@@ -125,6 +125,32 @@ fn errors() {
     assert_eq!(dup, Err(KindError::Taken(NODE)));
 }
 
+/// A kind with a fixed size takes only sizes that round to it, on every path: the sweep uses
+/// the kind's size, so a 16 B LEAF (24 B kind) would overlap the next cell, and the zap of the
+/// dead one would overwrite the live neighbour's header.
+#[test]
+fn fixed_size_kind_rejects_other_sizes() {
+    let heap = test_heap(|_| {});
+    let first = heap.alloc(LEAF, 24).unwrap();
+    let tlab = raw_tlab(&heap);
+    // TLAB, overflow TLAB (> 256 B) and LOS (> 8 KiB) sizes.
+    for size in [16, 32, 1024, 9000] {
+        assert_eq!(
+            heap.alloc(LEAF, size),
+            Err(AllocError::WrongSize(LEAF)),
+            "size {size}"
+        );
+    }
+    assert_eq!(raw_tlab(&heap), tlab, "a rejected size takes no memory");
+    assert_eq!(heap.stats().large_cells, 0);
+    // A size that rounds to the fixed size is the same cell.
+    let next = heap.alloc(LEAF, 20).unwrap();
+    assert_eq!(next.addr(), first.addr() + 24);
+    // A dynamic kind takes any size.
+    assert!(heap.alloc(NODE, 1024).is_ok());
+    black_box((first, next));
+}
+
 /// Fill pages with 256 B cells, keep every other one: each page then has 1-line holes. A 1 KiB
 /// cell does not fit a hole and goes to the overflow allocator (a fresh page); a 256 B cell
 /// reuses a hole.
@@ -202,6 +228,27 @@ fn out_of_memory_after_one_collection() {
     // With the roots gone, the next allocation collects and succeeds.
     let c = heap.alloc(LEAF, 24).expect("memory is free again");
     black_box(c);
+}
+
+/// A LOS cell in chunk 0 and a small page in chunk 1 both die: chunk 0 is decommitted, chunk 1
+/// stays cached. Under a limit of one page + 128 KiB, a new small page must reuse the cached
+/// chunk instead of committing chunk 0.
+#[test]
+#[cfg_attr(miri, ignore = "slow under Miri")]
+fn cached_page_is_reused_under_the_limit() {
+    let heap = test_heap(|c| c.max_heap_bytes = PAGE_SIZE + 128 * 1024);
+    let big = new_node(&heap, 1, 12_000);
+    let small = heap.alloc(LEAF, 24).unwrap();
+    assert!(small.addr() > big.addr());
+    black_box((big, small));
+    heap.collect_with_words(&[]);
+    heap.finish_sweeping();
+    let s = heap.stats();
+    assert_eq!((s.large_cells, s.small_pages), (0, 0));
+    assert_eq!(s.committed_bytes, PAGE_SIZE, "one cached page");
+    let c = heap.alloc(LEAF, 24).expect("the cached page is reused");
+    assert_eq!(c.addr() & PAGE_MASK, small.addr() & PAGE_MASK);
+    assert_eq!(heap.stats().committed_bytes, PAGE_SIZE);
 }
 
 #[test]

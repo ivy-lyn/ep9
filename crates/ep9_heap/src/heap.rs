@@ -15,6 +15,8 @@
 //!   -> mark: CSS [sp, stack high) + handles + scratch roots + root ranges + root sources
 //!   -> drain (trace by kind) -> clear dead weak slots -> free dead LOS cells now
 //!   -> queue every small page for lazy sweep (mark bits stay until the page is swept)
+//! a callback (root source, trace, size, weak source) panics while marking: every mark bit
+//!   is cleared and nothing is freed; while sweeping a page: that page's mark bits are cleared
 //! ```
 //!
 //! [`Heap`] keeps the fields that JIT and AOT code read at fixed offsets first
@@ -31,10 +33,10 @@ use ep9_value::encoding::VALUE_UNDEFINED;
 use ep9_value::{ShapeId, Value, Word0};
 
 use crate::barrier::{BarrierState, Slot, gc_state, threshold};
-use crate::cell::{CellKind, CellPtr, KindError, KindId, KindTable};
+use crate::cell::{CellKind, CellPtr, CellSize, KindError, KindId, KindTable};
 use crate::layout::{
-    FIRST_CELL_OFFSET, FIRST_LINE, LARGE_CELL_OFFSET, LINE_SIZE, LINES_PER_PAGE, Large,
-    MAX_LINE_CELL, MAX_SMALL_SIZE, PAGE_CELL_BYTES, PAGE_MASK, PAGE_SIZE, Page, ZAP_WORD,
+    BITMAP_WORDS, FIRST_CELL_OFFSET, FIRST_LINE, LARGE_CELL_OFFSET, LINE_SIZE, LINES_PER_PAGE,
+    Large, MAX_LINE_CELL, MAX_SMALL_SIZE, PAGE_CELL_BYTES, PAGE_MASK, PAGE_SIZE, Page, ZAP_WORD,
     cell_size_for,
 };
 use crate::memory::{HeapError, Memory};
@@ -86,6 +88,9 @@ pub enum AllocError {
     UnknownKind(KindId),
     /// The size overflows the address space.
     TooLarge,
+    /// The kind has a fixed size and the size, rounded by `cell_size_for`, is not it. The
+    /// sweep and the verifier use the kind's size, so such a cell would overlap its neighbour.
+    WrongSize(KindId),
 }
 
 impl std::fmt::Display for AllocError {
@@ -94,6 +99,13 @@ impl std::fmt::Display for AllocError {
             AllocError::OutOfMemory => f.write_str("out of GC heap memory"),
             AllocError::UnknownKind(k) => write!(f, "cell kind {} is not registered", k.get()),
             AllocError::TooLarge => f.write_str("allocation size overflows"),
+            AllocError::WrongSize(k) => {
+                write!(
+                    f,
+                    "size does not match the fixed size of cell kind {}",
+                    k.get()
+                )
+            }
         }
     }
 }
@@ -140,7 +152,9 @@ pub struct Heap {
     hot: Hot,
     base: NonNull<u8>,
     base_addr: usize,
-    registered: [Cell<bool>; 256],
+    /// Per kind byte, for `alloc` without a borrow of `inner`: [`NOT_REGISTERED`],
+    /// [`DYNAMIC_SIZE`], or the fixed size rounded by `cell_size_for`.
+    kind_sizes: [Cell<usize>; 256],
     pub(crate) inner: RefCell<Inner>,
     pub(crate) roots: RefCell<Roots>,
     pub(crate) handles: RefCell<Handles>,
@@ -156,6 +170,12 @@ const _: () = {
     assert!(offset_of!(Hot, cursor) == 8);
     assert!(offset_of!(Hot, limit) == 16);
 };
+
+/// `kind_sizes` entry of a kind byte with no registration.
+const NOT_REGISTERED: usize = 0;
+/// `kind_sizes` entry of a kind with a dynamic size. Not a multiple of 8, so no rounded size
+/// equals it.
+const DYNAMIC_SIZE: usize = usize::MAX;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Settings {
@@ -181,6 +201,46 @@ enum Swept {
     Free,
     Recyclable,
     Full,
+}
+
+/// Clears the mark bits of every small page and large object when dropped. `collect` holds
+/// one while it marks and forgets it when marking is done. If a callback panics, the unwind
+/// drops it: a cell left marked would not be traced by the next GC, so its children would be
+/// freed. (Cells marked so far keep gc_state BLACK, as survivors do.)
+///
+/// Why a reset and not a poisoned heap: before the guard is forgotten nothing is freed, the
+/// work lists are only dropped, and the weak entries cleared so far (only after a full mark)
+/// held cells that are unreachable. So clean marks are the whole state to restore. The heap
+/// stays usable after a caught panic, and the cost is on the panic path only.
+struct UnmarkOnUnwind<'a>(&'a Memory);
+
+impl Drop for UnmarkOnUnwind<'_> {
+    fn drop(&mut self) {
+        let mem = self.0;
+        for idx in mem.small_pages() {
+            clear_page_marks(mem.page(idx));
+        }
+        for idx in mem.large_heads() {
+            // SAFETY: chunk `idx` is the committed head of a large object.
+            let large = unsafe { Large::from_base(mem.chunk_base(idx)) };
+            large.header().mark.store(0, Relaxed);
+        }
+    }
+}
+
+/// Clears the mark bits of one small page when dropped (`sweep_page` holds one).
+struct UnmarkPageOnUnwind(Page);
+
+impl Drop for UnmarkPageOnUnwind {
+    fn drop(&mut self) {
+        clear_page_marks(self.0);
+    }
+}
+
+fn clear_page_marks(page: Page) {
+    for w in 0..BITMAP_WORDS {
+        page.mark_word(w).store(0, Relaxed);
+    }
 }
 
 pub(crate) struct Inner {
@@ -238,7 +298,7 @@ impl Heap {
             },
             base,
             base_addr,
-            registered: [const { Cell::new(false) }; 256],
+            kind_sizes: [const { Cell::new(NOT_REGISTERED) }; 256],
             inner: RefCell::new(Inner {
                 mem,
                 kinds: KindTable::new(),
@@ -278,7 +338,11 @@ impl Heap {
     /// allocation of that kind.
     pub fn register_kind(&self, id: KindId, kind: CellKind) -> Result<(), KindError> {
         self.inner.borrow_mut().kinds.register(id, kind)?;
-        self.registered[id.get() as usize].set(true);
+        let size = match kind.size {
+            CellSize::Fixed(n) => cell_size_for(n).expect("register checked the fixed size"),
+            CellSize::Dynamic(_) => DYNAMIC_SIZE,
+        };
+        self.kind_sizes[id.get() as usize].set(size);
         Ok(())
     }
 
@@ -287,15 +351,24 @@ impl Heap {
     /// ShapeId and the fields that the kind's size and trace functions read before the next
     /// GC point (no barrier needed: elision E2).
     ///
+    /// For a kind with a fixed size, `size` must round to that size
+    /// ([`AllocError::WrongSize`] otherwise).
+    ///
     /// This is a GC point: it may collect before it returns.
     #[inline]
     pub fn alloc(&self, kind: KindId, size: usize) -> Result<CellPtr, AllocError> {
-        if !self.registered[kind.get() as usize].get() {
+        let kind_size = self.kind_sizes[kind.get() as usize].get();
+        if kind_size == NOT_REGISTERED {
             return Err(AllocError::UnknownKind(kind));
         }
         let Some(size) = cell_size_for(size) else {
             return Err(AllocError::TooLarge);
         };
+        // Every path below (TLAB, overflow TLAB, LOS) reserves `size` bytes; the sweep uses the
+        // kind's size, so they must agree.
+        if kind_size != DYNAMIC_SIZE && kind_size != size {
+            return Err(AllocError::WrongSize(kind));
+        }
         if size <= MAX_SMALL_SIZE {
             let cur = self.hot.cursor.get();
             let end = cur.wrapping_add(size);
@@ -407,6 +480,11 @@ impl Heap {
             inner.finish_sweeping();
             inner.recyclable.clear();
 
+            // From here until the weak sources are done, a root source, trace, size or weak
+            // function may panic. The unwind then drops this guard, which clears every mark
+            // bit, so the next GC starts from clean marks. Nothing is freed before the guard
+            // is forgotten.
+            let unmark = UnmarkOnUnwind(&inner.mem);
             let mut log = core::mem::take(&mut inner.css_log);
             log.clear();
             let record = inner.s.record_css;
@@ -471,6 +549,7 @@ impl Heap {
             handles.clear_dead(&mut w);
             roots.visit_weak(&mut w);
             weak_cleared += w.cleared;
+            core::mem::forget(unmark);
 
             inner.sweep_large();
             inner.sweep_queue = inner.mem.small_pages().collect();
@@ -767,8 +846,13 @@ impl Inner {
 
     /// Lazy sweep of one small page: frees unmarked cells (VO bit cleared, zapped), clears the
     /// mark bits and recomputes the line marks from the live cells.
+    ///
+    /// The caller has taken the page off the sweep queue, so no allocation list holds it. If
+    /// a size function panics, the unwind clears the page's mark bits; its dead cells that
+    /// still have a VO bit are not zapped yet, and the next GC frees them.
     fn sweep_page(&mut self, idx: usize) -> Swept {
         let page = self.mem.page(idx);
+        let unmark = UnmarkPageOnUnwind(page);
         // SAFETY: the line-mark array lies in the page's committed metadata area.
         unsafe { page.line_marks().write_bytes(0, LINES_PER_PAGE) };
         let mut live = 0usize;
@@ -796,6 +880,8 @@ impl Inner {
                 };
                 live += 1;
             }
+            // Free the dead cells before zapping them: no VO bit is left on a zapped cell.
+            page.vo_word(w).store(vo & mk, Relaxed);
             let mut dead = vo & !mk;
             while dead != 0 {
                 let bit = dead.trailing_zeros() as usize;
@@ -813,9 +899,9 @@ impl Inner {
                 self.stats.freed_cells += 1;
                 self.stats.freed_bytes += size as u64;
             }
-            page.vo_word(w).store(vo & mk, Relaxed);
             page.mark_word(w).store(0, Relaxed);
         }
+        core::mem::forget(unmark);
         if live == 0 {
             self.mem.free_small_page(idx);
             return Swept::Free;

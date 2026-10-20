@@ -7,6 +7,7 @@
 
 use std::cell::RefCell;
 use std::hint::black_box;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 
 use ep9_value::Value;
@@ -415,5 +416,142 @@ fn verifier_catches_corruption() {
     heap.drop_global(bad);
     let r = heap.verify().expect("restored");
     assert!(r.small_cells >= 2);
+    heap.drop_global(g);
+}
+
+// ---- a callback panics during a GC, and the embedder catches it ----
+
+/// Panics without running the panic hook (no test output).
+fn callback_panic() -> ! {
+    std::panic::resume_unwind(Box::new("test callback panic"))
+}
+
+thread_local! {
+    /// Makes `panicky_trace` and `panicky_size` panic.
+    static PANIC_NOW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// 24 B: word0, a strong slot at +8, a raw word. Its trace function panics on demand.
+const PANICKY_TRACE: KindId = KindId::new(13).unwrap();
+/// A 16 B leaf whose size function panics on demand.
+const PANICKY_SIZE: KindId = KindId::new(14).unwrap();
+
+fn panicky_trace(c: CellPtr, t: &mut Tracer<'_>) {
+    if PANIC_NOW.get() {
+        callback_panic();
+    }
+    // SAFETY: a live PANICKY_TRACE cell has a Value slot at +8.
+    t.visit(unsafe { c.slot(8) });
+}
+
+fn panicky_size(_: CellPtr) -> usize {
+    if PANIC_NOW.get() {
+        callback_panic();
+    }
+    16
+}
+
+fn register_panicky_kinds(heap: &Heap) {
+    let trace = CellKind {
+        name: "test-panicky-trace",
+        size: CellSize::Fixed(24),
+        trace: panicky_trace,
+    };
+    let size = CellKind {
+        name: "test-panicky-size",
+        size: CellSize::Dynamic(panicky_size),
+        trace: |_, _| {},
+    };
+    heap.register_kind(PANICKY_TRACE, trace).unwrap();
+    heap.register_kind(PANICKY_SIZE, size).unwrap();
+}
+
+/// Runs `f`, which must panic, with `PANIC_NOW` set.
+fn catch_with_panic_now(f: impl FnOnce()) {
+    PANIC_NOW.set(true);
+    let r = catch_unwind(AssertUnwindSafe(f));
+    PANIC_NOW.set(false);
+    assert!(r.is_err(), "the callback did not panic");
+}
+
+/// After a caught callback panic: the verifier finds no mark bit and no zapped cell, and a
+/// new cell stored into the rooted `host` at `offset` survives the next GC. A host left
+/// marked would not be traced again, so the new cell would be freed.
+fn check_after_caught_panic(heap: &Heap, host: CellPtr, offset: usize) {
+    heap.verify()
+        .expect("clean heap (no mark bit, no zapped cell) after the caught panic");
+    let child = new_node(heap, 77, 0);
+    // SAFETY: `host` is rooted by the caller; `offset` is one of its Value slots.
+    unsafe {
+        host.slot(offset)
+            .set(host.header(), child.to_value(), heap.barrier())
+    };
+    let addr = child.addr();
+    precise_gc(heap);
+    assert!(heap.is_cell(addr), "a cell reachable from a root was freed");
+    assert_eq!(node_id(child), 77);
+    heap.verify().expect("verifier");
+}
+
+#[test]
+fn caught_root_source_panic_leaves_no_marks() {
+    let heap = test_heap(|_| {});
+    let parent = new_node(&heap, 1, 2);
+    let child = new_node(&heap, 2, 0);
+    store(&heap, parent, 0, child.to_value());
+    let g = heap.new_global(parent.to_value());
+    // Handles are marked before root sources run: `parent` is marked when this panics.
+    let id = heap.add_root_source(|_| callback_panic());
+    assert!(catch_unwind(AssertUnwindSafe(|| precise_gc(&heap))).is_err());
+    assert!(heap.remove_root(id));
+    check_after_caught_panic(&heap, parent, NODE_HEADER + 8);
+    assert!(heap.is_cell(child.addr()), "the first child survives too");
+    heap.drop_global(g);
+}
+
+#[test]
+fn caught_trace_panic_leaves_no_marks() {
+    let heap = test_heap(|_| {});
+    register_panicky_kinds(&heap);
+    let host = heap.alloc(PANICKY_TRACE, 24).unwrap();
+    let g = heap.new_global(host.to_value());
+    catch_with_panic_now(|| precise_gc(&heap));
+    check_after_caught_panic(&heap, host, 8);
+    heap.drop_global(g);
+}
+
+#[test]
+fn caught_weak_source_panic_leaves_no_marks() {
+    let heap = test_heap(|_| {});
+    // A LOS host: its mark lives in the large-object header.
+    let host = new_node(&heap, 1, 1100);
+    assert_eq!(heap.stats().large_cells, 1);
+    let g = heap.new_global(host.to_value());
+    // Weak sources run after marking: every reachable cell is marked when this panics.
+    let id = heap.add_weak_source(|_| callback_panic());
+    assert!(catch_unwind(AssertUnwindSafe(|| precise_gc(&heap))).is_err());
+    assert!(heap.remove_root(id));
+    check_after_caught_panic(&heap, host, NODE_HEADER);
+    heap.drop_global(g);
+}
+
+/// The lazy sweep of a page calls size functions. Here a dead 16 B node and then a dead
+/// PANICKY_SIZE cell follow the live host in one bitmap word: the node is zapped before the
+/// size function panics, and no VO bit may stay on it.
+#[test]
+fn caught_size_panic_in_lazy_sweep_leaves_no_marks() {
+    let heap = test_heap(|_| {});
+    register_panicky_kinds(&heap);
+    let host = new_node(&heap, 1, 1);
+    let dead_node = new_node(&heap, 2, 0).addr();
+    let dead_odd = heap.alloc(PANICKY_SIZE, 16).unwrap().addr();
+    let word = |a: usize| (a & !crate::layout::PAGE_MASK) / 8 / 64;
+    assert_eq!((dead_node, dead_odd), (host.addr() + 24, host.addr() + 40));
+    assert_eq!(word(host.addr()), word(dead_odd), "one bitmap word");
+    let g = heap.new_global(host.to_value());
+    precise_gc(&heap);
+    catch_with_panic_now(|| heap.finish_sweeping());
+    check_after_caught_panic(&heap, host, NODE_HEADER);
+    assert!(!heap.is_cell(dead_node) && !heap.is_cell(dead_odd));
     heap.drop_global(g);
 }

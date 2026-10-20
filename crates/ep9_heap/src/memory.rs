@@ -11,8 +11,10 @@
 //!   The conservative scan uses it for interior pointers into large objects.
 //! - Small pages are committed whole. A large object commits only up to the OS page after its
 //!   cell; the rest of its last chunk stays reserved.
-//! - Free chunks are reused lowest first. Up to [`MAX_CACHED_FREE_PAGES`] freed small pages
-//!   stay committed for reuse; other freed chunks are decommitted.
+//! - Up to [`MAX_CACHED_FREE_PAGES`] freed small pages stay committed for reuse (the cache);
+//!   other freed chunks are decommitted. A new small page takes the lowest cached chunk, else
+//!   the lowest free chunk. A large object takes the lowest free run and evicts cached chunks
+//!   when the commit would pass `max_committed`, so the cache never causes an out-of-memory.
 //! - Under Miri the reservation is one aligned block from the global allocator: Miri cannot
 //!   map fixed addresses, but its allocations sit far below 2^47.
 
@@ -82,7 +84,8 @@ pub(crate) struct Memory {
     layout: std::alloc::Layout,
     chunks: Vec<Chunk>,
     free: BTreeSet<u32>,
-    cached_free_pages: usize,
+    /// The free chunks that stay committed (a subset of `free`).
+    cached: BTreeSet<u32>,
     committed: usize,
     max_committed: usize,
     os_page: usize,
@@ -123,7 +126,7 @@ impl Memory {
             cage,
             chunks: Vec::new(),
             free: BTreeSet::new(),
-            cached_free_pages: 0,
+            cached: BTreeSet::new(),
             committed: 0,
             max_committed,
             os_page: ep9_platform::page_size(),
@@ -148,7 +151,7 @@ impl Memory {
             layout,
             chunks: Vec::new(),
             free: BTreeSet::new(),
-            cached_free_pages: 0,
+            cached: BTreeSet::new(),
             committed: 0,
             max_committed,
             os_page: 4096,
@@ -280,6 +283,13 @@ impl Memory {
 
     /// Takes one chunk for a small page and commits it. The caller writes the page header.
     pub(crate) fn alloc_small_page(&mut self) -> Option<usize> {
+        // A cached chunk is already committed: it needs no commit and cannot pass the limit.
+        if let Some(i) = self.cached.pop_first() {
+            debug_assert_eq!(self.chunks[i as usize], Chunk::Free { committed: true });
+            self.free.remove(&i);
+            self.chunks[i as usize] = Chunk::Small;
+            return Some(i as usize);
+        }
         let (idx, pushed) = match self.free.first().copied() {
             Some(i) => (i as usize, false),
             None => {
@@ -290,20 +300,14 @@ impl Memory {
                 (self.chunks.len() - 1, true)
             }
         };
-        let Chunk::Free { committed } = self.chunks[idx] else {
-            unreachable!("free set holds a used chunk")
-        };
-        if !committed {
-            if self.committed + PAGE_SIZE > self.max_committed || !self.commit(idx, PAGE_SIZE) {
-                if pushed {
-                    self.chunks.pop();
-                }
-                return None;
+        debug_assert_eq!(self.chunks[idx], Chunk::Free { committed: false });
+        if self.committed + PAGE_SIZE > self.max_committed || !self.commit(idx, PAGE_SIZE) {
+            if pushed {
+                self.chunks.pop();
             }
-            self.committed += PAGE_SIZE;
-        } else {
-            self.cached_free_pages -= 1;
+            return None;
         }
+        self.committed += PAGE_SIZE;
         self.free.remove(&(idx as u32));
         self.chunks[idx] = Chunk::Small;
         Some(idx)
@@ -312,8 +316,8 @@ impl Memory {
     /// Returns a swept, empty small page. It stays committed while the cache has room.
     pub(crate) fn free_small_page(&mut self, idx: usize) {
         debug_assert_eq!(self.chunks[idx], Chunk::Small);
-        if self.cached_free_pages < MAX_CACHED_FREE_PAGES {
-            self.cached_free_pages += 1;
+        if self.cached.len() < MAX_CACHED_FREE_PAGES {
+            self.cached.insert(idx as u32);
             self.chunks[idx] = Chunk::Free { committed: true };
         } else {
             // SAFETY: the page holds no live cell (the sweep found none), and the heap keeps no
@@ -360,25 +364,21 @@ impl Memory {
                 tail
             }
         };
-        // Decommit cached free pages in the run first, so the count of committed bytes stays
-        // exact, then check the limit.
-        let mut cached = 0;
-        for i in start..(start + n).min(self.chunks.len()) {
-            if self.chunks[i] == (Chunk::Free { committed: true }) {
-                cached += 1;
-            }
-        }
-        if self.committed - cached * PAGE_SIZE + commit > self.max_committed {
+        // Cached chunks count as committed. Check the limit as if every cached chunk were
+        // decommitted, then decommit the ones in the run (they are recommitted as part of the
+        // object) and, highest first, as many others as the limit needs.
+        if self.committed - self.cached.len() * PAGE_SIZE + commit > self.max_committed {
             return None;
         }
-        for i in start..(start + n).min(self.chunks.len()) {
-            if self.chunks[i] == (Chunk::Free { committed: true }) {
-                // SAFETY: a free chunk holds no live cell and nothing points into it.
-                unsafe { self.decommit(i, PAGE_SIZE) };
-                self.committed -= PAGE_SIZE;
-                self.cached_free_pages -= 1;
-                self.chunks[i] = Chunk::Free { committed: false };
-            }
+        while let Some(&i) = self.cached.range(start as u32..(start + n) as u32).next() {
+            self.evict_cached(i);
+        }
+        while self.committed + commit > self.max_committed {
+            let i = *self
+                .cached
+                .last()
+                .expect("the check above leaves enough cached chunks");
+            self.evict_cached(i);
         }
         let old_len = self.chunks.len();
         while self.chunks.len() < start + n {
@@ -398,6 +398,16 @@ impl Memory {
             };
         }
         Some(start)
+    }
+
+    /// Decommits a cached chunk. It stays free.
+    fn evict_cached(&mut self, i: u32) {
+        let was_cached = self.cached.remove(&i);
+        debug_assert!(was_cached && self.chunks[i as usize] == Chunk::Free { committed: true });
+        // SAFETY: a free chunk holds no live cell and nothing points into it.
+        unsafe { self.decommit(i as usize, PAGE_SIZE) };
+        self.committed -= PAGE_SIZE;
+        self.chunks[i as usize] = Chunk::Free { committed: false };
     }
 
     /// Frees a large object: decommits its `committed` bytes and frees its chunks.
@@ -498,5 +508,32 @@ mod tests {
         assert_eq!(m.alloc_large(max + 1, PAGE_SIZE), None, "reservation limit");
         assert!(m.alloc_large(max, PAGE_SIZE).is_some());
         assert_eq!(m.alloc_small_page(), None);
+    }
+
+    #[test]
+    fn cached_pages_never_cause_out_of_memory() {
+        let kib = 1024;
+        let mut m = Memory::new(&small_config(), PAGE_SIZE + 128 * kib).unwrap();
+        let l = m.alloc_large(1, 64 * kib).unwrap();
+        let s = m.alloc_small_page().unwrap();
+        assert_eq!((l, s), (0, 1));
+        m.free_small_page(s);
+        // SAFETY: nothing points into the large object.
+        unsafe { m.free_large(l, 64 * kib) };
+        assert_eq!(m.chunk(0), Chunk::Free { committed: false });
+        assert_eq!(m.chunk(1), Chunk::Free { committed: true });
+        assert_eq!(m.committed_bytes(), PAGE_SIZE);
+        // A small page takes the cached chunk 1; committing chunk 0 would pass the limit.
+        assert_eq!(m.alloc_small_page(), Some(1));
+        assert_eq!(m.committed_bytes(), PAGE_SIZE);
+        // A large object in chunk 0 evicts the cached chunk 1, which is outside its run.
+        m.free_small_page(1);
+        assert_eq!(m.alloc_large(1, 200 * kib), Some(0));
+        assert_eq!(m.chunk(1), Chunk::Free { committed: false });
+        let committed = (200 * kib).next_multiple_of(m.os_page());
+        assert_eq!(m.committed_bytes(), committed);
+        // Nothing left to evict: a real out-of-memory.
+        assert_eq!(m.alloc_large(1, 200 * kib), None);
+        assert_eq!(m.committed_bytes(), committed);
     }
 }
