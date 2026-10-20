@@ -3,10 +3,12 @@
 #
 #   lint ............. fmt + clippy -D warnings; run.mjs tests       (Linux x64)
 #   build-test ....... build + test; clippy on the other 3 targets   (4 targets)
-#   test262-parse .... parse-only runner vs expectations/            (4 targets)
-#   spikes ........... SP-Dispatch and SP-GC host gates              (4 targets)
+#   test262 .......... parse and exec runners vs expectations/       (4 targets)
+#   disasm ........... ep9_vm handler check (H15); ep9_heap barrier  (4 targets)
+#   spikes ........... SP-Dispatch, SP-GC and SP-JIT-mem host gates  (4 targets)
 #                      SP-Dispatch speed gates: recorded, not blocking (H15 ADR)
-#   dep-guards ....... cargo tree / metadata guards                  (Linux x64)
+#   miri ............. Miri on the ep9_value and ep9_heap tests      (Linux x64)
+#   dep-guards ....... cargo tree / metadata guards; cargo deny      (Linux x64)
 #   perf-ci-v0 ....... ep9-bench instruction counts as JSON artifact (Linux x64)
 #   sp-tsrs-win ...... tsrs_cli on Windows: recorded, not blocking   (Windows x64)
 #
@@ -83,8 +85,8 @@ jobs:
       - if: ${{ matrix.name != 'linux-x64' }}
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-  test262-parse:
-    name: test262 parse (${{ matrix.name }})
+  test262:
+    name: test262 parse + exec (${{ matrix.name }})
     strategy:
       fail-fast: false
       matrix:
@@ -105,9 +107,57 @@ jobs:
         with:
           path: third_party/test262
           key: test262-${{ runner.os }}-${{ hashFiles('third_party/test262.commit', 'third_party/patches/test262/**') }}
-      - run: bash scripts/sync-test262.sh
+      - id: sync
+        run: bash scripts/sync-test262.sh
       # Exit 1 on a regression vs expectations/test262-parse.<host-triple>.txt.
-      - run: cargo run --release --locked -p ep9_test262 -- parse
+      - name: test262 parse
+        run: cargo run --release --locked -p ep9_test262 -- parse
+      # The engine end to end (tools/test262/README.md "exec"): one worker process per CPU, 20 s
+      # soft timeout per run (the slowest run takes < 0.5 s on an M-series Mac). Exit 1 on a change
+      # vs expectations/test262.<host-triple>.jit.txt. Exit 2 on an infrastructure error (panic,
+      # timeout, worker crash): no expectation file can list one, so it always fails the job.
+      - name: test262 exec
+        if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
+        run: cargo run --release --locked -p ep9_test262 -- exec --json test262-exec.json
+      # Every failure with its cause; regenerate an expectation file from it (status "fail").
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ failure() }}
+        with:
+          name: test262-exec-${{ matrix.name }}
+          path: test262-exec.json
+          if-no-files-found: ignore
+
+  # Disassembly checks of engine crates (docs/plan/10-quality.md section 5; 08-repo section 7).
+  # Host target only: each tier-1 target has its own runner, and the machine code depends on the
+  # target, not on the host.
+  disasm:
+    name: disasm checks (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macos-arm64, os: macos-15 }
+          - { name: linux-x64, os: ubuntu-24.04 }
+          - { name: linux-arm64, os: ubuntu-24.04-arm }
+          - { name: windows-x64, os: windows-2025 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - run: git config --global core.autocrlf false && git config --global core.longpaths true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust
+      # cargo xtask disasm-check needs llvm-objdump, llvm-nm and llvm-ar from the sysroot.
+      - run: rustup component add llvm-tools
+      # H15: tail handlers end in tail jumps, handler args <= 4, and every expansion has 282
+      # handlers = ep9_vm::internals::THREADED_HANDLERS (opcodes + cold blocks + 3). Change the
+      # number when an opcode or a cold block is added. No --match-loop gate for ep9_vm yet: the
+      # x86-64 release dispatch of ep9_vm is open (H15).
+      - name: ep9_vm handlers
+        run: cargo xtask disasm-check --manifest-path crates/ep9_vm/Cargo.toml -p ep9_vm --expect 282
+      # SP-Value, H11: the barrier fast path (rustc --emit asm; no llvm-tools needed).
+      - name: ep9_heap barrier
+        if: ${{ !cancelled() }}
+        run: bash crates/ep9_heap/disasm-barrier.sh
 
   spikes:
     name: spike gates (${{ matrix.name }})
@@ -135,6 +185,7 @@ jobs:
           workspaces: |
             spikes/sp-dispatch -> target
             spikes/sp-gc -> target
+            spikes/sp-jit-mem -> target
       # Structural gates block (build, tests, agreement, tail exits, handler args, x64 match-loop
       # shape). Speed gates are recorded, not blocking: one hosted x64 label gave 4 CPU models,
       # and the verdict changes with the model (H15 ADR; docs/measurements/2026-10-21-sp-dispatch-x64.md).
@@ -148,12 +199,36 @@ jobs:
       - name: SP-GC gate
         if: ${{ !cancelled() }}
         run: bash spikes/sp-gc/gate.sh
+      # Host target only (SP_JIT_EXTRAS=0): the Rosetta and Windows cross-build extras are for a
+      # local Mac; each tier-1 target has its own runner here.
+      - name: SP-JIT-mem gate
+        if: ${{ !cancelled() }}
+        env:
+          SP_JIT_EXTRAS: "0"
+        run: bash spikes/sp-jit-mem/gate.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
           name: sp-dispatch-gate-${{ matrix.name }}
           path: spikes/sp-dispatch/target/gate/
           if-no-files-found: warn
+
+  # Miri on the unsafe code of ep9_value and ep9_heap (docs/plan/10-quality.md section 5,
+  # sanitizers). The plan runs it nightly; it runs on every PR until the nightly trigger lands.
+  # The crates skip what Miri cannot run (the conservative stack scan) and the slow tests
+  # (cfg_attr(miri, ignore)). The nightly is the pinned one of the become feature.
+  miri:
+    name: Miri (linux-x64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MIRI_TOOLCHAIN: nightly-2026-10-04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The +toolchain override wins over rust-toolchain.toml, so the stable pin is not needed.
+      - run: rustup toolchain install "$MIRI_TOOLCHAIN" --profile minimal --component miri,rust-src --no-self-update
+      - run: cargo "+$MIRI_TOOLCHAIN" miri setup
+      - run: cargo "+$MIRI_TOOLCHAIN" miri test --locked -p ep9_value -p ep9_heap
 
   dep-guards:
     name: dependency guards
@@ -163,6 +238,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-rust
       - run: bash .github/scripts/dep-guards.sh
+      # Licence and ban rules of deny.toml (docs/plan/12-governance.md section 1). The release
+      # binary is pinned by version and SHA-256 (the digest that GitHub and the release's .sha256
+      # file give); no third-party action and no build.
+      - name: Install cargo-deny
+        env:
+          DENY_VERSION: 0.20.2
+          DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+        run: |
+          set -euo pipefail
+          name="cargo-deny-$DENY_VERSION-x86_64-unknown-linux-musl"
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/$name.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/$DENY_VERSION/$name.tar.gz"
+          echo "$DENY_SHA256  $RUNNER_TEMP/$name.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$name.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
+      - run: cargo deny --locked check licenses bans
 
   perf-ci-v0:
     name: perf CI v0 (linux-x64)
