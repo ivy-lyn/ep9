@@ -172,13 +172,21 @@ pub fn measure(
         None => Command::new(program),
     };
     cmd.args(args);
-    let stderr_file = (!show_output).then(|| temp_path("stderr"));
-    if let Some(path) = &stderr_file {
-        cmd.stdout(Stdio::null());
-        match fs::File::create(path) {
-            Ok(f) => cmd.stderr(f),
-            Err(_) => cmd.stderr(Stdio::null()),
-        };
+    // The capture file and the handle we read it back from; the child writes through a clone.
+    let mut capture = None;
+    if !show_output {
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        if let Some((path, f)) = stderr_capture() {
+            match f.try_clone() {
+                Ok(w) => {
+                    cmd.stderr(w);
+                    capture = Some((path, f));
+                }
+                Err(_) => {
+                    let _ = fs::remove_file(&path);
+                }
+            }
+        }
     }
     let start = Instant::now();
     let status = cmd.status().map_err(|e| match counter {
@@ -188,17 +196,14 @@ pub fn measure(
     let wall_ns = start.elapsed().as_nanos();
     let text = fs::read_to_string(&report).unwrap_or_default();
     let _ = fs::remove_file(&report);
-    let stderr_tail = match &stderr_file {
-        Some(path) => {
-            let tail = status
-                .as_ref()
-                .is_ok_and(|s| !s.success())
-                .then(|| last_lines(path, STDERR_TAIL_LINES));
-            let _ = fs::remove_file(path);
-            tail
-        }
-        None => None,
-    };
+    let stderr_tail = capture.and_then(|(path, mut f)| {
+        let tail = status
+            .as_ref()
+            .is_ok_and(|s| !s.success())
+            .then(|| last_lines(&mut f, STDERR_TAIL_LINES));
+        let _ = fs::remove_file(&path);
+        tail
+    });
     let status = status?;
     if !status.success() {
         let mut e = format!("{} exited with {status}", program.display());
@@ -246,15 +251,41 @@ fn temp_path(ext: &str) -> PathBuf {
     std::env::temp_dir().join(format!("ep9-bench-{}-{n}.{ext}", std::process::id()))
 }
 
-/// The last `n` lines of the file at `path` (read from its last 64 KiB), without line ends.
-/// Empty when the file is empty or cannot be read.
-fn last_lines(path: &Path, n: usize) -> Vec<String> {
+/// A new temp file for the command's stderr and its path. `create_new` never opens a file or
+/// symlink that is already at the path (the names are predictable); on unix the mode is 0600.
+/// A taken name moves on to the next one. `None` when no file can be made.
+fn stderr_capture() -> Option<(PathBuf, fs::File)> {
+    for _ in 0..64 {
+        let path = temp_path("stderr");
+        match open_new_private(&path) {
+            Ok(f) => return Some((path, f)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+/// Creates the file at `path` for reading and writing; fails if anything is already there.
+fn open_new_private(path: &Path) -> std::io::Result<fs::File> {
+    let mut opts = fs::OpenOptions::new();
+    opts.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    opts.open(path)
+}
+
+/// The last `n` lines of `f`, without line ends, read from at most its last 64 KiB as of this
+/// call: a process that still writes to the file cannot make the read grow. Empty when the file is
+/// empty or cannot be read.
+fn last_lines(f: &mut fs::File, n: usize) -> Vec<String> {
     const MAX_READ: u64 = 64 << 10;
     let mut bytes = Vec::new();
-    let read = fs::File::open(path).and_then(|mut f| {
-        let len = f.metadata()?.len();
-        f.seek(SeekFrom::Start(len.saturating_sub(MAX_READ)))?;
-        f.read_to_end(&mut bytes)
+    let read = f.metadata().and_then(|m| {
+        let len = m.len();
+        let start = len.saturating_sub(MAX_READ);
+        f.seek(SeekFrom::Start(start))?;
+        f.take(len - start).read_to_end(&mut bytes)
     });
     if read.is_err() {
         return Vec::new();
@@ -347,6 +378,61 @@ mod tests {
         assert_eq!(parse_cachegrind(log), Some(1_234_567));
         assert_eq!(parse_cachegrind("==1== I   refs:      42\n"), Some(42));
         assert_eq!(parse_cachegrind("==1== error\n"), None);
+    }
+
+    // Review finding: File::create followed a symlink at the predictable path and truncated its
+    // target.
+    #[cfg(unix)]
+    #[test]
+    fn capture_file_never_opens_an_existing_path() {
+        let dir = std::env::temp_dir().join(format!("ep9-bench-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("victim.txt");
+        fs::write(&target, "keep me").unwrap();
+        let link = dir.join("capture.stderr");
+        let _ = fs::remove_file(&link);
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let e = open_new_private(&link).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&target).unwrap(), "keep me");
+        let fresh = dir.join("fresh.stderr");
+        let _ = fs::remove_file(&fresh);
+        drop(open_new_private(&fresh).unwrap());
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            fs::metadata(&fresh).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // Review finding: a writer that kept appending made the tail read grow without a bound.
+    #[test]
+    fn tail_read_is_bounded_while_the_file_grows() {
+        let (path, mut f) = stderr_capture().unwrap();
+        let mut w = f.try_clone().unwrap();
+        use std::io::Write as _;
+        w.write_all(&b"0123456789abcde\n".repeat(16 << 10)).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let chunk = b"appended line after the snapshot\n".repeat(1024);
+                while !stop.load(Ordering::Relaxed) {
+                    w.write_all(&chunk).unwrap();
+                }
+            })
+        };
+        for _ in 0..20 {
+            let lines = last_lines(&mut f, usize::MAX);
+            let bytes: usize = lines.iter().map(|l| l.len() + 1).sum();
+            assert!(bytes <= (64 << 10) + 1, "read {bytes} bytes");
+        }
+        stop.store(true, Ordering::Relaxed);
+        writer.join().unwrap();
+        let lines = last_lines(&mut f, 2);
+        assert_eq!(lines.len(), 2);
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
