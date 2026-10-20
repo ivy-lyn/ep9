@@ -142,6 +142,31 @@ fn per(delta_bytes: usize, delta_units: u32) -> String {
     }
 }
 
+/// Stack growth from n1 to n2 that is noise, not a slope (one page).
+const FLAT: usize = 4 << 10;
+
+/// Parse stack one pre-scan unit may use: its share of the worker stack, keeping the 1.5x
+/// margin of `stack.rs` (4,663 B debug, 2,615 B release).
+const PARSE_UNIT_BUDGET: usize =
+    crate::stack::WORKER_STACK_BYTES / 3 * 2 / crate::PRESCAN_CAP as usize;
+
+/// Pass stack one AST level may use: its share of the worker stack, keeping the 1.5x margin of
+/// `stack.rs`, as `bytecodegen::stack_tests` does for codegen (5,829 B debug, 3,269 B release).
+const PASS_LEVEL_BUDGET: usize = crate::stack::WORKER_STACK_BYTES / 3 * 2 / crate::AST_CAP as usize;
+
+/// `None` if `delta_bytes` over `delta_units` fits `budget` per unit; else what is wrong. No
+/// units means the stack must stay flat (the cap counts nothing for this form).
+fn over_budget(delta_bytes: usize, delta_units: u32, budget: usize) -> Option<String> {
+    if delta_units == 0 {
+        (delta_bytes > FLAT).then(|| format!("{delta_bytes} B with no units"))
+    } else {
+        let per = delta_bytes / delta_units as usize;
+        (per > budget).then(|| format!("{per} B/unit > budget {budget}"))
+    }
+}
+
+/// Measures every form, and fails when a slope does not fit its share of the worker stack:
+/// parse per pre-scan unit, the depth pass, oxc_semantic and the scope pass per AST level.
 #[test]
 #[ignore = "measurement; run on demand with --ignored --nocapture"]
 fn measure_forms() {
@@ -151,9 +176,10 @@ fn measure_forms() {
     } else {
         "release"
     };
-    let out = std::thread::Builder::new()
+    let (out, over) = std::thread::Builder::new()
         .stack_size(2 << 30)
         .spawn(move || {
+            let mut over = Vec::new();
             let mut out = String::new();
             writeln!(
                 out,
@@ -203,13 +229,35 @@ fn measure_forms() {
                     b.prescan,
                 )
                 .unwrap();
+                let pass = |at_b: usize, at_a: usize| {
+                    over_budget(at_b.saturating_sub(at_a), dast, PASS_LEVEL_BUDGET)
+                };
+                for (phase, problem) in [
+                    (
+                        "parse",
+                        over_budget(b.parse.saturating_sub(a.parse), de, PARSE_UNIT_BUDGET),
+                    ),
+                    ("depth pass", pass(b.depth_pass, a.depth_pass)),
+                    ("semantic", pass(b.semantic, a.semantic)),
+                    ("scope pass", pass(b.scope, a.scope)),
+                    ("pre-scan", over_budget(b.prescan.saturating_sub(a.prescan), 0, 0)),
+                ] {
+                    if let Some(problem) = problem {
+                        over.push(format!("{} {phase}: {problem}", form.name));
+                    }
+                }
             }
-            out
+            (out, over)
         })
         .unwrap()
         .join()
         .unwrap();
     println!("{out}");
+    assert!(
+        over.is_empty(),
+        "stack slopes above the worker stack share:\n{}",
+        over.join("\n")
+    );
 }
 
 /// Literal starts (regex, string, template) in oxc's AST.
@@ -229,57 +277,83 @@ impl<'a> oxc_ast_visit::Visit<'a> for OxcLiterals {
     }
 }
 
+/// A corpus check over no files proves nothing: fail when a checkout under `third_party/` is
+/// missing or empty, and name the script that syncs it.
+pub(crate) fn assert_checkout(dir: &str, files: usize) {
+    let script = if dir.starts_with("test262") {
+        "scripts/sync-test262.sh"
+    } else {
+        "scripts/sync-bench.sh"
+    };
+    assert!(
+        files > 0,
+        "third_party/{dir} has no .js or .mjs file: run `bash {script}` first"
+    );
+}
+
 fn corpus_files() -> Vec<(std::path::PathBuf, bool)> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../third_party");
     let mut out = Vec::new();
-    let mut stack = vec![
-        root.join("test262/test"),
-        root.join("test262/harness"),
-        root.join("bench-octane"),
-        root.join("bench-v8v7"),
-        root.join("bench-jetstream"),
-    ];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
-        entries.sort();
-        for path in entries {
-            if path.is_dir() {
-                if path
-                    .file_name()
-                    .is_some_and(|n| n == ".git" || n == "node_modules")
-                {
-                    continue;
+    for top in [
+        "test262/test",
+        "test262/harness",
+        "bench-octane",
+        "bench-v8v7",
+        "bench-jetstream",
+    ] {
+        let before = out.len();
+        let mut stack = vec![root.join(top)];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+            entries.sort();
+            for path in entries {
+                if path.is_dir() {
+                    if path
+                        .file_name()
+                        .is_some_and(|n| n == ".git" || n == "node_modules")
+                    {
+                        continue;
+                    }
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "js" || e == "mjs") {
+                    let module = path.extension().is_some_and(|e| e == "mjs");
+                    out.push((path, module));
                 }
-                stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "js" || e == "mjs") {
-                let module = path.extension().is_some_and(|e| e == "mjs");
-                out.push((path, module));
             }
         }
+        assert_checkout(top, out.len() - before);
     }
     out
 }
 
+/// Parse stack that does not grow with the estimate: the 16 KiB `GAP` that every measurement
+/// includes, oxc_parser's base and the regex parser's base. Corpus worst against
+/// `PARSE_UNIT_BUDGET` (aarch64, 2026-10-21): 13,776 B release (an empty file), 35,568 B debug
+/// (a `\p{...}` regex).
+const PARSE_BASE: usize = 64 << 10;
+
 /// Every valid file of test262 and the benchmark pins: the scanner finds exactly oxc's regex,
 /// string and template literals, and the real parse stack stays within the model
-/// `PARSE_BASE + estimate x unit`. Run on demand (needs the third_party checkouts):
+/// `PARSE_BASE + estimate x PARSE_UNIT_BUDGET`. Run on demand (needs the third_party
+/// checkouts; fails without them):
 /// `cargo test -p ep9_frontend --release probe::scanner -- --ignored --nocapture`
 #[test]
 #[ignore = "corpus check; needs third_party checkouts; run on demand"]
 fn scanner_matches_oxc_on_corpus() {
-    let report = std::thread::Builder::new()
+    let files = corpus_files();
+    let (report, checked, mismatches, over_model) = std::thread::Builder::new()
         .stack_size(2 << 30)
-        .spawn(|| {
-            let files = corpus_files();
+        .spawn(move || {
             let mut checked = 0usize;
             let mut literals = 0usize;
             let mut mismatches: Vec<String> = Vec::new();
+            let mut over_model: Vec<String> = Vec::new();
             let mut worst_residual: (i64, String, u32, usize) = (i64::MIN, String::new(), 0, 0);
             let mut worst_per_unit: (f64, String, u32, usize) = (0.0, String::new(), 0, 0);
-            let unit: i64 = if cfg!(debug_assertions) { 4_240 } else { 2_288 };
+            let unit = i64::try_from(PARSE_UNIT_BUDGET).unwrap();
             for (path, ext_module) in &files {
                 let Ok(src) = std::fs::read_to_string(path) else {
                     continue;
@@ -323,6 +397,12 @@ fn scanner_matches_oxc_on_corpus() {
                 let residual = i64::try_from(used).unwrap() - unit * i64::from(est.depth);
                 if residual > worst_residual.0 {
                     worst_residual = (residual, name.clone(), est.depth, used);
+                }
+                if residual > i64::try_from(PARSE_BASE).unwrap() {
+                    over_model.push(format!(
+                        "{name}: estimate {}, used {used} B, residual {residual} B",
+                        est.depth
+                    ));
                 }
                 if est.depth > 20 {
                     let per_unit = used as f64 / f64::from(est.depth);
@@ -391,12 +471,29 @@ fn scanner_matches_oxc_on_corpus() {
                 worst_per_unit.0, worst_per_unit.1, worst_per_unit.2, worst_per_unit.3
             )
             .unwrap();
-            out
+            (out, checked, mismatches, over_model)
         })
         .unwrap()
         .join()
         .unwrap();
     println!("{report}");
+    // Coverage: files oxc rejects (negative tests, module code run as a script) are skipped.
+    assert_eq!(
+        checked, 49_522,
+        "files checked changed: review the skipped files, then update this count"
+    );
+    assert!(
+        mismatches.is_empty(),
+        "{} files where the scanner's literal tokens differ from oxc:\n{}",
+        mismatches.len(),
+        mismatches.join("\n")
+    );
+    assert!(
+        over_model.is_empty(),
+        "{} files whose parse stack is above {PARSE_BASE} + estimate x {PARSE_UNIT_BUDGET} B:\n{}",
+        over_model.len(),
+        over_model.join("\n")
+    );
 }
 
 /// test262 front matter: (module goal, strict only).
@@ -417,8 +514,9 @@ fn test262_flags(src: &str, ext_module: bool) -> (bool, bool) {
 }
 
 /// Every valid file of test262 and the benchmark pins through the scope pass: no panic, no
-/// abort, every `IdentifierReference` visited, the same declaration as oxc's resolution, and
-/// the same result twice (determinism). Run on demand (needs the third_party checkouts):
+/// abort, every `IdentifierReference` visited, the same declaration as oxc's resolution (or
+/// one of the reviewed differences), and the same result twice (determinism). Run on demand
+/// (needs the third_party checkouts; fails without them):
 /// `cargo test -p ep9_frontend --release probe::scope_pass -- --ignored --nocapture`
 #[test]
 #[ignore = "corpus check; needs third_party checkouts; run on demand"]
@@ -430,6 +528,7 @@ fn scope_pass_matches_oxc_on_corpus() {
     let mut time = Duration::ZERO;
     let mut mismatches: Vec<String> = Vec::new();
     let mut by_why = std::collections::BTreeMap::new();
+    let mut rejected_by = std::collections::BTreeMap::new();
     for (path, ext_module) in &files {
         let Ok(src) = std::fs::read_to_string(path) else {
             continue;
@@ -492,10 +591,26 @@ fn scope_pass_matches_oxc_on_corpus() {
                     mismatches.push(format!("{}: {d}", path.display()));
                 }
             }
-            Err(_) => rejected += 1,
+            Err(e) => {
+                rejected += 1;
+                let key = match &e {
+                    crate::CompileError::Syntax(s) => format!("syntax: {}", s.first().message),
+                    crate::CompileError::Range(r) => format!("range: {:?}", r.kind),
+                };
+                let short = path.display().to_string();
+                let short = short
+                    .split("third_party/")
+                    .nth(1)
+                    .unwrap_or(&short)
+                    .to_owned();
+                rejected_by.entry(key).or_insert_with(Vec::new).push(short);
+            }
         }
     }
     println!("files analyzed {ok}, rejected by the front end {rejected}");
+    for (key, files) in &rejected_by {
+        println!("  rejected {} x {key}, e.g. {}", files.len(), files[0]);
+    }
     println!(
         "references {references}; oxc references or scopes with no ep9 counterpart {unvisited}; different on a second run {not_equal}"
     );
@@ -522,6 +637,35 @@ fn scope_pass_matches_oxc_on_corpus() {
         let short = file.split("third_party/").nth(1).unwrap_or(file);
         println!("  {short} x{count}: {example}");
     }
+    // Coverage: a rejected file drops out of every check below. At the pinned corpus the
+    // rejections are module code run as a script (`_FIXTURE.js` files and bench modules carry
+    // no module flag) and the annexB call-expression assignment targets oxc rejects.
+    assert_eq!(
+        (ok, rejected),
+        (49_517, 267),
+        "files analyzed / rejected changed: review the rejections above, then update these \
+         counts and H01"
+    );
+    assert_eq!(
+        unvisited, 0,
+        "oxc references or scopes with no ep9 counterpart (BytecodeGen looks them up)"
+    );
+    assert_eq!(
+        not_equal, 0,
+        "files with a different ScopeAnalysis on the second run"
+    );
+    // Only the reviewed classes, at their reviewed counts (H01 "F1 corpus"). `Why::Other` is a
+    // bug in ep9 or in oxc.
+    let reviewed = std::collections::BTreeMap::from([
+        (crate::scope::tests::Why::SplitBody, 54),
+        (crate::scope::tests::Why::AnnexB, 488),
+        (crate::scope::tests::Why::CatchVar, 4),
+    ]);
+    assert_eq!(
+        by_why, reviewed,
+        "references resolved unlike oxc changed: review the examples above, then update this \
+         table and H01"
+    );
 }
 
 /// The argument text of every `eval(`, `Function(` and `evalScript(` call in `src`.
@@ -636,6 +780,7 @@ fn has_lone_surrogate_escape(text: &str) -> bool {
 
 /// P4 baseline (01-front-end §7): test262 tests that pass source text with a lone surrogate to
 /// `eval`, `Function` or `$262.evalScript`. Such source cannot be UTF-8; it needs the shim.
+/// Fails without the test262 checkout, and when the set differs from the reviewed baseline.
 /// `cargo test -p ep9_frontend --release probe::p4 -- --ignored --nocapture`
 #[test]
 #[ignore = "corpus count; needs third_party/test262; run on demand"]
@@ -656,6 +801,7 @@ fn p4_lone_surrogate_eval_count() {
             }
         }
     }
+    assert_checkout("test262/test", files.len());
     files.sort();
     let (mut literal, mut generated, mut possible) = (Vec::new(), Vec::new(), Vec::new());
     // A `for` header that runs up to 0xFFFF, or code units built from 4 hex digits (S7.4_A5).
@@ -677,7 +823,11 @@ fn p4_lone_surrogate_eval_count() {
         if args.is_empty() {
             continue;
         }
-        let name = path.strip_prefix(&root).unwrap().display().to_string();
+        let name = path
+            .strip_prefix(&root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
         let computed = |a: &&str| {
             a.contains('+') || a.contains("${") || !a.trim_start().starts_with(['"', '\'', '`'])
         };
@@ -715,4 +865,41 @@ fn p4_lone_surrogate_eval_count() {
     for f in &possible {
         println!("  {f}");
     }
+    // The reviewed baseline (H05 "P4 baseline"): a change needs a new review by hand.
+    let review =
+        "the P4 set changed: review the files above by hand, then update this list and H05";
+    assert_eq!(
+        literal,
+        [
+            "language/literals/regexp/named-groups/invalid-lone-surrogate-groupname.js",
+            "staging/sm/RegExp/unicode-class-raw.js",
+            "staging/sm/RegExp/unicode-raw.js",
+        ],
+        "{review}"
+    );
+    assert_eq!(
+        generated,
+        [
+            "annexB/built-ins/RegExp/RegExp-leading-escape-BMP.js",
+            "annexB/built-ins/RegExp/RegExp-trailing-escape-BMP.js",
+            "language/comments/S7.4_A5.js",
+            "language/comments/S7.4_A6.js",
+            "language/literals/regexp/S7.8.5_A1.1_T2.js",
+            "language/literals/regexp/S7.8.5_A1.4_T2.js",
+            "language/literals/regexp/S7.8.5_A2.1_T2.js",
+            "language/literals/regexp/S7.8.5_A2.4_T2.js",
+        ],
+        "{review}"
+    );
+    assert_eq!(
+        possible,
+        [
+            "staging/sm/RegExp/unicode-braced.js",
+            "staging/sm/RegExp/unicode-class-braced.js",
+            "staging/sm/RegExp/unicode-class-lead-trail.js",
+            "staging/sm/RegExp/unicode-lead-trail.js",
+            "staging/sm/String/unicode-braced.js",
+        ],
+        "{review}"
+    );
 }

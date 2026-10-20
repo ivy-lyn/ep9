@@ -29,6 +29,7 @@ pub(crate) fn corpus_files() -> Vec<(PathBuf, bool, bool)> {
         ("bench-v8v7", false),
         ("bench-jetstream", false),
     ] {
+        let before = out.len();
         let mut stack = vec![root.join(dir)];
         while let Some(dir) = stack.pop() {
             let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -51,6 +52,7 @@ pub(crate) fn corpus_files() -> Vec<(PathBuf, bool, bool)> {
                 }
             }
         }
+        crate::probe::assert_checkout(dir, out.len() - before);
     }
     out
 }
@@ -255,10 +257,6 @@ fn print(report: &mut Report) {
 #[ignore = "corpus check; needs third_party checkouts; run on demand"]
 fn corpus_verifier_clean_and_deterministic() {
     let files = corpus_files();
-    assert!(
-        !files.is_empty(),
-        "no corpus files (third_party checkouts missing)"
-    );
     let mut report = run(&files);
     print(&mut report);
     let bad: usize = report
@@ -276,5 +274,12 @@ fn corpus_verifier_clean_and_deterministic() {
     assert_eq!(
         bad, 0,
         "internal errors, panics, determinism mismatches, missing positions or context errors"
+    );
+    // Coverage at the pinned corpus (decisions-log BCG-CORPUS): an unreadable file or a partial
+    // checkout drops out without a failure above.
+    assert_eq!(
+        (report.files, report.units),
+        (54_522, 104_375),
+        "corpus coverage changed: check the checkouts, then update these counts and BCG-CORPUS"
     );
 }
