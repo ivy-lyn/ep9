@@ -1,0 +1,9 @@
+self ReferenceError Cannot access 'a' before initialization
+forward ReferenceError Cannot access 'b' before initialization
+arrow ReferenceError Cannot access 'a' before initialization
+computed key ReferenceError Cannot access 'k' before initialization
+nested default ReferenceError Cannot access 'a' before initialization
+run0,ReferenceError,run2
+ctx0,ReferenceError,ctx2
+after 6
+simple 5

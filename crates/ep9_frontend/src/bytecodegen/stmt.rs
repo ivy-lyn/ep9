@@ -788,6 +788,9 @@ impl<'a> FnGen<'a, '_> {
                         g.b.create_block_context(k);
                     });
                 }
+                // The pattern's names are in TDZ until it binds them (also on a later run of
+                // this catch: a register still holds the last value).
+                self.init_holes(scope);
                 self.bind_pattern(pattern, exc, BindMode::Init)?;
             }
         }

@@ -417,6 +417,20 @@ fn non_simple_parameters_have_a_tdz() {
     assert!(!a.the("a").tdz);
 }
 
+#[test]
+fn catch_patterns_have_a_tdz() {
+    // In the pattern: checked. In the body: not. In a closure: checked.
+    let a = script("function f() { try {} catch ({ a = a, b = () => a }) { a; () => a; } }");
+    assert!(a.the("a").tdz);
+    assert_eq!(a.hole_checks("a"), vec![true, true, false, true]);
+    let a = script("function f() { try {} catch ([a = b, b]) { b; } }");
+    assert_eq!(a.hole_checks("b"), vec![true, false]);
+    // A plain catch parameter is initialized at once.
+    let a = script("function f() { try {} catch (e) { e; () => e; } }");
+    assert!(!a.the("e").tdz);
+    assert_eq!(a.hole_checks("e"), vec![false, false]);
+}
+
 // Hoisting.
 
 #[test]

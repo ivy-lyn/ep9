@@ -967,9 +967,20 @@ impl<'a> Visit<'a> for Builder<'a> {
         );
         self.cur_scope = scope;
         if let Some(param) = &it.param {
-            self.scope_extra[scope.index()].catch_pattern =
-                !matches!(param.pattern, BindingPattern::BindingIdentifier(_));
+            let pattern = !matches!(param.pattern, BindingPattern::BindingIdentifier(_));
+            self.scope_extra[scope.index()].catch_pattern = pattern;
             self.decl_pattern(&param.pattern, Decl::Catch);
+            // A pattern initializes its names one by one, so a default value or a computed key
+            // can read one before its initialization (ECMA-262 CatchClauseEvaluation: the
+            // bindings are created uninitialized). Same rule as a non-simple parameter list.
+            if pattern {
+                let end = param.pattern.span().end;
+                for &b in &self.scopes[scope.index()].bindings {
+                    let binding = &mut self.bindings[b.index()];
+                    binding.tdz = true;
+                    binding.init_pos = end;
+                }
+            }
         }
         self.visit_block_statement(&it.body);
         self.cur_scope = outer;
