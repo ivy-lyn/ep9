@@ -1,0 +1,7 @@
+= RK 5 5
+read K 1
+call KRM1 true
+throwing R,K!,key,K!,key
+values 10 6 2 1 0 0 1
+class RK 7 7
+plain RK 1

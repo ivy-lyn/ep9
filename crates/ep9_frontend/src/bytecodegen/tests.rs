@@ -636,6 +636,41 @@ fn iterator_close_on_a_throw_ignores_errors_of_the_return_lookup() {
     }
 }
 
+/// A `super[k]` reference keeps the key value; GetValue and PutValue convert it (ECMA-262
+/// SuperProperty evaluation). So `super[k] = v()` calls `v` before ToPropertyKey(k) (in
+/// StoreToSuper), and a compound assignment or update converts once, before the read, and the
+/// store reuses the key (GetValue step 3.c). node converts twice there; JSC and test262 once.
+#[test]
+fn super_keys_are_converted_by_get_value_and_put_value() {
+    use ep9_bytecode::{Instructions, RuntimeId};
+    let src = "({ a() { super[k] = v(); }, b() { super[k] += v(); }, c() { super[k]++; }, \
+               d() { return super[k](v()); } });";
+    let unit = compile_case(Sloppy, src).unwrap();
+    let steps = |f: usize| -> Vec<&str> {
+        Instructions::new(&unit.unit().functions[f].bytecode)
+            .map(|i| i.expect("verified code decodes"))
+            .filter_map(|i| match i.opcode {
+                Opcode::ToName => Some("ToName"),
+                Opcode::CallRuntime => match RuntimeId::from_u16(i.unsigned(0) as u16) {
+                    Some(r @ (RuntimeId::LoadKeyedFromSuper | RuntimeId::StoreToSuper)) => {
+                        Some(r.info().name)
+                    }
+                    _ => None,
+                },
+                op if op.info().flags.contains(OpcodeFlags::CALL) => Some("call"),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(steps(1), ["call", "StoreToSuper"]);
+    assert_eq!(
+        steps(2),
+        ["ToName", "LoadKeyedFromSuper", "call", "StoreToSuper"]
+    );
+    assert_eq!(steps(3), ["ToName", "LoadKeyedFromSuper", "StoreToSuper"]);
+    assert_eq!(steps(4), ["LoadKeyedFromSuper", "call", "call"]);
+}
+
 #[test]
 fn entry_points() {
     assert!(compile_script("1", Strictness::Sloppy).is_ok());

@@ -1020,9 +1020,12 @@ impl<'a, 's> FnGen<'a, 's> {
         let this = self.temp();
         self.load_ref(this_ref, false);
         self.b.star(this);
+        // The reference keeps the key value: GetValue and PutValue convert it (ECMA-262
+        // SuperProperty evaluation), so `super[k] = v` evaluates `v` before ToPropertyKey(k).
+        // LoadKeyedFromSuper and StoreToSuper convert it.
         let key = self.temp();
         self.expr(&c.expression)?;
-        self.b.to_name().star(key);
+        self.b.star(key);
         let home_ref = self.implicit(sup.span.start, ImplicitRef::HomeObject)?;
         let home = self.temp();
         self.load_ref(home_ref, false);
@@ -1873,7 +1876,14 @@ impl<'a, 's> FnGen<'a, 's> {
     fn get_prepared(&mut self, p: &Prepared<'a, 's>, at: u32) {
         match p {
             Prepared::Binding(r) => self.load_ref(r, false),
-            Prepared::Member(m) => self.load_member(*m, at),
+            Prepared::Member(m) => {
+                // GetValue stores the converted key in the reference, so the PutValue that
+                // follows does not convert it again (ECMA-262 GetValue step 3.c).
+                if let MemberRef::SuperKeyed { key, .. } = *m {
+                    self.b.ldar(key).to_name().star(key);
+                }
+                self.load_member(*m, at);
+            }
             Prepared::Pattern(_) => unreachable!("compound assignment to a pattern"),
         }
     }

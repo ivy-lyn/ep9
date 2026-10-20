@@ -77,7 +77,7 @@ function f1 method name="m" parent=f0 outer_scope=scope0 flags=[simple-params] p
       7 E 15 (1:16)
      16 E 21 (1:22)
 function f2 method name="n" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=6 range=28..64
-  code (69 bytes):
+  code (68 bytes):
       0 S> Ldar <this>                                  ; 0b ff
       2    Star r0                                      ; 0c 00
       4    LdaCurrentFunction                           ; 0e
@@ -94,28 +94,26 @@ function f2 method name="n" parent=f0 outer_scope=scope0 flags=[simple-params] p
      33 S> Ldar <this>                                  ; 0b ff
      35    Star r0                                      ; 0c 00
      37    LdaSmi [1]                                   ; 04 01
-     39 E> ToName                                       ; 58
-     40    Star r1                                      ; 0c 01
-     42    LdaCurrentFunction                           ; 0e
-     43    Star r3                                      ; 0c 03
-     45 E> CallRuntime GetHomeObject, r3                ; 68 0e 00 03 01
-     50    Star r2                                      ; 0c 02
-     52    Mov r0, r3                                   ; 0d 00 03
-     55    Mov r2, r4                                   ; 0d 02 04
-     58    Mov r1, r5                                   ; 0d 01 05
-     61 E> CallRuntime LoadKeyedFromSuper, r3-r5        ; 68 11 00 03 03
-     66    Return                                       ; 92
-     67    LdaUndefined                                 ; 05
-     68    Return                                       ; 92
+     39    Star r1                                      ; 0c 01
+     41    LdaCurrentFunction                           ; 0e
+     42    Star r3                                      ; 0c 03
+     44 E> CallRuntime GetHomeObject, r3                ; 68 0e 00 03 01
+     49    Star r2                                      ; 0c 02
+     51    Mov r0, r3                                   ; 0d 00 03
+     54    Mov r2, r4                                   ; 0d 02 04
+     57    Mov r1, r5                                   ; 0d 01 05
+     60 E> CallRuntime LoadKeyedFromSuper, r3-r5        ; 68 11 00 03 03
+     65    Return                                       ; 92
+     66    LdaUndefined                                 ; 05
+     67    Return                                       ; 92
   constants (1):
       0 String str3 "y"
   feedback (0):
   handlers (0):
-  positions (7):
+  positions (6):
       0 S 33 (1:34)
       7 E 33 (1:34)
      28 E 33 (1:34)
      33 S 46 (1:47)
-     39 E 53 (1:54)
-     45 E 53 (1:54)
-     61 E 59 (1:60)
+     44 E 53 (1:54)
+     60 E 59 (1:60)
