@@ -1,0 +1,17 @@
+name: Set up Rust from rust-toolchain.toml
+description: >
+  Installs the channel and components that rust-toolchain.toml names (D8), with no third-party
+  action. The toolchain file then selects it for every cargo run in the repo.
+runs:
+  using: composite
+  steps:
+    - name: Install the pinned toolchain
+      shell: bash
+      run: |
+        chan="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+        comps="$(sed -n 's/^components *= *\[\(.*\)\]/\1/p' rust-toolchain.toml | tr -d ' "')"
+        [ -n "$chan" ] || { echo "no channel in rust-toolchain.toml" >&2; exit 1; }
+        rustup toolchain install "$chan" --profile minimal ${comps:+--component "$comps"} --no-self-update
+        rustup show active-toolchain
+        rustc --version
+        cargo --version

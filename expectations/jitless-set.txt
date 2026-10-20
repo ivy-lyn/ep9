@@ -1,0 +1,36 @@
+# JITLESS-SET (docs/plan/10-quality.md section 3)
+# Content:     Octane-7, v8-v7 kernels, TS workload
+# Comparators: node --jitless (node 24.22, third_party/shells.toml); ep9 T0; ep9 baseline-AOT
+# Feeds:       FV1, K-A3 (A3); K-A4J (A4). Also the M1/M2 interpreter gates (G2).
+#
+# Columns: <id> <status> <source>
+#   status  pinned = every input is pinned in this repo today
+#           TBD    = an input or its pin does not exist yet (the comment says what is missing)
+#   source  <pin>:<path>[,<path>...], where <pin> is the checkout of third_party/<pin>.commit
+#           (scripts/sync-bench.sh). "-" when TBD.
+# Octane kernels load after bench-octane:base.js. v8-v7 kernels load after
+# bench-v8v7:bench/bench-v8/base.js and before run_harness.js.
+
+# Octane-7: the 7 Octane kernels of [R06] (no regexp).
+octane/richards          pinned  bench-octane:richards.js
+octane/deltablue         pinned  bench-octane:deltablue.js
+octane/crypto            pinned  bench-octane:crypto.js
+octane/raytrace          pinned  bench-octane:raytrace.js
+octane/earley-boyer      pinned  bench-octane:earley-boyer.js
+octane/splay             pinned  bench-octane:splay.js
+octane/navier-stokes     pinned  bench-octane:navier-stokes.js
+
+# v8-v7 kernels. The M2 gate geomean uses the first 7; regexp has its own RX1 gate.
+v8-v7/richards           pinned  bench-v8v7:bench/bench-v8/richards.js
+v8-v7/deltablue          pinned  bench-v8v7:bench/bench-v8/deltablue.js
+v8-v7/crypto             pinned  bench-v8v7:bench/bench-v8/crypto.js
+v8-v7/raytrace           pinned  bench-v8v7:bench/bench-v8/raytrace.js
+v8-v7/earley-boyer       pinned  bench-v8v7:bench/bench-v8/earley-boyer.js
+v8-v7/splay              pinned  bench-v8v7:bench/bench-v8/splay.js
+v8-v7/navier-stokes      pinned  bench-v8v7:bench/bench-v8/navier-stokes.js
+v8-v7/regexp             pinned  bench-v8v7:bench/bench-v8/regexp.js
+# All 8 v8-v7 kernels in one file, with base.js and run_harness.js (prints RESULT and SCORE lines).
+v8-v7/combined           pinned  bench-v8v7:bench/bench-v8/combined.js
+
+# TS workload: the Octane TypeScript benchmark (2.5 MB of source [R06]).
+octane/typescript        pinned  bench-octane:typescript-compiler.js,typescript-input.js,typescript.js

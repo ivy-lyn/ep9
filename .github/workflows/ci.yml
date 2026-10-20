@@ -1,0 +1,221 @@
+# ep9 CI on the 4 tier-1 targets (D2; docs/plan/09-milestones.md section 8 week 1;
+# docs/plan/10-quality.md sections 2 and 5; docs/plan/08-repo.md section 7).
+#
+#   lint ............. fmt + clippy -D warnings; run.mjs tests       (Linux x64)
+#   build-test ....... build + test; clippy on the other 3 targets   (4 targets)
+#   test262-parse .... parse-only runner vs expectations/            (4 targets)
+#   spikes ........... SP-Dispatch and SP-GC host gates              (4 targets)
+#   dep-guards ....... cargo tree / metadata guards                  (Linux x64)
+#   perf-ci-v0 ....... ep9-bench instruction counts as JSON artifact (Linux x64)
+#   sp-tsrs-win ...... tsrs_cli on Windows: recorded, not blocking   (Windows x64)
+#
+# Every action is pinned by full commit SHA; the comment names its release tag.
+# The Rust toolchain comes from rust-toolchain.toml through .github/actions/setup-rust.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  # The nightly trigger (cron "17 19 * * *", REMOTE-CI decision, docs/plan/12-governance.md
+  # section 3) lands together with the scope job. Without the scope job a nightly run would start
+  # every job on all 4 targets every night, even when main did not move.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# REMOTE-CI decision (docs/plan/12-governance.md section 3):
+# pull_request: one group per PR; a new push cancels the PR's running CI.
+# push: one group per commit, so every main commit gets its run (per-commit perf baseline).
+# schedule, workflow_dispatch: one group per event and ref; never cancelled; a newer pending run
+# replaces an older pending one.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || (github.event_name == 'push' && github.sha) || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # run.mjs gate logic with a fake engine; no JetStream checkout needed.
+      - run: node --test tools/bench/jetstream/run.test.mjs
+
+  build-test:
+    name: build + test (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macos-arm64, os: macos-15 }
+          - { name: linux-x64, os: ubuntu-24.04 }
+          - { name: linux-arm64, os: ubuntu-24.04-arm }
+          - { name: windows-x64, os: windows-2025 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      # Windows: keep LF in our files and in test262 (scripts break on CRLF), allow long paths.
+      - run: git config --global core.autocrlf false && git config --global core.longpaths true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo build --workspace --all-targets --locked
+      - run: cargo test --workspace --locked
+      # 10-quality section 5: clippy -D warnings on all 4 targets (the lint job covers Linux x64).
+      - if: ${{ matrix.name != 'linux-x64' }}
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test262-parse:
+    name: test262 parse (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macos-arm64, os: macos-15 }
+          - { name: linux-x64, os: ubuntu-24.04 }
+          - { name: linux-arm64, os: ubuntu-24.04-arm }
+          - { name: windows-x64, os: windows-2025 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - run: git config --global core.autocrlf false && git config --global core.longpaths true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # The checkout is keyed by the pin and the patch set, so a pin change misses the cache.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: third_party/test262
+          key: test262-${{ runner.os }}-${{ hashFiles('third_party/test262.commit', 'third_party/patches/test262/**') }}
+      - run: bash scripts/sync-test262.sh
+      # Exit 1 on a regression vs expectations/test262-parse.<host-triple>.txt.
+      - run: cargo run --release --locked -p ep9_test262 -- parse
+
+  spikes:
+    name: spike gates (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macos-arm64, os: macos-15 }
+          - { name: linux-x64, os: ubuntu-24.04 }
+          - { name: linux-arm64, os: ubuntu-24.04-arm }
+          - { name: windows-x64, os: windows-2025 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - run: git config --global core.autocrlf false && git config --global core.longpaths true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust
+      # `cargo xtask disasm-check` (gate step 5) needs llvm-objdump, llvm-nm and llvm-ar. It finds
+      # them in the sysroot of the pinned toolchain; runner images do not have them on PATH.
+      - run: rustup component add llvm-tools
+      # SP-Dispatch expansion (c) builds with this nightly (spikes/sp-dispatch/Cargo.toml).
+      - run: rustup toolchain install nightly-2026-10-04 --profile minimal --no-self-update
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: |
+            spikes/sp-dispatch -> target
+            spikes/sp-gc -> target
+      - name: SP-Dispatch gate
+        run: bash spikes/sp-dispatch/gate.sh
+      - name: SP-GC gate
+        if: ${{ !cancelled() }}
+        run: bash spikes/sp-gc/gate.sh
+
+  dep-guards:
+    name: dependency guards
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust
+      - run: bash .github/scripts/dep-guards.sh
+
+  perf-ci-v0:
+    name: perf CI v0 (linux-x64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # perf for hardware counters; valgrind (cachegrind) when the VM has none.
+      - name: Install instruction counters
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q valgrind linux-tools-common "linux-tools-$(uname -r)" ||
+            sudo apt-get install -y -q valgrind
+          sudo sysctl -w kernel.perf_event_paranoid=1 || true
+      - run: cargo build --release --locked -p ep9_bench -p ep9_cli
+      # Placeholder workload until the interpreter runs JS: `ep9` prints its version.
+      - name: Count instructions
+        run: |
+          target/release/ep9-bench --runs 5 --warmup 1 --name "ep9 (placeholder)" \
+            --out perf-ci-v0.json -- target/release/ep9
+          cat perf-ci-v0.json
+          { echo '```json'; cat perf-ci-v0.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: perf-ci-v0-${{ github.sha }}
+          path: perf-ci-v0.json
+          if-no-files-found: error
+
+  # SP-tsrs-win (docs/plan/08-repo.md section 5 item 7; 09-milestones section 4): the result is
+  # recorded in the job summary and an artifact. It never blocks (continue-on-error).
+  sp-tsrs-win:
+    name: SP-tsrs-win (recorded, not blocking)
+    runs-on: windows-2025
+    continue-on-error: true
+    timeout-minutes: 120
+    steps:
+      - run: git config --global core.autocrlf false && git config --global core.longpaths true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # tsrs's rust-toolchain.toml names the same channel as ours (D8); sync-tsrs.sh runs cargo +<it>.
+      - uses: ./.github/actions/setup-rust
+      - name: Sync tsrs (pin + patches)
+        run: |
+          set -euo pipefail
+          root="$PWD"
+          . scripts/sync-lib.sh
+          sync_dep tsrs https://github.com/oxc-project/tsrs.git
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: third_party/tsrs -> target
+      - name: Build tsrs_cli
+        run: bash scripts/sync-tsrs.sh 2>&1 | tee sp-tsrs-win.log
+      - name: Smoke tests
+        run: bash .github/scripts/tsrs-smoke.sh third_party/tsrs/target/release/tsrs.exe 2>&1 | tee -a sp-tsrs-win.log
+      - name: Record the result
+        if: ${{ always() }}
+        run: |
+          {
+            echo "## SP-tsrs-win"
+            echo "tsrs pin: $(cat third_party/tsrs.commit)"
+            echo '```'
+            tail -n 40 sp-tsrs-win.log 2> /dev/null || echo "no log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: sp-tsrs-win-log
+          path: sp-tsrs-win.log
+          if-no-files-found: warn

@@ -1,0 +1,138 @@
+# H11: Barrier and atomics
+
+| Field | Value |
+|---|---|
+| Status | Draft (2026-10-20). Decided 2026-10-20 (gc-barrier decision, critic additions). Accept needs the review record ([README §3.1](README.md#31-review-record-p-1)) |
+| Fix by | API M0; slow paths S1/S2; unit field A2 |
+| Freeze point | M1 exit (API, fast-path shape, gc_state values, emitter rule); slow paths may change without a new barrier version |
+| Origin | v1#7; plan status E (extended: AOT code kinds, barrier version) |
+| Crates | `ep9_heap` (barrier API, slow paths, verifiers, root-source registry), `ep9_value` (gc_state byte), `ep9_vm` (T0 handlers, Rust setters), `ep9_baseline`, `ep9_opt` (emitted fast path, elision), `ep9_unit` (barrier version) |
+| Owner (plan role) | GC lead; VM lead for SP-Value |
+| Validated by | SP-Value (M0 wk2); barrier model test (M0 wk2); verifier V1 (S1); verifiers V2, V3 and loom (S2b) |
+| Plan sources | [02 §6 H11](../plan/02-architecture.md#6-hard-to-change-decisions-h1-h37), [03 §3](../plan/03-gc.md#3-barrier-one-fast-path-in-every-tier-and-code-kind), [03 §4](../plan/03-gc.md#4-stages), [03 §7](../plan/03-gc.md#7-gc-test-matrix-per-mode) |
+
+## Context
+
+- One store barrier must serve sticky-mark generations (S1) and concurrent marking (S2) without a rewrite of every store site.
+- The first draft paired the JSC fast path (`is_cell(new)`) with an SATB slow path. That pair is unsound: `host.f = 5` over a cell skips the snapshot of the old cell (SP-Value, H11-Q4). An old-value filter is unsound for S1: it misses `host.f = young` over an int.
+- AOT code bakes in the barrier, as JIT code does. HotSpot Leyden rejects AOT code when GC barriers differ [R11].
+- Concurrent marking (S2b) reads fields while the mutator writes them. Risk RK12: data races in concurrent marking.
+
+## Decision
+
+ep9 uses the JSC Riptide barrier [J1][J2]. One object-granularity barrier serves S1 and S2. S2 is incremental update with a retreating wavefront. It is **not** SATB. The full rule set (state and threshold tables, slow path per stage, marker rule, termination, allocation colour, weak slots, roots, elision E1-E3, emitter rule, barrier version) is [03 §3](../plan/03-gc.md#3-barrier-one-fast-path-in-every-tier-and-code-kind). Summary:
+
+```
+store(host, slot, v):
+    if is_cell(v) && host.gc_state <= isolate.barrier_threshold { barrier_slow(host, slot, v) }  // slow path stores
+    else { slot.store(v, Relaxed) }
+```
+
+| Item | Decision |
+|---|---|
+| Filter | New value only |
+| Order | Check first; the slow path does `store (Release); fence (SeqCst); load gc_state` (Riptide post-store order) |
+| Emitter rule | No GC point between the check and the store. A loaded threshold or gc_state is never reused across a GC point |
+| gc_state | BLACK = 1, WHITE = 2, GREY = 3 |
+| Threshold | OFF = 0 (S0), GEN = 1 (S1), MARKING = 0xFF (S2 marking) |
+| S1 logs | The BLACK host (-> GREY); a 512-byte card for large arrays |
+| S2 logs | The BLACK, marked host (-> GREY) for a revisit; a BLACK, marked large array also dirties its card and is pushed once (card-only revisit); never the old value |
+| Marker | Set BLACK, SeqCst fence, read fields. Field loads Acquire, or an acquire fence before children are published to a shared deque |
+| Cycle start | A full cycle empties the S1 remembered-set buffer |
+| Termination | Stop-the-world fixpoint. TLAB retired first (VO bits). Rescans every root source: CSS, VM stack, `Global<T>`, `ScratchRoots`, unit RW link cells, embedder roots, mutator mark stack, dirty cards of marked large arrays, weak and ephemeron constraints. Space-time scheduler |
+| Allocation | WHITE in every stage |
+| Weak reads | No read barrier |
+| Weak slots | Cleared at every minor GC (S1) and every S2 end phase when the referent is unmarked |
+| Unit RW cells, roots | No write barrier; rescanned |
+| Elision | E1 non-cell value; E2 fresh, unescaped host with no GC point since allocation; E3 roots |
+| Barrier version | 2 |
+
+### Options considered
+
+| Option | Verdict | Why |
+|---|---|---|
+| A. Retreating wavefront (JSC Riptide) | Chosen | Same architecture in production; one barrier for both; no weak read barriers; non-cell stores free; no floating garbage |
+| B. Object-logging SATB (MMTk SATBBarrier + ObjectBarrier, LXR idea) | Rejected | Weak read barrier at every weak-to-strong site (Rust tables, transition ICs, JIT and AOT weak constants); non-cell stores cannot be elided; sticky marks need black-but-new handling; no production precedent with sticky marks |
+| C. Slot SATB pre + card post (G1, Shenandoah, Hermes) | Rejected | Two checks per store, plus the SATB weak-read burden |
+| D. Dijkstra insertion, no host check (V8) | Rejected | Marks floating garbage that sticky marks then promote; still rescans roots |
+| E. Go hybrid (Yuasa + Dijkstra) | Rejected | Solves STW scans of many goroutine stacks; ep9 has one stack per isolate (D14); needs allocate-black |
+| F. Field logging (LXR) | Rejected | Per-field unlog bits; built for RC; SATB burden |
+
+## Rules
+
+| Rule | Check | From |
+|---|---|---|
+| Every heap reference store goes through the barrier API or an elision rule E1-E3 | API in `ep9_heap`; emitter elision analysis; V1, V2, V3 | M0 (API) |
+| The filter reads the new value only; the slow path does the store | Barrier model test; SP-Value disassembly | M0 wk2 |
+| No GC point between the check and the store; no threshold or gc_state reuse across a GC point | Emitter review; barrier model test | M5; A2 |
+| Every GC-visible field access is a Relaxed atomic. The S2 slow path adds a Release store and a SeqCst fence. The marker sets BLACK, fences, then reads fields; field loads are Acquire (or an acquire fence before publishing children) | Review; loom with 2 markers + 1 mutator; TSan from S2 | M0 rule; S2 |
+| A ShapeId store into word0 goes through `barrier_slow_shape` when the check fires | Review; V2 | M1 |
+| `barrier_slow` never allocates on the GC heap and never reaches a safepoint | Review; debug no-GC scope | M1 |
+| Every root source can be rescanned with the world stopped, dirty LOS cards included | Root-source registry in `ep9_heap` (H10); V3 | M5 |
+| Every S2 pause retires the TLAB before CSS | Review; GC-stress | M5 |
+| Every minor GC clears weak slots whose referent is an unmarked young object | V1 run; GC-stress with weak IC cells, transitions, WeakRef | M1 |
+| No barrier clustering (one barrier for many stores) | Emitter review; negative control | M5 |
+| Fast path = 4 instructions plus the cell test on aarch64 | SP-Value disassembly | M0 wk2 |
+| One fast-path shape in every tier and code kind | Shared emitter per crate; verifiers under `--force-tier` and `--force-mode` | M5; M8 exit |
+| A unit with another barrier version runs its bytecode, never crashes | Unit golden files; header-mutation tests | A2 |
+
+## Consequences
+
+- **Gains.** One barrier and one header byte for S1 and S2: 4 instructions plus the cell test on aarch64. Non-cell stores need no barrier. No weak read barriers anywhere. No floating garbage. A concurrent minor GC stays possible later with the same barrier.
+- **Costs.**
+  - While marking runs, every cell store calls the slow path and pays two fences (Riptide: about 5% with the re-check inlined; ep9 starts out of line, H11-Q5). The marker pays one fence per visited object.
+  - Termination is not bounded by construction. A space-time scheduler paces the mutator, and the S2b p99 gate measures it.
+  - Every root source must support a rescan in the pause. Dirty LOS cards add card work to the pause; the card-only revisit drains most of it before.
+  - An old LOS array stays BLACK, so every cell store into it calls the slow path out of line in S1. S1 records this call rate.
+- **Follow-ups.** H21 (shape transitions under concurrent readers). S3 records candidate slots in the same slow path. D14 = shared heap would need an ADR amendment of H11, H22 and H23 (11-decisions).
+
+## Evidence
+
+| Tag | Claim used here | Link |
+|---|---|---|
+| [R05] | JSC Riptide: one header-byte compare for generational and concurrent paths; relaxed-atomic rule; the fast-path shape is the hard-to-change part. Its SATB slow-path recommendation is superseded by this ADR | [05-gc-design.md](../research/05-gc-design.md) |
+| [R11] | JEP 544: AOT code needs the same GC barriers | [11-dual-mode-vms.md](../research/11-dual-mode-vms.md) |
+| [J1] | Riptide: one barrier for generations and concurrency; conditional fence through the threshold; about 5% during GC, 0% otherwise; JIT elides non-cell and new-object barriers; revisit deferral; space-time scheduler; advancing wavefront fits generations badly; object granularity, cards were slower | https://webkit.org/blog/7122/introducing-riptide-webkits-retreating-wavefront-concurrent-garbage-collector/ |
+| [J2] | WebKit main bdf0502 (2026-10-20): heap/CellState.h:31-52; heap/HeapInlines.h:87-111; heap/Heap.cpp:1154-1210, 1370, 2189-2199, 2398-2449, 2705-2709; heap/SlotVisitor.cpp:386-388; heap/Collector.cpp:500-573, 997-1016; heap/MarkedBlock.h:315-350; dfg/DFGStoreBarrierInsertionPhase.cpp:488-515; runtime/JSCellInlines.h:240-259; jit/GPRInfo.h:249-250 | https://github.com/WebKit/WebKit/tree/main/Source/JavaScriptCore |
+| [S1] | SATB needs weak-read barriers (Hermes notes that weak roots used only for comparisons need none) | Hermes doc/Hades.md:243-258; mmtk-core src/plan/concurrent/barrier.rs:143-160; OpenJDK g1BarrierSet.inline.hpp:83-95 |
+| [S2] | One log can serve remsets and SATB (object or field logging) | mmtk-core src/plan/barriers.rs:197-259, 356-406; LXR (arXiv 2210.17175) §3.4 |
+| [S3] | V8 marks the new value, skips the host check to avoid a fence, re-scans roots at finalization | https://v8.dev/blog/concurrent-marking ; v8 src/heap/heap-write-barrier-inl.h:28-80 |
+| [S4] | Go hybrid barrier exists to avoid STW rescans of many goroutine stacks; it needs allocate-black | https://github.com/golang/proposal/blob/master/design/17503-eliminate-rescan.md |
+| [M] | Exhaustive interleaving model: decided form passes 5 scenarios; 6 rejected forms each lose an object. Critic model: the first decided card text (dirty a card, no push, cards not a root source) loses an object; a card rescan or a push fixes it | `ep9_heap` barrier model test (port, M0 wk2); session scratch `work/decide/gc-barrier/model/` and `work/decide/critic/los_card_model.py` |
+
+## Validation
+
+- **SP-Value** (M0 wk2): fast path 4 instructions plus the cell test on aarch64 (`ep9_probe_barrier`). On fail it reopens H6 and H11.
+- **Barrier model test** (M0 wk2): exhaustive interleavings, 6 scenarios (move, alloc, reg, escape, weak, los); the decided form passes; the rejected forms fail (including the "card without rescan or push" form).
+- **S1** (M1): V1 remembered-set verifier before every minor GC under GC-stress; negative controls fail.
+- **S2b** (before M7): V2 closure and V3 re-mark verifiers after every cycle under concurrent GC-stress, `--force-tier=baseline`; by M8 exit also `opt` and the forced AOT modes; loom on the fence pairs with 2 markers and 1 mutator, the re-whitening CAS and the card clear/dirty pair; TSan clean over 1,000 CPU-hours. Negative control "no card rescan at termination" must make V2 fail.
+- **A2** / every PR touching units: barrier-version mismatch gives bytecode fallback ([03 §7](../plan/03-gc.md#7-gc-test-matrix-per-mode)).
+
+## Open questions
+
+| ID | Question | Needed by | Proposed default |
+|---|---|---|---|
+| H11-Q1 | Instruction budget on x64 | Answered 2026-10-20 | SysV and Win64: 3 (cell test) + 4 + store (rustc 1.99 -O3). Record in SP-Value; no gate |
+| H11-Q2 | Where the threshold lives | M0 (API) | Fixed isolate offset; T0 reaches it through `Cx` |
+| H11-Q3 | How the barrier version is numbered | H35 header struct (M0 wk4) | One counter, bumped by review. Now 2 |
+| H11-Q4 | Closed 2026-10-20. The cell test reads the NEW value. S2 is retreating wavefront, not SATB, so a store that deletes a reference needs no barrier. Old only is unsound for S1 and S2. Old OR new is sound but not needed (one more load when the host fires). Evidence: [J1], [J2] HeapInlines.h:87-111, [M] | — | Closed |
+| H11-Q5 | Inline `fence; re-check` in the JIT and AOT cold stub (Riptide does) | S2b (M5) | Out of line first. Inline if the mutator slows down more than 10% while marking runs (barrier-version bump) |
+
+## Reopens if
+
+- SP-Value fails the barrier instruction budget (09 §4 names H6 and H11).
+- The S2b p99 pause gate fails after scheduler tuning because the fixpoint does not converge (then evaluate option B with the same header byte).
+- Mutator slowdown while marking stays above 10% on the JetStream 3 JS subset after the fenced re-check is inlined (H11-Q5).
+- The S2b verifiers, loom or TSan find a race that the fence rules cannot fix.
+- V1, V2 or V3 finds a miss that rules E1-E3, the emitter rule and the root registry cannot explain.
+- D14 changes to a shared heap (11-decisions "Affects": H11, H22, H23).
+- A moving nursery is added.
+
+## Change log
+
+| Date | Change kind | Change | By |
+|---|---|---|---|
+| 2026-10-20 | draft | First draft from 02 §6 and 03 §3-§4 (M0 wk1 list) | ADR agent |
+| 2026-10-20 | draft | Add H11-Q4 (old vs new value in the cell test) with the SP-Value evidence | fix agent |
+| 2026-10-20 | rewrite | JSC Riptide barrier for S1-S3; S2 is retreating wavefront, not SATB; new-value filter; slow path does the store; white allocation; stop-the-world root rescan; elision E1-E3; verifiers V1-V3; barrier version 2. H11-Q4 closed, H11-Q1 answered, H11-Q5 added | gc-barrier agent |
+| 2026-10-20 | rewrite | Critic additions: dirty LOS cards are a termination root source and a BLACK LOS host is pushed once (an exhaustive model lost an object without this); emitter rule (no GC point between check and store, no threshold reuse); weak slots cleared at every minor GC; marker Acquire loads with stealing markers; TLAB retired before each CSS; full cycle empties the S1 buffer; model test gains the `los` scenario and a fifth negative control | apply agent |

@@ -1,0 +1,32 @@
+[package]
+name = "t262h"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+tsrs_parser = { optional = true, path = "../../../../../third_party/tsrs/crates/tsrs_parser" }
+tsrs_ast = { optional = true, path = "../../../../../third_party/tsrs/crates/tsrs_ast" }
+tsrs_core = { optional = true, path = "../../../../../third_party/tsrs/crates/tsrs_core" }
+tsrs_binder = { optional = true, path = "../../../../../third_party/tsrs/crates/tsrs_binder" }
+tsrs_scanner = { optional = true, path = "../../../../../third_party/tsrs/crates/tsrs_scanner" }
+tsrs_diagnostics = { optional = true, path = "../../../../../third_party/tsrs/crates/tsrs_diagnostics" }
+oxc_parser = { version = "=0.155.0", optional = true }
+oxc_allocator = { version = "=0.155.0", optional = true }
+oxc_span = { version = "=0.155.0", optional = true }
+oxc_semantic = { version = "=0.155.0", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+default = ["tsrs", "oxc"]
+tsrs = ["dep:tsrs_parser", "dep:tsrs_ast", "dep:tsrs_core", "dep:tsrs_binder", "dep:tsrs_scanner", "dep:tsrs_diagnostics"]
+oxc = ["dep:oxc_parser", "dep:oxc_allocator", "dep:oxc_span", "dep:oxc_semantic"]
+
+[profile.release]
+opt-level = 3
+debug = 1
+panic = "unwind"
+codegen-units = 16

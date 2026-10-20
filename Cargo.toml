@@ -1,0 +1,48 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "tools/*"]
+# Required (docs/plan/08-repo.md section 1):
+# - third_party: path deps under the root would become members, and oxc patch paths point there.
+# - fuzz: own workspace on nightly.
+# - tools/ep9-typecheck: own [workspace] with tsrs's exact lock; never part of the engine graph.
+# - spikes: throwaway code, each spike has its own empty [workspace].
+exclude = ["third_party", "fuzz", "tools/ep9-typecheck", "spikes"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# D1 = E: oxc from crates.io with exact pins. Only ep9_frontend imports oxc.
+# Bump all of them together, one bump PR at a time (08-repo section 6).
+# List only crates that a member uses: newer cargo warns on unused workspace dependencies.
+# Transitive oxc crates (oxc_syntax, ...) stay pinned by Cargo.lock and --locked.
+oxc_allocator = "=0.155.0"
+oxc_ast = "=0.155.0"
+oxc_diagnostics = "=0.155.0"
+oxc_parser = "=0.155.0"
+oxc_semantic = "=0.155.0"
+oxc_span = "=0.155.0"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+# Every unsafe block needs a true "// SAFETY:" comment. CI runs clippy with -D warnings.
+undocumented_unsafe_blocks = "warn"
+
+[profile.release]
+# Fat LTO and one codegen unit, as in the parser benchmarks (08-repo section 4).
+lto = "fat"
+codegen-units = 1
+debug = "line-tables-only"
+
+# Fast local iteration with release optimization. Not for performance numbers.
+[profile.dev-opt]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true

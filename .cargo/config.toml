@@ -1,0 +1,4 @@
+# Cargo merges this file into every cargo run below the repo root, third_party/ and spikes/ included.
+# So keep it to aliases: no [build] or [target] settings here.
+[alias]
+xtask = "run --package xtask --"

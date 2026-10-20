@@ -1,0 +1,6700 @@
+{
+ "started": "2026-10-20T12:54:08.077Z",
+ "finished": "2026-10-20T13:08:44.903Z",
+ "host": {
+  "platform": "darwin",
+  "arch": "arm64",
+  "cpus": 18,
+  "node": "v24.22.0"
+ },
+ "loadavg_after_each_rep": [
+  [
+   29.5400390625,
+   30.9150390625,
+   26.7587890625
+  ],
+  [
+   36.482421875,
+   41.10009765625,
+   32.34814453125
+  ],
+  [
+   27.115234375,
+   36.95361328125,
+   31.98583984375
+  ],
+  [
+   33.390625,
+   36.18994140625,
+   32.3818359375
+  ],
+  [
+   34.20849609375,
+   35.51171875,
+   32.587890625
+  ],
+  [
+   17.1513671875,
+   29.9150390625,
+   30.82275390625
+  ],
+  [
+   21.10205078125,
+   26.68701171875,
+   29.3662109375
+  ],
+  [
+   20.46728515625,
+   24.6630859375,
+   28.20263671875
+  ]
+ ],
+ "jetstream_commit": "06785cf861ac44855f168cbbe829278c2802e6de",
+ "list": "expectations/jetstream-m7.txt",
+ "reps": 7,
+ "configs": [
+  {
+   "name": "full",
+   "engine": "node",
+   "flags": []
+  },
+  {
+   "name": "maxopt2",
+   "engine": "node",
+   "flags": [
+    "--max-opt=2"
+   ]
+  }
+ ],
+ "summary": {
+  "full": {
+   "workloads": 63,
+   "geomean_score": 399.1023301788406,
+   "ratio_vs_first": 1
+  },
+  "maxopt2": {
+   "workloads": 63,
+   "geomean_score": 350.28162023172695,
+   "ratio_vs_first": 0.8776737035706175
+  }
+ },
+ "table": [
+  {
+   "name": "acorn-wtb",
+   "full": 89.36508195136119,
+   "full_n": 7,
+   "maxopt2": 77.7774781886604,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "ai-astar",
+   "full": 1023.7560211760955,
+   "full_n": 7,
+   "maxopt2": 928.9266784749532,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "Air",
+   "full": 945.6635853521109,
+   "full_n": 7,
+   "maxopt2": 816.7161901882695,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "async-fs",
+   "full": 481.4072848741122,
+   "full_n": 7,
+   "maxopt2": 417.84295332552836,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "babel-minify-wtb",
+   "full": 159.53187737079543,
+   "full_n": 7,
+   "maxopt2": 154.13551671847515,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "babel-wtb",
+   "full": 199.17876194002065,
+   "full_n": 7,
+   "maxopt2": 186.39057569101655,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "Babylon",
+   "full": 1518.6544678665227,
+   "full_n": 7,
+   "maxopt2": 1494.6056080840838,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "babylon-wtb",
+   "full": 150.69274786613698,
+   "full_n": 7,
+   "maxopt2": 128.21223694639602,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "babylonjs-scene-es6",
+   "full": 68.7679731299847,
+   "full_n": 7,
+   "maxopt2": 67.30895521825913,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "babylonjs-startup-es6",
+   "full": 32.74886795879888,
+   "full_n": 7,
+   "maxopt2": 35.5957232127255,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "Basic",
+   "full": 1515.4396345208359,
+   "full_n": 7,
+   "maxopt2": 1240.8878014086388,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "bigint-noble-ed25519",
+   "full": 100.29013365982728,
+   "full_n": 7,
+   "maxopt2": 95.47269946096115,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "Box2D",
+   "full": 712.7482582005234,
+   "full_n": 7,
+   "maxopt2": 721.2720846286694,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "cdjs",
+   "full": 313.39029737054466,
+   "full_n": 7,
+   "maxopt2": 261.5483224749968,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "chai-wtb",
+   "full": 358.6336155065459,
+   "full_n": 7,
+   "maxopt2": 334.28779469457186,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "crypto",
+   "full": 2341.948333077039,
+   "full_n": 7,
+   "maxopt2": 1666.8909346683083,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "delta-blue",
+   "full": 2261.013518444197,
+   "full_n": 7,
+   "maxopt2": 1651.11767259357,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "doxbee-async",
+   "full": 517.3030588848379,
+   "full_n": 7,
+   "maxopt2": 417.7442797674527,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "doxbee-promise",
+   "full": 474.5114456191395,
+   "full_n": 7,
+   "maxopt2": 417.06195521214784,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "earley-boyer",
+   "full": 1189.180531031698,
+   "full_n": 7,
+   "maxopt2": 1066.5783745296617,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "espree-wtb",
+   "full": 128.5647478852253,
+   "full_n": 7,
+   "maxopt2": 112.12001570233801,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "esprima-next-wtb",
+   "full": 138.25033526256965,
+   "full_n": 7,
+   "maxopt2": 140.21353154387816,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "first-inspector-code-load",
+   "full": 393.53493345542915,
+   "full_n": 7,
+   "maxopt2": 399.81746485910764,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "FlightPlanner",
+   "full": 1431.9448896900237,
+   "full_n": 7,
+   "maxopt2": 1171.2723350597887,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "gaussian-blur",
+   "full": 865.3750366022207,
+   "full_n": 7,
+   "maxopt2": 716.4444241847717,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "gbemu",
+   "full": 248.84879895205162,
+   "full_n": 7,
+   "maxopt2": 249.52610830292744,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "hash-map",
+   "full": 941.8441985807332,
+   "full_n": 7,
+   "maxopt2": 641.0843919001284,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "js-tokens",
+   "full": 519.8232935135005,
+   "full_n": 7,
+   "maxopt2": 530.0817925209959,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "jsdom-d3-startup",
+   "full": 25.146265569620812,
+   "full_n": 7,
+   "maxopt2": 25.31750314804009,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "json-parse-inspector",
+   "full": 411.5390082841739,
+   "full_n": 7,
+   "maxopt2": 443.89921033723255,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "json-stringify-inspector",
+   "full": 572.6730259178349,
+   "full_n": 7,
+   "maxopt2": 574.1461955524449,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "lazy-collections",
+   "full": 369.3949782710943,
+   "full_n": 7,
+   "maxopt2": 337.35901468938886,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "mandreel",
+   "full": 260.5040965375042,
+   "full_n": 7,
+   "maxopt2": 135.73647712001014,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "ML",
+   "full": 228.8246569287486,
+   "full_n": 7,
+   "maxopt2": 116.68116268459798,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "mobx-startup",
+   "full": 282.1451295965313,
+   "full_n": 7,
+   "maxopt2": 272.87436154351667,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "multi-inspector-code-load",
+   "full": 645.4146390954741,
+   "full_n": 7,
+   "maxopt2": 648.0662393416501,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "navier-stokes",
+   "full": 1531.0990400750343,
+   "full_n": 7,
+   "maxopt2": 1267.1788521237336,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "octane-code-load",
+   "full": 2000.3944256902305,
+   "full_n": 7,
+   "maxopt2": 1885.9537266379343,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "OfflineAssembler",
+   "full": 310.5252445937699,
+   "full_n": 7,
+   "maxopt2": 298.4470547334578,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "pdfjs",
+   "full": 377.53614206531563,
+   "full_n": 7,
+   "maxopt2": 362.41813290547725,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "postcss-wtb",
+   "full": 55.405684887447094,
+   "full_n": 7,
+   "maxopt2": 53.40483925299108,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "prettier-wtb",
+   "full": 126.33069021479685,
+   "full_n": 7,
+   "maxopt2": 126.18831123202929,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "prismjs-startup-es6",
+   "full": 548.2956263773597,
+   "full_n": 7,
+   "maxopt2": 554.2287365483073,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "proxy-mobx",
+   "full": 2153.85389616054,
+   "full_n": 7,
+   "maxopt2": 2122.8653790513763,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "proxy-vue",
+   "full": 1061.7155943157961,
+   "full_n": 7,
+   "maxopt2": 1020.8656174981788,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "raytrace",
+   "full": 792.7120843267788,
+   "full_n": 7,
+   "maxopt2": 609.8177005128986,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "raytrace-private-class-fields",
+   "full": 614.5413828863382,
+   "full_n": 7,
+   "maxopt2": 209.34178956129006,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "raytrace-public-class-fields",
+   "full": 781.6785025930566,
+   "full_n": 7,
+   "maxopt2": 584.173446123749,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "regexp-octane",
+   "full": 999.1163228773289,
+   "full_n": 7,
+   "maxopt2": 1022.2522227734897,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "richards",
+   "full": 1727.7684071700166,
+   "full_n": 7,
+   "maxopt2": 1297.2931702428402,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "source-map-wtb",
+   "full": 440.89195288470023,
+   "full_n": 7,
+   "maxopt2": 388.65744468952676,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "splay",
+   "full": 390.5681553357815,
+   "full_n": 7,
+   "maxopt2": 266.3084389915767,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "stanford-crypto-aes",
+   "full": 813.4051031090474,
+   "full_n": 7,
+   "maxopt2": 801.9528414051007,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "stanford-crypto-pbkdf2",
+   "full": 1593.994743347941,
+   "full_n": 7,
+   "maxopt2": 1581.2001405187418,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "stanford-crypto-sha256",
+   "full": 1526.105245825621,
+   "full_n": 7,
+   "maxopt2": 1451.5373715753535,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "Sunspider",
+   "full": 1197.8106594762503,
+   "full_n": 7,
+   "maxopt2": 939.9835176973529,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "sync-fs",
+   "full": 595.9016369239564,
+   "full_n": 7,
+   "maxopt2": 491.37934564779084,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "threejs",
+   "full": 73.40442156583721,
+   "full_n": 7,
+   "maxopt2": 71.91864529084911,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "typescript-lib",
+   "full": 9.028640869447715,
+   "full_n": 7,
+   "maxopt2": 8.616758882904286,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "UniPoker",
+   "full": 962.3201013579202,
+   "full_n": 7,
+   "maxopt2": 669.6784429473112,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "validatorjs",
+   "full": 582.1484542343783,
+   "full_n": 7,
+   "maxopt2": 599.4732602893101,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "web-ssr",
+   "full": 307.27069859785115,
+   "full_n": 7,
+   "maxopt2": 313.51781489578406,
+   "maxopt2_n": 7
+  },
+  {
+   "name": "WSL",
+   "full": 3.988737532652955,
+   "full_n": 7,
+   "maxopt2": 4.129925195371324,
+   "maxopt2_n": 7
+  }
+ ],
+ "runs": [
+  {
+   "rep": 0,
+   "name": "acorn-wtb",
+   "config": "full",
+   "score": 89.36508195136119,
+   "wall": 0.731348292
+  },
+  {
+   "rep": 0,
+   "name": "acorn-wtb",
+   "config": "maxopt2",
+   "score": 77.11587147181356,
+   "wall": 0.881591167
+  },
+  {
+   "rep": 0,
+   "name": "ai-astar",
+   "config": "maxopt2",
+   "score": 878.2387934669008,
+   "wall": 0.7346185
+  },
+  {
+   "rep": 0,
+   "name": "ai-astar",
+   "config": "full",
+   "score": 967.5724057935319,
+   "wall": 0.565237125
+  },
+  {
+   "rep": 0,
+   "name": "Air",
+   "config": "full",
+   "score": 944.2164777539333,
+   "wall": 0.304005208
+  },
+  {
+   "rep": 0,
+   "name": "Air",
+   "config": "maxopt2",
+   "score": 912.6583426832599,
+   "wall": 0.358828833
+  },
+  {
+   "rep": 0,
+   "name": "async-fs",
+   "config": "maxopt2",
+   "score": 382.6448830365343,
+   "wall": 1.017479792
+  },
+  {
+   "rep": 0,
+   "name": "async-fs",
+   "config": "full",
+   "score": 188.3752495593835,
+   "wall": 1.663074041
+  },
+  {
+   "rep": 0,
+   "name": "babel-minify-wtb",
+   "config": "full",
+   "score": 103.9186079423555,
+   "wall": 0.66179425
+  },
+  {
+   "rep": 0,
+   "name": "babel-minify-wtb",
+   "config": "maxopt2",
+   "score": 90.08326592610854,
+   "wall": 0.782061708
+  },
+  {
+   "rep": 0,
+   "name": "babel-wtb",
+   "config": "maxopt2",
+   "score": 149.15195932356755,
+   "wall": 0.565495917
+  },
+  {
+   "rep": 0,
+   "name": "babel-wtb",
+   "config": "full",
+   "score": 121.9069100863568,
+   "wall": 0.615952458
+  },
+  {
+   "rep": 0,
+   "name": "Babylon",
+   "config": "full",
+   "score": 847.4587033318925,
+   "wall": 0.321634417
+  },
+  {
+   "rep": 0,
+   "name": "Babylon",
+   "config": "maxopt2",
+   "score": 792.2504724296149,
+   "wall": 0.374333958
+  },
+  {
+   "rep": 0,
+   "name": "babylon-wtb",
+   "config": "maxopt2",
+   "score": 81.31148382162814,
+   "wall": 0.844775834
+  },
+  {
+   "rep": 0,
+   "name": "babylon-wtb",
+   "config": "full",
+   "score": 105.8327784922092,
+   "wall": 0.629168459
+  },
+  {
+   "rep": 0,
+   "name": "babylonjs-scene-es6",
+   "config": "full",
+   "score": 53.83155441388238,
+   "wall": 0.686582875
+  },
+  {
+   "rep": 0,
+   "name": "babylonjs-scene-es6",
+   "config": "maxopt2",
+   "score": 49.48188249387012,
+   "wall": 0.773403125
+  },
+  {
+   "rep": 0,
+   "name": "babylonjs-startup-es6",
+   "config": "maxopt2",
+   "score": 19.144046399098844,
+   "wall": 2.947885333
+  },
+  {
+   "rep": 0,
+   "name": "babylonjs-startup-es6",
+   "config": "full",
+   "score": 14.510651327612177,
+   "wall": 3.220406167
+  },
+  {
+   "rep": 0,
+   "name": "Basic",
+   "config": "full",
+   "score": 1080.9842308797306,
+   "wall": 0.365109375
+  },
+  {
+   "rep": 0,
+   "name": "Basic",
+   "config": "maxopt2",
+   "score": 982.6645608771637,
+   "wall": 0.479660583
+  },
+  {
+   "rep": 0,
+   "name": "bigint-noble-ed25519",
+   "config": "maxopt2",
+   "score": 56.7518495155426,
+   "wall": 2.558969958
+  },
+  {
+   "rep": 0,
+   "name": "bigint-noble-ed25519",
+   "config": "full",
+   "score": 39.04149621445267,
+   "wall": 3.373181167
+  },
+  {
+   "rep": 0,
+   "name": "Box2D",
+   "config": "full",
+   "score": 157.98150463682268,
+   "wall": 1.119913708
+  },
+  {
+   "rep": 0,
+   "name": "Box2D",
+   "config": "maxopt2",
+   "score": 241.55004420382522,
+   "wall": 0.941252958
+  },
+  {
+   "rep": 0,
+   "name": "cdjs",
+   "config": "maxopt2",
+   "score": 170.6897714637801,
+   "wall": 1.226100416
+  },
+  {
+   "rep": 0,
+   "name": "cdjs",
+   "config": "full",
+   "score": 282.17174498038577,
+   "wall": 0.727328791
+  },
+  {
+   "rep": 0,
+   "name": "chai-wtb",
+   "config": "full",
+   "score": 380.66180694930944,
+   "wall": 0.222736292
+  },
+  {
+   "rep": 0,
+   "name": "chai-wtb",
+   "config": "maxopt2",
+   "score": 350.9045897323626,
+   "wall": 0.240818792
+  },
+  {
+   "rep": 0,
+   "name": "crypto",
+   "config": "maxopt2",
+   "score": 1818.0793880088902,
+   "wall": 0.301582792
+  },
+  {
+   "rep": 0,
+   "name": "crypto",
+   "config": "full",
+   "score": 2600.319030030938,
+   "wall": 0.176286042
+  },
+  {
+   "rep": 0,
+   "name": "delta-blue",
+   "config": "full",
+   "score": 2439.748188460645,
+   "wall": 0.129348459
+  },
+  {
+   "rep": 0,
+   "name": "delta-blue",
+   "config": "maxopt2",
+   "score": 1651.11767259357,
+   "wall": 0.283075959
+  },
+  {
+   "rep": 0,
+   "name": "doxbee-async",
+   "config": "maxopt2",
+   "score": 429.90550460057443,
+   "wall": 0.803536875
+  },
+  {
+   "rep": 0,
+   "name": "doxbee-async",
+   "config": "full",
+   "score": 546.455777720255,
+   "wall": 0.535795541
+  },
+  {
+   "rep": 0,
+   "name": "doxbee-promise",
+   "config": "full",
+   "score": 463.18203872628027,
+   "wall": 0.935755833
+  },
+  {
+   "rep": 0,
+   "name": "doxbee-promise",
+   "config": "maxopt2",
+   "score": 439.9524378893439,
+   "wall": 1.225752834
+  },
+  {
+   "rep": 0,
+   "name": "earley-boyer",
+   "config": "maxopt2",
+   "score": 1087.385004878425,
+   "wall": 0.417640708
+  },
+  {
+   "rep": 0,
+   "name": "earley-boyer",
+   "config": "full",
+   "score": 1189.180531031698,
+   "wall": 0.319176666
+  },
+  {
+   "rep": 0,
+   "name": "espree-wtb",
+   "config": "full",
+   "score": 128.5647478852253,
+   "wall": 0.518422208
+  },
+  {
+   "rep": 0,
+   "name": "espree-wtb",
+   "config": "maxopt2",
+   "score": 115.73343381729563,
+   "wall": 0.628067875
+  },
+  {
+   "rep": 0,
+   "name": "esprima-next-wtb",
+   "config": "maxopt2",
+   "score": 143.71034790445253,
+   "wall": 0.487742
+  },
+  {
+   "rep": 0,
+   "name": "esprima-next-wtb",
+   "config": "full",
+   "score": 138.25033526256965,
+   "wall": 0.492806708
+  },
+  {
+   "rep": 0,
+   "name": "first-inspector-code-load",
+   "config": "full",
+   "score": 267.1896774637703,
+   "wall": 1.712159083
+  },
+  {
+   "rep": 0,
+   "name": "first-inspector-code-load",
+   "config": "maxopt2",
+   "score": 267.87305523267344,
+   "wall": 1.659939666
+  },
+  {
+   "rep": 0,
+   "name": "FlightPlanner",
+   "config": "maxopt2",
+   "score": 1171.2723350597887,
+   "wall": 0.546992542
+  },
+  {
+   "rep": 0,
+   "name": "FlightPlanner",
+   "config": "full",
+   "score": 1558.37690953842,
+   "wall": 0.4549135
+  },
+  {
+   "rep": 0,
+   "name": "gaussian-blur",
+   "config": "full",
+   "score": 872.9814963436884,
+   "wall": 0.557892875
+  },
+  {
+   "rep": 0,
+   "name": "gaussian-blur",
+   "config": "maxopt2",
+   "score": 745.8246643218143,
+   "wall": 0.74460575
+  },
+  {
+   "rep": 0,
+   "name": "gbemu",
+   "config": "maxopt2",
+   "score": 271.31361894887215,
+   "wall": 1.432126292
+  },
+  {
+   "rep": 0,
+   "name": "gbemu",
+   "config": "full",
+   "score": 248.84879895205162,
+   "wall": 1.34790175
+  },
+  {
+   "rep": 0,
+   "name": "hash-map",
+   "config": "full",
+   "score": 941.8441985807332,
+   "wall": 0.3816055
+  },
+  {
+   "rep": 0,
+   "name": "hash-map",
+   "config": "maxopt2",
+   "score": 641.0843919001284,
+   "wall": 0.753197042
+  },
+  {
+   "rep": 0,
+   "name": "js-tokens",
+   "config": "maxopt2",
+   "score": 551.4631851572301,
+   "wall": 1.011092791
+  },
+  {
+   "rep": 0,
+   "name": "js-tokens",
+   "config": "full",
+   "score": 519.8232935135005,
+   "wall": 0.9807005
+  },
+  {
+   "rep": 0,
+   "name": "jsdom-d3-startup",
+   "config": "full",
+   "score": 24.169588851125344,
+   "wall": 2.941587583
+  },
+  {
+   "rep": 0,
+   "name": "jsdom-d3-startup",
+   "config": "maxopt2",
+   "score": 15.625516023704487,
+   "wall": 4.355173208
+  },
+  {
+   "rep": 0,
+   "name": "json-parse-inspector",
+   "config": "maxopt2",
+   "score": 387.67821719393316,
+   "wall": 0.454308584
+  },
+  {
+   "rep": 0,
+   "name": "json-parse-inspector",
+   "config": "full",
+   "score": 362.4469741707938,
+   "wall": 0.4108165
+  },
+  {
+   "rep": 0,
+   "name": "json-stringify-inspector",
+   "config": "full",
+   "score": 521.6924098303537,
+   "wall": 0.341172209
+  },
+  {
+   "rep": 0,
+   "name": "json-stringify-inspector",
+   "config": "maxopt2",
+   "score": 514.4967206551715,
+   "wall": 0.36979475
+  },
+  {
+   "rep": 0,
+   "name": "lazy-collections",
+   "config": "maxopt2",
+   "score": 267.3486600701823,
+   "wall": 1.843747292
+  },
+  {
+   "rep": 0,
+   "name": "lazy-collections",
+   "config": "full",
+   "score": 367.6131336128519,
+   "wall": 1.476269375
+  },
+  {
+   "rep": 0,
+   "name": "mandreel",
+   "config": "full",
+   "score": 238.59870996892568,
+   "wall": 1.341628542
+  },
+  {
+   "rep": 0,
+   "name": "mandreel",
+   "config": "maxopt2",
+   "score": 126.91704500115884,
+   "wall": 2.728506458
+  },
+  {
+   "rep": 0,
+   "name": "ML",
+   "config": "maxopt2",
+   "score": 108.78131877391294,
+   "wall": 2.664011875
+  },
+  {
+   "rep": 0,
+   "name": "ML",
+   "config": "full",
+   "score": 228.8246569287486,
+   "wall": 1.135008125
+  },
+  {
+   "rep": 0,
+   "name": "mobx-startup",
+   "config": "full",
+   "score": 247.95403942034665,
+   "wall": 0.580131333
+  },
+  {
+   "rep": 0,
+   "name": "mobx-startup",
+   "config": "maxopt2",
+   "score": 243.90274988043777,
+   "wall": 0.594107
+  },
+  {
+   "rep": 0,
+   "name": "multi-inspector-code-load",
+   "config": "maxopt2",
+   "score": 622.0629209630465,
+   "wall": 0.37842225
+  },
+  {
+   "rep": 0,
+   "name": "multi-inspector-code-load",
+   "config": "full",
+   "score": 602.5482068882047,
+   "wall": 0.3697305
+  },
+  {
+   "rep": 0,
+   "name": "navier-stokes",
+   "config": "full",
+   "score": 1440.9949709448717,
+   "wall": 0.289970292
+  },
+  {
+   "rep": 0,
+   "name": "navier-stokes",
+   "config": "maxopt2",
+   "score": 1173.7122777337536,
+   "wall": 0.420108
+  },
+  {
+   "rep": 0,
+   "name": "octane-code-load",
+   "config": "maxopt2",
+   "score": 1755.7602088487906,
+   "wall": 0.315659584
+  },
+  {
+   "rep": 0,
+   "name": "octane-code-load",
+   "config": "full",
+   "score": 1789.1861343528012,
+   "wall": 0.306130125
+  },
+  {
+   "rep": 0,
+   "name": "OfflineAssembler",
+   "config": "full",
+   "score": 280.8746342949571,
+   "wall": 1.090154666
+  },
+  {
+   "rep": 0,
+   "name": "OfflineAssembler",
+   "config": "maxopt2",
+   "score": 269.4779397993536,
+   "wall": 1.216299875
+  },
+  {
+   "rep": 0,
+   "name": "pdfjs",
+   "config": "maxopt2",
+   "score": 391.8765324656259,
+   "wall": 1.04073975
+  },
+  {
+   "rep": 0,
+   "name": "pdfjs",
+   "config": "full",
+   "score": 377.53614206531563,
+   "wall": 0.968236208
+  },
+  {
+   "rep": 0,
+   "name": "postcss-wtb",
+   "config": "full",
+   "score": 48.619889782036026,
+   "wall": 1.439317667
+  },
+  {
+   "rep": 0,
+   "name": "postcss-wtb",
+   "config": "maxopt2",
+   "score": 49.27103724403931,
+   "wall": 1.367248666
+  },
+  {
+   "rep": 0,
+   "name": "prettier-wtb",
+   "config": "maxopt2",
+   "score": 132.32798830545445,
+   "wall": 0.532663542
+  },
+  {
+   "rep": 0,
+   "name": "prettier-wtb",
+   "config": "full",
+   "score": 130.27766851018043,
+   "wall": 0.485310125
+  },
+  {
+   "rep": 0,
+   "name": "prismjs-startup-es6",
+   "config": "full",
+   "score": 263.84289746132924,
+   "wall": 1.294360583
+  },
+  {
+   "rep": 0,
+   "name": "prismjs-startup-es6",
+   "config": "maxopt2",
+   "score": 262.52460309992813,
+   "wall": 1.170845084
+  },
+  {
+   "rep": 0,
+   "name": "proxy-mobx",
+   "config": "maxopt2",
+   "score": 1355.445100463169,
+   "wall": 0.556487208
+  },
+  {
+   "rep": 0,
+   "name": "proxy-mobx",
+   "config": "full",
+   "score": 2246.656486843491,
+   "wall": 0.342785417
+  },
+  {
+   "rep": 0,
+   "name": "proxy-vue",
+   "config": "full",
+   "score": 1065.1160385898427,
+   "wall": 0.339035042
+  },
+  {
+   "rep": 0,
+   "name": "proxy-vue",
+   "config": "maxopt2",
+   "score": 1033.1853843733616,
+   "wall": 0.379442167
+  },
+  {
+   "rep": 0,
+   "name": "raytrace",
+   "config": "maxopt2",
+   "score": 609.8177005128986,
+   "wall": 0.880863584
+  },
+  {
+   "rep": 0,
+   "name": "raytrace",
+   "config": "full",
+   "score": 792.7120843267788,
+   "wall": 0.543433375
+  },
+  {
+   "rep": 0,
+   "name": "raytrace-private-class-fields",
+   "config": "full",
+   "score": 643.8905915278522,
+   "wall": 0.619236041
+  },
+  {
+   "rep": 0,
+   "name": "raytrace-private-class-fields",
+   "config": "maxopt2",
+   "score": 224.18158355583697,
+   "wall": 2.568475875
+  },
+  {
+   "rep": 0,
+   "name": "raytrace-public-class-fields",
+   "config": "maxopt2",
+   "score": 579.5180914604183,
+   "wall": 0.933162125
+  },
+  {
+   "rep": 0,
+   "name": "raytrace-public-class-fields",
+   "config": "full",
+   "score": 781.6785025930566,
+   "wall": 0.5845495
+  },
+  {
+   "rep": 0,
+   "name": "regexp-octane",
+   "config": "full",
+   "score": 948.2349365409563,
+   "wall": 0.607645333
+  },
+  {
+   "rep": 0,
+   "name": "regexp-octane",
+   "config": "maxopt2",
+   "score": 895.8091038921913,
+   "wall": 0.616659458
+  },
+  {
+   "rep": 0,
+   "name": "richards",
+   "config": "maxopt2",
+   "score": 1297.2931702428402,
+   "wall": 0.449222875
+  },
+  {
+   "rep": 0,
+   "name": "richards",
+   "config": "full",
+   "score": 1547.098637173583,
+   "wall": 0.334187042
+  },
+  {
+   "rep": 0,
+   "name": "source-map-wtb",
+   "config": "full",
+   "score": 422.9525841410289,
+   "wall": 0.205336792
+  },
+  {
+   "rep": 0,
+   "name": "source-map-wtb",
+   "config": "maxopt2",
+   "score": 345.76417580652986,
+   "wall": 0.237583792
+  },
+  {
+   "rep": 0,
+   "name": "splay",
+   "config": "maxopt2",
+   "score": 142.52051327944127,
+   "wall": 2.498102334
+  },
+  {
+   "rep": 0,
+   "name": "splay",
+   "config": "full",
+   "score": 344.6682618937469,
+   "wall": 1.276823375
+  },
+  {
+   "rep": 0,
+   "name": "stanford-crypto-aes",
+   "config": "full",
+   "score": 696.788802912898,
+   "wall": 0.683938208
+  },
+  {
+   "rep": 0,
+   "name": "stanford-crypto-aes",
+   "config": "maxopt2",
+   "score": 749.347417134173,
+   "wall": 0.652287125
+  },
+  {
+   "rep": 0,
+   "name": "stanford-crypto-pbkdf2",
+   "config": "maxopt2",
+   "score": 1581.2001405187418,
+   "wall": 0.358646958
+  },
+  {
+   "rep": 0,
+   "name": "stanford-crypto-pbkdf2",
+   "config": "full",
+   "score": 1581.9610642938574,
+   "wall": 0.335840834
+  },
+  {
+   "rep": 0,
+   "name": "stanford-crypto-sha256",
+   "config": "full",
+   "score": 1526.105245825621,
+   "wall": 0.363760917
+  },
+  {
+   "rep": 0,
+   "name": "stanford-crypto-sha256",
+   "config": "maxopt2",
+   "score": 1451.5373715753535,
+   "wall": 0.405015167
+  },
+  {
+   "rep": 0,
+   "name": "Sunspider",
+   "config": "maxopt2",
+   "score": 410.493391802673,
+   "wall": 11.531988625
+  },
+  {
+   "rep": 0,
+   "name": "Sunspider",
+   "config": "full",
+   "score": 480.4477727098925,
+   "wall": 8.608697125
+  },
+  {
+   "rep": 0,
+   "name": "sync-fs",
+   "config": "full",
+   "score": 595.9016369239564,
+   "wall": 0.524378917
+  },
+  {
+   "rep": 0,
+   "name": "sync-fs",
+   "config": "maxopt2",
+   "score": 496.0542119689738,
+   "wall": 0.703717292
+  },
+  {
+   "rep": 0,
+   "name": "threejs",
+   "config": "maxopt2",
+   "score": 73.75318707701803,
+   "wall": 3.998536375
+  },
+  {
+   "rep": 0,
+   "name": "threejs",
+   "config": "full",
+   "score": 78.63899129477187,
+   "wall": 3.781067333
+  },
+  {
+   "rep": 0,
+   "name": "typescript-lib",
+   "config": "full",
+   "score": 9.028640869447715,
+   "wall": 0.720913666
+  },
+  {
+   "rep": 0,
+   "name": "typescript-lib",
+   "config": "maxopt2",
+   "score": 4.60312437066659,
+   "wall": 1.312334042
+  },
+  {
+   "rep": 0,
+   "name": "UniPoker",
+   "config": "maxopt2",
+   "score": 305.46759279273925,
+   "wall": 1.351712875
+  },
+  {
+   "rep": 0,
+   "name": "UniPoker",
+   "config": "full",
+   "score": 559.843714106577,
+   "wall": 0.657170208
+  },
+  {
+   "rep": 0,
+   "name": "validatorjs",
+   "config": "full",
+   "score": 187.84001774672075,
+   "wall": 0.953587958
+  },
+  {
+   "rep": 0,
+   "name": "validatorjs",
+   "config": "maxopt2",
+   "score": 249.4671374136834,
+   "wall": 0.943500417
+  },
+  {
+   "rep": 0,
+   "name": "web-ssr",
+   "config": "maxopt2",
+   "score": 118.5910226658269,
+   "wall": 1.157796542
+  },
+  {
+   "rep": 0,
+   "name": "web-ssr",
+   "config": "full",
+   "score": 87.85842186726366,
+   "wall": 1.160856208
+  },
+  {
+   "rep": 0,
+   "name": "WSL",
+   "config": "full",
+   "score": 2.356517997289031,
+   "wall": 6.369735333
+  },
+  {
+   "rep": 0,
+   "name": "WSL",
+   "config": "maxopt2",
+   "score": 2.180562482361558,
+   "wall": 6.791659917
+  },
+  {
+   "rep": 1,
+   "name": "acorn-wtb",
+   "config": "maxopt2",
+   "score": 52.291620283587044,
+   "wall": 1.214678083
+  },
+  {
+   "rep": 1,
+   "name": "acorn-wtb",
+   "config": "full",
+   "score": 59.52489074764376,
+   "wall": 1.050987292
+  },
+  {
+   "rep": 1,
+   "name": "ai-astar",
+   "config": "full",
+   "score": 610.1761172165748,
+   "wall": 0.737336125
+  },
+  {
+   "rep": 1,
+   "name": "ai-astar",
+   "config": "maxopt2",
+   "score": 338.93814480322686,
+   "wall": 1.396050125
+  },
+  {
+   "rep": 1,
+   "name": "Air",
+   "config": "maxopt2",
+   "score": 756.5280865781192,
+   "wall": 0.437639833
+  },
+  {
+   "rep": 1,
+   "name": "Air",
+   "config": "full",
+   "score": 948.2269641098563,
+   "wall": 0.313358625
+  },
+  {
+   "rep": 1,
+   "name": "async-fs",
+   "config": "full",
+   "score": 498.25166371012386,
+   "wall": 0.7917185
+  },
+  {
+   "rep": 1,
+   "name": "async-fs",
+   "config": "maxopt2",
+   "score": 432.02641001744183,
+   "wall": 0.96024875
+  },
+  {
+   "rep": 1,
+   "name": "babel-minify-wtb",
+   "config": "maxopt2",
+   "score": 158.5927987826344,
+   "wall": 0.4626705
+  },
+  {
+   "rep": 1,
+   "name": "babel-minify-wtb",
+   "config": "full",
+   "score": 173.03980427783947,
+   "wall": 0.410743292
+  },
+  {
+   "rep": 1,
+   "name": "babel-wtb",
+   "config": "full",
+   "score": 202.53118791448938,
+   "wall": 0.414485917
+  },
+  {
+   "rep": 1,
+   "name": "babel-wtb",
+   "config": "maxopt2",
+   "score": 186.39057569101655,
+   "wall": 0.44344725
+  },
+  {
+   "rep": 1,
+   "name": "Babylon",
+   "config": "maxopt2",
+   "score": 1523.235262584157,
+   "wall": 0.235737625
+  },
+  {
+   "rep": 1,
+   "name": "Babylon",
+   "config": "full",
+   "score": 1522.9193779764541,
+   "wall": 0.2011375
+  },
+  {
+   "rep": 1,
+   "name": "babylon-wtb",
+   "config": "full",
+   "score": 162.3612194987067,
+   "wall": 0.430507292
+  },
+  {
+   "rep": 1,
+   "name": "babylon-wtb",
+   "config": "maxopt2",
+   "score": 128.21223694639602,
+   "wall": 0.529591333
+  },
+  {
+   "rep": 1,
+   "name": "babylonjs-scene-es6",
+   "config": "maxopt2",
+   "score": 67.30895521825913,
+   "wall": 0.547526042
+  },
+  {
+   "rep": 1,
+   "name": "babylonjs-scene-es6",
+   "config": "full",
+   "score": 68.7679731299847,
+   "wall": 0.565191958
+  },
+  {
+   "rep": 1,
+   "name": "babylonjs-startup-es6",
+   "config": "full",
+   "score": 32.74886795879888,
+   "wall": 1.643557167
+  },
+  {
+   "rep": 1,
+   "name": "babylonjs-startup-es6",
+   "config": "maxopt2",
+   "score": 40.9625434752536,
+   "wall": 1.373148875
+  },
+  {
+   "rep": 1,
+   "name": "Basic",
+   "config": "maxopt2",
+   "score": 1489.2451991773569,
+   "wall": 0.316446708
+  },
+  {
+   "rep": 1,
+   "name": "Basic",
+   "config": "full",
+   "score": 1706.484843843883,
+   "wall": 0.225947291
+  },
+  {
+   "rep": 1,
+   "name": "bigint-noble-ed25519",
+   "config": "full",
+   "score": 105.47908628190586,
+   "wall": 1.339175208
+  },
+  {
+   "rep": 1,
+   "name": "bigint-noble-ed25519",
+   "config": "maxopt2",
+   "score": 104.83587946355182,
+   "wall": 1.414752958
+  },
+  {
+   "rep": 1,
+   "name": "Box2D",
+   "config": "maxopt2",
+   "score": 765.126709009672,
+   "wall": 0.434181958
+  },
+  {
+   "rep": 1,
+   "name": "Box2D",
+   "config": "full",
+   "score": 712.7482582005234,
+   "wall": 0.354714083
+  },
+  {
+   "rep": 1,
+   "name": "cdjs",
+   "config": "full",
+   "score": 337.3727586912141,
+   "wall": 0.635576125
+  },
+  {
+   "rep": 1,
+   "name": "cdjs",
+   "config": "maxopt2",
+   "score": 297.7568376961868,
+   "wall": 0.852291291
+  },
+  {
+   "rep": 1,
+   "name": "chai-wtb",
+   "config": "maxopt2",
+   "score": 359.3104637536003,
+   "wall": 0.239066083
+  },
+  {
+   "rep": 1,
+   "name": "chai-wtb",
+   "config": "full",
+   "score": 384.8580885950847,
+   "wall": 0.216129917
+  },
+  {
+   "rep": 1,
+   "name": "crypto",
+   "config": "full",
+   "score": 2650.76616333077,
+   "wall": 0.178087542
+  },
+  {
+   "rep": 1,
+   "name": "crypto",
+   "config": "maxopt2",
+   "score": 1835.3314228546285,
+   "wall": 0.300864166
+  },
+  {
+   "rep": 1,
+   "name": "delta-blue",
+   "config": "maxopt2",
+   "score": 1810.7746858590647,
+   "wall": 0.27558475
+  },
+  {
+   "rep": 1,
+   "name": "delta-blue",
+   "config": "full",
+   "score": 2127.355852413565,
+   "wall": 0.151170375
+  },
+  {
+   "rep": 1,
+   "name": "doxbee-async",
+   "config": "full",
+   "score": 537.1429007651109,
+   "wall": 0.520754083
+  },
+  {
+   "rep": 1,
+   "name": "doxbee-async",
+   "config": "maxopt2",
+   "score": 445.854830897862,
+   "wall": 0.766478584
+  },
+  {
+   "rep": 1,
+   "name": "doxbee-promise",
+   "config": "maxopt2",
+   "score": 552.2638546043978,
+   "wall": 0.89254075
+  },
+  {
+   "rep": 1,
+   "name": "doxbee-promise",
+   "config": "full",
+   "score": 586.562034329204,
+   "wall": 0.7358635
+  },
+  {
+   "rep": 1,
+   "name": "earley-boyer",
+   "config": "full",
+   "score": 1316.8659347815235,
+   "wall": 0.298545541
+  },
+  {
+   "rep": 1,
+   "name": "earley-boyer",
+   "config": "maxopt2",
+   "score": 1136.3167620797847,
+   "wall": 0.409292667
+  },
+  {
+   "rep": 1,
+   "name": "espree-wtb",
+   "config": "maxopt2",
+   "score": 112.12001570233801,
+   "wall": 0.62566925
+  },
+  {
+   "rep": 1,
+   "name": "espree-wtb",
+   "config": "full",
+   "score": 142.52941645398596,
+   "wall": 0.482860666
+  },
+  {
+   "rep": 1,
+   "name": "esprima-next-wtb",
+   "config": "full",
+   "score": 142.485584792046,
+   "wall": 0.475932417
+  },
+  {
+   "rep": 1,
+   "name": "esprima-next-wtb",
+   "config": "maxopt2",
+   "score": 149.1339447792845,
+   "wall": 0.483982667
+  },
+  {
+   "rep": 1,
+   "name": "first-inspector-code-load",
+   "config": "maxopt2",
+   "score": 434.57991877163516,
+   "wall": 1.395420042
+  },
+  {
+   "rep": 1,
+   "name": "first-inspector-code-load",
+   "config": "full",
+   "score": 439.2053127370772,
+   "wall": 1.357541417
+  },
+  {
+   "rep": 1,
+   "name": "FlightPlanner",
+   "config": "full",
+   "score": 1883.0758059842653,
+   "wall": 0.442641583
+  },
+  {
+   "rep": 1,
+   "name": "FlightPlanner",
+   "config": "maxopt2",
+   "score": 1437.6641392953625,
+   "wall": 0.555192625
+  },
+  {
+   "rep": 1,
+   "name": "gaussian-blur",
+   "config": "maxopt2",
+   "score": 759.0336034319257,
+   "wall": 0.737157417
+  },
+  {
+   "rep": 1,
+   "name": "gaussian-blur",
+   "config": "full",
+   "score": 933.5815874281999,
+   "wall": 0.554341417
+  },
+  {
+   "rep": 1,
+   "name": "gbemu",
+   "config": "full",
+   "score": 247.49171080297756,
+   "wall": 1.336148667
+  },
+  {
+   "rep": 1,
+   "name": "gbemu",
+   "config": "maxopt2",
+   "score": 249.52610830292744,
+   "wall": 1.442419
+  },
+  {
+   "rep": 1,
+   "name": "hash-map",
+   "config": "maxopt2",
+   "score": 669.2991866936234,
+   "wall": 0.727343542
+  },
+  {
+   "rep": 1,
+   "name": "hash-map",
+   "config": "full",
+   "score": 1016.2943089385204,
+   "wall": 0.359576125
+  },
+  {
+   "rep": 1,
+   "name": "js-tokens",
+   "config": "full",
+   "score": 556.6216814655138,
+   "wall": 0.944285167
+  },
+  {
+   "rep": 1,
+   "name": "js-tokens",
+   "config": "maxopt2",
+   "score": 530.0817925209959,
+   "wall": 1.004927459
+  },
+  {
+   "rep": 1,
+   "name": "jsdom-d3-startup",
+   "config": "maxopt2",
+   "score": 26.981557143722203,
+   "wall": 2.7205435
+  },
+  {
+   "rep": 1,
+   "name": "jsdom-d3-startup",
+   "config": "full",
+   "score": 22.841120889721996,
+   "wall": 3.050227625
+  },
+  {
+   "rep": 1,
+   "name": "json-parse-inspector",
+   "config": "full",
+   "score": 440.27958186812606,
+   "wall": 0.367283125
+  },
+  {
+   "rep": 1,
+   "name": "json-parse-inspector",
+   "config": "maxopt2",
+   "score": 443.89921033723255,
+   "wall": 0.371602625
+  },
+  {
+   "rep": 1,
+   "name": "json-stringify-inspector",
+   "config": "maxopt2",
+   "score": 574.1461955524449,
+   "wall": 0.320359958
+  },
+  {
+   "rep": 1,
+   "name": "json-stringify-inspector",
+   "config": "full",
+   "score": 578.4563647165555,
+   "wall": 0.316390458
+  },
+  {
+   "rep": 1,
+   "name": "lazy-collections",
+   "config": "full",
+   "score": 367.3885671627205,
+   "wall": 1.407353916
+  },
+  {
+   "rep": 1,
+   "name": "lazy-collections",
+   "config": "maxopt2",
+   "score": 349.50986181309025,
+   "wall": 1.625661
+  },
+  {
+   "rep": 1,
+   "name": "mandreel",
+   "config": "maxopt2",
+   "score": 150.45363570575157,
+   "wall": 2.380116666
+  },
+  {
+   "rep": 1,
+   "name": "mandreel",
+   "config": "full",
+   "score": 136.94663795064304,
+   "wall": 2.016374208
+  },
+  {
+   "rep": 1,
+   "name": "ML",
+   "config": "full",
+   "score": 140.2208903754399,
+   "wall": 1.711061292
+  },
+  {
+   "rep": 1,
+   "name": "ML",
+   "config": "maxopt2",
+   "score": 56.47363374015246,
+   "wall": 4.851595209
+  },
+  {
+   "rep": 1,
+   "name": "mobx-startup",
+   "config": "maxopt2",
+   "score": 112.7815545850288,
+   "wall": 1.0018365
+  },
+  {
+   "rep": 1,
+   "name": "mobx-startup",
+   "config": "full",
+   "score": 92.10325678383644,
+   "wall": 1.24844125
+  },
+  {
+   "rep": 1,
+   "name": "multi-inspector-code-load",
+   "config": "full",
+   "score": 489.42453888023715,
+   "wall": 0.43220675
+  },
+  {
+   "rep": 1,
+   "name": "multi-inspector-code-load",
+   "config": "maxopt2",
+   "score": 505.35931129566643,
+   "wall": 0.484119167
+  },
+  {
+   "rep": 1,
+   "name": "navier-stokes",
+   "config": "maxopt2",
+   "score": 874.4099222672163,
+   "wall": 0.48319675
+  },
+  {
+   "rep": 1,
+   "name": "navier-stokes",
+   "config": "full",
+   "score": 1024.8358386142766,
+   "wall": 0.352592958
+  },
+  {
+   "rep": 1,
+   "name": "octane-code-load",
+   "config": "full",
+   "score": 1360.847903707009,
+   "wall": 0.410628875
+  },
+  {
+   "rep": 1,
+   "name": "octane-code-load",
+   "config": "maxopt2",
+   "score": 1488.0126660607157,
+   "wall": 0.370225583
+  },
+  {
+   "rep": 1,
+   "name": "OfflineAssembler",
+   "config": "maxopt2",
+   "score": 141.77286133063163,
+   "wall": 1.914237125
+  },
+  {
+   "rep": 1,
+   "name": "OfflineAssembler",
+   "config": "full",
+   "score": 179.42616392446413,
+   "wall": 1.671690875
+  },
+  {
+   "rep": 1,
+   "name": "pdfjs",
+   "config": "full",
+   "score": 238.03164598545712,
+   "wall": 1.510398167
+  },
+  {
+   "rep": 1,
+   "name": "pdfjs",
+   "config": "maxopt2",
+   "score": 288.39970726624443,
+   "wall": 1.293109292
+  },
+  {
+   "rep": 1,
+   "name": "postcss-wtb",
+   "config": "maxopt2",
+   "score": 52.03658186326097,
+   "wall": 1.354125209
+  },
+  {
+   "rep": 1,
+   "name": "postcss-wtb",
+   "config": "full",
+   "score": 55.48226919022141,
+   "wall": 1.225197791
+  },
+  {
+   "rep": 1,
+   "name": "prettier-wtb",
+   "config": "full",
+   "score": 126.33069021479685,
+   "wall": 0.505740125
+  },
+  {
+   "rep": 1,
+   "name": "prettier-wtb",
+   "config": "maxopt2",
+   "score": 126.18831123202929,
+   "wall": 0.552426334
+  },
+  {
+   "rep": 1,
+   "name": "prismjs-startup-es6",
+   "config": "maxopt2",
+   "score": 551.7955219068135,
+   "wall": 0.740205291
+  },
+  {
+   "rep": 1,
+   "name": "prismjs-startup-es6",
+   "config": "full",
+   "score": 561.2123380196532,
+   "wall": 0.71034825
+  },
+  {
+   "rep": 1,
+   "name": "proxy-mobx",
+   "config": "full",
+   "score": 2191.035016052434,
+   "wall": 0.350092667
+  },
+  {
+   "rep": 1,
+   "name": "proxy-mobx",
+   "config": "maxopt2",
+   "score": 2137.4558006105176,
+   "wall": 0.38309525
+  },
+  {
+   "rep": 1,
+   "name": "proxy-vue",
+   "config": "maxopt2",
+   "score": 996.8468120218895,
+   "wall": 0.401052375
+  },
+  {
+   "rep": 1,
+   "name": "proxy-vue",
+   "config": "full",
+   "score": 993.6465956378763,
+   "wall": 0.348268959
+  },
+  {
+   "rep": 1,
+   "name": "raytrace",
+   "config": "full",
+   "score": 635.9765822297136,
+   "wall": 0.698812333
+  },
+  {
+   "rep": 1,
+   "name": "raytrace",
+   "config": "maxopt2",
+   "score": 311.8184792142694,
+   "wall": 1.063448084
+  },
+  {
+   "rep": 1,
+   "name": "raytrace-private-class-fields",
+   "config": "maxopt2",
+   "score": 209.34178956129006,
+   "wall": 2.679482084
+  },
+  {
+   "rep": 1,
+   "name": "raytrace-private-class-fields",
+   "config": "full",
+   "score": 614.5413828863382,
+   "wall": 0.623600292
+  },
+  {
+   "rep": 1,
+   "name": "raytrace-public-class-fields",
+   "config": "full",
+   "score": 751.6500522155551,
+   "wall": 0.5894315
+  },
+  {
+   "rep": 1,
+   "name": "raytrace-public-class-fields",
+   "config": "maxopt2",
+   "score": 564.1194933225032,
+   "wall": 0.93538325
+  },
+  {
+   "rep": 1,
+   "name": "regexp-octane",
+   "config": "maxopt2",
+   "score": 1022.2522227734897,
+   "wall": 0.592515625
+  },
+  {
+   "rep": 1,
+   "name": "regexp-octane",
+   "config": "full",
+   "score": 1030.1776895013818,
+   "wall": 0.562206625
+  },
+  {
+   "rep": 1,
+   "name": "richards",
+   "config": "full",
+   "score": 1566.935330621602,
+   "wall": 0.3431175
+  },
+  {
+   "rep": 1,
+   "name": "richards",
+   "config": "maxopt2",
+   "score": 866.0626199951106,
+   "wall": 0.566079042
+  },
+  {
+   "rep": 1,
+   "name": "source-map-wtb",
+   "config": "maxopt2",
+   "score": 375.2542962599746,
+   "wall": 0.232385208
+  },
+  {
+   "rep": 1,
+   "name": "source-map-wtb",
+   "config": "full",
+   "score": 440.89195288470023,
+   "wall": 0.205041709
+  },
+  {
+   "rep": 1,
+   "name": "splay",
+   "config": "full",
+   "score": 390.5681553357815,
+   "wall": 1.17893725
+  },
+  {
+   "rep": 1,
+   "name": "splay",
+   "config": "maxopt2",
+   "score": 255.35179612378843,
+   "wall": 1.55495375
+  },
+  {
+   "rep": 1,
+   "name": "stanford-crypto-aes",
+   "config": "maxopt2",
+   "score": 752.7141659313646,
+   "wall": 0.653372958
+  },
+  {
+   "rep": 1,
+   "name": "stanford-crypto-aes",
+   "config": "full",
+   "score": 730.5442652220198,
+   "wall": 0.604762583
+  },
+  {
+   "rep": 1,
+   "name": "stanford-crypto-pbkdf2",
+   "config": "full",
+   "score": 1598.9198552660805,
+   "wall": 0.334729625
+  },
+  {
+   "rep": 1,
+   "name": "stanford-crypto-pbkdf2",
+   "config": "maxopt2",
+   "score": 1578.006382030192,
+   "wall": 0.358913417
+  },
+  {
+   "rep": 1,
+   "name": "stanford-crypto-sha256",
+   "config": "maxopt2",
+   "score": 1358.2745678864746,
+   "wall": 0.438979792
+  },
+  {
+   "rep": 1,
+   "name": "stanford-crypto-sha256",
+   "config": "full",
+   "score": 1384.6720458564585,
+   "wall": 0.392203458
+  },
+  {
+   "rep": 1,
+   "name": "Sunspider",
+   "config": "full",
+   "score": 1197.8106594762503,
+   "wall": 5.076665167
+  },
+  {
+   "rep": 1,
+   "name": "Sunspider",
+   "config": "maxopt2",
+   "score": 630.9873922813687,
+   "wall": 9.307740625
+  },
+  {
+   "rep": 1,
+   "name": "sync-fs",
+   "config": "maxopt2",
+   "score": 397.90177433565117,
+   "wall": 0.869410125
+  },
+  {
+   "rep": 1,
+   "name": "sync-fs",
+   "config": "full",
+   "score": 558.1374281456383,
+   "wall": 0.56765675
+  },
+  {
+   "rep": 1,
+   "name": "threejs",
+   "config": "full",
+   "score": 70.71315873377604,
+   "wall": 3.974361333
+  },
+  {
+   "rep": 1,
+   "name": "threejs",
+   "config": "maxopt2",
+   "score": 54.06492913400353,
+   "wall": 4.999616875
+  },
+  {
+   "rep": 1,
+   "name": "typescript-lib",
+   "config": "maxopt2",
+   "score": 7.2829383972815895,
+   "wall": 0.902953667
+  },
+  {
+   "rep": 1,
+   "name": "typescript-lib",
+   "config": "full",
+   "score": 9.05359797905586,
+   "wall": 0.74673025
+  },
+  {
+   "rep": 1,
+   "name": "UniPoker",
+   "config": "full",
+   "score": 972.8518216487162,
+   "wall": 0.519393875
+  },
+  {
+   "rep": 1,
+   "name": "UniPoker",
+   "config": "maxopt2",
+   "score": 669.6784429473112,
+   "wall": 0.822572541
+  },
+  {
+   "rep": 1,
+   "name": "validatorjs",
+   "config": "maxopt2",
+   "score": 613.2432533639836,
+   "wall": 0.452967958
+  },
+  {
+   "rep": 1,
+   "name": "validatorjs",
+   "config": "full",
+   "score": 581.9551756418061,
+   "wall": 0.491654208
+  },
+  {
+   "rep": 1,
+   "name": "web-ssr",
+   "config": "full",
+   "score": 313.8320578579945,
+   "wall": 0.511396417
+  },
+  {
+   "rep": 1,
+   "name": "web-ssr",
+   "config": "maxopt2",
+   "score": 309.8693697176638,
+   "wall": 0.525852209
+  },
+  {
+   "rep": 1,
+   "name": "WSL",
+   "config": "maxopt2",
+   "score": 4.153108935066089,
+   "wall": 3.415490459
+  },
+  {
+   "rep": 1,
+   "name": "WSL",
+   "config": "full",
+   "score": 4.432040731836678,
+   "wall": 3.174341625
+  },
+  {
+   "rep": 2,
+   "name": "acorn-wtb",
+   "config": "full",
+   "score": 77.11474268144912,
+   "wall": 0.767069208
+  },
+  {
+   "rep": 2,
+   "name": "acorn-wtb",
+   "config": "maxopt2",
+   "score": 77.7774781886604,
+   "wall": 0.812602959
+  },
+  {
+   "rep": 2,
+   "name": "ai-astar",
+   "config": "maxopt2",
+   "score": 1037.1673523562029,
+   "wall": 0.6388845
+  },
+  {
+   "rep": 2,
+   "name": "ai-astar",
+   "config": "full",
+   "score": 1023.7560211760955,
+   "wall": 0.542118292
+  },
+  {
+   "rep": 2,
+   "name": "Air",
+   "config": "full",
+   "score": 721.9719146397293,
+   "wall": 0.398584459
+  },
+  {
+   "rep": 2,
+   "name": "Air",
+   "config": "maxopt2",
+   "score": 763.3599969851128,
+   "wall": 0.447576125
+  },
+  {
+   "rep": 2,
+   "name": "async-fs",
+   "config": "maxopt2",
+   "score": 361.3472203402819,
+   "wall": 1.120487958
+  },
+  {
+   "rep": 2,
+   "name": "async-fs",
+   "config": "full",
+   "score": 491.349320963116,
+   "wall": 0.801936209
+  },
+  {
+   "rep": 2,
+   "name": "babel-minify-wtb",
+   "config": "full",
+   "score": 158.36309428244383,
+   "wall": 0.44279275
+  },
+  {
+   "rep": 2,
+   "name": "babel-minify-wtb",
+   "config": "maxopt2",
+   "score": 157.28878865903093,
+   "wall": 0.467627959
+  },
+  {
+   "rep": 2,
+   "name": "babel-wtb",
+   "config": "maxopt2",
+   "score": 184.58033680608483,
+   "wall": 0.464111541
+  },
+  {
+   "rep": 2,
+   "name": "babel-wtb",
+   "config": "full",
+   "score": 180.82199756140793,
+   "wall": 0.450453084
+  },
+  {
+   "rep": 2,
+   "name": "Babylon",
+   "config": "full",
+   "score": 1048.2452380523284,
+   "wall": 0.271206708
+  },
+  {
+   "rep": 2,
+   "name": "Babylon",
+   "config": "maxopt2",
+   "score": 1031.5186249188812,
+   "wall": 0.30164975
+  },
+  {
+   "rep": 2,
+   "name": "babylon-wtb",
+   "config": "maxopt2",
+   "score": 107.34781286585331,
+   "wall": 0.64855575
+  },
+  {
+   "rep": 2,
+   "name": "babylon-wtb",
+   "config": "full",
+   "score": 123.54497303638149,
+   "wall": 0.502679542
+  },
+  {
+   "rep": 2,
+   "name": "babylonjs-scene-es6",
+   "config": "full",
+   "score": 64.22543515762078,
+   "wall": 0.595554
+  },
+  {
+   "rep": 2,
+   "name": "babylonjs-scene-es6",
+   "config": "maxopt2",
+   "score": 55.2101300016333,
+   "wall": 0.669088083
+  },
+  {
+   "rep": 2,
+   "name": "babylonjs-startup-es6",
+   "config": "maxopt2",
+   "score": 29.141364676569523,
+   "wall": 1.887219583
+  },
+  {
+   "rep": 2,
+   "name": "babylonjs-startup-es6",
+   "config": "full",
+   "score": 31.54495530039907,
+   "wall": 1.781936083
+  },
+  {
+   "rep": 2,
+   "name": "Basic",
+   "config": "full",
+   "score": 689.7644250221822,
+   "wall": 0.386863875
+  },
+  {
+   "rep": 2,
+   "name": "Basic",
+   "config": "maxopt2",
+   "score": 1132.5188020104379,
+   "wall": 0.423946042
+  },
+  {
+   "rep": 2,
+   "name": "bigint-noble-ed25519",
+   "config": "maxopt2",
+   "score": 86.68235715393276,
+   "wall": 1.650530708
+  },
+  {
+   "rep": 2,
+   "name": "bigint-noble-ed25519",
+   "config": "full",
+   "score": 83.08291131452893,
+   "wall": 1.651613917
+  },
+  {
+   "rep": 2,
+   "name": "Box2D",
+   "config": "full",
+   "score": 686.2617125821491,
+   "wall": 0.400545583
+  },
+  {
+   "rep": 2,
+   "name": "Box2D",
+   "config": "maxopt2",
+   "score": 673.0950863549921,
+   "wall": 0.4610565
+  },
+  {
+   "rep": 2,
+   "name": "cdjs",
+   "config": "maxopt2",
+   "score": 136.44252920562167,
+   "wall": 1.338571958
+  },
+  {
+   "rep": 2,
+   "name": "cdjs",
+   "config": "full",
+   "score": 264.96483199152436,
+   "wall": 0.861260625
+  },
+  {
+   "rep": 2,
+   "name": "chai-wtb",
+   "config": "full",
+   "score": 278.37301280067555,
+   "wall": 0.288646333
+  },
+  {
+   "rep": 2,
+   "name": "chai-wtb",
+   "config": "maxopt2",
+   "score": 264.66448577667626,
+   "wall": 0.31382925
+  },
+  {
+   "rep": 2,
+   "name": "crypto",
+   "config": "maxopt2",
+   "score": 1412.4549838028688,
+   "wall": 0.3533065
+  },
+  {
+   "rep": 2,
+   "name": "crypto",
+   "config": "full",
+   "score": 2181.1574391654385,
+   "wall": 0.201740083
+  },
+  {
+   "rep": 2,
+   "name": "delta-blue",
+   "config": "full",
+   "score": 2167.6142053120543,
+   "wall": 0.14890325
+  },
+  {
+   "rep": 2,
+   "name": "delta-blue",
+   "config": "maxopt2",
+   "score": 1510.220580716297,
+   "wall": 0.317163375
+  },
+  {
+   "rep": 2,
+   "name": "doxbee-async",
+   "config": "maxopt2",
+   "score": 386.4084731723082,
+   "wall": 0.90808
+  },
+  {
+   "rep": 2,
+   "name": "doxbee-async",
+   "config": "full",
+   "score": 484.72528051490866,
+   "wall": 0.5870185
+  },
+  {
+   "rep": 2,
+   "name": "doxbee-promise",
+   "config": "full",
+   "score": 428.7585175890205,
+   "wall": 1.006237667
+  },
+  {
+   "rep": 2,
+   "name": "doxbee-promise",
+   "config": "maxopt2",
+   "score": 416.9200951801464,
+   "wall": 1.297843875
+  },
+  {
+   "rep": 2,
+   "name": "earley-boyer",
+   "config": "maxopt2",
+   "score": 984.998092254708,
+   "wall": 0.462647375
+  },
+  {
+   "rep": 2,
+   "name": "earley-boyer",
+   "config": "full",
+   "score": 629.5687284934556,
+   "wall": 0.452744583
+  },
+  {
+   "rep": 2,
+   "name": "espree-wtb",
+   "config": "full",
+   "score": 73.30372228794529,
+   "wall": 0.760136666
+  },
+  {
+   "rep": 2,
+   "name": "espree-wtb",
+   "config": "maxopt2",
+   "score": 101.06206955405115,
+   "wall": 0.693721
+  },
+  {
+   "rep": 2,
+   "name": "esprima-next-wtb",
+   "config": "maxopt2",
+   "score": 133.58445594998608,
+   "wall": 0.525882792
+  },
+  {
+   "rep": 2,
+   "name": "esprima-next-wtb",
+   "config": "full",
+   "score": 138.24329314138538,
+   "wall": 0.49890075
+  },
+  {
+   "rep": 2,
+   "name": "first-inspector-code-load",
+   "config": "full",
+   "score": 393.53493345542915,
+   "wall": 1.515279666
+  },
+  {
+   "rep": 2,
+   "name": "first-inspector-code-load",
+   "config": "maxopt2",
+   "score": 399.81746485910764,
+   "wall": 1.472685041
+  },
+  {
+   "rep": 2,
+   "name": "FlightPlanner",
+   "config": "maxopt2",
+   "score": 1041.8447398001724,
+   "wall": 0.660040791
+  },
+  {
+   "rep": 2,
+   "name": "FlightPlanner",
+   "config": "full",
+   "score": 1431.9448896900237,
+   "wall": 0.518166833
+  },
+  {
+   "rep": 2,
+   "name": "gaussian-blur",
+   "config": "full",
+   "score": 805.5844074777915,
+   "wall": 0.593328667
+  },
+  {
+   "rep": 2,
+   "name": "gaussian-blur",
+   "config": "maxopt2",
+   "score": 716.4444241847717,
+   "wall": 0.756390042
+  },
+  {
+   "rep": 2,
+   "name": "gbemu",
+   "config": "maxopt2",
+   "score": 132.17085922747194,
+   "wall": 2.248470625
+  },
+  {
+   "rep": 2,
+   "name": "gbemu",
+   "config": "full",
+   "score": 246.83702016920918,
+   "wall": 1.384738375
+  },
+  {
+   "rep": 2,
+   "name": "hash-map",
+   "config": "full",
+   "score": 798.9041729360658,
+   "wall": 0.42703475
+  },
+  {
+   "rep": 2,
+   "name": "hash-map",
+   "config": "maxopt2",
+   "score": 605.4816929308467,
+   "wall": 0.789685583
+  },
+  {
+   "rep": 2,
+   "name": "js-tokens",
+   "config": "maxopt2",
+   "score": 503.47763183929993,
+   "wall": 1.072075875
+  },
+  {
+   "rep": 2,
+   "name": "js-tokens",
+   "config": "full",
+   "score": 476.07238293236855,
+   "wall": 1.044108375
+  },
+  {
+   "rep": 2,
+   "name": "jsdom-d3-startup",
+   "config": "full",
+   "score": 25.76879841522679,
+   "wall": 2.93634725
+  },
+  {
+   "rep": 2,
+   "name": "jsdom-d3-startup",
+   "config": "maxopt2",
+   "score": 24.456266528369955,
+   "wall": 3.037197709
+  },
+  {
+   "rep": 2,
+   "name": "json-parse-inspector",
+   "config": "maxopt2",
+   "score": 409.46457491646333,
+   "wall": 0.398543084
+  },
+  {
+   "rep": 2,
+   "name": "json-parse-inspector",
+   "config": "full",
+   "score": 411.5390082841739,
+   "wall": 0.398187333
+  },
+  {
+   "rep": 2,
+   "name": "json-stringify-inspector",
+   "config": "full",
+   "score": 581.9383616249626,
+   "wall": 0.310098958
+  },
+  {
+   "rep": 2,
+   "name": "json-stringify-inspector",
+   "config": "maxopt2",
+   "score": 556.4042526423289,
+   "wall": 0.345137166
+  },
+  {
+   "rep": 2,
+   "name": "lazy-collections",
+   "config": "maxopt2",
+   "score": 337.35901468938886,
+   "wall": 1.652573875
+  },
+  {
+   "rep": 2,
+   "name": "lazy-collections",
+   "config": "full",
+   "score": 392.27413895197907,
+   "wall": 1.386748084
+  },
+  {
+   "rep": 2,
+   "name": "mandreel",
+   "config": "full",
+   "score": 262.3391299620505,
+   "wall": 1.242033
+  },
+  {
+   "rep": 2,
+   "name": "mandreel",
+   "config": "maxopt2",
+   "score": 138.39273838550136,
+   "wall": 2.472617542
+  },
+  {
+   "rep": 2,
+   "name": "ML",
+   "config": "maxopt2",
+   "score": 116.68116268459798,
+   "wall": 2.473300042
+  },
+  {
+   "rep": 2,
+   "name": "ML",
+   "config": "full",
+   "score": 221.82165118260212,
+   "wall": 1.133700125
+  },
+  {
+   "rep": 2,
+   "name": "mobx-startup",
+   "config": "full",
+   "score": 260.1806129565717,
+   "wall": 0.545209833
+  },
+  {
+   "rep": 2,
+   "name": "mobx-startup",
+   "config": "maxopt2",
+   "score": 256.79786592265606,
+   "wall": 0.568082792
+  },
+  {
+   "rep": 2,
+   "name": "multi-inspector-code-load",
+   "config": "maxopt2",
+   "score": 617.9910945964683,
+   "wall": 0.373525291
+  },
+  {
+   "rep": 2,
+   "name": "multi-inspector-code-load",
+   "config": "full",
+   "score": 557.7805461749829,
+   "wall": 0.379426291
+  },
+  {
+   "rep": 2,
+   "name": "navier-stokes",
+   "config": "full",
+   "score": 1415.2893746630552,
+   "wall": 0.278120208
+  },
+  {
+   "rep": 2,
+   "name": "navier-stokes",
+   "config": "maxopt2",
+   "score": 1182.465516902351,
+   "wall": 0.4029965
+  },
+  {
+   "rep": 2,
+   "name": "octane-code-load",
+   "config": "maxopt2",
+   "score": 1885.9537266379343,
+   "wall": 0.310574459
+  },
+  {
+   "rep": 2,
+   "name": "octane-code-load",
+   "config": "full",
+   "score": 1885.1646640762488,
+   "wall": 0.306977292
+  },
+  {
+   "rep": 2,
+   "name": "OfflineAssembler",
+   "config": "full",
+   "score": 310.5252445937699,
+   "wall": 0.978368
+  },
+  {
+   "rep": 2,
+   "name": "OfflineAssembler",
+   "config": "maxopt2",
+   "score": 298.4470547334578,
+   "wall": 1.106390791
+  },
+  {
+   "rep": 2,
+   "name": "pdfjs",
+   "config": "maxopt2",
+   "score": 362.41813290547725,
+   "wall": 1.102247375
+  },
+  {
+   "rep": 2,
+   "name": "pdfjs",
+   "config": "full",
+   "score": 358.8156271942648,
+   "wall": 1.008285666
+  },
+  {
+   "rep": 2,
+   "name": "postcss-wtb",
+   "config": "full",
+   "score": 50.577900312087095,
+   "wall": 1.339829875
+  },
+  {
+   "rep": 2,
+   "name": "postcss-wtb",
+   "config": "maxopt2",
+   "score": 47.32089810869053,
+   "wall": 1.465295791
+  },
+  {
+   "rep": 2,
+   "name": "prettier-wtb",
+   "config": "maxopt2",
+   "score": 116.33458995080427,
+   "wall": 0.586824666
+  },
+  {
+   "rep": 2,
+   "name": "prettier-wtb",
+   "config": "full",
+   "score": 107.74154215342963,
+   "wall": 0.556506625
+  },
+  {
+   "rep": 2,
+   "name": "prismjs-startup-es6",
+   "config": "full",
+   "score": 483.1324764673539,
+   "wall": 0.866021084
+  },
+  {
+   "rep": 2,
+   "name": "prismjs-startup-es6",
+   "config": "maxopt2",
+   "score": 480.75553146695916,
+   "wall": 0.858372167
+  },
+  {
+   "rep": 2,
+   "name": "proxy-mobx",
+   "config": "maxopt2",
+   "score": 1790.9156816267046,
+   "wall": 0.484859583
+  },
+  {
+   "rep": 2,
+   "name": "proxy-mobx",
+   "config": "full",
+   "score": 1817.907421631796,
+   "wall": 0.426557792
+  },
+  {
+   "rep": 2,
+   "name": "proxy-vue",
+   "config": "full",
+   "score": 883.7977513654984,
+   "wall": 0.425493792
+  },
+  {
+   "rep": 2,
+   "name": "proxy-vue",
+   "config": "maxopt2",
+   "score": 783.2116962513403,
+   "wall": 0.513589666
+  },
+  {
+   "rep": 2,
+   "name": "raytrace",
+   "config": "maxopt2",
+   "score": 561.5751095472845,
+   "wall": 0.947621334
+  },
+  {
+   "rep": 2,
+   "name": "raytrace",
+   "config": "full",
+   "score": 738.2427535865015,
+   "wall": 0.614379458
+  },
+  {
+   "rep": 2,
+   "name": "raytrace-private-class-fields",
+   "config": "full",
+   "score": 553.151757380643,
+   "wall": 0.731184917
+  },
+  {
+   "rep": 2,
+   "name": "raytrace-private-class-fields",
+   "config": "maxopt2",
+   "score": 183.01816254005965,
+   "wall": 2.934396292
+  },
+  {
+   "rep": 2,
+   "name": "raytrace-public-class-fields",
+   "config": "maxopt2",
+   "score": 525.664986222416,
+   "wall": 1.020606583
+  },
+  {
+   "rep": 2,
+   "name": "raytrace-public-class-fields",
+   "config": "full",
+   "score": 700.4663378354378,
+   "wall": 0.650815791
+  },
+  {
+   "rep": 2,
+   "name": "regexp-octane",
+   "config": "full",
+   "score": 775.486952921659,
+   "wall": 0.746737334
+  },
+  {
+   "rep": 2,
+   "name": "regexp-octane",
+   "config": "maxopt2",
+   "score": 819.9965640592135,
+   "wall": 0.715992458
+  },
+  {
+   "rep": 2,
+   "name": "richards",
+   "config": "maxopt2",
+   "score": 1120.8874040865212,
+   "wall": 0.510904875
+  },
+  {
+   "rep": 2,
+   "name": "richards",
+   "config": "full",
+   "score": 1422.4108259786929,
+   "wall": 0.375236333
+  },
+  {
+   "rep": 2,
+   "name": "source-map-wtb",
+   "config": "full",
+   "score": 436.67109510353384,
+   "wall": 0.1905925
+  },
+  {
+   "rep": 2,
+   "name": "source-map-wtb",
+   "config": "maxopt2",
+   "score": 423.3686481875969,
+   "wall": 0.212708833
+  },
+  {
+   "rep": 2,
+   "name": "splay",
+   "config": "maxopt2",
+   "score": 266.3084389915767,
+   "wall": 1.623131709
+  },
+  {
+   "rep": 2,
+   "name": "splay",
+   "config": "full",
+   "score": 350.72732570712793,
+   "wall": 1.189759625
+  },
+  {
+   "rep": 2,
+   "name": "stanford-crypto-aes",
+   "config": "full",
+   "score": 813.4051031090474,
+   "wall": 0.580129208
+  },
+  {
+   "rep": 2,
+   "name": "stanford-crypto-aes",
+   "config": "maxopt2",
+   "score": 801.9528414051007,
+   "wall": 0.661575625
+  },
+  {
+   "rep": 2,
+   "name": "stanford-crypto-pbkdf2",
+   "config": "maxopt2",
+   "score": 1471.2416129685857,
+   "wall": 0.370561625
+  },
+  {
+   "rep": 2,
+   "name": "stanford-crypto-pbkdf2",
+   "config": "full",
+   "score": 1559.9357987844548,
+   "wall": 0.337478208
+  },
+  {
+   "rep": 2,
+   "name": "stanford-crypto-sha256",
+   "config": "full",
+   "score": 1400.38671546573,
+   "wall": 0.391129958
+  },
+  {
+   "rep": 2,
+   "name": "stanford-crypto-sha256",
+   "config": "maxopt2",
+   "score": 1390.7502754057664,
+   "wall": 0.428817583
+  },
+  {
+   "rep": 2,
+   "name": "Sunspider",
+   "config": "maxopt2",
+   "score": 919.7684644942632,
+   "wall": 6.911049125
+  },
+  {
+   "rep": 2,
+   "name": "Sunspider",
+   "config": "full",
+   "score": 1130.4765078259213,
+   "wall": 5.278004208
+  },
+  {
+   "rep": 2,
+   "name": "sync-fs",
+   "config": "full",
+   "score": 491.4096507413667,
+   "wall": 0.63669725
+  },
+  {
+   "rep": 2,
+   "name": "sync-fs",
+   "config": "maxopt2",
+   "score": 380.19835403977066,
+   "wall": 0.845761583
+  },
+  {
+   "rep": 2,
+   "name": "threejs",
+   "config": "maxopt2",
+   "score": 67.61074801934839,
+   "wall": 4.320126708
+  },
+  {
+   "rep": 2,
+   "name": "threejs",
+   "config": "full",
+   "score": 74.37157809989696,
+   "wall": 4.048838458
+  },
+  {
+   "rep": 2,
+   "name": "typescript-lib",
+   "config": "full",
+   "score": 8.17453504711981,
+   "wall": 0.780369167
+  },
+  {
+   "rep": 2,
+   "name": "typescript-lib",
+   "config": "maxopt2",
+   "score": 8.773018125155458,
+   "wall": 0.743441708
+  },
+  {
+   "rep": 2,
+   "name": "UniPoker",
+   "config": "maxopt2",
+   "score": 656.3173195399256,
+   "wall": 0.845508917
+  },
+  {
+   "rep": 2,
+   "name": "UniPoker",
+   "config": "full",
+   "score": 943.3283510519941,
+   "wall": 0.528799875
+  },
+  {
+   "rep": 2,
+   "name": "validatorjs",
+   "config": "full",
+   "score": 581.8147212416434,
+   "wall": 0.499710833
+  },
+  {
+   "rep": 2,
+   "name": "validatorjs",
+   "config": "maxopt2",
+   "score": 574.0665054950008,
+   "wall": 0.5063035
+  },
+  {
+   "rep": 2,
+   "name": "web-ssr",
+   "config": "maxopt2",
+   "score": 268.2607358923547,
+   "wall": 0.570508
+  },
+  {
+   "rep": 2,
+   "name": "web-ssr",
+   "config": "full",
+   "score": 254.81202798799023,
+   "wall": 0.616794875
+  },
+  {
+   "rep": 2,
+   "name": "WSL",
+   "config": "full",
+   "score": 3.655766543050701,
+   "wall": 3.724741417
+  },
+  {
+   "rep": 2,
+   "name": "WSL",
+   "config": "maxopt2",
+   "score": 3.6470893478059714,
+   "wall": 3.938899416
+  },
+  {
+   "rep": 3,
+   "name": "acorn-wtb",
+   "config": "maxopt2",
+   "score": 82.38241981279666,
+   "wall": 0.821402833
+  },
+  {
+   "rep": 3,
+   "name": "acorn-wtb",
+   "config": "full",
+   "score": 92.49958555919245,
+   "wall": 0.693277958
+  },
+  {
+   "rep": 3,
+   "name": "ai-astar",
+   "config": "full",
+   "score": 1017.0021295700649,
+   "wall": 0.52325625
+  },
+  {
+   "rep": 3,
+   "name": "ai-astar",
+   "config": "maxopt2",
+   "score": 970.986415478714,
+   "wall": 0.657162834
+  },
+  {
+   "rep": 3,
+   "name": "Air",
+   "config": "maxopt2",
+   "score": 897.1688652563961,
+   "wall": 0.366756167
+  },
+  {
+   "rep": 3,
+   "name": "Air",
+   "config": "full",
+   "score": 945.6635853521109,
+   "wall": 0.315157916
+  },
+  {
+   "rep": 3,
+   "name": "async-fs",
+   "config": "full",
+   "score": 460.053349096487,
+   "wall": 0.828495208
+  },
+  {
+   "rep": 3,
+   "name": "async-fs",
+   "config": "maxopt2",
+   "score": 379.3719458292731,
+   "wall": 1.033037458
+  },
+  {
+   "rep": 3,
+   "name": "babel-minify-wtb",
+   "config": "maxopt2",
+   "score": 138.66781929023253,
+   "wall": 0.501359625
+  },
+  {
+   "rep": 3,
+   "name": "babel-minify-wtb",
+   "config": "full",
+   "score": 165.83843956600734,
+   "wall": 0.426615458
+  },
+  {
+   "rep": 3,
+   "name": "babel-wtb",
+   "config": "full",
+   "score": 207.7539598346881,
+   "wall": 0.400212
+  },
+  {
+   "rep": 3,
+   "name": "babel-wtb",
+   "config": "maxopt2",
+   "score": 197.02789507540834,
+   "wall": 0.420047709
+  },
+  {
+   "rep": 3,
+   "name": "Babylon",
+   "config": "maxopt2",
+   "score": 1501.2736103863772,
+   "wall": 0.230696458
+  },
+  {
+   "rep": 3,
+   "name": "Babylon",
+   "config": "full",
+   "score": 1518.8764583676525,
+   "wall": 0.199707542
+  },
+  {
+   "rep": 3,
+   "name": "babylon-wtb",
+   "config": "full",
+   "score": 154.7539254282595,
+   "wall": 0.424932042
+  },
+  {
+   "rep": 3,
+   "name": "babylon-wtb",
+   "config": "maxopt2",
+   "score": 132.23073471331253,
+   "wall": 0.513533541
+  },
+  {
+   "rep": 3,
+   "name": "babylonjs-scene-es6",
+   "config": "maxopt2",
+   "score": 76.38367942663753,
+   "wall": 0.497986167
+  },
+  {
+   "rep": 3,
+   "name": "babylonjs-scene-es6",
+   "config": "full",
+   "score": 84.89756660968185,
+   "wall": 0.464934417
+  },
+  {
+   "rep": 3,
+   "name": "babylonjs-startup-es6",
+   "config": "full",
+   "score": 38.4368117391354,
+   "wall": 1.425896709
+  },
+  {
+   "rep": 3,
+   "name": "babylonjs-startup-es6",
+   "config": "maxopt2",
+   "score": 39.22608406390994,
+   "wall": 1.422590209
+  },
+  {
+   "rep": 3,
+   "name": "Basic",
+   "config": "maxopt2",
+   "score": 1498.80675432757,
+   "wall": 0.328880125
+  },
+  {
+   "rep": 3,
+   "name": "Basic",
+   "config": "full",
+   "score": 1611.1616012132893,
+   "wall": 0.245835167
+  },
+  {
+   "rep": 3,
+   "name": "bigint-noble-ed25519",
+   "config": "full",
+   "score": 101.79670240767585,
+   "wall": 1.385993417
+  },
+  {
+   "rep": 3,
+   "name": "bigint-noble-ed25519",
+   "config": "maxopt2",
+   "score": 98.72891379312178,
+   "wall": 1.470095875
+  },
+  {
+   "rep": 3,
+   "name": "Box2D",
+   "config": "maxopt2",
+   "score": 721.2720846286694,
+   "wall": 0.425189
+  },
+  {
+   "rep": 3,
+   "name": "Box2D",
+   "config": "full",
+   "score": 759.1670465495564,
+   "wall": 0.344980167
+  },
+  {
+   "rep": 3,
+   "name": "cdjs",
+   "config": "full",
+   "score": 326.02310786935004,
+   "wall": 0.675771958
+  },
+  {
+   "rep": 3,
+   "name": "cdjs",
+   "config": "maxopt2",
+   "score": 261.5483224749968,
+   "wall": 0.910085542
+  },
+  {
+   "rep": 3,
+   "name": "chai-wtb",
+   "config": "maxopt2",
+   "score": 334.28779469457186,
+   "wall": 0.2523845
+  },
+  {
+   "rep": 3,
+   "name": "chai-wtb",
+   "config": "full",
+   "score": 354.9745350622939,
+   "wall": 0.232569459
+  },
+  {
+   "rep": 3,
+   "name": "crypto",
+   "config": "full",
+   "score": 2253.4899610106445,
+   "wall": 0.19319475
+  },
+  {
+   "rep": 3,
+   "name": "crypto",
+   "config": "maxopt2",
+   "score": 1666.8909346683083,
+   "wall": 0.319323334
+  },
+  {
+   "rep": 3,
+   "name": "delta-blue",
+   "config": "maxopt2",
+   "score": 1638.1682096358936,
+   "wall": 0.290370625
+  },
+  {
+   "rep": 3,
+   "name": "delta-blue",
+   "config": "full",
+   "score": 2261.013518444197,
+   "wall": 0.144426458
+  },
+  {
+   "rep": 3,
+   "name": "doxbee-async",
+   "config": "full",
+   "score": 514.8186373530375,
+   "wall": 0.561507166
+  },
+  {
+   "rep": 3,
+   "name": "doxbee-async",
+   "config": "maxopt2",
+   "score": 407.52985036346826,
+   "wall": 0.82926025
+  },
+  {
+   "rep": 3,
+   "name": "doxbee-promise",
+   "config": "maxopt2",
+   "score": 417.06195521214784,
+   "wall": 1.183731625
+  },
+  {
+   "rep": 3,
+   "name": "doxbee-promise",
+   "config": "full",
+   "score": 515.8499665005407,
+   "wall": 0.875143084
+  },
+  {
+   "rep": 3,
+   "name": "earley-boyer",
+   "config": "full",
+   "score": 1177.6884332499403,
+   "wall": 0.314882584
+  },
+  {
+   "rep": 3,
+   "name": "earley-boyer",
+   "config": "maxopt2",
+   "score": 1049.2563592130746,
+   "wall": 0.4313275
+  },
+  {
+   "rep": 3,
+   "name": "espree-wtb",
+   "config": "maxopt2",
+   "score": 116.08609818094239,
+   "wall": 0.621586833
+  },
+  {
+   "rep": 3,
+   "name": "espree-wtb",
+   "config": "full",
+   "score": 140.9209975564099,
+   "wall": 0.485556167
+  },
+  {
+   "rep": 3,
+   "name": "esprima-next-wtb",
+   "config": "full",
+   "score": 143.2584742700279,
+   "wall": 0.469695542
+  },
+  {
+   "rep": 3,
+   "name": "esprima-next-wtb",
+   "config": "maxopt2",
+   "score": 140.21353154387816,
+   "wall": 0.502723042
+  },
+  {
+   "rep": 3,
+   "name": "first-inspector-code-load",
+   "config": "maxopt2",
+   "score": 415.2263201500266,
+   "wall": 1.440411833
+  },
+  {
+   "rep": 3,
+   "name": "first-inspector-code-load",
+   "config": "full",
+   "score": 411.7313440457591,
+   "wall": 1.42918325
+  },
+  {
+   "rep": 3,
+   "name": "FlightPlanner",
+   "config": "full",
+   "score": 1615.7864568485747,
+   "wall": 0.476928625
+  },
+  {
+   "rep": 3,
+   "name": "FlightPlanner",
+   "config": "maxopt2",
+   "score": 1035.6771914388883,
+   "wall": 0.61923525
+  },
+  {
+   "rep": 3,
+   "name": "gaussian-blur",
+   "config": "maxopt2",
+   "score": 638.972798806763,
+   "wall": 0.772146333
+  },
+  {
+   "rep": 3,
+   "name": "gaussian-blur",
+   "config": "full",
+   "score": 886.2032328126243,
+   "wall": 0.556558167
+  },
+  {
+   "rep": 3,
+   "name": "gbemu",
+   "config": "full",
+   "score": 273.06210191558324,
+   "wall": 1.323111333
+  },
+  {
+   "rep": 3,
+   "name": "gbemu",
+   "config": "maxopt2",
+   "score": 269.05110081312375,
+   "wall": 1.418800875
+  },
+  {
+   "rep": 3,
+   "name": "hash-map",
+   "config": "maxopt2",
+   "score": 667.1595257852624,
+   "wall": 0.737490958
+  },
+  {
+   "rep": 3,
+   "name": "hash-map",
+   "config": "full",
+   "score": 975.9738984152383,
+   "wall": 0.369959125
+  },
+  {
+   "rep": 3,
+   "name": "js-tokens",
+   "config": "full",
+   "score": 536.5817944504481,
+   "wall": 0.948257833
+  },
+  {
+   "rep": 3,
+   "name": "js-tokens",
+   "config": "maxopt2",
+   "score": 531.3492149983716,
+   "wall": 1.024917333
+  },
+  {
+   "rep": 3,
+   "name": "jsdom-d3-startup",
+   "config": "maxopt2",
+   "score": 25.85958824058212,
+   "wall": 2.825121833
+  },
+  {
+   "rep": 3,
+   "name": "jsdom-d3-startup",
+   "config": "full",
+   "score": 25.847480655943396,
+   "wall": 2.828343625
+  },
+  {
+   "rep": 3,
+   "name": "json-parse-inspector",
+   "config": "full",
+   "score": 457.58947729011936,
+   "wall": 0.355306584
+  },
+  {
+   "rep": 3,
+   "name": "json-parse-inspector",
+   "config": "maxopt2",
+   "score": 455.6941937802812,
+   "wall": 0.359131875
+  },
+  {
+   "rep": 3,
+   "name": "json-stringify-inspector",
+   "config": "maxopt2",
+   "score": 642.2116161655981,
+   "wall": 0.295652375
+  },
+  {
+   "rep": 3,
+   "name": "json-stringify-inspector",
+   "config": "full",
+   "score": 572.6730259178349,
+   "wall": 0.294450958
+  },
+  {
+   "rep": 3,
+   "name": "lazy-collections",
+   "config": "full",
+   "score": 366.1476790889807,
+   "wall": 1.430288208
+  },
+  {
+   "rep": 3,
+   "name": "lazy-collections",
+   "config": "maxopt2",
+   "score": 341.5655315042806,
+   "wall": 1.655706834
+  },
+  {
+   "rep": 3,
+   "name": "mandreel",
+   "config": "maxopt2",
+   "score": 135.73647712001014,
+   "wall": 2.472941667
+  },
+  {
+   "rep": 3,
+   "name": "mandreel",
+   "config": "full",
+   "score": 244.1963699570756,
+   "wall": 1.275338583
+  },
+  {
+   "rep": 3,
+   "name": "ML",
+   "config": "full",
+   "score": 230.62847677779388,
+   "wall": 1.109277667
+  },
+  {
+   "rep": 3,
+   "name": "ML",
+   "config": "maxopt2",
+   "score": 116.69168941001874,
+   "wall": 2.486521
+  },
+  {
+   "rep": 3,
+   "name": "mobx-startup",
+   "config": "maxopt2",
+   "score": 272.87436154351667,
+   "wall": 0.529503167
+  },
+  {
+   "rep": 3,
+   "name": "mobx-startup",
+   "config": "full",
+   "score": 284.6830977929039,
+   "wall": 0.528036333
+  },
+  {
+   "rep": 3,
+   "name": "multi-inspector-code-load",
+   "config": "full",
+   "score": 645.4146390954741,
+   "wall": 0.344006833
+  },
+  {
+   "rep": 3,
+   "name": "multi-inspector-code-load",
+   "config": "maxopt2",
+   "score": 648.0662393416501,
+   "wall": 0.34829375
+  },
+  {
+   "rep": 3,
+   "name": "navier-stokes",
+   "config": "maxopt2",
+   "score": 1267.1788521237336,
+   "wall": 0.39288525
+  },
+  {
+   "rep": 3,
+   "name": "navier-stokes",
+   "config": "full",
+   "score": 1531.0990400750343,
+   "wall": 0.267453042
+  },
+  {
+   "rep": 3,
+   "name": "octane-code-load",
+   "config": "full",
+   "score": 2000.9208586727407,
+   "wall": 0.282949333
+  },
+  {
+   "rep": 3,
+   "name": "octane-code-load",
+   "config": "maxopt2",
+   "score": 1806.5004728267893,
+   "wall": 0.312788083
+  },
+  {
+   "rep": 3,
+   "name": "OfflineAssembler",
+   "config": "maxopt2",
+   "score": 278.02320472006045,
+   "wall": 1.171045375
+  },
+  {
+   "rep": 3,
+   "name": "OfflineAssembler",
+   "config": "full",
+   "score": 290.4792406035213,
+   "wall": 1.065700042
+  },
+  {
+   "rep": 3,
+   "name": "pdfjs",
+   "config": "full",
+   "score": 383.3830062741292,
+   "wall": 0.941451791
+  },
+  {
+   "rep": 3,
+   "name": "pdfjs",
+   "config": "maxopt2",
+   "score": 288.7520250469177,
+   "wall": 1.139574417
+  },
+  {
+   "rep": 3,
+   "name": "postcss-wtb",
+   "config": "maxopt2",
+   "score": 53.40483925299108,
+   "wall": 1.333858667
+  },
+  {
+   "rep": 3,
+   "name": "postcss-wtb",
+   "config": "full",
+   "score": 57.045108604270254,
+   "wall": 1.212336833
+  },
+  {
+   "rep": 3,
+   "name": "prettier-wtb",
+   "config": "full",
+   "score": 120.29771999409009,
+   "wall": 0.51786325
+  },
+  {
+   "rep": 3,
+   "name": "prettier-wtb",
+   "config": "maxopt2",
+   "score": 122.68837971358441,
+   "wall": 0.547386666
+  },
+  {
+   "rep": 3,
+   "name": "prismjs-startup-es6",
+   "config": "maxopt2",
+   "score": 573.996990296246,
+   "wall": 0.701987083
+  },
+  {
+   "rep": 3,
+   "name": "prismjs-startup-es6",
+   "config": "full",
+   "score": 547.8515551018802,
+   "wall": 0.7323725
+  },
+  {
+   "rep": 3,
+   "name": "proxy-mobx",
+   "config": "full",
+   "score": 2153.85389616054,
+   "wall": 0.341025292
+  },
+  {
+   "rep": 3,
+   "name": "proxy-mobx",
+   "config": "maxopt2",
+   "score": 1854.141319116908,
+   "wall": 0.436825209
+  },
+  {
+   "rep": 3,
+   "name": "proxy-vue",
+   "config": "maxopt2",
+   "score": 1018.1458815810905,
+   "wall": 0.381596
+  },
+  {
+   "rep": 3,
+   "name": "proxy-vue",
+   "config": "full",
+   "score": 1061.7155943157961,
+   "wall": 0.332056708
+  },
+  {
+   "rep": 3,
+   "name": "raytrace",
+   "config": "full",
+   "score": 850.0101744225402,
+   "wall": 0.551407875
+  },
+  {
+   "rep": 3,
+   "name": "raytrace",
+   "config": "maxopt2",
+   "score": 638.9362043972903,
+   "wall": 0.830386542
+  },
+  {
+   "rep": 3,
+   "name": "raytrace-private-class-fields",
+   "config": "maxopt2",
+   "score": 219.89911639442843,
+   "wall": 2.565872625
+  },
+  {
+   "rep": 3,
+   "name": "raytrace-private-class-fields",
+   "config": "full",
+   "score": 620.8388160111937,
+   "wall": 0.639719792
+  },
+  {
+   "rep": 3,
+   "name": "raytrace-public-class-fields",
+   "config": "full",
+   "score": 767.0635479051398,
+   "wall": 0.584600875
+  },
+  {
+   "rep": 3,
+   "name": "raytrace-public-class-fields",
+   "config": "maxopt2",
+   "score": 589.7416672854533,
+   "wall": 0.9265625
+  },
+  {
+   "rep": 3,
+   "name": "regexp-octane",
+   "config": "maxopt2",
+   "score": 1042.5293331241076,
+   "wall": 0.586542708
+  },
+  {
+   "rep": 3,
+   "name": "regexp-octane",
+   "config": "full",
+   "score": 1003.102851553841,
+   "wall": 0.585841542
+  },
+  {
+   "rep": 3,
+   "name": "richards",
+   "config": "full",
+   "score": 1727.7684071700166,
+   "wall": 0.3175685
+  },
+  {
+   "rep": 3,
+   "name": "richards",
+   "config": "maxopt2",
+   "score": 1387.2875919076448,
+   "wall": 0.436899917
+  },
+  {
+   "rep": 3,
+   "name": "source-map-wtb",
+   "config": "maxopt2",
+   "score": 420.53938746203136,
+   "wall": 0.195949833
+  },
+  {
+   "rep": 3,
+   "name": "source-map-wtb",
+   "config": "full",
+   "score": 441.34354433794107,
+   "wall": 0.197669208
+  },
+  {
+   "rep": 3,
+   "name": "splay",
+   "config": "full",
+   "score": 465.2612813785884,
+   "wall": 0.915138458
+  },
+  {
+   "rep": 3,
+   "name": "splay",
+   "config": "maxopt2",
+   "score": 286.4825923380621,
+   "wall": 1.446833917
+  },
+  {
+   "rep": 3,
+   "name": "stanford-crypto-aes",
+   "config": "maxopt2",
+   "score": 828.8004793173969,
+   "wall": 0.632808333
+  },
+  {
+   "rep": 3,
+   "name": "stanford-crypto-aes",
+   "config": "full",
+   "score": 869.8638104630095,
+   "wall": 0.550651667
+  },
+  {
+   "rep": 3,
+   "name": "stanford-crypto-pbkdf2",
+   "config": "full",
+   "score": 1593.994743347941,
+   "wall": 0.330480417
+  },
+  {
+   "rep": 3,
+   "name": "stanford-crypto-pbkdf2",
+   "config": "maxopt2",
+   "score": 1620.675048994672,
+   "wall": 0.354605417
+  },
+  {
+   "rep": 3,
+   "name": "stanford-crypto-sha256",
+   "config": "maxopt2",
+   "score": 1492.641875300652,
+   "wall": 0.400322208
+  },
+  {
+   "rep": 3,
+   "name": "stanford-crypto-sha256",
+   "config": "full",
+   "score": 1577.1798188459295,
+   "wall": 0.362263334
+  },
+  {
+   "rep": 3,
+   "name": "Sunspider",
+   "config": "full",
+   "score": 1224.9098120040294,
+   "wall": 4.887773542
+  },
+  {
+   "rep": 3,
+   "name": "Sunspider",
+   "config": "maxopt2",
+   "score": 995.9289409911316,
+   "wall": 6.517488792
+  },
+  {
+   "rep": 3,
+   "name": "sync-fs",
+   "config": "maxopt2",
+   "score": 493.5705070482311,
+   "wall": 0.729767042
+  },
+  {
+   "rep": 3,
+   "name": "sync-fs",
+   "config": "full",
+   "score": 606.1923822826315,
+   "wall": 0.532368583
+  },
+  {
+   "rep": 3,
+   "name": "threejs",
+   "config": "full",
+   "score": 74.46738442118694,
+   "wall": 3.968657208
+  },
+  {
+   "rep": 3,
+   "name": "threejs",
+   "config": "maxopt2",
+   "score": 71.91864529084911,
+   "wall": 3.900700916
+  },
+  {
+   "rep": 3,
+   "name": "typescript-lib",
+   "config": "maxopt2",
+   "score": 9.046915716266158,
+   "wall": 0.718074375
+  },
+  {
+   "rep": 3,
+   "name": "typescript-lib",
+   "config": "full",
+   "score": 9.242397583148524,
+   "wall": 0.709076292
+  },
+  {
+   "rep": 3,
+   "name": "UniPoker",
+   "config": "full",
+   "score": 962.3201013579202,
+   "wall": 0.512137042
+  },
+  {
+   "rep": 3,
+   "name": "UniPoker",
+   "config": "maxopt2",
+   "score": 683.583126693968,
+   "wall": 0.827110042
+  },
+  {
+   "rep": 3,
+   "name": "validatorjs",
+   "config": "maxopt2",
+   "score": 606.8686491352009,
+   "wall": 0.477709416
+  },
+  {
+   "rep": 3,
+   "name": "validatorjs",
+   "config": "full",
+   "score": 584.684491853736,
+   "wall": 0.494074792
+  },
+  {
+   "rep": 3,
+   "name": "web-ssr",
+   "config": "full",
+   "score": 291.1542804639254,
+   "wall": 0.531647125
+  },
+  {
+   "rep": 3,
+   "name": "web-ssr",
+   "config": "maxopt2",
+   "score": 319.5560107472906,
+   "wall": 0.505106333
+  },
+  {
+   "rep": 3,
+   "name": "WSL",
+   "config": "maxopt2",
+   "score": 4.17236179554905,
+   "wall": 3.451005834
+  },
+  {
+   "rep": 3,
+   "name": "WSL",
+   "config": "full",
+   "score": 4.021183292436135,
+   "wall": 3.616210042
+  },
+  {
+   "rep": 4,
+   "name": "acorn-wtb",
+   "config": "full",
+   "score": 96.19472368844778,
+   "wall": 0.687368125
+  },
+  {
+   "rep": 4,
+   "name": "acorn-wtb",
+   "config": "maxopt2",
+   "score": 86.18128836381396,
+   "wall": 0.792261541
+  },
+  {
+   "rep": 4,
+   "name": "ai-astar",
+   "config": "maxopt2",
+   "score": 1055.6432348411063,
+   "wall": 0.614771791
+  },
+  {
+   "rep": 4,
+   "name": "ai-astar",
+   "config": "full",
+   "score": 1228.440094759202,
+   "wall": 0.456157959
+  },
+  {
+   "rep": 4,
+   "name": "Air",
+   "config": "full",
+   "score": 955.7961910503459,
+   "wall": 0.312701458
+  },
+  {
+   "rep": 4,
+   "name": "Air",
+   "config": "maxopt2",
+   "score": 915.4391563439245,
+   "wall": 0.364494334
+  },
+  {
+   "rep": 4,
+   "name": "async-fs",
+   "config": "maxopt2",
+   "score": 435.18109627229654,
+   "wall": 0.977451333
+  },
+  {
+   "rep": 4,
+   "name": "async-fs",
+   "config": "full",
+   "score": 481.4072848741122,
+   "wall": 0.801910959
+  },
+  {
+   "rep": 4,
+   "name": "babel-minify-wtb",
+   "config": "full",
+   "score": 162.07573232970125,
+   "wall": 0.4321325
+  },
+  {
+   "rep": 4,
+   "name": "babel-minify-wtb",
+   "config": "maxopt2",
+   "score": 160.2528608087383,
+   "wall": 0.453998125
+  },
+  {
+   "rep": 4,
+   "name": "babel-wtb",
+   "config": "maxopt2",
+   "score": 209.60852102048355,
+   "wall": 0.408718042
+  },
+  {
+   "rep": 4,
+   "name": "babel-wtb",
+   "config": "full",
+   "score": 209.48023987483606,
+   "wall": 0.394086041
+  },
+  {
+   "rep": 4,
+   "name": "Babylon",
+   "config": "full",
+   "score": 1614.8973799414691,
+   "wall": 0.192263958
+  },
+  {
+   "rep": 4,
+   "name": "Babylon",
+   "config": "maxopt2",
+   "score": 1521.7457213061762,
+   "wall": 0.223724583
+  },
+  {
+   "rep": 4,
+   "name": "babylon-wtb",
+   "config": "maxopt2",
+   "score": 139.08651430859953,
+   "wall": 0.490773958
+  },
+  {
+   "rep": 4,
+   "name": "babylon-wtb",
+   "config": "full",
+   "score": 159.44814993123626,
+   "wall": 0.410309125
+  },
+  {
+   "rep": 4,
+   "name": "babylonjs-scene-es6",
+   "config": "full",
+   "score": 88.57794711798628,
+   "wall": 0.440912084
+  },
+  {
+   "rep": 4,
+   "name": "babylonjs-scene-es6",
+   "config": "maxopt2",
+   "score": 87.38618373737565,
+   "wall": 0.453606666
+  },
+  {
+   "rep": 4,
+   "name": "babylonjs-startup-es6",
+   "config": "maxopt2",
+   "score": 37.760784225923885,
+   "wall": 1.4479725
+  },
+  {
+   "rep": 4,
+   "name": "babylonjs-startup-es6",
+   "config": "full",
+   "score": 40.03900222639477,
+   "wall": 1.374874208
+  },
+  {
+   "rep": 4,
+   "name": "Basic",
+   "config": "full",
+   "score": 1675.453022899115,
+   "wall": 0.23110825
+  },
+  {
+   "rep": 4,
+   "name": "Basic",
+   "config": "maxopt2",
+   "score": 1446.609399093661,
+   "wall": 0.336075708
+  },
+  {
+   "rep": 4,
+   "name": "bigint-noble-ed25519",
+   "config": "maxopt2",
+   "score": 99.2217445175992,
+   "wall": 1.451879166
+  },
+  {
+   "rep": 4,
+   "name": "bigint-noble-ed25519",
+   "config": "full",
+   "score": 102.14818309032037,
+   "wall": 1.368971083
+  },
+  {
+   "rep": 4,
+   "name": "Box2D",
+   "config": "full",
+   "score": 851.7557520460327,
+   "wall": 0.324844375
+  },
+  {
+   "rep": 4,
+   "name": "Box2D",
+   "config": "maxopt2",
+   "score": 773.5260160764511,
+   "wall": 0.393455667
+  },
+  {
+   "rep": 4,
+   "name": "cdjs",
+   "config": "maxopt2",
+   "score": 293.7289301480313,
+   "wall": 0.867335208
+  },
+  {
+   "rep": 4,
+   "name": "cdjs",
+   "config": "full",
+   "score": 324.522562010452,
+   "wall": 0.643481542
+  },
+  {
+   "rep": 4,
+   "name": "chai-wtb",
+   "config": "full",
+   "score": 371.5210152858572,
+   "wall": 0.222863333
+  },
+  {
+   "rep": 4,
+   "name": "chai-wtb",
+   "config": "maxopt2",
+   "score": 347.99104198925227,
+   "wall": 0.243327167
+  },
+  {
+   "rep": 4,
+   "name": "crypto",
+   "config": "maxopt2",
+   "score": 1824.6520483514507,
+   "wall": 0.302295375
+  },
+  {
+   "rep": 4,
+   "name": "crypto",
+   "config": "full",
+   "score": 2629.340811314857,
+   "wall": 0.176746333
+  },
+  {
+   "rep": 4,
+   "name": "delta-blue",
+   "config": "full",
+   "score": 2435.763658787963,
+   "wall": 0.1302185
+  },
+  {
+   "rep": 4,
+   "name": "delta-blue",
+   "config": "maxopt2",
+   "score": 1921.9494105844617,
+   "wall": 0.269971625
+  },
+  {
+   "rep": 4,
+   "name": "doxbee-async",
+   "config": "maxopt2",
+   "score": 458.13500205824477,
+   "wall": 0.73528225
+  },
+  {
+   "rep": 4,
+   "name": "doxbee-async",
+   "config": "full",
+   "score": 560.067621291249,
+   "wall": 0.51507925
+  },
+  {
+   "rep": 4,
+   "name": "doxbee-promise",
+   "config": "full",
+   "score": 546.2939967087233,
+   "wall": 0.79929275
+  },
+  {
+   "rep": 4,
+   "name": "doxbee-promise",
+   "config": "maxopt2",
+   "score": 480.43494933988114,
+   "wall": 1.017864041
+  },
+  {
+   "rep": 4,
+   "name": "earley-boyer",
+   "config": "maxopt2",
+   "score": 1120.7838058544687,
+   "wall": 0.407930209
+  },
+  {
+   "rep": 4,
+   "name": "earley-boyer",
+   "config": "full",
+   "score": 1233.4953196485114,
+   "wall": 0.30589675
+  },
+  {
+   "rep": 4,
+   "name": "espree-wtb",
+   "config": "full",
+   "score": 136.34550089309894,
+   "wall": 0.500133084
+  },
+  {
+   "rep": 4,
+   "name": "espree-wtb",
+   "config": "maxopt2",
+   "score": 118.734131005888,
+   "wall": 0.59498225
+  },
+  {
+   "rep": 4,
+   "name": "esprima-next-wtb",
+   "config": "maxopt2",
+   "score": 144.17423283302196,
+   "wall": 0.481157125
+  },
+  {
+   "rep": 4,
+   "name": "esprima-next-wtb",
+   "config": "full",
+   "score": 152.7162360287439,
+   "wall": 0.43938375
+  },
+  {
+   "rep": 4,
+   "name": "first-inspector-code-load",
+   "config": "full",
+   "score": 436.9981102941053,
+   "wall": 1.373477292
+  },
+  {
+   "rep": 4,
+   "name": "first-inspector-code-load",
+   "config": "maxopt2",
+   "score": 433.07846448557257,
+   "wall": 1.39411875
+  },
+  {
+   "rep": 4,
+   "name": "FlightPlanner",
+   "config": "maxopt2",
+   "score": 1425.1852283307508,
+   "wall": 0.5683315
+  },
+  {
+   "rep": 4,
+   "name": "FlightPlanner",
+   "config": "full",
+   "score": 1357.8841575646939,
+   "wall": 0.476537458
+  },
+  {
+   "rep": 4,
+   "name": "gaussian-blur",
+   "config": "full",
+   "score": 865.3750366022207,
+   "wall": 0.557562375
+  },
+  {
+   "rep": 4,
+   "name": "gaussian-blur",
+   "config": "maxopt2",
+   "score": 759.2291507641322,
+   "wall": 0.736245416
+  },
+  {
+   "rep": 4,
+   "name": "gbemu",
+   "config": "maxopt2",
+   "score": 257.33984661868527,
+   "wall": 1.437307917
+  },
+  {
+   "rep": 4,
+   "name": "gbemu",
+   "config": "full",
+   "score": 277.45255698898166,
+   "wall": 1.312450833
+  },
+  {
+   "rep": 4,
+   "name": "hash-map",
+   "config": "full",
+   "score": 979.2382027466891,
+   "wall": 0.364278583
+  },
+  {
+   "rep": 4,
+   "name": "hash-map",
+   "config": "maxopt2",
+   "score": 676.5654669147772,
+   "wall": 0.721119291
+  },
+  {
+   "rep": 4,
+   "name": "js-tokens",
+   "config": "maxopt2",
+   "score": 543.8403589487123,
+   "wall": 1.006569333
+  },
+  {
+   "rep": 4,
+   "name": "js-tokens",
+   "config": "full",
+   "score": 543.7794691267414,
+   "wall": 0.942120708
+  },
+  {
+   "rep": 4,
+   "name": "jsdom-d3-startup",
+   "config": "full",
+   "score": 26.728387275397075,
+   "wall": 2.825129583
+  },
+  {
+   "rep": 4,
+   "name": "jsdom-d3-startup",
+   "config": "maxopt2",
+   "score": 25.31750314804009,
+   "wall": 2.898093083
+  },
+  {
+   "rep": 4,
+   "name": "json-parse-inspector",
+   "config": "maxopt2",
+   "score": 447.86526244458764,
+   "wall": 0.367882042
+  },
+  {
+   "rep": 4,
+   "name": "json-parse-inspector",
+   "config": "full",
+   "score": 382.1915401984342,
+   "wall": 0.369859209
+  },
+  {
+   "rep": 4,
+   "name": "json-stringify-inspector",
+   "config": "full",
+   "score": 593.3707752452079,
+   "wall": 0.289474667
+  },
+  {
+   "rep": 4,
+   "name": "json-stringify-inspector",
+   "config": "maxopt2",
+   "score": 640.6094670229896,
+   "wall": 0.295755375
+  },
+  {
+   "rep": 4,
+   "name": "lazy-collections",
+   "config": "maxopt2",
+   "score": 327.25225309241944,
+   "wall": 1.6049255
+  },
+  {
+   "rep": 4,
+   "name": "lazy-collections",
+   "config": "full",
+   "score": 380.1445709985317,
+   "wall": 1.410385333
+  },
+  {
+   "rep": 4,
+   "name": "mandreel",
+   "config": "full",
+   "score": 260.7062489169663,
+   "wall": 1.225363833
+  },
+  {
+   "rep": 4,
+   "name": "mandreel",
+   "config": "maxopt2",
+   "score": 87.50356254704312,
+   "wall": 3.029608375
+  },
+  {
+   "rep": 4,
+   "name": "ML",
+   "config": "maxopt2",
+   "score": 71.01965199050177,
+   "wall": 2.995833625
+  },
+  {
+   "rep": 4,
+   "name": "ML",
+   "config": "full",
+   "score": 115.46584334422627,
+   "wall": 1.628403833
+  },
+  {
+   "rep": 4,
+   "name": "mobx-startup",
+   "config": "full",
+   "score": 303.4692955525747,
+   "wall": 0.469738083
+  },
+  {
+   "rep": 4,
+   "name": "mobx-startup",
+   "config": "maxopt2",
+   "score": 289.25812028204666,
+   "wall": 0.513304791
+  },
+  {
+   "rep": 4,
+   "name": "multi-inspector-code-load",
+   "config": "maxopt2",
+   "score": 711.7054706775402,
+   "wall": 0.316511833
+  },
+  {
+   "rep": 4,
+   "name": "multi-inspector-code-load",
+   "config": "full",
+   "score": 704.3432108142911,
+   "wall": 0.314530375
+  },
+  {
+   "rep": 4,
+   "name": "navier-stokes",
+   "config": "full",
+   "score": 1581.4318185392076,
+   "wall": 0.2644345
+  },
+  {
+   "rep": 4,
+   "name": "navier-stokes",
+   "config": "maxopt2",
+   "score": 1294.255983293403,
+   "wall": 0.387787583
+  },
+  {
+   "rep": 4,
+   "name": "octane-code-load",
+   "config": "maxopt2",
+   "score": 1988.3651457650371,
+   "wall": 0.280245
+  },
+  {
+   "rep": 4,
+   "name": "octane-code-load",
+   "config": "full",
+   "score": 2015.685813631834,
+   "wall": 0.265496125
+  },
+  {
+   "rep": 4,
+   "name": "OfflineAssembler",
+   "config": "full",
+   "score": 314.87237410217546,
+   "wall": 0.940106791
+  },
+  {
+   "rep": 4,
+   "name": "OfflineAssembler",
+   "config": "maxopt2",
+   "score": 313.6294422963383,
+   "wall": 1.066464625
+  },
+  {
+   "rep": 4,
+   "name": "pdfjs",
+   "config": "maxopt2",
+   "score": 268.8097390093922,
+   "wall": 1.255029333
+  },
+  {
+   "rep": 4,
+   "name": "pdfjs",
+   "config": "full",
+   "score": 225.0996430888187,
+   "wall": 1.179905375
+  },
+  {
+   "rep": 4,
+   "name": "postcss-wtb",
+   "config": "full",
+   "score": 55.798515270934395,
+   "wall": 1.232721791
+  },
+  {
+   "rep": 4,
+   "name": "postcss-wtb",
+   "config": "maxopt2",
+   "score": 54.55545175204639,
+   "wall": 1.31311525
+  },
+  {
+   "rep": 4,
+   "name": "prettier-wtb",
+   "config": "maxopt2",
+   "score": 128.27403296021802,
+   "wall": 0.539354667
+  },
+  {
+   "rep": 4,
+   "name": "prettier-wtb",
+   "config": "full",
+   "score": 118.55389094170138,
+   "wall": 0.503227041
+  },
+  {
+   "rep": 4,
+   "name": "prismjs-startup-es6",
+   "config": "full",
+   "score": 548.2956263773597,
+   "wall": 0.74129975
+  },
+  {
+   "rep": 4,
+   "name": "prismjs-startup-es6",
+   "config": "maxopt2",
+   "score": 554.2287365483073,
+   "wall": 0.746676625
+  },
+  {
+   "rep": 4,
+   "name": "proxy-mobx",
+   "config": "maxopt2",
+   "score": 2122.8653790513763,
+   "wall": 0.393800708
+  },
+  {
+   "rep": 4,
+   "name": "proxy-mobx",
+   "config": "full",
+   "score": 2143.7233516795704,
+   "wall": 0.356747
+  },
+  {
+   "rep": 4,
+   "name": "proxy-vue",
+   "config": "full",
+   "score": 1088.2781499452663,
+   "wall": 0.368694292
+  },
+  {
+   "rep": 4,
+   "name": "proxy-vue",
+   "config": "maxopt2",
+   "score": 1037.3398811864993,
+   "wall": 0.381648833
+  },
+  {
+   "rep": 4,
+   "name": "raytrace",
+   "config": "maxopt2",
+   "score": 601.245275205551,
+   "wall": 0.857422333
+  },
+  {
+   "rep": 4,
+   "name": "raytrace",
+   "config": "full",
+   "score": 843.7292068799335,
+   "wall": 0.548036708
+  },
+  {
+   "rep": 4,
+   "name": "raytrace-private-class-fields",
+   "config": "full",
+   "score": 646.1148383966631,
+   "wall": 0.615092042
+  },
+  {
+   "rep": 4,
+   "name": "raytrace-private-class-fields",
+   "config": "maxopt2",
+   "score": 226.12905786884582,
+   "wall": 2.522654667
+  },
+  {
+   "rep": 4,
+   "name": "raytrace-public-class-fields",
+   "config": "maxopt2",
+   "score": 599.4101002601113,
+   "wall": 0.912811333
+  },
+  {
+   "rep": 4,
+   "name": "raytrace-public-class-fields",
+   "config": "full",
+   "score": 817.621867066011,
+   "wall": 0.571325416
+  },
+  {
+   "rep": 4,
+   "name": "regexp-octane",
+   "config": "full",
+   "score": 999.1163228773289,
+   "wall": 0.59382025
+  },
+  {
+   "rep": 4,
+   "name": "regexp-octane",
+   "config": "maxopt2",
+   "score": 1029.356497512259,
+   "wall": 0.586387208
+  },
+  {
+   "rep": 4,
+   "name": "richards",
+   "config": "maxopt2",
+   "score": 1369.7416154560635,
+   "wall": 0.438967
+  },
+  {
+   "rep": 4,
+   "name": "richards",
+   "config": "full",
+   "score": 1754.7238466921758,
+   "wall": 0.313374792
+  },
+  {
+   "rep": 4,
+   "name": "source-map-wtb",
+   "config": "full",
+   "score": 508.01672697807396,
+   "wall": 0.165907375
+  },
+  {
+   "rep": 4,
+   "name": "source-map-wtb",
+   "config": "maxopt2",
+   "score": 427.8413978962368,
+   "wall": 0.188138958
+  },
+  {
+   "rep": 4,
+   "name": "splay",
+   "config": "maxopt2",
+   "score": 277.6521714621462,
+   "wall": 1.4282665
+  },
+  {
+   "rep": 4,
+   "name": "splay",
+   "config": "full",
+   "score": 441.7520295892402,
+   "wall": 0.981895375
+  },
+  {
+   "rep": 4,
+   "name": "stanford-crypto-aes",
+   "config": "full",
+   "score": 858.1362801979699,
+   "wall": 0.556177792
+  },
+  {
+   "rep": 4,
+   "name": "stanford-crypto-aes",
+   "config": "maxopt2",
+   "score": 875.1083331106712,
+   "wall": 0.613407584
+  },
+  {
+   "rep": 4,
+   "name": "stanford-crypto-pbkdf2",
+   "config": "maxopt2",
+   "score": 1644.0187663539443,
+   "wall": 0.348374667
+  },
+  {
+   "rep": 4,
+   "name": "stanford-crypto-pbkdf2",
+   "config": "full",
+   "score": 1649.9947425210285,
+   "wall": 0.326845875
+  },
+  {
+   "rep": 4,
+   "name": "stanford-crypto-sha256",
+   "config": "full",
+   "score": 1598.307500289661,
+   "wall": 0.357187083
+  },
+  {
+   "rep": 4,
+   "name": "stanford-crypto-sha256",
+   "config": "maxopt2",
+   "score": 1493.520823190738,
+   "wall": 0.400758167
+  },
+  {
+   "rep": 4,
+   "name": "Sunspider",
+   "config": "maxopt2",
+   "score": 1010.8136310688461,
+   "wall": 6.447321416
+  },
+  {
+   "rep": 4,
+   "name": "Sunspider",
+   "config": "full",
+   "score": 1246.414072700566,
+   "wall": 4.829054417
+  },
+  {
+   "rep": 4,
+   "name": "sync-fs",
+   "config": "full",
+   "score": 599.9558315052152,
+   "wall": 0.526370458
+  },
+  {
+   "rep": 4,
+   "name": "sync-fs",
+   "config": "maxopt2",
+   "score": 491.37934564779084,
+   "wall": 0.723760125
+  },
+  {
+   "rep": 4,
+   "name": "threejs",
+   "config": "maxopt2",
+   "score": 74.92059405087709,
+   "wall": 3.907170625
+  },
+  {
+   "rep": 4,
+   "name": "threejs",
+   "config": "full",
+   "score": 72.548570070624,
+   "wall": 4.3212895
+  },
+  {
+   "rep": 4,
+   "name": "typescript-lib",
+   "config": "full",
+   "score": 8.278383835958858,
+   "wall": 0.792353208
+  },
+  {
+   "rep": 4,
+   "name": "typescript-lib",
+   "config": "maxopt2",
+   "score": 8.616758882904286,
+   "wall": 0.759042709
+  },
+  {
+   "rep": 4,
+   "name": "UniPoker",
+   "config": "maxopt2",
+   "score": 679.9866096733135,
+   "wall": 0.8267675
+  },
+  {
+   "rep": 4,
+   "name": "UniPoker",
+   "config": "full",
+   "score": 997.7735006034369,
+   "wall": 0.502512416
+  },
+  {
+   "rep": 4,
+   "name": "validatorjs",
+   "config": "full",
+   "score": 589.0979008050219,
+   "wall": 0.490848166
+  },
+  {
+   "rep": 4,
+   "name": "validatorjs",
+   "config": "maxopt2",
+   "score": 588.6826742342621,
+   "wall": 0.474469916
+  },
+  {
+   "rep": 4,
+   "name": "web-ssr",
+   "config": "maxopt2",
+   "score": 313.7396232975246,
+   "wall": 0.512926834
+  },
+  {
+   "rep": 4,
+   "name": "web-ssr",
+   "config": "full",
+   "score": 310.8351060303589,
+   "wall": 0.509500958
+  },
+  {
+   "rep": 4,
+   "name": "WSL",
+   "config": "full",
+   "score": 3.988737532652955,
+   "wall": 3.797446916
+  },
+  {
+   "rep": 4,
+   "name": "WSL",
+   "config": "maxopt2",
+   "score": 3.9550966731087893,
+   "wall": 3.687762375
+  },
+  {
+   "rep": 5,
+   "name": "acorn-wtb",
+   "config": "maxopt2",
+   "score": 91.26157794400652,
+   "wall": 0.767323333
+  },
+  {
+   "rep": 5,
+   "name": "acorn-wtb",
+   "config": "full",
+   "score": 97.78173554672482,
+   "wall": 0.66777825
+  },
+  {
+   "rep": 5,
+   "name": "ai-astar",
+   "config": "full",
+   "score": 1117.7517170016622,
+   "wall": 0.467730083
+  },
+  {
+   "rep": 5,
+   "name": "ai-astar",
+   "config": "maxopt2",
+   "score": 928.9266784749532,
+   "wall": 0.673397666
+  },
+  {
+   "rep": 5,
+   "name": "Air",
+   "config": "maxopt2",
+   "score": 808.1172201451496,
+   "wall": 0.413770292
+  },
+  {
+   "rep": 5,
+   "name": "Air",
+   "config": "full",
+   "score": 964.0076295434133,
+   "wall": 0.309841417
+  },
+  {
+   "rep": 5,
+   "name": "async-fs",
+   "config": "full",
+   "score": 487.4010448422616,
+   "wall": 0.786026709
+  },
+  {
+   "rep": 5,
+   "name": "async-fs",
+   "config": "maxopt2",
+   "score": 427.0423901314561,
+   "wall": 0.982330125
+  },
+  {
+   "rep": 5,
+   "name": "babel-minify-wtb",
+   "config": "maxopt2",
+   "score": 154.13551671847515,
+   "wall": 0.474376667
+  },
+  {
+   "rep": 5,
+   "name": "babel-minify-wtb",
+   "config": "full",
+   "score": 159.53187737079543,
+   "wall": 0.441173625
+  },
+  {
+   "rep": 5,
+   "name": "babel-wtb",
+   "config": "full",
+   "score": 199.17876194002065,
+   "wall": 0.41047625
+  },
+  {
+   "rep": 5,
+   "name": "babel-wtb",
+   "config": "maxopt2",
+   "score": 212.64389213418602,
+   "wall": 0.404019041
+  },
+  {
+   "rep": 5,
+   "name": "Babylon",
+   "config": "maxopt2",
+   "score": 1494.6056080840838,
+   "wall": 0.234357333
+  },
+  {
+   "rep": 5,
+   "name": "Babylon",
+   "config": "full",
+   "score": 1450.8344452994895,
+   "wall": 0.210821416
+  },
+  {
+   "rep": 5,
+   "name": "babylon-wtb",
+   "config": "full",
+   "score": 150.69274786613698,
+   "wall": 0.441497292
+  },
+  {
+   "rep": 5,
+   "name": "babylon-wtb",
+   "config": "maxopt2",
+   "score": 137.2832258651036,
+   "wall": 0.507130625
+  },
+  {
+   "rep": 5,
+   "name": "babylonjs-scene-es6",
+   "config": "maxopt2",
+   "score": 77.19203093519549,
+   "wall": 0.511391
+  },
+  {
+   "rep": 5,
+   "name": "babylonjs-scene-es6",
+   "config": "full",
+   "score": 80.22897429137419,
+   "wall": 0.485045833
+  },
+  {
+   "rep": 5,
+   "name": "babylonjs-startup-es6",
+   "config": "full",
+   "score": 35.83456129416112,
+   "wall": 1.539314375
+  },
+  {
+   "rep": 5,
+   "name": "babylonjs-startup-es6",
+   "config": "maxopt2",
+   "score": 35.5957232127255,
+   "wall": 1.531110958
+  },
+  {
+   "rep": 5,
+   "name": "Basic",
+   "config": "maxopt2",
+   "score": 1240.8878014086388,
+   "wall": 0.359156375
+  },
+  {
+   "rep": 5,
+   "name": "Basic",
+   "config": "full",
+   "score": 1515.4396345208359,
+   "wall": 0.247248375
+  },
+  {
+   "rep": 5,
+   "name": "bigint-noble-ed25519",
+   "config": "full",
+   "score": 100.29013365982728,
+   "wall": 1.425497583
+  },
+  {
+   "rep": 5,
+   "name": "bigint-noble-ed25519",
+   "config": "maxopt2",
+   "score": 95.47269946096115,
+   "wall": 1.517580209
+  },
+  {
+   "rep": 5,
+   "name": "Box2D",
+   "config": "maxopt2",
+   "score": 790.6981998569363,
+   "wall": 0.395397709
+  },
+  {
+   "rep": 5,
+   "name": "Box2D",
+   "config": "full",
+   "score": 799.8097330279151,
+   "wall": 0.344065666
+  },
+  {
+   "rep": 5,
+   "name": "cdjs",
+   "config": "full",
+   "score": 313.39029737054466,
+   "wall": 0.699883917
+  },
+  {
+   "rep": 5,
+   "name": "cdjs",
+   "config": "maxopt2",
+   "score": 259.0485186367054,
+   "wall": 1.003055458
+  },
+  {
+   "rep": 5,
+   "name": "chai-wtb",
+   "config": "maxopt2",
+   "score": 323.40623954373905,
+   "wall": 0.27380475
+  },
+  {
+   "rep": 5,
+   "name": "chai-wtb",
+   "config": "full",
+   "score": 278.6327117227929,
+   "wall": 0.293540208
+  },
+  {
+   "rep": 5,
+   "name": "crypto",
+   "config": "full",
+   "score": 1482.1138098609767,
+   "wall": 0.248374791
+  },
+  {
+   "rep": 5,
+   "name": "crypto",
+   "config": "maxopt2",
+   "score": 1403.980146925607,
+   "wall": 0.383672
+  },
+  {
+   "rep": 5,
+   "name": "delta-blue",
+   "config": "maxopt2",
+   "score": 1406.0532812129252,
+   "wall": 0.359280208
+  },
+  {
+   "rep": 5,
+   "name": "delta-blue",
+   "config": "full",
+   "score": 1612.488860036168,
+   "wall": 0.216757042
+  },
+  {
+   "rep": 5,
+   "name": "doxbee-async",
+   "config": "full",
+   "score": 358.9102372545689,
+   "wall": 0.783414
+  },
+  {
+   "rep": 5,
+   "name": "doxbee-async",
+   "config": "maxopt2",
+   "score": 344.14522601223325,
+   "wall": 1.024407542
+  },
+  {
+   "rep": 5,
+   "name": "doxbee-promise",
+   "config": "maxopt2",
+   "score": 292.8792510582194,
+   "wall": 1.692682792
+  },
+  {
+   "rep": 5,
+   "name": "doxbee-promise",
+   "config": "full",
+   "score": 474.5114456191395,
+   "wall": 0.923083583
+  },
+  {
+   "rep": 5,
+   "name": "earley-boyer",
+   "config": "full",
+   "score": 1223.2108645149879,
+   "wall": 0.322328166
+  },
+  {
+   "rep": 5,
+   "name": "earley-boyer",
+   "config": "maxopt2",
+   "score": 1066.5783745296617,
+   "wall": 0.437162542
+  },
+  {
+   "rep": 5,
+   "name": "espree-wtb",
+   "config": "maxopt2",
+   "score": 108.41812797798016,
+   "wall": 0.671082833
+  },
+  {
+   "rep": 5,
+   "name": "espree-wtb",
+   "config": "full",
+   "score": 125.39382356573253,
+   "wall": 0.551274417
+  },
+  {
+   "rep": 5,
+   "name": "esprima-next-wtb",
+   "config": "full",
+   "score": 123.98736361149928,
+   "wall": 0.559856292
+  },
+  {
+   "rep": 5,
+   "name": "esprima-next-wtb",
+   "config": "maxopt2",
+   "score": 109.41303712575231,
+   "wall": 0.643438708
+  },
+  {
+   "rep": 5,
+   "name": "first-inspector-code-load",
+   "config": "maxopt2",
+   "score": 354.92742109097196,
+   "wall": 1.635421125
+  },
+  {
+   "rep": 5,
+   "name": "first-inspector-code-load",
+   "config": "full",
+   "score": 390.8053267165717,
+   "wall": 1.488373833
+  },
+  {
+   "rep": 5,
+   "name": "FlightPlanner",
+   "config": "full",
+   "score": 1339.2770985670131,
+   "wall": 0.545637333
+  },
+  {
+   "rep": 5,
+   "name": "FlightPlanner",
+   "config": "maxopt2",
+   "score": 1238.0383031808922,
+   "wall": 0.656731
+  },
+  {
+   "rep": 5,
+   "name": "gaussian-blur",
+   "config": "maxopt2",
+   "score": 659.7809281610229,
+   "wall": 0.841237416
+  },
+  {
+   "rep": 5,
+   "name": "gaussian-blur",
+   "config": "full",
+   "score": 845.0277481302928,
+   "wall": 0.598745417
+  },
+  {
+   "rep": 5,
+   "name": "gbemu",
+   "config": "full",
+   "score": 254.3135224546493,
+   "wall": 1.40704775
+  },
+  {
+   "rep": 5,
+   "name": "gbemu",
+   "config": "maxopt2",
+   "score": 213.52696198966333,
+   "wall": 1.643313125
+  },
+  {
+   "rep": 5,
+   "name": "hash-map",
+   "config": "maxopt2",
+   "score": 369.0968418682289,
+   "wall": 1.027432375
+  },
+  {
+   "rep": 5,
+   "name": "hash-map",
+   "config": "full",
+   "score": 842.7365744957661,
+   "wall": 0.419835042
+  },
+  {
+   "rep": 5,
+   "name": "js-tokens",
+   "config": "full",
+   "score": 476.06774741723547,
+   "wall": 1.052023417
+  },
+  {
+   "rep": 5,
+   "name": "js-tokens",
+   "config": "maxopt2",
+   "score": 500.55014198599457,
+   "wall": 1.097559167
+  },
+  {
+   "rep": 5,
+   "name": "jsdom-d3-startup",
+   "config": "maxopt2",
+   "score": 22.065941775584182,
+   "wall": 3.4965575
+  },
+  {
+   "rep": 5,
+   "name": "jsdom-d3-startup",
+   "config": "full",
+   "score": 20.0691805535747,
+   "wall": 3.69696925
+  },
+  {
+   "rep": 5,
+   "name": "json-parse-inspector",
+   "config": "full",
+   "score": 422.65064538435587,
+   "wall": 0.397355542
+  },
+  {
+   "rep": 5,
+   "name": "json-parse-inspector",
+   "config": "maxopt2",
+   "score": 404.58369987305343,
+   "wall": 0.403120958
+  },
+  {
+   "rep": 5,
+   "name": "json-stringify-inspector",
+   "config": "maxopt2",
+   "score": 527.2823545277972,
+   "wall": 0.325930666
+  },
+  {
+   "rep": 5,
+   "name": "json-stringify-inspector",
+   "config": "full",
+   "score": 546.294068344007,
+   "wall": 0.324959917
+  },
+  {
+   "rep": 5,
+   "name": "lazy-collections",
+   "config": "full",
+   "score": 369.3949782710943,
+   "wall": 1.525752875
+  },
+  {
+   "rep": 5,
+   "name": "lazy-collections",
+   "config": "maxopt2",
+   "score": 305.9843842902767,
+   "wall": 1.811241917
+  },
+  {
+   "rep": 5,
+   "name": "mandreel",
+   "config": "maxopt2",
+   "score": 126.21131499766126,
+   "wall": 2.765492417
+  },
+  {
+   "rep": 5,
+   "name": "mandreel",
+   "config": "full",
+   "score": 260.5040965375042,
+   "wall": 1.221565417
+  },
+  {
+   "rep": 5,
+   "name": "ML",
+   "config": "full",
+   "score": 257.2444895694921,
+   "wall": 1.02266025
+  },
+  {
+   "rep": 5,
+   "name": "ML",
+   "config": "maxopt2",
+   "score": 122.85422141183334,
+   "wall": 2.344941583
+  },
+  {
+   "rep": 5,
+   "name": "mobx-startup",
+   "config": "maxopt2",
+   "score": 316.2590930392514,
+   "wall": 0.480194125
+  },
+  {
+   "rep": 5,
+   "name": "mobx-startup",
+   "config": "full",
+   "score": 282.1451295965313,
+   "wall": 0.501972917
+  },
+  {
+   "rep": 5,
+   "name": "multi-inspector-code-load",
+   "config": "full",
+   "score": 680.8992571248862,
+   "wall": 0.345661167
+  },
+  {
+   "rep": 5,
+   "name": "multi-inspector-code-load",
+   "config": "maxopt2",
+   "score": 713.1794062788836,
+   "wall": 0.322819833
+  },
+  {
+   "rep": 5,
+   "name": "navier-stokes",
+   "config": "maxopt2",
+   "score": 1316.4339677652993,
+   "wall": 0.387039083
+  },
+  {
+   "rep": 5,
+   "name": "navier-stokes",
+   "config": "full",
+   "score": 1609.723730159923,
+   "wall": 0.26380425
+  },
+  {
+   "rep": 5,
+   "name": "octane-code-load",
+   "config": "full",
+   "score": 2000.3944256902305,
+   "wall": 0.279907666
+  },
+  {
+   "rep": 5,
+   "name": "octane-code-load",
+   "config": "maxopt2",
+   "score": 2082.502192530162,
+   "wall": 0.262268375
+  },
+  {
+   "rep": 5,
+   "name": "OfflineAssembler",
+   "config": "maxopt2",
+   "score": 307.06410007428224,
+   "wall": 1.084712792
+  },
+  {
+   "rep": 5,
+   "name": "OfflineAssembler",
+   "config": "full",
+   "score": 322.6856547601463,
+   "wall": 0.926685958
+  },
+  {
+   "rep": 5,
+   "name": "pdfjs",
+   "config": "full",
+   "score": 441.3287442528058,
+   "wall": 0.86053825
+  },
+  {
+   "rep": 5,
+   "name": "pdfjs",
+   "config": "maxopt2",
+   "score": 410.6064314317867,
+   "wall": 0.98941
+  },
+  {
+   "rep": 5,
+   "name": "postcss-wtb",
+   "config": "maxopt2",
+   "score": 54.504206979318106,
+   "wall": 1.337525709
+  },
+  {
+   "rep": 5,
+   "name": "postcss-wtb",
+   "config": "full",
+   "score": 55.06544515697143,
+   "wall": 1.233566
+  },
+  {
+   "rep": 5,
+   "name": "prettier-wtb",
+   "config": "full",
+   "score": 129.07244437613528,
+   "wall": 0.491643959
+  },
+  {
+   "rep": 5,
+   "name": "prettier-wtb",
+   "config": "maxopt2",
+   "score": 118.18752342859989,
+   "wall": 0.557362875
+  },
+  {
+   "rep": 5,
+   "name": "prismjs-startup-es6",
+   "config": "maxopt2",
+   "score": 585.372845172804,
+   "wall": 0.690368041
+  },
+  {
+   "rep": 5,
+   "name": "prismjs-startup-es6",
+   "config": "full",
+   "score": 593.5385886120102,
+   "wall": 0.67687875
+  },
+  {
+   "rep": 5,
+   "name": "proxy-mobx",
+   "config": "full",
+   "score": 2101.9430628062646,
+   "wall": 0.374682084
+  },
+  {
+   "rep": 5,
+   "name": "proxy-mobx",
+   "config": "maxopt2",
+   "score": 2255.8346103743543,
+   "wall": 0.38068675
+  },
+  {
+   "rep": 5,
+   "name": "proxy-vue",
+   "config": "maxopt2",
+   "score": 1020.8656174981788,
+   "wall": 0.382344
+  },
+  {
+   "rep": 5,
+   "name": "proxy-vue",
+   "config": "full",
+   "score": 1037.842596864325,
+   "wall": 0.336046084
+  },
+  {
+   "rep": 5,
+   "name": "raytrace",
+   "config": "full",
+   "score": 788.3230549241533,
+   "wall": 0.551274333
+  },
+  {
+   "rep": 5,
+   "name": "raytrace",
+   "config": "maxopt2",
+   "score": 661.3435146767513,
+   "wall": 0.840473541
+  },
+  {
+   "rep": 5,
+   "name": "raytrace-private-class-fields",
+   "config": "maxopt2",
+   "score": 189.59087624971056,
+   "wall": 2.8876975
+  },
+  {
+   "rep": 5,
+   "name": "raytrace-private-class-fields",
+   "config": "full",
+   "score": 611.1178496715547,
+   "wall": 0.637529917
+  },
+  {
+   "rep": 5,
+   "name": "raytrace-public-class-fields",
+   "config": "full",
+   "score": 797.4106340098153,
+   "wall": 0.584321083
+  },
+  {
+   "rep": 5,
+   "name": "raytrace-public-class-fields",
+   "config": "maxopt2",
+   "score": 584.173446123749,
+   "wall": 0.928599958
+  },
+  {
+   "rep": 5,
+   "name": "regexp-octane",
+   "config": "maxopt2",
+   "score": 984.085322351819,
+   "wall": 0.617742875
+  },
+  {
+   "rep": 5,
+   "name": "regexp-octane",
+   "config": "full",
+   "score": 929.3540514778025,
+   "wall": 0.604546709
+  },
+  {
+   "rep": 5,
+   "name": "richards",
+   "config": "full",
+   "score": 1755.5147525438822,
+   "wall": 0.320487375
+  },
+  {
+   "rep": 5,
+   "name": "richards",
+   "config": "maxopt2",
+   "score": 1251.5758752898007,
+   "wall": 0.469756167
+  },
+  {
+   "rep": 5,
+   "name": "source-map-wtb",
+   "config": "maxopt2",
+   "score": 354.8295803494773,
+   "wall": 0.228384875
+  },
+  {
+   "rep": 5,
+   "name": "source-map-wtb",
+   "config": "full",
+   "score": 382.8015790648219,
+   "wall": 0.222827208
+  },
+  {
+   "rep": 5,
+   "name": "splay",
+   "config": "full",
+   "score": 287.1376167677062,
+   "wall": 1.554269166
+  },
+  {
+   "rep": 5,
+   "name": "splay",
+   "config": "maxopt2",
+   "score": 177.68900641840278,
+   "wall": 2.523896375
+  },
+  {
+   "rep": 5,
+   "name": "stanford-crypto-aes",
+   "config": "maxopt2",
+   "score": 611.6995222689708,
+   "wall": 0.831019333
+  },
+  {
+   "rep": 5,
+   "name": "stanford-crypto-aes",
+   "config": "full",
+   "score": 686.6907995997342,
+   "wall": 0.620875
+  },
+  {
+   "rep": 5,
+   "name": "stanford-crypto-pbkdf2",
+   "config": "full",
+   "score": 1526.3991817365363,
+   "wall": 0.343981708
+  },
+  {
+   "rep": 5,
+   "name": "stanford-crypto-pbkdf2",
+   "config": "maxopt2",
+   "score": 1457.3756574764384,
+   "wall": 0.377498
+  },
+  {
+   "rep": 5,
+   "name": "stanford-crypto-sha256",
+   "config": "maxopt2",
+   "score": 1173.7720175779032,
+   "wall": 0.4546365
+  },
+  {
+   "rep": 5,
+   "name": "stanford-crypto-sha256",
+   "config": "full",
+   "score": 1183.4200564809212,
+   "wall": 0.4272385
+  },
+  {
+   "rep": 5,
+   "name": "Sunspider",
+   "config": "full",
+   "score": 971.5791794807946,
+   "wall": 5.9282975
+  },
+  {
+   "rep": 5,
+   "name": "Sunspider",
+   "config": "maxopt2",
+   "score": 939.9835176973529,
+   "wall": 6.896331166
+  },
+  {
+   "rep": 5,
+   "name": "sync-fs",
+   "config": "maxopt2",
+   "score": 405.25380406442616,
+   "wall": 0.827291709
+  },
+  {
+   "rep": 5,
+   "name": "sync-fs",
+   "config": "full",
+   "score": 449.1638819734258,
+   "wall": 0.700545875
+  },
+  {
+   "rep": 5,
+   "name": "threejs",
+   "config": "full",
+   "score": 52.54369335023283,
+   "wall": 4.772422833
+  },
+  {
+   "rep": 5,
+   "name": "threejs",
+   "config": "maxopt2",
+   "score": 68.45620625050049,
+   "wall": 4.257642834
+  },
+  {
+   "rep": 5,
+   "name": "typescript-lib",
+   "config": "maxopt2",
+   "score": 8.273219773739848,
+   "wall": 0.783143583
+  },
+  {
+   "rep": 5,
+   "name": "typescript-lib",
+   "config": "full",
+   "score": 5.600749716357033,
+   "wall": 1.1199945
+  },
+  {
+   "rep": 5,
+   "name": "UniPoker",
+   "config": "full",
+   "score": 837.8311972398898,
+   "wall": 0.553955375
+  },
+  {
+   "rep": 5,
+   "name": "UniPoker",
+   "config": "maxopt2",
+   "score": 643.1676303696759,
+   "wall": 0.85183175
+  },
+  {
+   "rep": 5,
+   "name": "validatorjs",
+   "config": "maxopt2",
+   "score": 599.4732602893101,
+   "wall": 0.481301667
+  },
+  {
+   "rep": 5,
+   "name": "validatorjs",
+   "config": "full",
+   "score": 582.1484542343783,
+   "wall": 0.484185416
+  },
+  {
+   "rep": 5,
+   "name": "web-ssr",
+   "config": "full",
+   "score": 307.27069859785115,
+   "wall": 0.511690583
+  },
+  {
+   "rep": 5,
+   "name": "web-ssr",
+   "config": "maxopt2",
+   "score": 313.51781489578406,
+   "wall": 0.512874875
+  },
+  {
+   "rep": 5,
+   "name": "WSL",
+   "config": "maxopt2",
+   "score": 4.129925195371324,
+   "wall": 3.568915125
+  },
+  {
+   "rep": 5,
+   "name": "WSL",
+   "config": "full",
+   "score": 2.9985690214877225,
+   "wall": 4.6417425
+  },
+  {
+   "rep": 6,
+   "name": "acorn-wtb",
+   "config": "full",
+   "score": 52.957099427741326,
+   "wall": 1.1768235
+  },
+  {
+   "rep": 6,
+   "name": "acorn-wtb",
+   "config": "maxopt2",
+   "score": 63.453548222548264,
+   "wall": 1.002686541
+  },
+  {
+   "rep": 6,
+   "name": "ai-astar",
+   "config": "maxopt2",
+   "score": 914.5453854206705,
+   "wall": 0.702184875
+  },
+  {
+   "rep": 6,
+   "name": "ai-astar",
+   "config": "full",
+   "score": 1132.7722055719244,
+   "wall": 0.477868167
+  },
+  {
+   "rep": 6,
+   "name": "Air",
+   "config": "full",
+   "score": 935.6755165049203,
+   "wall": 0.322286584
+  },
+  {
+   "rep": 6,
+   "name": "Air",
+   "config": "maxopt2",
+   "score": 816.7161901882695,
+   "wall": 0.405324583
+  },
+  {
+   "rep": 6,
+   "name": "async-fs",
+   "config": "maxopt2",
+   "score": 417.84295332552836,
+   "wall": 0.993136709
+  },
+  {
+   "rep": 6,
+   "name": "async-fs",
+   "config": "full",
+   "score": 455.10298729856027,
+   "wall": 0.82820375
+  },
+  {
+   "rep": 6,
+   "name": "babel-minify-wtb",
+   "config": "full",
+   "score": 150.0819502061912,
+   "wall": 0.470612666
+  },
+  {
+   "rep": 6,
+   "name": "babel-minify-wtb",
+   "config": "maxopt2",
+   "score": 130.28176390237326,
+   "wall": 0.562216292
+  },
+  {
+   "rep": 6,
+   "name": "babel-wtb",
+   "config": "maxopt2",
+   "score": 178.94438083685532,
+   "wall": 0.475108708
+  },
+  {
+   "rep": 6,
+   "name": "babel-wtb",
+   "config": "full",
+   "score": 187.69482315152416,
+   "wall": 0.441937208
+  },
+  {
+   "rep": 6,
+   "name": "Babylon",
+   "config": "full",
+   "score": 1518.6544678665227,
+   "wall": 0.2094945
+  },
+  {
+   "rep": 6,
+   "name": "Babylon",
+   "config": "maxopt2",
+   "score": 1005.0213064521173,
+   "wall": 0.307749708
+  },
+  {
+   "rep": 6,
+   "name": "babylon-wtb",
+   "config": "maxopt2",
+   "score": 102.33289860251561,
+   "wall": 0.61749
+  },
+  {
+   "rep": 6,
+   "name": "babylon-wtb",
+   "config": "full",
+   "score": 97.62267282429052,
+   "wall": 0.603236791
+  },
+  {
+   "rep": 6,
+   "name": "babylonjs-scene-es6",
+   "config": "full",
+   "score": 64.12728604445014,
+   "wall": 0.607631167
+  },
+  {
+   "rep": 6,
+   "name": "babylonjs-scene-es6",
+   "config": "maxopt2",
+   "score": 58.74911153284965,
+   "wall": 0.652117458
+  },
+  {
+   "rep": 6,
+   "name": "babylonjs-startup-es6",
+   "config": "maxopt2",
+   "score": 31.375606937668735,
+   "wall": 1.72176825
+  },
+  {
+   "rep": 6,
+   "name": "babylonjs-startup-es6",
+   "config": "full",
+   "score": 25.2206880179914,
+   "wall": 2.180867042
+  },
+  {
+   "rep": 6,
+   "name": "Basic",
+   "config": "full",
+   "score": 979.882733828187,
+   "wall": 0.393402666
+  },
+  {
+   "rep": 6,
+   "name": "Basic",
+   "config": "maxopt2",
+   "score": 986.9919384893477,
+   "wall": 0.490204125
+  },
+  {
+   "rep": 6,
+   "name": "bigint-noble-ed25519",
+   "config": "maxopt2",
+   "score": 67.49493319126522,
+   "wall": 2.087809833
+  },
+  {
+   "rep": 6,
+   "name": "bigint-noble-ed25519",
+   "config": "full",
+   "score": 75.0899471073267,
+   "wall": 1.658360209
+  },
+  {
+   "rep": 6,
+   "name": "Box2D",
+   "config": "full",
+   "score": 691.236892943709,
+   "wall": 0.380734791
+  },
+  {
+   "rep": 6,
+   "name": "Box2D",
+   "config": "maxopt2",
+   "score": 683.0486223250084,
+   "wall": 0.439829709
+  },
+  {
+   "rep": 6,
+   "name": "cdjs",
+   "config": "maxopt2",
+   "score": 262.0057388455658,
+   "wall": 0.959628542
+  },
+  {
+   "rep": 6,
+   "name": "cdjs",
+   "config": "full",
+   "score": 300.1030108207432,
+   "wall": 0.7031065
+  },
+  {
+   "rep": 6,
+   "name": "chai-wtb",
+   "config": "full",
+   "score": 358.6336155065459,
+   "wall": 0.237556834
+  },
+  {
+   "rep": 6,
+   "name": "chai-wtb",
+   "config": "maxopt2",
+   "score": 323.7130896399376,
+   "wall": 0.262431125
+  },
+  {
+   "rep": 6,
+   "name": "crypto",
+   "config": "maxopt2",
+   "score": 1504.9623169615506,
+   "wall": 0.339781167
+  },
+  {
+   "rep": 6,
+   "name": "crypto",
+   "config": "full",
+   "score": 2341.948333077039,
+   "wall": 0.196871166
+  },
+  {
+   "rep": 6,
+   "name": "delta-blue",
+   "config": "full",
+   "score": 2306.6182993151137,
+   "wall": 0.144517875
+  },
+  {
+   "rep": 6,
+   "name": "delta-blue",
+   "config": "maxopt2",
+   "score": 1756.313121391032,
+   "wall": 0.291424208
+  },
+  {
+   "rep": 6,
+   "name": "doxbee-async",
+   "config": "maxopt2",
+   "score": 417.7442797674527,
+   "wall": 0.859201458
+  },
+  {
+   "rep": 6,
+   "name": "doxbee-async",
+   "config": "full",
+   "score": 517.3030588848379,
+   "wall": 0.571208459
+  },
+  {
+   "rep": 6,
+   "name": "doxbee-promise",
+   "config": "full",
+   "score": 412.1249396476069,
+   "wall": 1.109360667
+  },
+  {
+   "rep": 6,
+   "name": "doxbee-promise",
+   "config": "maxopt2",
+   "score": 358.79302381907695,
+   "wall": 1.403183333
+  },
+  {
+   "rep": 6,
+   "name": "earley-boyer",
+   "config": "maxopt2",
+   "score": 708.4932596939095,
+   "wall": 0.534874208
+  },
+  {
+   "rep": 6,
+   "name": "earley-boyer",
+   "config": "full",
+   "score": 694.1743088854238,
+   "wall": 0.436516209
+  },
+  {
+   "rep": 6,
+   "name": "espree-wtb",
+   "config": "full",
+   "score": 97.64936119960566,
+   "wall": 0.688920416
+  },
+  {
+   "rep": 6,
+   "name": "espree-wtb",
+   "config": "maxopt2",
+   "score": 82.73228565150066,
+   "wall": 0.837496959
+  },
+  {
+   "rep": 6,
+   "name": "esprima-next-wtb",
+   "config": "maxopt2",
+   "score": 105.66135619681828,
+   "wall": 0.665716625
+  },
+  {
+   "rep": 6,
+   "name": "esprima-next-wtb",
+   "config": "full",
+   "score": 100.3644746919648,
+   "wall": 0.682723459
+  },
+  {
+   "rep": 6,
+   "name": "first-inspector-code-load",
+   "config": "full",
+   "score": 292.8698545208637,
+   "wall": 1.965690333
+  },
+  {
+   "rep": 6,
+   "name": "first-inspector-code-load",
+   "config": "maxopt2",
+   "score": 281.999220909747,
+   "wall": 2.124090083
+  },
+  {
+   "rep": 6,
+   "name": "FlightPlanner",
+   "config": "maxopt2",
+   "score": 665.6384467764257,
+   "wall": 1.069765709
+  },
+  {
+   "rep": 6,
+   "name": "FlightPlanner",
+   "config": "full",
+   "score": 617.4111096723457,
+   "wall": 0.89769725
+  },
+  {
+   "rep": 6,
+   "name": "gaussian-blur",
+   "config": "full",
+   "score": 480.18665844058717,
+   "wall": 0.957260917
+  },
+  {
+   "rep": 6,
+   "name": "gaussian-blur",
+   "config": "maxopt2",
+   "score": 413.7749064327434,
+   "wall": 1.214504208
+  },
+  {
+   "rep": 6,
+   "name": "gbemu",
+   "config": "maxopt2",
+   "score": 186.00095839890048,
+   "wall": 1.939546
+  },
+  {
+   "rep": 6,
+   "name": "gbemu",
+   "config": "full",
+   "score": 188.3119560130099,
+   "wall": 1.747915958
+  },
+  {
+   "rep": 6,
+   "name": "hash-map",
+   "config": "full",
+   "score": 872.153961820956,
+   "wall": 0.389858667
+  },
+  {
+   "rep": 6,
+   "name": "hash-map",
+   "config": "maxopt2",
+   "score": 633.7944213566894,
+   "wall": 0.790645084
+  },
+  {
+   "rep": 6,
+   "name": "js-tokens",
+   "config": "maxopt2",
+   "score": 499.66815203923414,
+   "wall": 1.039974083
+  },
+  {
+   "rep": 6,
+   "name": "js-tokens",
+   "config": "full",
+   "score": 480.363055754285,
+   "wall": 1.023669875
+  },
+  {
+   "rep": 6,
+   "name": "jsdom-d3-startup",
+   "config": "full",
+   "score": 25.146265569620812,
+   "wall": 2.86494075
+  },
+  {
+   "rep": 6,
+   "name": "jsdom-d3-startup",
+   "config": "maxopt2",
+   "score": 27.280911229351897,
+   "wall": 2.673178666
+  },
+  {
+   "rep": 6,
+   "name": "json-parse-inspector",
+   "config": "maxopt2",
+   "score": 447.1032772878396,
+   "wall": 0.389770083
+  },
+  {
+   "rep": 6,
+   "name": "json-parse-inspector",
+   "config": "full",
+   "score": 386.73401307428,
+   "wall": 0.38366975
+  },
+  {
+   "rep": 6,
+   "name": "json-stringify-inspector",
+   "config": "full",
+   "score": 461.19252358009584,
+   "wall": 0.334418042
+  },
+  {
+   "rep": 6,
+   "name": "json-stringify-inspector",
+   "config": "maxopt2",
+   "score": 598.0469590558912,
+   "wall": 0.316073917
+  },
+  {
+   "rep": 6,
+   "name": "lazy-collections",
+   "config": "maxopt2",
+   "score": 348.12008790133916,
+   "wall": 1.61807375
+  },
+  {
+   "rep": 6,
+   "name": "lazy-collections",
+   "config": "full",
+   "score": 414.5132869492747,
+   "wall": 1.323066834
+  },
+  {
+   "rep": 6,
+   "name": "mandreel",
+   "config": "full",
+   "score": 272.2102696701397,
+   "wall": 1.192927792
+  },
+  {
+   "rep": 6,
+   "name": "mandreel",
+   "config": "maxopt2",
+   "score": 156.2870517925763,
+   "wall": 2.30384775
+  },
+  {
+   "rep": 6,
+   "name": "ML",
+   "config": "maxopt2",
+   "score": 122.4205541671375,
+   "wall": 2.374759917
+  },
+  {
+   "rep": 6,
+   "name": "ML",
+   "config": "full",
+   "score": 239.25031962499315,
+   "wall": 1.050391792
+  },
+  {
+   "rep": 6,
+   "name": "mobx-startup",
+   "config": "full",
+   "score": 297.28133585383847,
+   "wall": 0.485936
+  },
+  {
+   "rep": 6,
+   "name": "mobx-startup",
+   "config": "maxopt2",
+   "score": 313.51885658247966,
+   "wall": 0.482472375
+  },
+  {
+   "rep": 6,
+   "name": "multi-inspector-code-load",
+   "config": "maxopt2",
+   "score": 709.6658058628,
+   "wall": 0.314653959
+  },
+  {
+   "rep": 6,
+   "name": "multi-inspector-code-load",
+   "config": "full",
+   "score": 711.7870238174697,
+   "wall": 0.309050125
+  },
+  {
+   "rep": 6,
+   "name": "navier-stokes",
+   "config": "full",
+   "score": 1563.3402584134917,
+   "wall": 0.266728583
+  },
+  {
+   "rep": 6,
+   "name": "navier-stokes",
+   "config": "maxopt2",
+   "score": 1276.205358424614,
+   "wall": 0.388128125
+  },
+  {
+   "rep": 6,
+   "name": "octane-code-load",
+   "config": "maxopt2",
+   "score": 2054.252667828546,
+   "wall": 0.274037375
+  },
+  {
+   "rep": 6,
+   "name": "octane-code-load",
+   "config": "full",
+   "score": 2115.0370980975067,
+   "wall": 0.258557042
+  },
+  {
+   "rep": 6,
+   "name": "OfflineAssembler",
+   "config": "full",
+   "score": 333.7763754547647,
+   "wall": 0.920321167
+  },
+  {
+   "rep": 6,
+   "name": "OfflineAssembler",
+   "config": "maxopt2",
+   "score": 324.41552943341424,
+   "wall": 1.040196667
+  },
+  {
+   "rep": 6,
+   "name": "pdfjs",
+   "config": "maxopt2",
+   "score": 406.73349431896924,
+   "wall": 1.006843667
+  },
+  {
+   "rep": 6,
+   "name": "pdfjs",
+   "config": "full",
+   "score": 402.2269753485746,
+   "wall": 0.897755792
+  },
+  {
+   "rep": 6,
+   "name": "postcss-wtb",
+   "config": "full",
+   "score": 55.405684887447094,
+   "wall": 1.220626292
+  },
+  {
+   "rep": 6,
+   "name": "postcss-wtb",
+   "config": "maxopt2",
+   "score": 56.890870677944626,
+   "wall": 1.260562334
+  },
+  {
+   "rep": 6,
+   "name": "prettier-wtb",
+   "config": "maxopt2",
+   "score": 135.45443478787175,
+   "wall": 0.519436708
+  },
+  {
+   "rep": 6,
+   "name": "prettier-wtb",
+   "config": "full",
+   "score": 140.90039418083146,
+   "wall": 0.457724833
+  },
+  {
+   "rep": 6,
+   "name": "prismjs-startup-es6",
+   "config": "full",
+   "score": 587.5420026204978,
+   "wall": 0.675923667
+  },
+  {
+   "rep": 6,
+   "name": "prismjs-startup-es6",
+   "config": "maxopt2",
+   "score": 598.9945215861027,
+   "wall": 0.681510042
+  },
+  {
+   "rep": 6,
+   "name": "proxy-mobx",
+   "config": "maxopt2",
+   "score": 2251.347509455389,
+   "wall": 0.368799667
+  },
+  {
+   "rep": 6,
+   "name": "proxy-mobx",
+   "config": "full",
+   "score": 2257.0175401546253,
+   "wall": 0.337809417
+  },
+  {
+   "rep": 6,
+   "name": "proxy-vue",
+   "config": "full",
+   "score": 1137.954109795044,
+   "wall": 0.3296835
+  },
+  {
+   "rep": 6,
+   "name": "proxy-vue",
+   "config": "maxopt2",
+   "score": 1082.6867986776563,
+   "wall": 0.368972459
+  },
+  {
+   "rep": 6,
+   "name": "raytrace",
+   "config": "maxopt2",
+   "score": 671.3263173093868,
+   "wall": 0.806330458
+  },
+  {
+   "rep": 6,
+   "name": "raytrace",
+   "config": "full",
+   "score": 850.3783380745258,
+   "wall": 0.555180167
+  },
+  {
+   "rep": 6,
+   "name": "raytrace-private-class-fields",
+   "config": "full",
+   "score": 596.1748420963131,
+   "wall": 0.656578792
+  },
+  {
+   "rep": 6,
+   "name": "raytrace-private-class-fields",
+   "config": "maxopt2",
+   "score": 193.5314328022459,
+   "wall": 2.616656541
+  },
+  {
+   "rep": 6,
+   "name": "raytrace-public-class-fields",
+   "config": "maxopt2",
+   "score": 592.0701359428353,
+   "wall": 0.922191542
+  },
+  {
+   "rep": 6,
+   "name": "raytrace-public-class-fields",
+   "config": "full",
+   "score": 806.4199747075961,
+   "wall": 0.568066
+  },
+  {
+   "rep": 6,
+   "name": "regexp-octane",
+   "config": "full",
+   "score": 1074.115640345298,
+   "wall": 0.564568625
+  },
+  {
+   "rep": 6,
+   "name": "regexp-octane",
+   "config": "maxopt2",
+   "score": 1059.1140209090188,
+   "wall": 0.568883166
+  },
+  {
+   "rep": 6,
+   "name": "richards",
+   "config": "maxopt2",
+   "score": 1372.922078887514,
+   "wall": 0.435171125
+  },
+  {
+   "rep": 6,
+   "name": "richards",
+   "config": "full",
+   "score": 1812.3320308554462,
+   "wall": 0.309032125
+  },
+  {
+   "rep": 6,
+   "name": "source-map-wtb",
+   "config": "full",
+   "score": 512.5782191273163,
+   "wall": 0.176796542
+  },
+  {
+   "rep": 6,
+   "name": "source-map-wtb",
+   "config": "maxopt2",
+   "score": 388.65744468952676,
+   "wall": 0.201463625
+  },
+  {
+   "rep": 6,
+   "name": "splay",
+   "config": "maxopt2",
+   "score": 307.31652914342067,
+   "wall": 1.32491925
+  },
+  {
+   "rep": 6,
+   "name": "splay",
+   "config": "full",
+   "score": 475.3042794873051,
+   "wall": 0.879964208
+  },
+  {
+   "rep": 6,
+   "name": "stanford-crypto-aes",
+   "config": "full",
+   "score": 907.2626781455698,
+   "wall": 0.549341292
+  },
+  {
+   "rep": 6,
+   "name": "stanford-crypto-aes",
+   "config": "maxopt2",
+   "score": 888.0163178702555,
+   "wall": 0.602046208
+  },
+  {
+   "rep": 6,
+   "name": "stanford-crypto-pbkdf2",
+   "config": "maxopt2",
+   "score": 1635.5929295655728,
+   "wall": 0.346061
+  },
+  {
+   "rep": 6,
+   "name": "stanford-crypto-pbkdf2",
+   "config": "full",
+   "score": 1693.5125915138776,
+   "wall": 0.318683709
+  },
+  {
+   "rep": 6,
+   "name": "stanford-crypto-sha256",
+   "config": "full",
+   "score": 1610.130506887532,
+   "wall": 0.35508425
+  },
+  {
+   "rep": 6,
+   "name": "stanford-crypto-sha256",
+   "config": "maxopt2",
+   "score": 1536.5111959192661,
+   "wall": 0.389207583
+  },
+  {
+   "rep": 6,
+   "name": "Sunspider",
+   "config": "maxopt2",
+   "score": 988.7381883136535,
+   "wall": 6.496414041
+  },
+  {
+   "rep": 6,
+   "name": "Sunspider",
+   "config": "full",
+   "score": 1292.7154448986291,
+   "wall": 4.739214958
+  },
+  {
+   "rep": 6,
+   "name": "sync-fs",
+   "config": "full",
+   "score": 638.4014535671852,
+   "wall": 0.50442575
+  },
+  {
+   "rep": 6,
+   "name": "sync-fs",
+   "config": "maxopt2",
+   "score": 492.7850734021831,
+   "wall": 0.720556334
+  },
+  {
+   "rep": 6,
+   "name": "threejs",
+   "config": "maxopt2",
+   "score": 76.29946072484854,
+   "wall": 3.867183792
+  },
+  {
+   "rep": 6,
+   "name": "threejs",
+   "config": "full",
+   "score": 73.40442156583721,
+   "wall": 3.892392542
+  },
+  {
+   "rep": 6,
+   "name": "typescript-lib",
+   "config": "full",
+   "score": 10.285995226220242,
+   "wall": 0.639281542
+  },
+  {
+   "rep": 6,
+   "name": "typescript-lib",
+   "config": "maxopt2",
+   "score": 10.387716317699994,
+   "wall": 0.641453458
+  },
+  {
+   "rep": 6,
+   "name": "UniPoker",
+   "config": "maxopt2",
+   "score": 702.9038023587058,
+   "wall": 0.804903625
+  },
+  {
+   "rep": 6,
+   "name": "UniPoker",
+   "config": "full",
+   "score": 1012.3375107076462,
+   "wall": 0.495266291
+  },
+  {
+   "rep": 6,
+   "name": "validatorjs",
+   "config": "full",
+   "score": 641.0857167270545,
+   "wall": 0.443197125
+  },
+  {
+   "rep": 6,
+   "name": "validatorjs",
+   "config": "maxopt2",
+   "score": 627.5160823595135,
+   "wall": 0.47017975
+  },
+  {
+   "rep": 6,
+   "name": "web-ssr",
+   "config": "maxopt2",
+   "score": 321.71585987535855,
+   "wall": 0.4909075
+  },
+  {
+   "rep": 6,
+   "name": "web-ssr",
+   "config": "full",
+   "score": 327.8981647495736,
+   "wall": 0.489897958
+  },
+  {
+   "rep": 6,
+   "name": "WSL",
+   "config": "full",
+   "score": 4.736301580957628,
+   "wall": 2.930570208
+  },
+  {
+   "rep": 6,
+   "name": "WSL",
+   "config": "maxopt2",
+   "score": 4.286015683471908,
+   "wall": 3.25176175
+  }
+ ]
+}

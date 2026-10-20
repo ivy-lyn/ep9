@@ -1,0 +1,43 @@
+# ep9 code owners (docs/plan/12-governance.md section 4; docs/adr/README.md section 4, P-4).
+#
+# The owner is the GitHub account that owns this repository. It is the only human on the team;
+# AI agents do the work and open their PRs from the same account. GitHub does not let a PR author
+# approve their own PR, so branch protection must NOT require code-owner review: it would block
+# every PR. This file:
+#   1. names the paths whose PRs need more than the default review (docs/plan/12-governance.md 4.2),
+#   2. is read by the review checklist and, later, by the ADR lint (cargo xtask),
+#   3. makes GitHub show the owner on these paths.
+# Syntax: paths start at the repo root; the last matching line wins; no "!" negation.
+
+# Contract crates (docs/plan/10-quality.md section 6) and ep9_platform (H28, unsafe OS code).
+# Crates that do not exist yet are listed so that they are owned from their first commit.
+/crates/ep9_value/        @Brooooooklyn
+/crates/ep9_heap/         @Brooooooklyn
+/crates/ep9_platform/     @Brooooooklyn
+/crates/ep9_bytecode/     @Brooooooklyn
+/crates/ep9_vm/           @Brooooooklyn
+/crates/ep9_frontend/     @Brooooooklyn
+/crates/ep9_masm/         @Brooooooklyn
+/crates/ep9_baseline/     @Brooooooklyn
+/crates/ep9_opt/          @Brooooooklyn
+/crates/ep9_unit/         @Brooooooklyn
+/crates/ep9_aot/          @Brooooooklyn
+/crates/ep9_facts/        @Brooooooklyn
+
+# Decisions and process
+/docs/adr/                @Brooooooklyn
+/docs/decisions-log.md    @Brooooooklyn
+/docs/PLAN.md             @Brooooooklyn
+/docs/plan/               @Brooooooklyn
+
+# Build, toolchain, CI, pins, patches and licences
+/Cargo.toml               @Brooooooklyn
+/rust-toolchain.toml      @Brooooooklyn
+/.cargo/                  @Brooooooklyn
+/.github/                 @Brooooooklyn
+/third_party/             @Brooooooklyn
+/deny.toml                @Brooooooklyn
+/.gitattributes           @Brooooooklyn
+/LICENSE-MIT              @Brooooooklyn
+/LICENSE-APACHE           @Brooooooklyn
+/THIRD-PARTY-LICENSE      @Brooooooklyn

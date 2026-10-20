@@ -1,0 +1,18 @@
+# TYPED-KERNELS (docs/plan/10-quality.md section 3)
+# Content:     nbody, richards, raytracer, deltablue (typed ports)
+# Comparators: V8 full at peak (node 24.22); ep9 T2; ep9 A4 hinted code
+# Feeds:       K-A5pre / SP-TypedBound (M7), FV3 / K-A5 (A5)
+# Rule:        V8 runs the typed ports with types stripped, in the same structure (10-quality
+#              "Same source"). Checksums must equal V8 (FP differential, H36).
+#
+# Columns: <id> <status> <source>   (format: see expectations/jitless-set.txt)
+# The typed ports do not exist in the tree yet (agents may own them, 10-quality section 6).
+# Research sources (not pins): Flow-typed sources in facebook/hermes benchmarks/ [R15];
+# the AWFY TS port of [R13].
+
+# V8 checksum -0.169193895234998 [R15].
+nbody                    TBD     -
+richards                 TBD     -
+# V8 checksum 576888 [R15].
+raytracer                TBD     -
+deltablue                TBD     -

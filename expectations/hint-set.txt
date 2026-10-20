@@ -1,0 +1,19 @@
+# HINT-SET (docs/plan/10-quality.md section 3; docs/plan/05-aot.md section 5)
+# Content:     4 groups: TypeScript compiler sources as a tsc-like run; typed AWFY port;
+#              vscode base + editor common; hono
+# Comparators: the same ep9 mode with hints off
+# Feeds:       SP-HintPrecision (A1h), K-A4H (A4)
+#
+# Columns: <id> <status> <source>   (format: see expectations/jitless-set.txt)
+# All groups need pinned sources and tools/ep9-typecheck (A1h). None is pinned today.
+# The research checkouts below were session-local clones [R13]; they are candidates, not pins.
+
+# microsoft/TypeScript src/compiler, run as a tsc-like workload. Research checkout 050880ce59e3.
+ts-compiler              TBD     -
+# Typed TS port of the AWFY Richards, DeltaBlue and NBody (+ som.ts) [R13]. Not in the tree.
+# Upstream JS: smarr/are-we-fast-yet (research checkout 74306fec1510).
+awfy-typed               TBD     -
+# microsoft/vscode src/vs/base + src/vs/editor/common. Research checkout 01bfb5147e54.
+vscode-base-editor       TBD     -
+# honojs/hono. Research checkout 5ca49b072075.
+hono                     TBD     -

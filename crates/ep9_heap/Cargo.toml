@@ -1,0 +1,17 @@
+[package]
+name = "ep9_heap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+ep9_value = { path = "../ep9_value" }
+
+# Tests only: fake cells must sit below 2^47 (H7), so the tests take them from a small cage.
+[dev-dependencies]
+ep9_platform = { path = "../ep9_platform" }
+
+[lints]
+workspace = true

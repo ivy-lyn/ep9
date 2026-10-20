@@ -1,0 +1,43 @@
+ep9: third-party code in this repository
+
+ep9's own code is licensed under "MIT OR Apache-2.0" (LICENSE-MIT, LICENSE-APACHE).
+This file lists source code that is copied or ported into this repository from
+other projects. That code keeps its own licence, given below with each entry.
+ep9 has no NOTICE file. Third-party notices live here, so Apache-2.0 section 4(d)
+adds no duty for the users of ep9's own code.
+
+Not listed here:
+- Cargo dependencies (crates.io). Release builds ship a notice file that
+  cargo-about generates from Cargo.lock (docs/plan/12-governance.md section 1).
+- Checkouts that scripts/sync-*.sh fetch into third_party/<name>/ (git-ignored).
+  They are not part of this repository and ep9 binaries do not contain them.
+
+Rules (docs/plan/12-governance.md section 1):
+- The PR that copies or ports third-party code adds its entry here.
+- Each copied or ported file keeps the original copyright and licence lines and
+  adds the line "Ported for ep9 from <project> <path> at <commit>".
+- The full licence text of each project follows its entry, once per project.
+- No crate in this repository adds its own NOTICE file.
+
+Entries
+=======
+
+(none yet, 2026-10-20)
+
+Planned entries (added by the PR that ports the code; not in the tree yet)
+==========================================================================
+
+- V8 (BSD-3-Clause): irregexp (RX1), fixed-dtoa, bignum-dtoa,
+  DoubleToRadixCString, src/bigint, Torque MathHypot (H36).
+- fdlibm (Sun notice "provided that this notice is preserved"), if any
+  fdlibm-derived file is ported.
+- pxfm 0.1.30 (BSD-3-Clause OR Apache-2.0; ep9 takes the BSD-3-Clause side):
+  seed of the correctly rounded functions in crates/ep9_math (H36).
+- CORE-MATH (MIT): algorithms of the correctly rounded functions (H36), named
+  as the origin where a ported function matches the CORE-MATH C source.
+- LLVM libc (Apache-2.0 WITH LLVM-exception): where a ported function comes
+  from it (H36).
+- libm 0.2.16 / musl (MIT): generic fmod in crates/ep9_math (H36).
+- ecmascript_atomics (MPL-2.0), only if vendored: the files stay separate,
+  keep their MPL header, and binary releases make those files' source
+  available.

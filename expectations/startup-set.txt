@@ -1,0 +1,23 @@
+# STARTUP-SET (docs/plan/10-quality.md section 3; docs/plan/07-runtime.md startup gates)
+# Content:     `ep9 -e 0`; typescript.js (9.1 MB) + 1 call; tsc on a small project
+# Comparators: node (node 24.22, third_party/shells.toml); ep9 cold source path
+# Feeds:       A1 / G13 and the M4 startup gate; G15 report
+# Measure:     wall time on the quiet machine, best of N (10-quality section 2), not instruction counts.
+#
+# Columns: <id> <status> <source>   (format: see expectations/jitless-set.txt)
+#
+# Week-1 status (2026-10-20): NOT DONE, carried to M0 week 2 (owner: AOT senior role,
+# 09-milestones section 8). All 3 entries are TBD. The sync scripts pin only git checkouts
+# (third_party/<pin>.commit); nothing pins an npm package yet, and no small tsc project is chosen.
+# Checked on 2026-10-20: the typescript@5.9.3 hash below equals `npm view typescript@5.9.3
+# dist.integrity`.
+
+# `ep9 -e 0` vs `node -e 0` (M4 exit 1). Missing: `ep9 -e` (ep9 has no script mode yet).
+ep9-e-0                  TBD     -
+# lib/typescript.js of TypeScript 5.9.3 (9.1 MB) loaded, then one transpileModule call [R10].
+# Missing: the pin. Candidate: npm typescript@5.9.3
+# (sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==).
+typescript-js-1-call     TBD     -
+# tsc on a small project: 278 lines plus 55k DOM library lines, about 0.36 s on node [R15].
+# Missing: pins for the compiler and the project.
+tsc/small-project        TBD     -

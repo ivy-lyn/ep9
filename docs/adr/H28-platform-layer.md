@@ -1,0 +1,88 @@
+# H28: Platform layer
+
+| Field | Value |
+|---|---|
+| Status | Draft (2026-10-20) |
+| Fix by | M0 wk1-3 |
+| Freeze point | M1 exit |
+| Origin | v1#26; plan status U (unchanged; unit parts added in A2) |
+| Crates | `ep9_platform` (VA reserve, MAP_JIT/W^X under `jit`, stack bounds, signals/SEH, spill trampolines, unwind registration) |
+| Owner (plan role) | JIT/platform lead |
+| Validated by | SP-JIT-mem (M0 wk3); SP-GC Win64 trampoline (M0 wk2); SP-VA (M0 wk2) |
+| Plan sources | [02 §6 H28](../plan/02-architecture.md#6-hard-to-change-decisions-h1-h37), [08 §2](../plan/08-repo.md#2-crates), [04 §5](../plan/04-execution.md#5-jit-infrastructure-and-the-relocatable-macroassembler), [03 §2](../plan/03-gc.md#2-roots) |
+
+## Context
+
+- D2 (taken 2026-10-20): 4 tier-1 targets from week 1: macOS arm64, Linux x64, Linux arm64, Windows x64 ([decisions log](../decisions-log.md)).
+- Windows differs in the places that are hardest to retrofit: callee-saved registers for CSS (rsi, rdi, xmm6-xmm15), SEH unwind registration for JIT code, and VirtualAlloc reserve/commit semantics [R09].
+- No research report covered Windows on the engine side; the critic listed it as a missing topic that constrains early design [R09].
+- Risks: RK24 (Windows diverges), RK25 (Win64 passes only 4 register arguments).
+
+## Decision
+
+Win64 spill trampoline, SEH unwind registration and VirtualAlloc in `ep9_platform` from M0. Plus unit mapping and unwind registration on 4 targets (A2).
+
+| Concern | macOS arm64 | Linux x64 / arm64 | Windows x64 | When |
+|---|---|---|---|---|
+| VA reserve (cage + code range, H7) | mmap | mmap | VirtualAlloc | M0 wk2 (SP-VA) |
+| CSS spill trampoline (H10) | aarch64: x19-x28, fp, lr, d8-d15 | SysV x64: rbx, rbp, r12-r15; arm64 as macOS | Win64: SysV set + rsi, rdi, xmm6-xmm15 | M0 wk2 (SP-GC) |
+| Executable memory (`jit`) | `MAP_JIT`, `pthread_jit_write_protect_np`, `sys_icache_invalidate` | dual mapping or mprotect | VirtualAlloc | M0 wk3 (SP-JIT-mem) |
+| Unwind info for generated code | DWARF CFI | DWARF CFI | `RtlAddGrowableFunctionTable` (SEH) | M0 wk3 (SP-JIT-mem) |
+| Unit mapping + unwind registration (H35) | blob or `.o` | blob or `.o` | blob or `.o` | A2 |
+
+- Each cell copies 03 §2 and 04 §5. `ep9_platform` owns all of them ([08 §2](../plan/08-repo.md#2-crates)).
+
+## Rules
+
+| Rule | Check | From |
+|---|---|---|
+| All platform calls (VA, W^X, unwind, signals/SEH, stack bounds) live in `ep9_platform` | Crate review; `unsafe` only in reviewed crates | M0 |
+| CI builds and tests all 4 targets from week 1 | CI matrix | M0 wk1 |
+| Generated code can be called, unwound and backtraced on all 4 targets | SP-JIT-mem | M0 wk3 |
+| Win64 spill trampoline finds every live object | SP-GC on Win64 | M0 wk2 |
+| Units register unwind info on load and remove it on unload | A2 gate: exceptions and Error.stack through AOT frames | A2 |
+
+## Consequences
+
+- **Gains.** No late CSS or unwind rework for Windows. The jitless build reuses the same layer without the `jit` parts.
+- **Costs.** About 1-3 PM for the Win64 trampoline, SEH and VirtualAlloc (D2: dropping Windows would save it). Windows CI time from week 1.
+  - Windows x64 must stay within 10% of Linux x64 on speed gates (est.) from M2 (G10).
+- **Follow-ups.**
+  - H15: ≤ 4 handler arguments, because Win64 passes only 4 integer arguments in registers.
+  - D16 = yes would add iOS arm64 (static `.o` units, no JIT) through this layer (11-decisions "Affects": D16 → D2, H28, H35).
+  - `ep9 check` and ep9-typecheck stay unix-only until SP-tsrs-win passes (G10).
+
+## Evidence
+
+| Tag | Claim used here | Link |
+|---|---|---|
+| [R09] | Windows matrix: Win64 callee-saved set differs; JIT code needs SEH unwind registration; VirtualAlloc semantics differ; MMTk has no Windows support | [09-critic.md](../research/09-critic.md) |
+| [R06] | macOS MAP_JIT + per-thread W^X toggle works for an unsigned Rust binary; a toggle pair costs about 23 ns | [06-execution-tiers.md](../research/06-execution-tiers.md) |
+| [R05] | aarch64 callee-saved spill set for the CSS trampoline | [05-gc-design.md](../research/05-gc-design.md) |
+| [P1] | Plan v1 probe: a 5th handler argument breaks the tail call on Win64. SP-Dispatch checks it again | Session-local |
+
+## Validation
+
+- **SP-JIT-mem** ([09 §4](../plan/09-milestones.md#4-spikes), M0 wk3, JIT/platform lead): one generated function per target; toggle W^X; call it, unwind and take a backtrace (DWARF CFI; `RtlAddGrowableFunctionTable`) on all 4 targets. On fail it reopens H28 and H27.
+- **SP-GC** (M0 wk2): spill trampolines for a64, SysV and Win64. **SP-VA** (M0 wk2): cage and code range on 4 targets.
+- A2 gate: a unit with stub calls loads as blob and `.o` on 4 targets; exceptions and Error.stack through AOT frames.
+
+## Open questions
+
+| ID | Question | Needed by | Proposed default |
+|---|---|---|---|
+| H28-Q1 | Linux executable memory: dual mapping or mprotect. The plan allows both | SP-JIT-mem (M0 wk3) | Measure both in SP-JIT-mem |
+| H28-Q2 | Linux arm64 and Windows x64 cannot run on the dev host (macOS arm64). They run only on CI runners. When do CI runners for all 4 targets exist? | M0 wk1 check ("CI green on 4 targets") | CI owner reports it |
+| H28-Q3 | Signal and SEH handling policy (stack overflow, interrupts) belongs to H23 limits; which parts live here | H23 ADR (M0 wk3) | Mechanism here, policy in H23 |
+
+## Reopens if
+
+- SP-JIT-mem fails on any tier-1 target (09 §4 names H28 and H27).
+- SP-GC fails on Win64 or SP-VA fails on Windows.
+- D2 changes (drop Windows, add Windows arm64) or D16 = yes (iOS) or D5 = WebAssembly in v1 (11-decisions "Affects" for D2, D5 and D16 include H28).
+
+## Change log
+
+| Date | Change kind | Change | By |
+|---|---|---|---|
+| 2026-10-20 | draft | First draft from 02 §6, 03 §2, 04 §5 and 08 §2 (M0 wk1 list) | ADR agent |

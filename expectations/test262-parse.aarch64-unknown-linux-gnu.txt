@@ -1,0 +1,9 @@
+# ep9-test262 parse: known failures on aarch64-unknown-linux-gnu. Paths are relative to the test262 root.
+# Regenerate: cargo run --release -p ep9_test262 -- parse --update-expectations
+test/annexB/language/expressions/assignmenttargettype/callexpression-as-for-in-lhs.js
+test/annexB/language/expressions/assignmenttargettype/callexpression-as-for-of-lhs.js
+test/annexB/language/expressions/assignmenttargettype/callexpression-in-compound-assignment.js
+test/annexB/language/expressions/assignmenttargettype/callexpression-in-postfix-update.js
+test/annexB/language/expressions/assignmenttargettype/callexpression-in-prefix-update.js
+test/annexB/language/expressions/assignmenttargettype/callexpression.js
+test/annexB/language/expressions/assignmenttargettype/cover-callexpression-and-asyncarrowhead.js

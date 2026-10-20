@@ -1,0 +1,16 @@
+# Build output
+/target/
+/spikes/*/target/
+
+# Dependency checkouts made by scripts/sync-*.sh. The pins (third_party/*.commit)
+# and the patches (third_party/patches/) stay tracked.
+/third_party/*/
+!/third_party/patches/
+
+# ep9-typecheck builds in its own workspace; sync-tsrs.sh writes its lock (08-repo section 5)
+/tools/ep9-typecheck/target/
+/tools/ep9-typecheck/Cargo.lock
+
+# Research harness output
+/docs/research/artifacts/**/target/
+/docs/research/artifacts/**/out/

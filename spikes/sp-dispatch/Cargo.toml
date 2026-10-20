@@ -1,0 +1,43 @@
+[package]
+name = "sp-dispatch"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+description = "SP-Dispatch spike (M0 week 2, throwaway): one opcode DSL, three dispatch expansions"
+
+# Own workspace. The root workspace excludes spikes/ (docs/plan/08-repo.md section 1).
+[workspace]
+
+[lib]
+name = "sp_dispatch"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sp-dispatch"
+path = "src/main.rs"
+
+[features]
+# (c) nightly `become` expansion. Build: cargo +nightly-2026-10-04 build --release --features become
+become = []
+# A/B only: run cold blocks inside the fast handlers (runtime calls on the fast path).
+cold-inline = []
+# Negative tests for the checks. A gate run never enables them.
+# A 5th handler argument. The DSL static check must reject it at compile time.
+neg-five-args = []
+# With neg-five-args: turn off the static check, so the IR and disassembly checks see 5-argument code.
+neg-skip-arg-check = []
+# One handler passes the address of a local to an opaque call. This breaks the sibling call.
+neg-escape = []
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
+# Same as the root workspace release profile (docs/plan/08-repo.md section 4).
+[profile.release]
+lto = "fat"
+codegen-units = 1
+debug = "line-tables-only"

@@ -1,0 +1,3154 @@
+{
+ "started": "2026-10-20T13:13:39.265Z",
+ "finished": "2026-10-20T13:17:52.910Z",
+ "host": {
+  "platform": "darwin",
+  "arch": "arm64",
+  "cpus": 18,
+  "node": "v24.22.0"
+ },
+ "loadavg_after_each_rep": [
+  [
+   23.0537109375,
+   24.17626953125,
+   26.87060546875
+  ],
+  [
+   19.5322265625,
+   22.6630859375,
+   26.00634765625
+  ],
+  [
+   21.09423828125,
+   22.16943359375,
+   25.47998046875
+  ],
+  [
+   11.96240234375,
+   19.5185546875,
+   24.203125
+  ]
+ ],
+ "jetstream_commit": "06785cf861ac44855f168cbbe829278c2802e6de",
+ "list": "expectations/jetstream-m7.txt",
+ "reps": 3,
+ "configs": [
+  {
+   "name": "d8full",
+   "engine": "third_party/shells/d8-15.8.24/home/.jsvu/engines/v8-15.8.24/v8-15.8.24",
+   "flags": [],
+   "cliFlags": []
+  },
+  {
+   "name": "d8maxopt2",
+   "engine": "third_party/shells/d8-15.8.24/home/.jsvu/engines/v8-15.8.24/v8-15.8.24",
+   "flags": [
+    "--max-opt=2"
+   ],
+   "cliFlags": []
+  }
+ ],
+ "summary": {
+  "d8full": {
+   "workloads": 63,
+   "geomean_score": 532.7469824454565,
+   "ratio_vs_first": 1
+  },
+  "d8maxopt2": {
+   "workloads": 63,
+   "geomean_score": 472.80611451114385,
+   "ratio_vs_first": 0.8874871751329924
+  }
+ },
+ "table": [
+  {
+   "name": "acorn-wtb",
+   "d8full": 127.99508479052847,
+   "d8full_n": 3,
+   "d8maxopt2": 104.45552219807485,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "ai-astar",
+   "d8full": 1459.9252494567454,
+   "d8full_n": 3,
+   "d8maxopt2": 1396.5503208130897,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "Air",
+   "d8full": 1178.704456669798,
+   "d8full_n": 3,
+   "d8maxopt2": 1179.0185599651088,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "async-fs",
+   "d8full": 732.6995121066034,
+   "d8full_n": 3,
+   "d8maxopt2": 642.326902843156,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "babel-minify-wtb",
+   "d8full": 206.92519649193108,
+   "d8full_n": 3,
+   "d8maxopt2": 191.23858570770815,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "babel-wtb",
+   "d8full": 259.08475598658964,
+   "d8full_n": 3,
+   "d8maxopt2": 249.7333832911685,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "Babylon",
+   "d8full": 1985.9865278883494,
+   "d8full_n": 3,
+   "d8maxopt2": 1715.9554311837974,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "babylon-wtb",
+   "d8full": 181.53069845903732,
+   "d8full_n": 3,
+   "d8maxopt2": 160.32282343805446,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "babylonjs-scene-es6",
+   "d8full": 109.8518983203049,
+   "d8full_n": 3,
+   "d8maxopt2": 110.7419076086754,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "babylonjs-startup-es6",
+   "d8full": 43.52551634374954,
+   "d8full_n": 3,
+   "d8maxopt2": 43.3388980807031,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "Basic",
+   "d8full": 1921.7783161452596,
+   "d8full_n": 3,
+   "d8maxopt2": 1604.5620730136584,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "bigint-noble-ed25519",
+   "d8full": 302.09891127551174,
+   "d8full_n": 3,
+   "d8maxopt2": 294.1476998712101,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "Box2D",
+   "d8full": 946.9078577282926,
+   "d8full_n": 3,
+   "d8maxopt2": 926.6551177758951,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "cdjs",
+   "d8full": 518.1798231455143,
+   "d8full_n": 3,
+   "d8maxopt2": 381.36154919889805,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "chai-wtb",
+   "d8full": 446.3792919452701,
+   "d8full_n": 3,
+   "d8maxopt2": 442.16834256003847,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "crypto",
+   "d8full": 2267.670666698039,
+   "d8full_n": 3,
+   "d8maxopt2": 1311.888284875773,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "delta-blue",
+   "d8full": 2918.0260806980914,
+   "d8full_n": 3,
+   "d8maxopt2": 2273.1375230171716,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "doxbee-async",
+   "d8full": 1508.3260456935993,
+   "d8full_n": 3,
+   "d8maxopt2": 1210.490439919752,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "doxbee-promise",
+   "d8full": 917.268572671464,
+   "d8full_n": 3,
+   "d8maxopt2": 950.9043662570402,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "earley-boyer",
+   "d8full": 1538.9468656046206,
+   "d8full_n": 3,
+   "d8maxopt2": 1449.4737834440182,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "espree-wtb",
+   "d8full": 197.5378206691348,
+   "d8full_n": 3,
+   "d8maxopt2": 146.3037411706926,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "esprima-next-wtb",
+   "d8full": 174.18166384055132,
+   "d8full_n": 3,
+   "d8maxopt2": 165.52567186891352,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "first-inspector-code-load",
+   "d8full": 453.5374465991893,
+   "d8full_n": 3,
+   "d8maxopt2": 433.0165373266235,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "FlightPlanner",
+   "d8full": 1760.2275729807495,
+   "d8full_n": 3,
+   "d8maxopt2": 1421.1686437063595,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "gaussian-blur",
+   "d8full": 885.5182086332753,
+   "d8full_n": 3,
+   "d8maxopt2": 656.3011356102547,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "gbemu",
+   "d8full": 312.926870956957,
+   "d8full_n": 3,
+   "d8maxopt2": 267.0424770075225,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "hash-map",
+   "d8full": 1376.5674908679828,
+   "d8full_n": 3,
+   "d8maxopt2": 857.8400583700077,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "js-tokens",
+   "d8full": 618.279778597324,
+   "d8full_n": 3,
+   "d8maxopt2": 657.7813622580773,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "jsdom-d3-startup",
+   "d8full": 33.92361072886146,
+   "d8full_n": 3,
+   "d8maxopt2": 34.886300666571024,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "json-parse-inspector",
+   "d8full": 587.1211160989743,
+   "d8full_n": 3,
+   "d8maxopt2": 583.3356531660132,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "json-stringify-inspector",
+   "d8full": 1342.4103392652316,
+   "d8full_n": 3,
+   "d8maxopt2": 1277.5118370837774,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "lazy-collections",
+   "d8full": 535.5874398060557,
+   "d8full_n": 3,
+   "d8maxopt2": 471.9807668963987,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "mandreel",
+   "d8full": 282.36863000746825,
+   "d8full_n": 3,
+   "d8maxopt2": 207.85931848249135,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "ML",
+   "d8full": 271.7224505458305,
+   "d8full_n": 3,
+   "d8maxopt2": 219.64806902822045,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "mobx-startup",
+   "d8full": 366.1588351542457,
+   "d8full_n": 3,
+   "d8maxopt2": 362.0949014676298,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "multi-inspector-code-load",
+   "d8full": 692.424292807423,
+   "d8full_n": 3,
+   "d8maxopt2": 693.9006499456806,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "navier-stokes",
+   "d8full": 1584.1169621770746,
+   "d8full_n": 3,
+   "d8maxopt2": 1293.3667029874734,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "octane-code-load",
+   "d8full": 2134.486446141076,
+   "d8full_n": 3,
+   "d8maxopt2": 2094.7944023099167,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "OfflineAssembler",
+   "d8full": 496.47156199761844,
+   "d8full_n": 3,
+   "d8maxopt2": 454.3286019141078,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "pdfjs",
+   "d8full": 487.0435755444817,
+   "d8full_n": 3,
+   "d8maxopt2": 459.77131790415024,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "postcss-wtb",
+   "d8full": 66.82019659196463,
+   "d8full_n": 3,
+   "d8maxopt2": 66.15177697506847,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "prettier-wtb",
+   "d8full": 155.17779329091812,
+   "d8full_n": 3,
+   "d8maxopt2": 149.53361165905523,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "prismjs-startup-es6",
+   "d8full": 737.8468784578636,
+   "d8full_n": 3,
+   "d8maxopt2": 754.1010005439771,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "proxy-mobx",
+   "d8full": 2389.8528502941526,
+   "d8full_n": 3,
+   "d8maxopt2": 2376.802571689702,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "proxy-vue",
+   "d8full": 1518.0469597671802,
+   "d8full_n": 3,
+   "d8maxopt2": 1381.2535520459437,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "raytrace",
+   "d8full": 1088.9530872602197,
+   "d8full_n": 3,
+   "d8maxopt2": 698.1982750953165,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "raytrace-private-class-fields",
+   "d8full": 825.323838717166,
+   "d8full_n": 3,
+   "d8maxopt2": 450.2149616023037,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "raytrace-public-class-fields",
+   "d8full": 922.2724514445705,
+   "d8full_n": 3,
+   "d8maxopt2": 486.675135891279,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "regexp-octane",
+   "d8full": 1055.4080503776133,
+   "d8full_n": 3,
+   "d8maxopt2": 1095.0463676766228,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "richards",
+   "d8full": 1441.2271721488576,
+   "d8full_n": 3,
+   "d8maxopt2": 1312.5573422055083,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "source-map-wtb",
+   "d8full": 555.9360972432007,
+   "d8full_n": 3,
+   "d8maxopt2": 601.2653864971344,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "splay",
+   "d8full": 589.0833207778065,
+   "d8full_n": 3,
+   "d8maxopt2": 570.8274756780264,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "stanford-crypto-aes",
+   "d8full": 908.3982377164422,
+   "d8full_n": 3,
+   "d8maxopt2": 770.8237340671658,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "stanford-crypto-pbkdf2",
+   "d8full": 1573.0052555499549,
+   "d8full_n": 3,
+   "d8maxopt2": 1457.6845914679022,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "stanford-crypto-sha256",
+   "d8full": 1597.4258064789815,
+   "d8full_n": 3,
+   "d8maxopt2": 1540.8432471553358,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "Sunspider",
+   "d8full": 1468.8053917478765,
+   "d8full_n": 3,
+   "d8maxopt2": 1320.2223928372352,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "sync-fs",
+   "d8full": 781.2144924637627,
+   "d8full_n": 3,
+   "d8maxopt2": 665.8059492970727,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "threejs",
+   "d8full": 109.16936933306592,
+   "d8full_n": 3,
+   "d8maxopt2": 104.59893160650059,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "typescript-lib",
+   "d8full": 13.036483903853325,
+   "d8full_n": 3,
+   "d8maxopt2": 12.456712922593987,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "UniPoker",
+   "d8full": 1530.3884879285984,
+   "d8full_n": 3,
+   "d8maxopt2": 1289.9565367725863,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "validatorjs",
+   "d8full": 700.4141590693695,
+   "d8full_n": 3,
+   "d8maxopt2": 711.3361006540716,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "web-ssr",
+   "d8full": 355.11126049601955,
+   "d8full_n": 3,
+   "d8maxopt2": 366.1374651780223,
+   "d8maxopt2_n": 3
+  },
+  {
+   "name": "WSL",
+   "d8full": 9.202906017901277,
+   "d8full_n": 3,
+   "d8maxopt2": 8.657671184620579,
+   "d8maxopt2_n": 3
+  }
+ ],
+ "runs": [
+  {
+   "rep": 0,
+   "name": "acorn-wtb",
+   "config": "d8full",
+   "score": 127.99508479052847,
+   "wall": 0.560175459
+  },
+  {
+   "rep": 0,
+   "name": "acorn-wtb",
+   "config": "d8maxopt2",
+   "score": 104.45552219807485,
+   "wall": 0.662404292
+  },
+  {
+   "rep": 0,
+   "name": "ai-astar",
+   "config": "d8maxopt2",
+   "score": 1396.5503208130897,
+   "wall": 0.39540325
+  },
+  {
+   "rep": 0,
+   "name": "ai-astar",
+   "config": "d8full",
+   "score": 1459.9252494567454,
+   "wall": 0.365888458
+  },
+  {
+   "rep": 0,
+   "name": "Air",
+   "config": "d8full",
+   "score": 1178.704456669798,
+   "wall": 0.245011875
+  },
+  {
+   "rep": 0,
+   "name": "Air",
+   "config": "d8maxopt2",
+   "score": 1179.0185599651088,
+   "wall": 0.253887708
+  },
+  {
+   "rep": 0,
+   "name": "async-fs",
+   "config": "d8maxopt2",
+   "score": 642.326902843156,
+   "wall": 0.695674792
+  },
+  {
+   "rep": 0,
+   "name": "async-fs",
+   "config": "d8full",
+   "score": 732.6995121066034,
+   "wall": 0.562457833
+  },
+  {
+   "rep": 0,
+   "name": "babel-minify-wtb",
+   "config": "d8full",
+   "score": 206.92519649193108,
+   "wall": 0.344820542
+  },
+  {
+   "rep": 0,
+   "name": "babel-minify-wtb",
+   "config": "d8maxopt2",
+   "score": 192.27806160031562,
+   "wall": 0.369963375
+  },
+  {
+   "rep": 0,
+   "name": "babel-wtb",
+   "config": "d8maxopt2",
+   "score": 260.17614530547894,
+   "wall": 0.425301417
+  },
+  {
+   "rep": 0,
+   "name": "babel-wtb",
+   "config": "d8full",
+   "score": 267.5553382970776,
+   "wall": 0.4061455
+  },
+  {
+   "rep": 0,
+   "name": "Babylon",
+   "config": "d8full",
+   "score": 2041.3712075709032,
+   "wall": 0.154711334
+  },
+  {
+   "rep": 0,
+   "name": "Babylon",
+   "config": "d8maxopt2",
+   "score": 1715.9554311837974,
+   "wall": 0.2020825
+  },
+  {
+   "rep": 0,
+   "name": "babylon-wtb",
+   "config": "d8maxopt2",
+   "score": 161.23164629452504,
+   "wall": 0.433516917
+  },
+  {
+   "rep": 0,
+   "name": "babylon-wtb",
+   "config": "d8full",
+   "score": 181.53069845903732,
+   "wall": 0.377092417
+  },
+  {
+   "rep": 0,
+   "name": "babylonjs-scene-es6",
+   "config": "d8full",
+   "score": 110.54881768417538,
+   "wall": 0.367447542
+  },
+  {
+   "rep": 0,
+   "name": "babylonjs-scene-es6",
+   "config": "d8maxopt2",
+   "score": 110.7419076086754,
+   "wall": 0.357854
+  },
+  {
+   "rep": 0,
+   "name": "babylonjs-startup-es6",
+   "config": "d8maxopt2",
+   "score": 43.3388980807031,
+   "wall": 1.239454417
+  },
+  {
+   "rep": 0,
+   "name": "babylonjs-startup-es6",
+   "config": "d8full",
+   "score": 43.52551634374954,
+   "wall": 1.245865917
+  },
+  {
+   "rep": 0,
+   "name": "Basic",
+   "config": "d8full",
+   "score": 1921.7783161452596,
+   "wall": 0.20694675
+  },
+  {
+   "rep": 0,
+   "name": "Basic",
+   "config": "d8maxopt2",
+   "score": 1604.5620730136584,
+   "wall": 0.286936375
+  },
+  {
+   "rep": 0,
+   "name": "bigint-noble-ed25519",
+   "config": "d8maxopt2",
+   "score": 294.1476998712101,
+   "wall": 0.45645925
+  },
+  {
+   "rep": 0,
+   "name": "bigint-noble-ed25519",
+   "config": "d8full",
+   "score": 302.09891127551174,
+   "wall": 0.436939208
+  },
+  {
+   "rep": 0,
+   "name": "Box2D",
+   "config": "d8full",
+   "score": 946.9078577282926,
+   "wall": 0.312924458
+  },
+  {
+   "rep": 0,
+   "name": "Box2D",
+   "config": "d8maxopt2",
+   "score": 926.6551177758951,
+   "wall": 0.332682625
+  },
+  {
+   "rep": 0,
+   "name": "cdjs",
+   "config": "d8maxopt2",
+   "score": 381.36154919889805,
+   "wall": 0.618479167
+  },
+  {
+   "rep": 0,
+   "name": "cdjs",
+   "config": "d8full",
+   "score": 518.1798231455143,
+   "wall": 0.408129542
+  },
+  {
+   "rep": 0,
+   "name": "chai-wtb",
+   "config": "d8full",
+   "score": 446.3792919452701,
+   "wall": 0.176507125
+  },
+  {
+   "rep": 0,
+   "name": "chai-wtb",
+   "config": "d8maxopt2",
+   "score": 442.16834256003847,
+   "wall": 0.178545666
+  },
+  {
+   "rep": 0,
+   "name": "crypto",
+   "config": "d8maxopt2",
+   "score": 1311.888284875773,
+   "wall": 0.406001625
+  },
+  {
+   "rep": 0,
+   "name": "crypto",
+   "config": "d8full",
+   "score": 2267.670666698039,
+   "wall": 0.166466209
+  },
+  {
+   "rep": 0,
+   "name": "delta-blue",
+   "config": "d8full",
+   "score": 2918.0260806980914,
+   "wall": 0.111480667
+  },
+  {
+   "rep": 0,
+   "name": "delta-blue",
+   "config": "d8maxopt2",
+   "score": 2273.1375230171716,
+   "wall": 0.193117333
+  },
+  {
+   "rep": 0,
+   "name": "doxbee-async",
+   "config": "d8maxopt2",
+   "score": 1210.490439919752,
+   "wall": 0.304207166
+  },
+  {
+   "rep": 0,
+   "name": "doxbee-async",
+   "config": "d8full",
+   "score": 1508.3260456935993,
+   "wall": 0.211815459
+  },
+  {
+   "rep": 0,
+   "name": "doxbee-promise",
+   "config": "d8full",
+   "score": 917.268572671464,
+   "wall": 0.476403958
+  },
+  {
+   "rep": 0,
+   "name": "doxbee-promise",
+   "config": "d8maxopt2",
+   "score": 950.9043662570402,
+   "wall": 0.472464917
+  },
+  {
+   "rep": 0,
+   "name": "earley-boyer",
+   "config": "d8maxopt2",
+   "score": 1449.4737834440182,
+   "wall": 0.311476958
+  },
+  {
+   "rep": 0,
+   "name": "earley-boyer",
+   "config": "d8full",
+   "score": 1538.9468656046206,
+   "wall": 0.258707667
+  },
+  {
+   "rep": 0,
+   "name": "espree-wtb",
+   "config": "d8full",
+   "score": 197.5378206691348,
+   "wall": 0.360117
+  },
+  {
+   "rep": 0,
+   "name": "espree-wtb",
+   "config": "d8maxopt2",
+   "score": 146.3037411706926,
+   "wall": 0.500379459
+  },
+  {
+   "rep": 0,
+   "name": "esprima-next-wtb",
+   "config": "d8maxopt2",
+   "score": 165.52567186891352,
+   "wall": 0.432482292
+  },
+  {
+   "rep": 0,
+   "name": "esprima-next-wtb",
+   "config": "d8full",
+   "score": 174.18166384055132,
+   "wall": 0.401144083
+  },
+  {
+   "rep": 0,
+   "name": "first-inspector-code-load",
+   "config": "d8full",
+   "score": 419.93978439570157,
+   "wall": 1.411456875
+  },
+  {
+   "rep": 0,
+   "name": "first-inspector-code-load",
+   "config": "d8maxopt2",
+   "score": 433.0165373266235,
+   "wall": 1.391407084
+  },
+  {
+   "rep": 0,
+   "name": "FlightPlanner",
+   "config": "d8maxopt2",
+   "score": 1421.1686437063595,
+   "wall": 0.50841525
+  },
+  {
+   "rep": 0,
+   "name": "FlightPlanner",
+   "config": "d8full",
+   "score": 1760.2275729807495,
+   "wall": 0.37622475
+  },
+  {
+   "rep": 0,
+   "name": "gaussian-blur",
+   "config": "d8full",
+   "score": 885.5182086332753,
+   "wall": 0.561484625
+  },
+  {
+   "rep": 0,
+   "name": "gaussian-blur",
+   "config": "d8maxopt2",
+   "score": 656.3011356102547,
+   "wall": 0.806498375
+  },
+  {
+   "rep": 0,
+   "name": "gbemu",
+   "config": "d8maxopt2",
+   "score": 265.3305060235472,
+   "wall": 1.383032125
+  },
+  {
+   "rep": 0,
+   "name": "gbemu",
+   "config": "d8full",
+   "score": 312.926870956957,
+   "wall": 1.186226541
+  },
+  {
+   "rep": 0,
+   "name": "hash-map",
+   "config": "d8full",
+   "score": 1376.5674908679828,
+   "wall": 0.270630916
+  },
+  {
+   "rep": 0,
+   "name": "hash-map",
+   "config": "d8maxopt2",
+   "score": 890.3424075138935,
+   "wall": 0.559319708
+  },
+  {
+   "rep": 0,
+   "name": "js-tokens",
+   "config": "d8maxopt2",
+   "score": 657.7813622580773,
+   "wall": 0.79788125
+  },
+  {
+   "rep": 0,
+   "name": "js-tokens",
+   "config": "d8full",
+   "score": 618.279778597324,
+   "wall": 0.840055958
+  },
+  {
+   "rep": 0,
+   "name": "jsdom-d3-startup",
+   "config": "d8full",
+   "score": 33.92361072886146,
+   "wall": 2.188721375
+  },
+  {
+   "rep": 0,
+   "name": "jsdom-d3-startup",
+   "config": "d8maxopt2",
+   "score": 35.31998713045246,
+   "wall": 2.201584167
+  },
+  {
+   "rep": 0,
+   "name": "json-parse-inspector",
+   "config": "d8maxopt2",
+   "score": 583.3356531660132,
+   "wall": 0.278196667
+  },
+  {
+   "rep": 0,
+   "name": "json-parse-inspector",
+   "config": "d8full",
+   "score": 580.6899152463421,
+   "wall": 0.275106792
+  },
+  {
+   "rep": 0,
+   "name": "json-stringify-inspector",
+   "config": "d8full",
+   "score": 1241.1970437280215,
+   "wall": 0.184900958
+  },
+  {
+   "rep": 0,
+   "name": "json-stringify-inspector",
+   "config": "d8maxopt2",
+   "score": 1277.5118370837774,
+   "wall": 0.187593833
+  },
+  {
+   "rep": 0,
+   "name": "lazy-collections",
+   "config": "d8maxopt2",
+   "score": 461.4893332083293,
+   "wall": 1.156560834
+  },
+  {
+   "rep": 0,
+   "name": "lazy-collections",
+   "config": "d8full",
+   "score": 521.4307873736717,
+   "wall": 0.967942
+  },
+  {
+   "rep": 0,
+   "name": "mandreel",
+   "config": "d8full",
+   "score": 282.36863000746825,
+   "wall": 1.181534041
+  },
+  {
+   "rep": 0,
+   "name": "mandreel",
+   "config": "d8maxopt2",
+   "score": 195.4592376592726,
+   "wall": 1.761874959
+  },
+  {
+   "rep": 0,
+   "name": "ML",
+   "config": "d8maxopt2",
+   "score": 219.64806902822045,
+   "wall": 1.289562875
+  },
+  {
+   "rep": 0,
+   "name": "ML",
+   "config": "d8full",
+   "score": 271.7224505458305,
+   "wall": 0.972986875
+  },
+  {
+   "rep": 0,
+   "name": "mobx-startup",
+   "config": "d8full",
+   "score": 366.1588351542457,
+   "wall": 0.399886875
+  },
+  {
+   "rep": 0,
+   "name": "mobx-startup",
+   "config": "d8maxopt2",
+   "score": 362.0949014676298,
+   "wall": 0.401080583
+  },
+  {
+   "rep": 0,
+   "name": "multi-inspector-code-load",
+   "config": "d8maxopt2",
+   "score": 691.294818985465,
+   "wall": 0.27808525
+  },
+  {
+   "rep": 0,
+   "name": "multi-inspector-code-load",
+   "config": "d8full",
+   "score": 684.8264766725499,
+   "wall": 0.286952167
+  },
+  {
+   "rep": 0,
+   "name": "navier-stokes",
+   "config": "d8full",
+   "score": 1583.7133661691478,
+   "wall": 0.255182667
+  },
+  {
+   "rep": 0,
+   "name": "navier-stokes",
+   "config": "d8maxopt2",
+   "score": 1293.3667029874734,
+   "wall": 0.391729958
+  },
+  {
+   "rep": 0,
+   "name": "octane-code-load",
+   "config": "d8maxopt2",
+   "score": 2094.7944023099167,
+   "wall": 0.23438075
+  },
+  {
+   "rep": 0,
+   "name": "octane-code-load",
+   "config": "d8full",
+   "score": 2075.190836283522,
+   "wall": 0.234007666
+  },
+  {
+   "rep": 0,
+   "name": "OfflineAssembler",
+   "config": "d8full",
+   "score": 472.6919235109122,
+   "wall": 0.628749625
+  },
+  {
+   "rep": 0,
+   "name": "OfflineAssembler",
+   "config": "d8maxopt2",
+   "score": 443.4896899261998,
+   "wall": 0.715138667
+  },
+  {
+   "rep": 0,
+   "name": "pdfjs",
+   "config": "d8maxopt2",
+   "score": 459.77131790415024,
+   "wall": 0.89775675
+  },
+  {
+   "rep": 0,
+   "name": "pdfjs",
+   "config": "d8full",
+   "score": 466.7269594044583,
+   "wall": 0.82420525
+  },
+  {
+   "rep": 0,
+   "name": "postcss-wtb",
+   "config": "d8full",
+   "score": 65.16212506827137,
+   "wall": 1.085423708
+  },
+  {
+   "rep": 0,
+   "name": "postcss-wtb",
+   "config": "d8maxopt2",
+   "score": 64.31407167317204,
+   "wall": 1.132135083
+  },
+  {
+   "rep": 0,
+   "name": "prettier-wtb",
+   "config": "d8maxopt2",
+   "score": 149.53361165905523,
+   "wall": 0.448430375
+  },
+  {
+   "rep": 0,
+   "name": "prettier-wtb",
+   "config": "d8full",
+   "score": 155.17779329091812,
+   "wall": 0.411720875
+  },
+  {
+   "rep": 0,
+   "name": "prismjs-startup-es6",
+   "config": "d8full",
+   "score": 737.8468784578636,
+   "wall": 0.605286417
+  },
+  {
+   "rep": 0,
+   "name": "prismjs-startup-es6",
+   "config": "d8maxopt2",
+   "score": 754.1010005439771,
+   "wall": 0.595968667
+  },
+  {
+   "rep": 0,
+   "name": "proxy-mobx",
+   "config": "d8maxopt2",
+   "score": 2376.802571689702,
+   "wall": 0.331260333
+  },
+  {
+   "rep": 0,
+   "name": "proxy-mobx",
+   "config": "d8full",
+   "score": 2389.8528502941526,
+   "wall": 0.291258375
+  },
+  {
+   "rep": 0,
+   "name": "proxy-vue",
+   "config": "d8full",
+   "score": 1549.756002344963,
+   "wall": 0.260347959
+  },
+  {
+   "rep": 0,
+   "name": "proxy-vue",
+   "config": "d8maxopt2",
+   "score": 1381.2535520459437,
+   "wall": 0.298451833
+  },
+  {
+   "rep": 0,
+   "name": "raytrace",
+   "config": "d8maxopt2",
+   "score": 698.1982750953165,
+   "wall": 0.768704084
+  },
+  {
+   "rep": 0,
+   "name": "raytrace",
+   "config": "d8full",
+   "score": 1088.9530872602197,
+   "wall": 0.395524833
+  },
+  {
+   "rep": 0,
+   "name": "raytrace-private-class-fields",
+   "config": "d8full",
+   "score": 825.323838717166,
+   "wall": 0.469372042
+  },
+  {
+   "rep": 0,
+   "name": "raytrace-private-class-fields",
+   "config": "d8maxopt2",
+   "score": 450.2149616023037,
+   "wall": 1.169788
+  },
+  {
+   "rep": 0,
+   "name": "raytrace-public-class-fields",
+   "config": "d8maxopt2",
+   "score": 486.675135891279,
+   "wall": 1.1118025
+  },
+  {
+   "rep": 0,
+   "name": "raytrace-public-class-fields",
+   "config": "d8full",
+   "score": 922.2724514445705,
+   "wall": 0.435055208
+  },
+  {
+   "rep": 0,
+   "name": "regexp-octane",
+   "config": "d8full",
+   "score": 917.6437215451595,
+   "wall": 0.56097925
+  },
+  {
+   "rep": 0,
+   "name": "regexp-octane",
+   "config": "d8maxopt2",
+   "score": 1095.0463676766228,
+   "wall": 0.526109334
+  },
+  {
+   "rep": 0,
+   "name": "richards",
+   "config": "d8maxopt2",
+   "score": 1291.5984919834555,
+   "wall": 0.414379042
+  },
+  {
+   "rep": 0,
+   "name": "richards",
+   "config": "d8full",
+   "score": 1441.2271721488576,
+   "wall": 0.358362125
+  },
+  {
+   "rep": 0,
+   "name": "source-map-wtb",
+   "config": "d8full",
+   "score": 555.9360972432007,
+   "wall": 0.148924958
+  },
+  {
+   "rep": 0,
+   "name": "source-map-wtb",
+   "config": "d8maxopt2",
+   "score": 601.2653864971344,
+   "wall": 0.147088708
+  },
+  {
+   "rep": 0,
+   "name": "splay",
+   "config": "d8maxopt2",
+   "score": 507.43712912735174,
+   "wall": 0.892109083
+  },
+  {
+   "rep": 0,
+   "name": "splay",
+   "config": "d8full",
+   "score": 589.0833207778065,
+   "wall": 0.819141208
+  },
+  {
+   "rep": 0,
+   "name": "stanford-crypto-aes",
+   "config": "d8full",
+   "score": 908.3982377164422,
+   "wall": 0.541577333
+  },
+  {
+   "rep": 0,
+   "name": "stanford-crypto-aes",
+   "config": "d8maxopt2",
+   "score": 741.8586636664613,
+   "wall": 0.662528584
+  },
+  {
+   "rep": 0,
+   "name": "stanford-crypto-pbkdf2",
+   "config": "d8maxopt2",
+   "score": 1341.5079451361732,
+   "wall": 0.357375166
+  },
+  {
+   "rep": 0,
+   "name": "stanford-crypto-pbkdf2",
+   "config": "d8full",
+   "score": 1477.8341928391317,
+   "wall": 0.338575541
+  },
+  {
+   "rep": 0,
+   "name": "stanford-crypto-sha256",
+   "config": "d8full",
+   "score": 1539.0605899578088,
+   "wall": 0.344850583
+  },
+  {
+   "rep": 0,
+   "name": "stanford-crypto-sha256",
+   "config": "d8maxopt2",
+   "score": 1463.970907733604,
+   "wall": 0.365966958
+  },
+  {
+   "rep": 0,
+   "name": "Sunspider",
+   "config": "d8maxopt2",
+   "score": 1224.2944516963146,
+   "wall": 5.205039125
+  },
+  {
+   "rep": 0,
+   "name": "Sunspider",
+   "config": "d8full",
+   "score": 1401.136046223015,
+   "wall": 4.10931925
+  },
+  {
+   "rep": 0,
+   "name": "sync-fs",
+   "config": "d8full",
+   "score": 727.7107123082093,
+   "wall": 0.43724725
+  },
+  {
+   "rep": 0,
+   "name": "sync-fs",
+   "config": "d8maxopt2",
+   "score": 601.4516011785904,
+   "wall": 0.5886325
+  },
+  {
+   "rep": 0,
+   "name": "threejs",
+   "config": "d8maxopt2",
+   "score": 104.59893160650059,
+   "wall": 2.605435917
+  },
+  {
+   "rep": 0,
+   "name": "threejs",
+   "config": "d8full",
+   "score": 104.24359007535696,
+   "wall": 2.589423625
+  },
+  {
+   "rep": 0,
+   "name": "typescript-lib",
+   "config": "d8full",
+   "score": 11.90297645829316,
+   "wall": 0.64911775
+  },
+  {
+   "rep": 0,
+   "name": "typescript-lib",
+   "config": "d8maxopt2",
+   "score": 10.82633050188703,
+   "wall": 0.644345208
+  },
+  {
+   "rep": 0,
+   "name": "UniPoker",
+   "config": "d8maxopt2",
+   "score": 1289.9565367725863,
+   "wall": 0.392273375
+  },
+  {
+   "rep": 0,
+   "name": "UniPoker",
+   "config": "d8full",
+   "score": 1384.3509919376972,
+   "wall": 0.32852475
+  },
+  {
+   "rep": 0,
+   "name": "validatorjs",
+   "config": "d8full",
+   "score": 660.1488442644567,
+   "wall": 0.442044583
+  },
+  {
+   "rep": 0,
+   "name": "validatorjs",
+   "config": "d8maxopt2",
+   "score": 678.3458189511265,
+   "wall": 0.430796917
+  },
+  {
+   "rep": 0,
+   "name": "web-ssr",
+   "config": "d8maxopt2",
+   "score": 345.737090515077,
+   "wall": 0.460326
+  },
+  {
+   "rep": 0,
+   "name": "web-ssr",
+   "config": "d8full",
+   "score": 322.7262308006043,
+   "wall": 0.481959042
+  },
+  {
+   "rep": 0,
+   "name": "WSL",
+   "config": "d8full",
+   "score": 8.283196137122452,
+   "wall": 2.115486292
+  },
+  {
+   "rep": 0,
+   "name": "WSL",
+   "config": "d8maxopt2",
+   "score": 7.603527666746981,
+   "wall": 2.246217458
+  },
+  {
+   "rep": 1,
+   "name": "acorn-wtb",
+   "config": "d8maxopt2",
+   "score": 97.00366112082187,
+   "wall": 0.727954459
+  },
+  {
+   "rep": 1,
+   "name": "acorn-wtb",
+   "config": "d8full",
+   "score": 116.52919437754655,
+   "wall": 0.562706708
+  },
+  {
+   "rep": 1,
+   "name": "ai-astar",
+   "config": "d8full",
+   "score": 1297.2084161516632,
+   "wall": 0.403330375
+  },
+  {
+   "rep": 1,
+   "name": "ai-astar",
+   "config": "d8maxopt2",
+   "score": 1325.4985487867552,
+   "wall": 0.422498708
+  },
+  {
+   "rep": 1,
+   "name": "Air",
+   "config": "d8maxopt2",
+   "score": 1151.8857660052051,
+   "wall": 0.256632125
+  },
+  {
+   "rep": 1,
+   "name": "Air",
+   "config": "d8full",
+   "score": 1067.2671965055758,
+   "wall": 0.257281541
+  },
+  {
+   "rep": 1,
+   "name": "async-fs",
+   "config": "d8full",
+   "score": 650.0284689544981,
+   "wall": 0.62955775
+  },
+  {
+   "rep": 1,
+   "name": "async-fs",
+   "config": "d8maxopt2",
+   "score": 637.2063735510327,
+   "wall": 0.708212792
+  },
+  {
+   "rep": 1,
+   "name": "babel-minify-wtb",
+   "config": "d8maxopt2",
+   "score": 165.01446744627245,
+   "wall": 0.429967209
+  },
+  {
+   "rep": 1,
+   "name": "babel-minify-wtb",
+   "config": "d8full",
+   "score": 170.57150537242603,
+   "wall": 0.409140709
+  },
+  {
+   "rep": 1,
+   "name": "babel-wtb",
+   "config": "d8full",
+   "score": 220.89341809419807,
+   "wall": 0.493178666
+  },
+  {
+   "rep": 1,
+   "name": "babel-wtb",
+   "config": "d8maxopt2",
+   "score": 204.15628743835313,
+   "wall": 0.515126292
+  },
+  {
+   "rep": 1,
+   "name": "Babylon",
+   "config": "d8maxopt2",
+   "score": 1570.0051659912106,
+   "wall": 0.223894792
+  },
+  {
+   "rep": 1,
+   "name": "Babylon",
+   "config": "d8full",
+   "score": 1647.04945490477,
+   "wall": 0.175181084
+  },
+  {
+   "rep": 1,
+   "name": "babylon-wtb",
+   "config": "d8full",
+   "score": 161.43239186769046,
+   "wall": 0.430853875
+  },
+  {
+   "rep": 1,
+   "name": "babylon-wtb",
+   "config": "d8maxopt2",
+   "score": 150.08763593701437,
+   "wall": 0.459262667
+  },
+  {
+   "rep": 1,
+   "name": "babylonjs-scene-es6",
+   "config": "d8maxopt2",
+   "score": 95.99595178483267,
+   "wall": 0.437440208
+  },
+  {
+   "rep": 1,
+   "name": "babylonjs-scene-es6",
+   "config": "d8full",
+   "score": 103.35240005252109,
+   "wall": 0.38981975
+  },
+  {
+   "rep": 1,
+   "name": "babylonjs-startup-es6",
+   "config": "d8full",
+   "score": 37.93150639965384,
+   "wall": 1.408521791
+  },
+  {
+   "rep": 1,
+   "name": "babylonjs-startup-es6",
+   "config": "d8maxopt2",
+   "score": 37.60411909457616,
+   "wall": 1.438431334
+  },
+  {
+   "rep": 1,
+   "name": "Basic",
+   "config": "d8maxopt2",
+   "score": 1389.3290993148032,
+   "wall": 0.330250667
+  },
+  {
+   "rep": 1,
+   "name": "Basic",
+   "config": "d8full",
+   "score": 1593.7328797040261,
+   "wall": 0.236826167
+  },
+  {
+   "rep": 1,
+   "name": "bigint-noble-ed25519",
+   "config": "d8full",
+   "score": 239.14492790240314,
+   "wall": 0.55566775
+  },
+  {
+   "rep": 1,
+   "name": "bigint-noble-ed25519",
+   "config": "d8maxopt2",
+   "score": 202.76781223240155,
+   "wall": 0.656945708
+  },
+  {
+   "rep": 1,
+   "name": "Box2D",
+   "config": "d8maxopt2",
+   "score": 630.4057757684905,
+   "wall": 0.475151
+  },
+  {
+   "rep": 1,
+   "name": "Box2D",
+   "config": "d8full",
+   "score": 648.3199383206875,
+   "wall": 0.449306875
+  },
+  {
+   "rep": 1,
+   "name": "cdjs",
+   "config": "d8full",
+   "score": 347.9727185267858,
+   "wall": 0.61513925
+  },
+  {
+   "rep": 1,
+   "name": "cdjs",
+   "config": "d8maxopt2",
+   "score": 263.25653267903226,
+   "wall": 0.913202916
+  },
+  {
+   "rep": 1,
+   "name": "chai-wtb",
+   "config": "d8maxopt2",
+   "score": 299.7677848337823,
+   "wall": 0.26307
+  },
+  {
+   "rep": 1,
+   "name": "chai-wtb",
+   "config": "d8full",
+   "score": 294.13700867881516,
+   "wall": 0.263399375
+  },
+  {
+   "rep": 1,
+   "name": "crypto",
+   "config": "d8full",
+   "score": 1560.8168441564576,
+   "wall": 0.232004667
+  },
+  {
+   "rep": 1,
+   "name": "crypto",
+   "config": "d8maxopt2",
+   "score": 949.497668744712,
+   "wall": 0.530331542
+  },
+  {
+   "rep": 1,
+   "name": "delta-blue",
+   "config": "d8maxopt2",
+   "score": 1765.497890945638,
+   "wall": 0.244327125
+  },
+  {
+   "rep": 1,
+   "name": "delta-blue",
+   "config": "d8full",
+   "score": 2407.4915268072614,
+   "wall": 0.125977958
+  },
+  {
+   "rep": 1,
+   "name": "doxbee-async",
+   "config": "d8full",
+   "score": 1348.8464883654894,
+   "wall": 0.245955792
+  },
+  {
+   "rep": 1,
+   "name": "doxbee-async",
+   "config": "d8maxopt2",
+   "score": 1075.4384931995248,
+   "wall": 0.341431708
+  },
+  {
+   "rep": 1,
+   "name": "doxbee-promise",
+   "config": "d8maxopt2",
+   "score": 763.965845950079,
+   "wall": 0.589125208
+  },
+  {
+   "rep": 1,
+   "name": "doxbee-promise",
+   "config": "d8full",
+   "score": 733.5698012822778,
+   "wall": 0.646741875
+  },
+  {
+   "rep": 1,
+   "name": "earley-boyer",
+   "config": "d8full",
+   "score": 1376.0651905333357,
+   "wall": 0.29704775
+  },
+  {
+   "rep": 1,
+   "name": "earley-boyer",
+   "config": "d8maxopt2",
+   "score": 1250.3708106764825,
+   "wall": 0.360646667
+  },
+  {
+   "rep": 1,
+   "name": "espree-wtb",
+   "config": "d8maxopt2",
+   "score": 129.92818971234442,
+   "wall": 0.557248166
+  },
+  {
+   "rep": 1,
+   "name": "espree-wtb",
+   "config": "d8full",
+   "score": 169.2841940905253,
+   "wall": 0.406834375
+  },
+  {
+   "rep": 1,
+   "name": "esprima-next-wtb",
+   "config": "d8full",
+   "score": 168.90525368283306,
+   "wall": 0.40043425
+  },
+  {
+   "rep": 1,
+   "name": "esprima-next-wtb",
+   "config": "d8maxopt2",
+   "score": 148.02525239804598,
+   "wall": 0.474987125
+  },
+  {
+   "rep": 1,
+   "name": "first-inspector-code-load",
+   "config": "d8maxopt2",
+   "score": 400.8279712642211,
+   "wall": 1.41385625
+  },
+  {
+   "rep": 1,
+   "name": "first-inspector-code-load",
+   "config": "d8full",
+   "score": 455.53239367594927,
+   "wall": 1.359347958
+  },
+  {
+   "rep": 1,
+   "name": "FlightPlanner",
+   "config": "d8full",
+   "score": 1639.209862914496,
+   "wall": 0.405147167
+  },
+  {
+   "rep": 1,
+   "name": "FlightPlanner",
+   "config": "d8maxopt2",
+   "score": 1342.6927073785614,
+   "wall": 0.572516
+  },
+  {
+   "rep": 1,
+   "name": "gaussian-blur",
+   "config": "d8maxopt2",
+   "score": 406.403991109059,
+   "wall": 0.966277375
+  },
+  {
+   "rep": 1,
+   "name": "gaussian-blur",
+   "config": "d8full",
+   "score": 858.0527728485904,
+   "wall": 0.591247583
+  },
+  {
+   "rep": 1,
+   "name": "gbemu",
+   "config": "d8full",
+   "score": 280.5982184826725,
+   "wall": 1.315002416
+  },
+  {
+   "rep": 1,
+   "name": "gbemu",
+   "config": "d8maxopt2",
+   "score": 267.0424770075225,
+   "wall": 1.453662209
+  },
+  {
+   "rep": 1,
+   "name": "hash-map",
+   "config": "d8maxopt2",
+   "score": 741.6101938537523,
+   "wall": 0.638778542
+  },
+  {
+   "rep": 1,
+   "name": "hash-map",
+   "config": "d8full",
+   "score": 1121.4647656283332,
+   "wall": 0.326841458
+  },
+  {
+   "rep": 1,
+   "name": "js-tokens",
+   "config": "d8full",
+   "score": 608.7738575594499,
+   "wall": 0.812230458
+  },
+  {
+   "rep": 1,
+   "name": "js-tokens",
+   "config": "d8maxopt2",
+   "score": 627.4118906756398,
+   "wall": 0.816696083
+  },
+  {
+   "rep": 1,
+   "name": "jsdom-d3-startup",
+   "config": "d8maxopt2",
+   "score": 33.10817349655893,
+   "wall": 2.285175333
+  },
+  {
+   "rep": 1,
+   "name": "jsdom-d3-startup",
+   "config": "d8full",
+   "score": 33.601854937944545,
+   "wall": 2.200636042
+  },
+  {
+   "rep": 1,
+   "name": "json-parse-inspector",
+   "config": "d8full",
+   "score": 587.1211160989743,
+   "wall": 0.275250166
+  },
+  {
+   "rep": 1,
+   "name": "json-parse-inspector",
+   "config": "d8maxopt2",
+   "score": 554.4074153059773,
+   "wall": 0.287756625
+  },
+  {
+   "rep": 1,
+   "name": "json-stringify-inspector",
+   "config": "d8maxopt2",
+   "score": 1250.0747035241084,
+   "wall": 0.189176625
+  },
+  {
+   "rep": 1,
+   "name": "json-stringify-inspector",
+   "config": "d8full",
+   "score": 1342.4103392652316,
+   "wall": 0.179827584
+  },
+  {
+   "rep": 1,
+   "name": "lazy-collections",
+   "config": "d8full",
+   "score": 535.5874398060557,
+   "wall": 0.956784875
+  },
+  {
+   "rep": 1,
+   "name": "lazy-collections",
+   "config": "d8maxopt2",
+   "score": 471.9807668963987,
+   "wall": 1.14910675
+  },
+  {
+   "rep": 1,
+   "name": "mandreel",
+   "config": "d8maxopt2",
+   "score": 207.85931848249135,
+   "wall": 1.711039584
+  },
+  {
+   "rep": 1,
+   "name": "mandreel",
+   "config": "d8full",
+   "score": 274.10202011458836,
+   "wall": 1.2284685
+  },
+  {
+   "rep": 1,
+   "name": "ML",
+   "config": "d8full",
+   "score": 269.432959177217,
+   "wall": 0.9818325
+  },
+  {
+   "rep": 1,
+   "name": "ML",
+   "config": "d8maxopt2",
+   "score": 217.56378091727555,
+   "wall": 1.316284833
+  },
+  {
+   "rep": 1,
+   "name": "mobx-startup",
+   "config": "d8maxopt2",
+   "score": 347.47481328141447,
+   "wall": 0.418005458
+  },
+  {
+   "rep": 1,
+   "name": "mobx-startup",
+   "config": "d8full",
+   "score": 363.26929966868886,
+   "wall": 0.399192792
+  },
+  {
+   "rep": 1,
+   "name": "multi-inspector-code-load",
+   "config": "d8full",
+   "score": 692.424292807423,
+   "wall": 0.2782305
+  },
+  {
+   "rep": 1,
+   "name": "multi-inspector-code-load",
+   "config": "d8maxopt2",
+   "score": 693.9006499456806,
+   "wall": 0.277631375
+  },
+  {
+   "rep": 1,
+   "name": "navier-stokes",
+   "config": "d8maxopt2",
+   "score": 1282.625663464166,
+   "wall": 0.3943415
+  },
+  {
+   "rep": 1,
+   "name": "navier-stokes",
+   "config": "d8full",
+   "score": 1584.1169621770746,
+   "wall": 0.252576792
+  },
+  {
+   "rep": 1,
+   "name": "octane-code-load",
+   "config": "d8full",
+   "score": 2134.486446141076,
+   "wall": 0.231453209
+  },
+  {
+   "rep": 1,
+   "name": "octane-code-load",
+   "config": "d8maxopt2",
+   "score": 1936.0298727787608,
+   "wall": 0.238208041
+  },
+  {
+   "rep": 1,
+   "name": "OfflineAssembler",
+   "config": "d8maxopt2",
+   "score": 454.3286019141078,
+   "wall": 0.713459
+  },
+  {
+   "rep": 1,
+   "name": "OfflineAssembler",
+   "config": "d8full",
+   "score": 496.47156199761844,
+   "wall": 0.611651084
+  },
+  {
+   "rep": 1,
+   "name": "pdfjs",
+   "config": "d8full",
+   "score": 487.0435755444817,
+   "wall": 0.808224708
+  },
+  {
+   "rep": 1,
+   "name": "pdfjs",
+   "config": "d8maxopt2",
+   "score": 444.3865431144358,
+   "wall": 0.924575042
+  },
+  {
+   "rep": 1,
+   "name": "postcss-wtb",
+   "config": "d8maxopt2",
+   "score": 66.15177697506847,
+   "wall": 1.089512791
+  },
+  {
+   "rep": 1,
+   "name": "postcss-wtb",
+   "config": "d8full",
+   "score": 66.82019659196463,
+   "wall": 1.039777958
+  },
+  {
+   "rep": 1,
+   "name": "prettier-wtb",
+   "config": "d8full",
+   "score": 150.61825724303625,
+   "wall": 0.41368575
+  },
+  {
+   "rep": 1,
+   "name": "prettier-wtb",
+   "config": "d8maxopt2",
+   "score": 147.647664247717,
+   "wall": 0.455586083
+  },
+  {
+   "rep": 1,
+   "name": "prismjs-startup-es6",
+   "config": "d8maxopt2",
+   "score": 719.0087160888187,
+   "wall": 0.59482625
+  },
+  {
+   "rep": 1,
+   "name": "prismjs-startup-es6",
+   "config": "d8full",
+   "score": 714.8070286631472,
+   "wall": 0.615893375
+  },
+  {
+   "rep": 1,
+   "name": "proxy-mobx",
+   "config": "d8full",
+   "score": 2208.4067881453775,
+   "wall": 0.299103333
+  },
+  {
+   "rep": 1,
+   "name": "proxy-mobx",
+   "config": "d8maxopt2",
+   "score": 2366.298379843355,
+   "wall": 0.3220435
+  },
+  {
+   "rep": 1,
+   "name": "proxy-vue",
+   "config": "d8maxopt2",
+   "score": 1139.489583703446,
+   "wall": 0.321716375
+  },
+  {
+   "rep": 1,
+   "name": "proxy-vue",
+   "config": "d8full",
+   "score": 1453.4602696943061,
+   "wall": 0.284520625
+  },
+  {
+   "rep": 1,
+   "name": "raytrace",
+   "config": "d8full",
+   "score": 977.2640163744712,
+   "wall": 0.436362542
+  },
+  {
+   "rep": 1,
+   "name": "raytrace",
+   "config": "d8maxopt2",
+   "score": 695.0723528570587,
+   "wall": 0.779256541
+  },
+  {
+   "rep": 1,
+   "name": "raytrace-private-class-fields",
+   "config": "d8maxopt2",
+   "score": 439.6787487687875,
+   "wall": 1.1859705
+  },
+  {
+   "rep": 1,
+   "name": "raytrace-private-class-fields",
+   "config": "d8full",
+   "score": 808.340184874054,
+   "wall": 0.479435208
+  },
+  {
+   "rep": 1,
+   "name": "raytrace-public-class-fields",
+   "config": "d8full",
+   "score": 909.0153585027367,
+   "wall": 0.430882
+  },
+  {
+   "rep": 1,
+   "name": "raytrace-public-class-fields",
+   "config": "d8maxopt2",
+   "score": 467.58415175981133,
+   "wall": 1.176992875
+  },
+  {
+   "rep": 1,
+   "name": "regexp-octane",
+   "config": "d8maxopt2",
+   "score": 1073.8453397481105,
+   "wall": 0.557508792
+  },
+  {
+   "rep": 1,
+   "name": "regexp-octane",
+   "config": "d8full",
+   "score": 1055.4080503776133,
+   "wall": 0.538552334
+  },
+  {
+   "rep": 1,
+   "name": "richards",
+   "config": "d8full",
+   "score": 1384.2423740295715,
+   "wall": 0.37376175
+  },
+  {
+   "rep": 1,
+   "name": "richards",
+   "config": "d8maxopt2",
+   "score": 1312.5573422055083,
+   "wall": 0.422017958
+  },
+  {
+   "rep": 1,
+   "name": "source-map-wtb",
+   "config": "d8maxopt2",
+   "score": 549.0581991476926,
+   "wall": 0.161888083
+  },
+  {
+   "rep": 1,
+   "name": "source-map-wtb",
+   "config": "d8full",
+   "score": 549.2021241074476,
+   "wall": 0.154549875
+  },
+  {
+   "rep": 1,
+   "name": "splay",
+   "config": "d8full",
+   "score": 575.1505834786099,
+   "wall": 0.845788459
+  },
+  {
+   "rep": 1,
+   "name": "splay",
+   "config": "d8maxopt2",
+   "score": 570.8274756780264,
+   "wall": 0.877014292
+  },
+  {
+   "rep": 1,
+   "name": "stanford-crypto-aes",
+   "config": "d8maxopt2",
+   "score": 770.8237340671658,
+   "wall": 0.6466095
+  },
+  {
+   "rep": 1,
+   "name": "stanford-crypto-aes",
+   "config": "d8full",
+   "score": 895.055130554139,
+   "wall": 0.536726791
+  },
+  {
+   "rep": 1,
+   "name": "stanford-crypto-pbkdf2",
+   "config": "d8full",
+   "score": 1573.0052555499549,
+   "wall": 0.306646875
+  },
+  {
+   "rep": 1,
+   "name": "stanford-crypto-pbkdf2",
+   "config": "d8maxopt2",
+   "score": 1457.6845914679022,
+   "wall": 0.347976125
+  },
+  {
+   "rep": 1,
+   "name": "stanford-crypto-sha256",
+   "config": "d8maxopt2",
+   "score": 1540.8432471553358,
+   "wall": 0.349488458
+  },
+  {
+   "rep": 1,
+   "name": "stanford-crypto-sha256",
+   "config": "d8full",
+   "score": 1597.4258064789815,
+   "wall": 0.322556417
+  },
+  {
+   "rep": 1,
+   "name": "Sunspider",
+   "config": "d8full",
+   "score": 1468.8053917478765,
+   "wall": 3.936726292
+  },
+  {
+   "rep": 1,
+   "name": "Sunspider",
+   "config": "d8maxopt2",
+   "score": 1320.2223928372352,
+   "wall": 4.842459917
+  },
+  {
+   "rep": 1,
+   "name": "sync-fs",
+   "config": "d8maxopt2",
+   "score": 665.8059492970727,
+   "wall": 0.545713333
+  },
+  {
+   "rep": 1,
+   "name": "sync-fs",
+   "config": "d8full",
+   "score": 781.2144924637627,
+   "wall": 0.410833666
+  },
+  {
+   "rep": 1,
+   "name": "threejs",
+   "config": "d8full",
+   "score": 109.16936933306592,
+   "wall": 2.606655125
+  },
+  {
+   "rep": 1,
+   "name": "threejs",
+   "config": "d8maxopt2",
+   "score": 104.0333531754435,
+   "wall": 2.809542625
+  },
+  {
+   "rep": 1,
+   "name": "typescript-lib",
+   "config": "d8maxopt2",
+   "score": 12.456712922593987,
+   "wall": 0.542723
+  },
+  {
+   "rep": 1,
+   "name": "typescript-lib",
+   "config": "d8full",
+   "score": 13.036483903853325,
+   "wall": 0.517421084
+  },
+  {
+   "rep": 1,
+   "name": "UniPoker",
+   "config": "d8full",
+   "score": 1530.3884879285984,
+   "wall": 0.306550875
+  },
+  {
+   "rep": 1,
+   "name": "UniPoker",
+   "config": "d8maxopt2",
+   "score": 1248.6982548354028,
+   "wall": 0.389414875
+  },
+  {
+   "rep": 1,
+   "name": "validatorjs",
+   "config": "d8maxopt2",
+   "score": 711.3361006540716,
+   "wall": 0.420897292
+  },
+  {
+   "rep": 1,
+   "name": "validatorjs",
+   "config": "d8full",
+   "score": 700.4141590693695,
+   "wall": 0.427405584
+  },
+  {
+   "rep": 1,
+   "name": "web-ssr",
+   "config": "d8full",
+   "score": 355.11126049601955,
+   "wall": 0.447525292
+  },
+  {
+   "rep": 1,
+   "name": "web-ssr",
+   "config": "d8maxopt2",
+   "score": 366.1374651780223,
+   "wall": 0.423799625
+  },
+  {
+   "rep": 1,
+   "name": "WSL",
+   "config": "d8maxopt2",
+   "score": 8.657671184620579,
+   "wall": 2.003404125
+  },
+  {
+   "rep": 1,
+   "name": "WSL",
+   "config": "d8full",
+   "score": 9.202906017901277,
+   "wall": 1.873745417
+  },
+  {
+   "rep": 2,
+   "name": "acorn-wtb",
+   "config": "d8full",
+   "score": 131.8449521675037,
+   "wall": 0.510775625
+  },
+  {
+   "rep": 2,
+   "name": "acorn-wtb",
+   "config": "d8maxopt2",
+   "score": 109.08362908454963,
+   "wall": 0.634208292
+  },
+  {
+   "rep": 2,
+   "name": "ai-astar",
+   "config": "d8maxopt2",
+   "score": 1514.5575991324831,
+   "wall": 0.363610667
+  },
+  {
+   "rep": 2,
+   "name": "ai-astar",
+   "config": "d8full",
+   "score": 1527.9755219455756,
+   "wall": 0.356333042
+  },
+  {
+   "rep": 2,
+   "name": "Air",
+   "config": "d8full",
+   "score": 1271.4967436198601,
+   "wall": 0.229614375
+  },
+  {
+   "rep": 2,
+   "name": "Air",
+   "config": "d8maxopt2",
+   "score": 1261.2162498446319,
+   "wall": 0.234271417
+  },
+  {
+   "rep": 2,
+   "name": "async-fs",
+   "config": "d8maxopt2",
+   "score": 696.5624219559651,
+   "wall": 0.644872833
+  },
+  {
+   "rep": 2,
+   "name": "async-fs",
+   "config": "d8full",
+   "score": 748.4211671033327,
+   "wall": 0.539129292
+  },
+  {
+   "rep": 2,
+   "name": "babel-minify-wtb",
+   "config": "d8full",
+   "score": 209.06592547516752,
+   "wall": 0.335223916
+  },
+  {
+   "rep": 2,
+   "name": "babel-minify-wtb",
+   "config": "d8maxopt2",
+   "score": 191.23858570770815,
+   "wall": 0.373696666
+  },
+  {
+   "rep": 2,
+   "name": "babel-wtb",
+   "config": "d8maxopt2",
+   "score": 249.7333832911685,
+   "wall": 0.44202575
+  },
+  {
+   "rep": 2,
+   "name": "babel-wtb",
+   "config": "d8full",
+   "score": 259.08475598658964,
+   "wall": 0.415992959
+  },
+  {
+   "rep": 2,
+   "name": "Babylon",
+   "config": "d8full",
+   "score": 1985.9865278883494,
+   "wall": 0.159796666
+  },
+  {
+   "rep": 2,
+   "name": "Babylon",
+   "config": "d8maxopt2",
+   "score": 1799.0188727973855,
+   "wall": 0.19707025
+  },
+  {
+   "rep": 2,
+   "name": "babylon-wtb",
+   "config": "d8maxopt2",
+   "score": 160.32282343805446,
+   "wall": 0.434661375
+  },
+  {
+   "rep": 2,
+   "name": "babylon-wtb",
+   "config": "d8full",
+   "score": 183.28756847962126,
+   "wall": 0.374298458
+  },
+  {
+   "rep": 2,
+   "name": "babylonjs-scene-es6",
+   "config": "d8full",
+   "score": 109.8518983203049,
+   "wall": 0.381152458
+  },
+  {
+   "rep": 2,
+   "name": "babylonjs-scene-es6",
+   "config": "d8maxopt2",
+   "score": 115.0160933795845,
+   "wall": 0.355393334
+  },
+  {
+   "rep": 2,
+   "name": "babylonjs-startup-es6",
+   "config": "d8maxopt2",
+   "score": 43.932440306524235,
+   "wall": 1.236426208
+  },
+  {
+   "rep": 2,
+   "name": "babylonjs-startup-es6",
+   "config": "d8full",
+   "score": 44.436748084616674,
+   "wall": 1.223350666
+  },
+  {
+   "rep": 2,
+   "name": "Basic",
+   "config": "d8full",
+   "score": 1988.9536430108656,
+   "wall": 0.196478417
+  },
+  {
+   "rep": 2,
+   "name": "Basic",
+   "config": "d8maxopt2",
+   "score": 1648.6830866063224,
+   "wall": 0.277244583
+  },
+  {
+   "rep": 2,
+   "name": "bigint-noble-ed25519",
+   "config": "d8maxopt2",
+   "score": 303.75594941283214,
+   "wall": 0.437393166
+  },
+  {
+   "rep": 2,
+   "name": "bigint-noble-ed25519",
+   "config": "d8full",
+   "score": 306.8438050972792,
+   "wall": 0.42945325
+  },
+  {
+   "rep": 2,
+   "name": "Box2D",
+   "config": "d8full",
+   "score": 984.1533517779619,
+   "wall": 0.300371542
+  },
+  {
+   "rep": 2,
+   "name": "Box2D",
+   "config": "d8maxopt2",
+   "score": 950.5422397972826,
+   "wall": 0.323686417
+  },
+  {
+   "rep": 2,
+   "name": "cdjs",
+   "config": "d8maxopt2",
+   "score": 408.5420504714144,
+   "wall": 0.601750167
+  },
+  {
+   "rep": 2,
+   "name": "cdjs",
+   "config": "d8full",
+   "score": 540.3810275651997,
+   "wall": 0.3845105
+  },
+  {
+   "rep": 2,
+   "name": "chai-wtb",
+   "config": "d8full",
+   "score": 490.17289636735876,
+   "wall": 0.167261875
+  },
+  {
+   "rep": 2,
+   "name": "chai-wtb",
+   "config": "d8maxopt2",
+   "score": 474.6190842234082,
+   "wall": 0.165839208
+  },
+  {
+   "rep": 2,
+   "name": "crypto",
+   "config": "d8maxopt2",
+   "score": 1350.8516987908931,
+   "wall": 0.400383459
+  },
+  {
+   "rep": 2,
+   "name": "crypto",
+   "config": "d8full",
+   "score": 2296.1788662029885,
+   "wall": 0.159222875
+  },
+  {
+   "rep": 2,
+   "name": "delta-blue",
+   "config": "d8full",
+   "score": 3086.168856073618,
+   "wall": 0.097826417
+  },
+  {
+   "rep": 2,
+   "name": "delta-blue",
+   "config": "d8maxopt2",
+   "score": 2522.260370129547,
+   "wall": 0.175634833
+  },
+  {
+   "rep": 2,
+   "name": "doxbee-async",
+   "config": "d8maxopt2",
+   "score": 1289.8239884305035,
+   "wall": 0.285735708
+  },
+  {
+   "rep": 2,
+   "name": "doxbee-async",
+   "config": "d8full",
+   "score": 1578.2948640247687,
+   "wall": 0.20283275
+  },
+  {
+   "rep": 2,
+   "name": "doxbee-promise",
+   "config": "d8full",
+   "score": 962.710398152484,
+   "wall": 0.419413875
+  },
+  {
+   "rep": 2,
+   "name": "doxbee-promise",
+   "config": "d8maxopt2",
+   "score": 1026.5948958113552,
+   "wall": 0.420072667
+  },
+  {
+   "rep": 2,
+   "name": "earley-boyer",
+   "config": "d8maxopt2",
+   "score": 1489.484674479126,
+   "wall": 0.303540375
+  },
+  {
+   "rep": 2,
+   "name": "earley-boyer",
+   "config": "d8full",
+   "score": 1639.128695094283,
+   "wall": 0.245705708
+  },
+  {
+   "rep": 2,
+   "name": "espree-wtb",
+   "config": "d8full",
+   "score": 209.69799598681317,
+   "wall": 0.334735459
+  },
+  {
+   "rep": 2,
+   "name": "espree-wtb",
+   "config": "d8maxopt2",
+   "score": 150.8317570849433,
+   "wall": 0.478906291
+  },
+  {
+   "rep": 2,
+   "name": "esprima-next-wtb",
+   "config": "d8maxopt2",
+   "score": 179.33901602205685,
+   "wall": 0.399510791
+  },
+  {
+   "rep": 2,
+   "name": "esprima-next-wtb",
+   "config": "d8full",
+   "score": 194.9102613823402,
+   "wall": 0.360214375
+  },
+  {
+   "rep": 2,
+   "name": "first-inspector-code-load",
+   "config": "d8full",
+   "score": 453.5374465991893,
+   "wall": 1.333385583
+  },
+  {
+   "rep": 2,
+   "name": "first-inspector-code-load",
+   "config": "d8maxopt2",
+   "score": 444.618987391715,
+   "wall": 1.314402708
+  },
+  {
+   "rep": 2,
+   "name": "FlightPlanner",
+   "config": "d8maxopt2",
+   "score": 1547.5127091259262,
+   "wall": 0.456762417
+  },
+  {
+   "rep": 2,
+   "name": "FlightPlanner",
+   "config": "d8full",
+   "score": 1905.5441116705722,
+   "wall": 0.342342458
+  },
+  {
+   "rep": 2,
+   "name": "gaussian-blur",
+   "config": "d8full",
+   "score": 977.0942247773585,
+   "wall": 0.539194292
+  },
+  {
+   "rep": 2,
+   "name": "gaussian-blur",
+   "config": "d8maxopt2",
+   "score": 702.2515545470613,
+   "wall": 0.773586166
+  },
+  {
+   "rep": 2,
+   "name": "gbemu",
+   "config": "d8maxopt2",
+   "score": 304.78942135275634,
+   "wall": 1.297582541
+  },
+  {
+   "rep": 2,
+   "name": "gbemu",
+   "config": "d8full",
+   "score": 325.0653392637576,
+   "wall": 1.1402135
+  },
+  {
+   "rep": 2,
+   "name": "hash-map",
+   "config": "d8full",
+   "score": 1392.219663037292,
+   "wall": 0.260059417
+  },
+  {
+   "rep": 2,
+   "name": "hash-map",
+   "config": "d8maxopt2",
+   "score": 857.8400583700077,
+   "wall": 0.573151833
+  },
+  {
+   "rep": 2,
+   "name": "js-tokens",
+   "config": "d8maxopt2",
+   "score": 691.5821551789583,
+   "wall": 0.773204458
+  },
+  {
+   "rep": 2,
+   "name": "js-tokens",
+   "config": "d8full",
+   "score": 692.191321638013,
+   "wall": 0.732046458
+  },
+  {
+   "rep": 2,
+   "name": "jsdom-d3-startup",
+   "config": "d8full",
+   "score": 34.211608903877945,
+   "wall": 2.184705125
+  },
+  {
+   "rep": 2,
+   "name": "jsdom-d3-startup",
+   "config": "d8maxopt2",
+   "score": 34.886300666571024,
+   "wall": 2.220314667
+  },
+  {
+   "rep": 2,
+   "name": "json-parse-inspector",
+   "config": "d8maxopt2",
+   "score": 593.3814017953521,
+   "wall": 0.275436209
+  },
+  {
+   "rep": 2,
+   "name": "json-parse-inspector",
+   "config": "d8full",
+   "score": 599.6191190935472,
+   "wall": 0.265843209
+  },
+  {
+   "rep": 2,
+   "name": "json-stringify-inspector",
+   "config": "d8full",
+   "score": 1345.9551783072743,
+   "wall": 0.173670083
+  },
+  {
+   "rep": 2,
+   "name": "json-stringify-inspector",
+   "config": "d8maxopt2",
+   "score": 1360.6352277676158,
+   "wall": 0.176797125
+  },
+  {
+   "rep": 2,
+   "name": "lazy-collections",
+   "config": "d8maxopt2",
+   "score": 487.8358666389541,
+   "wall": 1.124204041
+  },
+  {
+   "rep": 2,
+   "name": "lazy-collections",
+   "config": "d8full",
+   "score": 542.3245158284761,
+   "wall": 0.956903875
+  },
+  {
+   "rep": 2,
+   "name": "mandreel",
+   "config": "d8full",
+   "score": 299.9324316083056,
+   "wall": 1.142562583
+  },
+  {
+   "rep": 2,
+   "name": "mandreel",
+   "config": "d8maxopt2",
+   "score": 208.86374130459023,
+   "wall": 1.707943791
+  },
+  {
+   "rep": 2,
+   "name": "ML",
+   "config": "d8maxopt2",
+   "score": 241.49027397038665,
+   "wall": 1.172195166
+  },
+  {
+   "rep": 2,
+   "name": "ML",
+   "config": "d8full",
+   "score": 301.8049226681891,
+   "wall": 0.880666334
+  },
+  {
+   "rep": 2,
+   "name": "mobx-startup",
+   "config": "d8full",
+   "score": 414.6247996372954,
+   "wall": 0.356428958
+  },
+  {
+   "rep": 2,
+   "name": "mobx-startup",
+   "config": "d8maxopt2",
+   "score": 405.6073064191276,
+   "wall": 0.363093084
+  },
+  {
+   "rep": 2,
+   "name": "multi-inspector-code-load",
+   "config": "d8maxopt2",
+   "score": 758.0564096244336,
+   "wall": 0.254033125
+  },
+  {
+   "rep": 2,
+   "name": "multi-inspector-code-load",
+   "config": "d8full",
+   "score": 745.8970194177973,
+   "wall": 0.255206459
+  },
+  {
+   "rep": 2,
+   "name": "navier-stokes",
+   "config": "d8full",
+   "score": 1730.25902903772,
+   "wall": 0.246350334
+  },
+  {
+   "rep": 2,
+   "name": "navier-stokes",
+   "config": "d8maxopt2",
+   "score": 1346.0006883621886,
+   "wall": 0.388187834
+  },
+  {
+   "rep": 2,
+   "name": "octane-code-load",
+   "config": "d8maxopt2",
+   "score": 2247.4743204586935,
+   "wall": 0.220819791
+  },
+  {
+   "rep": 2,
+   "name": "octane-code-load",
+   "config": "d8full",
+   "score": 2183.3244187866167,
+   "wall": 0.22328
+  },
+  {
+   "rep": 2,
+   "name": "OfflineAssembler",
+   "config": "d8full",
+   "score": 516.7302015480216,
+   "wall": 0.576860917
+  },
+  {
+   "rep": 2,
+   "name": "OfflineAssembler",
+   "config": "d8maxopt2",
+   "score": 491.7743025905837,
+   "wall": 0.665633416
+  },
+  {
+   "rep": 2,
+   "name": "pdfjs",
+   "config": "d8maxopt2",
+   "score": 497.672037121225,
+   "wall": 0.840543625
+  },
+  {
+   "rep": 2,
+   "name": "pdfjs",
+   "config": "d8full",
+   "score": 518.9419771135515,
+   "wall": 0.736169375
+  },
+  {
+   "rep": 2,
+   "name": "postcss-wtb",
+   "config": "d8full",
+   "score": 76.4902543750815,
+   "wall": 0.9122695
+  },
+  {
+   "rep": 2,
+   "name": "postcss-wtb",
+   "config": "d8maxopt2",
+   "score": 73.78038306331334,
+   "wall": 0.970940459
+  },
+  {
+   "rep": 2,
+   "name": "prettier-wtb",
+   "config": "d8maxopt2",
+   "score": 163.29815437534998,
+   "wall": 0.406807458
+  },
+  {
+   "rep": 2,
+   "name": "prettier-wtb",
+   "config": "d8full",
+   "score": 170.17292993466336,
+   "wall": 0.368773583
+  },
+  {
+   "rep": 2,
+   "name": "prismjs-startup-es6",
+   "config": "d8full",
+   "score": 808.5603416066239,
+   "wall": 0.549270083
+  },
+  {
+   "rep": 2,
+   "name": "prismjs-startup-es6",
+   "config": "d8maxopt2",
+   "score": 824.2665957810982,
+   "wall": 0.548284625
+  },
+  {
+   "rep": 2,
+   "name": "proxy-mobx",
+   "config": "d8maxopt2",
+   "score": 2509.1840370944988,
+   "wall": 0.307114459
+  },
+  {
+   "rep": 2,
+   "name": "proxy-mobx",
+   "config": "d8full",
+   "score": 2561.2070723675897,
+   "wall": 0.280102167
+  },
+  {
+   "rep": 2,
+   "name": "proxy-vue",
+   "config": "d8full",
+   "score": 1518.0469597671802,
+   "wall": 0.265127125
+  },
+  {
+   "rep": 2,
+   "name": "proxy-vue",
+   "config": "d8maxopt2",
+   "score": 1467.622892717659,
+   "wall": 0.290924667
+  },
+  {
+   "rep": 2,
+   "name": "raytrace",
+   "config": "d8maxopt2",
+   "score": 741.7019582440439,
+   "wall": 0.72803975
+  },
+  {
+   "rep": 2,
+   "name": "raytrace",
+   "config": "d8full",
+   "score": 1105.2501111194367,
+   "wall": 0.384534167
+  },
+  {
+   "rep": 2,
+   "name": "raytrace-private-class-fields",
+   "config": "d8full",
+   "score": 886.9312148194871,
+   "wall": 0.445361458
+  },
+  {
+   "rep": 2,
+   "name": "raytrace-private-class-fields",
+   "config": "d8maxopt2",
+   "score": 497.4533340744334,
+   "wall": 1.08770975
+  },
+  {
+   "rep": 2,
+   "name": "raytrace-public-class-fields",
+   "config": "d8maxopt2",
+   "score": 526.8985467121644,
+   "wall": 1.050401041
+  },
+  {
+   "rep": 2,
+   "name": "raytrace-public-class-fields",
+   "config": "d8full",
+   "score": 1015.6341773791903,
+   "wall": 0.375260583
+  },
+  {
+   "rep": 2,
+   "name": "regexp-octane",
+   "config": "d8full",
+   "score": 1223.9952812239699,
+   "wall": 0.476804458
+  },
+  {
+   "rep": 2,
+   "name": "regexp-octane",
+   "config": "d8maxopt2",
+   "score": 1174.053541162046,
+   "wall": 0.49071975
+  },
+  {
+   "rep": 2,
+   "name": "richards",
+   "config": "d8maxopt2",
+   "score": 1575.6828915995495,
+   "wall": 0.362224166
+  },
+  {
+   "rep": 2,
+   "name": "richards",
+   "config": "d8full",
+   "score": 1734.1279438084853,
+   "wall": 0.307593
+  },
+  {
+   "rep": 2,
+   "name": "source-map-wtb",
+   "config": "d8full",
+   "score": 689.3536486095948,
+   "wall": 0.1295645
+  },
+  {
+   "rep": 2,
+   "name": "source-map-wtb",
+   "config": "d8maxopt2",
+   "score": 665.9372902428676,
+   "wall": 0.1302205
+  },
+  {
+   "rep": 2,
+   "name": "splay",
+   "config": "d8maxopt2",
+   "score": 634.0820999191184,
+   "wall": 0.751366292
+  },
+  {
+   "rep": 2,
+   "name": "splay",
+   "config": "d8full",
+   "score": 670.1350355551734,
+   "wall": 0.712832958
+  },
+  {
+   "rep": 2,
+   "name": "stanford-crypto-aes",
+   "config": "d8full",
+   "score": 983.8566210500437,
+   "wall": 0.496117167
+  },
+  {
+   "rep": 2,
+   "name": "stanford-crypto-aes",
+   "config": "d8maxopt2",
+   "score": 850.397405467175,
+   "wall": 0.598646667
+  },
+  {
+   "rep": 2,
+   "name": "stanford-crypto-pbkdf2",
+   "config": "d8maxopt2",
+   "score": 1669.9015387933687,
+   "wall": 0.318012291
+  },
+  {
+   "rep": 2,
+   "name": "stanford-crypto-pbkdf2",
+   "config": "d8full",
+   "score": 1763.4608270008512,
+   "wall": 0.28365025
+  },
+  {
+   "rep": 2,
+   "name": "stanford-crypto-sha256",
+   "config": "d8full",
+   "score": 1706.367217891789,
+   "wall": 0.306429333
+  },
+  {
+   "rep": 2,
+   "name": "stanford-crypto-sha256",
+   "config": "d8maxopt2",
+   "score": 1564.7999275726897,
+   "wall": 0.342076208
+  },
+  {
+   "rep": 2,
+   "name": "Sunspider",
+   "config": "d8maxopt2",
+   "score": 1475.9368989237175,
+   "wall": 4.415743959
+  },
+  {
+   "rep": 2,
+   "name": "Sunspider",
+   "config": "d8full",
+   "score": 1610.4225437187708,
+   "wall": 3.565435042
+  },
+  {
+   "rep": 2,
+   "name": "sync-fs",
+   "config": "d8full",
+   "score": 788.4026783455304,
+   "wall": 0.3941865
+  },
+  {
+   "rep": 2,
+   "name": "sync-fs",
+   "config": "d8maxopt2",
+   "score": 667.1484196645129,
+   "wall": 0.539096167
+  },
+  {
+   "rep": 2,
+   "name": "threejs",
+   "config": "d8maxopt2",
+   "score": 116.10283236170251,
+   "wall": 2.356045875
+  },
+  {
+   "rep": 2,
+   "name": "threejs",
+   "config": "d8full",
+   "score": 130.3578533820919,
+   "wall": 2.032668709
+  },
+  {
+   "rep": 2,
+   "name": "typescript-lib",
+   "config": "d8full",
+   "score": 13.68393396680825,
+   "wall": 0.497717667
+  },
+  {
+   "rep": 2,
+   "name": "typescript-lib",
+   "config": "d8maxopt2",
+   "score": 13.129562522976734,
+   "wall": 0.507275417
+  },
+  {
+   "rep": 2,
+   "name": "UniPoker",
+   "config": "d8maxopt2",
+   "score": 1467.279644618076,
+   "wall": 0.347071291
+  },
+  {
+   "rep": 2,
+   "name": "UniPoker",
+   "config": "d8full",
+   "score": 1616.7755407878499,
+   "wall": 0.293105458
+  },
+  {
+   "rep": 2,
+   "name": "validatorjs",
+   "config": "d8full",
+   "score": 794.689384904318,
+   "wall": 0.376246625
+  },
+  {
+   "rep": 2,
+   "name": "validatorjs",
+   "config": "d8maxopt2",
+   "score": 821.0275070842488,
+   "wall": 0.347444125
+  },
+  {
+   "rep": 2,
+   "name": "web-ssr",
+   "config": "d8maxopt2",
+   "score": 396.4487650940445,
+   "wall": 0.395804417
+  },
+  {
+   "rep": 2,
+   "name": "web-ssr",
+   "config": "d8full",
+   "score": 394.5489170455367,
+   "wall": 0.397477333
+  },
+  {
+   "rep": 2,
+   "name": "WSL",
+   "config": "d8full",
+   "score": 9.961917193495257,
+   "wall": 1.734226125
+  },
+  {
+   "rep": 2,
+   "name": "WSL",
+   "config": "d8maxopt2",
+   "score": 9.726605454817141,
+   "wall": 1.789326208
+  }
+ ]
+}

@@ -1,0 +1,101 @@
+# H08: Object header and ShapeId
+
+| Field | Value |
+|---|---|
+| Status | Draft (2026-10-20) |
+| Fix by | M0 wk2 |
+| Freeze point | M1 exit |
+| Origin | v1#4 + R16-D5 (as corrected by R17); plan status E (extended: ShapeId rule) |
+| Crates | `ep9_heap` (word0, gc_state, kind), `ep9_vm` (shapes, ICs), `ep9_unit` (layout version), `ep9_opt` / `ep9_baseline` (AOT shape guards) |
+| Owner (plan role) | VM lead + GC lead; AOT senior for the ShapeId rule (M0 wk2) |
+| Validated by | SP-Value (word0 = 8 B); SP-Unit (first AOT code) |
+| Plan sources | [02 §6 H8](../plan/02-architecture.md#6-hard-to-change-decisions-h1-h37), [06 §2](../plan/06-object-model-and-spec.md#2-header-and-objects-h8-extended), [06 §2.1](../plan/06-object-model-and-spec.md#21-shapeid-rule-h8), [03 §5](../plan/03-gc.md#5-contract-items-that-exist-from-s0) |
+
+## Context
+
+- The header is read by every IC guard, the GC visitor, the barrier and (later) AOT shape guards.
+- AOT text is shared per process and may be signed. It cannot hold run-local shape addresses or ids (H12, H35).
+- R16-D5 asked for deterministic transition trees so build-time ShapeIds match at run time. R17 showed that RW cells remove that need.
+- Goals: G2-G4 (one-compare IC guards), G11 (dual-mode contracts from M0).
+
+## Decision
+
+8-byte word0: u32 ShapeId, u8 gc_state, u8 kind, u16 flags; size from header; minimum object 16 B. ShapeId = offset into the shape space, O(1) to Shape. Snapshot root shapes have stable ShapeIds; other ShapeIds are run-local and never appear in AOT text. AOT guards compare RW cells filled at first execution.
+
+```
+word0 (8 bytes, Relaxed atomic):
+  bytes 0-3  shape_id  u32   ShapeId: offset into the shape space, O(1) to the Shape; IC guards compare it
+  byte  4    gc_state  u8    cell state for the barrier: BLACK=1, WHITE=2, GREY=3 (H11); the mark bit is in side metadata (H9)
+  byte  5    kind      u8    GC visitor and size without loading the shape
+  bytes 6-7  flags     u16   hash-present, pinned, is-prototype, ...
+```
+
+| ShapeId kind | Created by | Stable across runs? | In AOT text? | AOT shape guard |
+|---|---|---|---|---|
+| Snapshot root shape | The startup snapshot, with a deterministic layout (H13) | Yes, per engine build | Yes, as an immediate (ShapeRef) | `header.shape_id == imm` |
+| Every other shape | Transitions at run time | No (run-local) | Never | `header.shape_id == RW cell`; the first execution fills the cell |
+
+```
+ AOT text (RX, one copy per process)            unit RW data (one copy per isolate, H22)
+ ld   s, [obj + 0]       ; header ShapeId       IcCell[k] = { shape_id, slot }
+ ld   c, [rw + k]        ; pc-relative cell       empty at load  -> the first run misses
+ cmp  s, c.shape_id                               the IC slow path fills the cell
+ b.ne miss               ; H32 policy path        later runs hit; a dead shape clears it (weak)
+ ld   v, [obj + c.slot]
+```
+
+- The object-layout version is a unit header field (H35). A change rejects the unit's native code; its bytecode still runs.
+- word0 can hold a forwarding pointer in S3; the state stays in gc_state ([R05] HEADER).
+
+## Rules
+
+| Rule | Check | From |
+|---|---|---|
+| word0 is 8 B; minimum object is 16 B | Static assert (SP-Value); xtask size asserts | M0 wk2 |
+| Object size is computable from the header (plus a length field) | Heap verifier; heap stays parsable (H9) | S0 |
+| No run-local ShapeId in AOT text or rodata | IR has no raw ShapeId for non-root shapes (ShapeRef lowers to CellRef, H30); unit golden tests | A2 |
+| Only snapshot root shapes have stable ShapeIds | Deterministic snapshot layout (H13) | A1 (M4) |
+| Unit IC cells hold shapes weakly | GC rule for unit RW data (03 §2) | A2 |
+
+## Consequences
+
+- **Gains.** IC guard = one u32 compare. GC needs no shape load; the barrier reads one byte.
+  - RW cells remove the need for deterministic transition trees. Property-add order, slack tracking and dictionary heuristics need not match between build and run [R17].
+- **Costs.** AOT guards on non-root shapes cost one extra pc-relative load. The first execution of each AOT site misses.
+- **Follow-ups.** H13 must make the snapshot layout deterministic. H30 must lower ShapeRef to an immediate only for snapshot root shapes. H35 carries the object-layout version.
+
+## Evidence
+
+| Tag | Claim used here | Link |
+|---|---|---|
+| [R05] | HEADER: u32 shape, u8 gc_state, u8 kind, u16 flags; size from header; minimum 16 B; forwarding in word0 | [05-gc-design.md](../research/05-gc-design.md) |
+| [R14] | Static Hermes AOT keeps per-site `{clazz, slot}` RW entries: 282 read and 128 write entries for Richards | [14-dual-mode-architecture.md](../research/14-dual-mode-architecture.md) |
+| [R17] | Correction of R16-D5: deterministic ShapeIds only for snapshot root shapes; other guards use RW cells | [17-aot-refutation.md](../research/17-aot-refutation.md) |
+| [R16] | The corrected proposal R16-D5 | [16-aot-synthesis.md](../research/16-aot-synthesis.md) |
+
+## Validation
+
+- **SP-Value** ([09 §4](../plan/09-milestones.md#4-spikes), M0 wk2): word0 = 8 B. M0 exit item 8.
+- **SP-Unit** (M0 month 2, inside Spike B): first AOT code; its 10 opcodes load, call, unwind, GC-scan and fall back (reopens H34, H35).
+- A2 gate: GC-stress clean with AOT frames; header-mutation fallbacks 100%.
+
+## Open questions
+
+| ID | Question | Needed by | Proposed default |
+|---|---|---|---|
+| H08-Q1 | Size, alignment and location of the shape space. A u32 offset bounds it; the plan gives no number | M0 wk4 (shapes v0) | Decide with shapes v0 |
+| H08-Q2 | Do SP-Unit's 10 opcodes include a shape-guarded load, so the RW-cell guard is tested in M0? | Spike B plan | Include one property load |
+| H08-Q3 | Full flag-bit list beyond hash-present, pinned, is-prototype | M1a (H17 freeze) | Fill at M1a |
+
+## Reopens if
+
+- SP-Value fails the word0 = 8 B assert (09 §4 names H6 and H11; word0 is shared with H6's gate).
+- H13 cannot give a deterministic snapshot layout. Then root-shape immediates have no basis.
+- A spike shows that the RW-cell guard fails a correctness check (SP-Unit reopens H34 and H35; this row is reviewed with them).
+
+## Change log
+
+| Date | Change kind | Change | By |
+|---|---|---|---|
+| 2026-10-20 | draft | First draft from 02 §6, 06 §2 and §2.1 (M0 wk1 list) | ADR agent |
+| 2026-10-20 | clarify | word0 byte 4 comment: gc_state values BLACK=1, WHITE=2, GREY=3 from the H11 decision; the mark bit is in side metadata (H9). Layout unchanged | apply agent |

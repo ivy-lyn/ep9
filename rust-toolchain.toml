@@ -1,0 +1,5 @@
+# D8: stable Rust, the same channel as third_party/tsrs. Upgrade in a PR of its own.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

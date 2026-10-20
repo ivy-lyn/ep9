@@ -1,0 +1,15 @@
+[package]
+name = "ep9_value"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# Tests only: fake cells must sit below 2^47 (H7), so the tests take them from a small cage.
+# The library itself keeps 0 dependencies (08-repo section 2).
+[dev-dependencies]
+ep9_platform = { path = "../ep9_platform" }
+
+[lints]
+workspace = true

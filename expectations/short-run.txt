@@ -1,0 +1,14 @@
+# SHORT-RUN (docs/plan/10-quality.md section 3)
+# Content:     tsc 6 on a pinned ~70k-line TS project, 1-2 s [R15]; the Octane TypeScript workload
+# Comparators: node with a warm compile cache (NODE_COMPILE_CACHE; cold node reported too);
+#              ep9 JIT-only with code cache
+# Feeds:       FV2, K-A4P, K-A4H (A4); the SHORT-RUN latency report (G15)
+#
+# Columns: <id> <status> <source>   (format: see expectations/jitless-set.txt)
+
+# tsc 6.0.3 on engine262/src: 69k TS lines plus 14k library lines, about 1.6 s on node [R15].
+# Missing: pins for the TypeScript 6 compiler and for the project. Candidates (not pins):
+# npm typescript@6.0.3 (sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==);
+# engine262/engine262 (the research did not record its revision; its session clone is at 267d1d441505).
+tsc6/engine262           TBD     -
+octane/typescript        pinned  bench-octane:typescript-compiler.js,typescript-input.js,typescript.js

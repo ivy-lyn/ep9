@@ -1,0 +1,27 @@
+[package]
+name = "ep9_platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# Versions checked with `cargo info` on 2026-10-20: libc 0.2.191 is the newest stable
+# (1.0 is still alpha); windows-sys 0.61.2 is the newest.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "stack_main"
+harness = false

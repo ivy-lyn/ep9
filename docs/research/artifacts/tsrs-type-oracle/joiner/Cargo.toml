@@ -1,0 +1,19 @@
+[package]
+name = "oxc_span_dump"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+oxc_parser = "=0.155.0"
+oxc_ast = "=0.155.0"
+oxc_ast_visit = "=0.155.0"
+oxc_allocator = "=0.155.0"
+oxc_span = "=0.155.0"
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+debug = 1

@@ -1,0 +1,39 @@
+# Line endings (docs/plan/12-governance.md section 6). LF in the repository and in every checkout, on
+# every OS, whatever core.autocrlf says. rustfmt, the shell scripts, the expectation files and
+# the CI scripts assume LF.
+* text=auto eol=lf
+
+# Patches must apply byte for byte. test262 files can hold CR and CRLF on purpose
+# (line-terminator tests), so git must not convert patch files.
+*.patch -text
+
+# Windows-only scripts need CRLF in cmd.exe and PowerShell 5. None exist yet.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files: no line-ending conversion, no textual diff or merge.
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.wasm binary
+*.gz binary
+*.zip binary
+*.zst binary
+*.o binary
+*.a binary
+*.lib binary
+*.obj binary
+*.exe binary
+*.dll binary
+*.dylib binary
+*.so binary
+*.ep9d binary
+*.ep9u binary
+*.ep9h binary
+*.ep9prof binary
+
+# Recorded measurement data: collapsed in PR diffs on GitHub, still diffable.
+docs/measurements/*.json linguist-generated=true

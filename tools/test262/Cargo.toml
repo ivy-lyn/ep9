@@ -1,0 +1,16 @@
+[package]
+name = "ep9_test262"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ep9-test262"
+path = "src/main.rs"
+
+[dependencies]
+ep9_frontend = { path = "../../crates/ep9_frontend" }
+
+[lints]
+workspace = true

@@ -1,0 +1,29 @@
+[package]
+name = "sp-gc"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "SP-GC spike (M0 week 2): spill trampolines, probe cases S1-S7, random-safepoint stress"
+
+[dependencies]
+ep9_platform = { path = "../../crates/ep9_platform" }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
+# The probes need optimized code: at opt-level 0 every value lives on the stack, so register
+# cases never happen. `cargo test` therefore builds with opt-level 3 too.
+[profile.dev]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = "line-tables-only"
+
+# Throwaway spike: its own workspace, outside the root one (08-repo section 1).
+[workspace]
