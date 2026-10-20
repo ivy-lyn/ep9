@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-20) |
+| Status | Draft (2026-10-20). S0 heap code (2026-10-21, `crates/ep9_heap`) has no `Drop` or finalizer hook for cells and no identity hash |
 | Fix by | M0 |
 | Freeze point | M1 exit |
 | Origin | v1#8; plan status U (unchanged) |
@@ -82,3 +82,4 @@ Identity hash stored lazily. No raw address escapes. No Rust `Drop` on heap obje
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-20 | draft | First draft from 02 §6 and 03 §1, §5 (M0 wk1 list) | ADR agent |
+| 2026-10-21 | clarify | Status: S0 heap built. A cell kind has only a trace function and a size; the sweep runs no Rust code for dead cells. No identity hash yet (H12-Q1 open) | heap agent |

@@ -7,7 +7,7 @@
 - Fuzzing adds a mode x tier differential, hint chaos, and the parsers for units, .ep9h and .ep9prof.
 - Risks: RK1-RK28 come from plan v1. RK29-RK44 are new AOT risks.
 
-IDs used here: G1, G6, G7, G12, G13, G15; N10; H2, H3, H5, H16, H29-H37; D1-D21; M0-M10, M1a; A1h, A1, A2, A3, A4, A5; T0-T3; baseline-AOT, optimized-AOT; JIT mode, AOT-jitless mode, hybrid mode; PROVEN, RUNTIME, PROFILED, HINTED; SLOWPATH, PIN, THROW; FV1-FV3; K-A3, K-A4J, K-A4P, K-A4H, K-A5pre, K-A5, K-A5v-cov, K-A5v-bound, K-A5v; VERIFIED; V1-V3 (barrier verifiers); HINT-SET, TYPED-KERNELS, SHORT-RUN, JITLESS-SET, STARTUP-SET, SIZE-REPORT; S1, S2, S2b, S3; RX0, RX1; P1-P5; SP-*; RK1-RK44.
+IDs used here: G1, G6, G7, G12, G13, G15; N10; H2, H3, H5, H11, H16, H29-H37; D1-D21; M0-M10, M1a, M5c; A1h, A1, A2, A3, A4, A5, A5v; T0-T3; baseline-AOT, optimized-AOT; JIT mode, AOT-jitless mode, hybrid mode; PROVEN, RUNTIME, PROFILED, HINTED; SLOWPATH, PIN, THROW; FV1-FV3; K-A3, K-A4J, K-A4P, K-A4H, K-A5pre, K-A5, K-A5v-cov, K-A5v-bound, K-A5v; VERIFIED; V1-V3 (barrier verifiers); HINT-SET, TYPED-KERNELS, SHORT-RUN, JITLESS-SET, STARTUP-SET, SIZE-REPORT; S1, S2, S2b, S3; RX0, RX1; P1-P5; SP-*, Spike B; RK1-RK44.
 
 Evidence tags: [R01] [R02] [R03] [R04] [R05] [R06] [R07] [R08] [R09] [R10] [R11] [R12] [R13] [R14] [R15] [R16] [R17] [R18] [P1] [T262] [TSRS]. Paths are in the table at the end.
 

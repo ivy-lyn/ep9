@@ -6,6 +6,7 @@ Committed expectations and pinned benchmark lists ([08-repo](../docs/plan/08-rep
 | File | What | Written by |
 |---|---|---|
 | `test262-parse.<target>.txt` | Parse-only test262 results per target | `cargo run --release -p ep9_test262 -- parse` |
+| `test262.<target>.<mode>.txt` | Full test262 results per target and mode: the failing paths. `<mode>` = the `--force-mode` value (`jit` only, until A3). First file: `test262.aarch64-apple-darwin.jit.txt` (M0 week 3) | `cargo run --release -p ep9_test262 -- exec --update-expectations` |
 | `jetstream-m7.txt` | JetStream 3 M7 list (G4, M7 exit 3) | `node tools/bench/jetstream/lists.mjs` |
 | `jetstream-m2.txt` | JetStream 3 M2 list (M2 exit 7) | `node tools/bench/jetstream/lists.mjs` |
 | `jitless-set.txt` | JITLESS-SET: Octane-7, v8-v7 kernels, TS workload | by hand |

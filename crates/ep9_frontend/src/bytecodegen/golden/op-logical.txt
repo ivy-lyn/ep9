@@ -1,0 +1,87 @@
+# op-logical: script (sloppy)
+# | function f(a, b, c) { return [a && b, a || b, a ?? b, a && b || c, a ? b : c]; }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=80 source=embedded hints=none
+source_hash=3f539119e4e249de1dc1dfbc99fdb67090a2b9db06b80dc1f484bd6936dee9fa
+strings (1):
+  str0 "f"
+scopes (2):
+  scope0 script outer=- flags=[] slots=["f":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..80
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=3 length=3 regs=2 range=0..80
+  code (90 bytes):
+      0 S> CreateArrayLiteral k0, s0, #0x01  ; k0 = ArrayBoilerplate [_, _, _, _, _] ; 6d 00 00 01
+      4    Star r0                                      ; 0c 00
+      6    LdaZero                                      ; 03
+      7    Star r1                                      ; 0c 01
+      9    Ldar a0                                      ; 0b fe
+     11    JumpIfToBooleanFalse @15                     ; 82 04
+     13    Ldar a1                                      ; 0b fd
+     15 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     19    LdaSmi [1]                                   ; 04 01
+     21    Star r1                                      ; 0c 01
+     23    Ldar a0                                      ; 0b fe
+     25    JumpIfToBooleanTrue @29                      ; 81 04
+     27    Ldar a1                                      ; 0b fd
+     29 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     33    LdaSmi [2]                                   ; 04 02
+     35    Star r1                                      ; 0c 01
+     37    Ldar a0                                      ; 0b fe
+     39    JumpIfUndefinedOrNull @43                    ; 87 04
+     41    Jump @45                                     ; 7e 04
+     43    Ldar a1                                      ; 0b fd
+     45 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     49    LdaSmi [3]                                   ; 04 03
+     51    Star r1                                      ; 0c 01
+     53    Ldar a0                                      ; 0b fe
+     55    JumpIfToBooleanFalse @59                     ; 82 04
+     57    Ldar a1                                      ; 0b fd
+     59    JumpIfToBooleanTrue @63                      ; 81 04
+     61    Ldar a2                                      ; 0b fc
+     63 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     67    LdaSmi [4]                                   ; 04 04
+     69    Star r1                                      ; 0c 01
+     71    Ldar a0                                      ; 0b fe
+     73    JumpIfToBooleanFalse @79                     ; 82 06
+     75    Ldar a1                                      ; 0b fd
+     77    Jump @81                                     ; 7e 04
+     79    Ldar a2                                      ; 0b fc
+     81 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     85    Ldar r0                                      ; 0b 00
+     87    Return                                       ; 92
+     88    LdaUndefined                                 ; 05
+     89    Return                                       ; 92
+  constants (1):
+      0 ArrayBoilerplate [_, _, _, _, _]
+  feedback (2):
+      0 Literal
+      1 StoreInArrayLiteral
+  handlers (0):
+  positions (6):
+      0 S 22 (1:23)
+     15 E 29 (1:30)
+     29 E 29 (1:30)
+     45 E 29 (1:30)
+     63 E 29 (1:30)
+     81 E 29 (1:30)

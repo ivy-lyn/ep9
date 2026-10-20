@@ -1,0 +1,77 @@
+# fn-named-expr: script (sloppy)
+# | var f = function g() { return g; }; var h = function() {}; var i = () => {};
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=76 source=embedded hints=none
+source_hash=a1023dbed0dfae799bd9f6402721102ba7d8d83d06cc5f0a530cc5ad2add475e
+strings (4):
+  str0 "f"
+  str1 "h"
+  str2 "i"
+  str3 "g"
+scopes (5):
+  scope0 script outer=- flags=[] slots=["f":var, "h":var, "i":var]
+  scope1 block outer=scope0 flags=[] slots=[]
+  scope2 function outer=scope1 flags=[] slots=[]
+  scope3 function outer=scope0 flags=[] slots=[]
+  scope4 function outer=scope0 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=0 range=0..76
+  code (28 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9 E> StaGlobal k1, s1  ; k1 = String str0 "f"     ; 12 01 01
+     12 S> CreateClosure k2, s2, #0x00  ; k2 = Function f2 ; 74 02 02 00
+     16 E> StaGlobal k3, s3  ; k3 = String str1 "h"     ; 12 03 03
+     19 S> CreateClosure k4, s4, #0x00  ; k4 = Function f3 ; 74 04 04 00
+     23 E> StaGlobal k5, s5  ; k5 = String str2 "i"     ; 12 05 05
+     26    LdaUndefined                                 ; 05
+     27    Return                                       ; 92
+  constants (6):
+      0 Function f1
+      1 String str0 "f"
+      2 Function f2
+      3 String str1 "h"
+      4 Function f3
+      5 String str2 "i"
+  feedback (6):
+      0 CreateClosure
+      1 StoreGlobal
+      2 CreateClosure
+      3 StoreGlobal
+      4 CreateClosure
+      5 StoreGlobal
+  handlers (0):
+  positions (7):
+      0 S 0 (1:1)
+      5 S 4 (1:5)
+      9 E 4 (1:5)
+     12 S 40 (1:41)
+     16 E 40 (1:41)
+     19 S 63 (1:64)
+     23 E 63 (1:64)
+function f1 normal name="g" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=8..34
+  code (4 bytes):
+      0 S> LdaCurrentFunction                           ; 0e
+      1    Return                                       ; 92
+      2    LdaUndefined                                 ; 05
+      3    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 23 (1:24)
+function f2 normal name="h" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=44..57
+  code (2 bytes):
+      0    LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (0):
+function f3 arrow name="i" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=67..75
+  code (2 bytes):
+      0    LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (0):

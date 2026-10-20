@@ -1,5 +1,6 @@
-//! NaN-boxed `Value`, `JsResult`, `Throw`, tags and NaN purification (H6), plus the 8-byte
-//! object header word `Word0` (H8). This crate has no dependencies.
+//! NaN-boxed `Value`, `JsResult`, `Throw`, tags and NaN purification (H6), the 8-byte object
+//! header word `Word0` (H8), and exact ToInt32 / ToUint32 ([`to_int32`], [`to_uint32`]).
+//! This crate has no dependencies.
 //!
 //! | Kind      | 64-bit pattern                 | Test                          |
 //! |-----------|--------------------------------|-------------------------------|
@@ -20,9 +21,11 @@ compile_error!("ep9_value needs a little-endian target: Word0 byte offsets assum
 #[cfg(test)]
 extern crate std;
 
+mod conv;
 mod header;
 mod value;
 
+pub use conv::{to_int32, to_uint32};
 pub use header::{ShapeId, Word0};
 pub use value::{Unpacked, Value, encoding};
 
@@ -51,5 +54,7 @@ const _: () = {
     assert!(size_of::<ShapeId>() == 4);
 };
 
+#[cfg(test)]
+mod conv_node_cases;
 #[cfg(test)]
 mod tests;

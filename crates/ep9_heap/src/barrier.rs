@@ -1,41 +1,80 @@
-//! Pre-store barrier fast path (H11, 03-gc §3). Prototype for SP-Value; the slow path only
-//! counts calls until S1/S2 give it a remembered set and an SATB queue.
+//! Store barrier, version 2: the JSC Riptide form decided for H11 (03-gc §3).
 //!
 //! ```text
-//! Slot::set(host, slot, new, state):
-//!     if host.word0.gc_state <= state.threshold        // header byte vs isolate byte
-//!         if is_cell(old) || is_cell(new)              // old = slot value before the store
-//!             barrier_slow(host, state)                // cold, out of line
-//!     slot = new                                       // Relaxed
+//! store(host, slot, v):                      same shape in T0, Rust, T1-T3, both AOT code kinds
+//!     if is_cell(v) && host.gc_state <= threshold     // u8 values, unsigned compare
+//!         barrier_slow(host, slot, v)                 // cold, out of line; it does the store
+//!     else
+//!         slot.store(v, Relaxed)
 //! ```
 //!
-//! Which value the cell test reads:
+//! | gc_state (word0 byte 4) | Value | Meaning |
+//! |---|---|---|
+//! | [`gc_state::BLACK`] | 1 | Old (mark bit stuck) and not remembered. In S2: scanned |
+//! | [`gc_state::WHITE`] | 2 | Young: allocated since the last GC. Every allocation writes WHITE |
+//! | [`gc_state::GREY`] | 3 | Remembered (S1) or queued for a revisit (S2) |
 //!
-//! | Filter       | Generations (S1: old host gets a new young ref) | SATB (S2: overwritten ref must stay marked) |
-//! |--------------|-----------------------------------------------|---------------------------------------------|
-//! | new (H11 text) | sound                                        | unsound: `host.f = 5` drops the old cell     |
-//! | old (task)   | unsound: `host.f = young` over an int is missed | sound                                      |
-//! | old or new   | sound                                          | sound                                       |
+//! | Threshold | Value | Stage | Effect |
+//! |---|---|---|---|
+//! | [`threshold::OFF`] | 0 | S0 | No host fires |
+//! | [`threshold::GEN`] | 1 | S1, S2 between cycles | BLACK hosts fire |
+//! | [`threshold::MARKING`] | 0xFF | S2 while marking runs | Every host fires |
 //!
-//! `Slot::set` uses "old or new". The header check runs first, so the common fast path never
-//! loads the old value. The probes in [`probe`] build all three forms for disassembly.
+//! - **Filter on the new value only.** A store that deletes an edge needs no barrier: the
+//!   final fixpoint rescans the roots (retreating wavefront, not SATB).
+//! - **The slow path does the store.** While marking runs, S2 will do `store (Release);
+//!   fence (SeqCst); load gc_state` there. In S0 it only stores.
+//! - **Emitter rule.** No GC point (call, safepoint poll, allocation slow path) between the
+//!   check and the store; a loaded threshold or gc_state is never reused across a GC point.
+//! - **Elision.** E1: `v` is known not to be a cell. E2: the host was allocated in this code
+//!   region, no GC point ran since, and it has not escaped ([`Slot::init`]). E3: stores into
+//!   roots (VM stack, handles, scratch roots, unit RW cells).
+//!
+//! The fast path is 4 instructions plus the cell test on aarch64 (`and`, `tst`, `b.ne`,
+//! `ldrb`, `ldrb`, `cmp`, `b.ls`, then `str`). `disasm-barrier.sh` in this crate checks it on
+//! the release build of [`probe::ep9_probe_barrier`].
 
-use core::sync::atomic::{AtomicU8, AtomicU64, Ordering::Relaxed};
+use core::sync::atomic::{
+    AtomicU8, AtomicU64,
+    Ordering::{Relaxed, Release},
+};
 
 use ep9_value::encoding::NOT_CELL_MASK;
-use ep9_value::{Value, Word0};
+use ep9_value::{ShapeId, Value, Word0};
 
-/// Barrier version for the unit header (H11, H35). It covers the fast-path shape and the
-/// threshold offset. Bump it when either changes; slow-path changes need no bump.
-pub const BARRIER_VERSION: u32 = 1;
+/// Barrier version for the unit header (H11, H35). It covers the fast-path shape (check, then
+/// a slow path that stores), the new-value filter and `NOT_CELL_MASK`, the gc_state offset and
+/// values, the threshold offset, the slow-path entries [`barrier_slow`] and
+/// [`barrier_slow_shape`], the emitter rule, elisions E1-E3 and the TLAB offsets
+/// ([`crate::Heap::TLAB_CURSOR_OFFSET`]). Slow-path semantics need no new version.
+pub const BARRIER_VERSION: u32 = 2;
 
-/// Barrier fields of the isolate. JIT and AOT code read `threshold` as one byte at a fixed
-/// offset from the isolate register.
+/// Cell states in word0 byte 4 ([`Word0::GC_STATE_OFFSET`]).
+pub mod gc_state {
+    /// Old and not remembered; in S2: scanned.
+    pub const BLACK: u8 = 1;
+    /// Allocated since the last GC.
+    pub const WHITE: u8 = 2;
+    /// Remembered (S1) or queued for a revisit (S2).
+    pub const GREY: u8 = 3;
+}
+
+/// Values of the isolate's barrier threshold. A host fires when `gc_state <= threshold`.
+pub mod threshold {
+    /// S0: no host fires (every gc_state is at least 1).
+    pub const OFF: u8 = 0;
+    /// S1 and S2 between cycles: BLACK hosts fire.
+    pub const GEN: u8 = 1;
+    /// S2 while marking runs: every host fires.
+    pub const MARKING: u8 = 0xFF;
+}
+
+/// The barrier field of the isolate. JIT and AOT code read `threshold` as one byte at a fixed
+/// offset from the isolate register; [`crate::Heap`] keeps this struct at offset 0.
 #[repr(C)]
 #[derive(Debug)]
 pub struct BarrierState {
     threshold: AtomicU8,
-    slow_calls: AtomicU64,
 }
 
 const _: () = assert!(core::mem::offset_of!(BarrierState, threshold) == 0);
@@ -43,13 +82,10 @@ const _: () = assert!(core::mem::offset_of!(BarrierState, threshold) == 0);
 impl BarrierState {
     /// Byte offset of the threshold inside this struct.
     pub const THRESHOLD_OFFSET: usize = 0;
-    /// Threshold that turns the barrier off (S0). Cell states start at 1, so none is <= 0.
-    pub const OFF: u8 = 0;
 
     pub const fn new(threshold: u8) -> BarrierState {
         BarrierState {
             threshold: AtomicU8::new(threshold),
-            slow_calls: AtomicU64::new(0),
         }
     }
 
@@ -58,20 +94,21 @@ impl BarrierState {
         self.threshold.load(Relaxed)
     }
 
+    /// Changes the threshold. Only the GC does this, at a safepoint.
     pub fn set_threshold(&self, threshold: u8) {
         self.threshold.store(threshold, Relaxed);
-    }
-
-    /// Number of slow-path calls so far (prototype counter).
-    pub fn slow_calls(&self) -> u64 {
-        self.slow_calls.load(Relaxed)
     }
 }
 
 /// A GC-visible heap field that holds a `Value`. Every access is a Relaxed atomic (H11).
+///
+/// A heap slot never holds the bits 0: allocation pre-fills every word of a new cell with
+/// `undefined` (H06-empty).
 #[repr(transparent)]
 #[derive(Debug)]
 pub struct Slot(AtomicU64);
+
+const _: () = assert!(size_of::<Slot>() == 8 && align_of::<Slot>() == 8);
 
 impl Slot {
     pub const fn new(v: Value) -> Slot {
@@ -80,25 +117,41 @@ impl Slot {
 
     #[inline(always)]
     pub fn get(&self) -> Value {
-        // SAFETY: a Slot only ever holds bits from `Value::to_bits` (`new`, `set`), so they are
-        // non-zero and valid; that makes building the Value sound. A cell pattern came from a
-        // cell that was live when its Value was made (`from_cell_ptr` contract). Keeping that
-        // cell live while a slot holds it is the caller's contract in S0 (no GC yet) and the
-        // GC's once it traces heap slots.
+        // SAFETY: a heap slot holds bits from `Value::to_bits` or the allocator's pre-fill
+        // (`undefined`), so they are valid and not 0. A cell pattern points to a cell that the
+        // GC keeps live while this slot is reachable (the host is live while `&self` is).
         unsafe { Value::from_bits_unchecked(self.0.load(Relaxed)) }
     }
 
-    /// Stores `new` with the pre-store barrier. `host` is the header of the cell that holds
-    /// this slot.
+    /// The raw bits, for the GC and for code that copies values without decoding them.
     #[inline(always)]
-    pub fn set(&self, host: &Word0, new: Value, state: &BarrierState) {
-        if host.gc_state() <= state.threshold() {
-            let old = self.0.load(Relaxed);
-            if is_cell_bits(old) || is_cell_bits(new.to_bits()) {
-                barrier_slow(host, state);
-            }
+    pub fn bits(&self) -> u64 {
+        self.0.load(Relaxed)
+    }
+
+    /// Stores `v` with the barrier. `host` is the header of the cell that holds this slot, and
+    /// `state` is the heap's [`BarrierState`].
+    #[inline(always)]
+    pub fn set(&self, host: &Word0, v: Value, state: &BarrierState) {
+        if is_cell_bits(v.to_bits()) && host.gc_state() <= state.threshold() {
+            barrier_slow(host, self, v);
+        } else {
+            self.0.store(v.to_bits(), Relaxed);
         }
-        self.0.store(new.to_bits(), Relaxed);
+    }
+
+    /// Stores `v` with no barrier. Allowed only under an elision rule: E1 (`v` is not a cell),
+    /// E2 (the host was allocated with no GC point since and has not escaped), or E3 (the slot
+    /// is a root).
+    #[inline(always)]
+    pub fn init(&self, v: Value) {
+        self.0.store(v.to_bits(), Relaxed);
+    }
+
+    /// GC-internal store (weak clearing). Not a mutator store.
+    #[inline(always)]
+    pub(crate) fn gc_store(&self, v: Value) {
+        self.0.store(v.to_bits(), Relaxed);
     }
 }
 
@@ -108,51 +161,82 @@ pub const fn is_cell_bits(bits: u64) -> bool {
     bits & NOT_CELL_MASK == 0
 }
 
-/// Slow path. JIT and AOT code reach it through the isolate table (Runtime relocation), so it
-/// uses the C ABI. S0: no remembered set or SATB queue yet; it only counts.
-#[cold]
-#[inline(never)]
-pub extern "C" fn barrier_slow(host: &Word0, state: &BarrierState) {
-    let _ = host;
-    state.slow_calls.fetch_add(1, Relaxed);
+/// Installs a new ShapeId in word0 with the barrier (03-gc §3 "Shape install"). The value is
+/// a shape cell, so the cell test is known to pass and is skipped.
+#[inline(always)]
+pub fn set_shape(host: &Word0, id: ShapeId, state: &BarrierState) {
+    if host.gc_state() <= state.threshold() {
+        barrier_slow_shape(host, id);
+    } else {
+        host.set_shape_id(id);
+    }
 }
 
-/// Disassembly probes for SP-Value (09-milestones §4) and `cargo xtask disasm-check`.
+/// Barrier slow path. JIT and AOT code reach it through the isolate table (Runtime
+/// relocation), so it uses the C ABI. It never allocates on the GC heap and never reaches a
+/// safepoint.
+///
+/// | Stage | Does |
+/// |---|---|
+/// | S0 (now) | The store (Release). Logs nothing |
+/// | S1 | Store; LOS host: dirty the 512-byte card; BLACK host: set GREY, push to the remembered set |
+/// | S2 | Store (Release); `fence(SeqCst)`; re-read gc_state; re-grey a BLACK marked host |
+#[cold]
+#[inline(never)]
+pub extern "C" fn barrier_slow(host: &Word0, slot: &Slot, v: Value) {
+    let _ = host;
+    #[cfg(test)]
+    slow_counter::bump();
+    slot.0.store(v.to_bits(), Release);
+}
+
+/// Slow path of [`set_shape`]. S0: the store. S1 and S2 log the host as in [`barrier_slow`].
+#[cold]
+#[inline(never)]
+pub extern "C" fn barrier_slow_shape(host: &Word0, id: ShapeId) {
+    #[cfg(test)]
+    slow_counter::bump();
+    host.set_shape_id(id);
+}
+
+/// Per-thread count of slow-path calls, for the tests only.
+#[cfg(test)]
+pub(crate) mod slow_counter {
+    use std::cell::Cell;
+
+    std::thread_local! {
+        static CALLS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn bump() {
+        CALLS.with(|c| c.set(c.get() + 1));
+    }
+
+    pub(crate) fn get() -> u64 {
+        CALLS.with(Cell::get)
+    }
+}
+
+/// Disassembly probes for SP-Value (09-milestones §4) and `disasm-barrier.sh`.
 /// `#[unsafe(no_mangle)]` keeps each one as an exported symbol in release builds.
 pub mod probe {
     use super::*;
 
-    /// The barrier that `Slot::set` uses: header byte first, then "old or new is a cell".
+    /// The decided barrier (`Slot::set`).
     #[unsafe(no_mangle)]
-    pub extern "C" fn ep9_probe_barrier(host: &Word0, slot: &Slot, new: Value, st: &BarrierState) {
-        slot.set(host, new, st);
+    pub extern "C" fn ep9_probe_barrier(host: &Word0, slot: &Slot, v: Value, st: &BarrierState) {
+        slot.set(host, v, st);
     }
 
-    /// H11 as 03-gc §3 writes it: `is_cell(new) && host.gc_state <= threshold`.
+    /// The shape-install barrier (`set_shape`): no cell test.
     #[unsafe(no_mangle)]
-    pub extern "C" fn ep9_probe_barrier_new(
-        host: &Word0,
-        slot: &Slot,
-        new: Value,
-        st: &BarrierState,
-    ) {
-        if is_cell_bits(new.to_bits()) && host.gc_state() <= st.threshold() {
-            barrier_slow(host, st);
-        }
-        slot.0.store(new.to_bits(), Relaxed);
+    pub extern "C" fn ep9_probe_barrier_shape(host: &Word0, id: ShapeId, st: &BarrierState) {
+        set_shape(host, id, st);
     }
 
-    /// SATB form: `is_cell(old) && host.gc_state <= threshold`.
+    /// An elided store (`Slot::init`): one `str`.
     #[unsafe(no_mangle)]
-    pub extern "C" fn ep9_probe_barrier_old(
-        host: &Word0,
-        slot: &Slot,
-        new: Value,
-        st: &BarrierState,
-    ) {
-        if host.gc_state() <= st.threshold() && is_cell_bits(slot.0.load(Relaxed)) {
-            barrier_slow(host, st);
-        }
-        slot.0.store(new.to_bits(), Relaxed);
+    pub extern "C" fn ep9_probe_slot_init(slot: &Slot, v: Value) {
+        slot.init(v);
     }
 }

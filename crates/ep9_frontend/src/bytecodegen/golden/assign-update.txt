@@ -1,0 +1,106 @@
+# assign-update: script (sloppy)
+# | var g; function f(o, k, a) { a++; ++a; var x = a--; g++; o.x++; --o[k]; return x; }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=83 source=embedded hints=none
+source_hash=48db74e9cd586cc393736890614ba58698d01899b4f0d65dda67609864126201
+strings (3):
+  str0 "g"
+  str1 "f"
+  str2 "x"
+scopes (2):
+  scope0 script outer=- flags=[] slots=["g":var, "f":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..83
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str1 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22 S> LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str1 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (4):
+      0 S 0 (1:1)
+      5 E 7 (1:8)
+     15 E 7 (1:8)
+     22 S 4 (1:5)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=3 length=3 regs=3 range=7..83
+  code (72 bytes):
+      0 S> Ldar a2                                      ; 0b fc
+      2 E> Inc s0                                       ; 42 00
+      4    Star a2                                      ; 0c fc
+      6 S> Ldar a2                                      ; 0b fc
+      8 E> Inc s1                                       ; 42 01
+     10    Star a2                                      ; 0c fc
+     12 S> Ldar a2                                      ; 0b fc
+     14 E> ToNumeric s2                                 ; 5a 02
+     16    Star r1                                      ; 0c 01
+     18 E> Dec s2                                       ; 43 02
+     20    Star a2                                      ; 0c fc
+     22    Ldar r1                                      ; 0b 01
+     24    Star r0                                      ; 0c 00
+     26 S> LdaGlobal k0, s3  ; k0 = String str0 "g"     ; 10 00 03
+     29 E> Inc s4                                       ; 42 04
+     31 E> StaGlobal k0, s5  ; k0 = String str0 "g"     ; 12 00 05
+     34 S> Ldar a0                                      ; 0b fe
+     36    Star r1                                      ; 0c 01
+     38 E> GetNamedProperty r1, k1, s6  ; k1 = String str2 "x" ; 21 01 01 06
+     42 E> Inc s7                                       ; 42 07
+     44 E> SetNamedProperty r1, k1, s8  ; k1 = String str2 "x" ; 24 01 01 08
+     48 S> Ldar a0                                      ; 0b fe
+     50    Star r1                                      ; 0c 01
+     52    Ldar a1                                      ; 0b fd
+     54    Star r2                                      ; 0c 02
+     56    Ldar r2                                      ; 0b 02
+     58 E> GetKeyedProperty r1, s9                      ; 23 01 09
+     61 E> Dec s10                                      ; 43 0a
+     63 E> SetKeyedProperty r1, r2, s11                 ; 26 01 02 0b
+     67 S> Ldar r0                                      ; 0b 00
+     69    Return                                       ; 92
+     70    LdaUndefined                                 ; 05
+     71    Return                                       ; 92
+  constants (2):
+      0 String str0 "g"
+      1 String str2 "x"
+  feedback (12):
+      0 BinaryOp
+      1 BinaryOp
+      2 BinaryOp
+      3 LoadGlobal
+      4 BinaryOp
+      5 StoreGlobal
+      6 LoadNamed
+      7 BinaryOp
+      8 StoreNamed
+      9 LoadKeyed
+     10 BinaryOp
+     11 StoreKeyed
+  handlers (0):
+  positions (19):
+      0 S 29 (1:30)
+      2 E 29 (1:30)
+      6 S 34 (1:35)
+      8 E 34 (1:35)
+     12 S 43 (1:44)
+     14 E 47 (1:48)
+     18 E 47 (1:48)
+     26 S 52 (1:53)
+     29 E 52 (1:53)
+     31 E 52 (1:53)
+     34 S 57 (1:58)
+     38 E 57 (1:58)
+     42 E 57 (1:58)
+     44 E 57 (1:58)
+     48 S 64 (1:65)
+     58 E 66 (1:67)
+     61 E 64 (1:65)
+     63 E 66 (1:67)
+     67 S 72 (1:73)

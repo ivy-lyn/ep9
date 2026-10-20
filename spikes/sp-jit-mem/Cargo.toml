@@ -1,0 +1,32 @@
+[package]
+name = "sp-jit-mem"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "SP-JIT-mem spike (M0 week 3): W^X code memory, icache, unwind registration, backtraces and panics through generated code"
+
+[dependencies]
+ep9_platform = { path = "../../crates/ep9_platform", features = ["jit"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Kernel",
+] }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
+# std::backtrace needs symbol names and lines; the cost bench needs optimized code.
+[profile.release]
+debug = "line-tables-only"
+
+# Throwaway spike: its own workspace, outside the root one (08-repo section 1).
+[workspace]

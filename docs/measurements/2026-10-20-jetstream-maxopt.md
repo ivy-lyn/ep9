@@ -6,6 +6,7 @@
 - Cross-check: d8 15.8.24 running `cli.js` natively gives 0.887 (M7) and 0.846 (M2). So the node host does not bend the list ratio.
 - So the G4 floor (est.) on this machine class is ep9 T2 ≥ 0.75 × 0.878 = **0.66x node full** on the M7 list.
 - **The machine was shared and busy.** The 1-minute load average was 17-37 on 18 cores during the run. Single runs of one workload vary by up to 97%. Use the medians below, not single cells. The quiet machine of 10-quality section 2 must measure this again before a gate uses it.
+- **Status: provisional** (speed-gate rule, [10-quality §3](../plan/10-quality.md#3-benchmark-sets), decision PERF-NOISE). The host was not a gate host and was loaded, so these ratios never pass or fail a gate. Measure again under the rule before M7 exit 3 uses them. The M2 list also changed after this run: decision M2-JETSTREAM-LIST keeps the Proxy, Reflect and WeakRef workloads, and `expectations/jetstream-m2.txt` now has 34 workloads (2026-10-21). The M2 ratio here is for the old 30-workload list.
 
 ## Setup
 

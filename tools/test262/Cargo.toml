@@ -4,13 +4,18 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "ep9-test262"
 path = "src/main.rs"
 
+# Engine crates only; no crates.io dependencies.
 [dependencies]
+ep9_bytecode = { path = "../../crates/ep9_bytecode" }
 ep9_frontend = { path = "../../crates/ep9_frontend" }
+ep9_heap = { path = "../../crates/ep9_heap" }
+ep9_vm = { path = "../../crates/ep9_vm" }
 
 [lints]
 workspace = true

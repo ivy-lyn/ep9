@@ -1,0 +1,111 @@
+[
+ {
+  "id": "5:6190",
+  "name": "tryDecodeURIComponent",
+  "file": "$EP9_RESEARCH_REPOS/hono/src/utils/url.ts",
+  "line": 221,
+  "kind": 220,
+  "v0": true,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "tryDecode",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "(str: string, decoder: Decoder) => string"
+   },
+   {
+    "name": "decodeURIComponent_",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "(encodedURIComponent: string) => string"
+   }
+  ]
+ },
+ {
+  "id": "5:6318",
+  "name": "_decodeURI",
+  "file": "$EP9_RESEARCH_REPOS/hono/src/utils/url.ts",
+  "line": 225,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "tryDecodeURIComponent",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "(str: string) => string"
+   }
+  ]
+ },
+ {
+  "id": "5:131",
+  "name": "splitPath",
+  "file": "$EP9_RESEARCH_REPOS/hono/src/utils/url.ts",
+  "line": 8,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "17:1678",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/hono/src/compose.ts",
+  "line": 51,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "i",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "18:32",
+  "name": "createNullObject",
+  "file": "$EP9_RESEARCH_REPOS/hono/src/router/utils.ts",
+  "line": 1,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "21:1685",
+  "name": "buildRegExp",
+  "file": "$EP9_RESEARCH_REPOS/hono/src/router/reg-exp-router/trie.ts",
+  "line": 59,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ }
+]

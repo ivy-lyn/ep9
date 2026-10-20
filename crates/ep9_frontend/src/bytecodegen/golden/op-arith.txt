@@ -1,0 +1,143 @@
+# op-arith: script (sloppy)
+# | function f(a, b) { return [a + b, a - 1, a * b, a / 2, a % b, a ** 2, a | b, a & 1, a ^ b, a << 2, a >> b, a >>> 1]; }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=118 source=embedded hints=none
+source_hash=ed6ba1d007deaaa5a46cacb2dc94d3aa5959b44fe51e3f5f8293b1565ca01359
+strings (1):
+  str0 "f"
+scopes (2):
+  scope0 script outer=- flags=[] slots=["f":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..118
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=2 length=2 regs=2 range=0..118
+  code (166 bytes):
+      0 S> CreateArrayLiteral k0, s0, #0x01  ; k0 = ArrayBoilerplate [_, _, _, _, _, _, _, _, _, _, _, _] ; 6d 00 00 01
+      4    Star r0                                      ; 0c 00
+      6    LdaZero                                      ; 03
+      7    Star r1                                      ; 0c 01
+      9    Ldar a1                                      ; 0b fd
+     11 E> Add a0, s2                                   ; 2a fe 02
+     14 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     18    LdaSmi [1]                                   ; 04 01
+     20    Star r1                                      ; 0c 01
+     22    Ldar a0                                      ; 0b fe
+     24 E> SubSmi [1], s3                               ; 37 01 03
+     27 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     31    LdaSmi [2]                                   ; 04 02
+     33    Star r1                                      ; 0c 01
+     35    Ldar a1                                      ; 0b fd
+     37 E> Mul a0, s4                                   ; 2c fe 04
+     40 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     44    LdaSmi [3]                                   ; 04 03
+     46    Star r1                                      ; 0c 01
+     48    Ldar a0                                      ; 0b fe
+     50 E> DivSmi [2], s5                               ; 39 02 05
+     53 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     57    LdaSmi [4]                                   ; 04 04
+     59    Star r1                                      ; 0c 01
+     61    Ldar a1                                      ; 0b fd
+     63 E> Mod a0, s6                                   ; 2e fe 06
+     66 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     70    LdaSmi [5]                                   ; 04 05
+     72    Star r1                                      ; 0c 01
+     74    Ldar a0                                      ; 0b fe
+     76 E> ExpSmi [2], s7                               ; 3b 02 07
+     79 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     83    LdaSmi [6]                                   ; 04 06
+     85    Star r1                                      ; 0c 01
+     87    Ldar a1                                      ; 0b fd
+     89 E> BitwiseOr a0, s8                             ; 30 fe 08
+     92 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     96    LdaSmi [7]                                   ; 04 07
+     98    Star r1                                      ; 0c 01
+    100    Ldar a0                                      ; 0b fe
+    102 E> BitwiseAndSmi [1], s9                        ; 3e 01 09
+    105 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+    109    LdaSmi [8]                                   ; 04 08
+    111    Star r1                                      ; 0c 01
+    113    Ldar a1                                      ; 0b fd
+    115 E> BitwiseXor a0, s10                           ; 31 fe 0a
+    118 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+    122    LdaSmi [9]                                   ; 04 09
+    124    Star r1                                      ; 0c 01
+    126    Ldar a0                                      ; 0b fe
+    128 E> ShiftLeftSmi [2], s11                        ; 3f 02 0b
+    131 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+    135    LdaSmi [10]                                  ; 04 0a
+    137    Star r1                                      ; 0c 01
+    139    Ldar a1                                      ; 0b fd
+    141 E> ShiftRight a0, s12                           ; 34 fe 0c
+    144 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+    148    LdaSmi [11]                                  ; 04 0b
+    150    Star r1                                      ; 0c 01
+    152    Ldar a0                                      ; 0b fe
+    154 E> ShiftRightLogicalSmi [1], s13                ; 41 01 0d
+    157 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+    161    Ldar r0                                      ; 0b 00
+    163    Return                                       ; 92
+    164    LdaUndefined                                 ; 05
+    165    Return                                       ; 92
+  constants (1):
+      0 ArrayBoilerplate [_, _, _, _, _, _, _, _, _, _, _, _]
+  feedback (14):
+      0 Literal
+      1 StoreInArrayLiteral
+      2 BinaryOp
+      3 BinaryOp
+      4 BinaryOp
+      5 BinaryOp
+      6 BinaryOp
+      7 BinaryOp
+      8 BinaryOp
+      9 BinaryOp
+     10 BinaryOp
+     11 BinaryOp
+     12 BinaryOp
+     13 BinaryOp
+  handlers (0):
+  positions (25):
+      0 S 19 (1:20)
+     11 E 27 (1:28)
+     14 E 26 (1:27)
+     24 E 34 (1:35)
+     27 E 26 (1:27)
+     37 E 41 (1:42)
+     40 E 26 (1:27)
+     50 E 48 (1:49)
+     53 E 26 (1:27)
+     63 E 55 (1:56)
+     66 E 26 (1:27)
+     76 E 62 (1:63)
+     79 E 26 (1:27)
+     89 E 70 (1:71)
+     92 E 26 (1:27)
+    102 E 77 (1:78)
+    105 E 26 (1:27)
+    115 E 84 (1:85)
+    118 E 26 (1:27)
+    128 E 91 (1:92)
+    131 E 26 (1:27)
+    141 E 99 (1:100)
+    144 E 26 (1:27)
+    154 E 107 (1:108)
+    157 E 26 (1:27)

@@ -15,6 +15,10 @@
 //! - The search tries aligned slots in a seeded order and reserves each slot at its exact
 //!   address. A slot that is in use, or above the VA limit of the host, is skipped.
 //! - Everything starts inaccessible. `commit` makes pages read-write; `decommit` drops them.
+//! - Exception (`jit` feature, macOS arm64): `Cage::reserve_jit` maps the code range with
+//!   `MAP_JIT` and read-write-execute protection, because macOS forbids `MAP_JIT` with
+//!   `MAP_FIXED` and forbids any `mprotect` of a `MAP_JIT` page after it is RWX. Each thread
+//!   still sees it as RX or RW only (`pthread_jit_write_protect_np`). See the `jit` module.
 
 use std::error::Error;
 use std::fmt;
@@ -71,6 +75,16 @@ fn invalid(msg: &'static str) -> io::Error {
 pub struct Reservation {
     base: usize,
     size: usize,
+    kind: Kind,
+}
+
+/// How the range was mapped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// Inaccessible until committed (every reservation except the one below).
+    Plain,
+    /// macOS arm64 code range: one `MAP_JIT` mapping, RWX from the start (see the module doc).
+    MapJit,
 }
 
 impl Reservation {
@@ -78,23 +92,54 @@ impl Reservation {
     pub fn reserve(size: usize) -> io::Result<Self> {
         check_size(size)?;
         let base = sys::reserve(0, size)?;
-        Ok(Self { base, size })
+        Ok(Self {
+            base,
+            size,
+            kind: Kind::Plain,
+        })
     }
 
     /// Reserves exactly `[addr, addr + size)`. Returns `Ok(None)` if the range is not free.
     /// `addr` and `size` are multiples of [`allocation_granularity`].
     pub fn reserve_at(addr: usize, size: usize) -> io::Result<Option<Self>> {
-        check_size(size)?;
-        if addr == 0 || !addr.is_multiple_of(allocation_granularity()) {
-            return Err(invalid(
-                "address is 0 or not a multiple of the allocation granularity",
-            ));
-        }
-        if addr.checked_add(size).is_none() {
-            return Err(invalid("range wraps around the address space"));
-        }
+        check_at(addr, size)?;
         // Build the value only on success: dropping it would release a range we do not own.
-        Ok(sys::reserve_at(addr, size)?.then(|| Self { base: addr, size }))
+        Ok(sys::reserve_at(addr, size)?.then(|| Self {
+            base: addr,
+            size,
+            kind: Kind::Plain,
+        }))
+    }
+
+    /// Reserves exactly `[addr, addr + size)` for generated code (`jit`). Returns `Ok(None)` if
+    /// the range is not free.
+    ///
+    /// | Target | Mapping |
+    /// |---|---|
+    /// | macOS arm64 | one `MAP_JIT` mapping, RWX; per-thread W^X (`jit::WxMode::MapJit`) |
+    /// | other | the same as [`Reservation::reserve_at`] |
+    #[cfg(any(feature = "jit", test))]
+    pub fn reserve_code_range_at(addr: usize, size: usize) -> io::Result<Option<Self>> {
+        check_at(addr, size)?;
+        #[cfg(all(target_vendor = "apple", target_arch = "aarch64"))]
+        {
+            Ok(sys::reserve_map_jit_at(addr, size)?.then(|| Self {
+                base: addr,
+                size,
+                kind: Kind::MapJit,
+            }))
+        }
+        #[cfg(not(all(target_vendor = "apple", target_arch = "aarch64")))]
+        {
+            Self::reserve_at(addr, size)
+        }
+    }
+
+    /// True for a macOS arm64 code range from `Reservation::reserve_code_range_at` (`jit`).
+    /// [`Reservation::commit`] and [`Reservation::decommit`] refuse such a range; use
+    /// `jit::CodeMemory`.
+    pub fn is_map_jit(&self) -> bool {
+        self.kind == Kind::MapJit
     }
 
     pub fn base(&self) -> usize {
@@ -125,6 +170,7 @@ impl Reservation {
     /// Executable pages lose execute access; JIT code will use its own W^X calls (`jit`).
     pub fn commit(&self, offset: usize, len: usize) -> io::Result<()> {
         let addr = self.subrange(offset, len)?;
+        self.check_plain()?;
         // SAFETY: `subrange` checked that the page-aligned range lies inside this reservation.
         // Commit only sets read-write protection; it never moves, frees or changes memory, so
         // no reference into the range becomes invalid.
@@ -138,12 +184,26 @@ impl Reservation {
     /// No live reference or pointer that will be dereferenced points into the range.
     pub unsafe fn decommit(&self, offset: usize, len: usize) -> io::Result<()> {
         let addr = self.subrange(offset, len)?;
+        self.check_plain()?;
         // SAFETY: the range is inside this reservation (`subrange`), and the caller guarantees
         // nothing still uses it.
         unsafe { sys::decommit(addr, len) }
     }
 
-    fn subrange(&self, offset: usize, len: usize) -> io::Result<usize> {
+    /// `MAP_JIT` pages cannot change protection after they are RWX (EACCES), and a plain
+    /// `MAP_FIXED` remap would drop `MAP_JIT` for good.
+    fn check_plain(&self) -> io::Result<()> {
+        if self.kind == Kind::MapJit {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "a MAP_JIT code range is committed through ep9_platform::jit::CodeMemory",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Checks `[offset, offset + len)` (page multiples, inside) and returns its address.
+    pub(crate) fn subrange(&self, offset: usize, len: usize) -> io::Result<usize> {
         let ps = page_size();
         if len == 0 || !offset.is_multiple_of(ps) || !len.is_multiple_of(ps) {
             return Err(invalid("offset and length must be non-zero page multiples"));
@@ -162,6 +222,19 @@ impl Drop for Reservation {
         let r = unsafe { sys::release(self.base, self.size) };
         debug_assert!(r.is_ok(), "release failed: {r:?}");
     }
+}
+
+fn check_at(addr: usize, size: usize) -> io::Result<()> {
+    check_size(size)?;
+    if addr == 0 || !addr.is_multiple_of(allocation_granularity()) {
+        return Err(invalid(
+            "address is 0 or not a multiple of the allocation granularity",
+        ));
+    }
+    if addr.checked_add(size).is_none() {
+        return Err(invalid("range wraps around the address space"));
+    }
+    Ok(())
 }
 
 fn check_size(size: usize) -> io::Result<()> {
@@ -303,6 +376,20 @@ pub struct Cage {
 impl Cage {
     /// Reserves the cage and the code range, then runs [`Cage::self_check`].
     pub fn reserve(config: &CageConfig) -> Result<Self, CageError> {
+        Self::reserve_with(config, Reservation::reserve_at)
+    }
+
+    /// Like [`Cage::reserve`], but the code range can hold generated code
+    /// ([`Reservation::reserve_code_range_at`]: `MAP_JIT` on macOS arm64).
+    #[cfg(any(feature = "jit", test))]
+    pub fn reserve_jit(config: &CageConfig) -> Result<Self, CageError> {
+        Self::reserve_with(config, Reservation::reserve_code_range_at)
+    }
+
+    fn reserve_with(
+        config: &CageConfig,
+        reserve_code: fn(usize, usize) -> io::Result<Option<Reservation>>,
+    ) -> Result<Self, CageError> {
         config.validate()?;
         let total = config.total();
         let first = config.min_base.div_ceil(config.align);
@@ -325,7 +412,7 @@ impl Cage {
                 continue;
             };
             // Dropping `heap` on the `continue` path releases the cage part again.
-            let Some(code) = Reservation::reserve_at(heap.end(), config.code_range_size)? else {
+            let Some(code) = reserve_code(heap.end(), config.code_range_size)? else {
                 continue;
             };
             let cage = Self {

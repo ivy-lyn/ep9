@@ -1,0 +1,71 @@
+# assign-simple: script (sloppy)
+# | var g; let l; function f(p) { var r; r = 1; p = 2; g = 3; l = 4; return r; }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=76 source=embedded hints=none
+source_hash=d4cda76bc693104ba25373bb107c76ac931f55cc9a694a65f4a1a82871ac6c88
+strings (3):
+  str0 "g"
+  str1 "l"
+  str2 "f"
+scopes (2):
+  scope0 script outer=- flags=[] slots=["g":var, "l":let, "f":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..76
+  code (38 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str2 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22 S> LdaUndefined                                 ; 05
+     23    Star r1                                      ; 0c 01
+     25    LdaConstant k2  ; k2 = String str1 "l"       ; 0a 02
+     27    Star r0                                      ; 0c 00
+     29 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     34    Ldar r1                                      ; 0b 01
+     36    LdaUndefined                                 ; 05
+     37    Return                                       ; 92
+  constants (3):
+      0 Function f1
+      1 String str2 "f"
+      2 String str1 "l"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (5):
+      0 S 0 (1:1)
+      5 E 14 (1:15)
+     15 E 14 (1:15)
+     22 S 11 (1:12)
+     29 E 7 (1:8)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=1 range=14..76
+  code (23 bytes):
+      0 S> LdaSmi [1]                                   ; 04 01
+      2    Star r0                                      ; 0c 00
+      4 S> LdaSmi [2]                                   ; 04 02
+      6    Star a0                                      ; 0c fe
+      8 S> LdaSmi [3]                                   ; 04 03
+     10 E> StaGlobal k0, s0  ; k0 = String str0 "g"     ; 12 00 00
+     13 S> LdaSmi [4]                                   ; 04 04
+     15 E> StaGlobal k1, s1  ; k1 = String str1 "l"     ; 12 01 01
+     18 S> Ldar r0                                      ; 0b 00
+     20    Return                                       ; 92
+     21    LdaUndefined                                 ; 05
+     22    Return                                       ; 92
+  constants (2):
+      0 String str0 "g"
+      1 String str1 "l"
+  feedback (2):
+      0 StoreGlobal
+      1 StoreGlobal
+  handlers (0):
+  positions (7):
+      0 S 37 (1:38)
+      4 S 44 (1:45)
+      8 S 51 (1:52)
+     10 E 51 (1:52)
+     13 S 58 (1:59)
+     15 E 58 (1:59)
+     18 S 65 (1:66)

@@ -1,0 +1,34 @@
+# cargo-deny configuration for the root workspace.
+# Rules: docs/plan/12-governance.md section 1 (LICENSE decision) and docs/plan/08-repo.md section 7.
+# Draft: docs/research/artifacts/decide/governance/deny.toml.
+# Run: cargo deny check licenses bans (cargo-deny 0.20.2). CI step: a follow-up of the CI owner.
+
+[graph]
+all-features = true
+
+[licenses]
+# An OR expression passes when one side is allowed (for example "Apache-2.0 OR GPL-2.0-only").
+# Add an id only when a crate in the graph needs it, in the PR that adds the crate.
+# Never allowed: GPL, LGPL, AGPL, SSPL. MPL-2.0 needs a per-crate exception
+# (file-level copyleft).
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSL-1.0",
+  "Unicode-3.0",
+]
+confidence-threshold = 0.93
+
+[licenses.private]
+# Workspace crates have publish = false. They still declare license.workspace = true.
+ignore = true
+
+[bans]
+# 08-repo section 7: LGPL big-number crates. The licence check rejects them too; this names them.
+deny = [
+  { crate = "malachite", reason = "LGPL-3.0 (08-repo section 7)" },
+  { crate = "rug", reason = "LGPL-3.0 (08-repo section 7)" },
+]
+# The lock has one duplicate today (syn 2 and syn 3, both proc-macro deps). Report, do not fail.
+multiple-versions = "warn"

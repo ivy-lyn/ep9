@@ -63,6 +63,42 @@ pub(crate) fn reserve_at(addr: usize, size: usize) -> io::Result<bool> {
     Ok(false)
 }
 
+/// macOS arm64 code range: maps exactly `[addr, addr + size)` with `MAP_JIT` and RWX.
+/// Returns `Ok(false)` if that range is not free.
+///
+/// - XNU rejects `MAP_JIT | MAP_FIXED` (EINVAL), so the address is a hint, as in `reserve_at`.
+/// - After a `MAP_JIT` page is RWX, XNU rejects every later `mprotect` of it (EACCES). So the
+///   whole range is RWX from the start; `pthread_jit_write_protect_np` gives W^X per thread.
+/// - Measured on macOS 27.0.1 (SP-JIT-mem, 2026-10-21).
+#[cfg(all(
+    any(feature = "jit", test),
+    target_vendor = "apple",
+    target_arch = "aarch64"
+))]
+pub(crate) fn reserve_map_jit_at(addr: usize, size: usize) -> io::Result<bool> {
+    // SAFETY: without MAP_FIXED, mmap only uses free address space, so no existing mapping
+    // changes. The result is checked for MAP_FAILED.
+    let p = unsafe {
+        libc::mmap(
+            addr as *mut c_void,
+            size,
+            libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+            libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_JIT,
+            -1,
+            0,
+        )
+    };
+    if p == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    if p as usize == addr {
+        return Ok(true);
+    }
+    // SAFETY: `p` is the mapping created just now; nothing else knows it.
+    unsafe { release(p as usize, size)? };
+    Ok(false)
+}
+
 /// # Safety
 /// `[addr, addr + size)` is address space this process reserved, and no live reference
 /// points into it.

@@ -33,7 +33,7 @@ use crate::{expect, json, pool};
 pub const DIRS: [&str; 4] = ["language", "built-ins", "annexB", "intl402"];
 
 /// INTERPRETING.md "Strict Mode": this exact prefix.
-const STRICT_PREFIX: &str = "\"use strict\";\n";
+pub(crate) const STRICT_PREFIX: &str = "\"use strict\";\n";
 
 /// Worker stack. oxc has no depth limit yet (01-front-end §6), so give it room.
 pub const STACK_BYTES: usize = 256 << 20;
@@ -61,7 +61,7 @@ pub struct Options {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Mode {
+pub(crate) enum Mode {
     Sloppy,
     Strict,
     Raw,
@@ -69,7 +69,7 @@ enum Mode {
 }
 
 impl Mode {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Mode::Sloppy => "sloppy",
             Mode::Strict => "strict",
@@ -148,7 +148,7 @@ impl Count {
     }
 }
 
-fn modes(meta: &Meta) -> Vec<Mode> {
+pub(crate) fn modes(meta: &Meta) -> Vec<Mode> {
     if meta.has_flag("module") {
         vec![Mode::Module]
     } else if meta.has_flag("raw") {
@@ -383,7 +383,7 @@ pub fn run(opts: &Options) -> ExitCode {
     let checked: BTreeSet<String> = all().map(|o| o.rel.clone()).collect();
     let mut status = ExitCode::SUCCESS;
     let diff = if opts.update {
-        if let Err(e) = expect::write(&opts.expect, opts.triple, &failing) {
+        if let Err(e) = expect::write(&opts.expect, &expect::parse_header(opts.triple), &failing) {
             eprintln!("ep9-test262: cannot write {}: {e}", opts.expect.display());
             return ExitCode::from(2);
         }

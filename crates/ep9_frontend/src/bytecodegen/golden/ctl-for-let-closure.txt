@@ -1,0 +1,124 @@
+# ctl-for-let-closure: script (sloppy)
+# | function f() { var r = []; for (let i = 0; i < 3; i++) { r.push(() => i); if (i) continue; } return r; }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=104 source=embedded hints=none
+source_hash=2d65ac7d7f8185bb66ae010a4552451e5990564dea767df2290f90a0316fb436
+strings (3):
+  str0 "f"
+  str1 "i"
+  str2 "push"
+scopes (5):
+  scope0 script outer=- flags=[] slots=["f":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+  scope2 block outer=scope1 flags=[needs-context] slots=["i":let]
+  scope3 block outer=scope2 flags=[] slots=[]
+  scope4 function outer=scope3 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..104
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=5 range=0..104
+  code (99 bytes):
+      0 S> CreateEmptyArrayLiteral s0                   ; 6e 00
+      2    Star r0                                      ; 0c 00
+      4 S> CreateBlockContext k0  ; k0 = Scope scope2   ; 76 00
+      6    PushContext r1                               ; 13 01
+      8    LdaTheHole                                   ; 07
+      9    StaCurrentContextSlot [0]                    ; 1b 00
+     11 S> LdaZero                                      ; 03
+     12    StaCurrentContextSlot [0]                    ; 1b 00
+     14    LdaCurrentContext                            ; 15
+     15    Star r2                                      ; 0c 02
+     17    PopContext r1                                ; 14 01
+     19 E> CreateBlockContext k0  ; k0 = Scope scope2   ; 76 00
+     21    PushContext r1                               ; 13 01
+     23    LdaContextSlot r2, [0], [0]                  ; 16 02 00 00
+     27    StaCurrentContextSlot [0]                    ; 1b 00
+     29    LdaCurrentContextSlot [0]                    ; 18 00
+     31    Star r2                                      ; 0c 02
+     33    LdaSmi [3]                                   ; 04 03
+     35 E> TestLessThan r2, s1                          ; 4d 02 01
+     38    JumpIfFalse @92                              ; 80 36
+     40 S> Ldar r0                                      ; 0b 00
+     42    Star r3                                      ; 0c 03
+     44 E> GetNamedProperty r3, k1, s2  ; k1 = String str2 "push" ; 21 03 01 02
+     48    Star r2                                      ; 0c 02
+     50 E> CreateClosure k2, s3, #0x00  ; k2 = Function f2 ; 74 02 03 00
+     54    Star r4                                      ; 0c 04
+     56 E> CallProperty1 r2, r3, r4, s4                 ; 61 02 03 04 04
+     61 S> LdaCurrentContextSlot [0]                    ; 18 00
+     63    JumpIfToBooleanFalse @67                     ; 82 04
+     65 S> Jump @67                                     ; 7e 02
+     67    LdaCurrentContext                            ; 15
+     68    Star r2                                      ; 0c 02
+     70    PopContext r1                                ; 14 01
+     72 E> CreateBlockContext k0  ; k0 = Scope scope2   ; 76 00
+     74    PushContext r1                               ; 13 01
+     76    LdaContextSlot r2, [0], [0]                  ; 16 02 00 00
+     80    StaCurrentContextSlot [0]                    ; 1b 00
+     82    LdaCurrentContextSlot [0]                    ; 18 00
+     84 E> Inc s5                                       ; 42 05
+     86    StaCurrentContextSlot [0]                    ; 1b 00
+     88    JumpLoop @29, [0], s6                        ; 7d 3b 00 06
+     92    PopContext r1                                ; 14 01
+     94 S> Ldar r0                                      ; 0b 00
+     96    Return                                       ; 92
+     97    LdaUndefined                                 ; 05
+     98    Return                                       ; 92
+  constants (3):
+      0 Scope scope2
+      1 String str2 "push"
+      2 Function f2
+  feedback (7):
+      0 Literal
+      1 CompareOp
+      2 LoadNamed
+      3 CreateClosure
+      4 Call
+      5 BinaryOp
+      6 JumpLoop
+  handlers (0):
+  positions (14):
+      0 S 19 (1:20)
+      4 S 27 (1:28)
+     11 S 36 (1:37)
+     19 E 27 (1:28)
+     35 E 43 (1:44)
+     40 S 57 (1:58)
+     44 E 59 (1:60)
+     50 E 64 (1:65)
+     56 E 59 (1:60)
+     61 S 74 (1:75)
+     65 S 81 (1:82)
+     72 E 27 (1:28)
+     84 E 50 (1:51)
+     94 S 93 (1:94)
+function f2 arrow name=- parent=f1 outer_scope=scope3 flags=[simple-params] params=0 length=0 regs=0 range=64..71
+  code (5 bytes):
+      0 S> LdaCurrentContextSlot [0]                    ; 18 00
+      2 E> ThrowReferenceErrorIfHole k0  ; k0 = String str1 "i" ; 94 00
+      4    Return                                       ; 92
+  constants (1):
+      0 String str1 "i"
+  feedback (0):
+  handlers (0):
+  positions (2):
+      0 S 70 (1:71)
+      2 E 70 (1:71)

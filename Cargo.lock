@@ -94,13 +94,21 @@ version = "0.0.0"
 [[package]]
 name = "ep9_cli"
 version = "0.0.0"
+dependencies = [
+ "ep9_bytecode",
+ "ep9_frontend",
+ "ep9_heap",
+ "ep9_vm",
+]
 
 [[package]]
 name = "ep9_frontend"
 version = "0.0.0"
 dependencies = [
+ "ep9_bytecode",
  "oxc_allocator",
  "oxc_ast",
+ "oxc_ast_visit",
  "oxc_diagnostics",
  "oxc_parser",
  "oxc_semantic",
@@ -127,7 +135,10 @@ dependencies = [
 name = "ep9_test262"
 version = "0.0.0"
 dependencies = [
+ "ep9_bytecode",
  "ep9_frontend",
+ "ep9_heap",
+ "ep9_vm",
 ]
 
 [[package]]
@@ -140,6 +151,12 @@ dependencies = [
 [[package]]
 name = "ep9_vm"
 version = "0.0.0"
+dependencies = [
+ "ep9_bytecode",
+ "ep9_heap",
+ "ep9_platform",
+ "ep9_value",
+]
 
 [[package]]
 name = "fastrand"

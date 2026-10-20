@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Syncs the benchmark sources to their pins (docs/plan/08-repo.md section 1, "bench.commit").
+# Syncs the benchmark sources to their pins (docs/plan/08-repo.md section 1, the bench-*.commit rows).
 # One pin file per repo, because sync_dep reads third_party/<name>.commit:
 #   bench-octane     chromium/octane, Octane 2.0 (archived 2017; Octane-7 kernels, TS workload)
 #   bench-v8v7       boa-dev/data branch "benchmarks": bench/bench-v8/combined.js (V8 suite v7,

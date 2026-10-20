@@ -6,7 +6,7 @@
 - Rule for every item: prefer the reversible option. Never make anything public.
 - This file sits in `docs/plan/` because the decision run could edit only plan, ADR and log files. It replaces the planned `docs/governance.md`.
 
-IDs used here: D2, D3, D6, D12; H28, H36; P1; RX1; M0, M1, M8; LICENSE, REMOTE-CI, ADR-P1-ADR-P4, CODEOWNERS, UPSTREAM, GITATTRIBUTES (decision ids, [decisions-log §5](../decisions-log.md#5-2026-10-20-decisions-made-by-the-agent-team-under-the-users-instruction)).
+IDs used here: D2, D3, D6, D12; H28, H36; P1; RX1; M0-M5, M8; LICENSE, REMOTE-CI, ADR-P1-ADR-P4, CODEOWNERS, UPSTREAM, GITATTRIBUTES (decision ids, [decisions-log §5](../decisions-log.md#5-2026-10-20-decisions-made-by-the-agent-team-under-the-users-instruction)).
 
 ## 1. Licence
 

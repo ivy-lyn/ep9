@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-20) |
+| Status | Draft (2026-10-20). S0 code built 2026-10-21: `crates/ep9_heap/src/layout.rs` (page layout), `memory.rs` (chunks, LOS), `heap.rs` (TLAB, lazy sweep). The code uses the proposed defaults of H09-Q1 to Q3: 8 B granule, 256 B lines, in-page header, LOS above 8 KiB |
 | Fix by | M0 wk2 |
 | Freeze point | M1 exit |
 | Origin | v1#5; plan status U (unchanged) |
@@ -85,3 +85,4 @@
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-20 | draft | First draft from 02 §6, 03 §2 and §4 (M0 wk1 list) | ADR agent |
+| 2026-10-21 | clarify | Status: S0 code built in `ep9_heap` with the H09-Q1 to Q3 defaults (8 B granule bitmaps, 256 B line marks, in-page header with first cell at offset 9472, LOS above 8 KiB in its own 256 KiB chunk run). The questions stay open until the review record | heap agent |

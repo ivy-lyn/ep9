@@ -1,0 +1,31 @@
+# op-comma: script (sloppy)
+# | var a, b; a = (1, 2, b);
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=24 source=embedded hints=none
+source_hash=57986e614f5799e0aa22aa5eb5a754f1e3f16146f53774687bcedc0f57aacd41
+strings (2):
+  str0 "a"
+  str1 "b"
+scopes (1):
+  scope0 script outer=- flags=[] slots=["a":var, "b":var]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=0 range=0..24
+  code (17 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> LdaSmi [1]                                   ; 04 01
+      7    LdaSmi [2]                                   ; 04 02
+      9 E> LdaGlobal k0, s0  ; k0 = String str1 "b"     ; 10 00 00
+     12 E> StaGlobal k1, s1  ; k1 = String str0 "a"     ; 12 01 01
+     15    LdaUndefined                                 ; 05
+     16    Return                                       ; 92
+  constants (2):
+      0 String str1 "b"
+      1 String str0 "a"
+  feedback (2):
+      0 LoadGlobal
+      1 StoreGlobal
+  handlers (0):
+  positions (4):
+      0 S 0 (1:1)
+      5 S 10 (1:11)
+      9 E 21 (1:22)
+     12 E 10 (1:11)

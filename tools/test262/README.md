@@ -1,9 +1,10 @@
 # ep9-test262
 
-The test262 runner. M0 week 1 has two commands: `index` and `parse`.
+The test262 runner. Commands: `parse` (M0 week 1), `exec` (M0 week 3), `index`.
 
 ```
 cargo run --release -p ep9_test262 -- parse          # exit 1 on a change vs the expectation file
+cargo run --release -p ep9_test262 -- exec           # the engine end to end, same exit rules
 cargo run --release -p ep9_test262 -- index --out /tmp/index.json
 ```
 
@@ -51,6 +52,76 @@ test262 root. `#` lines are comments.
 - `--update-expectations` writes the file from the current failures. It needs a full run.
 - Path prefixes as arguments (for example `test/annexB`) run a subset. Listed paths outside the subset are ignored.
 - `--json <file>` writes a summary with counts and every failure.
+
+## `exec`
+
+Each test runs through the whole engine: `ep9_frontend::compile` -> `ep9_vm::Isolate::run_script`.
+
+```text
+parent (exec)                         worker processes (exec-worker), one per thread
+  test/**/*.js, all 6 directories       one test path per stdin line
+  "rel\n" ---------------------------->  front matter -> runs by flags (as for parse)
+                                          per run: compile -> fresh Isolate
+                                            -> $262 prelude, assert.js, sta.js,
+                                               doneprintHandle.js (async), includes
+                                            -> the test; a watchdog terminates it at --timeout
+  <-------------- one result line ------  "rel  status  ok  runs  cause  detail"
+  no line in 2 x timeout + 5 s: kill the worker, respawn, infrastructure error
+  worker exits (crash, abort): infrastructure error with its stderr tail, respawn
+```
+
+| Item | Rule |
+|---|---|
+| Test set | Every `*.js` under `test/` (annexB, built-ins, harness, intl402, language, staging), except `*_FIXTURE*` |
+| Runs | As for `parse`: `module`, `raw`, `onlyStrict` (`"use strict";\n` prefix), `noStrict`, else sloppy and strict |
+| Harness | A `$262` prelude (`global`, `gc`), then `assert.js`, `sta.js`, `doneprintHandle.js` for `async`, then `includes`, each a separate sloppy script in the same isolate. `raw` tests get none of them |
+| Isolate | A new one per run. `print` collects output for async tests |
+| `negative.phase: parse` | Passes if compile gives an early SyntaxError of `negative.type`. A v0 "unsupported" error does not count |
+| `negative.phase: runtime` | Passes if the uncaught exception is `negative.type` (the `Name` of `Name: message`; non-Error objects are reported through ToString, as d8 does) |
+| `negative.phase: resolution` | Fails in v0 (no module linking) |
+| `async` | Passes if `print` wrote `Test262:AsyncTestComplete` |
+| Pass | Every run of the file passes. Counts are per file and per run |
+
+Infrastructure errors are not test results. They are: a panic in the engine, a run that hits
+the soft timeout (the watchdog calls `TerminateHandle::terminate`; the interrupt check stops
+the run), a stuck worker (killed at the hard timeout), a worker crash (abort or signal), an
+unreadable file, bad front matter, or a missing include. Any of them makes the run exit 2
+before it compares or writes the expectation file. So no expectation file can hide them.
+
+Failure causes: each failing file gets one cause, the first failing run's. The report lists
+the top `--causes` (default 20). A cause is the unsupported feature, the "not implemented"
+item, the uncaught error message (`ReferenceError: Symbol is not defined`), or
+`TypeError: undefined is not a function (<callee>)` with the callee text from the source.
+
+`expectations/test262.<target-triple>.jit.txt` (decision NAMING; mode `jit`, the only mode
+before A3) lists the failing paths, as for `parse`. `--update-expectations` writes it from a
+full run without infrastructure errors.
+
+`--gc-stress <n>` gives every isolate GC-stress (a collection before every n-th allocation)
+and the heap verifier after each collection; a verifier error panics, so it is an
+infrastructure error.
+
+Test hook: `EP9_TEST262_FAULT=panic:<substr>|abort:<substr>|hang:<substr>` makes a worker
+fail on matching paths. Only `tests/exec.rs` uses it.
+
+### Results at test262 d53ebc8b (M0 week 3, aarch64-apple-darwin, release, 18 workers)
+
+| Directory | Files passed | Runs passed |
+|---|---|---|
+| language | 8,681 / 23,726 (36.59%) | 16,321 / 44,497 |
+| built-ins | 614 / 23,823 | 1,179 / 47,341 |
+| annexB | 319 / 1,086 | 344 / 1,377 |
+| intl402 | 0 / 3,382 | 0 / 6,764 |
+| staging | 128 / 1,483 | 232 / 2,783 |
+| harness | 25 / 116 | 50 / 232 |
+| All | 9,767 / 53,616 (18.22%) | 18,126 / 102,994 |
+
+Wall time 4.7 s. 0 infrastructure errors.
+
+With `--gc-stress 1 --timeout 60` (a collection before every allocation, verifier after each):
+the same 9,767 files pass, 0 panics, 0 verifier errors, 0 crashes, wall time 155.7 s. 4 tests
+time out. They also fail without GC-stress: 3 `language/expressions/call/tco-*` tests (no
+tail calls, D7) and `staging/sm/String/string-upper-lower-mapping.js`.
 
 ## `index`
 

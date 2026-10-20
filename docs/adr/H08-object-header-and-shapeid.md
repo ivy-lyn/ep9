@@ -77,7 +77,7 @@ word0 (8 bytes, Relaxed atomic):
 
 - **SP-Value** ([09 §4](../plan/09-milestones.md#4-spikes), M0 wk2): word0 = 8 B. M0 exit item 8.
 - **SP-Unit** (M0 month 2, inside Spike B): first AOT code; its 10 opcodes load, call, unwind, GC-scan and fall back (reopens H34, H35).
-- A2 gate: GC-stress clean with AOT frames; header-mutation fallbacks 100%.
+- A2 gate: GC-stress clean with AOT frames; 100% of header mutations end in their [H35](H35-aot-unit-format.md) S3 outcome.
 
 ## Open questions
 
@@ -99,3 +99,4 @@ word0 (8 bytes, Relaxed atomic):
 |---|---|---|---|
 | 2026-10-20 | draft | First draft from 02 §6, 06 §2 and §2.1 (M0 wk1 list) | ADR agent |
 | 2026-10-20 | clarify | word0 byte 4 comment: gc_state values BLACK=1, WHITE=2, GREY=3 from the H11 decision; the mark bit is in side metadata (H9). Layout unchanged | apply agent |
+| 2026-10-21 | clarify | Validation: A2 gate wording "header-mutation fallbacks 100%" now uses the H35-fallback text ("100% of header mutations end in their H35 S3 outcome"), as in 09 §3 and 05 §12. No check changes | hygiene agent |

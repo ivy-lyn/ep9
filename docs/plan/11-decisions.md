@@ -8,7 +8,7 @@
 - The AOT choices wait for data where the plan says so: D17 at M7 exit (after SP-RegionCoverage at A1h, and SP-TypedBound and SP-RegionBound at M7), and D18 by its off-ramp and K-A4H.
 - No AOT part leaves v1 except by its kill rule. The orchestrator applies the rule at the points in §2.
 
-IDs used here: D1-D21; H1-H37; G9, G10, G12, G14, G15; N10; M0-M10, M1a; A1h, A3, A4, A5; T0-T3; M5c; RX1, RX2; P1-P5; S4; FV1-FV3; K-A3, K-A4J, K-A4P, K-A4H, K-A5pre, K-A5, K-A5v-cov, K-A5v-bound, K-A5v; SP-tsrs, SP-tsrs-win, SP-HintPrecision, SP-TypedBound, SP-RegionCoverage, SP-RegionBound, Spike B; PROFILED, HINTED, SOUND, VERIFIED; A5v; THROW; RK5, RK28, RK34, RK36, RK38, RK43.
+IDs used here: D1-D21; H1-H37; G9, G10, G12, G14, G15; N10; M0-M10, M1a; A1h, A3, A4, A5; T0-T3; M5c; RX1, RX2; P1-P5; S4; FV1-FV3; K-A3, K-A4J, K-A4P, K-A4H, K-A5pre, K-A5, K-A5v-cov, K-A5v-bound, K-A5v; SP-tsrs, SP-tsrs-win, SP-HintPrecision, SP-TypedBound, SP-RegionCoverage, SP-RegionBound, SP-Dispatch, SP-VA, Spike B; PROFILED, HINTED, SOUND, VERIFIED; A5v; THROW; RK5, RK28, RK34, RK36, RK38, RK43.
 
 Evidence tags: [R04] [R05] [R06] [R07] [R08] [R09] [R10] [R11] [R12] [R13] [R14] [R15] [R16] [R17] [R18] [P1] [TSRS]. Paths are in the table at the end.
 

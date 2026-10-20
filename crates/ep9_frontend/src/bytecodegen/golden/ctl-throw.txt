@@ -1,0 +1,80 @@
+# ctl-throw: script (sloppy)
+# | function f(e) { throw e; } function g() { throw new Error('x'); }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=65 source=embedded hints=none
+source_hash=c52467f52f8e419c7e993c05e1f5d9562f5a0455a1e497c4cdd352c83a2cc58a
+strings (4):
+  str0 "f"
+  str1 "g"
+  str2 "Error"
+  str3 "x"
+scopes (3):
+  scope0 script outer=- flags=[] slots=["f":function, "g":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+  scope2 function outer=scope0 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..65
+  code (41 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22 E> CreateClosure k2, s1, #0x00  ; k2 = Function f2 ; 74 02 01 00
+     26    Star r1                                      ; 0c 01
+     28    LdaConstant k3  ; k3 = String str1 "g"       ; 0a 03
+     30    Star r0                                      ; 0c 00
+     32 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     37    Ldar r1                                      ; 0b 01
+     39    LdaUndefined                                 ; 05
+     40    Return                                       ; 92
+  constants (4):
+      0 Function f1
+      1 String str0 "f"
+      2 Function f2
+      3 String str1 "g"
+  feedback (2):
+      0 CreateClosure
+      1 CreateClosure
+  handlers (0):
+  positions (5):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+     22 E 27 (1:28)
+     32 E 27 (1:28)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=0 range=0..26
+  code (5 bytes):
+      0 S> Ldar a0                                      ; 0b fe
+      2 E> Throw                                        ; 90
+      3    LdaUndefined                                 ; 05
+      4    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (2):
+      0 S 16 (1:17)
+      2 E 16 (1:17)
+function f2 normal name="g" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=2 range=27..65
+  code (19 bytes):
+      0 S> LdaGlobal k0, s0  ; k0 = String str2 "Error" ; 10 00 00
+      3    Star r0                                      ; 0c 00
+      5    LdaConstant k1  ; k1 = String str3 "x"       ; 0a 01
+      7    Star r1                                      ; 0c 01
+      9    Ldar r0                                      ; 0b 00
+     11 E> Construct r0, r1, s1                         ; 69 00 01 01 01
+     16 E> Throw                                        ; 90
+     17    LdaUndefined                                 ; 05
+     18    Return                                       ; 92
+  constants (2):
+      0 String str2 "Error"
+      1 String str3 "x"
+  feedback (2):
+      0 LoadGlobal
+      1 Call
+  handlers (0):
+  positions (3):
+      0 S 42 (1:43)
+     11 E 48 (1:49)
+     16 E 42 (1:43)

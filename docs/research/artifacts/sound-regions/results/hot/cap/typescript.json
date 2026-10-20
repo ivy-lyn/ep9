@@ -1,0 +1,8890 @@
+[
+ {
+  "id": "12:107479",
+  "name": "scan",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1891,
+  "kind": 263,
+  "v0": true,
+  "captures": 16,
+  "untyped": 4,
+  "untyped_mutable": 1,
+  "mutable_typed": 12,
+  "list": [
+   {
+    "name": "fullStartPos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "tokenFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "TokenFlags"
+   },
+   {
+    "name": "tokenStart",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "end",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "token",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "SyntaxKind"
+   },
+   {
+    "name": "text",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "skipTrivia",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "tokenValue",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "skipJsDocLeadingAsterisks",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "commentDirectives",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "CommentDirective[] | undefined"
+   },
+   {
+    "name": "commentDirectiveRegExSingleLine",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "RegExp"
+   },
+   {
+    "name": "commentDirectiveRegExMultiLine",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "RegExp"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   },
+   {
+    "name": "languageVariant",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "LanguageVariant"
+   },
+   {
+    "name": "languageVersion",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "ScriptTarget"
+   }
+  ]
+ },
+ {
+  "id": "12:53174",
+  "name": "isASCIILetter",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 600,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "12:210850",
+  "name": "codePointAt",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 4034,
+  "kind": 263,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "12:104084",
+  "name": "getIdentifierToken",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1815,
+  "kind": 263,
+  "v0": true,
+  "captures": 3,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 2,
+  "list": [
+   {
+    "name": "tokenValue",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "textToKeyword",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Map<string, KeywordSyntaxKind>"
+   },
+   {
+    "name": "token",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "SyntaxKind"
+   }
+  ]
+ },
+ {
+  "id": "12:133871",
+  "name": "scanIdentifier",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 2425,
+  "kind": 263,
+  "v0": true,
+  "captures": 5,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 5,
+  "list": [
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "end",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "tokenValue",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "text",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "tokenStart",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "12:74518",
+  "name": "codePointUnchecked",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1131,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "text",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   }
+  ]
+ },
+ {
+  "id": "12:75207",
+  "name": "charCodeUnchecked",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1148,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "text",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   }
+  ]
+ },
+ {
+  "id": "12:68994",
+  "name": "isIdentifierPart",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 978,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "12:211033",
+  "name": "charSize",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 4039,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "12:45666",
+  "name": "computeLineStarts",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 436,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "12:45103",
+  "name": "stringToToken",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 419,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "textToToken",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Map<string, SyntaxKind>"
+   }
+  ]
+ },
+ {
+  "id": "12:53358",
+  "name": "isWordCharacter",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 605,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "12:71694",
+  "name": "getTokenFullStart",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1061,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "fullStartPos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "12:52004",
+  "name": "isLineBreak",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 574,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "12:134441",
+  "name": "reScanGreaterToken",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 2438,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 2,
+  "list": [
+   {
+    "name": "token",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "SyntaxKind"
+   },
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "12:86612",
+  "name": "scanString",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1422,
+  "kind": 263,
+  "v0": true,
+  "captures": 5,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 4,
+  "list": [
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "end",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "text",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "tokenFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "TokenFlags"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   }
+  ]
+ },
+ {
+  "id": "12:58106",
+  "name": "isConflictMarkerTrivia",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 740,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "mergeConflictMarkerLength",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "12:78497",
+  "name": "scanNumber",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1233,
+  "kind": 263,
+  "v0": true,
+  "captures": 6,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 5,
+  "list": [
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "tokenFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "TokenFlags"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   },
+   {
+    "name": "tokenValue",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "token",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "SyntaxKind"
+   },
+   {
+    "name": "text",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   }
+  ]
+ },
+ {
+  "id": "12:52886",
+  "name": "isDigit",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 592,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "12:209660",
+  "name": "setText",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 3993,
+  "kind": 263,
+  "v0": false,
+  "captures": 2,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 2,
+  "list": [
+   {
+    "name": "text",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "end",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "12:196912",
+  "name": "reScanLessThanToken",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 3673,
+  "kind": 263,
+  "v0": true,
+  "captures": 3,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 3,
+  "list": [
+   {
+    "name": "token",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "SyntaxKind"
+   },
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "tokenStart",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "12:72340",
+  "name": "hasPrecedingJSDocComment",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1073,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "tokenFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "TokenFlags"
+   }
+  ]
+ },
+ {
+  "id": "12:68704",
+  "name": "isIdentifierStart",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 973,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "12:76082",
+  "name": "scanNumberFragment",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1171,
+  "kind": 263,
+  "v0": true,
+  "captures": 4,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 3,
+  "list": [
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "tokenFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "TokenFlags"
+   },
+   {
+    "name": "text",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   }
+  ]
+ },
+ {
+  "id": "12:202316",
+  "name": "scanJSDocCommentTextToken",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 3813,
+  "kind": 263,
+  "v0": true,
+  "captures": 8,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 8,
+  "list": [
+   {
+    "name": "fullStartPos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "tokenStart",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "tokenFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "TokenFlags"
+   },
+   {
+    "name": "end",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "token",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "SyntaxKind"
+   },
+   {
+    "name": "tokenValue",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "text",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   }
+  ]
+ },
+ {
+  "id": "12:83564",
+  "name": "scanDigits",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1348,
+  "kind": 263,
+  "v0": true,
+  "captures": 3,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 3,
+  "list": [
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "tokenValue",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "text",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   }
+  ]
+ },
+ {
+  "id": "12:71877",
+  "name": "getTokenStart",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1066,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "tokenStart",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "12:54563",
+  "name": "skipTrivia",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 641,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "12:106476",
+  "name": "checkBigIntSuffix",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1869,
+  "kind": 263,
+  "v0": true,
+  "captures": 3,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 3,
+  "list": [
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "tokenValue",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "tokenFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "TokenFlags"
+   }
+  ]
+ },
+ {
+  "id": "12:132550",
+  "name": "shouldParseJSDoc",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 2390,
+  "kind": 263,
+  "v0": true,
+  "captures": 6,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 5,
+  "list": [
+   {
+    "name": "jsDocParsingMode",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "JSDocParsingMode"
+   },
+   {
+    "name": "scriptKind",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "ScriptKind"
+   },
+   {
+    "name": "jsDocSeeOrLink",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "RegExp"
+   },
+   {
+    "name": "text",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "fullStartPos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "12:72154",
+  "name": "hasExtendedUnicodeEscape",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1071,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "tokenFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "TokenFlags"
+   }
+  ]
+ },
+ {
+  "id": "12:145437",
+  "name": "scanDisjunction",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 2643,
+  "kind": 263,
+  "v0": true,
+  "captures": 3,
+  "untyped": 2,
+  "untyped_mutable": 2,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "namedCapturingGroupsScopeStack",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "(Set<string> | undefined)[]"
+   },
+   {
+    "name": "topNamedCapturingGroupsScope",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "Set<string> | undefined"
+   },
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "12:147000",
+  "name": "scanAlternative",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 2685,
+  "kind": 263,
+  "v0": true,
+  "captures": 7,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 6,
+  "list": [
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "anyUnicodeModeOrNonAnnexB",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "languageVersion",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "ScriptTarget"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   },
+   {
+    "name": "numberOfCapturingGroups",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "tokenValue",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "unicodeSetsMode",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   }
+  ]
+ },
+ {
+  "id": "12:84508",
+  "name": "scanMinimumNumberOfHexDigits",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1374,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "12:82643",
+  "name": "checkForIdentifierStartAfterNumericLiteral",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1326,
+  "kind": 263,
+  "v0": true,
+  "captures": 4,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 3,
+  "list": [
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "languageVersion",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "ScriptTarget"
+   },
+   {
+    "name": "text",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   }
+  ]
+ },
+ {
+  "id": "12:185375",
+  "name": "scanClassAtom",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 3440,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "12:72247",
+  "name": "hasPrecedingLineBreak",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1072,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "tokenFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "TokenFlags"
+   }
+  ]
+ },
+ {
+  "id": "12:72021",
+  "name": "getTokenValue",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1069,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "tokenValue",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   }
+  ]
+ },
+ {
+  "id": "12:75501",
+  "name": "charCodeChecked",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1156,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "end",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "12:91173",
+  "name": "scanEscapeSequence",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1543,
+  "kind": 263,
+  "v0": true,
+  "captures": 6,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 5,
+  "list": [
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "end",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   },
+   {
+    "name": "tokenFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "TokenFlags"
+   },
+   {
+    "name": "text",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "languageVersion",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "ScriptTarget"
+   }
+  ]
+ },
+ {
+  "id": "12:99884",
+  "name": "scanExtendedUnicodeEscape",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1708,
+  "kind": 263,
+  "v0": true,
+  "captures": 5,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 4,
+  "list": [
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   },
+   {
+    "name": "end",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "tokenFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "TokenFlags"
+   },
+   {
+    "name": "text",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   }
+  ]
+ },
+ {
+  "id": "12:71840",
+  "name": "getToken",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1065,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "token",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "SyntaxKind"
+   }
+  ]
+ },
+ {
+  "id": "12:210431",
+  "name": "resetTokenState",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 4019,
+  "kind": 263,
+  "v0": false,
+  "captures": 6,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 6,
+  "list": [
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "fullStartPos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "tokenStart",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "token",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "SyntaxKind"
+   },
+   {
+    "name": "tokenValue",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "tokenFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "TokenFlags"
+   }
+  ]
+ },
+ {
+  "id": "12:68054",
+  "name": "getLeadingCommentRanges",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 957,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "12:157904",
+  "name": "scanAtomEscape",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 2893,
+  "kind": 263,
+  "v0": true,
+  "captures": 5,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 4,
+  "list": [
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "anyUnicodeModeOrNonAnnexB",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "namedCaptureGroups",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   },
+   {
+    "name": "unicodeSetsMode",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   }
+  ]
+ },
+ {
+  "id": "12:210137",
+  "name": "setLanguageVariant",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 4007,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "languageVariant",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "LanguageVariant"
+   }
+  ]
+ },
+ {
+  "id": "12:72066",
+  "name": "hasUnicodeEscape",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1070,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "tokenFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "TokenFlags"
+   }
+  ]
+ },
+ {
+  "id": "12:72445",
+  "name": "hasPrecedingJSDocLeadingAsterisks",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1074,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "tokenFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "TokenFlags"
+   }
+  ]
+ },
+ {
+  "id": "12:48997",
+  "name": "computeLineAndCharacterOfPosition",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 508,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "12:143330",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 2602,
+  "kind": 220,
+  "v0": true,
+  "captures": 2,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 2,
+  "list": [
+   {
+    "name": "regExpFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "RegularExpressionFlags"
+   },
+   {
+    "name": "namedCaptureGroups",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   }
+  ]
+ },
+ {
+  "id": "12:914",
+  "name": "tokenIsIdentifierOrKeyword",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 42,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "12:162863",
+  "name": "scanGroupName",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 2997,
+  "kind": 263,
+  "v0": true,
+  "captures": 9,
+  "untyped": 5,
+  "untyped_mutable": 4,
+  "mutable_typed": 4,
+  "list": [
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "tokenStart",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "languageVersion",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "ScriptTarget"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   },
+   {
+    "name": "groupNameReferences",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "(TextRange & { name: string; })[] | undefined"
+   },
+   {
+    "name": "tokenValue",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "topNamedCapturingGroupsScope",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "Set<string> | undefined"
+   },
+   {
+    "name": "namedCapturingGroupsScopeStack",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "(Set<string> | undefined)[]"
+   },
+   {
+    "name": "groupSpecifiers",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "Set<string> | undefined"
+   }
+  ]
+ },
+ {
+  "id": "12:71958",
+  "name": "getTokenText",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1068,
+  "kind": 220,
+  "v0": true,
+  "captures": 3,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 3,
+  "list": [
+   {
+    "name": "text",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "tokenStart",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "12:210027",
+  "name": "setScriptTarget",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 4003,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "languageVersion",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "ScriptTarget"
+   }
+  ]
+ },
+ {
+  "id": "12:135816",
+  "name": "reScanSlashToken",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 2467,
+  "kind": 263,
+  "v0": true,
+  "captures": 8,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 7,
+  "list": [
+   {
+    "name": "token",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "SyntaxKind"
+   },
+   {
+    "name": "tokenStart",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "tokenFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "TokenFlags"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   },
+   {
+    "name": "languageVersion",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "ScriptTarget"
+   },
+   {
+    "name": "tokenValue",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "text",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   }
+  ]
+ },
+ {
+  "id": "12:49401",
+  "name": "computeLineOfPosition",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 520,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "12:164200",
+  "name": "scanClassRanges",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 3023,
+  "kind": 263,
+  "v0": true,
+  "captures": 3,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 2,
+  "list": [
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "anyUnicodeModeOrNonAnnexB",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   }
+  ]
+ },
+ {
+  "id": "12:88140",
+  "name": "scanTemplateAndSetTokenValue",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 1462,
+  "kind": 263,
+  "v0": true,
+  "captures": 6,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 5,
+  "list": [
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "end",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "text",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "tokenFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "TokenFlags"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   },
+   {
+    "name": "tokenValue",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   }
+  ]
+ },
+ {
+  "id": "12:203567",
+  "name": "scanJsDocToken",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 3841,
+  "kind": 263,
+  "v0": true,
+  "captures": 9,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 9,
+  "list": [
+   {
+    "name": "fullStartPos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "tokenStart",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "tokenFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "TokenFlags"
+   },
+   {
+    "name": "end",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "token",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "SyntaxKind"
+   },
+   {
+    "name": "languageVersion",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "ScriptTarget"
+   },
+   {
+    "name": "tokenValue",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "text",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   }
+  ]
+ },
+ {
+  "id": "12:186378",
+  "name": "scanCharacterClassEscape",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 3466,
+  "kind": 263,
+  "v0": true,
+  "captures": 10,
+  "untyped": 5,
+  "untyped_mutable": 0,
+  "mutable_typed": 5,
+  "list": [
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "nonBinaryUnicodeProperties",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Map<string, \"General_Category\" | \"Script\" | \"Script_Extensions\">"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   },
+   {
+    "name": "valuesOfNonBinaryUnicodeProperties",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ General_Category: Set<string>; Script: Set<string>; Script_Extensions: Set<str"
+   },
+   {
+    "name": "binaryUnicodePropertiesOfStrings",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Set<string>"
+   },
+   {
+    "name": "unicodeSetsMode",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "mayContainStrings",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "binaryUnicodeProperties",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Set<string>"
+   },
+   {
+    "name": "anyUnicodeMode",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "anyUnicodeModeOrNonAnnexB",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   }
+  ]
+ },
+ {
+  "id": "12:211871",
+  "name": "utf16EncodeAsString",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+  "line": 4066,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "utf16EncodeAsStringWorker",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "(codePoint: number) => string"
+   }
+  ]
+ },
+ {
+  "id": "1:66203",
+  "name": "toFileNameLowerCase",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/core.ts",
+  "line": 1875,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "fileNameLowerCaseRegExp",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "RegExp"
+   }
+  ]
+ },
+ {
+  "id": "1:69588",
+  "name": "compareValues",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/core.ts",
+  "line": 1988,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "1:86291",
+  "name": "startsWith",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/core.ts",
+  "line": 2430,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "1:80401",
+  "name": "endsWith",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/core.ts",
+  "line": 2247,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "1:66665",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/core.ts",
+  "line": 1893,
+  "kind": 220,
+  "v0": false,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 2,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "callback",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "() => T"
+   },
+   {
+    "name": "value",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "T"
+   }
+  ]
+ },
+ {
+  "id": "1:63108",
+  "name": "toLowerCase",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/core.ts",
+  "line": 1835,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "1:7839",
+  "name": "indexOfAnyCharCode",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/core.ts",
+  "line": 232,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "1:80767",
+  "name": "removeSuffix",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/core.ts",
+  "line": 2257,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "1:68744",
+  "name": "equateStringsCaseSensitive",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/core.ts",
+  "line": 1966,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:364592",
+  "name": "parseStatement",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 7380,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:134588",
+  "name": "internIdentifier",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2637,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "identifiers",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Map<string, string>"
+   }
+  ]
+ },
+ {
+  "id": "25:115748",
+  "name": "token",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2194,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "currentToken",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "SyntaxKind"
+   }
+  ]
+ },
+ {
+  "id": "25:115823",
+  "name": "nextTokenWithoutCheck",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2198,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "currentToken",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "SyntaxKind"
+   },
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   }
+  ]
+ },
+ {
+  "id": "25:81265",
+  "name": "createBaseNode",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 1467,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "NodeConstructor",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "new (kind: SyntaxKind, pos: number, end: number) => Node"
+   }
+  ]
+ },
+ {
+  "id": "25:80944",
+  "name": "createBaseIdentifierNode",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 1464,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "IdentifierConstructor",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "new (kind: SyntaxKind.Identifier, pos: number, end: number) => Identifier"
+   }
+  ]
+ },
+ {
+  "id": "25:115049",
+  "name": "getNodePos",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2180,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   }
+  ]
+ },
+ {
+  "id": "25:325670",
+  "name": "parsePrimaryExpression",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 6608,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   }
+  ]
+ },
+ {
+  "id": "25:129150",
+  "name": "parseOptional",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2515,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:152233",
+  "name": "isListTerminator",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 3000,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:129413",
+  "name": "parseOptionalToken",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2524,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:81171",
+  "name": "createBaseTokenNode",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 1466,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "TokenConstructor",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "new (kind: SyntaxKind, pos: number, end: number) => Node"
+   }
+  ]
+ },
+ {
+  "id": "25:527215",
+  "name": "getDeclarationFileExtension",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 10561,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "supportedDeclarationExtensions",
+    "where": "module",
+    "const": true,
+    "tier": 2,
+    "type": "readonly Extension[]"
+   }
+  ]
+ },
+ {
+  "id": "25:120790",
+  "name": "isIdentifier",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2318,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:234906",
+  "name": "parseTypeOperatorOrHigher",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4781,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:140848",
+  "name": "nextTokenCanFollowModifier",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2766,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:354435",
+  "name": "isDeclaration",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 7168,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   }
+  ]
+ },
+ {
+  "id": "25:116777",
+  "name": "reScanGreaterToken",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2224,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "currentToken",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "SyntaxKind"
+   },
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   }
+  ]
+ },
+ {
+  "id": "25:112719",
+  "name": "inContext",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2125,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "contextFlags",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "NodeFlags"
+   }
+  ]
+ },
+ {
+  "id": "25:255718",
+  "name": "tryParseParenthesizedArrowFunctionExpression",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 5216,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:313855",
+  "name": "isStartOfOptionalPropertyOrElementAccessChain",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 6388,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:116024",
+  "name": "nextToken",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2207,
+  "kind": 263,
+  "v0": true,
+  "captures": 3,
+  "untyped": 2,
+  "untyped_mutable": 1,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "currentToken",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "SyntaxKind"
+   },
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   }
+  ]
+ },
+ {
+  "id": "25:285824",
+  "name": "isUpdateExpression",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 5839,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "languageVariant",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "LanguageVariant"
+   }
+  ]
+ },
+ {
+  "id": "25:283829",
+  "name": "parseSimpleUnaryExpression",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 5796,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "languageVariant",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "LanguageVariant"
+   }
+  ]
+ },
+ {
+  "id": "25:238099",
+  "name": "isStartOfFunctionTypeOrConstructorType",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4852,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:527059",
+  "name": "isDeclarationFileName",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 10556,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:319813",
+  "name": "isTemplateStartOfTaggedTemplate",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 6501,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:131626",
+  "name": "tryParseSemicolon",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2577,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:117173",
+  "name": "reScanLessThanToken",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2236,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "currentToken",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "SyntaxKind"
+   },
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   }
+  ]
+ },
+ {
+  "id": "25:237578",
+  "name": "parseIntersectionTypeOrHigher",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4839,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "factory",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "NodeFactory"
+   }
+  ]
+ },
+ {
+  "id": "25:140490",
+  "name": "parseContextualModifier",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2754,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:328940",
+  "name": "parseArgumentOrArrayLiteralElement",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 6679,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "factory",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "NodeFactory"
+   }
+  ]
+ },
+ {
+  "id": "25:190354",
+  "name": "parseTypeReference",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 3797,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "factory",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "NodeFactory"
+   }
+  ]
+ },
+ {
+  "id": "25:229437",
+  "name": "isStartOfType",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4659,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:416222",
+  "name": "tryParseImportAttributes",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 8441,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   }
+  ]
+ },
+ {
+  "id": "25:190043",
+  "name": "parseTypeArgumentsOfTypeReference",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 3791,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   }
+  ]
+ },
+ {
+  "id": "25:242674",
+  "name": "parseTypeAnnotation",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4961,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:108851",
+  "name": "setDisallowInContext",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2027,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:257009",
+  "name": "isParenthesizedArrowFunctionExpression",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 5236,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:142027",
+  "name": "canFollowExportModifier",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2794,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:142473",
+  "name": "parseAnyContextualModifier",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2807,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:115140",
+  "name": "hasPrecedingJSDocComment",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2184,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   }
+  ]
+ },
+ {
+  "id": "25:113014",
+  "name": "inDisallowConditionalTypesContext",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2137,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:80835",
+  "name": "createBaseSourceFileNode",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 1463,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "SourceFileConstructor",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "new (kind: SyntaxKind.SourceFile, pos: number, end: number) => SourceFile"
+   }
+  ]
+ },
+ {
+  "id": "25:113145",
+  "name": "inDecoratorContext",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2141,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:170960",
+  "name": "abortParsingListOrMoveToNextToken",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 3410,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:97559",
+  "name": "clearState",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 1780,
+  "kind": 263,
+  "v0": false,
+  "captures": 13,
+  "untyped": 6,
+  "untyped_mutable": 6,
+  "mutable_typed": 7,
+  "list": [
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   },
+   {
+    "name": "sourceText",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "languageVersion",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "ScriptTarget"
+   },
+   {
+    "name": "syntaxCursor",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "SyntaxCursor | undefined"
+   },
+   {
+    "name": "scriptKind",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "ScriptKind"
+   },
+   {
+    "name": "languageVariant",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "LanguageVariant"
+   },
+   {
+    "name": "sourceFlags",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "NodeFlags"
+   },
+   {
+    "name": "parseDiagnostics",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "DiagnosticWithDetachedLocation[]"
+   },
+   {
+    "name": "jsDocDiagnostics",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "DiagnosticWithDetachedLocation[]"
+   },
+   {
+    "name": "parsingContext",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "ParsingContext"
+   },
+   {
+    "name": "identifiers",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Map<string, string>"
+   },
+   {
+    "name": "notParenthesizedArrow",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Set<number> | undefined"
+   },
+   {
+    "name": "topLevel",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   }
+  ]
+ },
+ {
+  "id": "25:200635",
+  "name": "parseParameter",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4026,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:454362",
+  "name": "parseTrailingTagComments",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 9187,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:198766",
+  "name": "isStartOfParameter",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 3993,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:203880",
+  "name": "shouldParseReturnType",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4101,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   }
+  ]
+ },
+ {
+  "id": "25:238546",
+  "name": "skipParameterStart",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4863,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "parseDiagnostics",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "DiagnosticWithDetachedLocation[]"
+   }
+  ]
+ },
+ {
+  "id": "25:376172",
+  "name": "isBindingIdentifierOrPrivateIdentifierOrPattern",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 7628,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:344360",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 6952,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:376893",
+  "name": "parseVariableDeclarationAllowExclamation",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 7645,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:116896",
+  "name": "reScanSlashToken",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2228,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "currentToken",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "SyntaxKind"
+   },
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   }
+  ]
+ },
+ {
+  "id": "25:109196",
+  "name": "setAwaitContext",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2039,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:278609",
+  "name": "isBinaryOperator",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 5673,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:206014",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4142,
+  "kind": 220,
+  "v0": true,
+  "captures": 2,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "allowAmbiguity",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "savedAwaitContext",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "boolean"
+   }
+  ]
+ },
+ {
+  "id": "25:359181",
+  "name": "isStartOfDeclaration",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 7264,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:198460",
+  "name": "parseTypeParameters",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 3987,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:237781",
+  "name": "parseUnionTypeOrHigher",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4843,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "factory",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "NodeFactory"
+   }
+  ]
+ },
+ {
+  "id": "25:156592",
+  "name": "isInSomeParsingContext",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 3078,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "parsingContext",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "ParsingContext"
+   }
+  ]
+ },
+ {
+  "id": "25:362283",
+  "name": "isLetDeclaration",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 7336,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:437549",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 8857,
+  "kind": 220,
+  "v0": true,
+  "captures": 2,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 2,
+  "list": [
+   {
+    "name": "start",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "length",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "25:233647",
+  "name": "parseTypeOperator",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4752,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "factory",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "NodeFactory"
+   }
+  ]
+ },
+ {
+  "id": "25:220633",
+  "name": "parseTupleType",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4479,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "factory",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "NodeFactory"
+   }
+  ]
+ },
+ {
+  "id": "25:242843",
+  "name": "isStartOfLeftHandSideExpression",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4966,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:340140",
+  "name": "parseEmptyStatement",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 6877,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "factory",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "NodeFactory"
+   }
+  ]
+ },
+ {
+  "id": "25:215239",
+  "name": "nextTokenIsOpenParenOrLessThan",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4354,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:179842",
+  "name": "getExpectedCommaDiagnostic",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 3561,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   }
+  ]
+ },
+ {
+  "id": "25:234670",
+  "name": "parseInferType",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4775,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "factory",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "NodeFactory"
+   }
+  ]
+ },
+ {
+  "id": "25:76595",
+  "name": "parseJsonText",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 1381,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:112818",
+  "name": "inYieldContext",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2129,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:116457",
+  "name": "nextTokenJSDoc",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2216,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "currentToken",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "SyntaxKind"
+   },
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   }
+  ]
+ },
+ {
+  "id": "25:138252",
+  "name": "isLiteralPropertyName",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2703,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:203608",
+  "name": "parseReturnType",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4095,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:462983",
+  "name": "parseJSDocLinkPrefix",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 9346,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   }
+  ]
+ },
+ {
+  "id": "25:348261",
+  "name": "parseCaseOrDefaultClause",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 7030,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:329293",
+  "name": "parseArgumentExpression",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 6685,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "disallowInAndDecoratorContext",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "25:375936",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 7623,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:273347",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 5568,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "allowReturnTypeInArrowFunction",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   }
+  ]
+ },
+ {
+  "id": "25:400135",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 8115,
+  "kind": 220,
+  "v0": true,
+  "captures": 3,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "hasJSDoc",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "modifiers",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "NodeArray<ModifierLike> | undefined"
+   }
+  ]
+ },
+ {
+  "id": "25:140634",
+  "name": "nextTokenIsOnSameLineAndCanFollowModifier",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2758,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   }
+  ]
+ },
+ {
+  "id": "25:369467",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 7484,
+  "kind": 220,
+  "v0": true,
+  "captures": 3,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "pos",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "hasJSDoc",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "modifiers",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "NodeArray<ModifierLike> | undefined"
+   }
+  ]
+ },
+ {
+  "id": "25:253094",
+  "name": "nextTokenIsIdentifierOnSameLine",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 5164,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   }
+  ]
+ },
+ {
+  "id": "25:493557",
+  "name": "parseOptionalJsdoc",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 9883,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:200786",
+  "name": "parseParameterForSpeculation",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4030,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:171203",
+  "name": "parsingContextErrors",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 3420,
+  "kind": 263,
+  "v0": false,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   }
+  ]
+ },
+ {
+  "id": "25:201716",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4045,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:404285",
+  "name": "parseHeritageClauses",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 8196,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:131932",
+  "name": "parseSemicolon",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2590,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:406077",
+  "name": "parseClassMembers",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 8235,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:274309",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 5588,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:359280",
+  "name": "isStartOfStatement",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 7268,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:279853",
+  "name": "parseTypeOfExpression",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 5703,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "factory",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "NodeFactory"
+   }
+  ]
+ },
+ {
+  "id": "25:362060",
+  "name": "nextTokenIsBindingIdentifierOrStartOfDestructuring",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 7331,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:225820",
+  "name": "nextTokenIsNumericOrBigIntLiteral",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4584,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:403592",
+  "name": "parseNameOfClassDeclarationOrExpression",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 8181,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:375515",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 7615,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:313593",
+  "name": "nextTokenIsIdentifierOrKeywordOrOpenBracketOrTemplate",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 6381,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:212608",
+  "name": "isTypeMemberStart",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4292,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:186759",
+  "name": "parseTemplateSpan",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 3724,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "factory",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "NodeFactory"
+   }
+  ]
+ },
+ {
+  "id": "25:388143",
+  "name": "isClassMemberStart",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 7866,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:152080",
+  "name": "nextTokenIsStartOfType",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2994,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:428200",
+  "name": "parseNameWithKeywordCheck",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 8689,
+  "kind": 263,
+  "v0": true,
+  "captures": 4,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 3,
+  "list": [
+   {
+    "name": "checkIdentifierIsKeyword",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "checkIdentifierStart",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   },
+   {
+    "name": "checkIdentifierEnd",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "25:408625",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 8280,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:139394",
+  "name": "parsePropertyName",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2729,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:184809",
+  "name": "parseTemplateExpression",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 3668,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "factory",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "NodeFactory"
+   }
+  ]
+ },
+ {
+  "id": "25:207234",
+  "name": "parseTypeMemberSemicolon",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4173,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:215796",
+  "name": "parseTypeLiteral",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4373,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "factory",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "NodeFactory"
+   }
+  ]
+ },
+ {
+  "id": "25:244002",
+  "name": "isStartOfExpression",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4995,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:369646",
+  "name": "tryReuseAmbientDeclaration",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 7491,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "parsingContext",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "ParsingContext"
+   }
+  ]
+ },
+ {
+  "id": "25:155478",
+  "name": "isVariableDeclaratorListTerminator",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 3052,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:251617",
+  "name": "isYieldExpression",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 5136,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:189896",
+  "name": "parseEntityNameOfTypeReference",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 3787,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   }
+  ]
+ },
+ {
+  "id": "25:116573",
+  "name": "nextJSDocCommentTextToken",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2220,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "currentToken",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "SyntaxKind"
+   },
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   }
+  ]
+ },
+ {
+  "id": "25:142339",
+  "name": "nextTokenCanFollowExportModifier",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2802,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:113246",
+  "name": "inAwaitContext",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2145,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:333070",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 6745,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:256584",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 5229,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "allowReturnTypeInArrowFunction",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   }
+  ]
+ },
+ {
+  "id": "25:247062",
+  "name": "parseInitializer",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 5065,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:253243",
+  "name": "parseYieldExpression",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 5169,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 2,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   },
+   {
+    "name": "factory",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "NodeFactory"
+   }
+  ]
+ },
+ {
+  "id": "25:257701",
+  "name": "isParenthesizedArrowFunctionExpressionWorker",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 5251,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   },
+   {
+    "name": "languageVariant",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "LanguageVariant"
+   }
+  ]
+ },
+ {
+  "id": "25:131194",
+  "name": "canParseSemicolon",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2567,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   }
+  ]
+ },
+ {
+  "id": "25:404136",
+  "name": "isImplementsClause",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 8192,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:448393",
+  "name": "skipWhitespaceOrAsterisk",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 9070,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   }
+  ]
+ },
+ {
+  "id": "25:352111",
+  "name": "parseDebuggerStatement",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 7115,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "factory",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "NodeFactory"
+   }
+  ]
+ },
+ {
+  "id": "25:405647",
+  "name": "tryParseTypeArguments",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 8226,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:188040",
+  "name": "getTemplateLiteralRawText",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 3754,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "scanner",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Scanner"
+   }
+  ]
+ },
+ {
+  "id": "25:223644",
+  "name": "isStartOfTypeOfImportType",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4542,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:120396",
+  "name": "isBindingIdentifier",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 2308,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:185170",
+  "name": "parseTemplateType",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 3679,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "factory",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "NodeFactory"
+   }
+  ]
+ },
+ {
+  "id": "25:245649",
+  "name": "isStartOfExpressionStatement",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 5032,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:447233",
+  "name": "isNextNonwhitespaceTokenEndOfFile",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 9046,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "25:239270",
+  "name": "isUnambiguouslyStartOfFunctionType",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/parser.ts",
+  "line": 4881,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "13:67058",
+  "name": "isFunctionLikeDeclarationKind",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilitiesPublic.ts",
+  "line": 1694,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "13:67538",
+  "name": "isFunctionLikeKind",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilitiesPublic.ts",
+  "line": 1710,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "13:78010",
+  "name": "isLeftHandSideExpressionKind",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilitiesPublic.ts",
+  "line": 1999,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "13:92834",
+  "name": "isStatementKindButNotDeclarationKind",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilitiesPublic.ts",
+  "line": 2375,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "13:92151",
+  "name": "isDeclarationStatementKind",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilitiesPublic.ts",
+  "line": 2360,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "13:7031",
+  "name": "isExternalModuleNameRelative",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilitiesPublic.ts",
+  "line": 296,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "13:59369",
+  "name": "isLiteralKind",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilitiesPublic.ts",
+  "line": 1494,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "13:81558",
+  "name": "isExpressionKind",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilitiesPublic.ts",
+  "line": 2090,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "13:79877",
+  "name": "isUnaryExpressionKind",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilitiesPublic.ts",
+  "line": 2043,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "13:90322",
+  "name": "isDeclarationKind",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilitiesPublic.ts",
+  "line": 2321,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "13:60111",
+  "name": "isTemplateLiteralKind",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilitiesPublic.ts",
+  "line": 1518,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "13:64152",
+  "name": "isModifierKind",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilitiesPublic.ts",
+  "line": 1612,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "13:64934",
+  "name": "isParameterPropertyModifier",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilitiesPublic.ts",
+  "line": 1635,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "31:1383775",
+  "name": "resetMaybeStack",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 23457,
+  "kind": 263,
+  "v0": true,
+  "captures": 7,
+  "untyped": 2,
+  "untyped_mutable": 2,
+  "mutable_typed": 4,
+  "list": [
+   {
+    "name": "maybeStart",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "maybeCount",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "maybeKeysSet",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "Set<string>"
+   },
+   {
+    "name": "maybeKeys",
+    "where": "closure",
+    "const": false,
+    "tier": 2,
+    "type": "string[]"
+   },
+   {
+    "name": "relation",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "Map<string, RelationComparisonResult>"
+   },
+   {
+    "name": "propagatingVarianceFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "RelationComparisonResult"
+   },
+   {
+    "name": "relationCount",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "31:1958286",
+  "name": "popActiveMapper",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 32921,
+  "kind": 263,
+  "v0": false,
+  "captures": 3,
+  "untyped": 2,
+  "untyped_mutable": 2,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "activeTypeMappersCount",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "activeTypeMappers",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "TypeMapper[]"
+   },
+   {
+    "name": "activeTypeMappersCaches",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "Map<string, Type>[]"
+   }
+  ]
+ },
+ {
+  "id": "31:96825",
+  "name": "getCachedType",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 2427,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "cachedTypes",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "Map<string, Type>"
+   }
+  ]
+ },
+ {
+  "id": "31:2534916",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 43084,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "symbol",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "Symbol"
+   }
+  ]
+ },
+ {
+  "id": "31:1725111",
+  "name": "getOrSetCacheKey",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 29028,
+  "kind": 263,
+  "v0": true,
+  "captures": 6,
+  "untyped": 4,
+  "untyped_mutable": 4,
+  "mutable_typed": 2,
+  "list": [
+   {
+    "name": "isKeySet",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "key",
+    "where": "closure",
+    "const": false,
+    "tier": 1,
+    "type": "string | undefined"
+   },
+   {
+    "name": "reference",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "Node"
+   },
+   {
+    "name": "declaredType",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "Type"
+   },
+   {
+    "name": "initialType",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "Type"
+   },
+   {
+    "name": "flowContainer",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "Node | undefined"
+   }
+  ]
+ },
+ {
+  "id": "31:2594528",
+  "name": "checkFunctionDeclarationDiagnostics",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 44216,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "node",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "FunctionDeclaration"
+   }
+  ]
+ },
+ {
+  "id": "31:2435089",
+  "name": "checkYieldExpressionGrammar",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 41257,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "node",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "YieldExpression"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   }
+  ]
+ },
+ {
+  "id": "31:2551650",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 43359,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "node",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "Declaration"
+   }
+  ]
+ },
+ {
+  "id": "31:1650700",
+  "name": "getDefaultTypeArgumentType",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 27680,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 2,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "anyType",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "IntrinsicType"
+   },
+   {
+    "name": "unknownType",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "IntrinsicType"
+   }
+  ]
+ },
+ {
+  "id": "31:1958810",
+  "name": "clearActiveMapperCaches",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 32937,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "activeTypeMappersCount",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "activeTypeMappersCaches",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "Map<string, Type>[]"
+   }
+  ]
+ },
+ {
+  "id": "31:1560794",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 26284,
+  "kind": 220,
+  "v0": true,
+  "captures": 3,
+  "untyped": 2,
+  "untyped_mutable": 2,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "inference",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "InferenceInfo"
+   },
+   {
+    "name": "context",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "InferenceContext"
+   },
+   {
+    "name": "i",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "31:107933",
+  "name": "getExcludedSymbolFlags",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 2653,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "31:2758218",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 47199,
+  "kind": 220,
+  "v0": true,
+  "captures": 4,
+  "untyped": 4,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "type",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "InterfaceType"
+   },
+   {
+    "name": "symbol",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "Symbol"
+   },
+   {
+    "name": "staticType",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "ObjectType"
+   },
+   {
+    "name": "node",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "ClassLikeDeclaration"
+   }
+  ]
+ },
+ {
+  "id": "31:1956672",
+  "name": "popContextualType",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 32878,
+  "kind": 263,
+  "v0": false,
+  "captures": 4,
+  "untyped": 2,
+  "untyped_mutable": 2,
+  "mutable_typed": 2,
+  "list": [
+   {
+    "name": "contextualTypeCount",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "contextualTypeNodes",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "Node[]"
+   },
+   {
+    "name": "contextualTypes",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "(Type | undefined)[]"
+   },
+   {
+    "name": "contextualIsCache",
+    "where": "closure",
+    "const": false,
+    "tier": 2,
+    "type": "boolean[]"
+   }
+  ]
+ },
+ {
+  "id": "31:2603119",
+  "name": "checkFunctionOrMethodDeclarationDiagnostics",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 44401,
+  "kind": 263,
+  "v0": true,
+  "captures": 4,
+  "untyped": 3,
+  "untyped_mutable": 2,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "node",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "FunctionDeclaration | MethodDeclaration | MethodSignature"
+   },
+   {
+    "name": "body",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "Block | undefined"
+   },
+   {
+    "name": "anyType",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "IntrinsicType"
+   },
+   {
+    "name": "functionFlags",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "FunctionFlags"
+   }
+  ]
+ },
+ {
+  "id": "31:671682",
+  "name": "popTypeResolution",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 11543,
+  "kind": 263,
+  "v0": false,
+  "captures": 3,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 2,
+  "list": [
+   {
+    "name": "resolutionTargets",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "TypeSystemEntity[]"
+   },
+   {
+    "name": "resolutionPropertyNames",
+    "where": "closure",
+    "const": false,
+    "tier": 2,
+    "type": "TypeSystemPropertyName[]"
+   },
+   {
+    "name": "resolutionResults",
+    "where": "closure",
+    "const": false,
+    "tier": 2,
+    "type": "boolean[]"
+   }
+  ]
+ },
+ {
+  "id": "31:2890455",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 49611,
+  "kind": 220,
+  "v0": true,
+  "captures": 3,
+  "untyped": 3,
+  "untyped_mutable": 3,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "node",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "SourceFile"
+   },
+   {
+    "name": "compilerOptions",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "CompilerOptions"
+   },
+   {
+    "name": "diagnostics",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "DiagnosticCollection"
+   }
+  ]
+ },
+ {
+  "id": "31:2476176",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 41965,
+  "kind": 220,
+  "v0": true,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "node",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "TypeParameterDeclaration"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   }
+  ]
+ },
+ {
+  "id": "31:1556546",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 26210,
+  "kind": 220,
+  "v0": true,
+  "captures": 4,
+  "untyped": 2,
+  "untyped_mutable": 2,
+  "mutable_typed": 2,
+  "list": [
+   {
+    "name": "noImplicitAny",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "type",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "Type"
+   },
+   {
+    "name": "wideningKind",
+    "where": "outer-param",
+    "const": false,
+    "tier": 1,
+    "type": "WideningKind | undefined"
+   },
+   {
+    "name": "declaration",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "Declaration"
+   }
+  ]
+ },
+ {
+  "id": "31:1979490",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 33299,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "node",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "RegularExpressionLiteral"
+   }
+  ]
+ },
+ {
+  "id": "31:2742636",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 46922,
+  "kind": 220,
+  "v0": false,
+  "captures": 5,
+  "untyped": 3,
+  "untyped_mutable": 2,
+  "mutable_typed": 2,
+  "list": [
+   {
+    "name": "node",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "TypeParameterDeclaration"
+   },
+   {
+    "name": "seenDefault",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "typeParameterDeclarations",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "readonly TypeParameterDeclaration[] | undefined"
+   },
+   {
+    "name": "i",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   }
+  ]
+ },
+ {
+  "id": "31:1957580",
+  "name": "popInferenceContext",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 32901,
+  "kind": 263,
+  "v0": false,
+  "captures": 3,
+  "untyped": 2,
+  "untyped_mutable": 2,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "inferenceContextCount",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "inferenceContextNodes",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "Node[]"
+   },
+   {
+    "name": "inferenceContexts",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "(InferenceContext | undefined)[]"
+   }
+  ]
+ },
+ {
+  "id": "31:3143437",
+  "name": "getIterationTypesKeyFromIterationTypeKind",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 54240,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "31:2805033",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 48043,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "node",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "EnumDeclaration"
+   }
+  ]
+ },
+ {
+  "id": "31:654357",
+  "name": "visibilityToString",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 11214,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "31:279666",
+  "name": "checkIntrinsicName",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 5544,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "seenIntrinsicNames",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "Set<string>"
+   }
+  ]
+ },
+ {
+  "id": "31:353466",
+  "name": "restore",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 6710,
+  "kind": 263,
+  "v0": true,
+  "captures": 4,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "context",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "NodeBuilderContext"
+   },
+   {
+    "name": "flags",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "NodeBuilderFlags"
+   },
+   {
+    "name": "internalFlags",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "InternalNodeBuilderFlags"
+   },
+   {
+    "name": "depth",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "31:1049758",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 18047,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "flags",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "ElementFlags"
+   }
+  ]
+ },
+ {
+  "id": "31:1049438",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 18041,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "flags",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "ElementFlags"
+   }
+  ]
+ },
+ {
+  "id": "31:2897862",
+  "name": "getGlobalDiagnostics",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 49760,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "diagnostics",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "DiagnosticCollection"
+   }
+  ]
+ },
+ {
+  "id": "31:2177070",
+  "name": "chain",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 36711,
+  "kind": 220,
+  "v0": true,
+  "captures": 4,
+  "untyped": 3,
+  "untyped_mutable": 1,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   },
+   {
+    "name": "i",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "candidates",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "Signature[]"
+   },
+   {
+    "name": "c",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "Signature"
+   }
+  ]
+ },
+ {
+  "id": "31:278946",
+  "name": "createOriginType",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 5531,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "Type",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "new (checker: TypeChecker, flags: TypeFlags) => Type"
+   },
+   {
+    "name": "checker",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "TypeChecker"
+   }
+  ]
+ },
+ {
+  "id": "31:2794710",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 47856,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "node",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "InterfaceDeclaration"
+   }
+  ]
+ },
+ {
+  "id": "31:1942070",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 32648,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "prop",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "PropertyAssignment | ShorthandPropertyAssignment"
+   }
+  ]
+ },
+ {
+  "id": "31:323277",
+  "name": "toNodeBuilderFlags",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts",
+  "line": 6294,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "10:28552",
+  "name": "simpleNormalizePath",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 732,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "relativePathSegmentRegExp",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "RegExp"
+   }
+  ]
+ },
+ {
+  "id": "10:17457",
+  "name": "pathComponents",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 449,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "directorySeparator",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "\"/\""
+   }
+  ]
+ },
+ {
+  "id": "10:4676",
+  "name": "getEncodedRootLength",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 165,
+  "kind": 263,
+  "v0": true,
+  "captures": 3,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "directorySeparator",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "\"/\""
+   },
+   {
+    "name": "altDirectorySeparator",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "\"\\\\\""
+   },
+   {
+    "name": "urlSchemeSeparator",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "\"://\""
+   }
+  ]
+ },
+ {
+  "id": "10:20707",
+  "name": "normalizeSlashes",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 526,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "backslashRegExp",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "RegExp"
+   },
+   {
+    "name": "directorySeparator",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "\"/\""
+   }
+  ]
+ },
+ {
+  "id": "10:3646",
+  "name": "hasTrailingDirectorySeparator",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 140,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "10:29137",
+  "name": "getPathWithoutRoot",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 751,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "directorySeparator",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "\"/\""
+   }
+  ]
+ },
+ {
+  "id": "10:3119",
+  "name": "fileExtensionIs",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 120,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "10:1515",
+  "name": "isRootedDiskPath",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 60,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "10:2573",
+  "name": "pathIsRelative",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 100,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "10:21032",
+  "name": "reducePathComponents",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 538,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "10:19780",
+  "name": "getPathComponents",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 495,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "10:22523",
+  "name": "combinePaths",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 579,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "10:963",
+  "name": "isAnyDirectorySeparator",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 41,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "10:28157",
+  "name": "normalizePath",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 722,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "10:8786",
+  "name": "getRootLength",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 250,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "10:11391",
+  "name": "getDirectoryPath",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 312,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "directorySeparator",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "\"/\""
+   }
+  ]
+ },
+ {
+  "id": "10:24109",
+  "name": "getNormalizedPathComponents",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 622,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "10:30424",
+  "name": "removeTrailingDirectorySeparator",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 785,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "10:3834",
+  "name": "isVolumeCharacter",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 146,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "10:3292",
+  "name": "fileExtensionIsOneOf",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 125,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "10:29337",
+  "name": "getNormalizedAbsolutePathWithoutRoot",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 757,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "10:2984",
+  "name": "hasExtension",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 115,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "10:31098",
+  "name": "ensureTrailingDirectorySeparator",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/path.ts",
+  "line": 807,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "directorySeparator",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "\"/\""
+   }
+  ]
+ },
+ {
+  "id": "18:326048",
+  "name": "getTransformFlagsSubtreeExclusions",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/factory/nodeFactory.ts",
+  "line": 7320,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "18:152467",
+  "name": "createTemplateLiteralLikeNode",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/factory/nodeFactory.ts",
+  "line": 3580,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "18:329543",
+  "name": "createBaseIdentifierNode",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/factory/nodeFactory.ts",
+  "line": 7401,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "baseFactory",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "BaseNodeFactory"
+   }
+  ]
+ },
+ {
+  "id": "18:11996",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/factory/nodeFactory.ts",
+  "line": 496,
+  "kind": 220,
+  "v0": true,
+  "captures": 3,
+  "untyped": 2,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "flags",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "NodeFactoryFlags"
+   },
+   {
+    "name": "nullParenthesizerRules",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "ParenthesizerRules"
+   },
+   {
+    "name": "factory",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "NodeFactory"
+   }
+  ]
+ },
+ {
+  "id": "18:329748",
+  "name": "createBaseTokenNode",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/factory/nodeFactory.ts",
+  "line": 7403,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "baseFactory",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "BaseNodeFactory"
+   }
+  ]
+ },
+ {
+  "id": "18:50726",
+  "name": "createPrivateIdentifier",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/factory/nodeFactory.ts",
+  "line": 1396,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "18:57416",
+  "name": "createThis",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/factory/nodeFactory.ts",
+  "line": 1526,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "18:15086",
+  "name": "parenthesizer",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/factory/nodeFactory.ts",
+  "line": 514,
+  "kind": 178,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "parenthesizerRules",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "() => ParenthesizerRules"
+   }
+  ]
+ },
+ {
+  "id": "18:329831",
+  "name": "createBaseNode",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/factory/nodeFactory.ts",
+  "line": 7404,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "baseFactory",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "BaseNodeFactory"
+   }
+  ]
+ },
+ {
+  "id": "18:25298",
+  "name": "createJSDocNonNullableType",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/factory/nodeFactory.ts",
+  "line": 808,
+  "kind": 178,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "getJSDocPrePostfixUnaryTypeCreateFunction",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "<T extends JSDocType & { readonly type: TypeNode | undefined; readonly postfix: "
+   }
+  ]
+ },
+ {
+  "id": "63:131797",
+  "name": "getTypeChecker",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/program.ts",
+  "line": 2684,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "typeChecker",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "TypeChecker"
+   },
+   {
+    "name": "program",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "Program"
+   }
+  ]
+ },
+ {
+  "id": "63:198154",
+  "name": "getCanonicalFileName",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/program.ts",
+  "line": 3907,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "host",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "CompilerHost"
+   }
+  ]
+ },
+ {
+  "id": "63:43029",
+  "name": "resolve",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/program.ts",
+  "line": 1058,
+  "kind": 220,
+  "v0": true,
+  "captures": 5,
+  "untyped": 4,
+  "untyped_mutable": 4,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "containingFile",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "options",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "CompilerOptions"
+   },
+   {
+    "name": "host",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "ModuleResolutionHost"
+   },
+   {
+    "name": "cache",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "ModuleResolutionCache | undefined"
+   },
+   {
+    "name": "redirectedReference",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "ResolvedProjectReference | undefined"
+   }
+  ]
+ },
+ {
+  "id": "63:102931",
+  "name": "toPath",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/program.ts",
+  "line": 2139,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "currentDirectory",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "string"
+   }
+  ]
+ },
+ {
+  "id": "63:189319",
+  "name": "getRedirectFromSourceFile",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/program.ts",
+  "line": 3734,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "mapSourceFileToResolvedRef",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "Map<Path, ResolvedRefAndOutputDts> | undefined"
+   }
+  ]
+ },
+ {
+  "id": "63:162326",
+  "name": "getOptionsDiagnostics",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/program.ts",
+  "line": 3267,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "programDiagnostics",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "ProgramDiagnostics"
+   },
+   {
+    "name": "program",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "Program"
+   }
+  ]
+ },
+ {
+  "id": "63:15061",
+  "name": "readFile",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/program.ts",
+  "line": 486,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "system",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "System"
+   }
+  ]
+ },
+ {
+  "id": "63:14873",
+  "name": "useCaseSensitiveFileNames",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/program.ts",
+  "line": 482,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "system",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "System"
+   }
+  ]
+ },
+ {
+  "id": "63:86643",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/program.ts",
+  "line": 1820,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "63:14266",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/program.ts",
+  "line": 473,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "compilerHost",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "CompilerHost"
+   }
+  ]
+ },
+ {
+  "id": "63:84036",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/program.ts",
+  "line": 1782,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "63:132390",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/program.ts",
+  "line": 2698,
+  "kind": 220,
+  "v0": true,
+  "captures": 8,
+  "untyped": 5,
+  "untyped_mutable": 4,
+  "mutable_typed": 3,
+  "list": [
+   {
+    "name": "program",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "Program"
+   },
+   {
+    "name": "sourceFile",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "SourceFile | undefined"
+   },
+   {
+    "name": "writeFileCallback",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "WriteFileCallback | undefined"
+   },
+   {
+    "name": "cancellationToken",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "CancellationToken | undefined"
+   },
+   {
+    "name": "emitOnly",
+    "where": "outer-param",
+    "const": false,
+    "tier": 1,
+    "type": "boolean | EmitOnly | undefined"
+   },
+   {
+    "name": "transformers",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "CustomTransformers | undefined"
+   },
+   {
+    "name": "forceDtsEmit",
+    "where": "outer-param",
+    "const": false,
+    "tier": 1,
+    "type": "boolean | undefined"
+   },
+   {
+    "name": "skipBuildInfo",
+    "where": "outer-param",
+    "const": false,
+    "tier": 1,
+    "type": "boolean | undefined"
+   }
+  ]
+ },
+ {
+  "id": "63:15001",
+  "name": "fileExists",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/program.ts",
+  "line": 485,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "system",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "System"
+   }
+  ]
+ },
+ {
+  "id": "63:238733",
+  "name": "verifyProjectReferences",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/program.ts",
+  "line": 4587,
+  "kind": 263,
+  "v0": true,
+  "captures": 6,
+  "untyped": 5,
+  "untyped_mutable": 3,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "options",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "CompilerOptions"
+   },
+   {
+    "name": "projectReferences",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "readonly ProjectReference[] | undefined"
+   },
+   {
+    "name": "resolvedProjectReferences",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "readonly (ResolvedProjectReference | undefined)[] | undefined"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   },
+   {
+    "name": "rootNames",
+    "where": "closure",
+    "const": false,
+    "tier": 2,
+    "type": "readonly string[]"
+   },
+   {
+    "name": "hasEmitBlockingDiagnostics",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "Map<string, boolean>"
+   }
+  ]
+ },
+ {
+  "id": "63:250843",
+  "name": "getSymlinkCache",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/program.ts",
+  "line": 4797,
+  "kind": 263,
+  "v0": true,
+  "captures": 5,
+  "untyped": 4,
+  "untyped_mutable": 3,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "host",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "CompilerHost"
+   },
+   {
+    "name": "symlinks",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "SymlinkCache | undefined"
+   },
+   {
+    "name": "currentDirectory",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "files",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "SourceFile[]"
+   },
+   {
+    "name": "automaticTypeDirectiveResolutions",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "ModeAwareCache<ResolvedTypeReferenceDirectiveWithFailedLookupLocations>"
+   }
+  ]
+ },
+ {
+  "id": "63:135109",
+  "name": "getSourceFile",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/program.ts",
+  "line": 2770,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "63:175398",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/program.ts",
+  "line": 3489,
+  "kind": 220,
+  "v0": true,
+  "captures": 3,
+  "untyped": 2,
+  "untyped_mutable": 2,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "isDefaultLib",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "reason",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "FileIncludeReason"
+   },
+   {
+    "name": "packageId",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "PackageId | undefined"
+   }
+  ]
+ },
+ {
+  "id": "63:15184",
+  "name": "directoryExists",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/program.ts",
+  "line": 488,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "system",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "System"
+   }
+  ]
+ },
+ {
+  "id": "63:172804",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/program.ts",
+  "line": 3440,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "canonicalFileName",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "string"
+   }
+  ]
+ },
+ {
+  "id": "63:189819",
+  "name": "isSourceOfProjectReferenceRedirect",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/program.ts",
+  "line": 3748,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "useSourceOfProjectReferenceRedirect",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "boolean"
+   }
+  ]
+ },
+ {
+  "id": "27:50403",
+  "name": "get",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/moduleNameResolver.ts",
+  "line": 1124,
+  "kind": 175,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "underlying",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "Map<ModeAwareCacheKey, T>"
+   }
+  ]
+ },
+ {
+  "id": "27:47484",
+  "name": "getPackageJsonInfo",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/moduleNameResolver.ts",
+  "line": 1054,
+  "kind": 263,
+  "v0": true,
+  "captures": 3,
+  "untyped": 2,
+  "untyped_mutable": 2,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "cache",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "Map<Path, PackageJsonInfoCacheEntry> | undefined"
+   },
+   {
+    "name": "currentDirectory",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "getCanonicalFileName",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "(s: string) => string"
+   }
+  ]
+ },
+ {
+  "id": "27:169129",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/moduleNameResolver.ts",
+  "line": 3177,
+  "kind": 220,
+  "v0": true,
+  "captures": 7,
+  "untyped": 3,
+  "untyped_mutable": 2,
+  "mutable_typed": 3,
+  "list": [
+   {
+    "name": "matchedStar",
+    "where": "closure",
+    "const": true,
+    "tier": 1,
+    "type": "string | undefined"
+   },
+   {
+    "name": "baseDirectory",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "state",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "ModuleResolutionState"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   },
+   {
+    "name": "onlyRecordFailures",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "loader",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "ResolutionKindSpecificLoader"
+   },
+   {
+    "name": "extensions",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "Extensions"
+   }
+  ]
+ },
+ {
+  "id": "27:99119",
+  "name": "parseNodeModuleFromPath",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/moduleNameResolver.ts",
+  "line": 2044,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "nodeModulesPathPart",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "\"/node_modules/\""
+   }
+  ]
+ },
+ {
+  "id": "27:49412",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/moduleNameResolver.ts",
+  "line": 1103,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "27:95273",
+  "name": "normalizePathForCJSResolution",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/moduleNameResolver.ts",
+  "line": 1966,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "27:107948",
+  "name": "tryExtension",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/moduleNameResolver.ts",
+  "line": 2182,
+  "kind": 263,
+  "v0": true,
+  "captures": 3,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 2,
+  "list": [
+   {
+    "name": "candidate",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "onlyRecordFailures",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "state",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "ModuleResolutionState"
+   }
+  ]
+ },
+ {
+  "id": "27:117690",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/moduleNameResolver.ts",
+  "line": 2403,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "state",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "ModuleResolutionState"
+   }
+  ]
+ },
+ {
+  "id": "27:160385",
+  "name": "lookup",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/moduleNameResolver.ts",
+  "line": 3028,
+  "kind": 263,
+  "v0": true,
+  "captures": 7,
+  "untyped": 3,
+  "untyped_mutable": 3,
+  "mutable_typed": 3,
+  "list": [
+   {
+    "name": "state",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "ModuleResolutionState"
+   },
+   {
+    "name": "directory",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "cache",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "ModuleResolutionCache | undefined"
+   },
+   {
+    "name": "moduleName",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "mode",
+    "where": "closure",
+    "const": true,
+    "tier": 1,
+    "type": "ModuleKind.CommonJS | ModuleKind.ESNext | undefined"
+   },
+   {
+    "name": "redirectedReference",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "ResolvedProjectReference | undefined"
+   },
+   {
+    "name": "typesScopeOnly",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   }
+  ]
+ },
+ {
+  "id": "27:6090",
+  "name": "formatExtensions",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/moduleNameResolver.ts",
+  "line": 193,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "14:292213",
+  "name": "isAssignmentOperator",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 7435,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "14:287396",
+  "name": "selectSyntacticModifierFlags",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 7312,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "14:204917",
+  "name": "isKeyword",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 5266,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "14:391221",
+  "name": "visitDirectory",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 9847,
+  "kind": 263,
+  "v0": true,
+  "captures": 9,
+  "untyped": 7,
+  "untyped_mutable": 2,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "toCanonical",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "GetCanonicalFileName"
+   },
+   {
+    "name": "realpath",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "(path: string) => string"
+   },
+   {
+    "name": "visited",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "Map<string, true>"
+   },
+   {
+    "name": "getFileSystemEntries",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "(path: string) => FileSystemEntries"
+   },
+   {
+    "name": "extensions",
+    "where": "outer-param",
+    "const": false,
+    "tier": 2,
+    "type": "readonly string[] | undefined"
+   },
+   {
+    "name": "excludeRegex",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "\"\" | RegExp | undefined"
+   },
+   {
+    "name": "includeFileRegexes",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "RegExp[] | undefined"
+   },
+   {
+    "name": "results",
+    "where": "closure",
+    "const": true,
+    "tier": 2,
+    "type": "string[][]"
+   },
+   {
+    "name": "includeDirectoryRegex",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "\"\" | RegExp | undefined"
+   }
+  ]
+ },
+ {
+  "id": "14:234125",
+  "name": "getBinaryOperatorPrecedence",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 5997,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "14:409721",
+  "name": "positionIsSynthesized",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 10265,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "14:291745",
+  "name": "isLogicalOrCoalescingBinaryOperator",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 7425,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "14:289308",
+  "name": "modifierToFlag",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 7364,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "14:349548",
+  "name": "getLanguageVariant",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 8948,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "14:395603",
+  "name": "getScriptKindFromFileName",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 9945,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "14:326648",
+  "name": "isTypeNodeKind",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 8330,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "14:243360",
+  "name": "escapeNonAsciiString",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 6216,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "nonAsciiCharacters",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "RegExp"
+   }
+  ]
+ },
+ {
+  "id": "14:41167",
+  "name": "getUnusedExpectations",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 1221,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "directivesByLine",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "Map<string, CommentDirective>"
+   },
+   {
+    "name": "usedLines",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "Map<string, boolean>"
+   }
+  ]
+ },
+ {
+  "id": "14:384018",
+  "name": "isImplicitGlob",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 9684,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "14:367344",
+  "name": "emitModuleKindIsNonNodeESM",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 9326,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "14:290781",
+  "name": "isBinaryLogicalOperator",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 7403,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "14:406967",
+  "name": "removeFileExtension",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 10172,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "extensionsToRemove",
+    "where": "module",
+    "const": true,
+    "tier": 2,
+    "type": "Extension[]"
+   }
+  ]
+ },
+ {
+  "id": "14:47568",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 1384,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "emptyArray",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "never[]"
+   }
+  ]
+ },
+ {
+  "id": "14:410363",
+  "name": "resolutionExtensionIsTSOrJson",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 10281,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "14:394537",
+  "name": "getIncludeBasePath",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 9922,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "wildcardCharCodes",
+    "where": "module",
+    "const": true,
+    "tier": 2,
+    "type": "CharacterCodes[]"
+   },
+   {
+    "name": "directorySeparator",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "\"/\""
+   }
+  ]
+ },
+ {
+  "id": "14:395004",
+  "name": "ensureScriptKind",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 9934,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "14:407285",
+  "name": "tryRemoveExtension",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 10183,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "14:383721",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 9675,
+  "kind": 220,
+  "v0": true,
+  "captures": 3,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 2,
+  "list": [
+   {
+    "name": "basePath",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "usage",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "\"files\" | \"directories\" | \"exclude\""
+   },
+   {
+    "name": "wildcardMatchers",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ files: WildcardMatcher; directories: WildcardMatcher; exclude: WildcardMatcher"
+   }
+  ]
+ },
+ {
+  "id": "14:239003",
+  "name": "getGlobalDiagnostics",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 6117,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "hasReadNonFileDiagnostics",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "nonFileDiagnostics",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "SortedArray<Diagnostic>"
+   }
+  ]
+ },
+ {
+  "id": "14:291142",
+  "name": "isLogicalOrCoalescingAssignmentOperator",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 7413,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "14:247452",
+  "name": "writeText",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 6322,
+  "kind": 263,
+  "v0": true,
+  "captures": 3,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 3,
+  "list": [
+   {
+    "name": "lineStart",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "indent",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "output",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   }
+  ]
+ },
+ {
+  "id": "14:247035",
+  "name": "updateLineCountAndPosFor",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 6310,
+  "kind": 263,
+  "v0": true,
+  "captures": 4,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 4,
+  "list": [
+   {
+    "name": "lineCount",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "linePos",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "output",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "lineStart",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   }
+  ]
+ },
+ {
+  "id": "14:247738",
+  "name": "write",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts",
+  "line": 6333,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "hasTrailingComment",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   }
+  ]
+ },
+ {
+  "id": "5:1954",
+  "name": "mark",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/performance.ts",
+  "line": 74,
+  "kind": 263,
+  "v0": true,
+  "captures": 6,
+  "untyped": 5,
+  "untyped_mutable": 2,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "enabled",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "counts",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Map<string, number>"
+   },
+   {
+    "name": "marks",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Map<string, number>"
+   },
+   {
+    "name": "timestamp",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "() => number"
+   },
+   {
+    "name": "performanceImpl",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Performance | undefined"
+   },
+   {
+    "name": "onProfilerEvent",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "((eventName: string) => void) | undefined"
+   }
+  ]
+ },
+ {
+  "id": "34:19717",
+  "name": "isCompoundAssignment",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/transformers/utilities.ts",
+  "line": 490,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "3:3169",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/semver.ts",
+  "line": 70,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "prereleasePartRegExp",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "RegExp"
+   }
+  ]
+ },
+ {
+  "id": "15:2286",
+  "name": "createBaseTokenNode",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/factory/baseNodeFactory.ts",
+  "line": 53,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "TokenConstructor",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "new (kind: SyntaxKind, pos: number, end: number) => Node"
+   },
+   {
+    "name": "objectAllocator",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "ObjectAllocator"
+   }
+  ]
+ },
+ {
+  "id": "15:1787",
+  "name": "createBaseIdentifierNode",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/factory/baseNodeFactory.ts",
+  "line": 45,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "IdentifierConstructor",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "new (kind: SyntaxKind.Identifier, pos: number, end: number) => Node"
+   },
+   {
+    "name": "objectAllocator",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "ObjectAllocator"
+   }
+  ]
+ },
+ {
+  "id": "23:47525",
+  "name": "isMultiplicativeOperatorOrHigher",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/factory/utilities.ts",
+  "line": 1181,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "23:47886",
+  "name": "isAdditiveOperatorOrHigher",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/factory/utilities.ts",
+  "line": 1191,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "23:48349",
+  "name": "isShiftOperatorOrHigher",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/factory/utilities.ts",
+  "line": 1203,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "61:47193",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/emitter.ts",
+  "line": 1203,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "61:56752",
+  "name": "reset",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/emitter.ts",
+  "line": 1422,
+  "kind": 263,
+  "v0": true,
+  "captures": 17,
+  "untyped": 9,
+  "untyped_mutable": 9,
+  "mutable_typed": 8,
+  "list": [
+   {
+    "name": "nodeIdToGeneratedName",
+    "where": "closure",
+    "const": false,
+    "tier": 2,
+    "type": "string[]"
+   },
+   {
+    "name": "nodeIdToGeneratedPrivateName",
+    "where": "closure",
+    "const": false,
+    "tier": 2,
+    "type": "string[]"
+   },
+   {
+    "name": "autoGeneratedIdToGeneratedName",
+    "where": "closure",
+    "const": false,
+    "tier": 2,
+    "type": "string[]"
+   },
+   {
+    "name": "generatedNames",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "Set<string>"
+   },
+   {
+    "name": "formattedNameTempFlagsStack",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "(Map<string, TempFlags> | undefined)[]"
+   },
+   {
+    "name": "formattedNameTempFlags",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "Map<string, TempFlags> | undefined"
+   },
+   {
+    "name": "privateNameTempFlagsStack",
+    "where": "closure",
+    "const": false,
+    "tier": 2,
+    "type": "TempFlags[]"
+   },
+   {
+    "name": "privateNameTempFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "TempFlags"
+   },
+   {
+    "name": "tempFlagsStack",
+    "where": "closure",
+    "const": false,
+    "tier": 2,
+    "type": "TempFlags[]"
+   },
+   {
+    "name": "tempFlags",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "TempFlags"
+   },
+   {
+    "name": "reservedNamesStack",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "(Set<string> | undefined)[]"
+   },
+   {
+    "name": "reservedNames",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "Set<string> | undefined"
+   },
+   {
+    "name": "reservedPrivateNamesStack",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "(Set<string> | undefined)[]"
+   },
+   {
+    "name": "reservedPrivateNames",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "Set<string> | undefined"
+   },
+   {
+    "name": "currentSourceFile",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "SourceFile | undefined"
+   },
+   {
+    "name": "currentLineMap",
+    "where": "closure",
+    "const": false,
+    "tier": 2,
+    "type": "readonly number[] | undefined"
+   },
+   {
+    "name": "detachedCommentsInfo",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "{ nodePos: number; detachedCommentEndPos: number; }[] | undefined"
+   }
+  ]
+ },
+ {
+  "id": "61:207295",
+  "name": "writeSpace",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/emitter.ts",
+  "line": 4901,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "writer",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "EmitTextWriter"
+   }
+  ]
+ },
+ {
+  "id": "61:206776",
+  "name": "writePunctuation",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/emitter.ts",
+  "line": 4877,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "writer",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "EmitTextWriter"
+   }
+  ]
+ },
+ {
+  "id": "61:10213",
+  "name": "isBuildInfoFile",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/emitter.ts",
+  "line": 431,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "61:206961",
+  "name": "writeKeyword",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/emitter.ts",
+  "line": 4885,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "writer",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "EmitTextWriter"
+   }
+  ]
+ },
+ {
+  "id": "9:76647",
+  "name": "swapCase",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/sys.ts",
+  "line": 1732,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "9:69925",
+  "name": "exit",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/sys.ts",
+  "line": 1587,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "9:70394",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/sys.ts",
+  "line": 1594,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "9:76191",
+  "name": "isFileSystemCaseSensitive",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/sys.ts",
+  "line": 1722,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "platform",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "string"
+   }
+  ]
+ },
+ {
+  "id": "9:71951",
+  "name": "statSync",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/sys.ts",
+  "line": 1629,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "_fs",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "typeof import(\"fs\")"
+   },
+   {
+    "name": "statSyncOptions",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "{ readonly throwIfNoEntry: false; }"
+   }
+  ]
+ },
+ {
+  "id": "9:84524",
+  "name": "realpath",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/sys.ts",
+  "line": 1917,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "fsRealpath",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "{ (path: PathLike, options?: EncodingOption): string; (path: PathLike, options: "
+   }
+  ]
+ },
+ {
+  "id": "9:66427",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/sys.ts",
+  "line": 1501,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "9:69993",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/sys.ts",
+  "line": 1588,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "exitCode",
+    "where": "outer-param",
+    "const": false,
+    "tier": 1,
+    "type": "number | undefined"
+   }
+  ]
+ },
+ {
+  "id": "9:83902",
+  "name": "fileExists",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/sys.ts",
+  "line": 1901,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "9:67672",
+  "name": "write",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/sys.ts",
+  "line": 1527,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "9:84044",
+  "name": "directoryExists",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/sys.ts",
+  "line": 1905,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "64:5570",
+  "name": "getFileReasons",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/programDiagnostics.ts",
+  "line": 138,
+  "kind": 175,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "fileReasons",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "MultiMap<Path, FileIncludeReason>"
+   }
+  ]
+ },
+ {
+  "id": "74:37997",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/executeCommandLine.ts",
+  "line": 919,
+  "kind": 220,
+  "v0": true,
+  "captures": 2,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "currentDirectory",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "string"
+   },
+   {
+    "name": "getCanonicalFileName",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "GetCanonicalFileName"
+   }
+  ]
+ },
+ {
+  "id": "74:27164",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/executeCommandLine.ts",
+  "line": 650,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "currentDirectory",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "string"
+   }
+  ]
+ },
+ {
+  "id": "29:39653",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/moduleSpecifiers.ts",
+  "line": 835,
+  "kind": 220,
+  "v0": true,
+  "captures": 3,
+  "untyped": 2,
+  "untyped_mutable": 1,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "allFileNames",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "Map<string, { path: string; isRedirect: boolean; isInNodeModules: boolean; }>"
+   },
+   {
+    "name": "info",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "Info"
+   },
+   {
+    "name": "importedFileFromNodeModules",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   }
+  ]
+ },
+ {
+  "id": "29:9051",
+  "name": "getPreferredEnding",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/moduleSpecifiers.ts",
+  "line": 236,
+  "kind": 263,
+  "v0": true,
+  "captures": 5,
+  "untyped": 3,
+  "untyped_mutable": 3,
+  "mutable_typed": 2,
+  "list": [
+   {
+    "name": "oldImportSpecifier",
+    "where": "outer-param",
+    "const": false,
+    "tier": 1,
+    "type": "string | undefined"
+   },
+   {
+    "name": "importModuleSpecifierEnding",
+    "where": "closure",
+    "const": false,
+    "tier": 1,
+    "type": "\"auto\" | \"minimal\" | \"index\" | \"js\" | undefined"
+   },
+   {
+    "name": "importingSourceFile",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "Pick<SourceFile, \"fileName\" | \"impliedNodeFormat\">"
+   },
+   {
+    "name": "host",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "Pick<ModuleSpecifierResolutionHost, \"getDefaultResolutionModeForFile\">"
+   },
+   {
+    "name": "compilerOptions",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "CompilerOptions"
+   }
+  ]
+ },
+ {
+  "id": "29:36197",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/moduleSpecifiers.ts",
+  "line": 766,
+  "kind": 220,
+  "v0": true,
+  "captures": 3,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "shouldFilterIgnoredPaths",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "cb",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "(fileName: string, isRedirect: boolean) => T | undefined"
+   },
+   {
+    "name": "referenceRedirect",
+    "where": "closure",
+    "const": true,
+    "tier": 1,
+    "type": "string | undefined"
+   }
+  ]
+ },
+ {
+  "id": "2:4516",
+  "name": "shouldAssert",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/debug.ts",
+  "line": 177,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "currentAssertionLevel",
+    "where": "module",
+    "const": false,
+    "tier": 0,
+    "type": "AssertionLevel"
+   }
+  ]
+ },
+ {
+  "id": "26:92466",
+  "name": "getTsconfigRootOptionsMap",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/commandLineParser.ts",
+  "line": 2370,
+  "kind": 263,
+  "v0": false,
+  "captures": 7,
+  "untyped": 7,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "_tsconfigRootOptions",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "TsConfigOnlyOption"
+   },
+   {
+    "name": "compilerOptionsDeclaration",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "TsConfigOnlyOption"
+   },
+   {
+    "name": "watchOptionsDeclaration",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "TsConfigOnlyOption"
+   },
+   {
+    "name": "typeAcquisitionDeclaration",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "TsConfigOnlyOption"
+   },
+   {
+    "name": "extendsOptionDeclaration",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "CommandLineOptionOfListType"
+   },
+   {
+    "name": "Diagnostics",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ Unterminated_string_literal: DiagnosticMessage; Identifier_expected: Diagnosti"
+   },
+   {
+    "name": "compileOnSaveCommandLineOption",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "CommandLineOption"
+   }
+  ]
+ },
+ {
+  "id": "26:153964",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/commandLineParser.ts",
+  "line": 3702,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "host",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "ParseConfigHost"
+   }
+  ]
+ },
+ {
+  "id": "26:130711",
+  "name": "getFileNames",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/commandLineParser.ts",
+  "line": 3190,
+  "kind": 263,
+  "v0": true,
+  "captures": 8,
+  "untyped": 7,
+  "untyped_mutable": 4,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "configFileSpecs",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "ConfigFileSpecs"
+   },
+   {
+    "name": "options",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "CompilerOptions"
+   },
+   {
+    "name": "host",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "ParseConfigHost"
+   },
+   {
+    "name": "extraFileExtensions",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "readonly FileExtensionInfo[]"
+   },
+   {
+    "name": "raw",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "any"
+   },
+   {
+    "name": "resolutionStack",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "Path[]"
+   },
+   {
+    "name": "errors",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "Diagnostic[]"
+   },
+   {
+    "name": "configFileName",
+    "where": "outer-param",
+    "const": false,
+    "tier": 1,
+    "type": "string | undefined"
+   }
+  ]
+ },
+ {
+  "id": "26:90761",
+  "name": "getCommandLineCompilerOptionsMap",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/commandLineParser.ts",
+  "line": 2329,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "commandLineCompilerOptionsMapCache",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "Map<string, CommandLineOption>"
+   },
+   {
+    "name": "optionDeclarations",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "CommandLineOption[]"
+   }
+  ]
+ },
+ {
+  "id": "26:86820",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/commandLineParser.ts",
+  "line": 2239,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "host",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "ParseConfigFileHost"
+   }
+  ]
+ },
+ {
+  "id": "26:179351",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/commandLineParser.ts",
+  "line": 4210,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "file",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   }
+  ]
+ }
+]

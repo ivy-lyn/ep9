@@ -1,0 +1,98 @@
+# fn-arrow: script (sloppy)
+# | var f = (a, b) => a + b; var g = () => { return this; }; var h = x => ({x});
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=76 source=embedded hints=none
+source_hash=2e158d4cb13914323170b44b13251d8290263ab002f3172d2bf7be63827ab411
+strings (5):
+  str0 "f"
+  str1 "g"
+  str2 "h"
+  str3 "this"
+  str4 "x"
+scopes (5):
+  scope0 script outer=- flags=[] slots=["f":var, "g":var, "h":var]
+  scope1 function outer=scope0 flags=[needs-context] slots=["this":var]
+  scope2 function outer=scope1 flags=[] slots=[]
+  scope3 function outer=scope1 flags=[] slots=[]
+  scope4 function outer=scope1 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=1 range=0..76
+  code (37 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateFunctionContext k0, [1]  ; k0 = Scope scope1 ; 75 00 01
+      8    PushContext r0                               ; 13 00
+     10    Ldar <this>                                  ; 0b ff
+     12    StaCurrentContextSlot [0]                    ; 1b 00
+     14 S> CreateClosure k1, s0, #0x00  ; k1 = Function f1 ; 74 01 00 00
+     18 E> StaGlobal k2, s1  ; k2 = String str0 "f"     ; 12 02 01
+     21 S> CreateClosure k3, s2, #0x00  ; k3 = Function f2 ; 74 03 02 00
+     25 E> StaGlobal k4, s3  ; k4 = String str1 "g"     ; 12 04 03
+     28 S> CreateClosure k5, s4, #0x00  ; k5 = Function f3 ; 74 05 04 00
+     32 E> StaGlobal k6, s5  ; k6 = String str2 "h"     ; 12 06 05
+     35    LdaUndefined                                 ; 05
+     36    Return                                       ; 92
+  constants (7):
+      0 Scope scope1
+      1 Function f1
+      2 String str0 "f"
+      3 Function f2
+      4 String str1 "g"
+      5 Function f3
+      6 String str2 "h"
+  feedback (6):
+      0 CreateClosure
+      1 StoreGlobal
+      2 CreateClosure
+      3 StoreGlobal
+      4 CreateClosure
+      5 StoreGlobal
+  handlers (0):
+  positions (8):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     14 S 4 (1:5)
+     18 E 4 (1:5)
+     21 S 29 (1:30)
+     25 E 29 (1:30)
+     28 S 61 (1:62)
+     32 E 61 (1:62)
+function f1 arrow name="f" parent=f0 outer_scope=scope1 flags=[simple-params] params=2 length=2 regs=0 range=8..23
+  code (6 bytes):
+      0 S> Ldar a1                                      ; 0b fd
+      2 E> Add a0, s0                                   ; 2a fe 00
+      5    Return                                       ; 92
+  constants (0):
+  feedback (1):
+      0 BinaryOp
+  handlers (0):
+  positions (2):
+      0 S 18 (1:19)
+      2 E 18 (1:19)
+function f2 arrow name="g" parent=f0 outer_scope=scope1 flags=[simple-params] params=0 length=0 regs=0 range=33..55
+  code (5 bytes):
+      0 S> LdaImmutableCurrentContextSlot [0]           ; 19 00
+      2    Return                                       ; 92
+      3    LdaUndefined                                 ; 05
+      4    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 41 (1:42)
+function f3 arrow name="h" parent=f0 outer_scope=scope1 flags=[simple-params] params=1 length=1 regs=1 range=65..75
+  code (15 bytes):
+      0 S> CreateObjectLiteral k1, s0, #0x01  ; k1 = ObjectBoilerplate {k0: _} ; 70 01 00 01
+      4    Star r0                                      ; 0c 00
+      6    Ldar a0                                      ; 0b fe
+      8 E> DefineNamedOwnProperty r0, k0, s1  ; k0 = String str4 "x" ; 25 00 00 01
+     12    Ldar r0                                      ; 0b 00
+     14    Return                                       ; 92
+  constants (2):
+      0 String str4 "x"
+      1 ObjectBoilerplate {k0: _}
+  feedback (2):
+      0 Literal
+      1 DefineNamedOwn
+  handlers (0):
+  positions (2):
+      0 S 70 (1:71)
+      8 E 70 (1:71)

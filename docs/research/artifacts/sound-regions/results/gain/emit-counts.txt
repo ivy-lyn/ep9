@@ -1,0 +1,17 @@
+# shermes -O -emit-c (stripped = same source, types removed, untyped) vs shermes -O -typed -emit-c (typed). Counts of call sites in emitted C.
+emit/nbody-stripped.c bytes=41133 get_by_id=73 put_by_id=55 direct_prload=0 direct_prstore=0 ljs_call=12
+emit/nbody-typed.c bytes=29892 get_by_id=13 put_by_id=2 direct_prload=39 direct_prstore=54 ljs_call=7
+emit/raytracer-stripped.c bytes=191131 get_by_id=295 put_by_id=178 direct_prload=0 direct_prstore=0 ljs_call=97
+emit/raytracer-typed.c bytes=145324 get_by_id=20 put_by_id=14 direct_prload=239 direct_prstore=178 ljs_call=18
+emit/richards-stripped.c bytes=143518 get_by_id=172 put_by_id=131 direct_prload=0 direct_prstore=0 ljs_call=66
+emit/richards-typed.c bytes=161605 get_by_id=36 put_by_id=10 direct_prload=259 direct_prstore=332 ljs_call=32
+# binaries (bytes)
+69240 bin/nbody-stripped-sb-sh
+69152 bin/nbody-stripped-sh
+124968 bin/raytracer-stripped-sb-sh
+125240 bin/raytracer-stripped-sh
+104968 bin/richards-stripped-sb-sh
+104968 bin/richards-stripped-sh
+52320 ../../aot-vs-jit/bin/nbody-typed-sh
+71200 ../../aot-vs-jit/bin/raytracer-typed-sh
+88192 ../../aot-vs-jit/bin/richards-typed-sh

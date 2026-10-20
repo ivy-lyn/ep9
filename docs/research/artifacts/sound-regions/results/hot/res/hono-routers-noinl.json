@@ -1,0 +1,1010 @@
+{
+ "label": "hono-routers-noinl",
+ "profiles": [
+  "prof/lib-noinl/hono-routers.cpuprofile"
+ ],
+ "samples": 4779,
+ "mean_sample_interval_us": 317.0,
+ "leaf_categories": {
+  "fn-noq": 2772,
+  "regexp": 799,
+  "module-top-level": 495,
+  "fn-v0": 286,
+  "(garbage collector)": 280,
+  "(program)": 95,
+  "native": 35,
+  "node-internal": 15,
+  "fn-v3only": 1,
+  "(idle)": 1
+ },
+ "breakdown_pct": {
+  "not-Q": 74.7,
+  "module-top-level": 10.4,
+  "Q-v0": 6.0,
+  "(garbage collector)": 5.9,
+  "(program)": 2.0,
+  "node-internal": 1.0,
+  "Q-v3-only": 0.0,
+  "(idle)": 0.0
+ },
+ "pct_of_all_samples": {
+  "self_v0": 6.0,
+  "self_v3": 6.0,
+  "self_in_analyzed_functions": 64.0,
+  "self_plus_builtins_v0": 6.0,
+  "self_plus_builtins_v3": 6.0,
+  "self_plus_builtins_in_analyzed_functions": 80.7,
+  "inclusive_v0": 6.0,
+  "inclusive_v3": 6.0,
+  "inclusive_any_analyzed": 80.7,
+  "vm_gc_program_idle": 7.9
+ },
+ "pct_of_analyzed_self_plus_builtins": {
+  "v0": 7.4,
+  "v3": 7.4
+ },
+ "pct_of_analyzed_self": {
+  "v0": 9.3,
+  "v3": 9.4
+ },
+ "counts": {
+  "nonvm": 4403,
+  "selfb_js": 4403,
+  "name_match": 3059,
+  "self_fn": 3059,
+  "selfb_fn": 3858,
+  "selfb_analyzed_file": 4353,
+  "incl_any_analyzed": 3858,
+  "self_v3": 287,
+  "selfb_v3": 287,
+  "incl_v3": 287,
+  "self_v0": 286,
+  "selfb_v0": 286,
+  "incl_v0": 286
+ },
+ "top_self": [
+  {
+   "name": "PatternRouter.match",
+   "kind": "method",
+   "at": "hono/src/router/pattern-router/router.ts:38",
+   "pct": 19.5,
+   "samples": 934,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "class PatternRouter blocked by r5; local-type: tuple[]; any-flow",
+   "v3_reasons": [
+    "this-class-not-qualifying",
+    "local-type",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "hono/src/router/reg-exp-router/matcher.ts:14",
+   "pct": 15.8,
+   "samples": 757,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "local-type: tuple; assertion(as)",
+   "v3_reasons": [
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "Node.search",
+   "kind": "method",
+   "at": "hono/src/router/trie-router/node.ts:86",
+   "pct": 15.0,
+   "samples": 716,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "class Node blocked by r1/r4; local-type: inter(tlit {   handler: T   pos?,tlit {   params: Record<s?)[]; nonnull(!); any-flow",
+   "v3_reasons": [
+    "this-class-not-qualifying",
+    "local-type",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "splitPath",
+   "kind": "arrow",
+   "at": "hono/src/utils/url.ts:8",
+   "pct": 5.8,
+   "samples": 279,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "TrieRouter.match",
+   "kind": "method",
+   "at": "hono/src/router/trie-router/router.ts:15",
+   "pct": 4.2,
+   "samples": 201,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "class TrieRouter blocked by r5",
+   "v3_reasons": [
+    "this-class-not-qualifying"
+   ]
+  },
+  {
+   "name": "Node.#pushHandlerSets",
+   "kind": "method",
+   "at": "hono/src/router/trie-router/node.ts:64",
+   "pct": 3.0,
+   "samples": 144,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: inter(tlit {   handler: T   pos?,tlit {   params: Record<s?)[]; class Node blocked by r1/r4; local-type: param inter(tlit {   handler: T   pos?,tlit {   params: Record<s?)[]; assertion(as); any-flow",
+   "v3_reasons": [
+    "param-type",
+    "this-class-not-qualifying",
+    "local-type",
+    "assertion(as)",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "hono/src/router/trie-router/node.ts:219",
+   "pct": 0.4,
+   "samples": 17,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: inter(tlit {   handler: T   pos?,tlit {   params: Record<s?); assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "createNullObject",
+   "kind": "arrow",
+   "at": "hono/src/router/utils.ts:1",
+   "pct": 0.1,
+   "samples": 7,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "Node.insert",
+   "kind": "method",
+   "at": "hono/src/router/reg-exp-router/node.ts:53",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: tuple[]; class Node blocked by r1/r4/r5; local-type: param tuple[]",
+   "v3_reasons": [
+    "param-type",
+    "this-class-not-qualifying",
+    "local-type"
+   ]
+  },
+  {
+   "name": "RegExpRouter.add",
+   "kind": "method",
+   "at": "hono/src/router/reg-exp-router/router.ts:68",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: tp; class RegExpRouter blocked by r5; local-type: param tp; nonnull(!); any-flow",
+   "v3_reasons": [
+    "param-type",
+    "this-class-not-qualifying",
+    "local-type",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "PatternRouter.add",
+   "kind": "method",
+   "at": "hono/src/router/pattern-router/router.ts:12",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: tp; class PatternRouter blocked by r5",
+   "v3_reasons": [
+    "param-type",
+    "this-class-not-qualifying"
+   ]
+  },
+  {
+   "name": "Trie.buildRegExp",
+   "kind": "method",
+   "at": "hono/src/router/reg-exp-router/trie.ts:59",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "class Trie blocked by r1",
+   "v3_reasons": []
+  }
+ ],
+ "top_self_plus_builtins": [
+  {
+   "name": "PatternRouter.match",
+   "kind": "method",
+   "at": "hono/src/router/pattern-router/router.ts:38",
+   "pct": 30.7,
+   "samples": 1468,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "class PatternRouter blocked by r5; local-type: tuple[]; any-flow",
+   "v3_reasons": [
+    "this-class-not-qualifying",
+    "local-type",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "hono/src/router/reg-exp-router/matcher.ts:14",
+   "pct": 21.4,
+   "samples": 1022,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "local-type: tuple; assertion(as)",
+   "v3_reasons": [
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "Node.search",
+   "kind": "method",
+   "at": "hono/src/router/trie-router/node.ts:86",
+   "pct": 15.0,
+   "samples": 716,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "class Node blocked by r1/r4; local-type: inter(tlit {   handler: T   pos?,tlit {   params: Record<s?)[]; nonnull(!); any-flow",
+   "v3_reasons": [
+    "this-class-not-qualifying",
+    "local-type",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "splitPath",
+   "kind": "arrow",
+   "at": "hono/src/utils/url.ts:8",
+   "pct": 5.8,
+   "samples": 279,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "TrieRouter.match",
+   "kind": "method",
+   "at": "hono/src/router/trie-router/router.ts:15",
+   "pct": 4.2,
+   "samples": 201,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "class TrieRouter blocked by r5",
+   "v3_reasons": [
+    "this-class-not-qualifying"
+   ]
+  },
+  {
+   "name": "Node.#pushHandlerSets",
+   "kind": "method",
+   "at": "hono/src/router/trie-router/node.ts:64",
+   "pct": 3.0,
+   "samples": 144,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: inter(tlit {   handler: T   pos?,tlit {   params: Record<s?)[]; class Node blocked by r1/r4; local-type: param inter(tlit {   handler: T   pos?,tlit {   params: Record<s?)[]; assertion(as); any-flow",
+   "v3_reasons": [
+    "param-type",
+    "this-class-not-qualifying",
+    "local-type",
+    "assertion(as)",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "hono/src/router/trie-router/node.ts:219",
+   "pct": 0.4,
+   "samples": 17,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: inter(tlit {   handler: T   pos?,tlit {   params: Record<s?); assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "createNullObject",
+   "kind": "arrow",
+   "at": "hono/src/router/utils.ts:1",
+   "pct": 0.1,
+   "samples": 7,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "Node.insert",
+   "kind": "method",
+   "at": "hono/src/router/reg-exp-router/node.ts:53",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: tuple[]; class Node blocked by r1/r4/r5; local-type: param tuple[]",
+   "v3_reasons": [
+    "param-type",
+    "this-class-not-qualifying",
+    "local-type"
+   ]
+  },
+  {
+   "name": "RegExpRouter.add",
+   "kind": "method",
+   "at": "hono/src/router/reg-exp-router/router.ts:68",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: tp; class RegExpRouter blocked by r5; local-type: param tp; nonnull(!); any-flow",
+   "v3_reasons": [
+    "param-type",
+    "this-class-not-qualifying",
+    "local-type",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "PatternRouter.add",
+   "kind": "method",
+   "at": "hono/src/router/pattern-router/router.ts:12",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: tp; class PatternRouter blocked by r5",
+   "v3_reasons": [
+    "param-type",
+    "this-class-not-qualifying"
+   ]
+  },
+  {
+   "name": "Trie.buildRegExp",
+   "kind": "method",
+   "at": "hono/src/router/reg-exp-router/trie.ts:59",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "class Trie blocked by r1",
+   "v3_reasons": []
+  }
+ ],
+ "top_inclusive": [
+  {
+   "name": "PatternRouter.match",
+   "kind": "method",
+   "at": "hono/src/router/pattern-router/router.ts:38",
+   "pct": 30.7,
+   "samples": 1468,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "class PatternRouter blocked by r5; local-type: tuple[]; any-flow",
+   "v3_reasons": [
+    "this-class-not-qualifying",
+    "local-type",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "TrieRouter.match",
+   "kind": "method",
+   "at": "hono/src/router/trie-router/router.ts:15",
+   "pct": 28.2,
+   "samples": 1349,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "class TrieRouter blocked by r5",
+   "v3_reasons": [
+    "this-class-not-qualifying"
+   ]
+  },
+  {
+   "name": "Node.search",
+   "kind": "method",
+   "at": "hono/src/router/trie-router/node.ts:86",
+   "pct": 24.0,
+   "samples": 1148,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "class Node blocked by r1/r4; local-type: inter(tlit {   handler: T   pos?,tlit {   params: Record<s?)[]; nonnull(!); any-flow",
+   "v3_reasons": [
+    "this-class-not-qualifying",
+    "local-type",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "hono/src/router/reg-exp-router/matcher.ts:14",
+   "pct": 21.4,
+   "samples": 1022,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "local-type: tuple; assertion(as)",
+   "v3_reasons": [
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "splitPath",
+   "kind": "arrow",
+   "at": "hono/src/utils/url.ts:8",
+   "pct": 5.8,
+   "samples": 279,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "Node.#pushHandlerSets",
+   "kind": "method",
+   "at": "hono/src/router/trie-router/node.ts:64",
+   "pct": 3.1,
+   "samples": 148,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: inter(tlit {   handler: T   pos?,tlit {   params: Record<s?)[]; class Node blocked by r1/r4; local-type: param inter(tlit {   handler: T   pos?,tlit {   params: Record<s?)[]; assertion(as); any-flow",
+   "v3_reasons": [
+    "param-type",
+    "this-class-not-qualifying",
+    "local-type",
+    "assertion(as)",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "hono/src/router/trie-router/node.ts:219",
+   "pct": 0.4,
+   "samples": 17,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: inter(tlit {   handler: T   pos?,tlit {   params: Record<s?); assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "createNullObject",
+   "kind": "arrow",
+   "at": "hono/src/router/utils.ts:1",
+   "pct": 0.1,
+   "samples": 7,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "RegExpRouter.add",
+   "kind": "method",
+   "at": "hono/src/router/reg-exp-router/router.ts:68",
+   "pct": 0.0,
+   "samples": 2,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: tp; class RegExpRouter blocked by r5; local-type: param tp; nonnull(!); any-flow",
+   "v3_reasons": [
+    "param-type",
+    "this-class-not-qualifying",
+    "local-type",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "Node.insert",
+   "kind": "method",
+   "at": "hono/src/router/reg-exp-router/node.ts:53",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: tuple[]; class Node blocked by r1/r4/r5; local-type: param tuple[]",
+   "v3_reasons": [
+    "param-type",
+    "this-class-not-qualifying",
+    "local-type"
+   ]
+  },
+  {
+   "name": "Trie.insert",
+   "kind": "method",
+   "at": "hono/src/router/reg-exp-router/trie.ts:14",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "class Trie blocked by r1; local-type: tuple[]",
+   "v3_reasons": [
+    "local-type"
+   ]
+  },
+  {
+   "name": "RegExpRouter.#insertPath",
+   "kind": "method",
+   "at": "hono/src/router/reg-exp-router/router.ts:60",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "class RegExpRouter blocked by r5; local-type: unknown; nonnull(!)",
+   "v3_reasons": [
+    "this-class-not-qualifying",
+    "local-type"
+   ]
+  },
+  {
+   "name": "PatternRouter.add",
+   "kind": "method",
+   "at": "hono/src/router/pattern-router/router.ts:12",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: tp; class PatternRouter blocked by r5",
+   "v3_reasons": [
+    "param-type",
+    "this-class-not-qualifying"
+   ]
+  },
+  {
+   "name": "Trie.buildRegExp",
+   "kind": "method",
+   "at": "hono/src/router/reg-exp-router/trie.ts:59",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "class Trie blocked by r1",
+   "v3_reasons": []
+  },
+  {
+   "name": "RegExpRouter.#buildMatcher",
+   "kind": "method",
+   "at": "hono/src/router/reg-exp-router/router.ts:145",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "class RegExpRouter blocked by r5; local-type: tlit \u007ftype; assertion(as); nonnull(!); any-flow",
+   "v3_reasons": [
+    "this-class-not-qualifying",
+    "local-type",
+    "assertion(as)",
+    "any-flow"
+   ]
+  }
+ ],
+ "top_inclusive_v0": [
+  {
+   "name": "splitPath",
+   "kind": "arrow",
+   "at": "hono/src/utils/url.ts:8",
+   "pct": 5.8,
+   "samples": 279,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "createNullObject",
+   "kind": "arrow",
+   "at": "hono/src/router/utils.ts:1",
+   "pct": 0.1,
+   "samples": 7,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  }
+ ],
+ "top_self_v0": [
+  {
+   "name": "splitPath",
+   "kind": "arrow",
+   "at": "hono/src/utils/url.ts:8",
+   "pct": 5.8,
+   "samples": 279,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "createNullObject",
+   "kind": "arrow",
+   "at": "hono/src/router/utils.ts:1",
+   "pct": 0.1,
+   "samples": 7,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  }
+ ],
+ "blocker_time_pct_any": {
+  "local-type": 70.1,
+  "this-class-not-qualifying": 53.0,
+  "any-flow": 48.7,
+  "assertion(as)": 24.8,
+  "nonnull(!)": 15.0,
+  "param-type": 3.4
+ },
+ "blocker_time_pct_first": {
+  "this-class-not-qualifying": 49.9,
+  "local-type": 21.4,
+  "param-type": 3.4
+ },
+ "bad_type_time_pct": {
+  "tuple[]": 30.7,
+  "tuple": 21.4,
+  "inter(tlit {   handler: T   pos?,tlit {   params: Record<s?)[]": 18.0,
+  "inter(tlit {   handler: T   pos?,tlit {   params: Record<s?)": 0.4,
+  "tp": 0.0
+ },
+ "static_fn_share": {
+  "v0": 22.0,
+  "v3": 22.2
+ },
+ "distinct_sampled_functions": 12,
+ "distinct_sampled_v0": 2,
+ "functions_for_50pct_of_analyzed_time": 2,
+ "name_check": {
+  "match": 3059,
+  "v8_anonymous": 0,
+  "mismatch": 0,
+  "top_mismatch": []
+ },
+ "per_function": [
+  {
+   "id": "181:1181",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/pattern-router/router.ts",
+   "s": 1181,
+   "e": 1643,
+   "name": "match",
+   "kind": "method",
+   "class": "PatternRouter",
+   "line": 38,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 1468,
+   "self": 934,
+   "incl": 1468
+  },
+  {
+   "id": "19:633",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/reg-exp-router/matcher.ts",
+   "s": 633,
+   "e": 1008,
+   "name": "<anon>",
+   "kind": "arrow",
+   "class": null,
+   "line": 14,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 1022,
+   "self": 757,
+   "incl": 1022
+  },
+  {
+   "id": "27:2433",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/trie-router/node.ts",
+   "s": 2433,
+   "e": 6745,
+   "name": "search",
+   "kind": "method",
+   "class": "Node",
+   "line": 86,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 716,
+   "self": 716,
+   "incl": 1148
+  },
+  {
+   "id": "5:131",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/utils/url.ts",
+   "s": 131,
+   "e": 256,
+   "name": "splitPath",
+   "kind": "arrow",
+   "class": null,
+   "line": 8,
+   "v0": true,
+   "v3": true,
+   "repo": "hono",
+   "selfb": 279,
+   "self": 279,
+   "incl": 279
+  },
+  {
+   "id": "28:429",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/trie-router/router.ts",
+   "s": 429,
+   "e": 524,
+   "name": "match",
+   "kind": "method",
+   "class": "TrieRouter",
+   "line": 15,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 201,
+   "self": 201,
+   "incl": 1349
+  },
+  {
+   "id": "27:1685",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/trie-router/node.ts",
+   "s": 1685,
+   "e": 2429,
+   "name": "#pushHandlerSets",
+   "kind": "method",
+   "class": "Node",
+   "line": 64,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 144,
+   "self": 144,
+   "incl": 148
+  },
+  {
+   "id": "27:6682",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/trie-router/node.ts",
+   "s": 6682,
+   "e": 6739,
+   "name": "<anon>",
+   "kind": "arrow",
+   "class": null,
+   "line": 219,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 17,
+   "self": 17,
+   "incl": 17
+  },
+  {
+   "id": "18:32",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/utils.ts",
+   "s": 32,
+   "e": 57,
+   "name": "createNullObject",
+   "kind": "arrow",
+   "class": null,
+   "line": 1,
+   "v0": true,
+   "v3": true,
+   "repo": "hono",
+   "selfb": 7,
+   "self": 7,
+   "incl": 7
+  },
+  {
+   "id": "20:1349",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/reg-exp-router/node.ts",
+   "s": 1349,
+   "e": 4149,
+   "name": "insert",
+   "kind": "method",
+   "class": "Node",
+   "line": 53,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 1,
+   "self": 1,
+   "incl": 1
+  },
+  {
+   "id": "21:1685",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/reg-exp-router/trie.ts",
+   "s": 1685,
+   "e": 2452,
+   "name": "buildRegExp",
+   "kind": "method",
+   "class": "Trie",
+   "line": 59,
+   "v0": false,
+   "v3": true,
+   "repo": "hono",
+   "selfb": 1,
+   "self": 1,
+   "incl": 1
+  },
+  {
+   "id": "22:2086",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/reg-exp-router/router.ts",
+   "s": 2086,
+   "e": 3817,
+   "name": "add",
+   "kind": "method",
+   "class": "RegExpRouter",
+   "line": 68,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 1,
+   "self": 1,
+   "incl": 2
+  },
+  {
+   "id": "181:353",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/pattern-router/router.ts",
+   "s": 353,
+   "e": 1177,
+   "name": "add",
+   "kind": "method",
+   "class": "PatternRouter",
+   "line": 12,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 1,
+   "self": 1,
+   "incl": 1
+  },
+  {
+   "id": "22:1873",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/reg-exp-router/router.ts",
+   "s": 1873,
+   "e": 2082,
+   "name": "#insertPath",
+   "kind": "method",
+   "class": "RegExpRouter",
+   "line": 60,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "21:433",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/reg-exp-router/trie.ts",
+   "s": 433,
+   "e": 1681,
+   "name": "insert",
+   "kind": "method",
+   "class": "Trie",
+   "line": 14,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "19:385",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/reg-exp-router/matcher.ts",
+   "s": 385,
+   "e": 1084,
+   "name": "match",
+   "kind": "fn",
+   "class": null,
+   "line": 10,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "22:4238",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/reg-exp-router/router.ts",
+   "s": 4238,
+   "e": 5282,
+   "name": "#buildMatcher",
+   "kind": "method",
+   "class": "RegExpRouter",
+   "line": 145,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "22:3866",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/reg-exp-router/router.ts",
+   "s": 3866,
+   "e": 4234,
+   "name": "buildAllMatchers",
+   "kind": "method",
+   "class": "RegExpRouter",
+   "line": 131,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  }
+ ]
+}

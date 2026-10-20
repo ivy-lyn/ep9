@@ -1,0 +1,130 @@
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=263 source=embedded hints=none
+source_hash=21a43476ebc895ebbc9df7c099be81616f24fb1ed926e239fc902fa17794be5f
+strings (11):
+  str0 "total"
+  str1 "add"
+  str2 "e"
+  str3 "caf\xe9 \u20ac"
+  str4 "print"
+  str5 "tag"
+  str6 "n="
+  str7 ""
+  str8 "x"
+  str9 "a"
+  str10 "b"
+scopes (2):
+  scope0 script outer=- flags=[] slots=["total":var, "add":function]
+  scope1 catch outer=scope0 flags=[needs-context] slots=["e":var]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=11 range=0..263
+  code (141 bytes):
+      0    CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5    CreateClosure k2, s0, #0x00  ; k2 = Function f1 ; 74 02 00 00
+      9    StaGlobal k1, s1  ; k1 = String str1 "add"   ; 12 01 01
+     12 S> LdaZero                                      ; 03
+     13    StaGlobal k0, s1  ; k0 = String str0 "total" ; 12 00 01
+     16 S> LdaZero                                      ; 03
+     17    Star r1                                      ; 0c 01
+     19    LdaSmi [3]                                   ; 04 03
+     21 E> TestLessThan r1, s3                          ; 4d 01 03
+     24    JumpIfFalse @57                              ; 80 21
+     26 S> LdaGlobal k1, s2  ; k1 = String str1 "add"   ; 10 01 02
+     29    Star r2                                      ; 0c 02
+     31    LdaGlobal k0, s2  ; k0 = String str0 "total" ; 10 00 02
+     34    Star r3                                      ; 0c 03
+     36    Mov r1, r4                                   ; 0d 01 04
+     39 E> CallUndefinedReceiver r2, r3-r4, s5          ; 63 02 03 02 05
+     44    StaGlobal k0, s1  ; k0 = String str0 "total" ; 12 00 01
+     47    Ldar r1                                      ; 0b 01
+     49    Inc s4                                       ; 42 04
+     51    Star r1                                      ; 0c 01
+     53    JumpLoop @19, [0], s6                        ; 7d 22 00 06
+     57 S> LdaGlobal k0, s2  ; k0 = String str0 "total" ; 10 00 02
+     60    SwitchOnSmi k3, [0]  ; k3 = JumpTable [+5, +7] ; 8a 03 00
+     63    Jump @72                                     ; 7e 09
+     65    Jump @72                                     ; 7e 07
+     67    LdaConstant k4  ; k4 = String str3 "caf\xe9 \u20ac" ; 0a 04
+     69    StaGlobal k0, s1  ; k0 = String str0 "total" ; 12 00 01
+     72    LdaCurrentContext                            ; 15
+     73    Star r0                                      ; 0c 00
+     75 S> LdaGlobal k6, s2  ; k6 = String str5 "tag"   ; 10 06 02
+     78    Star r2                                      ; 0c 02
+     80    GetTemplateObject k7, s7  ; k7 = TemplateObject [("n=", "n="), ("", "")] ; 73 07 07
+     83    Star r9                                      ; 0c 09
+     85    LdaGlobal k0, s2  ; k0 = String str0 "total" ; 10 00 02
+     88    Star r10                                     ; 0c 0a
+     90    CallUndefinedReceiver r2, r9-r10, s5         ; 63 02 09 02 05
+     95    Star r5                                      ; 0c 05
+     97    LdaConstant k8  ; k8 = BigInt 0x1n           ; 0a 08
+     99    Star r6                                      ; 0c 06
+    101    CreateArrayLiteral k12, s8, #0x01  ; k12 = ArrayBoilerplate [k9, k10, k11] ; 6d 0c 08 01
+    105    Star r7                                      ; 0c 07
+    107    CreateObjectLiteral k17, s9, #0x01  ; k17 = ObjectBoilerplate {k13: k14, k15: k16} ; 70 11 09 01
+    111    Star r8                                      ; 0c 08
+    113    LdaGlobal k5, s2  ; k5 = String str4 "print" ; 10 05 02
+    116    Star r2                                      ; 0c 02
+    118    CallUndefinedReceiver r2, r5-r8, s5          ; 63 02 05 04 05
+    123    Jump @139                                    ; 7e 10
+    125 S> Star r2                                      ; 0c 02
+    127    CreateCatchContext r2, k18  ; k18 = Scope scope1 ; 77 02 12
+    130    PushContext r0                               ; 13 00
+    132 S> LdaSmi [-1]                                  ; 04 ff
+    134    StaGlobal k0, s1  ; k0 = String str0 "total" ; 12 00 01
+    137    PopContext r0                                ; 14 00
+    139    LdaUndefined                                 ; 05
+    140    Return                                       ; 92
+  constants (19):
+      0 String str0 "total"
+      1 String str1 "add"
+      2 Function f1
+      3 JumpTable [+5, +7]
+      4 String str3 "caf\xe9 \u20ac"
+      5 String str4 "print"
+      6 String str5 "tag"
+      7 TemplateObject [("n=", "n="), ("", "")]
+      8 BigInt 0x1n
+      9 Number 1.0
+     10 Oddball hole
+     11 String str8 "x"
+     12 ArrayBoilerplate [k9, k10, k11]
+     13 String str9 "a"
+     14 Number 1.5
+     15 String str10 "b"
+     16 Oddball null
+     17 ObjectBoilerplate {k13: k14, k15: k16}
+     18 Scope scope1
+  feedback (10):
+      0 CreateClosure
+      1 StoreGlobal
+      2 LoadGlobal
+      3 CompareOp
+      4 BinaryOp
+      5 Call
+      6 JumpLoop
+      7 Literal
+      8 Literal
+      9 Literal
+  handlers (1):
+        [75, 123) -> @125 context=r0 caught
+  positions (9):
+     12 S 0 (1:1)
+     16 S 52 (3:1)
+     21 E 68 (3:17)
+     26 S 82 (3:31)
+     39 E 90 (3:39)
+     57 S 107 (4:1)
+     75 S 176 (5:7)
+    125 S 237 (5:68)
+    132 S 249 (5:80)
+function f1 normal name="add" parent=f0 outer_scope=scope0 flags=[simple-params] params=2 length=2 regs=0 range=15..51
+  code (6 bytes):
+      0 S> Ldar a1                                      ; 0b fd
+      2 E> Add a0, s0                                   ; 2a fe 00
+      5    Return                                       ; 92
+  constants (0):
+  feedback (1):
+      0 BinaryOp
+  handlers (0):
+  positions (2):
+      0 S 36 (2:22)
+      2 E 43 (2:29)

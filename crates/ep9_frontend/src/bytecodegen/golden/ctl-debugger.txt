@@ -1,0 +1,18 @@
+# ctl-debugger: script (sloppy)
+# | debugger;
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=9 source=embedded hints=none
+source_hash=9312a1adbbf0a4c05fc296d158ec3bd39acfe50e9e98ff02688139aad6fc3351
+strings (0):
+scopes (1):
+  scope0 script outer=- flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=0 range=0..9
+  code (3 bytes):
+      0 S> Debugger                                     ; 9c
+      1    LdaUndefined                                 ; 05
+      2    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 0 (1:1)

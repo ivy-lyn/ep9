@@ -1,0 +1,309 @@
+[
+ {
+  "id": "403:29023",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/date-fns/pkgs/core/src/parse/index.ts",
+  "line": 503,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "setters",
+    "where": "closure",
+    "const": true,
+    "tier": 2,
+    "type": "Setter[]"
+   }
+  ]
+ },
+ {
+  "id": "403:29067",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/date-fns/pkgs/core/src/parse/index.ts",
+  "line": 505,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "priority",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "403:28951",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/date-fns/pkgs/core/src/parse/index.ts",
+  "line": 502,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "403:29180",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/date-fns/pkgs/core/src/parse/index.ts",
+  "line": 508,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "403:28922",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/date-fns/pkgs/core/src/parse/index.ts",
+  "line": 501,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "403:29749",
+  "name": "cleanEscapedString",
+  "file": "$EP9_RESEARCH_REPOS/date-fns/pkgs/core/src/parse/index.ts",
+  "line": 534,
+  "kind": 263,
+  "v0": false,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "escapedStringRegExp",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "RegExp"
+   },
+   {
+    "name": "doubleQuoteRegExp",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "RegExp"
+   }
+  ]
+ },
+ {
+  "id": "403:28883",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/date-fns/pkgs/core/src/parse/index.ts",
+  "line": 500,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "403:29123",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/date-fns/pkgs/core/src/parse/index.ts",
+  "line": 506,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "38:114",
+  "name": "isProtectedDayOfYearToken",
+  "file": "$EP9_RESEARCH_REPOS/date-fns/pkgs/core/src/_lib/protectedTokens/index.ts",
+  "line": 6,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "dayOfYearTokenRE",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "RegExp"
+   }
+  ]
+ },
+ {
+  "id": "38:215",
+  "name": "isProtectedWeekYearToken",
+  "file": "$EP9_RESEARCH_REPOS/date-fns/pkgs/core/src/_lib/protectedTokens/index.ts",
+  "line": 10,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "weekYearTokenRE",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "RegExp"
+   }
+  ]
+ },
+ {
+  "id": "115:23766",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/date-fns/pkgs/core/src/format/index.ts",
+  "line": 386,
+  "kind": 220,
+  "v0": true,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "formatters",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ [token: string]: Formatter; }"
+   },
+   {
+    "name": "unescapedLatinCharacterRegExp",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "RegExp"
+   }
+  ]
+ },
+ {
+  "id": "0:0",
+  "name": "addLeadingZeros",
+  "file": "$EP9_RESEARCH_REPOS/date-fns/pkgs/core/src/_lib/addLeadingZeros/index.ts",
+  "line": 1,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "367:1815",
+  "name": "parseNDigits",
+  "file": "$EP9_RESEARCH_REPOS/date-fns/pkgs/core/src/parse/_lib/utils.ts",
+  "line": 77,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "numericPatterns",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "{ month: RegExp; date: RegExp; dayOfYear: RegExp; week: RegExp; hour23h: RegExp;"
+   }
+  ]
+ },
+ {
+  "id": "367:3957",
+  "name": "isLeapYearIndex",
+  "file": "$EP9_RESEARCH_REPOS/date-fns/pkgs/core/src/parse/_lib/utils.ts",
+  "line": 155,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "360:830",
+  "name": "getDefaultOptions",
+  "file": "$EP9_RESEARCH_REPOS/date-fns/pkgs/core/src/getDefaultOptions/index.ts",
+  "line": 28,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "368:1057",
+  "name": "valueCallback",
+  "file": "$EP9_RESEARCH_REPOS/date-fns/pkgs/core/src/parse/_lib/parsers/YearParser.ts",
+  "line": 28,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "token",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "string"
+   }
+  ]
+ },
+ {
+  "id": "16:270",
+  "name": "getDefaultOptions",
+  "file": "$EP9_RESEARCH_REPOS/date-fns/pkgs/core/src/_lib/defaultOptions/index.ts",
+  "line": 14,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "defaultOptions",
+    "where": "module",
+    "const": false,
+    "tier": null,
+    "type": "DefaultOptions"
+   }
+  ]
+ }
+]

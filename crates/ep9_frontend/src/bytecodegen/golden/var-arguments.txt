@@ -1,0 +1,85 @@
+# var-arguments: script (sloppy)
+# | function f(a) { a = 1; return arguments; } function g(a) { 'use strict'; return arguments[0]; }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=95 source=embedded hints=none
+source_hash=c0b067f53f7c06d46974d19346c11e0f8450cdb19248ab0dd0ae340a3f244219
+strings (3):
+  str0 "f"
+  str1 "g"
+  str2 "a"
+scopes (3):
+  scope0 script outer=- flags=[] slots=["f":function, "g":function]
+  scope1 function outer=scope0 flags=[needs-context] slots=["a":var]
+  scope2 function outer=scope0 flags=[strict] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..95
+  code (41 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22 E> CreateClosure k2, s1, #0x00  ; k2 = Function f2 ; 74 02 01 00
+     26    Star r1                                      ; 0c 01
+     28    LdaConstant k3  ; k3 = String str1 "g"       ; 0a 03
+     30    Star r0                                      ; 0c 00
+     32 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     37    Ldar r1                                      ; 0b 01
+     39    LdaUndefined                                 ; 05
+     40    Return                                       ; 92
+  constants (4):
+      0 Function f1
+      1 String str0 "f"
+      2 Function f2
+      3 String str1 "g"
+  feedback (2):
+      0 CreateClosure
+      1 CreateClosure
+  handlers (0):
+  positions (5):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+     22 E 43 (1:44)
+     32 E 43 (1:44)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=2 range=0..42
+  code (21 bytes):
+      0 E> CreateFunctionContext k0, [1]  ; k0 = Scope scope1 ; 75 00 01
+      3    PushContext r1                               ; 13 01
+      5    Ldar a0                                      ; 0b fe
+      7    StaCurrentContextSlot [0]                    ; 1b 00
+      9 E> CreateMappedArguments                        ; 7a
+     10    Star r0                                      ; 0c 00
+     12 S> LdaSmi [1]                                   ; 04 01
+     14    StaCurrentContextSlot [0]                    ; 1b 00
+     16 S> Ldar r0                                      ; 0b 00
+     18    Return                                       ; 92
+     19    LdaUndefined                                 ; 05
+     20    Return                                       ; 92
+  constants (1):
+      0 Scope scope1
+  feedback (0):
+  handlers (0):
+  positions (4):
+      0 E 0 (1:1)
+      9 E 0 (1:1)
+     12 S 16 (1:17)
+     16 S 23 (1:24)
+function f2 normal name="g" parent=f0 outer_scope=scope0 flags=[strict,simple-params] params=1 length=1 regs=1 range=43..95
+  code (10 bytes):
+      0 E> CreateUnmappedArguments                      ; 7b
+      1    Star r0                                      ; 0c 00
+      3 S> LdaZero                                      ; 03
+      4 E> GetKeyedProperty r0, s0                      ; 23 00 00
+      7    Return                                       ; 92
+      8    LdaUndefined                                 ; 05
+      9    Return                                       ; 92
+  constants (0):
+  feedback (1):
+      0 LoadKeyed
+  handlers (0):
+  positions (3):
+      0 E 43 (1:44)
+      3 S 73 (1:74)
+      4 E 90 (1:91)

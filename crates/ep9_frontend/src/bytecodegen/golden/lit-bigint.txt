@@ -1,0 +1,31 @@
+# lit-bigint: script (sloppy)
+# | 0n; 42n; 18446744073709551616n; -5n;
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=36 source=embedded hints=none
+source_hash=baf189d19393bda12a7ee22bdbcd6b3762ca875d048580b201e916944b5e883f
+strings (0):
+scopes (1):
+  scope0 script outer=- flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=0 range=0..36
+  code (12 bytes):
+      0 S> LdaConstant k0  ; k0 = BigInt 0x0n           ; 0a 00
+      2 S> LdaConstant k1  ; k1 = BigInt 0x2an          ; 0a 01
+      4 S> LdaConstant k2  ; k2 = BigInt 0x10000000000000000n ; 0a 02
+      6 S> LdaConstant k3  ; k3 = BigInt 0x5n           ; 0a 03
+      8 E> Negate s0                                    ; 44 00
+     10    LdaUndefined                                 ; 05
+     11    Return                                       ; 92
+  constants (4):
+      0 BigInt 0x0n
+      1 BigInt 0x2an
+      2 BigInt 0x10000000000000000n
+      3 BigInt 0x5n
+  feedback (1):
+      0 BinaryOp
+  handlers (0):
+  positions (5):
+      0 S 0 (1:1)
+      2 S 4 (1:5)
+      4 S 9 (1:10)
+      6 S 32 (1:33)
+      8 E 32 (1:33)

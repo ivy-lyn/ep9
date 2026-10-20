@@ -1,9 +1,10 @@
 # Sound-regions harness (R18)
 
-- These are the scripts and sources behind [../../18-sound-regions.md](../../18-sound-regions.md) ([R18]).
+- These are the scripts, sources and cited results behind [../../18-sound-regions.md](../../18-sound-regions.md) ([R18]).
 - They were copied from the research scratchpad on 2026-10-21 (decision R18-7, [decisions-log §5](../../../decisions-log.md#5-2026-10-20-decisions-made-by-the-agent-team-under-the-users-instruction)).
 - Plan users: SP-RegionCoverage (A1h) and SP-RegionBound (M7) ([09-milestones §4](../../../plan/09-milestones.md#4-spikes)).
-- Only sources and scripts are here. Results, CPU profiles, build output and third-party code stayed in the scratchpad. Run the scripts again to get them.
+- Sources, scripts and the result files that R18 cites are here. The results came in a second copy on 2026-10-21 (`results/`, 68 files, 1,061,250 bytes).
+- CPU profiles, finder facts, build output and third-party code stayed in the scratchpad. Run the scripts again to get them.
 
 ## Layout
 
@@ -19,6 +20,14 @@
 | `probes/refute/` | `$SR/refute/` | Interrupt-poll probes (`Runtime.evaluate` at a poll) |
 | `probes/revise/` | `$SR/revise/` | Amdahl model for the gain estimates |
 | `probes/gain/` | `$SR/gain/` | V8 flag runs for the guard-removal bound |
+| `results/finder/` | `$SR/finder/out/*.summary.json`, `*.log` | Finder v1 summaries and logs per repo (`analyze.log`: per-file shares) |
+| `results/hot/res/` | `$SR/hot/res/table.md`, `*.json` | Hot-time shares per workload, with and without inlining (`*-noinl.json`), and `capweight.json`. `tsc.json` and `tsc-noinl.json` have no `per_function` key (see Notes) |
+| `results/hot/cap/` | `$SR/hot/cap/*.json` | `captures.cjs` output: the outer variables (closure and module) that each sampled qualifying function reads or writes, with their declared types. Input of `capweight.py` |
+| `results/hot/allfuncs/` | `$SR/hot/allfuncs/*.summary.json`, `*.log`, `typescript.ifaces.json` | `analyze_all.py` output per repo: finder summary with the what-if relaxations, and the interface table for tsc |
+| `results/semantics/` | `$SR/semantics/probes.log`, `scan.json`, `scan.log`, `typed-scan.log` | Breaker probe results B01-B28c and the source scans |
+| `results/refute/` | `$SR/refute/probes.log` | Interrupt-poll probe result |
+| `results/revise/` | `$SR/revise/amdahl.log`, `probe2-rerun.log` | Amdahl table and the interrupt-probe re-run |
+| `results/gain/` | `$SR/gain/*.log`, `emit-counts.txt` | V8 flag runs, Static Hermes typed vs stripped, emit counts |
 
 ## Path placeholders
 
@@ -30,6 +39,7 @@ The scripts held absolute paths of the research machine. The copy replaced them 
 | `$EP9_RESEARCH_REPOS` | A folder with the checkouts listed below |
 | `$EP9_RESEARCH_WORK` | A folder with the other research harnesses: `ts-type-trust/` (TypeScript npm package and `@types`, from [../../12-ts-type-soundness.md](../../12-ts-type-soundness.md)) and `tsrs-type-oracle/corpus/awfy-ts/` (typed AWFY port, from [../../13-tsrs-type-oracle.md](../../13-tsrs-type-oracle.md)) |
 | `$EP9_RESEARCH` | The parent of the two folders above |
+| `$EP9_RESEARCH...` | Only in `results/`: a log line that the research run cut at a fixed width ended inside a path. The rest of that path is lost |
 
 `region-facts/Cargo.toml` uses relative path dependencies into `third_party/tsrs/crates/`, like `../tsrs-type-oracle/oracle/`. It has its own empty `[workspace]`, so it does not join the ep9 workspace.
 
@@ -59,4 +69,6 @@ The scripts held absolute paths of the research machine. The copy replaced them 
 
 - Outputs go to `out/` and `target/` folders, which the repo `.gitignore` drops.
 - Written for tsrs `f527e984` and oxc `0.155.0`, like the other artifacts. A newer pin can need small fixes.
-- Not copied: CPU profiles (151 MB), finder facts and regions (139 MB, regenerable), bundled third-party code, Static Hermes outputs, downloaded papers and sources (R18 cites their URLs), and the result files that R18 quotes.
+- Not copied: CPU profiles (151 MB), finder facts and regions (139 MB, regenerable), the raw `hot/res/*.txt` dumps and `hot/allfuncs/*.allfuncs.json`, bundled third-party code, Static Hermes outputs, and downloaded papers and sources (R18 cites their URLs).
+- `results/hot/res/tsc.json` and `tsc-noinl.json` lost the `per_function` key (about 1.1 MB each). Every key that R18 cites is still there, for example `functions_for_50pct_of_analyzed_time`.
+- Size limits (R18-7): 2 MB for this folder, 256 KiB per file. On 2026-10-21 the folder held 1,337,334 bytes; the largest file is `results/hot/cap/typescript.json` (172,073 bytes).

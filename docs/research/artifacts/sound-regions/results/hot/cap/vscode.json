@@ -1,0 +1,993 @@
+[
+ {
+  "id": "309:731",
+  "name": "get",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/utils.ts",
+  "line": 17,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "309:604",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/utils.ts",
+  "line": 13,
+  "kind": 177,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "309:1110",
+  "name": "getKey",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/utils.ts",
+  "line": 33,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "312:2632",
+  "name": "getElement",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/linesSliceCharSequence.ts",
+  "line": 63,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "312:2706",
+  "name": "length",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/linesSliceCharSequence.ts",
+  "line": 67,
+  "kind": 178,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "312:2484",
+  "name": "getText",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/linesSliceCharSequence.ts",
+  "line": 59,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "312:3699",
+  "name": "translateOffset",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/linesSliceCharSequence.ts",
+  "line": 101,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "312:4610",
+  "name": "findWordContaining",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/linesSliceCharSequence.ts",
+  "line": 123,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "312:6360",
+  "name": "isWordChar",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/linesSliceCharSequence.ts",
+  "line": 187,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "312:2588",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/linesSliceCharSequence.ts",
+  "line": 60,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "312:6261",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/linesSliceCharSequence.ts",
+  "line": 182,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "range",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "OffsetRange"
+   }
+  ]
+ },
+ {
+  "id": "312:6035",
+  "name": "extendToFullLines",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/linesSliceCharSequence.ts",
+  "line": 180,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "312:7334",
+  "name": "getCategory",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/linesSliceCharSequence.ts",
+  "line": 225,
+  "kind": 263,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "312:2765",
+  "name": "getBoundaryScore",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/linesSliceCharSequence.ts",
+  "line": 71,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "312:5738",
+  "name": "countLinesIn",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/linesSliceCharSequence.ts",
+  "line": 172,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "315:11645",
+  "name": "shouldJoinDiffs",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/heuristicSequenceOptimizations.ts",
+  "line": 344,
+  "kind": 263,
+  "v0": false,
+  "captures": 3,
+  "untyped": 2,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "lastResult",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "SequenceDiff"
+   },
+   {
+    "name": "cur",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "SequenceDiff"
+   },
+   {
+    "name": "sequence1",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "LineSequence"
+   }
+  ]
+ },
+ {
+  "id": "315:8442",
+  "name": "scanWord",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/heuristicSequenceOptimizations.ts",
+  "line": 235,
+  "kind": 263,
+  "v0": false,
+  "captures": 7,
+  "untyped": 3,
+  "untyped_mutable": 1,
+  "mutable_typed": 4,
+  "list": [
+   {
+    "name": "lastPoint",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "OffsetPair"
+   },
+   {
+    "name": "findParent",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "(seq: LinesSliceCharSequence, idx: number) => OffsetRange | undefined"
+   },
+   {
+    "name": "sequence1",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "LinesSliceCharSequence"
+   },
+   {
+    "name": "sequence2",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "LinesSliceCharSequence"
+   },
+   {
+    "name": "equalMappings",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "SequenceDiff[]"
+   },
+   {
+    "name": "force",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "additional",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "SequenceDiff[]"
+   }
+  ]
+ },
+ {
+  "id": "315:14970",
+  "name": "shouldMarkAsChanged",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/heuristicSequenceOptimizations.ts",
+  "line": 446,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "cur",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "SequenceDiff"
+   }
+  ]
+ },
+ {
+  "id": "315:10470",
+  "name": "mergeSequenceDiffs",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/heuristicSequenceOptimizations.ts",
+  "line": 301,
+  "kind": 263,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "316:2942",
+  "name": "getOrCreateHash",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/defaultLinesDiffComputer.ts",
+  "line": 51,
+  "kind": 263,
+  "v0": true,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "perfectHashes",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "Map<string, number>"
+   }
+  ]
+ },
+ {
+  "id": "316:3199",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/defaultLinesDiffComputer.ts",
+  "line": 60,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "316:3282",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/defaultLinesDiffComputer.ts",
+  "line": 61,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "316:3498",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/defaultLinesDiffComputer.ts",
+  "line": 66,
+  "kind": 220,
+  "v0": true,
+  "captures": 5,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 2,
+  "list": [
+   {
+    "name": "sequence1",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "LineSequence"
+   },
+   {
+    "name": "sequence2",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "LineSequence"
+   },
+   {
+    "name": "timeout",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "InfiniteTimeout | DateTimeout"
+   },
+   {
+    "name": "originalLines",
+    "where": "outer-param",
+    "const": false,
+    "tier": 2,
+    "type": "string[]"
+   },
+   {
+    "name": "modifiedLines",
+    "where": "outer-param",
+    "const": false,
+    "tier": 2,
+    "type": "string[]"
+   }
+  ]
+ },
+ {
+  "id": "316:10192",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/defaultLinesDiffComputer.ts",
+  "line": 248,
+  "kind": 220,
+  "v0": false,
+  "captures": 2,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "slice1",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "LinesSliceCharSequence"
+   },
+   {
+    "name": "slice2",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "LinesSliceCharSequence"
+   }
+  ]
+ },
+ {
+  "id": "316:10536",
+  "name": "toLineRangeMapping",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/defaultLinesDiffComputer.ts",
+  "line": 266,
+  "kind": 263,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "316:9616",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/defaultLinesDiffComputer.ts",
+  "line": 234,
+  "kind": 220,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "316:5260",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/defaultLinesDiffComputer.ts",
+  "line": 124,
+  "kind": 220,
+  "v0": true,
+  "captures": 3,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 2,
+  "list": [
+   {
+    "name": "diff",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "SequenceDiff"
+   },
+   {
+    "name": "seq1LastStart",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "seq2LastStart",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "314:767",
+  "name": "length",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/lineSequence.ts",
+  "line": 20,
+  "kind": 178,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "314:690",
+  "name": "getElement",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/lineSequence.ts",
+  "line": 16,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "314:1118",
+  "name": "getText",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/lineSequence.ts",
+  "line": 30,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "311:1090",
+  "name": "getXAfterSnake",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/algorithms/myersDiffAlgorithm.ts",
+  "line": 23,
+  "kind": 263,
+  "v0": true,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "seqX",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "ISequence"
+   },
+   {
+    "name": "seqY",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "ISequence"
+   }
+  ]
+ },
+ {
+  "id": "311:4199",
+  "name": "get",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/algorithms/myersDiffAlgorithm.ts",
+  "line": 123,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "311:5021",
+  "name": "get",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/algorithms/myersDiffAlgorithm.ts",
+  "line": 159,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "305:5631",
+  "name": "isValid",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/algorithms/diffAlgorithm.ts",
+  "line": 179,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "305:4467",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/algorithms/diffAlgorithm.ts",
+  "line": 131,
+  "kind": 177,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "305:1975",
+  "name": "fromOffsetPairs",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/algorithms/diffAlgorithm.ts",
+  "line": 48,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "305:1708",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/algorithms/diffAlgorithm.ts",
+  "line": 39,
+  "kind": 220,
+  "v0": false,
+  "captures": 2,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "result",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "SequenceDiff[]"
+   },
+   {
+    "name": "doc1Length",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "305:1548",
+  "name": "invert",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/algorithms/diffAlgorithm.ts",
+  "line": 37,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "305:4161",
+  "name": "getEndExclusives",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/algorithms/diffAlgorithm.ts",
+  "line": 122,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "305:4054",
+  "name": "getStarts",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/algorithms/diffAlgorithm.ts",
+  "line": 118,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "305:3791",
+  "name": "intersect",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/algorithms/diffAlgorithm.ts",
+  "line": 109,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "305:2892",
+  "name": "join",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/algorithms/diffAlgorithm.ts",
+  "line": 80,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "189:1975",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/core/ranges/offsetRange.ts",
+  "line": 62,
+  "kind": 177,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "189:2167",
+  "name": "isEmpty",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/core/ranges/offsetRange.ts",
+  "line": 68,
+  "kind": 178,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "189:3727",
+  "name": "intersect",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/core/ranges/offsetRange.ts",
+  "line": 118,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "189:3308",
+  "name": "join",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/core/ranges/offsetRange.ts",
+  "line": 108,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "310:3116",
+  "name": "reportDecreasingAligningPositions",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/algorithms/dynamicProgrammingDiffing.ts",
+  "line": 77,
+  "kind": 263,
+  "v0": true,
+  "captures": 3,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 2,
+  "list": [
+   {
+    "name": "lastAligningPosS1",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "lastAligningPosS2",
+    "where": "closure",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   },
+   {
+    "name": "result",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "SequenceDiff[]"
+   }
+  ]
+ },
+ {
+  "id": "308:5128",
+  "name": "toRangeMapping2",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/rangeMapping.ts",
+  "line": 132,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "308:12109",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/rangeMapping.ts",
+  "line": 326,
+  "kind": 220,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "308:12047",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/rangeMapping.ts",
+  "line": 325,
+  "kind": 220,
+  "v0": false,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 2,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "originalLines",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "AbstractText"
+   },
+   {
+    "name": "modifiedLines",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "AbstractText"
+   }
+  ]
+ },
+ {
+  "id": "308:12459",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/rangeMapping.ts",
+  "line": 340,
+  "kind": 220,
+  "v0": true,
+  "captures": 4,
+  "untyped": 3,
+  "untyped_mutable": 2,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "dontAssertStartLine",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "boolean"
+   },
+   {
+    "name": "changes",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "DetailedLineRangeMapping[]"
+   },
+   {
+    "name": "modifiedLines",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "AbstractText"
+   },
+   {
+    "name": "originalLines",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "AbstractText"
+   }
+  ]
+ },
+ {
+  "id": "313:2773",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/computeMovedLines.ts",
+  "line": 68,
+  "kind": 220,
+  "v0": false,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "modifiedLines",
+    "where": "outer-param",
+    "const": false,
+    "tier": 2,
+    "type": "string[]"
+   }
+  ]
+ },
+ {
+  "id": "313:1528",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/diff/defaultLinesDiffComputer/computeMovedLines.ts",
+  "line": 29,
+  "kind": 220,
+  "v0": false,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "excludedChanges",
+    "where": "closure",
+    "const": false,
+    "tier": null,
+    "type": "Set<DetailedLineRangeMapping>"
+   }
+  ]
+ },
+ {
+  "id": "203:3312",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/core/text/abstractText.ts",
+  "line": 104,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "lines",
+    "where": "outer-param",
+    "const": false,
+    "tier": 2,
+    "type": "string[]"
+   }
+  ]
+ }
+]

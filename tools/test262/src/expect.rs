@@ -15,12 +15,17 @@ pub fn read(path: &Path) -> io::Result<BTreeSet<String>> {
         .collect())
 }
 
-/// Write the failing paths, sorted, after a short header.
-pub fn write(path: &Path, triple: &str, failing: &BTreeSet<String>) -> io::Result<()> {
-    let mut text = format!(
+/// The header of a parse expectation file.
+pub fn parse_header(triple: &str) -> String {
+    format!(
         "# ep9-test262 parse: known failures on {triple}. Paths are relative to the test262 root.\n\
          # Regenerate: cargo run --release -p ep9_test262 -- parse --update-expectations\n"
-    );
+    )
+}
+
+/// Write the failing paths, sorted, after `header` (`#` lines).
+pub fn write(path: &Path, header: &str, failing: &BTreeSet<String>) -> io::Result<()> {
+    let mut text = header.to_string();
     for p in failing {
         text.push_str(p);
         text.push('\n');
@@ -90,7 +95,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ep9-expect-{}", std::process::id()));
         let path = dir.join("x.txt");
         let failing = set(&["test/b.js", "test/a.js"]);
-        write(&path, "t", &failing).unwrap();
+        write(&path, "# t\n", &failing).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.ends_with("test/a.js\ntest/b.js\n"), "{text}");
         assert_eq!(read(&path).unwrap(), failing);

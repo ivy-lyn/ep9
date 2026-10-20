@@ -1,0 +1,161 @@
+# class-default-ctor: script (sloppy)
+# | class A {} class B extends A {} var C = class {}; var D = class extends A {};
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=77 source=embedded hints=none
+source_hash=1a802799161e1d45cf31d1dccc5f41abdc79e89e023520efbd634433ddc44337
+strings (4):
+  str0 "A"
+  str1 "B"
+  str2 "C"
+  str3 "D"
+scopes (9):
+  scope0 script outer=- flags=[] slots=["A":class, "B":class, "C":var, "D":var]
+  scope1 class outer=scope0 flags=[strict] slots=[]
+  scope2 function outer=scope1 flags=[strict] slots=[]
+  scope3 class outer=scope0 flags=[strict] slots=[]
+  scope4 function outer=scope3 flags=[strict] slots=[]
+  scope5 class outer=scope0 flags=[strict] slots=[]
+  scope6 function outer=scope5 flags=[strict] slots=[]
+  scope7 class outer=scope0 flags=[strict] slots=[]
+  scope8 function outer=scope7 flags=[strict] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=5 range=0..77
+  code (123 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> LdaTheHole                                   ; 07
+      6    Star r3                                      ; 0c 03
+      8 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+     12    Star r2                                      ; 0c 02
+     14 E> CallRuntime DefineClass, r2-r3               ; 68 04 00 02 02
+     19    Star r4                                      ; 0c 04
+     21    Ldar r2                                      ; 0b 02
+     23    Star r0                                      ; 0c 00
+     25    Ldar r2                                      ; 0b 02
+     27    Star r3                                      ; 0c 03
+     29    LdaConstant k1  ; k1 = String str0 "A"       ; 0a 01
+     31    Star r2                                      ; 0c 02
+     33 E> CallRuntime InitializeGlobal, r2-r3          ; 68 06 00 02 02
+     38    Ldar r3                                      ; 0b 03
+     40 S> LdaGlobal k1, s1  ; k1 = String str0 "A"     ; 10 01 01
+     43    Star r3                                      ; 0c 03
+     45 E> CreateClosure k2, s2, #0x00  ; k2 = Function f2 ; 74 02 02 00
+     49    Star r2                                      ; 0c 02
+     51 E> CallRuntime DefineClass, r2-r3               ; 68 04 00 02 02
+     56    Star r4                                      ; 0c 04
+     58    Ldar r2                                      ; 0b 02
+     60    Star r1                                      ; 0c 01
+     62    Ldar r2                                      ; 0b 02
+     64    Star r3                                      ; 0c 03
+     66    LdaConstant k3  ; k3 = String str1 "B"       ; 0a 03
+     68    Star r2                                      ; 0c 02
+     70 E> CallRuntime InitializeGlobal, r2-r3          ; 68 06 00 02 02
+     75    Ldar r3                                      ; 0b 03
+     77 S> LdaTheHole                                   ; 07
+     78    Star r3                                      ; 0c 03
+     80 E> CreateClosure k4, s3, #0x00  ; k4 = Function f3 ; 74 04 03 00
+     84    Star r2                                      ; 0c 02
+     86 E> CallRuntime DefineClass, r2-r3               ; 68 04 00 02 02
+     91    Star r4                                      ; 0c 04
+     93    Ldar r2                                      ; 0b 02
+     95 E> StaGlobal k5, s4  ; k5 = String str2 "C"     ; 12 05 04
+     98 S> LdaGlobal k1, s1  ; k1 = String str0 "A"     ; 10 01 01
+    101    Star r3                                      ; 0c 03
+    103 E> CreateClosure k6, s5, #0x00  ; k6 = Function f4 ; 74 06 05 00
+    107    Star r2                                      ; 0c 02
+    109 E> CallRuntime DefineClass, r2-r3               ; 68 04 00 02 02
+    114    Star r4                                      ; 0c 04
+    116    Ldar r2                                      ; 0b 02
+    118 E> StaGlobal k7, s6  ; k7 = String str3 "D"     ; 12 07 06
+    121    LdaUndefined                                 ; 05
+    122    Return                                       ; 92
+  constants (8):
+      0 Function f1
+      1 String str0 "A"
+      2 Function f2
+      3 String str1 "B"
+      4 Function f3
+      5 String str2 "C"
+      6 Function f4
+      7 String str3 "D"
+  feedback (7):
+      0 CreateClosure
+      1 LoadGlobal
+      2 CreateClosure
+      3 CreateClosure
+      4 StoreGlobal
+      5 CreateClosure
+      6 StoreGlobal
+  handlers (0):
+  positions (17):
+      0 S 0 (1:1)
+      5 S 0 (1:1)
+      8 E 0 (1:1)
+     14 E 0 (1:1)
+     33 E 0 (1:1)
+     40 S 11 (1:12)
+     45 E 11 (1:12)
+     51 E 11 (1:12)
+     70 E 11 (1:12)
+     77 S 36 (1:37)
+     80 E 40 (1:41)
+     86 E 40 (1:41)
+     95 E 36 (1:37)
+     98 S 54 (1:55)
+    103 E 58 (1:59)
+    109 E 58 (1:59)
+    118 E 54 (1:55)
+function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=8..10
+  code (2 bytes):
+      0 S> LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 0 (1:1)
+function f2 derived-constructor name="B" parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=2 range=29..31
+  code (15 bytes):
+      0 S> LdaCurrentFunction                           ; 0e
+      1    GetSuperConstructor r0                       ; 98 00
+      3 E> ThrowIfNotSuperConstructor r0                ; 97 00
+      5 E> CreateRestParameter                          ; 7c
+      6    Star r1                                      ; 0c 01
+      8    LdaNewTarget                                 ; 0f
+      9 E> ConstructWithSpread r0, r1, s0               ; 6a 00 01 01 00
+     14    Return                                       ; 92
+  constants (0):
+  feedback (1):
+      0 Call
+  handlers (0):
+  positions (4):
+      0 S 11 (1:12)
+      3 E 11 (1:12)
+      5 E 11 (1:12)
+      9 E 11 (1:12)
+function f3 class-constructor name="C" parent=f0 outer_scope=scope5 flags=[strict,simple-params] params=0 length=0 regs=0 range=46..48
+  code (2 bytes):
+      0 S> LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 40 (1:41)
+function f4 derived-constructor name="D" parent=f0 outer_scope=scope7 flags=[strict,simple-params] params=0 length=0 regs=2 range=74..76
+  code (15 bytes):
+      0 S> LdaCurrentFunction                           ; 0e
+      1    GetSuperConstructor r0                       ; 98 00
+      3 E> ThrowIfNotSuperConstructor r0                ; 97 00
+      5 E> CreateRestParameter                          ; 7c
+      6    Star r1                                      ; 0c 01
+      8    LdaNewTarget                                 ; 0f
+      9 E> ConstructWithSpread r0, r1, s0               ; 6a 00 01 01 00
+     14    Return                                       ; 92
+  constants (0):
+  feedback (1):
+      0 Call
+  handlers (0):
+  positions (4):
+      0 S 58 (1:59)
+      3 E 58 (1:59)
+      5 E 58 (1:59)
+      9 E 58 (1:59)

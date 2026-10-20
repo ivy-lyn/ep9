@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-20). Decided 2026-10-20 (gc-barrier decision, critic additions). Accept needs the review record ([README §3.1](README.md#31-review-record-p-1)) |
+| Status | Draft (2026-10-20). Decided 2026-10-20 (gc-barrier decision, critic additions). Accept needs the review record ([README §3.1](README.md#31-review-record-p-1)). Code 2026-10-21: barrier v2 API and S0 slow path in `crates/ep9_heap/src/barrier.rs`; model test in `src/tests/model.rs`; fast-path check `crates/ep9_heap/disasm-barrier.sh` |
 | Fix by | API M0; slow paths S1/S2; unit field A2 |
 | Freeze point | M1 exit (API, fast-path shape, gc_state values, emitter rule); slow paths may change without a new barrier version |
 | Origin | v1#7; plan status E (extended: AOT code kinds, barrier version) |
@@ -136,3 +136,4 @@ store(host, slot, v):
 | 2026-10-20 | draft | Add H11-Q4 (old vs new value in the cell test) with the SP-Value evidence | fix agent |
 | 2026-10-20 | rewrite | JSC Riptide barrier for S1-S3; S2 is retreating wavefront, not SATB; new-value filter; slow path does the store; white allocation; stop-the-world root rescan; elision E1-E3; verifiers V1-V3; barrier version 2. H11-Q4 closed, H11-Q1 answered, H11-Q5 added | gc-barrier agent |
 | 2026-10-20 | rewrite | Critic additions: dirty LOS cards are a termination root source and a BLACK LOS host is pushed once (an exhaustive model lost an object without this); emitter rule (no GC point between check and store, no threshold reuse); weak slots cleared at every minor GC; marker Acquire loads with stealing markers; TLAB retired before each CSS; full cycle empties the S1 buffer; model test gains the `los` scenario and a fifth negative control | apply agent |
+| 2026-10-21 | clarify | Status: barrier v2 built (`BARRIER_VERSION` = 2, gc_state BLACK=1 WHITE=2 GREY=3, thresholds OFF=0 GEN=1 MARKING=0xFF, `Slot::set` new-value filter with the store in the slow path, `Slot::init`, shape-install barrier). Model test ported to Rust with the `los` scenario and 5 negative controls. `disasm-barrier.sh` checks cell test + 4 header-check instructions + 1 store on aarch64 and x86_64 | heap agent |

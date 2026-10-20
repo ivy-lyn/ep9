@@ -1,0 +1,200 @@
+# lit-object-methods: script (sloppy)
+# | var k; ({m() { return 1; }, get g() { return 2; }, set g(v) {}, [k]() {}, get [k]() {}, f: function() {}, a: () => 1, [k]: function() {}});
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=139 source=embedded hints=none
+source_hash=520c0d0766435a507df449a5adcbd0b2d1a2a46f980eeb26c3c2077062d38352
+strings (7):
+  str0 "k"
+  str1 "m"
+  str2 "g"
+  str3 "f"
+  str4 "a"
+  str5 "get g"
+  str6 "set g"
+scopes (9):
+  scope0 script outer=- flags=[] slots=["k":var]
+  scope1 function outer=scope0 flags=[] slots=[]
+  scope2 function outer=scope0 flags=[] slots=[]
+  scope3 function outer=scope0 flags=[] slots=[]
+  scope4 function outer=scope0 flags=[] slots=[]
+  scope5 function outer=scope0 flags=[] slots=[]
+  scope6 function outer=scope0 flags=[] slots=[]
+  scope7 function outer=scope0 flags=[] slots=[]
+  scope8 function outer=scope0 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=5 range=0..139
+  code (134 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> CreateObjectLiteral k1, s0, #0x01  ; k1 = ObjectBoilerplate {k0: _} ; 70 01 00 01
+      9    Star r0                                      ; 0c 00
+     11 E> CreateClosure k2, s1, #0x00  ; k2 = Function f1 ; 74 02 01 00
+     15 E> DefineNamedOwnProperty r0, k0, s2  ; k0 = String str1 "m" ; 25 00 00 02
+     19    Mov r0, r1                                   ; 0d 00 01
+     22    LdaConstant k3  ; k3 = String str2 "g"       ; 0a 03
+     24    Star r2                                      ; 0c 02
+     26 E> CreateClosure k4, s3, #0x00  ; k4 = Function f2 ; 74 04 03 00
+     30    Star r3                                      ; 0c 03
+     32    LdaUndefined                                 ; 05
+     33    Star r4                                      ; 0c 04
+     35 E> CallRuntime DefineAccessorInLiteral, r1-r4   ; 68 0c 00 01 04
+     40    Mov r0, r1                                   ; 0d 00 01
+     43    LdaConstant k3  ; k3 = String str2 "g"       ; 0a 03
+     45    Star r2                                      ; 0c 02
+     47 E> CreateClosure k5, s4, #0x00  ; k5 = Function f3 ; 74 05 04 00
+     51    Star r4                                      ; 0c 04
+     53    LdaUndefined                                 ; 05
+     54    Star r3                                      ; 0c 03
+     56 E> CallRuntime DefineAccessorInLiteral, r1-r4   ; 68 0c 00 01 04
+     61 E> LdaGlobal k6, s5  ; k6 = String str0 "k"     ; 10 06 05
+     64 E> ToName                                       ; 58
+     65    Star r1                                      ; 0c 01
+     67 E> CreateClosure k7, s6, #0x00  ; k7 = Function f4 ; 74 07 06 00
+     71 E> DefineKeyedOwnPropertyInLiteral r0, r1, #0x01, s7 ; 29 00 01 01 07
+     76    Mov r0, r1                                   ; 0d 00 01
+     79 E> LdaGlobal k6, s5  ; k6 = String str0 "k"     ; 10 06 05
+     82 E> ToName                                       ; 58
+     83    Star r2                                      ; 0c 02
+     85 E> CreateClosure k8, s8, #0x00  ; k8 = Function f5 ; 74 08 08 00
+     89    Star r3                                      ; 0c 03
+     91    LdaUndefined                                 ; 05
+     92    Star r4                                      ; 0c 04
+     94 E> CallRuntime DefineAccessorInLiteral, r1-r4   ; 68 0c 00 01 04
+     99 E> CreateClosure k9, s9, #0x00  ; k9 = Function f6 ; 74 09 09 00
+    103 E> DefineNamedOwnProperty r0, k10, s10  ; k10 = String str3 "f" ; 25 00 0a 0a
+    107 E> CreateClosure k11, s11, #0x00  ; k11 = Function f7 ; 74 0b 0b 00
+    111 E> DefineNamedOwnProperty r0, k12, s12  ; k12 = String str4 "a" ; 25 00 0c 0c
+    115 E> LdaGlobal k6, s5  ; k6 = String str0 "k"     ; 10 06 05
+    118 E> ToName                                       ; 58
+    119    Star r1                                      ; 0c 01
+    121 E> CreateClosure k13, s13, #0x00  ; k13 = Function f8 ; 74 0d 0d 00
+    125 E> DefineKeyedOwnPropertyInLiteral r0, r1, #0x01, s14 ; 29 00 01 01 0e
+    130    Ldar r0                                      ; 0b 00
+    132    LdaUndefined                                 ; 05
+    133    Return                                       ; 92
+  constants (14):
+      0 String str1 "m"
+      1 ObjectBoilerplate {k0: _}
+      2 Function f1
+      3 String str2 "g"
+      4 Function f2
+      5 Function f3
+      6 String str0 "k"
+      7 Function f4
+      8 Function f5
+      9 Function f6
+     10 String str3 "f"
+     11 Function f7
+     12 String str4 "a"
+     13 Function f8
+  feedback (15):
+      0 Literal
+      1 CreateClosure
+      2 DefineNamedOwn
+      3 CreateClosure
+      4 CreateClosure
+      5 LoadGlobal
+      6 CreateClosure
+      7 DefineKeyedOwn
+      8 CreateClosure
+      9 CreateClosure
+     10 DefineNamedOwn
+     11 CreateClosure
+     12 DefineNamedOwn
+     13 CreateClosure
+     14 DefineKeyedOwn
+  handlers (0):
+  positions (24):
+      0 S 0 (1:1)
+      5 S 7 (1:8)
+     11 E 8 (1:9)
+     15 E 8 (1:9)
+     26 E 8 (1:9)
+     35 E 8 (1:9)
+     47 E 8 (1:9)
+     56 E 8 (1:9)
+     61 E 65 (1:66)
+     64 E 65 (1:66)
+     67 E 8 (1:9)
+     71 E 8 (1:9)
+     79 E 79 (1:80)
+     82 E 79 (1:80)
+     85 E 8 (1:9)
+     94 E 8 (1:9)
+     99 E 91 (1:92)
+    103 E 8 (1:9)
+    107 E 109 (1:110)
+    111 E 8 (1:9)
+    115 E 119 (1:120)
+    118 E 119 (1:120)
+    121 E 123 (1:124)
+    125 E 8 (1:9)
+function f1 method name="m" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=10..26
+  code (5 bytes):
+      0 S> LdaSmi [1]                                   ; 04 01
+      2    Return                                       ; 92
+      3    LdaUndefined                                 ; 05
+      4    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 15 (1:16)
+function f2 getter name="get g" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=33..49
+  code (5 bytes):
+      0 S> LdaSmi [2]                                   ; 04 02
+      2    Return                                       ; 92
+      3    LdaUndefined                                 ; 05
+      4    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 38 (1:39)
+function f3 setter name="set g" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=0 range=56..62
+  code (2 bytes):
+      0    LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (0):
+function f4 method name=- parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=67..72
+  code (2 bytes):
+      0    LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (0):
+function f5 getter name=- parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=81..86
+  code (2 bytes):
+      0    LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (0):
+function f6 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=91..104
+  code (2 bytes):
+      0    LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (0):
+function f7 arrow name="a" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=109..116
+  code (3 bytes):
+      0 S> LdaSmi [1]                                   ; 04 01
+      2    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 115 (1:116)
+function f8 normal name=- parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=123..136
+  code (2 bytes):
+      0    LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (0):

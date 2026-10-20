@@ -1,0 +1,53 @@
+# strict-script: script (strict)
+# | var a = 1; a = 2; function f() { return this; }
+; ep9 bytecode, ABI 2
+unit kind=script strict=true ts=none source_len=47 source=embedded hints=none
+source_hash=2fabb08e0ea837f5e83add6f277034b5eef70a05afc2797397b39c79b9c2207b
+strings (2):
+  str0 "a"
+  str1 "f"
+scopes (2):
+  scope0 script outer=- flags=[strict] slots=["a":var, "f":function]
+  scope1 function outer=scope0 flags=[strict] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[strict] params=0 length=0 regs=2 range=0..47
+  code (34 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str1 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22 S> LdaSmi [1]                                   ; 04 01
+     24 E> StaGlobal k2, s1  ; k2 = String str0 "a"     ; 12 02 01
+     27 S> LdaSmi [2]                                   ; 04 02
+     29 E> StaGlobal k2, s1  ; k2 = String str0 "a"     ; 12 02 01
+     32    LdaUndefined                                 ; 05
+     33    Return                                       ; 92
+  constants (3):
+      0 Function f1
+      1 String str1 "f"
+      2 String str0 "a"
+  feedback (2):
+      0 CreateClosure
+      1 StoreGlobal
+  handlers (0):
+  positions (7):
+      0 S 0 (1:1)
+      5 E 18 (1:19)
+     15 E 18 (1:19)
+     22 S 4 (1:5)
+     24 E 4 (1:5)
+     27 S 11 (1:12)
+     29 E 11 (1:12)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[strict,simple-params] params=0 length=0 regs=0 range=18..47
+  code (5 bytes):
+      0 S> Ldar <this>                                  ; 0b ff
+      2    Return                                       ; 92
+      3    LdaUndefined                                 ; 05
+      4    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 33 (1:34)

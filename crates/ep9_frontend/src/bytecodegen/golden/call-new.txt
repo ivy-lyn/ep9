@@ -1,0 +1,62 @@
+# call-new: script (sloppy)
+# | var C, a; new C; new C(); new C(1, a); new new C()();
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=53 source=embedded hints=none
+source_hash=44cc481c2a8a0caa75541cfb255f338a6a75904457cfda9eb862f65c5a5edd52
+strings (2):
+  str0 "C"
+  str1 "a"
+scopes (1):
+  scope0 script outer=- flags=[] slots=["C":var, "a":var]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=3 range=0..53
+  code (73 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> LdaGlobal k0, s0  ; k0 = String str0 "C"     ; 10 00 00
+      8    Star r0                                      ; 0c 00
+     10    Ldar r0                                      ; 0b 00
+     12 E> Construct r0, (), s1                         ; 69 00 00 00 01
+     17 S> LdaGlobal k0, s0  ; k0 = String str0 "C"     ; 10 00 00
+     20    Star r0                                      ; 0c 00
+     22    Ldar r0                                      ; 0b 00
+     24 E> Construct r0, (), s2                         ; 69 00 00 00 02
+     29 S> LdaGlobal k0, s0  ; k0 = String str0 "C"     ; 10 00 00
+     32    Star r0                                      ; 0c 00
+     34    LdaSmi [1]                                   ; 04 01
+     36    Star r1                                      ; 0c 01
+     38 E> LdaGlobal k1, s3  ; k1 = String str1 "a"     ; 10 01 03
+     41    Star r2                                      ; 0c 02
+     43    Ldar r0                                      ; 0b 00
+     45 E> Construct r0, r1-r2, s4                      ; 69 00 01 02 04
+     50 S> LdaGlobal k0, s0  ; k0 = String str0 "C"     ; 10 00 00
+     53    Star r1                                      ; 0c 01
+     55    Ldar r1                                      ; 0b 01
+     57 E> Construct r1, (), s5                         ; 69 01 00 00 05
+     62    Star r0                                      ; 0c 00
+     64    Ldar r0                                      ; 0b 00
+     66 E> Construct r0, (), s6                         ; 69 00 00 00 06
+     71    LdaUndefined                                 ; 05
+     72    Return                                       ; 92
+  constants (2):
+      0 String str0 "C"
+      1 String str1 "a"
+  feedback (7):
+      0 LoadGlobal
+      1 Call
+      2 Call
+      3 LoadGlobal
+      4 Call
+      5 Call
+      6 Call
+  handlers (0):
+  positions (11):
+      0 S 0 (1:1)
+      5 S 10 (1:11)
+     12 E 10 (1:11)
+     17 S 17 (1:18)
+     24 E 17 (1:18)
+     29 S 26 (1:27)
+     38 E 35 (1:36)
+     45 E 26 (1:27)
+     50 S 39 (1:40)
+     57 E 43 (1:44)
+     66 E 39 (1:40)

@@ -5,7 +5,7 @@
 - Two rules settle conflicts: [R17] corrects [R16], and [R09] arbitrates among [R01]-[R08].
 - Paths inside the reports point into a session scratchpad. They were session-local and no longer exist. Cite the tag, not the path.
 - The plan starts at [../PLAN.md](../PLAN.md).
-- Reusable harnesses are kept in [artifacts/](artifacts/README.md): the tsrs type oracle, the tsrs/oxc test262 scorer and, since 2026-10-21, the R18 sound-regions scripts ([artifacts/sound-regions/](artifacts/sound-regions/README.md)).
+- Reusable harnesses are kept in [artifacts/](artifacts/README.md): the tsrs type oracle, the tsrs/oxc test262 scorer and, since 2026-10-21, the R18 sound-regions scripts and cited results ([artifacts/sound-regions/](artifacts/sound-regions/README.md)) and the inputs of the 2026-10-20 decision round ([artifacts/decide/](artifacts/decide/README.md)).
 
 ## Run context
 
@@ -28,7 +28,7 @@
 | [R02] | [02-tsrs-conformance.md](02-tsrs-conformance.md) | tsrs and oxc on test262 | tsrs: 99.90% positives, 26.78% negatives. oxc + semantic: 99.98% and 100% |
 | [R03] | [03-parser-perf-and-features.md](03-parser-perf-and-features.md) | Parser speed and engine features | oxc 327 MB/s vs tsrs 212 MB/s summed; neither parser can preparse or re-parse one function |
 | [R04] | [04-parser-alternatives.md](04-parser-alternatives.md) | Six front ends compared | Only oxc + semantic catches 100% of parse-phase early errors (4,653/4,653) |
-| [R05] | [05-gc-design.md](05-gc-design.md) | GC design | JSC-like hybrid: non-moving, CSS, sticky-mark generations, concurrent SATB; MMTk not the v1 core |
+| [R05] | [05-gc-design.md](05-gc-design.md) | GC design | JSC-like hybrid: non-moving, CSS, sticky-mark generations, concurrent SATB; MMTk not the v1 core. The SATB slow path is superseded by [H11](../adr/H11-barrier-and-atomics.md) (retreating wavefront, decided 2026-10-20) |
 | [R06] | [06-execution-tiers.md](06-execution-tiers.md) | Tiers and dispatch | Mid tier = about 54% of V8 full on Octane and equal to V8 on the TS workload |
 | [R07] | [07-rust-engine-landscape.md](07-rust-engine-landscape.md) | Rust engines and lessons | test262.fyi rates; late perf choices caused the biggest regrets |
 | [R08] | [08-spec-subsystems.md](08-spec-subsystems.md) | Spec subsystems | Build vs reuse: temporal_rs, ICU4X, dragonbox; regress runs 0.8-5x slower than V8's regexp interpreter |

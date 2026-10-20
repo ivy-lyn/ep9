@@ -1,0 +1,60 @@
+# op-delete: script (sloppy)
+# | var o, k; delete o.a; delete o[k]; delete x; delete o; delete 1; delete o?.a;
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=77 source=embedded hints=none
+source_hash=0e380f58ad9644b722070c156de6e3bac663a172bf299a8a31bdbd4debeaa386
+strings (4):
+  str0 "o"
+  str1 "k"
+  str2 "a"
+  str3 "x"
+scopes (1):
+  scope0 script outer=- flags=[] slots=["o":var, "k":var]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=1 range=0..77
+  code (53 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> LdaGlobal k0, s0  ; k0 = String str0 "o"     ; 10 00 00
+      8    Star r0                                      ; 0c 00
+     10    LdaConstant k1  ; k1 = String str2 "a"       ; 0a 01
+     12 E> DeletePropertySloppy r0                      ; 4a 00
+     14 S> LdaGlobal k0, s0  ; k0 = String str0 "o"     ; 10 00 00
+     17    Star r0                                      ; 0c 00
+     19 E> LdaGlobal k2, s1  ; k2 = String str1 "k"     ; 10 02 01
+     22 E> DeletePropertySloppy r0                      ; 4a 00
+     24 S> LdaConstant k3  ; k3 = String str3 "x"       ; 0a 03
+     26    Star r0                                      ; 0c 00
+     28 E> CallRuntime DeleteLookupSlot, r0             ; 68 08 00 00 01
+     33 S> LdaFalse                                     ; 09
+     34 S> LdaSmi [1]                                   ; 04 01
+     36    LdaTrue                                      ; 08
+     37 S> LdaGlobal k0, s0  ; k0 = String str0 "o"     ; 10 00 00
+     40    JumpIfUndefinedOrNull @50                    ; 87 0a
+     42    Star r0                                      ; 0c 00
+     44    LdaConstant k1  ; k1 = String str2 "a"       ; 0a 01
+     46 E> DeletePropertySloppy r0                      ; 4a 00
+     48    Jump @51                                     ; 7e 03
+     50    LdaTrue                                      ; 08
+     51    LdaUndefined                                 ; 05
+     52    Return                                       ; 92
+  constants (4):
+      0 String str0 "o"
+      1 String str2 "a"
+      2 String str1 "k"
+      3 String str3 "x"
+  feedback (2):
+      0 LoadGlobal
+      1 LoadGlobal
+  handlers (0):
+  positions (12):
+      0 S 0 (1:1)
+      5 S 10 (1:11)
+     12 E 10 (1:11)
+     14 S 22 (1:23)
+     19 E 31 (1:32)
+     22 E 22 (1:23)
+     24 S 35 (1:36)
+     28 E 35 (1:36)
+     33 S 45 (1:46)
+     34 S 55 (1:56)
+     37 S 65 (1:66)
+     46 E 65 (1:66)

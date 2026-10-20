@@ -1,0 +1,12 @@
+{"project":"typescript","dynWrites":221,"byTarget":{"array/typed-array":170,"any/unknown/generic":10,"interface/structural/record/other":39,"lib-object (Map/DOM/...)":2},"reflect":13,"reflectByTarget":{"interface/structural/record/other":9,"any/unknown/generic":4},"deleteByTarget":{"interface/structural/record/other":1,"array/typed-array":1}}
+real 1.55
+{"project":"zod","dynWrites":36,"byTarget":{"any/unknown/generic":16,"array/typed-array":7,"interface/structural/record/other":13},"reflect":48,"reflectByTarget":{"any/unknown/generic":20,"interface/structural/record/other":28},"deleteByTarget":{"any/unknown/generic":5,"interface/structural/record/other":14}}
+real 0.91
+{"project":"datefns","dynWrites":2,"byTarget":{"any/unknown/generic":2},"reflect":4,"reflectByTarget":{"interface/structural/record/other":4},"deleteByTarget":{"any/unknown/generic":1}}
+real 2.33
+{"project":"hono","dynWrites":110,"byTarget":{"array/typed-array":28,"interface/structural/record/other":69,"class-instance":1,"any/unknown/generic":12},"reflect":4,"reflectByTarget":{"class-instance":1,"interface/structural/record/other":2,"lib-object (Map/DOM/...)":1},"deleteByTarget":{"interface/structural/record/other":13,"any/unknown/generic":3}}
+real 1.36
+{"project":"pixijs","dynWrites":602,"byTarget":{"interface/structural/record/other":211,"array/typed-array":341,"any/unknown/generic":14,"lib-object (Map/DOM/...)":32,"class-instance":4},"reflect":28,"reflectByTarget":{"any/unknown/generic":1,"interface/structural/record/other":11,"array/typed-array":2,"lib-object (Map/DOM/...)":1,"class-instance":13},"deleteByTarget":{"interface/structural/record/other":22,"class-instance":1,"any/unknown/generic":1}}
+real 1.32
+{"project":"vscode","dynWrites":517,"byTarget":{"array/typed-array":422,"any/unknown/generic":31,"interface/structural/record/other":62,"lib-object (Map/DOM/...)":2},"reflect":23,"reflectByTarget":{"class-instance":1,"array/typed-array":4,"interface/structural/record/other":15,"any/unknown/generic":3},"deleteByTarget":{"interface/structural/record/other":13,"any/unknown/generic":1}}
+real 0.80

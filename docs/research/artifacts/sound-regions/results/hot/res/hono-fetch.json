@@ -1,0 +1,1397 @@
+{
+ "label": "hono-fetch",
+ "profiles": [
+  "prof/lib/hono-fetch.cpuprofile"
+ ],
+ "samples": 4797,
+ "mean_sample_interval_us": 318.0,
+ "leaf_categories": {
+  "node-internal": 2547,
+  "fn-noq": 959,
+  "native": 518,
+  "(program)": 269,
+  "module-top-level": 207,
+  "(garbage collector)": 158,
+  "js-not-analyzed": 82,
+  "regexp": 48,
+  "fn-v0": 8,
+  "(idle)": 1
+ },
+ "breakdown_pct": {
+  "node-internal": 64.7,
+  "not-Q": 20.1,
+  "(program)": 5.6,
+  "module-top-level": 4.3,
+  "(garbage collector)": 3.3,
+  "js-not-analyzed": 1.7,
+  "Q-v0": 0.2,
+  "(idle)": 0.0
+ },
+ "pct_of_all_samples": {
+  "self_v0": 0.2,
+  "self_v3": 0.2,
+  "self_in_analyzed_functions": 20.2,
+  "self_plus_builtins_v0": 0.2,
+  "self_plus_builtins_v3": 0.2,
+  "self_plus_builtins_in_analyzed_functions": 20.3,
+  "inclusive_v0": 14.3,
+  "inclusive_v3": 14.3,
+  "inclusive_any_analyzed": 84.3,
+  "vm_gc_program_idle": 8.9
+ },
+ "pct_of_analyzed_self_plus_builtins": {
+  "v0": 0.8,
+  "v3": 0.8
+ },
+ "pct_of_analyzed_self": {
+  "v0": 0.8,
+  "v3": 0.8
+ },
+ "counts": {
+  "nonvm": 4369,
+  "selfb_js": 4369,
+  "name_match": 967,
+  "self_fn": 967,
+  "selfb_fn": 974,
+  "selfb_analyzed_file": 1181,
+  "incl_any_analyzed": 4045,
+  "incl_v0": 685,
+  "incl_v3": 685,
+  "self_v0": 8,
+  "self_v3": 8,
+  "selfb_v0": 8,
+  "selfb_v3": 8
+ },
+ "top_self": [
+  {
+   "name": "Hono.#dispatch",
+   "kind": "method",
+   "at": "hono/src/hono-base.ts:425",
+   "pct": 5.2,
+   "samples": 250,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface Request; class Hono blocked by r1/r2/r3/r4; local-type: param iface Request; any-flow",
+   "v3_reasons": [
+    "param-type",
+    "this-class-not-qualifying",
+    "local-type",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "getPath",
+   "kind": "arrow",
+   "at": "hono/src/utils/url.ts:106",
+   "pct": 2.8,
+   "samples": 132,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface Request",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": "json",
+   "kind": "arrow",
+   "at": "hono/src/context.ts:725",
+   "pct": 2.6,
+   "samples": 124,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: tp; assertion(as); any-flow",
+   "v3_reasons": [
+    "param-type",
+    "assertion(as)",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "hono/src/router/reg-exp-router/matcher.ts:14",
+   "pct": 2.3,
+   "samples": 110,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "local-type: tuple; assertion(as)",
+   "v3_reasons": [
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "dispatch",
+   "kind": "fn",
+   "at": "hono/src/compose.ts:32",
+   "pct": 1.9,
+   "samples": 90,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "local-type: any; any-flow",
+   "v3_reasons": [
+    "local-type",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "createResponseInstance",
+   "kind": "arrow",
+   "at": "hono/src/context.ts:288",
+   "pct": 0.8,
+   "samples": 39,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: union(string,iface ArrayBuffer,iface ArrayBufferView)",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": "text",
+   "kind": "arrow",
+   "at": "hono/src/context.ts:699",
+   "pct": 0.8,
+   "samples": 38,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: union(number,number,number); assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "Context.#newResponse",
+   "kind": "method",
+   "at": "hono/src/context.ts:608",
+   "pct": 0.8,
+   "samples": 37,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: union(string,iface ArrayBuffer,iface Blob); class Context blocked by r1/r4/r5; local-type: param union(string,iface ArrayBuffer,iface Blob); assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "this-class-not-qualifying",
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "_getQueryParam",
+   "kind": "arrow",
+   "at": "hono/src/utils/url.ts:232",
+   "pct": 0.7,
+   "samples": 33,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "local-type: any; assertion(as); any-flow",
+   "v3_reasons": [
+    "local-type",
+    "assertion(as)",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "fetch",
+   "kind": "arrow",
+   "at": "hono/src/hono-base.ts:502",
+   "pct": 0.5,
+   "samples": 24,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface Request",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "hono/src/compose.ts:20",
+   "pct": 0.5,
+   "samples": 23,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: class Context; local-type: param class Context",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "hono/src/hono-base.ts:471",
+   "pct": 0.4,
+   "samples": 18,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "local-type: class Context",
+   "v3_reasons": [
+    "local-type"
+   ]
+  },
+  {
+   "name": "Context.req",
+   "kind": "get",
+   "at": "hono/src/context.ts:366",
+   "pct": 0.2,
+   "samples": 11,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "class Context blocked by r1/r4/r5",
+   "v3_reasons": [
+    "this-class-not-qualifying"
+   ]
+  },
+  {
+   "name": "header",
+   "kind": "arrow",
+   "at": "hono/src/context.ts:519",
+   "pct": 0.2,
+   "samples": 9,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface SetHeadersOptions|null; local-type: param iface SetHeadersOptions|null; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "HonoRequest.query",
+   "kind": "method",
+   "at": "hono/src/request.ts:147",
+   "pct": 0.1,
+   "samples": 7,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "class HonoRequest blocked by r1/r2/r4/r5",
+   "v3_reasons": [
+    "this-class-not-qualifying"
+   ]
+  }
+ ],
+ "top_self_plus_builtins": [
+  {
+   "name": "Hono.#dispatch",
+   "kind": "method",
+   "at": "hono/src/hono-base.ts:425",
+   "pct": 5.2,
+   "samples": 250,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface Request; class Hono blocked by r1/r2/r3/r4; local-type: param iface Request; any-flow",
+   "v3_reasons": [
+    "param-type",
+    "this-class-not-qualifying",
+    "local-type",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "getPath",
+   "kind": "arrow",
+   "at": "hono/src/utils/url.ts:106",
+   "pct": 2.8,
+   "samples": 132,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface Request",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": "json",
+   "kind": "arrow",
+   "at": "hono/src/context.ts:725",
+   "pct": 2.6,
+   "samples": 124,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: tp; assertion(as); any-flow",
+   "v3_reasons": [
+    "param-type",
+    "assertion(as)",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "hono/src/router/reg-exp-router/matcher.ts:14",
+   "pct": 2.4,
+   "samples": 117,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "local-type: tuple; assertion(as)",
+   "v3_reasons": [
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "dispatch",
+   "kind": "fn",
+   "at": "hono/src/compose.ts:32",
+   "pct": 1.9,
+   "samples": 90,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "local-type: any; any-flow",
+   "v3_reasons": [
+    "local-type",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "createResponseInstance",
+   "kind": "arrow",
+   "at": "hono/src/context.ts:288",
+   "pct": 0.8,
+   "samples": 39,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: union(string,iface ArrayBuffer,iface ArrayBufferView)",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": "text",
+   "kind": "arrow",
+   "at": "hono/src/context.ts:699",
+   "pct": 0.8,
+   "samples": 38,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: union(number,number,number); assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "Context.#newResponse",
+   "kind": "method",
+   "at": "hono/src/context.ts:608",
+   "pct": 0.8,
+   "samples": 37,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: union(string,iface ArrayBuffer,iface Blob); class Context blocked by r1/r4/r5; local-type: param union(string,iface ArrayBuffer,iface Blob); assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "this-class-not-qualifying",
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "_getQueryParam",
+   "kind": "arrow",
+   "at": "hono/src/utils/url.ts:232",
+   "pct": 0.7,
+   "samples": 33,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "local-type: any; assertion(as); any-flow",
+   "v3_reasons": [
+    "local-type",
+    "assertion(as)",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "fetch",
+   "kind": "arrow",
+   "at": "hono/src/hono-base.ts:502",
+   "pct": 0.5,
+   "samples": 24,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface Request",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "hono/src/compose.ts:20",
+   "pct": 0.5,
+   "samples": 23,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: class Context; local-type: param class Context",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "hono/src/hono-base.ts:471",
+   "pct": 0.4,
+   "samples": 18,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "local-type: class Context",
+   "v3_reasons": [
+    "local-type"
+   ]
+  },
+  {
+   "name": "Context.req",
+   "kind": "get",
+   "at": "hono/src/context.ts:366",
+   "pct": 0.2,
+   "samples": 11,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "class Context blocked by r1/r4/r5",
+   "v3_reasons": [
+    "this-class-not-qualifying"
+   ]
+  },
+  {
+   "name": "header",
+   "kind": "arrow",
+   "at": "hono/src/context.ts:519",
+   "pct": 0.2,
+   "samples": 9,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface SetHeadersOptions|null; local-type: param iface SetHeadersOptions|null; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "HonoRequest.query",
+   "kind": "method",
+   "at": "hono/src/request.ts:147",
+   "pct": 0.1,
+   "samples": 7,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "class HonoRequest blocked by r1/r2/r4/r5",
+   "v3_reasons": [
+    "this-class-not-qualifying"
+   ]
+  }
+ ],
+ "top_inclusive": [
+  {
+   "name": "fetch",
+   "kind": "arrow",
+   "at": "hono/src/hono-base.ts:502",
+   "pct": 82.7,
+   "samples": 3969,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface Request",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": "Hono.#dispatch",
+   "kind": "method",
+   "at": "hono/src/hono-base.ts:425",
+   "pct": 82.2,
+   "samples": 3942,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface Request; class Hono blocked by r1/r2/r3/r4; local-type: param iface Request; any-flow",
+   "v3_reasons": [
+    "param-type",
+    "this-class-not-qualifying",
+    "local-type",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "text",
+   "kind": "arrow",
+   "at": "hono/src/context.ts:699",
+   "pct": 45.9,
+   "samples": 2200,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: union(number,number,number); assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "Context.#newResponse",
+   "kind": "method",
+   "at": "hono/src/context.ts:608",
+   "pct": 37.2,
+   "samples": 1786,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: union(string,iface ArrayBuffer,iface Blob); class Context blocked by r1/r4/r5; local-type: param union(string,iface ArrayBuffer,iface Blob); assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "this-class-not-qualifying",
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "createResponseInstance",
+   "kind": "arrow",
+   "at": "hono/src/context.ts:288",
+   "pct": 35.2,
+   "samples": 1689,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: union(string,iface ArrayBuffer,iface ArrayBufferView)",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": "json",
+   "kind": "arrow",
+   "at": "hono/src/context.ts:725",
+   "pct": 20.3,
+   "samples": 972,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: tp; assertion(as); any-flow",
+   "v3_reasons": [
+    "param-type",
+    "assertion(as)",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "dispatch",
+   "kind": "fn",
+   "at": "hono/src/compose.ts:32",
+   "pct": 16.0,
+   "samples": 768,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "local-type: any; any-flow",
+   "v3_reasons": [
+    "local-type",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "hono/src/hono-base.ts:471",
+   "pct": 15.7,
+   "samples": 751,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "local-type: class Context",
+   "v3_reasons": [
+    "local-type"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "hono/src/compose.ts:20",
+   "pct": 15.3,
+   "samples": 733,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: class Context; local-type: param class Context",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "hono/src/compose.ts:51",
+   "pct": 14.1,
+   "samples": 677,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "getPath",
+   "kind": "arrow",
+   "at": "hono/src/utils/url.ts:106",
+   "pct": 2.8,
+   "samples": 132,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface Request",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "hono/src/router/reg-exp-router/matcher.ts:14",
+   "pct": 2.4,
+   "samples": 117,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "local-type: tuple; assertion(as)",
+   "v3_reasons": [
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "header",
+   "kind": "arrow",
+   "at": "hono/src/context.ts:519",
+   "pct": 1.5,
+   "samples": 70,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface SetHeadersOptions|null; local-type: param iface SetHeadersOptions|null; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "HonoRequest.query",
+   "kind": "method",
+   "at": "hono/src/request.ts:147",
+   "pct": 1.0,
+   "samples": 46,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "class HonoRequest blocked by r1/r2/r4/r5",
+   "v3_reasons": [
+    "this-class-not-qualifying"
+   ]
+  },
+  {
+   "name": "_getQueryParam",
+   "kind": "arrow",
+   "at": "hono/src/utils/url.ts:232",
+   "pct": 0.8,
+   "samples": 38,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "local-type: any; assertion(as); any-flow",
+   "v3_reasons": [
+    "local-type",
+    "assertion(as)",
+    "any-flow"
+   ]
+  }
+ ],
+ "top_inclusive_v0": [
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "hono/src/compose.ts:51",
+   "pct": 14.1,
+   "samples": 677,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "tryDecodeURIComponent",
+   "kind": "arrow",
+   "at": "hono/src/utils/url.ts:221",
+   "pct": 0.1,
+   "samples": 7,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "_decodeURI",
+   "kind": "arrow",
+   "at": "hono/src/utils/url.ts:225",
+   "pct": 0.1,
+   "samples": 5,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  }
+ ],
+ "top_self_v0": [
+  {
+   "name": "tryDecodeURIComponent",
+   "kind": "arrow",
+   "at": "hono/src/utils/url.ts:221",
+   "pct": 0.1,
+   "samples": 7,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "_decodeURI",
+   "kind": "arrow",
+   "at": "hono/src/utils/url.ts:225",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  }
+ ],
+ "blocker_time_pct_any": {
+  "param-type": 14.2,
+  "local-type": 12.2,
+  "any-flow": 10.4,
+  "assertion(as)": 7.5,
+  "this-class-not-qualifying": 6.6,
+  "nonnull(!)": 0.0
+ },
+ "blocker_time_pct_first": {
+  "param-type": 14.2,
+  "local-type": 5.4,
+  "this-class-not-qualifying": 0.5
+ },
+ "bad_type_time_pct": {
+  "iface Request": 8.5,
+  "tp": 2.6,
+  "any": 2.6,
+  "tuple": 2.4,
+  "class Context": 0.9,
+  "union(string,iface ArrayBuffer,iface ArrayBufferView)": 0.8,
+  "union(number,number,number)": 0.8,
+  "union(string,iface ArrayBuffer,iface Blob)": 0.8,
+  "iface SetHeadersOptions|null": 0.2,
+  "union(string,number)": 0.1,
+  "tlit \u007ftype": 0.0,
+  "iface Response|null": 0.0
+ },
+ "static_fn_share": {
+  "v0": 22.0,
+  "v3": 22.2
+ },
+ "distinct_sampled_functions": 25,
+ "distinct_sampled_v0": 2,
+ "functions_for_50pct_of_analyzed_time": 3,
+ "name_check": {
+  "match": 967,
+  "v8_anonymous": 0,
+  "mismatch": 0,
+  "top_mismatch": []
+ },
+ "per_function": [
+  {
+   "id": "6:12772",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/hono-base.ts",
+   "s": 12772,
+   "e": 14487,
+   "name": "#dispatch",
+   "kind": "method",
+   "class": "Hono",
+   "line": 425,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 250,
+   "self": 250,
+   "incl": 3942
+  },
+  {
+   "id": "5:2770",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/utils/url.ts",
+   "s": 2770,
+   "e": 3822,
+   "name": "getPath",
+   "kind": "arrow",
+   "class": null,
+   "line": 106,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 132,
+   "self": 132,
+   "incl": 132
+  },
+  {
+   "id": "16:20611",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/context.ts",
+   "s": 20611,
+   "e": 21035,
+   "name": "json",
+   "kind": "arrow",
+   "class": null,
+   "line": 725,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 124,
+   "self": 124,
+   "incl": 972
+  },
+  {
+   "id": "19:633",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/reg-exp-router/matcher.ts",
+   "s": 633,
+   "e": 1008,
+   "name": "<anon>",
+   "kind": "arrow",
+   "class": null,
+   "line": 14,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 117,
+   "self": 110,
+   "incl": 117
+  },
+  {
+   "id": "17:1196",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/compose.ts",
+   "s": 1196,
+   "e": 2196,
+   "name": "dispatch",
+   "kind": "fn",
+   "class": null,
+   "line": 32,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 90,
+   "self": 90,
+   "incl": 768
+  },
+  {
+   "id": "16:8810",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/context.ts",
+   "s": 8810,
+   "e": 8922,
+   "name": "createResponseInstance",
+   "kind": "arrow",
+   "class": null,
+   "line": 288,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 39,
+   "self": 39,
+   "incl": 1689
+  },
+  {
+   "id": "16:19896",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/context.ts",
+   "s": 19896,
+   "e": 20325,
+   "name": "text",
+   "kind": "arrow",
+   "class": null,
+   "line": 699,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 38,
+   "self": 38,
+   "incl": 2200
+  },
+  {
+   "id": "16:17312",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/context.ts",
+   "s": 17312,
+   "e": 18734,
+   "name": "#newResponse",
+   "kind": "method",
+   "class": "Context",
+   "line": 608,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 37,
+   "self": 37,
+   "incl": 1786
+  },
+  {
+   "id": "5:6488",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/utils/url.ts",
+   "s": 6488,
+   "e": 8814,
+   "name": "_getQueryParam",
+   "kind": "arrow",
+   "class": null,
+   "line": 232,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 33,
+   "self": 33,
+   "incl": 38
+  },
+  {
+   "id": "6:14982",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/hono-base.ts",
+   "s": 14982,
+   "e": 15078,
+   "name": "fetch",
+   "kind": "arrow",
+   "class": null,
+   "line": 502,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 24,
+   "self": 24,
+   "incl": 3969
+  },
+  {
+   "id": "17:908",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/compose.ts",
+   "s": 908,
+   "e": 2200,
+   "name": "<anon>",
+   "kind": "arrow",
+   "class": null,
+   "line": 20,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 23,
+   "self": 23,
+   "incl": 733
+  },
+  {
+   "id": "6:14123",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/hono-base.ts",
+   "s": 14123,
+   "e": 14480,
+   "name": "<anon>",
+   "kind": "arrow",
+   "class": null,
+   "line": 471,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 18,
+   "self": 18,
+   "incl": 751
+  },
+  {
+   "id": "16:11010",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/context.ts",
+   "s": 11010,
+   "e": 11155,
+   "name": "req",
+   "kind": "get",
+   "class": "Context",
+   "line": 366,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 11,
+   "self": 11,
+   "incl": 11
+  },
+  {
+   "id": "16:15021",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/context.ts",
+   "s": 15021,
+   "e": 15442,
+   "name": "header",
+   "kind": "arrow",
+   "class": null,
+   "line": 519,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 9,
+   "self": 9,
+   "incl": 70
+  },
+  {
+   "id": "13:4128",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/request.ts",
+   "s": 4128,
+   "e": 4193,
+   "name": "query",
+   "kind": "method",
+   "class": "HonoRequest",
+   "line": 147,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 7,
+   "self": 7,
+   "incl": 46
+  },
+  {
+   "id": "5:6190",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/utils/url.ts",
+   "s": 6190,
+   "e": 6284,
+   "name": "tryDecodeURIComponent",
+   "kind": "arrow",
+   "class": null,
+   "line": 221,
+   "v0": true,
+   "v3": true,
+   "repo": "hono",
+   "selfb": 7,
+   "self": 7,
+   "incl": 7
+  },
+  {
+   "id": "13:2878",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/request.ts",
+   "s": 2878,
+   "e": 3099,
+   "name": "#getDecodedParam",
+   "kind": "method",
+   "class": "HonoRequest",
+   "line": 103,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 4,
+   "self": 4,
+   "incl": 8
+  },
+  {
+   "id": "16:12398",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/context.ts",
+   "s": 12398,
+   "e": 13010,
+   "name": "res",
+   "kind": "set",
+   "class": "Context",
+   "line": 414,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 2,
+   "self": 2,
+   "incl": 2
+  },
+  {
+   "id": "16:10621",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/context.ts",
+   "s": 10621,
+   "e": 10942,
+   "name": "<anon>",
+   "kind": "ctor",
+   "class": "Context",
+   "line": 352,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 2,
+   "self": 2,
+   "incl": 4
+  },
+  {
+   "id": "13:10108",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/request.ts",
+   "s": 10108,
+   "e": 10155,
+   "name": "url",
+   "kind": "get",
+   "class": "HonoRequest",
+   "line": 374,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 2,
+   "self": 2,
+   "incl": 3
+  },
+  {
+   "id": "22:4238",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/reg-exp-router/router.ts",
+   "s": 4238,
+   "e": 5282,
+   "name": "#buildMatcher",
+   "kind": "method",
+   "class": "RegExpRouter",
+   "line": 145,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 1,
+   "self": 1,
+   "incl": 1
+  },
+  {
+   "id": "22:2086",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/reg-exp-router/router.ts",
+   "s": 2086,
+   "e": 3817,
+   "name": "add",
+   "kind": "method",
+   "class": "RegExpRouter",
+   "line": 68,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 1,
+   "self": 1,
+   "incl": 2
+  },
+  {
+   "id": "5:6318",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/utils/url.ts",
+   "s": 6318,
+   "e": 6463,
+   "name": "_decodeURI",
+   "kind": "arrow",
+   "class": null,
+   "line": 225,
+   "v0": true,
+   "v3": true,
+   "repo": "hono",
+   "selfb": 1,
+   "self": 1,
+   "incl": 5
+  },
+  {
+   "id": "22:1127",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/reg-exp-router/router.ts",
+   "s": 1127,
+   "e": 1409,
+   "name": "findMiddleware",
+   "kind": "fn",
+   "class": null,
+   "line": 38,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 1,
+   "self": 1,
+   "incl": 1
+  },
+  {
+   "id": "13:3522",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/request.ts",
+   "s": 3522,
+   "e": 3660,
+   "name": "#getParamValue",
+   "kind": "method",
+   "class": "HonoRequest",
+   "line": 123,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 1,
+   "self": 1,
+   "incl": 1
+  },
+  {
+   "id": "6:12205",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/hono-base.ts",
+   "s": 12205,
+   "e": 12596,
+   "name": "#addRoute",
+   "kind": "method",
+   "class": "Hono",
+   "line": 405,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 0,
+   "self": 0,
+   "incl": 2
+  },
+  {
+   "id": "6:4399",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/hono-base.ts",
+   "s": 4399,
+   "e": 4778,
+   "name": "<anon>",
+   "kind": "arrow",
+   "class": null,
+   "line": 146,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "17:1678",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/compose.ts",
+   "s": 1678,
+   "e": 1699,
+   "name": "<anon>",
+   "kind": "arrow",
+   "class": null,
+   "line": 51,
+   "v0": true,
+   "v3": true,
+   "repo": "hono",
+   "selfb": 0,
+   "self": 0,
+   "incl": 677
+  },
+  {
+   "id": "22:3866",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/reg-exp-router/router.ts",
+   "s": 3866,
+   "e": 4234,
+   "name": "buildAllMatchers",
+   "kind": "method",
+   "class": "RegExpRouter",
+   "line": 131,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "13:2766",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/request.ts",
+   "s": 2766,
+   "e": 2874,
+   "name": "param",
+   "kind": "method",
+   "class": "HonoRequest",
+   "line": 99,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 0,
+   "self": 0,
+   "incl": 8
+  },
+  {
+   "id": "19:385",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/router/reg-exp-router/matcher.ts",
+   "s": 385,
+   "e": 1084,
+   "name": "match",
+   "kind": "fn",
+   "class": null,
+   "line": 10,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "6:5349",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/hono-base.ts",
+   "s": 5349,
+   "e": 5714,
+   "name": ".use",
+   "kind": "arrow",
+   "class": null,
+   "line": 175,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "6:5599",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/hono-base.ts",
+   "s": 5599,
+   "e": 5682,
+   "name": "<anon>",
+   "kind": "arrow",
+   "class": null,
+   "line": 182,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "6:4660",
+   "file": "$EP9_RESEARCH_REPOS/hono/src/hono-base.ts",
+   "s": 4660,
+   "e": 4742,
+   "name": "<anon>",
+   "kind": "arrow",
+   "class": null,
+   "line": 153,
+   "v0": false,
+   "v3": false,
+   "repo": "hono",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  }
+ ]
+}

@@ -2,10 +2,19 @@
 //!
 //! ```text
 //! bytes 0-3  shape_id  u32  offset into the shape space; IC guards compare it
-//! byte  4    gc_state  u8   sticky mark / log / age; the barrier reads only this byte
+//! byte  4    gc_state  u8   cell state for the barrier: BLACK=1, WHITE=2, GREY=3 (H11);
+//!                           the mark bit is in side metadata (H9); the barrier reads only this byte
 //! byte  5    kind      u8   GC visitor and size without loading the shape
 //! bytes 6-7  flags     u16  hash-present, pinned, is-prototype, ...
 //! ```
+//!
+//! | gc_state | Value | Meaning (03-gc §3) |
+//! |---|---|---|
+//! | BLACK | 1 | Old (mark bit stuck) and not remembered. In S2: scanned |
+//! | WHITE | 2 | Young: allocated since the last GC. Every allocation writes WHITE |
+//! | GREY | 3 | Remembered (S1) or queued for a revisit (S2) |
+//!
+//! `ep9_heap` owns these values and the barrier threshold (`ep9_heap::barrier`).
 //!
 //! Each field is its own Relaxed atomic of the field's size. Rust forbids racing atomic
 //! accesses of different sizes to overlapping memory (core::sync::atomic, "mixed-size

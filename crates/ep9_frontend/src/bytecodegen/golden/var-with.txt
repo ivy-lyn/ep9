@@ -1,0 +1,45 @@
+# var-with: script (sloppy)
+# | var o = {}; with (o) { x = 1; x; }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=34 source=embedded hints=none
+source_hash=3b3003d2fd25809254dedd8dd729997e94497e9f4d21d4af3ac9806be9b8269f
+strings (2):
+  str0 "o"
+  str1 "x"
+scopes (3):
+  scope0 script outer=- flags=[] slots=["o":var]
+  scope1 with outer=scope0 flags=[needs-context] slots=[]
+  scope2 block outer=scope1 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..34
+  code (30 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> CreateEmptyObjectLiteral                     ; 71
+      6 E> StaGlobal k0, s0  ; k0 = String str0 "o"     ; 12 00 00
+      9 S> LdaGlobal k0, s1  ; k0 = String str0 "o"     ; 10 00 01
+     12 E> ToObject r0                                  ; 5b 00
+     14 E> CreateWithContext r0, k1  ; k1 = Scope scope1 ; 79 00 01
+     17    PushContext r1                               ; 13 01
+     19 S> LdaSmi [1]                                   ; 04 01
+     21 E> StaLookupSlot k2, #0x00  ; k2 = String str1 "x" ; 1e 02 00
+     24 S> LdaLookupSlot k2  ; k2 = String str1 "x"     ; 1c 02
+     26    PopContext r1                                ; 14 01
+     28    LdaUndefined                                 ; 05
+     29    Return                                       ; 92
+  constants (3):
+      0 String str0 "o"
+      1 Scope scope1
+      2 String str1 "x"
+  feedback (2):
+      0 StoreGlobal
+      1 LoadGlobal
+  handlers (0):
+  positions (9):
+      0 S 0 (1:1)
+      5 S 4 (1:5)
+      6 E 4 (1:5)
+      9 S 12 (1:13)
+     12 E 18 (1:19)
+     14 E 12 (1:13)
+     19 S 23 (1:24)
+     21 E 23 (1:24)
+     24 S 30 (1:31)

@@ -1,0 +1,1662 @@
+{
+ "label": "zod-parse-noinl",
+ "profiles": [
+  "prof/lib-noinl/zod-parse.cpuprofile"
+ ],
+ "samples": 4785,
+ "mean_sample_interval_us": 317.3,
+ "leaf_categories": {
+  "fn-noq": 3268,
+  "eval-js": 598,
+  "(garbage collector)": 572,
+  "regexp": 256,
+  "(program)": 31,
+  "node-internal": 23,
+  "module-top-level": 21,
+  "native": 15,
+  "(idle)": 1
+ },
+ "breakdown_pct": {
+  "not-Q": 73.6,
+  "eval-js": 12.5,
+  "(garbage collector)": 12.0,
+  "node-internal": 0.8,
+  "(program)": 0.6,
+  "module-top-level": 0.5,
+  "(idle)": 0.0
+ },
+ "pct_of_all_samples": {
+  "self_v0": 0.0,
+  "self_v3": 0.0,
+  "self_in_analyzed_functions": 68.3,
+  "self_plus_builtins_v0": 0.0,
+  "self_plus_builtins_v3": 0.0,
+  "self_plus_builtins_in_analyzed_functions": 73.6,
+  "inclusive_v0": 0.0,
+  "inclusive_v3": 0.0,
+  "inclusive_any_analyzed": 86.1,
+  "vm_gc_program_idle": 12.6
+ },
+ "pct_of_analyzed_self_plus_builtins": {
+  "v0": 0.0,
+  "v3": 0.0
+ },
+ "pct_of_analyzed_self": {
+  "v0": 0.0,
+  "v3": 0.0
+ },
+ "counts": {
+  "nonvm": 4181,
+  "selfb_js": 4181,
+  "selfb_analyzed_file": 3546,
+  "name_match": 1377,
+  "self_fn": 3268,
+  "selfb_fn": 3524,
+  "incl_any_analyzed": 4118,
+  "incl_v0": 1,
+  "incl_v3": 1,
+  "name_mismatch": 1891
+ },
+ "top_self": [
+  {
+   "name": "runChecks",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:233",
+   "pct": 11.7,
+   "samples": 559,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload; assertion(as); any-flow",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)",
+    "any-flow"
+   ]
+  },
+  {
+   "name": ".run",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:297",
+   "pct": 11.5,
+   "samples": 549,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": ".parse",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:1888",
+   "pct": 10.2,
+   "samples": 487,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": ".check",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/checks.ts:743",
+   "pct": 7.7,
+   "samples": 368,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; nonnull(!)",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": "failure",
+   "kind": "fn",
+   "at": "zod/packages/zod/src/v4/core/parse.ts:83",
+   "pct": 6.7,
+   "samples": 322,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: fn; local-type: param fn",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "handleArrayResult",
+   "kind": "fn",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:1875",
+   "pct": 3.2,
+   "samples": 151,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface ParsePayload",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": ".parse",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:403",
+   "pct": 2.0,
+   "samples": 97,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": ".parse",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:2398",
+   "pct": 1.9,
+   "samples": 92,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload; any-flow",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "any-flow"
+   ]
+  },
+  {
+   "name": ".parse",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:1333",
+   "pct": 1.9,
+   "samples": 91,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "aborted",
+   "kind": "fn",
+   "at": "zod/packages/zod/src/v4/core/util.ts:904",
+   "pct": 1.4,
+   "samples": 65,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface ParsePayload",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": ".check",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/checks.ts:124",
+   "pct": 1.1,
+   "samples": 55,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": ".parse",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:3953",
+   "pct": 1.0,
+   "samples": 48,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/parse.ts:71",
+   "pct": 1.0,
+   "samples": 46,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: tp; local-type: param tp; assertion(as); any-flow",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "_whenHasLength",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/checks.ts:48",
+   "pct": 0.9,
+   "samples": 43,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "alloc",
+   "kind": "method",
+   "at": "zod/packages/zod/src/v4/core/memoizer.ts:216",
+   "pct": 0.8,
+   "samples": 37,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface $ZodType; local-type: param iface $ZodType; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  }
+ ],
+ "top_self_plus_builtins": [
+  {
+   "name": "runChecks",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:233",
+   "pct": 11.7,
+   "samples": 559,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload; assertion(as); any-flow",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)",
+    "any-flow"
+   ]
+  },
+  {
+   "name": ".check",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/checks.ts:743",
+   "pct": 11.6,
+   "samples": 556,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; nonnull(!)",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": ".run",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:297",
+   "pct": 11.5,
+   "samples": 549,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": ".parse",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:1888",
+   "pct": 10.2,
+   "samples": 487,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "failure",
+   "kind": "fn",
+   "at": "zod/packages/zod/src/v4/core/parse.ts:83",
+   "pct": 6.7,
+   "samples": 322,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: fn; local-type: param fn",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "handleArrayResult",
+   "kind": "fn",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:1875",
+   "pct": 3.2,
+   "samples": 151,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface ParsePayload",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": ".parse",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:403",
+   "pct": 2.0,
+   "samples": 97,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": ".check",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/checks.ts:782",
+   "pct": 2.0,
+   "samples": 94,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": ".parse",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:2398",
+   "pct": 1.9,
+   "samples": 92,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload; any-flow",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "any-flow"
+   ]
+  },
+  {
+   "name": ".parse",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:1333",
+   "pct": 1.9,
+   "samples": 91,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "aborted",
+   "kind": "fn",
+   "at": "zod/packages/zod/src/v4/core/util.ts:904",
+   "pct": 1.4,
+   "samples": 65,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface ParsePayload",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": ".check",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/checks.ts:124",
+   "pct": 1.1,
+   "samples": 55,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": ".parse",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:3953",
+   "pct": 1.0,
+   "samples": 48,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/parse.ts:71",
+   "pct": 1.0,
+   "samples": 46,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: tp; local-type: param tp; assertion(as); any-flow",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "_whenHasLength",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/checks.ts:48",
+   "pct": 0.9,
+   "samples": 43,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  }
+ ],
+ "top_inclusive": [
+  {
+   "name": ".parse",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:2398",
+   "pct": 75.4,
+   "samples": 3609,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload; any-flow",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "any-flow"
+   ]
+  },
+  {
+   "name": "safeParse",
+   "kind": "method",
+   "at": "zod/packages/zod/src/v4/classic/schemas.ts:303",
+   "pct": 50.3,
+   "samples": 2406,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: unknown; this-type",
+   "v3_reasons": [
+    "param-type",
+    "this-type"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/parse.ts:71",
+   "pct": 50.2,
+   "samples": 2402,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: tp; local-type: param tp; assertion(as); any-flow",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)",
+    "any-flow"
+   ]
+  },
+  {
+   "name": ".run",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:297",
+   "pct": 42.6,
+   "samples": 2039,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "_parse",
+   "kind": "fnexpr",
+   "at": "zod/packages/zod/src/v4/classic/schemas.ts:297",
+   "pct": 33.8,
+   "samples": 1616,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: unknown; this-type",
+   "v3_reasons": [
+    "param-type",
+    "this-type"
+   ]
+  },
+  {
+   "name": "fn",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/parse.ts:23",
+   "pct": 33.5,
+   "samples": 1605,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: tp; local-type: param tp; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "runChecks",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:233",
+   "pct": 30.1,
+   "samples": 1440,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload; assertion(as); any-flow",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)",
+    "any-flow"
+   ]
+  },
+  {
+   "name": ".parse",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:1888",
+   "pct": 14.9,
+   "samples": 712,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": ".check",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/checks.ts:743",
+   "pct": 11.6,
+   "samples": 556,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; nonnull(!)",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": "failure",
+   "kind": "fn",
+   "at": "zod/packages/zod/src/v4/core/parse.ts:83",
+   "pct": 6.7,
+   "samples": 322,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: fn; local-type: param fn",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "handleArrayResult",
+   "kind": "fn",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:1875",
+   "pct": 3.2,
+   "samples": 151,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface ParsePayload",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": ".parse",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:403",
+   "pct": 2.0,
+   "samples": 97,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": ".check",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/checks.ts:782",
+   "pct": 2.0,
+   "samples": 94,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": ".parse",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:1333",
+   "pct": 1.9,
+   "samples": 91,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface ParsePayload; local-type: param iface ParsePayload",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "aborted",
+   "kind": "fn",
+   "at": "zod/packages/zod/src/v4/core/util.ts:904",
+   "pct": 1.4,
+   "samples": 65,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface ParsePayload",
+   "v3_reasons": [
+    "param-type"
+   ]
+  }
+ ],
+ "top_inclusive_v0": [
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "zod/packages/zod/src/v4/core/schemas.ts:2278",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  }
+ ],
+ "top_self_v0": [],
+ "blocker_time_pct_any": {
+  "param-type": 73.6,
+  "local-type": 51.6,
+  "assertion(as)": 17.1,
+  "any-flow": 15.5,
+  "nonnull(!)": 11.7,
+  "this-type": 0.4
+ },
+ "blocker_time_pct_first": {
+  "param-type": 73.6,
+  "local-type": 0.0
+ },
+ "bad_type_time_pct": {
+  "iface ParsePayload": 62.4,
+  "fn": 6.7,
+  "tp": 1.6,
+  "any": 1.1,
+  "iface $ZodType": 0.8,
+  "union(tlit { [k in keyof T]: T[?,tlit { [k in keyof T]: T[?,tlit { [k in keyof T]: T[?)[]": 0.5,
+  "unknown": 0.4,
+  "union(iface $ZodCheck,fn)[]": 0.0,
+  "object": 0.0,
+  "iface ZodObject": 0.0,
+  "iface $ZodObjectDef": 0.0,
+  "iface FunctionConstructor": 0.0
+ },
+ "static_fn_share": {
+  "v0": 9.4,
+  "v3": 9.8
+ },
+ "distinct_sampled_functions": 33,
+ "distinct_sampled_v0": 0,
+ "functions_for_50pct_of_analyzed_time": 4,
+ "name_check": {
+  "match": 1377,
+  "v8_anonymous": 0,
+  "mismatch": 1891,
+  "top_mismatch": [
+   [
+    "inst._zod.run",
+    ".run",
+    297,
+    "zod/packages/zod/src/v4/core/schemas.ts",
+    549
+   ],
+   [
+    "inst._zod.parse",
+    ".parse",
+    1888,
+    "zod/packages/zod/src/v4/core/schemas.ts",
+    487
+   ],
+   [
+    "inst._zod.check",
+    ".check",
+    743,
+    "zod/packages/zod/src/v4/core/checks.ts",
+    368
+   ],
+   [
+    "inst._zod.parse",
+    ".parse",
+    403,
+    "zod/packages/zod/src/v4/core/schemas.ts",
+    97
+   ],
+   [
+    "inst._zod.parse",
+    ".parse",
+    2398,
+    "zod/packages/zod/src/v4/core/schemas.ts",
+    92
+   ],
+   [
+    "inst._zod.parse",
+    ".parse",
+    1333,
+    "zod/packages/zod/src/v4/core/schemas.ts",
+    91
+   ],
+   [
+    "inst._zod.check",
+    ".check",
+    124,
+    "zod/packages/zod/src/v4/core/checks.ts",
+    55
+   ],
+   [
+    "inst._zod.parse",
+    ".parse",
+    3953,
+    "zod/packages/zod/src/v4/core/schemas.ts",
+    48
+   ]
+  ]
+ },
+ "per_function": [
+  {
+   "id": "78:8011",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/schemas.ts",
+   "s": 8011,
+   "e": 9695,
+   "name": "runChecks",
+   "kind": "arrow",
+   "class": null,
+   "line": 233,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 559,
+   "self": 559,
+   "incl": 1440
+  },
+  {
+   "id": "81:22628",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/checks.ts",
+   "s": 22628,
+   "e": 23025,
+   "name": ".check",
+   "kind": "arrow",
+   "class": null,
+   "line": 743,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 556,
+   "self": 368,
+   "incl": 556
+  },
+  {
+   "id": "78:10344",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/schemas.ts",
+   "s": 10344,
+   "e": 11227,
+   "name": ".run",
+   "kind": "arrow",
+   "class": null,
+   "line": 297,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 549,
+   "self": 549,
+   "incl": 2039
+  },
+  {
+   "id": "78:59441",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/schemas.ts",
+   "s": 59441,
+   "e": 60671,
+   "name": ".parse",
+   "kind": "arrow",
+   "class": null,
+   "line": 1888,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 487,
+   "self": 487,
+   "incl": 712
+  },
+  {
+   "id": "3:3589",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/parse.ts",
+   "s": 3589,
+   "e": 4395,
+   "name": "failure",
+   "kind": "fn",
+   "class": null,
+   "line": 83,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 322,
+   "self": 322,
+   "incl": 322
+  },
+  {
+   "id": "78:58969",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/schemas.ts",
+   "s": 58969,
+   "e": 59207,
+   "name": "handleArrayResult",
+   "kind": "fn",
+   "class": null,
+   "line": 1875,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 151,
+   "self": 151,
+   "incl": 151
+  },
+  {
+   "id": "78:14360",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/schemas.ts",
+   "s": 14360,
+   "e": 14691,
+   "name": ".parse",
+   "kind": "arrow",
+   "class": null,
+   "line": 403,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 97,
+   "self": 97,
+   "incl": 97
+  },
+  {
+   "id": "81:23735",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/checks.ts",
+   "s": 23735,
+   "e": 24075,
+   "name": ".check",
+   "kind": "arrow",
+   "class": null,
+   "line": 782,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 94,
+   "self": 26,
+   "incl": 94
+  },
+  {
+   "id": "78:77278",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/schemas.ts",
+   "s": 77278,
+   "e": 77971,
+   "name": ".parse",
+   "kind": "arrow",
+   "class": null,
+   "line": 2398,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 92,
+   "self": 92,
+   "incl": 3609
+  },
+  {
+   "id": "78:43390",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/schemas.ts",
+   "s": 43390,
+   "e": 44049,
+   "name": ".parse",
+   "kind": "arrow",
+   "class": null,
+   "line": 1333,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 91,
+   "self": 91,
+   "incl": 91
+  },
+  {
+   "id": "2:31544",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/util.ts",
+   "s": 31544,
+   "e": 31802,
+   "name": "aborted",
+   "kind": "fn",
+   "class": null,
+   "line": 904,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 65,
+   "self": 65,
+   "incl": 65
+  },
+  {
+   "id": "81:4171",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/checks.ts",
+   "s": 4171,
+   "e": 4655,
+   "name": ".check",
+   "kind": "arrow",
+   "class": null,
+   "line": 124,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 55,
+   "self": 55,
+   "incl": 55
+  },
+  {
+   "id": "78:131473",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/schemas.ts",
+   "s": 131473,
+   "e": 132266,
+   "name": ".parse",
+   "kind": "arrow",
+   "class": null,
+   "line": 3953,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 48,
+   "self": 48,
+   "incl": 54
+  },
+  {
+   "id": "3:2754",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/parse.ts",
+   "s": 2754,
+   "e": 3134,
+   "name": "<anon>",
+   "kind": "arrow",
+   "class": null,
+   "line": 71,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 46,
+   "self": 46,
+   "incl": 2402
+  },
+  {
+   "id": "81:1691",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/checks.ts",
+   "s": 1691,
+   "e": 1833,
+   "name": "_whenHasLength",
+   "kind": "arrow",
+   "class": null,
+   "line": 48,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 43,
+   "self": 43,
+   "incl": 59
+  },
+  {
+   "id": "6:7491",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/memoizer.ts",
+   "s": 7491,
+   "e": 7754,
+   "name": "alloc",
+   "kind": "method",
+   "class": null,
+   "line": 216,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 37,
+   "self": 37,
+   "incl": 37
+  },
+  {
+   "id": "2:18827",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/util.ts",
+   "s": 18827,
+   "e": 18980,
+   "name": "isObject",
+   "kind": "fn",
+   "class": null,
+   "line": 513,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 32,
+   "self": 32,
+   "incl": 32
+  },
+  {
+   "id": "3:898",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/parse.ts",
+   "s": 898,
+   "e": 1463,
+   "name": "fn",
+   "kind": "arrow",
+   "class": null,
+   "line": 23,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 29,
+   "self": 29,
+   "incl": 1605
+  },
+  {
+   "id": "2:33548",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/util.ts",
+   "s": 33548,
+   "e": 33748,
+   "name": "attachSchema",
+   "kind": "fn",
+   "class": null,
+   "line": 951,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 25,
+   "self": 25,
+   "incl": 25
+  },
+  {
+   "id": "81:17400",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/checks.ts",
+   "s": 17400,
+   "e": 18090,
+   "name": ".check",
+   "kind": "arrow",
+   "class": null,
+   "line": 568,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 23,
+   "self": 23,
+   "incl": 23
+  },
+  {
+   "id": "78:122829",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/schemas.ts",
+   "s": 122829,
+   "e": 123069,
+   "name": ".parse",
+   "kind": "arrow",
+   "class": null,
+   "line": 3679,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 23,
+   "self": 23,
+   "incl": 23
+  },
+  {
+   "id": "2:31998",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/util.ts",
+   "s": 31998,
+   "e": 32267,
+   "name": "explicitlyAborted",
+   "kind": "fn",
+   "class": null,
+   "line": 915,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 22,
+   "self": 22,
+   "incl": 22
+  },
+  {
+   "id": "2:11646",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/util.ts",
+   "s": 11646,
+   "e": 11742,
+   "name": "nullish",
+   "kind": "fn",
+   "class": null,
+   "line": 317,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 19,
+   "self": 19,
+   "incl": 19
+  },
+  {
+   "id": "81:9175",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/checks.ts",
+   "s": 9175,
+   "e": 11380,
+   "name": ".check",
+   "kind": "arrow",
+   "class": null,
+   "line": 266,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 18,
+   "self": 18,
+   "incl": 18
+  },
+  {
+   "id": "88:11445",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/classic/schemas.ts",
+   "s": 11445,
+   "e": 11548,
+   "name": "_parse",
+   "kind": "fnexpr",
+   "class": null,
+   "line": 297,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 15,
+   "self": 15,
+   "incl": 1616
+  },
+  {
+   "id": "81:18896",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/checks.ts",
+   "s": 18896,
+   "e": 19623,
+   "name": ".check",
+   "kind": "arrow",
+   "class": null,
+   "line": 613,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 14,
+   "self": 14,
+   "incl": 14
+  },
+  {
+   "id": "88:11702",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/classic/schemas.ts",
+   "s": 11702,
+   "e": 11783,
+   "name": "safeParse",
+   "kind": "method",
+   "class": null,
+   "line": 303,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 4,
+   "self": 4,
+   "incl": 2406
+  },
+  {
+   "id": "80:3200",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/core.ts",
+   "s": 3200,
+   "e": 4850,
+   "name": "init",
+   "kind": "fn",
+   "class": null,
+   "line": 73,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 3,
+   "self": 3,
+   "incl": 5
+  },
+  {
+   "id": "0:1239",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/doc.ts",
+   "s": 1239,
+   "e": 1532,
+   "name": "compile",
+   "kind": "method",
+   "class": "Doc",
+   "line": 43,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 1,
+   "self": 1,
+   "incl": 1
+  },
+  {
+   "id": "78:66314",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/schemas.ts",
+   "s": 66314,
+   "e": 67186,
+   "name": "normalizeDef",
+   "kind": "fn",
+   "class": null,
+   "line": 2098,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 1,
+   "self": 1,
+   "incl": 1
+  },
+  {
+   "id": "2:42751",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/util.ts",
+   "s": 42751,
+   "e": 43048,
+   "name": "claim",
+   "kind": "fn",
+   "class": null,
+   "line": 1190,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 1,
+   "self": 1,
+   "incl": 1
+  },
+  {
+   "id": "88:8334",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/classic/schemas.ts",
+   "s": 8334,
+   "e": 8710,
+   "name": "check",
+   "kind": "method",
+   "class": null,
+   "line": 185,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 1,
+   "self": 1,
+   "incl": 1
+  },
+  {
+   "id": "88:60206",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/classic/schemas.ts",
+   "s": 60206,
+   "e": 60515,
+   "name": "<anon>",
+   "kind": "arrow",
+   "class": null,
+   "line": 1676,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 1,
+   "self": 1,
+   "incl": 2
+  },
+  {
+   "id": "88:61874",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/classic/schemas.ts",
+   "s": 61874,
+   "e": 62230,
+   "name": "object",
+   "kind": "fn",
+   "class": null,
+   "line": 1731,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 0,
+   "self": 0,
+   "incl": 3
+  },
+  {
+   "id": "88:41771",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/classic/schemas.ts",
+   "s": 41771,
+   "e": 41995,
+   "name": "<anon>",
+   "kind": "arrow",
+   "class": null,
+   "line": 1148,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "6:9036",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/memoizer.ts",
+   "s": 9036,
+   "e": 11478,
+   "name": "wrapped",
+   "kind": "arrow",
+   "class": null,
+   "line": 252,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 0,
+   "self": 0,
+   "incl": 4
+  },
+  {
+   "id": "88:26323",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/classic/schemas.ts",
+   "s": 26323,
+   "e": 26448,
+   "name": "<anon>",
+   "kind": "arrow",
+   "class": null,
+   "line": 704,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "80:5058",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/core.ts",
+   "s": 5058,
+   "e": 5885,
+   "name": "_",
+   "kind": "fn",
+   "class": null,
+   "line": 118,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 0,
+   "self": 0,
+   "incl": 5
+  },
+  {
+   "id": "88:20751",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/classic/schemas.ts",
+   "s": 20751,
+   "e": 20828,
+   "name": "email",
+   "kind": "method",
+   "class": null,
+   "line": 536,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "78:17366",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/schemas.ts",
+   "s": 17366,
+   "e": 17465,
+   "name": "<anon>",
+   "kind": "arrow",
+   "class": null,
+   "line": 502,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "82:3924",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/api.ts",
+   "s": 3924,
+   "e": 4225,
+   "name": "_email",
+   "kind": "fn",
+   "class": null,
+   "line": 96,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "82:20004",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/api.ts",
+   "s": 20004,
+   "e": 20244,
+   "name": "_number",
+   "kind": "fn",
+   "class": null,
+   "line": 617,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "2:46146",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/util.ts",
+   "s": 46146,
+   "e": 47330,
+   "name": "installLazyProp",
+   "kind": "fn",
+   "class": null,
+   "line": 1265,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "2:11369",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/util.ts",
+   "s": 11369,
+   "e": 11551,
+   "name": "value",
+   "kind": "get",
+   "class": "Cached",
+   "line": 303,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "88:44048",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/classic/schemas.ts",
+   "s": 44048,
+   "e": 44168,
+   "name": "number",
+   "kind": "fn",
+   "class": null,
+   "line": 1222,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "78:43286",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/schemas.ts",
+   "s": 43286,
+   "e": 44052,
+   "name": "<anon>",
+   "kind": "arrow",
+   "class": null,
+   "line": 1329,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "78:72781",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/schemas.ts",
+   "s": 72781,
+   "e": 72804,
+   "name": "<anon>",
+   "kind": "arrow",
+   "class": null,
+   "line": 2278,
+   "v0": true,
+   "v3": true,
+   "repo": "zod",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "78:15376",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/schemas.ts",
+   "s": 15376,
+   "e": 15528,
+   "name": "<anon>",
+   "kind": "arrow",
+   "class": null,
+   "line": 439,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "88:43312",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/classic/schemas.ts",
+   "s": 43312,
+   "e": 43373,
+   "name": "int",
+   "kind": "method",
+   "class": null,
+   "line": 1191,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  },
+  {
+   "id": "78:72883",
+   "file": "$EP9_RESEARCH_REPOS/zod/packages/zod/src/v4/core/schemas.ts",
+   "s": 72883,
+   "e": 76926,
+   "name": "generateFastpass",
+   "kind": "arrow",
+   "class": null,
+   "line": 2282,
+   "v0": false,
+   "v3": false,
+   "repo": "zod",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  }
+ ]
+}

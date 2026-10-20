@@ -1,0 +1,1266 @@
+//! `ep9-test262 exec`: run every test through the engine (test262 runner v0, M0 week 3).
+//!
+//! ```text
+//! parent (exec)                                   worker process (exec-worker), one per thread
+//!   discover test/**/*.js                           reads one test path per stdin line
+//!   one thread per worker: "rel\n" ---stdin--->     front matter -> runs by flags (as `parse`)
+//!                                                   per run: compile -> fresh Isolate
+//!                                                     -> $262 prelude, assert.js, sta.js,
+//!                                                        doneprintHandle.js (async), includes
+//!                                                     -> the test (watchdog: terminate)
+//!   <---------- one result line per test ------     "rel \t status \t ok \t runs \t cause \t detail"
+//!   no line within the hard timeout: kill, respawn, record an infra error
+//!   worker exits (crash, abort): record an infra error with its stderr tail, respawn
+//!   counts per directory, top failure causes, expectations
+//! ```
+//!
+//! - A test passes if every run passes. Panics, timeouts and worker crashes are infrastructure
+//!   errors: they are never failures, no expectation can list them, and the run exits 2
+//!   before it compares or writes the expectation file (as `parse` does).
+//! - A worker process isolates crashes: one crash loses one test, not the run.
+//! - Each run gets a fresh isolate (D14: one per thread; the worker runs one at a time).
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt::Write as _;
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Command, ExitCode, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
+
+use ep9_frontend::{CodegenError, CompileError, CompileOptions, SourceOpts, Strictness};
+use ep9_heap::HeapConfig;
+use ep9_vm::{Args, HostCx, Isolate, IsolateConfig, JsResult, TerminateHandle, Value};
+
+use crate::frontmatter::{self, Meta};
+use crate::parse::{Mode, STRICT_PREFIX, modes};
+use crate::suite::{self, TestFile};
+use crate::{expect, json};
+
+/// Native stack of the thread that runs the isolates in a worker (the CLI uses the same).
+const RUN_STACK_BYTES: usize = 64 << 20;
+
+/// The `$262` host object (INTERPRETING.md "Host-Defined Functions"). v0 has `global` and
+/// `gc`; `createRealm`, `evalScript`, `detachArrayBuffer` and `agent` are missing, so tests
+/// that use them fail.
+const PRELUDE: &str = "var $262 = { global: globalThis, gc: __ep9_gc };\n";
+
+pub struct Options {
+    pub test262: PathBuf,
+    pub expect: PathBuf,
+    pub update: bool,
+    pub json: Option<PathBuf>,
+    /// Worker processes.
+    pub threads: usize,
+    /// Soft timeout per run: the watchdog terminates the isolate.
+    pub timeout: Duration,
+    /// GC-stress for every isolate: collect before every n-th allocation, verify after each GC.
+    pub gc_stress: u32,
+    pub verbose: bool,
+    pub progress: bool,
+    /// Number of failure causes in the report.
+    pub causes: usize,
+    /// Path prefixes relative to the test262 root. Empty = everything.
+    pub filters: Vec<String>,
+    pub triple: &'static str,
+}
+
+pub struct WorkerOptions {
+    pub test262: PathBuf,
+    pub timeout: Duration,
+    pub gc_stress: u32,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Results
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Status {
+    Pass,
+    Fail,
+    /// Panic, timeout, crash, unreadable file or bad front matter: not a test result.
+    Infra,
+}
+
+impl Status {
+    fn name(self) -> &'static str {
+        match self {
+            Status::Pass => "pass",
+            Status::Fail => "fail",
+            Status::Infra => "infra",
+        }
+    }
+
+    fn from_name(s: &str) -> Option<Status> {
+        match s {
+            "pass" => Some(Status::Pass),
+            "fail" => Some(Status::Fail),
+            "infra" => Some(Status::Infra),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TestResult {
+    pub status: Status,
+    pub runs_ok: u32,
+    pub runs: u32,
+    /// Short grouping key of the first failing run (empty on a pass).
+    pub cause: String,
+    /// Every failing run: `[mode] text; ...`.
+    pub detail: String,
+}
+
+impl TestResult {
+    fn infra(cause: &str, detail: String) -> TestResult {
+        TestResult {
+            status: Status::Infra,
+            runs_ok: 0,
+            runs: 0,
+            cause: cause.to_string(),
+            detail,
+        }
+    }
+}
+
+fn escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('t') => out.push('\t'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+/// One protocol line (without the newline).
+pub fn encode(rel: &str, r: &TestResult) -> String {
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{}",
+        escape(rel),
+        r.status.name(),
+        r.runs_ok,
+        r.runs,
+        escape(&r.cause),
+        escape(&r.detail)
+    )
+}
+
+/// Parses a protocol line: `(rel, result)`.
+pub fn decode(line: &str) -> Option<(String, TestResult)> {
+    let mut parts = line.splitn(6, '\t');
+    let rel = unescape(parts.next()?);
+    let status = Status::from_name(parts.next()?)?;
+    let runs_ok = parts.next()?.parse().ok()?;
+    let runs = parts.next()?.parse().ok()?;
+    let cause = unescape(parts.next()?);
+    let detail = unescape(parts.next()?);
+    Some((
+        rel,
+        TestResult {
+            status,
+            runs_ok,
+            runs,
+            cause,
+            detail,
+        },
+    ))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Worker: one test at a time
+
+/// Outcome of one run (one mode) of a test.
+#[derive(Debug)]
+enum Run {
+    Pass,
+    Fail {
+        cause: String,
+        detail: String,
+    },
+    /// Infrastructure error: `cause` is `timeout`, `panic` or `harness`.
+    Infra {
+        cause: &'static str,
+        detail: String,
+    },
+}
+
+fn infra(cause: &'static str, detail: impl Into<String>) -> Run {
+    Run::Infra {
+        cause,
+        detail: detail.into(),
+    }
+}
+
+fn fail(cause: impl Into<String>, detail: impl Into<String>) -> Run {
+    Run::Fail {
+        cause: cause.into(),
+        detail: detail.into(),
+    }
+}
+
+thread_local! {
+    /// Output of `print` in the current run (async tests report through it).
+    static OUT: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// The last panic message (set by the worker's panic hook, from any thread).
+static LAST_PANIC: Mutex<Option<String>> = Mutex::new(None);
+
+fn take_panic() -> String {
+    LAST_PANIC
+        .lock()
+        .map_or(None, |mut p| p.take())
+        .unwrap_or_else(|| "panic without a message".into())
+}
+
+fn print(cx: &mut HostCx<'_>, _this: Value, args: Args<'_>, _nt: Value) -> JsResult<Value> {
+    let mut line = String::new();
+    for (i, v) in args.iter().enumerate() {
+        if i > 0 {
+            line.push(' ');
+        }
+        line.push_str(&cx.to_rust_string(v)?);
+    }
+    OUT.with(|o| {
+        let mut o = o.borrow_mut();
+        o.push_str(&line);
+        o.push('\n');
+    });
+    Ok(Value::UNDEFINED)
+}
+
+fn gc(cx: &mut HostCx<'_>, _this: Value, _args: Args<'_>, _nt: Value) -> JsResult<Value> {
+    cx.collect_garbage();
+    Ok(Value::UNDEFINED)
+}
+
+/// Terminates the armed isolate when its deadline passes.
+struct Watchdog {
+    slot: Arc<Mutex<Option<(Instant, TerminateHandle)>>>,
+}
+
+impl Watchdog {
+    fn start() -> Watchdog {
+        let slot: Arc<Mutex<Option<(Instant, TerminateHandle)>>> = Arc::new(Mutex::new(None));
+        let watched = Arc::clone(&slot);
+        std::thread::Builder::new()
+            .name("ep9-test262-watchdog".into())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(Duration::from_millis(20));
+                    let Ok(mut s) = watched.lock() else { return };
+                    if let Some((deadline, handle)) = s.as_ref()
+                        && Instant::now() >= *deadline
+                    {
+                        handle.terminate();
+                        *s = None;
+                    }
+                }
+            })
+            .expect("spawn the watchdog thread");
+        Watchdog { slot }
+    }
+
+    fn arm(&self, handle: TerminateHandle, timeout: Duration) {
+        if let Ok(mut s) = self.slot.lock() {
+            *s = Some((Instant::now() + timeout, handle));
+        }
+    }
+
+    fn disarm(&self) {
+        if let Ok(mut s) = self.slot.lock() {
+            *s = None;
+        }
+    }
+}
+
+/// Harness include sources, read once per worker.
+#[derive(Default)]
+struct Harness {
+    files: HashMap<String, Result<Arc<str>, String>>,
+}
+
+impl Harness {
+    fn get(&mut self, root: &Path, name: &str) -> Result<Arc<str>, String> {
+        self.files
+            .entry(name.to_string())
+            .or_insert_with(|| {
+                let path = root.join("harness").join(name);
+                match std::fs::read(&path).map(String::from_utf8) {
+                    Ok(Ok(s)) => Ok(Arc::from(s)),
+                    Ok(Err(_)) => Err(format!("harness/{name} is not valid UTF-8")),
+                    Err(e) => Err(format!("cannot read harness/{name}: {e}")),
+                }
+            })
+            .clone()
+    }
+}
+
+/// The grouping key of an uncaught exception message.
+pub fn cause_of_message(msg: &str) -> String {
+    if let Some(rest) = msg.strip_prefix("Error: not implemented in ep9 v0: ") {
+        return format!("not implemented: {rest}");
+    }
+    if msg.starts_with("Test262Error") {
+        return "Test262Error (an assertion failed)".into();
+    }
+    let mut s: String = msg.lines().next().unwrap_or("").chars().take(100).collect();
+    if s.is_empty() {
+        s = "(empty message)".into();
+    }
+    s
+}
+
+/// The dotted name (`Object.defineProperty`) around 1-based `line` and UTF-16 `column` of
+/// `src`: the VM reports a failed call at the property name of the callee.
+pub fn callee_at(src: &str, line: u32, column: u32) -> Option<String> {
+    let text = src.split('\n').nth(line.checked_sub(1)? as usize)?;
+    // Column -> char index (UTF-16 units; astral characters count 2).
+    let mut units = 0u32;
+    let chars: Vec<char> = text.chars().collect();
+    let mut at = None;
+    for (i, c) in chars.iter().enumerate() {
+        if units + 1 >= column {
+            at = Some(i);
+            break;
+        }
+        units += c.len_utf16() as u32;
+    }
+    let at = at?;
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+    let mut start = at;
+    while start > 0 && (word(chars[start - 1]) || chars[start - 1] == '.') {
+        start -= 1;
+    }
+    let mut end = at;
+    while end < chars.len() && word(chars[end]) {
+        end += 1;
+    }
+    let name: String = chars[start..end].iter().collect();
+    let name = name.trim_matches('.');
+    (!name.is_empty() && name.len() <= 60).then(|| name.to_string())
+}
+
+/// The grouping key and text of a compile error.
+fn compile_failure(e: &CodegenError, what: &str) -> Run {
+    match e {
+        CodegenError::Unsupported(u) => fail(
+            format!("unsupported: {}", u.feature),
+            format!("{what}: {e}"),
+        ),
+        CodegenError::Compile(CompileError::Syntax(errs)) => fail(
+            "unexpected SyntaxError at compile time",
+            format!("{what}: {}", errs.first()),
+        ),
+        CodegenError::Compile(CompileError::Range(r)) => {
+            fail("RangeError at compile time", format!("{what}: {r}"))
+        }
+        CodegenError::Limit(m) => fail(
+            "bytecode limit at compile time",
+            format!("{what}: RangeError: {m}"),
+        ),
+        CodegenError::Internal(m) => fail(
+            "internal BytecodeGen error",
+            format!("{what}: internal BytecodeGen error: {m}"),
+        ),
+    }
+}
+
+fn compile(src: &str, opts: SourceOpts) -> Result<ep9_bytecode::VerifiedUnit, CodegenError> {
+    ep9_frontend::compile(src, opts, CompileOptions::default())
+}
+
+/// Does an uncaught exception with `message` match the negative `error_type`?
+/// v0 compares the `Name` part of `Name: message` (Error objects use `name`; other objects
+/// are reported through ToString, so `Test262Error: ...`).
+fn exception_matches(message: &str, error_type: &str) -> bool {
+    message == error_type
+        || message
+            .strip_prefix(error_type)
+            .is_some_and(|r| r.starts_with(':'))
+}
+
+/// Test hook (only for tools/test262/tests): `EP9_TEST262_FAULT=panic:<substr>`,
+/// `abort:<substr>` or `hang:<substr>` makes the worker fail on matching paths.
+fn injected_fault(rel: &str) {
+    let Ok(spec) = std::env::var("EP9_TEST262_FAULT") else {
+        return;
+    };
+    for item in spec.split(',') {
+        let Some((kind, needle)) = item.split_once(':') else {
+            continue;
+        };
+        if needle.is_empty() || !rel.contains(needle) {
+            continue;
+        }
+        match kind {
+            "panic" => panic!("injected panic for {rel}"),
+            "abort" => std::process::abort(),
+            "hang" => loop {
+                std::thread::sleep(Duration::from_secs(1));
+            },
+            _ => {}
+        }
+    }
+}
+
+struct RunCtx<'a> {
+    opts: &'a WorkerOptions,
+    harness: &'a mut Harness,
+    watchdog: &'a Watchdog,
+}
+
+impl RunCtx<'_> {
+    fn isolate(&self) -> Result<Isolate, String> {
+        let config = IsolateConfig {
+            heap: HeapConfig {
+                gc_stress: self.opts.gc_stress,
+                verify_after_gc: self.opts.gc_stress > 0,
+                ..HeapConfig::default()
+            },
+            ..IsolateConfig::default()
+        };
+        let mut iso = Isolate::new(config).map_err(|e| format!("cannot create an isolate: {e}"))?;
+        iso.register_host_function("print", 1, print);
+        iso.register_host_function("__ep9_gc", 0, gc);
+        Ok(iso)
+    }
+
+    /// Compiles and runs one harness script. `None` = it ran.
+    fn harness_script(&mut self, iso: &mut Isolate, name: &str, src: &str) -> Option<Run> {
+        let unit = match compile(src, SourceOpts::script(Strictness::Sloppy)) {
+            Ok(u) => u,
+            Err(e) => return Some(compile_failure(&e, &format!("harness/{name}"))),
+        };
+        match iso.run_script(unit, &format!("harness/{name}")) {
+            Ok(_) => None,
+            Err(e) if e.terminated => Some(infra("timeout", format!("timeout in harness/{name}"))),
+            Err(e) => Some(fail(
+                format!("harness/{name} threw: {}", cause_of_message(&e.message)),
+                format!("harness/{name}: {e}"),
+            )),
+        }
+    }
+
+    fn run(&mut self, rel: &str, src: &str, meta: &Meta, mode: Mode) -> Run {
+        let negative = meta.negative.as_ref();
+        let (source, opts) = match mode {
+            Mode::Strict => (
+                std::borrow::Cow::Owned(format!("{STRICT_PREFIX}{src}")),
+                SourceOpts::script(Strictness::Sloppy),
+            ),
+            Mode::Sloppy | Mode::Raw => (
+                std::borrow::Cow::Borrowed(src),
+                SourceOpts::script(Strictness::Sloppy),
+            ),
+            Mode::Module => (std::borrow::Cow::Borrowed(src), SourceOpts::module()),
+        };
+        let compiled = compile(&source, opts);
+        if let Some(neg) = negative
+            && neg.phase == "parse"
+        {
+            return match compiled {
+                Err(CodegenError::Compile(CompileError::Syntax(_)))
+                    if neg.error_type == "SyntaxError" =>
+                {
+                    Run::Pass
+                }
+                Err(e) => fail(
+                    "negative parse test: wrong error",
+                    format!("expected an early {}, got {e}", neg.error_type),
+                ),
+                Ok(_) => fail(
+                    "negative parse test: no early error",
+                    format!("expected an early {}, but it compiled", neg.error_type),
+                ),
+            };
+        }
+        let unit = match compiled {
+            Ok(u) => u,
+            Err(e) => return compile_failure(&e, "test"),
+        };
+        let mut iso = match self.isolate() {
+            Ok(i) => i,
+            Err(e) => return infra("panic", e),
+        };
+        self.watchdog.arm(iso.terminate_handle(), self.opts.timeout);
+        OUT.with(|o| o.borrow_mut().clear());
+        if mode != Mode::Raw {
+            if let Some(r) = self.harness_script(&mut iso, "$262 prelude", PRELUDE) {
+                return r;
+            }
+            let mut names = vec!["assert.js".to_string(), "sta.js".to_string()];
+            if meta.has_flag("async") {
+                names.push("doneprintHandle.js".to_string());
+            }
+            names.extend(meta.includes.iter().cloned());
+            for name in &names {
+                let src = match self.harness.get(&self.opts.test262, name) {
+                    Ok(s) => s,
+                    Err(e) => return infra("harness", e),
+                };
+                if let Some(r) = self.harness_script(&mut iso, name, &src) {
+                    return r;
+                }
+            }
+        }
+        let result = iso.run_script(unit, rel);
+        self.watchdog.disarm();
+        let runtime_negative = negative.filter(|n| n.phase == "runtime");
+        match result {
+            Err(e) if e.terminated => infra(
+                "timeout",
+                format!("timeout: the test ran longer than {:?}", self.opts.timeout),
+            ),
+            Err(e) => match runtime_negative {
+                Some(n) if exception_matches(&e.message, &n.error_type) => Run::Pass,
+                Some(n) => fail(
+                    "negative runtime test: wrong error",
+                    format!("expected {}, got {e}", n.error_type),
+                ),
+                None => {
+                    let mut cause = cause_of_message(&e.message);
+                    // "x is not a function": name the callee from the source text, so the
+                    // report says which built-in is missing.
+                    if e.message.ends_with(" is not a function")
+                        && let Some(loc) = &e.location
+                        && loc.file == rel
+                        && let Some(name) = callee_at(&source, loc.line, loc.column)
+                    {
+                        cause = format!("{cause} ({name})");
+                    }
+                    fail(cause, e.to_string())
+                }
+            },
+            Ok(_) => {
+                if let Some(n) = negative {
+                    return fail(
+                        format!("negative {} test: no error", n.phase),
+                        format!(
+                            "expected {} in phase {}, but it completed",
+                            n.error_type, n.phase
+                        ),
+                    );
+                }
+                if meta.has_flag("async") {
+                    let out = OUT.with(|o| o.borrow().clone());
+                    if out.lines().any(|l| l == "Test262:AsyncTestComplete") {
+                        return Run::Pass;
+                    }
+                    if let Some(l) = out
+                        .lines()
+                        .find(|l| l.starts_with("Test262:AsyncTestFailure:"))
+                    {
+                        let msg = &l["Test262:AsyncTestFailure:".len()..];
+                        return fail(cause_of_message(msg), format!("async: {msg}"));
+                    }
+                    return fail(
+                        "async test: $DONE was not called",
+                        "async: no Test262:AsyncTestComplete",
+                    );
+                }
+                Run::Pass
+            }
+        }
+    }
+}
+
+fn run_test(
+    opts: &WorkerOptions,
+    harness: &mut Harness,
+    watchdog: &Watchdog,
+    rel: &str,
+) -> TestResult {
+    let path = opts.test262.join(rel);
+    let src = match std::fs::read(&path).map(String::from_utf8) {
+        Ok(Ok(s)) => s,
+        Ok(Err(_)) => {
+            return TestResult::infra("unreadable test", "file is not valid UTF-8".into());
+        }
+        Err(e) => return TestResult::infra("unreadable test", format!("cannot read: {e}")),
+    };
+    let meta = match frontmatter::parse(&src) {
+        Ok(m) => m,
+        Err(e) => return TestResult::infra("bad front matter", format!("front matter: {e}")),
+    };
+    let mut result = TestResult {
+        status: Status::Pass,
+        runs_ok: 0,
+        runs: 0,
+        cause: String::new(),
+        detail: String::new(),
+    };
+    for mode in modes(&meta) {
+        result.runs += 1;
+        let run = catch_unwind(AssertUnwindSafe(|| {
+            injected_fault(rel);
+            let mut cx = RunCtx {
+                opts,
+                harness: &mut *harness,
+                watchdog,
+            };
+            cx.run(rel, &src, &meta, mode)
+        }))
+        .unwrap_or_else(|_| infra("panic", format!("panic: {}", take_panic())));
+        watchdog.disarm();
+        let (status, cause, text) = match run {
+            Run::Pass => {
+                result.runs_ok += 1;
+                continue;
+            }
+            Run::Fail { cause, detail } => (Status::Fail, cause, detail),
+            Run::Infra { cause, detail } => (Status::Infra, cause.to_string(), detail),
+        };
+        if !result.detail.is_empty() {
+            result.detail.push_str("; ");
+        }
+        let _ = write!(result.detail, "[{}] {text}", mode.name());
+        // Infra beats fail; the first cause of the winning status names the test.
+        if status == Status::Infra && result.status != Status::Infra {
+            result.status = Status::Infra;
+            result.cause = cause;
+        } else if result.status == Status::Pass {
+            result.status = status;
+            result.cause = cause;
+        }
+    }
+    result
+}
+
+/// `exec-worker`: reads test paths from stdin, writes one result line per test to stdout.
+pub fn worker(opts: WorkerOptions) -> ExitCode {
+    std::panic::set_hook(Box::new(|info| {
+        let msg = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(ToString::to_string)
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "non-string panic".into());
+        let at = info
+            .location()
+            .map(|l| format!(" at {}:{}", l.file(), l.line()))
+            .unwrap_or_default();
+        if let Ok(mut p) = LAST_PANIC.lock() {
+            *p = Some(format!("{msg}{at}"));
+        }
+    }));
+    let runner = std::thread::Builder::new()
+        .name("ep9-test262-run".into())
+        .stack_size(RUN_STACK_BYTES)
+        .spawn(move || {
+            let watchdog = Watchdog::start();
+            let mut harness = Harness::default();
+            let stdin = io::stdin();
+            let mut out = io::stdout().lock();
+            for line in stdin.lock().lines() {
+                let Ok(rel) = line else { return 2 };
+                let rel = rel.trim_end_matches('\r');
+                if rel.is_empty() {
+                    continue;
+                }
+                let r = run_test(&opts, &mut harness, &watchdog, rel);
+                if writeln!(out, "{}", encode(rel, &r))
+                    .and_then(|()| out.flush())
+                    .is_err()
+                {
+                    return 2;
+                }
+            }
+            0
+        });
+    match runner.map(std::thread::JoinHandle::join) {
+        Ok(Ok(code)) => ExitCode::from(code),
+        _ => ExitCode::from(3),
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Parent: worker processes, report, expectations
+
+struct WorkerProc {
+    child: Child,
+    stdin: ChildStdin,
+    lines: mpsc::Receiver<String>,
+    stderr_tail: Arc<Mutex<String>>,
+}
+
+/// Bytes of a worker's stderr kept for a crash report.
+const STDERR_TAIL: usize = 4096;
+
+impl WorkerProc {
+    fn spawn(args: &[String]) -> io::Result<WorkerProc> {
+        let exe = std::env::current_exe()?;
+        let mut child = Command::new(exe)
+            .arg("exec-worker")
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let stdin = child.stdin.take().expect("piped stdin");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let mut stderr = child.stderr.take().expect("piped stderr");
+        let (tx, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { return };
+                if tx.send(line).is_err() {
+                    return;
+                }
+            }
+        });
+        let stderr_tail = Arc::new(Mutex::new(String::new()));
+        let tail = Arc::clone(&stderr_tail);
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match stderr.read(&mut buf) {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => {
+                        if let Ok(mut t) = tail.lock() {
+                            t.push_str(&String::from_utf8_lossy(&buf[..n]));
+                            if t.len() > STDERR_TAIL {
+                                let mut cut = t.len() - STDERR_TAIL;
+                                while !t.is_char_boundary(cut) {
+                                    cut += 1;
+                                }
+                                t.drain(..cut);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        Ok(WorkerProc {
+            child,
+            stdin,
+            lines,
+            stderr_tail,
+        })
+    }
+
+    /// Runs one test. `Err` = the worker is gone (it was killed or it crashed); respawn it.
+    fn run(&mut self, rel: &str, hard: Duration) -> Result<TestResult, TestResult> {
+        if writeln!(self.stdin, "{rel}")
+            .and_then(|()| self.stdin.flush())
+            .is_err()
+        {
+            return Err(self.crashed("the worker closed its input"));
+        }
+        match self.lines.recv_timeout(hard) {
+            Ok(line) => match decode(&line) {
+                Some((r, result)) if r == rel => Ok(result),
+                _ => Err(self.crashed(&format!("bad result line {line:?}"))),
+            },
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                Err(TestResult::infra(
+                    "timeout",
+                    format!("hard timeout: no result after {hard:?}; the worker was killed"),
+                ))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(self.crashed("the worker exited")),
+        }
+    }
+
+    fn crashed(&mut self, what: &str) -> TestResult {
+        let _ = self.child.kill();
+        let status = self
+            .child
+            .wait()
+            .map_or_else(|e| e.to_string(), |s| s.to_string());
+        // Let the stderr reader finish.
+        std::thread::sleep(Duration::from_millis(50));
+        let tail = self
+            .stderr_tail
+            .lock()
+            .map(|t| t.trim().to_string())
+            .unwrap_or_default();
+        TestResult::infra("worker crash", format!("{what} ({status}); stderr: {tail}"))
+    }
+}
+
+impl Drop for WorkerProc {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct Count {
+    passed: usize,
+    total: usize,
+}
+
+impl Count {
+    fn add(&mut self, passed: bool) {
+        self.total += 1;
+        self.passed += usize::from(passed);
+    }
+
+    fn add_n(&mut self, passed: u32, total: u32) {
+        self.total += total as usize;
+        self.passed += passed as usize;
+    }
+
+    fn percent(self) -> f64 {
+        if self.total == 0 {
+            0.0
+        } else {
+            100.0 * self.passed as f64 / self.total as f64
+        }
+    }
+}
+
+/// The header of an exec expectation file.
+fn header(triple: &str) -> String {
+    format!(
+        "# ep9-test262 exec (mode jit): known failures on {triple}. Paths are relative to the\n\
+         # test262 root. Infrastructure errors (panic, timeout, crash) are never listed here.\n\
+         # Regenerate: cargo run --release -p ep9_test262 -- exec --update-expectations\n"
+    )
+}
+
+/// Run the `exec` command. Exit code: 0 = matches the expectations, 1 = differs, 2 = error.
+pub fn run(opts: &Options) -> ExitCode {
+    let started = Instant::now();
+    let root = &opts.test262;
+    let dirs = match suite::all_dirs(root) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!(
+                "ep9-test262: cannot list {}: {e}",
+                root.join("test").display()
+            );
+            return ExitCode::from(2);
+        }
+    };
+    let dir_refs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+    let mut files: Vec<TestFile> = match suite::discover(root, &dir_refs) {
+        Ok(files) => files,
+        Err(e) => {
+            eprintln!("ep9-test262: cannot list tests in {}: {e}", root.display());
+            return ExitCode::from(2);
+        }
+    };
+    let full = opts.filters.is_empty();
+    if !full {
+        files.retain(|f| opts.filters.iter().any(|p| f.rel.starts_with(p.as_str())));
+        if files.is_empty() {
+            eprintln!("ep9-test262: no test matches {:?}", opts.filters);
+            return ExitCode::from(2);
+        }
+    }
+    if opts.update && !full {
+        eprintln!("ep9-test262: --update-expectations needs a full run (no path filters)");
+        return ExitCode::from(2);
+    }
+
+    let worker_args: Vec<String> = vec![
+        "--test262".into(),
+        root.display().to_string(),
+        "--timeout".into(),
+        opts.timeout.as_millis().to_string(),
+        "--gc-stress".into(),
+        opts.gc_stress.to_string(),
+    ];
+    // A test has at most 2 runs; each gets the soft timeout, then a margin. A worker that
+    // gives no result by then is stuck where the interrupt check does not reach: kill it.
+    let hard = opts.timeout * 2 + Duration::from_secs(5);
+    let next = AtomicUsize::new(0);
+    let done = AtomicUsize::new(0);
+    let threads = opts.threads.clamp(1, files.len());
+    let spawn_error: Mutex<Option<String>> = Mutex::new(None);
+    let parts: Vec<Vec<(usize, TestResult)>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut out = Vec::new();
+                    let mut worker: Option<WorkerProc> = None;
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        if i >= files.len() {
+                            return out;
+                        }
+                        if worker.is_none() {
+                            match WorkerProc::spawn(&worker_args) {
+                                Ok(w) => worker = Some(w),
+                                Err(e) => {
+                                    if let Ok(mut s) = spawn_error.lock() {
+                                        *s = Some(e.to_string());
+                                    }
+                                    return out;
+                                }
+                            }
+                        }
+                        let w = worker.as_mut().expect("worker spawned above");
+                        let result = match w.run(&files[i].rel, hard) {
+                            Ok(r) => r,
+                            Err(r) => {
+                                worker = None;
+                                r
+                            }
+                        };
+                        out.push((i, result));
+                        let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                        if opts.progress && n.is_multiple_of(2000) {
+                            eprintln!(
+                                "ep9-test262: {n}/{} tests, {:.0} s",
+                                files.len(),
+                                started.elapsed().as_secs_f64()
+                            );
+                        }
+                    }
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("runner thread"))
+            .collect()
+    });
+    if let Some(e) = spawn_error.lock().ok().and_then(|mut s| s.take()) {
+        eprintln!("ep9-test262: cannot start a worker process: {e}");
+        return ExitCode::from(2);
+    }
+    let mut results: Vec<Option<TestResult>> = vec![None; files.len()];
+    for (i, r) in parts.into_iter().flatten() {
+        results[i] = Some(r);
+    }
+    let results: Vec<(&str, TestResult)> = files
+        .iter()
+        .zip(results)
+        .map(|(f, r)| (f.rel.as_str(), r.expect("every test ran once")))
+        .collect();
+    let wall = started.elapsed();
+
+    // Counts.
+    let mut by_dir: BTreeMap<String, (Count, Count)> = BTreeMap::new();
+    let mut files_all = Count::default();
+    let mut runs_all = Count::default();
+    let mut causes: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut infra: Vec<(&str, &TestResult)> = Vec::new();
+    for (rel, r) in &results {
+        let entry = by_dir.entry(suite::top_dir(rel).to_string()).or_default();
+        let passed = r.status == Status::Pass;
+        entry.0.add(passed);
+        entry.1.add_n(r.runs_ok, r.runs);
+        files_all.add(passed);
+        runs_all.add_n(r.runs_ok, r.runs);
+        match r.status {
+            Status::Pass => {}
+            Status::Fail => *causes.entry(r.cause.as_str()).or_default() += 1,
+            Status::Infra => infra.push((rel, r)),
+        }
+    }
+    let mut top: Vec<(&str, usize)> = causes.iter().map(|(c, n)| (*c, *n)).collect();
+    top.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+
+    println!(
+        "ep9-test262 exec: {} tests, {} worker processes, target {}, mode jit, timeout {:?}{}",
+        results.len(),
+        threads,
+        opts.triple,
+        opts.timeout,
+        if opts.gc_stress > 0 {
+            format!(", GC-stress {}", opts.gc_stress)
+        } else {
+            String::new()
+        }
+    );
+    println!("  test262: {}", root.display());
+    println!(
+        "  {:<14}{:>8} / {:<8}{:>8}   {:>8} / {:<8}",
+        "files", "passed", "total", "", "runs ok", "runs"
+    );
+    let line = |label: &str, f: Count, r: Count| {
+        println!(
+            "  {label:<14}{:>8} / {:<8}{:>7.2}%   {:>8} / {:<8}{:>7.2}%",
+            f.passed,
+            f.total,
+            f.percent(),
+            r.passed,
+            r.total,
+            r.percent()
+        );
+    };
+    for (dir, (f, r)) in &by_dir {
+        line(dir, *f, *r);
+    }
+    line("all", files_all, runs_all);
+    println!(
+        "  infrastructure errors: {} (panic {}, timeout {}, worker crash {}, other {})",
+        infra.len(),
+        infra.iter().filter(|(_, r)| r.cause == "panic").count(),
+        infra.iter().filter(|(_, r)| r.cause == "timeout").count(),
+        infra
+            .iter()
+            .filter(|(_, r)| r.cause == "worker crash")
+            .count(),
+        infra
+            .iter()
+            .filter(|(_, r)| !matches!(r.cause.as_str(), "panic" | "timeout" | "worker crash"))
+            .count(),
+    );
+    println!(
+        "  top {} failure causes (test files):",
+        opts.causes.min(top.len())
+    );
+    for (cause, n) in top.iter().take(opts.causes) {
+        println!("    {n:>7}  {cause}");
+    }
+
+    let failing: BTreeSet<String> = results
+        .iter()
+        .filter(|(_, r)| r.status == Status::Fail)
+        .map(|(rel, _)| (*rel).to_string())
+        .collect();
+    let checked: BTreeSet<String> = results.iter().map(|(rel, _)| (*rel).to_string()).collect();
+
+    let mut status = ExitCode::SUCCESS;
+    let mut diff = expect::Diff::default();
+    if infra.is_empty() {
+        if opts.update {
+            if let Err(e) = expect::write(&opts.expect, &header(opts.triple), &failing) {
+                eprintln!("ep9-test262: cannot write {}: {e}", opts.expect.display());
+                return ExitCode::from(2);
+            }
+        } else {
+            match expect::read(&opts.expect) {
+                Ok(expected) => diff = expect::diff(&expected, &failing, &checked, full),
+                Err(e) => {
+                    eprintln!(
+                        "ep9-test262: cannot read expectations {}: {e}\n  (create it with --update-expectations)",
+                        opts.expect.display()
+                    );
+                    status = ExitCode::from(2);
+                }
+            }
+        }
+        if !diff.is_clean() && status == ExitCode::SUCCESS {
+            status = ExitCode::from(1);
+        }
+        println!(
+            "  failures: {} (new: {}, listed but passing: {}){}",
+            failing.len(),
+            diff.new_failures.len(),
+            diff.now_passing.len(),
+            if opts.update {
+                format!("; wrote {}", opts.expect.display())
+            } else {
+                String::new()
+            }
+        );
+        let details: BTreeMap<&str, &str> = results
+            .iter()
+            .map(|(rel, r)| (*rel, r.detail.as_str()))
+            .collect();
+        for path in &diff.new_failures {
+            println!(
+                "  NEW FAILURE {path}: {}",
+                details.get(path.as_str()).copied().unwrap_or("")
+            );
+        }
+        for path in &diff.now_passing {
+            println!(
+                "  NOW PASSING (remove from {}): {path}",
+                opts.expect.display()
+            );
+        }
+    } else {
+        for (rel, r) in &infra {
+            eprintln!("ep9-test262: {rel}: {}", r.detail);
+        }
+        eprintln!(
+            "ep9-test262: {} tests hit an infrastructure error (panic, timeout or crash); \
+             the expectations were not compared or written",
+            infra.len()
+        );
+        status = ExitCode::from(2);
+    }
+    if opts.verbose {
+        for (rel, r) in &results {
+            if r.status == Status::Fail {
+                println!("  failure {rel}: {}", r.detail);
+            }
+        }
+    }
+    println!("  wall time: {:.1} s", wall.as_secs_f64());
+
+    if let Some(path) = &opts.json {
+        let text = summary_json(
+            opts, &by_dir, files_all, runs_all, &top, &results, &diff, wall,
+        );
+        if let Err(e) = std::fs::write(path, text) {
+            eprintln!("ep9-test262: cannot write {}: {e}", path.display());
+            return ExitCode::from(2);
+        }
+    }
+    status
+}
+
+#[allow(clippy::too_many_arguments)]
+fn summary_json(
+    opts: &Options,
+    by_dir: &BTreeMap<String, (Count, Count)>,
+    files_all: Count,
+    runs_all: Count,
+    top: &[(&str, usize)],
+    results: &[(&str, TestResult)],
+    diff: &expect::Diff,
+    wall: Duration,
+) -> String {
+    let count = |out: &mut String, c: Count| {
+        let _ = write!(out, "{{\"passed\":{},\"total\":{}}}", c.passed, c.total);
+    };
+    let mut out = String::from("{\"command\":\"exec\",\"mode\":\"jit\",\"target\":");
+    json::string(&mut out, opts.triple);
+    out.push_str(",\"test262\":");
+    json::string(&mut out, &opts.test262.display().to_string());
+    let _ = write!(
+        out,
+        ",\"workers\":{},\"timeout_ms\":{},\"gc_stress\":{},\"wall_seconds\":{:.3}",
+        opts.threads,
+        opts.timeout.as_millis(),
+        opts.gc_stress,
+        wall.as_secs_f64()
+    );
+    out.push_str(",\"files\":");
+    count(&mut out, files_all);
+    out.push_str(",\"runs\":");
+    count(&mut out, runs_all);
+    out.push_str(",\"by_dir\":{");
+    for (i, (dir, (f, r))) in by_dir.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        json::string(&mut out, dir);
+        out.push_str(":{\"files\":");
+        count(&mut out, *f);
+        out.push_str(",\"runs\":");
+        count(&mut out, *r);
+        out.push('}');
+    }
+    out.push_str("},\"causes\":[");
+    for (i, (cause, n)) in top.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("\n{\"cause\":");
+        json::string(&mut out, cause);
+        let _ = write!(out, ",\"files\":{n}}}");
+    }
+    out.push_str("],\"results\":[");
+    let mut first = true;
+    for (rel, r) in results {
+        if r.status == Status::Pass {
+            continue;
+        }
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        out.push_str("\n{\"path\":");
+        json::string(&mut out, rel);
+        out.push_str(",\"status\":");
+        json::string(&mut out, r.status.name());
+        out.push_str(",\"cause\":");
+        json::string(&mut out, &r.cause);
+        out.push_str(",\"detail\":");
+        json::string(&mut out, &r.detail);
+        out.push('}');
+    }
+    out.push_str("],\"expectations\":{\"file\":");
+    json::string(&mut out, &opts.expect.display().to_string());
+    out.push_str(",\"new_failures\":");
+    json::string_array(&mut out, &diff.new_failures);
+    out.push_str(",\"now_passing\":");
+    json::string_array(&mut out, &diff.now_passing);
+    out.push_str("}}\n");
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_round_trip() {
+        let r = TestResult {
+            status: Status::Fail,
+            runs_ok: 1,
+            runs: 2,
+            cause: "Test262Error (an assertion failed)".into(),
+            detail: "[strict] a\tb\nc \\ d".into(),
+        };
+        let line = encode("test/a b.js", &r);
+        assert!(!line.contains('\n'));
+        assert_eq!(decode(&line), Some(("test/a b.js".to_string(), r)));
+        assert_eq!(decode("x\tbogus\t0\t0\t\t"), None);
+    }
+
+    #[test]
+    fn causes_group_messages() {
+        assert_eq!(
+            cause_of_message("Error: not implemented in ep9 v0: GetIterator"),
+            "not implemented: GetIterator"
+        );
+        assert_eq!(
+            cause_of_message("Test262Error: Expected SameValue(«1», «2») to be true"),
+            "Test262Error (an assertion failed)"
+        );
+        assert_eq!(
+            cause_of_message("ReferenceError: Symbol is not defined"),
+            "ReferenceError: Symbol is not defined"
+        );
+        assert_eq!(cause_of_message(""), "(empty message)");
+    }
+
+    #[test]
+    fn callee_names_from_source() {
+        let src = "var a;\nvar obj = Object.create(null);\n  x.y.z(1);";
+        assert_eq!(callee_at(src, 2, 18).as_deref(), Some("Object.create"));
+        assert_eq!(callee_at(src, 2, 11).as_deref(), Some("Object"));
+        assert_eq!(callee_at(src, 3, 7).as_deref(), Some("x.y.z"));
+        assert_eq!(callee_at("/*😀*/f()", 1, 7).as_deref(), Some("f"));
+        assert_eq!(callee_at(src, 9, 1), None);
+    }
+
+    #[test]
+    fn negative_types_match_the_name() {
+        assert!(exception_matches("TypeError: x", "TypeError"));
+        assert!(exception_matches("TypeError", "TypeError"));
+        assert!(!exception_matches("TypeErrorX: x", "TypeError"));
+        assert!(!exception_matches("RangeError: x", "TypeError"));
+        assert!(exception_matches("Test262Error: boom", "Test262Error"));
+    }
+}

@@ -1,0 +1,62 @@
+# module-default-class: module
+# | export default class { m() {} }
+; ep9 bytecode, ABI 2
+unit kind=module strict=true ts=none source_len=31 source=embedded hints=none
+source_hash=f55ef5f37d512892364419359444cd86499f97f58c75f2b544196e5bcd48cd90
+strings (2):
+  str0 "m"
+  str1 "default"
+scopes (4):
+  scope0 module outer=- flags=[strict] slots=[]
+  scope1 class outer=scope0 flags=[strict] slots=[]
+  scope2 function outer=scope1 flags=[strict] slots=[]
+  scope3 function outer=scope1 flags=[strict] slots=[]
+function f0 module name=- parent=- outer_scope=- flags=[strict] params=0 length=0 regs=6 range=0..31
+  code (41 bytes):
+      0 S> LdaTheHole                                   ; 07
+      1    Star r1                                      ; 0c 01
+      3 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      7    Star r0                                      ; 0c 00
+      9 E> CallRuntime DefineClass, r0-r1               ; 68 04 00 00 02
+     14    Star r2                                      ; 0c 02
+     16    Mov r2, r3                                   ; 0d 02 03
+     19    LdaConstant k1  ; k1 = String str0 "m"       ; 0a 01
+     21    Star r4                                      ; 0c 04
+     23 E> CreateClosure k2, s1, #0x00  ; k2 = Function f2 ; 74 02 01 00
+     27    Star r5                                      ; 0c 05
+     29 E> CallRuntime DefineClassMethod, r3-r5         ; 68 0f 00 03 03
+     34    Ldar r0                                      ; 0b 00
+     36    StaModuleVariable [1], [0]                   ; 20 01 00
+     39    LdaUndefined                                 ; 05
+     40    Return                                       ; 92
+  constants (3):
+      0 Function f1
+      1 String str0 "m"
+      2 Function f2
+  feedback (2):
+      0 CreateClosure
+      1 CreateClosure
+  handlers (0):
+  positions (5):
+      0 S 15 (1:16)
+      3 E 0 (1:1)
+      9 E 15 (1:16)
+     23 E 0 (1:1)
+     29 E 23 (1:24)
+function f1 class-constructor name="default" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=21..31
+  code (2 bytes):
+      0 S> LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 15 (1:16)
+function f2 method name="m" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=24..29
+  code (2 bytes):
+      0    LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (0):

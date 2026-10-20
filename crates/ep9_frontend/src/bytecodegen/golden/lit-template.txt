@@ -1,0 +1,74 @@
+# lit-template: script (sloppy)
+# | var a, b; `x`; `${a}`; `a${a}b${b}c`; `${a}${b}`;
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=49 source=embedded hints=none
+source_hash=2b67e8c1b10391ebbfd15613c9643435f79f66f0c1417e1dc10d731b2c4f5f4d
+strings (4):
+  str0 "a"
+  str1 "b"
+  str2 "x"
+  str3 "c"
+scopes (1):
+  scope0 script outer=- flags=[] slots=["a":var, "b":var]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=1 range=0..49
+  code (60 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> LdaConstant k0  ; k0 = String str2 "x"       ; 0a 00
+      7 S> LdaGlobal k1, s0  ; k1 = String str0 "a"     ; 10 01 00
+     10 E> ToString                                     ; 5c
+     11 S> LdaConstant k1  ; k1 = String str0 "a"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> LdaGlobal k1, s0  ; k1 = String str0 "a"     ; 10 01 00
+     18 E> ToString                                     ; 5c
+     19 E> Add r0, s1                                   ; 2a 00 01
+     22    Star r0                                      ; 0c 00
+     24    LdaConstant k2  ; k2 = String str1 "b"       ; 0a 02
+     26 E> Add r0, s2                                   ; 2a 00 02
+     29    Star r0                                      ; 0c 00
+     31 E> LdaGlobal k2, s3  ; k2 = String str1 "b"     ; 10 02 03
+     34 E> ToString                                     ; 5c
+     35 E> Add r0, s4                                   ; 2a 00 04
+     38    Star r0                                      ; 0c 00
+     40    LdaConstant k3  ; k3 = String str3 "c"       ; 0a 03
+     42 E> Add r0, s5                                   ; 2a 00 05
+     45 S> LdaGlobal k1, s0  ; k1 = String str0 "a"     ; 10 01 00
+     48 E> ToString                                     ; 5c
+     49    Star r0                                      ; 0c 00
+     51 E> LdaGlobal k2, s3  ; k2 = String str1 "b"     ; 10 02 03
+     54 E> ToString                                     ; 5c
+     55 E> Add r0, s6                                   ; 2a 00 06
+     58    LdaUndefined                                 ; 05
+     59    Return                                       ; 92
+  constants (4):
+      0 String str2 "x"
+      1 String str0 "a"
+      2 String str1 "b"
+      3 String str3 "c"
+  feedback (7):
+      0 LoadGlobal
+      1 BinaryOp
+      2 BinaryOp
+      3 LoadGlobal
+      4 BinaryOp
+      5 BinaryOp
+      6 BinaryOp
+  handlers (0):
+  positions (18):
+      0 S 0 (1:1)
+      5 S 10 (1:11)
+      7 S 15 (1:16)
+     10 E 18 (1:19)
+     11 S 23 (1:24)
+     15 E 27 (1:28)
+     18 E 27 (1:28)
+     19 E 23 (1:24)
+     26 E 23 (1:24)
+     31 E 32 (1:33)
+     34 E 32 (1:33)
+     35 E 23 (1:24)
+     42 E 23 (1:24)
+     45 S 38 (1:39)
+     48 E 41 (1:42)
+     51 E 45 (1:46)
+     54 E 45 (1:46)
+     55 E 38 (1:39)

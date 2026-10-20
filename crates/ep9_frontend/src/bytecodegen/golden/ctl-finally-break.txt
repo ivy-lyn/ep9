@@ -1,0 +1,90 @@
+# ctl-finally-break: script (sloppy)
+# | function f(g) { for (;;) { try { if (g()) break; continue; } finally { g(); } } }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=81 source=embedded hints=none
+source_hash=c0df0d1572f42a1e99402ed87007954ab93202da0a716611a01506c29fc046d8
+strings (1):
+  str0 "f"
+scopes (6):
+  scope0 script outer=- flags=[] slots=["f":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+  scope2 block outer=scope1 flags=[] slots=[]
+  scope3 block outer=scope2 flags=[] slots=[]
+  scope4 block outer=scope3 flags=[] slots=[]
+  scope5 block outer=scope3 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..81
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=5 range=0..81
+  code (69 bytes):
+      0 S> LdaCurrentContext                            ; 15
+      1    Star r2                                      ; 0c 02
+      3 S> Ldar a0                                      ; 0b fe
+      5    Star r3                                      ; 0c 03
+      7 E> CallUndefinedReceiver0 r3, s0                ; 64 03 00
+     10    JumpIfToBooleanFalse @18                     ; 82 08
+     12 S> LdaSmi [1]                                   ; 04 01
+     14    Star r0                                      ; 0c 00
+     16    Jump @35                                     ; 7e 13
+     18 S> LdaSmi [2]                                   ; 04 02
+     20    Star r0                                      ; 0c 00
+     22    Jump @35                                     ; 7e 0d
+     24    LdaSmi [-1]                                  ; 04 ff
+     26    Star r0                                      ; 0c 00
+     28    Jump @35                                     ; 7e 07
+     30    Star r1                                      ; 0c 01
+     32    LdaZero                                      ; 03
+     33    Star r0                                      ; 0c 00
+     35    LdaTheHole                                   ; 07
+     36    SetPendingMessage                            ; 93
+     37    Star r3                                      ; 0c 03
+     39 S> Ldar a0                                      ; 0b fe
+     41    Star r4                                      ; 0c 04
+     43 E> CallUndefinedReceiver0 r4, s1                ; 64 04 01
+     46    Ldar r3                                      ; 0b 03
+     48    SetPendingMessage                            ; 93
+     49    Ldar r0                                      ; 0b 00
+     51    SwitchOnSmi k0, [0]  ; k0 = JumpTable [+5, +8, +10] ; 8a 00 00
+     54    Jump @63                                     ; 7e 09
+     56    Ldar r1                                      ; 0b 01
+     58 E> ReThrow                                      ; 91
+     59    Jump @67                                     ; 7e 08
+     61    Jump @63                                     ; 7e 02
+     63    JumpLoop @0, [0], s2                         ; 7d 3f 00 02
+     67    LdaUndefined                                 ; 05
+     68    Return                                       ; 92
+  constants (1):
+      0 JumpTable [+5, +8, +10]
+  feedback (3):
+      0 Call
+      1 Call
+      2 JumpLoop
+  handlers (1):
+        [3, 24) -> @30 context=r2 uncaught
+  positions (8):
+      0 S 27 (1:28)
+      3 S 33 (1:34)
+      7 E 37 (1:38)
+     12 S 42 (1:43)
+     18 S 49 (1:50)
+     39 S 71 (1:72)
+     43 E 71 (1:72)
+     58 E 27 (1:28)

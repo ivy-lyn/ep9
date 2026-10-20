@@ -1,0 +1,129 @@
+# op-compare: script (sloppy)
+# | function f(a, b) { return [a == b, a != b, a === b, a !== b, a < b, a <= b, a > b, a >= b, a in b, a instanceof b]; }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=117 source=embedded hints=none
+source_hash=f77d8865412699f6178232e3589537839a02a2a8ad358d2ea535db2e86b26760
+strings (1):
+  str0 "f"
+scopes (2):
+  scope0 script outer=- flags=[] slots=["f":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..117
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=2 length=2 regs=2 range=0..117
+  code (142 bytes):
+      0 S> CreateArrayLiteral k0, s0, #0x01  ; k0 = ArrayBoilerplate [_, _, _, _, _, _, _, _, _, _] ; 6d 00 00 01
+      4    Star r0                                      ; 0c 00
+      6    LdaZero                                      ; 03
+      7    Star r1                                      ; 0c 01
+      9    Ldar a1                                      ; 0b fd
+     11 E> TestEqual a0, s2                             ; 4b fe 02
+     14 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     18    LdaSmi [1]                                   ; 04 01
+     20    Star r1                                      ; 0c 01
+     22    Ldar a1                                      ; 0b fd
+     24 E> TestEqual a0, s3                             ; 4b fe 03
+     27    LogicalNot                                   ; 47
+     28 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     32    LdaSmi [2]                                   ; 04 02
+     34    Star r1                                      ; 0c 01
+     36    Ldar a1                                      ; 0b fd
+     38 E> TestEqualStrict a0, s4                       ; 4c fe 04
+     41 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     45    LdaSmi [3]                                   ; 04 03
+     47    Star r1                                      ; 0c 01
+     49    Ldar a1                                      ; 0b fd
+     51 E> TestEqualStrict a0, s5                       ; 4c fe 05
+     54    LogicalNot                                   ; 47
+     55 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     59    LdaSmi [4]                                   ; 04 04
+     61    Star r1                                      ; 0c 01
+     63    Ldar a1                                      ; 0b fd
+     65 E> TestLessThan a0, s6                          ; 4d fe 06
+     68 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     72    LdaSmi [5]                                   ; 04 05
+     74    Star r1                                      ; 0c 01
+     76    Ldar a1                                      ; 0b fd
+     78 E> TestLessThanOrEqual a0, s7                   ; 4f fe 07
+     81 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     85    LdaSmi [6]                                   ; 04 06
+     87    Star r1                                      ; 0c 01
+     89    Ldar a1                                      ; 0b fd
+     91 E> TestGreaterThan a0, s8                       ; 4e fe 08
+     94 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     98    LdaSmi [7]                                   ; 04 07
+    100    Star r1                                      ; 0c 01
+    102    Ldar a1                                      ; 0b fd
+    104 E> TestGreaterThanOrEqual a0, s9                ; 50 fe 09
+    107 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+    111    LdaSmi [8]                                   ; 04 08
+    113    Star r1                                      ; 0c 01
+    115    Ldar a1                                      ; 0b fd
+    117 E> TestIn a0, s10                               ; 53 fe 0a
+    120 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+    124    LdaSmi [9]                                   ; 04 09
+    126    Star r1                                      ; 0c 01
+    128    Ldar a1                                      ; 0b fd
+    130 E> TestInstanceOf a0, s11                       ; 52 fe 0b
+    133 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+    137    Ldar r0                                      ; 0b 00
+    139    Return                                       ; 92
+    140    LdaUndefined                                 ; 05
+    141    Return                                       ; 92
+  constants (1):
+      0 ArrayBoilerplate [_, _, _, _, _, _, _, _, _, _]
+  feedback (12):
+      0 Literal
+      1 StoreInArrayLiteral
+      2 CompareOp
+      3 CompareOp
+      4 CompareOp
+      5 CompareOp
+      6 CompareOp
+      7 CompareOp
+      8 CompareOp
+      9 CompareOp
+     10 HasKeyed
+     11 InstanceOf
+  handlers (0):
+  positions (21):
+      0 S 19 (1:20)
+     11 E 27 (1:28)
+     14 E 26 (1:27)
+     24 E 35 (1:36)
+     28 E 26 (1:27)
+     38 E 43 (1:44)
+     41 E 26 (1:27)
+     51 E 52 (1:53)
+     55 E 26 (1:27)
+     65 E 61 (1:62)
+     68 E 26 (1:27)
+     78 E 68 (1:69)
+     81 E 26 (1:27)
+     91 E 76 (1:77)
+     94 E 26 (1:27)
+    104 E 83 (1:84)
+    107 E 26 (1:27)
+    117 E 91 (1:92)
+    120 E 26 (1:27)
+    130 E 99 (1:100)
+    133 E 26 (1:27)

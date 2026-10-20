@@ -1,10 +1,11 @@
-//! Runs the built `ep9` binary and checks its output.
+//! Runs the built `ep9` binary and checks its version output.
 
 use std::process::Command;
 
 #[test]
 fn prints_version() {
     let out = Command::new(env!("CARGO_BIN_EXE_ep9"))
+        .arg("--version")
         .output()
         .expect("run ep9");
     assert!(out.status.success());

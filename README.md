@@ -17,3 +17,16 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 The sync scripts work from any directory. A second run with the same pin and patches does not fetch again. `cargo build --profile dev-opt` gives optimized builds without fat LTO, for fast local work.
+
+## License
+
+ep9 is licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option. Code copied into this repository from other projects keeps its own licence; [THIRD-PARTY-LICENSE](THIRD-PARTY-LICENSE) lists it. The licence rules are in [12-governance §1](docs/plan/12-governance.md#1-licence).
+
+## Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in ep9 by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

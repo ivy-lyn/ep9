@@ -8,7 +8,7 @@
 - TypeScript runtime constructs now lower in BytecodeGen, not in oxc_transformer. This keeps hint keys valid on lowered code (H3).
 - `CompiledUnit` becomes a deterministic, versioned ABI with stable function ids and an optional hint section (H1, H2).
 
-IDs used here: D1, D4, D12, D18, D20; H1-H4, H23, H37; P1-P5; L0-L2; A1h, A4; K-A4H; SP-tsrs-win, SP-tsrs, SP-HintPrecision; HINT-SET; M0-M4; RK5-RK8, RK19, RK27, RK38, RK39.
+IDs used here: D1, D4, D12, D18, D20; H1-H4, H23, H36, H37; P1-P5; L0-L2; A1h, A4; K-A4H; SP-tsrs-win, SP-tsrs, SP-HintPrecision; HINT-SET; M0-M4; RK5-RK8, RK19, RK27, RK38, RK39.
 
 ---
 

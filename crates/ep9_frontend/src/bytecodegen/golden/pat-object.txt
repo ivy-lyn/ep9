@@ -1,0 +1,112 @@
+# pat-object: script (sloppy)
+# | function f(o) { var {a, b: c, ['d']: e = 1, ...rest} = o; let {} = o; return [a, c, e, rest]; }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=95 source=embedded hints=none
+source_hash=a354a216daf5d1d6bf8ebcc35d1e3242c709856edec9f818b2f6b318047917b7
+strings (4):
+  str0 "f"
+  str1 "a"
+  str2 "b"
+  str3 "d"
+scopes (2):
+  scope0 script outer=- flags=[] slots=["f":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..95
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=10 range=0..95
+  code (114 bytes):
+      0 S> Ldar a0                                      ; 0b fe
+      2    Star r4                                      ; 0c 04
+      4    Ldar r4                                      ; 0b 04
+      6 E> ToObject r5                                  ; 5b 05
+      8    Mov r4, r5                                   ; 0d 04 05
+     11    LdaConstant k0  ; k0 = String str1 "a"       ; 0a 00
+     13    Star r6                                      ; 0c 06
+     15 E> GetNamedProperty r4, k0, s0  ; k0 = String str1 "a" ; 21 04 00 00
+     19    Star r0                                      ; 0c 00
+     21    LdaConstant k1  ; k1 = String str2 "b"       ; 0a 01
+     23    Star r7                                      ; 0c 07
+     25 E> GetNamedProperty r4, k1, s1  ; k1 = String str2 "b" ; 21 04 01 01
+     29    Star r1                                      ; 0c 01
+     31    LdaConstant k2  ; k2 = String str3 "d"       ; 0a 02
+     33    Star r9                                      ; 0c 09
+     35    Mov r9, r8                                   ; 0d 09 08
+     38 E> Ldar r9                                      ; 0b 09
+     40 E> GetKeyedProperty r4, s2                      ; 23 04 02
+     43    JumpIfNotUndefined @47                       ; 86 04
+     45    LdaSmi [1]                                   ; 04 01
+     47    Star r2                                      ; 0c 02
+     49 E> CallRuntime CopyDataPropertiesExcluding, r5-r8 ; 68 0a 00 05 04
+     54    Star r3                                      ; 0c 03
+     56 S> Ldar a0                                      ; 0b fe
+     58    Star r4                                      ; 0c 04
+     60    Ldar r4                                      ; 0b 04
+     62 E> ToObject r5                                  ; 5b 05
+     64 S> CreateArrayLiteral k3, s3, #0x01  ; k3 = ArrayBoilerplate [_, _, _, _] ; 6d 03 03 01
+     68    Star r4                                      ; 0c 04
+     70    LdaZero                                      ; 03
+     71    Star r5                                      ; 0c 05
+     73    Ldar r0                                      ; 0b 00
+     75 E> StaInArrayLiteral r4, r5, s4                 ; 28 04 05 04
+     79    LdaSmi [1]                                   ; 04 01
+     81    Star r5                                      ; 0c 05
+     83    Ldar r1                                      ; 0b 01
+     85 E> StaInArrayLiteral r4, r5, s4                 ; 28 04 05 04
+     89    LdaSmi [2]                                   ; 04 02
+     91    Star r5                                      ; 0c 05
+     93    Ldar r2                                      ; 0b 02
+     95 E> StaInArrayLiteral r4, r5, s4                 ; 28 04 05 04
+     99    LdaSmi [3]                                   ; 04 03
+    101    Star r5                                      ; 0c 05
+    103    Ldar r3                                      ; 0b 03
+    105 E> StaInArrayLiteral r4, r5, s4                 ; 28 04 05 04
+    109    Ldar r4                                      ; 0b 04
+    111    Return                                       ; 92
+    112    LdaUndefined                                 ; 05
+    113    Return                                       ; 92
+  constants (4):
+      0 String str1 "a"
+      1 String str2 "b"
+      2 String str3 "d"
+      3 ArrayBoilerplate [_, _, _, _]
+  feedback (5):
+      0 LoadNamed
+      1 LoadNamed
+      2 LoadKeyed
+      3 Literal
+      4 StoreInArrayLiteral
+  handlers (0):
+  positions (14):
+      0 S 20 (1:21)
+      6 E 20 (1:21)
+     15 E 21 (1:22)
+     25 E 24 (1:25)
+     38 E 30 (1:31)
+     40 E 20 (1:21)
+     49 E 44 (1:45)
+     56 S 62 (1:63)
+     62 E 62 (1:63)
+     64 S 70 (1:71)
+     75 E 77 (1:78)
+     85 E 77 (1:78)
+     95 E 77 (1:78)
+    105 E 77 (1:78)
