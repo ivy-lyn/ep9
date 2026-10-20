@@ -326,6 +326,11 @@ const CASES: &[(&str, Mode, &str)] = &[
         "var o, f; o?.a; o?.[0]; o?.a.b; o?.m(); o.m?.(); f?.(); o?.a?.b?.(); (o?.a).b;",
     ),
     (
+        "call-optional-paren",
+        Sloppy,
+        "var o; (o?.m)(); (o?.a[0])(1); (o?.m)`x`; (o?.m)?.();",
+    ),
+    (
         "call-eval",
         Sloppy,
         "function f(x) { return eval(x); } function g() { return eval(); } var e = eval; e('1');",

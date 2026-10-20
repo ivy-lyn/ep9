@@ -1071,6 +1071,24 @@ impl<'a, 's> FnGen<'a, 's> {
         n: u32,
     ) -> Gen<Option<RegisterList>> {
         let inner = callee_expr.without_parentheses();
+        // `(a?.b)()`: an optional chain that ends in a property access is still a reference,
+        // so the call gets its receiver. A nullish base gives an undefined callee (the call
+        // throws a TypeError).
+        if let Expression::ChainExpression(chain) = inner
+            && let Some(member) = chain.expression.as_member_expression()
+        {
+            let nullish = self.b.new_label();
+            let saved = self.chain_end.replace(nullish);
+            let list = self.member_callee(member, callee, n);
+            self.chain_end = saved;
+            let list = list?;
+            let done = self.b.new_label();
+            self.b.jump(done);
+            self.b.bind(nullish);
+            self.b.lda_undefined().star(callee);
+            self.b.bind(done);
+            return Ok(Some(list));
+        }
         let member = match inner {
             Expression::StaticMemberExpression(_)
             | Expression::ComputedMemberExpression(_)
@@ -1082,6 +1100,17 @@ impl<'a, 's> FnGen<'a, 's> {
             self.b.star(callee);
             return Ok(None);
         };
+        self.member_callee(member, callee, n).map(Some)
+    }
+
+    /// Evaluate the callee of a property call into `callee`. Returns a list of `1 + n`
+    /// registers whose first one holds the receiver.
+    fn member_callee(
+        &mut self,
+        member: &'a MemberExpression<'a>,
+        callee: Register,
+        n: u32,
+    ) -> Gen<RegisterList> {
         let list = self.temps(1 + n);
         match member {
             MemberExpression::StaticMemberExpression(s) => {
@@ -1137,7 +1166,7 @@ impl<'a, 's> FnGen<'a, 's> {
                 return self.unsupported("private names", p.span);
             }
         }
-        Ok(Some(list))
+        Ok(list)
     }
 
     /// Emit the call: `args` holds the receiver first when `property`.
