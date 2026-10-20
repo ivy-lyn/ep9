@@ -1,7 +1,8 @@
 # cargo-deny configuration for the root workspace.
 # Rules: docs/plan/12-governance.md section 1 (LICENSE decision) and docs/plan/08-repo.md section 7.
 # Draft: docs/research/artifacts/decide/governance/deny.toml.
-# Run: cargo deny check licenses bans (cargo-deny 0.20.2). CI step: a follow-up of the CI owner.
+# Run: cargo deny check licenses bans (cargo-deny 0.20.2). CI: the dep-guards job of
+# .github/workflows/ci.yml runs it on every PR (release binary checked by SHA-256).
 
 [graph]
 all-features = true

@@ -34,10 +34,10 @@ Both fail the job.
 
 | Target | Failing files | Source |
 |---|---|---|
-| `aarch64-apple-darwin` | 43,849 | Local run (M0 week 3). The macos-15 runner writes the same bytes (CI run 39501063919) |
-| `x86_64-unknown-linux-gnu` | 43,849 | ubuntu-24.04 runner, CI run 39501063919. Docker on Rosetta writes the same bytes |
-| `aarch64-unknown-linux-gnu` | 43,849 | ubuntu-24.04-arm runner, CI run 39501063919. Docker (arm64) writes the same bytes |
-| `x86_64-pc-windows-msvc` | 43,849 | windows-2025 runner, CI run 39501063919 |
+| `aarch64-apple-darwin` | 43,847 | Local run (M0 week 3). The macos-15 runner writes the same bytes (CI run 39501063919) |
+| `x86_64-unknown-linux-gnu` | 43,847 | ubuntu-24.04 runner, CI run 39501063919. Docker on Rosetta writes the same bytes |
+| `aarch64-unknown-linux-gnu` | 43,847 | ubuntu-24.04-arm runner, CI run 39501063919. Docker (arm64) writes the same bytes |
+| `x86_64-pc-windows-msvc` | 43,847 | windows-2025 runner, CI run 39501063919 |
 
 - At test262 d53ebc8b the 4 files list the same paths. Only the header line differs. The
   `--json` output of the 4 runners also gives the same cause and detail for every failing test.
@@ -53,3 +53,4 @@ Both fail the job.
 | Date | Change |
 |---|---|
 | 2026-10-21 | test262 exec files for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and `x86_64-pc-windows-msvc` from CI run 39501063919; CI checks all 4 targets |
+| 2026-10-21 | 2 tests pass after PR #1 review fixes Fr4 and Fr5 (`super[k] = v` key order; `(a?.b)()` keeps `this`): 43,849 → 43,847 failing files on all 4 targets (commits `1ee8583`, `d514b6e`) |

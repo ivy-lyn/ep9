@@ -70,7 +70,7 @@ JSC NaN-box: raw cell pointers, int32 under the 0xFFFE tag, doubles + 2^49. `Val
 
 - **SP-Value** ([09 §4](../plan/09-milestones.md#4-spikes), M0 wk2, VM lead): `ep9_value` static asserts Value, JsResult, word0 = 8 B. Barrier fast path ≤ 5 instructions on aarch64 plus the cell test. On fail it reopens H6 and H11.
 - M0 exit item 8: static asserts Value, JsResult and word0 are 8 B.
-- Miri runs on `ep9_value` nightly ([10-quality §5](../plan/10-quality.md#5-other-ci-checks)).
+- Miri runs on `ep9_value` ([10-quality §5](../plan/10-quality.md#5-other-ci-checks)): on every PR until the nightly trigger lands (CI job `miri`, since 2026-10-21), then nightly.
 
 ## Open questions
 
@@ -93,3 +93,4 @@ JSC NaN-box: raw cell pointers, int32 under the 0xFFFE tag, doubles + 2^49. `Val
 | 2026-10-20 | draft | First draft, copied from 02 §6 and 06 §1 (M0 wk1 list) | ADR agent |
 | 2026-10-20 | fill | H06-Q1 and H06-Q2 resolved from `ep9_value::encoding` (SP-Value): immediate bit values and NotCellMask added to the Decision table. The plan row (02 §6 H6, 06 §1) still says "small non-zero constants"; plan fix to be filed with the plan owner | fix agent |
 | 2026-10-20 | fill | H06-empty: 0x22 kept after a check against the JSC tags (BigInt32 0x12, NativeCallee 0x3, deleted 0x4, MiscTag 0x0E) and every ep9_value fast test. Rule added: no 0 in a heap Value slot (pre-fill before the next GC point; the visitor skips 0). Plan rows 02 §6 H6 and 06 §1 updated | apply agent |
+| 2026-10-21 | clarify | Validation: Miri runs on every PR until the nightly trigger lands, as CI does ([decisions-log §10](../decisions-log.md#10-2026-10-21-pr-1-review-fixes-ci-gates-and-h15-on-t0) CIG-5) | follow-up agent |
