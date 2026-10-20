@@ -32,6 +32,10 @@ One cage per process below 2^47 (64 GiB default, configurable); avoids 0x4001_00
 - The code range sits next to the cage ([03 §5](../plan/03-gc.md#5-contract-items-that-exist-from-s0); SP-VA gate).
 - `ep9_platform` owns the VA reserve, including the code range ([08 §2](../plan/08-repo.md#2-crates)).
 - The plan fixes no addresses except the 2^47 bound for the cage and the avoided range. Where the code range sits is Open question H07-Q5.
+- **macOS arm64 code range (`jit` feature; noted 2026-10-21).** `Cage::reserve_jit` maps the code range with `MAP_JIT` and read-write-execute protection at reservation. So this range has no inaccessible phase. Every other reservation, and the code range from `Cage::reserve`, starts inaccessible.
+  - Why: macOS 27 rejects `MAP_JIT` with `MAP_FIXED` (the range is mapped at a hint address, then checked), and rejects every `mprotect` of a `MAP_JIT` page after it is RWX (SP-JIT-mem facts F1, F2: [data](../measurements/2026-10-21-sp-jit-mem.md)).
+  - W^X still holds per thread: each thread sees the pages as RX or RW only (`pthread_jit_write_protect_np`). `Reservation::commit` and `decommit` refuse this range; `ep9_platform::jit::CodeMemory` manages it, and release uses `madvise(MADV_FREE_REUSABLE)`.
+  - Code: `crates/ep9_platform/src/va.rs` (`Reservation::reserve_code_range_at`), `src/sys/unix.rs` (`reserve_map_jit_at`), `src/jit/`.
 
 ## Rules
 
@@ -89,3 +93,4 @@ One cage per process below 2^47 (64 GiB default, configurable); avoids 0x4001_00
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-20 | draft | First draft from 02 §6, 03 §5, 04 §5 (M0 wk1 list) | ADR agent |
+| 2026-10-21 | clarify | Decision notes that on macOS arm64 the code range from `Cage::reserve_jit` is RWX `MAP_JIT` from the start (no inaccessible phase), as built for SP-JIT-mem | docs-sync agent |

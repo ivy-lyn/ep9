@@ -143,7 +143,7 @@ Measurement rules:
 | Class | Gates | Metric | Host | Rounds |
 |---|---|---|---|---|
 | R regression | PR perf gate against the parent; ratchet | user-mode instructions: callgrind by default on hosted CI runners (they usually expose no PMU); `perf stat -e instructions:u` where the PMU is visible | any Linux CI runner | 1 (deterministic) |
-| S spike | ratios between variants or builds of one program: SP-Dispatch, Spike B round trip, SP-Facts speed | wall time of the timed region | gate host; x64 targets may use a hosted CI runner | ≥ 15 paired rounds + 1 warm-up round dropped; ≥ 31 on a hosted runner |
+| S spike | ratios between variants or builds of one program: SP-Dispatch, Spike B round trip, SP-Facts speed | wall time of the timed region | gate host; x64 targets may use a hosted CI runner. The result names its CPU model and holds for that model only | ≥ 15 paired rounds + 1 warm-up round dropped; ≥ 31 on a hosted runner |
 | M cross-engine | M0 exit 4, M1-M8 speed exits, JetStream lists, JITLESS-SET, FV and K gates, G4 | wall time (the benchmark's own score or timer) | gate host only | ≥ 10 paired rounds per kernel; JetStream ≥ 7 repetitions |
 | W startup, warm-up | M4 startup, A1/G13, FV2 time-to-peak | process wall time | gate host only | N ≥ 20; best and median reported; the gate uses best of N |
 | Mem | G7 caps, RSS reports | peak RSS | any host that passes the load guard; comparator on the same host | ≥ 5; median |
@@ -273,6 +273,7 @@ RK1-RK28 are plan v1 risks R1-R28, re-tagged. RK29-RK44 are new.
 - Risk IDs renamed RK (v1 R1-R28 → RK1-RK28). RK7, RK22 extended. 16 AOT risks added (RK29-RK44).
 - Unchanged: test262 rules, instruction-count perf gates, v1 fuzz targets and budgets, agent rules.
 - Decisions 2026-10-20 ([decisions-log §5](../decisions-log.md#5-2026-10-20-decisions-made-by-the-agent-team-under-the-users-instruction)): the speed-gate rule (PERF-NOISE); barrier checks V1-V3, the model test and 5 negative controls (H11); FP lint = `clippy.toml` + `xtask fp-check` (H36); H35 S3 outcomes in the unit checks; licence check; bench pin names (NAMING); JetStream harness note; K-A5v-cov, K-A5v-bound, K-A5v; RK7, RK18, RK28, RK29, RK35, RK40, RK41, RK42, RK43 updated.
+- Amended 2026-10-21 ([decisions-log §7](../decisions-log.md#7-2026-10-21-h15-dispatch-on-x86-64-sp-dispatch-reopen), PERF-NOISE amended): a class S result names its CPU model and holds for that model only (§3 row S).
 
 ---
 

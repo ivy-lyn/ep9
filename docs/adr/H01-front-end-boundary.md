@@ -71,7 +71,7 @@ F1 fills these gaps (kind **fill**):
 
 | ID | Question | Needed by | Proposed default |
 |---|---|---|---|
-| H01-Q1 | `oxc_ast_visit` is pinned in `ep9_frontend/Cargo.toml`, not in root `workspace.dependencies` | Next bump PR | Move the pin to the root list |
+| H01-Q1 | `oxc_ast_visit` is pinned in `ep9_frontend/Cargo.toml`, not in root `workspace.dependencies` | Next bump PR | **Closed 2026-10-21 (fill):** the root list pins `oxc_ast_visit = "=0.155.0"`; `ep9_frontend` uses `workspace = true`. `Cargo.lock` did not change |
 | H01-Q2 | Two line maps exist (`LineMap`, `SourceLines`) | BytecodeGen PR | Keep one, WTF-8 aware, in `ep9_bytecode` |
 | H01-Q3 | The synthetic class function id rule (B7) needs the H2 owner's agreement | H2 Accepted | B7 as written |
 | H01-Q4 | Binary chains above 20,000 terms: RangeError or an iterative path | M1 | Iterative chains in BytecodeGen, then a higher cap for chains only |
@@ -87,3 +87,4 @@ F1 fills these gaps (kind **fill**):
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-21 | draft | First draft from the F1 build: API, worker, caps, scope pass, positions, function ids | Front-end agent |
+| 2026-10-21 | fill | H01-Q1 closed: `oxc_ast_visit` pin moved to the root `workspace.dependencies` | docs-sync agent |

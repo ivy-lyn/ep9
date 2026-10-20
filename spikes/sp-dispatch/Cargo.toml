@@ -4,6 +4,7 @@ version = "0.0.0"
 edition = "2024"
 rust-version = "1.99"
 publish = false
+license = "MIT OR Apache-2.0"
 description = "SP-Dispatch spike (M0 week 2, throwaway): one opcode DSL, three dispatch expansions"
 
 # Own workspace. The root workspace excludes spikes/ (docs/plan/08-repo.md section 1).
