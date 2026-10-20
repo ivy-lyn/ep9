@@ -14,9 +14,10 @@
 //!   counts per directory, top failure causes, expectations
 //! ```
 //!
-//! - A test passes if every run passes. Panics, timeouts and worker crashes are infrastructure
-//!   errors: they are never failures, no expectation can list them, and the run exits 2
-//!   before it compares or writes the expectation file (as `parse` does).
+//! - A test passes if every run passes. Panics, timeouts (also a run that returns after its
+//!   deadline), worker crashes and internal BytecodeGen errors are infrastructure errors: they
+//!   are never failures, no expectation can list them, and the run exits 2 before it compares
+//!   or writes the expectation file (as `parse` does).
 //! - A worker process isolates crashes: one crash loses one test, not the run.
 //! - Each run gets a fresh isolate (D14: one per thread; the worker runs one at a time).
 
@@ -32,7 +33,7 @@ use std::time::{Duration, Instant};
 
 use ep9_frontend::{CodegenError, CompileError, CompileOptions, SourceOpts, Strictness};
 use ep9_heap::HeapConfig;
-use ep9_vm::{Args, HostCx, Isolate, IsolateConfig, JsResult, TerminateHandle, Value};
+use ep9_vm::{Args, Exception, HostCx, Isolate, IsolateConfig, JsResult, TerminateHandle, Value};
 
 use crate::frontmatter::{self, Meta};
 use crate::parse::{Mode, STRICT_PREFIX, modes};
@@ -204,7 +205,7 @@ enum Run {
         cause: String,
         detail: String,
     },
-    /// Infrastructure error: `cause` is `timeout`, `panic` or `harness`.
+    /// Infrastructure error: `cause` is `timeout`, `panic`, `harness` or `internal`.
     Infra {
         cause: &'static str,
         detail: String,
@@ -261,14 +262,24 @@ fn gc(cx: &mut HostCx<'_>, _this: Value, _args: Args<'_>, _nt: Value) -> JsResul
     Ok(Value::UNDEFINED)
 }
 
-/// Terminates the armed isolate when its deadline passes.
+/// The run that the watchdog watches.
+#[derive(Default)]
+struct Watch {
+    /// Deadline and isolate of the armed run.
+    armed: Option<(Instant, TerminateHandle)>,
+    /// The deadline of the armed run passed.
+    expired: bool,
+}
+
+/// Terminates the armed isolate when its deadline passes, and remembers that it passed: a
+/// native loop that does not poll termination can outlast the deadline and then return.
 struct Watchdog {
-    slot: Arc<Mutex<Option<(Instant, TerminateHandle)>>>,
+    slot: Arc<Mutex<Watch>>,
 }
 
 impl Watchdog {
     fn start() -> Watchdog {
-        let slot: Arc<Mutex<Option<(Instant, TerminateHandle)>>> = Arc::new(Mutex::new(None));
+        let slot: Arc<Mutex<Watch>> = Arc::default();
         let watched = Arc::clone(&slot);
         std::thread::Builder::new()
             .name("ep9-test262-watchdog".into())
@@ -276,11 +287,12 @@ impl Watchdog {
                 loop {
                     std::thread::sleep(Duration::from_millis(20));
                     let Ok(mut s) = watched.lock() else { return };
-                    if let Some((deadline, handle)) = s.as_ref()
+                    if let Some((deadline, handle)) = s.armed.as_ref()
                         && Instant::now() >= *deadline
                     {
                         handle.terminate();
-                        *s = None;
+                        s.armed = None;
+                        s.expired = true;
                     }
                 }
             })
@@ -290,14 +302,24 @@ impl Watchdog {
 
     fn arm(&self, handle: TerminateHandle, timeout: Duration) {
         if let Ok(mut s) = self.slot.lock() {
-            *s = Some((Instant::now() + timeout, handle));
+            *s = Watch {
+                armed: Some((Instant::now() + timeout, handle)),
+                expired: false,
+            };
         }
     }
 
-    fn disarm(&self) {
-        if let Ok(mut s) = self.slot.lock() {
-            *s = None;
-        }
+    /// Stops the clock. True if the deadline of the last armed run passed, whether or not the
+    /// run saw the termination. The next call returns false until the next `arm`.
+    fn disarm(&self) -> bool {
+        let Ok(mut s) = self.slot.lock() else {
+            return false;
+        };
+        let late = s
+            .armed
+            .take()
+            .is_some_and(|(deadline, _)| Instant::now() >= deadline);
+        std::mem::take(&mut s.expired) || late
     }
 }
 
@@ -386,47 +408,60 @@ fn compile_failure(e: &CodegenError, what: &str) -> Run {
             "bytecode limit at compile time",
             format!("{what}: RangeError: {m}"),
         ),
-        CodegenError::Internal(m) => fail(
-            "internal BytecodeGen error",
+        // A BytecodeGen bug (builder or verifier rejection), not a test result: an
+        // expectation file must not list it.
+        CodegenError::Internal(m) => infra(
+            "internal",
             format!("{what}: internal BytecodeGen error: {m}"),
         ),
     }
 }
 
-fn compile(src: &str, opts: SourceOpts) -> Result<ep9_bytecode::VerifiedUnit, CodegenError> {
+/// Compiles `src`; `name` is the test path or `harness/<file>` (for the `internal` test hook).
+fn compile(
+    src: &str,
+    opts: SourceOpts,
+    name: &str,
+) -> Result<ep9_bytecode::VerifiedUnit, CodegenError> {
+    if fault_for("internal", name) {
+        return Err(CodegenError::Internal(format!("injected for {name}")));
+    }
     ep9_frontend::compile(src, opts, CompileOptions::default())
 }
 
-/// Does an uncaught exception with `message` match the negative `error_type`?
-/// v0 compares the `Name` part of `Name: message` (Error objects use `name`; other objects
-/// are reported through ToString, so `Test262Error: ...`).
-fn exception_matches(message: &str, error_type: &str) -> bool {
-    message == error_type
-        || message
-            .strip_prefix(error_type)
-            .is_some_and(|r| r.starts_with(':'))
+/// Does an uncaught exception match the negative `error_type`? INTERPRETING.md: the name of
+/// the thrown value's constructor must be `error_type`. The text does not count: a thrown
+/// string `"TypeError: x"` has no constructor name, so it never matches.
+fn exception_matches(e: &Exception, error_type: &str) -> bool {
+    e.constructor.as_deref() == Some(error_type)
 }
 
-/// Test hook (only for tools/test262/tests): `EP9_TEST262_FAULT=panic:<substr>`,
-/// `abort:<substr>` or `hang:<substr>` makes the worker fail on matching paths.
+/// Test hook (only for tools/test262/tests): `EP9_TEST262_FAULT=<kind>:<substr>,...`. Is an
+/// item of `kind` set for `name`? Kinds:
+/// - `panic`, `abort`, `hang`: the worker fails on matching test paths.
+/// - `late`: the run of a matching test returns normally, but only after the soft timeout
+///   (as a native loop that does not poll termination does).
+/// - `internal`: BytecodeGen reports an internal error for a matching test path or
+///   `harness/<file>`.
+fn fault_for(kind: &str, name: &str) -> bool {
+    std::env::var("EP9_TEST262_FAULT").is_ok_and(|spec| {
+        spec.split(',').any(|item| {
+            item.split_once(':')
+                .is_some_and(|(k, needle)| k == kind && !needle.is_empty() && name.contains(needle))
+        })
+    })
+}
+
 fn injected_fault(rel: &str) {
-    let Ok(spec) = std::env::var("EP9_TEST262_FAULT") else {
-        return;
-    };
-    for item in spec.split(',') {
-        let Some((kind, needle)) = item.split_once(':') else {
-            continue;
-        };
-        if needle.is_empty() || !rel.contains(needle) {
-            continue;
-        }
-        match kind {
-            "panic" => panic!("injected panic for {rel}"),
-            "abort" => std::process::abort(),
-            "hang" => loop {
-                std::thread::sleep(Duration::from_secs(1));
-            },
-            _ => {}
+    if fault_for("panic", rel) {
+        panic!("injected panic for {rel}");
+    }
+    if fault_for("abort", rel) {
+        std::process::abort();
+    }
+    if fault_for("hang", rel) {
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
         }
     }
 }
@@ -455,16 +490,17 @@ impl RunCtx<'_> {
 
     /// Compiles and runs one harness script. `None` = it ran.
     fn harness_script(&mut self, iso: &mut Isolate, name: &str, src: &str) -> Option<Run> {
-        let unit = match compile(src, SourceOpts::script(Strictness::Sloppy)) {
+        let what = format!("harness/{name}");
+        let unit = match compile(src, SourceOpts::script(Strictness::Sloppy), &what) {
             Ok(u) => u,
-            Err(e) => return Some(compile_failure(&e, &format!("harness/{name}"))),
+            Err(e) => return Some(compile_failure(&e, &what)),
         };
-        match iso.run_script(unit, &format!("harness/{name}")) {
+        match iso.run_script(unit, &what) {
             Ok(_) => None,
-            Err(e) if e.terminated => Some(infra("timeout", format!("timeout in harness/{name}"))),
+            Err(e) if e.terminated => Some(infra("timeout", format!("timeout in {what}"))),
             Err(e) => Some(fail(
-                format!("harness/{name} threw: {}", cause_of_message(&e.message)),
-                format!("harness/{name}: {e}"),
+                format!("{what} threw: {}", cause_of_message(&e.message)),
+                format!("{what}: {e}"),
             )),
         }
     }
@@ -482,7 +518,10 @@ impl RunCtx<'_> {
             ),
             Mode::Module => (std::borrow::Cow::Borrowed(src), SourceOpts::module()),
         };
-        let compiled = compile(&source, opts);
+        let compiled = compile(&source, opts, rel);
+        if let Err(e @ CodegenError::Internal(_)) = &compiled {
+            return compile_failure(e, "test");
+        }
         if let Some(neg) = negative
             && neg.phase == "parse"
         {
@@ -532,7 +571,9 @@ impl RunCtx<'_> {
             }
         }
         let result = iso.run_script(unit, rel);
-        self.watchdog.disarm();
+        if fault_for("late", rel) {
+            std::thread::sleep(self.opts.timeout + Duration::from_millis(100));
+        }
         let runtime_negative = negative.filter(|n| n.phase == "runtime");
         match result {
             Err(e) if e.terminated => infra(
@@ -540,10 +581,14 @@ impl RunCtx<'_> {
                 format!("timeout: the test ran longer than {:?}", self.opts.timeout),
             ),
             Err(e) => match runtime_negative {
-                Some(n) if exception_matches(&e.message, &n.error_type) => Run::Pass,
+                Some(n) if exception_matches(&e, &n.error_type) => Run::Pass,
                 Some(n) => fail(
                     "negative runtime test: wrong error",
-                    format!("expected {}, got {e}", n.error_type),
+                    format!(
+                        "expected {}, got {e} (constructor: {})",
+                        n.error_type,
+                        e.constructor.as_deref().unwrap_or("none")
+                    ),
                 ),
                 None => {
                     let mut cause = cause_of_message(&e.message);
@@ -570,25 +615,38 @@ impl RunCtx<'_> {
                     );
                 }
                 if meta.has_flag("async") {
-                    let out = OUT.with(|o| o.borrow().clone());
-                    if out.lines().any(|l| l == "Test262:AsyncTestComplete") {
-                        return Run::Pass;
-                    }
-                    if let Some(l) = out
-                        .lines()
-                        .find(|l| l.starts_with("Test262:AsyncTestFailure:"))
-                    {
-                        let msg = &l["Test262:AsyncTestFailure:".len()..];
-                        return fail(cause_of_message(msg), format!("async: {msg}"));
-                    }
-                    return fail(
-                        "async test: $DONE was not called",
-                        "async: no Test262:AsyncTestComplete",
-                    );
+                    return OUT.with(|o| async_outcome(&o.borrow()));
                 }
                 Run::Pass
             }
         }
+    }
+}
+
+/// The result of an async test from its `print` output (INTERPRETING.md, flag `async`). A
+/// `Test262:AsyncTestFailure:` line fails it, before or after a completion; it passes on
+/// exactly one `Test262:AsyncTestComplete` line (a second one means `$DONE` ran twice).
+fn async_outcome(out: &str) -> Run {
+    if let Some(msg) = out
+        .lines()
+        .find_map(|l| l.strip_prefix("Test262:AsyncTestFailure:"))
+    {
+        return fail(cause_of_message(msg), format!("async: {msg}"));
+    }
+    match out
+        .lines()
+        .filter(|l| *l == "Test262:AsyncTestComplete")
+        .count()
+    {
+        1 => Run::Pass,
+        0 => fail(
+            "async test: $DONE was not called",
+            "async: no Test262:AsyncTestComplete",
+        ),
+        n => fail(
+            "async test: $DONE was called more than once",
+            format!("async: Test262:AsyncTestComplete {n} times"),
+        ),
     }
 }
 
@@ -629,7 +687,18 @@ fn run_test(
             cx.run(rel, &src, &meta, mode)
         }))
         .unwrap_or_else(|_| infra("panic", format!("panic: {}", take_panic())));
-        watchdog.disarm();
+        // Past the deadline: a timeout even if the run returned, never a pass or a failure.
+        let run = if watchdog.disarm() && !matches!(run, Run::Infra { .. }) {
+            infra(
+                "timeout",
+                format!(
+                    "timeout: the test ran longer than {:?} (it returned after the deadline)",
+                    opts.timeout
+                ),
+            )
+        } else {
+            run
+        };
         let (status, cause, text) = match run {
             Run::Pass => {
                 result.runs_ok += 1;
@@ -1255,12 +1324,80 @@ mod tests {
         assert_eq!(callee_at(src, 9, 1), None);
     }
 
+    fn exception(message: &str, constructor: Option<&str>) -> Exception {
+        Exception {
+            message: message.into(),
+            constructor: constructor.map(Into::into),
+            stack: None,
+            location: None,
+            terminated: false,
+        }
+    }
+
     #[test]
-    fn negative_types_match_the_name() {
-        assert!(exception_matches("TypeError: x", "TypeError"));
-        assert!(exception_matches("TypeError", "TypeError"));
-        assert!(!exception_matches("TypeErrorX: x", "TypeError"));
-        assert!(!exception_matches("RangeError: x", "TypeError"));
-        assert!(exception_matches("Test262Error: boom", "Test262Error"));
+    fn negative_types_match_the_constructor() {
+        let matches = |constructor, ty| exception_matches(&exception("text", constructor), ty);
+        assert!(matches(Some("TypeError"), "TypeError"));
+        assert!(matches(Some("Test262Error"), "Test262Error"));
+        assert!(!matches(Some("RangeError"), "TypeError"));
+        assert!(!matches(Some("TypeErrorX"), "TypeError"));
+        // The text does not count: a thrown string, or an object whose ToString looks right.
+        assert!(!exception_matches(
+            &exception("TypeError: x", None),
+            "TypeError"
+        ));
+        assert!(!exception_matches(
+            &exception("TypeError: x", Some("Object")),
+            "TypeError"
+        ));
+    }
+
+    #[test]
+    fn async_failure_beats_completion() {
+        let pass = |out: &str| matches!(async_outcome(out), Run::Pass);
+        assert!(pass("Test262:AsyncTestComplete\n"));
+        assert!(pass("debug line\nTest262:AsyncTestComplete\n"));
+        assert!(!pass(""));
+        assert!(!pass("Test262:AsyncTestFailure:Test262Error: x\n"));
+        assert!(!pass(
+            "Test262:AsyncTestFailure:Error: x\nTest262:AsyncTestComplete\n"
+        ));
+        assert!(!pass(
+            "Test262:AsyncTestComplete\nTest262:AsyncTestFailure:Error: late\n"
+        ));
+        assert!(!pass(
+            "Test262:AsyncTestComplete\nTest262:AsyncTestComplete\n"
+        ));
+        let Run::Fail { cause, .. } = async_outcome("Test262:AsyncTestFailure:Test262Error: x\n")
+        else {
+            panic!("not a failure");
+        };
+        assert_eq!(cause, "Test262Error (an assertion failed)");
+    }
+
+    #[test]
+    fn watchdog_remembers_an_expired_deadline() {
+        // The isolate never polls here, as in a native loop: the expiry must still show.
+        let iso = Isolate::new(IsolateConfig::default()).unwrap();
+        let w = Watchdog::start();
+        w.arm(iso.terminate_handle(), Duration::from_secs(60));
+        assert!(!w.disarm(), "in time");
+        // Past the deadline before the watchdog thread looks (it looks every 20 ms).
+        w.arm(iso.terminate_handle(), Duration::ZERO);
+        assert!(w.disarm(), "late, seen at disarm");
+        // The watchdog thread fires first: it disarms and records the expiry.
+        w.arm(iso.terminate_handle(), Duration::from_millis(1));
+        let waited = Instant::now();
+        while w.slot.lock().unwrap().armed.is_some() {
+            assert!(
+                waited.elapsed() < Duration::from_secs(10),
+                "the watchdog never fired"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(w.slot.lock().unwrap().expired);
+        assert!(w.disarm(), "late, fired by the watchdog");
+        // Taken: no stale expiry for a later run that compiles but is never armed.
+        assert!(!w.disarm());
     }
 }

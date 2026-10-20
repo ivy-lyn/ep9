@@ -77,15 +77,18 @@ parent (exec)                         worker processes (exec-worker), one per th
 | Harness | A `$262` prelude (`global`, `gc`), then `assert.js`, `sta.js`, `doneprintHandle.js` for `async`, then `includes`, each a separate sloppy script in the same isolate. `raw` tests get none of them |
 | Isolate | A new one per run. `print` collects output for async tests |
 | `negative.phase: parse` | Passes if compile gives an early SyntaxError of `negative.type`. A v0 "unsupported" error does not count |
-| `negative.phase: runtime` | Passes if the uncaught exception is `negative.type` (the `Name` of `Name: message`; non-Error objects are reported through ToString, as d8 does) |
+| `negative.phase: runtime` | Passes if the uncaught exception is an object whose `constructor.name` is `negative.type` (INTERPRETING.md). The text does not count: a thrown string `"TypeError: x"` fails a `TypeError` test |
 | `negative.phase: resolution` | Fails in v0 (no module linking) |
-| `async` | Passes if `print` wrote `Test262:AsyncTestComplete` |
+| `async` | Fails if `print` wrote a `Test262:AsyncTestFailure:` line, before or after a completion. Else passes if it wrote `Test262:AsyncTestComplete` exactly once (twice means `$DONE` ran twice: a fail) |
 | Pass | Every run of the file passes. Counts are per file and per run |
 
 Infrastructure errors are not test results. They are: a panic in the engine, a run that hits
 the soft timeout (the watchdog calls `TerminateHandle::terminate`; the interrupt check stops
-the run), a stuck worker (killed at the hard timeout), a worker crash (abort or signal), an
-unreadable file, bad front matter, or a missing include. Any of them makes the run exit 2
+the run), a run that returns after the soft timeout (a native loop that does not poll the
+interrupt check), a stuck worker (killed at the hard timeout), a worker crash (abort or
+signal), an internal BytecodeGen error (`CodegenError::Internal`: a builder or verifier
+rejection, in the test or a harness file), an unreadable file, bad front matter, or a
+missing include. Any of them makes the run exit 2
 before it compares or writes the expectation file. So no expectation file can hide them.
 
 Failure causes: each failing file gets one cause, the first failing run's. The report lists
@@ -101,8 +104,10 @@ full run without infrastructure errors.
 and the heap verifier after each collection; a verifier error panics, so it is an
 infrastructure error.
 
-Test hook: `EP9_TEST262_FAULT=panic:<substr>|abort:<substr>|hang:<substr>` makes a worker
-fail on matching paths. Only `tests/exec.rs` uses it.
+Test hook: `EP9_TEST262_FAULT=<kind>:<substr>,...` makes a worker fail on matching paths:
+`panic`, `abort`, `hang`, `late` (the run returns after the soft timeout) or `internal` (an
+internal BytecodeGen error for a test path or `harness/<file>`). Only `tests/exec.rs` uses
+it.
 
 ### Results at test262 d53ebc8b (M0 week 3, aarch64-apple-darwin, release, 18 workers)
 

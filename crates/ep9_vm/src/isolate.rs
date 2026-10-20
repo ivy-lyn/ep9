@@ -25,7 +25,8 @@ use crate::frame::{HOLE, UNDEFINED};
 use crate::host::HostFn;
 use crate::interp::{BUDGET, Cx, Dispatch};
 use crate::object::{self, attr, is_error, is_string, own_define, own_get};
-use crate::runtime::{Root, Runtime, val};
+use crate::property;
+use crate::runtime::{Atom, Root, Runtime, val};
 use crate::unit::{FunctionInfo, LoadedUnit};
 use crate::{call, realm};
 
@@ -93,6 +94,9 @@ impl std::fmt::Display for SourceLocation {
 pub struct Exception {
     /// `Name: message` for an Error object; the value's text otherwise.
     pub message: String,
+    /// The `name` of the thrown value's `constructor` (`TypeError`), or `None` for a
+    /// primitive. test262 negative tests name the constructor of the expected error.
+    pub constructor: Option<String>,
     /// The `stack` property of an Error object (message line plus `at` lines).
     pub stack: Option<String>,
     /// Where the Error was created, or where a non-Error value was thrown.
@@ -254,6 +258,7 @@ impl Isolate {
                 if rt.terminating.replace(false) {
                     return Err(Exception {
                         message: "execution terminated".into(),
+                        constructor: None,
                         stack: None,
                         location: None,
                         terminated: true,
@@ -263,11 +268,13 @@ impl Isolate {
                 if exc == 0 {
                     return Err(Exception {
                         message: "ep9 internal error: no pending exception".into(),
+                        constructor: None,
                         stack: None,
                         location: None,
                         terminated: false,
                     });
                 }
+                let constructor = constructor_name(&mut self.cx, exc);
                 let (err_site, stack) = error::describe_exception(rt, exc);
                 let site = if is_error(exc) { err_site } else { site };
                 let message = if is_error(exc) {
@@ -284,6 +291,7 @@ impl Isolate {
                             if rt.terminating.replace(false) {
                                 return Err(Exception {
                                     message: "execution terminated".into(),
+                                    constructor: None,
                                     stack: None,
                                     location: None,
                                     terminated: true,
@@ -307,6 +315,7 @@ impl Isolate {
                 });
                 Err(Exception {
                     message,
+                    constructor,
                     stack,
                     location,
                     terminated: false,
@@ -314,4 +323,19 @@ impl Isolate {
             }
         }
     }
+}
+
+/// `v.constructor.name` for an object `v`, if it is a string; `None` for a primitive. v0
+/// objects have data properties only, so this runs no JS and cannot throw.
+fn constructor_name(cx: &mut Cx, v: u64) -> Option<String> {
+    if !object::is_object(v) {
+        return None;
+    }
+    let rt = cx.rt();
+    let ctor = property::get_from(cx, v, rt.atom(Atom::Constructor)).ok()?;
+    if !object::is_object(ctor) {
+        return None;
+    }
+    let name = property::get_from(cx, ctor, rt.atom(Atom::Name)).ok()?;
+    is_string(name).then(|| object::str_view(name).to_string_lossy())
 }

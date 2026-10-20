@@ -1,6 +1,7 @@
 //! `ep9-test262 exec` on a small fake test262 tree: pass and fail rules (flags, negative
-//! phases, async, includes, raw), and infrastructure errors (timeout, panic, worker crash,
-//! stuck worker) that exit 2 and are never written to the expectation file.
+//! phases, async, includes, raw), and infrastructure errors (timeout, a run that returns after
+//! the timeout, panic, worker crash, stuck worker, internal BytecodeGen error) that exit 2 and
+//! are never written to the expectation file.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -62,6 +63,28 @@ fn tree(name: &str) -> PathBuf {
                 "throw new RangeError('r');",
             ),
         ),
+        // The constructor of the thrown value names the type, not its text.
+        (
+            "neg-runtime-string.js",
+            test(
+                "negative:\n  phase: runtime\n  type: TypeError\n",
+                "throw 'TypeError: not an error object';",
+            ),
+        ),
+        (
+            "neg-runtime-object.js",
+            test(
+                "negative:\n  phase: runtime\n  type: TypeError\n",
+                "throw { toString: function () { return 'TypeError: fake'; } };",
+            ),
+        ),
+        (
+            "neg-runtime-t262.js",
+            test(
+                "negative:\n  phase: runtime\n  type: Test262Error\n",
+                "throw new Test262Error('x');",
+            ),
+        ),
         (
             "strict-only.js",
             test(
@@ -86,6 +109,16 @@ fn tree(name: &str) -> PathBuf {
         ("async-pass.js", test("flags: [async]\n", "$DONE();")),
         ("async-fail.js", test("flags: [async]\n", "$DONE('bad');")),
         ("async-no-done.js", test("flags: [async]\n", "var x = 1;")),
+        // A failure marker fails the test even if a completion marker follows it.
+        (
+            "async-fail-then-done.js",
+            test("flags: [async]\n", "$DONE('bad'); $DONE();"),
+        ),
+        // One completion signal: a second $DONE() is a fail.
+        (
+            "async-done-twice.js",
+            test("flags: [async]\n", "$DONE(); $DONE();"),
+        ),
         (
             "include.js",
             test("includes: [extra.js]\n", "assert.sameValue(extra(), 42);"),
@@ -99,9 +132,13 @@ fn tree(name: &str) -> PathBuf {
 }
 
 const FAILING: &[&str] = &[
+    "test/language/async-done-twice.js",
+    "test/language/async-fail-then-done.js",
     "test/language/async-fail.js",
     "test/language/async-no-done.js",
     "test/language/fail.js",
+    "test/language/neg-runtime-object.js",
+    "test/language/neg-runtime-string.js",
     "test/language/neg-runtime-wrong.js",
     "test/language/unsupported.js",
 ];
@@ -144,7 +181,7 @@ fn pass_and_fail_rules() {
     let json = root.join("summary.json");
     let (code, text) = exec(&root, &expect, &["--json", json.to_str().unwrap()], None);
     assert_eq!(code, Some(0), "{text}");
-    assert!(text.contains("language             8 / 13"), "{text}");
+    assert!(text.contains("language             9 / 18"), "{text}");
     let summary = std::fs::read_to_string(&json).unwrap();
     assert!(
         summary.contains("\"cause\":\"unsupported: generator functions\""),
@@ -156,6 +193,10 @@ fn pass_and_fail_rules() {
     );
     assert!(
         summary.contains("\"cause\":\"negative runtime test: wrong error\""),
+        "{summary}"
+    );
+    assert!(
+        summary.contains("\"cause\":\"async test: $DONE was called more than once\""),
         "{summary}"
     );
     std::fs::remove_dir_all(root).unwrap();
@@ -247,7 +288,7 @@ fn worker_crash_is_an_infra_error_and_the_run_goes_on() {
     );
     assert!(text.contains("worker crash 1"), "{text}");
     // Every other test still ran in a new worker.
-    assert!(text.contains("language             7 / 13"), "{text}");
+    assert!(text.contains("language             8 / 18"), "{text}");
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -266,5 +307,57 @@ fn stuck_worker_is_killed() {
         text.contains("test/language/include.js: hard timeout"),
         "{text}"
     );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn run_that_returns_after_the_deadline_is_a_timeout() {
+    // A native loop that does not poll termination can outlast the deadline and then return
+    // normally: still a timeout, never a pass.
+    let root = tree("late");
+    let expect = expect_file(&root, FAILING);
+    let before = std::fs::read_to_string(&expect).unwrap();
+    let (code, text) = exec(
+        &root,
+        &expect,
+        &["--timeout", "0.5", "--update-expectations"],
+        Some("late:/pass.js"),
+    );
+    assert_eq!(code, Some(2), "{text}");
+    assert!(
+        text.contains("test/language/pass.js: [sloppy] timeout"),
+        "{text}"
+    );
+    assert!(text.contains("timeout 1"), "{text}");
+    assert_eq!(std::fs::read_to_string(&expect).unwrap(), before);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn internal_codegen_error_is_an_infra_error() {
+    // A BytecodeGen bug (builder or verifier rejection) in a test, a negative parse test or a
+    // harness include: never a test failure, so no expectation file can list it.
+    let root = tree("internal");
+    let expect = expect_file(&root, FAILING);
+    let before = std::fs::read_to_string(&expect).unwrap();
+    let (code, text) = exec(
+        &root,
+        &expect,
+        &["--update-expectations"],
+        Some("internal:/pass.js,internal:/neg-parse.js,internal:harness/extra.js"),
+    );
+    assert_eq!(code, Some(2), "{text}");
+    for path in ["pass.js", "neg-parse.js", "include.js"] {
+        assert!(
+            text.contains(&format!("test/language/{path}: [sloppy] ")),
+            "{path}: {text}"
+        );
+    }
+    assert!(
+        text.contains("internal BytecodeGen error: injected"),
+        "{text}"
+    );
+    assert!(text.contains("infrastructure errors: 3"), "{text}");
+    assert_eq!(std::fs::read_to_string(&expect).unwrap(), before);
     std::fs::remove_dir_all(root).unwrap();
 }
