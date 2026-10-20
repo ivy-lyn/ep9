@@ -1,7 +1,7 @@
 //! `ep9-bench`: perf CI v0 (docs/plan/09-milestones.md section 8 week 1; 10-quality section 2).
 //!
 //! It runs a command N times and records the instructions retired per run as JSON. Speed gates
-//! use instruction counts, because wall time on shared hosts is too noisy [R03][R09].
+//! use instruction counts, because wall time on shared hosts is too noisy \[R03\]\[R09\].
 //!
 //! ```text
 //! ep9-bench [--runs N] [--warmup W] [--counter auto|time|perf|cachegrind]

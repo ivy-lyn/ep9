@@ -10,9 +10,9 @@
 //!   bad flag, I/O   -> usage text                                             exit 2
 //! ```
 //!
-//! The isolate runs on its own thread with a fixed native stack ([`RUN_STACK_BYTES`]), so the
-//! stack-limit RangeError behaves the same on every target (the main thread of a Windows
-//! process has only 1 MiB).
+//! The isolate runs on its own thread with a fixed native stack (`--stack-size`, default
+//! 64 MiB), so the stack-limit RangeError behaves the same on every target (the main thread
+//! of a Windows process has only 1 MiB).
 #![forbid(unsafe_code)]
 
 mod args;
