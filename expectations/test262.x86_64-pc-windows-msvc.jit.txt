@@ -28421,7 +28421,6 @@ test/language/expressions/assignment/fn-name-gen.js
 test/language/expressions/assignment/fn-name-lhs-cover.js
 test/language/expressions/assignment/fn-name-lhs-member.js
 test/language/expressions/assignment/target-super-computed-reference-null.js
-test/language/expressions/assignment/target-super-computed-reference.js
 test/language/expressions/assignment/target-super-identifier-reference-null.js
 test/language/expressions/async-arrow-function/arrow-returns-promise.js
 test/language/expressions/async-arrow-function/dflt-params-abrupt.js
@@ -34872,7 +34871,6 @@ test/language/expressions/optional-chaining/member-expression-async-literal.js
 test/language/expressions/optional-chaining/member-expression-async-this.js
 test/language/expressions/optional-chaining/member-expression.js
 test/language/expressions/optional-chaining/new-target-optional-call.js
-test/language/expressions/optional-chaining/optional-call-preserves-this.js
 test/language/expressions/optional-chaining/optional-chain-async-optional-chain-square-brackets.js
 test/language/expressions/optional-chaining/optional-chain-async-square-brackets.js
 test/language/expressions/optional-chaining/optional-chain-prod-arguments.js
