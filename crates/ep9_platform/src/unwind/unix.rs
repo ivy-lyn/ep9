@@ -49,7 +49,14 @@ impl EhFrameRegistration {
     /// - Each FDE describes code at its `pc_begin` range correctly; the unwinder trusts it.
     /// - That code stays mapped and unchanged while the registration lives. Drop the
     ///   registration before the code memory.
-    /// - No other registration covers the same code.
+    /// - Drop the registration only when no thread unwinds or walks through that code (a
+    ///   panic, a backtrace, a [`super::walk_native_stack`] callback). The unwinders use a
+    ///   found FDE without a lock, and macOS libunwind reads it again at the next step of a
+    ///   walk. A drop during such a walk reads freed memory (SP-JIT-mem review: SIGSEGV on
+    ///   macOS, abort or SIGSEGV with libgcc).
+    /// - The spans of two live registrations do not overlap. A span runs from the lowest
+    ///   `pc_begin` to the highest FDE end of the section. libgcc finds a registration by its
+    ///   span, so a walk misses frames of interleaved registrations (libgcc 12 and 14).
     pub unsafe fn register(section: EhFrameSection) -> io::Result<Self> {
         let records = section.records()?;
         let base = section.bytes().as_ptr() as usize;
