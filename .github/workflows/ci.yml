@@ -180,11 +180,11 @@ jobs:
             sudo apt-get install -y -q valgrind
           sudo sysctl -w kernel.perf_event_paranoid=1 || true
       - run: cargo build --release --locked -p ep9_bench -p ep9_cli
-      # Placeholder workload until the interpreter runs JS: `ep9` prints its version.
+      # A fixed T0 workload; it checks its own output, so a wrong answer fails the job.
       - name: Count instructions
         run: |
-          target/release/ep9-bench --runs 5 --warmup 1 --name "ep9 (placeholder)" \
-            --out perf-ci-v0.json -- target/release/ep9
+          target/release/ep9-bench --runs 5 --warmup 1 --name "ep9 ci-v0" \
+            --out perf-ci-v0.json -- target/release/ep9 tools/bench/workloads/ci-v0.js
           cat perf-ci-v0.json
           { echo '```json'; cat perf-ci-v0.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
