@@ -91,9 +91,14 @@ fn sp_va_avoids_tsrs_range() {
         span.start
     );
     assert!(!overlaps(&span, &TSRS_RESERVATION));
-    // The first slot after the tsrs range is the first one tried.
-    assert_eq!(span.start, TSRS_RESERVATION.end);
-    assert_eq!(cage.slots_tried(), 1);
+    // The first slot after the tsrs range is the first one tried. Something else in the process
+    // (other tests reserve cages at random slots) can hold it; then the search moves up from it.
+    assert!(span.start >= TSRS_RESERVATION.end);
+    if span.start == TSRS_RESERVATION.end {
+        assert_eq!(cage.slots_tried(), 1);
+    } else {
+        assert!(cage.slots_tried() > 1);
+    }
 }
 
 /// A slot that is in use is skipped (unix: the kernel moves the mapping and we give it back;
