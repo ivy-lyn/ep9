@@ -46,8 +46,7 @@ pub struct Cx {
 
 const _: () = assert!(core::mem::offset_of!(Cx, table) == 0);
 
-/// (a) match loop, plus a copy that counts dispatches. Debug builds on every target and the
-/// release build on x86-64 use it (`Variant::RELEASE`).
+/// (a) match loop, plus a copy that counts dispatches. Debug builds use it on every target.
 pub mod match_loop {
     use crate::dsl::{Flow, expand_match};
     crate::ops::for_each_op!(expand_match[run]);
@@ -78,15 +77,12 @@ pub enum Variant {
 }
 
 impl Variant {
-    /// The release expansion of this target (H15 decision of 2026-10-21, ADR
-    /// docs/adr/H15-interpreter-dispatch.md). aarch64: sibling calls. x86-64 (SysV and Win64):
-    /// the match loop. LLVM copies its dispatch jump into every arm there, so it is already
-    /// threaded code. `cargo xtask disasm-check --match-loop` checks that shape.
-    pub const RELEASE: Variant = if cfg!(target_arch = "x86_64") {
-        Variant::Match
-    } else {
-        Variant::Sibling
-    };
+    /// The release expansion: sibling calls on every target (H15 ADR,
+    /// docs/adr/H15-interpreter-dispatch.md, T0 result of 2026-10-21). From the spike's first
+    /// result until then it was the match loop on x86-64, because LLVM threads this spike's
+    /// 20-opcode loop there. The real T0 loop is not threaded, and sibling calls were faster on
+    /// every sampled x86-64 model (docs/measurements/2026-10-21-t0-dispatch-x64.md).
+    pub const RELEASE: Variant = Variant::Sibling;
 
     pub const ALL: &[Variant] = &[
         Variant::Match,

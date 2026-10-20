@@ -120,7 +120,7 @@ An ADR whose row is built after M1 exit lists its parts, each with its own freez
 | H12 | No address identity | M0 | U | Draft | [H12-no-address-identity.md](H12-no-address-identity.md) |
 | H13 | Snapshot readiness and stable indices | Rules M0; index lists M1; built M4 (A1) | E | Not started | `H13-snapshot-stable-indices.md` |
 | H14 | Frames, calls, dispatch slots, pc→code registry | M0 wk3; Spike B + SP-Unit (M0 month 2); Spike C (M1) | E | Draft (2026-10-21) | [H14-frames-and-dispatch.md](H14-frames-and-dispatch.md) |
-| H15 | Interpreter dispatch | M0 wk2 | E | Draft (reopened and decided 2026-10-21: release expansion per target) | [H15-interpreter-dispatch.md](H15-interpreter-dispatch.md) |
+| H15 | Interpreter dispatch | M0 wk2 | E | Draft (reopened twice 2026-10-21; release expansion: sibling calls on every target) | [H15-interpreter-dispatch.md](H15-interpreter-dispatch.md) |
 | H16 | ICs and feedback; feedback schema = FactSnapshot schema | Slot kinds M0 wk4; frozen M1 exit | E | Not started | `H16-ics-and-feedback.md` |
 | H17 | Object layout | M1 (frozen at M1a) | U | Not started | `H17-object-layout.md` |
 | H18 | Elements kinds | M1a | U | Not started | `H18-elements-kinds.md` |
