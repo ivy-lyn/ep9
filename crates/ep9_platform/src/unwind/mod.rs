@@ -44,6 +44,9 @@ pub fn walk_native_stack(f: impl FnMut(usize) -> bool) {
 /// [`walk_native_stack`] into a vector of at most `max` instruction pointers.
 pub fn native_return_addresses(max: usize) -> Vec<usize> {
     let mut v = Vec::new();
+    if max == 0 {
+        return v;
+    }
     walk_native_stack(|ip| {
         v.push(ip);
         v.len() < max

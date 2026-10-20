@@ -182,3 +182,10 @@ fn native_walk_sees_this_function() {
         "no frame returns into the test function {me:#x}: {ips:x?}"
     );
 }
+
+#[test]
+fn native_return_addresses_honors_max() {
+    assert_eq!(super::native_return_addresses(0), []);
+    assert_eq!(super::native_return_addresses(1).len(), 1);
+    assert_eq!(super::native_return_addresses(2).len(), 2);
+}
