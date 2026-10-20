@@ -15,7 +15,7 @@ scopes (3):
   scope1 function outer=scope0 flags=[] slots=[]
   scope2 function outer=scope0 flags=[] slots=[]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=12 range=0..53
-  code (173 bytes):
+  code (181 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
       5 S> CreateEmptyObjectLiteral                     ; 71
       6    Star r0                                      ; 0c 00
@@ -68,31 +68,34 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
     114    SetPendingMessage                            ; 93
     115    Star r8                                      ; 0c 08
     117    Ldar r3                                      ; 0b 03
-    119    JumpIfTrue @158                              ; 7f 27
-    121 E> GetNamedProperty r1, k7, s12  ; k7 = String str5 "return" ; 21 01 07 0c
-    125    JumpIfUndefinedOrNull @158                   ; 87 21
-    127    Star r9                                      ; 0c 09
-    129    LdaZero                                      ; 03
-    130    TestReferenceEqual r5                        ; 51 05
-    132    JumpIfTrue @149                              ; 7f 11
+    119    JumpIfTrue @166                              ; 7f 2f
+    121    LdaZero                                      ; 03
+    122    TestReferenceEqual r5                        ; 51 05
+    124    JumpIfTrue @149                              ; 7f 19
+    126 E> GetNamedProperty r1, k7, s12  ; k7 = String str5 "return" ; 21 01 07 0c
+    130    JumpIfUndefinedOrNull @166                   ; 87 24
+    132    Star r9                                      ; 0c 09
     134 E> CallProperty0 r9, r1, s13                    ; 60 09 01 0d
-    138    JumpIfJSReceiver @158                        ; 88 14
+    138    JumpIfJSReceiver @166                        ; 88 1c
     140    Star r10                                     ; 0c 0a
     142 E> CallRuntime ThrowIteratorResultNotAnObject, r10 ; 68 01 00 0a 01
-    147    Jump @158                                    ; 7e 0b
+    147    Jump @166                                    ; 7e 13
     149    LdaCurrentContext                            ; 15
     150    Star r11                                     ; 0c 0b
-    152 E> CallProperty0 r9, r1, s13                    ; 60 09 01 0d
-    156    Jump @158                                    ; 7e 02
-    158    Ldar r8                                      ; 0b 08
-    160    SetPendingMessage                            ; 93
-    161    Ldar r5                                      ; 0b 05
-    163    SwitchOnSmi k8, [0]  ; k8 = JumpTable [+5]   ; 8a 08 00
-    166    Jump @171                                    ; 7e 05
-    168    Ldar r6                                      ; 0b 06
-    170 E> ReThrow                                      ; 91
-    171    LdaUndefined                                 ; 05
-    172    Return                                       ; 92
+    152 E> GetNamedProperty r1, k7, s12  ; k7 = String str5 "return" ; 21 01 07 0c
+    156    JumpIfUndefinedOrNull @166                   ; 87 0a
+    158    Star r9                                      ; 0c 09
+    160 E> CallProperty0 r9, r1, s13                    ; 60 09 01 0d
+    164    Jump @166                                    ; 7e 02
+    166    Ldar r8                                      ; 0b 08
+    168    SetPendingMessage                            ; 93
+    169    Ldar r5                                      ; 0b 05
+    171    SwitchOnSmi k8, [0]  ; k8 = JumpTable [+5]   ; 8a 08 00
+    174    Jump @179                                    ; 7e 05
+    176    Ldar r6                                      ; 0b 06
+    178 E> ReThrow                                      ; 91
+    179    LdaUndefined                                 ; 05
+    180    Return                                       ; 92
   constants (9):
       0 String str0 "f"
       1 Function f1
@@ -120,8 +123,8 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      13 Call
   handlers (2):
         [48, 102) -> @108 context=r7 uncaught
-        [152, 156) -> @158 context=r11 caught
-  positions (20):
+        [152, 164) -> @166 context=r11 caught
+  positions (21):
       0 S 0 (1:1)
       5 S 4 (1:5)
      10 E 4 (1:5)
@@ -137,11 +140,12 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
      77 E 34 (1:35)
      95 E 39 (1:40)
      99 E 35 (1:36)
-    121 E 34 (1:35)
+    126 E 34 (1:35)
     134 E 34 (1:35)
     142 E 34 (1:35)
     152 E 34 (1:35)
-    170 E 34 (1:35)
+    160 E 34 (1:35)
+    178 E 34 (1:35)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=9..22
   code (2 bytes):
       0    LdaUndefined                                 ; 05

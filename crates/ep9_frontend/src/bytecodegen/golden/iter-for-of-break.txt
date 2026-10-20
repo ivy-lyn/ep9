@@ -38,7 +38,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
       5 E 0 (1:1)
      15 E 0 (1:1)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=13 range=0..65
-  code (164 bytes):
+  code (172 bytes):
       0 S> CreateBlockContext k0  ; k0 = Scope scope2   ; 76 00
       2    PushContext r4                               ; 13 04
       4    LdaTheHole                                   ; 07
@@ -89,31 +89,34 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
     105    SetPendingMessage                            ; 93
     106    Star r9                                      ; 0c 09
     108    Ldar r2                                      ; 0b 02
-    110    JumpIfTrue @149                              ; 7f 27
-    112 E> GetNamedProperty r0, k5, s9  ; k5 = String str5 "return" ; 21 00 05 09
-    116    JumpIfUndefinedOrNull @149                   ; 87 21
-    118    Star r10                                     ; 0c 0a
-    120    LdaZero                                      ; 03
-    121    TestReferenceEqual r5                        ; 51 05
-    123    JumpIfTrue @140                              ; 7f 11
+    110    JumpIfTrue @157                              ; 7f 2f
+    112    LdaZero                                      ; 03
+    113    TestReferenceEqual r5                        ; 51 05
+    115    JumpIfTrue @140                              ; 7f 19
+    117 E> GetNamedProperty r0, k5, s9  ; k5 = String str5 "return" ; 21 00 05 09
+    121    JumpIfUndefinedOrNull @157                   ; 87 24
+    123    Star r10                                     ; 0c 0a
     125 E> CallProperty0 r10, r0, s10                   ; 60 0a 00 0a
-    129    JumpIfJSReceiver @149                        ; 88 14
+    129    JumpIfJSReceiver @157                        ; 88 1c
     131    Star r11                                     ; 0c 0b
     133 E> CallRuntime ThrowIteratorResultNotAnObject, r11 ; 68 01 00 0b 01
-    138    Jump @149                                    ; 7e 0b
+    138    Jump @157                                    ; 7e 13
     140    LdaCurrentContext                            ; 15
     141    Star r12                                     ; 0c 0c
-    143 E> CallProperty0 r10, r0, s10                   ; 60 0a 00 0a
-    147    Jump @149                                    ; 7e 02
-    149    Ldar r9                                      ; 0b 09
-    151    SetPendingMessage                            ; 93
-    152    Ldar r5                                      ; 0b 05
-    154    SwitchOnSmi k6, [0]  ; k6 = JumpTable [+5]   ; 8a 06 00
-    157    Jump @162                                    ; 7e 05
-    159    Ldar r6                                      ; 0b 06
-    161 E> ReThrow                                      ; 91
-    162    LdaUndefined                                 ; 05
-    163    Return                                       ; 92
+    143 E> GetNamedProperty r0, k5, s9  ; k5 = String str5 "return" ; 21 00 05 09
+    147    JumpIfUndefinedOrNull @157                   ; 87 0a
+    149    Star r10                                     ; 0c 0a
+    151 E> CallProperty0 r10, r0, s10                   ; 60 0a 00 0a
+    155    Jump @157                                    ; 7e 02
+    157    Ldar r9                                      ; 0b 09
+    159    SetPendingMessage                            ; 93
+    160    Ldar r5                                      ; 0b 05
+    162    SwitchOnSmi k6, [0]  ; k6 = JumpTable [+5]   ; 8a 06 00
+    165    Jump @170                                    ; 7e 05
+    167    Ldar r6                                      ; 0b 06
+    169 E> ReThrow                                      ; 91
+    170    LdaUndefined                                 ; 05
+    171    Return                                       ; 92
   constants (7):
       0 Scope scope2
       1 String str2 "next"
@@ -136,8 +139,8 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
      10 Call
   handlers (2):
         [28, 93) -> @99 context=r7 uncaught
-        [143, 147) -> @149 context=r12 caught
-  positions (17):
+        [143, 155) -> @157 context=r12 caught
+  positions (18):
       0 S 16 (1:17)
      13 E 30 (1:31)
      19 E 16 (1:17)
@@ -150,11 +153,12 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
      74 S 42 (1:43)
      78 S 49 (1:50)
      84 E 49 (1:50)
-    112 E 16 (1:17)
+    117 E 16 (1:17)
     125 E 16 (1:17)
     133 E 16 (1:17)
     143 E 16 (1:17)
-    161 E 16 (1:17)
+    151 E 16 (1:17)
+    169 E 16 (1:17)
 function f2 arrow name=- parent=f1 outer_scope=scope3 flags=[simple-params] params=0 length=0 regs=0 range=50..57
   code (5 bytes):
       0 S> LdaCurrentContextSlot [0]                    ; 18 00

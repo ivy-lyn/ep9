@@ -35,7 +35,7 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
       5 E 0 (1:1)
      15 E 0 (1:1)
 function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=13 range=0..65
-  code (146 bytes):
+  code (154 bytes):
       0 S> LdaZero                                      ; 03
       1    Star r0                                      ; 0c 00
       3 S> Ldar a0                                      ; 0b fe
@@ -76,33 +76,36 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
      84    SetPendingMessage                            ; 93
      85    Star r9                                      ; 0c 09
      87    Ldar r4                                      ; 0b 04
-     89    JumpIfTrue @128                              ; 7f 27
-     91 E> GetNamedProperty r2, k3, s8  ; k3 = String str4 "return" ; 21 02 03 08
-     95    JumpIfUndefinedOrNull @128                   ; 87 21
-     97    Star r10                                     ; 0c 0a
-     99    LdaZero                                      ; 03
-    100    TestReferenceEqual r6                        ; 51 06
-    102    JumpIfTrue @119                              ; 7f 11
+     89    JumpIfTrue @136                              ; 7f 2f
+     91    LdaZero                                      ; 03
+     92    TestReferenceEqual r6                        ; 51 06
+     94    JumpIfTrue @119                              ; 7f 19
+     96 E> GetNamedProperty r2, k3, s8  ; k3 = String str4 "return" ; 21 02 03 08
+    100    JumpIfUndefinedOrNull @136                   ; 87 24
+    102    Star r10                                     ; 0c 0a
     104 E> CallProperty0 r10, r2, s9                    ; 60 0a 02 09
-    108    JumpIfJSReceiver @128                        ; 88 14
+    108    JumpIfJSReceiver @136                        ; 88 1c
     110    Star r11                                     ; 0c 0b
     112 E> CallRuntime ThrowIteratorResultNotAnObject, r11 ; 68 01 00 0b 01
-    117    Jump @128                                    ; 7e 0b
+    117    Jump @136                                    ; 7e 13
     119    LdaCurrentContext                            ; 15
     120    Star r12                                     ; 0c 0c
-    122 E> CallProperty0 r10, r2, s9                    ; 60 0a 02 09
-    126    Jump @128                                    ; 7e 02
-    128    Ldar r9                                      ; 0b 09
-    130    SetPendingMessage                            ; 93
-    131    Ldar r6                                      ; 0b 06
-    133    SwitchOnSmi k4, [0]  ; k4 = JumpTable [+5]   ; 8a 04 00
-    136    Jump @141                                    ; 7e 05
-    138    Ldar r7                                      ; 0b 07
-    140 E> ReThrow                                      ; 91
-    141 S> Ldar r0                                      ; 0b 00
-    143    Return                                       ; 92
-    144    LdaUndefined                                 ; 05
-    145    Return                                       ; 92
+    122 E> GetNamedProperty r2, k3, s8  ; k3 = String str4 "return" ; 21 02 03 08
+    126    JumpIfUndefinedOrNull @136                   ; 87 0a
+    128    Star r10                                     ; 0c 0a
+    130 E> CallProperty0 r10, r2, s9                    ; 60 0a 02 09
+    134    Jump @136                                    ; 7e 02
+    136    Ldar r9                                      ; 0b 09
+    138    SetPendingMessage                            ; 93
+    139    Ldar r6                                      ; 0b 06
+    141    SwitchOnSmi k4, [0]  ; k4 = JumpTable [+5]   ; 8a 04 00
+    144    Jump @149                                    ; 7e 05
+    146    Ldar r7                                      ; 0b 07
+    148 E> ReThrow                                      ; 91
+    149 S> Ldar r0                                      ; 0b 00
+    151    Return                                       ; 92
+    152    LdaUndefined                                 ; 05
+    153    Return                                       ; 92
   constants (5):
       0 String str1 "next"
       1 String str2 "done"
@@ -122,8 +125,8 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
       9 Call
   handlers (2):
         [22, 72) -> @78 context=r8 uncaught
-        [122, 126) -> @128 context=r12 caught
-  positions (16):
+        [122, 134) -> @136 context=r12 caught
+  positions (17):
       0 S 20 (1:21)
       3 S 27 (1:28)
       7 E 43 (1:44)
@@ -134,9 +137,10 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
      44 E 27 (1:28)
      57 S 46 (1:47)
      63 E 46 (1:47)
-     91 E 27 (1:28)
+     96 E 27 (1:28)
     104 E 27 (1:28)
     112 E 27 (1:28)
     122 E 27 (1:28)
-    140 E 27 (1:28)
-    141 S 54 (1:55)
+    130 E 27 (1:28)
+    148 E 27 (1:28)
+    149 S 54 (1:55)

@@ -607,6 +607,35 @@ fn golden_cases_have_a_consistent_context_chain() {
     assert!(errors.is_empty(), "{}", errors.join("\n"));
 }
 
+/// IteratorClose with a throw completion keeps the original exception even when the
+/// `return` lookup throws (ECMA-262 7.4.11 step 4): the lookup is under the handler that
+/// ignores errors, like the call. With other completions the lookup errors propagate.
+#[test]
+fn iterator_close_on_a_throw_ignores_errors_of_the_return_lookup() {
+    use ep9_bytecode::{Constant, HandlerKind, Instructions, UnitString};
+    let name = UnitString::new("return");
+    for src in ["for (var x of a) {}", "var [y] = a;", "[z] = a;"] {
+        let unit = compile_case(Sloppy, src).unwrap();
+        let (u, f) = (unit.unit(), &unit.unit().functions[0]);
+        let lookups: Vec<u32> = Instructions::new(&f.bytecode)
+            .map(|i| i.expect("verified code decodes"))
+            .filter(|i| {
+                i.opcode == Opcode::GetNamedProperty
+                    && matches!(&f.constants[i.unsigned(1) as usize],
+                        Constant::String(s) if u.strings[s.index()] == name)
+            })
+            .map(|i| i.offset)
+            .collect();
+        let caught = |at: &&u32| {
+            f.handlers
+                .iter()
+                .any(|h| h.kind == HandlerKind::Caught && (h.start..h.end).contains(*at))
+        };
+        let ignored = lookups.iter().filter(caught).count();
+        assert_eq!((ignored, lookups.len() - ignored), (1, 1), "{src}");
+    }
+}
+
 #[test]
 fn entry_points() {
     assert!(compile_script("1", Strictness::Sloppy).is_ok());

@@ -631,17 +631,15 @@ impl<'a> FnGen<'a, '_> {
         self.b.get_named_property(value, k_value, s).star(value);
     }
 
-    /// IteratorClose (V8 BuildFinalizeIteration): token 0 means a throw completion, so errors
-    /// from `return()` are ignored; otherwise the result must be an object.
+    /// IteratorClose (ECMA-262 7.4.11; V8 BuildFinalizeIteration): token 0 means a throw
+    /// completion, so errors from the `return` lookup and from `return()` are ignored (the
+    /// original exception wins); otherwise they propagate and the result must be an object.
     pub(crate) fn close_iterator(&mut self, iter: Register, token: Register) {
         let m = self.mark();
         let method = self.temp();
         let done = self.b.new_label();
         let k = self.str_const("return");
         let s = self.slot(FeedbackSlotKind::LoadNamed);
-        self.b.get_named_property(iter, k, s);
-        self.b.jump_if_undefined_or_null(done);
-        self.b.star(method);
         let call = self.slot(FeedbackSlotKind::Call);
         let throw_path = self.b.new_label();
         self.b
@@ -649,18 +647,24 @@ impl<'a> FnGen<'a, '_> {
             .test_reference_equal(token)
             .jump_if_true(throw_path);
         // Normal completion: the result must be an object.
+        self.b.get_named_property(iter, k, s);
+        self.b.jump_if_undefined_or_null(done);
+        self.b.star(method);
         self.b.call_property0(method, iter, call);
         self.b.jump_if_js_receiver(done);
         let r = self.temp();
         self.b.star(r);
         self.runtime_with(RuntimeId::ThrowIteratorResultNotAnObject, &[r]);
         self.b.jump(done);
-        // Throw completion: call, ignore any exception.
+        // Throw completion: look up and call, ignore any exception (a `return` getter too).
         self.b.bind(throw_path);
         let ctx = self.temp();
         self.b.lda_current_context().star(ctx);
         let (start, end, handler) = (self.b.new_label(), self.b.new_label(), self.b.new_label());
         self.b.bind(start);
+        self.b.get_named_property(iter, k, s);
+        self.b.jump_if_undefined_or_null(done);
+        self.b.star(method);
         self.b.call_property0(method, iter, call);
         self.b.bind(end);
         self.b
