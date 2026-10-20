@@ -51,7 +51,7 @@ Concrete plan for ep9:
 
 ## Findings
 - [high] No TS type is a sound basis for unchecked codegen: 24/24 strict-mode programs type-check with 0 errors in tsc 6.0.3 --strict, tsc 7.0.2 and tsrs 0.18, and at runtime produce 47 values that contradict their declared types.
-  EVIDENCE: Suite: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/ts-type-trust/unsound/src/c01..c24*.ts with tsconfig strict, target es2022.
+  EVIDENCE: Suite: scratchpad/work/ts-type-trust/unsound/src/c01..c24*.ts with tsconfig strict, target es2022.
 Commands: `node node_modules/typescript/bin/tsc -p src` (exit 0), `node node_modules/ts7/bin/tsc -p src --noEmit` (exit 0), `target-tsrs/release/tsrs -p src --noEmit` (exit 0; 'Version 7.1.0-dev (tsrs 0.18.0-ts7.1.0-dev.20260929)'). Running the output prints 47 'LIE' lines (unsound/run.log).
 Examples:
 - JSON.parse any->number: runtime string
@@ -77,7 +77,7 @@ Examples:
 - [high] The strictest optional flags close only 3 of the 24 holes, and do it by making types less informative: with noUncheckedIndexedAccess, every arr[i] becomes T|undefined.
   EVIDENCE: `tsc -p src --noEmit --noUncheckedIndexedAccess --exactOptionalPropertyTypes --noPropertyAccessFromIndexSignature` reports errors only in c06 (index-sig/array element read), c07 (Record read) and c08 (`{a: undefined}`). tsc7 and tsrs both report 4 errors with the first two flags. The array-covariance write, width->optional re-add, casts, eval, Proxy, prototype mutation, enum and narrowing cases all still compile. `--erasableSyntaxOnly` additionally rejects only enums and parameter properties.
 - [high] Engine-relevant TS-only semantics depend on tsconfig: the same class source gives different object shapes under useDefineForClassFields false vs true, and node's type stripping always uses [[Define]]. 4 of the 6 measured codebases compile with [[Set]] semantics (target<ES2022 default, or vscode's explicit false), and 50-63% of their class fields have no initializer.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/ts-type-trust/fields/f.ts:
+  EVIDENCE: scratchpad/work/ts-type-trust/fields/f.ts:
 - tsc --target es2020: `own keys of D instance: []` and `base setter ran with 1`, e.x=7
 - tsc --target es2022 and `node f.ts` (strip-types): `["z"]`, e.x=1 own x
 Tsconfigs: vscode src/tsconfig.base.json has useDefineForClassFields:false; the TS compiler, zod and pixijs target es2020. Fields without initializer: pixijs 893/1779, vscode 1192/1901 (results/summary.txt).
@@ -186,20 +186,20 @@ Porffor (deda494, 2026-10-19) has `optTypes` on by default for .ts input: codege
 - Are there cheap whole-program facts (no subclass, no delete/defineProperty on class X, no eval in module) that tsrs plus an engine-side linker could prove for typical app bundles? This needs measuring on bundled apps, not libraries.
 
 ## Artifacts
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/ts-type-trust/unsound/src (24 unsoundness cases c01..c24 + tsconfig.json)
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/ts-type-trust/unsound/run.log
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/ts-type-trust/analyze.js
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/ts-type-trust/summarize.js
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/ts-type-trust/results/summary.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/ts-type-trust/results/typescript.json
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/ts-type-trust/results/zod.json
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/ts-type-trust/results/datefns.json
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/ts-type-trust/results/hono.json
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/ts-type-trust/results/pixijs.json
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/ts-type-trust/results/vscode.json
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/ts-type-trust/fields/f.ts
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/ts-type-trust/tscheck/deopt.log
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/ts-type-trust/tscheck/warm.js
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/ts-type-trust/tscheck/tsconfig.ts-compiler.json
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/ts-type-trust/target-tsrs/release/tsrs
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/ts-type-trust/papers (safets.txt, strongscript.txt, takikawa16.txt, greenman-icfp18.txt, roberts-ecoop19.txt, iiswc16.txt, nom.txt, sts-mplr19.txt, hermes-TypedLanguage.md, hermes-blog-*.md)
+- scratchpad/work/ts-type-trust/unsound/src (24 unsoundness cases c01..c24 + tsconfig.json)
+- scratchpad/work/ts-type-trust/unsound/run.log
+- scratchpad/work/ts-type-trust/analyze.js
+- scratchpad/work/ts-type-trust/summarize.js
+- scratchpad/work/ts-type-trust/results/summary.txt
+- scratchpad/work/ts-type-trust/results/typescript.json
+- scratchpad/work/ts-type-trust/results/zod.json
+- scratchpad/work/ts-type-trust/results/datefns.json
+- scratchpad/work/ts-type-trust/results/hono.json
+- scratchpad/work/ts-type-trust/results/pixijs.json
+- scratchpad/work/ts-type-trust/results/vscode.json
+- scratchpad/work/ts-type-trust/fields/f.ts
+- scratchpad/work/ts-type-trust/tscheck/deopt.log
+- scratchpad/work/ts-type-trust/tscheck/warm.js
+- scratchpad/work/ts-type-trust/tscheck/tsconfig.ts-compiler.json
+- scratchpad/work/ts-type-trust/target-tsrs/release/tsrs
+- scratchpad/work/ts-type-trust/papers (safets.txt, strongscript.txt, takikawa16.txt, greenman-icfp18.txt, roberts-ecoop19.txt, iiswc16.txt, nom.txt, sts-mplr19.txt, hermes-TypedLanguage.md, hermes-blog-*.md)

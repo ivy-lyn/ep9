@@ -67,14 +67,14 @@ VERDICT: suitable WITH CONDITIONS. Not suitable as an unmodified, version-pinned
 - Parse throughput against other Rust parsers is covered by the parser-perf workstream, not this one.
 
 ## Artifacts
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-arch/harness/src/main.rs
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-arch/harness/Cargo.toml
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-arch/cases.sh
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-arch/cases.out
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-arch/test262.tsv
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-arch/test262.results.tsv
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-arch/test262.regex.tsv
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-arch/test262.missed.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-arch/scripts/manifest.py
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-arch/scripts/analyze.py
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-arch/parser_commits.tsv
+- scratchpad/work/parser-arch/harness/src/main.rs
+- scratchpad/work/parser-arch/harness/Cargo.toml
+- scratchpad/work/parser-arch/cases.sh
+- scratchpad/work/parser-arch/cases.out
+- scratchpad/work/parser-arch/test262.tsv
+- scratchpad/work/parser-arch/test262.results.tsv
+- scratchpad/work/parser-arch/test262.regex.tsv
+- scratchpad/work/parser-arch/test262.missed.txt
+- scratchpad/work/parser-arch/scripts/manifest.py
+- scratchpad/work/parser-arch/scripts/analyze.py
+- scratchpad/work/parser-arch/parser_commits.tsv

@@ -104,16 +104,16 @@ nbody (ms):
 - Static Hermes untyped native: 2238-2258
 - Hermes JIT typed: 705-798
 
-Result files: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/richards-results.txt and /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/nbody-results.txt.
+Result files: scratchpad/work/aot-precedents/richards-results.txt and scratchpad/work/aot-precedents/nbody-results.txt.
 
-Meta's own table (2026-04-24, Richards x400) agrees: typed native 65ms vs Node 19ms (3.4x), 13x faster than QuickJS. Source: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/facebook_hermes/benchmarks/octane/richards-typed/benchmarks.md
+Meta's own table (2026-04-24, Richards x400) agrees: typed native 65ms vs Node 19ms (3.4x), 13x faster than QuickJS. Source: scratchpad/repos/facebook_hermes/benchmarks/octane/richards-typed/benchmarks.md
 - [high] Why Static Hermes typed code stays slower than V8:
 - `number` is still a NaN-boxed double, and there is no native int type. Bitwise ops cost fjcvtzs/scvtf round trips.
 - Objects have 5 direct slots. Field 6 and later goes through a runtime call (__sh_prload_indirect); moving one hot field saved 8%.
 - There is no narrowing across this.field reads, so about 20 redundant CheckedTypeCasts remain per hot method.
 - Calls through `any` return need casts.
 - Little inlining.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/facebook_hermes/benchmarks/octane/richards-typed/optimization-notes.md (sections 'Numbers are NaN-boxed doubles', 'Property access: direct slots vs indirect', 'Redundant CheckedTypeCastInst'; result 72ms->66ms)
+  EVIDENCE: scratchpad/repos/facebook_hermes/benchmarks/octane/richards-typed/optimization-notes.md (sections 'Numbers are NaN-boxed doubles', 'Property access: direct slots vs indirect', 'Redundant CheckedTypeCastInst'; result 72ms->66ms)
 - [high] Static Hermes typed mode is a different language from TS/JS, not 'JS plus types':
 - Flow syntax; TS only partially, via -parse-ts converted to Flow.
 - Exact objects with a fixed property order; nominal classes.
@@ -122,9 +122,9 @@ Meta's own table (2026-04-24, Richards x400) agrees: typed native 65ms vs Node 1
 - Unannotated functions are not type-checked.
 - Not supported: spread call arguments, rest destructuring, async/generator methods, computed class keys, optional calls.
 - Soundness is enforced at runtime. Each of these throws instead of following JS behavior: an `any` flowing into a typed variable, JSON.parse into `number`, writing a typed field through `any`, and reading arr[5] on a 3-element typed array.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/facebook_hermes/doc/TypedLanguage.md.
+  EVIDENCE: scratchpad/repos/facebook_hermes/doc/TypedLanguage.md.
 
-Experiment: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/sound/lie.flow.js, run with `shermes -typed -exec` and `hermes -typed`. Output:
+Experiment: scratchpad/work/aot-precedents/sound/lie.flow.js, run with `shermes -typed -exec` and `hermes -typed`. Output:
 - 'caught: TypeError: Checked cast failed' (twice)
 - 'TypeError: Cannot assign to read-only property x'
 - 'RangeError: array load index out of range'
@@ -143,16 +143,16 @@ In plain JS these would print 'a1', '71', NaN and undefined. The TS version fail
 RN 0.84 blog: https://reactnative.dev/blog/2026/02/11/react-native-0.84
 
 Hermes blog posts:
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/facebook_hermes/doc/blog/2025-07-15-static-h-performance-june-2025.md (charts read from images/2025-07-15-perf-hv32-jit.jpeg)
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/facebook_hermes/doc/blog/2025-11-02-hermes-compilation-runtime-modes.md
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/facebook_hermes/doc/blog/2024-12-19-static-hermes-update-dec-2024.md (the JIT gains on InterpDispatch2 (7.9x) and Mandelbrot (3.29x) come from types the compiler inferred)
+- scratchpad/repos/facebook_hermes/doc/blog/2025-07-15-static-h-performance-june-2025.md (charts read from images/2025-07-15-perf-hv32-jit.jpeg)
+- scratchpad/repos/facebook_hermes/doc/blog/2025-11-02-hermes-compilation-runtime-modes.md
+- scratchpad/repos/facebook_hermes/doc/blog/2024-12-19-static-hermes-update-dec-2024.md (the JIT gains on InterpDispatch2 (7.9x) and Mandelbrot (3.29x) come from types the compiler inferred)
 
 Talks:
 - https://speakerdeck.com/tmikov2023/compiling-a-real-world-cli-tool-to-native-with-static-hermes
 - RN EU 2023 deck: nbody 5511ms (interpreter) -> 565ms (typed native)
 - React Universe 2024 deck: 'Moderate speed ups for untyped code', and Amdahl's law cited as the limit set by untyped code.
 
-test262.fyi Hermes 41.80%: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/research/rust-engine-landscape.md:58
+test262.fyi Hermes 41.80%: scratchpad/research/rust-engine-landscape.md:58
 - [high] The strongest typed-AOT result I found is scriptc. It uses the TypeScript 7 checker and LLVM, gives classes exact C-struct layouts with unboxed f64 fields, and uses refcounting plus cycle collection.
 - nbody: 157-166ms, 1.25-1.4x faster than V8 (196-223) and JSC (231-237), and bit-identical output.
 - Richards: 259-334ms, about V8 Maglev speed (263-308) and 1.4x slower than TurboFan.
@@ -160,9 +160,9 @@ test262.fyi Hermes 41.80%: /private/tmp/claude-501/-Users-brooklyn-workspace-git
 - Class-field JS with no annotations compiled (98% static) but then threw at runtime: 'TypeError: expected null | undefined ... got object'. That is valid JS rejected.
   EVIDENCE: npm scriptc 0.3.6 (2026-10-17). Install scripts were blocked by npm, so I ran @scriptc/cli-darwin-arm64 after chmod +x, with PATH=/usr/bin first for Apple clang.
 
-Results: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/scriptc-results.txt
+Results: scratchpad/work/aot-precedents/scriptc-results.txt
 
-The LLVM IR shows `%sc_o__x25_cx311_Body = type { i64, double x7, ptr }`: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/scriptc/nbody-typed.ll line 24.
+The LLVM IR shows `%sc_o__x25_cx311_Body = type { i64, double x7, ptr }`: scratchpad/work/aot-precedents/scriptc/nbody-typed.ll line 24.
 
 Docs: https://scriptc.dev/docs/limitations
 - refuses eval/new Function, prototype reflection, and object-vs-primitive ==
@@ -171,13 +171,13 @@ Docs: https://scriptc.dev/docs/limitations
 
 tests/test262/README.md in vercel-labs/scriptc says its pass counts 'must not be presented as whole-suite ECMAScript conformance'.
 - [high] Trusting TS annotations without checks (unsound) produces wrong results. Porffor applies TS annotations by default (optTypes is on by default) and does not check them.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/sound/lie.ts
+  EVIDENCE: scratchpad/work/aot-precedents/sound/lie.ts
 
 Code tested: function add1(x:number){return x+1}; add1("a" as any), and let n:number = JSON.parse('"7"'); n+1.
 - node strip-types prints 'a1' and '71'.
 - Porffor (both `porf lie.ts` and native) prints 17 and 16657.
 
-Source: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/porffor/compiler/prefs.js line 1 (optTypes on by default), and codegen.js:2576-2660 (extractTypeAnnotation, promotes locals to raw f64).
+Source: scratchpad/work/aot-precedents/porffor/compiler/prefs.js line 1 (optTypes on by default), and codegen.js:2576-2660 (extractTypeAnnotation, promotes locals to raw f64).
 
 Perry docs also say 'declared types aren't enforced at runtime' and that prototype edits don't change class layout: https://docs.perryts.com/language/limitations.html
 - [high] Porffor (JS to C to native AOT; types not used for speed, measured):
@@ -187,15 +187,15 @@ Perry docs also say 'declared types aren't enforced at runtime' and that prototy
 - Values are 16-byte structs {f64 val; i32 type}.
 - Own test262 runner: 92.05% (49157/53404) on 2026-10-19, up from 69.5% on 2026-10-10. test262.fyi: 91.17%.
 - Its site claims a V8-v7 suite score of 6646, vs 5828 for Node --jitless and 3564 for QuickJS, and says it is 'not at JIT level yet'. Node/Bun with JITs score 13-17x higher.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/porffor-results.txt
+  EVIDENCE: scratchpad/work/aot-precedents/porffor-results.txt
 
-Generated C header: 'typedef struct jsval { f64 val; i32 type; } jsval;' in /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/bench/nbody.porf.c
+Generated C header: 'typedef struct jsval { f64 val; i32 type; } jsval;' in scratchpad/work/aot-precedents/bench/nbody.porf.c
 
-test262 history: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/porffor/test262/history.json
+test262 history: scratchpad/work/aot-precedents/porffor/test262/history.json
 
 Site claims: https://porffor.dev/
 - [high] Compiling through C/LLVM changes JS floating-point results unless FMA contraction is turned off. Porffor's clang -O3 build on arm64 prints nbody energy -0.16908313397886804. V8, JSC, shermes and scriptc all print -0.16908313397889935. Recompiling the same Porffor C with -ffp-contract=off gives the V8 value.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/bench/nbody.porf.c
+  EVIDENCE: scratchpad/work/aot-precedents/bench/nbody.porf.c
 
 I compiled it with `clang -O3 -ffp-contract=off` and with `clang -O3`. Porffor's own flags (compiler/index.js:128-135) have no -ffp-contract.
 - [high] AOT without types lands at baseline-JIT speed:
@@ -215,7 +215,7 @@ I compiled it with `clang -O3 -ffp-contract=off` and with `clang -O3`. Porffor's
 - DLS 2018 abstract: the majority of benchmarks are within 50% of one of the fastest JITs.
 - ECOOP 2022, sealed classes: +19% average, +56% best case.
 - 2024/25 Float Self-Tagging paper (Melançon, Serrano, Feeley) targets the boxed-float weakness.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/docs/icfp21.txt, lines 1365-1408, 1619-1620, 2111-2125 (from serrano-icfp21.pdf, doi 10.1145/3473575; tested against V8 6.8, JSC 4.0, SpiderMonkey 68).
+  EVIDENCE: scratchpad/work/aot-precedents/docs/icfp21.txt, lines 1365-1408, 1619-1620, 2111-2125 (from serrano-icfp21.pdf, doi 10.1145/3473575; tested against V8 6.8, JSC 4.0, SpiderMonkey 68).
 
 https://conf.researchr.org/event/dls-2018/dls-2018-javascript-aot-compilation
 https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.ECOOP.2022.24
@@ -231,21 +231,21 @@ manuel-serrano/hop was last pushed 2026-02-16.
   - nbody(100k): 4x vs 81x (20x slower)
   - binary(11): 1.7x vs 2.2x
 - It is more than 10x faster than Duktape, IoT.js and MicroPython, and runs in 16KB of RAM.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/docs/sts.txt, lines 215-240 and 676-716 (Figure 4), from https://www.microsoft.com/en-us/research/uploads/prod/2019/09/static-typescript-draft2.pdf. microsoft/pxt-common-packages was last pushed 2026-10-12.
+  EVIDENCE: scratchpad/work/aot-precedents/docs/sts.txt, lines 215-240 and 676-716 (Figure 4), from https://www.microsoft.com/en-us/research/uploads/prod/2019/09/static-typescript-draft2.pdf. microsoft/pxt-common-packages was last pushed 2026-10-12.
 - [high] SJS (Samsung, OOPSLA 2016): sound inferred types plus fixed object layout, compiled to C. It is competitive with V8 only at small iteration counts. At the largest runs it is 1.5x (navier) to 9.8x (raytrace) slower than V8, while using much less memory. For example, raytrace x1000 took 19.6s vs 2.0s on V8, and richards x10000 took 3.42s vs 1.48s.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/docs/sjs.txt, lines 1056-1075 and Figure 27 (lines 1885-1925), from https://arxiv.org/pdf/1608.07261
+  EVIDENCE: scratchpad/work/aot-precedents/docs/sjs.txt, lines 1056-1075 and Figure 27 (lines 1885-1925), from https://arxiv.org/pdf/1608.07261
 - [high] V8 strong mode / SoundScript (2015-2016):
 - Plan: a gradual, sound, TypeScript-based type system implemented inside the VM. Its 'opportunities' slide lists 'More optimisations! aggressive ones require soundness', 'No opt/deopt cycles of death', 'Reduced warm-up time' and 'Ahead-of-time compilation/optimisation'.
 - Its challenges slide lists 'Must not break lazy compilation ... precludes non-local type inference'.
 - 2016-02-11: Rossberg posted that V8 'reluctantly decided not to pursue strong mode further'. Reasons: class sealing fell apart under interop with ordinary 'weak' classes, 'hundreds of new code paths' in V8, and poor ES6 performance. The team no longer believed soundness could work 'by default' in JS, though opt-in might.
 - The code was removed from V8.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/docs/tc39-2015-012.txt (from Ecma/TC39/2015/012, lines 196-221 and 393-412)
+  EVIDENCE: scratchpad/work/aot-precedents/docs/tc39-2015-012.txt (from Ecma/TC39/2015/012, lines 196-221 and 393-412)
 
 https://groups.google.com/g/strengthen-js/c/ojj3TDxbHpQ/m/T6bTRDlnEwAJ
 https://2015.ecoop.org/details/STOP2015/3/Experiments-with-Strengthening-JavaScript
 https://codereview.chromium.org/1773653002 ('[strong] Remove all remainders of strong mode')
 - [high] The TC39 Type Annotations proposal is still Stage 1. The tc39/proposals table lists notes up to 2023-09, and the repo was last pushed 2025-08. The README says 'At runtime, a JavaScript engine ignores them, treating the types as comments'. Its FAQ says the authors are 'not aware of successful experiments in JavaScript that meaningfully beat dynamic type-driven JIT optimization', and that improving performance is 'explicitly a non-goal'. It cites TS* for runtime-check slowdown, and calls strong mode 'canceled ... in failure'.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/docs/type-annotations-README.md, lines 6, 12, 719-736 and 783.
+  EVIDENCE: scratchpad/work/aot-precedents/docs/type-annotations-README.md, lines 6, 12, 719-736 and 783.
 
 gh api repos/tc39/proposals/contents/stage-1-proposals.md (Type Annotations row)
 - [high] Measured startup on TypeScript 5.9.3 lib/typescript.js (9.1MB), loading it plus one transpileModule call (hyperfine -N, 10 runs, mean, busy machine).
@@ -259,9 +259,9 @@ Caches:
 - Node NODE_COMPILE_CACHE warm: 88ms vs 176ms (2.5MB cache).
 
 Empty-script floors: node 37ms, bun 32ms, qjs 2.7ms, hermes 5.7ms.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/startup-results.txt
+  EVIDENCE: scratchpad/work/aot-precedents/startup-results.txt
 
-Workload: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/startup/ts-load.js
+Workload: scratchpad/work/aot-precedents/startup/ts-load.js
 
 Bun docs claim 2x startup for tsc: https://bun.com/docs/bundler/bytecode. The V8 code cache blog reports a 20-40% compile-time cut: https://v8.dev/blog/improved-code-caching. Node's compile cache dropped its experimental status in v25.4: https://nodejs.org/api/module.html#module-compile-cache
 - [medium] Hermes' original reason for AOT bytecode (2019) was build-time compile, mmap'd bytecode and no JIT. Mattermost on Android: TTI 4.30s -> 2.29s, download size 41-42MB -> 19-22MB, memory 185 -> 136MB. On iOS, Callstack reports about 40% faster start than JSC. LLRT (QuickJS, no JIT, still 'experimental') claims up to 10x faster startup and 2x lower cost on Lambda, but says it is worse on long loops. Javy builds 1-16KB Wasm modules with dynamic linking, vs 869KB static.
@@ -270,7 +270,7 @@ Bun docs claim 2x startup for tsc: https://bun.com/docs/bundler/bytecode. The V8
 LLRT: gh api repos/awslabs/llrt/readme, lines 5-10 and 428-438.
 Javy: gh api repos/bytecodealliance/javy/readme, lines 20-22.
 - [high] TS type info could help even a JIT. TypeScript with target >= ES2022, and Node's stripTypeScriptTypes, turn `x: number;` into a class field `x;` initialized to undefined. On V8 that made nbody 6-7x slower: 1184-1428ms vs 196-201ms without the fields, and 196-199ms with `x = 0.5`. JSC was unaffected (231-237ms). Likely mechanism: the field representation starts as a heap object, never becomes Double, and every store boxes a HeapNumber. A TS-aware engine could seed the field representation from the declared type.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/nbody-results.txt (last lines)
+  EVIDENCE: scratchpad/work/aot-precedents/nbody-results.txt (last lines)
 
 TS emit check: ts.transpileModule on TS 5.9.3 shows ES2020 dropping the field, while ES2022 and ESNext emit 'x;'. node -e module.stripTypeScriptTypes keeps 'x        ;'.
 
@@ -280,7 +280,7 @@ The mechanism is inferred, not traced with --trace-generalization.
 - ts-aot (OffByOneStudios): 19 stars.
 - ASDAlexander77/TypeScriptCompiler (LLVM/MLIR, since 2021): 776 stars.
 - Third-party scriptc reports: startup about 1.8-12.5ms vs Node 62-68ms; memory 2-8MB vs 70-86MB. Hono needed --dynamic, which put 62% of the code in quickjs-ng and gave 18.4k vs Bun 70.5k req/s. One Hacker News user found a byte-array workload 7.5x slower than Node 24.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/docs/perry-README.md, lines 34-72
+  EVIDENCE: scratchpad/work/aot-precedents/docs/perry-README.md, lines 34-72
 
 https://docs.perryts.com/language/limitations.html
 
@@ -309,8 +309,8 @@ https://goto.ucsd.edu/~pvekris/docs/safets.pdf (POPL 2015)
 - scriptc: static code plus a quickjs-ng fallback.
 - Hopc: eval runs in the Bigloo interpreter.
 - weval: the interpreter stays the fallback.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/facebook_hermes/doc/blog/2025-11-02-hermes-compilation-runtime-modes.md
-/private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/facebook_hermes/doc/blog/2024-12-23-compiling-javascript-to-wasm.md, line 35
+  EVIDENCE: scratchpad/repos/facebook_hermes/doc/blog/2025-11-02-hermes-compilation-runtime-modes.md
+scratchpad/repos/facebook_hermes/doc/blog/2024-12-23-compiling-javascript-to-wasm.md, line 35
 
 scriptc limitations page; icfp21.txt lines 1394-1400.
 
@@ -333,23 +333,23 @@ scriptc limitations page; icfp21.txt lines 1394-1400.
 - What do test262 pass rates look like for typed-mode subsets? None of Static Hermes typed, scriptc, Perry or AssemblyScript publish a whole-suite number.
 
 ## Artifacts
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/richards-results.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/nbody-results.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/porffor-results.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/scriptc-results.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/startup-results.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/run-bench.sh
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/bench
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/sound/lie.ts
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/sound/lie.flow.js
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/scriptc/nbody-typed.ll
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/hermes-build/bin/shermes
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/docs/icfp21.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/docs/sts.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/docs/sjs.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/docs/tc39-2015-012.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/docs/type-annotations-README.md
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/aot-precedents/docs/perry-README.md
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/facebook_hermes/doc/TypedLanguage.md
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/facebook_hermes/benchmarks/octane/richards-typed/benchmarks.md
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/facebook_hermes/benchmarks/octane/richards-typed/optimization-notes.md
+- scratchpad/work/aot-precedents/richards-results.txt
+- scratchpad/work/aot-precedents/nbody-results.txt
+- scratchpad/work/aot-precedents/porffor-results.txt
+- scratchpad/work/aot-precedents/scriptc-results.txt
+- scratchpad/work/aot-precedents/startup-results.txt
+- scratchpad/work/aot-precedents/run-bench.sh
+- scratchpad/work/aot-precedents/bench
+- scratchpad/work/aot-precedents/sound/lie.ts
+- scratchpad/work/aot-precedents/sound/lie.flow.js
+- scratchpad/work/aot-precedents/scriptc/nbody-typed.ll
+- scratchpad/work/aot-precedents/hermes-build/bin/shermes
+- scratchpad/work/aot-precedents/docs/icfp21.txt
+- scratchpad/work/aot-precedents/docs/sts.txt
+- scratchpad/work/aot-precedents/docs/sjs.txt
+- scratchpad/work/aot-precedents/docs/tc39-2015-012.txt
+- scratchpad/work/aot-precedents/docs/type-annotations-README.md
+- scratchpad/work/aot-precedents/docs/perry-README.md
+- scratchpad/repos/facebook_hermes/doc/TypedLanguage.md
+- scratchpad/repos/facebook_hermes/benchmarks/octane/richards-typed/benchmarks.md
+- scratchpad/repos/facebook_hermes/benchmarks/octane/richards-typed/optimization-notes.md

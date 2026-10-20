@@ -41,7 +41,7 @@ Keep tsrs for what it does best: the runtime's `check`/LSP tooling, and the TS-t
 
 ## Findings
 - [high] test262 parse-phase results (all of test/language, annexB, built-ins and intl402 except _FIXTURE files; positives = valid tests that must parse, negatives = parse-phase tests that must fail). oxc parser+semantic: 47357/47364 positives (99.99%) and 4653/4653 negatives (100%). oxc parser alone: 70.11% of negatives, so about 30% of early errors are caught only by oxc_semantic. boa 0.22 with annex-b: 99.58% / 99.79%. Brimstone parser+analyze with annex_b: 98.81% / 99.87%. swc 46.1.1: 99.57% / 66.69%. tsrs parser: 99.91% / 26.78%. tsrs parser+binder: 98.17% / 41.97%. None crashed.
-  EVIDENCE: Harness /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/frontend-alternatives/common/t262.rs. Per-parser failure lists are in .../frontend-alternatives/results_clean/*.fails.txt (oxc, boa, brimstone) and .../results/{swc,tsrs-parser,tsrs-parser+binder}.fails.txt. test262 commit d53ebc8b1931d9f1541e43d59650776e4b766248.
+  EVIDENCE: Harness scratchpad/work/frontend-alternatives/common/t262.rs. Per-parser failure lists are in .../frontend-alternatives/results_clean/*.fails.txt (oxc, boa, brimstone) and .../results/{swc,tsrs-parser,tsrs-parser+binder}.fails.txt. test262 commit d53ebc8b1931d9f1541e43d59650776e4b766248.
 - [high] oxc's 7 remaining false errors are all new Annex B tests where `f() = 1` must be a runtime error, not an early error. swc misses all regex-literal early errors and the RegExp property-escape errors (334 tests), plus about 495 class-related ones, and it rejects Annex B function declarations in if-statements. boa's misses are mostly in staged proposals (import defer, using / await using).
   EVIDENCE: grep FALSE/MISSED in results_clean/oxc-parser+semantic.fails.txt, results/swc.fails.txt, results_clean/boa.fails.txt
 - [high] oxc only gives full early errors if you also run SemanticBuilder::with_check_syntax_error(true) and set ParseOptions.parse_regular_expression=true. With the regex option off, my oxc+semantic run caught 92.3% instead of 100%.
@@ -118,25 +118,25 @@ Only Nova/Andromeda compile TS straight from the AST: Nova's `typescript` featur
 - What preparse speed do we target? A preparser that only checks syntax could plausibly reach 2x full-parse speed, but nobody has measured that in Rust. A prototype on top of the tsrs scanner would answer it.
 
 ## Artifacts
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/frontend-alternatives/common/t262.rs
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/frontend-alternatives/harness/src/main.rs
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/frontend-alternatives/harness/examples/reparse.rs
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/frontend-alternatives/harness/examples/ambig.rs
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/frontend-alternatives/harness/examples/retain.rs
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/frontend-alternatives/harness_oxc/src/main.rs
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/frontend-alternatives/harness_swc/src/main.rs
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/frontend-alternatives/harness_bs/src/main.rs
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/frontend-alternatives/results_clean/oxc-parser+semantic.fails.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/frontend-alternatives/results_clean/boa.fails.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/frontend-alternatives/results_clean/brimstone.fails.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/frontend-alternatives/results/tsrs-parser.fails.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/frontend-alternatives/results/tsrs-parser+binder.fails.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/frontend-alternatives/results/swc.fails.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/frontend-alternatives/bench_js.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/frontend-alternatives/bench_ts.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/frontend-alternatives/bench_bs.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/frontend-alternatives/bench_tsrs_jsdoc.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/nova
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/brimstone
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/oxc
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/test262
+- scratchpad/work/frontend-alternatives/common/t262.rs
+- scratchpad/work/frontend-alternatives/harness/src/main.rs
+- scratchpad/work/frontend-alternatives/harness/examples/reparse.rs
+- scratchpad/work/frontend-alternatives/harness/examples/ambig.rs
+- scratchpad/work/frontend-alternatives/harness/examples/retain.rs
+- scratchpad/work/frontend-alternatives/harness_oxc/src/main.rs
+- scratchpad/work/frontend-alternatives/harness_swc/src/main.rs
+- scratchpad/work/frontend-alternatives/harness_bs/src/main.rs
+- scratchpad/work/frontend-alternatives/results_clean/oxc-parser+semantic.fails.txt
+- scratchpad/work/frontend-alternatives/results_clean/boa.fails.txt
+- scratchpad/work/frontend-alternatives/results_clean/brimstone.fails.txt
+- scratchpad/work/frontend-alternatives/results/tsrs-parser.fails.txt
+- scratchpad/work/frontend-alternatives/results/tsrs-parser+binder.fails.txt
+- scratchpad/work/frontend-alternatives/results/swc.fails.txt
+- scratchpad/work/frontend-alternatives/bench_js.txt
+- scratchpad/work/frontend-alternatives/bench_ts.txt
+- scratchpad/work/frontend-alternatives/bench_bs.txt
+- scratchpad/work/frontend-alternatives/bench_tsrs_jsdoc.txt
+- scratchpad/repos/nova
+- scratchpad/repos/brimstone
+- scratchpad/repos/oxc
+- scratchpad/repos/test262
