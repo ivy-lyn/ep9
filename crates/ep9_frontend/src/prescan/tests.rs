@@ -106,6 +106,27 @@ fn regex_groups_and_classes_weigh_more() {
 }
 
 #[test]
+fn v_flag_classes_stay_open_after_a_nested_class() {
+    // With `v`, the outer class stays open after `[a]`: 3 levels at the innermost `[a]`.
+    assert_eq!(est("x = /[[a]&&[[a]&&[a]]]/v"), 1 + 1 + 3 * REGEX_WEIGHT);
+    assert_eq!(est("x = /[[a]--[[a]--[a]]]/gv"), 1 + 1 + 3 * REGEX_WEIGHT);
+    assert_eq!(
+        est("x = /[\\q{a|bc}[\\q{d}[e]]]/v"),
+        1 + 1 + 3 * REGEX_WEIGHT
+    );
+    assert_eq!(est("x = /[[[[a]]]]/v"), 1 + 1 + 4 * REGEX_WEIGHT);
+    // Closed classes do not add up; a group holds its classes.
+    assert_eq!(est("x = /[[a]][[b]]/v"), 1 + 1 + 2 * REGEX_WEIGHT);
+    assert_eq!(est("x = /([[a]])([b])/v"), 1 + 1 + 3 * REGEX_WEIGHT);
+    // Escaped brackets are characters.
+    assert_eq!(est("x = /[\\[\\[a\\]]/v"), 1 + 1 + REGEX_WEIGHT);
+    // Without `v`, classes do not nest: `[` in a class is a character, `]` outside one too.
+    assert_eq!(est("x = /[[a]&&[[a]&&[a]]]/"), 1 + 1 + REGEX_WEIGHT);
+    assert_eq!(est("x = /[[[[a]/u"), 1 + 1 + REGEX_WEIGHT);
+    assert_eq!(est("x = /]]]((a))/"), 1 + 1 + 2 * REGEX_WEIGHT);
+}
+
+#[test]
 fn keywords_in_key_position_are_names() {
     assert_eq!(est("({ if: 1, for: 2, while: 3 })"), 3);
     assert_eq!(est("a.if.for.while"), 1);

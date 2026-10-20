@@ -8,11 +8,13 @@
 //! ep9 form(n_cap - 1)  -> exit 0, "ok"
 //! ep9 form(n_cap)      -> exit 0, "ok"
 //! ep9 form(n_cap + 1)  -> exit 1, "RangeError: Maximum call stack size exceeded", no signal
+//! ep9 form(REGEX_FAR)  -> the same, for the regex forms
 //! ```
 //!
 //! The forms are those of M0 exit item 7: bracket (array, paren, object, block, function),
 //! binary, member, call, comma, template (also tagged) and class (body, heritage). The programs
-//! also run, so a deep tree that compiles must also execute.
+//! also run, so a deep tree that compiles must also execute. The regex forms nest `v`-flag
+//! classes, which only the pre-scan limits (a regex has no AST depth).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -35,6 +37,23 @@ fn wrap(prefix: &str, open: &str, mid: &str, close: &str, n: usize) -> String {
         s.push_str(close);
     }
     s.push_str(";\nprint('ok');\n");
+    s
+}
+
+/// A regex literal in a function that never runs (the interpreter has no RegExp yet).
+fn regex(open: &str, mid: &str, close: &str, flags: &str, n: usize) -> String {
+    let mut s = String::with_capacity((open.len() + close.len()) * n + 64);
+    s.push_str("function f() { return /");
+    for _ in 0..n {
+        s.push_str(open);
+    }
+    s.push_str(mid);
+    for _ in 0..n {
+        s.push_str(close);
+    }
+    s.push('/');
+    s.push_str(flags);
+    s.push_str("; }\nprint('ok');\n");
     s
 }
 
@@ -104,6 +123,23 @@ const FORMS: &[Form] = &[
     },
 ];
 
+/// With the `v` flag a class stays open after a nested class closes: `[[a]&&[[a]&&[a]]]` is 3
+/// levels deep although every lexical class `[...]` ends at its first `]`.
+const REGEX_FORMS: &[Form] = &[
+    Form {
+        name: "regex-class-v-intersection",
+        build: |n| regex("[[a]&&", "[a]", "]", "v", n),
+    },
+    Form {
+        name: "regex-class-v-subtraction",
+        build: |n| regex("[[a]--", "[a]", "]", "v", n),
+    },
+];
+
+/// Regex levels far above the cap: without the pre-scan they overflow the front-end worker's
+/// stack in debug and in release.
+const REGEX_FAR: usize = 1_000_000;
+
 fn accepted(src: &str) -> bool {
     match check_early_errors(src, SourceOpts::script(Strictness::Sloppy)) {
         Ok(()) => true,
@@ -115,7 +151,8 @@ fn accepted(src: &str) -> bool {
 /// The largest `n` whose program the front end accepts.
 fn cap_of(form: &Form) -> usize {
     // Every level adds at least one AST level, so AST_CAP + 1 levels are too deep; every form
-    // adds at most 4, so AST_CAP / 8 levels are fine.
+    // adds at most 4, so AST_CAP / 8 levels are fine. A regex level is 4 pre-scan units, so the
+    // cap of a regex form is near PRESCAN_CAP / 4, also in between.
     let (mut lo, mut hi) = (AST_CAP as usize / 8, AST_CAP as usize + 1);
     assert!(
         accepted(&(form.build)(lo)),
@@ -160,7 +197,8 @@ fn caps_hold_end_to_end() {
     let dir = temp_dir();
     let mut report = Vec::new();
     let mut failures = Vec::new();
-    for form in FORMS {
+    let regex_forms = REGEX_FORMS.iter().map(|form| (form, Some(REGEX_FAR)));
+    for (form, far) in FORMS.iter().map(|form| (form, None)).chain(regex_forms) {
         let cap = cap_of(form);
         for n in [cap - 1, cap] {
             let out = run_ep9(form, n, &dir);
@@ -174,18 +212,20 @@ fn caps_hold_end_to_end() {
                 ));
             }
         }
-        let out = run_ep9(form, cap + 1, &dir);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        if out.status.code() != Some(1)
-            || !stderr.contains("RangeError: Maximum call stack size exceeded")
-            || !out.stdout.is_empty()
-        {
-            failures.push(format!(
-                "{} n={} (cap+1): status {:?}, stderr {stderr}",
-                form.name,
-                cap + 1,
-                out.status
-            ));
+        for n in std::iter::once(cap + 1).chain(far) {
+            let out = run_ep9(form, n, &dir);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if out.status.code() != Some(1)
+                || !stderr.contains("RangeError: Maximum call stack size exceeded")
+                || !out.stdout.is_empty()
+            {
+                failures.push(format!(
+                    "{} n={n} (cap {cap}): status {:?}, stderr {}",
+                    form.name,
+                    out.status,
+                    stderr.chars().take(400).collect::<String>()
+                ));
+            }
         }
         report.push(format!("{}: cap {cap} levels", form.name));
     }

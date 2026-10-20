@@ -282,6 +282,59 @@ pub(crate) const FORMS: &[Form] = &[
         module: false,
         build: |n| format!("/{}/v", wrap("[", "a", "]", n)),
     },
+    // With `v`, a nested class can follow a closed one: the class stays open after its first `]`.
+    Form {
+        name: "regex-class-v-intersection",
+        gate: Gate::Extra,
+        module: false,
+        build: |n| format!("/{}/v", wrap("[[a]&&", "[a]", "]", n)),
+    },
+    Form {
+        name: "regex-class-v-subtraction",
+        gate: Gate::Extra,
+        module: false,
+        build: |n| format!("/{}/v", wrap("[[a]--", "[a]", "]", n)),
+    },
+    Form {
+        name: "regex-class-v-union",
+        gate: Gate::Extra,
+        module: false,
+        build: |n| format!("/{}/v", wrap("[\\q{a}", "a", "]", n)),
+    },
+    // Group kinds take different paths through oxc's regex parser.
+    Form {
+        name: "regex-group-u",
+        gate: Gate::Extra,
+        module: false,
+        build: |n| format!("/{}/u", wrap("(", "a", ")", n)),
+    },
+    Form {
+        name: "regex-named-group",
+        gate: Gate::Extra,
+        module: false,
+        build: |n| {
+            let open = (0..n).map(|i| format!("(?<g{i}>")).collect::<String>();
+            format!("/{open}a{}/", ")".repeat(n))
+        },
+    },
+    Form {
+        name: "regex-ignore-group",
+        gate: Gate::Extra,
+        module: false,
+        build: |n| format!("/{}/", wrap("(?:", "a", ")", n)),
+    },
+    Form {
+        name: "regex-lookahead",
+        gate: Gate::Extra,
+        module: false,
+        build: |n| format!("/{}/", wrap("(?=", "a", ")", n)),
+    },
+    Form {
+        name: "regex-lookbehind",
+        gate: Gate::Extra,
+        module: false,
+        build: |n| format!("/{}/", wrap("(?<=", "a", ")", n)),
+    },
     Form {
         name: "module-block",
         gate: Gate::Extra,

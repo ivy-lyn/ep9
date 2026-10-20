@@ -122,7 +122,7 @@ fn check_ast_form(name: &str) {
 fn check_regex_form(name: &str) {
     let form = form(name);
     let (ea, eb) = linear(|n| estimate(form, n));
-    assert_eq!(ea, REGEX_WEIGHT);
+    assert_eq!(ea, REGEX_WEIGHT, "{name}: estimate per level");
     let n_cap = usize::try_from((PRESCAN_CAP - eb) / ea).unwrap();
     assert!(run(form, n_cap).is_ok(), "{name} n={n_cap}");
     let above = run(form, n_cap + 1);
@@ -130,6 +130,13 @@ fn check_regex_form(name: &str) {
         layer_of(&above),
         Some(DepthLayer::PreScan),
         "{name}: {above:?}"
+    );
+    // Far beyond: more levels than the worker stack holds in either profile without layer 0.
+    let far = run(form, 1_000_000);
+    assert_eq!(
+        layer_of(&far),
+        Some(DepthLayer::PreScan),
+        "{name} n=1000000: {far:?}"
     );
 }
 
@@ -191,25 +198,42 @@ gate! {
     x_module_block => "module-block",
 }
 
-#[test]
-fn x_regex_group() {
-    check_regex_form("regex-group");
+macro_rules! regex_gate {
+    ($($test:ident => $form:literal,)*) => {
+        $(
+            #[test]
+            fn $test() {
+                check_regex_form($form);
+            }
+        )*
+        /// Every regex form in `forms.rs` has a test here.
+        const REGEX_GATED: &[&str] = &[$($form),*];
+    };
 }
 
-#[test]
-fn x_regex_class_v() {
-    check_regex_form("regex-class-v");
+regex_gate! {
+    x_regex_group => "regex-group",
+    x_regex_class_v => "regex-class-v",
+    // With `v`, a class stays open after a nested class closes.
+    x_regex_class_v_intersection => "regex-class-v-intersection",
+    x_regex_class_v_subtraction => "regex-class-v-subtraction",
+    x_regex_class_v_union => "regex-class-v-union",
+    x_regex_group_u => "regex-group-u",
+    x_regex_named_group => "regex-named-group",
+    x_regex_ignore_group => "regex-ignore-group",
+    x_regex_lookahead => "regex-lookahead",
+    x_regex_lookbehind => "regex-lookbehind",
 }
 
 #[test]
 fn every_form_is_gated() {
     for form in FORMS {
-        let regex = form.name.starts_with("regex-");
-        assert!(
-            regex || GATED.contains(&form.name),
-            "{} has no gate test",
-            form.name
-        );
+        let gated = if form.name.starts_with("regex-") {
+            REGEX_GATED
+        } else {
+            GATED
+        };
+        assert!(gated.contains(&form.name), "{} has no gate test", form.name);
     }
     let m0 = FORMS.iter().filter(|f| f.gate == Gate::M0).count();
     let m1 = FORMS.iter().filter(|f| f.gate == Gate::M1).count();

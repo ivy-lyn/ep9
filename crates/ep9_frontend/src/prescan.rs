@@ -1108,14 +1108,27 @@ impl<'s> Scanner<'s> {
     /// which runs inside oxc's parser, so their depth adds to the current depth.
     ///
     /// The token ends as in the lexical grammar (ECMA-262 §12.9.5): a class `[...]` ends at its
-    /// first unescaped `]`. With the `v` flag, classes nest in the pattern grammar; every `[`
-    /// inside a class counts as one more level, an upper bound.
+    /// first unescaped `]`. The class depth depends on the flags, which come after the pattern,
+    /// so the scan keeps both counts:
+    ///
+    /// ```text
+    /// no v flag   a class is 1 level; `[` inside it is a character        /[[[a]/      1 level
+    /// v flag      every unescaped `[` opens a class, every `]` closes one  /[[a]&&[b]]/v 2 levels
+    ///             (also after the lexical class ended at the first `]`)
+    /// ```
+    ///
+    /// With `v`, any other `[` or `]` (or a `(` inside a class) is a syntax error, where oxc's
+    /// regex parser stops; counting it only raises the estimate. oxc parses with `v` only when
+    /// its flags, a prefix of the flags read here, hold a `v`.
     fn regex(&mut self, start: usize) {
         self.i += 1;
         let mut groups = 0u32;
-        let mut deepest = 0u32;
         let mut in_class = false;
-        let mut class_levels = 0u32;
+        // Open classes with the `v` flag.
+        let mut sets = 0u32;
+        // Deepest groups + classes without and with the `v` flag.
+        let mut deepest = 0u32;
+        let mut deepest_v = 0u32;
         while self.i < self.src.len() {
             match self.src[self.i] {
                 b'\\' => self.i += 2,
@@ -1123,19 +1136,21 @@ impl<'s> Scanner<'s> {
                 b'\n' | b'\r' => break,
                 0xE2 if self.is_ls_ps(self.i) => break,
                 b'[' => {
-                    class_levels += 1;
                     in_class = true;
-                    deepest = deepest.max(groups + class_levels);
+                    sets += 1;
+                    deepest = deepest.max(groups + 1);
+                    deepest_v = deepest_v.max(groups + sets);
                     self.i += 1;
                 }
-                b']' if in_class => {
+                b']' => {
                     in_class = false;
-                    class_levels = 0;
+                    sets = sets.saturating_sub(1);
                     self.i += 1;
                 }
                 b'(' if !in_class => {
                     groups += 1;
                     deepest = deepest.max(groups);
+                    deepest_v = deepest_v.max(groups + sets);
                     self.i += 1;
                 }
                 b')' if !in_class => {
@@ -1153,6 +1168,9 @@ impl<'s> Scanner<'s> {
         // Flags.
         let flags_start = self.i;
         self.identifier_tail_from(flags_start);
+        if self.src[flags_start..self.i].contains(&b'v') {
+            deepest = deepest_v;
+        }
         let depth = self
             .top_ref()
             .depth()
