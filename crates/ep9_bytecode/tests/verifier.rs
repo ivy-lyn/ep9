@@ -529,6 +529,7 @@ fn handler_rules() {
         kind: HandlerKind::Caught,
     };
     verify(mk(&[h(0, 2, 3)])).unwrap();
+    verify(mk(&[h(0, 2, 2)])).unwrap(); // target at the range end
     verify(mk(&[h(0, 3, 3), h(1, 2, 3)])).unwrap(); // nested, outer first
     assert!(matches!(
         err(mk(&[h(1, 1, 3)])),
@@ -542,10 +543,13 @@ fn handler_rules() {
         err(mk(&[h(0, 2, 4)])),
         VerifyErrorKind::Handler(0, "target")
     ));
-    assert!(matches!(
-        err(mk(&[h(0, 2, 1)])),
-        VerifyErrorKind::Handler(0, "target inside its own range")
-    ));
+    for t in [0, 1] {
+        assert_eq!(
+            err(mk(&[h(1, 2, t)])),
+            VerifyErrorKind::Handler(0, "target before the range end"),
+            "target {t}"
+        );
+    }
     assert!(matches!(
         err(mk(&[h(1, 2, 3), h(0, 3, 3)])),
         VerifyErrorKind::Handler(1, "order")
@@ -564,6 +568,103 @@ fn handler_rules() {
     let mut u = with_code(&[O::LdaSmi as u8, 1, RET, RET]);
     u.functions[1].handlers = vec![h(0, 1, 3)];
     assert!(matches!(err(u), VerifyErrorKind::Handler(0, "range")));
+}
+
+/// A handler target before its range end is a back edge without an interrupt poll: `Throw`
+/// at 4 went to 0 and back to `Throw` forever, and `TerminateHandle::terminate` never
+/// stopped it. Such a unit must not load.
+#[test]
+fn handler_back_edge_does_not_load() {
+    // f1: 0 LdaCurrentContext, 1 Star r0, 3 LdaZero, 4 Throw, 5 Return; handler [3, 5) -> t.
+    let mk = |target| {
+        let mut u = with_code(&[
+            O::LdaCurrentContext as u8,
+            O::Star as u8,
+            0,
+            O::LdaZero as u8,
+            O::Throw as u8,
+            RET,
+        ]);
+        u.functions[1].handlers = vec![Handler {
+            start: 3,
+            end: 5,
+            target,
+            context: Register::local(0),
+            kind: HandlerKind::Caught,
+        }];
+        u
+    };
+    CompiledUnit::from_bytes(&mk(5).to_bytes()).unwrap();
+    for target in [0, 1] {
+        let e = CompiledUnit::from_bytes(&mk(target).to_bytes()).unwrap_err();
+        assert_eq!(
+            e,
+            LoadError::Verify(VerifyError {
+                function: Some(1),
+                offset: None,
+                kind: VerifyErrorKind::Handler(0, "target before the range end"),
+            }),
+            "target {target}"
+        );
+    }
+}
+
+/// `UnitBuilder::finish` output always loads: the verifier enforces the reader's rules for
+/// strings and flag bits.
+#[test]
+fn builder_output_meets_the_reader_rules() {
+    let build = |scope: ScopeFlags, func: FunctionFlags, s: UnitString| {
+        let mut u = UnitBuilder::new("x", common::script_options(true));
+        u.add_scope(ScopeKind::Block, scope, None, Vec::new());
+        let mut meta = FunctionMeta::entry(CodeKind::Script, false, 1);
+        meta.flags = func;
+        let mut b = FunctionBuilder::new(meta);
+        let k = b.string_constant(s);
+        b.lda_constant(k).return_();
+        u.set_function(FunctionId(0), b.finish().unwrap());
+        u.finish()
+    };
+    let (sf, ff) = (ScopeFlags(ScopeFlags::ALL), FunctionFlags::default());
+    for s in [UnitString::new("a"), UnitString::new("\u{20ac}")] {
+        let v = build(sf, ff, s).unwrap();
+        assert_eq!(*CompiledUnit::from_bytes(&v.to_bytes()).unwrap(), *v);
+    }
+    let cases = [
+        (
+            (sf, ff, UnitString::Utf16(Box::new([0x61]))),
+            VerifyErrorKind::NonCanonicalString(0),
+        ),
+        (
+            (ScopeFlags(0x80), ff, UnitString::new("a")),
+            VerifyErrorKind::ScopeFlags(0),
+        ),
+        (
+            (sf, FunctionFlags(0x80), UnitString::new("a")),
+            VerifyErrorKind::FunctionFlags,
+        ),
+    ];
+    for ((scope, func, s), want) in cases {
+        let Err(BuildError::Verify(e)) = build(scope, func, s) else {
+            panic!("{want:?}: the builder accepted the unit");
+        };
+        assert_eq!(e.kind, want);
+    }
+    // The same units, written without the builder: the reader rejects their bytes too.
+    let good = build(sf, ff, UnitString::new("a")).unwrap().into_inner();
+    let edits: [fn(&mut CompiledUnit); 3] = [
+        |u| u.strings[0] = UnitString::Utf16(Box::new([0x61])),
+        |u| u.scopes[0].flags = ScopeFlags(0x80),
+        |u| u.functions[0].flags = FunctionFlags(0x80),
+    ];
+    for edit in edits {
+        let mut u = good.clone();
+        edit(&mut u);
+        assert!(verify_ref(&u).is_err());
+        assert!(matches!(
+            CompiledUnit::from_bytes(&u.to_bytes()),
+            Err(LoadError::Malformed { .. })
+        ));
+    }
 }
 
 #[test]

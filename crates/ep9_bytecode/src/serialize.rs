@@ -598,8 +598,8 @@ fn read_scopes(r: &mut Reader<'_>) -> Result<Vec<Scope>, LoadError> {
         let Some(kind) = ScopeKind::from_u8(r.u8()?) else {
             return r.err("scope kind");
         };
-        let flags = r.u8()?;
-        if flags & !ScopeFlags::ALL != 0 {
+        let flags = ScopeFlags(r.u8()?);
+        if !flags.is_defined() {
             return r.err("scope flags");
         }
         let outer = r.opt()?.map(ScopeId);
@@ -614,7 +614,7 @@ fn read_scopes(r: &mut Reader<'_>) -> Result<Vec<Scope>, LoadError> {
         }
         out.push(Scope {
             kind,
-            flags: ScopeFlags(flags),
+            flags,
             outer,
             slots,
         });
@@ -701,8 +701,8 @@ fn read_function(r: &mut Reader<'_>) -> Result<Function, LoadError> {
     let Some(kind) = FunctionKind::from_u8(r.u8()?) else {
         return r.err("function kind");
     };
-    let flags = r.u8()?;
-    if flags & !FunctionFlags::ALL != 0 {
+    let flags = FunctionFlags(r.u8()?);
+    if !flags.is_defined() {
         return r.err("function flags");
     }
     let name = r.opt()?.map(StringId);
@@ -753,7 +753,7 @@ fn read_function(r: &mut Reader<'_>) -> Result<Function, LoadError> {
     };
     Ok(Function {
         kind,
-        flags: FunctionFlags(flags),
+        flags,
         name,
         parent,
         outer_scope,

@@ -26,7 +26,7 @@ use crate::string::UnitString;
 /// | Version | Change |
 /// |---|---|
 /// | 1 | First ABI (opcode list, CompiledUnit v0) |
-/// | 2 | Runtime ids 6-18 for BytecodeGen v0; `DefineClass` takes 2 arguments |
+/// | 2 | Runtime ids 6-18 for BytecodeGen v0; `DefineClass` takes 2 arguments; a handler target is at or after its range end (added before v2 was released, so no bump) |
 pub const ABI_VERSION: u32 = 2;
 
 /// The ECMA-262 code kind of the unit's entry function.
@@ -203,6 +203,11 @@ impl FunctionFlags {
     /// All defined bits.
     pub const ALL: u8 = 0x0f;
 
+    /// True if only defined bits are set (the reader and the verifier both require it).
+    pub const fn is_defined(self) -> bool {
+        self.0 & !Self::ALL == 0
+    }
+
     /// True if every bit of `other` is set.
     pub const fn contains(self, other: FunctionFlags) -> bool {
         self.0 & other.0 == other.0
@@ -288,6 +293,11 @@ impl ScopeFlags {
     pub const STRICT: ScopeFlags = ScopeFlags(1 << 2);
     /// All defined bits.
     pub const ALL: u8 = 0x07;
+
+    /// True if only defined bits are set (the reader and the verifier both require it).
+    pub const fn is_defined(self) -> bool {
+        self.0 & !Self::ALL == 0
+    }
 
     /// True if every bit of `other` is set.
     pub const fn contains(self, other: ScopeFlags) -> bool {

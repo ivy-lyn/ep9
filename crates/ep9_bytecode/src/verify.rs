@@ -14,10 +14,11 @@
 //! | Jumps | Target is an instruction start in the same function. Only `JumpLoop` goes backward (or to itself); all other jumps and every jump-table entry go forward |
 //! | Fall-through | The last instruction is a terminator, so execution never runs off the end |
 //! | Contexts | `CreateFunctionContext`/`CreateEvalContext` slot count equals the scope's slot count |
-//! | Handlers | Ranges on instruction starts, nested or disjoint, ordered (start asc, end desc); target an instruction start outside the range; context register is a local |
+//! | Handlers | Ranges on instruction starts, nested or disjoint, ordered (start asc, end desc); target an instruction start at or after the range end, so a throw only goes forward and every loop inside a function passes a `JumpLoop` (an interrupt poll); context register is a local |
 //! | Positions | Bytecode offsets strictly increase and are instruction starts; source offsets <= source length |
 //! | Entry frame | Function 0 only, kind = the unit's code kind, 0 parameters, no arguments object, rest parameter or new.target. Every other function is not an entry kind and is a closure target only of its parent |
 //! | Tree | Function ids are a preorder of the parent links; scopes point only to earlier scopes |
+//! | Reader rules | Strings are canonical; scope and function flags use only defined bits. The reader checks the same, so a verified unit loads back |
 //!
 //! Not checked (VM duty, ADR H02 open questions): context slot and depth against the actual
 //! context chain (only a unit-wide bound is checked), module cell indices, register
@@ -55,9 +56,13 @@ pub enum VerifyErrorKind {
     Tree,
     /// A string id is out of range.
     StringId(u32),
+    /// String `n` is UTF-16 but fits Latin-1 (not canonical).
+    NonCanonicalString(u32),
+    /// Scope `n` sets undefined flag bits.
+    ScopeFlags(u32),
     /// A scope id is out of range, or a scope's outer scope is not earlier.
     ScopeId(u32),
-    /// Function flags do not fit the function kind.
+    /// Function flags set undefined bits or do not fit the function kind.
     FunctionFlags,
     /// Source range out of order or past the source length.
     SourceRange,
@@ -151,8 +156,14 @@ pub fn verify_ref(unit: &CompiledUnit) -> Result<(), VerifyError> {
     {
         return unit_err(VerifyErrorKind::Source);
     }
-    // Scopes: names valid, outer scope earlier.
+    if let Some(i) = unit.strings.iter().position(|s| !s.is_canonical()) {
+        return unit_err(VerifyErrorKind::NonCanonicalString(i as u32));
+    }
+    // Scopes: defined flags, names valid, outer scope earlier.
     for (i, s) in unit.scopes.iter().enumerate() {
+        if !s.flags.is_defined() {
+            return unit_err(VerifyErrorKind::ScopeFlags(i as u32));
+        }
         if let Some(o) = s.outer
             && o.index() >= i
         {
@@ -279,7 +290,7 @@ fn verify_function(
     if f.source_start > f.source_end || f.source_end > unit.header.source_len {
         return cx.err(None, VerifyErrorKind::SourceRange);
     }
-    if !flags_fit_kind(f) {
+    if !f.flags.is_defined() || !flags_fit_kind(f) {
         return cx.err(None, VerifyErrorKind::FunctionFlags);
     }
     if f.register_count > MAX_REGISTERS
@@ -591,8 +602,11 @@ fn verify_handlers(cx: &Ctx<'_>, starts: &[bool]) -> Result<(), VerifyError> {
         if h.target >= len || !starts[h.target as usize] {
             return bad("target");
         }
-        if h.target >= h.start && h.target < h.end {
-            return bad("target inside its own range");
+        // A throw goes forward, as every jump but `JumpLoop` does (H02 F6). A target before
+        // the range end is a back edge without an interrupt poll: a `Throw` loop that
+        // termination never stops.
+        if h.target < h.end {
+            return bad("target before the range end");
         }
         if !h
             .context
