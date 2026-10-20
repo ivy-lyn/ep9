@@ -15,10 +15,14 @@
 //! runs go without a wrapper and give wall time only (`instructions: None`).
 
 use std::fs;
+use std::io::{Read as _, Seek as _, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
+
+/// Lines of the command's stderr that a failed run prints when the output is not shown.
+const STDERR_TAIL_LINES: usize = 20;
 
 /// The program that a probe runs.
 const PROBE_PROGRAM: &str = if cfg!(target_os = "macos") {
@@ -150,14 +154,15 @@ pub struct Sample {
 
 /// Runs `program args` once, under `counter` if there is one; with `None` it measures wall time
 /// only. A nonzero exit of the program is an error. With a counter, a run that gives no count is
-/// an error too.
+/// an error too. Without `show_output`, stdout is discarded and stderr goes to a temp file, so the
+/// error of a failed run ends with the last [`STDERR_TAIL_LINES`] lines of its stderr.
 pub fn measure(
     counter: Option<Counter>,
     program: &Path,
     args: &[String],
     show_output: bool,
 ) -> Result<Sample, String> {
-    let report = temp_path();
+    let report = temp_path("txt");
     let mut cmd = match counter {
         Some(c) => {
             let mut cmd = c.wrapper(&report);
@@ -167,8 +172,13 @@ pub fn measure(
         None => Command::new(program),
     };
     cmd.args(args);
-    if !show_output {
-        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    let stderr_file = (!show_output).then(|| temp_path("stderr"));
+    if let Some(path) = &stderr_file {
+        cmd.stdout(Stdio::null());
+        match fs::File::create(path) {
+            Ok(f) => cmd.stderr(f),
+            Err(_) => cmd.stderr(Stdio::null()),
+        };
     }
     let start = Instant::now();
     let status = cmd.status().map_err(|e| match counter {
@@ -178,9 +188,32 @@ pub fn measure(
     let wall_ns = start.elapsed().as_nanos();
     let text = fs::read_to_string(&report).unwrap_or_default();
     let _ = fs::remove_file(&report);
+    let stderr_tail = match &stderr_file {
+        Some(path) => {
+            let tail = status
+                .as_ref()
+                .is_ok_and(|s| !s.success())
+                .then(|| last_lines(path, STDERR_TAIL_LINES));
+            let _ = fs::remove_file(path);
+            tail
+        }
+        None => None,
+    };
     let status = status?;
     if !status.success() {
-        return Err(format!("{} exited with {status}", program.display()));
+        let mut e = format!("{} exited with {status}", program.display());
+        match stderr_tail {
+            Some(tail) if tail.is_empty() => e.push_str(". Its stderr was empty."),
+            Some(tail) => {
+                e.push_str(". Its stderr ends with:");
+                for line in tail {
+                    e.push_str("\n  ");
+                    e.push_str(&line);
+                }
+            }
+            None => {}
+        }
+        return Err(e);
     }
     let Some(counter) = counter else {
         return Ok(Sample {
@@ -206,11 +239,30 @@ pub fn measure(
     })
 }
 
-/// A unique report path in the temp dir.
-fn temp_path() -> PathBuf {
+/// A unique path in the temp dir, with extension `ext`.
+fn temp_path(ext: &str) -> PathBuf {
     static N: AtomicU32 = AtomicU32::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("ep9-bench-{}-{n}.txt", std::process::id()))
+    std::env::temp_dir().join(format!("ep9-bench-{}-{n}.{ext}", std::process::id()))
+}
+
+/// The last `n` lines of the file at `path` (read from its last 64 KiB), without line ends.
+/// Empty when the file is empty or cannot be read.
+fn last_lines(path: &Path, n: usize) -> Vec<String> {
+    const MAX_READ: u64 = 64 << 10;
+    let mut bytes = Vec::new();
+    let read = fs::File::open(path).and_then(|mut f| {
+        let len = f.metadata()?.len();
+        f.seek(SeekFrom::Start(len.saturating_sub(MAX_READ)))?;
+        f.read_to_end(&mut bytes)
+    });
+    if read.is_err() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<&str> = text.lines().collect();
+    let skip = lines.len().saturating_sub(n);
+    lines[skip..].iter().map(|l| l.to_string()).collect()
 }
 
 /// macOS `/usr/bin/time -l` lines look like `   10906475  instructions retired`.
