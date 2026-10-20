@@ -28,7 +28,8 @@ cargo run --release -p ep9_bench -- --runs 5 --out out.json -- target/release/ep
 - No counter: ep9-bench still runs the command (wall time only) and writes the JSON with `"counter": null`, `"counter_status": "unavailable"`, `"counter_note"` (why), and `"instructions": null` in each run and in the summary. It exits 3. A null count means "not measured". Never read it as 0.
 - Exit status: 0 counts written; 1 error (the command failed, a counted run gave no count, or the JSON was not written); 2 usage error; 3 no counter (the JSON is still written).
 - The JSON names the counter. Do not compare counts from different counters.
-- A nonzero exit of the command is an error. The command's output is discarded unless `--show-output`.
+- A nonzero exit of the command is an error. The command's output is discarded unless `--show-output`;
+  the error of a failed run then ends with the last 20 lines of the command's stderr.
 - `commit` comes from `GITHUB_SHA` or `EP9_COMMIT`.
 - `EP9_BENCH_TIME` replaces `/usr/bin/time`. `tests/testdata/time-no-pmc.sh` is a fake that prints what a host with no PMC access prints.
 - Tests: `cargo test -p ep9_bench`. The tests probe the OS tool themselves (not through ep9-bench). With a counter, `counts_instructions` checks the counts. Without one, it prints `SKIPPED the count check` and checks the no-counter JSON instead. On macOS, `EP9_BENCH_TIME=$PWD/tools/bench/tests/testdata/time-no-pmc.sh cargo test -p ep9_bench` runs that path.

@@ -13,7 +13,8 @@
 //!   and one compare.
 //! - The code range starts at the first byte after the cage.
 //! - The search tries aligned slots in a seeded order and reserves each slot at its exact
-//!   address. A slot that is in use, or above the VA limit of the host, is skipped.
+//!   address. A slot that is in use, above the VA limit of the host, or refused by the host
+//!   (valgrind refuses hints that overlap its own mappings: EINVAL), is skipped.
 //! - Everything starts inaccessible. `commit` makes pages read-write; `decommit` drops them.
 //! - Exception (`jit` feature, macOS arm64): `Cage::reserve_jit` maps the code range with
 //!   `MAP_JIT` and read-write-execute protection, because macOS forbids `MAP_JIT` with
@@ -99,8 +100,8 @@ impl Reservation {
         })
     }
 
-    /// Reserves exactly `[addr, addr + size)`. Returns `Ok(None)` if the range is not free.
-    /// `addr` and `size` are multiples of [`allocation_granularity`].
+    /// Reserves exactly `[addr, addr + size)`. Returns `Ok(None)` if the range is not free or
+    /// the host refuses it. `addr` and `size` are multiples of [`allocation_granularity`].
     pub fn reserve_at(addr: usize, size: usize) -> io::Result<Option<Self>> {
         check_at(addr, size)?;
         // Build the value only on success: dropping it would release a range we do not own.

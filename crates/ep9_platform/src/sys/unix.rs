@@ -51,8 +51,20 @@ pub(crate) fn reserve(hint: usize, size: usize) -> io::Result<usize> {
 }
 
 /// Reserves exactly `[addr, addr + size)`. Returns `Ok(false)` if that range is not free.
+///
+/// `addr` and `size` are non-zero page multiples and do not wrap (`va::check_at`).
 pub(crate) fn reserve_at(addr: usize, size: usize) -> io::Result<bool> {
-    let got = reserve(addr, size)?;
+    let got = match reserve(addr, size) {
+        Ok(got) => got,
+        // valgrind (3.19, 3.22) fails a hinted mmap with EINVAL when the range overlaps a
+        // mapping it knows and it has no other free range of `size` bytes below its 128 GiB
+        // client limit (ML_(generic_PRE_sys_mmap)); a 64 GiB cage never fits there. Other
+        // addresses still work. The kernel never fails a valid hinted mmap because of the hint
+        // (it picks another address, handled below), and the arguments are valid here, so
+        // EINVAL means "not at this address", like ERROR_INVALID_ADDRESS on Windows.
+        Err(e) if e.raw_os_error() == Some(libc::EINVAL) => return Ok(false),
+        Err(e) => return Err(e),
+    };
     if got == addr {
         return Ok(true);
     }

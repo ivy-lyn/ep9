@@ -30,7 +30,8 @@ flags:
   --counter C       auto | time (macOS) | perf (Linux) | cachegrind (Linux) (default auto)
   --name NAME       benchmark name in the report (default: the command)
   --out FILE        write the JSON there (default: stdout)
-  --show-output     keep the command's stdout and stderr (default: discarded)
+  --show-output     keep the command's stdout and stderr (default: discarded; a failed run
+                    prints the last 20 lines of its stderr)
 
 Before the runs, ep9-bench probes the counter: `true` under it must give a count above 0.
 
