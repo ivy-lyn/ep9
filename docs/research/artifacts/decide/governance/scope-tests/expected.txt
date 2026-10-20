@@ -1,0 +1,30 @@
+== docs (docs/adr/H06-value-encoding.md README.md )
+scope: code=false
+scope: targets=[]
+scope: spikes=false
+scope: tsrs=false
+scope: perf=false
+== front (crates/ep9_frontend/src/lib.rs docs/plan/01-front-end.md )
+scope: code=true
+scope: targets=[{"name":"linux-x64","os":"ubuntu-24.04"},{"name":"linux-arm64","os":"ubuntu-24.04-arm"},{"name":"windows-x64","os":"windows-2025"}]
+scope: spikes=false
+scope: tsrs=false
+scope: perf=true
+== lock (Cargo.lock Cargo.toml )
+scope: code=true
+scope: targets=[{"name":"macos-arm64","os":"macos-15"},{"name":"linux-x64","os":"ubuntu-24.04"},{"name":"linux-arm64","os":"ubuntu-24.04-arm"},{"name":"windows-x64","os":"windows-2025"}]
+scope: spikes=false
+scope: tsrs=false
+scope: perf=true
+== plat (crates/ep9_platform/src/va.rs )
+scope: code=true
+scope: targets=[{"name":"macos-arm64","os":"macos-15"},{"name":"linux-x64","os":"ubuntu-24.04"},{"name":"linux-arm64","os":"ubuntu-24.04-arm"},{"name":"windows-x64","os":"windows-2025"}]
+scope: spikes=true
+scope: tsrs=false
+scope: perf=true
+== tsrs (third_party/tsrs.commit )
+scope: code=true
+scope: targets=[{"name":"linux-x64","os":"ubuntu-24.04"},{"name":"linux-arm64","os":"ubuntu-24.04-arm"},{"name":"windows-x64","os":"windows-2025"}]
+scope: spikes=false
+scope: tsrs=true
+scope: perf=true

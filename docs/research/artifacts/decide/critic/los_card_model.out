@@ -1,0 +1,3 @@
+decided     states= 247 LOST C (1 bad end states)
+fix_rescan  states= 247 ok
+fix_push    states= 240 ok

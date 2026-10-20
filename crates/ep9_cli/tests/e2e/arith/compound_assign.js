@@ -1,0 +1,14 @@
+var x = 10;
+x += 5; print(x);
+x -= 3; print(x);
+x *= 2; print(x);
+x /= 4; print(x);
+x %= 4; print(x);
+x = 7; x <<= 2; print(x);
+x >>= 1; print(x);
+x = -8; x >>>= 28; print(x);
+x = 6; x &= 3; print(x);
+x |= 8; print(x);
+x ^= 15; print(x);
+x **= 2; print(x);
+var s = "a"; s += 1; s += true; s += null; print(s);

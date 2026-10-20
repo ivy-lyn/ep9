@@ -1,0 +1,5 @@
+boom Error true object
+bad type TypeError true true false
+RangeError no new true
+true true 5
+Error: boom TypeError: bad type SyntaxError: s

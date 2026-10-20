@@ -51,8 +51,20 @@ pub(crate) fn reserve(hint: usize, size: usize) -> io::Result<usize> {
 }
 
 /// Reserves exactly `[addr, addr + size)`. Returns `Ok(false)` if that range is not free.
+///
+/// `addr` and `size` are non-zero page multiples and do not wrap (`va::check_at`).
 pub(crate) fn reserve_at(addr: usize, size: usize) -> io::Result<bool> {
-    let got = reserve(addr, size)?;
+    let got = match reserve(addr, size) {
+        Ok(got) => got,
+        // valgrind (3.19, 3.22) fails a hinted mmap with EINVAL when the range overlaps a
+        // mapping it knows and it has no other free range of `size` bytes below its 128 GiB
+        // client limit (ML_(generic_PRE_sys_mmap)); a 64 GiB cage never fits there. Other
+        // addresses still work. The kernel never fails a valid hinted mmap because of the hint
+        // (it picks another address, handled below), and the arguments are valid here, so
+        // EINVAL means "not at this address", like ERROR_INVALID_ADDRESS on Windows.
+        Err(e) if e.raw_os_error() == Some(libc::EINVAL) => return Ok(false),
+        Err(e) => return Err(e),
+    };
     if got == addr {
         return Ok(true);
     }
@@ -60,6 +72,42 @@ pub(crate) fn reserve_at(addr: usize, size: usize) -> io::Result<bool> {
     // another address. Give that mapping back.
     // SAFETY: `got` is the mapping that `reserve` created just now; nothing else knows it.
     unsafe { release(got, size)? };
+    Ok(false)
+}
+
+/// macOS arm64 code range: maps exactly `[addr, addr + size)` with `MAP_JIT` and RWX.
+/// Returns `Ok(false)` if that range is not free.
+///
+/// - XNU rejects `MAP_JIT | MAP_FIXED` (EINVAL), so the address is a hint, as in `reserve_at`.
+/// - After a `MAP_JIT` page is RWX, XNU rejects every later `mprotect` of it (EACCES). So the
+///   whole range is RWX from the start; `pthread_jit_write_protect_np` gives W^X per thread.
+/// - Measured on macOS 27.0.1 (SP-JIT-mem, 2026-10-21).
+#[cfg(all(
+    any(feature = "jit", test),
+    target_vendor = "apple",
+    target_arch = "aarch64"
+))]
+pub(crate) fn reserve_map_jit_at(addr: usize, size: usize) -> io::Result<bool> {
+    // SAFETY: without MAP_FIXED, mmap only uses free address space, so no existing mapping
+    // changes. The result is checked for MAP_FAILED.
+    let p = unsafe {
+        libc::mmap(
+            addr as *mut c_void,
+            size,
+            libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+            libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_JIT,
+            -1,
+            0,
+        )
+    };
+    if p == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    if p as usize == addr {
+        return Ok(true);
+    }
+    // SAFETY: `p` is the mapping created just now; nothing else knows it.
+    unsafe { release(p as usize, size)? };
     Ok(false)
 }
 

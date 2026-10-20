@@ -1,0 +1,136 @@
+# class-expression-name: script (sloppy)
+# | var C = class Inner { m() { return Inner; } }; var D = class { static n() { return D; } };
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=90 source=embedded hints=none
+source_hash=eaa1e6167d41599145f84fcf54183ef67f0712162839c1e33beac72b778b8faf
+strings (5):
+  str0 "C"
+  str1 "D"
+  str2 "Inner"
+  str3 "m"
+  str4 "n"
+scopes (7):
+  scope0 script outer=- flags=[] slots=["C":var, "D":var]
+  scope1 class outer=scope0 flags=[needs-context,strict] slots=["Inner":const]
+  scope2 function outer=scope1 flags=[strict] slots=[]
+  scope3 function outer=scope1 flags=[strict] slots=[]
+  scope4 class outer=scope0 flags=[strict] slots=[]
+  scope5 function outer=scope4 flags=[strict] slots=[]
+  scope6 function outer=scope4 flags=[strict] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=7 range=0..90
+  code (98 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> CreateBlockContext k0  ; k0 = Scope scope1   ; 76 00
+      7    PushContext r3                               ; 13 03
+      9    LdaTheHole                                   ; 07
+     10    StaCurrentContextSlot [0]                    ; 1b 00
+     12    LdaTheHole                                   ; 07
+     13    Star r1                                      ; 0c 01
+     15 E> CreateClosure k1, s0, #0x00  ; k1 = Function f1 ; 74 01 00 00
+     19    Star r0                                      ; 0c 00
+     21 E> CallRuntime DefineClass, r0-r1               ; 68 04 00 00 02
+     26    Star r2                                      ; 0c 02
+     28    Mov r2, r4                                   ; 0d 02 04
+     31    LdaConstant k2  ; k2 = String str3 "m"       ; 0a 02
+     33    Star r5                                      ; 0c 05
+     35 E> CreateClosure k3, s1, #0x00  ; k3 = Function f2 ; 74 03 01 00
+     39    Star r6                                      ; 0c 06
+     41 E> CallRuntime DefineClassMethod, r4-r6         ; 68 0f 00 04 03
+     46    Ldar r0                                      ; 0b 00
+     48    StaCurrentContextSlot [0]                    ; 1b 00
+     50    PopContext r3                                ; 14 03
+     52    Ldar r0                                      ; 0b 00
+     54 E> StaGlobal k4, s2  ; k4 = String str0 "C"     ; 12 04 02
+     57 S> LdaTheHole                                   ; 07
+     58    Star r1                                      ; 0c 01
+     60 E> CreateClosure k5, s3, #0x00  ; k5 = Function f3 ; 74 05 03 00
+     64    Star r0                                      ; 0c 00
+     66 E> CallRuntime DefineClass, r0-r1               ; 68 04 00 00 02
+     71    Star r2                                      ; 0c 02
+     73    Mov r0, r3                                   ; 0d 00 03
+     76    LdaConstant k6  ; k6 = String str4 "n"       ; 0a 06
+     78    Star r4                                      ; 0c 04
+     80 E> CreateClosure k7, s4, #0x00  ; k7 = Function f4 ; 74 07 04 00
+     84    Star r5                                      ; 0c 05
+     86 E> CallRuntime DefineClassMethod, r3-r5         ; 68 0f 00 03 03
+     91    Ldar r0                                      ; 0b 00
+     93 E> StaGlobal k8, s5  ; k8 = String str1 "D"     ; 12 08 05
+     96    LdaUndefined                                 ; 05
+     97    Return                                       ; 92
+  constants (9):
+      0 Scope scope1
+      1 Function f1
+      2 String str3 "m"
+      3 Function f2
+      4 String str0 "C"
+      5 Function f3
+      6 String str4 "n"
+      7 Function f4
+      8 String str1 "D"
+  feedback (6):
+      0 CreateClosure
+      1 CreateClosure
+      2 StoreGlobal
+      3 CreateClosure
+      4 CreateClosure
+      5 StoreGlobal
+  handlers (0):
+  positions (13):
+      0 S 0 (1:1)
+      5 S 4 (1:5)
+     15 E 8 (1:9)
+     21 E 8 (1:9)
+     35 E 8 (1:9)
+     41 E 22 (1:23)
+     54 E 4 (1:5)
+     57 S 51 (1:52)
+     60 E 55 (1:56)
+     66 E 55 (1:56)
+     80 E 55 (1:56)
+     86 E 70 (1:71)
+     93 E 51 (1:52)
+function f1 class-constructor name="Inner" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=20..45
+  code (2 bytes):
+      0 S> LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 8 (1:9)
+function f2 method name="m" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=23..43
+  code (7 bytes):
+      0 S> LdaImmutableCurrentContextSlot [0]           ; 19 00
+      2 E> ThrowReferenceErrorIfHole k0  ; k0 = String str2 "Inner" ; 94 00
+      4    Return                                       ; 92
+      5    LdaUndefined                                 ; 05
+      6    Return                                       ; 92
+  constants (1):
+      0 String str2 "Inner"
+  feedback (0):
+  handlers (0):
+  positions (2):
+      0 S 28 (1:29)
+      2 E 35 (1:36)
+function f3 class-constructor name="D" parent=f0 outer_scope=scope4 flags=[strict,simple-params] params=0 length=0 regs=0 range=61..89
+  code (2 bytes):
+      0 S> LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 55 (1:56)
+function f4 method name="n" parent=f0 outer_scope=scope4 flags=[strict,simple-params] params=0 length=0 regs=0 range=71..87
+  code (6 bytes):
+      0 S> LdaGlobal k0, s0  ; k0 = String str1 "D"     ; 10 00 00
+      3    Return                                       ; 92
+      4    LdaUndefined                                 ; 05
+      5    Return                                       ; 92
+  constants (1):
+      0 String str1 "D"
+  feedback (1):
+      0 LoadGlobal
+  handlers (0):
+  positions (1):
+      0 S 76 (1:77)

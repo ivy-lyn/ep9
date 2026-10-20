@@ -1,0 +1,68 @@
+# op-null-compare: script (sloppy)
+# | function f(a) { return [a === null, a !== null, a == null]; }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=61 source=embedded hints=none
+source_hash=3c68d8f9709d2efe3300f137dc195fa2a13f09f3de5f6684cbebe4cd5bbda7ee
+strings (1):
+  str0 "f"
+scopes (2):
+  scope0 script outer=- flags=[] slots=["f":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..61
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=2 range=0..61
+  code (45 bytes):
+      0 S> CreateArrayLiteral k0, s0, #0x01  ; k0 = ArrayBoilerplate [_, _, _] ; 6d 00 00 01
+      4    Star r0                                      ; 0c 00
+      6    LdaZero                                      ; 03
+      7    Star r1                                      ; 0c 01
+      9    Ldar a0                                      ; 0b fe
+     11    TestNull                                     ; 55
+     12 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     16    LdaSmi [1]                                   ; 04 01
+     18    Star r1                                      ; 0c 01
+     20    Ldar a0                                      ; 0b fe
+     22    TestNull                                     ; 55
+     23    LogicalNot                                   ; 47
+     24 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     28    LdaSmi [2]                                   ; 04 02
+     30    Star r1                                      ; 0c 01
+     32    LdaNull                                      ; 06
+     33 E> TestEqual a0, s2                             ; 4b fe 02
+     36 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     40    Ldar r0                                      ; 0b 00
+     42    Return                                       ; 92
+     43    LdaUndefined                                 ; 05
+     44    Return                                       ; 92
+  constants (1):
+      0 ArrayBoilerplate [_, _, _]
+  feedback (3):
+      0 Literal
+      1 StoreInArrayLiteral
+      2 CompareOp
+  handlers (0):
+  positions (5):
+      0 S 16 (1:17)
+     12 E 23 (1:24)
+     24 E 23 (1:24)
+     33 E 48 (1:49)
+     36 E 23 (1:24)

@@ -1,0 +1,46 @@
+# op-typeof: script (sloppy)
+# | typeof undeclared; typeof undeclared === 'undefined'; let t; typeof t == 'number'; typeof t !== 'object';
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=105 source=embedded hints=none
+source_hash=6f49cc72fb5c55532394df91fab630f7f9dd13f61dccf6b16490c5647ec4b1bd
+strings (2):
+  str0 "t"
+  str1 "undeclared"
+scopes (1):
+  scope0 script outer=- flags=[] slots=["t":let]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..105
+  code (42 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> LdaGlobalInsideTypeof k0, s0  ; k0 = String str1 "undeclared" ; 11 00 00
+      8    TypeOf s1                                    ; 48 01
+     10 S> LdaGlobalInsideTypeof k0, s0  ; k0 = String str1 "undeclared" ; 11 00 00
+     13    TestTypeOf undefined                         ; 57 05
+     15 S> LdaUndefined                                 ; 05
+     16    Star r1                                      ; 0c 01
+     18    LdaConstant k1  ; k1 = String str0 "t"       ; 0a 01
+     20    Star r0                                      ; 0c 00
+     22 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     27    Ldar r1                                      ; 0b 01
+     29 S> LdaGlobalInsideTypeof k1, s2  ; k1 = String str0 "t" ; 11 01 02
+     32    TestTypeOf number                            ; 57 00
+     34 S> LdaGlobalInsideTypeof k1, s2  ; k1 = String str0 "t" ; 11 01 02
+     37    TestTypeOf object                            ; 57 07
+     39    LogicalNot                                   ; 47
+     40    LdaUndefined                                 ; 05
+     41    Return                                       ; 92
+  constants (2):
+      0 String str1 "undeclared"
+      1 String str0 "t"
+  feedback (3):
+      0 LoadGlobalInsideTypeof
+      1 TypeOf
+      2 LoadGlobalInsideTypeof
+  handlers (0):
+  positions (7):
+      0 S 0 (1:1)
+      5 S 0 (1:1)
+     10 S 19 (1:20)
+     15 S 58 (1:59)
+     22 E 54 (1:55)
+     29 S 61 (1:62)
+     34 S 83 (1:84)

@@ -1,0 +1,31 @@
+# lit-regexp: script (sloppy)
+# | /a+b/; /x/dgimsuy; /[a]/v;
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=26 source=embedded hints=none
+source_hash=6600b7a68369acf919b075222bab7e564672899bd4955fb31ead1a21b42f64e2
+strings (3):
+  str0 "a+b"
+  str1 "x"
+  str2 "[a]"
+scopes (1):
+  scope0 script outer=- flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=0 range=0..26
+  code (17 bytes):
+      0 S> CreateRegExpLiteral k0, s0, #0x00  ; k0 = String str0 "a+b" ; 6c 00 00 00 00
+      5 S> CreateRegExpLiteral k1, s1, #0xbf  ; k1 = String str1 "x" ; 6c 01 01 bf 00
+     10 S> CreateRegExpLiteral k2, s2, #0x40  ; k2 = String str2 "[a]" ; 6c 02 02 40 00
+     15    LdaUndefined                                 ; 05
+     16    Return                                       ; 92
+  constants (3):
+      0 String str0 "a+b"
+      1 String str1 "x"
+      2 String str2 "[a]"
+  feedback (3):
+      0 Literal
+      1 Literal
+      2 Literal
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 S 7 (1:8)
+     10 S 19 (1:20)

@@ -225,6 +225,52 @@ fn failing_command_is_an_error() {
     assert!(stderr.contains("exited with"), "{stderr}");
 }
 
+const FAILING_CHILD_ENV: &str = "EP9_BENCH_FAILING_CHILD";
+
+/// Run by `failing_command_prints_stderr_tail` (through ep9-bench) only: writes 30 numbered
+/// lines to stderr and exits 70, like an ep9 internal error.
+#[test]
+fn failing_child() {
+    if std::env::var_os(FAILING_CHILD_ENV).is_none() {
+        return;
+    }
+    for i in 1..=30 {
+        eprintln!("child stderr line {i:02}");
+    }
+    std::process::exit(70);
+}
+
+/// Without `--show-output`, the error of a failed run ends with the last 20 lines of the
+/// command's stderr (CI run 39505241524 showed only "exited with exit status: 70").
+#[test]
+fn failing_command_prints_stderr_tail() {
+    let exe = std::env::current_exe().expect("the test binary");
+    let out = Command::new(BIN)
+        .args(["--runs", "1", "--warmup", "0", "--"])
+        .arg(&exe)
+        .args([
+            "failing_child",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(FAILING_CHILD_ENV, "1")
+        .output()
+        .expect("run ep9-bench");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("exited with"), "{stderr}");
+    assert!(stderr.contains("70. Its stderr ends with:\n"), "{stderr}");
+    for i in 11..=30 {
+        let line = format!("\n  child stderr line {i:02}\n");
+        assert!(stderr.contains(&line), "missing {line:?}: {stderr}");
+    }
+    for i in 1..=10 {
+        let line = format!("child stderr line {i:02}");
+        assert!(!stderr.contains(&line), "only the last 20 lines: {stderr}");
+    }
+}
+
 /// The command after `--` gets its own `--help`; ep9-bench does not print its usage.
 #[test]
 fn help_after_separator_goes_to_the_command() {

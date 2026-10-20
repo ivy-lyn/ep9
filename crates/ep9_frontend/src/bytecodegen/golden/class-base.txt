@@ -1,0 +1,185 @@
+# class-base: script (sloppy)
+# | class A { constructor(x) { this.x = x; } m() { return this.x; } static s() { return 1; } get g() { return 1; } set g(v) {} static get sg() {} }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=143 source=embedded hints=none
+source_hash=5ca350cc36f3f841e43b430a1d885ca71a7eb77177eb009bf5fdfda9ca00ef42
+strings (9):
+  str0 "A"
+  str1 "m"
+  str2 "s"
+  str3 "g"
+  str4 "sg"
+  str5 "x"
+  str6 "get g"
+  str7 "set g"
+  str8 "get sg"
+scopes (8):
+  scope0 script outer=- flags=[] slots=["A":class]
+  scope1 class outer=scope0 flags=[strict] slots=[]
+  scope2 function outer=scope1 flags=[strict] slots=[]
+  scope3 function outer=scope1 flags=[strict] slots=[]
+  scope4 function outer=scope1 flags=[strict] slots=[]
+  scope5 function outer=scope1 flags=[strict] slots=[]
+  scope6 function outer=scope1 flags=[strict] slots=[]
+  scope7 function outer=scope1 flags=[strict] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=8 range=0..143
+  code (141 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> LdaTheHole                                   ; 07
+      6    Star r2                                      ; 0c 02
+      8 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+     12    Star r1                                      ; 0c 01
+     14 E> CallRuntime DefineClass, r1-r2               ; 68 04 00 01 02
+     19    Star r3                                      ; 0c 03
+     21    Mov r3, r4                                   ; 0d 03 04
+     24    LdaConstant k1  ; k1 = String str1 "m"       ; 0a 01
+     26    Star r5                                      ; 0c 05
+     28 E> CreateClosure k2, s1, #0x00  ; k2 = Function f2 ; 74 02 01 00
+     32    Star r6                                      ; 0c 06
+     34 E> CallRuntime DefineClassMethod, r4-r6         ; 68 0f 00 04 03
+     39    Mov r1, r4                                   ; 0d 01 04
+     42    LdaConstant k3  ; k3 = String str2 "s"       ; 0a 03
+     44    Star r5                                      ; 0c 05
+     46 E> CreateClosure k4, s2, #0x00  ; k4 = Function f3 ; 74 04 02 00
+     50    Star r6                                      ; 0c 06
+     52 E> CallRuntime DefineClassMethod, r4-r6         ; 68 0f 00 04 03
+     57    Mov r3, r4                                   ; 0d 03 04
+     60    LdaConstant k5  ; k5 = String str3 "g"       ; 0a 05
+     62    Star r5                                      ; 0c 05
+     64 E> CreateClosure k6, s3, #0x00  ; k6 = Function f4 ; 74 06 03 00
+     68    Star r6                                      ; 0c 06
+     70    LdaUndefined                                 ; 05
+     71    Star r7                                      ; 0c 07
+     73 E> CallRuntime DefineClassAccessor, r4-r7       ; 68 10 00 04 04
+     78    Mov r3, r4                                   ; 0d 03 04
+     81    LdaConstant k5  ; k5 = String str3 "g"       ; 0a 05
+     83    Star r5                                      ; 0c 05
+     85 E> CreateClosure k7, s4, #0x00  ; k7 = Function f5 ; 74 07 04 00
+     89    Star r7                                      ; 0c 07
+     91    LdaUndefined                                 ; 05
+     92    Star r6                                      ; 0c 06
+     94 E> CallRuntime DefineClassAccessor, r4-r7       ; 68 10 00 04 04
+     99    Mov r1, r4                                   ; 0d 01 04
+    102    LdaConstant k8  ; k8 = String str4 "sg"      ; 0a 08
+    104    Star r5                                      ; 0c 05
+    106 E> CreateClosure k9, s5, #0x00  ; k9 = Function f6 ; 74 09 05 00
+    110    Star r6                                      ; 0c 06
+    112    LdaUndefined                                 ; 05
+    113    Star r7                                      ; 0c 07
+    115 E> CallRuntime DefineClassAccessor, r4-r7       ; 68 10 00 04 04
+    120    Ldar r1                                      ; 0b 01
+    122    Star r0                                      ; 0c 00
+    124    Ldar r1                                      ; 0b 01
+    126    Star r2                                      ; 0c 02
+    128    LdaConstant k10  ; k10 = String str0 "A"     ; 0a 0a
+    130    Star r1                                      ; 0c 01
+    132 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
+    137    Ldar r2                                      ; 0b 02
+    139    LdaUndefined                                 ; 05
+    140    Return                                       ; 92
+  constants (11):
+      0 Function f1
+      1 String str1 "m"
+      2 Function f2
+      3 String str2 "s"
+      4 Function f3
+      5 String str3 "g"
+      6 Function f4
+      7 Function f5
+      8 String str4 "sg"
+      9 Function f6
+     10 String str0 "A"
+  feedback (6):
+      0 CreateClosure
+      1 CreateClosure
+      2 CreateClosure
+      3 CreateClosure
+      4 CreateClosure
+      5 CreateClosure
+  handlers (0):
+  positions (15):
+      0 S 0 (1:1)
+      5 S 0 (1:1)
+      8 E 0 (1:1)
+     14 E 0 (1:1)
+     28 E 0 (1:1)
+     34 E 41 (1:42)
+     46 E 0 (1:1)
+     52 E 71 (1:72)
+     64 E 0 (1:1)
+     73 E 93 (1:94)
+     85 E 0 (1:1)
+     94 E 115 (1:116)
+    106 E 0 (1:1)
+    115 E 134 (1:135)
+    132 E 0 (1:1)
+function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=1 range=21..40
+  code (12 bytes):
+      0 S> Ldar <this>                                  ; 0b ff
+      2    Star r0                                      ; 0c 00
+      4    Ldar a0                                      ; 0b fe
+      6 E> SetNamedProperty r0, k0, s0  ; k0 = String str5 "x" ; 24 00 00 00
+     10    LdaUndefined                                 ; 05
+     11    Return                                       ; 92
+  constants (1):
+      0 String str5 "x"
+  feedback (1):
+      0 StoreNamed
+  handlers (0):
+  positions (2):
+      0 S 27 (1:28)
+      6 E 27 (1:28)
+function f2 method name="m" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=1 range=42..63
+  code (11 bytes):
+      0 S> Ldar <this>                                  ; 0b ff
+      2    Star r0                                      ; 0c 00
+      4 E> GetNamedProperty r0, k0, s0  ; k0 = String str5 "x" ; 21 00 00 00
+      8    Return                                       ; 92
+      9    LdaUndefined                                 ; 05
+     10    Return                                       ; 92
+  constants (1):
+      0 String str5 "x"
+  feedback (1):
+      0 LoadNamed
+  handlers (0):
+  positions (2):
+      0 S 47 (1:48)
+      4 E 59 (1:60)
+function f3 method name="s" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=72..88
+  code (5 bytes):
+      0 S> LdaSmi [1]                                   ; 04 01
+      2    Return                                       ; 92
+      3    LdaUndefined                                 ; 05
+      4    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 77 (1:78)
+function f4 getter name="get g" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=94..110
+  code (5 bytes):
+      0 S> LdaSmi [1]                                   ; 04 01
+      2    Return                                       ; 92
+      3    LdaUndefined                                 ; 05
+      4    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 99 (1:100)
+function f5 setter name="set g" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=0 range=116..122
+  code (2 bytes):
+      0    LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (0):
+function f6 getter name="get sg" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=136..141
+  code (2 bytes):
+      0    LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (0):

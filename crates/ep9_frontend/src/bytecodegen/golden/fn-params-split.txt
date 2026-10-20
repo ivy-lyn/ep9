@@ -1,0 +1,82 @@
+# fn-params-split: script (sloppy)
+# | function f(a = () => b, b) { var b; var a; return a; }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=54 source=embedded hints=none
+source_hash=23fa606bf05c8753ef279fc8595999e40654947462509dbaeb59b57a71a78b09
+strings (3):
+  str0 "f"
+  str1 "b"
+  str2 "a"
+scopes (4):
+  scope0 script outer=- flags=[] slots=["f":function]
+  scope1 function outer=scope0 flags=[needs-context] slots=["b":var]
+  scope2 function outer=scope1 flags=[] slots=[]
+  scope3 block outer=scope1 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..54
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[] params=2 length=0 regs=5 range=0..54
+  code (45 bytes):
+      0 E> CreateFunctionContext k0, [1]  ; k0 = Scope scope1 ; 75 00 01
+      3    PushContext r3                               ; 13 03
+      5    LdaTheHole                                   ; 07
+      6    StaCurrentContextSlot [0]                    ; 1b 00
+      8    Ldar a0                                      ; 0b fe
+     10    JumpIfNotUndefined @20                       ; 86 0a
+     12 E> CreateClosure k1, s0, #0x00  ; k1 = Function f2 ; 74 01 00 00
+     16    Star r4                                      ; 0c 04
+     18    Jump @24                                     ; 7e 06
+     20    Ldar a0                                      ; 0b fe
+     22    Star r4                                      ; 0c 04
+     24    Ldar r4                                      ; 0b 04
+     26    Star r0                                      ; 0c 00
+     28    Ldar a1                                      ; 0b fd
+     30    StaCurrentContextSlot [0]                    ; 1b 00
+     32    LdaCurrentContextSlot [0]                    ; 18 00
+     34    Star r1                                      ; 0c 01
+     36    Ldar r0                                      ; 0b 00
+     38    Star r2                                      ; 0c 02
+     40 S> Ldar r2                                      ; 0b 02
+     42    Return                                       ; 92
+     43    LdaUndefined                                 ; 05
+     44    Return                                       ; 92
+  constants (2):
+      0 Scope scope1
+      1 Function f2
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 E 0 (1:1)
+     12 E 15 (1:16)
+     40 S 43 (1:44)
+function f2 arrow name="a" parent=f1 outer_scope=scope1 flags=[simple-params] params=0 length=0 regs=0 range=15..22
+  code (5 bytes):
+      0 S> LdaCurrentContextSlot [0]                    ; 18 00
+      2 E> ThrowReferenceErrorIfHole k0  ; k0 = String str1 "b" ; 94 00
+      4    Return                                       ; 92
+  constants (1):
+      0 String str1 "b"
+  feedback (0):
+  handlers (0):
+  positions (2):
+      0 S 21 (1:22)
+      2 E 21 (1:22)

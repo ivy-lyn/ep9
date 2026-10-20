@@ -1,0 +1,113 @@
+# H02: Bytecode is a serialized ABI
+
+| Field | Value |
+|---|---|
+| Status | Draft (2026-10-21): bytecode ABI v1 and CompiledUnit v0 built in `ep9_bytecode` |
+| Fix by | M0 wk3; determinism CI M0; Spike C checks before M1 exit |
+| Freeze point | M1 exit |
+| Origin | v1#9 + R16-D1; plan status E |
+| Crates | `ep9_bytecode` (format, builder, verifier, disassembler); users: `ep9_frontend` (BytecodeGen), `ep9_vm` (interpreter), `ep9_unit` (bytecode section) |
+| Owner (plan role) | AOT senior (ABI, determinism); VM lead (interpreter use) |
+| Validated by | `ep9_bytecode` tests (gates below); determinism CI on the corpus (M0 exit 12); Spike C |
+| Plan sources | [02 §6 H2](../plan/02-architecture.md#6-hard-to-change-decisions-h1-h37), [01 §5](../plan/01-front-end.md#5-front-end-boundary-and-compiledunit-h1-h2), [04 §1-2, §9](../plan/04-execution.md), [05 §8](../plan/05-aot.md#8-aot-unit-format-h35), [H35](H35-aot-unit-format.md) |
+
+## Context
+
+- Every tier and code kind deopts to bytecode, and units ship it (H35 bytecode section). So the bytecode is an ABI between BytecodeGen, T0, T1, T2, the deoptimizer and both AOT kinds.
+- The same bytes serve the code cache and AOT units (H1). Determinism lets CI compare builds by hash.
+- SP-Dispatch (H15) proved the DSL style: one opcode list, expanded per dispatch method. This ADR fixes the list itself.
+
+## Decision
+
+Copied from the plan row: register + accumulator, 1-byte opcodes, wide prefixes, feedback-slot operands, relative jumps, side tables, constant-pool indices only, `TailCall` reserved. Deterministic generation (same decoded source + flags + ABI version → same bytes), content hash, versioned ABI. Bytecode offset = the only deopt/OSR id. Stable function id = preorder index.
+
+The format decisions below fill the gaps the plan leaves (kind **fill**).
+
+| # | Decision | Why |
+|---|---|---|
+| F1 | One list, `for_each_opcode!`: name, byte, snake name, accumulator use, flags (`Prefix Jump Switch Terminator Return Throws Call Interrupt Clobber Reserved`), operands with kind and parameter. 157 opcodes (0x00-0x9c). Encoder, decoder, verifier, disassembler, builder emitters and the VM DSL all expand it | One source; a test drives an external consumer from the macro alone |
+| F2 | Names and operand order follow V8 Ignition `bytecodes.h` (v8/v8 0c3940db, read 2026-10-20) where ep9 shares the opcode | Proven register + accumulator design ([R06] HTC2) |
+| F3 | V8 operand scales: scalable operands are 1 / 2 / 4 bytes after no prefix / `Wide` / `ExtraWide`; fixed operands (`Flag8`, `Flag16`, `Runtime`, `TypeOfLiteral`) keep their size. Little endian. Signed kinds sign-extend | Most operands fit 1 byte |
+| F4 | Canonical encoding: an instruction uses the smallest scale that holds all its operands. The builder relaxes jump sizes to a fixpoint; the verifier rejects a larger prefix | One encoding per program, so equal programs hash equal |
+| F5 | Register operand = signed name: `v >= 0` local `r<v>`; `-1` receiver; `-2-k` parameter `a<k>`. Register lists, pairs and triples hold locals only. The VM maps names to frame slots | Bytecode does not depend on the H14 frame layout, which Spike B may still change |
+| F6 | Jumps: unsigned offset from the instruction start (prefix included). Only `JumpLoop` goes backward (or to itself); every other jump and every jump-table entry goes forward. No V8 `*Constant` jump forms | Every loop has an interrupt poll = an H29 lazy-deopt point. Relaxation replaces constant-pool jumps |
+| F7 | Feedback-slot operands on arithmetic, compares, property access, calls, literals, closures, loops. Each function lists its slot kinds; the verifier checks each operand's required kind. `FeedbackSlotKind` is an H16 placeholder (21 kinds) | H16 freezes the kinds at M1 exit; V8's embedded arithmetic feedback is not copied |
+| F8 | Constant pool per function (V8 model). Strings live in one unit string table (Latin-1 or UTF-16, canonical form, lone surrogates allowed); pool entries refer to them. Kinds: Number (canonical NaN), String, BigInt (canonical limbs), Function (direct child only), Scope, JumpTable, Array/ObjectBoilerplate (refer only to earlier entries), TemplateObject, Oddball | Strings are atomized once per unit; no cycles; one encoding per value |
+| F9 | Side tables per function: handler table (start, end, target, context register, catch prediction; sorted start asc / end desc; nested or disjoint; innermost = last match) and position table (bytecode offset → UTF-8 source offset + statement bit, delta + minimal LEB128). Line and UTF-16 column are computed lazily by `SourceLines` | 01 §5: UTF-8 offsets stored, UTF-16 map built lazily |
+| F10 | Reserved: `Illegal` = 0x00 (zeroed memory never runs), `TailCall` (D7), `SwitchOnGeneratorState` / `SuspendGenerator` / `ResumeGenerator` (until M1 builds generators). The verifier rejects them. When M1 enables the generator opcodes, the verifier allows them only in generator or async functions | Layout is fixed now; enabling them is an ABI bump |
+| F11 | `LdaCurrentContext` (new, not in V8): ep9 has no `<context>` register name, so BytecodeGen saves the context for a handler with `LdaCurrentContext; Star r` | Found by the sample unit; F5 keeps special frame slots out of register names |
+| F12 | Content hash = SHA-256 of the unit with the hash and build-id fields zeroed. Source hash = SHA-256 of the decoded UTF-8 text. Header byte names the algorithm (1) | Collision resistant (a D6 signature can sign it), checkable with `shasum -a 256`, no dependency |
+
+## CompiledUnit v0 layout
+
+All integers little endian. Header 160 bytes; then 5 sections back to back. Bytes 0..20 are a frozen prefix for every ABI version.
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 8 | magic `89 45 50 39 42 43 0D 0A` ("\x89EP9BC\r\n", PNG-style) |
+| 8 / 12 / 16 | 4 each | ABI version (1) / header size (160) / total size |
+| 20 | 4 | flags: bits 0-1 code kind (script, module, eval); 2 strict; 8-15 TS ([H03](H03-ts-runtime-semantics.md)); 16 has source; 17 has hints |
+| 24 / 25 | 1 / 7 | hash algorithm (1 = SHA-256) / reserved, zero |
+| 32 / 64 / 96 | 32 / 32 / 16 | content hash / source hash / engine build id (not hashed) |
+| 112 / 116 | 4 / 4 | source length in bytes / reserved, zero |
+| 120 | 40 | section table: (offset, length) for strings, scopes, functions, source, hints |
+
+Check order: magic, ABI version, header layout, content hash, then structure, then the verifier. The ABI version comes before the hash, so a unit of another ABI ends in SOURCE even if a later ABI changes the header or the hash rule. For a code-cache entry, SOURCE and LOAD ERROR both recompile the source file.
+
+Function record: kind, flags, name, parent, outer scope, source start/end, parameter count, `length`, register count, then bytecode, constants, feedback kinds, handlers, positions (each with a u32 count). Optional ids store `id + 1` (0 = none). `tests/golden/tiny-unit.hex` pins the bytes.
+
+## Rules
+
+| Rule | Check | From |
+|---|---|---|
+| The opcode table is the golden `opcodes.txt` | `tests/golden.rs::opcode_table` | M0 |
+| A table or layout change bumps `ABI_VERSION`: `abi-history.txt` maps each version to one fingerprint (SHA-256 of `opcodes.txt` + tiny unit) | `tests/abi.rs` | M0 |
+| Same builder input → same bytes and hash, on every thread and target; function order does not matter | `tests/determinism.rs`; `hashes.txt` checked on macOS arm64/x64 and Linux arm64/x64 | M0 |
+| serialize → deserialize → verify round-trips; any input that loads re-serializes to the same bytes; corrupt input fails without a panic | `tests/roundtrip.rs` (random units, byte flips, rehashed mutations, truncation) | M0 |
+| The verifier enforces the guarantee table in `verify.rs` | `tests/verifier.rs`, one test per rule | M0 |
+| Disassembly text is stable | `sample-script.txt`, `sample-module.txt` | M0 |
+| Load errors map to H35 outcomes: bad magic, header or hash → LOAD ERROR; another ABI version → SOURCE | `roundtrip.rs::header_errors_map_to_h35_outcomes` | M0 |
+
+**Entry-frame rule (SP-Dispatch lesson).** The spike's entry function had no caller header, so `Return` from it read garbage. In ep9 the host entry writes a full H14 header, so `Return` from function 0 returns to the host. The verifier enforces the bytecode side: only function 0 has an entry kind (= the unit's code kind); it has 0 parameters and no `CreateMappedArguments`, `CreateUnmappedArguments`, `CreateRestParameter` or `LdaNewTarget`; it is never a closure target.
+
+## Consequences
+
+- **Gains.** BytecodeGen gets a typed builder; the VM gets a verified unit it can decode without bounds checks. Units and the code cache share one canonical format.
+- **Costs.** Load speed on Apple M5 Max, 6.7 MB of random units, release: hash 440 MB/s, hash + decode 295 MB/s, + verify 184 MB/s. Portable SHA-256 is 422 MB/s; hardware SHA-256 (OpenSSL) is 3,316 MB/s. The hash is about 40% of load time.
+- **Follow-ups.** BytecodeGen (01 §5); interpreter DSL on `for_each_opcode!` (H15); determinism CI on the corpus; ADR index update.
+
+## Evidence
+
+| Tag | Claim used here | Link |
+|---|---|---|
+| [R06] | Register machine + accumulator: about 46% fewer dispatches than a stack VM | [06-execution-tiers.md](../research/06-execution-tiers.md) |
+| [R14] | Bytecode is a serialized ABI and the universal deopt target; it ships in every unit, inlined callees included (Graal Ristretto lesson) | [14-dual-mode-architecture.md](../research/14-dual-mode-architecture.md) |
+| V8 | `src/interpreter/bytecodes.h`, `bytecode-operands.h` at 0c3940db | github.com/v8/v8 |
+| SP-Dispatch | Entry frame must not `Return` without a header; verifier lesson | [spikes/sp-dispatch](../../spikes/sp-dispatch/README.md) |
+
+## Open questions
+
+| ID | Question | Needed by | Proposed default |
+|---|---|---|---|
+| H02-Q1 | The plan row lists serialized liveness. v0 has no liveness section | Spike C (before M1 exit) | Add a per-function section, computed from `AccUse` and register operand kinds |
+| H02-Q2 | Context slot/depth operands are checked only against a unit-wide bound | M1 (closures in T0) | Abstract-interpret the context chain in the verifier, or bounds-check in the handler |
+| H02-Q3 | Module records (requests, imports, exports) are not in v0 | `compile_module` (M1) | New section + ABI bump |
+| H02-Q4 | Load speed for A1 (typescript.js ≥ 2x faster from a unit) | A1 (M4) | Hardware SHA-256 path in a crate that allows unsafe, or lazy per-function verification |
+| H02-Q5 | `FeedbackSlotKind` and `RuntimeId` are placeholders | H16 (M0 wk4), H13 index lists (M1) | Replace with H16 kinds and the H13 runtime table; bump ABI |
+| H02-Q6 | Short `Star0-15` forms and superinstructions (V8 has short stars) | M2 dispatch tuning | Add only with a dispatch-count measurement |
+| H02-Q7 | Lazy compile (H4) needs a per-function result type | L1 (M4) | Reuse `Function` + a scope chain record |
+
+## Reopens if
+
+- Spike C cannot deopt to bytecode offsets or needs data the format cannot carry.
+- SP-Unit (H35) needs a different bytecode section shape.
+- H14 (Spike B) needs register names that F5 cannot map in one step.
+
+## Change log
+
+| Date | Change kind | Change | By |
+|---|---|---|---|
+| 2026-10-21 | draft | ABI v1 opcode list, CompiledUnit v0 layout, verifier, disassembler, determinism and round-trip tests | bytecode agent |
+| 2026-10-21 | ABI bump | ABI 2 for BytecodeGen v0: runtime ids 6-18 (`InitializeGlobal` ... `StoreToSuper`); `DefineClass` takes 2 arguments (constructor, heritage). The ABI fingerprint now includes `runtime_table_text()`, so a runtime table change also bumps the ABI. `abi-history.txt` row 2 | bytecodegen agent |
+| 2026-10-21 | API addition | `FunctionBuilder::set_throw_position(Option<u32>)`: a default position for throwing instructions that have no pending position. No format change | bytecodegen agent |
+| 2026-10-21 | evidence | H02-Q2: a test-only context-chain check (`ep9_frontend/src/bytecodegen/ctx_check.rs`) follows context values through each function. 0 errors on 72,147 BytecodeGen units (test262 + bench corpus). It is a candidate for the verifier | bytecodegen agent |

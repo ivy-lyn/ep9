@@ -1,0 +1,150 @@
+# call-eval: script (sloppy)
+# | function f(x) { return eval(x); } function g() { return eval(); } var e = eval; e('1');
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=87 source=embedded hints=none
+source_hash=9aedf107e0a112c9793f303434566fbcff185718df19fdb4a29a87564cb8e259
+strings (9):
+  str0 "f"
+  str1 "g"
+  str2 "e"
+  str3 "x"
+  str4 "this"
+  str5 "new.target"
+  str6 "arguments"
+  str7 "eval"
+  str8 "1"
+scopes (3):
+  scope0 script outer=- flags=[] slots=["f":function, "g":function, "e":var]
+  scope1 function outer=scope0 flags=[needs-context,sloppy-eval] slots=["x":var, "this":var, "new.target":var, "arguments":var]
+  scope2 function outer=scope0 flags=[needs-context,sloppy-eval] slots=["this":var, "new.target":var, "arguments":var]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..87
+  code (60 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22 E> CreateClosure k2, s1, #0x00  ; k2 = Function f2 ; 74 02 01 00
+     26    Star r1                                      ; 0c 01
+     28    LdaConstant k3  ; k3 = String str1 "g"       ; 0a 03
+     30    Star r0                                      ; 0c 00
+     32 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     37    Ldar r1                                      ; 0b 01
+     39 S> LdaGlobal k4, s2  ; k4 = String str7 "eval"  ; 10 04 02
+     42 E> StaGlobal k5, s3  ; k5 = String str2 "e"     ; 12 05 03
+     45 S> LdaGlobal k5, s4  ; k5 = String str2 "e"     ; 10 05 04
+     48    Star r0                                      ; 0c 00
+     50    LdaConstant k6  ; k6 = String str8 "1"       ; 0a 06
+     52    Star r1                                      ; 0c 01
+     54 E> CallUndefinedReceiver1 r0, r1, s5            ; 65 00 01 05
+     58    LdaUndefined                                 ; 05
+     59    Return                                       ; 92
+  constants (7):
+      0 Function f1
+      1 String str0 "f"
+      2 Function f2
+      3 String str1 "g"
+      4 String str7 "eval"
+      5 String str2 "e"
+      6 String str8 "1"
+  feedback (6):
+      0 CreateClosure
+      1 CreateClosure
+      2 LoadGlobal
+      3 StoreGlobal
+      4 LoadGlobal
+      5 Call
+  handlers (0):
+  positions (9):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+     22 E 34 (1:35)
+     32 E 34 (1:35)
+     39 S 70 (1:71)
+     42 E 70 (1:71)
+     45 S 80 (1:81)
+     54 E 80 (1:81)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=8 range=0..33
+  code (58 bytes):
+      0 E> CreateFunctionContext k0, [4]  ; k0 = Scope scope1 ; 75 00 04
+      3    PushContext r0                               ; 13 00
+      5    Ldar a0                                      ; 0b fe
+      7    StaCurrentContextSlot [0]                    ; 1b 00
+      9    Ldar <this>                                  ; 0b ff
+     11    StaCurrentContextSlot [1]                    ; 1b 01
+     13    LdaNewTarget                                 ; 0f
+     14    StaCurrentContextSlot [2]                    ; 1b 02
+     16 E> CreateMappedArguments                        ; 7a
+     17    StaCurrentContextSlot [3]                    ; 1b 03
+     19 S> LdaLookupSlot k1  ; k1 = String str7 "eval"  ; 1c 01
+     21    Star r1                                      ; 0c 01
+     23    LdaCurrentContextSlot [0]                    ; 18 00
+     25    Star r2                                      ; 0c 02
+     27    Mov r1, r3                                   ; 0d 01 03
+     30    Mov r2, r4                                   ; 0d 02 04
+     33    LdaCurrentFunction                           ; 0e
+     34    Star r5                                      ; 0c 05
+     36    LdaSmi [1]                                   ; 04 01
+     38    Star r6                                      ; 0c 06
+     40    LdaSmi [23]                                  ; 04 17
+     42    Star r7                                      ; 0c 07
+     44 E> CallRuntime ResolvePossiblyDirectEval, r3-r7 ; 68 07 00 03 05
+     49    Star r1                                      ; 0c 01
+     51 E> CallUndefinedReceiver1 r1, r2, s0            ; 65 01 02 00
+     55    Return                                       ; 92
+     56    LdaUndefined                                 ; 05
+     57    Return                                       ; 92
+  constants (2):
+      0 Scope scope1
+      1 String str7 "eval"
+  feedback (1):
+      0 Call
+  handlers (0):
+  positions (5):
+      0 E 0 (1:1)
+     16 E 0 (1:1)
+     19 S 16 (1:17)
+     44 E 23 (1:24)
+     51 E 23 (1:24)
+function f2 normal name="g" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=7 range=34..65
+  code (49 bytes):
+      0 E> CreateFunctionContext k0, [3]  ; k0 = Scope scope2 ; 75 00 03
+      3    PushContext r0                               ; 13 00
+      5    Ldar <this>                                  ; 0b ff
+      7    StaCurrentContextSlot [0]                    ; 1b 00
+      9    LdaNewTarget                                 ; 0f
+     10    StaCurrentContextSlot [1]                    ; 1b 01
+     12 E> CreateMappedArguments                        ; 7a
+     13    StaCurrentContextSlot [2]                    ; 1b 02
+     15 S> LdaLookupSlot k1  ; k1 = String str7 "eval"  ; 1c 01
+     17    Star r1                                      ; 0c 01
+     19    Mov r1, r2                                   ; 0d 01 02
+     22    LdaUndefined                                 ; 05
+     23    Star r3                                      ; 0c 03
+     25    LdaCurrentFunction                           ; 0e
+     26    Star r4                                      ; 0c 04
+     28    LdaSmi [2]                                   ; 04 02
+     30    Star r5                                      ; 0c 05
+     32    LdaSmi [56]                                  ; 04 38
+     34    Star r6                                      ; 0c 06
+     36 E> CallRuntime ResolvePossiblyDirectEval, r2-r6 ; 68 07 00 02 05
+     41    Star r1                                      ; 0c 01
+     43 E> CallUndefinedReceiver0 r1, s0                ; 64 01 00
+     46    Return                                       ; 92
+     47    LdaUndefined                                 ; 05
+     48    Return                                       ; 92
+  constants (2):
+      0 Scope scope2
+      1 String str7 "eval"
+  feedback (1):
+      0 Call
+  handlers (0):
+  positions (5):
+      0 E 34 (1:35)
+     12 E 34 (1:35)
+     15 S 49 (1:50)
+     36 E 56 (1:57)
+     43 E 56 (1:57)

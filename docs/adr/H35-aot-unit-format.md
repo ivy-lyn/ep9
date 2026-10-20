@@ -122,7 +122,7 @@ Zero text relocations. Isolate register + pc-relative RW data + link table. Link
 ## Reopens if
 
 - SP-Unit fails on any tier-1 target (09 §4 names H34 and H35); the A0 time box is 2 weeks (est.).
-- The A2 gate fails (zero text relocations, header-mutation fallbacks, unwind through AOT frames).
+- The A2 gate fails (zero text relocations, 100% of header mutations end in their S3 outcome, unwind through AOT frames).
 - D6 = sandbox (only signed or bytecode-only units may load) or D16 = yes (`.o` first; 11-decisions "Affects").
 - Deployments must survive engine upgrades without a unit rebuild, and SOURCE start-up is measured too slow (A1 gates). Then relax S4 step 3 to "same bytecode ABI -> BYTECODE", backed by a cross-build bytecode-stability CI test.
 - Units must outlive container-version changes: add a frozen source-locator prefix before the A3 container freeze.
@@ -134,3 +134,4 @@ Zero text relocations. Isolate register + pc-relative RW data + link table. Link
 |---|---|---|---|
 | 2026-10-20 | draft | Spec skeleton from 02 §6 and 05 §8 (AOT senior, M0 wk1) | ADR agent |
 | 2026-10-20 | rewrite | H35-Q7 resolved: three outcomes by field (LOAD ERROR, SOURCE, BYTECODE). S3, S4, S5, Decision and Validation updated. Plan 02 §6, 05 §8, 05 §12, 07 §2-3, 09 §3, 10 §2 and RK35 aligned. A `.o` unit's LOAD ERROR is a clean startup error (critic note) | tech-gaps agent; apply agent |
+| 2026-10-21 | clarify | Reopens if: the A2 gate item "header-mutation fallbacks" now uses the Validation text ("100% of header mutations end in their S3 outcome"). No check changes | hygiene agent |

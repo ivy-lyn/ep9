@@ -1,7 +1,7 @@
 # Automatic sound regions: can ep9 find and optimize the sound parts of normal TS/JS code, with no opt-in?
 
 Date 2026-10-20. Inputs: five studies of this round (precedents, semantics, gain, finder, hot) and one adversarial review. The review findings are applied in this version. The machine was shared (load average 8-37), so every timing is noisy. No ep9 code exists yet, so every ep9 cost is an estimate (est.).
-Scratch alias: `SR` = `/private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/sound-regions/`. These paths are session-local (see README). The semantics and hot studies did not save a report file. This doc inlines the data it uses from them. Plan paths are relative to the repo root.
+Scratch alias: `SR` = the research folder `work/sound-regions/` in the session scratchpad. These paths are session-local (see README). The semantics and hot studies did not save a report file. This doc inlines the data it uses from them. Plan paths are relative to the repo root. Copies of the scripts, probes and cited results are in [artifacts/sound-regions/](artifacts/sound-regions/README.md) (its README maps the `SR/` folders to the copies and lists what was not copied).
 
 ## Summary
 The user's idea: do not ask users to write a strict TS subset. Let ep9c find the parts of normal code that meet the restrictions, and compile them with sound facts. The idea is sound in full ECMAScript if every fact in a region has one of three justifications: a static proof (S), a check (B), or a fuse (F), and if the fuse and effect-point lists are complete. On failure, the region falls back to generic code for the same bytecode. It never throws. So the regions stay legal in test262 mode, and the semantic change behind D17 is not needed. TS types can only propose candidates; a verifier that cannot read types proves each fact again. The weak point is coverage, not soundness. Functions that pass strict rules (typed bindings only) hold 7-8% of tsc CPU time, 0-6% of hono, 0% of zod and 6-11% of date-fns. Only 0-6.2% of member accesses sit inside such a function and on a qualifying receiver. The vscode diff engine (24-39%) is the exception among real apps. ep9's own typed AWFY port reaches 64-99%, after four relaxations. The gain is small in JIT mode and small to moderate in AOT-jitless mode. SpiderMonkey shipped a related run-time design (Type Inference, with guards on about 41% of accesses) in Firefox 9-82. Warp removed it: faster on Speedometer and real pages, slower on Octane and Kraken.
@@ -196,7 +196,9 @@ EVIDENCE: E1 = SR/gain/sh-typed-vs-stripped.log (nbody 940 vs 195 ms, richards 9
 14. **[high] Code generated at run time is outside any static finder.** 12.5-13.3% of zod's time runs in code that zod builds with `new F(...)`. Only JIT mode can optimize it.
     EVIDENCE: SR/hot/res/zod-parse.json; zod packages/zod/src/v4/core/doc.ts:44-46.
 
-## 6. Plan delta proposal (not applied; the user decides)
+## 6. Plan delta proposal
+
+Status 2026-10-20: decided ([decisions-log §5](../decisions-log.md#5-2026-10-20-decisions-made-by-the-agent-team-under-the-users-instruction)). D17 gains option (d) under a rule; SP-RegionCoverage runs in A1h; K-A5v-cov stays at 15%; K-A5v stops only if both parts fail; a kernels-only A5v needs ≥ 1.3x A4 code; the H24 debugger rule is in 02-architecture.
 
 **6.0 Changes now (before any A5v data)**
 
@@ -206,7 +208,7 @@ EVIDENCE: E1 = SR/gain/sh-typed-vs-stripped.log (nbody 940 vs 195 ms, richards 9
 | D17 (docs/plan/11-decisions.md:113) | Stays "Defer to M7 exit". Add option (d): "automatic VERIFIED regions: no opt-in, no edits, no THROW, test262 mode". Today's data limits (d) to kernels: K-A5v-cov trips on tsc and hono |
 | Separate item, not A5v: PROVEN locals vs debugger | B28 and B28c show that a session rewrites strict `let` and `const` locals. H24 needs a rule for PROVEN facts on locals while a session is connected. File it as its own plan item for the H24 owners |
 
-Everything below applies only if SP-RegionCoverage passes K-A5v-cov, or if the user picks a kernels-only A5v after it trips.
+Everything below applies only if the D17 rule picks (d) at M7 exit: K-A5v-cov passed, or region code ≥ 1.3x A4 code on ≥ 2 of 4 TYPED-KERNELS (kernels only).
 
 **6.1 Trust levels (docs/plan/05-aot.md §4, 04-execution.md §6-§7)**
 
@@ -215,7 +217,7 @@ Everything below applies only if SP-RegionCoverage passes K-A5v-cov, or if the u
 | PROVEN | unchanged (see the §6.0 item) | none | - | every mode |
 | VERIFIED (new) | Facts that the ep9c verifier proves per region from bytecode, module graph and the builtin effect model, under checks and fuses. Types only choose candidates | Entry checks; hoisted interior checks; aborting checks; F dependencies | Entry fail: generic sibling (SLOWPATH), jitless budget then PIN. Interior fail: DEOPT with frame state. Fuse pop: lazy deopt + slot swap. Never THROW | AOT units (jitless; hybrid until re-tier); test262 mode included |
 | HINT | unchanged | unchanged | unchanged | unchanged |
-| SOUND (opt-in, THROW) | frozen; build only if the user still wants a THROW dialect after K-A5v data | - | - | - |
+| SOUND (opt-in, THROW) | frozen; built only if the D17 rule picks (c) at M7 exit (decided 2026-10-20) | - | - | - |
 
 H30 merge rule: key VERIFIED facts by region version, not by bytecode site. Inside a region version, VERIFIED ranks above RUNTIME while its fuses hold; a conflict there means a missing fuse pop, so it is an engine bug (debug assert). At the same bytecode outside the region, RUNTIME feedback may legally differ: the generic sibling runs inputs that failed the entry checks, and baseline-AOT ICs write the shared feedback (H33, docs/plan/02-architecture.md:190).
 
@@ -227,17 +229,17 @@ H30 merge rule: key VERIFIED facts by region version, not by bytecode site. Insi
 | SP-TypedBound (M7) | T2 with guards removed on TYPED-KERNELS | + SP-RegionBound: remove guards only inside finder regions (SR/finder/regions.json), in JIT mode and in jitless mode (vs A4 code). Count entry, hoisted interior and aborting checks per region. Add a SIZE-REPORT line: unit text with the second code copy vs the A3 gate (unit text <= 8x bytecode, docs/plan/05-aot.md:355). +0.25 PM (est.) |
 | Early contract items | - | None. H17 stays as it is before M1a unless Spike C or SP-Facts measures a gain. Decide the field-type lattice after SP-RegionCoverage passes |
 
-**6.3 D15 and D17 wording (docs/plan/11-decisions.md:111, :113).** D17: see §6.0. If K-A5v data later passes, D17 becomes "is A5v worth 16-33 PM?" instead of "may ep9 change JS semantics?". D15 (b) wording ("found automatically" instead of "opt-in") is a product claim near N10; it is an open question for the user, not settled here.
+**6.3 D15 and D17 wording (docs/plan/11-decisions.md:111, :113).** D17: see §6.0. If K-A5v data later passes, D17 becomes "is A5v worth 16-33 PM?" instead of "may ep9 change JS semantics?". D15 (b) wording ("found automatically" instead of "opt-in") is a product claim near N10; decided 2026-10-20: mechanism-neutral wording (11-decisions D15).
 
 **6.4 Kill rules (replace K-A5, docs/plan/05-aot.md:371)**
 
-| ID | Checked | Rule (est.; thresholds are the user's call) | Today's data |
+| ID | Checked | Rule (est.; thresholds decided 2026-10-20) | Today's data |
 |---|---|---|---|
 | K-A5v-cov | SP-RegionCoverage | hot-time share in finder-v1 regions < 15% on >= 2 of the 3 real-app HINT-SET groups (TS compiler, vscode, hono; docs/plan/05-aot.md:177) -> limit A5v to kernels or stop | tsc 7-9%, hono 0.2-6%: trips; vscode-diff 24-39%: passes |
 | K-A5pre | M7 | unchanged (< 1.15x -> stop), but it gates only the FV3/JIT part. It measures JIT mode; A5v's claim is in jitless mode | not measured |
 | K-A5v-bound (new) | SP-RegionBound, jitless | region code < 1.1x A4 code inside regions on TYPED-KERNELS -> stop | not measured |
 | K-A5v | after the prototype | Real-app part: < 3% geomean end-to-end gain on the 3 real-app HINT-SET groups (typed AWFY excluded, as in the K-A4H off-ramp), AOT-jitless vs A4 optimized-AOT -> no real-app claim; A5v is kernels only. Kernel part: FV3 not met -> no D15 (b) claim. Both fail -> stop | Real apps +0.2-3.7% (est., §4 bands). At 1.27x for all groups: real apps +2.3-4.4%; with typed AWFY included +5.5-9.6% (SR/revise/amdahl.log) |
-| Dependency | K-A4J (M8 exit) | If K-A4J trips, A5v loses its codegen path (T2 AOT emit) and its comparator -> stop A5v or re-plan it with the user | - |
+| Dependency | K-A4J (M8 exit) | If K-A4J trips, A5v loses its codegen path (T2 AOT emit) and its comparator -> stop A5v (D17 rule: a K-A4J trip stops (d), decided 2026-10-20) | - |
 
 **6.5 FV3.** Keep the gate (>= 1.1x V8 full on >= 2 of 4 TYPED-KERNELS). Note: TYPED-KERNELS are typed ports (docs/plan/10-quality.md:95); the AWFY Richards, DeltaBlue and NBody ports were written for ep9 [R13]. AWFY reaches high coverage only with v1-v3 relaxations, so guards remain inside regions. Only nbody has data for a win [R15][R17].
 

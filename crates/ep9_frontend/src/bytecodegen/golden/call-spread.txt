@@ -1,0 +1,207 @@
+# call-spread: script (sloppy)
+# | var f, o, a; f(...a); f(1, ...a); f(...a, 1); o.m(...a); new f(...a); new f(...a, 2);
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=85 source=embedded hints=none
+source_hash=03dd5224e8b3fa21ad725114c13fbf35cf1bebaeacd86c2405355b116d6c077a
+strings (7):
+  str0 "f"
+  str1 "o"
+  str2 "a"
+  str3 "next"
+  str4 "done"
+  str5 "value"
+  str6 "m"
+scopes (1):
+  scope0 script outer=- flags=[] slots=["f":var, "o":var, "a":var]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=9 range=0..85
+  code (272 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> LdaGlobal k0, s0  ; k0 = String str0 "f"     ; 10 00 00
+      8    Star r0                                      ; 0c 00
+     10    LdaUndefined                                 ; 05
+     11    Star r1                                      ; 0c 01
+     13 E> LdaGlobal k1, s1  ; k1 = String str2 "a"     ; 10 01 01
+     16    Star r2                                      ; 0c 02
+     18 E> CallWithSpread r0, r1-r2, s2                 ; 67 00 01 02 02
+     23 S> LdaGlobal k0, s0  ; k0 = String str0 "f"     ; 10 00 00
+     26    Star r0                                      ; 0c 00
+     28    LdaUndefined                                 ; 05
+     29    Star r1                                      ; 0c 01
+     31    LdaSmi [1]                                   ; 04 01
+     33    Star r2                                      ; 0c 02
+     35 E> LdaGlobal k1, s1  ; k1 = String str2 "a"     ; 10 01 01
+     38    Star r3                                      ; 0c 03
+     40 E> CallWithSpread r0, r1-r3, s3                 ; 67 00 01 03 03
+     45 S> LdaGlobal k0, s0  ; k0 = String str0 "f"     ; 10 00 00
+     48    Star r0                                      ; 0c 00
+     50    LdaUndefined                                 ; 05
+     51    Star r1                                      ; 0c 01
+     53 E> CreateEmptyArrayLiteral s4                   ; 6e 04
+     55    Star r3                                      ; 0c 03
+     57    LdaZero                                      ; 03
+     58    Star r4                                      ; 0c 04
+     60 E> LdaGlobal k1, s1  ; k1 = String str2 "a"     ; 10 01 01
+     63    Star r8                                      ; 0c 08
+     65 E> GetIterator r8, s7, s8                       ; 8f 08 07 08
+     69    Star r5                                      ; 0c 05
+     71 E> GetNamedProperty r5, k2, s9  ; k2 = String str3 "next" ; 21 05 02 09
+     75    Star r6                                      ; 0c 06
+     77 E> CallProperty0 r6, r5, s10                    ; 60 06 05 0a
+     81    Star r7                                      ; 0c 07
+     83    JumpIfJSReceiver @90                         ; 88 07
+     85 E> CallRuntime ThrowIteratorResultNotAnObject, r7 ; 68 01 00 07 01
+     90 E> GetNamedProperty r7, k3, s11  ; k3 = String str4 "done" ; 21 07 03 0b
+     94    JumpIfToBooleanTrue @118                     ; 81 18
+     96 E> GetNamedProperty r7, k4, s12  ; k4 = String str5 "value" ; 21 07 04 0c
+    100    Star r7                                      ; 0c 07
+    102    Ldar r7                                      ; 0b 07
+    104 E> StaInArrayLiteral r3, r4, s13                ; 28 03 04 0d
+    108    Ldar r4                                      ; 0b 04
+    110 E> Inc s14                                      ; 42 0e
+    112    Star r4                                      ; 0c 04
+    114    JumpLoop @77, [0], s15                       ; 7d 25 00 0f
+    118    LdaSmi [1]                                   ; 04 01
+    120 E> StaInArrayLiteral r3, r4, s5                 ; 28 03 04 05
+    124    Ldar r4                                      ; 0b 04
+    126 E> Inc s6                                       ; 42 06
+    128    Star r4                                      ; 0c 04
+    130    Ldar r3                                      ; 0b 03
+    132    Star r2                                      ; 0c 02
+    134 E> CallWithSpread r0, r1-r2, s16                ; 67 00 01 02 10
+    139 S> LdaGlobal k6, s17  ; k6 = String str1 "o"    ; 10 06 11
+    142    Star r1                                      ; 0c 01
+    144 E> GetNamedProperty r1, k5, s18  ; k5 = String str6 "m" ; 21 01 05 12
+    148    Star r0                                      ; 0c 00
+    150 E> LdaGlobal k1, s1  ; k1 = String str2 "a"     ; 10 01 01
+    153    Star r2                                      ; 0c 02
+    155 E> CallWithSpread r0, r1-r2, s19                ; 67 00 01 02 13
+    160 S> LdaGlobal k0, s0  ; k0 = String str0 "f"     ; 10 00 00
+    163    Star r0                                      ; 0c 00
+    165 E> LdaGlobal k1, s1  ; k1 = String str2 "a"     ; 10 01 01
+    168    Star r1                                      ; 0c 01
+    170    Ldar r0                                      ; 0b 00
+    172 E> ConstructWithSpread r0, r1, s20              ; 6a 00 01 01 14
+    177 S> LdaGlobal k0, s0  ; k0 = String str0 "f"     ; 10 00 00
+    180    Star r0                                      ; 0c 00
+    182 E> CreateEmptyArrayLiteral s21                  ; 6e 15
+    184    Star r2                                      ; 0c 02
+    186    LdaZero                                      ; 03
+    187    Star r3                                      ; 0c 03
+    189 E> LdaGlobal k1, s1  ; k1 = String str2 "a"     ; 10 01 01
+    192    Star r7                                      ; 0c 07
+    194 E> GetIterator r7, s24, s25                     ; 8f 07 18 19
+    198    Star r4                                      ; 0c 04
+    200 E> GetNamedProperty r4, k2, s26  ; k2 = String str3 "next" ; 21 04 02 1a
+    204    Star r5                                      ; 0c 05
+    206 E> CallProperty0 r5, r4, s27                    ; 60 05 04 1b
+    210    Star r6                                      ; 0c 06
+    212    JumpIfJSReceiver @219                        ; 88 07
+    214 E> CallRuntime ThrowIteratorResultNotAnObject, r6 ; 68 01 00 06 01
+    219 E> GetNamedProperty r6, k3, s28  ; k3 = String str4 "done" ; 21 06 03 1c
+    223    JumpIfToBooleanTrue @247                     ; 81 18
+    225 E> GetNamedProperty r6, k4, s29  ; k4 = String str5 "value" ; 21 06 04 1d
+    229    Star r6                                      ; 0c 06
+    231    Ldar r6                                      ; 0b 06
+    233 E> StaInArrayLiteral r2, r3, s30                ; 28 02 03 1e
+    237    Ldar r3                                      ; 0b 03
+    239 E> Inc s31                                      ; 42 1f
+    241    Star r3                                      ; 0c 03
+    243    JumpLoop @206, [0], s32                      ; 7d 25 00 20
+    247    LdaSmi [2]                                   ; 04 02
+    249 E> StaInArrayLiteral r2, r3, s22                ; 28 02 03 16
+    253    Ldar r3                                      ; 0b 03
+    255 E> Inc s23                                      ; 42 17
+    257    Star r3                                      ; 0c 03
+    259    Ldar r2                                      ; 0b 02
+    261    Star r1                                      ; 0c 01
+    263    Ldar r0                                      ; 0b 00
+    265 E> ConstructWithSpread r0, r1, s33              ; 6a 00 01 01 21
+    270    LdaUndefined                                 ; 05
+    271    Return                                       ; 92
+  constants (7):
+      0 String str0 "f"
+      1 String str2 "a"
+      2 String str3 "next"
+      3 String str4 "done"
+      4 String str5 "value"
+      5 String str6 "m"
+      6 String str1 "o"
+  feedback (34):
+      0 LoadGlobal
+      1 LoadGlobal
+      2 Call
+      3 Call
+      4 Literal
+      5 StoreInArrayLiteral
+      6 BinaryOp
+      7 LoadNamed
+      8 Call
+      9 LoadNamed
+     10 Call
+     11 LoadNamed
+     12 LoadNamed
+     13 StoreInArrayLiteral
+     14 BinaryOp
+     15 JumpLoop
+     16 Call
+     17 LoadGlobal
+     18 LoadNamed
+     19 Call
+     20 Call
+     21 Literal
+     22 StoreInArrayLiteral
+     23 BinaryOp
+     24 LoadNamed
+     25 Call
+     26 LoadNamed
+     27 Call
+     28 LoadNamed
+     29 LoadNamed
+     30 StoreInArrayLiteral
+     31 BinaryOp
+     32 JumpLoop
+     33 Call
+  handlers (0):
+  positions (42):
+      0 S 0 (1:1)
+      5 S 13 (1:14)
+     13 E 18 (1:19)
+     18 E 13 (1:14)
+     23 S 22 (1:23)
+     35 E 30 (1:31)
+     40 E 22 (1:23)
+     45 S 34 (1:35)
+     53 E 34 (1:35)
+     60 E 39 (1:40)
+     65 E 36 (1:37)
+     71 E 34 (1:35)
+     77 E 36 (1:37)
+     85 E 34 (1:35)
+     90 E 34 (1:35)
+     96 E 34 (1:35)
+    104 E 34 (1:35)
+    110 E 34 (1:35)
+    120 E 34 (1:35)
+    126 E 34 (1:35)
+    134 E 34 (1:35)
+    139 S 46 (1:47)
+    144 E 48 (1:49)
+    150 E 53 (1:54)
+    155 E 48 (1:49)
+    160 S 57 (1:58)
+    165 E 66 (1:67)
+    172 E 57 (1:58)
+    177 S 70 (1:71)
+    182 E 70 (1:71)
+    189 E 79 (1:80)
+    194 E 76 (1:77)
+    200 E 70 (1:71)
+    206 E 76 (1:77)
+    214 E 70 (1:71)
+    219 E 70 (1:71)
+    225 E 70 (1:71)
+    233 E 70 (1:71)
+    239 E 70 (1:71)
+    249 E 70 (1:71)
+    255 E 70 (1:71)
+    265 E 70 (1:71)

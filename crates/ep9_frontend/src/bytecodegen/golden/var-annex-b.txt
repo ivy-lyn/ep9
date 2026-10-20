@@ -1,0 +1,83 @@
+# var-annex-b: script (sloppy)
+# | function f() { { function g() {} } return g; } if (true) function h() {}
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=72 source=embedded hints=none
+source_hash=5187e853e2fc59ff1451b36b3aae4664a4e0df90629248b1e53eda0bb1364291
+strings (3):
+  str0 "f"
+  str1 "h"
+  str2 "g"
+scopes (6):
+  scope0 script outer=- flags=[] slots=["f":function, "h":var]
+  scope1 function outer=scope0 flags=[] slots=[]
+  scope2 block outer=scope1 flags=[] slots=[]
+  scope3 function outer=scope2 flags=[] slots=[]
+  scope4 block outer=scope0 flags=[] slots=[]
+  scope5 function outer=scope4 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=3 range=0..72
+  code (35 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r2                                      ; 0c 02
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r1                                      ; 0c 01
+     15 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
+     20    Ldar r2                                      ; 0b 02
+     22 S> CreateClosure k2, s1, #0x00  ; k2 = Function f3 ; 74 02 01 00
+     26    Star r0                                      ; 0c 00
+     28 S> Ldar r0                                      ; 0b 00
+     30 E> StaGlobal k3, s2  ; k3 = String str1 "h"     ; 12 03 02
+     33    LdaUndefined                                 ; 05
+     34    Return                                       ; 92
+  constants (4):
+      0 Function f1
+      1 String str0 "f"
+      2 Function f3
+      3 String str1 "h"
+  feedback (3):
+      0 CreateClosure
+      1 CreateClosure
+      2 StoreGlobal
+  handlers (0):
+  positions (6):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+     22 S 47 (1:48)
+     28 S 57 (1:58)
+     30 E 57 (1:58)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=2 range=0..46
+  code (15 bytes):
+      0 E> CreateClosure k0, s0, #0x00  ; k0 = Function f2 ; 74 00 00 00
+      4    Star r1                                      ; 0c 01
+      6 S> Ldar r1                                      ; 0b 01
+      8    Star r0                                      ; 0c 00
+     10 S> Ldar r0                                      ; 0b 00
+     12    Return                                       ; 92
+     13    LdaUndefined                                 ; 05
+     14    Return                                       ; 92
+  constants (1):
+      0 Function f2
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 E 17 (1:18)
+      6 S 17 (1:18)
+     10 S 35 (1:36)
+function f2 normal name="g" parent=f1 outer_scope=scope2 flags=[simple-params] params=0 length=0 regs=0 range=17..32
+  code (2 bytes):
+      0    LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (0):
+function f3 normal name="h" parent=f0 outer_scope=scope4 flags=[simple-params] params=0 length=0 regs=0 range=57..72
+  code (2 bytes):
+      0    LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (0):

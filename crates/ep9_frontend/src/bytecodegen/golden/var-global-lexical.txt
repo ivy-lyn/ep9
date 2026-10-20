@@ -1,0 +1,111 @@
+# var-global-lexical: script (sloppy)
+# | let a = 1; const b = 2; class C {} a = b; function g() { return a + b; }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=72 source=embedded hints=none
+source_hash=4fb8fb62d37357a1a44437d45df1d16b32f192a235c946bd204b911a24f21117
+strings (4):
+  str0 "a"
+  str1 "b"
+  str2 "C"
+  str3 "g"
+scopes (4):
+  scope0 script outer=- flags=[] slots=["a":let, "b":const, "C":class, "g":function]
+  scope1 class outer=scope0 flags=[strict] slots=[]
+  scope2 function outer=scope1 flags=[strict] slots=[]
+  scope3 function outer=scope0 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=4 range=0..72
+  code (95 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f2 ; 74 00 00 00
+      9    Star r2                                      ; 0c 02
+     11    LdaConstant k1  ; k1 = String str3 "g"       ; 0a 01
+     13    Star r1                                      ; 0c 01
+     15 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
+     20    Ldar r2                                      ; 0b 02
+     22 S> LdaSmi [1]                                   ; 04 01
+     24    Star r2                                      ; 0c 02
+     26    LdaConstant k2  ; k2 = String str0 "a"       ; 0a 02
+     28    Star r1                                      ; 0c 01
+     30 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
+     35    Ldar r2                                      ; 0b 02
+     37 S> LdaSmi [2]                                   ; 04 02
+     39    Star r2                                      ; 0c 02
+     41    LdaConstant k3  ; k3 = String str1 "b"       ; 0a 03
+     43    Star r1                                      ; 0c 01
+     45 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
+     50    Ldar r2                                      ; 0b 02
+     52 S> LdaTheHole                                   ; 07
+     53    Star r2                                      ; 0c 02
+     55 E> CreateClosure k4, s1, #0x00  ; k4 = Function f1 ; 74 04 01 00
+     59    Star r1                                      ; 0c 01
+     61 E> CallRuntime DefineClass, r1-r2               ; 68 04 00 01 02
+     66    Star r3                                      ; 0c 03
+     68    Ldar r1                                      ; 0b 01
+     70    Star r0                                      ; 0c 00
+     72    Ldar r1                                      ; 0b 01
+     74    Star r2                                      ; 0c 02
+     76    LdaConstant k5  ; k5 = String str2 "C"       ; 0a 05
+     78    Star r1                                      ; 0c 01
+     80 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
+     85    Ldar r2                                      ; 0b 02
+     87 S> LdaGlobal k3, s2  ; k3 = String str1 "b"     ; 10 03 02
+     90 E> StaGlobal k2, s3  ; k2 = String str0 "a"     ; 12 02 03
+     93    LdaUndefined                                 ; 05
+     94    Return                                       ; 92
+  constants (6):
+      0 Function f2
+      1 String str3 "g"
+      2 String str0 "a"
+      3 String str1 "b"
+      4 Function f1
+      5 String str2 "C"
+  feedback (4):
+      0 CreateClosure
+      1 CreateClosure
+      2 LoadGlobal
+      3 StoreGlobal
+  handlers (0):
+  positions (13):
+      0 S 0 (1:1)
+      5 E 42 (1:43)
+     15 E 42 (1:43)
+     22 S 4 (1:5)
+     30 E 0 (1:1)
+     37 S 17 (1:18)
+     45 E 11 (1:12)
+     52 S 24 (1:25)
+     55 E 24 (1:25)
+     61 E 24 (1:25)
+     80 E 24 (1:25)
+     87 S 35 (1:36)
+     90 E 35 (1:36)
+function f1 class-constructor name="C" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=32..34
+  code (2 bytes):
+      0 S> LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 24 (1:25)
+function f2 normal name="g" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=1 range=42..72
+  code (14 bytes):
+      0 S> LdaGlobal k0, s0  ; k0 = String str0 "a"     ; 10 00 00
+      3    Star r0                                      ; 0c 00
+      5 E> LdaGlobal k1, s1  ; k1 = String str1 "b"     ; 10 01 01
+      8 E> Add r0, s2                                   ; 2a 00 02
+     11    Return                                       ; 92
+     12    LdaUndefined                                 ; 05
+     13    Return                                       ; 92
+  constants (2):
+      0 String str0 "a"
+      1 String str1 "b"
+  feedback (3):
+      0 LoadGlobal
+      1 LoadGlobal
+      2 BinaryOp
+  handlers (0):
+  positions (3):
+      0 S 57 (1:58)
+      5 E 68 (1:69)
+      8 E 64 (1:65)

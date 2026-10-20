@@ -1,0 +1,85 @@
+# fn-new-target: script (sloppy)
+# | function F() { return new.target; } function G() { return () => new.target; }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=77 source=embedded hints=none
+source_hash=a9b6c53040d7229f99683339373bd0d14aa1a06023bb254fd79f6410671c7693
+strings (3):
+  str0 "F"
+  str1 "G"
+  str2 "new.target"
+scopes (4):
+  scope0 script outer=- flags=[] slots=["F":function, "G":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+  scope2 function outer=scope0 flags=[needs-context] slots=["new.target":var]
+  scope3 function outer=scope2 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..77
+  code (41 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "F"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22 E> CreateClosure k2, s1, #0x00  ; k2 = Function f2 ; 74 02 01 00
+     26    Star r1                                      ; 0c 01
+     28    LdaConstant k3  ; k3 = String str1 "G"       ; 0a 03
+     30    Star r0                                      ; 0c 00
+     32 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     37    Ldar r1                                      ; 0b 01
+     39    LdaUndefined                                 ; 05
+     40    Return                                       ; 92
+  constants (4):
+      0 Function f1
+      1 String str0 "F"
+      2 Function f2
+      3 String str1 "G"
+  feedback (2):
+      0 CreateClosure
+      1 CreateClosure
+  handlers (0):
+  positions (5):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+     22 E 36 (1:37)
+     32 E 36 (1:37)
+function f1 normal name="F" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=0..35
+  code (4 bytes):
+      0 S> LdaNewTarget                                 ; 0f
+      1    Return                                       ; 92
+      2    LdaUndefined                                 ; 05
+      3    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 15 (1:16)
+function f2 normal name="G" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=1 range=36..77
+  code (15 bytes):
+      0 E> CreateFunctionContext k0, [1]  ; k0 = Scope scope2 ; 75 00 01
+      3    PushContext r0                               ; 13 00
+      5    LdaNewTarget                                 ; 0f
+      6    StaCurrentContextSlot [0]                    ; 1b 00
+      8 S> CreateClosure k1, s0, #0x00  ; k1 = Function f3 ; 74 01 00 00
+     12    Return                                       ; 92
+     13    LdaUndefined                                 ; 05
+     14    Return                                       ; 92
+  constants (2):
+      0 Scope scope2
+      1 Function f3
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (2):
+      0 E 36 (1:37)
+      8 S 51 (1:52)
+function f3 arrow name=- parent=f2 outer_scope=scope2 flags=[simple-params] params=0 length=0 regs=0 range=58..74
+  code (3 bytes):
+      0 S> LdaImmutableCurrentContextSlot [0]           ; 19 00
+      2    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 64 (1:65)

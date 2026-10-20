@@ -1,0 +1,69 @@
+# lit-tagged-template: script (sloppy)
+# | var t, o; t`a${1}b`; o.m`\u{`; t``;
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=35 source=embedded hints=none
+source_hash=73e8f3eb89c5b2638b6e9d4aeaede7f3aaa0fd918da7013180a9ebc6c1257113
+strings (7):
+  str0 "t"
+  str1 "o"
+  str2 "a"
+  str3 "b"
+  str4 "m"
+  str5 "\\u{"
+  str6 ""
+scopes (1):
+  scope0 script outer=- flags=[] slots=["t":var, "o":var]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=3 range=0..35
+  code (61 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> LdaGlobal k0, s0  ; k0 = String str0 "t"     ; 10 00 00
+      8    Star r0                                      ; 0c 00
+     10 E> GetTemplateObject k1, s1  ; k1 = TemplateObject [("a", "a"), ("b", "b")] ; 73 01 01
+     13    Star r1                                      ; 0c 01
+     15    LdaSmi [1]                                   ; 04 01
+     17    Star r2                                      ; 0c 02
+     19 E> CallUndefinedReceiver2 r0, r1, r2, s2        ; 66 00 01 02 02
+     24 S> LdaGlobal k3, s3  ; k3 = String str1 "o"     ; 10 03 03
+     27    Star r1                                      ; 0c 01
+     29 E> GetNamedProperty r1, k2, s4  ; k2 = String str4 "m" ; 21 01 02 04
+     33    Star r0                                      ; 0c 00
+     35 E> GetTemplateObject k4, s5  ; k4 = TemplateObject [("\\u{", undefined)] ; 73 04 05
+     38    Star r2                                      ; 0c 02
+     40 E> CallProperty1 r0, r1, r2, s6                 ; 61 00 01 02 06
+     45 S> LdaGlobal k0, s0  ; k0 = String str0 "t"     ; 10 00 00
+     48    Star r0                                      ; 0c 00
+     50 E> GetTemplateObject k5, s7  ; k5 = TemplateObject [("", "")] ; 73 05 07
+     53    Star r1                                      ; 0c 01
+     55 E> CallUndefinedReceiver1 r0, r1, s8            ; 65 00 01 08
+     59    LdaUndefined                                 ; 05
+     60    Return                                       ; 92
+  constants (6):
+      0 String str0 "t"
+      1 TemplateObject [("a", "a"), ("b", "b")]
+      2 String str4 "m"
+      3 String str1 "o"
+      4 TemplateObject [("\\u{", undefined)]
+      5 TemplateObject [("", "")]
+  feedback (9):
+      0 LoadGlobal
+      1 Literal
+      2 Call
+      3 LoadGlobal
+      4 LoadNamed
+      5 Literal
+      6 Call
+      7 Literal
+      8 Call
+  handlers (0):
+  positions (11):
+      0 S 0 (1:1)
+      5 S 10 (1:11)
+     10 E 10 (1:11)
+     19 E 10 (1:11)
+     24 S 21 (1:22)
+     29 E 23 (1:24)
+     35 E 21 (1:22)
+     40 E 21 (1:22)
+     45 S 31 (1:32)
+     50 E 31 (1:32)
+     55 E 31 (1:32)

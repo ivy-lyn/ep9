@@ -8,9 +8,7 @@ license.workspace = true
 
 [dependencies]
 ep9_value = { path = "../ep9_value" }
-
-# Tests only: fake cells must sit below 2^47 (H7), so the tests take them from a small cage.
-[dev-dependencies]
+# The cage (H7), stack bounds and spill trampolines for the conservative scan (H10).
 ep9_platform = { path = "../ep9_platform" }
 
 [lints]

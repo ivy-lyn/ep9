@@ -1,0 +1,72 @@
+# misc-positions: script (sloppy)
+# | var o;
+# | o.a.b.c;
+# | o.m(
+# | 1);
+# | new o.C();
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=36 source=embedded hints=none
+source_hash=7788868f7d8b6e6e5d2486aea1eb312bb196131e504025f3d5f9df1de60a40e0
+strings (6):
+  str0 "o"
+  str1 "c"
+  str2 "b"
+  str3 "a"
+  str4 "m"
+  str5 "C"
+scopes (1):
+  scope0 script outer=- flags=[] slots=["o":var]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=3 range=0..36
+  code (66 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> LdaGlobal k3, s0  ; k3 = String str0 "o"     ; 10 03 00
+      8    Star r2                                      ; 0c 02
+     10 E> GetNamedProperty r2, k2, s1  ; k2 = String str3 "a" ; 21 02 02 01
+     14    Star r1                                      ; 0c 01
+     16 E> GetNamedProperty r1, k1, s2  ; k1 = String str2 "b" ; 21 01 01 02
+     20    Star r0                                      ; 0c 00
+     22 E> GetNamedProperty r0, k0, s3  ; k0 = String str1 "c" ; 21 00 00 03
+     26 S> LdaGlobal k3, s0  ; k3 = String str0 "o"     ; 10 03 00
+     29    Star r1                                      ; 0c 01
+     31 E> GetNamedProperty r1, k4, s4  ; k4 = String str4 "m" ; 21 01 04 04
+     35    Star r0                                      ; 0c 00
+     37    LdaSmi [1]                                   ; 04 01
+     39    Star r2                                      ; 0c 02
+     41 E> CallProperty1 r0, r1, r2, s5                 ; 61 00 01 02 05
+     46 S> LdaGlobal k3, s0  ; k3 = String str0 "o"     ; 10 03 00
+     49    Star r1                                      ; 0c 01
+     51 E> GetNamedProperty r1, k5, s6  ; k5 = String str5 "C" ; 21 01 05 06
+     55    Star r0                                      ; 0c 00
+     57    Ldar r0                                      ; 0b 00
+     59 E> Construct r0, (), s7                         ; 69 00 00 00 07
+     64    LdaUndefined                                 ; 05
+     65    Return                                       ; 92
+  constants (6):
+      0 String str1 "c"
+      1 String str2 "b"
+      2 String str3 "a"
+      3 String str0 "o"
+      4 String str4 "m"
+      5 String str5 "C"
+  feedback (8):
+      0 LoadGlobal
+      1 LoadNamed
+      2 LoadNamed
+      3 LoadNamed
+      4 LoadNamed
+      5 Call
+      6 LoadNamed
+      7 Call
+  handlers (0):
+  positions (11):
+      0 S 0 (1:1)
+      5 S 7 (2:1)
+     10 E 9 (2:3)
+     16 E 11 (2:5)
+     22 E 13 (2:7)
+     26 S 16 (3:1)
+     31 E 18 (3:3)
+     41 E 18 (3:3)
+     46 S 25 (5:1)
+     51 E 31 (5:7)
+     59 E 25 (5:1)

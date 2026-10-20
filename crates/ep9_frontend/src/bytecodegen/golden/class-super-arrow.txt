@@ -1,0 +1,167 @@
+# class-super-arrow: script (sloppy)
+# | class A extends Object { constructor() { var f = () => super(); f(); } m() { return () => super.m(); } }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=104 source=embedded hints=none
+source_hash=575e16ccf8bcab7937cd3707dd99345c3b280114ee43bb422a856f34e63e994b
+strings (8):
+  str0 "A"
+  str1 ".callee"
+  str2 "new.target"
+  str3 "this"
+  str4 ".home_object"
+  str5 "Object"
+  str6 "m"
+  str7 "f"
+scopes (6):
+  scope0 script outer=- flags=[] slots=["A":class]
+  scope1 class outer=scope0 flags=[strict] slots=[]
+  scope2 function outer=scope1 flags=[needs-context,strict] slots=[".callee":var, "new.target":var, "this":var]
+  scope3 function outer=scope2 flags=[strict] slots=[]
+  scope4 function outer=scope1 flags=[needs-context,strict] slots=[".home_object":var, "this":var]
+  scope5 function outer=scope4 flags=[strict] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=7 range=0..104
+  code (62 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> LdaGlobal k0, s0  ; k0 = String str5 "Object" ; 10 00 00
+      8    Star r2                                      ; 0c 02
+     10 E> CreateClosure k1, s1, #0x00  ; k1 = Function f1 ; 74 01 01 00
+     14    Star r1                                      ; 0c 01
+     16 E> CallRuntime DefineClass, r1-r2               ; 68 04 00 01 02
+     21    Star r3                                      ; 0c 03
+     23    Mov r3, r4                                   ; 0d 03 04
+     26    LdaConstant k2  ; k2 = String str6 "m"       ; 0a 02
+     28    Star r5                                      ; 0c 05
+     30 E> CreateClosure k3, s2, #0x00  ; k3 = Function f3 ; 74 03 02 00
+     34    Star r6                                      ; 0c 06
+     36 E> CallRuntime DefineClassMethod, r4-r6         ; 68 0f 00 04 03
+     41    Ldar r1                                      ; 0b 01
+     43    Star r0                                      ; 0c 00
+     45    Ldar r1                                      ; 0b 01
+     47    Star r2                                      ; 0c 02
+     49    LdaConstant k4  ; k4 = String str0 "A"       ; 0a 04
+     51    Star r1                                      ; 0c 01
+     53 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
+     58    Ldar r2                                      ; 0b 02
+     60    LdaUndefined                                 ; 05
+     61    Return                                       ; 92
+  constants (5):
+      0 String str5 "Object"
+      1 Function f1
+      2 String str6 "m"
+      3 Function f3
+      4 String str0 "A"
+  feedback (3):
+      0 LoadGlobal
+      1 CreateClosure
+      2 CreateClosure
+  handlers (0):
+  positions (7):
+      0 S 0 (1:1)
+      5 S 0 (1:1)
+     10 E 0 (1:1)
+     16 E 0 (1:1)
+     30 E 0 (1:1)
+     36 E 71 (1:72)
+     53 E 0 (1:1)
+function f1 derived-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=3 range=36..70
+  code (35 bytes):
+      0 E> CreateFunctionContext k0, [3]  ; k0 = Scope scope2 ; 75 00 03
+      3    PushContext r1                               ; 13 01
+      5    LdaNewTarget                                 ; 0f
+      6    StaCurrentContextSlot [1]                    ; 1b 01
+      8    LdaCurrentFunction                           ; 0e
+      9    StaCurrentContextSlot [0]                    ; 1b 00
+     11    LdaTheHole                                   ; 07
+     12    StaCurrentContextSlot [2]                    ; 1b 02
+     14 S> CreateClosure k1, s0, #0x00  ; k1 = Function f2 ; 74 01 00 00
+     18    Star r0                                      ; 0c 00
+     20 S> Ldar r0                                      ; 0b 00
+     22    Star r2                                      ; 0c 02
+     24 E> CallUndefinedReceiver0 r2, s1                ; 64 02 01
+     27    LdaUndefined                                 ; 05
+     28    JumpIfUndefined @31                          ; 85 03
+     30    Return                                       ; 92
+     31    LdaCurrentContextSlot [2]                    ; 18 02
+     33 E> ThrowSuperNotCalledIfHole                    ; 95
+     34    Return                                       ; 92
+  constants (2):
+      0 Scope scope2
+      1 Function f2
+  feedback (2):
+      0 CreateClosure
+      1 Call
+  handlers (0):
+  positions (5):
+      0 E 36 (1:37)
+     14 S 45 (1:46)
+     20 S 64 (1:65)
+     24 E 64 (1:65)
+     33 E 69 (1:70)
+function f2 arrow name="f" parent=f1 outer_scope=scope2 flags=[strict,simple-params] params=0 length=0 regs=2 range=49..62
+  code (23 bytes):
+      0 S> LdaImmutableCurrentContextSlot [0]           ; 19 00
+      2    GetSuperConstructor r0                       ; 98 00
+      4 E> ThrowIfNotSuperConstructor r0                ; 97 00
+      6    LdaImmutableCurrentContextSlot [1]           ; 19 01
+      8 E> Construct r0, (), s0                         ; 69 00 00 00 00
+     13    Star r1                                      ; 0c 01
+     15    LdaCurrentContextSlot [2]                    ; 18 02
+     17 E> ThrowSuperAlreadyCalledIfNotHole             ; 96
+     18    Ldar r1                                      ; 0b 01
+     20    StaCurrentContextSlot [2]                    ; 1b 02
+     22    Return                                       ; 92
+  constants (0):
+  feedback (1):
+      0 Call
+  handlers (0):
+  positions (4):
+      0 S 55 (1:56)
+      4 E 55 (1:56)
+      8 E 55 (1:56)
+     17 E 55 (1:56)
+function f3 method name="m" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=72..102
+  code (26 bytes):
+      0 E> CreateFunctionContext k0, [2]  ; k0 = Scope scope4 ; 75 00 02
+      3    PushContext r0                               ; 13 00
+      5    Ldar <this>                                  ; 0b ff
+      7    StaCurrentContextSlot [1]                    ; 1b 01
+      9    LdaCurrentFunction                           ; 0e
+     10    Star r1                                      ; 0c 01
+     12 E> CallRuntime GetHomeObject, r1                ; 68 0e 00 01 01
+     17    StaCurrentContextSlot [0]                    ; 1b 00
+     19 S> CreateClosure k1, s0, #0x00  ; k1 = Function f4 ; 74 01 00 00
+     23    Return                                       ; 92
+     24    LdaUndefined                                 ; 05
+     25    Return                                       ; 92
+  constants (2):
+      0 Scope scope4
+      1 Function f4
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 E 72 (1:73)
+     12 E 72 (1:73)
+     19 S 77 (1:78)
+function f4 arrow name=- parent=f3 outer_scope=scope4 flags=[strict,simple-params] params=0 length=0 regs=4 range=84..99
+  code (24 bytes):
+      0 S> LdaImmutableCurrentContextSlot [1]           ; 19 01
+      2    Star r2                                      ; 0c 02
+      4    LdaImmutableCurrentContextSlot [0]           ; 19 00
+      6    Star r3                                      ; 0c 03
+      8    Ldar r3                                      ; 0b 03
+     10 E> GetNamedPropertyFromSuper r2, k0, s0  ; k0 = String str6 "m" ; 22 02 00 00
+     14    Star r0                                      ; 0c 00
+     16    Mov r2, r1                                   ; 0d 02 01
+     19 E> CallProperty0 r0, r1, s1                     ; 60 00 01 01
+     23    Return                                       ; 92
+  constants (1):
+      0 String str6 "m"
+  feedback (2):
+      0 LoadNamed
+      1 Call
+  handlers (0):
+  positions (3):
+      0 S 90 (1:91)
+     10 E 96 (1:97)
+     19 E 96 (1:97)

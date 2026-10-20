@@ -198,6 +198,23 @@ Kinds: **now** = final until its re-check point or an owner override. **rule** =
 
 **Corrections on 2026-10-21.** §2 note "D1 in the repo" said 7 oxc crates; the root `Cargo.toml` pins 6 (`oxc_allocator`, `oxc_ast`, `oxc_diagnostics`, `oxc_parser`, `oxc_semantic`, `oxc_span`). The note is fixed in place.
 
+## 6. 2026-10-21: corrections to earlier entries
+
+**Source.** The hygiene agent of the M0 workflow, from the verify report of the decision round. This entry changes no decision. It records edits that were made in place, and it completes R18-7 as decided.
+
+**Edits made in place on 2026-10-21.** The rule "append only" (top of this log) was broken by four in-place edits. They stay as they are. This table keeps the old text.
+
+| Where | Old text | Text now | Why |
+|---|---|---|---|
+| Top, bullet 1 | "This log records user decisions D1-D21 and the user statements behind them. The options, defaults and deadlines live in plan/11-decisions.md." | Names the agent-team decisions of §5 | §5 adds decisions made under the user's delegation |
+| Top, bullet 4 | "Each entry names its source. Only the user's own words decide." | Adds "or the agent team under the user's delegation of 2026-10-20 (§5)" | Same |
+| §2, note "D1 in the repo" | "pins 7 oxc crates" | "pins 6 oxc crates ... corrected 2026-10-21" | Count error. The root `Cargo.toml` pins 6 |
+| §3, first line | Link target `#3-open-decisions` | Link target `#3-decisions-all-decided-2026-10-20` | 11-decisions §3 has a new heading, so the old anchor was broken. The text "Each stays open" is history: §5 decides every row of §3 |
+
+**R18-7 is now applied in full.** The §5.2 row says "sources and scripts only (41 files, 272 KB); result files stayed in the scratchpad". On 2026-10-21 the result files were copied too, as the decision says: 68 files, 1,061,250 bytes, in [research/artifacts/sound-regions/results/](research/artifacts/sound-regions/README.md). The folder holds 1,337,334 bytes (limit 2 MB). The largest file has 172,073 bytes (limit 256 KiB). `tsc.json` and `tsc-noinl.json` lost their `per_function` key, as R18-7 says. The decision does not change.
+
+**Scratch evidence.** §5 says "Scratch evidence paths are under the session scratchpad `work/decide/<agent>/` (session-local)". The inputs that later steps need are now in [research/artifacts/decide/](research/artifacts/decide/README.md): `ci-scope.sh` and its tests, the `deny.toml` and `clippy.toml` drafts, the upstream README draft, the two barrier models (H11) and the math tables (H36). A re-run on 2026-10-21 gave the same results. All other scratch evidence stays session-local.
+
 ## 7. 2026-10-21: H15 dispatch on x86-64 (SP-Dispatch reopen)
 
 **Source.** The H15 agent of the M0 workflow, under the user's delegation of 2026-10-20 (§5). The round started from the user's message, relayed verbatim by the workflow harness: "What are u watching? CI is already finished and failed". Inputs: CI run [39458801246](https://github.com/Brooooooklyn/ep9/actions/runs/39458801246) (commit `ea31dcb`), the x86-64 diagnosis (branch `diag/dispatch-x64`, 3 runs) and the Windows cgoto.c fix. Data: [measurements/2026-10-21-sp-dispatch-x64.md](measurements/2026-10-21-sp-dispatch-x64.md). Decision record: [adr/H15-interpreter-dispatch.md](adr/H15-interpreter-dispatch.md).
@@ -214,3 +231,43 @@ Kinds: **now** = final until its re-check point or an owner override. **rule** =
 | REMOTE-CI (note) | The user allowed commits and pushes to the private repo on 2026-10-20/21. The workflow task text quotes the user: "You are free to create repo, keep it private first"; "Keep working on our plan" (workflow script text; the H15 agent did not see the user messages). This settles the REMOTE-CI critic note "commit and push only on an explicit user instruction". The repo stays private; no force-push to `main` | high | user messages as quoted by the workflow task | The user withdraws the permission or asks for a public repo | Records the instruction that the §5.4 REMOTE-CI row asks for |
 
 **Scratch evidence.** CI logs on GitHub expire. The numbers that the decisions use, with run and job URLs, are in the measurements file. The diag branch `diag/dispatch-x64` keeps the probe code; `diag/h15-gate` ran the new gate on 4 hosted targets before the change goes to `main` (runs [39472609604](https://github.com/Brooooooklyn/ep9/actions/runs/39472609604), [39474039711](https://github.com/Brooooooklyn/ep9/actions/runs/39474039711): every job passed).
+
+## 8. 2026-10-21: BytecodeGen v0 (F1)
+
+**Source.** The bytecodegen agent of the M0 workflow, under the user's delegation of 2026-10-20 (§5). The workflow task text quotes the user: "Don't ask me questions. Deepresearch and descide yourself"; "Keep working on our plan" (workflow script text). Code: [crates/ep9_frontend/src/bytecodegen/](../crates/ep9_frontend/src/bytecodegen/mod.rs). The design table G1-G11 is at the top of `mod.rs`.
+
+```text
+source -> parse + semantic -> scope::analyze -> BytecodeGen (G1-G11) -> UnitBuilder::finish -> verify -> VerifiedUnit
+```
+
+| ID | Decision | Conf. | Evidence | Reopen rule | Note |
+|---|---|---|---|---|---|
+| BCG-API | Entry points `compile_script`, `compile_module`, `compile` return `VerifiedUnit` or `CodegenError` (Compile, Unsupported, Limit, Internal). `check_determinism` builds twice on two threads and compares bytes and content hash | high | `bytecodegen/tests.rs::entry_points` | The VM or the tools need another result type | M0 exit 12 helper |
+| BCG-SCOPE (G1, G2) | The scope pass decides every binding location. BytecodeGen pushes one context for each scope with `needs_context`, in tree order. Temporaries use register marks (scope based, deterministic) | high | 87 golden files; context check (BCG-CTX-CHECK) | A register optimizer arrives (M2) | No re-allocation in codegen |
+| BCG-SCRIPT-CTX (G3) | A script whose top level needs a context gets the script context descriptor as unit scope 1. Later ids move up by one. Scope 0 keeps the global declarations for `DeclareGlobals` | medium | `var-script-this`, `var-direct-eval` goldens | H13 global object design needs another shape | Keeps the verifier rule "outer scopes come first" |
+| BCG-FINALLY (G5, G6) | `finally` uses a token register and a value register, then `SwitchOnSmi` (V8 model). `for-of` is a try-finally with a `done` register | high | `ctl-finally-*`, `iter-for-of-*` goldens | Generators (M2) need another shape | Handler tables stay static |
+| BCG-TDZ (G8) | A hole store at scope entry only when some reference checks it. Globals and module cells: the VM checks | medium | `var-tdz*` goldens | A TDZ bug in test262 runs (M1) | V8 rule |
+| BCG-RUNTIME (G9) | ABI 2: runtime ids 6-18 for global init, direct eval, classes, super, accessors, object spread and `__proto__`. The opcode table does not change | medium | `ep9_bytecode/tests/golden/abi-history.txt` row 2; H02 change log | H13 runtime table (M1) | Bumps `ABI_VERSION` to 2 |
+| BCG-POS (G10) | Every instruction that can throw has a position entry (allocations excepted). New builder call `FunctionBuilder::set_throw_position` gives the default | high | 0 missing on 72,147 corpus units | M0 exit 7 needs columns of another kind | Small API addition to ep9_bytecode |
+| BCG-UNSUPPORTED (G11) | An unsupported construct fails the whole unit with `CodegenError::Unsupported` and a position. v0 does not support: generators, async, `await`, `for await`, private names, class fields, static blocks, auto-accessors, decorators, `import()`, `import.meta`, `using`, `delete super`, direct eval with spread arguments | high | corpus classes (BCG-CORPUS) | Months 2-3 plan | No silent wrong code |
+| BCG-ERR-BOX | Codegen functions return `Result<T, Box<CodegenError>>` | high | Debug stack per AST level of the `call` form: 8,512 B before, 3,776 B after; budget 5,830 B (`stack_tests.rs`) | The budget changes in `stack.rs` | Release worst 1,232 B (budget 3,270 B) |
+| BCG-CTX-CHECK | A test-only data-flow check follows context values through each function and checks Create*Context parents, closure contexts, slot depth and slot range | medium | 4 mutation tests catch wrong units that the verifier accepts; 0 errors on 72,147 units | H02-Q2 moves the check into the verifier | Input for H02-Q2 |
+| BCG-CORPUS | Corpus run: test262 + `third_party/bench-*`, 54,522 files, 104,375 compiles, each built twice: 0 internal errors, 0 panics, 0 determinism mismatches, 0 missing positions, 0 context errors. A corpus digest (SHA-256 over sorted path, mode and unit hash) compares hosts and targets: `decb0871...8fce76` over 72,147 units on macOS arm64 (debug and release), macOS x86-64 (Rosetta), Linux arm64 and Linux x86-64 (Docker) | high | `cargo test -p ep9_frontend --release --lib bytecodegen::corpus -- --ignored --nocapture` | — | Not the tools/test262 subcommand |
+| BCG-SCOPE-ATTR | Three `#[cfg_attr(not(test), expect(dead_code, ...))]` attributes in `crates/ep9_frontend/src/scope/mod.rs` are removed. BytecodeGen now calls those functions, so `expect` fails the build | high | `cargo clippy -p ep9_frontend --all-targets -- -D warnings` | — | Outside the bytecodegen path; one-line change each |
+
+**VM contracts.** BytecodeGen v0 assumes these. The VM agent must check them.
+
+| Contract | Where it shows |
+|---|---|
+| `StaGlobal` and `SetNamedProperty` take strictness from the function flag | sloppy vs strict goldens |
+| The VM checks TDZ and `const` for global lexical bindings, also in `LdaGlobalInsideTypeof` | `var-global-lexical` |
+| Module cells start as the hole; imports are hole-checked by the VM | `module-*` goldens |
+| Accessor runtime arguments that are `undefined` mean "absent" (`DefineAccessorInLiteral`, `DefineClassAccessor` merge with the other half) | `lit-object-methods`, `class-base` |
+| New function-context slots and registers start as `undefined` | all goldens |
+| Mapped `arguments` needs a parameter-to-slot map | `var-arguments` |
+| `DefineClass(ctor, heritage)` sets the prototype, `constructor` and the home object of the constructor | `class-*` goldens |
+| `ResolvePossiblyDirectEval` receives the unit scope id of the call site | `call-eval`, `var-direct-eval` |
+| `DeclareGlobals` reads the declarations from unit scope 0 | every script golden |
+| RegExp flag bit i = letter i of `dgimsuvy` | `lit-regexp` |
+
+**Known gaps (open).** `with (o) f()` calls `f` with an `undefined` receiver. The default derived constructor and a spread call that is not last iterate an array (observable). Script completion values are not kept (f0 returns `undefined`). Module hoisted functions are set at f0 start, not at module instantiation (H02-Q3). The `super` base is read at access time.

@@ -1,0 +1,346 @@
+{
+ "repo": "pixijs",
+ "root_files": 718,
+ "walked_files": 718,
+ "root_bytes": 3921031,
+ "diagnostics": 161,
+ "diag_codes": {
+  "2300": 65,
+  "2307": 52,
+  "2352": 1,
+  "2403": 29,
+  "2687": 2,
+  "2717": 12
+ },
+ "classes_total": 306,
+ "classes_qualifying": 40,
+ "classes_qualifying_pct": 13.1,
+ "classes_qualifying_if_r4_lenient": 42,
+ "classes_qualifying_guarded_casts": 44,
+ "classes_qualifying_guarded_casts_r4_lenient": 46,
+ "classes_qualifying_v3_plus_generic_T_ok": 47,
+ "classes_qualifying_open_world": 5,
+ "classes_exported_qualifying": 35,
+ "class_rule_counts": {
+  "r5": 169,
+  "r4": 164,
+  "r1": 109,
+  "base": 99,
+  "r6": 42,
+  "r2": 31,
+  "r3": 24
+ },
+ "class_sole_rule_counts": {
+  "base": 35,
+  "r5": 21,
+  "r1": 16,
+  "r4": 11,
+  "r3": 3
+ },
+ "class_sub_rule_counts": {
+  "r4:never-assigned-in-ctor": 115,
+  "r1:as-unchecked": 62,
+  "r5:reachable-from-escaped": 57,
+  "r5:any": 56,
+  "r4:base-ctor-leaks-this": 52,
+  "r1:as-up": 40,
+  "r4:assigned-after-leak": 38,
+  "r5:unknown": 32,
+  "r1:as-down": 32,
+  "r2:dynamic-key": 31,
+  "r1:any-flows-in": 30,
+  "r6:merged-interface-decl": 26,
+  "r5:generic-T": 25,
+  "r4:optional-unassigned": 24,
+  "r1:structural-fake": 21,
+  "r3:Object.assign": 19,
+  "r6:foreign-base": 17,
+  "r5:foreign": 16,
+  "r5:class-mismatch": 13,
+  "r6:accessor-overridden": 7,
+  "r5:{}": 4,
+  "r5:other": 3,
+  "r3:Object.defineProperty": 2,
+  "r3:Object.create": 2,
+  "r3:delete": 1
+ },
+ "classes_qualifying_if_rule_off": {
+  "r1": 57,
+  "r2": 40,
+  "r3": 43,
+  "r4": 51,
+  "r5": 61,
+  "r6": 40,
+  "r7": 40,
+  "base": 75
+ },
+ "field_kinds_qualifying": {
+  "boolean": 8,
+  "other": 46,
+  "array": 18,
+  "number": 14,
+  "qclass": 2,
+  "string": 2
+ },
+ "member_access_total": 29760,
+ "member_access_dynamic": 28648,
+ "member_access_class_receiver": 15572,
+ "member_access_qualifying_receiver": 683,
+ "member_access_qualifying_pct_of_total": 2.3,
+ "member_access_qualifying_pct_of_dynamic": 2.4,
+ "member_access_qualifying_inside_functions": 675,
+ "modules_considered": 164,
+ "modules_ge50pct_v0": 3,
+ "modules_ge50pct_v3": 4,
+ "largest_modules_ge50pct_v3": [
+  {
+   "file": "$EP9_RESEARCH_REPOS/pixijs/src/ticker/Ticker.ts",
+   "functions": 21,
+   "body_bytes": 7809,
+   "v0_pct": 5.7,
+   "v3_pct": 53.6
+  },
+  {
+   "file": "$EP9_RESEARCH_REPOS/pixijs/src/rendering/high-shader/shader-bits/generateTextureBatchBit.ts",
+   "functions": 5,
+   "body_bytes": 3663,
+   "v0_pct": 54.6,
+   "v3_pct": 54.6
+  },
+  {
+   "file": "$EP9_RESEARCH_REPOS/pixijs/src/scene/text/canvas/utils/textTokenization.ts",
+   "functions": 9,
+   "body_bytes": 2817,
+   "v0_pct": 75.0,
+   "v3_pct": 75.0
+  }
+ ],
+ "largest_modules_ge50pct_v0": [
+  {
+   "file": "$EP9_RESEARCH_REPOS/pixijs/src/rendering/high-shader/shader-bits/generateTextureBatchBit.ts",
+   "functions": 5,
+   "body_bytes": 3663,
+   "v0_pct": 54.6
+  },
+  {
+   "file": "$EP9_RESEARCH_REPOS/pixijs/src/scene/text/canvas/utils/textTokenization.ts",
+   "functions": 9,
+   "body_bytes": 2817,
+   "v0_pct": 75.0
+  },
+  {
+   "file": "$EP9_RESEARCH_REPOS/pixijs/src/utils/browser/detectVideoAlphaMode.ts",
+   "functions": 5,
+   "body_bytes": 2493,
+   "v0_pct": 100.0
+  }
+ ],
+ "function_body_bytes": 1561589,
+ "function_body_bytes_qualifying_pct": 4.8,
+ "function_body_bytes_qualifying_v3_pct": 5.3,
+ "member_access_sound_in_region": 135,
+ "member_access_sound_in_region_pct_of_dynamic": 0.5,
+ "member_access_sound_in_region_v3": 274,
+ "functions_total": 3660,
+ "functions_qualifying_t2": 410,
+ "functions_qualifying_t2_pct": 11.2,
+ "functions_qualifying_t1": 354,
+ "functions_qualifying_guarded_casts": 418,
+ "functions_qualifying_guarded_casts_r4_lenient": 423,
+ "functions_qualifying_v3_plus_generic_T_ok": 442,
+ "member_access_qualifying_v3_plus_generic_T_ok": 994,
+ "member_access_qualifying_guarded_casts": 838,
+ "member_access_qualifying_guarded_casts_r4_lenient": 880,
+ "functions_qualifying_t0_strict": 354,
+ "functions_qualifying_nontrivial": 288,
+ "functions_by_kind": {
+  "arrow": 573,
+  "method": 1818,
+  "ctor": 242,
+  "get": 391,
+  "set": 196,
+  "fn": 440
+ },
+ "functions_qualifying_by_kind": {
+  "arrow": 219,
+  "get": 12,
+  "fn": 105,
+  "ctor": 3,
+  "set": 1,
+  "method": 70
+ },
+ "function_fail_reasons": {
+  "this-class-not-qualifying": 2159,
+  "param-type": 1903,
+  "local-type": 1078,
+  "assertion(as)": 489,
+  "any-flow": 169,
+  "this-type": 106,
+  "r2-dynamic-key": 10,
+  "r7": 7,
+  "nonnull(!)": 2
+ },
+ "function_sole_fail_reasons": {
+  "this-class-not-qualifying": 900,
+  "param-type": 438,
+  "local-type": 84,
+  "this-type": 39,
+  "assertion(as)": 26,
+  "any-flow": 4
+ },
+ "boundary_call_sites": 418,
+ "boundary_value_refs": 11,
+ "boundary_escaping_closures": 206,
+ "internal_call_sites": 56,
+ "qualifying_functions_without_boundary": 79,
+ "qualifying_functions_exported": 110,
+ "examples_qualifying_classes": [
+  {
+   "name": "TextureUvs",
+   "at": "$EP9_RESEARCH_REPOS/pixijs/src/rendering/renderers/shared/texture/TextureUvs.ts:21",
+   "fields": 9,
+   "field_kinds": {
+    "number": 8,
+    "other": 1
+   }
+  },
+  {
+   "name": "GpuUniformBatchPipe",
+   "at": "$EP9_RESEARCH_REPOS/pixijs/src/rendering/renderers/gpu/GpuUniformBatchPipe.ts:14",
+   "fields": 6,
+   "field_kinds": {
+    "other": 2,
+    "qclass": 1,
+    "array": 3
+   }
+  },
+  {
+   "name": "BitmapFontManagerClass",
+   "at": "$EP9_RESEARCH_REPOS/pixijs/src/scene/text-bitmap/BitmapFontManager.ts:263",
+   "fields": 6,
+   "field_kinds": {
+    "array": 4,
+    "other": 2
+   }
+  }
+ ],
+ "examples_blocked_classes": [
+  {
+   "name": "Container",
+   "at": "$EP9_RESEARCH_REPOS/pixijs/src/scene/container/Container.ts:655",
+   "fields": 64,
+   "field_kinds": {
+    "number": 23,
+    "other": 17,
+    "boolean": 13,
+    "array": 1,
+    "string": 10
+   },
+   "rules": [
+    "r1",
+    "r2",
+    "r4",
+    "r5",
+    "r6"
+   ],
+   "evidence": [
+    "r1 as-down(from C) @ $EP9_RESEARCH_REPOS/pixijs/src/scene/container/bounds/getLocalBounds.ts:74",
+    "r1 as-down(from C) @ $EP9_RESEARCH_REPOS/pixijs/src/scene/container/bounds/getGlobalBounds.ts:95",
+    "r1 as-down(from C) @ $EP9_RESEARCH_REPOS/pixijs/src/scene/container/utils/updateRenderGroupTransforms.ts:159",
+    "r1 as-down(from C) @ $EP9_RESEARCH_REPOS/pixijs/src/scene/container/RenderGroupSystem.ts:231",
+    "r4 never-assigned-in-ctor field=_worldTransform",
+    "r4 assigned-after-leak(this-value) field=_position",
+    "r5 escapes to shared structural type(s) ['6:419', '11:1236']"
+   ]
+  },
+  {
+   "name": "GifSprite",
+   "at": "$EP9_RESEARCH_REPOS/pixijs/src/gif/GifSprite.ts:223",
+   "fields": 33,
+   "field_kinds": {
+    "number": 7,
+    "boolean": 13,
+    "other": 7,
+    "string": 6
+   },
+   "rules": [
+    "base",
+    "r2",
+    "r3",
+    "r4",
+    "r5",
+    "r6"
+   ],
+   "evidence": [
+    "r2 dynamic-key(via base) @ $EP9_RESEARCH_REPOS/pixijs/src/events/EventBoundary.ts:662",
+    "r3 Object.assign @ $EP9_RESEARCH_REPOS/pixijs/src/gif/GifSprite.ts:431",
+    "r6 merged-interface-decl @ $EP9_RESEARCH_REPOS/pixijs/src/gif/GifSprite.ts:223",
+    "r5 generic-T @ $EP9_RESEARCH_REPOS/pixijs/src/gif/GifSprite.ts:485",
+    "r4 optional-unassigned field=onComplete",
+    "r4 optional-unassigned field=onFrameChange",
+    "base Sprite"
+   ]
+  },
+  {
+   "name": "PipelineSystem",
+   "at": "$EP9_RESEARCH_REPOS/pixijs/src/rendering/renderers/gpu/pipeline/PipelineSystem.ts:209",
+   "fields": 20,
+   "field_kinds": {
+    "other": 9,
+    "number": 6,
+    "string": 2,
+    "boolean": 3
+   },
+   "rules": [
+    "r4",
+    "r5"
+   ],
+   "evidence": [
+    "r5 reachable-from-escaped(WebGPURenderer) @ $EP9_RESEARCH_REPOS/pixijs/src/rendering/renderers/gpu/WebGPURenderer.ts:158",
+    "r4 never-assigned-in-ctor field=CONTEXT_UID",
+    "r4 never-assigned-in-ctor field=_gpu"
+   ]
+  }
+ ],
+ "examples_qualifying_functions": [
+  {
+   "name": "buildArcTo",
+   "kind": "fn",
+   "at": "$EP9_RESEARCH_REPOS/pixijs/src/scene/graphics/shared/buildCommands/buildArcTo.ts:15",
+   "tier": 2,
+   "internal": 0,
+   "boundary_calls": 1,
+   "value_refs": 0,
+   "escaping_closure": 0
+  },
+  {
+   "name": "buildArc",
+   "kind": "fn",
+   "at": "$EP9_RESEARCH_REPOS/pixijs/src/scene/graphics/shared/svg/buildSVGPath.ts:163",
+   "tier": 2,
+   "internal": 0,
+   "boundary_calls": 1,
+   "value_refs": 0,
+   "escaping_closure": 0
+  },
+  {
+   "name": "round",
+   "kind": "fn",
+   "at": "$EP9_RESEARCH_REPOS/pixijs/src/scene/graphics/shared/buildCommands/buildLine.ts:83",
+   "tier": 2,
+   "internal": 0,
+   "boundary_calls": 7,
+   "value_refs": 0,
+   "escaping_closure": 0
+  }
+ ],
+ "r7_files": [
+  "$EP9_RESEARCH_REPOS/pixijs/src/utils/browser/unsafeEvalSupported.ts",
+  "$EP9_RESEARCH_REPOS/pixijs/src/rendering/renderers/shared/shader/utils/compileBufferSync.ts",
+  "$EP9_RESEARCH_REPOS/pixijs/src/rendering/renderers/gl/shader/GenerateShaderSyncCode.ts",
+  "$EP9_RESEARCH_REPOS/pixijs/src/rendering/renderers/gl/shader/utils/generateUniformsSync.ts",
+  "$EP9_RESEARCH_REPOS/pixijs/src/scene/particle-container/shared/utils/generateParticleUpdateFunction.ts"
+ ],
+ "iface_targets": 442,
+ "iface_closed": 16
+}

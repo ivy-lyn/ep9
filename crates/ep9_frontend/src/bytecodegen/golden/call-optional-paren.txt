@@ -1,0 +1,98 @@
+# call-optional-paren: script (sloppy)
+# | var o; (o?.m)(); (o?.a[0])(1); (o?.m)`x`; (o?.m)?.();
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=53 source=embedded hints=none
+source_hash=31c5e5a48f9b36998a5fd6f078354531c0814eb9b125906fee51443b15b1e023
+strings (4):
+  str0 "o"
+  str1 "m"
+  str2 "a"
+  str3 "x"
+scopes (1):
+  scope0 script outer=- flags=[] slots=["o":var]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=4 range=0..53
+  code (119 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> LdaGlobal k1, s0  ; k1 = String str0 "o"     ; 10 01 00
+      8    JumpIfUndefinedOrNull @20                    ; 87 0c
+     10    Star r1                                      ; 0c 01
+     12 E> GetNamedProperty r1, k0, s1  ; k0 = String str1 "m" ; 21 01 00 01
+     16    Star r0                                      ; 0c 00
+     18    Jump @23                                     ; 7e 05
+     20    LdaUndefined                                 ; 05
+     21    Star r0                                      ; 0c 00
+     23 E> CallProperty0 r0, r1, s2                     ; 60 00 01 02
+     27 S> LdaGlobal k1, s0  ; k1 = String str0 "o"     ; 10 01 00
+     30    JumpIfUndefinedOrNull @48                    ; 87 12
+     32    Star r3                                      ; 0c 03
+     34 E> GetNamedProperty r3, k2, s3  ; k2 = String str2 "a" ; 21 03 02 03
+     38    Star r1                                      ; 0c 01
+     40    LdaZero                                      ; 03
+     41 E> GetKeyedProperty r1, s4                      ; 23 01 04
+     44    Star r0                                      ; 0c 00
+     46    Jump @51                                     ; 7e 05
+     48    LdaUndefined                                 ; 05
+     49    Star r0                                      ; 0c 00
+     51    LdaSmi [1]                                   ; 04 01
+     53    Star r2                                      ; 0c 02
+     55 E> CallProperty1 r0, r1, r2, s5                 ; 61 00 01 02 05
+     60 S> LdaGlobal k1, s0  ; k1 = String str0 "o"     ; 10 01 00
+     63    JumpIfUndefinedOrNull @75                    ; 87 0c
+     65    Star r1                                      ; 0c 01
+     67 E> GetNamedProperty r1, k0, s6  ; k0 = String str1 "m" ; 21 01 00 06
+     71    Star r0                                      ; 0c 00
+     73    Jump @78                                     ; 7e 05
+     75    LdaUndefined                                 ; 05
+     76    Star r0                                      ; 0c 00
+     78 E> GetTemplateObject k3, s7  ; k3 = TemplateObject [("x", "x")] ; 73 03 07
+     81    Star r2                                      ; 0c 02
+     83 E> CallProperty1 r0, r1, r2, s8                 ; 61 00 01 02 08
+     88 S> LdaGlobal k1, s0  ; k1 = String str0 "o"     ; 10 01 00
+     91    JumpIfUndefinedOrNull @103                   ; 87 0c
+     93    Star r1                                      ; 0c 01
+     95 E> GetNamedProperty r1, k0, s9  ; k0 = String str1 "m" ; 21 01 00 09
+     99    Star r0                                      ; 0c 00
+    101    Jump @106                                    ; 7e 05
+    103    LdaUndefined                                 ; 05
+    104    Star r0                                      ; 0c 00
+    106    Ldar r0                                      ; 0b 00
+    108    JumpIfUndefinedOrNull @116                   ; 87 08
+    110 E> CallProperty0 r0, r1, s10                    ; 60 00 01 0a
+    114    Jump @117                                    ; 7e 03
+    116    LdaUndefined                                 ; 05
+    117    LdaUndefined                                 ; 05
+    118    Return                                       ; 92
+  constants (4):
+      0 String str1 "m"
+      1 String str0 "o"
+      2 String str2 "a"
+      3 TemplateObject [("x", "x")]
+  feedback (11):
+      0 LoadGlobal
+      1 LoadNamed
+      2 Call
+      3 LoadNamed
+      4 LoadKeyed
+      5 Call
+      6 LoadNamed
+      7 Literal
+      8 Call
+      9 LoadNamed
+     10 Call
+  handlers (0):
+  positions (15):
+      0 S 0 (1:1)
+      5 S 7 (1:8)
+     12 E 11 (1:12)
+     23 E 7 (1:8)
+     27 S 17 (1:18)
+     34 E 21 (1:22)
+     41 E 23 (1:24)
+     55 E 17 (1:18)
+     60 S 31 (1:32)
+     67 E 35 (1:36)
+     78 E 31 (1:32)
+     83 E 31 (1:32)
+     88 S 42 (1:43)
+     95 E 46 (1:47)
+    110 E 42 (1:43)

@@ -1,0 +1,336 @@
+{
+ "repo": "vscode",
+ "root_files": 381,
+ "walked_files": 432,
+ "root_bytes": 4103206,
+ "diagnostics": 13,
+ "diag_codes": {
+  "2304": 4,
+  "2307": 5,
+  "7006": 3,
+  "7017": 1
+ },
+ "classes_total": 761,
+ "classes_qualifying": 336,
+ "classes_qualifying_pct": 44.2,
+ "classes_qualifying_if_r4_lenient": 345,
+ "classes_qualifying_guarded_casts": 345,
+ "classes_qualifying_guarded_casts_r4_lenient": 354,
+ "classes_qualifying_v3_plus_generic_T_ok": 373,
+ "classes_qualifying_open_world": 62,
+ "classes_exported_qualifying": 256,
+ "class_rule_counts": {
+  "r5": 315,
+  "r4": 128,
+  "r1": 116,
+  "base": 100,
+  "r6": 17,
+  "r3": 3
+ },
+ "class_sole_rule_counts": {
+  "r5": 150,
+  "r1": 33,
+  "r4": 23,
+  "base": 21,
+  "r6": 6,
+  "r3": 1
+ },
+ "class_sub_rule_counts": {
+  "r5:reachable-from-escaped": 73,
+  "r4:assigned-after-leak": 72,
+  "r5:generic-T": 63,
+  "r4:base-ctor-leaks-this": 56,
+  "r1:nonnull-!": 55,
+  "r4:never-assigned-in-ctor": 40,
+  "r1:structural-fake": 32,
+  "r5:object": 23,
+  "r1:as-unchecked": 22,
+  "r5:unknown": 21,
+  "r5:any": 20,
+  "r4:optional-unassigned": 17,
+  "r1:as-down": 14,
+  "r5:foreign": 13,
+  "r1:as-up": 12,
+  "r6:foreign-base": 11,
+  "r5:class-mismatch": 10,
+  "r1:any-flows-in": 8,
+  "r5:throw": 5,
+  "r6:accessor-overridden": 5,
+  "r3:member-decorator": 2,
+  "r5:{}": 2,
+  "r3:Object.setPrototypeOf": 1,
+  "r6:merged-interface-decl": 1
+ },
+ "classes_qualifying_if_rule_off": {
+  "r1": 372,
+  "r2": 336,
+  "r3": 337,
+  "r4": 368,
+  "r5": 493,
+  "r6": 346,
+  "r7": 336,
+  "base": 357
+ },
+ "field_kinds_qualifying": {
+  "other": 317,
+  "array": 128,
+  "number": 291,
+  "boolean": 75,
+  "qclass": 39,
+  "string": 69,
+  "nullable-prim": 12,
+  "nullable-qclass": 9
+ },
+ "member_access_total": 45579,
+ "member_access_dynamic": 39794,
+ "member_access_class_receiver": 22009,
+ "member_access_qualifying_receiver": 6356,
+ "member_access_qualifying_pct_of_total": 13.9,
+ "member_access_qualifying_pct_of_dynamic": 16.0,
+ "member_access_qualifying_inside_functions": 6350,
+ "modules_considered": 199,
+ "modules_ge50pct_v0": 18,
+ "modules_ge50pct_v3": 27,
+ "largest_modules_ge50pct_v3": [
+  {
+   "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/viewLayout/viewLineRenderer.ts",
+   "functions": 33,
+   "body_bytes": 34541,
+   "v0_pct": 51.9,
+   "v3_pct": 52.0
+  },
+  {
+   "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/base/common/json.ts",
+   "functions": 68,
+   "body_bytes": 25536,
+   "v0_pct": 58.9,
+   "v3_pct": 61.6
+  },
+  {
+   "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/base/common/color.ts",
+   "functions": 56,
+   "body_bytes": 25419,
+   "v0_pct": 52.1,
+   "v3_pct": 52.1
+  }
+ ],
+ "largest_modules_ge50pct_v0": [
+  {
+   "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/viewLayout/viewLineRenderer.ts",
+   "functions": 33,
+   "body_bytes": 34541,
+   "v0_pct": 51.9
+  },
+  {
+   "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/base/common/json.ts",
+   "functions": 68,
+   "body_bytes": 25536,
+   "v0_pct": 58.9
+  },
+  {
+   "file": "$EP9_RESEARCH_REPOS/vscode/src/vs/base/common/color.ts",
+   "functions": 56,
+   "body_bytes": 25419,
+   "v0_pct": 52.1
+  }
+ ],
+ "function_body_bytes": 2332396,
+ "function_body_bytes_qualifying_pct": 14.7,
+ "function_body_bytes_qualifying_v3_pct": 17.9,
+ "member_access_sound_in_region": 2461,
+ "member_access_sound_in_region_pct_of_dynamic": 6.2,
+ "member_access_sound_in_region_v3": 3720,
+ "functions_total": 7432,
+ "functions_qualifying_t2": 1709,
+ "functions_qualifying_t2_pct": 23.0,
+ "functions_qualifying_t1": 1634,
+ "functions_qualifying_guarded_casts": 1871,
+ "functions_qualifying_guarded_casts_r4_lenient": 1914,
+ "functions_qualifying_v3_plus_generic_T_ok": 2085,
+ "member_access_qualifying_v3_plus_generic_T_ok": 8610,
+ "member_access_qualifying_guarded_casts": 7173,
+ "member_access_qualifying_guarded_casts_r4_lenient": 7635,
+ "functions_qualifying_t0_strict": 1557,
+ "functions_qualifying_nontrivial": 1052,
+ "functions_by_kind": {
+  "ctor": 622,
+  "fnexpr": 38,
+  "arrow": 1337,
+  "method": 3813,
+  "fn": 1362,
+  "get": 245,
+  "set": 15
+ },
+ "functions_qualifying_by_kind": {
+  "ctor": 97,
+  "arrow": 464,
+  "method": 667,
+  "fn": 392,
+  "get": 70,
+  "fnexpr": 17,
+  "set": 2
+ },
+ "function_fail_reasons": {
+  "param-type": 3887,
+  "this-class-not-qualifying": 2708,
+  "local-type": 1895,
+  "assertion(as)": 276,
+  "nonnull(!)": 213,
+  "any-flow": 108,
+  "this-type": 8
+ },
+ "function_sole_fail_reasons": {
+  "param-type": 1644,
+  "this-class-not-qualifying": 1175,
+  "local-type": 271,
+  "nonnull(!)": 31,
+  "assertion(as)": 12,
+  "any-flow": 7,
+  "this-type": 1
+ },
+ "boundary_call_sites": 2055,
+ "boundary_value_refs": 33,
+ "boundary_escaping_closures": 441,
+ "internal_call_sites": 1116,
+ "qualifying_functions_without_boundary": 657,
+ "qualifying_functions_exported": 779,
+ "examples_qualifying_classes": [
+  {
+   "name": "RenderLineInput",
+   "at": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/viewLayout/viewLineRenderer.ts:51",
+   "fields": 23,
+   "field_kinds": {
+    "boolean": 9,
+    "string": 1,
+    "number": 9,
+    "other": 2,
+    "array": 1,
+    "nullable-prim": 1
+   }
+  },
+  {
+   "name": "ResolvedRenderLineInput",
+   "at": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/viewLayout/viewLineRenderer.ts:451",
+   "fields": 16,
+   "field_kinds": {
+    "boolean": 5,
+    "string": 1,
+    "number": 9,
+    "array": 1
+   }
+  },
+  {
+   "name": "ResolvedLanguageConfiguration",
+   "at": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/languages/languageConfigurationRegistry.ts:354",
+   "fields": 12,
+   "field_kinds": {
+    "nullable-qclass": 3,
+    "other": 7,
+    "qclass": 1,
+    "string": 1
+   }
+  }
+ ],
+ "examples_blocked_classes": [
+  {
+   "name": "TextModel",
+   "at": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/model/textModel.ts:186",
+   "fields": 45,
+   "field_kinds": {
+    "other": 30,
+    "string": 2,
+    "boolean": 8,
+    "number": 5
+   },
+   "rules": [
+    "base",
+    "r4",
+    "r5"
+   ],
+   "evidence": [
+    "r5 reachable-from-escaped(TokenizationTextModelPart) @ $EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/model/tokens/tokenizationTextModelPart.ts:31",
+    "r4 assigned-after-leak(method-call) field=_onWillDispose",
+    "r4 assigned-after-leak(method-call) field=onWillDispose",
+    "base Disposable",
+    "r5 escapes to shared structural type(s) ['267:19681', '228:1920']"
+   ]
+  },
+  {
+   "name": "ModelDecorationOptions",
+   "at": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/model/textModel.ts:2481",
+   "fields": 36,
+   "field_kinds": {
+    "string": 1,
+    "nullable-prim": 20,
+    "other": 9,
+    "number": 2,
+    "boolean": 4
+   },
+   "rules": [
+    "r1",
+    "r5"
+   ],
+   "evidence": [
+    "r1 as-unchecked(to C) @ $EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/viewModel/viewModelImpl.ts:945",
+    "r5 reachable-from-escaped(IntervalNode) @ $EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/model/intervalTree.ts:141",
+    "r5 escapes to shared structural type(s) ['267:4695']"
+   ]
+  },
+  {
+   "name": "CursorConfiguration",
+   "at": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/cursorCommon.ts:51",
+   "fields": 33,
+   "field_kinds": {
+    "other": 5,
+    "boolean": 9,
+    "number": 7,
+    "string": 9,
+    "qclass": 1,
+    "nullable-prim": 1,
+    "array": 1
+   },
+   "rules": [
+    "r4"
+   ],
+   "evidence": [
+    "r4 assigned-after-leak(method-call) field=autoClosingPairs",
+    "r4 assigned-after-leak(method-call) field=blockCommentStartToken"
+   ]
+  }
+ ],
+ "examples_qualifying_functions": [
+  {
+   "name": "_renderLine",
+   "kind": "fn",
+   "at": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/viewLayout/viewLineRenderer.ts:1021",
+   "tier": 2,
+   "internal": 0,
+   "boundary_calls": 1,
+   "value_refs": 0,
+   "escaping_closure": 0
+  },
+  {
+   "name": "scanBlockScalar",
+   "kind": "method",
+   "at": "$EP9_RESEARCH_REPOS/vscode/src/vs/base/common/yaml.ts:627",
+   "tier": 2,
+   "internal": 0,
+   "boundary_calls": 1,
+   "value_refs": 0,
+   "escaping_closure": 0
+  },
+  {
+   "name": "splitLargeTokens",
+   "kind": "fn",
+   "at": "$EP9_RESEARCH_REPOS/vscode/src/vs/editor/common/viewLayout/viewLineRenderer.ts:623",
+   "tier": 2,
+   "internal": 0,
+   "boundary_calls": 1,
+   "value_refs": 0,
+   "escaping_closure": 0
+  }
+ ],
+ "r7_files": [],
+ "iface_targets": 751,
+ "iface_closed": 36
+}

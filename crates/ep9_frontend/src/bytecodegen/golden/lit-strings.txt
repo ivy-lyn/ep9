@@ -1,0 +1,57 @@
+# lit-strings: script (sloppy)
+# | 0; "a"; "\u00e9"; "\u4e2d"; "\uD800"; "\uD83D\uDE00"; ""; 'x' + "y"; "\0\n";
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=76 source=embedded hints=none
+source_hash=12583c6194c2366f723ba491f4a01b481f7e3b65fca18b4bc33fd89d5f88357d
+strings (9):
+  str0 "a"
+  str1 "\xe9"
+  str2 "\u4e2d"
+  str3 "\ud800"
+  str4 "\ud83d\ude00"
+  str5 ""
+  str6 "x"
+  str7 "y"
+  str8 "\x00\x0a"
+scopes (1):
+  scope0 script outer=- flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=1 range=0..76
+  code (26 bytes):
+      0 S> LdaZero                                      ; 03
+      1 S> LdaConstant k0  ; k0 = String str0 "a"       ; 0a 00
+      3 S> LdaConstant k1  ; k1 = String str1 "\xe9"    ; 0a 01
+      5 S> LdaConstant k2  ; k2 = String str2 "\u4e2d"  ; 0a 02
+      7 S> LdaConstant k3  ; k3 = String str3 "\ud800"  ; 0a 03
+      9 S> LdaConstant k4  ; k4 = String str4 "\ud83d\ude00" ; 0a 04
+     11 S> LdaConstant k5  ; k5 = String str5 ""        ; 0a 05
+     13 S> LdaConstant k6  ; k6 = String str6 "x"       ; 0a 06
+     15    Star r0                                      ; 0c 00
+     17    LdaConstant k7  ; k7 = String str7 "y"       ; 0a 07
+     19 E> Add r0, s0                                   ; 2a 00 00
+     22 S> LdaConstant k8  ; k8 = String str8 "\x00\x0a" ; 0a 08
+     24    LdaUndefined                                 ; 05
+     25    Return                                       ; 92
+  constants (9):
+      0 String str0 "a"
+      1 String str1 "\xe9"
+      2 String str2 "\u4e2d"
+      3 String str3 "\ud800"
+      4 String str4 "\ud83d\ude00"
+      5 String str5 ""
+      6 String str6 "x"
+      7 String str7 "y"
+      8 String str8 "\x00\x0a"
+  feedback (1):
+      0 BinaryOp
+  handlers (0):
+  positions (10):
+      0 S 0 (1:1)
+      1 S 3 (1:4)
+      3 S 8 (1:9)
+      5 S 18 (1:19)
+      7 S 28 (1:29)
+      9 S 38 (1:39)
+     11 S 54 (1:55)
+     13 S 58 (1:59)
+     19 E 58 (1:59)
+     22 S 69 (1:70)

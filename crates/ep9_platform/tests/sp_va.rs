@@ -130,6 +130,117 @@ fn sp_va_skips_used_slot() {
     );
 }
 
+/// A slot that the host refuses with EINVAL is skipped, not an error (CI run 39505241524, perf
+/// CI v0, exit 70). valgrind refuses a hinted mmap that overlaps its own mappings with EINVAL
+/// when it has no other free range of that size below 128 GiB, so under valgrind the slots at
+/// 4..128 GiB fail. A seccomp filter on a test thread makes the kernel do the same here: every
+/// hinted `mmap` at a 4 GiB multiple in [4 GiB, 128 GiB) fails with EINVAL. Seed 0 starts the
+/// search at 4 GiB, so the cage must land at 128 GiB or above.
+#[cfg(target_os = "linux")]
+#[test]
+fn sp_va_skips_refused_slot() {
+    const FIRST_OK: u32 = 32; // 128 GiB >> 32
+    std::thread::spawn(|| {
+        refuse_hinted_mmaps(1, FIRST_OK);
+        // The filter works: a plain hinted mmap at 4 GiB fails with EINVAL.
+        // SAFETY: a hinted PROT_NONE mapping changes no existing mapping; it fails here.
+        let p = unsafe {
+            libc::mmap(
+                (4usize << 30) as *mut libc::c_void,
+                4 << 30,
+                libc::PROT_NONE,
+                libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_NORESERVE,
+                -1,
+                0,
+            )
+        };
+        assert_eq!(
+            p,
+            libc::MAP_FAILED,
+            "the seccomp filter must refuse the hint"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EINVAL)
+        );
+        let config = CageConfig {
+            seed: Some(0),
+            ..CageConfig::default()
+        };
+        let cage = Cage::reserve(&config).expect("refused slots must be skipped");
+        println!(
+            "cage at {:#x} after {} slots",
+            cage.heap().base(),
+            cage.slots_tried()
+        );
+        assert!(cage.heap().base() >= (FIRST_OK as usize) << 32);
+        assert!(cage.slots_tried() > (FIRST_OK - 1) as usize);
+        let refused = Reservation::reserve_at(4 << 30, 4 << 30).expect("EINVAL is not an error");
+        assert!(refused.is_none(), "a refused range is not free");
+    })
+    .join()
+    .unwrap();
+}
+
+/// Installs a seccomp filter on the calling thread (only): `mmap` with an address hint
+/// `k << 32` for `k` in `[lo, hi)` fails with EINVAL. Other calls run as usual.
+#[cfg(target_os = "linux")]
+fn refuse_hinted_mmaps(lo: u32, hi: u32) {
+    use libc::{
+        BPF_ABS, BPF_JEQ, BPF_JGE, BPF_JMP, BPF_K, BPF_LD, BPF_RET, BPF_W, SECCOMP_RET_ALLOW,
+        SECCOMP_RET_ERRNO, sock_filter,
+    };
+    let stmt = |code: u32, k: u32| sock_filter {
+        code: code as u16,
+        jt: 0,
+        jf: 0,
+        k,
+    };
+    let jump = |code: u32, k: u32, jt: u8, jf: u8| sock_filter {
+        code: code as u16,
+        jt,
+        jf,
+        k,
+    };
+    // struct seccomp_data: nr at 0, args[0] at 16 (low half) and 20 (high half; little endian).
+    let mut prog = [
+        stmt(BPF_LD | BPF_W | BPF_ABS, 0),
+        jump(BPF_JMP | BPF_JEQ | BPF_K, libc::SYS_mmap as u32, 0, 6),
+        stmt(BPF_LD | BPF_W | BPF_ABS, 16),
+        jump(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 4),
+        stmt(BPF_LD | BPF_W | BPF_ABS, 20),
+        jump(BPF_JMP | BPF_JGE | BPF_K, lo, 0, 2),
+        jump(BPF_JMP | BPF_JGE | BPF_K, hi, 1, 0),
+        stmt(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | libc::EINVAL as u32),
+        stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    ];
+    let fprog = libc::sock_fprog {
+        len: prog.len() as u16,
+        filter: prog.as_mut_ptr(),
+    };
+    let one: libc::c_ulong = 1;
+    let zero: libc::c_ulong = 0;
+    // SAFETY: PR_SET_NO_NEW_PRIVS takes integer arguments only; it is needed for an
+    // unprivileged filter and only limits privilege gains (setuid exec) of this thread.
+    let rc = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, one, zero, zero, zero) };
+    assert_eq!(
+        rc,
+        0,
+        "PR_SET_NO_NEW_PRIVS: {}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: `fprog` points to `prog`, a valid BPF program that lives across the call (the
+    // kernel copies it). Without SECCOMP_FILTER_FLAG_TSYNC it applies to this thread only.
+    let rc = unsafe {
+        libc::prctl(
+            libc::PR_SET_SECCOMP,
+            libc::c_ulong::from(libc::SECCOMP_MODE_FILTER),
+            &fprog as *const libc::sock_fprog,
+        )
+    };
+    assert_eq!(rc, 0, "PR_SET_SECCOMP: {}", std::io::Error::last_os_error());
+}
+
 /// Drop releases both parts: the same seed gets the same slot again.
 #[test]
 fn sp_va_drop_releases() {

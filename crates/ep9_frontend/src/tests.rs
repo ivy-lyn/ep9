@@ -8,6 +8,14 @@ fn ok(src: &str, opts: SourceOpts) -> bool {
     check_early_errors(src, opts).is_ok()
 }
 
+/// The early errors of `src`; panics on success or on a range error.
+fn syntax_errors(src: &str, opts: SourceOpts) -> EarlyErrors {
+    match check_early_errors(src, opts) {
+        Err(CompileError::Syntax(errors)) => errors,
+        other => panic!("expected early errors for {src:?}, got {other:?}"),
+    }
+}
+
 /// Strict via `SourceOpts` must agree with strict via a `"use strict";` source prefix.
 fn strict_both_ways(src: &str) -> bool {
     let by_opts = ok(src, STRICT);
@@ -167,7 +175,7 @@ fn annex_b_sloppy_forms() {
 fn errors_carry_span_line_and_utf16_column() {
     // Line 3. Before `with`: U+00E9 (2 bytes, 1 unit), U+1F600 (4 bytes, 2 units), then 3 spaces.
     let src = "'use strict';\n\n'\u{e9}\u{1F600}';   with (a) {}";
-    let err = check_early_errors(src, SLOPPY).unwrap_err();
+    let err = syntax_errors(src, SLOPPY);
     let first = err.first();
     let span = first.span.expect("a span");
     let with_at = u32::try_from(src.find("with").unwrap()).unwrap();
@@ -191,7 +199,7 @@ fn errors_carry_span_line_and_utf16_column() {
 
 #[test]
 fn parse_errors_are_reported_without_semantic() {
-    let err = check_early_errors("var = 1;\nlet a; let a;", SLOPPY).unwrap_err();
+    let err = syntax_errors("var = 1;\nlet a; let a;", SLOPPY);
     // The parser error stops the check, so the semantic redeclaration is not reported.
     assert!(
         err.as_slice()
@@ -205,23 +213,60 @@ fn parse_errors_are_reported_without_semantic() {
 
 #[test]
 fn every_error_is_returned() {
-    let err = check_early_errors("let a; let a; let b; let b;", SLOPPY).unwrap_err();
+    let err = syntax_errors("let a; let a; let b; let b;", SLOPPY);
     assert_eq!(err.len(), 2, "{err:?}");
     assert!(err.to_string().ends_with("(+1 more)"));
     assert_eq!(err.clone().into_vec().len(), 2);
 }
 
 #[test]
-fn deep_nesting_runs_on_a_big_stack() {
-    // No depth guard yet (M0 week 3): callers give the parser a big stack. A debug build on
-    // aarch64-apple-darwin needs 4-8 MiB for 2,000 levels, so 64 MiB leaves 8x room.
+fn deep_nesting_needs_no_big_caller_stack() {
+    // The front end hops to its sized-stack worker, so a 2,000-level input is fine on the default
+    // test thread stack (2 MiB), which would overflow in a debug parse on the caller's thread.
     let depth = 2_000;
     let src = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
-    let result = std::thread::Builder::new()
-        .stack_size(64 << 20)
-        .spawn(move || check_early_errors(&src, SLOPPY).is_ok())
-        .unwrap()
-        .join()
-        .unwrap();
-    assert!(result);
+    assert!(ok(&src, SLOPPY));
+}
+
+#[test]
+fn compile_error_display_keeps_the_syntax_error_text() {
+    let err = check_early_errors("let a; let a;", SLOPPY).unwrap_err();
+    let syntax = err.as_syntax().expect("a syntax error");
+    assert_eq!(err.to_string(), syntax.to_string());
+    assert!(err.as_range().is_none());
+}
+
+/// H01 rule: no oxc type in the public API. A `pub` item (not `pub(crate)`) never names an oxc
+/// crate, so the AST and oxc ids cannot leave `ep9_frontend`.
+#[test]
+fn no_public_item_names_an_oxc_type() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut stack = vec![root];
+    let mut checked = 0;
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (n, line) in text.lines().enumerate() {
+                let line = line.trim_start();
+                if line.starts_with("pub ") && !line.starts_with("pub(") {
+                    checked += 1;
+                    assert!(
+                        !line.contains("oxc"),
+                        "{}:{}: public item names oxc: {line}",
+                        path.display(),
+                        n + 1
+                    );
+                }
+            }
+        }
+    }
+    assert!(checked > 100, "only {checked} public lines found");
 }

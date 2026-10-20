@@ -1,0 +1,1699 @@
+[
+ {
+  "id": "2:11061",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 455,
+  "kind": 220,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:8199",
+  "name": "execute",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 335,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:11026",
+  "name": "execute",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 454,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:3445",
+  "name": "satisfy",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 127,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:13007",
+  "name": "addPropagate",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 539,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:9227",
+  "name": "execute",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 372,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:12751",
+  "name": "addConstraintsConsumingTo",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 529,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:6231",
+  "name": "getOutput",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 240,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:12900",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 532,
+  "kind": 220,
+  "v0": false,
+  "captures": 2,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "determiningC",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "AbstractConstraint | null"
+   },
+   {
+    "name": "coll",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "Vector<AbstractConstraint>"
+   }
+  ]
+ },
+ {
+  "id": "2:11263",
+  "name": "incrementalAdd",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 471,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:13986",
+  "name": "removePropagateFrom",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 576,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:6323",
+  "name": "recalculate",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 244,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:4475",
+  "name": "isSatisfied",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 166,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:9712",
+  "name": "recalculate",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 392,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:12028",
+  "name": "makePlan",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 501,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:1509",
+  "name": "weaker",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 56,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:10358",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 422,
+  "kind": 177,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:4868",
+  "name": "chooseMethod",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 186,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:13888",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 569,
+  "kind": 220,
+  "v0": false,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 1,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "determiningC",
+    "where": "closure",
+    "const": true,
+    "tier": null,
+    "type": "AbstractConstraint | null"
+   },
+   {
+    "name": "fn",
+    "where": "outer-param",
+    "const": false,
+    "tier": null,
+    "type": "(c: AbstractConstraint) => void"
+   }
+  ]
+ },
+ {
+  "id": "2:1682",
+  "name": "weakest",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 64,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:10580",
+  "name": "addConstraint",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 431,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:10824",
+  "name": "value",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 442,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:15465",
+  "name": "projectionTest",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 632,
+  "kind": 175,
+  "v0": false,
+  "captures": 2,
+  "untyped": 2,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "DEFAULT",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Sym"
+   },
+   {
+    "name": "REQUIRED",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Sym"
+   }
+  ]
+ },
+ {
+  "id": "2:14342",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 588,
+  "kind": 220,
+  "v0": false,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "unsatisfied",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "Vector<AbstractConstraint>"
+   }
+  ]
+ },
+ {
+  "id": "2:3048",
+  "name": "addConstraint",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 111,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:11734",
+  "name": "extractPlanFromConstraints",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 489,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:14641",
+  "name": "chainTest",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 602,
+  "kind": 175,
+  "v0": false,
+  "captures": 3,
+  "untyped": 3,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "REQUIRED",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Sym"
+   },
+   {
+    "name": "STRONG_DEFAULT",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Sym"
+   },
+   {
+    "name": "PREFERRED",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Sym"
+   }
+  ]
+ },
+ {
+  "id": "2:3641",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 132,
+  "kind": 220,
+  "v0": false,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "mark",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "2:14454",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 592,
+  "kind": 220,
+  "v0": false,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "todo",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "Vector<Variable>"
+   }
+  ]
+ },
+ {
+  "id": "2:1416",
+  "name": "stronger",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 52,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:3306",
+  "name": "inputsKnown",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 123,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:6171",
+  "name": "markUnsatisfied",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 236,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:8693",
+  "name": "addToGraph",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 356,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:7688",
+  "name": "recalculate",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 312,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:3373",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 124,
+  "kind": 220,
+  "v0": false,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "mark",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "2:7003",
+  "name": "addToGraph",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 278,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:7633",
+  "name": "getOutput",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 308,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:11180",
+  "name": "newMark",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 466,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:4543",
+  "name": "addToGraph",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 170,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:7237",
+  "name": "chooseMethod",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 290,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:11485",
+  "name": "incrementalRemove",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 480,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:6944",
+  "name": "isSatisfied",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 274,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:7572",
+  "name": "markUnsatisfied",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 304,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:3002",
+  "name": "isInput",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 107,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:13388",
+  "name": "change",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 555,
+  "kind": 175,
+  "v0": false,
+  "captures": 1,
+  "untyped": 1,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "PREFERRED",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Sym"
+   }
+  ]
+ },
+ {
+  "id": "2:16674",
+  "name": "innerBenchmarkLoop",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 676,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:3152",
+  "name": "destroyConstraint",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 116,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:11695",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 486,
+  "kind": 220,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:1938",
+  "name": "createStrengthConstants",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 74,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:10988",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 450,
+  "kind": 177,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:7096",
+  "name": "removeFromGraph",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 283,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:11889",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 492,
+  "kind": 220,
+  "v0": false,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "sources",
+    "where": "closure",
+    "const": true,
+    "tier": 0,
+    "type": "Vector<AbstractConstraint>"
+   }
+  ]
+ },
+ {
+  "id": "2:10664",
+  "name": "removeConstraint",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 435,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "2:613",
+  "name": "createStrengthTable",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 26,
+  "kind": 263,
+  "v0": true,
+  "captures": 8,
+  "untyped": 8,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "ABSOLUTE_STRONGEST",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Sym"
+   },
+   {
+    "name": "REQUIRED",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Sym"
+   },
+   {
+    "name": "STRONG_PREFERRED",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Sym"
+   },
+   {
+    "name": "PREFERRED",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Sym"
+   },
+   {
+    "name": "STRONG_DEFAULT",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Sym"
+   },
+   {
+    "name": "DEFAULT",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Sym"
+   },
+   {
+    "name": "WEAK_DEFAULT",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Sym"
+   },
+   {
+    "name": "ABSOLUTE_WEAKEST",
+    "where": "module",
+    "const": true,
+    "tier": null,
+    "type": "Sym"
+   }
+  ]
+ },
+ {
+  "id": "2:7962",
+  "name": "execute",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+  "line": 326,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "1:1545",
+  "name": "isEmpty",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/som.ts",
+  "line": 58,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "1:1959",
+  "name": "removeFirst",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/som.ts",
+  "line": 77,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "1:250",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/som.ts",
+  "line": 10,
+  "kind": 177,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "1:4212",
+  "name": "getBucket",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/som.ts",
+  "line": 176,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "1:529",
+  "name": "at",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/som.ts",
+  "line": 22,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "1:4123",
+  "name": "getBucketIdx",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/som.ts",
+  "line": 172,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "1:2581",
+  "name": "size",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/som.ts",
+  "line": 106,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "3:2306",
+  "name": "advance",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/nbody.ts",
+  "line": 86,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "3:3084",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/nbody.ts",
+  "line": 109,
+  "kind": 220,
+  "v0": true,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 1,
+  "list": [
+   {
+    "name": "dt",
+    "where": "outer-param",
+    "const": false,
+    "tier": 0,
+    "type": "number"
+   }
+  ]
+ },
+ {
+  "id": "3:4177",
+  "name": "innerBenchmarkLoop",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/nbody.ts",
+  "line": 143,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "3:1947",
+  "name": "createBodies",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/nbody.ts",
+  "line": 72,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "3:3201",
+  "name": "energy",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/nbody.ts",
+  "line": 116,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "3:1885",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/nbody.ts",
+  "line": 68,
+  "kind": 177,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:11032",
+  "name": "schedule",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 389,
+  "kind": 175,
+  "v0": false,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "TRACING",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "false"
+   }
+  ]
+ },
+ {
+  "id": "4:4403",
+  "name": "runTask",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 186,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:1938",
+  "name": "isTaskHoldingOrWaiting",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 87,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:6109",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 240,
+  "kind": 220,
+  "v0": false,
+  "captures": 2,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "WORK_PACKET_KIND",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "1"
+   },
+   {
+    "name": "DATA_SIZE",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "4"
+   }
+  ]
+ },
+ {
+  "id": "4:2058",
+  "name": "isWaitingWithPacket",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 91,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:10237",
+  "name": "queuePacket",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 357,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:7212",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 272,
+  "kind": 220,
+  "v0": false,
+  "captures": 2,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "DEVICE_A",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "4"
+   },
+   {
+    "name": "DEVICE_B",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "5"
+   }
+  ]
+ },
+ {
+  "id": "4:5392",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 220,
+  "kind": 220,
+  "v0": false,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "TRACING",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "false"
+   }
+  ]
+ },
+ {
+  "id": "4:4063",
+  "name": "addInputAndCheckPriority",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 175,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:9920",
+  "name": "findTask",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 345,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:10911",
+  "name": "markWaiting",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 384,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:8272",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 301,
+  "kind": 220,
+  "v0": false,
+  "captures": 3,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "HANDLER_A",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "2"
+   },
+   {
+    "name": "HANDLER_B",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "3"
+   },
+   {
+    "name": "DATA_SIZE",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "4"
+   }
+  ]
+ },
+ {
+  "id": "4:10516",
+  "name": "release",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 366,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:1316",
+  "name": "setTaskWaiting",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 59,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:500",
+  "name": "append",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 22,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:10088",
+  "name": "holdSelf",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 351,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:1253",
+  "name": "setTaskHolding",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 57,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:2706",
+  "name": "deviceInAdd",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 122,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:1379",
+  "name": "setPacketPending",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 61,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:1571",
+  "name": "running",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 69,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:1446",
+  "name": "packetPending",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 63,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:2805",
+  "name": "workInAdd",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 126,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:5895",
+  "name": "createHandler",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 238,
+  "kind": 175,
+  "v0": false,
+  "captures": 2,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "WORK_PACKET_KIND",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "1"
+   },
+   {
+    "name": "DATA_SIZE",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "4"
+   }
+  ]
+ },
+ {
+  "id": "4:2383",
+  "name": "createWaitingWithPacket",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 107,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:7635",
+  "name": "createPacket",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 287,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:944",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 44,
+  "kind": 177,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:3106",
+  "name": "<anon>",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 143,
+  "kind": 177,
+  "v0": false,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "DATA_SIZE",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "4"
+   }
+  ]
+ },
+ {
+  "id": "4:2278",
+  "name": "createWaiting",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 101,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:1195",
+  "name": "isTaskWaiting",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 55,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:2173",
+  "name": "createRunning",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 95,
+  "kind": 175,
+  "v0": false,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:11494",
+  "name": "benchmark",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 404,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ },
+ {
+  "id": "4:8780",
+  "name": "start",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 319,
+  "kind": 175,
+  "v0": false,
+  "captures": 8,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "IDLER",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "0"
+   },
+   {
+    "name": "WORKER",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "1"
+   },
+   {
+    "name": "WORK_PACKET_KIND",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "1"
+   },
+   {
+    "name": "DEVICE_A",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "4"
+   },
+   {
+    "name": "DEVICE_PACKET_KIND",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "0"
+   },
+   {
+    "name": "HANDLER_A",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "2"
+   },
+   {
+    "name": "DEVICE_B",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "5"
+   },
+   {
+    "name": "HANDLER_B",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "3"
+   }
+  ]
+ },
+ {
+  "id": "4:5179",
+  "name": "createDevice",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 217,
+  "kind": 175,
+  "v0": false,
+  "captures": 1,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "TRACING",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "false"
+   }
+  ]
+ },
+ {
+  "id": "4:8047",
+  "name": "createWorker",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+  "line": 298,
+  "kind": 175,
+  "v0": false,
+  "captures": 3,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": [
+   {
+    "name": "HANDLER_A",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "2"
+   },
+   {
+    "name": "HANDLER_B",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "3"
+   },
+   {
+    "name": "DATA_SIZE",
+    "where": "module",
+    "const": true,
+    "tier": 0,
+    "type": "4"
+   }
+  ]
+ },
+ {
+  "id": "0:105",
+  "name": "innerBenchmarkLoop",
+  "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/benchmark.ts",
+  "line": 3,
+  "kind": 175,
+  "v0": true,
+  "captures": 0,
+  "untyped": 0,
+  "untyped_mutable": 0,
+  "mutable_typed": 0,
+  "list": []
+ }
+]

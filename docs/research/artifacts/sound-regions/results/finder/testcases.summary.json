@@ -1,0 +1,207 @@
+{
+ "repo": "testcases",
+ "root_files": 3,
+ "walked_files": 3,
+ "root_bytes": 4950,
+ "diagnostics": 0,
+ "diag_codes": {},
+ "classes_total": 33,
+ "classes_qualifying": 2,
+ "classes_qualifying_pct": 6.1,
+ "classes_qualifying_if_r4_lenient": 4,
+ "classes_qualifying_guarded_casts": 6,
+ "classes_qualifying_guarded_casts_r4_lenient": 8,
+ "classes_qualifying_v3_plus_generic_T_ok": 9,
+ "classes_qualifying_open_world": 0,
+ "classes_exported_qualifying": 2,
+ "class_rule_counts": {
+  "r5": 13,
+  "r1": 9,
+  "r3": 3,
+  "r4": 3,
+  "r6": 3,
+  "base": 2,
+  "r2": 1,
+  "r7": 1
+ },
+ "class_sole_rule_counts": {
+  "r5": 12,
+  "r1": 6,
+  "r6": 3,
+  "r3": 2,
+  "r4": 2,
+  "base": 1,
+  "r7": 1
+ },
+ "class_sub_rule_counts": {
+  "r1:as-up": 5,
+  "r5:any": 4,
+  "r4:assigned-after-leak": 2,
+  "r5:object": 2,
+  "r1:as-unchecked": 1,
+  "r1:nonnull-!": 1,
+  "r1:any-flows-in": 1,
+  "r2:dynamic-key": 1,
+  "r3:delete": 1,
+  "r3:Object.defineProperty": 1,
+  "r3:proto-assign": 1,
+  "r5:unknown": 1,
+  "r5:generic-T": 1,
+  "r5:throw": 1,
+  "r6:foreign-base": 1,
+  "r6:index-signature": 1,
+  "r6:accessor-overridden": 1,
+  "r4:optional-unassigned": 1,
+  "r1:structural-fake": 1,
+  "r7:eval/with/Function in module": 1,
+  "r5:reachable-from-escaped": 1,
+  "r5:{}": 1
+ },
+ "classes_qualifying_if_rule_off": {
+  "r1": 9,
+  "r2": 2,
+  "r3": 4,
+  "r4": 4,
+  "r5": 14,
+  "r6": 6,
+  "r7": 3,
+  "base": 3
+ },
+ "field_kinds_qualifying": {
+  "number": 2
+ },
+ "member_access_total": 24,
+ "member_access_dynamic": 23,
+ "member_access_class_receiver": 11,
+ "member_access_qualifying_receiver": 2,
+ "member_access_qualifying_pct_of_total": 8.3,
+ "member_access_qualifying_pct_of_dynamic": 8.7,
+ "member_access_qualifying_inside_functions": 2,
+ "modules_considered": 1,
+ "modules_ge50pct_v0": 0,
+ "modules_ge50pct_v3": 0,
+ "largest_modules_ge50pct_v3": [],
+ "largest_modules_ge50pct_v0": [],
+ "function_body_bytes": 2632,
+ "function_body_bytes_qualifying_pct": 0.7,
+ "function_body_bytes_qualifying_v3_pct": 6.7,
+ "member_access_sound_in_region": 1,
+ "member_access_sound_in_region_pct_of_dynamic": 4.3,
+ "member_access_sound_in_region_v3": 7,
+ "functions_total": 19,
+ "functions_qualifying_t2": 1,
+ "functions_qualifying_t2_pct": 5.3,
+ "functions_qualifying_t1": 1,
+ "functions_qualifying_guarded_casts": 5,
+ "functions_qualifying_guarded_casts_r4_lenient": 7,
+ "functions_qualifying_v3_plus_generic_T_ok": 7,
+ "member_access_qualifying_v3_plus_generic_T_ok": 8,
+ "member_access_qualifying_guarded_casts": 6,
+ "member_access_qualifying_guarded_casts_r4_lenient": 8,
+ "functions_qualifying_t0_strict": 1,
+ "functions_qualifying_nontrivial": 0,
+ "functions_by_kind": {
+  "fn": 11,
+  "ctor": 3,
+  "method": 3,
+  "get": 2
+ },
+ "functions_qualifying_by_kind": {
+  "method": 1
+ },
+ "function_fail_reasons": {
+  "this-class-not-qualifying": 7,
+  "param-type": 5,
+  "local-type": 4,
+  "nonnull(!)": 2,
+  "assertion(as)": 2,
+  "any-flow": 1,
+  "r2-dynamic-key": 1,
+  "r7": 1
+ },
+ "function_sole_fail_reasons": {
+  "this-class-not-qualifying": 7,
+  "param-type": 4,
+  "local-type": 3,
+  "assertion(as)": 1,
+  "nonnull(!)": 1,
+  "r7": 1
+ },
+ "boundary_call_sites": 0,
+ "boundary_value_refs": 0,
+ "boundary_escaping_closures": 0,
+ "internal_call_sites": 0,
+ "qualifying_functions_without_boundary": 1,
+ "qualifying_functions_exported": 1,
+ "examples_qualifying_classes": [
+  {
+   "name": "GoodClosed",
+   "at": "$SR/finder/testcases/src/cases.ts:11",
+   "fields": 1,
+   "field_kinds": {
+    "number": 1
+   }
+  },
+  {
+   "name": "CloneHole",
+   "at": "$SR/finder/testcases/src/more.ts:6",
+   "fields": 1,
+   "field_kinds": {
+    "number": 1
+   }
+  }
+ ],
+ "examples_blocked_classes": [
+  {
+   "name": "Good",
+   "at": "$SR/finder/testcases/src/cases.ts:10",
+   "fields": 2,
+   "field_kinds": {
+    "number": 1,
+    "string": 1
+   },
+   "rules": [
+    "r1"
+   ],
+   "evidence": [
+    "r1 as-up(to C) @ $SR/finder/testcases/src/cases.ts:60"
+   ]
+  },
+  {
+   "name": "GoodChild",
+   "at": "$SR/finder/testcases/src/cases.ts:12",
+   "fields": 1,
+   "field_kinds": {
+    "boolean": 1
+   },
+   "rules": [
+    "base",
+    "r1"
+   ],
+   "evidence": [
+    "r1 as-up(from C) @ $SR/finder/testcases/src/cases.ts:60",
+    "base Good"
+   ]
+  },
+  {
+   "name": "BadDelete",
+   "at": "$SR/finder/testcases/src/cases.ts:18",
+   "fields": 1,
+   "field_kinds": {
+    "nullable-prim": 1
+   },
+   "rules": [
+    "r3"
+   ],
+   "evidence": [
+    "r3 delete @ $SR/finder/testcases/src/cases.ts:48"
+   ]
+  }
+ ],
+ "examples_qualifying_functions": [],
+ "r7_files": [
+  "$SR/finder/testcases/src/evil.ts"
+ ],
+ "iface_targets": 2,
+ "iface_closed": 1
+}

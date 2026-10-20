@@ -1,0 +1,159 @@
+# class-derived: script (sloppy)
+# | class A {} class B extends A { constructor() { super(1); this.y = 2; } m() { return super.m(); } }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=98 source=embedded hints=none
+source_hash=c82ef9bc21c0ee21163db1d1242befe91e8af9c25805fa8a39eb47a1fc31af01
+strings (4):
+  str0 "A"
+  str1 "B"
+  str2 "m"
+  str3 "y"
+scopes (6):
+  scope0 script outer=- flags=[] slots=["A":class, "B":class]
+  scope1 class outer=scope0 flags=[strict] slots=[]
+  scope2 function outer=scope1 flags=[strict] slots=[]
+  scope3 class outer=scope0 flags=[strict] slots=[]
+  scope4 function outer=scope3 flags=[strict] slots=[]
+  scope5 function outer=scope3 flags=[strict] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=8 range=0..98
+  code (97 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> LdaTheHole                                   ; 07
+      6    Star r3                                      ; 0c 03
+      8 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+     12    Star r2                                      ; 0c 02
+     14 E> CallRuntime DefineClass, r2-r3               ; 68 04 00 02 02
+     19    Star r4                                      ; 0c 04
+     21    Ldar r2                                      ; 0b 02
+     23    Star r0                                      ; 0c 00
+     25    Ldar r2                                      ; 0b 02
+     27    Star r3                                      ; 0c 03
+     29    LdaConstant k1  ; k1 = String str0 "A"       ; 0a 01
+     31    Star r2                                      ; 0c 02
+     33 E> CallRuntime InitializeGlobal, r2-r3          ; 68 06 00 02 02
+     38    Ldar r3                                      ; 0b 03
+     40 S> LdaGlobal k1, s1  ; k1 = String str0 "A"     ; 10 01 01
+     43    Star r3                                      ; 0c 03
+     45 E> CreateClosure k2, s2, #0x00  ; k2 = Function f2 ; 74 02 02 00
+     49    Star r2                                      ; 0c 02
+     51 E> CallRuntime DefineClass, r2-r3               ; 68 04 00 02 02
+     56    Star r4                                      ; 0c 04
+     58    Mov r4, r5                                   ; 0d 04 05
+     61    LdaConstant k3  ; k3 = String str2 "m"       ; 0a 03
+     63    Star r6                                      ; 0c 06
+     65 E> CreateClosure k4, s3, #0x00  ; k4 = Function f3 ; 74 04 03 00
+     69    Star r7                                      ; 0c 07
+     71 E> CallRuntime DefineClassMethod, r5-r7         ; 68 0f 00 05 03
+     76    Ldar r2                                      ; 0b 02
+     78    Star r1                                      ; 0c 01
+     80    Ldar r2                                      ; 0b 02
+     82    Star r3                                      ; 0c 03
+     84    LdaConstant k5  ; k5 = String str1 "B"       ; 0a 05
+     86    Star r2                                      ; 0c 02
+     88 E> CallRuntime InitializeGlobal, r2-r3          ; 68 06 00 02 02
+     93    Ldar r3                                      ; 0b 03
+     95    LdaUndefined                                 ; 05
+     96    Return                                       ; 92
+  constants (6):
+      0 Function f1
+      1 String str0 "A"
+      2 Function f2
+      3 String str2 "m"
+      4 Function f3
+      5 String str1 "B"
+  feedback (4):
+      0 CreateClosure
+      1 LoadGlobal
+      2 CreateClosure
+      3 CreateClosure
+  handlers (0):
+  positions (11):
+      0 S 0 (1:1)
+      5 S 0 (1:1)
+      8 E 0 (1:1)
+     14 E 0 (1:1)
+     33 E 0 (1:1)
+     40 S 11 (1:12)
+     45 E 11 (1:12)
+     51 E 11 (1:12)
+     65 E 11 (1:12)
+     71 E 71 (1:72)
+     88 E 11 (1:12)
+function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=8..10
+  code (2 bytes):
+      0 S> LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 0 (1:1)
+function f2 derived-constructor name="B" parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=4 range=42..70
+  code (46 bytes):
+      0    LdaTheHole                                   ; 07
+      1    Star r0                                      ; 0c 00
+      3 S> LdaCurrentFunction                           ; 0e
+      4    GetSuperConstructor r1                       ; 98 01
+      6    LdaSmi [1]                                   ; 04 01
+      8    Star r3                                      ; 0c 03
+     10 E> ThrowIfNotSuperConstructor r1                ; 97 01
+     12    LdaNewTarget                                 ; 0f
+     13 E> Construct r1, r3, s0                         ; 69 01 03 01 00
+     18    Star r2                                      ; 0c 02
+     20    Ldar r0                                      ; 0b 00
+     22 E> ThrowSuperAlreadyCalledIfNotHole             ; 96
+     23    Ldar r2                                      ; 0b 02
+     25    Star r0                                      ; 0c 00
+     27 S> Ldar r0                                      ; 0b 00
+     29 E> ThrowSuperNotCalledIfHole                    ; 95
+     30    Star r1                                      ; 0c 01
+     32    LdaSmi [2]                                   ; 04 02
+     34 E> SetNamedProperty r1, k0, s1  ; k0 = String str3 "y" ; 24 01 00 01
+     38    LdaUndefined                                 ; 05
+     39    JumpIfUndefined @42                          ; 85 03
+     41    Return                                       ; 92
+     42    Ldar r0                                      ; 0b 00
+     44 E> ThrowSuperNotCalledIfHole                    ; 95
+     45    Return                                       ; 92
+  constants (1):
+      0 String str3 "y"
+  feedback (2):
+      0 Call
+      1 StoreNamed
+  handlers (0):
+  positions (8):
+      3 S 47 (1:48)
+     10 E 47 (1:48)
+     13 E 47 (1:48)
+     22 E 47 (1:48)
+     27 S 57 (1:58)
+     29 E 57 (1:58)
+     34 E 57 (1:58)
+     44 E 69 (1:70)
+function f3 method name="m" parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=5 range=72..96
+  code (32 bytes):
+      0 S> Ldar <this>                                  ; 0b ff
+      2    Star r2                                      ; 0c 02
+      4    LdaCurrentFunction                           ; 0e
+      5    Star r4                                      ; 0c 04
+      7 E> CallRuntime GetHomeObject, r4                ; 68 0e 00 04 01
+     12    Star r3                                      ; 0c 03
+     14    Ldar r3                                      ; 0b 03
+     16 E> GetNamedPropertyFromSuper r2, k0, s0  ; k0 = String str2 "m" ; 22 02 00 00
+     20    Star r0                                      ; 0c 00
+     22    Mov r2, r1                                   ; 0d 02 01
+     25 E> CallProperty0 r0, r1, s1                     ; 60 00 01 01
+     29    Return                                       ; 92
+     30    LdaUndefined                                 ; 05
+     31    Return                                       ; 92
+  constants (1):
+      0 String str2 "m"
+  feedback (2):
+      0 LoadNamed
+      1 Call
+  handlers (0):
+  positions (4):
+      0 S 77 (1:78)
+      7 E 84 (1:85)
+     16 E 90 (1:91)
+     25 E 90 (1:91)

@@ -6,5 +6,17 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+# Engine crates only. No crates.io dependencies (08-repo section 2).
+[dependencies]
+ep9_bytecode = { path = "../ep9_bytecode" }
+ep9_heap = { path = "../ep9_heap" }
+ep9_platform = { path = "../ep9_platform" }
+ep9_value = { path = "../ep9_value" }
+
+[features]
+# H15 expansion (c): handlers end in `become` (guaranteed tail calls). Needs a nightly toolchain
+# with `explicit_tail_calls` (D8: opt-in). Stable builds have the match loop and sibling calls.
+become = []
+
 [lints]
 workspace = true

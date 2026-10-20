@@ -1,0 +1,15 @@
+A) reviewer check, g=1.27 everywhere
+ low: tsc,vsc,hono,awfy [1.44, 5.35, 0.04, 15.86] gm4 5.5 gm3 2.26
+ high v0:  [1.82, 9.07, 1.34, 26.76] gm4 9.29 gm3 4.01
+ high v3: gm3 4.39
+B) revised: tsc/hono/date-fns g=1.02-1.08 (guard-only band); vscode-diff g=1.02-1.27; kernels g<=1.27
+  tsc 0.13 to 0.66
+  hono 0.0 to 0.46
+  date-fns 0.12 to 0.84
+  vscode-diff 0.47 to 10.16  (at 1.08 high: 3.32 )
+  kernels v3 upper 15.86 to 26.76
+  gm3 real apps: 0.2 to 3.66
+C) old §4 row values check, g=1.27: tsc 1.44 1.91 date-fns 1.27 2.44 vsc 5.35 10.16
+D) JIT 1.05: tsc 0.32 0.42 vsc 1.15 2.11
+E) g=1.27 everywhere, high end with v3 shares (tsc .088, vsc .434, hono .062, awfy .993)
+  gm3 4.39 gm4 9.58

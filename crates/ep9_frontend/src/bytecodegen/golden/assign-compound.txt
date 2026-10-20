@@ -1,0 +1,96 @@
+# assign-compound: script (sloppy)
+# | var g; function f(o, k, a) { a += 1; a -= o; g *= 2; o.x |= 1; o[k] **= a; }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=76 source=embedded hints=none
+source_hash=d8358d16159771328cf475774e0f0ad84e5bdf5eabdc3426066953bc841fc349
+strings (3):
+  str0 "g"
+  str1 "f"
+  str2 "x"
+scopes (2):
+  scope0 script outer=- flags=[] slots=["g":var, "f":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..76
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str1 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22 S> LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str1 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (4):
+      0 S 0 (1:1)
+      5 E 7 (1:8)
+     15 E 7 (1:8)
+     22 S 4 (1:5)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=3 length=3 regs=3 range=7..76
+  code (68 bytes):
+      0 S> Ldar a2                                      ; 0b fc
+      2 E> AddSmi [1], s0                               ; 36 01 00
+      5    Star a2                                      ; 0c fc
+      7 S> Ldar a2                                      ; 0b fc
+      9    Star r0                                      ; 0c 00
+     11    Ldar a0                                      ; 0b fe
+     13 E> Sub r0, s1                                   ; 2b 00 01
+     16    Star a2                                      ; 0c fc
+     18 S> LdaGlobal k0, s2  ; k0 = String str0 "g"     ; 10 00 02
+     21 E> MulSmi [2], s3                               ; 38 02 03
+     24 E> StaGlobal k0, s4  ; k0 = String str0 "g"     ; 12 00 04
+     27 S> Ldar a0                                      ; 0b fe
+     29    Star r0                                      ; 0c 00
+     31 E> GetNamedProperty r0, k1, s5  ; k1 = String str2 "x" ; 21 00 01 05
+     35 E> BitwiseOrSmi [1], s6                         ; 3c 01 06
+     38 E> SetNamedProperty r0, k1, s7  ; k1 = String str2 "x" ; 24 00 01 07
+     42 S> Ldar a0                                      ; 0b fe
+     44    Star r0                                      ; 0c 00
+     46    Ldar a1                                      ; 0b fd
+     48    Star r1                                      ; 0c 01
+     50    Ldar r1                                      ; 0b 01
+     52 E> GetKeyedProperty r0, s8                      ; 23 00 08
+     55    Star r2                                      ; 0c 02
+     57    Ldar a2                                      ; 0b fc
+     59 E> Exp r2, s9                                   ; 2f 02 09
+     62 E> SetKeyedProperty r0, r1, s10                 ; 26 00 01 0a
+     66    LdaUndefined                                 ; 05
+     67    Return                                       ; 92
+  constants (2):
+      0 String str0 "g"
+      1 String str2 "x"
+  feedback (11):
+      0 BinaryOp
+      1 BinaryOp
+      2 LoadGlobal
+      3 BinaryOp
+      4 StoreGlobal
+      5 LoadNamed
+      6 BinaryOp
+      7 StoreNamed
+      8 LoadKeyed
+      9 BinaryOp
+     10 StoreKeyed
+  handlers (0):
+  positions (15):
+      0 S 29 (1:30)
+      2 E 29 (1:30)
+      7 S 37 (1:38)
+     13 E 37 (1:38)
+     18 S 45 (1:46)
+     21 E 45 (1:46)
+     24 E 45 (1:46)
+     27 S 53 (1:54)
+     31 E 53 (1:54)
+     35 E 53 (1:54)
+     38 E 53 (1:54)
+     42 S 63 (1:64)
+     52 E 63 (1:64)
+     59 E 63 (1:64)
+     62 E 63 (1:64)

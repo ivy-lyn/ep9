@@ -10,5 +10,12 @@ license.workspace = true
 name = "ep9"
 path = "src/main.rs"
 
+# Engine crates only. No crates.io dependencies.
+[dependencies]
+ep9_bytecode = { path = "../ep9_bytecode" }
+ep9_frontend = { path = "../ep9_frontend" }
+ep9_heap = { path = "../ep9_heap" }
+ep9_vm = { path = "../ep9_vm" }
+
 [lints]
 workspace = true

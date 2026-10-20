@@ -1,0 +1,67 @@
+# ctl-while: script (sloppy)
+# | function f(a) { while (a) { a--; if (a == 3) continue; if (a == 1) break; } }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=77 source=embedded hints=none
+source_hash=985617b8a6cf011b7325e409042daa433236e335a919e1eeef8148da1e26de58
+strings (1):
+  str0 "f"
+scopes (3):
+  scope0 script outer=- flags=[] slots=["f":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+  scope2 block outer=scope1 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..77
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=0 range=0..77
+  code (34 bytes):
+      0 S> Ldar a0                                      ; 0b fe
+      2    JumpIfToBooleanFalse @32                     ; 82 1e
+      4 S> Ldar a0                                      ; 0b fe
+      6 E> Dec s0                                       ; 43 00
+      8    Star a0                                      ; 0c fe
+     10 S> LdaSmi [3]                                   ; 04 03
+     12 E> TestEqual a0, s1                             ; 4b fe 01
+     15    JumpIfFalse @19                              ; 80 04
+     17 S> Jump @28                                     ; 7e 0b
+     19 S> LdaSmi [1]                                   ; 04 01
+     21 E> TestEqual a0, s2                             ; 4b fe 02
+     24    JumpIfFalse @28                              ; 80 04
+     26 S> Jump @32                                     ; 7e 06
+     28    JumpLoop @0, [0], s3                         ; 7d 1c 00 03
+     32    LdaUndefined                                 ; 05
+     33    Return                                       ; 92
+  constants (0):
+  feedback (4):
+      0 BinaryOp
+      1 CompareOp
+      2 CompareOp
+      3 JumpLoop
+  handlers (0):
+  positions (9):
+      0 S 16 (1:17)
+      4 S 28 (1:29)
+      6 E 28 (1:29)
+     10 S 33 (1:34)
+     12 E 37 (1:38)
+     17 S 45 (1:46)
+     19 S 55 (1:56)
+     21 E 59 (1:60)
+     26 S 67 (1:68)

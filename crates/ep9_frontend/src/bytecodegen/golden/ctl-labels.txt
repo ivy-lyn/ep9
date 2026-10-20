@@ -1,0 +1,76 @@
+# ctl-labels: script (sloppy)
+# | function f(a) { outer: for (var i = 0; i < 3; i++) { inner: for (;;) { if (a) continue outer; break outer; } } l: { if (a) break l; a = 1; } }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=142 source=embedded hints=none
+source_hash=f9dcc7c59201b03973de9744250e1062576cff7a12405dd136382246b55d0346
+strings (1):
+  str0 "f"
+scopes (7):
+  scope0 script outer=- flags=[] slots=["f":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+  scope2 block outer=scope1 flags=[] slots=[]
+  scope3 block outer=scope2 flags=[] slots=[]
+  scope4 block outer=scope3 flags=[] slots=[]
+  scope5 block outer=scope4 flags=[] slots=[]
+  scope6 block outer=scope1 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..142
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=1 range=0..142
+  code (44 bytes):
+      0 S> LdaZero                                      ; 03
+      1    Star r0                                      ; 0c 00
+      3    LdaSmi [3]                                   ; 04 03
+      5 E> TestLessThan r0, s0                          ; 4d 00 00
+      8    JumpIfFalse @32                              ; 80 18
+     10 S> Ldar a0                                      ; 0b fe
+     12    JumpIfToBooleanFalse @16                     ; 82 04
+     14 S> Jump @22                                     ; 7e 08
+     16 S> Jump @32                                     ; 7e 10
+     18    JumpLoop @10, [1], s1                        ; 7d 08 01 01
+     22    Ldar r0                                      ; 0b 00
+     24 E> Inc s2                                       ; 42 02
+     26    Star r0                                      ; 0c 00
+     28    JumpLoop @3, [0], s3                         ; 7d 19 00 03
+     32 S> Ldar a0                                      ; 0b fe
+     34    JumpIfToBooleanFalse @38                     ; 82 04
+     36 S> Jump @42                                     ; 7e 06
+     38 S> LdaSmi [1]                                   ; 04 01
+     40    Star a0                                      ; 0c fe
+     42    LdaUndefined                                 ; 05
+     43    Return                                       ; 92
+  constants (0):
+  feedback (4):
+      0 CompareOp
+      1 JumpLoop
+      2 BinaryOp
+      3 JumpLoop
+  handlers (0):
+  positions (9):
+      0 S 32 (1:33)
+      5 E 39 (1:40)
+     10 S 71 (1:72)
+     14 S 78 (1:79)
+     16 S 94 (1:95)
+     24 E 46 (1:47)
+     32 S 116 (1:117)
+     36 S 123 (1:124)
+     38 S 132 (1:133)

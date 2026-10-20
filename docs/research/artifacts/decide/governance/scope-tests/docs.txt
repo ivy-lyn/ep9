@@ -1,0 +1,2 @@
+docs/adr/H06-value-encoding.md
+README.md

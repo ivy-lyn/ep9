@@ -1,0 +1,10 @@
+form                     move          alloc            reg         escape           weak
+rw_slowstore           ok/201         ok/448          ok/29         ok/938          ok/61
+rw_precheck        LOST C/213     LOST N/460          ok/29     LOST N/951      LOST W/63
+rw_norescan            ok/201         ok/448      LOST C/29         ok/938          ok/61
+rw_oldfilter       LOST C/222     LOST N/436          ok/49     LOST N/698      LOST W/36
+rw_elide_escaped         ok/201         ok/448          ok/29     LOST C/759          ok/61
+satb_new           LOST C/142     LOST C/200      LOST C/29     LOST C/250          ok/58
+satb_oldnew            ok/155         ok/236          ok/35         ok/295          ok/58
+satb_noweakrb          ok/155         ok/236          ok/35         ok/295      LOST W/36
+rw_weak                ok/201         ok/448          ok/29         ok/938          ok/61

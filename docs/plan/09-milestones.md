@@ -7,7 +7,7 @@
 - v1 (M8) ships JIT mode, A1 artifacts and AOT-jitless mode. Baseline-AOT, optimized-AOT, hybrid mode and HINTED facts each ship only if their kill rule passes (K-A3, K-A4J, K-A4P, K-A4H).
 - Team (D3): AI agents led by an orchestrator agent; the owner reviews at will. Total M0-M8 effort is about 285-524 PM (est.), a size of work. The calendar months in §6 are human-team figures and do not apply.
 
-IDs used here: lanes CORE, SPEC, RT, AOT; M0-M10, M1a, M5c; A0, A1h, A1, A2, A3, A4, A5; H1-H37; G1-G15; D1-D21; SP-GC, SP-VA, SP-Value, SP-Dispatch, SP-JIT-mem, Spike B, SP-Unit, Spike C, SP-Facts, SP-tsrs-win, SP-tsrs, SP-HintPrecision, SP-TypedBound, SP-RegionCoverage, SP-RegionBound; FV1-FV3; K-A3, K-A4J, K-A4P, K-A4H, K-A5pre, K-A5, K-A5v-cov, K-A5v-bound, K-A5v; T0-T3; S0-S4; RX0-RX2; P1-P5; L1; HINT-SET, TYPED-KERNELS, SHORT-RUN, JITLESS-SET, STARTUP-SET, SIZE-REPORT; RK22, RK28, RK43.
+IDs used here: lanes CORE, SPEC, RT, AOT; M0-M10, M1a, M5c; A0, A1h, A1, A2, A3, A4, A5; H1-H37; G1-G15; D1-D21; SP-GC, SP-VA, SP-Value, SP-Dispatch, SP-JIT-mem, Spike B, SP-Unit, Spike C, SP-Facts, SP-tsrs-win, SP-tsrs, SP-HintPrecision, SP-TypedBound, SP-RegionCoverage, SP-RegionBound; FV1-FV3; VERIFIED; K-A3, K-A4J, K-A4P, K-A4H, K-A5pre, K-A5, K-A5v-cov, K-A5v-bound, K-A5v; T0-T3; S0-S4; RX0-RX2; P1-P5; L1; HINT-SET, TYPED-KERNELS, SHORT-RUN, JITLESS-SET, STARTUP-SET, SIZE-REPORT; RK22, RK28, RK43.
 
 Evidence tags: [R05] [R06] [R07] [R08] [R09] [R10] [R11] [R12] [R13] [R14] [R15] [R16] [R17] [R18] [P1] [T262] [TSRS]. Paths are in the table at the end.
 

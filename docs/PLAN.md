@@ -10,7 +10,7 @@ Date: 2026-10-20. This overview replaces the JIT-only plan v1. Detail: [plan/](p
 - **Team (D3).** AI agents led by an orchestrator agent; the owner reviews at will. Effort is in PM as a size of work. Calendar months do not apply.
 - **Decisions.** All 21 open items were decided on 2026-10-20 under your instruction (§10).
 
-IDs used here: G1-G15, N1-N13; H1-H37; D1-D21; M0-M10, M1a, M5c; A0-A5; T0-T3; FV1-FV3; K-A3, K-A4J, K-A4P, K-A4H, K-A5pre, K-A5, K-A5v-cov, K-A5v-bound, K-A5v; SP-RegionCoverage, SP-RegionBound; VERIFIED; P1-P5; S0-S4; RK1-RK44.
+IDs used here: G1-G15, N1-N13; H1-H37; D1-D21; M0-M10, M1a, M5c; A0-A5, A5v; T0-T3; FV1-FV3; K-A3, K-A4J, K-A4P, K-A4H, K-A5pre, K-A5, K-A5v-cov, K-A5v-bound, K-A5v; SP-RegionCoverage, SP-RegionBound; VERIFIED; V1-V3 (barrier verifiers); P1-P5; S0-S4; RK1-RK44.
 
 ## 1. The core idea
 

@@ -1,0 +1,12 @@
+var i = 5;
+print(i++, i, ++i, i, i--, i, --i, i);
+var o = { n: 1 };
+print(o.n++, o.n, ++o.n, o.n--, o.n);
+var a = [10];
+print(a[0]++, ++a[0], a[0]--, a[0]);
+var s = "5";
+s++;
+print(s, typeof s);
+var u;
+u++;
+print(u);

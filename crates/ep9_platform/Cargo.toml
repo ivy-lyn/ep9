@@ -12,12 +12,26 @@ license.workspace = true
 libc = "0.2.191"
 
 [target.'cfg(windows)'.dependencies]
+# Diagnostics_Debug and Kernel: function tables, RtlVirtualUnwind and FlushInstructionCache for
+# the `unwind` and `jit` modules. They are on in every build, because unit tests build those
+# modules without the features (see [features]).
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Kernel",
     "Win32_System_Memory",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
 ] }
+
+[features]
+# H27, H28: runtime codegen. Executable memory with W^X in the code range. Implies `unwind`.
+jit = ["unwind"]
+# H28: unwind registration for generated code (DWARF CFI on unix, function tables on Windows).
+# The jitless build needs it for loaded AOT units (A2), so it is a feature of its own.
+# Unit tests (`cfg(test)`) build both modules without the features, so
+# `cargo test --workspace` runs their tests.
+unwind = []
 
 [lints]
 workspace = true

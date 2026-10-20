@@ -7,7 +7,7 @@
 - Strings and numbers stay as in v1. Snapshot atoms get stable indices (H13). All tiers and AOT code share one Math implementation (H36).
 - The build-vs-reuse table moves TS lowering into BytecodeGen. It adds the ep9-typecheck oracle and 4 AOT rows.
 
-IDs used here: H3, H5, H6, H8, H13, H16, H17, H18, H19, H22, H31, H32, H34, H35, H36, H37; G7; N5, N6; D4, D9, D20; A0, A1h, A2, A3, A4; M0-M5, M8, M1a; RX0, RX1, RX2; SP-Value, SP-tsrs-win; IntrinsicRef, ShapeRef, FactSnapshot, InvalidatingFuse.
+IDs used here: H3, H5, H6, H8, H9, H11, H13, H16, H17, H18, H19, H22, H31, H32, H34, H35, H36, H37; G7; N5, N6; D4, D9, D20; A0, A1h, A2, A3, A4; M0-M5, M8, M1a; RX0, RX1, RX2; SP-Value, SP-tsrs-win; IntrinsicRef, ShapeRef, FactSnapshot, InvalidatingFuse.
 
 Evidence tags: [R01] [R02] [R05] [R06] [R07] [R08] [R10] [R12] [R13] [R14] [R15] [R16] [R17] [P1]. Paths are in the table at the end.
 

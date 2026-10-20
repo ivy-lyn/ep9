@@ -1,0 +1,112 @@
+# ctl-finally-nested: script (sloppy)
+# | function f(g) { try { try { return 1; } finally { g(); } } finally { g(); } }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=77 source=embedded hints=none
+source_hash=9917758d18488084c6369a3df6038d7db407cb379c3e5d62fa651de2096267f2
+strings (1):
+  str0 "f"
+scopes (6):
+  scope0 script outer=- flags=[] slots=["f":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+  scope2 block outer=scope1 flags=[] slots=[]
+  scope3 block outer=scope2 flags=[] slots=[]
+  scope4 block outer=scope2 flags=[] slots=[]
+  scope5 block outer=scope1 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..77
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=8 range=0..77
+  code (101 bytes):
+      0 S> LdaCurrentContext                            ; 15
+      1    Star r2                                      ; 0c 02
+      3 S> LdaCurrentContext                            ; 15
+      4    Star r5                                      ; 0c 05
+      6 S> LdaSmi [1]                                   ; 04 01
+      8    Star r4                                      ; 0c 04
+     10    LdaSmi [1]                                   ; 04 01
+     12    Star r3                                      ; 0c 03
+     14    Jump @27                                     ; 7e 0d
+     16    LdaSmi [-1]                                  ; 04 ff
+     18    Star r3                                      ; 0c 03
+     20    Jump @27                                     ; 7e 07
+     22    Star r4                                      ; 0c 04
+     24    LdaZero                                      ; 03
+     25    Star r3                                      ; 0c 03
+     27    LdaTheHole                                   ; 07
+     28    SetPendingMessage                            ; 93
+     29    Star r6                                      ; 0c 06
+     31 S> Ldar a0                                      ; 0b fe
+     33    Star r7                                      ; 0c 07
+     35 E> CallUndefinedReceiver0 r7, s0                ; 64 07 00
+     38    Ldar r6                                      ; 0b 06
+     40    SetPendingMessage                            ; 93
+     41    Ldar r3                                      ; 0b 03
+     43    SwitchOnSmi k0, [0]  ; k0 = JumpTable [+5, +8] ; 8a 00 00
+     46    Jump @61                                     ; 7e 0f
+     48    Ldar r4                                      ; 0b 04
+     50 E> ReThrow                                      ; 91
+     51    Ldar r4                                      ; 0b 04
+     53    Star r1                                      ; 0c 01
+     55    LdaSmi [1]                                   ; 04 01
+     57    Star r0                                      ; 0c 00
+     59    Jump @72                                     ; 7e 0d
+     61    LdaSmi [-1]                                  ; 04 ff
+     63    Star r0                                      ; 0c 00
+     65    Jump @72                                     ; 7e 07
+     67    Star r1                                      ; 0c 01
+     69    LdaZero                                      ; 03
+     70    Star r0                                      ; 0c 00
+     72    LdaTheHole                                   ; 07
+     73    SetPendingMessage                            ; 93
+     74    Star r3                                      ; 0c 03
+     76 S> Ldar a0                                      ; 0b fe
+     78    Star r4                                      ; 0c 04
+     80 E> CallUndefinedReceiver0 r4, s1                ; 64 04 01
+     83    Ldar r3                                      ; 0b 03
+     85    SetPendingMessage                            ; 93
+     86    Ldar r0                                      ; 0b 00
+     88    SwitchOnSmi k1, [0]  ; k1 = JumpTable [+5, +8] ; 8a 01 00
+     91    Jump @99                                     ; 7e 08
+     93    Ldar r1                                      ; 0b 01
+     95 E> ReThrow                                      ; 91
+     96    Ldar r1                                      ; 0b 01
+     98    Return                                       ; 92
+     99    LdaUndefined                                 ; 05
+    100    Return                                       ; 92
+  constants (2):
+      0 JumpTable [+5, +8]
+      1 JumpTable [+5, +8]
+  feedback (2):
+      0 Call
+      1 Call
+  handlers (2):
+        [3, 61) -> @67 context=r2 uncaught
+        [6, 16) -> @22 context=r5 uncaught
+  positions (9):
+      0 S 16 (1:17)
+      3 S 22 (1:23)
+      6 S 28 (1:29)
+     31 S 50 (1:51)
+     35 E 50 (1:51)
+     50 E 22 (1:23)
+     76 S 69 (1:70)
+     80 E 69 (1:70)
+     95 E 16 (1:17)

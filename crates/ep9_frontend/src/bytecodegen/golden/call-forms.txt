@@ -1,0 +1,157 @@
+# call-forms: script (sloppy)
+# | var f, o, k, a; f(); f(1); f(1, 2); f(1, 2, 3); o.m(); o.m(1); o.m(1, 2); o.m(1, 2, 3); o[k](a); (0, o.m)(); (o.m)();
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=117 source=embedded hints=none
+source_hash=9aed4a5fc57bce6cc9d26ccd3ca9d453df2af4186d89321a174d8c4b7d08113c
+strings (5):
+  str0 "f"
+  str1 "o"
+  str2 "k"
+  str3 "a"
+  str4 "m"
+scopes (1):
+  scope0 script outer=- flags=[] slots=["f":var, "o":var, "k":var, "a":var]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=5 range=0..117
+  code (209 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> LdaGlobal k0, s0  ; k0 = String str0 "f"     ; 10 00 00
+      8    Star r0                                      ; 0c 00
+     10 E> CallUndefinedReceiver0 r0, s1                ; 64 00 01
+     13 S> LdaGlobal k0, s0  ; k0 = String str0 "f"     ; 10 00 00
+     16    Star r0                                      ; 0c 00
+     18    LdaSmi [1]                                   ; 04 01
+     20    Star r1                                      ; 0c 01
+     22 E> CallUndefinedReceiver1 r0, r1, s2            ; 65 00 01 02
+     26 S> LdaGlobal k0, s0  ; k0 = String str0 "f"     ; 10 00 00
+     29    Star r0                                      ; 0c 00
+     31    LdaSmi [1]                                   ; 04 01
+     33    Star r1                                      ; 0c 01
+     35    LdaSmi [2]                                   ; 04 02
+     37    Star r2                                      ; 0c 02
+     39 E> CallUndefinedReceiver2 r0, r1, r2, s3        ; 66 00 01 02 03
+     44 S> LdaGlobal k0, s0  ; k0 = String str0 "f"     ; 10 00 00
+     47    Star r0                                      ; 0c 00
+     49    LdaSmi [1]                                   ; 04 01
+     51    Star r1                                      ; 0c 01
+     53    LdaSmi [2]                                   ; 04 02
+     55    Star r2                                      ; 0c 02
+     57    LdaSmi [3]                                   ; 04 03
+     59    Star r3                                      ; 0c 03
+     61 E> CallUndefinedReceiver r0, r1-r3, s4          ; 63 00 01 03 04
+     66 S> LdaGlobal k2, s5  ; k2 = String str1 "o"     ; 10 02 05
+     69    Star r1                                      ; 0c 01
+     71 E> GetNamedProperty r1, k1, s6  ; k1 = String str4 "m" ; 21 01 01 06
+     75    Star r0                                      ; 0c 00
+     77 E> CallProperty0 r0, r1, s7                     ; 60 00 01 07
+     81 S> LdaGlobal k2, s5  ; k2 = String str1 "o"     ; 10 02 05
+     84    Star r1                                      ; 0c 01
+     86 E> GetNamedProperty r1, k1, s8  ; k1 = String str4 "m" ; 21 01 01 08
+     90    Star r0                                      ; 0c 00
+     92    LdaSmi [1]                                   ; 04 01
+     94    Star r2                                      ; 0c 02
+     96 E> CallProperty1 r0, r1, r2, s9                 ; 61 00 01 02 09
+    101 S> LdaGlobal k2, s5  ; k2 = String str1 "o"     ; 10 02 05
+    104    Star r1                                      ; 0c 01
+    106 E> GetNamedProperty r1, k1, s10  ; k1 = String str4 "m" ; 21 01 01 0a
+    110    Star r0                                      ; 0c 00
+    112    LdaSmi [1]                                   ; 04 01
+    114    Star r2                                      ; 0c 02
+    116    LdaSmi [2]                                   ; 04 02
+    118    Star r3                                      ; 0c 03
+    120 E> CallProperty2 r0, r1, r2, r3, s11            ; 62 00 01 02 03 0b
+    126 S> LdaGlobal k2, s5  ; k2 = String str1 "o"     ; 10 02 05
+    129    Star r1                                      ; 0c 01
+    131 E> GetNamedProperty r1, k1, s12  ; k1 = String str4 "m" ; 21 01 01 0c
+    135    Star r0                                      ; 0c 00
+    137    LdaSmi [1]                                   ; 04 01
+    139    Star r2                                      ; 0c 02
+    141    LdaSmi [2]                                   ; 04 02
+    143    Star r3                                      ; 0c 03
+    145    LdaSmi [3]                                   ; 04 03
+    147    Star r4                                      ; 0c 04
+    149 E> CallProperty r0, r1-r4, s13                  ; 5f 00 01 04 0d
+    154 S> LdaGlobal k2, s5  ; k2 = String str1 "o"     ; 10 02 05
+    157    Star r1                                      ; 0c 01
+    159 E> LdaGlobal k3, s14  ; k3 = String str2 "k"    ; 10 03 0e
+    162 E> GetKeyedProperty r1, s15                     ; 23 01 0f
+    165    Star r0                                      ; 0c 00
+    167 E> LdaGlobal k4, s16  ; k4 = String str3 "a"    ; 10 04 10
+    170    Star r2                                      ; 0c 02
+    172 E> CallProperty1 r0, r1, r2, s17                ; 61 00 01 02 11
+    177 S> LdaZero                                      ; 03
+    178 E> LdaGlobal k2, s5  ; k2 = String str1 "o"     ; 10 02 05
+    181    Star r1                                      ; 0c 01
+    183 E> GetNamedProperty r1, k1, s18  ; k1 = String str4 "m" ; 21 01 01 12
+    187    Star r0                                      ; 0c 00
+    189 E> CallUndefinedReceiver0 r0, s19               ; 64 00 13
+    192 S> LdaGlobal k2, s5  ; k2 = String str1 "o"     ; 10 02 05
+    195    Star r1                                      ; 0c 01
+    197 E> GetNamedProperty r1, k1, s20  ; k1 = String str4 "m" ; 21 01 01 14
+    201    Star r0                                      ; 0c 00
+    203 E> CallProperty0 r0, r1, s21                    ; 60 00 01 15
+    207    LdaUndefined                                 ; 05
+    208    Return                                       ; 92
+  constants (5):
+      0 String str0 "f"
+      1 String str4 "m"
+      2 String str1 "o"
+      3 String str2 "k"
+      4 String str3 "a"
+  feedback (22):
+      0 LoadGlobal
+      1 Call
+      2 Call
+      3 Call
+      4 Call
+      5 LoadGlobal
+      6 LoadNamed
+      7 Call
+      8 LoadNamed
+      9 Call
+     10 LoadNamed
+     11 Call
+     12 LoadNamed
+     13 Call
+     14 LoadGlobal
+     15 LoadKeyed
+     16 LoadGlobal
+     17 Call
+     18 LoadNamed
+     19 Call
+     20 LoadNamed
+     21 Call
+  handlers (0):
+  positions (33):
+      0 S 0 (1:1)
+      5 S 16 (1:17)
+     10 E 16 (1:17)
+     13 S 21 (1:22)
+     22 E 21 (1:22)
+     26 S 27 (1:28)
+     39 E 27 (1:28)
+     44 S 36 (1:37)
+     61 E 36 (1:37)
+     66 S 48 (1:49)
+     71 E 50 (1:51)
+     77 E 50 (1:51)
+     81 S 55 (1:56)
+     86 E 57 (1:58)
+     96 E 57 (1:58)
+    101 S 63 (1:64)
+    106 E 65 (1:66)
+    120 E 65 (1:66)
+    126 S 74 (1:75)
+    131 E 76 (1:77)
+    149 E 76 (1:77)
+    154 S 88 (1:89)
+    159 E 90 (1:91)
+    162 E 90 (1:91)
+    167 E 93 (1:94)
+    172 E 88 (1:89)
+    177 S 97 (1:98)
+    178 E 101 (1:102)
+    183 E 103 (1:104)
+    189 E 97 (1:98)
+    192 S 109 (1:110)
+    197 E 112 (1:113)
+    203 E 112 (1:113)

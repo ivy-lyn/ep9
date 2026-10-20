@@ -7,7 +7,7 @@
 - tsc and prettier must match node in each shipped mode. Startup, RSS and size are reported per mode from A1 (G15).
 - eval and `new Function` compile at run time in every mode (H5). The lone-surrogate shim is unchanged.
 
-IDs used here: G13, G15; H1, H2, H3, H5, H7, H13, H14, H16, H24, H31, H32, H33, H35, H36; C12, C13; D2, D4, D5, D16, D17, D19; A1, A2, A3, A4, A5; K-A3, K-A4J, K-A4P, K-A4H; M0-M8, M10, M5c; N1; P4; SP-tsrs-win; STARTUP-SET; CORE and AOT lanes; JIT mode, AOT-jitless mode, hybrid mode.
+IDs used here: G13, G15; H1, H2, H3, H5, H7, H13, H14, H16, H24, H31, H32, H33, H35, H36; C12, C13; D2, D4, D5, D16, D17, D19; A1, A2, A3, A4, A5; K-A3, K-A4J, K-A4P, K-A4H; M0-M8, M10, M5c; N1; P4; SP-tsrs-win; STARTUP-SET; VERIFIED; CORE and AOT lanes; JIT mode, AOT-jitless mode, hybrid mode.
 
 Evidence tags: [R01] [R04] [R08] [R09] [R10] [R11] [R12] [R14] [R15] [R16] [R17] [R18] [P1] [T262]. Paths are in the table at the end.
 

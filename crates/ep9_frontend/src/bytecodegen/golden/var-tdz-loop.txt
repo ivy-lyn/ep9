@@ -1,0 +1,109 @@
+# var-tdz-loop: script (sloppy)
+# | function f() { for (let i = 0; i < 2; i++) { setTimeout(() => i); } }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=69 source=embedded hints=none
+source_hash=484bc8da17cb21dd1ec2fb3e674521cc8dc170189f53aafad1c510164ce676c8
+strings (3):
+  str0 "f"
+  str1 "i"
+  str2 "setTimeout"
+scopes (5):
+  scope0 script outer=- flags=[] slots=["f":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+  scope2 block outer=scope1 flags=[needs-context] slots=["i":let]
+  scope3 block outer=scope2 flags=[] slots=[]
+  scope4 function outer=scope3 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..69
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=3 range=0..69
+  code (80 bytes):
+      0 S> CreateBlockContext k0  ; k0 = Scope scope2   ; 76 00
+      2    PushContext r0                               ; 13 00
+      4    LdaTheHole                                   ; 07
+      5    StaCurrentContextSlot [0]                    ; 1b 00
+      7 S> LdaZero                                      ; 03
+      8    StaCurrentContextSlot [0]                    ; 1b 00
+     10    LdaCurrentContext                            ; 15
+     11    Star r1                                      ; 0c 01
+     13    PopContext r0                                ; 14 00
+     15 E> CreateBlockContext k0  ; k0 = Scope scope2   ; 76 00
+     17    PushContext r0                               ; 13 00
+     19    LdaContextSlot r1, [0], [0]                  ; 16 01 00 00
+     23    StaCurrentContextSlot [0]                    ; 1b 00
+     25    LdaCurrentContextSlot [0]                    ; 18 00
+     27    Star r1                                      ; 0c 01
+     29    LdaSmi [2]                                   ; 04 02
+     31 E> TestLessThan r1, s0                          ; 4d 01 00
+     34    JumpIfFalse @76                              ; 80 2a
+     36 S> LdaGlobal k1, s1  ; k1 = String str2 "setTimeout" ; 10 01 01
+     39    Star r1                                      ; 0c 01
+     41 E> CreateClosure k2, s2, #0x00  ; k2 = Function f2 ; 74 02 02 00
+     45    Star r2                                      ; 0c 02
+     47 E> CallUndefinedReceiver1 r1, r2, s3            ; 65 01 02 03
+     51    LdaCurrentContext                            ; 15
+     52    Star r1                                      ; 0c 01
+     54    PopContext r0                                ; 14 00
+     56 E> CreateBlockContext k0  ; k0 = Scope scope2   ; 76 00
+     58    PushContext r0                               ; 13 00
+     60    LdaContextSlot r1, [0], [0]                  ; 16 01 00 00
+     64    StaCurrentContextSlot [0]                    ; 1b 00
+     66    LdaCurrentContextSlot [0]                    ; 18 00
+     68 E> Inc s4                                       ; 42 04
+     70    StaCurrentContextSlot [0]                    ; 1b 00
+     72    JumpLoop @25, [0], s5                        ; 7d 2f 00 05
+     76    PopContext r0                                ; 14 00
+     78    LdaUndefined                                 ; 05
+     79    Return                                       ; 92
+  constants (3):
+      0 Scope scope2
+      1 String str2 "setTimeout"
+      2 Function f2
+  feedback (6):
+      0 CompareOp
+      1 LoadGlobal
+      2 CreateClosure
+      3 Call
+      4 BinaryOp
+      5 JumpLoop
+  handlers (0):
+  positions (9):
+      0 S 15 (1:16)
+      7 S 24 (1:25)
+     15 E 15 (1:16)
+     31 E 31 (1:32)
+     36 S 45 (1:46)
+     41 E 56 (1:57)
+     47 E 45 (1:46)
+     56 E 15 (1:16)
+     68 E 38 (1:39)
+function f2 arrow name=- parent=f1 outer_scope=scope3 flags=[simple-params] params=0 length=0 regs=0 range=56..63
+  code (5 bytes):
+      0 S> LdaCurrentContextSlot [0]                    ; 18 00
+      2 E> ThrowReferenceErrorIfHole k0  ; k0 = String str1 "i" ; 94 00
+      4    Return                                       ; 92
+  constants (1):
+      0 String str1 "i"
+  feedback (0):
+  handlers (0):
+  positions (2):
+      0 S 62 (1:63)
+      2 E 62 (1:63)

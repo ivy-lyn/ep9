@@ -528,3 +528,156 @@ fn property_kind_tests_partition_all_values() {
         }
     }
 }
+
+// ---- H06-empty: 0x22 against the JSC patterns ----
+
+/// JSC constants (WebKit `runtime/JSCJSValue.h`, commit e4be3948, lines 393-427).
+mod jsc {
+    pub const NUMBER_TAG: u64 = 0xFFFE_0000_0000_0000;
+    pub const MISC_TAG: u64 = 0x2 | 0x4 | 0x8; // OtherTag | BoolTag | UndefinedTag
+    pub const VALUE_EMPTY: u64 = 0x0;
+    pub const VALUE_DELETED: u64 = 0x4;
+    pub const BIGINT32_TAG: u64 = 0x12;
+    pub const BIGINT32_MASK: u64 = NUMBER_TAG | BIGINT32_TAG;
+    pub const NATIVE_CALLEE_TAG: u64 = 0x2 | 0x1;
+    pub const NATIVE_CALLEE_MASK: u64 = NUMBER_TAG | 0x7;
+}
+
+/// 06-object-model §1 (decision H06-empty): empty/hole = 0x22. It is none of JSC's reserved
+/// patterns, it fails every JSC kind test, and the one-compare "misc" test `v <= 0x0E` for
+/// null, false, true and undefined stays valid.
+#[test]
+fn empty_avoids_jsc_reserved_patterns() {
+    let e = Value::EMPTY.to_bits();
+    assert_eq!(e, 0x22);
+    // Not one of JSC's reserved patterns.
+    for reserved in [
+        jsc::VALUE_EMPTY,
+        jsc::VALUE_DELETED,
+        jsc::BIGINT32_TAG,
+        jsc::NATIVE_CALLEE_TAG,
+    ] {
+        assert_ne!(e, reserved, "{reserved:#x}");
+    }
+    // Fails JSC's BigInt32 and NativeCallee tests.
+    assert_ne!(e & jsc::BIGINT32_MASK, jsc::BIGINT32_TAG);
+    assert_ne!(e & jsc::NATIVE_CALLEE_MASK, jsc::NATIVE_CALLEE_TAG);
+    // Above MiscTag, so `v <= 0x0E` still means "null, bool or undefined" among immediates.
+    assert!(e > jsc::MISC_TAG);
+    for v in [Value::NULL, Value::FALSE, Value::TRUE, Value::UNDEFINED] {
+        assert!(v.to_bits() <= jsc::MISC_TAG, "{v:?}");
+    }
+    // Fails every other ep9 kind test, and its tag bit is free in the other immediates.
+    let v = Value::EMPTY;
+    assert!(!v.is_cell() && !v.is_number() && !v.is_bool() && !v.is_undefined_or_null());
+    assert_ne!(e & OTHER_TAG, 0);
+    for other in [Value::NULL, Value::FALSE, Value::TRUE, Value::UNDEFINED] {
+        assert_eq!(other.to_bits() & EMPTY_TAG, 0, "{other:?}");
+    }
+    // Not 0: the niche of Option<Value> and JsResult<Value> stays free.
+    assert_ne!(e, 0);
+}
+
+// ---- ToInt32 / ToUint32 ----
+
+/// Reference ToInt32/ToUint32 by a different method: truncate, then an exact `fmod` by 2^32.
+/// IEEE-754 remainder is exact, and every intermediate is an integer below 2^53.
+fn ref_to_uint32(d: f64) -> u32 {
+    if !d.is_finite() {
+        return 0;
+    }
+    let t = d.trunc();
+    let mut r = t % 4_294_967_296.0;
+    if r < 0.0 {
+        r += 4_294_967_296.0;
+    }
+    assert!((0.0..4_294_967_296.0).contains(&r) && r.fract() == 0.0);
+    r as u32
+}
+
+/// 2^k from its bits. `powi` is not exact everywhere (Miri adds error on purpose).
+fn pow2(k: i32) -> f64 {
+    f64::from_bits(((1023 + k) as u64) << 52)
+}
+
+#[test]
+fn to_int32_matches_node() {
+    let cases = crate::conv_node_cases::CASES;
+    assert!(cases.len() > 1000, "{} cases", cases.len());
+    for &(bits, want_i32, want_u32) in cases {
+        let d = f64::from_bits(bits);
+        assert_eq!(
+            crate::to_int32(d),
+            want_i32,
+            "ToInt32({d:e}) bits {bits:#018x}"
+        );
+        assert_eq!(
+            crate::to_uint32(d),
+            want_u32,
+            "ToUint32({d:e}) bits {bits:#018x}"
+        );
+        assert_eq!(ref_to_uint32(d), want_u32, "reference ToUint32({d:e})");
+    }
+}
+
+#[test]
+fn to_int32_spec_edges() {
+    use crate::{to_int32, to_uint32};
+    let p31 = 2_147_483_648.0f64;
+    let p32 = 4_294_967_296.0f64;
+    let cases: [(f64, i32, u32); 20] = [
+        (0.0, 0, 0),
+        (-0.0, 0, 0),
+        (f64::NAN, 0, 0),
+        (f64::INFINITY, 0, 0),
+        (f64::NEG_INFINITY, 0, 0),
+        (0.9, 0, 0),
+        (-0.9, 0, 0),
+        (-1.0, -1, u32::MAX),
+        (-1.5, -1, u32::MAX),
+        (p31 - 1.0, i32::MAX, 0x7FFF_FFFF),
+        (p31, i32::MIN, 0x8000_0000),
+        (-p31, i32::MIN, 0x8000_0000),
+        (-p31 - 0.5, i32::MIN, 0x8000_0000),
+        (-p31 - 1.0, i32::MAX, 0x7FFF_FFFF),
+        (p32 - 1.0, -1, u32::MAX),
+        (p32, 0, 0),
+        (p32 + 1.5, 1, 1),
+        (-p32 - 1.0, -1, u32::MAX),
+        (f64::MAX, 0, 0),
+        (9_007_199_254_740_993.0, 0, 0), // rounds to 2^53 when parsed
+    ];
+    for (d, i, u) in cases {
+        assert_eq!(to_int32(d), i, "ToInt32({d:e})");
+        assert_eq!(to_uint32(d), u, "ToUint32({d:e})");
+    }
+    // The shift rule at its two ends. One ulp of 2^83 is 2^31 (node: `x | 0` = -2147483648);
+    // one ulp of 2^84 is 2^32, so every bit of the result is 0.
+    assert_eq!(to_int32(9_007_199_254_740_994.0), 2);
+    assert_eq!(to_int32(f64::from_bits(pow2(84).to_bits() + 1)), 0);
+    assert_eq!(to_int32(f64::from_bits(pow2(83).to_bits() + 1)), i32::MIN);
+    assert_eq!(to_uint32(f64::from_bits(pow2(52).to_bits() + 7)), 7);
+    // Const evaluation works.
+    const C: i32 = crate::to_int32(-4_294_967_297.0);
+    assert_eq!(C, -1);
+}
+
+#[test]
+fn property_to_int32_matches_fmod_reference() {
+    let mut rng = SplitMix64(0x7011_7E32);
+    for _ in 0..ROUNDS {
+        let r = rng.next();
+        // Raw bit patterns: every exponent, NaN payloads, subnormals.
+        let d = f64::from_bits(r);
+        let want = ref_to_uint32(d);
+        assert_eq!(crate::to_uint32(d), want, "{d:e} bits {r:#018x}");
+        assert_eq!(crate::to_int32(d), want as i32, "{d:e} bits {r:#018x}");
+        // Magnitudes 2^0 .. 2^95, where the shift rule does its work.
+        let e = (r >> 57) as i32 + (r >> 63) as i32 * 32; // 0 ..= 95
+        let m = 1.0 + (r & ((1 << 52) - 1)) as f64 / (1u64 << 52) as f64;
+        let d = m * pow2(e) * if r & 1 == 1 { -1.0 } else { 1.0 };
+        let want = ref_to_uint32(d);
+        assert_eq!(crate::to_uint32(d), want, "{d:e}");
+        assert_eq!(crate::to_int32(d), want as i32, "{d:e}");
+    }
+}

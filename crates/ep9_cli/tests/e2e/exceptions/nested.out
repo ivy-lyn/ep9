@@ -1,0 +1,4 @@
+inner a
+outer b
+finally runs
+outer got c

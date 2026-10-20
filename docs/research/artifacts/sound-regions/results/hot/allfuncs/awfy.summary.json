@@ -1,0 +1,251 @@
+{
+ "repo": "awfy",
+ "root_files": 6,
+ "walked_files": 6,
+ "root_bytes": 40136,
+ "diagnostics": 0,
+ "diag_codes": {},
+ "classes_total": 30,
+ "classes_qualifying": 10,
+ "classes_qualifying_pct": 33.3,
+ "classes_qualifying_if_r4_lenient": 11,
+ "classes_qualifying_guarded_casts": 18,
+ "classes_qualifying_guarded_casts_r4_lenient": 20,
+ "classes_qualifying_v3_plus_generic_T_ok": 29,
+ "classes_qualifying_open_world": 3,
+ "classes_exported_qualifying": 6,
+ "class_rule_counts": {
+  "base": 14,
+  "r1": 10,
+  "r5": 5,
+  "r4": 2
+ },
+ "class_sole_rule_counts": {
+  "base": 7,
+  "r5": 1,
+  "r4": 1,
+  "r1": 1
+ },
+ "class_sub_rule_counts": {
+  "r1:nonnull-!": 5,
+  "r1:as-down": 5,
+  "r5:generic-T": 4,
+  "r4:assigned-after-leak": 2
+ },
+ "classes_qualifying_if_rule_off": {
+  "r1": 18,
+  "r2": 10,
+  "r3": 10,
+  "r4": 11,
+  "r5": 11,
+  "r6": 10,
+  "r7": 10,
+  "base": 17
+ },
+ "field_kinds_qualifying": {
+  "other": 3,
+  "number": 12,
+  "nullable-qclass": 1,
+  "array": 1
+ },
+ "member_access_total": 807,
+ "member_access_dynamic": 776,
+ "member_access_class_receiver": 702,
+ "member_access_qualifying_receiver": 228,
+ "member_access_qualifying_pct_of_total": 28.3,
+ "member_access_qualifying_pct_of_dynamic": 29.4,
+ "member_access_qualifying_inside_functions": 227,
+ "modules_considered": 4,
+ "modules_ge50pct_v0": 0,
+ "modules_ge50pct_v3": 3,
+ "largest_modules_ge50pct_v3": [
+  {
+   "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts",
+   "functions": 80,
+   "body_bytes": 11791,
+   "v0_pct": 9.6,
+   "v3_pct": 89.9
+  },
+  {
+   "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts",
+   "functions": 43,
+   "body_bytes": 7965,
+   "v0_pct": 0.5,
+   "v3_pct": 93.1
+  },
+  {
+   "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/nbody.ts",
+   "functions": 15,
+   "body_bytes": 3529,
+   "v0_pct": 40.9,
+   "v3_pct": 92.3
+  }
+ ],
+ "largest_modules_ge50pct_v0": [],
+ "function_body_bytes": 28275,
+ "function_body_bytes_qualifying_pct": 15.2,
+ "function_body_bytes_qualifying_v3_pct": 81.6,
+ "member_access_sound_in_region": 73,
+ "member_access_sound_in_region_pct_of_dynamic": 9.4,
+ "member_access_sound_in_region_v3": 585,
+ "functions_total": 167,
+ "functions_qualifying_t2": 31,
+ "functions_qualifying_t2_pct": 18.6,
+ "functions_qualifying_t1": 30,
+ "functions_qualifying_guarded_casts": 66,
+ "functions_qualifying_guarded_casts_r4_lenient": 76,
+ "functions_qualifying_v3_plus_generic_T_ok": 132,
+ "member_access_qualifying_v3_plus_generic_T_ok": 700,
+ "member_access_qualifying_guarded_casts": 378,
+ "member_access_qualifying_guarded_casts_r4_lenient": 427,
+ "functions_qualifying_t0_strict": 27,
+ "functions_qualifying_nontrivial": 16,
+ "functions_by_kind": {
+  "method": 129,
+  "ctor": 18,
+  "arrow": 18,
+  "fn": 2
+ },
+ "functions_qualifying_by_kind": {
+  "method": 23,
+  "ctor": 5,
+  "fn": 1,
+  "arrow": 2
+ },
+ "function_fail_reasons": {
+  "this-class-not-qualifying": 86,
+  "param-type": 72,
+  "local-type": 36,
+  "nonnull(!)": 16,
+  "assertion(as)": 7
+ },
+ "function_sole_fail_reasons": {
+  "this-class-not-qualifying": 46,
+  "param-type": 24,
+  "local-type": 6,
+  "nonnull(!)": 1
+ },
+ "boundary_call_sites": 37,
+ "boundary_value_refs": 0,
+ "boundary_escaping_closures": 2,
+ "internal_call_sites": 14,
+ "qualifying_functions_without_boundary": 6,
+ "qualifying_functions_exported": 15,
+ "examples_qualifying_classes": [
+  {
+   "name": "Body",
+   "at": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/nbody.ts:7",
+   "fields": 7,
+   "field_kinds": {
+    "number": 7
+   }
+  },
+  {
+   "name": "DictEntry",
+   "at": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/som.ts:133",
+   "fields": 4,
+   "field_kinds": {
+    "number": 1,
+    "other": 2,
+    "nullable-qclass": 1
+   }
+  },
+  {
+   "name": "Vector",
+   "at": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/som.ts:5",
+   "fields": 3,
+   "field_kinds": {
+    "other": 1,
+    "number": 2
+   }
+  }
+ ],
+ "examples_blocked_classes": [
+  {
+   "name": "Scheduler",
+   "at": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/richards.ts:208",
+   "fields": 7,
+   "field_kinds": {
+    "number": 4,
+    "array": 1,
+    "other": 2
+   },
+   "rules": [
+    "base"
+   ],
+   "evidence": [
+    "base RBObject"
+   ]
+  },
+  {
+   "name": "Variable",
+   "at": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts:414",
+   "fields": 6,
+   "field_kinds": {
+    "number": 2,
+    "qclass": 1,
+    "other": 2,
+    "boolean": 1
+   },
+   "rules": [
+    "r1",
+    "r5"
+   ],
+   "evidence": [
+    "r1 nonnull-! @ $EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts:586",
+    "r1 nonnull-! @ $EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts:649",
+    "r1 nonnull-! @ $EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts:650",
+    "r1 nonnull-! @ $EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts:654"
+   ]
+  },
+  {
+   "name": "Sym",
+   "at": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/deltablue.ts:5",
+   "fields": 1,
+   "field_kinds": {
+    "number": 1
+   },
+   "rules": [
+    "r5"
+   ],
+   "evidence": [
+    "r5 escapes to shared structural type(s) ['1:3226']"
+   ]
+  }
+ ],
+ "examples_qualifying_functions": [
+  {
+   "name": "<anon>",
+   "kind": "ctor",
+   "at": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/nbody.ts:16",
+   "tier": 0,
+   "internal": 5,
+   "boundary_calls": 0,
+   "value_refs": 0,
+   "escaping_closure": 0
+  },
+  {
+   "name": "resize",
+   "kind": "method",
+   "at": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/som.ts:223",
+   "tier": 2,
+   "internal": 0,
+   "boundary_calls": 1,
+   "value_refs": 0,
+   "escaping_closure": 0
+  },
+  {
+   "name": "getKeys",
+   "kind": "method",
+   "at": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/som.ts:239",
+   "tier": 1,
+   "internal": 1,
+   "boundary_calls": 0,
+   "value_refs": 0,
+   "escaping_closure": 0
+  }
+ ],
+ "r7_files": [],
+ "iface_targets": 1,
+ "iface_closed": 0
+}

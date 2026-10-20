@@ -8,6 +8,7 @@ sync_dep() {
   rev="$(tr -d '[:space:]' < "$root/third_party/$name.commit")"
   want="$rev $(patch_hash "$pdir")"
   [ -d "$dir/.git" ] || { git init -q "$dir"; git -C "$dir" remote add origin "$url"; }
+  git -C "$dir" config core.autocrlf false           # LF on every OS: .gitattributes stops at this work tree
   [ "$(cat "$dir/.ep9-stamp" 2>/dev/null || true)" = "$want" ] && return 0
   git -C "$dir" fetch -q --depth 1 origin "$rev"
   git -C "$dir" checkout -q -f --detach FETCH_HEAD   # drops patches from earlier runs

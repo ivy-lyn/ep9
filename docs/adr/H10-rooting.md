@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-20) |
+| Status | Draft (2026-10-20). S0 code built 2026-10-21: root registry and handles in `crates/ep9_heap/src/roots.rs`, CSS in `css.rs` and `heap.rs` (`Heap::collect`), tests in `src/tests/css.rs` |
 | Fix by | M0 wk2, after SP-GC |
 | Freeze point | M1 exit |
 | Origin | v1#6; plan status E (extended: AOT frames, unit RW data) |
@@ -92,3 +92,4 @@ unit RW data (one copy per isolate, H22) ---------> PRECISE, range registered by
 |---|---|---|---|
 | 2026-10-20 | draft | First draft from 02 §6 and 03 §2 (M0 wk1 list) | ADR agent |
 | 2026-10-20 | fill | Rule added from decision H11-termination: every root source registers a rescan callback, dirty LOS cards included; S2 runs all of them in every stop-the-world fixpoint | apply agent |
+| 2026-10-21 | clarify | Status: S0 code built in `ep9_heap`. Root sources, weak sources, strong and weak root ranges, global and weak handles, LIFO `ScratchRoots`; CSS spills through `ep9_platform` and scans [sp, stack high) with the end rule (word and word - 1) and interior lookup | heap agent |

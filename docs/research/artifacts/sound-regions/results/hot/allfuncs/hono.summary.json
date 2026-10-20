@@ -1,0 +1,308 @@
+{
+ "repo": "hono",
+ "root_files": 188,
+ "walked_files": 188,
+ "root_bytes": 793978,
+ "diagnostics": 11,
+ "diag_codes": {
+  "2304": 4,
+  "2503": 1,
+  "7006": 4,
+  "7031": 2
+ },
+ "classes_total": 48,
+ "classes_qualifying": 8,
+ "classes_qualifying_pct": 16.7,
+ "classes_qualifying_if_r4_lenient": 8,
+ "classes_qualifying_guarded_casts": 9,
+ "classes_qualifying_guarded_casts_r4_lenient": 9,
+ "classes_qualifying_v3_plus_generic_T_ok": 9,
+ "classes_qualifying_open_world": 0,
+ "classes_exported_qualifying": 8,
+ "class_rule_counts": {
+  "r5": 29,
+  "r6": 18,
+  "r1": 9,
+  "r4": 8,
+  "r3": 7,
+  "base": 7,
+  "r2": 5
+ },
+ "class_sole_rule_counts": {
+  "r5": 5,
+  "base": 2,
+  "r1": 1,
+  "r4": 1
+ },
+ "class_sub_rule_counts": {
+  "r6:foreign-base": 18,
+  "r5:throw": 18,
+  "r2:dynamic-key": 5,
+  "r1:as-unchecked": 5,
+  "r1:as-up": 4,
+  "r4:never-assigned-in-ctor": 4,
+  "r3:Object.assign": 4,
+  "r5:any": 3,
+  "r1:structural-fake": 3,
+  "r4:optional-unassigned": 3,
+  "r1:any-flows-in": 3,
+  "r3:delete": 3,
+  "r4:assigned-after-leak": 2,
+  "r5:reachable-from-escaped": 2,
+  "r1:nonnull-!": 2,
+  "r5:unknown": 2,
+  "r5:generic-T": 1,
+  "r5:{}": 1,
+  "r5:foreign": 1,
+  "r5:other": 1,
+  "r1:as-down": 1
+ },
+ "classes_qualifying_if_rule_off": {
+  "r1": 9,
+  "r2": 8,
+  "r3": 8,
+  "r4": 10,
+  "r5": 14,
+  "r6": 8,
+  "r7": 8,
+  "base": 10
+ },
+ "field_kinds_qualifying": {
+  "string": 2,
+  "other": 11,
+  "nullable-prim": 1
+ },
+ "member_access_total": 4978,
+ "member_access_dynamic": 4958,
+ "member_access_class_receiver": 1052,
+ "member_access_qualifying_receiver": 44,
+ "member_access_qualifying_pct_of_total": 0.9,
+ "member_access_qualifying_pct_of_dynamic": 0.9,
+ "member_access_qualifying_inside_functions": 44,
+ "modules_considered": 41,
+ "modules_ge50pct_v0": 3,
+ "modules_ge50pct_v3": 3,
+ "largest_modules_ge50pct_v3": [
+  {
+   "file": "$EP9_RESEARCH_REPOS/hono/src/utils/ipaddr.ts",
+   "functions": 16,
+   "body_bytes": 6980,
+   "v0_pct": 55.9,
+   "v3_pct": 55.9
+  },
+  {
+   "file": "$EP9_RESEARCH_REPOS/hono/src/jsx/utils.ts",
+   "functions": 8,
+   "body_bytes": 4033,
+   "v0_pct": 71.1,
+   "v3_pct": 71.1
+  },
+  {
+   "file": "$EP9_RESEARCH_REPOS/hono/src/helper/ssg/utils.ts",
+   "functions": 15,
+   "body_bytes": 2656,
+   "v0_pct": 66.0,
+   "v3_pct": 66.0
+  }
+ ],
+ "largest_modules_ge50pct_v0": [
+  {
+   "file": "$EP9_RESEARCH_REPOS/hono/src/utils/ipaddr.ts",
+   "functions": 16,
+   "body_bytes": 6980,
+   "v0_pct": 55.9
+  },
+  {
+   "file": "$EP9_RESEARCH_REPOS/hono/src/jsx/utils.ts",
+   "functions": 8,
+   "body_bytes": 4033,
+   "v0_pct": 71.1
+  },
+  {
+   "file": "$EP9_RESEARCH_REPOS/hono/src/helper/ssg/utils.ts",
+   "functions": 15,
+   "body_bytes": 2656,
+   "v0_pct": 66.0
+  }
+ ],
+ "function_body_bytes": 339000,
+ "function_body_bytes_qualifying_pct": 9.9,
+ "function_body_bytes_qualifying_v3_pct": 10.1,
+ "member_access_sound_in_region": 3,
+ "member_access_sound_in_region_pct_of_dynamic": 0.1,
+ "member_access_sound_in_region_v3": 4,
+ "functions_total": 1181,
+ "functions_qualifying_t2": 260,
+ "functions_qualifying_t2_pct": 22.0,
+ "functions_qualifying_t1": 247,
+ "functions_qualifying_guarded_casts": 262,
+ "functions_qualifying_guarded_casts_r4_lenient": 262,
+ "functions_qualifying_v3_plus_generic_T_ok": 262,
+ "member_access_qualifying_v3_plus_generic_T_ok": 56,
+ "member_access_qualifying_guarded_casts": 56,
+ "member_access_qualifying_guarded_casts_r4_lenient": 56,
+ "functions_qualifying_t0_strict": 236,
+ "functions_qualifying_nontrivial": 153,
+ "functions_by_kind": {
+  "ctor": 32,
+  "method": 105,
+  "arrow": 941,
+  "fn": 47,
+  "get": 18,
+  "set": 1,
+  "fnexpr": 37
+ },
+ "functions_qualifying_by_kind": {
+  "arrow": 241,
+  "fn": 9,
+  "method": 7,
+  "get": 3
+ },
+ "function_fail_reasons": {
+  "param-type": 772,
+  "local-type": 354,
+  "assertion(as)": 230,
+  "any-flow": 112,
+  "this-class-not-qualifying": 100,
+  "nonnull(!)": 14,
+  "r2-dynamic-key": 2,
+  "this-type": 2
+ },
+ "function_sole_fail_reasons": {
+  "param-type": 372,
+  "local-type": 32,
+  "this-class-not-qualifying": 31,
+  "assertion(as)": 22,
+  "any-flow": 6,
+  "r2-dynamic-key": 1,
+  "this-type": 1
+ },
+ "boundary_call_sites": 155,
+ "boundary_value_refs": 1,
+ "boundary_escaping_closures": 145,
+ "internal_call_sites": 43,
+ "qualifying_functions_without_boundary": 41,
+ "qualifying_functions_exported": 6,
+ "examples_qualifying_classes": [
+  {
+   "name": "WSContext",
+   "at": "$EP9_RESEARCH_REPOS/hono/src/helper/websocket/index.ts:70",
+   "fields": 5,
+   "field_kinds": {
+    "other": 3,
+    "string": 1,
+    "nullable-prim": 1
+   }
+  },
+  {
+   "name": "Factory",
+   "at": "$EP9_RESEARCH_REPOS/hono/src/helper/factory/index.ts:332",
+   "fields": 5,
+   "field_kinds": {
+    "other": 5
+   }
+  },
+  {
+   "name": "PreparedRegExpRouter",
+   "at": "$EP9_RESEARCH_REPOS/hono/src/router/reg-exp-router/prepared-router.ts:9",
+   "fields": 4,
+   "field_kinds": {
+    "string": 1,
+    "other": 3
+   }
+  }
+ ],
+ "examples_blocked_classes": [
+  {
+   "name": "Context",
+   "at": "$EP9_RESEARCH_REPOS/hono/src/context.ts:293",
+   "fields": 30,
+   "field_kinds": {
+    "other": 27,
+    "boolean": 1,
+    "nullable-prim": 2
+   },
+   "rules": [
+    "r1",
+    "r4",
+    "r5"
+   ],
+   "evidence": [
+    "r1 as-unchecked(to C) @ $EP9_RESEARCH_REPOS/hono/src/helper/websocket/index.ts:130",
+    "r1 as-up(to C) @ $EP9_RESEARCH_REPOS/hono/src/middleware/context-storage/index.ts:50",
+    "r1 as-unchecked(from C) @ $EP9_RESEARCH_REPOS/hono/src/validator/validator.ts:162",
+    "r5 any @ $EP9_RESEARCH_REPOS/hono/src/compose.ts:51",
+    "r4 never-assigned-in-ctor field=#req",
+    "r4 never-assigned-in-ctor field=#var"
+   ]
+  },
+  {
+   "name": "ClientRequestImpl",
+   "at": "$EP9_RESEARCH_REPOS/hono/src/client/client.ts:38",
+   "fields": 8,
+   "field_kinds": {
+    "string": 2,
+    "other": 5,
+    "nullable-prim": 1
+   },
+   "rules": [
+    "r4",
+    "r5"
+   ],
+   "evidence": [
+    "r5 unknown @ $EP9_RESEARCH_REPOS/hono/src/client/client.ts:248",
+    "r4 never-assigned-in-ctor field=rBody"
+   ]
+  },
+  {
+   "name": "RegExpRouter",
+   "at": "$EP9_RESEARCH_REPOS/hono/src/router/reg-exp-router/router.ts:48",
+   "fields": 5,
+   "field_kinds": {
+    "string": 1,
+    "other": 4
+   },
+   "rules": [
+    "r5"
+   ],
+   "evidence": [
+    "r5 escapes to shared structural type(s) ['3:762']"
+   ]
+  }
+ ],
+ "examples_qualifying_functions": [
+  {
+   "name": "convertIPv6ToBinary",
+   "kind": "arrow",
+   "at": "$EP9_RESEARCH_REPOS/hono/src/utils/ipaddr.ts:158",
+   "tier": 2,
+   "internal": 1,
+   "boundary_calls": 0,
+   "value_refs": 0,
+   "escaping_closure": 0
+  },
+  {
+   "name": "constantTimeEqualString",
+   "kind": "arrow",
+   "at": "$EP9_RESEARCH_REPOS/hono/src/utils/buffer.ts:29",
+   "tier": 0,
+   "internal": 0,
+   "boundary_calls": 2,
+   "value_refs": 0,
+   "escaping_closure": 0
+  },
+  {
+   "name": "splitRule",
+   "kind": "arrow",
+   "at": "$EP9_RESEARCH_REPOS/hono/src/jsx/dom/css.ts:27",
+   "tier": 2,
+   "internal": 0,
+   "boundary_calls": 1,
+   "value_refs": 0,
+   "escaping_closure": 0
+  }
+ ],
+ "r7_files": [],
+ "iface_targets": 174,
+ "iface_closed": 4
+}

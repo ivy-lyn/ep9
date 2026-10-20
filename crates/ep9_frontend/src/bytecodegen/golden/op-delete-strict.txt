@@ -1,0 +1,39 @@
+# op-delete-strict: script (strict)
+# | var o, k; delete o.a; delete o[k];
+; ep9 bytecode, ABI 2
+unit kind=script strict=true ts=none source_len=34 source=embedded hints=none
+source_hash=a0bfbaf96a891504be9a9adfd8416616dac776d301dc8c80094670fa2f1e7a67
+strings (3):
+  str0 "o"
+  str1 "k"
+  str2 "a"
+scopes (1):
+  scope0 script outer=- flags=[strict] slots=["o":var, "k":var]
+function f0 script name=- parent=- outer_scope=- flags=[strict] params=0 length=0 regs=1 range=0..34
+  code (26 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> LdaGlobal k0, s0  ; k0 = String str0 "o"     ; 10 00 00
+      8    Star r0                                      ; 0c 00
+     10    LdaConstant k1  ; k1 = String str2 "a"       ; 0a 01
+     12 E> DeletePropertyStrict r0                      ; 49 00
+     14 S> LdaGlobal k0, s0  ; k0 = String str0 "o"     ; 10 00 00
+     17    Star r0                                      ; 0c 00
+     19 E> LdaGlobal k2, s1  ; k2 = String str1 "k"     ; 10 02 01
+     22 E> DeletePropertyStrict r0                      ; 49 00
+     24    LdaUndefined                                 ; 05
+     25    Return                                       ; 92
+  constants (3):
+      0 String str0 "o"
+      1 String str2 "a"
+      2 String str1 "k"
+  feedback (2):
+      0 LoadGlobal
+      1 LoadGlobal
+  handlers (0):
+  positions (6):
+      0 S 0 (1:1)
+      5 S 10 (1:11)
+     12 E 10 (1:11)
+     14 S 22 (1:23)
+     19 E 31 (1:32)
+     22 E 22 (1:23)

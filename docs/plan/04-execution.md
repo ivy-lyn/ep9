@@ -6,7 +6,7 @@
 - The IR keeps proven facts apart from predicted{source, confidence} facts. The guard-failure policy per mode lives in the IR, not in the backend (H30, H32).
 - Fuses (H31), position-independent deopt metadata (H29) and FP rules (H36) are frozen by M1 exit, before any tier runs JS.
 
-IDs used here: T0, T1a, T1b, T2, T3; baseline-AOT, optimized-AOT; JIT mode, AOT-jitless mode, hybrid mode; H2, H5, H6, H7, H8, H13, H14, H15, H16, H17, H20, H22, H24, H27, H29, H30, H31, H32, H33, H34, H35, H36; D9, D13, D16, D17, D21; G2-G4; N4, N5, N7, N11; M0-M9; A2, A3, A4, A5; RX0, RX1, RX2; FV1; K-A3, K-A4J, K-A4P, K-A4H; M5c; Spike B, SP-Unit, Spike C, SP-Facts, SP-Dispatch, SP-JIT-mem; PROVEN, RUNTIME, PROFILED, HINTED; DEOPT, SLOWPATH, PIN, THROW; GuardFuse, InvalidatingFuse; RootRef, IntrinsicRef, ShapeRef, CellRef, UnitConst; FactSnapshot; JITLESS-SET.
+IDs used here: T0, T1a, T1b, T2, T3; baseline-AOT, optimized-AOT; JIT mode, AOT-jitless mode, hybrid mode; H2, H5, H6, H7, H8, H11, H13, H14, H15, H16, H17, H20, H22, H24, H27, H29, H30, H31, H32, H33, H34, H35, H36; D9, D13, D16, D17, D21; G2-G4; N4, N5, N7, N11; M0-M9; A2, A3, A4, A5; RX0, RX1, RX2; FV1; K-A3, K-A4J, K-A4P, K-A4H; M5c; Spike B, SP-Unit, Spike C, SP-Facts, SP-Dispatch, SP-JIT-mem; PROVEN, RUNTIME, PROFILED, HINTED, VERIFIED; DEOPT, SLOWPATH, PIN, THROW; GuardFuse, InvalidatingFuse; RootRef, IntrinsicRef, ShapeRef, CellRef, UnitConst; FactSnapshot; JITLESS-SET; E1-E3 (barrier elision).
 
 Evidence tags: [R03] [R05] [R06] [R07] [R08] [R09] [R10] [R11] [R12] [R14] [R15] [R16] [R17] [P1]. Paths are in the table at the end.
 

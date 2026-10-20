@@ -1,0 +1,1176 @@
+{
+ "label": "tsc-noinl",
+ "profiles": [
+  "prof/tsc-noinl/run1.cpuprofile",
+  "prof/tsc-noinl/run2.cpuprofile",
+  "prof/tsc-noinl/run3.cpuprofile"
+ ],
+ "samples": 29246,
+ "mean_sample_interval_us": 268.2,
+ "leaf_categories": {
+  "fn-noq": 24396,
+  "fn-v0": 2366,
+  "(garbage collector)": 941,
+  "node-internal": 623,
+  "native": 452,
+  "(program)": 192,
+  "fn-v3only": 125,
+  "regexp": 102,
+  "module-top-level": 49
+ },
+ "breakdown_pct": {
+  "not-Q": 83.4,
+  "Q-v0": 8.4,
+  "node-internal": 3.7,
+  "(garbage collector)": 3.2,
+  "(program)": 0.7,
+  "Q-v3-only": 0.4,
+  "module-top-level": 0.2
+ },
+ "pct_of_all_samples": {
+  "self_v0": 8.1,
+  "self_v3": 8.5,
+  "self_in_analyzed_functions": 91.9,
+  "self_plus_builtins_v0": 8.4,
+  "self_plus_builtins_v3": 8.8,
+  "self_plus_builtins_in_analyzed_functions": 92.3,
+  "inclusive_v0": 60.3,
+  "inclusive_v3": 60.5,
+  "inclusive_any_analyzed": 94.4,
+  "vm_gc_program_idle": 3.9
+ },
+ "pct_of_analyzed_self_plus_builtins": {
+  "v0": 9.1,
+  "v3": 9.6
+ },
+ "pct_of_analyzed_self": {
+  "v0": 8.8,
+  "v3": 9.3
+ },
+ "counts": {
+  "nonvm": 28113,
+  "selfb_js": 28113,
+  "name_match": 26867,
+  "self_fn": 26887,
+  "self_v0": 2366,
+  "self_v3": 2491,
+  "selfb_fn": 26989,
+  "selfb_v0": 2462,
+  "selfb_v3": 2587,
+  "selfb_analyzed_file": 27038,
+  "incl_any_analyzed": 27597,
+  "incl_v0": 17644,
+  "incl_v3": 17691,
+  "name_mismatch": 15,
+  "name_v8_anon": 5
+ },
+ "top_self": [
+  {
+   "name": "recursiveTypeRelatedTo",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:23319",
+   "pct": 2.1,
+   "samples": 612,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Type; local-type: param iface Type; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "getReducedApparentType",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:15559",
+   "pct": 1.2,
+   "samples": 349,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Type",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": "resolveNameHelper",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/utilities.ts:11511",
+   "pct": 1.1,
+   "samples": 328,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Node|null; local-type: param iface Node|null; assertion(as); nonnull(!)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "isTypeRelatedTo",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:22282",
+   "pct": 1.0,
+   "samples": 298,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Type; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "checkTypeRelatedTo",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:22380",
+   "pct": 0.9,
+   "samples": 274,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Type; local-type: param iface Type; nonnull(!)",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "bindChildren",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/binder.ts:1096",
+   "pct": 0.9,
+   "samples": 273,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Node; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "isRelatedTo",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:22759",
+   "pct": 0.9,
+   "samples": 267,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Type; local-type: param iface Type; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "getPropertyOfType",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:15893",
+   "pct": 0.8,
+   "samples": 243,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Type; local-type: param iface Type; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "getObjectFlags",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/utilities.ts:8280",
+   "pct": 0.8,
+   "samples": 228,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface Type; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "scan",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/scanner.ts:1891",
+   "pct": 0.8,
+   "samples": 224,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "getFlowTypeOfReference",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:29004",
+   "pct": 0.7,
+   "samples": 209,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Node; local-type: param iface Node",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "getUnionTypeFromSortedList",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:18432",
+   "pct": 0.7,
+   "samples": 208,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Type[]; local-type: param iface Type[]; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "getApparentType",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:15542",
+   "pct": 0.7,
+   "samples": 206,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Type; local-type: param iface Type; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "checkExpressionWorker",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:41820",
+   "pct": 0.7,
+   "samples": 193,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: union(iface Expression,iface QualifiedName); assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "getTypeAtFlowNode",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:29036",
+   "pct": 0.6,
+   "samples": 190,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: union(iface FlowArrayMutation,iface FlowAssignment,iface FlowCall); local-type: param union(iface FlowArrayMutation,iface FlowAssignment,iface FlowCall); assertion(as); nonnull(!)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  }
+ ],
+ "top_self_plus_builtins": [
+  {
+   "name": "recursiveTypeRelatedTo",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:23319",
+   "pct": 2.1,
+   "samples": 612,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Type; local-type: param iface Type; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "getReducedApparentType",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:15559",
+   "pct": 1.2,
+   "samples": 349,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Type",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": "resolveNameHelper",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/utilities.ts:11511",
+   "pct": 1.1,
+   "samples": 328,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Node|null; local-type: param iface Node|null; assertion(as); nonnull(!)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "isTypeRelatedTo",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:22282",
+   "pct": 1.0,
+   "samples": 298,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Type; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "checkTypeRelatedTo",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:22380",
+   "pct": 0.9,
+   "samples": 274,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Type; local-type: param iface Type; nonnull(!)",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "bindChildren",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/binder.ts:1096",
+   "pct": 0.9,
+   "samples": 273,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Node; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "isRelatedTo",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:22759",
+   "pct": 0.9,
+   "samples": 267,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Type; local-type: param iface Type; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "getPropertyOfType",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:15893",
+   "pct": 0.8,
+   "samples": 243,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Type; local-type: param iface Type; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "getObjectFlags",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/utilities.ts:8280",
+   "pct": 0.8,
+   "samples": 228,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface Type; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "scan",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/scanner.ts:1891",
+   "pct": 0.8,
+   "samples": 224,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "getFlowTypeOfReference",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:29004",
+   "pct": 0.7,
+   "samples": 209,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Node; local-type: param iface Node",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "getUnionTypeFromSortedList",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:18432",
+   "pct": 0.7,
+   "samples": 208,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Type[]; local-type: param iface Type[]; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "getApparentType",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:15542",
+   "pct": 0.7,
+   "samples": 206,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface Type; local-type: param iface Type; assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "checkExpressionWorker",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:41820",
+   "pct": 0.7,
+   "samples": 193,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: union(iface Expression,iface QualifiedName); assertion(as)",
+   "v3_reasons": [
+    "param-type",
+    "assertion(as)"
+   ]
+  },
+  {
+   "name": "getTypeAtFlowNode",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:29036",
+   "pct": 0.6,
+   "samples": 190,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: union(iface FlowArrayMutation,iface FlowAssignment,iface FlowCall); local-type: param union(iface FlowArrayMutation,iface FlowAssignment,iface FlowCall); assertion(as); nonnull(!)",
+   "v3_reasons": [
+    "param-type",
+    "local-type",
+    "assertion(as)"
+   ]
+  }
+ ],
+ "top_inclusive": [
+  {
+   "name": "executeCommandLine",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/executeCommandLine.ts:756",
+   "pct": 92.2,
+   "samples": 26957,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface System; local-type: param iface System",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "executeCommandLineWorker",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/executeCommandLine.ts:563",
+   "pct": 92.2,
+   "samples": 26955,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface System; local-type: param iface System; nonnull(!)",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "performCompilation",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/executeCommandLine.ts:908",
+   "pct": 91.8,
+   "samples": 26852,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: iface System; local-type: param iface System",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "forEach",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/core.ts:33",
+   "pct": 88.8,
+   "samples": 25958,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: tp[]|null; local-type: param tp[]|null",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "emitFilesAndReportErrors",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/watch.ts:564",
+   "pct": 79.7,
+   "samples": 23305,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: union(tp,iface Program); local-type: param union(tp,iface Program)",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "emitFilesAndReportErrorsAndGetExitStatus",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/watch.ts:634",
+   "pct": 79.7,
+   "samples": 23305,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: union(tp,iface Program); local-type: param union(tp,iface Program)",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "getDiagnosticsHelper",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/program.ts:2778",
+   "pct": 74.2,
+   "samples": 21694,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface SourceFile|null",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": "flatMap",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/core.ts:399",
+   "pct": 74.2,
+   "samples": 21693,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": false,
+   "blocker_v0": "param-type: tp[]|null; local-type: param tp[]|null",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "getSemanticDiagnostics",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/program.ts:2798",
+   "pct": 74.2,
+   "samples": 21688,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface SourceFile|null",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "TypeScript/src/compiler/program.ts:2786",
+   "pct": 74.2,
+   "samples": 21686,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface SourceFile",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "TypeScript/src/compiler/program.ts:2801",
+   "pct": 74.1,
+   "samples": 21685,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface SourceFile",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": "getSemanticDiagnosticsForFile",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/program.ts:2858",
+   "pct": 74.1,
+   "samples": 21683,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface SourceFile",
+   "v3_reasons": [
+    "param-type"
+   ]
+  },
+  {
+   "name": "runWithCancellationToken",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/program.ts:2843",
+   "pct": 74.1,
+   "samples": 21679,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: fn; local-type: param fn; nonnull(!)",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "getBindAndCheckDiagnosticsForFile",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/program.ts:2869",
+   "pct": 74.1,
+   "samples": 21673,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface SourceFile; local-type: param iface SourceFile",
+   "v3_reasons": [
+    "param-type",
+    "local-type"
+   ]
+  },
+  {
+   "name": "getBindAndCheckDiagnosticsForFileNoCache",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/program.ts:2887",
+   "pct": 74.1,
+   "samples": 21670,
+   "v0": false,
+   "v3": false,
+   "nested_in_function": true,
+   "blocker_v0": "param-type: iface SourceFile",
+   "v3_reasons": [
+    "param-type"
+   ]
+  }
+ ],
+ "top_inclusive_v0": [
+  {
+   "name": "checkFunctionDeclarationDiagnostics",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:44216",
+   "pct": 39.3,
+   "samples": 11482,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "TypeScript/src/compiler/program.ts:3489",
+   "pct": 11.9,
+   "samples": 3483,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "TypeScript/src/compiler/program.ts:1782",
+   "pct": 10.9,
+   "samples": 3181,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "parseStatement",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/parser.ts:7380",
+   "pct": 8.4,
+   "samples": 2453,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "getTypeChecker",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/program.ts:2684",
+   "pct": 5.4,
+   "samples": 1591,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "nextTokenWithoutCheck",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/parser.ts:2198",
+   "pct": 2.3,
+   "samples": 676,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "scan",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/scanner.ts:1891",
+   "pct": 2.2,
+   "samples": 641,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "nextToken",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/parser.ts:2207",
+   "pct": 2.0,
+   "samples": 585,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "parseClassMembers",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/parser.ts:8235",
+   "pct": 1.8,
+   "samples": 516,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "parseArgumentOrArrayLiteralElement",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/parser.ts:6679",
+   "pct": 1.7,
+   "samples": 485,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "parseVariableDeclarationAllowExclamation",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/parser.ts:7645",
+   "pct": 1.7,
+   "samples": 483,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "parseArgumentExpression",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/parser.ts:6685",
+   "pct": 1.6,
+   "samples": 478,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "parseInitializer",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/parser.ts:5065",
+   "pct": 1.6,
+   "samples": 463,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "TypeScript/src/compiler/program.ts:473",
+   "pct": 1.6,
+   "samples": 462,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "readFile",
+   "kind": "arrow",
+   "at": "TypeScript/src/compiler/program.ts:486",
+   "pct": 1.6,
+   "samples": 454,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  }
+ ],
+ "top_self_v0": [
+  {
+   "name": "scan",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/scanner.ts:1891",
+   "pct": 0.8,
+   "samples": 224,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "toFileNameLowerCase",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/core.ts:1875",
+   "pct": 0.4,
+   "samples": 129,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "compareValues",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/core.ts:1988",
+   "pct": 0.4,
+   "samples": 126,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "parseStatement",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/parser.ts:7380",
+   "pct": 0.3,
+   "samples": 91,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "isASCIILetter",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/scanner.ts:600",
+   "pct": 0.3,
+   "samples": 74,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "internIdentifier",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/parser.ts:2637",
+   "pct": 0.2,
+   "samples": 73,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "token",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/parser.ts:2194",
+   "pct": 0.2,
+   "samples": 62,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "isFunctionLikeDeclarationKind",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/utilitiesPublic.ts:1694",
+   "pct": 0.2,
+   "samples": 54,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "nextTokenWithoutCheck",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/parser.ts:2198",
+   "pct": 0.2,
+   "samples": 52,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "startsWith",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/core.ts:2430",
+   "pct": 0.2,
+   "samples": 52,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "getIdentifierToken",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/scanner.ts:1815",
+   "pct": 0.2,
+   "samples": 51,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "scanIdentifier",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/scanner.ts:2425",
+   "pct": 0.2,
+   "samples": 46,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "createBaseNode",
+   "kind": "arrow",
+   "at": "TypeScript/src/compiler/parser.ts:1467",
+   "pct": 0.2,
+   "samples": 45,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "resetMaybeStack",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/checker.ts:23457",
+   "pct": 0.2,
+   "samples": 44,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "codePointUnchecked",
+   "kind": "fn",
+   "at": "TypeScript/src/compiler/scanner.ts:1131",
+   "pct": 0.1,
+   "samples": 42,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  }
+ ],
+ "blocker_time_pct_any": {
+  "param-type": 80.8,
+  "local-type": 49.2,
+  "assertion(as)": 39.6,
+  "nonnull(!)": 12.3,
+  "any-flow": 0.7,
+  "this-type": 0.2
+ },
+ "blocker_time_pct_first": {
+  "param-type": 80.8,
+  "local-type": 2.3,
+  "nonnull(!)": 0.4,
+  "assertion(as)": 0.2,
+  "this-type": 0.1
+ },
+ "bad_type_time_pct": {
+  "iface Type": 23.9,
+  "iface Node": 14.5,
+  "iface Symbol": 4.2,
+  "iface Node|null": 2.9,
+  "iface Type[]": 2.7,
+  "tp[]|null": 1.9,
+  "iface Expression": 1.8,
+  "iface Signature": 1.7,
+  "fn": 1.4,
+  "iface Identifier": 1.4,
+  "iface UnionOrIntersectionType": 1.1,
+  "iface Declaration": 1.0
+ },
+ "static_fn_share": {
+  "v0": 14.6,
+  "v3": 15.2
+ },
+ "distinct_sampled_functions": 2367,
+ "distinct_sampled_v0": 253,
+ "functions_for_50pct_of_analyzed_time": 151,
+ "name_check": {
+  "match": 26867,
+  "v8_anonymous": 5,
+  "mismatch": 15,
+  "top_mismatch": [
+   [
+    "host.directoryExists",
+    ".directoryExists",
+    605,
+    "TypeScript/src/compiler/program.ts",
+    7
+   ],
+   [
+    "host.fileExists",
+    ".fileExists",
+    573,
+    "TypeScript/src/compiler/program.ts",
+    5
+   ],
+   [
+    "host.readFile",
+    ".readFile",
+    546,
+    "TypeScript/src/compiler/program.ts",
+    3
+   ]
+  ]
+ }
+}

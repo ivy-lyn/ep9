@@ -1,0 +1,8 @@
+add true Class constructor C cannot be invoked without 'new'
+template true Class constructor C cannot be invoked without 'new'
+mul true Class constructor D cannot be invoked without 'new'
+compare true Class constructor C cannot be invoked without 'new'
+key true Class constructor C cannot be invoked without 'new'
+join true Class constructor C cannot be invoked without 'new'
+ran 0
+true true 102

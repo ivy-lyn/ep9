@@ -1,0 +1,79 @@
+# fn-params: script (sloppy)
+# | function f(a, b = a, ...c) { return [a, b, c]; }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=48 source=embedded hints=none
+source_hash=554cfde8b15d67723079dc0ad89a3f7841d8b20792fdbee6324b58aebb795267
+strings (1):
+  str0 "f"
+scopes (3):
+  scope0 script outer=- flags=[] slots=["f":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+  scope2 block outer=scope1 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..48
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[] params=2 length=1 regs=5 range=0..48
+  code (69 bytes):
+      0    Ldar a0                                      ; 0b fe
+      2    Star r0                                      ; 0c 00
+      4    Ldar a1                                      ; 0b fd
+      6    JumpIfNotUndefined @14                       ; 86 08
+      8    Ldar r0                                      ; 0b 00
+     10    Star r3                                      ; 0c 03
+     12    Jump @18                                     ; 7e 06
+     14    Ldar a1                                      ; 0b fd
+     16    Star r3                                      ; 0c 03
+     18    Ldar r3                                      ; 0b 03
+     20    Star r1                                      ; 0c 01
+     22 E> CreateRestParameter                          ; 7c
+     23    Star r3                                      ; 0c 03
+     25    Ldar r3                                      ; 0b 03
+     27    Star r2                                      ; 0c 02
+     29 S> CreateArrayLiteral k0, s0, #0x01  ; k0 = ArrayBoilerplate [_, _, _] ; 6d 00 00 01
+     33    Star r3                                      ; 0c 03
+     35    LdaZero                                      ; 03
+     36    Star r4                                      ; 0c 04
+     38    Ldar r0                                      ; 0b 00
+     40 E> StaInArrayLiteral r3, r4, s1                 ; 28 03 04 01
+     44    LdaSmi [1]                                   ; 04 01
+     46    Star r4                                      ; 0c 04
+     48    Ldar r1                                      ; 0b 01
+     50 E> StaInArrayLiteral r3, r4, s1                 ; 28 03 04 01
+     54    LdaSmi [2]                                   ; 04 02
+     56    Star r4                                      ; 0c 04
+     58    Ldar r2                                      ; 0b 02
+     60 E> StaInArrayLiteral r3, r4, s1                 ; 28 03 04 01
+     64    Ldar r3                                      ; 0b 03
+     66    Return                                       ; 92
+     67    LdaUndefined                                 ; 05
+     68    Return                                       ; 92
+  constants (1):
+      0 ArrayBoilerplate [_, _, _]
+  feedback (2):
+      0 Literal
+      1 StoreInArrayLiteral
+  handlers (0):
+  positions (5):
+     22 E 0 (1:1)
+     29 S 29 (1:30)
+     40 E 36 (1:37)
+     50 E 36 (1:37)
+     60 E 36 (1:37)

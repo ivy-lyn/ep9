@@ -6,7 +6,7 @@
 - The Cargo features `jit` and `aot` give three engine binaries. The jitless build keeps T0, the bytecode compiler, the unit loader and the deoptimizer (H5, H27).
 - CI guards keep tsrs pins out of the engine graph and `ep9_hints` at zero dependencies. New xtask checks cover determinism, FP rules (`fp-check`, H36) and zero text relocations.
 
-IDs used here: H2, H3, H5, H7, H13, H14, H16, H24, H26, H27, H30, H32, H34, H35, H36, H37; C10, C11; D1, D2, D4, D8, D12, D16, D17; A1h, A2; K-A4H; M0; RX0, RX1, RX2; T0-T3; SP-tsrs-win; HINT-SET, TYPED-KERNELS, SHORT-RUN, JITLESS-SET; FactSnapshot, HINTED.
+IDs used here: H2, H3, H5, H7, H13, H14, H16, H24, H26, H27, H30, H32, H34, H35, H36, H37; C10, C11; D1, D2, D4, D8, D12, D16, D17; A1h, A2, A3; K-A4H; M0; RX0, RX1, RX2; T0-T3; SP-tsrs-win; HINT-SET, TYPED-KERNELS, SHORT-RUN, JITLESS-SET; FactSnapshot, HINTED.
 
 Evidence tags: [R02] [R03] [R04] [R08] [R09] [R13] [R14] [R16] [R17] [TSRS]. Paths are in the table at the end.
 
@@ -150,7 +150,7 @@ The hot code stays in one crate, `ep9_vm`: interpreter, ICs, shapes, strings and
    - Limit: without tsrs regions, the fixed 32 GiB range aborted at about 4,800 composite projects (issue #597). Large monorepos may need one run per project.
 9. The local `tsrs_cli` build has no PGO or BOLT; tsrs release binaries have both [TSRS Cargo.toml:96-99]. Type-check speed is not an engine gate.
 
-`scripts/sync-lib.sh` (shared by every `sync-<name>.sh`, unchanged from v1):
+`scripts/sync-lib.sh` (shared by every `sync-<name>.sh`; v1 plus `core.autocrlf=false` in each checkout, [12-governance §6](./12-governance.md#6-line-endings)):
 
 ```bash
 # usage: sync_dep <name> <git-url>; caller sets: set -euo pipefail; root=...
@@ -160,6 +160,7 @@ sync_dep() {
   rev="$(tr -d '[:space:]' < "$root/third_party/$name.commit")"
   want="$rev $(patch_hash "$pdir")"
   [ -d "$dir/.git" ] || { git init -q "$dir"; git -C "$dir" remote add origin "$url"; }
+  git -C "$dir" config core.autocrlf false           # LF on every OS: .gitattributes stops at this work tree
   [ "$(cat "$dir/.ep9-stamp" 2>/dev/null || true)" = "$want" ] && return 0
   git -C "$dir" fetch -q --depth 1 origin "$rev"
   git -C "$dir" checkout -q -f --detach FETCH_HEAD   # drops patches from earlier runs

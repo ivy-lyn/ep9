@@ -1,0 +1,83 @@
+# assign-logical: script (sloppy)
+# | function f(o, a) { a ||= 1; a &&= 2; a ??= 3; o.x ??= 4; o[a] ||= 5; }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=70 source=embedded hints=none
+source_hash=1b3300592ba2ac10e3aef0c3189bbd748da03c43d87383a9c1dd64ec0de29ff3
+strings (2):
+  str0 "f"
+  str1 "x"
+scopes (2):
+  scope0 script outer=- flags=[] slots=["f":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..70
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=2 length=2 regs=2 range=0..70
+  code (67 bytes):
+      0 S> Ldar a1                                      ; 0b fd
+      2    JumpIfToBooleanTrue @8                       ; 81 06
+      4    LdaSmi [1]                                   ; 04 01
+      6    Star a1                                      ; 0c fd
+      8 S> Ldar a1                                      ; 0b fd
+     10    JumpIfToBooleanFalse @16                     ; 82 06
+     12    LdaSmi [2]                                   ; 04 02
+     14    Star a1                                      ; 0c fd
+     16 S> Ldar a1                                      ; 0b fd
+     18    JumpIfUndefinedOrNull @22                    ; 87 04
+     20    Jump @26                                     ; 7e 06
+     22    LdaSmi [3]                                   ; 04 03
+     24    Star a1                                      ; 0c fd
+     26 S> Ldar a0                                      ; 0b fe
+     28    Star r0                                      ; 0c 00
+     30 E> GetNamedProperty r0, k0, s0  ; k0 = String str1 "x" ; 21 00 00 00
+     34    JumpIfUndefinedOrNull @38                    ; 87 04
+     36    Jump @44                                     ; 7e 08
+     38    LdaSmi [4]                                   ; 04 04
+     40 E> SetNamedProperty r0, k0, s1  ; k0 = String str1 "x" ; 24 00 00 01
+     44 S> Ldar a0                                      ; 0b fe
+     46    Star r0                                      ; 0c 00
+     48    Ldar a1                                      ; 0b fd
+     50    Star r1                                      ; 0c 01
+     52    Ldar r1                                      ; 0b 01
+     54 E> GetKeyedProperty r0, s2                      ; 23 00 02
+     57    JumpIfToBooleanTrue @65                      ; 81 08
+     59    LdaSmi [5]                                   ; 04 05
+     61 E> SetKeyedProperty r0, r1, s3                  ; 26 00 01 03
+     65    LdaUndefined                                 ; 05
+     66    Return                                       ; 92
+  constants (1):
+      0 String str1 "x"
+  feedback (4):
+      0 LoadNamed
+      1 StoreNamed
+      2 LoadKeyed
+      3 StoreKeyed
+  handlers (0):
+  positions (9):
+      0 S 19 (1:20)
+      8 S 28 (1:29)
+     16 S 37 (1:38)
+     26 S 46 (1:47)
+     30 E 46 (1:47)
+     40 E 46 (1:47)
+     44 S 57 (1:58)
+     54 E 57 (1:58)
+     61 E 57 (1:58)

@@ -1,0 +1,88 @@
+# var-closure: script (sloppy)
+# | function f(a) { var b = 1; let c = 2; return function g() { return a + b + c; }; }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=82 source=embedded hints=none
+source_hash=63e47c26f800a6eec755d37db5dbd490381c9e52e0993c0f1dba7cf7238fff28
+strings (5):
+  str0 "f"
+  str1 "a"
+  str2 "b"
+  str3 "c"
+  str4 "g"
+scopes (4):
+  scope0 script outer=- flags=[] slots=["f":function]
+  scope1 function outer=scope0 flags=[needs-context] slots=["a":var, "b":var, "c":let]
+  scope2 block outer=scope1 flags=[] slots=[]
+  scope3 function outer=scope2 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..82
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=1 range=0..82
+  code (27 bytes):
+      0 E> CreateFunctionContext k0, [3]  ; k0 = Scope scope1 ; 75 00 03
+      3    PushContext r0                               ; 13 00
+      5    Ldar a0                                      ; 0b fe
+      7    StaCurrentContextSlot [0]                    ; 1b 00
+      9    LdaTheHole                                   ; 07
+     10    StaCurrentContextSlot [2]                    ; 1b 02
+     12 S> LdaSmi [1]                                   ; 04 01
+     14    StaCurrentContextSlot [1]                    ; 1b 01
+     16 S> LdaSmi [2]                                   ; 04 02
+     18    StaCurrentContextSlot [2]                    ; 1b 02
+     20 S> CreateClosure k1, s0, #0x00  ; k1 = Function f2 ; 74 01 00 00
+     24    Return                                       ; 92
+     25    LdaUndefined                                 ; 05
+     26    Return                                       ; 92
+  constants (2):
+      0 Scope scope1
+      1 Function f2
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (4):
+      0 E 0 (1:1)
+     12 S 20 (1:21)
+     16 S 31 (1:32)
+     20 S 38 (1:39)
+function f2 normal name="g" parent=f1 outer_scope=scope1 flags=[simple-params] params=0 length=0 regs=2 range=45..79
+  code (21 bytes):
+      0 S> LdaCurrentContextSlot [0]                    ; 18 00
+      2    Star r1                                      ; 0c 01
+      4    LdaCurrentContextSlot [1]                    ; 18 01
+      6 E> Add r1, s0                                   ; 2a 01 00
+      9    Star r0                                      ; 0c 00
+     11    LdaCurrentContextSlot [2]                    ; 18 02
+     13 E> ThrowReferenceErrorIfHole k0  ; k0 = String str3 "c" ; 94 00
+     15 E> Add r0, s1                                   ; 2a 00 01
+     18    Return                                       ; 92
+     19    LdaUndefined                                 ; 05
+     20    Return                                       ; 92
+  constants (1):
+      0 String str3 "c"
+  feedback (2):
+      0 BinaryOp
+      1 BinaryOp
+  handlers (0):
+  positions (4):
+      0 S 60 (1:61)
+      6 E 67 (1:68)
+     13 E 75 (1:76)
+     15 E 67 (1:68)

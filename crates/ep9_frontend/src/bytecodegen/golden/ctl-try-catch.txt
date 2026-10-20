@@ -1,0 +1,109 @@
+# ctl-try-catch: script (sloppy)
+# | function f(g) { try { g(); } catch (e) { return e; } try { g(); } catch { } try { g(); } catch ({message}) { return message; } }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=128 source=embedded hints=none
+source_hash=5252537f5f78f424bfba9bf04f09f02776ae9264c9428854ffe68e35b5b33807
+strings (2):
+  str0 "f"
+  str1 "message"
+scopes (11):
+  scope0 script outer=- flags=[] slots=["f":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+  scope2 block outer=scope1 flags=[] slots=[]
+  scope3 catch outer=scope1 flags=[] slots=[]
+  scope4 block outer=scope3 flags=[] slots=[]
+  scope5 block outer=scope1 flags=[] slots=[]
+  scope6 catch outer=scope1 flags=[] slots=[]
+  scope7 block outer=scope6 flags=[] slots=[]
+  scope8 block outer=scope1 flags=[] slots=[]
+  scope9 catch outer=scope1 flags=[] slots=[]
+  scope10 block outer=scope9 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..128
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=5 range=0..128
+  code (70 bytes):
+      0 S> LdaCurrentContext                            ; 15
+      1    Star r2                                      ; 0c 02
+      3 S> Ldar a0                                      ; 0b fe
+      5    Star r3                                      ; 0c 03
+      7 E> CallUndefinedReceiver0 r3, s0                ; 64 03 00
+     10    Jump @23                                     ; 7e 0d
+     12    Star r3                                      ; 0c 03
+     14    LdaTheHole                                   ; 07
+     15    SetPendingMessage                            ; 93
+     16 S> Ldar r3                                      ; 0b 03
+     18    Star r0                                      ; 0c 00
+     20 S> Ldar r0                                      ; 0b 00
+     22    Return                                       ; 92
+     23 S> LdaCurrentContext                            ; 15
+     24    Star r2                                      ; 0c 02
+     26 S> Ldar a0                                      ; 0b fe
+     28    Star r3                                      ; 0c 03
+     30 E> CallUndefinedReceiver0 r3, s1                ; 64 03 01
+     33    Jump @39                                     ; 7e 06
+     35    Star r3                                      ; 0c 03
+     37    LdaTheHole                                   ; 07
+     38    SetPendingMessage                            ; 93
+     39 S> LdaCurrentContext                            ; 15
+     40    Star r2                                      ; 0c 02
+     42 S> Ldar a0                                      ; 0b fe
+     44    Star r3                                      ; 0c 03
+     46 E> CallUndefinedReceiver0 r3, s2                ; 64 03 02
+     49    Jump @68                                     ; 7e 13
+     51    Star r3                                      ; 0c 03
+     53    LdaTheHole                                   ; 07
+     54    SetPendingMessage                            ; 93
+     55 S> Ldar r3                                      ; 0b 03
+     57 E> ToObject r4                                  ; 5b 04
+     59 E> GetNamedProperty r3, k0, s3  ; k0 = String str1 "message" ; 21 03 00 03
+     63    Star r1                                      ; 0c 01
+     65 S> Ldar r1                                      ; 0b 01
+     67    Return                                       ; 92
+     68    LdaUndefined                                 ; 05
+     69    Return                                       ; 92
+  constants (1):
+      0 String str1 "message"
+  feedback (4):
+      0 Call
+      1 Call
+      2 Call
+      3 LoadNamed
+  handlers (3):
+        [3, 10) -> @12 context=r2 caught
+        [26, 33) -> @35 context=r2 caught
+        [42, 49) -> @51 context=r2 caught
+  positions (15):
+      0 S 16 (1:17)
+      3 S 22 (1:23)
+      7 E 22 (1:23)
+     16 S 29 (1:30)
+     20 S 41 (1:42)
+     23 S 53 (1:54)
+     26 S 59 (1:60)
+     30 E 59 (1:60)
+     39 S 76 (1:77)
+     42 S 82 (1:83)
+     46 E 82 (1:83)
+     55 S 89 (1:90)
+     57 E 96 (1:97)
+     59 E 97 (1:98)
+     65 S 109 (1:110)

@@ -1,0 +1,30 @@
+B01  | C instance has proto C.prototype                           | proto===F.prototype:true keys=x,y
+B02  | Stamp fields live only on Stamp-shaped objects             | foreign keys=a,x #brand on plain=true on proxy=true proto plain=true
+B03  | super() in D calls A                                       | from=X keys=from,extra proto=D.prototype:true
+B04a | field x is an own data slot after ctor                     | [[Set]]: own=false s.x=proto-get hits=setter; [[Define]]: own=true d.x=1
+B04b | this.q = 1 in ctor creates own slot                        | own=false hits=trap:q
+B05  | C.prototype identity fixed; C.prototype.m fixed            | prototype writable=false configurable=false assignThrows(strict)=true; m writable=true configurable=true after patch m()=patched
+B06  | this in Counter.inc is a Counter with int n                | call({n:'a'})=NaN apply({n:1.5})=2.5
+B07  | v.get target unchanged across `a + evil`                   | before=1 after=changed sum=2
+B08  | arr[i] for 0<=i<length is a number (packed)                | hole via proto=from-proto; after length=5: a2[4]=undefined 4 in a2=false
+B09  | arr.map returns a packed Array                             | subclass species -> {"0":1,"1":2,"custom":true}; own constructor prop -> {"0":1,"1":2,"viaOwnCtor":true}
+B10  | param a keeps its int value                                | sloppy -> str ; strict -> 1
+B11  | box.v int across yield                                     | number->string
+B12  | field define on new object always succeeds                 | TypeError:true
+B13  | every C instance has fields a,b,c                          | leaked keys=a instanceof C=true
+B14  | value from outside is a Pt                                 | clone proto===Pt.prototype:false keys=x,y
+B15  | typed array length fixed inside the loop                   | transfer: 8->0 ta[0]=undefined ; resize: 8->1
+B16  | Math.sqrt is the builtin                                   | 2 -> patched
+B17  | x instanceof Shape => x.area is Shape.prototype.area       | instanceof=true area()=override
+B18  | an Array has proto %Array.prototype% of this realm         | isArray=true instanceof Array=false proto same=false
+B19  | super.m in B is A.prototype.m                              | swapped
+B20  | a non-escaping object stays unreachable                    | stack=custom/custom getThis leaks=1 (sloppy frames only)
+B21  | C instances keep data slots x,y writable                   | after delete a.x=undefined; accessor b.x=acc; frozen write TypeError
+B22  | box.v int across a block end                               | string
+B23  | 'z' in c is false (absence fact)                           | false -> true c.z=polluted
+B24  | x instanceof C => x has C layout                           | ({}) instanceof C = true
+B25  | non-escaping Secret instance keeps int field v           | before=number,1 after=string,str
+B26  | no user code runs inside a synchronous region (FR)       | region-start gc0:deref=object gc1:deref=object gc2:deref=object gc3:deref=object gc4:deref=object region-end cleanup:o later:deref=undefined
+B27  | module-private binding unreachable by eval/new Function   | indirect eval: undefined; new Function: undefined; import() ns keys: pub,readSecret; exported pub.v now str; secret.v still number
+B28  | strict local never reassigned keeps its int value         | string,str (paused=other scopes=local/module/global setErr=none)
+B28c | strict CONST local keeps its int value                    | string,str (paused=other scopes=local/module/global setErr=none)

@@ -1,0 +1,242 @@
+{
+ "repo": "typescript",
+ "root_files": 77,
+ "walked_files": 78,
+ "root_bytes": 9400075,
+ "diagnostics": 1,
+ "diag_codes": {
+  "2307": 1
+ },
+ "classes_total": 9,
+ "classes_qualifying": 7,
+ "classes_qualifying_pct": 77.8,
+ "classes_qualifying_if_r4_lenient": 7,
+ "classes_qualifying_guarded_casts": 7,
+ "classes_qualifying_guarded_casts_r4_lenient": 7,
+ "classes_qualifying_v3_plus_generic_T_ok": 7,
+ "classes_qualifying_open_world": 2,
+ "classes_exported_qualifying": 4,
+ "class_rule_counts": {
+  "r5": 2,
+  "r1": 2
+ },
+ "class_sole_rule_counts": {},
+ "class_sub_rule_counts": {
+  "r1:as-unchecked": 2,
+  "r5:object": 1,
+  "r5:unknown": 1
+ },
+ "classes_qualifying_if_rule_off": {
+  "r1": 7,
+  "r2": 7,
+  "r3": 7,
+  "r4": 7,
+  "r5": 7,
+  "r6": 7,
+  "r7": 7,
+  "base": 7
+ },
+ "field_kinds_qualifying": {
+  "number": 3,
+  "array": 3,
+  "other": 10,
+  "boolean": 2
+ },
+ "member_access_total": 67491,
+ "member_access_dynamic": 46480,
+ "member_access_class_receiver": 191,
+ "member_access_qualifying_receiver": 178,
+ "member_access_qualifying_pct_of_total": 0.3,
+ "member_access_qualifying_pct_of_dynamic": 0.4,
+ "member_access_qualifying_inside_functions": 178,
+ "modules_considered": 61,
+ "modules_ge50pct_v0": 2,
+ "modules_ge50pct_v3": 2,
+ "largest_modules_ge50pct_v3": [
+  {
+   "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+   "functions": 154,
+   "body_bytes": 159898,
+   "v0_pct": 82.3,
+   "v3_pct": 82.9
+  },
+  {
+   "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/performance.ts",
+   "functions": 17,
+   "body_bytes": 2927,
+   "v0_pct": 63.9,
+   "v3_pct": 63.9
+  }
+ ],
+ "largest_modules_ge50pct_v0": [
+  {
+   "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts",
+   "functions": 154,
+   "body_bytes": 159898,
+   "v0_pct": 82.3
+  },
+  {
+   "file": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/performance.ts",
+   "functions": 17,
+   "body_bytes": 2927,
+   "v0_pct": 63.9
+  }
+ ],
+ "function_body_bytes": 7674627,
+ "function_body_bytes_qualifying_pct": 6.2,
+ "function_body_bytes_qualifying_v3_pct": 6.5,
+ "member_access_sound_in_region": 57,
+ "member_access_sound_in_region_pct_of_dynamic": 0.1,
+ "member_access_sound_in_region_v3": 57,
+ "functions_total": 11091,
+ "functions_qualifying_t2": 1619,
+ "functions_qualifying_t2_pct": 14.6,
+ "functions_qualifying_t1": 1577,
+ "functions_qualifying_guarded_casts": 1690,
+ "functions_qualifying_guarded_casts_r4_lenient": 1690,
+ "functions_qualifying_v3_plus_generic_T_ok": 1690,
+ "member_access_qualifying_v3_plus_generic_T_ok": 178,
+ "member_access_qualifying_guarded_casts": 178,
+ "member_access_qualifying_guarded_casts_r4_lenient": 178,
+ "functions_qualifying_t0_strict": 1481,
+ "functions_qualifying_nontrivial": 896,
+ "functions_by_kind": {
+  "fn": 8488,
+  "arrow": 2107,
+  "method": 143,
+  "get": 82,
+  "ctor": 4,
+  "fnexpr": 265,
+  "set": 2
+ },
+ "functions_qualifying_by_kind": {
+  "fn": 912,
+  "arrow": 566,
+  "method": 57,
+  "get": 81,
+  "ctor": 1,
+  "fnexpr": 2
+ },
+ "function_fail_reasons": {
+  "param-type": 8851,
+  "local-type": 3821,
+  "assertion(as)": 1492,
+  "nonnull(!)": 684,
+  "any-flow": 74,
+  "this-type": 38,
+  "this-class-not-qualifying": 1
+ },
+ "function_sole_fail_reasons": {
+  "param-type": 4794,
+  "local-type": 281,
+  "assertion(as)": 102,
+  "nonnull(!)": 71,
+  "this-type": 18,
+  "any-flow": 6
+ },
+ "boundary_call_sites": 3109,
+ "boundary_value_refs": 570,
+ "boundary_escaping_closures": 553,
+ "internal_call_sites": 1381,
+ "qualifying_functions_without_boundary": 332,
+ "qualifying_functions_exported": 211,
+ "examples_qualifying_classes": [
+  {
+   "name": "BinaryExpressionStateMachine",
+   "at": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/factory/utilities.ts:1413",
+   "fields": 6,
+   "field_kinds": {
+    "other": 6
+   }
+  },
+  {
+   "name": "Version",
+   "at": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/semver.ts:46",
+   "fields": 5,
+   "field_kinds": {
+    "number": 3,
+    "array": 2
+   }
+  },
+  {
+   "name": "SymbolTrackerImpl",
+   "at": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts:54329",
+   "fields": 5,
+   "field_kinds": {
+    "other": 3,
+    "boolean": 2
+   }
+  }
+ ],
+ "examples_blocked_classes": [
+  {
+   "name": "DebugTypeMapper",
+   "at": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/debug.ts:826",
+   "fields": 1,
+   "field_kinds": {
+    "number": 1
+   },
+   "rules": [
+    "r1",
+    "r5"
+   ],
+   "evidence": [
+    "r1 as-unchecked(to C) @ $EP9_RESEARCH_REPOS/TypeScript/src/compiler/debug.ts:849",
+    "r1 as-unchecked(to C) @ $EP9_RESEARCH_REPOS/TypeScript/src/compiler/debug.ts:850",
+    "r5 unknown @ $EP9_RESEARCH_REPOS/TypeScript/src/compiler/debug.ts:829",
+    "r5 object @ $EP9_RESEARCH_REPOS/TypeScript/src/compiler/debug.ts:859"
+   ]
+  },
+  {
+   "name": "SymbolLinks",
+   "at": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts:1451",
+   "fields": 1,
+   "field_kinds": {
+    "other": 1
+   },
+   "rules": [
+    "r1",
+    "r5"
+   ],
+   "evidence": [
+    "r1 as-unchecked(from C) @ $EP9_RESEARCH_REPOS/TypeScript/src/compiler/checker.ts:2636",
+    "r5 escapes to shared structural type(s) ['8:236613']"
+   ]
+  }
+ ],
+ "examples_qualifying_functions": [
+  {
+   "name": "reScanSlashToken",
+   "kind": "fn",
+   "at": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts:2467",
+   "tier": 1,
+   "internal": 0,
+   "boundary_calls": 0,
+   "value_refs": 1,
+   "escaping_closure": 0
+  },
+  {
+   "name": "visitDirectory",
+   "kind": "fn",
+   "at": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/utilities.ts:9847",
+   "tier": 2,
+   "internal": 1,
+   "boundary_calls": 1,
+   "value_refs": 0,
+   "escaping_closure": 0
+  },
+  {
+   "name": "scan",
+   "kind": "fn",
+   "at": "$EP9_RESEARCH_REPOS/TypeScript/src/compiler/scanner.ts:1891",
+   "tier": 1,
+   "internal": 1,
+   "boundary_calls": 0,
+   "value_refs": 1,
+   "escaping_closure": 0
+  }
+ ],
+ "r7_files": [],
+ "iface_targets": 895,
+ "iface_closed": 13
+}

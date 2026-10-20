@@ -1,0 +1,59 @@
+# ctl-if: script (sloppy)
+# | function f(a, b) { if (a) return 1; else if (b && a) return 2; else { return 3; } }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=83 source=embedded hints=none
+source_hash=fac9d2d695392d7614a865985e415f0a52c13082feaae574475195009daff5d0
+strings (1):
+  str0 "f"
+scopes (3):
+  scope0 script outer=- flags=[] slots=["f":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+  scope2 block outer=scope1 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..83
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=2 length=2 regs=0 range=0..83
+  code (27 bytes):
+      0 S> Ldar a0                                      ; 0b fe
+      2    JumpIfToBooleanFalse @9                      ; 82 07
+      4 S> LdaSmi [1]                                   ; 04 01
+      6    Return                                       ; 92
+      7    Jump @25                                     ; 7e 12
+      9 S> Ldar a1                                      ; 0b fd
+     11    JumpIfToBooleanFalse @22                     ; 82 0b
+     13    Ldar a0                                      ; 0b fe
+     15    JumpIfToBooleanFalse @22                     ; 82 07
+     17 S> LdaSmi [2]                                   ; 04 02
+     19    Return                                       ; 92
+     20    Jump @25                                     ; 7e 05
+     22 S> LdaSmi [3]                                   ; 04 03
+     24    Return                                       ; 92
+     25    LdaUndefined                                 ; 05
+     26    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (5):
+      0 S 19 (1:20)
+      4 S 26 (1:27)
+      9 S 41 (1:42)
+     17 S 53 (1:54)
+     22 S 70 (1:71)

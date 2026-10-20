@@ -1,0 +1,45 @@
+# lit-numbers: script (sloppy)
+# | 0; 1; -1; 2147483647; 2147483648; 1.5; -0; 1e300; 0.1 + 0.2;
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=60 source=embedded hints=none
+source_hash=cec9d5390271b15270bbcb7a8befb56750e0c903aeef5bbf18b67f37c95bb0ab
+strings (0):
+scopes (1):
+  scope0 script outer=- flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=1 range=0..60
+  code (30 bytes):
+      0 S> LdaZero                                      ; 03
+      1 S> LdaSmi [1]                                   ; 04 01
+      3 S> LdaSmi [-1]                                  ; 04 ff
+      5 S> LdaSmi.ExtraWide [2147483647]                ; 02 04 ff ff ff 7f
+     11 S> LdaConstant k0  ; k0 = Number 2147483648.0   ; 0a 00
+     13 S> LdaConstant k1  ; k1 = Number 1.5            ; 0a 01
+     15 S> LdaConstant k2  ; k2 = Number -0.0           ; 0a 02
+     17 S> LdaConstant k3  ; k3 = Number 1e300          ; 0a 03
+     19 S> LdaConstant k4  ; k4 = Number 0.1            ; 0a 04
+     21    Star r0                                      ; 0c 00
+     23    LdaConstant k5  ; k5 = Number 0.2            ; 0a 05
+     25 E> Add r0, s0                                   ; 2a 00 00
+     28    LdaUndefined                                 ; 05
+     29    Return                                       ; 92
+  constants (6):
+      0 Number 2147483648.0
+      1 Number 1.5
+      2 Number -0.0
+      3 Number 1e300
+      4 Number 0.1
+      5 Number 0.2
+  feedback (1):
+      0 BinaryOp
+  handlers (0):
+  positions (10):
+      0 S 0 (1:1)
+      1 S 3 (1:4)
+      3 S 6 (1:7)
+      5 S 10 (1:11)
+     11 S 22 (1:23)
+     13 S 34 (1:35)
+     15 S 39 (1:40)
+     17 S 43 (1:44)
+     19 S 50 (1:51)
+     25 E 50 (1:51)

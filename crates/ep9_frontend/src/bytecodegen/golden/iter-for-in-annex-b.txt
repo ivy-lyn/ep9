@@ -1,0 +1,66 @@
+# iter-for-in-annex-b: script (sloppy)
+# | function f(o) { for (var k = 1 in o) ; return k; }
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=50 source=embedded hints=none
+source_hash=81fb89a3580d77e91678346324382bf31e52bbf2ca6e48f4a03bdf8a0e7c8a88
+strings (1):
+  str0 "f"
+scopes (3):
+  scope0 script outer=- flags=[] slots=["f":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+  scope2 block outer=scope1 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..50
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=7 range=0..50
+  code (46 bytes):
+      0 S> LdaSmi [1]                                   ; 04 01
+      2    Star r0                                      ; 0c 00
+      4    Ldar a0                                      ; 0b fe
+      6    JumpIfUndefinedOrNull @41                    ; 87 23
+      8 E> ToObject r1                                  ; 5b 01
+     10 E> ForInEnumerate r1                            ; 8b 01
+     12    ForInPrepare r2-r4, s0                       ; 8c 02 00
+     15    LdaZero                                      ; 03
+     16    Star r5                                      ; 0c 05
+     18    JumpIfForInDone @41, r5, r4                  ; 89 17 05 04
+     22 E> ForInNext r1, r5, r2-r3, s0                  ; 8d 01 05 02 00
+     27    JumpIfUndefined @35                          ; 85 08
+     29    Star r6                                      ; 0c 06
+     31    Ldar r6                                      ; 0b 06
+     33    Star r0                                      ; 0c 00
+     35    ForInStep r5                                 ; 8e 05
+     37    JumpLoop @18, [0], s1                        ; 7d 13 00 01
+     41 S> Ldar r0                                      ; 0b 00
+     43    Return                                       ; 92
+     44    LdaUndefined                                 ; 05
+     45    Return                                       ; 92
+  constants (0):
+  feedback (2):
+      0 ForIn
+      1 JumpLoop
+  handlers (0):
+  positions (5):
+      0 S 16 (1:17)
+      8 E 34 (1:35)
+     10 E 16 (1:17)
+     22 E 16 (1:17)
+     41 S 39 (1:40)

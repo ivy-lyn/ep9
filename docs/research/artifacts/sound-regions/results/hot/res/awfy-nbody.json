@@ -1,0 +1,408 @@
+{
+ "label": "awfy-nbody",
+ "profiles": [
+  "prof/awfy/nbody.cpuprofile"
+ ],
+ "samples": 4815,
+ "mean_sample_interval_us": 318.4,
+ "leaf_categories": {
+  "fn-v3only": 3908,
+  "(program)": 617,
+  "(garbage collector)": 264,
+  "module-top-level": 13,
+  "node-internal": 7,
+  "fn-v0": 4,
+  "native": 2
+ },
+ "breakdown_pct": {
+  "Q-v3-only": 81.2,
+  "(program)": 12.8,
+  "(garbage collector)": 5.5,
+  "module-top-level": 0.3,
+  "node-internal": 0.2,
+  "Q-v0": 0.1
+ },
+ "pct_of_all_samples": {
+  "self_v0": 0.1,
+  "self_v3": 81.2,
+  "self_in_analyzed_functions": 81.2,
+  "self_plus_builtins_v0": 0.1,
+  "self_plus_builtins_v3": 81.2,
+  "self_plus_builtins_in_analyzed_functions": 81.2,
+  "inclusive_v0": 0.1,
+  "inclusive_v3": 81.2,
+  "inclusive_any_analyzed": 81.2,
+  "vm_gc_program_idle": 18.3
+ },
+ "pct_of_analyzed_self_plus_builtins": {
+  "v0": 0.1,
+  "v3": 100.0
+ },
+ "pct_of_analyzed_self": {
+  "v0": 0.1,
+  "v3": 100.0
+ },
+ "counts": {
+  "nonvm": 3934,
+  "selfb_js": 3934,
+  "selfb_analyzed_file": 3926,
+  "name_match": 3912,
+  "self_fn": 3912,
+  "self_v3": 3912,
+  "selfb_fn": 3912,
+  "selfb_v3": 3912,
+  "incl_any_analyzed": 3912,
+  "incl_v3": 3912,
+  "self_v0": 4,
+  "selfb_v0": 4,
+  "incl_v0": 4
+ },
+ "top_self": [
+  {
+   "name": "NBody.innerBenchmarkLoop",
+   "kind": "method",
+   "at": "awfy-ts/src/nbody.ts:143",
+   "pct": 80.8,
+   "samples": 3890,
+   "v0": false,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "local-type: class NBodySystem",
+   "v3_reasons": []
+  },
+  {
+   "name": "NBodySystem.advance",
+   "kind": "method",
+   "at": "awfy-ts/src/nbody.ts:86",
+   "pct": 0.3,
+   "samples": 16,
+   "v0": false,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "class NBodySystem blocked by r4",
+   "v3_reasons": []
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "awfy-ts/src/nbody.ts:109",
+   "pct": 0.1,
+   "samples": 4,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "NBodySystem.createBodies",
+   "kind": "method",
+   "at": "awfy-ts/src/nbody.ts:72",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "class NBodySystem blocked by r4",
+   "v3_reasons": []
+  },
+  {
+   "name": "NBodySystem.energy",
+   "kind": "method",
+   "at": "awfy-ts/src/nbody.ts:116",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "class NBodySystem blocked by r4",
+   "v3_reasons": []
+  }
+ ],
+ "top_self_plus_builtins": [
+  {
+   "name": "NBody.innerBenchmarkLoop",
+   "kind": "method",
+   "at": "awfy-ts/src/nbody.ts:143",
+   "pct": 80.8,
+   "samples": 3890,
+   "v0": false,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "local-type: class NBodySystem",
+   "v3_reasons": []
+  },
+  {
+   "name": "NBodySystem.advance",
+   "kind": "method",
+   "at": "awfy-ts/src/nbody.ts:86",
+   "pct": 0.3,
+   "samples": 16,
+   "v0": false,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "class NBodySystem blocked by r4",
+   "v3_reasons": []
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "awfy-ts/src/nbody.ts:109",
+   "pct": 0.1,
+   "samples": 4,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "NBodySystem.createBodies",
+   "kind": "method",
+   "at": "awfy-ts/src/nbody.ts:72",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "class NBodySystem blocked by r4",
+   "v3_reasons": []
+  },
+  {
+   "name": "NBodySystem.energy",
+   "kind": "method",
+   "at": "awfy-ts/src/nbody.ts:116",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "class NBodySystem blocked by r4",
+   "v3_reasons": []
+  }
+ ],
+ "top_inclusive": [
+  {
+   "name": "NBody.innerBenchmarkLoop",
+   "kind": "method",
+   "at": "awfy-ts/src/nbody.ts:143",
+   "pct": 81.2,
+   "samples": 3912,
+   "v0": false,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "local-type: class NBodySystem",
+   "v3_reasons": []
+  },
+  {
+   "name": "NBodySystem.advance",
+   "kind": "method",
+   "at": "awfy-ts/src/nbody.ts:86",
+   "pct": 0.4,
+   "samples": 20,
+   "v0": false,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "class NBodySystem blocked by r4",
+   "v3_reasons": []
+  },
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "awfy-ts/src/nbody.ts:109",
+   "pct": 0.1,
+   "samples": 4,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  },
+  {
+   "name": "NBodySystem.createBodies",
+   "kind": "method",
+   "at": "awfy-ts/src/nbody.ts:72",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "class NBodySystem blocked by r4",
+   "v3_reasons": []
+  },
+  {
+   "name": "NBodySystem.<anon>",
+   "kind": "ctor",
+   "at": "awfy-ts/src/nbody.ts:68",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "class NBodySystem blocked by r4",
+   "v3_reasons": []
+  },
+  {
+   "name": "NBodySystem.energy",
+   "kind": "method",
+   "at": "awfy-ts/src/nbody.ts:116",
+   "pct": 0.0,
+   "samples": 1,
+   "v0": false,
+   "v3": true,
+   "nested_in_function": false,
+   "blocker_v0": "class NBodySystem blocked by r4",
+   "v3_reasons": []
+  }
+ ],
+ "top_inclusive_v0": [
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "awfy-ts/src/nbody.ts:109",
+   "pct": 0.1,
+   "samples": 4,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  }
+ ],
+ "top_self_v0": [
+  {
+   "name": "<anon>",
+   "kind": "arrow",
+   "at": "awfy-ts/src/nbody.ts:109",
+   "pct": 0.1,
+   "samples": 4,
+   "v0": true,
+   "v3": true,
+   "nested_in_function": true,
+   "blocker_v0": "",
+   "v3_reasons": []
+  }
+ ],
+ "blocker_time_pct_any": {
+  "local-type": 80.8,
+  "this-class-not-qualifying": 0.4
+ },
+ "blocker_time_pct_first": {
+  "local-type": 80.8,
+  "this-class-not-qualifying": 0.4
+ },
+ "bad_type_time_pct": {
+  "class NBodySystem": 80.8
+ },
+ "static_fn_share": {
+  "v0": 18.6,
+  "v3": 79.0
+ },
+ "distinct_sampled_functions": 5,
+ "distinct_sampled_v0": 1,
+ "functions_for_50pct_of_analyzed_time": 1,
+ "name_check": {
+  "match": 3912,
+  "v8_anonymous": 0,
+  "mismatch": 0,
+  "top_mismatch": []
+ },
+ "per_function": [
+  {
+   "id": "3:4177",
+   "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/nbody.ts",
+   "s": 4177,
+   "e": 4431,
+   "name": "innerBenchmarkLoop",
+   "kind": "method",
+   "class": "NBody",
+   "line": 143,
+   "v0": false,
+   "v3": true,
+   "repo": "awfy",
+   "selfb": 3890,
+   "self": 3890,
+   "incl": 3912
+  },
+  {
+   "id": "3:2306",
+   "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/nbody.ts",
+   "s": 2306,
+   "e": 3197,
+   "name": "advance",
+   "kind": "method",
+   "class": "NBodySystem",
+   "line": 86,
+   "v0": false,
+   "v3": true,
+   "repo": "awfy",
+   "selfb": 16,
+   "self": 16,
+   "incl": 20
+  },
+  {
+   "id": "3:3084",
+   "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/nbody.ts",
+   "s": 3084,
+   "e": 3191,
+   "name": "<anon>",
+   "kind": "arrow",
+   "class": null,
+   "line": 109,
+   "v0": true,
+   "v3": true,
+   "repo": "awfy",
+   "selfb": 4,
+   "self": 4,
+   "incl": 4
+  },
+  {
+   "id": "3:3201",
+   "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/nbody.ts",
+   "s": 3201,
+   "e": 3784,
+   "name": "energy",
+   "kind": "method",
+   "class": "NBodySystem",
+   "line": 116,
+   "v0": false,
+   "v3": true,
+   "repo": "awfy",
+   "selfb": 1,
+   "self": 1,
+   "incl": 1
+  },
+  {
+   "id": "3:1947",
+   "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/nbody.ts",
+   "s": 1947,
+   "e": 2302,
+   "name": "createBodies",
+   "kind": "method",
+   "class": "NBodySystem",
+   "line": 72,
+   "v0": false,
+   "v3": true,
+   "repo": "awfy",
+   "selfb": 1,
+   "self": 1,
+   "incl": 1
+  },
+  {
+   "id": "3:1885",
+   "file": "$EP9_RESEARCH_WORK/tsrs-type-oracle/corpus/awfy-ts/src/nbody.ts",
+   "s": 1885,
+   "e": 1943,
+   "name": "<anon>",
+   "kind": "ctor",
+   "class": "NBodySystem",
+   "line": 68,
+   "v0": false,
+   "v3": true,
+   "repo": "awfy",
+   "selfb": 0,
+   "self": 0,
+   "incl": 1
+  }
+ ]
+}

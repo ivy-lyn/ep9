@@ -1,0 +1,3 @@
+# ep9 bytecode ABI history: <ABI_VERSION> <SHA-256 of opcodes.txt + tiny unit (+ runtime table text from ABI 2)>
+1 de045ed99583075622f11d217ee2fc0b4e3433977f217b7c268224fd5263bacf
+2 6d92eb9a21e4a3f82f6c26e2a21d4042b1fc64b24df5960b1e6e3a1dfba83d4b

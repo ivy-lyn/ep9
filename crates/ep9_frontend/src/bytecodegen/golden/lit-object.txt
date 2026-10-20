@@ -1,0 +1,161 @@
+# lit-object: script (sloppy)
+# | var x, k; ({}); ({a: 1, b: 'c'}); ({a: x, b: 2}); ({a: 1, a: 2}); ({[k]: 1, b: x}); ({x}); ({...x}); ({a: 1, ...x, b: 2}); ({__proto__: null, a: 1}); ({'__proto__': x}); ({__proto__}) ; ({1: 2, 1.5: 3});
+; ep9 bytecode, ABI 2
+unit kind=script strict=false ts=none source_len=203 source=embedded hints=none
+source_hash=9415f605793845a522023c24fa65ecd6f81b0da087710c1e8b92de807398a0f7
+strings (7):
+  str0 "x"
+  str1 "k"
+  str2 "a"
+  str3 "c"
+  str4 "b"
+  str5 "__proto__"
+  str6 "1"
+scopes (1):
+  scope0 script outer=- flags=[] slots=["x":var, "k":var]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..203
+  code (184 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> CreateEmptyObjectLiteral                     ; 71
+      6 S> CreateObjectLiteral k4, s0, #0x01  ; k4 = ObjectBoilerplate {k1: k0, k3: k2} ; 70 04 00 01
+     10 S> CreateObjectLiteral k6, s1, #0x01  ; k6 = ObjectBoilerplate {k1: _, k3: k5} ; 70 06 01 01
+     14    Star r0                                      ; 0c 00
+     16 E> LdaGlobal k7, s2  ; k7 = String str0 "x"     ; 10 07 02
+     19 E> DefineNamedOwnProperty r0, k1, s3  ; k1 = String str2 "a" ; 25 00 01 03
+     23    Ldar r0                                      ; 0b 00
+     25 S> CreateObjectLiteral k8, s4, #0x01  ; k8 = ObjectBoilerplate {k1: k0} ; 70 08 04 01
+     29    Star r0                                      ; 0c 00
+     31    LdaSmi [2]                                   ; 04 02
+     33 E> DefineNamedOwnProperty r0, k1, s5  ; k1 = String str2 "a" ; 25 00 01 05
+     37    Ldar r0                                      ; 0b 00
+     39 S> CreateEmptyObjectLiteral                     ; 71
+     40    Star r0                                      ; 0c 00
+     42 E> LdaGlobal k9, s6  ; k9 = String str1 "k"     ; 10 09 06
+     45 E> ToName                                       ; 58
+     46    Star r1                                      ; 0c 01
+     48    LdaSmi [1]                                   ; 04 01
+     50 E> DefineKeyedOwnPropertyInLiteral r0, r1, #0x00, s7 ; 29 00 01 00 07
+     55 E> LdaGlobal k7, s2  ; k7 = String str0 "x"     ; 10 07 02
+     58 E> DefineNamedOwnProperty r0, k3, s8  ; k3 = String str4 "b" ; 25 00 03 08
+     62    Ldar r0                                      ; 0b 00
+     64 S> CreateObjectLiteral k10, s9, #0x01  ; k10 = ObjectBoilerplate {k7: _} ; 70 0a 09 01
+     68    Star r0                                      ; 0c 00
+     70 E> LdaGlobal k7, s2  ; k7 = String str0 "x"     ; 10 07 02
+     73 E> DefineNamedOwnProperty r0, k7, s10  ; k7 = String str0 "x" ; 25 00 07 0a
+     77    Ldar r0                                      ; 0b 00
+     79 S> LdaGlobal k7, s2  ; k7 = String str0 "x"     ; 10 07 02
+     82    Star r1                                      ; 0c 01
+     84 E> CloneObject r1, #0x00, s11                   ; 72 01 00 0b
+     88    Star r0                                      ; 0c 00
+     90    Ldar r0                                      ; 0b 00
+     92 S> CreateObjectLiteral k11, s12, #0x01  ; k11 = ObjectBoilerplate {k1: k0} ; 70 0b 0c 01
+     96    Star r0                                      ; 0c 00
+     98 E> LdaGlobal k7, s2  ; k7 = String str0 "x"     ; 10 07 02
+    101    Star r1                                      ; 0c 01
+    103 E> CallRuntime CopyDataProperties, r0-r1        ; 68 09 00 00 02
+    108    LdaSmi [2]                                   ; 04 02
+    110 E> DefineNamedOwnProperty r0, k3, s13  ; k3 = String str4 "b" ; 25 00 03 0d
+    114    Ldar r0                                      ; 0b 00
+    116 S> CreateEmptyObjectLiteral                     ; 71
+    117    Star r0                                      ; 0c 00
+    119    LdaNull                                      ; 06
+    120    Star r1                                      ; 0c 01
+    122 E> CallRuntime SetPrototypeInLiteral, r0-r1     ; 68 0b 00 00 02
+    127    LdaSmi [1]                                   ; 04 01
+    129 E> DefineNamedOwnProperty r0, k1, s14  ; k1 = String str2 "a" ; 25 00 01 0e
+    133    Ldar r0                                      ; 0b 00
+    135 S> CreateEmptyObjectLiteral                     ; 71
+    136    Star r0                                      ; 0c 00
+    138 E> LdaGlobal k7, s2  ; k7 = String str0 "x"     ; 10 07 02
+    141    Star r1                                      ; 0c 01
+    143 E> CallRuntime SetPrototypeInLiteral, r0-r1     ; 68 0b 00 00 02
+    148    Ldar r0                                      ; 0b 00
+    150 S> CreateEmptyObjectLiteral                     ; 71
+    151    Star r0                                      ; 0c 00
+    153 E> LdaGlobal k12, s15  ; k12 = String str5 "__proto__" ; 10 0c 0f
+    156 E> DefineNamedOwnProperty r0, k12, s16  ; k12 = String str5 "__proto__" ; 25 00 0c 10
+    160    Ldar r0                                      ; 0b 00
+    162 S> CreateObjectLiteral k14, s17, #0x01  ; k14 = ObjectBoilerplate {k13: k5} ; 70 0e 11 01
+    166    Star r0                                      ; 0c 00
+    168    LdaConstant k15  ; k15 = Number 1.5          ; 0a 0f
+    170 E> ToName                                       ; 58
+    171    Star r1                                      ; 0c 01
+    173    LdaSmi [3]                                   ; 04 03
+    175 E> DefineKeyedOwnPropertyInLiteral r0, r1, #0x00, s18 ; 29 00 01 00 12
+    180    Ldar r0                                      ; 0b 00
+    182    LdaUndefined                                 ; 05
+    183    Return                                       ; 92
+  constants (16):
+      0 Number 1.0
+      1 String str2 "a"
+      2 String str3 "c"
+      3 String str4 "b"
+      4 ObjectBoilerplate {k1: k0, k3: k2}
+      5 Number 2.0
+      6 ObjectBoilerplate {k1: _, k3: k5}
+      7 String str0 "x"
+      8 ObjectBoilerplate {k1: k0}
+      9 String str1 "k"
+     10 ObjectBoilerplate {k7: _}
+     11 ObjectBoilerplate {k1: k0}
+     12 String str5 "__proto__"
+     13 String str6 "1"
+     14 ObjectBoilerplate {k13: k5}
+     15 Number 1.5
+  feedback (19):
+      0 Literal
+      1 Literal
+      2 LoadGlobal
+      3 DefineNamedOwn
+      4 Literal
+      5 DefineNamedOwn
+      6 LoadGlobal
+      7 DefineKeyedOwn
+      8 DefineNamedOwn
+      9 Literal
+     10 DefineNamedOwn
+     11 CloneObject
+     12 Literal
+     13 DefineNamedOwn
+     14 DefineNamedOwn
+     15 LoadGlobal
+     16 DefineNamedOwn
+     17 Literal
+     18 DefineKeyedOwn
+  handlers (0):
+  positions (35):
+      0 S 0 (1:1)
+      5 S 10 (1:11)
+      6 S 16 (1:17)
+     10 S 34 (1:35)
+     16 E 39 (1:40)
+     19 E 35 (1:36)
+     25 S 50 (1:51)
+     33 E 51 (1:52)
+     39 S 66 (1:67)
+     42 E 69 (1:70)
+     45 E 69 (1:70)
+     50 E 67 (1:68)
+     55 E 79 (1:80)
+     58 E 67 (1:68)
+     64 S 84 (1:85)
+     70 E 86 (1:87)
+     73 E 85 (1:86)
+     79 S 91 (1:92)
+     84 E 93 (1:94)
+     92 S 101 (1:102)
+     98 E 112 (1:113)
+    103 E 109 (1:110)
+    110 E 102 (1:103)
+    116 S 123 (1:124)
+    122 E 124 (1:125)
+    129 E 124 (1:125)
+    135 S 150 (1:151)
+    138 E 165 (1:166)
+    143 E 151 (1:152)
+    150 S 170 (1:171)
+    153 E 172 (1:173)
+    156 E 171 (1:172)
+    162 S 186 (1:187)
+    170 E 194 (1:195)
+    175 E 187 (1:188)
