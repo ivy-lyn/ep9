@@ -184,6 +184,14 @@ fn call_internal(cx: &mut Cx, f: u64, this: u64, args: &[u64], new_target: u64) 
             EXIT_STUB.as_ptr(),
         );
     }
+    // [[Call]] of a class constructor (§10.2.1 step 2), as in the `Call*` slow path.
+    if new_target == UNDEFINED && fi.is_class_constructor() {
+        let msg = format!(
+            "Class constructor {} cannot be invoked without 'new'",
+            fi.name
+        );
+        return Err(throw_error(cx, ErrorKind::TypeError, &msg));
+    }
     if !fi.is_bytecode() || fi.slot.kind_byte() != crate::dispatch::DispatchKind::Interp as u8 {
         return Err(not_implemented(cx, "calling code of this dispatch kind"));
     }

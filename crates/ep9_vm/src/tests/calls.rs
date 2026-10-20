@@ -1,8 +1,8 @@
 //! Calls, recursion, argument padding, `this`, construct, classes, closures, host functions.
 
 use ep9_bytecode::{
-    FeedbackSlotKind, FunctionFlags, FunctionId, FunctionKind, RegisterList, RuntimeId, ScopeId,
-    ScopeKind, VariableMode, VerifiedUnit,
+    FeedbackSlotKind, FunctionFlags, FunctionId, FunctionKind, Register, RegisterList, RuntimeId,
+    ScopeId, ScopeKind, VariableMode, VerifiedUnit,
 };
 
 use super::{Asm, isolate, meta, ok, run_all, take_output, unit, unit_with_scopes};
@@ -437,5 +437,133 @@ fn host_functions_and_reentry() {
             "{}",
             d.name()
         );
+    }
+}
+
+fn construct_host(
+    cx: &mut HostCx<'_>,
+    _this: Value,
+    args: Args<'_>,
+    _nt: Value,
+) -> JsResult<Value> {
+    cx.construct(args.get(0), &[])
+}
+
+/// `try { body } catch (e) { print(e.message); }`
+fn try_print_message(s: &mut Asm, ctx: Register, t: Register, body: impl FnOnce(&mut Asm)) {
+    let (start, end, handler, done) = (
+        s.b.new_label(),
+        s.b.new_label(),
+        s.b.new_label(),
+        s.b.new_label(),
+    );
+    s.b.lda_current_context().star(ctx);
+    s.b.add_handler(start, end, handler, ctx, ep9_bytecode::HandlerKind::Caught);
+    s.b.bind(start);
+    body(s);
+    s.b.bind(end);
+    s.b.jump(done);
+    s.b.bind(handler);
+    s.b.star(t);
+    s.get_named(t, "message");
+    s.print_acc();
+    s.b.bind(done);
+}
+
+/// A class constructor called from Rust without new.target (ToPrimitive, a host function,
+/// the embedder) throws a TypeError before its body runs (§10.2.1 step 2), like the `Call*`
+/// opcodes. Construct from Rust still runs it.
+#[test]
+fn class_constructor_needs_new_on_rust_calls() {
+    let make = || {
+        // f1: class C { constructor() { ran = ran + 1; return 7; } }
+        let mut mc = meta("C", 0, 0, 0, 0);
+        mc.kind = FunctionKind::ClassConstructor;
+        mc.flags = FunctionFlags::STRICT | FunctionFlags::SIMPLE_PARAMETERS;
+        let mut c = Asm::new(mc);
+        c.lda_global("ran");
+        c.b.inc(c.bin);
+        c.sta_global("ran");
+        c.b.lda_smi(7).return_();
+
+        let mut s = Asm::script(0);
+        let (ctx, t, o, cls, heritage) = (
+            s.b.new_register(),
+            s.b.new_register(),
+            s.b.new_register(),
+            s.b.new_register(),
+            s.b.new_register(),
+        );
+        s.b.lda_zero();
+        s.sta_global("ran");
+        // C = DefineClass(C, hole)
+        let def = RegisterList::new(cls.local_index().unwrap(), 2);
+        assert_eq!(heritage.local_index(), Some(cls.local_index().unwrap() + 1));
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0)
+            .star(cls)
+            .lda_the_hole()
+            .star(heritage);
+        s.b.call_runtime(RuntimeId::DefineClass, def, 2);
+        s.b.ldar(cls);
+        s.sta_global("C");
+        // try { print({ valueOf: C } + 1); } catch (e) { print(e.message); }  (ToPrimitive)
+        try_print_message(&mut s, ctx, t, |s| {
+            s.b.create_empty_object_literal().star(o);
+            s.lda_global("C");
+            s.set_named(o, "valueOf");
+            s.b.lda_smi(1).add(o, s.bin);
+            s.print_acc();
+        });
+        // try { print(callTwice(C)); } catch (e) { print(e.message); }  (host function)
+        try_print_message(&mut s, ctx, t, |s| {
+            s.lda_global("C");
+            s.b.star(s.a.get(1));
+            s.lda_global("callTwice");
+            s.b.star(s.f)
+                .call_undefined_receiver1(s.f, s.a.get(1), s.call);
+            s.print_acc();
+        });
+        // print(ran); print(construct(C) instanceof C); print(ran)
+        s.lda_global("ran");
+        s.print_acc();
+        s.lda_global("C");
+        s.b.star(s.a.get(1));
+        s.lda_global("construct");
+        s.b.star(s.f)
+            .call_undefined_receiver1(s.f, s.a.get(1), s.call)
+            .star(t);
+        let is = s.b.feedback_slot(FeedbackSlotKind::InstanceOf);
+        s.lda_global("C");
+        s.b.test_instance_of(t, is);
+        s.print_acc();
+        s.lda_global("ran");
+        s.print_acc();
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish(), c.finish()])
+    };
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let r = super::on_big_stack(move || {
+                let mut iso = isolate(super::config(d, stress));
+                iso.register_host_function("callTwice", 1, call_twice);
+                iso.register_host_function("construct", 1, construct_host);
+                take_output();
+                let r = iso.run_script(make(), "class.js").map(|v| iso.display(v));
+                // The embedder: Isolate::call(C).
+                let c = iso.global("C").unwrap();
+                let called = iso.call(c, Value::UNDEFINED, &[]).map(|v| iso.display(v));
+                let ran = iso.display(iso.global("ran").unwrap());
+                iso.collect_garbage();
+                iso.verify_heap().unwrap();
+                (r, take_output(), called.map_err(|e| e.message), ran)
+            });
+            let label = format!("{} stress={stress}", d.name());
+            assert!(r.0.is_ok(), "{label}: {:?}", r.0);
+            let msg = "Class constructor C cannot be invoked without 'new'";
+            assert_eq!(r.1, [msg, msg, "0", "true", "1"], "{label}");
+            assert_eq!(r.2, Err(format!("TypeError: {msg}")), "{label}");
+            assert_eq!(r.3, "1", "{label}");
+        }
     }
 }
