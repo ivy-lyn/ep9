@@ -228,7 +228,7 @@ Kinds: **now** = final until its re-check point or an owner override. **rule** =
 | PERF-NOISE (amended) | Class S on a hosted x64 runner: ≥ 31 rounds, the result names the CPU model and holds for that model only. `sp-dispatch bench` applies the rule: paired ratios per round, median, order-statistic interval, void if a kernel IQR > 5% | medium | Hosted x64 labels gave 5 CPU models in 16 jobs; verdict 0.77-1.13 | A hosted label pins one CPU model, or an x64 gate host exists | **change taken**. The text of 10-quality §3 row S is not edited yet (that file is open in another workflow): add "names its CPU model; holds for that model only" |
 | SPEED-CI | Hosted CI: structural gates block. Speed gates never block (`SP_SPEED=report`, 31 rounds): a `::warning` for each speed gate that does not pass, every gate in the job summary, all samples in the artifact `sp-dispatch-gate-<target>` (`bench.json`) | medium | `.github/workflows/ci.yml` spikes job | A gate host joins CI (the `perf` group): its speed gates then block | New. Hosted results stay visible; they do not hide behind a green check |
 | D21-UNIT | "18 sibling-call dispatches" (D21, Spike B) means 18 dispatches of the release expansion on the SP-Dispatch loop kernel, on the same host and in the same session. The number 18 does not change | medium | H15 ADR | Spike B design review | **clarify**. Text in 04 §4, 09 §4 and 11 D21 still says "sibling-call"; edit with the next touch of those rows |
-| REMOTE-CI (note) | The user allowed commits and pushes to the private repo on 2026-10-20/21. The workflow task text quotes the user: "You are free to create repo, keep it private first"; "Keep working on our plan" (workflow script text; the H15 agent did not see the user messages). This settles the REMOTE-CI critic note "commit and push only on an explicit user instruction". The repo stays private; no force-push to `main` | high | user messages as quoted by the workflow task | The user withdraws the permission or asks for a public repo | Records the instruction that the §5.4 REMOTE-CI row asks for |
+| REMOTE-CI (note) | The user allowed commits and pushes to the private repo. The user wrote these messages in the session: "You are free to create repo, keep it private first" (2026-10-20 14:27 UTC) and "Don't stop, I'm going to sleep. Keep working on our plan" (2026-10-20 16:32 UTC). This settles the REMOTE-CI critic note "commit and push only on an explicit user instruction". The repo stays private; no force-push to `main` | high | The user's own messages (session transcript `53ce3b1c`, checked 2026-10-21; §9.3) | The user withdraws the permission or asks for a public repo | Records the instruction that the §5.4 REMOTE-CI row asks for. Corrected 2026-10-21 (§9.2): the first text said the permission was seen only as workflow script text |
 
 **Scratch evidence.** CI logs on GitHub expire. The numbers that the decisions use, with run and job URLs, are in the measurements file. The diag branch `diag/dispatch-x64` keeps the probe code; `diag/h15-gate` ran the new gate on 4 hosted targets before the change goes to `main` (runs [39472609604](https://github.com/Brooooooklyn/ep9/actions/runs/39472609604), [39474039711](https://github.com/Brooooooklyn/ep9/actions/runs/39474039711): every job passed).
 
@@ -271,3 +271,57 @@ source -> parse + semantic -> scope::analyze -> BytecodeGen (G1-G11) -> UnitBuil
 | RegExp flag bit i = letter i of `dgimsuvy` | `lit-regexp` |
 
 **Known gaps (open).** `with (o) f()` calls `f` with an `undefined` receiver. The default derived constructor and a spread call that is not last iterate an array (observable). Script completion values are not kept (f0 returns `undefined`). Module hoisted functions are set at f0 start, not at module instantiation (H02-Q3). The `super` base is read at access time.
+
+## 9. 2026-10-21: PR #1 build decisions and doc sync
+
+**Source.** The docs-sync agent of the M0 workflow, under the user's delegation of 2026-10-20 (§5). The agents that built PR #1 (branch `m0/weeks2-3`, commit `fdad2b4`) reported the choices in §9.1; no earlier section records them. Each row was checked in the code on 2026-10-21. The Evidence column names the place. All reported items were confirmed; none was dropped.
+
+### 9.1 Decisions in the PR #1 code
+
+| ID | Decision | Conf. | Evidence | Reopen rule | Note |
+|---|---|---|---|---|---|
+| T0-NOT-IMPL | An opcode or path that T0 v0 does not run throws a catchable `Error` with the message "not implemented in ep9 v0: <what>". Never a panic, never UB | high | `crates/ep9_vm/src/error.rs` (`not_implemented`); `src/interp/ops.rs` (module doc); test `tests/exceptions.rs::type_errors_and_not_implemented_are_catchable` | Each item goes when its feature lands | Every v0 shortcut in `ops.rs` is marked `// v0:` |
+| T0-NATIVE-WORD | A native word on the VM stack (caller fp, return pc, FunctionInfo) is stored as `addr + 2^49`, a subnormal double pattern. So every slot in `[base, top)` is a valid `Value`, and the GC scans the VM stack as one precise slice | high | `crates/ep9_vm/src/frame.rs` (`native`, `native_addr`); `DOUBLE_ENCODE_OFFSET = 1 << 49` in `ep9_value` | A target with addresses at or above 2^49 (debug assert in `native`) | Decoding is one subtract. Object cells use the same encoding (`object.rs`) |
+| T0-STACK-LIMIT | Both stack limits give a catchable `RangeError` "Maximum call stack size exceeded": the VM register stack cap (`push_frame` finds no room) and the native stack bound (`sp > native_limit`; `native_limit` = stack low end + clamp(stack size / 4, 128 KiB, 1 MiB)). The isolate stays usable after it | high | `crates/ep9_vm/src/call.rs`; `runtime.rs` (`native_stack_ok`); `isolate.rs` (`native_margin`); tests `vm_stack_overflow_is_a_catchable_range_error` and `native_stack_overflow_is_a_catchable_range_error`, every dispatch kind | The H23 ADR (limits) sets other values | The native check runs at JS entries, host calls and recursive runtime routines |
+| T0-DEBUG-STACK | Debug builds only: the threaded handlers (sibling call, `become`) panic when the native stack pointer reaches 64 KiB below `native_limit` (`DEBUG_SLACK`). So the RangeError path keeps 64 KiB to unwind. The panic text says to use `Dispatch::Match` | high | `crates/ep9_vm/src/interp/dsl.rs` (`debug_native_stack_check`) | — | Debug builds have no tail calls, so sibling dispatch grows the native stack by one frame per instruction |
+| T0-COLD | Match loop (the x86-64 release expansion, H15): each cold block is an out-of-line `#[cold]` `#[inline(never)]` function (`cold::*`). Each arm stays small, so LLVM can copy the dispatch into the arms | high | `crates/ep9_vm/src/interp/dsl.rs` (`expand_match!`); `cargo xtask disasm-check --match-loop` | The `--match-loop` check fails on T0 (H15-X64 reopen rule, §7) | The threaded expansions have one cold handler per cold block |
+| T0-NEW-TARGET | v0 keeps new.target in the FEEDBACK header slot of a `[[Construct]]` frame (argc bit 30). `LdaNewTarget` reads it there. Host functions get it as an argument. The slot is free until H16 | medium | `crates/ep9_vm/src/call.rs` (`push_frame`); `src/interp/ops.rs` (`LdaNewTarget`) | H14-Q1 (open; M1: classes, `Reflect.construct`); H16 needs the slot | The H14 text was fixed the same day (clarify) |
+| VM-CELL-KINDS | v0 cell kind ids: STRING 1, OBJECT 2, FUNCTION 3, ARRAY 4, ERROR 5, PROPS 6, ELEMENTS 7, CONTEXT 8, ITERATOR 9 (array and string iterator, 48 B). A FUNCTION cell has 56 B: object (32 B), FunctionInfo (native word), context, `[[HomeObject]]` | high | `crates/ep9_vm/src/object.rs` (kind table, `mod fun`, `mod iter`) | Shapes (H8, H17) and H19 strings replace the v0 object model (week 4) | Kind 0 is reserved (`ep9_heap::KindId`) |
+| T262-INFRA | `ep9-test262 exec`: a panic, a timeout (soft per-run timeout, default 20 s; then a hard kill) or a worker crash is an infrastructure error, not a failure. Any infrastructure error makes the run exit 2 before it compares or writes the expectation file | high | `tools/test262/src/exec.rs` (module doc; `if infra.is_empty()` guards the compare and `--update-expectations`); usage text in `main.rs` | — | Same rule as `parse` |
+| T262-NAME | The exec expectation file is `expectations/test262.<target-triple>.jit.txt` (NAMING `<suite>.<target>[.<mode>].txt`, mode `jit`). First file: `test262.aarch64-apple-darwin.jit.txt` | high | `tools/test262/src/main.rs`; [expectations/](../expectations/README.md) | NAMING reopen rule (§5.4) | |
+| HEAP-LOS-VA | Each LOS cell takes a run of whole 256 KiB chunks of cage VA (at least one). It commits only up to the OS page after the cell. So the default 64 GiB cage holds at most 262,144 LOS cells (64 GiB / 256 KiB), fewer when small pages use chunks | medium | `crates/ep9_heap/src/heap.rs` (`alloc_large`); `memory.rs`; `DEFAULT_CAGE_SIZE` in `crates/ep9_platform/src/va.rs` | **Open.** Decide at the S1 design (M1) whether small LOS cells share chunks. Earlier if a test or workload hits the limit | Accepted for S0. A LOS cell is above 8 KiB (H09-Q3), so its VA cost is up to about 30 times its size |
+| HEAP-SIZEFN | A `CellSize::Dynamic` size function may read only its own cell | high | `crates/ep9_heap/src/cell.rs` (`SizeFn` doc) | — | The heap calls it on cells found through a VO bit or a LOS header (`cell_size`) |
+| HEAP-SCRATCH-LIFO | `ScratchRoots` scopes nest LIFO, checked at run time: a push into a scope that is not the innermost panics, and a scope dropped out of order panics (not while a panic unwinds) | high | `crates/ep9_heap/src/roots.rs`; test in `src/tests/gc.rs` (`not the innermost`) | — | 03-gc §2 `ScratchRoots` |
+| OXC-VISIT-PIN | `oxc_ast_visit = "=0.155.0"` moves to the root `[workspace.dependencies]`; `ep9_frontend` uses `workspace = true`. The root now pins 7 oxc crates | high | `cargo metadata --locked` and `cargo build -p ep9_frontend --locked` pass; `Cargo.lock` unchanged (sha256 `e88aee50...f94cd8b`) | The next oxc bump PR bumps all 7 together | Closes H01-Q1 (fill). The §2 note "D1 in the repo" (6 crates) was right until this change |
+
+### 9.2 Corrections to earlier entries
+
+| Where | Old text | Text now | Why |
+|---|---|---|---|
+| §7, row REMOTE-CI (note) | Decision: "The user allowed commits and pushes to the private repo on 2026-10-20/21. The workflow task text quotes the user: "You are free to create repo, keep it private first"; "Keep working on our plan" (workflow script text; the H15 agent did not see the user messages). This settles the REMOTE-CI critic note "commit and push only on an explicit user instruction". The repo stays private; no force-push to `main`". Evidence: "user messages as quoted by the workflow task". Note: "Records the instruction that the §5.4 REMOTE-CI row asks for" | The user wrote both messages in the session (times in UTC). Evidence: the session transcript. The note adds the correction | The old text was wrong. The transcript shows the user's own messages (§9.3). The decision does not change: the repo stays private; no force-push to `main` |
+
+The row was edited in place, as in §6. This table keeps the old text.
+
+### 9.3 User statements behind §2, §5, §7 and §8
+
+Some entries mark a quote as relayed by the workflow harness or as workflow script text. That was how the agent got the text. The session transcript (`53ce3b1c`, checked 2026-10-21) shows that the user typed each quote.
+
+| Quote (verbatim) | Time (UTC) | Used in |
+|---|---|---|
+| "go, let's start with your ultracode" | 2026-10-20 12:20 | §2 |
+| "Don't ask me questions. Deepresearch and descide yourself" | 2026-10-20 14:24 | §5, §8 |
+| "You are free to create repo, keep it private first" | 2026-10-20 14:27 (sent while a turn ran) | §7 REMOTE-CI (note) |
+| "Don't stop, I'm going to sleep. Keep working on our plan" | 2026-10-20 16:32 | §7 REMOTE-CI (note), §8 |
+| "What are u watching? CI is already finished and failed" | 2026-10-20 17:01 | §7 |
+
+### 9.4 Follow-ups applied (no decision changes)
+
+| From | Done on 2026-10-21 |
+|---|---|
+| §7 PERF-NOISE (amended) | [10-quality §3](plan/10-quality.md#3-benchmark-sets) row S: "The result names its CPU model and holds for that model only" |
+| §7 D21-UNIT | "18 sibling-call dispatches" became "18 release-expansion dispatches of the loop kernel" in 04 §5 (the row said §4), 09 §4 and §8, 11 §3.2 (D21) and §4 |
+| §6 "Scratch evidence" | H11 and H36 evidence [M] link the copies in [research/artifacts/decide/](research/artifacts/decide/README.md) |
+| §5.4 LICENSE | `tools/bench` has `license.workspace = true`; `spikes/sp-dispatch` states `license = "MIT OR Apache-2.0"`. [12-governance §1.1](plan/12-governance.md#11-decision) updated |
+| §5.4 UPSTREAM, GITATTRIBUTES | 12-governance §5.1: the three drafts are "draft (2026-10-21)", with links. §6: `sync-lib.sh` sets `core.autocrlf=false` (PR #1) |
+| ADR index | [adr/README §5](adr/README.md#5-index-of-h1-h37): H1, H2, H3, H5, H14 Draft (2026-10-21); H28 notes SP-JIT-mem; counts 17 Draft, 20 Not started |
+| PR #1 code | H07 notes the macOS arm64 `MAP_JIT` code range (RWX from reservation). H14 states where v0 keeps new.target |

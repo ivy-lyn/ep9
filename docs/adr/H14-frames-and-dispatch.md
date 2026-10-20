@@ -32,7 +32,7 @@ Canonical header (caller FP, return pc, callee, argc, SFI, feedback, context, of
 | Slot | Kind | Content |
 |---|---|---|
 | caller fp, return pc, function info | native word | `addr + 2^49` (a subnormal double; never a cell) |
-| callee, feedback, context | Value | feedback is undefined until H16 |
+| callee, feedback, context | Value | feedback is undefined until H16. v0: a `[[Construct]]` frame (argc bit 30) keeps new.target there (H14-Q1) |
 | argc | int32 | actual count; bit 30 = the frame came from `[[Construct]]` |
 | offset | int32 | bytecode offset, saved at runtime calls and Rust entries |
 
@@ -92,7 +92,7 @@ Every word in `[stack base, top)` is a valid Value. The GC scans that slice prec
 
 | ID | Question | Needed by | Proposed default |
 |---|---|---|---|
-| H14-Q1 | Where does `new.target` live? v0 passes it only to host calls | M1 (classes, `Reflect.construct`) | A register filled at entry, not a header slot |
+| H14-Q1 | Where does `new.target` live? v0 keeps it in the feedback slot of a `[[Construct]]` frame (`call::push_frame`; `LdaNewTarget` reads it there) and passes it to host functions as an argument | M1 (classes, `Reflect.construct`) | A register filled at entry, not a header slot |
 | H14-Q2 | Who wraps a primitive receiver of a sloppy function? | M1 | The callee prologue, from the FunctionInfo strict bit |
 | H14-Q3 | Is the register mapping (`o < 0` → `fp + o - 8`) part of the H2 ABI? | H2 freeze (M1 exit) | Yes; the AOT emitter uses it |
 | H14-Q4 | Default VM stack size and the RangeError depth versus V8 | M1 | Keep 2^20 slots; measure test262 and the benches |
@@ -108,3 +108,4 @@ Every word in `[stack base, top)` is a valid Value. The GC scans that slice prec
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-21 | draft | First draft from the T0 v0 interpreter in `ep9_vm` | VM lead (agent) |
+| 2026-10-21 | clarify | Header table and H14-Q1 state where v0 keeps new.target (feedback slot of a construct frame), as the code does | docs-sync agent |
