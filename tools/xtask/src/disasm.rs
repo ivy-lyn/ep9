@@ -9,7 +9,8 @@
 //! |---|---|
 //! | tail exits | A `tail` handler has 0 returns, 0 indirect calls, 0 calls to handlers, and at least one tail exit (indirect jump, or a direct jump to another handler). A direct jump to a symbol that is not a handler is followed: that code counts as part of the handler, and a target that cannot be disassembled fails. An `exit` handler has 0 indirect calls and 0 calls to handlers. |
 //! | handler args | Every handler in the LLVM IR has at most 4 parameters (`--max-args`), and none is passed in memory (sret, byval, inalloca, preallocated). |
-//! | match loop (`--match-loop`) | The match loop (`ep9loop__<expansion>__<fn>`) is the x86-64 release expansion (H15 ADR). On x86-64 it has an indirect (dispatch) jump for at least half of the fast `tail` handlers, so LLVM copied the dispatch into the arms (threaded code), and it touches the stack only next to a call, in the entry block or in an exit sequence. On aarch64 the shape is printed only (the release expansion there is sibling calls). |
+//! | match loop (`--match-loop`) | For SP-Dispatch, whose x86-64 release expansion is the match loop (`ep9loop__<expansion>__<fn>`). On x86-64 it has an indirect (dispatch) jump for at least half of the fast `tail` handlers, so LLVM copied the dispatch into the arms (threaded code), and it touches the stack only next to a call, in the entry block or in an exit sequence. On aarch64 the shape is printed only. T0 (`ep9_vm`) releases sibling calls on every target (H15 ADR, 2026-10-21), so for T0 the loop line is a report, not a gate. |
+//! | Mach-O data in code | x86-64 Mach-O keeps jump tables in `__text` (LC_DATA_IN_CODE). The check drops what `llvm-objdump -d` decodes from those bytes, so table data never counts as jumps, calls, returns or stack accesses. |
 //!
 //! Build mode (default) runs `cargo rustc --lib --release --crate-type staticlib --target T`.
 //! The crate's release profile applies (fat LTO). A staticlib needs no linker, so any target
@@ -449,14 +450,86 @@ fn disassemble(
             .arg(format!("--disassemble-symbols={}", raws.join(",")))
             .arg(file),
     )?;
-    let (format, blocks) = parse_disasm(&out);
+    let (format, mut blocks) = parse_disasm(&out);
     if format.is_empty() {
         return Err(format!(
             "llvm-objdump printed no file format for {}",
             file.display()
         ));
     }
+    if format.to_ascii_lowercase().starts_with("mach-o") {
+        let dice = run_quiet(
+            Command::new(objdump)
+                .args(["--macho", "--data-in-code"])
+                .arg(file),
+        )?;
+        let data = parse_data_in_code(&dice);
+        if !data.is_empty() {
+            let headers = run_quiet(
+                Command::new(objdump)
+                    .args(["--macho", "--private-headers"])
+                    .arg(file),
+            )?;
+            drop_data(&mut blocks, macho_dice_base(&headers), &data);
+        }
+    }
     Ok((format, blocks))
+}
+
+/// Entries `(offset, length)` of `llvm-objdump --macho --data-in-code` output
+/// ("0x0000417c    608 JUMP_TABLE32").
+fn parse_data_in_code(out: &str) -> Vec<(u64, u64)> {
+    out.lines()
+        .filter_map(|l| {
+            let mut w = l.split_whitespace();
+            let off = u64::from_str_radix(w.next()?.strip_prefix("0x")?, 16).ok()?;
+            let len = w.next()?.parse().ok()?;
+            w.next()?;
+            Some((off, len))
+        })
+        .collect()
+}
+
+/// The address of data-in-code offset 0: in a linked image the offsets count from the file
+/// start, so the base is the vmaddr of the segment at file offset 0 (`__TEXT`); in an object
+/// (one segment, not at file offset 0) the offsets are addresses already. Reads
+/// `llvm-objdump --macho --private-headers` output.
+fn macho_dice_base(headers: &str) -> u64 {
+    let field = |l: &str, k: &str| {
+        let v = l.trim().strip_prefix(k)?.trim();
+        match v.strip_prefix("0x") {
+            Some(h) => u64::from_str_radix(h, 16).ok(),
+            None => v.parse().ok(),
+        }
+    };
+    let (mut vmaddr, mut fileoff) = (None, None);
+    for l in headers.lines() {
+        if l.trim().starts_with("cmd LC_SEGMENT") {
+            (vmaddr, fileoff) = (None, None);
+        } else if let Some(v) = field(l, "vmaddr ") {
+            vmaddr = Some(v);
+        } else if let Some(v) = field(l, "fileoff ") {
+            fileoff = Some(v);
+        } else if let (Some(v), Some(0), Some(size)) = (vmaddr, fileoff, field(l, "filesize "))
+            && size > 0
+        {
+            return v;
+        }
+    }
+    0
+}
+
+/// Removes the "instructions" that llvm-objdump decoded from data in code. x86-64 Mach-O
+/// keeps jump tables in `__text` after the function's code (LC_DATA_IN_CODE), and `-d` decodes
+/// them as code: false indirect jumps and calls, stack accesses and returns.
+fn drop_data(blocks: &mut [Block], base: u64, data: &[(u64, u64)]) {
+    for b in blocks {
+        b.insns.retain(|i| {
+            !data
+                .iter()
+                .any(|&(off, len)| (base + off..base + off + len).contains(&i.addr))
+        });
+    }
 }
 
 /// Reads `llvm-objdump -d -r` output: the file format (empty if none) and one block per symbol.
@@ -1618,6 +1691,96 @@ mod tests {
             "movq\t(%rbp,%rbx,8), %r14",
             false
         ));
+    }
+
+    // x86-64 Mach-O: a jump table after the handler's code (as in `TestTypeOf`, rustc 1.99.1).
+    // `llvm-objdump -d` decodes its 8 bytes as an indirect call, junk and a return.
+    const X8_X64_MACHO: &str = "x8.o:\tfile format mach-o 64-bit x86-64
+
+0000000000000000 <_ep9h__fx__tail__TestTypeOf>:
+       0:      \tmovzbl\t0x1(%rsi), %eax
+       4:      \tleaq\t0x11(%rip), %rcx
+       b:      \tmovslq\t(%rcx,%rax,4), %rax
+       f:      \taddq\t%rcx, %rax
+      12:      \tjmpq\t*%rax
+      14:      \tmovzbl\t0x2(%rsi), %eax
+      18:      \tjmpq\t*(%rdi,%rax,8)
+      1c:      \tcallq\t*-0x1(%rax)
+      1f:      \t<unknown>
+      21:      \tretq
+      22:      \tnop
+      24:      \tnop
+";
+    const X8_DICE: &str = "x8.o:
+Data in code table (1 entries)
+offset     length kind
+0x0000001c      8 JUMP_TABLE32
+";
+    // `llvm-objdump --macho --private-headers`: an object (one segment, not at file offset 0)
+    // and a linked executable (__PAGEZERO, then __TEXT at file offset 0).
+    const OBJECT_HEADERS: &str = "x8.o:
+Mach header
+      magic cputype cpusubtype  caps    filetype ncmds sizeofcmds      flags
+MH_MAGIC_64  X86_64        ALL  0x00      OBJECT     5       2208 SUBSECTIONS_VIA_SYMBOLS
+Load command 0
+      cmd LC_SEGMENT_64
+  cmdsize 2072
+  segname
+   vmaddr 0x0000000000000000
+   vmsize 0x00000000003ae2c8
+  fileoff 2240
+ filesize 3859016
+";
+    const IMAGE_HEADERS: &str = "ep9:
+Load command 0
+      cmd LC_SEGMENT_64
+  cmdsize 72
+  segname __PAGEZERO
+   vmaddr 0x0000000000000000
+   vmsize 0x0000000100000000
+  fileoff 0
+ filesize 0
+Load command 1
+      cmd LC_SEGMENT_64
+  cmdsize 712
+  segname __TEXT
+   vmaddr 0x0000000100000000
+   vmsize 0x00000000001d1000
+  fileoff 0
+ filesize 1904640
+Section
+  sectname __text
+      addr 0x0000000100001000
+";
+
+    #[test]
+    fn macho_jump_table_is_data() {
+        let h = "_ep9h__fx__tail__TestTypeOf";
+        let hs = BTreeSet::from([h]);
+        let (_, mut blocks) = parse_disasm(X8_X64_MACHO);
+        // Negative control: decoded as code, the table fails the tail-exit rule.
+        let s = analyze(Arch::X64, &blocks[0], Class::Tail, &blocks, &hs);
+        assert_eq!((s.ind_jumps, s.ind_calls, s.returns), (2, 1, 1));
+        assert_eq!(verdict(Class::Tail, &s).len(), 2, "{s:?}");
+
+        let data = parse_data_in_code(X8_DICE);
+        assert_eq!(data, [(0x1c, 8)]);
+        drop_data(&mut blocks, macho_dice_base(OBJECT_HEADERS), &data);
+        assert_eq!(blocks[0].insns.len(), 8);
+        let s = analyze(Arch::X64, &blocks[0], Class::Tail, &blocks, &hs);
+        assert_eq!((s.ind_jumps, s.ind_calls, s.returns), (2, 0, 0));
+        assert!(verdict(Class::Tail, &s).is_empty(), "{s:?}");
+    }
+
+    #[test]
+    fn macho_data_in_code_base() {
+        assert_eq!(macho_dice_base(OBJECT_HEADERS), 0);
+        assert_eq!(macho_dice_base(IMAGE_HEADERS), 0x1_0000_0000);
+        assert_eq!(macho_dice_base(""), 0);
+        assert!(
+            parse_data_in_code("x.o:\nData in code table (0 entries)\noffset     length kind\n")
+                .is_empty()
+        );
     }
 
     #[test]
