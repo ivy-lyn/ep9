@@ -11,6 +11,25 @@ test("median ranks match the PERF-NOISE table", () => {
   assert.deepEqual(medianRanks(7), [1, 7]);
 });
 
+test("no 95% interval below 6 samples", () => {
+  // [min, max] covers 1 - 2^(1-n): 93.75% at n = 5, 96.9% at n = 6.
+  for (let n = 0; n <= 5; n++) assert.equal(medianRanks(n), null, `n = ${n}`);
+  assert.deepEqual(medianRanks(6), [1, 6]);
+  const v = verdict([1.5]);
+  assert.equal(v.side, "insufficient data");
+  assert.equal(v.interval, null);
+  assert.equal(verdict([1.2, 1.3, 1.4, 1.5, 1.6]).side, "insufficient data");
+  assert.equal(verdict([1.2, 1.3, 1.4, 1.5, 1.6, 1.7]).side, "B faster");
+});
+
+test("rounds below the class S minimum are rejected", () => {
+  assert.throws(() => parseArgs(["--ep9", "x", "--rounds", "1"]), /--rounds must be >= 15/);
+  assert.throws(() => parseArgs(["--ep9", "x", "--rounds", "14"]), /--rounds must be >= 15/);
+  assert.equal(parseArgs(["--ep9", "x", "--rounds", "15"]).rounds, 15);
+  // --cachegrind counts once and ignores --rounds.
+  assert.equal(parseArgs(["--ep9", "x", "--cachegrind", "--rounds", "1"]).cachegrind, true);
+});
+
 test("verdict sides and void", () => {
   const up = Array.from({ length: 31 }, (_, i) => 1.1 + i * 0.001);
   assert.equal(verdict(up).side, "B faster");

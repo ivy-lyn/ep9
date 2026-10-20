@@ -8,7 +8,9 @@
 //   --ep9 PATH          the ep9 binary (release build)
 //   --ep9-b PATH        a second binary: config B runs it (compare two builds, for example
 //                       `--configs sibling,sibling`); the labels become <dispatch>@a, <dispatch>@b
-//   --rounds N          paired rounds after the warm-up (default 31, the hosted-runner minimum)
+//   --rounds N          paired rounds after the warm-up (default 31, the hosted-runner minimum;
+//                       at least 15, the class S minimum: the script cannot tell a gate host
+//                       from a hosted runner, so it enforces the lower one)
 //   --warmup N          dropped warm-up rounds (default 1)
 //   --kernels LIST      comma list of kernel files in this directory (default: all below)
 //   --configs A,B       two --dispatch values; the ratio is time(A) / time(B) (default match,sibling)
@@ -36,6 +38,7 @@ import { fileURLToPath } from "node:url";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const KERNELS = ["t0-loop.js", "t0-branchy.js", "t0-call.js", "t0-prop.js", "ci-v0.js"];
+const MIN_ROUNDS = 15;
 
 export function parseArgs(argv) {
   const o = {
@@ -71,6 +74,10 @@ export function parseArgs(argv) {
   if (!o.ep9) throw new Error("--ep9 is required");
   if (o.configs.length !== 2) throw new Error("--configs needs exactly two values");
   if (!(o.rounds >= 1) || !(o.warmup >= 0)) throw new Error("bad --rounds or --warmup");
+  // PERF-NOISE class S (10-quality section 3): >= 15 paired rounds. --cachegrind counts once.
+  if (!o.cachegrind && o.rounds < MIN_ROUNDS) {
+    throw new Error(`--rounds must be >= ${MIN_ROUNDS} (PERF-NOISE class S)`);
+  }
   // Each config: a label, a binary and a --dispatch value.
   o.runs = o.configs.map((d, i) => ({
     label: o.ep9b ? `${d}@${"ab"[i]}` : d,
@@ -105,6 +112,7 @@ export function quantile(xs, q) {
  * 1-based ranks (k, n + 1 - k) of the order-statistic interval for the median with coverage
  * >= 95%: the largest k with 1 - 2 P(Bin(n, 1/2) <= k - 1) >= 0.95. n = 31 gives (10, 22),
  * n = 15 (4, 12), n = 10 (2, 9), n = 7 (1, 7), as in the PERF-NOISE table.
+ * null when no such interval exists: for n < 6 even (1, n) covers only 1 - 2^(1-n) (n = 5: 93.75%).
  */
 export function medianRanks(n) {
   // P(Bin(n, 1/2) <= j), summed in floating point (n is small).
@@ -117,6 +125,7 @@ export function medianRanks(n) {
     }
     return sum / 2 ** n;
   };
+  if (1 - 2 * cdf(0) < 0.95) return null;
   let k = 1;
   while (k + 1 <= n && 1 - 2 * cdf(k) >= 0.95) k++;
   return [k, n + 1 - k];
@@ -124,16 +133,18 @@ export function medianRanks(n) {
 
 export function verdict(ratios) {
   const s = sorted(ratios);
-  const [lo, hi] = medianRanks(s.length);
+  const ranks = medianRanks(s.length);
   const med = median(s);
   const iqr = quantile(s, 0.75) - quantile(s, 0.25);
-  const interval = [s[lo - 1], s[hi - 1]];
-  const side =
-    interval[0] > 1 ? "B faster" : interval[1] < 1 ? "A faster" : "tie";
+  // No 95% interval (n < 6): no interval and no side.
+  const interval = ranks && [s[ranks[0] - 1], s[ranks[1] - 1]];
+  const side = !interval
+    ? "insufficient data"
+    : interval[0] > 1 ? "B faster" : interval[1] < 1 ? "A faster" : "tie";
   return {
     median: med,
     interval,
-    ranks: [lo, hi],
+    ranks,
     iqrPct: (100 * iqr) / med,
     void: iqr / med > 0.05,
     side,
@@ -276,13 +287,14 @@ function report(o, h, res) {
     lines.push(
       `rounds: ${o.rounds} paired (+${o.warmup} warm-up dropped); ratio = time(${A}) / time(${B}), > 1: ${B} faster`,
       "",
-      `| kernel | ${A} ms | ${B} ms | ratio (median) | interval (ranks ${res.kernels[o.kernels[0]].ranks.join(", ")}) | IQR % | verdict |`,
+      `| kernel | ${A} ms | ${B} ms | ratio (median) | interval (ranks ${res.kernels[o.kernels[0]].ranks?.join(", ") ?? "none"}) | IQR % | verdict |`,
       "|---|---|---|---|---|---|---|",
     );
     for (const [k, v] of Object.entries(res.kernels)) {
-      const verdictText = v.side === "B faster" ? `${B} faster` : v.side === "A faster" ? `${A} faster` : "tie";
+      const verdictText = v.side === "B faster" ? `${B} faster` : v.side === "A faster" ? `${A} faster` : v.side;
+      const interval = v.interval ? `[${fmt(v.interval[0])}, ${fmt(v.interval[1])}]` : "none";
       lines.push(
-        `| ${k} | ${fmt(v[`${A}_ms`], 1)} | ${fmt(v[`${B}_ms`], 1)} | ${fmt(v.median)} | [${fmt(v.interval[0])}, ${fmt(v.interval[1])}] | ${fmt(v.iqrPct, 1)} | ${verdictText}${v.void ? " (void: IQR > 5%)" : ""} |`,
+        `| ${k} | ${fmt(v[`${A}_ms`], 1)} | ${fmt(v[`${B}_ms`], 1)} | ${fmt(v.median)} | ${interval} | ${fmt(v.iqrPct, 1)} | ${verdictText}${v.void ? " (void: IQR > 5%)" : ""} |`,
       );
     }
     lines.push("", `geomean of the medians (${res.geomeanKernels.join(", ")}): ${fmt(res.geomean)}`);
