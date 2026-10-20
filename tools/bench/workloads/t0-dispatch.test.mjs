@@ -1,0 +1,46 @@
+// node --test tools/bench/workloads/t0-dispatch.test.mjs
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import { geomean, median, medianRanks, parseArgs, quantile, verdict } from "./t0-dispatch.mjs";
+
+test("median ranks match the PERF-NOISE table", () => {
+  assert.deepEqual(medianRanks(31), [10, 22]);
+  assert.deepEqual(medianRanks(15), [4, 12]);
+  assert.deepEqual(medianRanks(10), [2, 9]);
+  assert.deepEqual(medianRanks(7), [1, 7]);
+});
+
+test("verdict sides and void", () => {
+  const up = Array.from({ length: 31 }, (_, i) => 1.1 + i * 0.001);
+  assert.equal(verdict(up).side, "B faster");
+  assert.equal(verdict(up).void, false);
+  assert.deepEqual(verdict(up).interval, [up[9], up[21]]);
+  const down = up.map((x) => 1 / x);
+  assert.equal(verdict(down).side, "A faster");
+  const mixed = Array.from({ length: 31 }, (_, i) => 0.9 + i * (0.2 / 30));
+  const v = verdict(mixed);
+  assert.equal(v.side, "tie");
+  assert.equal(v.void, true, `IQR ${v.iqrPct}%`);
+});
+
+test("small helpers", () => {
+  assert.equal(median([3, 1, 2]), 2);
+  assert.equal(median([4, 1, 2, 3]), 2.5);
+  assert.equal(quantile([1, 2, 3, 4, 5], 0.25), 2);
+  assert.ok(Math.abs(geomean([2, 8]) - 4) < 1e-12);
+  assert.deepEqual(parseArgs(["--ep9", "x", "--rounds", "15"]).rounds, 15);
+  assert.throws(() => parseArgs(["--configs", "a", "--ep9", "x"]));
+});
+
+test("two binaries get labels per binary", () => {
+  const o = parseArgs(["--ep9", "a", "--ep9-b", "b", "--configs", "sibling,sibling"]);
+  assert.deepEqual(
+    o.runs.map((r) => [r.label, r.bin, r.dispatch]),
+    [
+      ["sibling@a", "a", "sibling"],
+      ["sibling@b", "b", "sibling"],
+    ],
+  );
+  assert.throws(() => parseArgs(["--ep9", "a", "--configs", "match,match"]));
+});
