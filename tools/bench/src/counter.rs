@@ -8,12 +8,24 @@
 //! | `cachegrind` | `valgrind --tool=cachegrind` "I refs"   | Linux | user-mode instructions (VM) |
 //!
 //! `cachegrind` is the fallback for Linux hosts with no hardware counters (many cloud VMs).
+//!
+//! Before the runs, [`Counter::probe`] checks that the counter gives a count on this host. Some
+//! hosts have no counter: Windows, and a VM without PMC access, such as a hosted macOS runner
+//! (Apple's `time.c` prints "instructions retired" only for a count above 0). On such a host the
+//! runs go without a wrapper and give wall time only (`instructions: None`).
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
+
+/// The program that a probe runs.
+const PROBE_PROGRAM: &str = if cfg!(target_os = "macos") {
+    "/usr/bin/true"
+} else {
+    "/bin/true"
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Counter {
@@ -41,79 +53,128 @@ impl Counter {
         }
     }
 
-    /// Picks the counter for this host: `time` on macOS; on Linux `perf` if a probe run gives a
-    /// number, else `cachegrind` if valgrind runs.
-    pub fn detect() -> Result<Counter, String> {
-        match std::env::consts::OS {
-            "macos" => Ok(Counter::Time),
-            "linux" => {
-                let probe = Path::new("/bin/true");
-                if measure(Counter::Perf, probe, &[], false).is_ok() {
-                    Ok(Counter::Perf)
-                } else if measure(Counter::Cachegrind, probe, &[], false).is_ok() {
-                    Ok(Counter::Cachegrind)
-                } else {
-                    Err(
-                        "no instruction counter: `perf stat -e instructions:u` gave no count and \
-                         valgrind did not run"
-                            .into(),
-                    )
-                }
+    /// Checks that this counter gives a count on this host: one run of `true` under it must give
+    /// a count above 0. `Err` tells why it does not.
+    pub fn probe(self) -> Result<(), String> {
+        let why = match measure(Some(self), Path::new(PROBE_PROGRAM), &[], false) {
+            Ok(Sample {
+                instructions: Some(n),
+                ..
+            }) if n > 0 => return Ok(()),
+            Ok(_) => "the count was 0".to_string(),
+            Err(e) => e,
+        };
+        Err(format!(
+            "{}: {why} (probe run: {PROBE_PROGRAM}). {}",
+            self.id(),
+            self.no_count_hint()
+        ))
+    }
+
+    fn no_count_hint(self) -> &'static str {
+        match self {
+            Counter::Time => {
+                "macOS `time -l` prints \"instructions retired\" only for a count above 0, so \
+                 this host gives no instruction count (for example a VM without PMC access, such \
+                 as a hosted macOS runner)"
             }
-            os => Err(format!("no instruction counter on {os}")),
+            Counter::Perf => {
+                "perf is missing, or the host hides hardware counters (VM) or forbids them \
+                 (kernel.perf_event_paranoid)"
+            }
+            Counter::Cachegrind => "valgrind is missing or does not run",
         }
     }
+
+    /// Picks the counter for this host: `time` on macOS; on Linux `perf`, else `cachegrind`. Each
+    /// one must pass [`Counter::probe`]. `Err` tells why no counter gives a count.
+    pub fn detect() -> Result<Counter, String> {
+        let candidates: &[Counter] = match std::env::consts::OS {
+            "macos" => &[Counter::Time],
+            "linux" => &[Counter::Perf, Counter::Cachegrind],
+            os => return Err(format!("ep9-bench has no instruction counter for {os}")),
+        };
+        let mut why = Vec::new();
+        for &c in candidates {
+            match c.probe() {
+                Ok(()) => return Ok(c),
+                Err(e) => why.push(e),
+            }
+        }
+        Err(why.join("; "))
+    }
+
+    /// The wrapper command, before the benchmarked program. It writes its report to `report`.
+    fn wrapper(self, report: &Path) -> Command {
+        match self {
+            Counter::Time => {
+                let mut c = Command::new(time_tool());
+                c.arg("-l").arg("-o").arg(report);
+                c
+            }
+            Counter::Perf => {
+                let mut c = Command::new("perf");
+                c.args(["stat", "-x", ",", "-e", "instructions:u", "-o"]);
+                c.arg(report).arg("--");
+                c
+            }
+            Counter::Cachegrind => {
+                let mut c = Command::new("valgrind");
+                c.args([
+                    "--tool=cachegrind",
+                    "--cache-sim=no",
+                    "--cachegrind-out-file=/dev/null",
+                ]);
+                c.arg(format!("--log-file={}", report.display()));
+                c.arg("--");
+                c
+            }
+        }
+    }
+}
+
+/// `/usr/bin/time`, or the program in `EP9_BENCH_TIME` (tests set a fake: tests/testdata).
+fn time_tool() -> PathBuf {
+    std::env::var_os("EP9_BENCH_TIME").map_or_else(|| PathBuf::from("/usr/bin/time"), PathBuf::from)
 }
 
 /// One measured run.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sample {
-    pub instructions: u64,
+    /// `None` when the run has no counter (the host has none).
+    pub instructions: Option<u64>,
     pub wall_ns: u128,
     /// Peak RSS in bytes, when the tool reports it (`time` only).
     pub max_rss_bytes: Option<u64>,
 }
 
-/// Runs `program args` once under `counter`. A nonzero exit of the program is an error.
+/// Runs `program args` once, under `counter` if there is one; with `None` it measures wall time
+/// only. A nonzero exit of the program is an error. With a counter, a run that gives no count is
+/// an error too.
 pub fn measure(
-    counter: Counter,
+    counter: Option<Counter>,
     program: &Path,
     args: &[String],
     show_output: bool,
 ) -> Result<Sample, String> {
     let report = temp_path();
     let mut cmd = match counter {
-        Counter::Time => {
-            let mut c = Command::new("/usr/bin/time");
-            c.arg("-l").arg("-o").arg(&report);
-            c
+        Some(c) => {
+            let mut cmd = c.wrapper(&report);
+            cmd.arg(program);
+            cmd
         }
-        Counter::Perf => {
-            let mut c = Command::new("perf");
-            c.args(["stat", "-x", ",", "-e", "instructions:u", "-o"]);
-            c.arg(&report).arg("--");
-            c
-        }
-        Counter::Cachegrind => {
-            let mut c = Command::new("valgrind");
-            c.args([
-                "--tool=cachegrind",
-                "--cache-sim=no",
-                "--cachegrind-out-file=/dev/null",
-            ]);
-            c.arg(format!("--log-file={}", report.display()));
-            c.arg("--");
-            c
-        }
+        None => Command::new(program),
     };
-    cmd.arg(program).args(args);
+    cmd.args(args);
     if !show_output {
         cmd.stdout(Stdio::null()).stderr(Stdio::null());
     }
     let start = Instant::now();
-    let status = cmd
-        .status()
-        .map_err(|e| format!("cannot run the {} counter: {e}", counter.id()));
+    let status = cmd.status().map_err(|e| match counter {
+        Some(c) => format!("cannot run the {} counter: {e}", c.id()),
+        None => format!("cannot run {}: {e}", program.display()),
+    });
     let wall_ns = start.elapsed().as_nanos();
     let text = fs::read_to_string(&report).unwrap_or_default();
     let _ = fs::remove_file(&report);
@@ -121,6 +182,13 @@ pub fn measure(
     if !status.success() {
         return Err(format!("{} exited with {status}", program.display()));
     }
+    let Some(counter) = counter else {
+        return Ok(Sample {
+            instructions: None,
+            wall_ns,
+            max_rss_bytes: None,
+        });
+    };
     let instructions = match counter {
         Counter::Time => parse_time_l(&text),
         Counter::Perf => parse_perf_csv(&text),
@@ -132,7 +200,7 @@ pub fn measure(
         _ => None,
     };
     Ok(Sample {
-        instructions,
+        instructions: Some(instructions),
         wall_ns,
         max_rss_bytes,
     })
@@ -199,6 +267,11 @@ mod tests {
             Some(1_261_568)
         );
         assert_eq!(parse_time_l("time: command terminated abnormally\n"), None);
+        // No PMC access (hosted macOS VM): time.c leaves out the lines with a count of 0.
+        let no_pmc = "        0.00 real         0.00 user         0.00 sys\n\
+                      \x20            1261568  maximum resident set size\n\
+                      \x20            1327344  peak memory footprint\n";
+        assert_eq!(parse_time_l(no_pmc), None);
     }
 
     #[test]

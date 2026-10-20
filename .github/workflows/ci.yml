@@ -5,6 +5,7 @@
 #   build-test ....... build + test; clippy on the other 3 targets   (4 targets)
 #   test262-parse .... parse-only runner vs expectations/            (4 targets)
 #   spikes ........... SP-Dispatch and SP-GC host gates              (4 targets)
+#                      SP-Dispatch speed gates: recorded, not blocking (H15 ADR)
 #   dep-guards ....... cargo tree / metadata guards                  (Linux x64)
 #   perf-ci-v0 ....... ep9-bench instruction counts as JSON artifact (Linux x64)
 #   sp-tsrs-win ...... tsrs_cli on Windows: recorded, not blocking   (Windows x64)
@@ -134,11 +135,25 @@ jobs:
           workspaces: |
             spikes/sp-dispatch -> target
             spikes/sp-gc -> target
+      # Structural gates block (build, tests, agreement, tail exits, handler args, x64 match-loop
+      # shape). Speed gates are recorded, not blocking: one hosted x64 label gave 4 CPU models,
+      # and the verdict changes with the model (H15 ADR; docs/measurements/2026-10-21-sp-dispatch-x64.md).
+      # They show as warnings, in the job summary and in the artifact (bench.json). 31 rounds is
+      # the hosted-runner minimum of the speed-gate rule (docs/plan/10-quality.md section 3).
       - name: SP-Dispatch gate
+        env:
+          SP_SPEED: report
+          SP_ROUNDS: "31"
         run: bash spikes/sp-dispatch/gate.sh
       - name: SP-GC gate
         if: ${{ !cancelled() }}
         run: bash spikes/sp-gc/gate.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: sp-dispatch-gate-${{ matrix.name }}
+          path: spikes/sp-dispatch/target/gate/
+          if-no-files-found: warn
 
   dep-guards:
     name: dependency guards

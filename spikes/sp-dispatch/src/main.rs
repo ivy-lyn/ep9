@@ -6,11 +6,18 @@
 //! sp-dispatch ops                           opcode table
 //! sp-dispatch check [--cgoto EXE] [--become EXE]
 //! sp-dispatch deep-loop                     threaded variants on a 64 KiB native stack
-//! sp-dispatch bench [--rounds N] [--scale F] [--cgoto EXE] [--become EXE] [--gate]
+//! sp-dispatch cpu                           CPU model (the x64 speed ratios depend on it)
+//! sp-dispatch bench [--rounds N] [--scale F] [--cgoto EXE] [--become EXE] [--json FILE] [--gate]
 //! ```
 //!
 //! Result line (cgoto.c prints the same format):
 //! `result=<i64> interrupts=<u64> slow=<u64> error=<u32> ns=<u64>`
+//!
+//! Speed gates (H15 ADR; docs/plan/09-milestones.md section 4, row SP-Dispatch): `bench`
+//! prints one `GATE-RESULT <id> <pass|fail|marginal|void>` line per gate of this target, and
+//! `REPORT-RESULT` for a comparison that is measured but not gated there (x86-64: sibling-vs-match).
+//! The verdict follows the speed-gate rule of docs/plan/10-quality.md section 3 (PERF-NOISE):
+//! paired ratios per round, median, order-statistic interval, void if a kernel IQR > 5%.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -30,8 +37,14 @@ fn main() -> ExitCode {
         Some("ops") => cmd_ops(),
         Some("check") => cmd_check(&args[1..]),
         Some("deep-loop") => cmd_deep_loop(),
+        Some("cpu") => {
+            println!("{}", cpu_model());
+            Ok(true)
+        }
         Some("bench") => cmd_bench(&args[1..]),
-        _ => Err("usage: sp-dispatch run|dump|ops|check|deep-loop|bench (see src/main.rs)".into()),
+        _ => Err(
+            "usage: sp-dispatch run|dump|ops|check|deep-loop|cpu|bench (see src/main.rs)".into(),
+        ),
     };
     match r {
         Ok(true) => ExitCode::SUCCESS,
@@ -283,6 +296,62 @@ fn uptime() -> String {
         .unwrap_or_else(|e| format!("uptime failed: {e}"))
 }
 
+/// CPU model. The x86-64 ratios depend on it: one hosted runner label gave AMD EPYC 7763,
+/// 9V74, 9V45 and Intel Xeon 8573C, with match/sibling from 0.77 to 1.13
+/// (docs/measurements/2026-10-21-sp-dispatch-x64.md).
+fn cpu_model() -> String {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // CPUID leaves 0x8000_0002..=0x8000_0004 hold the 48-byte brand string, on every OS.
+        use std::arch::x86_64::__cpuid;
+        if __cpuid(0x8000_0000).eax >= 0x8000_0004 {
+            let mut b = Vec::with_capacity(48);
+            for leaf in 0x8000_0002u32..=0x8000_0004 {
+                let r = __cpuid(leaf);
+                for w in [r.eax, r.ebx, r.ecx, r.edx] {
+                    b.extend_from_slice(&w.to_le_bytes());
+                }
+            }
+            let s = String::from_utf8_lossy(&b);
+            let s = s.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+            if !s.is_empty() {
+                return s.to_string();
+            }
+        }
+    }
+    // Linux aarch64: implementer and part number.
+    if let Ok(s) = std::fs::read_to_string("/proc/cpuinfo") {
+        let field = |k: &str| {
+            s.lines()
+                .find(|l| l.starts_with(k))
+                .and_then(|l| l.split_once(':'))
+                .map(|(_, v)| v.trim().to_string())
+        };
+        if let (Some(imp), Some(part)) = (field("CPU implementer"), field("CPU part")) {
+            let name = match (imp.as_str(), part.as_str()) {
+                ("0x41", "0xd0c") => "Neoverse-N1 ",
+                ("0x41", "0xd49") => "Neoverse-N2 ",
+                ("0x41", "0xd40") => "Neoverse-V1 ",
+                ("0x41", "0xd4f") => "Neoverse-V2 ",
+                _ => "",
+            };
+            return format!("{name}(implementer {imp}, part {part})");
+        }
+        if let Some(m) = field("model name") {
+            return m;
+        }
+    }
+    // macOS.
+    Command::new("sysctl")
+        .args(["-n", "machdep.cpu.brand_string"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".into())
+}
+
 fn median(v: &mut [f64]) -> f64 {
     v.sort_by(f64::total_cmp);
     let n = v.len();
@@ -295,6 +364,227 @@ fn median(v: &mut [f64]) -> f64 {
 
 fn geomean(v: &[f64]) -> f64 {
     (v.iter().map(|x| x.ln()).sum::<f64>() / v.len() as f64).exp()
+}
+
+/// Linear-interpolation quantile of sorted values.
+fn quantile(s: &[f64], p: f64) -> f64 {
+    let x = p * (s.len() - 1) as f64;
+    let i = x.floor() as usize;
+    match s.get(i + 1) {
+        Some(&next) => s[i] + (next - s[i]) * (x - i as f64),
+        None => s[i],
+    }
+}
+
+/// Rank k (1-based) of the order-statistic interval [x(k), x(n+1-k)] of the median: the
+/// largest k with P(Bin(n, 1/2) <= k - 1) <= 0.025, so the interval covers >= 95%.
+/// 10-quality section 3: n = 7 -> 1, n = 10 -> 2, n = 15 -> 4, n = 31 -> 10.
+/// For n < 6 no k reaches 95%; it returns 1 (min and max).
+fn median_rank(n: usize) -> usize {
+    let mut pmf = 0.5f64.powi(n as i32);
+    let mut cdf = 0.0;
+    let mut k = 1;
+    for i in 0..n {
+        cdf += pmf; // P(B <= i)
+        if cdf > 0.025 {
+            break;
+        }
+        k = i + 1;
+        pmf *= (n - i) as f64 / (i + 1) as f64;
+    }
+    k.min(n.div_ceil(2))
+}
+
+/// One statistic of paired ratios with its verdict against a limit.
+struct Stat {
+    what: String,
+    limit: f64,
+    /// true: pass needs ratio <= limit; false: pass needs ratio >= limit.
+    at_most: bool,
+    n: usize,
+    median: f64,
+    lo: f64,
+    hi: f64,
+    /// Interquartile range in % of the median.
+    iqr_pct: f64,
+    result: &'static str,
+}
+
+/// PERF-NOISE verdict for the paired ratios `v` (10-quality section 3): pass if the whole
+/// interval of the median is on the pass side, fail if it is on the fail side, else marginal.
+fn stat(what: &str, v: &[f64], limit: f64, at_most: bool) -> Stat {
+    let mut s = v.to_vec();
+    s.sort_by(f64::total_cmp);
+    let n = s.len();
+    let k = median_rank(n);
+    let (lo, hi) = (s[k - 1], s[n - k]);
+    let median = quantile(&s, 0.5);
+    let iqr_pct = (quantile(&s, 0.75) - quantile(&s, 0.25)) / median * 100.0;
+    let (pass, fail) = if at_most {
+        (hi <= limit, lo > limit)
+    } else {
+        (lo >= limit, hi < limit)
+    };
+    let result = if pass {
+        "pass"
+    } else if fail {
+        "fail"
+    } else {
+        "marginal"
+    };
+    Stat {
+        what: what.into(),
+        limit,
+        at_most,
+        n,
+        median,
+        lo,
+        hi,
+        iqr_pct,
+        result,
+    }
+}
+
+/// A speed gate (or a report with the same form): a geomean statistic plus per-kernel guards.
+struct Gate {
+    id: String,
+    /// "gate" counts for the target; "report" is printed and stored only.
+    kind: &'static str,
+    rule: String,
+    stats: Vec<Stat>,
+}
+
+impl Gate {
+    /// void if a kernel's IQR > 5% (host not quiet; 10-quality section 3), else the worst
+    /// verdict: fail > marginal > pass.
+    fn result(&self) -> &'static str {
+        if self.stats.iter().skip(1).any(|s| s.iqr_pct > 5.0) {
+            return "void";
+        }
+        self.interval_result()
+    }
+
+    /// The worst interval verdict, IQR ignored.
+    fn interval_result(&self) -> &'static str {
+        let rank = |r: &str| match r {
+            "fail" => 2,
+            "marginal" => 1,
+            _ => 0,
+        };
+        self.stats
+            .iter()
+            .map(|s| s.result)
+            .max_by_key(|r| rank(r))
+            .unwrap_or("fail")
+    }
+}
+
+/// Builds a gate from per-round samples. `num` / `den` index the runners; the statistic per
+/// round is num/den for each kernel and their geomean over the kernels.
+fn paired_gate(
+    g: (&str, &'static str, String),
+    samples: &[Vec<Vec<f64>>],
+    kernels: &[&str],
+    (num, den): (usize, usize),
+    (geo_limit, kernel_limit, at_most): (f64, f64, bool),
+) -> Gate {
+    let rounds = samples[0][num].len();
+    let per_kernel: Vec<Vec<f64>> = samples
+        .iter()
+        .map(|k| (0..rounds).map(|i| k[num][i] / k[den][i]).collect())
+        .collect();
+    let per_round: Vec<f64> = (0..rounds)
+        .map(|i| geomean(&per_kernel.iter().map(|k| k[i]).collect::<Vec<_>>()))
+        .collect();
+    let mut stats = vec![stat("geomean", &per_round, geo_limit, at_most)];
+    for (ki, name) in kernels.iter().enumerate() {
+        stats.push(stat(name, &per_kernel[ki], kernel_limit, at_most));
+    }
+    Gate {
+        id: g.0.into(),
+        kind: g.1,
+        rule: g.2,
+        stats,
+    }
+}
+
+fn print_gate(g: &Gate) {
+    let tag = if g.kind == "gate" { "GATE" } else { "REPORT" };
+    println!("{tag} {}: {}", g.id, g.rule);
+    for s in &g.stats {
+        println!(
+            "  {:<8} n={} median {:.3} interval [{:.3}, {:.3}] IQR {:.1}% ({} {:.2}) -> {}",
+            s.what,
+            s.n,
+            s.median,
+            s.lo,
+            s.hi,
+            s.iqr_pct,
+            if s.at_most { "<=" } else { ">=" },
+            s.limit,
+            s.result
+        );
+    }
+    let (r, ir) = (g.result(), g.interval_result());
+    if r == "void" {
+        println!(
+            "{tag}-RESULT {} void (a kernel IQR > 5%; interval verdict: {ir})",
+            g.id
+        );
+    } else {
+        println!("{tag}-RESULT {} {r}", g.id);
+    }
+}
+
+/// JSON string literal.
+fn js(s: &str) -> String {
+    let mut o = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+/// JSON number list.
+fn jn(v: &[f64]) -> String {
+    let items: Vec<String> = v.iter().map(|x| format!("{x}")).collect();
+    format!("[{}]", items.join(","))
+}
+
+fn gate_json(g: &Gate) -> String {
+    let stats: Vec<String> = g
+        .stats
+        .iter()
+        .map(|s| {
+            format!(
+                "{{\"what\":{},\"limit\":{},\"at_most\":{},\"n\":{},\"median\":{},\"lo\":{},\"hi\":{},\"iqr_pct\":{},\"result\":{}}}",
+                js(&s.what),
+                s.limit,
+                s.at_most,
+                s.n,
+                s.median,
+                s.lo,
+                s.hi,
+                s.iqr_pct,
+                js(s.result)
+            )
+        })
+        .collect();
+    format!(
+        "{{\"id\":{},\"kind\":{},\"rule\":{},\"result\":{},\"interval_result\":{},\"stats\":[{}]}}",
+        js(&g.id),
+        js(g.kind),
+        js(&g.rule),
+        js(g.result()),
+        js(g.interval_result()),
+        stats.join(",")
+    )
 }
 
 struct Runner {
@@ -356,8 +646,12 @@ fn cmd_bench(a: &[String]) -> R {
     }
 
     let dir = work_dir()?;
+    let cpu = cpu_model();
+    let up_before = uptime();
     println!("host: {} {}", std::env::consts::ARCH, std::env::consts::OS);
-    println!("uptime before: {}", uptime());
+    println!("cpu: {cpu}");
+    println!("release expansion: {}", Variant::RELEASE.name());
+    println!("uptime before: {up_before}");
     let mut files = Vec::new();
     let mut dispatches = Vec::new();
     for k in KERNELS {
@@ -409,7 +703,8 @@ fn cmd_bench(a: &[String]) -> R {
         eprint!("\rround {}/{}", round + 1, warmup + rounds);
     }
     eprintln!();
-    println!("uptime after:  {}", uptime());
+    let up_after = uptime();
+    println!("uptime after:  {up_after}");
     println!();
     println!("Median of {rounds} runs per cell (warm-up round dropped). ms, then ns per dispatch:");
     print!("| kernel | result |");
@@ -446,32 +741,29 @@ fn cmd_bench(a: &[String]) -> R {
 
     let idx = |n: &str| runners.iter().position(|r| r.name == n).unwrap();
     let (im, is, ic) = (idx("match"), idx("sibling"), idx("cgoto"));
-    let mut sc = Vec::new();
-    let mut ms = Vec::new();
+    let release = Variant::RELEASE.name();
+    let ir = idx(release);
     println!();
-    println!(
-        "| kernel | sibling / cgoto | match / sibling | paired sibling / cgoto | paired match / sibling |"
-    );
+    println!("Ratio of medians (for reading; the gates below use paired ratios):");
+    println!("| kernel | {release} (release) / cgoto | sibling / cgoto | match / sibling |");
+    let mut cols = [Vec::new(), Vec::new(), Vec::new()];
     for (ki, (kname, _, _)) in files.iter().enumerate() {
-        let a = med[ki][is] / med[ki][ic];
-        let b = med[ki][im] / med[ki][is];
-        // Paired: ratio inside each round, then the median. Robust to load drift.
-        let mut pa: Vec<f64> = (0..rounds)
-            .map(|i| samples[ki][is][i] / samples[ki][ic][i])
-            .collect();
-        let mut pb: Vec<f64> = (0..rounds)
-            .map(|i| samples[ki][im][i] / samples[ki][is][i])
-            .collect();
-        println!(
-            "| {kname} | {a:.3} | {b:.3} | {:.3} | {:.3} |",
-            median(&mut pa),
-            median(&mut pb)
-        );
-        sc.push(a);
-        ms.push(b);
+        let r = [
+            med[ki][ir] / med[ki][ic],
+            med[ki][is] / med[ki][ic],
+            med[ki][im] / med[ki][is],
+        ];
+        println!("| {kname} | {:.3} | {:.3} | {:.3} |", r[0], r[1], r[2]);
+        for (c, x) in cols.iter_mut().zip(r) {
+            c.push(x);
+        }
     }
-    let (gsc, gms) = (geomean(&sc), geomean(&ms));
-    println!("| geomean | {gsc:.3} | {gms:.3} | | |");
+    println!(
+        "| geomean | {:.3} | {:.3} | {:.3} |",
+        geomean(&cols[0]),
+        geomean(&cols[1]),
+        geomean(&cols[2])
+    );
     for (ib, r) in runners.iter().enumerate() {
         if matches!(r.name.as_str(), "match" | "sibling" | "cgoto") {
             continue;
@@ -485,29 +777,135 @@ fn cmd_bench(a: &[String]) -> R {
             geomean(&bs)
         );
     }
-    let g1 = gsc <= 1.25;
-    let g2 = gms >= 1.2;
+
+    // Speed gates per target (H15 ADR, 09-milestones section 4). The release expansion must
+    // stay near C computed goto. On aarch64 sibling calls must also beat the match loop; on
+    // x86-64 the match loop is the release expansion, so that comparison is a report only.
+    let kernels: Vec<&str> = files.iter().map(|f| f.0).collect();
+    let sib_rel = Variant::RELEASE == Variant::Sibling;
+    let gates = [
+        paired_gate(
+            (
+                &format!("{release}-vs-cgoto"),
+                "gate",
+                format!("{release} (release) time <= 1.25x cgoto.c (geomean), <= 1.5x per kernel"),
+            ),
+            &samples,
+            &kernels,
+            (ir, ic),
+            (1.25, 1.5, true),
+        ),
+        paired_gate(
+            (
+                "sibling-vs-match",
+                if sib_rel { "gate" } else { "report" },
+                format!(
+                    "match time >= 1.2x sibling time (geomean), >= 1.0x per kernel{}",
+                    if sib_rel {
+                        ""
+                    } else {
+                        " (release is match on x86-64: a report for the M2 re-check, not a gate)"
+                    }
+                ),
+            ),
+            &samples,
+            &kernels,
+            (im, is),
+            (1.2, 1.0, false),
+        ),
+    ];
     println!();
-    println!(
-        "GATE sibling <= 1.25x cgoto (geomean): {gsc:.3} {}",
-        if g1 { "PASS" } else { "FAIL" }
-    );
-    println!(
-        "GATE sibling >= 1.2x faster than match (geomean): {gms:.3} {}",
-        if g2 { "PASS" } else { "FAIL" }
-    );
-    for (ki, (kname, _, _)) in files.iter().enumerate() {
-        println!(
-            "  per kernel {kname:<8} sibling/cgoto {:.3} {}  match/sibling {:.3} {}",
-            sc[ki],
-            if sc[ki] <= 1.25 { "ok" } else { "over" },
-            ms[ki],
-            if ms[ki] >= 1.2 { "ok" } else { "under" }
-        );
+    for g in &gates {
+        print_gate(g);
     }
     println!(
         "results equal across variants: {}",
         if ok { "yes" } else { "NO" }
     );
-    Ok(ok && (!gate || (g1 && g2)))
+
+    if let Some(path) = opt(a, "--json") {
+        let names: Vec<&str> = runners.iter().map(|r| r.name.as_str()).collect();
+        let ks: Vec<String> = files
+            .iter()
+            .enumerate()
+            .map(|(ki, (kname, _, n))| {
+                let med_ns: Vec<String> = names
+                    .iter()
+                    .enumerate()
+                    .map(|(ri, r)| format!("{}:{}", js(r), med[ki][ri]))
+                    .collect();
+                let raw: Vec<String> = names
+                    .iter()
+                    .enumerate()
+                    .map(|(ri, r)| format!("{}:{}", js(r), jn(&samples[ki][ri])))
+                    .collect();
+                format!(
+                    "{{\"name\":{},\"n\":{n},\"dispatches\":{},\"result\":{},\"median_ns\":{{{}}},\"samples_ns\":{{{}}}}}",
+                    js(kname),
+                    dispatches[ki],
+                    results[ki].map_or(0, |r| r.0),
+                    med_ns.join(","),
+                    raw.join(",")
+                )
+            })
+            .collect();
+        let gs: Vec<String> = gates.iter().map(gate_json).collect();
+        let j = format!(
+            "{{\"schema\":\"sp-dispatch-bench/1\",\"arch\":{},\"os\":{},\"cpu\":{},\"release\":{},\"rounds\":{rounds},\"warmup\":{warmup},\"scale\":{scale},\"uptime_before\":{},\"uptime_after\":{},\"results_equal\":{ok},\"kernels\":[{}],\"gates\":[{}]}}\n",
+            js(std::env::consts::ARCH),
+            js(std::env::consts::OS),
+            js(&cpu),
+            js(release),
+            js(&up_before),
+            js(&up_after),
+            ks.join(","),
+            gs.join(",")
+        );
+        std::fs::write(&path, j).map_err(|e| format!("{path}: {e}"))?;
+        println!("json: {path}");
+    }
+    let gates_pass = gates
+        .iter()
+        .filter(|g| g.kind == "gate")
+        .all(|g| g.result() == "pass");
+    Ok(ok && (!gate || gates_pass))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn median_rank_matches_the_speed_gate_rule() {
+        // 10-quality section 3: n = 7 -> min and max; 10 -> 2, 9; 15 -> 4, 12; 31 -> 10, 22.
+        for (n, k) in [(5, 1), (7, 1), (10, 2), (15, 4), (31, 10)] {
+            assert_eq!(median_rank(n), k, "n = {n}");
+        }
+    }
+
+    #[test]
+    fn verdict_pass_fail_marginal_void() {
+        let v: Vec<f64> = (0..15).map(|i| 1.0 + i as f64 * 0.001).collect();
+        assert_eq!(stat("k", &v, 1.25, true).result, "pass");
+        assert_eq!(stat("k", &v, 0.9, true).result, "fail");
+        assert_eq!(stat("k", &v, 1.007, true).result, "marginal");
+        assert_eq!(stat("k", &v, 0.9, false).result, "pass");
+        assert_eq!(stat("k", &v, 1.2, false).result, "fail");
+        // One sample per round for 2 kernels x 2 runners; kernel 1 is noisy (IQR > 5%).
+        let quiet: Vec<f64> = vec![100.0; 15];
+        let noisy: Vec<f64> = (0..15).map(|i| 100.0 + (i % 5) as f64 * 10.0).collect();
+        let samples = vec![
+            vec![quiet.clone(), quiet.clone()],
+            vec![noisy, quiet.clone()],
+        ];
+        let g = paired_gate(
+            ("t", "gate", String::new()),
+            &samples,
+            &["a", "b"],
+            (0, 1),
+            (1.25, 1.5, true),
+        );
+        assert_eq!(g.result(), "void");
+        assert_eq!(g.interval_result(), "pass");
+    }
 }

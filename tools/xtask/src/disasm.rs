@@ -9,6 +9,7 @@
 //! |---|---|
 //! | tail exits | A `tail` handler has 0 returns, 0 indirect calls, 0 calls to handlers, and at least one tail exit (indirect jump, or a direct jump to another handler). A direct jump to a symbol that is not a handler is followed: that code counts as part of the handler, and a target that cannot be disassembled fails. An `exit` handler has 0 indirect calls and 0 calls to handlers. |
 //! | handler args | Every handler in the LLVM IR has at most 4 parameters (`--max-args`), and none is passed in memory (sret, byval, inalloca, preallocated). |
+//! | match loop (`--match-loop`) | The match loop (`ep9loop__<expansion>__<fn>`) is the x86-64 release expansion (H15 ADR). On x86-64 it has an indirect (dispatch) jump for at least half of the fast `tail` handlers, so LLVM copied the dispatch into the arms (threaded code), and it touches the stack only next to a call, in the entry block or in an exit sequence. On aarch64 the shape is printed only (the release expansion there is sibling calls). |
 //!
 //! Build mode (default) runs `cargo rustc --lib --release --crate-type staticlib --target T`.
 //! The crate's release profile applies (fat LTO). A staticlib needs no linker, so any target
@@ -29,9 +30,12 @@ usage: cargo xtask disasm-check [options]
                         aarch64-unknown-linux-gnu x86_64-pc-windows-msvc
   --features LIST       cargo features
   --toolchain NAME      build with `rustup run NAME cargo` (for example a nightly)
+  --rustc-arg ARG       extra rustc argument for the checked crate; repeat for more
+                        (negative tests, for example -Cllvm-args=-disable-tail-duplicate)
   --binary FILE         check this built file instead of building; repeat for more
   --expect N            every expansion must have exactly N handlers
   --max-args N          handler argument limit (default 4)
+  --match-loop          also check the match loop (ep9loop__* symbols; rule on x86-64 only)
   --objdump PATH, --nm PATH   tools (default: rustup llvm-tools, then PATH)
   -v, --verbose         one line per handler";
 
@@ -44,6 +48,10 @@ const ALL_TARGETS: &[&str] = &[
 ];
 
 const PREFIX: &str = "ep9h__";
+const LOOP_PREFIX: &str = "ep9loop__";
+/// A stack access within this many instructions of a call is a spill or reload around that
+/// call (a cold path), not traffic on every dispatch.
+const LOOP_CALL_WINDOW: usize = 4;
 
 struct Opts {
     manifest: PathBuf,
@@ -51,9 +59,11 @@ struct Opts {
     targets: Vec<String>,
     features: Option<String>,
     toolchain: Option<String>,
+    rustc_args: Vec<String>,
     binaries: Vec<PathBuf>,
     expect: Option<usize>,
     max_args: usize,
+    match_loop: bool,
     objdump: Option<PathBuf>,
     nm: Option<PathBuf>,
     verbose: bool,
@@ -74,9 +84,11 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
         targets: Vec::new(),
         features: None,
         toolchain: None,
+        rustc_args: Vec::new(),
         binaries: Vec::new(),
         expect: None,
         max_args: 4,
+        match_loop: false,
         objdump: None,
         nm: None,
         verbose: false,
@@ -95,9 +107,11 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
             "--all-targets" => o.targets.extend(ALL_TARGETS.iter().map(|s| s.to_string())),
             "--features" => o.features = Some(val()?),
             "--toolchain" => o.toolchain = Some(val()?),
+            "--rustc-arg" => o.rustc_args.push(val()?),
             "--binary" => o.binaries.push(PathBuf::from(val()?)),
             "--expect" => o.expect = Some(val()?.parse().map_err(|e| format!("--expect: {e}"))?),
             "--max-args" => o.max_args = val()?.parse().map_err(|e| format!("--max-args: {e}"))?,
+            "--match-loop" => o.match_loop = true,
             "--objdump" => o.objdump = Some(PathBuf::from(val()?)),
             "--nm" => o.nm = Some(PathBuf::from(val()?)),
             "-v" | "--verbose" => o.verbose = true,
@@ -221,8 +235,18 @@ fn build(o: &Opts, target: &str) -> Result<(PathBuf, PathBuf), String> {
         .unwrap_or_else(|| repo_root().join("target"));
     let tdir = base.join("xtask-disasm");
     fs::create_dir_all(&tdir).map_err(|e| e.to_string())?;
+    // Extra rustc args get their own IR file name (FNV-1a hash of the args). Cargo
+    // fingerprints the args, so it rebuilds the staticlib when they change.
+    let rargs = if o.rustc_args.is_empty() {
+        String::new()
+    } else {
+        let h = o.rustc_args.join(" ").bytes().fold(0x811c_9dc5u32, |h, b| {
+            (h ^ b as u32).wrapping_mul(0x0100_0193)
+        });
+        format!("-r{h:08x}")
+    };
     let tag = format!(
-        "{target}{}{}",
+        "{target}{}{}{rargs}",
         o.toolchain
             .as_deref()
             .map(|t| format!("-{t}"))
@@ -260,7 +284,8 @@ fn build(o: &Opts, target: &str) -> Result<(PathBuf, PathBuf), String> {
         .arg(&tdir);
     // Cargo fingerprints these extra rustc args, so a fresh build keeps a matching .ll file.
     cmd.arg("--")
-        .arg(format!("--emit=llvm-ir={}", ll.display()));
+        .arg(format!("--emit=llvm-ir={}", ll.display()))
+        .args(&o.rustc_args);
     eprintln!(
         "disasm-check: building {} for {target}",
         o.manifest.display()
@@ -862,24 +887,9 @@ fn check_file(
     let mut format = String::new();
     let mut blocks = Vec::new();
     for m in members {
-        let (f, mut b) = if m.is_empty() {
-            disassemble_reach(&raws, |names| disassemble(&tools.objdump, file, names))?
-        } else {
-            let dir = std::env::temp_dir().join(format!("ep9-disasm-{}", std::process::id()));
-            fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-            run_quiet(
-                Command::new(&tools.ar)
-                    .arg("x")
-                    .arg(format!("--output={}", dir.display()))
-                    .arg(file)
-                    .arg(m),
-            )?;
-            let r = disassemble_reach(&raws, |names| {
-                disassemble(&tools.objdump, &dir.join(m), names)
-            });
-            let _ = fs::remove_dir_all(&dir);
-            r?
-        };
+        let (f, mut b) = in_member(tools, file, m, |obj| {
+            disassemble_reach(&raws, |names| disassemble(&tools.objdump, obj, names))
+        })?;
         b.iter_mut().for_each(|blk| blk.member = m.to_string());
         format = f;
         blocks.append(&mut b);
@@ -1051,6 +1061,235 @@ fn check_file(
         ok &= args_ok;
     }
     println!("   RESULT {abi}: {}", if ok { "PASS" } else { "FAIL" });
+    if o.match_loop {
+        // Fast tail handlers: one per tail opcode, cold handlers not counted.
+        let fast_tail = exps
+            .values()
+            .map(|hs| {
+                hs.iter()
+                    .filter(|h| h.class == Class::Tail && !h.name.ends_with("_cold"))
+                    .count()
+            })
+            .max()
+            .unwrap_or(0);
+        ok &= check_loops(tools, file, arch, abi, fast_tail)?;
+    }
+    Ok(ok)
+}
+
+/// Runs `f` on `file`, or on archive member `m` of it (extracted to a temporary directory).
+fn in_member<T>(
+    tools: &Tools,
+    file: &Path,
+    m: &str,
+    f: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
+    if m.is_empty() {
+        return f(file);
+    }
+    let dir = std::env::temp_dir().join(format!("ep9-disasm-{}", std::process::id()));
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let r = run_quiet(
+        Command::new(&tools.ar)
+            .arg("x")
+            .arg(format!("--output={}", dir.display()))
+            .arg(file)
+            .arg(m),
+    )
+    .and_then(|_| f(&dir.join(m)));
+    let _ = fs::remove_dir_all(&dir);
+    r
+}
+
+/// Match-loop symbols (`ep9loop__*`, Mach-O adds `_`) with their archive member.
+fn nm_loops(nm: &Path, file: &Path) -> Result<Vec<(String, String)>, String> {
+    let out = run_quiet(Command::new(nm).arg("--defined-only").arg(file))?;
+    let mut member = String::new();
+    let mut v = Vec::new();
+    for line in out.lines() {
+        let t = line.trim();
+        if t.ends_with(':') && !t.contains(' ') {
+            member = t.trim_end_matches(':').to_string();
+            continue;
+        }
+        let parts: Vec<&str> = t.split_whitespace().collect();
+        if parts.len() == 3
+            && matches!(parts[1], "T" | "t")
+            && parts[2].trim_start_matches('_').starts_with(LOOP_PREFIX)
+        {
+            v.push((parts[2].to_string(), member.clone()));
+        }
+    }
+    v.sort();
+    v.dedup();
+    Ok(v)
+}
+
+/// True if the instruction reads or writes stack memory (not push or pop). `fp`: the function
+/// keeps a frame pointer (x86-64 `%rbp`). Without one, `%rbp` is a general register: the
+/// match loop keeps the VM frame base there on Linux and Windows.
+fn is_stack_access(arch: Arch, text: &str, fp: bool) -> bool {
+    match arch {
+        Arch::X64 => {
+            !text.starts_with("lea") && (text.contains("(%rsp") || fp && text.contains("(%rbp"))
+        }
+        Arch::A64 => text.contains("[sp") || text.contains("[x29"),
+    }
+}
+
+/// Shape of one match-loop function.
+#[derive(Debug, Default)]
+struct LoopStats {
+    insns: usize,
+    ind_jumps: usize,
+    calls: usize,
+    /// Stack accesses that are not next to a call, not in the entry block and not in an exit
+    /// sequence: candidates for traffic on every dispatch.
+    stack_far: Vec<String>,
+}
+
+fn analyze_loop(arch: Arch, b: &Block) -> LoopStats {
+    let kinds: Vec<Kind> = b.insns.iter().map(|i| classify(arch, i, b)).collect();
+    let first_jump = kinds
+        .iter()
+        .position(|k| *k == Kind::IndJump)
+        .unwrap_or(kinds.len());
+    let fp = b.insns[..first_jump]
+        .iter()
+        .any(|i| i.text.replace(char::is_whitespace, " ") == "movq %rsp, %rbp");
+    let stack = |t: &str| is_stack_access(arch, t, fp);
+    let mut ok = vec![false; b.insns.len()];
+    // Entry block: everything before the first dispatch jump (prologue, register setup).
+    for (i, k) in kinds.iter().enumerate() {
+        if *k == Kind::IndJump {
+            break;
+        }
+        ok[i] = true;
+    }
+    for (i, k) in kinds.iter().enumerate() {
+        match k {
+            Kind::Call(_) | Kind::IndCall => {
+                let lo = i.saturating_sub(LOOP_CALL_WINDOW);
+                let hi = (i + LOOP_CALL_WINDOW).min(b.insns.len() - 1);
+                ok[lo..=hi].iter_mut().for_each(|x| *x = true);
+            }
+            // Exit sequence: the stack restores right before a return.
+            Kind::Ret => {
+                let mut j = i;
+                while j > 0 {
+                    let t = &b.insns[j - 1].text;
+                    let restore = stack(t)
+                        || t.starts_with("pop")
+                        || t.contains("%rsp")
+                        || t.contains("sp, sp");
+                    if !restore {
+                        break;
+                    }
+                    j -= 1;
+                    ok[j] = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    LoopStats {
+        insns: b.insns.len(),
+        ind_jumps: kinds.iter().filter(|k| **k == Kind::IndJump).count(),
+        calls: kinds
+            .iter()
+            .filter(|k| matches!(k, Kind::Call(_) | Kind::IndCall))
+            .count(),
+        stack_far: b
+            .insns
+            .iter()
+            .zip(&ok)
+            .filter(|(i, ok)| !**ok && stack(&i.text))
+            .map(|(i, _)| format!("{:x}: {}", i.addr, i.text.replace('\t', " ")))
+            .collect(),
+    }
+}
+
+/// Problems with one match loop on x86-64, empty if it passes. `fast_tail` is the number of
+/// fast tail handlers (one per tail opcode).
+fn loop_verdict(s: &LoopStats, fast_tail: usize) -> Vec<String> {
+    let need = fast_tail.div_ceil(2).max(2);
+    let mut p = Vec::new();
+    if s.ind_jumps < need {
+        p.push(format!(
+            "{} indirect jump(s), need >= {need}: the dispatch is not copied into the arms",
+            s.ind_jumps
+        ));
+    }
+    if !s.stack_far.is_empty() {
+        p.push(format!(
+            "{} stack access(es) away from calls: {}",
+            s.stack_far.len(),
+            s.stack_far.join("; ")
+        ));
+    }
+    p
+}
+
+/// Checks the match loops in `file`. The rule applies to the release loop
+/// `ep9loop__<expansion>__run` on x86-64; other loop symbols (the dispatch-counting copy)
+/// are printed only. Prints one `LOOP <abi>:` line.
+fn check_loops(
+    tools: &Tools,
+    file: &Path,
+    arch: Arch,
+    abi: &str,
+    fast_tail: usize,
+) -> Result<bool, String> {
+    let loops = nm_loops(&tools.nm, file)?;
+    if loops.is_empty() {
+        println!("   LOOP {abi}: FAIL (no {LOOP_PREFIX}* symbol)");
+        return Ok(false);
+    }
+    let mut ok = loops.iter().any(|(raw, _)| raw.ends_with("__run"));
+    if !ok {
+        println!("   FAIL no release loop {LOOP_PREFIX}<expansion>__run");
+    }
+    for (raw, m) in &loops {
+        let (_, blocks) = in_member(tools, file, m, |obj| {
+            disassemble(&tools.objdump, obj, std::slice::from_ref(raw))
+        })?;
+        let Some(b) = blocks.iter().find(|b| &b.raw == raw && !b.insns.is_empty()) else {
+            println!("   FAIL {raw}: not found in the disassembly");
+            ok = false;
+            continue;
+        };
+        let s = analyze_loop(arch, b);
+        let release = raw.ends_with("__run");
+        let p = if arch == Arch::X64 && release {
+            loop_verdict(&s, fast_tail)
+        } else {
+            Vec::new()
+        };
+        println!(
+            "   {} match loop {}: insns={} indirect_jumps={} (fast tail handlers: {fast_tail}) calls={} stack_far={}{}",
+            match (p.is_empty(), release && arch == Arch::X64) {
+                (false, _) => "FAIL",
+                (true, true) => "ok  ",
+                (true, false) => "info",
+            },
+            raw.trim_start_matches('_'),
+            s.insns,
+            s.ind_jumps,
+            s.calls,
+            s.stack_far.len(),
+            if p.is_empty() {
+                String::new()
+            } else {
+                format!("  <- {}", p.join("; "))
+            }
+        );
+        ok &= p.is_empty();
+    }
+    if arch == Arch::X64 {
+        println!("   LOOP {abi}: {}", if ok { "PASS" } else { "FAIL" });
+    } else {
+        println!("   LOOP {abi}: REPORT (no rule: the aarch64 release expansion is sibling calls)");
+    }
     Ok(ok)
 }
 
@@ -1319,6 +1558,66 @@ mod tests {
         assert!(!p.contains_key("other"));
         assert_eq!(p["ep9h__x__exit__halt"].len(), 4);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A block from `llvm-objdump -d` lines ("addr: text").
+    fn block(raw: &str, lines: &[&str]) -> Block {
+        Block {
+            member: String::new(),
+            raw: raw.into(),
+            addr: 0,
+            insns: lines
+                .iter()
+                .enumerate()
+                .map(|(i, t)| Insn {
+                    addr: i as u64,
+                    text: t.to_string(),
+                    reloc: None,
+                })
+                .collect(),
+        }
+    }
+
+    // Shape of the x86-64 match loop (rustc 1.99.1): prologue, copied dispatch in each arm,
+    // a spill around a cold call, pops before the return.
+    const X64_LOOP: &[&str] = &[
+        "pushq\t%rbp",
+        "pushq\t%rax",
+        "movzbl\t(%rsi), %ecx",
+        "jmpq\t*%rcx",
+        "addq\t$0x2, %rsi",
+        "jmpq\t*%rcx",
+        "movq\t%r12, (%rsp)",
+        "movq\t%rax, %r12",
+        "callq\t0x2f2 <ep9loop__match__run+0x2f2>",
+        "movq\t(%rsp), %r12",
+        "jmpq\t*%rcx",
+        "popq\t%rbp",
+        "retq",
+    ];
+
+    #[test]
+    fn x64_match_loop_shape() {
+        let b = block("ep9loop__match__run", X64_LOOP);
+        let s = analyze_loop(Arch::X64, &b);
+        assert_eq!((s.ind_jumps, s.calls, s.stack_far.len()), (3, 1, 0));
+        assert!(loop_verdict(&s, 6).is_empty());
+        // Fewer copied dispatch jumps than half the fast tail handlers: the switch-loop shape.
+        assert_eq!(loop_verdict(&s, 8).len(), 1);
+        // A reload far from any call: traffic on every dispatch.
+        let mut lines = X64_LOOP.to_vec();
+        lines.insert(4, "movq\t0x8(%rsp), %rdx");
+        let s = analyze_loop(Arch::X64, &block("ep9loop__match__run", &lines));
+        assert_eq!(s.stack_far.len(), 1, "{s:?}");
+        assert!(!loop_verdict(&s, 6).is_empty());
+        assert!(!is_stack_access(Arch::X64, "leaq\t0x8(%rsp), %rax", true));
+        // %rbp is a stack pointer only with a frame pointer.
+        assert!(is_stack_access(Arch::X64, "movq\t-0x8(%rbp), %rax", true));
+        assert!(!is_stack_access(
+            Arch::X64,
+            "movq\t(%rbp,%rbx,8), %r14",
+            false
+        ));
     }
 
     #[test]

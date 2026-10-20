@@ -46,7 +46,8 @@ pub struct Cx {
 
 const _: () = assert!(core::mem::offset_of!(Cx, table) == 0);
 
-/// (a) match loop, plus a copy that counts dispatches.
+/// (a) match loop, plus a copy that counts dispatches. Debug builds on every target and the
+/// release build on x86-64 use it (`Variant::RELEASE`).
 pub mod match_loop {
     use crate::dsl::{Flow, expand_match};
     crate::ops::for_each_op!(expand_match[run]);
@@ -77,6 +78,16 @@ pub enum Variant {
 }
 
 impl Variant {
+    /// The release expansion of this target (H15 decision of 2026-10-21, ADR
+    /// docs/adr/H15-interpreter-dispatch.md). aarch64: sibling calls. x86-64 (SysV and Win64):
+    /// the match loop. LLVM copies its dispatch jump into every arm there, so it is already
+    /// threaded code. `cargo xtask disasm-check --match-loop` checks that shape.
+    pub const RELEASE: Variant = if cfg!(target_arch = "x86_64") {
+        Variant::Match
+    } else {
+        Variant::Sibling
+    };
+
     pub const ALL: &[Variant] = &[
         Variant::Match,
         Variant::Sibling,

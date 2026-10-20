@@ -9,6 +9,8 @@
 //             M2 (M3 compliance, M4 runtime, M8 Wasm). The scan lexes each workload .js file and
 //             each preloaded dist/ bundle.
 //             A hit can be a feature test only; the scan then drops the workload anyway (safe side).
+//             Proxy, Reflect and WeakRef/FinalizationRegistry are M1 or earlier (09 M2 exit 7;
+//             decision M2-JETSTREAM-LIST), so the scan does not look for them.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -97,13 +99,13 @@ function tokens(src) {
 
 // Features that the plan schedules after M2 (09-milestones section 2.2: M3 compliance, M4
 // runtime, M8 Wasm). Each test sees the token list t and an index j of an identifier.
+// Not here: Proxy and Reflect (core in M1, 06 section 5) and WeakRef/FinalizationRegistry (core
+// with the GC, 03 section 5). They do not drop a workload (decision M2-JETSTREAM-LIST).
 const TYPED = /^(?:Int8|Uint8|Uint8Clamped|Int16|Uint16|Int32|Uint32|Float16|Float32|Float64|BigInt64|BigUint64)Array$|^ArrayBuffer$|^DataView$/;
 const at = (t, j, v) => t[j]?.v === v;
 const POST_M2 = [
   ["TypedArray/ArrayBuffer/DataView (M3)", (t, j) => t[j].k === "id" && TYPED.test(t[j].v)],
   ["BigInt (M3)", (t, j) => (t[j].k === "id" && t[j].v === "BigInt") || (t[j].k === "num" && t[j].v.endsWith("n"))],
-  ["Proxy (M3)", (t, j) => at(t, j, "Proxy") && (at(t, j - 1, "new") || at(t, j + 1, "."))],
-  ["WeakRef/FinalizationRegistry (M3)", (t, j) => t[j].k === "id" && /^(?:WeakRef|FinalizationRegistry)$/.test(t[j].v)],
   ["SharedArrayBuffer/Atomics (M3)", (t, j) => at(t, j, "SharedArrayBuffer") || (at(t, j, "Atomics") && at(t, j + 1, "."))],
   ["Intl (M3)", (t, j) => at(t, j, "Intl") && at(t, j + 1, ".")],
   ["Temporal (M3)", (t, j) => at(t, j, "Temporal") && at(t, j + 1, ".")],
@@ -163,11 +165,12 @@ const m7Text = [
 const m2Text = [
   head("JetStream 3 M2 list (docs/plan/09-milestones.md M2 exit 7: it runs; ratio to node --jitless recorded)", [
     "Rule: the M7 list without workloads whose code (.js files and preloaded dist/ bundles) uses a feature that the plan schedules",
-    "after M2 (M3: TypedArray, BigInt, Proxy, WeakRef, SAB/Atomics, Intl, Temporal, modules; M4: Worker;",
-    "M8: WebAssembly). The scan lexes the code (no strings, comments or regexes) and is conservative:",
-    "a feature test such as `typeof WeakRef` also drops a workload.",
+    "after M2 (M3: TypedArray, BigInt, SAB/Atomics, Intl, Temporal, modules; M4: Worker; M8: WebAssembly).",
+    "Proxy, Reflect and WeakRef/FinalizationRegistry are M1 or earlier, so they do not drop a workload",
+    "(decision M2-JETSTREAM-LIST). The scan lexes the code (no strings, comments or regexes) and is",
+    "conservative: a feature test such as `typeof SharedArrayBuffer` also drops a workload.",
     "Note: the harness itself puts `new Proxy({}, { get })` into every workload realm (JetStreamDriver.js,",
-    "class Scripts). So these workloads need a minimal Proxy (get trap) at M2, or a local harness patch.",
+    "class Scripts). Proxy core is in M1, so the harness runs with no patch (decision JETSTREAM-PROXY).",
     `Count: ${m2.length} of ${m7.length}`,
   ]),
   ...m2.map((b) => b.name),

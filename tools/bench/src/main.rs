@@ -7,6 +7,9 @@
 //! ep9-bench [--runs N] [--warmup W] [--counter auto|time|perf|cachegrind]
 //!           [--name NAME] [--out FILE] [--show-output] -- <command> [args...]
 //! ```
+//!
+//! A host with no instruction counter (Windows; a VM without PMC access) still gets the runs and
+//! the JSON, with null counts and `"counter_status": "unavailable"`, and exit status 3.
 #![forbid(unsafe_code)]
 
 mod counter;
@@ -28,7 +31,22 @@ flags:
   --name NAME       benchmark name in the report (default: the command)
   --out FILE        write the JSON there (default: stdout)
   --show-output     keep the command's stdout and stderr (default: discarded)
+
+Before the runs, ep9-bench probes the counter: `true` under it must give a count above 0.
+
+exit status:
+  0  the JSON has the counts
+  1  error: the command failed, a counted run gave no count, or the JSON was not written
+  2  usage error
+  3  no instruction counter on this host. The JSON is still written: \"counter\": null,
+     \"counter_status\": \"unavailable\", \"counter_note\": <why>, null counts (wall time only)
+
+environment:
+  EP9_BENCH_TIME    the `time -l` program (default /usr/bin/time; tests use a fake)
 ";
+
+/// Exit status when the host has no instruction counter. The JSON is still written.
+const EXIT_NO_COUNTER: u8 = 3;
 
 struct Options {
     runs: usize,
@@ -81,26 +99,38 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     Ok(o)
 }
 
-fn run(o: &Options) -> Result<String, String> {
+/// The JSON, and why the host has no counter (`None` when it has one).
+struct Outcome {
+    json: String,
+    no_counter: Option<String>,
+}
+
+fn run(o: &Options) -> Result<Outcome, String> {
     let counter = match o.counter {
-        Some(c) => c,
-        None => Counter::detect()?,
+        Some(c) => c.probe().map(|()| c),
+        None => Counter::detect(),
     };
+    let wrap = counter.as_ref().ok().copied();
     let program = PathBuf::from(&o.command[0]);
     let args = &o.command[1..];
     for _ in 0..o.warmup {
-        counter::measure(counter, &program, args, o.show_output)?;
+        counter::measure(wrap, &program, args, o.show_output)?;
     }
     let samples: Vec<Sample> = (0..o.runs)
-        .map(|_| counter::measure(counter, &program, args, o.show_output))
+        .map(|_| counter::measure(wrap, &program, args, o.show_output))
         .collect::<Result<_, _>>()?;
     let name = o.name.clone().unwrap_or_else(|| o.command.join(" "));
-    Ok(report::json(&name, &o.command, counter, &samples))
+    Ok(Outcome {
+        json: report::json(&name, &o.command, &counter, &samples),
+        no_counter: counter.err(),
+    })
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|a| a == "-h" || a == "--help") {
+    // Only flags before `--`: the command's own `--help` goes to the command.
+    let flags = args.iter().take_while(|a| *a != "--");
+    if flags.into_iter().any(|a| a == "-h" || a == "--help") {
         print!("{USAGE}");
         return ExitCode::SUCCESS;
     }
@@ -112,7 +142,7 @@ fn main() -> ExitCode {
         }
     };
     match run(&opts) {
-        Ok(json) => {
+        Ok(Outcome { json, no_counter }) => {
             if let Some(path) = &opts.out {
                 if let Err(e) = std::fs::write(path, &json) {
                     eprintln!("ep9-bench: cannot write {}: {e}", path.display());
@@ -121,7 +151,17 @@ fn main() -> ExitCode {
             } else {
                 print!("{json}");
             }
-            ExitCode::SUCCESS
+            match no_counter {
+                None => ExitCode::SUCCESS,
+                Some(why) => {
+                    eprintln!(
+                        "ep9-bench: no instruction counter on this host: {why}\n\
+                         ep9-bench: the JSON has \"counter_status\": \"unavailable\" and null \
+                         counts (wall time only); exit {EXIT_NO_COUNTER}"
+                    );
+                    ExitCode::from(EXIT_NO_COUNTER)
+                }
+            }
         }
         Err(e) => {
             eprintln!("ep9-bench: {e}");

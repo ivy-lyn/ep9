@@ -1,11 +1,17 @@
-//! The JSON report (schema "ep9-bench/v0"). Hand-written: the tool has no dependencies.
+//! The JSON report (schema "ep9-bench/v1"). Hand-written: the tool has no dependencies.
 //!
 //! ```text
-//! { "schema": "ep9-bench/v0", "name": .., "command": [..], "counter": .., "unit": "instructions",
-//!   "target": .., "commit": .. | null,
-//!   "runs": [ { "instructions": n, "wall_ns": n, "max_rss_bytes": n | null }, .. ],
-//!   "summary": { "instructions": { "min": n, "median": n, "max": n }, "wall_ns": { "median": n } } }
+//! { "schema": "ep9-bench/v1", "name": .., "command": [..],
+//!   "counter": .. | null, "counter_status": "ok" | "unavailable", "counter_note": null | ..,
+//!   "unit": "instructions", "target": .., "commit": .. | null,
+//!   "runs": [ { "instructions": n | null, "wall_ns": n, "max_rss_bytes": n | null }, .. ],
+//!   "summary": { "instructions": { "min": n, "median": n, "max": n } | null,
+//!                "wall_ns": { "median": n } } }
 //! ```
+//!
+//! v1 adds `counter_status` and `counter_note` to v0. When the host has no instruction counter,
+//! `counter` is null, `counter_status` is "unavailable", `counter_note` tells why, and every
+//! `instructions` value is null. A null count is "not measured", never 0.
 
 use crate::counter::{Counter, Sample};
 use std::fmt::Write as _;
@@ -13,9 +19,15 @@ use std::fmt::Write as _;
 /// The target triple this binary was built for (from build.rs).
 const TARGET: &str = env!("EP9_BENCH_TARGET");
 
-pub fn json(name: &str, command: &[String], counter: Counter, samples: &[Sample]) -> String {
+/// `counter` is the counter of the runs, or why the host has none.
+pub fn json(
+    name: &str,
+    command: &[String],
+    counter: &Result<Counter, String>,
+    samples: &[Sample],
+) -> String {
     let mut o = String::new();
-    o.push_str("{\n  \"schema\": \"ep9-bench/v0\",\n  \"name\": ");
+    o.push_str("{\n  \"schema\": \"ep9-bench/v1\",\n  \"name\": ");
     string(&mut o, name);
     o.push_str(",\n  \"command\": [");
     for (i, a) in command.iter().enumerate() {
@@ -25,7 +37,16 @@ pub fn json(name: &str, command: &[String], counter: Counter, samples: &[Sample]
         string(&mut o, a);
     }
     o.push_str("],\n  \"counter\": ");
-    string(&mut o, counter.id());
+    match counter {
+        Ok(c) => {
+            string(&mut o, c.id());
+            o.push_str(",\n  \"counter_status\": \"ok\",\n  \"counter_note\": null");
+        }
+        Err(why) => {
+            o.push_str("null,\n  \"counter_status\": \"unavailable\",\n  \"counter_note\": ");
+            string(&mut o, why);
+        }
+    }
     o.push_str(",\n  \"unit\": \"instructions\",\n  \"target\": ");
     string(&mut o, TARGET);
     o.push_str(",\n  \"commit\": ");
@@ -36,30 +57,45 @@ pub fn json(name: &str, command: &[String], counter: Counter, samples: &[Sample]
     }
     o.push_str(",\n  \"runs\": [\n");
     for (i, s) in samples.iter().enumerate() {
-        let rss = s
-            .max_rss_bytes
-            .map_or_else(|| "null".to_string(), |b| b.to_string());
         let _ = write!(
             o,
-            "    {{ \"instructions\": {}, \"wall_ns\": {}, \"max_rss_bytes\": {rss} }}",
-            s.instructions, s.wall_ns
+            "    {{ \"instructions\": {}, \"wall_ns\": {}, \"max_rss_bytes\": {} }}",
+            number_or_null(s.instructions),
+            s.wall_ns,
+            number_or_null(s.max_rss_bytes),
         );
         o.push_str(if i + 1 < samples.len() { ",\n" } else { "\n" });
     }
-    let mut ins: Vec<u64> = samples.iter().map(|s| s.instructions).collect();
+    // Counts for every run, or none: `measure` fails a counted run that gives no count.
+    let ins = samples
+        .iter()
+        .map(|s| s.instructions)
+        .collect::<Option<Vec<u64>>>()
+        .map_or_else(
+            || "null".to_string(),
+            |mut ins| {
+                ins.sort_unstable();
+                format!(
+                    "{{ \"min\": {}, \"median\": {}, \"max\": {} }}",
+                    ins[0],
+                    median_u64(&ins),
+                    ins[ins.len() - 1]
+                )
+            },
+        );
     let mut wall: Vec<u128> = samples.iter().map(|s| s.wall_ns).collect();
-    ins.sort_unstable();
     wall.sort_unstable();
     let _ = write!(
         o,
-        "  ],\n  \"summary\": {{\n    \"instructions\": {{ \"min\": {}, \"median\": {}, \"max\": {} }},\n    \
+        "  ],\n  \"summary\": {{\n    \"instructions\": {ins},\n    \
          \"wall_ns\": {{ \"median\": {} }}\n  }}\n}}\n",
-        ins[0],
-        median_u64(&ins),
-        ins[ins.len() - 1],
         median_u128(&wall),
     );
     o
+}
+
+fn number_or_null(n: Option<u64>) -> String {
+    n.map_or_else(|| "null".to_string(), |n| n.to_string())
 }
 
 /// Median of a sorted, non-empty slice; the lower middle for an even length.
@@ -108,31 +144,54 @@ mod tests {
         assert_eq!(median_u64(&[7]), 7);
     }
 
+    fn sample(instructions: Option<u64>, wall_ns: u128, max_rss_bytes: Option<u64>) -> Sample {
+        Sample {
+            instructions,
+            wall_ns,
+            max_rss_bytes,
+        }
+    }
+
     #[test]
     fn report_shape() {
         let samples = [
-            Sample {
-                instructions: 30,
-                wall_ns: 3,
-                max_rss_bytes: Some(1),
-            },
-            Sample {
-                instructions: 10,
-                wall_ns: 1,
-                max_rss_bytes: None,
-            },
-            Sample {
-                instructions: 20,
-                wall_ns: 2,
-                max_rss_bytes: None,
-            },
+            sample(Some(30), 3, Some(1)),
+            sample(Some(10), 1, None),
+            sample(Some(20), 2, None),
         ];
-        let j = json("x", &["ep9".into(), "-e".into()], Counter::Perf, &samples);
-        assert!(j.contains("\"schema\": \"ep9-bench/v0\""));
+        let j = json(
+            "x",
+            &["ep9".into(), "-e".into()],
+            &Ok(Counter::Perf),
+            &samples,
+        );
+        assert!(j.contains("\"schema\": \"ep9-bench/v1\""));
         assert!(j.contains("\"command\": [\"ep9\", \"-e\"]"));
         assert!(j.contains("\"counter\": \"perf-stat-instructions-u\""));
+        assert!(j.contains("\"counter_status\": \"ok\""));
+        assert!(j.contains("\"counter_note\": null"));
+        assert!(j.contains("{ \"instructions\": 30, \"wall_ns\": 3, \"max_rss_bytes\": 1 }"));
         assert!(j.contains("\"instructions\": { \"min\": 10, \"median\": 20, \"max\": 30 }"));
         assert!(j.contains("\"max_rss_bytes\": null"));
         assert!(j.contains("\"wall_ns\": { \"median\": 2 }"));
+    }
+
+    #[test]
+    fn report_without_counter() {
+        let samples = [sample(None, 5, None), sample(None, 4, None)];
+        let j = json("x", &["ep9".into()], &Err("no \"PMC\"".into()), &samples);
+        assert!(j.contains("\"counter\": null"));
+        assert!(j.contains("\"counter_status\": \"unavailable\""));
+        assert!(j.contains("\"counter_note\": \"no \\\"PMC\\\"\""));
+        assert_eq!(
+            j.matches("{ \"instructions\": null, \"wall_ns\": ").count(),
+            2,
+            "{j}"
+        );
+        assert!(
+            j.contains("\"summary\": {\n    \"instructions\": null,"),
+            "{j}"
+        );
+        assert!(j.contains("\"wall_ns\": { \"median\": 4 }"));
     }
 }

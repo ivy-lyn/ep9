@@ -71,7 +71,7 @@ T2 (/T3)     ep9_opt       ---> T2 / T3 code                   optimized-AOT   (
 
 | Technique | Evidence |
 |---|---|
-| Macro-DSL handlers. Debug builds use `match`. Release uses sibling calls, with a CI disassembly check and a deep-loop test. Nightly `become` is opt-in. At most 4 handler arguments (H15) | [R06]: sibling call 1.3-1.5x faster than match on dispatch-bound code; the debug sibling-call build overflowed the stack. [P1] (SP-Dispatch): a 5th argument breaks the tail call on Win64 |
+| Macro-DSL handlers. Debug builds use `match`. Release uses sibling calls on aarch64 and the match loop on x86-64, with CI disassembly checks (tail exits; the x86-64 loop keeps a copied dispatch jump in each arm) and a deep-loop test. Nightly `become` is opt-in. At most 4 handler arguments (H15) | [R06] (Apple M): sibling call 1.3-1.5x faster than match on dispatch-bound code; the debug sibling-call build overflowed the stack. SP-Dispatch: aarch64 1.37-2.05x; on x86-64 LLVM already threads the match loop, and match / sibling time is 0.77-1.13 by CPU model ([H15 ADR](../adr/H15-interpreter-dispatch.md)). [P1] (SP-Dispatch): a 5th argument breaks the tail call on Win64 |
 | pc, frame base and accumulator are handler arguments. Cx carries the dispatch table at a fixed offset | [R06]; [P1] (SP-Dispatch) |
 | Small fast paths. Slow paths are `#[cold] #[inline(never)]` runtime functions. T1, T2 and both AOT kinds call the same ones | [R06] |
 | Scope analysis puts locals that are not captured in registers. Contexts hold only captured variables | [R07] Boa +25% |

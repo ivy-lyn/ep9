@@ -10,7 +10,7 @@
 //!
 //! Handler symbol contract (read by `cargo xtask disasm-check`):
 //! `ep9h__<expansion>__<class>__<op>`, where class is `tail` (must leave only through a tail
-//! jump) or `exit` (may return to the host).
+//! jump) or `exit` (may return to the host). The match loop is `ep9loop__match__<fn>`.
 
 /// What a handler body does after its work.
 pub enum Flow {
@@ -236,9 +236,13 @@ macro_rules! expand_match {
     ) => {
         /// Runs from `pc` until an `exit` opcode.
         ///
+        /// Exported as `ep9loop__match__<fname>`, so `cargo xtask disasm-check --match-loop`
+        /// finds it in a staticlib (H15: the x86-64 release expansion).
+        ///
         /// # Safety
         /// `pc` and `fp` must come from `vm::run` on a verified program.
         #[inline(never)]
+        #[unsafe(export_name = concat!("ep9loop__match__", stringify!($fname)))]
         #[allow(unused_unsafe, unused_mut, unused_variables, unused_assignments, unreachable_code)]
         pub unsafe fn $fname(cx: &mut $crate::vm::Cx, pc: *const u8, fp: *mut i64, acc: i64) -> i64 {
             let $cx = cx;

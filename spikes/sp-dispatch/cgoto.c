@@ -4,7 +4,13 @@
 // so this file trusts the bytecode.
 //
 // Build: clang -O2 -o cgoto cgoto.c        Run: cgoto <program.ep9d>
+// Windows (clang, target x86_64-pc-windows-msvc): the same command with -o cgoto.exe.
 
+#ifdef _WIN32
+#define _CRT_SECURE_NO_WARNINGS // fopen is standard C; the MSVC CRT marks it deprecated.
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -173,6 +179,26 @@ L_ILLEGAL:
   return INT64_MIN;
 }
 
+// Monotonic time in ns. Windows has no clock_gettime: it uses QueryPerformanceCounter, the
+// same clock as Rust's Instant on Windows. Elsewhere CLOCK_MONOTONIC, as Instant uses.
+#ifdef _WIN32
+static uint64_t now_ns(void) {
+  static LARGE_INTEGER freq; // ticks per second; fixed at boot
+  LARGE_INTEGER t;
+  if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
+  QueryPerformanceCounter(&t);
+  uint64_t q = (uint64_t)t.QuadPart, f = (uint64_t)freq.QuadPart;
+  // Seconds and remainder apart, so q * 10^9 cannot overflow.
+  return q / f * 1000000000ull + q % f * 1000000000ull / f;
+}
+#else
+static uint64_t now_ns(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+#endif
+
 static uint32_t rd32(const uint8_t **p, const uint8_t *end) {
   if (end - *p < 4) { fprintf(stderr, "cgoto: truncated file\n"); exit(2); }
   uint32_t v;
@@ -217,11 +243,9 @@ int main(int argc, char **argv) {
     .code = code, .consts = consts, .funcs = funcs, .stack_limit = stack + STACK_SLOTS,
     .throw_pc = code + throw_off, .budget = BUDGET,
   };
-  struct timespec a, b;
-  clock_gettime(CLOCK_MONOTONIC, &a);
+  uint64_t t0 = now_ns();
   int64_t r = run(&cx, funcs[0].code, fp, 0);
-  clock_gettime(CLOCK_MONOTONIC, &b);
-  uint64_t ns = (uint64_t)(b.tv_sec - a.tv_sec) * 1000000000ull + (uint64_t)(b.tv_nsec - a.tv_nsec);
+  uint64_t ns = now_ns() - t0;
   printf("result=%lld interrupts=%llu slow=%llu error=%u ns=%llu\n", (long long)r,
          (unsigned long long)cx.interrupts, (unsigned long long)cx.slow_paths, cx.error,
          (unsigned long long)ns);
