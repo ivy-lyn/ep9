@@ -350,7 +350,7 @@ fn type_errors_and_not_implemented_are_catchable() {
             "Cannot read properties of undefined (reading 'x')",
             "function print is not a constructor",
             "not implemented in ep9 v0: RegExp literals",
-            "not implemented in ep9 v0: ** with a result that is not an exact integer (needs ep9_math::pow_js, H36)",
+            "not implemented in ep9 v0: ** with a result that is not an exact integer: needs the correctly rounded pow core (H36, month 2)",
             "not implemented in ep9 v0: BigInt values",
             "x is not defined",
         ]
