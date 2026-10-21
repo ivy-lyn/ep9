@@ -417,6 +417,7 @@ P0 scaffold (VM split, crates, ADRs) -> 11.2
 process (CI blocked, local CI)        -> 11.3
 P1 (shapes, strings, ABI, math, unit) -> 11.4
 P1 review (Codex) and its fixes       -> 11.5
+phase numbers (test262, BENCH)        -> 11.6
 ```
 
 ### 11.1 Week-4 plan decisions
@@ -633,3 +634,14 @@ rustdoc: [[...]] read as links             b     fixed f227ec1
 | W4-P1FIX-WRAPPER-NI | Until P2-SYM merges, `Cx::to_object` and `Cx::new_wrapper` throw not_implemented("wrapper objects for primitives") for primitives | A success that drops the primitive gives wrong answers silently (length undefined); not_implemented is the v0 rule | tests/abi.rs object_ops_and_conversions |
 | W4-P1-EXT-SPLIT | The non-extensible and descriptor bypasses are class (c) and go to their plan owners: P2-OBJ (define paths, prevent_extensions on shapes), P2-BTAB (GlobalDeclarationInstantiation), P3-ACC (CreateGlobalFunctionBinding, DefineMethodProperty, SetPrototypeInLiteral), P3-IC (add-property handlers miss on non-extensible receivers) | The unchecked paths are the same at d1c3f4c. Nothing in JS can make an object non-extensible in week 4, but `function NaN(){}` and `static ['prototype'](){}` reach the descriptor half today | scratchpad week4/p1-ext-handoff.md; acceptance tests in probes-ext/acceptance |
 | W4-P1-RUSTDOC | Spec notation in doc comments goes in backticks (`` `[[GetOwnProperty]]` ``); every agent prompt from P2 on lists `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked` | Local CI failed on 11 doc lines that no P1 agent had checked | Local CI rustdoc step, f227ec1 |
+
+### 11.6 Phase numbers
+
+Plan §1 "Phase merge" step 6. language/ is test262 files under test/language that pass (host exec, macOS arm64). BENCH is the median instruction count of 5 runs after 1 warm-up (`ep9-bench`, macOS `time -l`, whole process, release build, M5 Max); richards is `cross/v8v7.mjs --kernel richards` (N = 200). Compare counts only within this table.
+
+| Phase head | language/ | failing files | t0-loop | t0-branchy | t0-call | t0-prop | ci-v0 | richards |
+|---|---|---|---|---|---|---|---|---|
+| d1c3f4c (P0, perf run 1) | 8,683 / 23,726 | 43,847 | 8,997,512,580 | 6,701,675,618 | 13,759,819,079 | 14,800,067,874 | 111,441,380 | 45,373,464,257 |
+| c72d6bc (P1 + review fixes) | 8,691 / 23,726 | 43,839 | 8,997,633,743 | 6,690,813,070 | 12,369,382,792 | 13,035,759,872 | 104,187,060 | 40,735,936,199 |
+
+P1 change: t0-call -10.1%, t0-prop -11.9%, ci-v0 -6.5%, richards -10.2% (atom keys, P1-STR); t0-loop and t0-branchy flat. Local CI on c72d6bc: 25 of 25 steps pass.
