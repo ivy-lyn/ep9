@@ -123,7 +123,8 @@ fn boolean<'s>(
 }
 ```
 
-A plain object (no internal slot) is `cx.ordinary_create_from_constructor(nt, default)`.
+A plain object (no internal slot) is `cx.ordinary_create_from_constructor(nt, default)`; an
+object with internal slots is Template 8.
 
 ### Template 4: all the arguments
 
@@ -348,6 +349,169 @@ fn add_entry<'s>(cx: &mut Cx<'s>, obj: Local<'s, JsObject>, next: Local<'s>) -> 
 #     cx.to_rust_string(v)
 # });
 # assert_eq!(result.unwrap(), "1,2,TypeError,1");
+```
+
+### Template 8: an object with internal slots
+
+Promise, Date, Map, Set, ArrayBuffer and RegExp objects carry internal slots
+(`[[PromiseState]]`, `[[DateValue]]`, `[[MapData]]`, ...). Such an object has an `ObjectClass`
+(`ep9_vm::abi::ObjectClass`, an append-only list) and n slots that hold Values. The module of the
+class names the slot indices as constants. The slots live in a heap cell, so a stored object or
+string stays alive (R1), and property code never touches them.
+
+| Spec step | Call |
+|---|---|
+| `? OrdinaryCreateFromConstructor(NewTarget, "%X.prototype%", « [[A]], [[B]] »)` | `let p = cx.get_prototype_from_constructor(nt, default)?;` then `cx.new_object_with_slots(p, ObjectClass::X, 2)` (all slots undefined) |
+| `? RequireInternalSlot(O, [[A]])`, then read `O.[[A]]` | `cx.slot(o, ObjectClass::X, A)?` (TypeError for any other value) |
+| `? RequireInternalSlot(O, [[A]])`, then set `O.[[A]]` to `v` | `cx.set_slot(o, ObjectClass::X, A, v)?` |
+| "if `v` is an Object and has a `[[A]]` internal slot" (IsPromise) | `cx.object_class(v) == Some(ObjectClass::X)` (never throws) |
+
+When a step that can run JS (a `ToNumber`) comes between RequireInternalSlot and the access, check
+the class first with `object_class`, as `setTime` does below. A slot index past the count the
+object was made with panics: it is a bug in the module, not a JS error.
+
+```rust
+use ep9_vm::abi::ObjectClass;
+use ep9_vm::{Args, Cx, IntrinsicId, JsResult, Local, ToPrimitiveHint};
+
+/// The internal slots of a Date object: « [[DateValue]] ».
+const DATE_VALUE: usize = 0;
+const DATE_SLOTS: usize = 1;
+
+/// TimeClip ( time ): NaN outside ±8.64e15 ms, else the integral part (-0 becomes +0).
+fn time_clip(t: f64) -> f64 {
+    if !t.is_finite() || t.abs() > 8.64e15 { f64::NAN } else { t.trunc() + 0.0 }
+}
+
+/// Date ( ...values ) (§21.4.2.1), cut down to the one-argument number form.
+fn date<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. If NewTarget is undefined, return ToDateString(now).
+    let Some(nt) = new_target.as_object() else {
+        return Err(cx.not_implemented("Date called as a function"));
+    };
+    // 2-4. numberOfArgs = 1 only here.
+    if args.len() != 1 {
+        return Err(cx.not_implemented("Date with 0 or 2+ arguments"));
+    }
+    let value = args.get(0);
+    // 4.b. If value is an Object and value has a [[DateValue]] internal slot, then
+    //      let tv be value.[[DateValue]].
+    let tv = if cx.object_class(value) == Some(ObjectClass::Date) {
+        let tv = cx.slot(value, ObjectClass::Date, DATE_VALUE)?;
+        cx.to_number(tv)?
+    } else {
+        // 4.c. Else, let v be ? ToPrimitive(value); a String is parsed (not here);
+        //      else let tv be ? ToNumber(v).
+        let v = cx.to_primitive(value, ToPrimitiveHint::Default)?;
+        if v.is_string() {
+            return Err(cx.not_implemented("Date string parsing"));
+        }
+        cx.to_number(v)?
+    };
+    // 4.d. Let dv be TimeClip(tv).
+    let dv = Local::number(time_clip(tv));
+    // 6. Let O be ? OrdinaryCreateFromConstructor(NewTarget, "%Date.prototype%",
+    //    « [[DateValue]] »). (v0 has no %Date.prototype% yet: %Object.prototype% here.)
+    let proto = cx.get_prototype_from_constructor(nt, IntrinsicId::ObjectPrototype)?;
+    let o = cx.new_object_with_slots(proto, ObjectClass::Date, DATE_SLOTS);
+    // 7. Set O.[[DateValue]] to dv.
+    cx.set_slot(o, ObjectClass::Date, DATE_VALUE, dv)?;
+    // 8. Return O.
+    Ok(o.value())
+}
+
+/// Date.prototype.getTime ( ) (§21.4.4.10).
+fn date_get_time<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    _args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. Let dateObject be the this value.
+    // 2. Perform ? RequireInternalSlot(dateObject, [[DateValue]]).
+    // 3. Return dateObject.[[DateValue]].
+    cx.slot(this, ObjectClass::Date, DATE_VALUE)
+}
+
+/// Date.prototype.setTime ( time ) (§21.4.4.27).
+fn date_set_time<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. Let dateObject be the this value.
+    // 2. Perform ? RequireInternalSlot(dateObject, [[DateValue]]). (Before step 3, which
+    //    can run JS.)
+    if cx.object_class(this) != Some(ObjectClass::Date) {
+        return Err(cx.throw_type_error("this is not a Date object."));
+    }
+    // 3. Let t be ? ToNumber(time).
+    let t = cx.to_number(args.get(0))?;
+    // 4. Let v be TimeClip(t).
+    let v = Local::number(time_clip(t));
+    // 5. Set dateObject.[[DateValue]] to v.
+    cx.set_slot(this, ObjectClass::Date, DATE_VALUE, v)?;
+    // 6. Return v.
+    Ok(v)
+}
+# use ep9_vm::{BuiltinDef, BuiltinModule, BuiltinTable, ObjectProps, PropDef, PropKey};
+# const DEFS: &[BuiltinDef] = &[
+#     BuiltinDef::constructor("SlotDate", 1, date),
+#     BuiltinDef::method("getTime", 0, date_get_time),
+#     BuiltinDef::method("setTime", 1, date_set_time),
+# ];
+# const PROPS: &[ObjectProps] = &[ObjectProps {
+#     target: IntrinsicId::GlobalObject,
+#     props: &[
+#         PropDef::method(PropKey::Str("SlotDate"), 0),
+#         PropDef::method(PropKey::Str("getTime"), 1),
+#         PropDef::method(PropKey::Str("setTime"), 2),
+#     ],
+# }];
+# static TABLE: BuiltinTable = BuiltinTable::new(
+#     "slot-date",
+#     &[BuiltinModule { name: "slot-date", block: 120, defs: DEFS, intrinsics: &[], props: PROPS }],
+# );
+# // GC stress: a collection before every allocation, then the heap verifier.
+# let mut iso = ep9_vm::Isolate::new(ep9_vm::IsolateConfig {
+#     heap: ep9_heap::HeapConfig { gc_stress: 1, verify_after_gc: true, ..Default::default() },
+#     builtins: Some(&TABLE),
+#     ..ep9_vm::IsolateConfig::default()
+# })
+# .unwrap();
+# // The VM table has no Function.prototype.call: the functions go on the objects.
+# let src = "var d = new SlotDate(1500000000000.7); d.x = 'p'; \
+#            d.getTime = getTime; d.setTime = setTime; \
+#            var t1 = d.getTime(); \
+#            var copy = new SlotDate(d); copy.getTime = getTime; \
+#            var r = d.setTime(-0.5); \
+#            var e1; try { ({getTime: getTime}).getTime(); } catch (e) { e1 = e.constructor.name; } \
+#            var calls = 0; var e2; \
+#            try { ({setTime: setTime}).setTime({valueOf: function () { calls++; return 1; }}); } \
+#            catch (e) { e2 = e.constructor.name; } \
+#            var big = new SlotDate(9e15); big.getTime = getTime; \
+#            var result = [t1, copy.getTime(), r, 1 / d.getTime(), d.x, e1, e2, calls, \
+#                          big.getTime()].join();";
+# let unit = ep9_frontend::compile(
+#     src,
+#     ep9_frontend::SourceOpts::script(ep9_frontend::Strictness::Sloppy),
+#     ep9_frontend::CompileOptions::default(),
+# )
+# .unwrap();
+# iso.run_script(unit, "slot-date.js").unwrap();
+# iso.collect_garbage();
+# let result = iso.with_cx(|cx| {
+#     let global = cx.global();
+#     let v = cx.get(global, "result")?;
+#     cx.to_rust_string(v)
+# });
+# assert_eq!(result.unwrap(), "1500000000000,1500000000000,0,Infinity,p,TypeError,TypeError,0,NaN");
 ```
 
 ## 3. Add it to the table
