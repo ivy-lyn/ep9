@@ -1054,10 +1054,16 @@ mod tests {
             ("StaLookupSlot", "a"),
             ("LdaLookupSlot", "a"),
             ("LdaLookupSlot", "b"),
-            ("LdaLookupSlot", "f"),
+            ("LdaConstant", "f"),
         ] {
             assert!(has(&text, op, name), "missing {op} {name} in\n{text}");
         }
+        // The callee `f` of `f()` is a dynamic callee: its value and receiver come from one
+        // CallRuntimeForPair LoadLookupSlotForCall (bytecodegen/lookup.rs, P2-LOOKUP).
+        assert!(
+            text.contains("CallRuntimeForPair LoadLookupSlotForCall"),
+            "{text}"
+        );
         assert!(text.contains("CallRuntime DeclareEvalVar"), "{text}");
         assert!(
             text.find("DeclareEvalFunction") < text.find("DeclareEvalVar"),
