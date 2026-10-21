@@ -14,6 +14,8 @@
 //! | `Array.prototype.values` = `Array.prototype[@@iterator]`, %ArrayIteratorPrototype%.next | §23.1.3.38, §23.1.3.40, §23.1.5.2.1 |
 //! | `String.prototype[@@iterator]`, %StringIteratorPrototype%.next | §22.1.3.36, §22.1.5.2.1 |
 //! | `%Iterator.prototype%[@@iterator]` | §27.1.2.1 |
+//! | `%GeneratorFunction%`, `%GeneratorPrototype%` `next`/`return`/`throw`, `%AsyncFunction%` (M2-P0 stubs in `generator.rs`) | §27.3.1.1, §27.5.1.2-4, §27.7.1.1 |
+//! | `%eval%` (M2-P0 stub; not a global binding until P3-EVAL-VM, C19) | §19.2.1 |
 //!
 //! The built-in iterators are ITERATOR cells (object.rs): the iterated value and the next
 //! index. The iterated value also gives the kind, so each `next` checks its receiver
@@ -35,7 +37,7 @@ use crate::abi::{Args, Cx as HostCx, Local};
 use crate::atoms::Atom;
 use crate::builtins::{
     self, BuiltinDef, BuiltinModule, BuiltinTable, ConstValue, IntrinsicDef, IntrinsicId,
-    IntrinsicValue, ObjectProps, PropAttrs, PropDef, PropKey, WellKnownSymbol,
+    IntrinsicValue, ObjectProps, PropAttrs, PropDef, PropKey, PropValue, WellKnownSymbol,
 };
 use crate::conv::{self, num};
 use crate::error;
@@ -46,7 +48,7 @@ use crate::object::{self, attr, is_array, is_object, own_define};
 use crate::property;
 use crate::runtime::{ErrorKind, Root, Runtime};
 use crate::string::{self, MAX_STRING_LENGTH};
-use crate::{symbol, wrapper};
+use crate::{generator, symbol, wrapper};
 
 // ---- the VM table ------------------------------------------------------------------------------
 
@@ -79,6 +81,19 @@ pub(crate) mod vm {
     /// `%Iterator.prototype%[@@iterator]`.
     pub const ITERATOR_ITERATOR: u16 = 20;
     pub const STRING_ITERATOR_NEXT: u16 = 21;
+    // ---- M2-P0: stubs until their owners fill them (generator.rs, P1-GEN-VM; eval, P3) ----
+    /// `%GeneratorFunction%`.
+    pub const GENERATOR_FUNCTION: u16 = 22;
+    /// `%GeneratorPrototype%.next`.
+    pub const GENERATOR_NEXT: u16 = 23;
+    /// `%GeneratorPrototype%.return`.
+    pub const GENERATOR_RETURN: u16 = 24;
+    /// `%GeneratorPrototype%.throw`.
+    pub const GENERATOR_THROW: u16 = 25;
+    /// `%AsyncFunction%` (month 3).
+    pub const ASYNC_FUNCTION: u16 = 26;
+    /// `%eval%`: made, not a global binding until P3-EVAL-VM (C19).
+    pub const EVAL: u16 = 27;
 }
 
 /// The VM's block.
@@ -107,6 +122,12 @@ const VM_DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("[Symbol.iterator]", 0, string_iterator),
     BuiltinDef::method("[Symbol.iterator]", 0, iterator_iterator),
     BuiltinDef::method("next", 0, string_iterator_next),
+    BuiltinDef::constructor("GeneratorFunction", 1, generator::generator_function),
+    BuiltinDef::method("next", 1, generator::generator_next),
+    BuiltinDef::method("return", 1, generator::generator_return),
+    BuiltinDef::method("throw", 1, generator::generator_throw),
+    BuiltinDef::constructor("AsyncFunction", 1, generator::async_function),
+    BuiltinDef::method("eval", 1, eval),
 ];
 
 const VM_INTRINSICS: &[IntrinsicDef] = &[
@@ -161,6 +182,42 @@ const VM_INTRINSICS: &[IntrinsicDef] = &[
         value: IntrinsicValue::Object {
             proto: Some(IntrinsicId::IteratorPrototype),
         },
+    },
+    // M2-P0. Not reachable from JS until generators compile (P1) and `eval` is installed
+    // (P3); their `[[Prototype]]` (%Function% for the two constructors, §27.3.2, §27.7.2) is
+    // %Function.prototype% until the table can say otherwise.
+    IntrinsicDef {
+        id: IntrinsicId::GeneratorFunction,
+        value: IntrinsicValue::Builtin(vm::GENERATOR_FUNCTION),
+    },
+    // §27.3.3: an ordinary object whose [[Prototype]] is %Function.prototype%.
+    IntrinsicDef {
+        id: IntrinsicId::GeneratorFunctionPrototype,
+        value: IntrinsicValue::Object {
+            proto: Some(IntrinsicId::FunctionPrototype),
+        },
+    },
+    // §27.5.1: an ordinary object whose [[Prototype]] is %Iterator.prototype%.
+    IntrinsicDef {
+        id: IntrinsicId::GeneratorPrototype,
+        value: IntrinsicValue::Object {
+            proto: Some(IntrinsicId::IteratorPrototype),
+        },
+    },
+    IntrinsicDef {
+        id: IntrinsicId::AsyncFunction,
+        value: IntrinsicValue::Builtin(vm::ASYNC_FUNCTION),
+    },
+    // §27.7.3: an ordinary object whose [[Prototype]] is %Function.prototype%.
+    IntrinsicDef {
+        id: IntrinsicId::AsyncFunctionPrototype,
+        value: IntrinsicValue::Object {
+            proto: Some(IntrinsicId::FunctionPrototype),
+        },
+    },
+    IntrinsicDef {
+        id: IntrinsicId::Eval,
+        value: IntrinsicValue::Builtin(vm::EVAL),
     },
 ];
 
@@ -363,6 +420,59 @@ const VM_PROPS: &[ObjectProps] = &[
         target: IntrinsicId::UriError,
         props: &prototype_of(IntrinsicId::UriErrorPrototype),
     },
+    // ---- M2-P0: generators (§27.3, §27.5) and async functions (§27.7) ----
+    ObjectProps {
+        target: IntrinsicId::GeneratorFunction,
+        props: &prototype_of(IntrinsicId::GeneratorFunctionPrototype),
+    },
+    ObjectProps {
+        target: IntrinsicId::GeneratorFunctionPrototype,
+        props: &[
+            // §27.3.3.1, §27.3.3.2: {c}.
+            PropDef {
+                key: CONSTRUCTOR,
+                value: PropValue::Builtin(vm::GENERATOR_FUNCTION),
+                attrs: PropAttrs::CONFIGURABLE,
+            },
+            PropDef::intrinsic(
+                PROTOTYPE,
+                IntrinsicId::GeneratorPrototype,
+                PropAttrs::CONFIGURABLE,
+            ),
+            to_string_tag("GeneratorFunction"),
+        ],
+    },
+    ObjectProps {
+        target: IntrinsicId::GeneratorPrototype,
+        props: &[
+            // §27.5.1.1: {c}.
+            PropDef::intrinsic(
+                CONSTRUCTOR,
+                IntrinsicId::GeneratorFunctionPrototype,
+                PropAttrs::CONFIGURABLE,
+            ),
+            PropDef::method(NEXT, vm::GENERATOR_NEXT),
+            PropDef::method(PropKey::Str("return"), vm::GENERATOR_RETURN),
+            PropDef::method(PropKey::Str("throw"), vm::GENERATOR_THROW),
+            to_string_tag("Generator"),
+        ],
+    },
+    ObjectProps {
+        target: IntrinsicId::AsyncFunction,
+        props: &prototype_of(IntrinsicId::AsyncFunctionPrototype),
+    },
+    ObjectProps {
+        target: IntrinsicId::AsyncFunctionPrototype,
+        props: &[
+            // §27.7.3.1: {c}.
+            PropDef {
+                key: CONSTRUCTOR,
+                value: PropValue::Builtin(vm::ASYNC_FUNCTION),
+                attrs: PropAttrs::CONFIGURABLE,
+            },
+            to_string_tag("AsyncFunction"),
+        ],
+    },
 ];
 
 /// The VM module: block 0.
@@ -403,6 +513,17 @@ pub(crate) fn function_constructor<'s>(
     _nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
     Err(cx.not_implemented("Function constructor"))
+}
+
+/// `eval(x)` (§19.2.1), `%eval%`. Stub until P3-EVAL-VM: it is not a global binding yet
+/// (C19), so no script reaches it.
+pub(crate) fn eval<'s>(
+    cx: &mut HostCx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Err(cx.not_implemented("eval"))
 }
 
 /// Object(value) (§20.1.1.1).

@@ -19,7 +19,7 @@ use core::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU32;
 
 use ep9_heap::{CellPtr, GlobalHandle, Heap, KindId};
 use ep9_value::Value;
@@ -224,8 +224,10 @@ pub(crate) struct Runtime {
     /// Lowest native stack address the VM lets JS entries and host calls reach.
     pub native_limit: usize,
     pub stack_trace_limit: usize,
-    /// Set by `TerminateHandle::terminate` (another thread); read at interrupt polls.
-    pub terminate: Arc<AtomicBool>,
+    /// The interrupt word (`interp::interrupt` bits; bit 0 = terminate): set by
+    /// `TerminateHandle::terminate` (another thread), read at interrupt polls through
+    /// `Cx::interrupt`.
+    pub terminate: Arc<AtomicU32>,
     /// True while a termination unwinds (no handler catches it).
     pub terminating: Cell<bool>,
     /// Template objects per (FunctionInfo, constant index) (§13.2.8.4 GetTemplateObject).
@@ -263,7 +265,7 @@ impl Runtime {
             registry: RefCell::new(RangeRegistry::new()),
             native_limit,
             stack_trace_limit,
-            terminate: Arc::new(AtomicBool::new(false)),
+            terminate: Arc::new(AtomicU32::new(0)),
             terminating: Cell::new(false),
             templates: RefCell::new(HashMap::new()),
             shapes: ShapeState::default(),

@@ -25,9 +25,7 @@ use ep9_value::Value;
 use crate::call;
 use crate::conv::BinOp;
 use crate::dispatch::DispatchKind;
-use crate::frame::{
-    CONSTRUCT_BIT, FALSE, HOLE, NULL, TRUE, UNDEFINED, int32_bits, int32_of, native_ptr, slot,
-};
+use crate::frame::{FALSE, HOLE, NULL, TRUE, UNDEFINED, int32_bits, native_ptr, slot};
 use crate::interp::dsl::{Back, CSlot, Count, Depth, FSlot, Fwd, K, R, RList, RtId, S2, S4, TyLit};
 use crate::interp::slow::{self, CmpOp, CtxKind, Lit, NameMsg, PropOp, UnOp};
 use crate::interp::{Done, Flow, St};
@@ -421,10 +419,10 @@ op!(LdaCurrentFunction(st) {
     st.acc = st.hdr(slot::CALLEE);
     Done::Next
 });
-// v0: a construct frame keeps new.target in its feedback slot (call::push_frame; H14-Q1).
+// FRAME 2 (H14-Q1): fp-3 holds new.target, undefined for a call (call::push_frame), or the
+// generator object of a resumed frame (call::push_resume_frame). No construct-bit check.
 op!(LdaNewTarget(st) {
-    let construct = int32_of(st.hdr(slot::ARGC)) as u32 & CONSTRUCT_BIT != 0;
-    st.acc = if construct { st.hdr(slot::FEEDBACK) } else { UNDEFINED };
+    st.acc = st.hdr(slot::NEW_TARGET);
     Done::Next
 });
 
@@ -512,15 +510,19 @@ op!(StaCurrentContextSlot(st, i: CSlot) {
     let c = st.hdr(slot::CONTEXT);
     ctx_store(st, c, i, 0)
 } cold { ctx_cold(st) });
-// v0: no sloppy direct eval and no `with`, so no dynamic scope lookup.
-op!(LdaLookupSlot(st, _name: K) { Flow::Cold } cold {
-    not_impl(st, "dynamic scope lookup (eval, with)")
+// Dynamic scope lookup (sloppy direct eval, `with`): slow/lookup.rs (P2-LOOKUP).
+op!(LdaLookupSlot(st, name: K) { Flow::Cold } cold {
+    let r = slow::lda_lookup_slot(st.cx, st.fp, st.pc, name.0, false);
+    st.result(r)
 });
-op!(LdaLookupSlotInsideTypeof(st, _name: K) { Flow::Cold } cold {
-    not_impl(st, "dynamic scope lookup (eval, with)")
+op!(LdaLookupSlotInsideTypeof(st, name: K) { Flow::Cold } cold {
+    let r = slow::lda_lookup_slot(st.cx, st.fp, st.pc, name.0, true);
+    st.result(r)
 });
-op!(StaLookupSlot(st, _name: K, _flags: u8) { Flow::Cold } cold {
-    not_impl(st, "dynamic scope lookup (eval, with)")
+op!(StaLookupSlot(st, name: K, flags: u8) { Flow::Cold } cold {
+    let v = st.acc;
+    let r = slow::sta_lookup_slot(st.cx, st.fp, st.pc, name.0, flags, v);
+    st.result(r)
 });
 // v0: no modules.
 op!(LdaModuleVariable(st, _cell: i32, _depth: Depth) { Flow::Cold } cold {
@@ -611,18 +613,18 @@ op!(SetKeyedProperty(st, object: R, key: R, _s: FSlot) { Flow::Cold } cold {
     let (o, k, v) = (st.reg(object), st.reg(key), st.acc);
     prop_cold(st, PropOp::SetKeyed, o, k, v)
 });
-op!(DefineKeyedOwnProperty(st, object: R, key: R, _flags: u8, _s: FSlot) { Flow::Cold } cold {
+op!(DefineKeyedOwnProperty(st, object: R, key: R, flags: u8, _s: FSlot) { Flow::Cold } cold {
     let (o, k, v) = (st.reg(object), st.reg(key), st.acc);
-    prop_cold(st, PropOp::DefineKeyed, o, k, v)
+    prop_cold(st, PropOp::DefineKeyedOwn(flags), o, k, v)
 });
 op!(StaInArrayLiteral(st, array: R, index: R, _s: FSlot) { Flow::Cold } cold {
     let (o, k, v) = (st.reg(array), st.reg(index), st.acc);
     prop_cold(st, PropOp::DefineKeyed, o, k, v)
 });
 // v0: flag bit 0 (set the function name from the key) is ignored.
-op!(DefineKeyedOwnPropertyInLiteral(st, object: R, key: R, _flags: u8, _s: FSlot) { Flow::Cold } cold {
+op!(DefineKeyedOwnPropertyInLiteral(st, object: R, key: R, flags: u8, _s: FSlot) { Flow::Cold } cold {
     let (o, k, v) = (st.reg(object), st.reg(key), st.acc);
-    prop_cold(st, PropOp::DefineKeyed, o, k, v)
+    prop_cold(st, PropOp::DefineKeyedOwn(flags), o, k, v)
 });
 
 // ---- binary operators: acc = lhs OP acc ----------------------------------------------------
@@ -1020,8 +1022,10 @@ op!(CreateEvalContext(st, scope: K, slots: u32) { Flow::Cold } cold {
     let r = slow::create_context(st.cx, st.fp, st.pc, CtxKind::Eval, scope.0, slots, UNDEFINED);
     st.result(r)
 });
-op!(CreateWithContext(st, _object: R, _scope: K) { Flow::Cold } cold {
-    not_impl(st, "with statements")
+op!(CreateWithContext(st, object: R, scope: K) { Flow::Cold } cold {
+    let o = st.reg(object);
+    let r = slow::create_with_context(st.cx, st.fp, st.pc, o, scope.0);
+    st.result(r)
 });
 op!(CreateMappedArguments(st) { Flow::Cold } cold {
     let r = slow::arguments(st.cx, st.fp, st.pc, false);
@@ -1186,16 +1190,22 @@ op!(GetSuperConstructor(st, dst: R) {
     throw_msg(st, ErrorKind::Error, "ep9 internal error: GetSuperConstructor of a non-object")
 });
 
-// ---- generators (reserved until M1) --------------------------------------------------------
+// ---- generators: slow/generator.rs (P1-GEN-VM), frame-switch protocol ----------------------
 
-op!(SwitchOnGeneratorState(st, _generator: R, _table: K) { Flow::Cold } cold {
-    not_impl(st, "generators")
+op!(SwitchOnGeneratorState(st, generator: R, table: K) { Flow::Cold } cold {
+    let r = slow::switch_on_generator_state(st.cx, st.fp, st.pc, st.next, generator.0, table.0);
+    st.switch(r)
 });
-op!(SuspendGenerator(st, _generator: R, _registers: RList, _count: Count, _id: u32) { Flow::Cold } cold {
-    not_impl(st, "generators")
+op!(SuspendGenerator(st, generator: R, registers: RList, count: Count, id: u32) { Flow::Cold } cold {
+    let (acc, next) = (st.acc, st.next);
+    let r = slow::suspend_generator(
+        st.cx, st.fp, st.pc, next, acc, generator.0, registers.0, count.0, id,
+    );
+    st.switch(r)
 });
-op!(ResumeGenerator(st, _generator: R, _registers: RList, _count: Count) { Flow::Cold } cold {
-    not_impl(st, "generators")
+op!(ResumeGenerator(st, generator: R, registers: RList, count: Count) { Flow::Cold } cold {
+    let r = slow::resume_generator(st.cx, st.fp, st.pc, st.next, generator.0, registers.0, count.0);
+    st.switch(r)
 });
 
 // ---- debugger ------------------------------------------------------------------------------

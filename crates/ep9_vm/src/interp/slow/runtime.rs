@@ -3,6 +3,8 @@
 //! | Id | Function | Spec |
 //! |---|---|---|
 //! | 6 | `InitializeGlobal` | CreateGlobalFunctionBinding §9.1.1.4.18 (functions); lexical bindings |
+//! | 7 | `ResolvePossiblyDirectEval` | §13.3.6.1 step 6 (`slow/eval.rs`) |
+//! | 8 | `DeleteLookupSlot` | §13.5.1.2 for a dynamic name (`slow/lookup.rs`) |
 //! | 9, 10 | `CopyDataProperties`, `CopyDataPropertiesExcluding` | §7.3.25 (getters run) |
 //! | 11 | `SetPrototypeInLiteral` | §13.2.5.5 `__proto__: v` |
 //! | 12, 16 | `DefineAccessorInLiteral`, `DefineClassAccessor` | §15.4.5 MethodDefinitionEvaluation (get, set) |
@@ -82,8 +84,12 @@ pub(crate) fn call_runtime(
             }
         }
         Some(Id::InitializeGlobal) => initialize_global(cx, a(0), a(1)),
-        // v0: there is no %eval%, so the callee is never %eval% and the call goes ahead.
-        Some(Id::ResolvePossiblyDirectEval) => Ok(a(0)),
+        // slow/eval.rs (P3-EVAL-VM); P0: %eval% is not installed, so it gives the callee.
+        Some(Id::ResolvePossiblyDirectEval) => {
+            super::eval::resolve_possibly_direct_eval(cx, fp, a(0), a(1), a(2), a(3), a(4))
+        }
+        // slow/lookup.rs (P2-LOOKUP).
+        Some(Id::DeleteLookupSlot) => super::lookup::delete_lookup_slot(cx, fp, a(0)),
         Some(Id::CopyDataProperties) => {
             copy_data_properties(cx, a(0), a(1), UNDEFINED).map(|_| a(0))
         }
@@ -144,6 +150,9 @@ pub(crate) fn call_runtime(
                 Ok(v)
             })()
         }
+        // An id that a later ABI appends and the VM does not route yet. At ABI 2 every id is
+        // routed above, so the arm is unreachable until the ABI 3 ids arrive.
+        #[allow(unreachable_patterns)]
         Some(other) => Err(not_implemented(cx, other.info().name)),
         None => Err(throw_error(
             cx,

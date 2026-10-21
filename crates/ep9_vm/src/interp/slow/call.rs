@@ -79,7 +79,7 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
             return Err(throw_error(cx, ErrorKind::TypeError, &msg));
         }
         // `new.target` is the accumulator if it is a constructor (BytecodeGen sets it), else
-        // the callee. v0 keeps it in the callee frame's feedback slot (push_frame).
+        // the callee. The callee frame keeps it in `slot::NEW_TARGET` (push_frame).
         let mut new_target = if object::is_constructor(acc) {
             acc
         } else {

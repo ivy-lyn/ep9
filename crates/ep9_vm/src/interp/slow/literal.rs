@@ -65,7 +65,8 @@ pub(crate) fn create_context(
         CtxKind::Block => scope_len,
         CtxKind::Catch => scope_len.max(1),
     };
-    let c = object::new_context(cx.rt(), context(fp), id.0 as i32, len);
+    let scope = &u.context_scopes[id.index()];
+    let c = object::new_context(cx.rt(), context(fp), scope, len);
     if kind == CtxKind::Catch {
         object::context_set(cx.rt(), c, 0, exception);
     }

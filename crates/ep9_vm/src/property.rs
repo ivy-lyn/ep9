@@ -1035,10 +1035,11 @@ pub(crate) fn own_property_keys(cx: &mut Cx, o: u64) -> u64 {
     if let Some(p) = exotic::lazy_prototype_key(rt, o) {
         push(p);
     }
-    // 3. Symbols in creation order.
+    // 3. Symbols in creation order. A private name is not a property key (§6.2.12): it is
+    // never listed.
     for i in 0..object::own_count(o) {
         let k = stored(i);
-        if is_symbol_key(k) {
+        if is_symbol_key(k) && !crate::symbol::is_private(k) {
             push(k);
         }
     }

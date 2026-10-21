@@ -3,27 +3,37 @@
 //! without GC stress (a collection before every allocation, then the heap verifier), and
 //! checks that all runs agree.
 //!
-//! This file is frozen after the week-4 scaffold: each area adds its tests to its own module
-//! below, and host functions for tests live in `support.rs`.
+//! This file is frozen after the week-4 scaffold and again after M2-P0, which declared the
+//! month-2 modules (`abi_index`, `class_fields`, `eval`, `generator`, `isolate_api`, `jobs`,
+//! `slots`, `with_stmt`): each area adds its tests to its own module below, and host
+//! functions for tests live in `support.rs`.
 
 #![allow(clippy::unwrap_used)]
 
 mod abi;
+mod abi_index;
 mod accessors;
 mod basic;
 mod builtins;
 mod calls;
+mod class_fields;
+mod eval;
 mod exceptions;
 mod feedback;
 mod gc;
+mod generator;
 mod ic;
 mod interp;
+mod isolate_api;
 mod iter;
+mod jobs;
 mod objects;
 mod shapes;
+mod slots;
 mod strings;
 mod support;
 mod symbols;
+mod with_stmt;
 mod wrappers;
 
 #[path = "../../../ep9_bytecode/tests/common/mod.rs"]

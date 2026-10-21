@@ -25,8 +25,17 @@
 //! (`new_wrapper`, `to_object`, `this_primitive_value`), functions (`set_function_name`,
 //! `set_function_length`, `new_bound_function`, `initial_name`) and
 //! `get_prototype_from_constructor`.
+//!
+//! Month-2 submodules (C1), one owner each: `index.rs` (index access) and `iter.rs` (the
+//! iterator protocol), `slots.rs` (internal slots), `jobs.rs` (jobs), `script.rs`
+//! (`evaluate_script`). Each adds an `impl Cx` block.
 
+mod index;
+mod iter;
+mod jobs;
 mod local;
+mod script;
+mod slots;
 
 use core::marker::PhantomData;
 
@@ -120,11 +129,12 @@ impl<'s> Args<'s> {
         int32_of(self.word(slot::ARGC)) as u32 & CONSTRUCT_BIT != 0
     }
 
-    /// `new.target`: the constructor of a `[[Construct]]` call, undefined for a call. v0
-    /// keeps it in the frame's feedback slot (H14-Q1, H20-Q1).
+    /// `new.target`: the constructor of a `[[Construct]]` call, undefined for a call. The
+    /// frame keeps it in `slot::NEW_TARGET` (fp - 3, H14-Q1, H20-Q1); the construct-bit gate
+    /// stays, so a host frame never reports anything else there as new.target.
     pub fn new_target(&self) -> Local<'s> {
         if self.is_construct_call() {
-            Local::from_bits(self.word(slot::FEEDBACK))
+            Local::from_bits(self.word(slot::NEW_TARGET))
         } else {
             Local::undefined()
         }

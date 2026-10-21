@@ -214,3 +214,83 @@ fn values_below_the_scratch_top_survive_gc_stress() {
         iso.verify_heap().unwrap();
     }
 }
+
+/// C5 (OBJECT_LAYOUT 2): a context's SCOPE word points at the `ContextScope` of its unit
+/// scope, and the slot names it resolves are the unit's descriptor names. Checked under GC
+/// stress 1 with the heap verifier, and again after 100 more units load (the records must
+/// not move when `Runtime::units` grows).
+#[test]
+fn contexts_map_back_to_their_unit_scope() {
+    fn make() -> VerifiedUnit {
+        // function mk() { let n, m;  { let tmp; inner = () => {}; }  return () => {}; }
+        // outer = mk();
+        let mut mk = Asm::new(meta("mk", 0, 0, 0, 0));
+        let (ctx, save) = (mk.b.new_register(), mk.b.new_register());
+        let ks = mk.b.scope_constant(ScopeId(0));
+        mk.b.create_function_context(ks, 2).push_context(ctx);
+        let kb = mk.b.scope_constant(ScopeId(1));
+        mk.b.create_block_context(kb).push_context(save);
+        let ki = mk.b.function_constant(FunctionId(3));
+        mk.b.create_closure(ki, mk.closure, 0);
+        mk.sta_global("inner");
+        mk.b.pop_context(save);
+        let ko = mk.b.function_constant(FunctionId(2));
+        mk.b.create_closure(ko, mk.closure, 0).return_();
+        let mut outer = Asm::new(meta("", 0, 1, 0, 0));
+        outer.b.lda_undefined().return_();
+        let mut inner = Asm::new(meta("", 0, 1, 0, 0));
+        inner.b.lda_undefined().return_();
+        let mut s = Asm::script(0);
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0);
+        s.b.star(s.f).call_undefined_receiver0(s.f, s.call);
+        s.sta_global("outer");
+        s.b.lda_undefined().return_();
+        unit_with_scopes(
+            "",
+            vec![
+                (
+                    ScopeKind::Function,
+                    None,
+                    vec![("n", VariableMode::Let), ("m", VariableMode::Var)],
+                ),
+                (ScopeKind::Block, Some(0), vec![("tmp", VariableMode::Let)]),
+            ],
+            vec![s.finish(), mk.finish(), outer.finish(), inner.finish()],
+        )
+    }
+    fn small() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        s.b.lda_undefined().return_();
+        super::unit("", vec![s.finish()])
+    }
+    /// Checks the context of the closure in global `name`: unit 0, scope `scope`, names.
+    fn check(iso: &crate::Isolate, name: &str, scope: u32, names: &[&str]) {
+        let f = iso.global(name).unwrap().to_bits();
+        let c = crate::object::function_context(f);
+        let (u, s) = crate::object::context_scope(c);
+        assert_eq!(u.index, 0, "{name}: the first unit");
+        assert!(core::ptr::eq(s, &u.unit.scopes[scope as usize]), "{name}");
+        let got: Vec<String> = s
+            .slots
+            .iter()
+            .map(|slot| crate::string::to_rust_string(u.string(slot.name.index())))
+            .collect();
+        assert_eq!(got, names, "{name}");
+    }
+    for &d in Dispatch::ALL {
+        on_big_stack(move || {
+            let mut iso = isolate(config(d, true));
+            iso.run_script(make(), "ctx.js").unwrap();
+            check(&iso, "outer", 0, &["n", "m"]);
+            check(&iso, "inner", 1, &["tmp"]);
+            for i in 0..100 {
+                iso.run_script(small(), &format!("u{i}.js")).unwrap();
+            }
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+            check(&iso, "outer", 0, &["n", "m"]);
+            check(&iso, "inner", 1, &["tmp"]);
+        });
+    }
+}

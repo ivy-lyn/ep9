@@ -25,6 +25,7 @@ pub(crate) mod ops;
 pub(crate) mod slow;
 
 use core::cell::Cell;
+use core::sync::atomic::AtomicU32;
 
 use ep9_bytecode::Opcode;
 
@@ -137,6 +138,16 @@ pub(crate) struct Cx {
     /// pointer so a change made by a host call or a nested run is seen at once. The IC hit
     /// paths compare it (`ic.rs`).
     pub proto_epoch: *const Cell<u32>,
+    // ---- appended in M2-P0 (no field above moves; the poll fields are fixed for month 2) ----
+    /// The isolate's interrupt word (`Runtime::terminate`, bits in [`interrupt`]), read at
+    /// the interrupt poll (`slow::interrupt`). Other threads set bits (`TerminateHandle`).
+    pub interrupt: *const AtomicU32,
+}
+
+/// Bits of the interrupt word (`Cx::interrupt`). P3 adds bits; bit 0 keeps its meaning.
+pub(crate) mod interrupt {
+    /// Terminate the running script (`TerminateHandle::terminate`); the poll clears it.
+    pub const TERMINATE: u32 = 1;
 }
 
 const _: () = assert!(core::mem::offset_of!(Cx, table) == 0);

@@ -49,9 +49,9 @@ use crate::unit::FunctionInfo;
 /// the new `fp`, or `None` if the frame would end above `limit`.
 ///
 /// `new_target` is undefined for a call. For a `[[Construct]]` it is the new.target function:
-/// the frame gets the construct bit, and v0 keeps new.target in the feedback header slot
-/// (`slot::FEEDBACK`, fp - 3). The FeedbackVector does not use that slot: T0 reaches it through
-/// the FunctionInfo (feedback.rs). H14-Q1 decides the real home of new.target.
+/// the frame gets the construct bit, and new.target goes into `slot::NEW_TARGET` (fp - 3,
+/// FRAME 2, H14-Q1). The FeedbackVector does not use that slot: T0 reaches it through the
+/// FunctionInfo (feedback.rs).
 ///
 /// # Safety
 /// `base` is the first free slot of the VM stack (`frame_top` of the caller, or the stack
@@ -99,13 +99,45 @@ pub(crate) unsafe fn push_frame(
         };
         *fp.offset(slot::ARGC) = int32_bits(argc_word as i32);
         *fp.offset(slot::FUNCTION_INFO) = native_of(fi);
-        *fp.offset(slot::FEEDBACK) = new_target;
+        *fp.offset(slot::NEW_TARGET) = new_target;
         *fp.offset(slot::CONTEXT) = context;
         *fp.offset(slot::BYTECODE_OFFSET) = int32_bits(0);
         for r in 0..fi.register_count as usize {
             *fp.add(r) = UNDEFINED;
         }
     }
+    Some(fp)
+}
+
+/// Pushes the frame of a resumed generator (FRAME 2): [`push_frame`] for a call (the
+/// construct bit is clear), then `slot::NEW_TARGET` (fp - 3) holds `generator`, so
+/// `LdaNewTarget` in the resumed frame gives the generator object (BytecodeGen emits
+/// `LdaUndefined` for `new.target` in a generator body).
+///
+/// # Safety
+/// As for [`push_frame`]; `generator` is valid Value bits.
+#[allow(dead_code, clippy::too_many_arguments)] // m2-stub: caller P1-GEN-VM (resume)
+pub(crate) unsafe fn push_resume_frame(
+    base: *mut u64,
+    limit: *mut u64,
+    fi: &FunctionInfo,
+    callee: u64,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    caller_fp: *mut u64,
+    return_pc: *const u8,
+    context: u64,
+    generator: u64,
+) -> Option<*mut u64> {
+    // SAFETY: caller contract (the `push_frame` contract).
+    let fp = unsafe {
+        push_frame(
+            base, limit, fi, callee, this, argc, arg, caller_fp, return_pc, context, UNDEFINED,
+        )
+    }?;
+    // SAFETY: header slot of the frame just pushed.
+    unsafe { *fp.offset(slot::NEW_TARGET) = generator };
     Some(fp)
 }
 

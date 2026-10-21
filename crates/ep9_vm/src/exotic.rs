@@ -6,12 +6,13 @@
 //! |---|---|---|
 //! | array | `length`; array-index keys below the dense limit (elements) | {w}; {w, e, c} |
 //! | String wrapper | `length`; indices below the length (`wrapper::string_own_property`) | {}; {e} |
-//! | constructor function | `prototype` until first use, then an ordinary property | {w} |
+//! | constructor or generator function | `prototype` until first use, then an ordinary property | {w} |
 //!
 //! Function `length` and `name` are ordinary own data properties (`object::new_function`).
 //! The lazy `prototype` follows V8, which also creates it on first access.
 
 use crate::conv::num;
+use crate::generator::{self, LazyPrototype};
 use crate::interp::Cx;
 use crate::key::{Probe, array_index_of};
 use crate::kinds as kind;
@@ -30,27 +31,41 @@ pub(crate) fn is_key(rt: &Runtime, key: u64, how: Probe, a: Atom) -> bool {
     }
 }
 
-/// True if the function `f` is a constructor whose `prototype` is still lazy (not in its
-/// storage) and `key` is `prototype`. Not a GC point.
+/// True if the function `f` has a lazy `prototype` (`generator::lazy_prototype_kind`: a
+/// constructor, later also a generator function) that is still lazy (not in its storage),
+/// and `key` is `prototype`. Not a GC point.
 #[inline]
 pub(crate) fn is_lazy_prototype(rt: &Runtime, f: u64, key: u64, how: Probe) -> bool {
-    object::function_info(f).is_constructor()
+    generator::lazy_prototype_kind(object::function_info(f)).is_some()
         && is_key(rt, key, how, Atom::Prototype)
         && props::own_get_with(f, key, how).is_none()
 }
 
-/// The `prototype` object of the constructor `f`, created on first use with a `constructor`
-/// link back to `f` (§10.2.5 MakeConstructor: {w: true, e: false, c: false}). Also made
-/// before any later key is added to `f` (`props::own_add`), so it keeps its creation-order
-/// place among the keys. GC point.
+/// The `prototype` object of the function `f`, created on first use
+/// (`generator::lazy_prototype_kind`): for a constructor, with a `constructor` link back to
+/// `f` (§10.2.5 MakeConstructor); for a generator function, an object that inherits from the
+/// kind's intrinsic (§15.5.4). Both are {w: true, e: false, c: false}. Also made before any
+/// later key is added to `f` (`props::own_add`), so it keeps its creation-order place among
+/// the keys. GC point.
 pub(crate) fn function_prototype(rt: &Runtime, f: u64) -> u64 {
     let key = rt.atom(Atom::Prototype);
     if let Some((v, _)) = props::own_get(f, key) {
         return v;
     }
+    let kind = generator::lazy_prototype_kind(object::function_info(f));
     // GC points: `f` and `p` live in Rust locals.
-    let p = object::new_plain_object(rt);
-    props::own_define(rt, p, rt.atom(Atom::Constructor), f, attr::HIDDEN);
+    let p = match kind {
+        Some(LazyPrototype::Instances(id)) => {
+            let parent = crate::builtins::intrinsic(rt, id);
+            debug_assert!(kind::is_object(parent), "{} is not installed", id.name());
+            object::new_object(rt, parent)
+        }
+        Some(LazyPrototype::Ordinary) | None => {
+            let p = object::new_plain_object(rt);
+            props::own_define(rt, p, rt.atom(Atom::Constructor), f, attr::HIDDEN);
+            p
+        }
+    };
     props::own_define(rt, f, key, p, attr::WRITABLE);
     p
 }

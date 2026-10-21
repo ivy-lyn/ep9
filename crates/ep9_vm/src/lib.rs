@@ -18,6 +18,10 @@
 //! [`IntrinsicId`]; realm init walks the VM's table (`natives.rs`), then
 //! [`IsolateConfig::builtins`]. Contract versions: [`versions`].
 //!
+//! Month-2 stubs (M2-P0, each marked `m2-stub` until its owner fills it): generator.rs,
+//! jobs.rs, `interp/slow/{generator, lookup, private, class_fields, eval}.rs` and
+//! `abi/{index, iter, slots, jobs, script}.rs`.
+//!
 //! ADRs: H14 frames and dispatch (docs/adr/H14-frames-and-dispatch.md), H15 interpreter
 //! dispatch, H10 rooting, H06 values.
 #![cfg_attr(feature = "become", feature(explicit_tail_calls))]
@@ -37,10 +41,12 @@ mod exotic;
 mod feedback;
 mod frame;
 mod function_info;
+mod generator;
 mod host;
 mod ic;
 mod interp;
 mod isolate;
+mod jobs;
 mod key;
 mod kinds;
 mod natives;

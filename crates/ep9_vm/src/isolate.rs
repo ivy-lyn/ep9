@@ -14,7 +14,7 @@
 //! [`Isolate::with_cx`], whose `Local`s cannot outlive the call (H20-Q4).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use ep9_bytecode::VerifiedUnit;
 use ep9_heap::{Heap, HeapConfig, HeapError, VerifyError, VerifyReport};
@@ -134,11 +134,12 @@ impl std::fmt::Display for Exception {
 /// Stops the running script of an isolate from any thread. The isolate polls it at loop back
 /// edges and function entries; the exception it raises cannot be caught by JS.
 #[derive(Clone, Debug)]
-pub struct TerminateHandle(Arc<AtomicBool>);
+pub struct TerminateHandle(Arc<AtomicU32>);
 
 impl TerminateHandle {
     pub fn terminate(&self) {
-        self.0.store(true, Ordering::Release);
+        self.0
+            .fetch_or(crate::interp::interrupt::TERMINATE, Ordering::Release);
     }
 }
 
@@ -187,6 +188,7 @@ impl Isolate {
             dispatch: config.dispatch,
             feedback_threshold: config.feedback_threshold,
             proto_epoch: &rt.shapes.proto_epoch,
+            interrupt: Arc::as_ptr(&rt.terminate),
         });
         builtins::install(&mut cx).map_err(IsolateError::BuiltinTable)?;
         Ok(Isolate { cx, rt })
