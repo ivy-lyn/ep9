@@ -212,4 +212,32 @@ if grep -q "ep9_cli" <<< "$members"; then
   if present_in ep9_cli --no-default-features -e normal -i ep9_frontend; then ok "(12) the jitless ep9 (-p ep9_cli --no-default-features) links ep9_frontend"; else bad "(12) the jitless ep9 does not link ep9_frontend"; fi
 fi
 
+# 13) H23: release builds abort on a panic, so no panic unwinds through a JIT or AOT frame.
+#     [profile.release] of Cargo.toml has `panic = "abort"` (dev-opt inherits it), and no other
+#     profile table and no .cargo/config.toml sets `panic`. cargo tree and cargo metadata do not
+#     show profiles, so this reads the files. Control: the scan must find a `panic` key in a
+#     sample with one, so a scan that never matches fails here instead of passing.
+# panic_keys <file>: "<table> <value>" for every `panic = <value>` line, comments dropped.
+panic_keys() {
+  awk '{ sub(/[[:space:]]*#.*/, "") }
+    /^[[:space:]]*\[/ { t = $0; gsub(/[[:space:]]/, "", t); next }
+    /^[[:space:]]*panic[[:space:]]*=/ { v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v); print t " " v }' "$1"
+}
+sample="$(panic_keys <(printf '[profile.dev] # x\n  panic = "unwind"  # y\n[x]\n'))"
+if [ "$sample" = '[profile.dev] "unwind"' ]; then
+  keys="$(panic_keys Cargo.toml)"
+  if [ "$keys" = '[profile.release] "abort"' ]; then
+    ok "(13) [profile.release] has panic = \"abort\", and no other profile sets panic"
+  else
+    bad "(13) Cargo.toml must set panic = \"abort\" in [profile.release] and nowhere else (H23); found: ${keys:-no panic key}"
+  fi
+  if [ -f .cargo/config.toml ] && [ -n "$(panic_keys .cargo/config.toml)" ]; then
+    bad "(13) .cargo/config.toml sets panic: $(panic_keys .cargo/config.toml | paste -sd ' ' -)"
+  else
+    ok "(13) .cargo/config.toml sets no panic"
+  fi
+else
+  bad "(13) control: the panic scan read '$sample' from a sample with [profile.dev] panic = \"unwind\""
+fi
+
 exit "$fail"
