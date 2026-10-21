@@ -16,14 +16,20 @@
 //! A build script sees only its own package's features, so the id cannot name the features of
 //! other crates (H35-Q8). It reruns when `EP9_BUILD_ID` changes, when this file changes, and
 //! when HEAD moves: it watches the HEAD file, and the branch ref HEAD names (the loose ref
-//! file, or its directory and `packed-refs` while the ref is packed). `git rev-parse
-//! --git-path` finds both, also in a worktree, where `.git` is a file. Cargo reruns build
-//! scripts on a toolchain change by itself.
+//! file; while the ref is packed, the nearest existing directory above it inside `refs/`, and
+//! `packed-refs`). `git rev-parse --git-path` finds them, also in a worktree, where `.git` is a
+//! file. The paths are chosen in `build_watch.rs` (tested by `tests/build_watch.rs`). Cargo
+//! reruns build scripts on a toolchain change by itself.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use ep9_bytecode::sha256::sha256;
+
+#[path = "build_watch.rs"]
+mod build_watch;
+
+use build_watch::git;
 
 /// Length of the build id in bytes (`ENGINE_BUILD_ID: [u8; 16]`).
 const BUILD_ID_LEN: usize = 16;
@@ -35,6 +41,7 @@ fn main() {
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
     let dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets it"));
     println!("cargo::rerun-if-changed=build.rs");
+    println!("cargo::rerun-if-changed=build_watch.rs");
     println!("cargo::rerun-if-env-changed={OVERRIDE_VAR}");
 
     let (id, text) = match std::env::var(OVERRIDE_VAR) {
@@ -85,7 +92,9 @@ fn bad_override(hex: &str) -> ! {
 fn input_text(dir: &Path) -> String {
     let commit = git(dir, &["rev-parse", "HEAD"]);
     if commit.is_some() {
-        watch_head(dir);
+        for p in build_watch::head_watch_paths(dir) {
+            println!("cargo::rerun-if-changed={}", p.display());
+        }
     }
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
     let version = Command::new(&rustc)
@@ -110,53 +119,4 @@ fn input_text(dir: &Path) -> String {
         text.push('\n');
     }
     text
-}
-
-/// Rerun when HEAD moves: the HEAD file, then the ref it names.
-fn watch_head(dir: &Path) {
-    let Some(head) = git_path(dir, "HEAD") else {
-        return;
-    };
-    println!("cargo::rerun-if-changed={}", head.display());
-    let Ok(content) = std::fs::read_to_string(&head) else {
-        return;
-    };
-    // A detached HEAD holds the commit itself; a branch HEAD reads "ref: refs/heads/<name>".
-    let Some(name) = content.trim().strip_prefix("ref: ") else {
-        return;
-    };
-    let Some(loose) = git_path(dir, name) else {
-        return;
-    };
-    if loose.is_file() {
-        println!("cargo::rerun-if-changed={}", loose.display());
-        return;
-    }
-    // A packed ref: a commit writes the loose file (a new file in its directory) and leaves
-    // packed-refs alone, so watch the directory too. A path that does not exist would make
-    // cargo rerun this script on every build.
-    if let Some(parent) = loose.parent().filter(|p| p.is_dir()) {
-        println!("cargo::rerun-if-changed={}", parent.display());
-    }
-    if let Some(packed) = git_path(dir, "packed-refs").filter(|p| p.is_file()) {
-        println!("cargo::rerun-if-changed={}", packed.display());
-    }
-}
-
-/// `git rev-parse --git-path <path>`, absolute.
-fn git_path(dir: &Path, path: &str) -> Option<PathBuf> {
-    let p = PathBuf::from(git(dir, &["rev-parse", "--git-path", path])?);
-    Some(if p.is_absolute() { p } else { dir.join(p) })
-}
-
-/// The trimmed stdout of `git -C <dir> <args>`, or None if git is missing or fails.
-fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .ok()?;
-    let s = String::from_utf8(out.stdout).ok()?;
-    (out.status.success() && !s.trim().is_empty()).then(|| s.trim().to_string())
 }

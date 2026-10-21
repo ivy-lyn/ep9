@@ -24,17 +24,17 @@
 //!
 //! | Item | Host column | Windows column (CI jobs `<job> (windows-x64)`) |
 //! |---|---|---|
-//! | 1 | exec JSON: full run (runs = the pin's count), wall time <= 600 s, 0 infra, 0 new failures, 0 stale lines; the expectation file is committed | step "test262 exec" green and <= 600 s; the file is committed |
+//! | 1 | exec JSON: full run (runs = the pin's count), wall time <= 600 s, 0 infra; the run names the committed expectation file of this tree, and its "fail" results against that file give 0 new failures and 0 stale lines (recomputed here, not the runner's diff) | step "test262 exec" green and <= 600 s; the file is committed |
 //! | 2 | parse JSON: negatives all pass (the pin's count), positives >= 99.98% | step "test262 parse" green, and the Windows parse expectation file equals this host's |
 //! | 3 | exec JSON: `language/` files >= 40% | step "test262 exec" green; passed = total (exec JSON) - the `test/language/` lines of the Windows expectation file |
-//! | 4 | cross JSON: richards and deltablue vs QuickJS, net interval low end >= 0.6, valid rows, a gate host, not provisional | NOT-RUN (no Windows bench job) |
-//! | 5 | verdicts: SP-GC, SP-VA, SP-Value, SP-Dispatch, SP-JIT-mem and Spike B GO (no open conditions); SP-tsrs-win recorded | the same verdicts, and the spike, barrier and test steps of the run green |
-//! | 6 | GC JSON: 0 infra, 0 new failures; every skipped test is in the expectation file | NOT-RUN (CI runs GC-stress on linux-x64 only) |
+//! | 4 | cross JSON: richards and deltablue vs QuickJS, net interval low end >= 0.6, valid rows (a gross fallback row, net invalid, gives OPEN), a gate host, not provisional | NOT-RUN (no Windows bench job) |
+//! | 5 | verdicts: SP-GC, SP-VA, SP-Value, SP-Dispatch, SP-JIT-mem and Spike B GO (no open conditions); SP-tsrs-win recorded | the same verdicts, and these steps of the run green: SP-GC, SP-Dispatch, SP-JIT-mem and Spike B structural gates, ep9_heap barrier, cargo test --workspace, spike-native tests (ep9_vm) |
+//! | 6 | GC JSON: the whole pinned corpus (files run + skipped = the pin's count; skipped = the committed skip list), 0 infra; the run names the committed expectation file, and its "fail" results against that file without the skip list give 0 new failures (recomputed here) | NOT-RUN (CI runs GC-stress on linux-x64 only) |
 //! | 7 | nesting log: `every_form_is_gated`, `caps_hold_end_to_end`, `uncaught_error_reports_file_line_utf16_column` ok | step "cargo test --workspace" green (it runs the three) |
 //! | 8 | the asserts are in ep9_value's source, and `cargo check -p ep9_value --target <host>` passes | step "cargo build --workspace --all-targets" green |
 //! | 9, 10 | docs/adr/README.md index: the ADR status of every row due at M0 (Accepted or Frozen; a Draft for "Draft M0" rows); H20 Frozen | the same |
 //! | 11 | verdicts: SP-Unit GO | the same |
-//! | 12 | corpus logs: every digest equals `expectations/bytecode-corpus.digest` | step "bytecodegen corpus digest (release)" green |
+//! | 12 | corpus logs: every run in every log (a run starts at a cargo "Finished" line) prints the digest of `expectations/bytecode-corpus.digest` and its test is ok; a release and a debug run are both given | step "bytecodegen corpus digest (release)" green |
 //!
 //! Exit 0 when every cell is PASS (the M0 exit holds), 1 otherwise, 2 on a usage error or an
 //! input that cannot be read. The JSON reader is the small one below: xtask has no JSON crate.
@@ -54,12 +54,15 @@ const MAX_WALL_SECONDS: f64 = 600.0;
 /// Counts that depend on the test262 pin (09-milestones section 2.2 items 1 and 2).
 struct PinCounts {
     pin_prefix: &'static str,
+    /// Test files of a full exec run (item 6: run + skipped).
+    files: u64,
     runs: u64,
     negatives: u64,
 }
 
 const PIN_COUNTS: &[PinCounts] = &[PinCounts {
     pin_prefix: "d53ebc8b",
+    files: 53_616,
     runs: 102_994,
     negatives: 4_653,
 }];
@@ -523,6 +526,64 @@ fn exec_health(j: &Json) -> (usize, usize, usize) {
     (infra, len("new_failures"), len("now_passing"))
 }
 
+/// The expectation diff of an exec JSON, recomputed here: its "fail" results against the
+/// committed `expectations/<file>` without `skip` (the tests the run did not run). The runner's
+/// own diff is not enough: it stays empty when the runner cannot read its expectation file, and
+/// `--expect` can name any file. So the run must name the committed file of this tree.
+#[derive(Debug)]
+struct Recheck {
+    /// Failing, and not in the file.
+    new: Vec<String>,
+    /// In the file, and not failing.
+    stale: Vec<String>,
+}
+
+fn recheck(root: &Path, j: &Json, file: &str, skip: &BTreeSet<String>) -> Result<Recheck, String> {
+    let want = committed(root, file)?;
+    let used = j
+        .path(&["expectations", "file"])
+        .and_then(Json::str)
+        .unwrap_or("");
+    let same = match (std::fs::canonicalize(used), std::fs::canonicalize(&want)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    };
+    if !same {
+        return Err(format!(
+            "the run compared with {used:?}, not expectations/{file} of this tree ({}){}",
+            want.display(),
+            if Path::new(used).is_file() {
+                ""
+            } else {
+                ": that file does not exist, so the runner could not read it and compared nothing"
+            }
+        ));
+    }
+    let expected: BTreeSet<String> = expectation_set(&want)?.difference(skip).cloned().collect();
+    let results = j
+        .get("results")
+        .and_then(Json::arr)
+        .ok_or("the run has no \"results\" array")?;
+    let failing: BTreeSet<String> = results
+        .iter()
+        .filter(|r| r.get("status").and_then(Json::str) == Some("fail"))
+        .filter_map(|r| r.get("path").and_then(Json::str).map(str::to_string))
+        .collect();
+    Ok(Recheck {
+        new: failing.difference(&expected).cloned().collect(),
+        stale: expected.difference(&failing).cloned().collect(),
+    })
+}
+
+/// Up to 5 paths, for the evidence.
+fn some_paths(paths: &[String]) -> String {
+    let mut t = paths.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
+    if paths.len() > 5 {
+        let _ = write!(t, " and {} more", paths.len() - 5);
+    }
+    t
+}
+
 fn item1(c: &Ctx) -> (Cell, Cell) {
     let file = format!("test262.{}.jit.txt", c.o.host);
     let host = match &c.exec {
@@ -534,11 +595,7 @@ fn item1(c: &Ctx) -> (Cell, Cell) {
                 .and_then(Json::num)
                 .unwrap_or(f64::INFINITY);
             let gc = j.get("gc_stress").and_then(Json::num).unwrap_or(0.0);
-            let (infra, new, stale) = exec_health(j);
-            let used = j
-                .path(&["expectations", "file"])
-                .and_then(Json::str)
-                .unwrap_or("");
+            let (infra, runner_new, runner_stale) = exec_health(j);
             let mut why = Vec::new();
             let mut status = Status::Pass;
             let (ok_runs, total_runs) = runs.unwrap_or((0, 0));
@@ -569,6 +626,22 @@ fn item1(c: &Ctx) -> (Cell, Cell) {
                 status = Status::Fail;
                 why.push(format!("wall time {wall:.1} s > {MAX_WALL_SECONDS} s"));
             }
+            // The diff against the committed file, recomputed; the runner's diff counts too.
+            let mut basis = format!("recomputed against expectations/{file}");
+            let (new, stale) = match recheck(&c.o.root, j, &file, &BTreeSet::new()) {
+                Ok(d) => {
+                    if !d.new.is_empty() {
+                        why.push(format!("new failures: {}", some_paths(&d.new)));
+                    }
+                    (d.new.len().max(runner_new), d.stale.len().max(runner_stale))
+                }
+                Err(e) => {
+                    status = Status::Fail;
+                    why.push(e);
+                    basis = "the runner's diff, not recomputed".into();
+                    (runner_new, runner_stale)
+                }
+            };
             if infra > 0 || new > 0 {
                 status = Status::Fail;
                 why.push(format!("{infra} infrastructure errors, {new} new failures"));
@@ -579,21 +652,10 @@ fn item1(c: &Ctx) -> (Cell, Cell) {
                     "{stale} expectation lines now pass (regenerate the file)"
                 ));
             }
-            if !used.ends_with(&file) {
-                status = Status::Fail;
-                why.push(format!("compared with {used:?}, not expectations/{file}"));
-            }
-            match committed(&c.o.root, &file) {
-                Ok(_) => {}
-                Err(e) => {
-                    status = Status::Fail;
-                    why.push(e);
-                }
-            }
             cell(
                 status,
                 format!(
-                    "{}: {ok_runs} / {total_runs} runs ok, wall time {wall:.1} s (<= {MAX_WALL_SECONDS} s), {} workers, infra {infra}, new failures {new}, stale lines {stale}; expectations/{file} committed{}",
+                    "{}: {ok_runs} / {total_runs} runs ok, wall time {wall:.1} s (<= {MAX_WALL_SECONDS} s), {} workers, infra {infra}, new failures {new}, stale lines {stale} ({basis}){}",
                     p.display(),
                     j.get("workers").and_then(Json::num).unwrap_or(0.0),
                     if why.is_empty() {
@@ -832,26 +894,45 @@ fn cross_canary(p: &Path, j: &Json, root: &Path) -> Cell {
             parts.push(format!("{w}: no row vs QuickJS (did it run?)"));
             continue;
         };
-        let metric = row.get("metric").and_then(Json::str).unwrap_or("net");
-        let m = row.get(metric);
-        let median = m
-            .and_then(|m| m.get("median"))
-            .and_then(Json::num)
-            .unwrap_or(0.0);
-        let low = m
-            .and_then(|m| m.get("interval"))
+        // The gate reads net ratios only (run.mjs label()): a gross fallback row, written when
+        // net time is <= 0 in a round, passes or fails nothing.
+        let metric = row.get("metric").and_then(Json::str).unwrap_or("");
+        let invalid = row.get("net_invalid").and_then(Json::str);
+        let Some(net) = row.get("net").filter(|n| **n != Json::Null) else {
+            status = status.max(Status::Open);
+            parts.push(format!(
+                "{w}: net invalid ({}): no gate verdict (a {metric} ratio is shown, not gated)",
+                invalid.unwrap_or("no net ratio")
+            ));
+            continue;
+        };
+        if metric != "net" || invalid.is_some() {
+            status = status.max(Status::Open);
+            parts.push(format!(
+                "{w}: metric {metric:?}, net invalid ({}): no gate verdict",
+                invalid.unwrap_or("none given")
+            ));
+            continue;
+        }
+        let median = net.get("median").and_then(Json::num).unwrap_or(0.0);
+        let low = net
+            .get("interval")
             .and_then(Json::arr)
             .and_then(|a| a.first())
             .and_then(Json::num)
             .unwrap_or(0.0);
-        let void = row.get("void").and_then(Json::bool).unwrap_or(true);
+        let void = net
+            .get("void")
+            .or_else(|| row.get("void"))
+            .and_then(Json::bool)
+            .unwrap_or(true);
         if low < 0.6 {
             status = Status::Fail;
         } else if void {
             status = status.max(Status::Open);
         }
         parts.push(format!(
-            "{w} {metric} {median:.3}x (interval low end {low:.3}{})",
+            "{w} net {median:.3}x (interval low end {low:.3}{})",
             if void { ", void row" } else { "" }
         ));
     }
@@ -922,8 +1003,12 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
             ("spike gates", "SP-GC gate"),
             ("spike gates", "SP-Dispatch gate"),
             ("spike gates", "SP-JIT-mem gate"),
+            ("spike gates", "Spike B structural gate"),
             ("disasm checks", "ep9_heap barrier"),
             ("build + test", "Run cargo test --workspace --locked"),
+            // D21: the workspace test does not enable spike-native; this step is the only
+            // Windows run of Spike B's native code.
+            ("build + test", "spike-native tests (ep9_vm)"),
         ] {
             match ci.step(job, &[step]) {
                 Ok(s) => {
@@ -953,7 +1038,7 @@ fn item6(c: &Ctx) -> (Cell, Cell) {
         None => not_given("--exec-gc", GC_CMD),
         Some((p, j)) => {
             let gc = j.get("gc_stress").and_then(Json::num).unwrap_or(0.0);
-            let (infra, new, stale) = exec_health(j);
+            let (infra, runner_new, runner_stale) = exec_health(j);
             let skipped = j.get("skipped").and_then(Json::num).unwrap_or(0.0) as usize;
             let (fp, ft) = count(j, &["files"]).unwrap_or((0, 0));
             let mut status = Status::Pass;
@@ -962,23 +1047,35 @@ fn item6(c: &Ctx) -> (Cell, Cell) {
                 status = Status::Fail;
                 why.push("not a GC-stress run".to_string());
             }
-            if infra > 0 || new > 0 {
-                status = Status::Fail;
-                why.push(format!("{infra} infrastructure errors, {new} new failures"));
-            }
-            if stale > 0 {
-                why.push(format!("{stale} listed tests pass under GC-stress"));
+            // The whole pinned corpus: every file is run or skipped by the skip list.
+            match c.pin_counts {
+                Some(pc) if ft + skipped as u64 != pc.files => {
+                    status = Status::Fail;
+                    why.push(format!(
+                        "{ft} files run + {skipped} skipped, not the full {} of the pin (a filtered run?)",
+                        pc.files
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    status = status.max(Status::Open);
+                    why.push(format!(
+                        "no full-run file count for the pin {} in m0_exit.rs PIN_COUNTS",
+                        c.pin.as_deref().unwrap_or("unknown")
+                    ));
+                }
             }
             // A skipped test is not run. One that fails without GC-stress (it is in the
             // expectation file) is no passing test. One that passes without it is named: the
             // skip list says why it is skipped (a timeout under GC-stress), and its decision row
             // records the run that passed it alone.
-            let listed = expectation_set(
-                &c.o.root
-                    .join(format!("expectations/test262.{}.jit.txt", c.o.host)),
-            );
-            let skip = expectation_set(&c.o.root.join("expectations/test262-gc-skip.txt"));
+            let file = format!("test262.{}.jit.txt", c.o.host);
+            let listed = committed(&c.o.root, &file).and_then(|p| expectation_set(&p));
+            let skip =
+                committed(&c.o.root, "test262-gc-skip.txt").and_then(|p| expectation_set(&p));
             let mut skip_text = String::new();
+            let (mut new, mut stale) = (runner_new, runner_stale);
+            let mut basis = "the runner's diff, not recomputed".to_string();
             match (listed, skip) {
                 (Ok(listed), Ok(skip)) => {
                     let passing: Vec<&str> = skip
@@ -1005,16 +1102,39 @@ fn item6(c: &Ctx) -> (Cell, Cell) {
                             skip.len()
                         ));
                     }
+                    // The diff against the committed file without the skip list, recomputed;
+                    // the runner's diff counts too.
+                    match recheck(&c.o.root, j, &file, &skip) {
+                        Ok(d) => {
+                            if !d.new.is_empty() {
+                                why.push(format!("new failures: {}", some_paths(&d.new)));
+                            }
+                            new = new.max(d.new.len());
+                            stale = stale.max(d.stale.len());
+                            basis = format!("recomputed against expectations/{file}");
+                        }
+                        Err(e) => {
+                            status = Status::Fail;
+                            why.push(e);
+                        }
+                    }
                 }
                 (Err(e), _) | (_, Err(e)) => {
                     status = Status::Fail;
                     why.push(e);
                 }
             }
+            if infra > 0 || new > 0 {
+                status = Status::Fail;
+                why.push(format!("{infra} infrastructure errors, {new} new failures"));
+            }
+            if stale > 0 {
+                why.push(format!("{stale} listed tests pass under GC-stress"));
+            }
             cell(
                 status,
                 format!(
-                    "{}: --gc-stress {gc}, files {fp} / {ft}, infra {infra}, new failures {new}; {skip_text}{}",
+                    "{}: --gc-stress {gc}, files {fp} / {ft}, infra {infra}, new failures {new} ({basis}); {skip_text}{}",
                     p.display(),
                     if why.is_empty() {
                         String::new()
@@ -1298,42 +1418,53 @@ fn item12(c: &Ctx) -> (Cell, Cell) {
     } else {
         let mut status = Status::Pass;
         let mut parts = Vec::new();
+        let mut profiles = BTreeSet::new();
         for (p, log) in &c.corpus {
-            let profile = if log.contains("Finished `release` profile") {
-                "release"
-            } else if log.contains("Finished `test` profile")
-                || log.contains("Finished `dev` profile")
-            {
-                "debug"
-            } else {
-                "unknown profile"
-            };
-            let digest = log.lines().find_map(|l| {
-                let rest = l.trim().strip_prefix("corpus digest ")?;
-                let (d, units) = rest.split_once(" over ")?;
-                Some((
-                    d.to_string(),
-                    units.split(' ').next().unwrap_or("").to_string(),
-                ))
-            });
-            let ok = log.contains("test result: ok. 1 passed");
-            match digest {
-                Some((d, units)) => {
-                    if d != want || !ok {
-                        status = Status::Fail;
-                    }
-                    parts.push(format!(
-                        "{} ({profile}): {} over {units} units, test {}",
-                        p.display(),
-                        short(&d),
-                        if ok { "ok" } else { "not ok" }
-                    ));
-                }
-                None => {
-                    status = Status::Fail;
-                    parts.push(format!("{}: no \"corpus digest\" line", p.display()));
-                }
+            let runs = corpus_runs(log);
+            if runs.is_empty() {
+                status = Status::Fail;
+                parts.push(format!("{}: no \"corpus digest\" line", p.display()));
             }
+            for r in runs {
+                let ok = !r.failed && r.ok >= r.digests.len() && !r.digests.is_empty();
+                if r.digests.is_empty() {
+                    status = Status::Fail;
+                    parts.push(format!(
+                        "{} ({}): no \"corpus digest\" line",
+                        p.display(),
+                        r.profile
+                    ));
+                    continue;
+                }
+                if !ok || r.digests.iter().any(|(d, _)| *d != want) {
+                    status = Status::Fail;
+                } else {
+                    profiles.insert(r.profile);
+                }
+                let digests: Vec<String> = r
+                    .digests
+                    .iter()
+                    .map(|(d, units)| format!("{} over {units} units", short(d)))
+                    .collect();
+                parts.push(format!(
+                    "{} ({}): {}, test {}",
+                    p.display(),
+                    r.profile,
+                    digests.join(", "),
+                    if ok { "ok" } else { "not ok" }
+                ));
+            }
+        }
+        if !(profiles.contains("release") && profiles.contains("debug")) {
+            status = status.max(Status::Open);
+            parts.push(format!(
+                "a good release and a good debug run are needed (good: {})",
+                if profiles.is_empty() {
+                    "none".to_string()
+                } else {
+                    profiles.into_iter().collect::<Vec<_>>().join(", ")
+                }
+            ));
         }
         cell(
             status,
@@ -1359,6 +1490,59 @@ fn item12(c: &Ctx) -> (Cell, Cell) {
         ))
     });
     (host, win)
+}
+
+/// One cargo test run in a corpus log: from a "Finished `<profile>` profile" line to the next
+/// one (a log can hold several runs, appended).
+struct CorpusRun {
+    profile: &'static str,
+    /// (digest, units) of each `corpus digest <hex> over <n> units` line.
+    digests: Vec<(String, String)>,
+    /// "test result: ok. 1 passed" lines.
+    ok: usize,
+    /// A "test result: FAILED" line.
+    failed: bool,
+}
+
+/// The runs of a corpus log. Lines before the first "Finished" line form a run of an unknown
+/// profile, kept only if it has a digest or a test result.
+fn corpus_runs(log: &str) -> Vec<CorpusRun> {
+    let new = |profile| CorpusRun {
+        profile,
+        digests: Vec::new(),
+        ok: 0,
+        failed: false,
+    };
+    let mut runs = vec![new("unknown profile")];
+    for l in log.lines() {
+        let t = l.trim();
+        if let Some(rest) = t.strip_prefix("Finished `") {
+            runs.push(new(match rest.split('`').next() {
+                Some("release") => "release",
+                Some("test" | "dev") => "debug",
+                _ => "unknown profile",
+            }));
+            continue;
+        }
+        let Some(r) = runs.last_mut() else { continue };
+        if let Some((d, units)) = t
+            .strip_prefix("corpus digest ")
+            .and_then(|rest| rest.split_once(" over "))
+        {
+            r.digests.push((
+                d.to_string(),
+                units.split(' ').next().unwrap_or("").to_string(),
+            ));
+        } else if t.starts_with("test result: FAILED") {
+            r.failed = true;
+        } else if t.starts_with("test result: ok. 1 passed") {
+            r.ok += 1;
+        }
+    }
+    if runs[0].digests.is_empty() && runs[0].ok == 0 && !runs[0].failed {
+        runs.remove(0);
+    }
+    runs
 }
 
 fn short(sha: &str) -> String {
@@ -1981,6 +2165,31 @@ mod tests {
 
     const HOST: &str = "aarch64-apple-darwin";
 
+    /// An ep9-test262 exec JSON: `gc` the --gc-stress value, `fails` the paths with status
+    /// "fail", `used` the expectation file it names. The runner's own diff is empty.
+    fn exec_json(gc: u32, wall: f64, skipped: u32, fails: &[&str], used: &str) -> String {
+        let results: Vec<String> = fails
+            .iter()
+            .map(|p| format!(r#"{{"path":"{p}","status":"fail","cause":"x","detail":"d"}}"#))
+            .collect();
+        let files = PIN_COUNTS[0].files - u64::from(skipped);
+        format!(
+            r#"{{"command":"exec","mode":"jit","target":"{HOST}","workers":18,"gc_stress":{gc},"skipped":{skipped},"wall_seconds":{wall},
+            "files":{{"passed":{},"total":{files}}},"runs":{{"passed":50000,"total":102994}},
+            "by_dir":{{"language":{{"files":{{"passed":4,"total":6}},"runs":{{"passed":1,"total":2}}}}}},
+            "causes":[],"results":[{}],
+            "expectations":{{"file":{},"new_failures":[],"now_passing":[]}}}}"#,
+            files - fails.len() as u64,
+            results.join(","),
+            json_str(used)
+        )
+    }
+
+    /// `s` as a JSON string (a Windows temp path has backslashes).
+    fn json_str(s: &str) -> String {
+        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    }
+
     /// A fake repo with every input, from the real ADR README and spike review.
     fn fake_repo(name: &str) -> PathBuf {
         let real = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -2034,18 +2243,22 @@ mod tests {
             &format!("expectations/test262-parse.{CI_TRIPLE}.txt"),
             "# w\ntest/p.js\n",
         );
-        let exec = |gc: u32, wall: f64, skipped: u32| {
-            format!(
-                r#"{{"command":"exec","mode":"jit","target":"{HOST}","workers":18,"gc_stress":{gc},"skipped":{skipped},"wall_seconds":{wall},
-                "files":{{"passed":6,"total":10}},"runs":{{"passed":50000,"total":102994}},
-                "by_dir":{{"language":{{"files":{{"passed":4,"total":6}},"runs":{{"passed":1,"total":2}}}}}},
-                "causes":[],"results":[{{"path":"test/language/a.js","status":"fail","cause":"x","detail":"d"}}],
-                "expectations":{{"file":"/r/expectations/test262.{HOST}.jit.txt","new_failures":[],"now_passing":[]}}}}"#
-            )
-        };
-        write(&root, "in/exec.json", &exec(0, 5.4, 0));
-        write(&root, "in/gc.json", &exec(1, 166.0, 2));
-        write(&root, "in/slow.json", &exec(0, 700.0, 0));
+        let used = root.join(format!("expectations/test262.{HOST}.jit.txt"));
+        let used = used.to_str().unwrap();
+        // The default run fails every listed test; the GC run skips the 2 skip-list tests.
+        let all = [
+            "test/language/a.js",
+            "test/language/b.js",
+            "test/built-ins/c.js",
+            "test/skip/one.js",
+        ];
+        write(&root, "in/exec.json", &exec_json(0, 5.4, 0, &all, used));
+        write(
+            &root,
+            "in/gc.json",
+            &exec_json(1, 166.0, 2, &all[..3], used),
+        );
+        write(&root, "in/slow.json", &exec_json(0, 700.0, 0, &all, used));
         write(
             &root,
             "in/parse.json",
@@ -2072,9 +2285,27 @@ mod tests {
         write(
             &root,
             "in/corpus.log",
-            "    Finished `release` profile [optimized] target(s) in 1s\ncorpus digest abc123 over 77183 units (compare)\ntest result: ok. 1 passed; 0 failed\n",
+            &corpus_log("release", "abc123", true),
+        );
+        write(
+            &root,
+            "in/corpus-debug.log",
+            &corpus_log("test", "abc123", true),
         );
         root
+    }
+
+    /// The output of one corpus test run in the `profile` cargo profile.
+    fn corpus_log(profile: &str, digest: &str, ok: bool) -> String {
+        format!(
+            "    Finished `{profile}` profile [optimized] target(s) in 1s\n     Running unittests src/lib.rs\n\
+             running 1 test\ncorpus digest {digest} over 77183 units (compare across hosts and targets)\n{}",
+            if ok {
+                "test bytecodegen::corpus::corpus_digest ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored\n"
+            } else {
+                "test bytecodegen::corpus::corpus_digest ... FAILED\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored\n"
+            }
+        )
     }
 
     fn step(name: &str, conclusion: &str, from: &str, to: &str) -> String {
@@ -2085,7 +2316,22 @@ mod tests {
 
     /// A run in the shape of `gh run view <id> --json jobs,headSha,databaseId,url`.
     fn ci_json(exec_conclusion: &str) -> String {
-        let job = |name: &str, steps: &[String]| {
+        ci_json_with(|name| {
+            Some(if name == "test262 exec" {
+                exec_conclusion
+            } else {
+                "success"
+            })
+        })
+    }
+
+    /// The same run, with `conclusion(step name)` for each step; None leaves the step out.
+    fn ci_json_with<'a>(conclusion: impl Fn(&str) -> Option<&'a str>) -> String {
+        let job = |name: &str, steps: &[(&str, &str, &str)]| {
+            let steps: Vec<String> = steps
+                .iter()
+                .filter_map(|&(n, from, to)| conclusion(n).map(|c| step(n, c, from, to)))
+                .collect();
             format!(
                 r#"{{"name":"{name} (windows-x64)","status":"completed","conclusion":"success","databaseId":7,"steps":[{}]}}"#,
                 steps.join(",")
@@ -2096,43 +2342,31 @@ mod tests {
             job(
                 "build + test",
                 &[
-                    step(
+                    (
                         "Run cargo build --workspace --all-targets --locked",
-                        "success",
                         "02:00",
                         "12:00"
                     ),
-                    step(
-                        "Run cargo test --workspace --locked",
-                        "success",
-                        "12:00",
-                        "30:00"
-                    ),
+                    ("Run cargo test --workspace --locked", "12:00", "30:00"),
+                    ("spike-native tests (ep9_vm)", "30:00", "33:00"),
                 ]
             ),
             job(
                 "test262 parse + exec",
                 &[
-                    step("test262 parse", "success", "04:00", "14:00"),
-                    step("test262 exec", exec_conclusion, "14:00", "15:12"),
-                    step(
-                        "bytecodegen corpus digest (release)",
-                        "success",
-                        "16:30",
-                        "22:00"
-                    ),
+                    ("test262 parse", "04:00", "14:00"),
+                    ("test262 exec", "14:00", "15:12"),
+                    ("bytecodegen corpus digest (release)", "16:30", "22:00"),
                 ]
             ),
-            job(
-                "disasm checks",
-                &[step("ep9_heap barrier", "success", "15:00", "16:00")]
-            ),
+            job("disasm checks", &[("ep9_heap barrier", "15:00", "16:00")]),
             job(
                 "spike gates",
                 &[
-                    step("SP-Dispatch gate", "success", "05:00", "30:00"),
-                    step("SP-GC gate", "success", "30:00", "38:00"),
-                    step("SP-JIT-mem gate", "success", "38:00", "44:00"),
+                    ("SP-Dispatch gate", "05:00", "30:00"),
+                    ("SP-GC gate", "30:00", "38:00"),
+                    ("SP-JIT-mem gate", "38:00", "44:00"),
+                    ("Spike B structural gate", "44:00", "50:00"),
                 ]
             ),
         )
@@ -2149,7 +2383,7 @@ mod tests {
             exec_gc: i("gc.json"),
             cross: i("cross.json"),
             nesting: i("nesting.log"),
-            corpus: vec![root.join("in/corpus.log")],
+            corpus: vec![root.join("in/corpus.log"), root.join("in/corpus-debug.log")],
             verdicts: vec![],
             ci_run: Some("39636336281".into()),
             ci_run_json: i("ci.json"),
@@ -2247,6 +2481,214 @@ mod tests {
                 .all(|(_, w)| w.status != Status::Pass || w.evidence.starts_with("repo-wide"))
         );
         assert!(r.cells[0].1.evidence.contains("no CI run given"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// I3: the runner leaves its diff empty when it cannot read its expectation file, and it
+    /// can be pointed at any file, so item 1 recomputes the diff from the results against the
+    /// committed file and needs the run to name that file.
+    #[test]
+    fn item1_recomputes_the_diff() {
+        let root = fake_repo("item1-diff");
+        write(&root, "in/ci.json", &ci_json("success"));
+        let all = [
+            "test/language/a.js",
+            "test/language/b.js",
+            "test/built-ins/c.js",
+            "test/skip/one.js",
+        ];
+        let committed = root.join(format!("expectations/test262.{HOST}.jit.txt"));
+        let committed = committed.to_str().unwrap();
+        let missing = format!("/nonexistent/dir/test262.{HOST}.jit.txt");
+        let item1 = |fails: &[&str], used: &str| {
+            write(&root, "in/exec.json", &exec_json(0, 5.4, 0, fails, used));
+            let r = run(&opts(&root)).unwrap();
+            r.cells[0].0.clone()
+        };
+        // A failed read: the runner names a file that does not exist and diffs nothing.
+        let c = item1(&all, &missing);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("not recomputed"), "{}", c.evidence);
+        assert!(c.evidence.contains("/nonexistent/dir"), "{}", c.evidence);
+        // A file outside this tree with the right name.
+        write(
+            &root,
+            &format!("other/test262.{HOST}.jit.txt"),
+            "test/x.js\n",
+        );
+        let other = root.join(format!("other/test262.{HOST}.jit.txt"));
+        let c = item1(&all, other.to_str().unwrap());
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        // A new failure that the runner's (empty) diff does not report.
+        let mut more = all.to_vec();
+        more.push("test/new/x.js");
+        let c = item1(&more, committed);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("new failures 1"), "{}", c.evidence);
+        // A listed test that passes: stale, OPEN.
+        let c = item1(&all[..3], committed);
+        assert_eq!(c.status, Status::Open, "{}", c.evidence);
+        assert!(c.evidence.contains("stale lines 1"), "{}", c.evidence);
+        // The committed file and the same failing set: PASS.
+        let c = item1(&all, committed);
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// I2: item 6 needs the full pinned corpus (run plus skipped files), the committed
+    /// expectation file, and the diff recomputed from the results without the skip list.
+    #[test]
+    fn gc_run_needs_full_coverage() {
+        let root = fake_repo("gc-cover");
+        write(&root, "in/ci.json", &ci_json("success"));
+        let listed = [
+            "test/language/a.js",
+            "test/language/b.js",
+            "test/built-ins/c.js",
+        ];
+        let committed = root.join(format!("expectations/test262.{HOST}.jit.txt"));
+        let committed = committed.to_str().unwrap();
+        let item6 = |json: String| {
+            write(&root, "in/gc.json", &json);
+            let r = run(&opts(&root)).unwrap();
+            r.cells[5].0.clone()
+        };
+        // A filtered GC run: 1 file run, the 2 of the skip list skipped, an empty diff.
+        let full = exec_json(1, 166.0, 2, &listed, committed);
+        let files = format!(r#""files":{{"passed":{},"total":{}}}"#, 53_614 - 3, 53_614);
+        assert!(full.contains(&files), "{full}");
+        let c = item6(full.replace(&files, r#""files":{"passed":1,"total":1}"#));
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("not the full"), "{}", c.evidence);
+        // Compared with a file outside this tree.
+        let c = item6(exec_json(1, 166.0, 2, &listed, "/elsewhere/other.txt"));
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("not recomputed"), "{}", c.evidence);
+        assert!(
+            c.evidence.contains("/elsewhere/other.txt"),
+            "{}",
+            c.evidence
+        );
+        // A new failure under GC-stress that the runner's (empty) diff does not report.
+        let mut more = listed.to_vec();
+        more.push("test/new/x.js");
+        let c = item6(exec_json(1, 166.0, 2, &more, committed));
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("new failures 1"), "{}", c.evidence);
+        // The full corpus against the committed file: PASS.
+        let c = item6(exec_json(1, 166.0, 2, &listed, committed));
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// I4: the Windows cell of item 5 needs the spike-native tests (D21, the only Windows run
+    /// of Spike B's native code) and the Spike B structural gate, not only the other gates.
+    #[test]
+    fn windows_spike_b_needs_its_steps() {
+        let root = fake_repo("win-spike-b");
+        write(
+            &root,
+            "in/verdicts.md",
+            "| Spike | Verdict |\n|---|---|\n| SP-GC, SP-VA, SP-Value, SP-Dispatch, SP-JIT-mem, Spike B | GO |\n\
+             | SP-tsrs-win | recorded |\n",
+        );
+        let mut o = opts(&root);
+        o.verdicts = vec![root.join("in/verdicts.md")];
+        let item5 = |ci: String| {
+            write(&root, "in/ci.json", &ci);
+            let r = run(&o).unwrap();
+            assert_eq!(
+                r.cells[4].0.status,
+                Status::Pass,
+                "{}",
+                r.cells[4].0.evidence
+            );
+            r.cells[4].1.clone()
+        };
+        for step in ["spike-native tests (ep9_vm)", "Spike B structural gate"] {
+            let c = item5(ci_json_with(|n| {
+                Some(if n == step { "failure" } else { "success" })
+            }));
+            assert_eq!(c.status, Status::Fail, "{step}: {}", c.evidence);
+            assert!(c.evidence.contains(step), "{}", c.evidence);
+            let c = item5(ci_json_with(|n| (n != step).then_some("success")));
+            assert_eq!(c.status, Status::NotRun, "{step}: {}", c.evidence);
+        }
+        let c = item5(ci_json("success"));
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// I5: a gross fallback row (net time <= 0 in a round, so no net ratio) passes or fails
+    /// nothing, as tools/bench/cross/run.mjs label() says; item 4 reads net ratios only.
+    #[test]
+    fn canary_ignores_gross_fallback() {
+        let root = fake_repo("canary");
+        let row = |w: &str, valid: bool| {
+            if valid {
+                format!(
+                    r#"{{"workload":"{w}","comparator":"qjs","metric":"net","void":false,"net_invalid":null,
+                    "net":{{"median":0.8,"interval":[0.7,0.9],"void":false}},"gross":{{"median":0.5,"interval":[0.4,0.6],"void":false}}}}"#
+                )
+            } else {
+                format!(
+                    r#"{{"workload":"{w}","comparator":"qjs","metric":"gross","void":false,"net":null,
+                    "net_invalid":"net time <= 0 in round(s) 3","gross":{{"median":0.8,"interval":[0.7,0.9],"void":false}}}}"#
+                )
+            }
+        };
+        let canary = |valid: bool| {
+            let j = format!(
+                r#"{{"schema":"ep9-cross/v1","commit":{{"ep9":"fa451f6"}},"provisional":false,"host":{{"gate_host":true}},
+                "M":{{"ratios":[{},{}]}}}}"#,
+                row("richards", valid),
+                row("deltablue", valid)
+            );
+            cross_canary(Path::new("run.json"), &parse_json(&j).unwrap(), &root)
+        };
+        let c = canary(false);
+        assert_eq!(c.status, Status::Open, "{}", c.evidence);
+        assert!(c.evidence.contains("net invalid"), "{}", c.evidence);
+        let c = canary(true);
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        assert!(c.evidence.contains("richards net 0.800x"), "{}", c.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// I6: item 12 checks every corpus run in every log (a log can hold several cargo runs),
+    /// and needs a release and a debug run.
+    #[test]
+    fn corpus_checks_every_run() {
+        let root = fake_repo("corpus");
+        write(&root, "in/ci.json", &ci_json("success"));
+        let item12 = |logs: &[String]| {
+            let mut o = opts(&root);
+            o.corpus.clear();
+            for (i, log) in logs.iter().enumerate() {
+                let p = format!("in/c{i}.log");
+                write(&root, &p, log);
+                o.corpus.push(root.join(p));
+            }
+            run(&o).unwrap().cells[11].0.clone()
+        };
+        let release = corpus_log("release", "abc123", true);
+        let debug = corpus_log("test", "abc123", true);
+        // A release run that is ok, then a debug run with another digest that FAILED.
+        let bad_debug = corpus_log("test", "deadbeef", false);
+        let c = item12(&[format!("{release}{bad_debug}")]);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        // A debug run with the right digest that FAILED.
+        let c = item12(&[release.clone(), corpus_log("test", "abc123", false)]);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        // Release only.
+        let c = item12(std::slice::from_ref(&release));
+        assert_eq!(c.status, Status::Open, "{}", c.evidence);
+        assert!(c.evidence.contains("debug"), "{}", c.evidence);
+        // Release and debug, in two logs or in one.
+        let c = item12(&[release.clone(), debug.clone()]);
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        let c = item12(&[format!("{release}{debug}")]);
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
         std::fs::remove_dir_all(root).unwrap();
     }
 
