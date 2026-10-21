@@ -33,9 +33,9 @@ PACKED/HOLEY × INT32/DOUBLE/ELEMENTS, one-way. DOUBLE stores raw f64 with a hol
 
 | Item | v0 behavior | Where |
 |---|---|---|
-| Storage | ARRAY cell plus one ELEMENTS cell of Values; a hole is the H6 empty value 0x22 | `crates/ep9_vm/src/object.rs:21`, `crates/ep9_vm/src/object.rs:29`; `new_elements` (`crates/ep9_vm/src/object.rs:497`) |
-| Dense limit | 2^26 elements (`arr::MAX_LENGTH`) | `crates/ep9_vm/src/object.rs:88-89` |
-| Growth | a store at index i makes capacity max(i + 1, 2 × capacity, 4) | `array_set` (`crates/ep9_vm/src/object.rs:534`) |
+| Storage | ARRAY cell plus one ELEMENTS cell of Values; a hole is the H6 empty value 0x22 | `crates/ep9_vm/src/object.rs:21`, `crates/ep9_vm/src/object.rs:31`; `new_elements` (`crates/ep9_vm/src/object.rs:573`) |
+| Dense limit | 2^26 elements (`arr::MAX_LENGTH`) | `crates/ep9_vm/src/object.rs:144-145` |
+| Growth | a store at index i makes capacity max(i + 1, 2 × capacity, 4) | `array_set` (`crates/ep9_vm/src/object.rs:610`) |
 | High dense index | `a[2**26 - 1] = 1` allocates 2^26 slots: 540,606,464 B peak RSS (empty script: 3,473,408 B) | measured 2026-10-21 at `dabc38a`, release `ep9`, M5 Max (not measured again; the growth rule is unchanged) |
 | Index at or above 2^26 | stored as a string-keyed property, so the array moves to dictionary mode (an index key never enters a shape, OM-10); `length` does not change (ECMA-262: index + 1) | `crates/ep9_vm/src/property.rs:274-278` falls through |
 | `length` above 2^26 | RangeError "Invalid array length" (ECMA-262 allows up to 2^32 - 1) | `crates/ep9_vm/src/property.rs:265-271` |
@@ -95,3 +95,4 @@ PACKED/HOLEY × INT32/DOUBLE/ELEMENTS, one-way. DOUBLE stores raw f64 with a hol
 | 2026-10-21 | draft | First draft: plan row, v0 notes from the as-built arrays, open questions (M0 wk4 plan, task P0-DOCS 4; decision W4-H18) | P0-DOCS agent |
 | 2026-10-21 | fill | v0 notes as built at the P3 merge: index keys move an object to dictionary mode (P2-OBJ, OM-10), the element-attribute limits (W4-ACC-ELEM), the prototype index-key flag (W4-P3FIX-ELEM-FLAG). Checked with `ep9` (debug, `479b1cd`) on a probe script | P4-DOCS agent |
 | 2026-10-21 | clarify | 8 `path:line` references moved to the code at `479b1cd` (P4-DOCS drift script, [I15]); the RSS row names its commit; the index-key Rules row names its test | P4-DOCS agent |
+| 2026-10-21 | clarify | 4 `path:line` references moved to the code after M2-P0 (drift script, [I15]) | M2-P0 integration fixer |
