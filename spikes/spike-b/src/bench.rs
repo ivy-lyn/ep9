@@ -609,18 +609,25 @@ fn report_rounds(
     (v, rt)
 }
 
-/// The CPU model: /proc/cpuinfo "model name", else lscpu "Model name" (Linux), sysctl
-/// machdep.cpu.brand_string (macOS), PROCESSOR_IDENTIFIER (Windows).
+/// The CPU model: `SPIKE_B_CPU` if set (a VM that hides the model), /proc/cpuinfo "model
+/// name", else lscpu "Model name" (Linux), sysctl machdep.cpu.brand_string (macOS),
+/// PROCESSOR_IDENTIFIER (Windows), else the arm64 "CPU implementer" and "CPU part" ids.
+/// A value of "-" (lscpu in an arm64 VM) counts as missing.
 pub fn cpu_model() -> String {
+    if let Ok(m) = std::env::var("SPIKE_B_CPU")
+        && !m.trim().is_empty()
+    {
+        return format!("{} (SPIKE_B_CPU)", m.trim());
+    }
     let field = |text: &str, key: &str| {
         text.lines().find_map(|l| {
             let (k, v) = l.split_once(':')?;
-            (k.trim() == key).then(|| v.trim().to_string())
+            let v = v.trim();
+            (k.trim() == key && !v.is_empty() && v != "-").then(|| v.to_string())
         })
     };
-    if let Ok(t) = std::fs::read_to_string("/proc/cpuinfo")
-        && let Some(m) = field(&t, "model name")
-    {
+    let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+    if let Some(m) = field(&cpuinfo, "model name") {
         return m;
     }
     let cmd = |prog: &str, args: &[&str]| {
@@ -640,7 +647,16 @@ pub fn cpu_model() -> String {
     {
         return m;
     }
-    std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_else(|_| "unknown".into())
+    if let Ok(m) = std::env::var("PROCESSOR_IDENTIFIER") {
+        return m;
+    }
+    match (
+        field(&cpuinfo, "CPU implementer"),
+        field(&cpuinfo, "CPU part"),
+    ) {
+        (Some(i), Some(p)) => format!("unknown model (CPU implementer {i}, CPU part {p})"),
+        _ => "unknown".into(),
+    }
 }
 
 // ---- argument parsing ----------------------------------------------------------------------

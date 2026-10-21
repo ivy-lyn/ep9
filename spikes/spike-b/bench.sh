@@ -36,6 +36,8 @@
 #   SB_COMMIT            commit text when the tree has no git (the x86 sandbox)
 #   SB_SPD_BIN           sp-dispatch binary for cachegrind (spikes/sp-dispatch/target/release/sp-dispatch)
 #   SB_CG_N=1000000      n under cachegrind
+#   SPIKE_B_CPU          the CPU model to print where the host hides it (lscpu prints "-" in an
+#                        arm64 Linux VM); the result says it came from this variable
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,7 +63,8 @@ cachegrind() {
   command -v valgrind >/dev/null || die "cachegrind: valgrind is not on PATH"
   local spd="${SB_SPD_BIN:-$root/spikes/sp-dispatch/target/release/sp-dispatch$exe}"
   [ -x "$spd" ] || die "cachegrind: no sp-dispatch binary at $spd (cargo build --release in spikes/sp-dispatch)"
-  local n="${SB_CG_N:-1000000}" tmp
+  local n="${SB_CG_N:-1000000}"
+  # Global, so the EXIT trap still sees it after this function returns.
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
   # ir <name> <cmd...>: the "I refs" of one cachegrind run; the command's stdout in $tmp/<name>.out.
