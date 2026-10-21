@@ -94,7 +94,7 @@ const SPARSE_SCAN_MIN: u64 = 1024;
 
 /// The integer indices in [`from`, `to`) that `o` or an object on its prototype chain has as
 /// own keys, ascending: the only `k` for which HasProperty(O, ToString(k)) can be true. `None`
-/// if one of them is an accessor property.
+/// if one of them is an accessor property. `to` is a length (at most 2^53 - 1).
 ///
 /// v0 shortcut for a long range: the ABI reads a property by its key, and an index key is an
 /// atom, so a step-by-step loop allocates one key per index (a long sparse array costs a key per
@@ -112,23 +112,22 @@ fn present_indices<'s>(
     let mut found = Vec::new();
     let mut cur = Some(o);
     while let Some(obj) = cur {
-        // [[OwnPropertyKeys]] lists the integer indices first, ascending.
+        // Every own key is read: [[OwnPropertyKeys]] (§10.1.11.1) lists only the array indices
+        // (below 2^32 - 1) first, ascending; an integer key of 2^32 - 1 or more comes among the
+        // other strings, in creation order.
         let keys = cx.own_property_keys(obj)?;
         let n = length_of_array_like(cx, keys.into())?;
         for i in 0..n {
             let ik = index_key(cx, i);
             let key = cx.get(keys, ik)?;
             if !key.is_string() {
-                break;
+                continue;
             }
             let text = cx.to_rust_string(key)?;
             let Some(index) = canonical_index(&text) else {
-                break;
+                continue;
             };
-            if index >= to {
-                break;
-            }
-            if index < from {
+            if index < from || index >= to {
                 continue;
             }
             let pk = cx.to_property_key(key)?;
@@ -146,7 +145,8 @@ fn present_indices<'s>(
 }
 
 /// The integer index that the canonical numeric string `s` names ("0", or digits without a
-/// leading zero), or `None`.
+/// leading zero), or `None`. Below 2^53 these are exactly the keys `ToString(𝔽(k))`, the only
+/// form a `Pk` of step 10.a takes.
 fn canonical_index(s: &str) -> Option<u64> {
     if s.is_empty() || s.len() > 16 || !s.bytes().all(|b| b.is_ascii_digit()) {
         return None;
