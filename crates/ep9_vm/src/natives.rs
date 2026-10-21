@@ -14,8 +14,8 @@
 //! | `Array.prototype.values` = `Array.prototype[@@iterator]`, %ArrayIteratorPrototype%.next | §23.1.3.38, §23.1.3.40, §23.1.5.2.1 |
 //! | `String.prototype[@@iterator]`, %StringIteratorPrototype%.next | §22.1.3.36, §22.1.5.2.1 |
 //! | `%Iterator.prototype%[@@iterator]` | §27.1.2.1 |
-//! | `%GeneratorFunction%`, `%GeneratorPrototype%` `next`/`return`/`throw`, `%AsyncFunction%` (`generator.rs`; the two constructors are not-implemented stubs until P3-FNCTOR and month 3) | §27.3.1.1, §27.5.1.2-4, §27.7.1.1 |
-//! | `%eval%` (M2-P0 stub; not a global binding until P3-EVAL-VM, C19) | §19.2.1 |
+//! | `%GeneratorFunction%`, `%GeneratorPrototype%` `next`/`return`/`throw`, `%AsyncFunction%` (`generator.rs`; `%GeneratorFunction%` compiles through the compiler hook like `Function`, `abi/script.rs`; `%AsyncFunction%` is a not-implemented stub until month 3) | §27.3.1.1, §27.5.1.2-4, §27.7.1.1 |
+//! | `%eval%`, the global `eval` (indirect eval; direct eval is `interp/slow/eval.rs`), through the compiler hook (`abi/script.rs`) | §19.2.1 |
 //!
 //! The built-in iterators are ITERATOR cells (object.rs): the iterated value and the next
 //! index. The iterated value also gives the kind, so each `next` checks its receiver
@@ -92,7 +92,7 @@ pub(crate) mod vm {
     pub const GENERATOR_THROW: u16 = 25;
     /// `%AsyncFunction%` (month 3).
     pub const ASYNC_FUNCTION: u16 = 26;
-    /// `%eval%`: made, not a global binding until P3-EVAL-VM (C19).
+    /// `%eval%`, also the global `eval` (P3-EVAL-VM).
     pub const EVAL: u16 = 27;
 }
 
@@ -290,6 +290,8 @@ const VM_PROPS: &[ObjectProps] = &[
             PropDef::method(PropKey::Str("EvalError"), vm::EVAL_ERROR),
             PropDef::method(PropKey::Str("URIError"), vm::URI_ERROR),
             PropDef::method(PropKey::Str("Function"), vm::FUNCTION),
+            // §19.2.1: {w, c} (P3-EVAL-VM; C19 kept it out until the VM ran eval code).
+            PropDef::method(PropKey::Str("eval"), vm::EVAL),
         ],
     },
     ObjectProps {
@@ -503,26 +505,27 @@ pub(crate) fn function_prototype<'s>(
     Ok(Local::undefined())
 }
 
-/// `Function(...params, body)` (§20.2.1.1). v0: dynamic functions need the compiler in the
-/// isolate (H5), so it throws.
+/// `Function(...params, body)` (§20.2.1.1): CreateDynamicFunction with kind normal, through
+/// the compiler hook (`abi/script.rs`; an EvalError on an isolate without hooks, O2).
 pub(crate) fn function_constructor<'s>(
     cx: &mut HostCx<'s>,
     _this: Local<'s>,
-    _args: Args<'s>,
-    _nt: Local<'s>,
+    args: Args<'s>,
+    nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    Err(cx.not_implemented("Function constructor"))
+    cx.create_dynamic_function(args, nt, ep9_bytecode::FunctionCtorKind::Normal)
 }
 
-/// `eval(x)` (§19.2.1), `%eval%`. Stub until P3-EVAL-VM: it is not a global binding yet
-/// (C19), so no script reaches it.
+/// `eval(x)` (§19.2.1), `%eval%`: indirect eval (PerformEval with `direct` false). A direct
+/// `eval(...)` call does not reach this function with a string: `ResolvePossiblyDirectEval`
+/// (`interp/slow/eval.rs`) runs the code in the caller's scope instead.
 pub(crate) fn eval<'s>(
     cx: &mut HostCx<'s>,
     _this: Local<'s>,
-    _args: Args<'s>,
+    args: Args<'s>,
     _nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    Err(cx.not_implemented("eval"))
+    cx.indirect_eval(args.get(0))
 }
 
 /// Object(value) (§20.1.1.1).

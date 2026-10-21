@@ -164,7 +164,8 @@ fn two_isolates_have_the_same_intrinsic_property_order() {
         assert_eq!(a, b);
         assert!(a.len() >= 26, "core and VM intrinsics: {}", a.len());
     }
-    // The week-3 order of the global object, then `Function` (the test table appends).
+    // The week-3 order of the global object, then `Function` and `eval` (P3-EVAL-VM; the
+    // test table appends).
     with_table(Some(&TEST_TABLE), false, |cx, rt| {
         let g = cx.global();
         assert_eq!(
@@ -184,6 +185,7 @@ fn two_isolates_have_the_same_intrinsic_property_order() {
                 "EvalError",
                 "URIError",
                 "Function",
+                "eval",
                 "Math",
                 "Thing",
                 "print",
@@ -323,16 +325,12 @@ fn function_prototype_is_callable_and_function_throws() {
         assert!(function.is_same_bits(&cx.get(fp, "constructor").unwrap()));
         let p = cx.get(function.as_object().unwrap(), "prototype").unwrap();
         assert!(p.is_same_bits(&fp));
+        // No compiler hook on this isolate: an EvalError (O2, P3-EVAL-VM).
+        let no_hook = "EvalError: code generation from strings is not available (no compiler hook)";
         assert!(cx.call(function, Local::undefined(), &[]).is_err());
-        assert_eq!(
-            take_error(cx, rt),
-            "Error: not implemented in ep9 v0: Function constructor"
-        );
+        assert_eq!(take_error(cx, rt), no_hook);
         assert!(cx.construct(function, &[], function).is_err());
-        assert_eq!(
-            take_error(cx, rt),
-            "Error: not implemented in ep9 v0: Function constructor"
-        );
+        assert_eq!(take_error(cx, rt), no_hook);
     });
 }
 
