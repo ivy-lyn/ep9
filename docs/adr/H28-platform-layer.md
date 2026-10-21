@@ -39,11 +39,31 @@ Win64 spill trampoline, SEH unwind registration and VirtualAlloc in `ep9_platfor
 | W^X mode (`jit::WxMode::DEFAULT`) | `MapJit`: the code range is one `MAP_JIT` RWX mapping from `Cage::reserve_jit`; `pthread_jit_write_protect_np` per thread | `Protect`: `mprotect` RW <-> RX per write window (H28-Q1) | `Protect`: `VirtualProtect` RW <-> RX |
 | Other modes built | `Protect` (plain range, no hardened runtime; cost comparison only) | `DualMap` (memfd, RX view in the code range, RW view outside) | - |
 | icache flush after a write | `sys_icache_invalidate` | arm64: `DC CVAU` + `IC IVAU` loop (CTR_EL0); x64: none | `FlushInstructionCache` |
-| Unwind registration | `.eh_frame` (absptr FDEs), `__register_frame` once per FDE | `.eh_frame`, `__register_frame` once per section (libgcc) | `RtlAddGrowableFunctionTable`; UNWIND_INFO in the code memory |
+| Unwind registration | `.eh_frame` (absptr FDEs); `__register_frame` in the mode the self-test picks: per FDE (Apple libunwind) | `.eh_frame`; mode picked by the self-test: whole section with libgcc (a native gnu build), per FDE with LLVM libunwind (zig cc links it statically) | `RtlAddGrowableFunctionTable`; UNWIND_INFO in the code memory |
 | Release of code pages | `madvise(MADV_FREE_REUSABLE)`; pages stay RWX (F2) | `mmap(MAP_FIXED, PROT_NONE)` | `VirtualFree(MEM_DECOMMIT)` |
 
 - Feature split (H27): `jit` = executable memory with W^X. `unwind` = encoders, registration and the native stack walk; the jitless build needs it for AOT units (A2). Unit tests build both modules under `cfg(test)`, so `cargo test --workspace` runs them.
 - `CodeMemory::commit` is `unsafe`: the caller owns the pages. ep9_masm will own the code-space allocator (04 §5).
+
+**Rewritten by M2-P1 UNWIND-GUARD (2026-10-21; kind: rewrite).** The unix registration mode is chosen at run time, not by target (the old rule was "whole section on linux-gnu"). The unwinder is a link-time fact: a zig cc build for linux-gnu links LLVM libunwind statically with hidden symbols, and then a whole-section registration is ignored (its FDE decoder rejects the CIE), so no frame of generated code unwinds. `dlsym("__unw_add_dynamic_fde")` returns NULL in that build, so it is only a diagnostic.
+
+```text
+  first registration (unwind::registration_mode; jit builds use a built-in probe page)
+    probe section: CIE | FDE (other code) | FDE (probe)
+    whole-section: register, call the probe, walk from its callback
+      walk passes the probe and reaches the caller's frames -> WholeSection
+      else deregister
+    per-FDE: same                                          -> PerFde
+    both miss -> error; every later registration fails, native code does not start
+```
+
+| Build | Mode chosen | dlsym guess | Evidence |
+|---|---|---|---|
+| macOS arm64, macOS x64 (Rosetta) | per-FDE (whole-section misses) | per-FDE | `unwind::tests::each_mode_on_this_host` |
+| Linux arm64, Rust's gnu link (libgcc_s) | whole-section (per-FDE also passes: libgcc reads from any FDE to the terminator, so whole-section goes first) | whole-section | same test, Docker rust:1.99.1-slim-bookworm |
+| Linux arm64, zig cc link (static LLVM libunwind) | per-FDE (whole-section misses) | whole-section (wrong) | same test; before this change `jit::tests::unwind_through_generated_frame` failed in this build |
+
+- A jitless build (`unwind` without `jit`) has no code of its own to run, so it calls `unwind::self_test` on a probe in the first loaded unit's text (SP-Unit, M2-P4) before it registers anything. Windows has one form (function tables), so it has no self-test.
 
 ## Rules
 
@@ -53,6 +73,7 @@ Win64 spill trampoline, SEH unwind registration and VirtualAlloc in `ep9_platfor
 | CI builds and tests all 4 targets from week 1 | CI matrix | M0 wk1 |
 | Generated code can be called, unwound and backtraced on all 4 targets | SP-JIT-mem (`spikes/sp-jit-mem/gate.sh`) | M0 wk3 |
 | Every generated frame has registered unwind info before it runs (on Windows an unregistered frame looks like a leaf) | SP-JIT-mem control check; later ep9_masm finalize | M0 wk3 |
+| unix: the registration mode comes from a run-time self-test (register a probe, call it, walk through it); if no mode passes, native code does not start | `ep9_platform` `unwind::tests` (`selected_registration_mode`, `each_mode_on_this_host`, `missing_fde_fails_both_modes`); x86 sandbox libgcc and zig builds with `EP9_EXPECT_UNWIND_MODE` | M2-P1 |
 | No W^X mode is the default unless it stays coherent under a binary translator (Rosetta) | SP-JIT-mem `icache` check | M0 wk3 |
 | Win64 spill trampoline finds every live object | SP-GC on Win64 | M0 wk2 |
 | Units register unwind info on load and remove it on unload | A2 gate: exceptions and Error.stack through AOT frames | A2 |
@@ -105,3 +126,4 @@ Win64 spill trampoline, SEH unwind registration and VirtualAlloc in `ep9_platfor
 | 2026-10-20 | draft | First draft from 02 §6, 03 §2, 04 §5 and 08 §2 (M0 wk1 list) | ADR agent |
 | 2026-10-21 | fill | SP-JIT-mem passed on 4 targets. Filled the per-target table (W^X mode, icache, unwind registration, release), the `jit`/`unwind` feature split, 2 rules, H28-Q1 (mprotect default on Linux) | jitmem agent |
 | 2026-10-21 | fill | H28-Q3 filled: policy in H23, mechanism here (decision W4-H23). Follow-ups: the SP-tsrs-win result (decision W4-SP-TSRS-WIN; [spike review](../measurements/2026-10-21-m0-spike-review.md)) | P0-DOCS agent |
+| 2026-10-21 | rewrite | Unwind registration row: the unix mode is chosen at run time by a self-test (whole section, then per FDE), not by target; a failed self-test stops native code. New Rules row. Closes the week-4 open item "WHOLE_SECTION assumes libgcc on linux-gnu" | M2-P1 UNWIND-GUARD agent |

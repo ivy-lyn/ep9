@@ -189,3 +189,154 @@ fn native_return_addresses_honors_max() {
     assert_eq!(super::native_return_addresses(1).len(), 1);
     assert_eq!(super::native_return_addresses(2).len(), 2);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Registration mode self-test (unix).
+
+/// The process's mode. Prints it for CI logs. `EP9_EXPECT_UNWIND_MODE=whole-section|per-fde`
+/// makes the test fail on any other mode (the x86 libgcc and zig builds set it).
+#[cfg(unix)]
+#[test]
+fn selected_registration_mode() {
+    let mode = super::registration_mode().expect("a registration mode passes the self-test");
+    eprintln!(
+        "unwind registration mode: {mode} (dlsym guess: {})",
+        super::dlsym_guess()
+    );
+    if let Ok(want) = std::env::var("EP9_EXPECT_UNWIND_MODE") {
+        assert_eq!(mode.name(), want, "EP9_EXPECT_UNWIND_MODE");
+    }
+    // Apple libunwind (libSystem) takes one FDE per call.
+    #[cfg(target_vendor = "apple")]
+    assert_eq!(mode, super::RegistrationMode::PerFde);
+    // The choice is made once.
+    assert_eq!(super::registration_mode().unwrap(), mode);
+}
+
+/// The built-in probe passes again with the chosen mode, and a registration uses that mode.
+#[cfg(unix)]
+#[test]
+fn built_in_probe_and_register_use_the_mode() {
+    let mode = super::registration_mode().unwrap();
+    // SAFETY: `with_probe` maps the probe while the closure runs; the section describes it.
+    let again = super::mode::with_probe(super::mode::probe_section, |p| unsafe {
+        super::mode::select(p)
+    })
+    .unwrap();
+    assert_eq!(again, Ok(mode));
+    let r = super::mode::with_probe(super::mode::probe_section, |p| {
+        // SAFETY: as above; the registration drops inside the closure, before the page.
+        let reg = unsafe { super::EhFrameRegistration::register(p.section.clone()) }.unwrap();
+        reg.mode()
+    })
+    .unwrap();
+    assert_eq!(r, mode);
+}
+
+/// `self_test` on a caller's probe: the mode is chosen already, so it checks the probe in it.
+#[cfg(unix)]
+#[test]
+fn self_test_checks_a_probe() {
+    let mode = super::registration_mode().unwrap();
+    let r = super::mode::with_probe(super::mode::probe_section, |p| {
+        let probe = super::SelfTestProbe {
+            entry: p.entry,
+            code: p.code.clone(),
+            section: p.section.clone(),
+        };
+        // SAFETY: the probe is mapped while the closure runs; the section describes it.
+        unsafe { super::self_test(probe) }
+    })
+    .unwrap();
+    assert_eq!(r.unwrap(), mode);
+}
+
+/// A section without the probe's FDE: both modes miss, and the error names both.
+#[cfg(unix)]
+#[test]
+fn missing_fde_fails_both_modes() {
+    use super::cfi::{CfiProgram, Cie, EhFrameBuilder};
+    let no_probe_fde = |base: usize, _len: usize| {
+        let mut b = EhFrameBuilder::new(&Cie::host());
+        b.add_fde(base + super::mode::OTHER_OFF, 1, &CfiProgram::new());
+        b.finish()
+    };
+    // SAFETY: the probe is mapped while the closure runs; the one FDE describes the `other`
+    // function (a bare return: the CIE rules hold at its only instruction).
+    let r = super::mode::with_probe(no_probe_fde, |p| unsafe { super::mode::select(p) }).unwrap();
+    let e = r.expect_err("no mode can walk through a frame without an FDE");
+    // libgcc reports the probe frame and stops there; Apple libunwind stops before it.
+    let miss = |mode: &str| {
+        e.contains(&format!("{mode}: the walk stops at the probe frame"))
+            || e.contains(&format!("{mode}: no frame returns into the probe"))
+    };
+    assert!(
+        miss("whole-section") && miss("per-fde") && e.contains("Native code cannot run"),
+        "{e}"
+    );
+    // A failed check never sets the process mode (a test above may have set it already).
+    assert!(super::registration_mode().is_ok());
+}
+
+/// The walk check on made-up walks.
+#[cfg(unix)]
+#[test]
+fn walk_check_cases() {
+    use super::mode::{MAX_FRAMES, check};
+    let code = 0x1000..0x1028;
+    let base = [0x50, 0x60, 0x7000, 0x8000, 0x9000];
+    // callback frames, the probe return address, the return into `run`, then the caller's.
+    let good = [0x10, 0x20, 0x1018, 0x7100, 0x8000, 0x9000];
+    assert_eq!(check(&code, &base, Some(&good)), Ok(()));
+    // A return address at the probe's end still counts (a call as the last instruction).
+    let at_end = [0x10, 0x1028, 0x7100, 0x8000, 0x9000];
+    assert_eq!(check(&code, &base, Some(&at_end)), Ok(()));
+    let err = |w: &[usize]| check(&code, &base, Some(w)).unwrap_err();
+    assert!(
+        check(&code, &base, None)
+            .unwrap_err()
+            .contains("did not call")
+    );
+    assert!(err(&[0x10, 0x20, 0x7100]).contains("no frame returns into the probe"));
+    // The probe start is not a return address into it.
+    assert!(err(&[0x10, 0x1000, 0x7100, 0x8000]).contains("no frame returns"));
+    assert!(err(&[0x10, 0x1018]).contains("stops at the probe frame"));
+    assert!(err(&[0x10, 0x1018, 0x7100]).contains("stops at the probe frame"));
+    assert!(err(&[0x10, 0x1018, 0x7100, 0x8888, 0x9000]).contains("does not reach"));
+    // The tail must be a proper suffix: the baseline also has the frame into `run`.
+    assert!(
+        check(&code, &[0x8000, 0x9000], Some(&good))
+            .unwrap_err()
+            .contains("does not reach")
+    );
+    let long = vec![0x1018; MAX_FRAMES];
+    assert!(err(&long).contains("did not end"));
+}
+
+/// Each mode on this host, printed for CI logs. The chosen mode passes, and every mode tried
+/// before it misses.
+#[cfg(unix)]
+#[test]
+fn each_mode_on_this_host() {
+    use super::RegistrationMode;
+    let chosen = super::registration_mode().unwrap();
+    let results = super::mode::with_probe(super::mode::probe_section, |p| {
+        RegistrationMode::ORDER.map(|m| {
+            // SAFETY: the probe is mapped while the closure runs; the section describes it.
+            (m, unsafe { super::mode::try_mode(p, m) })
+        })
+    })
+    .unwrap();
+    for (m, r) in &results {
+        eprintln!(
+            "unwind mode {m}: {}",
+            r.as_ref().map_or_else(|e| e.as_str(), |()| "pass")
+        );
+    }
+    let at = RegistrationMode::ORDER
+        .iter()
+        .position(|&m| m == chosen)
+        .unwrap();
+    assert!(results[at].1.is_ok(), "{results:?}");
+    assert!(results[..at].iter().all(|(_, r)| r.is_err()), "{results:?}");
+}
