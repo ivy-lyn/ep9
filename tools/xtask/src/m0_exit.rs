@@ -29,7 +29,7 @@
 //! | 3 | exec JSON: `language/` files >= 40% | step "test262 exec" green; passed = total (exec JSON) - the `test/language/` lines of the Windows expectation file |
 //! | 4 | cross JSON: richards and deltablue vs QuickJS, net interval low end >= 0.6, valid rows, a gate host, not provisional | NOT-RUN (no Windows bench job) |
 //! | 5 | verdicts: SP-GC, SP-VA, SP-Value, SP-Dispatch, SP-JIT-mem and Spike B GO (no open conditions); SP-tsrs-win recorded | the same verdicts, and the spike, barrier and test steps of the run green |
-//! | 6 | GC JSON: 0 infra, 0 new failures; every skipped test is in the expectation file | NOT-RUN (CI runs GC-stress on linux-x64 only) |
+//! | 6 | GC JSON: the whole pinned corpus (files run + skipped = the pin's count; skipped = the committed skip list), 0 infra; the run names the committed expectation file, and its "fail" results against that file without the skip list give 0 new failures (recomputed here) | NOT-RUN (CI runs GC-stress on linux-x64 only) |
 //! | 7 | nesting log: `every_form_is_gated`, `caps_hold_end_to_end`, `uncaught_error_reports_file_line_utf16_column` ok | step "cargo test --workspace" green (it runs the three) |
 //! | 8 | the asserts are in ep9_value's source, and `cargo check -p ep9_value --target <host>` passes | step "cargo build --workspace --all-targets" green |
 //! | 9, 10 | docs/adr/README.md index: the ADR status of every row due at M0 (Accepted or Frozen; a Draft for "Draft M0" rows); H20 Frozen | the same |
@@ -54,12 +54,15 @@ const MAX_WALL_SECONDS: f64 = 600.0;
 /// Counts that depend on the test262 pin (09-milestones section 2.2 items 1 and 2).
 struct PinCounts {
     pin_prefix: &'static str,
+    /// Test files of a full exec run (item 6: run + skipped).
+    files: u64,
     runs: u64,
     negatives: u64,
 }
 
 const PIN_COUNTS: &[PinCounts] = &[PinCounts {
     pin_prefix: "d53ebc8b",
+    files: 53_616,
     runs: 102_994,
     negatives: 4_653,
 }];
@@ -1010,7 +1013,7 @@ fn item6(c: &Ctx) -> (Cell, Cell) {
         None => not_given("--exec-gc", GC_CMD),
         Some((p, j)) => {
             let gc = j.get("gc_stress").and_then(Json::num).unwrap_or(0.0);
-            let (infra, new, stale) = exec_health(j);
+            let (infra, runner_new, runner_stale) = exec_health(j);
             let skipped = j.get("skipped").and_then(Json::num).unwrap_or(0.0) as usize;
             let (fp, ft) = count(j, &["files"]).unwrap_or((0, 0));
             let mut status = Status::Pass;
@@ -1019,23 +1022,34 @@ fn item6(c: &Ctx) -> (Cell, Cell) {
                 status = Status::Fail;
                 why.push("not a GC-stress run".to_string());
             }
-            if infra > 0 || new > 0 {
-                status = Status::Fail;
-                why.push(format!("{infra} infrastructure errors, {new} new failures"));
-            }
-            if stale > 0 {
-                why.push(format!("{stale} listed tests pass under GC-stress"));
+            // The whole pinned corpus: every file is run or skipped by the skip list.
+            match c.pin_counts {
+                Some(pc) if ft + skipped as u64 != pc.files => {
+                    status = Status::Fail;
+                    why.push(format!(
+                        "{ft} files run + {skipped} skipped, not the full {} of the pin (a filtered run?)",
+                        pc.files
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    status = status.max(Status::Open);
+                    why.push(format!(
+                        "no full-run file count for the pin {} in m0_exit.rs PIN_COUNTS",
+                        c.pin.as_deref().unwrap_or("unknown")
+                    ));
+                }
             }
             // A skipped test is not run. One that fails without GC-stress (it is in the
             // expectation file) is no passing test. One that passes without it is named: the
             // skip list says why it is skipped (a timeout under GC-stress), and its decision row
             // records the run that passed it alone.
-            let listed = expectation_set(
-                &c.o.root
-                    .join(format!("expectations/test262.{}.jit.txt", c.o.host)),
-            );
-            let skip = expectation_set(&c.o.root.join("expectations/test262-gc-skip.txt"));
+            let file = format!("test262.{}.jit.txt", c.o.host);
+            let listed = committed(&c.o.root, &file).and_then(|p| expectation_set(&p));
+            let skip =
+                committed(&c.o.root, "test262-gc-skip.txt").and_then(|p| expectation_set(&p));
             let mut skip_text = String::new();
+            let (mut new, mut stale) = (runner_new, runner_stale);
             match (listed, skip) {
                 (Ok(listed), Ok(skip)) => {
                     let passing: Vec<&str> = skip
@@ -1062,16 +1076,38 @@ fn item6(c: &Ctx) -> (Cell, Cell) {
                             skip.len()
                         ));
                     }
+                    // The diff against the committed file without the skip list, recomputed;
+                    // the runner's diff counts too.
+                    match recheck(&c.o.root, j, &file, &skip) {
+                        Ok(d) => {
+                            if !d.new.is_empty() {
+                                why.push(format!("new failures: {}", some_paths(&d.new)));
+                            }
+                            new = new.max(d.new.len());
+                            stale = stale.max(d.stale.len());
+                        }
+                        Err(e) => {
+                            status = Status::Fail;
+                            why.push(e);
+                        }
+                    }
                 }
                 (Err(e), _) | (_, Err(e)) => {
                     status = Status::Fail;
                     why.push(e);
                 }
             }
+            if infra > 0 || new > 0 {
+                status = Status::Fail;
+                why.push(format!("{infra} infrastructure errors, {new} new failures"));
+            }
+            if stale > 0 {
+                why.push(format!("{stale} listed tests pass under GC-stress"));
+            }
             cell(
                 status,
                 format!(
-                    "{}: --gc-stress {gc}, files {fp} / {ft}, infra {infra}, new failures {new}; {skip_text}{}",
+                    "{}: --gc-stress {gc}, files {fp} / {ft}, infra {infra}, new failures {new} (recomputed against expectations/{file}); {skip_text}{}",
                     p.display(),
                     if why.is_empty() {
                         String::new()
@@ -2045,7 +2081,7 @@ mod tests {
             .iter()
             .map(|p| format!(r#"{{"path":"{p}","status":"fail","cause":"x","detail":"d"}}"#))
             .collect();
-        let files = 53_616 - u64::from(skipped);
+        let files = PIN_COUNTS[0].files - u64::from(skipped);
         format!(
             r#"{{"command":"exec","mode":"jit","target":"{HOST}","workers":18,"gc_stress":{gc},"skipped":{skipped},"wall_seconds":{wall},
             "files":{{"passed":{},"total":{files}}},"runs":{{"passed":50000,"total":102994}},
@@ -2382,6 +2418,51 @@ mod tests {
         assert!(c.evidence.contains("stale lines 1"), "{}", c.evidence);
         // The committed file and the same failing set: PASS.
         let c = item1(&all, committed);
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// I2: item 6 needs the full pinned corpus (run plus skipped files), the committed
+    /// expectation file, and the diff recomputed from the results without the skip list.
+    #[test]
+    fn gc_run_needs_full_coverage() {
+        let root = fake_repo("gc-cover");
+        write(&root, "in/ci.json", &ci_json("success"));
+        let listed = [
+            "test/language/a.js",
+            "test/language/b.js",
+            "test/built-ins/c.js",
+        ];
+        let committed = root.join(format!("expectations/test262.{HOST}.jit.txt"));
+        let committed = committed.to_str().unwrap();
+        let item6 = |json: String| {
+            write(&root, "in/gc.json", &json);
+            let r = run(&opts(&root)).unwrap();
+            r.cells[5].0.clone()
+        };
+        // A filtered GC run: 1 file run, the 2 of the skip list skipped, an empty diff.
+        let full = exec_json(1, 166.0, 2, &listed, committed);
+        let files = format!(r#""files":{{"passed":{},"total":{}}}"#, 53_614 - 3, 53_614);
+        assert!(full.contains(&files), "{full}");
+        let c = item6(full.replace(&files, r#""files":{"passed":1,"total":1}"#));
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("not the full"), "{}", c.evidence);
+        // Compared with a file outside this tree.
+        let c = item6(exec_json(1, 166.0, 2, &listed, "/elsewhere/other.txt"));
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(
+            c.evidence.contains("/elsewhere/other.txt"),
+            "{}",
+            c.evidence
+        );
+        // A new failure under GC-stress that the runner's (empty) diff does not report.
+        let mut more = listed.to_vec();
+        more.push("test/new/x.js");
+        let c = item6(exec_json(1, 166.0, 2, &more, committed));
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("new failures 1"), "{}", c.evidence);
+        // The full corpus against the committed file: PASS.
+        let c = item6(exec_json(1, 166.0, 2, &listed, committed));
         assert_eq!(c.status, Status::Pass, "{}", c.evidence);
         std::fs::remove_dir_all(root).unwrap();
     }
