@@ -279,3 +279,48 @@ fn help_after_separator_goes_to_the_command() {
     assert!(stdout.contains("\"schema\": \"ep9-bench/v1\""), "{stdout}");
     assert!(!stdout.contains("usage: ep9-bench"), "{stdout}");
 }
+
+/// With `--expect-stdout`, every run is checked, not only the first (W4-PERF-REFUSE). The engine
+/// (`testdata/right-once.sh`) prints the right answer in its first run only. A run that prints
+/// something else stops ep9-bench with exit 4 and no JSON.
+#[cfg(unix)]
+#[test]
+fn expect_stdout_checks_every_run() {
+    let dir = std::env::temp_dir().join(format!("ep9-bench-expect-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (want, state) = (dir.join("want.txt"), dir.join("runs"));
+    std::fs::write(&want, "577789\n").unwrap();
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let run = |runs: &str| {
+        Command::new(BIN)
+            .args(["--runs", runs, "--warmup", "0", "--expect-stdout"])
+            .arg(&want)
+            .arg("--")
+            .arg(manifest.join("tests/testdata/right-once.sh"))
+            .arg(manifest.join("workloads/t0-call.js"))
+            .env("RIGHT_ONCE_STATE", &state)
+            .output()
+            .expect("run ep9-bench")
+    };
+    // Run 1 prints the right answer: the JSON, with a count or (no counter on this host) without.
+    let out = run("1");
+    let json = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(matches!(out.status.code(), Some(0 | 3)), "{stderr}");
+    assert!(json.contains("\"schema\": \"ep9-bench/v1\""), "{json}");
+    // Run 2 prints "12345": exit 4 there, and no JSON.
+    let out = run("3");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(4), "{stderr}");
+    assert!(
+        stderr.contains(r#"printed "12345", want "577789""#),
+        "{stderr}"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(std::fs::read_to_string(&state).unwrap().trim(), "2");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

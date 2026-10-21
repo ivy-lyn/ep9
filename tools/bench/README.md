@@ -34,13 +34,14 @@ cargo run --release -p ep9_bench -- --runs 5 --out out.json -- target/release/ep
 
 - Before the runs, ep9-bench probes the counter: `true` under it must give a count above 0. Apple's `time.c` prints "instructions retired" only for a count above 0, so a VM without PMC access gives no line.
 - No counter: ep9-bench still runs the command (wall time only) and writes the JSON with `"counter": null`, `"counter_status": "unavailable"`, `"counter_note"` (why), and `"instructions": null` in each run and in the summary. It exits 3. A null count means "not measured". Never read it as 0.
-- Exit status: 0 counts written; 1 error (the command failed, a counted run gave no count, or the JSON was not written); 2 usage error; 3 no counter (the JSON is still written).
+- Exit status: 0 counts written; 1 error (the command failed, a counted run gave no count, or the JSON was not written); 2 usage error; 3 no counter (the JSON is still written); 4 a run printed the wrong output (`--expect-stdout`; no JSON).
 - The JSON names the counter. Do not compare counts from different counters.
 - A nonzero exit of the command is an error. The command's output is discarded unless `--show-output`;
   the error of a failed run then ends with the last 20 lines of the command's stderr.
+- `--expect-stdout FILE`: every run, warm-up and measured, must print what FILE holds, compared after CRLF -> LF and a trim of leading and trailing whitespace (the refusal rule of `cross/run.mjs`). The first run that prints anything else stops ep9-bench with exit 4 and its output in the error; no JSON is written, so a wrong answer never gets a count. The counter's own report goes to its own file, so this works under every counter. Not with `--show-output`.
 - `commit` comes from `GITHUB_SHA` or `EP9_COMMIT`.
 - `EP9_BENCH_TIME` replaces `/usr/bin/time`. `tests/testdata/time-no-pmc.sh` is a fake that prints what a host with no PMC access prints.
-- Tests: `cargo test -p ep9_bench`. The tests probe the OS tool themselves (not through ep9-bench). With a counter, `counts_instructions` checks the counts. Without one, it prints `SKIPPED the count check` and checks the no-counter JSON instead. On macOS, `EP9_BENCH_TIME=$PWD/tools/bench/tests/testdata/time-no-pmc.sh cargo test -p ep9_bench` runs that path.
+- Tests: `cargo test -p ep9_bench`. The tests probe the OS tool themselves (not through ep9-bench). With a counter, `counts_instructions` checks the counts. Without one, it prints `SKIPPED the count check` and checks the no-counter JSON instead. On macOS, `EP9_BENCH_TIME=$PWD/tools/bench/tests/testdata/time-no-pmc.sh cargo test -p ep9_bench` runs that path. `tests/perf_ci.rs` runs perf-ci-v0.mjs with node (`EP9_NODE`; it prints SKIPPED without node) and the fake engine `tests/testdata/right-once.sh`, which is right in its first run only.
 
 ## perf CI v0
 
@@ -65,7 +66,8 @@ richards deltablue                     cross/v8v7.mjs --kernel <name> (pinned)  
 one ep9 run, no counter: exit 0 and the expected output, else "refused" (no count)
           |
           v
-ep9-bench --counter cachegrind --runs 3 --warmup 0, EP9_HASH_SEED=1, workloads in parallel
+ep9-bench --counter cachegrind --runs 3 --warmup 0 --expect-stdout <expected output>,
+EP9_HASH_SEED=1, workloads in parallel. A run with another output: exit 4, "refused" (no count)
           |
           v
 perf-ci-v0.json (schema ep9-perf-ci/v1) + a Markdown table (--md appends; CI: the step summary)
@@ -75,6 +77,7 @@ perf-ci-v0.json (schema ep9-perf-ci/v1) + a Markdown table (--md appends; CI: th
 - **Hash seed.** The string hash seed is random per process, and it changes how far shape-index probes go. Without a fixed seed, 3 cachegrind runs of t0-call spread by 3.7%; with `EP9_HASH_SEED=1` (the script's default, `--hash-seed`) they spread by 609 instructions in 6.1e9. So a re-run on the same commit agrees to well within 0.1%.
 - **Runs.** 3 runs and no warm-up: with the fixed seed, more runs add time, not information. The spread column shows (max - min) / median.
 - **JSON.** `commit` (`GITHUB_SHA`, else `EP9_COMMIT`, else git HEAD), `counter`, `target`, `runs`, `warmup`, `hash_seed`, `host`, `complete`, and per workload: `name`, `status` (`ok`, `refused` or `error`), `error`, `instructions` (`min`, `median`, `max`, or null), the file and its `sha256`, the expected output, the v8-v7 `pin`, `blob` and `n`, and the whole ep9-bench/v1 report (`bench`).
+- **Refusal.** Every run checks the output, the counted ones too: ep9-bench gets the expected output (`--expect-stdout`), so an engine that is right in the check run and wrong in a counted run is refused, not counted (W4-PERF-REFUSE).
 - **Exit status.** 0 every workload has a count; 1 a workload was refused or has no count (the JSON and the table are still written, with null counts); 2 usage error.
 - `--workloads` picks a subset; `--jobs N` limits the parallel workloads (default: the CPU count); `--work DIR` keeps the generated v8-v7 files.
 
