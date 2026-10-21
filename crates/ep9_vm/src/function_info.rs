@@ -37,6 +37,11 @@ pub(crate) mod fi_flags {
     pub const CLASS_CONSTRUCTOR: u32 = 64;
     /// A derived class constructor: `[[Construct]]` binds no `this` (§10.2.2 step 5).
     pub const DERIVED: u32 = 128;
+    /// A generator function (`function*`, a generator method): its calls make a generator
+    /// object, its function object inherits from %GeneratorFunction.prototype% and its lazy
+    /// `prototype` from %GeneratorPrototype% (M2-P1-GEN-FLAG). Not set for async generators
+    /// (month 3 adds their own bit).
+    pub const GENERATOR: u32 = 256;
 }
 
 /// Per-function data the VM needs at run time. `repr(C)`: the call path reads the dispatch
@@ -94,6 +99,9 @@ fn bytecode_flags(f: &ep9_bytecode::Function) -> u32 {
     }
     if f.kind == FunctionKind::DerivedConstructor {
         flags |= fi_flags::DERIVED;
+    }
+    if f.flags.contains(FunctionFlags::GENERATOR) && !f.flags.contains(FunctionFlags::ASYNC) {
+        flags |= fi_flags::GENERATOR;
     }
     flags
 }
@@ -201,6 +209,12 @@ impl FunctionInfo {
     #[inline(always)]
     pub fn is_derived(&self) -> bool {
         self.flags & fi_flags::DERIVED != 0
+    }
+
+    /// A (sync) generator function ([`fi_flags::GENERATOR`]).
+    #[inline(always)]
+    pub fn is_generator(&self) -> bool {
+        self.flags & fi_flags::GENERATOR != 0
     }
 
     /// Bytecode offset of `pc`, if `pc` is inside this function's code.
