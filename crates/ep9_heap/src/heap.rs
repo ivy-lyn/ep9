@@ -11,7 +11,9 @@
 //! alloc_shape(kind, size)  (Space::Shape kinds only; never inline)
 //!   GC-stress count / budget --> collect(); then the shape hole if it fits, else the next
 //!   hole that fits: current shape page -> recyclable shape pages -> lazy sweep of shape
-//!   pages -> fresh page from the shape region (chunks [0, N)); full --> one collect, retry
+//!   pages -> fresh page from the shape region (chunks [0, N))
+//! no memory (both entries): collect once, retry; still none: sweep both lazy sweep queues
+//!   (the spaces share max_heap_bytes), retry once with no second GC; then OutOfMemory
 //! every new cell: word0 = {shape 0, WHITE, kind, flags 0}; every other word = undefined;
 //!                 VO bit set (small pages)
 //!
@@ -61,8 +63,8 @@ use crate::trace::{Mode, Tracer, WeakVisitor, find_cell};
 pub struct HeapConfig {
     /// The cage reservation (H7). Its alignment is raised to 256 KiB if lower.
     pub cage: CageConfig,
-    /// Most bytes committed at one time. Allocation fails with
-    /// [`AllocError::OutOfMemory`] beyond it (after one collection).
+    /// Most bytes committed at one time, shape region included. Allocation fails with
+    /// [`AllocError::OutOfMemory`] beyond it (after one collection and a full sweep).
     pub max_heap_bytes: usize,
     /// Bytes allocated before the first GC. Later budgets are `max(this, live bytes)`, so the
     /// heap may double between collections.
@@ -465,8 +467,8 @@ impl Heap {
     /// Allocates a cell of a [`Space::Shape`] kind in the shape region, as [`Heap::alloc`]
     /// does for other kinds: WHITE, ShapeId 0, every word after word0 `undefined`. Its
     /// [`Heap::shape_id_of`] is never 0. At most 8 KiB ([`AllocError::TooLarge`] above).
-    /// When the region is full it collects once and then gives
-    /// [`AllocError::OutOfMemory`].
+    /// When the region or `max_heap_bytes` is full it collects once, sweeps every page that
+    /// waits for the lazy sweep (both spaces), and then gives [`AllocError::OutOfMemory`].
     ///
     /// This is a GC point: it may collect before it returns.
     pub fn alloc_shape(&self, kind: KindId, size: usize) -> Result<CellPtr, AllocError> {
@@ -496,6 +498,7 @@ impl Heap {
             self.collect();
         }
         let mut collected = trigger;
+        let mut swept = false;
         loop {
             let placed = self.inner.borrow_mut().alloc_shape_in(size);
             match placed {
@@ -510,6 +513,9 @@ impl Heap {
                 None if !collected => {
                     self.collect();
                     collected = true;
+                }
+                None if !swept && self.inner.borrow_mut().sweep_before_out_of_memory() => {
+                    swept = true;
                 }
                 None => return Err(AllocError::OutOfMemory),
             }
@@ -565,6 +571,7 @@ impl Heap {
             self.collect();
         }
         let mut collected = trigger;
+        let mut swept = false;
         loop {
             let placed = self.inner.borrow_mut().alloc_in(&self.hot, size);
             match placed {
@@ -576,6 +583,9 @@ impl Heap {
                 None if !collected => {
                     self.collect();
                     collected = true;
+                }
+                None if !swept && self.inner.borrow_mut().sweep_before_out_of_memory() => {
+                    swept = true;
                 }
                 None => return Err(AllocError::OutOfMemory),
             }
@@ -1053,6 +1063,21 @@ impl Inner {
             self.shape_page = Some(idx);
             self.shape_line = FIRST_LINE;
         }
+    }
+
+    /// Called when an allocation still finds no memory after its GC, before it gives
+    /// OutOfMemory. That GC queued every page it found dead for the lazy sweep, but an
+    /// allocation sweeps only its own queue on its way (and LOS and medium cells none), while
+    /// all pages share `max_heap_bytes`. So this sweeps both queues: an empty ordinary page
+    /// goes to the page cache, which `alloc_shape_page` and `alloc_large` evict under the
+    /// limit; an empty shape page is decommitted. True if a page was queued, so one retry
+    /// (with no second GC) may fit.
+    #[cold]
+    #[inline(never)]
+    fn sweep_before_out_of_memory(&mut self) -> bool {
+        let queued = !self.sweep_queue.is_empty() || !self.shape_sweep_queue.is_empty();
+        self.finish_sweeping();
+        queued
     }
 
     pub(crate) fn finish_sweeping(&mut self) {

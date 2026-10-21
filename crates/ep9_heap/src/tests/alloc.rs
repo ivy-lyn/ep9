@@ -274,3 +274,72 @@ fn gc_stress_keeps_the_limit_at_zero() {
     assert_ne!(raw_tlab(&heap).1, 0, "stress off: the TLAB limit is back");
     black_box(c);
 }
+
+/// One unrooted leaf, the only cell of a fresh small page, allocated in a frame of its own.
+/// Returns its address in malloc memory, which the conservative scan never reads.
+#[inline(never)]
+fn leaf_garbage(heap: &Heap) -> Vec<usize> {
+    vec![heap.alloc(LEAF, 24).expect("leaf").addr()]
+}
+
+/// As [`leaf_garbage`], with the leaf rooted by a global handle.
+#[inline(never)]
+fn rooted_leaf(heap: &Heap) -> (crate::GlobalHandle, Vec<usize>) {
+    let c = heap.alloc(LEAF, 24).expect("leaf");
+    (heap.new_global(c.to_value()), vec![c.addr()])
+}
+
+/// A large cell needs the commit room of a small page that dies in the large allocation's own
+/// GC. The page waits in the lazy sweep queue, so the allocation must sweep it before it gives
+/// OutOfMemory. Verifier off: it finishes the sweep and would hide the failure.
+#[test]
+fn a_large_cell_sweeps_dead_pages_before_out_of_memory() {
+    let heap = test_heap(|c| c.max_heap_bytes = PAGE_SIZE);
+    let dead = leaf_garbage(&heap);
+    assert_eq!(heap.stats().committed_bytes, PAGE_SIZE);
+    clear_stack();
+    let before = heap.stats().collections;
+    let big = heap.alloc(NODE, NODE_HEADER + 8 * 2000);
+    if let Ok(c) = big {
+        // SAFETY: a new NODE cell; meta word written before the next GC point.
+        unsafe { c.field::<u64>(8).write(2000) };
+    }
+    let st = heap.stats();
+    assert_eq!(st.last_marked_cells, 0, "the GC found no live cell");
+    assert_eq!(st.collections, before + 1, "one GC");
+    let big = big.expect("the dead page makes room");
+    assert_eq!((st.small_pages, st.large_cells), (0, 1));
+    assert!(st.committed_bytes <= PAGE_SIZE);
+    assert!(!heap.is_cell(dead[0]) && heap.is_cell(big.addr()));
+    heap.verify().expect("verifier");
+}
+
+/// As above for a medium cell (> 256 B), which takes only fresh pages (the overflow TLAB).
+/// A first GC retires the TLAB while the leaf is still rooted.
+#[test]
+fn a_medium_cell_sweeps_dead_pages_before_out_of_memory() {
+    let heap = test_heap(|c| c.max_heap_bytes = PAGE_SIZE);
+    let (g, dead) = rooted_leaf(&heap);
+    heap.collect_with_words(&[]);
+    heap.drop_global(g);
+    clear_stack();
+    let before = heap.stats().collections;
+    let m = heap.alloc(NODE, NODE_HEADER + 8 * 128);
+    if let Ok(c) = m {
+        // SAFETY: a new NODE cell; meta word written before the next GC point.
+        unsafe { c.field::<u64>(8).write(128) };
+    }
+    let st = heap.stats();
+    assert_eq!(st.last_marked_cells, 0, "the GC found no live cell");
+    assert_eq!(st.collections, before + 1, "one GC");
+    let m = m.expect("the dead page makes room");
+    assert_eq!(st.small_pages, 1);
+    assert_eq!(st.committed_bytes, PAGE_SIZE);
+    assert_eq!(
+        m.addr() & PAGE_MASK,
+        dead[0] & PAGE_MASK,
+        "the dead page is reused"
+    );
+    assert!(heap.is_cell(m.addr()));
+    heap.verify().expect("verifier");
+}

@@ -8,7 +8,7 @@
 //! | `gc.rs` | mark-sweep with precise roots, weak slots, lazy sweep, zapping, GC-stress, verifier |
 //! | `css.rs` | conservative stack scan: locals, interior and one-past-end pointers, S7 (not Miri) |
 //! | `stress.rs` | randomized mutator against a model of the object graph |
-//! | `shape.rs` | the shape region: ShapeId = cage offset, word0 edge, weak clearing, full region, config |
+//! | `shape.rs` | the shape region: ShapeId = cage offset, word0 edge, weak clearing, full region, shared commit limit, config |
 
 use ep9_value::Value;
 
@@ -168,6 +168,14 @@ pub(crate) fn expected_live(heap: &Heap, roots: &[usize]) -> std::collections::B
         work.extend(children(c));
     }
     seen
+}
+
+/// Zeroes 64 KiB of stack below the caller's frame. Stale words that earlier calls left there
+/// (cell addresses in dead frames) then cannot keep a cell alive in the next conservative scan.
+#[inline(never)]
+pub(crate) fn clear_stack() {
+    let mut words = [0usize; 8192];
+    std::hint::black_box(&mut words);
 }
 
 /// A pointer to `addr` in the heap, with the reservation's provenance.

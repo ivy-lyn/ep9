@@ -83,6 +83,7 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 | IC and feedback data hold shapes as weak Values (the shape cell pointer), never as bare ids | H16 entry `[key (weak) \| value (strong)]`; `Tracer::visit_weak` | M0 wk4 |
 | The heap marks the shape that word0 names; no trace function visits it | `Tracer::drain`; test `a_shape_referenced_only_from_word0_survives` | M0 wk4 |
 | With a shape space, every non-zero word0 ShapeId names a live shape-space cell | Heap verifier (`verify_word0_shape`), run after every GC under GC-stress | M0 wk4 |
+| The shape region and ordinary pages share `max_heap_bytes`. An allocation that finds no memory after its GC sweeps both lazy sweep queues and retries once, with no second GC, before it gives `OutOfMemory` | `Inner::sweep_before_out_of_memory`; tests `alloc_shape_sweeps_dead_ordinary_pages_before_out_of_memory`, `alloc_sweeps_dead_shape_pages_before_out_of_memory`, `a_large_cell_sweeps_dead_shape_pages_before_out_of_memory` (verifier off: it finishes the sweep and hides the case) | M0 wk4 |
 
 ## Consequences
 
@@ -128,3 +129,4 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 | 2026-10-20 | clarify | word0 byte 4 comment: gc_state values BLACK=1, WHITE=2, GREY=3 from the H11 decision; the mark bit is in side metadata (H9). Layout unchanged | apply agent |
 | 2026-10-21 | clarify | Validation: A2 gate wording "header-mutation fallbacks 100%" now uses the H35-fallback text ("100% of header mutations end in their H35 S3 outcome"), as in 09 §3 and 05 §12. No check changes | hygiene agent |
 | 2026-10-21 | fill | H08-Q1 filled: shape region = the first `shape_space_bytes` of the cage (power of two, 1 MiB-4 GiB, 0 = none); cage align >= 4 GiB outside Miri; ShapeId = (addr - cage base) as u32; id 0 = none; cage base at heap offset 24. Rules added: the region never moves; where a bare ShapeId may appear; IC data holds shapes weakly; the heap marks word0's shape; the verifier checks word0 ids. Decisions W4-SHAPEID and W4-SHAPE-ALLOC (decisions log §11) | P1-HEAP agent |
+| 2026-10-21 | fill | Rule added: both spaces share `max_heap_bytes`, so before `OutOfMemory` an allocation sweeps both lazy sweep queues and retries once (no second GC). A page that died in the allocation's own GC used to wait in the other space's queue (Codex review of P1) | P1 fix agent |
