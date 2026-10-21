@@ -12,15 +12,14 @@
 //!
 //! Each stub runs one function's bytecode: `id(x)` is `Ldar a0; Return` and its stub returns
 //! a0; `g(f, x)` is `CallUndefinedReceiver1 a0, a1; Return` and its stub returns
-//! `call_any(offset 0)`, and so on. Code pages come from `Cage::reserve_jit` + `CodeMemory`
-//! with an explicit `code_range_size` (P1; the integration fixer moves them to
-//! `CodeRange::process()`).
+//! `call_any(offset 0)`, and so on. Code pages are chunks of `CodeRange::process()`, committed
+//! with `CodeChunk::commit`.
 
 use core::ops::Range;
 
 use ep9_bytecode::{FunctionId, HandlerKind, Opcode, RegisterList, VerifiedUnit};
-use ep9_platform::jit::{CodeMemory, WxMode};
-use ep9_platform::{Cage, CageConfig, allocation_granularity, page_size};
+use ep9_platform::jit::WxMode;
+use ep9_platform::{CodeRange, page_size};
 
 use super::{Asm, config, isolate, meta, on_big_stack, pos, take_output, unit};
 use crate::dispatch::DispatchKind;
@@ -266,19 +265,13 @@ fn stub_call_keep(off: u32, i: u32) -> Vec<u8> {
 /// Bytes per stub in the code page.
 const STUB_SIZE: usize = 128;
 
-/// Writes `stubs` into one page of a JIT code range (`Cage::reserve_jit` with an explicit
-/// `code_range_size`), then runs `f` with each stub's code range. The page is released after
-/// `f`, so every isolate that runs the stubs must drop inside `f`.
+/// Writes `stubs` into one page of the process code range (a [`CodeRange::process`] chunk),
+/// then runs `f` with each stub's code range. The page is released after `f`, so every
+/// isolate that runs the stubs must drop inside `f`.
 fn with_stubs<R>(stubs: &[Vec<u8>], f: impl FnOnce(&[Range<usize>]) -> R) -> R {
-    let config = CageConfig {
-        cage_size: allocation_granularity(),
-        code_range_size: 1 << 20,
-        ..CageConfig::default()
-    };
-    let cage = Cage::reserve_jit(&config).expect("reserve a JIT cage");
-    // SAFETY: the code range is new and this is its only code memory.
-    let mut mem = unsafe { CodeMemory::commit(cage.code(), 0, page_size(), WxMode::DEFAULT) }
-        .expect("commit one code page");
+    let range = CodeRange::process().expect("reserve the process code range");
+    let mut chunk = range.alloc(page_size()).expect("a chunk of the code range");
+    let mut mem = chunk.commit(WxMode::DEFAULT).expect("commit one code page");
     assert!(stubs.len() * STUB_SIZE <= mem.len());
     let mut ranges = Vec::new();
     for (i, s) in stubs.iter().enumerate() {

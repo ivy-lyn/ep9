@@ -12,8 +12,7 @@
 //! ```
 //!
 //! `CodeChunk::commit` is the safe entry. The unsafe `CodeMemory::commit(range, offset, len,
-//! mode)` takes any code-range [`Reservation`] (also a plain one, and the per-cage range of
-//! `Cage::reserve_jit`, which month 2 P1 still keeps).
+//! mode)` takes any code-range [`Reservation`] (also a plain one).
 //!
 //! | Mode | Targets | While a window is open | Toggle cost |
 //! |---|---|---|---|
@@ -21,10 +20,9 @@
 //! | [`WxMode::Protect`] | all (default except macOS arm64) | the window's pages are RW for all threads | 2 syscalls (`mprotect` / `VirtualProtect`) |
 //! | [`WxMode::DualMap`] | Linux | nothing changes: one memfd, an RX view in the code range, an RW view elsewhere | none |
 //!
-//! - **MapJit** needs a `MAP_JIT` code range: on macOS arm64 [`crate::CodeRange::process`] (and
-//!   the old per-cage `Cage::reserve_jit`) maps it with `MAP_JIT`, see [`crate::va`]. The
-//!   other modes need a plain range. `commit` checks this. [`WxMode::DEFAULT`] fits the
-//!   process code range on every target.
+//! - **MapJit** needs a `MAP_JIT` code range: on macOS arm64 [`crate::CodeRange::process`]
+//!   maps it with `MAP_JIT`, see [`crate::va`]. The other modes need a plain range. `commit`
+//!   checks this. [`WxMode::DEFAULT`] fits the process code range on every target.
 //! - **DualMap** saves the two syscalls per window, but a binary translator (Rosetta for
 //!   Linux) does not see writes through the RW view and runs stale code. Protect works there.
 //! - **Protect on macOS arm64** works for a binary without the hardened runtime (measured on
