@@ -123,7 +123,11 @@ impl LoadedUnit {
                 lu.consts[fi][k].init(val(b));
             }
         }
-        let unit_ptr: *const LoadedUnit = &*lu;
+        // A raw pointer straight from the box (`&raw const`, no shared reborrow): the writes to
+        // `lu.infos` and `lu.context_scopes` below go through the box, and a `&*lu` pointer would
+        // be frozen and lose its permission at the first one (Miri, Tree Borrows).
+        // `object::context_scope` later makes a `&LoadedUnit` from it.
+        let unit_ptr: *const LoadedUnit = &raw const *lu;
         let infos: Box<[FunctionInfo]> = lu
             .unit
             .functions
