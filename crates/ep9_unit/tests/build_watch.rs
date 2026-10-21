@@ -47,6 +47,11 @@ fn run_git(dir: &Path, args: &[&str]) {
     );
 }
 
+/// Best effort: git writes its object files read-only, which some platforms refuse to delete.
+fn cleanup(root: &Path) {
+    let _ = std::fs::remove_dir_all(root);
+}
+
 fn commit(dir: &Path, msg: &str) {
     run_git(dir, &["commit", "-q", "--allow-empty", "-m", msg]);
 }
@@ -105,7 +110,7 @@ fn a_commit_on_a_packed_nested_branch_is_seen() {
     run_git(&dir, &["checkout", "-q", "-b", "review/packed"]);
     commit(&dir, "b");
     check_packed_nested_branch(&dir, &dir, "review/packed");
-    std::fs::remove_dir_all(root).unwrap();
+    cleanup(&root);
 }
 
 #[test]
@@ -123,7 +128,7 @@ fn a_commit_on_a_packed_nested_branch_in_a_worktree_is_seen() {
     commit(&wt, "b");
     // The worktree's HEAD is its own; its refs and packed-refs are the main repo's.
     check_packed_nested_branch(&wt, &main, "wt/nested/x");
-    std::fs::remove_dir_all(root).unwrap();
+    cleanup(&root);
 }
 
 #[test]
@@ -137,5 +142,5 @@ fn a_detached_head_watches_head_only() {
     let watched = head_watch_paths(&dir);
     assert_eq!(watched.len(), 1, "{watched:?}");
     assert_eq!(canon(&watched[0]), canon(&git_path(&dir, "HEAD").unwrap()));
-    std::fs::remove_dir_all(root).unwrap();
+    cleanup(&root);
 }
