@@ -135,12 +135,9 @@ fn symbol_prototype_function_names() {
     );
 }
 
-/// `get Symbol.prototype.description` is definition 6 of src/symbol.rs. An accessor property
-/// needs P3-ACC: after the ACC merge, `PropDef::accessor(PropKey::Str("description"), Some(6),
-/// None)` goes on `%Symbol.prototype%` after `valueOf`, and this test runs. The expected lines
-/// are node 24's.
+/// `get Symbol.prototype.description` (an accessor property, P3-ACC). The expected lines are
+/// node 24's.
 #[test]
-#[ignore = "needs P3-ACC accessors: install `description` in src/symbol.rs after the ACC merge"]
 fn description_getter() {
     assert_eq!(
         common::run_both(

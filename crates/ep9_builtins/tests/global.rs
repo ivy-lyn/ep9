@@ -140,7 +140,7 @@ fn intrinsic_keys_follow_v8s_order() {
             ]),
         ),
         (IntrinsicId::SymbolPrototype, {
-            let mut k = s(&["constructor", "toString", "valueOf"]);
+            let mut k = s(&["constructor", "toString", "valueOf", "description"]);
             k.extend(wk(&["toStringTag", "toPrimitive"]));
             k
         }),

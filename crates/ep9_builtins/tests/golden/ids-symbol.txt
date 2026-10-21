@@ -7,4 +7,4 @@
 0x0e03   7.3          method       0       "toString"  (%Symbol.prototype%.toString w-c)
 0x0e04   7.4          method       0       "valueOf"  (%Symbol.prototype%.valueOf w-c)
 0x0e05   7.5          method       1       "[Symbol.toPrimitive]"  (%Symbol.prototype%.[Symbol.toPrimitive] --c)
-0x0e06   7.6          getter       0       "description"  (not installed)
+0x0e06   7.6          getter       0       "description"  (%Symbol.prototype%.description --c)

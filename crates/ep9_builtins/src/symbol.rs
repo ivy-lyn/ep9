@@ -7,16 +7,11 @@
 //!                       throws TypeError (it has [[Construct]]: IsConstructor is true)
 //! Symbol.for / keyFor   the registry (Cx::symbol_for, Cx::key_for)
 //! Symbol.<well-known>   the 15 well-known symbols (PropValue::Symbol, {})
-//! %Symbol.prototype%    toString (SymbolDescriptiveString), valueOf, [@@toPrimitive]
-//!                       ({c}), [@@toStringTag] = "Symbol" ({c}): thisSymbolValue
-//!                       (Cx::this_primitive_value)
+//! %Symbol.prototype%    toString (SymbolDescriptiveString), valueOf, the `description`
+//!                       getter ({c}), [@@toPrimitive] ({c}), [@@toStringTag] = "Symbol"
+//!                       ({c}): thisSymbolValue (Cx::this_primitive_value)
 //! global                Symbol {w, c}
 //! ```
-//!
-//! `get Symbol.prototype.description` is definition 6, but this table does not install it:
-//! an accessor property needs P3-ACC, and until then installing one fails `Isolate::new`.
-//! After the ACC merge, `PropDef::accessor(PropKey::Str("description"), Some(6), None)` goes
-//! after `valueOf` on `%Symbol.prototype%` (V8's key order).
 //!
 //! Owner of the templates: P3-BLTB (see `TEMPLATES.md`). Ids are append-only: definition `i`
 //! of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by `tests/golden/ids-symbol.txt`.
@@ -38,7 +33,7 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("toString", 0, to_string), // 3
     BuiltinDef::method("valueOf", 0, value_of),   // 4
     BuiltinDef::method("[Symbol.toPrimitive]", 1, to_primitive), // 5
-    BuiltinDef::getter("description", description), // 6: after P3-ACC
+    BuiltinDef::getter("description", description), // 6
 ];
 
 /// The intrinsics this module makes.
@@ -98,6 +93,8 @@ pub const PROPS: &[ObjectProps] = &[
             ),
             PropDef::method(PropKey::Atom(Atom::ToStringKey), 3),
             PropDef::method(PropKey::Atom(Atom::ValueOf), 4),
+            // §20.4.3.2 get Symbol.prototype.description ({c}).
+            PropDef::accessor(PropKey::Str("description"), Some(6), None),
             // §20.4.3.6 Symbol.prototype [ %Symbol.toStringTag% ] ({c}).
             PropDef::constant(
                 PropKey::Symbol(WellKnownSymbol::TO_STRING_TAG),
