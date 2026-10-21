@@ -55,6 +55,10 @@ commands:
           --threads <n>     worker processes (default: all CPUs)
           --timeout <s>     per-run soft timeout in seconds (default 20)
           --gc-stress <n>   collect before every n-th allocation and verify the heap (default 0)
+          --skip-list <file>  with --gc-stress only: neither run nor count the listed tests
+                            (one path per line, as in an expectation file); prints the count
+          --feedback-threshold <n>  calls before a function gets a feedback vector (default 8;
+                            0 = at the first call, 4294967295 = never)
           --causes <n>      failure causes in the report (default 20)
           --progress        print progress to stderr
           --verbose         print every failure
@@ -196,6 +200,8 @@ fn parse_exec_args(args: &[String]) -> Result<exec::Options, String> {
         threads: default_threads(),
         timeout: std::time::Duration::from_secs(20),
         gc_stress: 0,
+        skip_list: None,
+        feedback_threshold: ep9_vm::IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD,
         verbose: false,
         progress: false,
         causes: 20,
@@ -212,6 +218,8 @@ fn parse_exec_args(args: &[String]) -> Result<exec::Options, String> {
             "--threads" => opts.threads = threads(value(arg, &mut it)?)?,
             "--timeout" => opts.timeout = seconds(value(arg, &mut it)?)?,
             "--gc-stress" => opts.gc_stress = count(arg, value(arg, &mut it)?)?,
+            "--skip-list" => opts.skip_list = Some(PathBuf::from(value(arg, &mut it)?)),
+            "--feedback-threshold" => opts.feedback_threshold = count(arg, value(arg, &mut it)?)?,
             "--causes" => opts.causes = count(arg, value(arg, &mut it)?)? as usize,
             "--verbose" => opts.verbose = true,
             "--progress" => opts.progress = true,
@@ -219,6 +227,16 @@ fn parse_exec_args(args: &[String]) -> Result<exec::Options, String> {
             prefix => opts
                 .filters
                 .push(prefix.trim_start_matches("./").to_string()),
+        }
+    }
+    if opts.skip_list.is_some() {
+        // The list names the tests that only GC-stress makes too slow; a normal run skips
+        // nothing.
+        if opts.gc_stress == 0 {
+            return Err("--skip-list needs --gc-stress".into());
+        }
+        if opts.update {
+            return Err("--skip-list and --update-expectations do not go together".into());
         }
     }
     Ok(opts)
@@ -229,6 +247,7 @@ fn parse_worker_args(args: &[String]) -> Result<exec::WorkerOptions, String> {
         test262: repo_root().join("third_party/test262"),
         timeout: std::time::Duration::from_secs(20),
         gc_stress: 0,
+        feedback_threshold: ep9_vm::IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -244,8 +263,50 @@ fn parse_worker_args(args: &[String]) -> Result<exec::WorkerOptions, String> {
                 opts.timeout = std::time::Duration::from_millis(ms);
             }
             "--gc-stress" => opts.gc_stress = count(arg, value(arg, &mut it)?)?,
+            "--feedback-threshold" => opts.feedback_threshold = count(arg, value(arg, &mut it)?)?,
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
     Ok(opts)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strings(a: &[&str]) -> Vec<String> {
+        a.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn skip_list_only_with_gc_stress() {
+        let exec = |a: &[&str]| parse_exec_args(&strings(a));
+        assert!(exec(&["--skip-list", "skip.txt"]).is_err());
+        assert!(exec(&["--gc-stress", "0", "--skip-list", "skip.txt"]).is_err());
+        assert!(
+            exec(&[
+                "--gc-stress",
+                "1",
+                "--skip-list",
+                "skip.txt",
+                "--update-expectations"
+            ])
+            .is_err()
+        );
+        let o = exec(&["--gc-stress", "1", "--skip-list", "skip.txt"]).unwrap();
+        assert_eq!(o.skip_list, Some(PathBuf::from("skip.txt")));
+        assert_eq!(exec(&[]).unwrap().skip_list, None);
+    }
+
+    #[test]
+    fn feedback_threshold_reaches_exec_and_worker() {
+        let default = ep9_vm::IsolateConfig::default().feedback_threshold;
+        assert_eq!(parse_exec_args(&[]).unwrap().feedback_threshold, default);
+        let o = parse_exec_args(&strings(&["--feedback-threshold", "0"])).unwrap();
+        assert_eq!(o.feedback_threshold, 0);
+        assert!(parse_exec_args(&strings(&["--feedback-threshold", "-1"])).is_err());
+        let w = parse_worker_args(&strings(&["--feedback-threshold", "4294967295"])).unwrap();
+        assert_eq!(w.feedback_threshold, u32::MAX);
+        assert_eq!(parse_worker_args(&[]).unwrap().feedback_threshold, default);
+    }
 }
