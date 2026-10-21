@@ -2,11 +2,11 @@
 
 | Field | Value |
 |---|---|
-| Project, ref | oxc, new issue (no existing issue found in the plan research; search again before posting) |
-| Status | draft |
+| Project, ref | oxc, new issue (no existing issue found in the plan research; search again before posting). Searched again 2026-10-21 by P0-OXC-VERIFY with the GitHub issue search on oxc-project/oxc: `CreateDynamicFunction` 0 hits; `"Function constructor"`, `"new Function" parser`, `"parse_formal_parameters"` and `"FormalParameters" parse string` list no issue or PR about this request |
+| Status | ready (2026-10-21) |
 | ep9 need | `compile_function_ctor(params, body, kind)` ([01-front-end §5](../plan/01-front-end.md#5-front-end-boundary-and-compiledunit-h1-h2)) must throw SyntaxError when the parameters or the body do not parse on their own. Due M1 exit ([01-front-end §7](../plan/01-front-end.md#7-oxc-upstream-track-local-patches-p-gates-unchanged)) |
 | Workaround | Nova's single-script check, which misses some cases (01-front-end §7). Local oxc patches today: 0/3 |
-| Verified by | not yet (needs an agent that did not write this draft) |
+| Verified by | P0-OXC-VERIFY (M0 month 2), 2026-10-21. Ran both joined sources again on oxc `=0.155.0` (release commit `73e6b564`) and on oxc main `f3236009` (2026-10-21): both "accepted" on both. node v24.22.0 gives the two SyntaxErrors in the table. Program, commands and full output: [oxc-repro-program.md](oxc-repro-program.md) |
 
 ## Repro (pinned version)
 
@@ -22,7 +22,15 @@ oxc `=0.155.0`, Rust 1.99.1, macOS arm64, 2026-10-21. The program builds the sou
 
 ## Repro (upstream main)
 
-Not run yet.
+oxc main `f32360093c2ee18096fa14e0f48c48d75ca5a4a4` (2026-10-21T05:21:14Z), shallow clone, path dependencies, Rust 1.99.1 release build, macOS arm64, run 2026-10-21 by P0-OXC-VERIFY. Same program (`oxc-repro check '<joined source>'`).
+
+| Call | oxc main on the joined source |
+|---|---|
+| `new Function("/*", "*/){")` | accepted |
+| `new Function("", "}); (function(){")` | accepted |
+
+- The public entry points of `Parser` on main are still `parse` and `parse_expression` (`crates/oxc_parser/src/lib.rs`).
+- The parser has the two parts inside: `parse_function_body` and `parse_formal_parameters` are `pub(crate)` in `src/js/function.rs`, on main and in 0.155.0. So most of the grammar code exists. The request is mainly a public entry point that sets the Yield and Await context and reports left-over tokens.
 
 ## Text to post
 
