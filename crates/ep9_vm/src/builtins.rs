@@ -20,8 +20,11 @@
 //! | A table is checked before use: blocks, indices, kinds, intrinsics, aliases and duplicate keys | a table error is an `IsolateError`, never a half-built realm |
 //! | A constructor a table makes gets `prototype` {} as its first table key | §20 (`Number.prototype` and the others); a key before it would make the lazy `prototype` (`props::own_add`) |
 //!
-//! Core intrinsics (the prototypes, the iterator prototypes and the global object) come from
-//! `realm::init`; tables add properties to them and make the others (constructors, `%Math%`).
+//! Core intrinsics (the prototypes, `%Iterator.prototype%`, `%ArrayIteratorPrototype%` and the
+//! global object) come from `realm::init`; tables add properties to them and make the others
+//! (constructors, `%Math%`, and `%StringIteratorPrototype%` from the VM table). An intrinsic
+//! lives in a runtime root, in `symbol.rs` (`%Symbol.prototype%`), or in a builtin state slot
+//! (`IntrinsicId::slot`: ids appended after the runtime roots were fixed).
 
 use core::cell::{Cell, RefCell};
 use core::fmt::Write as _;
@@ -113,7 +116,6 @@ pub enum IntrinsicId {
     SyntaxErrorPrototype,
     EvalErrorPrototype,
     UriErrorPrototype,
-    /// v0: also the prototype of string iterators.
     ArrayIteratorPrototype,
     /// `%Symbol.prototype%`: kept by `symbol.rs` (P2-SYM), not by a runtime root.
     SymbolPrototype,
@@ -136,11 +138,14 @@ pub enum IntrinsicId {
     EvalError,
     UriError,
     Math,
+    /// `%StringIteratorPrototype%` (§22.1.5.2), made by the VM table. Its root is a slot of
+    /// the isolate's builtin state, not a runtime root.
+    StringIteratorPrototype,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 32] = [
+    pub const ALL: [IntrinsicId; 33] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -173,6 +178,7 @@ impl IntrinsicId {
         IntrinsicId::EvalError,
         IntrinsicId::UriError,
         IntrinsicId::Math,
+        IntrinsicId::StringIteratorPrototype,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object.
@@ -210,11 +216,12 @@ impl IntrinsicId {
             IntrinsicId::EvalError => "%EvalError%",
             IntrinsicId::UriError => "%URIError%",
             IntrinsicId::Math => "%Math%",
+            IntrinsicId::StringIteratorPrototype => "%StringIteratorPrototype%",
         }
     }
 
     /// The runtime root that holds this intrinsic; `None` for `%Symbol.prototype%`, which
-    /// `symbol.rs` keeps.
+    /// `symbol.rs` keeps, and for the intrinsics in builtin state slots ([`Self::slot`]).
     pub(crate) const fn root(self) -> Option<Root> {
         Some(match self {
             IntrinsicId::ObjectPrototype => Root::ObjectPrototype,
@@ -249,7 +256,17 @@ impl IntrinsicId {
             IntrinsicId::EvalError => Root::EvalErrorConstructor,
             IntrinsicId::UriError => Root::UriErrorConstructor,
             IntrinsicId::Math => Root::Math,
+            IntrinsicId::StringIteratorPrototype => return None,
         })
+    }
+
+    /// The builtin state slot ([`BuiltinState`]) that holds this intrinsic: intrinsics added
+    /// after the runtime roots were fixed (runtime.rs is not the table owner's file).
+    const fn slot(self) -> Option<usize> {
+        match self {
+            IntrinsicId::StringIteratorPrototype => Some(0),
+            _ => None,
+        }
     }
 
     /// Made by `realm::init` (and `symbol::install`), not by a table: tables may target these
@@ -262,18 +279,21 @@ impl IntrinsicId {
 /// The intrinsic `id` of the realm: an object, or undefined if no table made it (or, for
 /// `%Symbol.prototype%`, until symbols exist).
 pub(crate) fn intrinsic(rt: &Runtime, id: IntrinsicId) -> u64 {
-    match id.root() {
-        Some(r) => rt.root(r),
+    match (id.root(), id.slot()) {
+        (Some(r), _) => rt.root(r),
+        (None, Some(i)) => rt.builtins.intrinsics[i].bits(),
         // %Symbol.prototype% lives in symbol.rs.
-        None => symbol::prototype(rt),
+        (None, None) => symbol::prototype(rt),
     }
 }
 
 fn set_intrinsic(rt: &Runtime, id: IntrinsicId, v: u64) {
-    let r = id
-        .root()
-        .expect("a table-made intrinsic has a runtime root");
-    rt.set_root(r, v);
+    match (id.root(), id.slot()) {
+        (Some(r), _) => rt.set_root(r, v),
+        // E3: a store into a root slot takes no barrier.
+        (None, Some(i)) => rt.builtins.intrinsics[i].init(val(v)),
+        (None, None) => unreachable!("{} is not made by a table", id.name()),
+    }
 }
 
 // ---- table types ------------------------------------------------------------------------------
@@ -869,13 +889,32 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 
 // ---- per-isolate state ------------------------------------------------------------------------
 
-/// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module.
-#[derive(Default)]
+/// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
+const INTRINSIC_SLOTS: usize = 1;
+
+/// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
+/// intrinsics without a runtime root.
 pub(crate) struct BuiltinState {
     /// The embedder's table (`IsolateConfig::builtins`).
     table: Cell<Option<&'static BuiltinTable>>,
     /// The installed modules in walk order (the VM table first).
     modules: RefCell<Vec<ModuleState>>,
+    /// The intrinsics of [`IntrinsicId::slot`], undefined until made: a strong root range
+    /// that [`prepare`] registers (the heap is the Runtime's first field, so it drops with the
+    /// range before this box).
+    intrinsics: Box<[Slot]>,
+}
+
+impl Default for BuiltinState {
+    fn default() -> Self {
+        BuiltinState {
+            table: Cell::new(None),
+            modules: RefCell::new(Vec::new()),
+            intrinsics: (0..INTRINSIC_SLOTS)
+                .map(|_| Slot::new(Value::UNDEFINED))
+                .collect(),
+        }
+    }
 }
 
 struct ModuleState {
@@ -900,11 +939,21 @@ fn tables(embedder: Option<&'static BuiltinTable>) -> impl Iterator<Item = &'sta
 }
 
 /// Builds the dense FunctionInfo array and registers the function root range of every module
-/// (VM table first). No GC allocation. Runs once, before `realm::init`.
+/// (VM table first) and the intrinsic slots. No GC allocation. Runs once, before
+/// `realm::init`.
 pub(crate) fn prepare(rt: &Runtime, embedder: Option<&'static BuiltinTable>) {
     rt.builtins.table.set(embedder);
     let mut mods = rt.builtins.modules.borrow_mut();
     debug_assert!(mods.is_empty(), "builtins::prepare runs once");
+    // SAFETY: the slots live in a box that the Runtime owns (`builtins`); the heap is the
+    // Runtime's first field, so it drops (with this range) before the box. They hold
+    // `undefined` now and intrinsic objects later (never 0).
+    unsafe {
+        rt.heap.add_root_range(
+            NonNull::from(&rt.builtins.intrinsics[..]),
+            RootStrength::Strong,
+        );
+    }
     for module in tables(embedder).flat_map(|t| t.modules.iter()) {
         let infos: Box<[FunctionInfo]> = module
             .defs
@@ -960,8 +1009,8 @@ pub(crate) fn function_object(rt: &Runtime, id: BuiltinId) -> u64 {
     f
 }
 
-/// The function object of builtin `id` if the realm has made it (no allocation).
-#[allow(dead_code)] // for natives that check "is this still the intrinsic?" (P3-NAT)
+/// The function object of builtin `id` if the realm has made it (no allocation): the "is
+/// this still the intrinsic?" test of the iteration fast paths (`interp/slow/iter.rs`).
 pub(crate) fn existing_function(rt: &Runtime, id: BuiltinId) -> Option<u64> {
     lookup(rt, id)
         .map(|(_, _, f)| f)
@@ -1150,11 +1199,15 @@ mod tests {
         roots.sort_unstable();
         roots.dedup();
         assert_eq!(roots.len(), n);
-        assert_eq!(
-            n,
-            IntrinsicId::ALL.len() - 1,
-            "only %Symbol.prototype% has no root"
-        );
+        // %Symbol.prototype% lives in symbol.rs; the others without a root have one slot each.
+        let mut slots: Vec<usize> = IntrinsicId::ALL.iter().filter_map(|id| id.slot()).collect();
+        for id in IntrinsicId::ALL {
+            assert!(id.root().is_none() || id.slot().is_none(), "{}", id.name());
+            assert!(!id.is_core() || id.slot().is_none(), "{}", id.name());
+        }
+        assert_eq!(n + slots.len(), IntrinsicId::ALL.len() - 1);
+        slots.sort_unstable();
+        assert_eq!(slots, (0..INTRINSIC_SLOTS).collect::<Vec<_>>());
         assert!(
             roots
                 .iter()

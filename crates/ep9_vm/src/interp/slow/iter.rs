@@ -1,49 +1,231 @@
 //! Iteration, spread, the arguments object and for-in.
+//!
+//! ```text
+//! GetIterator(obj) (0x8f: for-of, array destructuring, spread elements after the first)
+//!   method = GetMethod(obj, @@iterator)       undefined, null or not callable -> TypeError
+//!                                             "x is not iterable"
+//!   method is %Array.prototype.values%, obj an object        -> a new array ITERATOR cell
+//!   method is %String.prototype[@@iterator]%, obj a string   -> a new string ITERATOR cell
+//!   else iterator = Call(method, obj)         not an object -> TypeError
+//!   (BytecodeGen then loads `next` and calls it each step)
+//! CreateArrayFromIterable(obj) (0x6f: `[...obj]`)
+//!   the same method lookup; while `next` of the iterator's prototype is also the intrinsic
+//!   (an own data property): an Array is copied element by element (holes read through
+//!   [[Get]]), a string is split into code points; else the generic IteratorStep loop
+//! ```
+//!
+//! The fast paths give the same values as the protocol: the cells are what `values` and
+//! `[@@iterator]` return, and the copy loops are the steps of their `next` (natives.rs). The
+//! intrinsic test (`builtins::existing_function`) runs once per GetIterator, not per step.
 
 use ep9_value::Throw;
 
-use crate::conv::describe;
+use crate::builtins::{self, BuiltinId, IntrinsicId};
+use crate::call;
+use crate::conv::{Res, describe, num, to_boolean};
 use crate::error::{FrameRef, throw_error};
-use crate::frame::UNDEFINED;
+use crate::frame::{NULL, UNDEFINED};
 use crate::interp::Cx;
+use crate::kinds::is_callable;
+use crate::natives;
 use crate::object::{self, is_array, is_object, is_string};
 use crate::property;
-use crate::runtime::{ErrorKind, Root, Runtime, val};
+use crate::runtime::{Atom, ErrorKind, Root, Runtime, val};
+use crate::string;
+use crate::symbol::{self, WellKnownSymbol};
 
-use super::{enter, info, ret, throw_msg_now};
+use super::{enter, info, interrupt, ret, throw_msg_now};
 
-/// `CreateArrayFromIterable` (v0: arrays and strings, the only iterables without symbols).
+/// `CreateArrayFromIterable` (0x6f): `[...v]`.
 #[cold]
 #[inline(never)]
 pub(crate) fn array_from_iterable(cx: &mut Cx, fp: *mut u64, pc: *const u8, v: u64) -> u64 {
     enter(cx, fp, pc);
-    let rt = cx.rt();
-    if is_string(v) {
-        let a = object::new_array(rt, 0);
-        push_code_points(rt, a, 0, v);
-        return a;
-    }
-    if !is_array(v) {
-        return ret(Err(not_iterable(cx, v)));
-    }
-    let n = object::array_len(v);
-    let a = object::new_array(rt, n as usize);
-    for i in 0..n {
-        object::array_set(rt, a, i, object::array_get(v, i).unwrap_or(UNDEFINED));
-    }
-    object::array_set_length(rt, a, n);
-    a
+    ret(iterable_to_array(cx, v))
 }
 
-/// The TypeError of GetIterator for a value without `@@iterator` (v0: not an array or string).
+/// The TypeError of GetIterator for a value without a callable `@@iterator`.
 pub(super) fn not_iterable(cx: &mut Cx, v: u64) -> Throw {
     let msg = format!("{} is not iterable", describe(v));
     throw_error(cx, ErrorKind::TypeError, &msg)
 }
 
-/// Appends the code points of the string `s` (one string each, as the string iterator yields
-/// them, §22.1.5.2.1) to the array `out` from index `start`. `out` must be rooted by the
-/// caller (a Rust local). Returns the new length.
+/// GetMethod(v, @@iterator) (§7.3.10) for GetIterator (§7.4.3 steps 1-3): the method, or the
+/// TypeError "v is not iterable" for undefined and null (GetV) and when there is no callable
+/// method. GC point (a getter).
+fn iterator_method(cx: &mut Cx, v: u64) -> Res<u64> {
+    if v == UNDEFINED || v == NULL {
+        return Err(not_iterable(cx, v));
+    }
+    let key = symbol::well_known(cx.rt(), WellKnownSymbol::Iterator);
+    let method = property::get(cx, v, key)?;
+    if !is_callable(method) {
+        return Err(not_iterable(cx, v));
+    }
+    Ok(method)
+}
+
+/// The built-in iterators the fast paths make without a call.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Builtin {
+    /// `method` is %Array.prototype.values% and `v` is an object.
+    Array,
+    /// `method` is %String.prototype[@@iterator]% and `v` is a string primitive.
+    String,
+}
+
+/// True if `f` is the function object of VM builtin `index` in this realm.
+fn is_vm_builtin(rt: &Runtime, f: u64, index: u16) -> bool {
+    builtins::existing_function(rt, BuiltinId::new(natives::VM_BLOCK, index)) == Some(f)
+}
+
+/// Which built-in iterator calling `method` on `v` makes, if the call can be skipped. Not a
+/// GC point.
+fn builtin_iterator(rt: &Runtime, v: u64, method: u64) -> Option<Builtin> {
+    if is_object(v) && is_vm_builtin(rt, method, natives::vm::ARRAY_VALUES) {
+        Some(Builtin::Array)
+    } else if is_string(v) && is_vm_builtin(rt, method, natives::vm::STRING_ITERATOR) {
+        Some(Builtin::String)
+    } else {
+        None
+    }
+}
+
+/// GetIterator steps 4-5 with the method found: the iterator object. GC point.
+fn iterator_from_method(cx: &mut Cx, v: u64, method: u64) -> Res<u64> {
+    let rt = cx.rt();
+    match builtin_iterator(rt, v, method) {
+        Some(Builtin::Array) => return Ok(natives::new_array_iterator(rt, v)),
+        Some(Builtin::String) => return Ok(natives::new_string_iterator(rt, v)),
+        None => {}
+    }
+    let it = call::call_function(cx, method, v, &[])?;
+    if !is_object(it) {
+        return Err(throw_error(
+            cx,
+            ErrorKind::TypeError,
+            "Result of the Symbol.iterator method is not an object",
+        ));
+    }
+    Ok(it)
+}
+
+/// `GetIterator(obj, sync)` (§7.4.3, 0x8f): the iterator object; BytecodeGen loads `next`
+/// next.
+#[cold]
+#[inline(never)]
+pub(crate) fn get_iterator(cx: &mut Cx, fp: *mut u64, pc: *const u8, o: u64) -> u64 {
+    enter(cx, fp, pc);
+    ret(iterator_method(cx, o).and_then(|m| iterator_from_method(cx, o, m)))
+}
+
+/// True if the own `next` of the iterator prototype `proto` is the data property that the
+/// realm made: VM builtin `index`. Then the steps of that native can run without the calls.
+fn next_is_intrinsic(rt: &Runtime, proto: u64, index: u16) -> bool {
+    object::own_get(proto, rt.atom(Atom::Next)).is_some_and(|(f, _)| is_vm_builtin(rt, f, index))
+}
+
+/// IterableToList(v) (§7.4.15, with GetIterator) as a new Array: the values of
+/// CreateArrayFromIterable (`[...v]`) and of a spread argument. GC point.
+pub(super) fn iterable_to_array(cx: &mut Cx, v: u64) -> Res<u64> {
+    let method = iterator_method(cx, v)?;
+    let rt = cx.rt();
+    match builtin_iterator(rt, v, method) {
+        Some(Builtin::Array)
+            if is_array(v)
+                && next_is_intrinsic(
+                    rt,
+                    rt.root(Root::ArrayIteratorPrototype),
+                    natives::vm::ITERATOR_NEXT,
+                ) =>
+        {
+            return copy_array(cx, v);
+        }
+        Some(Builtin::String)
+            if next_is_intrinsic(
+                rt,
+                builtins::intrinsic(rt, IntrinsicId::StringIteratorPrototype),
+                natives::vm::STRING_ITERATOR_NEXT,
+            ) =>
+        {
+            let a = object::new_array(rt, 0);
+            push_string_code_points(cx, a, v);
+            return Ok(a);
+        }
+        _ => {}
+    }
+    let it = iterator_from_method(cx, v, method)?;
+    let next = property::get(cx, it, rt.atom(Atom::Next))?;
+    // GC points below: `v`, `it`, `next`, `a`, `r` and `value` live in Rust locals.
+    let a = object::new_array(rt, 0);
+    let mut n = 0u32;
+    loop {
+        // A `next` that is a host function never polls: count the step here.
+        cx.budget -= 1;
+        if cx.budget <= 0 && interrupt(cx, core::ptr::null_mut()) == 0 {
+            return Err(Throw);
+        }
+        // IteratorStepValue (§7.4.10).
+        let r = call::call_function(cx, next, it, &[])?;
+        if !is_object(r) {
+            let msg = format!("Iterator result {} is not an object", describe(r));
+            return Err(throw_error(cx, ErrorKind::TypeError, &msg));
+        }
+        let done = property::get(cx, r, rt.atom(Atom::Done))?;
+        if to_boolean(done) {
+            break;
+        }
+        let value = property::get(cx, r, rt.atom(Atom::ValueKey))?;
+        if !object::array_set(rt, a, n, value) {
+            return Err(throw_error(
+                cx,
+                ErrorKind::RangeError,
+                "Invalid array length",
+            ));
+        }
+        n += 1;
+    }
+    Ok(a)
+}
+
+/// The steps of %ArrayIteratorPrototype%.next over the Array `v`: element `i` while `i` is
+/// below the length (read at each step), a hole through [[Get]]. GC point.
+fn copy_array(cx: &mut Cx, v: u64) -> Res<u64> {
+    let rt = cx.rt();
+    let a = object::new_array(rt, object::array_len(v) as usize);
+    let mut i = 0u32;
+    while i < object::array_len(v) {
+        let x = match object::array_get(v, i) {
+            Some(x) => x,
+            None => property::get_keyed(cx, v, num(f64::from(i)))?,
+        };
+        object::array_set(rt, a, i, x);
+        i += 1;
+    }
+    object::array_set_length(rt, a, i);
+    Ok(a)
+}
+
+/// Appends the code points of the string `s` to the array `out` (rooted by the caller, a Rust
+/// local), one string each as %StringIteratorPrototype%.next yields them (single-character
+/// atoms for Latin-1 units). Returns the new length.
+fn push_string_code_points(cx: &mut Cx, out: u64, s: u64) -> u32 {
+    let rt = cx.rt();
+    let mut n = object::array_len(out);
+    let mut i = 0;
+    while let Some((cp, len)) = natives::code_point_string(cx, s, i) {
+        object::array_set(rt, out, n, cp);
+        n += 1;
+        i += len;
+    }
+    object::array_set_length(rt, out, n);
+    n
+}
+
+/// Appends the code points of the string `s` (one string each, §22.1.5.2.1) to the array
+/// `out` from index `start`. `out` must be rooted by the caller (a Rust local). Returns the
+/// new length. Legacy entry for the spread argument of slow/call.rs (P3-BLTA), which has no
+/// `Cx` here: new code calls [`iterable_to_array`], which follows `@@iterator`.
 pub(super) fn push_code_points(rt: &Runtime, out: u64, start: u32, s: u64) -> u32 {
     let units: Vec<u16> = object::str_view(s).to_utf16();
     let mut n = start;
@@ -53,7 +235,10 @@ pub(super) fn push_code_points(rt: &Runtime, out: u64, start: u32, s: u64) -> u3
             && i + 1 < units.len()
             && (0xDC00..0xE000).contains(&units[i + 1]);
         let len = if pair { 2 } else { 1 };
-        let cp = object::new_string_utf16(rt, &units[i..i + len]);
+        let cp = match u8::try_from(units[i]) {
+            Ok(c) if !pair => string::single_char(rt, c),
+            _ => object::new_string_utf16(rt, &units[i..i + len]),
+        };
         object::array_set(rt, out, n, cp);
         n += 1;
         i += len;
@@ -70,19 +255,6 @@ impl Drop for KeepAlive {
     fn drop(&mut self) {
         core::hint::black_box(&self.0);
     }
-}
-
-/// `GetIterator(obj)` (§7.4.3) for v0: the built-in iterator of an array or a string.
-#[cold]
-#[inline(never)]
-pub(crate) fn get_iterator(cx: &mut Cx, fp: *mut u64, pc: *const u8, o: u64) -> u64 {
-    enter(cx, fp, pc);
-    let rt = cx.rt();
-    if is_array(o) || is_string(o) {
-        return object::new_iterator(rt, rt.root(Root::ArrayIteratorPrototype), o);
-    }
-    let msg = format!("{} is not iterable", describe(o));
-    ret(Err(throw_error(cx, ErrorKind::TypeError, &msg)))
 }
 
 /// `CreateMappedArguments`, `CreateUnmappedArguments` (`rest = false`) and

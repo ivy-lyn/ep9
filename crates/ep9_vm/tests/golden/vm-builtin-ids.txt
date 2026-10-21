@@ -19,6 +19,10 @@
 0x000f   0.15         constructor  1       "EvalError"  (%EvalError%)
 0x0010   0.16         constructor  1       "URIError"  (%URIError%)
 0x0011   0.17         method       0       "toString"  (%Error.prototype%.toString w-c)
+0x0012   0.18         method       0       "values"  (%Array.prototype%.values w-c)
+0x0013   0.19         method       0       "[Symbol.iterator]"  (%String.prototype%.[Symbol.iterator] w-c)
+0x0014   0.20         method       0       "[Symbol.iterator]"  (%Iterator.prototype%.[Symbol.iterator] w-c)
+0x0015   0.21         method       0       "next"  (%StringIteratorPrototype%.next w-c)
 # IntrinsicId (append-only)
 intrinsic   0  %Object.prototype%
 intrinsic   1  %Function.prototype%
@@ -52,3 +56,4 @@ intrinsic  28  %SyntaxError%
 intrinsic  29  %EvalError%
 intrinsic  30  %URIError%
 intrinsic  31  %Math%
+intrinsic  32  %StringIteratorPrototype%

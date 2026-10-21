@@ -699,8 +699,9 @@ fn accessor_and_symbol_entries_install_or_name_what_is_missing() {
             block: 103,
             defs: DEFS,
             intrinsics: &[],
+            // %Object.prototype%: the VM table defines %Array.prototype%[@@iterator] (P3-NAT).
             props: &[ObjectProps {
-                target: IntrinsicId::ArrayPrototype,
+                target: IntrinsicId::ObjectPrototype,
                 props: &[PropDef::method(
                     PropKey::Symbol(WellKnownSymbol::ITERATOR),
                     1,
