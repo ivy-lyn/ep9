@@ -24,10 +24,8 @@
 //! | number / boolean primitive | `Number.prototype` / `Boolean.prototype` |
 //! | symbol primitive | `Symbol.prototype` (`symbol::prototype`) |
 //!
-//! The builtin ABI (H20 ObjectOps, abi/mod.rs) calls [`get_own_property`],
-//! [`define_own_property`] (ValidateAndApplyPropertyDescriptor) and [`own_property_keys`],
-//! and its index access (`abi/index.rs`) calls [`get_index`], [`has_index`], [`set_index`]
-//! and [`delete_index`], which find an element or a missing index without a key.
+//! The builtin ABI (H20 ObjectOps, abi/mod.rs) calls [`get_own_property`], [`own_property_keys`],
+//! [`define_own_property`] (ValidateAndApplyPropertyDescriptor) and [`get_index`] and its kin.
 
 use crate::conv::{Res, describe, num, to_property_key, to_uint32_of};
 use crate::descriptor::Desc;
