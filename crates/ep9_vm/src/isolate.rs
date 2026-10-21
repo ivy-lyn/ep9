@@ -11,15 +11,30 @@
 //!
 //! A `Value` that the API returns is not a root: it stays valid until the next call into the
 //! isolate (that call may collect garbage). Copy what you need out of it first, or work inside
-//! [`Isolate::with_cx`], whose `Local`s cannot outlive the call (H20-Q4).
+//! [`Isolate::with_cx`], whose `Local`s cannot outlive the call (H20-Q4). The scoped forms
+//! (M2-P3, C11) are `Cx` methods:
+//!
+//! | Old form (raw `Value`) | Scoped form inside `with_cx` (`Local<'s>`) |
+//! |---|---|
+//! | `Isolate::run_script` | [`abi::Cx::run_script`] |
+//! | `Isolate::call` | `abi::Cx::call` |
+//! | `Isolate::global` | [`abi::Cx::global_binding`] (runs getters; TDZ throws) |
+//! | `Isolate::display` | [`abi::Cx::display`] |
+//!
+//! The old forms stay until the embedders move (M3-P3 EMBED-MIGRATE).
+//!
+//! Other threads reach a running isolate through two `Send` handles: [`TerminateHandle`]
+//! (stop the script) and [`InterruptHandle`] (run a callback on the isolate thread at the
+//! next interrupt poll).
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, PoisonError};
 
 use ep9_bytecode::VerifiedUnit;
 use ep9_heap::{Heap, HeapConfig, HeapError, VerifyError, VerifyReport};
 use ep9_value::{JsResult, Throw, Value};
 
+use crate::abi::{JsKey, JsObject, Local};
 use crate::builtins::{self, BuiltinTable};
 use crate::compiler::CompilerHooks;
 use crate::conv::{Res, describe};
@@ -27,7 +42,7 @@ use crate::frame::{HOLE, UNDEFINED};
 use crate::host::HostFn;
 use crate::interp::{BUDGET, Cx, Dispatch};
 use crate::object::{self, attr, is_error, is_string, own_define, own_get};
-use crate::runtime::{Atom, Root, Runtime, val};
+use crate::runtime::{Atom, ErrorKind, InterruptQueue, Root, Runtime, val};
 use crate::unit::{FunctionInfo, LoadedUnit};
 use crate::{abi, atoms, call, error, property, realm, shape, string};
 
@@ -146,6 +161,64 @@ impl TerminateHandle {
     pub fn terminate(&self) {
         self.0
             .fetch_or(crate::interp::interrupt::TERMINATE, Ordering::Release);
+    }
+}
+
+/// Runs a callback on the isolate's thread from any thread (H23-Q6): [`InterruptHandle::request`]
+/// queues it, and the isolate runs it at its next interrupt poll, the place where
+/// [`TerminateHandle`] stops a script (loop back edges, function entries, builtin loops; JIT
+/// code polls the same way). A poll comes once per interrupt budget (10,000 back edges or
+/// calls) while JS runs; an idle isolate runs the callback when it next runs JS and polls.
+///
+/// The callback gets no `Cx`: it runs no JS and allocates nothing on the JS heap, so it is
+/// safe at any poll. It may call [`TerminateHandle::terminate`] (the same poll then stops the
+/// script) or [`InterruptHandle::request`] (the new callback runs at a later poll).
+/// Callbacks run in request order. A callback that panics ends the process in a release build
+/// (`panic = "abort"`, H23); in a debug build the panic unwinds out of the running script and
+/// the callbacks queued behind it are dropped. After the isolate is dropped, a request is
+/// never run; the callback is dropped with the last handle.
+///
+/// ```
+/// use std::sync::atomic::{AtomicBool, Ordering};
+/// use std::sync::Arc;
+/// use ep9_vm::{Isolate, IsolateConfig};
+/// let iso = Isolate::new(IsolateConfig::default()).unwrap();
+/// let ran = Arc::new(AtomicBool::new(false));
+/// let (h, r) = (iso.interrupt_handle(), Arc::clone(&ran));
+/// std::thread::spawn(move || h.request(Box::new(move || r.store(true, Ordering::SeqCst))))
+///     .join()
+///     .unwrap();
+/// // Not run yet: the isolate has not polled.
+/// assert!(!ran.load(Ordering::SeqCst));
+/// ```
+#[derive(Clone)]
+pub struct InterruptHandle {
+    word: Arc<AtomicU32>,
+    queue: InterruptQueue,
+}
+
+impl InterruptHandle {
+    /// Queues `callback` and asks the isolate to run it at its next poll. It never waits for
+    /// the isolate: the queue lock is held only to push or to take the queue, never while a
+    /// callback runs.
+    pub fn request(&self, callback: Box<dyn FnOnce() + Send>) {
+        self.queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(callback);
+        // After the push: the poll that sees the bit finds the callback.
+        self.word
+            .fetch_or(crate::interp::interrupt::REQUEST, Ordering::Release);
+    }
+}
+
+impl std::fmt::Debug for InterruptHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let queued = self.queue.lock().map_or(0, |q| q.len());
+        f.debug_struct("InterruptHandle")
+            .field("word", &self.word)
+            .field("queued", &queued)
+            .finish()
     }
 }
 
@@ -279,15 +352,7 @@ impl Isolate {
     /// (§16.2.1.6.4 step 9; v0 runs a module unit alone, with no linking). `file` names the
     /// unit in stack traces and locations.
     pub fn run_script(&mut self, unit: VerifiedUnit, file: &str) -> Result<Value, Exception> {
-        let rt = &*self.rt;
-        let module = unit.header.code_kind == ep9_bytecode::CodeKind::Module;
-        let index = u32::try_from(rt.units.borrow().len()).expect("fewer than 2^32 units");
-        let lu = LoadedUnit::load(rt, unit, file.to_string(), index);
-        let entry: *const FunctionInfo = &lu.infos[0];
-        rt.units.borrow_mut().push(lu);
-        let f = object::new_function(rt, entry, UNDEFINED);
-        let this = if module { UNDEFINED } else { rt.global() };
-        let r = call::call_function(&mut self.cx, f, this, &[]);
+        let r = run_unit(&mut self.cx, unit, file);
         self.finish(r)
     }
 
@@ -300,32 +365,40 @@ impl Isolate {
     }
 
     /// The global binding `name` (the script lexical record first), without running JS: `None`
-    /// if there is none, and also if it is an accessor property of the global object (reading
-    /// it would call the getter, as `[[Get]]` through [`Isolate::with_cx`] does).
+    /// if there is none, if it is a lexical binding in its TDZ (not initialized yet; reading
+    /// it would throw a ReferenceError), and if it is an accessor property of the global
+    /// object (reading it would call the getter). An own data property of the global object
+    /// only: [`abi::Cx::global_binding`] does the full lookup, getters and TDZ included.
     pub fn global(&self, name: &str) -> Option<Value> {
         let rt = &*self.rt;
         let key = atoms::intern_str(rt, name);
-        own_get(rt.root(Root::Lexical), key)
-            .or_else(|| own_get(rt.global(), key))
-            // An accessor's slot holds its ACCESSOR_PAIR cell, which is not a JS value.
-            .filter(|&(_, a)| a & attr::ACCESSOR == 0)
-            .map(|(v, _)| val(v))
+        match own_get(rt.root(Root::Lexical), key) {
+            // The TDZ hole never leaves the VM.
+            Some((v, _)) => (v != HOLE).then(|| val(v)),
+            None => own_get(rt.global(), key)
+                // An accessor's slot holds its ACCESSOR_PAIR cell, which is not a JS value.
+                .filter(|&(_, a)| a & attr::ACCESSOR == 0)
+                .map(|(v, _)| val(v)),
+        }
     }
 
     /// Text of `v` for a REPL or test output, without running JS: strings as they are,
     /// numbers in JS form, other values as `describe` prints them.
     pub fn display(&self, v: Value) -> String {
-        let b = v.to_bits();
-        if is_string(b) {
-            string::to_rust_string(b)
-        } else {
-            describe(b)
-        }
+        display_bits(v.to_bits())
     }
 
     /// A handle that stops the running script from another thread.
     pub fn terminate_handle(&self) -> TerminateHandle {
         TerminateHandle(Arc::clone(&self.rt.terminate))
+    }
+
+    /// A handle that runs callbacks on this isolate's thread from another thread.
+    pub fn interrupt_handle(&self) -> InterruptHandle {
+        InterruptHandle {
+            word: Arc::clone(&self.rt.terminate),
+            queue: Arc::clone(&self.rt.interrupt_requests),
+        }
     }
 
     /// Runs a full garbage collection.
@@ -416,6 +489,107 @@ impl Isolate {
             location,
             terminated: false,
         }
+    }
+}
+
+/// Loads `unit` (a new entry of `Runtime::units`, never freed) and calls its entry function:
+/// `this` is the global object for a script and undefined for module code. The shared body of
+/// [`Isolate::run_script`] and [`abi::Cx::run_script`]. Works from Rust with no frame and from
+/// a host call (a nested run on top of the caller's frames).
+fn run_unit(cx: &mut Cx, unit: VerifiedUnit, file: &str) -> Res<u64> {
+    let rt = cx.rt();
+    let module = unit.header.code_kind == ep9_bytecode::CodeKind::Module;
+    let index = u32::try_from(rt.units.borrow().len()).expect("fewer than 2^32 units");
+    let lu = LoadedUnit::load(rt, unit, file.to_string(), index);
+    let entry: *const FunctionInfo = &lu.infos[0];
+    rt.units.borrow_mut().push(lu);
+    let f = object::new_function(rt, entry, UNDEFINED);
+    let this = if module { UNDEFINED } else { rt.global() };
+    call::call_function(cx, f, this, &[])
+}
+
+/// The text of [`Isolate::display`] and [`abi::Cx::display`]. Runs no JS.
+fn display_bits(b: u64) -> String {
+    if is_string(b) {
+        string::to_rust_string(b)
+    } else {
+        describe(b)
+    }
+}
+
+/// The embedder forms scoped to [`Isolate::with_cx`] (H20-Q4, C11): they take and return
+/// `Local`s, which cannot leave the `with_cx` call, so no raw `Value` outlives a collection.
+/// They are `Cx` methods, so a host function can use them too.
+impl<'s> abi::Cx<'s> {
+    /// Loads `unit` and runs it, as [`Isolate::run_script`] does: `this` is the global object
+    /// for a script and undefined for module code; `file` names the unit in stack traces. The
+    /// completion value comes back as a `Local`; a throw is the pending exception (`Err`),
+    /// which `with_cx` turns into its [`Exception`].
+    ///
+    /// ```compile_fail
+    /// use ep9_vm::Isolate;
+    /// fn escape(iso: &mut Isolate, unit: ep9_bytecode::VerifiedUnit) {
+    ///     // The `Local` cannot leave `with_cx`.
+    ///     let v = iso.with_cx(|cx| cx.run_script(unit, "a.js")).unwrap();
+    ///     iso.collect_garbage();
+    ///     let _ = v;
+    /// }
+    /// ```
+    pub fn run_script(&mut self, unit: VerifiedUnit, file: &str) -> JsResult<Local<'s>> {
+        let b = run_unit(self.inner(), unit, file)?;
+        // The hole never leaves the VM.
+        Ok(Local::from_bits(if b == HOLE { UNDEFINED } else { b }))
+    }
+
+    /// The value of the global binding `name` (GetBindingValue of the global environment,
+    /// §9.1.1.4.6): the script lexical record first, where a binding in its TDZ throws a
+    /// ReferenceError, then the global object and its prototype chain (HasProperty, then
+    /// `[[Get]]`, which runs a getter). `Ok(None)` if no binding has the name (an
+    /// unresolvable reference).
+    ///
+    /// ```
+    /// use ep9_vm::{Isolate, IsolateConfig};
+    /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    /// let r = iso.with_cx(|cx| {
+    ///     let nan = cx.global_binding("NaN")?.expect("a global");
+    ///     cx.collect_garbage();
+    ///     Ok((cx.display(nan), cx.global_binding("nope")?.is_none()))
+    /// });
+    /// assert_eq!(r, Ok(("NaN".to_string(), true)));
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use ep9_vm::{Isolate, IsolateConfig};
+    /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    /// // The `Local` cannot leave `with_cx`.
+    /// let nan = iso.with_cx(|cx| cx.global_binding("NaN")).unwrap();
+    /// iso.collect_garbage();
+    /// let _ = nan;
+    /// ```
+    pub fn global_binding(&mut self, name: &str) -> JsResult<Option<Local<'s>>> {
+        let cx = self.inner();
+        let rt = cx.rt();
+        // GC point; the key stays live in this Rust local (CSS).
+        let key = atoms::intern_str(rt, name);
+        if let Some((v, _)) = own_get(rt.root(Root::Lexical), key) {
+            if v == HOLE {
+                let msg = format!("Cannot access '{name}' before initialization");
+                return Err(error::throw_error(cx, ErrorKind::ReferenceError, &msg));
+            }
+            return Ok(Some(Local::from_bits(v)));
+        }
+        let global: Local<'s, JsObject> = Local::from_bits(rt.global());
+        let key: Local<'s, JsKey> = Local::from_bits(key);
+        if !self.has_property(global, key)? {
+            return Ok(None);
+        }
+        self.get(global, key).map(Some)
+    }
+
+    /// The text of `v` for a REPL or test output, as [`Isolate::display`]: strings as they
+    /// are, numbers in JS form, other values described. Runs no JS (no `toString` call).
+    pub fn display(&self, v: impl Into<Local<'s>>) -> String {
+        display_bits(v.into().bits())
     }
 }
 

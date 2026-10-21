@@ -235,6 +235,18 @@ impl Memory {
         self.committed
     }
 
+    /// The commit limit (`HeapConfig::max_heap_bytes`).
+    pub(crate) fn max_committed(&self) -> usize {
+        self.max_committed
+    }
+
+    /// Sets the commit limit. The heap's near-limit callback (`HeapConfig::near_limit`, H23)
+    /// raises it; the next commit checks the new value. A limit below the committed bytes
+    /// only stops new commits: nothing is decommitted.
+    pub(crate) fn set_max_committed(&mut self, max_committed: usize) {
+        self.max_committed = max_committed;
+    }
+
     pub(crate) fn os_page(&self) -> usize {
         self.os_page
     }

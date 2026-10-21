@@ -112,8 +112,10 @@ pub(crate) fn bad_opcode(cx: &mut Cx, _fp: *mut u64, pc: *const u8) -> u64 {
     rt.throw_value(s)
 }
 
-/// The interrupt poll (budget exhausted): resets the budget and handles termination. Returns
-/// 0 if the isolate must terminate (the pending exception cannot be caught).
+/// The interrupt poll (budget exhausted): resets the budget, runs the embedder callbacks that
+/// `InterruptHandle::request` queued, and handles termination. Returns 0 if the isolate must
+/// terminate (the pending exception cannot be caught). T0 polls reach it at `JumpLoop` and
+/// calls, JIT code through `RuntimeTable::poll`, builtins through `Cx::poll_interrupt`.
 #[cold]
 #[inline(never)]
 pub(crate) fn interrupt(cx: &mut Cx, _fp: *mut u64) -> u64 {
@@ -122,6 +124,15 @@ pub(crate) fn interrupt(cx: &mut Cx, _fp: *mut u64) -> u64 {
     // SAFETY: `cx.interrupt` points at the runtime's interrupt word (`Runtime::terminate`, an
     // Arc the Runtime holds), and the Runtime outlives the Cx (Isolate drop order).
     let word = unsafe { &*cx.interrupt };
+    // Callbacks first: they run no JS (H23-Q6), so they are safe at any poll, also while a
+    // termination unwinds. Clear the bit before taking the queue: a request that lands in
+    // between runs now or at the next poll. A callback that terminates stops this poll.
+    let request = crate::interp::interrupt::REQUEST;
+    if word.load(Ordering::Relaxed) & request != 0
+        && word.fetch_and(!request, Ordering::AcqRel) & request != 0
+    {
+        rt.run_interrupt_requests();
+    }
     let bit = crate::interp::interrupt::TERMINATE;
     if rt.terminating.get() || word.fetch_and(!bit, Ordering::AcqRel) & bit != 0 {
         rt.terminating.set(true);

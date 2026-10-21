@@ -13,7 +13,8 @@
 //!   hole that fits: current shape page -> recyclable shape pages -> lazy sweep of shape
 //!   pages -> fresh page from the shape region (chunks [0, N))
 //! no memory (both entries): collect once, retry; still none: sweep both lazy sweep queues
-//!   (the spaces share max_heap_bytes), retry once with no second GC; then OutOfMemory
+//!   (the spaces share max_heap_bytes), retry once with no second GC; still none: the
+//!   near_limit callback (H23), and if it raised the limit, retry once; then OutOfMemory
 //! every new cell: word0 = {shape 0, WHITE, kind, flags 0}; every other word = undefined;
 //!                 VO bit set (small pages)
 //!
@@ -64,8 +65,17 @@ pub struct HeapConfig {
     /// The cage reservation (H7). Its alignment is raised to 256 KiB if lower.
     pub cage: CageConfig,
     /// Most bytes committed at one time, shape region included. Allocation fails with
-    /// [`AllocError::OutOfMemory`] beyond it (after one collection and a full sweep).
+    /// [`AllocError::OutOfMemory`] beyond it (after one collection, a full sweep and the
+    /// [`HeapConfig::near_limit`] callback).
     pub max_heap_bytes: usize,
+    /// The near-limit callback (H23): an allocation that still finds no memory after its
+    /// collection and the full sweep calls `near_limit(committed bytes, limit)` once, before it
+    /// gives [`AllocError::OutOfMemory`]. A return value above `limit` becomes the new limit
+    /// ([`Heap::max_heap_bytes`]) and the allocation retries once; any other value keeps the
+    /// limit. The callback gets no heap: it must not call into the heap or the isolate. It
+    /// also runs when the cage is full, where a higher limit does not help. `None` (the
+    /// default): no callback.
+    pub near_limit: Option<fn(committed: usize, limit: usize) -> usize>,
     /// Bytes allocated before the first GC. Later budgets are `max(this, live bytes)`, so the
     /// heap may double between collections.
     pub initial_budget: usize,
@@ -90,6 +100,7 @@ impl Default for HeapConfig {
         HeapConfig {
             cage: CageConfig::default(),
             max_heap_bytes: usize::MAX,
+            near_limit: None,
             initial_budget: 8 << 20,
             gc_stress: 0,
             verify_after_gc: false,
@@ -222,6 +233,7 @@ pub(crate) struct Settings {
     pub(crate) verify_after_gc: bool,
     pub(crate) zap: bool,
     pub(crate) record_css: bool,
+    pub(crate) near_limit: Option<fn(usize, usize) -> usize>,
 }
 
 /// Where the conservative scan reads.
@@ -342,6 +354,7 @@ impl Heap {
             verify_after_gc: config.verify_after_gc,
             zap: config.zap,
             record_css: config.record_conservative_roots,
+            near_limit: config.near_limit,
         };
         Ok(Heap {
             hot: Hot {
@@ -468,7 +481,8 @@ impl Heap {
     /// does for other kinds: WHITE, ShapeId 0, every word after word0 `undefined`. Its
     /// [`Heap::shape_id_of`] is never 0. At most 8 KiB ([`AllocError::TooLarge`] above).
     /// When the region or `max_heap_bytes` is full it collects once, sweeps every page that
-    /// waits for the lazy sweep (both spaces), and then gives [`AllocError::OutOfMemory`].
+    /// waits for the lazy sweep (both spaces), calls [`HeapConfig::near_limit`], and then gives
+    /// [`AllocError::OutOfMemory`].
     ///
     /// This is a GC point: it may collect before it returns.
     pub fn alloc_shape(&self, kind: KindId, size: usize) -> Result<CellPtr, AllocError> {
@@ -499,6 +513,7 @@ impl Heap {
         }
         let mut collected = trigger;
         let mut swept = false;
+        let mut asked = false;
         loop {
             let placed = self.inner.borrow_mut().alloc_shape_in(size);
             match placed {
@@ -516,6 +531,9 @@ impl Heap {
                 }
                 None if !swept && self.inner.borrow_mut().sweep_before_out_of_memory() => {
                     swept = true;
+                }
+                None if !asked && self.near_limit_raised() => {
+                    asked = true;
                 }
                 None => return Err(AllocError::OutOfMemory),
             }
@@ -572,6 +590,7 @@ impl Heap {
         }
         let mut collected = trigger;
         let mut swept = false;
+        let mut asked = false;
         loop {
             let placed = self.inner.borrow_mut().alloc_in(&self.hot, size);
             match placed {
@@ -587,9 +606,44 @@ impl Heap {
                 None if !swept && self.inner.borrow_mut().sweep_before_out_of_memory() => {
                     swept = true;
                 }
+                None if !asked && self.near_limit_raised() => {
+                    asked = true;
+                }
                 None => return Err(AllocError::OutOfMemory),
             }
         }
+    }
+
+    /// The last step before an allocation gives [`AllocError::OutOfMemory`]: calls
+    /// [`HeapConfig::near_limit`] (if set) with the committed bytes and the limit, and raises
+    /// the limit to its result if that is higher. True if it raised the limit (the caller then
+    /// retries once). No borrow of the heap is held during the call.
+    #[cold]
+    #[inline(never)]
+    fn near_limit_raised(&self) -> bool {
+        let (callback, committed, limit) = {
+            let inner = self.inner.borrow();
+            (
+                inner.s.near_limit,
+                inner.mem.committed_bytes(),
+                inner.mem.max_committed(),
+            )
+        };
+        let Some(callback) = callback else {
+            return false;
+        };
+        let new_limit = callback(committed, limit);
+        if new_limit <= limit {
+            return false;
+        }
+        self.inner.borrow_mut().mem.set_max_committed(new_limit);
+        true
+    }
+
+    /// The commit limit: [`HeapConfig::max_heap_bytes`], or the value a
+    /// [`HeapConfig::near_limit`] callback raised it to.
+    pub fn max_heap_bytes(&self) -> usize {
+        self.inner.borrow().mem.max_committed()
     }
 
     /// Writes word0, pre-fills the other words with `undefined`, and sets the VO bit.
@@ -1256,5 +1310,116 @@ impl Heap {
     pub(crate) fn unswept_pages(&self) -> usize {
         let inner = self.inner.borrow();
         inner.sweep_queue.len() + inner.shape_sweep_queue.len()
+    }
+}
+
+/// `HeapConfig::near_limit` (H23): both allocation entries call it once before they give
+/// OutOfMemory; a higher result raises the limit and the allocation retries once.
+#[cfg(test)]
+mod near_limit_tests {
+    use core::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+
+    use super::*;
+    use crate::layout::PAGE_SIZE;
+    use crate::tests::{LEAF, NODE, NODE_HEADER, test_heap};
+
+    /// A large NODE (LOS) of more than one page.
+    const BIG_SLOTS: usize = 40_000;
+
+    fn big_node(heap: &Heap) -> Result<CellPtr, AllocError> {
+        let c = heap.alloc(NODE, NODE_HEADER + 8 * BIG_SLOTS)?;
+        // SAFETY: a new NODE cell; its meta word is written before the next GC point.
+        unsafe { c.field::<u64>(8).write(BIG_SLOTS as u64) };
+        Ok(c)
+    }
+
+    static RAISED: AtomicUsize = AtomicUsize::new(0);
+
+    fn raise_to_four_pages(committed: usize, limit: usize) -> usize {
+        RAISED.fetch_add(1, SeqCst);
+        assert_eq!(limit, PAGE_SIZE);
+        assert!(committed <= limit);
+        4 * PAGE_SIZE
+    }
+
+    #[test]
+    fn a_raised_limit_lets_the_allocation_retry() {
+        let heap = test_heap(|c| {
+            c.max_heap_bytes = PAGE_SIZE;
+            c.near_limit = Some(raise_to_four_pages);
+        });
+        let big = big_node(&heap).expect("the callback raised the limit");
+        assert_eq!(RAISED.load(SeqCst), 1, "called once");
+        assert_eq!(heap.max_heap_bytes(), 4 * PAGE_SIZE);
+        assert!(heap.stats().committed_bytes > PAGE_SIZE);
+        assert!(heap.is_cell(big.addr()));
+        // Room is left under the new limit: no second call.
+        heap.alloc(LEAF, 24).expect("a leaf fits");
+        assert_eq!(RAISED.load(SeqCst), 1);
+    }
+
+    static KEPT: AtomicUsize = AtomicUsize::new(0);
+
+    fn keep_the_limit(_committed: usize, limit: usize) -> usize {
+        KEPT.fetch_add(1, SeqCst);
+        limit
+    }
+
+    #[test]
+    fn a_kept_limit_gives_out_of_memory_after_one_call() {
+        let heap = test_heap(|c| {
+            c.max_heap_bytes = PAGE_SIZE;
+            c.near_limit = Some(keep_the_limit);
+        });
+        assert_eq!(big_node(&heap).err(), Some(AllocError::OutOfMemory));
+        assert_eq!(KEPT.load(SeqCst), 1, "once per failed allocation");
+        assert_eq!(big_node(&heap).err(), Some(AllocError::OutOfMemory));
+        assert_eq!(KEPT.load(SeqCst), 2);
+        assert_eq!(heap.max_heap_bytes(), PAGE_SIZE);
+        // An allocation that fits never calls it.
+        heap.alloc(LEAF, 24).expect("a leaf fits");
+        assert_eq!(KEPT.load(SeqCst), 2);
+    }
+
+    static SHAPE_RAISED: AtomicUsize = AtomicUsize::new(0);
+
+    fn raise_by_one_page(_committed: usize, limit: usize) -> usize {
+        SHAPE_RAISED.fetch_add(1, SeqCst);
+        limit + PAGE_SIZE
+    }
+
+    fn no_trace(_: CellPtr, _: &mut Tracer<'_>) {}
+
+    /// The shape entry: an ordinary rooted page fills the limit, so the first shape page
+    /// needs the callback.
+    #[test]
+    fn alloc_shape_calls_it_too() {
+        const SHAPE: KindId = KindId::new(20).unwrap();
+        let heap = test_heap(|c| {
+            c.shape_space_bytes = 1 << 20;
+            c.max_heap_bytes = PAGE_SIZE;
+            c.near_limit = Some(raise_by_one_page);
+        });
+        heap.register_kind_in(
+            SHAPE,
+            CellKind {
+                name: "test-shape",
+                size: CellSize::Fixed(24),
+                trace: no_trace,
+            },
+            Space::Shape,
+        )
+        .unwrap();
+        let leaf = heap.alloc(LEAF, 24).expect("the first page");
+        let root = heap.new_global(leaf.to_value());
+        assert_eq!(heap.stats().committed_bytes, PAGE_SIZE);
+        let s = heap
+            .alloc_shape(SHAPE, 24)
+            .expect("the callback raised the limit");
+        assert_eq!(SHAPE_RAISED.load(SeqCst), 1);
+        assert_eq!(heap.max_heap_bytes(), 2 * PAGE_SIZE);
+        assert_eq!(heap.stats().shape_pages, 1);
+        assert!(heap.is_cell(s.addr()));
+        heap.drop_global(root);
     }
 }

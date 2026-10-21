@@ -157,10 +157,14 @@ pub(crate) struct Cx {
     pub runtime_table: *const crate::native::RuntimeTable,
 }
 
-/// Bits of the interrupt word (`Cx::interrupt`). P3 adds bits; bit 0 keeps its meaning.
+/// Bits of the interrupt word (`Cx::interrupt`). Bit 0 keeps its meaning; new bits are
+/// appended. `slow::interrupt` reads them at every poll.
 pub(crate) mod interrupt {
     /// Terminate the running script (`TerminateHandle::terminate`); the poll clears it.
     pub const TERMINATE: u32 = 1;
+    /// Run the queued embedder callbacks (`InterruptHandle::request`,
+    /// `Runtime::interrupt_requests`); the poll clears it, then runs them (M2-P3).
+    pub const REQUEST: u32 = 2;
 }
 
 const _: () = assert!(core::mem::offset_of!(Cx, table) == 0);
