@@ -8,10 +8,13 @@
 use std::hint::black_box;
 use std::process::Command;
 
-use ep9_bytecode::{FeedbackSlotKind, HandlerKind, Label, Register, TypeOfLiteral, VerifiedUnit};
+use ep9_bytecode::{
+    CodeKind, FeedbackSlotKind, FunctionId, FunctionMeta, HandlerKind, Label, Register,
+    TypeOfLiteral, UnitBuilder, UnitOptions, VerifiedUnit,
+};
 use ep9_heap::ScratchRoots;
 
-use super::{Asm, config, isolate, on_big_stack, print, take_output, unit};
+use super::{Asm, config, isolate, on_big_stack, opts, print, take_output, unit};
 use crate::atoms;
 use crate::conv::{self, Hint};
 use crate::frame::{NULL, UNDEFINED};
@@ -737,6 +740,180 @@ fn to_primitive_passes_each_hint_from_rust() {
         // A primitive is returned as it is, without a lookup.
         assert_eq!(conv::to_primitive(cx, NULL, Hint::Number).unwrap(), NULL);
         assert_eq!(take_output(), ["default", "number", "string"]);
+        iso.collect_garbage();
+        iso.verify_heap().unwrap();
+    });
+}
+
+// ---- property access on a symbol primitive ----------------------------------------------------
+
+/// `acc = sym()`: a symbol without a description (clobbers `f`, `a`).
+fn call_sym_undefined(s: &mut Asm) {
+    let (f, a0) = (s.f, s.a.get(0));
+    s.b.lda_undefined().star(a0);
+    s.lda_global("sym");
+    s.b.star(f);
+    s.b.call_undefined_receiver1(f, a0, s.call);
+}
+
+#[test]
+fn property_reads_on_a_symbol_go_to_symbol_prototype() {
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let (x, o, t) = (s.b.new_register(), s.b.new_register(), s.b.new_register());
+        let ts = s.b.feedback_slot(FeedbackSlotKind::TypeOf);
+        let (keyed, cmp) = (s.keyed, s.cmp);
+        call_with_str(&mut s, "sym", "x");
+        s.b.star(x);
+        // typeof x.toString: %Object.prototype.toString%, found through %Symbol.prototype%.
+        s.get_named(x, "toString");
+        s.b.type_of(ts);
+        s.print_acc();
+        // x.toString === {}.toString
+        s.b.create_empty_object_literal().star(o);
+        s.get_named(o, "toString");
+        s.b.star(t);
+        s.get_named(x, "toString");
+        s.b.test_equal_strict(t, cmp);
+        s.print_acc();
+        // x.description and Symbol.iterator.description: undefined until the P3 getter.
+        s.get_named(x, "description");
+        s.print_acc();
+        call_with_str(&mut s, "wks", "iterator");
+        s.b.star(t);
+        s.get_named(t, "description");
+        s.print_acc();
+        // Keyed reads: x[Symbol.iterator] and x["toString"].
+        s.b.ldar(t).get_keyed_property(x, keyed);
+        s.print_acc();
+        s.lda_str("toString");
+        s.b.get_keyed_property(x, keyed).type_of(ts);
+        s.print_acc();
+        // A sloppy store is dropped: x.foo = 1; x.foo
+        s.b.lda_smi(1);
+        s.set_named(x, "foo");
+        s.get_named(x, "foo");
+        s.print_acc();
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish()])
+    }
+    let (r, out) = run_sym(make);
+    assert_eq!(r.as_deref(), Ok("undefined"));
+    assert_eq!(
+        out,
+        [
+            "function",
+            "true",
+            "undefined",
+            "undefined",
+            "undefined",
+            "function",
+            "undefined",
+        ]
+    );
+}
+
+#[test]
+fn strict_stores_on_primitives_throw_with_v8_text() {
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::new(FunctionMeta::entry(CodeKind::Script, true, 0));
+        let (ctx, x, t, v) = (
+            s.b.new_register(),
+            s.b.new_register(),
+            s.b.new_register(),
+            s.b.new_register(),
+        );
+        let set_keyed = s.set_keyed;
+        call_with_str(&mut s, "sym", "x");
+        s.b.star(x);
+        call_with_str(&mut s, "wks", "iterator");
+        s.b.star(t);
+        // x.foo = 1; x[Symbol.iterator] = 1
+        try_print_message(&mut s, ctx, |s| {
+            s.b.lda_smi(1);
+            s.set_named(x, "foo");
+        });
+        try_print_message(&mut s, ctx, |s| {
+            s.b.lda_smi(1).set_keyed_property(x, t, set_keyed);
+        });
+        // Symbol().foo = 1
+        call_sym_undefined(&mut s);
+        s.b.star(v);
+        try_print_message(&mut s, ctx, |s| {
+            s.b.lda_smi(1);
+            s.set_named(v, "foo");
+        });
+        // "ab".foo = 1; 1.5.foo = 1; true.foo = 1
+        let loads: [fn(&mut Asm); 3] = [
+            |s| {
+                s.lda_str("ab");
+            },
+            |s| {
+                s.lda_num(1.5);
+            },
+            |s| {
+                s.b.lda_true();
+            },
+        ];
+        for load in loads {
+            load(&mut s);
+            s.b.star(v);
+            try_print_message(&mut s, ctx, |s| {
+                s.b.lda_smi(1);
+                s.set_named(v, "foo");
+            });
+        }
+        s.b.lda_undefined().return_();
+        // A strict script: the unit flag matches the entry function.
+        let mut u = UnitBuilder::new(
+            "",
+            UnitOptions {
+                strict: true,
+                ..opts()
+            },
+        );
+        u.set_function(FunctionId(0), s.finish());
+        u.finish().unwrap()
+    }
+    let (r, out) = run_sym(make);
+    assert_eq!(r.as_deref(), Ok("undefined"));
+    // node 24 gives the same text for each of these stores.
+    assert_eq!(
+        out,
+        [
+            "Cannot create property 'foo' on symbol 'Symbol(x)'",
+            "Cannot create property 'Symbol(Symbol.iterator)' on symbol 'Symbol(x)'",
+            "Cannot create property 'foo' on symbol 'Symbol()'",
+            "Cannot create property 'foo' on string 'ab'",
+            "Cannot create property 'foo' on number '1.5'",
+            "Cannot create property 'foo' on boolean 'true'",
+        ]
+    );
+}
+
+#[test]
+fn a_symbol_reads_what_symbol_prototype_holds() {
+    on_big_stack(|| {
+        let mut iso = symbol_isolate(Dispatch::DEFAULT, true);
+        let cx: &mut crate::interp::Cx = &mut iso.cx;
+        let rt = cx.rt();
+        let key = atoms::intern_str(rt, "marker");
+        let s = symbol::new_symbol(rt, atoms::intern_str(rt, "x"));
+        assert_eq!(property::get(cx, s, key).unwrap(), UNDEFINED);
+        let proto = symbol::prototype(rt);
+        property::define(cx, proto, key, conv::num(7.0)).unwrap();
+        // Named and keyed reads, from a symbol and from a well-known symbol.
+        let iterator = symbol::well_known(rt, WellKnownSymbol::Iterator);
+        for base in [s, iterator] {
+            assert_eq!(property::get(cx, base, key).unwrap(), conv::num(7.0));
+            assert_eq!(property::get_keyed(cx, base, key).unwrap(), conv::num(7.0));
+        }
+        // A sloppy store on the primitive changes nothing; a strict one throws.
+        let other = atoms::intern_str(rt, "other");
+        property::set(cx, s, other, conv::num(1.0), false).unwrap();
+        assert_eq!(property::get(cx, s, other).unwrap(), UNDEFINED);
+        assert!(property::set(cx, s, other, conv::num(1.0), true).is_err());
+        assert!(kinds::is_error(rt.take_pending()));
         iso.collect_garbage();
         iso.verify_heap().unwrap();
     });
