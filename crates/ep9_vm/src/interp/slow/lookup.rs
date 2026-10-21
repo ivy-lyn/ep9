@@ -7,13 +7,14 @@
 //! StaLookupSlot name, flags        sta_lookup_slot               names each context's slots),
 //! CreateWithContext object, scope  create_with_context           `with` objects, `.eval_ext`
 //! CallRuntime DeleteLookupSlot     delete_lookup_slot            (runtime id 8)
+//! CallRuntimeForPair               load_lookup_slot_for_call     (runtime id 26: the
+//!   LoadLookupSlotForCall                                         function and its receiver)
 //! ```
 //!
 //! The opcode entries use the result protocol of `slow` (the new accumulator, or 0 with an
 //! exception pending). `name` and `scope` are constant indices of the frame's function.
 //! P0 stubs throw the v0 errors ("dynamic scope lookup (eval, with)", "with statements",
-//! "DeleteLookupSlot"). `LoadLookupSlotForCall` (runtime id 26, ABI 3) comes with the P0-LANG
-//! merge.
+//! "DeleteLookupSlot", "LoadLookupSlotForCall").
 
 use crate::conv::Res;
 use crate::error::not_implemented;
@@ -65,4 +66,12 @@ pub(crate) fn create_with_context(
 /// statically bound. Stub: the v0 error.
 pub(crate) fn delete_lookup_slot(cx: &mut Cx, _fp: *mut u64, _name: u64) -> Res<u64> {
     Err(not_implemented(cx, "DeleteLookupSlot"))
+}
+
+/// `LoadLookupSlotForCall(name)` (runtime id 26, a pair; `slow::call_runtime_pair` writes the
+/// two results to the `CallRuntimeForPair` output registers): the function bound to `name`,
+/// and the receiver, which is the `with` object that holds `name`, else undefined
+/// (§9.1.1.2.10 WithBaseObject). Stub: the v0 error.
+pub(crate) fn load_lookup_slot_for_call(cx: &mut Cx, _fp: *mut u64, _name: u64) -> Res<(u64, u64)> {
+    Err(not_implemented(cx, "LoadLookupSlotForCall"))
 }

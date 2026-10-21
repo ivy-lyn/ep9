@@ -10,6 +10,14 @@
 //! | 12, 16 | `DefineAccessorInLiteral`, `DefineClassAccessor` | §15.4.5 MethodDefinitionEvaluation (get, set) |
 //! | 15 | `DefineClassMethod` | DefineMethodProperty §10.2.8 |
 //! | 17, 18 | `LoadKeyedFromSuper`, `StoreToSuper` | §13.3.7 super references, receiver = `this` |
+//! | 19-22 | `CreateGeneratorObject`, `GeneratorGetResumeMode`, `GeneratorClose`, `ThrowThrowMethodMissing` | §27.5 generators (`slow/generator.rs`) |
+//! | 23 | `CreatePrivateName` | Private Names (`slow/private.rs`) |
+//! | 24, 25 | `SetClassFieldsInitializer`, `RunClassFieldsInitializer` | §15.7.14 fields, InitializeInstanceElements (`slow/class_fields.rs`) |
+//! | 26 | `LoadLookupSlotForCall` | §9.1.1.2.10 WithBaseObject; a pair, only through `CallRuntimeForPair` ([`call_runtime_pair`]; `slow/lookup.rs`) |
+//! | 27, 28 | `DeclareEvalVar`, `DeclareEvalFunction` | §19.2.1.3 EvalDeclarationInstantiation (`slow/eval.rs`) |
+//!
+//! Ids 19-28 (ABI 3) are stubs in M2-P0 that throw `not implemented in ep9 v0: <name>`, as
+//! the catch-all arm did before they were routed; their owners fill them.
 
 use ep9_bytecode::RuntimeId;
 
@@ -150,8 +158,34 @@ pub(crate) fn call_runtime(
                 Ok(v)
             })()
         }
-        // An id that a later ABI appends and the VM does not route yet. At ABI 2 every id is
-        // routed above, so the arm is unreachable until the ABI 3 ids arrive.
+        // ---- ABI 3 ----
+        // slow/generator.rs (P1-GEN-VM).
+        Some(Id::CreateGeneratorObject) => {
+            super::generator::create_generator_object(cx, fp, a(0), a(1))
+        }
+        Some(Id::GeneratorGetResumeMode) => super::generator::generator_get_resume_mode(cx, a(0)),
+        Some(Id::GeneratorClose) => super::generator::generator_close(cx, a(0)),
+        Some(Id::ThrowThrowMethodMissing) => super::generator::throw_throw_method_missing(cx),
+        // slow/private.rs and slow/class_fields.rs (P2-CLS-VM).
+        Some(Id::CreatePrivateName) => super::private::create_private_name(cx, a(0)),
+        Some(Id::SetClassFieldsInitializer) => {
+            super::class_fields::set_class_fields_initializer(cx, a(0), a(1))
+        }
+        Some(Id::RunClassFieldsInitializer) => {
+            super::class_fields::run_class_fields_initializer(cx, a(0), a(1))
+        }
+        // A pair function: the verifier lets only `CallRuntimeForPair` call it
+        // (`VerifyErrorKind::RuntimePair`), so this arm never runs for verified code.
+        Some(Id::LoadLookupSlotForCall) => Err(throw_error(
+            cx,
+            ErrorKind::Error,
+            "ep9 internal error: CallRuntime of a pair runtime function",
+        )),
+        // slow/eval.rs (P3-EVAL-VM).
+        Some(Id::DeclareEvalVar) => super::eval::declare_eval_var(cx, fp, a(0)),
+        Some(Id::DeclareEvalFunction) => super::eval::declare_eval_function(cx, fp, a(0), a(1)),
+        // An id that a later ABI appends and the VM does not route yet. At ABI 3 every id is
+        // routed above, so the arm is unreachable until the ABI 4 ids arrive.
         #[allow(unreachable_patterns)]
         Some(other) => Err(not_implemented(cx, other.info().name)),
         None => Err(throw_error(
@@ -161,6 +195,64 @@ pub(crate) fn call_runtime(
         )),
     };
     ret(r)
+}
+
+/// `CallRuntimeForPair(id, args, out)` (ABI 3): calls the pair runtime function `id` and
+/// writes its two results to the registers `out` and `out + 1` (slot offsets from `fp`).
+/// Returns `acc` (the opcode leaves the accumulator as it was), or 0 if an exception is
+/// pending; then neither register is written.
+#[cold]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn call_runtime_pair(
+    cx: &mut Cx,
+    fp: *mut u64,
+    pc: *const u8,
+    id: u16,
+    first: isize,
+    argc: u32,
+    out: isize,
+    acc: u64,
+) -> u64 {
+    enter(cx, fp, pc);
+    let a = |i: u32| -> u64 {
+        if i < argc {
+            // SAFETY: the verifier checked that the register list lies in the frame `fp`.
+            unsafe { *fp.offset(first + i as isize) }
+        } else {
+            UNDEFINED
+        }
+    };
+    use RuntimeId as Id;
+    let r: Res<(u64, u64)> = match RuntimeId::from_u16(id) {
+        // slow/lookup.rs (P2-LOOKUP).
+        Some(Id::LoadLookupSlotForCall) => super::lookup::load_lookup_slot_for_call(cx, fp, a(0)),
+        // The verifier lets `CallRuntimeForPair` call only pair functions, so these arms never
+        // run for verified code.
+        Some(_) => Err(throw_error(
+            cx,
+            ErrorKind::Error,
+            "ep9 internal error: CallRuntimeForPair of a runtime function that is not a pair",
+        )),
+        None => Err(throw_error(
+            cx,
+            ErrorKind::Error,
+            "ep9 internal error: unknown runtime function",
+        )),
+    };
+    match r {
+        Ok((v0, v1)) => {
+            // SAFETY: the verifier checked that `out` and `out + 1` are locals of the frame
+            // `fp` (`RegOutPair`); the call above may have run JS, but `fp` stays live.
+            unsafe {
+                *fp.offset(out) = v0;
+                *fp.offset(out + 1) = v1;
+            }
+            debug_assert!(acc != 0);
+            acc
+        }
+        Err(_) => 0,
+    }
 }
 
 /// `DefineClass(constructor, heritage)` (§15.7.14 ClassDefinitionEvaluation steps 5-8, 14-16).

@@ -13,8 +13,12 @@
 //! P0 stubs: each forwards to the path that a private key took before (the ordinary keyed
 //! operation), so no behaviour changes. T0 records no keyed IC; the IC code asserts that it
 //! never sees a private key (ic.rs).
+//!
+//! Runtime id 23 `CreatePrivateName(description)` (ABI 3) is routed here by `slow/runtime.rs`;
+//! the P0 stub throws "not implemented in ep9 v0: CreatePrivateName".
 
 use crate::conv::Res;
+use crate::error::not_implemented;
 use crate::interp::Cx;
 use crate::property;
 
@@ -37,4 +41,10 @@ pub(crate) fn keyed_define(cx: &mut Cx, o: u64, k: u64, v: u64, _flags: u8) -> R
 /// `#x in o`. Stub: the ordinary `in`.
 pub(crate) fn keyed_has(cx: &mut Cx, o: u64, k: u64) -> Res<bool> {
     property::has(cx, o, k)
+}
+
+/// `CreatePrivateName(description)` (runtime id 23): a new private name symbol
+/// (`symbol::new_private`) for `#x` or a class brand. Stub.
+pub(crate) fn create_private_name(cx: &mut Cx, _description: u64) -> Res<u64> {
+    Err(not_implemented(cx, "CreatePrivateName"))
 }

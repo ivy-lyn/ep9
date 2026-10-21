@@ -61,7 +61,7 @@ pub(crate) use ops_misc::{
 pub(crate) use property::{
     PropOp, get_named, get_super, load_global, prop, set_named, store_global,
 };
-pub(crate) use runtime::call_runtime;
+pub(crate) use runtime::{call_runtime, call_runtime_pair};
 
 #[inline(always)]
 fn enter(cx: &Cx, fp: *mut u64, pc: *const u8) {

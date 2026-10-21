@@ -14,9 +14,13 @@
 //!
 //! Operands: `generator` and `regs` are register slot offsets from `fp` (`dsl::R`,
 //! `dsl::RList`), `table` a constant index (a JumpTable). P0 stubs throw "not implemented in
-//! ep9 v0: generators", as the opcodes did before. Runtime ids 19-22 (ABI 3) come with the
-//! P0-LANG merge.
+//! ep9 v0: generators", as the opcodes did before.
+//!
+//! Runtime ids 19-22 (ABI 3, `slow/runtime.rs` routes them here) use the result protocol of
+//! `CallRuntime` (`Res<u64>`, the new accumulator). P0 stubs throw
+//! `not implemented in ep9 v0: <name>`, the text of the catch-all arm before they were routed.
 
+use crate::conv::Res;
 use crate::error::{self, not_implemented};
 use crate::interp::Cx;
 
@@ -75,4 +79,34 @@ pub(crate) fn resume_generator(
     _count: u32,
 ) -> u64 {
     not_built(cx, fp, pc)
+}
+
+// ---- runtime ids 19-22 (ABI 3) -------------------------------------------------------------
+
+/// `CreateGeneratorObject(function, receiver)` (runtime id 19): the generator object of the
+/// running generator (or async) function `function` in frame `fp`, with `receiver` as its
+/// `this`; the context and the register count come from the frame. Stub.
+pub(crate) fn create_generator_object(
+    cx: &mut Cx,
+    _fp: *mut u64,
+    _function: u64,
+    _receiver: u64,
+) -> Res<u64> {
+    Err(not_implemented(cx, "CreateGeneratorObject"))
+}
+
+/// `GeneratorGetResumeMode(generator)` (runtime id 20): next, return or throw, as a Smi. Stub.
+pub(crate) fn generator_get_resume_mode(cx: &mut Cx, _generator: u64) -> Res<u64> {
+    Err(not_implemented(cx, "GeneratorGetResumeMode"))
+}
+
+/// `GeneratorClose(generator)` (runtime id 21): the generator is completed. Stub.
+pub(crate) fn generator_close(cx: &mut Cx, _generator: u64) -> Res<u64> {
+    Err(not_implemented(cx, "GeneratorClose"))
+}
+
+/// `ThrowThrowMethodMissing()` (runtime id 22): the TypeError of `yield*` when the inner
+/// iterator has no `throw` method (§15.5.5 step 7.b.iii). Stub.
+pub(crate) fn throw_throw_method_missing(cx: &mut Cx) -> Res<u64> {
+    Err(not_implemented(cx, "ThrowThrowMethodMissing"))
 }

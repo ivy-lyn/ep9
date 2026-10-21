@@ -1215,9 +1215,12 @@ op!(Debugger(st) { Done::Next });
 
 // ---- runtime calls with two results (ABI 3) ------------------------------------------------
 
-// m2 P0-LANG stub: P0-VM fills the cold body (`out` and `out + 1` get the pair; acc unchanged).
-op!(CallRuntimeForPair(st, _id: RtId, _args: RList, _argc: Count, _out: R) { Flow::Cold } cold {
-    not_impl(st, "CallRuntimeForPair")
+// Like `CallRuntime`, for a pair function (only those; the verifier checks it): `out` and
+// `out + 1` get the two results, and the accumulator stays (acc None).
+op!(CallRuntimeForPair(st, id: RtId, args: RList, argc: Count, out: R) { Flow::Cold } cold {
+    let acc = st.acc;
+    let r = slow::call_runtime_pair(st.cx, st.fp, st.pc, id.0, args.0, argc.0, out.0, acc);
+    st.result(r)
 });
 
 // ---- the cold list -------------------------------------------------------------------------
