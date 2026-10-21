@@ -116,7 +116,7 @@ Zero text relocations. Isolate register + pc-relative RW data + link table. Link
 | Target | `target_arch` 1 x86_64, 2 aarch64; `target_abi` 1 linux, 2 apple, 3 windows; 0 = unknown, never matches |
 | CPU features | x86-64 bits 0-10 (sse3, ssse3, sse4.1, sse4.2, popcnt, avx, avx2, fma, bmi1, bmi2, lzcnt); AArch64 bits 32-36 (lse, jsconv, dotprod, fp16, rcpc). Host must have every required bit; a bit not listed counts as missing (H35-Q5) |
 | Build id | 16 zero bytes until SP-Unit (H35-Q8), as `ep9_frontend` writes into CompiledUnits today (`crates/ep9_frontend/src/bytecodegen/mod.rs:82`) |
-| Container version | Any change to the layout text needs a bump; `tests/golden/container-history.txt` pins the SHA-256 of the text per version |
+| Container version | Any change to the layout text needs a bump; `tests/golden/container-history.txt` pins the SHA-256 of the text per version. The text includes the CPU bits and target codes, so even adding one needs a bump, and a bump makes every older unit a LOAD ERROR. That is free while no unit exists; before the A3 freeze, an append-only history for these code tables can replace it (an older engine already treats an unknown bit as missing) |
 
 `check(bytes, &HostInfo) -> Outcome` is a pure function; `verdict` also gives the reason (S5 counts by reason). `HostInfo::current()` reads `ABI_VERSION`, `encoding::VERSION`, `BARRIER_VERSION`, the `ep9_vm::versions` constants, `FACT_SCHEMA_VERSION`, `PAGE_SIZE`, the compile target and the CPU features detected at run time. The `aot` feature holds an empty module until the A2 writer; tests build units with a test-only encoder.
 
