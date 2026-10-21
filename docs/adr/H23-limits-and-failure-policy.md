@@ -29,7 +29,7 @@ Limit checks on VM and native stacks: calls, JIT and AOT prologues, recursive bu
 | Native stack margin | JS entries and host calls stop at stack low end + clamp(size / 4, 128 KiB, 1 MiB): catchable RangeError | `native_margin` (`crates/ep9_vm/src/isolate.rs:158-161`) |
 | Debug threaded dispatch | panics 64 KiB below the native limit (debug builds have no tail calls) | `crates/ep9_vm/src/interp/dsl.rs:290-292` |
 | Depth of `function f() { f() }` | ep9 104,855; node 24.22 10,359; d8 15.8 10,360 (RangeError); QuickJS 2026-06-04 1,169 (InternalError) | measured 2026-10-21, Apple M5 Max, release builds |
-| CLI isolate thread | 64 MiB native stack (`--stack-mib`) | `crates/ep9_cli/src/args.rs:97`, `crates/ep9_cli/src/run.rs:244-248` |
+| CLI isolate thread | 64 MiB native stack (`--stack-mib`) | `crates/ep9_cli/src/args.rs:97`, `crates/ep9_cli/src/run.rs:279-284` |
 | Interrupt poll | at `JumpLoop` and function entry, once per budget of 10,000 | `BUDGET` (`crates/ep9_vm/src/interp/mod.rs:63`) |
 | Termination | `TerminateHandle` from any thread; the unwinder runs no handler, so no `catch` and no `finally`; the isolate stays usable | `crates/ep9_vm/src/error.rs:228-235`; test `crates/ep9_vm/src/tests/exceptions.rs:421` |
 | Heap out of memory | panic "ep9: heap allocation failed" | `crates/ep9_vm/src/runtime.rs:307-314` |
@@ -38,7 +38,9 @@ Limit checks on VM and native stacks: calls, JIT and AOT prologues, recursive bu
 | Array length (v0, dense) | 2^26; a larger `length` gives RangeError "Invalid array length" (H18) | `crates/ep9_vm/src/object.rs:148` |
 | Front-end depth caps | `AST_CAP` 20,000; `PRESCAN_CAP` 25,000; depth cap + 1 gives RangeError | `crates/ep9_frontend/src/depth.rs:29`, `crates/ep9_frontend/src/depth.rs:37` |
 | Release panic strategy | unwind (`[profile.release]` has no `panic` key) | root `Cargo.toml` lines 42-46 |
-| Code that catches panics | test262 exec and parse; the front-end worker; the `ep9` exit-70 path | `tools/test262/src/exec.rs:756`, `tools/test262/src/parse.rs:167`, `crates/ep9_frontend/src/worker.rs:96`, `crates/ep9_cli/src/run.rs:249-253` |
+| Code that catches panics | test262 exec and parse, inside their worker processes; the front-end worker; the `ep9` join arm (a fallback: the panic hook exits first) | `tools/test262/src/exec.rs:756`, `tools/test262/src/parse.rs:256`, `crates/ep9_frontend/src/worker.rs:98`, `crates/ep9_cli/src/run.rs:288-291` |
+| Panic isolation that needs no `catch_unwind` (as built, M2-P1-ABORT-PRE) | test262 parse and exec run every file in worker processes. A worker that ends (abort, signal, or any panic under `panic = "abort"`) is a `worker crash` infrastructure error, exit 2, and the report line carries the panic text: the worker panic hook writes it to stderr. `ep9`'s panic hook prints `ep9: internal error: <msg> (this is an ep9 bug)` and exits 70 on any thread, so the status stays 70 under `panic = "abort"` (the default hook gives 134) | `in_workers` (`tools/test262/src/exec.rs:1044`), `install_panic_hook` (`tools/test262/src/exec.rs:810`), `parse::worker` (`tools/test262/src/parse.rs:556`), `internal_error` (`crates/ep9_cli/src/run.rs:234`); tests `tools/test262/tests/infra_errors.rs`, `tools/test262/tests/exec.rs`, `crates/ep9_cli/tests/cli.rs` |
+| Scope of `panic = "abort"` | One setting per profile for the whole build: Cargo rejects `panic` in a `[profile.*.package.<name>]` table ("`panic` may not be specified in a `package` profile"). A panic that leaves an `extern "C"` function aborts (exit 134), even under `catch_unwind` | measured 2026-10-21 with Rust 1.99.1 (M2-P1-ABORT-PRE) |
 | Native stack past the margin (guard page) | Rust std prints "has overflowed its stack" and aborts (exit 134, SIGABRT, macOS arm64); no ep9 signal handler | Rust std; no `sigaction` in `crates/` |
 
 **Fills (2026-10-21).**
@@ -113,3 +115,4 @@ Limit checks on VM and native stacks: calls, JIT and AOT prologues, recursive bu
 | 2026-10-21 | fill | H23-Q2 out of memory, size limits, H23-Q6 interrupts, H23-Q9 guard pages (decision W4-H23) | P0-DOCS agent |
 | 2026-10-21 | clarify | 16 `path:line` references moved to the code at `479b1cd` (P4-DOCS drift script, [I15]); `MAX_STRING_LENGTH` is now in `string.rs`; the `[profile.release]` lines of the root `Cargo.toml` are 42-46 | P4-DOCS agent |
 | 2026-10-21 | clarify | 10 `path:line` references moved to the code after M2-P0 (drift script, [I15]) | M2-P0 integration fixer |
+| 2026-10-21 | clarify (as built) | Facts: test262 parse runs in worker processes; the worker and `ep9` panic hooks; the two `panic = "abort"` checks (per-profile scope, `extern "C"`). The refs of the CLI-thread and catch rows moved to the new code. No Decision or Rules row changes | M2-P1-ABORT-PRE agent |

@@ -21,7 +21,7 @@
 //! - A worker process isolates crashes: one crash loses one test, not the run.
 //! - Each run gets a fresh isolate (D14: one per thread; the worker runs one at a time).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt::Write as _;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -137,7 +137,7 @@ impl TestResult {
     }
 }
 
-fn escape(s: &str) -> String {
+pub(crate) fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -151,7 +151,7 @@ fn escape(s: &str) -> String {
     out
 }
 
-fn unescape(s: &str) -> String {
+pub(crate) fn unescape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut it = s.chars();
     while let Some(c) = it.next() {
@@ -458,12 +458,12 @@ fn exception_matches(e: &Exception, error_type: &str) -> bool {
 
 /// Test hook (only for tools/test262/tests): `EP9_TEST262_FAULT=<kind>:<substr>,...`. Is an
 /// item of `kind` set for `name`? Kinds:
-/// - `panic`, `abort`, `hang`: the worker fails on matching test paths.
+/// - `panic`, `abort`, `hang`, `nounwind-panic` (a panic that aborts): the worker fails.
 /// - `late`: the run of a matching test returns normally, but only after the soft timeout
 ///   (as a native loop that does not poll termination does).
 /// - `internal`: BytecodeGen reports an internal error for a matching test path or
-///   `harness/<file>`.
-fn fault_for(kind: &str, name: &str) -> bool {
+///   `harness/<file>`. The `parse-*` kinds are the parse worker's (crate::parse).
+pub(crate) fn fault_for(kind: &str, name: &str) -> bool {
     std::env::var("EP9_TEST262_FAULT").is_ok_and(|spec| {
         spec.split(',').any(|item| {
             item.split_once(':')
@@ -755,6 +755,9 @@ fn run_test(
         result.runs += 1;
         let run = catch_unwind(AssertUnwindSafe(|| {
             injected_fault(rel);
+            if fault_for("nounwind-panic", rel) {
+                panic_without_unwind(format!("injected panic for {rel}"));
+            }
             let mut cx = RunCtx {
                 opts,
                 harness: &mut *harness,
@@ -799,8 +802,12 @@ fn run_test(
     result
 }
 
-/// `exec-worker`: reads test paths from stdin, writes one result line per test to stdout.
-pub fn worker(opts: WorkerOptions) -> ExitCode {
+/// The panic hook of both worker processes (`exec-worker`, `parse-worker`). It keeps the text
+/// for the result line ([`take_panic`]) and writes it to stderr. Under `panic = "abort"`
+/// (P2-INFRA2) the process ends right after the hook; the parent then reports a `worker crash`
+/// with the stderr tail ([`WorkerProc`]), so the stderr line is how the panic text reaches the
+/// report.
+pub(crate) fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         let msg = info
             .payload()
@@ -815,7 +822,29 @@ pub fn worker(opts: WorkerOptions) -> ExitCode {
         if let Ok(mut p) = LAST_PANIC.lock() {
             *p = Some(format!("{msg}{at}"));
         }
+        // A closed stderr must not panic inside the hook (that aborts).
+        let _ = writeln!(io::stderr(), "ep9-test262 worker panicked: {msg}{at}");
     }));
+}
+
+/// Panics inside an `extern "C"` function. A panic cannot unwind out of one, so Rust aborts
+/// the process after the panic hook ran ("panic in a function that cannot unwind"): the same
+/// end as any panic in a `panic = "abort"` build. The test hooks `nounwind-panic` and
+/// `parse-nounwind-panic` use it to show that the panic text still reaches the report.
+pub(crate) fn panic_without_unwind(text: String) -> ! {
+    thread_local! {
+        static TEXT: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    }
+    extern "C" fn panic_here() -> ! {
+        panic!("{}", TEXT.with(std::cell::RefCell::take));
+    }
+    TEXT.with(|t| *t.borrow_mut() = text);
+    panic_here()
+}
+
+/// `exec-worker`: reads test paths from stdin, writes one result line per test to stdout.
+pub fn worker(opts: WorkerOptions) -> ExitCode {
+    install_panic_hook();
     let runner = std::thread::Builder::new()
         .name("ep9-test262-run".into())
         .stack_size(RUN_STACK_BYTES)
@@ -849,7 +878,9 @@ pub fn worker(opts: WorkerOptions) -> ExitCode {
 // ---------------------------------------------------------------------------------------------
 // Parent: worker processes, report, expectations
 
-struct WorkerProc {
+/// One worker process (`ep9-test262 <subcommand> <flags>`): request lines in on stdin, one
+/// reply line out on stdout per request, in order. A crash ends only this process.
+pub(crate) struct WorkerProc {
     child: Child,
     stdin: ChildStdin,
     lines: mpsc::Receiver<String>,
@@ -859,11 +890,19 @@ struct WorkerProc {
 /// Bytes of a worker's stderr kept for a crash report.
 const STDERR_TAIL: usize = 4096;
 
+/// A worker that is gone while it had a request: it exited (crash, abort, signal), wrote a bad
+/// reply, or gave no reply in time and was killed. Never a test result.
+pub(crate) struct Gone {
+    /// `worker crash` or `timeout`.
+    pub(crate) cause: &'static str,
+    pub(crate) detail: String,
+}
+
 impl WorkerProc {
-    fn spawn(args: &[String]) -> io::Result<WorkerProc> {
+    fn spawn(subcommand: &str, args: &[String]) -> io::Result<WorkerProc> {
         let exe = std::env::current_exe()?;
         let mut child = Command::new(exe)
-            .arg("exec-worker")
+            .arg(subcommand)
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -911,32 +950,33 @@ impl WorkerProc {
         })
     }
 
-    /// Runs one test. `Err` = the worker is gone (it was killed or it crashed); respawn it.
-    fn run(&mut self, rel: &str, hard: Duration) -> Result<TestResult, TestResult> {
-        if writeln!(self.stdin, "{rel}")
+    /// Writes request lines (each ends in a newline) in one write. `Err` = the worker closed
+    /// its input.
+    fn send(&mut self, lines: &str) -> io::Result<()> {
+        self.stdin
+            .write_all(lines.as_bytes())
             .and_then(|()| self.stdin.flush())
-            .is_err()
-        {
-            return Err(self.crashed("the worker closed its input"));
-        }
+    }
+
+    /// The next reply line. `Err` = the worker is gone: drop it and spawn a new one.
+    fn recv(&mut self, hard: Duration) -> Result<String, Gone> {
         match self.lines.recv_timeout(hard) {
-            Ok(line) => match decode(&line) {
-                Some((r, result)) if r == rel => Ok(result),
-                _ => Err(self.crashed(&format!("bad result line {line:?}"))),
-            },
+            Ok(line) => Ok(line),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let _ = self.child.kill();
                 let _ = self.child.wait();
-                Err(TestResult::infra(
-                    "timeout",
-                    format!("hard timeout: no result after {hard:?}; the worker was killed"),
-                ))
+                Err(Gone {
+                    cause: "timeout",
+                    detail: format!(
+                        "hard timeout: no result after {hard:?}; the worker was killed"
+                    ),
+                })
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(self.crashed("the worker exited")),
         }
     }
 
-    fn crashed(&mut self, what: &str) -> TestResult {
+    fn crashed(&mut self, what: &str) -> Gone {
         let _ = self.child.kill();
         let status = self
             .child
@@ -949,7 +989,10 @@ impl WorkerProc {
             .lock()
             .map(|t| t.trim().to_string())
             .unwrap_or_default();
-        TestResult::infra("worker crash", format!("{what} ({status}); stderr: {tail}"))
+        Gone {
+            cause: "worker crash",
+            detail: format!("{what} ({status}); stderr: {tail}"),
+        }
     }
 }
 
@@ -957,6 +1000,209 @@ impl Drop for WorkerProc {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// How [`in_workers`] runs its jobs.
+pub(crate) struct Workers<'a> {
+    /// The worker command (`exec-worker`, `parse-worker`) and its flags.
+    pub(crate) subcommand: &'static str,
+    pub(crate) args: &'a [String],
+    /// Worker processes, each driven by one parent thread.
+    pub(crate) threads: usize,
+    /// Jobs a parent thread takes at a time. With 1, a worker has one job at a time. With more,
+    /// the parent takes the next `chunk` jobs while fewer than `chunk` are unanswered, so the
+    /// worker never waits for a round trip (it may then answer in groups).
+    pub(crate) chunk: usize,
+    /// No reply within this time: kill the worker (a `timeout`).
+    pub(crate) hard: Duration,
+}
+
+/// The callbacks of [`in_workers`].
+struct Jobs<'a, T, Q, P, G, D> {
+    items: &'a [T],
+    request: Q,
+    reply: P,
+    gone: G,
+    done: D,
+}
+
+/// Runs every job in worker processes and returns the results in job order.
+///
+/// ```text
+/// parent thread (one per worker)                worker process
+///   take jobs ----------- request lines ---->     one reply line per request, in order
+///   reply(job, line) <--- reply lines -------     (single, or a group at a time)
+///   worker gone, 1 job unanswered: gone(job, Gone); a new worker takes the jobs after it
+///   worker gone, n > 1 unanswered: run those n again one at a time, so the job that stops
+///     the worker again gets the Gone; if none does, the first of them gets the first Gone
+/// ```
+///
+/// `request` gives a job's request line (no newline). `reply` reads its reply line; `None` (a
+/// bad line) counts as a crash. `done(n)` runs after each job, `n` = jobs done so far.
+/// `Err` = a worker process could not be started.
+pub(crate) fn in_workers<T, R>(
+    w: &Workers<'_>,
+    items: &[T],
+    request: impl Fn(&T) -> String + Sync,
+    reply: impl Fn(&T, &str) -> Option<R> + Sync,
+    gone: impl Fn(&T, Gone) -> R + Sync,
+    done: impl Fn(usize) + Sync,
+) -> Result<Vec<R>, String>
+where
+    T: Sync,
+    R: Send,
+{
+    let jobs = Jobs {
+        items,
+        request,
+        reply,
+        gone,
+        done,
+    };
+    let next = AtomicUsize::new(0);
+    let finished = AtomicUsize::new(0);
+    let threads = w.threads.clamp(1, items.len().max(1));
+    let spawn_error: Mutex<Option<String>> = Mutex::new(None);
+    let parts: Vec<Vec<(usize, R)>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|_| scope.spawn(|| drive(w, &jobs, &next, &finished, &spawn_error)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("runner thread"))
+            .collect()
+    });
+    if let Some(e) = spawn_error.lock().ok().and_then(|mut s| s.take()) {
+        return Err(e);
+    }
+    let mut slots: Vec<Option<R>> = std::iter::repeat_with(|| None).take(items.len()).collect();
+    for (i, r) in parts.into_iter().flatten() {
+        slots[i] = Some(r);
+    }
+    Ok(slots
+        .into_iter()
+        .map(|r| r.expect("every job ran once"))
+        .collect())
+}
+
+/// One parent thread of [`in_workers`]: its worker process and its jobs.
+fn drive<T, R, Q, P, G, D>(
+    w: &Workers<'_>,
+    jobs: &Jobs<'_, T, Q, P, G, D>,
+    next: &AtomicUsize,
+    finished: &AtomicUsize,
+    spawn_error: &Mutex<Option<String>>,
+) -> Vec<(usize, R)>
+where
+    Q: Fn(&T) -> String,
+    P: Fn(&T, &str) -> Option<R>,
+    G: Fn(&T, Gone) -> R,
+    D: Fn(usize),
+{
+    let chunk = w.chunk.max(1);
+    let mut out: Vec<(usize, R)> = Vec::new();
+    let mut worker: Option<WorkerProc> = None;
+    // Jobs taken and not answered yet, in order. The first `sent` went to `worker`.
+    let mut pending: VecDeque<usize> = VecDeque::new();
+    let mut sent = 0;
+    // After a worker stopped with several jobs unanswered: how many jobs at the front of
+    // `pending` still run one at a time, and the first Gone with its job while no job has
+    // stopped a worker again.
+    let mut alone = 0;
+    let mut unexplained: Option<(usize, Gone)> = None;
+    loop {
+        if pending.len() < chunk {
+            let start = next.fetch_add(chunk, Ordering::Relaxed);
+            if start < jobs.items.len() {
+                pending.extend(start..jobs.items.len().min(start + chunk));
+            } else if pending.is_empty() {
+                return out;
+            }
+        }
+        if worker.is_none() {
+            match WorkerProc::spawn(w.subcommand, w.args) {
+                Ok(p) => {
+                    worker = Some(p);
+                    sent = 0;
+                }
+                Err(e) => {
+                    if let Ok(mut s) = spawn_error.lock() {
+                        *s = Some(e.to_string());
+                    }
+                    return out;
+                }
+            }
+        }
+        let proc = worker.as_mut().expect("spawned above");
+        let limit = if alone > 0 { 1 } else { pending.len() };
+        if sent < limit {
+            let mut lines = String::new();
+            for &i in pending.range(sent..limit) {
+                lines.push_str(&(jobs.request)(&jobs.items[i]));
+                lines.push('\n');
+            }
+            // On an error the worker is gone; the next reply says how.
+            if proc.send(&lines).is_ok() {
+                sent = limit;
+            }
+        }
+        let i = *pending.front().expect("taken above");
+        let result = if sent == 0 {
+            Err(proc.crashed("the worker closed its input"))
+        } else {
+            proc.recv(w.hard).and_then(|line| {
+                (jobs.reply)(&jobs.items[i], &line)
+                    .ok_or_else(|| proc.crashed(&format!("bad result line {line:?}")))
+            })
+        };
+        let r = match result {
+            Ok(r) => {
+                sent -= 1;
+                r
+            }
+            Err(g) => {
+                let unanswered = sent;
+                worker = None;
+                sent = 0;
+                if alone == 0 && unanswered > 1 {
+                    // Not known which of them stopped the worker: run each alone.
+                    alone = unanswered;
+                    unexplained = Some((i, g));
+                    continue;
+                }
+                if alone > 0 {
+                    unexplained = None;
+                }
+                (jobs.gone)(&jobs.items[i], g)
+            }
+        };
+        pending.pop_front();
+        out.push((i, r));
+        (jobs.done)(finished.fetch_add(1, Ordering::Relaxed) + 1);
+        if alone > 0 {
+            alone -= 1;
+            if alone == 0
+                && let Some((j, g)) = unexplained.take()
+            {
+                // No job stopped a worker again (a crash from outside, or one that needs other
+                // jobs in the same worker): still an infrastructure error, on the first of them.
+                let g = Gone {
+                    cause: g.cause,
+                    detail: format!(
+                        "{} (the worker stopped with several files unanswered; none stopped it \
+                         again when each ran alone)",
+                        g.detail
+                    ),
+                };
+                let slot = out
+                    .iter_mut()
+                    .rev()
+                    .find(|(k, _)| *k == j)
+                    .expect("the job ran alone");
+                slot.1 = (jobs.gone)(&jobs.items[j], g);
+            }
+        }
     }
 }
 
@@ -1077,70 +1323,46 @@ pub fn run(opts: &Options) -> ExitCode {
     // A test has at most 2 runs; each gets the soft timeout, then a margin. A worker that
     // gives no result by then is stuck where the interrupt check does not reach: kill it.
     let hard = opts.timeout * 2 + Duration::from_secs(5);
-    let next = AtomicUsize::new(0);
-    let done = AtomicUsize::new(0);
-    let threads = opts.threads.clamp(1, files.len());
-    let spawn_error: Mutex<Option<String>> = Mutex::new(None);
-    let parts: Vec<Vec<(usize, TestResult)>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..threads)
-            .map(|_| {
-                scope.spawn(|| {
-                    let mut out = Vec::new();
-                    let mut worker: Option<WorkerProc> = None;
-                    loop {
-                        let i = next.fetch_add(1, Ordering::Relaxed);
-                        if i >= files.len() {
-                            return out;
-                        }
-                        if worker.is_none() {
-                            match WorkerProc::spawn(&worker_args) {
-                                Ok(w) => worker = Some(w),
-                                Err(e) => {
-                                    if let Ok(mut s) = spawn_error.lock() {
-                                        *s = Some(e.to_string());
-                                    }
-                                    return out;
-                                }
-                            }
-                        }
-                        let w = worker.as_mut().expect("worker spawned above");
-                        let result = match w.run(&files[i].rel, hard) {
-                            Ok(r) => r,
-                            Err(r) => {
-                                worker = None;
-                                r
-                            }
-                        };
-                        out.push((i, result));
-                        let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                        if opts.progress && n.is_multiple_of(2000) {
-                            eprintln!(
-                                "ep9-test262: {n}/{} tests, {:.0} s",
-                                files.len(),
-                                started.elapsed().as_secs_f64()
-                            );
-                        }
-                    }
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("runner thread"))
-            .collect()
-    });
-    if let Some(e) = spawn_error.lock().ok().and_then(|mut s| s.take()) {
-        eprintln!("ep9-test262: cannot start a worker process: {e}");
-        return ExitCode::from(2);
-    }
-    let mut results: Vec<Option<TestResult>> = vec![None; files.len()];
-    for (i, r) in parts.into_iter().flatten() {
-        results[i] = Some(r);
-    }
+    let workers = Workers {
+        subcommand: "exec-worker",
+        args: &worker_args,
+        threads: opts.threads.clamp(1, files.len()),
+        // One test at a time: exec tests are slow enough, and the hard timeout is per test.
+        chunk: 1,
+        hard,
+    };
+    let threads = workers.threads;
+    let results = in_workers(
+        &workers,
+        &files,
+        |f| f.rel.clone(),
+        |f, line| {
+            decode(line)
+                .filter(|(rel, _)| *rel == f.rel)
+                .map(|(_, r)| r)
+        },
+        |_, g| TestResult::infra(g.cause, g.detail),
+        |n| {
+            if opts.progress && n.is_multiple_of(2000) {
+                eprintln!(
+                    "ep9-test262: {n}/{} tests, {:.0} s",
+                    files.len(),
+                    started.elapsed().as_secs_f64()
+                );
+            }
+        },
+    );
+    let results = match results {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("ep9-test262: cannot start a worker process: {e}");
+            return ExitCode::from(2);
+        }
+    };
     let results: Vec<(&str, TestResult)> = files
         .iter()
         .zip(results)
-        .map(|(f, r)| (f.rel.as_str(), r.expect("every test ran once")))
+        .map(|(f, r)| (f.rel.as_str(), r))
         .collect();
     let wall = started.elapsed();
 

@@ -123,7 +123,8 @@ fn tree(name: &str) -> PathBuf {
             "include.js",
             test("includes: [extra.js]\n", "assert.sameValue(extra(), 42);"),
         ),
-        ("unsupported.js", test("", "function* g() {}")),
+        // An async generator: still "generator functions" after P1-GEN-CG (plan-v3 §4).
+        ("unsupported.js", test("", "async function* g() {}")),
     ];
     for (name, src) in tests {
         write(&root, &format!("test/language/{name}"), src);
@@ -289,6 +290,40 @@ fn worker_crash_is_an_infra_error_and_the_run_goes_on() {
     assert!(text.contains("worker crash 1"), "{text}");
     // Every other test still ran in a new worker.
     assert!(text.contains("language             8 / 18"), "{text}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_panic_that_aborts_the_worker_reaches_the_report() {
+    // A panic that cannot unwind ends the worker after the panic hook ran, as every panic does
+    // under `panic = "abort"`: a worker crash whose line carries the panic text.
+    let root = tree("nounwind");
+    let expect = expect_file(&root, FAILING);
+    let (code, text) = exec(&root, &expect, &[], Some("nounwind-panic:/pass.js"));
+    assert_eq!(code, Some(2), "{text}");
+    assert!(
+        text.contains("test/language/pass.js: the worker exited"),
+        "{text}"
+    );
+    assert!(
+        text.contains("panicked: injected panic for test/language/pass.js"),
+        "{text}"
+    );
+    assert!(text.contains("worker crash 1"), "{text}");
+    assert!(text.contains("language             8 / 18"), "{text}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn no_fault_no_infrastructure_error() {
+    let root = tree("clean");
+    let expect = expect_file(&root, FAILING);
+    let (code, text) = exec(&root, &expect, &[], None);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(
+        text.contains("infrastructure errors: 0 (panic 0, timeout 0, worker crash 0, other 0)"),
+        "{text}"
+    );
     std::fs::remove_dir_all(root).unwrap();
 }
 

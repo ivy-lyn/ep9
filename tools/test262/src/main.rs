@@ -6,7 +6,7 @@
 //!   `expectations/test262-parse.<target-triple>.txt`.
 //! - `exec`: the execution runner (engine end to end, worker processes), checked against
 //!   `expectations/test262.<target-triple>.jit.txt` (decision NAMING).
-//! - `exec-worker`: internal; one worker process of `exec`.
+//! - `exec-worker`, `parse-worker`: internal; one worker process of `exec` or `parse`.
 //!
 //! Default paths are relative to the ep9 repo root (found at build time), so `cargo run` works
 //! from any directory. Paths given as flags are used as given.
@@ -103,6 +103,10 @@ fn main() -> ExitCode {
             Ok(opts) => exec::worker(opts),
             Err(e) => usage_error(&e),
         },
+        "parse-worker" => match parse_parse_worker_args(&rest) {
+            Ok(opts) => parse::worker(opts),
+            Err(e) => usage_error(&e),
+        },
         "-h" | "--help" | "help" => {
             print!("{USAGE}");
             ExitCode::SUCCESS
@@ -161,18 +165,33 @@ fn parse_parse_args(args: &[String]) -> Result<parse::Options, String> {
             "--update-expectations" => opts.update = true,
             "--json" => opts.json = Some(PathBuf::from(value(arg, &mut it)?)),
             "--threads" => opts.threads = threads(value(arg, &mut it)?)?,
-            "--strict-by" => {
-                opts.strict_by = match value(arg, &mut it)?.as_str() {
-                    "prefix" => parse::StrictBy::Prefix,
-                    "opts" => parse::StrictBy::Opts,
-                    other => return Err(format!("bad --strict-by value {other:?}")),
-                }
-            }
+            "--strict-by" => opts.strict_by = strict_by(value(arg, &mut it)?)?,
             "--verbose" => opts.verbose = true,
             other if other.starts_with("--") => return Err(format!("unknown flag {other:?}")),
             prefix => opts
                 .filters
                 .push(prefix.trim_start_matches("./").to_string()),
+        }
+    }
+    Ok(opts)
+}
+
+fn strict_by(v: &str) -> Result<parse::StrictBy, String> {
+    parse::StrictBy::from_name(v).ok_or_else(|| format!("bad --strict-by value {v:?}"))
+}
+
+/// The flags of `parse-worker` (the parent passes `--test262` and `--strict-by`).
+fn parse_parse_worker_args(args: &[String]) -> Result<parse::WorkerOptions, String> {
+    let mut opts = parse::WorkerOptions {
+        test262: repo_root().join("third_party/test262"),
+        strict_by: parse::StrictBy::Prefix,
+    };
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--test262" => opts.test262 = PathBuf::from(value(arg, &mut it)?),
+            "--strict-by" => opts.strict_by = strict_by(value(arg, &mut it)?)?,
+            other => return Err(format!("unknown argument {other:?}")),
         }
     }
     Ok(opts)
@@ -308,5 +327,21 @@ mod tests {
         let w = parse_worker_args(&strings(&["--feedback-threshold", "4294967295"])).unwrap();
         assert_eq!(w.feedback_threshold, u32::MAX);
         assert_eq!(parse_worker_args(&[]).unwrap().feedback_threshold, default);
+    }
+
+    #[test]
+    fn strict_by_reaches_parse_and_its_worker() {
+        let p = parse_parse_args(&strings(&["--strict-by", "opts"])).unwrap();
+        assert_eq!(p.strict_by, parse::StrictBy::Opts);
+        assert!(parse_parse_args(&strings(&["--strict-by", "x"])).is_err());
+        let w =
+            parse_parse_worker_args(&strings(&["--strict-by", "opts", "--test262", "/t"])).unwrap();
+        assert_eq!(w.strict_by, parse::StrictBy::Opts);
+        assert_eq!(w.test262, PathBuf::from("/t"));
+        assert_eq!(
+            parse_parse_worker_args(&[]).unwrap().strict_by,
+            parse::StrictBy::Prefix
+        );
+        assert!(parse_parse_worker_args(&strings(&["--threads", "2"])).is_err());
     }
 }

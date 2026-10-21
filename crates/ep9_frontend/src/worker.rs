@@ -12,6 +12,8 @@
 //!   so one worker is enough, and isolates on one thread (D14) share it.
 //! - A job that runs on a worker thread runs inline: a nested call does not spawn a second worker.
 //! - A panic inside the job is caught on the worker and resumed on the caller. The worker lives on.
+//!   Under `panic = "abort"` (P2-INFRA2) the `catch_unwind` in `run` never runs: the process
+//!   aborts in the job. So nothing relies on it for isolation (ep9-test262 uses worker processes).
 //! - The stack is a reservation. The OS commits pages only as deep as a job really goes.
 
 use std::any::Any;
