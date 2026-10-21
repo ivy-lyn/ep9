@@ -4,9 +4,18 @@
 //! cage heap part (ep9_platform::Cage, below 2^47, H7)
 //! [ chunk 0 | chunk 1 | chunk 2 ......................... | chunk high-1 ]  (never used) ...
 //!   Small     Free      LargeHead LargeTail(2) LargeTail(2)   Free{committed}
+//!
+//! with a shape region of N chunks (HeapConfig::shape_space_bytes = N * 256 KiB, H08-Q1):
+//! [ shape 0 | ... | shape N-1 | chunk N | chunk N+1 ............ | chunk high-1 ] ...
+//!   Small (shape pages) or Free  ordinary chunks, as above
+//!   ^ cage base: offset 0 is a page header, never a cell, so ShapeId 0 means "none"
 //! ```
 //!
 //! - A chunk is one small page or one part of a large object (LOS).
+//! - The shape region is chunks `[0, N)`. Its pages are small pages ([`Chunk::Small`]) that
+//!   hold only shape-space cells. It has its own cursor (`shape_next`, the next chunk never
+//!   used) and its own free set; the ordinary free set, the page cache and LOS never hold a
+//!   region chunk. A freed shape page is decommitted. The region never moves.
 //! - The chunk table maps any address in `[base, base + high * 256 KiB)` to its chunk in O(1).
 //!   The conservative scan uses it for interior pointers into large objects.
 //! - Small pages are committed whole. A large object commits only up to the OS page after its
@@ -78,6 +87,12 @@ pub(crate) struct Memory {
     /// Base of the reservation, with provenance over all of it.
     base: NonNull<u8>,
     size: usize,
+    /// Chunks `[0, shape_chunks)` form the shape region (0: no shape space).
+    shape_chunks: usize,
+    /// The lowest region chunk that was never used.
+    shape_next: usize,
+    /// Region chunks below `shape_next` that are free (decommitted).
+    shape_free: BTreeSet<u32>,
     #[cfg(not(miri))]
     cage: ep9_platform::Cage,
     #[cfg(miri)]
@@ -93,17 +108,39 @@ pub(crate) struct Memory {
 
 impl Memory {
     /// Reserves the heap part of a cage (`cage_size` bytes) and allows `max_committed` bytes to
-    /// be committed at a time.
+    /// be committed at a time. No shape region (the unit tests' entry).
+    #[cfg(test)]
     pub(crate) fn new(
         cage: &ep9_platform::CageConfig,
         max_committed: usize,
+    ) -> Result<Memory, HeapError> {
+        Self::with_shape_space(cage, max_committed, 0)
+    }
+
+    /// As [`Memory::new`], with the first `shape_bytes` of the reservation as the shape region
+    /// (0: none). The checks are those of [`check_shape_space`], plus: the region fits the
+    /// reservation (under Miri the reservation is smaller than the cage).
+    pub(crate) fn with_shape_space(
+        cage: &ep9_platform::CageConfig,
+        max_committed: usize,
+        shape_bytes: usize,
     ) -> Result<Memory, HeapError> {
         if cage.cage_size < PAGE_SIZE || !cage.cage_size.is_multiple_of(PAGE_SIZE) {
             return Err(HeapError::Config(
                 "cage_size must be a non-zero multiple of 256 KiB",
             ));
         }
-        Self::reserve(cage, max_committed)
+        check_shape_space(cage, shape_bytes)?;
+        let mut m = Self::reserve(cage, max_committed)?;
+        if shape_bytes > m.size {
+            return Err(HeapError::Config(
+                "shape_space_bytes is larger than the heap reservation",
+            ));
+        }
+        // The region's chunks exist from the start, so ordinary chunks begin at index N.
+        m.shape_chunks = shape_bytes / PAGE_SIZE;
+        m.chunks = vec![Chunk::Free { committed: false }; m.shape_chunks];
+        Ok(m)
     }
 
     #[cfg(not(miri))]
@@ -122,6 +159,9 @@ impl Memory {
             .ok_or(HeapError::Config("cage base is null"))?;
         Ok(Memory {
             base,
+            shape_chunks: 0,
+            shape_next: 0,
+            shape_free: BTreeSet::new(),
             size: cage.heap().size(),
             cage,
             chunks: Vec::new(),
@@ -147,6 +187,9 @@ impl Memory {
         let base = NonNull::new(p).ok_or(HeapError::Config("Miri allocation failed"))?;
         Ok(Memory {
             base,
+            shape_chunks: 0,
+            shape_next: 0,
+            shape_free: BTreeSet::new(),
             size,
             layout,
             chunks: Vec::new(),
@@ -171,7 +214,19 @@ impl Memory {
         self.size / PAGE_SIZE
     }
 
-    /// Chunks handed out at least once: `[0, high)`.
+    /// Bytes of the shape region (0: no shape space).
+    #[inline]
+    pub(crate) fn shape_bytes(&self) -> usize {
+        self.shape_chunks * PAGE_SIZE
+    }
+
+    /// True if chunk `idx` belongs to the shape region.
+    #[inline]
+    pub(crate) fn is_shape_chunk(&self, idx: usize) -> bool {
+        idx < self.shape_chunks
+    }
+
+    /// The shape region plus the chunks handed out at least once: `[0, high)`.
     pub(crate) fn high(&self) -> usize {
         self.chunks.len()
     }
@@ -313,9 +368,52 @@ impl Memory {
         Some(idx)
     }
 
-    /// Returns a swept, empty small page. It stays committed while the cache has room.
+    /// Takes the lowest free chunk of the shape region for a shape page and commits it. The
+    /// caller writes the page header. `None` when the region is full or the commit limit
+    /// is reached; cached ordinary pages are evicted first, so the cache never causes it.
+    pub(crate) fn alloc_shape_page(&mut self) -> Option<usize> {
+        let idx = match self.shape_free.first() {
+            Some(&i) => i as usize,
+            None if self.shape_next < self.shape_chunks => self.shape_next,
+            None => return None,
+        };
+        debug_assert_eq!(self.chunks[idx], Chunk::Free { committed: false });
+        if self.committed - self.cached.len() * PAGE_SIZE + PAGE_SIZE > self.max_committed {
+            return None;
+        }
+        while self.committed + PAGE_SIZE > self.max_committed {
+            let i = *self
+                .cached
+                .last()
+                .expect("the check above leaves enough cached chunks");
+            self.evict_cached(i);
+        }
+        if !self.commit(idx, PAGE_SIZE) {
+            return None;
+        }
+        self.committed += PAGE_SIZE;
+        if idx == self.shape_next {
+            self.shape_next += 1;
+        } else {
+            self.shape_free.remove(&(idx as u32));
+        }
+        self.chunks[idx] = Chunk::Small;
+        Some(idx)
+    }
+
+    /// Returns a swept, empty small page. It stays committed while the cache has room. A shape
+    /// page goes back to the shape region, decommitted.
     pub(crate) fn free_small_page(&mut self, idx: usize) {
         debug_assert_eq!(self.chunks[idx], Chunk::Small);
+        if self.is_shape_chunk(idx) {
+            // SAFETY: the page holds no live cell (the sweep found none), and the heap keeps no
+            // pointer into a free chunk.
+            unsafe { self.decommit(idx, PAGE_SIZE) };
+            self.committed -= PAGE_SIZE;
+            self.chunks[idx] = Chunk::Free { committed: false };
+            self.shape_free.insert(idx as u32);
+            return;
+        }
         if self.cached.len() < MAX_CACHED_FREE_PAGES {
             self.cached.insert(idx as u32);
             self.chunks[idx] = Chunk::Free { committed: true };
@@ -429,6 +527,48 @@ impl Memory {
     }
 }
 
+/// The shape-space rules of [`crate::HeapConfig::shape_space_bytes`] that do not need the
+/// reservation: 0 (off), or a power of two from 1 MiB to 4 GiB and at most the cage size. Outside
+/// Miri the cage must be aligned to at least 4 GiB, so a ShapeId (the offset from the cage base)
+/// is also the low 32 bits of the shape's address (JSC StructureID). Miri's stand-in
+/// reservation is aligned to 256 KiB only, so Miri skips that rule; ids still use the subtract.
+pub(crate) fn check_shape_space(
+    cage: &ep9_platform::CageConfig,
+    shape_bytes: usize,
+) -> Result<(), HeapError> {
+    if shape_bytes == 0 {
+        return Ok(());
+    }
+    if !shape_bytes.is_power_of_two() || !(MIN_SHAPE_SPACE..=MAX_SHAPE_SPACE).contains(&shape_bytes)
+    {
+        return Err(HeapError::Config(
+            "shape_space_bytes must be 0 or a power of two from 1 MiB to 4 GiB",
+        ));
+    }
+    if shape_bytes > cage.cage_size {
+        return Err(HeapError::Config(
+            "shape_space_bytes is larger than the cage",
+        ));
+    }
+    #[cfg(not(miri))]
+    if cage.align < SHAPE_CAGE_ALIGN {
+        return Err(HeapError::Config(
+            "a shape space needs cage.align >= 4 GiB (a ShapeId is the low 32 bits of an address)",
+        ));
+    }
+    Ok(())
+}
+
+/// Smallest non-zero shape space.
+pub(crate) const MIN_SHAPE_SPACE: usize = 1 << 20;
+/// Largest shape space: every offset fits a u32 ShapeId.
+pub(crate) const MAX_SHAPE_SPACE: usize = 1 << 32;
+/// Cage alignment that a shape space needs outside Miri.
+#[cfg_attr(miri, allow(dead_code))]
+pub(crate) const SHAPE_CAGE_ALIGN: usize = 1 << 32;
+
+const _: () = assert!(MIN_SHAPE_SPACE.is_multiple_of(PAGE_SIZE));
+
 #[cfg(miri)]
 impl Drop for Memory {
     fn drop(&mut self) {
@@ -508,6 +648,49 @@ mod tests {
         assert_eq!(m.alloc_large(max + 1, PAGE_SIZE), None, "reservation limit");
         assert!(m.alloc_large(max, PAGE_SIZE).is_some());
         assert_eq!(m.alloc_small_page(), None);
+    }
+
+    #[test]
+    fn shape_region_chunks() {
+        let region = 4 * PAGE_SIZE;
+        let mut m = Memory::with_shape_space(&small_config(), usize::MAX, region).unwrap();
+        assert_eq!((m.shape_bytes(), m.high()), (region, 4));
+        assert!(m.is_shape_chunk(3) && !m.is_shape_chunk(4));
+        // Ordinary chunks start after the region; region chunks come from its own cursor.
+        assert_eq!(m.alloc_small_page(), Some(4));
+        assert_eq!(m.alloc_shape_page(), Some(0));
+        assert_eq!(m.alloc_shape_page(), Some(1));
+        assert_eq!(m.alloc_large(2, PAGE_SIZE), Some(5));
+        assert_eq!(m.chunk_index(m.base_addr() + 17), Some(0));
+        assert_eq!(m.committed_bytes(), 3 * PAGE_SIZE + PAGE_SIZE);
+        // A freed shape page is decommitted and goes back to the region, lowest first.
+        m.free_small_page(0);
+        assert_eq!(m.chunk(0), Chunk::Free { committed: false });
+        assert_eq!(m.committed_bytes(), 3 * PAGE_SIZE);
+        m.free_small_page(4);
+        assert_eq!(
+            m.chunk(4),
+            Chunk::Free { committed: true },
+            "ordinary page cached"
+        );
+        assert_eq!(m.alloc_small_page(), Some(4), "never a region chunk");
+        assert_eq!(m.alloc_shape_page(), Some(0));
+        assert_eq!(m.alloc_shape_page(), Some(2));
+        assert_eq!(m.alloc_shape_page(), Some(3));
+        assert_eq!(m.alloc_shape_page(), None, "region full");
+        assert_eq!(m.alloc_small_page(), Some(7));
+    }
+
+    #[test]
+    fn shape_pages_evict_cached_pages_under_the_limit() {
+        let mut m = Memory::with_shape_space(&small_config(), PAGE_SIZE, 4 * PAGE_SIZE).unwrap();
+        let s = m.alloc_small_page().unwrap();
+        m.free_small_page(s);
+        assert_eq!(m.committed_bytes(), PAGE_SIZE, "one cached page");
+        assert_eq!(m.alloc_shape_page(), Some(0), "the cached page is evicted");
+        assert_eq!(m.chunk(s), Chunk::Free { committed: false });
+        assert_eq!(m.committed_bytes(), PAGE_SIZE);
+        assert_eq!(m.alloc_shape_page(), None, "a real limit");
     }
 
     #[test]

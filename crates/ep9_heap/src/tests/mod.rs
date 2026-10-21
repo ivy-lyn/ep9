@@ -8,6 +8,7 @@
 //! | `gc.rs` | mark-sweep with precise roots, weak slots, lazy sweep, zapping, GC-stress, verifier |
 //! | `css.rs` | conservative stack scan: locals, interior and one-past-end pointers, S7 (not Miri) |
 //! | `stress.rs` | randomized mutator against a model of the object graph |
+//! | `shape.rs` | the shape region: ShapeId = cage offset, word0 edge, weak clearing, full region, config |
 
 use ep9_value::Value;
 
@@ -19,6 +20,7 @@ mod barrier;
 mod css;
 mod gc;
 mod model;
+mod shape;
 mod stress;
 
 /// A test node: word0, a raw meta word `(id << 32) | n`, then `n` Value slots.

@@ -7,6 +7,8 @@
 //! | Cells walk in address order from the VO bitmap; none overlaps the next; none crosses the page end | small pages |
 //! | Every cell kind is registered; size is at least 16 B, at most 8 KiB in a page, above 8 KiB in LOS | all cells |
 //! | gc_state is BLACK, WHITE or GREY | all cells |
+//! | Shape-space kinds only in the shape region, and only those there | all cells |
+//! | With a shape space: a non-zero word0 ShapeId names a live shape-space cell (H08-Q1) | all cells |
 //! | Every visited slot: not 0, valid `Value` bits; a cell reference is the start of a live cell | all cells and every root source |
 //! | LOS: header, chunk run and committed size match the chunk table | every large object |
 //!
@@ -15,7 +17,7 @@
 use core::sync::atomic::Ordering::Relaxed;
 
 use crate::barrier::gc_state;
-use crate::cell::CellPtr;
+use crate::cell::{CellPtr, Space};
 use crate::heap::Heap;
 use crate::layout::{
     BITMAP_WORDS, FIRST_CELL_OFFSET, LARGE_CELL_OFFSET, Large, MAX_SMALL_SIZE, PAGE_KIND_LARGE,
@@ -98,7 +100,7 @@ impl Heap {
                             // SAFETY: a VO bit marks a cell start whose word0 the allocator
                             // wrote; the page is committed.
                             let c = unsafe { CellPtr::from_raw(mem.ptr(addr).cast()) };
-                            match check_cell(&mut t, c, false) {
+                            match check_cell(&mut t, c, false, mem.is_shape_chunk(idx)) {
                                 Some(size) => {
                                     if addr + size > page.addr() + PAGE_SIZE {
                                         t.error(format_args!(
@@ -144,7 +146,7 @@ impl Heap {
                     }
                     // SAFETY: the LOS cell starts right after the header.
                     let c = unsafe { CellPtr::from_raw(large.cell_ptr().cast()) };
-                    if let Some(size) = check_cell(&mut t, c, true) {
+                    if let Some(size) = check_cell(&mut t, c, true, false) {
                         if size != h.size {
                             t.error(format_args!(
                                 "large cell {c:?}: kind size {size} != header size {}",
@@ -184,8 +186,9 @@ impl Heap {
 }
 
 /// Checks one cell and traces its slots in verify mode. Returns its size, or `None` when the
-/// kind is unknown (the size cannot be known then).
-fn check_cell(t: &mut Tracer<'_>, c: CellPtr, large: bool) -> Option<usize> {
+/// kind is unknown (the size cannot be known then). `in_region`: the cell lies in the shape
+/// region.
+fn check_cell(t: &mut Tracer<'_>, c: CellPtr, large: bool, in_region: bool) -> Option<usize> {
     // SAFETY: callers pass a cell start (VO bit or LOS header) in committed memory.
     let h = unsafe { c.header() };
     let kind = h.kind();
@@ -208,6 +211,14 @@ fn check_cell(t: &mut Tracer<'_>, c: CellPtr, large: bool) -> Option<usize> {
     if !matches!(st, gc_state::BLACK | gc_state::WHITE | gc_state::GREY) {
         t.error(format_args!("gc_state {st} is not BLACK, WHITE or GREY"));
     }
+    let space = t.kinds().space(kind);
+    if (space == Space::Shape) != in_region {
+        t.error(format_args!(
+            "a {space:?}-space cell {} the shape region",
+            if in_region { "inside" } else { "outside" }
+        ));
+    }
+    t.verify_word0_shape(h.shape_id().get());
     (k.trace)(c, t);
     Some(size)
 }

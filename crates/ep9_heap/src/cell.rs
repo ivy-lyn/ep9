@@ -13,6 +13,8 @@
 //! - Size comes from the header (H9 "heap always parsable"): a fixed size, or a function that
 //!   reads only the cell itself (a length field). The size of a cell never changes after the
 //!   first GC point that follows its allocation.
+//! - Each kind lives in one [`Space`]: `Normal` cells come from [`crate::Heap::alloc`], `Shape`
+//!   cells from [`crate::Heap::alloc_shape`] in the shape region (H08-Q1).
 
 use core::num::NonZeroU8;
 use core::ptr::NonNull;
@@ -20,7 +22,7 @@ use core::ptr::NonNull;
 use ep9_value::{Value, Word0};
 
 use crate::barrier::Slot;
-use crate::layout::cell_size_for;
+use crate::layout::{MAX_SMALL_SIZE, cell_size_for};
 use crate::trace::Tracer;
 
 /// Kind byte of a cell (word0 byte 5). Never 0.
@@ -62,13 +64,28 @@ pub struct CellKind {
     pub trace: TraceFn,
 }
 
+/// Where the cells of a kind are allocated.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Space {
+    /// Small pages, LOS. [`crate::Heap::alloc`].
+    #[default]
+    Normal,
+    /// The shape region at the start of the cage, so a cell's ShapeId is its offset from the
+    /// cage base (H08-Q1). [`crate::Heap::alloc_shape`]; at most [`crate::layout::MAX_SMALL_SIZE`]
+    /// bytes.
+    Shape,
+}
+
 /// Why `register_kind` failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KindError {
     /// The kind byte already has a registration.
     Taken(KindId),
-    /// A fixed size is 0 or does not fit `cell_size_for`.
+    /// A fixed size is 0 or does not fit `cell_size_for`, or a shape kind's fixed size is
+    /// above [`crate::layout::MAX_SMALL_SIZE`].
     BadSize(KindId),
+    /// A [`Space::Shape`] kind on a heap whose `shape_space_bytes` is 0.
+    NoShapeSpace(KindId),
 }
 
 impl std::fmt::Display for KindError {
@@ -76,6 +93,13 @@ impl std::fmt::Display for KindError {
         match self {
             KindError::Taken(k) => write!(f, "cell kind {} is already registered", k.get()),
             KindError::BadSize(k) => write!(f, "cell kind {} has a bad fixed size", k.get()),
+            KindError::NoShapeSpace(k) => {
+                write!(
+                    f,
+                    "cell kind {} needs a shape space, and the heap has none",
+                    k.get()
+                )
+            }
         }
     }
 }
@@ -84,30 +108,54 @@ impl std::error::Error for KindError {}
 
 pub(crate) struct KindTable {
     kinds: [Option<CellKind>; 256],
+    spaces: [Space; 256],
 }
 
 impl KindTable {
     pub(crate) fn new() -> KindTable {
-        KindTable { kinds: [None; 256] }
+        KindTable {
+            kinds: [None; 256],
+            spaces: [Space::Normal; 256],
+        }
     }
 
+    /// [`KindTable::register_in`] with [`Space::Normal`] (the unit tests' entry).
+    #[cfg(test)]
     pub(crate) fn register(&mut self, id: KindId, kind: CellKind) -> Result<(), KindError> {
+        self.register_in(id, kind, Space::Normal)
+    }
+
+    /// Registers `kind` in `space`. The caller checks that a shape space exists.
+    pub(crate) fn register_in(
+        &mut self,
+        id: KindId,
+        kind: CellKind,
+        space: Space,
+    ) -> Result<(), KindError> {
         let slot = &mut self.kinds[id.get() as usize];
         if slot.is_some() {
             return Err(KindError::Taken(id));
         }
-        if let CellSize::Fixed(n) = kind.size
-            && (n == 0 || cell_size_for(n).is_none())
-        {
-            return Err(KindError::BadSize(id));
+        if let CellSize::Fixed(n) = kind.size {
+            match cell_size_for(n) {
+                Some(s) if n != 0 && (space == Space::Normal || s <= MAX_SMALL_SIZE) => {}
+                _ => return Err(KindError::BadSize(id)),
+            }
         }
         *slot = Some(kind);
+        self.spaces[id.get() as usize] = space;
         Ok(())
     }
 
     #[inline]
     pub(crate) fn get(&self, kind: u8) -> Option<&CellKind> {
         self.kinds[kind as usize].as_ref()
+    }
+
+    /// The space of a kind byte. `Normal` for a kind with no registration.
+    #[inline]
+    pub(crate) fn space(&self, kind: u8) -> Space {
+        self.spaces[kind as usize]
     }
 
     /// Allocated size of a live cell: its kind's size, rounded as the allocator rounds.
