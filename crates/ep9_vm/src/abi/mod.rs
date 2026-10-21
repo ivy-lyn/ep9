@@ -47,7 +47,7 @@ use crate::object;
 use crate::property;
 use crate::runtime::{Atom, ErrorKind, Runtime};
 use crate::string::{self, MAX_STRING_LENGTH};
-use crate::{atoms, bound, call, wrapper};
+use crate::{atoms, bound, call, symbol, wrapper};
 
 /// A host function: a builtin or an embedder function (H20 signature). `this`, the
 /// arguments and `new_target` (undefined for a call) are [`Local`]s of the call `'s`.
@@ -779,16 +779,10 @@ impl<'s> Cx<'s> {
         if !d.is_undefined() && !d.is_string() {
             return Err(self.throw_type_error("a symbol description is a string or undefined"));
         }
-        // Merge with P2-SYM: `Ok(Self::local(symbol::new_symbol(self.rt(), d.bits())))`.
-        Err(self.not_implemented("symbols"))
+        Ok(Self::local(symbol::new_symbol(self.rt(), d.bits())))
     }
 
-    // ---- symbols (§20.4) over symbol.rs (P2-SYM) ----
-    //
-    // This base has no symbols (symbol.rs is the P0 stub): the entry points that can run
-    // throw "not implemented in ep9 v0: symbols", and the ones that take a symbol cannot be
-    // reached (no `Local<JsSymbol>` exists). Each body names the symbol.rs call that replaces
-    // it when P2-SYM merges.
+    // ---- symbols (§20.4) over symbol.rs ----
 
     /// `Symbol.for(key)` steps 2-6 (§20.4.2.2): the registry's symbol for the string `key`,
     /// or a new registered symbol whose description is `key`.
@@ -796,24 +790,20 @@ impl<'s> Cx<'s> {
         &mut self,
         key: impl Into<Local<'s, JsString>>,
     ) -> JsResult<Local<'s, JsSymbol>> {
-        let _key = key.into().bits();
-        // Merge with P2-SYM: `Ok(Self::local(symbol::symbol_for(self.cx, _key)))`.
-        Err(self.not_implemented("symbols"))
+        let key = key.into().bits();
+        Ok(Self::local(symbol::symbol_for(self.cx, key)))
     }
 
     /// KeyForSymbol (§20.4.5.1): the registry key of `sym`, or `None` if `sym` is not
     /// registered (`Symbol.keyFor`).
     pub fn key_for(&self, sym: Local<'s, JsSymbol>) -> Option<Local<'s, JsString>> {
-        let _sym = sym.bits();
-        // Merge with P2-SYM: `let k = symbol::key_for(_sym); (k != UNDEFINED).then(|| ...)`.
-        unreachable!("no symbol exists before P2-SYM's symbol.rs")
+        let k = symbol::key_for(sym.bits());
+        (k != UNDEFINED).then(|| Self::local(k))
     }
 
     /// `[[Description]]` of `sym` (§20.4.3.2): a string or undefined.
     pub fn symbol_description(&self, sym: Local<'s, JsSymbol>) -> Local<'s> {
-        let _sym = sym.bits();
-        // Merge with P2-SYM: `Self::local(symbol::description(_sym))`.
-        unreachable!("no symbol exists before P2-SYM's symbol.rs")
+        Self::local(symbol::description(sym.bits()))
     }
 
     /// SymbolDescriptiveString (§20.4.3.3.1): "Symbol(" + description + ")". RangeError past
@@ -822,9 +812,7 @@ impl<'s> Cx<'s> {
         &mut self,
         sym: Local<'s, JsSymbol>,
     ) -> JsResult<Local<'s, JsString>> {
-        let _sym = sym.bits();
-        // Merge with P2-SYM: `symbol::descriptive_string(self.cx, _sym).map(Self::local)`.
-        unreachable!("no symbol exists before P2-SYM's symbol.rs")
+        symbol::descriptive_string(self.cx, sym.bits()).map(Self::local)
     }
 
     // ---- functions ----

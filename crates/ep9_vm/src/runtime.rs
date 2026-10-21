@@ -234,7 +234,6 @@ pub(crate) struct Runtime {
     /// allocation.
     pub atoms: Rc<RefCell<AtomTable>>,
     /// Symbols: the registry and the identity-hash PRNG.
-    #[allow(dead_code)] // read by symbol.rs once P2-SYM fills it; drop this allow then
     pub symbols: SymbolState,
     /// Builtin tables (H20): the dense FunctionInfo arrays and function roots per module.
     pub builtins: BuiltinState,

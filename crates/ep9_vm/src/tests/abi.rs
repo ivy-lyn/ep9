@@ -12,8 +12,8 @@ use super::{Asm, config, isolate, meta, on_big_stack, unit};
 use crate::object::{attr, own_define};
 use crate::runtime::Runtime;
 use crate::{
-    Args, Cx, Dispatch, HostFn, IntrinsicId, Isolate, JsArray, JsResult, Local, PropertyDescriptor,
-    ToPrimitiveHint,
+    Args, Cx, Dispatch, HostFn, IntrinsicId, Isolate, JsArray, JsResult, Local, PrimitiveType,
+    PropertyDescriptor, ToPrimitiveHint,
 };
 
 /// Runs `f` with a builtin-ABI context of a fresh isolate. `stress`: a collection before
@@ -812,27 +812,27 @@ fn object_ops_and_conversions() {
             take_error(cx, rt),
             "TypeError: Cannot convert undefined or null to object"
         );
-        // v0: no wrapper objects, so boxing a primitive throws the interpreter's catchable
-        // not_implemented instead of returning an object without the primitive (P2 fills it).
+        // ToObject boxes a primitive in a wrapper with its type's prototype (P2-SYM wrappers).
         let abc = cx.new_string("abc").unwrap();
-        for v in [
-            abc.value(),
-            Local::int32(3),
-            Local::number(1.5),
-            Local::boolean(true),
+        for (v, ty) in [
+            (abc.value(), PrimitiveType::String),
+            (Local::int32(3), PrimitiveType::Number),
+            (Local::number(1.5), PrimitiveType::Number),
+            (Local::boolean(true), PrimitiveType::Boolean),
         ] {
-            assert!(cx.to_object(v).is_err());
-            assert_eq!(
-                take_error(cx, rt),
-                "Error: not implemented in ep9 v0: wrapper objects for primitives"
-            );
+            let w = cx.to_object(v).unwrap();
+            let proto = cx.get_prototype_of(w).unwrap();
+            assert!(proto.is_same_bits(&cx.intrinsic(ty.prototype())));
+            let inner = cx.this_primitive_value(w, ty).unwrap();
+            assert!(cx.same_value(inner, v));
         }
+        let w = cx.to_object(abc).unwrap();
+        let len = cx.get_own_property(w, "length").unwrap().unwrap();
+        assert_eq!(len.value.and_then(|v| v.as_int32()), Some(3));
         let np = cx.intrinsic(IntrinsicId::NumberPrototype);
-        assert!(cx.new_wrapper(np, Local::int32(3)).is_err());
-        assert_eq!(
-            take_error(cx, rt),
-            "Error: not implemented in ep9 v0: wrapper objects for primitives"
-        );
+        let w = cx.new_wrapper(np, Local::int32(3)).unwrap();
+        let inner = cx.this_primitive_value(w, PrimitiveType::Number).unwrap();
+        assert_eq!(inner.as_int32(), Some(3));
         // SameValue and IsStrictlyEqual.
         let nan = Local::number(f64::NAN);
         assert!(cx.same_value(nan, nan) && !cx.is_strictly_equal(nan, nan));
@@ -870,11 +870,16 @@ fn object_ops_and_conversions() {
             .unwrap();
         let ep = cx.intrinsic(IntrinsicId::ErrorPrototype);
         assert!(cx.get_prototype_of(made).unwrap().is_same_bits(&ep));
-        // Symbols come with P2.
-        assert!(cx.new_symbol(Local::undefined()).is_err());
-        assert_eq!(
-            take_error(cx, rt),
-            "Error: not implemented in ep9 v0: symbols"
-        );
+        // Symbols (P2-SYM).
+        let s = cx.new_symbol(Local::undefined()).unwrap();
+        assert!(cx.symbol_description(s).is_undefined());
+        let d = cx.new_string("d").unwrap();
+        let s = cx.new_symbol(d).unwrap();
+        let text = cx.descriptive_string(s).unwrap();
+        assert_eq!(cx.to_rust_string(text).unwrap(), "Symbol(d)");
+        assert!(cx.key_for(s).is_none());
+        let r = cx.symbol_for(d).unwrap();
+        assert!(cx.symbol_for(d).unwrap().is_same_bits(&r));
+        assert!(cx.key_for(r).is_some_and(|k| cx.same_value(k, d)));
     });
 }

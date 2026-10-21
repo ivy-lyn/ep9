@@ -263,9 +263,8 @@ impl IntrinsicId {
 pub(crate) fn intrinsic(rt: &Runtime, id: IntrinsicId) -> u64 {
     match id.root() {
         Some(r) => rt.root(r),
-        // P2-SYM keeps %Symbol.prototype% in symbol.rs (`symbol::prototype(rt)` on its
-        // branch); this base has no symbols yet, so it does not exist (merge note in H20).
-        None => UNDEFINED,
+        // %Symbol.prototype% lives in symbol.rs.
+        None => symbol::prototype(rt),
     }
 }
 

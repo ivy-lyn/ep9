@@ -300,7 +300,6 @@ fn alloc_symbol(rt: &Runtime, description: u64, flags: i32) -> u64 {
 
 /// A new symbol whose `[[Description]]` is `description` (a string or undefined). This is
 /// `Symbol(description)` after its ToString step. GC point.
-#[allow(dead_code)] // callers: P2-BTAB (`Cx::new_symbol`), P3-BLTB (the Symbol constructor)
 pub(crate) fn new_symbol(rt: &Runtime, description: u64) -> u64 {
     alloc_symbol(rt, description, 0)
 }
@@ -374,7 +373,6 @@ pub(crate) fn prototype(rt: &Runtime) -> u64 {
 /// `Symbol.for(key)` steps 2-6 (§20.4.2.2) for the string `key` (the caller did ToString):
 /// the registry's symbol for that text, or a new registered symbol whose description is the
 /// key. GC point.
-#[allow(dead_code)] // callers: P2-BTAB (`abi` symbol_for), P3-BLTB (`Symbol.for`)
 pub(crate) fn symbol_for(cx: &mut Cx, key: u64) -> u64 {
     debug_assert!(is_string(key));
     let key = string::flatten(cx, key);
@@ -393,7 +391,6 @@ pub(crate) fn symbol_for(cx: &mut Cx, key: u64) -> u64 {
 
 /// KeyForSymbol (§20.4.5.1): the registry key of `sym` (a string), or undefined if `sym` is
 /// not registered. A registered symbol's description is its key. Not a GC point.
-#[allow(dead_code)] // callers: P2-BTAB (`abi` key_for), P3-BLTB (`Symbol.keyFor`)
 pub(crate) fn key_for(sym: u64) -> u64 {
     if is_registered(sym) {
         description(sym)
@@ -423,7 +420,6 @@ pub(crate) fn descriptive_text(sym: u64) -> String {
 
 /// SymbolDescriptiveString (§20.4.3.3.1): the string "Symbol(" + description + ")". Throws
 /// RangeError "Invalid string length" past the string limit. GC point.
-#[allow(dead_code)] // callers: P2-BTAB (`abi` descriptive_string), P3-BLTB (String(sym))
 pub(crate) fn descriptive_string(cx: &mut Cx, sym: u64) -> Res<u64> {
     let d = description(sym);
     let mut units: Vec<u16> = "Symbol(".encode_utf16().collect();
