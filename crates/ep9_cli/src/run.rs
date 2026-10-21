@@ -317,8 +317,8 @@ mod tests {
         assert_eq!(line.unwrap(), "Symbol(x) Symbol() x 1\n");
     }
 
-    /// The hooks reach the front end: a script compiles, eval and `Function()` are still
-    /// `Unsupported` (M2-P0), and an early error is a `Syntax` failure.
+    /// The hooks reach the front end: a script and eval code compile (P2-EVAL-FE), `Function()`
+    /// is still `Unsupported` (M2-P0), and an early error is a `Syntax` failure.
     #[test]
     fn the_compiler_hooks_reach_the_front_end() {
         let iso = Isolate::new(IsolateConfig {
@@ -333,10 +333,11 @@ mod tests {
             Err(CompileFailure::Syntax(_))
         ));
         let ctx = EvalContext::default();
-        assert_eq!(
-            (hooks.compile_eval)("1", &ctx).unwrap_err(),
-            CompileFailure::Unsupported("eval".to_string())
-        );
+        assert!((hooks.compile_eval)("1", &ctx).is_ok());
+        assert!(matches!(
+            (hooks.compile_eval)("return 1", &ctx),
+            Err(CompileFailure::Syntax(_))
+        ));
         assert_eq!(
             (hooks.compile_function)(FunctionCtorKind::Normal, "a", "return a").unwrap_err(),
             CompileFailure::Unsupported("Function constructor".to_string())
