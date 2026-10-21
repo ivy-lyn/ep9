@@ -113,6 +113,7 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
             ..HeapConfig::default()
         },
         dispatch: opts.dispatch,
+        feedback_threshold: opts.feedback_threshold,
         ..IsolateConfig::default()
     };
     let mut isolate = match Isolate::new(config) {
