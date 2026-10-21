@@ -449,6 +449,32 @@ const CASES: &[(&str, Mode, &str)] = &[
         Module,
         "let x = 1; export const y = () => x; x = 2;",
     ),
+    // ---- generators (M2-P1-GEN-CG) ----
+    (
+        "gen-basic",
+        Sloppy,
+        "function* g(a) { var x = yield a; yield; return x + new.target; } var e = function* () {}; ({ *m() { yield this; } });",
+    ),
+    (
+        "gen-finally",
+        Sloppy,
+        "function* g(f) { try { yield 1; } catch (e) { yield e; } finally { f(); } return 2; }",
+    ),
+    (
+        "gen-for-of",
+        Sloppy,
+        "function* g(xs) { for (const x of xs) { yield () => x; } }",
+    ),
+    (
+        "gen-labeled-nested-loop",
+        Sloppy,
+        "function* g(n) { outer: for (let i = 0; i < n; i++) { let f = () => i; while (true) { if (yield f) continue outer; break outer; } } }",
+    ),
+    (
+        "gen-yield-star",
+        Strict,
+        "function* g(it) { var r = yield* it; return r; }",
+    ),
     // ---- strict and misc ----
     (
         "strict-script",
@@ -690,12 +716,12 @@ fn entry_points() {
 #[test]
 fn unsupported_constructs_name_the_feature() {
     for (src, feature) in [
-        ("function* g() {}", "generator functions"),
-        // M2 P0 routing keeps the texts (generator.rs, class_fields.rs).
+        // Async generators keep the "generator functions" text until month 3 (generator.rs).
         ("async function* g() {}", "generator functions"),
-        ("(function* () {})", "generator functions"),
-        ("({ *m() {} })", "generator functions"),
-        ("{ function* g() {} }", "generator functions"),
+        ("(async function* () {})", "generator functions"),
+        ("({ async *m() {} })", "generator functions"),
+        ("{ async function* g() {} }", "generator functions"),
+        ("class A { static async *m() {} }", "generator functions"),
         ("class A { accessor x = 1 }", "class auto-accessors"),
         ("class A { static #m() {} }", "private names"),
         ("async function f() {}", "async functions"),
@@ -723,7 +749,7 @@ fn unsupported_constructs_name_the_feature() {
 #[test]
 fn unsupported_reports_a_position() {
     let Err(CodegenError::Unsupported(u)) =
-        compile_script("1;\n  function* g() {}", Strictness::Sloppy)
+        compile_script("1;\n  async function* g() {}", Strictness::Sloppy)
     else {
         panic!("expected Unsupported");
     };
