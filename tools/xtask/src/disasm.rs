@@ -231,15 +231,19 @@ pub fn main(args: &[String]) -> Result<bool, String> {
     Ok(all)
 }
 
-/// Builds the crate as a staticlib for `target` and returns (staticlib, LLVM IR file).
-fn build(o: &Opts, target: &str) -> Result<(PathBuf, PathBuf), String> {
-    let base = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| repo_root().join("target"));
-    let tdir = base.join("xtask-disasm");
-    fs::create_dir_all(&tdir).map_err(|e| e.to_string())?;
-    // Extra rustc args get their own IR file name (FNV-1a hash of the args). Cargo
-    // fingerprints the args, so it rebuilds the staticlib when they change.
+/// The IR file name (without `.ll`) for one build: the package (or the manifest's directory when
+/// no `-p` is given), the target, the toolchain, the features, and a hash of extra rustc args.
+/// Two crates checked from one target dir (ep9_vm, then the SP-Dispatch spike) must never share
+/// an IR file: a cached build does not rewrite it, so the second check would read the first
+/// crate's IR. Cargo fingerprints the extra args, so it rebuilds the staticlib when they change.
+fn ir_tag(o: &Opts, target: &str) -> String {
+    let package = o.package.clone().unwrap_or_else(|| {
+        o.manifest
+            .parent()
+            .and_then(|d| d.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "crate".into())
+    });
     let rargs = if o.rustc_args.is_empty() {
         String::new()
     } else {
@@ -248,8 +252,8 @@ fn build(o: &Opts, target: &str) -> Result<(PathBuf, PathBuf), String> {
         });
         format!("-r{h:08x}")
     };
-    let tag = format!(
-        "{target}{}{}{rargs}",
+    format!(
+        "{package}-{target}{}{}{rargs}",
         o.toolchain
             .as_deref()
             .map(|t| format!("-{t}"))
@@ -258,8 +262,17 @@ fn build(o: &Opts, target: &str) -> Result<(PathBuf, PathBuf), String> {
             .as_deref()
             .map(|f| format!("-{}", f.replace([',', ' '], "+")))
             .unwrap_or_default()
-    );
-    let ll = tdir.join(format!("{tag}.ll"));
+    )
+}
+
+/// Builds the crate as a staticlib for `target` and returns (staticlib, LLVM IR file).
+fn build(o: &Opts, target: &str) -> Result<(PathBuf, PathBuf), String> {
+    let base = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo_root().join("target"));
+    let tdir = base.join("xtask-disasm");
+    fs::create_dir_all(&tdir).map_err(|e| e.to_string())?;
+    let ll = tdir.join(format!("{}.ll", ir_tag(o, target)));
     let mut cmd = match &o.toolchain {
         Some(tc) => {
             let mut c = Command::new("rustup");
@@ -1440,6 +1453,24 @@ fn check_loops(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Local CI checked ep9_vm and then the spike from one target dir; the cached spike build did
+    // not rewrite `<target>.ll`, so the spike check read ep9_vm's IR ("no LLVM IR definition").
+    #[test]
+    fn ir_file_names_differ_per_crate() {
+        let t = "aarch64-apple-darwin";
+        let spike = parse_opts(&[]).unwrap();
+        let vm = parse_opts(&[
+            "--manifest-path".into(),
+            "crates/ep9_vm/Cargo.toml".into(),
+            "-p".into(),
+            "ep9_vm".into(),
+        ])
+        .unwrap();
+        assert_ne!(ir_tag(&spike, t), ir_tag(&vm, t));
+        assert_eq!(ir_tag(&spike, t), format!("sp-dispatch-{t}"));
+        assert_eq!(ir_tag(&vm, t), format!("ep9_vm-{t}"));
+    }
 
     fn insn(text: &str, reloc: Option<&str>) -> Insn {
         Insn {
