@@ -236,50 +236,51 @@ fn call_global(s: &mut Asm, f: &str, args: &[f64], name: &str) {
 
 // ---- resume protocol ----------------------------------------------------------------------
 
+/// The program of [`next_runs_to_each_yield_and_the_return_completes`].
+fn basic_unit() -> VerifiedUnit {
+    // function* g(a) { const x = yield a; yield x + 1; return a * 10; }
+    let mut g = Gen::new(gen_meta("g", 1), 2, 1);
+    let (a, x) = (g.s.b.parameter(0), g.r[0]);
+    g.s.b.ldar(a);
+    g.yield_(1);
+    g.s.b.star(x).ldar(x).add_smi(1, g.s.bin);
+    g.yield_(2);
+    g.s.b.ldar(a).mul_smi(10, g.s.bin).return_();
+    let mut s = Asm::script(0);
+    let c = Calls::new(&mut s);
+    define(&mut s, 1, "g");
+    call_global(&mut s, "g", &[5.0], "it");
+    c.step(&mut s, "it", "next", Some(99.0)); // the first sent value is dropped
+    c.step(&mut s, "it", "next", Some(7.0));
+    c.step(&mut s, "it", "next", None);
+    c.step(&mut s, "it", "next", None);
+    c.step(&mut s, "it", "return", Some(3.0));
+    // A completed generator rethrows what `throw` gets.
+    c.try_print(&mut s, |s| c.call(s, "it", "throw", Some(9.0)));
+    s.b.lda_undefined().return_();
+    unit("", vec![s.finish(), g.finish()])
+}
+
 #[test]
 fn next_runs_to_each_yield_and_the_return_completes() {
-    fn make() -> VerifiedUnit {
-        // function* g(a) { const x = yield a; yield x + 1; return a * 10; }
-        let mut g = Gen::new(gen_meta("g", 1), 2, 1);
-        let (a, x) = (g.s.b.parameter(0), g.r[0]);
-        g.s.b.ldar(a);
-        g.yield_(1);
-        g.s.b.star(x).ldar(x).add_smi(1, g.s.bin);
-        g.yield_(2);
-        g.s.b.ldar(a).mul_smi(10, g.s.bin).return_();
-        let mut s = Asm::script(0);
-        let c = Calls::new(&mut s);
-        define(&mut s, 1, "g");
-        call_global(&mut s, "g", &[5.0], "it");
-        c.step(&mut s, "it", "next", Some(99.0)); // the first sent value is dropped
-        c.step(&mut s, "it", "next", Some(7.0));
-        c.step(&mut s, "it", "next", None);
-        c.step(&mut s, "it", "next", None);
-        c.step(&mut s, "it", "return", Some(3.0));
-        // A completed generator rethrows what `throw` gets.
-        c.try_print(&mut s, |s| c.call(s, "it", "throw", Some(9.0)));
-        s.b.lda_undefined().return_();
-        unit("", vec![s.finish(), g.finish()])
-    }
-    let r = run_all(make);
+    let r = run_all(basic_unit);
     ok(&r);
-    assert_eq!(
-        r.output,
-        [
-            "5",
-            "false",
-            "8",
-            "false",
-            "50",
-            "true",
-            "undefined",
-            "true",
-            "3",
-            "true",
-            "9"
-        ]
-    );
+    assert_eq!(r.output, BASIC_OUT);
 }
+
+const BASIC_OUT: [&str; 11] = [
+    "5",
+    "false",
+    "8",
+    "false",
+    "50",
+    "true",
+    "undefined",
+    "true",
+    "3",
+    "true",
+    "9",
+];
 
 #[test]
 fn return_and_throw_resume_at_a_suspend_point_and_at_the_start() {
@@ -378,68 +379,87 @@ fn throw_is_caught_inside_the_body_and_the_handler_context_survives() {
     assert_eq!(r.output, ["1", "false", "42", "false", "0", "true"]);
 }
 
+/// The program of [`a_block_context_and_the_parameters_and_this_survive_a_suspend`].
+fn context_unit() -> VerifiedUnit {
+    // function* g(a, b) { { let t = a * 5; yield this.x; yield t * 2; } yield b; }
+    let mut g = Gen::new(gen_meta("g", 2), 3, 1);
+    let save = g.r[0];
+    let (a, b) = (g.s.b.parameter(0), g.s.b.parameter(1));
+    let this = g.s.b.receiver();
+    let kb = g.s.b.scope_constant(ScopeId(0));
+    g.s.b.create_block_context(kb).push_context(save);
+    g.s.b
+        .ldar(a)
+        .mul_smi(5, g.s.bin)
+        .sta_current_context_slot(0);
+    g.get_this_x(this);
+    g.yield_(1);
+    g.s.b.lda_current_context_slot(0).mul_smi(2, g.s.bin);
+    g.yield_(2);
+    g.s.b.pop_context(save);
+    g.s.b.ldar(b);
+    g.yield_(3);
+    g.s.b.lda_undefined().return_();
+    // o = {x: 3}; o.g = g; it = o.g(4)  (b is missing: padded with undefined)
+    let mut s = Asm::script(0);
+    let c = Calls::new(&mut s);
+    define(&mut s, 1, "g");
+    s.b.create_empty_object_literal().star(c.o);
+    s.lda_num(3.0);
+    s.set_named(c.o, "x");
+    s.lda_global("g");
+    s.set_named(c.o, "g");
+    s.get_named(c.o, "g");
+    s.b.star(c.m);
+    s.lda_num(4.0);
+    s.b.star(c.x);
+    s.b.call_property1(c.m, c.o, c.x, s.call);
+    s.sta_global("it");
+    for _ in 0..4 {
+        c.step(&mut s, "it", "next", None);
+    }
+    s.b.lda_undefined().return_();
+    unit_with_scopes(
+        "",
+        vec![(ScopeKind::Block, None, vec![("t", VariableMode::Let)])],
+        vec![s.finish(), g.finish()],
+    )
+}
+
 #[test]
 fn a_block_context_and_the_parameters_and_this_survive_a_suspend() {
-    fn make() -> VerifiedUnit {
-        // function* g(a, b) { { let t = a * 5; yield this.x; yield t * 2; } yield b; }
-        let mut g = Gen::new(gen_meta("g", 2), 3, 1);
-        let save = g.r[0];
-        let (a, b) = (g.s.b.parameter(0), g.s.b.parameter(1));
-        let this = g.s.b.receiver();
-        let kb = g.s.b.scope_constant(ScopeId(0));
-        g.s.b.create_block_context(kb).push_context(save);
-        g.s.b
-            .ldar(a)
-            .mul_smi(5, g.s.bin)
-            .sta_current_context_slot(0);
-        g.get_this_x(this);
-        g.yield_(1);
-        g.s.b.lda_current_context_slot(0).mul_smi(2, g.s.bin);
-        g.yield_(2);
-        g.s.b.pop_context(save);
-        g.s.b.ldar(b);
-        g.yield_(3);
-        g.s.b.lda_undefined().return_();
-        // o = {x: 3}; o.g = g; it = o.g(4)  (b is missing: padded with undefined)
-        let mut s = Asm::script(0);
-        let c = Calls::new(&mut s);
-        define(&mut s, 1, "g");
-        s.b.create_empty_object_literal().star(c.o);
-        s.lda_num(3.0);
-        s.set_named(c.o, "x");
-        s.lda_global("g");
-        s.set_named(c.o, "g");
-        s.get_named(c.o, "g");
-        s.b.star(c.m);
-        s.lda_num(4.0);
-        s.b.star(c.x);
-        s.b.call_property1(c.m, c.o, c.x, s.call);
-        s.sta_global("it");
-        for _ in 0..4 {
-            c.step(&mut s, "it", "next", None);
-        }
-        s.b.lda_undefined().return_();
-        unit_with_scopes(
-            "",
-            vec![(ScopeKind::Block, None, vec![("t", VariableMode::Let)])],
-            vec![s.finish(), g.finish()],
-        )
-    }
-    let r = run_all(make);
+    let r = run_all(context_unit);
     ok(&r);
-    assert_eq!(
-        r.output,
-        [
-            "3",
-            "false",
-            "40",
-            "false",
-            "undefined",
-            "false",
-            "undefined",
-            "true"
-        ]
-    );
+    assert_eq!(r.output, CONTEXT_OUT);
+}
+
+const CONTEXT_OUT: [&str; 8] = [
+    "3",
+    "false",
+    "40",
+    "false",
+    "undefined",
+    "false",
+    "undefined",
+    "true",
+];
+
+/// The copy paths (`SuspendGenerator`, `ResumeGenerator`, the resumed frame push with the saved
+/// parameters, `this` and context) in one configuration without GC stress: the tests that
+/// MIRI(ep9_vm) is meant to run (`cargo miri test -p ep9_vm --lib copy_path`, plan-v3
+/// P1-GEN-VM). Miri does not run the conservative stack scan, so GC-stress runs are not valid
+/// under it. Today no ep9_vm isolate starts under Miri: its 8 MiB stand-in reservation cannot
+/// hold the shape space or meet the cage alignment that `shape::init` asserts.
+#[test]
+fn copy_path_suspend_resume_and_the_saved_frame() {
+    for (make, want) in [
+        (basic_unit as fn() -> VerifiedUnit, &BASIC_OUT[..]),
+        (context_unit, &CONTEXT_OUT[..]),
+    ] {
+        let r = super::run_in(config(Dispatch::Match, false), make());
+        ok(&r);
+        assert_eq!(r.output, want);
+    }
 }
 
 impl Gen {
