@@ -1,7 +1,7 @@
 //! BytecodeGen v0: JS source -> [`CompiledUnit`](ep9_bytecode::CompiledUnit) (bytecode ABI 3).
 //!
 //! ```text
-//! compile_script / compile_module / compile
+//! compile_script / compile_module / compile (and eval.rs compile_eval: own parse job, Eval root)
 //!   | with_front_end: parse, depth guard, oxc_semantic (on the sized-stack worker)
 //!   | scope::analyze -> ScopeAnalysis (bindings, locations, hops, hole checks)
 //!   v
@@ -36,10 +36,10 @@ use std::collections::VecDeque;
 use std::fmt;
 
 use ep9_bytecode::{
-    BuildError, CodeKind, FunctionBuilder, FunctionFlags, FunctionMeta, ScopeFlags, UnitBuilder,
-    UnitOptions, UnitString, VariableMode, VerifiedUnit,
+    BuildError, CodeKind, FeedbackSlotKind, FunctionBuilder, FunctionFlags, FunctionMeta, Register,
+    RuntimeId, ScopeFlags, UnitBuilder, UnitOptions, UnitString, VariableMode, VerifiedUnit,
 };
-use oxc_ast::ast::{ArrowFunctionExpression, Class, FormalParameters, Function};
+use oxc_ast::ast::{ArrowFunctionExpression, Class, FormalParameters, Function, Program};
 
 use crate::scope::{
     BindingId, BindingKind, BindingLocation, FunctionId, FunctionInfo, FunctionKind, Resolution,
@@ -70,7 +70,7 @@ mod stack_tests;
 #[cfg(test)]
 mod tests;
 
-use func::FnGen;
+use func::{FnGen, Gen};
 
 /// Options for the produced unit (not the source).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -240,6 +240,8 @@ pub(crate) struct UnitCtx<'s> {
     pub(crate) source: &'s str,
     pub(crate) sa: &'s ScopeAnalysis,
     pub(crate) module: bool,
+    /// The code kind of the unit (and of function 0).
+    pub(crate) code: CodeKind,
     /// Contexts from the root down to each scope (inclusive).
     pub(crate) depth: Vec<u32>,
     /// Per binding: a TDZ binding that needs an explicit hole store at scope entry.
@@ -304,16 +306,26 @@ pub(crate) fn module_cells(sa: &ScopeAnalysis) -> Vec<i32> {
     cells
 }
 
-fn generate(
+/// The unit for `fe` from its scope analysis. The code kind follows the goal, and eval code
+/// (`eval.rs`) is recognized by its [`ScopeKind::Eval`] root.
+pub(crate) fn generate(
     fe: &FrontEnd<'_>,
     sa: &ScopeAnalysis,
     options: CompileOptions,
 ) -> Result<VerifiedUnit, CodegenError> {
     let module = fe.opts.goal() == Goal::Module;
+    let code = if module {
+        CodeKind::Module
+    } else if sa.scopes()[0].kind == ScopeKind::Eval {
+        CodeKind::Eval
+    } else {
+        CodeKind::Script
+    };
     let cx = UnitCtx {
         source: fe.source,
         sa,
         module,
+        code,
         depth: context_depths(sa),
         needs_hole: hole_bindings(sa),
         needs_entry_ctx: Vec::new(),
@@ -327,18 +339,14 @@ fn generate(
     let mut unit = UnitBuilder::new(
         fe.source,
         UnitOptions {
-            code_kind: if module {
-                CodeKind::Module
-            } else {
-                CodeKind::Script
-            },
+            code_kind: code,
             strict,
             typescript: None,
             engine_build_id: options.engine_build_id,
             embed_source: options.embed_source,
         },
     );
-    cx.script_ctx_scope = add_scopes(&mut unit, sa, module);
+    cx.script_ctx_scope = add_scopes(&mut unit, sa, code);
 
     let mut done = vec![false; sa.functions().len()];
     let mut queue: VecDeque<Job<'_>> = VecDeque::new();
@@ -374,16 +382,16 @@ fn gen_job<'a>(
         Job::Program => {
             let info = &sa.functions()[0];
             let meta = FunctionMeta::entry(
-                if cx.module {
-                    CodeKind::Module
-                } else {
-                    CodeKind::Script
-                },
+                cx.code,
                 info.strict,
                 u32::try_from(fe.source.len()).unwrap_or(u32::MAX),
             );
             let mut g = FnGen::new(cx, info, meta);
-            g.gen_program(fe.program)?;
+            if cx.code == CodeKind::Eval {
+                g.gen_eval_program(fe.program)?;
+            } else {
+                g.gen_program(fe.program)?;
+            }
             let (code, jobs) = g.finish()?;
             Ok((info.id, code, jobs))
         }
@@ -578,6 +586,7 @@ fn unit_scope_kind(kind: ScopeKind) -> ep9_bytecode::ScopeKind {
     match kind {
         ScopeKind::Script => K::Script,
         ScopeKind::Module => K::Module,
+        ScopeKind::Eval => K::Eval,
         ScopeKind::Function => K::Function,
         ScopeKind::Catch => K::Catch,
         ScopeKind::With => K::With,
@@ -614,20 +623,21 @@ pub(crate) fn variable_mode(kind: BindingKind) -> VariableMode {
     }
 }
 
-/// One descriptor per analysis scope (same ids), plus the script context descriptor (G3).
 /// One descriptor per analysis scope, in analysis order (G3). A script whose top level needs a
 /// context (captured `this`, direct eval) gets the script context descriptor as unit scope 1
 /// (kind Function, outer scope 0); every later scope moves up by one, and the children of
 /// scope 0 get it as their outer scope. Scope 0 of a script lists the global declarations for
-/// `DeclareGlobals` and never has a context.
+/// `DeclareGlobals` and never has a context. Scope 0 of eval code (kind Eval) is an ordinary
+/// scope: its own context (`CreateEvalContext`) when it needs one.
 fn add_scopes(
     unit: &mut UnitBuilder,
     sa: &ScopeAnalysis,
-    module: bool,
+    code: CodeKind,
 ) -> Option<ep9_bytecode::ScopeId> {
     let name = |b: BindingId| UnitString::new(sa.name(sa.binding(b).name));
     let root = &sa.scopes()[0];
-    let script_ctx = (!module && root.needs_context).then_some(ep9_bytecode::ScopeId(1));
+    let script = code == CodeKind::Script;
+    let script_ctx = (script && root.needs_context).then_some(ep9_bytecode::ScopeId(1));
     let shifted = script_ctx.is_some();
     for s in sa.scopes() {
         let mut flags = ScopeFlags::default();
@@ -637,7 +647,7 @@ fn add_scopes(
         if s.sloppy_eval {
             flags = flags | ScopeFlags::CALLS_SLOPPY_EVAL;
         }
-        let script_top = s.id.0 == 0 && !module;
+        let script_top = s.id.0 == 0 && script;
         if s.needs_context && !script_top {
             flags = flags | ScopeFlags::NEEDS_CONTEXT;
         }
@@ -699,4 +709,127 @@ pub(crate) fn new_builder(info: &FunctionInfo, meta: FunctionMeta) -> FunctionBu
         b.new_register_list(info.register_count);
     }
     b
+}
+
+// ---------------------------------------------------------------------------------------------
+// Eval code
+
+/// The completion value binding of eval code: a root binding (`scope/resolve.rs`
+/// `declare_synthetic`) that every value-producing statement of the rewritten program stores
+/// into (`eval.rs`, the V8 Rewriter model). No JS source can name it.
+pub(crate) const EVAL_RESULT: &str = ".result";
+
+impl<'a> FnGen<'a, '_> {
+    /// Function 0 of eval code: ECMA-262 EvalDeclarationInstantiation (§19.2.1.3), the body,
+    /// and the completion value (PerformEval steps 29-30).
+    ///
+    /// ```text
+    /// [CreateEvalContext scope0, [n]; PushContext]   the eval scope needs a context
+    /// [Ldar <this>; Sta.. this]                      indirect eval: `this` in a context slot
+    /// hole stores (G8)
+    /// strict:  CreateClosure + store, per hoisted function (local bindings)
+    /// sloppy:  CreateClosure; CallRuntime DeclareEvalFunction (name, closure), per function
+    ///          CallRuntime DeclareEvalVar (name), per other `var` name
+    /// statements
+    /// load .result (or LdaUndefined); Return
+    /// ```
+    ///
+    /// Sloppy functions follow the spec order of `functionsToInitialize`: one per name, the
+    /// last declaration wins, ordered by that declaration, all before the `var` names (in
+    /// declaration order). The VM does the checks of EvalDeclarationInstantiation steps 3-8
+    /// in the two runtime functions (P3-EVAL-VM).
+    pub(crate) fn gen_eval_program(&mut self, program: &'a Program<'a>) -> Gen {
+        let root = ScopeId(0);
+        self.scope = root;
+        let root_info = self.sa.scope(root);
+        if root_info.needs_context {
+            let n = root_info.context_slots.len() as u32;
+            self.push_context(root, |g| {
+                let k = g.b.scope_constant(g.cx.unit_scope(root));
+                g.b.create_eval_context(k, n);
+            });
+        }
+        // Indirect eval code has its own `this` (the global this, as the VM's receiver);
+        // direct eval code looks the caller's up by name.
+        if let Some(t) = self.info.this
+            && matches!(self.binding(t).location, BindingLocation::Context { .. })
+        {
+            self.b.ldar(Register::RECEIVER);
+            self.store_binding_init(t);
+        }
+        self.init_holes(root);
+        if root_info.strict {
+            self.hoist_functions(root)?;
+        } else {
+            self.declare_eval_bindings(root)?;
+        }
+        self.statements(&program.body)?;
+        let result = root_info
+            .bindings
+            .iter()
+            .copied()
+            .find(|&b| self.sa.name(self.binding(b).name) == EVAL_RESULT);
+        match result {
+            Some(b) => self.load_binding_here(b, false),
+            None => {
+                self.b.lda_undefined();
+            }
+        }
+        self.b.return_();
+        Ok(())
+    }
+
+    /// The sloppy eval prologue: `DeclareEvalFunction` and `DeclareEvalVar` (ids 27-28).
+    fn declare_eval_bindings(&mut self, root: ScopeId) -> Gen {
+        let root_info = self.sa.scope(root);
+        // functionsToInitialize: walk the declarations backwards, keep the first of each name,
+        // and put it in front.
+        let mut functions: Vec<(BindingId, crate::scope::FunctionId)> = Vec::new();
+        for &(b, f) in root_info.hoisted_functions.iter().rev() {
+            if functions.iter().all(|&(seen, _)| seen != b) {
+                functions.push((b, f));
+            }
+        }
+        functions.reverse();
+        let vars: Vec<BindingId> = root_info
+            .bindings
+            .iter()
+            .copied()
+            .filter(|&b| self.binding(b).kind == BindingKind::Var)
+            .collect();
+        if functions.is_empty() && vars.is_empty() {
+            return Ok(());
+        }
+        self.b.set_statement_position(0);
+        for (b, f) in functions {
+            let info = self.sa.function(f);
+            let span = oxc_span::Span::new(info.span.start, info.span.end);
+            if info.is_generator {
+                self.check_generator(info.is_async, span)?;
+            } else if info.is_async {
+                return self.unsupported("async functions", span);
+            }
+            self.enter(span)?;
+            let m = self.mark();
+            let args = self.temps(2);
+            let k = self.b.function_constant(ep9_bytecode::FunctionId(f.0));
+            let s = self.slot(FeedbackSlotKind::CreateClosure);
+            self.b.create_closure(k, s, 0);
+            self.b.star(args.get(1));
+            let name = self.name_const(self.binding(b).name);
+            self.b.lda_constant(name).star(args.get(0));
+            self.runtime(RuntimeId::DeclareEvalFunction, args);
+            self.release(m);
+            self.leave();
+        }
+        for b in vars {
+            let m = self.mark();
+            let args = self.temps(1);
+            let name = self.name_const(self.binding(b).name);
+            self.b.lda_constant(name).star(args.get(0));
+            self.runtime(RuntimeId::DeclareEvalVar, args);
+            self.release(m);
+        }
+        Ok(())
+    }
 }

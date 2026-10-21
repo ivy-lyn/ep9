@@ -13,6 +13,20 @@
 //! ScopeAnalysis   plain Rust data: no GC object, no oxc type, deterministic (H2)
 //! ```
 //!
+//! Eval code (`analyze_eval`, P2-EVAL-FE) uses the same walk. The root is then a
+//! [`ScopeKind::Eval`] scope (made after collection: the walk builds a Script root), and
+//! resolution follows ECMA-262 PerformEval and EvalDeclarationInstantiation (§19.2.1.1,
+//! §19.2.1.3):
+//!
+//! | Eval code | Free names (also `#x`) | `this`, `new.target`, `super` | Root `var` and function declarations |
+//! |---|---|---|---|
+//! | direct | Dynamic (C4): looked up by name from the caller's context | Dynamic, by the names `this`, `new.target`, `.home_object`, `.callee` of the caller's context slots | strict: local; sloppy: Dynamic, declared by `DeclareEvalVar` / `DeclareEvalFunction` |
+//! | indirect | Global | `this`: the frame receiver (the global this, as a script) | strict: local; sloppy: Global, declared by `DeclareEvalVar` / `DeclareEvalFunction` |
+//!
+//! Lexical declarations at the eval top level are always local. The completion value `.result`
+//! and its backups (names written by `eval.rs`) are root bindings that no lookup can make
+//! dynamic.
+//!
 //! The pass resolves names itself, on its own scope tree. It does not take the context layout
 //! from the oxc scope tree, because that tree differs from the ECMA-262 environments in places
 //! that change where a binding must live (checked in `tests.rs`,
@@ -242,14 +256,18 @@ pub struct FunctionInfo {
 }
 
 /// What kind of scope. The runtime scope kinds (`ep9_bytecode::ScopeKind`) map as: `Function`,
-/// `Script`, `Module`, `Catch`, `With`, `Class` to themselves; `FunctionName`, `FunctionBody`,
-/// `For`, `Switch`, `StaticBlock` and `Block` to `Block`.
+/// `Script`, `Module`, `Eval`, `Catch`, `With`, `Class` to themselves; `FunctionName`,
+/// `FunctionBody`, `For`, `Switch`, `StaticBlock` and `Block` to `Block`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ScopeKind {
     /// Script top level (global code).
     Script,
     /// Module top level.
     Module,
+    /// Eval code top level: the new lexical environment of PerformEval (and, for strict eval
+    /// code, its new variable environment). Function 0 of an eval unit keeps
+    /// [`FunctionKind::Script`]: it has no own `new.target`, home object or `arguments`.
+    Eval,
     /// The own name of a named function expression (outside the parameters).
     FunctionName,
     /// Parameters (and the body, unless split).
@@ -728,6 +746,15 @@ fn lookup<T>(sorted: &[T], key: impl Fn(&T) -> u32, start: u32) -> Option<&T> {
     sorted.get(i).filter(|t| key(t) == start)
 }
 
+/// Direct or indirect eval code (ECMA-262 §19.2.1.1 PerformEval `direct`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum EvalKind {
+    /// `eval(...)` that calls %eval%: the code sees the caller's scope.
+    Direct,
+    /// Any other call of %eval%: global code.
+    Indirect,
+}
+
 /// Scope pass entry point, on the front-end worker after oxc_semantic. BytecodeGen calls it
 /// first and keeps the result for the whole unit.
 ///
@@ -739,14 +766,42 @@ pub(crate) fn analyze(fe: &FrontEnd<'_>) -> Result<ScopeAnalysis, CompileError> 
     analyze_with_cap(fe, crate::AST_CAP)
 }
 
+/// [`analyze`] for eval code (a Script-goal `fe`): the root becomes a [`ScopeKind::Eval`]
+/// scope after collection, and resolution and allocation follow the module doc table.
+///
+/// # Errors
+///
+/// As [`analyze`].
+pub(crate) fn analyze_eval(
+    fe: &FrontEnd<'_>,
+    kind: EvalKind,
+) -> Result<ScopeAnalysis, CompileError> {
+    analyze_full(fe, crate::AST_CAP, Some(kind))
+}
+
 /// [`analyze`] with a given depth cap (tests use a small one to reach layer 3).
 pub(crate) fn analyze_with_cap(fe: &FrontEnd<'_>, cap: u32) -> Result<ScopeAnalysis, CompileError> {
+    analyze_full(fe, cap, None)
+}
+
+/// The scope pass for a script or module (`eval` = `None`) or for eval code.
+fn analyze_full(
+    fe: &FrontEnd<'_>,
+    cap: u32,
+    eval: Option<EvalKind>,
+) -> Result<ScopeAnalysis, CompileError> {
     let mut builder = collect::Builder::new(fe, cap);
     builder.collect(fe.program);
     if let Some(at) = builder.too_deep {
         return Err(RangeError::too_deep(DepthLayer::Pass, fe.source, Some(at)).into());
     }
-    builder.resolve();
+    if eval.is_some() {
+        // The walk made a Script root (collect.rs `visit_program`); its function 0 keeps
+        // FunctionKind::Script.
+        debug_assert_eq!(builder.scopes[0].kind, ScopeKind::Script);
+        builder.scopes[0].kind = ScopeKind::Eval;
+    }
+    builder.resolve(eval);
     builder.allocate();
     Ok(builder.finish())
 }
