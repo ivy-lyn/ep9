@@ -1387,15 +1387,39 @@ impl<'a, 's> FnGen<'a, 's> {
         }
         let m = self.mark();
         let callee = self.temp();
-        self.expr(&c.callee)?;
-        self.b.star(callee);
         let n = c.arguments.len() as u32;
-        let list = self.temps(n);
-        self.arguments_into(&c.arguments, list, 0)?;
+        // A Dynamic `eval` (inside `with` or a sloppy-eval scope) is loaded with its receiver
+        // (LoadLookupSlotForCall, M2-P2-L5-OPEN): a `with` object's own `eval` that is not
+        // %eval% is then called as a method of that object (§13.3.6.1 step 4, WithBaseObject).
+        // Direct eval code does not read its receiver, so the closure from
+        // ResolvePossiblyDirectEval gets the same call.
+        let dynamic = match c.callee.without_parentheses() {
+            Expression::Identifier(id)
+                if matches!(
+                    self.reference_of(id)?.resolution,
+                    Resolution::Dynamic { .. }
+                ) =>
+            {
+                Some(id)
+            }
+            _ => None,
+        };
+        let (list, first) = match dynamic {
+            Some(id) => {
+                let list = self.dynamic_callee(&c.callee, id, callee, n)?;
+                (list.expect("dynamic_callee gives a receiver list"), 1)
+            }
+            None => {
+                self.expr(&c.callee)?;
+                self.b.star(callee);
+                (self.temps(n), 0)
+            }
+        };
+        self.arguments_into(&c.arguments, list, first)?;
         let resolve = self.temps(5);
         self.b.mov(callee, resolve.get(0));
         if n > 0 {
-            self.b.mov(list.get(0), resolve.get(1));
+            self.b.mov(list.get(first), resolve.get(1));
         } else {
             self.b.lda_undefined().star(resolve.get(1));
         }
@@ -1406,7 +1430,7 @@ impl<'a, 's> FnGen<'a, 's> {
         self.expr_pos(c.span.start);
         self.runtime(RuntimeId::ResolvePossiblyDirectEval, resolve);
         self.b.star(callee);
-        self.emit_call(callee, list, false, false);
+        self.emit_call(callee, list, first == 1, false);
         self.release(m);
         Ok(())
     }
