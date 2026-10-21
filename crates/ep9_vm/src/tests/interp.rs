@@ -6,7 +6,7 @@ use ep9_bytecode::{FunctionId, VerifiedUnit};
 
 use super::{Asm, common, config, isolate, meta, ok, on_big_stack, run_all, take_output, unit};
 use crate::dispatch::{CodeRegistry, DispatchKind};
-use crate::{Args, Dispatch, HostCx, IsolateConfig, JsResult, Value};
+use crate::{Args, Cx, Dispatch, IsolateConfig, JsResult, Local};
 
 #[test]
 fn expansions_and_defaults() {
@@ -32,8 +32,13 @@ fn expansions_and_defaults() {
     eprintln!("threaded handlers per expansion: {n}");
 }
 
-fn sp(_cx: &mut HostCx<'_>, _this: Value, _args: Args<'_>, _nt: Value) -> JsResult<Value> {
-    Ok(Value::number(ep9_platform::stack_pointer() as f64))
+fn sp<'s>(
+    _cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Ok(Local::number(ep9_platform::stack_pointer() as f64))
 }
 
 /// f1: function deep(n) { return n === 0 ? sp() : deep(n - 1); }
@@ -209,11 +214,16 @@ fn random_verified_units_never_misbehave() {
     });
 }
 
-fn tag(cx: &mut HostCx<'_>, _this: Value, args: Args<'_>, _nt: Value) -> JsResult<Value> {
+fn tag<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
     let strings = args.get(0);
-    let cooked = cx.get(strings, "0")?;
-    let raw = cx.get(strings, "raw")?;
-    let raw0 = cx.get(raw, "0")?;
+    let cooked = cx.get_v(strings, "0")?;
+    let raw = cx.get_v(strings, "raw")?;
+    let raw0 = cx.get_v(raw, "0")?;
     let line = format!(
         "tag {} {} {}",
         cx.to_rust_string(cooked)?,
@@ -221,7 +231,7 @@ fn tag(cx: &mut HostCx<'_>, _this: Value, args: Args<'_>, _nt: Value) -> JsResul
         cx.to_rust_string(args.get(1))?
     );
     RECORD.with(|r| r.borrow_mut().push(line));
-    Ok(cx.new_string("t"))
+    Ok(cx.new_string("t")?.value())
 }
 
 thread_local! {

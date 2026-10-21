@@ -2,25 +2,25 @@
 
 use std::cell::RefCell;
 
-use crate::{Args, HostCx, JsResult, Value};
+use crate::{Args, Cx, JsResult, Local};
 
 thread_local! {
     static OUT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 /// `print(...args)`: ToString of each argument, joined by spaces, into the test output.
-pub(crate) fn print(
-    cx: &mut HostCx<'_>,
-    _this: Value,
-    args: Args<'_>,
-    _nt: Value,
-) -> JsResult<Value> {
+pub(crate) fn print<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
     let mut parts = Vec::new();
     for v in args.iter() {
         parts.push(cx.to_rust_string(v)?);
     }
     OUT.with(|o| o.borrow_mut().push(parts.join(" ")));
-    Ok(Value::UNDEFINED)
+    Ok(Local::undefined())
 }
 
 /// The lines `print` wrote since the last call.

@@ -6,7 +6,7 @@ use ep9_bytecode::{
 };
 
 use super::{Asm, isolate, meta, ok, run_all, take_output, unit, unit_with_scopes};
-use crate::{Args, Dispatch, ErrorKind, HostCx, JsResult, Value};
+use crate::{Args, Cx, Dispatch, ErrorKind, JsResult, Local, Value};
 
 #[test]
 fn recursion_fib() {
@@ -343,20 +343,35 @@ fn closures_and_contexts() {
     assert_eq!(r.output, ["1", "2", "3", "1"]);
 }
 
-fn call_twice(cx: &mut HostCx<'_>, _this: Value, args: Args<'_>, _nt: Value) -> JsResult<Value> {
+fn call_twice<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
     let f = args.get(0);
-    cx.call(f, Value::UNDEFINED, &[])?;
-    cx.call(f, Value::UNDEFINED, &[])
+    cx.call(f, Local::undefined(), &[])?;
+    cx.call(f, Local::undefined(), &[])
 }
 
-fn fail(cx: &mut HostCx<'_>, _this: Value, _args: Args<'_>, _nt: Value) -> JsResult<Value> {
+fn fail<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
     Err(cx.throw_error(ErrorKind::TypeError, "host says no"))
 }
 
-fn add_host(cx: &mut HostCx<'_>, _this: Value, args: Args<'_>, _nt: Value) -> JsResult<Value> {
+fn add_host<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
     let a = cx.to_number(args.get(0))?;
     let b = cx.to_number(args.get(1))?;
-    Ok(Value::number(a + b))
+    Ok(Local::number(a + b))
 }
 
 #[test]
@@ -440,13 +455,14 @@ fn host_functions_and_reentry() {
     }
 }
 
-fn construct_host(
-    cx: &mut HostCx<'_>,
-    _this: Value,
-    args: Args<'_>,
-    _nt: Value,
-) -> JsResult<Value> {
-    cx.construct(args.get(0), &[])
+fn construct_host<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let f = args.get(0);
+    Ok(cx.construct(f, &[], f)?.value())
 }
 
 /// `try { body } catch (e) { print(e.message); }`

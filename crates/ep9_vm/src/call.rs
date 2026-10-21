@@ -8,21 +8,27 @@
 //! | Rust → JS (`call_function`, host callbacks, ToPrimitive) | push entry frame (return pc = EXIT stub), run the dispatch | one dispatch run, checked |
 //! | `[[Construct]]` from JS | push a stub frame (return pc = construct stub) + callee frame | none |
 //!
-//! Scratch area (frame.rs): a host frame push and an entry frame push clear the VM stack's
-//! scratch top, and so does the return from a host function. So bytecode never runs with a
-//! scratch area, and the JS→JS pushes (T0 fast path, `slow::call`) need not clear it.
+//! Scratch area (frame.rs): Rust code (the builtin ABI's `ArgsBuilder`, H20) may keep Values
+//! above the top frame, up to the VM stack's scratch top. A host frame push and an entry
+//! frame push from Rust start above the scratch area ([`top_of`]) and clear the scratch top,
+//! and the return restores the scratch top the caller had. So bytecode never runs with a
+//! scratch area, the JS→JS pushes (T0 fast path, `slow::call`) need not look at it, and a
+//! Rust caller's scratch Values survive the nested call (they lie below the nested frames).
+//!
+//! Host functions use the builtin ABI (H20, abi/mod.rs). [`call_host`] checks the throw
+//! protocol in debug builds: `Err` comes with a pending exception and `Ok` without one.
 
 use ep9_value::Throw;
 
+use crate::abi::{self, Args, Local};
 use crate::conv::Res;
 use crate::error::{FrameRef, not_implemented, stack_overflow, throw_error};
-use crate::frame::{CONSTRUCT_BIT, HEADER, NULL, UNDEFINED, int32_bits, native_of, slot};
-use crate::host::{Args, HostCx};
+use crate::frame::{CONSTRUCT_BIT, HEADER, HOLE, NULL, UNDEFINED, int32_bits, native_of, slot};
 use crate::interp::{self, Cx, EXIT_STUB};
 use crate::kinds::is_callable;
 use crate::object::{self, function_context, function_info, is_function, is_object};
 use crate::property;
-use crate::runtime::{Atom, ErrorKind, Root, frame_top, val};
+use crate::runtime::{Atom, ErrorKind, Root, Runtime, frame_top};
 use crate::unit::FunctionInfo;
 
 /// Pushes the argument area, header and register file of a frame for `fi` at `base`. Returns
@@ -99,12 +105,29 @@ pub(crate) fn bind_this(fi: &FunctionInfo, this: u64, global: u64) -> u64 {
     }
 }
 
-/// The first free slot above the frame `fp` (the stack base if `fp` is null).
+/// The first free slot above the frame `fp` (the stack base if `fp` is null), or the scratch
+/// top if Rust code keeps scratch Values above that frame.
 pub(crate) fn top_of(cx: &Cx, fp: *mut u64) -> *mut u64 {
-    if fp.is_null() {
-        cx.rt().stack().base()
+    let stack = cx.rt().stack();
+    let top = if fp.is_null() {
+        stack.base()
     } else {
         frame_top(fp)
+    };
+    let scratch = stack.scratch_top();
+    if scratch.addr() > top.addr() {
+        scratch
+    } else {
+        top
+    }
+}
+
+/// Puts back the scratch top a Rust caller had before it entered JS or a host function.
+fn restore_scratch(rt: &Runtime, saved: *mut u64) {
+    if saved.is_null() {
+        rt.stack().clear_scratch();
+    } else {
+        rt.stack().set_scratch_top(saved);
     }
 }
 
@@ -126,8 +149,10 @@ pub(crate) fn call_host(
     if !rt.native_stack_ok() {
         return stack_overflow(cx);
     }
+    let saved = rt.stack().scratch_top();
     let base = top_of(cx, caller_fp);
-    // SAFETY: `base` is the first free slot above `caller_fp`; the limit is the stack end.
+    // SAFETY: `base` is the first free slot above `caller_fp` and its scratch area; the limit
+    // is the stack end.
     let fp = unsafe {
         push_frame(
             base,
@@ -149,24 +174,51 @@ pub(crate) fn call_host(
     let h = fi.host.expect("a host function");
     rt.stack().set_fp(fp);
     rt.stack().clear_scratch();
-    // SAFETY: the host frame stays live until `h` returns; its argument slots hold `argc`
-    // Values from PARAM0 downward.
-    let args = unsafe { Args::new(fp.offset(slot::PARAM0), argc) };
+    // SAFETY: `fp` is the host frame that `push_frame` just wrote; it stays live until `h`
+    // returns.
+    let args = unsafe { Args::from_fp(fp) };
     let r = {
-        let mut hcx = HostCx { cx: &mut *cx };
-        h(&mut hcx, val(this), args, val(new_target))
+        let mut hcx = abi::Cx::new(cx);
+        h(
+            &mut hcx,
+            Local::from_bits(this),
+            args,
+            Local::from_bits(new_target),
+        )
     };
     rt.stack().set_fp(caller_fp);
-    rt.stack().clear_scratch();
-    r.map(|v| v.to_bits())
+    restore_scratch(rt, saved);
+    // H20 R4: the throw protocol.
+    debug_assert!(
+        r.is_ok() || rt.pending() != 0,
+        "host function {:?} returned Err without a pending exception",
+        fi.name
+    );
+    debug_assert!(
+        r.is_err() || rt.pending() == 0,
+        "host function {:?} returned Ok with a pending exception",
+        fi.name
+    );
+    r.map(|v| v.bits())
 }
 
 /// Call(F, thisArg, args) from Rust (§7.3.14). Runs the interpreter for a bytecode callee.
 pub(crate) fn call_function(cx: &mut Cx, f: u64, this: u64, args: &[u64]) -> Res<u64> {
-    call_internal(cx, f, this, args, UNDEFINED)
+    let argc = u32::try_from(args.len()).unwrap_or(u32::MAX);
+    call_with(cx, f, this, argc, |i| args[i as usize], UNDEFINED)
 }
 
-fn call_internal(cx: &mut Cx, f: u64, this: u64, args: &[u64], new_target: u64) -> Res<u64> {
+/// Call(F, thisArg, args) or the call step of `[[Construct]]` (`new_target` not undefined)
+/// from Rust, with `argc` arguments that `arg(i)` reads. The arguments are copied once, into
+/// the callee frame; `arg` may read the caller's frame or scratch area (H20 `call_args`).
+pub(crate) fn call_with(
+    cx: &mut Cx,
+    f: u64,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    new_target: u64,
+) -> Res<u64> {
     let rt = cx.rt();
     if !is_callable(f) {
         let msg = format!("{} is not a function", crate::conv::describe(f));
@@ -181,7 +233,6 @@ fn call_internal(cx: &mut Cx, f: u64, this: u64, args: &[u64], new_target: u64) 
     }
     let fi = function_info(f);
     let caller = rt.stack().fp();
-    let argc = u32::try_from(args.len()).unwrap_or(u32::MAX);
     if fi.host.is_some() {
         return call_host(
             cx,
@@ -189,7 +240,7 @@ fn call_internal(cx: &mut Cx, f: u64, this: u64, args: &[u64], new_target: u64) 
             fi,
             this,
             argc,
-            |i| args[i as usize],
+            arg,
             new_target,
             caller,
             EXIT_STUB.as_ptr(),
@@ -208,8 +259,9 @@ fn call_internal(cx: &mut Cx, f: u64, this: u64, args: &[u64], new_target: u64) 
     }
     poll(cx, caller)?;
     let this = bind_this(fi, this, rt.global());
+    let saved = rt.stack().scratch_top();
     let base = top_of(cx, caller);
-    // SAFETY: `base` is the first free slot above the current top frame.
+    // SAFETY: `base` is the first free slot above the current top frame and its scratch area.
     let fp = unsafe {
         push_frame(
             base,
@@ -218,7 +270,7 @@ fn call_internal(cx: &mut Cx, f: u64, this: u64, args: &[u64], new_target: u64) 
             f,
             this,
             argc,
-            |i| args[i as usize],
+            arg,
             caller,
             EXIT_STUB.as_ptr(),
             function_context(f),
@@ -234,14 +286,27 @@ fn call_internal(cx: &mut Cx, f: u64, this: u64, args: &[u64], new_target: u64) 
     // SAFETY: `fp` is a frame for `fi` that `push_frame` just wrote; its code is verified.
     let r = unsafe { interp::run(cx, fi.code, fp) };
     rt.stack().set_fp(caller);
+    restore_scratch(rt, saved);
     if r == 0 { Err(Throw) } else { Ok(r) }
 }
 
-/// Construct(F, args, newTarget) from Rust (§7.3.15). v0: `new_target` must be `f`.
-pub(crate) fn construct(cx: &mut Cx, f: u64, args: &[u64]) -> Res<u64> {
-    if !object::is_constructor(f) {
-        let msg = format!("{} is not a constructor", crate::conv::describe(f));
-        return Err(throw_error(cx, ErrorKind::TypeError, &msg));
+/// Construct(F, args, newTarget) from Rust (§7.3.15), with `argc` arguments that `arg(i)`
+/// reads. `new_target` must be a constructor; it gives the prototype of the new object
+/// (OrdinaryCreateFromConstructor) and `new.target` in the callee. A derived class
+/// constructor gets no object: its `this` starts uninitialized, as in the `Construct` slow
+/// path.
+pub(crate) fn construct_with(
+    cx: &mut Cx,
+    f: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    new_target: u64,
+) -> Res<u64> {
+    for c in [f, new_target] {
+        if !object::is_constructor(c) {
+            let msg = format!("{} is not a constructor", crate::conv::describe(c));
+            return Err(throw_error(cx, ErrorKind::TypeError, &msg));
+        }
     }
     if !is_function(f) {
         // A bound function: its [[Construct]] comes with Function.prototype.bind.
@@ -249,11 +314,22 @@ pub(crate) fn construct(cx: &mut Cx, f: u64, args: &[u64]) -> Res<u64> {
     }
     let fi = function_info(f);
     if fi.host.is_some() {
-        return call_internal(cx, f, UNDEFINED, args, f);
+        return call_with(cx, f, UNDEFINED, argc, arg, new_target);
     }
-    let this = ordinary_create_from_constructor(cx, f)?;
-    let r = call_internal(cx, f, this, args, f)?;
-    Ok(if is_object(r) { r } else { this })
+    let this = if fi.is_derived() {
+        HOLE
+    } else {
+        ordinary_create_from_constructor(cx, new_target)?
+    };
+    let r = call_with(cx, f, this, argc, arg, new_target)?;
+    // §10.2.2 steps 10-12, as `interp::construct_return` does for JS callers.
+    Ok(if is_object(r) {
+        r
+    } else if this == HOLE {
+        UNDEFINED
+    } else {
+        this
+    })
 }
 
 /// OrdinaryCreateFromConstructor(F, "%Object.prototype%") (§10.1.13).

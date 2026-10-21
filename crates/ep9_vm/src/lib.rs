@@ -12,8 +12,8 @@
 //! ```
 //!
 //! Week-4 modules (stubs until their owners fill them): shape.rs, atoms.rs, symbol.rs,
-//! wrapper.rs, bound.rs, accessor.rs, exotic.rs, ic.rs, feedback.rs, builtins.rs,
-//! descriptor.rs, abi/. Contract versions: [`versions`].
+//! wrapper.rs, bound.rs, accessor.rs, exotic.rs, ic.rs, feedback.rs, builtins.rs. The builtin
+//! ABI v1 (H20) is [`abi`]: `Cx`, `Local`, `Args`, ObjectOps. Contract versions: [`versions`].
 //!
 //! ADRs: H14 frames and dispatch (docs/adr/H14-frames-and-dispatch.md), H15 interpreter
 //! dispatch, H10 rooting, H06 values.
@@ -57,12 +57,17 @@ mod wrapper;
 #[cfg(test)]
 mod tests;
 
-pub use builtins::BuiltinTable;
+pub use abi::{
+    Args, ArgsBuilder, Cx, Downcast, FlatStr, HostFn, IntoKey, JsArray, JsFunction, JsKey,
+    JsObject, JsString, JsSymbol, JsValue, Local, PropertyDescriptor, Rest, ScratchList,
+    ToPrimitiveHint,
+};
+pub use builtins::{BuiltinTable, IntrinsicId};
 pub use dispatch::{
     CodeEntry, CodeRegistry, DispatchKind, DispatchSlot, NO_CODE, RangeRegistry, RegistryError,
 };
 pub use ep9_value::{JsResult, Throw, Value};
-pub use host::{Args, HostCx, HostFn};
+pub use host::HostCx;
 pub use interp::Dispatch;
 pub use isolate::{
     Exception, Isolate, IsolateConfig, IsolateError, SourceLocation, TerminateHandle,

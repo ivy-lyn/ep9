@@ -4,7 +4,7 @@ use std::io::Write as _;
 
 use ep9_frontend::{CodegenError, CompileError, CompileOptions, Position, SourceOpts, Strictness};
 use ep9_heap::HeapConfig;
-use ep9_vm::{Args, Exception, HostCx, Isolate, IsolateConfig, JsResult, Value};
+use ep9_vm::{Args, Cx, Exception, Isolate, IsolateConfig, JsResult, Local};
 
 use crate::args::{Options, Source};
 
@@ -19,7 +19,12 @@ pub const EXIT_INTERNAL: u8 = 70;
 pub const EVAL_NAME: &str = "[eval]";
 
 /// `print(...args)`: ToString of each argument, joined by a space, then a newline (d8, jsc).
-fn print(cx: &mut HostCx<'_>, _this: Value, args: Args<'_>, _nt: Value) -> JsResult<Value> {
+fn print<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
     let mut line = String::new();
     for (i, v) in args.iter().enumerate() {
         if i > 0 {
@@ -31,13 +36,18 @@ fn print(cx: &mut HostCx<'_>, _this: Value, args: Args<'_>, _nt: Value) -> JsRes
     let mut out = std::io::stdout().lock();
     // A closed stdout (for example `ep9 x.js | head -1`) is not a JS error.
     let _ = out.write_all(line.as_bytes());
-    Ok(Value::UNDEFINED)
+    Ok(Local::undefined())
 }
 
 /// `gc()`: a full collection now.
-fn gc(cx: &mut HostCx<'_>, _this: Value, _args: Args<'_>, _nt: Value) -> JsResult<Value> {
+fn gc<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
     cx.collect_garbage();
-    Ok(Value::UNDEFINED)
+    Ok(Local::undefined())
 }
 
 /// `file:line:col: ` for a compile error position (1-based line, 1-based UTF-16 column).
