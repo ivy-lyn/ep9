@@ -15,7 +15,7 @@
 //! | R3 | Every `&mut Cx` method may allocate and may run JS. No view into heap memory lives across one | views borrow `&Cx` |
 //! | R4 | Return `Err(Throw)` only after a `throw_*` (the exception is pending); pass a callee's `Err` on unchanged | debug assert in `call::call_host` |
 //! | R5 | A builtin creates objects in its callee's realm | v0: one realm; `Args::callee` is there for N realms (H20-Q2) |
-//! | R6 | [[GetOwnProperty]] reports the virtual properties (array `length` and elements, function `length`/`name`/`prototype`, String wrapper `length` and indices) with their spec attributes | `tests/abi.rs` |
+//! | R6 | `[[GetOwnProperty]]` reports the virtual properties (array `length` and elements, function `length`/`name`/`prototype`, String wrapper `length` and indices) with their spec attributes | `tests/abi.rs` |
 //!
 //! Lists of values: `ScratchList` (precise, LIFO) or a JS array; call arguments built in Rust
 //! go on the VM stack through `ArgsBuilder` (above the frame top, under the scratch top).
@@ -317,7 +317,7 @@ impl<'s> ScratchList<'s> {
     }
 }
 
-/// Call arguments built in Rust, on the VM stack above the top frame (H20 ABI-3, [I40]): no
+/// Call arguments built in Rust, on the VM stack above the top frame (H20 ABI-3, \[I40\]): no
 /// heap list. Each push writes the next slot and raises the stack's scratch top past it, so
 /// the GC scans the arguments; a call from Rust starts its frame above them and restores
 /// the scratch top on return. Builders nest LIFO: a push or a drop out of order panics.
@@ -486,7 +486,7 @@ impl<'s> Cx<'s> {
         self.throw_error(ErrorKind::RangeError, message)
     }
 
-    /// The catchable "not implemented in ep9 v0: <what>" Error.
+    /// The catchable `"not implemented in ep9 v0: <what>"` Error.
     pub fn not_implemented(&mut self, what: &str) -> Throw {
         error::not_implemented(self.cx, what)
     }
@@ -770,7 +770,7 @@ impl<'s> Cx<'s> {
         Ok(property::has_own_property(self.cx, o, k))
     }
 
-    /// O.[[GetOwnProperty]](P) (§10.1.5), with the virtual properties (R6).
+    /// O.`[[GetOwnProperty]]`(P) (§10.1.5), with the virtual properties (R6).
     pub fn get_own_property(
         &mut self,
         o: impl Into<Local<'s, JsObject>>,
@@ -781,7 +781,7 @@ impl<'s> Cx<'s> {
         Ok(property::get_own_property(self.cx, o, k).map(PropertyDescriptor::from_desc))
     }
 
-    /// O.[[DefineOwnProperty]](P, Desc) (§10.1.6, ValidateAndApplyPropertyDescriptor). v0:
+    /// O.`[[DefineOwnProperty]]`(P, Desc) (§10.1.6, ValidateAndApplyPropertyDescriptor). v0:
     /// an accessor descriptor throws "not implemented".
     pub fn define_own_property(
         &mut self,
@@ -835,7 +835,7 @@ impl<'s> Cx<'s> {
         self.define_property_or_throw(o, key, desc)
     }
 
-    /// O.[[Delete]](P) (§10.1.10).
+    /// O.`[[Delete]]`(P) (§10.1.10).
     pub fn delete(
         &mut self,
         o: impl Into<Local<'s, JsObject>>,
@@ -857,7 +857,7 @@ impl<'s> Cx<'s> {
         property::delete(self.cx, o, k, true).map(|_| ())
     }
 
-    /// O.[[OwnPropertyKeys]]() (§10.1.11) as a new array: array indices ascending, then
+    /// O.`[[OwnPropertyKeys]]`() (§10.1.11) as a new array: array indices ascending, then
     /// strings in creation order, then symbols.
     pub fn own_property_keys(
         &mut self,
@@ -867,12 +867,12 @@ impl<'s> Cx<'s> {
         Ok(Self::local(property::own_property_keys(self.cx, o)))
     }
 
-    /// O.[[GetPrototypeOf]]() (§10.1.1): an object or null.
+    /// O.`[[GetPrototypeOf]]`() (§10.1.1): an object or null.
     pub fn get_prototype_of(&mut self, o: impl Into<Local<'s, JsObject>>) -> JsResult<Local<'s>> {
         Ok(Self::local(object::proto_of(o.into().bits())))
     }
 
-    /// O.[[SetPrototypeOf]](V) (§10.1.2); `proto` is an object or null.
+    /// O.`[[SetPrototypeOf]]`(V) (§10.1.2); `proto` is an object or null.
     pub fn set_prototype_of(
         &mut self,
         o: impl Into<Local<'s, JsObject>>,
@@ -885,12 +885,12 @@ impl<'s> Cx<'s> {
         Ok(property::set_prototype_of(self.rt(), o, p))
     }
 
-    /// O.[[IsExtensible]]() (§10.1.3).
+    /// O.`[[IsExtensible]]`() (§10.1.3).
     pub fn is_extensible(&mut self, o: impl Into<Local<'s, JsObject>>) -> JsResult<bool> {
         Ok(property::is_extensible(o.into().bits()))
     }
 
-    /// O.[[PreventExtensions]]() (§10.1.4).
+    /// O.`[[PreventExtensions]]`() (§10.1.4).
     pub fn prevent_extensions(&mut self, o: impl Into<Local<'s, JsObject>>) -> JsResult<bool> {
         Ok(property::prevent_extensions(self.rt(), o.into().bits()))
     }
