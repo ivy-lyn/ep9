@@ -311,6 +311,12 @@ init), `PropKey::Str` for any other name, `PropKey::Symbol` for a well-known sym
 follow §18: functions and data {w, c} (`METHOD`), value properties and `prototype` {} (`NONE`),
 `@@toStringTag` and accessors {c} (`CONFIGURABLE`).
 
+Constructor rule (checked by `check_tables`): the first key a table gives a constructor that it
+makes (`IntrinsicValue::Builtin` of a `constructor` def) must be `prototype`, a data property with
+attributes {} (`NONE`), and every such constructor must have one. The keys then read `length`,
+`name`, `prototype`, then the rest, as in V8. Do not give a constructor a `length` or `name` key:
+the function object already has them, and install fails with `IsolateError::BuiltinTable`.
+
 Then bless the id golden and read the diff: only appended lines.
 
 ```sh
