@@ -9,6 +9,7 @@
 //!    4 value_encoding .. builtin_abi, target, heap_page_log2, cpu_required
 //!      (a required bit the host lacks); a text section while a native
 //!      contract is at version 0 -------------------------------------- differ -> BYTECODE
+//!      (and drop the hints if fact_schema differs, whatever differs first)
 //!    -> LOAD
 //! ```
 //!
@@ -57,6 +58,9 @@ pub enum Verdict {
         unit: u32,
         /// The host's version.
         host: u32,
+        /// Step 4 only: the fact schema differs too (or is `contract`), so the hints go as
+        /// well. Kept apart from `contract`, which names only the first difference.
+        drop_hints: bool,
     },
     /// Step 4: another target, or a host whose target is unknown.
     Target {
@@ -100,13 +104,15 @@ impl Verdict {
         }
     }
 
-    /// Whether the hints section is dropped. Only on a fact-schema mismatch: SOURCE and LOAD
-    /// ERROR use no section of the unit at all.
+    /// Whether the hints section is dropped: BYTECODE with a fact-schema mismatch, whichever
+    /// version differs first. Step 4 compares every version before the target, page size and
+    /// CPU, so only a `Version` verdict can see one. SOURCE and LOAD ERROR use no section of
+    /// the unit at all.
     pub fn drops_hints(&self) -> bool {
         matches!(
             self,
             Self::Version {
-                contract: Contract::FactSchema,
+                drop_hints: true,
                 ..
             }
         )
@@ -123,6 +129,7 @@ impl fmt::Display for Verdict {
                 contract,
                 unit,
                 host,
+                ..
             } => write!(
                 f,
                 "{}: {} version {unit}, this engine has {host}",
@@ -268,7 +275,10 @@ fn compare(h: &UnitHeader, sections: &Sections, host: &HostInfo) -> Verdict {
     if h.engine_build_id != host.engine_build_id {
         return Verdict::BuildId;
     }
-    // Contract::ALL starts with the bytecode ABI (step 3); the rest is step 4.
+    // Contract::ALL starts with the bytecode ABI (step 3); the rest is step 4. The verdict names
+    // the first difference only, so a fact-schema difference is tracked on its own: it drops
+    // the hints whichever step-4 version differs first.
+    let fact_schema_differs = h.versions.fact_schema != host.versions.fact_schema;
     for c in Contract::ALL {
         let (unit, host) = (h.versions.get(c), host.versions.get(c));
         if unit != host {
@@ -276,6 +286,7 @@ fn compare(h: &UnitHeader, sections: &Sections, host: &HostInfo) -> Verdict {
                 contract: c,
                 unit,
                 host,
+                drop_hints: c != Contract::BytecodeAbi && fact_schema_differs,
             };
         }
     }
