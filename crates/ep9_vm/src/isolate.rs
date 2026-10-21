@@ -281,12 +281,16 @@ impl Isolate {
         self.finish(r)
     }
 
-    /// The global binding `name` (the script lexical record first), without running JS.
+    /// The global binding `name` (the script lexical record first), without running JS: `None`
+    /// if there is none, and also if it is an accessor property of the global object (reading
+    /// it would call the getter, as `[[Get]]` through [`Isolate::with_cx`] does).
     pub fn global(&self, name: &str) -> Option<Value> {
         let rt = &*self.rt;
         let key = atoms::intern_str(rt, name);
         own_get(rt.root(Root::Lexical), key)
             .or_else(|| own_get(rt.global(), key))
+            // An accessor's slot holds its ACCESSOR_PAIR cell, which is not a JS value.
+            .filter(|&(_, a)| a & attr::ACCESSOR == 0)
             .map(|(v, _)| val(v))
     }
 

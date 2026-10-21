@@ -740,6 +740,39 @@ fn accessor_and_symbol_entries_install_or_name_what_is_missing() {
     }
 }
 
+/// An alias copies the value of a data key (`Array.prototype[@@iterator]` is `values`; no
+/// spec alias is an accessor). An alias of an accessor key would copy the internal
+/// ACCESSOR_PAIR cell as a data value, so the checks refuse it and name both keys, and
+/// `Isolate::new` fails with that text.
+#[test]
+fn an_alias_of_an_accessor_is_refused() {
+    const DEFS: &[BuiltinDef] = &[BuiltinDef::getter("seven", get_answer)];
+    const PROPS: &[PropDef] = &[
+        PropDef::accessor(PropKey::Str("seven"), Some(0), None),
+        PropDef::alias(
+            PropKey::Str("eight"),
+            PropKey::Str("seven"),
+            PropAttrs::METHOD,
+        ),
+    ];
+    let e = check_one(module(DEFS, &[], on(IntrinsicId::GlobalObject, PROPS)));
+    assert!(
+        e.contains("globalThis.eight: alias of seven, an accessor"),
+        "{e}"
+    );
+    let m: &'static [BuiltinModule] = Box::leak(Box::new([module(
+        DEFS,
+        &[],
+        on(IntrinsicId::GlobalObject, PROPS),
+    )]));
+    let t: &'static BuiltinTable = Box::leak(Box::new(BuiltinTable::new("alias", m)));
+    let e = table_error(t);
+    assert!(
+        e.contains("globalThis.eight: alias of seven, an accessor"),
+        "{e}"
+    );
+}
+
 // ---- the P3 surface -----------------------------------------------------------------------------
 
 #[test]

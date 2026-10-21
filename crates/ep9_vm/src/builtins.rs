@@ -742,10 +742,10 @@ pub(crate) fn check(embedder: Option<&'static BuiltinTable>) -> Result<(), Strin
 /// intrinsic made once, and a core one only named (by the VM table, as the builtin realm init
 /// makes it from); the prototype of a new intrinsic object made before it (walk order); every
 /// index in range and of the right kind; every named intrinsic made by realm init or a
-/// module; every alias names a key defined earlier on the same object; no key twice on one
-/// object; the first key of a constructor a module makes is `prototype`, a data property
-/// with attributes {} (§20: `Number.prototype` and the others), and every such constructor
-/// has one.
+/// module; every alias names a data key (not an accessor) defined earlier on the same object;
+/// no key twice on one object; the first key of a constructor a module makes is `prototype`, a
+/// data property with attributes {} (§20: `Number.prototype` and the others), and every such
+/// constructor has one.
 pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
     let modules = || tables.iter().flat_map(|t| t.modules.iter());
     let mut blocks = HashSet::new();
@@ -798,8 +798,8 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
         }
     }
     let prototype = PropKey::Atom(Atom::Prototype);
-    // Defined keys per target, in walk order (for aliases and duplicates).
-    let mut defined: Vec<(IntrinsicId, PropKey)> = Vec::new();
+    // Defined keys per target with their values, in walk order (for aliases and duplicates).
+    let mut defined: Vec<(IntrinsicId, PropKey, PropValue)> = Vec::new();
     for m in modules() {
         let at = |what: String| format!("builtin table module `{}`: {what}", m.name);
         for op in m.props {
@@ -811,7 +811,7 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                     |what: &str| at(format!("{}.{}: {what}", op.target.name(), p.key.text()));
                 if defined
                     .iter()
-                    .any(|(t, k)| *t == op.target && k.same(&p.key))
+                    .any(|(t, k, _)| *t == op.target && k.same(&p.key))
                 {
                     return Err(here("defined twice"));
                 }
@@ -825,7 +825,7 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                     && constructors.iter().any(|(c, _)| *c == op.target)
                     && !defined
                         .iter()
-                        .any(|(t, k)| *t == op.target && k.same(&prototype))
+                        .any(|(t, k, _)| *t == op.target && k.same(&prototype))
                 {
                     return Err(here(
                         "the first key of a constructor is `prototype`, a data property with \
@@ -842,11 +842,26 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                         }
                     }
                     PropValue::Alias(k) => {
-                        if !defined.iter().any(|(t, d)| *t == op.target && d.same(&k)) {
-                            return Err(here(&format!(
-                                "alias of {}, not defined before",
-                                k.text()
-                            )));
+                        let of = defined
+                            .iter()
+                            .find(|(t, d, _)| *t == op.target && d.same(&k));
+                        match of {
+                            None => {
+                                return Err(here(&format!(
+                                    "alias of {}, not defined before",
+                                    k.text()
+                                )));
+                            }
+                            // An alias copies a data value (one function object under two
+                            // names, as `Array.prototype[@@iterator]`); no spec alias is an
+                            // accessor, and install would copy the internal pair.
+                            Some((_, _, PropValue::Accessor { .. })) => {
+                                return Err(here(&format!(
+                                    "alias of {}, an accessor (an alias needs a data property)",
+                                    k.text()
+                                )));
+                            }
+                            Some(_) => {}
                         }
                     }
                     PropValue::Accessor { get, set } => {
@@ -863,12 +878,12 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                     }
                     PropValue::Const(_) | PropValue::Symbol(_) => {}
                 }
-                defined.push((op.target, p.key));
+                defined.push((op.target, p.key, p.value));
             }
         }
     }
     for (c, module) in &constructors {
-        if !defined.iter().any(|(t, k)| t == c && k.same(&prototype)) {
+        if !defined.iter().any(|(t, k, _)| t == c && k.same(&prototype)) {
             return Err(format!(
                 "builtin table module `{module}`: the constructor {} has no `prototype`",
                 c.name()
@@ -1150,9 +1165,14 @@ fn define(
         PropValue::Symbol(w) => well_known(rt, w).map_err(|e| at(&e))?,
         PropValue::Alias(k) => {
             let k = key_bits(rt, k).map_err(|e| at(&e))?;
-            own_get(target, k)
-                .map(|(v, _)| v)
-                .ok_or_else(|| at("the aliased key is missing"))?
+            match own_get(target, k) {
+                None => return Err(at("the aliased key is missing")),
+                // `check_tables` refuses this: the slot holds the internal ACCESSOR_PAIR cell.
+                Some((_, a)) if a & attr::ACCESSOR != 0 => {
+                    return Err(at("the aliased key is an accessor"));
+                }
+                Some((v, _)) => v,
+            }
         }
         PropValue::Accessor { get, set } => {
             let desc = Desc {

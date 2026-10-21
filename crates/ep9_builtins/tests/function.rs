@@ -296,6 +296,57 @@ fn a_long_bind_chain_needs_no_rust_recursion() {
 }
 
 #[test]
+fn instanceof_with_a_bound_function_asks_its_target() {
+    // OrdinaryHasInstance step 2 (§7.3.21): InstanceofOperator(O, [[BoundTargetFunction]]),
+    // before the primitive check and without reading the bound function's own `prototype`.
+    // The expected lines are node 24's.
+    assert_eq!(
+        run_both(
+            "function C() {}
+             var B = C.bind(null);
+             print(new B() instanceof B, new C() instanceof B, ({}) instanceof B, 1 instanceof B);
+             B.prototype = {};
+             function D() {}
+             D.prototype = B.prototype;
+             print(new B() instanceof B, new D() instanceof B);
+             var BB = C.bind(null).bind(null);
+             print(new C() instanceof BB, new BB() instanceof BB, ({}) instanceof BB);
+             var A = (() => 1).bind(null);
+             print(1 instanceof A);
+             try { ({}) instanceof A; print('no throw'); } catch (e) { print(e instanceof TypeError); }"
+        ),
+        lines(&[
+            "true true false false",
+            "true false",
+            "true true false",
+            "false",
+            "true"
+        ])
+    );
+}
+
+#[test]
+fn instanceof_walks_a_long_bind_chain_with_a_loop() {
+    // 100000 levels on an 8 MiB stack, as in `a_long_bind_chain_needs_no_rust_recursion`
+    // (node 24 overflows its stack here; with 500 levels it prints the same line).
+    let r = std::thread::Builder::new()
+        .stack_size(8 << 20)
+        .spawn(|| {
+            common::run(
+                "function C() {}
+                 var b = C;
+                 for (var i = 0; i < 100000; i++) { b = b.bind(null); delete b.name; }
+                 print(new C() instanceof b, ({}) instanceof b, new b() instanceof C);",
+                false,
+            )
+        })
+        .expect("a thread")
+        .join()
+        .expect("no stack overflow");
+    assert_eq!(r, lines(&["true false true"]));
+}
+
+#[test]
 fn bound_arguments_survive_gc_points_before_the_frame_push() {
     // The bound arguments are new objects held only by the bound function. In `new BC()`
     // OrdinaryCreateFromConstructor allocates (a GC point under stress) after the chain is

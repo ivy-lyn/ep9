@@ -55,7 +55,9 @@ pub(crate) enum Root {
     SyntaxErrorPrototype,
     EvalErrorPrototype,
     UriErrorPrototype,
-    /// v0: the prototype of array and string iterators (one object for both).
+    /// `%ArrayIteratorPrototype%`, the prototype of array iterators. String iterators have
+    /// their own `%StringIteratorPrototype%` (`builtins::IntrinsicId::StringIteratorPrototype`,
+    /// held in a builtin state slot).
     ArrayIteratorPrototype,
     // ---- week 4: the other intrinsics of `builtins::IntrinsicId` (H20 tables) ----
     /// `%Iterator.prototype%`.

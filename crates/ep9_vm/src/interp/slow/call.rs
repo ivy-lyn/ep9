@@ -18,11 +18,11 @@ use crate::feedback;
 use crate::frame::{HOLE, UNDEFINED};
 use crate::interp::{CONSTRUCT_RETURN_STUB, Cx};
 use crate::kinds::{is_bound, is_callable};
-use crate::object::{self, is_array, is_string};
+use crate::object::{self, is_array};
 use crate::runtime::{ErrorKind, frame_top};
 use crate::unit::FunctionInfo;
 
-use super::iter::{KeepAlive, not_iterable, push_code_points};
+use super::iter::{KeepAlive, iterable_to_array};
 use super::{enter, interrupt};
 
 // ---- calls ---------------------------------------------------------------------------------
@@ -49,20 +49,24 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
     // The argument values stay rooted in the caller's registers while this copy exists.
     // SAFETY: the offsets come from register operands of verified code in the frame `fp`.
     let mut args: Vec<u64> = s.args.iter().map(|&o| unsafe { *fp.offset(o) }).collect();
-    // A string spread gets a new array of code point strings; this keeps it (and so the
-    // strings in `args`) alive until the call returns.
+    // The spread operand (`CallWithSpread`, `ConstructWithSpread`) is an Array that bytecode
+    // made: BytecodeGen ran the iterator protocol already (`arguments_into`), or built the
+    // list itself (a spread that is not last, a default derived constructor's rest array).
+    // Its elements are the arguments as they are; an `@@iterator` call here would be a
+    // second, observable iteration. Any other value goes through IterableToList, and `keep`
+    // (a stack slot the conservative scan sees) keeps that new array, and so its values in
+    // `args`, alive until the call returns.
     let mut keep = KeepAlive(UNDEFINED);
     if s.spread {
         let last = args.pop().unwrap_or(UNDEFINED);
         let list = if is_array(last) {
             // The array stays rooted in the caller's last argument register.
             last
-        } else if is_string(last) {
-            keep.0 = object::new_array(rt, 0);
-            push_code_points(rt, keep.0, 0, last);
-            keep.0
         } else {
-            return Err(not_iterable(cx, last));
+            // GC point, runs JS: the values in `args` stay rooted in caller registers (the
+            // heap does not move cells).
+            keep.0 = iterable_to_array(cx, last)?;
+            keep.0
         };
         for i in 0..object::array_len(list) {
             args.push(object::array_get(list, i).unwrap_or(UNDEFINED));
