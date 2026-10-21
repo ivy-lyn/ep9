@@ -96,7 +96,8 @@ pub use string::JsStr;
 #[cfg(feature = "spike-native")]
 pub use native::{
     InstallError, NativeCx, NativeEntry, NativeTarget, RtCompareFn, RtFn0, RtFn1, RtFn2,
-    RuntimeTable, cmp, install_native, layout, lookup_code, native_target, uninstall_native,
+    RuntimeTable, call_from_rust, cmp, install_native, layout, lookup_code, native_target,
+    uninstall_native,
 };
 
 /// Facts for tests and tools (not a stable API).

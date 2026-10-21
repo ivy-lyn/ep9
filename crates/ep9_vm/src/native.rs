@@ -23,10 +23,15 @@
 //! | The T0 entry records no feedback and does not count the call (`feedback::count_call`) | the spike JIT records no feedback (plan-v3 §5 P2-SPIKE-B) |
 //! | The T0 entry checks no native stack limit | the native prologue compares `Cx::native_limit` (H23-Q5); `call_any` checks it before every nested native or T0 entry, so T0↔native recursion ends in a catchable RangeError |
 //!
-//! Not in P1: a call from Rust (`call::call_function_object`, for example `Isolate::call` or a
-//! builtin callback) into a native-slotted function still throws "not implemented", and so do
-//! `[[Construct]]` and a bound-function call of one (they take the T0 paths). `call_any` takes
-//! no spread call (BytecodeGen's spread array needs the iterator path of `slow::call`).
+//! Rust -> native: [`call_from_rust`] (P2-SPIKE-B, M2-P2-SPIKEB-RUSTENTRY) enters a
+//! native-slotted function from Rust with an entry frame (return pc = the `Exit` stub), as
+//! `call::call_function_object` does for T0. The general paths still refuse native code: a call
+//! from Rust through `call::call_function_object` (for example `Isolate::call` or a builtin
+//! callback) throws "not implemented", and so do `[[Construct]]` and a bound-function call of a
+//! native-slotted function (they take the T0 paths). `call_any` takes no spread call
+//! (BytecodeGen's spread array needs the iterator path of `slow::call`). Generator functions
+//! never get native code ([`InstallError::Generator`]): a resume pushes a new frame and runs
+//! T0 (`call::run_resumed`).
 
 use core::ops::Range;
 
@@ -37,12 +42,12 @@ use crate::call;
 use crate::conv::{BinOp, Res};
 use crate::dispatch::{CodeEntry, CodeRegistry, DispatchKind, RegistryError};
 use crate::error::{FrameRef, not_implemented, stack_overflow, throw_error};
-use crate::frame::{HEADER, UNDEFINED, slot};
-use crate::interp::Cx;
+use crate::frame::{HEADER, HOLE, UNDEFINED, slot};
 use crate::interp::slow::{self, CmpOp, UnOp};
-use crate::isolate::Isolate;
+use crate::interp::{Cx, EXIT_STUB};
+use crate::isolate::{Exception, Isolate};
 use crate::object;
-use crate::runtime::{ErrorKind, Runtime};
+use crate::runtime::{ErrorKind, Runtime, val};
 use crate::unit::FunctionInfo;
 
 /// The `Cx` that native code gets and passes back to the table functions. Opaque: native code
@@ -238,8 +243,8 @@ pub mod layout {
 // ---- the T0 entry --------------------------------------------------------------------------
 
 /// The FunctionInfo of `callee` if a call (not a construct) enters it natively: a FUNCTION
-/// cell (not bound), not a host function, not a class constructor, with a Baseline or
-/// AotBaseline slot.
+/// cell (not bound), not a host function, not a class constructor, not a generator function,
+/// with a Baseline or AotBaseline slot.
 #[inline]
 pub(crate) fn native_callee<'a>(callee: u64) -> Option<&'a FunctionInfo> {
     if !object::is_function(callee) {
@@ -248,6 +253,12 @@ pub(crate) fn native_callee<'a>(callee: u64) -> Option<&'a FunctionInfo> {
     let fi = object::function_info(callee);
     let k = fi.slot.kind_byte();
     let native = k == DispatchKind::Baseline as u8 || k == DispatchKind::AotBaseline as u8;
+    if fi.is_generator() {
+        // `install_native` refuses generators (M2-P1-R1): a resume pushes a new frame and
+        // runs T0 (`call::run_resumed`), and the runtime table has no generator entries.
+        debug_assert!(!native, "generator function {:?} has native code", fi.name);
+        return None;
+    }
     (native && fi.host.is_none() && !fi.is_class_constructor()).then_some(fi)
 }
 
@@ -296,6 +307,10 @@ pub(crate) unsafe fn enter_native(
     };
     cx.budget -= 1;
     rt.stack().set_fp(nfp);
+    // Native code runs with no scratch area, as bytecode does. Only an entry from Rust
+    // ([`call_from_rust`]) can find one here; it puts the caller's scratch top back after the
+    // call. The T0 and `call_any` paths never have one, so this is a no-op for them.
+    rt.stack().clear_scratch();
     // SAFETY: the slot entry is the address of a function with the `NativeEntry` ABI (caller
     // contract); fn pointers and data pointers have the same size on every target.
     let entry: NativeEntry = unsafe {
@@ -576,6 +591,10 @@ pub enum InstallError {
     /// A class constructor: T0 never enters one natively (`[[Call]]` throws, and
     /// `[[Construct]]` stays in T0).
     ClassConstructor,
+    /// A generator function (`FunctionInfo::is_generator`; M2-P1-R1): its frames are entered
+    /// at the `SwitchOnGeneratorState` prologue on every resume (`call::run_resumed`, T0
+    /// only), and native code has no suspend or resume path.
+    Generator,
     /// The kind is not [`DispatchKind::Baseline`] or [`DispatchKind::AotBaseline`].
     Kind(DispatchKind),
     /// The function already has native code ([`uninstall_native`] first).
@@ -596,6 +615,9 @@ pub struct NativeTarget<'i> {
     pub parameter_count: u32,
     pub register_count: u32,
     pub strict: bool,
+    /// Entries in the function's handler table (try/catch/finally ranges). Native code of the
+    /// spike has no handlers, so a JIT refuses a function that has any.
+    pub handler_count: u32,
     /// The current slot kind.
     pub kind: Option<DispatchKind>,
     /// The FunctionInfo address ([`CodeEntry::function`] of its registry entries).
@@ -622,12 +644,16 @@ pub fn native_target(_iso: &Isolate, f: Value) -> Option<NativeTarget<'_>> {
     // SAFETY: a bytecode FunctionInfo's code is `code_len` bytes that its loaded unit owns;
     // units live until the isolate drops, and the result borrows the isolate.
     let bytecode = unsafe { core::slice::from_raw_parts(fi.code, fi.code_len as usize) };
+    let handler_count = fi.loaded_unit().map_or(0, |u| {
+        u.unit.functions[fi.function_id as usize].handlers.len() as u32
+    });
     Some(NativeTarget {
         name: &fi.name,
         bytecode,
         parameter_count: fi.parameter_count,
         register_count: fi.register_count,
         strict: fi.is_strict(),
+        handler_count,
         kind: fi.slot.kind(),
         info: core::ptr::from_ref(fi).addr(),
     })
@@ -636,7 +662,9 @@ pub fn native_target(_iso: &Isolate, f: Value) -> Option<NativeTarget<'_>> {
 /// Installs the native code `code` (its first byte is the entry) for the function `f`: one
 /// dispatch slot write of `kind` (every closure of the function shares the slot, H14), plus a
 /// [`CodeEntry`] in the isolate's code registry. From then on a T0 call of `f` (no construct,
-/// no spread) enters the code natively.
+/// no spread) enters the code natively. Refused before the slot changes: a function that is
+/// not bytecode, a class constructor, a generator function, a function that already has
+/// native code, or a range the registry refuses.
 ///
 /// # Safety
 /// `code.start` is the entry of a function with the [`NativeEntry`] ABI that runs `f`'s
@@ -655,6 +683,9 @@ pub unsafe fn install_native(
     let fi = bytecode_info(f)?;
     if fi.is_class_constructor() {
         return Err(InstallError::ClassConstructor);
+    }
+    if fi.is_generator() {
+        return Err(InstallError::Generator);
     }
     if fi.slot.kind_byte() != DispatchKind::Interp as u8 {
         return Err(InstallError::AlreadyNative);
@@ -695,6 +726,101 @@ pub fn uninstall_native(iso: &Isolate, f: Value) -> Result<CodeEntry, InstallErr
 /// bytecode ranges).
 pub fn lookup_code(iso: &Isolate, pc: usize) -> Option<CodeEntry> {
     iso.rt.registry.borrow().lookup(pc)
+}
+
+// ---- Rust -> native ------------------------------------------------------------------------
+
+/// Call(`f`, `this`, `args`) from Rust into native code (M2-P2-SPIKEB-RUSTENTRY; Spike B
+/// configs J and JC time `drive` through it). The types are those of `Isolate::call`.
+///
+/// A function with native code ([`install_native`]; a FUNCTION with a Baseline or AotBaseline
+/// slot, not a class constructor or generator) is entered through the T0 entry path
+/// (`enter_native`) with an entry frame, as `call::call_function_object` enters T0 code:
+///
+/// | Step | Here | As `call_function_object` |
+/// |---|---|---|
+/// | native stack check | `Runtime::native_stack_ok`, else a RangeError | same |
+/// | interrupt poll | when the budget is out (`slow::interrupt`), else termination | `call::poll` |
+/// | frame | pushed above the top frame and the caller's scratch Values (`call::top_of`), return pc = the `Exit` stub, `this` after OrdinaryCallBindThis | `push_frame` with `EXIT_STUB` |
+/// | run | the slot entry, with the new frame published and no scratch area | `interp::run` |
+///
+/// Any other callee takes the T0 path of `Isolate::call` (`call::call_with`), so this function
+/// also calls T0, host and bound functions.
+///
+/// **State on every exit** (D20). Whether the call returns, throws, is terminated or fails its
+/// stack check, it puts back what it found: the published top frame (`VmStack::fp`), the
+/// scratch top, and `Cx::out_fp`/`out_pc`. So the VM stack depth after the call equals the
+/// depth before it, and a later `call_from_rust` or `Isolate::call` starts from the same
+/// state. `call_function_object` does the same for the frame and the scratch top on its error
+/// path. An exception or a termination comes back as `Err`, taken from the isolate as
+/// `Isolate::call` takes it (the pending exception is cleared).
+///
+/// The arguments are copied into the callee frame before the first GC point; `args` must hold
+/// live values (as for `Isolate::call`).
+pub fn call_from_rust(
+    iso: &mut Isolate,
+    f: Value,
+    this: Value,
+    args: &[Value],
+) -> Result<Value, Exception> {
+    let (f, this) = (f.to_bits(), this.to_bits());
+    let r = iso.with_cx(|acx| {
+        let cx = acx.inner();
+        let Ok(argc) = u32::try_from(args.len()) else {
+            return stack_overflow(cx);
+        };
+        let arg = |i: u32| args[i as usize].to_bits();
+        let (out_fp, out_pc) = (cx.out_fp, cx.out_pc);
+        let r = match native_callee(f) {
+            Some(fi) => enter_from_rust(cx, f, fi, this, argc, arg),
+            // No native code: the T0 path of `Isolate::call`.
+            None => call::call_with(cx, f, this, argc, arg, UNDEFINED),
+        };
+        // Nested T0 calls under native code set them (`slow::call`); put them back.
+        cx.out_fp = out_fp;
+        cx.out_pc = out_pc;
+        r
+    });
+    // The hole never leaves the VM (as `Isolate::call`).
+    r.map(|b| val(if b == HOLE { UNDEFINED } else { b }))
+}
+
+/// [`call_from_rust`] for the native-slotted function `f` (`fi` from [`native_callee`]).
+fn enter_from_rust(
+    cx: &mut Cx,
+    f: u64,
+    fi: &FunctionInfo,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+) -> Res<u64> {
+    let rt = cx.rt();
+    if !rt.native_stack_ok() {
+        return stack_overflow(cx);
+    }
+    let stack = rt.stack();
+    let caller = stack.fp();
+    // The interrupt poll of a function entry from Rust (`call::poll`).
+    if cx.budget <= 0 && slow::interrupt(cx, caller) == 0 {
+        return Err(Throw);
+    }
+    let saved_scratch = stack.scratch_top();
+    let base = call::top_of(cx, caller);
+    // SAFETY: `caller` is the published top frame (or null at the outermost entry), `base` is
+    // the first free slot above it and above the caller's scratch Values (`top_of`), `arg`
+    // reads live Values for `i < argc`, and `native_callee` checked that the slot of `fi`
+    // holds native code (`install_native` contract).
+    let r = unsafe { enter_native(cx, base, caller, EXIT_STUB.as_ptr(), f, fi, this, argc, arg) };
+    // Put back the frame state this call found, on every exit (`enter_native` already
+    // published `caller` again, except when its frame push failed). `call_from_rust` puts
+    // back `out_fp`/`out_pc`.
+    stack.set_fp(caller);
+    if saved_scratch.is_null() {
+        stack.clear_scratch();
+    } else {
+        stack.set_scratch_top(saved_scratch);
+    }
+    r
 }
 
 // Keep the frame layout the offsets above describe.

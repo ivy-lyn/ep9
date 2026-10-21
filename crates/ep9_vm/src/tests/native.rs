@@ -1,6 +1,8 @@
 //! Tests of the native entry (feature `spike-native` only; owners P1-NATIVE-ENTRY, then
 //! P2-SPIKE-B): calls into hand-written native stubs, GC stress across a native frame, and an
-//! exception that crosses one.
+//! exception that crosses one. P2-SPIKE-B adds: a generator function gets no native code
+//! (`InstallError::Generator`, M2-P1-R1), and `call_from_rust` enters native code from Rust and
+//! restores the entry state on every exit (D20).
 //!
 //! The stubs are a few hand-encoded instructions per target (aarch64: AAPCS64 `extern "C"`;
 //! x86-64: `extern "sysv64"`), checked with `llvm-mc --disassemble`:
@@ -942,4 +944,313 @@ fn stub_bytes_are_the_documented_instructions() {
             0xFF, 0xD0, 0x5D, 0xC3, // call rax; pop rbp; ret
         ]
     );
+}
+
+// ---- generator functions get no native code (M2-P1-R1) --------------------------------------
+
+/// `function* gen() { yield 1; yield 2; }` in the V8 shape of P1-GEN-CG (the prologue, the
+/// initial suspend, one resume point per `yield`; tests/generator.rs `Gen`), and a script that
+/// defines it as a global and makes three generators `ga`, `gb`, `gc`.
+fn generator_unit() -> VerifiedUnit {
+    use ep9_bytecode::{FunctionFlags, RuntimeId};
+    let mut m = meta("gen", 0, 0, 0, 0);
+    m.flags = FunctionFlags::SIMPLE_PARAMETERS | FunctionFlags::GENERATOR;
+    let mut s = Asm::new(m);
+    let g = s.b.new_register();
+    let v = s.b.new_register();
+    let t = s.b.new_register_list(2);
+    let save = RegisterList::new(0, s.b.register_count());
+    let (table, resumes) = s.b.jump_table(3);
+    let this = s.b.receiver();
+    s.b.lda_new_target().star(g);
+    s.b.switch_on_generator_state(g, table);
+    s.b.lda_current_function().star(t.get(0));
+    s.b.ldar(this).star(t.get(1));
+    s.b.call_runtime(RuntimeId::CreateGeneratorObject, t, 2);
+    s.b.star(g);
+    for k in 0..3u32 {
+        if k > 0 {
+            // yield k: {value: k, done: false}
+            s.b.lda_smi(k as i32)
+                .star(t.get(0))
+                .lda_false()
+                .star(t.get(1));
+            s.b.call_runtime(RuntimeId::CreateIterResultObject, t, 2);
+        }
+        s.b.suspend_generator(g, save, save.len(), k);
+        s.b.bind(resumes[k as usize]);
+        s.b.resume_generator(g, save, save.len());
+        s.b.star(v);
+        let gl = RegisterList::new(g.local_index().unwrap(), 1);
+        s.b.call_runtime(RuntimeId::GeneratorGetResumeMode, gl, 1);
+        let (modes, l) = s.b.jump_table(2);
+        let cont = s.b.new_label();
+        s.b.switch_on_smi(modes, 1);
+        s.b.jump(cont);
+        s.b.bind(l[0]);
+        s.b.ldar(v).return_();
+        s.b.bind(l[1]);
+        s.b.ldar(v).throw();
+        s.b.bind(cont);
+    }
+    s.b.lda_undefined().return_();
+    let mut sc = Asm::script(0);
+    let k = sc.b.function_constant(FunctionId(1));
+    sc.b.create_closure(k, sc.closure, 0);
+    sc.sta_global("gen");
+    for name in ["ga", "gb", "gc"] {
+        sc.lda_global("gen");
+        sc.b.star(sc.f);
+        sc.b.call_undefined_receiver0(sc.f, sc.call);
+        sc.sta_global(name);
+    }
+    sc.b.lda_undefined().return_();
+    unit("", vec![sc.finish(), s.finish()])
+}
+
+/// `it[method](arg)` from Rust, as `"value/done"`, or the thrown value as `"throw value"`.
+fn resume(iso: &mut Isolate, it: &str, method: &str, arg: Value) -> String {
+    let it = iso.global(it).unwrap();
+    let m = {
+        let cx = &mut *iso.cx;
+        let k = crate::atoms::intern_str(cx.rt(), method);
+        crate::runtime::val(crate::property::get(cx, it.to_bits(), k).unwrap())
+    };
+    match iso.call(m, it, &[arg]) {
+        Ok(r) => {
+            let cx = &mut *iso.cx;
+            let mut field = |name: &str| {
+                let k = crate::atoms::intern_str(cx.rt(), name);
+                crate::conv::describe(crate::property::get(cx, r.to_bits(), k).unwrap())
+            };
+            format!("{}/{}", field("value"), field("done"))
+        }
+        Err(e) => format!("throw {}", e.message),
+    }
+}
+
+#[test]
+fn a_generator_function_gets_no_native_code_and_its_generators_still_run() {
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let label = format!("{} stress={stress}", d.name());
+            let mut iso = isolate(config(d, stress));
+            iso.run_script(generator_unit(), "gen.js").unwrap();
+            let genf = iso.global("gen").unwrap();
+            let fi = crate::object::function_info(genf.to_bits());
+            assert!(fi.is_generator(), "{label}");
+            // `ga` runs its first step before the install attempt.
+            assert_eq!(resume(&mut iso, "ga", "next", Value::UNDEFINED), "1/false");
+            // A code address that holds no code: the install is refused before the slot or the
+            // registry changes, so nothing ever runs it.
+            let code = 0x1000..0x1010;
+            for kind in [DispatchKind::Baseline, DispatchKind::AotBaseline] {
+                // SAFETY: refused before the slot changes (the range is never entered).
+                let r = unsafe { crate::install_native(&iso, genf, kind, code.clone()) };
+                assert_eq!(r, Err(InstallError::Generator), "{label}");
+            }
+            assert_eq!(fi.slot.kind(), Some(DispatchKind::Interp), "{label}");
+            assert!(crate::lookup_code(&iso, code.start).is_none(), "{label}");
+            assert!(crate::native::native_callee(genf.to_bits()).is_none());
+            assert_eq!(
+                crate::uninstall_native(&iso, genf),
+                Err(InstallError::NotNative)
+            );
+            // Generators made before the attempt resume in T0: next, return, throw.
+            let rows = [
+                ("ga", "next", Value::UNDEFINED, "2/false"),
+                ("ga", "next", Value::UNDEFINED, "undefined/true"),
+                ("gb", "next", Value::UNDEFINED, "1/false"),
+                ("gb", "return", Value::int32(5), "5/true"),
+                ("gb", "next", Value::UNDEFINED, "undefined/true"),
+                ("gc", "next", Value::UNDEFINED, "1/false"),
+                ("gc", "throw", Value::int32(6), "throw 6"),
+                ("gc", "next", Value::UNDEFINED, "undefined/true"),
+            ];
+            for (it, method, arg, want) in rows {
+                assert_eq!(
+                    resume(&mut iso, it, method, arg),
+                    want,
+                    "{label} {it}.{method}"
+                );
+            }
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        }
+    }
+}
+
+// ---- Rust -> native (`call_from_rust`, M2-P2-SPIKEB-RUSTENTRY) ------------------------------
+
+/// What `call_from_rust` must put back (D20): the published top frame, the scratch top and
+/// `out_fp`/`out_pc`.
+fn entry_state(iso: &Isolate) -> [usize; 4] {
+    let st = iso.rt.stack();
+    [
+        st.fp().addr(),
+        st.scratch_top().addr(),
+        iso.cx.out_fp.addr(),
+        iso.cx.out_pc.addr(),
+    ]
+}
+
+/// A new string (a Rust local: the conservative scan keeps it).
+fn string(iso: &mut Isolate, s: &str) -> Value {
+    crate::runtime::val(crate::string::new_string(&iso.rt, s))
+}
+
+#[test]
+fn call_from_rust_enters_native_code_and_restores_the_entry_state() {
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let label = format!("{} stress={stress}", d.name());
+            let out = run_native(config(d, stress), move |iso| {
+                let g = |iso: &Isolate, n: &str| iso.global(n).unwrap();
+                // `call_from_rust` puts back all four words; `Isolate::call` (T0) keeps the
+                // stack depth (fp, scratch top) but leaves `out_fp`/`out_pc` as they are.
+                let depth = entry_state(iso)[..2].to_vec();
+                let mut rows = Vec::new();
+                let mut show =
+                    |iso: &mut Isolate, r: Result<Value, Exception>, before: [usize; 4]| {
+                        let s = match r {
+                            Ok(v) => iso.display(v),
+                            Err(e) => format!("Err({}, terminated={})", e.message, e.terminated),
+                        };
+                        assert_eq!(entry_state(iso)[..2], depth[..], "stack depth after {s}");
+                        if before[0] != usize::MAX {
+                            assert_eq!(entry_state(iso), before, "entry state after {s}");
+                        }
+                        rows.push(s);
+                    };
+                let plain = [usize::MAX; 4];
+                let u = Value::UNDEFINED;
+                // native id; native g -> native inc1 (JIT -> JIT); native g -> T0 bump (allocates).
+                let st = entry_state(iso);
+                let r = crate::call_from_rust(iso, g(iso, "id"), u, &[Value::int32(41)]);
+                show(iso, r, st);
+                let (gf, inc1) = (g(iso, "g"), g(iso, "inc1"));
+                let st = entry_state(iso);
+                let r = crate::call_from_rust(iso, gf, u, &[inc1, Value::int32(41)]);
+                show(iso, r, st);
+                let a = string(iso, "a");
+                let bump = g(iso, "bump");
+                let st = entry_state(iso);
+                let r = crate::call_from_rust(iso, gf, u, &[bump, a]);
+                show(iso, r, st);
+                // An exception from native code comes back as Err; the next calls work.
+                let x = string(iso, "x");
+                let st = entry_state(iso);
+                let r = crate::call_from_rust(iso, g(iso, "nthrow"), u, &[x]);
+                show(iso, r, st);
+                let st = entry_state(iso);
+                let r = crate::call_from_rust(iso, g(iso, "id"), u, &[Value::int32(7)]);
+                show(iso, r, st);
+                let b = string(iso, "b");
+                let r = iso.call(bump, u, &[b]);
+                show(iso, r, plain);
+                // A terminated call (the native poll sees the request), then both entries work.
+                iso.terminate_handle().terminate();
+                let st = entry_state(iso);
+                let r = crate::call_from_rust(iso, g(iso, "poll"), u, &[]);
+                show(iso, r, st);
+                let st = entry_state(iso);
+                let r = crate::call_from_rust(iso, gf, u, &[inc1, Value::int32(1)]);
+                show(iso, r, st);
+                let c = string(iso, "c");
+                let r = iso.call(bump, u, &[c]);
+                show(iso, r, plain);
+                // The native stack RangeError of a native prologue (`overflow`).
+                let st = entry_state(iso);
+                let r = crate::call_from_rust(iso, g(iso, "overflow"), u, &[]);
+                show(iso, r, st);
+                // A function without native code takes the T0 path.
+                let z = string(iso, "z");
+                let st = entry_state(iso);
+                let r = crate::call_from_rust(iso, bump, u, &[z]);
+                show(iso, r, st);
+                // A Rust caller's scratch Values stay below the native frame and the scratch
+                // top comes back.
+                let base = iso.rt.stack().base();
+                let keep = string(iso, "kept");
+                // SAFETY: the stack is empty (no frame is live), so `base` is free; it gets a
+                // valid Value before the scratch top moves past it.
+                unsafe { *base = keep.to_bits() };
+                iso.rt.stack().set_scratch_top(base.wrapping_add(1));
+                let before_scratch = entry_state(iso);
+                let r = crate::call_from_rust(iso, gf, u, &[bump, a]);
+                assert_eq!(entry_state(iso), before_scratch);
+                // SAFETY: the scratch slot written above.
+                let kept = unsafe { *base };
+                assert_eq!(iso.display(crate::runtime::val(kept)), "kept");
+                iso.rt.stack().clear_scratch();
+                let s = iso.display(r.unwrap());
+                rows.push(s);
+                rows
+            });
+            assert_eq!(
+                out,
+                [
+                    "41",
+                    "42",
+                    "a!",
+                    "Err(x, terminated=false)",
+                    "7",
+                    "b!",
+                    "Err(execution terminated, terminated=true)",
+                    "2",
+                    "c!",
+                    "Err(RangeError: Maximum call stack size exceeded, terminated=false)",
+                    "z!",
+                    "a!",
+                ],
+                "{label}"
+            );
+        }
+    }
+}
+
+#[test]
+fn call_from_rust_deep_recursion_is_a_range_error_and_the_next_call_works() {
+    // native g -> call_any -> T0 r -> native g ... from Rust, until a stack limit throws.
+    for &d in Dispatch::ALL {
+        let out = std::thread::Builder::new()
+            .stack_size(if cfg!(debug_assertions) {
+                64 << 20
+            } else {
+                4 << 20
+            })
+            .spawn(move || {
+                let probe = {
+                    let mut iso = isolate(IsolateConfig::default());
+                    iso.run_script(defs(), "defs.js").unwrap();
+                    stubs(|n, op| offset_in(&iso, n, op))
+                };
+                with_stubs(&probe, |code| {
+                    let mut iso = native_isolate(config(d, false), code);
+                    let before = entry_state(&iso);
+                    let (g, r) = (iso.global("g").unwrap(), iso.global("r").unwrap());
+                    let e =
+                        crate::call_from_rust(&mut iso, g, Value::UNDEFINED, &[r, Value::int32(1)])
+                            .unwrap_err();
+                    assert_eq!(entry_state(&iso), before);
+                    let id = iso.global("id").unwrap();
+                    let again =
+                        crate::call_from_rust(&mut iso, id, Value::UNDEFINED, &[Value::int32(3)])
+                            .unwrap();
+                    (e.message, iso.display(again))
+                })
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(
+            out,
+            (
+                "RangeError: Maximum call stack size exceeded".to_string(),
+                "3".to_string()
+            ),
+            "{}",
+            d.name()
+        );
+    }
 }
