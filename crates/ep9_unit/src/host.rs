@@ -3,9 +3,12 @@
 
 use crate::codes::{Versions, cpu, target_abi, target_arch};
 
-/// The engine build id this build writes and accepts (H35-Q8). All zero until SP-Unit picks
-/// its source, the same value `ep9_frontend` writes into every CompiledUnit today.
-pub const ENGINE_BUILD_ID: [u8; 16] = [0; 16];
+/// The engine build id this build writes and accepts (H35-Q8): the first 16 bytes of SHA-256
+/// over the git commit, `rustc -vV`, the target and this crate's features, or the 32 hex
+/// digits of `EP9_BUILD_ID` at build time (`build.rs`). `ep9_frontend` still writes 16 zero
+/// bytes into every CompiledUnit, so the bytecode corpus digest does not depend on it.
+pub const ENGINE_BUILD_ID: [u8; 16] =
+    *include_bytes!(concat!(env!("OUT_DIR"), "/engine_build_id.bin"));
 
 /// The host side of the check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,4 +123,73 @@ fn detect_cpu() -> u64 {
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 fn detect_cpu() -> u64 {
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ENGINE_BUILD_ID;
+
+    /// The text `build.rs` hashed (or the override line), from the same build.
+    const INPUT: &str = include_str!(concat!(env!("OUT_DIR"), "/engine_build_id.txt"));
+
+    fn hex(id: &[u8]) -> String {
+        id.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn build_id_is_the_override_or_the_hash_of_its_inputs() {
+        if let Some(v) = INPUT.strip_prefix("override ") {
+            assert_eq!(hex(&ENGINE_BUILD_ID), v.trim());
+            assert_eq!(
+                option_env!("EP9_BUILD_ID")
+                    .map(str::to_ascii_lowercase)
+                    .as_deref(),
+                Some(v.trim())
+            );
+            return;
+        }
+        assert_eq!(option_env!("EP9_BUILD_ID"), None);
+        let digest = ep9_bytecode::sha256::sha256(INPUT.as_bytes());
+        assert_eq!(ENGINE_BUILD_ID[..], digest[..16]);
+        let lines: Vec<&str> = INPUT.lines().collect();
+        assert_eq!(lines[0], "ep9 engine build id v1");
+        let commit = lines[1].strip_prefix("commit ").expect("commit line");
+        assert!(
+            commit == "unknown"
+                || (commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit())),
+            "{commit}"
+        );
+        assert!(
+            lines[2]
+                .strip_prefix("target ")
+                .is_some_and(|t| !t.is_empty()),
+            "{INPUT}"
+        );
+        assert!(lines[3].starts_with("features"), "{INPUT}");
+        assert_eq!(lines[4], "rustc");
+        assert!(
+            lines[5..].iter().any(|l| l.starts_with("host: ")),
+            "{INPUT}"
+        );
+        assert_eq!(lines[3] == "features AOT", cfg!(feature = "aot"), "{INPUT}");
+        assert_ne!(ENGINE_BUILD_ID, [0; 16]);
+    }
+
+    /// The commit in the id is the one checked out now: cargo reran build.rs when HEAD moved.
+    #[test]
+    fn build_id_names_the_checked_out_commit() {
+        let Some(line) = INPUT.lines().nth(1).and_then(|l| l.strip_prefix("commit ")) else {
+            return; // override
+        };
+        let head = std::process::Command::new("git")
+            .args(["-C", env!("CARGO_MANIFEST_DIR"), "rev-parse", "HEAD"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        match head {
+            Some(head) => assert_eq!(line, head),
+            None => assert_eq!(line, "unknown"),
+        }
+    }
 }

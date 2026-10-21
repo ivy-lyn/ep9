@@ -257,17 +257,25 @@ fn timeout_is_an_infra_error() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// A panic in a run is an infrastructure error in both builds of the binary. The dev profile
+/// (`cargo test`, as CI runs it) unwinds: the worker catches the panic and reports `panic`.
+/// The release profile has `panic = "abort"` (H23), and `cargo test --release` builds this
+/// binary with it: the worker ends after its panic hook, and the report line is a
+/// `worker crash` whose stderr tail carries the panic text.
 #[test]
 fn panic_is_an_infra_error() {
     let root = tree("panic");
     let expect = expect_file(&root, FAILING);
     let (code, text) = exec(&root, &expect, &[], Some("panic:/pass.js"));
     assert_eq!(code, Some(2), "{text}");
-    assert!(
-        text.contains("test/language/pass.js: [sloppy] panic: injected panic"),
-        "{text}"
-    );
-    assert!(text.contains("panic 1"), "{text}");
+    let caught = text.contains("test/language/pass.js: [sloppy] panic: injected panic")
+        && text.contains("(panic 1, timeout 0, worker crash 0, other 0)");
+    let aborted = text.contains("test/language/pass.js: the worker exited")
+        && text.contains("ep9-test262 worker panicked: injected panic for test/language/pass.js")
+        && text.contains("(panic 0, timeout 0, worker crash 1, other 0)");
+    assert!(caught || aborted, "{text}");
+    // Every other test still ran.
+    assert!(text.contains("language             8 / 18"), "{text}");
     std::fs::remove_dir_all(root).unwrap();
 }
 

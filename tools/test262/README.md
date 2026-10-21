@@ -130,11 +130,14 @@ the last 4096 bytes of each worker's stderr and puts them in the line of a `work
 
 | Build | A panic in a run | Report | Exit |
 |---|---|---|---|
-| unwinds (today) | caught in the worker | `panic` (exec), `[mode] panic: <msg>` (parse) | 2 |
-| `panic = "abort"` (from P2-INFRA2, also for ep9-test262) | ends the worker | `worker crash`, with the panic text from the stderr tail | 2 |
+| unwinds (the dev profile: debug builds, `cargo test`) | caught in the worker | `panic` (exec), `[mode] panic: <msg>` (parse) | 2 |
+| `panic = "abort"` (the release profile and `dev-opt`, since M0 month 2 P2; `cargo run --release` as in CI) | ends the worker | `worker crash`, with the panic text from the stderr tail | 2 |
 
-So from P2 on, a panic counts as `worker crash` in the infrastructure line, and exit 2 still
-holds. The summary line keeps its format:
+So in a release build a panic counts as `worker crash` in the infrastructure line, and exit 2
+still holds. The tests in `tests/` run the binary of the profile they are built in: CI runs them
+in the dev profile (`cargo test`), where `panic_is_an_infra_error` (`tests/exec.rs`) sees a caught
+`panic`; under `cargo test --release` the binary aborts, and the test accepts the `worker crash`
+form with the panic text instead. The summary line keeps its format:
 `infrastructure errors: N (panic N, timeout N, worker crash N, other N)` (the CI atom-key gate
 matches it).
 

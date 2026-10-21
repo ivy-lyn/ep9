@@ -11,7 +11,7 @@
 //! | `expand_threaded!([become, "become"])` | (c) the same with `become` |
 //! | `expand_match!([])` | (a) `ep9loop__match__run`: one `loop { match }` |
 //! | `expand_scaled!([])` | `step::<S>`: one prefixed instruction, out of line |
-//! | `handler!` | one handler fn with the handler ABI of the target (x86-64: `sysv64-unwind`) |
+//! | `handler!` | one handler fn with the handler ABI of the target (x86-64: `sysv64-unwind`; `sysv64` under `panic = "abort"`) |
 //!
 //! Handler classes (read by `cargo xtask disasm-check`): `tail` handlers leave only through
 //! a tail jump to the next handler; `exit` handlers (`Exit`, `BadOpcode`) return to Rust.
@@ -239,9 +239,14 @@ impl<C, A: RegArg, B: RegArg, D: RegArg, Ret: RegArg> AtMostFourRegArgs
     for for<'a> unsafe fn(&'a mut C, A, B, D) -> Ret
 {
 }
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", panic = "unwind"))]
 impl<C, A: RegArg, B: RegArg, D: RegArg, Ret: RegArg> AtMostFourRegArgs
     for for<'a> unsafe extern "sysv64-unwind" fn(&'a mut C, A, B, D) -> Ret
+{
+}
+#[cfg(all(target_arch = "x86_64", not(panic = "unwind")))]
+impl<C, A: RegArg, B: RegArg, D: RegArg, Ret: RegArg> AtMostFourRegArgs
+    for for<'a> unsafe extern "sysv64" fn(&'a mut C, A, B, D) -> Ret
 {
 }
 
@@ -249,13 +254,25 @@ impl<C, A: RegArg, B: RegArg, D: RegArg, Ret: RegArg> AtMostFourRegArgs
 /// [`crate::interp::Handler`]) with the handler ABI of the target. x86-64: `extern
 /// "sysv64-unwind"` on every OS, so Win64 handlers get the SysV register set (rsi, rdi and
 /// xmm6-xmm15 are not callee-saved there) and save fewer registers on entry. Other targets: the
-/// Rust ABI. `-unwind` keeps a panic (a VM bug) unwinding as with the Rust ABI.
+/// Rust ABI. `-unwind` keeps a panic (a VM bug) unwinding as with the Rust ABI. With `panic =
+/// "abort"` (the release profile, H23) the ABI is plain `sysv64`: nothing unwinds there, and a
+/// call to an `-unwind` function from abort code gets an abort landing pad, which turns every
+/// sibling call into a call + return (disasm-check: 50 of 282 tail jumps).
 macro_rules! handler {
     ( $(#[$($m:tt)*])* $vis:vis fn $name:ident($cx:ident, $pc:ident, $fp:ident, $acc:ident)
       $body:block ) => {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(all(target_arch = "x86_64", panic = "unwind"))]
         $(#[$($m)*])*
         $vis unsafe extern "sysv64-unwind" fn $name(
+            $cx: &mut $crate::interp::Cx,
+            $pc: *const u8,
+            $fp: *mut u64,
+            $acc: u64,
+        ) -> u64 $body
+
+        #[cfg(all(target_arch = "x86_64", not(panic = "unwind")))]
+        $(#[$($m)*])*
+        $vis unsafe extern "sysv64" fn $name(
             $cx: &mut $crate::interp::Cx,
             $pc: *const u8,
             $fp: *mut u64,
