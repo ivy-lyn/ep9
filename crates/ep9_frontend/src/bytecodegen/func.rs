@@ -101,6 +101,8 @@ pub(crate) struct FnGen<'a, 's> {
     /// Start offsets of the statements and expressions being generated (innermost last): the
     /// default position of a throwing instruction (G10).
     spans: Vec<u32>,
+    /// The generator state of a generator function body (`generator.rs`); `None` elsewhere.
+    pub(crate) generator: Option<super::generator::GenState>,
 }
 
 impl<'a, 's> FnGen<'a, 's> {
@@ -129,6 +131,7 @@ impl<'a, 's> FnGen<'a, 's> {
             global_slots: HashMap::new(),
             depth: 0,
             spans: Vec::new(),
+            generator: None,
         }
     }
 
@@ -413,6 +416,17 @@ impl<'a, 's> FnGen<'a, 's> {
         }
     }
 
+    /// `acc = new.target` from the frame. In a generator body `new.target` is undefined (a
+    /// generator is never constructed), and fp-3 of a resumed frame holds the generator object
+    /// (FRAME 2), so the body loads undefined instead.
+    fn load_new_target(&mut self) {
+        if self.info.is_generator {
+            self.b.lda_undefined();
+        } else {
+            self.b.lda_new_target();
+        }
+    }
+
     /// `acc = home object` from the frame (`GetHomeObject(running function)`).
     fn load_frame_home_object(&mut self) {
         let m = self.mark();
@@ -438,9 +452,7 @@ impl<'a, 's> FnGen<'a, 's> {
             BindingLocation::Frame(FrameSlot::Receiver) => {
                 self.b.ldar(Register::RECEIVER);
             }
-            BindingLocation::Frame(FrameSlot::NewTarget) => {
-                self.b.lda_new_target();
-            }
+            BindingLocation::Frame(FrameSlot::NewTarget) => self.load_new_target(),
             BindingLocation::Frame(FrameSlot::Callee) => {
                 self.b.lda_current_function();
             }
@@ -958,9 +970,7 @@ impl<'a, 's> FnGen<'a, 's> {
                 0 => {
                     self.b.ldar(Register::RECEIVER);
                 }
-                1 => {
-                    self.b.lda_new_target();
-                }
+                1 => self.load_new_target(),
                 2 => {
                     self.b.lda_current_function();
                 }
@@ -972,7 +982,7 @@ impl<'a, 's> FnGen<'a, 's> {
     }
 
     /// FunctionDeclarationInstantiation, then the body. `params` and `body` are the AST.
-    fn prologue_and_params(&mut self, params: &'a FormalParameters<'a>) -> Gen {
+    pub(crate) fn prologue_and_params(&mut self, params: &'a FormalParameters<'a>) -> Gen {
         let info = self.info;
         // 1. Name scope (named function expression): its own context with the callee.
         if let Some(ns) = info.name_scope {

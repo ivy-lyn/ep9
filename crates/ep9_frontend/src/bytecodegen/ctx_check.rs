@@ -14,6 +14,17 @@
 //! PushContext        : acc holds a known context
 //! PopContext, handler: the register holds a known context
 //! ```
+//!
+//! Generators (M2-P1-GEN-CG): a resume enters at the `SwitchOnGeneratorState` table entry of
+//! its suspend id with the context and the registers that `SuspendGenerator` saved, so:
+//!
+//! ```text
+//! SwitchOnGeneratorState: falls through only (the first call); its table entries get no
+//!                         state from the switch
+//! SuspendGenerator k     : table entry k takes the state just before it (current context
+//!                          and registers); the entry must be the ResumeGenerator after it
+//! ResumeGenerator        : keeps the saved registers (no `Other` marks); acc = the sent value
+//! ```
 
 use std::collections::BTreeMap;
 
@@ -158,6 +169,9 @@ impl Checker<'_> {
             Opcode::Ldar => st.acc = st.reg(insn.register(0)),
             Opcode::Mov => st.set(insn.register(1), st.reg(insn.register(0))),
             Opcode::LdaCurrentContext => st.acc = st.current,
+            // The VM restores the registers that the matching SuspendGenerator saved; the
+            // resume state is that suspend's state (see `check_function`).
+            Opcode::ResumeGenerator => st.acc = Cv::Other,
             Opcode::PushContext => {
                 let acc = st.acc;
                 if self.known(insn, "acc", acc) == Some(None) {
@@ -282,21 +296,29 @@ impl Checker<'_> {
     }
 }
 
-/// Successor offsets of `insn` in normal control flow.
+/// The offsets of the jump-table entries of a switch instruction.
+fn table_targets(f: &Function, insn: &Instruction<'_>) -> Vec<u32> {
+    let mut out = Vec::new();
+    for (i, o) in insn.opcode.info().operands.iter().enumerate() {
+        if o.kind == OperandKind::Const
+            && let Constant::JumpTable(t) = &f.constants[insn.operand(i) as usize]
+        {
+            out.extend(t.iter().map(|&e| insn.offset + e));
+        }
+    }
+    out
+}
+
+/// Successor offsets of `insn` in normal control flow. The table of `SwitchOnGeneratorState`
+/// is not followed: its entries are reached from the matching `SuspendGenerator`.
 fn successors(f: &Function, insn: &Instruction<'_>) -> Vec<u32> {
     let flags = insn.opcode.info().flags;
     let mut out = Vec::new();
     if let Some(t) = insn.jump_target() {
         out.push(t);
     }
-    if flags.contains(OpcodeFlags::SWITCH) {
-        for (i, o) in insn.opcode.info().operands.iter().enumerate() {
-            if o.kind == OperandKind::Const
-                && let Constant::JumpTable(t) = &f.constants[insn.operand(i) as usize]
-            {
-                out.extend(t.iter().map(|&e| insn.offset + e));
-            }
-        }
+    if flags.contains(OpcodeFlags::SWITCH) && insn.opcode != Opcode::SwitchOnGeneratorState {
+        out.extend(table_targets(f, insn));
     }
     if !flags.contains(OpcodeFlags::TERMINATOR) {
         out.push(insn.next_offset());
@@ -333,6 +355,12 @@ fn check_function(unit: &CompiledUnit, fi: usize, f: &Function, errors: &mut Vec
         acc: Cv::Other,
         regs: vec![Cv::Other; f.register_count as usize],
     };
+    // The resume points: the table of the (one) SwitchOnGeneratorState, by suspend id.
+    let resume: Vec<u32> = insns
+        .values()
+        .find(|i| i.opcode == Opcode::SwitchOnGeneratorState)
+        .map(|i| table_targets(f, i))
+        .unwrap_or_default();
     let mut cx = Checker {
         unit,
         fi,
@@ -352,6 +380,11 @@ fn check_function(unit: &CompiledUnit, fi: usize, f: &Function, errors: &mut Vec
             hs.current = st.reg(h.context);
             hs.acc = Cv::Other;
             next.push((h.target, hs));
+        }
+        if insn.opcode == Opcode::SuspendGenerator
+            && let Some(&target) = resume.get(insn.unsigned(3) as usize)
+        {
+            next.push((target, st.clone()));
         }
         cx.step(&insn, &mut st);
         for t in successors(f, &insn) {
@@ -380,6 +413,22 @@ fn check_function(unit: &CompiledUnit, fi: usize, f: &Function, errors: &mut Vec
         {
             let v = st.reg(h.context);
             cx.known(&insn, "the handler context register", v);
+        }
+        if insn.opcode == Opcode::SuspendGenerator {
+            let id = insn.unsigned(3);
+            let problem = match resume.get(id as usize) {
+                None => Some("has no resume point".to_string()),
+                Some(&t) if t != insn.next_offset() => {
+                    Some(format!("resumes at @{t}, not after the suspend"))
+                }
+                Some(&t) if insns[&t].opcode != Opcode::ResumeGenerator => {
+                    Some(format!("resumes at @{t}, not at a ResumeGenerator"))
+                }
+                Some(_) => None,
+            };
+            if let Some(p) = problem {
+                cx.error(&insn, format!("suspend id {id} {p}"));
+            }
         }
         cx.step(&insn, &mut st.clone());
     }
@@ -489,6 +538,52 @@ mod tests {
             both.iter()
                 .all(|e| e.contains("PopContext") && e.contains("not a known")),
             "{both:?}"
+        );
+    }
+
+    /// M2-P1-GEN-CG: a generator body with a `yield` inside a block context and inside
+    /// try/finally (also in the finally block). The resume points take the state of their
+    /// suspend: without the generator rule, ResumeGenerator marks the saved context registers
+    /// `Other` and the PopContext / handler checks after it fail.
+    const GEN: &str = "function* g(n) { let a = n; { let b = 2; yield () => a + b; } \
+                       try { let c = 3; yield () => c; } finally { yield a; } }";
+
+    fn gen_unit() -> VerifiedUnit {
+        let opts = SourceOpts::script(Strictness::Sloppy);
+        super::super::compile(GEN, opts, super::super::CompileOptions::default()).unwrap()
+    }
+
+    #[test]
+    fn generator_resume_points_take_the_suspend_state() {
+        let unit = gen_unit();
+        let g = &unit.unit().functions[1];
+        assert!(g.flags.contains(ep9_bytecode::FunctionFlags::GENERATOR));
+        assert!(!g.handlers.is_empty(), "the try/finally is in the body");
+        assert_eq!(context_errors(&unit), Vec::<String>::new());
+    }
+
+    /// A prologue table entry that points at another suspend's resume point.
+    #[test]
+    fn catches_a_resume_point_of_another_suspend() {
+        use ep9_bytecode::{Constant, Instructions, Opcode};
+        let mut u = gen_unit().into_inner();
+        let g = &mut u.functions[1];
+        let switch = Instructions::new(&g.bytecode)
+            .map(|i| i.unwrap())
+            .find(|i| i.opcode == Opcode::SwitchOnGeneratorState)
+            .unwrap();
+        let k = switch.operand(1) as usize;
+        let Constant::JumpTable(t) = &mut g.constants[k] else {
+            panic!("a jump table")
+        };
+        assert_eq!(t.len(), 4, "the initial suspend + 3 yields");
+        t.swap(1, 2);
+        let errors = context_errors(&verify(u).expect("the verifier accepts the change"));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("SuspendGenerator") && e.contains("not after the suspend")),
+            "{errors:?}"
         );
     }
 
