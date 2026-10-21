@@ -5,7 +5,7 @@
 //!
 //! This file is frozen after the week-4 scaffold and again after M2-P0, which declared the
 //! month-2 modules (`abi_index`, `class_fields`, `eval`, `generator`, `isolate_api`, `jobs`,
-//! `slots`, `with_stmt`): each area adds its tests to its own module below, and host
+//! `native` (feature `spike-native`), `slots`, `with_stmt`): each area adds its tests to its own module below, and host
 //! functions for tests live in `support.rs`.
 
 #![allow(clippy::unwrap_used)]
@@ -27,6 +27,8 @@ mod interp;
 mod isolate_api;
 mod iter;
 mod jobs;
+#[cfg(feature = "spike-native")]
+mod native;
 mod objects;
 mod shapes;
 mod slots;

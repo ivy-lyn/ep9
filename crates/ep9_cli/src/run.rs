@@ -2,9 +2,13 @@
 
 use std::io::Write as _;
 
+use ep9_bytecode::{EvalContext, FunctionCtorKind};
 use ep9_frontend::{CodegenError, CompileError, CompileOptions, Position, SourceOpts, Strictness};
 use ep9_heap::HeapConfig;
-use ep9_vm::{Args, Cx, Exception, Isolate, IsolateConfig, JsResult, Local};
+use ep9_vm::{
+    Args, CompileFailure, CompileResult, CompilerHooks, Cx, Exception, Isolate, IsolateConfig,
+    JsResult, Local,
+};
 
 use crate::args::{Options, Source};
 
@@ -140,6 +144,7 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
         dispatch: opts.dispatch,
         feedback_threshold: opts.feedback_threshold,
         builtins: Some(&ep9_builtins::TABLE),
+        compiler: Some(&COMPILER),
         ..IsolateConfig::default()
     };
     let mut isolate = match Isolate::new(config) {
@@ -178,6 +183,44 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
         }
     }
     status
+}
+
+// ---- the compiler hooks (C2): ep9_frontend behind `IsolateConfig::compiler` ----------------
+
+/// The compiler entry points of the CLI's isolates: ep9_vm does not link the front end, so eval,
+/// `Function()` and run-time scripts reach it through these (M2-P0: the eval and
+/// `Function()` entries still answer `Unsupported`).
+static COMPILER: CompilerHooks = CompilerHooks {
+    compile_eval: hook_compile_eval,
+    compile_function: hook_compile_function,
+    compile_script: hook_compile_script,
+};
+
+fn hook_compile_eval(source: &str, ctx: &EvalContext) -> CompileResult {
+    ep9_frontend::compile_eval(source, ctx, CompileOptions::default()).map_err(hook_failure)
+}
+
+fn hook_compile_function(kind: FunctionCtorKind, params: &str, body: &str) -> CompileResult {
+    ep9_frontend::compile_function_ctor(kind, params, body, CompileOptions::default())
+        .map_err(hook_failure)
+}
+
+fn hook_compile_script(source: &str) -> CompileResult {
+    let opts = SourceOpts::script(Strictness::Sloppy);
+    ep9_frontend::compile(source, opts, CompileOptions::default()).map_err(hook_failure)
+}
+
+/// A front-end error as the VM's [`CompileFailure`] (the message without a position).
+fn hook_failure(e: CodegenError) -> CompileFailure {
+    match e {
+        CodegenError::Compile(CompileError::Syntax(errors)) => {
+            CompileFailure::Syntax(errors.first().message.clone())
+        }
+        CodegenError::Compile(CompileError::Range(r)) => CompileFailure::Range(r.message),
+        CodegenError::Unsupported(u) => CompileFailure::Unsupported(u.feature.to_string()),
+        CodegenError::Limit(m) => CompileFailure::Range(m),
+        CodegenError::Internal(m) => CompileFailure::Internal(m),
+    }
 }
 
 /// Runs the script of `opts` on a new thread with a `stack_mib` MiB stack. Returns the exit status.
@@ -235,5 +278,37 @@ mod tests {
             print_line(cx, args.into_iter())
         });
         assert_eq!(line.unwrap(), "Symbol(x) Symbol() x 1\n");
+    }
+
+    /// The hooks reach the front end: a script compiles, eval and `Function()` are still
+    /// `Unsupported` (M2-P0), and an early error is a `Syntax` failure.
+    #[test]
+    fn the_compiler_hooks_reach_the_front_end() {
+        let iso = Isolate::new(IsolateConfig {
+            compiler: Some(&COMPILER),
+            ..IsolateConfig::default()
+        })
+        .unwrap();
+        let hooks = iso.compiler().unwrap();
+        assert!((hooks.compile_script)("var a = 1;").is_ok());
+        assert!(matches!(
+            (hooks.compile_script)("let a; let a;"),
+            Err(CompileFailure::Syntax(_))
+        ));
+        let ctx = EvalContext::default();
+        assert_eq!(
+            (hooks.compile_eval)("1", &ctx).unwrap_err(),
+            CompileFailure::Unsupported("eval".to_string())
+        );
+        assert_eq!(
+            (hooks.compile_function)(FunctionCtorKind::Normal, "a", "return a").unwrap_err(),
+            CompileFailure::Unsupported("Function constructor".to_string())
+        );
+        assert!(
+            Isolate::new(IsolateConfig::default())
+                .unwrap()
+                .compiler()
+                .is_none()
+        );
     }
 }

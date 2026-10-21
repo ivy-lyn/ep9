@@ -26,6 +26,7 @@ use ep9_value::Value;
 
 use crate::atoms::AtomTable;
 use crate::builtins::BuiltinState;
+use crate::compiler::CompilerHooks;
 use crate::dispatch::RangeRegistry;
 use crate::frame::{UNDEFINED, VmStack, int32_bits, native_ptr, slot};
 use crate::shape::ShapeState;
@@ -224,6 +225,8 @@ pub(crate) struct Runtime {
     /// Lowest native stack address the VM lets JS entries and host calls reach.
     pub native_limit: usize,
     pub stack_trace_limit: usize,
+    /// The compiler hooks (`IsolateConfig::compiler`, C2), for eval and `Function()`.
+    pub compiler: Option<&'static CompilerHooks>,
     /// The interrupt word (`interp::interrupt` bits; bit 0 = terminate): set by
     /// `TerminateHandle::terminate` (another thread), read at interrupt polls through
     /// `Cx::interrupt`.
@@ -249,6 +252,7 @@ impl Runtime {
         stack_slots: usize,
         native_limit: usize,
         stack_trace_limit: usize,
+        compiler: Option<&'static CompilerHooks>,
     ) -> Box<Runtime> {
         crate::object::register_kinds(&heap);
         let shared = Rc::new(Shared::new(stack_slots));
@@ -265,6 +269,7 @@ impl Runtime {
             registry: RefCell::new(RangeRegistry::new()),
             native_limit,
             stack_trace_limit,
+            compiler,
             terminate: Arc::new(AtomicU32::new(0)),
             terminating: Cell::new(false),
             templates: RefCell::new(HashMap::new()),

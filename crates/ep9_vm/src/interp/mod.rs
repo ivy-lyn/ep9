@@ -142,6 +142,14 @@ pub(crate) struct Cx {
     /// The isolate's interrupt word (`Runtime::terminate`, bits in [`interrupt`]), read at
     /// the interrupt poll (`slow::interrupt`). Other threads set bits (`TerminateHandle`).
     pub interrupt: *const AtomicU32,
+    /// Spike B (feature `spike-native`): the lowest native stack address native code may
+    /// reach (`Runtime::native_limit`, copied so a JIT prologue compares one `Cx` field).
+    #[cfg(feature = "spike-native")]
+    pub native_limit: usize,
+    /// Spike B (feature `spike-native`): the runtime functions native code calls
+    /// (`native::RUNTIME_TABLE`).
+    #[cfg(feature = "spike-native")]
+    pub runtime_table: *const crate::native::RuntimeTable,
 }
 
 /// Bits of the interrupt word (`Cx::interrupt`). P3 adds bits; bit 0 keeps its meaning.
