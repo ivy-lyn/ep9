@@ -130,6 +130,36 @@ fn identity<'s>(
     Ok(args.get(0))
 }
 
+/// A getter that calls `this.it.next()` and prints "inner:" with the result ("value,done") or
+/// the error ("Name: message", caught); then returns `this.ret`. With `this.rethrow` true the
+/// error propagates instead.
+fn reenter<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let this = this.as_object().expect("the array-like");
+    let it = cx.get(this, "it")?.as_object().expect("an iterator");
+    let rethrow = cx.get(this, "rethrow")?.as_bool() == Some(true);
+    let next = cx.get(it, "next")?;
+    let text = match cx.call(next, it.value(), &[]) {
+        Ok(r) => {
+            let r = r.as_object().expect("an iterator result");
+            let v = cx.get(r, "value")?;
+            let d = cx.get(r, "done")?;
+            format!("inner:{},{}", cx.to_rust_string(v)?, d.as_bool().unwrap())
+        }
+        Err(e) if rethrow => return Err(e),
+        // Caught: `result` takes the pending exception.
+        Err(_) => format!("inner:{}", result(cx, 0).unwrap_err()),
+    };
+    let print = global_fn(cx, "print");
+    let text = cx.new_string(&text)?;
+    cx.call(print, Local::undefined(), &[text.value()])?;
+    cx.get(this, "ret")
+}
+
 /// A new isolate with `print` and the test iterables.
 fn iter_isolate(config: IsolateConfig) -> Isolate {
     let mut iso = isolate(config);
@@ -140,6 +170,7 @@ fn iter_isolate(config: IsolateConfig) -> Isolate {
     iso.register_host_function("throws", 0, throws);
     iso.register_host_function("identity", 1, identity);
     iso.register_host_function("ownIt", 0, own_it);
+    iso.register_host_function("reenter", 0, reenter);
     iso
 }
 
@@ -576,6 +607,147 @@ fn the_array_iterator_reads_array_likes_and_stays_done() {
             assert_eq!(take_message(cx), "boom");
             cx.set(bad, "length", Local::int32(0), true)?;
             assert_eq!(step(cx, it)?, ("undefined".into(), true));
+            Ok(())
+        })
+        .unwrap();
+    });
+}
+
+/// What [`reenter`] prints when `next` finds its iterator executing.
+const RUNNING: &str = "inner:TypeError: Array Iterator is already running";
+
+/// An accessor descriptor with the getter [`reenter`].
+fn reenter_getter<'s>(cx: &mut Cx<'s>) -> PropertyDescriptor<'s> {
+    PropertyDescriptor {
+        get: Some(global_fn(cx, "reenter")),
+        set: Some(Local::undefined()),
+        enumerable: Some(true),
+        configurable: Some(true),
+        ..PropertyDescriptor::default()
+    }
+}
+
+/// `Array.prototype.values.call(o)`, also stored as `o.it`.
+fn values_of<'s>(cx: &mut Cx<'s>, o: Local<'s, JsObject>) -> JsResult<Local<'s, JsObject>> {
+    let ap = cx.intrinsic(IntrinsicId::ArrayPrototype);
+    let values = cx.get(ap, "values")?;
+    let it = cx.call(values, o.value(), &[])?.as_object().unwrap();
+    cx.set(o, "it", it, true)?;
+    Ok(it)
+}
+
+/// `o = { length: 3, get 0() { reenter; return "a" }, 1: "b", 2: "c" }` and `o.it`.
+fn reentrant_array_like<'s>(
+    cx: &mut Cx<'s>,
+) -> JsResult<(Local<'s, JsObject>, Local<'s, JsObject>)> {
+    let o = cx.new_object();
+    cx.set(o, "length", Local::int32(3), true)?;
+    let get = reenter_getter(cx);
+    cx.define_property_or_throw(o, "0", get)?;
+    for (k, v) in [("1", "b"), ("2", "c"), ("ret", "a")] {
+        let v = cx.new_string(v)?;
+        cx.set(o, k, v, true)?;
+    }
+    let it = values_of(cx, o)?;
+    Ok((o, it))
+}
+
+/// A `next` called by the user code of its own step (an element getter, the `length` getter)
+/// throws a TypeError: the iterator is executing (GeneratorValidate step 6; V8 runs the call,
+/// W4-P3FIX-ITER-REENTRY). A getter that catches it lets the outer step go on; one that does
+/// not completes the iterator.
+#[test]
+fn a_reentrant_next_throws_and_the_outer_step_goes_on() {
+    each_isolate(|iso| {
+        iso.with_cx(|cx| {
+            let (_, it) = reentrant_array_like(cx)?;
+            assert_eq!(step(cx, it)?, ("a".into(), false));
+            assert_eq!(take_output(), [RUNNING]);
+            assert_eq!(step(cx, it)?, ("b".into(), false));
+            assert_eq!(step(cx, it)?, ("c".into(), false));
+            assert_eq!(step(cx, it)?, ("undefined".into(), true));
+            assert!(take_output().is_empty());
+            // The length getter runs at each step, so each step re-enters once.
+            let o = cx.new_object();
+            let get = reenter_getter(cx);
+            cx.define_property_or_throw(o, "length", get)?;
+            cx.set(o, "ret", Local::int32(1), true)?;
+            let x = cx.new_string("x")?;
+            cx.set(o, "0", x, true)?;
+            let it = values_of(cx, o)?;
+            assert_eq!(step(cx, it)?, ("x".into(), false));
+            assert_eq!(step(cx, it)?, ("undefined".into(), true));
+            assert_eq!(take_output(), [RUNNING, RUNNING]);
+            // Not caught: the outer `next` throws it too, and the iterator is done.
+            let (o, it) = reentrant_array_like(cx)?;
+            cx.set(o, "rethrow", Local::boolean(true), true)?;
+            assert!(step(cx, it).is_err());
+            assert_eq!(take_message(cx), "Array Iterator is already running");
+            assert_eq!(step(cx, it)?, ("undefined".into(), true));
+            assert!(take_output().is_empty());
+            Ok(())
+        })
+        .unwrap();
+    });
+}
+
+/// `for (x of <global name>) print(x)`.
+fn for_of_global(name: &str) -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    s.lda_global(name);
+    for_of(&mut s, |s, v| {
+        s.b.ldar(v);
+        s.print_acc();
+    });
+    s.b.lda_undefined().return_();
+    unit("", vec![s.finish()])
+}
+
+/// for-of and spread (interp/slow/iter.rs) step an iterator object through its `next`, so a
+/// getter that re-enters it gets the TypeError there too. Over the array-like itself, the
+/// fast path's cell is out of reach; the getter's call then runs a step of `o.it`, whose own
+/// getter call re-enters `o.it`.
+#[test]
+fn for_of_and_spread_see_a_running_array_iterator() {
+    fn o_global<'s>(cx: &mut Cx<'s>) -> JsResult<Local<'s, JsObject>> {
+        let g = cx.global();
+        Ok(cx.get(g, "o")?.as_object().unwrap())
+    }
+    each_isolate(|iso| {
+        iso.with_cx(|cx| {
+            let (o, it) = reentrant_array_like(cx)?;
+            // o[Symbol.iterator] = Array.prototype.values, so GetIterator(o) takes the fast path.
+            let ap = cx.intrinsic(IntrinsicId::ArrayPrototype);
+            let values = cx.get(ap, "values")?;
+            let iter = well_known(cx, WellKnownSymbol::Iterator);
+            cx.set(o, iter, values, true)?;
+            let g = cx.global();
+            cx.set(g, "o", o, true)?;
+            cx.set(g, "it", it, true)
+        })
+        .unwrap();
+        // GetIterator(it) calls %Iterator.prototype%[@@iterator], then the loop calls `next`.
+        let (r, out) = run(iso, for_of_global("it"));
+        r.unwrap();
+        assert_eq!(out, [RUNNING, "a", "b", "c"]);
+        iso.with_cx(|cx| {
+            let o = o_global(cx)?;
+            values_of(cx, o).map(|_| ())
+        })
+        .unwrap();
+        let (r, out) = run(iso, for_of_global("o"));
+        r.unwrap();
+        assert_eq!(out, [RUNNING, "inner:a,false", "a", "b", "c"]);
+        // [...it] and [...o]: the generic IteratorStep loop of CreateArrayFromIterable.
+        iso.with_cx(|cx| {
+            let o = o_global(cx)?;
+            let it = values_of(cx, o)?;
+            take_output();
+            assert_eq!(spread_text(cx, it.value()).unwrap(), "a,b,c");
+            assert_eq!(take_output(), [RUNNING]);
+            values_of(cx, o)?;
+            assert_eq!(spread_text(cx, o.value()).unwrap(), "a,b,c");
+            assert_eq!(take_output(), [RUNNING, "inner:a,false"]);
             Ok(())
         })
         .unwrap();
