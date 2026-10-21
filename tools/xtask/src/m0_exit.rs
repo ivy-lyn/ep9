@@ -1496,7 +1496,7 @@ fn item12(c: &Ctx) -> (Cell, Cell) {
 /// one (a log can hold several runs, appended).
 struct CorpusRun {
     profile: &'static str,
-    /// (digest, units) of each "corpus digest <hex> over <n> units" line.
+    /// (digest, units) of each `corpus digest <hex> over <n> units` line.
     digests: Vec<(String, String)>,
     /// "test result: ok. 1 passed" lines.
     ok: usize,
