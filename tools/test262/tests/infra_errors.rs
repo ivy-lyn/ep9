@@ -165,6 +165,27 @@ fn a_crash_that_does_not_repeat_alone_is_still_an_infra_error() {
 }
 
 #[test]
+fn a_reply_cut_by_a_worker_crash_is_an_infra_error() {
+    // The only test, so the last job of the only worker: no later reply shows the crash. The
+    // cut reply decodes as an outcome with no run, which would pass a test that fails.
+    let root = tree("partial");
+    let expect = expect_file(&root, &[]);
+    let (code, text) = parse_with_fault(
+        &root,
+        &expect,
+        &["--threads", "1", "test/language/fails.js"],
+        Some("parse-partial-reply:/fails.js"),
+    );
+    assert_eq!(code, Some(2), "{text}");
+    assert!(
+        text.contains("test/language/fails.js: worker crash: the worker exited"),
+        "{text}"
+    );
+    assert!(text.contains("1 of 1 files could not be checked"), "{text}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn listed_test_with_invalid_utf8_is_an_error() {
     let root = tree("utf8");
     write(

@@ -155,6 +155,7 @@ matches it).
 | `parse-nounwind-panic` | parse | as `nounwind-panic`, in the parse worker |
 | `parse-abort` | parse | the parse worker aborts on the file |
 | `parse-abort-in-group` | parse | the parse worker aborts on the file only while more requests wait (a crash that does not repeat when the file runs alone) |
+| `parse-partial-reply` | parse | the parse worker writes the file's reply up to its first run, with no newline, and aborts (a worker killed while it writes; the parent drops the cut line, so it is a `worker crash`, not an outcome with no run) |
 
 ### In CI
 
