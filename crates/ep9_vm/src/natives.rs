@@ -19,10 +19,12 @@
 //! index. The iterated value also gives the kind, so each `next` checks its receiver
 //! (GeneratorValidate's brand) without a kind field:
 //!
-//! | Iterator | Iterated value | Done |
-//! |---|---|---|
-//! | array (`CreateArrayIterator`, kind "value") | an object: an Array, or any array-like (`LengthOfArrayLike`) | undefined |
-//! | string (`CreateStringIterator`) | a string primitive | the empty string |
+//! | Iterator | Iterated value | Done | Executing |
+//! |---|---|---|---|
+//! | array (`CreateArrayIterator`, kind "value") | an object: an Array, or any array-like (`LengthOfArrayLike`) | undefined | null, while `next` runs user code (getters, `valueOf`) |
+//! | string (`CreateStringIterator`) | a string primitive | the empty string | never: its `next` runs no user code |
+//!
+//! A `next` on an executing iterator throws a TypeError (GeneratorValidate, §27.5.3.2).
 //!
 //! `interp/slow/iter.rs` (GetIterator, spread) makes the same cells without calling
 //! `values` or `[@@iterator]` while the method it finds is the intrinsic.
@@ -575,6 +577,7 @@ fn iter_result(rt: &Runtime, value: u64, done: bool) -> u64 {
 /// %ArrayIteratorPrototype%.next (§23.1.5.2.1): one step of the CreateArrayIterator closure
 /// (§23.1.5.1, kind "value"). The length is read at every step (`LengthOfArrayLike`). Once the
 /// index reaches it, or a step throws (the closure completes), the iterator is done for good.
+/// While the step runs (getters, `valueOf` of the length), the cell holds null (executing).
 pub(crate) fn iterator_next<'s>(
     cx: &mut HostCx<'s>,
     this: Local<'s>,
@@ -583,16 +586,27 @@ pub(crate) fn iterator_next<'s>(
 ) -> JsResult<Local<'s>> {
     let cx = cx.inner();
     let it = this.bits();
+    // GeneratorResume (§27.5.3.3) step 1: GeneratorValidate (§27.5.3.2), the brand first.
     let state = object::is_iterator(it)
         .then(|| object::iterator_state(it))
         .filter(|&(target, _)| !is_string(target));
     let Some((target, i)) = state else {
         return Err(incompatible_receiver(cx, "Array Iterator", it));
     };
+    // GeneratorValidate step 6: executing, so the call comes from the user code of a step
+    // (V8 runs it instead: W4-P3FIX-ITER-REENTRY).
+    if target == NULL {
+        let msg = "Array Iterator is already running";
+        return Err(error::throw_error(cx, ErrorKind::TypeError, msg));
+    }
     let rt = cx.rt();
+    // GeneratorResume step 2: completed.
     if target == UNDEFINED {
         return Ok(local(iter_result(rt, UNDEFINED, true)));
     }
+    // GeneratorResume step 7: executing until the step ends. GC points below: `target` is
+    // only in a Rust local meanwhile.
+    object::set_iterator_state(rt, it, NULL, i);
     match array_iterator_step(cx, target, i) {
         Ok(Some(value)) => {
             object::set_iterator_state(rt, it, target, i + 1);
