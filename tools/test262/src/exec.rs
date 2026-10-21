@@ -482,6 +482,30 @@ fn injected_fault(rel: &str) {
     }
 }
 
+/// The config of every test isolate: the builtins of `ep9_builtins` (H20) on top of the VM's.
+fn isolate_config(gc_stress: u32, feedback_threshold: u32) -> IsolateConfig {
+    IsolateConfig {
+        heap: HeapConfig {
+            gc_stress,
+            verify_after_gc: gc_stress > 0,
+            ..HeapConfig::default()
+        },
+        feedback_threshold,
+        builtins: Some(&ep9_builtins::TABLE),
+        ..IsolateConfig::default()
+    }
+}
+
+/// `exec` exits 2 unless an isolate made with `config` has a builtin table: a run without
+/// one would fail thousands of tests and could rewrite the expectations with them.
+fn check_builtins(config: IsolateConfig) -> Result<(), String> {
+    let iso = Isolate::new(config).map_err(|e| format!("cannot create an isolate: {e}"))?;
+    match iso.builtin_table() {
+        Some(_) => Ok(()),
+        None => Err("no builtin table is installed (IsolateConfig::builtins)".to_string()),
+    }
+}
+
 struct RunCtx<'a> {
     opts: &'a WorkerOptions,
     harness: &'a mut Harness,
@@ -490,15 +514,7 @@ struct RunCtx<'a> {
 
 impl RunCtx<'_> {
     fn isolate(&self) -> Result<Isolate, String> {
-        let config = IsolateConfig {
-            heap: HeapConfig {
-                gc_stress: self.opts.gc_stress,
-                verify_after_gc: self.opts.gc_stress > 0,
-                ..HeapConfig::default()
-            },
-            feedback_threshold: self.opts.feedback_threshold,
-            ..IsolateConfig::default()
-        };
+        let config = isolate_config(self.opts.gc_stress, self.opts.feedback_threshold);
         let mut iso = Isolate::new(config).map_err(|e| format!("cannot create an isolate: {e}"))?;
         iso.register_host_function("print", 1, print);
         iso.register_host_function("__ep9_gc", 0, gc);
@@ -939,6 +955,10 @@ fn header(triple: &str) -> String {
 /// Run the `exec` command. Exit code: 0 = matches the expectations, 1 = differs, 2 = error.
 pub fn run(opts: &Options) -> ExitCode {
     let started = Instant::now();
+    if let Err(e) = check_builtins(isolate_config(0, opts.feedback_threshold)) {
+        eprintln!("ep9-test262: {e}");
+        return ExitCode::from(2);
+    }
     let root = &opts.test262;
     let dirs = match suite::all_dirs(root) {
         Ok(d) => d,
@@ -1449,6 +1469,15 @@ mod tests {
             panic!("not a failure");
         };
         assert_eq!(cause, "Test262Error (an assertion failed)");
+    }
+
+    #[test]
+    fn exec_needs_a_builtin_table() {
+        let config = isolate_config(0, IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD);
+        assert!(config.builtins.is_some());
+        assert_eq!(check_builtins(config), Ok(()));
+        let err = check_builtins(IsolateConfig::default()).unwrap_err();
+        assert!(err.contains("no builtin table is installed"), "{err}");
     }
 
     #[test]
