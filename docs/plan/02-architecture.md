@@ -16,7 +16,7 @@ IDs used here: G1-G15, N1-N13; H1-H37; C1-C14; D2, D4, D6, D14-D21; A0-A5; T0-T3
 
 | ID | Type | Statement | Measure or reason |
 |---|---|---|---|
-| G1 | Goal | Full ECMAScript (ES2026, ES2027 so far, Annex B, Intl, Temporal) in every tier and shipped mode | test262 full suite (53,616 files, 103,175 runs). A file passes when every strict/sloppy run it needs passes; staging and N3 features count as failures. ≥ 97.5% at M3; ≥ 98.5% at v1 (M8). Scale (per file, test262.fyi): V8 97.69%, QuickJS 98.48%, JSC 98.80% [R07] |
+| G1 | Goal | Full ECMAScript (ES2026, ES2027 so far, Annex B, Intl, Temporal) in every tier and shipped mode | test262 full suite (53,616 files, 102,994 runs at d53ebc8b; the parse runner skips staging and harness: 52,017 files, 99,979 runs). A file passes when every strict/sloppy run it needs passes; staging and N3 features count as failures. ≥ 97.5% at M3; ≥ 98.5% at v1 (M8). Scale (per file, test262.fyi): V8 97.69%, QuickJS 98.48%, JSC 98.80% [R07] |
 | G2 | Goal | Interpreter as fast as V8 jitless | Octane-7 ≥ 1.33x QuickJS. v8-v7 7-kernel geomean (no RegExp) ≥ 1.0x node --jitless. RegExp kernel ≥ 0.8x node --jitless by M5 exit [R06], [R09] |
 | G3 | Goal | Baseline JIT of JSC-Baseline class | Octane-7 ≥ 3.5x QuickJS. TS workload ≤ 1.1 s [R06] |
 | G4 | Goal | Speculative mid tier of Maglev/DFG class | Octane-7 ≥ 10x QuickJS (aim 14x). TS workload ≤ 0.6 s. JetStream 3 M7 list ≥ 0.75 × the node --max-opt=2 / node full ratio (est.) [R06] |
