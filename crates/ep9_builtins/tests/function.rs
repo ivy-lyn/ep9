@@ -270,7 +270,7 @@ fn constructor_checks_follow_the_target() {
 #[test]
 fn a_long_bind_chain_needs_no_rust_recursion() {
     // 100000 levels on an 8 MiB stack: the chain walks are loops (`bound::unwrap`,
-    // `bound::chain_arg`, `bound::is_constructor`), so the depth costs no native stack.
+    // `bound::copy_chain_args`, `bound::is_constructor`), so the depth costs no native stack.
     // Deleting each `name` keeps the names short ("bound " + the inherited "").
     let r = std::thread::Builder::new()
         .stack_size(8 << 20)

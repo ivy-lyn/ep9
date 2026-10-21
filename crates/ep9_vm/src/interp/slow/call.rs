@@ -3,7 +3,7 @@
 //!
 //! A bound function callee (§10.4.1) is replaced by its innermost target FUNCTION before
 //! anything else: its bound arguments go in front of the call's (`bound::unwrap`,
-//! `bound::chain_arg`), its bound `this` replaces the receiver, and for `[[Construct]]`
+//! `bound::copy_chain_args`), its bound `this` replaces the receiver, and for `[[Construct]]`
 //! new.target becomes the target while it is the bound function. The bound function stays in
 //! the caller's callee register, so everything its chain holds stays rooted until the frame
 //! push.
@@ -226,19 +226,19 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
 
 /// Walks the chain of the bound callee `f` (`bound::unwrap`; `new_target` undefined for a
 /// call) and puts the chain's bound arguments in front of `args`. RangeError if the count
-/// does not fit. Not a GC point; `f` must stay rooted (it is in the caller's callee register)
-/// while `args` holds the bound arguments.
+/// does not fit; polls for interrupts. Not a GC point unless it throws; `f` must stay rooted
+/// (it is in the caller's callee register) while `args` holds the bound arguments.
 fn prepend_bound_args(
     cx: &mut Cx,
     f: u64,
     new_target: u64,
     args: &mut Vec<u64>,
 ) -> Res<bound::Unwrapped> {
-    let Some(u) = bound::unwrap(f, new_target) else {
-        return stack_overflow(cx);
-    };
-    if u.bound > 0 {
-        args.splice(0..0, (0..u.bound).map(|i| bound::chain_arg(f, u.bound, i)));
+    let u = bound::unwrap(cx, f, new_target)?;
+    let n = u.bound as usize;
+    if n > 0 {
+        args.splice(0..0, core::iter::repeat_n(UNDEFINED, n));
+        bound::copy_chain_args(f, &mut args[..n]);
     }
     Ok(u)
 }

@@ -20,8 +20,9 @@
 //!
 //! Bound functions (§10.4.1, `bound.rs`) never get a frame. [`call_with`] and
 //! [`construct_with`] walk the chain to the innermost target FUNCTION and call it with the
-//! bound arguments in front of the caller's (`bound::chain_arg`), as `slow::call` does for
-//! bytecode callers:
+//! bound arguments in front of the caller's, as `slow::call` does for bytecode callers. The
+//! bound arguments are copied once to the scratch area ([`push_bound_args`]), and the callee
+//! frame goes above them:
 //!
 //! ```text
 //! call_with(f) ──── FUNCTION ──────────────────────────────> call_function_object(f)
@@ -243,29 +244,53 @@ pub(crate) fn call_with(
     }
     // A bound function: `construct_with` unwraps it before the call step.
     debug_assert!(new_target == UNDEFINED, "[[Construct]] of a bound function");
-    // §10.4.1.1 steps 1-5: Call(target, boundThis, boundArgs ++ argumentsList). `f` stays in
-    // this frame (the closure reads it), so the chain stays rooted until the frame push.
-    let Some(u) = bound::unwrap(f, UNDEFINED) else {
-        return stack_overflow(cx);
-    };
+    // §10.4.1.1 steps 1-5: Call(target, boundThis, boundArgs ++ argumentsList).
+    let u = bound::unwrap(cx, f, UNDEFINED)?;
     let Some(total) = u.bound.checked_add(argc) else {
         return stack_overflow(cx);
     };
     let bound = u.bound;
-    call_function_object(
+    let (pre, saved) = push_bound_args(cx, f, bound)?;
+    let r = call_function_object(
         cx,
         u.target,
         u.this,
         total,
         |i| {
             if i < bound {
-                bound::chain_arg(f, bound, i)
+                // SAFETY: slot `i < bound` of the copy, under the scratch top until the
+                // `restore_scratch` below.
+                unsafe { *pre.add(i as usize) }
             } else {
                 arg(i - bound)
             }
         },
         UNDEFINED,
-    )
+    );
+    restore_scratch(cx.rt(), saved);
+    r
+}
+
+/// Copies the bound-argument prefix of a call of the bound function `f` (`bound` values,
+/// `bound::copy_chain_args`) to the scratch area above the top frame, and raises the scratch
+/// top past it: the GC scans the copy, and a frame push or a nested call from Rust starts
+/// above it ([`top_of`]). Returns the copy and the scratch top to put back after the call.
+/// RangeError if the VM stack is full. Not a GC point unless it throws.
+fn push_bound_args(cx: &mut Cx, f: u64, bound: u32) -> Res<(*const u64, *mut u64)> {
+    let stack = cx.rt().stack();
+    let saved = stack.scratch_top();
+    let start = top_of(cx, stack.fp());
+    let end = start.wrapping_add(bound as usize);
+    if end.addr() > cx.stack_limit.addr() {
+        return stack_overflow(cx);
+    }
+    // SAFETY: [start, end) is inside the stack (end <= limit <= end of the stack) and above
+    // the top frame and every scratch Value, so these writes clobber nothing live.
+    let out = unsafe { core::slice::from_raw_parts_mut(start, bound as usize) };
+    bound::copy_chain_args(f, out);
+    // Every slot below `end` now holds a valid Value.
+    stack.set_scratch_top(end);
+    Ok((start, saved))
 }
 
 /// [`call_with`] for a FUNCTION `f` (a host or a bytecode function).
@@ -364,28 +389,31 @@ pub(crate) fn construct_with(
         return construct_function_object(cx, f, argc, arg, new_target);
     }
     // §10.4.1.2 steps 1-6: Construct(target, boundArgs ++ argumentsList, newTarget), with
-    // newTarget = target while it is the bound function. `f` stays in this frame (the
-    // closure reads it), so the chain stays rooted until the frame push.
-    let Some(u) = bound::unwrap(f, new_target) else {
-        return stack_overflow(cx);
-    };
+    // newTarget = target while it is the bound function. The copy of the bound arguments is
+    // scanned at the GC point of OrdinaryCreateFromConstructor.
+    let u = bound::unwrap(cx, f, new_target)?;
     let Some(total) = u.bound.checked_add(argc) else {
         return stack_overflow(cx);
     };
     let bound = u.bound;
-    construct_function_object(
+    let (pre, saved) = push_bound_args(cx, f, bound)?;
+    let r = construct_function_object(
         cx,
         u.target,
         total,
         |i| {
             if i < bound {
-                bound::chain_arg(f, bound, i)
+                // SAFETY: slot `i < bound` of the copy, under the scratch top until the
+                // `restore_scratch` below.
+                unsafe { *pre.add(i as usize) }
             } else {
                 arg(i - bound)
             }
         },
         u.new_target,
-    )
+    );
+    restore_scratch(cx.rt(), saved);
+    r
 }
 
 /// [`construct_with`] for a FUNCTION `f` with `[[Construct]]` (§10.2.2).
