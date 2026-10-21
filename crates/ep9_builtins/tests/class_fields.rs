@@ -240,3 +240,95 @@ print(typeof withStatic.kk.name);"#
         ])
     );
 }
+
+/// ClassDefinitionEvaluation step 8 (ECMA-262 §15.7.14): the heritage runs with the outer
+/// PrivateEnvironment, so a `#x` there means the enclosing class's `#x` even when the class
+/// being defined declares its own `#x` (a field, `#x in`, a method, a closure made in the
+/// heritage and called later, a class nested in the heritage, two levels). The inner class
+/// name stays in its TDZ during the heritage (last line).
+#[test]
+fn heritage_uses_the_outer_private_environment() {
+    assert_eq!(
+        run_both(
+            r#"class B {} class Base1 {} class Base2 {}
+class O {
+  #x = B;
+  #m() { return B; }
+  field() { return class I extends this.#x { #x; }; }
+  pick() { return class I extends (#x in this ? Base1 : Base2) { #x; }; }
+  method() { return class I extends this.#m() { #m() {} }; }
+  arrow() { const self = this; return class I extends (() => self.#x)() { #x; }; }
+  nested() {
+    return class I extends (class J { #x = 1; static has(o) { return #x in o; } }, this.#x) { #x; };
+  }
+  twoLevels() { return class H extends (class I extends this.#x { #x; }) { #x; }; }
+  late() { let f; class I extends (f = () => this.#x, Object) { #x = 2; } return f() === B; }
+  inner() { return class I extends this.#x { #x = 7; static read(o) { return o.#x; } }; }
+}
+var o = new O();
+print(new (o.field())() instanceof B);
+print(new (o.pick())() instanceof Base1);
+print(new (o.method())() instanceof B);
+print(new (o.arrow())() instanceof B);
+print(new (o.nested())() instanceof B);
+var H = o.twoLevels();
+print(new H() instanceof B, H.prototype instanceof B);
+var I = o.inner();
+print(I.read(new I()), o.late());
+try { I.read(o); print('no error'); } catch (e) { print(e.constructor.name); }
+try { class I extends I {} } catch (e) { print(e.constructor.name); }"#
+        ),
+        lines(&[
+            "true",
+            "true",
+            "true",
+            "true",
+            "true",
+            "true true",
+            "7 true",
+            "TypeError",
+            "ReferenceError",
+        ])
+    );
+}
+
+/// NamedEvaluation with a computed key (a class field, a static field, an object literal key
+/// that is not a literal): ClassDefinitionEvaluation names an anonymous class (§15.7.14,
+/// SetFunctionName before the elements) before its static fields and blocks run, so they
+/// see the key as `this.name`, and a static block that sets `name` itself keeps its value.
+/// The last line follows ECMA-262: a `static name()` method replaces the name the class got
+/// first; node v24 prints "string string" there (V8 names the class after the definition).
+#[test]
+fn computed_key_names_the_class_before_static_elements() {
+    assert_eq!(
+        run_both(
+            r#"var seen = [];
+var s = Symbol('d'), k = 'y';
+class C {
+  ['x'] = class { static observed = this.name; };
+  ['b'] = class { static { seen.push(this.name); } };
+  [s] = class { static { seen.push(this.name); } };
+  ['e'] = class { static { Object.defineProperty(this, 'name', { value: '', configurable: true }); } };
+  ['p'] = (class { static { seen.push(this.name); } });
+  static ['z'] = class { static { seen.push(this.name); } };
+  ['f'] = function () {};
+  ['m'] = class { static name() {} };
+}
+var c = new C();
+print(c.x.observed, c.b.name, c[s].name, '"' + c.e.name + '"', c.p.name, C.z.name, c.f.name);
+print(seen.join());
+var lit = { [k]: class { static { seen.push(this.name); } }, [k + 'm']: class { static name() {} } };
+print(seen.join(), lit.y.name);
+var d = Object.getOwnPropertyDescriptor(c.x, 'name');
+print(d.value, d.writable, d.enumerable, d.configurable, Object.getOwnPropertyNames(c.x).join());
+print(typeof c.m.name, typeof lit.ym.name);"#
+        ),
+        lines(&[
+            r#"x b [d] "" p z f"#,
+            "z,b,[d],p",
+            "z,b,[d],p,y y",
+            "x false false true length,name,prototype,observed",
+            "function function",
+        ])
+    );
+}

@@ -101,6 +101,15 @@ pub(super) struct Builder<'a> {
     implicit: Vec<(u32, ImplicitRef, RefId)>,
     function_at: Vec<(u32, FunctionId)>,
     synthetic_blocks: Vec<(u32, ScopeId)>,
+    /// The class scopes whose heritage the walk is in, outermost first. A class's heritage
+    /// runs with the outer PrivateEnvironment (ECMA-262 §15.7.14 ClassDefinitionEvaluation
+    /// step 8), so a `#x` there must not see these classes' private names. Kept across nested
+    /// functions and class bodies: everything inside the heritage is outside the class's
+    /// PrivateEnvironment.
+    heritage_of: Vec<ScopeId>,
+    /// Private name references made inside a heritage, with the class scopes whose bindings
+    /// resolution skips (a copy of `heritage_of`). Never iterated (H2).
+    pub(super) private_skips: HashMap<RefId, Box<[ScopeId]>>,
     pub(super) n_this: NameId,
     pub(super) n_new_target: NameId,
     pub(super) n_home_object: NameId,
@@ -143,6 +152,8 @@ impl<'a> Builder<'a> {
             implicit: Vec::new(),
             function_at: Vec::new(),
             synthetic_blocks: Vec::new(),
+            heritage_of: Vec::new(),
+            private_skips: HashMap::new(),
             n_this: NameId(0),
             n_new_target: NameId(0),
             n_home_object: NameId(0),
@@ -416,6 +427,17 @@ impl<'a> Builder<'a> {
     fn implicit_ref(&mut self, span: Span, key: ImplicitRef, name: NameId, kind: RefKind) {
         let r = self.push_reference(name, kind, span);
         self.implicit.push((span.start, key, r));
+    }
+
+    /// A `#x` reference (`o.#x`, `#x in o`). Inside a class heritage it records the classes
+    /// whose private names it must skip (see `heritage_of`).
+    fn private_ref(&mut self, span: Span, name: NameId) {
+        let r = self.push_reference(name, RefKind::PrivateName, span);
+        self.implicit.push((span.start, ImplicitRef::Private, r));
+        if !self.heritage_of.is_empty() {
+            self.private_skips
+                .insert(r, self.heritage_of.clone().into_boxed_slice());
+        }
     }
 
     fn identifier(&mut self, it: &IdentifierReference<'a>, export: bool) {
@@ -1071,7 +1093,12 @@ impl<'a> Visit<'a> for Builder<'a> {
         self.cur_scope = class_scope;
         self.strict = true;
         if let Some(heritage) = &it.heritage {
+            // The heritage stays in the class scope (the inner name is in its TDZ there, and
+            // the class context is on the runtime chain), but its private names are the outer
+            // ones.
+            self.heritage_of.push(class_scope);
             self.visit_expression(&heritage.expression);
+            self.heritage_of.pop();
         }
 
         // Private names are visible in the whole class body: declare them first.
@@ -1458,22 +1485,12 @@ impl<'a> Visit<'a> for Builder<'a> {
     fn visit_private_field_expression(&mut self, it: &PrivateFieldExpression<'a>) {
         self.visit_expression(&it.object);
         let name = self.private_name(it.field.name.as_str());
-        self.implicit_ref(
-            it.field.span,
-            ImplicitRef::Private,
-            name,
-            RefKind::PrivateName,
-        );
+        self.private_ref(it.field.span, name);
     }
 
     fn visit_private_in_expression(&mut self, it: &PrivateInExpression<'a>) {
         let name = self.private_name(it.left.name.as_str());
-        self.implicit_ref(
-            it.left.span,
-            ImplicitRef::Private,
-            name,
-            RefKind::PrivateName,
-        );
+        self.private_ref(it.left.span, name);
         self.visit_expression(&it.right);
     }
 }

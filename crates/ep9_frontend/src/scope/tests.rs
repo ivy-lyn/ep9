@@ -843,6 +843,33 @@ fn computed_keys_and_heritage_run_in_the_enclosing_function() {
     assert_eq!(a.loc("k"), BindingLocation::Parameter(0));
 }
 
+/// ClassDefinitionEvaluation step 8 (ECMA-262 §15.7.14): the heritage runs with the outer
+/// PrivateEnvironment. A `#x` in I's heritage (also in a closure or in a class J nested
+/// there) resolves to O's `#x`, never to I's; J's own body sees J's `#x`, and I's body sees
+/// I's `#x`.
+#[test]
+fn heritage_private_names_resolve_in_the_outer_class() {
+    let src = "class O { #x; m() {
+        return class I extends (this.#x, #x in this, () => this.#x,
+                                class J { #x; n() { return this.#x; } }, this.#x) {
+          #x; k() { return this.#x; }
+        };
+      } }";
+    let a = script(src);
+    let decl = |needle: &str| {
+        let at = u32::try_from(src.find(needle).unwrap()).unwrap();
+        a.named("#x")
+            .into_iter()
+            .find(|&b| a.binding(b).span.is_some_and(|s| s.start == at))
+            .unwrap()
+    };
+    let (o, j, i) = (decl("#x; m()"), decl("#x; n()"), decl("#x; k()"));
+    // Walk order: the heritage (three refs, J's body, the last ref), then I's body.
+    let targets: Vec<_> = (0..6).map(|n| a.target("#x", n)).collect();
+    assert_eq!(targets, vec![o, o, o, j, o, i]);
+    assert_eq!(a.refs("#x").len(), 6);
+}
+
 // Catch, for, function names.
 
 #[test]

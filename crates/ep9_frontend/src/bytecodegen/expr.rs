@@ -147,6 +147,27 @@ impl<'a, 's> FnGen<'a, 's> {
         result
     }
 
+    /// NamedEvaluation of `e` under a computed key: the name is the property key in `key`
+    /// (already ToPropertyKey'd). An anonymous class gets it inside ClassDefinitionEvaluation,
+    /// before its static elements run, and the result is false. Any other `e` is evaluated
+    /// without a name, and the result says whether it is an anonymous function definition:
+    /// the caller then names it at the define (flag bit 0), since a function cannot observe
+    /// its name before that.
+    pub(crate) fn keyed_named_value(&mut self, e: &'a Expression<'a>, key: Register) -> Gen<bool> {
+        if let Expression::ClassExpression(c) = e.without_parentheses()
+            && c.id.is_none()
+        {
+            self.enter(e.span())?;
+            let result = self.class(c, None, Some(key));
+            self.leave();
+            result?;
+            return Ok(false);
+        }
+        let anonymous = e.is_anonymous_function_definition();
+        self.named_value(e, None)?;
+        Ok(anonymous)
+    }
+
     /// Evaluate for side effects only.
     pub(crate) fn expr_effect(&mut self, e: &'a Expression<'a>) -> Gen {
         match e {
@@ -293,7 +314,7 @@ impl<'a, 's> FnGen<'a, 's> {
                     c.id.as_ref()
                         .map(|id| UnitString::new(id.name.as_str()))
                         .or(name);
-                self.class(c, name)
+                self.class(c, name, None)
             }
             Expression::ConditionalExpression(c) => self.conditional(c),
             Expression::FunctionExpression(f) => {
@@ -777,8 +798,12 @@ impl<'a, 's> FnGen<'a, 's> {
                 }
                 _ => {
                     let key = self.property_key_to_reg(&p.key)?;
-                    let anonymous = p.method || p.value.is_anonymous_function_definition();
-                    self.object_value(p, obj, None)?;
+                    let anonymous = if p.method {
+                        self.object_value(p, obj, None)?;
+                        true
+                    } else {
+                        self.keyed_named_value(&p.value, key)?
+                    };
                     let s = self.slot(FeedbackSlotKind::DefineKeyedOwn);
                     self.b
                         .define_keyed_own_property_in_literal(obj, key, u8::from(anonymous), s);

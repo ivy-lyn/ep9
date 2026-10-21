@@ -300,7 +300,7 @@ impl<'a> FnGen<'a, '_> {
             || UnitString::new("default"),
             |id| UnitString::new(id.name.as_str()),
         );
-        self.class(c, Some(name))?;
+        self.class(c, Some(name), None)?;
         let b = match (binding, &c.id) {
             (Some(b), _) => b,
             (None, Some(id)) => self.declared(id)?,
