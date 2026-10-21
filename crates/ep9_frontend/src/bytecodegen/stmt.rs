@@ -12,9 +12,10 @@ use oxc_ast::ast::{
 };
 use oxc_span::GetSpan;
 
+use super::expr::Prepared;
 use super::func::{Command, Control, FnGen, Gen, TargetKind};
 use super::pattern::BindMode;
-use crate::scope::{BindingId, BindingLocation, ImplicitRef, PerIteration, ScopeId};
+use crate::scope::{BindingId, BindingLocation, ImplicitRef, PerIteration, Resolution, ScopeId};
 
 impl<'a> FnGen<'a, '_> {
     pub(crate) fn statement(&mut self, s: &'a Statement<'a>) -> Gen {
@@ -176,6 +177,21 @@ impl<'a> FnGen<'a, '_> {
                 }
                 self.bind_value_in_acc(&d.id, BindMode::Init)?;
             } else if let Some(init) = &d.init {
+                // `var x = v` with a dynamic `x` resolves `x` before `v` (§14.3.2.1 step 2;
+                // lookup.rs).
+                if let BindingPattern::BindingIdentifier(id) = &d.id
+                    && !super::lookup::runs_no_code(init)
+                {
+                    let r = self.implicit(id.span.start, ImplicitRef::VarInit)?;
+                    if matches!(r.resolution, Resolution::Dynamic { .. }) {
+                        let m = self.mark();
+                        let p = self.resolve_dynamic(Prepared::Binding(r));
+                        self.named_value(init, super::func::pattern_name(&d.id))?;
+                        self.put_prepared(&p, id.span.start, false)?;
+                        self.release(m);
+                        continue;
+                    }
+                }
                 self.named_value(init, super::func::pattern_name(&d.id))?;
                 self.bind_value_in_acc(&d.id, BindMode::Var)?;
             }

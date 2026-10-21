@@ -1,6 +1,6 @@
 # assign-named-fn: script (sloppy)
 # | (function g() { g = 1; return g; }); (function h() { 'use strict'; h = 1; });
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=77 source=embedded hints=none
 source_hash=21f3083643df24382ebf0cd542501b7b2354474649b2c277cb0529b0713542d0
 strings (2):

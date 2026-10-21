@@ -1,6 +1,6 @@
 # var-direct-eval: script (sloppy)
 # | function f(a) { var b; eval('a + b'); return b; }
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=49 source=embedded hints=none
 source_hash=222d0166cab0d2fecf121065fbd303f90501a85a4cc23b4f45bac85fb64352ab
 strings (9):

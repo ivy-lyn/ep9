@@ -8,6 +8,11 @@
 //! CallRuntime DeleteLookupSlot     delete_lookup_slot            (runtime id 8) DeleteBinding
 //! CallRuntimeForPair               load_lookup_slot_for_call     (runtime id 26) the function and
 //!   LoadLookupSlotForCall                                         its receiver (WithBaseObject)
+//! CallRuntime ResolveLookupSlot    resolve_lookup_slot           (runtime id 29) ResolveBinding only
+//! CallRuntime                      load_lookup_slot_resolved     (runtime id 30) GetValue of it
+//!   LoadLookupSlotResolved
+//! CallRuntime                      store_lookup_slot_resolved    (runtime id 31) PutValue to it
+//!   StoreLookupSlotResolved
 //! ```
 //!
 //! Every entry first resolves the name (§9.1.2.1 GetIdentifierReference) with [`resolve`],
@@ -36,6 +41,17 @@
 //! this for `this` and undefined for the others, never a global property. `arguments` is an
 //! ordinary name.
 //!
+//! A reference that is used after other code runs (`x = v`, `x op= v`, `x++`, `var x = v`:
+//! §13.15.2, §13.4, §14.3.2.1 evaluate the reference first) is resolved once by
+//! `ResolveLookupSlot`, which returns its environment as a value: the declarative context
+//! that binds it (by a slot, or by its `.eval_ext` object), the `with` object, undefined for
+//! the global environment, or null for an unresolvable name. `LoadLookupSlotResolved` and
+//! `StoreLookupSlotResolved` turn it back into the binding without a walk (`binding_of_env`),
+//! so the right-hand side cannot move the reference, and a strict store to a `with` binding
+//! that is gone, or to a name that was unresolvable, throws a ReferenceError (§9.1.1.2.5,
+//! §6.2.5.6 step 3.a). The environment value lives only in a register of the frame
+//! (BytecodeGen temporaries), and no JS code sees it.
+//!
 //! The opcode entries use the result protocol of `slow` (the new accumulator, or 0 with an
 //! exception pending). `name` and `scope` are constant indices of the frame's function; the
 //! runtime ids take the name as a string value. Each context of the walk takes one budget
@@ -48,7 +64,7 @@ use ep9_value::Throw;
 
 use crate::conv::{self, Res};
 use crate::error::throw_error;
-use crate::frame::{HOLE, UNDEFINED};
+use crate::frame::{HOLE, NULL, TRUE, UNDEFINED};
 use crate::interp::Cx;
 use crate::key;
 use crate::kinds;
@@ -73,11 +89,16 @@ enum Binding {
     /// A property of the binding object of a `with` context (an object Environment Record
     /// with `withEnvironment` true: WithBaseObject is the object).
     With(u64),
-    /// An own property of a `.eval_ext` object (a var of sloppy direct eval code in a
-    /// declarative record: no receiver, deletable).
-    EvalExt(u64),
+    /// An own property of the `.eval_ext` object `ext` in slot 0 of the declarative context
+    /// `context` (a var of sloppy direct eval code in a declarative record: no receiver,
+    /// deletable).
+    EvalExt { context: u64, ext: u64 },
     /// The global environment, which also stands for an unresolvable name.
     Global,
+    /// A name that was unresolvable when `ResolveLookupSlot` ran (only from
+    /// [`binding_of_env`]): a read throws, a strict store throws, a sloppy store sets a
+    /// property of the global object (§6.2.5.6 step 3).
+    Unresolvable,
     /// An implicit name (see the module doc) that no context slot binds: the global
     /// environment's answer (GetThisBinding of the global record for `this`).
     GlobalImplicit,
@@ -109,6 +130,39 @@ fn is_eval_ext(u: &crate::unit::LoadedUnit, id: usize) -> bool {
     matches!(&u.unit.strings[id], UnitString::Latin1(b) if **b == *EVAL_EXT_BINDING.as_bytes())
 }
 
+/// The slot named `name` of the declarative context `c`.
+fn slot_binding(c: u64, name: u64) -> Option<Binding> {
+    let (u, scope) = object::context_scope(c);
+    let i = scope
+        .slots
+        .iter()
+        .position(|s| u.string(s.name.index()) == name)?;
+    Some(Binding::Slot {
+        context: c,
+        index: i as u32,
+        mode: scope.slots[i].mode,
+    })
+}
+
+/// The `.eval_ext` object of the declarative context `c`: slot 0 of a CALLS_SLOPPY_EVAL var
+/// scope that is not a script scope, once the first `DeclareEvalVar` or `DeclareEvalFunction`
+/// made it.
+fn eval_ext(c: u64) -> Option<u64> {
+    let (u, scope) = object::context_scope(c);
+    if scope.flags.contains(ScopeFlags::CALLS_SLOPPY_EVAL)
+        && scope.kind != ScopeKind::Script
+        && scope
+            .slots
+            .first()
+            .is_some_and(|s| is_eval_ext(u, s.name.index()))
+        && let Some(ext) = object::context_get(c, 0)
+        && is_object(ext)
+    {
+        return Some(ext);
+    }
+    None
+}
+
 /// GetIdentifierReference (§9.1.2.1) of the atom `name` from the current context of the
 /// frame `fp`, out to the global environment (see the module doc). GC point (an
 /// `@@unscopables` getter, a poll).
@@ -117,8 +171,7 @@ fn resolve(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<Binding> {
     let mut c = context(fp);
     while is_context(c) {
         poll(cx)?;
-        let (u, scope) = object::context_scope(c);
-        if scope.kind == ScopeKind::With {
+        if object::context_scope(c).1.kind == ScopeKind::With {
             // Only CreateWithContext makes a context of a With scope (`create_context`
             // refuses the other kinds), and slot 0 holds its object; the checks keep the
             // walk safe all the same. An implicit name never asks the object.
@@ -130,27 +183,14 @@ fn resolve(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<Binding> {
                 return Ok(Binding::With(o));
             }
         } else {
-            for (i, s) in scope.slots.iter().enumerate() {
-                if u.string(s.name.index()) == name {
-                    return Ok(Binding::Slot {
-                        context: c,
-                        index: i as u32,
-                        mode: s.mode,
-                    });
-                }
+            if let Some(b) = slot_binding(c, name) {
+                return Ok(b);
             }
             if !implicit
-                && scope.flags.contains(ScopeFlags::CALLS_SLOPPY_EVAL)
-                && scope.kind != ScopeKind::Script
-                && scope
-                    .slots
-                    .first()
-                    .is_some_and(|s| is_eval_ext(u, s.name.index()))
-                && let Some(ext) = object::context_get(c, 0)
-                && is_object(ext)
+                && let Some(ext) = eval_ext(c)
                 && property::has_own_property(cx, ext, name)
             {
-                return Ok(Binding::EvalExt(ext));
+                return Ok(Binding::EvalExt { context: c, ext });
             }
         }
         c = object::context_previous(c);
@@ -220,7 +260,8 @@ fn get_binding_value(
             }
             property::get(cx, o, name)
         }
-        Binding::EvalExt(ext) => property::get(cx, ext, name),
+        Binding::EvalExt { ext, .. } => property::get(cx, ext, name),
+        Binding::Unresolvable => Err(throw_name_now(cx, NameMsg::NotDefined, name)),
         Binding::Global => {
             let rt = cx.rt();
             if let Some((v, _)) = own_get(rt.root(Root::Lexical), name) {
@@ -276,7 +317,14 @@ fn set_binding_value(cx: &mut Cx, b: Binding, name: u64, v: u64, strict: bool) -
             }
             property::set(cx, o, name, v, strict)
         }
-        Binding::EvalExt(ext) => property::set(cx, ext, name, v, strict),
+        Binding::EvalExt { ext, .. } => property::set(cx, ext, name, v, strict),
+        Binding::Unresolvable => {
+            if strict {
+                return Err(throw_name_now(cx, NameMsg::NotDefined, name));
+            }
+            let g = cx.rt().global();
+            property::set(cx, g, name, v, false)
+        }
         Binding::Global => {
             let rt = cx.rt();
             let lexical = rt.root(Root::Lexical);
@@ -386,7 +434,9 @@ pub(crate) fn delete_lookup_slot(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<u6
     let name = name_key(cx, name)?;
     let deleted = match resolve(cx, fp, name)? {
         Binding::Slot { .. } | Binding::GlobalImplicit => false,
-        Binding::With(o) | Binding::EvalExt(o) => property::delete(cx, o, name, false)?,
+        Binding::With(o) | Binding::EvalExt { ext: o, .. } => property::delete(cx, o, name, false)?,
+        // `resolve` never gives it.
+        Binding::Unresolvable => true,
         Binding::Global => {
             let rt = cx.rt();
             if own_get(rt.root(Root::Lexical), name).is_some() {
@@ -412,4 +462,87 @@ pub(crate) fn load_lookup_slot_for_call(cx: &mut Cx, fp: *mut u64, name: u64) ->
         _ => UNDEFINED,
     };
     Ok((f, receiver))
+}
+
+/// `ResolveLookupSlot(name)` (runtime id 29): ResolveBinding (§9.4.2) of `name` without
+/// GetValue. Returns the environment of the reference (see the module doc): the declarative
+/// context that binds it, the `with` object, undefined for the global environment (the
+/// script lexical record has it, or HasProperty of the global object, §9.1.1.4.1), or null
+/// for an unresolvable name. GC point (an `@@unscopables` getter, a poll, a proxy trap).
+pub(crate) fn resolve_lookup_slot(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<u64> {
+    let name = name_key(cx, name)?;
+    Ok(match resolve(cx, fp, name)? {
+        Binding::Slot { context, .. } | Binding::EvalExt { context, .. } => context,
+        Binding::With(o) => o,
+        Binding::GlobalImplicit => UNDEFINED,
+        Binding::Global | Binding::Unresolvable => {
+            let rt = cx.rt();
+            let g = rt.global();
+            if own_get(rt.root(Root::Lexical), name).is_some()
+                || property::has_property(cx, g, name)
+            {
+                UNDEFINED
+            } else {
+                NULL
+            }
+        }
+    })
+}
+
+/// The binding of `name` in the environment `env` that [`resolve_lookup_slot`] gave, without
+/// a walk. A declarative context binds `name` by a slot or, failing that, by its `.eval_ext`
+/// object (whose property may be gone since: then a read gives undefined and a store makes
+/// it again, as the walk would have found it there).
+fn binding_of_env(cx: &mut Cx, env: u64, name: u64) -> Res<Binding> {
+    if env == UNDEFINED {
+        return Ok(if is_implicit_name(name) {
+            Binding::GlobalImplicit
+        } else {
+            Binding::Global
+        });
+    }
+    if env == NULL {
+        return Ok(Binding::Unresolvable);
+    }
+    if is_context(env) {
+        if let Some(b) = slot_binding(env, name) {
+            return Ok(b);
+        }
+        if let Some(ext) = eval_ext(env) {
+            return Ok(Binding::EvalExt { context: env, ext });
+        }
+    } else if is_object(env) {
+        return Ok(Binding::With(env));
+    }
+    throw_msg_now(cx, "not an environment of ResolveLookupSlot");
+    Err(Throw)
+}
+
+/// `LoadLookupSlotResolved(env, name)` (runtime id 30): GetValue (§6.2.5.5) of the reference
+/// that [`resolve_lookup_slot`] resolved to `env`. GC point.
+pub(crate) fn load_lookup_slot_resolved(
+    cx: &mut Cx,
+    fp: *mut u64,
+    env: u64,
+    name: u64,
+) -> Res<u64> {
+    let name = name_key(cx, name)?;
+    let b = binding_of_env(cx, env, name)?;
+    get_binding_value(cx, b, name, strict(fp), false)
+}
+
+/// `StoreLookupSlotResolved(env, name, value, strict)` (runtime id 31): PutValue (§6.2.5.6) of
+/// `value` to the reference that [`resolve_lookup_slot`] resolved to `env`; `strict` is the
+/// boolean strictness of the store. Returns `value`. GC point (a setter).
+pub(crate) fn store_lookup_slot_resolved(
+    cx: &mut Cx,
+    env: u64,
+    name: u64,
+    value: u64,
+    strict: u64,
+) -> Res<u64> {
+    let name = name_key(cx, name)?;
+    let b = binding_of_env(cx, env, name)?;
+    set_binding_value(cx, b, name, value, strict == TRUE)?;
+    Ok(value)
 }

@@ -1,6 +1,6 @@
 # gen-finally: script (sloppy)
 # | function* g(f) { try { yield 1; } catch (e) { yield e; } finally { f(); } return 2; }
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=85 source=embedded hints=none
 source_hash=ab9e41402490ae5107e05f5aa0b7abb20c50084fcd0420c3e08d5e7fa462591d
 strings (1):

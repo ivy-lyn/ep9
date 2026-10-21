@@ -1,6 +1,6 @@
 # class-field-ctor: script (sloppy)
 # | class A { x = 1; constructor(a = this.x) { this.a = a; } } class B { y = () => this; }
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=86 source=embedded hints=none
 source_hash=e6622fb1b63d3e4d35b291ead17d262ca036bdacd6395865b19cb9faf0ad5d99
 strings (6):

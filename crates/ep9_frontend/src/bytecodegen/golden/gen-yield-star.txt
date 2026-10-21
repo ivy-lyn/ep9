@@ -1,6 +1,6 @@
 # gen-yield-star: script (strict)
 # | function* g(it) { var r = yield* it; return r; }
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=true ts=none source_len=48 source=embedded hints=none
 source_hash=af0c4f19849c2e2ac23817ab14b2bd57a0ac1973f100d9239f0858409888a6fc
 strings (6):

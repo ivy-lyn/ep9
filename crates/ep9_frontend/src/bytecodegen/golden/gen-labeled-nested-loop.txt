@@ -1,6 +1,6 @@
 # gen-labeled-nested-loop: script (sloppy)
 # | function* g(n) { outer: for (let i = 0; i < n; i++) { let f = () => i; while (true) { if (yield f) continue outer; break outer; } } }
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=133 source=embedded hints=none
 source_hash=ecd57290d54f88bcdc57ed37e90f968f7429bbcc12241d9917350f08ccc614b0
 strings (3):

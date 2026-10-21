@@ -1,6 +1,6 @@
 # ctl-throw: script (sloppy)
 # | function f(e) { throw e; } function g() { throw new Error('x'); }
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=65 source=embedded hints=none
 source_hash=c52467f52f8e419c7e993c05e1f5d9562f5a0455a1e497c4cdd352c83a2cc58a
 strings (4):

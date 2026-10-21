@@ -510,6 +510,202 @@ fn implicit_names_skip_the_eval_ext_object() {
     assert_eq!(r.output, ["1"]);
 }
 
+/// `regs` = [env, name, value, strict]: `env = ResolveLookupSlot(name)` (runtime id 29).
+fn resolve_ref(s: &mut Asm, regs: RegisterList, name: &str) {
+    s.lda_str(name);
+    s.b.star(regs.get(1));
+    let first = regs.get(0).local_index().unwrap();
+    s.b.call_runtime(
+        RuntimeId::ResolveLookupSlot,
+        RegisterList::new(first + 1, 1),
+        1,
+    );
+    s.b.star(regs.get(0));
+}
+
+/// `acc = LoadLookupSlotResolved(env, name)` (runtime id 30).
+fn load_ref(s: &mut Asm, regs: RegisterList) {
+    let first = regs.get(0).local_index().unwrap();
+    s.b.call_runtime(
+        RuntimeId::LoadLookupSlotResolved,
+        RegisterList::new(first, 2),
+        2,
+    );
+}
+
+/// `StoreLookupSlotResolved(env, name, acc, strict)` (runtime id 31).
+fn store_ref(s: &mut Asm, regs: RegisterList, strict: bool) {
+    s.b.star(regs.get(2));
+    if strict {
+        s.b.lda_true();
+    } else {
+        s.b.lda_false();
+    }
+    s.b.star(regs.get(3));
+    s.b.call_runtime(RuntimeId::StoreLookupSlotResolved, regs, 4);
+}
+
+/// Runtime ids 29-31 (ABI 4): a reference resolved once keeps its binding while other code
+/// changes the scope: a `with` property deleted in between is set again on the object (sloppy),
+/// a declarative slot stays the target when the `with` object gains the name, an
+/// unresolvable name stays unresolvable (a sloppy store makes a global), and a global
+/// binding stays global.
+#[test]
+fn a_resolved_reference_keeps_its_binding() {
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let saved = decl_head(&mut s);
+        let o = s.b.new_register();
+        let regs = s.b.new_register_list(4);
+        // The with object of decl_head is in slot 0 of the current (with) context.
+        s.b.lda_current_context_slot(0).star(o);
+        s.b.lda_smi(1);
+        s.set_named(o, "x");
+        // with: resolve x, delete it, store 2 -> o.x = 2 again; read through it -> 2.
+        resolve_ref(&mut s, regs, "x");
+        delete(&mut s, "x");
+        s.b.lda_smi(2);
+        store_ref(&mut s, regs, false);
+        s.get_named(o, "x");
+        s.print_acc();
+        load_ref(&mut s, regs);
+        s.print_acc();
+        // declarative: resolve v (slot 2), then o gains v; the store still goes to the slot.
+        resolve_ref(&mut s, regs, "v");
+        s.b.lda_smi(7);
+        s.set_named(o, "v");
+        s.b.lda_smi(3);
+        store_ref(&mut s, regs, true);
+        load_ref(&mut s, regs);
+        s.print_acc();
+        s.get_named(o, "v");
+        s.print_acc();
+        // unresolvable: stays unresolvable; a sloppy store makes a global property.
+        resolve_ref(&mut s, regs, "fresh");
+        s.b.lda_smi(4);
+        s.set_named(o, "fresh");
+        s.b.lda_smi(5);
+        store_ref(&mut s, regs, false);
+        s.lda_global("fresh");
+        s.print_acc();
+        s.get_named(o, "fresh");
+        s.print_acc();
+        // global: g resolves to the global environment, then o gains g.
+        s.b.lda_smi(8);
+        s.sta_global("g");
+        resolve_ref(&mut s, regs, "g");
+        s.b.lda_smi(9);
+        s.set_named(o, "g");
+        s.b.lda_smi(10);
+        store_ref(&mut s, regs, true);
+        s.lda_global("g");
+        s.print_acc();
+        s.b.pop_context(saved);
+        s.b.lda_current_context_slot(2);
+        s.print_acc();
+        s.b.lda_undefined().return_();
+        decl_unit(vec![s.finish()])
+    }
+    let r = run_all(make);
+    ok(&r);
+    assert_eq!(r.output, ["2", "2", "3", "7", "5", "4", "10", "3"]);
+}
+
+/// The errors of a resolved reference: a strict store to a `with` binding that is gone and
+/// to a name that was unresolvable (even if a global of that name exists by now) throw a
+/// ReferenceError; a read of an unresolvable name throws; a store to a const throws a
+/// TypeError (§9.1.1.2.5, §6.2.5.6 step 3.a, §6.2.5.5 step 3).
+#[test]
+fn resolved_reference_errors() {
+    let cases: [(u8, &str); 4] = [
+        (0, "ReferenceError: x is not defined"),
+        (1, "ReferenceError: late is not defined"),
+        (2, "ReferenceError: nope is not defined"),
+        (3, "TypeError: Assignment to constant variable."),
+    ];
+    for (case, want) in cases {
+        let make = move || {
+            let mut s = Asm::script(0);
+            decl_head(&mut s);
+            let o = s.b.new_register();
+            let regs = s.b.new_register_list(4);
+            s.b.lda_current_context_slot(0).star(o);
+            match case {
+                0 => {
+                    s.b.lda_smi(1);
+                    s.set_named(o, "x");
+                    resolve_ref(&mut s, regs, "x");
+                    delete(&mut s, "x");
+                    s.b.lda_smi(2);
+                    store_ref(&mut s, regs, true);
+                }
+                1 => {
+                    resolve_ref(&mut s, regs, "late");
+                    s.b.lda_smi(1);
+                    s.sta_global("late");
+                    store_ref(&mut s, regs, true);
+                }
+                2 => {
+                    resolve_ref(&mut s, regs, "nope");
+                    load_ref(&mut s, regs);
+                }
+                _ => {
+                    resolve_ref(&mut s, regs, "c");
+                    s.b.lda_smi(2);
+                    store_ref(&mut s, regs, false);
+                }
+            }
+            s.b.lda_undefined().return_();
+            decl_unit(vec![s.finish()])
+        };
+        let r = run_every(make);
+        assert_eq!(err(&r), want, "case {case}");
+    }
+}
+
+/// A var of sloppy direct eval code (the `.eval_ext` object) resolved, then deleted: the
+/// store makes it again on the same object, not a global.
+#[test]
+fn a_resolved_eval_var_is_set_again_on_its_object() {
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let (ctx, ext) = (s.b.new_register(), s.b.new_register());
+        let regs = s.b.new_register_list(4);
+        let kf = s.b.scope_constant(ScopeId(0));
+        s.b.create_function_context(kf, 1).push_context(ctx);
+        s.b.create_empty_object_literal().star(ext);
+        s.b.lda_smi(1);
+        s.set_named(ext, "e");
+        s.b.ldar(ext).sta_current_context_slot(0);
+        resolve_ref(&mut s, regs, "e");
+        delete(&mut s, "e");
+        s.b.lda_smi(6);
+        store_ref(&mut s, regs, false);
+        s.get_named(ext, "e");
+        s.print_acc();
+        let ts = typeof_slot(&mut s);
+        s.b.pop_context(ctx);
+        tof(&mut s, ts, "e");
+        s.print_acc();
+        s.b.lda_undefined().return_();
+        let mut u = UnitBuilder::new("", opts());
+        u.add_scope(
+            ScopeKind::Function,
+            ScopeFlags::NEEDS_CONTEXT | ScopeFlags::CALLS_SLOPPY_EVAL,
+            None,
+            vec![(
+                UnitString::new(ep9_bytecode::EVAL_EXT_BINDING),
+                VariableMode::Var,
+            )],
+        );
+        u.set_function(FunctionId(0), s.finish());
+        u.finish().unwrap()
+    }
+    let r = run_all(make);
+    ok(&r);
+    assert_eq!(r.output, ["6", "undefined"]);
+}
+
 /// `CreateWithContext` converts a primitive with ToObject (a string's `length` is found) and
 /// throws a TypeError for undefined; a With scope with another `Create*Context` is a VM
 /// internal error, never a context with no object.

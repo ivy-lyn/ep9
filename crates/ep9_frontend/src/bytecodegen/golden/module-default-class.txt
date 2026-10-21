@@ -1,6 +1,6 @@
 # module-default-class: module
 # | export default class { m() {} }
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=module strict=true ts=none source_len=31 source=embedded hints=none
 source_hash=f55ef5f37d512892364419359444cd86499f97f58c75f2b544196e5bcd48cd90
 strings (2):

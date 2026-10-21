@@ -17,6 +17,7 @@ use oxc_span::{GetSpan, Span};
 
 use super::func::{FnGen, Gen};
 use super::literal::{self, PropertyName};
+use super::lookup::runs_no_code;
 use crate::scope::{BindingLocation, ImplicitRef, Reference, Resolution};
 
 /// A binary operator with a register form and a Smi form.
@@ -90,6 +91,12 @@ pub(crate) enum MemberRef {
 /// An assignment target with its reference parts evaluated.
 pub(crate) enum Prepared<'a, 's> {
     Binding(&'s Reference),
+    /// A dynamic name resolved before the right-hand side (`lookup.rs`
+    /// `resolve_dynamic`): `regs` = [environment, name, value, strict].
+    Dynamic {
+        r: &'s Reference,
+        regs: RegisterList,
+    },
     Member(MemberRef),
     Pattern(&'a oxc_ast::ast::AssignmentTargetPattern<'a>),
 }
@@ -1925,6 +1932,11 @@ impl<'a, 's> FnGen<'a, 's> {
                 self.store_ref(r, keep);
                 Ok(())
             }
+            Prepared::Dynamic { r, regs } => {
+                let strict = self.strict_at(r);
+                self.store_resolved(r.span.start, *regs, strict);
+                Ok(())
+            }
             Prepared::Member(m) => {
                 self.store_member(*m, at, keep);
                 Ok(())
@@ -1947,6 +1959,7 @@ impl<'a, 's> FnGen<'a, 's> {
     fn get_prepared(&mut self, p: &Prepared<'a, 's>, at: u32) {
         match p {
             Prepared::Binding(r) => self.load_ref(r, false),
+            Prepared::Dynamic { r, regs } => self.load_resolved(r.span.start, *regs),
             Prepared::Member(m) => {
                 // GetValue stores the converted key in the reference, so the PutValue that
                 // follows does not convert it again (ECMA-262 GetValue step 3.c).
@@ -1979,6 +1992,11 @@ impl<'a, 's> FnGen<'a, 's> {
             _ => None,
         };
         let target = self.prepare_target(&a.left)?;
+        let target = if a.operator == AssignmentOperator::Assign && runs_no_code(&a.right) {
+            target
+        } else {
+            self.resolve_dynamic(target)
+        };
         match a.operator {
             AssignmentOperator::Assign => {
                 self.named_value(&a.right, name)?;
@@ -2034,6 +2052,7 @@ impl<'a, 's> FnGen<'a, 's> {
         let m = self.mark();
         let at = u.argument.span().start;
         let target = self.prepare_simple(&u.argument)?;
+        let target = self.resolve_dynamic(target);
         self.get_prepared(&target, at);
         let s = self.slot(FeedbackSlotKind::BinaryOp);
         let old = (keep && !u.prefix).then(|| {

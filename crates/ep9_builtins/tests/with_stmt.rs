@@ -228,3 +228,69 @@ var it3 = g2({ y: 'own' }); it3.next(); print(it3.next().value);"#
         ])
     );
 }
+
+/// PutValue goes through the reference that was resolved before the right-hand side ran
+/// (§13.15.2 steps 1.a and 1.e, §13.4.2.1, §14.3.2.1): `=`, `op=`, `&&=`, `++` and a `var`
+/// initializer resolve the name once, read and store through that binding, and a strict store
+/// to a binding that is gone throws. These are the spec answers (JSC agrees, test262
+/// S11.13.1_A5_T1, S11.13.2_A5.*, S11.3.1_A5_*, unscopables-inc-dec.js, binding-resolution.js);
+/// V8/node v24 resolves again at the store and prints `2 undefined`, `6 undefined`, ...
+#[test]
+fn the_reference_is_resolved_before_the_right_side() {
+    assert_eq!(
+        run_both(
+            r#"var x = 10, o = { x: 1 };
+with (o) { x = (delete o.x, 2); }
+print(x, o.x);
+var o2 = { y: 1 }, y = 10;
+with (o2) { y += (delete o2.y, 5); }
+print(y, o2.y);
+var o3 = { get z() { delete this.z; return 2; } }, z = 0;
+with (o3) { z *= 3; }
+print(z, o3.z);
+var o4 = { w: 4 }, w = 0;
+with (o4) { w ||= (delete o4.w, 9); w &&= (delete o4.w, 7); }
+print(w, o4.w);
+var calls = 0, flag = true, a = { u: 7 };
+var b = { u: 4, get [Symbol.unscopables]() { calls++; return { u: flag = !flag }; } };
+with (a) { with (b) { u++; } }
+print(calls, a.u, b.u);
+var p = {}, q = 1;
+with (p) { q = (p.q = 2, 3); }
+print(q, p.q);
+var r = { v1: 1 };
+with (r) { var v1 = delete r.v1; }
+print(r.v1, v1);
+var keep = { k: 1 };
+with (keep) { print(k = (delete keep.k, 5), k++, ++k, k += 1); }
+print(keep.k);
+function strictStore() {
+  var s = { m: 1 };
+  with (s) { (function () { 'use strict'; try { m = (delete s.m, 2); print('no throw', s.m); } catch (e) { print(e.name); } })(); }
+}
+strictStore();
+with ({}) { (function () { 'use strict'; try { nf2 = (globalThis.nf2 = 1, 2); print('no throw'); } catch (e) { print(e.name, nf2); } })(); }
+with ({}) { fresh1 = (globalThis.fresh1 = 1, 2); }
+print(fresh1);
+var go = { gx: 0 }, gx = 'outer';
+function* gen() { with (go) { gx = yield 1; } }
+var gi = gen(); gi.next(); delete go.gx; gi.next(5);
+print(go.gx, gx);"#
+        ),
+        lines(&[
+            "10 2",
+            "10 6",
+            "0 6",
+            "0 7",
+            "1 7 5",
+            "3 2",
+            "true undefined",
+            "5 5 7 8",
+            "8",
+            "ReferenceError",
+            "ReferenceError 1",
+            "2",
+            "5 outer",
+        ])
+    );
+}

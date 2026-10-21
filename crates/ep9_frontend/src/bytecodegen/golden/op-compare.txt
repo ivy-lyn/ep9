@@ -1,6 +1,6 @@
 # op-compare: script (sloppy)
 # | function f(a, b) { return [a == b, a != b, a === b, a !== b, a < b, a <= b, a > b, a >= b, a in b, a instanceof b]; }
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=117 source=embedded hints=none
 source_hash=f77d8865412699f6178232e3589537839a02a2a8ad358d2ea535db2e86b26760
 strings (1):

@@ -1,6 +1,6 @@
 # call-forms: script (sloppy)
 # | var f, o, k, a; f(); f(1); f(1, 2); f(1, 2, 3); o.m(); o.m(1); o.m(1, 2); o.m(1, 2, 3); o[k](a); (0, o.m)(); (o.m)();
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=117 source=embedded hints=none
 source_hash=9aed4a5fc57bce6cc9d26ccd3ca9d453df2af4186d89321a174d8c4b7d08113c
 strings (5):
