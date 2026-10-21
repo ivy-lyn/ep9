@@ -2,11 +2,11 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-21; v0 notes). Flat Latin-1 and UTF-16 strings, atoms and keys are built; ropes, slices, thin and external strings are not |
+| Status | Draft (2026-10-21; v0 notes). Flat Latin-1 and UTF-16 strings, atoms, keys and symbols are built; ropes, slices, thin and external strings are not |
 | Fix by | M1a |
 | Freeze point | M1a |
 | Origin | v1#15; plan status U |
-| Crates | `ep9_vm` (`string.rs`, `atoms.rs`, `key.rs`, unit string loading in `unit.rs`); later `ep9_baseline`, `ep9_opt` (length and kind checks), `ep9_unit` (atoms by index, H13) |
+| Crates | `ep9_vm` (`string.rs`, `atoms.rs`, `key.rs`, `symbol.rs`, unit string loading in `unit.rs`); later `ep9_baseline`, `ep9_opt` (length and kind checks), `ep9_unit` (atoms by index, H13) |
 | Owner (plan role) | VM lead |
 | Validated by | `crates/ep9_vm/src/tests/strings.rs`; the debug atom-table check after every GC; the `EP9_ASSERT_ATOM_KEYS` gate; test262 with and without `--gc-stress` |
 | Plan sources | [02 §6 H19](../plan/02-architecture.md#6-hard-to-change-decisions-h1-h37), [06 §3](../plan/06-object-model-and-spec.md#3-strings-h19-unchanged--atom-indices) |
@@ -45,6 +45,24 @@ SeqLatin1, SeqUtf16, rope (length ≥ 13), slice (length ≥ 13), thin, external
 - **The embedder view.** `Isolate::string_view` does not root the string, and the embedder can keep a view where the conservative scan does not look (a `Vec`). So it borrows the isolate with `&mut self`: no isolate call runs while the view lives. A shared borrow is not enough, because some `&self` calls allocate or collect: `Isolate::global` (it interns its name) and `Isolate::heap` (`Heap::collect`, `Heap::alloc`, `Heap::alloc_shape`).
 - **GC rule** (W4-GC-RULES). The weak source holds an `Rc` clone of the table and borrows it during a GC. Interning never holds a borrow across an allocation: it allocates first, then borrows and inserts. A held borrow makes the GC panic ("borrowed across a GC point").
 
+**Symbols (v0, as built, M0 week 4).** A property key is a string atom or a symbol. Both compare by bits: an atom is the one cell of its text, a symbol is its own identity.
+
+| Item | v0 behavior | Where |
+|---|---|---|
+| Cell | SYMBOL (kind 8), 32 B: +8 `[[Description]]` (a string or undefined), +16 identity hash (int32, 30 bits), +24 flags (int32: bit 0 registered, bit 1 well-known, bit 2 private, reserved for M1) | `crates/ep9_vm/src/symbol.rs:45` |
+| Identity hash | the next value of a per-isolate splitmix64 PRNG (H12-Q3), never the address. Seed: 60 bits of the per-process SipHash key, read through the keyed hash of two fixed texts, so `EP9_HASH_SEED` fixes it and every isolate of one process starts the same sequence. 30 bits, the range of a string's table hash, so one shape index serves both | `SymbolState` (`crates/ep9_vm/src/symbol.rs:230`), `prng_seed` (`crates/ep9_vm/src/symbol.rs:265`) |
+| Well-known symbols | the 13 of §6.1.5.1 plus `dispose` and `asyncDispose`; descriptions "Symbol.iterator" and so on; made by `symbol::install` in realm init; isolate roots in `WellKnownSymbol` order | `install` (`crates/ep9_vm/src/symbol.rs:343`), `well_known` (`crates/ep9_vm/src/symbol.rs:362`) |
+| `%Symbol.prototype%` | an ordinary object whose prototype is `%Object.prototype%`; the prototype of Symbol wrappers; a symbol root until the builtin tables give it an intrinsic slot (P2-BTAB) | `prototype` (`crates/ep9_vm/src/symbol.rs:368`) |
+| `Symbol.for` registry | per isolate; open addressing keyed by the key's content hash (never an address); keys are atoms, so a probe compares bits; strong: a registered symbol lives as long as the isolate. `key_for` is the description of a registered symbol | `symbol_for` (`crates/ep9_vm/src/symbol.rs:378`), `key_for` (`crates/ep9_vm/src/symbol.rs:397`) |
+| Roots | one precise root source (it holds an `Rc` clone): the well-known symbols, `%Symbol.prototype%`, then every registry entry. `symbol_for` allocates first, then borrows the registry and inserts (W4-GC-RULES) | `install` (`crates/ep9_vm/src/symbol.rs:343`) |
+| Keys | ToPropertyKey gives a symbol back as it is (also when ToPrimitive returns one); `probe` classifies a symbol as Bits; `key_hash` gives its identity hash; `key_text` prints `Symbol(desc)` | `crates/ep9_vm/src/key.rs:55`, `:123`, `:136`, `:100` |
+| Conversions | `typeof` "symbol"; ToBoolean true; ToNumber and ToString throw TypeError ("Cannot convert a Symbol value to a number" / "to a string", as V8); ToPrimitive calls `@@toPrimitive` with "default", "number" or "string"; IsLooselyEqual steps 11-12 take symbols | `crates/ep9_vm/src/conv.rs:82`, `:143`, `:189`, `:224`, `:275` |
+| Text | SymbolDescriptiveString as Rust text for messages and `describe` (`descriptive_text`), and as a heap string (`descriptive_string`, RangeError past the length limit) | `crates/ep9_vm/src/symbol.rs:415`, `:427` |
+| Wrappers | PRIMITIVE_WRAPPER with one fixed field through the fixed-field API; ToObject wraps a string, number, boolean or symbol with the realm's prototype; a String wrapper has own `length` {w: f, e: f, c: f} and indices {w: f, e: t, c: f} | `new_wrapper` (`crates/ep9_vm/src/wrapper.rs:29`), `to_object` (`crates/ep9_vm/src/conv.rs:240`), `string_own_property` (`crates/ep9_vm/src/wrapper.rs:66`) |
+
+- **Why a PRNG and not a counter.** A counter makes hashes of symbols made in a row adjacent, which clusters them in a power-of-two hash index. H12-Q3 proposes a per-isolate PRNG; V8 also takes symbol hashes from the isolate's random number generator. The seed follows the string hash seed, so a run with `EP9_HASH_SEED` is reproducible.
+- **Why the registry is strong.** `Symbol.for(k)` must return the same symbol for the life of the realm, and a program can observe identity (`===`) even when it holds no reference in between. A weak registry would need the "symbol can be held weakly" rules of §9.13 CanBeHeldWeakly; registered symbols cannot be.
+
 ## Rules
 
 | Rule | Check | From |
@@ -57,6 +75,11 @@ SeqLatin1, SeqUtf16, rope (length ≥ 13), slice (length ≥ 13), thin, external
 | The seed is per process; `EP9_HASH_SEED` fixes it; no hash in bytecode, units, snapshots or property order | `ep9_hash_seed_gives_the_same_hashes_in_two_runs`; review rule (H12) | M0 wk4 |
 | Key compares on atoms are bit compares; the content-compare counter stays 0 | `EP9_ASSERT_ATOM_KEYS=1 cargo test -p ep9_vm` (debug); `the_atom_key_gate_fails_on_a_non_atom_compare` | M0 wk4 |
 | An over-limit result throws RangeError, never panics | `over_limit_strings_throw_range_error` | M0 wk4 |
+| A symbol is its own key: compared by bits, hashed by its identity hash, listed after the strings by [[OwnPropertyKeys]] | `a_symbol_works_as_a_key`, `own_property_keys_put_symbols_last_in_creation_order`, `symbol_keys_in_shapes_compare_by_bits_and_hash_by_identity` (`crates/ep9_vm/src/tests/symbols.rs`) | M0 wk4 |
+| Identity hashes come from the isolate PRNG, never the address; one seed gives one sequence | `two_isolates_with_one_seed_give_the_same_symbol_hashes` (two isolates, and two child processes with `EP9_HASH_SEED`) | M0 wk4 |
+| Well-known and registered symbols survive every GC; `Symbol.for` gives one symbol per key text | `well_known_symbols_are_isolate_roots_in_order`, `the_registry_is_stable` (GC stress, verifier, liveness check) | M0 wk4 |
+| `${s}` and `+s` throw TypeError; `@@toPrimitive` gets the spec hint | `template_literals_and_unary_plus_throw_on_a_symbol`, `at_at_to_primitive_gets_the_right_hint` | M0 wk4 |
+| ToObject wraps each primitive; String wrapper `length` and indices have the spec attributes | `crates/ep9_vm/src/tests/wrappers.rs` | M0 wk4 |
 | A view from `view(&cx, ..)` cannot live across a `&mut` call; a view from `Isolate::string_view` cannot live across any isolate call | compile_fail doctests on `Isolate::string_view`: `collect_garbage` (E0499), views in a `Vec` across `heap().collect()` (E0502), `global` (E0502); rustdoc checks the codes on nightly | M0 wk4 |
 | No new `str_view` call site; 0 sites by the freeze | `grep -rn str_view crates/ep9_vm/src` (W4-STRVIEW) | M1a |
 
@@ -64,7 +87,7 @@ SeqLatin1, SeqUtf16, rope (length ≥ 13), slice (length ≥ 13), thin, external
 
 - **Gains.** A key compare is one word for atoms, the same in T0, ICs, JIT and AOT. Strings save 8 B against the week-3 header. `s.length` is one load for every kind, ropes included. Index keys stay strings, so property.rs needs no number-key path this week.
 - **Costs.** Every unit string and computed key pays one hash and one table probe. Every GC walks the atom table (O(capacity)). A text over the limit built from Rust (for example an error message that quotes a huge key) still panics in `alloc_string` (H19-Q5).
-- **Follow-ups.** Ropes and slices (M1); P2-OBJ calls `intern_key` on define paths so stored keys are always atoms; P2-SYM adds symbol keys to `probe` and `key_hash`; `===` of two atoms can skip the content compare (`conv.rs`, `interp/ops.rs`).
+- **Follow-ups.** Ropes and slices (M1); P2-OBJ calls `intern_key` on define paths so stored keys are always atoms; symbol keys in `probe` and `key_hash` (done, see "Symbols"); `===` of two atoms can skip the content compare (`conv.rs`, `interp/ops.rs`).
 
 ## Evidence
 
@@ -91,6 +114,7 @@ SeqLatin1, SeqUtf16, rope (length ≥ 13), slice (length ≥ 13), thin, external
 | H19-Q4 | Thin strings: when can a string not become an atom in place? | M1 | Ropes and external strings get a thin forwarder |
 | H19-Q5 | Over-limit text built from Rust (messages) | M1 | Truncate quoted values in messages; RangeError elsewhere |
 | H19-Q6 | A number-to-string cache for `o[i]` on non-arrays | M1 | V8-style small cache keyed by the number |
+| H19-Q7 | Private names (`#x`): a SYMBOL with the private flag (V8) or a kind of their own | M1 (classes) | The private flag, bit 2, reserved now |
 
 ## Reopens if
 
@@ -103,3 +127,4 @@ SeqLatin1, SeqUtf16, rope (length ≥ 13), slice (length ≥ 13), thin, external
 |---|---|---|---|
 | 2026-10-21 | draft | First draft: plan row, v0 notes as built (header, hash field, SipHash-1-3 with a per-process seed, weak atom table, `atoms!` ids, single-character atoms, unit interning, keys without number keys, limit, read API), rules, open questions (M0 wk4 plan, task P1-STR 11; decisions W4-STRINGS, W4-HASH, W4-KEY-EQ, W4-NO-NUMBER-KEYS) | P1-STR agent |
 | 2026-10-21 | fix | `Isolate::string_view` takes `&mut self`: with `&self`, views kept in a `Vec` read freed memory after `heap().collect()` or a `global()` call that collected (P1 review finding). Two more compile_fail doctests; the embedder-view note | P1 fix agent |
+| 2026-10-21 | fill | Symbols v0: the SYMBOL cell, the identity hash from a per-isolate PRNG seeded by the string hash key (H12-Q3), the well-known symbols as roots, `%Symbol.prototype%`, the strong `Symbol.for` registry, symbol keys, the conversions and the primitive wrappers; five rules with their tests; H19-Q7 (private names) | P2-SYM agent |
