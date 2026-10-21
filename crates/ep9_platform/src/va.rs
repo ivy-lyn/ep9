@@ -21,7 +21,8 @@
 //! - Cages and the code range use the same search: aligned slots in a seeded order, each
 //!   reserved at its exact address. A slot that is in use, above the VA limit of the host, or
 //!   refused by the host (valgrind refuses hints that overlap its own mappings: EINVAL), is
-//!   skipped.
+//!   skipped. The VA limit can be below 2^47: x64 Windows user space ends 64 KiB below it, so
+//!   a slot that ends at 2^47 (the top slot of the default cage) is never free there.
 //! - Everything starts inaccessible. `commit` makes pages read-write; `decommit` drops them.
 //! - Exception (`jit` feature, macOS arm64): the code range is mapped with `MAP_JIT` and
 //!   read-write-execute protection, because macOS forbids `MAP_JIT` with `MAP_FIXED` (so the
@@ -111,8 +112,9 @@ impl Reservation {
         })
     }
 
-    /// Reserves exactly `[addr, addr + size)`. Returns `Ok(None)` if the range is not free or
-    /// the host refuses it. `addr` and `size` are multiples of [`allocation_granularity`].
+    /// Reserves exactly `[addr, addr + size)`. Returns `Ok(None)` if the range is not free, is
+    /// above the host's user address space, or the host refuses it. `addr` and `size` are
+    /// multiples of [`allocation_granularity`].
     pub fn reserve_at(addr: usize, size: usize) -> io::Result<Option<Self>> {
         check_at(addr, size)?;
         // Build the value only on success: dropping it would release a range we do not own.
@@ -940,6 +942,39 @@ mod tests {
                 matches!(c.validate(), Err(CageError::InvalidConfig(_))),
                 "{c:?}"
             );
+        }
+    }
+
+    /// Seed `slots - 1` makes the search try the slot that ends at `limit` first, then wrap to
+    /// the lowest slot. `sp_va_skips_slot_above_host_limit` uses these seeds: on x64 Windows
+    /// that top slot is above the user address space (CI run 39632519735).
+    #[test]
+    fn last_seed_tries_the_top_slot_first() {
+        let cage = CageConfig::default();
+        let code = CodeRangeConfig {
+            align: DEFAULT_CODE_RANGE_SIZE,
+            ..CodeRangeConfig::default()
+        };
+        for (span, align, min_base, avoid) in [
+            (cage.total(), cage.align, cage.min_base, &cage.avoid),
+            (code.size, code.align, code.min_base, &code.avoid),
+        ] {
+            let seed = ((CAGE_LIMIT - span) / align - min_base.div_ceil(align)) as u64;
+            let mut tried = Vec::new();
+            let found = search_slots(
+                span,
+                align,
+                min_base,
+                CAGE_LIMIT,
+                avoid,
+                Some(seed),
+                |b, n| {
+                    tried.push(b);
+                    Ok((n == 2).then_some(b))
+                },
+            );
+            assert_eq!(found.unwrap(), min_base);
+            assert_eq!(tried, [CAGE_LIMIT - span, min_base]);
         }
     }
 
