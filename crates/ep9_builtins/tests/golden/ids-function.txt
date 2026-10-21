@@ -1,3 +1,7 @@
 # ep9 builtin ids: module function, block 2. Append-only (H20, W4-BUILTIN-IDS): never
 # reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
 # id     block.index  kind         length  name  (installed as)
+0x0400   2.0          method       1       "call"  (%Function.prototype%.call w-c)
+0x0401   2.1          method       2       "apply"  (%Function.prototype%.apply w-c)
+0x0402   2.2          method       1       "bind"  (%Function.prototype%.bind w-c)
+0x0403   2.3          method       0       "toString"  (%Function.prototype%.toString w-c)
