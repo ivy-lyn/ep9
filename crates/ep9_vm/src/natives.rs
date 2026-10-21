@@ -29,7 +29,7 @@ use crate::kinds::is_callable;
 use crate::object::{self, attr, is_array, is_object, own_define};
 use crate::property;
 use crate::runtime::ErrorKind;
-use crate::string;
+use crate::{string, wrapper};
 
 // ---- the VM table ------------------------------------------------------------------------------
 
@@ -552,15 +552,18 @@ pub(crate) fn object_to_string<'s>(
     _: Local<'s>,
 ) -> JsResult<Local<'s>> {
     let o = this.bits();
+    // 3. O = ! ToObject(this value): a primitive and its wrapper have the same tag, from
+    //    [[BooleanData]], [[NumberData]] or [[StringData]] (steps 9-11).
+    let data = local(wrapper::wrapper_value(o).unwrap_or(o));
     let tag = match o {
         UNDEFINED => "Undefined",
         NULL => "Null",
         _ if is_array(o) => "Array",
         _ if is_callable(o) => "Function",
         _ if object::is_error(o) => "Error",
-        _ if object::is_string(o) => "String",
-        _ if this.is_number() => "Number",
-        _ if this.is_bool() => "Boolean",
+        _ if data.is_bool() => "Boolean",
+        _ if data.is_number() => "Number",
+        _ if data.is_string() => "String",
         _ => "Object",
     };
     Ok(cx.new_string(&format!("[object {tag}]"))?.value())

@@ -839,6 +839,57 @@ fn this_primitive_value_and_wrappers() {
     });
 }
 
+/// `Object.prototype.toString` with `this`.
+fn to_string_tag<'s>(cx: &mut Cx<'s>, this: impl Into<Local<'s>>) -> String {
+    let op = cx.intrinsic(IntrinsicId::ObjectPrototype);
+    let f = cx.get(op, "toString").unwrap();
+    let r = cx.call(f, this, &[]).unwrap();
+    cx.to_rust_string(r).unwrap()
+}
+
+/// Object.prototype.toString takes the builtinTag of a wrapper from its [[BooleanData]],
+/// [[NumberData]] or [[StringData]] (§20.1.3.6 steps 3 and 9-11), as node does:
+/// `Object.prototype.toString.call(Object(7))` is "[object Number]" (P2 review).
+#[test]
+fn object_to_string_tags_a_wrapper_by_its_primitive() {
+    with_table(None, true, |cx, _| {
+        let s = cx.new_string("ab").unwrap();
+        for (v, tag) in [
+            (Local::int32(7), "[object Number]"),
+            (Local::boolean(true), "[object Boolean]"),
+            (s.value(), "[object String]"),
+        ] {
+            assert_eq!(to_string_tag(cx, v), tag);
+            let w = cx.to_object(v).unwrap();
+            assert_eq!(to_string_tag(cx, w), tag);
+        }
+        // The prototypes are wrappers of +0, "" and false (§21.1.3, §22.1.3, §20.3.3).
+        for (id, tag) in [
+            (IntrinsicId::NumberPrototype, "[object Number]"),
+            (IntrinsicId::StringPrototype, "[object String]"),
+            (IntrinsicId::BooleanPrototype, "[object Boolean]"),
+        ] {
+            let p = cx.intrinsic(id);
+            assert_eq!(to_string_tag(cx, p), tag);
+        }
+        // A symbol's builtinTag is "Object" (step 14): node's "[object Symbol]" comes from
+        // %Symbol.prototype%[@@toStringTag] (step 15, P3).
+        let sym = cx.new_symbol(Local::undefined()).unwrap();
+        assert_eq!(to_string_tag(cx, sym), "[object Object]");
+        let w = cx.to_object(sym).unwrap();
+        assert_eq!(to_string_tag(cx, w), "[object Object]");
+        // Controls.
+        let a = cx.new_array();
+        assert_eq!(to_string_tag(cx, a), "[object Array]");
+        let o = cx.new_object();
+        assert_eq!(to_string_tag(cx, o), "[object Object]");
+        let f = global(cx, "Object");
+        assert_eq!(to_string_tag(cx, f), "[object Function]");
+        assert_eq!(to_string_tag(cx, Local::undefined()), "[object Undefined]");
+        assert_eq!(to_string_tag(cx, Local::null()), "[object Null]");
+    });
+}
+
 /// `new_bound_function` forwards to `bound::new_bound_function` (P3-BLTA fills it) with the
 /// arguments copied onto the VM stack.
 fn bind_rest<'s>(
