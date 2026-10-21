@@ -441,6 +441,21 @@ fn char_at_gives_single_character_atoms() {
 }
 
 #[test]
+fn string_view_reads_script_strings_and_the_copy_outlives_gc() {
+    // The view itself cannot outlive the next isolate call (compile_fail doctests on
+    // Isolate::string_view); the copied text can.
+    let mut iso = isolate(config(Dispatch::DEFAULT, false));
+    for (a, b) in [("abc", "def"), ("\u{20ac}x", "y")] {
+        let v = iso.run_script(concat_of(a, b), "view.js").unwrap();
+        let text = iso.string_view(v).map(|s| s.to_string_lossy());
+        iso.heap().collect();
+        let _ = iso.global("a name interned after the view");
+        assert_eq!(text, Some(format!("{a}{b}")));
+    }
+    assert!(iso.string_view(Value::UNDEFINED).is_none());
+}
+
+#[test]
 fn key_compares_and_probes() {
     let iso = isolate(config(Dispatch::DEFAULT, false));
     let rt = &*iso.rt;

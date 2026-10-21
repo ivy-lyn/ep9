@@ -266,10 +266,13 @@ pub(crate) fn view<'c>(_cx: &'c Cx, s: u64) -> JsStr<'c> {
 }
 
 impl Isolate {
-    /// The code units of `v` if it is a string, without a copy. The view borrows the isolate,
-    /// so it cannot live across a call that takes `&mut self` (any call that runs JS or
-    /// allocates, for example [`Isolate::collect_garbage`]); V8's `String::ValueView` has the
-    /// same rule. Copy the text out first:
+    /// The code units of `v` if it is a string, without a copy. The view does not root the
+    /// string, so it borrows the isolate exclusively: no isolate call can run while it lives.
+    /// That covers the `&mut self` calls that run JS or collect ([`Isolate::collect_garbage`])
+    /// and the `&self` ones that allocate or collect ([`Isolate::global`] interns its name;
+    /// [`Isolate::heap`] gives `Heap::collect` and `Heap::alloc`). V8's `String::ValueView`
+    /// has the same rule. As for every API `Value`, `v` must come from the latest call into
+    /// the isolate (a `Value` is not a root). Copy the text out first:
     ///
     /// ```
     /// use ep9_vm::{Isolate, IsolateConfig, Value};
@@ -280,9 +283,10 @@ impl Isolate {
     /// assert_eq!(text, None);
     /// ```
     ///
-    /// Keeping the view across the GC point does not compile (`E0502`):
+    /// Keeping the view across a GC point does not compile: across a `&mut self` call
+    /// (`E0499`),
     ///
-    /// ```compile_fail,E0502
+    /// ```compile_fail,E0499
     /// use ep9_vm::{Isolate, IsolateConfig, Value};
     /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
     /// let v = Value::UNDEFINED;
@@ -290,7 +294,31 @@ impl Isolate {
     /// iso.collect_garbage();
     /// assert!(view.is_none());
     /// ```
-    pub fn string_view(&self, v: Value) -> Option<JsStr<'_>> {
+    ///
+    /// across a `&self` call that collects, also with the views stored on the Rust heap where
+    /// the conservative scan does not see them (`E0502`),
+    ///
+    /// ```compile_fail,E0502
+    /// use ep9_vm::{Isolate, IsolateConfig, Value};
+    /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    /// let v = Value::UNDEFINED;
+    /// let mut views = Vec::new();
+    /// views.extend(iso.string_view(v));
+    /// iso.heap().collect();
+    /// assert!(views.is_empty());
+    /// ```
+    ///
+    /// and across a `&self` call that allocates (`E0502`):
+    ///
+    /// ```compile_fail,E0502
+    /// use ep9_vm::{Isolate, IsolateConfig, Value};
+    /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    /// let v = Value::UNDEFINED;
+    /// let view = iso.string_view(v);
+    /// let _ = iso.global("a new name");
+    /// assert!(view.is_none());
+    /// ```
+    pub fn string_view(&mut self, v: Value) -> Option<JsStr<'_>> {
         let b = v.to_bits();
         is_string(b).then(|| view(&self.cx, b))
     }
