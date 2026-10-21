@@ -1,6 +1,6 @@
 # ctl-finally-context: script (sloppy)
 # | function f(g) { try { let x = 1; g(() => x); return x; } finally { g(); } }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=75 source=embedded hints=none
 source_hash=2c945a5d630f5775fa66eb4618b2a2cd8c6ca622f52f3cc878050b4b5dda2394
 strings (2):

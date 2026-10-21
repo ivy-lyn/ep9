@@ -1,6 +1,6 @@
 # lit-tagged-template: script (sloppy)
 # | var t, o; t`a${1}b`; o.m`\u{`; t``;
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=35 source=embedded hints=none
 source_hash=73e8f3eb89c5b2638b6e9d4aeaede7f3aaa0fd918da7013180a9ebc6c1257113
 strings (7):

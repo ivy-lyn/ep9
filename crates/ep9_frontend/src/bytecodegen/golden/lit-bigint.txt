@@ -1,6 +1,6 @@
 # lit-bigint: script (sloppy)
 # | 0n; 42n; 18446744073709551616n; -5n;
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=36 source=embedded hints=none
 source_hash=baf189d19393bda12a7ee22bdbcd6b3762ca875d048580b201e916944b5e883f
 strings (0):

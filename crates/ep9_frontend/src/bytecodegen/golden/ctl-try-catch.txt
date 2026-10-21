@@ -1,6 +1,6 @@
 # ctl-try-catch: script (sloppy)
 # | function f(g) { try { g(); } catch (e) { return e; } try { g(); } catch { } try { g(); } catch ({message}) { return message; } }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=128 source=embedded hints=none
 source_hash=5252537f5f78f424bfba9bf04f09f02776ae9264c9428854ffe68e35b5b33807
 strings (2):

@@ -1,6 +1,6 @@
 # pat-object: script (sloppy)
 # | function f(o) { var {a, b: c, ['d']: e = 1, ...rest} = o; let {} = o; return [a, c, e, rest]; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=95 source=embedded hints=none
 source_hash=a354a216daf5d1d6bf8ebcc35d1e3242c709856edec9f818b2f6b318047917b7
 strings (4):

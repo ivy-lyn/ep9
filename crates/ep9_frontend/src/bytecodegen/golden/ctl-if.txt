@@ -1,6 +1,6 @@
 # ctl-if: script (sloppy)
 # | function f(a, b) { if (a) return 1; else if (b && a) return 2; else { return 3; } }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=83 source=embedded hints=none
 source_hash=fac9d2d695392d7614a865985e415f0a52c13082feaae574475195009daff5d0
 strings (1):

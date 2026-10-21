@@ -1,6 +1,6 @@
 # lit-object-super: script (sloppy)
 # | ({m() { return super.x; }, n() { super.y = 1; return super[1]; }});
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=67 source=embedded hints=none
 source_hash=4c598a4491b76def18134ce9c3575b9bf8ffbfa61e64b544c73f874ebf0303ff
 strings (4):

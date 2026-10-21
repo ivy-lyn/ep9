@@ -315,8 +315,8 @@ impl<'a, 's> FnGen<'a, 's> {
             }
             Expression::UnaryExpression(u) => self.unary(u),
             Expression::UpdateExpression(u) => self.update(u, true),
-            Expression::YieldExpression(y) => self.unsupported("yield", y.span),
-            Expression::PrivateInExpression(p) => self.unsupported("private names", p.span),
+            Expression::YieldExpression(y) => self.yield_expr(y),
+            Expression::PrivateInExpression(p) => self.private_in(p),
             Expression::ImportMeta(m) => self.unsupported("import.meta", m.span),
             Expression::NewTarget(t) => {
                 let r = self.implicit(t.span.start, ImplicitRef::NewTarget)?;
@@ -333,7 +333,7 @@ impl<'a, 's> FnGen<'a, 's> {
             Expression::V8IntrinsicExpression(v) => self.unsupported("V8 intrinsics", v.span),
             Expression::StaticMemberExpression(m) => self.static_member(m),
             Expression::ComputedMemberExpression(m) => self.computed_member(m),
-            Expression::PrivateFieldExpression(p) => self.unsupported("private names", p.span),
+            Expression::PrivateFieldExpression(p) => self.private_get(p),
         }
     }
 
@@ -822,6 +822,9 @@ impl<'a, 's> FnGen<'a, 's> {
             }
             _ => {
                 let Some(e) = key.as_expression() else {
+                    if let PropertyKey::PrivateIdentifier(p) = key {
+                        return self.private_key_into(p, r);
+                    }
                     return self.unsupported("private names", key.span());
                 };
                 self.expr(e)?;
@@ -868,9 +871,7 @@ impl<'a, 's> FnGen<'a, 's> {
                 let key = self.expr_to_temp(&c.expression)?;
                 Ok(MemberRef::Keyed { obj, key })
             }
-            MemberExpression::PrivateFieldExpression(p) => {
-                self.unsupported("private names", p.span)
-            }
+            MemberExpression::PrivateFieldExpression(p) => self.private_member_ref(p),
         }
     }
 
@@ -1044,9 +1045,7 @@ impl<'a, 's> FnGen<'a, 's> {
                 match m {
                     MemberExpression::StaticMemberExpression(s) => self.static_member(s),
                     MemberExpression::ComputedMemberExpression(cm) => self.computed_member(cm),
-                    MemberExpression::PrivateFieldExpression(p) => {
-                        self.unsupported("private names", p.span)
-                    }
+                    MemberExpression::PrivateFieldExpression(p) => self.private_get(p),
                 }
             }
         };
@@ -1096,6 +1095,15 @@ impl<'a, 's> FnGen<'a, 's> {
             _ => None,
         };
         let Some(member) = member else {
+            // A dynamic lookup (`with`, sloppy direct eval): lookup.rs.
+            if let Expression::Identifier(id) = inner
+                && matches!(
+                    self.reference_of(id)?.resolution,
+                    Resolution::Dynamic { .. }
+                )
+            {
+                return self.dynamic_callee(callee_expr, id, callee, n);
+            }
             self.expr(callee_expr)?;
             self.b.star(callee);
             return Ok(None);
@@ -1163,7 +1171,7 @@ impl<'a, 's> FnGen<'a, 's> {
                 }
             }
             MemberExpression::PrivateFieldExpression(p) => {
-                return self.unsupported("private names", p.span);
+                self.private_callee(p, callee, list)?;
             }
         }
         Ok(list)
@@ -1798,7 +1806,7 @@ impl<'a, 's> FnGen<'a, 's> {
                 }
                 Ok(())
             }
-            Expression::PrivateFieldExpression(p) => self.unsupported("private names", p.span),
+            Expression::PrivateFieldExpression(p) => self.private_delete(p),
             _ => {
                 self.expr_effect(&u.argument)?;
                 self.b.lda_true();
@@ -1835,7 +1843,7 @@ impl<'a, 's> FnGen<'a, 's> {
                 }
             }
             MemberExpression::PrivateFieldExpression(p) => {
-                return self.unsupported("private names", p.span);
+                self.private_delete(p)?;
             }
         }
         self.release(mark);

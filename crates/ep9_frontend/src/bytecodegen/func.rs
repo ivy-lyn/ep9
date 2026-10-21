@@ -332,18 +332,12 @@ impl<'a, 's> FnGen<'a, 's> {
     pub(crate) fn hoist_functions(&mut self, scope: ScopeId) -> Gen {
         for &(b, f) in &self.sa.scope(scope).hoisted_functions {
             let info = self.sa.function(f);
-            if info.is_generator || info.is_async {
-                let span = oxc_span::Span::new(info.span.start, info.span.end);
-                return self.unsupported(
-                    if info.is_generator {
-                        "generator functions"
-                    } else {
-                        "async functions"
-                    },
-                    span,
-                );
-            }
             let span = oxc_span::Span::new(info.span.start, info.span.end);
+            if info.is_generator {
+                self.check_generator(info.is_async, span)?;
+            } else if info.is_async {
+                return self.unsupported("async functions", span);
+            }
             self.enter(span)?;
             let k = self.b.function_constant(ep9_bytecode::FunctionId(f.0));
             let s = self.slot(FeedbackSlotKind::CreateClosure);
@@ -1078,7 +1072,7 @@ impl<'a, 's> FnGen<'a, 's> {
     /// A `function` node (declaration, expression, method, accessor, constructor).
     pub(crate) fn gen_function(&mut self, node: &'a Function<'a>) -> Gen {
         if node.generator {
-            return self.unsupported("generator functions", node.span);
+            return self.gen_generator(node);
         }
         if node.r#async {
             return self.unsupported("async functions", node.span);
@@ -1154,11 +1148,6 @@ impl<'a, 's> FnGen<'a, 's> {
         Ok(())
     }
 
-    /// Class constructors: nothing extra in v0 (no instance fields).
-    fn class_constructor_prologue(&mut self) -> Gen {
-        Ok(())
-    }
-
     /// The `this` binding of a derived constructor, for `super()`.
     pub(crate) fn per_iteration(&self, scope: ScopeId) -> PerIteration {
         self.sa.scope(scope).per_iteration
@@ -1171,7 +1160,7 @@ impl<'a, 's> FnGen<'a, 's> {
         name: Option<UnitString>,
     ) -> Gen<crate::scope::FunctionId> {
         if node.generator {
-            return self.unsupported("generator functions", node.span);
+            self.check_generator(node.r#async, node.span)?;
         }
         if node.r#async {
             return self.unsupported("async functions", node.span);

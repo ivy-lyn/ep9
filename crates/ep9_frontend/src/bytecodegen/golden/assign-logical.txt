@@ -1,6 +1,6 @@
 # assign-logical: script (sloppy)
 # | function f(o, a) { a ||= 1; a &&= 2; a ??= 3; o.x ??= 4; o[a] ||= 5; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=70 source=embedded hints=none
 source_hash=1b3300592ba2ac10e3aef0c3189bbd748da03c43d87383a9c1dd64ec0de29ff3
 strings (2):

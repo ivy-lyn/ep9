@@ -218,6 +218,9 @@ macro_rules! operand_type {
     (RegOutTriple) => {
         RegisterList
     };
+    (RegOutPair) => {
+        RegisterList
+    };
     (RegCount) => {
         u32
     };
@@ -561,7 +564,9 @@ impl FunctionBuilder {
                 (OperandKind::RegList | OperandKind::RegOutList, Pending::List { len, .. }) => {
                     matches!(operands.get(k + 1), Some(PendingOperand(Pending::Value(n))) if *n == i64::from(len))
                 }
-                (OperandKind::RegPair, Pending::List { len, .. }) => len == 2,
+                (OperandKind::RegPair | OperandKind::RegOutPair, Pending::List { len, .. }) => {
+                    len == 2
+                }
                 (OperandKind::RegOutTriple, Pending::List { len, .. }) => len == 3,
                 (OperandKind::JumpFwd | OperandKind::JumpBack, Pending::Label(_)) => true,
                 (_, Pending::Value(v)) => {
@@ -570,6 +575,7 @@ impl FunctionBuilder {
                         OperandKind::RegList
                             | OperandKind::RegOutList
                             | OperandKind::RegPair
+                            | OperandKind::RegOutPair
                             | OperandKind::RegOutTriple
                             | OperandKind::JumpFwd
                             | OperandKind::JumpBack

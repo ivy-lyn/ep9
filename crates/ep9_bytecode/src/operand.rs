@@ -110,6 +110,8 @@ pub enum OperandKind {
     Runtime = 18,
     /// A [`crate::TypeOfLiteral`]. Fixed 1 byte.
     TypeOfLiteral = 19,
+    /// Two consecutive locals the instruction writes (ABI 3, `CallRuntimeForPair`).
+    RegOutPair = 20,
 }
 
 impl OperandKind {
@@ -132,6 +134,7 @@ impl OperandKind {
                 | Self::RegOutList
                 | Self::RegPair
                 | Self::RegOutTriple
+                | Self::RegOutPair
                 | Self::Imm
         )
     }
@@ -147,6 +150,7 @@ impl OperandKind {
                 | Self::RegOutList
                 | Self::RegPair
                 | Self::RegOutTriple
+                | Self::RegOutPair
         )
     }
 
@@ -182,6 +186,7 @@ impl OperandKind {
             Self::Flag16 => "Flag16",
             Self::Runtime => "Runtime",
             Self::TypeOfLiteral => "TypeOfLiteral",
+            Self::RegOutPair => "RegOutPair",
         }
     }
 }

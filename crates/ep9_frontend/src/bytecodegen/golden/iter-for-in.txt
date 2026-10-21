@@ -1,6 +1,6 @@
 # iter-for-in: script (sloppy)
 # | function f(o) { var r = []; for (var k in o) r.push(k); for (let j in o) (() => j)(); for (o.p in o) ; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=104 source=embedded hints=none
 source_hash=57889cda1f591c9d7d9f9edff58137c1bedd08e8d886fea5ed8ddddcfb4f089e
 strings (4):

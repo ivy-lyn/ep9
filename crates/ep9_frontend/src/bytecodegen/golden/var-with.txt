@@ -1,6 +1,6 @@
 # var-with: script (sloppy)
 # | var o = {}; with (o) { x = 1; x; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=34 source=embedded hints=none
 source_hash=3b3003d2fd25809254dedd8dd729997e94497e9f4d21d4af3ac9806be9b8269f
 strings (2):

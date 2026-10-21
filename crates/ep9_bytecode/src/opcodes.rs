@@ -6,7 +6,8 @@
 //! the opcodes ep9 shares with V8. ADR H02 lists what ep9 changes: feedback-slot operands on
 //! arithmetic and compares (V8 now embeds that feedback), no `*Constant` jump variants (the
 //! builder relaxes jump sizes instead), forward-only jumps except `JumpLoop`, a reserved
-//! `TailCall` (D7), and reserved generator opcodes.
+//! `TailCall` (D7), generator opcodes only in generator and async functions (ABI 3), and
+//! `CallRuntimeForPair` with a [`RegOutPair`](crate::OperandKind::RegOutPair) output (ABI 3).
 
 /// Calls `$m!` with the full opcode list. Tokens in `[...]` are passed through first.
 ///
@@ -24,7 +25,8 @@
 ///   list order (a const assert checks it).
 /// - `acc` is one of `None`, `Read`, `Write`, `ReadWrite` ([`AccUse`]).
 /// - `flags` names [`OpcodeFlags`] bits: `Prefix`, `Jump`, `Switch`,
-///   `Terminator`, `Return`, `Throws`, `Call`, `Interrupt`, `Clobber`, `Reserved`.
+///   `Terminator`, `Return`, `Throws`, `Call`, `Interrupt`, `Clobber`, `Reserved`,
+///   `Generator`.
 /// - Each operand has a name and an [`OperandKind`](crate::OperandKind) variant. `Const(..)`
 ///   names a [`ConstOperand`](crate::ConstOperand), `Slot(..)` a
 ///   [`FeedbackSlotKind`](crate::FeedbackSlotKind), `Flag8(..)`/`Flag16(..)` the mask of
@@ -163,10 +165,12 @@ macro_rules! for_each_opcode {
             /// `object[key] = acc` (`[[Set]]`)
             SetKeyedProperty = 0x26, set_keyed_property, acc: ReadWrite, flags: [Throws, Clobber],
                 operands: (object: Reg, key: Reg, slot: Slot(StoreKeyed));
-            /// define own property `object[key] = acc`; bit 0 of flags = set function name
+            /// define own property `object[key] = acc`; bit 0 of flags = set function name;
+            /// bit 1 = private add (ABI 3): `key` is a private name, and it throws a TypeError
+            /// if `object` already has it
             DefineKeyedOwnProperty = 0x27, define_keyed_own_property, acc: ReadWrite,
                 flags: [Throws, Clobber],
-                operands: (object: Reg, key: Reg, flags: Flag8(0x01), slot: Slot(DefineKeyedOwn));
+                operands: (object: Reg, key: Reg, flags: Flag8(0x03), slot: Slot(DefineKeyedOwn));
             /// `array[index] = acc` inside an array literal
             StaInArrayLiteral = 0x28, sta_in_array_literal, acc: ReadWrite, flags: [Throws, Clobber],
                 operands: (array: Reg, index: Reg, slot: Slot(StoreInArrayLiteral));
@@ -513,17 +517,17 @@ macro_rules! for_each_opcode {
             GetSuperConstructor = 0x98, get_super_constructor, acc: Read, flags: [],
                 operands: (dst: RegOut);
 
-            // ---- Generators (reserved until M1) -------------------------------------------
+            // ---- Generators (ABI 3: only in generator and async functions) -----------------
 
-            /// Reserved. Resume: jump to `table[state of generator]`, else fall through
+            /// Resume: jump to `table[state of generator]`, else fall through
             SwitchOnGeneratorState = 0x99, switch_on_generator_state, acc: None,
-                flags: [Switch, Reserved], operands: (generator: Reg, table: Const(JumpTable));
-            /// Reserved. Save registers into generator, then return acc to the caller
+                flags: [Switch, Generator], operands: (generator: Reg, table: Const(JumpTable));
+            /// Save registers into generator, then return acc to the caller
             SuspendGenerator = 0x9a, suspend_generator, acc: Read,
-                flags: [Terminator, Return, Reserved],
+                flags: [Terminator, Return, Generator],
                 operands: (generator: Reg, registers: RegList, count: RegCount, suspend_id: UImm);
-            /// Reserved. Restore registers from generator; acc = the sent value
-            ResumeGenerator = 0x9b, resume_generator, acc: Write, flags: [Reserved],
+            /// Restore registers from generator; acc = the sent value
+            ResumeGenerator = 0x9b, resume_generator, acc: Write, flags: [Generator],
                 operands: (generator: Reg, registers: RegOutList, count: RegCount);
 
             // ---- Debugger -----------------------------------------------------------------
@@ -531,6 +535,13 @@ macro_rules! for_each_opcode {
             /// `debugger` statement: pause if a session is attached (H24). acc is undefined
             /// afterwards
             Debugger = 0x9c, debugger, acc: Write, flags: [Clobber], operands: ();
+
+            // ---- Runtime calls with two results (ABI 3) -----------------------------------
+
+            /// `out[0], out[1]` = runtime function `id`(args..), one that returns a pair (V8
+            /// `CallRuntimeForPair`); acc is unchanged
+            CallRuntimeForPair = 0x9d, call_runtime_for_pair, acc: None, flags: [Throws, Call],
+                operands: (id: Runtime, args: RegList, argc: RegCount, out: RegOutPair);
         }
     };
 }
@@ -596,11 +607,13 @@ impl OpcodeFlags {
     pub const INTERRUPT: OpcodeFlags = OpcodeFlags(1 << 7);
     /// The accumulator holds no defined value afterwards.
     pub const CLOBBER: OpcodeFlags = OpcodeFlags(1 << 8);
-    /// Not valid in ABI v1 bytecode; the verifier rejects it.
+    /// Not valid bytecode; the verifier rejects it.
     pub const RESERVED: OpcodeFlags = OpcodeFlags(1 << 9);
+    /// Valid only in a function with the `GENERATOR` or `ASYNC` flag (ABI 3, H02 F10).
+    pub const GENERATOR: OpcodeFlags = OpcodeFlags(1 << 10);
 
     /// Every flag with its golden-file name, in bit order.
-    pub const NAMES: [(OpcodeFlags, &'static str); 10] = [
+    pub const NAMES: [(OpcodeFlags, &'static str); 11] = [
         (Self::PREFIX, "Prefix"),
         (Self::JUMP, "Jump"),
         (Self::SWITCH, "Switch"),
@@ -611,6 +624,7 @@ impl OpcodeFlags {
         (Self::INTERRUPT, "Interrupt"),
         (Self::CLOBBER, "Clobber"),
         (Self::RESERVED, "Reserved"),
+        (Self::GENERATOR, "Generator"),
     ];
 
     /// True if every bit of `other` is set.
@@ -652,6 +666,9 @@ macro_rules! __ep9_opcode_flag {
     };
     (Reserved) => {
         $crate::OpcodeFlags::RESERVED
+    };
+    (Generator) => {
+        $crate::OpcodeFlags::GENERATOR
     };
 }
 
@@ -929,7 +946,7 @@ mod tests {
 
     #[test]
     fn table_is_dense_and_round_trips() {
-        assert_eq!(OPCODE_COUNT, 0x9d);
+        assert_eq!(OPCODE_COUNT, 0x9e);
         for (i, info) in OPCODES.iter().enumerate() {
             assert_eq!(info.opcode as usize, i);
             assert_eq!(Opcode::from_u8(i as u8), Some(info.opcode));
@@ -943,6 +960,51 @@ mod tests {
         assert_eq!(MAX_OPERANDS, 5);
         // ExtraWide CallProperty2: prefix + opcode + 4 registers x 4 + slot x 4.
         assert_eq!(MAX_INSTRUCTION_SIZE, 22);
+    }
+
+    /// ABI 3: which opcodes are reserved, which are generator-only, and the new opcode.
+    #[test]
+    fn abi_3_opcode_classes() {
+        let with = |flag| -> Vec<Opcode> {
+            OPCODES
+                .iter()
+                .filter(|i| i.flags.contains(flag))
+                .map(|i| i.opcode)
+                .collect()
+        };
+        assert_eq!(
+            with(OpcodeFlags::RESERVED),
+            [Opcode::Illegal, Opcode::TailCall]
+        );
+        assert_eq!(
+            with(OpcodeFlags::GENERATOR),
+            [
+                Opcode::SwitchOnGeneratorState,
+                Opcode::SuspendGenerator,
+                Opcode::ResumeGenerator
+            ]
+        );
+        let pair = Opcode::CallRuntimeForPair.info();
+        assert_eq!(Opcode::CallRuntimeForPair as u8, 0x9d);
+        let kinds: Vec<OperandKind> = pair.operands.iter().map(|o| o.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                OperandKind::Runtime,
+                OperandKind::RegList,
+                OperandKind::RegCount,
+                OperandKind::RegOutPair
+            ]
+        );
+        assert_eq!(pair.acc, AccUse::None);
+        assert_eq!(
+            Opcode::DefineKeyedOwnProperty.info().operands[2].param,
+            OperandParam::FlagMask(0x03)
+        );
+        assert_eq!(
+            Opcode::DefineKeyedOwnPropertyInLiteral.info().operands[2].param,
+            OperandParam::FlagMask(0x01)
+        );
     }
 
     /// Consistency rules between flags and operands. The verifier relies on them.
@@ -1015,6 +1077,13 @@ mod tests {
             if info.flags.contains(OpcodeFlags::PREFIX) {
                 assert!(ops.is_empty());
             }
+            // A generator-only opcode is valid bytecode, so it is never reserved.
+            assert!(
+                !(info.flags.contains(OpcodeFlags::GENERATOR)
+                    && info.flags.contains(OpcodeFlags::RESERVED)),
+                "{}",
+                info.name
+            );
             assert!(ops.len() <= MAX_OPERANDS);
         }
     }

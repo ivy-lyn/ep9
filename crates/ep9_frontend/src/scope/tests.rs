@@ -276,6 +276,34 @@ fn sloppy_direct_eval_forces_contexts_and_dynamic_lookups() {
     );
 }
 
+/// C6 (M2 P0): binding 0 and context slot 0 of a sloppy-eval function var scope are
+/// `.eval_ext`; the script scope gets none.
+#[test]
+fn sloppy_eval_function_var_scopes_get_eval_ext_at_slot_0() {
+    let a = script("eval('var t'); function f(a) { var x; eval('1'); }");
+    let ext = a.id_of(ep9_bytecode::EVAL_EXT_BINDING);
+    let f = a.func(1);
+    let fs = a.scope(f.scope);
+    assert_eq!(fs.bindings[0], ext, "{a}");
+    assert_eq!(fs.context_slots[0], ext, "{a}");
+    let b = a.binding(ext);
+    assert_eq!(b.kind, BindingKind::EvalExt);
+    assert!(b.kind.is_implicit() && !b.tdz);
+    assert_eq!(
+        b.location,
+        BindingLocation::Context {
+            scope: f.scope,
+            slot: 0
+        }
+    );
+    // Script scope 0 is a sloppy-eval scope too, but its eval vars are global properties.
+    assert!(a.scope(ScopeId(0)).sloppy_eval);
+    assert!(!a.scope(ScopeId(0)).bindings.contains(&ext));
+    // Strict code never gets one.
+    let s = strict("function f() { eval('var x'); }");
+    assert!(s.named(ep9_bytecode::EVAL_EXT_BINDING).is_empty());
+}
+
 #[test]
 fn strict_direct_eval_reads_but_never_adds_bindings() {
     let a = strict("function f() { var x; eval('x'); return x + z; }");

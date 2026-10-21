@@ -1,6 +1,6 @@
 # class-super-arrow: script (sloppy)
 # | class A extends Object { constructor() { var f = () => super(); f(); } m() { return () => super.m(); } }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=104 source=embedded hints=none
 source_hash=575e16ccf8bcab7937cd3707dd99345c3b280114ee43bb422a856f34e63e994b
 strings (8):

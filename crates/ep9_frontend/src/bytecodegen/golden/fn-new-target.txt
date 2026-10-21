@@ -1,6 +1,6 @@
 # fn-new-target: script (sloppy)
 # | function F() { return new.target; } function G() { return () => new.target; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=77 source=embedded hints=none
 source_hash=a9b6c53040d7229f99683339373bd0d14aa1a06023bb254fd79f6410671c7693
 strings (3):

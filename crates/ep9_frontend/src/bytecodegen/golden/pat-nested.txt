@@ -1,6 +1,6 @@
 # pat-nested: script (sloppy)
 # | function f(o) { const {a: [b, {c}], d: {e: [f] = []} = {}} = o; return b + c + f; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=83 source=embedded hints=none
 source_hash=dcbeb41c20e6aff919027e829d06e6833cc0b1e31b33a7d8639d1ee3354b20d8
 strings (9):

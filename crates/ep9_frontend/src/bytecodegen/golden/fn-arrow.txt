@@ -1,6 +1,6 @@
 # fn-arrow: script (sloppy)
 # | var f = (a, b) => a + b; var g = () => { return this; }; var h = x => ({x});
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=76 source=embedded hints=none
 source_hash=2e158d4cb13914323170b44b13251d8290263ab002f3172d2bf7be63827ab411
 strings (5):
