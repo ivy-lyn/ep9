@@ -1,7 +1,9 @@
-//! Shapes (H8, H17): hidden classes for JS objects. Week 4 builds the shapes core here (P1);
-//! P2-OBJ moves objects onto it (word0 shape ids, the shape space, prototype mode).
+//! Shapes (H8, H17): hidden classes for JS objects. P1 built the shapes core; P2-OBJ put
+//! every JS object on it (word0 shape ids in the shape space, prototype mode, the epoch).
 //!
 //! ```text
+//!  object word0.shape_id ──(cage base | id)──> SHAPE in the shape region (first 256 MiB of the cage)
+//!
 //!  ShapeState root range [0] ─> PROTO_INFO(null)      PROTO_INFO(P), one per prototype P
 //!                                 +24 SLOTS ──strong──> root shapes per (kind, capacity),
 //!                                                       dictionary shapes per (kind, extensible)
@@ -9,13 +11,17 @@
 //!     \                   └──+40 TRANSITIONS (weak entries)──> {a,x}
 //!      \  {a}, {a,b}, {a,b,c} share one DESCRIPTORS cell [a, b, c]: a shape sees its first
 //!       \ `count` entries (the prefix rule). The branch {a,x} has its own copy [a, x].
+//!
+//!  prototype P ──word0──> unique shape U (PROTOTYPE | UNIQUE, no parent, no transitions)
+//!                           +40 ──strong──> PROTO_INFO(P) ──+8──> P
+//!  P gets a property: a new unique shape U' (same PROTO_INFO, descriptors by the prefix rule)
 //! ```
 //!
 //! Every word of these cells after word0 is a Value: a cell, undefined, null or an int32.
 //!
 //! | Kind | Id | Layout (byte offsets) | Size |
 //! |---|---|---|---|
-//! | SHAPE | 128 | +8 proto, +16 parent, +24 DESCRIPTORS, +32 one transition (weak), +40 TRANSITIONS (P2: PROTO_INFO of a prototype-mode shape), +48 counts, +56 flags | 64 |
+//! | SHAPE | 128 | +8 proto, +16 parent, +24 DESCRIPTORS, +32 one transition (weak), +40 TRANSITIONS, or the PROTO_INFO of a prototype-mode shape, +48 counts, +56 flags | 64 |
 //! | SLOTS | 71 | +8 capacity, +16 values | 16 + 8 cap |
 //! | DESCRIPTORS | 72 | +8 capacity, +16 length, +24 DESC_INDEX or undefined, +32 entries: key, details | 32 + 16 cap |
 //! | DESC_INDEX | 73 | +8 bucket count (a power of 2), +16 buckets: descriptor index or undefined | 16 + 8 buckets |
@@ -31,6 +37,11 @@
 //!   reserved, 0), field index in bits 8-23.
 //!
 //! Rules:
+//! - Only SHAPE lives in the shape space ([`heap_config`], [`register_kinds`]); its cells come
+//!   from `Heap::alloc_shape` (W4-P2-SHAPE-ALLOC). An object's word0 id is installed with
+//!   `ep9_heap::set_shape` ([`install`]) at allocation and on every change.
+//! - An ep9_vm cage is aligned to [`CAGE_ALIGN`] and no larger, so [`shape_of`] finds the
+//!   shape of any cell from its address alone: `(address & !(CAGE_ALIGN - 1)) | id`.
 //! - Stored keys are atoms ([`key::intern_key`] in [`add`]). A lookup classifies its probe once
 //!   ([`key::probe`]): an atom or a symbol compares by bits, any other string by content.
 //! - Up to 8 keys a lookup scans; above 8 it uses the DESC_INDEX hash index of the
@@ -39,37 +50,42 @@
 //! - A hit at an index at or past the shape's count is a miss (the prefix rule).
 //! - Only the last owner of a descriptor array appends in place (its count equals the array
 //!   length). Growth copies the array and moves every ancestor that used it to the copy.
-//!   Entries below the length never change.
+//!   Entries below the length never change. A unique shape may append too: every other user
+//!   of the array sees only its own prefix.
 //! - Transitions and the transition table's entries are weak; a dead child's slot reads
 //!   undefined after the GC. Parent links, descriptors and PROTO_INFO lists are strong.
 //! - No table is keyed by an address (H12): per-prototype root and dictionary shapes live in
 //!   the prototype's PROTO_INFO, null-prototype ones in the ShapeState root range.
+//! - Prototype mode (OM-8, OM-11): an object becomes a prototype the first time a shape names
+//!   it as `[[Prototype]]` ([`proto_info_for`]). It gets word0 flag IS_PROTOTYPE and a unique
+//!   shape that holds its PROTO_INFO at +40. So every shape's proto is null or a prototype-mode
+//!   object. Any structural change of a prototype-mode object bumps
+//!   [`ShapeState::proto_epoch`] ([`note_change`]).
 //!
 //! Hooks the rest of the VM already calls:
 //!
 //! | Hook | Called from | Job |
 //! |---|---|---|
-//! | [`heap_config`] | `Isolate::new`, before the heap exists | ask for the shape space (H08-Q1; P2-OBJ) |
-//! | [`register_kinds`] | `object::register_kinds` | SHAPE, SLOTS, DESCRIPTORS, DESC_INDEX, TRANSITIONS, PROTO_INFO |
+//! | [`heap_config`] | `Isolate::new`, before the heap exists | the shape space (H08-Q1) and the cage alignment |
+//! | [`register_kinds`] | `object::register_kinds` | SHAPE (shape space), SLOTS, DESCRIPTORS, DESC_INDEX, TRANSITIONS, PROTO_INFO |
 //! | [`init`] | `Runtime::new` | register the ShapeState root range and make the null PROTO_INFO |
 //!
 //! `Cx::proto_epoch` points at [`ShapeState::proto_epoch`], so a host call or a nested run
 //! that changes a prototype is seen at once (never a stale copy).
-// No VM caller uses the shapes API before P2-OBJ moves objects onto it; the unit tests use
-// every item (tests/shapes.rs), and test builds keep the dead-code lint.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use core::cell::Cell;
 use core::ptr::NonNull;
 
-use ep9_heap::{CellKind, CellPtr, CellSize, Heap, HeapConfig, KindId, RootStrength, Slot, Tracer};
+use ep9_heap::{
+    CellKind, CellPtr, CellSize, Heap, HeapConfig, KindId, RootStrength, Slot, Space, Tracer,
+};
 use ep9_value::Value;
 
 use crate::frame::{NULL, UNDEFINED, int32_bits, int32_of};
 use crate::key::{self, Probe};
 use crate::kinds as kind;
 use crate::object::{self, attr, cell, rd, rd_i32, wr};
-use crate::runtime::{Runtime, val};
+use crate::runtime::{Root, Runtime, val};
 
 /// SHAPE fields.
 mod shf {
@@ -104,8 +120,8 @@ mod trf {
     pub const ENTRIES: usize = 16;
 }
 
-/// SLOTS fields.
-mod slf {
+/// SLOTS fields (shared with the out-of-line property storage of objects, props.rs).
+pub(crate) mod slf {
     pub const CAPACITY: usize = 8;
     pub const DATA: usize = 16;
 }
@@ -124,11 +140,19 @@ pub(crate) mod flag {
     pub const EXTENSIBLE: i32 = 1;
     /// Properties live in the object's PROPS table; the shape has none and no transitions.
     pub const DICTIONARY: i32 = 2;
-    /// Reserved for P2-OBJ: the shape of a prototype object; +40 holds its PROTO_INFO.
+    /// The shape of a prototype object; +40 holds its PROTO_INFO.
     pub const PROTOTYPE: i32 = 4;
-    /// Reserved for P2-OBJ: not in the transition tree (prototype mode).
+    /// Not in the transition tree and used by one object only (prototype mode): no parent,
+    /// no transitions. A change makes a new unique shape.
     pub const UNIQUE: i32 = 8;
 }
+
+/// The cage alignment and largest cage of an ep9_vm isolate (W4-OBJ-CAGE): 64 GiB, the H7
+/// default cage size. [`heap_config`] asks for it, so the cage base of any cell is its
+/// address with the low 36 bits cleared, and [`shape_of`] needs no heap pointer.
+pub(crate) const CAGE_ALIGN: usize = 64 << 30;
+/// The shape region ep9_vm asks for (H08-Q1, I45).
+pub(crate) const SHAPE_SPACE_BYTES: usize = 256 << 20;
 
 /// The accessor attribute bit of a descriptor (H17, OM-9; P3-ACC stores the pair).
 pub(crate) const ACCESSOR: i32 = 8;
@@ -158,7 +182,10 @@ const FIELD_SHIFT: u32 = 8;
 mod root {
     /// The PROTO_INFO of the null prototype.
     pub const NULL_PROTO_INFO: usize = 0;
-    pub const COUNT: usize = 1;
+    /// The shape of a new function: %Function.prototype%, `length` and `name` (a cache;
+    /// undefined until the first function).
+    pub const FUNCTION_SHAPE: usize = 1;
+    pub const COUNT: usize = 2;
 }
 
 /// Per-isolate shape state (a `Runtime` field).
@@ -182,9 +209,15 @@ impl Default for ShapeState {
     }
 }
 
-/// The heap settings the shape space needs. Identity until the object layout moves to
-/// shapes (P2-OBJ asks for 256 MiB).
-pub(crate) fn heap_config(cfg: HeapConfig) -> HeapConfig {
+/// The heap settings shapes need: a shape space of [`SHAPE_SPACE_BYTES`] (unless the
+/// embedder asked for one), and a cage of at most [`CAGE_ALIGN`] bytes aligned to
+/// [`CAGE_ALIGN`] (W4-OBJ-CAGE; the H7 default cage is exactly that size).
+pub(crate) fn heap_config(mut cfg: HeapConfig) -> HeapConfig {
+    if cfg.shape_space_bytes == 0 {
+        cfg.shape_space_bytes = SHAPE_SPACE_BYTES;
+    }
+    cfg.cage.cage_size = cfg.cage.cage_size.min(CAGE_ALIGN);
+    cfg.cage.align = cfg.cage.align.max(CAGE_ALIGN);
     cfg
 }
 
@@ -239,17 +272,20 @@ fn trace_proto_info(c: CellPtr, t: &mut Tracer<'_>) {
     object::trace_from_8(c, t, pif::SIZE);
 }
 
-/// Registers the shape cell kinds (all in the normal space until P2-OBJ moves SHAPE).
+/// Registers the shape cell kinds: SHAPE in the shape space (H08-Q1), the others in the
+/// normal space.
 pub(crate) fn register_kinds(heap: &Heap) {
-    let kinds: [(KindId, CellKind); 6] = [
-        (
-            kind::SHAPE,
-            CellKind {
-                name: "shape",
-                size: CellSize::Fixed(shf::SIZE),
-                trace: trace_shape,
-            },
-        ),
+    heap.register_kind_in(
+        kind::SHAPE,
+        CellKind {
+            name: "shape",
+            size: CellSize::Fixed(shf::SIZE),
+            trace: trace_shape,
+        },
+        Space::Shape,
+    )
+    .expect("register SHAPE in the shape space");
+    let kinds: [(KindId, CellKind); 5] = [
         (
             kind::SLOTS,
             CellKind {
@@ -299,6 +335,11 @@ pub(crate) fn register_kinds(heap: &Heap) {
 /// Runs once in `Runtime::new`, after the kinds are registered and before the realm exists:
 /// registers the ShapeState root range and makes the PROTO_INFO of the null prototype.
 pub(crate) fn init(rt: &Runtime) {
+    // [`shape_of`] derives the cage base from a cell address; `heap_config` asked for this.
+    assert!(
+        rt.heap.cage_base().is_multiple_of(CAGE_ALIGN) && rt.heap.shape_space_bytes() != 0,
+        "an ep9_vm heap needs a shape space and a cage aligned to CAGE_ALIGN (shape::heap_config)"
+    );
     let roots = &rt.shapes.roots;
     // SAFETY: the slots live in a box that the Runtime owns. The heap is the Runtime's first
     // field, so it drops (with this range) before the box. They hold `undefined` now and
@@ -351,6 +392,7 @@ impl Details {
         self.0 & ATTR_MASK
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // P3-ACC reads it
     pub(crate) fn is_accessor(self) -> bool {
         self.0 & ACCESSOR != 0
     }
@@ -436,6 +478,17 @@ pub(crate) fn capacity(shape: u64) -> u8 {
 /// The kind id of objects with `shape`.
 pub(crate) fn object_kind(shape: u64) -> u8 {
     (counts(cell(shape)) >> KIND_SHIFT) as u8
+}
+
+/// (in-object capacity, object kind id) of objects with `shape`, from one load: the field
+/// address of a property needs both.
+#[inline(always)]
+pub(crate) fn field_layout(shape: u64) -> (usize, u8) {
+    let c = counts(cell(shape));
+    (
+        usize::from((c >> CAPACITY_SHIFT) as u8),
+        (c >> KIND_SHIFT) as u8,
+    )
 }
 
 pub(crate) fn flags(shape: u64) -> i32 {
@@ -524,15 +577,29 @@ pub(crate) fn transition_count(shape: u64) -> usize {
 /// point. A dictionary shape has no descriptors (the object's PROPS table holds them).
 pub(crate) fn lookup(rt: &Runtime, shape: u64, key: u64) -> Option<Found> {
     debug_assert!(is_shape(shape));
+    if count_of(cell(shape)) == 0 {
+        return None;
+    }
+    lookup_with(shape, key, classify(rt, key))
+}
+
+/// [`lookup`] with a probe the caller classified once ([`key::probe`]) for a walk over
+/// several shapes. Not a GC point.
+pub(crate) fn lookup_with(shape: u64, key: u64, how: Probe) -> Option<Found> {
+    debug_assert!(is_shape(shape));
     let s = cell(shape);
     let n = count_of(s);
     if n == 0 {
         return None;
     }
     let d = cell(rd(s, shf::DESCRIPTORS));
-    let how = classify(rt, key);
-    let ix = rd(d, dsc::INDEX);
-    if n <= LINEAR_MAX || ix == UNDEFINED {
+    // The index exists only past LINEAR_MAX keys, so short shapes do not load it.
+    let ix = if n <= LINEAR_MAX {
+        UNDEFINED
+    } else {
+        rd(d, dsc::INDEX)
+    };
+    if ix == UNDEFINED {
         debug_assert!(n <= LINEAR_MAX, "{n} descriptors and no index");
         return (0..n)
             .find(|&i| same_key(d_key(d, i), key, how))
@@ -574,16 +641,15 @@ pub(crate) fn add(rt: &Runtime, shape: u64, key: u64, attrs: i32) -> Added {
     if fl & flag::DICTIONARY != 0 {
         return Added::Dictionary;
     }
-    debug_assert!(
-        fl & (flag::UNIQUE | flag::PROTOTYPE) == 0,
-        "P2-OBJ defines add on prototype-mode shapes"
-    );
     let key = key::intern_key(rt, key);
     debug_assert!(
         lookup(rt, shape, key).is_none(),
         "add of a key the shape already has"
     );
     let how = classify(rt, key);
+    if fl & flag::UNIQUE != 0 {
+        return add_unique(rt, shape, key, attrs, how);
+    }
     if let Some(child) = find_transition(shape, key, attrs, how) {
         return Added::Shape(child);
     }
@@ -618,6 +684,70 @@ pub(crate) fn remove_last(shape: u64) -> u64 {
     let p = parent(shape);
     assert!(p != UNDEFINED, "remove_last on a root shape");
     p
+}
+
+/// [`add`] on a unique (prototype-mode) shape: a new unique shape with one more property,
+/// the same prototype, flags and PROTO_INFO. The descriptor array follows the prefix rule,
+/// so it may be shared with tree shapes. GC point.
+fn add_unique(rt: &Runtime, shape: u64, key: u64, attrs: i32, how: Probe) -> Added {
+    let n = count(shape);
+    if n >= MAX_FAST_PROPERTIES || key::is_index_key(key) {
+        return Added::Dictionary;
+    }
+    let d = descriptors_for_child(rt, shape, key, Details::new(attrs, n as u16), how);
+    let counts = pack_counts(n + 1, capacity(shape), object_kind(shape));
+    Added::Shape(new_unique(
+        rt,
+        proto(shape),
+        d,
+        counts,
+        flags(shape),
+        unique_info(shape),
+    ))
+}
+
+/// [`remove_last`] for a unique (prototype-mode) shape: a new unique shape without the last
+/// property. GC point.
+pub(crate) fn remove_last_unique(rt: &Runtime, shape: u64) -> u64 {
+    debug_assert!(flags(shape) & (flag::DICTIONARY | flag::UNIQUE) == flag::UNIQUE);
+    let n = count(shape);
+    assert!(n > 0, "remove_last_unique on a shape without properties");
+    let d = if n == 1 {
+        UNDEFINED
+    } else {
+        descriptors(shape)
+    };
+    let counts = pack_counts(n - 1, capacity(shape), object_kind(shape));
+    new_unique(
+        rt,
+        proto(shape),
+        d,
+        counts,
+        flags(shape),
+        unique_info(shape),
+    )
+}
+
+/// The PROTO_INFO a unique shape carries.
+fn unique_info(shape: u64) -> u64 {
+    debug_assert!(flags(shape) & flag::UNIQUE != 0);
+    rd(cell(shape), shf::TABLE)
+}
+
+/// A new unique shape (prototype mode) that holds `info` at +40. GC point.
+fn new_unique(rt: &Runtime, proto: u64, d: u64, counts: u64, flags: i32, info: u64) -> u64 {
+    debug_assert!(kind::cell_kind(info) == kind::PROTO_INFO.get());
+    let s = new_shape(
+        rt,
+        proto,
+        UNDEFINED,
+        d,
+        counts,
+        flags | flag::PROTOTYPE | flag::UNIQUE,
+    );
+    // E2: the cell is new and nothing ran since its allocation.
+    object::init(cell(s), shf::TABLE, info);
+    s
 }
 
 /// The child of `shape` for the key and attributes, if the transition is live.
@@ -746,8 +876,13 @@ fn index_insert(ix: CellPtr, hash: u32, i: usize) {
     object::init(ix, dix::DATA + 8 * b, int32_bits(i as i32));
 }
 
+/// A new SHAPE cell in the shape space. GC point. v0: a full shape space is fatal, as a full
+/// heap is (`Runtime::alloc`; H23 adds the OOM callback).
 fn new_shape(rt: &Runtime, proto: u64, parent: u64, d: u64, counts: u64, flags: i32) -> u64 {
-    let s = rt.alloc(kind::SHAPE, shf::SIZE);
+    let s = match rt.heap.alloc_shape(kind::SHAPE, shf::SIZE) {
+        Ok(c) => c,
+        Err(e) => panic!("ep9: shape allocation failed: {e:?}"),
+    };
     object::init(s, shf::PROTO, proto);
     object::init(s, shf::PARENT, parent);
     object::init(s, shf::DESCRIPTORS, d);
@@ -813,6 +948,7 @@ pub(crate) fn null_proto_info(rt: &Runtime) -> u64 {
 }
 
 /// The number of root and dictionary shapes `proto_info` holds.
+#[cfg(test)]
 pub(crate) fn proto_info_len(proto_info: u64) -> usize {
     rd_i32(cell(proto_info), pif::COUNT) as usize
 }
@@ -898,6 +1034,153 @@ fn info_push(rt: &Runtime, proto_info: u64, shape: u64) {
     wr(&rt.heap, info, pif::COUNT, int32_bits(n as i32 + 1));
 }
 
+// ---- objects: word0, prototype mode, the epoch ----------------------------------------------
+
+/// The shape of the JS object `o` (word0's ShapeId). Not a GC point; needs no heap pointer:
+/// the cage is aligned to [`CAGE_ALIGN`] and the shape region starts at its base.
+#[inline(always)]
+pub(crate) fn shape_of(o: u64) -> u64 {
+    // SAFETY: a cell value the VM holds is live (crate invariant, object.rs).
+    let id = unsafe { cell(o).header() }.shape_id().get();
+    debug_assert!(id != 0, "{o:#x} has no shape");
+    let s = (o & !(CAGE_ALIGN as u64 - 1)) | u64::from(id);
+    debug_assert!(is_shape(s), "word0 of {o:#x} does not name a shape");
+    s
+}
+
+/// Installs `shape` in word0 of the JS object `o` with the shape barrier (barrier v2; OM-4).
+/// Not a GC point.
+#[inline]
+pub(crate) fn install(rt: &Runtime, o: u64, shape: u64) {
+    debug_assert!(is_shape(shape) && kind::is_object(o));
+    debug_assert_eq!(
+        object_kind(shape),
+        kind::cell_kind(o),
+        "shape of another kind"
+    );
+    let id = rt.heap.shape_id_of(cell(shape));
+    // SAFETY: `o` is live (crate invariant).
+    ep9_heap::set_shape(unsafe { cell(o).header() }, id, rt.heap.barrier());
+}
+
+/// True if `o` is in prototype mode (word0 flag IS_PROTOTYPE).
+#[inline]
+pub(crate) fn is_prototype_object(o: u64) -> bool {
+    // SAFETY: `o` is live (crate invariant).
+    unsafe { cell(o).header() }.flags() & kind::FLAG_IS_PROTOTYPE != 0
+}
+
+/// Records a structural change of `o` (add, delete, attribute change, `[[SetPrototypeOf]]`,
+/// dictionary mode, PreventExtensions): bumps the epoch if `o` is a prototype (OM-8).
+#[inline]
+pub(crate) fn note_change(rt: &Runtime, o: u64) {
+    if is_prototype_object(o) {
+        let e = &rt.shapes.proto_epoch;
+        e.set(e.get().wrapping_add(1));
+    }
+}
+
+/// The PROTO_INFO for the prototype `p` (an object, or null). The first call for an object
+/// puts it in prototype mode: a new PROTO_INFO, word0 flag IS_PROTOTYPE and a unique shape
+/// that holds the PROTO_INFO. GC point.
+pub(crate) fn proto_info_for(rt: &Runtime, p: u64) -> u64 {
+    if p == NULL {
+        return null_proto_info(rt);
+    }
+    debug_assert!(kind::is_object(p));
+    if is_prototype_object(p) {
+        return unique_info(shape_of(p));
+    }
+    // GC points below: `p` and `info` live in Rust locals (CSS).
+    let info = new_proto_info(rt, p);
+    let old = shape_of(p);
+    let fl = flags(old) & (flag::EXTENSIBLE | flag::DICTIONARY);
+    let u = new_unique(
+        rt,
+        proto(old),
+        descriptors(old),
+        rd(cell(old), shf::COUNTS),
+        fl,
+        info,
+    );
+    // SAFETY: `p` is live (crate invariant).
+    let h = unsafe { cell(p).header() };
+    h.set_flags(h.flags() | kind::FLAG_IS_PROTOTYPE);
+    install(rt, p, u);
+    info
+}
+
+/// The initial shape of a new object of `object_kind` with `capacity` in-object slots and
+/// the prototype `proto` (an object or null). GC point.
+pub(crate) fn initial_shape(rt: &Runtime, proto: u64, object_kind: KindId, capacity: u8) -> u64 {
+    let info = proto_info_for(rt, proto);
+    root_shape_for(rt, info, object_kind, capacity)
+}
+
+/// The shape of a new function before its own properties change: the root for
+/// (%Function.prototype%, FUNCTION, 2 slots) plus `length` and `name`, both {w: false,
+/// e: false, c: true}. Cached in the ShapeState roots. GC point.
+pub(crate) fn function_shape(rt: &Runtime) -> u64 {
+    let fp = rt.root(Root::FunctionPrototype);
+    let cached = rt.shapes.roots[root::FUNCTION_SHAPE].bits();
+    if cached != UNDEFINED && proto(cached) == fp {
+        return cached;
+    }
+    let mut s = initial_shape(rt, fp, kind::FUNCTION, 2);
+    for a in [crate::runtime::Atom::Length, crate::runtime::Atom::Name] {
+        match add(rt, s, rt.atom(a), attr::CONFIGURABLE) {
+            Added::Shape(c) => s = c,
+            Added::Dictionary => unreachable!("a root shape takes two properties"),
+        }
+    }
+    // E3: a store into a root takes no barrier.
+    rt.shapes.roots[root::FUNCTION_SHAPE].init(val(s));
+    s
+}
+
+/// The dictionary shape for an object whose shape is `shape`, with the same prototype and
+/// kind: the shared one of its prototype's PROTO_INFO, or a new unique one in prototype mode
+/// (it keeps the PROTO_INFO). GC point.
+pub(crate) fn dictionary_shape_of(rt: &Runtime, shape: u64, extensible: bool) -> u64 {
+    let k = KindId::new(object_kind(shape)).expect("an object kind");
+    let ext = if extensible { flag::EXTENSIBLE } else { 0 };
+    if flags(shape) & flag::UNIQUE != 0 {
+        let counts = pack_counts(0, 0, k.get());
+        return new_unique(
+            rt,
+            proto(shape),
+            UNDEFINED,
+            counts,
+            flag::DICTIONARY | ext,
+            unique_info(shape),
+        );
+    }
+    let info = proto_info_for(rt, proto(shape));
+    dictionary_shape_for(rt, info, k, extensible)
+}
+
+/// The shape for an object with `shape` (a unique one, or one without properties) after its
+/// `[[Prototype]]` becomes `p`. A unique shape is copied with the new prototype; any other
+/// shape becomes the matching root or dictionary shape of `p` (`capacity`: the object's
+/// in-object slots). An object with properties in a shared fast shape goes to dictionary
+/// mode first (OM-10), so it never reaches here. GC point.
+pub(crate) fn with_proto(rt: &Runtime, shape: u64, p: u64, capacity: u8) -> u64 {
+    let k = KindId::new(object_kind(shape)).expect("an object kind");
+    let fl = flags(shape);
+    if fl & flag::UNIQUE != 0 {
+        let counts = rd(cell(shape), shf::COUNTS);
+        let d = descriptors(shape);
+        return new_unique(rt, p, d, counts, fl, unique_info(shape));
+    }
+    let info = proto_info_for(rt, p);
+    if fl & flag::DICTIONARY != 0 {
+        dictionary_shape_for(rt, info, k, fl & flag::EXTENSIBLE != 0)
+    } else {
+        debug_assert!(count(shape) == 0, "a shared fast shape with properties");
+        root_shape_for(rt, info, k, capacity)
+    }
+}
+
 // ---- checks ---------------------------------------------------------------------------------
 
 /// Checks the invariants of `shape` and its parent chain: counts, the prefix rule, distinct
@@ -908,6 +1191,14 @@ pub(crate) fn check(rt: &Runtime, shape: u64) -> Result<(), String> {
         return Err(format!("{shape:#x} is not a shape"));
     }
     let n = count(shape);
+    let unique = flags(shape) & flag::UNIQUE != 0;
+    if unique
+        && (flags(shape) & flag::PROTOTYPE == 0
+            || parent(shape) != UNDEFINED
+            || kind::cell_kind(unique_info(shape)) != kind::PROTO_INFO.get())
+    {
+        return Err("a unique shape without PROTOTYPE or PROTO_INFO, or with a parent".into());
+    }
     if is_dictionary(shape) || n == 0 {
         return if n == 0 && parent(shape) == UNDEFINED && descriptors(shape) == UNDEFINED {
             Ok(())
@@ -923,6 +1214,20 @@ pub(crate) fn check(rt: &Runtime, shape: u64) -> Result<(), String> {
                 return Err(format!("descriptors {j} and {i} have one key"));
             }
         }
+    }
+    if unique {
+        // No parent chain: check this shape's own prefix.
+        if n > len {
+            return Err(format!("count {n}, length {len}"));
+        }
+        for i in 0..n {
+            if usize::from(details_at(shape, i).field()) != i
+                || lookup(rt, shape, key_at(shape, i)).map(|f| f.index) != Some(i)
+            {
+                return Err(format!("the unique shape does not find descriptor {i}"));
+            }
+        }
+        return Ok(());
     }
     let mut s = shape;
     while count(s) > 0 {

@@ -8,7 +8,7 @@ use crate::frame::{HOLE, UNDEFINED};
 use crate::interp::Cx;
 use crate::object::{self, own_define};
 use crate::property;
-use crate::runtime::{Atom, val};
+use crate::runtime::{Atom, Root, val};
 use crate::unit::FunctionInfo;
 
 use super::runtime::copy_data_properties;
@@ -152,7 +152,19 @@ fn object_from_boilerplate(cx: &mut Cx, fi: &FunctionInfo, k: u32) -> Res<u64> {
     let Constant::ObjectBoilerplate(props) = fi.constant_entry(k) else {
         return Err(not_implemented(cx, "object literal constant"));
     };
-    let o = object::new_plain_object(rt);
+    // One in-object slot per named key (H17 v0); index keys go to dictionary mode anyway.
+    let named = props
+        .iter()
+        .filter(|(kc, _)| {
+            let c = fi.constant(kc.0);
+            object::is_string(c) && crate::key::array_index_of(c).is_none()
+        })
+        .count();
+    let o = if named == 0 {
+        object::new_plain_object(rt)
+    } else {
+        object::new_object_with_capacity(rt, rt.root(Root::ObjectPrototype), named)
+    };
     for (kc, vc) in props.iter() {
         let key = conv::to_property_key(cx, fi.constant(kc.0))?;
         let v = match vc {

@@ -69,6 +69,17 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 
 - An IC key, and the `shape_id` of an AOT RW `IcCell` in the sketch above, is a weak shape Value whose low 32 bits are the ShapeId. A GC clears a dead key to `undefined` (0x0a); that low half is never a ShapeId (bits 0-2 are 0), so a reused address never gives a false hit.
 
+### Flag bits (H08-Q3, filled 2026-10-21)
+
+| Bits | Meaning | Where |
+|---|---|---|
+| 0-7 | Kind-specific. JS objects: the in-object slot count (0-255, H17). Strings: bit 0 = atom (H19) | `kinds::FLAG_INOBJECT_MASK`, `kinds::FLAG_ATOM` |
+| 8 | is-prototype: the object is some object's `[[Prototype]]` and has a unique shape (H17 prototype mode) | `kinds::FLAG_IS_PROTOTYPE` |
+| 9 | Reserved for hash-present (identity hash, not built) | `kinds::FLAG_HASH_PRESENT` |
+| 10-15 | Reserved (pinned, if S3 needs it, takes one of these) | none |
+
+- `ep9_vm` asks for a cage aligned to 64 GiB and at most 64 GiB in size (`shape::heap_config`, `CAGE_ALIGN`). The H08-Q1 rule (align >= 4 GiB) still holds. With it, `shape_of(o) = (o & !(64 GiB - 1)) | shape_id` needs no heap pointer (decision W4-OBJ-CAGE).
+
 ## Rules
 
 | Rule | Check | From |
@@ -113,7 +124,7 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 |---|---|---|---|
 | H08-Q1 | Size, alignment and location of the shape space. A u32 offset bounds it; the plan gives no number | M0 wk4 (shapes v0) | **Filled 2026-10-21:** the first `shape_space_bytes` of the cage (0 = none in `ep9_heap`; 256 MiB from `ep9_vm`); a power of two from 1 MiB to 4 GiB; cage align >= 4 GiB outside Miri; ShapeId = offset from the cage base. See "Shape space" under Decision |
 | H08-Q2 | Do SP-Unit's 10 opcodes include a shape-guarded load, so the RW-cell guard is tested in M0? | Spike B plan | Include one property load |
-| H08-Q3 | Full flag-bit list beyond hash-present, pinned, is-prototype | M1a (H17 freeze) | Fill at M1a |
+| H08-Q3 | Full flag-bit list beyond hash-present, pinned, is-prototype | M1a (H17 freeze) | **Filled 2026-10-21:** bits 0-7 kind-specific, bit 8 is-prototype, bit 9 reserved for hash-present, bits 10-15 reserved. See "Flag bits" under Decision |
 
 ## Reopens if
 
@@ -130,3 +141,4 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 | 2026-10-21 | clarify | Validation: A2 gate wording "header-mutation fallbacks 100%" now uses the H35-fallback text ("100% of header mutations end in their H35 S3 outcome"), as in 09 §3 and 05 §12. No check changes | hygiene agent |
 | 2026-10-21 | fill | H08-Q1 filled: shape region = the first `shape_space_bytes` of the cage (power of two, 1 MiB-4 GiB, 0 = none); cage align >= 4 GiB outside Miri; ShapeId = (addr - cage base) as u32; id 0 = none; cage base at heap offset 24. Rules added: the region never moves; where a bare ShapeId may appear; IC data holds shapes weakly; the heap marks word0's shape; the verifier checks word0 ids. Decisions W4-SHAPEID and W4-SHAPE-ALLOC (decisions log §11) | P1-HEAP agent |
 | 2026-10-21 | fill | Rule added: both spaces share `max_heap_bytes`, so before `OutOfMemory` an allocation sweeps both lazy sweep queues and retries once (no second GC). A page that died in the allocation's own GC used to wait in the other space's queue (Codex review of P1) | P1 fix agent |
+| 2026-10-21 | fill | H08-Q3 filled: bits 0-7 kind-specific (in-object slot count for JS objects, atom for strings), bit 8 is-prototype, bit 9 reserved for hash-present, bits 10-15 reserved. Note: `ep9_vm` aligns its cage to 64 GiB so an object's shape needs no heap pointer (W4-OBJ-CAGE) | P2-OBJ agent |

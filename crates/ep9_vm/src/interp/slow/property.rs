@@ -96,8 +96,44 @@ pub(crate) enum PropOp {
     DeleteSloppy,
 }
 
-/// `super[key]` with home object `home` (§13.3.7.3 GetSuperBase, then [[Get]]).
+/// `super[key]` with home object `home` (§13.3.7.3 GetSuperBase, then [[Get]]). The callers
+/// pass no receiver yet (opcode 0x22 and `LoadKeyedFromSuper`): v0 has no getters, so the
+/// result is the same. P3 passes `this` through [`super_get_with_receiver`].
 pub(super) fn super_get(cx: &mut Cx, home: u64, key: u64) -> Res<u64> {
+    super_get_with_receiver(cx, home, key, UNDEFINED)
+}
+
+/// `super[key]` (§13.3.7.1 MakeSuperPropertyReference, then GetValue): `[[Get]]` on the
+/// prototype of the home object with `receiver` (the `this` value).
+pub(crate) fn super_get_with_receiver(cx: &mut Cx, home: u64, key: u64, receiver: u64) -> Res<u64> {
+    let p = super_base(cx, home, key, "reading")?;
+    property::get_with_receiver(cx, p, key, receiver)
+}
+
+/// `super[key] = v` (§13.3.7.1, then PutValue: `[[Set]]` on the prototype of the home object
+/// with `receiver`, §10.1.9.2). A failed assignment throws in strict code.
+#[allow(dead_code)] // P3-ACC moves `StoreToSuper` (interp/slow/runtime.rs) here.
+pub(crate) fn super_set(
+    cx: &mut Cx,
+    home: u64,
+    key: u64,
+    v: u64,
+    receiver: u64,
+    strict: bool,
+) -> Res<()> {
+    let p = super_base(cx, home, key, "setting")?;
+    if property::set_with_receiver(cx, p, key, v, receiver)? || !strict {
+        return Ok(());
+    }
+    let msg = format!(
+        "Cannot assign to read only property '{}' of object",
+        crate::key::key_text(cx.rt(), key)
+    );
+    Err(throw_error(cx, ErrorKind::TypeError, &msg))
+}
+
+/// GetSuperBase (§9.1.1.3.5): the prototype of the home object, which must be an object.
+fn super_base(cx: &mut Cx, home: u64, key: u64, doing: &str) -> Res<u64> {
     if !is_object(home) {
         return Err(not_implemented(
             cx,
@@ -107,12 +143,12 @@ pub(super) fn super_get(cx: &mut Cx, home: u64, key: u64) -> Res<u64> {
     let p = object::proto_of(home);
     if p == NULL {
         let msg = format!(
-            "Cannot read properties of null (reading '{}')",
+            "Cannot read properties of null ({doing} '{}')",
             describe(key).trim_matches('"')
         );
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     }
-    property::get_from(cx, p, key)
+    Ok(p)
 }
 
 /// Runs `op`. Returns the accumulator: the loaded value, the stored value or the boolean.

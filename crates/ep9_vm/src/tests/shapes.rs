@@ -236,6 +236,8 @@ fn lookups_hit_and_miss_at_8_and_at_9_and_more_keys() {
             Some(7)
         );
         assert_eq!(shape::lookup(rt, kept(&roots, first + 7), probe), None);
+        // Those content compares were on purpose; the EP9_ASSERT_ATOM_KEYS gate checks the rest.
+        rt.atoms.borrow_mut().reset_non_atom_compares();
         // A branch at 10 keys copies a prefix longer than 8 and indexes it.
         let b = add(rt, kept(&roots, first + 10), "branch");
         assert_ne!(shape::descriptors(b), d);
@@ -355,12 +357,13 @@ fn root_and_dictionary_shapes_are_kept_per_prototype() {
         // The same (kind, capacity) gives the same root, after collections too.
         rt.heap.collect();
         assert_eq!(null_root(rt), r4);
-        let r8 = shape::root_shape_for(rt, null_info, kinds::OBJECT, 8);
+        // (Capacity 6: the realm made the (OBJECT, 8) root for `Object.prototype` already.)
+        let r6 = shape::root_shape_for(rt, null_info, kinds::OBJECT, 6);
         let f4 = shape::root_shape_for(rt, null_info, kinds::FUNCTION, 4);
-        assert!(r4 != r8 && r4 != f4 && r8 != f4);
-        assert_eq!(shape::capacity(r8), 8);
+        assert!(r4 != r6 && r4 != f4 && r6 != f4);
+        assert_eq!(shape::capacity(r6), 6);
         assert_eq!(shape::object_kind(f4), kinds::FUNCTION.get());
-        for s in [r4, r8, f4] {
+        for s in [r4, r6, f4] {
             assert_eq!((shape::count(s), shape::proto(s)), (0, NULL));
             shape::check(rt, s).unwrap();
         }
