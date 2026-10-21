@@ -34,7 +34,7 @@
 //! | 8 | the asserts are in ep9_value's source, and `cargo check -p ep9_value --target <host>` passes | step "cargo build --workspace --all-targets" green |
 //! | 9, 10 | docs/adr/README.md index: the ADR status of every row due at M0 (Accepted or Frozen; a Draft for "Draft M0" rows); H20 Frozen | the same |
 //! | 11 | verdicts: SP-Unit GO | the same |
-//! | 12 | corpus logs: every digest equals `expectations/bytecode-corpus.digest` | step "bytecodegen corpus digest (release)" green |
+//! | 12 | corpus logs: every run in every log (a run starts at a cargo "Finished" line) prints the digest of `expectations/bytecode-corpus.digest` and its test is ok; a release and a debug run are both given | step "bytecodegen corpus digest (release)" green |
 //!
 //! Exit 0 when every cell is PASS (the M0 exit holds), 1 otherwise, 2 on a usage error or an
 //! input that cannot be read. The JSON reader is the small one below: xtask has no JSON crate.
@@ -1414,42 +1414,53 @@ fn item12(c: &Ctx) -> (Cell, Cell) {
     } else {
         let mut status = Status::Pass;
         let mut parts = Vec::new();
+        let mut profiles = BTreeSet::new();
         for (p, log) in &c.corpus {
-            let profile = if log.contains("Finished `release` profile") {
-                "release"
-            } else if log.contains("Finished `test` profile")
-                || log.contains("Finished `dev` profile")
-            {
-                "debug"
-            } else {
-                "unknown profile"
-            };
-            let digest = log.lines().find_map(|l| {
-                let rest = l.trim().strip_prefix("corpus digest ")?;
-                let (d, units) = rest.split_once(" over ")?;
-                Some((
-                    d.to_string(),
-                    units.split(' ').next().unwrap_or("").to_string(),
-                ))
-            });
-            let ok = log.contains("test result: ok. 1 passed");
-            match digest {
-                Some((d, units)) => {
-                    if d != want || !ok {
-                        status = Status::Fail;
-                    }
-                    parts.push(format!(
-                        "{} ({profile}): {} over {units} units, test {}",
-                        p.display(),
-                        short(&d),
-                        if ok { "ok" } else { "not ok" }
-                    ));
-                }
-                None => {
-                    status = Status::Fail;
-                    parts.push(format!("{}: no \"corpus digest\" line", p.display()));
-                }
+            let runs = corpus_runs(log);
+            if runs.is_empty() {
+                status = Status::Fail;
+                parts.push(format!("{}: no \"corpus digest\" line", p.display()));
             }
+            for r in runs {
+                let ok = !r.failed && r.ok >= r.digests.len() && !r.digests.is_empty();
+                if r.digests.is_empty() {
+                    status = Status::Fail;
+                    parts.push(format!(
+                        "{} ({}): no \"corpus digest\" line",
+                        p.display(),
+                        r.profile
+                    ));
+                    continue;
+                }
+                if !ok || r.digests.iter().any(|(d, _)| *d != want) {
+                    status = Status::Fail;
+                } else {
+                    profiles.insert(r.profile);
+                }
+                let digests: Vec<String> = r
+                    .digests
+                    .iter()
+                    .map(|(d, units)| format!("{} over {units} units", short(d)))
+                    .collect();
+                parts.push(format!(
+                    "{} ({}): {}, test {}",
+                    p.display(),
+                    r.profile,
+                    digests.join(", "),
+                    if ok { "ok" } else { "not ok" }
+                ));
+            }
+        }
+        if !(profiles.contains("release") && profiles.contains("debug")) {
+            status = status.max(Status::Open);
+            parts.push(format!(
+                "a good release and a good debug run are needed (good: {})",
+                if profiles.is_empty() {
+                    "none".to_string()
+                } else {
+                    profiles.into_iter().collect::<Vec<_>>().join(", ")
+                }
+            ));
         }
         cell(
             status,
@@ -1475,6 +1486,59 @@ fn item12(c: &Ctx) -> (Cell, Cell) {
         ))
     });
     (host, win)
+}
+
+/// One cargo test run in a corpus log: from a "Finished `<profile>` profile" line to the next
+/// one (a log can hold several runs, appended).
+struct CorpusRun {
+    profile: &'static str,
+    /// (digest, units) of each "corpus digest <hex> over <n> units" line.
+    digests: Vec<(String, String)>,
+    /// "test result: ok. 1 passed" lines.
+    ok: usize,
+    /// A "test result: FAILED" line.
+    failed: bool,
+}
+
+/// The runs of a corpus log. Lines before the first "Finished" line form a run of an unknown
+/// profile, kept only if it has a digest or a test result.
+fn corpus_runs(log: &str) -> Vec<CorpusRun> {
+    let new = |profile| CorpusRun {
+        profile,
+        digests: Vec::new(),
+        ok: 0,
+        failed: false,
+    };
+    let mut runs = vec![new("unknown profile")];
+    for l in log.lines() {
+        let t = l.trim();
+        if let Some(rest) = t.strip_prefix("Finished `") {
+            runs.push(new(match rest.split('`').next() {
+                Some("release") => "release",
+                Some("test" | "dev") => "debug",
+                _ => "unknown profile",
+            }));
+            continue;
+        }
+        let Some(r) = runs.last_mut() else { continue };
+        if let Some((d, units)) = t
+            .strip_prefix("corpus digest ")
+            .and_then(|rest| rest.split_once(" over "))
+        {
+            r.digests.push((
+                d.to_string(),
+                units.split(' ').next().unwrap_or("").to_string(),
+            ));
+        } else if t.starts_with("test result: FAILED") {
+            r.failed = true;
+        } else if t.starts_with("test result: ok. 1 passed") {
+            r.ok += 1;
+        }
+    }
+    if runs[0].digests.is_empty() && runs[0].ok == 0 && !runs[0].failed {
+        runs.remove(0);
+    }
+    runs
 }
 
 fn short(sha: &str) -> String {
@@ -2217,9 +2281,27 @@ mod tests {
         write(
             &root,
             "in/corpus.log",
-            "    Finished `release` profile [optimized] target(s) in 1s\ncorpus digest abc123 over 77183 units (compare)\ntest result: ok. 1 passed; 0 failed\n",
+            &corpus_log("release", "abc123", true),
+        );
+        write(
+            &root,
+            "in/corpus-debug.log",
+            &corpus_log("test", "abc123", true),
         );
         root
+    }
+
+    /// The output of one corpus test run in the `profile` cargo profile.
+    fn corpus_log(profile: &str, digest: &str, ok: bool) -> String {
+        format!(
+            "    Finished `{profile}` profile [optimized] target(s) in 1s\n     Running unittests src/lib.rs\n\
+             running 1 test\ncorpus digest {digest} over 77183 units (compare across hosts and targets)\n{}",
+            if ok {
+                "test bytecodegen::corpus::corpus_digest ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored\n"
+            } else {
+                "test bytecodegen::corpus::corpus_digest ... FAILED\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored\n"
+            }
+        )
     }
 
     fn step(name: &str, conclusion: &str, from: &str, to: &str) -> String {
@@ -2297,7 +2379,7 @@ mod tests {
             exec_gc: i("gc.json"),
             cross: i("cross.json"),
             nesting: i("nesting.log"),
-            corpus: vec![root.join("in/corpus.log")],
+            corpus: vec![root.join("in/corpus.log"), root.join("in/corpus-debug.log")],
             verdicts: vec![],
             ci_run: Some("39636336281".into()),
             ci_run_json: i("ci.json"),
@@ -2564,6 +2646,43 @@ mod tests {
         let c = canary(true);
         assert_eq!(c.status, Status::Pass, "{}", c.evidence);
         assert!(c.evidence.contains("richards net 0.800x"), "{}", c.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// I6: item 12 checks every corpus run in every log (a log can hold several cargo runs),
+    /// and needs a release and a debug run.
+    #[test]
+    fn corpus_checks_every_run() {
+        let root = fake_repo("corpus");
+        write(&root, "in/ci.json", &ci_json("success"));
+        let item12 = |logs: &[String]| {
+            let mut o = opts(&root);
+            o.corpus.clear();
+            for (i, log) in logs.iter().enumerate() {
+                let p = format!("in/c{i}.log");
+                write(&root, &p, log);
+                o.corpus.push(root.join(p));
+            }
+            run(&o).unwrap().cells[11].0.clone()
+        };
+        let release = corpus_log("release", "abc123", true);
+        let debug = corpus_log("test", "abc123", true);
+        // A release run that is ok, then a debug run with another digest that FAILED.
+        let bad_debug = corpus_log("test", "deadbeef", false);
+        let c = item12(&[format!("{release}{bad_debug}")]);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        // A debug run with the right digest that FAILED.
+        let c = item12(&[release.clone(), corpus_log("test", "abc123", false)]);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        // Release only.
+        let c = item12(std::slice::from_ref(&release));
+        assert_eq!(c.status, Status::Open, "{}", c.evidence);
+        assert!(c.evidence.contains("debug"), "{}", c.evidence);
+        // Release and debug, in two logs or in one.
+        let c = item12(&[release.clone(), debug.clone()]);
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        let c = item12(&[format!("{release}{debug}")]);
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
         std::fs::remove_dir_all(root).unwrap();
     }
 
