@@ -1,0 +1,41 @@
+FactSnapshot schema 1 bytecode-abi 2 source profiled
+unit 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+shapes 10
+  s0 proto=null kind=ordinary flags={extensible} capacity=4 keys=["k" {w,e,c}]
+  s1 proto=intrinsic#1 kind=ordinary flags={extensible} capacity=4 keys=["x" {w,e,c}, "y" {w,e,c}]
+  s2 proto=intrinsic#1 kind=ordinary flags={extensible} capacity=4 keys=["x" {w,e,c}, "y" {w,e,c}, "z" {w,e,c}]
+  s3 proto=intrinsic#12 kind=function flags={extensible} capacity=2 keys=["length" {w,e,c}]
+  s4 proto=intrinsic#13 kind=error flags={extensible} capacity=2 keys=["length" {w,e,c}]
+  s5 proto=intrinsic#14 kind=iterator flags={extensible} capacity=2 keys=["length" {w,e,c}]
+  s6 proto=intrinsic#15 kind=primitive-wrapper flags={extensible} capacity=2 keys=["length" {w,e,c}]
+  s7 proto=intrinsic#16 kind=bound-function flags={extensible} capacity=2 keys=["length" {w,e,c}]
+  s8 proto=prototype-of(js:self#2) kind=ordinary flags={extensible} capacity=8 keys=["caf\xe9" {w,e,c}, "\u20ac" {w}, @@iterator {c}, <symbol> {c,accessor}]
+  s9 proto=unknown kind=array flags={dictionary} capacity=0 keys=[]
+records 27
+  f1 slot 0 Call: count=9 polymorphic [js:self#2, js:a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5#7, builtin:3.5] result={int32,double}
+  f1 slot 1 LoadNamed: polymorphic [s0 missing depth=1, s1 own-field 1, s2 proto-field depth=1 3, s8 getter depth=0 js:self#3] values={int32,undefined}
+  f1 slot 2 LoadKeyed: polymorphic [s1 array-length, s9 element dictionary] values={int32,double,undefined,null,boolean,string,symbol,bigint,plain-object,array,function,other-object} keys={index,name}
+  f1 slot 3 StoreNamed: monomorphic [s1 add-field s2 2] values={double}
+  f1 slot 4 StoreKeyed: monomorphic [s8 setter depth=2 js:a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5#7] values={string} keys={symbol,other}
+  f1 slot 5 DefineNamedOwn: megamorphic [] values={function}
+  f1 slot 6 DefineKeyedOwn: uninitialized [] values={} keys={}
+  f2 slot 0 LoadGlobal: bindings={lexical,data-property} values={plain-object}
+  f2 slot 1 LoadGlobalInsideTypeof: bindings={missing} values={undefined}
+  f2 slot 2 StoreGlobal: bindings={accessor-property} values={null,boolean}
+  f2 slot 3 HasKeyed: monomorphic [s0 string-length] values={} keys={name}
+  f2 slot 4 BinaryOp: {int32,int32-overflow,number,oddball,string,bigint,other}
+  f2 slot 5 CompareOp: {int32,number,boolean,nullish,atom,string,symbol,bigint,receiver,other}
+  f2 slot 6 TypeOf: {symbol,bigint,array,other-object}
+  f3 slot 0 InstanceOf: monomorphic [js:self#2]
+  f3 slot 1 Literal: count=3 shape=s1 elements=packed-int32
+  f3 slot 2 CloneObject: polymorphic [s1 -> s0, s8 -> s9]
+  f3 slot 3 StoreInArrayLiteral: polymorphic [s2 element holey-double, s9 generic] values={int32} keys={index}
+  f3 slot 4 ForIn: {enum-cache-keys-and-indices,any}
+  f3 slot 5 JumpLoop: back-edges=16909060
+  f3 slot 6 CreateClosure: closures=one
+  f4 slot 0 Literal: count=0 shape=none elements=none
+  f4 slot 1 CreateClosure: closures=many
+  f4 slot 2 CreateClosure: closures=none
+  f4 slot 3 ForIn: {enum-cache-keys}
+  f4 slot 4 Literal: count=1 shape=s4 elements=holey-elements
+  f4 slot 5 LoadKeyed: polymorphic [s3 element holey-int32, s5 element packed-double, s6 element packed-elements, s7 generic] values={int32} keys={index}

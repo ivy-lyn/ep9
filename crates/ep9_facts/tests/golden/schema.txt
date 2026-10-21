@@ -1,0 +1,101 @@
+ep9 FactSnapshot schema (H16)
+encoding: little endian; fixed-width u8 u16 u32; a count is a u32; an optional shape index or enum stores value + 1 (0 = none)
+header 64 bytes:
+  0 8 magic 89 45 50 39 46 53 0d 0a
+  8 4 schema_version
+  12 4 bytecode_abi
+  16 32 unit_hash
+  48 1 source FactSource
+  49 3 reserved
+  52 4 shape_count
+  56 4 record_count
+  60 4 total_size
+body: shapes[shape_count] ShapeDesc, then records[record_count] Record
+types:
+  ShapeDesc = proto ProtoRef, kind u8 ObjectKind, flags u8 ShapeFlags, capacity u16, key_count u32, keys[key_count] (KeyRef, attrs u8 PropAttrs)
+  ShapeIndex = u32 index into shapes
+  Record = function u32, slot u32, kind u8 FeedbackSlotKind, payload by kind
+  CallFacts = count u32, callees TargetFacts, result u16 TypeSet
+  TargetFacts = state u8 IcState, count u32, FunctionRef[count]
+  PropertyFacts = state u8 IcState, count u32, (receiver ShapeIndex, Access)[count], values u16 TypeSet
+  KeyedFacts = PropertyFacts, keys u8 KeySet
+  GlobalFacts = bindings u8 BindingSet, values u16 TypeSet
+  LiteralFacts = count u32, shape u32 (ShapeIndex + 1), elements u8 (ElementsKind + 1)
+  CloneFacts = state u8 IcState, count u32, (source ShapeIndex, result ShapeIndex)[count]
+  LoopFacts = back_edges u32
+  ClosureFacts = closures u8 ClosureCount
+  BinaryHint = u8 bits; CompareHint = u16 bits; TypeSet = u16 bits; ForInHint = u8 bits
+  ProtoRef = tag u8:
+    0 null
+    1 intrinsic index u32
+    2 function-prototype FunctionRef
+    3 unknown
+  KeyRef = tag u8:
+    0 latin1 len u32, u8[len]
+    1 utf16 len u32, u16[len]
+    2 well-known-symbol u8 WellKnownSymbol
+    3 other-symbol
+  FunctionRef = tag u8:
+    0 js unit_hash u8[32], function u32
+    1 builtin builtin_id u16
+  Access = tag u8:
+    0 own-field field u16
+    1 proto-field depth u8, field u16
+    2 missing depth u8
+    3 getter depth u8, FunctionRef
+    4 setter depth u8, FunctionRef
+    5 add-field to ShapeIndex, field u16
+    6 array-length
+    7 string-length
+    8 element kind u8 ElementsKind
+    9 generic
+kinds (FeedbackSlotKind byte, name, payload):
+  0 Call CallFacts
+  1 LoadNamed PropertyFacts
+  2 LoadKeyed KeyedFacts
+  3 StoreNamed PropertyFacts
+  4 StoreKeyed KeyedFacts
+  5 DefineNamedOwn PropertyFacts
+  6 DefineKeyedOwn KeyedFacts
+  7 LoadGlobal GlobalFacts
+  8 LoadGlobalInsideTypeof GlobalFacts
+  9 StoreGlobal GlobalFacts
+  10 HasKeyed KeyedFacts
+  11 BinaryOp BinaryHint
+  12 CompareOp CompareHint
+  13 TypeOf TypeSet
+  14 InstanceOf TargetFacts
+  15 Literal LiteralFacts
+  16 CloneObject CloneFacts
+  17 StoreInArrayLiteral KeyedFacts
+  18 ForIn ForInHint
+  19 JumpLoop LoopFacts
+  20 CreateClosure ClosureFacts
+enums:
+  FactSource u8: 0 runtime, 1 profiled, 2 hinted
+  IcState u8: 0 uninitialized, 1 monomorphic, 2 polymorphic, 3 megamorphic
+  ObjectKind u8: 0 ordinary, 1 array, 2 function, 3 error, 4 iterator, 5 primitive-wrapper, 6 bound-function
+  ElementsKind u8: 0 packed-int32, 1 packed-double, 2 packed-elements, 3 holey-int32, 4 holey-double, 5 holey-elements, 6 dictionary
+  WellKnownSymbol u8: 0 asyncIterator, 1 hasInstance, 2 isConcatSpreadable, 3 iterator, 4 match, 5 matchAll, 6 replace, 7 search, 8 species, 9 split, 10 toPrimitive, 11 toStringTag, 12 unscopables, 13 dispose, 14 asyncDispose
+  ClosureCount u8: 0 none, 1 one, 2 many
+bitsets (reserved bits are 0):
+  TypeSet u16: 0 int32, 1 double, 2 undefined, 3 null, 4 boolean, 5 string, 6 symbol, 7 bigint, 8 plain-object, 9 array, 10 function, 11 other-object
+  BinaryHint u8: 0 int32, 1 int32-overflow, 2 number, 3 oddball, 4 string, 5 bigint, 6 other
+  CompareHint u16: 0 int32, 1 number, 2 boolean, 3 nullish, 4 atom, 5 string, 6 symbol, 7 bigint, 8 receiver, 9 other
+  ForInHint u8: 0 enum-cache-keys-and-indices, 1 enum-cache-keys, 2 any
+  KeySet u8: 0 index, 1 name, 2 symbol, 3 other
+  BindingSet u8: 0 lexical, 1 data-property, 2 accessor-property, 3 missing
+  PropAttrs u8: 0 w, 1 e, 2 c, 3 accessor
+  ShapeFlags u8: 0 extensible, 1 dictionary
+rules:
+  value order: fields in declaration order, variants in tag order, strings Latin-1 before UTF-16 then by code units
+  shapes strictly ascending in value order; every shape is used by a record
+  records strictly ascending by (function, slot); nothing after the last record
+  cases and targets strictly ascending in value order, at most 4; uninitialized and megamorphic hold 0, monomorphic at most 1
+  property cases have distinct receivers; clone cases have distinct sources
+  own-field and add-field: field < key count of the shape
+  a dictionary shape lists no keys; keys are distinct except other-symbol; a utf16 key holds a code unit above 0xff
+  a js FunctionRef never names function 0
+  key i is in-object slot i below capacity, else out-of-line slot i - capacity
+  bitsets merge by OR
+  validator: drop the snapshot if bytecode_abi or unit_hash differ from the unit; drop a record if its function or slot does not exist, its kind is not the slot's kind, or a js ref into this unit names no function

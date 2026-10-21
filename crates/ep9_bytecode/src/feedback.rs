@@ -1,9 +1,22 @@
 //! Feedback slot kinds, runtime function ids and `typeof` literals.
 //!
-//! [`FeedbackSlotKind`] is a **placeholder** for the H16 slot kinds (due M0 week 4, frozen at
-//! M1 exit as the FactSnapshot v0 schema). It follows V8's `FeedbackSlotKind` without the
-//! language-mode split: the VM reads strictness from the function flags. H16 may replace it;
-//! the byte values are part of the bytecode ABI, so a change bumps [`crate::ABI_VERSION`].
+//! [`FeedbackSlotKind`] is the **H16 v0** slot-kind list (`docs/adr/H16-ics-and-feedback.md`).
+//! It is also the FactSnapshot v0 schema (`ep9_facts`), and it freezes at M1 exit. It follows
+//! V8's `FeedbackSlotKind` without the language-mode split: the VM reads strictness from the
+//! function flags. The byte values and names are part of the bytecode ABI (the opcode table
+//! prints `Slot(<name>)`), so a change bumps [`crate::ABI_VERSION`] and
+//! `ep9_facts::FACT_SCHEMA_VERSION` (`docs/adr/H02-bytecode-abi.md`, change log).
+//!
+//! Each slot has three views, listed on each kind:
+//! - **Opcodes**: the instructions whose `Slot(<kind>)` operand names the slot.
+//! - **Runtime record**: one 16-byte entry `[key | value]` in the function's FeedbackVector.
+//!   The key word is weak and the value word is strong (H16). A new entry is
+//!   `[undefined | int32 0]`. T0 v0 writes only the property-IC entries of opcodes 0x21,
+//!   0x22, 0x24 and 0x25; the other records are defined now and written from M1 (H16-Q2).
+//! - **Fact record**: the `ep9_facts` payload that a FactSnapshot stores for the slot. It
+//!   holds no ShapeId and no address.
+//!
+//! [`RuntimeId`] stays a **placeholder** with 19 ids (0-18) until the H13 index lists (M1).
 
 macro_rules! byte_enum {
     (
@@ -46,50 +59,152 @@ macro_rules! byte_enum {
 }
 
 byte_enum! {
-    /// The kind of one feedback slot (H16 placeholder). Each opcode operand of kind
+    /// The kind of one feedback slot (H16 v0). Each opcode operand of kind
     /// [`crate::OperandKind::Slot`] names the kind its slot must have; the verifier checks it.
+    ///
+    /// "Property IC" below is the H16 IC entry: key `undefined` = uninitialized, a shape cell
+    /// = monomorphic, the hole with a POLY_IC cell in the value = polymorphic (at most 4
+    /// cases), the hole with an int32 in the value = megamorphic (sticky).
     pub enum FeedbackSlotKind {
-        /// Call and construct sites (`Call*`, `Construct*`, the call part of `GetIterator`).
+        /// Call and construct sites.
+        ///
+        /// - Opcodes: 0x5e-0x67 (`CallAnyReceiver` to `CallWithSpread`), 0x69 `Construct`, 0x6a
+        ///   `ConstructWithSpread`, 0x6b `TailCall`, and the `call_slot` of 0x8f `GetIterator`.
+        ///   0x68 `CallRuntime` has no slot.
+        /// - Runtime record: key = the callee (weak) while monomorphic, the hole once megamorphic;
+        ///   value = int32 call count.
+        /// - Fact record: `CallFacts`: call count, IC state, up to 4 targets (`FunctionRef`),
+        ///   result `TypeSet`.
         Call = 0 => "Call",
-        /// Named property load (`GetNamedProperty*`, the load part of `GetIterator`).
+        /// Named property load.
+        ///
+        /// - Opcodes: 0x21 `GetNamedProperty`, 0x22 `GetNamedPropertyFromSuper` (keyed on the
+        ///   lookup-start object), and the `load_slot` of 0x8f `GetIterator`.
+        /// - Runtime record: property IC.
+        /// - Fact record: `PropertyFacts`: IC state, up to 4 cases (receiver `ShapeDesc`,
+        ///   `Access`), value `TypeSet`.
         LoadNamed = 1 => "LoadNamed",
         /// Keyed property load.
+        ///
+        /// - Opcodes: 0x23 `GetKeyedProperty`.
+        /// - Runtime record: property IC.
+        /// - Fact record: `KeyedFacts`: `PropertyFacts` plus the `KeySet` of keys seen.
         LoadKeyed = 2 => "LoadKeyed",
-        /// Named property store (`SetNamedProperty`).
+        /// Named property store.
+        ///
+        /// - Opcodes: 0x24 `SetNamedProperty`.
+        /// - Runtime record: property IC (an add-property case names the target shape, weak).
+        /// - Fact record: `PropertyFacts`; the value `TypeSet` holds the stored values.
         StoreNamed = 3 => "StoreNamed",
-        /// Keyed property store (`SetKeyedProperty`).
+        /// Keyed property store.
+        ///
+        /// - Opcodes: 0x26 `SetKeyedProperty`.
+        /// - Runtime record: property IC.
+        /// - Fact record: `KeyedFacts`.
         StoreKeyed = 4 => "StoreKeyed",
         /// Own named property definition.
+        ///
+        /// - Opcodes: 0x25 `DefineNamedOwnProperty`.
+        /// - Runtime record: property IC.
+        /// - Fact record: `PropertyFacts`.
         DefineNamedOwn = 5 => "DefineNamedOwn",
         /// Own keyed property definition.
+        ///
+        /// - Opcodes: 0x27 `DefineKeyedOwnProperty`, 0x29 `DefineKeyedOwnPropertyInLiteral`.
+        /// - Runtime record: property IC.
+        /// - Fact record: `KeyedFacts`.
         DefineKeyedOwn = 6 => "DefineKeyedOwn",
         /// Global load outside `typeof`.
+        ///
+        /// - Opcodes: 0x10 `LdaGlobal`.
+        /// - Runtime record: key = the shape of the object that held the binding (weak); value =
+        ///   the handler.
+        /// - Fact record: `GlobalFacts`: the `BindingSet` (lexical, data property, accessor,
+        ///   missing) and the value `TypeSet`.
         LoadGlobal = 7 => "LoadGlobal",
         /// Global load inside `typeof` (no ReferenceError).
+        ///
+        /// - Opcodes: 0x11 `LdaGlobalInsideTypeof`.
+        /// - Runtime record: as `LoadGlobal`.
+        /// - Fact record: `GlobalFacts`.
         LoadGlobalInsideTypeof = 8 => "LoadGlobalInsideTypeof",
         /// Global store.
+        ///
+        /// - Opcodes: 0x12 `StaGlobal`.
+        /// - Runtime record: as `LoadGlobal`.
+        /// - Fact record: `GlobalFacts`; the value `TypeSet` holds the stored values.
         StoreGlobal = 9 => "StoreGlobal",
         /// `in` operator.
+        ///
+        /// - Opcodes: 0x53 `TestIn`.
+        /// - Runtime record: property IC.
+        /// - Fact record: `KeyedFacts`; a case is an own or prototype hit (`Access::OwnField`,
+        ///   `Access::ProtoField`) or `Access::Missing`.
         HasKeyed = 10 => "HasKeyed",
         /// Binary and unary arithmetic, bitwise ops, `ToNumber`, `ToNumeric`.
+        ///
+        /// - Opcodes: 0x2a-0x45 (`Add` to `BitwiseNot`, the `*Smi` forms, `Inc`, `Dec`, `Negate`),
+        ///   0x59 `ToNumber`, 0x5a `ToNumeric`.
+        /// - Runtime record: key unused; value = int32 `BinaryHint` bits.
+        /// - Fact record: `BinaryHint`.
         BinaryOp = 11 => "BinaryOp",
         /// Comparisons.
+        ///
+        /// - Opcodes: 0x4b-0x50 (`TestEqual` to `TestGreaterThanOrEqual`).
+        /// - Runtime record: key unused; value = int32 `CompareHint` bits.
+        /// - Fact record: `CompareHint`.
         CompareOp = 12 => "CompareOp",
         /// `typeof`.
+        ///
+        /// - Opcodes: 0x48 `TypeOf`.
+        /// - Runtime record: key unused; value = int32 `TypeSet` bits.
+        /// - Fact record: `TypeSet`.
         TypeOf = 13 => "TypeOf",
         /// `instanceof`.
+        ///
+        /// - Opcodes: 0x52 `TestInstanceOf`.
+        /// - Runtime record: key = the right-hand side constructor (weak); value = int32 IC state.
+        /// - Fact record: `TargetFacts`: IC state and up to 4 constructors (`FunctionRef`).
         InstanceOf = 14 => "InstanceOf",
         /// Literal sites: object, array, RegExp and template objects (allocation site).
+        ///
+        /// - Opcodes: 0x6c `CreateRegExpLiteral`, 0x6d `CreateArrayLiteral`, 0x6e
+        ///   `CreateEmptyArrayLiteral`, 0x70 `CreateObjectLiteral`, 0x73 `GetTemplateObject`.
+        /// - Runtime record: key = the shape of the last literal (weak); value = int32 allocation
+        ///   count.
+        /// - Fact record: `LiteralFacts`: allocation count, result `ShapeDesc`, H18 `ElementsKind`.
         Literal = 15 => "Literal",
         /// `CloneObject` (object spread).
+        ///
+        /// - Opcodes: 0x72 `CloneObject`.
+        /// - Runtime record: key = the source shape (weak); value = a handler that names the result
+        ///   shape (weak).
+        /// - Fact record: `CloneFacts`: IC state and up to 4 (source, result) `ShapeDesc` pairs.
         CloneObject = 16 => "CloneObject",
         /// Stores into array literals.
+        ///
+        /// - Opcodes: 0x28 `StaInArrayLiteral`.
+        /// - Runtime record: property IC.
+        /// - Fact record: `KeyedFacts` (cases are `Access::Element`).
         StoreInArrayLiteral = 17 => "StoreInArrayLiteral",
         /// `for-in` enumeration cache.
+        ///
+        /// - Opcodes: 0x8c `ForInPrepare`, 0x8d `ForInNext`.
+        /// - Runtime record: key unused; value = int32 `ForInHint` bits.
+        /// - Fact record: `ForInHint`.
         ForIn = 18 => "ForIn",
         /// Loop back edge: OSR and back-edge counters.
+        ///
+        /// - Opcodes: 0x7d `JumpLoop`.
+        /// - Runtime record: key unused; value = int32 back-edge count.
+        /// - Fact record: `LoopFacts`: back-edge count.
         JumpLoop = 19 => "JumpLoop",
         /// Closure creation: the feedback cell of the new closure.
+        ///
+        /// - Opcodes: 0x74 `CreateClosure`.
+        /// - Runtime record: key = the one closure made here (weak); value = int32 0, 1 or 2 (none,
+        ///   one, many).
+        /// - Fact record: `ClosureFacts`: none, one or many closures.
         CreateClosure = 20 => "CreateClosure",
     }
 }
