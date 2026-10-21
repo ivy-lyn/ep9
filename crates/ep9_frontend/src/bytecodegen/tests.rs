@@ -206,6 +206,11 @@ const CASES: &[(&str, Mode, &str)] = &[
         "function f(a) { var b; eval('a + b'); return b; }",
     ),
     ("var-with", Sloppy, "var o = {}; with (o) { x = 1; x; }"),
+    (
+        "var-with-call",
+        Sloppy,
+        "var o = {f() {}}; with (o) { f(1); (f)(); }",
+    ),
     // ---- functions ----
     (
         "fn-params",
