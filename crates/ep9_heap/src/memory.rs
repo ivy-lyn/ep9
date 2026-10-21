@@ -117,9 +117,9 @@ impl Memory {
         Self::with_shape_space(cage, max_committed, 0)
     }
 
-    /// As [`Memory::new`], with the first `shape_bytes` of the reservation as the shape region
-    /// (0: none). The checks are those of [`check_shape_space`], plus: the region fits the
-    /// reservation (under Miri the reservation is smaller than the cage).
+    /// As `Memory::new` (test builds only), with the first `shape_bytes` of the reservation as
+    /// the shape region (0: none). The checks are those of [`check_shape_space`], plus: the
+    /// region fits the reservation (under Miri the reservation is smaller than the cage).
     pub(crate) fn with_shape_space(
         cage: &ep9_platform::CageConfig,
         max_committed: usize,

@@ -50,7 +50,7 @@ mod strf {
 }
 
 /// Largest string length in code units (V8: 2^29 - 24). Longer results throw RangeError
-/// ("Invalid string length"); see [`concat`].
+/// ("Invalid string length"); see [`concat()`].
 pub(crate) const MAX_STRING_LENGTH: usize = (1 << 29) - 24;
 
 // ---- hash field ------------------------------------------------------------------------------
@@ -368,7 +368,7 @@ pub(crate) fn single_char(rt: &Runtime, c: u8) -> u64 {
 // ---- allocation ------------------------------------------------------------------------------
 
 /// A new string cell of `len` code units (data not written yet). GC point. The caller checks
-/// `len <= MAX_STRING_LENGTH` for lengths that JS code controls ([`concat`] does).
+/// `len <= MAX_STRING_LENGTH` for lengths that JS code controls ([`concat()`] does).
 fn alloc_string(rt: &Runtime, len: usize, utf16: bool) -> CellPtr {
     assert!(
         len <= MAX_STRING_LENGTH,

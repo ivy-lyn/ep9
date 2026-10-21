@@ -61,8 +61,11 @@ impl LoadedUnit {
             feedback,
             roots: Vec::new(),
         });
-        // SAFETY: the slices live in boxes that the LoadedUnit owns until Drop, which removes
-        // the ranges first. They hold `undefined` now and Value bits later (never 0).
+        // SAFETY: the slices live in boxes that the LoadedUnit owns. LoadedUnit has no Drop and
+        // nothing removes these ranges (`roots` only records the ids). The Runtime keeps every
+        // LoadedUnit until it drops (`Runtime::units` only grows), and it declares `heap`
+        // before `units`, so the heap and its range table drop before the boxes. The slices
+        // hold `undefined` now and Value bits later (never 0).
         unsafe {
             let id = rt
                 .heap

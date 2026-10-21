@@ -13,7 +13,7 @@
 //! | `Array.prototype.join`, `toString`, `push` | §23.1.3.18, §23.1.3.36, §23.1.3.23 |
 //! | `Array.prototype.values` = `Array.prototype[@@iterator]`, %ArrayIteratorPrototype%.next | §23.1.3.38, §23.1.3.40, §23.1.5.2.1 |
 //! | `String.prototype[@@iterator]`, %StringIteratorPrototype%.next | §22.1.3.36, §22.1.5.2.1 |
-//! | %Iterator.prototype%[@@iterator] | §27.1.2.1 |
+//! | `%Iterator.prototype%[@@iterator]` | §27.1.2.1 |
 //!
 //! The built-in iterators are ITERATOR cells (object.rs): the iterated value and the next
 //! index. The iterated value also gives the kind, so each `next` checks its receiver
@@ -528,7 +528,7 @@ pub(crate) fn array_values<'s>(
     Ok(local(new_array_iterator(cx.inner().rt(), o)))
 }
 
-/// String.prototype[@@iterator] (§22.1.3.36): CreateStringIterator(? ToString(?
+/// `String.prototype[@@iterator]` (§22.1.3.36): CreateStringIterator(? ToString(?
 /// RequireObjectCoercible(this value))).
 pub(crate) fn string_iterator<'s>(
     cx: &mut HostCx<'s>,
@@ -545,7 +545,7 @@ pub(crate) fn string_iterator<'s>(
     Ok(local(new_string_iterator(cx.inner().rt(), s)))
 }
 
-/// %Iterator.prototype%[@@iterator] (§27.1.2.1): the this value.
+/// `%Iterator.prototype%[@@iterator]` (§27.1.2.1): the this value.
 pub(crate) fn iterator_iterator<'s>(
     _cx: &mut HostCx<'s>,
     this: Local<'s>,

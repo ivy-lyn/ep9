@@ -30,7 +30,7 @@ One cage per isolate below 2^47 (64 GiB default, configurable); avoids 0x4001_00
                                         one code range per process: JIT code + unit text (RX)
 ```
 
-- **Cage per isolate (as built).** `Heap::new` reserves its own `Cage` (`crates/ep9_heap/src/memory.rs:117`). The in-cage test and the conservative scan look only at that heap's chunks (`crates/ep9_heap/src/memory.rs:195-197`, `crates/ep9_heap/src/trace.rs:310-311`). So one isolate's scan never finds another isolate's cells.
+- **Cage per isolate (as built).** `Heap::new` reserves its own `Cage` (`crates/ep9_heap/src/memory.rs:154`). The in-cage test and the conservative scan look only at that heap's chunks (`crates/ep9_heap/src/memory.rs:250-252`, `crates/ep9_heap/src/trace.rs:357-358`). So one isolate's scan never finds another isolate's cells.
 - **Process code range (to build).** Unit text is shared per process (05 §8, H22), and JIT stubs are shared by every isolate. One range keeps direct calls between them. SpiderMonkey also keeps one executable region per process ([SM-PEM]).
 - **Until it exists.** Each cage reserves a code range right after itself (`crates/ep9_platform/src/va.rs:37-40`, `Cage::self_check`). The engine does not use it yet: no JIT code and no unit is loaded. It costs address space only.
 - `ep9_platform` owns the VA reserve, including the code range ([08 §2](../plan/08-repo.md#2-crates)).
@@ -102,3 +102,4 @@ One cage per isolate below 2^47 (64 GiB default, configurable); avoids 0x4001_00
 | 2026-10-20 | draft | First draft from 02 §6, 03 §5, 04 §5 (M0 wk1 list) | ADR agent |
 | 2026-10-21 | clarify | Decision notes that on macOS arm64 the code range from `Cage::reserve_jit` is RWX `MAP_JIT` from the start (no inaccessible phase), as built for SP-JIT-mem | docs-sync agent |
 | 2026-10-21 | rewrite | Decision and Rules follow the code: one cage per isolate (as built since M0 wk2) and one process-wide code range, built before Spike B. Old Decision: "One cage per process below 2^47 (64 GiB default, configurable); avoids 0x4001_0000_0000 + 32 GiB; startup self-check. Plus one code-range reservation for JIT code and mmapped units". Old Rules row: "One cage per process; isolates share it", checked by "Isolate-per-thread model (H22, D14)". Also: H07-Q1, Q3, Q4 and Q5 filled from SP-VA and the code; H07-Q6 added. Decision W4-H07-REWRITE (decisions log §11); the plan row 02 §6 H7 changes in P4 | P0-DOCS agent |
+| 2026-10-21 | clarify | 3 `path:line` references moved to the code at `479b1cd` (P4-DOCS drift script, [I15]) | P4-DOCS agent |

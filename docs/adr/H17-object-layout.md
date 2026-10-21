@@ -36,7 +36,7 @@ v0 (M0 wk4) builds the plan's JSObject header with shapes in the shape space. Th
 | FUNCTION | +24 info, +32 context, +40 home | 2 (`length`, `name`) |
 | ARRAY | +24 length | 0 |
 | ERROR | +24 unit, +32 offset | 2 |
-| ITERATOR | +24 iterated, +32 next | 0 |
+| ITERATOR | +24 iterated (array iterator: an object, null while its `next` runs user code, undefined when done; string iterator: a string, "" when done), +32 next | 0 |
 | PRIMITIVE_WRAPPER | +24 value | 0 |
 | BOUND_FUNCTION | +24 target, +32 this, +40 args | 2 |
 
@@ -47,7 +47,8 @@ v0 (M0 wk4) builds the plan's JSObject header with shapes in the shape space. Th
 | Fast shapes | Transition tree; one descriptor array shared along a chain (prefix rule); hash index above 8 keys; weak transitions | `shape.rs` (P1-SHAPE) |
 | Dictionary mode (OM-10) | Delete that is not the last; attribute change (data <-> accessor too); array-index key on a non-array; SetPrototypeOf with own properties; PreventExtensions; 1020 properties; 64 live transitions. One shared dictionary shape per (prototype, kind, extensible); a prototype object gets a unique one | `props::to_dictionary` |
 | Prototype mode | When an object becomes a `[[Prototype]]` on any path (a new object, SetPrototypeOf of any object, a prototype included): is-prototype flag bit, a unique shape (no parent, no transitions) whose +40 holds the object's PROTO_INFO (its root and dictionary shapes). So every shape's proto is null or a prototype-mode object | `shape::proto_info_for`, `shape::with_proto` |
-| Epoch (OM-8) | Any structural change of a prototype bumps `ShapeState::proto_epoch`: a named property or an array element that appears or goes away (a `length` cut that removes an element too), an attribute change, SetPrototypeOf, PreventExtensions, a dictionary move. A value store does not (a named or element value, `length` growth, a `length` cut over holes only). Only a prototype pays more than a flag test | `shape::note_change`; elements: `object::array_set`, `object::array_set_length` (the only element writers) |
+| Epoch (OM-8) | Any structural change of a prototype bumps `ShapeState::proto_epoch`: a named property or an array element that appears or goes away (a `length` cut that removes an element too), an attribute change, SetPrototypeOf, PreventExtensions, a dictionary move. A value store does not (a named or element value, `length` growth, a `length` cut over holes only). Only a prototype pays more than a flag test. The epoch saturates at `u32::MAX` and never wraps (W4-P3FIX-EPOCH-SAT; H16 K18) | `shape::note_change`, `shape::EPOCH_SATURATED`; elements: `object::array_set`, `object::array_set_length` (the only element writers) |
+| Index keys on prototypes | A sticky per-runtime flag (`shape::proto_index_keys`) is set when a prototype-mode object gets an array-index own property (any attributes), or when an object that may have one becomes a prototype. While it is clear, `[[Set]]` and `Array.prototype.push` add a missing array element with no prototype walk; once set, they walk the chain (§10.1.9.2). It is never cleared, like V8's protector (W4-P3FIX-ELEM-FLAG, -ANY-INDEX, -PROTO-SCAN, -PUSH) | `shape::note_proto_index_key`, `shape::proto_info_for`, `property::array_store` |
 | Extensible, `[[Prototype]]` | In the shape (flag EXTENSIBLE, +8 proto). A fast shape is always extensible | `property::prevent_extensions` |
 | Keys | Stored keys are atoms or symbols (`key::intern_key` on every define path); a lookup classifies its probe once | W4-KEY-EQ |
 | Accessors | Attribute bit 8 (`attr::ACCESSOR`) in descriptors and dictionary entries; the value slot holds an immutable ACCESSOR_PAIR (see "Accessors" below) | `accessor.rs`, `object::attr` |
@@ -97,7 +98,7 @@ ordinary value slot, so a shape describes an accessor exactly as it describes a 
 
 - **Gains.** A shape guard is one u32 compare, and the field offset comes from the shape. `shape_of` needs no runtime pointer, so host paths (`proto_of`, `is_extensible`) stay free functions.
 - **Costs.** The 64 GiB cage alignment leaves 2,048 cage slots below 2^47. Prototype objects never share shapes. Class constructors with `extends` go to dictionary mode (SetPrototypeOf with own properties).
-- **Follow-ups.** P3-IC caches (shape, field). Exotic own properties (array `length` and elements, a constructor's lazy `prototype`, String wrapper properties) are not in shapes: the epoch covers an element that appears or goes away, but a holder's exotic property is never a field load. P3-ACC built accessors (section above); the super paths pass the receiver (`LoadKeyedFromSuper`, `StoreToSuper`; opcode 0x22 with P3-IC). An IC must not make a data handler for an `ACCESSOR` descriptor: the slot holds the pair. Slack tracking replaces the fixed `new F` capacity of 8.
+- **Follow-ups.** P3-IC built the (shape, field) caches (H16 K9-K18). Exotic own properties (array `length` and elements, a constructor's lazy `prototype`, String wrapper properties) are not in shapes: the epoch covers an element that appears or goes away, but a holder's exotic property is never a field load. P3-ACC built accessors (section above); the super paths pass the receiver (`LoadKeyedFromSuper`, `StoreToSuper`; opcode 0x22 with P3-IC). An IC must not make a data handler for an `ACCESSOR` descriptor: the slot holds the pair. Slack tracking replaces the fixed `new F` capacity of 8.
 
 ## Decide before M1a
 
@@ -145,3 +146,5 @@ ordinary value slot, so a shape describes an accessor exactly as it describes a 
 | 2026-10-21 | draft | First draft: v0 layout as built (word0 shapes, fixed fields, capacity, OM-10, prototype mode, epoch, function `length`/`name`), decide-before-M1a list incl. the S2 weak-child note | P2-OBJ agent |
 | 2026-10-21 | fix | Epoch rule on every path: SetPrototypeOf of a prototype puts the new prototype in prototype mode; dense element adds, deletes and `length` cuts of a prototype bump the epoch; the proto-mode invariant is asserted in `new_shape` | P2 fix agent (review W4-P2FIX-EPOCH) |
 | 2026-10-21 | fill | Accessors as built: ACCESSOR_PAIR (kind 67, immutable), `[[Get]]`/`[[Set]]` with the receiver, ValidateAndApplyPropertyDescriptor for accessors, the pair epoch rule, data-only engine text, runtime ids 12 and 16; two decide-before-M1a rows (accessor ICs, element accessors) | P3-ACC agent |
+| 2026-10-21 | fill | As built after the P3 review: the "Index keys on prototypes" row (sticky `proto_index_keys` flag, W4-P3FIX-ELEM-*), and the ITERATOR states (null = executing, W4-P3FIX-ITER-EXEC-NULL) | P4-DOCS agent |
+| 2026-10-21 | clarify | Epoch row names the saturation (W4-P3FIX-EPOCH-SAT, already H16 K18); Follow-ups say the IC caches are built | P4-DOCS agent |
