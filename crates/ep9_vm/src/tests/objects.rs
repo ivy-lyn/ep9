@@ -19,8 +19,8 @@ use crate::property;
 use crate::props;
 use crate::runtime::{Root, Runtime};
 use crate::shape::{self, MAX_FAST_PROPERTIES, MAX_TRANSITIONS, flag};
-use crate::string;
 use crate::{Cx, Dispatch, Isolate, JsObject, Local, PropertyDescriptor};
+use crate::{string, wrapper};
 
 // ---- CreateDataPropertyOrThrow on the bytecode define paths (P1 review: non-extensible and
 // non-configurable targets). Compiled JS only defines on fresh literals today; these units
@@ -1118,5 +1118,84 @@ fn dense_element_changes_of_an_array_prototype_bump_the_epoch() {
             shape::check(rt, shape::shape_of(a)).unwrap();
         }
         log.done();
+    });
+}
+
+// ---- [[Set]] of a missing array element and index keys on prototypes -----------------------
+//
+// `shape::proto_index_keys` turns on the first time a prototype-mode object has an
+// array-index own property. Until then `[[Set]]` adds a missing array element without the
+// walk; after it, the walk finds an inherited setter, getter or read-only index (§10.1.9.2).
+
+#[test]
+fn proto_index_keys_stays_off_without_index_keys_on_prototypes() {
+    each(|cx, rt| {
+        assert!(!shape::proto_index_keys(rt), "after realm init");
+        let a = object::new_array(rt, 0);
+        property::set_keyed(cx, a, int(0), int(1), true).unwrap();
+        let o = object::new_plain_object(rt);
+        property::define(cx, o, k(rt, "0"), int(1)).unwrap();
+        assert!(!shape::proto_index_keys(rt), "index keys of non-prototypes");
+        let p = object::new_plain_object(rt);
+        let _ = object::new_object(rt, p);
+        put(rt, p, "x", int(1), attr::DEFAULT);
+        let e = object::new_array(rt, 0);
+        let _ = object::new_object(rt, e);
+        assert!(!shape::proto_index_keys(rt), "a named key; an empty array");
+    });
+}
+
+#[test]
+fn an_index_key_added_to_a_prototype_sets_proto_index_keys() {
+    each(|_, rt| {
+        let p = object::new_plain_object(rt);
+        let _ = object::new_object(rt, p);
+        put(rt, p, "3", int(1), attr::DEFAULT);
+        assert!(shape::proto_index_keys(rt), "a stored index key");
+    });
+    each(|cx, rt| {
+        let p = object::new_array(rt, 0);
+        let _ = object::new_object(rt, p);
+        property::set_keyed(cx, p, int(0), int(1), true).unwrap();
+        assert!(shape::proto_index_keys(rt), "an element");
+    });
+}
+
+/// `arr[i] = 7` in sloppy and strict code; true if the element was added. A strict failure
+/// must be a TypeError.
+fn set_adds(cx: &mut VmCx, rt: &Runtime, arr: u64, i: i32) -> bool {
+    property::set_keyed(cx, arr, int(i), int(7), false).unwrap();
+    let added = object::array_get(arr, i as u32) == Some(int(7));
+    if !added {
+        assert!(property::set_keyed(cx, arr, int(i), int(7), true).is_err());
+        rt.take_pending();
+    }
+    added
+}
+
+#[test]
+fn an_object_with_index_keys_that_becomes_a_prototype_blocks_array_appends() {
+    // A read-only index 0, stored before the object is a prototype.
+    each(|cx, rt| {
+        let p = object::new_plain_object(rt);
+        let ro = Desc::data(int(1), 0);
+        assert!(property::define_own_property(cx, p, k(rt, "0"), ro).unwrap());
+        assert!(!shape::proto_index_keys(rt));
+        let arr = object::new_array(rt, 0);
+        assert!(property::set_prototype_of(rt, arr, p));
+        assert!(shape::proto_index_keys(rt));
+        assert!(!set_adds(cx, rt, arr, 0), "§10.1.9.2 step 2.a");
+        assert_eq!(object::array_len(arr), 0);
+        assert!(set_adds(cx, rt, arr, 1), "another index");
+    });
+    // A String wrapper's indices are read-only (§10.4.3).
+    each(|cx, rt| {
+        let s = object::new_string(rt, "ab");
+        let w = wrapper::new_wrapper(rt, rt.root(Root::StringPrototype), s);
+        let arr = object::new_array(rt, 0);
+        assert!(property::set_prototype_of(rt, arr, w));
+        assert!(shape::proto_index_keys(rt));
+        assert!(!set_adds(cx, rt, arr, 1));
+        assert!(set_adds(cx, rt, arr, 2), "past the string");
     });
 }

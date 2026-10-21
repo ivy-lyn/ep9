@@ -64,6 +64,9 @@
 //!   object bumps [`ShapeState::proto_epoch`] ([`note_change`]): a named property or an
 //!   element that appears or goes away, new attributes, `[[SetPrototypeOf]]`,
 //!   PreventExtensions, dictionary mode. A value store does not.
+//! - The first array-index own property on a prototype-mode object (or an object with one
+//!   becoming a prototype) sets the sticky [`proto_index_keys`] flag: until then `[[Set]]`
+//!   adds array elements without walking the prototype chain.
 //!
 //! Hooks the rest of the VM already calls:
 //!
@@ -197,6 +200,11 @@ pub(crate) struct ShapeState {
     /// Bumped on every structural change of a prototype (OM-8); prototype IC handlers compare
     /// it.
     pub proto_epoch: Cell<u32>,
+    /// Sticky, never cleared: set once a prototype-mode object has an array-index own
+    /// property ([`proto_index_keys`]). While it is false no prototype chain has an index key,
+    /// so `[[Set]]` may add a missing array element without the walk (V8's "no elements"
+    /// protector).
+    proto_index: Cell<bool>,
     /// A strong root range ([`init`]): see [`root`].
     roots: Box<[Slot]>,
 }
@@ -205,6 +213,7 @@ impl Default for ShapeState {
     fn default() -> Self {
         ShapeState {
             proto_epoch: Cell::new(0),
+            proto_index: Cell::new(false),
             roots: (0..root::COUNT)
                 .map(|_| Slot::new(Value::UNDEFINED))
                 .collect(),
@@ -1102,6 +1111,37 @@ pub(crate) fn note_change(rt: &Runtime, o: u64) {
     }
 }
 
+/// True if some prototype-mode object has, or once had, an array-index own property: an
+/// element, a stored index key or a String wrapper index. False means no prototype chain
+/// has an index key, so an inherited setter, getter or read-only property cannot decide a
+/// `[[Set]]` of an index (§10.1.9.2). One load; not a GC point.
+#[inline(always)]
+pub(crate) fn proto_index_keys(rt: &Runtime) -> bool {
+    rt.shapes.proto_index.get()
+}
+
+/// Records that the prototype-mode object `o` gets an array-index own property (sets the
+/// flag of [`proto_index_keys`]). The callers check that `o` is a prototype and the key an
+/// index: `props::own_add` and `object::array_set`. Not a GC point.
+#[inline]
+pub(crate) fn note_proto_index_key(rt: &Runtime, o: u64) {
+    debug_assert!(is_prototype_object(o));
+    rt.shapes.proto_index.set(true);
+}
+
+/// True if the object `o` may have an array-index own property: an array with a non-zero
+/// `length` (holes too), a String wrapper of a non-empty string, or a stored index key. Not a
+/// GC point. Out of line: [`proto_info_for`] runs it once per new prototype.
+#[cold]
+#[inline(never)]
+fn may_have_index_keys(o: u64) -> bool {
+    let wrapped = crate::wrapper::wrapper_value(o);
+    (kind::is_array(o) && object::array_len(o) > 0)
+        || wrapped.is_some_and(|s| kind::is_string(s) && object::str_len(s) > 0)
+        || (0..object::own_count(o))
+            .any(|i| key::array_index_of(object::own_entry(o, i).0).is_some())
+}
+
 /// The PROTO_INFO for the prototype `p` (an object, or null). The first call for an object
 /// puts it in prototype mode: a new PROTO_INFO, word0 flag IS_PROTOTYPE and a unique shape
 /// that holds the PROTO_INFO. GC point.
@@ -1129,6 +1169,10 @@ pub(crate) fn proto_info_for(rt: &Runtime, p: u64) -> u64 {
     let h = unsafe { cell(p).header() };
     h.set_flags(h.flags() | kind::FLAG_IS_PROTOTYPE);
     install(rt, p, u);
+    // An object that has index keys already becomes a prototype (`proto_index_keys`).
+    if may_have_index_keys(p) {
+        note_proto_index_key(rt, p);
+    }
     info
 }
 
