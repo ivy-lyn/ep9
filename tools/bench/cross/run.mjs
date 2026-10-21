@@ -567,14 +567,17 @@ export function renderMarkdown(res) {
   }
   L.push("");
   L.push(`Geomean of the median ratios over ${res.M.ratios.length ? [...new Set(res.M.ratios.map((r) => r.workload))].join(", ") : "-"}: ${Object.entries(res.M.geomean).map(([c, v]) => `${eng[c].label} net ${f3(v.net)} / gross ${f3(v.gross)}`).join("; ")}.`);
-  const can = res.M.ratios.filter((r) => r.canary);
-  if (can.length) {
+  if (res.engines.some((e) => e.id === CANARY.engine)) {
     L.push("");
-    L.push(`M0 exit 4 canary (ep9 >= ${CANARY.threshold}x QuickJS):`);
+    L.push(`M0 exit 4 canary (ep9 >= ${CANARY.threshold}x QuickJS on ${CANARY.workloads.join(" and ")}):`);
     L.push("");
     L.push("| workload | net ratio vs QuickJS | interval | gate reading |");
     L.push("|---|---|---|---|");
-    for (const r of can) L.push(`| ${r.workload} | ${f3((r.net ?? r.gross).median)} | ${f3((r.net ?? r.gross).interval?.[0])}-${f3((r.net ?? r.gross).interval?.[1])} | ${r.canary.gate} |`);
+    for (const w of CANARY.workloads) {
+      const r = res.M.ratios.find((x) => x.canary && x.workload === w);
+      const v = r && (r.net ?? r.gross);
+      L.push(r ? `| ${w} | ${f3(v.median)} | ${f3(v.interval?.[0])}-${f3(v.interval?.[1])} | ${r.canary.gate} |` : `| ${w} | not in this run | - | no reading |`);
+    }
   }
   L.push("");
   L.push("Median wall time per process, ms (net = minus the empty script):");
@@ -605,9 +608,16 @@ export function renderMarkdown(res) {
 // ---- main -----------------------------------------------------------------------------------
 
 async function main() {
+  const argv = process.argv.slice(2);
+  if (argv.includes("-h") || argv.includes("--help")) {
+    // The usage is the comment at the top of this file.
+    const src = readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n");
+    process.stdout.write(`${src.slice(1, src.findIndex((l, i) => i > 0 && !l.startsWith("//"))).map((l) => l.replace(/^\/\/ ?/, "")).join("\n")}\n`);
+    return;
+  }
   let o;
   try {
-    o = parseArgs(process.argv.slice(2));
+    o = parseArgs(argv);
   } catch (e) {
     console.error(`run.mjs: ${e.message}`);
     process.exit(2);

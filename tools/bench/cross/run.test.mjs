@@ -334,6 +334,8 @@ test("CLI: rotated rounds as planned, 10 rounds, JSON with every sample", (t) =>
     else assert.deepEqual(row.status, ["valid"]);
   }
   assert.ok(readFileSync(f.md, "utf8").includes("Gate run: the load guard passed"));
+  // Neither canary workload ran: the table says so.
+  assert.match(readFileSync(f.md, "utf8"), /\| richards \| not in this run \| - \| no reading \|\n\| deltablue \| not in this run/);
   assert.equal(r.stdout, readFileSync(f.md, "utf8"));
 });
 

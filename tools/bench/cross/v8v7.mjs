@@ -213,9 +213,16 @@ export function parseArgs(argv) {
 }
 
 function main() {
+  const argv = process.argv.slice(2);
+  if (argv.includes("-h") || argv.includes("--help")) {
+    // The usage is the comment at the top of this file.
+    const src = readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n");
+    process.stdout.write(`${src.slice(1, src.findIndex((l, i) => i > 0 && !l.startsWith("//"))).map((l) => l.replace(/^\/\/ ?/, "")).join("\n")}\n`);
+    return;
+  }
   let o;
   try {
-    o = parseArgs(process.argv.slice(2));
+    o = parseArgs(argv);
   } catch (e) {
     console.error(`v8v7.mjs: ${e.message}`);
     process.exit(2);
