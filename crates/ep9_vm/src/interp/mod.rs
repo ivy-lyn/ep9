@@ -131,8 +131,7 @@ pub(crate) struct Cx {
     pub out_pc: *const u8,
     pub dispatch: Dispatch,
     /// Calls of a function before T0 makes its feedback vector (H16; 0 = at once, `u32::MAX`
-    /// = never). From `IsolateConfig::feedback_threshold`.
-    #[allow(dead_code)] // wk4-stub
+    /// = never). From `IsolateConfig::feedback_threshold`; see `feedback.rs`.
     pub feedback_threshold: u32,
     /// The prototype epoch (`ShapeState::proto_epoch` in the runtime), read through this
     /// pointer so a change made by a host call or a nested run is seen at once.
@@ -156,9 +155,18 @@ impl Cx {
 /// Runs the dispatch from `pc` in frame `fp` until an `Exit`. Returns the accumulator bits,
 /// or 0 if an exception is pending.
 ///
+/// An entry at the first instruction counts as a call of the function for its feedback
+/// vector (`feedback.rs`), as the `Call*` paths do for calls from JS.
+///
 /// # Safety
-/// `fp` is the live top frame for the function whose verified code holds `pc`.
+/// `fp` is the live top frame for the function whose verified code holds `pc`, and every
+/// Value the caller needs after this call is in a frame, a root or a Rust local.
 pub(crate) unsafe fn run(cx: &mut Cx, pc: *const u8, fp: *mut u64) -> u64 {
+    // SAFETY: header slot 4 of the live frame `fp` holds its FunctionInfo native word.
+    let fi = unsafe { &*native_ptr::<FunctionInfo>(*fp.offset(slot::FUNCTION_INFO)) };
+    if fi.feedback.get().is_null() && pc == fi.code {
+        slow::count_entry(cx, fp, pc);
+    }
     // SAFETY: caller contract; each expansion takes this state.
     unsafe {
         match cx.dispatch {

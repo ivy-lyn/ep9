@@ -270,7 +270,12 @@ fn jump_if(st: &St<'_>, c: bool, t: Fwd) -> Done {
 
 /// The JS→JS call fast path (H14): a bytecode callee gets its frame right above the caller's
 /// registers and the dispatch continues at its first instruction. No Rust recursion. Anything
-/// else (host callee, class constructor, interrupt due, VM stack full) takes the cold path.
+/// else (host callee, class constructor, interrupt due, the call that makes the callee's
+/// feedback vector, VM stack full) takes the cold path.
+///
+/// While the callee has no feedback vector, a call that pushes its frame here counts in
+/// `invocations`; the call that reaches `feedback_threshold` goes cold, and `slow::call`
+/// makes the vector before it pushes the frame (H16, `feedback.rs`).
 #[inline(always)]
 fn call_fast(
     st: &mut St<'_>,
@@ -288,6 +293,10 @@ fn call_fast(
     }
     st.cx.budget -= 1;
     if st.cx.budget <= 0 {
+        return Flow::Cold;
+    }
+    // Without a vector, `invocations` is below the threshold, so `+ 1` never overflows.
+    if fi.feedback.get().is_null() && fi.invocations.get() + 1 >= st.cx.feedback_threshold {
         return Flow::Cold;
     }
     let this = call::bind_this(fi, this, st.cx.global_this);
@@ -314,6 +323,10 @@ fn call_fast(
     };
     match nfp {
         Some(n) => {
+            // Read again here, so no count stays live across the frame push.
+            if fi.feedback.get().is_null() {
+                fi.invocations.set(fi.invocations.get() + 1);
+            }
             st.fp = n;
             Flow::Jump(fi.code)
         }
