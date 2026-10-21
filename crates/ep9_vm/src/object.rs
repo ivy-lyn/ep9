@@ -85,7 +85,7 @@ pub(crate) mod iter {
 pub(crate) mod arr {
     pub const LENGTH: usize = 24;
     pub const FIXED: usize = 1;
-    /// v0: dense arrays only, up to this length. Week 4 adds elements kinds (H18).
+    /// v0: dense arrays only, up to this length. Elements kinds come with H18 (M1a).
     pub const MAX_LENGTH: u32 = 1 << 26;
 }
 
