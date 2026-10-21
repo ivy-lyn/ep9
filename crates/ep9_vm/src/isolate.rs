@@ -397,17 +397,18 @@ impl Isolate {
     }
 }
 
-/// `v.constructor.name` for an object `v`, if it is a string; `None` for a primitive. v0
-/// objects have data properties only, so this runs no JS and cannot throw.
+/// `v.constructor.name` for an object `v`, if it is a string; `None` for a primitive. It
+/// reads data properties only (an accessor counts as absent), so it runs no JS and cannot
+/// throw.
 fn constructor_name(cx: &mut Cx, v: u64) -> Option<String> {
     if !object::is_object(v) {
         return None;
     }
     let rt = cx.rt();
-    let ctor = property::get_from(cx, v, rt.atom(Atom::Constructor)).ok()?;
+    let ctor = property::get_data_from(cx, v, rt.atom(Atom::Constructor))?;
     if !object::is_object(ctor) {
         return None;
     }
-    let name = property::get_from(cx, ctor, rt.atom(Atom::Name)).ok()?;
+    let name = property::get_data_from(cx, ctor, rt.atom(Atom::Name))?;
     is_string(name).then(|| string::to_rust_string(name))
 }

@@ -1,16 +1,28 @@
 //! `CallRuntime(id, args)`.
+//!
+//! | Id | Function | Spec |
+//! |---|---|---|
+//! | 6 | `InitializeGlobal` | CreateGlobalFunctionBinding §9.1.1.4.18 (functions); lexical bindings |
+//! | 9, 10 | `CopyDataProperties`, `CopyDataPropertiesExcluding` | §7.3.25 (getters run) |
+//! | 11 | `SetPrototypeInLiteral` | §13.2.5.5 `__proto__: v` |
+//! | 12, 16 | `DefineAccessorInLiteral`, `DefineClassAccessor` | §15.4.5 MethodDefinitionEvaluation (get, set) |
+//! | 15 | `DefineClassMethod` | DefineMethodProperty §10.2.8 |
+//! | 17, 18 | `LoadKeyedFromSuper`, `StoreToSuper` | §13.3.7 super references, receiver = `this` |
 
 use ep9_bytecode::RuntimeId;
 
+use crate::abi::{self, JsObject, JsValue, Local};
 use crate::conv::{self, Res, describe};
+use crate::descriptor::Desc;
 use crate::error::{not_implemented, throw_error};
 use crate::frame::{HOLE, NULL, UNDEFINED};
 use crate::interp::Cx;
+use crate::key::key_text;
 use crate::object::{self, attr, is_array, is_function, is_object, is_string, own_define, own_get};
 use crate::property;
 use crate::runtime::{Atom, ErrorKind, Root};
 
-use super::property::super_get;
+use super::property::{super_get_with_receiver, super_set};
 use super::{enter, info, ret, strict};
 
 // ---- CallRuntime ---------------------------------------------------------------------------
@@ -81,28 +93,20 @@ pub(crate) fn call_runtime(
             copy_data_properties(cx, o, a(0), ex)?;
             Ok(o)
         })(),
+        // §13.2.5.5 PropertyDefinitionEvaluation of `__proto__: v`: if `v` is an object or
+        // null, `! object.[[SetPrototypeOf]](v)`. The literal is new, extensible and in no
+        // chain, so it cannot fail.
         Some(Id::SetPrototypeInLiteral) => {
             let (o, p) = (a(0), a(1));
             if is_object(o) && (is_object(p) || p == NULL) {
-                // A cycle leaves the prototype as it is (as V8 does for `__proto__`).
-                object::set_proto(cx.rt(), o, p);
+                let done = property::set_prototype_of(cx.rt(), o, p);
+                debug_assert!(done, "SetPrototypeOf of a new literal");
             }
             Ok(UNDEFINED)
         }
-        Some(Id::DefineClassMethod) => {
-            let (home, k, f) = (a(0), a(1), a(2));
-            (|| -> Res<u64> {
-                let key = conv::to_property_key(cx, k)?;
-                if !is_object(home) {
-                    return Err(not_implemented(cx, "class method on a non-object"));
-                }
-                if is_function(f) {
-                    object::set_home_object(cx.rt(), f, home);
-                }
-                own_define(cx.rt(), home, key, f, attr::HIDDEN);
-                Ok(UNDEFINED)
-            })()
-        }
+        Some(Id::DefineAccessorInLiteral) => define_accessor(cx, a(0), a(1), a(2), a(3), false),
+        Some(Id::DefineClassMethod) => define_class_method(cx, a(0), a(1), a(2)),
+        Some(Id::DefineClassAccessor) => define_accessor(cx, a(0), a(1), a(2), a(3), true),
         // MakeMethod(F, homeObject) (§10.2.7) for object literal methods that use `super`.
         Some(Id::SetHomeObject) => {
             let (f, home) = (a(0), a(1));
@@ -119,29 +123,24 @@ pub(crate) fn call_runtime(
                 UNDEFINED
             })
         }
-        // `super[key]` (§13.3.7.1 MakeSuperPropertyReference + GetValue). v0: no accessors,
-        // so the receiver is not needed.
+        // `super[key]` (§13.3.7.1 MakeSuperPropertyReference + GetValue): `[[Get]]` on the
+        // home object's prototype with receiver = `this` (a getter sees `this`).
         Some(Id::LoadKeyedFromSuper) => {
-            let (home, k) = (a(1), a(2));
+            let (receiver, home, k) = (a(0), a(1), a(2));
             (|| -> Res<u64> {
                 let key = conv::to_property_key(cx, k)?;
-                super_get(cx, home, key)
+                super_get_with_receiver(cx, home, key, receiver)
             })()
         }
-        // `super[key] = value` (§10.1.9.2 OrdinarySetWithOwnDescriptor with receiver = this).
-        // v0: no accessors, so the store goes to the receiver (strict: super is only in
-        // methods, and a failed store throws in strict code).
+        // `super[key] = value` (§13.3.7.1, then PutValue): `[[Set]]` on the home object's
+        // prototype with receiver = `this` (§10.1.9.2: a setter on the chain runs with
+        // `this`; a data property lands on the receiver). A failed store throws in strict
+        // code. Returns the value.
         Some(Id::StoreToSuper) => {
             let (receiver, home, k, v) = (a(0), a(1), a(2), a(3));
             (|| -> Res<u64> {
                 let key = conv::to_property_key(cx, k)?;
-                if !is_object(home) {
-                    return Err(not_implemented(
-                        cx,
-                        "super property store without a home object",
-                    ));
-                }
-                property::set(cx, receiver, key, v, strict(fp))?;
+                super_set(cx, home, key, v, receiver, strict(fp))?;
                 Ok(v)
             })()
         }
@@ -205,8 +204,8 @@ fn define_class(cx: &mut Cx, ctor: u64, heritage: u64) -> Res<u64> {
     Ok(proto)
 }
 
-/// `InitializeGlobal(name, value)` (v0): initializes a lexical binding, or sets the global
-/// object property of a function declaration.
+/// `InitializeGlobal(name, value)`: initializes a lexical binding (`let`, `const`, `class`),
+/// or binds a function declaration on the global object (CreateGlobalFunctionBinding).
 fn initialize_global(cx: &mut Cx, name: u64, v: u64) -> Res<u64> {
     let rt = cx.rt();
     if !is_string(name) {
@@ -221,17 +220,129 @@ fn initialize_global(cx: &mut Cx, name: u64, v: u64) -> Res<u64> {
         object::own_replace(rt, lexical, name, v);
         return Ok(UNDEFINED);
     }
-    let g = rt.global();
-    if !object::own_replace(rt, g, name, v) {
-        own_define(rt, g, name, v, attr::WRITABLE | attr::ENUMERABLE);
-    }
+    create_global_function_binding(cx, name, v)?;
     Ok(UNDEFINED)
 }
 
-/// CopyDataProperties(target, source, excluded) (§7.3.25, v0: own enumerable data properties,
-/// array elements and string characters). `excluded` is an array of property keys or
-/// undefined. No JS runs here, so `source` keeps its keys and values alive; fresh index keys
-/// live in Rust locals (conservative scan, H10) until `define` stores them.
+/// CreateGlobalFunctionBinding(N, V, D = false) (§9.1.1.4.18) for a script's function
+/// declaration. `DeclareGlobals` checked CanDeclareGlobalFunction and made a missing binding
+/// {w, e} (undefined); a configurable property (a builtin such as `parseInt`, or an
+/// accessor) becomes the data property {w, e} here. GC point.
+fn create_global_function_binding(cx: &mut Cx, name: u64, v: u64) -> Res<()> {
+    let g = cx.rt().global();
+    // Steps 3-5.
+    let desc = match property::get_own_property(cx, g, name) {
+        None => Desc::data(v, attr::WRITABLE | attr::ENUMERABLE),
+        Some(d) if d.configurable == Some(true) => Desc::data(v, attr::WRITABLE | attr::ENUMERABLE),
+        Some(_) => Desc {
+            value: Some(v),
+            ..Desc::default()
+        },
+    };
+    // Step 6: DefinePropertyOrThrow.
+    if !property::define_own_property(cx, g, name, desc)? {
+        let msg = format!("Cannot redefine property: {}", key_text(cx.rt(), name));
+        return Err(throw_error(cx, ErrorKind::TypeError, &msg));
+    }
+    // Step 7: Set(globalObject, N, V, false).
+    property::set(cx, g, name, v, false)
+}
+
+/// True if the closure `f` is an anonymous function definition (its unit gives it no name):
+/// the runtime names it from its property key (SetFunctionName). The front end names a
+/// method or accessor with a literal key itself ("x", "get x").
+fn is_anonymous(f: u64) -> bool {
+    let fi = object::function_info(f);
+    fi.loaded_unit()
+        .is_some_and(|u| u.unit.functions[fi.function_id as usize].name.is_none())
+}
+
+/// SetFunctionName(f, key, prefix) (§10.2.9) through the builtin ABI. GC point.
+fn set_function_name(cx: &mut Cx, f: u64, key: u64, prefix: Option<&str>) -> Res<()> {
+    let mut acx = abi::Cx::new(cx);
+    acx.set_function_name(
+        Local::<JsObject>::from_bits(f),
+        Local::<JsValue>::from_bits(key),
+        prefix,
+    )
+}
+
+/// MakeMethod and SetFunctionName of a class element or literal method `f` defined on
+/// `home` under `key` (§15.4.4, §15.4.5): a class element gets `home` as its
+/// `[[HomeObject]]` (an object literal method gets it from `SetHomeObject`, only when it uses
+/// `super`); an anonymous `f` (a computed key) is named from `key`. GC point.
+fn make_method(
+    cx: &mut Cx,
+    f: u64,
+    home: u64,
+    key: u64,
+    class: bool,
+    prefix: Option<&str>,
+) -> Res<()> {
+    if !is_function(f) {
+        return Ok(());
+    }
+    if class {
+        object::set_home_object(cx.rt(), f, home);
+    }
+    if is_anonymous(f) {
+        set_function_name(cx, f, key, prefix)?;
+    }
+    Ok(())
+}
+
+/// `DefineClassMethod(home, key, function)`: DefineMethodProperty(home, key, f, false)
+/// (§10.2.8), after MakeMethod and SetFunctionName. A rejected define throws a TypeError
+/// (`static ['prototype']() {}` meets the non-configurable `prototype`).
+fn define_class_method(cx: &mut Cx, home: u64, k: u64, f: u64) -> Res<u64> {
+    let key = conv::to_property_key(cx, k)?;
+    if !is_object(home) {
+        return Err(not_implemented(cx, "class method on a non-object"));
+    }
+    make_method(cx, f, home, key, true, None)?;
+    define_or_throw(cx, home, key, Desc::data(f, attr::HIDDEN))?;
+    Ok(UNDEFINED)
+}
+
+/// `DefineAccessorInLiteral(object, key, getter, setter)` (enumerable) and
+/// `DefineClassAccessor(home, key, getter, setter)` (not enumerable): MethodDefinitionEvaluation
+/// of `get` or `set` (§15.4.5). The present half (the other is undefined) gets MakeMethod and
+/// its name (`"get x"`, `"set x"`, `"get [desc]"` for a symbol key), then DefinePropertyOrThrow
+/// with a descriptor of that half only, so a getter and a setter of one key combine into one
+/// accessor property. GC point.
+fn define_accessor(cx: &mut Cx, home: u64, k: u64, get: u64, set: u64, class: bool) -> Res<u64> {
+    let key = conv::to_property_key(cx, k)?;
+    if !is_object(home) {
+        return Err(not_implemented(cx, "accessor on a non-object"));
+    }
+    make_method(cx, get, home, key, class, Some("get"))?;
+    make_method(cx, set, home, key, class, Some("set"))?;
+    let half = |f: u64| (f != UNDEFINED).then_some(f);
+    let desc = Desc {
+        get: half(get),
+        set: half(set),
+        enumerable: Some(!class),
+        configurable: Some(true),
+        ..Desc::default()
+    };
+    define_or_throw(cx, home, key, desc)?;
+    Ok(UNDEFINED)
+}
+
+/// DefinePropertyOrThrow (§7.3.9). GC point.
+fn define_or_throw(cx: &mut Cx, o: u64, key: u64, desc: Desc) -> Res<()> {
+    if property::define_own_property(cx, o, key, desc)? {
+        return Ok(());
+    }
+    let msg = format!("Cannot redefine property: {}", key_text(cx.rt(), key));
+    Err(throw_error(cx, ErrorKind::TypeError, &msg))
+}
+
+/// CopyDataProperties(target, source, excluded) (§7.3.25): the own enumerable properties of
+/// `source` (string characters for a string), in `[[OwnPropertyKeys]]` order; a getter runs
+/// (Get). `excluded` is an array of property keys or undefined. GC: the key list is a new
+/// array in a Rust local (conservative scan, H10), so the keys survive the getters, which
+/// may change `source`; each key's descriptor is read again when its turn comes (step 5.c).
 pub(super) fn copy_data_properties(
     cx: &mut Cx,
     target: u64,
@@ -262,23 +373,20 @@ pub(super) fn copy_data_properties(
     if !is_object(source) {
         return Ok(());
     }
-    if is_array(source) {
-        for i in 0..object::array_len(source) {
-            if let Some(v) = object::array_get(source, i) {
-                let k = conv::number_string(cx, f64::from(i));
-                if !skip(k) {
-                    property::define(cx, target, k, v)?;
-                }
-            }
+    let keys = property::own_property_keys(cx, source);
+    for i in 0..object::array_len(keys) {
+        let Some(k) = object::array_get(keys, i) else {
+            continue;
+        };
+        if skip(k) {
+            continue;
         }
-    }
-    let mut i = 0;
-    while i < object::own_count(source) {
-        let (k, v, a) = object::own_entry(source, i);
-        if a & attr::ENUMERABLE != 0 && !skip(k) {
+        let enumerable =
+            property::get_own_property(cx, source, k).is_some_and(|d| d.enumerable == Some(true));
+        if enumerable {
+            let v = property::get_from(cx, source, k)?;
             property::define(cx, target, k, v)?;
         }
-        i += 1;
     }
     Ok(())
 }

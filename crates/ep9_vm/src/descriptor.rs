@@ -1,8 +1,9 @@
 //! Property descriptors (§6.2.6): every field optional, as ToPropertyDescriptor gives them.
 //! The builtin ABI's `PropertyDescriptor<'s>` (abi/mod.rs) converts to and from this form.
 //!
-//! v0 stores data properties only: `get` and `set` exist so ToPropertyDescriptor can report
-//! them, and [[DefineOwnProperty]] throws "not implemented" for them until accessors land (P3).
+//! A stored property becomes a complete descriptor through `accessor::stored_desc`: a data
+//! descriptor ([`Desc::data`]) or an accessor one (`get` and `set` from its ACCESSOR_PAIR,
+//! undefined for an absent half).
 
 use crate::object::attr;
 
@@ -33,6 +34,11 @@ impl Desc {
     /// IsAccessorDescriptor (§6.2.6.1).
     pub fn is_accessor(&self) -> bool {
         self.get.is_some() || self.set.is_some()
+    }
+
+    /// IsDataDescriptor (§6.2.6.2).
+    pub fn is_data(&self) -> bool {
+        self.value.is_some() || self.writable.is_some()
     }
 
     /// The attribute bits of a new property from this descriptor: an absent field is false
@@ -67,8 +73,9 @@ mod tests {
             (Some(true), Some(false), Some(false))
         );
         assert!(!d.is_accessor());
+        assert!(d.is_data());
         let generic = Desc::default();
-        assert!(!generic.is_accessor());
+        assert!(!generic.is_accessor() && !generic.is_data());
         assert_eq!(generic.new_attrs(), 0);
         assert_eq!(generic.merge_attrs(attr::DEFAULT), attr::DEFAULT);
         let e = Desc {
@@ -84,6 +91,11 @@ mod tests {
             get: Some(0),
             ..Desc::default()
         };
-        assert!(acc.is_accessor());
+        assert!(acc.is_accessor() && !acc.is_data());
+        let w = Desc {
+            writable: Some(false),
+            ..Desc::default()
+        };
+        assert!(w.is_data() && !w.is_accessor());
     }
 }
