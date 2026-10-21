@@ -23,7 +23,8 @@
 //! The P3 surface (H20 "Spec helpers"): symbols (`symbol_for`, `key_for`,
 //! `symbol_description`, `descriptive_string`, `new_symbol`), primitive wrappers
 //! (`new_wrapper`, `to_object`, `this_primitive_value`), functions (`set_function_name`,
-//! `set_function_length`, `new_bound_function`) and `get_prototype_from_constructor`.
+//! `set_function_length`, `new_bound_function`, `initial_name`) and
+//! `get_prototype_from_constructor`.
 
 mod local;
 
@@ -888,6 +889,27 @@ impl<'s> Cx<'s> {
         let r = bound::new_bound_function(self.cx, target, this, bound_args);
         drop(list);
         r.map(Self::local)
+    }
+
+    /// `[[InitialName]]` of the built-in function object `f` (§10.3): the name it was made
+    /// with (CreateBuiltinFunction §10.3.4, then SetFunctionName §10.2.9 steps 4-5, with the
+    /// optional step 5.b: "get x" / "set x" for an accessor's functions, as V8). It stays the
+    /// same when `f.name` is redefined or deleted. `None` for a function with no
+    /// `[[InitialName]]`: a bytecode function or a bound function. A GC point (the atom).
+    pub fn initial_name(
+        &mut self,
+        f: impl Into<Local<'s, JsFunction>>,
+    ) -> Option<Local<'s, JsString>> {
+        let f = f.into().bits();
+        if !kinds::is_function(f) {
+            return None;
+        }
+        // A host function is a built-in one: a table builtin or an embedder's function. Its
+        // FunctionInfo keeps the name its `name` property was made from (`object::new_function`).
+        let (fi, rt) = (object::function_info(f), self.rt());
+        fi.host
+            .is_some()
+            .then(|| Self::local(atoms::intern_str(rt, &fi.name)))
     }
 
     /// The concatenation of two strings. RangeError past the length limit.

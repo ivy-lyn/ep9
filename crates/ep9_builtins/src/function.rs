@@ -9,7 +9,7 @@
 //! | `call` | 6 | IsCallable(this); forward `args.rest(1)` with `Cx::call_args` (one copy, into the callee frame) |
 //! | `apply` | companion | CreateListFromArrayLike into an `ArgsBuilder` (VM stack), then `Cx::call_built` |
 //! | `bind` | 7 | BoundFunctionCreate (`Cx::new_bound_function`: a BOUND_FUNCTION cell; its `[[Call]]` and `[[Construct]]` are in the VM), then SetFunctionLength and SetFunctionName |
-//! | `toString` | companion | v0: the NativeFunction form for every callable (no `[[SourceText]]` is kept yet), TypeError otherwise |
+//! | `toString` | companion | v0: the NativeFunction form for every callable (no `[[SourceText]]` is kept yet), a builtin's named by its `[[InitialName]]` (`Cx::initial_name`); TypeError otherwise |
 //!
 //! Owner of the templates: P3-BLTA (see `TEMPLATES.md`). Ids are append-only: definition `i`
 //! of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by `tests/golden/ids-function.txt`.
@@ -212,26 +212,31 @@ fn to_string<'s>(
     //    func.[[InitialName]] is a String, the portion of the returned String that would be
     //    matched by NativeFunctionAccessor_opt PropertyName must be the value of
     //    func.[[InitialName]].
-    // 4. If func is an Object and IsCallable(func) is true, return an implementation-defined
-    //    String source code representation of func. The representation must have the syntax
-    //    of a NativeFunction.
-    // The name: the own data property `name` (no getter runs; [[InitialName]] is not kept)
-    // when it is a string of the NativeFunction syntax: an IdentifierName, or "get " / "set "
-    // and one. Else none.
-    let mut name = String::new();
-    if let Some(d) = cx.get_own_property(func, "name")?
-        && let Some(v) = d.value
-        && v.is_string()
-    {
-        let text = cx.to_rust_string(v)?;
-        let bare = text
-            .strip_prefix("get ")
-            .or_else(|| text.strip_prefix("set "))
-            .unwrap_or(&text);
-        if is_ascii_identifier_name(bare) {
-            name = text;
+    //    (Not the `name` property: it may have been redefined or deleted.)
+    let name = if let Some(initial_name) = cx.initial_name(func) {
+        cx.to_rust_string(initial_name)?
+    } else {
+        // 4. If func is an Object and IsCallable(func) is true, return an
+        //    implementation-defined String source code representation of func. The
+        //    representation must have the syntax of a NativeFunction.
+        // v0 name: the own data property `name` (no getter runs) when it is a string of the
+        // NativeFunction syntax: an IdentifierName, or "get " / "set " and one. Else none.
+        let mut name = String::new();
+        if let Some(d) = cx.get_own_property(func, "name")?
+            && let Some(v) = d.value
+            && v.is_string()
+        {
+            let text = cx.to_rust_string(v)?;
+            let bare = text
+                .strip_prefix("get ")
+                .or_else(|| text.strip_prefix("set "))
+                .unwrap_or(&text);
+            if is_ascii_identifier_name(bare) {
+                name = text;
+            }
         }
-    }
+        name
+    };
     // As V8 prints it: `function f() { [native code] }`, `function () { [native code] }`.
     let text = format!("function {name}() {{ [native code] }}");
     Ok(cx.new_string(&text)?.value())

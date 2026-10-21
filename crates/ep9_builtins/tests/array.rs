@@ -148,3 +148,36 @@ fn index_of_over_a_long_sparse_range() {
         ])
     );
 }
+
+/// The long-range scan reads every own key along the prototype chain: an integer key of
+/// 2^32 - 1 or more is not an array index, so `[[OwnPropertyKeys]]` lists it among the other
+/// strings in creation order (§10.1.11.1), after `length` or any other key. A non-canonical
+/// key ("04294967297") names no index; an own key shadows the prototype's; an accessor in
+/// range still takes the step-by-step loop. Lengths reach 2^53 - 1.
+#[test]
+fn index_of_finds_integer_keys_past_the_array_index_range() {
+    assert_eq!(
+        run_both(
+            "var o = {length: 4294969000}; o[4294967295] = 'hit';
+             print(Array.prototype.indexOf.call(o, 'hit', 4294967295), Array.prototype.indexOf.call(o, 'hit', -2000));
+             var p = {a: 1, length: 4294969000};
+             p[4294967300] = 'y'; p[4294967296] = 'x'; p.z = 2; p[4294967298] = 'x'; p['04294967297'] = 'n'; p['4294967297.0'] = 'n';
+             print(Array.prototype.indexOf.call(p, 'x', 4294967290), Array.prototype.indexOf.call(p, 'y', 4294967290), Array.prototype.indexOf.call(p, 'x', 4294967297), Array.prototype.indexOf.call(p, 'n', 4294967290));
+             function P() {} P.prototype.b = 1; P.prototype[4294967297] = 'q'; P.prototype[4294967299] = 'r';
+             var c = new P(); c.length = 4294969000; c[4294967299] = 'own';
+             print(Array.prototype.indexOf.call(c, 'q', 4294967290), Array.prototype.indexOf.call(c, 'r', 4294967290), Array.prototype.indexOf.call(c, 'own', 4294967290));
+             var g = {length: 4294969000}; g.k = 1;
+             Object.defineProperty(g, 4294967296, {get: function () { return 'got'; }});
+             print(Array.prototype.indexOf.call(g, 'got', 4294967290));
+             var big = {length: 9007199254740991}; big[9007199254740990] = 'end'; big[9007199254740000] = 'mid';
+             print(Array.prototype.indexOf.call(big, 'end', 9007199254739000), Array.prototype.indexOf.call(big, 'mid', -5000));"
+        ),
+        lines(&[
+            "4294967295 4294967295",
+            "4294967296 4294967300 4294967298 -1",
+            "4294967297 -1 4294967299",
+            "4294967296",
+            "9007199254740990 9007199254740000",
+        ])
+    );
+}
