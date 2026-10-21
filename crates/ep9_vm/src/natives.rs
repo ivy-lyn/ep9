@@ -5,7 +5,7 @@
 //!
 //! | Function | Spec |
 //! |---|---|
-//! | `%Function.prototype%` (callable, returns undefined), `Function` (v0: throws) | §20.2.3, §20.2.1.1 |
+//! | `%Function.prototype%` (callable, returns undefined), `Function` (CreateDynamicFunction through the compiler hook, `abi/script.rs`) | §20.2.3, §20.2.1.1 |
 //! | `Object`, `Array` | §20.1.1.1, §23.1.1.1 |
 //! | `Error` and the native errors | §20.5.1.1, §20.5.6.1.1 |
 //! | `Object.prototype.toString`, `valueOf` | §20.1.3.6, §20.1.3.7 |

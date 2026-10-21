@@ -7,7 +7,8 @@
 //!                                           run defs, JIT f and g, run main; print the output
 //! spike-b ops <file.js> <name>...           the opcode list each named function JITs with
 //! spike-b structural <a..h | all>           the structural gate checks (gate.sh structural)
-//! spike-b bench <args>                      src/bench.rs (P3-SPIKEB-BENCH)
+//! spike-b bench [--tau ..] | run <cfg> | k | ratio
+//!                                           src/bench.rs (P3-SPIKEB-BENCH)
 //! spike-b unit <args>                       src/unit/mod.rs (P4-SP-UNIT)
 //! ```
 

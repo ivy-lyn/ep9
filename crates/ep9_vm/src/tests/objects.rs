@@ -1225,9 +1225,10 @@ fn generator_and_slot_object_cells_are_registered_object_kinds() {
 
 /// SLOT_OBJECT keeps its class id and its internal-slots cell in fixed fields, which property
 /// code never touches: named properties, a dictionary move (it clears the in-object slots)
-/// and PreventExtensions leave both fields as they were. No SLOT_OBJECT allocator exists yet
-/// (P3-ABI-SLOTS), so the test builds the cell with `new_object_with_fields` and puts a plain
-/// object where the ELEMENTS cell of the internal slots goes.
+/// and PreventExtensions leave both fields as they were. This test builds the cell by hand
+/// with `new_object_with_fields` and puts a plain object where the ELEMENTS cell of the
+/// internal slots goes. The real allocator is `object::new_slot_object` (P3-ABI-SLOTS); the
+/// same check on its objects is `tests::slots::property_changes_leave_the_slots_alone`.
 #[test]
 fn slot_object_fixed_fields_survive_property_changes() {
     each(|_cx, rt| {

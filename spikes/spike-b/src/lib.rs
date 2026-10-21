@@ -10,7 +10,7 @@
 //! | [`jit`] | placement (a): the 11-opcode JIT for AArch64 and x86-64, the in-memory finalizer | P2-SPIKE-B |
 //! | [`harness`] | compile JS, make isolates, JIT and install functions, capture `print` | P2-SPIKE-B |
 //! | [`structural`] | the gate checks (a)-(h) of `gate.sh structural` | P2-SPIKE-B |
-//! | [`bench`](mod@bench) | `spike-b bench` (stub) | P3-SPIKEB-BENCH |
+//! | [`bench`](mod@bench) | `spike-b bench`: the D21 round-trip bench (bench.sh; protocol §5-§8) | P3-SPIKEB-BENCH |
 //! | [`jit_b`] | placement (b) (stub) | P3-SPIKEB-BENCH, only after a "fail" verdict |
 //! | [`unit`](mod@unit) | `spike-b unit` (stub) | P4-SP-UNIT |
 //!
