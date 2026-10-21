@@ -1,0 +1,16 @@
+[package]
+name = "ep9_math"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# No dependencies (H36; docs/plan/08-repo.md section 2): .github/scripts/dep-guards.sh check 6.
+
+# Tests only: SHA-256 of large result sets, so 4 targets can compare them by one digest.
+[dev-dependencies]
+ep9_bytecode = { path = "../ep9_bytecode" }
+
+[lints]
+workspace = true

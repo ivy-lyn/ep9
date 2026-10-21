@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 # Engine crates only; no crates.io dependencies.
 [dependencies]
+ep9_builtins = { path = "../../crates/ep9_builtins" }
 ep9_bytecode = { path = "../../crates/ep9_bytecode" }
 ep9_frontend = { path = "../../crates/ep9_frontend" }
 ep9_heap = { path = "../../crates/ep9_heap" }
