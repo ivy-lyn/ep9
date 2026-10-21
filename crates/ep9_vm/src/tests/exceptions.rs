@@ -10,7 +10,7 @@ use super::{
     Asm, config, isolate, meta, ok, on_big_stack, pos, run_all, run_in, take_output, unit,
     unit_with_scopes,
 };
-use crate::{Args, Dispatch, HostCx, IsolateConfig, JsResult, Value};
+use crate::{Args, Cx, Dispatch, IsolateConfig, JsResult, Local};
 
 /// `try { body } catch (e) { print(e.message) }` around what `body` emits.
 fn try_print_message(s: &mut Asm, ctx: Register, body: impl FnOnce(&mut Asm)) {
@@ -241,8 +241,13 @@ fn vm_stack_overflow_is_a_catchable_range_error() {
     assert_eq!(r.output, ["Maximum call stack size exceeded"]);
 }
 
-fn reenter(cx: &mut HostCx<'_>, _this: Value, args: Args<'_>, _nt: Value) -> JsResult<Value> {
-    cx.call(args.get(0), Value::UNDEFINED, &[args.get(0)])
+fn reenter<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    cx.call(args.get(0), Local::undefined(), &[args.get(0)])
 }
 
 #[test]

@@ -14,11 +14,11 @@
 //! Init order: static atoms, intrinsics and globals, symbols (`symbol::install`), then the
 //! embedder's builtin table (`builtins::install`).
 
+use crate::abi::HostFn;
 use crate::builtins::{self, BuiltinTable};
 use crate::conv::{self, num};
 use crate::error;
 use crate::frame::{NULL, UNDEFINED};
-use crate::host::HostFn;
 use crate::interp::Cx;
 use crate::natives;
 use crate::object::{self, attr, own_define};

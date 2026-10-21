@@ -5,15 +5,20 @@
 use ep9_bytecode::{FunctionId, ScopeId, ScopeKind, VariableMode, VerifiedUnit};
 
 use super::{Asm, config, isolate, meta, ok, on_big_stack, run_all, take_output, unit_with_scopes};
-use crate::{Args, Dispatch, HostCx, JsResult, Value};
+use crate::{Args, Cx, Dispatch, JsResult, Local, Value};
 
-fn gc(cx: &mut HostCx<'_>, _this: Value, _args: Args<'_>, _nt: Value) -> JsResult<Value> {
+fn gc<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
     // A value that lives only in this Rust local across the collection (conservative scan).
-    let s = cx.new_string("kept by the stack scan");
+    let s = cx.new_string("kept by the stack scan")?;
     cx.collect_garbage();
     let t = cx.to_rust_string(s)?;
     assert_eq!(t, "kept by the stack scan");
-    Ok(Value::UNDEFINED)
+    Ok(Local::undefined())
 }
 
 #[test]
@@ -160,17 +165,17 @@ fn fill_scratch(rt: &crate::runtime::Runtime, top: *mut u64) {
 
 /// `scratchValues()`: keeps fresh strings only between the host frame's top and the scratch
 /// top across many collections, then checks every one.
-fn scratch_values(
-    cx: &mut HostCx<'_>,
-    _this: Value,
-    _args: Args<'_>,
-    _nt: Value,
-) -> JsResult<Value> {
-    let rt = cx.cx.rt();
+fn scratch_values<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let rt = cx.inner().rt();
     let top = crate::runtime::frame_top(rt.stack().fp());
     fill_scratch(rt, top);
     for _ in 0..16 {
-        cx.new_string("an allocation, so a collection under stress");
+        cx.new_string("an allocation, so a collection under stress")?;
     }
     cx.collect_garbage();
     for i in 0..SCRATCH {
@@ -180,7 +185,7 @@ fn scratch_values(
         let text = crate::string::str_view(s).to_string_lossy();
         assert_eq!(text, format!("scratch {i}"));
     }
-    Ok(Value::UNDEFINED)
+    Ok(Local::undefined())
 }
 
 #[test]

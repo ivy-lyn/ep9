@@ -1,5 +1,6 @@
-//! The host functions of the v0 realm (realm.rs installs them). Week 4 moves them to the
-//! builtin ABI (H20) and the builtin tables.
+//! The host functions of the v0 realm (realm.rs installs them), on the builtin ABI v1 (H20).
+//! They live in ep9_vm because they read VM internals (iterator cells, error sites); the
+//! builtin tables (P2) take them over.
 //!
 //! | Function | Spec |
 //! |---|---|
@@ -10,41 +11,46 @@
 //! | `Error.prototype.toString` | §20.5.3.4 |
 //! | `Array.prototype.join`, `toString`, `push` | §23.1.3.18, §23.1.3.36, §23.1.3.23 |
 
-use ep9_value::{JsResult, Value};
+use ep9_value::JsResult;
 
+use crate::abi::{Args, Cx as HostCx, HostFn, Local};
 use crate::conv::{self, num};
 use crate::error;
 use crate::frame::{NULL, UNDEFINED};
-use crate::host::{Args, HostCx, HostFn};
 use crate::interp::Cx;
 use crate::kinds::is_callable;
 use crate::object::{self, attr, is_array, is_object, own_define};
 use crate::property;
-use crate::runtime::{Atom, ErrorKind, val};
+use crate::runtime::{Atom, ErrorKind};
 use crate::string;
 
+/// A `Local` of VM bits.
+fn local<'s>(b: u64) -> Local<'s> {
+    Local::from_bits(b)
+}
+
 /// Object(value) (§20.1.1.1). v0: no wrapper objects, so a primitive gives a new object.
-pub(crate) fn object_constructor(
-    cx: &mut HostCx<'_>,
-    _this: Value,
-    args: Args<'_>,
-    _nt: Value,
-) -> JsResult<Value> {
+pub(crate) fn object_constructor<'s>(
+    cx: &mut HostCx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
     let v = args.get(0);
-    if is_object(v.to_bits()) {
+    if v.is_object() {
         return Ok(v);
     }
-    Ok(val(object::new_plain_object(cx.cx.rt())))
+    Ok(cx.new_object().value())
 }
 
 /// Array(...items) and Array(length) (§23.1.1.1).
-pub(crate) fn array_constructor(
-    cx: &mut HostCx<'_>,
-    _this: Value,
-    args: Args<'_>,
-    _nt: Value,
-) -> JsResult<Value> {
-    let rt = cx.cx.rt();
+pub(crate) fn array_constructor<'s>(
+    cx: &mut HostCx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let rt = cx.inner().rt();
     if args.len() == 1
         && let Some(n) = args.get(0).as_number()
     {
@@ -56,25 +62,26 @@ pub(crate) fn array_constructor(
         if !object::array_set_length(rt, a, len) {
             return Err(cx.throw_error(ErrorKind::RangeError, "Invalid array length"));
         }
-        return Ok(val(a));
+        return Ok(local(a));
     }
     let a = object::new_array(rt, args.len());
     for (i, v) in args.iter().enumerate() {
-        object::array_set(rt, a, i as u32, v.to_bits());
+        object::array_set(rt, a, i as u32, v.bits());
     }
-    Ok(val(a))
+    Ok(local(a))
 }
 
 pub(crate) fn error_constructor(kind: ErrorKind) -> HostFn {
     macro_rules! ctor {
         ($k:ident) => {{
-            fn f(
-                cx: &mut HostCx<'_>,
-                _this: Value,
-                args: Args<'_>,
-                new_target: Value,
-            ) -> JsResult<Value> {
-                construct_error(cx.cx, ErrorKind::$k, args.get(0), new_target)
+            fn f<'s>(
+                cx: &mut HostCx<'s>,
+                _this: Local<'s>,
+                args: Args<'s>,
+                new_target: Local<'s>,
+            ) -> JsResult<Local<'s>> {
+                let (m, nt) = (args.get(0).bits(), new_target.bits());
+                construct_error(cx.inner(), ErrorKind::$k, m, nt).map(local)
             }
             f as HostFn
         }};
@@ -91,39 +98,33 @@ pub(crate) fn error_constructor(kind: ErrorKind) -> HostFn {
 }
 
 /// NativeError(message) (§20.5.6.1.1). v0: no `options.cause`.
-fn construct_error(
-    cx: &mut Cx,
-    kind: ErrorKind,
-    message: Value,
-    new_target: Value,
-) -> JsResult<Value> {
+fn construct_error(cx: &mut Cx, kind: ErrorKind, message: u64, nt: u64) -> JsResult<u64> {
     let rt = cx.rt();
     let mut proto = rt.root(kind.prototype_root());
-    let nt = new_target.to_bits();
     if is_callable(nt) {
         let p = property::get(cx, nt, rt.atom(Atom::Prototype))?;
         if is_object(p) {
             proto = p;
         }
     }
-    let msg = if message.is_undefined() {
+    let msg = if message == UNDEFINED {
         None
     } else {
-        Some(conv::to_string(cx, message.to_bits())?)
+        Some(conv::to_string(cx, message)?)
     };
-    Ok(val(error::new_error_value(cx, proto, msg)))
+    Ok(error::new_error_value(cx, proto, msg))
 }
 
 /// %ArrayIteratorPrototype%.next (§23.1.5.2.1, kind "value") and
 /// %StringIteratorPrototype%.next (§22.1.5.2.1) for the v0 iterator cells.
-pub(crate) fn iterator_next(
-    cx: &mut HostCx<'_>,
-    this: Value,
-    _: Args<'_>,
-    _: Value,
-) -> JsResult<Value> {
-    let cx = &mut *cx.cx;
-    let it = this.to_bits();
+pub(crate) fn iterator_next<'s>(
+    cx: &mut HostCx<'s>,
+    this: Local<'s>,
+    _: Args<'s>,
+    _: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let cx = cx.inner();
+    let it = this.bits();
     if !object::is_iterator(it) {
         return Err(error::throw_error(
             cx,
@@ -180,18 +181,18 @@ pub(crate) fn iterator_next(
         crate::frame::FALSE
     };
     own_define(rt, result, rt.atom(Atom::Done), done, attr::DEFAULT);
-    Ok(val(result))
+    Ok(local(result))
 }
 
 /// Error.prototype.toString (§20.5.3.4).
-pub(crate) fn error_to_string(
-    cx: &mut HostCx<'_>,
-    this: Value,
-    _: Args<'_>,
-    _: Value,
-) -> JsResult<Value> {
-    let cx = &mut *cx.cx;
-    let o = this.to_bits();
+pub(crate) fn error_to_string<'s>(
+    cx: &mut HostCx<'s>,
+    this: Local<'s>,
+    _: Args<'s>,
+    _: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let cx = cx.inner();
+    let o = this.bits();
     if !is_object(o) {
         return Err(error::throw_error(
             cx,
@@ -217,17 +218,17 @@ pub(crate) fn error_to_string(
         (_, true) => name,
         _ => format!("{name}: {msg}"),
     };
-    Ok(val(object::new_string(rt, &s)))
+    Ok(local(object::new_string(rt, &s)))
 }
 
 /// Object.prototype.toString (§20.1.3.6, v0: no `@@toStringTag`).
-pub(crate) fn object_to_string(
-    cx: &mut HostCx<'_>,
-    this: Value,
-    _: Args<'_>,
-    _: Value,
-) -> JsResult<Value> {
-    let o = this.to_bits();
+pub(crate) fn object_to_string<'s>(
+    cx: &mut HostCx<'s>,
+    this: Local<'s>,
+    _: Args<'s>,
+    _: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let o = this.bits();
     let tag = match o {
         UNDEFINED => "Undefined",
         NULL => "Null",
@@ -235,20 +236,20 @@ pub(crate) fn object_to_string(
         _ if is_callable(o) => "Function",
         _ if object::is_error(o) => "Error",
         _ if object::is_string(o) => "String",
-        _ if val(o).is_number() => "Number",
-        _ if val(o).is_bool() => "Boolean",
+        _ if this.is_number() => "Number",
+        _ if this.is_bool() => "Boolean",
         _ => "Object",
     };
-    Ok(cx.new_string(&format!("[object {tag}]")))
+    Ok(cx.new_string(&format!("[object {tag}]"))?.value())
 }
 
 /// Object.prototype.valueOf (§20.1.3.7, v0: primitives are not wrapped).
-pub(crate) fn object_value_of(
-    cx: &mut HostCx<'_>,
-    this: Value,
-    _: Args<'_>,
-    _: Value,
-) -> JsResult<Value> {
+pub(crate) fn object_value_of<'s>(
+    cx: &mut HostCx<'s>,
+    this: Local<'s>,
+    _: Args<'s>,
+    _: Local<'s>,
+) -> JsResult<Local<'s>> {
     if this.is_undefined_or_null() {
         return Err(cx.throw_error(
             ErrorKind::TypeError,
@@ -259,16 +260,16 @@ pub(crate) fn object_value_of(
 }
 
 /// Array.prototype.join (§23.1.3.18).
-pub(crate) fn array_join(
-    cx: &mut HostCx<'_>,
-    this: Value,
-    args: Args<'_>,
-    _: Value,
-) -> JsResult<Value> {
-    join(cx.cx, this.to_bits(), args.get(0).to_bits())
+pub(crate) fn array_join<'s>(
+    cx: &mut HostCx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _: Local<'s>,
+) -> JsResult<Local<'s>> {
+    join(cx.inner(), this.bits(), args.get(0).bits()).map(local)
 }
 
-fn join(cx: &mut Cx, o: u64, sep: u64) -> JsResult<Value> {
+fn join(cx: &mut Cx, o: u64, sep: u64) -> JsResult<u64> {
     if !is_object(o) {
         return Err(error::throw_error(
             cx,
@@ -300,7 +301,7 @@ fn join(cx: &mut Cx, o: u64, sep: u64) -> JsResult<Value> {
             acc = concat_or_throw(cx, acc, s)?;
         }
     }
-    Ok(val(acc))
+    Ok(acc)
 }
 
 fn concat_or_throw(cx: &mut Cx, a: u64, b: u64) -> JsResult<u64> {
@@ -309,37 +310,42 @@ fn concat_or_throw(cx: &mut Cx, a: u64, b: u64) -> JsResult<u64> {
 }
 
 /// Array.prototype.toString (§23.1.3.36): `join`, or Object.prototype.toString.
-pub(crate) fn array_to_string(
-    cx: &mut HostCx<'_>,
-    this: Value,
-    a: Args<'_>,
-    nt: Value,
-) -> JsResult<Value> {
-    if is_array(this.to_bits()) {
-        return join(cx.cx, this.to_bits(), UNDEFINED);
+pub(crate) fn array_to_string<'s>(
+    cx: &mut HostCx<'s>,
+    this: Local<'s>,
+    a: Args<'s>,
+    nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    if is_array(this.bits()) {
+        return join(cx.inner(), this.bits(), UNDEFINED).map(local);
     }
     object_to_string(cx, this, a, nt)
 }
 
 /// Array.prototype.push (§23.1.3.23, v0: arrays only).
-pub(crate) fn array_push(
-    cx: &mut HostCx<'_>,
-    this: Value,
-    args: Args<'_>,
-    _: Value,
-) -> JsResult<Value> {
-    let a = this.to_bits();
-    if !is_array(a) {
+pub(crate) fn array_push<'s>(
+    cx: &mut HostCx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let Some(a) = this.as_array() else {
         return Err(cx.throw_error(
             ErrorKind::TypeError,
             "not implemented in ep9 v0: Array.prototype.push on a non-array",
         ));
-    }
+    };
+    let a = a.bits();
     for v in args.iter() {
         let n = object::array_len(a);
-        if !object::array_set(cx.cx.rt(), a, n, v.to_bits()) {
+        // Set(O, n, v, true): a non-extensible array rejects the new element.
+        if !property::is_extensible(a) {
+            let msg = format!("Cannot add property {n}, object is not extensible");
+            return Err(cx.throw_type_error(&msg));
+        }
+        if !object::array_set(cx.inner().rt(), a, n, v.bits()) {
             return Err(cx.throw_error(ErrorKind::RangeError, "Invalid array length"));
         }
     }
-    Ok(val(num(f64::from(object::array_len(a)))))
+    Ok(local(num(f64::from(object::array_len(a)))))
 }

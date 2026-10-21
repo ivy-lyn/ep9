@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 
 use ep9_frontend::{CodegenError, CompileError, CompileOptions, SourceOpts, Strictness};
 use ep9_heap::HeapConfig;
-use ep9_vm::{Args, Exception, HostCx, Isolate, IsolateConfig, JsResult, TerminateHandle, Value};
+use ep9_vm::{Args, Cx, Exception, Isolate, IsolateConfig, JsResult, Local, TerminateHandle};
 
 use crate::frontmatter::{self, Meta};
 use crate::parse::{Mode, STRICT_PREFIX, modes};
@@ -247,7 +247,12 @@ fn take_panic() -> String {
         .unwrap_or_else(|| "panic without a message".into())
 }
 
-fn print(cx: &mut HostCx<'_>, _this: Value, args: Args<'_>, _nt: Value) -> JsResult<Value> {
+fn print<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
     let mut line = String::new();
     for (i, v) in args.iter().enumerate() {
         if i > 0 {
@@ -260,12 +265,17 @@ fn print(cx: &mut HostCx<'_>, _this: Value, args: Args<'_>, _nt: Value) -> JsRes
         o.push_str(&line);
         o.push('\n');
     });
-    Ok(Value::UNDEFINED)
+    Ok(Local::undefined())
 }
 
-fn gc(cx: &mut HostCx<'_>, _this: Value, _args: Args<'_>, _nt: Value) -> JsResult<Value> {
+fn gc<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
     cx.collect_garbage();
-    Ok(Value::UNDEFINED)
+    Ok(Local::undefined())
 }
 
 /// The run that the watchdog watches.
