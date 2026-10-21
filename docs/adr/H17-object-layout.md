@@ -46,8 +46,8 @@ v0 (M0 wk4) builds the plan's JSObject header with shapes in the shape space. Th
 | Field i | `i < capacity`: in-object slot i; else `SLOTS[i - capacity]` (grows to max(need, 2 x old, 4)) | `props::field_ref` |
 | Fast shapes | Transition tree; one descriptor array shared along a chain (prefix rule); hash index above 8 keys; weak transitions | `shape.rs` (P1-SHAPE) |
 | Dictionary mode (OM-10) | Delete that is not the last; attribute change (data <-> accessor too); array-index key on a non-array; SetPrototypeOf with own properties; PreventExtensions; 1020 properties; 64 live transitions. One shared dictionary shape per (prototype, kind, extensible); a prototype object gets a unique one | `props::to_dictionary` |
-| Prototype mode | When an object becomes a `[[Prototype]]`: is-prototype flag bit, a unique shape (no parent, no transitions) whose +40 holds the object's PROTO_INFO (its root and dictionary shapes) | `shape::proto_info_for` |
-| Epoch (OM-8) | Any structural change of a prototype (add, delete, attribute change, SetPrototypeOf, PreventExtensions, dictionary move) bumps `ShapeState::proto_epoch`. A value store does not | `shape::note_change` |
+| Prototype mode | When an object becomes a `[[Prototype]]` on any path (a new object, SetPrototypeOf of any object, a prototype included): is-prototype flag bit, a unique shape (no parent, no transitions) whose +40 holds the object's PROTO_INFO (its root and dictionary shapes). So every shape's proto is null or a prototype-mode object | `shape::proto_info_for`, `shape::with_proto` |
+| Epoch (OM-8) | Any structural change of a prototype bumps `ShapeState::proto_epoch`: a named property or an array element that appears or goes away (a `length` cut that removes an element too), an attribute change, SetPrototypeOf, PreventExtensions, a dictionary move. A value store does not (a named or element value, `length` growth, a `length` cut over holes only). Only a prototype pays more than a flag test | `shape::note_change`; elements: `object::array_set`, `object::array_set_length` (the only element writers) |
 | Extensible, `[[Prototype]]` | In the shape (flag EXTENSIBLE, +8 proto). A fast shape is always extensible | `property::prevent_extensions` |
 | Keys | Stored keys are atoms or symbols (`key::intern_key` on every define path); a lookup classifies its probe once | W4-KEY-EQ |
 | Accessors | Attribute bit 8 (`attr::ACCESSOR`) in descriptors and dictionary entries. Getters and setters are called from P3-ACC on | `object::attr` |
@@ -64,12 +64,14 @@ v0 (M0 wk4) builds the plan's JSObject header with shapes in the shape space. Th
 | Each OM-10 trigger moves to dictionary mode | `om10_*` tests in `tests/objects.rs` | M0 wk4 |
 | `[[OwnPropertyKeys]]` order: indices, strings in creation order, symbols | `object_keys_and_for_in_order_survive_layout_changes`, `a_lazy_prototype_keeps_its_place_in_the_key_order` | M0 wk4 |
 | No content compare of keys in UNIT(ep9_vm) | `EP9_ASSERT_ATOM_KEYS=1 cargo test -p ep9_vm` | M0 wk4 |
+| Every shape's proto is null or a prototype-mode object | `debug_assert` in `shape::new_shape`; `set_prototype_of_a_prototype_puts_the_new_prototype_in_prototype_mode` (fast and dictionary objects) | M0 wk4 (P2 fix) |
+| A structural change of a prototype bumps the epoch; a value store does not (named and element paths, fast and dictionary prototypes) | `an_object_used_as_a_prototype_gets_a_unique_shape_and_bumps_the_epoch`, `dense_element_changes_of_an_array_prototype_bump_the_epoch` | M0 wk4 (P2 fix) |
 
 ## Consequences
 
 - **Gains.** A shape guard is one u32 compare, and the field offset comes from the shape. `shape_of` needs no runtime pointer, so host paths (`proto_of`, `is_extensible`) stay free functions.
 - **Costs.** The 64 GiB cage alignment leaves 2,048 cage slots below 2^47. Prototype objects never share shapes. Class constructors with `extends` go to dictionary mode (SetPrototypeOf with own properties).
-- **Follow-ups.** P3-IC caches (shape, field). P3-ACC calls getters and setters and passes the receiver on the super paths. Slack tracking replaces the fixed `new F` capacity of 8.
+- **Follow-ups.** P3-IC caches (shape, field). Exotic own properties (array `length` and elements, a constructor's lazy `prototype`, String wrapper properties) are not in shapes: the epoch covers an element that appears or goes away, but a holder's exotic property is never a field load. P3-ACC calls getters and setters and passes the receiver on the super paths. Slack tracking replaces the fixed `new F` capacity of 8.
 
 ## Decide before M1a
 
@@ -113,3 +115,4 @@ v0 (M0 wk4) builds the plan's JSObject header with shapes in the shape space. Th
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-21 | draft | First draft: v0 layout as built (word0 shapes, fixed fields, capacity, OM-10, prototype mode, epoch, function `length`/`name`), decide-before-M1a list incl. the S2 weak-child note | P2-OBJ agent |
+| 2026-10-21 | fix | Epoch rule on every path: SetPrototypeOf of a prototype puts the new prototype in prototype mode; dense element adds, deletes and `length` cuts of a prototype bump the epoch; the proto-mode invariant is asserted in `new_shape` | P2 fix agent (review W4-P2FIX-EPOCH) |

@@ -525,12 +525,16 @@ pub(crate) fn array_get(a: u64, i: u32) -> Option<u64> {
     (v != HOLE).then_some(v)
 }
 
-/// Stores element `i`, growing the array. False if `i` is past the v0 dense limit. A raw
-/// store: callers check `[[Extensible]]` for a new element.
+/// Stores element `i`, growing the array; [`HOLE`] removes it. False if `i` is past the v0
+/// dense limit. A raw store: callers check `[[Extensible]]` for a new element. Every element
+/// write goes through here and [`array_set_length`]: an element that appears or goes away is
+/// a structural change of a prototype (OM-8, `shape::note_change`); a value store is not.
 pub(crate) fn array_set(rt: &Runtime, a: u64, i: u32, v: u64) -> bool {
     if i >= arr::MAX_LENGTH {
         return false;
     }
+    // Only a prototype pays for more than the flag test.
+    let structural = shape::is_prototype_object(a) && array_get(a, i).is_some() != (v != HOLE);
     let cap = elements_of(a).map_or(0, |e| rd_i32(e, elems::CAPACITY) as usize);
     let e = if (i as usize) < cap {
         elements_of(a).expect("elements")
@@ -549,11 +553,15 @@ pub(crate) fn array_set(rt: &Runtime, a: u64, i: u32, v: u64) -> bool {
     if i >= array_len(a) {
         wr(&rt.heap, cell(a), arr::LENGTH, int32_bits(i as i32 + 1));
     }
+    if structural {
+        shape::note_change(rt, a);
+    }
     true
 }
 
 /// Sets `length` (§10.4.2.4 ArraySetLength, v0: dense, no non-configurable elements). False
-/// if `len` is past the v0 dense limit.
+/// if `len` is past the v0 dense limit. A cut that removes an element is a structural change
+/// of a prototype (OM-8); growth and a cut over holes only change the value of `length`.
 pub(crate) fn array_set_length(rt: &Runtime, a: u64, len: u32) -> bool {
     if len > arr::MAX_LENGTH {
         return false;
@@ -562,9 +570,15 @@ pub(crate) fn array_set_length(rt: &Runtime, a: u64, len: u32) -> bool {
     if len < old
         && let Some(e) = elements_of(a)
     {
-        let cap = rd_i32(e, elems::CAPACITY) as u32;
-        for j in len..old.min(cap) {
-            wr(&rt.heap, e, elems::DATA + 8 * j as usize, HOLE);
+        let end = old.min(rd_i32(e, elems::CAPACITY) as u32);
+        let at = |j: u32| elems::DATA + 8 * j as usize;
+        // Only a prototype pays for more than the flag test.
+        let structural = shape::is_prototype_object(a) && (len..end).any(|j| rd(e, at(j)) != HOLE);
+        for j in len..end {
+            wr(&rt.heap, e, at(j), HOLE);
+        }
+        if structural {
+            shape::note_change(rt, a);
         }
     }
     wr(&rt.heap, cell(a), arr::LENGTH, int32_bits(len as i32));

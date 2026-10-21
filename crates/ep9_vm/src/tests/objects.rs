@@ -876,3 +876,247 @@ fn an_object_used_as_a_prototype_gets_a_unique_shape_and_bumps_the_epoch() {
         shape::check(rt, shape::shape_of(p2)).unwrap();
     });
 }
+
+// ---- the epoch rule on every mutation path (OM-8; P2 review fixes) ---------------------------
+//
+// A structural change of a prototype (an own property appears or goes away, attributes,
+// `[[Prototype]]`, extensibility, dictionary mode) bumps the epoch; a value store does not.
+// P3-IC guards prototype-chain loads with the epoch, so both halves matter.
+
+/// Records each step whose epoch effect breaks the rule, so one run lists every broken path.
+struct EpochLog<'r> {
+    rt: &'r Runtime,
+    /// The case of the steps that follow (a prefix of each message).
+    case: String,
+    wrong: Vec<String>,
+}
+
+impl<'r> EpochLog<'r> {
+    fn new(rt: &'r Runtime) -> Self {
+        EpochLog {
+            rt,
+            case: String::new(),
+            wrong: Vec::new(),
+        }
+    }
+
+    /// Runs `f`, which must bump the epoch (`bumps`) or leave it as it is.
+    fn step<T>(&mut self, what: &str, bumps: bool, f: impl FnOnce() -> T) -> T {
+        let before = self.rt.shapes.proto_epoch.get();
+        let r = f();
+        let after = self.rt.shapes.proto_epoch.get();
+        if (after != before) != bumps {
+            let want = if bumps { "a bump" } else { "no bump" };
+            let case = &self.case;
+            self.wrong.push(format!(
+                "{case}: {what}: want {want}, epoch {before} -> {after}"
+            ));
+        }
+        r
+    }
+
+    fn check(&mut self, what: &str, ok: bool) {
+        if !ok {
+            self.wrong.push(format!("{}: {what}", self.case));
+        }
+    }
+
+    fn done(self) {
+        assert!(
+            self.wrong.is_empty(),
+            "the epoch rule is broken:\n  {}",
+            self.wrong.join("\n  ")
+        );
+    }
+}
+
+/// True if every `[[Prototype]]` on the chain of `o` is in prototype mode (H17: a shape's
+/// proto is null or a prototype-mode object, so a change to it bumps the epoch).
+fn chain_in_prototype_mode(o: u64) -> bool {
+    let mut p = object::proto_of(o);
+    while p != NULL {
+        if !shape::is_prototype_object(p) {
+            return false;
+        }
+        p = object::proto_of(p);
+    }
+    true
+}
+
+/// A plain object with the own property `name` = 1, in fast mode, or (`dict`) in dictionary
+/// mode by a delete that is not the last (OM-10).
+fn plain_with(cx: &mut VmCx, rt: &Runtime, name: &str, dict: bool) -> u64 {
+    let o = object::new_plain_object(rt);
+    put(rt, o, "pad", int(0), attr::DEFAULT);
+    put(rt, o, name, int(1), attr::DEFAULT);
+    if dict {
+        assert!(property::delete(cx, o, k(rt, "pad"), true).unwrap());
+    }
+    assert_eq!(shape::is_dictionary(shape::shape_of(o)), dict);
+    o
+}
+
+#[test]
+fn set_prototype_of_a_prototype_puts_the_new_prototype_in_prototype_mode() {
+    each(|cx, rt| {
+        let mut log = EpochLog::new(rt);
+        for (p_dict, q_dict) in [(false, false), (false, true), (true, false), (true, true)] {
+            log.case = format!("p dictionary {p_dict}, q dictionary {q_dict}");
+            // `p` is a prototype (unique shape); `q` is a new object, not one yet.
+            let p = plain_with(cx, rt, "m", p_dict);
+            let child = object::new_object(rt, p);
+            assert!(shape::is_prototype_object(p));
+            let q = plain_with(cx, rt, "n", q_dict);
+            assert!(!shape::is_prototype_object(q));
+            log.step("SetPrototypeOf(p, q)", true, || {
+                assert!(property::set_prototype_of(rt, p, q));
+            });
+            log.check("q is not in prototype mode", shape::is_prototype_object(q));
+            log.check(
+                "a proto on the chain is outside prototype mode",
+                chain_in_prototype_mode(child),
+            );
+            let y = k(rt, "y");
+            assert_eq!(property::get(cx, child, y).unwrap(), UNDEFINED);
+            log.step("add q.y", true, || {
+                property::set(cx, q, y, int(42), true).unwrap();
+            });
+            assert_eq!(property::get(cx, child, y).unwrap(), int(42));
+            log.step("store q.y", false, || {
+                property::set(cx, q, y, int(43), true).unwrap();
+            });
+            assert_eq!(property::get(cx, child, y).unwrap(), int(43));
+            log.step("delete q.y", true, || {
+                assert!(property::delete(cx, q, y, true).unwrap());
+            });
+            assert_eq!(property::get(cx, child, y).unwrap(), UNDEFINED);
+            // The same through a prototype whose `[[Prototype]]` is set again: `r` is new.
+            let r = plain_with(cx, rt, "o", q_dict);
+            log.step("SetPrototypeOf(q, r)", true, || {
+                assert!(property::set_prototype_of(rt, q, r));
+            });
+            log.check("r is not in prototype mode", chain_in_prototype_mode(child));
+            log.step("add r.y", true, || {
+                put(rt, r, "y", int(7), attr::DEFAULT);
+            });
+            assert_eq!(property::get(cx, child, y).unwrap(), int(7));
+            for o in [p, q, r] {
+                shape::check(rt, shape::shape_of(o)).unwrap();
+            }
+        }
+        log.done();
+    });
+}
+
+/// An array `[1]` with the own named properties `a` (and `pad` unless `dict`), in fast mode
+/// or (`dict`) in dictionary mode (OM-10).
+fn array_with(cx: &mut VmCx, rt: &Runtime, dict: bool) -> u64 {
+    let a = object::new_array(rt, 0);
+    property::set_keyed(cx, a, int(0), int(1), true).unwrap();
+    put(rt, a, "pad", int(0), attr::DEFAULT);
+    put(rt, a, "a", int(0), attr::DEFAULT);
+    if dict {
+        assert!(property::delete(cx, a, k(rt, "pad"), true).unwrap());
+    }
+    assert_eq!(shape::is_dictionary(shape::shape_of(a)), dict);
+    a
+}
+
+#[test]
+fn dense_element_changes_of_an_array_prototype_bump_the_epoch() {
+    each(|cx, rt| {
+        let mut log = EpochLog::new(rt);
+        for dict in [false, true] {
+            log.case = format!("dictionary {dict}");
+            let a = array_with(cx, rt, dict);
+            // Not a prototype yet: no element change bumps the epoch.
+            log.step("append to a non-prototype", false, || {
+                assert!(object::array_set(rt, a, 1, int(5)));
+            });
+            log.step("truncate a non-prototype", false, || {
+                assert!(object::array_set_length(rt, a, 1));
+            });
+            let child = object::new_object(rt, a);
+            assert!(shape::is_prototype_object(a));
+            let len = k(rt, "length");
+            let at = |cx: &mut VmCx, i: i32| property::get_keyed(cx, child, int(i)).unwrap();
+            assert_eq!(at(cx, 1), UNDEFINED);
+            // Adds.
+            log.step("[[Set]] adds element 1", true, || {
+                property::set_keyed(cx, a, int(1), int(42), true).unwrap();
+            });
+            assert_eq!(at(cx, 1), int(42));
+            log.step("CreateDataProperty adds element 2", true, || {
+                property::define_keyed(cx, a, int(2), int(2)).unwrap();
+            });
+            log.step("DefineOwnProperty adds element 3", true, || {
+                let d = Desc::data(int(3), attr::DEFAULT);
+                assert!(property::define_own_property(cx, a, k(rt, "3"), d).unwrap());
+            });
+            log.step("a raw append (push, literals)", true, || {
+                assert!(object::array_set(rt, a, 4, int(4)));
+            });
+            assert_eq!(at(cx, 4), int(4));
+            // Value stores.
+            log.step("[[Set]] stores element 1", false, || {
+                property::set_keyed(cx, a, int(1), int(43), true).unwrap();
+            });
+            log.step("CreateDataProperty stores element 1", false, || {
+                property::define_keyed(cx, a, int(1), int(44)).unwrap();
+            });
+            log.step("DefineOwnProperty stores element 3", false, || {
+                let d = Desc {
+                    value: Some(int(33)),
+                    ..Desc::default()
+                };
+                assert!(property::define_own_property(cx, a, k(rt, "3"), d).unwrap());
+            });
+            assert_eq!((at(cx, 1), at(cx, 3)), (int(44), int(33)));
+            // Deletes.
+            log.step("delete element 2", true, || {
+                assert!(property::delete(cx, a, int(2), true).unwrap());
+            });
+            assert_eq!(at(cx, 2), UNDEFINED);
+            log.step("delete a hole", false, || {
+                assert!(property::delete(cx, a, int(2), true).unwrap());
+            });
+            log.step("a hole stored over a hole", false, || {
+                assert!(object::array_set(rt, a, 2, crate::frame::HOLE));
+            });
+            // `length`: growth and a cut over holes only change its value.
+            log.step("length grows", false, || {
+                property::set(cx, a, len, int(10), true).unwrap();
+            });
+            log.step("length cut over holes", false, || {
+                property::set(cx, a, len, int(6), true).unwrap();
+            });
+            log.step("length cut removes elements", true, || {
+                property::set(cx, a, len, int(1), true).unwrap();
+            });
+            assert_eq!(
+                (at(cx, 0), at(cx, 1), at(cx, 4)),
+                (int(1), UNDEFINED, UNDEFINED)
+            );
+            log.step("DefineOwnProperty length cut", true, || {
+                let d = Desc {
+                    value: Some(int(0)),
+                    ..Desc::default()
+                };
+                assert!(property::define_own_property(cx, a, len, d).unwrap());
+            });
+            assert_eq!(at(cx, 0), UNDEFINED);
+            log.step("a raw cut (no element left)", false, || {
+                assert!(object::array_set_length(rt, a, 0));
+            });
+            // Named properties of the array prototype follow the same rule.
+            log.step("add a.b", true, || {
+                put(rt, a, "b", int(1), attr::DEFAULT);
+            });
+            log.step("store a.b", false, || {
+                put(rt, a, "b", int(2), attr::DEFAULT);
+            });
+            shape::check(rt, shape::shape_of(a)).unwrap();
+        }
+        log.done();
+    });
+}
