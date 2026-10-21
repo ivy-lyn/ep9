@@ -69,7 +69,7 @@ All exit items of a milestone must hold. All 4 targets are tier-1 from week 1, W
 - Scope (v1): workspace, CI on 4 targets, perf CI, test262 runner. Value, cage, header, GC S0. Bytecode v1, VM stack, frames, limits. Dispatch DSL with 3 expansions and ≤ 4 handler arguments. Front end F1, depth layers 2-3, `CompiledUnit`. Shapes v0, named-property IC v0, strings v0. H16 slot kinds and the H29 ADR draft. All M0 spikes, incl. SP-tsrs-win. Builtin ABI frozen (H20).
 - Scope (A0 part 1): ADRs for H2, H3 header fields, H5, H7, H8, H13 rules, H14, H27, H35 container spec v0 and H36. Determinism CI. SP-Unit inside Spike B.
 - Exit:
-  1. Full test262 run (103,175 runs) ≤ 10 min. Expectations committed per target.
+  1. Full test262 run (102,994 runs at d53ebc8b) ≤ 10 min. Expectations committed per target.
   2. Parse negatives 4,653/4,653 and positives ≥ 99.98% on all 4 targets.
   3. `language/` ≥ 40%.
   4. richards and deltablue run correctly, each ≥ 0.6x QuickJS (design canary).

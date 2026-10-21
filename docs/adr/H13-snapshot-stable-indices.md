@@ -1,0 +1,94 @@
+# H13: Snapshot readiness and stable indices
+
+| Field | Value |
+|---|---|
+| Status | Draft (2026-10-21): the rules. The index lists are due at M1; the snapshot is built in M4 (A1) |
+| Fix by | Rules M0; index lists M1; built M4 (A1) |
+| Freeze point | Freeze table (README §3.4): rules and index lists at M1 exit; snapshot build at M4 exit |
+| Origin | v1#19 + R16-D5; plan status E |
+| Crates | `ep9_vm` (roots, atoms, intrinsics, builtin ids, symbols), `ep9_builtins` (builtin ids), `ep9_bytecode` (runtime ids, constant pools), `ep9_unit` (link table), `ep9_heap` (snapshot layout, M4) |
+| Owner (plan role) | VM lead (index lists); runtime lead (A1 snapshot, a CORE item in M4); AOT senior (A0 part 1) |
+| Validated by | Golden and order tests per list (Rules); determinism tests; the A1 snapshot gates (M4) |
+| Plan sources | [02 §6 H13](../plan/02-architecture.md#6-hard-to-change-decisions-h1-h37), [03 §5-§6](../plan/03-gc.md#6-snapshot-interaction), [06 §2.1](../plan/06-object-model-and-spec.md#21-shapeid-rule-h8), [07 §2-§3](../plan/07-runtime.md#3-a1-code-cache-snapshot-and-bytecode-units) |
+
+## Context
+
+- A startup snapshot (A1, M4), the code cache and AOT units must reach heap objects with no redesign. A snapshot maps, deserializes and rewrites pointers; units then reach its objects only by index or through link cells (03 §6).
+- Depends on: H2 (bytecode ABI), H8 (ShapeId rule), H12 (no address identity), H22 (realms), H25 (off-heap pointers), H31 (fuses).
+- Depended on by: H35 (link table, RootIndex relocations), H34 (RootIndex kind), H30 (RootRef, IntrinsicRef), H16 and H37 (facts name builtins and intrinsics by index).
+
+## Decision
+
+Copied from the plan row: an external-reference table. Intrinsics in fixed order. Stable indices for isolate roots, realm intrinsics, builtins, atoms, fuses and snapshot root shapes. A deterministic snapshot layout. No raw pointers in bytecode (02 §6).
+
+```text
+ build:  snapshot blob { roots[n], realm intrinsics[j], atoms[k], fuses[f], root shapes[s] }
+ start:  map -> deserialize -> rewrite pointers -> fill the isolate root table -> load units
+ unit:   text --RootIndex(n)--> isolate root table --> object
+         text --LinkSlot(i)---> RW link cell (resolved at load or first run) --> object
+```
+
+**Index lists at M0 (as built, 55c15d0).**
+
+| List | Where | Order check today |
+|---|---|---|
+| Atoms (`atoms!`, `Atom::ALL`) | `crates/ep9_vm/src/atoms.rs` | `tests::strings::the_atoms_list_is_append_only` |
+| Realm intrinsics (`IntrinsicId::ALL`, 33) | `crates/ep9_vm/src/builtins.rs` | the IntrinsicId lines of `crates/ep9_vm/tests/golden/vm-builtin-ids.txt` |
+| Builtins (`BuiltinId` = block + index; VM block 0, `ep9_builtins` blocks 1-9) | `natives.rs` (VM table), `crates/ep9_builtins/src/*` | `builtin_ids::vm_builtin_ids_match_the_golden`, `table::ids_match_the_goldens`, and the swap tests of both crates |
+| Runtime functions (`RuntimeId`) | `crates/ep9_bytecode/src/feedback.rs` | the ABI fingerprint (`runtime_table_text`): `abi::abi_version_matches_history` |
+| Well-known symbols (`WellKnownSymbol::ALL`) | `crates/ep9_vm/src/symbol.rs` | `tests::symbols::well_known_symbols_are_isolate_roots_in_order` |
+| Isolate roots (`Root`, 32) | `crates/ep9_vm/src/runtime.rs` | count only: `runtime::tests::atoms_and_roots_are_distinct` (H13-Q2) |
+| Native runtime-function table (`RuntimeTable`, feature `spike-native`) | P1-NATIVE-ENTRY (M0 month 2) | none yet (H13-Q3) |
+| Fuses, snapshot root shapes, external references | not built (H31 in M1; A1 in M4) | none yet |
+
+## Rules
+
+| Rule | Check | From |
+|---|---|---|
+| Each index list is append-only: no id is reordered, removed or reused | the order checks in the table above (golden files; `EP9_BLESS=1` only after a review) | M0 wk4 |
+| Intrinsics are created in a fixed order: two isolates give the same intrinsic objects and property order | `tests::builtins::two_isolates_have_the_same_intrinsic_property_order` | M0 wk4 |
+| Bytecode holds no raw pointer: operands and constants are indices or owned literals, and the VM turns them into Values per isolate at load | `roundtrip::random_units_round_trip`; `determinism::builds_on_other_threads_agree` (same bytes from other threads) | M0 wk3 |
+| No heap address reaches a hash or an order, so a snapshot layout can be deterministic | `tests::strings::ep9_hash_seed_gives_the_same_hashes_in_two_runs` (`EP9_HASH_SEED`); H12 rules | M0 wk4 |
+| Each native word in a heap cell has an index form that a snapshot can write: FUNCTION +24 = (unit, function id); FEEDBACK info = the same; CONTEXT scope word (OBJECT_LAYOUT 2) = (unit, scope id) | review of each `native_of` store into a cell (H25 inventory) | M2-P0 |
+| Units reach snapshot objects only by root or intrinsic index, or through a link cell | H35 zero-text-relocation check; SP-Unit link-cell test | SP-Unit (M0 month 2), A2 |
+| Root ShapeIds are stable per engine build only; every other ShapeId is run-local (H8) | A1 snapshot test: two builds of the snapshot give the same bytes | M4 (A1) |
+| One external-reference table serves the snapshot and every unit link table (03 §5) | A1 snapshot test; SP-Unit loader test | M4 (A1) |
+
+## Consequences
+
+- **Gains.** The snapshot, the code cache and AOT units need no object-model change. Parallel agents append ids without shifting each other's (W4-BUILTIN-IDS). Facts, hints and profiles name builtins and intrinsics by a stable index (W4-FACTS-REFS).
+- **Costs.** A removed builtin or intrinsic keeps its id forever (a dead slot). Every new list needs its own golden test.
+- **Follow-ups.** M1: the isolate root list, the fuse list (H31) and the external-reference table with order checks. M4: the snapshot writer and reader, and the root-shape list.
+
+## Evidence
+
+| Tag | Claim used here | Link |
+|---|---|---|
+| [R09] | Day-1 constraints: every heap-to-native pointer goes through an external-reference table; intrinsics are created deterministically; bytecode holds constant-pool indices, never raw pointers. Pointer rewriting at deserialization works on the non-moving heap | [../research/09-critic.md](../research/09-critic.md) |
+| [R14] | The dual-mode design needs a startup snapshot with stable indices: roots, builtins, ShapeIds, atoms, class root shapes | [../research/14-dual-mode-architecture.md](../research/14-dual-mode-architecture.md) |
+| [R17] | Deterministic ShapeIds are needed only for snapshot-created root shapes; other AOT shape guards use RW cells filled at first execution | [../research/17-aot-refutation.md](../research/17-aot-refutation.md) |
+
+## Validation
+
+- M0: the Rules checks above run in `cargo test` on 4 targets.
+- M1 exit: every list in the table has an order check. M4 (A1): snapshot start ≥ 2x faster than without (STARTUP-SET); 100% of invalidation tests pass (07 §3).
+
+## Open questions
+
+| ID | Question | Needed by | Proposed default |
+|---|---|---|---|
+| H13-Q1 | Which lists must stay stable across engine builds, and which only within one build? A snapshot and a unit with another build id are rejected anyway (H35 S3) | M1 (index lists) | Within one build is enough for the snapshot and units. The ids that facts, hints and profiles store (builtins, intrinsics, well-known symbols, atoms) stay append-only across builds |
+| H13-Q2 | `Root` has no order check: a reorder passes every test | M1 | A golden of the `Root` names, like `vm-builtin-ids.txt` |
+| H13-Q3 | Is the native runtime-function table (JIT and AOT slow paths) an H13 list? | SP-Unit (M0 month 2) | Yes: units call it by index through the isolate table (04 §5 `Runtime(fn)`), so it is append-only with a golden |
+| H13-Q4 | Does the global declarative record stay a plain object (`Root::Lexical`), or become a script context? | M1 (H22 realms) | Decide with H22 realms; the snapshot stores whichever exists |
+
+## Reopens if
+
+- The A1 snapshot gate fails (M4), or SP-Unit cannot reach an object by index.
+- S3 (moving GC) starts: pointer rewriting and RW cells must then follow moves (H12).
+
+## Change log
+
+| Date | Change kind | Change | By |
+|---|---|---|---|
+| 2026-10-21 | draft | First draft (rules) from 02 §6 row H13, 03 §6 and 07 §3, with the index lists as built at 55c15d0 | P0-DOCS agent (M2-P0) |
