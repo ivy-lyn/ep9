@@ -129,7 +129,8 @@ echo "== SP-Dispatch gate on $host ($abi); speed gates: $speed_mode"
 echo "uptime: $(load)"
 # The C compiler and its target (Windows: x86_64-pc-windows-msvc, for zig cc and for clang).
 echo "cc: $cc_note: ${cc[*]} ($(command -v "${cc[0]}" || echo "${cc[0]} not found"))"
-"${cc[@]}" --version 2>&1 | sed -n '1,2p' | sed 's/^/cc: /'
+# Run it in $tgt: `zig cc --version` writes a 0-byte a.o into the current directory (M2-AO).
+(cd "$tgt" && "${cc[@]}" --version) 2>&1 | sed -n '1,2p' | sed 's/^/cc: /'
 
 # 1. build
 ok=1
