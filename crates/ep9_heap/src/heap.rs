@@ -8,20 +8,32 @@
 //! alloc_slow: GC-stress count / budget --> collect(); then
 //!   small (<= 256 B):  next hole: current page -> recyclable pages -> lazy sweep -> fresh page
 //!   medium (> 256 B):  current hole if it fits, else the overflow TLAB (fresh pages only)
+//! alloc_shape(kind, size)  (Space::Shape kinds only; never inline)
+//!   GC-stress count / budget --> collect(); then the shape hole if it fits, else the next
+//!   hole that fits: current shape page -> recyclable shape pages -> lazy sweep of shape
+//!   pages -> fresh page from the shape region (chunks [0, N)); full --> one collect, retry
 //! every new cell: word0 = {shape 0, WHITE, kind, flags 0}; every other word = undefined;
 //!                 VO bit set (small pages)
 //!
-//! collect(): spill registers (ep9_platform) -> retire TLABs -> finish the last lazy sweep
+//! collect(): spill registers (ep9_platform) -> retire TLABs and the shape hole -> finish the
+//!   last lazy sweep
 //!   -> mark: CSS [sp, stack high) + handles + scratch roots + root ranges + root sources
-//!   -> drain (trace by kind) -> clear dead weak slots -> free dead LOS cells now
-//!   -> queue every small page for lazy sweep (mark bits stay until the page is swept)
+//!   -> drain (trace by kind; with a shape space, also mark the shape that word0 names)
+//!   -> clear dead weak slots -> free dead LOS cells now
+//!   -> queue every small page for lazy sweep, shape pages in their own queue (mark bits stay
+//!      until the page is swept)
 //! a callback (root source, trace, size, weak source) panics while marking: every mark bit
 //!   is cleared and nothing is freed; while sweeping a page: that page's mark bits are cleared
 //! ```
 //!
 //! [`Heap`] keeps the fields that JIT and AOT code read at fixed offsets first
 //! ([`Heap::BARRIER_THRESHOLD_OFFSET`], [`Heap::TLAB_CURSOR_OFFSET`],
-//! [`Heap::TLAB_LIMIT_OFFSET`]). An isolate embeds the heap and adds its own offset.
+//! [`Heap::TLAB_LIMIT_OFFSET`], [`Heap::CAGE_BASE_OFFSET`]). An isolate embeds the heap and
+//! adds its own offset.
+//!
+//! Shape region (H08-Q1): `ShapeId = (shape address - cage base) as u32`, and the shape is
+//! `cage base + id` ([`Heap::shape_id_of`], [`Heap::shape_cell`]). Outside Miri a shape space
+//! needs a 4 GiB-aligned cage, so the id is also the low 32 bits of the address.
 
 use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
@@ -33,7 +45,7 @@ use ep9_value::encoding::VALUE_UNDEFINED;
 use ep9_value::{ShapeId, Value, Word0};
 
 use crate::barrier::{BarrierState, Slot, gc_state, threshold};
-use crate::cell::{CellKind, CellPtr, CellSize, KindError, KindId, KindTable};
+use crate::cell::{CellKind, CellPtr, CellSize, KindError, KindId, KindTable, Space};
 use crate::layout::{
     BITMAP_WORDS, FIRST_CELL_OFFSET, FIRST_LINE, LARGE_CELL_OFFSET, LINE_SIZE, LINES_PER_PAGE,
     Large, MAX_LINE_CELL, MAX_SMALL_SIZE, PAGE_CELL_BYTES, PAGE_MASK, PAGE_SIZE, Page, ZAP_WORD,
@@ -63,6 +75,12 @@ pub struct HeapConfig {
     pub zap: bool,
     /// Keep the cells that the last conservative scan found ([`Heap::last_conservative_roots`]).
     pub record_conservative_roots: bool,
+    /// Bytes at the start of the cage that form the shape region (H08-Q1): only
+    /// [`Space::Shape`] cells, from [`Heap::alloc_shape`]. 0 (the default) means no shape
+    /// space. Otherwise a power of two from 1 MiB to 4 GiB, at most the cage size (and, under
+    /// Miri, the 8 MiB stand-in reservation); outside Miri `cage.align` must be at least
+    /// 4 GiB. [`HeapError::Config`] otherwise.
+    pub shape_space_bytes: usize,
 }
 
 impl Default for HeapConfig {
@@ -75,6 +93,7 @@ impl Default for HeapConfig {
             verify_after_gc: false,
             zap: cfg!(debug_assertions),
             record_conservative_roots: false,
+            shape_space_bytes: 0,
         }
     }
 }
@@ -91,6 +110,9 @@ pub enum AllocError {
     /// The kind has a fixed size and the size, rounded by `cell_size_for`, is not it. The
     /// sweep and the verifier use the kind's size, so such a cell would overlap its neighbour.
     WrongSize(KindId),
+    /// [`Heap::alloc_shape`] with a kind registered in [`Space::Normal`]. ([`Heap::alloc`]
+    /// gives [`AllocError::UnknownKind`] for a `Shape` kind.)
+    WrongSpace(KindId),
 }
 
 impl std::fmt::Display for AllocError {
@@ -105,6 +127,9 @@ impl std::fmt::Display for AllocError {
                     "size does not match the fixed size of cell kind {}",
                     k.get()
                 )
+            }
+            AllocError::WrongSpace(k) => {
+                write!(f, "cell kind {} is not a shape-space kind", k.get())
             }
         }
     }
@@ -127,7 +152,10 @@ pub struct GcStats {
     /// Bytes handed to allocation buffers and LOS cells so far.
     pub allocated_bytes: u64,
     pub committed_bytes: usize,
+    /// Small pages, shape pages included.
     pub small_pages: usize,
+    /// Small pages in the shape region.
+    pub shape_pages: usize,
     pub large_cells: usize,
 }
 
@@ -140,6 +168,8 @@ struct Hot {
     /// TLAB end. 0 when there is no TLAB, and always 0 in GC-stress mode, so every
     /// allocation takes the slow path.
     limit: Cell<usize>,
+    /// Base of the cage = base of the shape region. Never changes. `shape = base + ShapeId`.
+    cage_base: usize,
 }
 
 /// The GC heap of one isolate.
@@ -150,8 +180,10 @@ struct Hot {
 #[repr(C)]
 pub struct Heap {
     hot: Hot,
+    /// The cage base, with provenance over the whole reservation.
     base: NonNull<u8>,
-    base_addr: usize,
+    /// Bytes of the shape region (0: none). Never changes.
+    shape_bytes: usize,
     /// Per kind byte, for `alloc` without a borrow of `inner`: [`NOT_REGISTERED`],
     /// [`DYNAMIC_SIZE`], or the fixed size rounded by `cell_size_for`.
     kind_sizes: [Cell<usize>; 256],
@@ -169,6 +201,10 @@ const _: () = {
     assert!(offset_of!(Hot, barrier) + BarrierState::THRESHOLD_OFFSET == 0);
     assert!(offset_of!(Hot, cursor) == 8);
     assert!(offset_of!(Hot, limit) == 16);
+    assert!(offset_of!(Hot, cage_base) == Heap::CAGE_BASE_OFFSET);
+    // Offset 0 of the region (and of every page) is a page header, never a cell, so ShapeId
+    // 0 never names a shape.
+    assert!(FIRST_CELL_OFFSET > 0);
 };
 
 /// `kind_sizes` entry of a kind byte with no registration.
@@ -260,6 +296,14 @@ pub(crate) struct Inner {
     allocated_since_gc: usize,
     budget: usize,
     stress_count: u32,
+    /// The shape hole: bump pointer and end (0 when there is none). Shape cells never use the
+    /// main TLAB.
+    shape_cursor: usize,
+    shape_end: usize,
+    shape_page: Option<usize>,
+    shape_line: usize,
+    shape_recyclable: Vec<usize>,
+    shape_sweep_queue: Vec<usize>,
     mark_stack: Vec<CellPtr>,
     weak_slots: Vec<NonNull<Slot>>,
     css_log: Vec<CellPtr>,
@@ -274,14 +318,22 @@ impl Heap {
     pub const TLAB_CURSOR_OFFSET: usize = 8;
     /// Offset of the TLAB limit.
     pub const TLAB_LIMIT_OFFSET: usize = 16;
+    /// Offset of the cage base (a `usize`), which is also the shape-region base: JIT and AOT
+    /// slow paths decode a ShapeId as `[heap + CAGE_BASE_OFFSET] + id`.
+    pub const CAGE_BASE_OFFSET: usize = 24;
 
     /// Reserves the cage and creates an empty heap for the current thread.
     pub fn new(config: HeapConfig) -> Result<Heap, HeapError> {
-        let mem = Memory::new(&config.cage, config.max_heap_bytes)?;
+        let mem = Memory::with_shape_space(
+            &config.cage,
+            config.max_heap_bytes,
+            config.shape_space_bytes,
+        )?;
         #[cfg(not(miri))]
         let stack = ep9_platform::current_thread_stack_bounds().map_err(HeapError::Stack)?;
         let base = mem.base();
         let base_addr = mem.base_addr();
+        let shape_bytes = mem.shape_bytes();
         let s = Settings {
             initial_budget: config.initial_budget.max(PAGE_SIZE),
             gc_stress: config.gc_stress,
@@ -295,9 +347,10 @@ impl Heap {
                 _pad: [0; 7],
                 cursor: Cell::new(0),
                 limit: Cell::new(0),
+                cage_base: base_addr,
             },
             base,
-            base_addr,
+            shape_bytes,
             kind_sizes: [const { Cell::new(NOT_REGISTERED) }; 256],
             inner: RefCell::new(Inner {
                 mem,
@@ -315,6 +368,12 @@ impl Heap {
                 allocated_since_gc: 0,
                 budget: s.initial_budget,
                 stress_count: 0,
+                shape_cursor: 0,
+                shape_end: 0,
+                shape_page: None,
+                shape_line: FIRST_LINE,
+                shape_recyclable: Vec::new(),
+                shape_sweep_queue: Vec::new(),
                 mark_stack: Vec::new(),
                 weak_slots: Vec::new(),
                 css_log: Vec::new(),
@@ -335,14 +394,33 @@ impl Heap {
     }
 
     /// Registers the trace and size functions of a cell kind. Needed before the first
-    /// allocation of that kind.
+    /// allocation of that kind. Same as [`Heap::register_kind_in`] with [`Space::Normal`].
     pub fn register_kind(&self, id: KindId, kind: CellKind) -> Result<(), KindError> {
-        self.inner.borrow_mut().kinds.register(id, kind)?;
-        let size = match kind.size {
-            CellSize::Fixed(n) => cell_size_for(n).expect("register checked the fixed size"),
-            CellSize::Dynamic(_) => DYNAMIC_SIZE,
-        };
-        self.kind_sizes[id.get() as usize].set(size);
+        self.register_kind_in(id, kind, Space::Normal)
+    }
+
+    /// Registers a cell kind in `space`. A [`Space::Shape`] kind needs a shape space
+    /// ([`KindError::NoShapeSpace`]) and a fixed size of at most 8 KiB, if fixed
+    /// ([`KindError::BadSize`]); its cells come only from [`Heap::alloc_shape`].
+    pub fn register_kind_in(
+        &self,
+        id: KindId,
+        kind: CellKind,
+        space: Space,
+    ) -> Result<(), KindError> {
+        if space == Space::Shape && self.shape_bytes == 0 {
+            return Err(KindError::NoShapeSpace(id));
+        }
+        self.inner.borrow_mut().kinds.register_in(id, kind, space)?;
+        // `alloc` reads only `kind_sizes`. A shape kind keeps NOT_REGISTERED there, so `alloc`
+        // never places one and its code stays as it was.
+        if space == Space::Normal {
+            let size = match kind.size {
+                CellSize::Fixed(n) => cell_size_for(n).expect("register checked the fixed size"),
+                CellSize::Dynamic(_) => DYNAMIC_SIZE,
+            };
+            self.kind_sizes[id.get() as usize].set(size);
+        }
         Ok(())
     }
 
@@ -352,7 +430,9 @@ impl Heap {
     /// GC point (no barrier needed: elision E2).
     ///
     /// For a kind with a fixed size, `size` must round to that size
-    /// ([`AllocError::WrongSize`] otherwise).
+    /// ([`AllocError::WrongSize`] otherwise). A [`Space::Shape`] kind is not in this entry's
+    /// table, so it gives [`AllocError::UnknownKind`]: use [`Heap::alloc_shape`]. (A finer
+    /// error here would change how LLVM inlines this function: +0.4% instructions on ci-v0.)
     ///
     /// This is a GC point: it may collect before it returns.
     #[inline]
@@ -380,6 +460,101 @@ impl Heap {
             }
         }
         self.alloc_slow(kind, size)
+    }
+
+    /// Allocates a cell of a [`Space::Shape`] kind in the shape region, as [`Heap::alloc`]
+    /// does for other kinds: WHITE, ShapeId 0, every word after word0 `undefined`. Its
+    /// [`Heap::shape_id_of`] is never 0. At most 8 KiB ([`AllocError::TooLarge`] above).
+    /// When the region is full it collects once and then gives
+    /// [`AllocError::OutOfMemory`].
+    ///
+    /// This is a GC point: it may collect before it returns.
+    pub fn alloc_shape(&self, kind: KindId, size: usize) -> Result<CellPtr, AllocError> {
+        let size = {
+            let inner = self.inner.borrow();
+            let Some(k) = inner.kinds.get(kind.get()) else {
+                return Err(AllocError::UnknownKind(kind));
+            };
+            if inner.kinds.space(kind.get()) != Space::Shape {
+                return Err(AllocError::WrongSpace(kind));
+            }
+            let Some(size) = cell_size_for(size) else {
+                return Err(AllocError::TooLarge);
+            };
+            if let CellSize::Fixed(n) = k.size
+                && cell_size_for(n) != Some(size)
+            {
+                return Err(AllocError::WrongSize(kind));
+            }
+            if size > MAX_SMALL_SIZE {
+                return Err(AllocError::TooLarge);
+            }
+            size
+        };
+        let trigger = self.inner.borrow_mut().gc_trigger(size);
+        if trigger {
+            self.collect();
+        }
+        let mut collected = trigger;
+        loop {
+            let placed = self.inner.borrow_mut().alloc_shape_in(size);
+            match placed {
+                Some(addr) => {
+                    // H08-Q1: offset 0 of the region never holds a cell, so id 0 means "none".
+                    assert!(addr > self.hot.cage_base, "a shape cell at the cage base");
+                    debug_assert!(addr + size <= self.hot.cage_base + self.shape_bytes);
+                    // SAFETY: `alloc_shape_in` returned a free, committed part of a shape hole:
+                    // a small page of this heap.
+                    return Ok(unsafe { self.init_cell(addr, kind, size, true) });
+                }
+                None if !collected => {
+                    self.collect();
+                    collected = true;
+                }
+                None => return Err(AllocError::OutOfMemory),
+            }
+        }
+    }
+
+    /// The base address of the cage, which is the base of the shape region.
+    #[inline(always)]
+    pub fn cage_base(&self) -> usize {
+        self.hot.cage_base
+    }
+
+    /// Bytes of the shape region; 0 when the heap has no shape space.
+    #[inline(always)]
+    pub fn shape_space_bytes(&self) -> usize {
+        self.shape_bytes
+    }
+
+    /// The ShapeId of a shape cell: its offset from the cage base. Never 0. Outside Miri it
+    /// equals the low 32 bits of the address (the cage is 4 GiB-aligned).
+    #[inline(always)]
+    pub fn shape_id_of(&self, shape: CellPtr) -> ShapeId {
+        let off = shape.addr().wrapping_sub(self.hot.cage_base);
+        debug_assert!(
+            off != 0 && off < self.shape_bytes,
+            "{shape:?} is not in the shape region"
+        );
+        ShapeId::new(off as u32)
+    }
+
+    /// The shape cell that `id` names: `cage base + id`.
+    ///
+    /// # Safety
+    /// `id` names a live shape cell of this heap: it was read from the word0 of a live cell
+    /// (the GC keeps that shape alive), or it is the [`Heap::shape_id_of`] of a live shape.
+    #[inline(always)]
+    pub unsafe fn shape_cell(&self, id: ShapeId) -> CellPtr {
+        let off = id.get() as usize;
+        debug_assert!(
+            off != 0 && off < self.shape_bytes,
+            "ShapeId {off:#x} is outside the shape region"
+        );
+        // SAFETY: the region lies inside the reservation, so the offset stays in bounds of the
+        // provenance of `base`; a live shape cell starts there (caller contract).
+        unsafe { CellPtr::from_raw(self.base.add(off).cast()) }
     }
 
     #[cold]
@@ -416,7 +591,7 @@ impl Heap {
     unsafe fn init_cell(&self, addr: usize, kind: KindId, size: usize, small: bool) -> CellPtr {
         // SAFETY: `addr` is inside the reservation (caller contract), so the offset is in
         // bounds of the provenance of `base`.
-        let p = unsafe { self.base.add(addr - self.base_addr) };
+        let p = unsafe { self.base.add(addr - self.hot.cage_base) };
         let w = p.cast::<u64>();
         // SAFETY: the caller guarantees `size` bytes of unused, committed, 8-aligned memory.
         // No reference to it exists yet; the GC reads it only after the VO bit is set below.
@@ -431,7 +606,7 @@ impl Heap {
             // SAFETY: a small cell lies in a committed small page; its base is the address
             // masked to 256 KiB, inside the reservation.
             let page =
-                unsafe { Page::from_base(self.base.add((addr & PAGE_MASK) - self.base_addr)) };
+                unsafe { Page::from_base(self.base.add((addr & PAGE_MASK) - self.hot.cage_base)) };
             page.set_vo(addr);
         }
         // SAFETY: a new cell of this heap starts at `p`.
@@ -476,9 +651,13 @@ impl Heap {
             inner.cur_page = None;
             inner.ov_cursor = 0;
             inner.ov_end = 0;
+            inner.shape_cursor = 0;
+            inner.shape_end = 0;
+            inner.shape_page = None;
             // Mark bits and VO bits must be exact before marking.
             inner.finish_sweeping();
             inner.recyclable.clear();
+            inner.shape_recyclable.clear();
 
             // From here until the weak sources are done, a root source, trace, size or weak
             // function may panic. The unwind then drops this guard, which clears every mark
@@ -552,8 +731,14 @@ impl Heap {
             core::mem::forget(unmark);
 
             inner.sweep_large();
-            inner.sweep_queue = inner.mem.small_pages().collect();
-            inner.sweep_queue.reverse(); // pop() takes low pages first
+            let (mut shape_pages, mut pages): (Vec<usize>, Vec<usize>) = inner
+                .mem
+                .small_pages()
+                .partition(|&i| inner.mem.is_shape_chunk(i));
+            pages.reverse(); // pop() takes low pages first
+            shape_pages.reverse();
+            inner.sweep_queue = pages;
+            inner.shape_sweep_queue = shape_pages;
 
             inner.budget = inner.s.initial_budget.max(marked_bytes);
             inner.allocated_since_gc = 0;
@@ -594,6 +779,11 @@ impl Heap {
         let mut s = inner.stats.clone();
         s.committed_bytes = inner.mem.committed_bytes();
         s.small_pages = inner.mem.small_pages().count();
+        s.shape_pages = inner
+            .mem
+            .small_pages()
+            .filter(|&i| inner.mem.is_shape_chunk(i))
+            .count();
         s.large_cells = inner.mem.large_heads().count();
         s
     }
@@ -819,27 +1009,61 @@ impl Inner {
     }
 
     fn find_hole(&mut self, idx: usize) -> Option<(usize, usize)> {
-        let page = self.mem.page(idx);
-        let mut l = self.cur_line;
-        while l < LINES_PER_PAGE && page.line_used(l) {
-            l += 1;
+        next_free_run(self.mem.page(idx), &mut self.cur_line)
+    }
+
+    /// Finds memory for a shape cell of `size` (already rounded, at most 8 KiB) in the shape
+    /// region. Holes shorter than `size` are skipped until the next GC.
+    fn alloc_shape_in(&mut self, size: usize) -> Option<usize> {
+        debug_assert!(size <= MAX_SMALL_SIZE);
+        loop {
+            let cur = self.shape_cursor;
+            if cur != 0 && cur + size <= self.shape_end {
+                self.shape_cursor = cur + size;
+                return Some(cur);
+            }
+            if let Some(idx) = self.shape_page {
+                if let Some((start, end)) = next_free_run(self.mem.page(idx), &mut self.shape_line)
+                {
+                    if end - start >= size {
+                        self.note_allocated(end - start);
+                        self.shape_cursor = start;
+                        self.shape_end = end;
+                    }
+                    continue;
+                }
+                self.shape_page = None;
+            }
+            if let Some(idx) = self.shape_recyclable.pop() {
+                self.shape_page = Some(idx);
+                self.shape_line = FIRST_LINE;
+                continue;
+            }
+            if let Some(idx) = self.shape_sweep_queue.pop() {
+                if self.sweep_page(idx) == Swept::Recyclable {
+                    self.shape_page = Some(idx);
+                    self.shape_line = FIRST_LINE;
+                }
+                continue;
+            }
+            // A fresh page is one hole of PAGE_CELL_BYTES >= MAX_SMALL_SIZE, so the next turn
+            // places the cell.
+            let idx = self.mem.alloc_shape_page()?;
+            self.mem.page(idx).init(idx as u32);
+            self.shape_page = Some(idx);
+            self.shape_line = FIRST_LINE;
         }
-        if l >= LINES_PER_PAGE {
-            self.cur_line = LINES_PER_PAGE;
-            return None;
-        }
-        let start = l;
-        while l < LINES_PER_PAGE && !page.line_used(l) {
-            l += 1;
-        }
-        self.cur_line = l;
-        Some((page.addr() + start * LINE_SIZE, page.addr() + l * LINE_SIZE))
     }
 
     pub(crate) fn finish_sweeping(&mut self) {
         while let Some(idx) = self.sweep_queue.pop() {
             if self.sweep_page(idx) == Swept::Recyclable {
                 self.recyclable.push(idx);
+            }
+        }
+        while let Some(idx) = self.shape_sweep_queue.pop() {
+            if self.sweep_page(idx) == Swept::Recyclable {
+                self.shape_recyclable.push(idx);
             }
         }
     }
@@ -943,6 +1167,25 @@ impl Inner {
     }
 }
 
+/// The next run of free lines in `page`, from line `*line` on. Leaves `*line` after the run
+/// (at `LINES_PER_PAGE` when there is none). Returns the run's (start, end) addresses.
+fn next_free_run(page: Page, line: &mut usize) -> Option<(usize, usize)> {
+    let mut l = *line;
+    while l < LINES_PER_PAGE && page.line_used(l) {
+        l += 1;
+    }
+    if l >= LINES_PER_PAGE {
+        *line = LINES_PER_PAGE;
+        return None;
+    }
+    let start = l;
+    while l < LINES_PER_PAGE && !page.line_used(l) {
+        l += 1;
+    }
+    *line = l;
+    Some((page.addr() + start * LINE_SIZE, page.addr() + l * LINE_SIZE))
+}
+
 #[cfg(test)]
 impl Heap {
     /// True if a cell starting at `addr` survived the last GC, without sweeping: on a page that
@@ -959,15 +1202,34 @@ impl Heap {
                 if addr - page.addr() < FIRST_CELL_OFFSET || !page.vo(addr) {
                     return false;
                 }
-                !inner.sweep_queue.contains(&idx) || page.is_marked(addr)
+                let queued =
+                    inner.sweep_queue.contains(&idx) || inner.shape_sweep_queue.contains(&idx);
+                !queued || page.is_marked(addr)
             }
             Chunk::LargeHead { .. } => crate::trace::cell_start(&inner.mem, addr).is_some(),
             _ => false,
         }
     }
 
+    /// Live cells in the shape region (VO bits after a full sweep).
+    pub(crate) fn shape_region_cells(&self) -> usize {
+        let mut inner = self.inner.borrow_mut();
+        inner.finish_sweeping();
+        let mem = &inner.mem;
+        mem.small_pages()
+            .filter(|&i| mem.is_shape_chunk(i))
+            .map(|i| {
+                let page = mem.page(i);
+                (0..BITMAP_WORDS)
+                    .map(|w| page.vo_word(w).load(Relaxed).count_ones() as usize)
+                    .sum::<usize>()
+            })
+            .sum()
+    }
+
     /// Small pages still waiting for the lazy sweep.
     pub(crate) fn unswept_pages(&self) -> usize {
-        self.inner.borrow().sweep_queue.len()
+        let inner = self.inner.borrow();
+        inner.sweep_queue.len() + inner.shape_sweep_queue.len()
     }
 }
