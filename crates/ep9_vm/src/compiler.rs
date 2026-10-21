@@ -10,9 +10,13 @@
 //!     compile_script    -> ep9_frontend::compile (sloppy Script)  script entry (ABI script.rs)
 //! ```
 //!
-//! M2-P0: nothing calls the hooks yet. With no hooks, or with a
-//! [`CompileFailure::Unsupported`] result, `Function()` keeps its v0 Error and `%eval%` stays
-//! uninstalled (C19), so no test262 result changes.
+//! The callers (P3-EVAL-VM): direct eval (`interp/slow/eval.rs`), the global `eval`,
+//! `Function` and `GeneratorFunction` (`natives.rs`, `generator.rs`) and `Cx::evaluate_script`,
+//! all through `abi/script.rs`. With no hooks they throw an `EvalError` ("code generation from
+//! strings is not available"); a [`CompileFailure::Unsupported`] result throws the v0
+//! not-implemented `Error` (`"unsupported: <construct>"`), never a `SyntaxError`. A
+//! `compile_function` unit (from `compile_function_ctor`) is eval code whose function 0
+//! returns the new closure; the VM runs it with no context and `this` = the global this.
 //!
 //! [`IsolateConfig::compiler`]: crate::IsolateConfig::compiler
 

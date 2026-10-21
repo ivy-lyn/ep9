@@ -194,15 +194,15 @@ fn resume_native<'s>(
     resume(cx.inner(), this.bits(), mode, v, method).map(Local::from_bits)
 }
 
-/// `GeneratorFunction(...params, body)` (§27.3.1.1). Not implemented: needs the compiler
-/// hook (P3-FNCTOR).
+/// `GeneratorFunction(...params, body)` (§27.3.1.1): CreateDynamicFunction with kind
+/// generator, through the compiler hook like `Function` (`abi/script.rs`, P3-EVAL-VM).
 pub(crate) fn generator_function<'s>(
     cx: &mut HostCx<'s>,
     _this: Local<'s>,
-    _args: Args<'s>,
-    _nt: Local<'s>,
+    args: Args<'s>,
+    nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    Err(cx.not_implemented("GeneratorFunction constructor"))
+    cx.create_dynamic_function(args, nt, ep9_bytecode::FunctionCtorKind::Generator)
 }
 
 /// `%GeneratorPrototype%.next(value)` (§27.5.1.2): GeneratorResume(this, value).

@@ -152,7 +152,7 @@ pub enum IntrinsicId {
     AsyncFunction,
     /// `%AsyncFunction.prototype%` (§27.7.3).
     AsyncFunctionPrototype,
-    /// `%eval%` (§19.2.1). Made, but not a global binding until P3-EVAL-VM (C19).
+    /// `%eval%` (§19.2.1), also the global `eval` (P3-EVAL-VM).
     Eval,
 }
 

@@ -149,7 +149,11 @@ fn function_prototype_is_a_function() {
     );
     assert_eq!(
         common::run_both("Function('return 1')"),
-        Err("Error: not implemented in ep9 v0: Function constructor".to_string())
+        // The common isolates have no compiler hook (O2, P3-EVAL-VM).
+        Err(
+            "EvalError: code generation from strings is not available (no compiler hook)"
+                .to_string()
+        )
     );
     assert_eq!(
         common::run_both(
