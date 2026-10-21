@@ -273,12 +273,12 @@ jobs:
       - uses: ./.github/actions/setup-rust
       # cargo xtask disasm-check needs llvm-objdump, llvm-nm and llvm-ar from the sysroot.
       - run: rustup component add llvm-tools
-      # H15: tail handlers end in tail jumps, handler args <= 4, and every expansion has 282
+      # H15: tail handlers end in tail jumps, handler args <= 4, and every expansion has 284
       # handlers = ep9_vm::internals::THREADED_HANDLERS (opcodes + cold blocks + 3). Change the
       # number when an opcode or a cold block is added. No --match-loop gate for ep9_vm: its
       # match loop is the debug expansion, and its release shape is a report (H15 ADR, Rules).
       - name: ep9_vm handlers
-        run: cargo xtask disasm-check --manifest-path crates/ep9_vm/Cargo.toml -p ep9_vm --expect 282
+        run: cargo xtask disasm-check --manifest-path crates/ep9_vm/Cargo.toml -p ep9_vm --expect 284
       # SP-Value, H11: the barrier fast path (rustc --emit asm; no llvm-tools needed).
       - name: ep9_heap barrier
         if: ${{ !cancelled() }}
