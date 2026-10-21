@@ -55,7 +55,7 @@ pub const PROPS: &[ObjectProps] = &[
     ObjectProps {
         target: IntrinsicId::StringPrototype,
         props: &[
-            // §22.1.3.5 String.prototype.constructor.
+            // §22.1.3.6 String.prototype.constructor.
             PropDef::intrinsic(
                 PropKey::Atom(Atom::Constructor),
                 IntrinsicId::String,
@@ -68,7 +68,7 @@ pub const PROPS: &[ObjectProps] = &[
     },
     ObjectProps {
         target: IntrinsicId::GlobalObject,
-        // §19.3.31 String ( . . . ).
+        // §19.3 String ( . . . ).
         props: &[PropDef::intrinsic(
             PropKey::Str("String"),
             IntrinsicId::String,
@@ -172,7 +172,7 @@ fn char_code_at<'s>(
     Ok(Local::int32(i32::from(unit)))
 }
 
-/// String.prototype.toString ( ) (§22.1.3.32).
+/// String.prototype.toString ( ) (§22.1.3.29).
 fn to_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,

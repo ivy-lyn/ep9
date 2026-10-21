@@ -61,7 +61,7 @@ pub const PROPS: &[ObjectProps] = &[
     ObjectProps {
         target: IntrinsicId::Symbol,
         props: &[
-            // §20.4.2.11 Symbol.prototype ({}).
+            // §20.4.2.9 Symbol.prototype ({}).
             PropDef::intrinsic(
                 PropKey::Atom(Atom::Prototype),
                 IntrinsicId::SymbolPrototype,
@@ -114,7 +114,7 @@ pub const PROPS: &[ObjectProps] = &[
     },
     ObjectProps {
         target: IntrinsicId::GlobalObject,
-        // §19.3.33 Symbol ( . . . ).
+        // §19.3 Symbol ( . . . ).
         props: &[PropDef::intrinsic(
             PropKey::Str("Symbol"),
             IntrinsicId::Symbol,

@@ -59,7 +59,7 @@ pub const PROPS: &[ObjectProps] = &[
     },
     ObjectProps {
         target: IntrinsicId::GlobalObject,
-        // §19.3.8 Boolean ( . . . ).
+        // §19.3 Boolean ( . . . ).
         props: &[PropDef::intrinsic(
             PropKey::Str("Boolean"),
             IntrinsicId::Boolean,

@@ -87,7 +87,7 @@ pub const PROPS: &[ObjectProps] = &[
     },
     ObjectProps {
         target: IntrinsicId::GlobalObject,
-        // §19.3.21 Number ( . . . ).
+        // §19.3 Number ( . . . ).
         props: &[PropDef::intrinsic(
             PropKey::Str("Number"),
             IntrinsicId::Number,
@@ -202,7 +202,7 @@ fn exponent(x: f64) -> i32 {
 /// integer digits:  divide by the radix while the quotient is >= 2^53, writing '0' for each
 ///   unrepresented digit; then take remainders (fmod) down to 0
 /// ```
-pub fn radix_string(x: f64, radix: u32) -> String {
+fn radix_string(x: f64, radix: u32) -> String {
     debug_assert!((2..=36).contains(&radix) && radix != 10);
     if x.is_nan() {
         return "NaN".into();
