@@ -1,12 +1,22 @@
-//! Property access on v0 objects: [[Get]], [[Set]], [[DefineOwnProperty]], [[Delete]],
-//! [[HasProperty]], [[GetOwnProperty]] and [[OwnPropertyKeys]] along the prototype chain
-//! (§10.1). v0: data properties only (no accessors), string keys only (no symbols), dense
-//! array elements only.
+//! The internal methods of ordinary objects (§10.1) on shapes (H17 v0): `[[Get]]`, `[[Set]]`,
+//! `[[DefineOwnProperty]]`, `[[Delete]]`, `[[HasProperty]]`, `[[GetOwnProperty]]`,
+//! `[[OwnPropertyKeys]]`, `[[GetPrototypeOf]]`, `[[SetPrototypeOf]]`, `[[IsExtensible]]` and
+//! `[[PreventExtensions]]`, plus the exotic parts of arrays and String wrappers
+//! (`exotic.rs`). v0: data properties only (an accessor descriptor throws "not
+//! implemented"; P3-ACC), dense array elements only.
 //!
-//! | Receiver | Own properties seen before the table |
+//! ```text
+//!  get / set / has / delete
+//!    probe(key) once ──> per object on the chain: exotic::get / own_attrs ──> props (shape or table)
+//!  define (CreateDataPropertyOrThrow)
+//!    fast path: a new key on an extensible object, or an existing configurable data property
+//!    otherwise: define_own_property (ValidateAndApplyPropertyDescriptor), TypeError on false
+//! ```
+//!
+//! | Receiver | Own properties seen before the storage |
 //! |---|---|
 //! | array | `length` {w}, array-index keys (elements, {w, e, c}) |
-//! | function | `prototype` (created on first access for constructors), `length` {c}, `name` {c} |
+//! | constructor function | `prototype` (created on first use, `exotic.rs`) |
 //! | primitive wrapper | `wrapper::string_own_property` (String wrappers: `length`, indices) |
 //! | string primitive | `length`, array-index keys; then `String.prototype` |
 //! | number / boolean primitive | `Number.prototype` / `Boolean.prototype` |
@@ -17,79 +27,48 @@
 use crate::conv::{Res, describe, num, to_property_key, to_uint32_of};
 use crate::descriptor::Desc;
 use crate::error::{not_implemented, throw_error};
-use crate::frame::{NULL, UNDEFINED, int32_bits};
+use crate::exotic::{self, Exotic};
+use crate::frame::{NULL, UNDEFINED};
 use crate::interp::Cx;
-use crate::key::{array_index_of, intern_key, is_property_key, is_symbol_key, key_text};
-use crate::kinds::{is_callable, is_wrapper};
-use crate::object::{
-    self, attr, is_array, is_function, is_object, is_string, obj, own_define, own_get,
+use crate::key::{
+    self, Probe, array_index_of, intern_key, is_property_key, is_symbol_key, key_text,
 };
+use crate::kinds::{self as kind, is_callable};
+use crate::object::{self, attr, is_array, is_function, is_object, is_string};
+use crate::props;
 use crate::runtime::{Atom, ErrorKind, Root, Runtime, val};
-use crate::{string, wrapper};
+use crate::{shape, string, wrapper};
 
 fn is_atom(cx: &Cx, key: u64, a: Atom) -> bool {
     object::key_eq(key, cx.rt().atom(a))
 }
 
-/// The lazily created `prototype` object of a constructor function (v0: created on first
-/// access, as V8 does for most functions).
-fn function_prototype_property(cx: &mut Cx, f: u64) -> u64 {
-    let rt = cx.rt();
-    let key = rt.atom(Atom::Prototype);
-    if let Some((v, _)) = own_get(f, key) {
-        return v;
-    }
-    let p = object::new_plain_object(rt);
-    own_define(rt, p, rt.atom(Atom::Constructor), f, attr::HIDDEN);
-    own_define(rt, f, key, p, attr::WRITABLE);
-    p
+/// OrdinaryGet over the prototype chain, starting at object `o` (receiver `o`).
+pub(crate) fn get_from(cx: &mut Cx, o: u64, key: u64) -> Res<u64> {
+    get_with_receiver(cx, o, key, o)
 }
 
-/// A virtual own property of `o` (not in its table), if any.
-fn virtual_get(cx: &mut Cx, o: u64, key: u64) -> Option<u64> {
-    if is_array(o) {
-        if is_atom(cx, key, Atom::Length) {
-            return Some(num(f64::from(object::array_len(o))));
-        }
-        if let Some(i) = array_index_of(key) {
-            return object::array_get(o, i);
-        }
-    } else if is_function(o) {
-        let fi = object::function_info(o);
-        if fi.is_constructor() && is_atom(cx, key, Atom::Prototype) {
-            return Some(function_prototype_property(cx, o));
-        }
-        if own_get(o, key).is_none() {
-            if is_atom(cx, key, Atom::Length) {
-                return Some(num(f64::from(fi.length)));
-            }
-            if is_atom(cx, key, Atom::Name) {
-                let name = fi.name.clone();
-                return Some(object::new_string(cx.rt(), &name));
-            }
-        }
-    }
-    None
-}
-
-/// OrdinaryGet over the prototype chain, starting at object `o`.
-pub(crate) fn get_from(cx: &mut Cx, mut o: u64, key: u64) -> Res<u64> {
+/// `o.[[Get]](key, receiver)` (§10.1.8.1 OrdinaryGet) up the prototype chain from the
+/// object `o`. The probe is classified once. v0: data properties only, so `receiver` is not
+/// used yet (P3-ACC passes it to getters). GC point (a lazy `prototype`).
+pub(crate) fn get_with_receiver(cx: &mut Cx, mut o: u64, key: u64, _receiver: u64) -> Res<u64> {
+    debug_assert!(is_object(o) && is_property_key(key));
+    let how = key::probe(key);
     loop {
-        if let Some(v) = virtual_get(cx, o, key) {
+        if kind::cell_kind(o) != kind::OBJECT.get()
+            && let Some(v) = exotic::get(cx, o, key, how)
+        {
             return Ok(v);
         }
-        if let Some((v, _)) = own_get(o, key) {
-            return Ok(v);
+        match props::own_value_or_proto(o, key, how) {
+            Ok(v) => return Ok(v),
+            Err(NULL) => return Ok(UNDEFINED),
+            Err(p) => o = p,
         }
-        let p = object::proto_of(o);
-        if p == NULL {
-            return Ok(UNDEFINED);
-        }
-        o = p;
     }
 }
 
-/// `base[key]` with a property-key string (GetValue on a property reference).
+/// `base[key]` with a property key (GetValue on a property reference).
 pub(crate) fn get(cx: &mut Cx, base: u64, key: u64) -> Res<u64> {
     debug_assert!(is_property_key(key));
     if is_object(base) {
@@ -118,7 +97,7 @@ pub(crate) fn get(cx: &mut Cx, base: u64, key: u64) -> Res<u64> {
         );
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     };
-    get_from(cx, proto, key)
+    get_with_receiver(cx, proto, key, base)
 }
 
 #[inline]
@@ -151,8 +130,8 @@ pub(crate) fn get_keyed(cx: &mut Cx, base: u64, k: u64) -> Res<u64> {
     get(cx, base, key)
 }
 
-/// OrdinarySet (§10.1.9) with receiver = `base`. v0: no accessors; a non-writable own or
-/// inherited property makes the assignment fail (TypeError in strict code).
+/// PutValue on a property reference: `base[key] = v` with receiver `base`. A failed
+/// assignment throws a TypeError in strict code.
 pub(crate) fn set(cx: &mut Cx, base: u64, key: u64, v: u64, strict: bool) -> Res<()> {
     debug_assert!(is_property_key(key));
     if !is_object(base) {
@@ -184,39 +163,60 @@ pub(crate) fn set(cx: &mut Cx, base: u64, key: u64, v: u64, strict: bool) -> Res
 
 /// `o.[[Set]](key, v, o)` (§10.1.9 OrdinarySet, receiver = `o`) on an object. `Ok(false)`
 /// when the assignment fails (a non-writable property on the chain, or a new property on a
-/// non-extensible object). v0: no accessors.
+/// non-extensible object).
 pub(crate) fn ordinary_set(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<bool> {
+    set_with_receiver(cx, o, key, v, o)
+}
+
+/// `o.[[Set]](key, v, receiver)` (§10.1.9.1 OrdinarySet and §10.1.9.2
+/// OrdinarySetWithOwnDescriptor) on the object `o`. `Ok(false)` when the assignment fails.
+/// v0: data properties only (P3-ACC adds setters). GC point.
+pub(crate) fn set_with_receiver(cx: &mut Cx, o: u64, key: u64, v: u64, receiver: u64) -> Res<bool> {
     debug_assert!(is_object(o) && is_property_key(key));
     let rt = cx.rt();
-    if is_array(o) {
-        if is_atom(cx, key, Atom::Length) {
-            let n = to_uint32_of(cx, v)?;
-            let d = crate::conv::to_number(cx, v)?;
-            if f64::from(n) != d || !object::array_set_length(rt, o, n) {
-                return Err(throw_error(
-                    cx,
-                    ErrorKind::RangeError,
-                    "Invalid array length",
-                ));
+    let how = key::probe(key);
+    if receiver == o {
+        if is_array(o) {
+            if exotic::is_key(rt, key, how, Atom::Length) {
+                let n = to_uint32_of(cx, v)?;
+                let d = crate::conv::to_number(cx, v)?;
+                if f64::from(n) != d || !object::array_set_length(rt, o, n) {
+                    return Err(throw_error(
+                        cx,
+                        ErrorKind::RangeError,
+                        "Invalid array length",
+                    ));
+                }
+                return Ok(true);
             }
-            return Ok(true);
-        }
-        if let Some(i) = array_index_of(key)
-            && array_store(rt, o, i, v)
-        {
-            return Ok(true);
-        }
-    }
-    if is_function(o) && object::function_info(o).is_constructor() {
-        // Materialize `prototype` so the store below replaces it.
-        if is_atom(cx, key, Atom::Prototype) {
-            function_prototype_property(cx, o);
+            if let Some(i) = array_index_of(key)
+                && array_store(rt, o, i, v)
+            {
+                return Ok(true);
+            }
+        } else if is_function(o) && exotic::is_lazy_prototype(rt, o, key, how) {
+            // Make `prototype`, so the store below replaces it.
+            exotic::function_prototype(rt, o);
         }
     }
-    // Find the property on the chain to check writability.
+    // The property on the chain decides (§10.1.9.2 steps 1-2). v0: an accessor has no
+    // WRITABLE bit, so it fails here until P3-ACC calls setters.
     let mut cur = o;
     loop {
-        if let Some((_, a)) = own_get(cur, key) {
+        let found = match exotic::own_attrs(rt, cur, key, how) {
+            Some(a) => Some(a),
+            // The common case, in one lookup: an own data property of the receiver takes the
+            // value in place if it is writable (array `length` and elements returned above;
+            // a lazy `prototype` is made, so it is stored).
+            None if cur == receiver => {
+                if let Some(stored) = props::own_store_if_writable(rt, cur, key, how, v) {
+                    return Ok(stored);
+                }
+                None
+            }
+            None => props::own_get_with(cur, key, how).map(|(_, a)| a),
+        };
+        if let Some(a) = found {
             if a & attr::WRITABLE == 0 {
                 return Ok(false);
             }
@@ -228,14 +228,31 @@ pub(crate) fn ordinary_set(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<bool> {
         }
         cur = p;
     }
-    if object::own_replace(rt, o, key, v) {
-        return Ok(true);
-    }
-    if !is_extensible(o) {
+    define_on_receiver(cx, receiver, key, v)
+}
+
+/// §10.1.9.2 steps 2.c-e: the store lands on `receiver`: an existing writable data property
+/// gets the value, a missing one is CreateDataProperty. GC point.
+fn define_on_receiver(cx: &mut Cx, receiver: u64, key: u64, v: u64) -> Res<bool> {
+    if !is_object(receiver) {
         return Ok(false);
     }
-    own_define(rt, o, key, v, attr::DEFAULT);
-    Ok(true)
+    match own_property(cx, receiver, key) {
+        Some((_, a, _)) if a & attr::WRITABLE == 0 => Ok(false),
+        Some(_) => {
+            let desc = Desc {
+                value: Some(v),
+                ..Desc::default()
+            };
+            define_own_property(cx, receiver, key, desc)
+        }
+        None => {
+            if !is_extensible(receiver) {
+                return Ok(false);
+            }
+            add_own_property(cx, receiver, key, v, attr::DEFAULT)
+        }
+    }
 }
 
 /// Stores element `i` of the array `a` unless that adds an element to a non-extensible
@@ -280,29 +297,57 @@ pub(crate) fn set_keyed(cx: &mut Cx, base: u64, k: u64, v: u64, strict: bool) ->
     set(cx, base, key, v, strict)
 }
 
-/// CreateDataPropertyOrThrow on an object (literals, `DefineNamedOwnProperty`).
+/// CreateDataPropertyOrThrow (§7.3.7) on an object: literals, `DefineNamedOwnProperty`,
+/// `DefineKeyedOwnProperty`, `StaInArrayLiteral`, CopyDataProperties. The fast path takes a
+/// new key on an extensible object and an existing configurable data property; everything
+/// else goes through `[[DefineOwnProperty]]`, and a rejection throws a TypeError. GC point.
 pub(crate) fn define(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<()> {
     debug_assert!(is_object(o) && is_property_key(key));
     let rt = cx.rt();
-    if is_array(o) {
-        if let Some(i) = array_index_of(key)
-            && object::array_set(rt, o, i, v)
-        {
-            return Ok(());
-        }
-        if is_atom(cx, key, Atom::Length) {
-            return set(cx, o, key, v, true);
+    let key = intern_key(rt, key);
+    let how = key::probe(key);
+    if is_array(o)
+        && let Some(i) = array_index_of(key)
+        // An existing element is {w, e, c}; a new one needs an extensible array.
+        && (object::array_get(o, i).is_some() || is_extensible(o))
+        && object::array_set(rt, o, i, v)
+    {
+        return Ok(());
+    }
+    let exotic = exotic::own_attrs(rt, o, key, how);
+    let stored = props::own_get_with(o, key, how);
+    if exotic.is_none() {
+        match stored {
+            None if is_extensible(o) => {
+                props::own_add(rt, o, key, v, attr::DEFAULT);
+                return Ok(());
+            }
+            Some((_, a)) if a & attr::CONFIGURABLE != 0 && a & attr::ACCESSOR == 0 => {
+                props::own_define(rt, o, key, v, attr::DEFAULT);
+                return Ok(());
+            }
+            _ => {}
         }
     }
-    own_define(rt, o, key, v, attr::DEFAULT);
-    Ok(())
+    let exists = exotic.is_some() || stored.is_some();
+    if define_own_property(cx, o, key, Desc::data(v, attr::DEFAULT))? {
+        return Ok(());
+    }
+    let k = key_text(cx.rt(), key);
+    let msg = if exists {
+        format!("Cannot redefine property: {k}")
+    } else {
+        format!("Cannot define property {k}, object is not extensible")
+    };
+    Err(throw_error(cx, ErrorKind::TypeError, &msg))
 }
 
-/// Keyed define for any key value.
+/// Keyed define (CreateDataPropertyOrThrow) for any key value.
 pub(crate) fn define_keyed(cx: &mut Cx, o: u64, k: u64, v: u64) -> Res<()> {
     if is_array(o)
         && let Some(i) = val(k).as_int32()
         && i >= 0
+        && (object::array_get(o, i as u32).is_some() || is_extensible(o))
         && object::array_set(cx.rt(), o, i as u32, v)
     {
         return Ok(());
@@ -311,7 +356,7 @@ pub(crate) fn define_keyed(cx: &mut Cx, o: u64, k: u64, v: u64) -> Res<()> {
     define(cx, o, key, v)
 }
 
-/// `delete base[k]` (§13.5.1.2). Returns the boolean result.
+/// `delete base[k]` (§13.5.1.2, then `[[Delete]]` §10.1.10). Returns the boolean result.
 pub(crate) fn delete(cx: &mut Cx, base: u64, k: u64, strict: bool) -> Res<bool> {
     if base == UNDEFINED || base == NULL {
         return Err(throw_error(
@@ -327,22 +372,26 @@ pub(crate) fn delete(cx: &mut Cx, base: u64, k: u64, strict: bool) -> Res<bool> 
             !(is_string(base) && (array_index_of(key).is_some() || is_atom(cx, key, Atom::Length)))
         );
     }
-    if is_array(base) {
-        if is_atom(cx, key, Atom::Length) {
-            return deny(cx, key, strict);
-        }
-        if let Some(i) = array_index_of(key) {
-            if i < object::array_len(base) {
-                // v0: a dense array keeps a hole.
-                object::array_set(cx.rt(), base, i, crate::frame::HOLE);
-            }
-            return Ok(true);
-        }
+    let rt = cx.rt();
+    let how = key::probe(key);
+    if is_array(base)
+        && let Some(i) = array_index_of(key)
+        && object::array_get(base, i).is_some()
+    {
+        // v0: a dense array keeps a hole.
+        object::array_set(rt, base, i, crate::frame::HOLE);
+        return Ok(true);
     }
-    match own_get(base, key) {
+    if let Some(a) = exotic::own_attrs(rt, base, key, how) {
+        // Array `length`, a constructor's lazy `prototype` and String wrapper properties are
+        // not configurable; elements were handled above.
+        debug_assert!(a & attr::CONFIGURABLE == 0);
+        return deny(cx, key, strict);
+    }
+    match props::own_get_with(base, key, how) {
         Some((_, a)) if a & attr::CONFIGURABLE == 0 => deny(cx, key, strict),
         Some(_) => {
-            object::own_delete(cx.rt(), base, key);
+            object::own_delete(rt, base, key);
             Ok(true)
         }
         None => Ok(true),
@@ -381,9 +430,10 @@ pub(crate) fn has(cx: &mut Cx, o: u64, k: u64) -> Res<bool> {
 /// Runs no JS (no proxies yet) and allocates nothing.
 pub(crate) fn has_property(cx: &Cx, o: u64, key: u64) -> bool {
     debug_assert!(is_object(o) && is_property_key(key));
+    let how = key::probe(key);
     let mut cur = o;
     loop {
-        if has_own_property(cx, cur, key) {
+        if has_own_with(cx.rt(), cur, key, how) {
             return true;
         }
         let p = object::proto_of(cur);
@@ -396,21 +446,12 @@ pub(crate) fn has_property(cx: &Cx, o: u64, key: u64) -> bool {
 
 /// HasOwnProperty(O, P) (§7.3.13): `[[GetOwnProperty]]` is not undefined. Allocates nothing.
 pub(crate) fn has_own_property(cx: &Cx, o: u64, key: u64) -> bool {
-    if own_get(o, key).is_some() {
-        return true;
-    }
-    if is_array(o) {
-        is_atom(cx, key, Atom::Length)
-            || array_index_of(key).is_some_and(|i| object::array_get(o, i).is_some())
-    } else if is_function(o) {
-        is_atom(cx, key, Atom::Length)
-            || is_atom(cx, key, Atom::Name)
-            || object::function_info(o).is_constructor() && is_atom(cx, key, Atom::Prototype)
-    } else if is_wrapper(o) {
-        wrapper::string_own_property(cx.rt(), o, key).is_some()
-    } else {
-        false
-    }
+    debug_assert!(is_object(o) && is_property_key(key));
+    has_own_with(cx.rt(), o, key, key::probe(key))
+}
+
+fn has_own_with(rt: &Runtime, o: u64, key: u64, how: Probe) -> bool {
+    props::own_get_with(o, key, how).is_some() || exotic::own_attrs(rt, o, key, how).is_some()
 }
 
 /// OrdinaryHasInstance (§7.3.22) for `v instanceof f`. v0: no `@@hasInstance`, no bound
@@ -446,7 +487,8 @@ pub(crate) fn instance_of(cx: &mut Cx, v: u64, f: u64) -> Res<bool> {
 }
 
 /// The keys a `for-in` loop visits (§14.7.5.9 EnumerateObjectProperties, v0: own and inherited
-/// enumerable string keys, array indices first, no duplicates), as a new array.
+/// enumerable string keys, array indices first, no duplicates; symbols are skipped), as a new
+/// array.
 pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
     let rt = cx.rt();
     let keys = object::new_array(rt, 0);
@@ -462,7 +504,7 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
     // EnumerateObjectProperties (§14.7.5.9): each object's own keys in [[OwnPropertyKeys]]
     // order (§10.1.11: array indices ascending, then strings in creation order), then the
     // prototype's. A key seen before, enumerable or not, is skipped later.
-    // GC: the Rust vectors hold only indices and key strings of property tables (reachable
+    // GC: the Rust vectors hold only indices and key atoms of property storage (reachable
     // from `o`); a new index string goes into `keys` (a Rust local, so a root) at once.
     let mut seen_index: Vec<u32> = Vec::new();
     let mut seen_string: Vec<u64> = Vec::new();
@@ -480,6 +522,9 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
         }
         for i in 0..object::own_count(cur) {
             let (k, _, a) = object::own_entry(cur, i);
+            if is_symbol_key(k) {
+                continue;
+            }
             let enumerable = a & attr::ENUMERABLE != 0;
             match array_index_of(k) {
                 Some(n) => index_keys.push((n, enumerable)),
@@ -522,53 +567,24 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
 /// Where an own property lives, for the apply step of [[DefineOwnProperty]].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OwnSlot {
-    /// The property table (`props.rs`).
-    Table,
-    /// A dense array element.
-    Element(u32),
-    /// A function's `length` or `name` that is not in its table yet.
-    FunctionVirtual,
-    /// A String wrapper's `length` or index (never writable or configurable).
-    WrapperVirtual,
+    /// The object's property storage (`props.rs`: shape slots or the dictionary table).
+    Storage,
+    /// An exotic own property (`exotic.rs`).
+    Exotic(Exotic),
 }
 
 /// The own property `key` of the object `o`: (value, attribute bits, where it lives). Array
-/// `length` is handled by the callers. GC point (a function's `name` string, a constructor's
-/// lazy `prototype` object).
+/// `length` is handled by the callers. GC point (a constructor's lazy `prototype` object).
 fn own_property(cx: &mut Cx, o: u64, key: u64) -> Option<(u64, i32, OwnSlot)> {
-    if is_array(o) {
-        if let Some(i) = array_index_of(key)
-            && let Some(v) = object::array_get(o, i)
-        {
-            return Some((v, attr::DEFAULT, OwnSlot::Element(i)));
-        }
-    } else if is_function(o) {
-        let fi = object::function_info(o);
-        if fi.is_constructor() && is_atom(cx, key, Atom::Prototype) {
-            function_prototype_property(cx, o);
-        } else if own_get(o, key).is_none() {
-            // §10.2.9 SetFunctionName and §10.2.10 SetFunctionLength: {w: false, e: false,
-            // c: true}.
-            if is_atom(cx, key, Atom::Length) {
-                let v = num(f64::from(fi.length));
-                return Some((v, attr::CONFIGURABLE, OwnSlot::FunctionVirtual));
-            }
-            if is_atom(cx, key, Atom::Name) {
-                let name = fi.name.clone();
-                let v = object::new_string(cx.rt(), &name);
-                return Some((v, attr::CONFIGURABLE, OwnSlot::FunctionVirtual));
-            }
-        }
-    } else if is_wrapper(o)
-        && let Some((v, a)) = wrapper::string_own_property(cx.rt(), o, key)
-    {
-        return Some((v, a, OwnSlot::WrapperVirtual));
+    let how = key::probe(key);
+    if let Some((v, a, e)) = exotic::own_property(cx, o, key, how) {
+        return Some((v, a, OwnSlot::Exotic(e)));
     }
-    own_get(o, key).map(|(v, a)| (v, a, OwnSlot::Table))
+    props::own_get_with(o, key, how).map(|(v, a)| (v, a, OwnSlot::Storage))
 }
 
-/// `o.[[GetOwnProperty]](key)` (§10.1.5.1 OrdinaryGetOwnProperty, plus the virtual
-/// properties of arrays, functions and String wrappers; H20 R6). GC point.
+/// `o.[[GetOwnProperty]](key)` (§10.1.5.1 OrdinaryGetOwnProperty, plus the exotic
+/// properties of arrays, constructors and String wrappers; H20 R6). GC point.
 pub(crate) fn get_own_property(cx: &mut Cx, o: u64, key: u64) -> Option<Desc> {
     debug_assert!(is_object(o) && is_property_key(key));
     if is_array(o) && is_atom(cx, key, Atom::Length) {
@@ -579,20 +595,22 @@ pub(crate) fn get_own_property(cx: &mut Cx, o: u64, key: u64) -> Option<Desc> {
     own_property(cx, o, key).map(|(v, a, _)| Desc::data(v, a))
 }
 
-/// IsExtensible (§7.2.5, ordinary objects).
+/// IsExtensible (§7.2.5, ordinary objects): the shape's flag.
 pub(crate) fn is_extensible(o: u64) -> bool {
-    object::flags_of(o) & obj::EXTENSIBLE != 0
+    shape::is_extensible(shape::shape_of(o))
 }
 
-/// `o.[[PreventExtensions]]()` (§10.1.4.1). Always succeeds for ordinary objects.
+/// `o.[[PreventExtensions]]()` (§10.1.4.1). Always succeeds for ordinary objects. The
+/// object moves to a non-extensible dictionary shape (OM-10). GC point.
 pub(crate) fn prevent_extensions(rt: &Runtime, o: u64) -> bool {
-    let flags = object::flags_of(o) & !obj::EXTENSIBLE;
-    object::wr(&rt.heap, object::cell(o), obj::FLAGS, int32_bits(flags));
+    if is_extensible(o) {
+        props::prevent_extensions(rt, o);
+    }
     true
 }
 
 /// `o.[[SetPrototypeOf]](p)` (§10.1.2.1 OrdinarySetPrototypeOf; `p` is an object or null).
-/// %Object.prototype% is an immutable prototype exotic object (§10.4.7).
+/// %Object.prototype% is an immutable prototype exotic object (§10.4.7). GC point.
 pub(crate) fn set_prototype_of(rt: &Runtime, o: u64, p: u64) -> bool {
     debug_assert!(is_object(o) && (p == NULL || is_object(p)));
     if object::proto_of(o) == p {
@@ -618,7 +636,7 @@ pub(crate) fn same_value(a: u64, b: u64) -> bool {
 /// §10.1.6.3 ValidateAndApplyPropertyDescriptor; §10.4.2.1 for arrays). `Ok(false)` when the
 /// definition is rejected. v0: a descriptor with `get` or `set`, a non-writable array
 /// `length`, and an array element with attributes other than {w, e, c} throw "not
-/// implemented".
+/// implemented". GC point.
 pub(crate) fn define_own_property(cx: &mut Cx, o: u64, key: u64, desc: Desc) -> Res<bool> {
     debug_assert!(is_object(o) && is_property_key(key));
     if desc.is_accessor() {
@@ -635,6 +653,9 @@ pub(crate) fn define_own_property(cx: &mut Cx, o: u64, key: u64, desc: Desc) -> 
         let v = desc.value.unwrap_or(UNDEFINED);
         return add_own_property(cx, o, key, v, desc.new_attrs());
     };
+    if cur_a & attr::ACCESSOR != 0 {
+        return Err(not_implemented(cx, "accessor properties"));
+    }
     if !validate_data(&desc, cur_v, cur_a) {
         return Ok(false);
     }
@@ -645,8 +666,9 @@ pub(crate) fn define_own_property(cx: &mut Cx, o: u64, key: u64, desc: Desc) -> 
     }
     let rt = cx.rt();
     match slot {
-        OwnSlot::Table => own_define(rt, o, key, v, attrs),
-        OwnSlot::Element(i) => {
+        // New attributes move a fast object to dictionary mode (OM-10, props.rs).
+        OwnSlot::Storage => props::own_define(rt, o, key, v, attrs),
+        OwnSlot::Exotic(Exotic::Element(i)) => {
             if attrs != attr::DEFAULT {
                 return Err(not_implemented(
                     cx,
@@ -655,14 +677,9 @@ pub(crate) fn define_own_property(cx: &mut Cx, o: u64, key: u64, desc: Desc) -> 
             }
             object::array_set(rt, o, i, v);
         }
-        OwnSlot::FunctionVirtual => {
-            // The property moves into the table; [[OwnPropertyKeys]] keeps it first.
-            let key = intern_key(rt, key);
-            own_define(rt, o, key, v, attrs);
-        }
         // Validation passed on a non-writable, non-configurable property: nothing changes
         // (SameValue held for the value).
-        OwnSlot::WrapperVirtual => {}
+        OwnSlot::Exotic(Exotic::Wrapper) => {}
     }
     Ok(true)
 }
@@ -709,11 +726,10 @@ fn add_own_property(cx: &mut Cx, o: u64, key: u64, v: u64, attrs: i32) -> Res<bo
         if object::array_set(rt, o, i, v) {
             return Ok(true);
         }
-        // Past the v0 dense limit the index becomes a table property and `length` stays
-        // (H18 v0 notes), as in [[Set]] and literals.
+        // Past the v0 dense limit the index becomes a dictionary property and `length`
+        // stays (H18 v0 notes), as in [[Set]] and literals.
     }
-    let key = intern_key(rt, key);
-    own_define(rt, o, key, v, attrs);
+    props::own_define(rt, o, key, v, attrs);
     Ok(true)
 }
 
@@ -757,64 +773,52 @@ fn array_define_length(cx: &mut Cx, a: u64, desc: Desc) -> Res<bool> {
 
 /// `o.[[OwnPropertyKeys]]()` (§10.1.11.1 OrdinaryOwnPropertyKeys, §10.4.2 arrays, §10.4.3.3
 /// String wrappers) as a new array: array indices ascending, then strings in creation order,
-/// then symbols in creation order. The virtual properties come where the spec creates them:
-/// `length` of an array or String wrapper first among the strings; `length`, `name`, then
-/// `prototype` of a function. GC point.
+/// then symbols in creation order. The exotic properties come where the spec creates them:
+/// `length` of an array or String wrapper first among the strings; a constructor's lazy
+/// `prototype` after its `length` and `name`. GC point.
 pub(crate) fn own_property_keys(cx: &mut Cx, o: u64) -> u64 {
     debug_assert!(is_object(o));
     let rt = cx.rt();
-    // GC: `keys` is a Rust local (a root by the stack scan); the table keys stay reachable
-    // from `o`, and no JS runs here, so the table does not change under the loops.
+    // GC: `keys` is a Rust local (a root by the stack scan); the stored keys stay reachable
+    // from `o`, and no JS runs here, so the storage does not change under the loops.
     let keys = object::new_array(rt, 0);
     let push = |k: u64| {
         let n = object::array_len(keys);
         object::array_set(rt, keys, n, k);
     };
-    // 1. Integer indices ascending: elements, String wrapper indices, table index keys.
+    // 1. Integer indices ascending: elements, String wrapper indices, stored index keys.
     let mut indices: Vec<u32> = Vec::new();
     if is_array(o) {
         indices.extend((0..object::array_len(o)).filter(|&i| object::array_get(o, i).is_some()));
     }
-    let wrapped_string = wrapper::wrapper_value(o).filter(|&p| is_string(p));
-    if let Some(s) = wrapped_string {
+    if let Some(s) = wrapper::wrapper_value(o).filter(|&p| is_string(p)) {
         indices.extend(0..object::str_len(s) as u32);
     }
-    let table = |i: usize| object::own_entry(o, i).0;
-    indices.extend((0..object::own_count(o)).filter_map(|i| array_index_of(table(i))));
+    let stored = |i: usize| object::own_entry(o, i).0;
+    indices.extend((0..object::own_count(o)).filter_map(|i| array_index_of(stored(i))));
     indices.sort_unstable();
     indices.dedup();
     for i in indices {
         let s = crate::conv::number_string(cx, f64::from(i));
         push(s);
     }
-    // 2. Strings in creation order, the virtual ones first.
-    let mut first: [Option<Atom>; 3] = [None; 3];
-    if is_array(o) || wrapped_string.is_some() {
-        first[0] = Some(Atom::Length);
-    } else if is_function(o) {
-        first = [Some(Atom::Length), Some(Atom::Name), None];
-        if object::function_info(o).is_constructor() {
-            first[2] = Some(Atom::Prototype);
-        }
+    // 2. Strings in creation order: an exotic `length` first, a lazy `prototype` last (no
+    // stored key is younger than it, `exotic::lazy_prototype_key`).
+    if let Some(k) = exotic::virtual_length_key(rt, o) {
+        push(k);
     }
-    for a in first.into_iter().flatten() {
-        push(rt.atom(a));
-    }
-    let is_first = |k: u64| {
-        first
-            .into_iter()
-            .flatten()
-            .any(|a| object::key_eq(k, rt.atom(a)))
-    };
     for i in 0..object::own_count(o) {
-        let k = table(i);
-        if !is_symbol_key(k) && array_index_of(k).is_none() && !is_first(k) {
+        let k = stored(i);
+        if !is_symbol_key(k) && array_index_of(k).is_none() {
             push(k);
         }
     }
+    if let Some(p) = exotic::lazy_prototype_key(rt, o) {
+        push(p);
+    }
     // 3. Symbols in creation order.
     for i in 0..object::own_count(o) {
-        let k = table(i);
+        let k = stored(i);
         if is_symbol_key(k) {
             push(k);
         }

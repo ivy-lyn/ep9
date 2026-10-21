@@ -1,34 +1,46 @@
-//! v0 object model (M0 week 3). Week 4 replaces the property dictionary with shapes (H8, H17)
-//! and the strings with H19 strings. Every shortcut is marked `// v0:`.
+//! JS objects on shapes: the H17 v0 layout (M0 week 4), plus contexts and the ELEMENTS
+//! store. Shapes are in `shape.rs`, own-property storage (fast slots and the dictionary table)
+//! in `props.rs`, internal methods in `property.rs`, exotic own properties in `exotic.rs`.
 //!
-//! All cells are `ep9_heap` cells. Every word after word0 of an object, table or context is a
-//! valid `Value` (raw pointers use the native-word encoding of `frame.rs`), so one trace
-//! function visits them all. Kind ids are in `kinds.rs` (table v1). Strings live in
-//! `string.rs`, the property dictionary in `props.rs` and the key helpers in `key.rs`; this
-//! file re-exports their old names.
+//! ```text
+//!  JS object (kinds 16-63)                                   word0 flags
+//!  +0  word0: shape_id | gc_state | kind | flags              bits 0-7  in-object slot count
+//!  +8  SLOTS (out-of-line fields) | PROPS (dictionary) | undefined   bit 8  IS_PROTOTYPE
+//!  +16 ELEMENTS (arrays) | undefined                          bit 9  reserved (hash present)
+//!  +24 the kind's fixed fields, then the in-object slots      bits 10-15 reserved
+//!  size = 24 + 8 * (fixed fields + in-object slots)   (read from the cell: kind + flags)
+//! ```
+//!
+//! `[[Prototype]]` and `[[Extensible]]` live in the shape. A function's `[[Construct]]` bit
+//! comes from its FunctionInfo (OM-11).
+//!
+//! | Kind | Id | Fixed fields (from +24) | In-object slots |
+//! |---|---|---|---|
+//! | OBJECT | 16 | none | 4 for `{}`; n for a literal with n named keys; 8 for other prototypes (`new F`) |
+//! | FUNCTION | 17 | +24 FunctionInfo (native word), +32 context, +40 `[[HomeObject]]` or undefined | 2 (`length`, `name`) |
+//! | ARRAY | 18 | +24 length (int32); elements at +16 | 0 |
+//! | ERROR | 19 | +24 unit index (int32 or undefined), +32 source offset (int32) | 2 |
+//! | ITERATOR | 20 | +24 iterated array or string (undefined when done), +32 next index (int32) | 0 |
+//! | PRIMITIVE_WRAPPER | 21 | +24 the primitive | 0 |
+//! | BOUND_FUNCTION | 22 | +24 target, +32 bound `this`, +40 bound arguments | 2 |
 //!
 //! | Kind | Id | Layout (byte offsets) | Size |
 //! |---|---|---|---|
-//! | OBJECT | 16 | +8 prototype, +16 property table or undefined, +24 flags (int32) | 32 |
-//! | FUNCTION | 17 | object + 32 FunctionInfo (native word), +40 context, +48 `[[HomeObject]]` or undefined | 56 |
-//! | ARRAY | 18 | object + 32 elements or undefined, +40 length (int32) | 48 |
-//! | ERROR | 19 | object + 32 unit index (int32 or undefined), +40 source offset (int32) | 48 |
-//! | ITERATOR | 20 | object + 32 iterated array or string (undefined when done), +40 next index (int32) | 48 |
-//! | PRIMITIVE_WRAPPER | 21 | object + 1 fixed field: the primitive | 40 |
-//! | BOUND_FUNCTION | 22 | object + 3 fixed fields: target, bound `this`, bound arguments | 56 |
 //! | ELEMENTS | 65 | +8 capacity (int32), +16 values (hole = empty) | 16 + 8 cap |
 //! | CONTEXT | 66 | +8 previous, +16 scope id (int32), +24 length (int32), +32 slots | 32 + 8 len |
 //!
-//! Fixed fields are the words after the object header (from +32). The fixed-field API
-//! ([`new_object_with_fields`], [`fixed_get`], [`fixed_set`]) reads and writes them by
-//! index, so PRIMITIVE_WRAPPER and BOUND_FUNCTION code never hard-codes an offset (H17 moves
-//! the header; these signatures stay).
+//! Every word after word0 is a valid `Value` (raw pointers use the native-word encoding of
+//! `frame.rs`), so one trace function per size visits them all; no trace function visits
+//! the word0 shape (the heap marks it, H08). The fixed-field API ([`new_object_with_fields`],
+//! [`fixed_get`], [`fixed_set`]) reads and writes fixed fields by index, so
+//! PRIMITIVE_WRAPPER and BOUND_FUNCTION code never hard-codes an offset.
 
 use ep9_heap::{CellKind, CellPtr, CellSize, Heap, KindId, Slot, Tracer};
 
 use crate::frame::{HOLE, NULL, UNDEFINED, int32_bits, int32_of, native_of, native_ptr};
 use crate::kinds as kind;
-use crate::runtime::{Root, Runtime, val};
+use crate::runtime::{Atom, Root, Runtime, val};
+use crate::shape;
 use crate::unit::FunctionInfo;
 
 pub(crate) use crate::key::key_eq;
@@ -38,44 +50,49 @@ pub(crate) use crate::kinds::{
 pub(crate) use crate::props::{own_count, own_define, own_delete, own_entry, own_get, own_replace};
 pub(crate) use crate::string::{concat, new_string, new_string_utf16, str_len, str_view};
 
-/// Object fields shared by every JS object kind.
+/// Object fields shared by every JS object kind (H17 v0).
 pub(crate) mod obj {
-    pub const PROTO: usize = 8;
-    pub const PROPS: usize = 16;
-    pub const FLAGS: usize = 24;
-    pub const SIZE: usize = 32;
-    /// Flag bits.
+    /// SLOTS (fast mode, out-of-line fields), PROPS (dictionary mode) or undefined.
+    pub const SLOTS: usize = 8;
+    /// ELEMENTS or undefined (v0: arrays only).
+    pub const ELEMENTS: usize = 16;
+    /// The first fixed field; the in-object slots follow the fixed fields.
+    pub const FIXED: usize = 24;
+    /// Most in-object slots (word0 flag bits 0-7).
+    pub const MAX_INOBJECT: usize = 255;
+    /// Flag bits of [`super::flags_of`] (the week-3 FLAGS word, now computed).
     pub const EXTENSIBLE: i32 = 1;
     /// A function with `[[Construct]]`.
     pub const CONSTRUCTOR: i32 = 2;
 }
 
 pub(crate) mod fun {
-    pub const INFO: usize = 32;
-    pub const CONTEXT: usize = 40;
+    pub const INFO: usize = 24;
+    pub const CONTEXT: usize = 32;
     /// `[[HomeObject]]` (§10.2): set for methods; undefined otherwise.
-    pub const HOME: usize = 48;
-    pub const SIZE: usize = 56;
+    pub const HOME: usize = 40;
+    pub const FIXED: usize = 3;
+    /// In-object slots: `length` and `name`.
+    pub const CAPACITY: u8 = 2;
 }
 
 pub(crate) mod iter {
-    pub const ITERATED: usize = 32;
-    pub const NEXT: usize = 40;
-    pub const SIZE: usize = 48;
+    pub const ITERATED: usize = 24;
+    pub const NEXT: usize = 32;
+    pub const FIXED: usize = 2;
 }
 
 pub(crate) mod arr {
-    pub const ELEMENTS: usize = 32;
-    pub const LENGTH: usize = 40;
-    pub const SIZE: usize = 48;
+    pub const LENGTH: usize = 24;
+    pub const FIXED: usize = 1;
     /// v0: dense arrays only, up to this length. Week 4 adds elements kinds (H18).
     pub const MAX_LENGTH: u32 = 1 << 26;
 }
 
 pub(crate) mod err {
-    pub const UNIT: usize = 32;
-    pub const OFFSET: usize = 40;
-    pub const SIZE: usize = 48;
+    pub const UNIT: usize = 24;
+    pub const OFFSET: usize = 32;
+    pub const FIXED: usize = 2;
 }
 
 /// Fixed-field counts of the kinds that only use the fixed-field API.
@@ -98,11 +115,14 @@ mod ctxf {
     pub const SLOTS: usize = 32;
 }
 
-/// Property attribute bits (int32 in the table).
+/// Property attribute bits (int32 in the dictionary table; bits 0-3 of shape details).
 pub(crate) mod attr {
     pub const WRITABLE: i32 = 1;
     pub const ENUMERABLE: i32 = 2;
     pub const CONFIGURABLE: i32 = 4;
+    /// The slot holds an ACCESSOR_PAIR (H17, OM-9; P3-ACC stores the pairs). Equals
+    /// `shape::ACCESSOR`.
+    pub const ACCESSOR: i32 = 8;
     /// Ordinary assignment: all three.
     pub const DEFAULT: i32 = WRITABLE | ENUMERABLE | CONFIGURABLE;
     /// Built-in methods and prototype links: writable, configurable, not enumerable.
@@ -163,24 +183,64 @@ pub(crate) fn trace_from_8(c: CellPtr, t: &mut Tracer<'_>, size: usize) {
     t.visit_slots(unsafe { c.slots(8, (size - 8) / 8) });
 }
 
-fn trace_object(c: CellPtr, t: &mut Tracer<'_>) {
-    trace_from_8(c, t, obj::SIZE);
+/// The in-object slot count of a JS object cell (word0 flag bits 0-7).
+#[inline(always)]
+pub(crate) fn inobject_count(c: CellPtr) -> usize {
+    // SAFETY: `c` is live (crate invariant; the heap passes live cells to size functions).
+    usize::from(unsafe { c.header() }.flags() & kind::FLAG_INOBJECT_MASK)
 }
 
-fn trace_object48(c: CellPtr, t: &mut Tracer<'_>) {
-    trace_from_8(c, t, 48);
+/// The size of a JS object cell with `F` fixed fields.
+fn object_size<const F: usize>(c: CellPtr) -> usize {
+    obj::FIXED + 8 * (F + inobject_count(c))
 }
 
-fn trace_function(c: CellPtr, t: &mut Tracer<'_>) {
-    trace_from_8(c, t, fun::SIZE);
+fn trace_object<const F: usize>(c: CellPtr, t: &mut Tracer<'_>) {
+    trace_from_8(c, t, object_size::<F>(c));
 }
 
-fn trace_wrapper(c: CellPtr, t: &mut Tracer<'_>) {
-    trace_from_8(c, t, obj::SIZE + 8 * fixed::WRAPPER);
+/// Fixed-field counts by kind id (0 for OBJECT and for ids that are not JS object kinds).
+const FIXED_COUNTS: [u8; 256] = {
+    let mut t = [0u8; 256];
+    t[kind::FUNCTION.get() as usize] = fun::FIXED as u8;
+    t[kind::ARRAY.get() as usize] = arr::FIXED as u8;
+    t[kind::ERROR.get() as usize] = err::FIXED as u8;
+    t[kind::ITERATOR.get() as usize] = iter::FIXED as u8;
+    t[kind::PRIMITIVE_WRAPPER.get() as usize] = fixed::WRAPPER as u8;
+    t[kind::BOUND_FUNCTION.get() as usize] = fixed::BOUND as u8;
+    t
+};
+
+/// The fixed-field count of the JS object kind `k` (16-63): one table load.
+#[inline(always)]
+pub(crate) fn fixed_count(k: u8) -> usize {
+    debug_assert!(
+        [
+            kind::OBJECT,
+            kind::FUNCTION,
+            kind::ARRAY,
+            kind::ERROR,
+            kind::ITERATOR,
+            kind::PRIMITIVE_WRAPPER,
+            kind::BOUND_FUNCTION
+        ]
+        .iter()
+        .any(|x| x.get() == k),
+        "kind {k} is not a JS object kind"
+    );
+    usize::from(FIXED_COUNTS[usize::from(k)])
 }
 
-fn trace_bound(c: CellPtr, t: &mut Tracer<'_>) {
-    trace_from_8(c, t, obj::SIZE + 8 * fixed::BOUND);
+/// The in-object slot count new objects of kind `k` get (the OBJECT count is chosen per
+/// prototype in [`new_object`]).
+fn default_capacity(k: KindId) -> u8 {
+    if k == kind::FUNCTION || k == kind::ERROR || k == kind::BOUND_FUNCTION {
+        2
+    } else if k == kind::OBJECT {
+        4
+    } else {
+        0
+    }
 }
 
 fn elements_size(c: CellPtr) -> usize {
@@ -199,6 +259,18 @@ fn trace_context(c: CellPtr, t: &mut Tracer<'_>) {
     trace_from_8(c, t, context_size(c));
 }
 
+fn object_kind(
+    name: &'static str,
+    size: fn(CellPtr) -> usize,
+    trace: fn(CellPtr, &mut Tracer<'_>),
+) -> CellKind {
+    CellKind {
+        name,
+        size: CellSize::Dynamic(size),
+        trace,
+    }
+}
+
 /// Registers every VM cell kind with a new heap: the kinds of this file, then each module
 /// that owns a layout (strings, the property dictionary, symbols, shapes, feedback,
 /// accessors, ICs).
@@ -206,59 +278,55 @@ pub(crate) fn register_kinds(heap: &Heap) {
     let kinds: [(KindId, CellKind); 9] = [
         (
             kind::OBJECT,
-            CellKind {
-                name: "object",
-                size: CellSize::Fixed(obj::SIZE),
-                trace: trace_object,
-            },
+            object_kind("object", object_size::<0>, trace_object::<0>),
         ),
         (
             kind::FUNCTION,
-            CellKind {
-                name: "function",
-                size: CellSize::Fixed(fun::SIZE),
-                trace: trace_function,
-            },
+            object_kind(
+                "function",
+                object_size::<{ fun::FIXED }>,
+                trace_object::<{ fun::FIXED }>,
+            ),
         ),
         (
             kind::ARRAY,
-            CellKind {
-                name: "array",
-                size: CellSize::Fixed(arr::SIZE),
-                trace: trace_object48,
-            },
+            object_kind(
+                "array",
+                object_size::<{ arr::FIXED }>,
+                trace_object::<{ arr::FIXED }>,
+            ),
         ),
         (
             kind::ERROR,
-            CellKind {
-                name: "error",
-                size: CellSize::Fixed(err::SIZE),
-                trace: trace_object48,
-            },
+            object_kind(
+                "error",
+                object_size::<{ err::FIXED }>,
+                trace_object::<{ err::FIXED }>,
+            ),
         ),
         (
             kind::ITERATOR,
-            CellKind {
-                name: "iterator",
-                size: CellSize::Fixed(iter::SIZE),
-                trace: trace_object48,
-            },
+            object_kind(
+                "iterator",
+                object_size::<{ iter::FIXED }>,
+                trace_object::<{ iter::FIXED }>,
+            ),
         ),
         (
             kind::PRIMITIVE_WRAPPER,
-            CellKind {
-                name: "primitive-wrapper",
-                size: CellSize::Fixed(obj::SIZE + 8 * fixed::WRAPPER),
-                trace: trace_wrapper,
-            },
+            object_kind(
+                "primitive-wrapper",
+                object_size::<{ fixed::WRAPPER }>,
+                trace_object::<{ fixed::WRAPPER }>,
+            ),
         ),
         (
             kind::BOUND_FUNCTION,
-            CellKind {
-                name: "bound-function",
-                size: CellSize::Fixed(obj::SIZE + 8 * fixed::BOUND),
-                trace: trace_bound,
-            },
+            object_kind(
+                "bound-function",
+                object_size::<{ fixed::BOUND }>,
+                trace_object::<{ fixed::BOUND }>,
+            ),
         ),
         (
             kind::ELEMENTS,
@@ -291,17 +359,44 @@ pub(crate) fn register_kinds(heap: &Heap) {
 
 // ---- objects --------------------------------------------------------------------------------
 
-/// A new object of `kind` (any JS object kind) with `size` bytes.
-pub(crate) fn new_object_of(rt: &Runtime, k: KindId, size: usize, proto: u64) -> CellPtr {
+/// A new JS object of kind `k` with prototype `proto`, `capacity` in-object slots and no
+/// properties; its fixed fields and slots hold undefined. GC point.
+pub(crate) fn new_js_object(rt: &Runtime, k: KindId, proto: u64, capacity: u8) -> CellPtr {
+    // GC points: the shape first (it may make `proto` a prototype), then the cell. Both
+    // live in Rust locals (CSS).
+    let s = shape::initial_shape(rt, proto, k, capacity);
+    alloc_with_shape(rt, k, s, capacity)
+}
+
+/// Allocates a JS object of kind `k` with `capacity` in-object slots and installs `shape`
+/// (a live shape of that kind) before the next GC point. GC point (the allocation).
+fn alloc_with_shape(rt: &Runtime, k: KindId, s: u64, capacity: u8) -> CellPtr {
+    let size = obj::FIXED + 8 * (fixed_count(k.get()) + usize::from(capacity));
     let c = rt.alloc(k, size);
-    init(c, obj::PROTO, proto);
-    init(c, obj::FLAGS, int32_bits(obj::EXTENSIBLE));
+    // The size function reads the in-object count: set it before the next GC point.
+    // SAFETY: `c` is the new live cell.
+    unsafe { c.header() }.set_flags(u16::from(capacity));
+    shape::install(rt, c.to_value().to_bits(), s);
     c
 }
 
-/// `OrdinaryObjectCreate(proto)`.
+/// `OrdinaryObjectCreate(proto)` (`proto` an object or null). In-object slots: 4 when the
+/// prototype is %Object.prototype% (`{}`), 8 otherwise (`new F`, which reaches here
+/// through OrdinaryCreateFromConstructor, and Object.create). GC point.
 pub(crate) fn new_object(rt: &Runtime, proto: u64) -> u64 {
-    new_object_of(rt, kind::OBJECT, obj::SIZE, proto)
+    let cap = if proto == rt.root(Root::ObjectPrototype) {
+        4
+    } else {
+        8
+    };
+    new_object_with_capacity(rt, proto, cap)
+}
+
+/// An ordinary object with `capacity` in-object slots (literals: one per named key, at most
+/// [`obj::MAX_INOBJECT`]). GC point.
+pub(crate) fn new_object_with_capacity(rt: &Runtime, proto: u64, capacity: usize) -> u64 {
+    let cap = capacity.min(obj::MAX_INOBJECT) as u8;
+    new_js_object(rt, kind::OBJECT, proto, cap)
         .to_value()
         .to_bits()
 }
@@ -311,32 +406,43 @@ pub(crate) fn new_plain_object(rt: &Runtime) -> u64 {
 }
 
 /// A new extensible object of kind `k` with prototype `proto` and `n` fixed fields, all
-/// undefined. `n` must be the kind's fixed-field count (its registered size). GC point.
-#[allow(dead_code)] // wk4-stub
+/// undefined. `n` must be the kind's fixed-field count. GC point.
+#[allow(dead_code)] // callers: wrapper.rs (P2-SYM), bound.rs (P3-BLTA)
 pub(crate) fn new_object_with_fields(rt: &Runtime, k: KindId, proto: u64, n: usize) -> u64 {
-    new_object_of(rt, k, obj::SIZE + 8 * n, proto)
+    assert_eq!(
+        n,
+        fixed_count(k.get()),
+        "kind {} has another fixed-field count",
+        k.get()
+    );
+    new_js_object(rt, k, proto, default_capacity(k))
         .to_value()
         .to_bits()
 }
 
 /// Fixed field `i` of the object `o`.
-#[allow(dead_code)] // wk4-stub
+#[allow(dead_code)] // callers: wrapper.rs (P2-SYM), bound.rs (P3-BLTA)
 pub(crate) fn fixed_get(o: u64, i: usize) -> u64 {
-    rd(cell(o), obj::SIZE + 8 * i)
+    debug_assert!(i < fixed_count(cell_kind(o)));
+    rd(cell(o), obj::FIXED + 8 * i)
 }
 
 /// Stores fixed field `i` of the object `o` (barriered).
-#[allow(dead_code)] // wk4-stub
+#[allow(dead_code)] // callers: wrapper.rs (P2-SYM), bound.rs (P3-BLTA)
 pub(crate) fn fixed_set(rt: &Runtime, o: u64, i: usize, v: u64) {
-    wr(&rt.heap, cell(o), obj::SIZE + 8 * i, v);
+    debug_assert!(i < fixed_count(cell_kind(o)));
+    wr(&rt.heap, cell(o), obj::FIXED + 8 * i, v);
 }
 
+/// `[[Prototype]]` of the object `o` (an object or null): its shape's.
+#[inline]
 pub(crate) fn proto_of(o: u64) -> u64 {
-    rd(cell(o), obj::PROTO)
+    shape::proto(shape::shape_of(o))
 }
 
 /// Sets the prototype of `o` to `p` (an object or null), unless that makes a cycle
-/// (§10.1.2 OrdinarySetPrototypeOf step 8). Returns false for a cycle.
+/// (§10.1.2 OrdinarySetPrototypeOf step 8). Returns false for a cycle. A raw store: it
+/// does not check `[[Extensible]]` (`property::set_prototype_of` does). GC point.
 pub(crate) fn set_proto(rt: &Runtime, o: u64, p: u64) -> bool {
     let mut q = p;
     while q != NULL {
@@ -345,22 +451,45 @@ pub(crate) fn set_proto(rt: &Runtime, o: u64, p: u64) -> bool {
         }
         q = proto_of(q);
     }
-    wr(&rt.heap, cell(o), obj::PROTO, p);
+    if proto_of(o) == p {
+        return true;
+    }
+    let s = shape::shape_of(o);
+    if !shape::is_dictionary(s) && shape::flags(s) & shape::flag::UNIQUE == 0 && shape::count(s) > 0
+    {
+        // OM-10: an object with properties in a shared fast shape goes to dictionary mode.
+        crate::props::to_dictionary(rt, o);
+    }
+    // GC point below: `o` and `p` live in Rust locals.
+    let cap = inobject_count(cell(o)) as u8;
+    let ns = shape::with_proto(rt, shape::shape_of(o), p, cap);
+    shape::install(rt, o, ns);
+    shape::note_change(rt, o);
     true
 }
 
+/// The week-3 FLAGS word, computed: [`obj::EXTENSIBLE`] from the shape, [`obj::CONSTRUCTOR`]
+/// for a FUNCTION with `[[Construct]]`.
+#[allow(dead_code)] // the P0 compatibility API (no caller left)
 pub(crate) fn flags_of(o: u64) -> i32 {
-    rd_i32(cell(o), obj::FLAGS)
+    let mut f = 0;
+    if shape::is_extensible(shape::shape_of(o)) {
+        f |= obj::EXTENSIBLE;
+    }
+    if is_constructor(o) {
+        f |= obj::CONSTRUCTOR;
+    }
+    f
 }
 
 // ---- arrays --------------------------------------------------------------------------------
 
 pub(crate) fn new_array(rt: &Runtime, capacity: usize) -> u64 {
-    let a = new_object_of(rt, kind::ARRAY, arr::SIZE, rt.root(Root::ArrayPrototype));
+    let a = new_js_object(rt, kind::ARRAY, rt.root(Root::ArrayPrototype), 0);
     init(a, arr::LENGTH, int32_bits(0));
     if capacity > 0 {
         let e = new_elements(rt, capacity);
-        wr(&rt.heap, a, arr::ELEMENTS, e.to_value().to_bits());
+        wr(&rt.heap, a, obj::ELEMENTS, e.to_value().to_bits());
     }
     a.to_value().to_bits()
 }
@@ -379,7 +508,7 @@ pub(crate) fn array_len(a: u64) -> u32 {
 }
 
 fn elements_of(a: u64) -> Option<CellPtr> {
-    let e = rd(cell(a), arr::ELEMENTS);
+    let e = rd(cell(a), obj::ELEMENTS);
     (e != UNDEFINED).then(|| cell(e))
 }
 
@@ -396,7 +525,8 @@ pub(crate) fn array_get(a: u64, i: u32) -> Option<u64> {
     (v != HOLE).then_some(v)
 }
 
-/// Stores element `i`, growing the array. False if `i` is past the v0 dense limit.
+/// Stores element `i`, growing the array. False if `i` is past the v0 dense limit. A raw
+/// store: callers check `[[Extensible]]` for a new element.
 pub(crate) fn array_set(rt: &Runtime, a: u64, i: u32, v: u64) -> bool {
     if i >= arr::MAX_LENGTH {
         return false;
@@ -412,7 +542,7 @@ pub(crate) fn array_set(rt: &Runtime, a: u64, i: u32, v: u64) -> bool {
                 init(n, elems::DATA + 8 * j, rd(old, elems::DATA + 8 * j));
             }
         }
-        wr(&rt.heap, cell(a), arr::ELEMENTS, n.to_value().to_bits());
+        wr(&rt.heap, cell(a), obj::ELEMENTS, n.to_value().to_bits());
         n
     };
     wr(&rt.heap, e, elems::DATA + 8 * i as usize, v);
@@ -443,29 +573,46 @@ pub(crate) fn array_set_length(rt: &Runtime, a: u64, len: u32) -> bool {
 
 // ---- functions, contexts, errors -----------------------------------------------------------
 
+/// A new function object for `info` with `context`. It gets the own data properties
+/// `length` and `name` from the FunctionInfo, {w: false, e: false, c: true} (§10.2.9
+/// SetFunctionName, §10.2.10 SetFunctionLength), in its 2 in-object slots. `prototype`
+/// stays lazy (`exotic.rs`). GC point.
 pub(crate) fn new_function(rt: &Runtime, info: *const FunctionInfo, context: u64) -> u64 {
     // SAFETY: function infos outlive the isolate's cells (units and host infos are never
     // freed while the isolate lives).
     let fi = unsafe { &*info };
-    let f = new_object_of(
-        rt,
-        kind::FUNCTION,
-        fun::SIZE,
-        rt.root(Root::FunctionPrototype),
-    );
-    let mut flags = obj::EXTENSIBLE;
-    if fi.is_constructor() {
-        flags |= obj::CONSTRUCTOR;
-    }
-    init(f, obj::FLAGS, int32_bits(flags));
+    // GC points first (the name atom of a host function, the shape); the values live in
+    // Rust locals (CSS).
+    let name = function_name(rt, fi);
+    let s = shape::function_shape(rt);
+    let f = alloc_with_shape(rt, kind::FUNCTION, s, fun::CAPACITY);
     init(f, fun::INFO, native_of(info));
     init(f, fun::CONTEXT, context);
+    let slots = obj::FIXED + 8 * fun::FIXED;
+    init(f, slots, crate::conv::num(f64::from(fi.length)));
+    init(f, slots + 8, name);
     f.to_value().to_bits()
+}
+
+/// The `name` value of a new function for `fi`: the unit's atom for a bytecode function (no
+/// allocation), the interned text for a host function. GC point.
+fn function_name(rt: &Runtime, fi: &FunctionInfo) -> u64 {
+    if let Some(u) = fi.loaded_unit() {
+        return match u.unit.functions[fi.function_id as usize].name {
+            Some(id) => u.string(id.index()),
+            None => rt.atom(Atom::Empty),
+        };
+    }
+    if fi.name.is_empty() {
+        rt.atom(Atom::Empty)
+    } else {
+        crate::atoms::intern_str(rt, &fi.name)
+    }
 }
 
 /// The FunctionInfo of a function cell.
 pub(crate) fn function_info<'a>(f: u64) -> &'a FunctionInfo {
-    // SAFETY: a FUNCTION cell's slot +32 holds the native word of a FunctionInfo that lives as
+    // SAFETY: a FUNCTION cell's slot +24 holds the native word of a FunctionInfo that lives as
     // long as the isolate.
     unsafe { &*native_ptr::<FunctionInfo>(rd(cell(f), fun::INFO)) }
 }
@@ -486,7 +633,7 @@ pub(crate) fn set_home_object(rt: &Runtime, f: u64, home: u64) {
 /// A new v0 iterator over the array or string `iterated` (CreateArrayIterator, §23.1.5.1, kind
 /// "value"; CreateStringIterator, §22.1.5.1). `proto` is its prototype.
 pub(crate) fn new_iterator(rt: &Runtime, proto: u64, iterated: u64) -> u64 {
-    let c = new_object_of(rt, kind::ITERATOR, iter::SIZE, proto);
+    let c = new_js_object(rt, kind::ITERATOR, proto, 0);
     init(c, iter::ITERATED, iterated);
     init(c, iter::NEXT, int32_bits(0));
     c.to_value().to_bits()
@@ -505,12 +652,12 @@ pub(crate) fn set_iterator_state(rt: &Runtime, it: u64, iterated: u64, next: u32
     wr(&rt.heap, c, iter::NEXT, int32_bits(next as i32));
 }
 
-/// IsConstructor (§7.2.4): a FUNCTION with `[[Construct]]`, or a bound function whose target
-/// is a constructor (`bound::is_constructor`).
+/// IsConstructor (§7.2.4): a FUNCTION whose FunctionInfo has `[[Construct]]`, or a bound
+/// function whose target is a constructor (`bound::is_constructor`).
 pub(crate) fn is_constructor(f: u64) -> bool {
     let k = cell_kind(f);
     if k == kind::FUNCTION.get() {
-        flags_of(f) & obj::CONSTRUCTOR != 0
+        function_info(f).is_constructor()
     } else {
         k == kind::BOUND_FUNCTION.get() && crate::bound::is_constructor(f)
     }
@@ -545,9 +692,8 @@ pub(crate) fn context_set(rt: &Runtime, c: u64, i: u32, v: u64) -> bool {
 }
 
 pub(crate) fn new_error_object(rt: &Runtime, proto: u64) -> u64 {
-    new_object_of(rt, kind::ERROR, err::SIZE, proto)
-        .to_value()
-        .to_bits()
+    let c = new_js_object(rt, kind::ERROR, proto, default_capacity(kind::ERROR));
+    c.to_value().to_bits()
 }
 
 /// The (unit, source offset) recorded when an Error was created.
