@@ -33,7 +33,15 @@ oxc_semantic syntax checks).
 - A test with `negative.phase: parse` passes if every run reports an early error. Every other test passes if every run parses.
 - Counts are per test file (a file passes when all its runs pass), and per run.
 - `--strict-by opts` makes strict runs strict through `SourceOpts` instead of the prefix. The results must be the same.
-- Workers: one per CPU, 256 MiB stack each (oxc has no depth limit yet).
+- Workers: one worker process (`parse-worker`) per CPU, each running files on a 256 MiB stack
+  (oxc has no depth limit yet). Both passes, tests and then harness includes, run in them. A
+  parent thread sends a worker 8 files at a time and keeps the next 8 queued; the worker
+  replies in groups of up to 8, so no file waits for a round trip.
+- A worker that ends on a file (crash, abort, signal) or gives no reply in 120 s is an
+  infrastructure error with the worker's stderr tail; a new worker takes the next files, so
+  the run goes on. When a worker ends with several files unanswered, the runner runs each of
+  them again alone, and the one that ends a worker again gets the error. If none does, the
+  first of them gets it ("none stopped it again"), so a crash is never lost.
 
 ### Expectations
 
@@ -45,7 +53,7 @@ test262 root. `#` lines are comments.
 | Failures equal the file | 0 |
 | A failure that is not in the file, or a listed path that passes now | 1 |
 | Bad flag, missing file, I/O error | 2 |
-| A test or include that cannot be read, is not UTF-8, has bad front matter, or makes the parser panic | 2 |
+| A test or include that cannot be read, is not UTF-8, has bad front matter, makes the parser panic, or ends or hangs its worker | 2 |
 
 - Exit 2 for a file that the runner cannot check comes before the expectation file is read. So
   the expectation file cannot hide these errors, and `--update-expectations` does not write them.
@@ -113,10 +121,39 @@ lists the 4 tests that run past any timeout under GC-stress (they fail without i
 (H16; default 8, `0` = at the first call, `4294967295` = never), as `ep9 --feedback-threshold`.
 The result must not depend on it, so every threshold uses the same expectation file.
 
-Test hook: `EP9_TEST262_FAULT=<kind>:<substr>,...` makes a worker fail on matching paths:
-`panic`, `abort`, `hang`, `late` (the run returns after the soft timeout) or `internal` (an
-internal BytecodeGen error for a test path or `harness/<file>`). Only `tests/exec.rs` uses
-it.
+### Panics and `panic = "abort"`
+
+Each worker process installs a panic hook that keeps the panic text for the result line and
+also writes `ep9-test262 worker panicked: <msg> at <file>:<line>` to stderr. The parent keeps
+the last 4096 bytes of each worker's stderr and puts them in the line of a `worker crash`.
+
+| Build | A panic in a run | Report | Exit |
+|---|---|---|---|
+| unwinds (today) | caught in the worker | `panic` (exec), `[mode] panic: <msg>` (parse) | 2 |
+| `panic = "abort"` (from P2-INFRA2, also for ep9-test262) | ends the worker | `worker crash`, with the panic text from the stderr tail | 2 |
+
+So from P2 on, a panic counts as `worker crash` in the infrastructure line, and exit 2 still
+holds. The summary line keeps its format:
+`infrastructure errors: N (panic N, timeout N, worker crash N, other N)` (the CI atom-key gate
+matches it).
+
+### Test hooks
+
+`EP9_TEST262_FAULT=<kind>:<substr>,...` makes a worker fail on matching paths. Only
+`tests/exec.rs` and `tests/infra_errors.rs` use it.
+
+| Kind | Command | Effect on a matching path |
+|---|---|---|
+| `panic` | exec | a panic in the run |
+| `nounwind-panic` | exec | a panic that cannot unwind (in an `extern "C"` frame): the worker aborts after the panic hook, as under `panic = "abort"` |
+| `abort` | exec | the worker aborts |
+| `hang` | exec | the worker hangs (killed at the hard timeout) |
+| `late` | exec | the run returns after the soft timeout |
+| `internal` | exec | an internal BytecodeGen error, for a test path or `harness/<file>` |
+| `parse-panic` | parse | a panic in each run of the file (a test path or `harness/<file>`) |
+| `parse-nounwind-panic` | parse | as `nounwind-panic`, in the parse worker |
+| `parse-abort` | parse | the parse worker aborts on the file |
+| `parse-abort-in-group` | parse | the parse worker aborts on the file only while more requests wait (a crash that does not repeat when the file runs alone) |
 
 ### In CI
 
