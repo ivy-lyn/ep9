@@ -9,6 +9,7 @@
 //! ToPropertyKey (any value) -> a symbol as it is; else flatten, then the atom of the string
 //! unit strings              -> atoms (interned at unit load, unit.rs)
 //! Rust text                 -> atoms::intern_str
+//! index or number (Rust)    -> index_key / number_key (the atom; no fresh string first)
 //! define paths              -> intern_key (P2-OBJ calls it; stored keys are always atoms)
 //!
 //! lookup: probe(key) once -> Bits (atom or symbol): compare bits only
@@ -67,6 +68,35 @@ pub(crate) fn to_property_key(cx: &mut Cx, b: u64) -> Res<PropertyKey> {
     };
     let s = string::flatten(cx, s);
     Ok(intern_key(cx.rt(), s))
+}
+
+/// The key of the index `i`: the atom of its canonical string ("0" .. "4294967295"), whose
+/// hash field caches the index. Every key a Rust loop builds from an index (OwnPropertyKeys,
+/// CopyDataProperties of a string, Array.prototype.push) comes from here, so it compares by
+/// bits (W4-KEY-EQ). GC point only when the atom is new (it allocates the string first and
+/// holds no table borrow, W4-GC-RULES); a hit allocates nothing.
+pub(crate) fn index_key(rt: &Runtime, i: u32) -> PropertyKey {
+    if i < 10 {
+        return string::single_char(rt, b'0' + i as u8);
+    }
+    let mut buf = [0u8; 10];
+    let mut at = buf.len();
+    let mut n = i;
+    while n != 0 {
+        at -= 1;
+        buf[at] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
+    atoms::intern_latin1(rt, &buf[at..])
+}
+
+/// The key of the number `d`: ToPropertyKey(𝔽(d)) as an atom ([`index_key`] for an integer
+/// in 0 ..= 2^32 - 1, else the atom of Number::toString(d)). GC point.
+pub(crate) fn number_key(rt: &Runtime, d: f64) -> PropertyKey {
+    if (0.0..=f64::from(u32::MAX)).contains(&d) && d.fract() == 0.0 {
+        return index_key(rt, d as u32);
+    }
+    atoms::intern_str(rt, &crate::numconv::number_to_string(d))
 }
 
 /// The array index that `key` names, if it is a canonical index string ("0" .. "4294967294").

@@ -923,7 +923,7 @@ fn push_with_set(cx: &mut Cx, a: u64, args: Args<'_>) -> JsResult<u64> {
     // 5. For each element E of items: Set(O, ! ToString(𝔽(len)), E, true); len = len + 1.
     for v in args.iter() {
         // GC point: `a` lives in a Rust local, `v` in the argument list.
-        let key = conv::number_string(cx, len);
+        let key = crate::key::number_key(cx.rt(), len);
         property::set(cx, a, key, v.bits(), true)?;
         len += 1.0;
     }

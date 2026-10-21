@@ -360,7 +360,8 @@ pub(super) fn copy_data_properties(
     };
     if is_string(source) {
         for i in 0..object::str_len(source) {
-            let k = conv::number_string(cx, i as f64);
+            // A string is shorter than 2^29 units, so `i` fits a u32.
+            let k = crate::key::index_key(rt, i as u32);
             if skip(k) {
                 continue;
             }

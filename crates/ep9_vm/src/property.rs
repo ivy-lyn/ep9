@@ -1018,8 +1018,8 @@ pub(crate) fn own_property_keys(cx: &mut Cx, o: u64) -> u64 {
     indices.sort_unstable();
     indices.dedup();
     for i in indices {
-        let s = crate::conv::number_string(cx, f64::from(i));
-        push(s);
+        // The atom (W4-KEY-EQ): callers compare and look up with these keys.
+        push(crate::key::index_key(rt, i));
     }
     // 2. Strings in creation order: an exotic `length` first, a lazy `prototype` last (no
     // stored key is younger than it, `exotic::lazy_prototype_key`).

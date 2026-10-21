@@ -15,7 +15,7 @@ use crate::kinds::{self, FLAG_ATOM};
 use crate::object::cell;
 use crate::runtime::Runtime;
 use crate::string::{self, testing};
-use crate::{Dispatch, IsolateConfig};
+use crate::{Dispatch, IntrinsicId, IsolateConfig, Local};
 
 /// Allocated size of the cell of `b`.
 fn cell_size(rt: &Runtime, b: u64) -> usize {
@@ -478,6 +478,105 @@ fn key_compares_and_probes() {
     assert_eq!(key::key_text(rt, plain), "k");
     // The compares above were on purpose; the EP9_ASSERT_ATOM_KEYS gate checks the rest.
     rt.atoms.borrow_mut().reset_non_atom_compares();
+}
+
+#[test]
+fn index_and_number_keys_are_the_atoms_of_their_text() {
+    for stress in [false, true] {
+        let iso = isolate(config(Dispatch::DEFAULT, stress));
+        let rt = &*iso.rt;
+        // Single digits, the cached-index limit (2^24) and the u32 ends.
+        let ends = [0, 9, 10, 16_777_215, 16_777_216, 4_294_967_294, u32::MAX];
+        for i in ends.into_iter().chain(1000..1100) {
+            // A new atom may allocate (a GC point under stress); then it is the text's atom.
+            let k = key::index_key(rt, i);
+            assert!(string::is_atom(k), "{i}");
+            assert_eq!(k, atoms::intern_str(rt, &i.to_string()), "{i}");
+            assert_eq!(key::array_index_of(k), (i != u32::MAX).then_some(i), "{i}");
+        }
+        let cases: [(f64, &str); 7] = [
+            (0.0, "0"),
+            (-0.0, "0"),
+            (12.0, "12"),
+            (4_294_967_296.0, "4294967296"),
+            (1.5, "1.5"),
+            (-1.0, "-1"),
+            (f64::NAN, "NaN"),
+        ];
+        for (d, text) in cases {
+            let k = key::number_key(rt, d);
+            assert!(string::is_atom(k), "{text}");
+            assert_eq!(k, atoms::intern_str(rt, text), "{text}");
+        }
+        atoms::verify(rt).unwrap();
+    }
+}
+
+/// The non-atom key compares of `iso`'s thread since its atom table was made (W4-KEY-EQ;
+/// always 0 in release builds).
+fn non_atom_compares(iso: &crate::Isolate) -> u64 {
+    iso.rt.atoms.borrow().non_atom_compares()
+}
+
+#[test]
+fn own_property_keys_hands_out_index_keys_as_atoms() {
+    // o = {bar: 2, 1: 0}; a = [5, , 6]; w = new String("ab"): every key of [[OwnPropertyKeys]]
+    // is an atom, so the lookups a caller makes with them (CopyDataProperties) compare bits.
+    let mut iso = isolate(config(Dispatch::DEFAULT, false));
+    let texts = iso
+        .with_cx(|cx| {
+            let o = cx.new_object();
+            cx.set(o, "bar", Local::number(2.0), true)?;
+            cx.set(o, "1", Local::number(0.0), true)?;
+            let a = cx.new_array();
+            cx.set(a, "0", Local::number(5.0), true)?;
+            cx.set(a, "2", Local::number(6.0), true)?;
+            let sp = cx.intrinsic(IntrinsicId::StringPrototype);
+            let ab = cx.new_string("ab")?;
+            let w = cx.new_wrapper(sp, ab)?;
+            let mut texts = Vec::new();
+            for obj in [o, a.into(), w] {
+                let keys = cx.own_property_keys(obj)?.bits();
+                for i in 0..crate::object::array_len(keys) {
+                    let k = crate::object::array_get(keys, i).unwrap();
+                    let text = string::to_rust_string(k);
+                    assert!(string::is_atom(k), "{text}");
+                    assert!(crate::property::get_own_property(cx.inner(), obj.bits(), k).is_some());
+                    texts.push(text);
+                }
+            }
+            Ok(texts)
+        })
+        .unwrap();
+    assert_eq!(texts, ["1", "bar", "0", "2", "length", "0", "1", "length"]);
+    if cfg!(debug_assertions) {
+        assert_eq!(non_atom_compares(&iso), 0, "W4-KEY-EQ");
+    }
+}
+
+#[test]
+fn push_through_set_uses_atom_keys() {
+    // Array.prototype[7] = "p" (so push takes the [[Set]] path); a = []; a.push(1, 2, 3).
+    let mut iso = isolate(config(Dispatch::DEFAULT, false));
+    let len = iso
+        .with_cx(|cx| {
+            let ap = cx.intrinsic(IntrinsicId::ArrayPrototype);
+            let p = cx.new_string("p")?;
+            cx.set(ap, "7", p, true)?;
+            let push = cx.get(ap, "push")?;
+            let a = cx.new_array();
+            let args = [Local::number(1.0), Local::number(2.0), Local::number(3.0)];
+            let n = cx.call(push, a, &args)?;
+            let n = cx.to_number(n)?;
+            let last = cx.get(a, "2")?;
+            assert_eq!(cx.to_number(last)?, 3.0);
+            Ok(n)
+        })
+        .unwrap();
+    assert_eq!(len, 3.0);
+    if cfg!(debug_assertions) {
+        assert_eq!(non_atom_compares(&iso), 0, "W4-KEY-EQ");
+    }
 }
 
 /// Child of `the_atom_key_gate_fails_on_a_non_atom_compare`: one non-atom key compare when
