@@ -200,6 +200,155 @@ Other ABI helpers for the P3 builtins: `symbol_for` and `key_for` (`Symbol.for`/
 `new_bound_function`, `create_list_from_array_like` (`apply`), `to_property_descriptor` and
 `from_property_descriptor` (`defineProperty`, `getOwnPropertyDescriptor`).
 
+### Template 6: an array-like, by index
+
+A spec step on `! ToString(𝔽(k))` takes the integer `k` itself. The index ObjectOps read a dense
+element or a missing index without a property key, so a loop over a long sparse array makes no
+key per hole.
+
+| Spec step | Call |
+|---|---|
+| `? Get(O, ! ToString(𝔽(k)))` | `cx.get_index(o, k)?` |
+| `? HasProperty(O, ! ToString(𝔽(k)))` | `cx.has_index(o, k)?` |
+| `? Set(O, ! ToString(𝔽(k)), V, true)` | `cx.set_index(o, k, v, true)?` |
+| `? DeletePropertyOrThrow(O, ! ToString(𝔽(k)))` | `cx.delete_index(o, k, true)?` |
+
+```rust
+use ep9_vm::{Args, Cx, JsResult, Local};
+
+/// Array.prototype.at ( index ) (§23.1.3.1).
+fn array_at<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. Let O be ? ToObject(this value).
+    let o = cx.to_object(this)?;
+    // 2. Let len be ? LengthOfArrayLike(O).
+    let len = cx.get(o, "length")?;
+    let len = cx.to_length(len)? as f64;
+    // 3. Let relativeIndex be ? ToIntegerOrInfinity(index).
+    let relative_index = cx.to_integer_or_infinity(args.get(0))?;
+    // 4. If relativeIndex ≥ 0, then let k be relativeIndex.
+    // 5. Else, let k be len + relativeIndex.
+    let k = if relative_index >= 0.0 { relative_index } else { len + relative_index };
+    // 6. If k < 0 or k ≥ len, return undefined.
+    if k < 0.0 || k >= len {
+        return Ok(Local::undefined());
+    }
+    // 7. Return ? Get(O, ! ToString(𝔽(k))).
+    cx.get_index(o, k as u64)
+}
+# let mut iso = ep9_vm::Isolate::new(ep9_vm::IsolateConfig {
+#     builtins: Some(&ep9_builtins::TABLE),
+#     ..ep9_vm::IsolateConfig::default()
+# })
+# .unwrap();
+# iso.register_host_function("at", 1, array_at);
+# let src = "var a = [1, , 3]; a[5] = 6; \
+#            var result = [at.call(a, -1), at.call(a, 1), at.call({length: 2, 1: 'x'}, 1), at.call('ab', 0)].join();";
+# let unit = ep9_frontend::compile(
+#     src,
+#     ep9_frontend::SourceOpts::script(ep9_frontend::Strictness::Sloppy),
+#     ep9_frontend::CompileOptions::default(),
+# )
+# .unwrap();
+# iso.run_script(unit, "at.js").unwrap();
+# let result = iso.with_cx(|cx| {
+#     let global = cx.global();
+#     let v = cx.get(global, "result")?;
+#     cx.to_rust_string(v)
+# });
+# assert_eq!(result.unwrap(), "6,,x,a");
+```
+
+### Template 7: an iterable
+
+`get_iterator` gives an `IteratorRecord` (stack-only, like a `Local`: rule R2).
+`iterator_step_value` gives `Some(value)` until the iterator is done; when it throws, the iterator
+is done and must not be closed. Any other abrupt completion inside the loop goes to
+`iterator_close`, which calls the iterator's `return` and gives that completion back (the spec's
+IfAbruptCloseIterator).
+
+```rust
+use ep9_vm::{Args, Cx, JsObject, JsResult, Local};
+
+/// Object.fromEntries ( iterable ) (§20.1.2.7), with AddEntriesFromIterable (§24.1.1.2) and
+/// CreateDataPropertyOnObject as the adder.
+fn from_entries<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let iterable = args.get(0);
+    // 1. Perform ? RequireObjectCoercible(iterable).
+    if iterable.is_undefined_or_null() {
+        return Err(cx.throw_type_error("Cannot convert undefined or null to object"));
+    }
+    // 2. Let obj be OrdinaryObjectCreate(%Object.prototype%).
+    let obj = cx.new_object();
+    // 3-5. Return ? AddEntriesFromIterable(obj, iterable, adder).
+    //   1. Let iteratorRecord be ? GetIterator(iterable, sync).
+    let mut iterator_record = cx.get_iterator(iterable)?;
+    //   2. Repeat,
+    //      a. Let next be ? IteratorStepValue(iteratorRecord).
+    //      b. If next is done, return target.
+    while let Some(next) = cx.iterator_step_value(&mut iterator_record)? {
+        //  c-i. Each abrupt completion: return ? IteratorClose(iteratorRecord, completion).
+        if let Err(throw) = add_entry(cx, obj, next) {
+            return cx.iterator_close(&iterator_record, Err(throw));
+        }
+    }
+    Ok(obj.value())
+}
+
+/// AddEntriesFromIterable steps 2.c-2.i for one value of the iterator.
+fn add_entry<'s>(cx: &mut Cx<'s>, obj: Local<'s, JsObject>, next: Local<'s>) -> JsResult<()> {
+    // c. If next is not an Object, then let error be ThrowCompletion(a TypeError).
+    let Some(next) = next.as_object() else {
+        return Err(cx.throw_type_error("Iterator value is not an entry object"));
+    };
+    // d. Let k be Completion(Get(next, "0")).
+    let k = cx.get_index(next, 0)?;
+    // f. Let v be Completion(Get(next, "1")).
+    let v = cx.get_index(next, 1)?;
+    // h. Let status be Completion(Call(adder, target, « k, v »)): CreateDataPropertyOnObject
+    //    is ToPropertyKey, then ! CreateDataPropertyOrThrow.
+    let key = cx.to_property_key(k)?;
+    cx.create_data_property_or_throw(obj, key, v)
+}
+# let mut iso = ep9_vm::Isolate::new(ep9_vm::IsolateConfig {
+#     builtins: Some(&ep9_builtins::TABLE),
+#     ..ep9_vm::IsolateConfig::default()
+# })
+# .unwrap();
+# iso.register_host_function("fromEntries", 1, from_entries);
+# let src = "var o = fromEntries([['a', 1], ['b', 2]]); \
+#            var closed = 0; \
+#            var it = {}; \
+#            it[Symbol.iterator] = function () { \
+#              return {next: function () { return {done: false, value: 7}; }, \
+#                      return: function () { closed++; return {}; }}; \
+#            }; \
+#            var caught; try { fromEntries(it); } catch (e) { caught = e.constructor.name; } \
+#            var result = [o.a, o.b, caught, closed].join();";
+# let unit = ep9_frontend::compile(
+#     src,
+#     ep9_frontend::SourceOpts::script(ep9_frontend::Strictness::Sloppy),
+#     ep9_frontend::CompileOptions::default(),
+# )
+# .unwrap();
+# iso.run_script(unit, "from-entries.js").unwrap();
+# let result = iso.with_cx(|cx| {
+#     let global = cx.global();
+#     let v = cx.get(global, "result")?;
+#     cx.to_rust_string(v)
+# });
+# assert_eq!(result.unwrap(), "1,2,TypeError,1");
+```
+
 ## 3. Add it to the table
 
 ```rust
@@ -329,7 +478,7 @@ git diff crates/ep9_builtins/tests/golden
 | Rule | Do | Checked by |
 |---|---|---|
 | R1 | keep JS values in `Local`s in Rust locals or in `args`: the collector finds them on the stack | GC-stress tests (`run_both`), test262 `--gc-stress 1` |
-| R2 | no `Local`, `Args`, `Rest`, `PropertyDescriptor`, `ArgsBuilder` or `ScratchList` in a `Vec`, `Box`, `HashMap`, struct field on the heap, `static` or `thread_local` | lifetimes and `!Send`; `cargo xtask gc-lint`; a debug check in `Local` |
+| R2 | no `Local`, `Args`, `Rest`, `PropertyDescriptor`, `ArgsBuilder`, `ScratchList` or `IteratorRecord` in a `Vec`, `Box`, `HashMap`, struct field on the heap, `static` or `thread_local` | lifetimes and `!Send`; `cargo xtask gc-lint`; a debug check in `Local` |
 | R3 | a string view (`FlatStr`, `code_unit_at`) borrows `&Cx`; finish with it before the next `&mut Cx` call | the borrow checker |
 | R4 | return `Err` only from `cx.throw_*`, `cx.not_implemented` or a `?`; never `Ok` after a throw | debug asserts in the host call |
 | R5 | make objects with `cx` (`new_object`, `intrinsic`, ...); never keep one in a static | one realm in v0; `args.callee()` for N realms (H20-Q2) |

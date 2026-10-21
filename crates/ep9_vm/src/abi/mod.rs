@@ -42,6 +42,7 @@ use core::marker::PhantomData;
 use ep9_heap::ScratchRoots;
 use ep9_value::{JsResult, Throw};
 
+pub use self::iter::IteratorRecord;
 pub use self::local::{
     Downcast, FlatStr, JsArray, JsFunction, JsKey, JsObject, JsString, JsSymbol, JsValue, Local,
 };

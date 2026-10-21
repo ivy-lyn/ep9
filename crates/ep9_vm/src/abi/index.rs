@@ -1,16 +1,71 @@
-#![allow(dead_code)] // m2-stub
-//! Index access on the builtin ABI (owner P1-ABI-INDEX; H20 ABI-1): `get_index`,
-//! `has_index`, `set_index` and `delete_index`, with no atom for a dense element.
+//! Index access on the builtin ABI (H20 ABI-1): `get_index`, `has_index`, `set_index` and
+//! `delete_index`, the ObjectOps of the key `! ToString(𝔽(index))` for an integer index.
 //!
-//! P0 stub: one placeholder that throws "not implemented".
+//! ```text
+//! cx.get_index(o, k)  ──> property::get_index: a dense element, a String wrapper index or a
+//!                         missing index answers without a key (no atom); a stored integer key
+//!                         is found by a scan of a small object; else the key path (an atom)
+//! cx.set_index(o, k, v, throw) ──> a dense array element in place, else Set(O, key, V, throw)
+//! ```
+//!
+//! An index is a `u64`, as `length_of_array_like` gives it (at most 2^53 - 1 from ToLength);
+//! a larger one is converted as the spec does, through `𝔽(index)`.
 
-use ep9_value::Throw;
+use ep9_value::JsResult;
 
-use super::Cx;
+use super::{Cx, JsObject, Local};
+use crate::property;
 
 impl<'s> Cx<'s> {
-    /// Placeholder until P1-ABI-INDEX fills this file.
-    pub(crate) fn index_access_stub(&mut self) -> Throw {
-        self.not_implemented("abi::index")
+    /// Get(O, ! ToString(𝔽(index))) (§7.3.2). Makes no atom for a dense element or a missing
+    /// index.
+    pub fn get_index(
+        &mut self,
+        o: impl Into<Local<'s, JsObject>>,
+        index: u64,
+    ) -> JsResult<Local<'s>> {
+        let o = o.into().bits();
+        property::get_index(self.cx, o, index).map(Self::local)
+    }
+
+    /// HasProperty(O, ! ToString(𝔽(index))) (§7.3.12). Makes no atom for a dense element or
+    /// a missing index.
+    pub fn has_index(&mut self, o: impl Into<Local<'s, JsObject>>, index: u64) -> JsResult<bool> {
+        let o = o.into().bits();
+        Ok(property::has_index(self.cx, o, index))
+    }
+
+    /// Set(O, ! ToString(𝔽(index)), V, Throw) (§7.3.4). `Ok(false)` if the assignment failed
+    /// and `throw` is false; a TypeError if it failed and `throw` is true. A dense array
+    /// element is stored without a key.
+    pub fn set_index(
+        &mut self,
+        o: impl Into<Local<'s, JsObject>>,
+        index: u64,
+        v: impl Into<Local<'s>>,
+        throw: bool,
+    ) -> JsResult<bool> {
+        let (o, v) = (o.into().bits(), v.into().bits());
+        if property::set_index(self.cx, o, index, v)? {
+            return Ok(true);
+        }
+        if throw {
+            let msg = format!("Cannot assign to read only property '{index}' of object");
+            return Err(self.throw_type_error(&msg));
+        }
+        Ok(false)
+    }
+
+    /// O.`[[Delete]]`(! ToString(𝔽(index))) (§10.1.10) with `throw` false, or
+    /// DeletePropertyOrThrow (§7.3.10) with `throw` true (a TypeError instead of `false`). An
+    /// element becomes a hole, and a missing index gives true, without a key.
+    pub fn delete_index(
+        &mut self,
+        o: impl Into<Local<'s, JsObject>>,
+        index: u64,
+        throw: bool,
+    ) -> JsResult<bool> {
+        let o = o.into().bits();
+        property::delete_index(self.cx, o, index, throw)
     }
 }

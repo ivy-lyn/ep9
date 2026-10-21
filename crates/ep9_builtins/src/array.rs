@@ -7,7 +7,7 @@
 //! | Builtin | Template | Pattern |
 //! |---|---|---|
 //! | `Array.isArray` | 1 | a pure static predicate |
-//! | `pop`, `indexOf` | companions | generic over array-likes: every element access goes through ObjectOps with an index key (`index_key`) |
+//! | `pop`, `indexOf` | companions | generic over array-likes: every element access goes through the index ObjectOps (`get_index`, `has_index`, `delete_index`), which need no key for an element or a missing index |
 //!
 //! Owner of the templates: P3-BLTA (see `TEMPLATES.md`). Ids are append-only: definition `i`
 //! of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by `tests/golden/ids-array.txt`.
@@ -89,74 +89,6 @@ pub(crate) fn length_of_array_like<'s>(cx: &mut Cx<'s>, obj: Local<'s, JsObject>
     cx.to_length(len)
 }
 
-/// The shortest index range [`present_indices`] scans instead of every index.
-const SPARSE_SCAN_MIN: u64 = 1024;
-
-/// The integer indices in [`from`, `to`) that `o` or an object on its prototype chain has as
-/// own keys, ascending: the only `k` for which HasProperty(O, ToString(k)) can be true. `None`
-/// if one of them is an accessor property. `to` is a length (at most 2^53 - 1).
-///
-/// v0 shortcut for a long range: the ABI reads a property by its key, and an index key is an
-/// atom, so a step-by-step loop allocates one key per index (a long sparse array costs a key per
-/// hole; under GC stress, a collection per hole). Visiting only the present indices is
-/// unobservable while no JS runs during the loop: HasProperty runs none (no proxies in v0) and
-/// IsStrictlyEqual runs none, so only a getter could (it could add or remove indices). With an
-/// accessor among the indices, the caller runs the step-by-step loop. Not a GC point for the
-/// caller's values: everything here is read through ObjectOps.
-fn present_indices<'s>(
-    cx: &mut Cx<'s>,
-    o: Local<'s, JsObject>,
-    from: u64,
-    to: u64,
-) -> JsResult<Option<Vec<u64>>> {
-    let mut found = Vec::new();
-    let mut cur = Some(o);
-    while let Some(obj) = cur {
-        // Every own key is read: [[OwnPropertyKeys]] (§10.1.11.1) lists only the array indices
-        // (below 2^32 - 1) first, ascending; an integer key of 2^32 - 1 or more comes among the
-        // other strings, in creation order.
-        let keys = cx.own_property_keys(obj)?;
-        let n = length_of_array_like(cx, keys.into())?;
-        for i in 0..n {
-            let ik = index_key(cx, i);
-            let key = cx.get(keys, ik)?;
-            if !key.is_string() {
-                continue;
-            }
-            let text = cx.to_rust_string(key)?;
-            let Some(index) = canonical_index(&text) else {
-                continue;
-            };
-            if index < from || index >= to {
-                continue;
-            }
-            let pk = cx.to_property_key(key)?;
-            let desc = cx.get_own_property(obj, pk)?;
-            if desc.is_some_and(|d| d.is_accessor()) {
-                return Ok(None);
-            }
-            found.push(index);
-        }
-        cur = cx.get_prototype_of(obj)?.as_object();
-    }
-    found.sort_unstable();
-    found.dedup();
-    Ok(Some(found))
-}
-
-/// The integer index that the canonical numeric string `s` names ("0", or digits without a
-/// leading zero), or `None`. Below 2^53 these are exactly the keys `ToString(𝔽(k))`, the only
-/// form a `Pk` of step 10.a takes.
-fn canonical_index(s: &str) -> Option<u64> {
-    if s.is_empty() || s.len() > 16 || !s.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    if s.len() > 1 && s.starts_with('0') {
-        return None;
-    }
-    s.parse().ok()
-}
-
 // ---- builtins ----------------------------------------------------------------------------------
 
 /// Template 1. Array.isArray ( arg ) (§23.1.2.2).
@@ -192,12 +124,11 @@ fn pop<'s>(
     //    a. Assert: len > 0.
     //    b. Let newLen be 𝔽(len - 1).
     let new_len = len - 1;
-    //    c. Let index be ! ToString(newLen).
-    let index = index_key(cx, new_len);
+    //    c. Let index be ! ToString(newLen). (`get_index` and `delete_index` take newLen.)
     //    d. Let element be ? Get(O, index).
-    let element = cx.get(o, index)?;
+    let element = cx.get_index(o, new_len)?;
     //    e. Perform ? DeletePropertyOrThrow(O, index).
-    cx.delete_property_or_throw(o, index)?;
+    cx.delete_index(o, new_len, true)?;
     //    f. Perform ? Set(O, "length", newLen, true).
     cx.set(o, "length", Local::number(new_len as f64), true)?;
     //    g. Return element.
@@ -241,33 +172,15 @@ fn index_of<'s>(
         //    b. If k < 0, set k to 0.
         (len as f64 + n).max(0.0)
     } as u64;
-    // v0: over a long range, visit only the present indices (`present_indices`): the ABI has
-    // no integer-keyed element access, so each index key is an atom (an allocation).
-    if len.saturating_sub(k) > SPARSE_SCAN_MIN
-        && let Some(present) = present_indices(cx, o, k, len)?
-    {
-        // Step 10 over the present indices, in ascending order; the others have
-        // kPresent = false.
-        for k in present {
-            let pk = index_key(cx, k);
-            if cx.has_property(o, pk)? {
-                let element_k = cx.get(o, pk)?;
-                if cx.is_strictly_equal(search_element, element_k) {
-                    return Ok(Local::number(k as f64));
-                }
-            }
-        }
-        return Ok(Local::int32(-1));
-    }
     // 10. Repeat, while k < len,
     while k < len {
-        // a. Let Pk be ! ToString(𝔽(k)).
-        let pk = index_key(cx, k);
+        // a. Let Pk be ! ToString(𝔽(k)). (`has_index` and `get_index` take k: no key for an
+        //    element or a missing index.)
         // b. Let kPresent be ? HasProperty(O, Pk).
         // c. If kPresent is true, then
-        if cx.has_property(o, pk)? {
+        if cx.has_index(o, k)? {
             // i. Let elementK be ? Get(O, Pk).
-            let element_k = cx.get(o, pk)?;
+            let element_k = cx.get_index(o, k)?;
             // ii. If IsStrictlyEqual(searchElement, elementK) is true, return 𝔽(k).
             if cx.is_strictly_equal(search_element, element_k) {
                 return Ok(Local::number(k as f64));
