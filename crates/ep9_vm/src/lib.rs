@@ -18,9 +18,9 @@
 //! [`IntrinsicId`]; realm init walks the VM's table (`natives.rs`), then
 //! [`IsolateConfig::builtins`]. Contract versions: [`versions`].
 //!
-//! Month-2 stubs (M2-P0, each marked `m2-stub` until its owner fills it): generator.rs,
-//! jobs.rs, native.rs (feature `spike-native` only), `interp/slow/{generator, lookup, private, class_fields, eval}.rs` and
-//! `abi/{index, iter, slots, jobs, script}.rs`.
+//! Month-2 stubs left after M2-P2 (each marked `m2-stub` until its owner fills it): jobs.rs,
+//! `interp/slow/eval.rs`, `abi/{slots, jobs, script}.rs` and the test modules
+//! `tests/{eval, isolate_api, jobs, slots}.rs`.
 //!
 //! ADRs: H14 frames and dispatch (docs/adr/H14-frames-and-dispatch.md), H15 interpreter
 //! dispatch, H10 rooting, H06 values.

@@ -621,7 +621,8 @@ op!(StaInArrayLiteral(st, array: R, index: R, _s: FSlot) { Flow::Cold } cold {
     let (o, k, v) = (st.reg(array), st.reg(index), st.acc);
     prop_cold(st, PropOp::DefineKeyed, o, k, v)
 });
-// v0: flag bit 0 (set the function name from the key) is ignored.
+// Flag bit 0 (set the function name from the key) is applied in slow/class_fields.rs
+// `define_keyed_own`, from the DefineKeyedOwn arm of slow/property.rs (D15).
 op!(DefineKeyedOwnPropertyInLiteral(st, object: R, key: R, flags: u8, _s: FSlot) { Flow::Cold } cold {
     let (o, k, v) = (st.reg(object), st.reg(key), st.acc);
     prop_cold(st, PropOp::DefineKeyedOwn(flags), o, k, v)

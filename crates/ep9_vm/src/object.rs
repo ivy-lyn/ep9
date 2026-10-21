@@ -923,7 +923,6 @@ pub(crate) fn new_context(
 
 /// The unit and the scope descriptor of the context `c` (C5): a slot name resolves with
 /// `unit.string(scope.slots[i].name.index())`.
-#[allow(dead_code)] // callers: tests (gc.rs); P2-LOOKUP (dynamic lookup by name)
 pub(crate) fn context_scope<'a>(c: u64) -> (&'a LoadedUnit, &'a ep9_bytecode::Scope) {
     // SAFETY: the SCOPE word of a CONTEXT cell is the native word of a `ContextScope` in a
     // boxed LoadedUnit (`new_context`); units are never freed while the isolate lives
