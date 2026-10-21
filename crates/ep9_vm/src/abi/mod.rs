@@ -19,6 +19,11 @@
 //!
 //! Lists of values: `ScratchList` (precise, LIFO) or a JS array; call arguments built in Rust
 //! go on the VM stack through `ArgsBuilder` (above the frame top, under the scratch top).
+//!
+//! The P3 surface (H20 "Spec helpers"): symbols (`symbol_for`, `key_for`,
+//! `symbol_description`, `descriptive_string`, `new_symbol`), primitive wrappers
+//! (`new_wrapper`, `to_object`, `this_primitive_value`), functions (`set_function_name`,
+//! `set_function_length`, `new_bound_function`) and `get_prototype_from_constructor`.
 
 mod local;
 
@@ -30,7 +35,7 @@ use ep9_value::{JsResult, Throw};
 pub use self::local::{
     Downcast, FlatStr, JsArray, JsFunction, JsKey, JsObject, JsString, JsSymbol, JsValue, Local,
 };
-use crate::builtins::IntrinsicId;
+use crate::builtins::{self, IntrinsicId};
 use crate::conv::{self, Hint};
 use crate::descriptor::Desc;
 use crate::error;
@@ -42,7 +47,7 @@ use crate::object;
 use crate::property;
 use crate::runtime::{Atom, ErrorKind, Runtime};
 use crate::string::{self, MAX_STRING_LENGTH};
-use crate::{atoms, call};
+use crate::{atoms, bound, call, wrapper};
 
 /// A host function: a builtin or an embedder function (H20 signature). `this`, the
 /// arguments and `new_target` (undefined for a call) are [`Local`]s of the call `'s`.
@@ -284,6 +289,54 @@ pub enum ToPrimitiveHint {
     Default,
     Number,
     String,
+}
+
+/// A primitive type that has a wrapper object (§10.4.3, §21.1.4, §20.3.4, §20.4.4), for
+/// [`Cx::this_primitive_value`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrimitiveType {
+    Number,
+    Boolean,
+    String,
+    Symbol,
+}
+
+impl PrimitiveType {
+    /// The type of `bits`, if it is a primitive with a wrapper.
+    fn of(bits: u64) -> Option<PrimitiveType> {
+        let v = Local::<JsValue>::from_bits(bits);
+        if v.is_number() {
+            Some(PrimitiveType::Number)
+        } else if v.is_bool() {
+            Some(PrimitiveType::Boolean)
+        } else if v.is_string() {
+            Some(PrimitiveType::String)
+        } else if v.is_symbol() {
+            Some(PrimitiveType::Symbol)
+        } else {
+            None
+        }
+    }
+
+    /// The constructor name (`Number`).
+    pub const fn name(self) -> &'static str {
+        match self {
+            PrimitiveType::Number => "Number",
+            PrimitiveType::Boolean => "Boolean",
+            PrimitiveType::String => "String",
+            PrimitiveType::Symbol => "Symbol",
+        }
+    }
+
+    /// The prototype of its wrapper objects.
+    const fn prototype(self) -> IntrinsicId {
+        match self {
+            PrimitiveType::Number => IntrinsicId::NumberPrototype,
+            PrimitiveType::Boolean => IntrinsicId::BooleanPrototype,
+            PrimitiveType::String => IntrinsicId::StringPrototype,
+            PrimitiveType::Symbol => IntrinsicId::SymbolPrototype,
+        }
+    }
 }
 
 // ---- lists ---------------------------------------------------------------------------------
@@ -647,9 +700,18 @@ impl<'s> Cx<'s> {
         Self::local(self.rt().global())
     }
 
-    /// An intrinsic object of the current realm (§6.1.7.4).
+    /// An intrinsic object of the current realm (§6.1.7.4). Panics if no table made it (a
+    /// table names only intrinsics that exist: `builtins::check_tables`).
     pub fn intrinsic(&self, id: IntrinsicId) -> Local<'s, JsObject> {
-        Self::local(self.rt().root(id.root()))
+        let v = builtins::intrinsic(self.rt(), id);
+        assert!(kinds::is_object(v), "{} is not installed", id.name());
+        Self::local(v)
+    }
+
+    /// Does the realm have the intrinsic `id`? (The core ones always; the others when a
+    /// table made them.)
+    pub fn has_intrinsic(&self, id: IntrinsicId) -> bool {
+        kinds::is_object(builtins::intrinsic(self.rt(), id))
     }
 
     /// OrdinaryObjectCreate(%Object.prototype%).
@@ -686,22 +748,170 @@ impl<'s> Cx<'s> {
     }
 
     /// A new primitive wrapper object (§10.4.3 String exotic, or a Number, Boolean or Symbol
-    /// object) of `value` with prototype `proto`. v0: not implemented until wrappers exist
-    /// (P2); `wrapper::new_wrapper` is a stub that drops `value`.
+    /// object) of the primitive `value` with prototype `proto` (`wrapper::new_wrapper`).
+    /// TypeError if `value` has no wrapper type (undefined, null, an object). The wrapper must
+    /// hold `value` as its `[[...Data]]`: while `wrapper.rs` is the P0 stub (a plain object),
+    /// this throws "not implemented" rather than return an object without the primitive.
     pub fn new_wrapper(
         &mut self,
-        _proto: impl Into<Local<'s, JsObject>>,
-        _value: impl Into<Local<'s>>,
+        proto: impl Into<Local<'s, JsObject>>,
+        value: impl Into<Local<'s>>,
     ) -> JsResult<Local<'s, JsObject>> {
-        Err(self.not_implemented("wrapper objects for primitives"))
+        let (p, v) = (proto.into().bits(), value.into().bits());
+        if PrimitiveType::of(v).is_none() {
+            let msg = format!("Cannot wrap {} in an object", conv::describe(v));
+            return Err(self.throw_type_error(&msg));
+        }
+        let w = wrapper::new_wrapper(self.rt(), p, v);
+        if wrapper::wrapper_value(w).is_none_or(|d| !property::same_value(d, v)) {
+            return Err(self.not_implemented("wrapper objects for primitives"));
+        }
+        Ok(Self::local(w))
     }
 
-    /// A new symbol with the description `description` (a string or undefined).
+    /// A new symbol with the description `description` (a string or undefined): `Symbol()`
+    /// after its ToString step (§20.4.1.1).
     pub fn new_symbol(
         &mut self,
-        _description: impl Into<Local<'s>>,
+        description: impl Into<Local<'s>>,
     ) -> JsResult<Local<'s, JsSymbol>> {
+        let d = description.into();
+        if !d.is_undefined() && !d.is_string() {
+            return Err(self.throw_type_error("a symbol description is a string or undefined"));
+        }
+        // Merge with P2-SYM: `Ok(Self::local(symbol::new_symbol(self.rt(), d.bits())))`.
         Err(self.not_implemented("symbols"))
+    }
+
+    // ---- symbols (§20.4) over symbol.rs (P2-SYM) ----
+    //
+    // This base has no symbols (symbol.rs is the P0 stub): the entry points that can run
+    // throw "not implemented in ep9 v0: symbols", and the ones that take a symbol cannot be
+    // reached (no `Local<JsSymbol>` exists). Each body names the symbol.rs call that replaces
+    // it when P2-SYM merges.
+
+    /// `Symbol.for(key)` steps 2-6 (§20.4.2.2): the registry's symbol for the string `key`,
+    /// or a new registered symbol whose description is `key`.
+    pub fn symbol_for(
+        &mut self,
+        key: impl Into<Local<'s, JsString>>,
+    ) -> JsResult<Local<'s, JsSymbol>> {
+        let _key = key.into().bits();
+        // Merge with P2-SYM: `Ok(Self::local(symbol::symbol_for(self.cx, _key)))`.
+        Err(self.not_implemented("symbols"))
+    }
+
+    /// KeyForSymbol (§20.4.5.1): the registry key of `sym`, or `None` if `sym` is not
+    /// registered (`Symbol.keyFor`).
+    pub fn key_for(&self, sym: Local<'s, JsSymbol>) -> Option<Local<'s, JsString>> {
+        let _sym = sym.bits();
+        // Merge with P2-SYM: `let k = symbol::key_for(_sym); (k != UNDEFINED).then(|| ...)`.
+        unreachable!("no symbol exists before P2-SYM's symbol.rs")
+    }
+
+    /// `[[Description]]` of `sym` (§20.4.3.2): a string or undefined.
+    pub fn symbol_description(&self, sym: Local<'s, JsSymbol>) -> Local<'s> {
+        let _sym = sym.bits();
+        // Merge with P2-SYM: `Self::local(symbol::description(_sym))`.
+        unreachable!("no symbol exists before P2-SYM's symbol.rs")
+    }
+
+    /// SymbolDescriptiveString (§20.4.3.3.1): "Symbol(" + description + ")". RangeError past
+    /// the string length limit.
+    pub fn descriptive_string(
+        &mut self,
+        sym: Local<'s, JsSymbol>,
+    ) -> JsResult<Local<'s, JsString>> {
+        let _sym = sym.bits();
+        // Merge with P2-SYM: `symbol::descriptive_string(self.cx, _sym).map(Self::local)`.
+        unreachable!("no symbol exists before P2-SYM's symbol.rs")
+    }
+
+    // ---- functions ----
+
+    /// SetFunctionName(F, name, prefix) (§10.2.9): defines `F.name` {w: false, e: false,
+    /// c: true}. A symbol `name` becomes `"[description]"` (`""` without one); a `prefix`
+    /// ("get", "set", "bound") goes in front with a space. TypeError if `name` is not a string
+    /// or a symbol, or if `F.name` cannot be defined.
+    pub fn set_function_name(
+        &mut self,
+        f: impl Into<Local<'s, JsObject>>,
+        name: impl Into<Local<'s>>,
+        prefix: Option<&str>,
+    ) -> JsResult<()> {
+        let (f, name) = (f.into(), name.into());
+        let mut text = if let Some(sym) = name.as_symbol() {
+            let d = self.symbol_description(sym);
+            match d.as_string() {
+                None => Self::local(self.rt().atom(Atom::Empty)),
+                Some(d) => {
+                    let open = self.new_string("[")?;
+                    let close = self.new_string("]")?;
+                    let t = self.concat(open, d)?;
+                    self.concat(t, close)?
+                }
+            }
+        } else if let Some(s) = name.as_string() {
+            s
+        } else {
+            return Err(self.throw_type_error("a function name is a string or a symbol"));
+        };
+        if let Some(p) = prefix {
+            let p = self.new_string(&format!("{p} "))?;
+            text = self.concat(p, text)?;
+        }
+        let key = self.atom(Atom::Name);
+        let desc = PropertyDescriptor::data(text.value(), false, false, true);
+        self.define_property_or_throw(f, key, desc)
+    }
+
+    /// SetFunctionLength(F, length) (§10.2.10): defines `F.length` = `length` (an integer
+    /// or +∞) {w: false, e: false, c: true}.
+    pub fn set_function_length(
+        &mut self,
+        f: impl Into<Local<'s, JsObject>>,
+        length: f64,
+    ) -> JsResult<()> {
+        let key = self.atom(Atom::Length);
+        let desc = PropertyDescriptor::data(Local::number(length), false, false, true);
+        self.define_property_or_throw(f, key, desc)
+    }
+
+    /// BoundFunctionCreate(target, boundThis, boundArgs) (§10.4.1.3), with `args` (a tail of
+    /// this call's arguments, as `Function.prototype.bind` passes them) as the bound
+    /// arguments (`bound::new_bound_function`; P3-BLTA fills it).
+    pub fn new_bound_function(
+        &mut self,
+        target: impl Into<Local<'s, JsFunction>>,
+        bound_this: impl Into<Local<'s>>,
+        args: Rest<'s>,
+    ) -> JsResult<Local<'s, JsFunction>> {
+        let (target, this) = (target.into().bits(), bound_this.into().bits());
+        // One copy onto the VM stack (precise roots, in order), never a heap list (R2).
+        let mut list = self.args_builder();
+        for v in args.iter() {
+            list.push(self, v)?;
+        }
+        let n = list.len();
+        // SAFETY: `list` wrote slots `start..start + n` with valid Values (`push`); they stay
+        // under the scratch top, unchanged, while `list` lives, which is past this call (the
+        // heap does not move cells, so the GC never writes them).
+        let bound_args = unsafe { core::slice::from_raw_parts(list.start, n) };
+        let r = bound::new_bound_function(self.cx, target, this, bound_args);
+        drop(list);
+        r.map(Self::local)
+    }
+
+    /// The concatenation of two strings. RangeError past the length limit.
+    fn concat(
+        &mut self,
+        a: Local<'s, JsString>,
+        b: Local<'s, JsString>,
+    ) -> JsResult<Local<'s, JsString>> {
+        match object::concat(self.rt(), a.bits(), b.bits()) {
+            Some(s) => Ok(Self::local(s)),
+            None => Err(self.throw_range_error("Invalid string length")),
+        }
     }
 
     // ---- ObjectOps v0: internal methods and their spec wrappers (§7.3) ----
@@ -966,17 +1176,47 @@ impl<'s> Cx<'s> {
         Ok(Self::local(k))
     }
 
-    /// ToObject (§7.1.18): TypeError for undefined and null. v0: a primitive throws the same
-    /// not_implemented as the interpreter's ToObject until wrappers exist (P2).
+    /// ToObject (§7.1.18): an object as it is; a wrapper of a primitive with the realm's
+    /// prototype for its type ([`Cx::new_wrapper`]); TypeError for undefined and null.
     pub fn to_object(&mut self, v: impl Into<Local<'s>>) -> JsResult<Local<'s, JsObject>> {
+        let v = v.into();
+        if let Some(o) = v.as_object() {
+            return Ok(o);
+        }
+        let Some(ty) = PrimitiveType::of(v.bits()) else {
+            return Err(self.throw_type_error("Cannot convert undefined or null to object"));
+        };
+        if !self.has_intrinsic(ty.prototype()) {
+            return Err(self.not_implemented("wrapper objects for primitives"));
+        }
+        let proto = self.intrinsic(ty.prototype());
+        self.new_wrapper(proto, v)
+    }
+
+    /// thisNumberValue, thisBooleanValue, thisStringValue and thisSymbolValue (§21.1.3.7.1,
+    /// §20.3.3.3.1, §22.1.3.35.1, §20.4.3.4.1): `v` if it is a primitive of type `ty`, the
+    /// primitive inside `v` if it is a wrapper of that type, else a TypeError.
+    pub fn this_primitive_value(
+        &mut self,
+        v: impl Into<Local<'s>>,
+        ty: PrimitiveType,
+    ) -> JsResult<Local<'s>> {
         let v = v.into().bits();
-        if kinds::is_object(v) {
+        if PrimitiveType::of(v) == Some(ty) {
             return Ok(Self::local(v));
         }
-        if v == UNDEFINED || v == NULL {
-            return Err(self.throw_type_error("Cannot convert undefined or null to object"));
+        if kinds::is_object(v)
+            && let Some(p) = wrapper::wrapper_value(v)
+            && PrimitiveType::of(p) == Some(ty)
+        {
+            return Ok(Self::local(p));
         }
-        Err(self.not_implemented("wrapper objects for primitives"))
+        let msg = format!(
+            "{}.prototype method called on an incompatible receiver {}",
+            ty.name(),
+            conv::describe(v)
+        );
+        Err(self.throw_type_error(&msg))
     }
 
     /// ToPrimitive (§7.1.1).

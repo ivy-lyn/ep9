@@ -12,8 +12,11 @@
 //! ```
 //!
 //! Week-4 modules (stubs until their owners fill them): shape.rs, atoms.rs, symbol.rs,
-//! wrapper.rs, bound.rs, accessor.rs, exotic.rs, ic.rs, feedback.rs, builtins.rs. The builtin
-//! ABI v1 (H20) is [`abi`]: `Cx`, `Local`, `Args`, ObjectOps. Contract versions: [`versions`].
+//! wrapper.rs, bound.rs, accessor.rs, exotic.rs, ic.rs, feedback.rs. The builtin ABI v1 (H20)
+//! is [`abi`]: `Cx`, `Local`, `Args`, ObjectOps. Builtin tables (H20): [`BuiltinTable`],
+//! [`BuiltinModule`], [`BuiltinDef`], [`PropDef`], with the ids [`BuiltinId`] and
+//! [`IntrinsicId`]; realm init walks the VM's table (`natives.rs`), then
+//! [`IsolateConfig::builtins`]. Contract versions: [`versions`].
 //!
 //! ADRs: H14 frames and dispatch (docs/adr/H14-frames-and-dispatch.md), H15 interpreter
 //! dispatch, H10 rooting, H06 values.
@@ -59,10 +62,15 @@ mod tests;
 
 pub use abi::{
     Args, ArgsBuilder, Cx, Downcast, FlatStr, HostFn, IntoKey, JsArray, JsFunction, JsKey,
-    JsObject, JsString, JsSymbol, JsValue, Local, PropertyDescriptor, Rest, ScratchList,
-    ToPrimitiveHint,
+    JsObject, JsString, JsSymbol, JsValue, Local, PrimitiveType, PropertyDescriptor, Rest,
+    ScratchList, ToPrimitiveHint,
 };
-pub use builtins::{BuiltinTable, IntrinsicId};
+pub use atoms::Atom;
+pub use builtins::{
+    BuiltinDef, BuiltinId, BuiltinKind, BuiltinModule, BuiltinTable, ConstValue, IntrinsicDef,
+    IntrinsicId, IntrinsicValue, ObjectProps, PropAttrs, PropDef, PropKey, PropValue,
+    WellKnownSymbol, check_tables,
+};
 pub use dispatch::{
     CodeEntry, CodeRegistry, DispatchKind, DispatchSlot, NO_CODE, RangeRegistry, RegistryError,
 };
@@ -82,4 +90,7 @@ pub mod internals {
     /// Handlers per threaded expansion: one per opcode, one per cold block, plus `Exit`,
     /// `BadOpcode` and `ConstructReturn` (the `cargo xtask disasm-check --expect` value).
     pub const THREADED_HANDLERS: usize = ep9_bytecode::OPCODE_COUNT + COLD_OPCODES + 3;
+    /// The VM's own builtin table (block 0): for its id golden
+    /// (`crates/ep9_vm/tests/golden/vm-builtin-ids.txt`) and table checks.
+    pub static VM_BUILTINS: &crate::BuiltinTable = &crate::natives::VM_TABLE;
 }

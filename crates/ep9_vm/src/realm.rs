@@ -1,32 +1,40 @@
-//! The v0 realm: intrinsics, the global object and a few builtins (M0 week 3). Week 4 brings
-//! the builtin ABI (H20) and template builtins; these are only what the VM itself needs. The
-//! host functions are in `natives.rs`.
+//! The realm: its core intrinsics and global object (`init`), and the global declaration step
+//! of scripts (`declare_globals`). Builtin functions and their properties come from tables
+//! (`builtins.rs`): the VM table (`natives.rs`), then `IsolateConfig::builtins`.
 //!
-//! | Global | Value |
+//! ```text
+//! Isolate::new: builtins::check -> Runtime::new -> builtins::prepare
+//!   -> realm::init: atoms, core intrinsics, global object, symbol::install
+//!   -> builtins::install: every builtin function, the tables' intrinsics, their properties
+//! ```
+//!
+//! | Core intrinsic | Made as |
 //! |---|---|
-//! | `globalThis`, `undefined`, `NaN`, `Infinity` | as in §19.1 |
-//! | `Object`, `Array` | constructors (§20.1.1, §23.1.1; v0: no wrapper objects) |
-//! | `Error`, `TypeError`, `RangeError`, `ReferenceError`, `SyntaxError`, `EvalError`, `URIError` | constructors (§20.5) |
-//!
-//! Prototype methods: `Object.prototype.toString`/`valueOf`, `Error.prototype.toString`,
-//! `Array.prototype.join`/`toString`/`push`.
-//!
-//! Init order: static atoms, intrinsics and globals, symbols (`symbol::install`), then the
-//! embedder's builtin table (`builtins::install`).
+//! | `%Object.prototype%` | an ordinary object, `[[Prototype]]` null |
+//! | `%Function.prototype%` | VM builtin 0.0: a function that returns undefined (§20.2.3) |
+//! | `%Array.prototype%` | an ordinary object (v0: not an Array exotic object, H18) |
+//! | `%String.prototype%`, `%Number.prototype%`, `%Boolean.prototype%` | `wrapper::new_wrapper` of "", +0 and false (§22.1.3, §21.1.3, §20.3.3) |
+//! | `%Iterator.prototype%`, `%ArrayIteratorPrototype%` | ordinary objects; v0: one iterator prototype for arrays and strings |
+//! | `%Error.prototype%`, the native error prototypes | ordinary objects |
+//! | `%Symbol.prototype%` | `symbol::install` (P2-SYM) |
+//! | the global object; the script lexical record | an ordinary object; a null-prototype object |
 
 use crate::abi::HostFn;
-use crate::builtins::{self, BuiltinTable};
+use crate::builtins::{self, BuiltinId};
 use crate::conv::{self, num};
 use crate::error;
-use crate::frame::{NULL, UNDEFINED};
+use crate::frame::{FALSE, HOLE, NULL, UNDEFINED};
 use crate::interp::Cx;
+use crate::key::key_text;
 use crate::natives;
-use crate::object::{self, attr, own_define};
+use crate::object::{self, attr, own_define, own_get};
+use crate::property;
 use crate::runtime::{Atom, ErrorKind, Root, Runtime};
 use crate::unit::FunctionInfo;
-use crate::{atoms, symbol};
+use crate::{atoms, symbol, wrapper};
 
-/// A host function object for `f`. Its FunctionInfo lives in `rt.infos` (boxed, stable).
+/// A host function object for `f` outside the tables (an embedder's function, tests). Its
+/// FunctionInfo lives in `rt.infos` (boxed, stable).
 pub(crate) fn new_host_function(
     rt: &Runtime,
     f: HostFn,
@@ -40,119 +48,70 @@ pub(crate) fn new_host_function(
     object::new_function(rt, p, UNDEFINED)
 }
 
-/// Defines `holder.name = <host function>` (not enumerable).
-pub(crate) fn define_host_method(
-    rt: &Runtime,
-    holder: u64,
-    name: &str,
-    f: HostFn,
-    length: u32,
-) -> u64 {
-    let func = new_host_function(rt, f, name, length, false);
-    let key = atoms::intern_str(rt, name);
-    own_define(rt, holder, key, func, attr::HIDDEN);
-    func
-}
-
-/// Builds the realm: atoms, intrinsics, the global object, then the embedder's builtins.
-/// Every new cell goes into a root before the next allocation (GC-stress safe).
-pub(crate) fn init(rt: &Runtime, table: Option<&'static BuiltinTable>) {
+/// Makes the atoms, the core intrinsics, the global object and the symbols. Every new cell
+/// goes into a root before the next allocation (GC-stress safe). `builtins::prepare` ran
+/// first; `builtins::install` runs next.
+pub(crate) fn init(rt: &Runtime) {
     atoms::init_static(rt);
     let object_proto = object::new_object(rt, NULL);
     rt.set_root(Root::ObjectPrototype, object_proto);
-    for (r, p) in [
-        (Root::FunctionPrototype, object_proto),
-        (Root::ArrayPrototype, object_proto),
-        (Root::StringPrototype, object_proto),
-        (Root::NumberPrototype, object_proto),
-        (Root::BooleanPrototype, object_proto),
-        (Root::ErrorPrototype, object_proto),
+    // `new_function` takes a function's [[Prototype]] from this root, and the [[Prototype]]
+    // of %Function.prototype% itself is %Object.prototype% (§20.2.3).
+    rt.set_root(Root::FunctionPrototype, object_proto);
+    let fp = builtins::function_object(
+        rt,
+        BuiltinId::new(natives::VM_BLOCK, natives::vm::FUNCTION_PROTOTYPE),
+    );
+    rt.set_root(Root::FunctionPrototype, fp);
+    let array_proto = object::new_object(rt, object_proto);
+    rt.set_root(Root::ArrayPrototype, array_proto);
+    for (r, v) in [
+        (Root::StringPrototype, rt.atom(Atom::Empty)),
+        (Root::NumberPrototype, num(0.0)),
+        (Root::BooleanPrototype, FALSE),
     ] {
-        // v0: plain objects (Function.prototype is not callable, Array.prototype is not an
-        // array exotic object).
-        let o = object::new_object(rt, p);
-        rt.set_root(r, o);
+        let p = wrapper::new_wrapper(rt, object_proto, v);
+        rt.set_root(r, p);
+    }
+    let iterator_proto = object::new_object(rt, object_proto);
+    rt.set_root(Root::IteratorPrototype, iterator_proto);
+    let array_iterator_proto = object::new_object(rt, iterator_proto);
+    rt.set_root(Root::ArrayIteratorPrototype, array_iterator_proto);
+    let error_proto = object::new_object(rt, object_proto);
+    rt.set_root(Root::ErrorPrototype, error_proto);
+    for kind in ErrorKind::ALL {
+        if kind != ErrorKind::Error {
+            let p = object::new_object(rt, error_proto);
+            rt.set_root(kind.prototype_root(), p);
+        }
     }
     let lexical = object::new_object(rt, NULL);
     rt.set_root(Root::Lexical, lexical);
     let global = object::new_object(rt, object_proto);
     rt.set_root(Root::GlobalObject, global);
-
-    own_define(rt, global, rt.atom(Atom::GlobalThis), global, attr::HIDDEN);
-    own_define(rt, global, rt.atom(Atom::Undefined), UNDEFINED, 0);
-    own_define(rt, global, rt.atom(Atom::NaN), num(f64::NAN), 0);
-    own_define(rt, global, rt.atom(Atom::Infinity), num(f64::INFINITY), 0);
-
-    define_host_method(rt, object_proto, "toString", natives::object_to_string, 0);
-    define_host_method(rt, object_proto, "valueOf", natives::object_value_of, 0);
-    let array_proto = rt.root(Root::ArrayPrototype);
-    define_host_method(rt, array_proto, "join", natives::array_join, 1);
-    define_host_method(rt, array_proto, "toString", natives::array_to_string, 0);
-    define_host_method(rt, array_proto, "push", natives::array_push, 1);
-
-    // v0: one prototype for array and string iterators; `next` only (no Symbol.iterator).
-    let iterator_proto = object::new_object(rt, object_proto);
-    rt.set_root(Root::ArrayIteratorPrototype, iterator_proto);
-    define_host_method(rt, iterator_proto, "next", natives::iterator_next, 0);
-
-    define_constructor(
-        rt,
-        global,
-        "Object",
-        natives::object_constructor,
-        object_proto,
-    );
-    define_constructor(rt, global, "Array", natives::array_constructor, array_proto);
-
-    let error_proto = rt.root(Root::ErrorPrototype);
-    define_host_method(rt, error_proto, "toString", natives::error_to_string, 0);
-    for kind in ErrorKind::ALL {
-        let proto = if kind == ErrorKind::Error {
-            error_proto
-        } else {
-            let p = object::new_object(rt, error_proto);
-            rt.set_root(kind.prototype_root(), p);
-            p
-        };
-        let name = object::new_string(rt, kind.name());
-        own_define(rt, proto, rt.atom(Atom::Name), name, attr::HIDDEN);
-        own_define(
-            rt,
-            proto,
-            rt.atom(Atom::Message),
-            rt.atom(Atom::Empty),
-            attr::HIDDEN,
-        );
-        let ctor = new_host_function(rt, natives::error_constructor(kind), kind.name(), 1, true);
-        own_define(rt, ctor, rt.atom(Atom::Prototype), proto, 0);
-        own_define(rt, proto, rt.atom(Atom::Constructor), ctor, attr::HIDDEN);
-        let gname = atoms::intern_str(rt, kind.name());
-        own_define(rt, global, gname, ctor, attr::HIDDEN);
-    }
     symbol::install(rt);
-    builtins::install(rt, table);
 }
 
-/// Defines the global constructor `name` with `prototype` (and `prototype.constructor`).
-fn define_constructor(rt: &Runtime, global: u64, name: &str, f: HostFn, proto: u64) {
-    let ctor = new_host_function(rt, f, name, 1, true);
-    own_define(rt, ctor, rt.atom(Atom::Prototype), proto, 0);
-    own_define(rt, proto, rt.atom(Atom::Constructor), ctor, attr::HIDDEN);
-    let key = atoms::intern_str(rt, name);
-    own_define(rt, global, key, ctor, attr::HIDDEN);
-}
-
-/// The global declaration step of `DeclareGlobals` (§16.1.7 GlobalDeclarationInstantiation,
-/// v0): `var`/function names become global properties (undefined if new); `let`/`const`/
-/// `class` names go to the lexical record as holes (TDZ; `const` is not writable).
-/// `InitializeGlobal` stores their values later. Conflicts throw a SyntaxError.
+/// `DeclareGlobals`: GlobalDeclarationInstantiation (§16.1.7) of the script (or eval) scope
+/// of `unit`. Every check runs before any binding is made, so a failed declaration leaves the
+/// realm as it was:
+///
+/// | Steps | Check | Error |
+/// |---|---|---|
+/// | 3 | a lexical name is a lexical binding already, or HasRestrictedGlobalProperty (a non-configurable global; v0 has no `[[VarNames]]`, and a var binding is non-configurable) | SyntaxError |
+/// | 4 | a var or function name is a lexical binding | SyntaxError |
+/// | 5-8 | CanDeclareGlobalFunction (§9.1.1.4.16), last declaration first | TypeError |
+/// | 9-10 | CanDeclareGlobalVar (§9.1.1.4.15) for vars that are not functions | TypeError |
+///
+/// Then (steps 15-17): `let`/`const`/`class` names go to the lexical record as holes (TDZ;
+/// `const` is not writable); function, then var names become global properties (undefined
+/// if new: CreateGlobalVarBinding §9.1.1.4.17; `InitializeGlobal` stores a function's value).
 pub(crate) fn declare_globals(
     cx: &mut Cx,
     unit: &ep9_bytecode::CompiledUnit,
     strings: &dyn Fn(usize) -> u64,
 ) -> conv::Res<()> {
     use ep9_bytecode::{ScopeKind, VariableMode};
-    let rt = cx.rt();
     let Some(scope) = unit
         .scopes
         .iter()
@@ -160,33 +119,79 @@ pub(crate) fn declare_globals(
     else {
         return Ok(());
     };
+    let rt = cx.rt();
     let global = rt.global();
     let lexical = rt.root(Root::Lexical);
-    for s in &scope.slots {
-        let name = strings(s.name.index());
-        let lexical_decl = matches!(
-            s.mode,
+    let is_lexical = |m: VariableMode| {
+        matches!(
+            m,
             VariableMode::Let | VariableMode::Const | VariableMode::Class
-        );
-        let clash = object::own_get(lexical, name).is_some()
-            || lexical_decl
-                && object::own_get(global, name).is_some_and(|(_, a)| a & attr::CONFIGURABLE == 0);
+        )
+    };
+    let name_of = |s: &ep9_bytecode::ScopeSlot| strings(s.name.index());
+    // Steps 3-4.
+    for s in &scope.slots {
+        let name = name_of(s);
+        let clash = own_get(lexical, name).is_some()
+            || is_lexical(s.mode) && has_restricted_global_property(cx, global, name);
         if clash {
-            let n = object::str_view(name).to_string_lossy();
-            return Err(error::throw_error(
-                cx,
-                ErrorKind::SyntaxError,
-                &format!("Identifier '{n}' has already been declared"),
-            ));
+            let msg = format!(
+                "Identifier '{}' has already been declared",
+                key_text(rt, name)
+            );
+            return Err(error::throw_error(cx, ErrorKind::SyntaxError, &msg));
         }
-        if lexical_decl {
-            let a = if s.mode == VariableMode::Const {
-                0
+    }
+    // Steps 5-8.
+    let functions = || {
+        scope
+            .slots
+            .iter()
+            .filter(|s| s.mode == VariableMode::Function)
+    };
+    for s in functions().rev() {
+        let name = name_of(s);
+        if !can_declare_global_function(cx, global, name) {
+            let n = key_text(rt, name);
+            let msg = if own_get(global, name).is_some() {
+                format!("Cannot redefine property: {n}")
             } else {
-                attr::WRITABLE
+                format!("Cannot add property {n}, object is not extensible")
             };
-            own_define(rt, lexical, name, crate::frame::HOLE, a);
-        } else if object::own_get(global, name).is_none() {
+            return Err(error::throw_error(cx, ErrorKind::TypeError, &msg));
+        }
+    }
+    // Steps 9-10.
+    let is_function_name = |name: u64| functions().any(|f| name_of(f) == name);
+    let vars = || {
+        scope
+            .slots
+            .iter()
+            .filter(|s| s.mode == VariableMode::Var && !is_function_name(name_of(s)))
+    };
+    for s in vars() {
+        let name = name_of(s);
+        if !can_declare_global_var(cx, global, name) {
+            let msg = format!(
+                "Cannot add property {}, object is not extensible",
+                key_text(rt, name)
+            );
+            return Err(error::throw_error(cx, ErrorKind::TypeError, &msg));
+        }
+    }
+    // Steps 15-17. GC points: `name` is an atom of the unit's string table (a root range).
+    for s in scope.slots.iter().filter(|s| is_lexical(s.mode)) {
+        let a = if s.mode == VariableMode::Const {
+            0
+        } else {
+            attr::WRITABLE
+        };
+        own_define(rt, lexical, name_of(s), HOLE, a);
+    }
+    for s in functions().chain(vars()) {
+        // CreateGlobalVarBinding (§9.1.1.4.17): only a new name on an extensible global.
+        let name = name_of(s);
+        if own_get(global, name).is_none() && property::is_extensible(global) {
             own_define(
                 rt,
                 global,
@@ -197,4 +202,26 @@ pub(crate) fn declare_globals(
         }
     }
     Ok(())
+}
+
+/// HasRestrictedGlobalProperty (§9.1.1.4.14): a non-configurable own property of the global.
+fn has_restricted_global_property(cx: &mut Cx, global: u64, name: u64) -> bool {
+    property::get_own_property(cx, global, name).is_some_and(|d| d.configurable == Some(false))
+}
+
+/// CanDeclareGlobalFunction (§9.1.1.4.16).
+fn can_declare_global_function(cx: &mut Cx, global: u64, name: u64) -> bool {
+    match property::get_own_property(cx, global, name) {
+        // 3. No property: IsExtensible(globalObject).
+        None => property::is_extensible(global),
+        // 4. A configurable property can be replaced.
+        Some(d) if d.configurable == Some(true) => true,
+        // 5. A writable, enumerable data property keeps its attributes.
+        Some(d) => !d.is_accessor() && d.writable == Some(true) && d.enumerable == Some(true),
+    }
+}
+
+/// CanDeclareGlobalVar (§9.1.1.4.15).
+fn can_declare_global_var(cx: &mut Cx, global: u64, name: u64) -> bool {
+    property::has_own_property(cx, global, name) || property::is_extensible(global)
 }
