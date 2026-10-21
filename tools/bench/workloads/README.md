@@ -9,6 +9,7 @@ Fixed JS programs for the T0 interpreter. Each one checks its own result and thr
 | `t0-branchy.js` | H15 dispatch kernels | xorshift32 stream; data-dependent branches, about half mispredict |
 | `t0-call.js` | H15 dispatch kernels | JS-to-JS calls with 0-3 arguments, recursion, a closure |
 | `t0-prop.js` | H15 dispatch kernels | named properties, class methods, array elements |
+| `t0-gen.js` | generator kernel (P1-GEN-VM; not in `DEFAULT_WORKLOADS`) | generator resume and suspend: for-of over a generator, `next(v)` with sent values, `yield*` |
 | `t0-dispatch.mjs` | runner | paired rounds of two configs, PERF-NOISE statistics (10-quality §3) |
 
 ```text
