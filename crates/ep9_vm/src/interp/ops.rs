@@ -1114,9 +1114,10 @@ op!(ForInStep(st, index: R) {
     st.set_reg(index, int(i.wrapping_add(1)));
     Done::Next
 });
-// v0: no symbols, so no `Symbol.iterator`: arrays and strings get the built-in iterator
-// (`%Array.prototype.values%`, `%String.prototype[@@iterator]%`); other values are not
-// iterable (TypeError), which is what GetIterator gives when no `@@iterator` method exists.
+// GetIterator (§7.4.4): looks up `@@iterator` and calls it (`slow::get_iterator`). While the
+// method is %Array.prototype.values% (on an object) or %String.prototype[@@iterator]% (on a
+// string), the iterator cell is made without the call. A value with no callable `@@iterator`
+// is not iterable (TypeError).
 op!(GetIterator(st, object: R, _load: FSlot, _call: FSlot) { Flow::Cold } cold {
     let o = st.reg(object);
     let r = slow::get_iterator(st.cx, st.fp, st.pc, o);

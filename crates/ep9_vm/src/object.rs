@@ -20,7 +20,7 @@
 //! | FUNCTION | 17 | +24 FunctionInfo (native word), +32 context, +40 `[[HomeObject]]` or undefined | 2 (`length`, `name`) |
 //! | ARRAY | 18 | +24 length (int32); elements at +16 | 0 |
 //! | ERROR | 19 | +24 unit index (int32 or undefined), +32 source offset (int32) | 2 |
-//! | ITERATOR | 20 | +24 iterated array or string (undefined when done), +32 next index (int32) | 0 |
+//! | ITERATOR | 20 | +24 iterated value: an object (undefined when done) or a string ("" when done), +32 next index (int32) | 0 |
 //! | PRIMITIVE_WRAPPER | 21 | +24 the primitive | 0 |
 //! | BOUND_FUNCTION | 22 | +24 target, +32 bound `this`, +40 bound arguments | 2 |
 //!
@@ -644,8 +644,9 @@ pub(crate) fn set_home_object(rt: &Runtime, f: u64, home: u64) {
     wr(&rt.heap, cell(f), fun::HOME, home);
 }
 
-/// A new v0 iterator over the array or string `iterated` (CreateArrayIterator, §23.1.5.1, kind
-/// "value"; CreateStringIterator, §22.1.5.1). `proto` is its prototype.
+/// A new ITERATOR cell with prototype `proto` over `iterated`: an object for an array iterator
+/// (CreateArrayIterator, §23.1.5.1, kind "value"; the object is read as an array-like), or a
+/// string for a string iterator (CreateStringIterator, §22.1.5.1).
 pub(crate) fn new_iterator(rt: &Runtime, proto: u64, iterated: u64) -> u64 {
     let c = new_js_object(rt, kind::ITERATOR, proto, 0);
     init(c, iter::ITERATED, iterated);
@@ -653,13 +654,15 @@ pub(crate) fn new_iterator(rt: &Runtime, proto: u64, iterated: u64) -> u64 {
     c.to_value().to_bits()
 }
 
-/// (iterated object or undefined, next index) of an ITERATOR cell.
+/// (iterated value, next index) of an ITERATOR cell: an object or undefined (done), or a
+/// string or "" (done).
 pub(crate) fn iterator_state(it: u64) -> (u64, u32) {
     let c = cell(it);
     (rd(c, iter::ITERATED), rd_i32(c, iter::NEXT) as u32)
 }
 
-/// Updates an ITERATOR cell; `iterated = undefined` marks it done.
+/// Updates an ITERATOR cell; `iterated` = undefined (array iterator) or "" (string iterator)
+/// marks it done.
 pub(crate) fn set_iterator_state(rt: &Runtime, it: u64, iterated: u64, next: u32) {
     let c = cell(it);
     wr(&rt.heap, c, iter::ITERATED, iterated);
