@@ -9,7 +9,8 @@
 //!   1. one scope descriptor per analysis scope (unit scope id == analysis scope id)
 //!      (+ the script context descriptor as unit scope 1 when the script top level needs one)
 //!   2. job queue: f0, then every function node in the order the walk meets it
-//!   3. FnGen per job (func.rs, stmt.rs, expr.rs, class.rs, pattern.rs) -> FunctionCode
+//!   3. FnGen per job (func.rs, stmt.rs, expr.rs, class.rs, pattern.rs; the M2 P0 routing
+//!      stubs generator.rs, class_fields.rs, private.rs, lookup.rs) -> FunctionCode
 //!   4. UnitBuilder::finish: interns strings, runs the verifier
 //!   v
 //! VerifiedUnit
@@ -50,10 +51,14 @@ use crate::{
 };
 
 mod class;
+mod class_fields;
 mod expr;
 mod func;
+mod generator;
 mod literal;
+mod lookup;
 mod pattern;
+mod private;
 mod stmt;
 
 #[cfg(test)]

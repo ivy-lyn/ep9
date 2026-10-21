@@ -691,6 +691,13 @@ fn entry_points() {
 fn unsupported_constructs_name_the_feature() {
     for (src, feature) in [
         ("function* g() {}", "generator functions"),
+        // M2 P0 routing keeps the texts (generator.rs, class_fields.rs).
+        ("async function* g() {}", "generator functions"),
+        ("(function* () {})", "generator functions"),
+        ("({ *m() {} })", "generator functions"),
+        ("{ function* g() {} }", "generator functions"),
+        ("class A { accessor x = 1 }", "class auto-accessors"),
+        ("class A { static #m() {} }", "private names"),
         ("async function f() {}", "async functions"),
         ("(async () => 1)", "async functions"),
         ("class A { x = 1 }", "class fields"),
@@ -788,4 +795,28 @@ fn eval_ext_is_slot_0_of_sloppy_eval_function_var_scopes_only() {
     // Strict eval cannot add vars: no binding.
     let strict = compile_script("function f() { eval('var x'); }", Strictness::Strict).unwrap();
     assert_eq!(has_ext(&strict), Vec::<usize>::new());
+}
+
+/// M2 P0 stubs: `compile_eval` (P2-EVAL-FE) and `compile_function_ctor` (P3-FNCTOR) return
+/// Unsupported, so the VM keeps today's behaviour.
+#[test]
+fn eval_and_function_ctor_entry_points_are_stubs() {
+    use ep9_bytecode::{EvalContext, FunctionCtorKind};
+    let ctx = EvalContext {
+        direct: true,
+        ..EvalContext::default()
+    };
+    match crate::compile_eval("var x = 1;", &ctx, super::CompileOptions::default()) {
+        Err(CodegenError::Unsupported(u)) => assert_eq!(u.feature, "eval"),
+        other => panic!("{other:?}"),
+    }
+    match crate::compile_function_ctor(
+        FunctionCtorKind::Normal,
+        "a",
+        "return a",
+        super::CompileOptions::default(),
+    ) {
+        Err(CodegenError::Unsupported(u)) => assert_eq!(u.feature, "Function constructor"),
+        other => panic!("{other:?}"),
+    }
 }

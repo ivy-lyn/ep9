@@ -10,7 +10,8 @@
 //! inner name = r_ctor; exit class scope; acc = r_ctor
 //! ```
 //!
-//! Unsupported in v0: fields, private names, static blocks, `accessor`, decorators.
+//! Unsupported in v0: fields, private names, static blocks, `accessor` (checks in
+//! `class_fields.rs`, M2 P0 routing), decorators (rejected here).
 
 use ep9_bytecode::{Register, RuntimeId, UnitString};
 use oxc_ast::ast::{Class, ClassElement, MethodDefinitionKind, MethodDefinitionType, PropertyKey};
@@ -153,15 +154,9 @@ impl<'a> FnGen<'a, '_> {
         let mut constructor = None;
         for e in &c.body.body {
             match e {
-                ClassElement::StaticBlock(s) => {
-                    return self.unsupported("class static blocks", s.span);
-                }
-                ClassElement::PropertyDefinition(p) => {
-                    return self.unsupported("class fields", p.span);
-                }
-                ClassElement::AccessorProperty(p) => {
-                    return self.unsupported("class auto-accessors", p.span);
-                }
+                ClassElement::StaticBlock(s) => self.check_static_block(s)?,
+                ClassElement::PropertyDefinition(p) => self.check_class_field(p)?,
+                ClassElement::AccessorProperty(p) => self.check_auto_accessor(p)?,
                 ClassElement::TSIndexSignature(_) => {}
                 ClassElement::MethodDefinition(m) => {
                     if let Some(d) = m.decorators.first() {
@@ -173,7 +168,7 @@ impl<'a> FnGen<'a, '_> {
                         return self.unsupported("TypeScript declarations", m.span);
                     }
                     if let PropertyKey::PrivateIdentifier(p) = &m.key {
-                        return self.unsupported("private names", p.span);
+                        self.check_private_method(m, p)?;
                     }
                     if m.kind == MethodDefinitionKind::Constructor {
                         constructor = Some(&**m);

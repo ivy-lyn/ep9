@@ -34,6 +34,8 @@ use oxc_span::{SPAN, SourceType};
 
 mod bytecodegen;
 mod depth;
+mod eval;
+mod function_ctor;
 mod position;
 mod prescan;
 pub mod scope;
@@ -45,6 +47,8 @@ pub use bytecodegen::{
     compile_module, compile_script,
 };
 pub use depth::{AST_CAP, DepthLayer, PRESCAN_CAP};
+pub use eval::compile_eval;
+pub use function_ctor::compile_function_ctor;
 pub use position::{LineMap, Position};
 pub use scope::ScopeAnalysis;
 
