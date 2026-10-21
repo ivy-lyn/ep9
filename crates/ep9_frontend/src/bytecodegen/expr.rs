@@ -1397,6 +1397,7 @@ impl<'a, 's> FnGen<'a, 's> {
         self.b.throw_super_already_called_if_not_hole();
         self.b.ldar(result);
         self.store_binding_raw(binding, hops);
+        self.fields_after_super(callee_ref, result)?;
         self.release(m);
         Ok(())
     }

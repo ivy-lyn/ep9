@@ -1177,7 +1177,11 @@ impl<'a> Visit<'a> for Builder<'a> {
             );
         }
 
-        // Synthetic functions: ids at the start of the class body, in this fixed order.
+        // Synthetic functions. Function ids must be a preorder of the parent links (the
+        // bytecode verifier's Tree rule), so each initializer is followed at once by the
+        // functions inside it: default constructor; instance initializer, then the instance
+        // field values; static initializer, then the static field values and static blocks;
+        // then the methods and computed keys in source order.
         let derived = it.heritage.is_some();
         let has_constructor = elements.iter().any(|e| {
             matches!(e, ClassElement::MethodDefinition(m) if m.kind == MethodDefinitionKind::Constructor)
@@ -1205,22 +1209,47 @@ impl<'a> Visit<'a> for Builder<'a> {
             };
             self.synthetic(kind, class_scope, body_span, false)
         });
-        let instance = needs_instance.then(|| {
-            self.synthetic(
-                FunctionKind::InstanceMembersInitializer,
-                class_scope,
-                body_span,
-                false,
-            )
-        });
-        let statics = needs_static.then(|| {
-            self.synthetic(
-                FunctionKind::StaticMembersInitializer,
-                class_scope,
-                body_span,
-                true,
-            )
-        });
+        let mut initializers = [None, None];
+        for (is_static, needed) in [(false, needs_instance), (true, needs_static)] {
+            if !needed {
+                continue;
+            }
+            let kind = if is_static {
+                FunctionKind::StaticMembersInitializer
+            } else {
+                FunctionKind::InstanceMembersInitializer
+            };
+            let f = Some(self.synthetic(kind, class_scope, body_span, is_static));
+            initializers[usize::from(is_static)] = f;
+            for element in elements {
+                let value = match element {
+                    ClassElement::PropertyDefinition(p) if p.r#static == is_static => &p.value,
+                    ClassElement::AccessorProperty(p) if p.r#static == is_static => &p.value,
+                    ClassElement::StaticBlock(block) if is_static => {
+                        self.in_synthetic(f, |s| {
+                            let parent = s.cur_scope;
+                            let scope = s.new_scope(
+                                ScopeKind::StaticBlock,
+                                Some(parent),
+                                s.cur_fn,
+                                block.span,
+                                true,
+                                block.scope_id.get(),
+                            );
+                            s.cur_scope = scope;
+                            s.var_scope = scope;
+                            s.visit_statements(&block.body);
+                        });
+                        continue;
+                    }
+                    _ => continue,
+                };
+                if let Some(value) = value {
+                    self.in_synthetic(f, |s| s.visit_expression(value));
+                }
+            }
+        }
+        let [instance, statics] = initializers;
 
         let mut constructor = default_constructor;
         for element in elements {
@@ -1249,38 +1278,14 @@ impl<'a> Visit<'a> for Builder<'a> {
                     if p.computed {
                         self.visit_property_key(&p.key);
                     }
-                    if let Some(value) = &p.value {
-                        let f = if p.r#static { statics } else { instance };
-                        self.in_synthetic(f, |s| s.visit_expression(value));
-                    }
                 }
                 ClassElement::AccessorProperty(p) => {
                     self.visit_decorators(&p.decorators);
                     if p.computed {
                         self.visit_property_key(&p.key);
                     }
-                    if let Some(value) = &p.value {
-                        let f = if p.r#static { statics } else { instance };
-                        self.in_synthetic(f, |s| s.visit_expression(value));
-                    }
                 }
-                ClassElement::StaticBlock(block) => {
-                    self.in_synthetic(statics, |s| {
-                        let parent = s.cur_scope;
-                        let scope = s.new_scope(
-                            ScopeKind::StaticBlock,
-                            Some(parent),
-                            s.cur_fn,
-                            block.span,
-                            true,
-                            block.scope_id.get(),
-                        );
-                        s.cur_scope = scope;
-                        s.var_scope = scope;
-                        s.visit_statements(&block.body);
-                    });
-                }
-                ClassElement::TSIndexSignature(_) => {}
+                ClassElement::StaticBlock(_) | ClassElement::TSIndexSignature(_) => {}
             }
         }
         for f in [default_constructor, instance, statics]

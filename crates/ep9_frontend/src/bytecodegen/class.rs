@@ -1,17 +1,25 @@
-//! Classes v0: constructor, methods, getters, setters (static or not), `extends`.
+//! Classes: constructor, methods, getters, setters (static or not), `extends`, fields,
+//! private names, static blocks (P2-CLS-CG; the element code is in `class_fields.rs`).
 //!
 //! ```text
 //! enter class scope (inner name in TDZ)
+//! CreatePrivateName per field #x and per brand -> class context slots
 //! heritage -> r_heritage (or the hole)
 //! CreateClosure(constructor) -> r_ctor
 //! DefineClass(r_ctor, r_heritage) -> r_proto
-//! per method, in order: key, CreateClosure,
-//!   DefineClassMethod(home, key, fn) | DefineClassAccessor(home, key, get, set)
-//! inner name = r_ctor; exit class scope; acc = r_ctor
+//! per element, in source order:
+//!   method:         key, CreateClosure, DefineClassMethod(home, key, fn)
+//!                   | DefineClassAccessor(home, key, get, set)
+//!   private method: CreateClosure -> its class context slot (a setter: `#.set-x`)
+//!   computed field: key, ToName -> `#.class-field-N`
+//! inner name = r_ctor
+//! SetClassFieldsInitializer(r_ctor, instance initializer)
+//! static brand: DefineKeyedOwnProperty r_ctor, brand (private add)
+//! static initializer: CallProperty0(fn, r_ctor)   (static fields and blocks, in order)
+//! exit class scope; acc = r_ctor
 //! ```
 //!
-//! Unsupported in v0: fields, private names, static blocks, `accessor` (checks in
-//! `class_fields.rs`, M2 P0 routing), decorators (rejected here).
+//! Unsupported: `accessor` (auto-accessors) and decorators.
 
 use ep9_bytecode::{Register, RuntimeId, UnitString};
 use oxc_ast::ast::{Class, ClassElement, MethodDefinitionKind, MethodDefinitionType, PropertyKey};
@@ -20,6 +28,7 @@ use oxc_span::GetSpan;
 use super::Job;
 use super::func::{FnGen, Gen};
 use super::literal::{self, PropertyName};
+use crate::scope::ScopeId;
 
 impl<'a> FnGen<'a, '_> {
     /// ClassDefinitionEvaluation. `name` is the class name (binding or NamedEvaluation).
@@ -38,6 +47,7 @@ impl<'a> FnGen<'a, '_> {
         let heritage = self.temp();
         let proto = self.temp();
         let pushed = self.enter_scope(scope);
+        self.create_private_names(c, scope, name.as_ref())?;
         match &c.heritage {
             Some(h) => {
                 self.expr(&h.expression)?;
@@ -69,25 +79,49 @@ impl<'a> FnGen<'a, '_> {
             Some(c.span.start),
         );
         self.b.star(proto);
-        self.class_methods(c, ctor, proto)?;
+        self.class_methods(c, scope, ctor, proto)?;
         if let Some(inner) = info.inner_name {
             self.b.ldar(ctor);
             self.store_binding_init(inner);
         }
+        self.class_definition_end(c, info, scope, ctor, proto)?;
         self.exit_scope(scope, pushed);
         self.b.ldar(ctor);
         self.release(m);
         Ok(())
     }
 
-    /// Defines the methods, getters and setters in source order.
+    /// ClassElementEvaluation in source order: defines the methods, getters and setters,
+    /// stores the private methods in the class context, and evaluates the computed field keys
+    /// into their `#.class-field-N` slots.
     #[inline(never)]
-    fn class_methods(&mut self, c: &'a Class<'a>, ctor: Register, proto: Register) -> Gen {
+    fn class_methods(
+        &mut self,
+        c: &'a Class<'a>,
+        scope: ScopeId,
+        ctor: Register,
+        proto: Register,
+    ) -> Gen {
+        let field_keys = self.computed_field_keys(scope);
+        let mut next_field = 0;
         for e in &c.body.body {
-            let ClassElement::MethodDefinition(md) = e else {
-                continue;
+            let md = match e {
+                ClassElement::MethodDefinition(md) => md,
+                ClassElement::PropertyDefinition(p) if p.computed => {
+                    let Some(&b) = field_keys.get(next_field) else {
+                        return Err(super::internal("no slot for a computed field key"));
+                    };
+                    next_field += 1;
+                    self.computed_field_key(p, b)?;
+                    continue;
+                }
+                _ => continue,
             };
             if md.kind == MethodDefinitionKind::Constructor {
+                continue;
+            }
+            if let PropertyKey::PrivateIdentifier(p) = &md.key {
+                self.private_method_definition(md, p, if md.r#static { ctor } else { proto })?;
                 continue;
             }
             let em = self.mark();

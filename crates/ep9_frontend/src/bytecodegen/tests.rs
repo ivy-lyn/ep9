@@ -428,6 +428,47 @@ const CASES: &[(&str, Mode, &str)] = &[
         Sloppy,
         "class A { m() { return () => A; } }",
     ),
+    // ---- class fields and private names (P2-CLS-CG) ----
+    (
+        "class-field-public",
+        Sloppy,
+        "class A { x = 1; y; 'z' = () => 1; 1 = function() {}; 1.5 = 2; static s = this; }",
+    ),
+    (
+        "class-field-computed",
+        Sloppy,
+        "var k; class A { [k] = 1; static [k + 1] = function() {}; [k]() {} [k + 2]; }",
+    ),
+    (
+        "class-field-ctor",
+        Sloppy,
+        "class A { x = 1; constructor(a = this.x) { this.a = a; } } class B { y = () => this; }",
+    ),
+    (
+        "class-field-derived",
+        Sloppy,
+        "class A {} class B extends A { x = 1; constructor() { super(); } } class C extends A { y = super.constructor; } class D extends A { z; constructor() { var f = () => super(); f(); } }",
+    ),
+    (
+        "class-field-static-block",
+        Sloppy,
+        "class A { static x = 1; static { var y = this.x; function f() { return y; } let z = f; } static w = A; }",
+    ),
+    (
+        "class-private-field",
+        Sloppy,
+        "class A { #x = 1; static #s; get() { return this.#x; } set(v) { this.#x = v; this.#x += 1; this.#x++; [this.#x] = [v]; } has(o) { return #x in o && #s in A; } opt(o) { return o?.#x; } call() { return this.#x(); } }",
+    ),
+    (
+        "class-private-method",
+        Sloppy,
+        "class A { #m() { return 1; } static #s() { return super.x; } get #a() { return 1; } set #a(v) {} set #w(v) {} t(o) { return [o.#m(), A.#s(), o.#a, #m in o, o?.#m, #a in o]; } }",
+    ),
+    (
+        "class-private-generator",
+        Sloppy,
+        "class A { *#g() { yield 1; } static *#h() {} t() { return this.#g(); } }",
+    ),
     // ---- modules ----
     (
         "module-basic",
@@ -723,12 +764,12 @@ fn unsupported_constructs_name_the_feature() {
         ("{ async function* g() {} }", "generator functions"),
         ("class A { static async *m() {} }", "generator functions"),
         ("class A { accessor x = 1 }", "class auto-accessors"),
-        ("class A { static #m() {} }", "private names"),
+        ("class A { accessor #x }", "class auto-accessors"),
         ("async function f() {}", "async functions"),
         ("(async () => 1)", "async functions"),
-        ("class A { x = 1 }", "class fields"),
-        ("class A { #x() {} }", "private names"),
-        ("class A { static {} }", "class static blocks"),
+        ("class A { async #m() {} }", "async functions"),
+        ("class A { async *#m() {} }", "generator functions"),
+        ("class A { x = async () => 1 }", "async functions"),
         ("import('x')", "import()"),
     ] {
         match compile_script(src, Strictness::Sloppy) {
@@ -823,19 +864,11 @@ fn eval_ext_is_slot_0_of_sloppy_eval_function_var_scopes_only() {
     assert_eq!(has_ext(&strict), Vec::<usize>::new());
 }
 
-/// M2 P0 stubs: `compile_eval` (P2-EVAL-FE) and `compile_function_ctor` (P3-FNCTOR) return
-/// Unsupported, so the VM keeps today's behaviour.
+/// M2 P0 stub: `compile_function_ctor` (P3-FNCTOR) returns Unsupported, so the VM keeps
+/// today's behaviour. (`compile_eval` is P2-EVAL-FE's: its tests are in `eval.rs`, D3.)
 #[test]
-fn eval_and_function_ctor_entry_points_are_stubs() {
-    use ep9_bytecode::{EvalContext, FunctionCtorKind};
-    let ctx = EvalContext {
-        direct: true,
-        ..EvalContext::default()
-    };
-    match crate::compile_eval("var x = 1;", &ctx, super::CompileOptions::default()) {
-        Err(CodegenError::Unsupported(u)) => assert_eq!(u.feature, "eval"),
-        other => panic!("{other:?}"),
-    }
+fn function_ctor_entry_point_is_a_stub() {
+    use ep9_bytecode::FunctionCtorKind;
     match crate::compile_function_ctor(
         FunctionCtorKind::Normal,
         "a",
