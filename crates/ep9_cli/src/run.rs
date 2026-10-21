@@ -192,8 +192,9 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
 // ---- the compiler hooks (C2): ep9_frontend behind `IsolateConfig::compiler` ----------------
 
 /// The compiler entry points of the CLI's isolates: ep9_vm does not link the front end, so eval,
-/// `Function()` and run-time scripts reach it through these. Eval code compiles
-/// (`compile_eval`, M2-P2); the `Function()` entry still answers `Unsupported` (P3-FNCTOR).
+/// `Function()` and run-time scripts reach it through these. Eval code (`compile_eval`, M2-P2)
+/// and the `Function()` family (`compile_function_ctor`, P3-FNCTOR; the async kinds answer
+/// `Unsupported`) compile.
 static COMPILER: CompilerHooks = CompilerHooks {
     compile_eval: hook_compile_eval,
     compile_function: hook_compile_function,
@@ -317,8 +318,9 @@ mod tests {
         assert_eq!(line.unwrap(), "Symbol(x) Symbol() x 1\n");
     }
 
-    /// The hooks reach the front end: a script and eval code compile (P2-EVAL-FE), `Function()`
-    /// is still `Unsupported` (M2-P0), and an early error is a `Syntax` failure.
+    /// The hooks reach the front end: a script, eval code (P2-EVAL-FE) and `Function()` code
+    /// (P3-FNCTOR) compile, an early error is a `Syntax` failure, and an async function is
+    /// `Unsupported`.
     #[test]
     fn the_compiler_hooks_reach_the_front_end() {
         let iso = Isolate::new(IsolateConfig {
@@ -338,9 +340,14 @@ mod tests {
             (hooks.compile_eval)("return 1", &ctx),
             Err(CompileFailure::Syntax(_))
         ));
+        assert!((hooks.compile_function)(FunctionCtorKind::Normal, "a", "return a").is_ok());
+        assert!(matches!(
+            (hooks.compile_function)(FunctionCtorKind::Normal, "/*", "*/){"),
+            Err(CompileFailure::Syntax(_))
+        ));
         assert_eq!(
-            (hooks.compile_function)(FunctionCtorKind::Normal, "a", "return a").unwrap_err(),
-            CompileFailure::Unsupported("Function constructor".to_string())
+            (hooks.compile_function)(FunctionCtorKind::Async, "a", "return await a").unwrap_err(),
+            CompileFailure::Unsupported("async functions".to_string())
         );
         assert!(
             Isolate::new(IsolateConfig::default())
