@@ -134,8 +134,8 @@ pub(crate) struct Cx {
     /// = never). From `IsolateConfig::feedback_threshold`; see `feedback.rs`.
     pub feedback_threshold: u32,
     /// The prototype epoch (`ShapeState::proto_epoch` in the runtime), read through this
-    /// pointer so a change made by a host call or a nested run is seen at once.
-    #[allow(dead_code)] // wk4-stub
+    /// pointer so a change made by a host call or a nested run is seen at once. The IC hit
+    /// paths compare it (`ic.rs`).
     pub proto_epoch: *const Cell<u32>,
 }
 

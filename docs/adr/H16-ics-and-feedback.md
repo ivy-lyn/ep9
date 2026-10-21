@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-21): slot kinds H16 v0 and FactSnapshot v0 built (`ep9_bytecode` docs, `ep9_facts`). The FeedbackVector and IC v0 are week-4 P2/P3 work |
+| Status | Draft (2026-10-21): slot kinds H16 v0 and FactSnapshot v0 built (`ep9_bytecode` docs, `ep9_facts`); the FeedbackVector (P2) and the T0 named and global ICs v0 (P3-IC, `ep9_vm/src/ic.rs`) built |
 | Fix by | Slot kinds M0 wk4; frozen M1 exit |
 | Freeze point | M1 exit |
 | Origin | v1#12 + R16-D7 + R17; plan status E |
@@ -56,7 +56,21 @@ Per kind (byte, opcodes, runtime record, fact record). "IC" is the K3 entry; "bi
 | 19 | JumpLoop | 0x7d | - / int32 back-edge count | LoopFacts |
 | 20 | CreateClosure | 0x74 | the one closure (weak) / int32 0, 1, 2 | ClosureFacts: none, one, many |
 
-T0 v0 writes only the IC entries of 0x21, 0x22, 0x24 and 0x25 (P3-IC); the other records are written from M1 (H16-Q2).
+T0 v0 writes only the IC entries of 0x21, 0x22, 0x24, 0x25 and the global sites 0x10-0x12 (P3-IC); the other records are written from M1 (H16-Q2). 0x8f `GetIterator` keeps its load slot empty (I34).
+
+**IC v0 as built (P3-IC, week 4).** The layouts and the handler table are in the module docs of `crates/ep9_vm/src/ic.rs`.
+
+| # | As built | Why |
+|---|---|---|
+| K9 | **Hit test**: `(key as u32) == word0.shape_id` of the receiver (the cage is aligned, so a shape's low 32 bits are its ShapeId), then the handler. An int32 handler has its kind in bits 0-3 and a byte offset in bits 4-31: `FIELD_IN_OBJECT`, `FIELD_OUT_OF_LINE`, `ARRAY_LENGTH`, `STRING_LENGTH`, `SLOW`, `MEGA` | One compare and one load for an own field; no shape load (I44) |
+| K10 | **Cells**: POLY_IC (69, 72 B) = 4 cases (key weak, handler strong). IC_HANDLER (70, 40 B) = +8 kind, +16 epoch, +24 holder or target shape (weak), +32 location (an int32 field handler). Handler kinds: `PROTO_LOAD`, `MISSING`, `ADD`, `GLOBAL` | K7: only handlers are strong |
+| K11 | **Strings** have ShapeId 0: their case key is `KEY_STRING` (int32 0), and `STRING_LENGTH` checks the kind byte (symbols have ShapeId 0 too). Only `length` is cached on strings | No shape for strings in v0 |
+| K12 | **`SLOW` cases** keep their place and take the generic path with no epoch: dictionary shapes (shared, so they cannot tell own keys), accessors, read-only stores, and the exotic keys of `exotic.rs` (a String wrapper's `length`; an array's `length` as a store target; a function's `prototype`, except a load of one already stored). Array-index keys are never cached | A site that sees such objects does not churn; mega stays for >4 shapes |
+| K13 | **Add cases** are checked after the store ran: the new shape must be the receiver shape's child with the key as the next {w, e, c} data field. Prototype-mode (unique) shapes get no add case; a FUNCTION shape without a stored `prototype` gets `SLOW`. An out-of-line add hits only if the SLOTS cell has room (growth is slow). 0x24 compares the epoch; 0x25 does not (CreateDataProperty ignores the chain). A non-extensible object has a dictionary shape (OM-10), so an add case never matches it | One shape compare guards the whole transition |
+| K14 | **Miss path**: the case is computed before the generic operation (no GC point, no JS) and recorded only if the operation succeeded (a throw records nothing) | A failed or reentrant operation cannot leave a wrong case |
+| K15 | **Global ICs** (stretch, built): a lexical binding is a field case keyed on the lexical record's shape (the TDZ hole misses); an own data property of the global object is a `GLOBAL` cell keyed on the global object's shape whose +24 is the lexical record's shape (weak), so a new `let` that shadows it misses. A found global costs one table scan on the miss path (W4-P1-GLOBAL-ONE-SCAN) | Without it, each global load scans the lexical record and the global object |
+| K16 | **Shared slots**: `ic::init_vector` scans the function's bytecode when the vector is made; an IC slot that sites with different names share starts megamorphic. BytecodeGen never shares one; hand-built units (tests) do | One name's handler must never answer another name |
+| K17 | **0x22** is keyed on the lookup start (the home object's prototype) and passes its `receiver` register as the receiver (W4-P3-SUPER-SPLIT) | §13.3.7.3 |
 
 **FactSnapshot v0** (full text: `crates/ep9_facts/tests/golden/schema.txt`):
 
@@ -83,7 +97,9 @@ KeyRef    = string (Latin-1 or UTF-16) | well-known symbol | other symbol
 | `ep9_facts` depends on `ep9_bytecode` only; no unsafe | dep-guards check 7; `#![forbid(unsafe_code)]` | M0 wk4 |
 | One encoding per fact set; the same facts in any build order give the same bytes | `tests/encoding.rs` (two build orders, corrupt input, 3,000 random round trips) | M0 wk4 |
 | A record whose kind is not the unit's `feedback_slots[i]` is dropped; another ABI or unit hash drops the snapshot | `tests/validate.rs` | M0 wk4 |
-| IC and feedback data hold shapes weakly | `ep9_vm` tests: a dead shape clears its entry (P2-FEED, P3-IC) | M0 wk4 |
+| IC and feedback data hold shapes weakly | `ep9_vm` tests: a dead shape clears its entry, a dead holder misses (`tests/feedback.rs`, `tests/ic.rs`) | M0 wk4 |
+| Prototype-chain cases compare `proto_epoch`; a value store to a prototype does not bump it, so a prototype load reads the holder at every hit | `tests/ic.rs`: a replaced method, a read-only `x` on Object.prototype, a missing property that appears | M0 wk4 |
+| IC hit paths do not allocate or call; T0 fast handlers inline them | `cargo xtask disasm-check` (tail handlers) | M0 wk4 |
 | ICs never change test262 results | T262 and T262-EAGER give the same sets | M0 wk4 |
 | No code patching: IC state lives in RW data | review of JIT and AOT IC code | M5 / A3 |
 
@@ -129,3 +145,4 @@ KeyRef    = string (Latin-1 or UTF-16) | well-known symbol | other symbol
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-21 | draft | H16 v0: the 21 slot kinds kept with no ABI bump, a runtime and a fact record per kind; FactSnapshot v0 in `ep9_facts` (FACT_SCHEMA_VERSION 1, schema history); K2-K7 copied from the week-4 plan (OM-5 to OM-8, OM-12 to OM-14) | P2-FACTS (AOT senior role) |
+| 2026-10-21 | as built | IC v0 in T0: K9-K17 (int32 handlers, POLY_IC and IC_HANDLER cells, `SLOW` cases, checked add cases, global ICs, shared slots, 0x22 receiver) | P3-IC (VM lead role) |

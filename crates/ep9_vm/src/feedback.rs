@@ -23,9 +23,11 @@
 //! | `JumpLoop` budget poll (`slow::interrupt_at`) | [`ensure`]: a running function that has none gets one |
 //!
 //! `t = 0` makes the vector at the first call; `t = u32::MAX` never makes one (not even at a
-//! poll). Every slot starts as (undefined, int32 0). Host functions and VM stubs never get a
-//! vector. The key half is weak (cleared to undefined when its cell dies); the value half is
-//! strong (OM-14).
+//! poll). Every slot starts as (undefined, int32 0), except an IC slot that sites with
+//! different names share: it starts megamorphic (`ic::init_vector`). Host functions and VM
+//! stubs never get a vector. The key half is weak (cleared to undefined when its cell dies);
+//! the value half is strong (OM-14). `ic.rs` reads and writes the slots of the named-property
+//! and global sites.
 
 use core::ptr::NonNull;
 
@@ -93,10 +95,6 @@ pub(crate) fn unit_slot(unit: &LoadedUnit, function_id: u32) -> Option<&Slot> {
 
 /// The FEEDBACK cell of `fi`, if it has one.
 #[inline(always)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the named-property IC (P3-IC) reads it")
-)]
 pub(crate) fn vector(fi: &FunctionInfo) -> Option<u64> {
     let p = fi.feedback.get();
     // SAFETY: a non-null `feedback` points at a slot of the UnitFeedback of `fi`'s unit
@@ -136,8 +134,9 @@ pub(crate) fn ensure(rt: &Runtime, threshold: u32, fi: &FunctionInfo) {
     }
 }
 
-/// Allocates the vector of the bytecode function `fi` (every slot (undefined, int32 0)),
-/// stores it in the unit's slot and links `fi` to that slot. GC point.
+/// Allocates the vector of the bytecode function `fi` (every slot (undefined, int32 0), a
+/// shared IC slot megamorphic), stores it in the unit's slot and links `fi` to that slot. GC
+/// point.
 ///
 /// A function with more than [`MAX_SLOTS`] slots, or whose vector is too large for one
 /// cell, gets none: its count starts again, so `invocations` stays below the threshold.
@@ -171,6 +170,12 @@ fn make(rt: &Runtime, fi: &FunctionInfo) {
     for i in 0..n {
         init(c, slot_offset(i) + fv::VALUE, int32_bits(0));
     }
+    // A slot that sites with different names share gets no IC (still no GC point).
+    crate::ic::init_vector(
+        fi,
+        &unit.unit.functions[id as usize].bytecode,
+        c.to_value().to_bits(),
+    );
     let slot = unit_slot(unit, id).expect("one feedback slot per unit function");
     // E3: a store into a root takes no barrier.
     slot.init(c.to_value());
@@ -190,10 +195,6 @@ pub(crate) fn slot_count(v: u64) -> u32 {
 
 /// The key word (weak) of slot `i` of the vector `v`.
 #[inline(always)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the named-property IC (P3-IC) reads it")
-)]
 pub(crate) fn key(v: u64, i: u32) -> u64 {
     debug_assert!(i < slot_count(v));
     rd(cell(v), slot_offset(i as usize) + fv::KEY)
@@ -201,20 +202,12 @@ pub(crate) fn key(v: u64, i: u32) -> u64 {
 
 /// The value word (strong) of slot `i` of the vector `v`.
 #[inline(always)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the named-property IC (P3-IC) reads it")
-)]
 pub(crate) fn value(v: u64, i: u32) -> u64 {
     debug_assert!(i < slot_count(v));
     rd(cell(v), slot_offset(i as usize) + fv::VALUE)
 }
 
 /// Sets slot `i` of the vector `v` to (`key`, `value`), with the barrier.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the named-property IC (P3-IC) writes it")
-)]
 pub(crate) fn set_slot(rt: &Runtime, v: u64, i: u32, key: u64, value: u64) {
     debug_assert!(i < slot_count(v));
     let c = cell(v);
