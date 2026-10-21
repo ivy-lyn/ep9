@@ -27,10 +27,10 @@ Limit checks on VM and native stacks: calls, JIT and AOT prologues, recursive bu
 |---|---|---|
 | VM register stack | 2^20 slots (8 MiB) by default, 1024..=2^28 accepted; overflow gives a catchable RangeError | `crates/ep9_vm/src/isolate.rs:65`, `crates/ep9_vm/src/isolate.rs:168-172` |
 | Native stack margin | JS entries and host calls stop at stack low end + clamp(size / 4, 128 KiB, 1 MiB): catchable RangeError | `native_margin` (`crates/ep9_vm/src/isolate.rs:159-162`) |
-| Debug threaded dispatch | panics 64 KiB below the native limit (debug builds have no tail calls) | `crates/ep9_vm/src/interp/dsl.rs:290-292` |
+| Debug threaded dispatch | panics 64 KiB below the native limit (debug builds have no tail calls) | `crates/ep9_vm/src/interp/dsl.rs:307-309` |
 | Depth of `function f() { f() }` | ep9 104,855; node 24.22 10,359; d8 15.8 10,360 (RangeError); QuickJS 2026-06-04 1,169 (InternalError) | measured 2026-10-21, Apple M5 Max, release builds |
 | CLI isolate thread | 64 MiB native stack (`--stack-mib`) | `crates/ep9_cli/src/args.rs:97`, `crates/ep9_cli/src/run.rs:279-284` |
-| Interrupt poll | at `JumpLoop` and function entry, once per budget of 10,000 | `BUDGET` (`crates/ep9_vm/src/interp/mod.rs:63`) |
+| Interrupt poll | at `JumpLoop` and function entry, once per budget of 10,000 | `BUDGET` (`crates/ep9_vm/src/interp/mod.rs:68`) |
 | Termination | `TerminateHandle` from any thread; the unwinder runs no handler, so no `catch` and no `finally`; the isolate stays usable | `crates/ep9_vm/src/error.rs:228-235`; test `crates/ep9_vm/src/tests/exceptions.rs:421` |
 | Heap out of memory | panic "ep9: heap allocation failed" | `crates/ep9_vm/src/runtime.rs:307-314` |
 | Heap limit | none: `max_heap_bytes = usize::MAX`; the 64 GiB cage bounds the heap | `crates/ep9_heap/src/heap.rs:92` |
