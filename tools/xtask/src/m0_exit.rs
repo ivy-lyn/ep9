@@ -27,7 +27,7 @@
 //! | 1 | exec JSON: full run (runs = the pin's count), wall time <= 600 s, 0 infra; the run names the committed expectation file of this tree, and its "fail" results against that file give 0 new failures and 0 stale lines (recomputed here, not the runner's diff) | step "test262 exec" green and <= 600 s; the file is committed |
 //! | 2 | parse JSON: negatives all pass (the pin's count), positives >= 99.98% | step "test262 parse" green, and the Windows parse expectation file equals this host's |
 //! | 3 | exec JSON: `language/` files >= 40% | step "test262 exec" green; passed = total (exec JSON) - the `test/language/` lines of the Windows expectation file |
-//! | 4 | cross JSON: richards and deltablue vs QuickJS, net interval low end >= 0.6, valid rows, a gate host, not provisional | NOT-RUN (no Windows bench job) |
+//! | 4 | cross JSON: richards and deltablue vs QuickJS, net interval low end >= 0.6, valid rows (a gross fallback row, net invalid, gives OPEN), a gate host, not provisional | NOT-RUN (no Windows bench job) |
 //! | 5 | verdicts: SP-GC, SP-VA, SP-Value, SP-Dispatch, SP-JIT-mem and Spike B GO (no open conditions); SP-tsrs-win recorded | the same verdicts, and these steps of the run green: SP-GC, SP-Dispatch, SP-JIT-mem and Spike B structural gates, ep9_heap barrier, cargo test --workspace, spike-native tests (ep9_vm) |
 //! | 6 | GC JSON: the whole pinned corpus (files run + skipped = the pin's count; skipped = the committed skip list), 0 infra; the run names the committed expectation file, and its "fail" results against that file without the skip list give 0 new failures (recomputed here) | NOT-RUN (CI runs GC-stress on linux-x64 only) |
 //! | 7 | nesting log: `every_form_is_gated`, `caps_hold_end_to_end`, `uncaught_error_reports_file_line_utf16_column` ok | step "cargo test --workspace" green (it runs the three) |
@@ -892,26 +892,45 @@ fn cross_canary(p: &Path, j: &Json, root: &Path) -> Cell {
             parts.push(format!("{w}: no row vs QuickJS (did it run?)"));
             continue;
         };
-        let metric = row.get("metric").and_then(Json::str).unwrap_or("net");
-        let m = row.get(metric);
-        let median = m
-            .and_then(|m| m.get("median"))
-            .and_then(Json::num)
-            .unwrap_or(0.0);
-        let low = m
-            .and_then(|m| m.get("interval"))
+        // The gate reads net ratios only (run.mjs label()): a gross fallback row, written when
+        // net time is <= 0 in a round, passes or fails nothing.
+        let metric = row.get("metric").and_then(Json::str).unwrap_or("");
+        let invalid = row.get("net_invalid").and_then(Json::str);
+        let Some(net) = row.get("net").filter(|n| **n != Json::Null) else {
+            status = status.max(Status::Open);
+            parts.push(format!(
+                "{w}: net invalid ({}): no gate verdict (a {metric} ratio is shown, not gated)",
+                invalid.unwrap_or("no net ratio")
+            ));
+            continue;
+        };
+        if metric != "net" || invalid.is_some() {
+            status = status.max(Status::Open);
+            parts.push(format!(
+                "{w}: metric {metric:?}, net invalid ({}): no gate verdict",
+                invalid.unwrap_or("none given")
+            ));
+            continue;
+        }
+        let median = net.get("median").and_then(Json::num).unwrap_or(0.0);
+        let low = net
+            .get("interval")
             .and_then(Json::arr)
             .and_then(|a| a.first())
             .and_then(Json::num)
             .unwrap_or(0.0);
-        let void = row.get("void").and_then(Json::bool).unwrap_or(true);
+        let void = net
+            .get("void")
+            .or_else(|| row.get("void"))
+            .and_then(Json::bool)
+            .unwrap_or(true);
         if low < 0.6 {
             status = Status::Fail;
         } else if void {
             status = status.max(Status::Open);
         }
         parts.push(format!(
-            "{w} {metric} {median:.3}x (interval low end {low:.3}{})",
+            "{w} net {median:.3}x (interval low end {low:.3}{})",
             if void { ", void row" } else { "" }
         ));
     }
@@ -2509,6 +2528,42 @@ mod tests {
         }
         let c = item5(ci_json("success"));
         assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// I5: a gross fallback row (net time <= 0 in a round, so no net ratio) passes or fails
+    /// nothing, as tools/bench/cross/run.mjs label() says; item 4 reads net ratios only.
+    #[test]
+    fn canary_ignores_gross_fallback() {
+        let root = fake_repo("canary");
+        let row = |w: &str, valid: bool| {
+            if valid {
+                format!(
+                    r#"{{"workload":"{w}","comparator":"qjs","metric":"net","void":false,"net_invalid":null,
+                    "net":{{"median":0.8,"interval":[0.7,0.9],"void":false}},"gross":{{"median":0.5,"interval":[0.4,0.6],"void":false}}}}"#
+                )
+            } else {
+                format!(
+                    r#"{{"workload":"{w}","comparator":"qjs","metric":"gross","void":false,"net":null,
+                    "net_invalid":"net time <= 0 in round(s) 3","gross":{{"median":0.8,"interval":[0.7,0.9],"void":false}}}}"#
+                )
+            }
+        };
+        let canary = |valid: bool| {
+            let j = format!(
+                r#"{{"schema":"ep9-cross/v1","commit":{{"ep9":"fa451f6"}},"provisional":false,"host":{{"gate_host":true}},
+                "M":{{"ratios":[{},{}]}}}}"#,
+                row("richards", valid),
+                row("deltablue", valid)
+            );
+            cross_canary(Path::new("run.json"), &parse_json(&j).unwrap(), &root)
+        };
+        let c = canary(false);
+        assert_eq!(c.status, Status::Open, "{}", c.evidence);
+        assert!(c.evidence.contains("net invalid"), "{}", c.evidence);
+        let c = canary(true);
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        assert!(c.evidence.contains("richards net 0.800x"), "{}", c.evidence);
         std::fs::remove_dir_all(root).unwrap();
     }
 
