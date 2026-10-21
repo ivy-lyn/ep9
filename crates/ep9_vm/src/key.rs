@@ -1,17 +1,19 @@
 //! Property keys (H19 PropertyKey): ToPropertyKey, key equality, hashing, interning.
 //!
-//! A key is the Value bits of a string (or, from P2, a symbol). There are no number keys: an
-//! index stays a string atom ("1"), and its hash field caches the index (W4-NO-NUMBER-KEYS).
+//! A key is the Value bits of a string or a symbol. There are no number keys: an index stays
+//! a string atom ("1"), and its hash field caches the index (W4-NO-NUMBER-KEYS). A symbol is
+//! its own key: one cell per symbol, so it always compares by bits.
 //!
 //! ```text
 //! producer                     key it hands on
-//! ToPropertyKey (any value) -> flatten, then the atom of the string (atoms::intern)
+//! ToPropertyKey (any value) -> a symbol as it is; else flatten, then the atom of the string
 //! unit strings              -> atoms (interned at unit load, unit.rs)
 //! Rust text                 -> atoms::intern_str
 //! define paths              -> intern_key (P2-OBJ calls it; stored keys are always atoms)
 //!
 //! lookup: probe(key) once -> Bits (atom or symbol): compare bits only
 //!                         -> Content (any other string): one content scan, debug counter + 1
+//! hash:   key_hash(key)    -> a string's 30-bit table hash, or a symbol's 30-bit identity hash
 //! ```
 
 use crate::atoms;
@@ -19,7 +21,7 @@ use crate::conv::{Hint, Res, describe, to_primitive, to_string};
 use crate::interp::Cx;
 use crate::kinds::{is_string, is_symbol};
 use crate::runtime::Runtime;
-use crate::string;
+use crate::{string, symbol};
 
 /// A property key: the Value bits of a string or a symbol.
 pub(crate) type PropertyKey = u64;
@@ -48,16 +50,19 @@ pub(crate) fn key_eq(a: PropertyKey, b: PropertyKey) -> bool {
     string::equals(a, b)
 }
 
-/// ToPropertyKey (§7.1.19): the atom of ToString(ToPrimitive(b, string)). Keys are strings
-/// until symbols exist (P2-SYM). An index such as "1" stays a string atom.
+/// ToPropertyKey (§7.1.19): ToPrimitive(b, string); a symbol is the key, anything else
+/// becomes the atom of its ToString. An index such as "1" stays a string atom.
 pub(crate) fn to_property_key(cx: &mut Cx, b: u64) -> Res<PropertyKey> {
-    if string::is_atom(b) {
+    if string::is_atom(b) || is_symbol(b) {
         return Ok(b);
     }
     let s = if is_string(b) {
         b
     } else {
         let p = to_primitive(cx, b, Hint::String)?;
+        if is_symbol(p) {
+            return Ok(p);
+        }
         to_string(cx, p)?
     };
     let s = string::flatten(cx, s);
@@ -81,8 +86,8 @@ pub(crate) fn is_index_key(key: PropertyKey) -> bool {
 }
 
 /// True if `key` is a symbol.
-pub(crate) fn is_symbol_key(_key: PropertyKey) -> bool {
-    false
+pub(crate) fn is_symbol_key(key: PropertyKey) -> bool {
+    is_symbol(key)
 }
 
 /// True if `key` is a valid property key (a string or a symbol).
@@ -90,10 +95,13 @@ pub(crate) fn is_property_key(key: PropertyKey) -> bool {
     is_string(key) || is_symbol_key(key)
 }
 
-/// The text of `key` for error messages (never runs JS).
+/// The text of `key` for error messages (never runs JS): a string's text, or a symbol's
+/// `Symbol(desc)` (SymbolDescriptiveString).
 pub(crate) fn key_text(_rt: &Runtime, key: PropertyKey) -> String {
     if is_string(key) {
         string::to_rust_string(key)
+    } else if is_symbol(key) {
+        symbol::descriptive_text(key)
     } else {
         describe(key)
     }
@@ -109,7 +117,7 @@ pub(crate) fn intern_key(rt: &Runtime, key: PropertyKey) -> PropertyKey {
     }
 }
 
-/// Classifies a probe key once per lookup [I47]: an atom or a symbol compares by bits; any
+/// Classifies a probe key once per lookup (I47): an atom or a symbol compares by bits; any
 /// other string needs a content compare, which the debug counter records (W4-KEY-EQ).
 #[allow(dead_code)] // callers: shape lookups (P1-SHAPE), props lookups (P2-OBJ)
 pub(crate) fn probe(key: PropertyKey) -> Probe {
@@ -121,11 +129,14 @@ pub(crate) fn probe(key: PropertyKey) -> Probe {
     }
 }
 
-/// The stored 30-bit hash of a string key (its cached hash field; computed and cached on
-/// first use). Seeded per process: never in bytecode, units or property order. Not a GC
-/// point.
+/// The 30-bit hash of a key: a string's table hash (its cached hash field, computed on first
+/// use) or a symbol's identity hash (PRNG, never the address; H12). Seeded per process:
+/// never in bytecode, units or property order. Not a GC point.
 #[allow(dead_code)] // callers: DESC_INDEX (P1-SHAPE)
 pub(crate) fn key_hash(key: PropertyKey) -> u32 {
-    debug_assert!(is_string(key), "symbol hashes come with P2-SYM");
+    if is_symbol(key) {
+        return symbol::hash(key);
+    }
+    debug_assert!(is_string(key), "a property key is a string or a symbol");
     string::hash(key)
 }

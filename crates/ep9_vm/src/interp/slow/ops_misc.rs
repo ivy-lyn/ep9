@@ -3,12 +3,8 @@
 use ep9_bytecode::Constant;
 
 use crate::conv::{self, BinOp, CompareOp, Res};
-use crate::error::{not_implemented, throw_error};
-use crate::frame::{NULL, UNDEFINED};
 use crate::interp::Cx;
-use crate::object::is_object;
 use crate::property;
-use crate::runtime::ErrorKind;
 
 use super::{enter, info, ret};
 
@@ -48,19 +44,8 @@ pub(crate) fn unary(cx: &mut Cx, fp: *mut u64, pc: *const u8, op: UnOp, v: u64) 
             UnOp::ToNumber | UnOp::ToNumeric => conv::num(conv::to_numeric(cx, v)?),
             UnOp::ToName => conv::to_property_key(cx, v)?,
             UnOp::ToString => conv::to_string(cx, v)?,
-            UnOp::ToObject => {
-                if is_object(v) {
-                    v
-                } else if v == UNDEFINED || v == NULL {
-                    return Err(throw_error(
-                        cx,
-                        ErrorKind::TypeError,
-                        "Cannot convert undefined or null to object",
-                    ));
-                } else {
-                    return Err(not_implemented(cx, "wrapper objects for primitives"));
-                }
-            }
+            // A wrapper object for a primitive (§7.1.18); TypeError for undefined and null.
+            UnOp::ToObject => conv::to_object(cx, v)?,
         })
     })();
     ret(r)
