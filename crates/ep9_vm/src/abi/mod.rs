@@ -328,8 +328,8 @@ impl PrimitiveType {
         }
     }
 
-    /// The prototype of its wrapper objects.
-    const fn prototype(self) -> IntrinsicId {
+    /// The prototype of its wrapper objects (the default of its constructor).
+    pub const fn prototype(self) -> IntrinsicId {
         match self {
             PrimitiveType::Number => IntrinsicId::NumberPrototype,
             PrimitiveType::Boolean => IntrinsicId::BooleanPrototype,
