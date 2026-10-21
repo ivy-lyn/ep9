@@ -1,0 +1,9 @@
+# fp-check fixture workspace (tools/xtask/tests/fpcheck.rs copies it to a temp dir).
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+# As the ep9 release profile: the checked object is post-LTO.
+[profile.release]
+lto = "fat"
+codegen-units = 1

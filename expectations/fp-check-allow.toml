@@ -1,0 +1,18 @@
+# cargo xtask fp-check allow list (H36, docs/adr/H36-fp-semantics.md; tools/xtask/src/fpcheck.rs).
+#
+# Each entry lets a banned libm symbol appear in one function of the shipped ep9 object. The
+# file is a small TOML subset that fp-check reads by hand: [[allow]] tables; string values and
+# one-line arrays of strings. More than 5 entries reopens H36 (fp-check then fails).
+#
+#   symbols   banned symbols, by C name ("pow", not "_pow" or "__imp_pow")
+#   function  demangled function path; its generic instances and closures match too
+#   targets   "all", or an array of target triples
+#   reopen    when the entry can go
+#   reason    why the call cannot change a JS-visible number
+
+[[allow]]
+symbols = ["fmod", "pow"]
+function = "oxc_semantic::ts_enum::eval::evaluate_expression"
+targets = "all"
+reopen = "H3 enum lowering (M4): BytecodeGen folds TS enums with ep9_math"
+reason = "oxc_semantic folds TS enum `%` and `**` with host fmod/powf; BytecodeGen rejects TSEnumDeclaration (crates/ep9_frontend/src/bytecodegen/stmt.rs), so ep9 never reads those values"

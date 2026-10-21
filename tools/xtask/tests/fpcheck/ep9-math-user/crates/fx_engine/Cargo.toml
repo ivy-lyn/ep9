@@ -1,0 +1,9 @@
+[package]
+name = "fx_engine"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# The test replaces @EP9_MATH@ with the repo's crates/ep9_math.
+[dependencies]
+ep9_math = { path = "@EP9_MATH@" }
