@@ -280,9 +280,12 @@ fn help_after_separator_goes_to_the_command() {
     assert!(!stdout.contains("usage: ep9-bench"), "{stdout}");
 }
 
-/// With `--expect-stdout`, every run is checked, not only the first (W4-PERF-REFUSE). The engine
-/// (`testdata/right-once.sh`) prints the right answer in its first run only. A run that prints
-/// something else stops ep9-bench with exit 4 and no JSON.
+/// With `--expect-stdout`, every run is checked, warm-up and measured, not only the first
+/// (W4-PERF-REFUSE). The engine (`testdata/right-then-wrong.sh`) prints the right answer in its
+/// first `right` runs only. A run that prints something else stops ep9-bench at once with exit 4
+/// and no JSON. Each case starts the engine's run count again, so the wrong run is never the first
+/// run of a case unless the case says so: a check of the first run only (or of measured run 1
+/// only, or of the measured runs only) fails one of these cases.
 #[cfg(unix)]
 #[test]
 fn expect_stdout_checks_every_run() {
@@ -291,36 +294,59 @@ fn expect_stdout_checks_every_run() {
     let (want, state) = (dir.join("want.txt"), dir.join("runs"));
     std::fs::write(&want, "577789\n").unwrap();
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let run = |runs: &str| {
-        Command::new(BIN)
-            .args(["--runs", runs, "--warmup", "0", "--expect-stdout"])
+    // ep9-bench with `warmup` and `runs`, on an engine whose first `right` runs are right; the
+    // output, and how many runs the engine made.
+    let run = |warmup: &str, runs: &str, right: &str| {
+        let _ = std::fs::remove_file(&state);
+        let out = Command::new(BIN)
+            .args(["--runs", runs, "--warmup", warmup, "--expect-stdout"])
             .arg(&want)
             .arg("--")
-            .arg(manifest.join("tests/testdata/right-once.sh"))
+            .arg(manifest.join("tests/testdata/right-then-wrong.sh"))
             .arg(manifest.join("workloads/t0-call.js"))
-            .env("RIGHT_ONCE_STATE", &state)
+            .env("RIGHT_RUNS", right)
+            .env("RIGHT_STATE", &state)
             .output()
-            .expect("run ep9-bench")
+            .expect("run ep9-bench");
+        let made: u32 = std::fs::read_to_string(&state)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        (out, made)
     };
-    // Run 1 prints the right answer: the JSON, with a count or (no counter on this host) without.
-    let out = run("1");
+    let refused = |out: &Output, case: &str| {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(4), "{case}: {stderr}");
+        assert!(
+            stderr.contains(r#"printed "12345", want "577789""#),
+            "{case}: {stderr}"
+        );
+        assert!(
+            out.stdout.is_empty(),
+            "{case}: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    };
+    // Every run right (1 warm-up, 2 measured): the JSON, with a count or (no counter on this host)
+    // without.
+    let (out, made) = run("1", "2", "3");
     let json = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(matches!(out.status.code(), Some(0 | 3)), "{stderr}");
     assert!(json.contains("\"schema\": \"ep9-bench/v1\""), "{json}");
-    // Run 2 prints "12345": exit 4 there, and no JSON.
-    let out = run("3");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(out.status.code(), Some(4), "{stderr}");
-    assert!(
-        stderr.contains(r#"printed "12345", want "577789""#),
-        "{stderr}"
-    );
-    assert!(
-        out.stdout.is_empty(),
-        "{}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    assert_eq!(std::fs::read_to_string(&state).unwrap().trim(), "2");
+    assert_eq!(made, 3, "{json}");
+    // No warm-up; measured run 1 right, measured run 2 wrong.
+    let (out, made) = run("0", "3", "1");
+    refused(&out, "measured run 2 wrong");
+    assert_eq!(made, 2, "stops at the wrong run");
+    // The warm-up run wrong: refused before any measured run.
+    let (out, made) = run("1", "2", "0");
+    refused(&out, "warm-up run wrong");
+    assert_eq!(made, 1, "stops at the wrong run");
+    // The warm-up run and measured run 1 right, measured run 2 wrong.
+    let (out, made) = run("1", "3", "2");
+    refused(&out, "warm-up right, measured run 2 wrong");
+    assert_eq!(made, 3, "stops at the wrong run");
     std::fs::remove_dir_all(&dir).unwrap();
 }

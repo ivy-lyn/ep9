@@ -1,7 +1,8 @@
-//! `.github/scripts/perf-ci-v0.mjs` with the built ep9-bench (W4-PERF-REFUSE): the check run does
-//! not vouch for the counted runs. The engine (`testdata/right-once.sh`) prints the right answer in
-//! the check run and a wrong one in every later run. The workload must be refused with no count,
-//! and the script must exit 1.
+//! `.github/scripts/perf-ci-v0.mjs` with the built ep9-bench (W4-PERF-REFUSE): neither the check
+//! run nor the first counted run vouches for the later counted runs. The engine
+//! (`testdata/right-then-wrong.sh`, `RIGHT_RUNS=2`) prints the right answer in the check run and in
+//! counted run 1, and a wrong one in counted run 2. The workload must be refused with no count, and
+//! the script must exit 1.
 //!
 //! Needs node (`EP9_NODE` names it); without node the test prints SKIPPED and passes. Unix only:
 //! the engine is a shell script.
@@ -29,10 +30,12 @@ fn a_wrong_answer_in_a_counted_run_is_refused() {
     for counter in ["auto", "cachegrind"] {
         let state = dir.join(format!("{counter}.runs"));
         let json = dir.join(format!("{counter}.json"));
+        // The engine's run count starts at 0.
+        let _ = std::fs::remove_file(&state);
         let out = Command::new(&node)
             .arg(manifest.join("../../.github/scripts/perf-ci-v0.mjs"))
             .arg("--ep9")
-            .arg(manifest.join("tests/testdata/right-once.sh"))
+            .arg(manifest.join("tests/testdata/right-then-wrong.sh"))
             .args([
                 "--bench",
                 BIN,
@@ -45,15 +48,17 @@ fn a_wrong_answer_in_a_counted_run_is_refused() {
             ])
             .args(["--workloads", "t0-call", "--out"])
             .arg(&json)
-            .env("RIGHT_ONCE_STATE", &state)
+            .env("RIGHT_RUNS", "2")
+            .env("RIGHT_STATE", &state)
             .output()
             .expect("run node");
         let stderr = String::from_utf8_lossy(&out.stderr);
         let report = std::fs::read_to_string(&json).unwrap_or_else(|e| panic!("{e}: {stderr}"));
         assert_eq!(out.status.code(), Some(1), "{counter}: {stderr}\n{report}");
-        // Two runs: the check run passed, then ep9-bench refused its first run.
+        // Three runs: the check run and counted run 1 passed, then ep9-bench refused counted run 2
+        // and made no counted run 3.
         let runs = std::fs::read_to_string(&state).unwrap();
-        assert_eq!(runs.trim(), "2", "{counter}: {report}");
+        assert_eq!(runs.trim(), "3", "{counter}: {report}");
         for want in [
             r#""complete": false"#,
             r#""status": "refused""#,
