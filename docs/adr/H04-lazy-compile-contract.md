@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-22). The SFI fields exist in v0; every function compiles eagerly (L0) |
+| Status | Draft (2026-10-21). The SFI fields exist in v0; every function compiles eagerly (L0) |
 | Fix by | M0 |
 | Freeze point | M1 exit |
 | Origin | v1#20; plan status U |
@@ -88,4 +88,4 @@ FunctionInfo { unit, function_id, flags, code, slot, ... }
 
 | Date | Change kind | Change | By |
 |---|---|---|---|
-| 2026-10-22 | draft | First draft from 02 §6 row H4 and 01 §8, with the v0 fields and checks as built at 55c15d0 | P0-DOCS agent (M2-P0) |
+| 2026-10-21 | draft | First draft from 02 §6 row H4 and 01 §8, with the v0 fields and checks as built at 55c15d0 | P0-DOCS agent (M2-P0) |

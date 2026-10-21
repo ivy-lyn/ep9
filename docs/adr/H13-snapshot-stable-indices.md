@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-22): the rules. The index lists are due at M1; the snapshot is built in M4 (A1) |
+| Status | Draft (2026-10-21): the rules. The index lists are due at M1; the snapshot is built in M4 (A1) |
 | Fix by | Rules M0; index lists M1; built M4 (A1) |
 | Freeze point | Freeze table (README §3.4): rules and index lists at M1 exit; snapshot build at M4 exit |
 | Origin | v1#19 + R16-D5; plan status E |
@@ -91,4 +91,4 @@ Copied from the plan row: an external-reference table. Intrinsics in fixed order
 
 | Date | Change kind | Change | By |
 |---|---|---|---|
-| 2026-10-22 | draft | First draft (rules) from 02 §6 row H13, 03 §6 and 07 §3, with the index lists as built at 55c15d0 | P0-DOCS agent (M2-P0) |
+| 2026-10-21 | draft | First draft (rules) from 02 §6 row H13, 03 §6 and 07 §3, with the index lists as built at 55c15d0 | P0-DOCS agent (M2-P0) |

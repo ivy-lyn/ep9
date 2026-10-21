@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-22): the M0 rules. The inspector is built in M4, the sampler in M6, the AOT parts in A2 |
+| Status | Draft (2026-10-21): the M0 rules. The inspector is built in M4, the sampler in M6, the AOT parts in A2 |
 | Fix by | M0 rules; AOT parts A2 |
 | Freeze point | Freeze table (README §3.4): rules at M1 exit; AOT parts at the A2 gate |
 | Origin | v1#22; plan status E |
@@ -59,7 +59,7 @@ Copied from the plan row: lazy position tables, kept ScopeInfo, a debug bytecode
 |---|---|---|
 | [R09] | A sampler walks interpreter, JIT and Rust frames from a signal or a suspended thread: it needs frame pointers everywhere and findable interpreter frames | [../research/09-critic.md](../research/09-critic.md) |
 | [R18] | A node inspector session rewrote strict `let` and `const` locals (B28, B28c) and retyped a field in a call-free loop | [../research/18-sound-regions.md](../research/18-sound-regions.md) |
-| target spec | `rustc +nightly-2026-10-04 -Z unstable-options --print target-spec-json`: frame-pointer `non-leaf` on aarch64-apple-darwin and aarch64-unknown-linux-gnu, `always` on x86_64-apple-darwin, no key (may omit) on x86_64-unknown-linux-gnu and x86_64-pc-windows-msvc (run 2026-10-22) | H24-Q1 |
+| target spec | `rustc +nightly-2026-10-04 -Z unstable-options --print target-spec-json`: frame-pointer `non-leaf` on aarch64-apple-darwin and aarch64-unknown-linux-gnu, `always` on x86_64-apple-darwin, no key (may omit) on x86_64-unknown-linux-gnu and x86_64-pc-windows-msvc (run 2026-10-21) | H24-Q1 |
 
 ## Validation
 
@@ -83,4 +83,4 @@ Copied from the plan row: lazy position tables, kept ScopeInfo, a debug bytecode
 
 | Date | Change kind | Change | By |
 |---|---|---|---|
-| 2026-10-22 | draft | First draft (M0 rules R1-R6) from 02 §6 row H24 and 07 §2, with the facts as built at 55c15d0 and the frame-pointer defaults of the 5 targets | P0-DOCS agent (M2-P0) |
+| 2026-10-21 | draft | First draft (M0 rules R1-R6) from 02 §6 row H24 and 07 §2, with the facts as built at 55c15d0 and the frame-pointer defaults of the 5 targets | P0-DOCS agent (M2-P0) |

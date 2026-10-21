@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-22): the rule and an inventory of today's off-heap pointers. `ExternalRef<T>` is not built yet (H25-Q1) |
+| Status | Draft (2026-10-21): the rule and an inventory of today's off-heap pointers. `ExternalRef<T>` is not built yet (H25-Q1) |
 | Fix by | M0 |
 | Freeze point | M1 exit. D6 names M1a (object layout freeze) as the last cheap point for a sandbox |
 | Origin | v1#23; plan status U |
@@ -86,4 +86,4 @@ The other `native_of` stores write VM stack frame slots (caller fp, return pc, f
 
 | Date | Change kind | Change | By |
 |---|---|---|---|
-| 2026-10-22 | draft | First draft from 02 §6 row H25 and 11 D6, with the inventory of off-heap pointers in heap cells at 55c15d0 | P0-DOCS agent (M2-P0) |
+| 2026-10-21 | draft | First draft from 02 §6 row H25 and 11 D6, with the inventory of off-heap pointers in heap cells at 55c15d0 | P0-DOCS agent (M2-P0) |

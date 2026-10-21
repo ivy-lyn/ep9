@@ -1,6 +1,6 @@
 # Spike B round-trip protocol (the D21 gate), written before any spike code
 
-- **Status.** Protocol only; no result. Written in M0 month 2, phase P0 (2026-10-22), before any Spike B code exists (decision M2-D21-METHOD: a gate written first cannot be tuned to the result). A change after the first gate run needs a decisions-log row that names this file.
+- **Status.** Protocol only; no result. Written in M0 month 2, phase P0, on 2026-10-21 (the file name keeps the date the plan gave it), before any Spike B code exists (decision M2-D21-METHOD: a gate written first cannot be tuned to the result). A change after the first gate run needs a decisions-log row that names this file.
 - **Gate.** D21 keeps native-stack JIT frames (placement (a)) if one T0→JIT→T0 round trip costs ≤ 18 release-expansion dispatches of the SP-Dispatch loop kernel, on the same host and in the same session ([09 §4](../plan/09-milestones.md#4-spikes) Spike B row; decisions-log D21 and D21-UNIT).
 - **Class.** S (spike) of the speed-gate rule ([10-quality §3](../plan/10-quality.md), PERF-NOISE): wall time of the timed region, ≥ 15 paired rounds, order-statistic interval.
 - **Who runs what.** P3-SPIKEB-BENCH builds `spikes/spike-b/bench.sh` and does a provisional run. The gate run is the orchestrator's gate window 1, after the P3 merge, with no agent running.
@@ -100,4 +100,4 @@ C:  6 Ldar a1 | TestLessThan r1 | JumpIfFalse | Ldar r0 | AddSmi [1] | Star r0 |
 - `bash spikes/spike-b/bench.sh` prints: host, CPU model, commit, load before and after, tau with its source file, k with the counted listing lines, every round's t_A, t_C and RT_r, the median, the interval, the verdict and its labels. The result goes to `docs/measurements/<date>-spike-b.md`.
 - **pass:** placement (a) stays; SP-Unit starts in P4.
 - **fail:** placement (b) (JIT frames on the VM stack, entered with the 4 handler arguments, in `spikes/spike-b/src/jit_b/`) is built and measured with this same protocol (M2-D21-FAIL). D21 reopens only if both placements fail.
-- **Sizing note.** n was chosen so that t_C is about 0.3 s: at 55c15d0, `ep9` ran kernel C with n = 2·10^7 in 0.06 s of process wall time (2026-10-22, load 18.7, so a sizing figure only).
+- **Sizing note.** n was chosen so that t_C is about 0.3 s: at 55c15d0, `ep9` ran kernel C with n = 2·10^7 in 0.06 s of process wall time (2026-10-21, load 18.7, so a sizing figure only).

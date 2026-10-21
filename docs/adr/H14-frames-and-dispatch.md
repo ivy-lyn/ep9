@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-21; H14-Q1 filled 2026-10-22: FRAME 2, fp-3 = new.target). The T0 v0 interpreter implements it. Accept needs the review record (README §3.1) and Spike B |
+| Status | Draft (2026-10-21; H14-Q1 filled 2026-10-21: FRAME 2, fp-3 = new.target). The T0 v0 interpreter implements it. Accept needs the review record (README §3.1) and Spike B |
 | Fix by | M0 wk3; Spike B + SP-Unit (M0 month 2); Spike C (M1) |
 | Freeze point | M1 exit |
 | Origin | v1#10 + R16-D2; plan status E |
@@ -98,7 +98,7 @@ Every word in `[stack base, top)` is a valid Value. The GC scans that slice prec
 
 | ID | Question | Needed by | Proposed default |
 |---|---|---|---|
-| H14-Q1 | Where does `new.target` live? v0 keeps it in the feedback slot of a `[[Construct]]` frame (`call::push_frame`; `LdaNewTarget` reads it there) and passes it to host functions as an argument | M1 (classes, `Reflect.construct`) | **Filled (2026-10-22, FRAME 2).** fp-3 is the new.target slot (`slot::NEW_TARGET`): the incoming new.target, or the generator object in a resumed frame. JIT and AOT frames reach the feedback vector through fp-4, as T0 does. The proposed default (a register filled at entry) was not taken: one header slot serves `[[Construct]]` and generator resume (M2-GEN-MODEL), and the frame size does not change |
+| H14-Q1 | Where does `new.target` live? v0 keeps it in the feedback slot of a `[[Construct]]` frame (`call::push_frame`; `LdaNewTarget` reads it there) and passes it to host functions as an argument | M1 (classes, `Reflect.construct`) | **Filled (2026-10-21, FRAME 2).** fp-3 is the new.target slot (`slot::NEW_TARGET`): the incoming new.target, or the generator object in a resumed frame. JIT and AOT frames reach the feedback vector through fp-4, as T0 does. The proposed default (a register filled at entry) was not taken: one header slot serves `[[Construct]]` and generator resume (M2-GEN-MODEL), and the frame size does not change |
 | H14-Q2 | Who wraps a primitive receiver of a sloppy function? | M1 | The callee prologue, from the FunctionInfo strict bit |
 | H14-Q3 | Is the register mapping (`o < 0` → `fp + o - 8`) part of the H2 ABI? | H2 freeze (M1 exit) | Yes; the AOT emitter uses it |
 | H14-Q4 | Default VM stack size and the RangeError depth versus V8 | M1 | Keep 2^20 slots; measure test262 and the benches |
@@ -116,5 +116,5 @@ Every word in `[stack base, top)` is a valid Value. The GC scans that slice prec
 | 2026-10-21 | draft | First draft from the T0 v0 interpreter in `ep9_vm` | VM lead (agent) |
 | 2026-10-21 | clarify | Header table and H14-Q1 state where v0 keeps new.target (feedback slot of a construct frame), as the code does | docs-sync agent |
 | 2026-10-21 | fill | T0 reaches the lazy FeedbackVector (H16) through the function info slot (fp-4, `FunctionInfo.feedback`); fp-3 keeps new.target (H14-Q1 unchanged). New rule `tests::feedback::*` | VM lead (agent, P2-FEED) |
-| 2026-10-22 | fill | H14-Q1 filled: fp-3 holds the incoming new.target, or the generator object in a resumed frame; JIT and AOT frames reach the feedback vector through fp-4. Header table, frame diagram and a new rule row updated | P0-DOCS agent (M2-P0) |
-| 2026-10-22 | rewrite (version) | FRAME_VERSION 1 -> 2 (`crates/ep9_vm/src/versions.rs`, P0-VM): `slot::FEEDBACK` becomes `slot::NEW_TARGET`, a resumed frame (`push_resume_frame`, construct bit clear) carries the generator object there, and `LdaNewTarget` reads fp-3 without the construct-bit check. A unit built for FRAME 1 falls back to its bytecode (H35 S3). Pre-freeze churn (README §3.3) | P0-DOCS agent (M2-P0) |
+| 2026-10-21 | fill | H14-Q1 filled: fp-3 holds the incoming new.target, or the generator object in a resumed frame; JIT and AOT frames reach the feedback vector through fp-4. Header table, frame diagram and a new rule row updated | P0-DOCS agent (M2-P0) |
+| 2026-10-21 | rewrite (version) | FRAME_VERSION 1 -> 2 (`crates/ep9_vm/src/versions.rs`, P0-VM): `slot::FEEDBACK` becomes `slot::NEW_TARGET`, a resumed frame (`push_resume_frame`, construct bit clear) carries the generator object there, and `LdaNewTarget` reads fp-3 without the construct-bit check. A unit built for FRAME 1 falls back to its bytecode (H35 S3). Pre-freeze churn (README §3.3) | P0-DOCS agent (M2-P0) |
