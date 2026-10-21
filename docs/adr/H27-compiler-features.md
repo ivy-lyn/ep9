@@ -8,7 +8,7 @@
 | Origin | v1#25; plan status E (extended: `aot`) |
 | Crates | `ep9_cli` (default `jit`), `ep9_vm` (`jit`; `spike-native` and `ic-stats`, never in `ep9`), `ep9_platform` (`jit`, `unwind`), `ep9_unit` (`aot`, empty in M0); later `ep9_masm`, `ep9_baseline`, `ep9_opt`, `ep9_regexp` (RX2 under `jit`), `ep9_aot`, `ep9c` |
 | Owner (plan role) | JIT/platform lead (`jit`); AOT senior (`aot`) |
-| Validated by | SP-JIT-mem (passed on 4 targets, 2026-10-21); dep-guards checks 5, 9, 10, 11 and 12; `cargo xtask feature-matrix` as a build-test step on 4 runners (M0 wk4) |
+| Validated by | SP-JIT-mem (passed on 4 targets, 2026-10-21); dep-guards checks 5, 9, 10, 11, 12 and 13; `cargo xtask feature-matrix` as a build-test step on 4 runners (M0 wk4) |
 | Plan sources | [02 §6 H27](../plan/02-architecture.md#6-hard-to-change-decisions-h1-h37), [08 §2](../plan/08-repo.md#2-crates), [08 §3](../plan/08-repo.md#3-binaries), [08 §7](../plan/08-repo.md#7-dependency-guards-and-xtask-checks), [04 §5](../plan/04-execution.md#5-jit-infrastructure-and-the-relocatable-macroassembler) |
 
 ## Context
@@ -62,6 +62,7 @@
 | No `ep9_unit` feature `aot` in the `ep9_cli` graph, default or jitless | dep-guards check 10 (`.github/scripts/dep-guards.sh:168-178`), with a control: `-p ep9_unit --features aot` must show `aot` | M0 wk4 |
 | No `ep9_vm` feature `spike-native` or `ic-stats` in the `ep9_cli` graph, default or jitless | dep-guards check 11 (`.github/scripts/dep-guards.sh:180-189`), with a control: `-p ep9_vm --features spike-native,ic-stats` must show both | M0 month 2 |
 | H5: `ep9` (the runtime crate, `ep9_cli` today) links the bytecode compiler `ep9_frontend` in its normal graph, default and jitless | dep-guards check 12 (`.github/scripts/dep-guards.sh:191-213`), with two controls: `ep9_vm`'s graph must not show `ep9_frontend` (`ep9_vm` reaches the compiler only through the `IsolateConfig::compiler` hook), and `ep9_builtins` (a dev-only edge) must not pass the query | M0 month 2 |
+| Release builds abort on a panic: `[profile.release]` of Cargo.toml has `panic = "abort"` (dev-opt inherits it), and no other profile table and no `.cargo/config.toml` sets `panic` (H23) | dep-guards check 13 (`.github/scripts/dep-guards.sh:215-241`), with a control: the scan must find the key in a sample `[profile.dev]` table | M0 month 2 |
 | Each build is built, linted (`-D warnings`) and tested per package, never with `--workspace` | `cargo xtask feature-matrix`; CI build-test step on 4 runners | M0 wk4 |
 | Code under `jit` compiles out without the feature | `#[cfg(any(feature = "jit", test))]` (for example `Reservation::reserve_code_range_at`, `crates/ep9_platform/src/va.rs:135`) | M0 wk3 |
 | The jitless build passes the same test262 set as the JIT build | test262 per mode (10-quality §1) | when T1 exists (M1+) |
@@ -112,6 +113,7 @@
 | 2026-10-22 | clarify | 2026-10-21 row "As built in M0 wk4" (P1-AOTU): kind is rewrite (README §3.3). It replaced the check text of the guard 9 Rules row (`-e features`) and added controls to rows 9 and 10 | P2-ACCEPT-1 |
 | 2026-10-22 | clarify | 2026-10-21 row "Check 12 reads only cargo tree's stdout" (M2-P0 fixer): kind is rewrite (README §3.3). Check 12 now rejects what it accepted (`warning: nothing to print.` on stderr), and its Rules row gained a second control | P2-ACCEPT-1 |
 | 2026-10-22 | clarify | Row added for bb5967e (2026-10-21, P1-CODE-RANGE), which had none: the "Code under `jit` compiles out" Rules row names `Reservation::reserve_code_range_at` as its example, since `Cage::reserve_jit` is gone. The rule and its check are unchanged. Later `va.rs` line moves are ADRLINE ref fixes | P2-ACCEPT-1 |
+| 2026-10-22 | fill | M0 month 2 P2 (M2-P2-GUARD13-H27): new Rules row for dep-guards check 13 (release builds abort on a panic; H23 and M2-ABORT-SCOPE), with its control. Text from the P2-INFRA2 report. Existing rules and checks keep their results | P2 integration fixer |
 
 ## Review record
 
