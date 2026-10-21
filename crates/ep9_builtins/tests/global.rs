@@ -67,8 +67,10 @@ fn keys(id: IntrinsicId) -> Vec<String> {
     .expect("no exception")
 }
 
-/// The keys of this crate's intrinsics are in V8's order (node 24 `Reflect.ownKeys`), with
-/// the keys that are not built yet left out.
+/// The keys that this crate's modules give their intrinsics (and a function's `length` and
+/// `name`) are all there, in V8's order (node 24 `Reflect.ownKeys`; keys not built yet left
+/// out). Keys from other tables (the VM table's `String.prototype[@@iterator]`, say) may sit
+/// between them.
 #[test]
 fn intrinsic_keys_follow_v8s_order() {
     let wk = |names: &[&str]| -> Vec<String> {
@@ -152,7 +154,8 @@ fn intrinsic_keys_follow_v8s_order() {
         }),
     ];
     for (id, want) in cases {
-        assert_eq!(keys(id), want, "{}", id.name());
+        let got: Vec<String> = keys(id).into_iter().filter(|k| want.contains(k)).collect();
+        assert_eq!(got, want, "{}", id.name());
     }
 }
 
