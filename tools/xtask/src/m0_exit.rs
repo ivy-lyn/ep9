@@ -627,6 +627,7 @@ fn item1(c: &Ctx) -> (Cell, Cell) {
                 why.push(format!("wall time {wall:.1} s > {MAX_WALL_SECONDS} s"));
             }
             // The diff against the committed file, recomputed; the runner's diff counts too.
+            let mut basis = format!("recomputed against expectations/{file}");
             let (new, stale) = match recheck(&c.o.root, j, &file, &BTreeSet::new()) {
                 Ok(d) => {
                     if !d.new.is_empty() {
@@ -637,6 +638,7 @@ fn item1(c: &Ctx) -> (Cell, Cell) {
                 Err(e) => {
                     status = Status::Fail;
                     why.push(e);
+                    basis = "the runner's diff, not recomputed".into();
                     (runner_new, runner_stale)
                 }
             };
@@ -653,7 +655,7 @@ fn item1(c: &Ctx) -> (Cell, Cell) {
             cell(
                 status,
                 format!(
-                    "{}: {ok_runs} / {total_runs} runs ok, wall time {wall:.1} s (<= {MAX_WALL_SECONDS} s), {} workers, infra {infra}, new failures {new}, stale lines {stale} (recomputed against expectations/{file}){}",
+                    "{}: {ok_runs} / {total_runs} runs ok, wall time {wall:.1} s (<= {MAX_WALL_SECONDS} s), {} workers, infra {infra}, new failures {new}, stale lines {stale} ({basis}){}",
                     p.display(),
                     j.get("workers").and_then(Json::num).unwrap_or(0.0),
                     if why.is_empty() {
@@ -1073,6 +1075,7 @@ fn item6(c: &Ctx) -> (Cell, Cell) {
                 committed(&c.o.root, "test262-gc-skip.txt").and_then(|p| expectation_set(&p));
             let mut skip_text = String::new();
             let (mut new, mut stale) = (runner_new, runner_stale);
+            let mut basis = "the runner's diff, not recomputed".to_string();
             match (listed, skip) {
                 (Ok(listed), Ok(skip)) => {
                     let passing: Vec<&str> = skip
@@ -1108,6 +1111,7 @@ fn item6(c: &Ctx) -> (Cell, Cell) {
                             }
                             new = new.max(d.new.len());
                             stale = stale.max(d.stale.len());
+                            basis = format!("recomputed against expectations/{file}");
                         }
                         Err(e) => {
                             status = Status::Fail;
@@ -1130,7 +1134,7 @@ fn item6(c: &Ctx) -> (Cell, Cell) {
             cell(
                 status,
                 format!(
-                    "{}: --gc-stress {gc}, files {fp} / {ft}, infra {infra}, new failures {new} (recomputed against expectations/{file}); {skip_text}{}",
+                    "{}: --gc-stress {gc}, files {fp} / {ft}, infra {infra}, new failures {new} ({basis}); {skip_text}{}",
                     p.display(),
                     if why.is_empty() {
                         String::new()
@@ -2504,6 +2508,7 @@ mod tests {
         // A failed read: the runner names a file that does not exist and diffs nothing.
         let c = item1(&all, &missing);
         assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("not recomputed"), "{}", c.evidence);
         assert!(c.evidence.contains("/nonexistent/dir"), "{}", c.evidence);
         // A file outside this tree with the right name.
         write(
@@ -2558,6 +2563,7 @@ mod tests {
         // Compared with a file outside this tree.
         let c = item6(exec_json(1, 166.0, 2, &listed, "/elsewhere/other.txt"));
         assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("not recomputed"), "{}", c.evidence);
         assert!(
             c.evidence.contains("/elsewhere/other.txt"),
             "{}",
