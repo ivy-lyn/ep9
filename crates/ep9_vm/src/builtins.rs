@@ -141,11 +141,24 @@ pub enum IntrinsicId {
     /// `%StringIteratorPrototype%` (§22.1.5.2), made by the VM table. Its root is a slot of
     /// the isolate's builtin state, not a runtime root.
     StringIteratorPrototype,
+    // ---- M2-P0 (generators; async functions for month 3; eval): VM table, state slots ----
+    /// `%GeneratorFunction%` (§27.3.1).
+    GeneratorFunction,
+    /// `%GeneratorFunction.prototype%` (§27.3.3).
+    GeneratorFunctionPrototype,
+    /// `%GeneratorPrototype%` (§27.5.1, `%GeneratorFunction.prototype.prototype%`).
+    GeneratorPrototype,
+    /// `%AsyncFunction%` (§27.7.1).
+    AsyncFunction,
+    /// `%AsyncFunction.prototype%` (§27.7.3).
+    AsyncFunctionPrototype,
+    /// `%eval%` (§19.2.1). Made, but not a global binding until P3-EVAL-VM (C19).
+    Eval,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 33] = [
+    pub const ALL: [IntrinsicId; 39] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -179,6 +192,12 @@ impl IntrinsicId {
         IntrinsicId::UriError,
         IntrinsicId::Math,
         IntrinsicId::StringIteratorPrototype,
+        IntrinsicId::GeneratorFunction,
+        IntrinsicId::GeneratorFunctionPrototype,
+        IntrinsicId::GeneratorPrototype,
+        IntrinsicId::AsyncFunction,
+        IntrinsicId::AsyncFunctionPrototype,
+        IntrinsicId::Eval,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object.
@@ -217,6 +236,12 @@ impl IntrinsicId {
             IntrinsicId::UriError => "%URIError%",
             IntrinsicId::Math => "%Math%",
             IntrinsicId::StringIteratorPrototype => "%StringIteratorPrototype%",
+            IntrinsicId::GeneratorFunction => "%GeneratorFunction%",
+            IntrinsicId::GeneratorFunctionPrototype => "%GeneratorFunction.prototype%",
+            IntrinsicId::GeneratorPrototype => "%GeneratorPrototype%",
+            IntrinsicId::AsyncFunction => "%AsyncFunction%",
+            IntrinsicId::AsyncFunctionPrototype => "%AsyncFunction.prototype%",
+            IntrinsicId::Eval => "%eval%",
         }
     }
 
@@ -256,7 +281,13 @@ impl IntrinsicId {
             IntrinsicId::EvalError => Root::EvalErrorConstructor,
             IntrinsicId::UriError => Root::UriErrorConstructor,
             IntrinsicId::Math => Root::Math,
-            IntrinsicId::StringIteratorPrototype => return None,
+            IntrinsicId::StringIteratorPrototype
+            | IntrinsicId::GeneratorFunction
+            | IntrinsicId::GeneratorFunctionPrototype
+            | IntrinsicId::GeneratorPrototype
+            | IntrinsicId::AsyncFunction
+            | IntrinsicId::AsyncFunctionPrototype
+            | IntrinsicId::Eval => return None,
         })
     }
 
@@ -265,6 +296,12 @@ impl IntrinsicId {
     const fn slot(self) -> Option<usize> {
         match self {
             IntrinsicId::StringIteratorPrototype => Some(0),
+            IntrinsicId::GeneratorFunction => Some(1),
+            IntrinsicId::GeneratorFunctionPrototype => Some(2),
+            IntrinsicId::GeneratorPrototype => Some(3),
+            IntrinsicId::AsyncFunction => Some(4),
+            IntrinsicId::AsyncFunctionPrototype => Some(5),
+            IntrinsicId::Eval => Some(6),
             _ => None,
         }
     }
@@ -905,7 +942,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 1;
+const INTRINSIC_SLOTS: usize = 7;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.

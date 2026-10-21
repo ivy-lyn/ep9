@@ -20,20 +20,27 @@
 //! | FUNCTION | 17 | +24 FunctionInfo (native word), +32 context, +40 `[[HomeObject]]` or undefined | 2 (`length`, `name`) |
 //! | ARRAY | 18 | +24 length (int32); elements at +16 | 0 |
 //! | ERROR | 19 | +24 unit index (int32 or undefined), +32 source offset (int32) | 2 |
-//! | ITERATOR | 20 | +24 iterated value: an object (undefined when done, null while an array iterator's `next` runs user code) or a string ("" when done), +32 next index (int32) | 0 |
+//! | ITERATOR | 20 | +24 iterated value: an object (undefined when done, null while an array iterator's `next` runs user code) or a string ("" when done), +32 next index (int32), +40 kind (int32, [`iter_kind`]: values, keys, entries) | 0 |
 //! | PRIMITIVE_WRAPPER | 21 | +24 the primitive | 0 |
 //! | BOUND_FUNCTION | 22 | +24 target, +32 bound `this`, +40 bound arguments | 2 |
+//! | GENERATOR | 23 | +24 state, +32 mode (int32s), +40 function, +48 receiver, +56 context, +64 registers (an ELEMENTS cell), +72 resume mode (int32), +80 async slot ([`genf`]) | 0 |
+//! | SLOT_OBJECT | 24 | +24 ObjectClass id (int32) ([`slot_obj`]) | n: the internal slots |
 //!
 //! | Kind | Id | Layout (byte offsets) | Size |
 //! |---|---|---|---|
 //! | ELEMENTS | 65 | +8 capacity (int32), +16 values (hole = empty) | 16 + 8 cap |
-//! | CONTEXT | 66 | +8 previous, +16 scope id (int32), +24 length (int32), +32 slots | 32 + 8 len |
+//! | CONTEXT | 66 | +8 previous, +16 scope (native word: a [`ContextScope`] record), +24 length (int32), +32 slots | 32 + 8 len |
 //!
 //! Every word after word0 is a valid `Value` (raw pointers use the native-word encoding of
 //! `frame.rs`), so one trace function per size visits them all; no trace function visits
 //! the word0 shape (the heap marks it, H08). The fixed-field API ([`new_object_with_fields`],
 //! [`fixed_get`], [`fixed_set`]) reads and writes fixed fields by index, so
 //! PRIMITIVE_WRAPPER and BOUND_FUNCTION code never hard-codes an offset.
+//!
+//! OBJECT_LAYOUT 2 (`versions.rs`, M2-P0): the GENERATOR and SLOT_OBJECT kinds, the ITERATOR
+//! kind field (+40; the cell grows from 40 to 48 B) and the CONTEXT scope word, which is now a
+//! native word that points at the VM-side [`ContextScope`] of the context's unit scope (C5),
+//! so a context names its slots: [`context_scope`] gives the unit and the scope descriptor.
 
 use ep9_heap::{CellKind, CellPtr, CellSize, Heap, KindId, Slot, Tracer};
 
@@ -41,7 +48,7 @@ use crate::frame::{HOLE, NULL, UNDEFINED, int32_bits, int32_of, native_of, nativ
 use crate::kinds as kind;
 use crate::runtime::{Atom, Root, Runtime, val};
 use crate::shape;
-use crate::unit::FunctionInfo;
+use crate::unit::{ContextScope, FunctionInfo, LoadedUnit};
 
 pub(crate) use crate::key::key_eq;
 pub(crate) use crate::kinds::{
@@ -79,7 +86,56 @@ pub(crate) mod fun {
 pub(crate) mod iter {
     pub const ITERATED: usize = 24;
     pub const NEXT: usize = 32;
-    pub const FIXED: usize = 2;
+    /// The iteration kind (int32, [`super::iter_kind`]).
+    pub const KIND: usize = 40;
+    pub const FIXED: usize = 3;
+}
+
+/// The kind field of an ITERATOR cell (CreateArrayIterator's `kind`, §23.1.5.1). String
+/// iterators use [`VALUES`](iter_kind::VALUES).
+pub(crate) mod iter_kind {
+    pub const VALUES: i32 = 0;
+    #[allow(dead_code)] // caller: P4-B-ARRAY (`Array.prototype.keys`)
+    pub const KEYS: i32 = 1;
+    #[allow(dead_code)] // caller: P4-B-ARRAY (`Array.prototype.entries`)
+    pub const ENTRIES: i32 = 2;
+}
+
+/// GENERATOR fixed fields (OBJECT_LAYOUT 2). Every field holds a Value; state, mode and
+/// resume mode are int32s. One kind serves generators, async functions and async generators
+/// (the mode). P1-GEN-VM adds the accessors.
+#[allow(dead_code)] // callers: P1-GEN-VM (generator.rs), month 3 (async)
+pub(crate) mod genf {
+    /// The suspend point id, or a closed/executing marker (int32).
+    pub const STATE: usize = 24;
+    /// [`MODE_SYNC`], [`MODE_ASYNC_FUNCTION`] or [`MODE_ASYNC_GENERATOR`] (int32).
+    pub const MODE: usize = 32;
+    /// The generator function.
+    pub const FUNCTION: usize = 40;
+    /// The receiver (`this`) of the body.
+    pub const RECEIVER: usize = 48;
+    /// The context of the suspended frame.
+    pub const CONTEXT: usize = 56;
+    /// The saved parameters and registers: an ELEMENTS cell (never a Rust buffer, plan rule 8).
+    pub const REGS: usize = 64;
+    /// How the frame resumes: next, return or throw (int32).
+    pub const RESUME_MODE: usize = 72;
+    /// Async functions and async generators: the promise or the request queue.
+    pub const ASYNC: usize = 80;
+    pub const FIXED: usize = 8;
+    pub const MODE_SYNC: i32 = 0;
+    pub const MODE_ASYNC_FUNCTION: i32 = 1;
+    pub const MODE_ASYNC_GENERATOR: i32 = 2;
+}
+
+/// SLOT_OBJECT fixed fields (OBJECT_LAYOUT 2): the ObjectClass id; the internal slots are the
+/// object's in-object slots (word0 flag bits 0-7, at most [`obj::MAX_INOBJECT`]). P3-ABI-SLOTS
+/// adds the accessors.
+#[allow(dead_code)] // caller: P3-ABI-SLOTS (abi/slots.rs)
+pub(crate) mod slot_obj {
+    /// The ObjectClass id (int32).
+    pub const CLASS: usize = 24;
+    pub const FIXED: usize = 1;
 }
 
 pub(crate) mod arr {
@@ -208,6 +264,8 @@ const FIXED_COUNTS: [u8; 256] = {
     t[kind::ITERATOR.get() as usize] = iter::FIXED as u8;
     t[kind::PRIMITIVE_WRAPPER.get() as usize] = fixed::WRAPPER as u8;
     t[kind::BOUND_FUNCTION.get() as usize] = fixed::BOUND as u8;
+    t[kind::GENERATOR.get() as usize] = genf::FIXED as u8;
+    t[kind::SLOT_OBJECT.get() as usize] = slot_obj::FIXED as u8;
     t
 };
 
@@ -222,7 +280,9 @@ pub(crate) fn fixed_count(k: u8) -> usize {
             kind::ERROR,
             kind::ITERATOR,
             kind::PRIMITIVE_WRAPPER,
-            kind::BOUND_FUNCTION
+            kind::BOUND_FUNCTION,
+            kind::GENERATOR,
+            kind::SLOT_OBJECT
         ]
         .iter()
         .any(|x| x.get() == k),
@@ -275,7 +335,7 @@ fn object_kind(
 /// that owns a layout (strings, the property dictionary, symbols, shapes, feedback,
 /// accessors, ICs).
 pub(crate) fn register_kinds(heap: &Heap) {
-    let kinds: [(KindId, CellKind); 9] = [
+    let kinds: [(KindId, CellKind); 11] = [
         (
             kind::OBJECT,
             object_kind("object", object_size::<0>, trace_object::<0>),
@@ -326,6 +386,22 @@ pub(crate) fn register_kinds(heap: &Heap) {
                 "bound-function",
                 object_size::<{ fixed::BOUND }>,
                 trace_object::<{ fixed::BOUND }>,
+            ),
+        ),
+        (
+            kind::GENERATOR,
+            object_kind(
+                "generator",
+                object_size::<{ genf::FIXED }>,
+                trace_object::<{ genf::FIXED }>,
+            ),
+        ),
+        (
+            kind::SLOT_OBJECT,
+            object_kind(
+                "slot-object",
+                object_size::<{ slot_obj::FIXED }>,
+                trace_object::<{ slot_obj::FIXED }>,
             ),
         ),
         (
@@ -654,10 +730,22 @@ pub(crate) fn set_home_object(rt: &Runtime, f: u64, home: u64) {
 /// string for a string iterator (CreateStringIterator, §22.1.5.1). The other states are listed
 /// at [`iterator_state`].
 pub(crate) fn new_iterator(rt: &Runtime, proto: u64, iterated: u64) -> u64 {
+    new_iterator_of_kind(rt, proto, iterated, iter_kind::VALUES)
+}
+
+/// [`new_iterator`] with the iteration kind `k` ([`iter_kind`]). GC point.
+pub(crate) fn new_iterator_of_kind(rt: &Runtime, proto: u64, iterated: u64, k: i32) -> u64 {
     let c = new_js_object(rt, kind::ITERATOR, proto, 0);
     init(c, iter::ITERATED, iterated);
     init(c, iter::NEXT, int32_bits(0));
+    init(c, iter::KIND, int32_bits(k));
     c.to_value().to_bits()
+}
+
+/// The iteration kind of an ITERATOR cell ([`iter_kind`]).
+#[allow(dead_code)] // caller: P4-B-ARRAY (the array iterator `next` for keys and entries)
+pub(crate) fn iterator_kind(it: u64) -> i32 {
+    rd_i32(cell(it), iter::KIND)
 }
 
 /// (iterated value, next index) of an ITERATOR cell. Array iterator: an object (suspended),
@@ -687,12 +775,33 @@ pub(crate) fn is_constructor(f: u64) -> bool {
     }
 }
 
-pub(crate) fn new_context(rt: &Runtime, previous: u64, scope: i32, len: usize) -> u64 {
+/// A new context with `len` slots (undefined) for the unit scope `scope`, whose previous
+/// context is `previous`. `scope` is an entry of its unit's [`LoadedUnit::context_scopes`],
+/// which lives as long as the isolate. GC point.
+pub(crate) fn new_context(
+    rt: &Runtime,
+    previous: u64,
+    scope: *const ContextScope,
+    len: usize,
+) -> u64 {
     let c = rt.alloc(kind::CONTEXT, ctxf::SLOTS + 8 * len);
     init(c, ctxf::PREVIOUS, previous);
-    init(c, ctxf::SCOPE, int32_bits(scope));
+    init(c, ctxf::SCOPE, native_of(scope));
     init(c, ctxf::LENGTH, int32_bits(len as i32));
     c.to_value().to_bits()
+}
+
+/// The unit and the scope descriptor of the context `c` (C5): a slot name resolves with
+/// `unit.string(scope.slots[i].name.index())`.
+#[allow(dead_code)] // callers: tests (gc.rs); P2-LOOKUP (dynamic lookup by name)
+pub(crate) fn context_scope<'a>(c: u64) -> (&'a LoadedUnit, &'a ep9_bytecode::Scope) {
+    // SAFETY: the SCOPE word of a CONTEXT cell is the native word of a `ContextScope` in a
+    // boxed LoadedUnit (`new_context`); units are never freed while the isolate lives
+    // (`Runtime::units` only grows), and the record's pointers point into that unit.
+    let cs = unsafe { &*native_ptr::<ContextScope>(rd(cell(c), ctxf::SCOPE)) };
+    // SAFETY: as above; `scope` points into the unit's verified scope table, which never
+    // changes after verification.
+    unsafe { (&*cs.unit, &*cs.scope) }
 }
 
 pub(crate) fn context_previous(c: u64) -> u64 {

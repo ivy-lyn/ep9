@@ -43,10 +43,14 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
             ("symbol", 7),
             ("math", 8),
             ("global", 9),
+            ("promise", 10),
+            ("reflect", 11),
         ]
     );
     assert_eq!(ep9_builtins::object::BLOCK, 1);
     assert_eq!(ep9_builtins::global::BLOCK, 9);
+    assert_eq!(ep9_builtins::promise::BLOCK, 10);
+    assert_eq!(ep9_builtins::reflect::BLOCK, 11);
 }
 
 #[test]

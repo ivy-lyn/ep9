@@ -1,0 +1,3 @@
+# ep9 builtin ids: module reflect, block 11. Append-only (H20, W4-BUILTIN-IDS): never
+# reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
+# id     block.index  kind         length  name  (installed as)

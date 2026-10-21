@@ -22,6 +22,7 @@ use crate::object::{self, attr, is_object, own_get};
 use crate::property;
 use crate::props;
 use crate::runtime::{ErrorKind, Root};
+use crate::symbol;
 
 use super::{NameMsg, enter, info, ret, strict, throw_name_now};
 
@@ -180,8 +181,12 @@ pub(crate) enum PropOp {
     GetKeyed,
     /// `o[k] = v` (strict mode of the function).
     SetKeyed,
-    /// CreateDataPropertyOrThrow.
+    /// CreateDataPropertyOrThrow (`StaInArrayLiteral`).
     DefineKeyed,
+    /// `DefineKeyedOwnProperty` and `DefineKeyedOwnPropertyInLiteral` with their flags (bit 0:
+    /// set the function name; bit 1: private add, ABI 3): CreateDataPropertyOrThrow, or a
+    /// private field add for a private key.
+    DefineKeyedOwn(u8),
     /// `delete o[k]` in strict code.
     DeleteStrict,
     DeleteSloppy,
@@ -247,10 +252,20 @@ pub(crate) fn prop(
     v: u64,
 ) -> u64 {
     enter(cx, fp, pc);
+    // A private name (`#x`, symbol.rs) goes to the private paths (C7).
+    let private = symbol::is_private_key(k);
     let r = match op {
+        PropOp::GetKeyed if private => super::private::keyed_get(cx, o, k),
         PropOp::GetKeyed => property::get_keyed(cx, o, k),
+        PropOp::SetKeyed if private => {
+            super::private::keyed_set(cx, o, k, v, strict(fp)).map(|_| v)
+        }
         PropOp::SetKeyed => property::set_keyed(cx, o, k, v, strict(fp)).map(|_| v),
         PropOp::DefineKeyed => define_checked(cx, o, k, v, true).map(|_| v),
+        PropOp::DefineKeyedOwn(flags) if private => {
+            super::private::keyed_define(cx, o, k, v, flags).map(|_| v)
+        }
+        PropOp::DefineKeyedOwn(_) => define_checked(cx, o, k, v, true).map(|_| v),
         PropOp::DeleteStrict => property::delete(cx, o, k, true).map(conv::boolean),
         PropOp::DeleteSloppy => property::delete(cx, o, k, false).map(conv::boolean),
     };
@@ -359,7 +374,7 @@ pub(crate) fn set_named(
     ret(r.map(|()| v))
 }
 
-fn define_checked(cx: &mut Cx, o: u64, k: u64, v: u64, keyed: bool) -> Res<()> {
+pub(super) fn define_checked(cx: &mut Cx, o: u64, k: u64, v: u64, keyed: bool) -> Res<()> {
     if !is_object(o) {
         return Err(throw_error(
             cx,

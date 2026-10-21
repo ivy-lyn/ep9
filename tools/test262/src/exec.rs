@@ -31,9 +31,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+use ep9_bytecode::{EvalContext, FunctionCtorKind};
 use ep9_frontend::{CodegenError, CompileError, CompileOptions, SourceOpts, Strictness};
 use ep9_heap::HeapConfig;
-use ep9_vm::{Args, Cx, Exception, Isolate, IsolateConfig, JsResult, Local, TerminateHandle};
+use ep9_vm::{
+    Args, CompileFailure, CompileResult, CompilerHooks, Cx, Exception, Isolate, IsolateConfig,
+    JsResult, Local, TerminateHandle,
+};
 
 use crate::frontmatter::{self, Meta};
 use crate::parse::{Mode, STRICT_PREFIX, modes};
@@ -492,7 +496,46 @@ fn isolate_config(gc_stress: u32, feedback_threshold: u32) -> IsolateConfig {
         },
         feedback_threshold,
         builtins: Some(&ep9_builtins::TABLE),
+        compiler: Some(&COMPILER),
         ..IsolateConfig::default()
+    }
+}
+
+// ---- the compiler hooks (C2): ep9_frontend behind `IsolateConfig::compiler` ----------------
+
+/// The compiler entry points of the test isolates: ep9_vm does not link the front end, so eval,
+/// `Function()` and run-time scripts reach it through these (M2-P0: the eval and
+/// `Function()` entries still answer `Unsupported`).
+static COMPILER: CompilerHooks = CompilerHooks {
+    compile_eval: hook_compile_eval,
+    compile_function: hook_compile_function,
+    compile_script: hook_compile_script,
+};
+
+fn hook_compile_eval(source: &str, ctx: &EvalContext) -> CompileResult {
+    ep9_frontend::compile_eval(source, ctx, CompileOptions::default()).map_err(hook_failure)
+}
+
+fn hook_compile_function(kind: FunctionCtorKind, params: &str, body: &str) -> CompileResult {
+    ep9_frontend::compile_function_ctor(kind, params, body, CompileOptions::default())
+        .map_err(hook_failure)
+}
+
+fn hook_compile_script(source: &str) -> CompileResult {
+    let opts = SourceOpts::script(Strictness::Sloppy);
+    ep9_frontend::compile(source, opts, CompileOptions::default()).map_err(hook_failure)
+}
+
+/// A front-end error as the VM's [`CompileFailure`] (the message without a position).
+fn hook_failure(e: CodegenError) -> CompileFailure {
+    match e {
+        CodegenError::Compile(CompileError::Syntax(errors)) => {
+            CompileFailure::Syntax(errors.first().message.clone())
+        }
+        CodegenError::Compile(CompileError::Range(r)) => CompileFailure::Range(r.message),
+        CodegenError::Unsupported(u) => CompileFailure::Unsupported(u.feature.to_string()),
+        CodegenError::Limit(m) => CompileFailure::Range(m),
+        CodegenError::Internal(m) => CompileFailure::Internal(m),
     }
 }
 

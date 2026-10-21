@@ -537,8 +537,15 @@ pub(crate) struct Case {
     pub handler: Handler,
 }
 
-/// True if `k` is a key the IC may cache: an atom that is not an array index.
+/// True if `k` is a key the IC may cache: an atom that is not an array index. Every IC case
+/// asks this first. A private name (`#x`, symbol.rs) never reaches IC code: the keyed paths
+/// send it to `slow/private.rs`, and T0 records no keyed IC (C7). The assert keeps that true
+/// when M1 adds keyed ICs.
 fn cacheable_key(k: u64) -> bool {
+    debug_assert!(
+        !crate::symbol::is_private_key(k),
+        "IC code saw a private name (C7)"
+    );
     string::is_atom(k) && key::array_index_of(k).is_none()
 }
 

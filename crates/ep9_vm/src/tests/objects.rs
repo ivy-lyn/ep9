@@ -1199,3 +1199,72 @@ fn an_object_with_index_keys_that_becomes_a_prototype_blocks_array_appends() {
         assert!(set_adds(cx, rt, arr, 2), "past the string");
     });
 }
+
+// ---- OBJECT_LAYOUT 2 (M2-P0): new kinds, the ITERATOR kind field, private names ------------
+
+#[test]
+fn generator_and_slot_object_cells_are_registered_object_kinds() {
+    each(|_cx, rt| {
+        let proto = rt.root(Root::ObjectPrototype);
+        let g = object::new_object_with_fields(rt, kinds::GENERATOR, proto, object::genf::FIXED);
+        let s =
+            object::new_object_with_fields(rt, kinds::SLOT_OBJECT, proto, object::slot_obj::FIXED);
+        // GC points with both cells in Rust locals: the heap verifier walks their fields.
+        let t = object::new_plain_object(rt);
+        object::fixed_set(rt, g, 2, t);
+        object::fixed_set(rt, s, 0, int(3));
+        put(rt, g, "p", int(1), attr::DEFAULT);
+        assert!(kinds::is_object(g) && kinds::is_object(s));
+        assert_eq!(object::fixed_count(kinds::GENERATOR.get()), 8);
+        assert_eq!(object::fixed_count(kinds::SLOT_OBJECT.get()), 1);
+        assert_eq!(object::fixed_get(g, 2), t);
+        assert_eq!(object::fixed_get(s, 0), int(3));
+        assert_eq!(own(rt, g, "p"), Some(int(1)));
+    });
+}
+
+#[test]
+fn an_iterator_cell_has_a_kind_field() {
+    each(|_cx, rt| {
+        let a = object::new_array(rt, 0);
+        let it = object::new_iterator(rt, rt.root(Root::ArrayIteratorPrototype), a);
+        assert_eq!(object::fixed_count(kinds::ITERATOR.get()), 3);
+        assert_eq!(object::iterator_kind(it), object::iter_kind::VALUES);
+        assert_eq!(object::iterator_state(it), (a, 0));
+        let e = object::new_iterator_of_kind(
+            rt,
+            rt.root(Root::ArrayIteratorPrototype),
+            a,
+            object::iter_kind::ENTRIES,
+        );
+        assert_eq!(object::iterator_kind(e), object::iter_kind::ENTRIES);
+        assert_eq!(object::iterator_kind(it), object::iter_kind::VALUES);
+    });
+}
+
+#[test]
+fn a_private_name_is_not_listed_by_own_property_keys_or_for_in() {
+    each(|cx, rt| {
+        let o = object::new_plain_object(rt);
+        let private = crate::symbol::new_private(rt, k(rt, "#x"));
+        let public = crate::symbol::new_symbol(rt, k(rt, "s"));
+        assert!(crate::symbol::is_private(private));
+        assert!(!crate::symbol::is_private(public));
+        assert!(crate::symbol::is_private_key(private));
+        assert!(!crate::symbol::is_private_key(k(rt, "#x")));
+        put(rt, o, "a", int(1), attr::DEFAULT);
+        props::own_define(rt, o, private, int(2), attr::DEFAULT);
+        props::own_define(rt, o, public, int(3), attr::DEFAULT);
+        put(rt, o, "b", int(4), attr::DEFAULT);
+        let keys = property::own_property_keys(cx, o);
+        let got: Vec<u64> = (0..object::array_len(keys))
+            .map(|i| object::array_get(keys, i).unwrap())
+            .collect();
+        assert_eq!(got, [k(rt, "a"), k(rt, "b"), public]);
+        assert_eq!(for_in(cx, o), ["a", "b"]);
+        // The private key is still stored; only the listings skip it.
+        assert_eq!(props::own_get(o, private).map(|(v, _)| v), Some(int(2)));
+        // `[[Get]]` still finds it: the P0 stubs of slow/private.rs forward to this path.
+        assert_eq!(property::get_keyed(cx, o, private).unwrap(), int(2));
+    });
+}

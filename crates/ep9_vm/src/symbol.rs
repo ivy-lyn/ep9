@@ -22,8 +22,9 @@
 //!   key (`EP9_HASH_SEED` fixes it). So two isolates of one process, or two runs with one
 //!   `EP9_HASH_SEED`, give the same hashes in the same order. The hash is 30 bits, the range of
 //!   a string's table hash, so `key::key_hash` serves both in one shape index.
-//! - Flags: bit 0 registered (`Symbol.for`), bit 1 well-known, bit 2 private (reserved for
-//!   private names, M1).
+//! - Flags: bit 0 registered (`Symbol.for`), bit 1 well-known, bit 2 private: a private name
+//!   (§6.2.12, `#x`; [`new_private`]). A private key is never listed by `[[OwnPropertyKeys]]`
+//!   or for-in, and the keyed property paths send it to `interp/slow/private.rs`.
 //! - The registry is strong: a registered symbol lives as long as the isolate, because
 //!   `Symbol.for` must give the same symbol again (§20.4.2.2). Its keys are atoms.
 
@@ -55,8 +56,7 @@ pub(crate) mod flag {
     pub const REGISTERED: i32 = 1;
     /// One of the well-known symbols.
     pub const WELL_KNOWN: i32 = 2;
-    /// Reserved for private names (M1).
-    #[allow(dead_code)] // reserved bit (private names, M1)
+    /// A private name (§6.2.12): `#x` of a class body.
     pub const PRIVATE: i32 = 4;
 }
 
@@ -302,6 +302,24 @@ fn alloc_symbol(rt: &Runtime, description: u64, flags: i32) -> u64 {
 /// `Symbol(description)` after its ToString step. GC point.
 pub(crate) fn new_symbol(rt: &Runtime, description: u64) -> u64 {
     alloc_symbol(rt, description, 0)
+}
+
+/// A new private name (§6.2.12 NewPrivateName) whose `[[Description]]` is `description` (a
+/// string, `#x`). It is a symbol with the [`flag::PRIVATE`] bit. GC point.
+#[allow(dead_code)] // callers: tests; P2-CLS-VM (CreatePrivateName)
+pub(crate) fn new_private(rt: &Runtime, description: u64) -> u64 {
+    alloc_symbol(rt, description, flag::PRIVATE)
+}
+
+/// True for a private name ([`new_private`]).
+pub(crate) fn is_private(sym: u64) -> bool {
+    flags(sym) & flag::PRIVATE != 0
+}
+
+/// True if the value `k` is a private name (any value; not a GC point).
+#[inline]
+pub(crate) fn is_private_key(k: u64) -> bool {
+    is_symbol(k) && is_private(k)
 }
 
 /// `[[Description]]` of the symbol `sym`: a string or undefined.

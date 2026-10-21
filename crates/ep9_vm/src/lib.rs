@@ -18,6 +18,10 @@
 //! [`IntrinsicId`]; realm init walks the VM's table (`natives.rs`), then
 //! [`IsolateConfig::builtins`]. Contract versions: [`versions`].
 //!
+//! Month-2 stubs (M2-P0, each marked `m2-stub` until its owner fills it): generator.rs,
+//! jobs.rs, native.rs (feature `spike-native` only), `interp/slow/{generator, lookup, private, class_fields, eval}.rs` and
+//! `abi/{index, iter, slots, jobs, script}.rs`.
+//!
 //! ADRs: H14 frames and dispatch (docs/adr/H14-frames-and-dispatch.md), H15 interpreter
 //! dispatch, H10 rooting, H06 values.
 #![cfg_attr(feature = "become", feature(explicit_tail_calls))]
@@ -29,6 +33,7 @@ mod atoms;
 mod bound;
 mod builtins;
 mod call;
+mod compiler;
 mod conv;
 mod descriptor;
 mod dispatch;
@@ -37,12 +42,16 @@ mod exotic;
 mod feedback;
 mod frame;
 mod function_info;
+mod generator;
 mod host;
 mod ic;
 mod interp;
 mod isolate;
+mod jobs;
 mod key;
 mod kinds;
+#[cfg(feature = "spike-native")]
+mod native;
 mod natives;
 mod numconv;
 mod object;
@@ -71,6 +80,7 @@ pub use builtins::{
     IntrinsicId, IntrinsicValue, ObjectProps, PropAttrs, PropDef, PropKey, PropValue,
     WellKnownSymbol, check_tables,
 };
+pub use compiler::{CompileFailure, CompileResult, CompilerHooks};
 pub use dispatch::{
     CodeEntry, CodeRegistry, DispatchKind, DispatchSlot, NO_CODE, RangeRegistry, RegistryError,
 };

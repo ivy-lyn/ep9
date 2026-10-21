@@ -6,7 +6,11 @@
 //!                          consts:   [[Slot]]     constant pool per function          (root ranges)
 //!                          infos:    [FunctionInfo] { dispatch slot, code, counts, consts, unit }
 //!                          feedback: UnitFeedback  per-function feedback (H16, lazy)
+//!                          context_scopes: [ContextScope] { unit, scope } per unit scope (C5)
 //! ```
+//!
+//! A context's SCOPE word points at its [`ContextScope`] (object.rs, OBJECT_LAYOUT 2), so
+//! the context names its unit and scope descriptor: `object::context_scope`.
 //!
 //! Constant pool entries become Values: Number → number, String → its atom, Oddball → its
 //! value. The other kinds keep their index as an int32 marker, and handlers read the
@@ -15,7 +19,7 @@
 
 use core::ptr::NonNull;
 
-use ep9_bytecode::{Constant, Oddball, SourceLines, VerifiedUnit};
+use ep9_bytecode::{Constant, Oddball, Scope, SourceLines, VerifiedUnit};
 use ep9_heap::{RootId, RootStrength, Slot};
 use ep9_value::Value;
 
@@ -27,6 +31,14 @@ use crate::runtime::{Runtime, val};
 
 pub(crate) use crate::function_info::FunctionInfo;
 
+/// The VM-side record that a context's SCOPE word points at (C5): the unit and one of its
+/// scope descriptors. A `&Scope` alone cannot name its slots: a slot name is a unit
+/// `StringId`, which only the loaded unit maps to a heap string ([`LoadedUnit::string`]).
+pub(crate) struct ContextScope {
+    pub unit: *const LoadedUnit,
+    pub scope: *const Scope,
+}
+
 /// A unit the isolate loaded. Boxed and kept until the isolate drops: frames, function cells
 /// and dispatch slots point into it.
 pub(crate) struct LoadedUnit {
@@ -34,6 +46,9 @@ pub(crate) struct LoadedUnit {
     pub file: String,
     pub unit: VerifiedUnit,
     pub infos: Box<[FunctionInfo]>,
+    /// One record per unit scope, in scope id order (stable, like `infos`): contexts point at
+    /// them.
+    pub context_scopes: Box<[ContextScope]>,
     /// Per-function feedback (H16; `feedback.rs`).
     pub feedback: UnitFeedback,
     strings: Box<[Slot]>,
@@ -58,6 +73,7 @@ impl LoadedUnit {
                 .collect(),
             unit,
             infos: Box::new([]),
+            context_scopes: Box::new([]),
             feedback,
             roots: Vec::new(),
         });
@@ -127,6 +143,18 @@ impl LoadedUnit {
             })
             .collect();
         lu.infos = infos;
+        // The scope table of a VerifiedUnit never changes (no DerefMut), and the box does not
+        // move, so these pointers stay valid as long as the unit.
+        let scopes: Box<[ContextScope]> = lu
+            .unit
+            .scopes
+            .iter()
+            .map(|scope| ContextScope {
+                unit: unit_ptr,
+                scope,
+            })
+            .collect();
+        lu.context_scopes = scopes;
         let mut reg = rt.registry.borrow_mut();
         for info in lu.infos.iter() {
             // Empty bytecode never verifies, so len >= 1.

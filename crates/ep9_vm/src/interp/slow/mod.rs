@@ -17,6 +17,11 @@
 //! | `runtime.rs` | `CallRuntime` |
 //! | `literal.rs` | closures, contexts, literals, template objects, `CloneObject` |
 //! | `iter.rs` | iteration, spread, arguments, for-in |
+//! | `generator.rs` | generator opcodes and runtime ids (P1-GEN-VM) |
+//! | `lookup.rs` | dynamic scope lookup, `with` (P2-LOOKUP) |
+//! | `private.rs` | private names on the keyed paths (P2-CLS-VM) |
+//! | `class_fields.rs` | class fields and private methods (P2-CLS-VM) |
+//! | `eval.rs` | direct eval (P3-EVAL-VM) |
 
 use core::sync::atomic::Ordering;
 
@@ -32,24 +37,31 @@ use crate::runtime::{ErrorKind, Site};
 use crate::unit::FunctionInfo;
 
 mod call;
+mod class_fields;
+mod eval;
+mod generator;
 mod iter;
 mod literal;
+mod lookup;
 mod ops_misc;
+mod private;
 mod property;
 mod runtime;
 
 pub(crate) use call::call;
+pub(crate) use generator::{resume_generator, suspend_generator, switch_on_generator_state};
 pub(crate) use iter::{
     arguments, array_from_iterable, for_in_enumerate, for_in_next, get_iterator,
 };
 pub(crate) use literal::{CtxKind, Lit, clone_object, create_closure, create_context, literal};
+pub(crate) use lookup::{create_with_context, lda_lookup_slot, sta_lookup_slot};
 pub(crate) use ops_misc::{
     CmpOp, UnOp, binary, compare, strict_equals, switch_target, to_boolean, type_of, unary,
 };
 pub(crate) use property::{
     PropOp, get_named, get_super, load_global, prop, set_named, store_global,
 };
-pub(crate) use runtime::call_runtime;
+pub(crate) use runtime::{call_runtime, call_runtime_pair};
 
 #[inline(always)]
 fn enter(cx: &Cx, fp: *mut u64, pc: *const u8) {
@@ -107,7 +119,11 @@ pub(crate) fn bad_opcode(cx: &mut Cx, _fp: *mut u64, pc: *const u8) -> u64 {
 pub(crate) fn interrupt(cx: &mut Cx, _fp: *mut u64) -> u64 {
     cx.budget = BUDGET;
     let rt = cx.rt();
-    if rt.terminating.get() || rt.terminate.swap(false, Ordering::AcqRel) {
+    // SAFETY: `cx.interrupt` points at the runtime's interrupt word (`Runtime::terminate`, an
+    // Arc the Runtime holds), and the Runtime outlives the Cx (Isolate drop order).
+    let word = unsafe { &*cx.interrupt };
+    let bit = crate::interp::interrupt::TERMINATE;
+    if rt.terminating.get() || word.fetch_and(!bit, Ordering::AcqRel) & bit != 0 {
         rt.terminating.set(true);
         return rt.throw_value(UNDEFINED);
     }

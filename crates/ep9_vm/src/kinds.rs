@@ -1,10 +1,11 @@
-//! Cell kind ids (word0 byte 5), table v1, and the kind tests on Value bits.
+//! Cell kind ids (word0 byte 5), table v1 (v2 of the object layout adds GENERATOR and
+//! SLOT_OBJECT, M2-P0), and the kind tests on Value bits.
 //!
 //! | Ids | Kinds | Range test |
 //! |---|---|---|
 //! | 1-7 | strings: SEQ_LATIN1, SEQ_UTF16; CONS, SLICED, THIN, EXT_LATIN1, EXT_UTF16 reserved (M1) | [`is_string`] |
 //! | 8 | SYMBOL | [`is_symbol`] |
-//! | 16-63 | JS objects: OBJECT, FUNCTION, ARRAY, ERROR, ITERATOR, PRIMITIVE_WRAPPER, BOUND_FUNCTION; 23-63 reserved | [`is_object`] |
+//! | 16-63 | JS objects: OBJECT, FUNCTION, ARRAY, ERROR, ITERATOR, PRIMITIVE_WRAPPER, BOUND_FUNCTION, GENERATOR, SLOT_OBJECT; 25-63 reserved | [`is_object`] |
 //! | 64-127 | internal cells: PROPS, ELEMENTS, CONTEXT, ACCESSOR_PAIR, FEEDBACK, POLY_IC, IC_HANDLER, SLOTS, DESCRIPTORS, DESC_INDEX, TRANSITIONS, PROTO_INFO | - |
 //! | 128 | SHAPE | - |
 //!
@@ -53,6 +54,13 @@ pub(crate) const ERROR: KindId = k(19);
 pub(crate) const ITERATOR: KindId = k(20);
 pub(crate) const PRIMITIVE_WRAPPER: KindId = k(21);
 pub(crate) const BOUND_FUNCTION: KindId = k(22);
+/// A generator object (also async functions and async generators, by its mode field):
+/// 8 fixed fields (`object::genf`). OBJECT_LAYOUT 2.
+pub(crate) const GENERATOR: KindId = k(23);
+/// An object with internal slots (Promise, Map, Date and the other ObjectClass kinds): fixed
+/// field 0 is the ObjectClass id, then its in-object slots are the internal slots
+/// (`object::slot_obj`). OBJECT_LAYOUT 2.
+pub(crate) const SLOT_OBJECT: KindId = k(24);
 
 // ---- internal cells (64-127) ----
 pub(crate) const PROPS: KindId = k(64);
@@ -175,8 +183,11 @@ mod tests {
             ITERATOR,
             PRIMITIVE_WRAPPER,
             BOUND_FUNCTION,
+            GENERATOR,
+            SLOT_OBJECT,
         ];
         assert!(objects.iter().all(|k| (16..=63).contains(&k.get())));
+        assert_eq!((GENERATOR.get(), SLOT_OBJECT.get()), (23, 24));
         let internal = [
             PROPS,
             ELEMENTS,

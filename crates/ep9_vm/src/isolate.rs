@@ -14,13 +14,14 @@
 //! [`Isolate::with_cx`], whose `Local`s cannot outlive the call (H20-Q4).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use ep9_bytecode::VerifiedUnit;
 use ep9_heap::{Heap, HeapConfig, HeapError, VerifyError, VerifyReport};
 use ep9_value::{JsResult, Throw, Value};
 
 use crate::builtins::{self, BuiltinTable};
+use crate::compiler::CompilerHooks;
 use crate::conv::{Res, describe};
 use crate::frame::{HOLE, UNDEFINED};
 use crate::host::HostFn;
@@ -47,6 +48,9 @@ pub struct IsolateConfig {
     /// The builtin table to install into the realm (H20), after the VM's own table:
     /// `ep9_builtins::TABLE` for the ECMAScript builtins. `None`: only the VM's builtins.
     pub builtins: Option<&'static BuiltinTable>,
+    /// The compiler entry points for eval, `Function()` and run-time scripts (C2; ep9_vm
+    /// does not link the compiler). `None`: those paths throw their v0 errors.
+    pub compiler: Option<&'static CompilerHooks>,
 }
 
 impl IsolateConfig {
@@ -63,6 +67,7 @@ impl Default for IsolateConfig {
             stack_trace_limit: 10,
             feedback_threshold: IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD,
             builtins: None,
+            compiler: None,
         }
     }
 }
@@ -134,11 +139,12 @@ impl std::fmt::Display for Exception {
 /// Stops the running script of an isolate from any thread. The isolate polls it at loop back
 /// edges and function entries; the exception it raises cannot be caught by JS.
 #[derive(Clone, Debug)]
-pub struct TerminateHandle(Arc<AtomicBool>);
+pub struct TerminateHandle(Arc<AtomicU32>);
 
 impl TerminateHandle {
     pub fn terminate(&self) {
-        self.0.store(true, Ordering::Release);
+        self.0
+            .fetch_or(crate::interp::interrupt::TERMINATE, Ordering::Release);
     }
 }
 
@@ -173,6 +179,7 @@ impl Isolate {
             config.vm_stack_slots,
             native_limit,
             config.stack_trace_limit,
+            config.compiler,
         );
         builtins::prepare(&rt, config.builtins);
         realm::init(&rt);
@@ -187,6 +194,11 @@ impl Isolate {
             dispatch: config.dispatch,
             feedback_threshold: config.feedback_threshold,
             proto_epoch: &rt.shapes.proto_epoch,
+            interrupt: Arc::as_ptr(&rt.terminate),
+            #[cfg(feature = "spike-native")]
+            native_limit: rt.native_limit,
+            #[cfg(feature = "spike-native")]
+            runtime_table: &crate::native::RUNTIME_TABLE,
         });
         builtins::install(&mut cx).map_err(IsolateError::BuiltinTable)?;
         Ok(Isolate { cx, rt })
@@ -195,6 +207,11 @@ impl Isolate {
     /// The builtin table installed after the VM's own (`IsolateConfig::builtins`).
     pub fn builtin_table(&self) -> Option<&'static BuiltinTable> {
         self.rt.builtins.table()
+    }
+
+    /// The compiler hooks of this isolate (`IsolateConfig::compiler`, C2).
+    pub fn compiler(&self) -> Option<&'static CompilerHooks> {
+        self.rt.compiler
     }
 
     /// Runs `f` with a builtin-ABI context ([`abi::Cx`], H20): the embedder's way to hold
