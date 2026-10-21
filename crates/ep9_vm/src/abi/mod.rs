@@ -40,9 +40,9 @@ use crate::key;
 use crate::kinds;
 use crate::object;
 use crate::property;
-use crate::runtime::{Atom, ErrorKind, Root, Runtime};
+use crate::runtime::{Atom, ErrorKind, Runtime};
 use crate::string::{self, MAX_STRING_LENGTH};
-use crate::{atoms, call, wrapper};
+use crate::{atoms, call};
 
 /// A host function: a builtin or an embedder function (H20 signature). `this`, the
 /// arguments and `new_target` (undefined for a call) are [`Local`]s of the call `'s`.
@@ -686,14 +686,14 @@ impl<'s> Cx<'s> {
     }
 
     /// A new primitive wrapper object (§10.4.3 String exotic, or a Number, Boolean or Symbol
-    /// object) of `value` with prototype `proto`.
+    /// object) of `value` with prototype `proto`. v0: not implemented until wrappers exist
+    /// (P2); `wrapper::new_wrapper` is a stub that drops `value`.
     pub fn new_wrapper(
         &mut self,
-        proto: impl Into<Local<'s, JsObject>>,
-        value: impl Into<Local<'s>>,
-    ) -> Local<'s, JsObject> {
-        let (p, v) = (proto.into().bits(), value.into().bits());
-        Self::local(wrapper::new_wrapper(self.rt(), p, v))
+        _proto: impl Into<Local<'s, JsObject>>,
+        _value: impl Into<Local<'s>>,
+    ) -> JsResult<Local<'s, JsObject>> {
+        Err(self.not_implemented("wrapper objects for primitives"))
     }
 
     /// A new symbol with the description `description` (a string or undefined).
@@ -966,25 +966,17 @@ impl<'s> Cx<'s> {
         Ok(Self::local(k))
     }
 
-    /// ToObject (§7.1.18): TypeError for undefined and null; a wrapper for a primitive.
+    /// ToObject (§7.1.18): TypeError for undefined and null. v0: a primitive throws the same
+    /// not_implemented as the interpreter's ToObject until wrappers exist (P2).
     pub fn to_object(&mut self, v: impl Into<Local<'s>>) -> JsResult<Local<'s, JsObject>> {
         let v = v.into().bits();
         if kinds::is_object(v) {
             return Ok(Self::local(v));
         }
-        let rt = self.rt();
-        let proto = if v == UNDEFINED || v == NULL {
+        if v == UNDEFINED || v == NULL {
             return Err(self.throw_type_error("Cannot convert undefined or null to object"));
-        } else if kinds::is_string(v) {
-            Root::StringPrototype
-        } else if crate::runtime::val(v).is_number() {
-            Root::NumberPrototype
-        } else if crate::runtime::val(v).is_bool() {
-            Root::BooleanPrototype
-        } else {
-            return Err(self.not_implemented("ToObject of this value"));
-        };
-        Ok(Self::local(wrapper::new_wrapper(rt, rt.root(proto), v)))
+        }
+        Err(self.not_implemented("wrapper objects for primitives"))
     }
 
     /// ToPrimitive (§7.1.1).
