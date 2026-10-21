@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-21). P1-AOTU adds the as-built details of week 4 |
+| Status | Draft (2026-10-21). As built in M0 wk4: `aot` on `ep9_unit` (empty module), `cargo xtask feature-matrix`, dep-guards checks 9 and 10 (see "As built") |
 | Fix by | M0 (wk4) |
 | Freeze point | M1 exit |
 | Origin | v1#25; plan status E (extended: `aot`) |
@@ -40,13 +40,23 @@
 - Week 4 (P0) adds `jit` to `ep9_vm` and `ep9_cli` (default) and `aot` to the new `ep9_unit` crate. Nothing else in M0 sits under `aot` (decision W4-FEATURES).
 - `ep9_vm`'s `become` feature selects a dispatch expansion (H15, nightly only). It is not a compiler feature.
 
+### As built (M0 wk4)
+
+| Item | Detail |
+|---|---|
+| `aot` | `crates/ep9_unit/Cargo.toml`: `aot = []`, gating an empty `mod aot {}`. The unit header codec and the load check (H35 S6) are loader code, so they are in every build. Tests build units with a test-only encoder (`crates/ep9_unit/tests/common/mod.rs`) |
+| `cargo xtask feature-matrix` | `tools/xtask/src/features.rs`. 9 cells: the 3 builds above x `build`, `clippy --all-targets -- -D warnings`, `test`. Every command has `--locked` and `-p`, never `--workspace`. It runs every cell even after a failure, then prints PASS or FAIL per cell. Exit 0 all pass, 1 any fails, 2 usage error or cargo cannot start. Options: `--set`, `--step`, `--target` (a cross target allows `build` and `clippy` only), `--dry-run` |
+| Guards 9 and 10 | They read each package's enabled features from `cargo tree --target all -e normal,build,dev -f '{p}\|{f}'` (dev edges included, so the graph is the test build's). `cargo tree -e features` does not show the features that the root package's own `[features]` table turns on, so a grep of it cannot see `jit` even in the default build (decision W4-GUARD-FEATURES) |
+| First local runs | macOS arm64 (M5 Max), warm cache. Run 1: 95.5 s wall, `aot` clippy FAIL (a lint in the new `ep9_unit` tests, fixed before merge). Run 2: 65.6 s wall, 9 of 9 PASS. `--target x86_64-pc-windows-msvc --step clippy`: 3 of 3 PASS |
+| CI | A step in the build-test job on 4 runners (P3-CI, M0 wk4) |
+
 ## Rules
 
 | Rule | Check | From |
 |---|---|---|
-| The jitless `ep9` links no `ep9_masm`, `ep9_baseline` or `ep9_opt` | dep-guards check 5 (`.github/scripts/dep-guards.sh:57-62`) | M0 wk1 |
-| The jitless `ep9` has no `ep9_platform` feature `jit` | dep-guards check 9 (`cargo tree -p ep9_cli --no-default-features -e features`) | M0 wk4 |
-| No `ep9_unit` feature `aot` in the `ep9_cli` graph, default or jitless | dep-guards check 10 | M0 wk4 |
+| The jitless `ep9` links no `ep9_masm`, `ep9_baseline` or `ep9_opt` | dep-guards check 5 (`.github/scripts/dep-guards.sh:144-149`) | M0 wk1 |
+| The jitless `ep9` has no `ep9_platform` feature `jit` | dep-guards check 9 (`.github/scripts/dep-guards.sh:160-166`), with a control: the default build must show `jit` | M0 wk4 |
+| No `ep9_unit` feature `aot` in the `ep9_cli` graph, default or jitless | dep-guards check 10 (`.github/scripts/dep-guards.sh:168-178`), with a control: `-p ep9_unit --features aot` must show `aot` | M0 wk4 |
 | Each build is built, linted (`-D warnings`) and tested per package, never with `--workspace` | `cargo xtask feature-matrix`; CI build-test step on 4 runners | M0 wk4 |
 | Code under `jit` compiles out without the feature | `#[cfg(any(feature = "jit", test))]` (for example `Cage::reserve_jit`, `crates/ep9_platform/src/va.rs:385`) | M0 wk3 |
 | The jitless build passes the same test262 set as the JIT build | test262 per mode (10-quality §1) | when T1 exists (M1+) |
@@ -91,3 +101,4 @@
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-21 | draft | First draft from 02 §6, 08 §2-§3 and §7, the `ep9_platform` features and the week-4 feature plan (M0 wk4 plan, task P0-DOCS 3; decision W4-FEATURES) | P0-DOCS agent |
+| 2026-10-21 | fill | As built in M0 wk4: the `feature-matrix` cells, options and exit codes; how guards 9 and 10 read features (with positive controls), replacing the plan's `-e features` wording in the Rules table; the check 5 cite moved to lines 144-149 after the P0 guard rewrite; the empty `aot` module and the test-only unit encoder. No rule changes. Decision W4-AOTU-MATRIX | P1-AOTU agent |

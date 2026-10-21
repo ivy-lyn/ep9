@@ -114,7 +114,7 @@ store(host, slot, v):
 |---|---|---|---|
 | H11-Q1 | Instruction budget on x64 | Answered 2026-10-20 | SysV and Win64: 3 (cell test) + 4 + store (rustc 1.99 -O3). Record in SP-Value; no gate |
 | H11-Q2 | Where the threshold lives | M0 (API) | Fixed isolate offset; T0 reaches it through `Cx` |
-| H11-Q3 | How the barrier version is numbered | H35 header struct (M0 wk4) | One counter, bumped by review. Now 2 |
+| H11-Q3 | How the barrier version is numbered | H35 header struct (M0 wk4) | **Filled (M0 wk4, W4-H11-Q3).** One counter, `BARRIER_VERSION` (`crates/ep9_heap/src/barrier.rs:50`), bumped by review when anything its doc comment lists changes. Now 2. The H35 unit header carries it as a u32 at offset 100; a mismatch gives BYTECODE (`crates/ep9_unit`, tests `every_header_field_mutation_gives_its_listed_outcome`) |
 | H11-Q4 | Closed 2026-10-20. The cell test reads the NEW value. S2 is retreating wavefront, not SATB, so a store that deletes a reference needs no barrier. Old only is unsound for S1 and S2. Old OR new is sound but not needed (one more load when the host fires). Evidence: [J1], [J2] HeapInlines.h:87-111, [M] | — | Closed |
 | H11-Q5 | Inline `fence; re-check` in the JIT and AOT cold stub (Riptide does) | S2b (M5) | Out of line first. Inline if the mutator slows down more than 10% while marking runs (barrier-version bump) |
 
@@ -138,3 +138,4 @@ store(host, slot, v):
 | 2026-10-20 | rewrite | Critic additions: dirty LOS cards are a termination root source and a BLACK LOS host is pushed once (an exhaustive model lost an object without this); emitter rule (no GC point between check and store, no threshold reuse); weak slots cleared at every minor GC; marker Acquire loads with stealing markers; TLAB retired before each CSS; full cycle empties the S1 buffer; model test gains the `los` scenario and a fifth negative control | apply agent |
 | 2026-10-21 | clarify | Status: barrier v2 built (`BARRIER_VERSION` = 2, gc_state BLACK=1 WHITE=2 GREY=3, thresholds OFF=0 GEN=1 MARKING=0xFF, `Slot::set` new-value filter with the store in the slow path, `Slot::init`, shape-install barrier). Model test ported to Rust with the `los` scenario and 5 negative controls. `disasm-barrier.sh` checks cell test + 4 header-check instructions + 1 store on aarch64 and x86_64 | heap agent |
 | 2026-10-21 | clarify | Evidence [M] names the ported model test file and links the repo copies of the two models in `docs/research/artifacts/decide/` instead of the session scratch paths | docs-sync agent |
+| 2026-10-21 | fill | H11-Q3: one counter (`BARRIER_VERSION` = 2), carried in the H35 unit header at offset 100; a mismatch gives BYTECODE. Decision W4-H11-Q3 | P1-AOTU agent |
