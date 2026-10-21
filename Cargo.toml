@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "tools/*"]
+# Every directory that the member globs match needs a Cargo.toml, hidden directories included:
+# one without it makes every cargo command fail ("failed to load manifest for workspace member").
+# A tool that is not a Rust crate (a Python oracle, for example) goes into `exclude`.
+# .github/scripts/dep-guards.sh check 0 enforces this.
 # Required (docs/plan/08-repo.md section 1):
 # - third_party: path deps under the root would become members, and oxc patch paths point there.
 # - fuzz: own workspace on nightly.
