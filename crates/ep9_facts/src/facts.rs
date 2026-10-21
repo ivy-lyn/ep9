@@ -9,11 +9,14 @@
 //!    globals ───────── GlobalFacts { bindings, values }
 //!    hints ─────────── TypeSet, BinaryHint, CompareHint, ForInHint (bitsets, merge by OR)
 //!  ShapeDesc { proto: ProtoRef, kind, flags, capacity, keys[(KeyRef, PropAttrs)] }
+//!    held as Arc<ShapeDesc>: a decoded snapshot shares one per shape-table entry
 //!  never: a ShapeId, an address, a cell kind id, a closure identity
 //! ```
 //!
 //! Order: every list in a record is sorted by the derived `Ord` (fields in declaration order,
 //! variants in tag order) with no duplicates, so one set of facts has one encoding.
+
+use std::sync::Arc;
 
 use ep9_bytecode::{FeedbackSlotKind, UnitString};
 
@@ -117,6 +120,10 @@ impl KeyRef {
 
 /// A shape by its contents: what the VM exporter writes for a live ShapeId (H8: ShapeIds are
 /// run-local, so no fact holds one).
+///
+/// Records hold shapes as `Arc<ShapeDesc>`. The decoder gives every reference to one entry of
+/// the shape table the same `Arc`, so a decoded snapshot holds each shape once, however many
+/// records use it: its memory grows with the input, not with shape size times references.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ShapeDesc {
     /// The prototype.
@@ -169,7 +176,7 @@ pub enum Access {
     /// A store that added a property: the receiver moved to shape `to`.
     AddField {
         /// The shape after the store.
-        to: ShapeDesc,
+        to: Arc<ShapeDesc>,
         /// Index of the new key in `to`.
         field: u16,
     },
@@ -222,7 +229,7 @@ impl Access {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PropertyCase {
     /// The receiver's shape (for 0x22, the lookup-start object's shape).
-    pub receiver: ShapeDesc,
+    pub receiver: Arc<ShapeDesc>,
     /// What the access did.
     pub access: Access,
 }
@@ -283,7 +290,7 @@ pub struct LiteralFacts {
     /// Objects allocated (saturating).
     pub count: u32,
     /// The shape of the last result, if it has a description.
-    pub shape: Option<ShapeDesc>,
+    pub shape: Option<Arc<ShapeDesc>>,
     /// The elements kind of the last array result.
     pub elements: Option<ElementsKind>,
 }
@@ -292,9 +299,9 @@ pub struct LiteralFacts {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CloneCase {
     /// The source object's shape.
-    pub source: ShapeDesc,
+    pub source: Arc<ShapeDesc>,
     /// The result object's shape.
-    pub result: ShapeDesc,
+    pub result: Arc<ShapeDesc>,
 }
 
 /// Facts of a `CloneObject` site.
@@ -542,26 +549,48 @@ impl SlotFacts {
     /// strictly ascending lists (no duplicates, no two cases for one receiver or source),
     /// field indices inside their shape, and every shape and function reference.
     pub fn check(&self) -> Result<(), FactError> {
+        self.check_rules(None)
+    }
+
+    /// [`SlotFacts::check`] for a record the decoder just read. Each of its shapes is an entry
+    /// of the shape table, which the decoder checked once and found strictly ascending, and
+    /// `order` holds the table index of each case's receiver (or clone source). So no shape is
+    /// checked again and the case order is checked on the indices: the work per record does
+    /// not grow with the size of its shapes.
+    pub(crate) fn check_decoded(&self, order: &[u32]) -> Result<(), FactError> {
+        self.check_rules(Some(order))
+    }
+
+    /// `table` is `None` for [`SlotFacts::check`] and the case order for
+    /// [`SlotFacts::check_decoded`].
+    fn check_rules(&self, table: Option<&[u32]>) -> Result<(), FactError> {
         match self {
             SlotFacts::LoadNamed(p) | SlotFacts::StoreNamed(p) | SlotFacts::DefineNamedOwn(p) => {
-                check_property(p)
+                check_property(p, table)
             }
             SlotFacts::LoadKeyed(k)
             | SlotFacts::StoreKeyed(k)
             | SlotFacts::DefineKeyedOwn(k)
             | SlotFacts::HasKeyed(k)
-            | SlotFacts::StoreInArrayLiteral(k) => check_property(&k.property),
+            | SlotFacts::StoreInArrayLiteral(k) => check_property(&k.property, table),
             SlotFacts::Call(c) => check_targets(&c.callees),
             SlotFacts::InstanceOf(t) => check_targets(t),
-            SlotFacts::Literal(l) => l.shape.as_ref().map_or(Ok(()), check_shape),
+            SlotFacts::Literal(l) => match (&l.shape, table) {
+                (Some(s), None) => check_shape(s),
+                _ => Ok(()),
+            },
             SlotFacts::CloneObject(c) => {
                 check_count(c.state, c.cases.len())?;
-                ascending(&c.cases, |a, b| a.source < b.source)?;
-                for case in &c.cases {
-                    check_shape(&case.source)?;
-                    check_shape(&case.result)?;
+                match table {
+                    Some(order) => ascending(order, |a, b| a < b),
+                    None => {
+                        ascending(&c.cases, |a, b| a.source < b.source)?;
+                        c.cases.iter().try_for_each(|case| {
+                            check_shape(&case.source)?;
+                            check_shape(&case.result)
+                        })
+                    }
                 }
-                Ok(())
             }
             SlotFacts::LoadGlobal(_)
             | SlotFacts::LoadGlobalInsideTypeof(_)
@@ -678,15 +707,24 @@ fn ascending<T>(items: &[T], less: impl Fn(&T, &T) -> bool) -> Result<(), FactEr
     }
 }
 
-fn check_property(p: &PropertyFacts) -> Result<(), FactError> {
+/// `table`: see [`SlotFacts::check_rules`]. With the case order of a decoded record, the
+/// shapes are table entries the decoder checked already.
+fn check_property(p: &PropertyFacts, table: Option<&[u32]>) -> Result<(), FactError> {
     check_count(p.state, p.cases.len())?;
-    ascending(&p.cases, |a, b| a.receiver < b.receiver)?;
+    match table {
+        Some(order) => ascending(order, |a, b| a < b)?,
+        None => ascending(&p.cases, |a, b| a.receiver < b.receiver)?,
+    }
     for case in &p.cases {
-        check_shape(&case.receiver)?;
+        if table.is_none() {
+            check_shape(&case.receiver)?;
+        }
         match &case.access {
             Access::OwnField { field } => check_field(&case.receiver, *field)?,
             Access::AddField { to, field } => {
-                check_shape(to)?;
+                if table.is_none() {
+                    check_shape(to)?;
+                }
                 check_field(to, *field)?;
             }
             Access::Getter { getter: r, .. } | Access::Setter { setter: r, .. } => {

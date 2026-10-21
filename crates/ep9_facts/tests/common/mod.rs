@@ -216,7 +216,10 @@ pub fn of_kind(kind: ObjectKind) -> ShapeDesc {
 }
 
 fn case(receiver: ShapeDesc, access: Access) -> PropertyCase {
-    PropertyCase { receiver, access }
+    PropertyCase {
+        receiver: receiver.into(),
+        access,
+    }
 }
 
 /// One record per slot kind, in kind order: (function, slot, facts). Together they use every
@@ -289,7 +292,7 @@ pub fn sample_records() -> Vec<(u32, u32, SlotFacts)> {
                 cases: vec![case(
                     point(),
                     Access::AddField {
-                        to: point3(),
+                        to: point3().into(),
                         field: 2,
                     },
                 )],
@@ -387,7 +390,7 @@ pub fn sample_records() -> Vec<(u32, u32, SlotFacts)> {
             1,
             F::Literal(LiteralFacts {
                 count: 3,
-                shape: Some(point()),
+                shape: Some(point().into()),
                 elements: Some(ElementsKind::PackedInt32),
             }),
         ),
@@ -398,12 +401,12 @@ pub fn sample_records() -> Vec<(u32, u32, SlotFacts)> {
                 state: IcState::Polymorphic,
                 cases: vec![
                     CloneCase {
-                        source: point(),
-                        result: bare(),
+                        source: point().into(),
+                        result: bare().into(),
                     },
                     CloneCase {
-                        source: instance(),
-                        result: dictionary(),
+                        source: instance().into(),
+                        result: dictionary().into(),
                     },
                 ],
             }),
@@ -473,7 +476,7 @@ pub fn sample_records() -> Vec<(u32, u32, SlotFacts)> {
             4,
             F::Literal(LiteralFacts {
                 count: 1,
-                shape: Some(of_kind(ObjectKind::Error)),
+                shape: Some(of_kind(ObjectKind::Error).into()),
                 elements: Some(ElementsKind::HoleyElements),
             }),
         ),
@@ -712,7 +715,7 @@ fn random_access(rng: &mut Rng, receiver: &ShapeDesc) -> Access {
                 ));
                 Access::AddField {
                     field: to.keys.len() as u16 - 1,
-                    to,
+                    to: to.into(),
                 }
             }
             6 => Access::ArrayLength,
@@ -742,9 +745,12 @@ fn random_property(rng: &mut Rng) -> PropertyFacts {
     let mut cases: Vec<PropertyCase> = Vec::new();
     for _ in 0..n {
         let receiver = random_shape(rng);
-        if cases.iter().all(|c| c.receiver != receiver) {
+        if cases.iter().all(|c| *c.receiver != receiver) {
             let access = random_access(rng, &receiver);
-            cases.push(PropertyCase { receiver, access });
+            cases.push(PropertyCase {
+                receiver: receiver.into(),
+                access,
+            });
         }
     }
     PropertyFacts {
@@ -803,7 +809,7 @@ pub fn random_facts(rng: &mut Rng, kind: FeedbackSlotKind) -> SlotFacts {
         K::InstanceOf => SlotFacts::InstanceOf(random_targets(rng)),
         K::Literal => SlotFacts::Literal(LiteralFacts {
             count: rng.next() as u32,
-            shape: (rng.below(2) == 0).then(|| random_shape(rng)),
+            shape: (rng.below(2) == 0).then(|| random_shape(rng).into()),
             elements: (rng.below(2) == 0).then(|| *rng.pick(ElementsKind::ALL)),
         }),
         K::CloneObject => {
@@ -811,10 +817,10 @@ pub fn random_facts(rng: &mut Rng, kind: FeedbackSlotKind) -> SlotFacts {
             let mut cases: Vec<CloneCase> = Vec::new();
             for _ in 0..n {
                 let source = random_shape(rng);
-                if cases.iter().all(|c| c.source != source) {
+                if cases.iter().all(|c| *c.source != source) {
                     cases.push(CloneCase {
-                        source,
-                        result: random_shape(rng),
+                        source: source.into(),
+                        result: random_shape(rng).into(),
                     });
                 }
             }
