@@ -334,7 +334,7 @@ impl<'a> FnGen<'a, '_> {
     }
 
     /// The prologue of a base class constructor: InitializeInstanceElements before the
-    /// parameters are bound (ECMA-262 §10.2.2 [[Construct]] step 6.b runs it before
+    /// parameters are bound (ECMA-262 §10.2.2 `[[Construct]]` step 6.b runs it before
     /// OrdinaryCallEvaluateBody). Called by `gen_function` before `prologue_and_params`.
     pub(crate) fn class_constructor_prologue(&mut self) -> Gen {
         if matches!(

@@ -893,7 +893,7 @@ fn synthetic_class_bindings_live_in_the_class_context() {
     use crate::scope::{BindingKind, BindingLocation, ScopeKind};
     let src = "var k; class C { #m() {} static #s() {} get #a() { return 1; } set #a(v) {} \
                [k] = 1; static [k + 1]; x = 2; #f; }";
-    let sa = crate::with_front_end(src, Sloppy.opts(), |fe| crate::scope::analyze(fe)).unwrap();
+    let sa = crate::with_front_end(src, Sloppy.opts(), crate::scope::analyze).unwrap();
     let class = sa
         .scopes()
         .iter()
