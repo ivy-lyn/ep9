@@ -141,6 +141,50 @@ test("net time <= 0 makes the net ratio invalid; the row falls back to gross", (
   assert.equal(m.geomean.qjs.net, null);
 });
 
+test("a row with an invalid net time is provisional: the gross ratio passes or fails no gate", () => {
+  // ep9: richards 99 ms, empty script 100 ms (net -1 ms in every round); QuickJS: 100 and 10 ms.
+  const m = label(
+    analyze(
+      synth({ emptyMs: (e) => (e === "ep9" ? 100 : 10), workMs: (e) => (e === "ep9" ? -1 : 90), workloads: ["richards"] }),
+      { subject: "ep9", comparators: ["qjs"], workloads: ["richards"], warmup: 1 },
+    ),
+    false,
+  );
+  const row = m.ratios[0];
+  assert.equal(row.net, null);
+  assert.equal(row.metric, "gross");
+  // Gross 100 / 99: quiet, and its interval is above 0.6. It stays as a shown value only.
+  assert.equal(row.void, false);
+  assert.equal(row.verdict, "ep9 faster");
+  assert.deepEqual(row.status, ["net invalid (net time <= 0 in round(s) 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)", "provisional"]);
+  assert.equal(row.canary.side, "above");
+  assert.equal(row.canary.gate, "no gate verdict (provisional; the gross interval is above 0.6)");
+
+  // Markdown: no gross value under a "net ratio" heading.
+  const md = renderMarkdown({
+    label: null,
+    started: "t0",
+    finished: "t1",
+    commit: { ep9: "0123456789abcdef" },
+    host: { id: "test", idle_baseline_load1: 1, measured: { cpu: "c", cpus: 1, os: "o", platform: "p", node: "n" } },
+    load: { before: null, after: null, after_each_round: [1] },
+    provisional: false,
+    provisional_reasons: [],
+    options: { warmup: 1 },
+    engines: [
+      { id: "ep9", label: "ep9 T0", role: "subject", version: "x" },
+      { id: "qjs", label: "QuickJS", role: "gate", version: "y" },
+    ],
+    M: m,
+    R: null,
+  });
+  assert.ok(
+    md.includes("| richards | QuickJS | invalid | none | 0.0 | 1.010 | 1.010-1.010 | ep9 faster (gross) | net invalid (net time <= 0 in round(s) 1, 2, 3, 4, 5, 6, 7, 8, 9, 10), provisional |\n"),
+    md,
+  );
+  assert.ok(md.includes("| richards | invalid | none | no gate verdict (provisional; the gross interval is above 0.6) |\n"), md);
+});
+
 test("analyze refuses missing samples", () => {
   const s = synth({ emptyMs: () => 1, workMs: () => 1 }).filter((x) => !(x.round === 3 && x.engine === "qjs" && x.workload === "k"));
   assert.throws(() => analyze(s, { subject: "ep9", comparators: ["qjs"], workloads: ["k"], warmup: 1 }), /k on qjs has 9 of 10 samples/);
@@ -329,8 +373,9 @@ test("CLI: rotated rounds as planned, 10 rounds, JSON with every sample", (t) =>
     assert.deepEqual((row.net ?? row.gross).ranks, [2, 9]);
     assert.equal((row.net ?? row.gross).interval.length, 2);
     assert.ok(["ep9 faster", "ep9 slower", "marginal"].includes(row.verdict), row.verdict);
-    // A noisy (void) row is provisional even in a run that passed the load guard.
-    if (row.void) assert.ok(row.status.includes("provisional"));
+    // A noisy (void) row, or one with an invalid net ratio, is provisional even in a run that
+    // passed the load guard. The fake engines' net times are noise around 0, so most rows are.
+    if (row.void || row.net_invalid) assert.ok(row.status.includes("provisional"));
     else assert.deepEqual(row.status, ["valid"]);
   }
   assert.ok(readFileSync(f.md, "utf8").includes("Gate run: the load guard passed"));

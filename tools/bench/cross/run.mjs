@@ -36,12 +36,15 @@
 //
 // Statistics. Per round and workload, ratio = t(engine) / t(ep9): ep9's speed relative to that
 // engine (> 1: ep9 is faster). Net: each time minus the same engine's empty-script time in the
-// same round. The verdict uses net ratios; gross ratios are shown too. Median, the order-statistic
-// interval (n = 10: ranks 2 and 9), void when the IQR is > 5% of the median (lib/stats.mjs).
+// same round. The verdict uses net ratios; gross ratios are shown too. A net time <= 0 in any round
+// makes the row's net ratio invalid: the row shows the gross verdict instead. Median, the
+// order-statistic interval (n = 10: ranks 2 and 9), void when the IQR is > 5% of the median
+// (lib/stats.mjs).
 //
 // Labels. The run is provisional when: there is no host file; the host is not a gate host; the
 // host file has no idle baseline; or the load guard fails before (with --allow-busy) or after the
-// run. A void row is provisional too. A provisional result never passes or fails a gate.
+// run. A void row, or a row with an invalid net ratio, is provisional too. A provisional result
+// never passes or fails a gate.
 //
 // Refusal. Every run's stdout must equal the workload's expected output and its exit status must
 // be 0. Otherwise the runner stops with "REFUSED" and exit 1, and writes no report.
@@ -337,13 +340,15 @@ export function label(m, provisional) {
     const s = [];
     if (provisional) s.push("provisional");
     if (row.void) s.push(`void (IQR ${(row.net ?? row.gross).iqrPct.toFixed(1)}% > 5%)`);
-    if (row.void && !provisional) s.push("provisional");
+    // Gates read net ratios only: a gross fallback is shown, but it passes or fails nothing.
+    if (row.net_invalid) s.push(`net invalid (${row.net_invalid})`);
+    if ((row.void || row.net_invalid) && !provisional) s.push("provisional");
     row.status = s.length ? s : ["valid"];
     if (row.canary) {
       const side = row.canary.side;
       row.canary.gate =
-        provisional || row.void
-          ? `no gate verdict (provisional; the interval is ${side === "marginal" ? "around" : side} ${CANARY.threshold})`
+        provisional || row.void || row.net_invalid
+          ? `no gate verdict (provisional; the ${row.net ? "" : "gross "}interval is ${side === "marginal" ? "around" : side} ${CANARY.threshold})`
           : side === "above" ? "pass" : side === "below" ? "fail" : "marginal";
     }
   }
@@ -560,10 +565,10 @@ export function renderMarkdown(res) {
   L.push("");
   L.push("| workload | vs | net ratio | interval | IQR % | gross ratio | gross interval | verdict | status |");
   L.push("|---|---|---|---|---|---|---|---|---|");
+  const iv = (v) => (v?.interval ? `${f3(v.interval[0])}-${f3(v.interval[1])}` : "none");
   for (const r of res.M.ratios) {
     const n = r.net;
-    const iv = (v) => (v?.interval ? `${f3(v.interval[0])}-${f3(v.interval[1])}` : "none");
-    L.push(`| ${r.workload} | ${eng[r.comparator].label} | ${n ? f3(n.median) : "invalid"} | ${iv(n)} | ${f1((n ?? r.gross).iqrPct)} | ${f3(r.gross.median)} | ${iv(r.gross)} | ${r.verdict} | ${r.status.join(", ")} |`);
+    L.push(`| ${r.workload} | ${eng[r.comparator].label} | ${n ? f3(n.median) : "invalid"} | ${iv(n)} | ${f1((n ?? r.gross).iqrPct)} | ${f3(r.gross.median)} | ${iv(r.gross)} | ${r.verdict}${n ? "" : " (gross)"} | ${r.status.join(", ")} |`);
   }
   L.push("");
   L.push(`Geomean of the median ratios over ${res.M.ratios.length ? [...new Set(res.M.ratios.map((r) => r.workload))].join(", ") : "-"}: ${Object.entries(res.M.geomean).map(([c, v]) => `${eng[c].label} net ${f3(v.net)} / gross ${f3(v.gross)}`).join("; ")}.`);
@@ -575,8 +580,8 @@ export function renderMarkdown(res) {
     L.push("|---|---|---|---|");
     for (const w of CANARY.workloads) {
       const r = res.M.ratios.find((x) => x.canary && x.workload === w);
-      const v = r && (r.net ?? r.gross);
-      L.push(r ? `| ${w} | ${f3(v.median)} | ${f3(v.interval?.[0])}-${f3(v.interval?.[1])} | ${r.canary.gate} |` : `| ${w} | not in this run | - | no reading |`);
+      // Net only, as the heading says; the gross ratio of an invalid row is in the table above.
+      L.push(r ? `| ${w} | ${r.net ? f3(r.net.median) : "invalid"} | ${iv(r.net)} | ${r.canary.gate} |` : `| ${w} | not in this run | - | no reading |`);
     }
   }
   L.push("");
