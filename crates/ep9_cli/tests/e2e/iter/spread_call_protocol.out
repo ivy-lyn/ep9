@@ -1,0 +1,18 @@
+iterable 3:10,20,30 4:1,10,20,30 4:10,20,30,2
+objects 3 10 20
+method 3:10,20,30
+holes 3:1,undefined,3
+string 3:a,b,😀
+array 3:1,2,3 3:0,1,2
+not iterable threw true
+undefined threw true
+order true iter,next
+bad result threw true
+bad iterator threw true
+hole from proto 3:1,proto,3
+replaced 1:x
+replaced new 1
+replaced not last 2:x,9
+default ctor 5 6
+super spread x undefined
+gc 4950

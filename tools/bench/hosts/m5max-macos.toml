@@ -1,0 +1,33 @@
+# Host file (docs/plan/10-quality.md section 3, "Gate host" and "Load guard").
+# tools/bench/cross/run.mjs --host reads it through tools/bench/lib/host.mjs, which parses a TOML
+# subset: one `key = value` per line; strings, numbers, true/false, one-line arrays.
+#
+# This is the shared macOS arm64 machine. It may act as gate host only in a quiet window: the
+# orchestrator runs the perf step alone, and the load guard passes ("Until gate hosts exist").
+# Facts read on 2026-10-21 with sysctl, sw_vers, pmset and node's os module.
+
+id = "m5max-macos"
+# Must equal what the runner measures (os.cpus()[0].model), or run.mjs stops.
+cpu = "Apple M5 Max"
+model = "Mac17,6"
+cores = 18
+# hw.perflevel0 "Super" = 6 cores, hw.perflevel1 "Performance" = 12 cores. macOS: no pinning.
+core_levels = "6 Super + 12 Performance"
+memory_gib = 128
+platform = "darwin-arm64"
+os = "macOS 27.0.1 (26A434), Darwin 27.0.0"
+# AC power, pmset powermode 2 (high power): no low-power mode.
+power = "AC, powermode 2"
+gate_host = true
+
+# The idle baseline (median 1-minute load over 10 idle minutes), measured with
+# `node tools/bench/cross/idle.mjs` on 2026-10-21 08:04:52-08:14:46 UTC (m0/wk4 a494a44, no build or
+# benchmark process, the orchestrator idle): 60 samples every 10 s, min 1.57, max 5.35. The load
+# spikes come from other work on this shared machine. An earlier window (07:54:40-08:04:40 UTC) gave
+# 2.785 but overlapped a 242 MB file copy, so it is not used.
+idle_baseline_load1 = 2.505
+#
+# A partial sample, for reference only: 2026-10-21 08:58:19-09:01:11 (+08), every 10 s, no build
+# process running, before other agents' builds started at 09:01:21 (load 6.86). 18 samples (3 of
+# the 10 minutes), median 1.295.
+partial_idle_samples = [1.08, 1.23, 1.35, 1.29, 1.25, 1.36, 1.30, 1.25, 1.37, 1.38, 1.32, 1.27, 1.15, 0.97, 1.20, 1.32, 1.42, 1.50]

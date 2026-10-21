@@ -1,0 +1,12 @@
+[package]
+name = "fx_cli"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "fx"
+path = "src/main.rs"
+
+[dependencies]
+fx_engine = { path = "../fx_engine" }

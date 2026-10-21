@@ -1126,7 +1126,8 @@ impl<'a, 's> FnGen<'a, 's> {
         self.b.set_statement_position(class.span.start);
         self.b.set_throw_position(Some(class.span.start));
         if self.info.kind == FunctionKind::DefaultDerivedConstructor {
-            // constructor(...args) { super(...args); } (v0: the rest array is spread again).
+            // constructor(...args) { super(...args); }, but with no `@@iterator` call
+            // (§15.7.14 NOTE): ConstructWithSpread spreads the rest array as it is.
             let m = self.mark();
             let sup = self.temp();
             let args = self.temps(1);

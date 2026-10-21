@@ -40,7 +40,8 @@ usage: cargo xtask disasm-check [options]
   --objdump PATH, --nm PATH   tools (default: rustup llvm-tools, then PATH)
   -v, --verbose         one line per handler";
 
-const ALL_TARGETS: &[&str] = &[
+/// The 5 targets of `--all-targets`; fp-check (fpcheck.rs) checks the same set.
+pub(crate) const ALL_TARGETS: &[&str] = &[
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
     "x86_64-unknown-linux-gnu",
@@ -70,7 +71,7 @@ struct Opts {
     verbose: bool,
 }
 
-fn repo_root() -> PathBuf {
+pub(crate) fn repo_root() -> PathBuf {
     // tools/xtask -> repo root
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -126,7 +127,8 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
     Ok(o)
 }
 
-fn run_capture(cmd: &mut Command) -> Result<String, String> {
+/// Runs `cmd` and returns its stdout; stderr goes to the log. A failed run is an error.
+pub(crate) fn run_capture(cmd: &mut Command) -> Result<String, String> {
     let out = cmd
         .stderr(Stdio::inherit())
         .output()
@@ -150,7 +152,7 @@ fn run_quiet(cmd: &mut Command) -> Result<String, String> {
     String::from_utf8(out.stdout).map_err(|e| format!("{cmd:?}: {e}"))
 }
 
-fn host_triple() -> Result<String, String> {
+pub(crate) fn host_triple() -> Result<String, String> {
     let v = run_capture(Command::new("rustc").arg("-vV"))?;
     v.lines()
         .find_map(|l| l.strip_prefix("host: "))
@@ -159,7 +161,7 @@ fn host_triple() -> Result<String, String> {
 }
 
 /// Finds an LLVM tool: the override, then rustup's llvm-tools component, then PATH.
-fn find_tool(name: &str, over: &Option<PathBuf>) -> Result<PathBuf, String> {
+pub(crate) fn find_tool(name: &str, over: &Option<PathBuf>) -> Result<PathBuf, String> {
     if let Some(p) = over {
         return Ok(p.clone());
     }
@@ -229,15 +231,19 @@ pub fn main(args: &[String]) -> Result<bool, String> {
     Ok(all)
 }
 
-/// Builds the crate as a staticlib for `target` and returns (staticlib, LLVM IR file).
-fn build(o: &Opts, target: &str) -> Result<(PathBuf, PathBuf), String> {
-    let base = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| repo_root().join("target"));
-    let tdir = base.join("xtask-disasm");
-    fs::create_dir_all(&tdir).map_err(|e| e.to_string())?;
-    // Extra rustc args get their own IR file name (FNV-1a hash of the args). Cargo
-    // fingerprints the args, so it rebuilds the staticlib when they change.
+/// The IR file name (without `.ll`) for one build: the package (or the manifest's directory when
+/// no `-p` is given), the target, the toolchain, the features, and a hash of extra rustc args.
+/// Two crates checked from one target dir (ep9_vm, then the SP-Dispatch spike) must never share
+/// an IR file: a cached build does not rewrite it, so the second check would read the first
+/// crate's IR. Cargo fingerprints the extra args, so it rebuilds the staticlib when they change.
+fn ir_tag(o: &Opts, target: &str) -> String {
+    let package = o.package.clone().unwrap_or_else(|| {
+        o.manifest
+            .parent()
+            .and_then(|d| d.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "crate".into())
+    });
     let rargs = if o.rustc_args.is_empty() {
         String::new()
     } else {
@@ -246,8 +252,8 @@ fn build(o: &Opts, target: &str) -> Result<(PathBuf, PathBuf), String> {
         });
         format!("-r{h:08x}")
     };
-    let tag = format!(
-        "{target}{}{}{rargs}",
+    format!(
+        "{package}-{target}{}{}{rargs}",
         o.toolchain
             .as_deref()
             .map(|t| format!("-{t}"))
@@ -256,8 +262,17 @@ fn build(o: &Opts, target: &str) -> Result<(PathBuf, PathBuf), String> {
             .as_deref()
             .map(|f| format!("-{}", f.replace([',', ' '], "+")))
             .unwrap_or_default()
-    );
-    let ll = tdir.join(format!("{tag}.ll"));
+    )
+}
+
+/// Builds the crate as a staticlib for `target` and returns (staticlib, LLVM IR file).
+fn build(o: &Opts, target: &str) -> Result<(PathBuf, PathBuf), String> {
+    let base = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo_root().join("target"));
+    let tdir = base.join("xtask-disasm");
+    fs::create_dir_all(&tdir).map_err(|e| e.to_string())?;
+    let ll = tdir.join(format!("{}.ll", ir_tag(o, target)));
     let mut cmd = match &o.toolchain {
         Some(tc) => {
             let mut c = Command::new("rustup");
@@ -417,19 +432,25 @@ fn nm_handlers(nm: &Path, file: &Path) -> Result<Vec<Handler>, String> {
     Ok(v)
 }
 
+/// One decoded instruction of a [`Block`].
 #[derive(Debug)]
-struct Insn {
-    addr: u64,
-    text: String,
-    reloc: Option<String>,
+pub(crate) struct Insn {
+    pub(crate) addr: u64,
+    /// "mnemonic\toperands" as llvm-objdump prints it.
+    pub(crate) text: String,
+    /// The relocation target that llvm-objdump `-r` prints after this instruction, if any.
+    pub(crate) reloc: Option<String>,
 }
 
+/// One symbol of `llvm-objdump -d -r` output.
 #[derive(Debug)]
-struct Block {
-    member: String,
-    raw: String,
-    addr: u64,
-    insns: Vec<Insn>,
+pub(crate) struct Block {
+    /// The archive member that holds the symbol (empty outside an archive).
+    pub(crate) member: String,
+    /// The symbol name as the object file spells it (Mach-O adds a leading `_`).
+    pub(crate) raw: String,
+    pub(crate) addr: u64,
+    pub(crate) insns: Vec<Insn>,
 }
 
 fn is_reloc(s: &str) -> bool {
@@ -492,8 +513,9 @@ fn disassemble(
 /// its start, data included, so on x86 an "instruction" decoded from the data can end past the
 /// range: the code after it is then decoded from a wrong address, or swallowed (a `ret` hidden).
 /// `dis(symbol, start, stop)` disassembles `symbol` from `start` up to `stop` (the next range;
-/// `None`: the symbol end); its instructions replace the ones of the first pass there.
-fn redecode_after_data(
+/// `None`: the symbol end); its instructions replace the ones of the first pass there. fp-check
+/// (fpcheck.rs) uses it too.
+pub(crate) fn redecode_after_data(
     blocks: &mut [Block],
     base: u64,
     data: &[(u64, u64)],
@@ -541,7 +563,7 @@ fn redecode_after_data(
 
 /// Entries `(offset, length)` of `llvm-objdump --macho --data-in-code` output
 /// ("0x0000417c    608 JUMP_TABLE32").
-fn parse_data_in_code(out: &str) -> Vec<(u64, u64)> {
+pub(crate) fn parse_data_in_code(out: &str) -> Vec<(u64, u64)> {
     out.lines()
         .filter_map(|l| {
             let mut w = l.split_whitespace();
@@ -585,7 +607,7 @@ fn macho_dice_base(headers: &str) -> u64 {
 /// Removes the "instructions" that llvm-objdump decoded from data in code. x86-64 Mach-O
 /// keeps jump tables in `__text` after the function's code (LC_DATA_IN_CODE), and `-d` decodes
 /// them as code: false indirect jumps and calls, stack accesses and returns.
-fn drop_data(blocks: &mut [Block], base: u64, data: &[(u64, u64)]) {
+pub(crate) fn drop_data(blocks: &mut [Block], base: u64, data: &[(u64, u64)]) {
     for b in blocks {
         b.insns.retain(|i| {
             !data
@@ -596,7 +618,7 @@ fn drop_data(blocks: &mut [Block], base: u64, data: &[(u64, u64)]) {
 }
 
 /// Reads `llvm-objdump -d -r` output: the file format (empty if none) and one block per symbol.
-fn parse_disasm(out: &str) -> (String, Vec<Block>) {
+pub(crate) fn parse_disasm(out: &str) -> (String, Vec<Block>) {
     let mut format = String::new();
     let mut member = String::new();
     let mut blocks: Vec<Block> = Vec::new();
@@ -1432,6 +1454,24 @@ fn check_loops(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Local CI checked ep9_vm and then the spike from one target dir; the cached spike build did
+    // not rewrite `<target>.ll`, so the spike check read ep9_vm's IR ("no LLVM IR definition").
+    #[test]
+    fn ir_file_names_differ_per_crate() {
+        let t = "aarch64-apple-darwin";
+        let spike = parse_opts(&[]).unwrap();
+        let vm = parse_opts(&[
+            "--manifest-path".into(),
+            "crates/ep9_vm/Cargo.toml".into(),
+            "-p".into(),
+            "ep9_vm".into(),
+        ])
+        .unwrap();
+        assert_ne!(ir_tag(&spike, t), ir_tag(&vm, t));
+        assert_eq!(ir_tag(&spike, t), format!("sp-dispatch-{t}"));
+        assert_eq!(ir_tag(&vm, t), format!("ep9_vm-{t}"));
+    }
 
     fn insn(text: &str, reloc: Option<&str>) -> Insn {
         Insn {

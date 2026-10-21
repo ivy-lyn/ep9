@@ -15,7 +15,7 @@
 //!       callee            fp - 6   Value     the function object
 //!       argc              fp - 5   int32     actual count; bit 30 = [[Construct]] call
 //!       function info     fp - 4   native    FunctionInfo of this frame
-//!       feedback          fp - 3   Value     undefined until H16 (lazy FeedbackVector)
+//!       feedback          fp - 3   Value     new.target of a [[Construct]], else undefined (H14-Q1)
 //!       context           fp - 2   Value     current context
 //!       bytecode offset   fp - 1   int32     saved at runtime calls (stack traces, H29)
 //!       r0 .. r(m-1)      fp + 0.. Value     undefined on push
@@ -23,7 +23,11 @@
 //! ```
 //!
 //! Every slot below the top holds a valid `Value` (03-gc §2 "VM-stack rule"), so the GC scans
-//! `[base, top)` as one precise slice. Words that are not JS values use two encodings:
+//! `[base, top)` as one precise slice. Rust code may also put Values above the top frame (for
+//! example the arguments it builds for a call): it writes them, then raises the stack's
+//! scratch top past them, and the GC scans `[base, max(top, scratch top))`. Every frame push
+//! from Rust and every return from a host function clears the scratch top, so bytecode always
+//! runs without one. Words that are not JS values use two encodings:
 //!
 //! | Encoding | Bits | Value kind | Used for |
 //! |---|---|---|---|
@@ -53,7 +57,9 @@ pub mod slot {
     pub const ARGC: isize = -5;
     /// FunctionInfo pointer (native word).
     pub const FUNCTION_INFO: isize = -4;
-    /// Feedback vector (Value; undefined in v0).
+    /// Named for the feedback vector, but v0 keeps `new.target` here (Value): the constructor
+    /// of a `[[Construct]]` call, undefined for a call (H14-Q1). The FeedbackVector is reached
+    /// through [`FUNCTION_INFO`] instead (feedback.rs).
     pub const FEEDBACK: isize = -3;
     /// Current context (Value).
     pub const CONTEXT: isize = -2;
@@ -118,7 +124,8 @@ pub const FALSE: u64 = Value::FALSE.to_bits();
 pub const HOLE: u64 = Value::EMPTY.to_bits();
 
 /// The VM register stack of one isolate. The memory is zeroed on allocation and written before
-/// it is read: the GC scans only `[base, top)`, and every slot there is written at frame push.
+/// it is read: the GC scans only `[base, max(top, scratch_top))`, and every slot there is
+/// written at frame push or before the scratch top moves past it.
 pub struct VmStack {
     base: *mut u64,
     slots: usize,
@@ -126,6 +133,10 @@ pub struct VmStack {
     /// frame is live. The GC root source reads it. Interpreter code writes it before every GC
     /// point (`Runtime::enter`).
     fp: Cell<*mut u64>,
+    /// End of the scratch Values that Rust code keeps above the top frame; null when there are
+    /// none. Raised only past slots that already hold valid Values; cleared by
+    /// [`VmStack::clear_scratch`].
+    scratch_top: Cell<*mut u64>,
 }
 
 impl VmStack {
@@ -142,6 +153,7 @@ impl VmStack {
             base,
             slots,
             fp: Cell::new(ptr::null_mut()),
+            scratch_top: Cell::new(ptr::null_mut()),
         }
     }
 
@@ -160,6 +172,25 @@ impl VmStack {
 
     pub fn set_fp(&self, fp: *mut u64) {
         self.fp.set(fp);
+    }
+
+    /// End of the scratch Values above the top frame (null: none).
+    pub fn scratch_top(&self) -> *mut u64 {
+        self.scratch_top.get()
+    }
+
+    /// Makes the GC scan up to `top` (exclusive) even above the top frame. Every slot below
+    /// `top` must hold a valid Value. Callers: the builtin ABI's argument builder (H20) and
+    /// the Rust-to-JS entry, which restores the caller's value on return.
+    pub fn set_scratch_top(&self, top: *mut u64) {
+        debug_assert!(top.addr() >= self.base.addr() && top.addr() <= self.end().addr());
+        self.scratch_top.set(top);
+    }
+
+    /// Drops the scratch area (a frame push takes the space above the top frame).
+    #[inline(always)]
+    pub fn clear_scratch(&self) {
+        self.scratch_top.set(ptr::null_mut());
     }
 }
 
@@ -210,6 +241,7 @@ mod tests {
     fn stack_bounds() {
         let s = VmStack::new(128);
         assert!(s.fp().is_null());
+        assert!(s.scratch_top().is_null());
         // SAFETY: slot 3 is inside the 128-slot stack; the memory is zeroed.
         assert_eq!(unsafe { *s.base().add(3) }, 0);
     }

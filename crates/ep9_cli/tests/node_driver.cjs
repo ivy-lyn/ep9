@@ -4,7 +4,8 @@
 //   node tests/node_driver.cjs <file.js>
 //
 // - print(...args): ToString of each argument (a template literal applies ToString), joined by
-//   a space, then a newline, written synchronously to stdout (as the ep9 CLI does).
+//   a space, then a newline, written synchronously to stdout (as the ep9 CLI does). A symbol
+//   prints as its descriptive string, String(sym) = "Symbol(desc)", as the ep9 CLI does.
 // - gc(): no-op.
 // - An uncaught exception prints "Uncaught <Name>: <message>" and the stack to stderr, exit 1.
 'use strict';
@@ -14,7 +15,8 @@ const vm = require('vm');
 const file = process.argv[2];
 const source = fs.readFileSync(file, 'utf8');
 globalThis.print = function print(...args) {
-  fs.writeSync(1, args.map((a) => `${a}`).join(' ') + '\n');
+  const text = (a) => (typeof a === 'symbol' ? String(a) : `${a}`);
+  fs.writeSync(1, args.map(text).join(' ') + '\n');
 };
 globalThis.gc = function gc() {};
 try {

@@ -10,7 +10,7 @@ use super::{
     Asm, config, isolate, meta, ok, on_big_stack, pos, run_all, run_in, take_output, unit,
     unit_with_scopes,
 };
-use crate::{Args, Dispatch, HostCx, IsolateConfig, JsResult, Value};
+use crate::{Args, Cx, Dispatch, IsolateConfig, JsResult, Local};
 
 /// `try { body } catch (e) { print(e.message) }` around what `body` emits.
 fn try_print_message(s: &mut Asm, ctx: Register, body: impl FnOnce(&mut Asm)) {
@@ -241,8 +241,13 @@ fn vm_stack_overflow_is_a_catchable_range_error() {
     assert_eq!(r.output, ["Maximum call stack size exceeded"]);
 }
 
-fn reenter(cx: &mut HostCx<'_>, _this: Value, args: Args<'_>, _nt: Value) -> JsResult<Value> {
-    cx.call(args.get(0), Value::UNDEFINED, &[args.get(0)])
+fn reenter<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    cx.call(args.get(0), Local::undefined(), &[args.get(0)])
 }
 
 #[test]
@@ -317,10 +322,10 @@ fn type_errors_and_not_implemented_are_catchable() {
             let slot = s.b.feedback_slot(FeedbackSlotKind::Literal);
             s.b.create_reg_exp_literal(k, slot, 0);
         });
-        // 2 ** 0.5  (needs ep9_math, H36)
+        // 2 ** 0.3  (needs the correctly rounded pow core of ep9_math, H36, month 2)
         try_print_message(&mut s, ctx, |s| {
             s.b.lda_smi(2).star(t);
-            s.lda_num(0.5);
+            s.lda_num(0.3);
             s.b.exp(t, bin);
         });
         // 1n
@@ -345,7 +350,7 @@ fn type_errors_and_not_implemented_are_catchable() {
             "Cannot read properties of undefined (reading 'x')",
             "function print is not a constructor",
             "not implemented in ep9 v0: RegExp literals",
-            "not implemented in ep9 v0: ** with a result that is not an exact integer (needs ep9_math::pow_js, H36)",
+            "not implemented in ep9 v0: ** with a result that is not an exact integer: needs the correctly rounded pow core (H36, month 2)",
             "not implemented in ep9 v0: BigInt values",
             "x is not defined",
         ]

@@ -1,0 +1,13 @@
+setter, number key: 1 7 0 false
+setter, string key: 2 8 0 false
+own element: 2 9 1
+other index: 2 3 true 3
+push: 2 3 5 2 false 6
+hole: 4 4 3 false
+getter, sloppy: 0 false g
+getter, strict: TypeError 0
+getter, strict: TypeError 0
+read-only, sloppy: 0 false ro
+read-only, strict: TypeError 0
+read-only, push: TypeError 0
+after: 101 0 99 100 true

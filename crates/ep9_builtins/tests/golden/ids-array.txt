@@ -1,0 +1,6 @@
+# ep9 builtin ids: module array, block 3. Append-only (H20, W4-BUILTIN-IDS): never
+# reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
+# id     block.index  kind         length  name  (installed as)
+0x0600   3.0          method       1       "isArray"  (%Array%.isArray w-c)
+0x0601   3.1          method       0       "pop"  (%Array.prototype%.pop w-c)
+0x0602   3.2          method       1       "indexOf"  (%Array.prototype%.indexOf w-c)

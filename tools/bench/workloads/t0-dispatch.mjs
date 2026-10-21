@@ -31,10 +31,13 @@
 // the median (the host was not quiet).
 
 import { spawnSync } from "node:child_process";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { hostInfo as host } from "../lib/host.mjs";
+import { geomean, median, medianRanks, quantile, verdict as sharedVerdict } from "../lib/stats.mjs";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const KERNELS = ["t0-loop.js", "t0-branchy.js", "t0-call.js", "t0-prop.js", "ci-v0.js"];
@@ -88,100 +91,16 @@ export function parseArgs(argv) {
   return o;
 }
 
-// ---- statistics (10-quality section 3) ----------------------------------------------------
+// ---- statistics (10-quality section 3): tools/bench/lib/stats.mjs --------------------------
 
-function sorted(xs) {
-  return [...xs].sort((a, b) => a - b);
-}
+export { geomean, median, medianRanks, quantile };
 
-export function median(xs) {
-  const s = sorted(xs);
-  const m = s.length >> 1;
-  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-}
-
-/** Quantile with linear interpolation between order statistics (type 7). */
-export function quantile(xs, q) {
-  const s = sorted(xs);
-  const h = (s.length - 1) * q;
-  const lo = Math.floor(h);
-  return s[lo] + (h - lo) * ((s[Math.min(lo + 1, s.length - 1)] ?? s[lo]) - s[lo]);
-}
-
-/**
- * 1-based ranks (k, n + 1 - k) of the order-statistic interval for the median with coverage
- * >= 95%: the largest k with 1 - 2 P(Bin(n, 1/2) <= k - 1) >= 0.95. n = 31 gives (10, 22),
- * n = 15 (4, 12), n = 10 (2, 9), n = 7 (1, 7), as in the PERF-NOISE table.
- * null when no such interval exists: for n < 6 even (1, n) covers only 1 - 2^(1-n) (n = 5: 93.75%).
- */
-export function medianRanks(n) {
-  // P(Bin(n, 1/2) <= j), summed in floating point (n is small).
-  const cdf = (j) => {
-    let c = 1;
-    let sum = 0;
-    for (let i = 0; i <= j; i++) {
-      sum += c;
-      c = (c * (n - i)) / (i + 1);
-    }
-    return sum / 2 ** n;
-  };
-  if (1 - 2 * cdf(0) < 0.95) return null;
-  let k = 1;
-  while (k + 1 <= n && 1 - 2 * cdf(k) >= 0.95) k++;
-  return [k, n + 1 - k];
-}
-
+/** lib/stats.mjs verdict against 1, with this runner's labels: ratio = A / B, so "above" 1 means
+ * B is faster. */
 export function verdict(ratios) {
-  const s = sorted(ratios);
-  const ranks = medianRanks(s.length);
-  const med = median(s);
-  const iqr = quantile(s, 0.75) - quantile(s, 0.25);
-  // No 95% interval (n < 6): no interval and no side.
-  const interval = ranks && [s[ranks[0] - 1], s[ranks[1] - 1]];
-  const side = !interval
-    ? "insufficient data"
-    : interval[0] > 1 ? "B faster" : interval[1] < 1 ? "A faster" : "tie";
-  return {
-    median: med,
-    interval,
-    ranks,
-    iqrPct: (100 * iqr) / med,
-    void: iqr / med > 0.05,
-    side,
-  };
-}
-
-export function geomean(xs) {
-  return Math.exp(xs.reduce((a, x) => a + Math.log(x), 0) / xs.length);
-}
-
-// ---- host ---------------------------------------------------------------------------------
-
-/** The CPU model: /proc/cpuinfo "model name" (x86-64 Linux), else lscpu "Model name" (arm64
- * Linux has no such line in /proc/cpuinfo), else what node reports (macOS, Windows). */
-function cpuModel() {
-  if (process.platform === "linux") {
-    try {
-      const m = readFileSync("/proc/cpuinfo", "utf8").match(/^model name\s*:\s*(.+)$/m);
-      if (m) return m[1].trim();
-    } catch {}
-    const l = spawnSync("lscpu", [], { encoding: "utf8" });
-    const m = (l.stdout || "").match(/^Model name:\s*(.+)$/m);
-    if (m) return m[1].trim();
-  }
-  return os.cpus()[0]?.model?.trim() || "unknown";
-}
-
-function host() {
-  return {
-    cpu: cpuModel(),
-    cpus: os.cpus().length,
-    platform: `${process.platform}-${process.arch}`,
-    os: `${os.type()} ${os.release()}`,
-    loadavg: os.loadavg().map((x) => Number(x.toFixed(2))),
-    node: process.version,
-    date: new Date().toISOString(),
-  };
+  const v = sharedVerdict(ratios, 1);
+  const side = { above: "B faster", below: "A faster", marginal: "tie" }[v.side] ?? v.side;
+  return { median: v.median, interval: v.interval, ranks: v.ranks, iqrPct: v.iqrPct, void: v.void, side };
 }
 
 // ---- runs ---------------------------------------------------------------------------------

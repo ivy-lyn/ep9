@@ -5,15 +5,20 @@
 use ep9_bytecode::{FunctionId, ScopeId, ScopeKind, VariableMode, VerifiedUnit};
 
 use super::{Asm, config, isolate, meta, ok, on_big_stack, run_all, take_output, unit_with_scopes};
-use crate::{Args, Dispatch, HostCx, JsResult, Value};
+use crate::{Args, Cx, Dispatch, JsResult, Local, Value};
 
-fn gc(cx: &mut HostCx<'_>, _this: Value, _args: Args<'_>, _nt: Value) -> JsResult<Value> {
+fn gc<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
     // A value that lives only in this Rust local across the collection (conservative scan).
-    let s = cx.new_string("kept by the stack scan");
+    let s = cx.new_string("kept by the stack scan")?;
     cx.collect_garbage();
     let t = cx.to_rust_string(s)?;
     assert_eq!(t, "kept by the stack scan");
-    Ok(Value::UNDEFINED)
+    Ok(Local::undefined())
 }
 
 #[test]
@@ -137,5 +142,75 @@ fn collection_in_the_middle_of_js() {
             });
             assert_eq!(out, ["p2", "a1"], "{} stress={stress}", d.name());
         }
+    }
+}
+
+/// Slots that `fill_scratch` and `scratch_values` use above the host frame.
+const SCRATCH: usize = 64;
+
+/// Writes `SCRATCH` fresh strings into the VM stack from `top` up, raising the scratch top
+/// past each one. Every allocation is a GC point (and, under GC stress, a collection), so the
+/// earlier strings live only in those slots. Out of line: no Rust local of the caller holds
+/// them afterwards.
+#[inline(never)]
+fn fill_scratch(rt: &crate::runtime::Runtime, top: *mut u64) {
+    for i in 0..SCRATCH {
+        let s = crate::string::new_string(rt, &format!("scratch {i}"));
+        // SAFETY: `top + i` lies above the live host frame and far below the end of the
+        // 2^20-slot VM stack; no frame uses it while the host function runs.
+        unsafe { *top.add(i) = s };
+        rt.stack().set_scratch_top(top.wrapping_add(i + 1));
+    }
+}
+
+/// `scratchValues()`: keeps fresh strings only between the host frame's top and the scratch
+/// top across many collections, then checks every one.
+fn scratch_values<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let rt = cx.inner().rt();
+    let top = crate::runtime::frame_top(rt.stack().fp());
+    fill_scratch(rt, top);
+    for _ in 0..16 {
+        cx.new_string("an allocation, so a collection under stress")?;
+    }
+    cx.collect_garbage();
+    for i in 0..SCRATCH {
+        // SAFETY: `fill_scratch` wrote slot `top + i` with a string Value.
+        let s = unsafe { *top.add(i) };
+        assert!(crate::kinds::is_string(s), "slot {i} lost its string");
+        let text = crate::string::str_view(s).to_string_lossy();
+        assert_eq!(text, format!("scratch {i}"));
+    }
+    Ok(Local::undefined())
+}
+
+#[test]
+fn values_below_the_scratch_top_survive_gc_stress() {
+    // A host frame's top is where Rust code builds call arguments (H20 ArgsBuilder): the GC
+    // scans up to the scratch top, and a host call clears it again on return.
+    for stress in [false, true] {
+        let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+        iso.register_host_function("scratchValues", 0, scratch_values);
+        let f = iso.global("scratchValues").unwrap();
+        let before = iso.heap().stats().collections;
+        let r = iso.call(f, Value::UNDEFINED, &[]);
+        assert!(r.is_ok(), "{r:?}");
+        let collections = iso.heap().stats().collections - before;
+        if stress {
+            assert!(
+                collections > SCRATCH as u64,
+                "{collections} collections under stress"
+            );
+        }
+        assert!(
+            iso.rt.stack().scratch_top().is_null(),
+            "the host return clears it"
+        );
+        iso.collect_garbage();
+        iso.verify_heap().unwrap();
     }
 }

@@ -31,5 +31,6 @@ deny = [
   { crate = "malachite", reason = "LGPL-3.0 (08-repo section 7)" },
   { crate = "rug", reason = "LGPL-3.0 (08-repo section 7)" },
 ]
-# The lock has one duplicate today (syn 2 and syn 3, both proc-macro deps). Report, do not fail.
+# The lock has one duplicate today: syn 2 and syn 3 (proc-macro deps of oxc; xtask also uses
+# syn 2 for gc-lint). Report, do not fail.
 multiple-versions = "warn"

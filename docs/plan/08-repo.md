@@ -68,7 +68,7 @@ The 4 new expectation files pin HINT-SET, TYPED-KERNELS, SHORT-RUN and JITLESS-S
 | `ep9_bytecode` | Opcodes, encoding, verifier, disassembler; + ABI version, determinism, stable function ids, CompiledUnit serialization incl. TS flags and hint section (H2) | no | default | x | x | x | - |
 | `ep9_frontend` | The only oxc importer: parse, semantic, depth guard, scope pass, BytecodeGen + TS lowering, hint join from `.ep9h`, lone-surrogate shim, L1 cache | small, contained | default | x | x | x | - |
 | `ep9_vm` | Isolate, realms, objects, strings, interpreter, ICs, frames; + deoptimizer runtime, fuse registry, dispatch slots with AOT kinds, pc->code registry (H14), FactSnapshot export | yes (reviewed) | default | x | x | x | - |
-| `ep9_builtins_*` | ECMA-262 spec layer, one crate per test262 area (C10) | forbid | default | x | x | x | - |
+| `ep9_builtins` | ECMA-262 spec layer. Until M1a: one crate, one module per test262 area; its engine dependencies are `ep9_vm` and `ep9_math` only (W4-BUILTINS-CRATE; dep-guards check 8). The split into one `ep9_builtins_*` crate per test262 area (C10) is checked again at M1a | forbid | default | x | x | x | - |
 | `ep9_numconv` | dtoa ports, radix, StringToNumber, f16 | no (Miri) | default | x | x | x | - |
 | `ep9_math` (new) | One Rust Math (H36): CR libm-class functions, `pow_js`, V8 `hypot`, exact `fmod`, `fma_exact`. No dependencies | one fn (fma dispatch); Miri skips corpus tests | default | x | x | x | - |
 | `ep9_regexp` | Backend trait. RX0 regress fork; RX1 and RX2 irregexp port | backend only | default; RX2 under `jit` | x | x (RX1) | x | - |

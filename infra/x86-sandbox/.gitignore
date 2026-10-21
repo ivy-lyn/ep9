@@ -1,0 +1,10 @@
+.token
+.token.new
+.url
+node_modules/
+.wrangler/
+.dryrun/
+jobs/
+evidence/
+build/
+worker-configuration.d.ts

@@ -14,6 +14,7 @@ Committed expectations and pinned benchmark lists ([08-repo](../docs/plan/08-rep
 | `short-run.txt` | SHORT-RUN | by hand |
 | `hint-set.txt` | HINT-SET | by hand |
 | `typed-kernels.txt` | TYPED-KERNELS | by hand |
+| `fp-check-allow.toml` | Exceptions for `cargo xtask fp-check` (H36): a banned libm symbol allowed in one function, with a reopen condition. More than 5 entries reopens H36. Format in the file header | by hand |
 
 Benchmark set files (`*-set.txt`, `short-run.txt`, `typed-kernels.txt`): one entry per line.
 
@@ -52,5 +53,6 @@ Both fail the job.
 
 | Date | Change |
 |---|---|
+| 2026-10-21 | `fp-check-allow.toml` with entry 1: `fmod` and `pow` in `oxc_semantic::ts_enum::eval::evaluate_expression` on all targets (TS enum folding; reopen at H3). It is the only finding of `cargo xtask fp-check` on the 5 targets and on x86_64 Linux with `x86-64-v3` (M0 week 4) |
 | 2026-10-21 | test262 exec files for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and `x86_64-pc-windows-msvc` from CI run 39501063919; CI checks all 4 targets |
 | 2026-10-21 | 2 tests pass after PR #1 review fixes Fr4 and Fr5 (`super[k] = v` key order; `(a?.b)()` keeps `this`): 43,849 → 43,847 failing files on all 4 targets (commits `1ee8583`, `d514b6e`) |

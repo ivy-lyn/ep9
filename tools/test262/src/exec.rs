@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 
 use ep9_frontend::{CodegenError, CompileError, CompileOptions, SourceOpts, Strictness};
 use ep9_heap::HeapConfig;
-use ep9_vm::{Args, Exception, HostCx, Isolate, IsolateConfig, JsResult, TerminateHandle, Value};
+use ep9_vm::{Args, Cx, Exception, Isolate, IsolateConfig, JsResult, Local, TerminateHandle};
 
 use crate::frontmatter::{self, Meta};
 use crate::parse::{Mode, STRICT_PREFIX, modes};
@@ -59,6 +59,11 @@ pub struct Options {
     pub timeout: Duration,
     /// GC-stress for every isolate: collect before every n-th allocation, verify after each GC.
     pub gc_stress: u32,
+    /// Tests that are neither run nor counted (only with `gc_stress`; tests that GC-stress
+    /// makes too slow).
+    pub skip_list: Option<PathBuf>,
+    /// `IsolateConfig::feedback_threshold` of every isolate.
+    pub feedback_threshold: u32,
     pub verbose: bool,
     pub progress: bool,
     /// Number of failure causes in the report.
@@ -72,6 +77,7 @@ pub struct WorkerOptions {
     pub test262: PathBuf,
     pub timeout: Duration,
     pub gc_stress: u32,
+    pub feedback_threshold: u32,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -241,7 +247,12 @@ fn take_panic() -> String {
         .unwrap_or_else(|| "panic without a message".into())
 }
 
-fn print(cx: &mut HostCx<'_>, _this: Value, args: Args<'_>, _nt: Value) -> JsResult<Value> {
+fn print<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
     let mut line = String::new();
     for (i, v) in args.iter().enumerate() {
         if i > 0 {
@@ -254,12 +265,17 @@ fn print(cx: &mut HostCx<'_>, _this: Value, args: Args<'_>, _nt: Value) -> JsRes
         o.push_str(&line);
         o.push('\n');
     });
-    Ok(Value::UNDEFINED)
+    Ok(Local::undefined())
 }
 
-fn gc(cx: &mut HostCx<'_>, _this: Value, _args: Args<'_>, _nt: Value) -> JsResult<Value> {
+fn gc<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
     cx.collect_garbage();
-    Ok(Value::UNDEFINED)
+    Ok(Local::undefined())
 }
 
 /// The run that the watchdog watches.
@@ -466,6 +482,30 @@ fn injected_fault(rel: &str) {
     }
 }
 
+/// The config of every test isolate: the builtins of `ep9_builtins` (H20) on top of the VM's.
+fn isolate_config(gc_stress: u32, feedback_threshold: u32) -> IsolateConfig {
+    IsolateConfig {
+        heap: HeapConfig {
+            gc_stress,
+            verify_after_gc: gc_stress > 0,
+            ..HeapConfig::default()
+        },
+        feedback_threshold,
+        builtins: Some(&ep9_builtins::TABLE),
+        ..IsolateConfig::default()
+    }
+}
+
+/// `exec` exits 2 unless an isolate made with `config` has a builtin table: a run without
+/// one would fail thousands of tests and could rewrite the expectations with them.
+fn check_builtins(config: IsolateConfig) -> Result<(), String> {
+    let iso = Isolate::new(config).map_err(|e| format!("cannot create an isolate: {e}"))?;
+    match iso.builtin_table() {
+        Some(_) => Ok(()),
+        None => Err("no builtin table is installed (IsolateConfig::builtins)".to_string()),
+    }
+}
+
 struct RunCtx<'a> {
     opts: &'a WorkerOptions,
     harness: &'a mut Harness,
@@ -474,14 +514,7 @@ struct RunCtx<'a> {
 
 impl RunCtx<'_> {
     fn isolate(&self) -> Result<Isolate, String> {
-        let config = IsolateConfig {
-            heap: HeapConfig {
-                gc_stress: self.opts.gc_stress,
-                verify_after_gc: self.opts.gc_stress > 0,
-                ..HeapConfig::default()
-            },
-            ..IsolateConfig::default()
-        };
+        let config = isolate_config(self.opts.gc_stress, self.opts.feedback_threshold);
         let mut iso = Isolate::new(config).map_err(|e| format!("cannot create an isolate: {e}"))?;
         iso.register_host_function("print", 1, print);
         iso.register_host_function("__ep9_gc", 0, gc);
@@ -922,6 +955,10 @@ fn header(triple: &str) -> String {
 /// Run the `exec` command. Exit code: 0 = matches the expectations, 1 = differs, 2 = error.
 pub fn run(opts: &Options) -> ExitCode {
     let started = Instant::now();
+    if let Err(e) = check_builtins(isolate_config(0, opts.feedback_threshold)) {
+        eprintln!("ep9-test262: {e}");
+        return ExitCode::from(2);
+    }
     let root = &opts.test262;
     let dirs = match suite::all_dirs(root) {
         Ok(d) => d,
@@ -953,6 +990,36 @@ pub fn run(opts: &Options) -> ExitCode {
         eprintln!("ep9-test262: --update-expectations needs a full run (no path filters)");
         return ExitCode::from(2);
     }
+    // Skipped tests are neither run nor counted, and the expectation compare ignores them.
+    let mut skipped: BTreeSet<String> = BTreeSet::new();
+    if let Some(path) = &opts.skip_list {
+        let list = match expect::read(path) {
+            Ok(list) => list,
+            Err(e) => {
+                eprintln!(
+                    "ep9-test262: cannot read the skip list {}: {e}",
+                    path.display()
+                );
+                return ExitCode::from(2);
+            }
+        };
+        files.retain(|f| {
+            let skip = list.contains(&f.rel);
+            if skip {
+                skipped.insert(f.rel.clone());
+            }
+            !skip
+        });
+        if full {
+            for p in list.difference(&skipped) {
+                eprintln!("ep9-test262: warning: skip list entry {p} names no test");
+            }
+        }
+        if files.is_empty() {
+            eprintln!("ep9-test262: the skip list leaves no test to run");
+            return ExitCode::from(2);
+        }
+    }
 
     let worker_args: Vec<String> = vec![
         "--test262".into(),
@@ -961,6 +1028,8 @@ pub fn run(opts: &Options) -> ExitCode {
         opts.timeout.as_millis().to_string(),
         "--gc-stress".into(),
         opts.gc_stress.to_string(),
+        "--feedback-threshold".into(),
+        opts.feedback_threshold.to_string(),
     ];
     // A test has at most 2 runs; each gets the soft timeout, then a margin. A worker that
     // gives no result by then is stuck where the interrupt check does not reach: kill it.
@@ -1055,7 +1124,7 @@ pub fn run(opts: &Options) -> ExitCode {
     top.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
 
     println!(
-        "ep9-test262 exec: {} tests, {} worker processes, target {}, mode jit, timeout {:?}{}",
+        "ep9-test262 exec: {} tests, {} worker processes, target {}, mode jit, timeout {:?}{}{}",
         results.len(),
         threads,
         opts.triple,
@@ -1064,9 +1133,21 @@ pub fn run(opts: &Options) -> ExitCode {
             format!(", GC-stress {}", opts.gc_stress)
         } else {
             String::new()
+        },
+        if opts.feedback_threshold == IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD {
+            String::new()
+        } else {
+            format!(", feedback threshold {}", opts.feedback_threshold)
         }
     );
     println!("  test262: {}", root.display());
+    if let Some(path) = &opts.skip_list {
+        println!(
+            "  skipped: {} (listed in {}; not run, not counted)",
+            skipped.len(),
+            path.display()
+        );
+    }
     println!(
         "  {:<14}{:>8} / {:<8}{:>8}   {:>8} / {:<8}",
         "files", "passed", "total", "", "runs ok", "runs"
@@ -1125,7 +1206,11 @@ pub fn run(opts: &Options) -> ExitCode {
             }
         } else {
             match expect::read(&opts.expect) {
-                Ok(expected) => diff = expect::diff(&expected, &failing, &checked, full),
+                Ok(expected) => {
+                    let expected: BTreeSet<String> =
+                        expected.difference(&skipped).cloned().collect();
+                    diff = expect::diff(&expected, &failing, &checked, full);
+                }
                 Err(e) => {
                     eprintln!(
                         "ep9-test262: cannot read expectations {}: {e}\n  (create it with --update-expectations)",
@@ -1187,7 +1272,15 @@ pub fn run(opts: &Options) -> ExitCode {
 
     if let Some(path) = &opts.json {
         let text = summary_json(
-            opts, &by_dir, files_all, runs_all, &top, &results, &diff, wall,
+            opts,
+            &by_dir,
+            files_all,
+            runs_all,
+            &top,
+            &results,
+            &diff,
+            wall,
+            skipped.len(),
         );
         if let Err(e) = std::fs::write(path, text) {
             eprintln!("ep9-test262: cannot write {}: {e}", path.display());
@@ -1207,6 +1300,7 @@ fn summary_json(
     results: &[(&str, TestResult)],
     diff: &expect::Diff,
     wall: Duration,
+    skipped: usize,
 ) -> String {
     let count = |out: &mut String, c: Count| {
         let _ = write!(out, "{{\"passed\":{},\"total\":{}}}", c.passed, c.total);
@@ -1217,10 +1311,12 @@ fn summary_json(
     json::string(&mut out, &opts.test262.display().to_string());
     let _ = write!(
         out,
-        ",\"workers\":{},\"timeout_ms\":{},\"gc_stress\":{},\"wall_seconds\":{:.3}",
+        ",\"workers\":{},\"timeout_ms\":{},\"gc_stress\":{},\"feedback_threshold\":{},\"skipped\":{},\"wall_seconds\":{:.3}",
         opts.threads,
         opts.timeout.as_millis(),
         opts.gc_stress,
+        opts.feedback_threshold,
+        skipped,
         wall.as_secs_f64()
     );
     out.push_str(",\"files\":");
@@ -1373,6 +1469,15 @@ mod tests {
             panic!("not a failure");
         };
         assert_eq!(cause, "Test262Error (an assertion failed)");
+    }
+
+    #[test]
+    fn exec_needs_a_builtin_table() {
+        let config = isolate_config(0, IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD);
+        assert!(config.builtins.is_some());
+        assert_eq!(check_builtins(config), Ok(()));
+        let err = check_builtins(IsolateConfig::default()).unwrap_err();
+        assert!(err.contains("no builtin table is installed"), "{err}");
     }
 
     #[test]

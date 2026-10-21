@@ -6,9 +6,13 @@
 //!   CSS word w: find_cell(w), find_cell(w - 1)        |  newly marked: gc_state = BLACK, push
 //!   precise: handles, scratch, ranges, sources        v
 //! drain: pop cell -> KindTable[word0.kind].trace(cell, tracer) -> Tracer::visit* -> ...
+//!        with a shape space: word0.shape_id != 0 -> mark cage base + shape_id (H08-Q1)
 //! weak:  Tracer::visit_weak records the slot; after the fixpoint, a slot whose cell is
 //!        unmarked is cleared to `undefined`
 //! ```
+//!
+//! The shape that word0 names is a strong edge of every cell, so no trace function visits
+//! it. Without a shape space, word0's shape_id is not a heap reference and is ignored.
 //!
 //! The same `Tracer` runs in verify mode for the heap verifier: it checks each edge instead of
 //! marking.
@@ -19,7 +23,7 @@ use core::sync::atomic::Ordering::Relaxed;
 use ep9_value::Value;
 
 use crate::barrier::{Slot, gc_state, is_cell_bits};
-use crate::cell::{CellPtr, KindTable};
+use crate::cell::{CellPtr, KindTable, Space};
 use crate::layout::{FIRST_CELL_OFFSET, Large, MAX_SMALL_SIZE, PAGE_MASK};
 use crate::memory::{Chunk, Memory};
 
@@ -51,6 +55,8 @@ pub struct Tracer<'h> {
     mem: &'h Memory,
     kinds: &'h KindTable,
     mode: Mode,
+    /// Bytes of the shape region (0: no shape space).
+    shape_bytes: usize,
     stack: Vec<CellPtr>,
     weak: Vec<NonNull<Slot>>,
     pub(crate) marked_cells: usize,
@@ -75,6 +81,7 @@ impl<'h> Tracer<'h> {
             mem,
             kinds,
             mode,
+            shape_bytes: mem.shape_bytes(),
             stack,
             weak,
             marked_cells: 0,
@@ -212,17 +219,57 @@ impl<'h> Tracer<'h> {
         }
     }
 
-    /// Traces until the mark stack is empty.
+    /// Traces until the mark stack is empty. With a shape space, it also marks the shape that
+    /// each traced cell's word0 names.
     pub(crate) fn drain(&mut self) {
         while let Some(c) = self.stack.pop() {
             // SAFETY: only marked cell starts are pushed.
-            let kind = unsafe { c.header() }.kind();
+            let h = unsafe { c.header() };
+            let kind = h.kind();
             let Some(k) = self.kinds.get(kind).copied() else {
                 panic!("heap corrupt: cell {c:?} has the unregistered kind {kind}");
             };
             self.marked_cells += 1;
             self.marked_bytes += self.kinds.cell_size(c).unwrap_or(0);
+            if self.shape_bytes != 0 {
+                let id = h.shape_id().get() as usize;
+                if id != 0 {
+                    self.mark_shape(c, id);
+                }
+            }
             (k.trace)(c, self);
+        }
+    }
+
+    /// Marks the shape cell at offset `id` of the region (the word0 shape of `host`).
+    #[inline]
+    fn mark_shape(&mut self, host: CellPtr, id: usize) {
+        match self.shape_at(id) {
+            Some(s) => {
+                self.mark(s);
+            }
+            None => debug_assert!(false, "{host:?}: word0 ShapeId {id:#x} names no shape cell"),
+        }
+    }
+
+    /// The live shape-space cell that starts at offset `id` of the shape region, if any.
+    fn shape_at(&self, id: usize) -> Option<CellPtr> {
+        if id >= self.shape_bytes {
+            return None;
+        }
+        let c = cell_start(self.mem, self.mem.base_addr() + id)?;
+        // SAFETY: `cell_start` found a live cell start (VO bit) in a committed page.
+        let kind = unsafe { c.header() }.kind();
+        (self.kinds.space(kind) == Space::Shape).then_some(c)
+    }
+
+    /// Verify mode: the word0 shape of the current cell. With a shape space, a non-zero id
+    /// must name a live shape-space cell.
+    pub(crate) fn verify_word0_shape(&mut self, id: u32) {
+        if self.shape_bytes != 0 && id != 0 && self.shape_at(id as usize).is_none() {
+            self.error(format_args!(
+                "word0 ShapeId {id:#x} does not name a live shape-space cell"
+            ));
         }
     }
 

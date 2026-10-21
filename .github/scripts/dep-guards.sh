@@ -5,8 +5,41 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 fail=0
-ok() { echo "ok:   $*"; }
+ok() { echo "PASS: $*"; }
 bad() { echo "FAIL: $*"; fail=1; }
+
+# 0) Every directory that a `members` glob of Cargo.toml matches (hidden ones too) has a
+#    Cargo.toml or is under an `exclude` path. Without one, every cargo command fails with
+#    "failed to load manifest for workspace member", so this runs first and stops on failure.
+# toml_array <key>: the strings of the array `<key> = [...]` in Cargo.toml (one line or several).
+toml_array() {
+  awk -v k="$1" '$0 ~ "^" k " *= *\\[" { on = 1 } on { sub(/#.*/, ""); print; if (/\]/) exit }' Cargo.toml |
+    grep -o '"[^"]*"' | tr -d '"' || true
+}
+globs="$(toml_array members)"
+excludes="$(toml_array exclude)"
+if [ -z "$globs" ]; then
+  bad "(0) cannot read the members array of Cargo.toml"
+  exit 1
+fi
+shopt -s nullglob dotglob
+while IFS= read -r g; do
+  for d in $g; do
+    [ -d "$d" ] || continue
+    [ -f "$d/Cargo.toml" ] && continue
+    skip=0
+    while IFS= read -r e; do
+      if [ -n "$e" ] && { [ "$d" = "$e" ] || [[ "$d" == "$e"/* ]]; }; then skip=1; fi
+    done <<< "$excludes"
+    [ "$skip" = 1 ] || bad "(0) $d matches the member glob \"$g\" but has no Cargo.toml: add one, or add the directory to exclude in Cargo.toml"
+  done
+done <<< "$globs"
+shopt -u nullglob dotglob
+if [ "$fail" = 1 ]; then
+  echo "FAIL: (0) later checks need a loadable workspace; stopping"
+  exit 1
+fi
+ok "(0) every directory under the member globs has a Cargo.toml or is excluded"
 
 # absent_from <cargo tree args...>: the last arg must not be in the given graph. cargo tree exits
 # 101 with "did not match any packages" when the package is not in the graph.
@@ -19,46 +52,129 @@ absent_from() {
   grep -q "did not match any packages" <<< "$out" || { echo "$out"; return 2; }
 }
 
+# features_of <package> <cargo tree args...>: the features that <package> has in that graph, one
+# line per package instance, comma-separated (an empty line means no features). No output when
+# <package> is not in the graph; exit 2 when cargo tree fails. Dev edges are included, so the
+# graph is the one a test build of the selected package resolves; the shipped binary's graph is
+# a subset of it.
+features_of() {
+  local pkg="$1" out
+  shift
+  out="$(cargo tree --locked --target all "$@" -e normal,build,dev --prefix none -f '{p}|{f}')" ||
+    { echo "cargo tree $* failed" >&2; return 2; }
+  awk -F'|' -v p="$pkg v" 'index($1, p) == 1 { sub(/ \(\*\)$/, "", $2); print $2 }' <<< "$out" | sort -u
+}
+
+# has_feature <features_of output> <feature>
+has_feature() {
+  local s=",${1//$'\n'/,},"
+  [[ "$s" == *",$2,"* ]]
+}
+
+# feature_check <check> <package> <feature> <want: on|off> <label> <cargo tree args...>
+feature_check() {
+  local check="$1" pkg="$2" feat="$3" want="$4" label="$5" f
+  shift 5
+  if ! f="$(features_of "$pkg" "$@")"; then
+    bad "($check) cargo tree $* failed"
+  elif has_feature "$f" "$feat"; then
+    if [ "$want" = on ]; then ok "($check) $label has $pkg feature $feat"; else bad "($check) $label turns on $pkg feature $feat"; fi
+  else
+    if [ "$want" = off ]; then ok "($check) $label has no $pkg feature $feat"; else bad "($check) $label does not show $pkg feature $feat"; fi
+  fi
+}
+
 # 1) No tsrs in the engine graph: `cargo tree -i tsrs_core` is empty for the whole root workspace.
-if absent_from --workspace -e normal,build,dev -i tsrs_core; then ok "no tsrs_core in the root workspace"; else bad "tsrs_core is in the root workspace graph (or cargo tree failed)"; fi
+if absent_from --workspace -e normal,build,dev -i tsrs_core; then ok "(1) no tsrs_core in the root workspace"; else bad "(1) tsrs_core is in the root workspace graph (or cargo tree failed)"; fi
 
 meta="$(cargo metadata --locked --format-version 1)" || { bad "cargo metadata --locked failed (is Cargo.lock up to date?)"; exit 1; }
 members="$(jq -r '.workspace_members[]' <<< "$meta")"
 
+# member_exists <name>, member_deps <name>: a workspace member and the package names of its
+# normal and build dependencies (dev-dependencies are left out), one per line.
+member_exists() {
+  jq -e --arg n "$1" '.workspace_members as $m | .packages[] | select(.name == $n and (.id as $id | $m | index($id)))' <<< "$meta" > /dev/null
+}
+member_deps() {
+  jq -r --arg n "$1" '.workspace_members as $m | .packages[] | select(.name == $n and (.id as $id | $m | index($id))) | .dependencies[] | select(.kind != "dev") | .name' <<< "$meta" | sort -u
+}
+
+# deps_within <check> <crate> <allowed...>: the crate's normal and build dependencies are a
+# subset of the allowed names (an empty list allows none).
+deps_within() {
+  local check="$1" crate="$2" extra
+  shift 2
+  if ! member_exists "$crate"; then ok "($check) $crate does not exist yet"; return; fi
+  extra="$(member_deps "$crate" | grep -vxF -f <(printf '%s\n' "$@") | paste -sd ' ' - || true)"
+  if [ -z "$extra" ] && [ $# = 0 ]; then
+    ok "($check) $crate has 0 normal/build dependencies"
+  elif [ -z "$extra" ]; then
+    ok "($check) $crate normal/build dependencies are within {$(IFS=,; echo "$*")}"
+  elif [ $# = 0 ]; then
+    bad "($check) $crate must have 0 normal/build dependencies; it has: $extra"
+  else
+    bad "($check) $crate has normal/build dependencies outside {$(IFS=,; echo "$*")}: $extra"
+  fi
+}
+
 # 2) Unicode pin: every unicode-id-start in the graph is >= 1.5.0 (Unicode 17).
 vers="$(jq -r '.packages[] | select(.name == "unicode-id-start") | .version' <<< "$meta")"
 if [ -z "$vers" ]; then
-  ok "unicode-id-start not in the graph yet"
+  ok "(2) unicode-id-start not in the graph yet"
 else
   for v in $vers; do
-    if [ "$(printf '%s\n' 1.5.0 "$v" | sort -V | head -1)" = 1.5.0 ]; then ok "unicode-id-start $v >= 1.5.0"; else bad "unicode-id-start $v < 1.5.0"; fi
+    if [ "$(printf '%s\n' 1.5.0 "$v" | sort -V | head -1)" = 1.5.0 ]; then ok "(2) unicode-id-start $v >= 1.5.0"; else bad "(2) unicode-id-start $v < 1.5.0"; fi
   done
 fi
 
 # 3) ep9_hints has 0 normal and build dependencies (H37).
-if jq -e '.packages[] | select(.name == "ep9_hints")' <<< "$meta" > /dev/null; then
-  n="$(jq '[.packages[] | select(.name == "ep9_hints") | .dependencies[] | select(.kind != "dev")] | length' <<< "$meta")"
-  if [ "$n" = 0 ]; then ok "ep9_hints has 0 dependencies"; else bad "ep9_hints has $n normal/build dependencies"; fi
-else
-  ok "ep9_hints does not exist yet"
-fi
+deps_within 3 ep9_hints
 
 # 4) The `object` crate has an exact `=` pin in every workspace member that uses it (H35).
 reqs="$(jq -r --argjson m "$(jq -c '.workspace_members' <<< "$meta")" \
   '.packages[] | select(.id as $id | $m | index($id)) | .name as $p | .dependencies[] | select(.name == "object") | "\($p) \(.req)"' <<< "$meta")"
 if [ -z "$reqs" ]; then
-  ok "no member uses the object crate yet"
+  ok "(4) no member uses the object crate yet"
 else
   while read -r p req; do
-    if [[ "$req" == =* ]]; then ok "$p pins object $req"; else bad "$p uses object $req (needs an exact = pin)"; fi
+    if [[ "$req" == =* ]]; then ok "(4) $p pins object $req"; else bad "(4) $p uses object $req (needs an exact = pin)"; fi
   done <<< "$reqs"
 fi
 
 # 5) The jitless ep9 (ep9_cli without default features) links no JIT crate (H27).
 if grep -q "ep9_cli" <<< "$members"; then
   for c in ep9_masm ep9_baseline ep9_opt; do
-    if absent_from -p ep9_cli --no-default-features -e normal,build -i "$c"; then ok "jitless ep9 has no $c"; else bad "jitless ep9 links $c"; fi
+    if absent_from -p ep9_cli --no-default-features -e normal,build -i "$c"; then ok "(5) jitless ep9 has no $c"; else bad "(5) jitless ep9 links $c"; fi
   done
+fi
+
+# 6) ep9_math has 0 normal and build dependencies (H36).
+deps_within 6 ep9_math
+
+# 7) ep9_facts depends on ep9_bytecode only (H16: a fact holds no VM or heap type).
+deps_within 7 ep9_facts ep9_bytecode
+
+# 8) ep9_builtins reaches the engine only through ep9_vm, plus ep9_math for Math (H20).
+deps_within 8 ep9_builtins ep9_vm ep9_math
+
+# 9) The jitless ep9 has no `jit` feature anywhere in its graph (H27): no ep9_platform "jit".
+#    Control: the default ep9 must show it, so a broken jit chain or a cargo output change that
+#    hides features fails here instead of passing silently.
+if grep -q "ep9_cli" <<< "$members"; then
+  feature_check 9 ep9_platform jit on "control: the default ep9 (-p ep9_cli)" -p ep9_cli
+  feature_check 9 ep9_platform jit off "the jitless ep9 (-p ep9_cli --no-default-features)" -p ep9_cli --no-default-features
+fi
+
+# 10) ep9_unit's `aot` feature (the unit writer) is never in the ep9 graph, default or jitless
+#     (H27). Control: `-p ep9_unit --features aot` must show it.
+if member_exists ep9_unit; then
+  feature_check 10 ep9_unit aot on "control: -p ep9_unit --features aot" -p ep9_unit --features aot
+  if grep -q "ep9_cli" <<< "$members"; then
+    feature_check 10 ep9_unit aot off "the default ep9 (-p ep9_cli)" -p ep9_cli
+    feature_check 10 ep9_unit aot off "the jitless ep9 (-p ep9_cli --no-default-features)" -p ep9_cli --no-default-features
+  fi
+else
+  ok "(10) ep9_unit does not exist yet"
 fi
 
 exit "$fail"

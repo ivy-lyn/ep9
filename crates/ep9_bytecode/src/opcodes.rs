@@ -1,4 +1,5 @@
-//! The opcode list (H2), written once in [`for_each_opcode!`], and the tables made from it.
+//! The opcode list (H2), written once in
+//! [`for_each_opcode!`](crate::for_each_opcode!), and the tables made from it.
 //!
 //! The list follows V8 Ignition (`src/interpreter/bytecodes.h`, v8/v8 commit 0c3940db, read
 //! 2026-10-20): register + accumulator machine, the same opcode names and operand order for
@@ -19,10 +20,10 @@
 /// Name = 0xNN, snake_name, acc: AccUse, flags: [Flag, ..], operands: (name: Kind[(param)], ..);
 /// ```
 ///
-/// - `Name` is the [`Opcode`](crate::Opcode) variant; `0xNN` its byte. Bytes are dense and in
+/// - `Name` is the [`Opcode`] variant; `0xNN` its byte. Bytes are dense and in
 ///   list order (a const assert checks it).
-/// - `acc` is one of `None`, `Read`, `Write`, `ReadWrite` ([`AccUse`](crate::AccUse)).
-/// - `flags` names [`OpcodeFlags`](crate::OpcodeFlags) bits: `Prefix`, `Jump`, `Switch`,
+/// - `acc` is one of `None`, `Read`, `Write`, `ReadWrite` ([`AccUse`]).
+/// - `flags` names [`OpcodeFlags`] bits: `Prefix`, `Jump`, `Switch`,
 ///   `Terminator`, `Return`, `Throws`, `Call`, `Interrupt`, `Clobber`, `Reserved`.
 /// - Each operand has a name and an [`OperandKind`](crate::OperandKind) variant. `Const(..)`
 ///   names a [`ConstOperand`](crate::ConstOperand), `Slot(..)` a

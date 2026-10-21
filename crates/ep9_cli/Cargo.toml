@@ -12,10 +12,18 @@ path = "src/main.rs"
 
 # Engine crates only. No crates.io dependencies.
 [dependencies]
+ep9_builtins = { path = "../ep9_builtins" }
 ep9_bytecode = { path = "../ep9_bytecode" }
 ep9_frontend = { path = "../ep9_frontend" }
 ep9_heap = { path = "../ep9_heap" }
 ep9_vm = { path = "../ep9_vm" }
+
+[features]
+default = ["jit"]
+# H27: the JIT chain ep9_cli -> ep9_vm -> ep9_platform. The jitless ep9 is
+# `cargo build -p ep9_cli --no-default-features`; .github/scripts/dep-guards.sh checks 5 and 9
+# keep `jit` out of it.
+jit = ["ep9_vm/jit"]
 
 [lints]
 workspace = true

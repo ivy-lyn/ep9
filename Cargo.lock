@@ -88,6 +88,17 @@ name = "ep9_bench"
 version = "0.0.0"
 
 [[package]]
+name = "ep9_builtins"
+version = "0.0.0"
+dependencies = [
+ "ep9_bytecode",
+ "ep9_frontend",
+ "ep9_heap",
+ "ep9_math",
+ "ep9_vm",
+]
+
+[[package]]
 name = "ep9_bytecode"
 version = "0.0.0"
 
@@ -95,10 +106,18 @@ version = "0.0.0"
 name = "ep9_cli"
 version = "0.0.0"
 dependencies = [
+ "ep9_builtins",
  "ep9_bytecode",
  "ep9_frontend",
  "ep9_heap",
  "ep9_vm",
+]
+
+[[package]]
+name = "ep9_facts"
+version = "0.0.0"
+dependencies = [
+ "ep9_bytecode",
 ]
 
 [[package]]
@@ -124,6 +143,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ep9_math"
+version = "0.0.0"
+dependencies = [
+ "ep9_bytecode",
+]
+
+[[package]]
 name = "ep9_platform"
 version = "0.0.0"
 dependencies = [
@@ -135,9 +161,21 @@ dependencies = [
 name = "ep9_test262"
 version = "0.0.0"
 dependencies = [
+ "ep9_builtins",
  "ep9_bytecode",
  "ep9_frontend",
  "ep9_heap",
+ "ep9_vm",
+]
+
+[[package]]
+name = "ep9_unit"
+version = "0.0.0"
+dependencies = [
+ "ep9_bytecode",
+ "ep9_facts",
+ "ep9_heap",
+ "ep9_value",
  "ep9_vm",
 ]
 
@@ -154,6 +192,7 @@ version = "0.0.0"
 dependencies = [
  "ep9_bytecode",
  "ep9_heap",
+ "ep9_math",
  "ep9_platform",
  "ep9_value",
 ]
@@ -822,6 +861,11 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 [[package]]
 name = "xtask"
 version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "yoke"

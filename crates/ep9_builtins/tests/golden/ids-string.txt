@@ -1,0 +1,8 @@
+# ep9 builtin ids: module string, block 6. Append-only (H20, W4-BUILTIN-IDS): never
+# reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
+# id     block.index  kind         length  name  (installed as)
+0x0c00   6.0          constructor  1       "String"  (%String%)
+0x0c01   6.1          method       1       "fromCharCode"  (%String%.fromCharCode w-c)
+0x0c02   6.2          method       1       "charCodeAt"  (%String.prototype%.charCodeAt w-c)
+0x0c03   6.3          method       0       "toString"  (%String.prototype%.toString w-c)
+0x0c04   6.4          method       0       "valueOf"  (%String.prototype%.valueOf w-c)

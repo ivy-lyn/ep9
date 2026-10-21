@@ -1,0 +1,24 @@
+[package]
+name = "ep9_unit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# The header check reads the version of every contract a unit depends on (H35): the bytecode
+# ABI, the value encoding, the barrier and page size, the VM versions and the fact schema.
+[dependencies]
+ep9_bytecode = { path = "../ep9_bytecode" }
+ep9_facts = { path = "../ep9_facts" }
+ep9_heap = { path = "../ep9_heap" }
+ep9_value = { path = "../ep9_value" }
+ep9_vm = { path = "../ep9_vm" }
+
+[features]
+# H27: the unit writer, linked only into AOT builds (ep9c). Never in the ep9 binary:
+# .github/scripts/dep-guards.sh check 10.
+aot = []
+
+[lints]
+workspace = true

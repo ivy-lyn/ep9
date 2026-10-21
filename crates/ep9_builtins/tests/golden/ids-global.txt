@@ -1,0 +1,5 @@
+# ep9 builtin ids: module global, block 9. Append-only (H20, W4-BUILTIN-IDS): never
+# reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
+# id     block.index  kind         length  name  (installed as)
+0x1200   9.0          method       1       "isFinite"  (globalThis.isFinite w-c)
+0x1201   9.1          method       1       "isNaN"  (globalThis.isNaN w-c)

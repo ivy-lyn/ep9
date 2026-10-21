@@ -1,0 +1,9 @@
+object 2 a b undefined b
+2 a q
+false false true a 2 undefined
+true false true false
+TypeError
+TypeError
+TypeError
+2 b
+2 b undefined a

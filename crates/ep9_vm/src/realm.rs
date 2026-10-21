@@ -1,28 +1,40 @@
-//! The v0 realm: intrinsics, the global object and a few builtins (M0 week 3). Week 4 brings
-//! the builtin ABI (H20) and template builtins; these are only what the VM itself needs.
+//! The realm: its core intrinsics and global object (`init`), and the global declaration step
+//! of scripts (`declare_globals`). Builtin functions and their properties come from tables
+//! (`builtins.rs`): the VM table (`natives.rs`), then `IsolateConfig::builtins`.
 //!
-//! | Global | Value |
+//! ```text
+//! Isolate::new: builtins::check -> Runtime::new -> builtins::prepare
+//!   -> realm::init: atoms, core intrinsics, global object, symbol::install
+//!   -> builtins::install: every builtin function, the tables' intrinsics, their properties
+//! ```
+//!
+//! | Core intrinsic | Made as |
 //! |---|---|
-//! | `globalThis`, `undefined`, `NaN`, `Infinity` | as in §19.1 |
-//! | `Object`, `Array` | constructors (§20.1.1, §23.1.1; v0: no wrapper objects) |
-//! | `Error`, `TypeError`, `RangeError`, `ReferenceError`, `SyntaxError`, `EvalError`, `URIError` | constructors (§20.5) |
-//!
-//! Prototype methods: `Object.prototype.toString`/`valueOf`, `Error.prototype.toString`,
-//! `Array.prototype.join`/`toString`/`push`.
+//! | `%Object.prototype%` | an ordinary object, `[[Prototype]]` null |
+//! | `%Function.prototype%` | VM builtin 0.0: a function that returns undefined (§20.2.3) |
+//! | `%Array.prototype%` | an ordinary object (v0: not an Array exotic object, H18) |
+//! | `%String.prototype%`, `%Number.prototype%`, `%Boolean.prototype%` | `wrapper::new_wrapper` of "", +0 and false (§22.1.3, §21.1.3, §20.3.3) |
+//! | `%Iterator.prototype%`, `%ArrayIteratorPrototype%` | ordinary objects (`%StringIteratorPrototype%` is made by the VM table, `natives.rs`) |
+//! | `%Error.prototype%`, the native error prototypes | ordinary objects |
+//! | `%Symbol.prototype%` | `symbol::install` (P2-SYM) |
+//! | the global object; the script lexical record | an ordinary object; a null-prototype object |
 
-use ep9_value::{JsResult, Value};
-
+use crate::abi::HostFn;
+use crate::builtins::{self, BuiltinId};
 use crate::conv::{self, num};
 use crate::error;
-use crate::frame::{NULL, UNDEFINED};
-use crate::host::{Args, HostCx, HostFn};
+use crate::frame::{FALSE, HOLE, NULL, UNDEFINED};
 use crate::interp::Cx;
-use crate::object::{self, attr, is_array, is_function, is_object, own_define};
+use crate::key::key_text;
+use crate::natives;
+use crate::object::{self, attr, own_define, own_get};
 use crate::property;
-use crate::runtime::{Atom, ErrorKind, Root, Runtime, val};
+use crate::runtime::{Atom, ErrorKind, Root, Runtime};
 use crate::unit::FunctionInfo;
+use crate::{atoms, symbol, wrapper};
 
-/// A host function object for `f`. Its FunctionInfo lives in `rt.infos` (boxed, stable).
+/// A host function object for `f` outside the tables (an embedder's function, tests). Its
+/// FunctionInfo lives in `rt.infos` (boxed, stable).
 pub(crate) fn new_host_function(
     rt: &Runtime,
     f: HostFn,
@@ -36,399 +48,70 @@ pub(crate) fn new_host_function(
     object::new_function(rt, p, UNDEFINED)
 }
 
-/// Defines `holder.name = <host function>` (not enumerable).
-pub(crate) fn define_host_method(
-    rt: &Runtime,
-    holder: u64,
-    name: &str,
-    f: HostFn,
-    length: u32,
-) -> u64 {
-    let func = new_host_function(rt, f, name, length, false);
-    let key = object::new_string(rt, name);
-    own_define(rt, holder, key, func, attr::HIDDEN);
-    func
-}
-
-/// Builds the realm: atoms, intrinsics, the global object. Every new cell goes into a root
-/// before the next allocation (GC-stress safe).
+/// Makes the atoms, the core intrinsics, the global object and the symbols. Every new cell
+/// goes into a root before the next allocation (GC-stress safe). `builtins::prepare` ran
+/// first; `builtins::install` runs next.
 pub(crate) fn init(rt: &Runtime) {
-    for &a in Atom::ALL {
-        let s = object::new_string(rt, a.text());
-        rt.set_atom(a, s);
-    }
+    atoms::init_static(rt);
     let object_proto = object::new_object(rt, NULL);
     rt.set_root(Root::ObjectPrototype, object_proto);
-    for (r, p) in [
-        (Root::FunctionPrototype, object_proto),
-        (Root::ArrayPrototype, object_proto),
-        (Root::StringPrototype, object_proto),
-        (Root::NumberPrototype, object_proto),
-        (Root::BooleanPrototype, object_proto),
-        (Root::ErrorPrototype, object_proto),
+    // `new_function` takes a function's [[Prototype]] from this root, and the [[Prototype]]
+    // of %Function.prototype% itself is %Object.prototype% (§20.2.3).
+    rt.set_root(Root::FunctionPrototype, object_proto);
+    let fp = builtins::function_object(
+        rt,
+        BuiltinId::new(natives::VM_BLOCK, natives::vm::FUNCTION_PROTOTYPE),
+    );
+    rt.set_root(Root::FunctionPrototype, fp);
+    let array_proto = object::new_object(rt, object_proto);
+    rt.set_root(Root::ArrayPrototype, array_proto);
+    for (r, v) in [
+        (Root::StringPrototype, rt.atom(Atom::Empty)),
+        (Root::NumberPrototype, num(0.0)),
+        (Root::BooleanPrototype, FALSE),
     ] {
-        // v0: plain objects (Function.prototype is not callable, Array.prototype is not an
-        // array exotic object).
-        let o = object::new_object(rt, p);
-        rt.set_root(r, o);
+        let p = wrapper::new_wrapper(rt, object_proto, v);
+        rt.set_root(r, p);
+    }
+    let iterator_proto = object::new_object(rt, object_proto);
+    rt.set_root(Root::IteratorPrototype, iterator_proto);
+    let array_iterator_proto = object::new_object(rt, iterator_proto);
+    rt.set_root(Root::ArrayIteratorPrototype, array_iterator_proto);
+    let error_proto = object::new_object(rt, object_proto);
+    rt.set_root(Root::ErrorPrototype, error_proto);
+    for kind in ErrorKind::ALL {
+        if kind != ErrorKind::Error {
+            let p = object::new_object(rt, error_proto);
+            rt.set_root(kind.prototype_root(), p);
+        }
     }
     let lexical = object::new_object(rt, NULL);
     rt.set_root(Root::Lexical, lexical);
     let global = object::new_object(rt, object_proto);
     rt.set_root(Root::GlobalObject, global);
-
-    own_define(rt, global, rt.atom(Atom::GlobalThis), global, attr::HIDDEN);
-    own_define(rt, global, rt.atom(Atom::Undefined), UNDEFINED, 0);
-    own_define(rt, global, rt.atom(Atom::NaN), num(f64::NAN), 0);
-    own_define(rt, global, rt.atom(Atom::Infinity), num(f64::INFINITY), 0);
-
-    define_host_method(rt, object_proto, "toString", object_to_string, 0);
-    define_host_method(rt, object_proto, "valueOf", object_value_of, 0);
-    let array_proto = rt.root(Root::ArrayPrototype);
-    define_host_method(rt, array_proto, "join", array_join, 1);
-    define_host_method(rt, array_proto, "toString", array_to_string, 0);
-    define_host_method(rt, array_proto, "push", array_push, 1);
-
-    // v0: one prototype for array and string iterators; `next` only (no Symbol.iterator).
-    let iterator_proto = object::new_object(rt, object_proto);
-    rt.set_root(Root::ArrayIteratorPrototype, iterator_proto);
-    define_host_method(rt, iterator_proto, "next", iterator_next, 0);
-
-    define_constructor(rt, global, "Object", object_constructor, object_proto);
-    define_constructor(rt, global, "Array", array_constructor, array_proto);
-
-    let error_proto = rt.root(Root::ErrorPrototype);
-    define_host_method(rt, error_proto, "toString", error_to_string, 0);
-    for kind in ErrorKind::ALL {
-        let proto = if kind == ErrorKind::Error {
-            error_proto
-        } else {
-            let p = object::new_object(rt, error_proto);
-            rt.set_root(kind.prototype_root(), p);
-            p
-        };
-        let name = object::new_string(rt, kind.name());
-        own_define(rt, proto, rt.atom(Atom::Name), name, attr::HIDDEN);
-        own_define(
-            rt,
-            proto,
-            rt.atom(Atom::Message),
-            rt.atom(Atom::Empty),
-            attr::HIDDEN,
-        );
-        let ctor = new_host_function(rt, error_constructor(kind), kind.name(), 1, true);
-        own_define(rt, ctor, rt.atom(Atom::Prototype), proto, 0);
-        own_define(rt, proto, rt.atom(Atom::Constructor), ctor, attr::HIDDEN);
-        let gname = object::new_string(rt, kind.name());
-        own_define(rt, global, gname, ctor, attr::HIDDEN);
-    }
+    symbol::install(rt);
 }
 
-/// Defines the global constructor `name` with `prototype` (and `prototype.constructor`).
-fn define_constructor(rt: &Runtime, global: u64, name: &str, f: HostFn, proto: u64) {
-    let ctor = new_host_function(rt, f, name, 1, true);
-    own_define(rt, ctor, rt.atom(Atom::Prototype), proto, 0);
-    own_define(rt, proto, rt.atom(Atom::Constructor), ctor, attr::HIDDEN);
-    let key = object::new_string(rt, name);
-    own_define(rt, global, key, ctor, attr::HIDDEN);
-}
-
-/// Object(value) (§20.1.1.1). v0: no wrapper objects, so a primitive gives a new object.
-fn object_constructor(
-    cx: &mut HostCx<'_>,
-    _this: Value,
-    args: Args<'_>,
-    _nt: Value,
-) -> JsResult<Value> {
-    let v = args.get(0);
-    if is_object(v.to_bits()) {
-        return Ok(v);
-    }
-    Ok(val(object::new_plain_object(cx.cx.rt())))
-}
-
-/// Array(...items) and Array(length) (§23.1.1.1).
-fn array_constructor(
-    cx: &mut HostCx<'_>,
-    _this: Value,
-    args: Args<'_>,
-    _nt: Value,
-) -> JsResult<Value> {
-    let rt = cx.cx.rt();
-    if args.len() == 1
-        && let Some(n) = args.get(0).as_number()
-    {
-        let len = n as u32;
-        if f64::from(len) != n {
-            return Err(cx.throw_error(ErrorKind::RangeError, "Invalid array length"));
-        }
-        let a = object::new_array(rt, 0);
-        if !object::array_set_length(rt, a, len) {
-            return Err(cx.throw_error(ErrorKind::RangeError, "Invalid array length"));
-        }
-        return Ok(val(a));
-    }
-    let a = object::new_array(rt, args.len());
-    for (i, v) in args.iter().enumerate() {
-        object::array_set(rt, a, i as u32, v.to_bits());
-    }
-    Ok(val(a))
-}
-
-fn error_constructor(kind: ErrorKind) -> HostFn {
-    macro_rules! ctor {
-        ($k:ident) => {{
-            fn f(
-                cx: &mut HostCx<'_>,
-                _this: Value,
-                args: Args<'_>,
-                new_target: Value,
-            ) -> JsResult<Value> {
-                construct_error(cx.cx, ErrorKind::$k, args.get(0), new_target)
-            }
-            f as HostFn
-        }};
-    }
-    match kind {
-        ErrorKind::Error => ctor!(Error),
-        ErrorKind::TypeError => ctor!(TypeError),
-        ErrorKind::RangeError => ctor!(RangeError),
-        ErrorKind::ReferenceError => ctor!(ReferenceError),
-        ErrorKind::SyntaxError => ctor!(SyntaxError),
-        ErrorKind::EvalError => ctor!(EvalError),
-        ErrorKind::UriError => ctor!(UriError),
-    }
-}
-
-/// NativeError(message) (§20.5.6.1.1). v0: no `options.cause`.
-fn construct_error(
-    cx: &mut Cx,
-    kind: ErrorKind,
-    message: Value,
-    new_target: Value,
-) -> JsResult<Value> {
-    let rt = cx.rt();
-    let mut proto = rt.root(kind.prototype_root());
-    let nt = new_target.to_bits();
-    if is_function(nt) {
-        let p = property::get(cx, nt, rt.atom(Atom::Prototype))?;
-        if is_object(p) {
-            proto = p;
-        }
-    }
-    let msg = if message.is_undefined() {
-        None
-    } else {
-        Some(conv::to_string(cx, message.to_bits())?)
-    };
-    Ok(val(error::new_error_value(cx, proto, msg)))
-}
-
-/// %ArrayIteratorPrototype%.next (§23.1.5.2.1, kind "value") and
-/// %StringIteratorPrototype%.next (§22.1.5.2.1) for the v0 iterator cells.
-fn iterator_next(cx: &mut HostCx<'_>, this: Value, _: Args<'_>, _: Value) -> JsResult<Value> {
-    let cx = &mut *cx.cx;
-    let it = this.to_bits();
-    if !object::is_iterator(it) {
-        return Err(error::throw_error(
-            cx,
-            ErrorKind::TypeError,
-            "next method called on an incompatible receiver",
-        ));
-    }
-    let rt = cx.rt();
-    let (target, i) = object::iterator_state(it);
-    let mut value = UNDEFINED;
-    let mut done = true;
-    if object::is_string(target) {
-        let units: Vec<u16> = {
-            let s = object::str_view(target);
-            let n = s.len();
-            let at = i as usize;
-            if at < n {
-                let lead = s.at(at);
-                let pair = (0xD800..0xDC00).contains(&lead)
-                    && at + 1 < n
-                    && (0xDC00..0xE000).contains(&s.at(at + 1));
-                if pair {
-                    vec![lead, s.at(at + 1)]
-                } else {
-                    vec![lead]
-                }
-            } else {
-                Vec::new()
-            }
-        };
-        if units.is_empty() {
-            object::set_iterator_state(rt, it, UNDEFINED, i);
-        } else {
-            value = object::new_string_utf16(rt, &units);
-            object::set_iterator_state(rt, it, target, i + units.len() as u32);
-            done = false;
-        }
-    } else if is_array(target) {
-        if i < object::array_len(target) {
-            value = property::get_keyed(cx, target, num(f64::from(i)))?;
-            object::set_iterator_state(rt, it, target, i + 1);
-            done = false;
-        } else {
-            object::set_iterator_state(rt, it, UNDEFINED, i);
-        }
-    }
-    // CreateIterResultObject(value, done) (§7.4.14).
-    let result = object::new_plain_object(rt);
-    own_define(rt, result, rt.atom(Atom::ValueKey), value, attr::DEFAULT);
-    let done = if done {
-        crate::frame::TRUE
-    } else {
-        crate::frame::FALSE
-    };
-    own_define(rt, result, rt.atom(Atom::Done), done, attr::DEFAULT);
-    Ok(val(result))
-}
-
-/// Error.prototype.toString (§20.5.3.4).
-fn error_to_string(cx: &mut HostCx<'_>, this: Value, _: Args<'_>, _: Value) -> JsResult<Value> {
-    let cx = &mut *cx.cx;
-    let o = this.to_bits();
-    if !is_object(o) {
-        return Err(error::throw_error(
-            cx,
-            ErrorKind::TypeError,
-            "Error.prototype.toString called on a non-object",
-        ));
-    }
-    let rt = cx.rt();
-    let name = property::get(cx, o, rt.atom(Atom::Name))?;
-    let name = if name == UNDEFINED {
-        "Error".to_string()
-    } else {
-        conv::to_rust_string(cx, name)?
-    };
-    let msg = property::get(cx, o, rt.atom(Atom::Message))?;
-    let msg = if msg == UNDEFINED {
-        String::new()
-    } else {
-        conv::to_rust_string(cx, msg)?
-    };
-    let s = match (name.is_empty(), msg.is_empty()) {
-        (true, _) => msg,
-        (_, true) => name,
-        _ => format!("{name}: {msg}"),
-    };
-    Ok(val(object::new_string(rt, &s)))
-}
-
-/// Object.prototype.toString (§20.1.3.6, v0: no `@@toStringTag`).
-fn object_to_string(cx: &mut HostCx<'_>, this: Value, _: Args<'_>, _: Value) -> JsResult<Value> {
-    let o = this.to_bits();
-    let tag = match o {
-        UNDEFINED => "Undefined",
-        NULL => "Null",
-        _ if is_array(o) => "Array",
-        _ if is_function(o) => "Function",
-        _ if object::is_error(o) => "Error",
-        _ if object::is_string(o) => "String",
-        _ if val(o).is_number() => "Number",
-        _ if val(o).is_bool() => "Boolean",
-        _ => "Object",
-    };
-    Ok(cx.new_string(&format!("[object {tag}]")))
-}
-
-/// Object.prototype.valueOf (§20.1.3.7, v0: primitives are not wrapped).
-fn object_value_of(cx: &mut HostCx<'_>, this: Value, _: Args<'_>, _: Value) -> JsResult<Value> {
-    if this.is_undefined_or_null() {
-        return Err(cx.throw_error(
-            ErrorKind::TypeError,
-            "Cannot convert undefined or null to object",
-        ));
-    }
-    Ok(this)
-}
-
-/// Array.prototype.join (§23.1.3.18).
-fn array_join(cx: &mut HostCx<'_>, this: Value, args: Args<'_>, _: Value) -> JsResult<Value> {
-    join(cx.cx, this.to_bits(), args.get(0).to_bits())
-}
-
-fn join(cx: &mut Cx, o: u64, sep: u64) -> JsResult<Value> {
-    if !is_object(o) {
-        return Err(error::throw_error(
-            cx,
-            ErrorKind::TypeError,
-            "Array.prototype.join called on a non-object",
-        ));
-    }
-    let rt = cx.rt();
-    let len = property::get(cx, o, rt.atom(Atom::Length))?;
-    let len = conv::to_number(cx, len)?;
-    let len = if len.is_nan() || len <= 0.0 {
-        0u32
-    } else {
-        len.min(f64::from(u32::MAX)) as u32
-    };
-    let sep = if sep == UNDEFINED {
-        rt.atom(Atom::Comma)
-    } else {
-        conv::to_string(cx, sep)?
-    };
-    let mut acc = rt.atom(Atom::Empty);
-    for i in 0..len {
-        if i > 0 {
-            acc = concat_or_throw(cx, acc, sep)?;
-        }
-        let e = property::get_keyed(cx, o, num(f64::from(i)))?;
-        if e != UNDEFINED && e != NULL {
-            let s = conv::to_string(cx, e)?;
-            acc = concat_or_throw(cx, acc, s)?;
-        }
-    }
-    Ok(val(acc))
-}
-
-fn concat_or_throw(cx: &mut Cx, a: u64, b: u64) -> JsResult<u64> {
-    object::concat(cx.rt(), a, b)
-        .ok_or_else(|| error::throw_error(cx, ErrorKind::RangeError, "Invalid string length"))
-}
-
-/// Array.prototype.toString (§23.1.3.36): `join`, or Object.prototype.toString.
-fn array_to_string(cx: &mut HostCx<'_>, this: Value, a: Args<'_>, nt: Value) -> JsResult<Value> {
-    if is_array(this.to_bits()) {
-        return join(cx.cx, this.to_bits(), UNDEFINED);
-    }
-    object_to_string(cx, this, a, nt)
-}
-
-/// Array.prototype.push (§23.1.3.23, v0: arrays only).
-fn array_push(cx: &mut HostCx<'_>, this: Value, args: Args<'_>, _: Value) -> JsResult<Value> {
-    let a = this.to_bits();
-    if !is_array(a) {
-        return Err(cx.throw_error(
-            ErrorKind::TypeError,
-            "not implemented in ep9 v0: Array.prototype.push on a non-array",
-        ));
-    }
-    for v in args.iter() {
-        let n = object::array_len(a);
-        if !object::array_set(cx.cx.rt(), a, n, v.to_bits()) {
-            return Err(cx.throw_error(ErrorKind::RangeError, "Invalid array length"));
-        }
-    }
-    Ok(val(num(f64::from(object::array_len(a)))))
-}
-
-/// The global declaration step of `DeclareGlobals` (§16.1.7 GlobalDeclarationInstantiation,
-/// v0): `var`/function names become global properties (undefined if new); `let`/`const`/
-/// `class` names go to the lexical record as holes (TDZ; `const` is not writable).
-/// `InitializeGlobal` stores their values later. Conflicts throw a SyntaxError.
+/// `DeclareGlobals`: GlobalDeclarationInstantiation (§16.1.7) of the script (or eval) scope
+/// of `unit`. Every check runs before any binding is made, so a failed declaration leaves the
+/// realm as it was:
+///
+/// | Steps | Check | Error |
+/// |---|---|---|
+/// | 3 | a lexical name is a lexical binding already, or HasRestrictedGlobalProperty (a non-configurable global; v0 has no `[[VarNames]]`, and a var binding is non-configurable) | SyntaxError |
+/// | 4 | a var or function name is a lexical binding | SyntaxError |
+/// | 5-8 | CanDeclareGlobalFunction (§9.1.1.4.16), last declaration first | TypeError |
+/// | 9-10 | CanDeclareGlobalVar (§9.1.1.4.15) for vars that are not functions | TypeError |
+///
+/// Then (steps 15-17): `let`/`const`/`class` names go to the lexical record as holes (TDZ;
+/// `const` is not writable); function, then var names become global properties (undefined
+/// if new: CreateGlobalVarBinding §9.1.1.4.17; `InitializeGlobal` stores a function's value).
 pub(crate) fn declare_globals(
     cx: &mut Cx,
     unit: &ep9_bytecode::CompiledUnit,
     strings: &dyn Fn(usize) -> u64,
 ) -> conv::Res<()> {
     use ep9_bytecode::{ScopeKind, VariableMode};
-    let rt = cx.rt();
     let Some(scope) = unit
         .scopes
         .iter()
@@ -436,33 +119,79 @@ pub(crate) fn declare_globals(
     else {
         return Ok(());
     };
+    let rt = cx.rt();
     let global = rt.global();
     let lexical = rt.root(Root::Lexical);
-    for s in &scope.slots {
-        let name = strings(s.name.index());
-        let lexical_decl = matches!(
-            s.mode,
+    let is_lexical = |m: VariableMode| {
+        matches!(
+            m,
             VariableMode::Let | VariableMode::Const | VariableMode::Class
-        );
-        let clash = object::own_get(lexical, name).is_some()
-            || lexical_decl
-                && object::own_get(global, name).is_some_and(|(_, a)| a & attr::CONFIGURABLE == 0);
+        )
+    };
+    let name_of = |s: &ep9_bytecode::ScopeSlot| strings(s.name.index());
+    // Steps 3-4.
+    for s in &scope.slots {
+        let name = name_of(s);
+        let clash = own_get(lexical, name).is_some()
+            || is_lexical(s.mode) && has_restricted_global_property(cx, global, name);
         if clash {
-            let n = object::str_view(name).to_string_lossy();
-            return Err(error::throw_error(
-                cx,
-                ErrorKind::SyntaxError,
-                &format!("Identifier '{n}' has already been declared"),
-            ));
+            let msg = format!(
+                "Identifier '{}' has already been declared",
+                key_text(rt, name)
+            );
+            return Err(error::throw_error(cx, ErrorKind::SyntaxError, &msg));
         }
-        if lexical_decl {
-            let a = if s.mode == VariableMode::Const {
-                0
+    }
+    // Steps 5-8.
+    let functions = || {
+        scope
+            .slots
+            .iter()
+            .filter(|s| s.mode == VariableMode::Function)
+    };
+    for s in functions().rev() {
+        let name = name_of(s);
+        if !can_declare_global_function(cx, global, name) {
+            let n = key_text(rt, name);
+            let msg = if own_get(global, name).is_some() {
+                format!("Cannot redefine property: {n}")
             } else {
-                attr::WRITABLE
+                format!("Cannot add property {n}, object is not extensible")
             };
-            own_define(rt, lexical, name, crate::frame::HOLE, a);
-        } else if object::own_get(global, name).is_none() {
+            return Err(error::throw_error(cx, ErrorKind::TypeError, &msg));
+        }
+    }
+    // Steps 9-10.
+    let is_function_name = |name: u64| functions().any(|f| name_of(f) == name);
+    let vars = || {
+        scope
+            .slots
+            .iter()
+            .filter(|s| s.mode == VariableMode::Var && !is_function_name(name_of(s)))
+    };
+    for s in vars() {
+        let name = name_of(s);
+        if !can_declare_global_var(cx, global, name) {
+            let msg = format!(
+                "Cannot add property {}, object is not extensible",
+                key_text(rt, name)
+            );
+            return Err(error::throw_error(cx, ErrorKind::TypeError, &msg));
+        }
+    }
+    // Steps 15-17. GC points: `name` is an atom of the unit's string table (a root range).
+    for s in scope.slots.iter().filter(|s| is_lexical(s.mode)) {
+        let a = if s.mode == VariableMode::Const {
+            0
+        } else {
+            attr::WRITABLE
+        };
+        own_define(rt, lexical, name_of(s), HOLE, a);
+    }
+    for s in functions().chain(vars()) {
+        // CreateGlobalVarBinding (§9.1.1.4.17): only a new name on an extensible global.
+        let name = name_of(s);
+        if own_get(global, name).is_none() && property::is_extensible(global) {
             own_define(
                 rt,
                 global,
@@ -473,4 +202,26 @@ pub(crate) fn declare_globals(
         }
     }
     Ok(())
+}
+
+/// HasRestrictedGlobalProperty (§9.1.1.4.14): a non-configurable own property of the global.
+fn has_restricted_global_property(cx: &mut Cx, global: u64, name: u64) -> bool {
+    property::get_own_property(cx, global, name).is_some_and(|d| d.configurable == Some(false))
+}
+
+/// CanDeclareGlobalFunction (§9.1.1.4.16).
+fn can_declare_global_function(cx: &mut Cx, global: u64, name: u64) -> bool {
+    match property::get_own_property(cx, global, name) {
+        // 3. No property: IsExtensible(globalObject).
+        None => property::is_extensible(global),
+        // 4. A configurable property can be replaced.
+        Some(d) if d.configurable == Some(true) => true,
+        // 5. A writable, enumerable data property keeps its attributes.
+        Some(d) => !d.is_accessor() && d.writable == Some(true) && d.enumerable == Some(true),
+    }
+}
+
+/// CanDeclareGlobalVar (§9.1.1.4.15).
+fn can_declare_global_var(cx: &mut Cx, global: u64, name: u64) -> bool {
+    property::has_own_property(cx, global, name) || property::is_extensible(global)
 }

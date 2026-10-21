@@ -706,7 +706,7 @@ impl CompiledUnit {
     }
 }
 
-/// A unit that passed [`crate::verify`]. The VM accepts only this type; ADR H02 lists what it
+/// A unit that passed [`crate::verify()`]. The VM accepts only this type; ADR H02 lists what it
 /// may assume.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct VerifiedUnit(pub(crate) CompiledUnit);

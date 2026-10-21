@@ -1,0 +1,6 @@
+# ep9 builtin ids: module number, block 4. Append-only (H20, W4-BUILTIN-IDS): never
+# reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
+# id     block.index  kind         length  name  (installed as)
+0x0800   4.0          constructor  1       "Number"  (%Number%)
+0x0801   4.1          method       1       "toString"  (%Number.prototype%.toString w-c)
+0x0802   4.2          method       0       "valueOf"  (%Number.prototype%.valueOf w-c)

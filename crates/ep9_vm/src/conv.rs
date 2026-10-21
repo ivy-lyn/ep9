@@ -1,18 +1,34 @@
-//! Type conversions and operators (ECMA-262 §7.1, §7.2, §13). v0: no Symbol and no BigInt
-//! values, so ToNumeric is ToNumber and `typeof` never says "symbol" or "bigint".
+//! Type conversions and operators (ECMA-262 §7.1, §7.2, §13). v0: no BigInt values, so
+//! ToNumeric is ToNumber and `typeof` never says "bigint".
 //!
-//! Functions that can run JS (ToPrimitive calls `valueOf`/`toString`) take `&mut Cx` and
-//! return `Res`: `Err(Throw)` means the exception is pending in the runtime.
+//! Functions that can run JS (ToPrimitive calls `@@toPrimitive`, `valueOf`/`toString`) take
+//! `&mut Cx` and return `Res`: `Err(Throw)` means the exception is pending in the runtime.
+//!
+//! Symbols (H19 "Symbols"):
+//!
+//! | Operation | On a symbol |
+//! |---|---|
+//! | `typeof` | "symbol" |
+//! | ToBoolean | true |
+//! | ToNumber, ToNumeric (`+s`, `s - 1`, `s < 1`) | TypeError "Cannot convert a Symbol value to a number" |
+//! | ToString (`${s}`, `s + ""`) | TypeError "Cannot convert a Symbol value to a string" |
+//! | ToPropertyKey | the symbol itself (`key.rs`) |
+//! | ToObject | a Symbol wrapper (`wrapper.rs`) |
+//! | `describe`, `key::key_text` | `Symbol(desc)` (SymbolDescriptiveString, `symbol::descriptive_text`) |
 
 use ep9_value::{Throw, Value, to_int32, to_uint32};
 
 use crate::error::{not_implemented, throw_error};
 use crate::frame::{FALSE, NULL, TRUE, UNDEFINED};
 use crate::interp::Cx;
-use crate::numconv::{fmod, number_to_string, pow_exact, string_to_number};
+use crate::kinds::{is_callable, is_symbol};
+use crate::numconv::{exponentiate, fmod, number_to_string, string_to_number};
 use crate::object::{self, is_function, is_object, is_string, str_view};
-use crate::property;
-use crate::runtime::{Atom, ErrorKind, val};
+use crate::runtime::{Atom, ErrorKind, Root, val};
+use crate::symbol::{self, WellKnownSymbol};
+use crate::{atoms, property, wrapper};
+
+pub(crate) use crate::key::to_property_key;
 
 pub(crate) type Res<T = u64> = Result<T, Throw>;
 
@@ -47,7 +63,7 @@ pub(crate) fn to_boolean(b: u64) -> bool {
             } else if is_string(b) {
                 object::str_len(b) != 0
             } else {
-                // Objects (v0: no document.all).
+                // Symbols and objects (v0: no document.all).
                 true
             }
         }
@@ -61,11 +77,46 @@ pub(crate) enum Hint {
     String,
 }
 
-/// ToPrimitive (§7.1.1) without `@@toPrimitive` (v0: no symbols).
+/// ToPrimitive (§7.1.1): a primitive as it is; for an object, its `@@toPrimitive` method
+/// called with the hint "default", "number" or "string", else OrdinaryToPrimitive.
 pub(crate) fn to_primitive(cx: &mut Cx, b: u64, hint: Hint) -> Res<u64> {
     if !is_object(b) {
         return Ok(b);
     }
+    let rt = cx.rt();
+    // Step 1.a: GetMethod(input, @@toPrimitive) (§7.3.10). The symbol is undefined only
+    // while the realm is being built (`symbol::install`), when no conversion runs.
+    let key = symbol::well_known(rt, WellKnownSymbol::ToPrimitive);
+    if key != UNDEFINED {
+        let exotic = property::get(cx, b, key)?;
+        if exotic != UNDEFINED && exotic != NULL {
+            if !is_callable(exotic) {
+                let msg = format!("{} is not a function", describe(exotic));
+                return Err(throw_error(cx, ErrorKind::TypeError, &msg));
+            }
+            // Steps 1.b.i-v. GC point (the "default" atom): `b` and `exotic` are Rust locals.
+            let hint_string = match hint {
+                Hint::Default => atoms::intern_str(rt, "default"),
+                Hint::Number => rt.atom(Atom::Number),
+                Hint::String => rt.atom(Atom::String),
+            };
+            let r = crate::call::call_function(cx, exotic, b, &[hint_string])?;
+            if !is_object(r) {
+                return Ok(r);
+            }
+            return Err(throw_error(
+                cx,
+                ErrorKind::TypeError,
+                "Cannot convert object to primitive value",
+            ));
+        }
+    }
+    ordinary_to_primitive(cx, b, hint)
+}
+
+/// OrdinaryToPrimitive (§7.1.1.1): `toString` then `valueOf` for the hint "string",
+/// `valueOf` then `toString` otherwise.
+fn ordinary_to_primitive(cx: &mut Cx, b: u64, hint: Hint) -> Res<u64> {
     let rt = cx.rt();
     let order = if hint == Hint::String {
         [Atom::ToStringKey, Atom::ValueOf]
@@ -74,7 +125,7 @@ pub(crate) fn to_primitive(cx: &mut Cx, b: u64, hint: Hint) -> Res<u64> {
     };
     for name in order {
         let f = property::get(cx, b, rt.atom(name))?;
-        if is_function(f) {
+        if is_callable(f) {
             let r = crate::call::call_function(cx, f, b, &[])?;
             if !is_object(r) {
                 return Ok(r);
@@ -101,6 +152,13 @@ pub(crate) fn to_number(cx: &mut Cx, b: u64) -> Res<f64> {
         _ if is_object(b) => {
             let p = to_primitive(cx, b, Hint::Number)?;
             return to_number(cx, p);
+        }
+        _ if is_symbol(b) => {
+            return Err(throw_error(
+                cx,
+                ErrorKind::TypeError,
+                "Cannot convert a Symbol value to a number",
+            ));
         }
         _ => return Err(not_implemented(cx, "ToNumber of this value")),
     })
@@ -145,6 +203,13 @@ pub(crate) fn to_string(cx: &mut Cx, b: u64) -> Res<u64> {
             let p = to_primitive(cx, b, Hint::String)?;
             return to_string(cx, p);
         }
+        _ if is_symbol(b) => {
+            return Err(throw_error(
+                cx,
+                ErrorKind::TypeError,
+                "Cannot convert a Symbol value to a string",
+            ));
+        }
         _ => return Err(not_implemented(cx, "ToString of this value")),
     })
 }
@@ -155,15 +220,6 @@ pub(crate) fn to_rust_string(cx: &mut Cx, b: u64) -> Res<String> {
     Ok(str_view(s).to_string_lossy())
 }
 
-/// ToPropertyKey (§7.1.19). v0: keys are strings.
-pub(crate) fn to_property_key(cx: &mut Cx, b: u64) -> Res<u64> {
-    if is_string(b) {
-        return Ok(b);
-    }
-    let p = to_primitive(cx, b, Hint::String)?;
-    to_string(cx, p)
-}
-
 /// `typeof` (§13.5.3).
 pub(crate) fn type_of(b: u64) -> Atom {
     match b {
@@ -172,9 +228,35 @@ pub(crate) fn type_of(b: u64) -> Atom {
         TRUE | FALSE => Atom::Boolean,
         _ if val(b).is_number() => Atom::Number,
         _ if is_string(b) => Atom::String,
-        _ if is_function(b) => Atom::Function,
+        _ if is_symbol(b) => Atom::Symbol,
+        _ if is_callable(b) => Atom::Function,
         _ => Atom::Object,
     }
+}
+
+/// ToObject (§7.1.18): an object as it is; a wrapper object for a string, number, boolean or
+/// symbol (its prototype is the realm's `%String.prototype%`, `%Number.prototype%`,
+/// `%Boolean.prototype%` or `%Symbol.prototype%`); TypeError for undefined and null. GC point.
+pub(crate) fn to_object(cx: &mut Cx, b: u64) -> Res<u64> {
+    if is_object(b) {
+        return Ok(b);
+    }
+    let rt = cx.rt();
+    let proto = match b {
+        UNDEFINED | NULL => {
+            return Err(throw_error(
+                cx,
+                ErrorKind::TypeError,
+                "Cannot convert undefined or null to object",
+            ));
+        }
+        TRUE | FALSE => rt.root(Root::BooleanPrototype),
+        _ if val(b).is_number() => rt.root(Root::NumberPrototype),
+        _ if is_string(b) => rt.root(Root::StringPrototype),
+        _ if is_symbol(b) => symbol::prototype(rt),
+        _ => return Err(not_implemented(cx, "ToObject of this value")),
+    };
+    Ok(wrapper::new_wrapper(rt, proto, b))
 }
 
 /// IsStrictlyEqual (§7.2.16).
@@ -194,6 +276,7 @@ pub(crate) fn loose_equals(cx: &mut Cx, a: u64, b: u64) -> Res<bool> {
     let (na, nb) = (as_number(a).is_some(), as_number(b).is_some());
     let (sa, sb) = (is_string(a), is_string(b));
     let (oa, ob) = (is_object(a), is_object(b));
+    let (ya, yb) = (is_symbol(a), is_symbol(b));
     let nullish = |x: u64| x == UNDEFINED || x == NULL;
     let boolish = |x: u64| x == TRUE || x == FALSE;
     if (na && nb) || (sa && sb) || (oa && ob) || a == b {
@@ -218,11 +301,12 @@ pub(crate) fn loose_equals(cx: &mut Cx, a: u64, b: u64) -> Res<bool> {
         let y = num(f64::from(u8::from(b == TRUE)));
         return loose_equals(cx, a, y);
     }
-    if (na || sa) && ob {
+    // Steps 11-12 (BigInt: not in v0).
+    if (na || sa || ya) && ob {
         let p = to_primitive(cx, b, Hint::Default)?;
         return loose_equals(cx, a, p);
     }
-    if oa && (nb || sb) {
+    if oa && (nb || sb || yb) {
         let p = to_primitive(cx, a, Hint::Default)?;
         return loose_equals(cx, p, b);
     }
@@ -301,7 +385,7 @@ pub(crate) fn number_op(cx: &mut Cx, op: BinOp, x: f64, y: f64) -> Res<u64> {
             None => {
                 return Err(not_implemented(
                     cx,
-                    "** with a result that is not an exact integer (needs ep9_math::pow_js, H36)",
+                    "** with a result that is not an exact integer: needs the correctly rounded pow core (H36, month 2)",
                 ));
             }
         },
@@ -312,24 +396,6 @@ pub(crate) fn number_op(cx: &mut Cx, op: BinOp, x: f64, y: f64) -> Res<u64> {
         BinOp::Sar => num(f64::from(to_int32(x) >> (to_uint32(y) & 31))),
         BinOp::Shr => num(f64::from(to_uint32(x) >> (to_uint32(y) & 31))),
     })
-}
-
-/// Number::exponentiate. v0: [`pow_exact`] plus the infinity and NaN rules of the spec.
-fn exponentiate(base: f64, exp: f64) -> Option<f64> {
-    if let Some(r) = pow_exact(base, exp) {
-        return Some(r);
-    }
-    if exp.is_infinite() && !base.is_nan() {
-        let a = base.abs();
-        return Some(if a == 1.0 {
-            f64::NAN
-        } else if (a > 1.0) == (exp > 0.0) {
-            f64::INFINITY
-        } else {
-            0.0
-        });
-    }
-    None
 }
 
 /// ApplyStringOrNumericBinaryOperator (§13.15.3) for `lhs OP rhs`.
@@ -379,6 +445,8 @@ pub(crate) fn describe(b: u64) -> String {
                 format!("function {n}")
             }
         }
+        _ if is_symbol(b) => symbol::descriptive_text(b),
+        _ if is_callable(b) => "function".into(),
         _ if object::is_array(b) => "array".into(),
         _ => "object".into(),
     }

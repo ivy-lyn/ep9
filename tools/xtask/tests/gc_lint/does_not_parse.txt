@@ -1,0 +1,3 @@
+//! gc-lint case: a file that does not parse exits 2 with its file:line.
+
+pub fn broken( {

@@ -32,11 +32,13 @@ Canonical header (caller FP, return pc, callee, argc, SFI, feedback, context, of
 | Slot | Kind | Content |
 |---|---|---|
 | caller fp, return pc, function info | native word | `addr + 2^49` (a subnormal double; never a cell) |
-| callee, feedback, context | Value | feedback is undefined until H16. v0: a `[[Construct]]` frame (argc bit 30) keeps new.target there (H14-Q1) |
+| callee, feedback, context | Value | feedback holds no vector: T0 reaches the vector through the function info slot (below). v0: a `[[Construct]]` frame (argc bit 30) keeps new.target there (H14-Q1); other frames hold undefined |
 | argc | int32 | actual count; bit 30 = the frame came from `[[Construct]]` |
 | offset | int32 | bytecode offset, saved at runtime calls and Rust entries |
 
 Every word in `[stack base, top)` is a valid Value. The GC scans that slice precisely (H10). Rust locals stay under the conservative native-stack scan.
+
+**Feedback vector (H16).** T0 reaches a function's vector through the function info slot (fp-4): `FunctionInfo.feedback` points at the function's slot in its unit's strong root range, and that slot holds the FEEDBACK cell. So a frame that is already running sees a new vector at once, and the frame layout does not change. The vector is lazy: a call counts while the function has none, and the call that reaches `IsolateConfig::feedback_threshold` (default 8; 0 = first call; `u32::MAX` = never) makes it before the frame push. A `JumpLoop` budget poll makes one for a running function that has none (`crates/ep9_vm/src/feedback.rs`).
 
 **Calls.**
 
@@ -68,12 +70,13 @@ Every word in `[stack base, top)` is a valid Value. The GC scans that slice prec
 | The VM stack is a precise root; GC stress + verifier pass | `tests::gc::*`; `run_all` runs every program under stress | M0 wk3 |
 | A tier change writes one slot; registry ranges do not overlap | `dispatch::tests::*`, `tests::interp::dispatch_slots_and_code_registry` | M0 wk3 |
 | Every threaded handler ends in a tail jump, ≤ 4 register args | `cargo xtask disasm-check -p ep9_vm --all-targets --expect 282` (H15) | M0 wk3 |
+| T0 finds the vector through fp-4; it appears on the threshold call (from JS or from Rust) or at a loop poll, never at `u32::MAX`; the unit keeps it | `tests::feedback::*` | M0 wk4 |
 
 ## Consequences
 
 - **Gains.** No adaptor frames: the callee frame pads arguments (+11.2% jitless, [R06]). Deep JS recursion is bounded by the VM stack (default 2^20 slots), not by the native stack. One walker serves the unwinder, Error.stack and later the profiler and deopt.
 - **Costs.** Every argument is copied into the callee frame. Native words cost one add on store and one subtract on load. Calls into host functions and Rust entries still use the native stack and need a check.
-- **Follow-ups.** Spike B decides where JIT frames live (D21). H16 fills the feedback slot. M5 adds frame walkers for JIT and AOT frames to the registry.
+- **Follow-ups.** Spike B decides where JIT frames live (D21). H14-Q1 decides whether fp-3 keeps new.target or holds the vector for JIT and AOT frames. M5 adds frame walkers for JIT and AOT frames to the registry.
 
 ## Evidence
 
@@ -109,3 +112,4 @@ Every word in `[stack base, top)` is a valid Value. The GC scans that slice prec
 |---|---|---|---|
 | 2026-10-21 | draft | First draft from the T0 v0 interpreter in `ep9_vm` | VM lead (agent) |
 | 2026-10-21 | clarify | Header table and H14-Q1 state where v0 keeps new.target (feedback slot of a construct frame), as the code does | docs-sync agent |
+| 2026-10-21 | fill | T0 reaches the lazy FeedbackVector (H16) through the function info slot (fp-4, `FunctionInfo.feedback`); fp-3 keeps new.target (H14-Q1 unchanged). New rule `tests::feedback::*` | VM lead (agent, P2-FEED) |

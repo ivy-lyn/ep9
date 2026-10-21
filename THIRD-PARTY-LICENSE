@@ -22,7 +22,83 @@ Rules (docs/plan/12-governance.md section 1):
 Entries
 =======
 
-(none yet, 2026-10-20)
+musl libc (MIT)
+---------------
+
+Project:  musl libc, https://musl.libc.org/ (git: https://git.musl-libc.org/cgit/musl)
+Ported:   crates/ep9_math/src/fmod.rs (JS `%`, H36), from src/math/fmod.c at tag
+          v1.2.6 (9fa28ece75d8a2191de7c5bb53bed224c5947417). The file has not
+          changed since ee2ee92d62c4 (2013-09-05); the port matches it line for line
+          except that the NaN case returns f64::NAN (M0 week 4).
+          The SoftFma code in crates/ep9_math/src/exact.rs also has musl origin
+          (src/math/fma.c), through libm (next entry).
+Copyright: musl's COPYRIGHT file. fmod.c and fma.c carry no other notice.
+
+musl as a whole is licensed under the following standard MIT license:
+
+----------------------------------------------------------------------
+Copyright © 2005-2020 Rich Felker, et al.
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+----------------------------------------------------------------------
+
+libm (MIT)
+----------
+
+Project:  libm, the Rust port of the musl math library (crate libm), in
+          https://github.com/rust-lang/compiler-builtins (directory libm/)
+Ported:   crates/ep9_math/src/exact.rs (SoftFma, H36): libm/src/math/generic/fma.rs
+          ("origin: musl src/math/fma.c. Ported to generic Rust algorithm in 2025, TG.")
+          and libm/src/math/generic/scalbn.rs, at libm 0.2.16
+          (dfd2203a4d6110820ad7bb65cafe1bf331a03a3d), monomorphized to f64 (M0 week 4),
+          with one fix: the sticky bit of the shifted x * y, as in musl's fma.c
+          (libm issue rust-lang/compiler-builtins#1353).
+Copyright: libm's LICENSE.txt: "Copyright (c) 2018 Jorge Aparicio", and portions
+          "Copyright © 2005-2020 Rich Felker, et al." (musl libc, entry above).
+          libm offers its code under MIT; contributors also agree to Apache-2.0.
+          ep9 takes the MIT side.
+
+rust-lang/libm as a whole is available for use under the MIT license:
+
+----------------------------------------------------------------------
+Copyright (c) 2018 Jorge Aparicio
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+----------------------------------------------------------------------
 
 Planned entries (added by the PR that ports the code; not in the tree yet)
 ==========================================================================
@@ -37,7 +113,6 @@ Planned entries (added by the PR that ports the code; not in the tree yet)
   as the origin where a ported function matches the CORE-MATH C source.
 - LLVM libc (Apache-2.0 WITH LLVM-exception): where a ported function comes
   from it (H36).
-- libm 0.2.16 / musl (MIT): generic fmod in crates/ep9_math (H36).
 - ecmascript_atomics (MPL-2.0), only if vendored: the files stay separate,
   keep their MPL header, and binary releases make those files' source
   available.
