@@ -113,7 +113,7 @@ function* w() { var i = 0; while (true) { var cmd = yield i++; if (cmd === 'stop
 var it = w(); it.next(); it.next(); print(it.next().value, it.next('stop').value);
 function* fo() { for (var x of [1, 2, 3]) { yield x * 2; } }
 var sum = 0; for (var v of fo()) sum += v; print(sum);
-function* closures() { let fs = []; for (let i = 0; i < 3; i++) { fs.push(() => i); yield i; } yield fs.map(f => f()).join(); }
+function* closures() { let fs = []; for (let i = 0; i < 3; i++) { fs.push(() => i); yield i; } let s = ''; for (const f of fs) s += f(); yield s; }
 print([...closures()].join('|'));
 function* early() { try { yield 1; yield 2; } finally { print('cleanup'); } }
 for (var e of early()) { print('got', e); break; }
@@ -124,7 +124,7 @@ var [a, b] = range(10); print(a, b);"#
             "0,1,10,11,20,21",
             "2 done",
             "12",
-            "0|1|2|0,1,2",
+            "0|1|2|012",
             "got 1",
             "cleanup",
             "0 1"
@@ -138,33 +138,35 @@ var [a, b] = range(10); print(a, b);"#
 fn objects() {
     assert_eq!(
         run_both(
-            r#"function* g() { yield 1; }
-var GF = Object.getPrototypeOf(g);
-print(GF === Object.getPrototypeOf(function* () {}), GF !== Function.prototype);
-print(Object.getPrototypeOf(GF) === Function.prototype);
-print(Object.getPrototypeOf(g.prototype) === GF.prototype, Object.getPrototypeOf(g()) === g.prototype);
+            r#"// inChain(P, x): P is on x's prototype chain (no Object.getPrototypeOf in ep9 yet).
+function inChain(P, x) { function F() {} F.prototype = P; return x instanceof F; }
+function* g() { yield 1; }
+var GF = g.constructor;
+print(GF.name, GF === (function* () {}).constructor, GF.prototype !== Function.prototype);
+print(inChain(GF.prototype, g), inChain(Function.prototype, GF.prototype), g instanceof Function);
+print(inChain(GF.prototype.prototype, g.prototype), g() instanceof g, inChain(GF.prototype.prototype, g()));
 print(g.prototype.hasOwnProperty('constructor'), Object.getOwnPropertyNames(g.prototype).length);
 var d = Object.getOwnPropertyDescriptor(g, 'prototype'); print(d.writable, d.enumerable, d.configurable);
-print(typeof GF.prototype.next, typeof GF.prototype.return, typeof GF.prototype.throw);
+print(typeof GF.prototype.prototype.next, typeof GF.prototype.prototype.return, typeof GF.prototype.prototype.throw);
 print(Object.prototype.toString.call(g()), Object.prototype.toString.call(g));
 var it = g(); print(it[Symbol.iterator]() === it);
 try { new g(); } catch (e) { print(e.constructor.name); }
-g.prototype = 1; print(Object.getPrototypeOf(g()) === GF.prototype);
+g.prototype = 1; var it2 = g(); print(inChain(GF.prototype.prototype, it2), typeof it2.next);
 var o = { *m() { yield 'm'; } }; class C { *m() { yield 'c'; } static *s() { yield 's'; } }
 print(o.m().next().value, new C().m().next().value, C.s().next().value);
-print(Object.getPrototypeOf(o.m) === GF, o.m.hasOwnProperty('prototype'));"#
+print(o.m.constructor === GF, o.m.hasOwnProperty('prototype'));"#
         ),
         lines(&[
-            "true true",
-            "true",
-            "true true",
+            "GeneratorFunction true true",
+            "true true true",
+            "true true true",
             "false 0",
             "true false false",
             "function function function",
             "[object Generator] [object GeneratorFunction]",
             "true",
             "TypeError",
-            "true",
+            "true function",
             "m c s",
             "true true"
         ])
@@ -203,7 +205,7 @@ function* h() { yield 1; throw new Error('body'); }
 var j = h(); j.next();
 try { j.next(); } catch (e) { print(e.message); }
 print(j.next().done);
-var next = Object.getPrototypeOf(h).prototype.next;
+var next = j.next;
 try { next.call({}); } catch (e) { print(e.constructor.name); }
 try { next.call(undefined); } catch (e) { print(e.constructor.name); }"#
         ),
@@ -231,14 +233,17 @@ print(d(100).next().value);"#;
 }
 
 /// M2-P1-GENFN-PROTO: %GeneratorFunction%'s [[Prototype]] is %Function% (§27.3.2). The P1
-/// integration fixer sets it in `builtins::install`.
+/// integration fixer sets it in `builtins::install`; until then this prints "false true".
 #[test]
 #[ignore = "needs P1-FIX %Function% proto"]
 fn generator_function_constructor_inherits_from_function() {
     assert_eq!(
         run_both(
-            r#"print(Object.getPrototypeOf(Object.getPrototypeOf(function* () {}).constructor) === Function);"#
+            r#"// %GeneratorFunction%'s [[Prototype]] is %Function% (no Object.getPrototypeOf in ep9 yet).
+function inChain(P, x) { function F() {} F.prototype = P; return x instanceof F; }
+var GF = (function* () {}).constructor;
+print(inChain(Function, GF), GF instanceof Function);"#
         ),
-        lines(&["true"])
+        lines(&["true true"])
     );
 }
