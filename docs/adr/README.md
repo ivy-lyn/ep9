@@ -112,7 +112,7 @@ An ADR whose row is built after M1 exit lists its parts, each with its own freez
 | H4 | Lazy-compile contract | M0 | U | Not started | `H04-lazy-compile-contract.md` |
 | H5 | Compiler, interpreter and source always present | M0 rule (wk3) | N | Draft (2026-10-21) | [H05-always-linked-compiler.md](H05-always-linked-compiler.md) |
 | H6 | Value encoding | M0 wk2 | U | Draft (decided 2026-10-20) | [H06-value-encoding.md](H06-value-encoding.md) |
-| H7 | Address space and code range | M0 wk2 (SP-VA) | E | Draft | [H07-address-space-and-code-range.md](H07-address-space-and-code-range.md) |
+| H7 | Address space and code range | M0 wk2 (SP-VA) | E | Draft (rewritten 2026-10-21: one cage per isolate) | [H07-address-space-and-code-range.md](H07-address-space-and-code-range.md) |
 | H8 | Object header and ShapeId | M0 wk2 | E | Draft | [H08-object-header-and-shapeid.md](H08-object-header-and-shapeid.md) |
 | H9 | Pages and side metadata | M0 wk2 | U | Draft | [H09-pages-and-side-metadata.md](H09-pages-and-side-metadata.md) |
 | H10 | Rooting | M0 wk2, after SP-GC | E | Draft | [H10-rooting.md](H10-rooting.md) |
@@ -123,16 +123,16 @@ An ADR whose row is built after M1 exit lists its parts, each with its own freez
 | H15 | Interpreter dispatch | M0 wk2 | E | Draft (reopened twice 2026-10-21; release expansion: sibling calls on every target) | [H15-interpreter-dispatch.md](H15-interpreter-dispatch.md) |
 | H16 | ICs and feedback; feedback schema = FactSnapshot schema | Slot kinds M0 wk4; frozen M1 exit | E | Not started | `H16-ics-and-feedback.md` |
 | H17 | Object layout | M1 (frozen at M1a) | U | Not started | `H17-object-layout.md` |
-| H18 | Elements kinds | M1a | U | Not started | `H18-elements-kinds.md` |
+| H18 | Elements kinds | M1a | U | Draft (2026-10-21, v0 notes) | [H18-elements-kinds.md](H18-elements-kinds.md) |
 | H19 | Strings | M1a | U | Not started | `H19-strings.md` |
 | H20 | Builtin ABI | Frozen M0 exit | U | Not started | `H20-builtin-abi.md` |
 | H21 | Shape transitions under concurrent readers | ADR M1; built M5; functional before M7 | U | Not started | `H21-shape-transitions.md` |
-| H22 | Isolates and realms | M0 wk3 (D14) | E | Not started | `H22-isolates-and-realms.md` |
-| H23 | Limits and failure policy | M0 wk3 | E | Not started | `H23-limits-and-failure-policy.md` |
+| H22 | Isolates and realms | M0 wk3 (D14) | E | Draft (2026-10-21) | [H22-isolates-and-realms.md](H22-isolates-and-realms.md) |
+| H23 | Limits and failure policy | M0 wk3 | E | Draft (2026-10-21) | [H23-limits-and-failure-policy.md](H23-limits-and-failure-policy.md) |
 | H24 | Debug and profiling hooks | M0 rules; AOT parts A2 | E | Not started | `H24-debug-and-profiling-hooks.md` |
 | H25 | Sandbox readiness | M0 | U | Not started | `H25-sandbox-readiness.md` |
 | H26 | Toolchain and Unicode | M0 wk1 | U | Draft | [H26-toolchain-and-unicode.md](H26-toolchain-and-unicode.md) |
-| H27 | Compilers as Cargo features | M0 (wk4) | E | Not started | `H27-compiler-features.md` |
+| H27 | Compilers as Cargo features | M0 (wk4) | E | Draft (2026-10-21) | [H27-compiler-features.md](H27-compiler-features.md) |
 | H28 | Platform layer | M0 wk1-3 | U | Draft (SP-JIT-mem passed on 4 CI runners on 2026-10-21: [data](../measurements/2026-10-21-sp-jit-mem.md)) | [H28-platform-layer.md](H28-platform-layer.md) |
 | H29 | Profiling and deopt contract; position-independent metadata | Draft M0 month 3; Spike C + SP-Facts; frozen M1 exit | E | Not started | `H29-deopt-contract.md` |
 | H30 | IR fact model with provenance | Draft M0 month 3; frozen M1 exit | N | Not started | `H30-ir-fact-model.md` |
@@ -144,7 +144,7 @@ An ADR whose row is built after M1 exit lists its parts, each with its own freez
 | H36 | FP semantics in every backend | M0 rule (wk2); FP differential CI from M1 | N | Draft (decided 2026-10-20) | [H36-fp-semantics.md](H36-fp-semantics.md) |
 | H37 | TS hint side-table schema | v0 at A1h (by M4 exit); frozen at A4 start | N | Not started | `H37-hint-side-table.md` |
 
-Counts on 2026-10-21: 17 Draft, 20 Not started, 0 Accepted, 0 Frozen. H6, H11, H35 and H36 carry decisions of 2026-10-20, and H15 a decision of 2026-10-21; they move to Accepted when the §3.1 review record is complete. Until 2026-10-21 this line said "11 Draft, 26 Not started". That count did not include H15 or the five M0 wk3 drafts (H1, H2, H3, H5, H14).
+Counts on 2026-10-21 (after M0 week 4 P0): 21 Draft, 16 Not started, 0 Accepted, 0 Frozen. H6, H11, H35 and H36 carry decisions of 2026-10-20, and H15 a decision of 2026-10-21; they move to Accepted when the §3.1 review record is complete. Until 2026-10-21 this line said "11 Draft, 26 Not started". That count did not include H15 or the five M0 wk3 drafts (H1, H2, H3, H5, H14).
 
 ## 6. When each ADR is due in M0
 
