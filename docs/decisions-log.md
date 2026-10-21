@@ -418,6 +418,7 @@ process (CI blocked, local CI)        -> 11.3
 P1 (shapes, strings, ABI, math, unit) -> 11.4
 P1 review (Codex) and its fixes       -> 11.5
 phase numbers (test262, BENCH)        -> 11.6
+x86-64 sandbox (real hardware CI)     -> 11.7
 ```
 
 ### 11.1 Week-4 plan decisions
@@ -645,3 +646,23 @@ Plan §1 "Phase merge" step 6. language/ is test262 files under test/language th
 | c72d6bc (P1 + review fixes) | 8,691 / 23,726 | 43,839 | 8,997,633,743 | 6,690,813,070 | 12,369,382,792 | 13,035,759,872 | 104,187,060 | 40,735,936,199 |
 
 P1 change: t0-call -10.1%, t0-prop -11.9%, ci-v0 -6.5%, richards -10.2% (atom keys, P1-STR); t0-loop and t0-branchy flat. Local CI on c72d6bc: 25 of 25 steps pass.
+
+### 11.7 x86-64 Linux on a Cloudflare sandbox
+
+**Source.** The user, 2026-10-21: "If you want to debug & test x86 code path, you can use Cloudflare sandbox", then "cross compile locally via cargo-zigbuild and test it on Cloudflare sandbox, use a large instance".
+
+```text
+Mac (arm64)                                     Cloudflare sandbox ep9-x86-sandbox (standard-4)
+cargo zigbuild --target                          AMD EPYC Zen 4, 4 vCPU, 12 GiB, 20 GB, glibc 2.41
+  x86_64-unknown-linux-gnu.2.39   --- sbx --->   same absolute paths as the Mac
+  + real libgcc_s.so.1                           tests, test262, math, spikes, perf CI v0
+```
+
+| ID | Decision | Reason | Evidence |
+|---|---|---|---|
+| W4-X86-SANDBOX | A dedicated harness `infra/x86-sandbox` (Worker ep9-x86-sandbox, account 6db7cbc0..., scheduling policy durable_object, Registry cap 2 running ids, Bearer token over HTTPS only), copied from the proven webcodecs harness. Size standard-4 | The account limit is 4 vCPU / 12,288 MiB / 20,000 MB per deployment (GET containers/me, 2026-10-21), so standard-4 is the largest allowed. A separate Worker keeps ep9 out of the webcodecs slots | Smoke test: auth 401/403 checks, 20 MB put/get sha256 match, 200 s bg job, cap 429 on a 3rd id; all ids destroyed |
+| W4-X86-LIBGCC | Every x86 binary links the real Debian libgcc_s.so.1 (pinned sha256) with target x86_64-unknown-linux-gnu.2.39 | zig links LLVM libunwind by default; ep9's linux-gnu JIT unwind registers the whole .eh_frame the libgcc way, so jit::tests::unwind_through_generated_frame and sp-jit-mem failed under it. glibc 2.39 is what that libgcc_s needs and equals GitHub ubuntu-24.04 | zig-linked build: 2 unwind failures; libgcc-linked: 19/19 pass on the box; a build step checks all 57 ELFs |
+| W4-X86-LOCALCI | local-ci.sh drops the Rosetta docker-amd64 step and runs scratchpad ci/x86-sandbox.sh in the background from the start (about 13 min) | Real hardware runs the 2 tests Rosetta had to skip (W4-ROSETTA-SKIPS is no longer needed), uses real vfmadd, and adds test262 parse, GC-stress exec, the spike binaries and perf CI v0 on Linux x86-64 | First full run on c72d6bc: 604 passed / 0 failed / 17 ignored (35 binaries), test262 exec failures 43,839 new 0, GC-stress exec 0 infra errors, soft_vs_hw 10M 0 mismatches vs vfmadd, cachegrind ci-v0 82,970,298 Ir |
+| W4-COMMIT-PATHS | In the shared main checkout, every commit names its paths (`git commit -- <paths>`) | c72d6bc ("docs: decisions-log 11.5 ...") was made with a plain `git commit` while the harness agent had 11 infra/x86-sandbox files staged, so it holds them too. It is not rewritten: the six P2 branches start from it. No secret was committed (.token and .url are git-ignored; checked with git ls-files) | `git show --stat c72d6bc` |
+
+Open (product call, not week 4): `crates/ep9_platform/src/unwind/unix.rs` sets WHOLE_SECTION from `target_env = "gnu"`, which assumes libgcc. A linux-gnu build linked to LLVM libunwind loses JIT frames and aborts a panic through JIT code with no error message. Guard or document before Spike B (H23).
