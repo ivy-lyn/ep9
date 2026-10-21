@@ -637,6 +637,31 @@ fn the_generator_opcodes_reject_a_register_without_the_generator() {
 
 // ---- objects and prototypes -------------------------------------------------------------------
 
+/// M2-P1-GENFN-PROTO (§27.3.2, §27.7.2): the [[Prototype]] of %GeneratorFunction% and
+/// %AsyncFunction% is %Function%; their `prototype` objects inherit from %Function.prototype%.
+#[test]
+fn generator_and_async_function_constructors_inherit_from_function() {
+    let iso = isolate(config(Dispatch::ALL[0], false));
+    let rt: &Runtime = iso.cx.rt();
+    let function = intrinsic(rt, IntrinsicId::Function);
+    let fp = intrinsic(rt, IntrinsicId::FunctionPrototype);
+    for (c, p) in [
+        (
+            IntrinsicId::GeneratorFunction,
+            IntrinsicId::GeneratorFunctionPrototype,
+        ),
+        (
+            IntrinsicId::AsyncFunction,
+            IntrinsicId::AsyncFunctionPrototype,
+        ),
+    ] {
+        let (c, p) = (intrinsic(rt, c), intrinsic(rt, p));
+        assert!(object::is_object(c) && object::is_object(p));
+        assert_eq!(object::proto_of(c), function);
+        assert_eq!(object::proto_of(p), fp);
+    }
+}
+
 /// §15.5.3/§15.5.4: a generator function object inherits from %GeneratorFunction.prototype%,
 /// its lazy `prototype` {w} from %GeneratorPrototype% (no `constructor`), and a generator
 /// object from the function's `prototype` (or %GeneratorPrototype% when that is not an

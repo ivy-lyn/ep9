@@ -1070,7 +1070,8 @@ pub(crate) fn existing_function(rt: &Runtime, id: BuiltinId) -> Option<u64> {
 }
 
 /// Installs the tables that [`prepare`] registered: (1) the function object of every
-/// definition, (2) the intrinsics the modules make, (3) the properties. Walk order: VM table,
+/// definition, (2) the intrinsics the modules make, then the [[Prototype]] of
+/// %GeneratorFunction% and %AsyncFunction%, (3) the properties. Walk order: VM table,
 /// then the embedder's; modules, then entries, in order. Runs after `realm::init`.
 pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
     let rt = cx.rt();
@@ -1110,6 +1111,19 @@ pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
             } else {
                 set_intrinsic(rt, d.id, v);
             }
+        }
+    }
+    // §27.3.2, §27.7.2: the [[Prototype]] of %GeneratorFunction% and %AsyncFunction% is
+    // %Function%. A table gives a builtin's function object %Function.prototype% only. GC
+    // point (dictionary mode, OM-10): the intrinsics are roots.
+    let function = intrinsic(rt, IntrinsicId::Function);
+    for id in [IntrinsicId::GeneratorFunction, IntrinsicId::AsyncFunction] {
+        let c = intrinsic(rt, id);
+        if !is_object(function)
+            || !is_object(c)
+            || !crate::property::set_prototype_of(rt, c, function)
+        {
+            return Err(format!("could not set the [[Prototype]] of {}", id.name()));
         }
     }
     for m in &modules {

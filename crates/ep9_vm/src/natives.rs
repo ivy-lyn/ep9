@@ -183,9 +183,8 @@ const VM_INTRINSICS: &[IntrinsicDef] = &[
             proto: Some(IntrinsicId::IteratorPrototype),
         },
     },
-    // M2-P0. Not reachable from JS until generators compile (P1) and `eval` is installed
-    // (P3); their `[[Prototype]]` (%Function% for the two constructors, §27.3.2, §27.7.2) is
-    // %Function.prototype% until the table can say otherwise.
+    // M2-P0. Their `[[Prototype]]` is %Function% (§27.3.2, §27.7.2): a table gives a builtin
+    // %Function.prototype%, so `builtins::install` sets it after step (2) (M2-P1-GENFN-PROTO).
     IntrinsicDef {
         id: IntrinsicId::GeneratorFunction,
         value: IntrinsicValue::Builtin(vm::GENERATOR_FUNCTION),

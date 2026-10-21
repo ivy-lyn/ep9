@@ -232,10 +232,9 @@ print(d(100).next().value);"#;
     assert_eq!(on_big_stack(move || run(src, false)), lines(&["true", "0"]));
 }
 
-/// M2-P1-GENFN-PROTO: %GeneratorFunction%'s [[Prototype]] is %Function% (§27.3.2). The P1
-/// integration fixer sets it in `builtins::install`; until then this prints "false true".
+/// M2-P1-GENFN-PROTO: %GeneratorFunction%'s [[Prototype]] is %Function% (§27.3.2), set in
+/// `builtins::install`.
 #[test]
-#[ignore = "needs P1-FIX %Function% proto"]
 fn generator_function_constructor_inherits_from_function() {
     assert_eq!(
         run_both(
