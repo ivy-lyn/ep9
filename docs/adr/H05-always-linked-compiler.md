@@ -35,8 +35,8 @@ The rule needs these details (kind **fill**):
 | Rule | Check | From |
 |---|---|---|
 | A runtime crate never has an optional `ep9_frontend` dependency or a feature that removes it; `ep9_vm` has no `ep9_frontend` edge | CI `dep-guards.sh` check 12: `cargo tree -p ep9_cli [--no-default-features] -e normal -i ep9_frontend` exits 0 and its stdout has an `ep9_cli` node (default and jitless ep9); controls: `-p ep9_vm -e normal,build -i ep9_frontend` matches no package, and `ep9_builtins` (a dev-only edge) does not pass the same query | First VM crate that runs code (M0); check 12 since M2-P0 |
-| Units keep source | `ep9_bytecode` unit tests: AOT units have `source`; hash and length match | M0 (H35) |
-| eval, Function, toString pass in every mode | test262 runner per mode: 1,805 files call `eval(` or `Function(` outside staging (2,057 with staging); 80 files in `built-ins/Function/prototype/toString` | M1 |
+| Units keep source | `ep9_bytecode` test `determinism::source_hash_is_sha256_of_the_decoded_text` (hash and length of the decoded text); AOT units have `source` from A2 (H35) | M0 (H35) |
+| eval, Function, toString pass in every mode | test262 runner per mode: 1,829 files call `eval(` or `Function(` outside staging (2,081 with staging); 80 files in `built-ins/Function/prototype/toString` | M1 |
 | The lone-surrogate eval set is counted | `probe::p4_lone_surrogate_eval_count` (baseline 11, below) | M0 count; P4 at M2 exit |
 
 ## Consequences
@@ -51,12 +51,12 @@ The rule needs these details (kind **fill**):
 |---|---|---|
 | [R14] | Dual-mode systems keep a compiler for eval; Hermes compiler size | [../research/14-dual-mode-architecture.md](../research/14-dual-mode-architecture.md) |
 | [R17] | The rule rests on test262, not on a speed claim | [../research/17-aot-refutation.md](../research/17-aot-refutation.md) |
-| test262 d53ebc8b | 1,805 / 2,057 eval-or-Function files; 80 toString files (grep at the pin, 2026-10-21) | `third_party/test262.commit` |
+| test262 d53ebc8b | 1,829 / 2,081 eval-or-Function files (`grep -rlE 'eval\(\|Function\(' test --include='*.js'` in the test262 checkout, without and with `test/staging/`; 17 of them are `_FIXTURE` files); 80 toString files. Re-counted 2026-10-22: the draft's 1,805 / 2,057 (2026-10-21) did not record its command, and 02 §6 H5 says 1,791 | `third_party/test262.commit` |
 | P4 baseline | 11 tests pass lone-surrogate source to eval: 3 with a literal (`invalid-lone-surrogate-groupname.js`, 2 staging/sm RegExp), 8 that eval every code unit 0..0xFFFF (S7.4_A5, S7.4_A6, 4 x S7.8.5 regexp, 2 annexB RegExp escape) | `probe::p4_lone_surrogate_eval_count` |
 
 ## Validation
 
-- M0: the dependency check runs in CI once `ep9_vm` or `ep9_cli` runs code.
+- M0: the dependency check runs in CI: dep-guards check 12 (since M2-P0), in the dep-guards job.
 - M1: the test262 runner runs eval, Function and toString tests in every mode.
 - M2 exit: P4. Any of the 11 tests that fails through the shim triggers P4 (01 §7).
 
@@ -66,7 +66,7 @@ The rule needs these details (kind **fill**):
 |---|---|---|---|
 | H05-Q1 | Which crate is "the runtime" for the dependency check: `ep9_vm` or a facade crate | First runnable VM | **Filled 2026-10-22:** the binary crate that fills `IsolateConfig::compiler`: `ep9_cli` (the `ep9` binary) now, `ep9_runtime` when that crate exists. Never `ep9_vm`: it reaches the compiler only through the hook (A1, C2). The check is dep-guards check 12 (Rules row 1) |
 | H05-Q2 | Size budget for the always-linked front end | M1 (SIZE-REPORT) | Report only; no budget before M1 |
-| H05-Q3 | Shim design for lone-surrogate source (re-encode, or a WTF-8 path in oxc) | M2 exit (P4) | Map each lone surrogate to a private marker, map positions back with `LineMap` |
+| H05-Q3 | Shim design for lone-surrogate source (re-encode, or a WTF-8 path in oxc) | M3 (milestone): 01 §7 puts WTF-8 source input at M3, and M3 exit item 6 needs every lone-surrogate eval case to pass ([09 §2.2](../plan/09-milestones.md#22-scope-and-exit-criteria)). The P-gate P4 is still checked at milestone M2 exit (01 §7) | Map each lone surrogate to a private marker, map positions back with `LineMap` |
 
 ## Reopens if
 
@@ -80,3 +80,15 @@ The rule needs these details (kind **fill**):
 | 2026-10-21 | draft | First draft: rule details A1-A4, checks, test262 counts, P4 baseline 11 | Front-end agent |
 | 2026-10-21 | rewrite | A1 (C2, M2-P0): the compiler edge moves from the runtime crate to the binary. `ep9_vm` gets the compiler through the new hook `IsolateConfig::compiler: Option<&'static CompilerHooks>` (`compile_eval`, `compile_function`, `compile_script` -> `CompileResult`), and `ep9_cli` and `ep9_test262` fill it from `ep9_frontend`. The Rules check is dep-guards check 12 (ep9 default and jitless link `ep9_frontend`; `ep9_vm` does not). Nothing calls the hooks in M2-P0 (P3-EVAL-VM, P3-FNCTOR). Pre-freeze churn (README §3.3) | M2-P0 integration fixer |
 | 2026-10-22 | fill | H05-Q1 filled: "the runtime" for the dependency check is the binary that fills `IsolateConfig::compiler`, `ep9_cli` now and `ep9_runtime` later, never `ep9_vm`; the check is dep-guards check 12 (Rules row 1, unchanged). H05-Q3 stays open (D8) | P2-EVAL-FE |
+| 2026-10-22 | clarify | H05-Q3 Needed by: M3 (milestone), was "M2 exit (P4)". The shim is milestone-M3 work (01 §7 WTF-8 row; M3 exit item 6; plan-v4 decision D8); "P4" is the parser P-gate, checked at milestone M2 exit, not a month-2 phase. The question stays open. No check changes | P3-ACCEPT-2 |
+| 2026-10-22 | clarify | Rules row "Units keep source" names its test (`source_hash_is_sha256_of_the_decoded_text`), and AOT units start at A2; Validation says that dep-guards check 12 runs in CI since M2-P0. No check changes | P3-ACCEPT-2 |
+| 2026-10-22 | clarify | test262 counts re-counted at the pin with a written command: 1,829 / 2,081 eval-or-Function files (was 1,805 / 2,057, command not recorded; 02 §6 H5 says 1,791, a plan fix is reported). The 80 toString files are unchanged. No check changes | P3-ACCEPT-2 |
+
+## Review record
+
+| Part (README §3.1) | Who | Result | Ref |
+|---|---|---|---|
+| 1 Reviewer | P3-ACCEPT-2 (did not write the ADR) | Decision = the 02 §6 H5 row plus A1-A4 (A1 rewritten in M2-P0 for C2; Q1 filled by P2-EVAL-FE). Checked at e719ffa against dep-guards check 12 (`.github/scripts/dep-guards.sh:191-213`, both controls), `CompilerHooks` and `IsolateConfig::compiler` (`crates/ep9_vm/src/compiler.rs`), the unit source fields (`source_hash`, `source_len`), the span of synthetic class functions (A3: `ep9 --print-bytecode` gives the default constructor and both initializers of a test class the range of its body, 8..96), and `probe::p4_lone_surrogate_eval_count`. R1: H05-Q3 Needed by said "M2 exit (P4)"; the shim is milestone-M3 work (01 §7, M3 exit item 6, plan-v4 D8) (fixed, clarify). R2: the test262 counts (1,805 / 2,057) could not be reproduced and 02 §6 H5 says 1,791; re-counted with a written command: 1,829 / 2,081 (fixed; the 02 row needs a plan fix, reported). R3: Rules row 2 and Validation named no built check (fixed). Change-log kinds: agree (the M2-P0 row is a rewrite: a Decision row changed; the Q1 row is a fill). H05 is verified in P4 (plan-v5 §11, B1 table) | c68971a |
+| 2 Codex | orchestrator | (filled after the P3 merge) | |
+| 3 Verifier | P4-ACCEPT-3 | (filled in P4) | |
+| 4 Data | from the "Validated by" line | `bash .github/scripts/dep-guards.sh` check 12: 4 PASS (2 controls; the default and the jitless `ep9` link `ep9_frontend`). `determinism::source_hash_is_sha256_of_the_decoded_text` passes (`cargo test -p ep9_bytecode`, 75 pass). `probe::p4_lone_surrogate_eval_count` (release, `--ignored`): 11, plus 5 files listed for a review by hand. Missing: test262 per mode (M1); eval and `Function` in the VM are this phase's P3-EVAL-VM and P3-FNCTOR work | local run, mac a64, e719ffa; logs outside the repo: scratchpad m0m2/accept2/logs/depguards.log, bytecode.log, probe-p4.log |
