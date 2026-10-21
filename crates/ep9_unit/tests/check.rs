@@ -32,6 +32,7 @@ fn a_test_encoded_unit_loads_and_another_abi_gives_source() {
             contract: Contract::BytecodeAbi,
             unit: ep9_bytecode::ABI_VERSION + 1,
             host: ep9_bytecode::ABI_VERSION,
+            drop_hints: false,
         }
     );
 }
@@ -159,6 +160,63 @@ fn every_header_field_mutation_gives_its_listed_outcome() {
     }
     println!("header mutations: load/bytecode/source/load-error = {counts:?}");
     assert!(counts.iter().all(|&n| n > 0));
+}
+
+#[test]
+fn a_fact_schema_mismatch_drops_the_hints_whatever_else_differs() {
+    // Step 4 reports the first difference, an object-layout one here, but the hints still go.
+    let host = synthetic_host();
+    let mut u = TestUnit::small(&host);
+    u.header.versions.object_layout += 1;
+    u.header.versions.fact_schema += 1;
+    let v = verdict(&u.encode(), &host);
+    assert!(matches!(
+        v,
+        Verdict::Version {
+            contract: Contract::ObjectLayout,
+            ..
+        }
+    ));
+    assert_eq!(v.outcome(), Outcome::Bytecode);
+    assert!(v.drops_hints(), "{v}");
+
+    // Every other field mutated on top of a fact-schema mismatch: BYTECODE always drops the
+    // hints; SOURCE and LOAD ERROR (steps 1-3 run first) use no section at all.
+    let mut rng = Rng::new(13);
+    let mut counts = [0usize; 4];
+    for (name, mut u) in [
+        ("small", TestUnit::small(&host)),
+        ("native", TestUnit::native(&host)),
+    ] {
+        u.header.versions.fact_schema += 1;
+        let base = u.encode();
+        for f in &HEADER_FIELDS {
+            if f.name == "content_hash" || f.name == "fact_schema" {
+                continue;
+            }
+            let range = f.offset..f.offset + f.size;
+            for new in new_values(&base[range.clone()], &mut rng) {
+                let mut m = base.clone();
+                m[range.clone()].copy_from_slice(&new);
+                rehash(&mut m);
+                let v = verdict(&m, &host);
+                let want = match expected(f, &new, &host) {
+                    Outcome::Load => Outcome::Bytecode,
+                    other => other,
+                };
+                assert_eq!(v.outcome(), want, "{name}: {} = {new:02x?}: {v}", f.name);
+                assert_eq!(
+                    v.drops_hints(),
+                    want == Outcome::Bytecode,
+                    "{name}: {} = {new:02x?}: {v}",
+                    f.name
+                );
+                counts[want as usize] += 1;
+            }
+        }
+    }
+    println!("with a fact-schema mismatch: load/bytecode/source/load-error = {counts:?}");
+    assert!(counts[1..].iter().all(|&n| n > 0));
 }
 
 #[test]
