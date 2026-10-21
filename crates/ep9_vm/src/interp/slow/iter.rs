@@ -69,7 +69,7 @@ fn iterator_method(cx: &mut Cx, v: u64) -> Res<u64> {
 enum Builtin {
     /// `method` is %Array.prototype.values% and `v` is an object.
     Array,
-    /// `method` is %String.prototype[@@iterator]% and `v` is a string primitive.
+    /// `method` is `%String.prototype[@@iterator]%` and `v` is a string primitive.
     String,
 }
 
@@ -189,7 +189,7 @@ pub(super) fn iterable_to_array(cx: &mut Cx, v: u64) -> Res<u64> {
 }
 
 /// The steps of %ArrayIteratorPrototype%.next over the Array `v`: element `i` while `i` is
-/// below the length (read at each step), a hole through [[Get]]. GC point.
+/// below the length (read at each step), a hole through `[[Get]]`. GC point.
 fn copy_array(cx: &mut Cx, v: u64) -> Res<u64> {
     let rt = cx.rt();
     let a = object::new_array(rt, object::array_len(v) as usize);

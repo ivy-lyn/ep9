@@ -49,8 +49,9 @@ use crate::unit::FunctionInfo;
 /// the new `fp`, or `None` if the frame would end above `limit`.
 ///
 /// `new_target` is undefined for a call. For a `[[Construct]]` it is the new.target function:
-/// the frame gets the construct bit, and v0 keeps new.target in the feedback header slot,
-/// which is unused until H16 (H14-Q1 decides the real home of new.target).
+/// the frame gets the construct bit, and v0 keeps new.target in the feedback header slot
+/// (`slot::FEEDBACK`, fp - 3). The FeedbackVector does not use that slot: T0 reaches it through
+/// the FunctionInfo (feedback.rs). H14-Q1 decides the real home of new.target.
 ///
 /// # Safety
 /// `base` is the first free slot of the VM stack (`frame_top` of the caller, or the stack

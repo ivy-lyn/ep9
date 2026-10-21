@@ -144,7 +144,7 @@ fn this_number_value<'s>(cx: &mut Cx<'s>, this: Local<'s>) -> JsResult<f64> {
     Ok(x.as_number().expect("thisNumberValue gives a number"))
 }
 
-/// Number.prototype.toString ( [ radix ] ) (§21.1.3.6).
+/// `Number.prototype.toString ( [ radix ] )` (§21.1.3.6).
 fn to_string<'s>(
     cx: &mut Cx<'s>,
     this: Local<'s>,

@@ -4,7 +4,7 @@
 //!
 //! | Item | JS use | v0 status (M0 week 4) |
 //! |---|---|---|
-//! | [`fmod`] | `%` (Number::remainder) | exact; musl port |
+//! | [`fmod()`] | `%` (Number::remainder) | exact; musl port |
 //! | [`pow_js`] | `**`, `Math.pow` | special cases and exact results; `None` where the correctly rounded core is needed (month 2) |
 //! | [`round_js`], [`fround`] | `Math.round`, `Math.fround` | exact |
 //! | [`fma_exact`], [`two_prod`], [`two_sum`], [`fma_soft`] | building blocks of the CR functions | exact |

@@ -18,7 +18,7 @@
 //!   the string's content (string.rs), never from its address (H12).
 //! - The table is weak. The `atoms!` list and the single-character table are isolate roots
 //!   (runtime.rs), and unit strings are rooted by their unit, so those atoms never die.
-//! - GC rule [I41] (W4-GC-RULES): never hold a borrow of the table across an allocation.
+//! - GC rule \[I41\] (W4-GC-RULES): never hold a borrow of the table across an allocation.
 //! - Debug counter (W4-KEY-EQ): every property-key compare that has to look at content (a key
 //!   that is not an atom) bumps [`note_non_atom_compare`]. `EP9_ASSERT_ATOM_KEYS=1` makes a
 //!   debug isolate panic at drop if its count is not 0.

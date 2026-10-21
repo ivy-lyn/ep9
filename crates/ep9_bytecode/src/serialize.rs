@@ -375,7 +375,7 @@ pub fn compute_content_hash(bytes: &[u8]) -> Digest {
 impl CompiledUnit {
     /// Serializes the unit in canonical form, content hash included.
     ///
-    /// Panics if a count or size does not fit in u32. A unit that fails [`crate::verify`] may
+    /// Panics if a count or size does not fit in u32. A unit that fails [`crate::verify()`] may
     /// serialize to bytes that do not load.
     pub fn to_bytes(&self) -> Vec<u8> {
         let sections: [Vec<u8>; SECTION_COUNT] = [
