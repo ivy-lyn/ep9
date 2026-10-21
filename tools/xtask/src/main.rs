@@ -7,7 +7,7 @@
 //! | `fp-check` | `fpcheck.rs` | no banned libm symbol, no FMA instruction outside `ep9_math`, no second math crate, in post-LTO objects for 5 targets (H36) |
 //! | `feature-matrix` | `features.rs` | default, jitless and `aot` builds: build, clippy and test, per package (H27) |
 //! | `gc-lint` | `gc_lint.rs` | no stack-only GC type (`Local` and friends) in a heap container, `static` or `thread_local`, and no boxed closure that uses one (H10, H20 R2) |
-//! | `m0-exit` | `m0_exit.rs` | the 12 M0 exit items per host, as a table (a stub until M0 month 2 P2; exits 2) |
+//! | `m0-exit` | `m0_exit.rs` | the 12 M0 exit items per host and the Windows CI column, as a table |
 //!
 //! Each module's doc says how far it is built. Exit codes for every task: 0 pass, 1 fail,
 //! 2 usage error, tool error or a task that is not implemented yet. An unknown task exits 2.
