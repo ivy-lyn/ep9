@@ -1216,10 +1216,48 @@ fn generator_and_slot_object_cells_are_registered_object_kinds() {
         put(rt, g, "p", int(1), attr::DEFAULT);
         assert!(kinds::is_object(g) && kinds::is_object(s));
         assert_eq!(object::fixed_count(kinds::GENERATOR.get()), 8);
-        assert_eq!(object::fixed_count(kinds::SLOT_OBJECT.get()), 1);
+        assert_eq!(object::fixed_count(kinds::SLOT_OBJECT.get()), 2);
         assert_eq!(object::fixed_get(g, 2), t);
         assert_eq!(object::fixed_get(s, 0), int(3));
         assert_eq!(own(rt, g, "p"), Some(int(1)));
+    });
+}
+
+/// SLOT_OBJECT keeps its class id and its internal-slots cell in fixed fields, which property
+/// code never touches: named properties, a dictionary move (it clears the in-object slots)
+/// and PreventExtensions leave both fields as they were. No SLOT_OBJECT allocator exists yet
+/// (P3-ABI-SLOTS), so the test builds the cell with `new_object_with_fields` and puts a plain
+/// object where the ELEMENTS cell of the internal slots goes.
+#[test]
+fn slot_object_fixed_fields_survive_property_changes() {
+    each(|_cx, rt| {
+        assert_eq!(
+            (
+                object::slot_obj::CLASS,
+                object::slot_obj::SLOTS,
+                object::slot_obj::FIXED
+            ),
+            (24, 32, 2)
+        );
+        assert_eq!(object::fixed_count(kinds::SLOT_OBJECT.get()), 2);
+        let proto = rt.root(Root::ObjectPrototype);
+        let s =
+            object::new_object_with_fields(rt, kinds::SLOT_OBJECT, proto, object::slot_obj::FIXED);
+        let slots = object::new_plain_object(rt);
+        object::fixed_set(rt, s, 0, int(7));
+        object::fixed_set(rt, s, 1, slots);
+        for i in 0..6 {
+            put(rt, s, &format!("p{i}"), int(i), attr::DEFAULT);
+        }
+        assert!(!shape::is_dictionary(shape::shape_of(s)));
+        props::to_dictionary(rt, s);
+        assert!(shape::is_dictionary(shape::shape_of(s)));
+        assert!(property::prevent_extensions(rt, s));
+        put(rt, s, "p0", int(10), attr::DEFAULT);
+        assert_eq!(object::fixed_get(s, 0), int(7), "class id");
+        assert_eq!(object::fixed_get(s, 1), slots, "internal slots cell");
+        assert_eq!(own(rt, s, "p0"), Some(int(10)));
+        assert_eq!(own(rt, s, "p5"), Some(int(5)));
     });
 }
 

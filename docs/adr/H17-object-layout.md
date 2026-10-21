@@ -36,9 +36,11 @@ v0 (M0 wk4) builds the plan's JSObject header with shapes in the shape space. Th
 | FUNCTION | +24 info, +32 context, +40 home | 2 (`length`, `name`) |
 | ARRAY | +24 length | 0 |
 | ERROR | +24 unit, +32 offset | 2 |
-| ITERATOR | +24 iterated (array iterator: an object, null while its `next` runs user code, undefined when done; string iterator: a string, "" when done), +32 next | 0 |
+| ITERATOR | +24 iterated (array iterator: an object, null while its `next` runs user code, undefined when done; string iterator: a string, "" when done), +32 next, +40 kind (values 0, keys 1, entries 2; OBJECT_LAYOUT 2) | 0 |
 | PRIMITIVE_WRAPPER | +24 value | 0 |
 | BOUND_FUNCTION | +24 target, +32 this, +40 args | 2 |
+| GENERATOR (OBJECT_LAYOUT 2) | +24 state, +32 mode, +40 function, +48 receiver, +56 context, +64 registers (an ELEMENTS cell), +72 resume mode, +80 async slot | 0 |
+| SLOT_OBJECT (OBJECT_LAYOUT 2) | +24 ObjectClass id, +32 internal slots (an ELEMENTS cell of n Values, or undefined when n = 0); property code never touches fixed fields | 0 |
 
 | Item | v0 rule | Where |
 |---|---|---|
@@ -149,3 +151,5 @@ ordinary value slot, so a shape describes an accessor exactly as it describes a 
 | 2026-10-21 | fill | As built after the P3 review: the "Index keys on prototypes" row (sticky `proto_index_keys` flag, W4-P3FIX-ELEM-*), and the ITERATOR states (null = executing, W4-P3FIX-ITER-EXEC-NULL) | P4-DOCS agent |
 | 2026-10-21 | clarify | Epoch row names the saturation (W4-P3FIX-EPOCH-SAT, already H16 K18); Follow-ups say the IC caches are built | P4-DOCS agent |
 | 2026-10-21 | rewrite (version) | OBJECT_LAYOUT 1 -> 2 (`versions.rs`), as built in M2-P0: kind 23 GENERATOR, fixed fields +24 state, +32 mode, +40 function, +48 receiver, +56 context, +64 registers (an ELEMENTS cell), +72 resume mode, +80 async slot, capacity 0 (`object::genf`); kind 24 SLOT_OBJECT, fixed field +24 ObjectClass id, its in-object slots are the internal slots (`object::slot_obj`); ITERATOR gets +40 kind (values 0, keys 1, entries 2; `iter::FIXED` 2 -> 3, the cell grows 40 -> 48 B); the CONTEXT +16 word is a native word that points at the unit's `ContextScope { unit, scope }` record (C5; `object::context_scope`), not an int32 scope id. The Decision kind table still shows layout 1 for ITERATOR; object.rs has the v2 table | P0-VM agent |
+| 2026-10-21 | clarify | The Decision kind table shows OBJECT_LAYOUT 2, as the row above and the `object.rs` table: ITERATOR +40 kind, and the GENERATOR and SLOT_OBJECT rows | M2-P0 integration fixer |
+| 2026-10-21 | rewrite (version) | Before any release of OBJECT_LAYOUT 2 (it stays 2): SLOT_OBJECT gets 2 fixed fields, +24 ObjectClass id and +32 a separate internal-slots cell (an ELEMENTS cell, or undefined when n = 0). Its in-object slots are no longer the internal slots: property code uses in-object slots for named fields (`props::field_ref`) and clears them on a dictionary move (`props::to_dictionary`), so `m.foo = 1` or `Object.preventExtensions(m)` would have overwritten them. Test `tests::objects::slot_object_fixed_fields_survive_property_changes`. Pre-freeze churn (README §3.3) | M2-P0 integration fixer (hot-path review) |

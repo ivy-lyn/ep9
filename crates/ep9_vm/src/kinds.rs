@@ -58,8 +58,8 @@ pub(crate) const BOUND_FUNCTION: KindId = k(22);
 /// 8 fixed fields (`object::genf`). OBJECT_LAYOUT 2.
 pub(crate) const GENERATOR: KindId = k(23);
 /// An object with internal slots (Promise, Map, Date and the other ObjectClass kinds): fixed
-/// field 0 is the ObjectClass id, then its in-object slots are the internal slots
-/// (`object::slot_obj`). OBJECT_LAYOUT 2.
+/// field 0 is the ObjectClass id, fixed field 1 a separate cell with the internal slots (not
+/// the in-object slots, which hold properties) (`object::slot_obj`). OBJECT_LAYOUT 2.
 pub(crate) const SLOT_OBJECT: KindId = k(24);
 
 // ---- internal cells (64-127) ----
