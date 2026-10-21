@@ -189,7 +189,7 @@ Crash-free budgets grow from 24 CPU-h (front end, M1) to 100 (M1), 500 (M2), 2,0
 | Golden | Bytecode disassembly snapshots. Unit golden files (H35 header struct, container layout) | Every PR |
 | Determinism | Two builds give identical bytecode hashes (H2) | Every PR |
 | Zero text relocations | Every unit emitted in CI has no text relocation; the writer rejects HeapConst (H34) | Every PR touching `ep9_masm`, `ep9_unit`, `ep9_baseline`, `ep9_opt`, from A2 |
-| FP lint (H36) | Root `clippy.toml` bans libm, `powi`, `rem_euclid`, `div_euclid`, `mul_add` and `algebraic_*` methods. `cargo xtask fp-check`: no banned libm symbol, no FMA instruction outside `ep9_math`, no second math crate; 5 targets; exceptions in `expectations/fp-check-allow.toml` | Every PR |
+| FP lint (H36) | Root `clippy.toml` bans libm, `powi`, `rem_euclid`, `div_euclid`, `mul_add` and `algebraic_*` methods. `cargo xtask fp-check`: no banned libm symbol, no FMA instruction outside `ep9_math`, no second math crate, no `disallowed_methods` allow outside `crates/ep9_math/src/exact.rs`; exceptions in `expectations/fp-check-allow.toml`. Scan method: for each of the 5 targets, plus x86_64 Linux with `-Ctarget-cpu=x86-64-v3`, it builds the post-LTO object of `ep9` (`cargo rustc --release --target T -p ep9_cli --bin ep9 -- --emit=obj=F -C linker=true`: fat LTO, no real link, so one Linux host covers every target), lists imports with `llvm-nm -u`, names the calling function and finds FMA mnemonics with `llvm-objdump -dr -C`, and reads `cargo tree -e normal,build --target all` | Every PR (one Linux job) |
 | Licence check | `cargo deny check licenses` with the root `deny.toml` allow list ([12-governance §1](./12-governance.md#1-licence)) | Every PR touching `Cargo.lock` or a manifest |
 | ADR lint | Changes to H-row crates must reference an ADR | Every PR |
 | Dependency guards | Plan v1 guards. `cargo tree -i tsrs_core` empty for the root workspace. `ep9_hints` has 0 dependencies. The jitless build has no `jit` feature. `object` crate exact pin ([08-repo](./08-repo.md)) | Every PR |
@@ -275,6 +275,7 @@ RK1-RK28 are plan v1 risks R1-R28, re-tagged. RK29-RK44 are new.
 - Decisions 2026-10-20 ([decisions-log §5](../decisions-log.md#5-2026-10-20-decisions-made-by-the-agent-team-under-the-users-instruction)): the speed-gate rule (PERF-NOISE); barrier checks V1-V3, the model test and 5 negative controls (H11); FP lint = `clippy.toml` + `xtask fp-check` (H36); H35 S3 outcomes in the unit checks; licence check; bench pin names (NAMING); JetStream harness note; K-A5v-cov, K-A5v-bound, K-A5v; RK7, RK18, RK28, RK29, RK35, RK40, RK41, RK42, RK43 updated.
 - Amended 2026-10-21 ([decisions-log §7](../decisions-log.md#7-2026-10-21-h15-dispatch-on-x86-64-sp-dispatch-reopen), PERF-NOISE amended): a class S result names its CPU model and holds for that model only (§3 row S).
 - Amended 2026-10-21 ([decisions-log §10](../decisions-log.md#10-2026-10-21-pr-1-review-fixes-ci-gates-and-h15-on-t0), CIG-5): Miri runs on every PR until the nightly trigger lands, on `ep9_value` and `ep9_heap` (§5 row Sanitizers).
+- Amended 2026-10-21 (M0 week 4, H36 change log): `xtask fp-check` is built; §5 row FP lint names its scan method (post-LTO object per target, `llvm-nm`, `llvm-objdump`, `cargo tree`, allow-site scan).
 
 ---
 
