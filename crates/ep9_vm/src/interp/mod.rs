@@ -11,7 +11,7 @@
 //!
 //! | Rule (H15) | Where |
 //! |---|---|
-//! | Handler = `unsafe fn(&mut Cx, pc, fp, acc) -> u64`, ≤ 4 register-wide args; x86-64: `extern "sysv64-unwind"` on every OS | [`Handler`], `dsl::AtMostFourRegArgs`, `dsl::handler!` |
+//! | Handler = `unsafe fn(&mut Cx, pc, fp, acc) -> u64`, ≤ 4 register-wide args; x86-64: `extern "sysv64-unwind"` on every OS (`extern "sysv64"` under `panic = "abort"`) | [`Handler`], `dsl::AtMostFourRegArgs`, `dsl::handler!` |
 //! | `Cx` holds the 256-entry dispatch table at offset 0 | [`Cx`] const assert |
 //! | Every runtime call is in a cold block; the fast handler reaches it by a tail jump | `ops.rs` `cold` bodies, `<op>_cold` handlers |
 //! | Symbols `ep9h__<exp>__<tail\|exit>__<Op>`, match loop `ep9loop__match__run` | `dsl.rs` (read by `cargo xtask disasm-check`) |

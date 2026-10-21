@@ -11,7 +11,7 @@
 //! | `expand_threaded!([become, "become"])` | (c) the same with `become` |
 //! | `expand_match!([])` | (a) `ep9loop__match__run`: one `loop { match }` |
 //! | `expand_scaled!([])` | `step::<S>`: one prefixed instruction, out of line |
-//! | `handler!` | one handler fn with the handler ABI of the target (x86-64: `sysv64-unwind`) |
+//! | `handler!` | one handler fn with the handler ABI of the target (x86-64: `sysv64-unwind`; `sysv64` under `panic = "abort"`) |
 //!
 //! Handler classes (read by `cargo xtask disasm-check`): `tail` handlers leave only through
 //! a tail jump to the next handler; `exit` handlers (`Exit`, `BadOpcode`) return to Rust.
