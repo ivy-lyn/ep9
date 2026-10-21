@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-21): the rule, with the checks it needs; no runtime crate links the compiler yet |
+| Status | Draft (2026-10-21): the rule, with the checks it needs. Since M2-P0, `ep9` (ep9_cli) links ep9_frontend in every mode (dep-guards check 12) and gives it to the VM through `IsolateConfig::compiler` |
 | Fix by | M0 rule (wk3) |
 | Freeze point | M1 exit |
 | Origin | R16-D9; plan status N |
