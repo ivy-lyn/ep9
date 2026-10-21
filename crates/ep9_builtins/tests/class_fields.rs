@@ -1,9 +1,7 @@
 //! JS-level tests of class fields, private names, private methods and static blocks
-//! (owner P2-CLS-VM), run through BytecodeGen. The VM side is on this branch; the codegen side
-//! is P2-CLS-CG, so the class tests are `#[ignore = "needs P2-CLS-CG"]` until the P2
-//! integration fixer removes the marks after the CLS-CG merge. The expected lines come from
-//! node v24 (`print` = `console.log`), except where a comment names the spec text that node
-//! does not follow. Every check runs with and without GC stress (`common::run_both`).
+//! (owner P2-CLS-VM), run through BytecodeGen (P2-CLS-CG). The expected lines come from node
+//! v24 (`print` = `console.log`), except where a comment names the spec text that node does
+//! not follow. Every check runs with and without GC stress (`common::run_both`).
 
 mod common;
 
@@ -17,7 +15,6 @@ fn lines(v: &[&str]) -> Result<Vec<String>, String> {
 /// initializer key on `C` and the private names are not listed by
 /// `Object.getOwnPropertyNames`, `Object.keys` or for-in (P2-CLS-VM acceptance).
 #[test]
-#[ignore = "needs P2-CLS-CG"]
 fn fields_are_hidden_from_key_lists() {
     assert_eq!(
         run_both(
@@ -56,7 +53,6 @@ print(d.value, d.writable, d.enumerable, d.configurable);"#
 /// PrivateGet, PrivateSet and `#x in` errors, and a second add through a constructor
 /// return override (node v24 texts).
 #[test]
-#[ignore = "needs P2-CLS-CG"]
 fn private_name_errors() {
     assert_eq!(
         run_both(
@@ -95,7 +91,6 @@ try { M.m({}); } catch (e) { print(e.constructor.name); }"#
 /// Private methods, a getter and a static private method: the brand, `#m in o`, the brand
 /// check of a call on an object without it; private methods are not own properties.
 #[test]
-#[ignore = "needs P2-CLS-CG"]
 fn private_methods_and_accessors() {
     assert_eq!(
         run_both(
@@ -123,7 +118,6 @@ try { C.callM({}); } catch (e) { print(e.constructor.name); }"#
 
 /// A private accessor as an assignment target (plain and compound): the setter runs.
 #[test]
-#[ignore = "needs P2-CLS-CG"]
 fn private_setter_assignment() {
     assert_eq!(
         run_both(
@@ -141,7 +135,6 @@ print(new C().run());"#
 
 /// Static fields and static blocks run in source order with `this` = the class.
 #[test]
-#[ignore = "needs P2-CLS-CG"]
 fn static_fields_and_blocks_run_in_source_order() {
     assert_eq!(
         run_both(
@@ -164,7 +157,6 @@ print(C.a, C.b);"#
 /// Fields of a derived class run when `super()` returns; `super.x` and arrows in field
 /// initializers; a field initializer runs before parameter defaults (§10.2.2 step 6.b).
 #[test]
-#[ignore = "needs P2-CLS-CG"]
 fn derived_fields_run_after_super() {
     assert_eq!(
         run_both(
@@ -201,7 +193,6 @@ var g = new G(); print(g.f === g);"#
 /// private field's name is its description `#f`); a named function and a non-computed key
 /// keep the closure's own name.
 #[test]
-#[ignore = "needs P2-CLS-CG"]
 fn computed_field_keys_name_anonymous_functions() {
     assert_eq!(
         run_both(
@@ -224,10 +215,10 @@ print(c.kk.name, c[s].name, '"' + c[e].name + '"', c.getF().name, c.n.name, c.na
 }
 
 /// Bit 0 of DefineKeyedOwnPropertyInLiteral (P2-CLS-VM task 4, D15): computed object literal
-/// keys name anonymous functions, classes and methods. Runs without CLS-CG. The last line
-/// follows ECMA-262 (ClassDefinitionEvaluation sets the name before the static `name` method
-/// replaces it; test262 `*-init-fn-name-class.js` checks the same for destructuring
-/// defaults); node v24 prints "string" there.
+/// keys name anonymous functions, classes and methods (no class-field codegen needed). The
+/// last line follows ECMA-262 (ClassDefinitionEvaluation sets the name before the static
+/// `name` method replaces it; test262 `*-init-fn-name-class.js` checks the same for
+/// destructuring defaults); node v24 prints "string" there.
 #[test]
 fn computed_literal_keys_name_anonymous_functions() {
     assert_eq!(
