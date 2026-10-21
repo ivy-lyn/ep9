@@ -187,9 +187,11 @@ mod tests {
             .ok()
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-        match head {
-            Some(head) => assert_eq!(line, head),
-            None => assert_eq!(line, "unknown"),
+        // No git where the test runs (for example a binary built here and run on another
+        // host): there is nothing to compare with. build.rs writes "unknown" only when git
+        // failed at build time, which this run cannot see.
+        if let Some(head) = head {
+            assert_eq!(line, head);
         }
     }
 }
