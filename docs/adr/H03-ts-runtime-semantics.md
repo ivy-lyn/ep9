@@ -37,8 +37,8 @@ Rust API: `UnitHeader::typescript: Option<TsFlags>`; `TsFlags::DEFAULT` is the D
 
 | Rule | Check | From |
 |---|---|---|
-| A JavaScript unit (bit 8 clear) has bits 9-15 clear | reader: `BadHeader("TS flags on a JavaScript unit")`; `roundtrip.rs::header_errors_map_to_h35_outcomes` | M0 |
-| Bits 12-15 are zero (ABI 1-4) | reader rejects undefined flag bits (`BadHeader("unit flags")`); `crates/ep9_bytecode/tests/roundtrip.rs` `header_errors_map_to_h35_outcomes` sets each bit 12-15 on a JavaScript and on a TypeScript unit | M0 |
+| A JavaScript unit (bit 8 clear) has bits 9-15 clear | reader: bits 9-11 give `BadHeader("TS flags on a JavaScript unit")`, bits 12-15 give `BadHeader("unit flags")` (row below; the defined-bits check runs first, `crates/ep9_bytecode/src/serialize.rs:821-822`); `roundtrip.rs::header_errors_map_to_h35_outcomes` | M0 |
+| Bits 12-15 are zero until an H03-Q2 flag is added (every ABI so far: 1-4) | reader rejects undefined flag bits (`BadHeader("unit flags")`); `crates/ep9_bytecode/tests/roundtrip.rs` `header_errors_map_to_h35_outcomes` sets each bit 12-15 on a JavaScript and on a TypeScript unit | M0 |
 | TS flags are covered by the content hash, so another flag value is another module identity and cache key | `determinism.rs::content_hash_excludes_build_id_and_covers_ts_flags` | M0 |
 | The flags round-trip | `sample-module.txt` golden (bit 8 and bits 10-11 set, bit 9 clear: the `[[Set]]` case); random units set them at random | M0 |
 | H35 S3: a unit's TS flags are not compared at load; SOURCE compiles the source section with them | `ep9_unit` loader (A2) | A2 |
@@ -75,7 +75,9 @@ Rust API: `UnitHeader::typescript: Option<TsFlags>`; `TsFlags::DEFAULT` is the D
 | 2026-10-21 | draft | Header fields: unit flag bits 8-15, `TsFlags`, reader and hash rules | bytecode agent |
 | 2026-10-22 | clarify | Rules: bits 12-15 are zero in ABI 1-3 (was "ABI v1"; ABI_VERSION is 3); the check names its error and says that no test sets those bits yet. The `sample-module.txt` golden sets bit 9 clear, not "all three". No check changes | P2-ACCEPT-1 |
 | 2026-10-22 | rewrite | Rules row "Bits 12-15 are zero": its check now names a test. `header_errors_map_to_h35_outcomes` sets each of bits 12-15 on a JavaScript and a TypeScript unit and expects `BadHeader("unit flags")` (review finding R2). The rule and the reader are unchanged; the kind is rewrite because a Rules row and a test change (README §3.3). `serialize.rs` `TS_RESERVED` doc now says ABI 1-3 (R4) | P2 integration fixer |
-| 2026-10-22 | clarify | Rules: bits 12-15 are zero in ABI 1-4 (ABI 4 adds runtime ids only, H02 change log); no check changes | M2-P2 review fixer (lookup) |
+| 2026-10-22 | clarify | Rules: bits 12-15 are zero in ABI 1-4 (ABI 4 adds runtime ids 29-31 and `VariableMode::FunctionName` = 5, and ids 26 and 30 take a strict argument; no header flag changes; H02 change log); no check changes | M2-P2 review fixer (lookup) |
+| 2026-10-22 | clarify | Rules row "Bits 12-15 are zero" now reads "until an H03-Q2 flag is added (every ABI so far: 1-4)" (was "(ABI 1-4)"), so a later ABI bump that adds no TS flag needs no H03 amendment; H03-Q2 adds such a flag with an ABI bump. The 2026-10-22 lookup-fixer row above said "ABI 4 adds runtime ids only"; that was false (ABI 4 also adds `VariableMode::FunctionName` = 5, and ids 26 and 30 take a strict argument: `crates/ep9_bytecode/src/unit.rs:30`, H02 change log), so its text is corrected in place. No check changes | P3-ACCEPT-2 |
+| 2026-10-22 | clarify | Rules row "A JavaScript unit has bits 9-15 clear": its check named one error for all 7 bits. The reader gives `BadHeader("TS flags on a JavaScript unit")` for bits 9-11 and `BadHeader("unit flags")` for bits 12-15 (its defined-bits check runs first); `header_errors_map_to_h35_outcomes` checks bit 9 and bits 12-15 that way. No check changes | P3-ACCEPT-2 |
 
 ## Review record
 

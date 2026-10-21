@@ -73,7 +73,7 @@ Win64 spill trampoline, SEH unwind registration and VirtualAlloc in `ep9_platfor
 | CI builds and tests all 4 targets from week 1 | CI matrix | M0 wk1 |
 | Generated code can be called, unwound and backtraced on all 4 targets | SP-JIT-mem (`spikes/sp-jit-mem/gate.sh`) | M0 wk3 |
 | Every generated frame has registered unwind info before it runs (on Windows an unregistered frame looks like a leaf) | SP-JIT-mem control check; later ep9_masm finalize | M0 wk3 |
-| unix: the registration mode comes from a run-time self-test (register a probe, call it, walk through it); if no mode passes, native code does not start | `ep9_platform` `unwind::tests` (`selected_registration_mode`, `each_mode_on_this_host`, `missing_fde_fails_both_modes`); x86 sandbox libgcc and zig builds with `EP9_EXPECT_UNWIND_MODE` | M2-P1 |
+| unix: the registration mode comes from a run-time self-test (register a probe, call it, walk through it); if no mode passes, native code does not start | `ep9_platform` `unwind::tests` (`selected_registration_mode`, `each_mode_on_this_host`, `missing_fde_fails_both_modes`); x86 sandbox libgcc and zig builds with `EP9_EXPECT_UNWIND_MODE` (the orchestrator's sandbox script, outside the repo; no CI job sets the variable) | M2-P1 |
 | No W^X mode is the default unless it stays coherent under a binary translator (Rosetta) | SP-JIT-mem `icache` check | M0 wk3 |
 | Win64 spill trampoline finds every live object | SP-GC on Win64 | M0 wk2 |
 | Units register unwind info on load and remove it on unload | A2 gate: exceptions and Error.stack through AOT frames | A2 |
@@ -128,3 +128,4 @@ Win64 spill trampoline, SEH unwind registration and VirtualAlloc in `ep9_platfor
 | 2026-10-21 | fill | H28-Q3 filled: policy in H23, mechanism here (decision W4-H23). Follow-ups: the SP-tsrs-win result (decision W4-SP-TSRS-WIN; [spike review](../measurements/2026-10-21-m0-spike-review.md)) | P0-DOCS agent |
 | 2026-10-21 | rewrite | Unwind registration row: the unix mode is chosen at run time by a self-test (whole section, then per FDE), not by target; a failed self-test stops native code. New Rules row. Closes the week-4 open item "WHOLE_SECTION assumes libgcc on linux-gnu" | M2-P1 UNWIND-GUARD agent |
 | 2026-10-21 | clarify | W^X mode row: the `MAP_JIT` code range comes from `CodeRange::process()` (`Cage::reserve_jit` is removed) | M2-P1 integration fixer |
+| 2026-10-22 | clarify | Rules row "unix: the registration mode comes from a run-time self-test": its x86 sandbox check is the orchestrator's script outside the repo, and no CI job sets `EP9_EXPECT_UNWIND_MODE`; the check cell says so. No check changes | P3-ACCEPT-2 |

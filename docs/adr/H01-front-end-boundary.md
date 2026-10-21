@@ -31,7 +31,7 @@ F1 fills these gaps (kind **fill**):
 | B4 | The scope pass resolves names on its own scope tree (ECMA-262 environments). oxc reference and scope ids are only `pub(crate)` lookup keys for BytecodeGen | The oxc tree differs from the spec in 4 places (scope/mod.rs table) |
 | B5 | `ScopeAnalysis` is plain Rust data with u32 ids, built in source order. Hash maps are only for lookup, never iterated | H2 determinism |
 | B6 | Positions are UTF-8 byte offsets. `LineMap` gives line and UTF-16 column, also for WTF-8 lone surrogates. It agrees with `ep9_bytecode::SourceLines` on every offset of valid UTF-8 | 01 §5: offsets stored, columns lazy |
-| B7 | Stable function id = preorder index. Synthetic class functions (default constructor, instance and static member initializers) get ids when the walk enters the class body, before any element, in that order | H2 needs one rule for functions without source |
+| B7 | Stable function id = preorder index. When the walk enters a class body (after the heritage), each synthetic class function gets its id, followed at once by the functions inside it: the default constructor (only if the class has no `constructor`); the instance initializer (only if there is an instance field, accessor or private method), then the functions in the instance field values; the static initializer (only if there is a static field, accessor or static block), then the functions in the static field values and static blocks; then the methods and the functions in computed keys and decorators, in element order. So the ids are a preorder of the parent links (the bytecode verifier Tree rule). As built: `crates/ep9_frontend/src/scope/collect.rs:1207-1211`, the `FunctionId` doc `crates/ep9_frontend/src/scope/mod.rs:76-80` (M2-P2-CLSCG-FNID-PREORDER) | H2 needs one rule for functions without source |
 
 ## Rules
 
@@ -39,7 +39,7 @@ F1 fills these gaps (kind **fill**):
 |---|---|---|
 | Only `ep9_frontend` lists an `oxc_*` dependency | `grep oxc crates/*/Cargo.toml` (one hit); review | M0 |
 | No `pub` item names an oxc type | `tests::no_public_item_names_an_oxc_type` | F1 |
-| Every nesting form: cap compiles, cap + 1 is a RangeError, debug and release | `depth_tests::m0_*`, `m1_*`, `x_*` (39 forms + 2 regex forms) | F1 |
+| Every nesting form: cap compiles, cap + 1 is a RangeError, debug and release | `depth_tests::m0_*`, `m1_*`, `x_*` (39 forms + 10 regex forms, `crates/ep9_frontend/src/forms.rs` `FORMS`; `every_form_is_gated`) | F1 |
 | No abort on deep input | `depth_tests::a_million_levels_never_abort`, `random_mixes_near_the_caps_never_abort` | F1 |
 | The scope pass handles every form at the cap on the worker stack | `depth_tests::check_ast_form` runs `analyze` at the cap | F1 |
 | Layer 3 reports a RangeError, not an abort | `scope::tests::layer_3_reports_a_range_error` | F1 |
@@ -51,7 +51,7 @@ F1 fills these gaps (kind **fill**):
 
 - **Gains.** oxc can change or be replaced behind one crate. Deep input fails with a RangeError on every target. The scope pass follows the spec where the oxc tree does not; it takes 0.40 s for 49,517 test262 + bench files (4.6 M references, release, aarch64).
 - **Costs.** About 167 MiB (debug) / 94 MiB (release) of virtual stack per thread that compiles. Binary and logical chains deeper than 20,000 are a RangeError; V8 accepts about 4 M. Own resolution is code that oxc already has.
-- **Follow-ups.** BytecodeGen consumes `ScopeAnalysis` (next F1 step). Layer 1 (oxc depth counter) at M1. `compile_eval` with an EvalContext (oxc #11793) at M1.
+- **Follow-ups.** Layer 1 (oxc depth counter) at M1. Eval: `compile_eval` with an `EvalContext` is built (M0 month 2 P2, `crates/ep9_frontend/src/eval.rs`) as a wrapper parse plus post-checks; the oxc eval-context option (oxc #11793) or a local patch is due at M1 exit ([01 §7](../plan/01-front-end.md#7-oxc-upstream-track-local-patches-p-gates-unchanged)). BytecodeGen consumes `ScopeAnalysis` (built in M0 wk3-4).
 
 ## Evidence
 
@@ -64,7 +64,7 @@ F1 fills these gaps (kind **fill**):
 
 ## Validation
 
-- `cargo test -p ep9_frontend` (debug and release) on aarch64 macOS, x86_64 macOS, Linux arm64 and amd64; Windows x64 compile check. `cargo run --release -p ep9_test262 -- parse` stays green.
+- `cargo test -p ep9_frontend` (debug) runs in the CI build-test job (`cargo test --workspace`) on macOS arm64, Linux x64, Linux arm64 and Windows x64. The release run (`--release`) is local only: no CI step runs it. x86_64 macOS runs only locally under Rosetta. `cargo run --release -p ep9_test262 -- parse` stays green (CI test262 job, 4 targets).
 - M0 exit 7 (nesting forms at cap + 1 give RangeError) and 12 (identical bytecode hashes).
 
 ## Open questions
@@ -88,3 +88,7 @@ F1 fills these gaps (kind **fill**):
 |---|---|---|---|
 | 2026-10-21 | draft | First draft from the F1 build: API, worker, caps, scope pass, positions, function ids | Front-end agent |
 | 2026-10-21 | fill | H01-Q1 closed: `oxc_ast_visit` pin moved to the root `workspace.dependencies` | docs-sync agent |
+| 2026-10-22 | rewrite | B7 follows the code (M2-P2-CLSCG-FNID-PREORDER, 5083e3d): each synthetic class function is followed at once by the functions inside it (default constructor; instance initializer, then the instance field values; static initializer, then the static field values and static blocks; then methods and computed keys in element order). The old text gave all synthetic ids before any element, which the bytecode verifier Tree rule rejects once fields compile. A Decision row changes, so the kind is rewrite | P3-ACCEPT-2 |
+| 2026-10-22 | rewrite | Rules row "Every nesting form": 39 forms + 10 regex forms (was "+ 2"). 34bd740 (2026-10-21, pre-scan: v-flag classes that stay open after a nested class) added 8 regex forms to `FORMS` with no ADR row. The new forms fail on the old pre-scan (a worker stack overflow at 100k levels of v-flag classes, not a RangeError), so the check changes result | P3-ACCEPT-2 |
+| 2026-10-22 | clarify | Follow-ups: `compile_eval` with an `EvalContext` is built (M0 month 2 P2, wrapper parse); the oxc option or a local patch stays due at M1 exit (01 §7). BytecodeGen consumes `ScopeAnalysis` (done). No check changes | P3-ACCEPT-2 |
+| 2026-10-22 | clarify | Validation says where each run happens: CI runs the debug tests on the 4 CI targets (Windows x64 runs them, not only a compile check); the release run and x86_64 macOS are local only. No check changes | P3-ACCEPT-2 |

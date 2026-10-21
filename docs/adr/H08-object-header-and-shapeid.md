@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-20; Q1 and Q3 filled 2026-10-21: shape region, word0 flag bits). Accept needs the review record (README §3.1) and SP-Unit |
+| Status | Draft (2026-10-20; Q1 and Q3 filled 2026-10-21: shape region, word0 flag bits; Q2 filled 2026-10-22: no shape-guarded load in Spike B). Accept needs the review record (README §3.1) and SP-Unit |
 | Fix by | M0 wk2 |
 | Freeze point | M1 exit |
 | Origin | v1#4 + R16-D5 (as corrected by R17); plan status E (extended: ShapeId rule) |
@@ -147,6 +147,7 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 | 2026-10-22 | clarify | Shape space, Alignment row: the Miri text holds for `ep9_heap` tests only; no `ep9_vm` isolate starts under Miri (M2-P1-MIRI-VM). New Open question H08-Q4. "(P2)" in the Size row now says "(M0 wk4)". No check changes | P2-ACCEPT-1 |
 | 2026-10-22 | clarify | Rules row 1: the size checks are `const` asserts in `ep9_value` and `MIN_CELL_SIZE` in `ep9_heap`; no xtask task checks sizes. No check changes | P2-ACCEPT-1 |
 | 2026-10-22 | fill | H08-Q2 filled with the orchestrator decision M2-H08-Q2: the RW-cell shape guard is not tested in M0; Spike C tests it in M1. Every existing check keeps its result | P2-ACCEPT-1 (decision: orchestrator) |
+| 2026-10-22 | clarify | Status line also names the H08-Q2 fill (2026-10-22), as the README §5 index row does. No check changes | P3-ACCEPT-2 |
 
 ## Review record
 

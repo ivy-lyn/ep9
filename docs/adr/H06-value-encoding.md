@@ -40,7 +40,7 @@ JSC NaN-box: raw cell pointers, int32 under the 0xFFFE tag, doubles + 2^49. `Val
 
 | Rule | Check | From |
 |---|---|---|
-| `Value`, `JsResult<Value>` and word0 are 8 B | Static asserts in `ep9_value`; xtask size asserts ([08 §7](../plan/08-repo.md#7-dependency-guards-and-xtask-checks)) | SP-Value, M0 wk2; M0 exit item 8 |
+| `Value`, `JsResult<Value>` and word0 are 8 B | Static asserts in `ep9_value` (`crates/ep9_value/src/lib.rs:44-55`: `Value`, `Option<Value>`, `JsResult<Value>` and `Word0` are 8 B); `cargo xtask m0-exit` item 8 checks that the asserts are there. No xtask task checks sizes yet ([08 §7](../plan/08-repo.md#7-dependency-guards-and-xtask-checks) lists size asserts) | SP-Value, M0 wk2; M0 exit item 8 |
 | No NaN other than the canonical one is ever boxed | Unit tests on every boxing path; FP differential (H36) | M0; M1 |
 | A boxed cell pointer is the raw address | CSS probe case S6 does not apply (03 §2) | SP-GC |
 | The encoding version is a unit header field | H35 header struct + golden test | M0 exit |
@@ -94,3 +94,4 @@ JSC NaN-box: raw cell pointers, int32 under the 0xFFFE tag, doubles + 2^49. `Val
 | 2026-10-20 | fill | H06-Q1 and H06-Q2 resolved from `ep9_value::encoding` (SP-Value): immediate bit values and NotCellMask added to the Decision table. The plan row (02 §6 H6, 06 §1) still says "small non-zero constants"; plan fix to be filed with the plan owner | fix agent |
 | 2026-10-20 | fill | H06-empty: 0x22 kept after a check against the JSC tags (BigInt32 0x12, NativeCallee 0x3, deleted 0x4, MiscTag 0x0E) and every ep9_value fast test. Rule added: no 0 in a heap Value slot (pre-fill before the next GC point; the visitor skips 0). Plan rows 02 §6 H6 and 06 §1 updated | apply agent |
 | 2026-10-21 | clarify | Validation: Miri runs on every PR until the nightly trigger lands, as CI does ([decisions-log §10](../decisions-log.md#10-2026-10-21-pr-1-review-fixes-ci-gates-and-h15-on-t0) CIG-5) | follow-up agent |
+| 2026-10-22 | clarify | Rules row 1: its check named "xtask size asserts", which do not exist. It now names the `ep9_value` const asserts and the m0-exit item 8 check of them, as H08 Rules row 1 does (P2-ACCEPT-1, H08 R2). No check changes | P3-ACCEPT-2 |
