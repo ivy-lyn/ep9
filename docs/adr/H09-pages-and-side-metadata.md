@@ -89,3 +89,12 @@
 | 2026-10-21 | fill | H09-Q4: no emitted code bakes the page mask in v0; the H35 unit header carries the page size as its own field (`heap_page_log2`), not under the object-layout version. Decision W4-H09-Q4 | P1-AOTU agent |
 | 2026-10-21 | clarify | 2 `path:line` references moved to the code at `479b1cd` (P4-DOCS drift script, [I15]); the `PAGE_MASK` use in `heap.rs` changed form and is pinned to its new line | P4-DOCS agent |
 | 2026-10-22 | clarify | H09-Q4 fill text: Spike B (M0 month 2) emits code but bakes no page mask, so "the only machine code ep9 emits is the SP-JIT-mem test stubs" and "the first emitter that bakes the mask (Spike B)" were out of date; the `spike-native` stubs and the Spike B JIT are named, and no emitter uses `PAGE_MASK`. No check changes | P3-ACCEPT-2 |
+
+## Review record
+
+| Part (README §3.1) | Who | Result | Ref |
+|---|---|---|---|
+| 1 Reviewer | P3-ACCEPT-2 (did not write the ADR) | Decision = the 02 §6 H9 row. Checked against `ep9_heap` at e719ffa: `PAGE_SIZE` 256 KiB, `GRANULE` 8, `LINE_SIZE` 256, the first cell at 9472 (const assert, `crates/ep9_heap/src/layout.rs:67`), `MAX_SMALL_SIZE` 8 KiB (larger cells go to the LOS); the verifier walks cells in address order from the VO bitmap (`verify.rs`); the CSS interior and one-past-end tests (`src/tests/css.rs`). R1: the H09-Q4 fill said the only emitted code is the SP-JIT-mem stubs and named Spike B as the first emitter to bake the mask; Spike B emits code but uses no page mask (`PAGE_MASK` appears only in `ep9_heap`) (fixed, clarify). Open and due in M0, not filled (reported): H09-Q1, H09-Q2 and H09-Q3 (Needed by M0 wk2 or S0); the code uses their proposed defaults (8 B granule, 256 B lines, in-page header, LOS above 8 KiB; Status line). Change-log kinds: agree | c68971a |
+| 2 Codex | orchestrator | (filled after the P3 merge) | |
+| 3 Verifier | P4-ACCEPT-3 | (filled in P4) | |
+| 4 Data | from the "Validated by" line | SP-GC: `bash spikes/sp-gc/gate.sh` PASS on mac a64 (probes S1-S7; 10^6 safepoints x 3 seeds on aapcs64 with 0 misses; the 3 negative controls miss as they must; the Win64 build and its save and SEH codes match); the Rosetta x86_64 step SKIP (Rosetta is hung on this host, M2-P3-ROSETTA). `cargo test -p ep9_heap --locked`: 84 pass. Missing: the GC-stress test262 run is the CI test262 job (linux-x64); the SysV and Win64 runs are the CI spikes job | local run, mac a64, e719ffa; logs outside the repo: scratchpad m0m2/accept2/logs/sp-gc.log, heap.log |
