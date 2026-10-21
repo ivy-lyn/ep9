@@ -499,3 +499,42 @@ var gi = gen(); var go = gi.next().value; delete go.x; print(gi.next(2).value);"
         ])
     );
 }
+
+/// Annex B.3.5 `for (var x = init in o)`: `x` is resolved (step 2) before the initializer
+/// runs (steps 3-4) and PutValue (step 5) goes to that binding; the for-in head runs after
+/// (step 6), and each iteration's store resolves again. The subjects `{}`, null and
+/// undefined run no iteration; `{ a: 1 }` stores 'a' in the `with` object, which has `x`
+/// again. A literal or function initializer (resolved at the store, NamedEvaluation kept),
+/// the `@@unscopables` order, and script scope. V8/node v24 prints `2 undefined`,
+/// `a undefined` and `init,unscopables 2`; these are the spec answers.
+#[test]
+fn a_for_in_var_initializer_resolves_first() {
+    assert_eq!(
+        run_both(
+            r#"function t(name, f) { print(name + ' ' + f({ x: 1 })); }
+t('in {}', function (o) { var x = 10; with (o) { for (var x = (delete o.x, 2) in {}) {} } return x + ' ' + o.x; });
+t('in null', function (o) { var x = 10; with (o) { for (var x = (delete o.x, 2) in null) {} } return x + ' ' + o.x; });
+t('in undefined', function (o) { var x = 10; with (o) { for (var x = (delete o.x, 2) in undefined) {} } return x + ' ' + o.x; });
+t('in {a:1}', function (o) { var x = 10; with (o) { for (var x = (delete o.x, 2) in { a: 1 }) {} } return x + ' ' + o.x; });
+t('literal', function (o) { var x = 10; with (o) { for (var x = 3 in {}) {} } return x + ' ' + o.x; });
+t('fn name', function (o) { var x = 10; with (o) { for (var x = function () {} in {}) {} } return x + ' ' + o.x.name; });
+var L = [];
+var lo = { x: 1, get [Symbol.unscopables]() { L.push('unscopables'); return {}; } };
+with (lo) { for (var x = (L.push('init'), 2) in {}) {} }
+print(L.join(), lo.x);
+var gx = 10, go = { gx: 1 };
+with (go) { for (var gx = (delete go.gx, 2) in {}) {} }
+print(gx, go.gx);"#
+        ),
+        lines(&[
+            "in {} 10 2",
+            "in null 10 2",
+            "in undefined 10 2",
+            "in {a:1} 10 a",
+            "literal 10 3",
+            "fn name 10 x",
+            "unscopables,init 2",
+            "10 2",
+        ])
+    );
+}

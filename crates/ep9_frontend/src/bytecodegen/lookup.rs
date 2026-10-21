@@ -36,7 +36,7 @@
 //! (§13.15.5.3-6, §8.6.3, §8.6.4; `pattern.rs`).
 //!
 //! Callers: `expr.rs` (`assignment`, `update`, `get_prepared`, `put_prepared`), `stmt.rs`
-//! (`var_decl`) and `pattern.rs` (`prepare_element`, the shorthand property).
+//! (`var_initializer`: `var x = v` and the Annex B.3.5 `for (var x = v in o)` head) and `pattern.rs` (`prepare_element`, the shorthand property).
 //! `StaLookupSlot` (which resolves at the store) stays where no code runs between the
 //! reference and the store, so both orders give the same result: a plain `=` or `var x =`
 //! whose value is a literal or a function ([`runs_no_code`]), and a plain identifier head of
@@ -321,6 +321,16 @@ mod tests {
         let lines = code("with (o) { x++; }");
         assert!(at(&lines, resolve) < at(&lines, load), "{lines:#?}");
         assert!(at(&lines, load) < at(&lines, store), "{lines:#?}");
+        // Annex B.3.5 `for (var x = v in o)`: the initializer the same way; the store of
+        // each key (after ForInNext) keeps StaLookupSlot.
+        let lines = code("with (o) { for (var x = f() in {}); }");
+        assert!(at(&lines, resolve) < at(&lines, call), "{lines:#?}");
+        assert!(at(&lines, call) < at(&lines, store), "{lines:#?}");
+        assert!(at(&lines, store) < at(&lines, "ForInNext"), "{lines:#?}");
+        assert!(
+            at(&lines, "ForInNext") < at(&lines, "StaLookupSlot"),
+            "{lines:#?}"
+        );
     }
 
     /// A value that runs no code keeps the one-step `StaLookupSlot` (both orders agree).
