@@ -19,7 +19,7 @@ IDs used here: D2, D3, D6, D12; H28, H36; P1; RX1; M0-M5, M8; LICENSE, REMOTE-CI
 | NOTICE file | None, for ep9's own code and for every crate in the tree (`ep9_math` included). So Apache-2.0 §4(d) adds no duty for ep9's users |
 | Third-party code copied into the tree | Listed in `THIRD-PARTY-LICENSE` with its licence text (the oxc and rolldown layout). The PR that copies or ports the code adds the entry |
 | Cargo dependency notices | Release builds ship a notice file that `cargo about generate` makes from `Cargo.lock` (tested offline on the M0 graph, 2026-10-20). Not needed before the first binary release |
-| Crate manifests | `[workspace.package] license = "MIT OR Apache-2.0"`; each member `license.workspace = true` (the `crates/*` members have it; the `tools/*` members follow after the current tools/ work). Spikes and `tools/ep9-typecheck` state the same expression |
+| Crate manifests | `[workspace.package] license = "MIT OR Apache-2.0"`; each member `license.workspace = true`. On 2026-10-21 all 10 members have it (7 in `crates/*`, 3 in `tools/*`; `cargo metadata --locked`). Each spike has its own `[workspace]` and states `license = "MIT OR Apache-2.0"` (`sp-dispatch`, `sp-gc`, `sp-jit-mem`). `tools/ep9-typecheck` (not created yet) states the same expression |
 | Contributions | Inbound = outbound. README clause: a contribution is dual licensed as above, with no extra terms |
 | Licence check | `cargo deny check licenses` with a root `deny.toml` on every PR. Allowed today: MIT, Apache-2.0, Apache-2.0 WITH LLVM-exception, BSL-1.0, Unicode-3.0. Add an id only in the PR that adds a crate that needs it. Never: GPL, LGPL, AGPL, SSPL. MPL-2.0 only with a per-crate exception |
 
@@ -70,6 +70,8 @@ IDs used here: D2, D3, D6, D12; H28, H36; P1; RX1; M0-M5, M8; LICENSE, REMOTE-CI
 4. These pass on the host: `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo test --workspace --locked`; `cargo run --release --locked -p ep9_test262 -- parse`; `bash .github/scripts/dep-guards.sh`; `actionlint .github/workflows/ci.yml`; `cargo deny check licenses`.
 5. `git add -A --dry-run` lists no build output, no `third_party/<name>/` checkout, no file over 1 MB, and no secret (scan for key, token and password patterns).
 6. The commit carries the attribution trailer. The push is `git push -u origin main` over ssh.
+
+The user gave the instruction on 2026-10-20: "You are free to create repo, keep it private first" ([decisions-log §7](../decisions-log.md#7-2026-10-21-h15-dispatch-on-x86-64-sp-dispatch-reopen), row REMOTE-CI (note), corrected 2026-10-21).
 
 After the push: set the merge settings, create the label `ci:full`, and start one full run with `gh workflow run ci.yml --ref main`. The full run gives the "CI green on 4 targets" evidence for the M0 week-1 exit. Expect cold caches.
 
@@ -156,7 +158,7 @@ So `.github/CODEOWNERS` lists the owner on the contract paths, the decision file
 | Rule | Decision |
 |---|---|
 | Who posts | Only the user, by hand. Agents never create issues, PRs, comments, reactions or reviews on any public repository, and never drive the user's account for it |
-| Drafts | In this private repo: `docs/upstream/<project>-<slug>.md`, one per request. The folder and its index (§5.1) are created with the first draft |
+| Drafts | In this private repo: `docs/upstream/<project>-<slug>.md`, one per request. The folder and its index exist since 2026-10-21 ([docs/upstream/README.md](../upstream/README.md)) |
 | A draft is "ready" when | (1) a minimal repro runs on the pinned version (oxc `=0.155.0`) and on upstream main of the draft date, and an agent that did not write it reproduced it; (2) it names the ep9 need (milestone, gate) and the local workaround; (3) it stands alone: no ep9 internals, no private links, nothing that reveals unannounced plans beyond the need itself |
 | When a draft goes to the user | Only if the need is concrete and verified and one of: the local workaround fails; the local patch count would pass the cap of 3 (gate P1); or the need is due within the next milestone. Ready drafts appear in the next status report as "ready to post", as a statement |
 | Default meanwhile | Work with the local workaround or a local patch through `third_party/patches/oxc` (≤ 3, gate P1). No work waits on a post |
@@ -169,16 +171,16 @@ Status runs: draft -> ready (all 3 checks pass) -> handed over (in a status repo
 
 | File | Project | Upstream ref | ep9 need (milestone, gate) | Local workaround | Status |
 |---|---|---|---|---|---|
-| `oxc-eval-parse-options.md` | oxc | #11793 | Eval-context early errors; M1 exit; P1 | Nova-style wrapper parse + post-checks, then a local patch | not started |
-| `oxc-depth-limit.md` | oxc | #21953, #24375 | Depth error instead of abort; M1 exit; P1 | Bracket pre-scan, sized stack, AST-depth pass (M0) | not started |
-| `oxc-function-constructor.md` | oxc | none yet | Parse Function() parameters and body apart; M1 exit | Nova's single-script check | not started |
+| [`oxc-eval-parse-options.md`](../upstream/oxc-eval-parse-options.md) | oxc | #11793 | Eval-context early errors; M1 exit; P1 | Nova-style wrapper parse + post-checks, then a local patch | draft (2026-10-21) |
+| [`oxc-depth-limit.md`](../upstream/oxc-depth-limit.md) | oxc | #21953, #24375 | Depth error instead of abort; M1 exit; P1 | Bracket pre-scan, sized stack, AST-depth pass (M0) | draft (2026-10-21) |
+| [`oxc-function-constructor.md`](../upstream/oxc-function-constructor.md) | oxc | none yet | Parse Function() parameters and body apart; M1 exit | Nova's single-script check | draft (2026-10-21) |
 
 Draft template (fields): project and ref; status; ep9 need (milestone, gate, due date); workaround and local patch count after it (n/3); verified by (an agent role that did not write it, date); repro on the pinned version; repro on upstream main (date, commit); standalone text to post.
 
 ## 6. Line endings
 
 - Root `.gitattributes`: `* text=auto eol=lf`, `*.patch -text`, CRLF for `*.bat`, `*.cmd`, `*.ps1`, and a binary list. All 187 files of the M0 tree stage as LF, also with `core.autocrlf=true` (simulated 2026-10-20). One file changes: `docs/research/artifacts/tsrs-conformance/results/summary.csv` has CRLF in the work tree (Python csv output) and is stored as LF.
-- The attributes do not reach the nested checkouts under `third_party/<name>/`: git reads `.gitattributes` only up to the top of each work tree. So CI keeps `git config --global core.autocrlf false`, and `scripts/sync-lib.sh` sets `core.autocrlf=false` in each checkout it creates (follow-up).
+- The attributes do not reach the nested checkouts under `third_party/<name>/`: git reads `.gitattributes` only up to the top of each work tree. So CI keeps `git config --global core.autocrlf false`, and `scripts/sync-lib.sh` sets `core.autocrlf=false` in each checkout on every run, before the stamp check (done 2026-10-21, PR #1).
 - A test file that needs CR or CRLF bytes gets its own `-text` line in the PR that adds it.
 
 ## 7. Evidence

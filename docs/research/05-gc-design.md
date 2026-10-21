@@ -83,7 +83,7 @@ EASY TO CHANGE: collection algorithm per stage, pacing heuristics, slow-path bar
 
 ## Findings
 - [high] V8 (main, 2026-10-20) still uses the parallel Scavenger (semi-space copying) as its default young-gen collector. MinorMS (non-moving young-gen mark-sweep) is an experimental flag, off by default. Sticky mark bits are a build flag, off by default. Chromium's gin layer has no MinorMS feature switch (only kV8ScavengerHigherCapacity, disabled by default).
-  EVIDENCE: v8/v8@8f6ac1ce src/flags/flag-definitions.h:3865 `DEFINE_EXPERIMENTAL_FEATURE(minor_ms, ...)` (macro at :309-311 sets default false); :3889 sticky_mark_bits = V8_ENABLE_STICKY_MARK_BITS_BOOL; BUILD.gn:507 `v8_enable_sticky_mark_bits = false`; chromium gin/gin_features.cc:106 only kV8ScavengerHigherCapacity; v8_initializer.cc:416-419. Local copies in /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/gc/
+  EVIDENCE: v8/v8@8f6ac1ce src/flags/flag-definitions.h:3865 `DEFINE_EXPERIMENTAL_FEATURE(minor_ms, ...)` (macro at :309-311 sets default false); :3889 sticky_mark_bits = V8_ENABLE_STICKY_MARK_BITS_BOOL; BUILD.gn:507 `v8_enable_sticky_mark_bits = false`; chromium gin/gin_features.cc:106 only kV8ScavengerHigherCapacity; v8_initializer.cc:416-419. Local copies in scratchpad/work/gc/
 - [medium] V8 conservative stack scanning (CSS) is still not on by default. It is forced on only by the v8_enable_direct_handle build flag, which defaults to false. Chromium keeps a clang tool to migrate Handle<T> to DirectHandle<T>, so changing the rooting model is a multi-year, tool-assisted migration even for V8. Scavenger pinning for conservative roots exists (whole pages are quarantined and then promoted) but is off by default.
   EVIDENCE: flag-definitions.h:505-524 (`#ifdef V8_ENABLE_DIRECT_HANDLE ... conservative_stack_scanning true` else experimental; 'Do not use direct handles without conservative stack scanning'); :526 scavenger_conservative_object_pinning false; :558 scavenger_promote_quarantined_pages true; gni/v8.gni:212 `v8_enable_direct_handle = false`; chromium tools/clang/v8_handle_migrate/README.md
 - [high] In V8, CSS needs heap parsability and inner-pointer resolution: it finds the previous valid object via the marking bitmap, then walks forward using object sizes. With pointer compression it decompresses BOTH 32-bit halves of every stack word.
@@ -117,11 +117,11 @@ EASY TO CHANGE: collection algorithm per stage, pacing heuristics, slow-path bar
 - [high] Kiesel is written in Zig, not Rust, and uses bdwgc (Boehm, fully conservative). gc-arena uses 'mutation xor collection' with branded 'gc lifetimes: no GC while engine code is running, no moving, single-threaded. That does not fit an engine that must GC in the middle of builtins and JIT code.
   EVIDENCE: repos/kiesel@d3e8470 README.md:3,29, build.zig.zon:11-13; repos/gc-arena@5ea967a README.md:9-25,55-66,87-88
 - [high] EXPERIMENT (macOS arm64, rustc 1.99, opt-level 3, LTO) with a conservative scanner over optimized Rust code: (1) If callee-saved registers are not spilled first, refs held in registers are missed (S1, S2, S3 all MISSING). (2) LLVM strength reduction left only an interior pointer live across the safepoint (`ldr x8, [x20], #0x8`). After the last iteration that pointer equals the next object's start, so interior resolution is required and one-past-end pointers can blame the wrong object. (3) Compressed u32 refs are only found by scanning 32-bit halves, and two refs can share one 64-bit word. (4) NaN-boxed or high-tagged pointers are invisible unless the scanner untags them. (5) A ref stored only in a Rust Vec (malloc heap) is invisible, so explicit Global roots or traced containers are needed. With all registers spilled, every plain/interior/compressed case was found.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/gc/css-probe/src/main.rs (naked spill_and_scan trampoline; scenarios S1-S7); run output: spilled: S1 Exact, S2 Exact, S3 Interior, S4 CompLow, S5 CompLow/CompHigh, S6 MISSING, S7 MISSING; not spilled: S1/S2/S3/S7 MISSING; objdump of s3_loop
+  EVIDENCE: scratchpad/work/gc/css-probe/src/main.rs (naked spill_and_scan trampoline; scenarios S1-S7); run output: spilled: S1 Exact, S2 Exact, S3 Interior, S4 CompLow, S5 CompLow/CompHigh, S6 MISSING, S7 MISSING; not spilled: S1/S2/S3/S7 MISSING; objdump of s3_loop
 - [high] Concurrent marking in Rust needs every GC-visible field read and write to be atomic (Relaxed); otherwise it is a data race and UB. On aarch64 this is free: Relaxed AtomicU64 load and store compile to plain ldr and str. A JSC/MMTk-style header-byte barrier fast path is str + ldrb(host) + ldrb(threshold) + cmp + b.ls. A V8-style page-flag barrier is str + and + ldrb + tbz, plus a second check on the value's page.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/gc/atomics-codegen/lib.rs and lib.s (rustc 1.99 -C opt-level=3)
+  EVIDENCE: scratchpad/work/gc/atomics-codegen/lib.rs and lib.s (rustc 1.99 -C opt-level=3)
 - [high] Julia's experience retrofitting a moving GC (MMTk, ISMM'25): unreported 'dominated' roots, raw-pointer FFI and address-based hashing were the biggest obstacles. They used conservative pinning of stack and register roots, resolved through VO bits, and pinned objects that are hashed or exposed to FFI. 70-99% of objects stayed movable. Write barriers had to be lowered per GC plan in codegen.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/gc/pdf/julia-ismm25.txt lines ~540-700 (https://www.steveblackburn.org/pubs/papers/julia-ismm-2025.pdf)
+  EVIDENCE: scratchpad/work/gc/pdf/julia-ismm25.txt lines ~540-700 (https://www.steveblackburn.org/pubs/papers/julia-ismm-2025.pdf)
 - [medium] Running Rust Drop impls as GC finalizers causes soundness, performance and premature-finalization problems; Alloy (OOPSLA 2025) needed dedicated analyses to make it safe. A JS heap should therefore not hold Drop types and should run explicit, typed finalizers only.
   EVIDENCE: https://arxiv.org/abs/2504.01841 (Hughes & Tratt, 'Garbage Collection for Rust: The Finalizer Frontier'); read at abstract level only
 - [high] Engines that use precise native rooting need extra tooling to stay correct: V8 has GCMole, SpiderMonkey has its hazard analysis, and Nova relies on borrow-checker lifetimes. A library cannot produce Rust stack maps (rustc does not expose LLVM statepoints), so the realistic choices for Rust frames are handles/shadow stacks or CSS.
@@ -146,19 +146,19 @@ EASY TO CHANGE: collection algorithm per stage, pacing heuristics, slow-path bar
 - Not verified: up-to-date head-to-head numbers for MMTk StickyImmix/ConcurrentImmix against JSC or V8 collectors on JS-like workloads. None were found.
 
 ## Artifacts
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/gc/css-probe/src/main.rs
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/gc/css-probe/Cargo.toml
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/gc/atomics-codegen/lib.rs
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/gc/atomics-codegen/lib.s
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/gc/flag-definitions.h
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/gc/csv.h
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/gc/hwb.h
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/gc/hermes/Hades.md
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/gc/hermes/GCSafeCoding.md
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/gc/pdf/julia-ismm25.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/mmtk-core
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/oscars
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/yavashark
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/kiesel
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/gc-arena
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/mmtk-v8
+- scratchpad/work/gc/css-probe/src/main.rs
+- scratchpad/work/gc/css-probe/Cargo.toml
+- scratchpad/work/gc/atomics-codegen/lib.rs
+- scratchpad/work/gc/atomics-codegen/lib.s
+- scratchpad/work/gc/flag-definitions.h
+- scratchpad/work/gc/csv.h
+- scratchpad/work/gc/hwb.h
+- scratchpad/work/gc/hermes/Hades.md
+- scratchpad/work/gc/hermes/GCSafeCoding.md
+- scratchpad/work/gc/pdf/julia-ismm25.txt
+- scratchpad/repos/mmtk-core
+- scratchpad/repos/oscars
+- scratchpad/repos/yavashark
+- scratchpad/repos/kiesel
+- scratchpad/repos/gc-arena
+- scratchpad/repos/mmtk-v8

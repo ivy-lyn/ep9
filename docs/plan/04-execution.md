@@ -71,7 +71,7 @@ T2 (/T3)     ep9_opt       ---> T2 / T3 code                   optimized-AOT   (
 
 | Technique | Evidence |
 |---|---|
-| Macro-DSL handlers. Debug builds use `match`. Release uses sibling calls on aarch64 and the match loop on x86-64, with CI disassembly checks (tail exits; the x86-64 loop keeps a copied dispatch jump in each arm) and a deep-loop test. Nightly `become` is opt-in. At most 4 handler arguments (H15) | [R06] (Apple M): sibling call 1.3-1.5x faster than match on dispatch-bound code; the debug sibling-call build overflowed the stack. SP-Dispatch: aarch64 1.37-2.05x; on x86-64 LLVM already threads the match loop, and match / sibling time is 0.77-1.13 by CPU model ([H15 ADR](../adr/H15-interpreter-dispatch.md)). [P1] (SP-Dispatch): a 5th argument breaks the tail call on Win64 |
+| Macro-DSL handlers. Debug builds use `match`. Release uses sibling calls on every target, with CI disassembly checks (every tail handler ends in a tail jump) and a deep-loop test. On x86-64 the handlers use the SysV ABI on every OS. Nightly `become` is opt-in. At most 4 handler arguments (H15) | [R06] (Apple M): sibling call 1.3-1.5x faster than match on dispatch-bound code; the debug sibling-call build overflowed the stack. SP-Dispatch: aarch64 1.37-2.05x. T0: the x86-64 match loop is not threaded (1 dispatch jump), and sibling is 1.21-1.47x faster on 5 x86-64 models ([H15 ADR](../adr/H15-interpreter-dispatch.md)). [P1] (SP-Dispatch): a 5th argument breaks the tail call on Win64 |
 | pc, frame base and accumulator are handler arguments. Cx carries the dispatch table at a fixed offset | [R06]; [P1] (SP-Dispatch) |
 | Small fast paths. Slow paths are `#[cold] #[inline(never)]` runtime functions. T1, T2 and both AOT kinds call the same ones | [R06] |
 | Scope analysis puts locals that are not captured in registers. Contexts hold only captured variables | [R07] Boa +25% |
@@ -168,7 +168,7 @@ ep9_baseline / ep9_opt
 
 **Spikes.**
 - **Spike B (M0, month 2).** A 10-opcode template JIT measures the T0 -> JIT -> T0 round trip on each target.
-  - Keep native-stack JIT frames if one round trip costs ≤ 18 sibling-call dispatches on the same host (est.). Otherwise open an ADR for one unified VM stack.
+  - Keep native-stack JIT frames if one round trip costs ≤ 18 release-expansion dispatches of the loop kernel on the same host (est.). Otherwise open an ADR for one unified VM stack.
   - It also settles D21 (interpreter frame home; default: VM register stack + native control stack, Hermes model) [R14].
 - **SP-Unit (inside Spike B, +0.25 PM est.).** The same 10 opcodes go into a unit blob. It must load, call, unwind, survive a GC scan and fall back on a version mismatch. Gate: green on 4 targets.
 - **Spike C (M1, throwaway, 1.5-3 PM est.).** A small SSA compiler for 2-3 v8-v7 kernels on arm64. It reads T0 feedback and has one eager deopt from a native frame to a VM-stack frame. Gate: deopt correct under the tier-differential test; kernels ≥ 3x faster than T0 (est.).
@@ -335,6 +335,8 @@ lazy:  fuse pops -> mark dependent code -> swap return addresses on the stack ->
 - Security adds units, hint chaos and loader fuzzing.
 - Unchanged: tier targets, T0 techniques, thresholds, tier-order reasoning, Cranelift and LLVM verdicts for T1/T2.
 - Decisions 2026-10-20: H36 FP rules rewritten (CR target, `ep9_math`, closed inline list, `clippy.toml` + `xtask fp-check`); H11 emitter rule and elision E1-E3; H24/H29/H31 debugger, interrupt-poll and fuse rules; D17 (d) VERIFIED candidate [R18].
+- Clarified 2026-10-21 ([decisions-log §7](../decisions-log.md#7-2026-10-21-h15-dispatch-on-x86-64-sp-dispatch-reopen), D21-UNIT): the D21 threshold for Spike B counts release-expansion dispatches of the SP-Dispatch loop kernel on the same host, not "sibling-call dispatches". The number 18 does not change.
+- Amended 2026-10-21 ([decisions-log §10](../decisions-log.md#10-2026-10-21-pr-1-review-fixes-ci-gates-and-h15-on-t0), H15-X64-T0): §2 T0 release uses sibling calls on every target, not the match loop on x86-64.
 
 ## Evidence tags
 

@@ -25,8 +25,8 @@
 //! | A named function expression has its own name environment | the name sits with the parameters | a parameter `g` and the name `g` collide |
 //! | Annex B block functions have a block binding and a var binding | one binding, moved to the var scope | the block binding and its TDZ-free copy semantics are lost |
 //!
-//! oxc ids are used only as lookup keys for BytecodeGen ([`ScopeAnalysis::reference`],
-//! [`ScopeAnalysis::scope_for`]); they never leave this crate (H1).
+//! oxc ids are used only as lookup keys for BytecodeGen (`ScopeAnalysis::reference`,
+//! `ScopeAnalysis::scope_for`); they never leave this crate (H1).
 
 use std::fmt;
 

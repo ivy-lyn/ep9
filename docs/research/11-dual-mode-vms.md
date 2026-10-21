@@ -78,7 +78,7 @@ For ep9's AOT+JIT idea, copy the shared-optimizer pattern and make no broad clai
 - Megamorphic: TypedDataPoly.mega 0.50, Iterators.poly 0.69 (AOT's global dispatch table beats JIT's megamorphic call path).
 - Dynamic, a call-overhead microbenchmark with never-inline: 0.67.
 - Binary sizes: dartvm (JIT VM) 41.5 MB vs dartaotruntime 4.8 MB; a Richards AOT exe is 5.7 MB.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/dartbench/dart_jit_vs_aot.log, dart_summary.txt and richards_o3.txt (same dir). Runner: run.sh; analyzer: ../analyze_dart.py. The machine was shared; load average reached about 70 on 18 cores during part of the run, so treat single-benchmark ratios as ±15%. The polymorphism pattern is a 2x effect and holds across reps.
+  EVIDENCE: scratchpad/work/dual-mode-vms/dartbench/dart_jit_vs_aot.log, dart_summary.txt and richards_o3.txt (same dir). Runner: run.sh; analyzer: ../analyze_dart.py. The machine was shared; load average reached about 70 on 18 cores during part of the run, so treat single-benchmark ratios as ±15%. The polymorphism pattern is a 2x effect and holds across reps.
 - [medium] Dart's AOT runtime gained an escape hatch for code that is not in the closed world: dart2bytecode emits bytecode for 'dynamic modules', executed by an interpreter inside the VM/AOT runtime (experimental). This mirrors Hermes's AOT-plus-interpreter mix.
   EVIDENCE: gh api repos/dart-lang/sdk/contents/pkg/dart2bytecode/docs/bytecode.md ('Dart bytecode is a binary representation of dynamic modules on the VM/AOT ... executed by the VM and AOT runtime'); runtime/vm/interpreter.cc is 180 KB; issue 63381 (2026-05) is about the KBC interpreter in vm/aot.
 - [high] Oracle GraalVM's own numbers (Spring PetClinic, 512 MB heap, G1, native-image with PGO vs GraalVM CE with C2):
@@ -98,7 +98,7 @@ Against Graal JIT (same compiler): O2 1.10, PGO 0.97.
 - First iteration over steady state: C2 2.07x geomean (DeltaBlue 8.2x, Havlak 4.0x); Graal JIT up to 12x; native-image 0.9-1.4x.
 - Median max RSS: C2 870 MiB, Graal JIT 957 MiB, native-image 57-58 MiB (default heap policies differ).
 - Binaries: 6.7 MB (O2), 6.3 MB (PGO), 43 MB (instrumented). Builds took 12-26 s.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/awfy/awfy_results_all.txt, awfy_summary.txt, awfy_summary2.txt; scripts run_awfy.sh and build_ni.sh; build logs in ni/build-*.log ('optimization level: 2 ... PGO: ML-inferred' and 'optimization level: 3 ... PGO: user-provided'). The PGO profile came from the same benchmarks, so it is a best case. Rep-to-rep spread had median 11% (max 36%). A second pass at load about 9 reproduced the geomeans (0.93, 1.02, 0.92).
+  EVIDENCE: scratchpad/work/dual-mode-vms/awfy/awfy_results_all.txt, awfy_summary.txt, awfy_summary2.txt; scripts run_awfy.sh and build_ni.sh; build logs in ni/build-*.log ('optimization level: 2 ... PGO: ML-inferred' and 'optimization level: 3 ... PGO: user-provided'). The PGO profile came from the same benchmarks, so it is a best case. Rep-to-rep spread had median 11% (max 36%). A second pass at load about 9 reproduced the geomeans (0.93, 1.02, 0.92).
 - [high] Native-image AOT code is not speculative or deoptimizable. In SubstrateVM, the source of a deoptimization is always runtime-compiled code (Truffle JIT inside the image) and the target is always an AOT-compiled method. So AOT code serves as the deopt target for JIT code, which is a reusable pattern: an AOT-compiled interpreter or baseline acting as the deopt landing pad.
   EVIDENCE: oracle/graal substratevm/src/com.oracle.svm.core/src/com/oracle/svm/core/deopt/Deoptimizer.java class comment: 'The method to deoptimize (= the source method) is either a specialized runtime compiled method or an AOT-compiled test method ... The target method is always an AOT-compiled method.'
 - [high] Project Leyden status (openjdk.org, page updated 2026-10-01):
@@ -117,7 +117,7 @@ JEP 544 design: AOT code is produced by the same C1/C2 in a training run, coexis
 - On compute-heavy AWFY Havlak, the first iteration fell 99 to 68 ms (-31%), but steady state over iterations 60-120 got 20-40% slower (25.6-27.7 ms to 32.6-38.5 ms).
 - With -XX:-AOTReplayTraining (cached classes, no replayed profiles), steady state returned to 26.8-27.4 ms and the first-iteration gain mostly vanished (92-98 ms).
 - Conclusion: profile replay sped up warmup but locked in worse steady-state code for this workload.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/leyden/leyden_results.txt, leyden_summary.txt, havlak120_results.txt, run_leyden.sh. n=3-5. Shared, noisy machine. Root cause not investigated beyond the AOTReplayTraining toggle.
+  EVIDENCE: scratchpad/work/dual-mode-vms/leyden/leyden_results.txt, leyden_summary.txt, havlak120_results.txt, run_leyden.sh. n=3-5. Shared, noisy machine. Root cause not investigated beyond the AOTReplayTraining toggle.
 - [high] .NET:
 - ReadyToRun docs: 'Ahead-of-time generated code is not as highly optimized as code produced by the JIT. To address this issue, tiered compilation will replace commonly used ReadyToRun methods with JIT-generated methods.' R2R assemblies are 2-3x larger.
 - .NET 8 added an R2R path: R2R (optimized, uninstrumented) → tier1-instrumented → tier1 with PGO.
@@ -143,7 +143,7 @@ Microsoft's ASP.NET 8 NativeAOT launch post gives startup -70%/-76%, size -89%/-
 - [high] ART's AOT compiler uses offline inline caches from profiles (receiver types per dex pc, megamorphic flag), but deliberately emits polymorphic inlining with a fallback and no deopt. Its stated reasons: a deopt in AOT code may never refresh the profile, leading to 'forever deoptimizations'; and for processes 'not allowed to JIT ... we will run interpreted code for the rest of the lifetime'. The JIT, by contrast, uses runtime inline caches and deopt.
   EVIDENCE: android.googlesource.com platform/art compiler/optimizing/inliner.cc HInliner::UseOnlyPolymorphicInliningWithNoDeopt and TryInlineFromInlineCache (GetInlineCacheAOT vs GetInlineCacheJIT); libprofile/profile/profile_compilation_info.h (inline cache encoding).
 - [high] V8 is AOT inside a JIT engine. All builtins and bytecode handlers are compiled at build time by V8's own compiler pipeline (mksnapshot writes embedded.cc as .byte directives into .text), shared across isolates and processes. This cut median V8 heap by 19%. It first cost Speedometer2 5%, reduced to about 0.5% via root-register-relative loads and pc-relative builtin-to-builtin calls. I measured node 24.22 / V8 13.6 arm64: 2,384 Builtins_* symbols in .text, including 515 bytecode-handler variants (normal/Wide/ExtraWide) and 82 *_Baseline builtins called by Sparkplug code. Embedded blob: 1.87 MiB code + 0.10 MiB data.
-  EVIDENCE: https://v8.dev/blog/embedded-builtins ; nm on /Users/brooklyn/.vite-plus/js_runtime/node/24.22.0/bin/node, with v8_Default_embedded_blob_code_size_ = 1,958,784 read from __DATA_CONST; symbol list in .../dual-mode-vms/v8-builtins.txt.
+  EVIDENCE: https://v8.dev/blog/embedded-builtins ; nm on ~/.vite-plus/js_runtime/node/24.22.0/bin/node, with v8_Default_embedded_blob_code_size_ = 1,958,784 read from __DATA_CONST; symbol list in .../dual-mode-vms/v8-builtins.txt.
 - [high] Calls between AOT and JIT code have a placement cost. V8 9.1 temporarily un-embedded builtins on desktop: JIT code calling builtins more than 4 GiB away causes indirect-call mispredictions (Apple M1 never predicts targets beyond 4 GiB; arm64 direct calls reach only 128 MiB). So V8 copied builtins into the pointer-compression cage at +1.2-1.4 MiB per instance. Also, TurboFan re-implements key builtins as inline graph reductions (js-call-reducer.cc: ReduceArrayMap, ReduceArrayForEach, ReduceArrayFilter, ReduceArrayPrototypePush), because a call into an AOT builtin is opaque to the optimizer.
   EVIDENCE: https://v8.dev/blog/short-builtin-calls (2021-05-06); gh api repos/v8/v8/contents/src/compiler/js-call-reducer.cc (414 KB; lines 4117, 4190, 4217, 6585).
 - [high] V8's code cache stores bytecode, not machine code. Caching after top-level execution cut parse and compile time by 20-40%. Ignition bytecode is '50% to 25% the size of the equivalent baseline machine code'. Prior research also found V8 --jitless costs about 40% on Speedometer2 and about 80% on Web Tooling, and measured 1.33x QuickJS on Octane vs 25.6x for full V8.
@@ -192,25 +192,25 @@ Hermes lead (2025): 'compiling untyped JS to native AOT isn't a performance impr
 - Code-size budget: Dart's O3 inlining gave +10-25% speed for +13-26% size. What inlining/size policy fits ep9's AOT output when shipping per-app native code alongside the engine?
 
 ## Artifacts
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/dartbench/dart_jit_vs_aot.log
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/dartbench/dart_summary.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/dartbench/richards_o3.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/dartbench/run.sh
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/awfy/awfy_results_all.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/awfy/awfy_summary.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/awfy/awfy_summary2.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/awfy/run_awfy.sh
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/awfy/build_ni.sh
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/leyden/leyden_results.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/leyden/leyden_summary.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/leyden/havlak120_results.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/leyden/run_leyden.sh
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/luajit/luajit_summary.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/v8-builtins.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/analyze_awfy.py
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/analyze_dart.py
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/dl/papers/serrano-icfp21.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/web/jep544.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/web/oracle-graalvm-jdk21.md
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/web/hermes-static_h.h
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/dual-mode-vms/web/hermes-blog-2025-11-02-hermes-compilation-runtime-modes.md
+- scratchpad/work/dual-mode-vms/dartbench/dart_jit_vs_aot.log
+- scratchpad/work/dual-mode-vms/dartbench/dart_summary.txt
+- scratchpad/work/dual-mode-vms/dartbench/richards_o3.txt
+- scratchpad/work/dual-mode-vms/dartbench/run.sh
+- scratchpad/work/dual-mode-vms/awfy/awfy_results_all.txt
+- scratchpad/work/dual-mode-vms/awfy/awfy_summary.txt
+- scratchpad/work/dual-mode-vms/awfy/awfy_summary2.txt
+- scratchpad/work/dual-mode-vms/awfy/run_awfy.sh
+- scratchpad/work/dual-mode-vms/awfy/build_ni.sh
+- scratchpad/work/dual-mode-vms/leyden/leyden_results.txt
+- scratchpad/work/dual-mode-vms/leyden/leyden_summary.txt
+- scratchpad/work/dual-mode-vms/leyden/havlak120_results.txt
+- scratchpad/work/dual-mode-vms/leyden/run_leyden.sh
+- scratchpad/work/dual-mode-vms/luajit/luajit_summary.txt
+- scratchpad/work/dual-mode-vms/v8-builtins.txt
+- scratchpad/work/dual-mode-vms/analyze_awfy.py
+- scratchpad/work/dual-mode-vms/analyze_dart.py
+- scratchpad/work/dual-mode-vms/dl/papers/serrano-icfp21.txt
+- scratchpad/work/dual-mode-vms/web/jep544.txt
+- scratchpad/work/dual-mode-vms/web/oracle-graalvm-jdk21.md
+- scratchpad/work/dual-mode-vms/web/hermes-static_h.h
+- scratchpad/work/dual-mode-vms/web/hermes-blog-2025-11-02-hermes-compilation-runtime-modes.md

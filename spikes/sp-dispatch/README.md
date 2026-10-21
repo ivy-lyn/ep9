@@ -5,25 +5,29 @@ Gate source: [docs/plan/09-milestones.md](../../docs/plan/09-milestones.md) sect
 [H15 ADR](../../docs/adr/H15-interpreter-dispatch.md). Evidence: [R06], [P1],
 [x64 measurements](../../docs/measurements/2026-10-21-sp-dispatch-x64.md).
 
-**Release expansion per target (H15, 2026-10-21):** sibling calls on aarch64; the match loop on
-x86-64, where LLVM copies the dispatch jump into every match arm (threaded code). `Variant::RELEASE`
-in `src/vm.rs` holds the choice. The first CI run failed "sibling >= 1.2x faster than match" on
-linux-x64 (0.812); that reopened H15 (DISPATCH-GATE rule).
+**Release expansion (H15, 2026-10-21):** sibling calls on every target. `Variant::RELEASE` in
+`src/vm.rs` holds the choice. History: the first CI run failed "sibling >= 1.2x faster than match"
+on linux-x64 (0.812), and H15 made the match loop the x86-64 release expansion, because LLVM copies
+the dispatch jump into every arm of this spike's loop (threaded code). The real T0 loop (157
+opcodes) is not threaded, and sibling calls were faster on every sampled x86-64 model, so H15
+reopened again the same day ([T0 measurements](../../docs/measurements/2026-10-21-t0-dispatch-x64.md)).
 
 | Gate id | Kind | Rule | Result |
 |---|---|---|---|
 | dsl-3-expansions | structural | 20 opcodes defined once; match, sibling call and `become` build and agree | pass (4 CI targets) |
 | tail-exits-a64, -x64-sysv, -x64-win64 | structural | every `tail` handler of sibling and `become` ends in a tail jump; 0 non-tail exits | pass (binaries; staticlib objects on 5 targets) |
 | handler-args | structural | <= 4 handler arguments, none passed in memory | pass (compile-time trait check + LLVM IR on 5 targets) |
-| match-loop-x64-sysv, -x64-win64 | structural | the x86-64 match loop has a dispatch jump for >= half of the 19 fast tail handlers and no stack access away from a call, the entry or an exit; a build without tail duplication must fail | pass: 16 jumps; negative fails as expected |
+| match-loop-x64-sysv, -x64-win64 | structural | the spike's x86-64 match loop has a dispatch jump for >= half of the 19 fast tail handlers and no stack access away from a call, the entry or an exit; a build without tail duplication must fail. Still blocking: the H15 threaded-loop rule applies to SP-Dispatch, not to T0 (a report there) | pass: 16 jumps; negative fails as expected |
 | sibling-vs-cgoto-a64 | speed | sibling time <= 1.25x cgoto.c (geomean of 3 kernels), <= 1.5x per kernel | pass: 0.975 (2026-10-21, provisional host) |
 | sibling-vs-match-a64 | speed | match time >= 1.2x sibling time (geomean), >= 1.0x per kernel | 1.489, void (call IQR 5.0%); 2026-10-20: 1.365 |
-| match-vs-cgoto-x64-sysv, -x64-win64 | speed | match time <= 1.25x cgoto.c (geomean), <= 1.5x per kernel | sysv: pass 1.128 (Xeon 8370C, twice); win64: void, loop 1.591 on EPYC 7763 (H15-Q3) |
+| sibling-vs-cgoto-x64-sysv, -x64-win64 | speed | sibling time <= 1.25x cgoto.c (geomean), <= 1.5x per kernel | not yet run as a gate. Ratio of medians in the diag runs: sysv 0.983-1.196 (§3 of the x64 measurements), win64 0.975 and 1.125; win64 on EPYC 7763 1.233, max kernel 1.381 (H15-Q3) |
 
 - Speed verdicts follow docs/plan/10-quality.md section 3 (PERF-NOISE): paired ratios per round,
   median, order-statistic interval (pass or fail only if the whole interval is on one side, else
-  marginal), void if a kernel IQR > 5%. On x86-64 bench also prints `REPORT sibling-vs-match`
-  (not a gate there).
+  marginal), void if a kernel IQR > 5%.
+- Reports, never gates: bench prints `REPORT match-vs-cgoto` on every target (the x86-64 release
+  gate until the T0 result; sysv: 1.128 on Xeon 8370C, twice; win64: void, loop 1.591 on EPYC
+  7763) and `REPORT sibling-vs-match` on x86-64.
 - CI runs `SP_SPEED=report` with 31 rounds: structural gates block; speed gates give warnings, a
   job summary and the artifact `sp-dispatch-gate-<target>` (`bench.json` with every sample).
 
@@ -181,10 +185,11 @@ with its own target lookup.
 ## Findings for H15
 
 0. (2026-10-21) On x86-64 LLVM copies the match dispatch into every arm (16 indirect jumps;
-   1 on aarch64). So the x64 match loop is already threaded, and sibling calls gain nothing
-   there: match / sibling time is 0.77-1.13 by CPU model. The x86-64 release expansion is the
-   match loop; its shape is fragile (the dispatch-counting copy has 1 jump), so a blocking
-   disassembly check guards it.
+   1 on aarch64). So this spike's x64 match loop is already threaded, and sibling calls gain
+   nothing there: match / sibling time is 0.77-1.13 by CPU model. The shape is fragile (the
+   dispatch-counting copy has 1 jump). Superseded for T0 the same day: the T0 loop has 1
+   dispatch jump on x86-64, sibling is 1.21-1.47x faster (geomean, 5 models), and the release
+   expansion is sibling calls on every target (H15 ADR).
 
 1. Stable sibling calls reach C computed-goto speed on a64 (0.998x) and beat the match loop
    by 1.365x. Nightly `become` is within 2% of them. Stable is enough for T0.

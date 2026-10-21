@@ -3,7 +3,7 @@
 - These 18 reports are the evidence base for the plan. The plan cites them by tag: [R01] = `01-*.md`, and so on.
 - Reports 01-09 come from the JIT research round. Reports 10-17 come from the AOT round. Report 18 comes from the sound-regions round. It was revised in place after an adversarial review, so it has no separate refutation report.
 - Two rules settle conflicts: [R17] corrects [R16], and [R09] arbitrates among [R01]-[R08].
-- Paths inside the reports point into a session scratchpad. They were session-local and no longer exist. Cite the tag, not the path.
+- Paths inside the reports point into a session scratchpad. They were session-local and no longer exist. Cite the tag, not the path. Since 2026-10-21 they read `scratchpad/...`, `~/...` (the home folder of the research host) or a repo-relative path, without the absolute session prefix. A file that was copied into [artifacts/](artifacts/README.md) is linked there.
 - The plan starts at [../PLAN.md](../PLAN.md).
 - Reusable harnesses are kept in [artifacts/](artifacts/README.md): the tsrs type oracle, the tsrs/oxc test262 scorer and, since 2026-10-21, the R18 sound-regions scripts and cited results ([artifacts/sound-regions/](artifacts/sound-regions/README.md)) and the inputs of the 2026-10-20 decision round ([artifacts/decide/](artifacts/decide/README.md)).
 

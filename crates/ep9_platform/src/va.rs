@@ -44,7 +44,7 @@ pub const DEFAULT_CAGE_ALIGN: usize = 4 << 30;
 /// Lowest default cage base. 64-bit macOS maps a 4 GiB zero page below this address.
 pub const DEFAULT_MIN_BASE: usize = 4 << 30;
 /// tsrs (in-process type checking) maps this fixed range on unix and aborts if it cannot
-/// [R09]. The default cage never overlaps it.
+/// \[R09\]. The default cage never overlaps it.
 pub const TSRS_RESERVATION: Range<usize> = 0x4001_0000_0000..0x4001_0000_0000 + (32 << 30);
 
 /// Largest distance a direct call or branch can reach on this architecture.

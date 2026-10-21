@@ -83,20 +83,20 @@ For running .ts directly, compile from the TS AST and skip type nodes. Use oxc_t
 - Is parallel parsing of many modules needed? I did not measure thread scaling; both parsers can parse on several threads (oxc: one Allocator per thread; tsrs: thread arenas or Regions).
 
 ## Artifacts
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-perf/harness/Cargo.toml
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-perf/harness/src/lib.rs
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-perf/harness/src/bin/bench.rs
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-perf/harness/src/bin/once.rs
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-perf/harness/src/bin/probe.rs
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-perf/harness/src/bin/deep.rs
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-perf/transpile/src/main.rs
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-perf/run_bench.py
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-perf/results.json
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-perf/probe_literals.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-perf/probe_early.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-perf/probe_early_verbose.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-perf/probe_regex.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-perf/probe_shape.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-perf/probe_scope.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-perf/probe_reparse.txt
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/parser-perf/corpus
+- scratchpad/work/parser-perf/harness/Cargo.toml
+- scratchpad/work/parser-perf/harness/src/lib.rs
+- scratchpad/work/parser-perf/harness/src/bin/bench.rs
+- scratchpad/work/parser-perf/harness/src/bin/once.rs
+- scratchpad/work/parser-perf/harness/src/bin/probe.rs
+- scratchpad/work/parser-perf/harness/src/bin/deep.rs
+- scratchpad/work/parser-perf/transpile/src/main.rs
+- scratchpad/work/parser-perf/run_bench.py
+- scratchpad/work/parser-perf/results.json
+- scratchpad/work/parser-perf/probe_literals.txt
+- scratchpad/work/parser-perf/probe_early.txt
+- scratchpad/work/parser-perf/probe_early_verbose.txt
+- scratchpad/work/parser-perf/probe_regex.txt
+- scratchpad/work/parser-perf/probe_shape.txt
+- scratchpad/work/parser-perf/probe_scope.txt
+- scratchpad/work/parser-perf/probe_reparse.txt
+- scratchpad/work/parser-perf/corpus

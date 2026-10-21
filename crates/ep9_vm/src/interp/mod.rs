@@ -11,11 +11,11 @@
 //!
 //! | Rule (H15) | Where |
 //! |---|---|
-//! | Handler = `unsafe fn(&mut Cx, pc, fp, acc) -> u64`, ≤ 4 register-wide args | [`Handler`], `dsl::AtMostFourRegArgs` |
+//! | Handler = `unsafe fn(&mut Cx, pc, fp, acc) -> u64`, ≤ 4 register-wide args; x86-64: `extern "sysv64-unwind"` on every OS | [`Handler`], `dsl::AtMostFourRegArgs`, `dsl::handler!` |
 //! | `Cx` holds the 256-entry dispatch table at offset 0 | [`Cx`] const assert |
 //! | Every runtime call is in a cold block; the fast handler reaches it by a tail jump | `ops.rs` `cold` bodies, `<op>_cold` handlers |
 //! | Symbols `ep9h__<exp>__<tail\|exit>__<Op>`, match loop `ep9loop__match__run` | `dsl.rs` (read by `cargo xtask disasm-check`) |
-//! | Debug builds use the match loop; release: sibling on aarch64, match on x86-64 | [`Dispatch::DEFAULT`] |
+//! | Debug builds use the match loop; release builds use sibling calls on every target | [`Dispatch::DEFAULT`] |
 //!
 //! Handlers return the accumulator bits to the host only through the VM-internal `Exit`
 //! opcode (byte 0xFF, never in verified bytecode). 0 means "exception pending".
@@ -31,7 +31,14 @@ use crate::runtime::Runtime;
 use crate::unit::FunctionInfo;
 
 /// A handler: `(cx, pc, fp, acc) -> result` (H15). The result is the accumulator bits the run
+/// returns (0 = exception pending). x86-64 handlers use the SysV ABI on every OS (see
+/// `dsl::handler!`); other targets use the Rust ABI.
+#[cfg(target_arch = "x86_64")]
+pub(crate) type Handler =
+    unsafe extern "sysv64-unwind" fn(&mut Cx, *const u8, *mut u64, u64) -> u64;
+/// A handler: `(cx, pc, fp, acc) -> result` (H15). The result is the accumulator bits the run
 /// returns (0 = exception pending).
+#[cfg(not(target_arch = "x86_64"))]
 pub(crate) type Handler = unsafe fn(&mut Cx, *const u8, *mut u64, u64) -> u64;
 
 /// VM-internal opcode: leave the dispatch and return the accumulator to Rust.
@@ -66,13 +73,11 @@ pub enum Dispatch {
 }
 
 impl Dispatch {
-    /// The release expansion of this target (H15 ADR, 2026-10-21): sibling calls on aarch64,
-    /// the match loop on x86-64.
-    pub const RELEASE: Dispatch = if cfg!(target_arch = "x86_64") {
-        Dispatch::Match
-    } else {
-        Dispatch::Sibling
-    };
+    /// The release expansion (H15 ADR, T0 result of 2026-10-21): sibling calls on every target.
+    /// On x86-64 the T0 match loop has one dispatch jump (LLVM does not copy it into the
+    /// arms), and sibling was faster on every sampled CPU model
+    /// (docs/measurements/2026-10-21-t0-dispatch-x64.md).
+    pub const RELEASE: Dispatch = Dispatch::Sibling;
 
     /// Debug builds use the match loop on every target (debug sibling calls are real calls).
     pub const DEFAULT: Dispatch = if cfg!(debug_assertions) {

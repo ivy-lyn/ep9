@@ -84,7 +84,7 @@ The "bit-equal to d8" column comes from one host (macOS arm64) and about 15k inp
 |---|---|---|
 | [R10] | C/LLVM changes JS FP results unless FMA contraction is off | [10-js-aot-precedents.md](../research/10-js-aot-precedents.md) |
 | [R15] | Porffor nbody -0.16919383316763523 vs -0.169193895234998 | [15-aot-perf-reality.md](../research/15-aot-perf-reality.md) |
-| [M] | 2026-10-20 run: 365,667 inputs; d8 15.8.24, node 24 (macOS, Linux arm64/x64), Rust std, libm 0.2.16, pxfm 0.1.30; mpmath CR reference on 84,613 inputs | session scratch `work/decide/math/exp/evidence_tables.txt` |
+| [M] | 2026-10-20 run: 365,667 inputs; d8 15.8.24, node 24 (macOS, Linux arm64/x64), Rust std, libm 0.2.16, pxfm 0.1.30; mpmath CR reference on 84,613 inputs | [evidence_tables.txt](../research/artifacts/decide/math/evidence_tables.txt) (copy of the 2026-10-20 scratch file) |
 | [V8] | `src/base/ieee754.cc` (LLVM libc; `std::tanh`), `src/numbers/ieee754.cc` (`std::pow`), `math.tq` (MathHypot); commits 55e89435d5f1, c1486295ae5b, 08be4445f60b, 43f04a52f24d | https://github.com/v8/v8 |
 | [SM] | `js/src/builtin/Math.cpp`: fdlibm, native sin/cos/tan, std::pow + powi | https://github.com/mozilla-firefox/firefox |
 | [JSC] | `MathCommon.cpp`/`.h`: std:: for all; integer pow loop 0..1000 | https://github.com/WebKit/WebKit |
@@ -137,3 +137,4 @@ The "bit-equal to d8" column comes from one host (macOS arm64) and about 15k inp
 | 2026-10-20 | draft | First draft from 02 §6, 04 §10, 06 §4; local rustc check added | ADR agent |
 | 2026-10-20 | fill | Q1-Q4 closed: CR target, `ep9_math`, pow/hypot/fmod rules, inline list, `clippy.toml`, `xtask fp-check`, tests | math decision run |
 | 2026-10-20 | fill | Critic changes: no NOTICE file in `ep9_math`; provenance through `THIRD-PARTY-LICENSE` (pxfm, CORE-MATH, LLVM libc, V8 MathHypot, libm/musl fmod) and a CORE-MATH diff before vendoring; the d8 column is from one host | apply agent |
+| 2026-10-21 | clarify | Evidence [M] links the repo copy of the math tables in `docs/research/artifacts/decide/math/` instead of the session scratch path | docs-sync agent |

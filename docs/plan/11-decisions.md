@@ -109,7 +109,7 @@ M8 exit ......... AOT ship review: K-A4J, K-A4P, K-A4H; D15 (t1): failing A4 par
 | D18 | TS-hint investment before measurement | (a) full hint pipeline in the optimizer early. (b) cheap oracle now (A1h), consumers only in A4, kill by K-A4H. (c) skip TS types | **(b)** | Decided now; off-ramp by rule | A1h: class-receiver share < 5% and slot-found < 5% on ≥ 2 of the 3 real-app groups → (c) for HINTED consumers before A4; ep9-typecheck stays only if K-A5v-cov passed; `ep9 check` stays. M8 exit: the K-A4H keep rule | (a): hint consumers are built before any gain is measured, so their 3-6 PM is spent even where K-A4H would kill them. (c): no ep9-typecheck and no HINTED facts; saves A1h (1-2 PM) and the A4 hint work (3-6 PM); `ep9 check` stays; A5v loses its finder input [R18] | H30, H37; A1h, A4; K-A4H |
 | D19 | AOT compile scope | (a) all functions. (b) PGO hot set. (c) baseline-AOT for all reachable functions + optimized-AOT for the hot set | **(b) for hybrid; (c) for jitless** | Decided rule | A3 SIZE-REPORT: if (c) gives unit text > 8x the bytecode of compiled functions, jitless baseline-AOT covers only functions that ran in the training run; the rest stays bytecode for T0 | (a): per-app payload grows about 10x (baseline and mid-tier native code is 6-19x the bytecode); simpler driver. `ep9c --all` keeps (a) as a flag | A3, A4; ep9_aot; SIZE-REPORT; RK34 |
 | D20 | TS class-field and decorator semantics when ep9 strips types | (a) always [[Define]], like node strip-types. (b) follow tsconfig (`useDefineForClassFields`, `experimentalDecorators`) when present, else [[Define]] | **(b)** | Decided now | H3 ADR (fields M0 wk3; built M4) | (a): code that tsc compiles with [[Set]] (4 of 6 measured codebases) gets other shapes and other behavior. Example: base-class setters stop running for fields | H3, H37; M4; cache key |
-| D21 | Interpreter frame home (the AOT emitter must match it) | (a) VM register stack + native control stack (Hermes model). (b) generated native-stack interpreter now | **(a)**, with the canonical frame layout kept so M5c can switch later | Decided now; JIT-frame placement by rule | Spike B (M0 month 2): keep native-stack JIT frames if one T0→JIT→T0 round trip costs ≤ 18 sibling-call dispatches (about 6-10 ns at SP-Dispatch's 0.36-0.57 ns per dispatch); else JIT frames also live on the VM register stack (one VM stack, H14 ADR). (b) is not a Spike B outcome | (b): deopt and OSR become plain frame copies. But the interpreter then needs a code generator before the M2 gate. The plan allows codegen infra only after M1 exit, so this work moves earlier on CORE | H14; Spike B; M5c |
+| D21 | Interpreter frame home (the AOT emitter must match it) | (a) VM register stack + native control stack (Hermes model). (b) generated native-stack interpreter now | **(a)**, with the canonical frame layout kept so M5c can switch later | Decided now; JIT-frame placement by rule | Spike B (M0 month 2): keep native-stack JIT frames if one T0→JIT→T0 round trip costs ≤ 18 release-expansion dispatches of the loop kernel (about 6-10 ns at SP-Dispatch's 0.36-0.57 ns per dispatch); else JIT frames also live on the VM register stack (one VM stack, H14 ADR). (b) is not a Spike B outcome | (b): deopt and OSR become plain frame copies. But the interpreter then needs a code generator before the M2 gate. The plan allows codegen infra only after M1 exit, so this work moves earlier on CORE | H14; Spike B; M5c |
 
 ---
 
@@ -160,7 +160,7 @@ M8 exit ......... AOT ship review: K-A4J, K-A4P, K-A4H; D15 (t1): failing A4 par
 
 **D21 (frame home).**
 - Hermes runs interpreter, JIT and AOT-native frames on one register-stack layout (SHStackFrame) [R14].
-- Spike B keeps native-stack JIT frames if a T0→JIT→T0 round trip costs ≤ 18 sibling-call dispatches (est.).
+- Spike B keeps native-stack JIT frames if a T0→JIT→T0 round trip costs ≤ 18 release-expansion dispatches of the loop kernel (est.).
 - A generated native-stack interpreter (M5c) can later be emitted by the AOT emitter and embedded at engine build time [R14][R16].
 - SpiderMonkey went from 31 to 52 on Speedometer with a generated baseline interpreter [R06].
 
@@ -182,6 +182,10 @@ M8 exit ......... AOT ship review: K-A4J, K-A4P, K-A4H; D15 (t1): failing A4 par
 - D17 gains option (d), automatic VERIFIED regions [R18], and a rule at M7 exit. (b) is rejected.
 - D15 (b) is worded without a mechanism. D15 timing stays (t1) (critic change). New kill rules: K-A5v-cov, K-A5v-bound, K-A5v. K-A5 keeps only its FV3 clause.
 - Re-open points become re-check points. The orchestrator applies the written rules there.
+
+## Changes on 2026-10-21
+
+- D21 clarified ([decisions-log §7](../decisions-log.md#7-2026-10-21-h15-dispatch-on-x86-64-sp-dispatch-reopen), D21-UNIT): the threshold (§3.2, §4) for Spike B counts release-expansion dispatches of the SP-Dispatch loop kernel on the same host, not "sibling-call dispatches". The number 18 does not change.
 
 ---
 

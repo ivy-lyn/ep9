@@ -16,10 +16,15 @@
 #   8. bench      paired rounds; speed-gate verdicts by the rule of docs/plan/10-quality.md
 #                 section 3 (PERF-NOISE): median of the paired ratios, order-statistic interval
 #
-# Gates. The release expansion is sibling calls on aarch64 and the match loop on x86-64 (H15).
+# Gates. The release expansion is sibling calls on every target (H15, T0 result of 2026-10-21).
 #   structural  dsl-3-expansions, tail-exits-<abi>, handler-args, match-loop-<x64 abi>
 #   speed       a64: sibling-vs-cgoto-a64, sibling-vs-match-a64
-#               x64: match-vs-cgoto-<abi> (bench prints sibling-vs-match as a report only)
+#               x64: sibling-vs-cgoto-<abi>
+#   reports     bench prints match-vs-cgoto (every target) and sibling-vs-match (x64); they
+#               never count, in any SP_SPEED mode
+# match-loop-<x64 abi> stays a blocking structural gate (H15 ADR Rules and CI rule: the
+# threaded-loop rule applies to SP-Dispatch, not to T0). LLVM threads this spike's 20-opcode
+# loop; the gate keeps the xtask loop check proven on a pass and on a fail (negative build).
 #
 # Environment:
 #   SP_ROUNDS=15                  benchmark rounds (>= 15 on a gate host; >= 31 on a hosted runner)
@@ -93,8 +98,8 @@ xtask() { (cd "$root" && cargo xtask disasm-check "$@"); }
 # xres <log-name> <RESULT|LOOP>: true if the xtask log has that line with PASS (LOOP: or REPORT,
 # the aarch64 case). The tail-exit and argument checks print RESULT; --match-loop prints LOOP.
 xres() { grep -qE "^ +$2 [^:]+: (PASS|REPORT)" "$log/$1.txt"; }
-# The x86-64 match loop is threaded only because LLVM copies its dispatch jump into every arm
-# (tail duplication). Without that, the loop check must fail, for that reason.
+# The spike's x86-64 match loop is threaded only because LLVM copies its dispatch jump into
+# every arm (tail duplication). Without that, the loop check must fail, for that reason.
 notd=(--rustc-arg -Cllvm-args=-disable-tail-duplicate --rustc-arg -Cllvm-args=-disable-early-taildup
   --rustc-arg -Cllvm-args=-tail-dup-placement=false)
 loop_neg() { # loop_neg <target>
@@ -233,10 +238,8 @@ if [ "${SP_BENCH:-1}" = 1 ]; then
   # No verdict at all: the bench itself failed (a crash or a missing tool).
   [ "$n" -gt 0 ] || set_gate "bench-$abi" fail
 else
-  case "$abi" in
-    a64) set_gate sibling-vs-cgoto-a64 not-run speed; set_gate sibling-vs-match-a64 not-run speed ;;
-    *) set_gate "match-vs-cgoto-$abi" not-run speed ;;
-  esac
+  set_gate "sibling-vs-cgoto-$abi" not-run speed
+  case "$abi" in a64) set_gate sibling-vs-match-a64 not-run speed ;; esac
 fi
 
 echo

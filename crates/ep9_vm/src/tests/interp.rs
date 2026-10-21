@@ -14,11 +14,8 @@ fn expansions_and_defaults() {
     assert!(Dispatch::ALL.contains(&Dispatch::Sibling));
     #[cfg(feature = "become")]
     assert!(Dispatch::ALL.contains(&Dispatch::Become));
-    let release = if cfg!(target_arch = "x86_64") {
-        Dispatch::Match
-    } else {
-        Dispatch::Sibling
-    };
+    // H15 (T0 result, 2026-10-21): sibling calls are the release expansion on every target.
+    let release = Dispatch::Sibling;
     assert_eq!(Dispatch::RELEASE, release);
     let default = if cfg!(debug_assertions) {
         Dispatch::Match

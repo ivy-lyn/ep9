@@ -147,7 +147,8 @@ pub fn compile_script(source: &str, strictness: Strictness) -> Result<VerifiedUn
 }
 
 /// Compile a Module. v0 has no module record section (H02-Q3): imports and exports are module
-/// cells, numbered as described in [`module_cells`].
+/// cells. Exported top-level bindings are cells `1, 2, ...` and imports `-1, -2, ...`, both in
+/// binding order.
 ///
 /// # Errors
 ///

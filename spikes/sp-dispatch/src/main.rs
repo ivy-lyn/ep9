@@ -15,7 +15,8 @@
 //!
 //! Speed gates (H15 ADR; docs/plan/09-milestones.md section 4, row SP-Dispatch): `bench`
 //! prints one `GATE-RESULT <id> <pass|fail|marginal|void>` line per gate of this target, and
-//! `REPORT-RESULT` for a comparison that is measured but not gated there (x86-64: sibling-vs-match).
+//! `REPORT-RESULT` for a comparison that is measured but not gated there (match-vs-cgoto on
+//! every target; sibling-vs-match on x86-64).
 //! The verdict follows the speed-gate rule of docs/plan/10-quality.md section 3 (PERF-NOISE):
 //! paired ratios per round, median, order-statistic interval, void if a kernel IQR > 5%.
 
@@ -745,12 +746,12 @@ fn cmd_bench(a: &[String]) -> R {
     let ir = idx(release);
     println!();
     println!("Ratio of medians (for reading; the gates below use paired ratios):");
-    println!("| kernel | {release} (release) / cgoto | sibling / cgoto | match / sibling |");
+    println!("| kernel | {release} (release) / cgoto | match / cgoto | match / sibling |");
     let mut cols = [Vec::new(), Vec::new(), Vec::new()];
     for (ki, (kname, _, _)) in files.iter().enumerate() {
         let r = [
             med[ki][ir] / med[ki][ic],
-            med[ki][is] / med[ki][ic],
+            med[ki][im] / med[ki][ic],
             med[ki][im] / med[ki][is],
         ];
         println!("| {kname} | {:.3} | {:.3} | {:.3} |", r[0], r[1], r[2]);
@@ -778,11 +779,13 @@ fn cmd_bench(a: &[String]) -> R {
         );
     }
 
-    // Speed gates per target (H15 ADR, 09-milestones section 4). The release expansion must
-    // stay near C computed goto. On aarch64 sibling calls must also beat the match loop; on
-    // x86-64 the match loop is the release expansion, so that comparison is a report only.
+    // Speed gates per target (H15 ADR, 09-milestones section 4). The release expansion
+    // (sibling calls) must stay near C computed goto. On aarch64 sibling calls must also beat
+    // the match loop. On x86-64 sibling vs match depends on the CPU model (this spike's x64
+    // match loop is threaded by LLVM; T0's is not), so it is a report there. match vs cgoto.c
+    // was the x86-64 release gate until the T0 result; it stays as a report.
     let kernels: Vec<&str> = files.iter().map(|f| f.0).collect();
-    let sib_rel = Variant::RELEASE == Variant::Sibling;
+    let x64 = cfg!(target_arch = "x86_64");
     let gates = [
         paired_gate(
             (
@@ -798,13 +801,13 @@ fn cmd_bench(a: &[String]) -> R {
         paired_gate(
             (
                 "sibling-vs-match",
-                if sib_rel { "gate" } else { "report" },
+                if x64 { "report" } else { "gate" },
                 format!(
                     "match time >= 1.2x sibling time (geomean), >= 1.0x per kernel{}",
-                    if sib_rel {
-                        ""
+                    if x64 {
+                        " (x86-64: reported per CPU model, never gated)"
                     } else {
-                        " (release is match on x86-64: a report for the M2 re-check, not a gate)"
+                        ""
                     }
                 ),
             ),
@@ -812,6 +815,19 @@ fn cmd_bench(a: &[String]) -> R {
             &kernels,
             (im, is),
             (1.2, 1.0, false),
+        ),
+        paired_gate(
+            (
+                "match-vs-cgoto",
+                "report",
+                "match time <= 1.25x cgoto.c (geomean), <= 1.5x per kernel (the x86-64 \
+                 release gate before the T0 result; a report)"
+                    .into(),
+            ),
+            &samples,
+            &kernels,
+            (im, ic),
+            (1.25, 1.5, true),
         ),
     ];
     println!();

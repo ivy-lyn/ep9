@@ -8,7 +8,7 @@ If ep9 uses tsrs_parser, treat it as a fast, crash-free, error-tolerant tree bui
 
 ## Findings
 - [high] Main scores (language + built-ins + annexB; 43,982 positive / 4,653 negative; script 47,805, module 830). tsrs parser only: positive 43940/43982 (99.90%), negative 1246/4653 (26.78%), negative script 1216/4455 (27.30%), negative module 30/198 (15.15%), overall 92.91%. oxc_parser only: positive 43975 (99.98%), negative 3262 (70.11%), negative script 69.63%, negative module 80.81%, overall 97.13%. oxc_parser + semantic: positive 99.98%, negative 4653/4653 (100%), overall 99.99%.
-  EVIDENCE: /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/results/summary.csv (from scripts/analyze.py over results/results_merged.jsonl)
+  EVIDENCE: [artifacts/tsrs-conformance/results/summary.csv](artifacts/tsrs-conformance/results/summary.csv) (from scripts/analyze.py over results/results_merged.jsonl)
 - [high] Other tsrs variants. Parser + tsrs's regex validator: positive 99.83%, negative 34.47%. Parser + binder with tsc's plain-JS filter: positive 98.54%, negative 33.74% (module negative 21.21%). Parser + binder + regex: positive 98.47%, negative 41.44%. Parser + unfiltered binder: positive 98.03%, negative 41.97%. Every variant passes all 3,382 intl402 tests.
   EVIDENCE: results/summary.csv. The regex variant re-runs Scanner::re_scan_slash_token(true) on each RegularExpressionLiteral, the same way tsrs_checker/src/grammarchecks.rs:131-156 does.
 - [high] oxc numbers match oxc's published snapshot. Negative: 4653/4653, exactly matching tasks/coverage/snapshots/parser_test262.snap (snapshot taken at test262 7ab7fafa, pinned in oxc's .github/scripts/clone-parallel.mjs:13). The only 7 positive failures are annexB/language/expressions/assignmenttargettype/*, which oxc's harness skips (tasks/coverage/src/load.rs:99). Positive totals differ by about 18 because of the test262 commit difference and because oxc also counts test/harness (116 files).
@@ -49,26 +49,26 @@ If ep9 uses tsrs_parser, treat it as a fast, crash-free, error-tolerant tree bui
 - The tsrs binder's TS2300 Duplicate identifier errors on valid var/function redeclarations, and its 'always strict' behaviour: is either configurable in tsrs? Nothing I found suggests so (Binder::new takes only the file).
 
 ## Artifacts
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/harness/Cargo.toml
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/harness/src/main.rs
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/harness-oxc/Cargo.toml
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/scripts/manifest.py
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/scripts/orchestrate.py
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/scripts/analyze.py
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/scripts/cluster.py
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/scripts/categorize.py
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/scripts/top_clusters.py
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/results/manifest.jsonl
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/results/results.jsonl
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/results/results_oxc_only.jsonl
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/results/results_merged.jsonl
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/results/summary.csv
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/results/summary.json
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/results/per_test.csv
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/results/failing/
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/results/tsrs_false_negatives_categorized.csv
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/results/tsrs_false_positives.csv
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/results/tsrs_fn_categories.json
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/results/tsrs_fn_clusters.json
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/work/tsrs-conformance/results/tsrs_top_clusters.json
-- /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/repos/test262
+- [artifacts/tsrs-conformance/harness/Cargo.toml](artifacts/tsrs-conformance/harness/Cargo.toml)
+- [artifacts/tsrs-conformance/harness/src/main.rs](artifacts/tsrs-conformance/harness/src/main.rs)
+- [artifacts/tsrs-conformance/harness-oxc/Cargo.toml](artifacts/tsrs-conformance/harness-oxc/Cargo.toml)
+- [artifacts/tsrs-conformance/scripts/manifest.py](artifacts/tsrs-conformance/scripts/manifest.py)
+- [artifacts/tsrs-conformance/scripts/orchestrate.py](artifacts/tsrs-conformance/scripts/orchestrate.py)
+- [artifacts/tsrs-conformance/scripts/analyze.py](artifacts/tsrs-conformance/scripts/analyze.py)
+- [artifacts/tsrs-conformance/scripts/cluster.py](artifacts/tsrs-conformance/scripts/cluster.py)
+- [artifacts/tsrs-conformance/scripts/categorize.py](artifacts/tsrs-conformance/scripts/categorize.py)
+- [artifacts/tsrs-conformance/scripts/top_clusters.py](artifacts/tsrs-conformance/scripts/top_clusters.py)
+- scratchpad/work/tsrs-conformance/results/manifest.jsonl
+- scratchpad/work/tsrs-conformance/results/results.jsonl
+- scratchpad/work/tsrs-conformance/results/results_oxc_only.jsonl
+- scratchpad/work/tsrs-conformance/results/results_merged.jsonl
+- [artifacts/tsrs-conformance/results/summary.csv](artifacts/tsrs-conformance/results/summary.csv)
+- scratchpad/work/tsrs-conformance/results/summary.json
+- scratchpad/work/tsrs-conformance/results/per_test.csv
+- scratchpad/work/tsrs-conformance/results/failing/
+- scratchpad/work/tsrs-conformance/results/tsrs_false_negatives_categorized.csv
+- scratchpad/work/tsrs-conformance/results/tsrs_false_positives.csv
+- scratchpad/work/tsrs-conformance/results/tsrs_fn_categories.json
+- scratchpad/work/tsrs-conformance/results/tsrs_fn_clusters.json
+- scratchpad/work/tsrs-conformance/results/tsrs_top_clusters.json
+- scratchpad/repos/test262

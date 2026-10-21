@@ -11,6 +11,7 @@
 //! | `expand_threaded!([become, "become"])` | (c) the same with `become` |
 //! | `expand_match!([])` | (a) `ep9loop__match__run`: one `loop { match }` |
 //! | `expand_scaled!([])` | `step::<S>`: one prefixed instruction, out of line |
+//! | `handler!` | one handler fn with the handler ABI of the target (x86-64: `sysv64-unwind`) |
 //!
 //! Handler classes (read by `cargo xtask disasm-check`): `tail` handlers leave only through
 //! a tail jump to the next handler; `exit` handlers (`Exit`, `BadOpcode`) return to Rust.
@@ -232,10 +233,45 @@ impl<T> RegArg for *mut T {}
 /// the context reference. Win64 passes 4 integer arguments in registers; a 5th goes on the
 /// stack and can break the sibling call (RK25).
 pub(crate) trait AtMostFourRegArgs {}
+#[cfg(not(target_arch = "x86_64"))]
 impl<C, A: RegArg, B: RegArg, D: RegArg, Ret: RegArg> AtMostFourRegArgs
     for for<'a> unsafe fn(&'a mut C, A, B, D) -> Ret
 {
 }
+#[cfg(target_arch = "x86_64")]
+impl<C, A: RegArg, B: RegArg, D: RegArg, Ret: RegArg> AtMostFourRegArgs
+    for for<'a> unsafe extern "sysv64-unwind" fn(&'a mut C, A, B, D) -> Ret
+{
+}
+
+/// Defines a handler (`fn name(cx, pc, fp, acc) { body }`, an `unsafe fn` of type
+/// [`crate::interp::Handler`]) with the handler ABI of the target. x86-64: `extern
+/// "sysv64-unwind"` on every OS, so Win64 handlers get the SysV register set (rsi, rdi and
+/// xmm6-xmm15 are not callee-saved there) and save fewer registers on entry. Other targets: the
+/// Rust ABI. `-unwind` keeps a panic (a VM bug) unwinding as with the Rust ABI.
+macro_rules! handler {
+    ( $(#[$($m:tt)*])* $vis:vis fn $name:ident($cx:ident, $pc:ident, $fp:ident, $acc:ident)
+      $body:block ) => {
+        #[cfg(target_arch = "x86_64")]
+        $(#[$($m)*])*
+        $vis unsafe extern "sysv64-unwind" fn $name(
+            $cx: &mut $crate::interp::Cx,
+            $pc: *const u8,
+            $fp: *mut u64,
+            $acc: u64,
+        ) -> u64 $body
+
+        #[cfg(not(target_arch = "x86_64"))]
+        $(#[$($m)*])*
+        $vis unsafe fn $name(
+            $cx: &mut $crate::interp::Cx,
+            $pc: *const u8,
+            $fp: *mut u64,
+            $acc: u64,
+        ) -> u64 $body
+    };
+}
+pub(crate) use handler;
 
 const fn assert_handler_sig<T: AtMostFourRegArgs>() {}
 const _: () = assert_handler_sig::<crate::interp::Handler>();
@@ -270,7 +306,7 @@ macro_rules! expand_threaded {
          flags: [$($flag:ident),*],
          operands: ($($oname:ident : $okind:ident $(($oparam:tt))?),*); )*
     ) => {
-        $(
+        $( $crate::interp::dsl::handler! {
             $(#[$doc])*
             ///
             /// # Safety
@@ -278,7 +314,7 @@ macro_rules! expand_threaded {
             /// is this opcode in verified code of the live top frame `fp`.
             #[unsafe(export_name = concat!("ep9h__", $exp, "__tail__", stringify!($name)))]
             #[allow(non_snake_case, unused_mut, unused_variables, unused_unsafe, unreachable_code)]
-            pub(crate) unsafe fn $name(cx: &mut Cx, pc: *const u8, fp: *mut u64, acc: u64) -> u64 {
+            pub(crate) fn $name(cx, pc, fp, acc) {
                 #[cfg(debug_assertions)]
                 $crate::interp::dsl::debug_native_stack_check(cx);
                 // SAFETY: the verifier checked every operand of this instruction (registers in
@@ -310,14 +346,14 @@ macro_rules! expand_threaded {
                 // SAFETY: the table holds handlers of this expansion; the state is valid.
                 unsafe { $tail h(cx, next, fp, acc) }
             }
-        )*
+        } )*
 
         /// Cold handlers: one per opcode with a cold block (runtime calls live here).
         pub(crate) mod cold {
             #[allow(unused_imports)]
             use super::*;
             $(
-                $crate::interp::ops::if_cold!($name {
+                $crate::interp::ops::if_cold!($name { $crate::interp::dsl::handler! {
                     /// Cold path of the opcode with the same name.
                     ///
                     /// # Safety
@@ -326,7 +362,7 @@ macro_rules! expand_threaded {
                     #[cold]
                     #[inline(never)]
                     #[allow(non_snake_case, unused_mut, unused_variables, unused_unsafe)]
-                    pub(crate) unsafe fn $name(cx: &mut Cx, pc: *const u8, fp: *mut u64, acc: u64) -> u64 {
+                    pub(crate) fn $name(cx, pc, fp, acc) {
                         // SAFETY: as in the fast handler.
                         let (len, ($($oname,)*)) = unsafe {
                             $crate::interp::dsl::decode!($crate::interp::dsl::S1, pc; $($oname: $okind),*)
@@ -343,42 +379,49 @@ macro_rules! expand_threaded {
                         // SAFETY: as in the fast handler.
                         unsafe { $tail h(cx, next, fp, acc) }
                     }
-                } else {});
+                } } else {});
             )*
         }
 
-        /// Leaves the dispatch: returns the accumulator (0 = exception pending) to Rust.
-        ///
-        /// # Safety
-        /// Only the dispatch table calls this.
-        #[unsafe(export_name = concat!("ep9h__", $exp, "__exit__Exit"))]
-        #[allow(unused_variables)]
-        unsafe fn exit(cx: &mut Cx, pc: *const u8, fp: *mut u64, acc: u64) -> u64 {
-            acc
+        $crate::interp::dsl::handler! {
+            /// Leaves the dispatch: returns the accumulator (0 = exception pending) to Rust.
+            ///
+            /// # Safety
+            /// Only the dispatch table calls this.
+            #[unsafe(export_name = concat!("ep9h__", $exp, "__exit__Exit"))]
+            #[allow(unused_variables)]
+            fn exit(cx, pc, fp, acc) {
+                acc
+            }
         }
 
-        /// A byte that is no opcode (a VM bug: the verifier accepts defined opcodes only).
-        ///
-        /// # Safety
-        /// Only the dispatch table calls this.
-        #[unsafe(export_name = concat!("ep9h__", $exp, "__exit__BadOpcode"))]
-        #[allow(unused_variables)]
-        unsafe fn bad_opcode(cx: &mut Cx, pc: *const u8, fp: *mut u64, acc: u64) -> u64 {
-            $crate::interp::slow::bad_opcode(cx, fp, pc)
+        $crate::interp::dsl::handler! {
+            /// A byte that is no opcode (a VM bug: the verifier accepts defined opcodes only).
+            ///
+            /// # Safety
+            /// Only the dispatch table calls this.
+            #[unsafe(export_name = concat!("ep9h__", $exp, "__exit__BadOpcode"))]
+            #[allow(unused_variables)]
+            fn bad_opcode(cx, pc, fp, acc) {
+                $crate::interp::slow::bad_opcode(cx, fp, pc)
+            }
         }
 
-        /// The `[[Construct]]` result check of a construct stub frame (H14).
-        ///
-        /// # Safety
-        /// Only the dispatch table calls this, with `fp` a construct stub frame.
-        #[unsafe(export_name = concat!("ep9h__", $exp, "__tail__ConstructReturn"))]
-        unsafe fn construct_return(cx: &mut Cx, _pc: *const u8, fp: *mut u64, acc: u64) -> u64 {
-            // SAFETY: caller contract.
-            let (next, fp, acc) = unsafe { $crate::interp::construct_return(fp, acc) };
-            // SAFETY: `next` is the caller's next instruction.
-            let h = cx.table[unsafe { *next } as usize];
-            // SAFETY: as in the opcode handlers.
-            unsafe { $tail h(cx, next, fp, acc) }
+        $crate::interp::dsl::handler! {
+            /// The `[[Construct]]` result check of a construct stub frame (H14).
+            ///
+            /// # Safety
+            /// Only the dispatch table calls this, with `fp` a construct stub frame.
+            #[unsafe(export_name = concat!("ep9h__", $exp, "__tail__ConstructReturn"))]
+            #[allow(unused_variables)]
+            fn construct_return(cx, pc, fp, acc) {
+                // SAFETY: caller contract.
+                let (next, fp, acc) = unsafe { $crate::interp::construct_return(fp, acc) };
+                // SAFETY: `next` is the caller's next instruction.
+                let h = cx.table[unsafe { *next } as usize];
+                // SAFETY: as in the opcode handlers.
+                unsafe { $tail h(cx, next, fp, acc) }
+            }
         }
 
         /// The dispatch table of this expansion.
@@ -396,15 +439,19 @@ pub(crate) use expand_threaded;
 // ---- (a) the match loop --------------------------------------------------------------------
 
 /// One `loop { match }` function. Cold blocks run in out-of-line functions (`cold::*`), so
-/// each arm stays small and LLVM can copy the dispatch into the arms.
+/// each arm stays small. LLVM does not copy the dispatch into the arms here (one dispatch jump
+/// on every target, H15 2026-10-21): the reachable `_` arm keeps a jump-table range check that
+/// splits the dispatch block, and the dispatch block has too many predecessors and successors
+/// for early tail duplication.
 macro_rules! expand_match {
     ( []
       $( $(#[$doc:meta])* $name:ident = $code:literal, $snake:ident, acc: $acc:ident,
          flags: [$($flag:ident),*],
          operands: ($($oname:ident : $okind:ident $(($oparam:tt))?),*); )*
     ) => {
-        /// Runs from `pc` until an `Exit`. Exported as `ep9loop__match__run` for
-        /// `cargo xtask disasm-check --match-loop` (the x86-64 release expansion, H15).
+        /// Runs from `pc` until an `Exit`. Exported as `ep9loop__match__run`, so
+        /// `cargo xtask disasm-check --match-loop` can print its shape. It is the debug
+        /// expansion; release builds use sibling calls on every target (H15, 2026-10-21).
         ///
         /// # Safety
         /// `pc` and `fp` come from `interp::run`: `pc` is an instruction of verified code in
