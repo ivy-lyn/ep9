@@ -352,3 +352,52 @@ pub fn run_program(
         .map_err(|e| format!("heap verifier after the run: {:?}", e.errors))?;
     Ok(r)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::structural::LOOP_DEFS;
+
+    /// Configs J and JC of the protocol: Rust calls the JIT-installed `drive(f, n)` through
+    /// `call_from_rust` and gets n, also under GC stress. A throw and a termination come back
+    /// as `Err`, and the next `call_from_rust` and `Isolate::call` still work.
+    #[test]
+    fn call_from_rust_runs_jit_drive() {
+        for config in [Config::default(), Config::stress()] {
+            let mut s = Session::new(&config).expect("session");
+            s.run(LOOP_DEFS, "defs.js").result.expect("defs");
+            let boom = "function boom(x) { if (x === 3) throw new Error('b' + x); return x; }";
+            s.run(boom, "boom.js").result.expect("boom");
+            s.jit(&["id", "drive"]).expect("jit");
+            let g = |s: &Session, n: &str| s.iso.global(n).expect("global");
+            let (drive, id, boom) = (g(&s, "drive"), g(&s, "id"), g(&s, "boom"));
+            let u = Value::UNDEFINED;
+            let n = if config.gc_stress != 0 { 200 } else { 100_000 };
+            let call = |s: &mut Session, f: Value, n: i32| {
+                ep9_vm::call_from_rust(&mut s.iso, drive, u, &[f, Value::int32(n)])
+                    .map(|v| s.iso.display(v))
+            };
+            assert_eq!(call(&mut s, id, n).expect("drive(id, n)"), n.to_string());
+            let e = call(&mut s, boom, 10).expect_err("drive(boom, 10) throws");
+            assert!(e.message.contains("b3") && !e.terminated, "{e:?}");
+            assert_eq!(call(&mut s, id, 5).expect("after the throw"), "5");
+            // `boom` stays in T0; `Isolate::call` on a native slot throws not_implemented
+            // (call.rs), so the JIT entry from Rust is `call_from_rust`.
+            let r = s
+                .iso
+                .call(boom, u, &[Value::int32(9)])
+                .expect("Isolate::call");
+            assert_eq!(s.iso.display(r), "9");
+            s.iso.terminate_handle().terminate();
+            let e = call(&mut s, id, 1 << 30).expect_err("terminated");
+            assert!(e.terminated, "{e:?}");
+            assert_eq!(call(&mut s, id, 7).expect("after the termination"), "7");
+            let e = s
+                .iso
+                .call(drive, u, &[id, Value::int32(3)])
+                .expect_err("native slot");
+            assert!(e.message.contains("not implemented"), "{e:?}");
+            assert_eq!(call(&mut s, id, 11).expect("last"), "11");
+        }
+    }
+}
