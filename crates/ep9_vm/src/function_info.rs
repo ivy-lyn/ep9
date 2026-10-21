@@ -60,11 +60,11 @@ pub(crate) struct FunctionInfo {
     pub name: String,
     pub kind: Option<FunctionKind>,
     /// This function's slot in its unit's feedback (H16 lazy FeedbackVector): null until the
-    /// vector is made.
-    #[allow(dead_code)] // wk4-stub
+    /// vector is made, then the unit slot that holds the FEEDBACK cell (`feedback.rs`). T0
+    /// reads it through the frame's FunctionInfo word (fp-4).
     pub feedback: Cell<*const feedback::Slot>,
-    /// Calls counted while the function has no feedback vector.
-    #[allow(dead_code)] // wk4-stub
+    /// Calls counted while the function has no feedback vector (`feedback::count_call`):
+    /// below the threshold until the call that makes the vector, then fixed.
     pub invocations: Cell<u32>,
 }
 

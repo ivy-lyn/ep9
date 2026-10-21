@@ -1,10 +1,12 @@
-//! Calls and constructs from bytecode.
+//! Calls and constructs from bytecode. A bytecode callee's call is counted here, and the call
+//! that reaches the feedback threshold makes its vector before the frame push (`feedback.rs`).
 
 use ep9_value::Throw;
 
 use crate::call::{self, CallSite};
 use crate::conv::{Res, describe};
 use crate::error::{self, not_implemented, stack_overflow, throw_error};
+use crate::feedback;
 use crate::frame::{HOLE, UNDEFINED};
 use crate::interp::{CONSTRUCT_RETURN_STUB, Cx};
 use crate::kinds::is_callable;
@@ -99,6 +101,9 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
         if !runs_bytecode(fi) {
             return Err(not_implemented(cx, "calling code of this dispatch kind"));
         }
+        // GC point, before `this` exists: the callee and the arguments are in caller
+        // registers, new.target is a Rust local (as at the GC point below).
+        feedback::count_call(rt, cx.feedback_threshold, fi);
         let this = if fi.is_derived() {
             HOLE
         } else {
@@ -169,6 +174,8 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
     if !runs_bytecode(fi) {
         return Err(not_implemented(cx, "calling code of this dispatch kind"));
     }
+    // GC point: the callee, the receiver and the arguments are in caller registers.
+    feedback::count_call(rt, cx.feedback_threshold, fi);
     let this = call::bind_this(fi, s.this, rt.global());
     // SAFETY: `frame_top(fp)` is the first free slot above the live top frame.
     let nfp = unsafe {

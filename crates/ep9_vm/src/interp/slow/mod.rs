@@ -24,6 +24,7 @@ use ep9_value::Throw;
 
 use crate::conv::{Res, describe};
 use crate::error::{self, FrameRef, not_implemented, throw_error};
+use crate::feedback;
 use crate::frame::{TRUE, UNDEFINED, slot};
 use crate::interp::{BUDGET, Cx};
 use crate::object;
@@ -111,12 +112,28 @@ pub(crate) fn interrupt(cx: &mut Cx, _fp: *mut u64) -> u64 {
     TRUE
 }
 
-/// `interrupt` at a `JumpLoop`.
+/// `interrupt` at a `JumpLoop`. A running function without a feedback vector gets one here
+/// (OM-13), so a loop in code that runs once still gets feedback. GC point: the loop's
+/// Values are in the frame, and the accumulator stays in the handler (a Rust local).
 #[cold]
 #[inline(never)]
 pub(crate) fn interrupt_at(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> u64 {
     enter(cx, fp, pc);
-    interrupt(cx, fp)
+    let r = interrupt(cx, fp);
+    if r != 0 {
+        feedback::ensure(cx.rt(), cx.feedback_threshold, info(fp));
+    }
+    r
+}
+
+/// An entry from Rust (`interp::run`) at the first instruction of a function that has no
+/// feedback vector: counts the call (`feedback::count_call`). GC point: the entry frame is
+/// pushed and holds the callee, `this` and the arguments.
+#[cold]
+#[inline(never)]
+pub(crate) fn count_entry(cx: &mut Cx, fp: *mut u64, pc: *const u8) {
+    enter(cx, fp, pc);
+    feedback::count_call(cx.rt(), cx.feedback_threshold, info(fp));
 }
 
 /// Throws the "not implemented" error of v0.
