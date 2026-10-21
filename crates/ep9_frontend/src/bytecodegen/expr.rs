@@ -1207,13 +1207,22 @@ impl<'a, 's> FnGen<'a, 's> {
         (any, last_only)
     }
 
-    /// Evaluate arguments into `list` from index `first`. A spread argument evaluates its
-    /// iterable (CallWithSpread spreads it).
+    /// Evaluate arguments into `list` from index `first`. A spread argument (only the last
+    /// one comes here) becomes a new Array of its values at once: ArgumentListEvaluation
+    /// (§13.3.8.1) runs GetIterator and the steps while the arguments are evaluated. The
+    /// spread operand of CallWithSpread and ConstructWithSpread is always an Array that
+    /// bytecode made (this one, the array of `arguments_array`, or the rest array of a
+    /// default derived constructor), and the VM spreads it as it is, with no `@@iterator`
+    /// call: a second iteration would be observable.
     fn arguments_into(&mut self, args: &'a [Argument<'a>], list: RegisterList, first: u32) -> Gen {
         for (i, a) in args.iter().enumerate() {
             let r = list.get(first + i as u32);
             match a {
-                Argument::SpreadElement(s) => self.expr_into(&s.argument, r)?,
+                Argument::SpreadElement(s) => {
+                    self.expr(&s.argument)?;
+                    self.expr_pos(s.span.start);
+                    self.b.create_array_from_iterable().star(r);
+                }
                 other => self.expr_into(other.to_expression(), r)?,
             }
         }

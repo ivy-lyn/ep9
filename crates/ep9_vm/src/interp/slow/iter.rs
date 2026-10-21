@@ -31,7 +31,6 @@ use crate::natives;
 use crate::object::{self, is_array, is_object, is_string};
 use crate::property;
 use crate::runtime::{Atom, ErrorKind, Root, Runtime, val};
-use crate::string;
 use crate::symbol::{self, WellKnownSymbol};
 
 use super::{enter, info, interrupt, ret, throw_msg_now};
@@ -45,7 +44,7 @@ pub(crate) fn array_from_iterable(cx: &mut Cx, fp: *mut u64, pc: *const u8, v: u
 }
 
 /// The TypeError of GetIterator for a value without a callable `@@iterator`.
-pub(super) fn not_iterable(cx: &mut Cx, v: u64) -> Throw {
+fn not_iterable(cx: &mut Cx, v: u64) -> Throw {
     let msg = format!("{} is not iterable", describe(v));
     throw_error(cx, ErrorKind::TypeError, &msg)
 }
@@ -126,7 +125,8 @@ fn next_is_intrinsic(rt: &Runtime, proto: u64, index: u16) -> bool {
 }
 
 /// IterableToList(v) (§7.4.15, with GetIterator) as a new Array: the values of
-/// CreateArrayFromIterable (`[...v]`) and of a spread argument. GC point.
+/// CreateArrayFromIterable (`[...v]`, and the spread argument of `f(...v)`, which BytecodeGen
+/// lowers to it) and of a call spread operand that is not an Array (`slow::call`). GC point.
 pub(super) fn iterable_to_array(cx: &mut Cx, v: u64) -> Res<u64> {
     let method = iterator_method(cx, v)?;
     let rt = cx.rt();
@@ -214,31 +214,6 @@ fn push_string_code_points(cx: &mut Cx, out: u64, s: u64) -> u32 {
     let mut n = object::array_len(out);
     let mut i = 0;
     while let Some((cp, len)) = natives::code_point_string(cx, s, i) {
-        object::array_set(rt, out, n, cp);
-        n += 1;
-        i += len;
-    }
-    object::array_set_length(rt, out, n);
-    n
-}
-
-/// Appends the code points of the string `s` (one string each, §22.1.5.2.1) to the array
-/// `out` from index `start`. `out` must be rooted by the caller (a Rust local). Returns the
-/// new length. Legacy entry for the spread argument of slow/call.rs (P3-BLTA), which has no
-/// `Cx` here: new code calls [`iterable_to_array`], which follows `@@iterator`.
-pub(super) fn push_code_points(rt: &Runtime, out: u64, start: u32, s: u64) -> u32 {
-    let units: Vec<u16> = object::str_view(s).to_utf16();
-    let mut n = start;
-    let mut i = 0;
-    while i < units.len() {
-        let pair = (0xD800..0xDC00).contains(&units[i])
-            && i + 1 < units.len()
-            && (0xDC00..0xE000).contains(&units[i + 1]);
-        let len = if pair { 2 } else { 1 };
-        let cp = match u8::try_from(units[i]) {
-            Ok(c) if !pair => string::single_char(rt, c),
-            _ => object::new_string_utf16(rt, &units[i..i + len]),
-        };
         object::array_set(rt, out, n, cp);
         n += 1;
         i += len;
