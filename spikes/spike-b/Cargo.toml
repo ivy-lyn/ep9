@@ -1,0 +1,50 @@
+[package]
+name = "spike-b"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Spike B (M0 month 2, throwaway): native code for T0 frames, the D21 measurement, then SP-Unit"
+
+# Own workspace. The root workspace excludes spikes/ (docs/plan/08-repo.md section 1), so cargo
+# deny (root workspace only) never sees this graph, and this lock is separate from the root lock.
+[workspace]
+
+[lib]
+name = "spike_b"
+path = "src/lib.rs"
+
+[[bin]]
+name = "spike-b"
+path = "src/main.rs"
+
+[dependencies]
+# `spike-native` (implies `jit`): the native-entry path in T0's call path. Never in the ep9 graph
+# (.github/scripts/dep-guards.sh check 11).
+ep9_vm = { path = "../../crates/ep9_vm", features = ["spike-native"] }
+ep9_platform = { path = "../../crates/ep9_platform", features = ["jit"] }
+ep9_heap = { path = "../../crates/ep9_heap" }
+ep9_value = { path = "../../crates/ep9_value" }
+ep9_bytecode = { path = "../../crates/ep9_bytecode" }
+ep9_frontend = { path = "../../crates/ep9_frontend" }
+ep9_unit = { path = "../../crates/ep9_unit" }
+# The spike's assembler. MPL-2.0: allowed here only because this graph is outside the root
+# workspace. Adding dynasm to the root graph needs a per-crate exception in deny.toml
+# (deny.toml:13-14) and an ADR row (H27). Exact pins, like oxc in the root (D1).
+dynasm = "=5.1.0"
+dynasmrt = "=5.1.0"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
+# The root workspace release profile (Cargo.toml [profile.release]; docs/plan/08-repo.md
+# section 4), plus panic = "abort", the panic policy of code that runs generated code (H23).
+[profile.release]
+lto = "fat"
+codegen-units = 1
+debug = "line-tables-only"
+panic = "abort"
