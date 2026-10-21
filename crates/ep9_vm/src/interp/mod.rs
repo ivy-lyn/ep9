@@ -36,9 +36,14 @@ use crate::unit::FunctionInfo;
 /// A handler: `(cx, pc, fp, acc) -> result` (H15). The result is the accumulator bits the run
 /// returns (0 = exception pending). x86-64 handlers use the SysV ABI on every OS (see
 /// `dsl::handler!`); other targets use the Rust ABI.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", panic = "unwind"))]
 pub(crate) type Handler =
     unsafe extern "sysv64-unwind" fn(&mut Cx, *const u8, *mut u64, u64) -> u64;
+/// A handler: `(cx, pc, fp, acc) -> result` (H15), x86-64 with `panic = "abort"`: plain
+/// `sysv64`, because a call to an `-unwind` function from abort code needs an abort landing
+/// pad, and that pad stops the sibling call (see `dsl::handler!`).
+#[cfg(all(target_arch = "x86_64", not(panic = "unwind")))]
+pub(crate) type Handler = unsafe extern "sysv64" fn(&mut Cx, *const u8, *mut u64, u64) -> u64;
 /// A handler: `(cx, pc, fp, acc) -> result` (H15). The result is the accumulator bits the run
 /// returns (0 = exception pending).
 #[cfg(not(target_arch = "x86_64"))]
