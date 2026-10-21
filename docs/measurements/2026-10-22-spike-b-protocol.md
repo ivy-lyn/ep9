@@ -20,7 +20,7 @@ So RT_disp counts the call instruction, the JIT callee and the return to T0, in 
 
 ## 2. Kernels A and C
 
-Both run in one release build of `spikes/spike-b` (feature `spike-native`). Only `id` is compiled by the spike JIT; its bytecode is `Ldar a0; Return`, two of the 10 Spike B opcodes. `drive` always runs in T0.
+Both run in one release build of `spikes/spike-b` (feature `spike-native`). The spike JIT compiles 11 opcodes: LdaZero, Ldar, Star, Add, AddSmi, Inc, TestLessThan, JumpIfFalse, JumpLoop, CallUndefinedReceiver1 and Return (plan-v4 P2-SPIKE-B task 1). `id` (`Ldar a0; Return`) and both `drive` kernels (`AddSmi [1]` included) JIT completely; `spike-b ops` and `gate.sh structural` print the opcode list of each. Configs A, C and A0 run `drive` in T0, so the gate measures one T0→JIT→T0 round trip. Configs J and JC run `drive` in the JIT, entered from Rust through `native::call_from_rust` (table below).
 
 ```js
 // kernel A                                       // kernel C: the call statement removed
@@ -34,6 +34,7 @@ function drive(f, n) {                            function drive(f, n) {
 
 - n = 100,000,000. Every value stays an int32 (a ≤ n < 2^31), so no double path runs.
 - A run is valid only if `drive` returns n. A wrong result fails the run, not the gate.
+- The gate host is macOS arm64. On x86-64 the spike's release build (`panic = "abort"`) runs T0 with the match loop (`spike_b::harness::DISPATCH`): rustc puts an abort guard after each `sysv64-unwind` handler call there, so T0 handlers make no sibling calls. x86-64 numbers are reports only.
 - Configurations of one round:
 
 | Config | `drive` | `id` | Use |
