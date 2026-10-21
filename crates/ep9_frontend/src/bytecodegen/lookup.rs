@@ -31,11 +31,16 @@
 //! CallRuntime StoreLookupSlotResolved, r_env-r_strict     (acc = the value)
 //! ```
 //!
-//! Callers: `expr.rs` (`assignment`, `update`, `get_prepared`, `put_prepared`) and `stmt.rs`
-//! (`var_decl`). `StaLookupSlot` (which resolves at the store) stays where no code runs
-//! between the reference and the store, so both orders give the same result: a plain `=` or
-//! `var x =` whose value is a literal or a function ([`runs_no_code`]), a for-in/of head and
-//! a destructuring target (their store follows the value).
+//! A destructuring target (assignment pattern, or a `var` binding pattern) is resolved the
+//! same way before its value is read: before GetV, the iterator step and the default
+//! (§13.15.5.3-6, §8.6.3, §8.6.4; `pattern.rs`).
+//!
+//! Callers: `expr.rs` (`assignment`, `update`, `get_prepared`, `put_prepared`), `stmt.rs`
+//! (`var_decl`) and `pattern.rs` (`prepare_element`, the shorthand property).
+//! `StaLookupSlot` (which resolves at the store) stays where no code runs between the
+//! reference and the store, so both orders give the same result: a plain `=` or `var x =`
+//! whose value is a literal or a function ([`runs_no_code`]), and a plain identifier head of
+//! a for-in/of (`for (x of o)`, `for (var x in o)`: its store follows the value).
 //!
 //! GetValue of a dynamic name takes the strictness of the use site (§9.4.2 step 3): a `with`
 //! binding that is gone by then reads as undefined in sloppy code and throws a ReferenceError
@@ -384,6 +389,50 @@ mod tests {
         let sloppy = code("with (o) { f(); }");
         let call = at(&sloppy, "CallRuntimeForPair LoadLookupSlotForCall");
         assert_eq!(sloppy[call - 2], "LdaFalse", "{sloppy:#?}");
+    }
+
+    /// Destructuring targets resolve before their value (M2-P2 review fix L7): the shorthand
+    /// `{ x }` and the `var` property `{ y }` resolve before their `GetNamedProperty`, the
+    /// array element `z` before the iterator's `next` call, and all three store through the
+    /// resolved reference.
+    #[test]
+    fn a_destructuring_target_is_resolved_before_its_value() {
+        let lines = code("with (o) { ({ x } = v); var { y } = v; [z] = v; }");
+        let resolves: Vec<usize> = (0..lines.len())
+            .filter(|&i| lines[i].starts_with("CallRuntime ResolveLookupSlot"))
+            .collect();
+        assert_eq!(resolves.len(), 3, "{lines:#?}");
+        let after = |i: usize, op: &str| {
+            i + lines[i..]
+                .iter()
+                .position(|l| l.starts_with(op))
+                .unwrap_or_else(|| panic!("no {op} after {i} in {lines:#?}"))
+        };
+        assert!(
+            after(resolves[0], "GetNamedProperty") < resolves[1],
+            "{lines:#?}"
+        );
+        assert!(
+            after(resolves[1], "GetNamedProperty") < resolves[2],
+            "{lines:#?}"
+        );
+        let next = after(resolves[2], "CallProperty0");
+        assert!(
+            after(resolves[2], "CallRuntime StoreLookupSlotResolved") > next,
+            "{lines:#?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.starts_with("CallRuntime StoreLookupSlotResolved"))
+                .count(),
+            3,
+            "{lines:#?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.starts_with("StaLookupSlot")),
+            "{lines:#?}"
+        );
     }
 
     /// A callee that is not a dynamic lookup keeps the plain call.

@@ -41,8 +41,9 @@
 //! this for `this` and undefined for the others, never a global property. `arguments` is an
 //! ordinary name.
 //!
-//! A reference that is used after other code runs (`x = v`, `x op= v`, `x++`, `var x = v`:
-//! §13.15.2, §13.4, §14.3.2.1 evaluate the reference first) is resolved once by
+//! A reference that is used after other code runs (`x = v`, `x op= v`, `x++`, `var x = v`,
+//! a destructuring target: §13.15.2, §13.4, §14.3.2.1, §13.15.5, §8.6.3-4 evaluate the
+//! reference first) is resolved once by
 //! `ResolveLookupSlot`, which returns its environment as a value: the declarative context
 //! that binds it (by a slot, or by its `.eval_ext` object), the `with` object, undefined for
 //! the global environment, or null for an unresolvable name. `LoadLookupSlotResolved` and
