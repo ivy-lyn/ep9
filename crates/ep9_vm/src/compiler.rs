@@ -14,7 +14,7 @@
 //! `Function` and `GeneratorFunction` (`natives.rs`, `generator.rs`) and `Cx::evaluate_script`,
 //! all through `abi/script.rs`. With no hooks they throw an `EvalError` ("code generation from
 //! strings is not available"); a [`CompileFailure::Unsupported`] result throws the v0
-//! not-implemented `Error` ("unsupported: <construct>"), never a `SyntaxError`.
+//! not-implemented `Error` (`"unsupported: <construct>"`), never a `SyntaxError`.
 //!
 //! [`IsolateConfig::compiler`]: crate::IsolateConfig::compiler
 
