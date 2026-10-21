@@ -74,7 +74,10 @@ macro_rules! define_id {
 define_id!(
     /// A function: its preorder index in the source tree (the H2 stable function id).
     /// Function 0 is the script or module. Synthetic class functions get their ids when the walk
-    /// enters the class body, before any element (see [`ClassInfo`]).
+    /// enters the class body: the default constructor, the instance initializer and the
+    /// functions in the instance fields, then the static initializer and the functions in the
+    /// static elements, then the methods (and the functions in computed keys) in element order.
+    /// This is a preorder of the parent links (the verifier Tree rule; see [`ClassInfo`]).
     FunctionId
 );
 define_id!(
