@@ -18,6 +18,7 @@ checks that the reported `file:line`s are exactly the lines that end in `// FLAG
 | `generic_holder.rs` | `Holder<'s, Local<'s>>` where `Holder` holds a `Local` and has `Vec<T>`; `Vec<Local<'s, FlatStr>>` | flag both, once each (the marker `FlatStr` is no value) |
 | `boxed_closure_alias.rs` | `HeapBox::new(..)` and `Shared::new(..)` (`Box as HeapBox`, `Rc as Shared`) capturing a `Local` | flag both closures |
 | `closure_shadowing.rs` | a `Local` used before a `let` shadows it in the closure; after an `if let` / `while let` that shadows it | flag the 3 closures; a shadow in scope at the use is no finding |
+| `iterator_record/records_in_vec.rs` | `Vec<IteratorRecord>`; the test copies the real `crates/ep9_vm/src/abi/iter.rs` next to it in a temp root | flag the `Vec` with `iter.rs`; exit 0 without it |
 | `nested/deep/vec_in_mod.rs` | `Vec<Local>` in a nested directory | flag it; the path prints with `/` |
 | `clean.rs` | references, `PhantomData`, fn pointers, trait objects, `HostFn` tables, root ranges, unboxed closures | exit 0 |
 | `allowed.rs` | a `Vec<Local>` under `// gc-lint: allow(..)` | exit 0 and list the allow |
