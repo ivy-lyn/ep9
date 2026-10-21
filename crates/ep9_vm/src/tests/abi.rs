@@ -812,9 +812,27 @@ fn object_ops_and_conversions() {
             take_error(cx, rt),
             "TypeError: Cannot convert undefined or null to object"
         );
-        let w = cx.to_object(Local::int32(3)).unwrap();
+        // v0: no wrapper objects, so boxing a primitive throws the interpreter's catchable
+        // not_implemented instead of returning an object without the primitive (P2 fills it).
+        let abc = cx.new_string("abc").unwrap();
+        for v in [
+            abc.value(),
+            Local::int32(3),
+            Local::number(1.5),
+            Local::boolean(true),
+        ] {
+            assert!(cx.to_object(v).is_err());
+            assert_eq!(
+                take_error(cx, rt),
+                "Error: not implemented in ep9 v0: wrapper objects for primitives"
+            );
+        }
         let np = cx.intrinsic(IntrinsicId::NumberPrototype);
-        assert!(cx.get_prototype_of(w).unwrap().is_same_bits(&np));
+        assert!(cx.new_wrapper(np, Local::int32(3)).is_err());
+        assert_eq!(
+            take_error(cx, rt),
+            "Error: not implemented in ep9 v0: wrapper objects for primitives"
+        );
         // SameValue and IsStrictlyEqual.
         let nan = Local::number(f64::NAN);
         assert!(cx.same_value(nan, nan) && !cx.is_strictly_equal(nan, nan));
