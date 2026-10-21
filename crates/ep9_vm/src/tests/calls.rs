@@ -662,10 +662,11 @@ fn lda_new_target_reads_the_resumed_frame_slot() {
     }
 }
 
-/// ABI 3 runtime ids 23-28 reach their M2-P0 stubs (`slow/{private, class_fields, lookup,
-/// eval}.rs`), which throw the text the `CallRuntime` catch-all arm gave before: id 26
-/// through `CallRuntimeForPair`, every other one through `CallRuntime`. Every dispatch, with
-/// and without GC stress. Ids 19-22 (P1-GEN-VM) are covered in `tests/generator.rs`.
+/// ABI 3 runtime ids 27-28 reach their M2-P0 stubs (`slow/eval.rs`, P3-EVAL-VM), which throw
+/// the text the `CallRuntime` catch-all arm gave before. Every dispatch, with and without GC
+/// stress. The filled ids are tested where they live: 19-22 (P1-GEN-VM) in
+/// `tests/generator.rs`, 23-25 (P2-CLS-VM) in `tests/class_fields.rs`, 26 (the pair
+/// `LoadLookupSlotForCall`, P2-LOOKUP) in `tests/with_stmt.rs`.
 #[test]
 fn abi3_runtime_ids_reach_their_stubs() {
     /// `CallRuntime(id, args)` (or `CallRuntimeForPair` for a pair id) with undefined
@@ -686,8 +687,7 @@ fn abi3_runtime_ids_reach_their_stubs() {
         s.b.lda_smi(1).return_();
         unit("", vec![s.finish()])
     }
-    let ids: Vec<RuntimeId> = (23..=28).map(|v| RuntimeId::from_u16(v).unwrap()).collect();
-    assert!(ids[3].info().returns_pair, "26 is the pair id");
+    let ids: Vec<RuntimeId> = (27..=28).map(|v| RuntimeId::from_u16(v).unwrap()).collect();
     for &d in Dispatch::ALL {
         for stress in [false, true] {
             let ids = ids.clone();
