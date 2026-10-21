@@ -15,6 +15,11 @@ ep9_heap = { path = "../ep9_heap" }
 ep9_value = { path = "../ep9_value" }
 ep9_vm = { path = "../ep9_vm" }
 
+# build.rs: the engine build id (H35-Q8). It writes all zeros until the BUILD-ID task (M0 month 2,
+# P2) hashes the build inputs with ep9_bytecode's SHA-256.
+[build-dependencies]
+ep9_bytecode = { path = "../ep9_bytecode" }
+
 [features]
 # H27: the unit writer, linked only into AOT builds (ep9c). Never in the ep9 binary:
 # .github/scripts/dep-guards.sh check 10.

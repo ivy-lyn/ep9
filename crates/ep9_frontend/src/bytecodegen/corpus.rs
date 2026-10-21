@@ -2,8 +2,13 @@
 //! verifier-clean counts per result class, and determinism (each file compiled twice).
 //!
 //! ```text
-//! cargo test -p ep9_frontend --release --lib bytecodegen::corpus -- --ignored --nocapture
+//! cargo test -p ep9_frontend --release --locked --lib bytecodegen::corpus -- --ignored --nocapture
 //! ```
+//!
+//! Determinism across hosts, targets and profiles (G1): the corpus digest must equal the one in
+//! `expectations/bytecode-corpus.digest`, in debug and in release. `EP9_BLESS_CORPUS=1` rewrites
+//! that file after a clean run. The digest changes only with an ABI bump or a codegen change,
+//! and each change gets a BCG-CORPUS row in docs/decisions-log.md.
 //!
 //! A test262 file runs in the modes the harness uses: module, strict only, sloppy only (or
 //! `raw`), or both strict and sloppy. Every compile goes through [`super::check_determinism`]:
@@ -124,6 +129,68 @@ impl Report {
         }
         ep9_bytecode::sha256::to_hex(&h.finish())
     }
+}
+
+/// `expectations/bytecode-corpus.digest`, from this crate's directory.
+fn digest_file() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../expectations/bytecode-corpus.digest")
+}
+
+/// The comment header that `EP9_BLESS_CORPUS=1` writes above the digest line.
+const DIGEST_FILE_HEADER: &str = "\
+# Bytecodegen corpus digest (G1 determinism): SHA-256 over the sorted (path under third_party,
+# mode, unit content hash) lines of every unit that compiled. Every host and target, debug and
+# release, must give this value. It changes only with an ABI bump or a codegen change; each
+# change gets a BCG-CORPUS row in docs/decisions-log.md.
+# Check:   cargo test -p ep9_frontend --release --locked --lib bytecodegen::corpus -- --ignored
+# Rewrite: the same command with EP9_BLESS_CORPUS=1 (crates/ep9_frontend/src/bytecodegen/corpus.rs)
+";
+
+/// The digest in a digest file: its only line that is not empty and not a `#` comment, which
+/// must be 64 lowercase hex digits.
+fn parse_digest_file(text: &str) -> Result<String, String> {
+    let mut lines = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'));
+    let (Some(line), None) = (lines.next(), lines.next()) else {
+        return Err("needs exactly one line that is not empty and not a # comment".into());
+    };
+    if line.len() == 64
+        && line
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        Ok(line.to_owned())
+    } else {
+        Err(format!("{line:?} is not 64 lowercase hex digits"))
+    }
+}
+
+/// Compares `digest` with the digest file, or rewrites the file with `EP9_BLESS_CORPUS=1`.
+fn check_digest(digest: &str, units: usize) {
+    let path = digest_file();
+    if std::env::var_os("EP9_BLESS_CORPUS").is_some() {
+        std::fs::write(&path, format!("{DIGEST_FILE_HEADER}{digest}\n"))
+            .unwrap_or_else(|e| panic!("cannot write {}: {e}", path.display()));
+        println!("wrote corpus digest {digest} to {}", path.display());
+        return;
+    }
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "cannot read {}: {e} (EP9_BLESS_CORPUS=1 writes it)",
+            path.display()
+        )
+    });
+    let want = parse_digest_file(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    assert_eq!(
+        digest,
+        want,
+        "corpus digest over {units} units differs from {}: the bytecode of some unit changed. \
+         An ABI bump or a codegen change re-blesses it (EP9_BLESS_CORPUS=1) with a BCG-CORPUS \
+         row; any other change is a determinism bug",
+        path.display()
+    );
 }
 
 /// The path under `third_party/`, with `/` separators.
@@ -282,4 +349,31 @@ fn corpus_verifier_clean_and_deterministic() {
         (54_522, 104_375),
         "corpus coverage changed: check the checkouts, then update these counts and BCG-CORPUS"
     );
+    let digest = report.digest();
+    check_digest(&digest, report.hashes.len());
+}
+
+#[test]
+fn digest_file_format() {
+    let d = "ffdbd454fa9a920e961c6129ea72b465ed93bb8b0e2b3eb68ef2f226e5e82acb";
+    assert_eq!(
+        parse_digest_file(&format!("{DIGEST_FILE_HEADER}{d}\n")),
+        Ok(d.to_owned())
+    );
+    assert_eq!(
+        parse_digest_file(&format!("\n  {d}  \n\n")),
+        Ok(d.to_owned())
+    );
+    assert!(parse_digest_file(DIGEST_FILE_HEADER).is_err());
+    assert!(parse_digest_file(&format!("{d}\n{d}\n")).is_err());
+    assert!(parse_digest_file(&d.to_uppercase()).is_err());
+    assert!(parse_digest_file(&d[1..]).is_err());
+    assert!(parse_digest_file(&format!("{}g", &d[1..])).is_err());
+}
+
+/// The committed digest file parses (the corpus run itself needs the checkouts).
+#[test]
+fn committed_digest_file_parses() {
+    let text = std::fs::read_to_string(digest_file()).expect("expectations/bytecode-corpus.digest");
+    parse_digest_file(&text).expect("expectations/bytecode-corpus.digest");
 }
