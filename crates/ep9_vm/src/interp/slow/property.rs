@@ -187,17 +187,6 @@ pub(crate) enum PropOp {
     DeleteSloppy,
 }
 
-/// `super[key]` with home object `home` (§13.3.7.3 GetSuperBase, then `[[Get]]`) and no
-/// receiver. Only `LoadKeyedFromSuper` (interp/slow/runtime.rs) calls it; P3-ACC moves that
-/// caller to [`super_get_with_receiver`] with `this` (W4-P3-SUPER-SPLIT), and then this goes.
-#[allow(
-    dead_code,
-    reason = "its last caller moves to super_get_with_receiver (P3-ACC)"
-)]
-pub(super) fn super_get(cx: &mut Cx, home: u64, key: u64) -> Res<u64> {
-    super_get_with_receiver(cx, home, key, UNDEFINED)
-}
-
 /// `super[key]` (§13.3.7.1 MakeSuperPropertyReference, then GetValue): `[[Get]]` on the
 /// prototype of the home object with `receiver` (the `this` value).
 pub(crate) fn super_get_with_receiver(cx: &mut Cx, home: u64, key: u64, receiver: u64) -> Res<u64> {
@@ -207,7 +196,6 @@ pub(crate) fn super_get_with_receiver(cx: &mut Cx, home: u64, key: u64, receiver
 
 /// `super[key] = v` (§13.3.7.1, then PutValue: `[[Set]]` on the prototype of the home object
 /// with `receiver`, §10.1.9.2). A failed assignment throws in strict code.
-#[allow(dead_code)] // P3-ACC moves `StoreToSuper` (interp/slow/runtime.rs) here.
 pub(crate) fn super_set(
     cx: &mut Cx,
     home: u64,

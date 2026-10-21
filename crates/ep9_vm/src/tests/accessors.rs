@@ -482,7 +482,6 @@ fn keyed_super_getters_and_setters_see_this() {
 }
 
 #[test]
-#[ignore = "needs P3-IC 0x22 receiver"]
 fn super_x_getters_see_this() {
     let r = run_all(|| super_unit(true));
     ok(&r);
