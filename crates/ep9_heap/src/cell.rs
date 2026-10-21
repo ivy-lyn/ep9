@@ -15,6 +15,10 @@
 //!   first GC point that follows its allocation.
 //! - Each kind lives in one [`Space`]: `Normal` cells come from [`crate::Heap::alloc`], `Shape`
 //!   cells from [`crate::Heap::alloc_shape`] in the shape region (H08-Q1).
+//! - No `Drop` (H12): the sweep frees a dead cell without running Rust code. A kind whose
+//!   layout is a Rust type ([`HeapLayout`]) is registered with [`crate::Heap::register_typed`],
+//!   which rejects at build time a type that needs `Drop`. Kinds laid out by byte offsets (all
+//!   of `ep9_vm` today) keep [`crate::Heap::register_kind`].
 
 use core::num::NonZeroU8;
 use core::ptr::NonNull;
@@ -22,7 +26,8 @@ use core::ptr::NonNull;
 use ep9_value::{Value, Word0};
 
 use crate::barrier::Slot;
-use crate::layout::{MAX_SMALL_SIZE, cell_size_for};
+use crate::heap::Heap;
+use crate::layout::{GRANULE, MAX_SMALL_SIZE, cell_size_for};
 use crate::trace::Tracer;
 
 /// Kind byte of a cell (word0 byte 5). Never 0.
@@ -105,6 +110,109 @@ impl std::fmt::Display for KindError {
 }
 
 impl std::error::Error for KindError {}
+
+/// A Rust type that is the layout of one cell kind: `#[repr(C)]`, a [`Word0`] first, every GC
+/// reference in a [`Slot`]. Register it with [`Heap::register_typed`].
+///
+/// The heap frees a dead cell without running any Rust code: no `Drop`, no finalizer (H12).
+/// So the type must not need `Drop`. A `String`, `Vec`, `Box` or `Rc` field would leak, and a
+/// `Drop` impl would never run. [`Heap::register_typed`] checks this when it is built:
+///
+/// ```compile_fail,E0080
+/// use ep9_heap::{CellPtr, Heap, HeapConfig, HeapLayout, KindId, Tracer};
+/// use ep9_value::Word0;
+///
+/// #[repr(C)]
+/// struct Named {
+///     word0: Word0,
+///     name: String, // needs Drop: register_typed does not build
+/// }
+///
+/// impl HeapLayout for Named {
+///     const KIND: KindId = KindId::new(70).unwrap();
+///     const NAME: &'static str = "named";
+///     fn trace(_: CellPtr, _: &mut Tracer<'_>) {}
+/// }
+///
+/// let heap = Heap::new(HeapConfig::default()).unwrap();
+/// heap.register_typed::<Named>().unwrap();
+/// ```
+///
+/// The same type with a plain field builds and registers:
+///
+/// ```
+/// use ep9_heap::{CageConfig, CellPtr, Heap, HeapConfig, HeapLayout, KindId, Slot, Tracer};
+/// use ep9_value::Word0;
+///
+/// #[repr(C)]
+/// struct Named {
+///     word0: Word0,
+///     name: Slot, // a string Value: traced, no Drop
+/// }
+///
+/// impl HeapLayout for Named {
+///     const KIND: KindId = KindId::new(70).unwrap();
+///     const NAME: &'static str = "named";
+///     fn trace(cell: CellPtr, tracer: &mut Tracer<'_>) {
+///         // SAFETY: the heap calls trace only with a live `Named` cell; +8 is its slot.
+///         tracer.visit(unsafe { cell.slot(8) });
+///     }
+/// }
+///
+/// let cage = CageConfig {
+///     cage_size: 1 << 30,
+///     code_range_size: ep9_platform::allocation_granularity(),
+///     ..CageConfig::default()
+/// };
+/// let heap = Heap::new(HeapConfig { cage, ..HeapConfig::default() }).unwrap();
+/// heap.register_typed::<Named>().unwrap();
+/// ```
+///
+/// The check runs where `register_typed::<T>` is instantiated, so it shows in `cargo build`
+/// and `cargo test`, not in `cargo check` or clippy.
+pub trait HeapLayout: Sized {
+    /// The kind byte (word0 byte 5).
+    const KIND: KindId;
+    /// For errors and the verifier.
+    const NAME: &'static str;
+    /// Where its cells are allocated.
+    const SPACE: Space = Space::Normal;
+    /// The cell size: the type's size, or a [`SizeFn`] for a cell with a tail.
+    const SIZE: CellSize = CellSize::Fixed(size_of::<Self>());
+    /// Visits every GC reference of a live cell of this kind (a [`TraceFn`]).
+    fn trace(cell: CellPtr, tracer: &mut Tracer<'_>);
+}
+
+impl Heap {
+    /// Registers the cell kind of the Rust type `T`, as [`Heap::register_kind_in`] does with
+    /// `T`'s constants. Does not build if `T` needs `Drop` (H12), is smaller than word0, or is
+    /// aligned above the heap granule (8 bytes).
+    pub fn register_typed<T: HeapLayout>(&self) -> Result<(), KindError> {
+        const {
+            assert!(
+                !core::mem::needs_drop::<T>(),
+                "a heap cell type must not need Drop: the GC frees cells without running Rust code (H12)"
+            );
+            assert!(
+                size_of::<T>() >= size_of::<Word0>(),
+                "a heap cell type starts with word0"
+            );
+            assert!(
+                align_of::<T>() <= GRANULE,
+                "a heap cell type is aligned to at most the heap granule (8 bytes)"
+            );
+        };
+        self.register_kind_in(
+            T::KIND,
+            CellKind {
+                name: T::NAME,
+                size: T::SIZE,
+                trace: T::trace,
+            },
+            T::SPACE,
+        )
+    }
+}
 
 pub(crate) struct KindTable {
     kinds: [Option<CellKind>; 256],
@@ -320,5 +428,85 @@ mod tests {
         assert_eq!(t.register(k2, dynamic), Ok(()));
         assert_eq!(t.get(3).map(|k| k.name), Some("leaf"));
         assert!(t.get(0).is_none() && t.get(5).is_none());
+    }
+
+    /// A typed kind: word0, one strong slot, one raw word.
+    #[repr(C)]
+    struct Pair {
+        word0: Word0,
+        first: Slot,
+        raw: u64,
+    }
+
+    impl HeapLayout for Pair {
+        const KIND: KindId = KindId::new(40).unwrap();
+        const NAME: &'static str = "test-pair";
+        fn trace(cell: CellPtr, tracer: &mut Tracer<'_>) {
+            // SAFETY: the heap calls trace only with a live Pair cell; `first` is its slot.
+            tracer.visit(unsafe { cell.slot(core::mem::offset_of!(Pair, first)) });
+        }
+    }
+
+    /// A typed kind of the shape space.
+    #[repr(C)]
+    struct ShapeLike {
+        word0: Word0,
+        raw: u64,
+    }
+
+    impl HeapLayout for ShapeLike {
+        const KIND: KindId = KindId::new(41).unwrap();
+        const NAME: &'static str = "test-shape-like";
+        const SPACE: Space = Space::Shape;
+        fn trace(_: CellPtr, _: &mut Tracer<'_>) {}
+    }
+
+    #[test]
+    fn register_typed_uses_the_type() {
+        use crate::tests::{LEAF, test_heap};
+
+        let heap = test_heap(|_| {});
+        assert_eq!(heap.register_typed::<Pair>(), Ok(()));
+        assert_eq!(
+            heap.register_typed::<Pair>(),
+            Err(KindError::Taken(Pair::KIND))
+        );
+        assert_eq!(
+            heap.register_typed::<ShapeLike>(),
+            Err(KindError::NoShapeSpace(ShapeLike::KIND))
+        );
+        {
+            let inner = heap.inner.borrow();
+            let k = inner.kinds.get(Pair::KIND.get()).expect("registered");
+            assert_eq!(k.name, "test-pair");
+            assert!(matches!(k.size, CellSize::Fixed(24)));
+        }
+        // The size is the type's: another size is refused.
+        assert!(heap.alloc(Pair::KIND, 32).is_err());
+        let pair = heap
+            .alloc(Pair::KIND, size_of::<Pair>())
+            .expect("alloc pair");
+        let leaf = heap.alloc(LEAF, 24).expect("alloc leaf");
+        // SAFETY: `pair` is a new Pair cell, written before the next GC point (elision E2).
+        unsafe {
+            (*pair.cast::<Pair>().as_ptr()).first.set(
+                pair.header(),
+                leaf.to_value(),
+                heap.barrier(),
+            );
+            (*pair.cast::<Pair>().as_ptr()).raw = 7;
+        }
+        let g = heap.new_global(pair.to_value());
+        let leaf_addr = leaf.addr();
+        // Only the global and `Pair::trace` keep the leaf: the scan reads no stack words.
+        heap.collect_with_words(&[]);
+        assert!(heap.is_cell(pair.addr()));
+        assert!(
+            heap.is_cell(leaf_addr),
+            "Pair::trace did not visit its slot"
+        );
+        heap.drop_global(g);
+        heap.collect_with_words(&[]);
+        assert!(!heap.is_cell(pair.addr()) && !heap.is_cell(leaf_addr));
     }
 }

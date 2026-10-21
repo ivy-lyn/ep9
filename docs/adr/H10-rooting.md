@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-20). S0 code built 2026-10-21: root registry and handles in `crates/ep9_heap/src/roots.rs`, CSS in `css.rs` and `heap.rs` (`Heap::collect`), tests in `src/tests/css.rs` |
+| Status | Draft (2026-10-20). S0 code built 2026-10-21: root registry and handles in `crates/ep9_heap/src/roots.rs`, CSS in `css.rs` and `heap.rs` (`Heap::collect`), tests in `src/tests/css.rs`. M0 wk4: H10-Q2 filled; `cargo xtask gc-lint` and the debug on-stack check of `Local` built |
 | Fix by | M0 wk2, after SP-GC |
 | Freeze point | M1 exit |
 | Origin | v1#6; plan status E (extended: AOT frames, unit RW data) |
@@ -46,7 +46,7 @@ unit RW data (one copy per isolate, H22) ---------> PRECISE, range registered by
 |---|---|---|
 | Spill all callee-saved registers before the scan, per ABI | SP-GC trampolines for a64, SysV and Win64 | M0 wk2 |
 | Interior and one-past-end pointers resolve through VO bits | SP-GC probe cases S1-S3 as unit tests | M0 wk2 |
-| No `Vec`/`HashMap` of `Local` | Lint "no `Vec<Local>`" (M0 wk4); probe case S7 | M0 wk4 |
+| No `Vec`/`HashMap` of `Local` | Lint "no `Vec<Local>`" (M0 wk4); probe case S7. Built as `cargo xtask gc-lint` (`tools/xtask/src/gc_lint.rs`; cases in `tools/xtask/tests/gc_lint/`) and the debug on-stack check in every `Local` read (`crates/ep9_vm/src/abi/local.rs`); see H10-Q2 | M0 wk4 |
 | Safepoints are at calls only | Call-only safepoints in every emitter (03 §2) | M0 (T0); M5; A2 |
 | Unit RW ranges are registered and removed per isolate | `ep9_heap` root-range hook; GC-stress with AOT frames | A2 |
 | Every root source registers a rescan callback (CSS, VM stack, `Global<T>`, `ScratchRoots`, unit RW ranges, embedder roots, the card table of large arrays). S2 runs all of them in every stop-the-world fixpoint; the root-range hook stays callable more than once (H11) | Root-source registry in `ep9_heap`; V3 | M5 |
@@ -66,6 +66,7 @@ unit RW data (one copy per isolate, H22) ---------> PRECISE, range registered by
 | [R05] | CSS probe S1-S7: without a spill, register refs are missed; interior pointers stay live; a ref only in a Rust `Vec` is invisible | [05-gc-design.md](../research/05-gc-design.md) |
 | [R09] | Rooting conflict resolved: conservative native frames over a precise heap (JSC, Oilpan, LibJS precedent) | [09-critic.md](../research/09-critic.md) |
 | [R07] | Boa refcount rooting costs 10-18% of mutator time | [07-rust-engine-landscape.md](../research/07-rust-engine-landscape.md) |
+| [V8-L] | V8 `Local` derives from `StackAllocated<true>` under `V8_ENABLE_LOCAL_OFF_STACK_CHECK`; its constructor and copy constructor call `VerifyOnStack()` | v8 main: `include/v8-local-handle.h:354-357`, `include/v8-handle-base.h:28-47` (fetched 2026-10-21) |
 
 ## Validation
 
@@ -78,7 +79,7 @@ unit RW data (one copy per isolate, H22) ---------> PRECISE, range registered by
 | ID | Question | Needed by | Proposed default |
 |---|---|---|---|
 | H10-Q1 | The dev host is macOS arm64. Win64 runs only on CI runners. x64 SysV runs locally only under Rosetta. Is a Rosetta run enough for the SysV part of the SP-GC gate? | M0 wk2 | Rosetta for local runs; the CI runner is the gate |
-| H10-Q2 | How the lint finds `Vec<Local>` (clippy lint, xtask grep, or type-level `!Send`/lifetime trick) | M0 wk4 | Decide with the builtin ABI draft (H20) |
+| H10-Q2 | How the lint finds `Vec<Local>` (clippy lint, xtask grep, or type-level `!Send`/lifetime trick) | M0 wk4 | **Filled (M0 wk4, W4-H10-Q2).** Four layers. (1) Types: `Local<'s>` is branded by the host call and `!Send`, so it cannot be `'static` or cross threads (H20). (2) `cargo xtask gc-lint`: a `syn` 2 pass over `crates/ep9_vm/src` and `crates/ep9_builtins/src`, on stable Rust in under 1 s. It flags a stack-only type (`Local`, `Args`, `Rest`, `ArgsBuilder`, `ScratchList`, `PropertyDescriptor`, `JsStr`, `FlatStr`, and any type that holds one by value) inside `Vec`, `VecDeque`, `HashMap`, `HashSet`, `BTreeMap`, `Box`, `Rc`, `Arc`, `RefCell`, `SmallVec` and the other std containers, in a `static` or `thread_local!`, or captured by a closure given to `Box::new`/`Rc::new`/`Arc::new`. `// gc-lint: allow(<reason>)` skips the next item and is listed. (3) Debug builds: every read of a `Local` checks that `&self` lies on the thread's stack (bounds cached per thread), so a `Local` read through `&vec[0]` panics. V8 checks at construction and copy (`V8_ENABLE_LOCAL_OFF_STACK_CHECK`); a Rust `Copy` type has no copy hook, so ep9 checks at the read. (4) GC-stress runs. Not clippy or dylint: a custom lint pass needs a nightly toolchain, and D8 keeps CI on stable. Known gaps: inferred types (`let v: Vec<_> = it.collect()`), a value moved in by a call (`v.push(l)`), a `Local` copied out of a `Vec` before its read. Reopen: a GC-stress failure caused by a `Local` in Rust heap memory adds a type-aware dylint job on nightly |
 
 ## Reopens if
 
@@ -93,3 +94,4 @@ unit RW data (one copy per isolate, H22) ---------> PRECISE, range registered by
 | 2026-10-20 | draft | First draft from 02 §6 and 03 §2 (M0 wk1 list) | ADR agent |
 | 2026-10-20 | fill | Rule added from decision H11-termination: every root source registers a rescan callback, dirty LOS cards included; S2 runs all of them in every stop-the-world fixpoint | apply agent |
 | 2026-10-21 | clarify | Status: S0 code built in `ep9_heap`. Root sources, weak sources, strong and weak root ranges, global and weak handles, LIFO `ScratchRoots`; CSS spills through `ep9_platform` and scans [sp, stack high) with the end rule (word and word - 1) and interior lookup | heap agent |
+| 2026-10-21 | fill | H10-Q2 filled: types (`'s`, `!Send`) + `cargo xtask gc-lint` (syn, stable) + the debug on-stack check in `Local` reads + GC-stress. The "no `Vec`/`HashMap` of `Local`" Rules row names the built checks. Decision W4-H10-Q2 | P2-LINT agent |
