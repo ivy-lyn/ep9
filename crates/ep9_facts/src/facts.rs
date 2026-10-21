@@ -735,14 +735,17 @@ pub(crate) fn check_shape(s: &ShapeDesc) -> Result<(), FactError> {
     if let ProtoRef::FunctionPrototype(r) = &s.proto {
         check_function(r)?;
     }
-    for (i, (k, _)) in s.keys.iter().enumerate() {
+    // A set, not a pairwise scan: a decoded shape may hold any number of keys, and the check
+    // must stay O(n log n) on hostile input.
+    let mut seen = std::collections::BTreeSet::new();
+    for (k, _) in &s.keys {
         if let KeyRef::String(u) = k
             && !u.is_canonical()
         {
             return Err(FactError::NonCanonical("UTF-16 key that fits Latin-1"));
         }
         // OtherSymbol keys have no name, so two of them may be different symbols.
-        if *k != KeyRef::OtherSymbol && s.keys[..i].iter().any(|(o, _)| o == k) {
+        if *k != KeyRef::OtherSymbol && !seen.insert(k) {
             return Err(FactError::Invalid("a key appears twice in a shape"));
         }
     }

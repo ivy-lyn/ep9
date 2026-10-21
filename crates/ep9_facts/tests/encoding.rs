@@ -540,3 +540,32 @@ fn bitsets_merge_by_or() {
     );
     assert_eq!(ForInHint::ALL.hint(), Some(ForInHint::ANY));
 }
+
+/// A shape with many keys is checked in O(n log n): 200,000 distinct keys decode quickly,
+/// and one repeated key at the end is found.
+#[test]
+fn a_shape_with_many_keys_is_checked_without_a_pairwise_scan() {
+    let mut big = point();
+    big.keys = (0..200_000u32).map(|i| key(&format!("k{i}"))).collect();
+    let facts = SlotFacts::Literal(LiteralFacts {
+        count: 1,
+        shape: Some(big.clone()),
+        elements: None,
+    });
+    let mut s = FactSnapshot::new(header());
+    let t = std::time::Instant::now();
+    s.insert(0, 0, facts).unwrap();
+    let back = FactSnapshot::decode(&s.encode()).unwrap();
+    assert_eq!(back, s);
+    assert!(t.elapsed().as_secs() < 20, "took {:?}", t.elapsed());
+    big.keys.push(key("k7"));
+    let dup = SlotFacts::Literal(LiteralFacts {
+        count: 1,
+        shape: Some(big),
+        elements: None,
+    });
+    assert_eq!(
+        FactSnapshot::new(header()).insert(0, 0, dup),
+        Err(FactError::Invalid("a key appears twice in a shape"))
+    );
+}
