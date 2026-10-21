@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-21). The T0 v0 interpreter implements it. Accept needs the review record (README §3.1) and Spike B |
+| Status | Draft (2026-10-21; H14-Q1 filled 2026-10-22: FRAME 2, fp-3 = new.target). The T0 v0 interpreter implements it. Accept needs the review record (README §3.1) and Spike B |
 | Fix by | M0 wk3; Spike B + SP-Unit (M0 month 2); Spike C (M1) |
 | Freeze point | M1 exit |
 | Origin | v1#10 + R16-D2; plan status E |
@@ -24,21 +24,22 @@ Canonical header (caller FP, return pc, callee, argc, SFI, feedback, context, of
 **Frame.** The VM stack grows up. `fp` points at `r0`. The register operand `o` maps to `fp + o` for `o ≥ 0` and to `fp + o - 8` for `o < 0` (parameters).
 
 ```text
- low   a(n-1) .. a0  this | caller fp  ret pc  callee  argc  info  feedback  context  offset | r0 .. r(m-1)   high
- fp-   10+(n-1) .. 10  9  |    8         7       6      5     4       3         2       1    | 0  ..  m-1
+ low   a(n-1) .. a0  this | caller fp  ret pc  callee  argc  info  new.target  context  offset | r0 .. r(m-1)   high
+ fp-   10+(n-1) .. 10  9  |    8         7       6      5     4        3          2       1    | 0  ..  m-1
        n = max(argc, parameter count); missing args = undefined          top = fp + register count
 ```
 
 | Slot | Kind | Content |
 |---|---|---|
 | caller fp, return pc, function info | native word | `addr + 2^49` (a subnormal double; never a cell) |
-| callee, feedback, context | Value | feedback holds no vector: T0 reaches the vector through the function info slot (below). v0: a `[[Construct]]` frame (argc bit 30) keeps new.target there (H14-Q1); other frames hold undefined |
+| callee, context | Value | the function object; the current context |
+| new.target (fp-3, `slot::NEW_TARGET`; FRAME 2) | Value | the incoming new.target: the constructor of a `[[Construct]]` call (argc bit 30), undefined for a plain call. A resumed generator frame (`call::push_resume_frame`, construct bit clear) holds the generator object. `LdaNewTarget` reads the slot with no construct-bit check; host functions get new.target as an argument (`abi::new_target` keeps its construct-bit check). No tier keeps the feedback vector here (H14-Q1) |
 | argc | int32 | actual count; bit 30 = the frame came from `[[Construct]]` |
 | offset | int32 | bytecode offset, saved at runtime calls and Rust entries |
 
 Every word in `[stack base, top)` is a valid Value. The GC scans that slice precisely (H10). Rust locals stay under the conservative native-stack scan.
 
-**Feedback vector (H16).** T0 reaches a function's vector through the function info slot (fp-4): `FunctionInfo.feedback` points at the function's slot in its unit's strong root range, and that slot holds the FEEDBACK cell. So a frame that is already running sees a new vector at once, and the frame layout does not change. The vector is lazy: a call counts while the function has none, and the call that reaches `IsolateConfig::feedback_threshold` (default 8; 0 = first call; `u32::MAX` = never) makes it before the frame push. A `JumpLoop` budget poll makes one for a running function that has none (`crates/ep9_vm/src/feedback.rs`).
+**Feedback vector (H16).** T0 reaches a function's vector through the function info slot (fp-4): `FunctionInfo.feedback` points at the function's slot in its unit's strong root range, and that slot holds the FEEDBACK cell. So a frame that is already running sees a new vector at once, and the frame layout does not change. The vector is lazy: a call counts while the function has none, and the call that reaches `IsolateConfig::feedback_threshold` (default 8; 0 = first call; `u32::MAX` = never) makes it before the frame push. A `JumpLoop` budget poll makes one for a running function that has none (`crates/ep9_vm/src/feedback.rs`). JIT and AOT frames reach the vector the same way, through fp-4 (H14-Q1).
 
 **Calls.**
 
@@ -71,12 +72,14 @@ Every word in `[stack base, top)` is a valid Value. The GC scans that slice prec
 | A tier change writes one slot; registry ranges do not overlap | `dispatch::tests::*`, `tests::interp::dispatch_slots_and_code_registry` | M0 wk3 |
 | Every threaded handler ends in a tail jump, ≤ 4 register args | `cargo xtask disasm-check -p ep9_vm --all-targets --expect 282` (H15) | M0 wk3 |
 | T0 finds the vector through fp-4; it appears on the threshold call (from JS or from Rust) or at a loop poll, never at `u32::MAX`; the unit keeps it | `tests::feedback::*` | M0 wk4 |
+| fp-3 holds new.target, or the generator object in a resumed frame; `LdaNewTarget` returns the slot | the P0-VM test: a frame pushed with the construct bit clear and fp-3 = an object makes `LdaNewTarget` return that object; `host_info_reads_the_contract_constants` (`crates/ep9_unit/tests/check.rs`) reads `FRAME_VERSION` = 2 | M2-P0 |
 
 ## Consequences
 
 - **Gains.** No adaptor frames: the callee frame pads arguments (+11.2% jitless, [R06]). Deep JS recursion is bounded by the VM stack (default 2^20 slots), not by the native stack. One walker serves the unwinder, Error.stack and later the profiler and deopt.
 - **Costs.** Every argument is copied into the callee frame. Native words cost one add on store and one subtract on load. Calls into host functions and Rust entries still use the native stack and need a check.
-- **Follow-ups.** Spike B decides where JIT frames live (D21). H14-Q1 decides whether fp-3 keeps new.target or holds the vector for JIT and AOT frames. M5 adds frame walkers for JIT and AOT frames to the registry.
+- **Follow-ups.** Spike B decides where JIT frames live (D21). H14-Q1 is filled (FRAME 2): fp-3 keeps new.target, and every tier reaches the vector through fp-4. M5 adds frame walkers for JIT and AOT frames to the registry.
+- **Plan fix filed.** The plan row (02 §6 H14) still names fp-3 "feedback" in the header list; since FRAME 2 that slot is new.target. The Decision text above keeps the plan's words until the plan row changes.
 
 ## Evidence
 
@@ -95,7 +98,7 @@ Every word in `[stack base, top)` is a valid Value. The GC scans that slice prec
 
 | ID | Question | Needed by | Proposed default |
 |---|---|---|---|
-| H14-Q1 | Where does `new.target` live? v0 keeps it in the feedback slot of a `[[Construct]]` frame (`call::push_frame`; `LdaNewTarget` reads it there) and passes it to host functions as an argument | M1 (classes, `Reflect.construct`) | A register filled at entry, not a header slot |
+| H14-Q1 | Where does `new.target` live? v0 keeps it in the feedback slot of a `[[Construct]]` frame (`call::push_frame`; `LdaNewTarget` reads it there) and passes it to host functions as an argument | M1 (classes, `Reflect.construct`) | **Filled (2026-10-22, FRAME 2).** fp-3 is the new.target slot (`slot::NEW_TARGET`): the incoming new.target, or the generator object in a resumed frame. JIT and AOT frames reach the feedback vector through fp-4, as T0 does. The proposed default (a register filled at entry) was not taken: one header slot serves `[[Construct]]` and generator resume (M2-GEN-MODEL), and the frame size does not change |
 | H14-Q2 | Who wraps a primitive receiver of a sloppy function? | M1 | The callee prologue, from the FunctionInfo strict bit |
 | H14-Q3 | Is the register mapping (`o < 0` → `fp + o - 8`) part of the H2 ABI? | H2 freeze (M1 exit) | Yes; the AOT emitter uses it |
 | H14-Q4 | Default VM stack size and the RangeError depth versus V8 | M1 | Keep 2^20 slots; measure test262 and the benches |
@@ -113,3 +116,5 @@ Every word in `[stack base, top)` is a valid Value. The GC scans that slice prec
 | 2026-10-21 | draft | First draft from the T0 v0 interpreter in `ep9_vm` | VM lead (agent) |
 | 2026-10-21 | clarify | Header table and H14-Q1 state where v0 keeps new.target (feedback slot of a construct frame), as the code does | docs-sync agent |
 | 2026-10-21 | fill | T0 reaches the lazy FeedbackVector (H16) through the function info slot (fp-4, `FunctionInfo.feedback`); fp-3 keeps new.target (H14-Q1 unchanged). New rule `tests::feedback::*` | VM lead (agent, P2-FEED) |
+| 2026-10-22 | fill | H14-Q1 filled: fp-3 holds the incoming new.target, or the generator object in a resumed frame; JIT and AOT frames reach the feedback vector through fp-4. Header table, frame diagram and a new rule row updated | P0-DOCS agent (M2-P0) |
+| 2026-10-22 | rewrite (version) | FRAME_VERSION 1 -> 2 (`crates/ep9_vm/src/versions.rs`, P0-VM): `slot::FEEDBACK` becomes `slot::NEW_TARGET`, a resumed frame (`push_resume_frame`, construct bit clear) carries the generator object there, and `LdaNewTarget` reads fp-3 without the construct-bit check. A unit built for FRAME 1 falls back to its bytecode (H35 S3). Pre-freeze churn (README §3.3) | P0-DOCS agent (M2-P0) |
