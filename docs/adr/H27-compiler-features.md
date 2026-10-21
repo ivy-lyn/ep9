@@ -63,7 +63,7 @@
 | No `ep9_vm` feature `spike-native` or `ic-stats` in the `ep9_cli` graph, default or jitless | dep-guards check 11 (`.github/scripts/dep-guards.sh:180-189`), with a control: `-p ep9_vm --features spike-native,ic-stats` must show both | M0 month 2 |
 | H5: `ep9` (the runtime crate, `ep9_cli` today) links the bytecode compiler `ep9_frontend` in its normal graph, default and jitless | dep-guards check 12 (`.github/scripts/dep-guards.sh:191-213`), with two controls: `ep9_vm`'s graph must not show `ep9_frontend` (`ep9_vm` reaches the compiler only through the `IsolateConfig::compiler` hook), and `ep9_builtins` (a dev-only edge) must not pass the query | M0 month 2 |
 | Each build is built, linted (`-D warnings`) and tested per package, never with `--workspace` | `cargo xtask feature-matrix`; CI build-test step on 4 runners | M0 wk4 |
-| Code under `jit` compiles out without the feature | `#[cfg(any(feature = "jit", test))]` (for example `Reservation::reserve_code_range_at`, `crates/ep9_platform/src/va.rs:133`) | M0 wk3 |
+| Code under `jit` compiles out without the feature | `#[cfg(any(feature = "jit", test))]` (for example `Reservation::reserve_code_range_at`, `crates/ep9_platform/src/va.rs:135`) | M0 wk3 |
 | The jitless build passes the same test262 set as the JIT build | test262 per mode (10-quality §1) | when T1 exists (M1+) |
 
 ## Consequences

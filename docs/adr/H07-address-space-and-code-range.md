@@ -32,8 +32,8 @@ One cage per isolate below 2^47 (64 GiB default, configurable); avoids 0x4001_00
 
 - **Cage per isolate (as built).** `Heap::new` reserves its own `Cage` (`crates/ep9_heap/src/memory.rs:154`). The in-cage test and the conservative scan look only at that heap's chunks (`crates/ep9_heap/src/memory.rs:250-252`, `crates/ep9_heap/src/trace.rs:357-358`). So one isolate's scan never finds another isolate's cells.
 - **Process code range (as built, M0 month 2 P1).** Unit text is shared per process (05 §8, H22), and JIT stubs are shared by every isolate. One range keeps direct calls between them. SpiderMonkey also keeps one executable region per process ([SM-PEM]).
-  - `CodeRange::process()` (`crates/ep9_platform/src/va.rs:619`) reserves it at the first call, on any thread, and returns the same `&'static CodeRange` after that. Placement and size: H07-Q6.
-  - Users take page-granular `CodeChunk`s from it (`CodeRange::alloc`, `crates/ep9_platform/src/va.rs:693`: lowest free run that fits, behind a mutex; drop gives the pages back and merges free runs). With `jit`, `CodeChunk::commit` makes a chunk a W^X `jit::CodeMemory`.
+  - `CodeRange::process()` (`crates/ep9_platform/src/va.rs:621`) reserves it at the first call, on any thread, and returns the same `&'static CodeRange` after that. Placement and size: H07-Q6.
+  - Users take page-granular `CodeChunk`s from it (`CodeRange::alloc`, `crates/ep9_platform/src/va.rs:695`: lowest free run that fits, behind a mutex; drop gives the pages back and merges free runs). With `jit`, `CodeChunk::commit` makes a chunk a W^X `jit::CodeMemory`.
 - **No per-cage code range.** A cage reserves no code range by default (`CageConfig::default`, `code_range_size: 0`), so `Heap::new` reserves none (test `heap_new_reserves_no_code_range`). A non-zero `code_range_size` still gives a plain reservation right after the cage (`Cage::code_range`); no code goes there. `Cage::reserve_jit` and `Cage::code` are removed (month 2 P1 integration fixer): their last users, the unwind self-test and the `spike-native` stub tests, take `CodeRange::process()` chunks.
 - `ep9_platform` owns the VA reserve, including the code range ([08 §2](../plan/08-repo.md#2-crates)).
 - **macOS arm64 code range (`jit` feature; noted 2026-10-21).** In a `jit` build the process code range is mapped with `MAP_JIT` and read-write-execute protection at reservation. So this range has no inaccessible phase. Every other reservation, a code range in a build without `jit`, and the per-cage range from `Cage::reserve`, start inaccessible.
@@ -84,7 +84,7 @@ One cage per isolate below 2^47 (64 GiB default, configurable); avoids 0x4001_00
 
 | ID | Question | Needed by | Proposed default |
 |---|---|---|---|
-| H07-Q1 | Size of the code range | SP-VA | **Filled 2026-10-21 (as built): 128 MiB default**, the arm64 direct-call reach; a size above the target's direct-branch reach is refused (`crates/ep9_platform/src/va.rs:587-588`) |
+| H07-Q1 | Size of the code range | SP-VA | **Filled 2026-10-21 (as built): 128 MiB default**, the arm64 direct-call reach; a size above the target's direct-branch reach is refused (`crates/ep9_platform/src/va.rs:589-590`) |
 | H07-Q2 | What happens to calls beyond direct-call reach (indirect call or veneer) | SP-JIT-mem / H34 | Decide in the H34 ADR (relocation kinds) |
 | H07-Q3 | Is 0x4001_0000_0000 + 32 GiB still needed? tsrs is never in the engine process (N8) | M0 wk2 | **Filled 2026-10-21 (as built): kept**; `TSRS_RESERVATION` is in the default avoid list |
 | H07-Q4 | Windows: reserve at a hinted address below 2^47; behavior if the hint fails | SP-VA | **Filled 2026-10-21 (as built):** `VirtualAlloc` at each slot address; a used slot is skipped (`sp_va_skips_used_slot`); no free slot gives `CageError::NoFreeSlot`, and the isolate is not created |

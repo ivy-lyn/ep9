@@ -4,7 +4,7 @@
 
 use ep9_platform::va::{
     self, CAGE_LIMIT, Cage, CageConfig, CageError, CodeRange, CodeRangeConfig, DEFAULT_CAGE_ALIGN,
-    DEFAULT_CODE_RANGE_SIZE, DEFAULT_MIN_BASE, Reservation, TSRS_RESERVATION,
+    DEFAULT_CAGE_SIZE, DEFAULT_CODE_RANGE_SIZE, DEFAULT_MIN_BASE, Reservation, TSRS_RESERVATION,
 };
 
 const PATTERN: u64 = 0xE9E9_0000_0000_0001;
@@ -314,6 +314,57 @@ fn sp_va_low_limit() {
     let cage = Cage::reserve(&config).unwrap();
     println!("limit 2^39: cage at {:#x}", cage.heap().base());
     assert!(cage.heap().end() <= 1 << 39);
+}
+
+/// The seed of the last slot: `[2^47 - span, 2^47)` when `span` is a multiple of `align`.
+fn top_slot_seed(span: usize, align: usize) -> u64 {
+    ((CAGE_LIMIT - span) / align - DEFAULT_MIN_BASE.div_ceil(align)) as u64
+}
+
+/// A slot above the user address space of the host is skipped, not an error (CI run
+/// 39632519735, windows-x64: "The parameter is incorrect. (os error 87)"). x64 Windows user
+/// space ends 64 KiB below 2^47, so the top slot of the default cage, which ends at 2^47, is
+/// never free there. On unix a hinted mmap above the limit gives another address (skipped);
+/// below it the slot may be free, and the cage lands there.
+#[test]
+fn sp_va_skips_slot_above_host_limit() {
+    let g = va::allocation_granularity();
+    let top = Reservation::reserve_at(CAGE_LIMIT - g, g).expect("the last granule below 2^47");
+    println!("last granule below 2^47 free: {}", top.is_some());
+    #[cfg(windows)]
+    assert!(top.is_none(), "above the x64 Windows user space");
+    drop(top);
+
+    let cage = Cage::reserve(&CageConfig {
+        seed: Some(top_slot_seed(DEFAULT_CAGE_SIZE, DEFAULT_CAGE_ALIGN)),
+        ..CageConfig::default()
+    })
+    .expect("seed at the top cage slot");
+    let h = cage.heap().range();
+    println!(
+        "seed at the top slot: cage at {:#x}..{:#x} after {} slots",
+        h.start,
+        h.end,
+        cage.slots_tried()
+    );
+    #[cfg(windows)]
+    assert!(h.end < CAGE_LIMIT && cage.slots_tried() > 1);
+
+    let size = DEFAULT_CODE_RANGE_SIZE;
+    let k = CodeRange::reserve(&CodeRangeConfig {
+        align: size,
+        seed: Some(top_slot_seed(size, size)),
+        ..CodeRangeConfig::default()
+    })
+    .expect("seed at the top code-range slot");
+    println!(
+        "seed at the top slot: code range at {:#x}..{:#x} after {} slots",
+        k.base(),
+        k.end(),
+        k.slots_tried()
+    );
+    #[cfg(windows)]
+    assert!(k.end() < CAGE_LIMIT && k.slots_tried() > 1);
 }
 
 #[test]
