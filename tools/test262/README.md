@@ -115,7 +115,8 @@ infrastructure error.
 `--skip-list <file>` (only with `--gc-stress`, not with `--update-expectations`) neither runs
 nor counts the listed tests, and the expectation compare ignores them. The run prints
 `skipped: <n>`; an entry that names no test gets a warning. `expectations/test262-gc-skip.txt`
-lists the 4 tests that run past any timeout under GC-stress (they fail without it too).
+lists the 5 tests that run past the 60 s timeout under GC-stress (4 fail without it too; its
+header says why each one is there).
 
 `--feedback-threshold <n>` is the number of calls before a function gets its feedback vector
 (H16; default 8, `0` = at the first call, `4294967295` = never), as `ep9 --feedback-threshold`.

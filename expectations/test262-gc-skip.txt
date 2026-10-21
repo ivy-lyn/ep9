@@ -1,11 +1,15 @@
 # ep9-test262 exec --gc-stress: tests that are neither run nor counted (--skip-list).
 # Under `--gc-stress 1 --timeout 60` (a collection before every allocation) each one runs past
-# the timeout, an infrastructure error (exit 2). All four also fail without GC-stress and are
-# listed in every expectations/test262.<triple>.jit.txt:
+# the timeout, an infrastructure error (exit 2). The first four also fail without GC-stress and
+# are listed in every expectations/test262.<triple>.jit.txt:
 # - the 3 tco-* tests: RangeError, no tail calls (D7);
 # - string-upper-lower-mapping.js (65,000 lines): ReferenceError, no `String` global yet.
+# recursion.js passes without GC-stress, and passes alone under it in about 450-490 s. It
+# recurses through generator resume (about 24,000 deep) until the native-stack RangeError, and
+# every forced collection scans that deep stack (M2-P1-GEN-GCSKIP).
 # Measured at test262 d53ebc8b on aarch64-apple-darwin. Paths are relative to the test262 root.
 test/language/expressions/call/tco-call-args.js
 test/language/expressions/call/tco-non-eval-function.js
 test/language/expressions/call/tco-non-eval-global.js
 test/staging/sm/String/string-upper-lower-mapping.js
+test/staging/sm/extensions/recursion.js
