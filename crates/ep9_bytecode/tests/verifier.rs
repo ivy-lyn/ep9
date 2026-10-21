@@ -345,7 +345,7 @@ fn register_rules() {
             RuntimeId::LoadLookupSlotForCall as u8,
             0,
             0,
-            1,
+            2,
             first as u8,
             RET,
         ])
@@ -448,17 +448,18 @@ fn flag_runtime_and_typeof_rules() {
         VerifyErrorKind::RuntimeArity
     );
     // ABI 3: a function that returns a pair only through CallRuntimeForPair, and the others
-    // only through CallRuntime. CallRuntimeForPair id, r0 (1 argument), out r1-r2.
+    // only through CallRuntime. CallRuntimeForPair id, r0 (argc arguments), out r1-r2.
+    // LoadLookupSlotForCall takes 2 arguments from ABI 4 (name, strict).
     let lookup = RuntimeId::LoadLookupSlotForCall as u8;
     let pair = |id: u8, argc: u8| with_code(&[O::CallRuntimeForPair as u8, id, 0, 0, argc, 1, RET]);
-    verify(pair(lookup, 1)).unwrap();
-    assert_eq!(err(pair(lookup, 2)), VerifyErrorKind::RuntimeArity);
+    verify(pair(lookup, 2)).unwrap();
+    assert_eq!(err(pair(lookup, 1)), VerifyErrorKind::RuntimeArity);
     assert_eq!(
         err(pair(RuntimeId::GetHomeObject as u8, 1)),
         VerifyErrorKind::RuntimePair
     );
     assert_eq!(
-        err(with_code(&[O::CallRuntime as u8, lookup, 0, 0, 1, RET])),
+        err(with_code(&[O::CallRuntime as u8, lookup, 0, 0, 2, RET])),
         VerifyErrorKind::RuntimePair
     );
 }
