@@ -709,17 +709,14 @@ fn define_own_property_validates_and_applies() {
             ..Default::default()
         };
         assert!(!cx.define_own_property(a, "length", enumerable).unwrap());
-        // Accessors are not in v0.
+        // Accessors (P3-ACC; tests/accessors.rs has the full validation).
         let f = global(cx, "probe");
         let acc = PropertyDescriptor {
             get: Some(f),
             ..Default::default()
         };
-        assert!(cx.define_own_property(o, "g", acc).is_err());
-        assert_eq!(
-            take_error(cx, rt),
-            "Error: not implemented in ep9 v0: accessor properties"
-        );
+        assert!(cx.define_own_property(o, "g", acc).unwrap());
+        assert!(cx.get_own_property(o, "g").unwrap().unwrap().is_accessor());
     });
 }
 

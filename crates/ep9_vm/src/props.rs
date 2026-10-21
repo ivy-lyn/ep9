@@ -1,6 +1,7 @@
 //! Own named-property storage of a JS object (H17 v0): raw reads and stores that ignore
 //! attributes. The internal methods (`property.rs`) check attributes and extensibility on
-//! top of these.
+//! top of these. An accessor property (`attr::ACCESSOR`) stores its ACCESSOR_PAIR
+//! (`accessor.rs`) as the value: a raw read returns the pair, never a JS value.
 //!
 //! ```text
 //!  fast mode:        shape descriptors (key, attrs, field i)    field i < capacity: in-object slot i
@@ -248,13 +249,15 @@ pub(crate) fn own_get_with(o: u64, key: u64, how: Probe) -> Option<(u64, i32)> {
     find_own(o, key, how).map(|(_, v, a)| (v, a))
 }
 
-/// One step of a `[[Get]]` walk: the value of the own property `key` of `o`, or else the
-/// `[[Prototype]]` of `o` (an object or null), from one shape load. Not a GC point.
-#[inline]
-pub(crate) fn own_value_or_proto(o: u64, key: u64, how: Probe) -> Result<u64, u64> {
+/// One step of a `[[Get]]` walk: (value, attributes) of the own property `key` of `o`, or
+/// else the `[[Prototype]]` of `o` (an object or null), from one shape load. For an accessor
+/// (`attr::ACCESSOR`) the value is its ACCESSOR_PAIR (`accessor.rs`). Not a GC point. Always
+/// inlined: the `[[Get]]` walk is hot until the ICs.
+#[inline(always)]
+pub(crate) fn own_value_or_proto(o: u64, key: u64, how: Probe) -> Result<(u64, i32), u64> {
     let s = shape::shape_of(o);
     match find_own_in(o, s, key, how) {
-        Some((_, v, _)) => Ok(v),
+        Some((_, v, a)) => Ok((v, a)),
         None => Err(shape::proto(s)),
     }
 }
@@ -271,9 +274,10 @@ pub(crate) fn own_replace(rt: &Runtime, o: u64, key: u64, v: u64) -> bool {
 }
 
 /// `o.key = v` on an own data property in one lookup: `None` if `o` has no own `key`,
-/// `Some(false)` if it is not writable (nothing stored), `Some(true)` once stored. Not a GC
-/// point.
-#[inline]
+/// `Some(false)` if it is not writable (nothing stored; an accessor has no `WRITABLE` bit, so
+/// it gives `Some(false)` too), `Some(true)` once stored. Not a GC point. Always inlined: the
+/// `[[Set]]` walk is hot until the ICs.
+#[inline(always)]
 pub(crate) fn own_store_if_writable(
     rt: &Runtime,
     o: u64,
@@ -292,9 +296,15 @@ pub(crate) fn own_store_if_writable(
     Some(true)
 }
 
-/// [`own_replace`] with a classified probe.
+/// [`own_replace`] with a classified probe. The property must be a data property (an
+/// accessor's pair is replaced through [`own_define`]).
 pub(crate) fn own_replace_with(rt: &Runtime, o: u64, key: u64, how: Probe, v: u64) -> bool {
-    match find_own(o, key, how) {
+    let found = find_own(o, key, how);
+    debug_assert!(
+        found.is_none_or(|(_, _, a)| a & object::attr::ACCESSOR == 0),
+        "own_replace of an accessor"
+    );
+    match found {
         Some((Hit::Fast(s, f), _, _)) => {
             field_set(rt, o, s, f, v);
             true
@@ -312,16 +322,23 @@ pub(crate) fn own_replace_with(rt: &Runtime, o: u64, key: u64, how: Probe, v: u6
 /// Defines or overwrites an own property with `attrs` (`attr` bits; ACCESSOR for an accessor
 /// pair). A raw store: it checks neither `[[Extensible]]` nor the current attributes. The key
 /// is stored as an atom. A new key appends (insertion order); new attributes on an existing
-/// key move a fast object to dictionary mode (OM-10). GC point.
+/// key move a fast object to dictionary mode (OM-10). A new pair in place of an accessor's
+/// old one is a structural change (`accessor.rs`): it bumps the epoch of a prototype. GC
+/// point.
 pub(crate) fn own_define(rt: &Runtime, o: u64, key: u64, v: u64, attrs: i32) {
     debug_assert!(object::is_object(o));
     let key = key::intern_key(rt, key);
     let how = key::probe(key);
     match find_own(o, key, how) {
-        Some((hit, _, old)) if old == attrs => match hit {
-            Hit::Fast(s, f) => field_set(rt, o, s, f, v),
-            Hit::Dict(p, i) => wr(&rt.heap, p, entry(i) + 8, v),
-        },
+        Some((hit, old_v, old)) if old == attrs => {
+            match hit {
+                Hit::Fast(s, f) => field_set(rt, o, s, f, v),
+                Hit::Dict(p, i) => wr(&rt.heap, p, entry(i) + 8, v),
+            }
+            if attrs & object::attr::ACCESSOR != 0 && old_v != v {
+                shape::note_change(rt, o);
+            }
+        }
         Some((hit, _, _)) => {
             if let Hit::Fast(..) = hit {
                 to_dictionary(rt, o);

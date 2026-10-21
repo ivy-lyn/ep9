@@ -2,12 +2,14 @@
 //! `[[DefineOwnProperty]]`, `[[Delete]]`, `[[HasProperty]]`, `[[GetOwnProperty]]`,
 //! `[[OwnPropertyKeys]]`, `[[GetPrototypeOf]]`, `[[SetPrototypeOf]]`, `[[IsExtensible]]` and
 //! `[[PreventExtensions]]`, plus the exotic parts of arrays and String wrappers
-//! (`exotic.rs`). v0: data properties only (an accessor descriptor throws "not
-//! implemented"; P3-ACC), dense array elements only.
+//! (`exotic.rs`). Data and accessor properties (`accessor.rs`: an accessor stores an
+//! immutable ACCESSOR_PAIR); v0: dense array elements only, and every element is a data
+//! property {w, e, c}.
 //!
 //! ```text
 //!  get / set / has / delete
 //!    probe(key) once ──> per object on the chain: exotic::get / own_attrs ──> props (shape or table)
+//!    an accessor on the chain: get calls its getter, set its setter, with the receiver as `this`
 //!  define (CreateDataPropertyOrThrow)
 //!    fast path: a new key on an extensible object, or an existing configurable data property
 //!    otherwise: define_own_property (ValidateAndApplyPropertyDescriptor), TypeError on false
@@ -38,7 +40,7 @@ use crate::kinds::{self as kind, is_callable, is_symbol};
 use crate::object::{self, attr, is_array, is_function, is_object, is_string};
 use crate::props;
 use crate::runtime::{Atom, ErrorKind, Root, Runtime, val};
-use crate::{shape, string, symbol, wrapper};
+use crate::{accessor, shape, string, symbol, wrapper};
 
 fn is_atom(cx: &Cx, key: u64, a: Atom) -> bool {
     object::key_eq(key, cx.rt().atom(a))
@@ -50,9 +52,10 @@ pub(crate) fn get_from(cx: &mut Cx, o: u64, key: u64) -> Res<u64> {
 }
 
 /// `o.[[Get]](key, receiver)` (§10.1.8.1 OrdinaryGet) up the prototype chain from the
-/// object `o`. The probe is classified once. v0: data properties only, so `receiver` is not
-/// used yet (P3-ACC passes it to getters). GC point (a lazy `prototype`).
-pub(crate) fn get_with_receiver(cx: &mut Cx, mut o: u64, key: u64, _receiver: u64) -> Res<u64> {
+/// object `o`. The probe is classified once. An accessor found on the chain calls its getter
+/// with `receiver` as `this` (any value: a primitive base passes itself). GC point (a lazy
+/// `prototype`, a getter).
+pub(crate) fn get_with_receiver(cx: &mut Cx, mut o: u64, key: u64, receiver: u64) -> Res<u64> {
     debug_assert!(is_object(o) && is_property_key(key));
     let how = key::probe(key);
     loop {
@@ -62,21 +65,53 @@ pub(crate) fn get_with_receiver(cx: &mut Cx, mut o: u64, key: u64, _receiver: u6
             return Ok(v);
         }
         match props::own_value_or_proto(o, key, how) {
-            Ok(v) => return Ok(v),
+            Ok((v, a)) if a & attr::ACCESSOR == 0 => return Ok(v),
+            Ok((pair, _)) => return accessor::call_getter(cx, pair, receiver),
             Err(NULL) => return Ok(UNDEFINED),
             Err(p) => o = p,
         }
     }
 }
 
+/// The value of the first property `key` on the chain from the object `o` if it is a data
+/// property; `None` for an accessor (its getter does not run) or no property. For engine
+/// text that must run no JS: an error's "Name: message" header (`error::error_header`, made
+/// inside `throw_error`, also on stack overflow) and the reported constructor name. GC point
+/// (a lazy `prototype`), but runs no JS and cannot throw.
+pub(crate) fn get_data_from(cx: &mut Cx, mut o: u64, key: u64) -> Option<u64> {
+    debug_assert!(is_object(o) && is_property_key(key));
+    let how = key::probe(key);
+    loop {
+        if kind::cell_kind(o) != kind::OBJECT.get()
+            && let Some(v) = exotic::get(cx, o, key, how)
+        {
+            return Some(v);
+        }
+        match props::own_value_or_proto(o, key, how) {
+            Ok((v, a)) => return (a & attr::ACCESSOR == 0).then_some(v),
+            Err(NULL) => return None,
+            Err(p) => o = p,
+        }
+    }
+}
+
 /// `base[key]` with a property key (GetValue on a property reference).
+#[inline]
 pub(crate) fn get(cx: &mut Cx, base: u64, key: u64) -> Res<u64> {
     debug_assert!(is_property_key(key));
     if is_object(base) {
         return get_from(cx, base, key);
     }
+    get_primitive(cx, base, key)
+}
+
+/// [`get`] on a primitive `base`: a string's own `length` and indices, then the chain of its
+/// prototype with the primitive as the receiver (undefined / null: TypeError). Out of line,
+/// so `get` stays small.
+#[inline(never)]
+fn get_primitive(cx: &mut Cx, base: u64, key: u64) -> Res<u64> {
     let rt = cx.rt();
-    let proto = if is_string(base) {
+    if is_string(base) {
         if is_atom(cx, key, Atom::Length) {
             return Ok(num(object::str_len(base) as f64));
         }
@@ -85,15 +120,8 @@ pub(crate) fn get(cx: &mut Cx, base: u64, key: u64) -> Res<u64> {
         {
             return Ok(string::char_at(rt, base, i as usize));
         }
-        rt.root(Root::StringPrototype)
-    } else if val(base).is_number() {
-        rt.root(Root::NumberPrototype)
-    } else if base == object_bool(true) || base == object_bool(false) {
-        rt.root(Root::BooleanPrototype)
-    } else if is_symbol(base) {
-        // Made by `symbol::install` in realm init, before any script runs.
-        symbol::prototype(rt)
-    } else {
+    }
+    let Some(proto) = primitive_proto(rt, base) else {
         let k = key_text(rt, key);
         let msg = format!(
             "Cannot read properties of {} (reading '{k}')",
@@ -102,6 +130,24 @@ pub(crate) fn get(cx: &mut Cx, base: u64, key: u64) -> Res<u64> {
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     };
     get_with_receiver(cx, proto, key, base)
+}
+
+/// The `[[Prototype]]` of `ToObject(b)` for a primitive `b` (§7.1.18): where a property
+/// access on a string, number, boolean or symbol goes after the primitive's own properties.
+/// `None` for undefined and null. Not a GC point.
+fn primitive_proto(rt: &Runtime, b: u64) -> Option<u64> {
+    if is_string(b) {
+        Some(rt.root(Root::StringPrototype))
+    } else if val(b).is_number() {
+        Some(rt.root(Root::NumberPrototype))
+    } else if b == object_bool(true) || b == object_bool(false) {
+        Some(rt.root(Root::BooleanPrototype))
+    } else if is_symbol(b) {
+        // Made by `symbol::install` in realm init, before any script runs.
+        Some(symbol::prototype(rt))
+    } else {
+        None
+    }
 }
 
 #[inline]
@@ -149,35 +195,44 @@ pub(crate) fn get_keyed(cx: &mut Cx, base: u64, k: u64) -> Res<u64> {
     get(cx, base, key)
 }
 
-/// PutValue on a property reference: `base[key] = v` with receiver `base`. A failed
-/// assignment throws a TypeError in strict code.
+/// PutValue on a property reference (§6.2.5.6): `base[key] = v` with receiver `base`. A
+/// failed assignment throws a TypeError in strict code. GC point (a setter runs JS).
 pub(crate) fn set(cx: &mut Cx, base: u64, key: u64, v: u64, strict: bool) -> Res<()> {
     debug_assert!(is_property_key(key));
-    if !is_object(base) {
-        if base == UNDEFINED || base == NULL {
-            let msg = format!(
-                "Cannot set properties of {} (setting '{}')",
-                describe(base),
-                key_text(cx.rt(), key)
-            );
-            return Err(throw_error(cx, ErrorKind::TypeError, &msg));
+    if is_object(base) {
+        // OrdinarySet with the walk inlined: `set` is hot until the ICs.
+        if set_walk(cx, base, key, v, base)? {
+            return Ok(());
         }
-        // Primitive receiver: v0 drops the store (sloppy) or throws (strict).
-        if strict {
-            let msg = format!(
-                "Cannot create property '{}' on {}",
-                key_text(cx.rt(), key),
-                primitive_text(base)
-            );
-            return Err(throw_error(cx, ErrorKind::TypeError, &msg));
-        }
+        return fail(cx, base, base, key, strict);
+    }
+    set_primitive(cx, base, key, v, strict)
+}
+
+/// [`set`] on a primitive `base` (or undefined / null: TypeError). Kept out of line so `set`
+/// inlines its one call of [`set_with_receiver`]. GC point.
+#[cold]
+#[inline(never)]
+fn set_primitive(cx: &mut Cx, base: u64, key: u64, v: u64, strict: bool) -> Res<()> {
+    let Some(proto) = primitive_proto(cx.rt(), base) else {
+        let msg = format!(
+            "Cannot set properties of {} (setting '{}')",
+            describe(base),
+            key_text(cx.rt(), key)
+        );
+        return Err(throw_error(cx, ErrorKind::TypeError, &msg));
+    };
+    // Step 5.a: ToObject(base).[[Set]](key, v, base). The wrapper's own properties come
+    // first: a String's `length` and indices are not writable (§10.4.3); the other wrappers
+    // have none. Then the prototype chain decides; a setter gets the primitive as `this`, and
+    // a data property fails because the receiver is not an object (§10.1.9.2 step 2.c).
+    let own = is_string(base)
+        && (is_atom(cx, key, Atom::Length)
+            || array_index_of(key).is_some_and(|i| (i as usize) < object::str_len(base)));
+    if !own && set_with_receiver(cx, proto, key, v, base)? {
         return Ok(());
     }
-    if ordinary_set(cx, base, key, v)? {
-        Ok(())
-    } else {
-        fail(cx, key, strict)
-    }
+    fail(cx, base, proto, key, strict)
 }
 
 /// `o.[[Set]](key, v, o)` (§10.1.9 OrdinarySet, receiver = `o`) on an object. `Ok(false)`
@@ -188,9 +243,17 @@ pub(crate) fn ordinary_set(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<bool> {
 }
 
 /// `o.[[Set]](key, v, receiver)` (§10.1.9.1 OrdinarySet and §10.1.9.2
-/// OrdinarySetWithOwnDescriptor) on the object `o`. `Ok(false)` when the assignment fails.
-/// v0: data properties only (P3-ACC adds setters). GC point.
+/// OrdinarySetWithOwnDescriptor) on the object `o`. `Ok(false)` when the assignment fails: a
+/// non-writable data property or an accessor without a setter on the chain, a receiver that
+/// is not an object, or a new property on a non-extensible receiver. An accessor calls its
+/// setter with `receiver` as `this`. GC point.
 pub(crate) fn set_with_receiver(cx: &mut Cx, o: u64, key: u64, v: u64, receiver: u64) -> Res<bool> {
+    set_walk(cx, o, key, v, receiver)
+}
+
+/// The body of [`set_with_receiver`], inlined into [`set`].
+#[inline(always)]
+fn set_walk(cx: &mut Cx, o: u64, key: u64, v: u64, receiver: u64) -> Res<bool> {
     debug_assert!(is_object(o) && is_property_key(key));
     let rt = cx.rt();
     let how = key::probe(key);
@@ -218,24 +281,27 @@ pub(crate) fn set_with_receiver(cx: &mut Cx, o: u64, key: u64, v: u64, receiver:
             exotic::function_prototype(rt, o);
         }
     }
-    // The property on the chain decides (§10.1.9.2 steps 1-2). v0: an accessor has no
-    // WRITABLE bit, so it fails here until P3-ACC calls setters.
+    // The first property on the chain decides (§10.1.9.2 steps 1-2 and 4-7).
     let mut cur = o;
     loop {
         let found = match exotic::own_attrs(rt, cur, key, how) {
-            Some(a) => Some(a),
+            // Exotic own properties are data properties: the value is not needed.
+            Some(a) => Some((UNDEFINED, a)),
             // The common case, in one lookup: an own data property of the receiver takes the
             // value in place if it is writable (array `length` and elements returned above;
-            // a lazy `prototype` is made, so it is stored).
-            None if cur == receiver => {
-                if let Some(stored) = props::own_store_if_writable(rt, cur, key, how, v) {
-                    return Ok(stored);
-                }
-                None
-            }
-            None => props::own_get_with(cur, key, how).map(|(_, a)| a),
+            // a lazy `prototype` is made, so it is stored). A read-only one or an accessor
+            // (no WRITABLE bit) is looked up again.
+            None if cur == receiver => match props::own_store_if_writable(rt, cur, key, how, v) {
+                Some(true) => return Ok(true),
+                Some(false) => props::own_get_with(cur, key, how),
+                None => None,
+            },
+            None => props::own_get_with(cur, key, how),
         };
-        if let Some(a) = found {
+        if let Some((pv, a)) = found {
+            if a & attr::ACCESSOR != 0 {
+                return accessor::call_setter(cx, pv, receiver, v);
+            }
             if a & attr::WRITABLE == 0 {
                 return Ok(false);
             }
@@ -283,15 +349,60 @@ fn array_store(rt: &Runtime, a: u64, i: u32, v: u64) -> bool {
     object::array_set(rt, a, i, v)
 }
 
-fn fail(cx: &mut Cx, key: u64, strict: bool) -> Res<()> {
-    if strict {
-        let msg = format!(
-            "Cannot assign to read only property '{}' of object",
-            key_text(cx.rt(), key)
-        );
-        Err(throw_error(cx, ErrorKind::TypeError, &msg))
+/// A failed `base[key] = v`: nothing in sloppy code, a TypeError in strict code. The message
+/// names the first property on the chain from `start` (`base`, or the prototype of a
+/// primitive `base`), as V8 does. Not a GC point before the throw.
+#[cold]
+#[inline(never)]
+fn fail(cx: &mut Cx, base: u64, start: u64, key: u64, strict: bool) -> Res<()> {
+    if !strict {
+        return Ok(());
+    }
+    let rt = cx.rt();
+    let k = key_text(rt, key);
+    let what = if is_object(base) {
+        "#<Object>".to_string()
     } else {
-        Ok(())
+        primitive_text(base)
+    };
+    let own_string = is_string(base)
+        && (is_atom(cx, key, Atom::Length)
+            || array_index_of(key).is_some_and(|i| (i as usize) < object::str_len(base)));
+    let found = if own_string {
+        Some(0)
+    } else {
+        first_attrs_on_chain(rt, start, key)
+    };
+    let msg = match found {
+        Some(a) if a & attr::ACCESSOR != 0 => {
+            format!("Cannot set property {k} of {what} which has only a getter")
+        }
+        Some(a) if a & attr::WRITABLE == 0 && is_object(base) => {
+            format!("Cannot assign to read only property '{k}' of object '{what}'")
+        }
+        Some(a) if a & attr::WRITABLE == 0 => {
+            format!("Cannot assign to read only property '{k}' of {what}")
+        }
+        _ if is_object(base) => format!("Cannot add property {k}, object is not extensible"),
+        _ => format!("Cannot create property '{k}' on {what}"),
+    };
+    Err(throw_error(cx, ErrorKind::TypeError, &msg))
+}
+
+/// The attributes of the first property `key` on the chain from the object `o`, if any.
+/// Not a GC point (a lazy `prototype` is not made: it is {w}).
+fn first_attrs_on_chain(rt: &Runtime, mut o: u64, key: u64) -> Option<i32> {
+    let how = key::probe(key);
+    loop {
+        if let Some(a) = exotic::own_attrs(rt, o, key, how)
+            .or_else(|| props::own_get_with(o, key, how).map(|(_, a)| a))
+        {
+            return Some(a);
+        }
+        o = object::proto_of(o);
+        if o == NULL {
+            return None;
+        }
     }
 }
 
@@ -590,7 +701,7 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
 
 // ---- [[GetOwnProperty]], [[DefineOwnProperty]], [[OwnPropertyKeys]] (builtin ABI, H20) ------
 
-/// Where an own property lives, for the apply step of [[DefineOwnProperty]].
+/// Where an own property lives, for the apply step of `[[DefineOwnProperty]]`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OwnSlot {
     /// The object's property storage (`props.rs`: shape slots or the dictionary table).
@@ -618,7 +729,7 @@ pub(crate) fn get_own_property(cx: &mut Cx, o: u64, key: u64) -> Option<Desc> {
         let len = num(f64::from(object::array_len(o)));
         return Some(Desc::data(len, attr::WRITABLE));
     }
-    own_property(cx, o, key).map(|(v, a, _)| Desc::data(v, a))
+    own_property(cx, o, key).map(|(v, a, _)| accessor::stored_desc(v, a))
 }
 
 /// IsExtensible (§7.2.5, ordinary objects): the shape's flag.
@@ -660,15 +771,21 @@ pub(crate) fn same_value(a: u64, b: u64) -> bool {
 
 /// `o.[[DefineOwnProperty]](key, desc)` (§10.1.6.1 OrdinaryDefineOwnProperty with
 /// §10.1.6.3 ValidateAndApplyPropertyDescriptor; §10.4.2.1 for arrays). `Ok(false)` when the
-/// definition is rejected. v0: a descriptor with `get` or `set`, a non-writable array
-/// `length`, and an array element with attributes other than {w, e, c} throw "not
-/// implemented". GC point.
+/// definition is rejected. An accessor gets a new ACCESSOR_PAIR on every change (pairs are
+/// immutable, `accessor.rs`). v0: a non-writable array `length`, and an array element that
+/// would not be a data property {w, e, c}, throw "not implemented". GC point.
 pub(crate) fn define_own_property(cx: &mut Cx, o: u64, key: u64, desc: Desc) -> Res<bool> {
     debug_assert!(is_object(o) && is_property_key(key));
-    if desc.is_accessor() {
-        return Err(not_implemented(cx, "accessor properties"));
-    }
+    debug_assert!(
+        !(desc.is_accessor() && desc.is_data()),
+        "ToPropertyDescriptor rejects a descriptor with get or set and value or writable"
+    );
     if is_array(o) && is_atom(cx, key, Atom::Length) {
+        // ArraySetLength step 1 (no [[Value]]): OrdinaryDefineOwnProperty against the data
+        // property {w: true, e: false, c: false}, which rejects an accessor (step 5.c).
+        if desc.is_accessor() {
+            return Ok(false);
+        }
         return array_define_length(cx, o, desc);
     }
     let Some((cur_v, cur_a, slot)) = own_property(cx, o, key) else {
@@ -676,17 +793,54 @@ pub(crate) fn define_own_property(cx: &mut Cx, o: u64, key: u64, desc: Desc) -> 
         if !is_extensible(o) {
             return Ok(false);
         }
+        if desc.is_accessor() {
+            let get = desc.get.unwrap_or(UNDEFINED);
+            let set = desc.set.unwrap_or(UNDEFINED);
+            return add_accessor(cx, o, key, get, set, desc.new_attrs());
+        }
         let v = desc.value.unwrap_or(UNDEFINED);
         return add_own_property(cx, o, key, v, desc.new_attrs());
     };
-    if cur_a & attr::ACCESSOR != 0 {
-        return Err(not_implemented(cx, "accessor properties"));
-    }
-    if !validate_data(&desc, cur_v, cur_a) {
+    let current = accessor::stored_desc(cur_v, cur_a);
+    // Steps 4-5.
+    if !validate(&desc, &current) {
         return Ok(false);
     }
-    let attrs = desc.merge_attrs(cur_a);
-    let v = desc.value.unwrap_or(cur_v);
+    // Step 6: the new value slot (a data value or a pair) and attributes.
+    let ec = desc.merge_attrs(cur_a) & (attr::ENUMERABLE | attr::CONFIGURABLE);
+    let (v, attrs) = if desc.is_accessor() || (current.is_accessor() && !desc.is_data()) {
+        // 6.a (data to accessor; absent halves are undefined) or 6.c (an accessor keeps the
+        // halves the descriptor does not name).
+        let keep = |d: Option<u64>, c: Option<u64>| d.or(c).unwrap_or(UNDEFINED);
+        let get = keep(desc.get, current.get);
+        let set = keep(desc.set, current.set);
+        let attrs = attr::ACCESSOR | ec;
+        if current.is_accessor()
+            && attrs == cur_a
+            && get == current.get.unwrap_or(UNDEFINED)
+            && set == current.set.unwrap_or(UNDEFINED)
+        {
+            return Ok(true);
+        }
+        if let OwnSlot::Exotic(_) = slot {
+            // Exotic own properties are data properties; only a dense element gets here
+            // (a String wrapper's are not configurable).
+            return Err(not_implemented(cx, "accessor array elements"));
+        }
+        // GC point: `o`, `key`, `get` and `set` live in Rust locals.
+        (accessor::new_pair(cx.rt(), get, set), attrs)
+    } else if current.is_accessor() {
+        // 6.b: accessor to data; absent fields are undefined / false.
+        let w = if desc.writable == Some(true) {
+            attr::WRITABLE
+        } else {
+            0
+        };
+        (desc.value.unwrap_or(UNDEFINED), w | ec)
+    } else {
+        // 6.c: data to data.
+        (desc.value.unwrap_or(cur_v), desc.merge_attrs(cur_a))
+    };
     if attrs == cur_a && v == cur_v {
         return Ok(true);
     }
@@ -710,30 +864,57 @@ pub(crate) fn define_own_property(cx: &mut Cx, o: u64, key: u64, desc: Desc) -> 
     Ok(true)
 }
 
-/// ValidateAndApplyPropertyDescriptor (§10.1.6.3) steps 4-5 for a data descriptor (or a
-/// generic one) against an existing data property.
-fn validate_data(desc: &Desc, cur_v: u64, cur_a: i32) -> bool {
-    if cur_a & attr::CONFIGURABLE != 0 {
+/// ValidateAndApplyPropertyDescriptor (§10.1.6.3) steps 4-5: may `desc` change the existing
+/// property `current` (a complete data or accessor descriptor)?
+fn validate(desc: &Desc, current: &Desc) -> bool {
+    if current.configurable == Some(true) {
         return true;
     }
+    // 5.a-b.
     if desc.configurable == Some(true) {
         return false;
     }
     if desc
         .enumerable
-        .is_some_and(|e| e != (cur_a & attr::ENUMERABLE != 0))
+        .is_some_and(|e| Some(e) != current.enumerable)
     {
         return false;
     }
-    if cur_a & attr::WRITABLE == 0 {
+    // 5.c: a non-generic descriptor must keep the kind.
+    let generic = !desc.is_accessor() && !desc.is_data();
+    if !generic && desc.is_accessor() != current.is_accessor() {
+        return false;
+    }
+    let differs =
+        |d: Option<u64>, c: Option<u64>| d.is_some_and(|d| !same_value(d, c.unwrap_or(UNDEFINED)));
+    if current.is_accessor() {
+        // 5.d.
+        return !differs(desc.get, current.get) && !differs(desc.set, current.set);
+    }
+    // 5.e.
+    if current.writable == Some(false) {
         if desc.writable == Some(true) {
             return false;
         }
-        if desc.value.is_some_and(|v| !same_value(v, cur_v)) {
+        if differs(desc.value, current.value) {
             return false;
         }
     }
     true
+}
+
+/// Adds the new own accessor property `key` with `get`, `set` (callables or undefined) and
+/// the enumerable and configurable bits of `attrs` (the object is extensible). GC point.
+fn add_accessor(cx: &mut Cx, o: u64, key: u64, get: u64, set: u64, attrs: i32) -> Res<bool> {
+    if is_array(o) && array_index_of(key).is_some() {
+        return Err(not_implemented(cx, "accessor array elements"));
+    }
+    let rt = cx.rt();
+    // GC point: `o`, `key` and the pair live in Rust locals.
+    let pair = accessor::new_pair(rt, get, set);
+    let attrs = attr::ACCESSOR | (attrs & (attr::ENUMERABLE | attr::CONFIGURABLE));
+    props::own_define(rt, o, key, pair, attrs);
+    Ok(true)
 }
 
 /// Adds the new own property `key` (the object is extensible). GC point.

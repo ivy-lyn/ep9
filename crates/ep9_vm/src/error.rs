@@ -126,13 +126,14 @@ pub(crate) fn stack_lines(rt: &Runtime, frames: &[StackFrame]) -> String {
     s
 }
 
-/// "Name: message" of an error object, without running JS (v0: data properties only).
+/// "Name: message" of an error object, without running JS: a `name` or `message` accessor
+/// counts as absent (`property::get_data_from`).
 pub(crate) fn error_header(cx: &mut Cx, e: u64) -> String {
     let rt = cx.rt();
     let read = |cx: &mut Cx, a: Atom| -> String {
         let key = rt.atom(a);
-        match crate::property::get_from(cx, e, key) {
-            Ok(v) if is_string(v) => str_view(v).to_string_lossy(),
+        match crate::property::get_data_from(cx, e, key) {
+            Some(v) if is_string(v) => str_view(v).to_string_lossy(),
             _ => String::new(),
         }
     };

@@ -57,8 +57,9 @@ pub(crate) fn function_prototype(rt: &Runtime, f: u64) -> u64 {
 
 /// The value of an exotic own property of `o` for a get: an array's `length` or element, a
 /// String wrapper's `length` or character, or a constructor's lazy `prototype` (made here).
-/// `None` if `key` names none of them. GC point (the lazy `prototype`).
-#[inline]
+/// `None` if `key` names none of them. GC point (the lazy `prototype`). Always inlined into
+/// the `[[Get]]` walks (`property::get_with_receiver`, `property::get_data_from`).
+#[inline(always)]
 pub(crate) fn get(cx: &mut Cx, o: u64, key: u64, how: Probe) -> Option<u64> {
     let k = kind::cell_kind(o);
     if k == kind::ARRAY.get() {
