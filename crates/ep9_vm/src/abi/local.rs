@@ -9,15 +9,18 @@
 //! | 8 bytes, `JsResult<Local>` 8 bytes | `repr(transparent)`; `Value` wraps `NonZeroU64`, so `Err` uses the niche |
 //! | Lives no longer than the host call | the brand `'s`; `HostFn` is `for<'s>` |
 //! | Never in a static or on another thread | `'s` is not `'static`; `*const T` makes it `!Send + !Sync` |
-//! | Never in Rust heap memory (`Vec`, `Box`, ...) | rule R2: `cargo xtask gc-lint` (P2) and the debug check of `&self` |
+//! | Never in Rust heap memory (`Vec`, `Box`, ...) | rule R2: `cargo xtask gc-lint`, and in debug builds every read checks that `self` lies on the thread's native stack |
 //!
 //! The type parameter is a marker of what the value is: [`JsValue`] (any value, the default),
 //! [`JsObject`], [`JsFunction`] (callable), [`JsArray`], [`JsString`], [`FlatStr`] (a flat
 //! string, from `Cx::flatten`), [`JsSymbol`] and [`JsKey`] (a property key: an atom string or
 //! a symbol, from the `Cx`). Downcasts are checked; upcasts are `From` conversions.
 //!
-//! Every accessor takes `&self` and reads the bits through [`Local::bits`], so a debug check
-//! that `self` lies on the native stack (H20 lint plan, ABI-5 c) has one place to go.
+//! Every accessor takes `&self` and reads the value through one function, so the debug check
+//! that `self` lies on the native stack (H20 ABI-5 c, as V8's `V8_ENABLE_LOCAL_OFF_STACK_CHECK`)
+//! has one place to go. A `Local` read through `&vec[0]` or a `Box` panics in a debug build.
+//! The check misses a `Local` copied out of heap memory before the read (`let l = v[0];`);
+//! `cargo xtask gc-lint` and the GC-stress runs cover that (H10 risk R3).
 
 use core::fmt;
 use core::marker::PhantomData;
@@ -97,6 +100,7 @@ impl<T> Copy for Local<'_, T> {}
 
 impl<T> fmt::Debug for Local<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Not checked: it prints the bits and reads no cell, also in a panic message.
         write!(f, "Local({:?})", self.value)
     }
 }
@@ -112,10 +116,19 @@ impl<'s, T> Local<'s, T> {
         }
     }
 
-    /// The Value bits (the one read of a `Local`; see the module docs).
+    /// The value: the one read of a `Local` (see the module docs). Debug builds check that
+    /// `self` lies on this thread's native stack.
+    #[inline(always)]
+    fn get(&self) -> Value {
+        #[cfg(all(debug_assertions, not(miri)))]
+        on_stack::check(core::ptr::from_ref(self).addr());
+        self.value
+    }
+
+    /// The Value bits.
     #[inline(always)]
     pub(crate) fn bits(&self) -> u64 {
-        self.value.to_bits()
+        self.get().to_bits()
     }
 
     /// The same value as a [`Local<JsValue>`](JsValue).
@@ -132,23 +145,23 @@ impl<'s, T> Local<'s, T> {
     }
 
     pub fn is_undefined(&self) -> bool {
-        self.value.is_undefined()
+        self.get().is_undefined()
     }
 
     pub fn is_null(&self) -> bool {
-        self.value.is_null()
+        self.get().is_null()
     }
 
     pub fn is_undefined_or_null(&self) -> bool {
-        self.value.is_undefined_or_null()
+        self.get().is_undefined_or_null()
     }
 
     pub fn is_number(&self) -> bool {
-        self.value.is_number()
+        self.get().is_number()
     }
 
     pub fn is_bool(&self) -> bool {
-        self.value.is_bool()
+        self.get().is_bool()
     }
 
     pub fn is_string(&self) -> bool {
@@ -169,15 +182,15 @@ impl<'s, T> Local<'s, T> {
     }
 
     pub fn as_number(&self) -> Option<f64> {
-        self.value.as_number()
+        self.get().as_number()
     }
 
     pub fn as_int32(&self) -> Option<i32> {
-        self.value.as_int32()
+        self.get().as_int32()
     }
 
     pub fn as_bool(&self) -> Option<bool> {
-        self.value.as_bool()
+        self.get().as_bool()
     }
 
     pub fn as_object(&self) -> Option<Local<'s, JsObject>> {
@@ -254,4 +267,69 @@ upcast! {
     JsArray => JsObject,
     FlatStr => JsString,
     JsSymbol => JsKey,
+}
+
+/// The debug on-stack check (H20 ABI-5 c). The bounds come from the OS once per thread and are
+/// cached in a `thread_local` \[I48\]: on the Linux main thread the OS call reads
+/// `/proc/self/maps`.
+#[cfg(all(debug_assertions, not(miri)))]
+mod on_stack {
+    use core::cell::Cell;
+
+    thread_local! {
+        /// `[low, high)` of this thread's stack: `(0, 0)` before the first read, `(0, MAX)`
+        /// if the OS gave no bounds (then nothing is checked).
+        static BOUNDS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+    }
+
+    /// Panics unless `addr` (a `&Local`) lies on the calling thread's stack.
+    #[inline(never)]
+    pub(super) fn check(addr: usize) {
+        let (low, high) = BOUNDS.with(|b| {
+            if b.get().1 == 0 {
+                b.set(match ep9_platform::current_thread_stack_bounds() {
+                    Ok(s) => (s.low, s.high),
+                    Err(_) => (0, usize::MAX),
+                });
+            }
+            b.get()
+        });
+        assert!(
+            low <= addr && addr < high,
+            "a Local was read outside the native stack ({addr:#x} is not in \
+             [{low:#x}, {high:#x})): a Local lives in a Rust local, never in Rust heap memory \
+             (H20 rule R2; `cargo xtask gc-lint` finds the container)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn locals_on_the_stack_read() {
+        let l = Local::int32(7);
+        assert_eq!(l.as_int32(), Some(7));
+        let pair = [Local::undefined(), Local::null()];
+        assert!(pair[0].is_undefined() && pair[1].is_null());
+        assert!(pair[0].value().is_same_bits(&Local::undefined()));
+        // Another thread reads its own bounds.
+        std::thread::spawn(|| {
+            let b = Local::boolean(true);
+            assert_eq!(b.as_bool(), Some(true));
+        })
+        .join()
+        .unwrap();
+    }
+
+    // gc-lint: allow(debug test: a Local in a Vec must make the on-stack check panic)
+    #[test]
+    #[cfg(all(debug_assertions, not(miri)))]
+    #[should_panic(expected = "a Local was read outside the native stack")]
+    fn a_local_read_through_a_vec_panics() {
+        let v: Vec<Local<'_>> = vec![Local::int32(1)];
+        let first = &v[0];
+        let _ = first.as_int32();
+    }
 }
