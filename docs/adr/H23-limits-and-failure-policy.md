@@ -111,3 +111,4 @@ Limit checks on VM and native stacks: calls, JIT and AOT prologues, recursive bu
 | 2026-10-21 | draft | First draft from 02 §6, 01 §6, 03 §5, 07 §2 and the as-built limits (M0 wk4 plan, task P0-DOCS 2) | P0-DOCS agent |
 | 2026-10-21 | fill | H23-Q1 panic policy (decision W4-PANIC-ABORT, decisions log §11) | P0-DOCS agent |
 | 2026-10-21 | fill | H23-Q2 out of memory, size limits, H23-Q6 interrupts, H23-Q9 guard pages (decision W4-H23) | P0-DOCS agent |
+| 2026-10-21 | clarify | 16 `path:line` references moved to the code at `479b1cd` (P4-DOCS drift script, [I15]); `MAX_STRING_LENGTH` is now in `string.rs`; the `[profile.release]` lines of the root `Cargo.toml` are 42-46 | P4-DOCS agent |

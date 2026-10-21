@@ -88,3 +88,4 @@ Identity hash stored lazily. No raw address escapes. No Rust `Drop` on heap obje
 | 2026-10-20 | draft | First draft from 02 §6 and 03 §1, §5 (M0 wk1 list) | ADR agent |
 | 2026-10-21 | clarify | Status: S0 heap built. A cell kind has only a trace function and a size; the sweep runs no Rust code for dead cells. No identity hash yet (H12-Q1 open) | heap agent |
 | 2026-10-21 | fill | "No `Drop` in heap types" built: `HeapLayout` + `Heap::register_typed` with a const `needs_drop` assert (compile_fail doctest). Content hashing for the atom table and the `Symbol.for` registry recorded. H12-Q1 deferred to M1 with word0 bit 9 reserved; H12-Q2 review rule; H12-Q3 per-isolate PRNG. Decisions W4-LINT-NEEDS-DROP, W4-H12-Q1, W4-H12-Q2, W4-H12-Q3 | P2-LINT agent |
+| 2026-10-21 | clarify | 1 `path:line` reference moved to the code at `479b1cd` (P4-DOCS drift script, [I15]) | P4-DOCS agent |

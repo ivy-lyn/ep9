@@ -104,3 +104,4 @@ Isolate = one heap, one thread at a time; N realms; workers are isolates; only S
 | 2026-10-21 | draft | First draft from 02 §6, 05 §8, 06 §2.3, 07 §2 and the as-built isolate (M0 wk4 plan, task P0-DOCS 1) | P0-DOCS agent |
 | 2026-10-21 | fill | H22-Q1: one cage per isolate, as built (decision W4-H22, decisions log §11) | P0-DOCS agent |
 | 2026-10-21 | fill | H22-Q2: one process code range, built before Spike B (decision W4-H07-REWRITE) | P0-DOCS agent |
+| 2026-10-21 | clarify | 11 `path:line` references moved to the code at `479b1cd` (P4-DOCS drift script, [I15]); the roots line of `Shared::new` is now one line | P4-DOCS agent |
