@@ -35,7 +35,7 @@ Limit checks on VM and native stacks: calls, JIT and AOT prologues, recursive bu
 | Heap out of memory | panic "ep9: heap allocation failed" | `crates/ep9_vm/src/runtime.rs:307-314` |
 | Heap limit | none: `max_heap_bytes = usize::MAX`; the 64 GiB cage bounds the heap | `crates/ep9_heap/src/heap.rs:92` |
 | String length | 2^29 - 24 code units (as V8); concat past it gives RangeError "Invalid string length" | `crates/ep9_vm/src/string.rs:54`, `crates/ep9_vm/src/conv.rs:414` |
-| Array length (v0, dense) | 2^26; a larger `length` gives RangeError "Invalid array length" (H18) | `crates/ep9_vm/src/object.rs:148` |
+| Array length (v0, dense) | 2^26; a larger `length` gives RangeError "Invalid array length" (H18) | `crates/ep9_vm/src/object.rs:161` |
 | Front-end depth caps | `AST_CAP` 20,000; `PRESCAN_CAP` 25,000; depth cap + 1 gives RangeError | `crates/ep9_frontend/src/depth.rs:29`, `crates/ep9_frontend/src/depth.rs:37` |
 | Release panic strategy | unwind (`[profile.release]` has no `panic` key) | root `Cargo.toml` lines 42-46 |
 | Code that catches panics | test262 exec and parse, inside their worker processes; the front-end worker; the `ep9` join arm (a fallback: the panic hook exits first) | `tools/test262/src/exec.rs:756`, `tools/test262/src/parse.rs:256`, `crates/ep9_frontend/src/worker.rs:98`, `crates/ep9_cli/src/run.rs:288-291` |

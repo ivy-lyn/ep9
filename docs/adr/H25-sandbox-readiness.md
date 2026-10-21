@@ -32,7 +32,7 @@ Copied from the plan row: off-heap pointers only in `ExternalRef<T>`. Units are 
 
 | Cell | Field | Points at | Store |
 |---|---|---|---|
-| FUNCTION | +24 | `FunctionInfo` (in its unit, or a host or stub info) | `crates/ep9_vm/src/object.rs:687` |
+| FUNCTION | +24 | `FunctionInfo` (in its unit, or a host or stub info) | `crates/ep9_vm/src/object.rs:705` |
 | FEEDBACK | info word (`fv::INFO`) | `FunctionInfo` | `crates/ep9_vm/src/feedback.rs:169` |
 | CONTEXT | scope word (OBJECT_LAYOUT 2, C5) | `ContextScope { unit, scope }` | P0-VM (M2-P0) |
 
