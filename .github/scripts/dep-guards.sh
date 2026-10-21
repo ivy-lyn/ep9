@@ -229,7 +229,7 @@ if [ "$sample" = '[profile.dev] "unwind"' ]; then
   if [ "$keys" = '[profile.release] "abort"' ]; then
     ok "(13) [profile.release] has panic = \"abort\", and no other profile sets panic"
   else
-    bad "(13) Cargo.toml must set panic = \"abort\" in [profile.release] and nowhere else (H23); found: ${keys:-no panic key}"
+    bad "(13) Cargo.toml must set panic = \"abort\" in [profile.release] and nowhere else (H23); found: $(if [ -n "$keys" ]; then paste -sd ';' - <<< "$keys"; else echo "no panic key"; fi)"
   fi
   if [ -f .cargo/config.toml ] && [ -n "$(panic_keys .cargo/config.toml)" ]; then
     bad "(13) .cargo/config.toml sets panic: $(panic_keys .cargo/config.toml | paste -sd ' ' -)"
