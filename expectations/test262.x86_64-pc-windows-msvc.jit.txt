@@ -807,7 +807,6 @@ test/built-ins/Array/S15.4.1_A1.1_T3.js
 test/built-ins/Array/S15.4.2.1_A1.1_T1.js
 test/built-ins/Array/S15.4.2.1_A1.1_T3.js
 test/built-ins/Array/S15.4.3_A1.1_T1.js
-test/built-ins/Array/S15.4.3_A1.1_T2.js
 test/built-ins/Array/S15.4.3_A1.1_T3.js
 test/built-ins/Array/S15.4.5.2_A1_T1.js
 test/built-ins/Array/S15.4.5.2_A3_T2.js
@@ -6189,7 +6188,6 @@ test/built-ins/Function/S15.3.2.1_A3_T9.js
 test/built-ins/Function/S15.3.2_A1.js
 test/built-ins/Function/S15.3.3_A1.js
 test/built-ins/Function/S15.3.3_A2_T1.js
-test/built-ins/Function/S15.3.3_A2_T2.js
 test/built-ins/Function/S15.3.3_A3.js
 test/built-ins/Function/S15.3.5_A1_T1.js
 test/built-ins/Function/S15.3.5_A1_T2.js
@@ -6197,7 +6195,6 @@ test/built-ins/Function/S15.3.5_A2_T1.js
 test/built-ins/Function/S15.3.5_A2_T2.js
 test/built-ins/Function/S15.3.5_A3_T1.js
 test/built-ins/Function/S15.3.5_A3_T2.js
-test/built-ins/Function/S15.3_A1.js
 test/built-ins/Function/S15.3_A2_T1.js
 test/built-ins/Function/S15.3_A2_T2.js
 test/built-ins/Function/S15.3_A3_T1.js
@@ -6241,13 +6238,8 @@ test/built-ins/Function/prototype/S15.3.3.1_A2.js
 test/built-ins/Function/prototype/S15.3.3.1_A3.js
 test/built-ins/Function/prototype/S15.3.3.1_A4.js
 test/built-ins/Function/prototype/S15.3.4_A1.js
-test/built-ins/Function/prototype/S15.3.4_A2_T1.js
-test/built-ins/Function/prototype/S15.3.4_A2_T2.js
-test/built-ins/Function/prototype/S15.3.4_A2_T3.js
 test/built-ins/Function/prototype/S15.3.4_A3_T1.js
-test/built-ins/Function/prototype/S15.3.4_A3_T2.js
 test/built-ins/Function/prototype/S15.3.4_A4.js
-test/built-ins/Function/prototype/S15.3.4_A5.js
 test/built-ins/Function/prototype/S15.3.5.2_A1_T1.js
 test/built-ins/Function/prototype/S15.3.5.2_A1_T2.js
 test/built-ins/Function/prototype/Symbol.hasInstance/length.js
@@ -6295,7 +6287,6 @@ test/built-ins/Function/prototype/apply/S15.3.4.3_A7_T6.js
 test/built-ins/Function/prototype/apply/S15.3.4.3_A7_T7.js
 test/built-ins/Function/prototype/apply/S15.3.4.3_A7_T8.js
 test/built-ins/Function/prototype/apply/S15.3.4.3_A7_T9.js
-test/built-ins/Function/prototype/apply/S15.3.4.3_A8_T3.js
 test/built-ins/Function/prototype/apply/S15.3.4.3_A8_T4.js
 test/built-ins/Function/prototype/apply/S15.3.4.3_A8_T5.js
 test/built-ins/Function/prototype/apply/S15.3.4.3_A8_T6.js
@@ -6308,22 +6299,13 @@ test/built-ins/Function/prototype/apply/name.js
 test/built-ins/Function/prototype/apply/not-a-constructor.js
 test/built-ins/Function/prototype/apply/resizable-buffer.js
 test/built-ins/Function/prototype/apply/this-not-callable-realm.js
-test/built-ins/Function/prototype/apply/this-not-callable.js
 test/built-ins/Function/prototype/arguments/prop-desc.js
 test/built-ins/Function/prototype/bind/15.3.4.5-0-1.js
 test/built-ins/Function/prototype/bind/15.3.4.5-10-1.js
 test/built-ins/Function/prototype/bind/15.3.4.5-11-1.js
 test/built-ins/Function/prototype/bind/15.3.4.5-16-1.js
 test/built-ins/Function/prototype/bind/15.3.4.5-16-2.js
-test/built-ins/Function/prototype/bind/15.3.4.5-2-1.js
-test/built-ins/Function/prototype/bind/15.3.4.5-2-10.js
-test/built-ins/Function/prototype/bind/15.3.4.5-2-11.js
-test/built-ins/Function/prototype/bind/15.3.4.5-2-12.js
-test/built-ins/Function/prototype/bind/15.3.4.5-2-13.js
-test/built-ins/Function/prototype/bind/15.3.4.5-2-14.js
-test/built-ins/Function/prototype/bind/15.3.4.5-2-15.js
 test/built-ins/Function/prototype/bind/15.3.4.5-2-16.js
-test/built-ins/Function/prototype/bind/15.3.4.5-2-2.js
 test/built-ins/Function/prototype/bind/15.3.4.5-2-3.js
 test/built-ins/Function/prototype/bind/15.3.4.5-2-4.js
 test/built-ins/Function/prototype/bind/15.3.4.5-2-5.js
@@ -6383,9 +6365,6 @@ test/built-ins/Function/prototype/bind/15.3.4.5.2-4-8.js
 test/built-ins/Function/prototype/bind/15.3.4.5.2-4-9.js
 test/built-ins/Function/prototype/bind/BoundFunction_restricted-properties.js
 test/built-ins/Function/prototype/bind/S15.3.4.5_A1.js
-test/built-ins/Function/prototype/bind/S15.3.4.5_A13.js
-test/built-ins/Function/prototype/bind/S15.3.4.5_A14.js
-test/built-ins/Function/prototype/bind/S15.3.4.5_A15.js
 test/built-ins/Function/prototype/bind/S15.3.4.5_A16.js
 test/built-ins/Function/prototype/bind/S15.3.4.5_A2.js
 test/built-ins/Function/prototype/bind/S15.3.4.5_A3.js
@@ -6416,9 +6395,6 @@ test/built-ins/Function/prototype/call/15.3.4.4-3-s.js
 test/built-ins/Function/prototype/call/S15.3.4.4_A10.js
 test/built-ins/Function/prototype/call/S15.3.4.4_A11.js
 test/built-ins/Function/prototype/call/S15.3.4.4_A12.js
-test/built-ins/Function/prototype/call/S15.3.4.4_A13.js
-test/built-ins/Function/prototype/call/S15.3.4.4_A14.js
-test/built-ins/Function/prototype/call/S15.3.4.4_A15.js
 test/built-ins/Function/prototype/call/S15.3.4.4_A16.js
 test/built-ins/Function/prototype/call/S15.3.4.4_A1_T1.js
 test/built-ins/Function/prototype/call/S15.3.4.4_A1_T2.js
@@ -6452,7 +6428,6 @@ test/built-ins/Function/prototype/call/S15.3.4.4_A6_T6.js
 test/built-ins/Function/prototype/call/S15.3.4.4_A6_T7.js
 test/built-ins/Function/prototype/call/S15.3.4.4_A6_T8.js
 test/built-ins/Function/prototype/call/S15.3.4.4_A6_T9.js
-test/built-ins/Function/prototype/call/S15.3.4.4_A7_T3.js
 test/built-ins/Function/prototype/call/S15.3.4.4_A7_T4.js
 test/built-ins/Function/prototype/call/S15.3.4.4_A7_T5.js
 test/built-ins/Function/prototype/call/S15.3.4.4_A7_T6.js
@@ -6461,7 +6436,6 @@ test/built-ins/Function/prototype/call/name.js
 test/built-ins/Function/prototype/call/not-a-constructor.js
 test/built-ins/Function/prototype/caller-arguments/accessor-properties.js
 test/built-ins/Function/prototype/caller/prop-desc.js
-test/built-ins/Function/prototype/constructor/S15.3.4.1_A1_T1.js
 test/built-ins/Function/prototype/length.js
 test/built-ins/Function/prototype/name.js
 test/built-ins/Function/prototype/property-order.js
@@ -6471,11 +6445,7 @@ test/built-ins/Function/prototype/toString/Function.js
 test/built-ins/Function/prototype/toString/GeneratorFunction.js
 test/built-ins/Function/prototype/toString/S15.3.4.2_A10.js
 test/built-ins/Function/prototype/toString/S15.3.4.2_A11.js
-test/built-ins/Function/prototype/toString/S15.3.4.2_A12.js
-test/built-ins/Function/prototype/toString/S15.3.4.2_A13.js
-test/built-ins/Function/prototype/toString/S15.3.4.2_A14.js
 test/built-ins/Function/prototype/toString/S15.3.4.2_A16.js
-test/built-ins/Function/prototype/toString/S15.3.4.2_A6.js
 test/built-ins/Function/prototype/toString/S15.3.4.2_A8.js
 test/built-ins/Function/prototype/toString/S15.3.4.2_A9.js
 test/built-ins/Function/prototype/toString/arrow-function.js
@@ -6522,7 +6492,6 @@ test/built-ins/Function/prototype/toString/method-class-statement.js
 test/built-ins/Function/prototype/toString/method-computed-property-name.js
 test/built-ins/Function/prototype/toString/method-object.js
 test/built-ins/Function/prototype/toString/name.js
-test/built-ins/Function/prototype/toString/not-a-constructor.js
 test/built-ins/Function/prototype/toString/private-method-class-expression.js
 test/built-ins/Function/prototype/toString/private-method-class-statement.js
 test/built-ins/Function/prototype/toString/private-static-method-class-expression.js
@@ -8425,7 +8394,6 @@ test/built-ins/Object/S15.2.1.1_A1_T3.js
 test/built-ins/Object/S15.2.1.1_A1_T4.js
 test/built-ins/Object/S15.2.1.1_A1_T5.js
 test/built-ins/Object/S15.2.1.1_A2_T1.js
-test/built-ins/Object/S15.2.1.1_A2_T11.js
 test/built-ins/Object/S15.2.1.1_A2_T12.js
 test/built-ins/Object/S15.2.1.1_A2_T13.js
 test/built-ins/Object/S15.2.1.1_A2_T14.js
@@ -8442,7 +8410,6 @@ test/built-ins/Object/S15.2.2.1_A1_T3.js
 test/built-ins/Object/S15.2.2.1_A1_T4.js
 test/built-ins/Object/S15.2.2.1_A1_T5.js
 test/built-ins/Object/S15.2.2.1_A2_T5.js
-test/built-ins/Object/S15.2.2.1_A2_T7.js
 test/built-ins/Object/S15.2.2.1_A3_T1.js
 test/built-ins/Object/S15.2.2.1_A3_T2.js
 test/built-ins/Object/S15.2.2.1_A3_T3.js
@@ -27709,7 +27676,6 @@ test/language/computed-property-names/to-name-side-effects/class.js
 test/language/computed-property-names/to-name-side-effects/numbers-class.js
 test/language/computed-property-names/to-name-side-effects/numbers-object.js
 test/language/computed-property-names/to-name-side-effects/object.js
-test/language/destructuring/binding/initialization-returns-normal-completion-for-empty-objects.js
 test/language/destructuring/binding/keyed-destructuring-property-reference-target-evaluation-order-with-bindings.js
 test/language/destructuring/binding/syntax/destructuring-array-parameters-function-arguments-length.js
 test/language/destructuring/binding/syntax/destructuring-object-parameters-function-arguments-length.js
@@ -28265,7 +28231,6 @@ test/language/expressions/assignment/11.13.1-4-1.js
 test/language/expressions/assignment/11.13.1-4-14-s.js
 test/language/expressions/assignment/11.13.1-4-28gs.js
 test/language/expressions/assignment/11.13.1-4-29gs.js
-test/language/expressions/assignment/11.13.1-4-6-s.js
 test/language/expressions/assignment/8.12.5-3-b_1.js
 test/language/expressions/assignment/8.12.5-3-b_2.js
 test/language/expressions/assignment/8.12.5-5-b_1.js
@@ -28368,9 +28333,6 @@ test/language/expressions/assignment/dstr/array-rest-put-prop-ref-no-get.js
 test/language/expressions/assignment/dstr/array-rest-put-prop-ref-user-err-iter-close-skip.js
 test/language/expressions/assignment/dstr/array-rest-put-prop-ref-user-err.js
 test/language/expressions/assignment/dstr/array-rest-yield-expr.js
-test/language/expressions/assignment/dstr/obj-empty-bool.js
-test/language/expressions/assignment/dstr/obj-empty-num.js
-test/language/expressions/assignment/dstr/obj-empty-string.js
 test/language/expressions/assignment/dstr/obj-empty-symbol.js
 test/language/expressions/assignment/dstr/obj-id-init-fn-name-arrow.js
 test/language/expressions/assignment/dstr/obj-id-init-fn-name-class.js
@@ -28404,11 +28366,9 @@ test/language/expressions/assignment/dstr/obj-rest-non-string-computed-property-
 test/language/expressions/assignment/dstr/obj-rest-non-string-computed-property-array-1.js
 test/language/expressions/assignment/dstr/obj-rest-non-string-computed-property-array-1e0.js
 test/language/expressions/assignment/dstr/obj-rest-non-string-computed-property-string-1.js
-test/language/expressions/assignment/dstr/obj-rest-number.js
 test/language/expressions/assignment/dstr/obj-rest-order.js
 test/language/expressions/assignment/dstr/obj-rest-same-name.js
 test/language/expressions/assignment/dstr/obj-rest-skip-non-enumerable.js
-test/language/expressions/assignment/dstr/obj-rest-str-val.js
 test/language/expressions/assignment/dstr/obj-rest-symbol-val.js
 test/language/expressions/assignment/dstr/obj-rest-to-property-with-setter.js
 test/language/expressions/assignment/dstr/obj-rest-to-property.js
@@ -32320,7 +32280,6 @@ test/language/expressions/class/subclass-builtins/subclass-Int32Array.js
 test/language/expressions/class/subclass-builtins/subclass-Int8Array.js
 test/language/expressions/class/subclass-builtins/subclass-Map.js
 test/language/expressions/class/subclass-builtins/subclass-Number.js
-test/language/expressions/class/subclass-builtins/subclass-Object.js
 test/language/expressions/class/subclass-builtins/subclass-Promise.js
 test/language/expressions/class/subclass-builtins/subclass-RegExp.js
 test/language/expressions/class/subclass-builtins/subclass-Set.js
@@ -33853,8 +33812,6 @@ test/language/expressions/instanceof/S11.8.6_A4_T1.js
 test/language/expressions/instanceof/S11.8.6_A4_T2.js
 test/language/expressions/instanceof/S11.8.6_A4_T3.js
 test/language/expressions/instanceof/S11.8.6_A6_T2.js
-test/language/expressions/instanceof/S11.8.6_A6_T3.js
-test/language/expressions/instanceof/S11.8.6_A6_T4.js
 test/language/expressions/instanceof/S11.8.6_A7_T3.js
 test/language/expressions/instanceof/S15.3.5.3_A1_T1.js
 test/language/expressions/instanceof/S15.3.5.3_A1_T2.js
@@ -33869,8 +33826,6 @@ test/language/expressions/instanceof/S15.3.5.3_A2_T5.js
 test/language/expressions/instanceof/S15.3.5.3_A2_T6.js
 test/language/expressions/instanceof/S15.3.5.3_A3_T1.js
 test/language/expressions/instanceof/S15.3.5.3_A3_T2.js
-test/language/expressions/instanceof/primitive-prototype-with-object.js
-test/language/expressions/instanceof/primitive-prototype-with-primitive.js
 test/language/expressions/instanceof/prototype-getter-with-object-throws.js
 test/language/expressions/instanceof/prototype-getter-with-object.js
 test/language/expressions/instanceof/prototype-getter-with-primitive.js
@@ -34944,7 +34899,6 @@ test/language/expressions/property-accessors/S11.2.1_A3_T1.js
 test/language/expressions/property-accessors/S11.2.1_A3_T2.js
 test/language/expressions/property-accessors/S11.2.1_A3_T3.js
 test/language/expressions/property-accessors/S11.2.1_A4_T1.js
-test/language/expressions/property-accessors/S11.2.1_A4_T3.js
 test/language/expressions/property-accessors/S11.2.1_A4_T4.js
 test/language/expressions/property-accessors/S11.2.1_A4_T5.js
 test/language/expressions/property-accessors/S11.2.1_A4_T6.js
@@ -35353,8 +35307,6 @@ test/language/function-code/10.4.3-1-98-s.js
 test/language/function-code/10.4.3-1-98gs.js
 test/language/function-code/10.4.3-1-99-s.js
 test/language/function-code/10.4.3-1-99gs.js
-test/language/function-code/S10.2.1_A4_T1.js
-test/language/function-code/S10.2.1_A4_T2.js
 test/language/function-code/eval-param-env-with-computed-key.js
 test/language/function-code/eval-param-env-with-prop-initializer.js
 test/language/global-code/decl-func.js
@@ -39794,7 +39746,6 @@ test/language/statements/class/subclass-builtins/subclass-Int32Array.js
 test/language/statements/class/subclass-builtins/subclass-Int8Array.js
 test/language/statements/class/subclass-builtins/subclass-Map.js
 test/language/statements/class/subclass-builtins/subclass-Number.js
-test/language/statements/class/subclass-builtins/subclass-Object.js
 test/language/statements/class/subclass-builtins/subclass-Promise.js
 test/language/statements/class/subclass-builtins/subclass-RegExp.js
 test/language/statements/class/subclass-builtins/subclass-Set.js
@@ -39839,7 +39790,6 @@ test/language/statements/class/subclass/builtin-objects/Number/regular-subclassi
 test/language/statements/class/subclass/builtin-objects/Number/super-must-be-called.js
 test/language/statements/class/subclass/builtin-objects/Object/constructor-returns-non-object.js
 test/language/statements/class/subclass/builtin-objects/Object/regular-subclassing.js
-test/language/statements/class/subclass/builtin-objects/Object/replacing-prototype.js
 test/language/statements/class/subclass/builtin-objects/Promise/regular-subclassing.js
 test/language/statements/class/subclass/builtin-objects/Promise/super-must-be-called.js
 test/language/statements/class/subclass/builtin-objects/Proxy/no-prototype-throws.js
@@ -41298,9 +41248,6 @@ test/language/statements/for-of/dstr/let-obj-ptrn-prop-id-get-value-err.js
 test/language/statements/for-of/dstr/let-obj-ptrn-rest-getter.js
 test/language/statements/for-of/dstr/let-obj-ptrn-rest-skip-non-enumerable.js
 test/language/statements/for-of/dstr/let-obj-ptrn-rest-val-obj.js
-test/language/statements/for-of/dstr/obj-empty-bool.js
-test/language/statements/for-of/dstr/obj-empty-num.js
-test/language/statements/for-of/dstr/obj-empty-string.js
 test/language/statements/for-of/dstr/obj-empty-symbol.js
 test/language/statements/for-of/dstr/obj-id-init-fn-name-arrow.js
 test/language/statements/for-of/dstr/obj-id-init-fn-name-class.js
@@ -41334,11 +41281,9 @@ test/language/statements/for-of/dstr/obj-rest-non-string-computed-property-1e0.j
 test/language/statements/for-of/dstr/obj-rest-non-string-computed-property-array-1.js
 test/language/statements/for-of/dstr/obj-rest-non-string-computed-property-array-1e0.js
 test/language/statements/for-of/dstr/obj-rest-non-string-computed-property-string-1.js
-test/language/statements/for-of/dstr/obj-rest-number.js
 test/language/statements/for-of/dstr/obj-rest-order.js
 test/language/statements/for-of/dstr/obj-rest-same-name.js
 test/language/statements/for-of/dstr/obj-rest-skip-non-enumerable.js
-test/language/statements/for-of/dstr/obj-rest-str-val.js
 test/language/statements/for-of/dstr/obj-rest-symbol-val.js
 test/language/statements/for-of/dstr/obj-rest-to-property-with-setter.js
 test/language/statements/for-of/dstr/obj-rest-to-property.js
@@ -43362,7 +43307,6 @@ test/staging/sm/async-functions/create-function-parse-before-getprototype.js
 test/staging/sm/async-functions/inner-caller.js
 test/staging/sm/async-functions/length.js
 test/staging/sm/async-functions/no-expression-closure.js
-test/staging/sm/async-functions/property.js
 test/staging/sm/async-functions/toString.js
 test/staging/sm/class/boundFunctionSubclassing.js
 test/staging/sm/class/bytecodePatternMatching.js
@@ -43768,10 +43712,6 @@ test/staging/sm/regress/regress-810525.js
 test/staging/sm/statements/arrow-function-in-for-statement-head.js
 test/staging/sm/statements/for-in-with-declaration.js
 test/staging/sm/statements/for-inof-finally.js
-test/staging/sm/statements/for-inof-loop-const-declaration.js
-test/staging/sm/statements/for-inof-name-iteration-expression-contains-index-string.js
-test/staging/sm/statements/for-loop-declaration-contains-computed-name.js
-test/staging/sm/statements/for-loop-declaration-contains-initializer.js
 test/staging/sm/statements/for-of-iterator-close-throw.js
 test/staging/sm/statements/for-of-iterator-close.js
 test/staging/sm/statements/for-of-iterator-primitive.js
