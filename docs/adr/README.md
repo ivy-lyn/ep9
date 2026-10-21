@@ -115,7 +115,7 @@ An ADR whose row is built after M1 exit lists its parts, each with its own freez
 | H5 | Compiler, interpreter and source always present | M0 rule (wk3) | N | Draft (2026-10-21) | [H05-always-linked-compiler.md](H05-always-linked-compiler.md) |
 | H6 | Value encoding | M0 wk2 | U | Draft (decided 2026-10-20) | [H06-value-encoding.md](H06-value-encoding.md) |
 | H7 | Address space and code range | M0 wk2 (SP-VA) | E | Draft (rewritten 2026-10-21: one cage per isolate) | [H07-address-space-and-code-range.md](H07-address-space-and-code-range.md) |
-| H8 | Object header and ShapeId | M0 wk2 | E | Draft (Q1 and Q3 filled 2026-10-21: shape region, word0 flag bits) | [H08-object-header-and-shapeid.md](H08-object-header-and-shapeid.md) |
+| H8 | Object header and ShapeId | M0 wk2 | E | Draft (Q1 and Q3 filled 2026-10-21: shape region, word0 flag bits; Q2 filled 2026-10-22: no shape-guarded load in Spike B) | [H08-object-header-and-shapeid.md](H08-object-header-and-shapeid.md) |
 | H9 | Pages and side metadata | M0 wk2 | U | Draft (Q4 filled 2026-10-21) | [H09-pages-and-side-metadata.md](H09-pages-and-side-metadata.md) |
 | H10 | Rooting | M0 wk2, after SP-GC | E | Draft (Q2 filled 2026-10-21: gc-lint, Local check) | [H10-rooting.md](H10-rooting.md) |
 | H11 | Barrier and atomics | API M0; slow paths S1/S2; unit field A2 | E | Draft (decided 2026-10-20; Q3 filled 2026-10-21) | [H11-barrier-and-atomics.md](H11-barrier-and-atomics.md) |
