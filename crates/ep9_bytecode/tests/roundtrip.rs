@@ -210,6 +210,23 @@ fn header_errors_map_to_h35_outcomes() {
         CompiledUnit::from_bytes(&m).unwrap_err(),
         LoadError::BadHeader("TS flags on a JavaScript unit")
     );
+    // Bits 12-15 (reserved TS flags) are zero in ABI 1-3, on a JavaScript and on a
+    // TypeScript unit (H03 Rules row 2).
+    for bit in 12..16 {
+        for extra in [0, unit_flags::TYPESCRIPT] {
+            let mut m = bytes.clone();
+            let fl = u32::from_le_bytes(m[20..24].try_into().unwrap()) | extra | (1 << bit);
+            assert_ne!(fl & unit_flags::TS_RESERVED, 0);
+            m[20..24].copy_from_slice(&fl.to_le_bytes());
+            rehash(&mut m);
+            assert_eq!(
+                CompiledUnit::from_bytes(&m).unwrap_err(),
+                LoadError::BadHeader("unit flags"),
+                "bit {bit}, typescript {}",
+                extra != 0
+            );
+        }
+    }
     // peek_header reads the build id without trusting the rest.
     let p = peek_header(&bytes).unwrap();
     assert_eq!(p.abi_version, ABI_VERSION);
