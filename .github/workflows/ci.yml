@@ -4,7 +4,8 @@
 #   lint ............. fmt + clippy + rustdoc -D warnings; gc-lint   (Linux x64)
 #                      jetstream/run.mjs, cross/run.mjs and t0-dispatch.mjs tests
 #   build-test ....... build + test; clippy on the other 3 targets;  (4 targets)
-#                      feature matrix (default, jitless, aot; H27)
+#                      feature matrix (default, jitless, aot; H27);
+#                      ep9_vm spike-native tests (Spike B native entry)
 #   test262 .......... parse and exec runners vs expectations/;      (4 targets)
 #                      exec with eager feedback; bytecodegen corpus
 #                      digest (G1); on Linux x64 also exec with
@@ -14,7 +15,8 @@
 #                      SoftFma vs hardware FMA
 #   disasm ........... ep9_vm handler check (H15); ep9_heap barrier  (4 targets)
 #   spikes ........... SP-Dispatch, SP-GC and SP-JIT-mem host gates  (4 targets)
-#                      SP-Dispatch speed gates: recorded, not blocking (H15 ADR)
+#                      SP-Dispatch speed gates: recorded, not blocking (H15 ADR);
+#                      cgoto.c built with zig cc 0.17.0 (H15-Q3)
 #   miri ............. Miri on ep9_value, ep9_heap and ep9_math      (Linux x64)
 #   dep-guards ....... cargo tree / metadata guards; cargo deny      (Linux x64)
 #   perf-ci-v0 ....... cachegrind instruction counts of 7 workloads  (Linux x64)
@@ -103,6 +105,12 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo build --workspace --all-targets --locked
       - run: cargo test --workspace --locked
+      # Spike B's native entry (plan M0 month 2, D21): the ep9_vm `spike-native` tests run
+      # native code on every target, Windows x64 included (crates/ep9_vm/src/tests/native.rs).
+      # The feature is never in the ep9 graph (dep-guards check 11), so it gets its own build.
+      - name: spike-native tests (ep9_vm)
+        if: ${{ !cancelled() }}
+        run: cargo test -p ep9_vm --features spike-native --locked native
       # 10-quality section 5: clippy -D warnings on all 4 targets (the lint job covers Linux x64).
       - if: ${{ matrix.name != 'linux-x64' }}
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -317,6 +325,37 @@ jobs:
             spikes/sp-dispatch -> target
             spikes/sp-gc -> target
             spikes/sp-jit-mem -> target
+      # H15-Q3: one LLVM for cgoto.c on every target. spikes/sp-dispatch/gate.sh builds it with
+      # `zig cc` when `zig version` prints 0.17.0 and logs "cc: zig cc 0.17.0 (pinned, H15-Q3)".
+      # The archive is pinned by its SHA-256 from https://ziglang.org/download/index.json
+      # (release of 2026-10-01); no third-party action.
+      - name: Install zig 0.17.0
+        env:
+          ZIG_VERSION: 0.17.0
+          MATRIX_NAME: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          exe=""
+          case "$MATRIX_NAME" in
+            linux-x64) arch=x86_64-linux ext=tar.xz sum=1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026 ;;
+            linux-arm64) arch=aarch64-linux ext=tar.xz sum=9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8 ;;
+            macos-arm64) arch=aarch64-macos ext=tar.xz sum=b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a ;;
+            windows-x64) arch=x86_64-windows ext=zip sum=b5663f69581dcf391293fbf16c06cb80d81d806545ce618b4d0bab7f0eb8c428 exe=.exe ;;
+            *) echo "::error::no zig $ZIG_VERSION archive for $MATRIX_NAME"; exit 1 ;;
+          esac
+          name="zig-$arch-$ZIG_VERSION"
+          tmp="$RUNNER_TEMP"
+          if command -v cygpath > /dev/null; then tmp="$(cygpath -u "$RUNNER_TEMP")"; fi
+          curl -sSfL --retry 3 -o "$tmp/$name.$ext" "https://ziglang.org/download/$ZIG_VERSION/$name.$ext"
+          if command -v sha256sum > /dev/null; then got="$(sha256sum "$tmp/$name.$ext")"; else got="$(shasum -a 256 "$tmp/$name.$ext")"; fi
+          got="${got%% *}"
+          if [ "$got" != "$sum" ]; then
+            echo "::error::$name.$ext has SHA-256 $got, not $sum"
+            exit 1
+          fi
+          if [ "$ext" = zip ]; then 7z x -bd -y -o"$RUNNER_TEMP" "$RUNNER_TEMP/$name.$ext" > /dev/null; else tar -xJf "$tmp/$name.$ext" -C "$tmp"; fi
+          "$tmp/$name/zig$exe" version
+          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
       # Structural gates block (build, tests, agreement, tail exits, handler args, x64 match-loop
       # shape). Speed gates are recorded, not blocking: one hosted x64 label gave 4 CPU models,
       # and the verdict changes with the model (H15 ADR; docs/measurements/2026-10-21-sp-dispatch-x64.md).

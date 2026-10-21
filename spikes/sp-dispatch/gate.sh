@@ -4,7 +4,8 @@
 # SP_SPEED=gate, every speed gate passes.
 #
 # Steps:
-#   1. build      stable release (match + sibling), nightly release (+ become), cgoto.c (clang -O2)
+#   1. build      stable release (match + sibling), nightly release (+ become), cgoto.c (-O2,
+#                 with zig cc 0.17.0 when it is on PATH; see CC below)
 #   2. test       cargo test --release (stable; nightly with become)
 #   3. check      every variant and cgoto agree with the reference models on small inputs
 #   4. deep-loop  threaded variants on a 64 KiB native stack, every opcode in a loop
@@ -33,7 +34,10 @@
 #                                 bench.json, GitHub warnings and the job summary, but not to the
 #                                 exit code (hosted CI runners; H15 ADR)
 #   SP_NIGHTLY=nightly-2026-10-04 toolchain for `become`; "none" skips it (dsl-3-expansions: partial)
-#   CC=clang                      C compiler for cgoto.c
+#   CC=<compiler>                 C compiler for cgoto.c. Unset: `zig cc` when `zig version` prints
+#                                 0.17.0 (H15-Q3: one LLVM for cgoto.c on every target; on Windows
+#                                 with -target x86_64-windows-msvc, as the Rust binaries), else
+#                                 clang. The log line "cc:" says which, and "not pinned" if not zig
 #   SP_CROSS=1                    0 skips step 7
 #   SP_BENCH=1                    0 skips step 8 (the speed gates then report "not-run")
 set -uo pipefail
@@ -43,12 +47,24 @@ root="$(cd "$here/../.." && pwd)"
 rounds="${SP_ROUNDS:-15}"
 speed_mode="${SP_SPEED:-gate}"
 nightly="${SP_NIGHTLY:-nightly-2026-10-04}"
-cc="${CC:-clang}"
 case "$speed_mode" in
   gate | report) ;;
   *) echo "SP_SPEED must be gate or report, not '$speed_mode'"; exit 2 ;;
 esac
 host="$(rustc -vV | sed -n 's/^host: //p')"
+zig_pin=0.17.0
+if [ -n "${CC:-}" ]; then
+  cc=("$CC")
+  cc_note="$CC from CC (not pinned)"
+elif [ "$(zig version 2>/dev/null)" = "$zig_pin" ]; then
+  # zig cc defaults to the gnu ABI on Windows; the measured Rust binaries are msvc.
+  cc=(zig cc)
+  case "$host" in *windows*) cc+=(-target x86_64-windows-msvc) ;; esac
+  cc_note="zig cc $zig_pin (pinned, H15-Q3)"
+else
+  cc=(clang)
+  cc_note="clang (not pinned)"
+fi
 exe=""
 case "$host" in *windows*) exe=".exe" ;; esac
 case "$host" in
@@ -111,15 +127,15 @@ load() { uptime 2>/dev/null || echo "n/a (no uptime command; Git Bash on Windows
 
 echo "== SP-Dispatch gate on $host ($abi); speed gates: $speed_mode"
 echo "uptime: $(load)"
-# The C compiler and its target (Windows: clang from the runner image, x86_64-pc-windows-msvc).
-echo "cc: $(command -v "$cc" || echo "$cc not found")"
-"$cc" --version 2>&1 | sed -n '1,2p' | sed 's/^/cc: /'
+# The C compiler and its target (Windows: x86_64-pc-windows-msvc, for zig cc and for clang).
+echo "cc: $cc_note: ${cc[*]} ($(command -v "${cc[0]}" || echo "${cc[0]} not found"))"
+"${cc[@]}" --version 2>&1 | sed -n '1,2p' | sed 's/^/cc: /'
 
 # 1. build
 ok=1
 # Explicit --target-dir: an exported CARGO_TARGET_DIR must not move the measured binaries.
 run build-stable cargo build --release --manifest-path "$here/Cargo.toml" --target-dir "$tgt" || ok=0
-run build-cgoto "$cc" -O2 -o "$tgt/cgoto$exe" "$here/cgoto.c" || ok=0
+run build-cgoto "${cc[@]}" -O2 -o "$tgt/cgoto$exe" "$here/cgoto.c" || ok=0
 have_become=0
 if [ "$nightly" != "none" ]; then
   if run build-nightly cargo "+$nightly" build --release --features become \
