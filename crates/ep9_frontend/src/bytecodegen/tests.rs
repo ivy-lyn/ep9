@@ -846,3 +846,51 @@ fn eval_and_function_ctor_entry_points_are_stubs() {
         other => panic!("{other:?}"),
     }
 }
+
+/// D2 (P2-CLS-CG): the synthetic class bindings (brands, accessor setters, computed field
+/// keys) are `PrivateName` bindings with names no source can spell, declared in the class
+/// scope, and the scope pass puts them in the class context (codegen finds them by name).
+#[test]
+fn synthetic_class_bindings_live_in_the_class_context() {
+    use crate::scope::{BindingKind, BindingLocation, ScopeKind};
+    let src = "var k; class C { #m() {} static #s() {} get #a() { return 1; } set #a(v) {} \
+               [k] = 1; static [k + 1]; x = 2; #f; }";
+    let sa = crate::with_front_end(src, Sloppy.opts(), |fe| crate::scope::analyze(fe)).unwrap();
+    let class = sa
+        .scopes()
+        .iter()
+        .find(|s| s.kind == ScopeKind::Class)
+        .unwrap();
+    let names: Vec<(&str, bool)> = class
+        .bindings
+        .iter()
+        .map(|&b| {
+            let binding = sa.binding(b);
+            assert!(
+                matches!(binding.kind, BindingKind::PrivateName { .. })
+                    || binding.kind == BindingKind::ClassInner
+            );
+            let in_class_context = matches!(
+                binding.location,
+                BindingLocation::Context { scope, .. } if scope == class.id
+            );
+            (sa.name(binding.name), in_class_context)
+        })
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("C", false),
+            ("#m", true),
+            ("#s", true),
+            ("#a", true),
+            ("#f", true),
+            ("#.brand", true),
+            ("#.static-brand", true),
+            ("#.set-a", true),
+            ("#.class-field-0", true),
+            ("#.class-field-1", true),
+        ]
+    );
+    assert!(class.needs_context);
+}

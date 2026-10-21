@@ -1101,6 +1101,82 @@ impl<'a> Visit<'a> for Builder<'a> {
             }
         }
 
+        // Synthetic class-context bindings (P2-CLS-CG, D2). Their names start with `#.`, which
+        // no source can spell, so codegen finds them by name in the class scope and a direct
+        // eval never sees them. Like every private name they live in the class context.
+        //   #.brand          instance brand (any instance private method or accessor)
+        //   #.static-brand   static brand (any static private method or accessor)
+        //   #.set-x          the setter of private accessor `#x` (`#x` holds the getter)
+        //   #.class-field-N  the key of the N-th computed field, after ToPropertyKey
+        fn synthetic_name(names: &mut Vec<Box<str>>, text: String) -> NameId {
+            let id = NameId::of(names.len());
+            names.push(text.into_boxed_str());
+            id
+        }
+        let private_method = |e: &ClassElement<'a>, want_static: bool| {
+            matches!(e, ClassElement::MethodDefinition(m)
+                if m.r#static == want_static && matches!(m.key, PropertyKey::PrivateIdentifier(_)))
+        };
+        let brands = [(".brand", false), (".static-brand", true)];
+        for (text, is_static) in brands {
+            if elements.iter().any(|e| private_method(e, is_static)) {
+                let name = self.private_name(text);
+                self.declare(
+                    class_scope,
+                    name,
+                    BindingKind::PrivateName {
+                        kind: PrivateKind::Method,
+                        is_static,
+                    },
+                    None,
+                );
+            }
+        }
+        let accessors: Vec<(NameId, bool)> = self.scopes[class_scope.index()]
+            .bindings
+            .iter()
+            .filter_map(|b| match self.bindings[b.index()].kind {
+                BindingKind::PrivateName {
+                    kind: PrivateKind::Getter | PrivateKind::Setter | PrivateKind::GetterSetter,
+                    is_static,
+                } => Some((self.bindings[b.index()].name, is_static)),
+                _ => None,
+            })
+            .collect();
+        for (accessor, is_static) in accessors {
+            let text = format!("#.set-{}", &self.names[accessor.index()][1..]);
+            let name = synthetic_name(&mut self.names, text);
+            self.declare(
+                class_scope,
+                name,
+                BindingKind::PrivateName {
+                    kind: PrivateKind::Method,
+                    is_static,
+                },
+                None,
+            );
+        }
+        let computed_fields = elements
+            .iter()
+            .filter_map(|e| match e {
+                ClassElement::PropertyDefinition(p) if p.computed => Some(p.r#static),
+                _ => None,
+            })
+            .enumerate()
+            .collect::<Vec<_>>();
+        for (n, is_static) in computed_fields {
+            let name = synthetic_name(&mut self.names, format!("#.class-field-{n}"));
+            self.declare(
+                class_scope,
+                name,
+                BindingKind::PrivateName {
+                    kind: PrivateKind::Field,
+                    is_static,
+                },
+                None,
+            );
+        }
+
         // Synthetic functions: ids at the start of the class body, in this fixed order.
         let derived = it.heritage.is_some();
         let has_constructor = elements.iter().any(|e| {
