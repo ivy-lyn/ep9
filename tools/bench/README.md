@@ -6,6 +6,7 @@ Benchmark tools ([10-quality](../../docs/plan/10-quality.md) section 2; perf CI 
 | Path | What it does |
 |---|---|
 | `src/` (package `ep9_bench`, bin `ep9-bench`) | Runs a command N times. Writes the instructions retired per run as JSON (schema `ep9-bench/v1`) |
+| `../../.github/scripts/perf-ci-v0.mjs` | perf CI v0: counts the T0 kernels, ci-v0, richards and deltablue under one counter; one JSON (schema `ep9-perf-ci/v1`) and a Markdown table |
 | `jetstream/node-host.mjs` | JSC-shell host API on node, so JetStream's `cli.js` runs under node |
 | `jetstream/lists.mjs` | Writes `expectations/jetstream-m2.txt` and `jetstream-m7.txt` from the pinned JetStream |
 | `jetstream/run.mjs` | Runs JetStream workloads, one process each, under several configs; prints median scores |
@@ -41,9 +42,46 @@ cargo run --release -p ep9_bench -- --runs 5 --out out.json -- target/release/ep
 - `EP9_BENCH_TIME` replaces `/usr/bin/time`. `tests/testdata/time-no-pmc.sh` is a fake that prints what a host with no PMC access prints.
 - Tests: `cargo test -p ep9_bench`. The tests probe the OS tool themselves (not through ep9-bench). With a counter, `counts_instructions` checks the counts. Without one, it prints `SKIPPED the count check` and checks the no-counter JSON instead. On macOS, `EP9_BENCH_TIME=$PWD/tools/bench/tests/testdata/time-no-pmc.sh cargo test -p ep9_bench` runs that path.
 
+## perf CI v0
+
+The CI job `perf-ci-v0` (Linux x64) records instruction counts per commit. It is a record, not a
+gate yet. The same commands run on any Linux host with valgrind and node:
+
+```bash
+sudo apt-get install -y valgrind
+bash scripts/sync-bench.sh bench-v8v7          # richards and deltablue need the v8-v7 pin
+cargo build --release --locked -p ep9_bench -p ep9_cli
+node .github/scripts/perf-ci-v0.mjs --ep9 target/release/ep9 --bench target/release/ep9-bench \
+  --counter cachegrind --runs 3 --warmup 0 --out perf-ci-v0.json --md summary.md
+```
+
+```text
+workload                               file                                     check, then count
+t0-loop t0-branchy t0-call t0-prop     tools/bench/workloads/<name>.js           output = the `want`
+ci-v0                                  tools/bench/workloads/ci-v0.js            of workloads.mjs
+richards deltablue                     cross/v8v7.mjs --kernel <name> (pinned)  "<name> <N>" lines
+          |
+          v
+one ep9 run, no counter: exit 0 and the expected output, else "refused" (no count)
+          |
+          v
+ep9-bench --counter cachegrind --runs 3 --warmup 0, EP9_HASH_SEED=1, workloads in parallel
+          |
+          v
+perf-ci-v0.json (schema ep9-perf-ci/v1) + a Markdown table (--md appends; CI: the step summary)
+```
+
+- **Counter.** Always cachegrind (`--counter cachegrind`), never perf: cachegrind counts user-mode instructions on any VM, and with a fixed hash seed it gives the same count on every run. Compare counts only within one counter and one target.
+- **Hash seed.** The string hash seed is random per process, and it changes how far shape-index probes go. Without a fixed seed, 3 cachegrind runs of t0-call spread by 3.7%; with `EP9_HASH_SEED=1` (the script's default, `--hash-seed`) they spread by 609 instructions in 6.1e9. So a re-run on the same commit agrees to well within 0.1%.
+- **Runs.** 3 runs and no warm-up: with the fixed seed, more runs add time, not information. The spread column shows (max - min) / median.
+- **JSON.** `commit` (`GITHUB_SHA`, else `EP9_COMMIT`, else git HEAD), `counter`, `target`, `runs`, `warmup`, `hash_seed`, `host`, `complete`, and per workload: `name`, `status` (`ok`, `refused` or `error`), `error`, `instructions` (`min`, `median`, `max`, or null), the file and its `sha256`, the expected output, the v8-v7 `pin`, `blob` and `n`, and the whole ep9-bench/v1 report (`bench`).
+- **Exit status.** 0 every workload has a count; 1 a workload was refused or has no count (the JSON and the table are still written, with null counts); 2 usage error.
+- `--workloads` picks a subset; `--jobs N` limits the parallel workloads (default: the CPU count); `--work DIR` keeps the generated v8-v7 files.
+
 ## JetStream
 
-Needs `bash scripts/sync-bench.sh` first.
+Needs `bash scripts/sync-bench.sh` first (`bash scripts/sync-bench.sh bench-jetstream` syncs only
+JetStream; with no argument it syncs all three bench pins).
 
 ```bash
 node tools/bench/jetstream/lists.mjs            # write the M2 and M7 lists
@@ -60,8 +98,8 @@ node tools/bench/jetstream/run.mjs --list expectations/jetstream-m7.txt --reps 7
 
 ## Cross-engine runner
 
-Needs `bash scripts/sync-shells.sh` (the reference shells) and `bash scripts/sync-bench.sh` (for
-richards), and a release build: `cargo build --release --locked -p ep9_cli -p ep9_bench`.
+Needs `bash scripts/sync-shells.sh` (the reference shells) and `bash scripts/sync-bench.sh
+bench-v8v7` (for richards), and a release build: `cargo build --release --locked -p ep9_cli -p ep9_bench`.
 
 ```bash
 node tools/bench/cross/run.mjs --ep9 target/release/ep9 --host tools/bench/hosts/m5max-macos.toml \
