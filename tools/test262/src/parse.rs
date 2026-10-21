@@ -496,6 +496,33 @@ fn decode_outcome(line: &str) -> Option<Outcome> {
     })
 }
 
+/// The reply to `test\t<rel>`: an outcome for `rel` with an error and no run (`run_test`
+/// stopped early), or with one run per mode of its flags, in order. `None` (a bad line, a
+/// crash) for any other line, such as one cut short: an outcome with fewer runs would pass
+/// on the runs it has.
+fn test_reply(rel: &str, line: &str) -> Option<Outcome> {
+    decode_outcome(line).filter(|o| {
+        o.rel == rel
+            && match (&o.error, &o.meta) {
+                (Some(_), _) => o.runs.is_empty(),
+                (None, Some(meta)) => o.runs.iter().map(|r| r.mode).eq(modes(meta)),
+                (None, None) => false,
+            }
+    })
+}
+
+/// The reply to `include\t<name>\t<modes>`: an outcome for `harness/<name>` with an error and
+/// no run, or with one run per requested mode, in order (as [`test_reply`]).
+fn include_reply(name: &str, modes: &BTreeSet<Mode>, line: &str) -> Option<Outcome> {
+    decode_outcome(line).filter(|o| {
+        o.rel == format!("harness/{name}")
+            && match o.error {
+                Some(_) => o.runs.is_empty(),
+                None => o.runs.iter().map(|r| r.mode).eq(modes.iter().copied()),
+            }
+    })
+}
+
 /// The outcome of a file whose worker crashed or hung on it: an infrastructure error.
 fn gone_outcome(rel: String, gone: exec::Gone) -> Outcome {
     Outcome {
@@ -549,6 +576,21 @@ fn parse_abort_hook(name: &str, queued: bool) {
     }
 }
 
+/// Test hook `parse-partial-reply`: on a matching file the worker writes its reply up to the
+/// first run, with no newline, and aborts, as a worker killed while it writes a long reply.
+/// The cut line still decodes (an outcome with no run).
+fn partial_reply_hook(out: &mut impl io::Write, name: &str, reply: &str) {
+    if faults_on() && exec::fault_for("parse-partial-reply", name) {
+        let end = reply
+            .match_indices('\t')
+            .nth(6)
+            .map_or(reply.len(), |(i, _)| i);
+        let _ = out.write_all(&reply.as_bytes()[..end]);
+        let _ = out.flush();
+        std::process::abort();
+    }
+}
+
 /// `parse-worker`: reads request lines from stdin and writes one outcome line per request to
 /// stdout, in order. Replies go out in groups of up to [`CHUNK`], or sooner when no request
 /// waits. A crash loses the replies not written yet; the parent then runs those files again
@@ -582,7 +624,9 @@ pub fn worker(opts: WorkerOptions) -> ExitCode {
                     );
                     return 2;
                 };
-                if writeln!(out, "{}", encode_outcome(&outcome)).is_err() {
+                let reply = encode_outcome(&outcome);
+                partial_reply_hook(&mut out, &outcome.rel, &reply);
+                if writeln!(out, "{reply}").is_err() {
                     return 2;
                 }
                 unflushed += 1;
@@ -646,7 +690,7 @@ pub fn run(opts: &Options) -> ExitCode {
         &workers,
         &files,
         |f| test_request(&f.rel),
-        |f, line| decode_outcome(line).filter(|o| o.rel == f.rel),
+        |f, line| test_reply(&f.rel, line),
         |f, gone| gone_outcome(f.rel.clone(), gone),
         |_| {},
     );
@@ -660,7 +704,7 @@ pub fn run(opts: &Options) -> ExitCode {
         &workers,
         &needs,
         |(name, modes)| include_request(name, modes),
-        |(name, _), line| decode_outcome(line).filter(|o| o.rel == format!("harness/{name}")),
+        |(name, modes), line| include_reply(name, modes, line),
         |(name, _), gone| gone_outcome(format!("harness/{name}"), gone),
         |_| {},
     );
@@ -1116,6 +1160,67 @@ mod tests {
         for bad in ["", "a\t1", "a\t1\t0\t\t0\t\t\tsloppy", "a\t2\t0\t\t0\t\t"] {
             assert_eq!(decode_outcome(bad), None, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_reply_needs_every_run_its_request_asks_for() {
+        let run = |mode, ok| Run {
+            mode,
+            ok,
+            panicked: false,
+            detail: (!ok).then(|| "unexpected early error: x".to_string()),
+        };
+        let test = Outcome {
+            rel: "test/a.js".into(),
+            module: false,
+            negative: false,
+            meta: Some(Meta {
+                includes: vec!["a.js".into(), "b.js".into()],
+                ..Meta::default()
+            }),
+            runs: vec![run(Mode::Sloppy, true), run(Mode::Strict, false)],
+            error: None,
+        };
+        let line = encode_outcome(&test);
+        assert_eq!(test_reply("test/a.js", &line).as_ref(), Some(&test));
+        assert_eq!(test_reply("test/b.js", &line), None);
+        // Cut after the includes (no run), or before the failing strict run: each still
+        // decodes, and would pass with the runs it has.
+        let cut = |n: usize| line.match_indices('\t').nth(n).unwrap().0;
+        for end in [cut(6), cut(10)] {
+            let short = &line[..end];
+            assert!(decode_outcome(short).unwrap().passed(), "{short:?}");
+            assert_eq!(test_reply("test/a.js", short), None, "{short:?}");
+        }
+        // A file that could not be read has an error and no run; a run with it is bad.
+        let unread = Outcome {
+            meta: None,
+            runs: Vec::new(),
+            error: Some("cannot read: x".into()),
+            ..test
+        };
+        let line = encode_outcome(&unread);
+        assert_eq!(test_reply("test/a.js", &line).as_ref(), Some(&unread));
+        let with_run = format!("{line}\tsloppy\t1\t0\t");
+        assert_eq!(test_reply("test/a.js", &with_run), None);
+        // An include runs in each requested mode, in order.
+        let include = Outcome {
+            rel: "harness/h.js".into(),
+            module: false,
+            negative: false,
+            meta: None,
+            runs: vec![run(Mode::Sloppy, true), run(Mode::Strict, false)],
+            error: None,
+        };
+        let both = BTreeSet::from([Mode::Sloppy, Mode::Strict]);
+        let line = encode_outcome(&include);
+        assert_eq!(include_reply("h.js", &both, &line).as_ref(), Some(&include));
+        assert_eq!(
+            include_reply("h.js", &BTreeSet::from([Mode::Sloppy]), &line),
+            None
+        );
+        let short = &line[..line.match_indices('\t').nth(10).unwrap().0];
+        assert_eq!(include_reply("h.js", &both, short), None);
     }
 
     #[test]

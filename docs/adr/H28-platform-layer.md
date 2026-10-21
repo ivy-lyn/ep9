@@ -36,7 +36,7 @@ Win64 spill trampoline, SEH unwind registration and VirtualAlloc in `ep9_platfor
 
 | Item | macOS arm64 | Linux x64 / arm64 | Windows x64 |
 |---|---|---|---|
-| W^X mode (`jit::WxMode::DEFAULT`) | `MapJit`: the code range is one `MAP_JIT` RWX mapping from `Cage::reserve_jit`; `pthread_jit_write_protect_np` per thread | `Protect`: `mprotect` RW <-> RX per write window (H28-Q1) | `Protect`: `VirtualProtect` RW <-> RX |
+| W^X mode (`jit::WxMode::DEFAULT`) | `MapJit`: the code range is one `MAP_JIT` RWX mapping from `CodeRange::process()`; `pthread_jit_write_protect_np` per thread | `Protect`: `mprotect` RW <-> RX per write window (H28-Q1) | `Protect`: `VirtualProtect` RW <-> RX |
 | Other modes built | `Protect` (plain range, no hardened runtime; cost comparison only) | `DualMap` (memfd, RX view in the code range, RW view outside) | - |
 | icache flush after a write | `sys_icache_invalidate` | arm64: `DC CVAU` + `IC IVAU` loop (CTR_EL0); x64: none | `FlushInstructionCache` |
 | Unwind registration | `.eh_frame` (absptr FDEs); `__register_frame` in the mode the self-test picks: per FDE (Apple libunwind) | `.eh_frame`; mode picked by the self-test: whole section with libgcc (a native gnu build), per FDE with LLVM libunwind (zig cc links it statically) | `RtlAddGrowableFunctionTable`; UNWIND_INFO in the code memory |
@@ -127,3 +127,4 @@ Win64 spill trampoline, SEH unwind registration and VirtualAlloc in `ep9_platfor
 | 2026-10-21 | fill | SP-JIT-mem passed on 4 targets. Filled the per-target table (W^X mode, icache, unwind registration, release), the `jit`/`unwind` feature split, 2 rules, H28-Q1 (mprotect default on Linux) | jitmem agent |
 | 2026-10-21 | fill | H28-Q3 filled: policy in H23, mechanism here (decision W4-H23). Follow-ups: the SP-tsrs-win result (decision W4-SP-TSRS-WIN; [spike review](../measurements/2026-10-21-m0-spike-review.md)) | P0-DOCS agent |
 | 2026-10-21 | rewrite | Unwind registration row: the unix mode is chosen at run time by a self-test (whole section, then per FDE), not by target; a failed self-test stops native code. New Rules row. Closes the week-4 open item "WHOLE_SECTION assumes libgcc on linux-gnu" | M2-P1 UNWIND-GUARD agent |
+| 2026-10-21 | clarify | W^X mode row: the `MAP_JIT` code range comes from `CodeRange::process()` (`Cage::reserve_jit` is removed) | M2-P1 integration fixer |

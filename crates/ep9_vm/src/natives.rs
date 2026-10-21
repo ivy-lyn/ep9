@@ -14,7 +14,7 @@
 //! | `Array.prototype.values` = `Array.prototype[@@iterator]`, %ArrayIteratorPrototype%.next | §23.1.3.38, §23.1.3.40, §23.1.5.2.1 |
 //! | `String.prototype[@@iterator]`, %StringIteratorPrototype%.next | §22.1.3.36, §22.1.5.2.1 |
 //! | `%Iterator.prototype%[@@iterator]` | §27.1.2.1 |
-//! | `%GeneratorFunction%`, `%GeneratorPrototype%` `next`/`return`/`throw`, `%AsyncFunction%` (M2-P0 stubs in `generator.rs`) | §27.3.1.1, §27.5.1.2-4, §27.7.1.1 |
+//! | `%GeneratorFunction%`, `%GeneratorPrototype%` `next`/`return`/`throw`, `%AsyncFunction%` (`generator.rs`; the two constructors are not-implemented stubs until P3-FNCTOR and month 3) | §27.3.1.1, §27.5.1.2-4, §27.7.1.1 |
 //! | `%eval%` (M2-P0 stub; not a global binding until P3-EVAL-VM, C19) | §19.2.1 |
 //!
 //! The built-in iterators are ITERATOR cells (object.rs): the iterated value and the next
@@ -183,9 +183,8 @@ const VM_INTRINSICS: &[IntrinsicDef] = &[
             proto: Some(IntrinsicId::IteratorPrototype),
         },
     },
-    // M2-P0. Not reachable from JS until generators compile (P1) and `eval` is installed
-    // (P3); their `[[Prototype]]` (%Function% for the two constructors, §27.3.2, §27.7.2) is
-    // %Function.prototype% until the table can say otherwise.
+    // M2-P0. Their `[[Prototype]]` is %Function% (§27.3.2, §27.7.2): a table gives a builtin
+    // %Function.prototype%, so `builtins::install` sets it after step (2) (M2-P1-GENFN-PROTO).
     IntrinsicDef {
         id: IntrinsicId::GeneratorFunction,
         value: IntrinsicValue::Builtin(vm::GENERATOR_FUNCTION),

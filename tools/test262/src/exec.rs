@@ -890,6 +890,29 @@ pub(crate) struct WorkerProc {
 /// Bytes of a worker's stderr kept for a crash report.
 const STDERR_TAIL: usize = 4096;
 
+/// Sends each line a worker writes to stdout, without its newline (`\n` or `\r\n`). A last
+/// piece with no newline is a reply cut short (the worker died while it wrote): it is dropped,
+/// as is everything after a line that is not UTF-8, so the parent sees the worker gone (a
+/// crash), never a short reply that might decode.
+fn forward_lines(mut r: impl BufRead, tx: &mpsc::Sender<String>) {
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        if !matches!(r.read_until(b'\n', &mut buf), Ok(n) if n > 0) || buf.pop() != Some(b'\n') {
+            return;
+        }
+        if buf.last() == Some(&b'\r') {
+            buf.pop();
+        }
+        let Ok(line) = String::from_utf8(core::mem::take(&mut buf)) else {
+            return;
+        };
+        if tx.send(line).is_err() {
+            return;
+        }
+    }
+}
+
 /// A worker that is gone while it had a request: it exited (crash, abort, signal), wrote a bad
 /// reply, or gave no reply in time and was killed. Never a test result.
 pub(crate) struct Gone {
@@ -912,14 +935,7 @@ impl WorkerProc {
         let stdout = child.stdout.take().expect("piped stdout");
         let mut stderr = child.stderr.take().expect("piped stderr");
         let (tx, lines) = mpsc::channel();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                let Ok(line) = line else { return };
-                if tx.send(line).is_err() {
-                    return;
-                }
-            }
-        });
+        std::thread::spawn(move || forward_lines(BufReader::new(stdout), &tx));
         let stderr_tail = Arc::new(Mutex::new(String::new()));
         let tail = Arc::clone(&stderr_tail);
         std::thread::spawn(move || {
@@ -1656,6 +1672,18 @@ mod tests {
         assert!(!line.contains('\n'));
         assert_eq!(decode(&line), Some(("test/a b.js".to_string(), r)));
         assert_eq!(decode("x\tbogus\t0\t0\t\t"), None);
+    }
+
+    #[test]
+    fn a_reply_cut_by_the_end_of_the_output_is_dropped() {
+        let (tx, rx) = mpsc::channel();
+        forward_lines(&b"a\tb\nc\r\n\nd\te"[..], &tx);
+        drop(tx);
+        assert_eq!(rx.iter().collect::<Vec<_>>(), ["a\tb", "c", ""]);
+        let (tx, rx) = mpsc::channel();
+        forward_lines(&b"ok\n\xff\nlost\n"[..], &tx);
+        drop(tx);
+        assert_eq!(rx.iter().collect::<Vec<_>>(), ["ok"]);
     }
 
     #[test]

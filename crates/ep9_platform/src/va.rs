@@ -16,8 +16,8 @@
 //!   (128 MiB, [`DEFAULT_CODE_RANGE_SIZE`]). Isolates take [`CodeChunk`]s from it, so code of
 //!   every isolate and every shared stub stay within direct-call reach of each other.
 //! - A cage reserves no code range by default (`code_range_size` 0). A cage with a non-zero
-//!   `code_range_size` still gets one right after itself; that per-cage range is going away
-//!   (`Cage::reserve_jit`, `Cage::code` are kept for month 2 P1 only).
+//!   `code_range_size` still gets a plain reservation right after itself
+//!   ([`Cage::code_range`]); no code goes there.
 //! - Cages and the code range use the same search: aligned slots in a seeded order, each
 //!   reserved at its exact address. A slot that is in use, above the VA limit of the host, or
 //!   refused by the host (valgrind refuses hints that overlap its own mappings: EINVAL), is
@@ -265,8 +265,8 @@ pub struct CageConfig {
     pub cage_size: usize,
     /// Size of a per-cage code range right after the cage: 0 (the default) for none. JIT code
     /// and units go to the process code range ([`CodeRange::process`]). A non-zero size is a
-    /// multiple of the granularity and at most [`DIRECT_BRANCH_REACH`]; it exists only for
-    /// the users of `Cage::reserve_jit` and `Cage::code` in month 2 P1.
+    /// multiple of the granularity and at most [`DIRECT_BRANCH_REACH`]; it reserves a plain
+    /// range ([`Cage::code_range`]) that no code uses.
     pub code_range_size: usize,
     /// Cage base alignment: a power of two, at least the granularity.
     pub align: usize,
@@ -435,21 +435,6 @@ impl Cage {
     /// Reserves the cage (and a per-cage code range if `code_range_size > 0`), then runs
     /// [`Cage::self_check`].
     pub fn reserve(config: &CageConfig) -> Result<Self, CageError> {
-        Self::reserve_with(config, Reservation::reserve_at)
-    }
-
-    /// Like [`Cage::reserve`], but a per-cage code range (`code_range_size > 0`) can hold
-    /// generated code ([`Reservation::reserve_code_range_at`]: `MAP_JIT` on macOS arm64).
-    /// Kept for month 2 P1 only; new code takes a chunk of [`CodeRange::process`].
-    #[cfg(any(feature = "jit", test))]
-    pub fn reserve_jit(config: &CageConfig) -> Result<Self, CageError> {
-        Self::reserve_with(config, Reservation::reserve_code_range_at)
-    }
-
-    fn reserve_with(
-        config: &CageConfig,
-        reserve_code: fn(usize, usize) -> io::Result<Option<Reservation>>,
-    ) -> Result<Self, CageError> {
         config.validate()?;
         let found = search_slots(
             config.total(),
@@ -466,7 +451,8 @@ impl Cage {
                     None
                 } else {
                     // Returning on `None` drops `heap`, which releases the cage part again.
-                    let Some(code) = reserve_code(heap.end(), config.code_range_size)? else {
+                    let Some(code) = Reservation::reserve_at(heap.end(), config.code_range_size)?
+                    else {
                         return Ok(None);
                     };
                     Some(code)
@@ -526,21 +512,6 @@ impl Cage {
     /// The heap part (H9 pages live here).
     pub fn heap(&self) -> &Reservation {
         &self.heap
-    }
-
-    /// The per-cage code range. Kept for month 2 P1 only: use [`Cage::code_range`], or a
-    /// chunk of [`CodeRange::process`] for code.
-    ///
-    /// # Panics
-    /// If the cage has no code range (`code_range_size` 0, the default).
-    pub fn code(&self) -> &Reservation {
-        match &self.code {
-            Some(code) => code,
-            None => panic!(
-                "this cage has no code range (code_range_size is 0): JIT code and units go \
-                 to a chunk of CodeRange::process()"
-            ),
-        }
     }
 
     /// The per-cage code range: `Some` only when `code_range_size > 0`.
@@ -1001,23 +972,15 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "this cage has no code range")]
-    fn cage_code_panics_without_code_range() {
-        let cage = Cage::reserve(&small_cage(0)).unwrap();
-        let _ = cage.code();
-    }
-
-    #[test]
     fn cage_with_code_range_keeps_it() {
         let size = 1 << 20;
-        for cage in [
-            Cage::reserve(&small_cage(size)).unwrap(),
-            Cage::reserve_jit(&small_cage(size)).unwrap(),
-        ] {
-            let k = cage.code_range().expect("a per-cage code range").range();
-            assert_eq!(k, cage.code().range());
-            assert_eq!((k.start, k.len()), (cage.heap().end(), size));
-        }
+        let cage = Cage::reserve(&small_cage(size)).unwrap();
+        let k = cage.code_range().expect("a per-cage code range");
+        assert_eq!((k.base(), k.size()), (cage.heap().end(), size));
+        assert!(
+            !k.is_map_jit(),
+            "a per-cage code range is a plain reservation"
+        );
     }
 
     /// A private 1 MiB range: alloc rounds to pages, takes the lowest fit, refuses 0 and

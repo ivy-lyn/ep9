@@ -40,7 +40,7 @@ Per W^X mode of the host (`WxMode::available()`):
 | Linux arm64, x86-64 | `protect` (default), `dual-map` | a chunk of the process code range |
 | Windows x64 | `protect` | a chunk of the process code range |
 
-Until month 2 (P1) the code went to a per-cage code range (`Cage::reserve_jit`); the
+Until month 2 (P1) the code went to a per-cage code range right after a heap cage; the
 week-3 results in docs/measurements/2026-10-21-sp-jit-mem.md were measured that way.
 
 ## Files

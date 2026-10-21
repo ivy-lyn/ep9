@@ -262,13 +262,13 @@ pub(super) fn check(
     Ok(())
 }
 
-/// The built-in probe: a page of its own from a JIT cage, freed after the test.
+/// The built-in probe: a page of its own from the process code range, freed after the test.
 #[cfg(any(feature = "jit", test))]
 mod builtin {
     use super::{ProbeFn, RegistrationMode, SelfTestProbe};
-    use crate::jit::{CodeMemory, WxMode};
+    use crate::jit::WxMode;
     use crate::unwind::cfi::{CfiProgram, Cie, EhFrameBuilder, reg};
-    use crate::va::{Cage, CageConfig, allocation_granularity, page_size};
+    use crate::va::{CodeRange, page_size};
 
     /// Offset of a second function (a bare return) with an FDE of its own, placed before the
     /// probe's FDE in the section.
@@ -373,23 +373,21 @@ mod builtin {
         p
     }
 
-    /// Runs `f` with the probe and the `other` function mapped executable in a fresh page;
-    /// `section` builds the probe's `.eh_frame` from (page base, probe length).
+    /// Runs `f` with the probe and the `other` function mapped executable in one page (a chunk
+    /// of [`CodeRange::process`]); `section` builds the probe's `.eh_frame` from (page base, probe length).
     pub(in crate::unwind) fn with_probe<T>(
         section: impl FnOnce(usize, usize) -> crate::unwind::cfi::EhFrameSection,
         f: impl FnOnce(&SelfTestProbe) -> T,
     ) -> Result<T, String> {
-        // An explicit code range size: the default may become 0 once code lives in one
-        // process code range (H07-Q6).
-        let config = CageConfig {
-            cage_size: allocation_granularity(),
-            code_range_size: 1 << 20,
-            ..CageConfig::default()
-        };
-        let cage = Cage::reserve_jit(&config).map_err(|e| format!("reserve a code page: {e}"))?;
+        // One page of the process code range (H07-Q6), where JIT code and units live.
+        let range =
+            CodeRange::process().map_err(|e| format!("reserve the process code range: {e}"))?;
+        let mut chunk = range
+            .alloc(page_size())
+            .map_err(|e| format!("take a code page: {e}"))?;
         let (code, other) = (probe_code(), other_code());
-        // SAFETY: the cage is new and this is the only code memory in it.
-        let mut mem = unsafe { CodeMemory::commit(cage.code(), 0, page_size(), WxMode::DEFAULT) }
+        let mut mem = chunk
+            .commit(WxMode::DEFAULT)
             .map_err(|e| format!("commit a code page: {e}"))?;
         {
             let mut w = mem
@@ -409,7 +407,7 @@ mod builtin {
             code: base..base + code.len(),
             section: section(base, code.len()),
         };
-        // `mem`, then `cage`, drop after `f` and its registrations.
+        // `mem`, then `chunk`, drop after `f` and its registrations.
         Ok(f(&probe))
     }
 
