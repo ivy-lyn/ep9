@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-21). As built in M0 wk4: `aot` on `ep9_unit` (empty module), `cargo xtask feature-matrix`, dep-guards checks 9 and 10 (see "As built"). M0 month 2 P0: `ep9_vm` features `spike-native` and `ic-stats`, dep-guards checks 11 and 12 |
+| Status | Accepted (2026-10-22, M2-P3-ACCEPT; review record complete). Draft since 2026-10-21. As built in M0 wk4: `aot` on `ep9_unit` (empty module), `cargo xtask feature-matrix`, dep-guards checks 9 and 10 (see "As built"). M0 month 2 P0: `ep9_vm` features `spike-native` and `ic-stats`, dep-guards checks 11 and 12 |
 | Fix by | M0 (wk4) |
 | Freeze point | M1 exit |
 | Origin | v1#25; plan status E (extended: `aot`) |
@@ -114,6 +114,7 @@
 | 2026-10-22 | clarify | Row added for bb5967e (2026-10-21, P1-CODE-RANGE), which had none: the "Code under `jit` compiles out" Rules row names `Reservation::reserve_code_range_at` as its example, since `Cage::reserve_jit` is gone. The rule and its check are unchanged. Later `va.rs` line moves are ADRLINE ref fixes | P2-ACCEPT-1 |
 | 2026-10-22 | fill | M0 month 2 P2 (M2-P2-GUARD13-H27): new Rules row for dep-guards check 13 (release builds abort on a panic; H23 and M2-ABORT-SCOPE), with its control. Text from the P2-INFRA2 report. Existing rules and checks keep their results | P2 integration fixer |
 | 2026-10-22 | rewrite | Check cell of the guard-13 Rules row (M2-P3-H27-65; closes M2-P2-OPEN-H27-65): it described the old single control ("the scan must find the key in a sample `[profile.dev]` table"). The P2 review fix I7 (06805b7, M2-P2-I7) made the scan flag every TOML spelling of a `panic` key, added `.cargo/config`, and grew the one control sample to 9 must-flag samples, 3 must-not lines and two tests of the Cargo.toml rule; the cell now says so. The kind is rewrite because a Check cell changes (as M2-P2-FIX-H03-KIND) | P3-ACCEPT-2 |
+| 2026-10-22 | clarify | Status Draft -> Accepted (M2-P3-ACCEPT). The §3.1 review record is complete: row 1 P2-ACCEPT-1, row 2 Codex (M2-P2-REVIEW), row 3 P3-ACCEPT-2, row 4 data. The Codex run on the P3 ADR slice (merge 6146ec5) had no finding on this ADR. The decision text does not change | orchestrator |
 
 ## Review record
 

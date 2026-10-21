@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-21): header fields built; lowering table not started (M4) |
+| Status | Accepted (2026-10-22, M2-P3-ACCEPT; review record complete). Header fields built; lowering table not started (M4) |
 | Fix by | Header fields M0 wk3; ADR M0 exit; built M4 |
 | Freeze | Header fields and TS flags: M1 exit. BytecodeGen lowering table: M4 exit ([README §3.4](README.md#34-parts-built-after-m1-exit-p-3)) |
 | Origin | R16-D14 + R17; plan status N |
@@ -78,6 +78,7 @@ Rust API: `UnitHeader::typescript: Option<TsFlags>`; `TsFlags::DEFAULT` is the D
 | 2026-10-22 | clarify | Rules: bits 12-15 are zero in ABI 1-4 (ABI 4 adds runtime ids 29-31 and `VariableMode::FunctionName` = 5, and ids 26 and 30 take a strict argument; no header flag changes; H02 change log); no check changes | M2-P2 review fixer (lookup) |
 | 2026-10-22 | clarify | Rules row "Bits 12-15 are zero" now reads "until an H03-Q2 flag is added (every ABI so far: 1-4)" (was "(ABI 1-4)"), so a later ABI bump that adds no TS flag needs no H03 amendment; H03-Q2 adds such a flag with an ABI bump. The 2026-10-22 lookup-fixer row above said "ABI 4 adds runtime ids only"; that was false (ABI 4 also adds `VariableMode::FunctionName` = 5, and ids 26 and 30 take a strict argument: `crates/ep9_bytecode/src/unit.rs:30`, H02 change log), so its text is corrected in place. No check changes | P3-ACCEPT-2 |
 | 2026-10-22 | clarify | Rules row "A JavaScript unit has bits 9-15 clear": its check named one error for all 7 bits. The reader gives `BadHeader("TS flags on a JavaScript unit")` for bits 9-11 and `BadHeader("unit flags")` for bits 12-15 (its defined-bits check runs first); `header_errors_map_to_h35_outcomes` checks bit 9 and bits 12-15 that way. No check changes | P3-ACCEPT-2 |
+| 2026-10-22 | clarify | Status Draft -> Accepted (M2-P3-ACCEPT). The §3.1 review record is complete: row 1 P2-ACCEPT-1, row 2 Codex (M2-P2-REVIEW), row 3 P3-ACCEPT-2, row 4 data. The Codex run on the P3 ADR slice (merge 6146ec5) had no finding on this ADR. The decision text does not change | orchestrator |
 
 ## Review record
 

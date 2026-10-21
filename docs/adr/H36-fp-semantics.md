@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-20). Decided 2026-10-20 (math decision run); Q1-Q4 closed; Q5 closes with H06-Q3. Accept needs the review record ([README §3.1](README.md#31-review-record-p-1)) |
+| Status | Accepted (2026-10-22, M2-P3-ACCEPT; review record complete). Draft since 2026-10-20. Decided 2026-10-20 (math decision run); Q1-Q4 closed; Q5 closes with H06-Q3. |
 | Fix by | M0 wk2: `clippy.toml` + `xtask fp-check` stub. M0 wk3: `ep9_math` skeleton, `ep9_value::to_int32`. M1: CR functions, Math builtins, FP differential CI |
 | Freeze point | M1 exit |
 | Origin | R16-D12; plan status N (new) |
@@ -144,6 +144,7 @@ The "bit-equal to d8" column comes from one host (macOS arm64) and about 15k inp
 | 2026-10-21 | rewrite (kind set 2026-10-22; was fill) | Correction to item (4) of the M0 wk4 row: `SoftFma` was not exact. The libm 0.2.16 generic `fma` (and so the first port) loses the sticky bit when `z` is 65 to 127 bits above `x * y`: it reads `rlo` after overwriting it, where musl `fma.c` uses one expression. On a rounding tie plus a tiny tail it then rounds to even: `fma(0x1.b4d42bf5242b8p+0, 0x1.2c0db0d0ff40dp-1, 0x1p53)` gave 2^53, not 2^53 + 2. Upstream: rust-lang/compiler-builtins#1353 (open, no fix on master). `SoftFma` is now libm 0.2.16 plus that one fix ("ep9 fix" in `exact.rs`). The 10^7 corpus reached that branch 2.17M times, with a wrong sticky bit 82,435 times, but never on a tie; it now also has near-tie inputs: 19,651 of 10,110,592 differed from the hardware before the fix, 0 after (macOS arm64; Rosetta x86-64 against the C `fma`: 0). New tests: `soft_fma_sticky_of_shifted_product`, `soft_vs_hw_near_ties` | P1 fix agent (M0 wk4) |
 | 2026-10-22 | clarify | Crates line: `ep9_builtins` (one crate until M1a) and `ep9_numconv` (planned; today a module of `ep9_vm`). Rules row 1 names the `ep9_builtins` copy of the bans and its test. Rules row 5 says that its check is not built yet; new Open question H36-Q6. Follow-ups and Validation say that `clippy.toml` and `fp-check` landed in M0 wk4. No check changes | P2-ACCEPT-1 |
 | 2026-10-22 | clarify | Kind cells set to rewrite (README §3.3) in two rows. 2026-10-20 "Critic changes": it replaced an option that the Q1-Q4 fill had chosen (a NOTICE file in `ep9_math`; decisions log H36-libm-src: "change taken"). 2026-10-21 "Correction to item (4)": it changed the result bits of the built `SoftFma` (code change in `exact.rs`; no Open question) | P2-ACCEPT-1 (critic row); P2 review fixer (Codex A2: SoftFma row, kind cells) |
+| 2026-10-22 | clarify | Status Draft -> Accepted (M2-P3-ACCEPT). The §3.1 review record is complete: row 1 P2-ACCEPT-1, row 2 Codex (M2-P2-REVIEW), row 3 P3-ACCEPT-2, row 4 data. The Codex run on the P3 ADR slice (merge 6146ec5) had no finding on this ADR. The decision text does not change | orchestrator |
 
 ## Review record
 
