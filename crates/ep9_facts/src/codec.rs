@@ -14,6 +14,7 @@
 //! field list is in [`crate::schema_text`].
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use ep9_bytecode::{FeedbackSlotKind, UnitString};
 
@@ -191,7 +192,7 @@ impl<'a> Writer<'a> {
                 self.u32(l.count);
                 match &l.shape {
                     Some(s) => {
-                        let i = self.shapes[s];
+                        let i = self.shapes[&**s];
                         self.u32(i + 1);
                     }
                     None => self.u32(0),
@@ -269,6 +270,7 @@ impl FactSnapshot {
             at: 0,
             shapes: Vec::new(),
             used: Vec::new(),
+            order: Vec::new(),
         };
         if r.take(8)? != MAGIC {
             return Err(FactError::Magic);
@@ -296,10 +298,10 @@ impl FactSnapshot {
         for _ in 0..shape_count {
             let s = r.shape_desc()?;
             check_shape(&s)?;
-            if r.shapes.last().is_some_and(|prev| *prev >= s) {
+            if r.shapes.last().is_some_and(|prev| **prev >= s) {
                 return Err(FactError::NonCanonical("shapes not strictly ascending"));
             }
-            r.shapes.push(s);
+            r.shapes.push(Arc::new(s));
         }
         r.used = vec![false; r.shapes.len()];
         let mut snap = FactSnapshot::new(FactHeader {
@@ -320,8 +322,9 @@ impl FactSnapshot {
             last = Some(key);
             let kind =
                 FeedbackSlotKind::from_u8(r.u8()?).ok_or(FactError::BadValue("slot kind"))?;
+            r.order.clear();
             let facts = r.payload(kind)?;
-            facts.check()?;
+            facts.check_decoded(&r.order)?;
             snap.push_decoded(key, facts);
         }
         if r.at != bytes.len() {
@@ -339,8 +342,12 @@ impl FactSnapshot {
 struct Reader<'a> {
     b: &'a [u8],
     at: usize,
-    shapes: Vec<ShapeDesc>,
+    /// The shape table, each entry checked once. Records share these, never copy them.
+    shapes: Vec<Arc<ShapeDesc>>,
     used: Vec<bool>,
+    /// The table index of each case's receiver (or clone source) in the current record, for
+    /// [`SlotFacts::check_decoded`].
+    order: Vec<u32>,
 }
 
 impl<'a> Reader<'a> {
@@ -457,15 +464,27 @@ impl<'a> Reader<'a> {
         })
     }
 
-    fn shape(&mut self) -> Result<ShapeDesc, FactError> {
-        let i = self.u32()? as usize;
+    /// Table entry `i`, shared: a reference costs one `Arc`, whatever the shape's size.
+    fn shape_at(&mut self, i: usize) -> Result<Arc<ShapeDesc>, FactError> {
         let s = self
             .shapes
             .get(i)
-            .ok_or(FactError::BadValue("shape index"))?
-            .clone();
+            .ok_or(FactError::BadValue("shape index"))?;
+        let s = Arc::clone(s);
         self.used[i] = true;
         Ok(s)
+    }
+
+    fn shape(&mut self) -> Result<Arc<ShapeDesc>, FactError> {
+        let i = self.u32()?;
+        self.shape_at(i as usize)
+    }
+
+    /// A case's receiver (or clone source). Its index goes to `order`.
+    fn case_shape(&mut self) -> Result<Arc<ShapeDesc>, FactError> {
+        let i = self.u32()?;
+        self.order.push(i);
+        self.shape_at(i as usize)
     }
 
     fn targets(&mut self) -> Result<TargetFacts, FactError> {
@@ -480,7 +499,7 @@ impl<'a> Reader<'a> {
         let n = self.cases()?;
         let mut cases = Vec::with_capacity(n);
         for _ in 0..n {
-            let receiver = self.shape()?;
+            let receiver = self.case_shape()?;
             let access = match self.u8()? {
                 0 => Access::OwnField { field: self.u16()? },
                 1 => Access::ProtoField {
@@ -564,16 +583,7 @@ impl<'a> Reader<'a> {
                 let count = self.u32()?;
                 let shape = match self.u32()? {
                     0 => None,
-                    i => {
-                        let i = i as usize - 1;
-                        let s = self
-                            .shapes
-                            .get(i)
-                            .ok_or(FactError::BadValue("shape index"))?;
-                        let s = s.clone();
-                        self.used[i] = true;
-                        Some(s)
-                    }
+                    i => Some(self.shape_at(i as usize - 1)?),
                 };
                 let elements = match self.u8()? {
                     0 => None,
@@ -593,7 +603,7 @@ impl<'a> Reader<'a> {
                 let mut cases = Vec::with_capacity(n);
                 for _ in 0..n {
                     cases.push(CloneCase {
-                        source: self.shape()?,
+                        source: self.case_shape()?,
                         result: self.shape()?,
                     });
                 }

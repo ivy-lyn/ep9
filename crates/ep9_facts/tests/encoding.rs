@@ -320,7 +320,7 @@ fn raw_load_named(state: IcState, cases: Vec<PropertyCase>) -> Vec<u8> {
 #[test]
 fn case_rules_hold_in_insert_and_in_decode() {
     let generic = |s: ShapeDesc| PropertyCase {
-        receiver: s,
+        receiver: s.into(),
         access: Access::Generic,
     };
     // Control: the hand encoder agrees with encode() on a valid record.
@@ -352,7 +352,7 @@ fn case_rules_hold_in_insert_and_in_decode() {
             vec![
                 generic(bare()),
                 PropertyCase {
-                    receiver: bare(),
+                    receiver: bare().into(),
                     access: Access::OwnField { field: 0 },
                 },
             ],
@@ -361,7 +361,7 @@ fn case_rules_hold_in_insert_and_in_decode() {
         (
             IcState::Monomorphic,
             vec![PropertyCase {
-                receiver: point(),
+                receiver: point().into(),
                 access: Access::OwnField { field: 2 },
             }],
             FactError::Invalid("field index outside the shape's keys"),
@@ -403,13 +403,47 @@ fn case_rules_hold_in_insert_and_in_decode() {
     );
 }
 
+/// The decoder checks the order of clone sources on their table indices.
+#[test]
+fn clone_sources_out_of_order_are_refused_by_decode() {
+    let mut s = FactSnapshot::new(header());
+    s.insert(
+        0,
+        0,
+        SlotFacts::CloneObject(CloneFacts {
+            state: IcState::Polymorphic,
+            cases: [(bare(), point()), (point(), bare())]
+                .into_iter()
+                .map(|(source, result)| CloneCase {
+                    source: source.into(),
+                    result: result.into(),
+                })
+                .collect(),
+        }),
+    )
+    .unwrap();
+    let ok = s.encode();
+    // The record ends with its 2 cases: (source u32, result u32) each.
+    let cases = ok.len() - 16;
+    let mut swapped = ok.clone();
+    swapped[cases..].copy_from_slice(&[&ok[cases + 8..], &ok[cases..cases + 8]].concat());
+    let mut same = ok.clone();
+    same.copy_within(cases..cases + 4, cases + 8);
+    for bad in [swapped, same] {
+        assert_eq!(
+            FactSnapshot::decode(&bad),
+            Err(FactError::NonCanonical("list not strictly ascending"))
+        );
+    }
+}
+
 #[test]
 fn shape_and_reference_rules() {
     let mono = |receiver: ShapeDesc| {
         SlotFacts::LoadNamed(PropertyFacts {
             state: IcState::Monomorphic,
             cases: vec![PropertyCase {
-                receiver,
+                receiver: receiver.into(),
                 access: Access::Generic,
             }],
             values: TypeSet::EMPTY,
@@ -485,7 +519,7 @@ fn shape_table_errors() {
         SlotFacts::LoadNamed(PropertyFacts {
             state: IcState::Monomorphic,
             cases: vec![PropertyCase {
-                receiver: bare(),
+                receiver: bare().into(),
                 access: Access::Generic,
             }],
             values: TypeSet::EMPTY,
@@ -549,7 +583,7 @@ fn a_shape_with_many_keys_is_checked_without_a_pairwise_scan() {
     big.keys = (0..200_000u32).map(|i| key(&format!("k{i}"))).collect();
     let facts = SlotFacts::Literal(LiteralFacts {
         count: 1,
-        shape: Some(big.clone()),
+        shape: Some(big.clone().into()),
         elements: None,
     });
     let mut s = FactSnapshot::new(header());
@@ -561,11 +595,106 @@ fn a_shape_with_many_keys_is_checked_without_a_pairwise_scan() {
     big.keys.push(key("k7"));
     let dup = SlotFacts::Literal(LiteralFacts {
         count: 1,
-        shape: Some(big),
+        shape: Some(big.into()),
         elements: None,
     });
     assert_eq!(
         FactSnapshot::new(header()).insert(0, 0, dup),
         Err(FactError::Invalid("a key appears twice in a shape"))
     );
+}
+
+/// `records` copies of the one record `facts`, in slots 0, 1, ...: one shape table, then the
+/// record bytes copied, so no record goes through `insert`.
+fn repeat_record(facts: SlotFacts, records: u32) -> Vec<u8> {
+    let mut s = FactSnapshot::new(header());
+    s.insert(0, 0, facts.clone()).unwrap();
+    let one = s.encode();
+    s.insert(0, 1, facts).unwrap();
+    let size = s.encode().len() - one.len();
+    let (head, record) = one.split_at(one.len() - size);
+    let mut out = head.to_vec();
+    for slot in 0..records {
+        let at = out.len();
+        out.extend_from_slice(record);
+        put_u32(&mut out, at + 4, slot);
+    }
+    put_u32(&mut out, offsets::RECORD_COUNT, records);
+    let total = out.len() as u32;
+    put_u32(&mut out, offsets::TOTAL_SIZE, total);
+    out
+}
+
+/// The distinct shape descriptions a snapshot holds, by address, and the references to them.
+fn shapes_held(s: &FactSnapshot) -> (usize, usize) {
+    let mut held = std::collections::BTreeSet::new();
+    let mut refs = 0;
+    for (_, f) in s.records() {
+        f.for_each_shape(&mut |sh| {
+            held.insert(std::ptr::from_ref(sh));
+            refs += 1;
+        });
+    }
+    (held.len(), refs)
+}
+
+/// Every reference to a table shape decodes to that one shape, not to a copy of it. With a
+/// copy per reference, 13,385 bytes (one shape of 2,048 keys, 512 records that use it) held
+/// 33.7 MB, and took as much before a corrupt last byte was refused.
+#[test]
+fn every_reference_to_a_table_shape_shares_one_decoded_shape() {
+    let mut big = bare();
+    big.keys = vec![(KeyRef::OtherSymbol, PropAttrs::EMPTY); 2048];
+    let literal = SlotFacts::Literal(LiteralFacts {
+        count: 1,
+        shape: Some(big.into()),
+        elements: None,
+    });
+    let bytes = repeat_record(literal, 512);
+    assert_eq!(bytes.len(), 13_385);
+    let s = FactSnapshot::decode(&bytes).unwrap();
+    assert_eq!(shapes_held(&s), (1, 512));
+    assert_eq!(s.encode(), bytes);
+    // The shared shapes are `Arc`s, so a snapshot stays Send + Sync.
+    fn send_sync<T: Send + Sync>(_: &T) {}
+    send_sync(&s);
+    let mut bad = bytes;
+    *bad.last_mut().unwrap() = 0xff; // the last record's elements kind
+    assert_eq!(
+        FactSnapshot::decode(&bad),
+        Err(FactError::BadValue("elements kind"))
+    );
+}
+
+/// Decoding checks each shape once, in the table, and the case order on table indices, so
+/// its work grows with the input, not with shape size times references. Two shapes of
+/// 262,144 keys that differ in one last key and 20,000 records with both as cases (1.5 MB)
+/// decode in about 0.05 s in a debug build. Comparing the two shapes per record took 36 s
+/// there (9.9 s in release), and checking each record's shapes again took 56 s.
+#[test]
+fn decoding_work_does_not_grow_with_shape_size_times_references() {
+    let mut a = bare();
+    a.keys = vec![(KeyRef::OtherSymbol, PropAttrs::EMPTY); 262_144];
+    let mut b = a.clone();
+    b.keys.push(key("z"));
+    let poly = SlotFacts::LoadNamed(PropertyFacts {
+        state: IcState::Polymorphic,
+        cases: [a, b]
+            .into_iter()
+            .map(|s| PropertyCase {
+                receiver: s.into(),
+                access: Access::Generic,
+            })
+            .collect(),
+        values: TypeSet::EMPTY,
+    });
+    // Shared shapes first: with a copy per reference the large input below needs 335 GB.
+    let small = FactSnapshot::decode(&repeat_record(poly.clone(), 2)).unwrap();
+    assert_eq!(shapes_held(&small), (2, 4));
+    let bytes = repeat_record(poly, 20_000);
+    assert_eq!(bytes.len(), 1_568_665);
+    let t = std::time::Instant::now();
+    let s = FactSnapshot::decode(&bytes).unwrap();
+    assert!(t.elapsed().as_secs() < 5, "took {:?}", t.elapsed());
+    assert_eq!(shapes_held(&s), (2, 40_000));
 }

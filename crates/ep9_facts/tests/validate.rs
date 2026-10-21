@@ -98,7 +98,7 @@ fn load_x(unit: &CompiledUnit) -> SlotFacts {
     SlotFacts::LoadNamed(PropertyFacts {
         state: IcState::Monomorphic,
         cases: vec![PropertyCase {
-            receiver,
+            receiver: receiver.into(),
             access: Access::OwnField { field: 0 },
         }],
         values: TypeSet::INT32,
@@ -176,7 +176,7 @@ fn wrong_records_are_dropped() {
         SlotFacts::LoadNamed(PropertyFacts {
             state: IcState::Monomorphic,
             cases: vec![PropertyCase {
-                receiver: bad_proto,
+                receiver: bad_proto.into(),
                 access: Access::Generic,
             }],
             values: TypeSet::EMPTY,
