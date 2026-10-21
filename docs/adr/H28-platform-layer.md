@@ -65,7 +65,7 @@ Win64 spill trampoline, SEH unwind registration and VirtualAlloc in `ep9_platfor
 - **Follow-ups.**
   - H15: ≤ 4 handler arguments, because Win64 passes only 4 integer arguments in registers.
   - D16 = yes would add iOS arm64 (static `.o` units, no JIT) through this layer (11-decisions "Affects": D16 → D2, H28, H35).
-  - `ep9 check` and ep9-typecheck stay unix-only until SP-tsrs-win passes (G10).
+  - `ep9 check` and ep9-typecheck stay unix-only until SP-tsrs-win passes (G10). **SP-tsrs-win passed** on windows-2025 with 0 local patches, in each of 12 CI runs ([data](../measurements/2026-10-20-sp-tsrs-win.md)): by D2, `ep9 check` may support Windows; ep9-typecheck and `ep9c build --hints` wait for the A1h re-check.
 
 ## Evidence
 
@@ -90,7 +90,7 @@ Win64 spill trampoline, SEH unwind registration and VirtualAlloc in `ep9_platfor
 |---|---|---|---|
 | H28-Q1 | Linux executable memory: dual mapping or mprotect. The plan allows both | SP-JIT-mem (M0 wk3) | **Resolved 2026-10-21 (fill): mprotect is the default.** A pair costs about 3.6 µs on CI VMs, dual mapping about 12 ns. ICs never patch code (04 §5), so windows open only at finalize. Dual mapping runs stale code under Rosetta (F4), needs a memfd, and keeps an RW alias mapped. `DualMap` stays built for later measurement [M-JIT] |
 | H28-Q2 | Linux arm64 and Windows x64 cannot run on the dev host (macOS arm64). They run only on CI runners. When do CI runners for all 4 targets exist? | M0 wk1 check ("CI green on 4 targets") | CI owner reports it |
-| H28-Q3 | Signal and SEH handling policy (stack overflow, interrupts) belongs to H23 limits; which parts live here | H23 ADR (M0 wk3) | Mechanism here, policy in H23 |
+| H28-Q3 | Signal and SEH handling policy (stack overflow, interrupts) belongs to H23 limits; which parts live here | H23 ADR (M0 wk3) | **Filled 2026-10-21: policy in [H23](H23-limits-and-failure-policy.md)** (a native stack overflow past the margin is fatal; the margin checks give a RangeError first; termination and interrupts use no signal). **Mechanism here:** stack bounds (`current_thread_stack_bounds`, `stack_pointer`), and any signal or SEH handler with its alternate stack. ep9 installs no handler today; Rust std's guard-page handler aborts (H23-Q9; decision W4-H23) |
 
 ## Reopens if
 
@@ -104,3 +104,4 @@ Win64 spill trampoline, SEH unwind registration and VirtualAlloc in `ep9_platfor
 |---|---|---|---|
 | 2026-10-20 | draft | First draft from 02 §6, 03 §2, 04 §5 and 08 §2 (M0 wk1 list) | ADR agent |
 | 2026-10-21 | fill | SP-JIT-mem passed on 4 targets. Filled the per-target table (W^X mode, icache, unwind registration, release), the `jit`/`unwind` feature split, 2 rules, H28-Q1 (mprotect default on Linux) | jitmem agent |
+| 2026-10-21 | fill | H28-Q3 filled: policy in H23, mechanism here (decision W4-H23). Follow-ups: the SP-tsrs-win result (decision W4-SP-TSRS-WIN; [spike review](../measurements/2026-10-21-m0-spike-review.md)) | P0-DOCS agent |
