@@ -29,7 +29,7 @@
 //! | 3 | exec JSON: `language/` files >= 40% | step "test262 exec" green; passed = total (exec JSON) - the `test/language/` lines of the Windows expectation file |
 //! | 4 | cross JSON: richards and deltablue vs QuickJS, net interval low end >= 0.6, valid rows (a gross fallback row, net invalid, gives OPEN), a gate host, not provisional | NOT-RUN (no Windows bench job) |
 //! | 5 | verdicts: SP-GC, SP-VA, SP-Value, SP-Dispatch, SP-JIT-mem and Spike B GO (no open conditions); SP-tsrs-win recorded | the same verdicts, and these steps of the run green: SP-GC, SP-Dispatch, SP-JIT-mem and Spike B structural gates, ep9_heap barrier, cargo test --workspace, spike-native tests (ep9_vm) |
-//! | 6 | GC JSON: the whole pinned corpus (files run + skipped = the pin's count; skipped = the committed skip list), 0 infra; the run names the committed expectation file, and its "fail" results against that file without the skip list give 0 new failures (recomputed here) | NOT-RUN (CI runs GC-stress on linux-x64 only) |
+//! | 6 | GC JSON: the whole pinned corpus (files run + skipped = the pin's count; `skipped_paths` = the set of the committed skip list, and `skipped` = its size), `timeout_ms` <= 60000 and `feedback_threshold` 0 (GC_CMD), 0 infra; the run names the committed expectation file, and its "fail" results against that file without the skip list give 0 new failures (recomputed here) | NOT-RUN (CI runs GC-stress on linux-x64 only) |
 //! | 7 | nesting log: `every_form_is_gated`, `caps_hold_end_to_end`, `uncaught_error_reports_file_line_utf16_column` ok | step "cargo test --workspace" green (it runs the three) |
 //! | 8 | the asserts are in ep9_value's source, and `cargo check -p ep9_value --target <host>` passes | step "cargo build --workspace --all-targets" green |
 //! | 9, 10 | docs/adr/README.md index: the ADR status of every row due at M0 (Accepted or Frozen; a Draft for "Draft M0" rows); H20 Frozen | the same |
@@ -1032,6 +1032,8 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
 }
 
 const GC_CMD: &str = "cargo run --release --locked -p ep9_test262 -- exec --gc-stress 1 --feedback-threshold 0 --timeout 60 --skip-list expectations/test262-gc-skip.txt --json gc.json";
+/// Item 6: the `--timeout` of [`GC_CMD`], in ms (a shorter one is stricter).
+const GC_TIMEOUT_MS: f64 = 60_000.0;
 
 fn item6(c: &Ctx) -> (Cell, Cell) {
     let host = match &c.gc {
@@ -1040,12 +1042,41 @@ fn item6(c: &Ctx) -> (Cell, Cell) {
             let gc = j.get("gc_stress").and_then(Json::num).unwrap_or(0.0);
             let (infra, runner_new, runner_stale) = exec_health(j);
             let skipped = j.get("skipped").and_then(Json::num).unwrap_or(0.0) as usize;
+            // The skipped tests by path (an older runner wrote only their count).
+            let skipped_paths: Option<BTreeSet<String>> =
+                j.get("skipped_paths").and_then(Json::arr).map(|a| {
+                    a.iter()
+                        .filter_map(|p| p.str().map(str::to_string))
+                        .collect()
+                });
             let (fp, ft) = count(j, &["files"]).unwrap_or((0, 0));
             let mut status = Status::Pass;
             let mut why = Vec::new();
             if gc <= 0.0 {
                 status = Status::Fail;
                 why.push("not a GC-stress run".to_string());
+            }
+            // The timeout and the feedback threshold of GC_CMD: a longer timeout lets a timeout
+            // skip pass, and lazy feedback is another run.
+            match j.get("timeout_ms").and_then(Json::num) {
+                Some(t) if t <= GC_TIMEOUT_MS => {}
+                t => {
+                    status = Status::Fail;
+                    why.push(format!(
+                        "timeout_ms {}, not at most {GC_TIMEOUT_MS} (--timeout 60)",
+                        t.map_or("missing".to_string(), |t| t.to_string())
+                    ));
+                }
+            }
+            match j.get("feedback_threshold").and_then(Json::num) {
+                Some(0.0) => {}
+                f => {
+                    status = Status::Fail;
+                    why.push(format!(
+                        "feedback_threshold {}, not 0 (--feedback-threshold 0)",
+                        f.map_or("missing".to_string(), |f| f.to_string())
+                    ));
+                }
             }
             // The whole pinned corpus: every file is run or skipped by the skip list.
             match c.pin_counts {
@@ -1101,6 +1132,42 @@ fn item6(c: &Ctx) -> (Cell, Cell) {
                             "the run skipped {skipped}, the skip list has {}",
                             skip.len()
                         ));
+                    }
+                    // The same tests, not only as many: another set of the same size hides a
+                    // GC regression in the test skipped in place of a listed one.
+                    match &skipped_paths {
+                        None => {
+                            status = Status::Fail;
+                            why.push(
+                                "the runner JSON has no skipped_paths (an older runner), so the skipped tests cannot be checked"
+                                    .into(),
+                            );
+                        }
+                        Some(paths) => {
+                            if paths.len() != skipped {
+                                status = Status::Fail;
+                                why.push(format!(
+                                    "skipped {skipped}, but skipped_paths names {}",
+                                    paths.len()
+                                ));
+                            }
+                            let extra: Vec<String> = paths.difference(&skip).cloned().collect();
+                            let missing: Vec<String> = skip.difference(paths).cloned().collect();
+                            if !extra.is_empty() {
+                                status = Status::Fail;
+                                why.push(format!(
+                                    "skipped but not in the skip list: {}",
+                                    some_paths(&extra)
+                                ));
+                            }
+                            if !missing.is_empty() {
+                                status = Status::Fail;
+                                why.push(format!(
+                                    "in the skip list but not skipped (run, or the entry names no test): {}",
+                                    some_paths(&missing)
+                                ));
+                            }
+                        }
                     }
                     // The diff against the committed file without the skip list, recomputed;
                     // the runner's diff counts too.
@@ -2165,20 +2232,27 @@ mod tests {
 
     const HOST: &str = "aarch64-apple-darwin";
 
-    /// An ep9-test262 exec JSON: `gc` the --gc-stress value, `fails` the paths with status
-    /// "fail", `used` the expectation file it names. The runner's own diff is empty.
-    fn exec_json(gc: u32, wall: f64, skipped: u32, fails: &[&str], used: &str) -> String {
+    /// The skip list of [`fake_repo`].
+    const SKIP: [&str; 2] = ["test/skip/one.js", "test/skip/two.js"];
+
+    /// An ep9-test262 exec JSON: `gc` the --gc-stress value, `skipped` the paths the skip list
+    /// skipped, `fails` the paths with status "fail", `used` the expectation file it names. The
+    /// runner's own diff is empty; the timeout and feedback threshold are those of [`GC_CMD`].
+    fn exec_json(gc: u32, wall: f64, skipped: &[&str], fails: &[&str], used: &str) -> String {
         let results: Vec<String> = fails
             .iter()
             .map(|p| format!(r#"{{"path":"{p}","status":"fail","cause":"x","detail":"d"}}"#))
             .collect();
-        let files = PIN_COUNTS[0].files - u64::from(skipped);
+        let files = PIN_COUNTS[0].files - skipped.len() as u64;
+        let paths: Vec<String> = skipped.iter().map(|p| json_str(p)).collect();
         format!(
-            r#"{{"command":"exec","mode":"jit","target":"{HOST}","workers":18,"gc_stress":{gc},"skipped":{skipped},"wall_seconds":{wall},
+            r#"{{"command":"exec","mode":"jit","target":"{HOST}","workers":18,"timeout_ms":60000,"gc_stress":{gc},"feedback_threshold":0,"skipped":{},"skipped_paths":[{}],"wall_seconds":{wall},
             "files":{{"passed":{},"total":{files}}},"runs":{{"passed":50000,"total":102994}},
             "by_dir":{{"language":{{"files":{{"passed":4,"total":6}},"runs":{{"passed":1,"total":2}}}}}},
             "causes":[],"results":[{}],
             "expectations":{{"file":{},"new_failures":[],"now_passing":[]}}}}"#,
+            skipped.len(),
+            paths.join(","),
             files - fails.len() as u64,
             results.join(","),
             json_str(used)
@@ -2252,13 +2326,13 @@ mod tests {
             "test/built-ins/c.js",
             "test/skip/one.js",
         ];
-        write(&root, "in/exec.json", &exec_json(0, 5.4, 0, &all, used));
+        write(&root, "in/exec.json", &exec_json(0, 5.4, &[], &all, used));
         write(
             &root,
             "in/gc.json",
-            &exec_json(1, 166.0, 2, &all[..3], used),
+            &exec_json(1, 166.0, &SKIP, &all[..3], used),
         );
-        write(&root, "in/slow.json", &exec_json(0, 700.0, 0, &all, used));
+        write(&root, "in/slow.json", &exec_json(0, 700.0, &[], &all, used));
         write(
             &root,
             "in/parse.json",
@@ -2501,7 +2575,7 @@ mod tests {
         let committed = committed.to_str().unwrap();
         let missing = format!("/nonexistent/dir/test262.{HOST}.jit.txt");
         let item1 = |fails: &[&str], used: &str| {
-            write(&root, "in/exec.json", &exec_json(0, 5.4, 0, fails, used));
+            write(&root, "in/exec.json", &exec_json(0, 5.4, &[], fails, used));
             let r = run(&opts(&root)).unwrap();
             r.cells[0].0.clone()
         };
@@ -2554,14 +2628,14 @@ mod tests {
             r.cells[5].0.clone()
         };
         // A filtered GC run: 1 file run, the 2 of the skip list skipped, an empty diff.
-        let full = exec_json(1, 166.0, 2, &listed, committed);
+        let full = exec_json(1, 166.0, &SKIP, &listed, committed);
         let files = format!(r#""files":{{"passed":{},"total":{}}}"#, 53_614 - 3, 53_614);
         assert!(full.contains(&files), "{full}");
         let c = item6(full.replace(&files, r#""files":{"passed":1,"total":1}"#));
         assert_eq!(c.status, Status::Fail, "{}", c.evidence);
         assert!(c.evidence.contains("not the full"), "{}", c.evidence);
         // Compared with a file outside this tree.
-        let c = item6(exec_json(1, 166.0, 2, &listed, "/elsewhere/other.txt"));
+        let c = item6(exec_json(1, 166.0, &SKIP, &listed, "/elsewhere/other.txt"));
         assert_eq!(c.status, Status::Fail, "{}", c.evidence);
         assert!(c.evidence.contains("not recomputed"), "{}", c.evidence);
         assert!(
@@ -2572,11 +2646,81 @@ mod tests {
         // A new failure under GC-stress that the runner's (empty) diff does not report.
         let mut more = listed.to_vec();
         more.push("test/new/x.js");
-        let c = item6(exec_json(1, 166.0, 2, &more, committed));
+        let c = item6(exec_json(1, 166.0, &SKIP, &more, committed));
         assert_eq!(c.status, Status::Fail, "{}", c.evidence);
         assert!(c.evidence.contains("new failures 1"), "{}", c.evidence);
         // The full corpus against the committed file: PASS.
-        let c = item6(exec_json(1, 166.0, 2, &listed, committed));
+        let c = item6(exec_json(1, 166.0, &SKIP, &listed, committed));
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// M2-P2-RF2-I8: item 6 needs the run to skip exactly the committed skip list (by path, not
+    /// by count), with the timeout and the feedback threshold of [`GC_CMD`].
+    #[test]
+    fn gc_run_skips_exactly_the_skip_list() {
+        let root = fake_repo("gc-skip-set");
+        write(&root, "in/ci.json", &ci_json("success"));
+        let listed = [
+            "test/language/a.js",
+            "test/language/b.js",
+            "test/built-ins/c.js",
+        ];
+        let committed = root.join(format!("expectations/test262.{HOST}.jit.txt"));
+        let committed = committed.to_str().unwrap();
+        let item6 = |json: String| {
+            write(&root, "in/gc.json", &json);
+            let r = run(&opts(&root)).unwrap();
+            r.cells[5].0.clone()
+        };
+        let honest = exec_json(1, 166.0, &SKIP, &listed, committed);
+        let c = item6(honest.clone());
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        // The same count, another set: two.js (passing, the timeout skip) ran and passed, and a
+        // passing test z.js was skipped, so a GC regression in z.js is hidden.
+        let c = item6(exec_json(
+            1,
+            166.0,
+            &["test/skip/one.js", "test/skip/z.js"],
+            &listed,
+            committed,
+        ));
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("test/skip/z.js"), "{}", c.evidence);
+        assert!(c.evidence.contains("test/skip/two.js"), "{}", c.evidence);
+        // A subset and a superset.
+        let c = item6(exec_json(1, 166.0, &SKIP[..1], &listed, committed));
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        let c = item6(exec_json(
+            1,
+            166.0,
+            &[SKIP[0], SKIP[1], "test/skip/z.js"],
+            &listed,
+            committed,
+        ));
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        // An older runner: no paths, only the count.
+        let paths = r#""skipped_paths":["test/skip/one.js","test/skip/two.js"],"#;
+        assert!(honest.contains(paths), "{honest}");
+        let c = item6(honest.replace(paths, ""));
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("skipped_paths"), "{}", c.evidence);
+        // A count that does not match the paths.
+        let c = item6(honest.replace(paths, r#""skipped_paths":["test/skip/one.js"],"#));
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        // Not the timeout or the feedback threshold of GC_CMD (a longer timeout lets a timeout
+        // skip pass; lazy feedback is another run). A shorter timeout is stricter.
+        for (from, to) in [
+            (r#""timeout_ms":60000,"#, r#""timeout_ms":600000,"#),
+            (r#""timeout_ms":60000,"#, ""),
+            (r#""feedback_threshold":0,"#, r#""feedback_threshold":8,"#),
+            (r#""feedback_threshold":0,"#, ""),
+        ] {
+            assert!(honest.contains(from), "{honest}");
+            let c = item6(honest.replace(from, to));
+            assert_eq!(c.status, Status::Fail, "{to}: {}", c.evidence);
+        }
+        let c = item6(honest.replace(r#""timeout_ms":60000,"#, r#""timeout_ms":15000,"#));
         assert_eq!(c.status, Status::Pass, "{}", c.evidence);
         std::fs::remove_dir_all(root).unwrap();
     }
