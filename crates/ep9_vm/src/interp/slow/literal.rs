@@ -1,6 +1,6 @@
 //! Closures, contexts and literals.
 
-use ep9_bytecode::Constant;
+use ep9_bytecode::{Constant, ScopeKind};
 
 use crate::conv::{self, Res};
 use crate::error::{not_implemented, stack_overflow};
@@ -37,10 +37,15 @@ pub(crate) enum CtxKind {
     Block,
     Catch,
     Eval,
+    /// `CreateWithContext` (slow/lookup.rs): one slot, the object. Its scope descriptor (kind
+    /// With) has no slots, so a name walk never reads names for it (an object environment).
+    With,
 }
 
-/// `Create{Function,Block,Catch,Eval}Context`: a new context whose previous context is the
-/// current one. `slots` is the slot count operand (0 for block and catch: the scope says).
+/// `Create{Function,Block,Catch,Eval,With}Context`: a new context whose previous context is
+/// the current one. `slots` is the slot count operand (0 for block, catch and with: the scope
+/// or the kind says). `first` goes to slot 0 of a catch context (the exception) or a with
+/// context (the object).
 #[cold]
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
@@ -51,7 +56,7 @@ pub(crate) fn create_context(
     kind: CtxKind,
     k: u32,
     slots: u32,
-    exception: u64,
+    first: u64,
 ) -> u64 {
     enter(cx, fp, pc);
     let fi = info(fp);
@@ -59,16 +64,21 @@ pub(crate) fn create_context(
         return throw_msg_now(cx, "context constant is not a scope");
     };
     let u = fi.loaded_unit().expect("a bytecode function");
-    let scope_len = u.unit.scopes[id.index()].slots.len();
+    let unit_scope = &u.unit.scopes[id.index()];
+    // The name walk reads slot 0 of a With scope's context as the binding object.
+    if (kind == CtxKind::With) != (unit_scope.kind == ScopeKind::With) {
+        return throw_msg_now(cx, "CreateWithContext and With scopes go together");
+    }
+    let scope_len = unit_scope.slots.len();
     let len = match kind {
         CtxKind::Function | CtxKind::Eval => slots as usize,
         CtxKind::Block => scope_len,
-        CtxKind::Catch => scope_len.max(1),
+        CtxKind::Catch | CtxKind::With => scope_len.max(1),
     };
     let scope = &u.context_scopes[id.index()];
     let c = object::new_context(cx.rt(), context(fp), scope, len);
-    if kind == CtxKind::Catch {
-        object::context_set(cx.rt(), c, 0, exception);
+    if matches!(kind, CtxKind::Catch | CtxKind::With) {
+        object::context_set(cx.rt(), c, 0, first);
     }
     c
 }

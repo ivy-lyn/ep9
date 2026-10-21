@@ -1,0 +1,230 @@
+//! JS-level tests of `with` and dynamic scope lookup (P2-LOOKUP), run through BytecodeGen.
+//! The expected lines come from node v24 (`print` = `console.log`). Every check runs with
+//! and without GC stress (`common::run_both`). The hand-built VM tests are in
+//! `crates/ep9_vm/src/tests/with_stmt.rs`.
+
+mod common;
+
+use common::run_both;
+
+fn lines(v: &[&str]) -> Result<Vec<String>, String> {
+    Ok(v.iter().map(|s| s.to_string()).collect())
+}
+
+/// `with (o) f()` calls `f` with `this === o` (WithBaseObject), also for `(f)()`, a tagged
+/// template, a spread call and an optional call; a function found outside the with object
+/// gets an undefined receiver.
+#[test]
+fn a_call_in_with_gets_the_object_as_this() {
+    assert_eq!(
+        run_both(
+            r#"var o = { f: function () { return this === o; } };
+with (o) { print(f()); print((f)()); }
+var tt = { tag: function (s) { return this === tt; } };
+with (tt) { print(tag`x`); }
+var sp = { f: function () { return [this === sp, arguments.length]; } };
+with (sp) { print(f(...[1, 2, 3]).join()); }
+var opt = { m: function () { return this === opt; } };
+with (opt) { print(m?.()); }
+with ({ oc: undefined }) { print(oc?.()); }
+function C() {} C.prototype.who = function () { return this instanceof C; };
+with (new C()) { print(who()); }
+function outerF() { 'use strict'; return this; }
+with (o) { print(outerF() === undefined); }
+with ({ nf: 1 }) { try { nf(); } catch (e) { print(e.name); } }"#
+        ),
+        lines(&[
+            "true",
+            "true",
+            "true",
+            "true,3",
+            "true",
+            "undefined",
+            "true",
+            "true",
+            "TypeError"
+        ])
+    );
+}
+
+/// Reads and stores go to the with object when it has the name, else on to the enclosing
+/// function, the global object, or (sloppy store) a new global.
+#[test]
+fn reads_and_stores() {
+    assert_eq!(
+        run_both(
+            r#"var o = { x: 1 };
+with (o) { print(x); x = 2; print(o.x); }
+var y = 10;
+with (o) { print(y); y = 11; }
+print(y);
+with (o) { z = 5; }
+print(typeof z, z, 'z' in o);
+print(typeof undefinedThing);
+try { with (o) { nope; } } catch (e) { print(e.name + ': ' + e.message); }
+function g() { var a = 1; with ({}) { a = 2; } return a; }
+print(g());
+var cc = { n: 1 }; with (cc) { n += 5; n++; } print(cc.n);
+with (cc) { print(typeof n, typeof missingName); }
+with ({ a1: 1 }) { with ({ a2: 2 }) { print(a1 + a2); a1 = 10; } }
+with ('abc') { print(length); }
+try { with (null) {} } catch (e) { print(e.name); }
+var so = { set sv(v) { print('set', v, this === so); }, get sv() { return 'got'; } };
+with (so) { sv = 9; print(sv); }
+var nw = {}; Object.defineProperty(nw, 'ro', { value: 1, writable: false });
+with (nw) { ro = 2; print(ro); (function () { 'use strict'; try { ro = 3; } catch (e) { print(e.name); } })(); }
+with ({}) { (function () { 'use strict'; try { undeclared_s = 1; } catch (e) { print(e.name); } })(); }
+var fio = { k: 'none' };
+with (fio) { for (k in { a: 1 }) {} }
+print(fio.k, typeof k);
+with ({ e: 'obj' }) { try { throw 'thrown'; } catch (e) { print(e); } print(e); }"#
+        ),
+        lines(&[
+            "1",
+            "2",
+            "10",
+            "11",
+            "number 5 false",
+            "undefined",
+            "ReferenceError: nope is not defined",
+            "2",
+            "7",
+            "number undefined",
+            "3",
+            "3",
+            "TypeError",
+            "set 9 true",
+            "got",
+            "1",
+            "TypeError",
+            "ReferenceError",
+            "a undefined",
+            "thrown",
+            "obj",
+        ])
+    );
+}
+
+/// `@@unscopables` blocks a name (the walk goes on), and its getter runs before the value's
+/// getter (HasBinding, then GetBindingValue).
+#[test]
+fn unscopables() {
+    assert_eq!(
+        run_both(
+            r#"var u = { w: 'from-o' };
+var w = 'outer';
+u[Symbol.unscopables] = { w: true };
+with (u) { print(w); w = 'set'; }
+print(w, u.w);
+var order = [];
+var t = { get v() { order.push('get v'); return 1; } };
+Object.defineProperty(t, Symbol.unscopables, { get: function () { order.push('get unscopables'); return {}; } });
+with (t) { v; }
+print(order.join(','));
+var nb = { q: 1 };
+nb[Symbol.unscopables] = { q: false };
+with (nb) { print(q); }"#
+        ),
+        lines(&["outer", "set from-o", "get unscopables,get v", "1"])
+    );
+}
+
+/// Sloppy `delete name`: a with object's property (true), a declarative binding (false), a
+/// global `var` (false), a configurable global property (true), `NaN` (false), an
+/// unresolvable name (true).
+#[test]
+fn delete_a_name() {
+    assert_eq!(
+        run_both(
+            r#"var p = { d: 1 };
+with (p) { print(delete d, 'd' in p, delete nonexist); }
+function f() { var local = 1; with ({}) { return delete local; } }
+print(f());
+var vv = 1; print(delete vv);
+globalThis.gz = 1;
+print(delete gz, typeof gz);
+print(delete NaN);
+let gl = 1; with ({}) { print(delete gl); }"#
+        ),
+        lines(&[
+            "true false true",
+            "false",
+            "false",
+            "true undefined",
+            "false",
+            "false"
+        ])
+    );
+}
+
+/// Closures keep the with context; TDZ and `const` through a with context; a `let` per
+/// loop iteration inside `with`.
+#[test]
+fn closures_tdz_and_const() {
+    assert_eq!(
+        run_both(
+            r#"var m = { mm: 'm' };
+var fn; with (m) { fn = function () { return mm; }; }
+print(fn());
+m.mm = 'm2'; print(fn());
+function outer() { var ov = 'outer-v'; return function () { with ({}) { return ov; } }; }
+print(outer()());
+var fs = [];
+with ({ q: 'Q' }) { for (let i = 0; i < 3; i++) { fs.push(function () { return q + i; }); } }
+print(fs[0]() + ',' + fs[1]() + ',' + fs[2]());
+function h() { with ({}) { try { c; } catch (e) { print(e.name); } } let c = 3; return c; }
+print(h());
+function k() { const q = 1; with ({}) { try { q = 2; } catch (e) { print(e.name + ': ' + e.message); } } return q; }
+print(k());
+with ({}) { try { typeof tdzv; } catch (e) { print(e.name); } }
+let tdzv = 1;
+let gl = 'gl'; with ({}) { print(gl); gl = 'gl2'; } print(gl);
+const gc = 1; with ({}) { try { gc = 2; } catch (e) { print(e.name); } }
+var ao = { t: 1, m: function () { with ({ t: 2 }) { return (() => this.t)(); } } };
+print(ao.m());"#
+        ),
+        lines(&[
+            "m",
+            "m2",
+            "outer-v",
+            "Q0,Q1,Q2",
+            "ReferenceError",
+            "3",
+            "TypeError: Assignment to constant variable.",
+            "1",
+            "ReferenceError",
+            "gl",
+            "gl2",
+            "TypeError",
+            "1",
+        ])
+    );
+}
+
+/// A generator suspended inside `with` resumes in the with context (genf::CONTEXT).
+#[test]
+fn generator_suspended_in_with() {
+    assert_eq!(
+        run_both(
+            r#"function* g(o) { with (o) { yield x; yield x } }
+var o = { x: 1 };
+var it = g(o);
+var r = it.next(); print(r.value, r.done);
+o.x = 2;
+r = it.next(); print(r.value, r.done);
+r = it.next(); print(r.value, r.done);
+function* g2(o) { with (o) { yield 0; yield y; x = 5; } }
+var o2 = { x: 1 }; var y = 'global-y';
+var it2 = g2(o2); it2.next(); print(it2.next().value); o2.y = 'own-y'; it2.next(); print(o2.x);
+var it3 = g2({ y: 'own' }); it3.next(); print(it3.next().value);"#
+        ),
+        lines(&[
+            "1 false",
+            "2 false",
+            "undefined true",
+            "global-y",
+            "5",
+            "own"
+        ])
+    );
+}
