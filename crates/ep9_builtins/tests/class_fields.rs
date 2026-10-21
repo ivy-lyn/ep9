@@ -92,8 +92,8 @@ try { M.m({}); } catch (e) { print(e.constructor.name); }"#
     );
 }
 
-/// Private methods, accessors and static private methods: the brand, `#m in o`; private
-/// methods are not own properties.
+/// Private methods, a getter and a static private method: the brand, `#m in o`, the brand
+/// check of a call on an object without it; private methods are not own properties.
 #[test]
 #[ignore = "needs P2-CLS-CG"]
 fn private_methods_and_accessors() {
@@ -103,16 +103,39 @@ fn private_methods_and_accessors() {
   #v = 10;
   #m() { return this.#v + 1; }
   get #g() { return this.#v * 2; }
-  set #g(x) { this.#v = x; }
   static #sm() { return 'sm'; }
-  run() { this.#g = 3; return [this.#m(), this.#g, C.#sm()].join(); }
+  run() { return [this.#m(), this.#g, C.#sm()].join(); }
   static isC(o) { return #m in o; }
+  static callM(o) { return o.#m(); }
 }
 var c = new C();
 print(c.run(), C.isC(c), C.isC({}), C.isC(C));
-print(Object.getOwnPropertyNames(c).length, Object.getOwnPropertyNames(C.prototype).join());"#
+print(Object.getOwnPropertyNames(c).length, Object.getOwnPropertyNames(C.prototype).join());
+try { C.callM({}); } catch (e) { print(e.constructor.name); }"#
         ),
-        lines(&["4,6,sm true false false", "0 constructor,run"])
+        lines(&[
+            "11,20,sm true false false",
+            "0 constructor,run",
+            "TypeError"
+        ])
+    );
+}
+
+/// A private accessor as an assignment target (plain and compound): the setter runs.
+#[test]
+#[ignore = "needs P2-CLS-CG"]
+fn private_setter_assignment() {
+    assert_eq!(
+        run_both(
+            r#"class C {
+  #v = 10;
+  get #g() { return this.#v; }
+  set #g(x) { this.#v = x; }
+  run() { this.#g = 3; this.#g += 4; return this.#g; }
+}
+print(new C().run());"#
+        ),
+        lines(&["7"])
     );
 }
 
