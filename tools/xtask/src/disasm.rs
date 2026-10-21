@@ -40,7 +40,8 @@ usage: cargo xtask disasm-check [options]
   --objdump PATH, --nm PATH   tools (default: rustup llvm-tools, then PATH)
   -v, --verbose         one line per handler";
 
-const ALL_TARGETS: &[&str] = &[
+/// The 5 targets of `--all-targets`; fp-check (fpcheck.rs) checks the same set.
+pub(crate) const ALL_TARGETS: &[&str] = &[
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
     "x86_64-unknown-linux-gnu",
@@ -70,7 +71,7 @@ struct Opts {
     verbose: bool,
 }
 
-fn repo_root() -> PathBuf {
+pub(crate) fn repo_root() -> PathBuf {
     // tools/xtask -> repo root
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -126,7 +127,8 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
     Ok(o)
 }
 
-fn run_capture(cmd: &mut Command) -> Result<String, String> {
+/// Runs `cmd` and returns its stdout; stderr goes to the log. A failed run is an error.
+pub(crate) fn run_capture(cmd: &mut Command) -> Result<String, String> {
     let out = cmd
         .stderr(Stdio::inherit())
         .output()
@@ -150,7 +152,7 @@ fn run_quiet(cmd: &mut Command) -> Result<String, String> {
     String::from_utf8(out.stdout).map_err(|e| format!("{cmd:?}: {e}"))
 }
 
-fn host_triple() -> Result<String, String> {
+pub(crate) fn host_triple() -> Result<String, String> {
     let v = run_capture(Command::new("rustc").arg("-vV"))?;
     v.lines()
         .find_map(|l| l.strip_prefix("host: "))
@@ -159,7 +161,7 @@ fn host_triple() -> Result<String, String> {
 }
 
 /// Finds an LLVM tool: the override, then rustup's llvm-tools component, then PATH.
-fn find_tool(name: &str, over: &Option<PathBuf>) -> Result<PathBuf, String> {
+pub(crate) fn find_tool(name: &str, over: &Option<PathBuf>) -> Result<PathBuf, String> {
     if let Some(p) = over {
         return Ok(p.clone());
     }
@@ -417,19 +419,25 @@ fn nm_handlers(nm: &Path, file: &Path) -> Result<Vec<Handler>, String> {
     Ok(v)
 }
 
+/// One decoded instruction of a [`Block`].
 #[derive(Debug)]
-struct Insn {
-    addr: u64,
-    text: String,
-    reloc: Option<String>,
+pub(crate) struct Insn {
+    pub(crate) addr: u64,
+    /// "mnemonic\toperands" as llvm-objdump prints it.
+    pub(crate) text: String,
+    /// The relocation target that llvm-objdump `-r` prints after this instruction, if any.
+    pub(crate) reloc: Option<String>,
 }
 
+/// One symbol of `llvm-objdump -d -r` output.
 #[derive(Debug)]
-struct Block {
-    member: String,
-    raw: String,
-    addr: u64,
-    insns: Vec<Insn>,
+pub(crate) struct Block {
+    /// The archive member that holds the symbol (empty outside an archive).
+    pub(crate) member: String,
+    /// The symbol name as the object file spells it (Mach-O adds a leading `_`).
+    pub(crate) raw: String,
+    pub(crate) addr: u64,
+    pub(crate) insns: Vec<Insn>,
 }
 
 fn is_reloc(s: &str) -> bool {
@@ -596,7 +604,7 @@ fn drop_data(blocks: &mut [Block], base: u64, data: &[(u64, u64)]) {
 }
 
 /// Reads `llvm-objdump -d -r` output: the file format (empty if none) and one block per symbol.
-fn parse_disasm(out: &str) -> (String, Vec<Block>) {
+pub(crate) fn parse_disasm(out: &str) -> (String, Vec<Block>) {
     let mut format = String::new();
     let mut member = String::new();
     let mut blocks: Vec<Block> = Vec::new();
