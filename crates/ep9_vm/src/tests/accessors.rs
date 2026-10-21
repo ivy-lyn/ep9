@@ -786,6 +786,57 @@ fn a_function_declaration_replaces_a_configurable_global_accessor() {
     }
 }
 
+std::thread_local! {
+    static GETTER_CALLS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+fn counting_getter<'s>(
+    _cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    GETTER_CALLS.with(|c| c.set(c.get() + 1));
+    Ok(Local::int32(7))
+}
+
+#[test]
+fn isolate_global_gives_none_for_a_global_accessor() {
+    // `Isolate::global` runs no JS, so for an accessor of the global object it gives None and
+    // calls no getter. It never hands out the internal ACCESSOR_PAIR cell. A data property
+    // still reads, and [[Get]] through the ABI still runs the getter.
+    for stress in [false, true] {
+        GETTER_CALLS.with(|c| c.set(0));
+        let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+        {
+            let iso = &mut iso;
+            let mut cx = Cx::new(&mut iso.cx);
+            let g = cx.global();
+            let get = host_fn(&iso.rt, "get acc", counting_getter);
+            let d = PropertyDescriptor {
+                get: Some(get),
+                enumerable: Some(true),
+                configurable: Some(true),
+                ..PropertyDescriptor::default()
+            };
+            cx.define_property_or_throw(g, "acc", d).unwrap();
+            cx.set(g, "data", Local::int32(5), true).unwrap();
+        }
+        assert!(iso.global("acc").is_none(), "an accessor gave a value");
+        assert_eq!(GETTER_CALLS.with(std::cell::Cell::get), 0);
+        let data = iso.global("data").map(|v| iso.display(v));
+        assert_eq!(data.as_deref(), Some("5"));
+        let v = iso.with_cx(|cx| {
+            let g = cx.global();
+            cx.get(g, "acc").map(|v| v.as_int32())
+        });
+        assert_eq!(v, Ok(Some(7)));
+        assert_eq!(GETTER_CALLS.with(std::cell::Cell::get), 1);
+        iso.collect_garbage();
+        iso.verify_heap().unwrap();
+    }
+}
+
 // ---- [[DefineOwnProperty]] and [[GetOwnProperty]] through the builtin ABI ---------------------
 
 fn h1<'s>(_: &mut Cx<'s>, _: Local<'s>, _: Args<'s>, _: Local<'s>) -> JsResult<Local<'s>> {
