@@ -107,25 +107,25 @@ An ADR whose row is built after M1 exit lists its parts, each with its own freez
 | ID | Decision | Fix by | Plan | ADR status | File |
 |---|---|---|---|---|---|
 | H1 | Front-end boundary | M0 wk3 | E | Draft (2026-10-21) | [H01-front-end-boundary.md](H01-front-end-boundary.md) |
-| H2 | Bytecode is a serialized ABI | M0 wk3; determinism CI M0; Spike C checks before M1 exit | E | Draft (2026-10-21) | [H02-bytecode-abi.md](H02-bytecode-abi.md) |
+| H2 | Bytecode is a serialized ABI | M0 wk3; determinism CI M0; Spike C checks before M1 exit | E | Draft (2026-10-21; Q5 filled: slot kinds = H16 v0) | [H02-bytecode-abi.md](H02-bytecode-abi.md) |
 | H3 | TS runtime semantics in BytecodeGen; TS flags in module identity | Header fields M0 wk3; ADR M0 exit; built M4 | N | Draft (2026-10-21) | [H03-ts-runtime-semantics.md](H03-ts-runtime-semantics.md) |
 | H4 | Lazy-compile contract | M0 | U | Not started | `H04-lazy-compile-contract.md` |
 | H5 | Compiler, interpreter and source always present | M0 rule (wk3) | N | Draft (2026-10-21) | [H05-always-linked-compiler.md](H05-always-linked-compiler.md) |
 | H6 | Value encoding | M0 wk2 | U | Draft (decided 2026-10-20) | [H06-value-encoding.md](H06-value-encoding.md) |
 | H7 | Address space and code range | M0 wk2 (SP-VA) | E | Draft (rewritten 2026-10-21: one cage per isolate) | [H07-address-space-and-code-range.md](H07-address-space-and-code-range.md) |
-| H8 | Object header and ShapeId | M0 wk2 | E | Draft (Q1 filled 2026-10-21: shape region) | [H08-object-header-and-shapeid.md](H08-object-header-and-shapeid.md) |
+| H8 | Object header and ShapeId | M0 wk2 | E | Draft (Q1 and Q3 filled 2026-10-21: shape region, word0 flag bits) | [H08-object-header-and-shapeid.md](H08-object-header-and-shapeid.md) |
 | H9 | Pages and side metadata | M0 wk2 | U | Draft (Q4 filled 2026-10-21) | [H09-pages-and-side-metadata.md](H09-pages-and-side-metadata.md) |
-| H10 | Rooting | M0 wk2, after SP-GC | E | Draft | [H10-rooting.md](H10-rooting.md) |
+| H10 | Rooting | M0 wk2, after SP-GC | E | Draft (Q2 filled 2026-10-21: gc-lint, Local check) | [H10-rooting.md](H10-rooting.md) |
 | H11 | Barrier and atomics | API M0; slow paths S1/S2; unit field A2 | E | Draft (decided 2026-10-20; Q3 filled 2026-10-21) | [H11-barrier-and-atomics.md](H11-barrier-and-atomics.md) |
-| H12 | No address identity | M0 | U | Draft | [H12-no-address-identity.md](H12-no-address-identity.md) |
+| H12 | No address identity | M0 | U | Draft (Q1-Q3 filled 2026-10-21) | [H12-no-address-identity.md](H12-no-address-identity.md) |
 | H13 | Snapshot readiness and stable indices | Rules M0; index lists M1; built M4 (A1) | E | Not started | `H13-snapshot-stable-indices.md` |
-| H14 | Frames, calls, dispatch slots, pc→code registry | M0 wk3; Spike B + SP-Unit (M0 month 2); Spike C (M1) | E | Draft (2026-10-21) | [H14-frames-and-dispatch.md](H14-frames-and-dispatch.md) |
+| H14 | Frames, calls, dispatch slots, pc→code registry | M0 wk3; Spike B + SP-Unit (M0 month 2); Spike C (M1) | E | Draft (2026-10-21; feedback vector via fp-4 filled) | [H14-frames-and-dispatch.md](H14-frames-and-dispatch.md) |
 | H15 | Interpreter dispatch | M0 wk2 | E | Draft (reopened twice 2026-10-21; release expansion: sibling calls on every target) | [H15-interpreter-dispatch.md](H15-interpreter-dispatch.md) |
-| H16 | ICs and feedback; feedback schema = FactSnapshot schema | Slot kinds M0 wk4; frozen M1 exit | E | Not started | `H16-ics-and-feedback.md` |
-| H17 | Object layout | M1 (frozen at M1a) | U | Not started | `H17-object-layout.md` |
+| H16 | ICs and feedback; feedback schema = FactSnapshot schema | Slot kinds M0 wk4; frozen M1 exit | E | Draft (2026-10-21; slot kinds H16 v0 and FactSnapshot v0 built) | [H16-ics-and-feedback.md](H16-ics-and-feedback.md) |
+| H17 | Object layout | M1 (frozen at M1a) | U | Draft (2026-10-21; object layout v0 on shapes built) | [H17-object-layout.md](H17-object-layout.md) |
 | H18 | Elements kinds | M1a | U | Draft (2026-10-21, v0 notes) | [H18-elements-kinds.md](H18-elements-kinds.md) |
-| H19 | Strings | M1a | U | Draft (2026-10-21; strings v0 built) | [H19-strings.md](H19-strings.md) |
-| H20 | Builtin ABI | Frozen M0 exit | U | Draft (2026-10-21; ABI v1 draft built) | [H20-builtin-abi.md](H20-builtin-abi.md) |
+| H19 | Strings | M1a | U | Draft (2026-10-21; strings v0 and symbols v0 built) | [H19-strings.md](H19-strings.md) |
+| H20 | Builtin ABI | Frozen M0 exit | U | Draft (2026-10-21; ABI v1 draft, builtin tables and ids built; Q4 partly settled) | [H20-builtin-abi.md](H20-builtin-abi.md) |
 | H21 | Shape transitions under concurrent readers | ADR M1; built M5; functional before M7 | U | Not started | `H21-shape-transitions.md` |
 | H22 | Isolates and realms | M0 wk3 (D14) | E | Draft (2026-10-21) | [H22-isolates-and-realms.md](H22-isolates-and-realms.md) |
 | H23 | Limits and failure policy | M0 wk3 | E | Draft (2026-10-21) | [H23-limits-and-failure-policy.md](H23-limits-and-failure-policy.md) |
@@ -144,7 +144,7 @@ An ADR whose row is built after M1 exit lists its parts, each with its own freez
 | H36 | FP semantics in every backend | M0 rule (wk2); FP differential CI from M1 | N | Draft (decided 2026-10-20; pow_js v0 and fp-check built 2026-10-21) | [H36-fp-semantics.md](H36-fp-semantics.md) |
 | H37 | TS hint side-table schema | v0 at A1h (by M4 exit); frozen at A4 start | N | Not started | `H37-hint-side-table.md` |
 
-Counts on 2026-10-21 (after M0 week 4 P1): 23 Draft, 14 Not started, 0 Accepted, 0 Frozen. H6, H11, H35 and H36 carry decisions of 2026-10-20, and H15 a decision of 2026-10-21; they move to Accepted when the §3.1 review record is complete. Until 2026-10-21 this line said "11 Draft, 26 Not started". That count did not include H15 or the five M0 wk3 drafts (H1, H2, H3, H5, H14).
+Counts on 2026-10-21 (after M0 week 4 P2): 25 Draft, 12 Not started, 0 Accepted, 0 Frozen. H6, H11, H35 and H36 carry decisions of 2026-10-20, and H15 a decision of 2026-10-21; they move to Accepted when the §3.1 review record is complete. Until 2026-10-21 this line said "11 Draft, 26 Not started". That count did not include H15 or the five M0 wk3 drafts (H1, H2, H3, H5, H14).
 
 ## 6. When each ADR is due in M0
 
