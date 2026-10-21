@@ -54,6 +54,8 @@ Accept, and every amendment of an Accepted or Frozen ADR, need all of these. The
 3. An agent that did not write the change verifies each Codex finding through the full control flow and sorts it: (a) serves the ADR's goal, (b) a defect the PR introduced, (c) neither. Only (a) and (b) change the PR. A (c) finding goes to Open questions or to an issue.
 4. The data the change needs: the spike gate output for Accept and reopen, a benchmark or gate output for a Frozen part.
 
+Phase-merged work with no per-ADR PR keeps the record in the ADR's `## Review record` section (M2-ACCEPT-RECORD).
+
 ### 3.2 Who approves (P-1)
 
 | Change kind | Draft | Accepted | Frozen part |
