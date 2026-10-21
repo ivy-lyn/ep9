@@ -29,6 +29,13 @@
 //! on a read (undefined inside `typeof`), a ReferenceError on a strict store and a new global
 //! property on a sloppy store (§6.2.5.6 PutValue step 3).
 //!
+//! Direct eval code reads `this`, `new.target`, `super.x` (`.home_object`) and the callee
+//! (`.callee`) by these names (ep9_bytecode `eval_context.rs`). They are not identifier
+//! references, so only the declarative slots that hold them answer: the walk skips `with`
+//! objects and `.eval_ext` objects for them, and the global environment gives the global
+//! this for `this` and undefined for the others, never a global property. `arguments` is an
+//! ordinary name.
+//!
 //! The opcode entries use the result protocol of `slow` (the new accumulator, or 0 with an
 //! exception pending). `name` and `scope` are constant indices of the frame's function; the
 //! runtime ids take the name as a string value. Each context of the walk takes one budget
@@ -48,6 +55,7 @@ use crate::kinds;
 use crate::object::{self, attr, is_context, is_object, own_get};
 use crate::property;
 use crate::runtime::{ErrorKind, Root};
+use crate::string;
 use crate::symbol::{self, WellKnownSymbol};
 
 use super::literal::{CtxKind, create_context};
@@ -70,6 +78,9 @@ enum Binding {
     EvalExt(u64),
     /// The global environment, which also stands for an unresolvable name.
     Global,
+    /// An implicit name (see the module doc) that no context slot binds: the global
+    /// environment's answer (GetThisBinding of the global record for `this`).
+    GlobalImplicit,
 }
 
 /// One budget unit per context of the walk; polls when the budget runs out (M2-P2-POLL).
@@ -82,6 +93,17 @@ fn poll(cx: &mut Cx) -> Res<()> {
     Ok(())
 }
 
+/// The names of the implicit bindings of direct eval code (see the module doc).
+const IMPLICIT_NAMES: [&[u8]; 4] = [b"this", b"new.target", b".home_object", b".callee"];
+
+/// `name` is one of [`IMPLICIT_NAMES`].
+fn is_implicit_name(name: u64) -> bool {
+    kinds::is_string(name)
+        && IMPLICIT_NAMES
+            .iter()
+            .any(|t| string::equals_text(name, string::JsStr::Latin1(t)))
+}
+
 /// The slot name `id` of unit `u` is the `.eval_ext` binding.
 fn is_eval_ext(u: &crate::unit::LoadedUnit, id: usize) -> bool {
     matches!(&u.unit.strings[id], UnitString::Latin1(b) if **b == *EVAL_EXT_BINDING.as_bytes())
@@ -91,6 +113,7 @@ fn is_eval_ext(u: &crate::unit::LoadedUnit, id: usize) -> bool {
 /// frame `fp`, out to the global environment (see the module doc). GC point (an
 /// `@@unscopables` getter, a poll).
 fn resolve(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<Binding> {
+    let implicit = is_implicit_name(name);
     let mut c = context(fp);
     while is_context(c) {
         poll(cx)?;
@@ -98,8 +121,9 @@ fn resolve(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<Binding> {
         if scope.kind == ScopeKind::With {
             // Only CreateWithContext makes a context of a With scope (`create_context`
             // refuses the other kinds), and slot 0 holds its object; the checks keep the
-            // walk safe all the same.
-            if let Some(o) = object::context_get(c, 0)
+            // walk safe all the same. An implicit name never asks the object.
+            if !implicit
+                && let Some(o) = object::context_get(c, 0)
                 && is_object(o)
                 && with_has_binding(cx, o, name)?
             {
@@ -115,7 +139,8 @@ fn resolve(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<Binding> {
                     });
                 }
             }
-            if scope.flags.contains(ScopeFlags::CALLS_SLOPPY_EVAL)
+            if !implicit
+                && scope.flags.contains(ScopeFlags::CALLS_SLOPPY_EVAL)
                 && scope.kind != ScopeKind::Script
                 && scope
                     .slots
@@ -130,7 +155,11 @@ fn resolve(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<Binding> {
         }
         c = object::context_previous(c);
     }
-    Ok(Binding::Global)
+    Ok(if implicit {
+        Binding::GlobalImplicit
+    } else {
+        Binding::Global
+    })
 }
 
 /// HasBinding of an object Environment Record with `withEnvironment` true (§9.1.1.2.1).
@@ -209,6 +238,13 @@ fn get_binding_value(
             }
             property::get(cx, g, name)
         }
+        Binding::GlobalImplicit => Ok(
+            if string::equals_text(name, string::JsStr::Latin1(IMPLICIT_NAMES[0])) {
+                cx.global_this
+            } else {
+                UNDEFINED
+            },
+        ),
     }
 }
 
@@ -259,6 +295,11 @@ fn set_binding_value(cx: &mut Cx, b: Binding, name: u64, v: u64, strict: bool) -
                 return Err(throw_name_now(cx, NameMsg::NotDefined, name));
             }
             property::set(cx, g, name, v, strict)
+        }
+        Binding::GlobalImplicit => {
+            // No bytecode stores to an implicit name.
+            throw_msg_now(cx, "store to an implicit binding");
+            Err(Throw)
         }
     }
 }
@@ -344,7 +385,7 @@ pub(crate) fn create_with_context(
 pub(crate) fn delete_lookup_slot(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<u64> {
     let name = name_key(cx, name)?;
     let deleted = match resolve(cx, fp, name)? {
-        Binding::Slot { .. } => false,
+        Binding::Slot { .. } | Binding::GlobalImplicit => false,
         Binding::With(o) | Binding::EvalExt(o) => property::delete(cx, o, name, false)?,
         Binding::Global => {
             let rt = cx.rt();

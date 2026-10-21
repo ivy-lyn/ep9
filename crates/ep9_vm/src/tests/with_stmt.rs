@@ -381,6 +381,135 @@ fn eval_ext_object_is_searched_in_its_scope() {
     assert_eq!(r.output, ["9", "10", "with-e", "4", "true", "undefined"]);
 }
 
+/// The implicit bindings that direct eval code reads by name (`this`, `new.target`,
+/// `.home_object`, `.callee`; ep9_bytecode eval_context.rs) are never answered by a `with`
+/// object, a `.eval_ext` object or a global property: they come from the context slot that
+/// holds them, or the global this for `this`. `arguments` is an ordinary name, so the `with`
+/// object answers it.
+#[test]
+fn implicit_names_skip_object_environments() {
+    const NAMES: [&str; 5] = ["this", "new.target", ".home_object", ".callee", "arguments"];
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let (ctx, ext, o, wctx) = (
+            s.b.new_register(),
+            s.b.new_register(),
+            s.b.new_register(),
+            s.b.new_register(),
+        );
+        // Scope 0: the function context, slots [.eval_ext, this, new.target, .home_object,
+        // .callee, arguments] = [ext, 1, 2, 3, 4, 5].
+        let kf = s.b.scope_constant(ScopeId(0));
+        s.b.create_function_context(kf, 6).push_context(ctx);
+        s.b.create_empty_object_literal().star(ext);
+        s.b.create_empty_object_literal().star(o);
+        for (i, n) in NAMES.iter().enumerate() {
+            s.b.lda_smi(10 + i as i32);
+            s.set_named(ext, n);
+            s.b.lda_smi(20 + i as i32);
+            s.set_named(o, n);
+        }
+        s.b.ldar(ext).sta_current_context_slot(0);
+        for i in 1..=5 {
+            s.b.lda_smi(i).sta_current_context_slot(i as u32);
+        }
+        // Inside `with (o)`: 1 2 3 4 and the with object's `arguments` (24).
+        let kw = s.b.scope_constant(ScopeId(1));
+        s.b.create_with_context(o, kw).push_context(wctx);
+        for n in NAMES {
+            lookup(&mut s, n);
+            s.print_acc();
+        }
+        s.b.pop_context(ctx);
+        // A global property named `this` does not answer either; with no context slot,
+        // `this` is the global this and `new.target` is undefined.
+        s.b.lda_smi(99);
+        s.sta_global("this");
+        s.b.lda_smi(98);
+        s.sta_global("new.target");
+        s.b.create_with_context(o, kw).push_context(wctx);
+        lookup(&mut s, "this");
+        let g = s.b.new_register();
+        s.b.star(g);
+        s.lda_global("globalThis");
+        s.b.test_equal_strict(g, s.cmp);
+        s.print_acc();
+        lookup(&mut s, "new.target");
+        s.print_acc();
+        s.b.lda_undefined().return_();
+        let mut u = UnitBuilder::new("", opts());
+        let mut slots = vec![(
+            UnitString::new(ep9_bytecode::EVAL_EXT_BINDING),
+            VariableMode::Var,
+        )];
+        slots.extend(
+            NAMES
+                .iter()
+                .map(|n| (UnitString::new(n), VariableMode::Var)),
+        );
+        u.add_scope(
+            ScopeKind::Function,
+            ScopeFlags::NEEDS_CONTEXT | ScopeFlags::CALLS_SLOPPY_EVAL,
+            None,
+            slots,
+        );
+        u.add_scope(
+            ScopeKind::With,
+            ScopeFlags::NEEDS_CONTEXT,
+            Some(ScopeId(0)),
+            vec![],
+        );
+        u.set_function(FunctionId(0), s.finish());
+        u.finish().unwrap()
+    }
+    let r = run_all(make);
+    ok(&r);
+    assert_eq!(r.output, ["1", "2", "3", "4", "24", "true", "undefined"]);
+}
+
+/// The same names in a context with no slot for them: the `.eval_ext` object of a
+/// CALLS_SLOPPY_EVAL scope does not answer them, the outer slot does.
+#[test]
+fn implicit_names_skip_the_eval_ext_object() {
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let (outer, inner, ext) = (s.b.new_register(), s.b.new_register(), s.b.new_register());
+        let k0 = s.b.scope_constant(ScopeId(0));
+        s.b.create_function_context(k0, 1).push_context(outer);
+        s.b.lda_smi(1).sta_current_context_slot(0);
+        let k1 = s.b.scope_constant(ScopeId(1));
+        s.b.create_function_context(k1, 1).push_context(inner);
+        s.b.create_empty_object_literal().star(ext);
+        s.b.lda_smi(7);
+        s.set_named(ext, "this");
+        s.b.ldar(ext).sta_current_context_slot(0);
+        lookup(&mut s, "this");
+        s.print_acc();
+        s.b.lda_undefined().return_();
+        let mut u = UnitBuilder::new("", opts());
+        u.add_scope(
+            ScopeKind::Function,
+            ScopeFlags::NEEDS_CONTEXT,
+            None,
+            vec![(UnitString::new("this"), VariableMode::Var)],
+        );
+        u.add_scope(
+            ScopeKind::Function,
+            ScopeFlags::NEEDS_CONTEXT | ScopeFlags::CALLS_SLOPPY_EVAL,
+            Some(ScopeId(0)),
+            vec![(
+                UnitString::new(ep9_bytecode::EVAL_EXT_BINDING),
+                VariableMode::Var,
+            )],
+        );
+        u.set_function(FunctionId(0), s.finish());
+        u.finish().unwrap()
+    }
+    let r = run_all(make);
+    ok(&r);
+    assert_eq!(r.output, ["1"]);
+}
+
 /// `CreateWithContext` converts a primitive with ToObject (a string's `length` is found) and
 /// throws a TypeError for undefined; a With scope with another `Create*Context` is a VM
 /// internal error, never a context with no object.
