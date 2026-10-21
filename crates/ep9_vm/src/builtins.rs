@@ -1070,7 +1070,7 @@ pub(crate) fn existing_function(rt: &Runtime, id: BuiltinId) -> Option<u64> {
 }
 
 /// Installs the tables that [`prepare`] registered: (1) the function object of every
-/// definition, (2) the intrinsics the modules make, then the [[Prototype]] of
+/// definition, (2) the intrinsics the modules make, then the `[[Prototype]]` of
 /// %GeneratorFunction% and %AsyncFunction%, (3) the properties. Walk order: VM table,
 /// then the embedder's; modules, then entries, in order. Runs after `realm::init`.
 pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
