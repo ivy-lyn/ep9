@@ -203,6 +203,50 @@ fn pass_and_fail_rules() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// The JSON names the skipped tests, not only their count: `cargo xtask m0-exit` item 6 checks
+/// that a GC-stress run skipped exactly the committed skip list (M2-P2-RF2-I8).
+#[test]
+fn skip_list_paths_reach_the_json() {
+    let root = tree("skip");
+    let listed: Vec<&str> = FAILING
+        .iter()
+        .copied()
+        .filter(|p| !p.ends_with("/fail.js"))
+        .collect();
+    let expect = expect_file(&root, &listed);
+    let skip = root.join("skip.txt");
+    std::fs::write(
+        &skip,
+        "# s\ntest/language/pass.js\ntest/language/fail.js\ntest/language/none.js\n",
+    )
+    .unwrap();
+    let json = root.join("summary.json");
+    let (code, text) = exec(
+        &root,
+        &expect,
+        &[
+            "--gc-stress",
+            "1",
+            "--skip-list",
+            skip.to_str().unwrap(),
+            "--json",
+            json.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("skipped: 2"), "{text}");
+    let summary = std::fs::read_to_string(&json).unwrap();
+    // Sorted; the entry that names no test is not in it.
+    assert!(
+        summary.contains(
+            "\"skipped\":2,\"skipped_paths\":[\"test/language/fail.js\",\"test/language/pass.js\"]"
+        ),
+        "{summary}"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn update_writes_only_failures() {
     let root = tree("update");

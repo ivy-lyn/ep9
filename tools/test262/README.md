@@ -114,7 +114,8 @@ infrastructure error.
 
 `--skip-list <file>` (only with `--gc-stress`, not with `--update-expectations`) neither runs
 nor counts the listed tests, and the expectation compare ignores them. The run prints
-`skipped: <n>`; an entry that names no test gets a warning. `expectations/test262-gc-skip.txt`
+`skipped: <n>`, and `--json` writes `skipped` (the count) and `skipped_paths` (the sorted paths
+of the skipped tests); an entry that names no test gets a warning. `expectations/test262-gc-skip.txt`
 lists the 7 tests that run past (or on a busy host can run past) the 60 s timeout under
 GC-stress (6 fail without it too; its header says why each one is there).
 

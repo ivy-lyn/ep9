@@ -1553,15 +1553,7 @@ pub fn run(opts: &Options) -> ExitCode {
 
     if let Some(path) = &opts.json {
         let text = summary_json(
-            opts,
-            &by_dir,
-            files_all,
-            runs_all,
-            &top,
-            &results,
-            &diff,
-            wall,
-            skipped.len(),
+            opts, &by_dir, files_all, runs_all, &top, &results, &diff, wall, &skipped,
         );
         if let Err(e) = std::fs::write(path, text) {
             eprintln!("ep9-test262: cannot write {}: {e}", path.display());
@@ -1581,7 +1573,7 @@ fn summary_json(
     results: &[(&str, TestResult)],
     diff: &expect::Diff,
     wall: Duration,
-    skipped: usize,
+    skipped: &BTreeSet<String>,
 ) -> String {
     let count = |out: &mut String, c: Count| {
         let _ = write!(out, "{{\"passed\":{},\"total\":{}}}", c.passed, c.total);
@@ -1592,14 +1584,18 @@ fn summary_json(
     json::string(&mut out, &opts.test262.display().to_string());
     let _ = write!(
         out,
-        ",\"workers\":{},\"timeout_ms\":{},\"gc_stress\":{},\"feedback_threshold\":{},\"skipped\":{},\"wall_seconds\":{:.3}",
+        ",\"workers\":{},\"timeout_ms\":{},\"gc_stress\":{},\"feedback_threshold\":{},\"skipped\":{}",
         opts.threads,
         opts.timeout.as_millis(),
         opts.gc_stress,
         opts.feedback_threshold,
-        skipped,
-        wall.as_secs_f64()
+        skipped.len(),
     );
+    // The skipped tests by path, sorted (`cargo xtask m0-exit` item 6 compares them with the
+    // committed skip list); "skipped" stays their count.
+    out.push_str(",\"skipped_paths\":");
+    json::string_array(&mut out, &skipped.iter().collect::<Vec<_>>());
+    let _ = write!(out, ",\"wall_seconds\":{:.3}", wall.as_secs_f64());
     out.push_str(",\"files\":");
     count(&mut out, files_all);
     out.push_str(",\"runs\":");

@@ -515,6 +515,11 @@ impl<'a, 's> FnGen<'a, 's> {
                     self.b.lda_global(k, s);
                 }
             }
+            // Strict code in a sloppy function (a class heritage or computed key): the
+            // opcodes read with the function's strictness (lookup.rs).
+            Resolution::Dynamic { .. } if self.strict_at(r) && !self.info.strict => {
+                self.load_dynamic_strict(r, inside_typeof);
+            }
             Resolution::Dynamic { .. } => {
                 let k = self.name_const(r.name);
                 self.expr_pos(r.span.start);

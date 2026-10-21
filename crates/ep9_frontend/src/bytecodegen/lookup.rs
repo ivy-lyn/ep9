@@ -1,12 +1,12 @@
 //! Calls whose callee is a dynamic lookup (`with`, sloppy direct eval): `f()` where `f`
 //! resolves to [`Resolution::Dynamic`]. The callee and its receiver come from one
-//! `CallRuntimeForPair(LoadLookupSlotForCall, name)`, so that
+//! `CallRuntimeForPair(LoadLookupSlotForCall, name, strict)`, so that
 //! `with (o) f()` gets `this === o` (§13.3.6.1 EvaluateCall step 1.b, WithBaseObject), and the
 //! call takes the property call path of `call`:
 //!
 //! ```text
-//! LdaConstant name; Star r_name
-//! CallRuntimeForPair LoadLookupSlotForCall, r_name, (r_callee, list[0] = receiver)
+//! LdaConstant name; Star r_name; LdaTrue|LdaFalse; Star r_strict
+//! CallRuntimeForPair LoadLookupSlotForCall, r_name-r_strict, (r_callee, list[0] = receiver)
 //! <arguments into list[1..]>
 //! CallProperty r_callee, list
 //! ```
@@ -25,23 +25,43 @@
 //! ```text
 //! LdaConstant name; Star r_name
 //! CallRuntime ResolveLookupSlot, r_name; Star r_env       (Prepared::Dynamic)
-//! [CallRuntime LoadLookupSlotResolved, r_env-r_name]      (compound, logical, update)
+//! [LdaTrue|LdaFalse; Star r_value                         (compound, logical, update:
+//!  CallRuntime LoadLookupSlotResolved, r_env-r_value]       r_value holds the strictness)
 //! <right-hand side>; Star r_value; LdaTrue|LdaFalse; Star r_strict
 //! CallRuntime StoreLookupSlotResolved, r_env-r_strict     (acc = the value)
 //! ```
 //!
-//! Callers: `expr.rs` (`assignment`, `update`, `get_prepared`, `put_prepared`) and `stmt.rs`
-//! (`var_decl`). `StaLookupSlot` (which resolves at the store) stays where no code runs
-//! between the reference and the store, so both orders give the same result: a plain `=` or
-//! `var x =` whose value is a literal or a function ([`runs_no_code`]), a for-in/of head and
-//! a destructuring target (their store follows the value).
+//! A destructuring target (assignment pattern, or a `var` binding pattern) is resolved the
+//! same way before its value is read: before GetV, the iterator step and the default
+//! (§13.15.5.3-6, §8.6.3, §8.6.4; `pattern.rs`).
+//!
+//! Callers: `expr.rs` (`assignment`, `update`, `get_prepared`, `put_prepared`), `stmt.rs`
+//! (`var_initializer`: `var x = v` and the Annex B.3.5 `for (var x = v in o)` head) and `pattern.rs` (`prepare_element`, the shorthand property).
+//! `StaLookupSlot` (which resolves at the store) stays where no code runs between the
+//! reference and the store, so both orders give the same result: a plain `=` or `var x =`
+//! whose value is a literal or a function ([`runs_no_code`]), and a plain identifier head of
+//! a for-in/of (`for (x of o)`, `for (var x in o)`: its store follows the value).
+//!
+//! GetValue of a dynamic name takes the strictness of the use site (§9.4.2 step 3): a `with`
+//! binding that is gone by then reads as undefined in sloppy code and throws a ReferenceError
+//! in strict code (§9.1.1.2.6 step 2). `LdaLookupSlot` and `LdaLookupSlotInsideTypeof` take the
+//! strictness of the function in the VM, so a strict read in a sloppy function (a class
+//! heritage or computed key, §11.2.2) uses the resolved form ([`FnGen::load_dynamic_strict`];
+//! `typeof` of an unresolvable name gives undefined, §13.5.3.1 step 3.a):
+//!
+//! ```text
+//! LdaConstant name; Star r_name; CallRuntime ResolveLookupSlot, r_name; Star r_env
+//! [JumpIfNull L_undefined]                                 (typeof)
+//! LdaTrue; Star r_value; CallRuntime LoadLookupSlotResolved, r_env-r_value
+//! [Jump L_end; L_undefined: LdaUndefined; L_end:]          (typeof)
+//! ```
 
 use ep9_bytecode::{Register, RegisterList, RuntimeId};
 use oxc_ast::ast::{Expression, IdentifierReference};
 
 use super::expr::Prepared;
 use super::func::{FnGen, Gen};
-use crate::scope::Resolution;
+use crate::scope::{Reference, Resolution};
 
 impl<'a, 's> FnGen<'a, 's> {
     /// Evaluates the callee `callee_expr` (the identifier `id`, maybe in parentheses) into
@@ -57,11 +77,14 @@ impl<'a, 's> FnGen<'a, 's> {
         // `(f)()`: a parenthesized reference is still a reference (§13.2.9.1), so the
         // receiver is the same; `callee_expr` only adds the parentheses.
         let _ = callee_expr;
+        let strict = self.strict_at(self.reference_of(id)?);
         let list = self.temps(1 + n);
         let m = self.mark();
-        let name = self.temp();
+        let args = self.temps(2);
         let k = self.str_const(id.name.as_str());
-        self.b.lda_constant(k).star(name);
+        self.b.lda_constant(k).star(args.get(0));
+        self.lda_bool(strict);
+        self.b.star(args.get(1));
         let adjacent = matches!(
             (callee.local_index(), list.first().local_index()),
             (Some(c), Some(l)) if l == c + 1
@@ -72,12 +95,8 @@ impl<'a, 's> FnGen<'a, 's> {
             self.temps(2)
         };
         self.expr_pos(id.span.start);
-        self.b.call_runtime_for_pair(
-            RuntimeId::LoadLookupSlotForCall,
-            RegisterList::new(name.local_index().expect("a temporary"), 1),
-            1,
-            out,
-        );
+        self.b
+            .call_runtime_for_pair(RuntimeId::LoadLookupSlotForCall, args, 2, out);
         if !adjacent {
             self.b.mov(out.get(0), callee).mov(out.get(1), list.get(0));
         }
@@ -94,33 +113,70 @@ impl<'a, 's> FnGen<'a, 's> {
         if !matches!(r.resolution, Resolution::Dynamic { .. }) {
             return p;
         }
+        let regs = self.resolve_into_temps(r);
+        Prepared::Dynamic { r, regs }
+    }
+
+    /// `regs[0] = ResolveLookupSlot(regs[1] = name of r)` in 4 new temporaries
+    /// [environment, name, value, strict]; the accumulator holds the environment.
+    fn resolve_into_temps(&mut self, r: &Reference) -> RegisterList {
         let regs = self.temps(4);
         let k = self.name_const(r.name);
         self.b.lda_constant(k).star(regs.get(1));
         self.expr_pos(r.span.start);
         self.runtime(RuntimeId::ResolveLookupSlot, sub_list(regs, 1, 1));
         self.b.star(regs.get(0));
-        Prepared::Dynamic { r, regs }
+        regs
     }
 
-    /// `acc = GetValue` of a reference that [`Self::resolve_dynamic`] resolved into `regs`.
-    pub(crate) fn load_resolved(&mut self, at: u32, regs: RegisterList) {
+    /// `acc = GetValue` of a reference that [`Self::resolve_dynamic`] resolved into `regs`
+    /// (`strict`: the read is in strict code). The strictness goes in the value register, which
+    /// is free until the store.
+    pub(crate) fn load_resolved(&mut self, at: u32, regs: RegisterList, strict: bool) {
+        self.lda_bool(strict);
+        self.b.star(regs.get(2));
         self.expr_pos(at);
-        self.runtime(RuntimeId::LoadLookupSlotResolved, sub_list(regs, 0, 2));
+        self.runtime(RuntimeId::LoadLookupSlotResolved, sub_list(regs, 0, 3));
+    }
+
+    /// `acc = GetValue` of the dynamic reference `r` in strict code inside a sloppy function
+    /// (see the module doc): ResolveBinding, then (for `typeof`, unless unresolvable) a strict
+    /// GetValue.
+    pub(crate) fn load_dynamic_strict(&mut self, r: &Reference, inside_typeof: bool) {
+        let m = self.mark();
+        let regs = self.resolve_into_temps(r);
+        let labels = inside_typeof.then(|| {
+            let (undefined, end) = (self.b.new_label(), self.b.new_label());
+            self.b.jump_if_null(undefined);
+            (undefined, end)
+        });
+        self.load_resolved(r.span.start, regs, true);
+        if let Some((undefined, end)) = labels {
+            self.b.jump(end);
+            self.b.bind(undefined);
+            self.b.lda_undefined();
+            self.b.bind(end);
+        }
+        self.release(m);
     }
 
     /// PutValue of the accumulator to that reference (`strict`: the store is in strict code).
     /// The accumulator holds the value afterwards.
     pub(crate) fn store_resolved(&mut self, at: u32, regs: RegisterList, strict: bool) {
         self.b.star(regs.get(2));
-        if strict {
+        self.lda_bool(strict);
+        self.b.star(regs.get(3));
+        self.expr_pos(at);
+        self.runtime(RuntimeId::StoreLookupSlotResolved, regs);
+    }
+
+    /// `acc = true` or `false`.
+    fn lda_bool(&mut self, v: bool) {
+        if v {
             self.b.lda_true();
         } else {
             self.b.lda_false();
         }
-        self.b.star(regs.get(3));
-        self.expr_pos(at);
-        self.runtime(RuntimeId::StoreLookupSlotResolved, regs);
     }
 }
 
@@ -265,6 +321,16 @@ mod tests {
         let lines = code("with (o) { x++; }");
         assert!(at(&lines, resolve) < at(&lines, load), "{lines:#?}");
         assert!(at(&lines, load) < at(&lines, store), "{lines:#?}");
+        // Annex B.3.5 `for (var x = v in o)`: the initializer the same way; the store of
+        // each key (after ForInNext) keeps StaLookupSlot.
+        let lines = code("with (o) { for (var x = f() in {}); }");
+        assert!(at(&lines, resolve) < at(&lines, call), "{lines:#?}");
+        assert!(at(&lines, call) < at(&lines, store), "{lines:#?}");
+        assert!(at(&lines, store) < at(&lines, "ForInNext"), "{lines:#?}");
+        assert!(
+            at(&lines, "ForInNext") < at(&lines, "StaLookupSlot"),
+            "{lines:#?}"
+        );
     }
 
     /// A value that runs no code keeps the one-step `StaLookupSlot` (both orders agree).
@@ -298,6 +364,85 @@ mod tests {
         .unwrap();
         let text = ep9_bytecode::disassemble(unit.unit());
         assert!(text.contains("slots=[\"g\":function-name]"), "{text}");
+    }
+
+    /// GetValue takes the strictness of the use site (M2-P2 review fix L6): a read in a class
+    /// heritage or computed key (strict code, §11.2.2) in a sloppy script resolves first and
+    /// reads with `true` (with a null check for `typeof`), a sloppy read keeps
+    /// `LdaLookupSlot`, and a dynamic call passes its strictness to `LoadLookupSlotForCall`.
+    #[test]
+    fn a_strict_read_in_sloppy_code_is_resolved() {
+        let count = |lines: &[String], op: &str| lines.iter().filter(|l| l.starts_with(op)).count();
+        let lines =
+            code("with (o) { x; class C extends (y, Object) { [typeof z]() {} [f()]() {} } }");
+        assert_eq!(count(&lines, "LdaLookupSlot "), 1, "{lines:#?}");
+        assert_eq!(count(&lines, "LdaLookupSlotInsideTypeof"), 0, "{lines:#?}");
+        // y, Object (also dynamic inside `with`) and z.
+        assert_eq!(
+            count(&lines, "CallRuntime ResolveLookupSlot"),
+            3,
+            "{lines:#?}"
+        );
+        assert_eq!(
+            count(&lines, "CallRuntime LoadLookupSlotResolved"),
+            3,
+            "{lines:#?}"
+        );
+        assert_eq!(count(&lines, "JumpIfNull"), 1, "{lines:#?}");
+        for (i, l) in lines.iter().enumerate() {
+            if l.starts_with("CallRuntime LoadLookupSlotResolved") {
+                assert_eq!(lines[i - 2], "LdaTrue", "{lines:#?}");
+            }
+        }
+        let call = at(&lines, "CallRuntimeForPair LoadLookupSlotForCall");
+        assert_eq!(lines[call - 2], "LdaTrue", "{lines:#?}");
+        let sloppy = code("with (o) { f(); }");
+        let call = at(&sloppy, "CallRuntimeForPair LoadLookupSlotForCall");
+        assert_eq!(sloppy[call - 2], "LdaFalse", "{sloppy:#?}");
+    }
+
+    /// Destructuring targets resolve before their value (M2-P2 review fix L7): the shorthand
+    /// `{ x }` and the `var` property `{ y }` resolve before their `GetNamedProperty`, the
+    /// array element `z` before the iterator's `next` call, and all three store through the
+    /// resolved reference.
+    #[test]
+    fn a_destructuring_target_is_resolved_before_its_value() {
+        let lines = code("with (o) { ({ x } = v); var { y } = v; [z] = v; }");
+        let resolves: Vec<usize> = (0..lines.len())
+            .filter(|&i| lines[i].starts_with("CallRuntime ResolveLookupSlot"))
+            .collect();
+        assert_eq!(resolves.len(), 3, "{lines:#?}");
+        let after = |i: usize, op: &str| {
+            i + lines[i..]
+                .iter()
+                .position(|l| l.starts_with(op))
+                .unwrap_or_else(|| panic!("no {op} after {i} in {lines:#?}"))
+        };
+        assert!(
+            after(resolves[0], "GetNamedProperty") < resolves[1],
+            "{lines:#?}"
+        );
+        assert!(
+            after(resolves[1], "GetNamedProperty") < resolves[2],
+            "{lines:#?}"
+        );
+        let next = after(resolves[2], "CallProperty0");
+        assert!(
+            after(resolves[2], "CallRuntime StoreLookupSlotResolved") > next,
+            "{lines:#?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.starts_with("CallRuntime StoreLookupSlotResolved"))
+                .count(),
+            3,
+            "{lines:#?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.starts_with("StaLookupSlot")),
+            "{lines:#?}"
+        );
     }
 
     /// A callee that is not a dynamic lookup keeps the plain call.
