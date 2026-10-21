@@ -1,3 +1,10 @@
 # ep9 builtin ids: module symbol, block 7. Append-only (H20, W4-BUILTIN-IDS): never
 # reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
 # id     block.index  kind         length  name  (installed as)
+0x0e00   7.0          constructor  0       "Symbol"  (%Symbol%)
+0x0e01   7.1          method       1       "for"  (%Symbol%.for w-c)
+0x0e02   7.2          method       1       "keyFor"  (%Symbol%.keyFor w-c)
+0x0e03   7.3          method       0       "toString"  (%Symbol.prototype%.toString w-c)
+0x0e04   7.4          method       0       "valueOf"  (%Symbol.prototype%.valueOf w-c)
+0x0e05   7.5          method       1       "[Symbol.toPrimitive]"  (%Symbol.prototype%.[Symbol.toPrimitive] --c)
+0x0e06   7.6          getter       0       "description"  (not installed)
