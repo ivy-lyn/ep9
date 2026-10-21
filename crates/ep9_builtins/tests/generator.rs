@@ -1,8 +1,7 @@
-//! JS-level generator tests (P1-GEN-VM, M2-P1-GEN-JSTESTS). They need BytecodeGen support
-//! (P1-GEN-CG), which merges after P1-GEN-VM (plan §9), so they are ignored on the GEN-VM
-//! branch; the P1 integration fixer removes the ignores after the GEN-CG merge. The expected
-//! lines come from node v24 (`print` = `console.log`). Every check runs with and without GC
-//! stress (`common::run_both`), except the deep chain (GC stress is too slow for it).
+//! JS-level generator tests (P1-GEN-VM, M2-P1-GEN-JSTESTS), run through BytecodeGen
+//! (P1-GEN-CG). The expected lines come from node v24 (`print` = `console.log`). Every check
+//! runs with and without GC stress (`common::run_both`), except the deep chain (GC stress is
+//! too slow for it).
 
 mod common;
 
@@ -14,7 +13,6 @@ fn lines(v: &[&str]) -> Result<Vec<String>, String> {
 
 /// next/return/throw, sent values, the completed state.
 #[test]
-#[ignore = "needs P1-GEN-CG"]
 fn basic() {
     assert_eq!(
         run_both(
@@ -40,7 +38,6 @@ try { it.throw(9); } catch (e) { print('caught', e); }"#
 
 /// return and throw run `finally` blocks; a yield inside `finally`; a caught throw.
 #[test]
-#[ignore = "needs P1-GEN-CG"]
 fn finally() {
     assert_eq!(
         run_both(
@@ -64,7 +61,6 @@ var it5 = g(); r = it5.return(4); print(r.value, r.done);"#
 
 /// `yield*`: values, sent values, return and throw forwarding, the missing `throw` method (§15.5.5 step 7.b.iii), strings and arrays.
 #[test]
-#[ignore = "needs P1-GEN-CG"]
 fn delegate() {
     assert_eq!(
         run_both(
@@ -99,9 +95,10 @@ print([...s()].join());"#
     );
 }
 
-/// yields inside loops (a SwitchOnSmi at each loop header), labeled continue, for-of, closures over loop bindings, early break closes the generator.
+/// yields inside loops (each resume point is an entry of the prologue SwitchOnGeneratorState
+/// table, M2-P1-GEN-LOOPS-DIRECT), labeled continue, for-of, closures over loop bindings,
+/// early break closes the generator.
 #[test]
-#[ignore = "needs P1-GEN-CG"]
 fn loops() {
     assert_eq!(
         run_both(
@@ -134,7 +131,6 @@ var [a, b] = range(10); print(a, b);"#
 
 /// the prototype chain of generator functions and generator objects (§15.5.3, §15.5.4, §27.3.3, §27.5.1), generator methods.
 #[test]
-#[ignore = "needs P1-GEN-CG"]
 fn objects() {
     assert_eq!(
         run_both(
@@ -175,7 +171,6 @@ print(o.m.constructor === GF, o.m.hasOwnProperty('prototype'));"#
 
 /// `this` and the arguments object survive suspends; parameter defaults and rest.
 #[test]
-#[ignore = "needs P1-GEN-CG"]
 fn this_args() {
     assert_eq!(
         run_both(
@@ -193,7 +188,6 @@ function* s() { 'use strict'; yield this; } print(s().next().value);"#
 
 /// the executing-state TypeError; a throw from the body closes the generator; GeneratorValidate.
 #[test]
-#[ignore = "needs P1-GEN-CG"]
 fn states() {
     assert_eq!(
         run_both(
@@ -224,7 +218,6 @@ try { next.call(undefined); } catch (e) { print(e.constructor.name); }"#
 /// checked native level each (`call::run_resumed`), so the overflow is a catchable RangeError
 /// (plan-v3 P1-GEN-VM acceptance). No GC stress.
 #[test]
-#[ignore = "needs P1-GEN-CG"]
 fn a_deep_yield_star_chain_is_a_catchable_range_error() {
     let src = r#"function* d(n) { if (n > 0) yield* d(n - 1); else yield 0; }
 try { d(1e5).next(); print('no error'); } catch (e) { print(e instanceof RangeError); }
