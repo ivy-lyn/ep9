@@ -17,10 +17,23 @@
 //!
 //! Host functions use the builtin ABI (H20, abi/mod.rs). [`call_host`] checks the throw
 //! protocol in debug builds: `Err` comes with a pending exception and `Ok` without one.
+//!
+//! Bound functions (§10.4.1, `bound.rs`) never get a frame. [`call_with`] and
+//! [`construct_with`] walk the chain to the innermost target FUNCTION and call it with the
+//! bound arguments in front of the caller's (`bound::chain_arg`), as `slow::call` does for
+//! bytecode callers:
+//!
+//! ```text
+//! call_with(f) ──── FUNCTION ──────────────────────────────> call_function_object(f)
+//!             └──── BOUND: unwrap(f) ─> (target, boundThis, bound ++ args)
+//! construct_with(f, nt) ── FUNCTION ───────────────────────> construct_function_object(f, nt)
+//!                       └─ BOUND: unwrap(f, nt) ─> (target, bound ++ args, nt == F ? target : nt)
+//! ```
 
 use ep9_value::Throw;
 
 use crate::abi::{self, Args, Local};
+use crate::bound;
 use crate::conv::Res;
 use crate::error::{FrameRef, not_implemented, stack_overflow, throw_error};
 use crate::frame::{CONSTRUCT_BIT, HEADER, HOLE, NULL, UNDEFINED, int32_bits, native_of, slot};
@@ -211,6 +224,8 @@ pub(crate) fn call_function(cx: &mut Cx, f: u64, this: u64, args: &[u64]) -> Res
 /// Call(F, thisArg, args) or the call step of `[[Construct]]` (`new_target` not undefined)
 /// from Rust, with `argc` arguments that `arg(i)` reads. The arguments are copied once, into
 /// the callee frame; `arg` may read the caller's frame or scratch area (H20 `call_args`).
+/// A bound `f` (§10.4.1.1 `[[Call]]`) calls its innermost target with the bound `this` and
+/// the bound arguments in front; its `[[Construct]]` goes through [`construct_with`].
 pub(crate) fn call_with(
     cx: &mut Cx,
     f: u64,
@@ -219,15 +234,51 @@ pub(crate) fn call_with(
     arg: impl Fn(u32) -> u64,
     new_target: u64,
 ) -> Res<u64> {
-    let rt = cx.rt();
     if !is_callable(f) {
         let msg = format!("{} is not a function", crate::conv::describe(f));
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     }
-    if !is_function(f) {
-        // A bound function: its [[Call]] comes with Function.prototype.bind.
-        return Err(not_implemented(cx, "[[Call]] of a bound function"));
+    if is_function(f) {
+        return call_function_object(cx, f, this, argc, arg, new_target);
     }
+    // A bound function: `construct_with` unwraps it before the call step.
+    debug_assert!(new_target == UNDEFINED, "[[Construct]] of a bound function");
+    // §10.4.1.1 steps 1-5: Call(target, boundThis, boundArgs ++ argumentsList). `f` stays in
+    // this frame (the closure reads it), so the chain stays rooted until the frame push.
+    let Some(u) = bound::unwrap(f, UNDEFINED) else {
+        return stack_overflow(cx);
+    };
+    let Some(total) = u.bound.checked_add(argc) else {
+        return stack_overflow(cx);
+    };
+    let bound = u.bound;
+    call_function_object(
+        cx,
+        u.target,
+        u.this,
+        total,
+        |i| {
+            if i < bound {
+                bound::chain_arg(f, bound, i)
+            } else {
+                arg(i - bound)
+            }
+        },
+        UNDEFINED,
+    )
+}
+
+/// [`call_with`] for a FUNCTION `f` (a host or a bytecode function).
+fn call_function_object(
+    cx: &mut Cx,
+    f: u64,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    new_target: u64,
+) -> Res<u64> {
+    debug_assert!(is_function(f));
+    let rt = cx.rt();
     if !rt.native_stack_ok() {
         return stack_overflow(cx);
     }
@@ -294,7 +345,8 @@ pub(crate) fn call_with(
 /// reads. `new_target` must be a constructor; it gives the prototype of the new object
 /// (OrdinaryCreateFromConstructor) and `new.target` in the callee. A derived class
 /// constructor gets no object: its `this` starts uninitialized, as in the `Construct` slow
-/// path.
+/// path. A bound `f` (§10.4.1.2) constructs its innermost target with the bound arguments in
+/// front, and new.target becomes the target while it is the bound function.
 pub(crate) fn construct_with(
     cx: &mut Cx,
     f: u64,
@@ -308,20 +360,52 @@ pub(crate) fn construct_with(
             return Err(throw_error(cx, ErrorKind::TypeError, &msg));
         }
     }
-    if !is_function(f) {
-        // A bound function: its [[Construct]] comes with Function.prototype.bind.
-        return Err(not_implemented(cx, "[[Construct]] of a bound function"));
+    if is_function(f) {
+        return construct_function_object(cx, f, argc, arg, new_target);
     }
+    // §10.4.1.2 steps 1-6: Construct(target, boundArgs ++ argumentsList, newTarget), with
+    // newTarget = target while it is the bound function. `f` stays in this frame (the
+    // closure reads it), so the chain stays rooted until the frame push.
+    let Some(u) = bound::unwrap(f, new_target) else {
+        return stack_overflow(cx);
+    };
+    let Some(total) = u.bound.checked_add(argc) else {
+        return stack_overflow(cx);
+    };
+    let bound = u.bound;
+    construct_function_object(
+        cx,
+        u.target,
+        total,
+        |i| {
+            if i < bound {
+                bound::chain_arg(f, bound, i)
+            } else {
+                arg(i - bound)
+            }
+        },
+        u.new_target,
+    )
+}
+
+/// [`construct_with`] for a FUNCTION `f` with `[[Construct]]` (§10.2.2).
+fn construct_function_object(
+    cx: &mut Cx,
+    f: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    new_target: u64,
+) -> Res<u64> {
     let fi = function_info(f);
     if fi.host.is_some() {
-        return call_with(cx, f, UNDEFINED, argc, arg, new_target);
+        return call_function_object(cx, f, UNDEFINED, argc, arg, new_target);
     }
     let this = if fi.is_derived() {
         HOLE
     } else {
         ordinary_create_from_constructor(cx, new_target)?
     };
-    let r = call_with(cx, f, this, argc, arg, new_target)?;
+    let r = call_function_object(cx, f, this, argc, arg, new_target)?;
     // §10.2.2 steps 10-12, as `interp::construct_return` does for JS callers.
     Ok(if is_object(r) {
         r
