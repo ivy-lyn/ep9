@@ -526,9 +526,11 @@ pub(crate) fn array_get(a: u64, i: u32) -> Option<u64> {
 }
 
 /// Stores element `i`, growing the array; [`HOLE`] removes it. False if `i` is past the v0
-/// dense limit. A raw store: callers check `[[Extensible]]` for a new element. Every element
-/// write goes through here and [`array_set_length`]: an element that appears or goes away is
-/// a structural change of a prototype (OM-8, `shape::note_change`); a value store is not.
+/// dense limit. A raw store: callers check `[[Extensible]]` for a new element, and a
+/// `[[Set]]` caller the prototype chain (`shape::proto_index_keys`). Every element write goes
+/// through here and [`array_set_length`]: an element that appears or goes away is a
+/// structural change of a prototype (OM-8, `shape::note_change`); a value store is not. An
+/// element that appears on a prototype also sets `shape::proto_index_keys`.
 pub(crate) fn array_set(rt: &Runtime, a: u64, i: u32, v: u64) -> bool {
     if i >= arr::MAX_LENGTH {
         return false;
@@ -554,6 +556,9 @@ pub(crate) fn array_set(rt: &Runtime, a: u64, i: u32, v: u64) -> bool {
         wr(&rt.heap, cell(a), arr::LENGTH, int32_bits(i as i32 + 1));
     }
     if structural {
+        if v != HOLE {
+            shape::note_proto_index_key(rt, a);
+        }
         shape::note_change(rt, a);
     }
     true

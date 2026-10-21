@@ -360,6 +360,9 @@ pub(crate) fn own_add(rt: &Runtime, o: u64, key: u64, v: u64, attrs: i32) {
         "a stored key is an atom"
     );
     debug_assert!(own_get(o, key).is_none(), "own_add of a key the object has");
+    if shape::is_prototype_object(o) && key::array_index_of(key).is_some() {
+        shape::note_proto_index_key(rt, o);
+    }
     if kind::is_function(o) && key != rt.atom(Atom::Prototype) {
         // A lazy `prototype` is older than `key`: make it now so it keeps its place in
         // `[[OwnPropertyKeys]]` (`exotic::lazy_prototype_key`). GC point: `o`, `key` and `v`

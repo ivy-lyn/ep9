@@ -340,10 +340,14 @@ fn define_on_receiver(cx: &mut Cx, receiver: u64, key: u64, v: u64) -> Res<bool>
     }
 }
 
-/// Stores element `i` of the array `a` unless that adds an element to a non-extensible
-/// array. False if it stored nothing (also past the v0 dense limit).
+/// `a[i] = v` on the array `a` (receiver `a`) without the walk: an existing element is a
+/// writable own data property (§10.1.9.2 step 2.d). A missing one is added (step 2.e) only
+/// if `a` is extensible and no prototype has an index key (`shape::proto_index_keys`).
+/// Otherwise the caller takes the walk (step 1.b), where an inherited setter, a getter
+/// without a setter or a read-only property `i` decides. False if it stored nothing (also
+/// past the v0 dense limit).
 fn array_store(rt: &Runtime, a: u64, i: u32, v: u64) -> bool {
-    if object::array_get(a, i).is_none() && !is_extensible(a) {
+    if object::array_get(a, i).is_none() && (!is_extensible(a) || shape::proto_index_keys(rt)) {
         return false;
     }
     object::array_set(rt, a, i, v)

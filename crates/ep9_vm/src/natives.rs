@@ -894,6 +894,10 @@ pub(crate) fn array_push<'s>(
         ));
     };
     let a = a.bits();
+    if crate::shape::proto_index_keys(cx.inner().rt()) {
+        // A prototype may have an index key: each store is a `[[Set]]` walk.
+        return push_with_set(cx.inner(), a, args).map(local);
+    }
     for v in args.iter() {
         let n = object::array_len(a);
         // Set(O, n, v, true): a non-extensible array rejects the new element.
@@ -906,4 +910,26 @@ pub(crate) fn array_push<'s>(
         }
     }
     Ok(local(num(f64::from(object::array_len(a)))))
+}
+
+/// Array.prototype.push steps 2-7 on the array `a` with `[[Set]]` for every store, so an
+/// inherited setter, getter or read-only index property decides (`shape::proto_index_keys`).
+/// Out of line, so the fast loop of [`array_push`] stays small.
+#[cold]
+#[inline(never)]
+fn push_with_set(cx: &mut Cx, a: u64, args: Args<'_>) -> JsResult<u64> {
+    // 2. Let len be ? LengthOfArrayLike(O).
+    let mut len = f64::from(object::array_len(a));
+    // 5. For each element E of items: Set(O, ! ToString(𝔽(len)), E, true); len = len + 1.
+    for v in args.iter() {
+        // GC point: `a` lives in a Rust local, `v` in the argument list.
+        let key = conv::number_string(cx, len);
+        property::set(cx, a, key, v.bits(), true)?;
+        len += 1.0;
+    }
+    // 6. Perform ? Set(O, "length", 𝔽(len), true).
+    let key = cx.rt().atom(Atom::Length);
+    property::set(cx, a, key, num(len), true)?;
+    // 7. Return 𝔽(len).
+    Ok(num(len))
 }
