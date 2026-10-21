@@ -5,7 +5,7 @@
 //! | Check | Rule | How |
 //! |---|---|---|
 //! | banned symbols | No undefined reference to a libm-class symbol (`BANNED_BASE` and `BANNED_EXTRA`: transcendental `math.h` names with their `f`/`l` forms, `fma`, `fmod`, `remainder`, `remquo`, the compiler-rt `__powi*` helpers, Apple/MSVC/glibc aliases) unless `expectations/fp-check-allow.toml` lists that symbol in that function | `llvm-nm -u` on the object; `llvm-objdump -dr -C` names the function of each relocation to the symbol |
-//! | FMA instructions | FMA mnemonics (aarch64 `fmadd fmsub fnmadd fnmsub fmla* fmls* fnmla fnmls`, SVE `fmad fmsb fnmad fnmsb`, `bfmla bfmls`; x86 `vfmadd* vfmsub* vfnmadd* vfnmsub*`) only in `ep9_math::` functions | the same disassembly |
+//! | FMA instructions | FMA mnemonics (aarch64 `fmadd fmsub fnmadd fnmsub fmla* fmls* fnmla fnmls`, SVE `fmad fmsb fnmad fnmsb`, `bfmla bfmls`; x86 `vfmadd* vfmsub* vfnmadd* vfnmsub*`) only in `ep9_math::` functions | the same disassembly; on x86-64 Mach-O without the jump-table bytes (LC_DATA_IN_CODE), and decoded again from each table end, as in `disasm-check` |
 //! | second math crate | `libm`, `pxfm`, `core_maths` and `micromath` are not in the package's normal or build graph, on any target | `cargo tree -e normal,build --target all` |
 //! | allow sites | `clippy::disallowed_methods` is named (allow, expect, cfg_attr) only in `crates/ep9_math/src/exact.rs`; `tools/*` may name it | text scan of `crates/**/*.rs`; syn names the enclosing item |
 //!
@@ -43,7 +43,10 @@ use quote::ToTokens;
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
 
-use crate::disasm::{ALL_TARGETS, Block, find_tool, parse_disasm, repo_root, run_capture};
+use crate::disasm::{
+    ALL_TARGETS, Block, drop_data, find_tool, parse_data_in_code, parse_disasm,
+    redecode_after_data, repo_root, run_capture,
+};
 
 const USAGE: &str = "\
 usage: cargo xtask fp-check [options]
@@ -721,18 +724,30 @@ fn parse_nm_undefined(out: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// Data-in-code ranges `[start, end)` of a Mach-O object (`llvm-objdump --macho
-/// --data-in-code`). In an object file the offsets are addresses.
-fn parse_data_in_code(out: &str) -> Vec<(u64, u64)> {
-    out.lines()
-        .filter_map(|l| {
-            let mut w = l.split_whitespace();
-            let off = u64::from_str_radix(w.next()?.strip_prefix("0x")?, 16).ok()?;
-            let len: u64 = w.next()?.parse().ok()?;
-            w.next()?;
-            Some((off, off + len))
-        })
-        .collect()
+/// x86-64 Mach-O keeps jump tables in `__text` (LC_DATA_IN_CODE), and `-d` decodes their bytes
+/// as code. A decode that runs across a table end hides the instruction there (an FMA, say), so
+/// as in disasm-check the code after each table is decoded again from the table end, and then
+/// the table bytes are dropped. `data`: `(offset, length)` entries; in an object the offsets are
+/// addresses. `dis(start, stop)` disassembles the object from `start` up to `stop` (`None`: the
+/// end).
+fn drop_macho_data(
+    blocks: &mut [Block],
+    data: &[(u64, u64)],
+    mut dis: impl FnMut(u64, Option<u64>) -> Result<Vec<Block>, String>,
+) -> Result<(), String> {
+    let mut starts: Vec<u64> = blocks.iter().map(|b| b.addr).collect();
+    starts.sort_unstable();
+    redecode_after_data(blocks, 0, data, |_, start, stop| {
+        // Stop at the next symbol: the decode selects by address, since a demangled name can
+        // hold commas and `--disassemble-symbols` takes a comma list.
+        let next = starts.get(starts.partition_point(|&a| a < start)).copied();
+        match [stop, next].into_iter().flatten().min() {
+            Some(t) if t <= start => Ok(Vec::new()),
+            stop => dis(start, stop),
+        }
+    })?;
+    drop_data(blocks, 0, data);
+    Ok(())
 }
 
 #[derive(Debug, Default)]
@@ -819,16 +834,21 @@ fn scan_object(objdump: &Path, nm: &Path, obj: &Path) -> Result<ObjScan, String>
             Command::new(nm).args(["-C", "--defined-only"]).arg(obj),
         )?);
         if arch_of(&format)? == Arch::X64 {
-            // x86-64 Mach-O keeps jump tables in __text; their bytes are not instructions.
             let data = parse_data_in_code(&run_capture(
                 Command::new(objdump)
                     .args(["--macho", "--data-in-code"])
                     .arg(obj),
             )?);
-            for b in &mut blocks {
-                b.insns
-                    .retain(|i| !data.iter().any(|&(s, e)| (s..e).contains(&i.addr)));
-            }
+            drop_macho_data(&mut blocks, &data, |start, stop| {
+                let out = run_capture(
+                    Command::new(objdump)
+                        .args(["-d", "-r", "-C", "--no-show-raw-insn"])
+                        .arg(format!("--start-address={start:#x}"))
+                        .args(stop.map(|t| format!("--stop-address={t:#x}")))
+                        .arg(obj),
+                )?;
+                Ok(parse_disasm(&out).1)
+            })?;
         }
     }
     let undefined: BTreeSet<String> =
@@ -1403,10 +1423,87 @@ reopen = "x"
         assert!(p.contains("libm") && p.contains("ep9_cli") && p.contains("libc"));
         let dice = "f.o:\nData in code table (2 entries)\noffset     length kind\n\
                     0x0000c7a4    268 JUMP_TABLE32\n0x0000ed90     76 JUMP_TABLE32\n";
+        assert_eq!(parse_data_in_code(dice), [(0xc7a4, 268), (0xed90, 76)]);
+    }
+
+    // x86-64 Mach-O from the `jump-table-fma` fixture (tests/fpcheck): a jump table at 0x14..0x1c
+    // (`.data_region jt32`), then a `vfmadd213sd` at 0x1c. `-d` decodes across the table end:
+    // `addb %al, %ah` at 0x1b takes the byte 0xc4 of the FMA.
+    const JT_FIRST: &str = "fx.o:\tfile format mach-o 64-bit x86-64
+
+0000000000000000 <_fx_table_fma>:
+       0:      \tleaq\t0xd(%rip), %rcx         ## 0x14 <_fx_table_fma+0x14>
+       7:      \tandl\t$0x1, %edi
+       a:      \tmovslq\t(%rcx,%rdi,4), %rax
+       e:      \taddq\t%rcx, %rax
+      11:      \tjmpq\t*%rax
+      13:      \tnop
+      14:      \torb\t%al, (%rax)
+      16:      \taddb\t%al, (%rax)
+      18:      \t<unknown>
+      19:      \taddb\t%al, (%rax)
+      1b:      \taddb\t%al, %ah
+      1d:      \tloop\t0x10 <_fx_table_fma+0x10>
+      1f:      \ttestl\t$0xfbc5c3c2, %eax       ## imm = 0xFBC5C3C2
+      24:      \tpopq\t%rcx
+      25:      \troll\t$0xfb, %ebp
+      28:      \tpopq\t%rax
+      29:      \tretq\t$0xfc3                  ## imm = 0xFC3
+      2c:      \t<unknown>
+      2d:      \taddb\t%r8b, (%rax)
+
+0000000000000030 <core::ptr::drop_glue::<std::env::Args>>:
+      30:      \tpushq\t%rbp
+";
+    // The same file with `--start-address=0x1c --stop-address=0x30`.
+    const JT_AFTER: &str = "fx.o:\tfile format mach-o 64-bit x86-64
+
+0000000000000000 <_fx_table_fma>:
+      1c:      \tvfmadd213sd\t%xmm2, %xmm1, %xmm0 ## xmm0 = (xmm1 * xmm0) + xmm2
+      21:      \tretq
+      22:      \tvmulsd\t%xmm1, %xmm0, %xmm0
+      26:      \tvaddsd\t%xmm2, %xmm0, %xmm0
+      2a:      \tretq
+      2b:      \tnopl\t(%rax,%rax)
+";
+
+    #[test]
+    fn macho_fma_after_jump_table() {
+        let format = "mach-o 64-bit x86-64";
+        let scan = |blocks: &[Block]| {
+            let names = function_names(blocks, &BTreeMap::new());
+            scan_blocks(format, blocks, &names, &BTreeSet::new()).unwrap()
+        };
+        // Negative control: dropping the table alone hides the FMA.
+        let (_, mut blocks) = parse_disasm(JT_FIRST);
+        drop_data(&mut blocks, 0, &[(0x14, 8)]);
+        assert!(scan(&blocks).fma_outside.is_empty());
+
+        // Decoded again from the table end up to the next symbol, the FMA is found.
+        let (_, mut blocks) = parse_disasm(JT_FIRST);
+        let mut calls = Vec::new();
+        drop_macho_data(&mut blocks, &[(0x14, 8)], |start, stop| {
+            calls.push((start, stop));
+            Ok(parse_disasm(JT_AFTER).1)
+        })
+        .unwrap();
+        assert_eq!(calls, [(0x1c, Some(0x30))]);
         assert_eq!(
-            parse_data_in_code(dice),
-            [(0xc7a4, 0xc7a4 + 268), (0xed90, 0xed90 + 76)]
+            scan(&blocks).fma_outside,
+            [(
+                "_fx_table_fma".to_string(),
+                "vfmadd213sd %xmm2, %xmm1, %xmm0".to_string()
+            )]
         );
+        assert_eq!(blocks[0].insns.last().unwrap().addr, 0x2b);
+
+        // A table that ends where the next symbol starts needs no second decode.
+        let (_, mut blocks) = parse_disasm(JT_FIRST);
+        drop_macho_data(&mut blocks, &[(0x28, 8)], |_, _| {
+            panic!("no decode after a table at a symbol end")
+        })
+        .unwrap();
+        assert_eq!(blocks[0].insns.last().unwrap().addr, 0x25);
     }
 
     #[test]

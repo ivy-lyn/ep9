@@ -513,8 +513,9 @@ fn disassemble(
 /// its start, data included, so on x86 an "instruction" decoded from the data can end past the
 /// range: the code after it is then decoded from a wrong address, or swallowed (a `ret` hidden).
 /// `dis(symbol, start, stop)` disassembles `symbol` from `start` up to `stop` (the next range;
-/// `None`: the symbol end); its instructions replace the ones of the first pass there.
-fn redecode_after_data(
+/// `None`: the symbol end); its instructions replace the ones of the first pass there. fp-check
+/// (fpcheck.rs) uses it too.
+pub(crate) fn redecode_after_data(
     blocks: &mut [Block],
     base: u64,
     data: &[(u64, u64)],
@@ -562,7 +563,7 @@ fn redecode_after_data(
 
 /// Entries `(offset, length)` of `llvm-objdump --macho --data-in-code` output
 /// ("0x0000417c    608 JUMP_TABLE32").
-fn parse_data_in_code(out: &str) -> Vec<(u64, u64)> {
+pub(crate) fn parse_data_in_code(out: &str) -> Vec<(u64, u64)> {
     out.lines()
         .filter_map(|l| {
             let mut w = l.split_whitespace();
@@ -606,7 +607,7 @@ fn macho_dice_base(headers: &str) -> u64 {
 /// Removes the "instructions" that llvm-objdump decoded from data in code. x86-64 Mach-O
 /// keeps jump tables in `__text` after the function's code (LC_DATA_IN_CODE), and `-d` decodes
 /// them as code: false indirect jumps and calls, stack accesses and returns.
-fn drop_data(blocks: &mut [Block], base: u64, data: &[(u64, u64)]) {
+pub(crate) fn drop_data(blocks: &mut [Block], base: u64, data: &[(u64, u64)]) {
     for b in blocks {
         b.insns.retain(|i| {
             !data

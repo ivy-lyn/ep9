@@ -1,7 +1,7 @@
 //! `cargo xtask fp-check` on the fixtures in `tests/fpcheck/` (README there).
 //!
-//! The fixture tests build objects, so they need llvm-tools and the x86_64-unknown-linux-gnu
-//! rustup target: they are `#[ignore]`, and the fp-check host runs them with
+//! The fixture tests build objects, so they need llvm-tools and the x86_64-unknown-linux-gnu and
+//! x86_64-apple-darwin rustup targets: they are `#[ignore]`, and the fp-check host runs them with
 //! `cargo test -p xtask --test fpcheck -- --ignored` [I14]. The other tests need no tool and run
 //! on every runner.
 
@@ -11,6 +11,8 @@ use std::process::{Command, Output};
 
 /// The target the fixtures build for; with `@x86-64-v3` every crate may use FMA instructions.
 const LINUX_X64: &str = "x86_64-unknown-linux-gnu";
+/// x86-64 Mach-O, which keeps jump tables in `__text` (the `jump-table-fma` case).
+const MACOS_X64: &str = "x86_64-apple-darwin";
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fpcheck")
@@ -187,6 +189,26 @@ fn disallowed_methods_allow_outside_exact_rs_fails() {
         fails,
         [
             "fp-check FAIL source: crates/fx_engine/src/lib.rs:4: names clippy::disallowed_methods in fx_engine::allowed_sqrt (only crates/ep9_math/src/exact.rs may)"
+        ],
+        "{out}"
+    );
+}
+
+/// x86-64 Mach-O: an FMA right after a jump table, which `llvm-objdump -d` decodes as code
+/// across the table end, is still found (fp-check decodes again from the table end).
+#[test]
+#[ignore = "needs llvm-tools and the x86_64-apple-darwin target (fp-check host)"]
+fn fma_after_macho_jump_table_fails() {
+    let fx = Fixture::new("jump-table-fma");
+    let (code, out) = run_case(&fx, &[MACOS_X64], &[]);
+    assert_eq!(code, 1, "{out}");
+    assert_eq!(
+        fail_lines(&out),
+        [
+            format!(
+                "fp-check FAIL {MACOS_X64}: FMA instruction `vfmadd213sd %xmm2, %xmm1, %xmm0` in _fx_table_fma: only ep9_math:: functions may use FMA (H36)"
+            )
+            .as_str()
         ],
         "{out}"
     );
