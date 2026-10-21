@@ -74,3 +74,12 @@ Rust API: `UnitHeader::typescript: Option<TsFlags>`; `TsFlags::DEFAULT` is the D
 |---|---|---|---|
 | 2026-10-21 | draft | Header fields: unit flag bits 8-15, `TsFlags`, reader and hash rules | bytecode agent |
 | 2026-10-22 | clarify | Rules: bits 12-15 are zero in ABI 1-3 (was "ABI v1"; ABI_VERSION is 3); the check names its error and says that no test sets those bits yet. The `sample-module.txt` golden sets bit 9 clear, not "all three". No check changes | P2-ACCEPT-1 |
+
+## Review record
+
+| Part (README §3.1) | Who | Result | Ref |
+|---|---|---|---|
+| 1 Reviewer | P2-ACCEPT-1 (did not write the ADR) | Decision = the 02 §6 H3 row. Rules checked against `ep9_bytecode` at 383a317 (the `serialize.rs` flag bits and reader, `TsFlags`, the named tests) and H35 S3. R1: "ABI v1" is now ABI 1-3 (fixed). R2: no test sets a bit 12-15 (the check says so; a test case is reported for the fixer). R3: the golden has bit 9 clear, not "all three set" (fixed). R4: the `serialize.rs` doc "zero in ABI v1" is in a frozen ABI file (reported). Change-log kinds: agree | ccaf5df |
+| 2 Codex | orchestrator | (filled after the P2 merge) | |
+| 3 Verifier | P3-ACCEPT-2 | (filled in P3) | |
+| 4 Data | from the "Validated by" line | `cargo test -p ep9_bytecode --locked`: every suite passes, with `header_errors_map_to_h35_outcomes`, `content_hash_excludes_build_id_and_covers_ts_flags`, the golden test and `random_units_round_trip`. Missing: the M4 lowering tests (M4) | local run, mac a64, 383a317; logs outside the repo: scratchpad m0m2/accept1/h03-ep9_bytecode-test.log |

@@ -147,3 +147,12 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 | 2026-10-22 | clarify | Shape space, Alignment row: the Miri text holds for `ep9_heap` tests only; no `ep9_vm` isolate starts under Miri (M2-P1-MIRI-VM). New Open question H08-Q4. "(P2)" in the Size row now says "(M0 wk4)". No check changes | P2-ACCEPT-1 |
 | 2026-10-22 | clarify | Rules row 1: the size checks are `const` asserts in `ep9_value` and `MIN_CELL_SIZE` in `ep9_heap`; no xtask task checks sizes. No check changes | P2-ACCEPT-1 |
 | 2026-10-22 | fill | H08-Q2 filled with the orchestrator decision M2-H08-Q2: the RW-cell shape guard is not tested in M0; Spike C tests it in M1. Every existing check keeps its result | P2-ACCEPT-1 (decision: orchestrator) |
+
+## Review record
+
+| Part (README §3.1) | Who | Result | Ref |
+|---|---|---|---|
+| 1 Reviewer | P2-ACCEPT-1 (did not write the ADR) | Decision = the 02 §6 H8 row, word for word. Rules checked against `ep9_value` (`Word0`, const asserts), `ep9_heap` (shape space, verifier, the sweep-before-OOM tests) and `ep9_vm` (`shape::heap_config`, `CAGE_ALIGN`, the flag constants). R1: the Miri text holds for `ep9_heap` only; new Q4 (fixed). R2: there is no xtask size task; the check names the real asserts (fixed). R3: Status line (fixed). R4: Q2 filled (M2-H08-Q2). R5: "(P2)" was unclear (fixed). Change-log kinds: agree | ccaf5df |
+| 2 Codex | orchestrator | (filled after the P2 merge) | |
+| 3 Verifier | P3-ACCEPT-2 | (filled in P3) | |
+| 4 Data | from the "Validated by" line | SP-Value: the `ep9_value` const asserts compile and `cargo test -p ep9_value --locked` passes; SP-Value GO (decisions log W4-P4-SPIKE-RECHECK). `cargo test -p ep9_heap --locked` passes, with `a_shape_referenced_only_from_word0_survives` and the 3 sweep-before-OOM tests. Missing: SP-Unit (P4-SP-UNIT); the A2 gate (A2) | local run, mac a64, 383a317; logs outside the repo: scratchpad m0m2/accept1/h08-ep9_value-test.log, h08-ep9_heap-test.log |

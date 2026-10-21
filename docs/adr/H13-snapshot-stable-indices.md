@@ -93,3 +93,12 @@ Copied from the plan row: an external-reference table. Intrinsics in fixed order
 |---|---|---|---|
 | 2026-10-21 | draft | First draft (rules) from 02 §6 row H13, 03 §6 and 07 §3, with the index lists as built at 55c15d0 | P0-DOCS agent (M2-P0) |
 | 2026-10-22 | clarify | Index-list table re-checked at 383a317: 39 realm intrinsics (the golden lists 39), builtin blocks 1-11, and the native `RuntimeTable` is built (offset-order test, no golden). Rules re-checked: the three `native_of` stores into cells (FUNCTION info, CONTEXT scope, FEEDBACK info) each have an index form. No check changes | P2-ACCEPT-1 |
+
+## Review record
+
+| Part (README §3.1) | Who | Result | Ref |
+|---|---|---|---|
+| 1 Reviewer | P2-ACCEPT-1 (did not write the ADR) | Decision = the 02 §6 H13 row. Every order check in the index table exists and passes. The native-word rule holds: 3 `native_of` stores into cells, each with an index form. R1: the table had the 55c15d0 counts and "not built" for the native table; re-checked at 383a317 (fixed). Due in M0, not filled here: H13-Q3 (P4-SP-UNIT fills it). Change-log kinds: agree | ccaf5df |
+| 2 Codex | orchestrator | (filled after the P2 merge) | |
+| 3 Verifier | P3-ACCEPT-2 | (filled in P3) | |
+| 4 Data | from the "Validated by" line | Pass: `the_atoms_list_is_append_only`, `vm_builtin_ids_match_the_golden`, `ids_match_the_goldens`, both swap tests, `abi_version_matches_history`, `well_known_symbols_are_isolate_roots_in_order`, `atoms_and_roots_are_distinct`, both `two_isolates_have_the_same_intrinsic_property_order`, `random_units_round_trip`, `builds_on_other_threads_agree`, `ep9_hash_seed_gives_the_same_hashes_in_two_runs`. Missing: a `Root` order check (H13-Q2, M1); the SP-Unit link-cell test (P4); the A1 snapshot gates (M4) | local run, mac a64, 383a317; logs outside the repo: scratchpad m0m2/accept1/h13-ep9_vm-test.log, h13-ep9_builtins-table.log, h03-ep9_bytecode-test.log |
