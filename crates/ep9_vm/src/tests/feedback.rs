@@ -230,7 +230,30 @@ fn entries_from_rust_count_as_calls() {
     });
 }
 
+// ---- dead cells: the stack must not keep them ----------------------------------------------
+//
+// The GC test below expects the key cell to die, and the value cell to live only through the
+// vector. So no copy of either address may sit where the conservative scan of the collection
+// reads: the callee-saved registers and `[sp, stack high)` at the spill trampoline (ep9_heap
+// css.rs). The cells are made, and read, only below a 64 KiB pad (W4-P3FIX-DEADSHAPE-TEST, as
+// in tests/ic.rs):
+//
+//   test frame        gets only masked addresses, and calls nothing that reads the cells
+//                     before the collection
+//   ---------------   <- the scan stops here (checked: `collect_after_a_pad`)
+//   below_a_pad       DEEP bytes of zeros
+//   ---------------   <- `pad_low`
+//   made_*            frames that make and read the cells (inline(never))
+//
+// A frame may spill a caller-saved register that it never set, such as the unused payload of a
+// returned enum; on x86-64 Linux (debug) that kept a dead shape in tests/ic.rs. Hence every
+// read of the cells happens below the pad.
+
 const MASK: usize = 0x5a5a_5a5a_5a5a_5a5a;
+
+/// Bytes of zeros between the test's frame and the frames that make the cells: far more than a
+/// collection's own frames take (`Isolate::collect_garbage` down to the spill trampoline).
+const DEEP: usize = 64 << 10;
 
 /// Overwrites 256 KiB of stack below the caller, so stale words of returned frames cannot
 /// keep a dead cell alive through the conservative scan.
@@ -238,6 +261,33 @@ const MASK: usize = 0x5a5a_5a5a_5a5a_5a5a;
 fn scrub_stack() {
     let mut words = [0usize; 1 << 15];
     black_box(&mut words);
+}
+
+/// Runs `made` with [`DEEP`] bytes of zeros between its frames and the caller's. `made` must
+/// only call an `#[inline(never)]` function that makes the cells and returns their masked
+/// addresses. Returns that result and `pad_low`, the lowest byte of the pad: every frame of
+/// `made`'s callee lies below it.
+#[inline(never)]
+fn below_a_pad<R>(made: impl FnOnce() -> R) -> (R, usize) {
+    let mut pad = [0u8; DEEP];
+    black_box(&mut pad);
+    let r = made();
+    (r, black_box(&mut pad).as_ptr().addr())
+}
+
+/// Scrubs the stack and collects, after the cells were made by [`below_a_pad`] (which gave
+/// `pad_low`). Then checks that the collection can show something about them: its
+/// conservative scan stopped above the pad, and kept none of `cells` (masked addresses).
+fn collect_after_a_pad(iso: &mut Isolate, pad_low: usize, cells: &[usize]) {
+    scrub_stack();
+    iso.collect_garbage();
+    let high = ep9_platform::current_thread_stack_bounds().unwrap().high;
+    let scan_low = high - 8 * iso.heap().stats().last_stack_words;
+    assert!(
+        scan_low > pad_low,
+        "the conservative scan read the frames below the pad ({scan_low:#x} <= {pad_low:#x})"
+    );
+    assert_not_kept(&iso.rt, cells);
 }
 
 /// Panics if the last conservative scan kept one of `cells` (masked addresses): the check
@@ -254,10 +304,10 @@ fn assert_not_kept(rt: &Runtime, cells: &[usize]) {
 }
 
 /// Fills slot 0 of `v` with (a new string, a new object) and slot 1 with (the global object,
-/// 5), in a frame of its own. Returns the masked addresses of the string and the object, so
-/// no stack word points at them.
+/// 5), in a frame of its own. Run it [`below_a_pad`]. Returns the masked addresses of the
+/// string and the object, so no stack word points at them.
 #[inline(never)]
-fn fill(rt: &Runtime, v: u64) -> [usize; 2] {
+fn made_filled_slots(rt: &Runtime, v: u64) -> [usize; 2] {
     let key = object::new_string(rt, "a key only the vector holds");
     let value = object::new_object(rt, rt.global());
     feedback::set_slot(rt, v, 0, key, value);
@@ -315,10 +365,8 @@ fn a_key_to_a_dead_cell_is_cleared_and_a_value_is_kept() {
         let mut iso = eager_isolate();
         let v = vector_of_f(&iso);
         assert!(feedback::slot_count(v) >= 2);
-        let [key, value] = fill(&iso.rt, v);
-        scrub_stack();
-        iso.collect_garbage();
-        assert_not_kept(&iso.rt, &[key, value]);
+        let ([key, value], pad_low) = below_a_pad(|| made_filled_slots(&iso.rt, v));
+        collect_after_a_pad(&mut iso, pad_low, &[key, value]);
         iso.verify_heap().unwrap();
         // The key was the only reference to its string: weak, cleared to undefined.
         assert_eq!(feedback::key(v, 0), UNDEFINED);
