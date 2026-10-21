@@ -1,6 +1,6 @@
 # call-optional: script (sloppy)
 # | var o, f; o?.a; o?.[0]; o?.a.b; o?.m(); o.m?.(); f?.(); o?.a?.b?.(); (o?.a).b;
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=78 source=embedded hints=none
 source_hash=884a728d3c79126c76c64e5178dcf780a34b112a2243b214c554e6263807ba9c
 strings (5):

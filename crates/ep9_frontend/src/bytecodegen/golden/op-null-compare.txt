@@ -1,6 +1,6 @@
 # op-null-compare: script (sloppy)
 # | function f(a) { return [a === null, a !== null, a == null]; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=61 source=embedded hints=none
 source_hash=3c68d8f9709d2efe3300f137dc195fa2a13f09f3de5f6684cbebe4cd5bbda7ee
 strings (1):

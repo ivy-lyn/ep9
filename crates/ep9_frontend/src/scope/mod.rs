@@ -322,7 +322,8 @@ pub struct ScopeInfo {
     pub context_slots: Vec<BindingId>,
     /// BytecodeGen pushes a context when it enters this scope.
     pub needs_context: bool,
-    /// A sloppy direct eval can add `var` bindings to this scope at run time.
+    /// A sloppy direct eval can add `var` bindings to this scope at run time. In a function
+    /// var scope, binding 0 and context slot 0 are then [`BindingKind::EvalExt`].
     pub sloppy_eval: bool,
     /// A direct eval in this scope or an inner one (also in inner functions).
     pub contains_eval: bool,
@@ -395,6 +396,11 @@ pub enum BindingKind {
     HomeObject,
     /// Implicit: the running function object (for `super()`).
     Callee,
+    /// Implicit: the object that holds the `var` and function declarations of sloppy direct
+    /// eval code ([`ep9_bytecode::EVAL_EXT_BINDING`]). Context slot 0 of each function var scope
+    /// with a sloppy direct eval (never a script scope: script-level eval vars go to the
+    /// global object). It starts undefined; the VM makes the object (C6).
+    EvalExt,
 }
 
 impl BindingKind {
@@ -422,7 +428,12 @@ impl BindingKind {
     pub const fn is_implicit(self) -> bool {
         matches!(
             self,
-            Self::This | Self::NewTarget | Self::Arguments | Self::HomeObject | Self::Callee
+            Self::This
+                | Self::NewTarget
+                | Self::Arguments
+                | Self::HomeObject
+                | Self::Callee
+                | Self::EvalExt
         )
     }
 }
@@ -480,8 +491,8 @@ pub enum ContextReason {
 /// One binding.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Binding {
-    /// The name (`this`, `new.target`, `.home_object`, `.callee`, `#x` for implicit and private
-    /// names; `*default*` for an anonymous default export).
+    /// The name (`this`, `new.target`, `.home_object`, `.callee`, `.eval_ext`, `#x` for implicit
+    /// and private names; `*default*` for an anonymous default export).
     pub name: NameId,
     /// How it was declared.
     pub kind: BindingKind,

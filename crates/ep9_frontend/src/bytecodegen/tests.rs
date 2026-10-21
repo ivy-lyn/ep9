@@ -723,3 +723,69 @@ fn unsupported_reports_a_position() {
     assert_eq!((u.position.line, u.position.column), (2, 3));
     assert_eq!(u.span.start, 5);
 }
+
+/// C6 (M2 P0): slot 0 of each sloppy-eval *function* var scope is `.eval_ext`. Script scope 0
+/// (the global declarations) and the script context scope never get it: script-level eval vars
+/// go to the global object.
+#[test]
+fn eval_ext_is_slot_0_of_sloppy_eval_function_var_scopes_only() {
+    use ep9_bytecode::{EVAL_EXT_BINDING, ScopeFlags, ScopeKind, UnitString};
+    let ext = UnitString::new(EVAL_EXT_BINDING);
+    let names = |unit: &VerifiedUnit, s: usize| -> Vec<UnitString> {
+        let u = unit.unit();
+        u.scopes[s]
+            .slots
+            .iter()
+            .map(|slot| u.string(slot.name).clone())
+            .collect()
+    };
+    let has_ext = |unit: &VerifiedUnit| -> Vec<usize> {
+        (0..unit.unit().scopes.len())
+            .filter(|&s| names(unit, s).contains(&ext))
+            .collect()
+    };
+
+    // Top-level sloppy eval: scope 0 and the script context scope (unit scope 1) have none.
+    let top = compile_script("var y; eval('var x');", Strictness::Sloppy).unwrap();
+    let u = top.unit();
+    assert!(u.scopes[0].flags.contains(ScopeFlags::CALLS_SLOPPY_EVAL));
+    assert_eq!(
+        u.scopes[1].kind,
+        ScopeKind::Function,
+        "script context scope"
+    );
+    assert!(
+        !names(&top, 1).is_empty(),
+        "the script context holds `this`"
+    );
+    assert_eq!(has_ext(&top), Vec::<usize>::new());
+
+    // A function (and an arrow) with a sloppy direct eval: slot 0 of its var scope.
+    for src in [
+        "function f(a) { var b; eval('var x'); return b; }",
+        "var g = (a) => eval('var x');",
+        "function h(a = eval('var x')) { return a; }",
+    ] {
+        let unit = compile_script(src, Strictness::Sloppy).unwrap();
+        let with = has_ext(&unit);
+        assert_eq!(with.len(), 1, "{src}");
+        let s = with[0];
+        assert_eq!(names(&unit, s)[0], ext, "{src}: slot 0");
+        let flags = unit.unit().scopes[s].flags;
+        assert!(
+            flags.contains(ScopeFlags::CALLS_SLOPPY_EVAL)
+                && flags.contains(ScopeFlags::NEEDS_CONTEXT),
+            "{src}"
+        );
+        // Every other sloppy-eval scope is script scope 0.
+        for (i, scope) in unit.unit().scopes.iter().enumerate() {
+            if scope.flags.contains(ScopeFlags::CALLS_SLOPPY_EVAL) && i != s {
+                assert_eq!(scope.kind, ScopeKind::Script, "{src}: scope {i}");
+            }
+        }
+    }
+
+    // Strict eval cannot add vars: no binding.
+    let strict = compile_script("function f() { eval('var x'); }", Strictness::Strict).unwrap();
+    assert_eq!(has_ext(&strict), Vec::<usize>::new());
+}

@@ -1,6 +1,6 @@
 # module-basic: module
 # | import a, {b as c} from 'x'; export let d = a + c; export function e() { return d; } export default 1;
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=module strict=true ts=none source_len=102 source=embedded hints=none
 source_hash=2e7757b8bd04c06689e836127afcdb75661eebd9b0801c3a9e97213741d151cf
 strings (4):

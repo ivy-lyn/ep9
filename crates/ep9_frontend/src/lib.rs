@@ -15,7 +15,7 @@
 //!   v
 //! scope pass v0 (scope::analyze, layer 3 checks) --> ScopeAnalysis
 //!   v
-//! BytecodeGen v0 (bytecodegen::compile) ------------> VerifiedUnit (ep9_bytecode ABI 2)
+//! BytecodeGen v0 (bytecodegen::compile) ------------> VerifiedUnit (ep9_bytecode ABI 3)
 //! ```
 //!
 //! - No oxc type leaves this crate (H1). Errors are plain [`SyntaxError`] / [`RangeError`] values.

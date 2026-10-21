@@ -1,4 +1,4 @@
-//! BytecodeGen v0: JS source -> [`CompiledUnit`](ep9_bytecode::CompiledUnit) (bytecode ABI v2).
+//! BytecodeGen v0: JS source -> [`CompiledUnit`](ep9_bytecode::CompiledUnit) (bytecode ABI 3).
 //!
 //! ```text
 //! compile_script / compile_module / compile
@@ -604,7 +604,8 @@ pub(crate) fn variable_mode(kind: BindingKind) -> VariableMode {
         | BindingKind::NewTarget
         | BindingKind::Arguments
         | BindingKind::HomeObject
-        | BindingKind::Callee => VariableMode::Var,
+        | BindingKind::Callee
+        | BindingKind::EvalExt => VariableMode::Var,
     }
 }
 

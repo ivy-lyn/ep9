@@ -27,7 +27,8 @@ use crate::string::UnitString;
 /// |---|---|
 /// | 1 | First ABI (opcode list, CompiledUnit v0) |
 /// | 2 | Runtime ids 6-18 for BytecodeGen v0; `DefineClass` takes 2 arguments; a handler target is at or after its range end (added before v2 was released, so no bump) |
-pub const ABI_VERSION: u32 = 2;
+/// | 3 | Generator opcodes 0x99-0x9b valid in generator and async functions (flag `Generator`, no longer `Reserved`); `CallRuntimeForPair` 0x9d with operand kind `RegOutPair`; `DefineKeyedOwnProperty` flag bit 1 (private add); runtime ids 19-28 and the `pair` mark in the runtime table |
+pub const ABI_VERSION: u32 = 3;
 
 /// The ECMA-262 code kind of the unit's entry function.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -287,7 +288,9 @@ pub struct ScopeFlags(pub u8);
 impl ScopeFlags {
     /// The scope allocates a context at run time.
     pub const NEEDS_CONTEXT: ScopeFlags = ScopeFlags(1 << 0);
-    /// The scope contains a sloppy direct eval (dynamic lookups).
+    /// The scope contains a sloppy direct eval (dynamic lookups). It is set only on the var
+    /// scope of the eval site. In a function var scope (not a `Script` scope), slot 0 is the
+    /// [`EVAL_EXT_BINDING`](crate::EVAL_EXT_BINDING) binding (from ABI 3).
     pub const CALLS_SLOPPY_EVAL: ScopeFlags = ScopeFlags(1 << 1);
     /// Strict mode scope.
     pub const STRICT: ScopeFlags = ScopeFlags(1 << 2);

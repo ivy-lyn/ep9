@@ -1,6 +1,6 @@
 # pat-array: script (sloppy)
 # | function f(a) { let [x, , y = 2, ...z] = a; const [] = a; return [x, y, z]; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=77 source=embedded hints=none
 source_hash=033f2872bb9c530973be10e4eda84365acd625543f0073ee86232f9d3a092139
 strings (5):

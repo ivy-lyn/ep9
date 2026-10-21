@@ -1,6 +1,6 @@
 # class-derived: script (sloppy)
 # | class A {} class B extends A { constructor() { super(1); this.y = 2; } m() { return super.m(); } }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=98 source=embedded hints=none
 source_hash=c82ef9bc21c0ee21163db1d1242befe91e8af9c25805fa8a39eb47a1fc31af01
 strings (4):

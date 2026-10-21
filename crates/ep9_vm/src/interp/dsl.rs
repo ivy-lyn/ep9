@@ -181,6 +181,7 @@ pub(crate) mod kind {
     operand!(RegInOut, R, |p, S| R::from_operand(read_signed::<S>(p)));
     operand!(RegPair, R, |p, S| R::from_operand(read_signed::<S>(p)));
     operand!(RegOutTriple, R, |p, S| R::from_operand(read_signed::<S>(p)));
+    operand!(RegOutPair, R, |p, S| R::from_operand(read_signed::<S>(p)));
     operand!(RegList, RList, |p, S| RList(read_signed::<S>(p) as isize));
     operand!(
         RegOutList,

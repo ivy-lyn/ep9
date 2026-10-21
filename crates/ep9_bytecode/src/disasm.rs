@@ -194,7 +194,7 @@ pub fn instruction_text(unit: &CompiledUnit, func: &Function, insn: &Instruction
         let text = match op.kind {
             OperandKind::Reg | OperandKind::RegOut | OperandKind::RegInOut => reg(v),
             OperandKind::RegList | OperandKind::RegOutList => range(v, insn.operand(k + 1)),
-            OperandKind::RegPair => range(v, 2),
+            OperandKind::RegPair | OperandKind::RegOutPair => range(v, 2),
             OperandKind::RegOutTriple => range(v, 3),
             OperandKind::RegCount => continue,
             OperandKind::Imm | OperandKind::UImm | OperandKind::CtxSlot | OperandKind::CtxDepth => {

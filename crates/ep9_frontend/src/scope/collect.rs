@@ -106,6 +106,7 @@ pub(super) struct Builder<'a> {
     pub(super) n_home_object: NameId,
     pub(super) n_callee: NameId,
     pub(super) n_arguments: NameId,
+    pub(super) n_eval_ext: NameId,
     n_default: NameId,
     cur_scope: ScopeId,
     cur_fn: FunctionId,
@@ -147,6 +148,7 @@ impl<'a> Builder<'a> {
             n_home_object: NameId(0),
             n_callee: NameId(0),
             n_arguments: NameId(0),
+            n_eval_ext: NameId(0),
             n_default: NameId(0),
             cur_scope: ScopeId(0),
             cur_fn: FunctionId(0),
@@ -165,6 +167,7 @@ impl<'a> Builder<'a> {
         builder.n_callee = builder.name(".callee");
         builder.n_arguments = builder.name("arguments");
         builder.n_default = builder.name("*default*");
+        builder.n_eval_ext = builder.name(ep9_bytecode::EVAL_EXT_BINDING);
         builder
     }
 
