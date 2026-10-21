@@ -27,7 +27,10 @@ fn stressed(f: fn(&Runtime)) {
         let before = iso.heap().stats().collections;
         f(&iso.rt);
         let n = iso.heap().stats().collections - before;
-        assert!(n >= 10, "GC stress: only {n} collections");
+        // Stress 1 collects before every allocation, so one collection shows that stress is
+        // on. A fixed floor breaks when more keys are atoms (H19): a repeated atom key
+        // allocates nothing.
+        assert!(n > 0, "GC stress is off: no collection ran");
         eprintln!("collections under stress: {n}");
         iso.collect_garbage();
         iso.verify_heap().unwrap();

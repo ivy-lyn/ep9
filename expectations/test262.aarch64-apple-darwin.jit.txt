@@ -33404,16 +33404,9 @@ test/language/expressions/equals/symbol-abstract-equality-comparison.js
 test/language/expressions/equals/symbol-strict-equality-comparison.js
 test/language/expressions/equals/to-prim-hint.js
 test/language/expressions/exponentiation/applying-the-exp-operator_A10.js
-test/language/expressions/exponentiation/applying-the-exp-operator_A11.js
-test/language/expressions/exponentiation/applying-the-exp-operator_A12.js
-test/language/expressions/exponentiation/applying-the-exp-operator_A13.js
 test/language/expressions/exponentiation/applying-the-exp-operator_A14.js
-test/language/expressions/exponentiation/applying-the-exp-operator_A15.js
 test/language/expressions/exponentiation/applying-the-exp-operator_A16.js
-test/language/expressions/exponentiation/applying-the-exp-operator_A17.js
-test/language/expressions/exponentiation/applying-the-exp-operator_A18.js
 test/language/expressions/exponentiation/applying-the-exp-operator_A20.js
-test/language/expressions/exponentiation/applying-the-exp-operator_A21.js
 test/language/expressions/exponentiation/applying-the-exp-operator_A22.js
 test/language/expressions/exponentiation/applying-the-exp-operator_A23.js
 test/language/expressions/exponentiation/bigint-and-number.js
@@ -33425,7 +33418,6 @@ test/language/expressions/exponentiation/bigint-wrapped-values.js
 test/language/expressions/exponentiation/bigint-zero-base-zero-exponent.js
 test/language/expressions/exponentiation/exp-operator-precedence-unary-expression-semantics.js
 test/language/expressions/exponentiation/exp-operator-precedence-update-expression-semantics.js
-test/language/expressions/exponentiation/exp-operator.js
 test/language/expressions/exponentiation/int32_min-exponent.js
 test/language/expressions/exponentiation/order-of-evaluation.js
 test/language/expressions/function/dstr/ary-init-iter-close.js

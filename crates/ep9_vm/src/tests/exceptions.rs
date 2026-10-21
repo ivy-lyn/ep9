@@ -322,10 +322,10 @@ fn type_errors_and_not_implemented_are_catchable() {
             let slot = s.b.feedback_slot(FeedbackSlotKind::Literal);
             s.b.create_reg_exp_literal(k, slot, 0);
         });
-        // 2 ** 0.5  (needs ep9_math, H36)
+        // 2 ** 0.3  (needs the correctly rounded pow core of ep9_math, H36, month 2)
         try_print_message(&mut s, ctx, |s| {
             s.b.lda_smi(2).star(t);
-            s.lda_num(0.5);
+            s.lda_num(0.3);
             s.b.exp(t, bin);
         });
         // 1n
