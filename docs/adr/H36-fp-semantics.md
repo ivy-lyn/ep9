@@ -6,7 +6,7 @@
 | Fix by | M0 wk2: `clippy.toml` + `xtask fp-check` stub. M0 wk3: `ep9_math` skeleton, `ep9_value::to_int32`. M1: CR functions, Math builtins, FP differential CI |
 | Freeze point | M1 exit |
 | Origin | R16-D12; plan status N (new) |
-| Crates | `ep9_math` (new), `ep9_vm` (T0 arithmetic), `ep9_builtins_*` (Math, Number), `ep9_value` (ToInt32, NaN purification), `ep9_numconv`, `ep9_frontend` (folds), `ep9_masm`, `ep9_baseline`, `ep9_opt` (emitted FP code), `tools/xtask` (`fp-check`) |
+| Crates | `ep9_math` (new), `ep9_vm` (T0 arithmetic), `ep9_builtins` (Math, Number; one crate until M1a, 08 §2), `ep9_value` (ToInt32, NaN purification), `ep9_numconv` (planned; today `ep9_vm` `numconv.rs`), `ep9_frontend` (folds), `ep9_masm`, `ep9_baseline`, `ep9_opt` (emitted FP code), `tools/xtask` (`fp-check`) |
 | Owner (plan role) | AOT senior (rules, lint, `fp-check`, M0 wk2); VM lead (`ep9_math`, M0 wk3-M1) |
 | Validated by | `clippy.toml` + `xtask fp-check` (M0 wk2); `ep9_math` golden and hash tests on 4 targets and x86-64 with/without FMA; nightly CR oracle; FP differential CI (M1). No SP-* spike |
 | Plan sources | [02 §6 H36](../plan/02-architecture.md#6-hard-to-change-decisions-h1-h37), [04 §10](../plan/04-execution.md#10-floating-point-rules-h36), [06 §4](../plan/06-object-model-and-spec.md#4-numbers-and-bigint), [10 §5](../plan/10-quality.md#5-other-ci-checks) |
@@ -61,11 +61,11 @@ The "bit-equal to d8" column comes from one host (macOS arm64) and about 15k inp
 
 | Rule | Check | From |
 |---|---|---|
-| No std libm methods, `powi`, `rem_euclid`, `div_euclid`, `mul_add` or `algebraic_*`; only `ep9_math::exact` may allow `mul_add` | Root `clippy.toml` `disallowed-methods`; clippy `-D warnings` on 4 targets | M0 wk2 |
+| No std libm methods, `powi`, `rem_euclid`, `div_euclid`, `mul_add` or `algebraic_*`; only `ep9_math::exact` may allow `mul_add` | Root `clippy.toml` `disallowed-methods`; clippy `-D warnings` on 4 targets. `crates/ep9_builtins/clippy.toml` repeats the list, because clippy reads the nearest file only (test `clippy_toml_repeats_the_root_bans`) | M0 wk2 |
 | No reference to a banned libm symbol (transcendental math.h names, `fma`, `fmod`, `remainder`, `__powidf2`, f/l variants) outside `expectations/fp-check-allow.toml` | `cargo xtask fp-check`: the post-LTO object of `ep9` (`--emit=obj`, `-C linker=true`) on 5 targets plus x86_64 Linux with `x86-64-v3`, every PR | M0 wk4 |
 | No FMA instruction outside `ep9_math::*` symbols; `ep9_math` public functions are `#[inline(never)]` | `xtask fp-check` disassembly scan | M0 wk4 |
 | `libm`, `pxfm`, `core_maths`, `micromath` stay out of the engine graph unless allowlisted | `xtask fp-check` reads `cargo tree -e normal,build --target all` | M0 wk4 |
-| `ep9_math` gives the same bits on every target | Golden table + 1M-input SHA-256 per function on 4 targets and x86-64 `x86-64`/`x86-64-v3` | M0 wk3 |
+| `ep9_math` gives the same bits on every target | Golden table + 1M-input SHA-256 per function on 4 targets and x86-64 `x86-64`/`x86-64-v3` (not built yet: `ep9_math` has value tests only; H36-Q6) | M0 wk3 |
 | CR functions are CR | Golden bits from mpmath (>= 160 bits) + CORE-MATH worst cases; nightly 200k fresh inputs per function vs mpmath 1.3.0 | M1 |
 | ep9 vs V8 | Nightly vs pinned d8: bit-equal on the 100% rows; <= 1 ULP `atan tanh pow`; <= 2 ULP `sinh cosh asinh acosh atanh` (`expectations/math-ulp.toml`) | M1 |
 | nbody = -0.169193895234998, raytracer = 576888 in every tier and code kind | FP differential checksums, every PR | M1 |
@@ -76,7 +76,7 @@ The "bit-equal to d8" column comes from one host (macOS arm64) and about 15k inp
 
 - **Gains.** Same bits on every platform, compiler, tier and mode. Equal to V8 main on 13 libm functions plus `hypot` and `sqrt` today, and to every future CR engine. `10 ** k === 1ek` for k in -30..30; fdlibm `pow` fails 10 of these, Rust `libm` 8 [M].
 - **Costs.** ep9 owns about 0.7 MB of Rust source and 1-1.25 PM of work (est.). On M5 Max the seed costs 1.2x macOS libm on `sin` (5.5 vs 4.6 ns), 2.2x on `pow` (10.8 vs 4.9 ns), 2.4x on `atan2` [M]. Results differ from V8 main by at most 1-2 ULP on 10-17% of `sinh cosh asinh acosh atanh` inputs and on about 0.1-0.2% of `tanh` and `pow` inputs, and from node 24 by 1-2 ULP on 0.03-21% of inputs per function.
-- **Follow-ups.** `ep9_numconv` owns exact number-to-string (06 §4). BytecodeGen folds TS enums with `ep9_math` (H3). `xtask fp-check` and the root `clippy.toml` land after the current tools/ work.
+- **Follow-ups.** `ep9_numconv` owns exact number-to-string (06 §4). BytecodeGen folds TS enums with `ep9_math` (H3). `xtask fp-check` and the root `clippy.toml` landed in M0 wk4 (Change log).
 
 ## Evidence
 
@@ -108,7 +108,7 @@ The "bit-equal to d8" column comes from one host (macOS arm64) and about 15k inp
 
 ## Validation
 
-- No spike reopens H36. M0 wk2: `clippy.toml` + `xtask fp-check` stub (AOT senior). M0 wk3: `ep9_math` skeleton. M1: CR functions, FP differential CI ([10-quality](../plan/10-quality.md#5-other-ci-checks)).
+- No spike reopens H36. M0 wk2: `clippy.toml` + `xtask fp-check` stub (AOT senior). M0 wk3: `ep9_math` skeleton. Built in M0 wk4: the root `clippy.toml`, the full `fp-check` (a CI job on every PR) and `ep9_math` v0 (Change log). M1: CR functions, FP differential CI ([10-quality](../plan/10-quality.md#5-other-ci-checks)).
 
 ## Open questions
 
@@ -119,6 +119,7 @@ The "bit-equal to d8" column comes from one host (macOS arm64) and about 15k inp
 | H36-Q3 | Own port or pinned crate? | Closed: own vendored CR port in `ep9_math` (CORE-MATH algorithms, pxfm seed, no NOTICE file) |
 | H36-Q4 | ToInt32 helper and FJCVTZS | Closed: `ep9_value::to_int32`; FJCVTZS allowed when JSCVT is present (JIT: CPU; AOT: unit target) |
 | H36-Q5 | Canonical NaN | Owned by H06-Q3. H36 needs no particular pattern |
+| H36-Q6 | Rules row 5 (golden table + 1M-input SHA-256 per function) is not built: `ep9_math` has value tests only (for example `fmod_edges`, `pow_js_spec_special_values`, `soft_vs_hw_quick`), and its test-only `ep9_bytecode` dependency (for SHA-256) has no user. When does it land, and does it cover the exact v0 functions? | Open (P2-ACCEPT-1, 2026-10-22). Needed before the first CR function (M1); owner VM lead |
 
 ## Reopens if
 
@@ -141,3 +142,5 @@ The "bit-equal to d8" column comes from one host (macOS arm64) and about 15k inp
 | 2026-10-21 | clarify | Clippy's `disallowed-methods` does not see float `%` or `Rem::rem` (no method call; both lower to the C `fmod`; probe on rustc 1.99.1), so the `fmod` symbol scan of `fp-check` is the guard for `%`. The root `clippy.toml` also reaches `spikes/*` through clippy's parent-directory lookup: `sp-jit-mem` (its gate runs clippy) has no banned call; `sp-dispatch` calls `ln`, `exp`, `powi` and `log2` (src/main.rs:367, 385, 660) but its gate runs no clippy. A spike that adds clippy adds its own allow | P1-MATH (M0 wk4) |
 | 2026-10-21 | fill | M0 wk4 build. (1) Root `clippy.toml` = the prototype list; the one allow is on `HwFma` in `crates/ep9_math/src/exact.rs`. (2) `fp-check` is real: it builds the post-LTO object of `ep9` per target (`cargo rustc --release --target T -p ep9_cli --bin ep9 -- --emit=obj=F -C linker=true`; one Linux or macOS host covers all targets), reads `llvm-nm -u` and `llvm-objdump -dr -C` (caller names, FMA mnemonics), runs `cargo tree` for second math crates (a crate allow entry is not built yet; none is needed) and scans `crates/**` for `disallowed_methods` allow sites; exit 0/1/2. (3) Allow entry 1: {`fmod`, `pow`} in `oxc_semantic::ts_enum::eval::evaluate_expression`, all targets, reopen at H3. It is the only finding on all 6 builds today, and the objects have no FMA instruction. (4) FMA: `HwFma` (the only `mul_add`) and `SoftFma` (libm 0.2.16 generic fma, musl origin); x86-64 entry points are compiled twice (`#[target_feature(enable = "fma")]` copy and soft copy, picked by `is_x86_feature_detected!`), the crate's only `unsafe`. SoftFma equals the hardware on 10^7 random plus edge inputs. (5) `fmod` is a direct port of musl `src/math/fmod.c` (v1.2.6), not of the libm generic fmod (a different algorithm). (6) `pow_js` v0: steps 1-5, the special values of step 6, and the M0 exact integer path; it returns `None` (`**` throws "not implemented") where the CR core is needed. CR `exp`, `log` and `pow` move to month 2, inside M1 (Rules row 6) | P1-MATH (M0 wk4) |
 | 2026-10-21 | fill | Correction to item (4) of the M0 wk4 row: `SoftFma` was not exact. The libm 0.2.16 generic `fma` (and so the first port) loses the sticky bit when `z` is 65 to 127 bits above `x * y`: it reads `rlo` after overwriting it, where musl `fma.c` uses one expression. On a rounding tie plus a tiny tail it then rounds to even: `fma(0x1.b4d42bf5242b8p+0, 0x1.2c0db0d0ff40dp-1, 0x1p53)` gave 2^53, not 2^53 + 2. Upstream: rust-lang/compiler-builtins#1353 (open, no fix on master). `SoftFma` is now libm 0.2.16 plus that one fix ("ep9 fix" in `exact.rs`). The 10^7 corpus reached that branch 2.17M times, with a wrong sticky bit 82,435 times, but never on a tie; it now also has near-tie inputs: 19,651 of 10,110,592 differed from the hardware before the fix, 0 after (macOS arm64; Rosetta x86-64 against the C `fma`: 0). New tests: `soft_fma_sticky_of_shifted_product`, `soft_vs_hw_near_ties` | P1 fix agent (M0 wk4) |
+| 2026-10-22 | clarify | Crates line: `ep9_builtins` (one crate until M1a) and `ep9_numconv` (planned; today a module of `ep9_vm`). Rules row 1 names the `ep9_builtins` copy of the bans and its test. Rules row 5 says that its check is not built yet; new Open question H36-Q6. Follow-ups and Validation say that `clippy.toml` and `fp-check` landed in M0 wk4. No check changes | P2-ACCEPT-1 |
+| 2026-10-22 | clarify | 2026-10-20 row "Critic changes": kind is rewrite (README §3.3). It replaced an option that the Q1-Q4 fill had chosen (a NOTICE file in `ep9_math`; decisions log H36-libm-src: "change taken") | P2-ACCEPT-1 |

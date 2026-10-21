@@ -38,9 +38,9 @@ Rust API: `UnitHeader::typescript: Option<TsFlags>`; `TsFlags::DEFAULT` is the D
 | Rule | Check | From |
 |---|---|---|
 | A JavaScript unit (bit 8 clear) has bits 9-15 clear | reader: `BadHeader("TS flags on a JavaScript unit")`; `roundtrip.rs::header_errors_map_to_h35_outcomes` | M0 |
-| Bits 12-15 are zero in ABI v1 | reader rejects undefined flag bits | M0 |
+| Bits 12-15 are zero (ABI 1-3) | reader rejects undefined flag bits (`BadHeader("unit flags")`); no test sets a bit 12-15 yet | M0 |
 | TS flags are covered by the content hash, so another flag value is another module identity and cache key | `determinism.rs::content_hash_excludes_build_id_and_covers_ts_flags` | M0 |
-| The flags round-trip | `sample-module.txt` golden (all three set); random units set them at random | M0 |
+| The flags round-trip | `sample-module.txt` golden (bit 8 and bits 10-11 set, bit 9 clear: the `[[Set]]` case); random units set them at random | M0 |
 | H35 S3: a unit's TS flags are not compared at load; SOURCE compiles the source section with them | `ep9_unit` loader (A2) | A2 |
 | The `.ep9h` header carries the same three flags; a mismatch drops the hint file | `ep9_hints` (A1h) | A1h |
 
@@ -73,3 +73,4 @@ Rust API: `UnitHeader::typescript: Option<TsFlags>`; `TsFlags::DEFAULT` is the D
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-21 | draft | Header fields: unit flag bits 8-15, `TsFlags`, reader and hash rules | bytecode agent |
+| 2026-10-22 | clarify | Rules: bits 12-15 are zero in ABI 1-3 (was "ABI v1"; ABI_VERSION is 3); the check names its error and says that no test sets those bits yet. The `sample-module.txt` golden sets bit 9 clear, not "all three". No check changes | P2-ACCEPT-1 |
