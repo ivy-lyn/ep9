@@ -72,7 +72,7 @@ F1 fills these gaps (kind **fill**):
 | ID | Question | Needed by | Proposed default |
 |---|---|---|---|
 | H01-Q1 | `oxc_ast_visit` is pinned in `ep9_frontend/Cargo.toml`, not in root `workspace.dependencies` | Next bump PR | **Closed 2026-10-21 (fill):** the root list pins `oxc_ast_visit = "=0.155.0"`; `ep9_frontend` uses `workspace = true`. `Cargo.lock` did not change |
-| H01-Q2 | Two line maps exist (`LineMap`, `SourceLines`) | BytecodeGen PR | Keep one, WTF-8 aware, in `ep9_bytecode` |
+| H01-Q2 | Two line maps exist (`LineMap`, `SourceLines`). Both are in use: `LineMap` in the front end (`crates/ep9_frontend/src/position.rs:43`), `SourceLines` in the disassembler and the VM (`crates/ep9_bytecode/src/positions.rs:140`). Joining them is a refactor that no M0 exit item needs | M1 (was "BytecodeGen PR"; M2-P3-OQ-H01-Q2) | Keep one, WTF-8 aware, in `ep9_bytecode` |
 | H01-Q3 | The synthetic class function id rule (B7) needs the H2 owner's agreement | H2 Accepted | B7 as written |
 | H01-Q4 | Binary chains above 20,000 terms: RangeError or an iterative path | M1 | Iterative chains in BytecodeGen, then a higher cap for chains only |
 | H01-Q5 | Annex B: two same-name functions in one block hoist (V8, SpiderMonkey), `arguments` block functions do not (spec, main test262 test) | M1 test262 run | As built; 2 staging/sm tests stay red |
@@ -92,6 +92,7 @@ F1 fills these gaps (kind **fill**):
 | 2026-10-22 | rewrite | Rules row "Every nesting form": 39 forms + 10 regex forms (was "+ 2"). 34bd740 (2026-10-21, pre-scan: v-flag classes that stay open after a nested class) added 8 regex forms to `FORMS` with no ADR row. The new forms fail on the old pre-scan (a worker stack overflow at 100k levels of v-flag classes, not a RangeError), so the check changes result | P3-ACCEPT-2 |
 | 2026-10-22 | clarify | Follow-ups: `compile_eval` with an `EvalContext` is built (M0 month 2 P2, wrapper parse); the oxc option or a local patch stays due at M1 exit (01 §7). BytecodeGen consumes `ScopeAnalysis` (done). No check changes | P3-ACCEPT-2 |
 | 2026-10-22 | clarify | Validation says where each run happens: CI runs the debug tests on the 4 CI targets (Windows x64 runs them, not only a compile check); the release run and x86_64 macOS are local only. No check changes | P3-ACCEPT-2 |
+| 2026-10-22 | clarify | H01-Q2 stays open: Needed by moves from "BytecodeGen PR" to M1. `LineMap` and `SourceLines` are both in use, and joining them is a refactor that no M0 exit item needs. No check changes (M2-P3-OQ-H01-Q2) | P3 integration fixer |
 
 ## Review record
 

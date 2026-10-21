@@ -78,7 +78,7 @@ JSC NaN-box: raw cell pointers, int32 under the 0xFFFE tag, doubles + 2^49. `Val
 |---|---|---|---|
 | H06-Q1 | The exact bit values of null, undefined, false, true and empty/hole. JSC uses 0 for its empty value, but `NonZeroU64` forbids 0. The plan fixes only "small non-zero constants below the first heap page" | SP-Value, M0 wk2 | **Resolved (fill, 2026-10-20).** As JSC, except empty: null 0x02, false 0x06, true 0x07, undefined 0x0a, empty/hole 0x22 (OtherTag 0x2 \| EmptyTag 0x20; JSC uses 0x10 for BigInt32). Source: `ep9_value::encoding` (`VALUE_*`); test `immediates_have_the_documented_bits`. Confirmed by decision H06-empty (2026-10-20). 02 §6 H6 and 06 §1 now state the bits |
 | H06-Q2 | The value of `NotCellMask`. Immediates must have a bit in it, or the cell test accepts them | SP-Value | **Resolved (fill, 2026-10-20).** As JSC: NumberTag \| OtherTag = `0xFFFE_0000_0000_0002`. Every immediate has OtherTag set. Source: `ep9_value::encoding::NOT_CELL_MASK`; same test. Confirmed by decision H06-empty (2026-10-20). 02 §6 H6 and 06 §1 now state the bits |
-| H06-Q3 | The bit pattern of the canonical NaN | SP-Value | Open. H36 adds no constraint (decision H36-nan, 2026-10-20): it needs only purification on boxing; tests compare NaN as a class |
+| H06-Q3 | The bit pattern of the canonical NaN | SP-Value | **Filled (M0 month 2 P3, M2-P3-OQ-H06-Q3).** As built: the canonical NaN is `PURE_NAN_BITS` = 0x7FF8_0000_0000_0000 (`crates/ep9_value/src/value.rs:39`, JSC PNaN). Boxing replaces every NaN with it (`Value::double`, `crates/ep9_value/src/value.rs:92-97`; `Value::number` boxes a NaN through it). Test `nan_payloads_are_purified` (`crates/ep9_value/src/tests.rs:208`): 11 NaN bit patterns (the x86 default NaN 0xFFF8_0000_0000_0000, signaling NaNs, patterns that would alias an int32, a cell or 0) and 6 NaNs made at run time all box to the same bits through `Value::double` and `Value::number`. H36 adds no constraint (decision H36-nan, 2026-10-20): it needs only purification on boxing; tests compare NaN as a class |
 
 ## Reopens if
 
@@ -95,6 +95,7 @@ JSC NaN-box: raw cell pointers, int32 under the 0xFFFE tag, doubles + 2^49. `Val
 | 2026-10-20 | fill | H06-empty: 0x22 kept after a check against the JSC tags (BigInt32 0x12, NativeCallee 0x3, deleted 0x4, MiscTag 0x0E) and every ep9_value fast test. Rule added: no 0 in a heap Value slot (pre-fill before the next GC point; the visitor skips 0). Plan rows 02 §6 H6 and 06 §1 updated | apply agent |
 | 2026-10-21 | clarify | Validation: Miri runs on every PR until the nightly trigger lands, as CI does ([decisions-log §10](../decisions-log.md#10-2026-10-21-pr-1-review-fixes-ci-gates-and-h15-on-t0) CIG-5) | follow-up agent |
 | 2026-10-22 | clarify | Rules row 1: its check named "xtask size asserts", which do not exist. It now names the `ep9_value` const asserts and the m0-exit item 8 check of them, as H08 Rules row 1 does (P2-ACCEPT-1, H08 R2). No check changes | P3-ACCEPT-2 |
+| 2026-10-22 | fill | H06-Q3 filled as built: the canonical NaN is `PURE_NAN_BITS` 0x7FF8_0000_0000_0000 (JSC PNaN); test `nan_payloads_are_purified` proves the purification. Every check keeps its result (M2-P3-OQ-H06-Q3) | P3 integration fixer |
 
 ## Review record
 

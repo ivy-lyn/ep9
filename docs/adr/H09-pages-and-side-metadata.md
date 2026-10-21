@@ -69,9 +69,9 @@
 
 | ID | Question | Needed by | Proposed default |
 |---|---|---|---|
-| H09-Q1 | Immix line size and the granularity of the mark and VO bitmaps (bits per 8 B or per 16 B) | M0 wk2 (`ep9_heap` S0 core) | 8-byte granularity, as objects are 8-byte aligned ([R05]) |
-| H09-Q2 | Page header layout: in-page header vs a side table indexed by page number | M0 wk2 | Decide in S0 core |
-| H09-Q3 | The exact LOS threshold. The plan says "about 8 KiB" | S0 | 8 KiB |
+| H09-Q1 | Immix line size and the granularity of the mark and VO bitmaps (bits per 8 B or per 16 B) | M0 wk2 (`ep9_heap` S0 core) | **Filled (M0 month 2 P3, M2-P3-OQ-H09-Q1).** As built: an 8-byte granule, one mark bit and one VO bit per granule (`GRANULE` = 8, `crates/ep9_heap/src/layout.rs:31`; cells are 8-byte aligned, [R05]), and Immix lines of 256 B with one line-mark byte per line (`LINE_SIZE` = 256, `crates/ep9_heap/src/layout.rs:33`) |
+| H09-Q2 | Page header layout: in-page header vs a side table indexed by page number | M0 wk2 | **Filled (M0 month 2 P3, M2-P3-OQ-H09-Q2).** As built: an in-page header. A 256 KiB page starts with a 64 B `PageHeader`, then the mark bitmap (+64), the VO bitmap (+4160) and the line marks (+8256); the first cell is at offset 9472, line 37 (`FIRST_CELL_OFFSET`, `crates/ep9_heap/src/layout.rs:48-49`; const assert at `crates/ep9_heap/src/layout.rs:67`). One mask (`addr & PAGE_MASK`, `crates/ep9_heap/src/layout.rs:29`) finds all the metadata |
+| H09-Q3 | The exact LOS threshold. The plan says "about 8 KiB" | S0 | **Filled (M0 month 2 P3, M2-P3-OQ-H09-Q3).** As built: 8 KiB. `MAX_SMALL_SIZE` = 8 KiB (`crates/ep9_heap/src/layout.rs:38`) is the largest cell in a small page; a larger cell goes to the LOS (`crates/ep9_heap/src/heap.rs:995-996`) |
 | H09-Q4 | Which emitted code uses the page mask? The ep9 barrier reads the header byte (H11), not page flags. If any AOT code bakes the mask, the unit header needs a version that covers page size. The H35 field list has none | H35 header struct (M0 wk4) | **Filled (M0 wk4, W4-H09-Q4).** No emitted code bakes the mask in v0: `PAGE_MASK` is used only by `ep9_heap` Rust code (`crates/ep9_heap/src/heap.rs:619`, `crates/ep9_heap/src/trace.rs:409`), and no machine code that ep9 emits uses it: the SP-JIT-mem test stubs and, since M0 month 2, the `spike-native` test stubs (`crates/ep9_vm/src/tests/native.rs`) and the Spike B JIT (`spikes/spike-b/src/jit/`, 11 opcodes) (grep, 2026-10-22). The unit header carries the page size as its own field instead of folding it into the object-layout version: `heap_page_log2` at offset 122 (H35 S6, H35-Q6); a mismatch gives BYTECODE. The first emitter that bakes the mask must also bump the object-layout version if it changes how the mask is used |
 
 ## Reopens if
@@ -89,6 +89,9 @@
 | 2026-10-21 | fill | H09-Q4: no emitted code bakes the page mask in v0; the H35 unit header carries the page size as its own field (`heap_page_log2`), not under the object-layout version. Decision W4-H09-Q4 | P1-AOTU agent |
 | 2026-10-21 | clarify | 2 `path:line` references moved to the code at `479b1cd` (P4-DOCS drift script, [I15]); the `PAGE_MASK` use in `heap.rs` changed form and is pinned to its new line | P4-DOCS agent |
 | 2026-10-22 | clarify | H09-Q4 fill text: Spike B (M0 month 2) emits code but bakes no page mask, so "the only machine code ep9 emits is the SP-JIT-mem test stubs" and "the first emitter that bakes the mask (Spike B)" were out of date; the `spike-native` stubs and the Spike B JIT are named, and no emitter uses `PAGE_MASK`. No check changes | P3-ACCEPT-2 |
+| 2026-10-22 | fill | H09-Q1 filled as built: 8-byte granule for the mark and VO bitmaps, `LINE_SIZE` 256 (`layout.rs`). Every check keeps its result (M2-P3-OQ-H09-Q1) | P3 integration fixer |
+| 2026-10-22 | fill | H09-Q2 filled as built: in-page header, first cell at offset 9472 (`layout.rs`). Every check keeps its result (M2-P3-OQ-H09-Q2) | P3 integration fixer |
+| 2026-10-22 | fill | H09-Q3 filled as built: `MAX_SMALL_SIZE` 8 KiB is the LOS threshold (`layout.rs`). Every check keeps its result (M2-P3-OQ-H09-Q3) | P3 integration fixer |
 
 ## Review record
 
