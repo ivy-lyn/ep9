@@ -1306,3 +1306,62 @@ fn a_private_name_is_not_listed_by_own_property_keys_or_for_in() {
         assert_eq!(property::get_keyed(cx, o, private).unwrap(), int(2));
     });
 }
+
+/// H13 native-word rule, FUNCTION +24 (A1): what each kind of FunctionInfo a function cell
+/// can point at offers a snapshot as an index form today.
+/// - bytecode info: (unit, function id), inside its unit;
+/// - table builtin: a host info inside its module's dense `infos`, one per BuiltinId, so the
+///   pointer gives back the BuiltinId (the info does not store it);
+/// - embedder host function (`realm::new_host_function`): unit null, function id u32::MAX,
+///   the same pair for every such function, so no index form until the external-reference
+///   table (H13-Q5, A1 in M4).
+#[test]
+fn function_cell_infos_have_an_index_form() {
+    on_big_stack(|| {
+        // f0: `g = function g() {}`; f1: g.
+        let mut s = Asm::script(0);
+        let k0 = s.b.function_constant(ep9_bytecode::FunctionId(1));
+        s.b.create_closure(k0, s.closure, 0);
+        s.sta_global("g");
+        s.b.lda_undefined().return_();
+        let mut g = Asm::new(super::meta("g", 0, 0, 0, 0));
+        g.b.lda_undefined().return_();
+        let mut iso = isolate(verified(false));
+        iso.run_script(unit("", vec![s.finish(), g.finish()]), "t.js")
+            .unwrap();
+        let rt = &*iso.rt;
+        // Bytecode: (unit, function id) names the info.
+        let gv = iso.global("g").unwrap().to_bits();
+        let fi = object::function_info(gv);
+        let lu = fi.loaded_unit().expect("a bytecode info has its unit");
+        assert!(fi.is_bytecode() && fi.host.is_none());
+        assert!((fi.function_id as usize) < lu.infos.len());
+        assert!(core::ptr::eq(&lu.infos[fi.function_id as usize], fi));
+        // Table builtins: host infos, one distinct info per BuiltinId.
+        let mut seen = std::collections::HashMap::new();
+        for m in crate::natives::VM_TABLE.modules {
+            for i in 0..m.defs.len() {
+                let id = crate::builtins::BuiltinId::new(m.block, i as u16);
+                let f = crate::builtins::function_object(rt, id);
+                let info = object::function_info(f);
+                assert!(info.host.is_some() && info.unit.is_null(), "{id}");
+                assert_eq!(info.function_id, u32::MAX, "{id}");
+                let p = core::ptr::from_ref(info).addr();
+                assert_eq!(seen.insert(p, id), None, "{id}: shares an info");
+            }
+        }
+        assert!(!seen.is_empty());
+        // Embedder host functions: the (unit, function id) pair is the same for all of them
+        // (H13-Q5).
+        let pair = |f: u64| {
+            let info = object::function_info(f);
+            assert!(info.host.is_some());
+            (info.unit, info.function_id)
+        };
+        let a = crate::realm::new_host_function(rt, super::print, "a", 0, false);
+        let b = crate::realm::new_host_function(rt, super::print, "b", 0, false);
+        assert_eq!(pair(a), (core::ptr::null(), u32::MAX));
+        assert_eq!(pair(a), pair(b));
+        assert!(!seen.contains_key(&core::ptr::from_ref(object::function_info(a)).addr()));
+    });
+}
