@@ -1,6 +1,6 @@
 # op-eval-order: script (sloppy)
 # | function f(a) { return a + (a = 1); }
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=37 source=embedded hints=none
 source_hash=db76d5a7e12b2d7edf90f9012477f0ddd419c0f2c1c4faf6037f53d6a8767db5
 strings (1):

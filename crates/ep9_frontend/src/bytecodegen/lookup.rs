@@ -1,6 +1,6 @@
 //! Calls whose callee is a dynamic lookup (`with`, sloppy direct eval): `f()` where `f`
-//! resolves to [`Resolution::Dynamic`](crate::scope::Resolution::Dynamic). The callee and its
-//! receiver come from one `CallRuntimeForPair(LoadLookupSlotForCall, name)`, so that
+//! resolves to [`Resolution::Dynamic`]. The callee and its receiver come from one
+//! `CallRuntimeForPair(LoadLookupSlotForCall, name)`, so that
 //! `with (o) f()` gets `this === o` (§13.3.6.1 EvaluateCall step 1.b, WithBaseObject), and the
 //! call takes the property call path of `call`:
 //!
@@ -15,13 +15,35 @@
 //! callers allocate `callee` just before the list); otherwise into two temporaries and moved.
 //!
 //! Caller: `expr.rs` (`callee_and_receiver`).
+//!
+//! Assignments to a dynamic name (`x = v`, `x op= v`, `x &&= v`, `x++`, `var x = v`) evaluate
+//! the reference before the right-hand side (§13.15.2 step 1.a, §13.4.2.1, §14.3.2.1), and
+//! PutValue goes to that reference even if the right-hand side deletes or adds a binding
+//! (test262 S11.13.1_A5_T1, unscopables-inc-dec.js). So the target is resolved first, into a
+//! list of 4 temporaries that the read and the store use (runtime ids 29-31, ABI 4):
+//!
+//! ```text
+//! LdaConstant name; Star r_name
+//! CallRuntime ResolveLookupSlot, r_name; Star r_env       (Prepared::Dynamic)
+//! [CallRuntime LoadLookupSlotResolved, r_env-r_name]      (compound, logical, update)
+//! <right-hand side>; Star r_value; LdaTrue|LdaFalse; Star r_strict
+//! CallRuntime StoreLookupSlotResolved, r_env-r_strict     (acc = the value)
+//! ```
+//!
+//! Callers: `expr.rs` (`assignment`, `update`, `get_prepared`, `put_prepared`) and `stmt.rs`
+//! (`var_decl`). `StaLookupSlot` (which resolves at the store) stays where no code runs
+//! between the reference and the store, so both orders give the same result: a plain `=` or
+//! `var x =` whose value is a literal or a function ([`runs_no_code`]), a for-in/of head and
+//! a destructuring target (their store follows the value).
 
 use ep9_bytecode::{Register, RegisterList, RuntimeId};
 use oxc_ast::ast::{Expression, IdentifierReference};
 
+use super::expr::Prepared;
 use super::func::{FnGen, Gen};
+use crate::scope::Resolution;
 
-impl<'a> FnGen<'a, '_> {
+impl<'a, 's> FnGen<'a, 's> {
     /// Evaluates the callee `callee_expr` (the identifier `id`, maybe in parentheses) into
     /// `callee`. Returns `Some(list)` of `1 + n` registers with the receiver in `list[0]` for a
     /// property-style call, or `None` for a call with an undefined receiver.
@@ -62,6 +84,70 @@ impl<'a> FnGen<'a, '_> {
         self.release(m);
         Ok(Some(list))
     }
+
+    /// Resolves `p` now when it is a dynamic name (see the module doc), so the read and the
+    /// store that follow use this reference. Any other target is returned as it is.
+    pub(crate) fn resolve_dynamic(&mut self, p: Prepared<'a, 's>) -> Prepared<'a, 's> {
+        let Prepared::Binding(r) = p else {
+            return p;
+        };
+        if !matches!(r.resolution, Resolution::Dynamic { .. }) {
+            return p;
+        }
+        let regs = self.temps(4);
+        let k = self.name_const(r.name);
+        self.b.lda_constant(k).star(regs.get(1));
+        self.expr_pos(r.span.start);
+        self.runtime(RuntimeId::ResolveLookupSlot, sub_list(regs, 1, 1));
+        self.b.star(regs.get(0));
+        Prepared::Dynamic { r, regs }
+    }
+
+    /// `acc = GetValue` of a reference that [`Self::resolve_dynamic`] resolved into `regs`.
+    pub(crate) fn load_resolved(&mut self, at: u32, regs: RegisterList) {
+        self.expr_pos(at);
+        self.runtime(RuntimeId::LoadLookupSlotResolved, sub_list(regs, 0, 2));
+    }
+
+    /// PutValue of the accumulator to that reference (`strict`: the store is in strict code).
+    /// The accumulator holds the value afterwards.
+    pub(crate) fn store_resolved(&mut self, at: u32, regs: RegisterList, strict: bool) {
+        self.b.star(regs.get(2));
+        if strict {
+            self.b.lda_true();
+        } else {
+            self.b.lda_false();
+        }
+        self.b.star(regs.get(3));
+        self.expr_pos(at);
+        self.runtime(RuntimeId::StoreLookupSlotResolved, regs);
+    }
+}
+
+/// Evaluating `e` runs no JS code and changes no binding (a literal, a function or arrow
+/// expression, a template with no substitutions): a dynamic name assigned from it can be
+/// resolved at the store.
+pub(crate) fn runs_no_code(e: &Expression<'_>) -> bool {
+    match e.without_parentheses() {
+        Expression::NumericLiteral(_)
+        | Expression::StringLiteral(_)
+        | Expression::BooleanLiteral(_)
+        | Expression::NullLiteral(_)
+        | Expression::BigIntLiteral(_)
+        | Expression::FunctionExpression(_)
+        | Expression::ArrowFunctionExpression(_) => true,
+        Expression::TemplateLiteral(t) => t.expressions.is_empty(),
+        _ => false,
+    }
+}
+
+/// `len` registers of `regs` from index `from`.
+fn sub_list(regs: RegisterList, from: u32, len: u32) -> RegisterList {
+    let first = regs
+        .get(from)
+        .local_index()
+        .expect("temporaries are locals");
+    RegisterList::new(first, len)
 }
 
 #[cfg(test)]
@@ -138,6 +224,80 @@ mod tests {
     fn tagged_template_and_spread() {
         assert_pair_feeds_call(&code("with ({}) { f`t`; }"), "CallProperty1");
         assert_pair_feeds_call(&code("with ({}) { f(...a); }"), "CallWithSpread");
+    }
+
+    /// The position of the first line that starts with `op`.
+    fn at(lines: &[String], op: &str) -> usize {
+        lines
+            .iter()
+            .position(|l| l.starts_with(op))
+            .unwrap_or_else(|| panic!("no {op} in {lines:#?}"))
+    }
+
+    /// `x = v`, `x op= v`, `x ||= v`, `x++` and `var x = v` on a dynamic `x` resolve it
+    /// before `v` runs (here the dynamic call `f()`), then read and store through it.
+    #[test]
+    fn a_dynamic_target_is_resolved_before_the_value() {
+        let resolve = "CallRuntime ResolveLookupSlot";
+        let load = "CallRuntime LoadLookupSlotResolved";
+        let store = "CallRuntime StoreLookupSlotResolved";
+        let call = "CallRuntimeForPair LoadLookupSlotForCall";
+        for (src, reads) in [
+            ("with (o) { x = f(); }", false),
+            ("with (o) { x += f(); }", true),
+            ("with (o) { x ||= f(); }", true),
+            ("with (o) { var x = f(); }", false),
+        ] {
+            let lines = code(src);
+            assert!(at(&lines, resolve) < at(&lines, call), "{src}: {lines:#?}");
+            assert!(at(&lines, call) < at(&lines, store), "{src}: {lines:#?}");
+            if reads {
+                assert!(at(&lines, resolve) < at(&lines, load), "{src}: {lines:#?}");
+                assert!(at(&lines, load) < at(&lines, call), "{src}: {lines:#?}");
+            }
+            assert!(
+                !lines
+                    .iter()
+                    .any(|l| l.starts_with("StaLookupSlot") || l.starts_with("LdaLookupSlot k")),
+                "{src}: {lines:#?}"
+            );
+        }
+        let lines = code("with (o) { x++; }");
+        assert!(at(&lines, resolve) < at(&lines, load), "{lines:#?}");
+        assert!(at(&lines, load) < at(&lines, store), "{lines:#?}");
+    }
+
+    /// A value that runs no code keeps the one-step `StaLookupSlot` (both orders agree).
+    #[test]
+    fn a_literal_value_keeps_sta_lookup_slot() {
+        let lines = code("with (o) { x = 1; var y = function () {}; z = `t`; }");
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.starts_with("StaLookupSlot"))
+                .count(),
+            3,
+            "{lines:#?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("LookupSlotResolved")),
+            "{lines:#?}"
+        );
+    }
+
+    /// A named function expression's own name, when it lives in a context, is described
+    /// as `function-name` (VariableMode::FunctionName, ABI 4): the VM's dynamic store must
+    /// see that it is immutable but not strict.
+    #[test]
+    fn a_function_name_slot_has_its_own_mode() {
+        let unit = compile(
+            "var f = function g() { with ({}) { g = 1; } };",
+            SourceOpts::script(Strictness::Sloppy),
+            CompileOptions::default(),
+        )
+        .unwrap();
+        let text = ep9_bytecode::disassemble(unit.unit());
+        assert!(text.contains("slots=[\"g\":function-name]"), "{text}");
     }
 
     /// A callee that is not a dynamic lookup keeps the plain call.

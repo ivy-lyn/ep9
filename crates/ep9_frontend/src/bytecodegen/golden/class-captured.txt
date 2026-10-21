@@ -1,6 +1,6 @@
 # class-captured: script (sloppy)
 # | class A { m() { return () => A; } }
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=35 source=embedded hints=none
 source_hash=cef97254a6634a516fa906cdf913cbcdfb129c5b4aeb3d6d41413e33b1c9976b
 strings (2):

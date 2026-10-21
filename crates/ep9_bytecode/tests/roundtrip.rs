@@ -210,7 +210,7 @@ fn header_errors_map_to_h35_outcomes() {
         CompiledUnit::from_bytes(&m).unwrap_err(),
         LoadError::BadHeader("TS flags on a JavaScript unit")
     );
-    // Bits 12-15 (reserved TS flags) are zero in ABI 1-3, on a JavaScript and on a
+    // Bits 12-15 (reserved TS flags) are zero in ABI 1-4, on a JavaScript and on a
     // TypeScript unit (H03 Rules row 2).
     for bit in 12..16 {
         for extra in [0, unit_flags::TYPESCRIPT] {

@@ -1,4 +1,4 @@
-//! BytecodeGen v0: JS source -> [`CompiledUnit`](ep9_bytecode::CompiledUnit) (bytecode ABI 3).
+//! BytecodeGen v0: JS source -> [`CompiledUnit`](ep9_bytecode::CompiledUnit) (bytecode ABI 4).
 //!
 //! ```text
 //! compile_script / compile_module / compile (and eval.rs compile_eval: own parse job, Eval root)
@@ -612,10 +612,10 @@ pub(crate) fn variable_mode(kind: BindingKind) -> VariableMode {
         | BindingKind::PrivateName { .. } => VariableMode::Const,
         BindingKind::Function | BindingKind::BlockFunction => VariableMode::Function,
         BindingKind::Class => VariableMode::Class,
+        BindingKind::FunctionName => VariableMode::FunctionName,
         BindingKind::Var
         | BindingKind::Parameter
         | BindingKind::CatchParameter
-        | BindingKind::FunctionName
         | BindingKind::This
         | BindingKind::NewTarget
         | BindingKind::Arguments

@@ -89,7 +89,7 @@ pub mod flags {
     pub const TS_EXPERIMENTAL_DECORATORS: u32 = 1 << 10;
     /// Bit 11: `emitDecoratorMetadata` (H3). Only with [`TYPESCRIPT`].
     pub const TS_EMIT_DECORATOR_METADATA: u32 = 1 << 11;
-    /// Bits 12-15: reserved for later TS flags; zero in ABI 1-3.
+    /// Bits 12-15: reserved for later TS flags; zero in ABI 1-4.
     pub const TS_RESERVED: u32 = 0xf << 12;
     /// Bit 16: the source section holds the source text.
     pub const HAS_SOURCE: u32 = 1 << 16;

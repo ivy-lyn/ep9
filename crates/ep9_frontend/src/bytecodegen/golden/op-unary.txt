@@ -1,6 +1,6 @@
 # op-unary: script (sloppy)
 # | function f(a) { return [-a, +a, ~a, !a, typeof a, void a, -1, -0]; }
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=68 source=embedded hints=none
 source_hash=e318bd6f0047619fdd5519eb888630b507b19bc020ca11217c3327433a99be37
 strings (1):

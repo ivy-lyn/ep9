@@ -1,6 +1,6 @@
 # var-script-this: script (sloppy)
 # | var f = () => this; this.x = 1;
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=31 source=embedded hints=none
 source_hash=9884592f3af91cee6e3dcf32b093f18e00dcb0b4c6e5d7e4e75ec469af8e1fdc
 strings (3):

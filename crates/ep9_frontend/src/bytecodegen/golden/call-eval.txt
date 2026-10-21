@@ -1,6 +1,6 @@
 # call-eval: script (sloppy)
 # | function f(x) { return eval(x); } function g() { return eval(); } var e = eval; e('1');
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=87 source=embedded hints=none
 source_hash=9aedf107e0a112c9793f303434566fbcff185718df19fdb4a29a87564cb8e259
 strings (10):

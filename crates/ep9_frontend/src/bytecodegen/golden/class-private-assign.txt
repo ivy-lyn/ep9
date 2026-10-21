@@ -1,6 +1,6 @@
 # class-private-assign: script (sloppy)
 # | class A { #m() {} get #a() { return 1; } set #a(v) {} get #g() {} t(o, v) { o.#a = v; o.#a += 1; o.#a++; [o.#a] = [v]; o.#m = v; return o.#g = v; } }
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=149 source=embedded hints=none
 source_hash=3e352a399cf544ffc7680007655e7f3c1954b723db6c73f682d8f4d5470a57b5
 strings (15):
