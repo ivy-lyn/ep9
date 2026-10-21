@@ -71,6 +71,7 @@ T0 v0 writes only the IC entries of 0x21, 0x22, 0x24, 0x25 and the global sites 
 | K15 | **Global ICs** (stretch, built): a lexical binding is a field case keyed on the lexical record's shape (the TDZ hole misses); an own data property of the global object is a `GLOBAL` cell keyed on the global object's shape whose +24 is the lexical record's shape (weak), so a new `let` that shadows it misses. A found global costs one table scan on the miss path (W4-P1-GLOBAL-ONE-SCAN) | Without it, each global load scans the lexical record and the global object |
 | K16 | **Shared slots**: `ic::init_vector` scans the function's bytecode when the vector is made; an IC slot that sites with different names share starts megamorphic. BytecodeGen never shares one; hand-built units (tests) do | One name's handler must never answer another name |
 | K17 | **0x22** is keyed on the lookup start (the home object's prototype) and passes its `receiver` register as the receiver (W4-P3-SUPER-SPLIT) | §13.3.7.3 |
+| K18 | **The epoch saturates** at `u32::MAX` (W4-P3FIX-EPOCH-SAT). There a miss records `SLOW` for a prototype load, a missing property or a 0x24 add, so every older handler misses and only the generic path runs from then on. The real fix is K5: validity cells in M1 | A wrap brought back an old handler's epoch and its stale answer after 2^32 prototype changes |
 
 **FactSnapshot v0** (full text: `crates/ep9_facts/tests/golden/schema.txt`):
 
@@ -146,3 +147,4 @@ KeyRef    = string (Latin-1 or UTF-16) | well-known symbol | other symbol
 |---|---|---|---|
 | 2026-10-21 | draft | H16 v0: the 21 slot kinds kept with no ABI bump, a runtime and a fact record per kind; FactSnapshot v0 in `ep9_facts` (FACT_SCHEMA_VERSION 1, schema history); K2-K7 copied from the week-4 plan (OM-5 to OM-8, OM-12 to OM-14) | P2-FACTS (AOT senior role) |
 | 2026-10-21 | as built | IC v0 in T0: K9-K17 (int32 handlers, POLY_IC and IC_HANDLER cells, `SLOW` cases, checked add cases, global ICs, shared slots, 0x22 receiver) | P3-IC (VM lead role) |
+| 2026-10-21 | as built | K18: `proto_epoch` saturates instead of wrapping | P3 review fix |

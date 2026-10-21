@@ -20,7 +20,7 @@ use ep9_heap::GlobalHandle;
 use super::{Asm, config, isolate, meta, on_big_stack, print, unit};
 use crate::atoms;
 use crate::feedback;
-use crate::frame::{NULL, UNDEFINED, int32_bits};
+use crate::frame::{NULL, UNDEFINED, int32_bits, int32_of};
 use crate::ic::{self, KEY_STRING, State, hk, smi};
 use crate::object::{self, attr};
 use crate::property;
@@ -268,8 +268,30 @@ fn method(rt: &Runtime, name: &str) -> u64 {
 }
 
 // ---- dead cells: the stack must not keep them ----------------------------------------------
+//
+// A test that expects a cell to die must leave no copy of its address where the conservative
+// scan of the next collection reads: the callee-saved registers and `[sp, stack high)` at the
+// spill trampoline (ep9_heap css.rs). So:
+//
+//   test frame        gets only masked addresses, and calls nothing that reads the dead
+//   (and T::collect)  cells before the collection (W4-P3FIX-DEADSHAPE-TEST)
+//   ---------------   <- the scan stops here (checked: `collect_after_a_pad`)
+//   below_a_pad       DEEP bytes of zeros
+//   ---------------   <- `pad_low`
+//   made_*            frames that make and read the dead cells (inline(never))
+//
+// - Callee-saved registers are restored when `below_a_pad` returns, to values of the test
+//   frame, which never held an unmasked address.
+// - A caller-saved register is not scanned, but a frame may spill one that is uninitialized
+//   to its stack, such as the unused payload of a returned enum. On x86-64 Linux (debug) the
+//   test frame spilled the payload register of `T::state`'s `Monomorphic`, which still held
+//   the dead shape. Hence every read of a dead cell happens below the pad.
 
 const MASK: usize = 0x5a5a_5a5a_5a5a_5a5a;
+
+/// Bytes of zeros between the test's frame and the frames that make the dead cells: far more
+/// than a collection's own frames take (`T::collect` down to the spill trampoline).
+const DEEP: usize = 64 << 10;
 
 /// Overwrites 256 KiB of stack below the caller, so stale words of returned frames cannot
 /// keep a dead cell alive through the conservative scan.
@@ -277,6 +299,33 @@ const MASK: usize = 0x5a5a_5a5a_5a5a_5a5a;
 fn scrub_stack() {
     let mut words = [0usize; 1 << 15];
     black_box(&mut words);
+}
+
+/// Runs `made` with [`DEEP`] bytes of zeros between its frames and the caller's. `made` must
+/// only call an `#[inline(never)]` function that makes the cells and returns their masked
+/// addresses. Returns that result and `pad_low`, the lowest byte of the pad: every frame of
+/// `made`'s callee lies below it.
+#[inline(never)]
+fn below_a_pad<R>(made: impl FnOnce() -> R) -> (R, usize) {
+    let mut pad = [0u8; DEEP];
+    black_box(&mut pad);
+    let r = made();
+    (r, black_box(&mut pad).as_ptr().addr())
+}
+
+/// Scrubs the stack and collects, after the dead cells were made by [`below_a_pad`] (which
+/// gave `pad_low`). Then checks that the collection can show something about them: its
+/// conservative scan stopped above the pad, and kept none of `dead` (masked addresses).
+fn collect_after_a_pad(t: &mut T, pad_low: usize, dead: &[usize]) {
+    scrub_stack();
+    t.collect();
+    let high = ep9_platform::current_thread_stack_bounds().unwrap().high;
+    let scan_low = high - 8 * t.rt().heap.stats().last_stack_words;
+    assert!(
+        scan_low > pad_low,
+        "the conservative scan read the frames below the pad ({scan_low:#x} <= {pad_low:#x})"
+    );
+    assert_not_kept(t.rt(), dead);
 }
 
 /// Panics if the last conservative scan kept one of `cells` (masked addresses): the check
@@ -293,12 +342,15 @@ fn assert_not_kept(rt: &Runtime, cells: &[usize]) {
 }
 
 /// Loads `x` through `f0` from a new object `{pad: 0, x: 1}` whose shape no other object has,
-/// in a frame of its own. Returns the masked addresses of the object and its shape.
+/// and checks that the entry of `f0` is then in the state `want` (a read of the shape, so it
+/// happens in this frame, below the pad). Returns the masked addresses of the object and its
+/// shape.
 #[inline(never)]
-fn load_from_a_lone_shape(t: &mut T, pad: &str) -> [usize; 2] {
+fn made_a_lone_shape_load(t: &mut T, pad: &str, want: State) -> [usize; 2] {
     let p = object_prototype(t.rt());
     let o = object_with(t.rt(), p, &[(pad, int(0)), ("x", int(1))]);
     assert_eq!(t.ok(0, o, UNDEFINED), int(1));
+    assert_eq!(t.state(0), want);
     let s = shape::shape_of(o);
     [black_box(o as usize) ^ MASK, black_box(s as usize) ^ MASK]
 }
@@ -604,17 +656,176 @@ fn a_super_load_is_keyed_on_the_home_objects_prototype() {
     });
 }
 
+// ---- the epoch saturates (W4-P3FIX-EPOCH-SAT) ---------------------------------------------
+
+/// The sites of [`epoch_run`]: `o.b` (a prototype load), `o.q` (a missing property), strict
+/// `x.n = v` (an add that a read-only `n` on the chain makes throw), sloppy `y.m = v` (an add
+/// the changes do not touch) and CreateDataProperty(z, "d", v) (0x25).
+const EPOCH_SITES: [Site; 5] = [
+    Site::Get("b"),
+    Site::Get("q"),
+    Site::Set("n", true),
+    Site::Set("m", false),
+    Site::Define("d"),
+];
+
+/// An answer of [`epoch_answers`]: an int, or `None` for undefined.
+fn answer(v: Option<u64>) -> Option<i32> {
+    let v = v.filter(|&v| v != UNDEFINED)?;
+    assert_eq!(v, int(int32_of(v)), "not an int: {v:#x}");
+    Some(int32_of(v))
+}
+
+/// One round of [`EPOCH_SITES`]: `o.b`, `o.q`, then on new objects whose prototype is `p`:
+/// strict `x.n = 5` (-1 for a TypeError, else `x.n`), sloppy `y.m = 6` then `y.m`,
+/// CreateDataProperty(z, "d", 7) then `z.d`. Ints and undefined only, so two isolates can
+/// compare them.
+fn epoch_answers(t: &mut T, o: u64, p: u64) -> Vec<Option<i32>> {
+    let mut r = vec![
+        answer(Some(t.ok(0, o, UNDEFINED))),
+        answer(Some(t.ok(1, o, UNDEFINED))),
+    ];
+    let x = object::new_object(t.rt(), p);
+    r.push(match t.call(2, x, int(5)) {
+        Ok(_) => answer(own(t.rt(), x, "n")),
+        Err(e) => {
+            assert_eq!(e.constructor.as_deref(), Some("TypeError"), "{}", e.message);
+            Some(-1)
+        }
+    });
+    for (i, v, name) in [(3, 6, "m"), (4, 7, "d")] {
+        let y = object::new_object(t.rt(), p);
+        t.ok(i, y, int(v));
+        r.push(answer(own(t.rt(), y, name)));
+    }
+    r
+}
+
+/// What [`epoch_run`] saw after the changes.
+#[derive(Debug)]
+struct EpochRun {
+    /// Two rounds of [`epoch_answers`] after the four changes, then one after a fifth.
+    answers: Vec<Option<i32>>,
+    epoch: u32,
+    /// With the IC: the kind of each site's case for `o`'s shape, then the kind and epoch of
+    /// a 0x25 case made after the changes.
+    kinds: Option<([i32; 5], (i32, u32))>,
+}
+
+/// Sets the epoch to `warm`, warms [`EPOCH_SITES`] on `o` and new objects whose prototype is
+/// `p` = {a: 1, b: 2}, then sets the epoch to `jump` and makes four structural changes of
+/// `p`, each of which makes a warm answer wrong: delete `b`, add `c` = 30 (in `b`'s old
+/// field), add `q` = 40, add a read-only `n`. Two rounds of answers follow (the misses record
+/// new cases), then a fifth change that makes the missing `o.b` 50, and one more round.
+fn epoch_run(c: IsolateConfig, warm: u32, jump: u32) -> EpochRun {
+    let ic = c.feedback_threshold == 0;
+    let mut t = T::new(c, &EPOCH_SITES);
+    let op = object_prototype(t.rt());
+    let p = object_with(t.rt(), op, &[("a", int(1)), ("b", int(2))]);
+    let kept = t.keep(p);
+    let o = object::new_object(t.rt(), p);
+    let so = shape::shape_of(o);
+    t.rt().shapes.proto_epoch.set(warm);
+    for _ in 0..2 {
+        let warm_answers = [Some(2), None, Some(5), Some(6), Some(7)];
+        assert_eq!(epoch_answers(&mut t, o, p), warm_answers);
+    }
+    if ic {
+        let (kind, made_at, holder, _) = t.describe(0, so).unwrap();
+        assert_eq!((kind, made_at, holder), (PROTO_LOAD, warm, p));
+        assert_eq!(t.describe(1, so).map(|d| (d.0, d.1)), Some((MISSING, warm)));
+        for i in 2..5 {
+            assert_eq!(t.describe(i, so).map(|d| (d.0, d.1)), Some((ADD, warm)));
+        }
+    }
+    assert_eq!(t.epoch(), warm);
+    t.rt().shapes.proto_epoch.set(jump);
+    let b = key(t.rt(), "b");
+    assert!(property::delete(&mut t.iso.cx, p, b, true).unwrap());
+    for (name, v, a) in [
+        ("c", int(30), attr::DEFAULT),
+        ("q", int(40), attr::DEFAULT),
+        ("n", int(9), attr::CONFIGURABLE),
+    ] {
+        props::own_define(t.rt(), p, key(t.rt(), name), v, a);
+    }
+    let epoch = t.epoch();
+    let mut answers = epoch_answers(&mut t, o, p);
+    answers.extend(epoch_answers(&mut t, o, p));
+    props::own_define(t.rt(), p, b, int(50), attr::DEFAULT);
+    answers.extend(epoch_answers(&mut t, o, p));
+    let kinds = ic.then(|| {
+        // A shape the 0x25 site has not seen.
+        let z = object_with(t.rt(), op, &[("icPadZ", int(0))]);
+        let zs = shape::shape_of(z);
+        t.ok(4, z, int(8));
+        assert_eq!(own(t.rt(), z, "d"), Some(int(8)));
+        let d = t.describe(4, zs).unwrap();
+        ([0, 1, 2, 3, 4].map(|i| t.kind(i, so).unwrap()), (d.0, d.1))
+    });
+    t.release(kept);
+    EpochRun {
+        answers,
+        epoch,
+        kinds,
+    }
+}
+
+/// Runs [`epoch_run`] with the IC (eager feedback) and without it (no vector), and checks that
+/// both give the answers of the generic path, and that the epoch stays at its maximum.
+fn epoch_matches_the_generic_path(c: IsolateConfig, warm: u32, jump: u32) -> EpochRun {
+    let mut off = c.clone();
+    off.feedback_threshold = u32::MAX;
+    let without = epoch_run(off, warm, jump);
+    let with = epoch_run(c, warm, jump);
+    let mut want = [None, Some(40), Some(-1), Some(6), Some(7)].repeat(2);
+    want.extend([Some(50), Some(40), Some(-1), Some(6), Some(7)]);
+    assert_eq!(without.answers, want, "the generic path");
+    assert_eq!(
+        with.answers, want,
+        "the IC (epoch {warm} -> {jump} -> {})",
+        with.epoch
+    );
+    assert_eq!((without.epoch, with.epoch), (u32::MAX, u32::MAX));
+    with
+}
+
+#[test]
+fn a_saturated_epoch_misses_every_case_made_before_it() {
+    each(|c| {
+        // Warm at MAX - 2; the four changes take the epoch to MAX and then stay there.
+        let run = epoch_matches_the_generic_path(c, u32::MAX - 2, u32::MAX - 2);
+        // At MAX the misses record SLOW, not a case that compares the epoch (a missing case
+        // for `o.b` would answer undefined after the fifth change); the strict add threw, so
+        // it recorded nothing. A 0x25 add case ignores the epoch: the old one still hits, and
+        // a new one is still made.
+        let (kinds, define) = run.kinds.unwrap();
+        assert_eq!(kinds, [smi::SLOW, smi::SLOW, ADD, smi::SLOW, ADD]);
+        assert_eq!(define, (ADD, u32::MAX));
+    });
+}
+
+#[test]
+fn the_epoch_does_not_wrap_back_to_an_old_case() {
+    each(|c| {
+        // Warm at 3, jump to MAX: four changes would wrap the epoch to 0, 1, 2 and then 3, so
+        // every warm case would hit again with its old answer (`o.b` reading `c`, `o.q`
+        // undefined, `x.n = 5` adding past a read-only `n`).
+        let run = epoch_matches_the_generic_path(c, 3, u32::MAX);
+        let (kinds, _) = run.kinds.unwrap();
+        assert_eq!(kinds, [smi::SLOW, smi::SLOW, ADD, smi::SLOW, ADD]);
+    });
+}
+
 // ---- weak references -----------------------------------------------------------------------
 
 #[test]
 fn a_dead_shape_clears_its_entry() {
     each(|c| {
         let mut t = T::new(c, &[Site::Get("x")]);
-        let dead = load_from_a_lone_shape(&mut t, "icPadA");
-        assert_eq!(t.state(0), State::Monomorphic);
-        scrub_stack();
-        t.collect();
-        assert_not_kept(t.rt(), &dead);
+        let (dead, pad_low) =
+            below_a_pad(|| made_a_lone_shape_load(&mut t, "icPadA", State::Monomorphic));
+        collect_after_a_pad(&mut t, pad_low, &dead);
         assert_eq!(feedback::key(t.vector(0), SLOT), UNDEFINED);
         assert_eq!(t.state(0), State::Uninitialized);
         // A polymorphic case: two live shapes and one that dies. Handles keep the live objects
@@ -625,11 +836,9 @@ fn a_dead_shape_clears_its_entry() {
         let kept = [t.keep(a), t.keep(b)];
         assert_eq!(t.ok(0, a, UNDEFINED), int(1));
         assert_eq!(t.ok(0, b, UNDEFINED), int(2));
-        let dead = load_from_a_lone_shape(&mut t, "icPadC");
-        assert_eq!(t.state(0), State::Polymorphic(3));
-        scrub_stack();
-        t.collect();
-        assert_not_kept(t.rt(), &dead);
+        let (dead, pad_low) =
+            below_a_pad(|| made_a_lone_shape_load(&mut t, "icPadC", State::Polymorphic(3)));
+        collect_after_a_pad(&mut t, pad_low, &dead);
         assert_eq!(t.state(0), State::Polymorphic(2));
         assert_eq!(t.ok(0, a, UNDEFINED), int(1));
         assert_eq!(t.ok(0, b, UNDEFINED), int(2));
@@ -649,9 +858,9 @@ fn a_dead_shape_clears_its_entry() {
 
 /// Builds `o → p1 → p2` with `m` = 7 on `p2`, loads `o.m` through `f0` (a prototype-load case
 /// whose holder is `p2`), then cuts `p2` off the chain. Returns `o` and the masked address of
-/// `p2`, which nothing references now.
+/// `p2`, which nothing references now. Run it [`below_a_pad`].
 #[inline(never)]
-fn proto_load_through_a_lone_holder(t: &mut T) -> (u64, usize) {
+fn made_a_proto_load_through_a_lone_holder(t: &mut T) -> (u64, usize) {
     let op = object_prototype(t.rt());
     let p2 = object_with(t.rt(), op, &[("m", int(7))]);
     let p1 = object::new_object(t.rt(), p2);
@@ -667,10 +876,8 @@ fn proto_load_through_a_lone_holder(t: &mut T) -> (u64, usize) {
 fn a_proto_load_whose_holder_died_misses() {
     each(|c| {
         let mut t = T::new(c, &[Site::Get("m")]);
-        let (o, p2) = proto_load_through_a_lone_holder(&mut t);
-        scrub_stack();
-        t.collect();
-        assert_not_kept(t.rt(), &[p2]);
+        let ((o, p2), pad_low) = below_a_pad(|| made_a_proto_load_through_a_lone_holder(&mut t));
+        collect_after_a_pad(&mut t, pad_low, &[p2]);
         // The case stays (its key, the shape of `o`, lives); its weak holder is cleared.
         let (kind, made_at, holder, _) = t.describe(0, shape::shape_of(o)).unwrap();
         assert_eq!((kind, holder), (PROTO_LOAD, UNDEFINED));
