@@ -1,3 +1,14 @@
 # ep9 builtin ids: module math, block 8. Append-only (H20, W4-BUILTIN-IDS): never
 # reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
 # id     block.index  kind         length  name  (installed as)
+0x1000   8.0          method       1       "abs"  (%Math%.abs w-c)
+0x1001   8.1          method       1       "ceil"  (%Math%.ceil w-c)
+0x1002   8.2          method       1       "floor"  (%Math%.floor w-c)
+0x1003   8.3          method       1       "fround"  (%Math%.fround w-c)
+0x1004   8.4          method       2       "max"  (%Math%.max w-c)
+0x1005   8.5          method       2       "min"  (%Math%.min w-c)
+0x1006   8.6          method       2       "pow"  (%Math%.pow w-c)
+0x1007   8.7          method       1       "round"  (%Math%.round w-c)
+0x1008   8.8          method       1       "sign"  (%Math%.sign w-c)
+0x1009   8.9          method       1       "sqrt"  (%Math%.sqrt w-c)
+0x100a   8.10         method       1       "trunc"  (%Math%.trunc w-c)
