@@ -28,7 +28,7 @@
 //! | 2 | parse JSON: negatives all pass (the pin's count), positives >= 99.98% | step "test262 parse" green, and the Windows parse expectation file equals this host's |
 //! | 3 | exec JSON: `language/` files >= 40% | step "test262 exec" green; passed = total (exec JSON) - the `test/language/` lines of the Windows expectation file |
 //! | 4 | cross JSON: richards and deltablue vs QuickJS, net interval low end >= 0.6, valid rows, a gate host, not provisional | NOT-RUN (no Windows bench job) |
-//! | 5 | verdicts: SP-GC, SP-VA, SP-Value, SP-Dispatch, SP-JIT-mem and Spike B GO (no open conditions); SP-tsrs-win recorded | the same verdicts, and the spike, barrier and test steps of the run green |
+//! | 5 | verdicts: SP-GC, SP-VA, SP-Value, SP-Dispatch, SP-JIT-mem and Spike B GO (no open conditions); SP-tsrs-win recorded | the same verdicts, and these steps of the run green: SP-GC, SP-Dispatch, SP-JIT-mem and Spike B structural gates, ep9_heap barrier, cargo test --workspace, spike-native tests (ep9_vm) |
 //! | 6 | GC JSON: the whole pinned corpus (files run + skipped = the pin's count; skipped = the committed skip list), 0 infra; the run names the committed expectation file, and its "fail" results against that file without the skip list give 0 new failures (recomputed here) | NOT-RUN (CI runs GC-stress on linux-x64 only) |
 //! | 7 | nesting log: `every_form_is_gated`, `caps_hold_end_to_end`, `uncaught_error_reports_file_line_utf16_column` ok | step "cargo test --workspace" green (it runs the three) |
 //! | 8 | the asserts are in ep9_value's source, and `cargo check -p ep9_value --target <host>` passes | step "cargo build --workspace --all-targets" green |
@@ -982,8 +982,12 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
             ("spike gates", "SP-GC gate"),
             ("spike gates", "SP-Dispatch gate"),
             ("spike gates", "SP-JIT-mem gate"),
+            ("spike gates", "Spike B structural gate"),
             ("disasm checks", "ep9_heap barrier"),
             ("build + test", "Run cargo test --workspace --locked"),
+            // D21: the workspace test does not enable spike-native; this step is the only
+            // Windows run of Spike B's native code.
+            ("build + test", "spike-native tests (ep9_vm)"),
         ] {
             match ci.step(job, &[step]) {
                 Ok(s) => {
@@ -2207,7 +2211,22 @@ mod tests {
 
     /// A run in the shape of `gh run view <id> --json jobs,headSha,databaseId,url`.
     fn ci_json(exec_conclusion: &str) -> String {
-        let job = |name: &str, steps: &[String]| {
+        ci_json_with(|name| {
+            Some(if name == "test262 exec" {
+                exec_conclusion
+            } else {
+                "success"
+            })
+        })
+    }
+
+    /// The same run, with `conclusion(step name)` for each step; None leaves the step out.
+    fn ci_json_with<'a>(conclusion: impl Fn(&str) -> Option<&'a str>) -> String {
+        let job = |name: &str, steps: &[(&str, &str, &str)]| {
+            let steps: Vec<String> = steps
+                .iter()
+                .filter_map(|&(n, from, to)| conclusion(n).map(|c| step(n, c, from, to)))
+                .collect();
             format!(
                 r#"{{"name":"{name} (windows-x64)","status":"completed","conclusion":"success","databaseId":7,"steps":[{}]}}"#,
                 steps.join(",")
@@ -2218,43 +2237,31 @@ mod tests {
             job(
                 "build + test",
                 &[
-                    step(
+                    (
                         "Run cargo build --workspace --all-targets --locked",
-                        "success",
                         "02:00",
                         "12:00"
                     ),
-                    step(
-                        "Run cargo test --workspace --locked",
-                        "success",
-                        "12:00",
-                        "30:00"
-                    ),
+                    ("Run cargo test --workspace --locked", "12:00", "30:00"),
+                    ("spike-native tests (ep9_vm)", "30:00", "33:00"),
                 ]
             ),
             job(
                 "test262 parse + exec",
                 &[
-                    step("test262 parse", "success", "04:00", "14:00"),
-                    step("test262 exec", exec_conclusion, "14:00", "15:12"),
-                    step(
-                        "bytecodegen corpus digest (release)",
-                        "success",
-                        "16:30",
-                        "22:00"
-                    ),
+                    ("test262 parse", "04:00", "14:00"),
+                    ("test262 exec", "14:00", "15:12"),
+                    ("bytecodegen corpus digest (release)", "16:30", "22:00"),
                 ]
             ),
-            job(
-                "disasm checks",
-                &[step("ep9_heap barrier", "success", "15:00", "16:00")]
-            ),
+            job("disasm checks", &[("ep9_heap barrier", "15:00", "16:00")]),
             job(
                 "spike gates",
                 &[
-                    step("SP-Dispatch gate", "success", "05:00", "30:00"),
-                    step("SP-GC gate", "success", "30:00", "38:00"),
-                    step("SP-JIT-mem gate", "success", "38:00", "44:00"),
+                    ("SP-Dispatch gate", "05:00", "30:00"),
+                    ("SP-GC gate", "30:00", "38:00"),
+                    ("SP-JIT-mem gate", "38:00", "44:00"),
+                    ("Spike B structural gate", "44:00", "50:00"),
                 ]
             ),
         )
@@ -2463,6 +2470,44 @@ mod tests {
         assert!(c.evidence.contains("new failures 1"), "{}", c.evidence);
         // The full corpus against the committed file: PASS.
         let c = item6(exec_json(1, 166.0, 2, &listed, committed));
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// I4: the Windows cell of item 5 needs the spike-native tests (D21, the only Windows run
+    /// of Spike B's native code) and the Spike B structural gate, not only the other gates.
+    #[test]
+    fn windows_spike_b_needs_its_steps() {
+        let root = fake_repo("win-spike-b");
+        write(
+            &root,
+            "in/verdicts.md",
+            "| Spike | Verdict |\n|---|---|\n| SP-GC, SP-VA, SP-Value, SP-Dispatch, SP-JIT-mem, Spike B | GO |\n\
+             | SP-tsrs-win | recorded |\n",
+        );
+        let mut o = opts(&root);
+        o.verdicts = vec![root.join("in/verdicts.md")];
+        let item5 = |ci: String| {
+            write(&root, "in/ci.json", &ci);
+            let r = run(&o).unwrap();
+            assert_eq!(
+                r.cells[4].0.status,
+                Status::Pass,
+                "{}",
+                r.cells[4].0.evidence
+            );
+            r.cells[4].1.clone()
+        };
+        for step in ["spike-native tests (ep9_vm)", "Spike B structural gate"] {
+            let c = item5(ci_json_with(|n| {
+                Some(if n == step { "failure" } else { "success" })
+            }));
+            assert_eq!(c.status, Status::Fail, "{step}: {}", c.evidence);
+            assert!(c.evidence.contains(step), "{}", c.evidence);
+            let c = item5(ci_json_with(|n| (n != step).then_some("success")));
+            assert_eq!(c.status, Status::NotRun, "{step}: {}", c.evidence);
+        }
+        let c = item5(ci_json("success"));
         assert_eq!(c.status, Status::Pass, "{}", c.evidence);
         std::fs::remove_dir_all(root).unwrap();
     }
