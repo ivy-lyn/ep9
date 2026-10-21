@@ -487,6 +487,7 @@ pub fn random_unit(seed: u64) -> RandomUnit {
                         VariableMode::Const,
                         VariableMode::Function,
                         VariableMode::Class,
+                        VariableMode::FunctionName,
                     ]),
                 )
             })

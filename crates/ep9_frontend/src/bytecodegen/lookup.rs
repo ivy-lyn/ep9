@@ -285,6 +285,21 @@ mod tests {
         );
     }
 
+    /// A named function expression's own name, when it lives in a context, is described
+    /// as `function-name` (VariableMode::FunctionName, ABI 4): the VM's dynamic store must
+    /// see that it is immutable but not strict.
+    #[test]
+    fn a_function_name_slot_has_its_own_mode() {
+        let unit = compile(
+            "var f = function g() { with ({}) { g = 1; } };",
+            SourceOpts::script(Strictness::Sloppy),
+            CompileOptions::default(),
+        )
+        .unwrap();
+        let text = ep9_bytecode::disassemble(unit.unit());
+        assert!(text.contains("slots=[\"g\":function-name]"), "{text}");
+    }
+
     /// A callee that is not a dynamic lookup keeps the plain call.
     #[test]
     fn static_callee_is_unchanged() {

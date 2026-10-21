@@ -612,10 +612,10 @@ pub(crate) fn variable_mode(kind: BindingKind) -> VariableMode {
         | BindingKind::PrivateName { .. } => VariableMode::Const,
         BindingKind::Function | BindingKind::BlockFunction => VariableMode::Function,
         BindingKind::Class => VariableMode::Class,
+        BindingKind::FunctionName => VariableMode::FunctionName,
         BindingKind::Var
         | BindingKind::Parameter
         | BindingKind::CatchParameter
-        | BindingKind::FunctionName
         | BindingKind::This
         | BindingKind::NewTarget
         | BindingKind::Arguments

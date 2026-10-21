@@ -706,6 +706,79 @@ fn a_resolved_eval_var_is_set_again_on_its_object() {
     assert_eq!(r.output, ["6", "undefined"]);
 }
 
+/// A `VariableMode::FunctionName` slot (a named function expression's own name, ABI 4) is
+/// immutable but not strict: a sloppy `StaLookupSlot` or `StoreLookupSlotResolved` leaves it
+/// as it is, a strict one throws a TypeError, and `delete` gives false.
+#[test]
+fn a_function_name_slot_ignores_sloppy_stores() {
+    let cases: [(u8, Result<&[&str], &str>); 3] = [
+        (0, Ok(&["1", "1", "false", "1"])),
+        (1, Err("TypeError: Assignment to constant variable.")),
+        (2, Err("TypeError: Assignment to constant variable.")),
+    ];
+    for (case, want) in cases {
+        let make = move || {
+            let mut s = Asm::script(0);
+            let (ctx, o, wctx) = (s.b.new_register(), s.b.new_register(), s.b.new_register());
+            let regs = s.b.new_register_list(4);
+            let kb = s.b.scope_constant(ScopeId(0));
+            s.b.create_block_context(kb).push_context(ctx);
+            s.b.lda_smi(1).sta_current_context_slot(0);
+            s.b.create_empty_object_literal().star(o);
+            let kw = s.b.scope_constant(ScopeId(1));
+            s.b.create_with_context(o, kw).push_context(wctx);
+            match case {
+                0 => {
+                    s.b.lda_smi(2);
+                    store(&mut s, "g", false);
+                    lookup(&mut s, "g");
+                    s.print_acc();
+                    resolve_ref(&mut s, regs, "g");
+                    s.b.lda_smi(3);
+                    store_ref(&mut s, regs, false);
+                    load_ref(&mut s, regs);
+                    s.print_acc();
+                    delete(&mut s, "g");
+                    s.print_acc();
+                    s.b.pop_context(wctx);
+                    s.b.lda_current_context_slot(0);
+                    s.print_acc();
+                }
+                1 => {
+                    s.b.lda_smi(2);
+                    store(&mut s, "g", true);
+                }
+                _ => {
+                    resolve_ref(&mut s, regs, "g");
+                    s.b.lda_smi(3);
+                    store_ref(&mut s, regs, true);
+                }
+            }
+            s.b.lda_undefined().return_();
+            unit_with_scopes(
+                "",
+                vec![
+                    (
+                        ScopeKind::Block,
+                        None,
+                        vec![("g", VariableMode::FunctionName)],
+                    ),
+                    (ScopeKind::With, Some(0), vec![]),
+                ],
+                vec![s.finish()],
+            )
+        };
+        let r = run_every(make);
+        match want {
+            Ok(lines) => {
+                ok(&r);
+                assert_eq!(r.output, lines, "case {case}");
+            }
+            Err(m) => assert_eq!(err(&r), m, "case {case}"),
+        }
+    }
+}
+
 /// `CreateWithContext` converts a primitive with ToObject (a string's `length` is found) and
 /// throws a TypeError for undefined; a With scope with another `Create*Context` is a VM
 /// internal error, never a context with no object.

@@ -294,3 +294,32 @@ print(go.gx, gx);"#
         ])
     );
 }
+
+/// A named function expression's own name is an immutable binding that is not strict
+/// (§15.2.5 CreateImmutableBinding(name, false)): a dynamic store to it (inside `with`) is
+/// ignored in sloppy code and a TypeError in strict code, `delete` gives false, and a `with`
+/// object that has the name still wins. Same answers as node v24.
+#[test]
+fn a_function_expression_name_is_immutable_through_with() {
+    assert_eq!(
+        run_both(
+            r#"var f = function g() { with ({}) { g = 3; return typeof g; } }; print(f());
+var f2 = function g() { with ({}) { return (function () { 'use strict'; try { g = 3; return 'no throw'; } catch (e) { return e instanceof TypeError; } })(); } }; print(f2());
+var f3 = function g() { with ({}) { g += 1; g++; return typeof g; } }; print(f3());
+var f4 = function g() { var r; with ({}) { r = delete g; } return r + ' ' + typeof g; }; print(f4());
+var f5 = function g() { with ({ g: 1 }) { g = 2; return typeof g; } }; print(f5());
+var f6 = function* g() { with ({}) { g = 3; yield typeof g; } }; print(f6().next().value);
+var f7 = function g() { with ({}) { (function () { 'use strict'; try { g++; } catch (e) { print(e.name); } })(); } return typeof g; }; print(f7());"#
+        ),
+        lines(&[
+            "function",
+            "true",
+            "function",
+            "false function",
+            "number",
+            "function",
+            "TypeError",
+            "function",
+        ])
+    );
+}

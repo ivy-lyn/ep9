@@ -306,6 +306,15 @@ fn set_binding_value(cx: &mut Cx, b: Binding, name: u64, v: u64, strict: bool) -
             if mode == VariableMode::Const {
                 return Err(const_assign(cx));
             }
+            // A named function expression's own name: immutable, not strict (§9.1.1.1.5
+            // step 5.b): ignored in sloppy code.
+            if mode == VariableMode::FunctionName {
+                return if strict {
+                    Err(const_assign(cx))
+                } else {
+                    Ok(())
+                };
+            }
             object::context_set(cx.rt(), context, index, v);
             Ok(())
         }
