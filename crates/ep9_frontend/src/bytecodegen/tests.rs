@@ -465,6 +465,11 @@ const CASES: &[(&str, Mode, &str)] = &[
         "class A { #m() { return 1; } static #s() { return super.x; } get #a() { return 1; } set #a(v) {} set #w(v) {} t(o) { return [o.#m(), A.#s(), o.#a, #m in o, o?.#m, #a in o]; } }",
     ),
     (
+        "class-private-assign",
+        Sloppy,
+        "class A { #m() {} get #a() { return 1; } set #a(v) {} get #g() {} t(o, v) { o.#a = v; o.#a += 1; o.#a++; [o.#a] = [v]; o.#m = v; return o.#g = v; } }",
+    ),
+    (
         "class-private-generator",
         Sloppy,
         "class A { *#g() { yield 1; } static *#h() {} t() { return this.#g(); } }",

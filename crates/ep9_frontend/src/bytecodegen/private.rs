@@ -10,8 +10,9 @@
 //! ```
 //!
 //! A field reference is a plain keyed `MemberRef`. A private method or accessor as an
-//! assignment target needs its own `MemberRef` kind in `expr.rs` (not in this file's grant):
-//! `private_member_ref` reports it as unsupported here.
+//! assignment target is `MemberRef::PrivateBranded`: the brand check runs at each GetValue
+//! and PutValue (after the right side), a write calls the setter, and a write to a method
+//! (or a getter-only accessor, whose setter slot holds undefined) throws a TypeError.
 //!
 //! Callers: `expr.rs` (load, member reference, optional chain, call, `in`, `delete`, keys).
 
@@ -142,14 +143,98 @@ impl<'a, 's> FnGen<'a, 's> {
         p: &'a PrivateFieldExpression<'a>,
     ) -> Gen<MemberRef> {
         let r = self.private_ref(&p.field)?;
-        if r.kind != PrivateKind::Field {
-            return self.unsupported("private names", p.field.span);
-        }
         let obj = self.private_object(p)?;
-        let key = self.temp();
-        self.load_ref(r.reference, false);
-        self.b.star(key);
-        Ok(MemberRef::Keyed { obj, key })
+        match r.kind {
+            PrivateKind::Field => {
+                let key = self.temp();
+                self.load_ref(r.reference, false);
+                self.b.star(key);
+                Ok(MemberRef::Keyed { obj, key })
+            }
+            PrivateKind::Accessor => self.unsupported("class auto-accessors", p.field.span),
+            kind => {
+                let brand = self.temp();
+                self.private_key(r)?;
+                self.b.star(brand);
+                let get = self.temp();
+                self.load_binding_raw(r.binding, r.hops, false);
+                self.b.star(get);
+                let set = if kind == PrivateKind::Method {
+                    None
+                } else {
+                    let s = self.setter_binding(r.binding)?;
+                    let set = self.temp();
+                    self.load_binding_raw(s, r.hops, false);
+                    self.b.star(set);
+                    Some(set)
+                };
+                Ok(MemberRef::PrivateBranded {
+                    obj,
+                    brand,
+                    get,
+                    set,
+                    at: p.field.span.start,
+                })
+            }
+        }
+    }
+
+    /// GetValue of a `MemberRef::PrivateBranded`: the brand check, then the method, or the
+    /// getter's result (a setter-only accessor holds undefined: the call throws).
+    pub(crate) fn private_branded_load(
+        &mut self,
+        obj: Register,
+        brand: Register,
+        get: Register,
+        method: bool,
+        at: u32,
+    ) {
+        let s = self.slot(FeedbackSlotKind::LoadKeyed);
+        self.b.ldar(brand);
+        self.expr_pos(at);
+        self.b.get_keyed_property(obj, s);
+        if method {
+            self.b.ldar(get);
+        } else {
+            let s = self.slot(FeedbackSlotKind::Call);
+            self.expr_pos(at);
+            self.b.call_property0(get, obj, s);
+        }
+    }
+
+    /// PutValue of the accumulator to a `MemberRef::PrivateBranded`: the brand check, then the
+    /// setter call (a getter-only accessor holds undefined: the call throws), or for a method
+    /// the TypeError of PrivateSet step 5 (ThrowConstAssignError; ABI 3 has no id with the
+    /// "Private method is not writable" text). The accumulator is not kept.
+    pub(crate) fn private_branded_store(
+        &mut self,
+        obj: Register,
+        brand: Register,
+        set: Option<Register>,
+        at: u32,
+    ) {
+        let m = self.mark();
+        let value = self.temp();
+        self.b.star(value);
+        let s = self.slot(FeedbackSlotKind::LoadKeyed);
+        self.b.ldar(brand);
+        self.expr_pos(at);
+        self.b.get_keyed_property(obj, s);
+        match set {
+            Some(setter) => {
+                let s = self.slot(FeedbackSlotKind::Call);
+                self.expr_pos(at);
+                self.b.call_property1(setter, obj, value, s);
+            }
+            None => {
+                self.expr_pos(at);
+                self.runtime(
+                    ep9_bytecode::RuntimeId::ThrowConstAssignError,
+                    RegisterList::EMPTY,
+                );
+            }
+        }
+        self.release(m);
     }
 
     /// The callee of `o.#m(...)`: the function into `callee`, the receiver into `list[0]`

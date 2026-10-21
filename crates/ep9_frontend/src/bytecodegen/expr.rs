@@ -75,6 +75,16 @@ pub(crate) enum MemberRef {
         home: Register,
         key: Register,
     },
+    /// `o.#m` or `o.#a`, a private method or accessor (private.rs): `brand` holds the class
+    /// brand, `get` the method or the getter, `set` the setter (`None` for a method). `at` is
+    /// the `#name` offset.
+    PrivateBranded {
+        obj: Register,
+        brand: Register,
+        get: Register,
+        set: Option<Register>,
+        at: u32,
+    },
 }
 
 /// An assignment target with its reference parts evaluated.
@@ -932,6 +942,13 @@ impl<'a, 's> FnGen<'a, 's> {
             MemberRef::SuperKeyed { this, home, key } => {
                 self.runtime_with_at(RuntimeId::LoadKeyedFromSuper, &[this, home, key], Some(at));
             }
+            MemberRef::PrivateBranded {
+                obj,
+                brand,
+                get,
+                set,
+                at,
+            } => self.private_branded_load(obj, brand, get, set.is_none(), at),
         }
     }
 
@@ -973,6 +990,13 @@ impl<'a, 's> FnGen<'a, 's> {
                 self.expr_pos(at);
                 self.runtime(RuntimeId::StoreToSuper, args);
             }
+            MemberRef::PrivateBranded {
+                obj,
+                brand,
+                set,
+                at,
+                ..
+            } => self.private_branded_store(obj, brand, set, at),
         }
         if let Some(t) = saved {
             self.b.ldar(t);
