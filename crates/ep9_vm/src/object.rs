@@ -103,8 +103,7 @@ pub(crate) mod iter_kind {
 
 /// GENERATOR fixed fields (OBJECT_LAYOUT 2). Every field holds a Value; state, mode and
 /// resume mode are int32s. One kind serves generators, async functions and async generators
-/// (the mode). P1-GEN-VM adds the accessors.
-#[allow(dead_code)] // callers: P1-GEN-VM (generator.rs), month 3 (async)
+/// (the mode). Accessors: [`new_generator`], [`gen_get`], [`gen_set`], [`gen_regs`].
 pub(crate) mod genf {
     /// The suspend point id, or a closed/executing marker (int32).
     pub const STATE: usize = 24;
@@ -121,11 +120,25 @@ pub(crate) mod genf {
     /// How the frame resumes: next, return or throw (int32).
     pub const RESUME_MODE: usize = 72;
     /// Async functions and async generators: the promise or the request queue.
+    #[allow(dead_code)] // month 3 (async)
     pub const ASYNC: usize = 80;
     pub const FIXED: usize = 8;
     pub const MODE_SYNC: i32 = 0;
+    #[allow(dead_code)] // month 3 (async)
     pub const MODE_ASYNC_FUNCTION: i32 = 1;
+    #[allow(dead_code)] // month 3 (async)
     pub const MODE_ASYNC_GENERATOR: i32 = 2;
+    /// [`STATE`] of a completed generator (M2-P1-GEN-NUMBERS; suspend ids are >= 0).
+    pub const STATE_CLOSED: i32 = -1;
+    /// [`STATE`] while the body runs.
+    pub const STATE_EXECUTING: i32 = -2;
+    /// [`RESUME_MODE`] values (M2-P1-GEN-NUMBERS, V8's `JSGeneratorObject::ResumeMode`).
+    pub const RESUME_NEXT: i32 = 0;
+    pub const RESUME_RETURN: i32 = 1;
+    pub const RESUME_THROW: i32 = 2;
+    /// [`REGS`] index of the value that `next`/`return`/`throw` passed (`ResumeGenerator`
+    /// puts it in the accumulator); the saved parameters, then the registers, follow it.
+    pub const REGS_INPUT: usize = 0;
 }
 
 /// SLOT_OBJECT fixed fields (OBJECT_LAYOUT 2): the ObjectClass id and a separate cell for the
@@ -674,7 +687,8 @@ pub(crate) fn array_set_length(rt: &Runtime, a: u64, len: u32) -> bool {
 /// A new function object for `info` with `context`. It gets the own data properties
 /// `length` and `name` from the FunctionInfo, {w: false, e: false, c: true} (§10.2.9
 /// SetFunctionName, §10.2.10 SetFunctionLength), in its 2 in-object slots. `prototype`
-/// stays lazy (`exotic.rs`). GC point.
+/// stays lazy (`exotic.rs`). Its `[[Prototype]]` is %Function.prototype%, or
+/// %GeneratorFunction.prototype% for a generator function (§15.5.3). GC point.
 pub(crate) fn new_function(rt: &Runtime, info: *const FunctionInfo, context: u64) -> u64 {
     // SAFETY: function infos outlive the isolate's cells (units and host infos are never
     // freed while the isolate lives).
@@ -682,7 +696,11 @@ pub(crate) fn new_function(rt: &Runtime, info: *const FunctionInfo, context: u64
     // GC points first (the name atom of a host function, the shape); the values live in
     // Rust locals (CSS).
     let name = function_name(rt, fi);
-    let s = shape::function_shape(rt);
+    let s = if fi.is_generator() {
+        shape::generator_function_shape(rt)
+    } else {
+        shape::function_shape(rt)
+    };
     let f = alloc_with_shape(rt, kind::FUNCTION, s, fun::CAPACITY);
     init(f, fun::INFO, native_of(info));
     init(f, fun::CONTEXT, context);
@@ -765,6 +783,115 @@ pub(crate) fn set_iterator_state(rt: &Runtime, it: u64, iterated: u64, next: u32
     let c = cell(it);
     wr(&rt.heap, c, iter::ITERATED, iterated);
     wr(&rt.heap, c, iter::NEXT, int32_bits(next as i32));
+}
+
+// ---- generators (GENERATOR cells, [`genf`]) ---------------------------------------------------
+
+/// A new GENERATOR object with prototype `proto` for the generator function `function`, in
+/// state executing with resume mode next: `receiver` is the body's `this`, `context` its
+/// context, and REGS a new ELEMENTS cell of `regs` Values (holes; the input slot undefined).
+/// GC point.
+pub(crate) fn new_generator(
+    rt: &Runtime,
+    proto: u64,
+    function: u64,
+    receiver: u64,
+    context: u64,
+    mode: i32,
+    regs: usize,
+) -> u64 {
+    // GC points first (the ELEMENTS cell, then the object); the values live in Rust locals
+    // (CSS) until the object holds them.
+    let r = new_elements(rt, regs.max(1));
+    init(r, elems::DATA + 8 * genf::REGS_INPUT, UNDEFINED);
+    let r = r.to_value().to_bits();
+    let g = new_js_object(rt, kind::GENERATOR, proto, 0);
+    init(g, genf::STATE, int32_bits(genf::STATE_EXECUTING));
+    init(g, genf::MODE, int32_bits(mode));
+    init(g, genf::FUNCTION, function);
+    init(g, genf::RECEIVER, receiver);
+    init(g, genf::CONTEXT, context);
+    init(g, genf::REGS, r);
+    init(g, genf::RESUME_MODE, int32_bits(genf::RESUME_NEXT));
+    init(g, genf::ASYNC, UNDEFINED);
+    g.to_value().to_bits()
+}
+
+/// GENERATOR field `off` ([`genf`]) of `g`.
+#[inline]
+pub(crate) fn gen_get(g: u64, off: usize) -> u64 {
+    debug_assert!(cell_kind(g) == kind::GENERATOR.get());
+    debug_assert!(
+        (genf::STATE..genf::STATE + 8 * genf::FIXED).contains(&off) && off.is_multiple_of(8)
+    );
+    rd(cell(g), off)
+}
+
+/// An int32 GENERATOR field (state, mode, resume mode) of `g`.
+#[inline]
+pub(crate) fn gen_get_i32(g: u64, off: usize) -> i32 {
+    int32_of(gen_get(g, off))
+}
+
+/// Stores GENERATOR field `off` of `g` (barriered).
+#[inline]
+pub(crate) fn gen_set(rt: &Runtime, g: u64, off: usize, v: u64) {
+    debug_assert!(cell_kind(g) == kind::GENERATOR.get());
+    debug_assert!(
+        (genf::STATE..genf::STATE + 8 * genf::FIXED).contains(&off) && off.is_multiple_of(8)
+    );
+    wr(&rt.heap, cell(g), off, v);
+}
+
+/// The saved values of a generator (its REGS cell): `[input, params.., registers..]`
+/// ([`genf::REGS_INPUT`]). A view of a live cell: hold it only while the generator is held,
+/// and do not keep it across a GC point after [`gen_release`].
+#[derive(Clone, Copy)]
+pub(crate) struct GenRegs {
+    cell: CellPtr,
+    len: usize,
+}
+
+impl GenRegs {
+    /// The number of saved slots.
+    #[inline]
+    pub fn len(self) -> usize {
+        self.len
+    }
+
+    /// Slot `i` (`i < len`).
+    #[inline]
+    pub fn get(self, i: usize) -> u64 {
+        assert!(i < self.len, "generator slot {i} out of range");
+        rd(self.cell, elems::DATA + 8 * i)
+    }
+
+    /// Stores slot `i` (`i < len`, barriered).
+    #[inline]
+    pub fn set(self, rt: &Runtime, i: usize, v: u64) {
+        assert!(i < self.len, "generator slot {i} out of range");
+        wr(&rt.heap, self.cell, elems::DATA + 8 * i, v);
+    }
+}
+
+/// The saved values of `g`, or `None` once they were released ([`gen_release`]).
+pub(crate) fn gen_regs(g: u64) -> Option<GenRegs> {
+    let r = gen_get(g, genf::REGS);
+    if r == UNDEFINED {
+        return None;
+    }
+    debug_assert!(cell_kind(r) == kind::ELEMENTS.get());
+    let c = cell(r);
+    Some(GenRegs {
+        cell: c,
+        len: rd_i32(c, elems::CAPACITY) as usize,
+    })
+}
+
+/// Drops the saved values of the completed generator `g` (REGS = undefined), so it keeps
+/// nothing alive that only its frame used.
+pub(crate) fn gen_release(rt: &Runtime, g: u64) {
+    gen_set(rt, g, genf::REGS, UNDEFINED);
 }
 
 /// IsConstructor (§7.2.4): a FUNCTION whose FunctionInfo has `[[Construct]]`, or a bound

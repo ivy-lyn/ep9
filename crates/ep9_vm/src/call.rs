@@ -6,6 +6,7 @@
 //! | JS → JS (`Call*`, `Construct`) | push frame, jump (handler or `rt_call`) | none |
 //! | JS → host function | push host frame, call the Rust fn | one Rust call, checked |
 //! | Rust → JS (`call_function`, host callbacks, ToPrimitive) | push entry frame (return pc = EXIT stub), run the dispatch | one dispatch run, checked |
+//! | generator resume (`next`/`return`/`throw`, [`run_resumed`]) | push a resumed frame (fp-3 = the generator, return pc = EXIT stub), run the dispatch | one dispatch run, checked |
 //! | `[[Construct]]` from JS | push a stub frame (return pc = construct stub) + callee frame | none |
 //!
 //! Scratch area (frame.rs): Rust code (the builtin ABI's `ArgsBuilder`, H20) may keep Values
@@ -112,11 +113,11 @@ pub(crate) unsafe fn push_frame(
 /// Pushes the frame of a resumed generator (FRAME 2): [`push_frame`] for a call (the
 /// construct bit is clear), then `slot::NEW_TARGET` (fp - 3) holds `generator`, so
 /// `LdaNewTarget` in the resumed frame gives the generator object (BytecodeGen emits
-/// `LdaUndefined` for `new.target` in a generator body).
+/// `LdaUndefined` for `new.target` in a generator body). Caller: [`run_resumed`].
 ///
 /// # Safety
 /// As for [`push_frame`]; `generator` is valid Value bits.
-#[allow(dead_code, clippy::too_many_arguments)] // m2-stub: caller P1-GEN-VM (resume)
+#[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn push_resume_frame(
     base: *mut u64,
     limit: *mut u64,
@@ -393,6 +394,65 @@ fn call_function_object(
     rt.stack().clear_scratch();
     cx.budget -= 1;
     // SAFETY: `fp` is a frame for `fi` that `push_frame` just wrote; its code is verified.
+    let r = unsafe { interp::run(cx, fi.code, fp) };
+    rt.stack().set_fp(caller);
+    restore_scratch(rt, saved);
+    if r == 0 { Err(Throw) } else { Ok(r) }
+}
+
+/// Resumes a suspended generator from Rust (GeneratorResume, §27.5.3.3 steps 5-9): pushes a
+/// resumed frame of the bytecode generator function `f` (`push_resume_frame`, fp-3 =
+/// `generator`) with `this`, the `argc` saved parameters that `arg(i)` reads and the saved
+/// `context`, and runs the dispatch from the function's first instruction until the frame
+/// suspends again or completes (its return pc is the EXIT stub). One checked native level,
+/// as [`call_with`]: a RangeError when the native or the VM stack is full, before the frame
+/// exists. Returns the accumulator of the `SuspendGenerator` or `Return` that left the frame.
+pub(crate) fn run_resumed(
+    cx: &mut Cx,
+    f: u64,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    context: u64,
+    generator: u64,
+) -> Res<u64> {
+    debug_assert!(is_function(f));
+    let rt = cx.rt();
+    if !rt.native_stack_ok() {
+        return stack_overflow(cx);
+    }
+    let fi = function_info(f);
+    if !fi.is_bytecode() || fi.slot.kind_byte() != crate::dispatch::DispatchKind::Interp as u8 {
+        return Err(not_implemented(cx, "calling code of this dispatch kind"));
+    }
+    let caller = rt.stack().fp();
+    poll(cx, caller)?;
+    let saved = rt.stack().scratch_top();
+    let base = top_of(cx, caller);
+    // SAFETY: `base` is the first free slot above the current top frame and its scratch area.
+    let fp = unsafe {
+        push_resume_frame(
+            base,
+            cx.stack_limit,
+            fi,
+            f,
+            this,
+            argc,
+            arg,
+            caller,
+            EXIT_STUB.as_ptr(),
+            context,
+            generator,
+        )
+    };
+    let Some(fp) = fp else {
+        return stack_overflow(cx);
+    };
+    rt.stack().set_fp(fp);
+    rt.stack().clear_scratch();
+    cx.budget -= 1;
+    // SAFETY: `fp` is a frame for `fi` that `push_resume_frame` just wrote; its code is
+    // verified.
     let r = unsafe { interp::run(cx, fi.code, fp) };
     rt.stack().set_fp(caller);
     restore_scratch(rt, saved);
