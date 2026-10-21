@@ -1,6 +1,6 @@
 # iter-for-of: script (sloppy)
 # | function f(a) { var s = 0; for (const x of a) s += x; return s; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=65 source=embedded hints=none
 source_hash=0d60e6e055c6c702a29a7f73308bbd1ce45f1c1b54a08667e9f3502882165dad
 strings (5):

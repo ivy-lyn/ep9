@@ -256,9 +256,14 @@ impl Checker<'_> {
                                 st.set(Register::from_operand(first + k), Cv::Other);
                             }
                         }
-                        OperandKind::RegOutTriple => {
+                        OperandKind::RegOutTriple | OperandKind::RegOutPair => {
+                            let n = if o.kind == OperandKind::RegOutPair {
+                                2
+                            } else {
+                                3
+                            };
                             let first = insn.register(i).to_operand();
-                            for k in 0..3 {
+                            for k in 0..n {
                                 st.set(Register::from_operand(first + k), Cv::Other);
                             }
                         }
@@ -436,6 +441,54 @@ mod tests {
         assert!(
             errors.iter().any(|e| e.contains("needs parent")),
             "{errors:?}"
+        );
+    }
+
+    /// ABI 3: `CallRuntimeForPair` writes both registers of its `RegOutPair`, so a context
+    /// that was in either register is gone.
+    #[test]
+    fn call_runtime_for_pair_writes_both_outputs() {
+        use ep9_bytecode::{
+            CodeKind, FunctionBuilder, FunctionId, FunctionMeta, Register, RegisterList, RuntimeId,
+            UnitBuilder, UnitOptions,
+        };
+        // r0 = r1 = the current context; r2 = "x";
+        // CallRuntimeForPair LoadLookupSlotForCall, r2, out; PopContext r0; PopContext r1.
+        let errors = |out: u32| {
+            let src = "f()";
+            let mut b = FunctionBuilder::new(FunctionMeta::entry(CodeKind::Script, false, 3));
+            b.new_register_list(5);
+            let k = b.string_constant("x");
+            let (r0, r1, r2) = (Register::local(0), Register::local(1), Register::local(2));
+            b.lda_current_context().star(r0).star(r1);
+            b.lda_constant(k).star(r2);
+            b.call_runtime_for_pair(
+                RuntimeId::LoadLookupSlotForCall,
+                RegisterList::new(2, 1),
+                1,
+                RegisterList::new(out, 2),
+            );
+            b.pop_context(r0).pop_context(r1).lda_undefined().return_();
+            let mut u = UnitBuilder::new(
+                src,
+                UnitOptions {
+                    code_kind: CodeKind::Script,
+                    strict: false,
+                    typescript: None,
+                    engine_build_id: [0; 16],
+                    embed_source: false,
+                },
+            );
+            u.set_function(FunctionId(0), b.finish().unwrap());
+            context_errors(&u.finish().unwrap())
+        };
+        assert_eq!(errors(3), Vec::<String>::new());
+        let both = errors(0);
+        assert_eq!(both.len(), 2, "{both:?}");
+        assert!(
+            both.iter()
+                .all(|e| e.contains("PopContext") && e.contains("not a known")),
+            "{both:?}"
         );
     }
 

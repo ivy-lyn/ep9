@@ -1,6 +1,6 @@
 # fn-params-pattern: script (sloppy)
 # | function f({a, b: [c] = []}, d) { return a + c + d; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=53 source=embedded hints=none
 source_hash=40d5bb7bb208fe9a20e5e2aa6ec3348c0d3c3f48e816bdf80b7482d096671519
 strings (7):

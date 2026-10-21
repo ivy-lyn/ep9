@@ -144,6 +144,26 @@ impl Builder<'_> {
         b
     }
 
+    /// C6: binding 0 of a function var scope with a sloppy direct eval is `.eval_ext`, so it gets
+    /// context slot 0 (`allocate` places a scope's bindings in order, and the eval puts every
+    /// binding of the scope in its context). A script scope gets none: its eval vars go to the
+    /// global object.
+    fn eval_ext_binding(&mut self, scope: ScopeId) {
+        if self.scopes[scope.index()].kind == ScopeKind::Script
+            || self.scope_extra[scope.index()]
+                .names
+                .contains_key(&self.n_eval_ext)
+        {
+            return;
+        }
+        let b = self.declare(scope, self.n_eval_ext, BindingKind::EvalExt, None);
+        let list = &mut self.scopes[scope.index()].bindings;
+        debug_assert_eq!(list.last(), Some(&b), "declare appends the new binding");
+        list.pop();
+        list.insert(0, b);
+        self.bindings[b.index()].referenced = true;
+    }
+
     /// The nearest function with its own `this`: arrows use the enclosing one.
     fn receiver_function(&self, mut f: FunctionId) -> FunctionId {
         while self.functions[f.index()].kind == super::FunctionKind::Arrow {
@@ -260,6 +280,7 @@ impl Builder<'_> {
                 self.scopes[var_scope.index()].sloppy_eval = true;
                 let owner = self.scopes[var_scope.index()].function;
                 self.functions[owner.index()].calls_sloppy_eval = true;
+                self.eval_ext_binding(var_scope);
             }
             // The eval code can use this, new.target, super and arguments of the nearest
             // function with its own `this`.

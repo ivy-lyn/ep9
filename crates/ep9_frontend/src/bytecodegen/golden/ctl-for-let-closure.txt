@@ -1,6 +1,6 @@
 # ctl-for-let-closure: script (sloppy)
 # | function f() { var r = []; for (let i = 0; i < 3; i++) { r.push(() => i); if (i) continue; } return r; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=104 source=embedded hints=none
 source_hash=2d65ac7d7f8185bb66ae010a4552451e5990564dea767df2290f90a0316fb436
 strings (3):

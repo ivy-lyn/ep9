@@ -1,6 +1,6 @@
 # call-new: script (sloppy)
 # | var C, a; new C; new C(); new C(1, a); new new C()();
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=53 source=embedded hints=none
 source_hash=44cc481c2a8a0caa75541cfb255f338a6a75904457cfda9eb862f65c5a5edd52
 strings (2):

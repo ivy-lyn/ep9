@@ -1,6 +1,6 @@
 # module-default-fn: module
 # | export default function () { return 1; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=module strict=true ts=none source_len=40 source=embedded hints=none
 source_hash=878937b9594561e598a3c40c4d1bf320fb5bbd31fa6140fbe83215e7f4037a79
 strings (1):

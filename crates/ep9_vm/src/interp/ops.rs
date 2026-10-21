@@ -1213,6 +1213,13 @@ op!(ResumeGenerator(st, generator: R, registers: RList, count: Count) { Flow::Co
 // v0: no debugger; the statement does nothing.
 op!(Debugger(st) { Done::Next });
 
+// ---- runtime calls with two results (ABI 3) ------------------------------------------------
+
+// m2 P0-LANG stub: P0-VM fills the cold body (`out` and `out + 1` get the pair; acc unchanged).
+op!(CallRuntimeForPair(st, _id: RtId, _args: RList, _argc: Count, _out: R) { Flow::Cold } cold {
+    not_impl(st, "CallRuntimeForPair")
+});
+
 // ---- the cold list -------------------------------------------------------------------------
 
 /// `if_cold!(Name { tokens if Name has a cold body } else { tokens if not })`.
@@ -1339,6 +1346,7 @@ macro_rules! if_cold {
     (SwitchOnGeneratorState { $($y:tt)* } else { $($n:tt)* }) => { $($y)* };
     (SuspendGenerator { $($y:tt)* } else { $($n:tt)* }) => { $($y)* };
     (ResumeGenerator { $($y:tt)* } else { $($n:tt)* }) => { $($y)* };
+    (CallRuntimeForPair { $($y:tt)* } else { $($n:tt)* }) => { $($y)* };
     ($other:ident { $($y:tt)* } else { $($n:tt)* }) => { $($n)* };
 }
 pub(crate) use if_cold;

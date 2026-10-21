@@ -1,6 +1,6 @@
 # iter-for-of-pattern: script (sloppy)
 # | function f(a) { for (const [k, v] of a) ; for ({x: a.y} of a) ; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 3
 unit kind=script strict=false ts=none source_len=65 source=embedded hints=none
 source_hash=614c548d3484f328764581de96f410cee666e4696375b08776cdb9caa0fde2e8
 strings (7):
