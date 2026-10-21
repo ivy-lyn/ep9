@@ -712,6 +712,74 @@ fn copy_data_properties_runs_getters_once_in_key_order() {
     assert_eq!(r.output, ["G", "1", "1", "0", "undefined", "1", "1"]);
 }
 
+#[test]
+fn copy_data_properties_with_index_keys_compares_atoms_only() {
+    // src = {}; src[1] = 0; src.bar = 2; t = {}; CopyDataProperties(t, src); print(t[1], t.bar)
+    // r = CopyDataPropertiesExcluding(src, 1); print(r[1], r.bar)
+    // r = CopyDataPropertiesExcluding("ab", 0); print(r[0], r[1])
+    // The keys come from [[OwnPropertyKeys]] (an index key) and from a string's indices; the
+    // excluded-key compares and the lookups must see atoms only (W4-KEY-EQ).
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let (src, t, k) = (s.b.new_register(), s.b.new_register(), s.b.new_register());
+        s.b.create_empty_object_literal().star(src);
+        s.b.lda_smi(1).star(k).lda_zero();
+        s.b.set_keyed_property(src, k, s.set_keyed);
+        s.b.lda_smi(2);
+        s.set_named(src, "bar");
+        let args = s.b.new_register_list(2);
+        s.b.create_empty_object_literal().star(t);
+        s.b.mov(t, args.get(0)).mov(src, args.get(1));
+        s.b.call_runtime(RuntimeId::CopyDataProperties, args, 2);
+        let print_both = |s: &mut Asm, o: Register, i: i32, name: Option<&str>| {
+            s.b.lda_smi(i).get_keyed_property(o, s.keyed);
+            s.print_acc();
+            match name {
+                Some(n) => {
+                    s.get_named(o, n);
+                }
+                None => {
+                    s.b.lda_smi(i + 1).get_keyed_property(o, s.keyed);
+                }
+            }
+            s.print_acc();
+        };
+        print_both(&mut s, t, 1, Some("bar"));
+        s.b.mov(src, args.get(0)).lda_smi(1).star(args.get(1));
+        s.b.call_runtime(RuntimeId::CopyDataPropertiesExcluding, args, 2)
+            .star(t);
+        print_both(&mut s, t, 1, Some("bar"));
+        s.lda_str("ab");
+        s.b.star(args.get(0)).lda_zero().star(args.get(1));
+        s.b.call_runtime(RuntimeId::CopyDataPropertiesExcluding, args, 2)
+            .star(t);
+        print_both(&mut s, t, 0, None);
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish()])
+    }
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let (output, compares) = on_big_stack(move || {
+                let mut iso = isolate(config(d, stress));
+                take_output();
+                let r = iso.run_script(make(), "test.js").map(|v| iso.display(v));
+                assert!(r.is_ok(), "{r:?}");
+                let compares = iso.rt.atoms.borrow().non_atom_compares();
+                (take_output(), compares)
+            });
+            let label = format!("{} stress={stress}", d.name());
+            assert_eq!(
+                output,
+                ["0", "2", "undefined", "2", "undefined", "b"],
+                "{label}"
+            );
+            if cfg!(debug_assertions) {
+                assert_eq!(compares, 0, "W4-KEY-EQ, {label}");
+            }
+        }
+    }
+}
+
 /// A script that declares `function f() { return 2; }` (DeclareGlobals, InitializeGlobal),
 /// then prints `f()`.
 fn declare_f() -> VerifiedUnit {
