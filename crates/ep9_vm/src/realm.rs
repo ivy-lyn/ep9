@@ -14,7 +14,7 @@
 //! | `%Function.prototype%` | VM builtin 0.0: a function that returns undefined (§20.2.3) |
 //! | `%Array.prototype%` | an ordinary object (v0: not an Array exotic object, H18) |
 //! | `%String.prototype%`, `%Number.prototype%`, `%Boolean.prototype%` | `wrapper::new_wrapper` of "", +0 and false (§22.1.3, §21.1.3, §20.3.3) |
-//! | `%Iterator.prototype%`, `%ArrayIteratorPrototype%` | ordinary objects; v0: one iterator prototype for arrays and strings |
+//! | `%Iterator.prototype%`, `%ArrayIteratorPrototype%` | ordinary objects (`%StringIteratorPrototype%` is made by the VM table, `natives.rs`) |
 //! | `%Error.prototype%`, the native error prototypes | ordinary objects |
 //! | `%Symbol.prototype%` | `symbol::install` (P2-SYM) |
 //! | the global object; the script lexical record | an ordinary object; a null-prototype object |

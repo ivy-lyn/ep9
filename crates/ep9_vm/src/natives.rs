@@ -8,28 +8,43 @@
 //! | `%Function.prototype%` (callable, returns undefined), `Function` (v0: throws) | §20.2.3, §20.2.1.1 |
 //! | `Object`, `Array` | §20.1.1.1, §23.1.1.1 |
 //! | `Error` and the native errors | §20.5.1.1, §20.5.6.1.1 |
-//! | %ArrayIteratorPrototype%.next, %StringIteratorPrototype%.next | §23.1.5.2.1, §22.1.5.2.1 |
 //! | `Object.prototype.toString`, `valueOf` | §20.1.3.6, §20.1.3.7 |
 //! | `Error.prototype.toString` | §20.5.3.4 |
 //! | `Array.prototype.join`, `toString`, `push` | §23.1.3.18, §23.1.3.36, §23.1.3.23 |
+//! | `Array.prototype.values` = `Array.prototype[@@iterator]`, %ArrayIteratorPrototype%.next | §23.1.3.38, §23.1.3.40, §23.1.5.2.1 |
+//! | `String.prototype[@@iterator]`, %StringIteratorPrototype%.next | §22.1.3.36, §22.1.5.2.1 |
+//! | %Iterator.prototype%[@@iterator] | §27.1.2.1 |
+//!
+//! The built-in iterators are ITERATOR cells (object.rs): the iterated value and the next
+//! index. The iterated value also gives the kind, so each `next` checks its receiver
+//! (GeneratorValidate's brand) without a kind field:
+//!
+//! | Iterator | Iterated value | Done |
+//! |---|---|---|
+//! | array (`CreateArrayIterator`, kind "value") | an object: an Array, or any array-like (`LengthOfArrayLike`) | undefined |
+//! | string (`CreateStringIterator`) | a string primitive | the empty string |
+//!
+//! `interp/slow/iter.rs` (GetIterator, spread) makes the same cells without calling
+//! `values` or `[@@iterator]` while the method it finds is the intrinsic.
 
 use ep9_value::JsResult;
 
 use crate::abi::{Args, Cx as HostCx, Local};
 use crate::atoms::Atom;
 use crate::builtins::{
-    BuiltinDef, BuiltinModule, BuiltinTable, ConstValue, IntrinsicDef, IntrinsicId, IntrinsicValue,
-    ObjectProps, PropAttrs, PropDef, PropKey,
+    self, BuiltinDef, BuiltinModule, BuiltinTable, ConstValue, IntrinsicDef, IntrinsicId,
+    IntrinsicValue, ObjectProps, PropAttrs, PropDef, PropKey, WellKnownSymbol,
 };
 use crate::conv::{self, num};
 use crate::error;
-use crate::frame::{NULL, UNDEFINED};
+use crate::frame::{FALSE, NULL, TRUE, UNDEFINED};
 use crate::interp::Cx;
-use crate::kinds::is_callable;
+use crate::kinds::{is_callable, is_string};
 use crate::object::{self, attr, is_array, is_object, own_define};
 use crate::property;
-use crate::runtime::ErrorKind;
-use crate::{string, wrapper};
+use crate::runtime::{ErrorKind, Root, Runtime};
+use crate::string::{self, MAX_STRING_LENGTH};
+use crate::{symbol, wrapper};
 
 // ---- the VM table ------------------------------------------------------------------------------
 
@@ -55,6 +70,13 @@ pub(crate) mod vm {
     pub const EVAL_ERROR: u16 = 15;
     pub const URI_ERROR: u16 = 16;
     pub const ERROR_TO_STRING: u16 = 17;
+    /// `Array.prototype.values`, also `Array.prototype[@@iterator]` (one function object).
+    pub const ARRAY_VALUES: u16 = 18;
+    /// `String.prototype[@@iterator]`.
+    pub const STRING_ITERATOR: u16 = 19;
+    /// `%Iterator.prototype%[@@iterator]`.
+    pub const ITERATOR_ITERATOR: u16 = 20;
+    pub const STRING_ITERATOR_NEXT: u16 = 21;
 }
 
 /// The VM's block.
@@ -79,6 +101,10 @@ const VM_DEFS: &[BuiltinDef] = &[
     BuiltinDef::constructor("EvalError", 1, eval_error_ctor),
     BuiltinDef::constructor("URIError", 1, uri_error_ctor),
     BuiltinDef::method("toString", 0, error_to_string),
+    BuiltinDef::method("values", 0, array_values),
+    BuiltinDef::method("[Symbol.iterator]", 0, string_iterator),
+    BuiltinDef::method("[Symbol.iterator]", 0, iterator_iterator),
+    BuiltinDef::method("next", 0, string_iterator_next),
 ];
 
 const VM_INTRINSICS: &[IntrinsicDef] = &[
@@ -127,11 +153,27 @@ const VM_INTRINSICS: &[IntrinsicDef] = &[
         id: IntrinsicId::UriError,
         value: IntrinsicValue::Builtin(vm::URI_ERROR),
     },
+    // §22.1.5.2: an ordinary object whose [[Prototype]] is %Iterator.prototype%.
+    IntrinsicDef {
+        id: IntrinsicId::StringIteratorPrototype,
+        value: IntrinsicValue::Object {
+            proto: Some(IntrinsicId::IteratorPrototype),
+        },
+    },
 ];
 
 const PROTOTYPE: PropKey = PropKey::Atom(Atom::Prototype);
 const CONSTRUCTOR: PropKey = PropKey::Atom(Atom::Constructor);
 const TO_STRING: PropKey = PropKey::Atom(Atom::ToStringKey);
+const NEXT: PropKey = PropKey::Atom(Atom::Next);
+const VALUES: PropKey = PropKey::Str("values");
+const ITERATOR: PropKey = PropKey::Symbol(WellKnownSymbol::ITERATOR);
+const TO_STRING_TAG: PropKey = PropKey::Symbol(WellKnownSymbol::TO_STRING_TAG);
+
+/// `@@toStringTag` = `tag` ({c}, §18): the tag of `Object.prototype.toString` (step 15).
+const fn to_string_tag(tag: &'static str) -> PropDef {
+    PropDef::constant(TO_STRING_TAG, ConstValue::Str(tag), PropAttrs::CONFIGURABLE)
+}
 
 /// `C.prototype = P` ({}): a builtin constructor's `prototype` (§20.1.2.20 and the others).
 const fn prototype_of(p: IntrinsicId) -> [PropDef; 1] {
@@ -219,6 +261,9 @@ const VM_PROPS: &[ObjectProps] = &[
             PropDef::method(TO_STRING, vm::ARRAY_TO_STRING),
             PropDef::method(PropKey::Str("push"), vm::ARRAY_PUSH),
             PropDef::method(CONSTRUCTOR, vm::ARRAY),
+            PropDef::method(VALUES, vm::ARRAY_VALUES),
+            // §23.1.3.40: the same function object as `values`.
+            PropDef::alias(ITERATOR, VALUES, PropAttrs::METHOD),
         ],
     },
     ObjectProps {
@@ -226,11 +271,26 @@ const VM_PROPS: &[ObjectProps] = &[
         props: &prototype_of(IntrinsicId::ArrayPrototype),
     },
     ObjectProps {
+        target: IntrinsicId::IteratorPrototype,
+        props: &[PropDef::method(ITERATOR, vm::ITERATOR_ITERATOR)],
+    },
+    ObjectProps {
         target: IntrinsicId::ArrayIteratorPrototype,
-        props: &[PropDef::method(
-            PropKey::Atom(Atom::Next),
-            vm::ITERATOR_NEXT,
-        )],
+        props: &[
+            PropDef::method(NEXT, vm::ITERATOR_NEXT),
+            to_string_tag("Array Iterator"),
+        ],
+    },
+    ObjectProps {
+        target: IntrinsicId::StringIteratorPrototype,
+        props: &[
+            PropDef::method(NEXT, vm::STRING_ITERATOR_NEXT),
+            to_string_tag("String Iterator"),
+        ],
+    },
+    ObjectProps {
+        target: IntrinsicId::StringPrototype,
+        props: &[PropDef::method(ITERATOR, vm::STRING_ITERATOR)],
     },
     ObjectProps {
         target: IntrinsicId::ErrorPrototype,
@@ -438,8 +498,83 @@ fn construct_error(cx: &mut Cx, kind: ErrorKind, message: u64, nt: u64) -> JsRes
     Ok(error::new_error_value(cx, proto, msg))
 }
 
-/// %ArrayIteratorPrototype%.next (§23.1.5.2.1, kind "value") and
-/// %StringIteratorPrototype%.next (§22.1.5.2.1) for the v0 iterator cells.
+// ---- iterators ---------------------------------------------------------------------------------
+
+/// A new array iterator over the object `o` (CreateArrayIterator, §23.1.5.1, kind "value").
+/// GC point: `o` lives in a Rust local.
+pub(crate) fn new_array_iterator(rt: &Runtime, o: u64) -> u64 {
+    debug_assert!(is_object(o));
+    object::new_iterator(rt, rt.root(Root::ArrayIteratorPrototype), o)
+}
+
+/// A new string iterator over the string `s` (CreateStringIterator, §22.1.5.1). GC point.
+pub(crate) fn new_string_iterator(rt: &Runtime, s: u64) -> u64 {
+    debug_assert!(is_string(s));
+    let proto = builtins::intrinsic(rt, IntrinsicId::StringIteratorPrototype);
+    object::new_iterator(rt, proto, s)
+}
+
+/// Array.prototype.values (§23.1.3.38), which is also `Array.prototype[@@iterator]`
+/// (§23.1.3.40): CreateArrayIterator(? ToObject(this value), value).
+pub(crate) fn array_values<'s>(
+    cx: &mut HostCx<'s>,
+    this: Local<'s>,
+    _: Args<'s>,
+    _: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let o = cx.to_object(this)?.bits();
+    Ok(local(new_array_iterator(cx.inner().rt(), o)))
+}
+
+/// String.prototype[@@iterator] (§22.1.3.36): CreateStringIterator(? ToString(?
+/// RequireObjectCoercible(this value))).
+pub(crate) fn string_iterator<'s>(
+    cx: &mut HostCx<'s>,
+    this: Local<'s>,
+    _: Args<'s>,
+    _: Local<'s>,
+) -> JsResult<Local<'s>> {
+    if this.is_undefined_or_null() {
+        return Err(
+            cx.throw_type_error("String.prototype[Symbol.iterator] called on null or undefined")
+        );
+    }
+    let s = cx.to_string(this)?.bits();
+    Ok(local(new_string_iterator(cx.inner().rt(), s)))
+}
+
+/// %Iterator.prototype%[@@iterator] (§27.1.2.1): the this value.
+pub(crate) fn iterator_iterator<'s>(
+    _cx: &mut HostCx<'s>,
+    this: Local<'s>,
+    _: Args<'s>,
+    _: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Ok(this)
+}
+
+/// The TypeError of a `next` whose receiver is not an iterator of its kind
+/// (GeneratorValidate, §27.5.3.2).
+fn incompatible_receiver(cx: &mut Cx, what: &str, this: u64) -> ep9_value::Throw {
+    let msg = format!(
+        "Method {what}.prototype.next called on incompatible receiver {}",
+        conv::describe(this)
+    );
+    error::throw_error(cx, ErrorKind::TypeError, &msg)
+}
+
+/// CreateIteratorResultObject(value, done) (§7.4.14). GC point: `value` lives in a Rust local.
+fn iter_result(rt: &Runtime, value: u64, done: bool) -> u64 {
+    let result = object::new_plain_object(rt);
+    own_define(rt, result, rt.atom(Atom::ValueKey), value, attr::DEFAULT);
+    let done = if done { TRUE } else { FALSE };
+    own_define(rt, result, rt.atom(Atom::Done), done, attr::DEFAULT);
+    result
+}
+
+/// %ArrayIteratorPrototype%.next (§23.1.5.2.1): one step of the CreateArrayIterator closure
+/// (§23.1.5.1, kind "value"). The length is read at every step (`LengthOfArrayLike`). Once the
+/// index reaches it, or a step throws (the closure completes), the iterator is done for good.
 pub(crate) fn iterator_next<'s>(
     cx: &mut HostCx<'s>,
     this: Local<'s>,
@@ -448,63 +583,110 @@ pub(crate) fn iterator_next<'s>(
 ) -> JsResult<Local<'s>> {
     let cx = cx.inner();
     let it = this.bits();
-    if !object::is_iterator(it) {
-        return Err(error::throw_error(
-            cx,
-            ErrorKind::TypeError,
-            "next method called on an incompatible receiver",
-        ));
-    }
-    let rt = cx.rt();
-    let (target, i) = object::iterator_state(it);
-    let mut value = UNDEFINED;
-    let mut done = true;
-    if object::is_string(target) {
-        // The code point at `i`: one code unit, or a surrogate pair (§22.1.5.2.1).
-        let (n, pair) = {
-            let s = object::str_view(target);
-            let n = s.len();
-            let at = i as usize;
-            let pair = at + 1 < n
-                && (0xD800..0xDC00).contains(&s.at(at))
-                && (0xDC00..0xE000).contains(&s.at(at + 1));
-            (n, pair.then(|| [s.at(at), s.at(at + 1)]))
-        };
-        if i as usize >= n {
-            object::set_iterator_state(rt, it, UNDEFINED, i);
-        } else {
-            let len = match pair {
-                Some(units) => {
-                    value = object::new_string_utf16(rt, &units);
-                    2
-                }
-                None => {
-                    value = string::char_at(rt, target, i as usize);
-                    1
-                }
-            };
-            object::set_iterator_state(rt, it, target, i + len);
-            done = false;
-        }
-    } else if is_array(target) {
-        if i < object::array_len(target) {
-            value = property::get_keyed(cx, target, num(f64::from(i)))?;
-            object::set_iterator_state(rt, it, target, i + 1);
-            done = false;
-        } else {
-            object::set_iterator_state(rt, it, UNDEFINED, i);
-        }
-    }
-    // CreateIterResultObject(value, done) (§7.4.14).
-    let result = object::new_plain_object(rt);
-    own_define(rt, result, rt.atom(Atom::ValueKey), value, attr::DEFAULT);
-    let done = if done {
-        crate::frame::TRUE
-    } else {
-        crate::frame::FALSE
+    let state = object::is_iterator(it)
+        .then(|| object::iterator_state(it))
+        .filter(|&(target, _)| !is_string(target));
+    let Some((target, i)) = state else {
+        return Err(incompatible_receiver(cx, "Array Iterator", it));
     };
-    own_define(rt, result, rt.atom(Atom::Done), done, attr::DEFAULT);
-    Ok(local(result))
+    let rt = cx.rt();
+    if target == UNDEFINED {
+        return Ok(local(iter_result(rt, UNDEFINED, true)));
+    }
+    match array_iterator_step(cx, target, i) {
+        Ok(Some(value)) => {
+            object::set_iterator_state(rt, it, target, i + 1);
+            Ok(local(iter_result(rt, value, false)))
+        }
+        Ok(None) => {
+            object::set_iterator_state(rt, it, UNDEFINED, i);
+            Ok(local(iter_result(rt, UNDEFINED, true)))
+        }
+        Err(e) => {
+            object::set_iterator_state(rt, it, UNDEFINED, i);
+            Err(e)
+        }
+    }
+}
+
+/// Element `i` of the array-like `o`, or `None` past `LengthOfArrayLike(o)` (§7.3.18). v0:
+/// the cell keeps a u32 index, so an array-like is done at 2^32 - 1 (an Array's length is
+/// below that).
+fn array_iterator_step(cx: &mut Cx, o: u64, i: u32) -> JsResult<Option<u64>> {
+    let len = if is_array(o) {
+        f64::from(object::array_len(o))
+    } else {
+        let rt = cx.rt();
+        let len = property::get(cx, o, rt.atom(Atom::Length))?;
+        to_length(cx, len)?
+    };
+    if f64::from(i) >= len || i == u32::MAX {
+        return Ok(None);
+    }
+    property::get_keyed(cx, o, num(f64::from(i))).map(Some)
+}
+
+/// ToLength (§7.1.20) as an f64 in [0, 2^53 - 1].
+fn to_length(cx: &mut Cx, v: u64) -> JsResult<f64> {
+    let d = conv::to_number(cx, v)?;
+    Ok(if d.is_nan() || d <= 0.0 {
+        0.0
+    } else {
+        d.trunc().min(9_007_199_254_740_991.0)
+    })
+}
+
+/// %StringIteratorPrototype%.next (§22.1.5.2.1): one step of the CreateStringIterator closure
+/// (§22.1.5.1). A done iterator holds the empty string, so it keeps its brand.
+pub(crate) fn string_iterator_next<'s>(
+    cx: &mut HostCx<'s>,
+    this: Local<'s>,
+    _: Args<'s>,
+    _: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let cx = cx.inner();
+    let it = this.bits();
+    let state = object::is_iterator(it)
+        .then(|| object::iterator_state(it))
+        .filter(|&(s, _)| is_string(s));
+    let Some((s, i)) = state else {
+        return Err(incompatible_receiver(cx, "String Iterator", it));
+    };
+    let rt = cx.rt();
+    let (value, done) = match code_point_string(cx, s, i as usize) {
+        Some((cp, len)) => {
+            object::set_iterator_state(rt, it, s, i + len as u32);
+            (cp, false)
+        }
+        None => {
+            object::set_iterator_state(rt, it, rt.atom(Atom::Empty), 0);
+            (UNDEFINED, true)
+        }
+    };
+    Ok(local(iter_result(rt, value, done)))
+}
+
+/// The code point of the string `s` at code unit `i` (CodePointAt, §11.1.4) as a string,
+/// and its length in code units: one unit gives `string::char_at` (the single-character atom
+/// for a Latin-1 unit), a surrogate pair a new string. `None` at or past the end. GC point.
+pub(crate) fn code_point_string(cx: &mut Cx, s: u64, i: usize) -> Option<(u64, usize)> {
+    let s = string::flatten(cx, s);
+    // The view ends before the allocation below (W4-STRVIEW).
+    let pair = {
+        let v = string::view(cx, s);
+        if i >= v.len() {
+            return None;
+        }
+        let pair = i + 1 < v.len()
+            && (0xD800..0xDC00).contains(&v.at(i))
+            && (0xDC00..0xE000).contains(&v.at(i + 1));
+        pair.then(|| [v.at(i), v.at(i + 1)])
+    };
+    let rt = cx.rt();
+    Some(match pair {
+        Some(units) => (string::new_string_utf16(rt, &units), 2),
+        None => (string::char_at(rt, s, i), 1),
+    })
 }
 
 /// Error.prototype.toString (§20.5.3.4).
@@ -544,29 +726,65 @@ pub(crate) fn error_to_string<'s>(
     Ok(local(object::new_string(rt, &s)))
 }
 
-/// Object.prototype.toString (§20.1.3.6, v0: no `@@toStringTag`).
+/// Object.prototype.toString (§20.1.3.6). v0: no `[[ParameterMap]]` (arguments objects are
+/// Arrays), and no Date or RegExp.
 pub(crate) fn object_to_string<'s>(
     cx: &mut HostCx<'s>,
     this: Local<'s>,
     _: Args<'s>,
     _: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    let o = this.bits();
-    // 3. O = ! ToObject(this value): a primitive and its wrapper have the same tag, from
-    //    [[BooleanData]], [[NumberData]] or [[StringData]] (steps 9-11).
+    // 1-2.
+    if this.is_undefined() {
+        return Ok(cx.new_string("[object Undefined]")?.value());
+    }
+    if this.is_null() {
+        return Ok(cx.new_string("[object Null]")?.value());
+    }
+    // 3. O = ! ToObject(this value). GC point: `o` then lives in a Rust local.
+    let o = cx.to_object(this)?.bits();
+    // 4-14. builtinTag: a primitive and its wrapper have the same tag, from [[BooleanData]],
+    //    [[NumberData]] or [[StringData]].
     let data = local(wrapper::wrapper_value(o).unwrap_or(o));
-    let tag = match o {
-        UNDEFINED => "Undefined",
-        NULL => "Null",
-        _ if is_array(o) => "Array",
-        _ if is_callable(o) => "Function",
-        _ if object::is_error(o) => "Error",
-        _ if data.is_bool() => "Boolean",
-        _ if data.is_number() => "Number",
-        _ if data.is_string() => "String",
-        _ => "Object",
+    let builtin_tag = if is_array(o) {
+        "Array"
+    } else if is_callable(o) {
+        "Function"
+    } else if object::is_error(o) {
+        "Error"
+    } else if data.is_bool() {
+        "Boolean"
+    } else if data.is_number() {
+        "Number"
+    } else if data.is_string() {
+        "String"
+    } else {
+        "Object"
     };
-    Ok(cx.new_string(&format!("[object {tag}]"))?.value())
+    // 15. tag = ? Get(O, @@toStringTag).
+    let cx = cx.inner();
+    let rt = cx.rt();
+    let key = symbol::well_known(rt, symbol::WellKnownSymbol::ToStringTag);
+    let tag = property::get(cx, o, key)?;
+    // 16-17. "[object " + tag + "]", with builtinTag unless tag is a String.
+    if !is_string(tag) {
+        return Ok(local(string::new_string(
+            rt,
+            &format!("[object {builtin_tag}]"),
+        )));
+    }
+    let tag = string::flatten(cx, tag);
+    if string::str_len(tag) > MAX_STRING_LENGTH - 9 {
+        return Err(error::throw_error(
+            cx,
+            ErrorKind::RangeError,
+            "Invalid string length",
+        ));
+    }
+    let mut units: Vec<u16> = "[object ".encode_utf16().collect();
+    units.extend(string::view(cx, tag).to_utf16());
+    units.push(u16::from(b']'));
+    Ok(local(string::new_string_utf16(rt, &units)))
 }
 
 /// Object.prototype.valueOf (§20.1.3.7, v0: primitives are not wrapped).
