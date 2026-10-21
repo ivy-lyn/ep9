@@ -754,8 +754,9 @@ fn class_scopes_private_names_and_synthetic_functions() {
            static { var z = this; }
          }",
     );
-    // Function ids (preorder): script, h (heritage), the synthetic initializers (at the class
-    // body start), then the source order: the arrow in field `y`, the constructor, m.
+    // Function ids (a preorder of the parent links): script, h (heritage), the instance
+    // initializer and the arrow in field `y` (its child), the static initializer, then the
+    // methods in source order: the constructor, m.
     let kinds: Vec<_> = a.functions().iter().map(|f| f.kind).collect();
     assert_eq!(
         kinds,
@@ -763,12 +764,13 @@ fn class_scopes_private_names_and_synthetic_functions() {
             FunctionKind::Script,
             FunctionKind::Normal,
             FunctionKind::InstanceMembersInitializer,
-            FunctionKind::StaticMembersInitializer,
             FunctionKind::Arrow,
+            FunctionKind::StaticMembersInitializer,
             FunctionKind::DerivedConstructor,
             FunctionKind::Method,
         ]
     );
+    assert_eq!(a.func(3).parent, Some(FunctionId(2)));
     let class_scope = a
         .scopes()
         .iter()
@@ -779,7 +781,7 @@ fn class_scopes_private_names_and_synthetic_functions() {
     assert_eq!(info.constructor, Some(FunctionId(5)));
     assert_eq!(info.default_constructor, None);
     assert_eq!(info.instance_initializer, Some(FunctionId(2)));
-    assert_eq!(info.static_initializer, Some(FunctionId(3)));
+    assert_eq!(info.static_initializer, Some(FunctionId(4)));
     // Private names and the captured inner name live in the class context.
     for name in ["#x", "#y"] {
         assert_eq!(ctx(&a, name).0, class_scope.id);
@@ -801,8 +803,8 @@ fn class_scopes_private_names_and_synthetic_functions() {
     // The static block's var is local to the static initializer.
     let z = a.the("z");
     assert_eq!(a.scope(z.scope).kind, ScopeKind::StaticBlock);
-    assert_eq!(a.scope(z.scope).function, FunctionId(3));
-    assert!(a.func(3).this.is_some());
+    assert_eq!(a.scope(z.scope).function, FunctionId(4));
+    assert!(a.func(4).this.is_some());
 }
 
 #[test]

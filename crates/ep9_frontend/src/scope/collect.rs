@@ -1101,7 +1101,87 @@ impl<'a> Visit<'a> for Builder<'a> {
             }
         }
 
-        // Synthetic functions: ids at the start of the class body, in this fixed order.
+        // Synthetic class-context bindings (P2-CLS-CG, D2). Their names start with `#.`, which
+        // no source can spell, so codegen finds them by name in the class scope and a direct
+        // eval never sees them. Like every private name they live in the class context.
+        //   #.brand          instance brand (any instance private method or accessor)
+        //   #.static-brand   static brand (any static private method or accessor)
+        //   #.set-x          the setter of private accessor `#x` (`#x` holds the getter)
+        //   #.class-field-N  the key of the N-th computed field, after ToPropertyKey
+        fn synthetic_name(names: &mut Vec<Box<str>>, text: String) -> NameId {
+            let id = NameId::of(names.len());
+            names.push(text.into_boxed_str());
+            id
+        }
+        let private_method = |e: &ClassElement<'a>, want_static: bool| {
+            matches!(e, ClassElement::MethodDefinition(m)
+                if m.r#static == want_static && matches!(m.key, PropertyKey::PrivateIdentifier(_)))
+        };
+        let brands = [(".brand", false), (".static-brand", true)];
+        for (text, is_static) in brands {
+            if elements.iter().any(|e| private_method(e, is_static)) {
+                let name = self.private_name(text);
+                self.declare(
+                    class_scope,
+                    name,
+                    BindingKind::PrivateName {
+                        kind: PrivateKind::Method,
+                        is_static,
+                    },
+                    None,
+                );
+            }
+        }
+        let accessors: Vec<(NameId, bool)> = self.scopes[class_scope.index()]
+            .bindings
+            .iter()
+            .filter_map(|b| match self.bindings[b.index()].kind {
+                BindingKind::PrivateName {
+                    kind: PrivateKind::Getter | PrivateKind::Setter | PrivateKind::GetterSetter,
+                    is_static,
+                } => Some((self.bindings[b.index()].name, is_static)),
+                _ => None,
+            })
+            .collect();
+        for (accessor, is_static) in accessors {
+            let text = format!("#.set-{}", &self.names[accessor.index()][1..]);
+            let name = synthetic_name(&mut self.names, text);
+            self.declare(
+                class_scope,
+                name,
+                BindingKind::PrivateName {
+                    kind: PrivateKind::Method,
+                    is_static,
+                },
+                None,
+            );
+        }
+        let computed_fields = elements
+            .iter()
+            .filter_map(|e| match e {
+                ClassElement::PropertyDefinition(p) if p.computed => Some(p.r#static),
+                _ => None,
+            })
+            .enumerate()
+            .collect::<Vec<_>>();
+        for (n, is_static) in computed_fields {
+            let name = synthetic_name(&mut self.names, format!("#.class-field-{n}"));
+            self.declare(
+                class_scope,
+                name,
+                BindingKind::PrivateName {
+                    kind: PrivateKind::Field,
+                    is_static,
+                },
+                None,
+            );
+        }
+
+        // Synthetic functions. Function ids must be a preorder of the parent links (the
+        // bytecode verifier's Tree rule), so each initializer is followed at once by the
+        // functions inside it: default constructor; instance initializer, then the instance
+        // field values; static initializer, then the static field values and static blocks;
+        // then the methods and computed keys in source order.
         let derived = it.heritage.is_some();
         let has_constructor = elements.iter().any(|e| {
             matches!(e, ClassElement::MethodDefinition(m) if m.kind == MethodDefinitionKind::Constructor)
@@ -1129,22 +1209,47 @@ impl<'a> Visit<'a> for Builder<'a> {
             };
             self.synthetic(kind, class_scope, body_span, false)
         });
-        let instance = needs_instance.then(|| {
-            self.synthetic(
-                FunctionKind::InstanceMembersInitializer,
-                class_scope,
-                body_span,
-                false,
-            )
-        });
-        let statics = needs_static.then(|| {
-            self.synthetic(
-                FunctionKind::StaticMembersInitializer,
-                class_scope,
-                body_span,
-                true,
-            )
-        });
+        let mut initializers = [None, None];
+        for (is_static, needed) in [(false, needs_instance), (true, needs_static)] {
+            if !needed {
+                continue;
+            }
+            let kind = if is_static {
+                FunctionKind::StaticMembersInitializer
+            } else {
+                FunctionKind::InstanceMembersInitializer
+            };
+            let f = Some(self.synthetic(kind, class_scope, body_span, is_static));
+            initializers[usize::from(is_static)] = f;
+            for element in elements {
+                let value = match element {
+                    ClassElement::PropertyDefinition(p) if p.r#static == is_static => &p.value,
+                    ClassElement::AccessorProperty(p) if p.r#static == is_static => &p.value,
+                    ClassElement::StaticBlock(block) if is_static => {
+                        self.in_synthetic(f, |s| {
+                            let parent = s.cur_scope;
+                            let scope = s.new_scope(
+                                ScopeKind::StaticBlock,
+                                Some(parent),
+                                s.cur_fn,
+                                block.span,
+                                true,
+                                block.scope_id.get(),
+                            );
+                            s.cur_scope = scope;
+                            s.var_scope = scope;
+                            s.visit_statements(&block.body);
+                        });
+                        continue;
+                    }
+                    _ => continue,
+                };
+                if let Some(value) = value {
+                    self.in_synthetic(f, |s| s.visit_expression(value));
+                }
+            }
+        }
+        let [instance, statics] = initializers;
 
         let mut constructor = default_constructor;
         for element in elements {
@@ -1173,38 +1278,14 @@ impl<'a> Visit<'a> for Builder<'a> {
                     if p.computed {
                         self.visit_property_key(&p.key);
                     }
-                    if let Some(value) = &p.value {
-                        let f = if p.r#static { statics } else { instance };
-                        self.in_synthetic(f, |s| s.visit_expression(value));
-                    }
                 }
                 ClassElement::AccessorProperty(p) => {
                     self.visit_decorators(&p.decorators);
                     if p.computed {
                         self.visit_property_key(&p.key);
                     }
-                    if let Some(value) = &p.value {
-                        let f = if p.r#static { statics } else { instance };
-                        self.in_synthetic(f, |s| s.visit_expression(value));
-                    }
                 }
-                ClassElement::StaticBlock(block) => {
-                    self.in_synthetic(statics, |s| {
-                        let parent = s.cur_scope;
-                        let scope = s.new_scope(
-                            ScopeKind::StaticBlock,
-                            Some(parent),
-                            s.cur_fn,
-                            block.span,
-                            true,
-                            block.scope_id.get(),
-                        );
-                        s.cur_scope = scope;
-                        s.var_scope = scope;
-                        s.visit_statements(&block.body);
-                    });
-                }
-                ClassElement::TSIndexSignature(_) => {}
+                ClassElement::StaticBlock(_) | ClassElement::TSIndexSignature(_) => {}
             }
         }
         for f in [default_constructor, instance, statics]

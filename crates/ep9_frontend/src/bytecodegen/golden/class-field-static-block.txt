@@ -1,0 +1,126 @@
+# class-field-static-block: script (sloppy)
+# | class A { static x = 1; static { var y = this.x; function f() { return y; } let z = f; } static w = A; }
+; ep9 bytecode, ABI 3
+unit kind=script strict=false ts=none source_len=104 source=embedded hints=none
+source_hash=438aba743cf045708f58e867a969153dc647eda62fe446d0e9a10e9429b4db96
+strings (5):
+  str0 "A"
+  str1 "y"
+  str2 "x"
+  str3 "w"
+  str4 "f"
+scopes (6):
+  scope0 script outer=- flags=[] slots=["A":class]
+  scope1 class outer=scope0 flags=[needs-context,strict] slots=["A":const]
+  scope2 function outer=scope1 flags=[strict] slots=[]
+  scope3 function outer=scope1 flags=[strict] slots=[]
+  scope4 block outer=scope3 flags=[needs-context,strict] slots=["y":var]
+  scope5 function outer=scope4 flags=[strict] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=5 range=0..104
+  code (61 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> CreateBlockContext k0  ; k0 = Scope scope1   ; 76 00
+      7    PushContext r3                               ; 13 03
+      9    LdaTheHole                                   ; 07
+     10    StaCurrentContextSlot [0]                    ; 1b 00
+     12    LdaTheHole                                   ; 07
+     13    Star r1                                      ; 0c 01
+     15 E> CreateClosure k1, s0, #0x00  ; k1 = Function f1 ; 74 01 00 00
+     19    Star r0                                      ; 0c 00
+     21 E> CallRuntime DefineClass, r0-r1               ; 68 04 00 00 02
+     26    Star r2                                      ; 0c 02
+     28    Ldar r0                                      ; 0b 00
+     30    StaCurrentContextSlot [0]                    ; 1b 00
+     32 E> CreateClosure k2, s1, #0x00  ; k2 = Function f2 ; 74 02 01 00
+     36    Star r4                                      ; 0c 04
+     38 E> CallProperty0 r4, r0, s2                     ; 60 04 00 02
+     42    PopContext r3                                ; 14 03
+     44    Ldar r0                                      ; 0b 00
+     46    Star r1                                      ; 0c 01
+     48    LdaConstant k3  ; k3 = String str0 "A"       ; 0a 03
+     50    Star r0                                      ; 0c 00
+     52 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     57    Ldar r1                                      ; 0b 01
+     59    LdaUndefined                                 ; 05
+     60    Return                                       ; 92
+  constants (4):
+      0 Scope scope1
+      1 Function f1
+      2 Function f2
+      3 String str0 "A"
+  feedback (3):
+      0 CreateClosure
+      1 CreateClosure
+      2 Call
+  handlers (0):
+  positions (7):
+      0 S 0 (1:1)
+      5 S 0 (1:1)
+     15 E 0 (1:1)
+     21 E 0 (1:1)
+     32 E 0 (1:1)
+     38 E 8 (1:9)
+     52 E 0 (1:1)
+function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=8..104
+  code (2 bytes):
+      0 S> LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 0 (1:1)
+function f2 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=4 range=8..104
+  code (42 bytes):
+      0 S> LdaSmi [1]                                   ; 04 01
+      2 E> DefineNamedOwnProperty <this>, k0, s0  ; k0 = String str2 "x" ; 25 ff 00 00
+      6 S> CreateBlockContext k1  ; k1 = Scope scope4   ; 76 01
+      8    PushContext r2                               ; 13 02
+     10 E> CreateClosure k2, s1, #0x00  ; k2 = Function f3 ; 74 02 01 00
+     14    Star r0                                      ; 0c 00
+     16 S> Ldar <this>                                  ; 0b ff
+     18    Star r3                                      ; 0c 03
+     20 E> GetNamedProperty r3, k0, s2  ; k0 = String str2 "x" ; 21 03 00 02
+     24    StaCurrentContextSlot [0]                    ; 1b 00
+     26 S> Ldar r0                                      ; 0b 00
+     28    Star r1                                      ; 0c 01
+     30    PopContext r2                                ; 14 02
+     32 S> LdaImmutableCurrentContextSlot [0]           ; 19 00
+     34 E> ThrowReferenceErrorIfHole k3  ; k3 = String str0 "A" ; 94 03
+     36 E> DefineNamedOwnProperty <this>, k4, s3  ; k4 = String str3 "w" ; 25 ff 04 03
+     40    LdaUndefined                                 ; 05
+     41    Return                                       ; 92
+  constants (5):
+      0 String str2 "x"
+      1 Scope scope4
+      2 Function f3
+      3 String str0 "A"
+      4 String str3 "w"
+  feedback (4):
+      0 DefineNamedOwn
+      1 CreateClosure
+      2 LoadNamed
+      3 DefineNamedOwn
+  handlers (0):
+  positions (10):
+      0 S 10 (1:11)
+      2 E 17 (1:18)
+      6 S 24 (1:25)
+     10 E 49 (1:50)
+     16 S 37 (1:38)
+     20 E 46 (1:47)
+     26 S 80 (1:81)
+     32 S 89 (1:90)
+     34 E 100 (1:101)
+     36 E 96 (1:97)
+function f3 normal name="f" parent=f2 outer_scope=scope4 flags=[strict,simple-params] params=0 length=0 regs=0 range=49..75
+  code (5 bytes):
+      0 S> LdaCurrentContextSlot [0]                    ; 18 00
+      2    Return                                       ; 92
+      3    LdaUndefined                                 ; 05
+      4    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 64 (1:65)

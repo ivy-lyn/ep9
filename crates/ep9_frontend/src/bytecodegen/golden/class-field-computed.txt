@@ -1,0 +1,177 @@
+# class-field-computed: script (sloppy)
+# | var k; class A { [k] = 1; static [k + 1] = function() {}; [k]() {} [k + 2]; }
+; ep9 bytecode, ABI 3
+unit kind=script strict=false ts=none source_len=77 source=embedded hints=none
+source_hash=83fd11c1a0fd56d4a0ba9e02b0a2ca29bc6a142dcd9debc7804e7c97979c9c9c
+strings (5):
+  str0 "k"
+  str1 "A"
+  str2 "#.class-field-0"
+  str3 "#.class-field-1"
+  str4 "#.class-field-2"
+scopes (7):
+  scope0 script outer=- flags=[] slots=["k":var, "A":class]
+  scope1 class outer=scope0 flags=[needs-context,strict] slots=["#.class-field-0":const, "#.class-field-1":const, "#.class-field-2":const]
+  scope2 function outer=scope1 flags=[strict] slots=[]
+  scope3 function outer=scope1 flags=[strict] slots=[]
+  scope4 function outer=scope1 flags=[strict] slots=[]
+  scope5 function outer=scope4 flags=[strict] slots=[]
+  scope6 function outer=scope1 flags=[strict] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=8 range=0..77
+  code (119 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> CreateBlockContext k0  ; k0 = Scope scope1   ; 76 00
+      7    PushContext r4                               ; 13 04
+      9    LdaTheHole                                   ; 07
+     10    Star r2                                      ; 0c 02
+     12 E> CreateClosure k1, s0, #0x00  ; k1 = Function f1 ; 74 01 00 00
+     16    Star r1                                      ; 0c 01
+     18 E> CallRuntime DefineClass, r1-r2               ; 68 04 00 01 02
+     23    Star r3                                      ; 0c 03
+     25 E> LdaGlobal k2, s1  ; k2 = String str0 "k"     ; 10 02 01
+     28 E> ToName                                       ; 58
+     29    StaCurrentContextSlot [0]                    ; 1b 00
+     31 E> LdaGlobal k2, s1  ; k2 = String str0 "k"     ; 10 02 01
+     34 E> AddSmi [1], s2                               ; 36 01 02
+     37 E> ToName                                       ; 58
+     38    StaCurrentContextSlot [1]                    ; 1b 01
+     40    Mov r3, r5                                   ; 0d 03 05
+     43 E> LdaGlobal k2, s1  ; k2 = String str0 "k"     ; 10 02 01
+     46 E> ToName                                       ; 58
+     47    Star r6                                      ; 0c 06
+     49 E> CreateClosure k3, s3, #0x00  ; k3 = Function f5 ; 74 03 03 00
+     53    Star r7                                      ; 0c 07
+     55 E> CallRuntime DefineClassMethod, r5-r7         ; 68 0f 00 05 03
+     60 E> LdaGlobal k2, s1  ; k2 = String str0 "k"     ; 10 02 01
+     63 E> AddSmi [2], s4                               ; 36 02 04
+     66 E> ToName                                       ; 58
+     67    StaCurrentContextSlot [2]                    ; 1b 02
+     69    Ldar r1                                      ; 0b 01
+     71    Star r0                                      ; 0c 00
+     73 E> CreateClosure k4, s5, #0x00  ; k4 = Function f2 ; 74 04 05 00
+     77    Star r5                                      ; 0c 05
+     79    Mov r1, r6                                   ; 0d 01 06
+     82    Mov r5, r7                                   ; 0d 05 07
+     85 E> CallRuntime SetClassFieldsInitializer, r6-r7 ; 68 18 00 06 02
+     90 E> CreateClosure k5, s6, #0x00  ; k5 = Function f3 ; 74 05 06 00
+     94    Star r6                                      ; 0c 06
+     96 E> CallProperty0 r6, r1, s7                     ; 60 06 01 07
+    100    PopContext r4                                ; 14 04
+    102    Ldar r1                                      ; 0b 01
+    104    Star r2                                      ; 0c 02
+    106    LdaConstant k6  ; k6 = String str1 "A"       ; 0a 06
+    108    Star r1                                      ; 0c 01
+    110 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
+    115    Ldar r2                                      ; 0b 02
+    117    LdaUndefined                                 ; 05
+    118    Return                                       ; 92
+  constants (7):
+      0 Scope scope1
+      1 Function f1
+      2 String str0 "k"
+      3 Function f5
+      4 Function f2
+      5 Function f3
+      6 String str1 "A"
+  feedback (8):
+      0 CreateClosure
+      1 LoadGlobal
+      2 BinaryOp
+      3 CreateClosure
+      4 BinaryOp
+      5 CreateClosure
+      6 CreateClosure
+      7 Call
+  handlers (0):
+  positions (21):
+      0 S 0 (1:1)
+      5 S 7 (1:8)
+     12 E 7 (1:8)
+     18 E 7 (1:8)
+     25 E 18 (1:19)
+     28 E 18 (1:19)
+     31 E 34 (1:35)
+     34 E 34 (1:35)
+     37 E 34 (1:35)
+     43 E 59 (1:60)
+     46 E 59 (1:60)
+     49 E 7 (1:8)
+     55 E 59 (1:60)
+     60 E 68 (1:69)
+     63 E 68 (1:69)
+     66 E 68 (1:69)
+     73 E 7 (1:8)
+     85 E 15 (1:16)
+     90 E 7 (1:8)
+     96 E 15 (1:16)
+    110 E 7 (1:8)
+function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=15..77
+  code (13 bytes):
+      0 S> LdaCurrentFunction                           ; 0e
+      1    Star r0                                      ; 0c 00
+      3    Mov <this>, r1                               ; 0d ff 01
+      6 E> CallRuntime RunClassFieldsInitializer, r0-r1 ; 68 19 00 00 02
+     11    LdaUndefined                                 ; 05
+     12    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (2):
+      0 S 7 (1:8)
+      6 E 15 (1:16)
+function f2 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=1 range=15..77
+  code (23 bytes):
+      0 S> LdaCurrentContextSlot [0]                    ; 18 00
+      2    Star r0                                      ; 0c 00
+      4    LdaSmi [1]                                   ; 04 01
+      6 E> DefineKeyedOwnProperty <this>, r0, #0x00, s0 ; 27 ff 00 00 00
+     11 S> LdaCurrentContextSlot [2]                    ; 18 02
+     13    Star r0                                      ; 0c 00
+     15    LdaUndefined                                 ; 05
+     16 E> DefineKeyedOwnProperty <this>, r0, #0x00, s1 ; 27 ff 00 00 01
+     21    LdaUndefined                                 ; 05
+     22    Return                                       ; 92
+  constants (0):
+  feedback (2):
+      0 DefineKeyedOwn
+      1 DefineKeyedOwn
+  handlers (0):
+  positions (4):
+      0 S 17 (1:18)
+      6 E 18 (1:19)
+     11 S 67 (1:68)
+     16 E 68 (1:69)
+function f3 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=1 range=15..77
+  code (15 bytes):
+      0 S> LdaCurrentContextSlot [1]                    ; 18 01
+      2    Star r0                                      ; 0c 00
+      4 E> CreateClosure k0, s0, #0x00  ; k0 = Function f4 ; 74 00 00 00
+      8 E> DefineKeyedOwnProperty <this>, r0, #0x01, s1 ; 27 ff 00 01 01
+     13    LdaUndefined                                 ; 05
+     14    Return                                       ; 92
+  constants (1):
+      0 Function f4
+  feedback (2):
+      0 CreateClosure
+      1 DefineKeyedOwn
+  handlers (0):
+  positions (3):
+      0 S 26 (1:27)
+      4 E 43 (1:44)
+      8 E 34 (1:35)
+function f4 normal name=- parent=f3 outer_scope=scope4 flags=[strict,simple-params] params=0 length=0 regs=0 range=43..56
+  code (2 bytes):
+      0    LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (0):
+function f5 method name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=61..66
+  code (2 bytes):
+      0    LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (0):

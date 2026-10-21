@@ -428,6 +428,52 @@ const CASES: &[(&str, Mode, &str)] = &[
         Sloppy,
         "class A { m() { return () => A; } }",
     ),
+    // ---- class fields and private names (P2-CLS-CG) ----
+    (
+        "class-field-public",
+        Sloppy,
+        "class A { x = 1; y; 'z' = () => 1; 1 = function() {}; 1.5 = 2; static s = this; }",
+    ),
+    (
+        "class-field-computed",
+        Sloppy,
+        "var k; class A { [k] = 1; static [k + 1] = function() {}; [k]() {} [k + 2]; }",
+    ),
+    (
+        "class-field-ctor",
+        Sloppy,
+        "class A { x = 1; constructor(a = this.x) { this.a = a; } } class B { y = () => this; }",
+    ),
+    (
+        "class-field-derived",
+        Sloppy,
+        "class A {} class B extends A { x = 1; constructor() { super(); } } class C extends A { y = super.constructor; } class D extends A { z; constructor() { var f = () => super(); f(); } }",
+    ),
+    (
+        "class-field-static-block",
+        Sloppy,
+        "class A { static x = 1; static { var y = this.x; function f() { return y; } let z = f; } static w = A; }",
+    ),
+    (
+        "class-private-field",
+        Sloppy,
+        "class A { #x = 1; static #s; get() { return this.#x; } set(v) { this.#x = v; this.#x += 1; this.#x++; [this.#x] = [v]; } has(o) { return #x in o && #s in A; } opt(o) { return o?.#x; } call() { return this.#x(); } }",
+    ),
+    (
+        "class-private-method",
+        Sloppy,
+        "class A { #m() { return 1; } static #s() { return super.x; } get #a() { return 1; } set #a(v) {} set #w(v) {} t(o) { return [o.#m(), A.#s(), o.#a, #m in o, o?.#m, #a in o]; } }",
+    ),
+    (
+        "class-private-assign",
+        Sloppy,
+        "class A { #m() {} get #a() { return 1; } set #a(v) {} get #g() {} t(o, v) { o.#a = v; o.#a += 1; o.#a++; [o.#a] = [v]; o.#m = v; return o.#g = v; } }",
+    ),
+    (
+        "class-private-generator",
+        Sloppy,
+        "class A { *#g() { yield 1; } static *#h() {} t() { return this.#g(); } }",
+    ),
     // ---- modules ----
     (
         "module-basic",
@@ -723,12 +769,12 @@ fn unsupported_constructs_name_the_feature() {
         ("{ async function* g() {} }", "generator functions"),
         ("class A { static async *m() {} }", "generator functions"),
         ("class A { accessor x = 1 }", "class auto-accessors"),
-        ("class A { static #m() {} }", "private names"),
+        ("class A { accessor #x }", "class auto-accessors"),
         ("async function f() {}", "async functions"),
         ("(async () => 1)", "async functions"),
-        ("class A { x = 1 }", "class fields"),
-        ("class A { #x() {} }", "private names"),
-        ("class A { static {} }", "class static blocks"),
+        ("class A { async #m() {} }", "async functions"),
+        ("class A { async *#m() {} }", "generator functions"),
+        ("class A { x = async () => 1 }", "async functions"),
         ("import('x')", "import()"),
     ] {
         match compile_script(src, Strictness::Sloppy) {
@@ -823,19 +869,11 @@ fn eval_ext_is_slot_0_of_sloppy_eval_function_var_scopes_only() {
     assert_eq!(has_ext(&strict), Vec::<usize>::new());
 }
 
-/// M2 P0 stubs: `compile_eval` (P2-EVAL-FE) and `compile_function_ctor` (P3-FNCTOR) return
-/// Unsupported, so the VM keeps today's behaviour.
+/// M2 P0 stub: `compile_function_ctor` (P3-FNCTOR) returns Unsupported, so the VM keeps
+/// today's behaviour. (`compile_eval` is P2-EVAL-FE's: its tests are in `eval.rs`, D3.)
 #[test]
-fn eval_and_function_ctor_entry_points_are_stubs() {
-    use ep9_bytecode::{EvalContext, FunctionCtorKind};
-    let ctx = EvalContext {
-        direct: true,
-        ..EvalContext::default()
-    };
-    match crate::compile_eval("var x = 1;", &ctx, super::CompileOptions::default()) {
-        Err(CodegenError::Unsupported(u)) => assert_eq!(u.feature, "eval"),
-        other => panic!("{other:?}"),
-    }
+fn function_ctor_entry_point_is_a_stub() {
+    use ep9_bytecode::FunctionCtorKind;
     match crate::compile_function_ctor(
         FunctionCtorKind::Normal,
         "a",
@@ -845,4 +883,52 @@ fn eval_and_function_ctor_entry_points_are_stubs() {
         Err(CodegenError::Unsupported(u)) => assert_eq!(u.feature, "Function constructor"),
         other => panic!("{other:?}"),
     }
+}
+
+/// D2 (P2-CLS-CG): the synthetic class bindings (brands, accessor setters, computed field
+/// keys) are `PrivateName` bindings with names no source can spell, declared in the class
+/// scope, and the scope pass puts them in the class context (codegen finds them by name).
+#[test]
+fn synthetic_class_bindings_live_in_the_class_context() {
+    use crate::scope::{BindingKind, BindingLocation, ScopeKind};
+    let src = "var k; class C { #m() {} static #s() {} get #a() { return 1; } set #a(v) {} \
+               [k] = 1; static [k + 1]; x = 2; #f; }";
+    let sa = crate::with_front_end(src, Sloppy.opts(), crate::scope::analyze).unwrap();
+    let class = sa
+        .scopes()
+        .iter()
+        .find(|s| s.kind == ScopeKind::Class)
+        .unwrap();
+    let names: Vec<(&str, bool)> = class
+        .bindings
+        .iter()
+        .map(|&b| {
+            let binding = sa.binding(b);
+            assert!(
+                matches!(binding.kind, BindingKind::PrivateName { .. })
+                    || binding.kind == BindingKind::ClassInner
+            );
+            let in_class_context = matches!(
+                binding.location,
+                BindingLocation::Context { scope, .. } if scope == class.id
+            );
+            (sa.name(binding.name), in_class_context)
+        })
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("C", false),
+            ("#m", true),
+            ("#s", true),
+            ("#a", true),
+            ("#f", true),
+            ("#.brand", true),
+            ("#.static-brand", true),
+            ("#.set-a", true),
+            ("#.class-field-0", true),
+            ("#.class-field-1", true),
+        ]
+    );
+    assert!(class.needs_context);
 }
