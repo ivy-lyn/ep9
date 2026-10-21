@@ -6,9 +6,9 @@
 | Fix by | M1 |
 | Freeze point | M1a |
 | Origin | v1#13; plan status U |
-| Crates | `ep9_vm` (`object.rs`, `props.rs`, `shape.rs`, `exotic.rs`, `property.rs`); `ep9_heap` (shape space, word0); later `ep9_baseline`, `ep9_opt` (shape guards, field loads) |
+| Crates | `ep9_vm` (`object.rs`, `props.rs`, `shape.rs`, `exotic.rs`, `property.rs`, `accessor.rs`); `ep9_heap` (shape space, word0); later `ep9_baseline`, `ep9_opt` (shape guards, field loads) |
 | Owner (plan role) | VM lead |
-| Validated by | `ep9_vm` tests `tests/objects.rs`, `tests/shapes.rs` (GC stress + heap verifier); test262 with and without `--gc-stress 1` |
+| Validated by | `ep9_vm` tests `tests/objects.rs`, `tests/shapes.rs`, `tests/accessors.rs` (GC stress + heap verifier); test262 with and without `--gc-stress 1` |
 | Plan sources | [02 §6 H17](../plan/02-architecture.md#6-hard-to-change-decisions-h1-h37), [06 §2](../plan/06-object-model-and-spec.md#2-header-and-objects-h8-extended), [06 §2.2](../plan/06-object-model-and-spec.md#22-shapes-h17) |
 
 ## Context
@@ -50,8 +50,31 @@ v0 (M0 wk4) builds the plan's JSObject header with shapes in the shape space. Th
 | Epoch (OM-8) | Any structural change of a prototype bumps `ShapeState::proto_epoch`: a named property or an array element that appears or goes away (a `length` cut that removes an element too), an attribute change, SetPrototypeOf, PreventExtensions, a dictionary move. A value store does not (a named or element value, `length` growth, a `length` cut over holes only). Only a prototype pays more than a flag test | `shape::note_change`; elements: `object::array_set`, `object::array_set_length` (the only element writers) |
 | Extensible, `[[Prototype]]` | In the shape (flag EXTENSIBLE, +8 proto). A fast shape is always extensible | `property::prevent_extensions` |
 | Keys | Stored keys are atoms or symbols (`key::intern_key` on every define path); a lookup classifies its probe once | W4-KEY-EQ |
-| Accessors | Attribute bit 8 (`attr::ACCESSOR`) in descriptors and dictionary entries. Getters and setters are called from P3-ACC on | `object::attr` |
+| Accessors | Attribute bit 8 (`attr::ACCESSOR`) in descriptors and dictionary entries; the value slot holds an immutable ACCESSOR_PAIR (see "Accessors" below) | `accessor.rs`, `object::attr` |
 | Functions | `length`, `name` are own data properties {w: false, e: false, c: true} in the 2 slots. `prototype` is made on first use, and before any later key is added, so the key order is right | `object::new_function`, `exotic.rs` |
+
+### Accessors (M0 wk4, P3-ACC)
+
+JSC style (plan §2 row 6): an accessor is an attribute bit plus an immutable pair cell in the
+ordinary value slot, so a shape describes an accessor exactly as it describes a data field.
+
+```text
+ descriptor details: attrs = ACCESSOR | e | c (never WRITABLE), field i
+ field i (in-object, SLOTS or PROPS entry) ──> ACCESSOR_PAIR (kind 67, 24 B): +8 getter, +16 setter
+                                               (a callable, or undefined when absent)
+```
+
+| Item | v0 rule | Where |
+|---|---|---|
+| Pair | Immutable. `[[DefineOwnProperty]]` builds a new pair from the descriptor and the old halves (6.c keeps a half the descriptor does not name) and stores it in place of the old one | `accessor::new_pair`, `property::define_own_property` |
+| `[[Get]]` | The first property on the chain decides; an accessor calls its getter with the receiver as `this` (a primitive base passes itself), undefined without a getter | `property::get_with_receiver`, `accessor::call_getter` |
+| `[[Set]]` | The first property on the chain decides; an accessor calls its setter with the receiver, or fails without one (sloppy: ignored; strict: TypeError "Cannot set property x of #<Object> which has only a getter"). A primitive base walks its prototype's chain (§6.2.5.6 step 5.a) | `property::set_with_receiver`, `property::set` |
+| `[[DefineOwnProperty]]` | ValidateAndApplyPropertyDescriptor for both kinds: steps 5.a-e, then 6.a (data to accessor), 6.b (accessor to data, `writable` false unless given), 6.c (field by field). Data <-> accessor is an attribute change, so a fast object goes to dictionary mode (OM-10) | `property::validate`, `property::define_own_property` |
+| Epoch | A new pair in place of an old one bumps the epoch of a prototype, even with the same attributes (an IC may cache a getter found on a prototype while the epoch holds) | `props::own_define` |
+| Raw reads | `props::own_get`, `own_entry`, `own_value_or_proto` return the pair of an accessor; a caller tests `attr::ACCESSOR` before it uses the value as a JS value. A pair never reaches JS | `props.rs` |
+| Engine text | An error's "Name: message" header (made inside `throw_error`, also on stack overflow) and the reported constructor name read data properties only: no getter runs there | `property::get_data_from` |
+| Exotic | An accessor on an array element or array `length` is not built: an element throws "not implemented" (H18), `length` rejects it (ArraySetLength step 1). String wrapper properties are not configurable, so they reject it | `property::define_own_property` |
+| Runtime ids | 12 `DefineAccessorInLiteral` (enumerable) and 16 `DefineClassAccessor` (not enumerable, sets `[[HomeObject]]`): a descriptor with the one present half, DefinePropertyOrThrow; an anonymous function (computed key) is named `"get k"`, `"set k"` or `"get [desc]"` | `interp/slow/runtime.rs` |
 
 ## Rules
 
@@ -66,12 +89,15 @@ v0 (M0 wk4) builds the plan's JSObject header with shapes in the shape space. Th
 | No content compare of keys in UNIT(ep9_vm) | `EP9_ASSERT_ATOM_KEYS=1 cargo test -p ep9_vm` | M0 wk4 |
 | Every shape's proto is null or a prototype-mode object | `debug_assert` in `shape::new_shape`; `set_prototype_of_a_prototype_puts_the_new_prototype_in_prototype_mode` (fast and dictionary objects) | M0 wk4 (P2 fix) |
 | A structural change of a prototype bumps the epoch; a value store does not (named and element paths, fast and dictionary prototypes) | `an_object_used_as_a_prototype_gets_a_unique_shape_and_bumps_the_epoch`, `dense_element_changes_of_an_array_prototype_bump_the_epoch` | M0 wk4 (P2 fix) |
+| An ACCESSOR_PAIR never changes; a define makes a new one, and a new pair on a prototype bumps the epoch | `validate_and_apply_accessor_descriptors`, `replacing_an_accessor_of_a_prototype_bumps_the_epoch` | M0 wk4 (P3-ACC) |
+| Getters and setters get the receiver as `this` (inherited, `super`, primitive bases) | `literal_getters_and_setters_take_the_receiver_as_this`, `keyed_super_getters_and_setters_see_this`, `getters_and_setters_receive_the_receiver_also_a_primitive` | M0 wk4 (P3-ACC) |
+| Engine-made error text runs no getter | `engine_error_text_runs_no_getters` | M0 wk4 (P3-ACC) |
 
 ## Consequences
 
 - **Gains.** A shape guard is one u32 compare, and the field offset comes from the shape. `shape_of` needs no runtime pointer, so host paths (`proto_of`, `is_extensible`) stay free functions.
 - **Costs.** The 64 GiB cage alignment leaves 2,048 cage slots below 2^47. Prototype objects never share shapes. Class constructors with `extends` go to dictionary mode (SetPrototypeOf with own properties).
-- **Follow-ups.** P3-IC caches (shape, field). Exotic own properties (array `length` and elements, a constructor's lazy `prototype`, String wrapper properties) are not in shapes: the epoch covers an element that appears or goes away, but a holder's exotic property is never a field load. P3-ACC calls getters and setters and passes the receiver on the super paths. Slack tracking replaces the fixed `new F` capacity of 8.
+- **Follow-ups.** P3-IC caches (shape, field). Exotic own properties (array `length` and elements, a constructor's lazy `prototype`, String wrapper properties) are not in shapes: the epoch covers an element that appears or goes away, but a holder's exotic property is never a field load. P3-ACC built accessors (section above); the super paths pass the receiver (`LoadKeyedFromSuper`, `StoreToSuper`; opcode 0x22 with P3-IC). An IC must not make a data handler for an `ACCESSOR` descriptor: the slot holds the pair. Slack tracking replaces the fixed `new F` capacity of 8.
 
 ## Decide before M1a
 
@@ -84,6 +110,8 @@ v0 (M0 wk4) builds the plan's JSObject header with shapes in the shape space. Th
 | Validity cells | Prototype-chain validity cells per PROTO_INFO in place of one global epoch | One `proto_epoch` |
 | S2 weak transition child | Reading a weak transition child is safe because marking is stop-the-world. With incremental marking, a weak child that is read and stored must be marked by the barrier or the final rescan | Stop-the-world marking |
 | Dictionary mode | Shared dictionary shapes per (prototype, kind, extensible): is a per-object shape needed for IC misses? The PROPS table is scanned linearly: when does it get a hash index? | Shared shapes; linear scan |
+| Accessor ICs | Getter/setter call handlers (V8 LoadHandler for accessors, JSC GetterSetter cached by identity): cache the pair or the getter, under the epoch or a per-holder validity cell? Data <-> accessor goes to dictionary mode today; does a fast object need an accessor transition instead? | Accessors take the IC slow path; any data <-> accessor change goes to dictionary mode |
+| Element accessors | Accessor elements (and non-default element attributes) need a sparse or dictionary elements kind (H18) | "not implemented" |
 
 ## Evidence
 
@@ -116,3 +144,4 @@ v0 (M0 wk4) builds the plan's JSObject header with shapes in the shape space. Th
 |---|---|---|---|
 | 2026-10-21 | draft | First draft: v0 layout as built (word0 shapes, fixed fields, capacity, OM-10, prototype mode, epoch, function `length`/`name`), decide-before-M1a list incl. the S2 weak-child note | P2-OBJ agent |
 | 2026-10-21 | fix | Epoch rule on every path: SetPrototypeOf of a prototype puts the new prototype in prototype mode; dense element adds, deletes and `length` cuts of a prototype bump the epoch; the proto-mode invariant is asserted in `new_shape` | P2 fix agent (review W4-P2FIX-EPOCH) |
+| 2026-10-21 | fill | Accessors as built: ACCESSOR_PAIR (kind 67, immutable), `[[Get]]`/`[[Set]]` with the receiver, ValidateAndApplyPropertyDescriptor for accessors, the pair epoch rule, data-only engine text, runtime ids 12 and 16; two decide-before-M1a rows (accessor ICs, element accessors) | P3-ACC agent |
