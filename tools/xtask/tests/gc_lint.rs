@@ -100,6 +100,34 @@ fn closure_capture_in_a_box() {
     check_case("boxed_closure.rs");
 }
 
+/// An alias in one file (`use std::alloc::Layout as Local`) hides no `Local` in another, also
+/// when two files give one alias name different targets.
+#[test]
+fn an_alias_never_hides_a_stack_only_type() {
+    let out = gc_lint(Some(&fixtures()), &["alias_collision"]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = stdout(&out);
+    for case in ["alias_collision/store.rs", "alias_collision/unrelated.rs"] {
+        assert_eq!(reported(&text, case), flagged(case), "{case}");
+    }
+}
+
+/// `Holder<'s, Local<'s>>` where `Holder` holds a `Local` and puts `T` in a `Vec`.
+#[test]
+fn a_derived_type_walks_its_type_arguments() {
+    check_case("generic_holder.rs");
+}
+
+#[test]
+fn a_boxing_call_through_an_alias() {
+    check_case("boxed_closure_alias.rs");
+}
+
+#[test]
+fn a_shadow_hides_a_capture_only_where_it_is_in_scope() {
+    check_case("closure_shadowing.rs");
+}
+
 #[test]
 fn clean_patterns_pass() {
     assert!(flagged("clean.rs").is_empty());

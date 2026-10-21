@@ -20,18 +20,27 @@
 //!
 //! - Stack-only types: [`STACK_ONLY`], any struct, enum, union or alias that holds one by
 //!   value, and any `use .. as` name of one. Names are matched by their last path segment.
+//!   The type arguments of a type that holds one are walked like any type's
+//!   (`Holder<'s, Local<'s>>`); only a base type's argument is a marker (`Local<'s, FlatStr>`).
+//! - Aliases: a `use a::B as C` in any file makes `C` stand for `C` and `B` everywhere (types,
+//!   containers, `C::new`). So an alias adds a meaning and never hides one: an unrelated
+//!   `use std::alloc::Layout as Local` leaves every `Local` stack-only. An alias of an
+//!   unrelated type to a stack-only name can give a finding that needs an allow.
 //! - Heap containers: [`HEAP_CONTAINERS`], and a local generic type whose field puts the
 //!   parameter in one (`struct Stack<T> { items: Vec<T> }`).
 //! - Not a finding: a reference or raw pointer (the value stays where it is), `PhantomData`,
 //!   a `fn` pointer, a trait object or `impl Trait` (`HostFn` tables, `Box<dyn Fn(Local)>`).
 //! - Closures: the type of a binding comes from its annotation, a fn or closure parameter, or a
 //!   simple initializer (a call or method call whose return type the scanned files declare, a
-//!   struct literal, `?`, a field, a cast).
+//!   struct literal, `?`, a field, a cast). A binding hides an outer one only where it is in
+//!   scope: after its `let` to the end of the block, in a match arm, a `for` body, the `then`
+//!   part of an `if let` or the body of a `while let`.
 //! - Macro bodies: `thread_local!` is parsed as items, any other macro as comma-separated
 //!   expressions when it parses (`vec![..]`, `assert!(..)`); `macro_rules!` bodies are skipped.
 //! - Known gaps (H10 risk R3): inferred types (`let v: Vec<_> = it.collect()`), values moved
-//!   into a container by a call (`v.push(l)`), and macro bodies that do not parse. The debug
-//!   on-stack check in `Local::bits` and the GC-stress runs are the backstop.
+//!   into a container by a call (`v.push(l)`), macro bodies that do not parse, and a name used
+//!   only inside a format string (`Box::new(move || format!("{l:?}"))`). The debug on-stack
+//!   check in `Local::bits` and the GC-stress runs are the backstop.
 //!
 //! Allow: `// gc-lint: allow(<reason>)` on its own line, right before an item, field, variant
 //! or statement (its attributes and doc comment included), skips every finding inside that
@@ -484,8 +493,9 @@ struct Summary {
 struct Model {
     /// Stack-only type -> the base type it holds (itself for a base type).
     stack_only: BTreeMap<String, String>,
-    /// `use a::B as C`: C -> B.
-    renames: HashMap<String, String>,
+    /// `use a::B as C` in any file: C -> every name it may stand for (B, and B's own aliases).
+    /// A name also stands for itself, so an alias adds meanings and never hides one.
+    aliases: HashMap<String, Vec<String>>,
     /// Local generic types: the role of each type parameter.
     params: HashMap<String, Vec<ParamRole>>,
     /// (impl type, or "" for a free fn; fn name) -> return types.
@@ -498,7 +508,8 @@ struct Model {
 #[derive(Default)]
 struct Collect {
     defs: Vec<Def>,
-    renames: HashMap<String, String>,
+    /// `use a::B as C`: C -> B, for every such `use` (one name can be several aliases).
+    renames: HashMap<String, BTreeSet<String>>,
     /// (impl type name, or "" for a free fn; fn name; return type).
     fns: Vec<(String, String, Type)>,
     /// (type, field, field type).
@@ -542,9 +553,11 @@ impl Collect {
     fn use_tree(&mut self, t: &syn::UseTree) {
         match t {
             syn::UseTree::Path(p) => self.use_tree(&p.tree),
-            syn::UseTree::Rename(r) if r.ident != r.rename => {
+            syn::UseTree::Rename(r) if r.ident != r.rename && r.rename != "_" => {
                 self.renames
-                    .insert(r.rename.to_string(), r.ident.to_string());
+                    .entry(r.rename.to_string())
+                    .or_default()
+                    .insert(r.ident.to_string());
             }
             syn::UseTree::Group(g) => g.items.iter().for_each(|i| self.use_tree(i)),
             _ => {}
@@ -656,10 +669,12 @@ enum Reach {
     Static,
 }
 
+/// What a type argument is to its type, weakest first.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Role {
-    Heap,
-    Held,
     Cut,
+    Held,
+    Heap,
 }
 
 type PathFn<'a, 'p> = dyn FnMut(&'p syn::Path, At<'p>) + 'a;
@@ -670,12 +685,30 @@ impl Model {
         for f in files {
             c.visit_file(f);
         }
+        // Every name an alias reaches through the `use .. as` chains.
+        let aliases = c
+            .renames
+            .keys()
+            .map(|a| {
+                let mut seen = BTreeSet::from([a.as_str()]);
+                let mut todo = vec![a.as_str()];
+                while let Some(n) = todo.pop() {
+                    for t in c.renames.get(n).into_iter().flatten() {
+                        if seen.insert(t.as_str()) {
+                            todo.push(t);
+                        }
+                    }
+                }
+                seen.remove(a.as_str());
+                (a.clone(), seen.into_iter().map(str::to_string).collect())
+            })
+            .collect();
         let mut m = Model {
             stack_only: STACK_ONLY
                 .iter()
                 .map(|s| (s.to_string(), s.to_string()))
                 .collect(),
-            renames: c.renames,
+            aliases,
             ..Model::default()
         };
         // Fixed point: both sets only grow.
@@ -723,9 +756,12 @@ impl Model {
         for (owner, name, ty) in &c.fns {
             let self_name = (!owner.is_empty()).then_some(owner.as_str());
             let s = m.summary(ty, self_name);
-            fns.entry((m.resolve(owner).to_string(), name.clone()))
-                .or_default()
-                .push(s);
+            // `impl HostCx` with `use ..::Cx as HostCx`: a method of `Cx` too.
+            for o in m.names(owner) {
+                fns.entry((o.to_string(), name.clone()))
+                    .or_default()
+                    .push(s.clone());
+            }
         }
         let mut fields: HashMap<(String, String), Vec<Summary>> = HashMap::new();
         for (owner, name, ty) in &c.fields {
@@ -740,16 +776,23 @@ impl Model {
         m
     }
 
-    /// Follows `use .. as` renames.
-    fn resolve<'a>(&'a self, name: &'a str) -> &'a str {
-        let mut n = name;
-        for _ in 0..8 {
-            match self.renames.get(n) {
-                Some(next) => n = next,
-                None => break,
-            }
-        }
-        n
+    /// `name`, then every name a `use .. as` alias `name` may stand for. Aliases are not
+    /// scoped: one in any file counts everywhere, so it can add a meaning but not hide one.
+    fn names<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a str> {
+        std::iter::once(name).chain(
+            self.aliases
+                .get(name)
+                .into_iter()
+                .flatten()
+                .map(String::as_str),
+        )
+    }
+
+    /// The stack-only type that the name `n` (or an alias target of it) is, if any.
+    fn stack_only_of(&self, n: &str) -> Option<&str> {
+        self.names(n)
+            .find_map(|n| self.stack_only.get_key_value(n))
+            .map(|(k, _)| k.as_str())
     }
 
     /// The stack-only type that `p` names, if any (`Self` is `self_name`).
@@ -759,24 +802,32 @@ impl Model {
             ("Self", Some(s)) => s,
             _ => id.as_str(),
         };
-        let n = self.resolve(n);
-        self.stack_only.get_key_value(n).map(|(k, _)| k.as_str())
+        self.stack_only_of(n)
     }
 
+    /// The role of argument `i` of the type named `name`: the strongest role of the names it
+    /// may stand for; `Held` when none is known.
     fn role(&self, name: &str, i: usize) -> Role {
+        self.names(name)
+            .filter_map(|n| self.known_role(n, i))
+            .max()
+            .unwrap_or(Role::Held)
+    }
+
+    fn known_role(&self, name: &str, i: usize) -> Option<Role> {
         if HEAP_CONTAINERS.contains(&name) {
-            return Role::Heap;
+            return Some(Role::Heap);
         }
         if OPAQUE.contains(&name) {
-            return Role::Cut;
+            return Some(Role::Cut);
         }
-        match self.params.get(name).and_then(|r| r.get(i)) {
+        Some(match self.params.get(name)?.get(i) {
             Some(r) if r.heap => Role::Heap,
             Some(r) if r.held => Role::Held,
             Some(_) => Role::Cut,
-            // A type that is not local, or an argument past the declared ones.
+            // An argument past the declared ones.
             None => Role::Held,
-        }
+        })
     }
 
     /// Calls `f` for every path type in `ty` with where it stands.
@@ -833,13 +884,14 @@ impl Model {
     /// with the role its segment gives it.
     fn walk_path<'p>(&self, path: &'p syn::Path, reach: Reach, at: At<'p>, f: &mut PathFn<'_, 'p>) {
         f(path, at);
-        // The marker of `Local<'s, JsObject>` is not a value.
-        if self.stack_only_name(path, None).is_some() {
-            return;
-        }
-        for seg in &path.segments {
-            let id = seg.ident.to_string();
-            let name = self.resolve(&id);
+        // A base type's type argument is a marker, not a value (`Local<'s, FlatStr>`). A type
+        // that holds one walks its arguments like any type (`Holder<'s, Local<'s>>`).
+        let base = self
+            .stack_only_name(path, None)
+            .is_some_and(|n| self.stack_only[n] == n);
+        let walked = path.segments.len() - usize::from(base);
+        for seg in path.segments.iter().take(walked) {
+            let name = seg.ident.to_string();
             match &seg.arguments {
                 PathArguments::None => {}
                 PathArguments::Parenthesized(p) => {
@@ -855,7 +907,7 @@ impl Model {
                     for arg in &a.args {
                         match arg {
                             GenericArgument::Type(t) => {
-                                let next = match self.role(name, i) {
+                                let next = match self.role(&name, i) {
                                     Role::Heap => At {
                                         heap: Some(path),
                                         by_value: at.by_value,
@@ -901,7 +953,7 @@ impl Model {
                 let id = last_ident(&tp.path);
                 let name = match (id.as_deref(), self_name) {
                     (Some("Self"), Some(s)) => Some(s.to_string()),
-                    _ => id.map(|n| self.resolve(&n).to_string()),
+                    _ => id,
                 };
                 let first = tp.path.segments.last().and_then(|s| match &s.arguments {
                     PathArguments::AngleBracketed(a) => a.args.iter().find_map(|g| match g {
@@ -925,31 +977,62 @@ impl Model {
 
     /// The summary of a value of the type named `name` (a struct literal, a constructor).
     fn named(&self, name: &str) -> Summary {
-        let n = self.resolve(name);
         Summary {
-            name: Some(n.to_string()),
-            holds: self.stack_only.contains_key(n).then(|| n.to_string()),
+            name: Some(name.to_string()),
+            holds: self.stack_only_of(name).map(str::to_string),
             first: None,
         }
     }
 
-    /// The return type of `owner::name` (`owner` "" for a free fn); with several candidates,
-    /// one that holds a stack-only type wins.
+    /// The return type of `owner::name` (`owner` "" for a free fn, or any name `owner` may
+    /// stand for); with several candidates, one that holds a stack-only type wins.
     fn returned(&self, owner: &str, name: &str) -> Option<Summary> {
-        pick(self.fns.get(&(owner.to_string(), name.to_string())))
+        self.pick(&self.fns, owner, name)
     }
 
     fn field(&self, owner: &str, name: &str) -> Option<Summary> {
-        pick(self.fields.get(&(owner.to_string(), name.to_string())))
+        self.pick(&self.fields, owner, name)
     }
-}
 
-fn pick(c: Option<&Vec<Summary>>) -> Option<Summary> {
-    let c = c?;
-    c.iter()
-        .find(|s| s.holds.is_some())
-        .or_else(|| c.first())
-        .cloned()
+    fn pick(
+        &self,
+        map: &HashMap<(String, String), Vec<Summary>>,
+        owner: &str,
+        name: &str,
+    ) -> Option<Summary> {
+        let c: Vec<&Summary> = self
+            .names(owner)
+            .filter_map(|o| map.get(&(o.to_string(), name.to_string())))
+            .flatten()
+            .collect();
+        c.iter()
+            .find(|s| s.holds.is_some())
+            .or_else(|| c.first())
+            .map(|s| (*s).clone())
+    }
+
+    /// The name to print for a heap container written `id` (`Vec` for an alias of `Vec`).
+    fn container_name<'a>(&'a self, id: &'a str) -> &'a str {
+        self.names(id)
+            .find(|n| HEAP_CONTAINERS.contains(n))
+            .unwrap_or(id)
+    }
+
+    /// `X::new(..)` and `X::pin(..)` where `X` (or a name it may stand for) is in [`BOXING`]:
+    /// the call as written.
+    fn boxing_call(&self, func: &Expr) -> Option<String> {
+        let Expr::Path(p) = strip(func) else {
+            return None;
+        };
+        let n = p.path.segments.len();
+        if p.qself.is_some() || n < 2 {
+            return None;
+        }
+        let f = p.path.segments[n - 1].ident.to_string();
+        let t = p.path.segments[n - 2].ident.to_string();
+        (self.names(&t).any(|n| BOXING.contains(&n)) && (f == "new" || f == "pin"))
+            .then(|| format!("{t}::{f}"))
+    }
 }
 
 // ---- the lint (pass 2) ----------------------------------------------------------------------
@@ -1015,11 +1098,35 @@ fn pat_idents(p: &Pat, out: &mut Vec<String>) {
     V(out).visit_pat(p);
 }
 
-/// Identifiers a closure body uses and binds (an over-approximation of its free variables).
+/// The identifiers a closure uses where no binding of the closure is in scope (an
+/// over-approximation of its free variables). A binding is in scope from the end of its
+/// `let` to the end of its block, in a match arm, in a `for` body, and in the `then` part of
+/// an `if let` or the body of a `while let`.
 #[derive(Default)]
 struct Free {
     used: Vec<String>,
-    bound: BTreeSet<String>,
+    /// The closure's bindings, innermost scope last.
+    scopes: Vec<Vec<String>>,
+}
+
+impl Free {
+    fn scoped(&mut self, f: impl FnOnce(&mut Self)) {
+        self.scopes.push(Vec::new());
+        f(self);
+        self.scopes.pop();
+    }
+
+    fn bind(&mut self, p: &Pat) {
+        if let Some(s) = self.scopes.last_mut() {
+            pat_idents(p, s);
+        }
+    }
+
+    fn use_name(&mut self, n: String) {
+        if !self.scopes.iter().flatten().any(|b| *b == n) {
+            self.used.push(n);
+        }
+    }
 }
 
 impl<'ast> Visit<'ast> for Free {
@@ -1029,18 +1136,72 @@ impl<'ast> Visit<'ast> for Free {
             && e.path.segments.len() == 1
             && e.path.segments[0].arguments.is_none()
         {
-            self.used.push(e.path.segments[0].ident.to_string());
+            self.use_name(e.path.segments[0].ident.to_string());
         }
         visit::visit_expr_path(self, e);
     }
-    fn visit_pat(&mut self, p: &'ast Pat) {
-        let mut v = Vec::new();
-        pat_idents(p, &mut v);
-        self.bound.extend(v);
-        visit::visit_pat(self, p);
-    }
     fn visit_macro(&mut self, m: &'ast syn::Macro) {
-        idents(&m.tokens, &mut self.used);
+        let mut v = Vec::new();
+        idents(&m.tokens, &mut v);
+        v.into_iter().for_each(|n| self.use_name(n));
+    }
+    // A pattern binds where its owner says (below); a pattern uses no binding.
+    fn visit_pat(&mut self, _: &'ast Pat) {}
+    // An item inside the closure captures nothing.
+    fn visit_item(&mut self, _: &'ast Item) {}
+    fn visit_block(&mut self, b: &'ast syn::Block) {
+        self.scoped(|s| visit::visit_block(s, b));
+    }
+    fn visit_local(&mut self, l: &'ast syn::Local) {
+        // `let x = x;`: the initializer sees the outer `x`; an `else` block sees no new one.
+        if let Some(init) = &l.init {
+            self.visit_expr(&init.expr);
+            if let Some((_, e)) = &init.diverge {
+                self.visit_expr(e);
+            }
+        }
+        self.bind(&l.pat);
+    }
+    fn visit_expr_closure(&mut self, c: &'ast syn::ExprClosure) {
+        self.scoped(|s| {
+            c.inputs.iter().for_each(|p| s.bind(p));
+            s.visit_expr(&c.body);
+        });
+    }
+    fn visit_arm(&mut self, a: &'ast syn::Arm) {
+        self.scoped(|s| {
+            s.bind(&a.pat);
+            if let Some((_, g)) = &a.guard {
+                s.visit_expr(g);
+            }
+            s.visit_expr(&a.body);
+        });
+    }
+    fn visit_expr_for_loop(&mut self, f: &'ast syn::ExprForLoop) {
+        self.visit_expr(&f.expr);
+        self.scoped(|s| {
+            s.bind(&f.pat);
+            s.visit_block(&f.body);
+        });
+    }
+    fn visit_expr_if(&mut self, i: &'ast syn::ExprIf) {
+        self.scoped(|s| {
+            s.visit_expr(&i.cond);
+            s.visit_block(&i.then_branch);
+        });
+        if let Some((_, e)) = &i.else_branch {
+            self.visit_expr(e);
+        }
+    }
+    fn visit_expr_while(&mut self, w: &'ast syn::ExprWhile) {
+        self.scoped(|s| {
+            s.visit_expr(&w.cond);
+            s.visit_block(&w.body);
+        });
+    }
+    fn visit_expr_let(&mut self, l: &'ast syn::ExprLet) {
+        self.visit_expr(&l.expr);
+        self.bind(&l.pat);
     }
 }
 
@@ -1072,20 +1233,6 @@ fn strip(e: &Expr) -> &Expr {
     }
 }
 
-/// `Box::new`, `Rc::pin`, ...: the container's name.
-fn boxing_call(func: &Expr) -> Option<String> {
-    let Expr::Path(p) = strip(func) else {
-        return None;
-    };
-    let n = p.path.segments.len();
-    if p.qself.is_some() || n < 2 {
-        return None;
-    }
-    let f = p.path.segments[n - 1].ident.to_string();
-    let t = p.path.segments[n - 2].ident.to_string();
-    (BOXING.contains(&t.as_str()) && (f == "new" || f == "pin")).then(|| format!("{t}::{f}"))
-}
-
 impl Linter<'_> {
     fn finding(&mut self, line: usize, msg: String) {
         self.findings.push((line, msg));
@@ -1103,8 +1250,8 @@ impl Linter<'_> {
             if let (Some(c), Some(n)) = (at.heap, m.stack_only_name(path, None)) {
                 let container = c.segments.iter().rev().find_map(|s| {
                     let id = s.ident.to_string();
-                    let r = m.resolve(&id);
-                    (!matches!(s.arguments, PathArguments::None)).then(|| r.to_string())
+                    (!matches!(s.arguments, PathArguments::None))
+                        .then(|| m.container_name(&id).to_string())
                 });
                 let base = &m.stack_only[n];
                 let what = if base == n {
@@ -1252,8 +1399,8 @@ impl Linter<'_> {
                         let n = segs[0].ident.to_string();
                         self.m.returned("", &n).or_else(|| {
                             // A tuple struct constructor.
-                            let r = self.m.resolve(&n);
-                            self.m.stack_only.contains_key(r).then(|| self.m.named(r))
+                            let s = self.m.named(&n);
+                            s.holds.is_some().then_some(s)
                         })
                     }
                     k => {
@@ -1264,7 +1411,7 @@ impl Linter<'_> {
                         };
                         let f = segs[k - 1].ident.to_string();
                         self.m
-                            .returned(self.m.resolve(&owner), &f)
+                            .returned(&owner, &f)
                             .or_else(|| self.m.returned("", &f))
                     }
                 }
@@ -1276,14 +1423,11 @@ impl Linter<'_> {
     /// The stack-only bindings a closure captures: (name, type).
     fn captures(&self, c: &syn::ExprClosure) -> Vec<(String, String)> {
         let mut free = Free::default();
-        for p in &c.inputs {
-            free.visit_pat(p);
-        }
-        free.visit_expr(&c.body);
+        free.visit_expr_closure(c);
         let mut out: Vec<(String, String)> = Vec::new();
         let mut seen = BTreeSet::new();
         for n in free.used {
-            if free.bound.contains(&n) || !seen.insert(n.clone()) {
+            if !seen.insert(n.clone()) {
                 continue;
             }
             if let Some(b) = self.lookup(&n) {
@@ -1356,10 +1500,7 @@ impl<'ast> Visit<'ast> for Linter<'_> {
                 } else {
                     let mut ids = Vec::new();
                     idents(&m.tokens, &mut ids);
-                    if let Some(n) = ids
-                        .iter()
-                        .find(|i| self.m.stack_only.contains_key(self.m.resolve(i)))
-                    {
+                    if let Some(n) = ids.iter().find(|i| self.m.stack_only_of(i).is_some()) {
                         self.finding(
                             line_of(m),
                             format!(
@@ -1476,6 +1617,24 @@ impl<'ast> Visit<'ast> for Linter<'_> {
         self.scopes.pop();
     }
 
+    // An `if let` or `while let` binding is in scope in the `then` part or the body only.
+    fn visit_expr_if(&mut self, i: &'ast syn::ExprIf) {
+        self.scopes.push(Vec::new());
+        self.visit_expr(&i.cond);
+        self.visit_block(&i.then_branch);
+        self.scopes.pop();
+        if let Some((_, e)) = &i.else_branch {
+            self.visit_expr(e);
+        }
+    }
+
+    fn visit_expr_while(&mut self, w: &'ast syn::ExprWhile) {
+        self.scopes.push(Vec::new());
+        self.visit_expr(&w.cond);
+        self.visit_block(&w.body);
+        self.scopes.pop();
+    }
+
     fn visit_expr_let(&mut self, l: &'ast syn::ExprLet) {
         self.visit_expr(&l.expr);
         self.bind_unknown(&l.pat);
@@ -1483,7 +1642,7 @@ impl<'ast> Visit<'ast> for Linter<'_> {
     }
 
     fn visit_expr_call(&mut self, c: &'ast syn::ExprCall) {
-        if let Some(call) = boxing_call(&c.func) {
+        if let Some(call) = self.m.boxing_call(&c.func) {
             for a in &c.args {
                 match strip(a) {
                     Expr::Closure(cl) => {
