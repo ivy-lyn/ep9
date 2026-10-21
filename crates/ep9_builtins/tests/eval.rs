@@ -62,12 +62,10 @@ fn hook_eval(source: &str, ctx: &EvalContext) -> CompileResult {
     ep9_frontend::compile_eval(source, ctx, CompileOptions::default()).map_err(failure)
 }
 
-/// The FNCTOR unit contract (plan-v5 D8) built here with `compile_eval` (indirect, sloppy) on
-/// the joined text, so the VM side is tested before P3-FNCTOR's `compile_function_ctor` (which
-/// adds the separate parameter and body checks) is merged.
+/// P3-FNCTOR's `compile_function_ctor`: the unit of the FNCTOR contract (plan-v5 D8), whose
+/// function 0 returns the new closure.
 fn hook_function(kind: FunctionCtorKind, params: &str, body: &str) -> CompileResult {
-    let text = format!("({} anonymous({params}\n) {{\n{body}\n}})", kind.prefix());
-    ep9_frontend::compile_eval(&text, &EvalContext::default(), CompileOptions::default())
+    ep9_frontend::compile_function_ctor(kind, params, body, CompileOptions::default())
         .map_err(failure)
 }
 
@@ -306,7 +304,14 @@ print(it.next().value, it.next().value, g instanceof GF, GF !== Function);
 class Sub extends Function {}
 var s = new Sub('return 9');
 print(s(), s instanceof Sub);
-try { Function('a', '}'); } catch (x) { print(x.constructor.name); }"#
+try { Function('a', '}'); } catch (x) { print(x.constructor.name); }
+function e(f) { try { f(); return 'ok'; } catch (x) { return x.constructor.name; } }
+print(e(() => Function('/*', '*/){')), e(() => Function('', '}); (function(){')));
+print(e(() => Function('a = 1', '"use strict"')), e(() => Function('a, a', '"use strict"')));
+print(Function('return typeof anonymous')(), Function('return this === globalThis')());
+print(Function("'use strict'; return this")(), Function('a, b', '').length, typeof Function('').prototype);
+var nf = Function('this.p = 1'); var no = new nf();
+print(no.p, no instanceof nf, nf.prototype.constructor === nf);"#
         ),
         lines(&[
             "true 5",
@@ -315,6 +320,11 @@ try { Function('a', '}'); } catch (x) { print(x.constructor.name); }"#
             "5 6 true true",
             "9 true",
             "SyntaxError",
+            "SyntaxError SyntaxError",
+            "SyntaxError SyntaxError",
+            "undefined true",
+            "undefined 2 object",
+            "1 true true",
         ])
     );
 }

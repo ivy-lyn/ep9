@@ -14,7 +14,9 @@
 //! `Function` and `GeneratorFunction` (`natives.rs`, `generator.rs`) and `Cx::evaluate_script`,
 //! all through `abi/script.rs`. With no hooks they throw an `EvalError` ("code generation from
 //! strings is not available"); a [`CompileFailure::Unsupported`] result throws the v0
-//! not-implemented `Error` (`"unsupported: <construct>"`), never a `SyntaxError`.
+//! not-implemented `Error` (`"unsupported: <construct>"`), never a `SyntaxError`. A
+//! `compile_function` unit (from `compile_function_ctor`) is eval code whose function 0
+//! returns the new closure; the VM runs it with no context and `this` = the global this.
 //!
 //! [`IsolateConfig::compiler`]: crate::IsolateConfig::compiler
 
