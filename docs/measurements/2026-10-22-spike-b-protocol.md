@@ -1,6 +1,6 @@
 # Spike B round-trip protocol (the D21 gate), written before any spike code
 
-- **Status.** Protocol only; no result. Written in M0 month 2, phase P0, on 2026-10-21 (the file name keeps the date the plan gave it), before any Spike B code exists (decision M2-D21-METHOD: a gate written first cannot be tuned to the result). A change after the first gate run needs a decisions-log row that names this file.
+- **Status.** Protocol; no gate result yet. P3-SPIKEB-BENCH built `spikes/spike-b/bench.sh` and made one provisional run ([2026-10-22-spike-b.md](2026-10-22-spike-b.md)); the gate run is gate window 1. Written in M0 month 2, phase P0, on 2026-10-21 (the file name keeps the date the plan gave it), before any Spike B code exists (decision M2-D21-METHOD: a gate written first cannot be tuned to the result). A change after the first gate run needs a decisions-log row that names this file.
 - **Gate.** D21 keeps native-stack JIT frames (placement (a)) if one T0→JIT→T0 round trip costs ≤ 18 release-expansion dispatches of the SP-Dispatch loop kernel, on the same host and in the same session ([09 §4](../plan/09-milestones.md#4-spikes) Spike B row; decisions-log D21 and D21-UNIT).
 - **Class.** S (spike) of the speed-gate rule ([10-quality §3](../plan/10-quality.md), PERF-NOISE): wall time of the timed region, ≥ 15 paired rounds, order-statistic interval.
 - **Who runs what.** P3-SPIKEB-BENCH builds `spikes/spike-b/bench.sh` and does a provisional run. The gate run is the orchestrator's gate window 1, after the P3 merge, with no agent running.
@@ -20,7 +20,7 @@ So RT_disp counts the call instruction, the JIT callee and the return to T0, in 
 
 ## 2. Kernels A and C
 
-Both run in one release build of `spikes/spike-b` (feature `spike-native`). The spike JIT compiles 11 opcodes: LdaZero, Ldar, Star, Add, AddSmi, Inc, TestLessThan, JumpIfFalse, JumpLoop, CallUndefinedReceiver1 and Return (plan-v4 P2-SPIKE-B task 1). `id` (`Ldar a0; Return`) and both `drive` kernels (`AddSmi [1]` included) JIT completely; `spike-b ops` and `gate.sh structural` print the opcode list of each. Configs A, C and A0 run `drive` in T0, so the gate measures one T0→JIT→T0 round trip. Configs J and JC run `drive` in the JIT, entered from Rust through `native::call_from_rust` (table below).
+Both run in one release build of `spikes/spike-b` (feature `spike-native`). The spike JIT compiles 11 opcodes: LdaZero, Ldar, Star, Add, AddSmi, Inc, TestLessThan, JumpIfFalse, JumpLoop, CallUndefinedReceiver1 and Return (plan-v4 P2-SPIKE-B task 1). `id` (`Ldar a0; Return`) and both `drive` kernels (`AddSmi [1]` included) JIT completely; `spike-b ops` and `gate.sh structural` print the opcode list of each. Configs A, C and A0 run `drive` in T0, so the gate measures one T0→JIT→T0 round trip. Configs J and JC run `drive` in the JIT, entered from Rust through `ep9_vm::call_from_rust` (the crate-root re-export under `spike-native`; `native` is a private module), and A, C and A0 call `drive` with `Isolate::call` (table below).
 
 ```js
 // kernel A                                       // kernel C: the call statement removed
@@ -53,7 +53,7 @@ function drive(f, n) {                            function drive(f, n) {
 
 ## 4. k
 
-- Take the `ep9 --print-bytecode` listing of A and C from the same build. In `drive`, count the instructions from the `JumpLoop` target to the `JumpLoop` itself. Each of them runs once per iteration (the only branch in the range is the loop exit). k = (count in A) − (count in C) − 1.
+- Take the listing of `drive` in A and C from `ep9_bytecode::disassemble_function` in the bench binary itself, so from the same build (`ep9 --print-bytecode` prints the same per-function listing). In `drive`, count the instructions from the `JumpLoop` target to the `JumpLoop` itself. Each of them runs once per iteration (the only branch in the range is the loop exit). k = (count in A) − (count in C) − 1.
 - A wide or extra-wide prefix in either loop range fails the run: in T0 a prefix takes the cold path, so it is not one dispatch.
 - The bench prints the counted lines of both listings.
 
