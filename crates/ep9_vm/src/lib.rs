@@ -81,6 +81,7 @@ pub use isolate::{
     Exception, Isolate, IsolateConfig, IsolateError, SourceLocation, TerminateHandle,
 };
 pub use runtime::ErrorKind;
+pub use string::JsStr;
 
 /// Facts for tests and tools (not a stable API).
 #[doc(hidden)]
