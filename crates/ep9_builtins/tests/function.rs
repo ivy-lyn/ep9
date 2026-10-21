@@ -411,3 +411,43 @@ fn to_string_gives_the_native_function_form() {
         );
     }
 }
+
+/// A builtin's NativeFunction text names it by its `[[InitialName]]` (§20.2.3.5 step 3), not by
+/// its `name` property: redefining or deleting `name` changes nothing. Table and VM builtins,
+/// a table getter ("get description", §10.2.9 step 5.b), symbol-named builtins and an
+/// embedder's host function. A bound function has no `[[InitialName]]`. Expected lines are
+/// node 24's, except the last one: node has no host `print` (d8 prints the same line).
+#[test]
+fn to_string_names_a_builtin_by_its_initial_name() {
+    assert_eq!(
+        run_both(
+            "var pop = Array.prototype.pop;
+             Object.defineProperty(pop, 'name', {value: 'changed'});
+             print(pop.name, pop.toString());
+             var io = Array.prototype.indexOf;
+             delete io.name;
+             print(io.hasOwnProperty('name'), io.toString());
+             Object.defineProperty(Array.prototype.join, 'name', {value: 'not an identifier'});
+             print(Array.prototype.join.toString());
+             var desc = Object.getOwnPropertyDescriptor(Symbol.prototype, 'description').get;
+             Object.defineProperty(desc, 'name', {value: 'x'});
+             print(desc.toString());
+             print(Symbol.prototype[Symbol.toPrimitive].toString(), String.prototype[Symbol.iterator].toString());
+             print(Function.prototype.toString(), Function.prototype.toString.call(Array));
+             function f() {}
+             print(f.bind().toString(), pop.bind().toString());
+             delete print.name;
+             print(print.toString());"
+        ),
+        lines(&[
+            "changed function pop() { [native code] }",
+            "false function indexOf() { [native code] }",
+            "function join() { [native code] }",
+            "function get description() { [native code] }",
+            "function [Symbol.toPrimitive]() { [native code] } function [Symbol.iterator]() { [native code] }",
+            "function () { [native code] } function Array() { [native code] }",
+            "function () { [native code] } function () { [native code] }",
+            "function print() { [native code] }",
+        ])
+    );
+}
