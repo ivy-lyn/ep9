@@ -28,21 +28,22 @@
 //! method). `arguments` in such nested eval code is then not an early error.
 //!
 //! EvalDeclarationInstantiation (§19.2.1.3) is split over the two runtime ids, one name per
-//! call (the order of `functionsToInitialize`, then the var names). Each call does the checks
-//! of its name and then creates its binding, so a conflict of a later name leaves the earlier
-//! bindings made (the spec checks every name first; the names of the other calls are not
-//! available here: an ABI 5 candidate if a test needs it).
+//! call (the order of `functionsToInitialize`, then the var names). The spec checks every name
+//! (steps 3, 9, 11) before it creates any binding, so a conflict of a later name must leave
+//! no binding made. The first call of a run therefore reads the whole prologue of function 0
+//! (`gen_eval_program`: `LdaConstant name; Star r; CallRuntime DeclareEval*, r..`, straight-line
+//! code before the body) and checks every name; then each call creates its own binding.
 
 use ep9_bytecode::{
-    CodeKind, EVAL_EXT_BINDING, EvalContext, FunctionKind, ScopeFlags, ScopeKind, UnitString,
-    VariableMode,
+    CodeKind, EVAL_EXT_BINDING, EvalContext, FunctionKind, Instructions, Opcode, Register,
+    RuntimeId, ScopeFlags, ScopeKind, UnitString, VariableMode,
 };
 use ep9_value::Throw;
 
 use crate::abi::{self, Local};
 use crate::conv::Res;
 use crate::descriptor::Desc;
-use crate::error::throw_error;
+use crate::error::{FrameRef, throw_error};
 use crate::frame::{UNDEFINED, int32_of};
 use crate::interp::Cx;
 use crate::key::{self, key_text};
@@ -51,7 +52,7 @@ use crate::object::{
 };
 use crate::property;
 use crate::runtime::{ErrorKind, Root};
-use crate::unit::LoadedUnit;
+use crate::unit::{FunctionInfo, LoadedUnit};
 
 use super::{context, info, interrupt, throw_msg_now};
 
@@ -362,11 +363,109 @@ fn cannot_declare(cx: &mut Cx, name: u64, redefine: bool) -> Throw {
     throw_error(cx, ErrorKind::TypeError, &msg)
 }
 
+/// The declarations of the sloppy eval prologue of `fi` (function 0 of eval code), in call
+/// order: (the constant index of the name, a function). Also the byte range of the first
+/// `CallRuntime DeclareEval*`. The names are unit constants (atoms that the unit roots), kept
+/// here as constant indices.
+fn prologue(fi: &FunctionInfo) -> (Option<(u32, u32)>, Vec<(u32, bool)>) {
+    let mut first = None;
+    let mut decls = Vec::new();
+    let Some(u) = fi.loaded_unit() else {
+        return (first, decls);
+    };
+    let code = &u.unit.functions[fi.function_id as usize].bytecode;
+    // The constant index in the accumulator and in each register, along straight-line code.
+    let mut acc: Option<u32> = None;
+    let mut regs: Vec<(Register, u32)> = Vec::new();
+    for insn in Instructions::new(code) {
+        let Ok(insn) = insn else { break };
+        match insn.opcode {
+            Opcode::LdaConstant => acc = Some(insn.unsigned(0)),
+            Opcode::Star => {
+                let r = insn.register(0);
+                regs.retain(|&(q, _)| q != r);
+                if let Some(k) = acc {
+                    regs.push((r, k));
+                }
+            }
+            Opcode::CallRuntime => {
+                let function = match RuntimeId::from_u16(insn.unsigned(0) as u16) {
+                    Some(RuntimeId::DeclareEvalFunction) => true,
+                    Some(RuntimeId::DeclareEvalVar) => false,
+                    _ => {
+                        acc = None;
+                        continue;
+                    }
+                };
+                let r = insn.register(1);
+                if let Some(&(_, k)) = regs.iter().find(|&&(q, _)| q == r) {
+                    first.get_or_insert((insn.offset, insn.next_offset()));
+                    decls.push((k, function));
+                }
+                acc = None;
+            }
+            _ => acc = None,
+        }
+    }
+    (first, decls)
+}
+
+/// At the first `DeclareEval*` call of a run of the eval code in frame `fp`: the checks of
+/// EvalDeclarationInstantiation for every name of the prologue (step 3: SyntaxError; steps 9
+/// and 11 at the global level: CanDeclareGlobalFunction, CanDeclareGlobalVar: TypeError),
+/// before any binding is made. Later calls of the run skip it. GC point (a poll).
+fn check_all(cx: &mut Cx, fp: *mut u64) -> Res<()> {
+    let fi = info(fp);
+    let (first, decls) = prologue(fi);
+    let at = FrameRef(fp).saved_offset();
+    if !first.is_some_and(|(start, end)| (start..end).contains(&at)) {
+        return Ok(());
+    }
+    let mut global = false;
+    for &(k, _) in &decls {
+        let name = key::to_property_key(cx, fi.constant(k))?;
+        global = matches!(var_env(cx, fp, name)?, VarEnv::Global);
+    }
+    if !global {
+        return Ok(());
+    }
+    let g = cx.rt().global();
+    for &(k, function) in decls.iter().rev() {
+        if !function {
+            continue;
+        }
+        let name = fi.constant(k);
+        let definable = match property::get_own_property(cx, g, name) {
+            None => property::is_extensible(g),
+            Some(d) => {
+                d.configurable == Some(true)
+                    || !d.is_accessor() && d.writable == Some(true) && d.enumerable == Some(true)
+            }
+        };
+        if !definable {
+            let exists = property::has_own_property(cx, g, name);
+            return Err(cannot_declare(cx, name, exists));
+        }
+    }
+    for &(k, function) in &decls {
+        let name = fi.constant(k);
+        let is_function_name = decls.iter().any(|&(j, f)| f && fi.constant(j) == name);
+        if function || is_function_name {
+            continue;
+        }
+        if !property::has_own_property(cx, g, name) && !property::is_extensible(g) {
+            return Err(cannot_declare(cx, name, false));
+        }
+    }
+    Ok(())
+}
+
 /// `DeclareEvalVar(name)` (runtime id 27): a `var` of sloppy eval code (§19.2.1.3 steps 3,
 /// 11 and 18). In a function: a new binding in the `.eval_ext` object of its var scope
 /// context unless the scope or that object binds `name`; at the global level: CanDeclareGlobalVar
 /// (TypeError), then CreateGlobalVarBinding(name, true), a configurable property. GC point.
 pub(crate) fn declare_eval_var(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<u64> {
+    check_all(cx, fp)?;
     let name = key::to_property_key(cx, name)?;
     match var_env(cx, fp, name)? {
         VarEnv::Function(c) => {
@@ -406,6 +505,7 @@ pub(crate) fn declare_eval_function(
     name: u64,
     function: u64,
 ) -> Res<u64> {
+    check_all(cx, fp)?;
     let name = key::to_property_key(cx, name)?;
     match var_env(cx, fp, name)? {
         VarEnv::Function(c) => {

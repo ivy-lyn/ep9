@@ -185,8 +185,9 @@ print(f());"#
 }
 
 /// EvalDeclarationInstantiation conflicts: a var over a lexical binding on the way is a
-/// SyntaxError (the eval code does not run), a catch parameter is not a conflict (B.3.4), and
-/// a non-configurable global property refuses a function (TypeError).
+/// SyntaxError (the eval code does not run), a catch parameter is not a conflict (B.3.4), a
+/// non-configurable global property refuses a function (TypeError), and a failed check leaves
+/// no binding of the other names (the checks come first, §19.2.1.3).
 #[test]
 fn eval_declaration_conflicts() {
     assert_eq!(
@@ -200,7 +201,13 @@ let top = 1;
 print(e(function () { eval('var top'); }));
 print(e(function () { (0, eval)('var top'); }));
 try { throw 1; } catch (err) { eval('var err = 2'); print(err); }
-print(e(function () { (0, eval)('function NaN() {}'); }), e(function () { (0, eval)('var NaN'); }));"#
+print(e(function () { (0, eval)('function NaN() {}'); }), e(function () { (0, eval)('var NaN'); }));
+print(e(function () { (0, eval)('function before1() {} function NaN() {} function after1() {}'); }));
+print(typeof before1, typeof after1);
+function lf() { let z; var r = e(function () { eval('var before2; function f2() {} var z'); }); return r + ' ' + typeof before2 + ' ' + typeof f2; }
+print(lf());
+function lh() { let z; var r; try { eval('var before4; function f4() {} var z'); r = 'ok'; } catch (x) { r = x.constructor.name; } return r + ' ' + typeof before4 + ' ' + typeof f4; }
+print(lh());"#
         ),
         lines(&[
             "SyntaxError false",
@@ -210,6 +217,12 @@ print(e(function () { (0, eval)('function NaN() {}'); }), e(function () { (0, ev
             "SyntaxError",
             "2",
             "TypeError ok",
+            "TypeError",
+            // Spec (every name is checked before any binding is made); node v24 prints
+            // "function undefined": V8 makes `before1` first.
+            "undefined undefined",
+            "ok undefined undefined",
+            "SyntaxError undefined undefined",
         ])
     );
 }
