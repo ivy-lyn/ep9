@@ -874,19 +874,26 @@ fn eval_ext_is_slot_0_of_sloppy_eval_function_var_scopes_only() {
     assert_eq!(has_ext(&strict), Vec::<usize>::new());
 }
 
-/// M2 P0 stub: `compile_function_ctor` (P3-FNCTOR) returns Unsupported, so the VM keeps
-/// today's behaviour. (`compile_eval` is P2-EVAL-FE's: its tests are in `eval.rs`, D3.)
+/// `compile_function_ctor` (P3-FNCTOR) gives units with a consistent context chain and
+/// positions on every throwing instruction, like the golden cases. (`compile_eval` is
+/// P2-EVAL-FE's: its tests are in `eval.rs`, D3; the Function() tests are in `function_ctor.rs`.)
 #[test]
-fn function_ctor_entry_point_is_a_stub() {
-    use ep9_bytecode::FunctionCtorKind;
-    match crate::compile_function_ctor(
-        FunctionCtorKind::Normal,
-        "a",
-        "return a",
-        super::CompileOptions::default(),
-    ) {
-        Err(CodegenError::Unsupported(u)) => assert_eq!(u.feature, "Function constructor"),
-        other => panic!("{other:?}"),
+fn function_ctor_units_pass_the_golden_checks() {
+    use ep9_bytecode::FunctionCtorKind as K;
+    for (kind, params, body) in [
+        (K::Normal, "a, b = a", "return a + b"),
+        (K::Normal, "", "var x = 1; return function () { return x; }"),
+        (K::Normal, "a", "with (a) { return b; }"),
+        (K::Normal, "", "return eval('1')"),
+        (K::Generator, "a", "yield a; yield* [a];"),
+    ] {
+        let unit =
+            crate::compile_function_ctor(kind, params, body, super::CompileOptions::default())
+                .unwrap();
+        let errors = super::ctx_check::context_errors(&unit);
+        assert!(errors.is_empty(), "{body}: {}", errors.join("\n"));
+        let missing = unpositioned_throws(&unit);
+        assert!(missing.is_empty(), "{body}: {missing:?}");
     }
 }
 
