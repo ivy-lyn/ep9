@@ -19,24 +19,39 @@ pub const EXIT_INTERNAL: u8 = 70;
 pub const EVAL_NAME: &str = "[eval]";
 
 /// `print(...args)`: ToString of each argument, joined by a space, then a newline (d8, jsc).
+/// A symbol prints as its descriptive string, `Symbol(desc)`, as node's console.log and qjs
+/// print it (ToString of a symbol throws; d8 prints only the description).
 fn print<'s>(
     cx: &mut Cx<'s>,
     _this: Local<'s>,
     args: Args<'s>,
     _nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    let mut line = String::new();
-    for (i, v) in args.iter().enumerate() {
-        if i > 0 {
-            line.push(' ');
-        }
-        line.push_str(&cx.to_rust_string(v)?);
-    }
-    line.push('\n');
+    let line = print_line(cx, args.iter())?;
     let mut out = std::io::stdout().lock();
     // A closed stdout (for example `ep9 x.js | head -1`) is not a JS error.
     let _ = out.write_all(line.as_bytes());
     Ok(Local::undefined())
+}
+
+/// The line `print` writes for `args`, with its newline.
+fn print_line<'s>(cx: &mut Cx<'s>, args: impl Iterator<Item = Local<'s>>) -> JsResult<String> {
+    let mut line = String::new();
+    for (i, v) in args.enumerate() {
+        if i > 0 {
+            line.push(' ');
+        }
+        let text = match v.as_symbol() {
+            Some(s) => {
+                let d = cx.descriptive_string(s)?;
+                cx.to_rust_string(d)?
+            }
+            None => cx.to_rust_string(v)?,
+        };
+        line.push_str(&text);
+    }
+    line.push('\n');
+    Ok(line)
 }
 
 /// `gc()`: a full collection now.
@@ -198,5 +213,27 @@ pub fn main(opts: Options) -> u8 {
             eprintln!("ep9: cannot start the isolate thread: {e}");
             EXIT_INTERNAL
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn print_shows_a_symbol_as_its_descriptive_string() {
+        let mut isolate = Isolate::new(IsolateConfig {
+            builtins: Some(&ep9_builtins::TABLE),
+            ..IsolateConfig::default()
+        })
+        .unwrap();
+        let line = isolate.with_cx(|cx| {
+            let d = cx.new_string("x")?;
+            let x = cx.new_symbol(d)?;
+            let none = cx.new_symbol(Local::undefined())?;
+            let args: [Local<'_>; 4] = [x.into(), none.into(), d.into(), Local::int32(1)];
+            print_line(cx, args.into_iter())
+        });
+        assert_eq!(line.unwrap(), "Symbol(x) Symbol() x 1\n");
     }
 }

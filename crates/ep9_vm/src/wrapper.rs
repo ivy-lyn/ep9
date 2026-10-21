@@ -10,7 +10,7 @@
 //!                                symbol  -> new_wrapper(%Symbol.prototype%, v)  (symbol::prototype)
 //! own properties of a String wrapper (property.rs, exotic.rs):
 //!   string_own_property      "length" {v: len, w: f, e: f, c: f}; index i < len {v: s[i], w: f, e: t, c: f}
-//!   string_has_own_property  the same test without the value (allocates nothing)
+//!   string_own_attrs         the same attributes without the value (allocates nothing)
 //! ```
 
 use crate::frame::{NULL, UNDEFINED};
@@ -71,8 +71,13 @@ pub(crate) fn string_own_property(rt: &Runtime, o: u64, key: u64) -> Option<(u64
     })
 }
 
-/// True if [`string_own_property`] has a property for `key`. Allocates nothing.
-#[allow(dead_code)] // callers: P2-OBJ (HasOwnProperty, which allocates nothing)
-pub(crate) fn string_has_own_property(rt: &Runtime, o: u64, key: u64) -> bool {
-    string_data(o).is_some_and(|s| string_key(rt, s, key).is_some())
+/// The [`attr`] bits of the String wrapper property that [`string_own_property`] gives for
+/// `key`, without its value: `exotic::own_attrs`, so HasOwnProperty, HasProperty and the
+/// `[[Set]]` and `[[Delete]]` checks allocate nothing. Not a GC point.
+pub(crate) fn string_own_attrs(rt: &Runtime, o: u64, key: u64) -> Option<i32> {
+    let s = string_data(o)?;
+    Some(match string_key(rt, s, key)? {
+        StringKey::Length => 0,
+        StringKey::Index(_) => attr::ENUMERABLE,
+    })
 }

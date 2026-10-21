@@ -121,7 +121,15 @@ pub(crate) fn register_kinds(heap: &Heap) {
 
 // ---- views ---------------------------------------------------------------------------------
 
-/// The code units of a flat string (H19 `JsStr`): Latin-1 bytes or UTF-16 code units.
+/// The code units of a flat string (H19 `JsStr`): Latin-1 bytes or UTF-16 code units. The
+/// two forms of one text are equal (`==`), and `<` is code-unit order (§7.2.13):
+///
+/// ```
+/// use ep9_vm::JsStr;
+/// assert_eq!(JsStr::Latin1(b"ab"), JsStr::Utf16(&[0x61, 0x62]));
+/// assert!(JsStr::Latin1(b"ab") < JsStr::Utf16(&[0x61, 0x62, 0]));
+/// assert!(JsStr::Latin1(b"\xff\xff") < JsStr::Utf16(&[0x100]));
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub enum JsStr<'a> {
     Latin1(&'a [u8]),
@@ -164,27 +172,6 @@ impl<'a> JsStr<'a> {
         }
     }
 
-    /// Equal code units (either encoding).
-    pub fn eq(&self, other: &JsStr<'_>) -> bool {
-        match (self, other) {
-            (JsStr::Latin1(a), JsStr::Latin1(b)) => a == b,
-            (JsStr::Utf16(a), JsStr::Utf16(b)) => a == b,
-            _ => self.len() == other.len() && (0..self.len()).all(|i| self.at(i) == other.at(i)),
-        }
-    }
-
-    /// Code-unit order (IsLessThan on strings, §7.2.13).
-    pub fn cmp(&self, other: &JsStr<'_>) -> core::cmp::Ordering {
-        let n = self.len().min(other.len());
-        for i in 0..n {
-            match self.at(i).cmp(&other.at(i)) {
-                core::cmp::Ordering::Equal => {}
-                o => return o,
-            }
-        }
-        self.len().cmp(&other.len())
-    }
-
     /// CanonicalNumericIndexString restricted to array indices: "0", "1", ... "4294967294".
     pub fn array_index(&self) -> Option<u32> {
         let n = self.len();
@@ -218,6 +205,39 @@ impl<'a> JsStr<'a> {
             JsStr::Utf16(u) => sip13_units(u),
         };
         HASH_COMPUTED | ((h as u32 & HASH_MASK) << HASH_SHIFT)
+    }
+}
+
+/// Equal code units (either encoding).
+impl PartialEq<JsStr<'_>> for JsStr<'_> {
+    fn eq(&self, other: &JsStr<'_>) -> bool {
+        match (self, other) {
+            (JsStr::Latin1(a), JsStr::Latin1(b)) => a == b,
+            (JsStr::Utf16(a), JsStr::Utf16(b)) => a == b,
+            _ => self.len() == other.len() && (0..self.len()).all(|i| self.at(i) == other.at(i)),
+        }
+    }
+}
+
+impl Eq for JsStr<'_> {}
+
+/// Code-unit order (IsLessThan on strings, §7.2.13).
+impl Ord for JsStr<'_> {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        let n = self.len().min(other.len());
+        for i in 0..n {
+            match self.at(i).cmp(&other.at(i)) {
+                core::cmp::Ordering::Equal => {}
+                o => return o,
+            }
+        }
+        self.len().cmp(&other.len())
+    }
+}
+
+impl PartialOrd for JsStr<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 

@@ -130,7 +130,7 @@ pub(crate) fn own_attrs(rt: &Runtime, o: u64, key: u64, how: Probe) -> Option<i3
         return is_lazy_prototype(rt, o, key, how).then_some(attr::WRITABLE);
     }
     if k == kind::PRIMITIVE_WRAPPER.get() {
-        return wrapper::string_own_property(rt, o, key).map(|(_, a)| a);
+        return wrapper::string_own_attrs(rt, o, key);
     }
     None
 }

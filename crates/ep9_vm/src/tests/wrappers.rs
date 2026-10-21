@@ -206,10 +206,14 @@ fn wrapper_length_and_indices_are_right() {
             sym,
         ] {
             assert_eq!(wrapper::string_own_property(rt, w, key), None);
-            assert!(!wrapper::string_has_own_property(rt, w, key));
+            assert_eq!(wrapper::string_own_attrs(rt, w, key), None);
         }
-        for key in [k("0"), k("2"), k("length")] {
-            assert!(wrapper::string_has_own_property(rt, w, key));
+        for (key, a) in [
+            (k("0"), attr::ENUMERABLE),
+            (k("2"), attr::ENUMERABLE),
+            (k("length"), 0),
+        ] {
+            assert_eq!(wrapper::string_own_attrs(rt, w, key), Some(a));
         }
         // The ordinary internal methods see them (property.rs asks the wrapper first).
         let d = property::get_own_property(cx, w, k("length")).unwrap();
@@ -274,6 +278,103 @@ fn a_wrapper_keeps_its_value_across_gc() {
         assert!(rt.heap.is_cell(cell(v).addr()));
         assert_eq!(string::to_rust_string(v), "kept text");
         drop(roots);
+        iso.collect_garbage();
+        iso.verify_heap().unwrap();
+    });
+}
+
+#[test]
+fn has_own_property_on_a_string_wrapper_allocates_nothing() {
+    on_big_stack(|| {
+        // GC stress 1: a collection before every allocation, so the count shows allocations.
+        let mut iso = isolate(config(Dispatch::DEFAULT, true));
+        let (cx, rt) = parts(&mut iso);
+        let k = |t: &str| atoms::intern_str(rt, t);
+        // "a€c": a UTF-16 string, so reading index 1 would make a new one-character string.
+        let text = string::new_string(rt, "a\u{20ac}c");
+        let w = conv::to_object(cx, text).unwrap();
+        let keys = [k("0"), k("1"), k("2"), k("3"), k("length"), k("x")];
+        let before = rt.heap.stats().collections;
+        let own = keys.map(|key| property::has_own_property(cx, w, key));
+        let has = keys.map(|key| property::has_property(cx, w, key));
+        assert_eq!(
+            rt.heap.stats().collections,
+            before,
+            "an allocation happened"
+        );
+        assert_eq!(own, [true, true, true, false, true, false]);
+        assert_eq!(has, own);
+        iso.collect_garbage();
+        iso.verify_heap().unwrap();
+    });
+}
+
+#[test]
+fn for_in_lists_a_string_wrapper_s_indices_first() {
+    on_big_stack(|| {
+        let mut iso = isolate(config(Dispatch::DEFAULT, true));
+        let (cx, rt) = parts(&mut iso);
+        let k = |t: &str| atoms::intern_str(rt, t);
+        let texts = |cx: &mut Cx, o: u64| -> Vec<String> {
+            let keys = property::for_in_keys(cx, o).unwrap();
+            (0..object::array_len(keys))
+                .map(|i| key::key_text(rt, object::array_get(keys, i).unwrap()))
+                .collect()
+        };
+        let w = conv::to_object(cx, k("ab")).unwrap();
+        assert_eq!(texts(cx, w), ["0", "1"]);
+        // Own keys added later: an index past the length, a name, a smaller index and a
+        // symbol (skipped).
+        let sym = symbol::new_symbol(rt, k("s"));
+        for key in [k("5"), k("x"), k("2"), sym] {
+            property::define(cx, w, key, conv::num(1.0)).unwrap();
+        }
+        assert_eq!(texts(cx, w), ["0", "1", "2", "5", "x"]);
+        // Inherited keys come after the own ones; an enumerable `length` on
+        // %Object.prototype% is hidden by the wrapper's own `length` (not enumerable).
+        let op = rt.root(Root::ObjectPrototype);
+        let sp = rt.root(Root::StringPrototype);
+        property::define(cx, op, k("length"), conv::num(1.0)).unwrap();
+        property::define(cx, op, k("y"), conv::num(1.0)).unwrap();
+        property::define(cx, sp, k("z"), conv::num(1.0)).unwrap();
+        property::define(cx, sp, sym, conv::num(1.0)).unwrap();
+        assert_eq!(texts(cx, w), ["0", "1", "2", "5", "x", "z", "y"]);
+        // An empty String wrapper has no index keys; a UTF-16 one has one per code unit.
+        let e = conv::to_object(cx, rt.atom(Atom::Empty)).unwrap();
+        assert_eq!(texts(cx, e), ["z", "y"]);
+        let u = conv::to_object(cx, string::new_string(rt, "a\u{20ac}c")).unwrap();
+        assert_eq!(texts(cx, u), ["0", "1", "2", "z", "y"]);
+        iso.collect_garbage();
+        iso.verify_heap().unwrap();
+    });
+}
+
+#[test]
+fn stores_to_a_string_wrapper_s_own_properties_change_nothing() {
+    on_big_stack(|| {
+        let mut iso = isolate(config(Dispatch::DEFAULT, true));
+        let (cx, rt) = parts(&mut iso);
+        let k = |t: &str| atoms::intern_str(rt, t);
+        let w = conv::to_object(cx, k("ab")).unwrap();
+        let z = k("z");
+        // [[Get]] reads `length` and the indices (exotic.rs asks the wrapper first).
+        assert_eq!(property::get(cx, w, k("length")).unwrap(), conv::num(2.0));
+        assert_eq!(property::get(cx, w, k("1")).unwrap(), k("b"));
+        assert_eq!(property::get(cx, w, k("2")).unwrap(), UNDEFINED);
+        // [[Set]] fails on them (§10.4.3: not writable): false, so sloppy code drops the
+        // store and strict code throws; nothing goes into the property storage.
+        for key in [k("length"), k("0"), k("1")] {
+            assert!(!property::ordinary_set(cx, w, key, z).unwrap());
+            property::set(cx, w, key, z, false).unwrap();
+            assert!(property::set(cx, w, key, z, true).is_err());
+            assert!(kinds::is_error(rt.take_pending()));
+        }
+        assert_eq!(object::own_count(w), 0);
+        assert_eq!(property::get(cx, w, k("0")).unwrap(), k("a"));
+        // An index at or past the length is an ordinary property.
+        assert!(property::ordinary_set(cx, w, k("2"), z).unwrap());
+        assert_eq!(object::own_count(w), 1);
+        assert_eq!(property::get(cx, w, k("2")).unwrap(), z);
         iso.collect_garbage();
         iso.verify_heap().unwrap();
     });

@@ -20,6 +20,7 @@
 //! | primitive wrapper | `wrapper::string_own_property` (String wrappers: `length`, indices) |
 //! | string primitive | `length`, array-index keys; then `String.prototype` |
 //! | number / boolean primitive | `Number.prototype` / `Boolean.prototype` |
+//! | symbol primitive | `Symbol.prototype` (`symbol::prototype`) |
 //!
 //! The builtin ABI (H20 ObjectOps, abi/mod.rs) calls [`get_own_property`],
 //! [`define_own_property`] (ValidateAndApplyPropertyDescriptor) and [`own_property_keys`].
@@ -33,11 +34,11 @@ use crate::interp::Cx;
 use crate::key::{
     self, Probe, array_index_of, intern_key, is_property_key, is_symbol_key, key_text,
 };
-use crate::kinds::{self as kind, is_callable};
+use crate::kinds::{self as kind, is_callable, is_symbol};
 use crate::object::{self, attr, is_array, is_function, is_object, is_string};
 use crate::props;
 use crate::runtime::{Atom, ErrorKind, Root, Runtime, val};
-use crate::{shape, string, wrapper};
+use crate::{shape, string, symbol, wrapper};
 
 fn is_atom(cx: &Cx, key: u64, a: Atom) -> bool {
     object::key_eq(key, cx.rt().atom(a))
@@ -89,6 +90,9 @@ pub(crate) fn get(cx: &mut Cx, base: u64, key: u64) -> Res<u64> {
         rt.root(Root::NumberPrototype)
     } else if base == object_bool(true) || base == object_bool(false) {
         rt.root(Root::BooleanPrototype)
+    } else if is_symbol(base) {
+        // Made by `symbol::install` in realm init, before any script runs.
+        symbol::prototype(rt)
     } else {
         let k = key_text(rt, key);
         let msg = format!(
@@ -103,6 +107,21 @@ pub(crate) fn get(cx: &mut Cx, base: u64, key: u64) -> Res<u64> {
 #[inline]
 fn object_bool(b: bool) -> u64 {
     crate::conv::boolean(b)
+}
+
+/// A string, number, boolean or symbol in V8's message form: `string 'ab'`, `number '1.5'`,
+/// `boolean 'true'`, `symbol 'Symbol(x)'`.
+fn primitive_text(b: u64) -> String {
+    let (ty, text) = if is_string(b) {
+        ("string", string::to_rust_string(b))
+    } else if is_symbol(b) {
+        ("symbol", describe(b))
+    } else if val(b).is_number() {
+        ("number", describe(b))
+    } else {
+        ("boolean", describe(b))
+    };
+    format!("{ty} '{text}'")
 }
 
 /// `base[k]` for any key value (keyed load).
@@ -148,7 +167,7 @@ pub(crate) fn set(cx: &mut Cx, base: u64, key: u64, v: u64, strict: bool) -> Res
             let msg = format!(
                 "Cannot create property '{}' on {}",
                 key_text(cx.rt(), key),
-                describe(base)
+                primitive_text(base)
             );
             return Err(throw_error(cx, ErrorKind::TypeError, &msg));
         }
@@ -487,8 +506,8 @@ pub(crate) fn instance_of(cx: &mut Cx, v: u64, f: u64) -> Res<bool> {
 }
 
 /// The keys a `for-in` loop visits (§14.7.5.9 EnumerateObjectProperties, v0: own and inherited
-/// enumerable string keys, array indices first, no duplicates; symbols are skipped), as a new
-/// array.
+/// enumerable string keys, array and String wrapper indices first, no duplicates; symbols are
+/// skipped), as a new array.
 pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
     let rt = cx.rt();
     let keys = object::new_array(rt, 0);
@@ -504,8 +523,9 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
     // EnumerateObjectProperties (§14.7.5.9): each object's own keys in [[OwnPropertyKeys]]
     // order (§10.1.11: array indices ascending, then strings in creation order), then the
     // prototype's. A key seen before, enumerable or not, is skipped later.
-    // GC: the Rust vectors hold only indices and key atoms of property storage (reachable
-    // from `o`); a new index string goes into `keys` (a Rust local, so a root) at once.
+    // GC: the Rust vectors hold only indices, key atoms of property storage (reachable from
+    // `o`) and the `length` atom (a runtime root); a new index string goes into `keys` (a Rust
+    // local, so a root) at once.
     let mut seen_index: Vec<u32> = Vec::new();
     let mut seen_string: Vec<u64> = Vec::new();
     let mut cur = o;
@@ -519,6 +539,12 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
                     index_keys.push((i, true));
                 }
             }
+        }
+        // A String wrapper (§10.4.3.3): its indices come first, and its `length` (not
+        // enumerable) first among the strings, so it hides an inherited `length`.
+        if let Some(s) = wrapper::wrapper_value(cur).filter(|&p| is_string(p)) {
+            index_keys.extend((0..object::str_len(s) as u32).map(|i| (i, true)));
+            string_keys.push((rt.atom(Atom::Length), false));
         }
         for i in 0..object::own_count(cur) {
             let (k, _, a) = object::own_entry(cur, i);
