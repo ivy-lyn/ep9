@@ -18,6 +18,7 @@
 //! | Each definition has one function object per realm, made in table order | identity: `Builtin(i)` twice is one object; a fixed heap layout |
 //! | Realm init walks the tables in a fixed order: VM table, then the embedder's; inside, module order, then entry order | two isolates have the same property order |
 //! | A table is checked before use: blocks, indices, kinds, intrinsics, aliases and duplicate keys | a table error is an `IsolateError`, never a half-built realm |
+//! | A constructor a table makes gets `prototype` {} as its first table key | §20 (`Number.prototype` and the others); a key before it would make the lazy `prototype` (`props::own_add`) |
 //!
 //! Core intrinsics (the prototypes, the iterator prototypes and the global object) come from
 //! `realm::init`; tables add properties to them and make the others (constructors, `%Math%`).
@@ -722,7 +723,9 @@ pub(crate) fn check(embedder: Option<&'static BuiltinTable>) -> Result<(), Strin
 /// makes it from); the prototype of a new intrinsic object made before it (walk order); every
 /// index in range and of the right kind; every named intrinsic made by realm init or a
 /// module; every alias names a key defined earlier on the same object; no key twice on one
-/// object.
+/// object; the first key of a constructor a module makes is `prototype`, a data property
+/// with attributes {} (§20: `Number.prototype` and the others), and every such constructor
+/// has one.
 pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
     let modules = || tables.iter().flat_map(|t| t.modules.iter());
     let mut blocks = HashSet::new();
@@ -730,6 +733,8 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
         .into_iter()
         .filter(|id| id.is_core())
         .collect();
+    // The constructors the modules make, in walk order, with the module that makes each.
+    let mut constructors: Vec<(IntrinsicId, &'static str)> = Vec::new();
     for m in modules() {
         let at = |what: String| format!("builtin table module `{}`: {what}", m.name);
         if usize::from(m.block) >= BuiltinId::BLOCKS || !blocks.insert(m.block) {
@@ -764,11 +769,15 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
             match d.value {
                 IntrinsicValue::Builtin(i) => {
                     data_def(m, i).map_err(at)?;
+                    if m.defs[usize::from(i)].kind == BuiltinKind::Constructor {
+                        constructors.push((d.id, m.name));
+                    }
                 }
                 IntrinsicValue::Object { .. } => {}
             }
         }
     }
+    let prototype = PropKey::Atom(Atom::Prototype);
     // Defined keys per target, in walk order (for aliases and duplicates).
     let mut defined: Vec<(IntrinsicId, PropKey)> = Vec::new();
     for m in modules() {
@@ -785,6 +794,23 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                     .any(|(t, k)| *t == op.target && k.same(&p.key))
                 {
                     return Err(here("defined twice"));
+                }
+                // Install adds keys in walk order, and adding a key to a function first makes
+                // its lazy `prototype` (`props::own_add`), which the table's own `prototype`
+                // would then meet. So a constructor gets `prototype` {} before any other key.
+                let is_prototype = p.key.same(&prototype)
+                    && p.attrs == PropAttrs::NONE
+                    && !matches!(p.value, PropValue::Accessor { .. });
+                if !is_prototype
+                    && constructors.iter().any(|(c, _)| *c == op.target)
+                    && !defined
+                        .iter()
+                        .any(|(t, k)| *t == op.target && k.same(&prototype))
+                {
+                    return Err(here(
+                        "the first key of a constructor is `prototype`, a data property with \
+                         attributes {}",
+                    ));
                 }
                 match p.value {
                     PropValue::Builtin(i) => {
@@ -819,6 +845,14 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                 }
                 defined.push((op.target, p.key));
             }
+        }
+    }
+    for (c, module) in &constructors {
+        if !defined.iter().any(|(t, k)| t == c && k.same(&prototype)) {
+            return Err(format!(
+                "builtin table module `{module}`: the constructor {} has no `prototype`",
+                c.name()
+            ));
         }
     }
     Ok(())
@@ -1035,6 +1069,13 @@ fn define(
         )
     };
     let key = key_bits(rt, p.key).map_err(|e| at(&e))?;
+    // The checks see table keys only; realm init and `object::new_function` (a function's
+    // `length` and `name`) make others. A second definition is an error in every build.
+    if own_get(target, key).is_some() {
+        return Err(at(
+            "the object has this key already (from realm init or the function)",
+        ));
+    }
     let v = match p.value {
         PropValue::Builtin(i) => function_object(rt, m.id(i)),
         PropValue::Intrinsic(i) => {
@@ -1088,7 +1129,6 @@ fn define(
             };
         }
     };
-    debug_assert!(own_get(target, key).is_none(), "checked: no key twice");
     own_define(rt, target, key, v, p.attrs.bits());
     Ok(())
 }

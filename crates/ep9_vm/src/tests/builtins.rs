@@ -550,6 +550,117 @@ fn table_checks_reject_each_broken_rule() {
     }
 }
 
+/// `%Number%` made by a table (block 104), and two of its keys.
+const NUMBER_DEFS: &[BuiltinDef] = &[BuiltinDef::constructor("Number", 1, count_args)];
+const MAKE_NUMBER: &[IntrinsicDef] = &[IntrinsicDef {
+    id: IntrinsicId::Number,
+    value: IntrinsicValue::Builtin(0),
+}];
+const NUMBER_PROTOTYPE: PropDef = PropDef::intrinsic(
+    PropKey::Str("prototype"),
+    IntrinsicId::NumberPrototype,
+    PropAttrs::NONE,
+);
+const EPSILON: PropDef = PropDef::constant(
+    PropKey::Str("EPSILON"),
+    ConstValue::Number(f64::EPSILON),
+    PropAttrs::NONE,
+);
+
+/// A table whose one module makes `%Number%` and gives it `props`.
+fn number_table(props: &'static [PropDef]) -> &'static BuiltinTable {
+    let m = module(NUMBER_DEFS, MAKE_NUMBER, on(IntrinsicId::Number, props));
+    let m: &'static [BuiltinModule] = Box::leak(Box::new([m]));
+    Box::leak(Box::new(BuiltinTable::new("number", m)))
+}
+
+/// The `IsolateError::BuiltinTable` text of an isolate with `table`.
+fn table_error(table: &'static BuiltinTable) -> String {
+    match Isolate::new(IsolateConfig {
+        builtins: Some(table),
+        ..IsolateConfig::default()
+    }) {
+        Err(IsolateError::BuiltinTable(m)) => m,
+        Err(e) => panic!("{e}"),
+        Ok(_) => panic!("table `{}` was accepted", table.name),
+    }
+}
+
+/// Install adds keys in table order, and a key added to a constructor first makes its lazy
+/// `prototype` (`props::own_add`). `EPSILON` before `prototype` passed the checks, then
+/// install met `prototype` twice: a panic in debug builds, a dictionary-mode `%Number%` in
+/// release builds (P2 review). Now the checks want `prototype` {} first, and install rejects
+/// a key the object has (a function's `name`) in every build.
+#[test]
+fn a_table_constructor_gets_prototype_first() {
+    let e = table_error(number_table(const { &[EPSILON, NUMBER_PROTOTYPE] }));
+    assert!(
+        e.contains("%Number%.EPSILON: the first key of a constructor is `prototype`"),
+        "{e}"
+    );
+    // `prototype` with other attributes, or no `prototype` at all.
+    let e = check_one(module(
+        NUMBER_DEFS,
+        MAKE_NUMBER,
+        on(
+            IntrinsicId::Number,
+            const {
+                &[PropDef::intrinsic(
+                    PropKey::Str("prototype"),
+                    IntrinsicId::NumberPrototype,
+                    PropAttrs::METHOD,
+                )]
+            },
+        ),
+    ));
+    assert!(
+        e.contains("%Number%.prototype: the first key of a constructor is `prototype`"),
+        "{e}"
+    );
+    let e = check_one(module(NUMBER_DEFS, MAKE_NUMBER, &[]));
+    assert!(
+        e.contains("the constructor %Number% has no `prototype`"),
+        "{e}"
+    );
+    // `name` comes from `new_function`, which the checks do not see.
+    let name_again = number_table(
+        const {
+            &[
+                NUMBER_PROTOTYPE,
+                PropDef::constant(PropKey::Str("name"), ConstValue::Str("N"), PropAttrs::NONE),
+            ]
+        },
+    );
+    assert_eq!(
+        check_tables(&[crate::internals::VM_BUILTINS, name_again]),
+        Ok(())
+    );
+    let e = table_error(name_again);
+    assert!(
+        e.contains("%Number%.name: the object has this key already"),
+        "{e}"
+    );
+    // The accepted order gives V8's: length, name, prototype {}, then the other keys, and
+    // the constructor stays in fast mode.
+    let number = number_table(const { &[NUMBER_PROTOTYPE, EPSILON] });
+    for stress in [false, true] {
+        with_table(Some(number), stress, |cx, rt| {
+            let n = cx.intrinsic(IntrinsicId::Number);
+            assert_eq!(keys(cx, rt, n), ["length", "name", "prototype", "EPSILON"]);
+            let d = cx.get_own_property(n, "prototype").unwrap().unwrap();
+            let np = cx.intrinsic(IntrinsicId::NumberPrototype);
+            assert!(d.value.unwrap().is_same_bits(&np));
+            assert_eq!(
+                (d.writable, d.enumerable, d.configurable),
+                (Some(false), Some(false), Some(false))
+            );
+            assert!(!crate::shape::is_dictionary(crate::shape::shape_of(
+                n.bits()
+            )));
+        });
+    }
+}
+
 fn get_answer<'s>(
     _cx: &mut Cx<'s>,
     _this: Local<'s>,
