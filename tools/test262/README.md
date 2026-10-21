@@ -104,10 +104,37 @@ full run without infrastructure errors.
 and the heap verifier after each collection; a verifier error panics, so it is an
 infrastructure error.
 
+`--skip-list <file>` (only with `--gc-stress`, not with `--update-expectations`) neither runs
+nor counts the listed tests, and the expectation compare ignores them. The run prints
+`skipped: <n>`; an entry that names no test gets a warning. `expectations/test262-gc-skip.txt`
+lists the 4 tests that run past any timeout under GC-stress (they fail without it too).
+
+`--feedback-threshold <n>` is the number of calls before a function gets its feedback vector
+(H16; default 8, `0` = at the first call, `4294967295` = never), as `ep9 --feedback-threshold`.
+The result must not depend on it, so every threshold uses the same expectation file.
+
 Test hook: `EP9_TEST262_FAULT=<kind>:<substr>,...` makes a worker fail on matching paths:
 `panic`, `abort`, `hang`, `late` (the run returns after the soft timeout) or `internal` (an
 internal BytecodeGen error for a test path or `harness/<file>`). Only `tests/exec.rs` uses
 it.
+
+### In CI
+
+The `test262` job of `.github/workflows/ci.yml` runs these steps, each against
+`expectations/test262.<target-triple>.jit.txt`:
+
+| Step | Command (after `cargo run --release --locked -p ep9_test262 --`) | Where |
+|---|---|---|
+| test262 exec | `exec --json test262-exec.json` | 4 targets |
+| eager feedback | `exec --feedback-threshold 0 --json test262-exec-eager.json` | 4 targets |
+| GC-stress + eager feedback | `exec --gc-stress 1 --feedback-threshold 0 --timeout 60 --skip-list expectations/test262-gc-skip.txt --json test262-exec-gc.json` | Linux x64 |
+
+A failed job uploads the JSON files (`test262-exec-<target>`). At m0/wk4 b95efd3 (after P2) the
+GC-stress + eager run on Linux arm64 (Docker on the M5 Max, 18 workers) failed the
+same files as the default run minus the 4 skipped ones: 43,775 failures, 0 new, 0 listed but
+passing, 0 infrastructure errors, `skipped: 4`, wall time 71 s, 18 CPU-minutes. With
+`--timeout 15` it still had no timeout. On Linux arm64 and macOS arm64 the eager run failed
+the same 43,779 files as the default run.
 
 ### Results at test262 d53ebc8b (M0 week 3, aarch64-apple-darwin, release, 18 workers)
 
