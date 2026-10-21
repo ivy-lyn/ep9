@@ -16,7 +16,8 @@
 //!   oxc_semantic (new_compiler) ---------- an error not in the allowed set --------> Syntax
 //!   post-checks: `arguments` in a field initializer; every #x declared here or in
 //!     EvalContext::private_names ------------------------------------------------> Syntax
-//!   super(...) allowed and present, Annex B function in sloppy eval ---------> Unsupported
+//!   super(...) allowed and present, a #x of the caller's class,
+//!     Annex B function in sloppy eval ------------------------------------------> Unsupported
 //!   scope::analyze_eval (ScopeKind::Eval root; direct: free names Dynamic, indirect: Global)
 //!   bytecodegen::generate (CodeKind::Eval; gen_eval_program)  --> VerifiedUnit
 //! ```
@@ -33,6 +34,7 @@
 //! | E6 | `super()` in eval code is Unsupported in P2 | `super_call` (expr.rs) needs a static `this` binding; the caller's `this` is only reachable by name (C4) |
 //! | E7 | An Annex B.3.2.3 function in sloppy eval code is Unsupported in P2 | Whether it gets a var binding depends on the caller's environments at run time (EvalDeclarationInstantiation B.3.2.3 steps i.1-7); the front end alone cannot decide it |
 //! | E8 | Lone surrogates never reach this function in M0 (the hook takes `&str`) | D8: the shim is milestone-M3 work (01-front-end.md:159) |
+//! | E9 | A `#x` that only the caller's class declares (`EvalContext::private_names`) is Unsupported in P2; the scope pass still resolves it `Dynamic` | The private-name codegen (bytecodegen/private.rs) needs a static binding; without this check such code would reach it as an internal error. The check goes when private.rs gets a by-name path (P3-EVAL-VM) |
 
 use ep9_bytecode::{EvalContext, VerifiedUnit};
 use oxc_allocator::{Allocator, CloneIn, GetAllocator, TakeIn};
@@ -66,8 +68,8 @@ use crate::{
 /// # Errors
 ///
 /// See [`CodegenError`]: early errors (also the eval-only ones of PerformEval), depth limits,
-/// and [`CodegenError::Unsupported`] for `super()` in eval code, for an Annex B function in
-/// sloppy eval code, and for every construct that BytecodeGen v0 does not support.
+/// and [`CodegenError::Unsupported`] for `super()` in eval code, for a `#x` of the caller's
+/// class, for an Annex B function in sloppy eval code, and for every construct that BytecodeGen v0 does not support.
 pub fn compile_eval(
     source: &str,
     ctx: &EvalContext,
@@ -198,9 +200,16 @@ fn on_worker<R>(
             return Err(syntax(source, kept.into_iter()));
         }
     }
-    post_checks(source, program, allow)?;
+    let caller_private = post_checks(source, program, allow)?;
     if let Some(&call) = allowed.super_calls.first() {
         return Err(unsupported(source, "super() in eval code", call));
+    }
+    if let Some(at) = caller_private {
+        return Err(unsupported(
+            source,
+            "a private name of the caller's class in eval code",
+            at,
+        ));
     }
 
     let strictness = if allow.strict {
@@ -393,16 +402,22 @@ impl<'a> Visit<'a> for AllowWalk<'_> {
 // ---------------------------------------------------------------------------------------------
 // Post-checks (PerformEval steps 10-11 and AllPrivateIdentifiersValid)
 
-fn post_checks(source: &str, program: &Program<'_>, allow: &Allow) -> Result<(), CodegenError> {
+/// The checks; `Ok` holds the first `#x` that only the caller's class declares (E9).
+fn post_checks(
+    source: &str,
+    program: &Program<'_>,
+    allow: &Allow,
+) -> Result<Option<Span>, CodegenError> {
     let mut walk = PostWalk {
         allow,
         functions: 0,
         classes: Vec::new(),
         error: None,
+        caller_private: None,
     };
     walk.visit_program(program);
     match walk.error {
-        None => Ok(()),
+        None => Ok(walk.caller_private),
         Some((message, span)) => Err(syntax_at(source, message, span)),
     }
 }
@@ -415,6 +430,8 @@ struct PostWalk<'s> {
     classes: Vec<Vec<String>>,
     /// The first error (source order of the walk).
     error: Option<(String, Span)>,
+    /// The first `#x` that only the caller's class declares (E9).
+    caller_private: Option<Span>,
 }
 
 impl PostWalk<'_> {
@@ -425,8 +442,12 @@ impl PostWalk<'_> {
     }
 
     fn private_ref(&mut self, name: &str, span: Span) {
-        let declared = self.classes.iter().any(|c| c.iter().any(|n| n == name));
-        if !declared && !self.allow.private_name_ok(name) {
+        if self.classes.iter().any(|c| c.iter().any(|n| n == name)) {
+            return;
+        }
+        if self.allow.private_name_ok(name) {
+            self.caller_private.get_or_insert(span);
+        } else {
             self.fail(
                 format!("Private field '#{name}' must be declared in an enclosing class"),
                 span,
@@ -867,7 +888,11 @@ mod tests {
                 "syntax: Super calls are not permitted outside constructors or in nested \
                  functions inside constructors.",
             ),
-            ("this.#x", &private, "ok"),
+            (
+                "this.#x",
+                &private,
+                "unsupported: a private name of the caller's class in eval code",
+            ),
             (
                 "this.#x",
                 &direct(),
@@ -965,11 +990,22 @@ mod tests {
             private_names: vec!["x".to_owned(), ".brand".to_owned()],
             ..direct()
         };
-        assert_eq!(outcome("#x in this", &names), "ok");
-        assert_eq!(outcome("this?.#x", &names), "ok");
+        // E9: a caller name passes the checks and then is Unsupported.
+        let caller = "unsupported: a private name of the caller's class in eval code";
+        assert_eq!(outcome("#x in this", &names), caller);
+        assert_eq!(outcome("this?.#x", &names), caller);
         assert_eq!(
             outcome("class C { #y; m() { return this.#y + this.#x } }", &names),
+            caller
+        );
+        assert_eq!(
+            outcome("class C { #y; m() { return this.#y } }", &names),
             "ok"
+        );
+        // A syntax error wins over E9.
+        assert_eq!(
+            outcome("this.#x; class C { m() { this.#y } }", &names),
+            "syntax: Private field '#y' must be declared in an enclosing class"
         );
         assert_eq!(
             outcome("class C { m() { this.#y } }", &names),
@@ -978,6 +1014,10 @@ mod tests {
         // The heritage sees only the outer names.
         assert_eq!(
             outcome("class C extends (this.#x, Object) { #x }", &names),
+            caller
+        );
+        assert_eq!(
+            outcome("class C extends Object { #x; m() { this.#x } }", &names),
             "ok"
         );
         assert!(

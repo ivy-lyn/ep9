@@ -78,7 +78,7 @@ Several uses: the text `new.target + 1; f(new.target)` gives 2 parser errors, on
 
 Also measured: `() => super.x` and `() => super()` give the same errors at the Super node (6, 5) and the call (6, 7); `(() => new.target)()` gives the parser error at (7, 10); `return 1` stays a parser error (0, 6); `fatal_error` is false for all rows.
 
-So ep9 drops a diagnostic only when its label (the primary one, else the first) equals the span of: a NewTarget node, a Super node of a member expression, or a `super(...)` CallExpression, at the eval code's own function level (arrows included; not inside a function, method, field initializer or static block of the eval code); or a PrivateIdentifier of `o.#x` / `#x in o` whose name is in `EvalContext::private_names`. Every other diagnostic stays an early error.
+So ep9 drops a diagnostic only when its label (the primary one, else the first) equals the span of: a NewTarget node, a Super node of a member expression, or a `super(...)` CallExpression, at the eval code's own function level (arrows included; not inside a function, method, field initializer or static block of the eval code); or a PrivateIdentifier of `o.#x` / `#x in o` whose name is in `EvalContext::private_names`. Every other diagnostic stays an early error. After the checks, `super(...)` and a `#x` that only the caller's class declares are `Unsupported` in M2-P2 (the codegen for them needs static bindings; eval.rs rows E6 and E9).
 
 ## Repro (upstream main)
 
