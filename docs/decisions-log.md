@@ -1323,7 +1323,7 @@ corpus digest                8203f695…6805b (BCG-CORPUS-4)
 gate                         result at 237215a
 local CI                     29/29 PASS on the Mac steps (mac a64, mac x64 Rosetta, linux a64 Docker; atomgate, corpus, corpus-macos-x64, miri, fp-check)
 x86-64 Linux sandbox         997 tests pass (53 binaries); test262 parse/exec/eager and GC-stress (973 s) PASS; unwind self-test picks whole-section (libgcc_s) and per-FDE (zig, LLVM libunwind), 32/32 each; spike-native 11/11; perf-ci-v0 PASS
-real CI (PR #2)              run on the pushed P1 head; the result is in the `m2-p1` tag message
+real CI (PR #2)              run 39632519735 on 010a2e1: windows-x64 failed (M2-P1-WIN-TOPSLOT); the result after the fix is in the `m2-p1` tag message
 test262                      2,147 NOW PASSING, 0 NEW FAILURE; language 10,884 -> 12,966; files 14,687 -> 16,834 / 53,616
 "unsupported: generator functions"   5,793 -> 2,929 (async generators only, month 3)
 handler count n              284 (unchanged)
@@ -1343,6 +1343,7 @@ BENCH-SET                    6 kernels within ±0.25% of 15a68bf; ci-v0 +2.2% / 
 | M2-P1-T0GEN | Accept BENCH(t0-gen): about 2,513 instructions per yield, 13.5x a T0 call (plan estimate ≤ 1.5x). Follow-ups for the VM owners: a cached `{value, done}` shape (~900 instructions) and a faster JS→host call (~370) | The cost is outside the generator code; codegen emits V8's shape (one CreateIterResultObject and one GeneratorGetResumeMode per yield) | t0-gen 3,210,303,981 instructions (median of 5); GEN-VM callgrind breakdown |
 | M2-P1-MIRI-VM | Open for a heap owner (M1): no ep9_vm isolate starts under Miri (`shape_space_bytes is larger than the heap reservation`, CAGE_ALIGN at shape.rs:361), so MIRI(ep9_vm) cannot run the generator copy-path test | Predates P1; `tests::calls::recursion_fib` fails the same way | GEN-VM and GEN-CG reports |
 | M2-P1-X86-UNWIND | The x86 sandbox script builds the ep9_platform tests twice: with libgcc_s (must pick whole-section) and zig default with LLVM libunwind (must pick per-FDE, then pass in full). It also runs the `spike-native` native tests on x86-64 | UNWIND-GUARD removed the reason every ELF needed libgcc_s | scratchpad ci/x86-sandbox.sh steps unwind-libgcc, unwind-zig, vm-native |
+| M2-P1-WIN-TOPSLOT | On Windows, `sys::reserve_at` returns `Ok(false)` when `addr + size - 1 > lpMaximumApplicationAddress` (cached with the granularity). Other error 87 results stay errors; CageConfig defaults stay | P1 set `code_range_size` to 0, so the top default-cage slot ends at 2^47, above the Windows x64 user space (0x7FFF_FFFE_FFFF). VirtualAlloc fails that range with 87 (not 487), which stopped the slot search: about 1 isolate in 4,600 failed on the windows-x64 runner. Unix already skips such a slot (the hinted mmap lands elsewhere) | CI run 39632519735 (69 test262 lines + 2 tests, all `Os(87)`); 37613b5, 25fa5af; tests `sp_va_skips_slot_above_host_limit`, `range_ending_at_2_47_is_not_free`; independent verifier |
 | M2-P1-SUPERSEDED | M2-P1-INDEXOF-SCAN-REMOVED supersedes W4-BLTA-INDEXOF-SPARSE and W4-P3FIX-INDEXOF-ALLKEYS; M2-P1-GEN-LOOPS-DIRECT supersedes M2-GEN-LOOPS; M2-P1-FIX-CODE-RANGE-KEEP closes M2-P1-CAGE-CODE (`Cage::reserve_jit` and `Cage::code()` are gone) | Rows above stay as history | this section |
 
 **P1 agent decisions.**
