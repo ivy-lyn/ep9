@@ -24,7 +24,7 @@
 //!
 //! | Item | Host column | Windows column (CI jobs `<job> (windows-x64)`) |
 //! |---|---|---|
-//! | 1 | exec JSON: full run (runs = the pin's count), wall time <= 600 s, 0 infra, 0 new failures, 0 stale lines; the expectation file is committed | step "test262 exec" green and <= 600 s; the file is committed |
+//! | 1 | exec JSON: full run (runs = the pin's count), wall time <= 600 s, 0 infra; the run names the committed expectation file of this tree, and its "fail" results against that file give 0 new failures and 0 stale lines (recomputed here, not the runner's diff) | step "test262 exec" green and <= 600 s; the file is committed |
 //! | 2 | parse JSON: negatives all pass (the pin's count), positives >= 99.98% | step "test262 parse" green, and the Windows parse expectation file equals this host's |
 //! | 3 | exec JSON: `language/` files >= 40% | step "test262 exec" green; passed = total (exec JSON) - the `test/language/` lines of the Windows expectation file |
 //! | 4 | cross JSON: richards and deltablue vs QuickJS, net interval low end >= 0.6, valid rows, a gate host, not provisional | NOT-RUN (no Windows bench job) |
@@ -523,6 +523,64 @@ fn exec_health(j: &Json) -> (usize, usize, usize) {
     (infra, len("new_failures"), len("now_passing"))
 }
 
+/// The expectation diff of an exec JSON, recomputed here: its "fail" results against the
+/// committed `expectations/<file>` without `skip` (the tests the run did not run). The runner's
+/// own diff is not enough: it stays empty when the runner cannot read its expectation file, and
+/// `--expect` can name any file. So the run must name the committed file of this tree.
+#[derive(Debug)]
+struct Recheck {
+    /// Failing, and not in the file.
+    new: Vec<String>,
+    /// In the file, and not failing.
+    stale: Vec<String>,
+}
+
+fn recheck(root: &Path, j: &Json, file: &str, skip: &BTreeSet<String>) -> Result<Recheck, String> {
+    let want = committed(root, file)?;
+    let used = j
+        .path(&["expectations", "file"])
+        .and_then(Json::str)
+        .unwrap_or("");
+    let same = match (std::fs::canonicalize(used), std::fs::canonicalize(&want)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    };
+    if !same {
+        return Err(format!(
+            "the run compared with {used:?}, not expectations/{file} of this tree ({}){}",
+            want.display(),
+            if Path::new(used).is_file() {
+                ""
+            } else {
+                ": that file does not exist, so the runner could not read it and compared nothing"
+            }
+        ));
+    }
+    let expected: BTreeSet<String> = expectation_set(&want)?.difference(skip).cloned().collect();
+    let results = j
+        .get("results")
+        .and_then(Json::arr)
+        .ok_or("the run has no \"results\" array")?;
+    let failing: BTreeSet<String> = results
+        .iter()
+        .filter(|r| r.get("status").and_then(Json::str) == Some("fail"))
+        .filter_map(|r| r.get("path").and_then(Json::str).map(str::to_string))
+        .collect();
+    Ok(Recheck {
+        new: failing.difference(&expected).cloned().collect(),
+        stale: expected.difference(&failing).cloned().collect(),
+    })
+}
+
+/// Up to 5 paths, for the evidence.
+fn some_paths(paths: &[String]) -> String {
+    let mut t = paths.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
+    if paths.len() > 5 {
+        let _ = write!(t, " and {} more", paths.len() - 5);
+    }
+    t
+}
+
 fn item1(c: &Ctx) -> (Cell, Cell) {
     let file = format!("test262.{}.jit.txt", c.o.host);
     let host = match &c.exec {
@@ -534,11 +592,7 @@ fn item1(c: &Ctx) -> (Cell, Cell) {
                 .and_then(Json::num)
                 .unwrap_or(f64::INFINITY);
             let gc = j.get("gc_stress").and_then(Json::num).unwrap_or(0.0);
-            let (infra, new, stale) = exec_health(j);
-            let used = j
-                .path(&["expectations", "file"])
-                .and_then(Json::str)
-                .unwrap_or("");
+            let (infra, runner_new, runner_stale) = exec_health(j);
             let mut why = Vec::new();
             let mut status = Status::Pass;
             let (ok_runs, total_runs) = runs.unwrap_or((0, 0));
@@ -569,6 +623,20 @@ fn item1(c: &Ctx) -> (Cell, Cell) {
                 status = Status::Fail;
                 why.push(format!("wall time {wall:.1} s > {MAX_WALL_SECONDS} s"));
             }
+            // The diff against the committed file, recomputed; the runner's diff counts too.
+            let (new, stale) = match recheck(&c.o.root, j, &file, &BTreeSet::new()) {
+                Ok(d) => {
+                    if !d.new.is_empty() {
+                        why.push(format!("new failures: {}", some_paths(&d.new)));
+                    }
+                    (d.new.len().max(runner_new), d.stale.len().max(runner_stale))
+                }
+                Err(e) => {
+                    status = Status::Fail;
+                    why.push(e);
+                    (runner_new, runner_stale)
+                }
+            };
             if infra > 0 || new > 0 {
                 status = Status::Fail;
                 why.push(format!("{infra} infrastructure errors, {new} new failures"));
@@ -579,21 +647,10 @@ fn item1(c: &Ctx) -> (Cell, Cell) {
                     "{stale} expectation lines now pass (regenerate the file)"
                 ));
             }
-            if !used.ends_with(&file) {
-                status = Status::Fail;
-                why.push(format!("compared with {used:?}, not expectations/{file}"));
-            }
-            match committed(&c.o.root, &file) {
-                Ok(_) => {}
-                Err(e) => {
-                    status = Status::Fail;
-                    why.push(e);
-                }
-            }
             cell(
                 status,
                 format!(
-                    "{}: {ok_runs} / {total_runs} runs ok, wall time {wall:.1} s (<= {MAX_WALL_SECONDS} s), {} workers, infra {infra}, new failures {new}, stale lines {stale}; expectations/{file} committed{}",
+                    "{}: {ok_runs} / {total_runs} runs ok, wall time {wall:.1} s (<= {MAX_WALL_SECONDS} s), {} workers, infra {infra}, new failures {new}, stale lines {stale} (recomputed against expectations/{file}){}",
                     p.display(),
                     j.get("workers").and_then(Json::num).unwrap_or(0.0),
                     if why.is_empty() {
@@ -1981,6 +2038,31 @@ mod tests {
 
     const HOST: &str = "aarch64-apple-darwin";
 
+    /// An ep9-test262 exec JSON: `gc` the --gc-stress value, `fails` the paths with status
+    /// "fail", `used` the expectation file it names. The runner's own diff is empty.
+    fn exec_json(gc: u32, wall: f64, skipped: u32, fails: &[&str], used: &str) -> String {
+        let results: Vec<String> = fails
+            .iter()
+            .map(|p| format!(r#"{{"path":"{p}","status":"fail","cause":"x","detail":"d"}}"#))
+            .collect();
+        let files = 53_616 - u64::from(skipped);
+        format!(
+            r#"{{"command":"exec","mode":"jit","target":"{HOST}","workers":18,"gc_stress":{gc},"skipped":{skipped},"wall_seconds":{wall},
+            "files":{{"passed":{},"total":{files}}},"runs":{{"passed":50000,"total":102994}},
+            "by_dir":{{"language":{{"files":{{"passed":4,"total":6}},"runs":{{"passed":1,"total":2}}}}}},
+            "causes":[],"results":[{}],
+            "expectations":{{"file":{},"new_failures":[],"now_passing":[]}}}}"#,
+            files - fails.len() as u64,
+            results.join(","),
+            json_str(used)
+        )
+    }
+
+    /// `s` as a JSON string (a Windows temp path has backslashes).
+    fn json_str(s: &str) -> String {
+        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    }
+
     /// A fake repo with every input, from the real ADR README and spike review.
     fn fake_repo(name: &str) -> PathBuf {
         let real = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -2034,18 +2116,22 @@ mod tests {
             &format!("expectations/test262-parse.{CI_TRIPLE}.txt"),
             "# w\ntest/p.js\n",
         );
-        let exec = |gc: u32, wall: f64, skipped: u32| {
-            format!(
-                r#"{{"command":"exec","mode":"jit","target":"{HOST}","workers":18,"gc_stress":{gc},"skipped":{skipped},"wall_seconds":{wall},
-                "files":{{"passed":6,"total":10}},"runs":{{"passed":50000,"total":102994}},
-                "by_dir":{{"language":{{"files":{{"passed":4,"total":6}},"runs":{{"passed":1,"total":2}}}}}},
-                "causes":[],"results":[{{"path":"test/language/a.js","status":"fail","cause":"x","detail":"d"}}],
-                "expectations":{{"file":"/r/expectations/test262.{HOST}.jit.txt","new_failures":[],"now_passing":[]}}}}"#
-            )
-        };
-        write(&root, "in/exec.json", &exec(0, 5.4, 0));
-        write(&root, "in/gc.json", &exec(1, 166.0, 2));
-        write(&root, "in/slow.json", &exec(0, 700.0, 0));
+        let used = root.join(format!("expectations/test262.{HOST}.jit.txt"));
+        let used = used.to_str().unwrap();
+        // The default run fails every listed test; the GC run skips the 2 skip-list tests.
+        let all = [
+            "test/language/a.js",
+            "test/language/b.js",
+            "test/built-ins/c.js",
+            "test/skip/one.js",
+        ];
+        write(&root, "in/exec.json", &exec_json(0, 5.4, 0, &all, used));
+        write(
+            &root,
+            "in/gc.json",
+            &exec_json(1, 166.0, 2, &all[..3], used),
+        );
+        write(&root, "in/slow.json", &exec_json(0, 700.0, 0, &all, used));
         write(
             &root,
             "in/parse.json",
@@ -2247,6 +2333,56 @@ mod tests {
                 .all(|(_, w)| w.status != Status::Pass || w.evidence.starts_with("repo-wide"))
         );
         assert!(r.cells[0].1.evidence.contains("no CI run given"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// I3: the runner leaves its diff empty when it cannot read its expectation file, and it
+    /// can be pointed at any file, so item 1 recomputes the diff from the results against the
+    /// committed file and needs the run to name that file.
+    #[test]
+    fn item1_recomputes_the_diff() {
+        let root = fake_repo("item1-diff");
+        write(&root, "in/ci.json", &ci_json("success"));
+        let all = [
+            "test/language/a.js",
+            "test/language/b.js",
+            "test/built-ins/c.js",
+            "test/skip/one.js",
+        ];
+        let committed = root.join(format!("expectations/test262.{HOST}.jit.txt"));
+        let committed = committed.to_str().unwrap();
+        let missing = format!("/nonexistent/dir/test262.{HOST}.jit.txt");
+        let item1 = |fails: &[&str], used: &str| {
+            write(&root, "in/exec.json", &exec_json(0, 5.4, 0, fails, used));
+            let r = run(&opts(&root)).unwrap();
+            r.cells[0].0.clone()
+        };
+        // A failed read: the runner names a file that does not exist and diffs nothing.
+        let c = item1(&all, &missing);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("/nonexistent/dir"), "{}", c.evidence);
+        // A file outside this tree with the right name.
+        write(
+            &root,
+            &format!("other/test262.{HOST}.jit.txt"),
+            "test/x.js\n",
+        );
+        let other = root.join(format!("other/test262.{HOST}.jit.txt"));
+        let c = item1(&all, other.to_str().unwrap());
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        // A new failure that the runner's (empty) diff does not report.
+        let mut more = all.to_vec();
+        more.push("test/new/x.js");
+        let c = item1(&more, committed);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("new failures 1"), "{}", c.evidence);
+        // A listed test that passes: stale, OPEN.
+        let c = item1(&all[..3], committed);
+        assert_eq!(c.status, Status::Open, "{}", c.evidence);
+        assert!(c.evidence.contains("stale lines 1"), "{}", c.evidence);
+        // The committed file and the same failing set: PASS.
+        let c = item1(&all, committed);
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
         std::fs::remove_dir_all(root).unwrap();
     }
 
