@@ -23,6 +23,9 @@
 //   --count PATH        an ep9-bench binary: also count instructions (class R) of every R workload
 //                       on every engine (ep9-bench --runs 5 --warmup 1; median)
 //   --count-runs N, --count-warmup N   (default 5 and 1)
+//   --hash-seed S       EP9_HASH_SEED for ep9's counted runs (default 1; W4-CI-PERF-SEED). The
+//                       string hash seed is random per process otherwise, and moves counts by up
+//                       to 3.75%. Timed (class M) runs keep the random seed, as in run 1
 //   --timeout-s N       a run that takes longer fails (default 600)
 //   --work DIR          write the workload files there and keep them (default: a temporary dir)
 //   --label TEXT        a name for the run, for the report
@@ -47,7 +50,9 @@
 // never passes or fails a gate.
 //
 // Refusal. Every run's stdout must equal the workload's expected output and its exit status must
-// be 0. Otherwise the runner stops with "REFUSED" and exit 1, and writes no report.
+// be 0. Otherwise the runner stops with "REFUSED" and exit 1, and writes no report. Counted runs
+// (class R) too: ep9-bench gets --expect-stdout, so a run that is right in the output check and
+// wrong in a counted run gets no count (exit 4: REFUSED; same rule as perf-ci-v0, W4-PERF-REFUSE).
 //
 // Exit status: 0 done; 1 refused or another error; 2 usage error; 3 host busy.
 // Tests (fake engines, no shells needed): node --test tools/bench/cross/run.test.mjs
@@ -103,6 +108,7 @@ export function parseArgs(argv) {
     count: null,
     countRuns: 5,
     countWarmup: 1,
+    hashSeed: "1",
     timeoutS: 600,
     work: null,
     label: null,
@@ -137,6 +143,7 @@ export function parseArgs(argv) {
       case "--count": o.count = path.resolve(val()); break;
       case "--count-runs": o.countRuns = num(a, val()); break;
       case "--count-warmup": o.countWarmup = num(a, val()); break;
+      case "--hash-seed": o.hashSeed = val(); break;
       case "--timeout-s": o.timeoutS = num(a, val()); break;
       case "--work": o.work = path.resolve(val()); break;
       case "--label": o.label = val(); break;
@@ -376,24 +383,40 @@ export function parseBenchJson(text) {
   };
 }
 
-/** Class R: ep9-bench for every R workload on every engine. */
+/** ep9-bench exit status when a run printed something other than --expect-stdout (no JSON). */
+export const BENCH_WRONG_OUTPUT = 4;
+
+/**
+ * Class R: ep9-bench for every R workload on every engine. Every counted run, warm-up included,
+ * must print the workload's expected output (ep9-bench --expect-stdout): the output check before
+ * the rounds cannot vouch for later runs. ep9 runs with EP9_HASH_SEED = o.hashSeed.
+ */
 export function countAll(o, engines, files, commit) {
   const rows = [];
   const tmp = mkdtempSync(path.join(os.tmpdir(), "ep9-cross-count-"));
   try {
     for (const w of o.workloads.filter((x) => files[x].classes.includes("R"))) {
+      const expect = path.join(tmp, `${w}.expect.txt`);
+      writeFileSync(expect, files[w].expect);
       for (const e of engines) {
         const out = path.join(tmp, `${w}-${e.id}.json`);
-        const args = ["--runs", String(o.countRuns), "--warmup", String(o.countWarmup), "--name", `${w}@${e.id}`, "--out", out, "--", e.bin, ...e.args, files[w].file];
+        const args = ["--runs", String(o.countRuns), "--warmup", String(o.countWarmup), "--name", `${w}@${e.id}`, "--out", out, "--expect-stdout", expect, "--", e.bin, ...e.args, files[w].file];
+        const env = { ...process.env, EP9_COMMIT: e.id === "ep9" ? commit : "" };
+        if (e.id === "ep9") env.EP9_HASH_SEED = o.hashSeed;
+        else delete env.EP9_HASH_SEED;
         const r = spawnSync(o.count, args, {
           encoding: "utf8",
-          env: { ...process.env, EP9_COMMIT: e.id === "ep9" ? commit : "" },
+          env,
           timeout: o.timeoutS * 1000 * (o.countRuns + o.countWarmup),
         });
         if (r.error) throw new Error(`${o.count}: ${r.error.message}`);
+        const tail = () => (r.stderr || "").trim().split("\n").slice(-5).join("\n    ");
+        if (r.status === BENCH_WRONG_OUTPUT) {
+          throw new Refusal(`count ${w} on ${e.id}: a counted run printed the wrong output (ep9-bench exit 4)\n    ${tail()}`);
+        }
         // 3: no counter on this host; the JSON is still written, with null counts.
         if (r.status !== 0 && r.status !== 3) {
-          throw new Refusal(`count ${w} on ${e.id}: ep9-bench exit ${r.status}\n    ${(r.stderr || "").trim().split("\n").slice(-5).join("\n    ")}`);
+          throw new Refusal(`count ${w} on ${e.id}: ep9-bench exit ${r.status}\n    ${tail()}`);
         }
         const p = parseBenchJson(readFileSync(out, "utf8"));
         rows.push({ workload: w, engine: e.id, ...p });
@@ -403,7 +426,15 @@ export function countAll(o, engines, files, commit) {
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
-  return { tool: "ep9-bench", runs: o.countRuns, warmup: o.countWarmup, counter: rows[0]?.counter ?? null, rows };
+  return {
+    tool: "ep9-bench",
+    runs: o.countRuns,
+    warmup: o.countWarmup,
+    counter: rows[0]?.counter ?? null,
+    expect_stdout: true,
+    ep9_hash_seed: o.hashSeed,
+    rows,
+  };
 }
 
 function git(args) {
@@ -599,7 +630,10 @@ export function renderMarkdown(res) {
   }
   if (res.R) {
     L.push("");
-    L.push(`Class R: instructions retired, median of ${res.R.runs} runs after ${res.R.warmup} warm-up (${res.R.tool}, counter ${res.R.counter ?? "none"}), in billions (G). Compare within one counter only.`);
+    const how = [`${res.R.tool}, counter ${res.R.counter ?? "none"}`];
+    if (res.R.expect_stdout) how.push("every run's output checked");
+    if (res.R.ep9_hash_seed != null) how.push(`ep9 with EP9_HASH_SEED=${res.R.ep9_hash_seed}`);
+    L.push(`Class R: instructions retired, median of ${res.R.runs} runs after ${res.R.warmup} warm-up (${how.join("; ")}), in billions (G). Compare within one counter only.`);
     L.push("");
     const rw = [...new Set(res.R.rows.map((x) => x.workload))];
     const re = [...new Set(res.R.rows.map((x) => x.engine))];
