@@ -21,3 +21,8 @@ ep9_bytecode = { path = "../ep9_bytecode" }
 
 [lints]
 workspace = true
+
+# M2-P1-WIN-TLSJOIN: compile on the main thread, then exit the process from it.
+[[test]]
+name = "exit_after_compile"
+harness = false
