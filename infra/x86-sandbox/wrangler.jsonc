@@ -1,0 +1,56 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	// ep9 x86-64 sandbox. Same shape as the webcodecs-x86-sandbox-v2 harness
+	// (/Users/brooklyn/workspace/github/webcodecs-node-work/x86-sandbox), with its
+	// own Worker and container app so the two never share state or a cap.
+	"name": "ep9-x86-sandbox",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-10-15",
+	// @cloudflare/sandbox 1.x reads Linux error names through node:os.
+	"compatibility_flags": ["nodejs_compat"],
+	"workers_dev": true,
+	"upload_source_maps": true,
+	"observability": {
+		"enabled": true,
+	},
+	"containers": [
+		{
+			"name": "ep9-x86-sandbox-sandbox",
+			"class_name": "Sandbox",
+			// `durable_object` scheduling policy (beta): the container belongs to
+			// its Durable Object. Image and instance size are chosen in code at
+			// ctx.container.start() (src/index.ts). No max_instances here: the
+			// cap of 2 running sandboxes is the `Registry` Durable Object.
+			"scheduling_policy": "durable_object",
+			"images": {
+				"base": {
+					"dockerfile": "./Dockerfile",
+				},
+			},
+		},
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"class_name": "Sandbox",
+				"name": "Sandbox",
+			},
+			{
+				"class_name": "Registry",
+				"name": "Registry",
+			},
+		],
+	},
+	// New applications declare Durable Object classes with `exports`
+	// (SQLite storage) instead of the legacy `migrations` array.
+	"exports": {
+		"Sandbox": {
+			"type": "durable-object",
+			"storage": "sqlite",
+		},
+		"Registry": {
+			"type": "durable-object",
+			"storage": "sqlite",
+		},
+	},
+}

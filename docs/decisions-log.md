@@ -416,6 +416,7 @@ week-4 plan (design + critic)        -> 11.1
 P0 scaffold (VM split, crates, ADRs) -> 11.2
 process (CI blocked, local CI)        -> 11.3
 P1 (shapes, strings, ABI, math, unit) -> 11.4
+P1 review (Codex) and its fixes       -> 11.5
 ```
 
 ### 11.1 Week-4 plan decisions
@@ -599,3 +600,36 @@ Agent rows:
 | W4-PERF-STUB | v8v7.mjs reads each kernel from the pinned git blob (cat-file) and refuses a checkout at another HEAD or with a changed file. It copies base.js's deterministic Math.random only where Math exists. Each benchmark runs setup, then run() N times, then tear-down, and prints '<name> <N>'. No date is written, so the output is the same every time | determinism; the same text on every engine (print falls back to console.log) | two runs compare equal (cmp); runs on all 5 engines |
 | W4-PERF-N | Default N per kernel: richards 200 (from the plan), deltablue 100, crypto 8, raytrace 24, earley-boyer 8, regexp 5, splay 200, navier-stokes 12. Each gives QuickJS about 0.35 s, like richards | comparable run lengths for run 2 and later | QuickJS time per run() = (t(N=21) - t(N=1))/20, best of 3, 2026-10-21 (comments in v8v7.mjs) |
 | W4-PERF-RUN1 | Run 1 (provisional), ep9 vs QuickJS, net: richards 0.239x (0.228-0.245), t0-call 0.374x (0.367-0.390), t0-prop 0.449x (0.431-0.454), t0-branchy 1.458x, t0-loop 1.567x (void). Geomean of the 5 kernels: 0.620x QuickJS, 0.487x node --jitless. ep9 retires 45.37G instructions on richards vs 6.63G for QuickJS | first perf report | docs/measurements/2026-10-21-perf-v0.{md,json} |
+
+### 11.5 P1 review: Codex findings and fixes
+
+Codex (gpt-6.1-sol) reviewed the P1 diff (d1c3f4c..f650916) in slices under 1 MB: tools (357 KB), then the engine in two parts, heap + math (128 KB) and ep9_vm (283 KB). The first whole-engine run (421 KB) stopped early but gave one concrete claim (SoftFma). Each finding was checked by a separate agent that read the control flow, reproduced it and ran a negative control. Local CI on 2c7c566 also found a rustdoc failure that no P1 agent had run.
+
+```text
+finding                                   class  result
+SoftFma loses a sticky bit                 b     fixed 7ca6ef8 (upstream libm bug too)
+fp-check misses code after Mach-O tables   b     fixed ef14657
+perf canary passes on invalid net time     b     fixed 76e66ab
+unit keeps hints on a combined mismatch    b     fixed bb59feb
+heap: false OOM across sweep queues        b     fixed f5f04e9 (+2 older LOS/medium cases, same arm)
+string_view dangles after a shared GC      b     fixed 4bfa87f
+to_object succeeds through the stub        b     fixed bf69589
+non-extensible bypass on define paths      c     same code at d1c3f4c; split to P2-OBJ, P2-BTAB, P3-ACC, P3-IC
+rustdoc: [[...]] read as links             b     fixed f227ec1
+```
+
+| ID | Decision | Reason | Evidence |
+|---|---|---|---|
+| P1FIX-FMA-STICKY | Fix the SoftFma sticky bit in ep9 (musl's one expression: the sticky bit comes from the old `rlo`), not wait for upstream | H36 allows a hardware/software dispatch only between exact implementations. libm 0.2.16 has the same bug (rust-lang/compiler-builtins#1353, open, no fix) | 4 concrete inputs, exact rational check; soft_vs_hw 10M: 19,651 mismatches before, 0 after |
+| P1FIX-FMA-CORPUS | soft_vs_hw gets near-tie inputs plus a fixed near-tie grid test | Random inputs never hit "tie plus a far tail": the old corpus reached the branch 2,169,912 times with 82,435 wrong sticky bits but 0 changed results | soft_vs_hw_near_ties: 1,852 of 168,960 differ before, 0 after |
+| FPC-1 | fp-check reuses disasm.rs `redecode_after_data`, `drop_data` and `parse_data_in_code` (now pub(crate)) | One boundary-recovery path for both checks | disasm-check stdout identical before and after; fixture jump-table-fma fails before, passes after |
+| FPC-2 | Re-decode by address (start = table end, stop = next table or next symbol), not by symbol name | Demangled names contain commas and --disassemble-symbols takes a comma list | ep9 x86_64-apple-darwin object: 406,332 instructions equal to `--macho -d`, 0 differences |
+| FPC-3 | Re-decode after every table | Simpler; +8.7 s on x86_64-apple-darwin only | 11.2 s -> 20.0 s |
+| W4-PERF-NETINVALID | A row with a net time <= 0 in any round is "net invalid" and provisional; its canary reading is "no gate verdict"; gross values stay shown, marked "(gross)" | Gates read net ratios only (W4-PERF-RATIO) | run.test.mjs regression test fails before, passes after; run-1 report unchanged (smallest net time 103.4 ms) |
+| W4-AOTU-HINTS | `Verdict::Version` carries `drop_hints`, set from the fact schema on its own; the verdict still names the first difference in header order | Moving the fact-schema check first would change the pinned layout text and need a container bump | a_fact_schema_mismatch_drops_the_hints_whatever_else_differs fails before, passes after |
+| W4-HEAP-OOM-SWEEP | If an allocation still fails after its GC, `Inner::sweep_before_out_of_memory` (cold) sweeps both lazy queues and the allocation retries once without a second GC; same arm in `alloc_slow` and `alloc_shape` | Both spaces share max_heap_bytes; a page that died in this GC waited in the other space's queue, giving OutOfMemory with 0 marked cells. verify_after_gc hid it | 5 tests fail before, pass after (debug, release, Miri); all 7 functions that inline Heap::alloc are unchanged; cachegrind ci-v0 +3,116 Ir (+0.004%) |
+| W4-HEAP-OOM-SWEEP-SCOPE | The same arm also fixes the older LOS and medium-cell cases | One cold arm, no hot-path change; dropping them would need extra code to exclude them | Both tests fail on d1c3f4c |
+| W4-STR-VIEW-EXCL | `Isolate::string_view` takes `&mut self` | The exclusive borrow blocks every isolate call (global, heap().collect/alloc, run_script). A rooting guard would need Drop and would not survive a moving GC. The API has no caller yet | Probe: 16 of 16 views read freed text after heap().collect(); 2 new compile_fail doctests (E0502), the collect_garbage one is now E0499 |
+| W4-P1FIX-WRAPPER-NI | Until P2-SYM merges, `Cx::to_object` and `Cx::new_wrapper` throw not_implemented("wrapper objects for primitives") for primitives | A success that drops the primitive gives wrong answers silently (length undefined); not_implemented is the v0 rule | tests/abi.rs object_ops_and_conversions |
+| W4-P1-EXT-SPLIT | The non-extensible and descriptor bypasses are class (c) and go to their plan owners: P2-OBJ (define paths, prevent_extensions on shapes), P2-BTAB (GlobalDeclarationInstantiation), P3-ACC (CreateGlobalFunctionBinding, DefineMethodProperty, SetPrototypeInLiteral), P3-IC (add-property handlers miss on non-extensible receivers) | The unchecked paths are the same at d1c3f4c. Nothing in JS can make an object non-extensible in week 4, but `function NaN(){}` and `static ['prototype'](){}` reach the descriptor half today | scratchpad week4/p1-ext-handoff.md; acceptance tests in probes-ext/acceptance |
+| W4-P1-RUSTDOC | Spec notation in doc comments goes in backticks (`` `[[GetOwnProperty]]` ``); every agent prompt from P2 on lists `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked` | Local CI failed on 11 doc lines that no P1 agent had checked | Local CI rustdoc step, f227ec1 |

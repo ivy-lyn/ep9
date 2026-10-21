@@ -1,0 +1,385 @@
+#!/usr/bin/env bash
+# sbx - client for the ep9-x86-sandbox Worker (real x86_64 Linux on Cloudflare Containers).
+#
+# Needs only: bash (3.2 ok), curl, jq, base64, split, shasum (or sha256sum), zstd, tar, git.
+# URL comes from  $SBX_URL_FILE   (default: <dir of this script>/.url); it must be https://
+#   (http://localhost, 127.0.0.1 or [::1] only with SBX_ALLOW_INSECURE_LOCAL=1, for a local test).
+# Token comes from $SBX_TOKEN_FILE (default: <dir of this script>/.token)
+# The token is only ever read inside this script and passed to curl via a
+# process-substitution header file (never on a command line, never printed).
+#
+# Commands (see README.md for details):
+#   sbx exec    <id> '<cmd>' [timeout_s]           run via `bash -c`, print stdout/stderr, exit with remote code
+#   sbx put     <id> <local-file> <remote-path>    chunked upload, sha256 verified on both sides
+#   sbx get     <id> <remote-path> <local-path>    chunked download, sha256 verified
+#   sbx push-git <id> <git-dir> <commit> <remote-dir>   git archive | zstd -> put -> extract
+#   sbx bg      <id> <job> '<cmd>'                 start a background job (/work/jobs/<job>.log/.exit)
+#   sbx wait    <id> <job> [poll_s]                poll job (keeps sandbox awake), stream log, exit with job code
+#   sbx destroy <id>                               stop the container now (files are lost)
+#   sbx health  [id]                               auth check; with id also reports running state (never starts it)
+set -euo pipefail
+
+SBX_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+URL_FILE=${SBX_URL_FILE:-$SBX_DIR/.url}
+TOKEN_FILE=${SBX_TOKEN_FILE:-$SBX_DIR/.token}
+CHUNK=${SBX_CHUNK_BYTES:-2097152}          # 2 MiB raw per request (≈2.8 MB base64); keeps Worker/DO memory low
+START_RETRIES=${SBX_START_RETRIES:-36}     # retries while Cloudflare has no instance ready (10 s apart)
+PAR=${SBX_PARALLEL:-4}                     # concurrent chunk requests for put/get (~1.7 MB/s per stream)
+
+die() { echo "sbx: $*" >&2; exit 99; }
+
+[ "$CHUNK" -ge 1024 ] && [ "$CHUNK" -le 6291456 ] || die "SBX_CHUNK_BYTES must be 1024..6291456 (the Worker caps stdout at 8 MiB and base64 adds 1/3)"
+[ -r "$URL_FILE" ] || die "missing URL file $URL_FILE"
+[ -r "$TOKEN_FILE" ] || die "missing token file $TOKEN_FILE"
+URL=$(tr -d ' \n\r' < "$URL_FILE")
+URL=${URL%/}
+# The token is a Bearer header: only ever send it over HTTPS. Plain http is
+# allowed only for a local `wrangler dev` test, and only when asked for.
+LOCAL_HTTP_RE='^http://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]{1,5})?(/.*)?$'
+case "$URL" in
+	https://*) CURL_PROTO='=https' ;;
+	*)
+		if [[ "$URL" =~ $LOCAL_HTTP_RE ]] && [[ "$URL" != *@* ]] && [ "${SBX_ALLOW_INSECURE_LOCAL:-}" = 1 ]; then
+			CURL_PROTO='=http'
+		else
+			die "refusing non-https URL '$URL' from $URL_FILE (the token must only travel over HTTPS; SBX_ALLOW_INSECURE_LOCAL=1 allows http://localhost / 127.0.0.1 / [::1] for a local test)"
+		fi
+		;;
+esac
+for t in curl jq base64; do command -v "$t" >/dev/null || die "need $t"; done
+
+# Hash from stdin: with a path argument, shasum and GNU sha256sum escape a name
+# that has `\` or a newline and put a `\` in front of the hash.
+if command -v shasum >/dev/null; then
+	sha256_file() { shasum -a 256 < "$1" | awk '{print $1}'; }
+elif command -v sha256sum >/dev/null; then
+	sha256_file() { sha256sum < "$1" | awk '{print $1}'; }
+else
+	die "need shasum or sha256sum"
+fi
+if printf 'QQ==' | base64 -d >/dev/null 2>&1; then B64D="-d"; else B64D="-D"; fi
+b64enc() { base64 < "$1" | tr -d '\n\r'; }
+b64dec() { base64 "$B64D"; }
+file_size() { wc -c < "$1" | tr -d ' '; }
+
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/sbx.XXXXXX")
+trap 'rm -rf "$WORK"' EXIT
+
+check_id() { [[ "$1" =~ ^[a-z0-9-]{1,40}$ ]] || die "bad id '$1' (must match ^[a-z0-9-]{1,40}\$)"; }
+check_job() { [[ "$1" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "bad job name '$1'"; }
+q() { printf '%q' "$1"; }  # quote one word for the remote bash
+
+# api METHOD PATH BODY_FILE OUT_FILE MAX_TIME -> prints HTTP code, or on a transport error:
+#   000 = curl failed before it sent the request (DNS, TCP connect, TLS handshake: exit 6, 7, 35)
+#   001 = any other curl failure (reset, empty reply, HTTP/2 error, cut body, timeout): the
+#         request may have reached the Worker, so the step may have run
+api() {
+	local method=$1 path=$2 body=$3 out=$4 maxt=${5:-600} code rc=0
+	if [ -n "$body" ]; then
+		code=$(curl -sS --proto "$CURL_PROTO" -X "$method" -o "$out" -w '%{http_code}' --connect-timeout 20 --max-time "$maxt" \
+			-H @<(printf 'Authorization: Bearer %s\n' "$(tr -d ' \n\r' < "$TOKEN_FILE")") \
+			-H 'content-type: application/json' --data-binary @"$body" "$URL$path") || rc=$?
+	else
+		code=$(curl -sS --proto "$CURL_PROTO" -X "$method" -o "$out" -w '%{http_code}' --connect-timeout 20 --max-time "$maxt" \
+			-H @<(printf 'Authorization: Bearer %s\n' "$(tr -d ' \n\r' < "$TOKEN_FILE")") \
+			"$URL$path") || rc=$?
+	fi
+	if [ "$rc" != 0 ]; then
+		case $rc in 6 | 7 | 35) code=000 ;; *) code=001 ;; esac
+	fi
+	printf '%s' "$code"
+}
+
+# Retry only when the request never reached a container ("no container
+# instance ... try again later": first deploy or all max_instances busy) or
+# curl could not connect; never on a command that may have run.
+# HTTP 500 "The container connection is temporarily unavailable, try again
+# shortly" is retried (same 10 s x SBX_START_RETRIES bound) only when IDEM=1
+# (the step can run twice: one /write chunk, a read-only step of `get`) or the
+# Worker answered `"ran": false` (/exec failed before it launched the command).
+# api_retry METHOD PATH BODY_FILE OUT_FILE MAX_TIME [IDEM]
+api_retry() {
+	local method=$1 path=$2 body=$3 out=$4 maxt=${5:-600} idem=${6:-0} code n=0 why
+	while :; do
+		code=$(api "$method" "$path" "$body" "$out" "$maxt")
+		if [ "$code" = 500 ] && grep -q 'no container instance' "$out" 2>/dev/null && [ "$n" -lt "$START_RETRIES" ]; then
+			n=$((n + 1)); echo "sbx: no container instance yet, retry $n/$START_RETRIES in 10s" >&2; sleep 10; continue
+		fi
+		if [ "$code" = 500 ] && grep -q 'container connection is temporarily unavailable' "$out" 2>/dev/null; then
+			if [ "$idem" = 1 ] || [ "$(jq -r '.ran' "$out" 2>/dev/null)" = false ]; then
+				if [ "$n" -lt "$START_RETRIES" ]; then
+					n=$((n + 1))
+					if [ "$idem" = 1 ]; then why="this step is safe to repeat"; else why="the command did not run"; fi
+					echo "sbx: container connection temporarily unavailable ($why), retry $n/$START_RETRIES in 10s" >&2; sleep 10; continue
+				fi
+			else
+				echo "sbx: container connection temporarily unavailable after the command was launched; it may have run, so it is not retried" >&2
+			fi
+		fi
+		if [ "$code" = 000 ] && [ "$n" -lt 3 ]; then
+			n=$((n + 1)); echo "sbx: could not connect (nothing was sent), retry $n/3" >&2; sleep 5; continue
+		fi
+		if [ "$code" = 001 ]; then
+			if [ "$idem" = 1 ] && [ "$n" -lt 3 ]; then
+				n=$((n + 1)); echo "sbx: connection broke after the request was sent; this step is safe to repeat, retry $n/3" >&2; sleep 5; continue
+			fi
+			echo "sbx: connection broke after the request was sent; the step may have run, so it is not retried" >&2
+		fi
+		break
+	done
+	printf '%s' "$code"
+}
+
+# rexec ID CMD TIMEOUT_S OUT_JSON [IDEM] -> returns 0 if HTTP 200 (remote exit code is in the JSON)
+# IDEM=1 only for commands that are safe to run twice (read-only).
+rexec() {
+	local id=$1 cmd=$2 tmo=$3 out=$4 idem=${5:-0} body="$4.req.json" code
+	jq -n --arg id "$id" --arg cmd "$cmd" --argjson t "$((tmo * 1000))" '{id:$id, cmd:$cmd, timeout_ms:$t}' > "$body"
+	code=$(api_retry POST /exec "$body" "$out" "$((tmo + 120))" "$idem")
+	rm -f "$body"
+	if [ "$code" != 200 ]; then
+		echo "sbx: /exec HTTP $code: $(head -c 2000 "$out" 2>/dev/null)" >&2
+		grep -q 'Maximum number of running container instances' "$out" 2>/dev/null \
+			&& echo "sbx: all sandbox slots are in use; 'sbx destroy <id>' one you no longer need" >&2
+		grep -q 'was destroyed by a /destroy that ran while this request was in flight' "$out" 2>/dev/null \
+			&& echo "sbx: a destroy of this id finished while the request waited; nothing ran; send it again" >&2
+		grep -q 'is attached to a container it did not start' "$out" 2>/dev/null \
+			&& echo "sbx: this id is not on the container it started; 'sbx destroy <id>' and start again" >&2
+		grep -q 'Network connection lost' "$out" 2>/dev/null \
+			&& echo "sbx: the Durable Object restarted mid-request; the command may still be running in the container (use 'sbx bg' + 'sbx wait' for long work)" >&2
+		return 1
+	fi
+}
+
+# rexec_ok ID CMD TIMEOUT_S [IDEM] -> prints remote stdout; fails (with stderr) if remote exit != 0
+rexec_ok() {
+	local out ec
+	out=$(mktemp "$WORK/r.XXXXXX")
+	rexec "$1" "$2" "$3" "$out" "${4:-0}" || return 1
+	ec=$(jq -r '.exitCode' "$out")
+	if [ "$ec" != 0 ]; then
+		echo "sbx: remote command failed (exit $ec): $2" >&2
+		jq -j '.stderr' "$out" >&2
+		jq -j '.stdout' "$out" >&2
+		rm -f "$out"; return 1
+	fi
+	jq -j '.stdout' "$out"
+	rm -f "$out"
+}
+
+cmd_exec() {
+	[ $# -ge 2 ] || die "usage: sbx exec <id> '<cmd>' [timeout_s]"
+	local id=$1 cmd=$2 tmo=${3:-600} out="$WORK/exec.out.json" ec
+	check_id "$id"
+	[[ "$tmo" =~ ^[0-9]+$ ]] && [ "$tmo" -ge 1 ] && [ "$tmo" -le 21600 ] || die "timeout_s must be 1..21600"
+	rexec "$id" "$cmd" "$tmo" "$out" || exit 98
+	jq -j '.stdout' "$out"
+	jq -j '.stderr' "$out" >&2
+	if [ "$(jq -r '.stdoutTruncated or .stderrTruncated' "$out")" = true ]; then
+		echo "sbx: output truncated (stdout $(jq -r .stdoutBytes "$out") B, stderr $(jq -r .stderrBytes "$out") B); redirect to a file and use 'sbx get'" >&2
+	fi
+	[ "$(jq -r '.timedOut' "$out")" = true ] && echo "sbx: command timed out after ${tmo}s" >&2
+	ec=$(jq -r '.exitCode' "$out")
+	exit "$ec"
+}
+
+# write_chunk ID LOCAL_CHUNK REMOTE_PATH -> verifies the sha256 the Worker computed
+write_chunk() {
+	local id=$1 f=$2 rpath=$3 want got body="$2.json" out="$2.out" code n=0
+	want=$(sha256_file "$f")
+	b64enc "$f" > "$f.b64"
+	jq -n --arg id "$id" --arg path "$rpath" --rawfile b "$f.b64" '{id:$id, path:$path, content_b64:$b}' > "$body"
+	rm -f "$f.b64"
+	while :; do
+		# One chunk to its own temp path: writing it twice is harmless (IDEM=1).
+		code=$(api_retry POST /write "$body" "$out" 600 1)
+		got=$(jq -r '.sha256 // empty' "$out" 2>/dev/null || true)
+		if [ "$code" = 200 ] && [ "$got" = "$want" ]; then break; fi
+		n=$((n + 1))
+		[ "$n" -le 3 ] || { echo "sbx: /write $rpath failed: HTTP $code $(head -c 500 "$out")" >&2; return 1; }
+		echo "sbx: /write retry $n (HTTP $code)" >&2; sleep 3
+	done
+	rm -f "$body" "$out"
+}
+
+# Sliding-window job pool (bash 3.2 has no `wait -n`): at most $PAR running.
+POOL_PIDS=()
+POOL_FAIL=0
+pool_reap() {
+	local keep=() p
+	for p in ${POOL_PIDS[@]+"${POOL_PIDS[@]}"}; do
+		if kill -0 "$p" 2>/dev/null; then keep+=("$p"); else wait "$p" || POOL_FAIL=1; fi
+	done
+	POOL_PIDS=(${keep[@]+"${keep[@]}"})
+}
+pool_run() {
+	while [ "${#POOL_PIDS[@]}" -ge "$PAR" ]; do
+		pool_reap
+		[ "${#POOL_PIDS[@]}" -ge "$PAR" ] && sleep 0.2
+	done
+	"$@" &
+	POOL_PIDS+=("$!")
+}
+pool_wait() {
+	local p
+	for p in ${POOL_PIDS[@]+"${POOL_PIDS[@]}"}; do wait "$p" || POOL_FAIL=1; done
+	POOL_PIDS=()
+	[ "$POOL_FAIL" = 0 ]
+}
+put_one() { write_chunk "$1" "$2" "$3" && rm -f "$2" && echo "sbx:   chunk $4 ok" >&2; }
+get_one() { get_chunk "$1" "$2" "$3" "$4" && echo "sbx:   chunk $5 ok" >&2; }
+
+cmd_put() {
+	[ $# -eq 3 ] || die "usage: sbx put <id> <local-file> <remote-path>"
+	local id=$1 lf=$2 rp=$3 size sha nparts i=0 up rsha
+	check_id "$id"
+	[ -f "$lf" ] || die "no such file $lf"
+	case "$rp" in /*) ;; *) die "remote path must be absolute" ;; esac
+	size=$(file_size "$lf"); sha=$(sha256_file "$lf")
+	up="/work/.upload/put-$(date +%s)-$$-$RANDOM"
+	mkdir -p "$WORK/parts"
+	if [ "$size" -eq 0 ]; then : > "$WORK/parts/p.aaaaaa"; else split -b "$CHUNK" -a 6 "$lf" "$WORK/parts/p."; fi
+	nparts=$(ls "$WORK/parts" | wc -l | tr -d ' ')
+	echo "sbx: put $lf ($size B, sha256 $sha) -> $id:$rp in $nparts chunk(s)" >&2
+	for f in "$WORK"/parts/p.*; do
+		i=$((i + 1))
+		pool_run put_one "$id" "$f" "$up/$(basename "$f")" "$i/$nparts"
+	done
+	pool_wait || exit 98
+	rsha=$(rexec_ok "$id" "set -e; mkdir -p \"\$(dirname $(q "$rp"))\"; cat $(q "$up")/p.* > $(q "$rp").sbxpart; mv -f $(q "$rp").sbxpart $(q "$rp"); rm -rf $(q "$up"); sha256sum < $(q "$rp") | cut -d' ' -f1" 600) || exit 98
+	rsha=$(printf '%s' "$rsha" | tr -d '\n')
+	if [ "$rsha" != "$sha" ]; then echo "sbx: sha256 MISMATCH local=$sha remote=$rsha" >&2; exit 97; fi
+	echo "sbx: put ok sha256 $sha" >&2
+}
+
+# get_chunk ID REMOTE_PATH INDEX LOCAL_OUT (retries 3x; reads are idempotent)
+get_chunk() {
+	local id=$1 rp=$2 i=$3 dst=$4 out="$4.json" n=0
+	while :; do
+		if rexec "$id" "dd if=$(q "$rp") bs=$CHUNK skip=$i count=1 iflag=fullblock status=none | base64 -w0" 120 "$out" 1 \
+			&& [ "$(jq -r '.exitCode' "$out")" = 0 ] && [ "$(jq -r '.stdoutTruncated' "$out")" = false ]; then
+			jq -j '.stdout' "$out" | b64dec > "$dst" && break
+		fi
+		n=$((n + 1))
+		[ "$n" -le 3 ] || { echo "sbx: chunk $i read failed: $(jq -j .stderr "$out" 2>/dev/null)" >&2; return 1; }
+		echo "sbx: chunk $i retry $n" >&2; sleep 3
+	done
+	rm -f "$out" "$out.req.json"
+}
+
+cmd_get() {
+	[ $# -eq 3 ] || die "usage: sbx get <id> <remote-path> <local-path>"
+	local id=$1 rp=$2 lp=$3 info size rsha n i=0 lsha
+	check_id "$id"
+	info=$(rexec_ok "$id" "stat -c %s $(q "$rp") && sha256sum < $(q "$rp") | cut -d' ' -f1" 600 1) || exit 98
+	size=$(printf '%s\n' "$info" | sed -n 1p); rsha=$(printf '%s\n' "$info" | sed -n 2p)
+	n=$(( (size + CHUNK - 1) / CHUNK ))
+	echo "sbx: get $id:$rp ($size B, sha256 $rsha) in $n chunk(s)" >&2
+	mkdir -p "$WORK/get"
+	while [ "$i" -lt "$n" ]; do
+		pool_run get_one "$id" "$rp" "$i" "$WORK/get/c.$i" "$((i + 1))/$n"
+		i=$((i + 1))
+	done
+	pool_wait || exit 98
+	: > "$lp.sbxpart"
+	i=0
+	while [ "$i" -lt "$n" ]; do cat "$WORK/get/c.$i" >> "$lp.sbxpart"; rm -f "$WORK/get/c.$i"; i=$((i + 1)); done
+	lsha=$(sha256_file "$lp.sbxpart")
+	if [ "$lsha" != "$rsha" ]; then echo "sbx: sha256 MISMATCH remote=$rsha local=$lsha" >&2; rm -f "$lp.sbxpart"; exit 97; fi
+	mv -f "$lp.sbxpart" "$lp"
+	echo "sbx: get ok sha256 $lsha" >&2
+}
+
+cmd_push_git() {
+	[ $# -eq 4 ] || die "usage: sbx push-git <id> <git-dir> <commit> <remote-dir>"
+	local id=$1 gd=$2 commit=$3 rd=$4 full tarz rtar
+	check_id "$id"
+	command -v git >/dev/null && command -v zstd >/dev/null || die "need git and zstd"
+	case "$rd" in /*) ;; *) die "remote dir must be absolute" ;; esac
+	full=$(git -C "$gd" rev-parse --verify "$commit^{commit}") || die "unknown commit $commit in $gd"
+	tarz="$WORK/src.tar.zst"
+	# Reads committed objects only; never touches the worktree, index or HEAD.
+	git -C "$gd" archive --format=tar "$full" | zstd -q -T0 -6 -o "$tarz"
+	echo "sbx: push-git $gd@$full ($(file_size "$tarz") B zstd) -> $id:$rd" >&2
+	rtar="/work/.upload/git-$full.tar.zst"
+	cmd_put "$id" "$tarz" "$rtar"
+	rexec_ok "$id" "set -e; mkdir -p $(q "$rd"); zstd -q -dc $(q "$rtar") | tar -xf - -C $(q "$rd"); rm -f $(q "$rtar"); printf '%s\n' $full > $(q "$rd")/.sbx-commit; echo extracted \$(find $(q "$rd") -type f | wc -l) files" 1200 || exit 98
+	echo >&2
+}
+
+cmd_bg() {
+	[ $# -eq 3 ] || die "usage: sbx bg <id> <job-name> '<cmd>'"
+	local id=$1 job=$2 cmd=$3 script="$WORK/job.sh" j="/work/jobs/$2"
+	check_id "$id"; check_job "$job"
+	printf '%s\n' "$cmd" > "$script"
+	mkdir -p "$WORK/bgparts"; cp "$script" "$WORK/bgparts/s"
+	write_chunk "$id" "$WORK/bgparts/s" "$j.sh" || exit 98
+	# setsid + nohup: the job survives the /exec request that launched it.
+	rexec_ok "$id" "set -e; rm -f $j.log $j.exit $j.pid; cd /work; nohup setsid bash -c 'bash $j.sh > $j.log 2>&1 < /dev/null; echo \$? > $j.exit.tmp; mv -f $j.exit.tmp $j.exit' > /dev/null 2>&1 < /dev/null & echo \$! > $j.pid; sleep 0.2; echo started job $job pid \$(cat $j.pid)" 60 || exit 98
+}
+
+cmd_wait() {
+	[ $# -ge 2 ] || die "usage: sbx wait <id> <job-name> [poll_s]"
+	local id=$1 job=$2 poll=${3:-20} j="/work/jobs/$2" off=0 out="$WORK/wait.json" st sz fails=0
+	check_id "$id"; check_job "$job"
+	[[ "$poll" =~ ^[0-9]+$ ]] && [ "$poll" -ge 1 ] && [ "$poll" -le 1500 ] || die "poll_s must be 1..1500 (keep it under the 30 min idle timeout)"
+	while :; do
+		# One request per poll: status line, then up to 4 MiB of new log bytes as base64.
+		rexec "$id" "if [ -f $j.exit ]; then st=\$(cat $j.exit); elif [ -f $j.pid ] && kill -0 \$(cat $j.pid) 2>/dev/null; then st=running; elif [ -f $j.pid ]; then st=lost; else st=missing; fi; sz=\$(stat -c %s $j.log 2>/dev/null || echo 0); echo \"\$st \$sz\"; tail -c +$((off + 1)) $j.log 2>/dev/null | head -c 4194304 | base64 -w0" 120 "$out" || {
+			fails=$((fails + 1)); [ "$fails" -le 10 ] || { echo "sbx: wait: 10 failed polls in a row, giving up" >&2; exit 98; }
+			sleep "$poll"; continue; }
+		fails=0
+		st=$(jq -r '.stdout' "$out" | sed -n 1p | cut -d' ' -f1)
+		sz=$(jq -r '.stdout' "$out" | sed -n 1p | cut -d' ' -f2)
+		jq -r '.stdout' "$out" | sed -n 2p > "$WORK/wait.b64"
+		if [ -s "$WORK/wait.b64" ]; then
+			b64dec < "$WORK/wait.b64" > "$WORK/wait.bin"
+			cat "$WORK/wait.bin"
+			off=$((off + $(file_size "$WORK/wait.bin")))
+		fi
+		case "$st" in
+			running) ;;
+			missing) echo "sbx: job $job not found on $id (was the sandbox restarted?)" >&2; exit 96 ;;
+			lost) [ "$off" -ge "$sz" ] && { echo "sbx: job $job died without an exit file" >&2; exit 95; } ;;
+			*) if [ "$off" -ge "$sz" ]; then echo "sbx: job $job exited $st" >&2; exit "$st"; fi ;;
+		esac
+		[ "$off" -lt "$sz" ] && continue   # more log to fetch right away
+		sleep "$poll"
+	done
+}
+
+cmd_destroy() {
+	[ $# -eq 1 ] || die "usage: sbx destroy <id>"
+	local id=$1 body="$WORK/d.json" out="$WORK/d.out" code
+	check_id "$id"
+	jq -n --arg id "$id" '{id:$id}' > "$body"
+	code=$(api POST /destroy "$body" "$out" 120)
+	cat "$out"; echo
+	# A container that still runs after destroy keeps billing: never exit 0 then.
+	if [ "$(jq -r '.runningAfter' "$out" 2>/dev/null)" = true ]; then
+		echo "sbx: destroy did not stop the container of $id (runningAfter true); it still runs and bills; run 'sbx destroy $id' again" >&2
+		exit 94
+	fi
+	[ "$code" = 200 ] && [ "$(jq -r '.ok' "$out" 2>/dev/null)" = true ] || exit 98
+}
+
+cmd_health() {
+	local out="$WORK/h.out" code path=/health
+	if [ $# -ge 1 ]; then check_id "$1"; path="/health?id=$1"; fi
+	code=$(api GET "$path" "" "$out" 60)
+	cat "$out"; echo
+	[ "$code" = 200 ] || exit 98
+}
+
+sub=${1:-}; [ $# -gt 0 ] && shift
+case "$sub" in
+	exec) cmd_exec "$@" ;;
+	put) cmd_put "$@" ;;
+	get) cmd_get "$@" ;;
+	push-git) cmd_push_git "$@" ;;
+	bg) cmd_bg "$@" ;;
+	wait) cmd_wait "$@" ;;
+	destroy) cmd_destroy "$@" ;;
+	health) cmd_health "$@" ;;
+	*) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

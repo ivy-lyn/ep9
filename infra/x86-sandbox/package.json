@@ -1,0 +1,17 @@
+{
+  "name": "ep9-x86-sandbox",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "types": "wrangler types",
+    "typecheck": "tsc --noEmit",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@cloudflare/sandbox": "1.0.1"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "wrangler": "4.151.0"
+  }
+}
