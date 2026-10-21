@@ -174,6 +174,9 @@ fn index_of<'s>(
     } as u64;
     // 10. Repeat, while k < len,
     while k < len {
+        // The loop has no back edge and a hole runs no JS: one budget unit per index, so
+        // termination stops a walk to 2^53 - 1.
+        cx.poll_interrupt()?;
         // a. Let Pk be ! ToString(𝔽(k)). (`has_index` and `get_index` take k: no key for an
         //    element or a missing index.)
         // b. Let kPresent be ? HasProperty(O, Pk).

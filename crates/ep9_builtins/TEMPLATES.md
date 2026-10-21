@@ -204,7 +204,8 @@ Other ABI helpers for the P3 builtins: `symbol_for` and `key_for` (`Symbol.for`/
 
 A spec step on `! ToString(𝔽(k))` takes the integer `k` itself. The index ObjectOps read a dense
 element or a missing index without a property key, so a loop over a long sparse array makes no
-key per hole.
+key per hole. Such a loop has no back edge and a hole runs no JS, so it calls
+`cx.poll_interrupt()?` once per pass: termination must stop a walk to 2^53 - 1.
 
 | Spec step | Call |
 |---|---|

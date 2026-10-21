@@ -181,3 +181,53 @@ fn index_of_finds_integer_keys_past_the_array_index_range() {
         ])
     );
 }
+
+/// The step-10 loop of indexOf has no back edge and calls no JS on a hole, so it takes one
+/// interrupt budget unit per index (`Cx::poll_interrupt`): termination stops a walk over
+/// 2^53 - 1 holes, with or without a getter at index 0. Termination is requested before the script runs, and nothing polls
+/// between its start and the loop, so only a poll in the loop stops it. The 60 s wait only
+/// stops a hung test.
+#[test]
+fn termination_stops_index_of_over_a_long_hole_range() {
+    let cases = [
+        "Array.prototype.indexOf.call({length: 2 ** 53 - 1}, 1)",
+        "Array.prototype.indexOf.call({length: 2 ** 53 - 1, get 0() { return 0; }}, 1)",
+    ];
+    for call in cases {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .stack_size(8 << 20)
+            .spawn(move || {
+                let mut iso = common::isolate(false);
+                let unit = |src: &str| {
+                    ep9_frontend::compile(
+                        src,
+                        ep9_frontend::SourceOpts::script(ep9_frontend::Strictness::Sloppy),
+                        ep9_frontend::CompileOptions::default(),
+                    )
+                    .expect("compiles")
+                };
+                iso.terminate_handle().terminate();
+                let r = iso.run_script(
+                    unit(&format!(
+                        "var stage = 'before'; var r = {call}; stage = 'reached ' + r;"
+                    )),
+                    "call.js",
+                );
+                let terminated = r.is_err_and(|e| e.terminated);
+                let stage = iso.global("stage").map(|v| iso.display(v));
+                // The isolate keeps working.
+                iso.run_script(unit("stage = 'again'"), "again.js")
+                    .expect("runs");
+                let again = iso.global("stage").map(|v| iso.display(v));
+                let _ = tx.send((terminated, stage, again));
+            })
+            .expect("a thread");
+        let got = rx.recv_timeout(std::time::Duration::from_secs(60));
+        assert_eq!(
+            got,
+            Ok((true, Some("before".to_string()), Some("again".to_string()))),
+            "{call}"
+        );
+    }
+}

@@ -137,7 +137,8 @@ impl std::fmt::Display for Exception {
 }
 
 /// Stops the running script of an isolate from any thread. The isolate polls it at loop back
-/// edges and function entries; the exception it raises cannot be caught by JS.
+/// edges and function entries, and in builtin loops that have neither (`Cx::poll_interrupt`);
+/// the exception it raises cannot be caught by JS.
 #[derive(Clone, Debug)]
 pub struct TerminateHandle(Arc<AtomicU32>);
 
