@@ -1,9 +1,7 @@
 //! JS-level tests of class fields, private names, private methods and static blocks
-//! (owner P2-CLS-VM), run through BytecodeGen. The VM side is on this branch; the codegen side
-//! is P2-CLS-CG, so the class tests are `#[ignore = "needs P2-CLS-CG"]` until the P2
-//! integration fixer removes the marks after the CLS-CG merge. The expected lines come from
-//! node v24 (`print` = `console.log`), except where a comment names the spec text that node
-//! does not follow. Every check runs with and without GC stress (`common::run_both`).
+//! (owner P2-CLS-VM), run through BytecodeGen (P2-CLS-CG). The expected lines come from node
+//! v24 (`print` = `console.log`), except where a comment names the spec text that node does
+//! not follow. Every check runs with and without GC stress (`common::run_both`).
 
 mod common;
 
@@ -17,7 +15,6 @@ fn lines(v: &[&str]) -> Result<Vec<String>, String> {
 /// initializer key on `C` and the private names are not listed by
 /// `Object.getOwnPropertyNames`, `Object.keys` or for-in (P2-CLS-VM acceptance).
 #[test]
-#[ignore = "needs P2-CLS-CG"]
 fn fields_are_hidden_from_key_lists() {
     assert_eq!(
         run_both(
@@ -56,7 +53,6 @@ print(d.value, d.writable, d.enumerable, d.configurable);"#
 /// PrivateGet, PrivateSet and `#x in` errors, and a second add through a constructor
 /// return override (node v24 texts).
 #[test]
-#[ignore = "needs P2-CLS-CG"]
 fn private_name_errors() {
     assert_eq!(
         run_both(
@@ -95,7 +91,6 @@ try { M.m({}); } catch (e) { print(e.constructor.name); }"#
 /// Private methods, a getter and a static private method: the brand, `#m in o`, the brand
 /// check of a call on an object without it; private methods are not own properties.
 #[test]
-#[ignore = "needs P2-CLS-CG"]
 fn private_methods_and_accessors() {
     assert_eq!(
         run_both(
@@ -123,7 +118,6 @@ try { C.callM({}); } catch (e) { print(e.constructor.name); }"#
 
 /// A private accessor as an assignment target (plain and compound): the setter runs.
 #[test]
-#[ignore = "needs P2-CLS-CG"]
 fn private_setter_assignment() {
     assert_eq!(
         run_both(
@@ -141,7 +135,6 @@ print(new C().run());"#
 
 /// Static fields and static blocks run in source order with `this` = the class.
 #[test]
-#[ignore = "needs P2-CLS-CG"]
 fn static_fields_and_blocks_run_in_source_order() {
     assert_eq!(
         run_both(
@@ -164,7 +157,6 @@ print(C.a, C.b);"#
 /// Fields of a derived class run when `super()` returns; `super.x` and arrows in field
 /// initializers; a field initializer runs before parameter defaults (§10.2.2 step 6.b).
 #[test]
-#[ignore = "needs P2-CLS-CG"]
 fn derived_fields_run_after_super() {
     assert_eq!(
         run_both(
@@ -201,7 +193,6 @@ var g = new G(); print(g.f === g);"#
 /// private field's name is its description `#f`); a named function and a non-computed key
 /// keep the closure's own name.
 #[test]
-#[ignore = "needs P2-CLS-CG"]
 fn computed_field_keys_name_anonymous_functions() {
     assert_eq!(
         run_both(
@@ -224,10 +215,10 @@ print(c.kk.name, c[s].name, '"' + c[e].name + '"', c.getF().name, c.n.name, c.na
 }
 
 /// Bit 0 of DefineKeyedOwnPropertyInLiteral (P2-CLS-VM task 4, D15): computed object literal
-/// keys name anonymous functions, classes and methods. Runs without CLS-CG. The last line
-/// follows ECMA-262 (ClassDefinitionEvaluation sets the name before the static `name` method
-/// replaces it; test262 `*-init-fn-name-class.js` checks the same for destructuring
-/// defaults); node v24 prints "string" there.
+/// keys name anonymous functions, classes and methods (no class-field codegen needed). The
+/// last line follows ECMA-262 (ClassDefinitionEvaluation sets the name before the static
+/// `name` method replaces it; test262 `*-init-fn-name-class.js` checks the same for
+/// destructuring defaults); node v24 prints "string" there.
 #[test]
 fn computed_literal_keys_name_anonymous_functions() {
     assert_eq!(
@@ -246,6 +237,98 @@ print(typeof withStatic.kk.name);"#
             r#"kk [sd] "" 2 kkm x nn kkc"#,
             "false false true",
             "function"
+        ])
+    );
+}
+
+/// ClassDefinitionEvaluation step 8 (ECMA-262 §15.7.14): the heritage runs with the outer
+/// PrivateEnvironment, so a `#x` there means the enclosing class's `#x` even when the class
+/// being defined declares its own `#x` (a field, `#x in`, a method, a closure made in the
+/// heritage and called later, a class nested in the heritage, two levels). The inner class
+/// name stays in its TDZ during the heritage (last line).
+#[test]
+fn heritage_uses_the_outer_private_environment() {
+    assert_eq!(
+        run_both(
+            r#"class B {} class Base1 {} class Base2 {}
+class O {
+  #x = B;
+  #m() { return B; }
+  field() { return class I extends this.#x { #x; }; }
+  pick() { return class I extends (#x in this ? Base1 : Base2) { #x; }; }
+  method() { return class I extends this.#m() { #m() {} }; }
+  arrow() { const self = this; return class I extends (() => self.#x)() { #x; }; }
+  nested() {
+    return class I extends (class J { #x = 1; static has(o) { return #x in o; } }, this.#x) { #x; };
+  }
+  twoLevels() { return class H extends (class I extends this.#x { #x; }) { #x; }; }
+  late() { let f; class I extends (f = () => this.#x, Object) { #x = 2; } return f() === B; }
+  inner() { return class I extends this.#x { #x = 7; static read(o) { return o.#x; } }; }
+}
+var o = new O();
+print(new (o.field())() instanceof B);
+print(new (o.pick())() instanceof Base1);
+print(new (o.method())() instanceof B);
+print(new (o.arrow())() instanceof B);
+print(new (o.nested())() instanceof B);
+var H = o.twoLevels();
+print(new H() instanceof B, H.prototype instanceof B);
+var I = o.inner();
+print(I.read(new I()), o.late());
+try { I.read(o); print('no error'); } catch (e) { print(e.constructor.name); }
+try { class I extends I {} } catch (e) { print(e.constructor.name); }"#
+        ),
+        lines(&[
+            "true",
+            "true",
+            "true",
+            "true",
+            "true",
+            "true true",
+            "7 true",
+            "TypeError",
+            "ReferenceError",
+        ])
+    );
+}
+
+/// NamedEvaluation with a computed key (a class field, a static field, an object literal key
+/// that is not a literal): ClassDefinitionEvaluation names an anonymous class (§15.7.14,
+/// SetFunctionName before the elements) before its static fields and blocks run, so they
+/// see the key as `this.name`, and a static block that sets `name` itself keeps its value.
+/// The last line follows ECMA-262: a `static name()` method replaces the name the class got
+/// first; node v24 prints "string string" there (V8 names the class after the definition).
+#[test]
+fn computed_key_names_the_class_before_static_elements() {
+    assert_eq!(
+        run_both(
+            r#"var seen = [];
+var s = Symbol('d'), k = 'y';
+class C {
+  ['x'] = class { static observed = this.name; };
+  ['b'] = class { static { seen.push(this.name); } };
+  [s] = class { static { seen.push(this.name); } };
+  ['e'] = class { static { Object.defineProperty(this, 'name', { value: '', configurable: true }); } };
+  ['p'] = (class { static { seen.push(this.name); } });
+  static ['z'] = class { static { seen.push(this.name); } };
+  ['f'] = function () {};
+  ['m'] = class { static name() {} };
+}
+var c = new C();
+print(c.x.observed, c.b.name, c[s].name, '"' + c.e.name + '"', c.p.name, C.z.name, c.f.name);
+print(seen.join());
+var lit = { [k]: class { static { seen.push(this.name); } }, [k + 'm']: class { static name() {} } };
+print(seen.join(), lit.y.name);
+var d = Object.getOwnPropertyDescriptor(c.x, 'name');
+print(d.value, d.writable, d.enumerable, d.configurable, Object.getOwnPropertyNames(c.x).join());
+print(typeof c.m.name, typeof lit.ym.name);"#
+        ),
+        lines(&[
+            r#"x b [d] "" p z f"#,
+            "z,b,[d],p",
+            "z,b,[d],p,y y",
+            "x false false true length,name,prototype,observed",
+            "function function",
         ])
     );
 }

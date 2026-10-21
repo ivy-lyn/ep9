@@ -16,7 +16,8 @@
 #   disasm ........... ep9_vm handler check (H15); ep9_heap barrier  (4 targets)
 #   spikes ........... SP-Dispatch, SP-GC and SP-JIT-mem host gates  (4 targets)
 #                      SP-Dispatch speed gates: recorded, not blocking (H15 ADR);
-#                      cgoto.c built with zig cc 0.17.0 (H15-Q3)
+#                      cgoto.c built with zig cc 0.17.0 (H15-Q3);
+#                      Spike B structural gate (checks (a)-(h))
 #   miri ............. Miri on ep9_value, ep9_heap and ep9_math      (Linux x64)
 #   dep-guards ....... cargo tree / metadata guards; cargo deny      (Linux x64)
 #   perf-ci-v0 ....... cachegrind instruction counts of 7 workloads  (Linux x64)
@@ -325,6 +326,7 @@ jobs:
             spikes/sp-dispatch -> target
             spikes/sp-gc -> target
             spikes/sp-jit-mem -> target
+            spikes/spike-b -> target
       # H15-Q3: one LLVM for cgoto.c on every target. spikes/sp-dispatch/gate.sh builds it with
       # `zig cc` when `zig version` prints 0.17.0 and logs "cc: zig cc 0.17.0 (pinned, H15-Q3)".
       # The archive is pinned by its SHA-256 from https://ziglang.org/download/index.json
@@ -376,6 +378,13 @@ jobs:
         env:
           SP_JIT_EXTRAS: "0"
         run: bash spikes/sp-jit-mem/gate.sh
+      # Spike B structural gate (plan-v4 P2-SPIKE-B task 4): spike unit tests, `spike-b structural all`
+      # in the release (panic = abort) build, then check (h) in the debug (panic = unwind) build.
+      # Every check has a Windows path (UNWIND_INFO through FunctionTableRegistration; check (h)
+      # expects exit code 0xC0000409 there), so no check is skipped on windows-x64.
+      - name: Spike B structural gate
+        if: ${{ !cancelled() }}
+        run: bash spikes/spike-b/gate.sh structural
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:

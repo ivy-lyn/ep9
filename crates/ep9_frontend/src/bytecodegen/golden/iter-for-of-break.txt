@@ -1,6 +1,6 @@
 # iter-for-of-break: script (sloppy)
 # | function f(a) { for (let x of a) { if (x) break; (() => x)(); } }
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=65 source=embedded hints=none
 source_hash=9ed0c777fc92b0ff84f5c7fb7fe99910462cb9b0988bfc1724d71438dd4bc49e
 strings (6):

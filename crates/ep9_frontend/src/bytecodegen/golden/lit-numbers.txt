@@ -1,6 +1,6 @@
 # lit-numbers: script (sloppy)
 # | 0; 1; -1; 2147483647; 2147483648; 1.5; -0; 1e300; 0.1 + 0.2;
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=60 source=embedded hints=none
 source_hash=cec9d5390271b15270bbcb7a8befb56750e0c903aeef5bbf18b67f37c95bb0ab
 strings (0):

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use super::collect::{Builder, EvalSite};
 use super::{
     BindingId, BindingKind, BindingLocation, ContextReason, EvalKind, FrameSlot, FunctionId,
-    ImplicitRef, NameId, RefKind, Resolution, ScopeId, ScopeKind,
+    ImplicitRef, NameId, RefId, RefKind, Resolution, ScopeId, ScopeKind,
 };
 use crate::bytecodegen::EVAL_RESULT;
 
@@ -294,6 +294,36 @@ impl Builder<'_> {
         }
     }
 
+    /// [`Self::lookup`] for a private name used inside the heritage of the classes `skip`:
+    /// the same parent walk, but a binding declared in a scope of `skip` does not count
+    /// (ECMA-262 §15.7.14 step 8: the heritage runs with the outer PrivateEnvironment). The
+    /// class scopes stay on the walk, so the hop count still includes their contexts, which
+    /// are on the runtime chain while the heritage runs.
+    fn lookup_private(
+        &self,
+        from: ScopeId,
+        name: NameId,
+        skip: &[ScopeId],
+        eval: Option<EvalKind>,
+    ) -> (Option<BindingId>, bool) {
+        let mut s = from;
+        loop {
+            if !skip.contains(&s)
+                && let Some(&b) = self.scope_extra[s.index()].names.get(&name)
+            {
+                return (Some(b), false);
+            }
+            let scope = &self.scopes[s.index()];
+            match scope.parent {
+                Some(p) => s = p,
+                None => {
+                    let direct = scope.kind == ScopeKind::Eval && eval == Some(EvalKind::Direct);
+                    return (None, direct);
+                }
+            }
+        }
+    }
+
     fn hole_check(&self, b: BindingId, function: FunctionId, at: u32) -> bool {
         let binding = &self.bindings[b.index()];
         if !binding.tdz {
@@ -396,8 +426,12 @@ impl Builder<'_> {
                         (Some(self.pseudo(nf, which)), false)
                     }
                 }
-                // Private names are lexical: `with` and eval cannot shadow them.
-                RefKind::PrivateName => self.lookup(scope, name, false, eval),
+                // Private names are lexical: `with` and eval cannot shadow them. One in a
+                // class heritage skips that class's own names (the outer PrivateEnvironment).
+                RefKind::PrivateName => match self.private_skips.get(&RefId::of(r)) {
+                    Some(skip) => self.lookup_private(scope, name, skip, eval),
+                    None => self.lookup(scope, name, false, eval),
+                },
                 // The completion names of eval code: always the root binding.
                 _ if self.is_completion_name(name) => self.lookup(scope, name, false, None),
                 _ => self.lookup(scope, name, true, eval),

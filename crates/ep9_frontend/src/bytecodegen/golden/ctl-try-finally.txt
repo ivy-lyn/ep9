@@ -1,6 +1,6 @@
 # ctl-try-finally: script (sloppy)
 # | function f(g) { try { return g(); } finally { g(); } }
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=54 source=embedded hints=none
 source_hash=501b2233aff8b367b0a7491a112bdb47a4006a497abd956cead756685ec76e00
 strings (1):

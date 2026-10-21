@@ -214,30 +214,66 @@ fi
 
 # 13) H23: release builds abort on a panic, so no panic unwinds through a JIT or AOT frame.
 #     [profile.release] of Cargo.toml has `panic = "abort"` (dev-opt inherits it), and no other
-#     profile table and no .cargo/config.toml sets `panic`. cargo tree and cargo metadata do not
-#     show profiles, so this reads the files. Control: the scan must find a `panic` key in a
-#     sample with one, so a scan that never matches fails here instead of passing.
-# panic_keys <file>: "<table> <value>" for every `panic = <value>` line, comments dropped.
+#     profile table and no .cargo/config.toml (or legacy .cargo/config) sets `panic`. cargo tree
+#     and cargo metadata do not show profiles, so this reads the files. TOML can spell the key in
+#     many ways (`"panic" =`, `'panic' =`, `release.panic =`, `release = { panic = ... }`, a
+#     \u escape in a quoted key), so the scan flags every line where `panic` can be a key, and a
+#     line with a quoted key that holds an escape; it may flag more than cargo reads, never less.
+#     Controls: the scan must flag each spelling in a sample, must not flag `panic_x` or
+#     `no-panic` keys or a comment line, and the Cargo.toml rule must accept only the one line.
+# panic_keys <file>: "<table> <line>" for every such line; the table is the last [header] seen.
 panic_keys() {
-  awk '{ sub(/[[:space:]]*#.*/, "") }
-    /^[[:space:]]*\[/ { t = $0; gsub(/[[:space:]]/, "", t); next }
-    /^[[:space:]]*panic[[:space:]]*=/ { v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[[:space:]]+$/, "", v); print t " " v }' "$1"
+  awk 'BEGIN {
+      q = sprintf("%c", 39)
+      key = "(^|[.{,[:space:]\"" q "])panic[\"" q "]?[[:space:]]*="
+      esc = "\\\\[uU][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][^\"" q "=]*[\"" q "][[:space:]]*="
+    }
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*\[/ { t = $0; sub(/[[:space:]]*#.*/, "", t); gsub(/[[:space:]]/, "", t); next }
+    $0 ~ key || $0 ~ esc { l = $0; sub(/^[[:space:]]+/, "", l); sub(/[[:space:]]+$/, "", l); print t " " l }' "$1"
 }
-sample="$(panic_keys <(printf '[profile.dev] # x\n  panic = "unwind"  # y\n[x]\n'))"
-if [ "$sample" = '[profile.dev] "unwind"' ]; then
+# release_abort_only <keys>: the keys of Cargo.toml are exactly [profile.release] panic = "abort".
+release_abort_only() {
+  [ "$(grep -c . <<< "$1")" = 1 ] &&
+    grep -Eq '^\[profile\.release\] panic[[:space:]]*=[[:space:]]*"abort"[[:space:]]*(#.*)?$' <<< "$1"
+}
+control=""
+while IFS= read -r sample; do
+  [ -n "$(panic_keys <(printf '%b' "$sample"))" ] || control="$control [$sample]"
+done <<'SAMPLES'
+[profile.dev] # x\n  panic = "unwind"  # y\n[x]\n
+[profile.release]\n"panic" = "unwind"\n
+[profile.release]\n'panic' = "unwind"\n
+[profile]\nrelease.panic = "unwind"\n
+[profile]\nrelease . "panic" = "unwind"\n
+[profile]\nrelease = { panic = "unwind" }\n
+[profile]\nrelease = { opt-level = 3,panic = "unwind" }\n
+[profile]\nrelease = { debug = "#", panic = "unwind" }\n
+[profile.release]\n"pan\\u0069c" = "unwind"\n
+SAMPLES
+if [ -n "$(panic_keys <(printf '[profile.release]\npanic_x = 1\nno-panic = 2\n  # panic = "unwind"\n'))" ]; then
+  control="$control [panic_x, no-panic or a comment line flagged]"
+fi
+release_abort_only "$(panic_keys <(printf '[profile.release] # r\npanic = "abort" # H23\n'))" ||
+  control="$control [the Cargo.toml rule rejects the one allowed line]"
+release_abort_only "$(panic_keys <(printf '[profile.release]\npanic = "abort"\n[profile.dev]\n"panic" = "unwind"\n'))" &&
+  control="$control [the Cargo.toml rule accepts a second panic key]"
+if [ -z "$control" ]; then
   keys="$(panic_keys Cargo.toml)"
-  if [ "$keys" = '[profile.release] "abort"' ]; then
+  if release_abort_only "$keys"; then
     ok "(13) [profile.release] has panic = \"abort\", and no other profile sets panic"
   else
-    bad "(13) Cargo.toml must set panic = \"abort\" in [profile.release] and nowhere else (H23); found: $(if [ -n "$keys" ]; then paste -sd ';' - <<< "$keys"; else echo "no panic key"; fi)"
+    bad "(13) Cargo.toml must set panic = \"abort\" in [profile.release] and nowhere else, in no other spelling (H23); found: $(if [ -n "$keys" ]; then paste -sd ';' - <<< "$keys"; else echo "no panic key"; fi)"
   fi
-  if [ -f .cargo/config.toml ] && [ -n "$(panic_keys .cargo/config.toml)" ]; then
-    bad "(13) .cargo/config.toml sets panic: $(panic_keys .cargo/config.toml | paste -sd ' ' -)"
-  else
-    ok "(13) .cargo/config.toml sets no panic"
-  fi
+  for f in .cargo/config.toml .cargo/config; do
+    if [ -f "$f" ] && [ -n "$(panic_keys "$f")" ]; then
+      bad "(13) $f sets panic: $(panic_keys "$f" | paste -sd ';' -)"
+    else
+      ok "(13) $f sets no panic"
+    fi
+  done
 else
-  bad "(13) control: the panic scan read '$sample' from a sample with [profile.dev] panic = \"unwind\""
+  bad "(13) control: the panic scan failed on samples:$control"
 fi
 
 exit "$fail"

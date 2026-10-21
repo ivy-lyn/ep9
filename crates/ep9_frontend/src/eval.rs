@@ -9,8 +9,9 @@
 //!   oxc_parser, Script goal -------------- fatal, or an error not in the allowed set --> Syntax
 //!   depth::check_ast_depth (layer 2) ----- too deep --------------------------------> Range
 //!   allowed set: the spans of the new.target, super.x / super[x], super(...) and #x nodes
-//!     that the caller permits (EvalContext); parser and semantic diagnostics whose label
-//!     span is one of them are dropped (and only those)
+//!     that the caller permits (EvalContext); a parser or semantic diagnostic is dropped only
+//!     when it is the context-dependent error of that node kind and its label span is the
+//!     node's
 //!   completion rewrite (V8 Rewriter model): `.result = <value>` stores, see below
 //!   caller strict: force_strict (a synthetic "use strict" directive)
 //!   oxc_semantic (new_compiler) ---------- an error not in the allowed set --------> Syntax
@@ -27,7 +28,7 @@
 //! | # | Decision | Why |
 //! |---|---|---|
 //! | E1 | No wrapper parse: the text is parsed as a Script. A recoverable oxc error whose label span equals an allowed node is dropped | OXC-VERIFY: oxc builds the whole AST for the 4 rows (docs/upstream/oxc-eval-parse-options.md); a wrapper accepts `return 1` |
-//! | E2 | The label spans (oxc 0.155, `SemanticBuilder::new_compiler()`): `new.target` = the NewTarget node (parser error); `super.x`, `super[x]` = the Super node; `super()` = the whole CallExpression; `#x` = the PrivateIdentifier (`#x`, with the `#`) | Measured, the table in `tests` and the oxc doc |
+//! | E2 | The label spans (oxc 0.155, `SemanticBuilder::new_compiler()`): `new.target` = the NewTarget node (parser error); `super.x`, `super[x]` = the Super node; `super()` = the whole CallExpression; `#x` = the PrivateIdentifier (`#x`, with the `#`). Only the error of the node's kind (`AllowKind`, matched by oxc's message) is dropped, and a Super counts only as the object of a non-optional `super.x` / `super[x]`: `super?.x`, `(super).x` and a bare `super` keep their errors | Measured, the table in `tests` and the oxc doc |
 //! | E3 | `new.target` and `super` are allowed only at the eval code's own function level (also inside arrows), never inside a function, method, field initializer or static block of the eval code | Those have their own `new.target` and home object; oxc reports nothing there when they are valid |
 //! | E4 | For indirect eval the context flags and `private_names` are ignored (treated as false and empty) | PerformEval: indirect eval is global code |
 //! | E5 | The completion value comes from an AST rewrite before oxc_semantic: value-producing statements store into the synthetic root binding `.result` (V8 `Rewriter`, src/parsing/rewriter.cc, ported statement by statement), and function 0 returns it. A function or class value is stored through a one-element sequence, so it gets no name | The statement generators (stmt.rs) have no completion register; the rewrite keeps the change inside this file. `eval("(function(){})").name` is `""` (node 24) |
@@ -40,8 +41,9 @@ use ep9_bytecode::{EvalContext, VerifiedUnit};
 use oxc_allocator::{Allocator, CloneIn, GetAllocator, TakeIn};
 use oxc_ast::ast::{
     AccessorProperty, AssignmentOperator, AssignmentTarget, CallExpression, Class, ClassElement,
-    Expression, Function, IdentifierReference, NewTarget, PrivateFieldExpression,
-    PrivateInExpression, Program, PropertyDefinition, PropertyKey, Statement, StaticBlock, Super,
+    ComputedMemberExpression, Expression, Function, IdentifierReference, NewTarget,
+    PrivateFieldExpression, PrivateInExpression, Program, PropertyDefinition, PropertyKey,
+    Statement, StaticBlock, StaticMemberExpression,
 };
 use oxc_ast::builder::AstBuilder;
 use oxc_ast_visit::{Visit, walk};
@@ -271,11 +273,44 @@ fn unsupported(source: &str, feature: &'static str, span: Span) -> CodegenError 
 // ---------------------------------------------------------------------------------------------
 // The allowed set (E1-E3)
 
-/// The spans of the nodes whose oxc diagnostics are dropped.
+/// The context-dependent early errors that a caller can permit (E2), each known by oxc's
+/// message (oxc gives these diagnostics no code). A `#x` has two: outside any class of the
+/// eval code, and inside one that does not declare it (AllPrivateIdentifiersValid).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum AllowKind {
+    NewTarget,
+    SuperProperty,
+    SuperCall,
+    PrivateName,
+}
+
+impl AllowKind {
+    /// The kind of `d`, if it is one of the four errors.
+    fn of(d: &OxcDiagnostic) -> Option<AllowKind> {
+        let m: &str = &d.message;
+        Some(match m {
+            "Unexpected new.target expression" => Self::NewTarget,
+            "'super' can only be referenced in members of derived classes or object literal \
+             expressions." => Self::SuperProperty,
+            "Super calls are not permitted outside constructors or in nested functions inside \
+             constructors." => Self::SuperCall,
+            _ if m.starts_with("Private identifier '#")
+                && m.ends_with("' is not allowed outside class bodies")
+                || m.starts_with("Private field '#")
+                    && m.ends_with("' must be declared in an enclosing class") =>
+            {
+                Self::PrivateName
+            }
+            _ => return None,
+        })
+    }
+}
+
+/// The nodes whose context-dependent oxc diagnostic is dropped.
 #[derive(Default)]
 struct Allowed {
-    /// Sorted, deduplicated `(start, end)`.
-    spans: Vec<(u32, u32)>,
+    /// Sorted, deduplicated `(start, end, kind)`.
+    spans: Vec<(u32, u32, AllowKind)>,
     /// The allowed `super(...)` calls (E6).
     super_calls: Vec<Span>,
 }
@@ -294,8 +329,12 @@ impl Allowed {
         out
     }
 
-    /// The diagnostic's label (primary, else the first) is exactly an allowed node.
+    /// The diagnostic is the error of an allowed node's kind, and its label (primary, else
+    /// the first) is exactly that node.
     fn drops(&self, d: &OxcDiagnostic) -> bool {
+        let Some(kind) = AllowKind::of(d) else {
+            return false;
+        };
         let Some(label) = d
             .labels
             .iter()
@@ -306,7 +345,7 @@ impl Allowed {
         };
         let start = label.offset();
         self.spans
-            .binary_search(&(start, start.saturating_add(label.len())))
+            .binary_search(&(start, start.saturating_add(label.len()), kind))
             .is_ok()
     }
 }
@@ -321,8 +360,20 @@ struct AllowWalk<'s> {
 }
 
 impl AllowWalk<'_> {
-    fn add(&mut self, span: Span) {
-        self.out.spans.push((span.start, span.end));
+    fn add(&mut self, span: Span, kind: AllowKind) {
+        self.out.spans.push((span.start, span.end, kind));
+    }
+
+    /// `super` as the object of a non-optional `super.x` / `super[x]` (§13.3.7
+    /// SuperProperty) at the eval code's own function level.
+    fn super_object(&mut self, object: &Expression<'_>, optional: bool) {
+        if let Expression::Super(sup) = object
+            && !optional
+            && self.functions == 0
+            && self.allow.super_property
+        {
+            self.add(sup.span, AllowKind::SuperProperty);
+        }
     }
 
     fn nested(&mut self, f: impl FnOnce(&mut Self)) {
@@ -361,21 +412,26 @@ impl<'a> Visit<'a> for AllowWalk<'_> {
 
     fn visit_new_target(&mut self, it: &NewTarget) {
         if self.functions == 0 && self.allow.new_target {
-            self.add(it.span);
+            self.add(it.span, AllowKind::NewTarget);
         }
     }
 
-    /// `super.x` and `super[x]` (the callee of `super()` does not come here).
-    fn visit_super(&mut self, it: &Super) {
-        if self.functions == 0 && self.allow.super_property {
-            self.add(it.span);
-        }
+    /// `super.x`. Any other `super` (optional, parenthesized, bare) is never added.
+    fn visit_static_member_expression(&mut self, it: &StaticMemberExpression<'a>) {
+        self.super_object(&it.object, it.optional);
+        walk::walk_static_member_expression(self, it);
+    }
+
+    /// `super[x]`.
+    fn visit_computed_member_expression(&mut self, it: &ComputedMemberExpression<'a>) {
+        self.super_object(&it.object, it.optional);
+        walk::walk_computed_member_expression(self, it);
     }
 
     fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
         if matches!(it.callee, Expression::Super(_)) {
             if self.functions == 0 && self.allow.super_call {
-                self.add(it.span);
+                self.add(it.span, AllowKind::SuperCall);
                 self.out.super_calls.push(it.span);
             }
             self.visit_arguments(&it.arguments);
@@ -386,14 +442,14 @@ impl<'a> Visit<'a> for AllowWalk<'_> {
 
     fn visit_private_field_expression(&mut self, it: &PrivateFieldExpression<'a>) {
         if self.allow.private_name_ok(it.field.name.as_str()) {
-            self.add(it.field.span);
+            self.add(it.field.span, AllowKind::PrivateName);
         }
         walk::walk_private_field_expression(self, it);
     }
 
     fn visit_private_in_expression(&mut self, it: &PrivateInExpression<'a>) {
         if self.allow.private_name_ok(it.left.name.as_str()) {
-            self.add(it.left.span);
+            self.add(it.left.span, AllowKind::PrivateName);
         }
         walk::walk_private_in_expression(self, it);
     }
@@ -951,6 +1007,91 @@ mod tests {
         );
     }
 
+    /// A caller that allows `super.x` allows only a plain member access on `super`
+    /// (§13.3.7 SuperProperty): an optional chain on `super`, a parenthesized `super` and a
+    /// bare `super` stay SyntaxErrors (node v24: "'super' keyword unexpected here").
+    #[test]
+    fn only_a_plain_super_member_is_allowed() {
+        let method = EvalContext {
+            in_method: true,
+            super_property_ok: true,
+            ..direct()
+        };
+        for src in [
+            "super?.x",
+            "super?.[\"x\"]",
+            "super?.x()",
+            "(super)?.x",
+            "(super).x",
+            "(super)[0]",
+            "super",
+            "super?.()",
+        ] {
+            let got = outcome(src, &method);
+            assert!(got.starts_with("syntax: "), "{src}: {got}");
+        }
+        for src in [
+            "super.x",
+            "super[0]",
+            "super.x?.y",
+            "super[0]?.()",
+            "super.x()",
+            "super.x = 1",
+            "super.x++",
+            "[super.x] = [1]",
+            "() => super.x",
+        ] {
+            assert_eq!(outcome(src, &method), "ok", "{src}");
+        }
+    }
+
+    /// Only the context-dependent diagnostic of each allowed node is dropped: another
+    /// diagnostic whose label is the same span stays.
+    #[test]
+    fn only_the_allowed_kind_is_dropped() {
+        let allocator = Allocator::default();
+        let src = "new.target; super.x; this.#x; super()";
+        let parsed = Parser::new(&allocator, src, SourceType::script()).parse();
+        let allow = Allow::from_context(&EvalContext {
+            in_derived_ctor: true,
+            super_property_ok: true,
+            super_call_ok: true,
+            private_names: vec!["x".to_owned()],
+            ..direct()
+        });
+        let allowed = Allowed::collect(&parsed.program, &allow);
+        let rows = [
+            (Span::new(0, 10), "Unexpected new.target expression"),
+            (
+                Span::new(12, 17),
+                "'super' can only be referenced in members of derived classes or object \
+                 literal expressions.",
+            ),
+            (
+                Span::new(26, 28),
+                "Private identifier '#x' is not allowed outside class bodies",
+            ),
+            (
+                Span::new(26, 28),
+                "Private field '#x' must be declared in an enclosing class",
+            ),
+            (
+                Span::new(30, 37),
+                "Super calls are not permitted outside constructors or in nested functions \
+                 inside constructors.",
+            ),
+        ];
+        for (span, message) in rows {
+            let d = OxcDiagnostic::error(message).with_label(span);
+            assert!(allowed.drops(&d), "{message} at {span:?}");
+            let other = OxcDiagnostic::error("Unexpected token").with_label(span);
+            assert!(!allowed.drops(&other), "another error at {span:?}");
+        }
+        // The right message at another node's span stays too.
+        let d = OxcDiagnostic::error(rows[0].1).with_label(rows[1].0);
+        assert!(!allowed.drops(&d));
+    }
+
     /// E3: only the eval code's own function level (and arrows in it) sees the caller's
     /// `new.target` and `super`.
     #[test]
@@ -1054,10 +1195,16 @@ mod tests {
             ("StaLookupSlot", "a"),
             ("LdaLookupSlot", "a"),
             ("LdaLookupSlot", "b"),
-            ("LdaLookupSlot", "f"),
+            ("LdaConstant", "f"),
         ] {
             assert!(has(&text, op, name), "missing {op} {name} in\n{text}");
         }
+        // The callee `f` of `f()` is a dynamic callee: its value and receiver come from one
+        // CallRuntimeForPair LoadLookupSlotForCall (bytecodegen/lookup.rs, P2-LOOKUP).
+        assert!(
+            text.contains("CallRuntimeForPair LoadLookupSlotForCall"),
+            "{text}"
+        );
         assert!(text.contains("CallRuntime DeclareEvalVar"), "{text}");
         assert!(
             text.find("DeclareEvalFunction") < text.find("DeclareEvalVar"),

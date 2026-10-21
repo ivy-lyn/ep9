@@ -239,7 +239,8 @@ byte_enum! {
 /// the VM add entries as they need them; each addition bumps [`crate::ABI_VERSION`] until H2
 /// freezes at M1 exit. ABI 2 added ids 6-18 for BytecodeGen v0 (`ep9_frontend::bytecodegen`)
 /// and fixed the `DefineClass` layout. ABI 3 added ids 19-28 (generators, class fields and
-/// private names, `with` calls, sloppy direct eval). [`runtime_table_text`] is part of the ABI
+/// private names, `with` calls, sloppy direct eval). ABI 4 added ids 29-31 (a dynamic
+/// reference resolved before the right-hand side). [`runtime_table_text`] is part of the ABI
 /// fingerprint.
 ///
 /// A function that returns a pair ([`RuntimeInfo::returns_pair`]) is called only by
@@ -331,6 +332,19 @@ pub enum RuntimeId {
     /// `DeclareEvalFunction(name, function)`: a function declaration of sloppy direct eval
     /// code.
     DeclareEvalFunction = 28,
+    /// `ResolveLookupSlot(name)`: ResolveBinding (ECMA-262 §9.4.2) of a dynamic name, without
+    /// GetValue, for a reference that is used after other code runs (`x = v`, `x op= v`,
+    /// `x++`, `var x = v`). Returns the environment that binds `name`: a context, an object
+    /// (a `with` object), undefined (the global environment) or null (unresolvable). Only
+    /// `LoadLookupSlotResolved` and `StoreLookupSlotResolved` read the result. (ABI 4.)
+    ResolveLookupSlot = 29,
+    /// `LoadLookupSlotResolved(env, name)`: GetValue of the reference that `ResolveLookupSlot`
+    /// gave `env` for `name` (no new resolution). (ABI 4.)
+    LoadLookupSlotResolved = 30,
+    /// `StoreLookupSlotResolved(env, name, value, strict)`: PutValue of `value` to that
+    /// reference (SetMutableBinding of the record it names; `strict` is true or false: the
+    /// store is in strict code). Returns `value`. (ABI 4.)
+    StoreLookupSlotResolved = 31,
 }
 
 /// Static facts about one runtime function.
@@ -520,6 +534,24 @@ pub const RUNTIME_FUNCTIONS: &[RuntimeInfo] = &[
         id: RuntimeId::DeclareEvalFunction,
         name: "DeclareEvalFunction",
         arity: Some(2),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::ResolveLookupSlot,
+        name: "ResolveLookupSlot",
+        arity: Some(1),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::LoadLookupSlotResolved,
+        name: "LoadLookupSlotResolved",
+        arity: Some(2),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::StoreLookupSlotResolved,
+        name: "StoreLookupSlotResolved",
+        arity: Some(4),
         returns_pair: false,
     },
 ];

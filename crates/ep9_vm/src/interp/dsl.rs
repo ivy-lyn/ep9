@@ -10,7 +10,7 @@
 //! | `expand_threaded!([return, "sib"])` | (b) `ep9h__sib__tail__<Name>` per opcode, `..._cold` per cold block, `TABLE` |
 //! | `expand_threaded!([become, "become"])` | (c) the same with `become` |
 //! | `expand_match!([])` | (a) `ep9loop__match__run`: one `loop { match }` |
-//! | `expand_scaled!([])` | `step::<S>`: one prefixed instruction, out of line |
+//! | `expand_scaled!([])` | `step::<S>`: one prefixed instruction, out of line; its cold blocks in `step_cold::<S>` |
 //! | `handler!` | one handler fn with the handler ABI of the target (x86-64: `sysv64-unwind`; `sysv64` under `panic = "abort"`) |
 //!
 //! Handler classes (read by `cargo xtask disasm-check`): `tail` handlers leave only through
@@ -603,7 +603,11 @@ macro_rules! expand_scaled {
                         match $crate::interp::ops::$name::fast(&mut st, $($oname),*) {
                             Flow::Next => Done::Next,
                             Flow::Jump(t) => Done::Jump(t),
-                            Flow::Cold => $crate::interp::ops::$name::cold(&mut st, $($oname),*),
+                            Flow::Cold => {
+                                let St { cx, fp, acc, .. } = st;
+                                // SAFETY: the cold step takes the same state as this arm.
+                                return unsafe { step_cold::<S>(cx, pc, fp, acc) };
+                            }
                         }
                     } else {
                         $crate::interp::ops::$name::fast(&mut st, $($oname),*)
@@ -616,6 +620,57 @@ macro_rules! expand_scaled {
                     cx.out_fp = f;
                     cx.out_pc = next;
                     a
+                } )*
+                _ => {
+                    let r = $crate::interp::slow::bad_opcode(cx, fp, pc);
+                    cx.out_fp = fp;
+                    cx.out_pc = $crate::interp::EXIT_STUB.as_ptr();
+                    r
+                }
+            }
+        }
+
+        /// The cold blocks of `step::<S>`, out of line, so that the rare cold paths (runtime
+        /// calls, lookups, IC misses) do not shape the register use of the fast arms. Same
+        /// contract as `step::<S>`; called only after the opcode's fast body returned
+        /// `Flow::Cold`.
+        ///
+        /// # Safety
+        /// As for `step::<S>`.
+        #[cold]
+        #[inline(never)]
+        #[allow(unused_mut, unused_variables, unused_unsafe, unreachable_code)]
+        unsafe fn step_cold<S: $crate::interp::dsl::Scale>(
+            cx: &mut Cx,
+            pc: *const u8,
+            fp: *mut u64,
+            acc: u64,
+        ) -> u64 {
+            // SAFETY: a verified prefix is followed by an opcode byte.
+            let op = unsafe { *pc.add(1) };
+            match op {
+                $( $code if const { ep9_bytecode::Opcode::$name.info().has_scalable_operands() } => {
+                    $crate::interp::ops::if_cold!($name {{
+                        // SAFETY: as in `step::<S>`.
+                        let (len, ($($oname,)*)) = unsafe {
+                            $crate::interp::dsl::decode!(S, pc; $($oname: $okind),*)
+                        };
+                        // SAFETY: as in `step::<S>`.
+                        let mut st = unsafe { St::new(&mut *cx, pc, fp, acc, pc.add(len)) };
+                        let next = match $crate::interp::ops::$name::cold(&mut st, $($oname),*) {
+                            Done::Next => st.next,
+                            Done::Jump(t) => t,
+                        };
+                        let (f, a) = (st.fp, st.acc);
+                        cx.out_fp = f;
+                        cx.out_pc = next;
+                        a
+                    }} else {{
+                        let r = $crate::interp::slow::bad_opcode(cx, fp, pc);
+                        cx.out_fp = fp;
+                        cx.out_pc = $crate::interp::EXIT_STUB.as_ptr();
+                        r
+                    }})
                 } )*
                 _ => {
                     let r = $crate::interp::slow::bad_opcode(cx, fp, pc);

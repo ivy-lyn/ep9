@@ -1,6 +1,6 @@
 # gen-basic: script (sloppy)
 # | function* g(a) { var x = yield a; yield; return x + new.target; } var e = function* () {}; ({ *m() { yield this; } });
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=118 source=embedded hints=none
 source_hash=f7c340cccfd4f0dfd57144544d08d9d3eb0a5549f5d2332a8a8940caa8a6a6fd
 strings (3):

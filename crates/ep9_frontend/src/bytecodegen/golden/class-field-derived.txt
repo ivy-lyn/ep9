@@ -1,6 +1,6 @@
 # class-field-derived: script (sloppy)
 # | class A {} class B extends A { x = 1; constructor() { super(); } } class C extends A { y = super.constructor; } class D extends A { z; constructor() { var f = () => super(); f(); } }
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=182 source=embedded hints=none
 source_hash=0622f1c99eb00b08ba5dd41d4164d18474fd1010236ff7777fb22bda9b48b1a2
 strings (12):

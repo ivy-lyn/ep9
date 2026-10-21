@@ -1,6 +1,6 @@
 # var-closure: script (sloppy)
 # | function f(a) { var b = 1; let c = 2; return function g() { return a + b + c; }; }
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=82 source=embedded hints=none
 source_hash=63e47c26f800a6eec755d37db5dbd490381c9e52e0993c0f1dba7cf7238fff28
 strings (5):

@@ -4,7 +4,7 @@
 # | o.m(
 # | 1);
 # | new o.C();
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=36 source=embedded hints=none
 source_hash=7788868f7d8b6e6e5d2486aea1eb312bb196131e504025f3d5f9df1de60a40e0
 strings (6):

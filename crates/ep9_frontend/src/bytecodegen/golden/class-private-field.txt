@@ -1,6 +1,6 @@
 # class-private-field: script (sloppy)
 # | class A { #x = 1; static #s; get() { return this.#x; } set(v) { this.#x = v; this.#x += 1; this.#x++; [this.#x] = [v]; } has(o) { return #x in o && #s in A; } opt(o) { return o?.#x; } call() { return this.#x(); } }
-; ep9 bytecode, ABI 3
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=214 source=embedded hints=none
 source_hash=453642638688494c8423382dd32ed87aa2722cca8d5ab5718fc707c36c7b69d5
 strings (12):

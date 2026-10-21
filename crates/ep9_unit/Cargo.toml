@@ -15,8 +15,8 @@ ep9_heap = { path = "../ep9_heap" }
 ep9_value = { path = "../ep9_value" }
 ep9_vm = { path = "../ep9_vm" }
 
-# build.rs: the engine build id (H35-Q8). It writes all zeros until the BUILD-ID task (M0 month 2,
-# P2) hashes the build inputs with ep9_bytecode's SHA-256.
+# build.rs: the engine build id (H35-Q8): the first 16 bytes of SHA-256 (ep9_bytecode's) over
+# the commit, `rustc -vV`, the target and ep9_unit's features; EP9_BUILD_ID overrides it.
 [build-dependencies]
 ep9_bytecode = { path = "../ep9_bytecode" }
 

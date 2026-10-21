@@ -15,6 +15,7 @@
 //! | 24, 25 | `SetClassFieldsInitializer`, `RunClassFieldsInitializer` | §15.7.14 fields, InitializeInstanceElements (`slow/class_fields.rs`) |
 //! | 26 | `LoadLookupSlotForCall` | §9.1.1.2.10 WithBaseObject; a pair, only through `CallRuntimeForPair` ([`call_runtime_pair`]; `slow/lookup.rs`) |
 //! | 27, 28 | `DeclareEvalVar`, `DeclareEvalFunction` | §19.2.1.3 EvalDeclarationInstantiation (`slow/eval.rs`) |
+//! | 29-31 | `ResolveLookupSlot`, `LoadLookupSlotResolved`, `StoreLookupSlotResolved` | §9.4.2 ResolveBinding, then GetValue / PutValue of that reference (ABI 4, `slow/lookup.rs`) |
 //!
 //! Ids 19-28 (ABI 3) are stubs in M2-P0 that throw `not implemented in ep9 v0: <name>`, as
 //! the catch-all arm did before they were routed; their owners fill them.
@@ -184,8 +185,17 @@ pub(crate) fn call_runtime(
         // slow/eval.rs (P3-EVAL-VM).
         Some(Id::DeclareEvalVar) => super::eval::declare_eval_var(cx, fp, a(0)),
         Some(Id::DeclareEvalFunction) => super::eval::declare_eval_function(cx, fp, a(0), a(1)),
-        // An id that a later ABI appends and the VM does not route yet. At ABI 3 every id is
-        // routed above, so the arm is unreachable until the ABI 4 ids arrive.
+        // ---- ABI 4 ----
+        // slow/lookup.rs: a dynamic reference resolved before the right-hand side.
+        Some(Id::ResolveLookupSlot) => super::lookup::resolve_lookup_slot(cx, fp, a(0)),
+        Some(Id::LoadLookupSlotResolved) => {
+            super::lookup::load_lookup_slot_resolved(cx, fp, a(0), a(1))
+        }
+        Some(Id::StoreLookupSlotResolved) => {
+            super::lookup::store_lookup_slot_resolved(cx, a(0), a(1), a(2), a(3))
+        }
+        // An id that a later ABI appends and the VM does not route yet. At ABI 4 every id is
+        // routed above, so the arm is unreachable until the next ABI adds ids.
         #[allow(unreachable_patterns)]
         Some(other) => Err(not_implemented(cx, other.info().name)),
         None => Err(throw_error(

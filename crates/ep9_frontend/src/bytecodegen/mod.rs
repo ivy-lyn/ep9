@@ -1,4 +1,4 @@
-//! BytecodeGen v0: JS source -> [`CompiledUnit`](ep9_bytecode::CompiledUnit) (bytecode ABI 3).
+//! BytecodeGen v0: JS source -> [`CompiledUnit`](ep9_bytecode::CompiledUnit) (bytecode ABI 4).
 //!
 //! ```text
 //! compile_script / compile_module / compile (and eval.rs compile_eval: own parse job, Eval root)
@@ -9,8 +9,9 @@
 //!   1. one scope descriptor per analysis scope (unit scope id == analysis scope id)
 //!      (+ the script context descriptor as unit scope 1 when the script top level needs one)
 //!   2. job queue: f0, then every function node in the order the walk meets it
-//!   3. FnGen per job (func.rs, stmt.rs, expr.rs, class.rs, pattern.rs, generator.rs; the M2
-//!      P0 routing stubs class_fields.rs, private.rs, lookup.rs) -> FunctionCode
+//!   3. FnGen per job (func.rs, stmt.rs, expr.rs, class.rs, pattern.rs, generator.rs,
+//!      class_fields.rs, private.rs, lookup.rs (dynamic callees: CallRuntimeForPair
+//!      LoadLookupSlotForCall)) -> FunctionCode
 //!   4. UnitBuilder::finish: interns strings, runs the verifier
 //!   v
 //! VerifiedUnit
@@ -30,7 +31,7 @@
 //! | G8 | TDZ: a binding gets an explicit hole store at scope entry only if some reference checks it (or a dynamic lookup may reach it). Globals and module cells: the VM checks | Fewer stores; V8 rule |
 //! | G9 | Runtime calls for what has no opcode: global init, direct eval, classes, super, accessors, object spread, `__proto__` (ABI 2 ids 6-18) | Opcode table unchanged |
 //! | G10 | A position entry before every instruction that may throw; statement positions at every statement | M0 exit 7 (`throw` prints file:line:col) |
-//! | G11 | Unsupported constructs fail the whole unit with [`CodegenError::Unsupported`] (async functions and async generators, private names, class fields, ...) | No silent wrong code |
+//! | G11 | Unsupported constructs fail the whole unit with [`CodegenError::Unsupported`] (async functions and async generators, class auto-accessors, decorators, ...) | No silent wrong code |
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -227,7 +228,8 @@ pub(crate) enum Job<'a> {
         id: FunctionId,
         name: Option<UnitString>,
     },
-    /// The synthetic default constructor of a class.
+    /// The synthetic default constructor of a class, or its instance or static members
+    /// initializer (P2-CLS-CG, D1): `gen_default_constructor` dispatches on the function kind.
     DefaultConstructor {
         class: &'a Class<'a>,
         id: FunctionId,
@@ -610,10 +612,10 @@ pub(crate) fn variable_mode(kind: BindingKind) -> VariableMode {
         | BindingKind::PrivateName { .. } => VariableMode::Const,
         BindingKind::Function | BindingKind::BlockFunction => VariableMode::Function,
         BindingKind::Class => VariableMode::Class,
+        BindingKind::FunctionName => VariableMode::FunctionName,
         BindingKind::Var
         | BindingKind::Parameter
         | BindingKind::CatchParameter
-        | BindingKind::FunctionName
         | BindingKind::This
         | BindingKind::NewTarget
         | BindingKind::Arguments

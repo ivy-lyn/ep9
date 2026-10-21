@@ -192,8 +192,8 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
 // ---- the compiler hooks (C2): ep9_frontend behind `IsolateConfig::compiler` ----------------
 
 /// The compiler entry points of the CLI's isolates: ep9_vm does not link the front end, so eval,
-/// `Function()` and run-time scripts reach it through these (M2-P0: the eval and
-/// `Function()` entries still answer `Unsupported`).
+/// `Function()` and run-time scripts reach it through these. Eval code compiles
+/// (`compile_eval`, M2-P2); the `Function()` entry still answers `Unsupported` (P3-FNCTOR).
 static COMPILER: CompilerHooks = CompilerHooks {
     compile_eval: hook_compile_eval,
     compile_function: hook_compile_function,
