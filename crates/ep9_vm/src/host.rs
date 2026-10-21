@@ -112,13 +112,13 @@ impl HostCx<'_> {
 
     /// `obj[key]`.
     pub fn get(&mut self, obj: Value, key: &str) -> JsResult<Value> {
-        let k = object::new_string(self.cx.rt(), key);
+        let k = crate::atoms::intern_str(self.cx.rt(), key);
         crate::property::get(self.cx, obj.to_bits(), k).map(val)
     }
 
     /// `obj[key] = v` (strict).
     pub fn set(&mut self, obj: Value, key: &str, v: Value) -> JsResult<()> {
-        let k = object::new_string(self.cx.rt(), key);
+        let k = crate::atoms::intern_str(self.cx.rt(), key);
         crate::property::set(self.cx, obj.to_bits(), k, v.to_bits(), true)
     }
 
@@ -131,7 +131,7 @@ impl HostCx<'_> {
     }
 
     pub fn is_callable(&self, v: Value) -> bool {
-        object::is_function(v.to_bits())
+        crate::kinds::is_callable(v.to_bits())
     }
 
     /// `typeof v`.

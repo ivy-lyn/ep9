@@ -19,6 +19,7 @@ use ep9_bytecode::VerifiedUnit;
 use ep9_heap::{Heap, HeapConfig, HeapError, VerifyError, VerifyReport};
 use ep9_value::{Throw, Value};
 
+use crate::builtins::BuiltinTable;
 use crate::conv::{Res, describe};
 use crate::error;
 use crate::frame::{HOLE, UNDEFINED};
@@ -28,7 +29,7 @@ use crate::object::{self, attr, is_error, is_string, own_define, own_get};
 use crate::property;
 use crate::runtime::{Atom, Root, Runtime, val};
 use crate::unit::{FunctionInfo, LoadedUnit};
-use crate::{call, realm};
+use crate::{atoms, call, realm, shape};
 
 /// Isolate settings.
 #[derive(Clone, Debug)]
@@ -40,6 +41,17 @@ pub struct IsolateConfig {
     pub dispatch: Dispatch,
     /// Frames in `Error.prototype.stack` (V8: `Error.stackTraceLimit` = 10).
     pub stack_trace_limit: usize,
+    /// Calls of a function before the interpreter gives it a feedback vector (H16): 0 = at
+    /// the first call (eager), `u32::MAX` = never. Default
+    /// [`IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD`].
+    pub feedback_threshold: u32,
+    /// The builtin table to install into the realm (H20), after the VM's own intrinsics.
+    pub builtins: Option<&'static BuiltinTable>,
+}
+
+impl IsolateConfig {
+    /// The default of [`IsolateConfig::feedback_threshold`].
+    pub const DEFAULT_FEEDBACK_THRESHOLD: u32 = 8;
 }
 
 impl Default for IsolateConfig {
@@ -49,6 +61,8 @@ impl Default for IsolateConfig {
             vm_stack_slots: 1 << 20,
             dispatch: Dispatch::DEFAULT,
             stack_trace_limit: 10,
+            feedback_threshold: IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD,
+            builtins: None,
         }
     }
 }
@@ -145,7 +159,7 @@ impl Isolate {
                 "vm_stack_slots must be in 1024..=2^28",
             ));
         }
-        let heap = Heap::new(config.heap).map_err(IsolateError::Heap)?;
+        let heap = Heap::new(shape::heap_config(config.heap)).map_err(IsolateError::Heap)?;
         let bounds = ep9_platform::current_thread_stack_bounds()
             .map_err(|e| IsolateError::Heap(HeapError::Stack(e)))?;
         let native_limit = bounds.low + native_margin(bounds.size());
@@ -155,7 +169,7 @@ impl Isolate {
             native_limit,
             config.stack_trace_limit,
         );
-        realm::init(&rt);
+        realm::init(&rt, config.builtins);
         let cx = Box::new(Cx {
             table: *config.dispatch.table(),
             rt: &*rt,
@@ -165,6 +179,8 @@ impl Isolate {
             out_fp: core::ptr::null_mut(),
             out_pc: core::ptr::null(),
             dispatch: config.dispatch,
+            feedback_threshold: config.feedback_threshold,
+            proto_epoch: &rt.shapes.proto_epoch,
         });
         Ok(Isolate { cx, rt })
     }
@@ -178,7 +194,7 @@ impl Isolate {
     pub fn register_host_function(&mut self, name: &str, length: u32, f: HostFn) {
         let rt = &*self.rt;
         let func = realm::new_host_function(rt, f, name, length, false);
-        let key = object::new_string(rt, name);
+        let key = atoms::intern_str(rt, name);
         own_define(rt, rt.global(), key, func, attr::HIDDEN);
     }
 
@@ -210,7 +226,7 @@ impl Isolate {
     /// The global binding `name` (the script lexical record first), without running JS.
     pub fn global(&self, name: &str) -> Option<Value> {
         let rt = &*self.rt;
-        let key = object::new_string(rt, name);
+        let key = atoms::intern_str(rt, name);
         own_get(rt.root(Root::Lexical), key)
             .or_else(|| own_get(rt.global(), key))
             .map(|(v, _)| val(v))
