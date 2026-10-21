@@ -121,11 +121,11 @@ An ADR whose row is built after M1 exit lists its parts, each with its own freez
 | H13 | Snapshot readiness and stable indices | Rules M0; index lists M1; built M4 (A1) | E | Not started | `H13-snapshot-stable-indices.md` |
 | H14 | Frames, calls, dispatch slots, pc→code registry | M0 wk3; Spike B + SP-Unit (M0 month 2); Spike C (M1) | E | Draft (2026-10-21; feedback vector via fp-4 filled) | [H14-frames-and-dispatch.md](H14-frames-and-dispatch.md) |
 | H15 | Interpreter dispatch | M0 wk2 | E | Draft (reopened twice 2026-10-21; release expansion: sibling calls on every target) | [H15-interpreter-dispatch.md](H15-interpreter-dispatch.md) |
-| H16 | ICs and feedback; feedback schema = FactSnapshot schema | Slot kinds M0 wk4; frozen M1 exit | E | Draft (2026-10-21; slot kinds H16 v0 and FactSnapshot v0 built) | [H16-ics-and-feedback.md](H16-ics-and-feedback.md) |
-| H17 | Object layout | M1 (frozen at M1a) | U | Draft (2026-10-21; object layout v0 on shapes built) | [H17-object-layout.md](H17-object-layout.md) |
+| H16 | ICs and feedback; feedback schema = FactSnapshot schema | Slot kinds M0 wk4; frozen M1 exit | E | Draft (2026-10-21; slot kinds H16 v0, FactSnapshot v0, T0 named/global IC v0 and epoch saturation built) | [H16-ics-and-feedback.md](H16-ics-and-feedback.md) |
+| H17 | Object layout | M1 (frozen at M1a) | U | Draft (2026-10-21; object layout v0 on shapes and accessors built) | [H17-object-layout.md](H17-object-layout.md) |
 | H18 | Elements kinds | M1a | U | Draft (2026-10-21, v0 notes) | [H18-elements-kinds.md](H18-elements-kinds.md) |
 | H19 | Strings | M1a | U | Draft (2026-10-21; strings v0 and symbols v0 built) | [H19-strings.md](H19-strings.md) |
-| H20 | Builtin ABI | Frozen M0 exit | U | Draft (2026-10-21; ABI v1 draft, builtin tables and ids built; Q4 partly settled) | [H20-builtin-abi.md](H20-builtin-abi.md) |
+| H20 | Builtin ABI | Frozen M0 exit | U | Draft (2026-10-21; ABI v1 draft, builtin tables and ids, P3 builtins and Cx::initial_name built; Q4 partly settled) | [H20-builtin-abi.md](H20-builtin-abi.md) |
 | H21 | Shape transitions under concurrent readers | ADR M1; built M5; functional before M7 | U | Not started | `H21-shape-transitions.md` |
 | H22 | Isolates and realms | M0 wk3 (D14) | E | Draft (2026-10-21) | [H22-isolates-and-realms.md](H22-isolates-and-realms.md) |
 | H23 | Limits and failure policy | M0 wk3 | E | Draft (2026-10-21) | [H23-limits-and-failure-policy.md](H23-limits-and-failure-policy.md) |
