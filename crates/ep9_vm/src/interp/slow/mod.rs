@@ -46,7 +46,9 @@ pub(crate) use literal::{CtxKind, Lit, clone_object, create_closure, create_cont
 pub(crate) use ops_misc::{
     CmpOp, UnOp, binary, compare, strict_equals, switch_target, to_boolean, type_of, unary,
 };
-pub(crate) use property::{PropOp, load_global, prop, store_global};
+pub(crate) use property::{
+    PropOp, get_named, get_super, load_global, prop, set_named, store_global,
+};
 pub(crate) use runtime::call_runtime;
 
 #[inline(always)]

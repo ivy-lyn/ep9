@@ -32,7 +32,7 @@ use crate::interp::dsl::{Back, CSlot, Count, Depth, FSlot, Fwd, K, R, RList, RtI
 use crate::interp::slow::{self, CmpOp, CtxKind, Lit, NameMsg, PropOp, UnOp};
 use crate::interp::{Done, Flow, St};
 use crate::runtime::ErrorKind;
-use crate::{kinds, object};
+use crate::{ic, kinds, object};
 
 macro_rules! op {
     ($Name:ident ($st:ident $(, $a:ident : $t:ty)*) $fast:block) => {
@@ -430,19 +430,43 @@ op!(LdaNewTarget(st) {
 
 // ---- globals -------------------------------------------------------------------------------
 
-op!(LdaGlobal(st, name: K, _s: FSlot) { Flow::Cold } cold {
+// Global ICs (H16, `ic.rs`): a lexical binding or an own data property of the global object.
+op!(LdaGlobal(st, name: K, s: FSlot) {
+    match ic::load_global(st.rt(), st.info(), st.cx.global_this, s.0) {
+        Some(v) => {
+            st.acc = v;
+            Flow::Next
+        }
+        None => Flow::Cold,
+    }
+} cold {
     let n = st.constant(name);
-    let r = slow::load_global(st.cx, st.fp, st.pc, n, false);
+    let r = slow::load_global(st.cx, st.fp, st.pc, n, false, s.0);
     st.result(r)
 });
-op!(LdaGlobalInsideTypeof(st, name: K, _s: FSlot) { Flow::Cold } cold {
+op!(LdaGlobalInsideTypeof(st, name: K, s: FSlot) {
+    match ic::load_global(st.rt(), st.info(), st.cx.global_this, s.0) {
+        Some(v) => {
+            st.acc = v;
+            Flow::Next
+        }
+        None => Flow::Cold,
+    }
+} cold {
     let n = st.constant(name);
-    let r = slow::load_global(st.cx, st.fp, st.pc, n, true);
+    let r = slow::load_global(st.cx, st.fp, st.pc, n, true, s.0);
     st.result(r)
 });
-op!(StaGlobal(st, name: K, _s: FSlot) { Flow::Cold } cold {
+op!(StaGlobal(st, name: K, s: FSlot) {
+    let v = st.acc;
+    if ic::store_global(st.rt(), st.info(), st.cx.global_this, s.0, v) {
+        Flow::Next
+    } else {
+        Flow::Cold
+    }
+} cold {
     let n = st.constant(name);
-    let r = slow::store_global(st.cx, st.fp, st.pc, n, st.acc);
+    let r = slow::store_global(st.cx, st.fp, st.pc, n, st.acc, s.0);
     st.result(r)
 });
 
@@ -508,13 +532,40 @@ op!(StaModuleVariable(st, _cell: i32, _depth: Depth) { Flow::Cold } cold {
 
 // ---- property access -----------------------------------------------------------------------
 
-op!(GetNamedProperty(st, object: R, name: K, _s: FSlot) { Flow::Cold } cold {
+// Named loads and stores run the IC hit path inline (H16, `ic.rs`); a miss runs the generic
+// operation and records a case.
+op!(GetNamedProperty(st, object: R, name: K, s: FSlot) {
+    let o = st.reg(object);
+    match ic::load(st.info(), st.cx.proto_epoch, o, s.0) {
+        Some(v) => {
+            st.acc = v;
+            Flow::Next
+        }
+        None => Flow::Cold,
+    }
+} cold {
     let (o, k) = (st.reg(object), st.constant(name));
-    prop_cold(st, PropOp::GetNamed, o, k, UNDEFINED)
+    let r = slow::get_named(st.cx, st.fp, st.pc, o, k, s.0);
+    st.result(r)
 });
-op!(GetNamedPropertyFromSuper(st, _receiver: R, name: K, _s: FSlot) { Flow::Cold } cold {
-    let (home, k) = (st.acc, st.constant(name));
-    prop_cold(st, PropOp::GetSuper, home, k, UNDEFINED)
+// The accumulator holds the home object; the IC is keyed on its prototype (the lookup start)
+// and `receiver` is the `this` a getter sees.
+op!(GetNamedPropertyFromSuper(st, receiver: R, name: K, s: FSlot) {
+    let home = st.acc;
+    if !object::is_object(home) {
+        return Flow::Cold;
+    }
+    match ic::load(st.info(), st.cx.proto_epoch, object::proto_of(home), s.0) {
+        Some(v) => {
+            st.acc = v;
+            Flow::Next
+        }
+        None => Flow::Cold,
+    }
+} cold {
+    let (home, k, this) = (st.acc, st.constant(name), st.reg(receiver));
+    let r = slow::get_super(st.cx, st.fp, st.pc, home, k, this, s.0);
+    st.result(r)
 });
 op!(GetKeyedProperty(st, object: R, _s: FSlot) {
     let (o, k) = (st.reg(object), st.acc);
@@ -531,13 +582,30 @@ op!(GetKeyedProperty(st, object: R, _s: FSlot) {
     let (o, k) = (st.reg(object), st.acc);
     prop_cold(st, PropOp::GetKeyed, o, k, UNDEFINED)
 });
-op!(SetNamedProperty(st, object: R, name: K, _s: FSlot) { Flow::Cold } cold {
+op!(SetNamedProperty(st, object: R, name: K, s: FSlot) {
+    let (o, v) = (st.reg(object), st.acc);
+    if ic::store::<true>(st.rt(), st.info(), st.cx.proto_epoch, o, s.0, v) {
+        Flow::Next
+    } else {
+        Flow::Cold
+    }
+} cold {
     let (o, k, v) = (st.reg(object), st.constant(name), st.acc);
-    prop_cold(st, PropOp::SetNamed, o, k, v)
+    let r = slow::set_named(st.cx, st.fp, st.pc, o, k, v, s.0, false);
+    st.result(r)
 });
-op!(DefineNamedOwnProperty(st, object: R, name: K, _s: FSlot) { Flow::Cold } cold {
+// CreateDataPropertyOrThrow: an add needs no epoch (the prototype chain does not matter).
+op!(DefineNamedOwnProperty(st, object: R, name: K, s: FSlot) {
+    let (o, v) = (st.reg(object), st.acc);
+    if ic::store::<false>(st.rt(), st.info(), st.cx.proto_epoch, o, s.0, v) {
+        Flow::Next
+    } else {
+        Flow::Cold
+    }
+} cold {
     let (o, k, v) = (st.reg(object), st.constant(name), st.acc);
-    prop_cold(st, PropOp::DefineNamed, o, k, v)
+    let r = slow::set_named(st.cx, st.fp, st.pc, o, k, v, s.0, true);
+    st.result(r)
 });
 op!(SetKeyedProperty(st, object: R, key: R, _s: FSlot) { Flow::Cold } cold {
     let (o, k, v) = (st.reg(object), st.reg(key), st.acc);

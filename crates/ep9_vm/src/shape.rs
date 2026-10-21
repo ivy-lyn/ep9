@@ -586,10 +586,23 @@ pub(crate) fn lookup(rt: &Runtime, shape: u64, key: u64) -> Option<Found> {
     lookup_with(shape, key, classify(rt, key))
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Tests (W4-P1-GLOBAL-ONE-SCAN): a shape and how many times [`lookup_with`] scanned it.
+    pub(crate) static SCANS: Cell<(u64, u32)> = const { Cell::new((0, 0)) };
+}
+
 /// [`lookup`] with a probe the caller classified once ([`key::probe`]) for a walk over
 /// several shapes. Not a GC point.
 pub(crate) fn lookup_with(shape: u64, key: u64, how: Probe) -> Option<Found> {
     debug_assert!(is_shape(shape));
+    #[cfg(test)]
+    SCANS.with(|c| {
+        let (watched, n) = c.get();
+        if watched == shape {
+            c.set((watched, n + 1));
+        }
+    });
     let s = cell(shape);
     let n = count_of(s);
     if n == 0 {
