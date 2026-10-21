@@ -2,59 +2,63 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-20) |
-| Fix by | M0 wk2 (SP-VA) |
+| Status | Draft (2026-10-20; rewritten 2026-10-21) |
+| Fix by | M0 wk2 (SP-VA); the process code range before Spike B (M0 month 2) |
 | Freeze point | M1 exit |
 | Origin | v1#3; plan status E (extended: code range) |
-| Crates | `ep9_platform` (VA reserve incl. the code range), `ep9_heap` (cage, in-cage test) |
+| Crates | `ep9_platform` (VA reserve incl. the code range), `ep9_heap` (one cage per heap, in-cage test) |
 | Owner (plan role) | GC lead + JIT/platform lead; AOT senior for the code range |
-| Validated by | SP-VA (M0 wk2) |
-| Plan sources | [02 §6 H7](../plan/02-architecture.md#6-hard-to-change-decisions-h1-h37), [03 §5](../plan/03-gc.md#5-contract-items-that-exist-from-s0), [04 §5](../plan/04-execution.md#5-jit-infrastructure-and-the-relocatable-macroassembler), [08 §2](../plan/08-repo.md#2-crates) |
+| Validated by | SP-VA (M0 wk2; passed on 4 CI runners); Spike B and SP-Unit put the first code in the process code range |
+| Plan sources | [02 §6 H7](../plan/02-architecture.md#6-hard-to-change-decisions-h1-h37), [03 §5](../plan/03-gc.md#5-contract-items-that-exist-from-s0), [04 §5](../plan/04-execution.md#5-jit-infrastructure-and-the-relocatable-macroassembler), [08 §2](../plan/08-repo.md#2-crates), [H22](H22-isolates-and-realms.md) |
 
 ## Context
 
 - H6 stores raw cell pointers in a 47-bit payload. So every heap address must be below 2^47 on every target.
 - CSS (H10) needs a fast test: "is this word inside the heap?"
 - JIT code and AOT units call each other and call stubs. On arm64, direct calls reach only 128 MiB.
+- D14: one isolate per thread, each with its own heap (H22). A heap that only its own thread uses needs no shared allocator.
 - Goals: G6 (no abort on hostile input), G10 (4 tier-1 targets). Risk RK9: heap addresses above 47 bits (LA57, 52-bit arm64, sanitizers).
 
 ## Decision
 
-One cage per process below 2^47 (64 GiB default, configurable); avoids 0x4001_0000_0000 + 32 GiB; startup self-check. Plus one code-range reservation for JIT code and mmapped units.
+One cage per isolate below 2^47 (64 GiB default, configurable); avoids 0x4001_0000_0000 + 32 GiB; startup self-check. Plus one process-wide code range for JIT code and mmapped units, built before Spike B (decision W4-H07-REWRITE).
 
-```
- 0 .. first heap page ............................................. 2^47
- | immediates (H6) |   cage: all JS heap cells (64 GiB default)    |
-                       never overlaps 0x4001_0000_0000 .. +32 GiB
-                     + code range next to the cage: JIT code and mmapped units
+```text
+ 0 .. first heap page ......................................................... 2^47
+ | immediates (H6) | cage A (isolate A) | ... | cage B (isolate B) | ... | code range |
+                     64 GiB each, 4 GiB-aligned slots, never over 0x4001_0000_0000 + 32 GiB
+                                        one code range per process: JIT code + unit text (RX)
 ```
 
-- The code range sits next to the cage ([03 §5](../plan/03-gc.md#5-contract-items-that-exist-from-s0); SP-VA gate).
+- **Cage per isolate (as built).** `Heap::new` reserves its own `Cage` (`crates/ep9_heap/src/memory.rs:117`). The in-cage test and the conservative scan look only at that heap's chunks (`crates/ep9_heap/src/memory.rs:195-197`, `crates/ep9_heap/src/trace.rs:310-311`). So one isolate's scan never finds another isolate's cells.
+- **Process code range (to build).** Unit text is shared per process (05 §8, H22), and JIT stubs are shared by every isolate. One range keeps direct calls between them. SpiderMonkey also keeps one executable region per process ([SM-PEM]).
+- **Until it exists.** Each cage reserves a code range right after itself (`crates/ep9_platform/src/va.rs:37-40`, `Cage::self_check`). The engine does not use it yet: no JIT code and no unit is loaded. It costs address space only.
 - `ep9_platform` owns the VA reserve, including the code range ([08 §2](../plan/08-repo.md#2-crates)).
-- The plan fixes no addresses except the 2^47 bound for the cage and the avoided range. Where the code range sits is Open question H07-Q5.
 - **macOS arm64 code range (`jit` feature; noted 2026-10-21).** `Cage::reserve_jit` maps the code range with `MAP_JIT` and read-write-execute protection at reservation. So this range has no inaccessible phase. Every other reservation, and the code range from `Cage::reserve`, starts inaccessible.
   - Why: macOS 27 rejects `MAP_JIT` with `MAP_FIXED` (the range is mapped at a hint address, then checked), and rejects every `mprotect` of a `MAP_JIT` page after it is RWX (SP-JIT-mem facts F1, F2: [data](../measurements/2026-10-21-sp-jit-mem.md)).
   - W^X still holds per thread: each thread sees the pages as RX or RW only (`pthread_jit_write_protect_np`). `Reservation::commit` and `decommit` refuse this range; `ep9_platform::jit::CodeMemory` manages it, and release uses `madvise(MADV_FREE_REUSABLE)`.
-  - Code: `crates/ep9_platform/src/va.rs` (`Reservation::reserve_code_range_at`), `src/sys/unix.rs` (`reserve_map_jit_at`), `src/jit/`.
+  - Code: `crates/ep9_platform/src/va.rs` (`Reservation::reserve_code_range_at`), `src/sys/unix.rs` (`reserve_map_jit_at`), `src/jit/`. The process code range keeps this mapping rule.
 
 ## Rules
 
 | Rule | Check | From |
 |---|---|---|
-| Every cage address is below 2^47 | Startup self-check: if the reservation fails, ep9 refuses to run (RK9) | M0 wk2 |
-| The cage never overlaps 0x4001_0000_0000 + 32 GiB | Startup self-check; SP-VA on 4 targets | M0 wk2 |
-| One cage per process; isolates share it | Isolate-per-thread model (H22, D14) | M0 wk3 |
-| JIT code and mmapped units live in the code range | SP-VA; later SP-JIT-mem and SP-Unit place code there | M0 wk2-month 2 |
-| CSS rejects any word outside the cage with one range check | Cage range check before the VO lookup (03 §2) | SP-GC |
+| Every cage and code-range address is below 2^47 | `Cage::self_check` at reserve: if it fails, the isolate is not created (RK9); SP-VA on 4 targets | M0 wk2 |
+| No cage or code range overlaps 0x4001_0000_0000 + 32 GiB | `Cage::self_check`; `sp_va_avoids_tsrs_range` | M0 wk2 |
+| Each isolate owns one cage; a cell lives only in its own isolate's cage | `Heap::new` reserves the cage; `find_cell` reads only its own chunks | M0 wk2 |
+| CSS rejects any word outside its cage with one range check | `Memory::contains` before the VO lookup (03 §2) | SP-GC |
+| JIT code and mmapped units live in the one process code range | Spike B and SP-Unit place code there | before Spike B |
+| A code range is at most the direct-branch reach (128 MiB on arm64, 2 GiB on x86-64) | `CageConfig::validate`, `Cage::self_check` | M0 wk2 |
 
 ## Consequences
 
-- **Gains.** The payload always fits. The in-cage test for CSS is fast. The design is safe on LA57 and 52-bit VA hosts.
-  - Direct calls between JIT code, units and stubs stay possible inside one reservation. V8 copied builtins into its cage for this reason [R11].
-- **Costs.** A fixed reservation per process. 64 GiB is the default; embedders can configure it.
+- **Gains.** The payload always fits. The in-cage test for CSS is fast and also rejects cells of other isolates. The design is safe on LA57 and 52-bit VA hosts.
+  - Direct calls between JIT code, units and stubs stay possible inside the one code range. V8 copied builtins into its pointer-compression cage for this reason [R11].
+- **Costs.** 64 GiB + 128 MiB of address space per isolate by default. At most 1,926 default cages fit below 2^47 (17 slots of 4 GiB each), fewer when other mappings take slots. Embedders and workers can lower the size (H22-Q8).
   - Hosts with small VA limits must lower the size. The startup self-check makes a failure visible instead of a later crash.
 - **Follow-ups.**
-  - D5 (WebAssembly): "Signal and VA coexistence rules apply now" (11-decisions). A later wasmtime engine must fit beside the cage and code range.
+  - Before Spike B: build the process code range; then drop the per-cage code range.
+  - D5 (WebAssembly): "Signal and VA coexistence rules apply now" (11-decisions). A later wasmtime engine must fit beside the cages and the code range.
   - H35: `.ep9u` blobs are mapped into the code range; `.o` units are linked into the binary.
 
 ## Evidence
@@ -65,27 +69,30 @@ One cage per process below 2^47 (64 GiB default, configurable); avoids 0x4001_00
 | [R07] | Boa #4275: raw malloc pointers above 48 bits panic on Android aarch64. Lesson: own reserved region | [07-rust-engine-landscape.md](../research/07-rust-engine-landscape.md) |
 | [R06] | LA57 and 52-bit VA break NaN-boxing unless address-space reservation is controlled | [06-execution-tiers.md](../research/06-execution-tiers.md) |
 | [R11] | arm64 direct calls reach only 128 MiB; Apple M1 never predicts targets beyond 4 GiB | [11-dual-mode-vms.md](../research/11-dual-mode-vms.md) |
+| [SM-PEM] | SpiderMonkey: one per-process executable reservation; near jumps between JIT pages; the Win64 exception handler is registered once | mozilla-firefox `js/src/jit/ProcessExecutableMemory.cpp` lines 665-679 (main, read 2026-10-21) |
 
 ## Validation
 
-- **SP-VA** ([09 §4](../plan/09-milestones.md#4-spikes), M0 wk2, GC lead + JIT/platform lead): cage below 2^47 on 4 targets, plus the code range next to it. On fail it reopens H7.
-- Week 2 check: "SP-VA reserves cage and code range on 4 targets" ([09 §8](../plan/09-milestones.md#8-m0-first-month-week-by-week)).
-- SP-JIT-mem (wk3) and SP-Unit (month 2) put code in the code range.
+- **SP-VA** ([09 §4](../plan/09-milestones.md#4-spikes), M0 wk2, GC lead + JIT/platform lead): cage below 2^47 on 4 targets, plus the code range. On fail it reopens H7.
+  - **Result: PASS** on macOS arm64, Linux x64, Linux arm64 and Windows x64: `crates/ep9_platform/tests/sp_va.rs` (8 tests; 9 on Linux) in build-test, CI run 39518270586 on the week-4 base tree.
+- SP-JIT-mem (wk3) put code in a cage's code range (`Cage::reserve_jit`). Spike B and SP-Unit (month 2) put code in the process code range.
 
 ## Open questions
 
 | ID | Question | Needed by | Proposed default |
 |---|---|---|---|
-| H07-Q1 | Size of the code range. The plan states the 128 MiB direct-call reach but no size | SP-VA | Measure in SP-VA; record as a fill |
+| H07-Q1 | Size of the code range | SP-VA | **Filled 2026-10-21 (as built): 128 MiB default**, the arm64 direct-call reach; a size above the target's direct-branch reach is refused (`crates/ep9_platform/src/va.rs:299-300`) |
 | H07-Q2 | What happens to calls beyond direct-call reach (indirect call or veneer) | SP-JIT-mem / H34 | Decide in the H34 ADR (relocation kinds) |
-| H07-Q3 | Is 0x4001_0000_0000 + 32 GiB still needed? tsrs is never in the engine process (N8). The plan keeps the rule | M0 wk2 | Keep the rule; it costs nothing |
-| H07-Q4 | Windows: reserve with VirtualAlloc at a hinted address below 2^47; behavior if the hint fails | SP-VA | Retry, then refuse to run (self-check) |
-| H07-Q5 | Must the code range also be below 2^47? H6 requires it only if a code address is ever boxed as a Value. The plan does not say. "Next to the cage" is the only rule | SP-VA | Decide in SP-VA |
+| H07-Q3 | Is 0x4001_0000_0000 + 32 GiB still needed? tsrs is never in the engine process (N8) | M0 wk2 | **Filled 2026-10-21 (as built): kept**; `TSRS_RESERVATION` is in the default avoid list |
+| H07-Q4 | Windows: reserve at a hinted address below 2^47; behavior if the hint fails | SP-VA | **Filled 2026-10-21 (as built):** `VirtualAlloc` at each slot address; a used slot is skipped (`sp_va_skips_used_slot`); no free slot gives `CageError::NoFreeSlot`, and the isolate is not created |
+| H07-Q5 | Must the code range be below 2^47? | SP-VA | **Filled 2026-10-21 (as built): yes** (`Cage::self_check`). The process code range keeps it: frames store return pcs as native words (addr + 2^49, decision T0-NATIVE-WORD) |
+| H07-Q6 | Where does the process code range sit, how big is it, and when is it reserved? | Spike B | Below 2^47, found by the same slot search, reserved at the first JIT compile or unit load; 128 MiB on arm64 |
 
 ## Reopens if
 
 - SP-VA fails on any tier-1 target (09 §4 names H7).
 - The startup self-check fails on a tier-1 CI runner.
+- Spike B or SP-Unit cannot place code in one process code range on a tier-1 target.
 - D5 changes to "WebAssembly in v1" and the coexistence rules do not fit (11-decisions "Affects": H7, H28).
 
 ## Change log
@@ -94,3 +101,4 @@ One cage per process below 2^47 (64 GiB default, configurable); avoids 0x4001_00
 |---|---|---|---|
 | 2026-10-20 | draft | First draft from 02 §6, 03 §5, 04 §5 (M0 wk1 list) | ADR agent |
 | 2026-10-21 | clarify | Decision notes that on macOS arm64 the code range from `Cage::reserve_jit` is RWX `MAP_JIT` from the start (no inaccessible phase), as built for SP-JIT-mem | docs-sync agent |
+| 2026-10-21 | rewrite | Decision and Rules follow the code: one cage per isolate (as built since M0 wk2) and one process-wide code range, built before Spike B. Old Decision: "One cage per process below 2^47 (64 GiB default, configurable); avoids 0x4001_0000_0000 + 32 GiB; startup self-check. Plus one code-range reservation for JIT code and mmapped units". Old Rules row: "One cage per process; isolates share it", checked by "Isolate-per-thread model (H22, D14)". Also: H07-Q1, Q3, Q4 and Q5 filled from SP-VA and the code; H07-Q6 added. Decision W4-H07-REWRITE (decisions log §11); the plan row 02 §6 H7 changes in P4 | P0-DOCS agent |
