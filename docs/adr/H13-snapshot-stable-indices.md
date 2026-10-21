@@ -28,17 +28,17 @@ Copied from the plan row: an external-reference table. Intrinsics in fixed order
          text --LinkSlot(i)---> RW link cell (resolved at load or first run) --> object
 ```
 
-**Index lists at M0 (as built, 55c15d0).**
+**Index lists at M0 (as built, 55c15d0; counts and the native table re-checked at 383a317, M0 month 2 P1).**
 
 | List | Where | Order check today |
 |---|---|---|
 | Atoms (`atoms!`, `Atom::ALL`) | `crates/ep9_vm/src/atoms.rs` | `tests::strings::the_atoms_list_is_append_only` |
-| Realm intrinsics (`IntrinsicId::ALL`, 33) | `crates/ep9_vm/src/builtins.rs` | the IntrinsicId lines of `crates/ep9_vm/tests/golden/vm-builtin-ids.txt` |
-| Builtins (`BuiltinId` = block + index; VM block 0, `ep9_builtins` blocks 1-9) | `natives.rs` (VM table), `crates/ep9_builtins/src/*` | `builtin_ids::vm_builtin_ids_match_the_golden`, `table::ids_match_the_goldens`, and the swap tests of both crates |
+| Realm intrinsics (`IntrinsicId::ALL`, 33 at 55c15d0, 39 at 383a317) | `crates/ep9_vm/src/builtins.rs` | the IntrinsicId lines of `crates/ep9_vm/tests/golden/vm-builtin-ids.txt` |
+| Builtins (`BuiltinId` = block + index; VM block 0, `ep9_builtins` blocks 1-11; 10 and 11 stay empty until P4-PROMISE and P5-B-REFLECT-GLOBALS) | `natives.rs` (VM table), `crates/ep9_builtins/src/*` | `builtin_ids::vm_builtin_ids_match_the_golden`, `table::ids_match_the_goldens`, and the swap tests of both crates |
 | Runtime functions (`RuntimeId`) | `crates/ep9_bytecode/src/feedback.rs` | the ABI fingerprint (`runtime_table_text`): `abi::abi_version_matches_history` |
 | Well-known symbols (`WellKnownSymbol::ALL`) | `crates/ep9_vm/src/symbol.rs` | `tests::symbols::well_known_symbols_are_isolate_roots_in_order` |
 | Isolate roots (`Root`, 32) | `crates/ep9_vm/src/runtime.rs` | count only: `runtime::tests::atoms_and_roots_are_distinct` (H13-Q2) |
-| Native runtime-function table (`RuntimeTable`, feature `spike-native`) | P1-NATIVE-ENTRY (M0 month 2) | none yet (H13-Q3) |
+| Native runtime-function table (`RuntimeTable`, feature `spike-native`) | `crates/ep9_vm/src/native.rs` (built by P1-NATIVE-ENTRY) | the 7 `RT_*` offsets in declaration order: `tests::native::layout_offsets_read_the_live_isolate` (spike-native builds only); no golden yet (H13-Q3) |
 | Fuses, snapshot root shapes, external references | not built (H31 in M1; A1 in M4) | none yet |
 
 ## Rules
@@ -92,3 +92,13 @@ Copied from the plan row: an external-reference table. Intrinsics in fixed order
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-21 | draft | First draft (rules) from 02 §6 row H13, 03 §6 and 07 §3, with the index lists as built at 55c15d0 | P0-DOCS agent (M2-P0) |
+| 2026-10-22 | clarify | Index-list table re-checked at 383a317: 39 realm intrinsics (the golden lists 39), builtin blocks 1-11, and the native `RuntimeTable` is built (offset-order test, no golden). Rules re-checked: the three `native_of` stores into cells (FUNCTION info, CONTEXT scope, FEEDBACK info) each have an index form. No check changes | P2-ACCEPT-1 |
+
+## Review record
+
+| Part (README §3.1) | Who | Result | Ref |
+|---|---|---|---|
+| 1 Reviewer | P2-ACCEPT-1 (did not write the ADR) | Decision = the 02 §6 H13 row. Every order check in the index table exists and passes. The native-word rule holds: 3 `native_of` stores into cells, each with an index form. R1: the table had the 55c15d0 counts and "not built" for the native table; re-checked at 383a317 (fixed). Due in M0, not filled here: H13-Q3 (P4-SP-UNIT fills it). Change-log kinds: agree | ccaf5df |
+| 2 Codex | orchestrator | (filled after the P2 merge) | |
+| 3 Verifier | P3-ACCEPT-2 | (filled in P3) | |
+| 4 Data | from the "Validated by" line | Pass: `the_atoms_list_is_append_only`, `vm_builtin_ids_match_the_golden`, `ids_match_the_goldens`, both swap tests, `abi_version_matches_history`, `well_known_symbols_are_isolate_roots_in_order`, `atoms_and_roots_are_distinct`, both `two_isolates_have_the_same_intrinsic_property_order`, `random_units_round_trip`, `builds_on_other_threads_agree`, `ep9_hash_seed_gives_the_same_hashes_in_two_runs`. Missing: a `Root` order check (H13-Q2, M1); the SP-Unit link-cell test (P4); the A1 snapshot gates (M4) | local run, mac a64, 383a317; logs outside the repo: scratchpad m0m2/accept1/h13-ep9_vm-test.log, h13-ep9_builtins-table.log, h03-ep9_bytecode-test.log |

@@ -109,3 +109,15 @@
 | 2026-10-21 | fill | As built in M0 wk4: the `feature-matrix` cells, options and exit codes; how guards 9 and 10 read features (with positive controls), replacing the plan's `-e features` wording in the Rules table; the check 5 cite moved to lines 144-149 after the P0 guard rewrite; the empty `aot` module and the test-only unit encoder. No rule changes. Decision W4-AOTU-MATRIX | P1-AOTU agent |
 | 2026-10-21 | fill | M0 month 2 P0: the `ep9_vm` features `spike-native` and `ic-stats` (non-default); the `spikes/spike-b` workspace with `dynasm` outside the root graph; two new Rules rows: check 11 (neither feature in `ep9`) and check 12 (H5: `ep9` links `ep9_frontend`), each with a control. Existing rules and checks keep their results | P0-INFRA agent (M0 month 2) |
 | 2026-10-21 | clarify | Check 12 reads only cargo tree's stdout and needs an `ep9_cli` node; a second control (`ep9_builtins`, dev-only edge) must not pass. Before, `warning: nothing to print.` on stderr counted as a match. Its `path:line` range is now 191-213 | M2-P0 integration fixer |
+| 2026-10-22 | clarify | 2026-10-21 row "As built in M0 wk4" (P1-AOTU): kind is rewrite (README §3.3). It replaced the check text of the guard 9 Rules row (`-e features`) and added controls to rows 9 and 10 | P2-ACCEPT-1 |
+| 2026-10-22 | clarify | 2026-10-21 row "Check 12 reads only cargo tree's stdout" (M2-P0 fixer): kind is rewrite (README §3.3). Check 12 now rejects what it accepted (`warning: nothing to print.` on stderr), and its Rules row gained a second control | P2-ACCEPT-1 |
+| 2026-10-22 | clarify | Row added for bb5967e (2026-10-21, P1-CODE-RANGE), which had none: the "Code under `jit` compiles out" Rules row names `Reservation::reserve_code_range_at` as its example, since `Cage::reserve_jit` is gone. The rule and its check are unchanged. Later `va.rs` line moves are ADRLINE ref fixes | P2-ACCEPT-1 |
+
+## Review record
+
+| Part (README §3.1) | Who | Result | Ref |
+|---|---|---|---|
+| 1 Reviewer | P2-ACCEPT-1 (did not write the ADR) | Decision = the 02 §6 H27 row. Rules checked against `dep-guards.sh` (checks 5 and 9-12, their line ranges), `tools/xtask/src/features.rs`, the `[features]` tables of `ep9_platform`, `ep9_vm`, `ep9_cli` and `ep9_unit`, and `reserve_code_range_at` under `cfg(any(feature = "jit", test))`. R1, R2: two existing rows are rewrites by README §3.3 (clarify rows added). R3: bb5967e changed a Rules example with no row (row added). Note: check 5 passes today because those crates do not exist yet. The guard-13 row is not there yet (the fixer adds it, M2-P2-GUARD13-H27) | ccaf5df |
+| 2 Codex | orchestrator | (filled after the P2 merge) | |
+| 3 Verifier | P3-ACCEPT-2 | (filled in P3) | |
+| 4 Data | from the "Validated by" line | `bash .github/scripts/dep-guards.sh`: 26 PASS, 0 FAIL (checks 5 and 9-12 with their controls). `cargo xtask feature-matrix`: 9 of 9 PASS. SP-JIT-mem: PASS on 4 targets ([M-JIT]). Missing: test262 per mode (M1+) | local run, mac a64, 383a317; logs outside the repo: scratchpad m0m2/accept1/h27-dep-guards.log, h27-feature-matrix.log |
