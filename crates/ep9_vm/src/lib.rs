@@ -92,6 +92,12 @@ pub use isolate::{
 };
 pub use runtime::ErrorKind;
 pub use string::JsStr;
+// Spike B (feature `spike-native` only): the native-entry API of `native.rs`.
+#[cfg(feature = "spike-native")]
+pub use native::{
+    InstallError, NativeCx, NativeEntry, NativeTarget, RtCompareFn, RtFn0, RtFn1, RtFn2,
+    RuntimeTable, cmp, install_native, layout, lookup_code, native_target, uninstall_native,
+};
 
 /// Facts for tests and tools (not a stable API).
 #[doc(hidden)]

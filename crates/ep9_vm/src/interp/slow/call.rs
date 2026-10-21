@@ -7,6 +7,10 @@
 //! new.target becomes the target while it is the bound function. The bound function stays in
 //! the caller's callee register, so everything its chain holds stays rooted until the frame
 //! push.
+//!
+//! Spike B (feature `spike-native` only, `native.rs`): a call of a FUNCTION with a Baseline or
+//! AotBaseline slot (no construct, no spread, not host, not a class constructor) is entered
+//! natively before the argument copy (`call_native`). The default build has no such branch.
 
 use ep9_value::Throw;
 
@@ -45,6 +49,13 @@ pub(crate) fn call(cx: &mut Cx, fp: *mut u64, pc: *const u8, acc: u64) -> u64 {
 }
 
 fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
+    #[cfg(feature = "spike-native")]
+    if !s.construct
+        && !s.spread
+        && let Some(fi) = crate::native::native_callee(s.callee)
+    {
+        return call_native(cx, fp, s, fi);
+    }
     let rt = cx.rt();
     // The argument values stay rooted in the caller's registers while this copy exists.
     // SAFETY: the offsets come from register operands of verified code in the frame `fp`.
@@ -222,6 +233,40 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
     cx.out_fp = nfp;
     cx.out_pc = fi.code;
     Ok(UNDEFINED)
+}
+
+/// Spike B (feature `spike-native`): a call (no construct, no spread) of a FUNCTION whose slot
+/// holds native code (`native::native_callee`). The callee frame goes right above the
+/// caller's registers with the return pc of the next instruction, as on the T0 path, and the
+/// arguments are read straight from the caller's registers (no `Vec`). Native code runs to
+/// its return; then the dispatch continues at the next instruction with its result, or
+/// `slow::call` unwinds from this call instruction. No feedback count and no native stack
+/// check here (`native.rs` module doc).
+#[cfg(feature = "spike-native")]
+fn call_native(cx: &mut Cx, fp: *mut u64, s: &CallSite, fi: &FunctionInfo) -> Res<u64> {
+    let Ok(argc) = u32::try_from(s.args.len()) else {
+        return stack_overflow(cx);
+    };
+    // SAFETY: `frame_top(fp)` is the first free slot above the live top frame (bytecode runs
+    // with no scratch area, call.rs), the offsets in `s.args` come from register operands of
+    // verified code in the frame `fp`, and `native_callee` checked the native slot.
+    let r = unsafe {
+        crate::native::enter_native(
+            cx,
+            frame_top(fp),
+            fp,
+            s.next_pc,
+            s.callee,
+            fi,
+            s.this,
+            argc,
+            |i| *fp.offset(s.args[i as usize]),
+        )
+    };
+    // After the call: a nested dispatch under native code (`call_any`) sets them too.
+    cx.out_fp = fp;
+    cx.out_pc = s.next_pc;
+    r
 }
 
 /// Walks the chain of the bound callee `f` (`bound::unwrap`; `new_target` undefined for a
