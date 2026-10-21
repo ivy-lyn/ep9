@@ -177,4 +177,31 @@ else
   ok "(10) ep9_unit does not exist yet"
 fi
 
+# 11) The ep9_vm features `spike-native` (Spike B's native entry) and `ic-stats` (IC counters)
+#     are never in the ep9 graph, default or jitless (plan M0 month 2, rule 11; H27). Control:
+#     `-p ep9_vm --features spike-native,ic-stats` must show both.
+if grep -q "ep9_cli" <<< "$members" && member_exists ep9_vm; then
+  for feat in spike-native ic-stats; do
+    feature_check 11 ep9_vm "$feat" on "control: -p ep9_vm --features spike-native,ic-stats" -p ep9_vm --features spike-native,ic-stats
+    feature_check 11 ep9_vm "$feat" off "the default ep9 (-p ep9_cli)" -p ep9_cli
+    feature_check 11 ep9_vm "$feat" off "the jitless ep9 (-p ep9_cli --no-default-features)" -p ep9_cli --no-default-features
+  done
+fi
+
+# 12) H5: the bytecode compiler is always linked. ep9 (the runtime crate, ep9_cli for now) has
+#     ep9_frontend in its normal graph, default and jitless; eval reaches it through the
+#     IsolateConfig::compiler hook. Control: ep9_vm's graph must not show ep9_frontend (ep9_vm
+#     has no edge to it), so a query that always matches fails here instead of passing.
+# present_in <cargo tree args...>: the last arg is in the given graph (cargo tree exits 0 and
+# prints the inverted tree).
+present_in() {
+  local out
+  out="$(cargo tree --locked --target all "$@" 2>&1)" && [ -n "$out" ]
+}
+if grep -q "ep9_cli" <<< "$members"; then
+  if absent_from -p ep9_vm -e normal,build -i ep9_frontend; then ok "(12) control: ep9_vm has no ep9_frontend"; else bad "(12) control: ep9_vm reaches ep9_frontend (or cargo tree failed)"; fi
+  if present_in -p ep9_cli -e normal -i ep9_frontend; then ok "(12) the default ep9 (-p ep9_cli) links ep9_frontend"; else bad "(12) the default ep9 (-p ep9_cli) does not link ep9_frontend"; fi
+  if present_in -p ep9_cli --no-default-features -e normal -i ep9_frontend; then ok "(12) the jitless ep9 (-p ep9_cli --no-default-features) links ep9_frontend"; else bad "(12) the jitless ep9 does not link ep9_frontend"; fi
+fi
+
 exit "$fail"

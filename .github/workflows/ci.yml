@@ -6,8 +6,10 @@
 #   build-test ....... build + test; clippy on the other 3 targets;  (4 targets)
 #                      feature matrix (default, jitless, aot; H27)
 #   test262 .......... parse and exec runners vs expectations/;      (4 targets)
-#                      exec with eager feedback; on Linux x64 also
-#                      exec with GC-stress + eager feedback
+#                      exec with eager feedback; bytecodegen corpus
+#                      digest (G1); on Linux x64 also exec with
+#                      GC-stress + eager feedback, the debug corpus
+#                      digest and the atom-key gate (G2, debug exec)
 #   fp-check ......... no libm call, no FMA outside ep9_math (H36);  (Linux x64)
 #                      SoftFma vs hardware FMA
 #   disasm ........... ep9_vm handler check (H15); ep9_heap barrier  (4 targets)
@@ -116,7 +118,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # linux-x64 also runs exec under GC-stress (about 18 CPU-minutes on an M5 Max).
+        # linux-x64 also runs exec under GC-stress (about 18 CPU-minutes on an M5 Max), the debug
+        # corpus digest and the debug atom-key gate.
         include:
           - { name: macos-arm64, os: macos-15, timeout: 60 }
           - { name: linux-x64, os: ubuntu-24.04, timeout: 120 }
@@ -136,6 +139,18 @@ jobs:
           key: test262-${{ runner.os }}-${{ hashFiles('third_party/test262.commit', 'third_party/patches/test262/**') }}
       - id: sync
         run: bash scripts/sync-test262.sh
+      # The benchmark pins, for the corpus digest below (corpus.rs reads all three). JetStream
+      # inflates its .z files with node (scripts/sync-bench.sh); the runner images have node.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            third_party/bench-octane
+            third_party/bench-v8v7
+            third_party/bench-jetstream
+          key: bench-${{ runner.os }}-${{ hashFiles('third_party/bench-octane.commit', 'third_party/bench-v8v7.commit', 'third_party/bench-jetstream.commit', 'third_party/patches/bench-*/**') }}
+      - id: bench
+        if: ${{ !cancelled() }}
+        run: bash scripts/sync-bench.sh bench-octane bench-v8v7 bench-jetstream
       # Exit 1 on a regression vs expectations/test262-parse.<host-triple>.txt.
       - name: test262 parse
         run: cargo run --release --locked -p ep9_test262 -- parse
@@ -160,6 +175,40 @@ jobs:
         run: >-
           cargo run --release --locked -p ep9_test262 -- exec --gc-stress 1 --feedback-threshold 0
           --timeout 60 --skip-list expectations/test262-gc-skip.txt --json test262-exec-gc.json
+      # G1 determinism (decision M2-DETERMINISM): every unit of the bytecodegen corpus (test262
+      # plus the 3 benchmark pins, 54,522 files) compiles to the same bytes on every target, in
+      # release and in debug. The digest over them must equal expectations/bytecode-corpus.digest
+      # (crates/ep9_frontend/src/bytecodegen/corpus.rs). The log prints this runner's digest. It
+      # changes only with an ABI bump or a codegen change (a BCG-CORPUS row in decisions-log).
+      - name: bytecodegen corpus digest (release)
+        if: ${{ !cancelled() && steps.sync.outcome == 'success' && steps.bench.outcome == 'success' }}
+        run: cargo test -p ep9_frontend --release --locked --lib bytecodegen::corpus -- --ignored --nocapture
+      - name: bytecodegen corpus digest (debug)
+        if: ${{ !cancelled() && steps.sync.outcome == 'success' && steps.bench.outcome == 'success' && matrix.name == 'linux-x64' }}
+        run: cargo test -p ep9_frontend --locked --lib bytecodegen::corpus -- --ignored --nocapture
+      # G2 atom-key gate (W4-KEY-EQ): in a debug build with EP9_ASSERT_ATOM_KEYS=1, every isolate
+      # drop panics if a property-key compare looked at string content (crates/ep9_vm/src/atoms.rs),
+      # and the runner counts that as a panic. The gate is "panic 0" in the summary. The 120 s soft
+      # timeout is for the slower debug build. Other differences of the debug run (exit 1 or 2
+      # without a panic) are warnings here: the release steps above are the result gates.
+      - name: test262 exec, atom-key gate (debug)
+        if: ${{ !cancelled() && steps.sync.outcome == 'success' && matrix.name == 'linux-x64' }}
+        run: |
+          cargo build --locked -p ep9_test262
+          rc=0
+          EP9_ASSERT_ATOM_KEYS=1 target/debug/ep9-test262 exec --timeout 120 2>&1 | tee atomgate.log || rc=$?
+          line="$(grep 'infrastructure errors:' atomgate.log || true)"
+          if [ -z "$line" ]; then
+            echo "::error::atom-key gate: the debug exec run printed no summary (exit $rc)"
+            exit 1
+          fi
+          if ! grep -q '(panic 0,' <<< "$line"; then
+            echo "::error::atom-key gate:$line"
+            exit 1
+          fi
+          if [ "$rc" != 0 ]; then
+            echo "::warning::atom-key gate passed (panic 0), but the debug exec run exited $rc:$line"
+          fi
       # Every failure with its cause; regenerate an expectation file from test262-exec.json
       # (status "fail").
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
