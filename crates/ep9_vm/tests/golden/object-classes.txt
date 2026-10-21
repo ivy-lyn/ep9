@@ -1,0 +1,10 @@
+# ep9 ObjectClass ids (H20, M2-P3 ABI-SLOTS). Append-only: never reorder, remove or
+# reuse a line; `EP9_BLESS=1` rewrites this file after a review.
+# id  name
+   0  Promise
+   1  PromiseReaction
+   2  Date
+   3  Map
+   4  Set
+   5  ArrayBuffer
+   6  RegExp
