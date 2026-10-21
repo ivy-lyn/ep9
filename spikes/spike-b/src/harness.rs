@@ -17,19 +17,22 @@ use ep9_vm::{Args, Cx, Dispatch, Exception, Isolate, IsolateConfig, JsResult, Lo
 use crate::emit::{Emitter, Finalize, FunctionCode, FunctionInput, Refusal};
 use crate::jit::{InMemory, JitModule, Placed, SpikeEmitter};
 
-/// The T0 dispatch of the spike's runs.
+/// The T0 dispatch of the spike's runs: `Dispatch::DEFAULT` on every target.
 ///
-/// x86-64 with `panic = "abort"` (the spike's release profile, Cargo.toml): rustc guards
-/// every call through a `sysv64-unwind` handler pointer (`interp::Handler` on x86-64) with an
-/// abort-on-unwind landing pad (`panic_cannot_unwind`), so no handler ends in a sibling call
-/// (`cargo xtask disasm-check --binary` on the spike: 50 of 282 tail handlers end in a tail
-/// jump), and a T0 loop of 10^5 iterations overflows an 8 MiB stack. The match loop does not
-/// need sibling calls. Everywhere else: `Dispatch::DEFAULT`.
-pub const DISPATCH: Dispatch = if cfg!(all(target_arch = "x86_64", panic = "abort")) {
-    Dispatch::Match
-} else {
-    Dispatch::DEFAULT
-};
+/// History: x86-64 with `panic = "abort"` (the spike's release profile, Cargo.toml) once
+/// forced the match loop here. The handlers were `sysv64-unwind` there, and rustc guarded
+/// each call to one with an abort-on-unwind landing pad, so only 50 of 282 tail handlers
+/// ended in a tail jump and a T0 loop of 10^5 iterations overflowed an 8 MiB stack. Since
+/// M2-P2-ABORT-SYSV64 (H15) the handlers are plain `sysv64` under `panic = "abort"`, and
+/// `cargo xtask disasm-check --binary` on the spike's x86-64 release build finds 282 of 282.
+pub const DISPATCH: Dispatch = Dispatch::DEFAULT;
+
+// The x86-64 release override must not come back: the spike (and the D21 T0 baseline of
+// P3-SPIKEB-BENCH) times the default T0 expansion on every target.
+const _: () = assert!(
+    matches!(DISPATCH, Dispatch::Sibling) == matches!(Dispatch::DEFAULT, Dispatch::Sibling),
+    "spike-b must run T0 with Dispatch::DEFAULT"
+);
 
 /// Isolate settings of a run.
 #[derive(Clone, Copy, Debug)]
@@ -279,7 +282,9 @@ impl Session {
     }
 
     /// Places `codes` (made from the global functions `names`, same order) in one module and
-    /// installs each.
+    /// installs each. All or nothing: if an install is refused, the functions this call
+    /// installed before it go back to T0 before the module drops, so no dispatch slot or
+    /// registry entry points at freed code.
     pub fn install(
         &mut self,
         names: &[&str],
@@ -294,19 +299,36 @@ impl Session {
             fns.push(f);
         }
         let module = InMemory.finalize(codes).map_err(|e| e.to_string())?;
+        for (i, &f) in fns.iter().enumerate() {
+            // SAFETY: function `i` of the module was compiled from `f` (same global, the
+            // isolate did not run in between). The module outlives the installation: on
+            // success it goes to `self.modules`, which drops after `self.iso`; on a refusal
+            // the loop below uninstalls functions 0..i before the module drops.
+            if let Err(e) = unsafe { module.install(&self.iso, f, i) } {
+                // No JS ran since the installs, so each uninstall finds its own entry. If one
+                // fails anyway, keep the module: its code must stay mapped.
+                let stuck = fns[..i]
+                    .iter()
+                    .filter(|&&g| ep9_vm::uninstall_native(&self.iso, g).is_err())
+                    .count();
+                if stuck > 0 {
+                    self.keep(module);
+                }
+                return Err(format!("{}: install refused: {e:?}", names[i]));
+            }
+        }
+        self.keep(module);
+        Ok(self.modules.last().expect("pushed").functions())
+    }
+
+    /// Records `module` as live: its code ranges for [`is_jit_pc`], the module in
+    /// `self.modules`.
+    fn keep(&mut self, module: JitModule) {
         JIT_RANGES.with(|r| {
             r.borrow_mut()
                 .extend(module.functions().iter().map(|p| p.code.clone()))
         });
-        for (i, f) in fns.into_iter().enumerate() {
-            // SAFETY: function `i` of the module was compiled from `f` (same global, the
-            // isolate did not run in between), and the module lives in `self.modules`, which
-            // drops after `self.iso`.
-            unsafe { module.install(&self.iso, f, i) }
-                .map_err(|e| format!("{}: install refused: {e:?}", names[i]))?;
-        }
         self.modules.push(module);
-        Ok(self.modules.last().expect("pushed").functions())
     }
 
     /// The JIT modules of this session.
@@ -357,6 +379,7 @@ pub fn run_program(
 mod tests {
     use super::*;
     use crate::structural::LOOP_DEFS;
+    use ep9_vm::DispatchKind;
 
     /// Configs J and JC of the protocol: Rust calls the JIT-installed `drive(f, n)` through
     /// `call_from_rust` and gets n, also under GC stress. A throw and a termination come back
@@ -399,5 +422,51 @@ mod tests {
             assert!(e.message.contains("not implemented"), "{e:?}");
             assert_eq!(call(&mut s, id, 11).expect("last"), "11");
         }
+    }
+
+    /// The JIT ranges this thread has recorded.
+    fn jit_ranges() -> Vec<Range<usize>> {
+        JIT_RANGES.with(|r| r.borrow().clone())
+    }
+
+    /// A failed install in a batch (`id` is already native, so install 1 of 2 is refused)
+    /// leaves no function of that batch installed, keeps no module and no JIT range, and the
+    /// session goes on: the next module (which may reuse the freed chunk) installs, and
+    /// `drive` still runs in T0 with the right result.
+    #[test]
+    fn a_refused_install_uninstalls_the_batch() {
+        let mut s = Session::new(&Config::default()).expect("session");
+        s.run(LOOP_DEFS, "defs.js").result.expect("defs");
+        s.run("function other(x) { return 0; }", "other.js")
+            .result
+            .expect("other");
+        let before = jit_ranges();
+        s.jit(&["id"]).expect("jit id");
+        let kept = jit_ranges();
+        assert_eq!(kept.len(), before.len() + 1, "{kept:?}");
+        let e = s.jit(&["drive", "id"]).expect_err("id is already native");
+        assert!(e.contains("id: install refused: AlreadyNative"), "{e}");
+        let kind = |s: &Session, n: &str| {
+            let f = s.iso.global(n).expect("global");
+            ep9_vm::native_target(&s.iso, f).expect("bytecode").kind
+        };
+        assert_eq!(
+            kind(&s, "drive"),
+            Some(DispatchKind::Interp),
+            "drive rolled back"
+        );
+        assert_eq!(
+            kind(&s, "id"),
+            Some(DispatchKind::Baseline),
+            "id keeps its code"
+        );
+        assert_eq!(s.modules().len(), 1);
+        assert_eq!(jit_ranges(), kept, "the dropped module left a JIT range");
+        s.jit(&["other"]).expect("jit other after the refusal");
+        let r = s.run("print(drive(id, 10)); print(other(1));", "main.js");
+        assert_eq!(r.result, Ok("undefined".to_string()));
+        assert_eq!(r.output, ["10", "0"]);
+        drop(s);
+        assert_eq!(jit_ranges(), before);
     }
 }
