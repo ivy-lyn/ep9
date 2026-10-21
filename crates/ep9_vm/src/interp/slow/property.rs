@@ -265,7 +265,10 @@ pub(crate) fn prop(
         PropOp::DefineKeyedOwn(flags) if private => {
             super::private::keyed_define(cx, o, k, v, flags).map(|_| v)
         }
-        PropOp::DefineKeyedOwn(_) => define_checked(cx, o, k, v, true).map(|_| v),
+        // Bit 0 (set the function name) is applied by class_fields.rs (D15).
+        PropOp::DefineKeyedOwn(flags) => {
+            super::class_fields::define_keyed_own(cx, o, k, v, flags).map(|_| v)
+        }
         PropOp::DeleteStrict => property::delete(cx, o, k, true).map(conv::boolean),
         PropOp::DeleteSloppy => property::delete(cx, o, k, false).map(conv::boolean),
     };
