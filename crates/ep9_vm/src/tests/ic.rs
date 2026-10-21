@@ -268,8 +268,30 @@ fn method(rt: &Runtime, name: &str) -> u64 {
 }
 
 // ---- dead cells: the stack must not keep them ----------------------------------------------
+//
+// A test that expects a cell to die must leave no copy of its address where the conservative
+// scan of the next collection reads: the callee-saved registers and `[sp, stack high)` at the
+// spill trampoline (ep9_heap css.rs). So:
+//
+//   test frame        gets only masked addresses, and calls nothing that reads the dead
+//   (and T::collect)  cells before the collection (W4-P3FIX-DEADSHAPE-TEST)
+//   ---------------   <- the scan stops here (checked: `collect_after_a_pad`)
+//   below_a_pad       DEEP bytes of zeros
+//   ---------------   <- `pad_low`
+//   made_*            frames that make and read the dead cells (inline(never))
+//
+// - Callee-saved registers are restored when `below_a_pad` returns, to values of the test
+//   frame, which never held an unmasked address.
+// - A caller-saved register is not scanned, but a frame may spill one that is uninitialized
+//   to its stack, such as the unused payload of a returned enum. On x86-64 Linux (debug) the
+//   test frame spilled the payload register of `T::state`'s `Monomorphic`, which still held
+//   the dead shape. Hence every read of a dead cell happens below the pad.
 
 const MASK: usize = 0x5a5a_5a5a_5a5a_5a5a;
+
+/// Bytes of zeros between the test's frame and the frames that make the dead cells: far more
+/// than a collection's own frames take (`T::collect` down to the spill trampoline).
+const DEEP: usize = 64 << 10;
 
 /// Overwrites 256 KiB of stack below the caller, so stale words of returned frames cannot
 /// keep a dead cell alive through the conservative scan.
@@ -277,6 +299,33 @@ const MASK: usize = 0x5a5a_5a5a_5a5a_5a5a;
 fn scrub_stack() {
     let mut words = [0usize; 1 << 15];
     black_box(&mut words);
+}
+
+/// Runs `made` with [`DEEP`] bytes of zeros between its frames and the caller's. `made` must
+/// only call an `#[inline(never)]` function that makes the cells and returns their masked
+/// addresses. Returns that result and `pad_low`, the lowest byte of the pad: every frame of
+/// `made`'s callee lies below it.
+#[inline(never)]
+fn below_a_pad<R>(made: impl FnOnce() -> R) -> (R, usize) {
+    let mut pad = [0u8; DEEP];
+    black_box(&mut pad);
+    let r = made();
+    (r, black_box(&mut pad).as_ptr().addr())
+}
+
+/// Scrubs the stack and collects, after the dead cells were made by [`below_a_pad`] (which
+/// gave `pad_low`). Then checks that the collection can show something about them: its
+/// conservative scan stopped above the pad, and kept none of `dead` (masked addresses).
+fn collect_after_a_pad(t: &mut T, pad_low: usize, dead: &[usize]) {
+    scrub_stack();
+    t.collect();
+    let high = ep9_platform::current_thread_stack_bounds().unwrap().high;
+    let scan_low = high - 8 * t.rt().heap.stats().last_stack_words;
+    assert!(
+        scan_low > pad_low,
+        "the conservative scan read the frames below the pad ({scan_low:#x} <= {pad_low:#x})"
+    );
+    assert_not_kept(t.rt(), dead);
 }
 
 /// Panics if the last conservative scan kept one of `cells` (masked addresses): the check
@@ -293,12 +342,15 @@ fn assert_not_kept(rt: &Runtime, cells: &[usize]) {
 }
 
 /// Loads `x` through `f0` from a new object `{pad: 0, x: 1}` whose shape no other object has,
-/// in a frame of its own. Returns the masked addresses of the object and its shape.
+/// and checks that the entry of `f0` is then in the state `want` (a read of the shape, so it
+/// happens in this frame, below the pad). Returns the masked addresses of the object and its
+/// shape.
 #[inline(never)]
-fn load_from_a_lone_shape(t: &mut T, pad: &str) -> [usize; 2] {
+fn made_a_lone_shape_load(t: &mut T, pad: &str, want: State) -> [usize; 2] {
     let p = object_prototype(t.rt());
     let o = object_with(t.rt(), p, &[(pad, int(0)), ("x", int(1))]);
     assert_eq!(t.ok(0, o, UNDEFINED), int(1));
+    assert_eq!(t.state(0), want);
     let s = shape::shape_of(o);
     [black_box(o as usize) ^ MASK, black_box(s as usize) ^ MASK]
 }
@@ -610,11 +662,9 @@ fn a_super_load_is_keyed_on_the_home_objects_prototype() {
 fn a_dead_shape_clears_its_entry() {
     each(|c| {
         let mut t = T::new(c, &[Site::Get("x")]);
-        let dead = load_from_a_lone_shape(&mut t, "icPadA");
-        assert_eq!(t.state(0), State::Monomorphic);
-        scrub_stack();
-        t.collect();
-        assert_not_kept(t.rt(), &dead);
+        let (dead, pad_low) =
+            below_a_pad(|| made_a_lone_shape_load(&mut t, "icPadA", State::Monomorphic));
+        collect_after_a_pad(&mut t, pad_low, &dead);
         assert_eq!(feedback::key(t.vector(0), SLOT), UNDEFINED);
         assert_eq!(t.state(0), State::Uninitialized);
         // A polymorphic case: two live shapes and one that dies. Handles keep the live objects
@@ -625,11 +675,9 @@ fn a_dead_shape_clears_its_entry() {
         let kept = [t.keep(a), t.keep(b)];
         assert_eq!(t.ok(0, a, UNDEFINED), int(1));
         assert_eq!(t.ok(0, b, UNDEFINED), int(2));
-        let dead = load_from_a_lone_shape(&mut t, "icPadC");
-        assert_eq!(t.state(0), State::Polymorphic(3));
-        scrub_stack();
-        t.collect();
-        assert_not_kept(t.rt(), &dead);
+        let (dead, pad_low) =
+            below_a_pad(|| made_a_lone_shape_load(&mut t, "icPadC", State::Polymorphic(3)));
+        collect_after_a_pad(&mut t, pad_low, &dead);
         assert_eq!(t.state(0), State::Polymorphic(2));
         assert_eq!(t.ok(0, a, UNDEFINED), int(1));
         assert_eq!(t.ok(0, b, UNDEFINED), int(2));
@@ -649,9 +697,9 @@ fn a_dead_shape_clears_its_entry() {
 
 /// Builds `o → p1 → p2` with `m` = 7 on `p2`, loads `o.m` through `f0` (a prototype-load case
 /// whose holder is `p2`), then cuts `p2` off the chain. Returns `o` and the masked address of
-/// `p2`, which nothing references now.
+/// `p2`, which nothing references now. Run it [`below_a_pad`].
 #[inline(never)]
-fn proto_load_through_a_lone_holder(t: &mut T) -> (u64, usize) {
+fn made_a_proto_load_through_a_lone_holder(t: &mut T) -> (u64, usize) {
     let op = object_prototype(t.rt());
     let p2 = object_with(t.rt(), op, &[("m", int(7))]);
     let p1 = object::new_object(t.rt(), p2);
@@ -667,10 +715,8 @@ fn proto_load_through_a_lone_holder(t: &mut T) -> (u64, usize) {
 fn a_proto_load_whose_holder_died_misses() {
     each(|c| {
         let mut t = T::new(c, &[Site::Get("m")]);
-        let (o, p2) = proto_load_through_a_lone_holder(&mut t);
-        scrub_stack();
-        t.collect();
-        assert_not_kept(t.rt(), &[p2]);
+        let ((o, p2), pad_low) = below_a_pad(|| made_a_proto_load_through_a_lone_holder(&mut t));
+        collect_after_a_pad(&mut t, pad_low, &[p2]);
         // The case stays (its key, the shape of `o`, lives); its weak holder is cleared.
         let (kind, made_at, holder, _) = t.describe(0, shape::shape_of(o)).unwrap();
         assert_eq!((kind, holder), (PROTO_LOAD, UNDEFINED));
