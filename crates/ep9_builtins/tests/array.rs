@@ -121,9 +121,9 @@ fn index_of_converts_in_spec_order() {
     );
 }
 
-/// A long range scans only the present indices (`present_indices`); the result is the same as
-/// the step-by-step loop, including indices on the prototype chain and a range start past the
-/// end.
+/// A long sparse range runs the plain spec loop over `has_index`/`get_index`, which take no
+/// atom for a hole (M2-P1-INDEXOF-SCAN-REMOVED): indices on the prototype chain and a range
+/// start past the end.
 #[test]
 fn index_of_over_a_long_sparse_range() {
     assert_eq!(
@@ -149,11 +149,11 @@ fn index_of_over_a_long_sparse_range() {
     );
 }
 
-/// The long-range scan reads every own key along the prototype chain: an integer key of
-/// 2^32 - 1 or more is not an array index, so `[[OwnPropertyKeys]]` lists it among the other
-/// strings in creation order (§10.1.11.1), after `length` or any other key. A non-canonical
-/// key ("04294967297") names no index; an own key shadows the prototype's; an accessor in
-/// range still takes the step-by-step loop. Lengths reach 2^53 - 1.
+/// The spec loop finds integer keys past the array-index range: a key of 2^32 - 1 or more is
+/// not an array index, so it is an ordinary string key (§10.1.11.1), stored after `length` or
+/// any other key, that `has_index`/`get_index` find by its digits. A non-canonical key
+/// ("04294967297") names no index; an own key shadows the prototype's; a getter in range
+/// runs. Lengths reach 2^53 - 1.
 #[test]
 fn index_of_finds_integer_keys_past_the_array_index_range() {
     assert_eq!(
