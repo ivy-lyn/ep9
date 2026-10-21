@@ -32,51 +32,7 @@ use crate::shape::ShapeState;
 use crate::symbol::SymbolState;
 use crate::unit::{FunctionInfo, LoadedUnit};
 
-macro_rules! atoms {
-    ($($name:ident = $text:literal,)*) => {
-        /// Strings the VM needs often. Created once per isolate and kept as roots.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        #[repr(u8)]
-        pub(crate) enum Atom { $($name,)* }
-
-        impl Atom {
-            pub(crate) const ALL: &'static [Atom] = &[$(Atom::$name,)*];
-            pub(crate) const fn text(self) -> &'static str {
-                match self { $(Atom::$name => $text,)* }
-            }
-        }
-    };
-}
-
-atoms! {
-    Empty = "",
-    Length = "length",
-    Prototype = "prototype",
-    Constructor = "constructor",
-    Name = "name",
-    Message = "message",
-    Stack = "stack",
-    ToStringKey = "toString",
-    ValueOf = "valueOf",
-    Raw = "raw",
-    ValueKey = "value",
-    Done = "done",
-    Undefined = "undefined",
-    Null = "null",
-    True = "true",
-    False = "false",
-    Object = "object",
-    Boolean = "boolean",
-    Number = "number",
-    String = "string",
-    Function = "function",
-    Symbol = "symbol",
-    Bigint = "bigint",
-    NaN = "NaN",
-    Infinity = "Infinity",
-    Comma = ",",
-    GlobalThis = "globalThis",
-}
+pub use crate::atoms::Atom;
 
 /// Realm intrinsics and other runtime roots (v0: one realm per isolate; H22 allows N).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +60,12 @@ pub(crate) enum Root {
 }
 
 pub(crate) const ROOT_COUNT: usize = Root::ArrayIteratorPrototype as usize + 1;
+
+/// Root slots: realm roots, then the `atoms!` list, then the 256 single-character atoms
+/// (undefined until first use, string.rs `single_char`).
+const ATOM_ROOTS: usize = ROOT_COUNT;
+const SINGLE_CHAR_ROOTS: usize = ATOM_ROOTS + Atom::ALL.len();
+const ROOT_SLOTS: usize = SINGLE_CHAR_ROOTS + 256;
 
 /// The ECMAScript native error types (§20.5.5) plus the plain `Error`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -179,15 +141,13 @@ impl Shared {
             pending: Cell::new(0),
             pending_message: Cell::new(UNDEFINED),
             throw_site: Cell::new(None),
-            roots: (0..ROOT_COUNT + Atom::ALL.len())
-                .map(|_| Cell::new(UNDEFINED))
-                .collect(),
+            roots: (0..ROOT_SLOTS).map(|_| Cell::new(UNDEFINED)).collect(),
         }
     }
 
     /// Visits every precise root the VM owns: the live VM stack up to the top frame or the
-    /// scratch top (whichever is higher), the pending exception, the pending message and the
-    /// realm roots and atoms.
+    /// scratch top (whichever is higher), the pending exception, the pending message, the
+    /// realm roots, the `atoms!` list and the single-character atoms.
     fn trace(&self, t: &mut ep9_heap::Tracer<'_>) {
         let fp = self.stack.fp();
         let base = self.stack.base();
@@ -251,7 +211,6 @@ pub(crate) struct Runtime {
     pub shapes: ShapeState,
     /// The atom table (H19). Shared with the heap's weak source; never borrowed across an
     /// allocation.
-    #[allow(dead_code)] // wk4-stub
     pub atoms: Rc<RefCell<AtomTable>>,
     /// Symbols: the registry and the identity-hash PRNG.
     #[allow(dead_code)] // wk4-stub
@@ -291,6 +250,7 @@ impl Runtime {
             symbols: SymbolState::default(),
             builtins: BuiltinState::default(),
         });
+        crate::atoms::init(&rt);
         crate::shape::init(&rt);
         rt
     }
@@ -335,11 +295,20 @@ impl Runtime {
     }
 
     pub fn atom(&self, a: Atom) -> u64 {
-        self.shared.roots[ROOT_COUNT + a as usize].get()
+        self.shared.roots[ATOM_ROOTS + usize::from(a.id())].get()
     }
 
     pub fn set_atom(&self, a: Atom, v: u64) {
-        self.shared.roots[ROOT_COUNT + a as usize].set(v);
+        self.shared.roots[ATOM_ROOTS + usize::from(a.id())].set(v);
+    }
+
+    /// The single-character atom of `c`, or undefined before its first use.
+    pub fn single_char(&self, c: u8) -> u64 {
+        self.shared.roots[SINGLE_CHAR_ROOTS + c as usize].get()
+    }
+
+    pub fn set_single_char(&self, c: u8, v: u64) {
+        self.shared.roots[SINGLE_CHAR_ROOTS + c as usize].set(v);
     }
 
     pub fn global(&self) -> u64 {
@@ -372,6 +341,15 @@ impl Runtime {
     }
 }
 
+/// Debug builds: `atoms::check_at_drop` (the atom table check, and the W4-KEY-EQ counter
+/// check with `EP9_ASSERT_ATOM_KEYS` set). Release builds have no `Drop`.
+#[cfg(debug_assertions)]
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        crate::atoms::check_at_drop(self);
+    }
+}
+
 /// The `Value` of bits that the VM holds (stack slots, accumulator, cell slots, roots).
 #[inline(always)]
 pub(crate) fn val(b: u64) -> Value {
@@ -392,6 +370,7 @@ mod tests {
             assert!(seen.insert(a.text()), "duplicate atom {:?}", a.text());
         }
         assert_eq!(ROOT_COUNT, 16);
+        assert_eq!(ROOT_SLOTS, 16 + Atom::ALL.len() + 256);
         assert_eq!(ErrorKind::UriError.name(), "URIError");
         assert_eq!(crate::frame::HEADER, 8);
     }

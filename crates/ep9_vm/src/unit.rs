@@ -2,13 +2,13 @@
 //!
 //! ```text
 //! VerifiedUnit --load--> LoadedUnit (boxed, never freed while the isolate lives)
-//!                          strings:  [Slot]       unit string table as heap strings  (root range)
+//!                          strings:  [Slot]       unit string table as atoms         (root range)
 //!                          consts:   [[Slot]]     constant pool per function          (root ranges)
 //!                          infos:    [FunctionInfo] { dispatch slot, code, counts, consts, unit }
 //!                          feedback: UnitFeedback  per-function feedback (H16, lazy)
 //! ```
 //!
-//! Constant pool entries become Values: Number → number, String → heap string, Oddball → its
+//! Constant pool entries become Values: Number → number, String → its atom, Oddball → its
 //! value. The other kinds keep their index as an int32 marker, and handlers read the
 //! `Constant` from the unit. BigInt is the hole marker: `LdaConstant` of a BigInt throws "not
 //! implemented" (v0).
@@ -19,11 +19,11 @@ use ep9_bytecode::{Constant, Oddball, SourceLines, VerifiedUnit};
 use ep9_heap::{RootId, RootStrength, Slot};
 use ep9_value::Value;
 
+use crate::atoms;
 use crate::dispatch::{CodeEntry, CodeRegistry, DispatchKind};
 use crate::feedback::UnitFeedback;
 use crate::frame::{FALSE, HOLE, NULL, TRUE, UNDEFINED, int32_bits};
 use crate::runtime::{Runtime, val};
-use crate::string;
 
 pub(crate) use crate::function_info::FunctionInfo;
 
@@ -75,10 +75,12 @@ impl LoadedUnit {
                 lu.roots.push(id);
             }
         }
+        // Every unit string is an atom (H19): one cell per text in the isolate, so a name
+        // from two units, or from a unit and ToPropertyKey, is one key (bits compare).
         for (i, s) in lu.unit.strings.iter().enumerate() {
             let b = match s {
-                ep9_bytecode::UnitString::Latin1(b) => string::new_string_latin1(rt, b),
-                ep9_bytecode::UnitString::Utf16(u) => string::new_string_utf16(rt, u),
+                ep9_bytecode::UnitString::Latin1(b) => atoms::intern_latin1(rt, b),
+                ep9_bytecode::UnitString::Utf16(u) => atoms::intern_utf16(rt, u),
             };
             lu.strings[i].init(val(b));
         }

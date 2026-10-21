@@ -1,27 +1,30 @@
 //! Property keys (H19 PropertyKey): ToPropertyKey, key equality, hashing, interning.
 //!
 //! A key is the Value bits of a string (or, from P2, a symbol). There are no number keys: an
-//! index stays a string ("1"), and H19 caches its index in the string's hash field.
+//! index stays a string atom ("1"), and its hash field caches the index (W4-NO-NUMBER-KEYS).
 //!
-//! | Helper | Today | Later |
-//! |---|---|---|
-//! | [`intern_key`] | identity | the atom of the key (stored keys are always atoms) |
-//! | [`probe`] | always [`Probe::Content`] | [`Probe::Bits`] for atoms and symbols |
-//! | [`key_hash`] | FNV-1a over the code units | the stored hash |
-//! | [`is_symbol_key`] | false | the symbol test |
+//! ```text
+//! producer                     key it hands on
+//! ToPropertyKey (any value) -> flatten, then the atom of the string (atoms::intern)
+//! unit strings              -> atoms (interned at unit load, unit.rs)
+//! Rust text                 -> atoms::intern_str
+//! define paths              -> intern_key (P2-OBJ calls it; stored keys are always atoms)
+//!
+//! lookup: probe(key) once -> Bits (atom or symbol): compare bits only
+//!                         -> Content (any other string): one content scan, debug counter + 1
+//! ```
 
+use crate::atoms;
 use crate::conv::{Hint, Res, describe, to_primitive, to_string};
 use crate::interp::Cx;
-use crate::kinds::is_string;
+use crate::kinds::{is_string, is_symbol};
 use crate::runtime::Runtime;
-use crate::string::str_view;
+use crate::string;
 
 /// A property key: the Value bits of a string or a symbol.
-#[allow(dead_code)] // wk4-stub
 pub(crate) type PropertyKey = u64;
 
 /// How a lookup compares a probe key with stored keys (classified once per lookup).
-#[allow(dead_code)] // wk4-stub
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Probe {
     /// An atom or a symbol: compare bits only.
@@ -30,79 +33,99 @@ pub(crate) enum Probe {
     Content,
 }
 
-/// Property-key equality: the same cell, or two strings with equal code units.
+/// Property-key equality: the same cell, or two strings with equal code units. Two distinct
+/// atoms are never equal, so only a pair with a non-atom string looks at content (and bumps
+/// the debug counter, W4-KEY-EQ).
 #[inline]
-pub(crate) fn key_eq(a: u64, b: u64) -> bool {
-    a == b || (is_string(a) && is_string(b) && str_view(a).eq(&str_view(b)))
+pub(crate) fn key_eq(a: PropertyKey, b: PropertyKey) -> bool {
+    if a == b {
+        return true;
+    }
+    if !(is_string(a) && is_string(b)) || (string::is_atom(a) && string::is_atom(b)) {
+        return false;
+    }
+    atoms::note_non_atom_compare();
+    string::equals(a, b)
 }
 
-/// ToPropertyKey (§7.1.19). Keys are strings until symbols exist.
-pub(crate) fn to_property_key(cx: &mut Cx, b: u64) -> Res<u64> {
-    if is_string(b) {
+/// ToPropertyKey (§7.1.19): the atom of ToString(ToPrimitive(b, string)). Keys are strings
+/// until symbols exist (P2-SYM). An index such as "1" stays a string atom.
+pub(crate) fn to_property_key(cx: &mut Cx, b: u64) -> Res<PropertyKey> {
+    if string::is_atom(b) {
         return Ok(b);
     }
-    let p = to_primitive(cx, b, Hint::String)?;
-    to_string(cx, p)
+    let s = if is_string(b) {
+        b
+    } else {
+        let p = to_primitive(cx, b, Hint::String)?;
+        to_string(cx, p)?
+    };
+    let s = string::flatten(cx, s);
+    Ok(intern_key(cx.rt(), s))
 }
 
 /// The array index that `key` names, if it is a canonical index string ("0" .. "4294967294").
-pub(crate) fn array_index_of(key: u64) -> Option<u32> {
+/// An atom answers from its cached hash field.
+pub(crate) fn array_index_of(key: PropertyKey) -> Option<u32> {
     if is_string(key) {
-        str_view(key).array_index()
+        string::array_index(key)
     } else {
         None
     }
 }
 
 /// True if `key` is an array index.
-#[allow(dead_code)] // wk4-stub
-pub(crate) fn is_index_key(key: u64) -> bool {
+#[allow(dead_code)] // callers: P2-OBJ (OM-10 index keys)
+pub(crate) fn is_index_key(key: PropertyKey) -> bool {
     array_index_of(key).is_some()
 }
 
 /// True if `key` is a symbol.
-pub(crate) fn is_symbol_key(_key: u64) -> bool {
+pub(crate) fn is_symbol_key(_key: PropertyKey) -> bool {
     false
 }
 
 /// True if `key` is a valid property key (a string or a symbol).
-pub(crate) fn is_property_key(key: u64) -> bool {
+pub(crate) fn is_property_key(key: PropertyKey) -> bool {
     is_string(key) || is_symbol_key(key)
 }
 
 /// The text of `key` for error messages (never runs JS).
-pub(crate) fn key_text(_rt: &Runtime, key: u64) -> String {
+pub(crate) fn key_text(_rt: &Runtime, key: PropertyKey) -> String {
     if is_string(key) {
-        str_view(key).to_string_lossy()
+        string::to_rust_string(key)
     } else {
         describe(key)
     }
 }
 
-/// The key to store for `key` (the atom of the key, H19).
-#[allow(dead_code)] // wk4-stub
-pub(crate) fn intern_key(_rt: &Runtime, key: u64) -> u64 {
-    key
-}
-
-/// Classifies a probe key once per lookup.
-#[allow(dead_code)] // wk4-stub
-pub(crate) fn probe(_key: u64) -> Probe {
-    Probe::Content
-}
-
-/// A hash of the key's content: 32-bit FNV-1a over the UTF-16 code units, so the Latin-1
-/// and UTF-16 forms of one text hash alike. Never in bytecode, units or property order.
-#[allow(dead_code)] // wk4-stub
-pub(crate) fn key_hash(key: u64) -> u32 {
-    debug_assert!(is_string(key));
-    let s = str_view(key);
-    let mut h: u32 = 0x811c_9dc5;
-    for i in 0..s.len() {
-        for b in s.at(i).to_le_bytes() {
-            h ^= u32::from(b);
-            h = h.wrapping_mul(0x0100_0193);
-        }
+/// The key to store for `key`: the atom of a string key (H19); a symbol as it is. Not a GC
+/// point.
+pub(crate) fn intern_key(rt: &Runtime, key: PropertyKey) -> PropertyKey {
+    if is_string(key) {
+        atoms::intern(rt, key)
+    } else {
+        key
     }
-    h
+}
+
+/// Classifies a probe key once per lookup [I47]: an atom or a symbol compares by bits; any
+/// other string needs a content compare, which the debug counter records (W4-KEY-EQ).
+#[allow(dead_code)] // callers: shape lookups (P1-SHAPE), props lookups (P2-OBJ)
+pub(crate) fn probe(key: PropertyKey) -> Probe {
+    if string::is_atom(key) || is_symbol(key) {
+        Probe::Bits
+    } else {
+        atoms::note_non_atom_compare();
+        Probe::Content
+    }
+}
+
+/// The stored 30-bit hash of a string key (its cached hash field; computed and cached on
+/// first use). Seeded per process: never in bytecode, units or property order. Not a GC
+/// point.
+#[allow(dead_code)] // callers: DESC_INDEX (P1-SHAPE)
+pub(crate) fn key_hash(key: PropertyKey) -> u32 {
+    debug_assert!(is_string(key), "symbol hashes come with P2-SYM");
+    string::hash(key)
 }
