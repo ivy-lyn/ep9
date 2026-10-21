@@ -64,7 +64,7 @@ The rule needs these details (kind **fill**):
 
 | ID | Question | Needed by | Proposed default |
 |---|---|---|---|
-| H05-Q1 | Which crate is "the runtime" for the dependency check: `ep9_vm` or a facade crate | First runnable VM | The crate that exposes `eval`; check `ep9_cli` too |
+| H05-Q1 | Which crate is "the runtime" for the dependency check: `ep9_vm` or a facade crate | First runnable VM | **Filled 2026-10-22:** the binary crate that fills `IsolateConfig::compiler`: `ep9_cli` (the `ep9` binary) now, `ep9_runtime` when that crate exists. Never `ep9_vm`: it reaches the compiler only through the hook (A1, C2). The check is dep-guards check 12 (Rules row 1) |
 | H05-Q2 | Size budget for the always-linked front end | M1 (SIZE-REPORT) | Report only; no budget before M1 |
 | H05-Q3 | Shim design for lone-surrogate source (re-encode, or a WTF-8 path in oxc) | M2 exit (P4) | Map each lone surrogate to a private marker, map positions back with `LineMap` |
 
@@ -79,3 +79,4 @@ The rule needs these details (kind **fill**):
 |---|---|---|---|
 | 2026-10-21 | draft | First draft: rule details A1-A4, checks, test262 counts, P4 baseline 11 | Front-end agent |
 | 2026-10-21 | rewrite | A1 (C2, M2-P0): the compiler edge moves from the runtime crate to the binary. `ep9_vm` gets the compiler through the new hook `IsolateConfig::compiler: Option<&'static CompilerHooks>` (`compile_eval`, `compile_function`, `compile_script` -> `CompileResult`), and `ep9_cli` and `ep9_test262` fill it from `ep9_frontend`. The Rules check is dep-guards check 12 (ep9 default and jitless link `ep9_frontend`; `ep9_vm` does not). Nothing calls the hooks in M2-P0 (P3-EVAL-VM, P3-FNCTOR). Pre-freeze churn (README §3.3) | M2-P0 integration fixer |
+| 2026-10-22 | fill | H05-Q1 filled: "the runtime" for the dependency check is the binary that fills `IsolateConfig::compiler`, `ep9_cli` now and `ep9_runtime` later, never `ep9_vm`; the check is dep-guards check 12 (Rules row 1, unchanged). H05-Q3 stays open (D8) | P2-EVAL-FE |

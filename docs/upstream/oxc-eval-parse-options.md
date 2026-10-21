@@ -5,7 +5,7 @@
 | Project, ref | oxc, [#11793](https://github.com/oxc-project/oxc/issues/11793) "parser/semantic: Support eval string parsing". Open; opened 2025-06-18; no linked PR (issue page read 2026-10-21). The text below is a comment on it, not a new issue |
 | Status | ready (2026-10-21) |
 | ep9 need | `compile_eval(src, EvalContext)` must give the right early errors for direct eval ([01-front-end §5, §7](../plan/01-front-end.md#7-oxc-upstream-track-local-patches-p-gates-unchanged)). Due M1 exit; gate P1 |
-| Workaround | Nova-style wrapper parse plus post-checks, then a local patch in `third_party/patches/oxc/`. Local oxc patches today: 0/3. After a patch for this: 1/3 |
+| Workaround | In use since M2-P2 (`crates/ep9_frontend/src/eval.rs`): parse as a Script (no wrapper), drop only the diagnostics whose label span equals a node the caller permits, then post-checks for rows 5-6 and for private names (see "ep9 use" below). A local patch in `third_party/patches/oxc/` stays the fallback. Local oxc patches today: 0/3. After a patch for this: 1/3 |
 | Verified by | P0-OXC-VERIFY (M0 month 2), 2026-10-21. Ran rows 1-6 again on oxc `=0.155.0` (release commit `73e6b564`) and on oxc main `f3236009` (2026-10-21): the same output as the table below on both. node v24.22.0 agrees with the Spec column. #11793 is still open (2 comments, last update 2025-06-20; read 2026-10-21). Program, commands and full output: [oxc-repro-program.md](oxc-repro-program.md) |
 
 ## Repro (pinned version)
@@ -59,6 +59,26 @@ this.#x      semantic_errors=1 parser_errors=0 fatal_error=false statements=1 ne
 ```
 
 Several uses: the text `new.target + 1; f(new.target)` gives 2 parser errors, one per `new.target` span, `fatal_error=false`, and an AST with both nodes (codegen `new.target + 1;\nf(new.target);`). So a drop matched by span removes each of them and keeps any other parser error.
+
+## ep9 use (P2-EVAL-FE, 2026-10-22)
+
+`compile_eval` runs oxc with the options ep9 uses everywhere: `ParseOptions { parse_regular_expression: true, .. }` and `SemanticBuilder::new_compiler()` (= `with_check_syntax_error(true)`, no node table). The rows again on oxc `=0.155.0` (macOS arm64, a temporary test in `eval.rs`; label = `(offset, length)` of the only label, none is marked primary):
+
+| # | Text | Stage | Message | Label | Node at the label |
+|---|---|---|---|---|---|
+| 1 | `new.target` | parser | Unexpected new.target expression | (0, 10) | the NewTarget node |
+| 2 | `super.x` | semantic | 'super' can only be referenced in members of derived classes or object literal expressions. | (0, 5) | the Super node |
+| 2 | `super[k]` | semantic | (same) | (0, 5) | the Super node |
+| 3 | `super()` | semantic | Super calls are not permitted outside constructors or in nested functions inside constructors. | (0, 7) | the whole CallExpression (not the Super node) |
+| 4 | `this.#x` | semantic | Private identifier '#x' is not allowed outside class bodies | (5, 2) | the PrivateIdentifier, with the `#` |
+| 4 | `#x in o`, `o?.#x` | semantic | (same) | (0, 2), (3, 2) | the PrivateIdentifier |
+| 4 | `class C { m() { this.#y } }` | semantic | Private field '#y' must be declared in an enclosing class | (21, 2) | the PrivateIdentifier |
+| 5 | `arguments` | - | accepted | - | ep9 post-check |
+| 6 | `with (o) {}` | - | accepted | - | ep9 adds the "use strict" directive for a strict caller; then semantic: 'with' statements are not allowed, label on the `with` keyword (length 4) |
+
+Also measured: `() => super.x` and `() => super()` give the same errors at the Super node (6, 5) and the call (6, 7); `(() => new.target)()` gives the parser error at (7, 10); `return 1` stays a parser error (0, 6); `fatal_error` is false for all rows.
+
+So ep9 drops a diagnostic only when its label (the primary one, else the first) equals the span of: a NewTarget node, a Super node of a member expression, or a `super(...)` CallExpression, at the eval code's own function level (arrows included; not inside a function, method, field initializer or static block of the eval code); or a PrivateIdentifier of `o.#x` / `#x in o` whose name is in `EvalContext::private_names`. Every other diagnostic stays an early error.
 
 ## Repro (upstream main)
 
