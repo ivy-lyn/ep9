@@ -5,10 +5,13 @@
 //!
 //! | Target | Format (encoder) | Registration | Unwinder that reads it |
 //! |---|---|---|---|
-//! | Linux (glibc) | DWARF CFI, `.eh_frame` ([`cfi`]) | `__register_frame(section)`: libgcc takes the whole section | libgcc `_Unwind_*` |
-//! | macOS | DWARF CFI, `.eh_frame` ([`cfi`]) | `__register_frame(fde)` once per FDE: libunwind takes one FDE | libunwind `_Unwind_*` |
+//! | Linux, macOS | DWARF CFI, `.eh_frame` ([`cfi`]) | `__register_frame` in the mode the self-test chose: whole section (libgcc) or once per FDE (LLVM and Apple libunwind) | the linked `_Unwind_*` |
 //! | Windows x64 | UNWIND_INFO + RUNTIME_FUNCTION ([`win64`]) | `RtlAddGrowableFunctionTable` | `RtlLookupFunctionEntry` / `RtlVirtualUnwind` |
 //!
+//! - unix: the unwinder is a link-time fact (a linux-gnu build links libgcc_s, zig cc links
+//!   LLVM libunwind), so a self-test picks the mode at run time: register a probe, call it,
+//!   walk through it ([`RegistrationMode`], [`self_test`]). If no mode works, every
+//!   registration fails and native code does not start. Windows has one form only.
 //! - The encoders build on every host, so their tests run everywhere.
 //! - [`walk_native_stack`] walks the current thread with the same system unwinder. Tests and
 //!   SP-JIT-mem use it to prove that a walk passes through generated code.
@@ -17,7 +20,14 @@ pub mod cfi;
 pub mod win64;
 
 #[cfg(unix)]
+mod mode;
+#[cfg(unix)]
 mod unix;
+#[cfg(unix)]
+pub use mode::{
+    ProbeCallback, ProbeFn, RegistrationMode, SelfTestProbe, dlsym_guess, registration_mode,
+    self_test,
+};
 #[cfg(unix)]
 use unix as os;
 #[cfg(unix)]
