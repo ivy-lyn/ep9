@@ -18,6 +18,20 @@ fn scratch(name: &str) -> PathBuf {
     d
 }
 
+/// False when no `git` program can be started (a minimal image such as rust:*-slim has none;
+/// `build.rs` then watches nothing and has nothing to test here). In CI git must be there.
+fn have_git() -> bool {
+    let ok = Command::new("git").arg("--version").output().is_ok();
+    assert!(
+        ok || std::env::var_os("CI").is_none(),
+        "git not found, and CI is set"
+    );
+    if !ok {
+        eprintln!("skipped: no git program");
+    }
+    ok
+}
+
 /// `git -C <dir> <args>` without the user's or the system's git config; panics on failure.
 fn run_git(dir: &Path, args: &[&str]) {
     let empty = dir.parent().unwrap().join("empty.gitconfig");
@@ -102,6 +116,9 @@ fn check_packed_nested_branch(dir: &Path, packer: &Path, branch: &str) {
 
 #[test]
 fn a_commit_on_a_packed_nested_branch_is_seen() {
+    if !have_git() {
+        return;
+    }
     let root = scratch("repo");
     let dir = root.join("r");
     std::fs::create_dir(&dir).unwrap();
@@ -115,6 +132,9 @@ fn a_commit_on_a_packed_nested_branch_is_seen() {
 
 #[test]
 fn a_commit_on_a_packed_nested_branch_in_a_worktree_is_seen() {
+    if !have_git() {
+        return;
+    }
     let root = scratch("worktree");
     let main = root.join("main");
     std::fs::create_dir(&main).unwrap();
@@ -133,6 +153,9 @@ fn a_commit_on_a_packed_nested_branch_in_a_worktree_is_seen() {
 
 #[test]
 fn a_detached_head_watches_head_only() {
+    if !have_git() {
+        return;
+    }
     let root = scratch("detached");
     let dir = root.join("r");
     std::fs::create_dir(&dir).unwrap();
