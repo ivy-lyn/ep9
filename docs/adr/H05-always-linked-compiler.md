@@ -25,7 +25,7 @@ The rule needs these details (kind **fill**):
 
 | # | Decision | Why |
 |---|---|---|
-| A1 | The runtime crate that runs code depends on `ep9_frontend` as a normal, non-optional dependency. No Cargo feature removes it | One edge to check; a feature flag would make a lean build possible |
+| A1 | The binary that runs code (`ep9_cli`, also `ep9_test262`) depends on `ep9_frontend` as a normal, non-optional dependency. No Cargo feature removes it. `ep9_vm` has no edge to `ep9_frontend` (C2): it reaches the compiler through `IsolateConfig::compiler: Option<&'static CompilerHooks>` (`compile_eval`, `compile_function`, `compile_script`; `crates/ep9_vm/src/compiler.rs`), which the embedder fills from `ep9_frontend` | One edge to check per binary; a feature flag would make a lean build possible. The VM crate stays free of the front end, and eval and `Function()` still find a compiler in every mode |
 | A2 | Every unit keeps the decoded source text. AOT units always embed it (`CompiledUnit::source`, H35); the header holds its hash and length | `toString` and lazy compile need it |
 | A3 | Each function records its source range: the function node, or the class body for synthetic class functions (`FunctionInfo::span`, H01 B7) | `toString` of a class constructor returns the class text |
 | A4 | Source text that holds a lone surrogate (only possible through `eval` and `Function` of a JS string) goes through the lone-surrogate shim; P4 tracks it | oxc reads UTF-8 only |
@@ -34,7 +34,7 @@ The rule needs these details (kind **fill**):
 
 | Rule | Check | From |
 |---|---|---|
-| A runtime crate never has an optional `ep9_frontend` dependency or a feature that removes it | CI: `cargo tree -e normal -p ep9_cli` lists `ep9_frontend`; grep for `optional` on that edge | First VM crate that runs code (M0) |
+| A runtime crate never has an optional `ep9_frontend` dependency or a feature that removes it; `ep9_vm` has no `ep9_frontend` edge | CI `dep-guards.sh` check 12: `cargo tree -p ep9_cli [--no-default-features] -e normal -i ep9_frontend` exits 0 and its stdout has an `ep9_cli` node (default and jitless ep9); controls: `-p ep9_vm -e normal,build -i ep9_frontend` matches no package, and `ep9_builtins` (a dev-only edge) does not pass the same query | First VM crate that runs code (M0); check 12 since M2-P0 |
 | Units keep source | `ep9_bytecode` unit tests: AOT units have `source`; hash and length match | M0 (H35) |
 | eval, Function, toString pass in every mode | test262 runner per mode: 1,805 files call `eval(` or `Function(` outside staging (2,057 with staging); 80 files in `built-ins/Function/prototype/toString` | M1 |
 | The lone-surrogate eval set is counted | `probe::p4_lone_surrogate_eval_count` (baseline 11, below) | M0 count; P4 at M2 exit |
@@ -78,3 +78,4 @@ The rule needs these details (kind **fill**):
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-21 | draft | First draft: rule details A1-A4, checks, test262 counts, P4 baseline 11 | Front-end agent |
+| 2026-10-21 | rewrite | A1 (C2, M2-P0): the compiler edge moves from the runtime crate to the binary. `ep9_vm` gets the compiler through the new hook `IsolateConfig::compiler: Option<&'static CompilerHooks>` (`compile_eval`, `compile_function`, `compile_script` -> `CompileResult`), and `ep9_cli` and `ep9_test262` fill it from `ep9_frontend`. The Rules check is dep-guards check 12 (ep9 default and jitless link `ep9_frontend`; `ep9_vm` does not). Nothing calls the hooks in M2-P0 (P3-EVAL-VM, P3-FNCTOR). Pre-freeze churn (README §3.3) | M2-P0 integration fixer |

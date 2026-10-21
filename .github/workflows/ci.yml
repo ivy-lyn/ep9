@@ -188,27 +188,33 @@ jobs:
         run: cargo test -p ep9_frontend --locked --lib bytecodegen::corpus -- --ignored --nocapture
       # G2 atom-key gate (W4-KEY-EQ): in a debug build with EP9_ASSERT_ATOM_KEYS=1, every isolate
       # drop panics if a property-key compare looked at string content (crates/ep9_vm/src/atoms.rs),
-      # and the runner counts that as a panic. The gate is "panic 0" in the summary. The 120 s soft
-      # timeout is for the slower debug build. Other differences of the debug run (exit 1 or 2
-      # without a panic) are warnings here: the release steps above are the result gates.
+      # and the runner counts that as a panic. The gate needs "infrastructure errors: 0 (panic 0,
+      # ...)" in the summary and exit 0 or 1. Exit 2 means an infrastructure error (panic,
+      # timeout, worker crash, internal BytecodeGen error) or a runner error, and fails the step;
+      # an infrastructure error also skips the expectation compare (tools/test262/src/exec.rs).
+      # Exit 1 (the failing set differs from the expectation file, no infrastructure error) is a
+      # warning: the release steps above are the result gates. The 120 s soft timeout is for the
+      # slower debug build.
       - name: test262 exec, atom-key gate (debug)
         if: ${{ !cancelled() && steps.sync.outcome == 'success' && matrix.name == 'linux-x64' }}
         run: |
           cargo build --locked -p ep9_test262
           rc=0
           EP9_ASSERT_ATOM_KEYS=1 target/debug/ep9-test262 exec --timeout 120 2>&1 | tee atomgate.log || rc=$?
-          line="$(grep 'infrastructure errors:' atomgate.log || true)"
+          line="$(grep 'infrastructure errors:' atomgate.log | tail -n 1 || true)"
           if [ -z "$line" ]; then
             echo "::error::atom-key gate: the debug exec run printed no summary (exit $rc)"
             exit 1
           fi
-          if ! grep -q '(panic 0,' <<< "$line"; then
-            echo "::error::atom-key gate:$line"
+          if ! grep -qE '^ *infrastructure errors: 0 \(panic 0, timeout 0, worker crash 0, other 0\)$' <<< "$line"; then
+            echo "::error::atom-key gate (exit $rc):$line"
             exit 1
           fi
-          if [ "$rc" != 0 ]; then
-            echo "::warning::atom-key gate passed (panic 0), but the debug exec run exited $rc:$line"
-          fi
+          case "$rc" in
+            0) ;;
+            1) echo "::warning::atom-key gate passed (infrastructure errors 0), but the debug failing set differs from the expectation file (exit 1)" ;;
+            *) echo "::error::atom-key gate: the debug exec run exited $rc:$line"; exit 1 ;;
+          esac
       # Every failure with its cause; regenerate an expectation file from test262-exec.json
       # (status "fail").
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -273,12 +279,12 @@ jobs:
       - uses: ./.github/actions/setup-rust
       # cargo xtask disasm-check needs llvm-objdump, llvm-nm and llvm-ar from the sysroot.
       - run: rustup component add llvm-tools
-      # H15: tail handlers end in tail jumps, handler args <= 4, and every expansion has 282
+      # H15: tail handlers end in tail jumps, handler args <= 4, and every expansion has 284
       # handlers = ep9_vm::internals::THREADED_HANDLERS (opcodes + cold blocks + 3). Change the
       # number when an opcode or a cold block is added. No --match-loop gate for ep9_vm: its
       # match loop is the debug expansion, and its release shape is a report (H15 ADR, Rules).
       - name: ep9_vm handlers
-        run: cargo xtask disasm-check --manifest-path crates/ep9_vm/Cargo.toml -p ep9_vm --expect 282
+        run: cargo xtask disasm-check --manifest-path crates/ep9_vm/Cargo.toml -p ep9_vm --expect 284
       # SP-Value, H11: the barrier fast path (rustc --emit asm; no llvm-tools needed).
       - name: ep9_heap barrier
         if: ${{ !cancelled() }}

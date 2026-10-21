@@ -192,16 +192,24 @@ fi
 #     ep9_frontend in its normal graph, default and jitless; eval reaches it through the
 #     IsolateConfig::compiler hook. Control: ep9_vm's graph must not show ep9_frontend (ep9_vm
 #     has no edge to it), so a query that always matches fails here instead of passing.
-# present_in <cargo tree args...>: the last arg is in the given graph (cargo tree exits 0 and
-# prints the inverted tree).
+# present_in <package> <cargo tree args... -i <dep>>: <package> reaches <dep> in the given graph.
+# cargo tree must exit 0, and its stdout (the inverted tree, one node per line with
+# --prefix none) must hold a "<package> v" node. Only stdout is read: for a graph without <dep>
+# on those edges cargo tree exits 0 with "warning: nothing to print." on stderr and no stdout.
 present_in() {
-  local out
-  out="$(cargo tree --locked --target all "$@" 2>&1)" && [ -n "$out" ]
+  local pkg="$1" out
+  shift
+  out="$(cargo tree --locked --target all --prefix none -p "$pkg" "$@")" || return 1
+  grep -q "^$pkg v" <<< "$out"
 }
 if grep -q "ep9_cli" <<< "$members"; then
   if absent_from -p ep9_vm -e normal,build -i ep9_frontend; then ok "(12) control: ep9_vm has no ep9_frontend"; else bad "(12) control: ep9_vm reaches ep9_frontend (or cargo tree failed)"; fi
-  if present_in -p ep9_cli -e normal -i ep9_frontend; then ok "(12) the default ep9 (-p ep9_cli) links ep9_frontend"; else bad "(12) the default ep9 (-p ep9_cli) does not link ep9_frontend"; fi
-  if present_in -p ep9_cli --no-default-features -e normal -i ep9_frontend; then ok "(12) the jitless ep9 (-p ep9_cli --no-default-features) links ep9_frontend"; else bad "(12) the jitless ep9 does not link ep9_frontend"; fi
+  # Control for present_in: ep9_builtins has ep9_frontend only as a dev-dependency (check 8
+  # keeps its normal edges to ep9_vm and ep9_math), so on normal edges cargo tree prints
+  # nothing and present_in must say no.
+  if present_in ep9_builtins -e normal -i ep9_frontend 2>/dev/null; then bad "(12) control: present_in accepts ep9_builtins -> ep9_frontend on normal edges (a dev-only edge)"; else ok "(12) control: present_in rejects a dev-only edge (ep9_builtins -e normal -i ep9_frontend)"; fi
+  if present_in ep9_cli -e normal -i ep9_frontend; then ok "(12) the default ep9 (-p ep9_cli) links ep9_frontend"; else bad "(12) the default ep9 (-p ep9_cli) does not link ep9_frontend"; fi
+  if present_in ep9_cli --no-default-features -e normal -i ep9_frontend; then ok "(12) the jitless ep9 (-p ep9_cli --no-default-features) links ep9_frontend"; else bad "(12) the jitless ep9 does not link ep9_frontend"; fi
 fi
 
 exit "$fail"

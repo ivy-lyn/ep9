@@ -48,7 +48,7 @@ FunctionInfo { unit, function_id, flags, code, slot, ... }
 | Every function of a unit has bytecode (units carry eager bytecode) | `verifier::function_metadata_rules` (`EmptyBytecode`) | M0 wk3 |
 | The VM reads compile inputs only from the unit (indices, ranges), never from an AST: `ep9_vm` has no edge to oxc or `ep9_frontend` | `cargo tree -p ep9_vm -e normal,build --locked --target all \| grep -cE 'oxc_\|ep9_frontend'` prints 0 | M0 |
 | The unit keeps the source text a later compile needs | H05 rule "units keep source"; `CompileOptions::embed_source` defaults to true | M0 wk3 |
-| A call runs bytecode only through an `Interp` dispatch slot. Every call path checks the slot kind first, so a function without bytecode can get its own slot kind later with no change in callers | The T0 fast call (`crates/ep9_vm/src/interp/ops.rs:291`), `slow::call` (`runs_bytecode`) and `call::call_function_object` check the kind; `dispatch::tests::*` | M0 wk3 |
+| A call runs bytecode only through an `Interp` dispatch slot. Every call path checks the slot kind first, so a function without bytecode can get its own slot kind later with no change in callers | The T0 fast call (`crates/ep9_vm/src/interp/ops.rs:289`), `slow::call` (`runs_bytecode`) and `call::call_function_object` check the kind; `dispatch::tests::*` | M0 wk3 |
 | A function compiled lazily gets the same bytecode as its eager compile in the same unit | L1 differential test (H04-Q2) | M4 (L1) |
 
 ## Consequences
@@ -89,3 +89,4 @@ FunctionInfo { unit, function_id, flags, code, slot, ... }
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-21 | draft | First draft from 02 §6 row H4 and 01 §8, with the v0 fields and checks as built at 55c15d0 | P0-DOCS agent (M2-P0) |
+| 2026-10-21 | clarify | 1 `path:line` reference moved to the code after M2-P0 (drift script, [I15]) | M2-P0 integration fixer |

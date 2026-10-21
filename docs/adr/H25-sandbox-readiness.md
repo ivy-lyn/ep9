@@ -32,7 +32,7 @@ Copied from the plan row: off-heap pointers only in `ExternalRef<T>`. Units are 
 
 | Cell | Field | Points at | Store |
 |---|---|---|---|
-| FUNCTION | +24 | `FunctionInfo` (in its unit, or a host or stub info) | `crates/ep9_vm/src/object.rs:608` |
+| FUNCTION | +24 | `FunctionInfo` (in its unit, or a host or stub info) | `crates/ep9_vm/src/object.rs:687` |
 | FEEDBACK | info word (`fv::INFO`) | `FunctionInfo` | `crates/ep9_vm/src/feedback.rs:169` |
 | CONTEXT | scope word (OBJECT_LAYOUT 2, C5) | `ContextScope { unit, scope }` | P0-VM (M2-P0) |
 
@@ -87,3 +87,4 @@ The other `native_of` stores write VM stack frame slots (caller fp, return pc, f
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-21 | draft | First draft from 02 §6 row H25 and 11 D6, with the inventory of off-heap pointers in heap cells at 55c15d0 | P0-DOCS agent (M2-P0) |
+| 2026-10-21 | clarify | 1 `path:line` reference moved to the code after M2-P0 (drift script, [I15]) | M2-P0 integration fixer |

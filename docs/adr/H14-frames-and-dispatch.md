@@ -8,7 +8,7 @@
 | Origin | v1#10 + R16-D2; plan status E |
 | Crates | `ep9_vm` (VM register stack, frame layout, calls, unwinder, dispatch slots, code registry) |
 | Owner (plan role) | VM lead; the AOT senior also works on it in M0-M1 (09 §2) |
-| Validated by | `ep9_vm` tests (listed in Rules); `cargo xtask disasm-check -p ep9_vm --expect 282`; Spike B, SP-Unit, Spike C later |
+| Validated by | `ep9_vm` tests (listed in Rules); `cargo xtask disasm-check -p ep9_vm --expect 284`; Spike B, SP-Unit, Spike C later |
 | Plan sources | [02 §6 H14](../plan/02-architecture.md#6-hard-to-change-decisions-h1-h37), [04 §4](../plan/04-execution.md#4-tier-up-dispatch-slots-and-hybrid-re-tier), [03 §2 VM-stack rule](../plan/03-gc.md), [11 D7, D14, D21](../plan/11-decisions.md) |
 
 ## Context
@@ -19,7 +19,7 @@
 
 ## Decision
 
-Canonical header (caller FP, return pc, callee, argc, SFI, feedback, context, offset), then registers. Args reversed, padded with undefined. One layout for T0-T3 and both AOT kinds. JS→JS calls never recurse in Rust. Dispatch-slot kinds {interp, baseline, opt, aot-baseline, aot-opt}. A pc→code registry over JIT code and unit ranges serves unwinding, Error.stack, profiler, debugger and deopt (02 §6).
+Canonical header (caller FP, return pc, callee, argc, SFI, new.target, context, offset), then registers. Args reversed, padded with undefined. One layout for T0-T3 and both AOT kinds. JS→JS calls never recurse in Rust. Dispatch-slot kinds {interp, baseline, opt, aot-baseline, aot-opt}. A pc→code registry over JIT code and unit ranges serves unwinding, Error.stack, profiler, debugger and deopt (02 §6).
 
 **Frame.** The VM stack grows up. `fp` points at `r0`. The register operand `o` maps to `fp + o` for `o ≥ 0` and to `fp + o - 8` for `o < 0` (parameters).
 
@@ -70,16 +70,16 @@ Every word in `[stack base, top)` is a valid Value. The GC scans that slice prec
 | Handler tables catch across frames; uncaught errors carry file:line:col (UTF-16) and a stack | `tests::exceptions::*` | M0 wk3 |
 | The VM stack is a precise root; GC stress + verifier pass | `tests::gc::*`; `run_all` runs every program under stress | M0 wk3 |
 | A tier change writes one slot; registry ranges do not overlap | `dispatch::tests::*`, `tests::interp::dispatch_slots_and_code_registry` | M0 wk3 |
-| Every threaded handler ends in a tail jump, ≤ 4 register args | `cargo xtask disasm-check -p ep9_vm --all-targets --expect 282` (H15) | M0 wk3 |
+| Every threaded handler ends in a tail jump, ≤ 4 register args | `cargo xtask disasm-check -p ep9_vm --all-targets --expect 284` (H15) | M0 wk3 |
 | T0 finds the vector through fp-4; it appears on the threshold call (from JS or from Rust) or at a loop poll, never at `u32::MAX`; the unit keeps it | `tests::feedback::*` | M0 wk4 |
-| fp-3 holds new.target, or the generator object in a resumed frame; `LdaNewTarget` returns the slot | the P0-VM test: a frame pushed with the construct bit clear and fp-3 = an object makes `LdaNewTarget` return that object; `host_info_reads_the_contract_constants` (`crates/ep9_unit/tests/check.rs`) reads `FRAME_VERSION` = 2 | M2-P0 |
+| fp-3 holds new.target, or the generator object in a resumed frame; `LdaNewTarget` returns the slot | `tests::calls::lda_new_target_reads_the_resumed_frame_slot` (a call gives undefined; a frame pushed by `push_resume_frame` with the construct bit clear and fp-3 = an object gives that object; `[[Construct]]` gives new.target); `host_info_reads_the_contract_constants` (`crates/ep9_unit/tests/check.rs`) reads `FRAME_VERSION` = 2 | M2-P0 |
 
 ## Consequences
 
 - **Gains.** No adaptor frames: the callee frame pads arguments (+11.2% jitless, [R06]). Deep JS recursion is bounded by the VM stack (default 2^20 slots), not by the native stack. One walker serves the unwinder, Error.stack and later the profiler and deopt.
 - **Costs.** Every argument is copied into the callee frame. Native words cost one add on store and one subtract on load. Calls into host functions and Rust entries still use the native stack and need a check.
 - **Follow-ups.** Spike B decides where JIT frames live (D21). H14-Q1 is filled (FRAME 2): fp-3 keeps new.target, and every tier reaches the vector through fp-4. M5 adds frame walkers for JIT and AOT frames to the registry.
-- **Plan fix filed.** The plan row (02 §6 H14) still names fp-3 "feedback" in the header list; since FRAME 2 that slot is new.target. The Decision text above keeps the plan's words until the plan row changes.
+- **Plan row fixed (2026-10-21).** The plan row (02 §6 H14) and the Decision text above now name fp-3 "new.target" in the header list (it said "feedback" before FRAME 2).
 
 ## Evidence
 
@@ -118,3 +118,4 @@ Every word in `[stack base, top)` is a valid Value. The GC scans that slice prec
 | 2026-10-21 | fill | T0 reaches the lazy FeedbackVector (H16) through the function info slot (fp-4, `FunctionInfo.feedback`); fp-3 keeps new.target (H14-Q1 unchanged). New rule `tests::feedback::*` | VM lead (agent, P2-FEED) |
 | 2026-10-21 | fill | H14-Q1 filled: fp-3 holds the incoming new.target, or the generator object in a resumed frame; JIT and AOT frames reach the feedback vector through fp-4. Header table, frame diagram and a new rule row updated | P0-DOCS agent (M2-P0) |
 | 2026-10-21 | rewrite (version) | FRAME_VERSION 1 -> 2 (`crates/ep9_vm/src/versions.rs`, P0-VM): `slot::FEEDBACK` becomes `slot::NEW_TARGET`, a resumed frame (`push_resume_frame`, construct bit clear) carries the generator object there, and `LdaNewTarget` reads fp-3 without the construct-bit check. A unit built for FRAME 1 falls back to its bytecode (H35 S3). Pre-freeze churn (README §3.3) | P0-DOCS agent (M2-P0) |
+| 2026-10-21 | clarify | Follows the FRAME 2 row above, no new rule: the Decision header list and the plan row (02 §6 H14) name fp-3 new.target; the FRAME 2 rule row names its test `tests::calls::lda_new_target_reads_the_resumed_frame_slot`; the `disasm-check` checks say `--expect 284` (H15, ABI 3) | M2-P0 integration fixer |

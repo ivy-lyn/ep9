@@ -290,6 +290,8 @@ fn construct_with_a_different_new_target() {
     }
 }
 
+// Only the debug-only R4 tests below call it (`call_host` checks R4 with debug asserts).
+#[cfg(debug_assertions)]
 fn returns_err_without_throw<'s>(
     _cx: &mut Cx<'s>,
     _this: Local<'s>,
@@ -299,6 +301,8 @@ fn returns_err_without_throw<'s>(
     Err(Throw)
 }
 
+// Only the debug-only R4 tests below call it (`call_host` checks R4 with debug asserts).
+#[cfg(debug_assertions)]
 fn returns_ok_with_pending<'s>(
     cx: &mut Cx<'s>,
     _this: Local<'s>,

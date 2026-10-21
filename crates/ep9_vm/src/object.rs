@@ -24,7 +24,7 @@
 //! | PRIMITIVE_WRAPPER | 21 | +24 the primitive | 0 |
 //! | BOUND_FUNCTION | 22 | +24 target, +32 bound `this`, +40 bound arguments | 2 |
 //! | GENERATOR | 23 | +24 state, +32 mode (int32s), +40 function, +48 receiver, +56 context, +64 registers (an ELEMENTS cell), +72 resume mode (int32), +80 async slot ([`genf`]) | 0 |
-//! | SLOT_OBJECT | 24 | +24 ObjectClass id (int32) ([`slot_obj`]) | n: the internal slots |
+//! | SLOT_OBJECT | 24 | +24 ObjectClass id (int32), +32 internal slots: an ELEMENTS cell of n Values, or undefined when n = 0 ([`slot_obj`]) | 0 |
 //!
 //! | Kind | Id | Layout (byte offsets) | Size |
 //! |---|---|---|---|
@@ -128,14 +128,17 @@ pub(crate) mod genf {
     pub const MODE_ASYNC_GENERATOR: i32 = 2;
 }
 
-/// SLOT_OBJECT fixed fields (OBJECT_LAYOUT 2): the ObjectClass id; the internal slots are the
-/// object's in-object slots (word0 flag bits 0-7, at most [`obj::MAX_INOBJECT`]). P3-ABI-SLOTS
-/// adds the accessors.
+/// SLOT_OBJECT fixed fields (OBJECT_LAYOUT 2): the ObjectClass id and a separate cell for the
+/// internal slots. The internal slots are never in-object slots: property code owns those
+/// (`props::field_ref` stores named fields there, `props::to_dictionary` clears them), and it
+/// never touches fixed fields. P3-ABI-SLOTS adds the accessors.
 #[allow(dead_code)] // caller: P3-ABI-SLOTS (abi/slots.rs)
 pub(crate) mod slot_obj {
     /// The ObjectClass id (int32).
     pub const CLASS: usize = 24;
-    pub const FIXED: usize = 1;
+    /// The internal slots: an ELEMENTS cell of n Values, or undefined when the class has none.
+    pub const SLOTS: usize = 32;
+    pub const FIXED: usize = 2;
 }
 
 pub(crate) mod arr {
