@@ -178,9 +178,8 @@ impl VmStack {
     }
 
     /// Makes the GC scan up to `top` (exclusive) even above the top frame. Every slot below
-    /// `top` must hold a valid Value. (Tests use it today; the builtin ABI's argument
-    /// builder, H20, is its first VM caller.)
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// `top` must hold a valid Value. Callers: the builtin ABI's argument builder (H20) and
+    /// the Rust-to-JS entry, which restores the caller's value on return.
     pub fn set_scratch_top(&self, top: *mut u64) {
         debug_assert!(top.addr() >= self.base.addr() && top.addr() <= self.end().addr());
         self.scratch_top.set(top);
