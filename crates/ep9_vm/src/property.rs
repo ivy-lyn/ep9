@@ -36,11 +36,11 @@ use crate::interp::Cx;
 use crate::key::{
     self, Probe, array_index_of, intern_key, is_property_key, is_symbol_key, key_text,
 };
-use crate::kinds::{self as kind, is_callable, is_symbol};
+use crate::kinds::{self as kind, is_bound, is_callable, is_symbol};
 use crate::object::{self, attr, is_array, is_function, is_object, is_string};
 use crate::props;
 use crate::runtime::{Atom, ErrorKind, Root, Runtime, val};
-use crate::{accessor, shape, string, symbol, wrapper};
+use crate::{accessor, bound, shape, string, symbol, wrapper};
 
 fn is_atom(cx: &Cx, key: u64, a: Atom) -> bool {
     object::key_eq(key, cx.rt().atom(a))
@@ -584,8 +584,8 @@ fn has_own_with(rt: &Runtime, o: u64, key: u64, how: Probe) -> bool {
     props::own_get_with(o, key, how).is_some() || exotic::own_attrs(rt, o, key, how).is_some()
 }
 
-/// OrdinaryHasInstance (§7.3.22) for `v instanceof f`. v0: no `@@hasInstance`, no bound
-/// functions.
+/// InstanceofOperator (§13.10.2) and OrdinaryHasInstance (§7.3.21) for `v instanceof f`. v0:
+/// no `@@hasInstance`, so InstanceofOperator is OrdinaryHasInstance after the callable check.
 pub(crate) fn instance_of(cx: &mut Cx, v: u64, f: u64) -> Res<bool> {
     if !is_callable(f) {
         return Err(throw_error(
@@ -593,6 +593,14 @@ pub(crate) fn instance_of(cx: &mut Cx, v: u64, f: u64) -> Res<bool> {
             ErrorKind::TypeError,
             "Right-hand side of 'instanceof' is not callable",
         ));
+    }
+    // OrdinaryHasInstance step 2: a bound function gives InstanceofOperator(v, its
+    // [[BoundTargetFunction]]), which is callable (BoundFunctionCreate's target is). Its own
+    // `prototype`, if any, is never read. A loop down the chain, so its depth costs no native
+    // stack (W4-BLTA-BOUND).
+    let mut f = f;
+    while is_bound(f) {
+        f = bound::target(f);
     }
     if !is_object(v) {
         return Ok(false);
