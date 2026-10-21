@@ -20,7 +20,7 @@ use ep9_heap::GlobalHandle;
 use super::{Asm, config, isolate, meta, on_big_stack, print, unit};
 use crate::atoms;
 use crate::feedback;
-use crate::frame::{NULL, UNDEFINED, int32_bits};
+use crate::frame::{NULL, UNDEFINED, int32_bits, int32_of};
 use crate::ic::{self, KEY_STRING, State, hk, smi};
 use crate::object::{self, attr};
 use crate::property;
@@ -653,6 +653,167 @@ fn a_super_load_is_keyed_on_the_home_objects_prototype() {
         // A home object whose prototype is null: GetSuperBase gives null, and the load throws.
         assert!(property::set_prototype_of(t.rt(), home, NULL));
         t.throws(0, home, receiver, "TypeError");
+    });
+}
+
+// ---- the epoch saturates (W4-P3FIX-EPOCH-SAT) ---------------------------------------------
+
+/// The sites of [`epoch_run`]: `o.b` (a prototype load), `o.q` (a missing property), strict
+/// `x.n = v` (an add that a read-only `n` on the chain makes throw), sloppy `y.m = v` (an add
+/// the changes do not touch) and CreateDataProperty(z, "d", v) (0x25).
+const EPOCH_SITES: [Site; 5] = [
+    Site::Get("b"),
+    Site::Get("q"),
+    Site::Set("n", true),
+    Site::Set("m", false),
+    Site::Define("d"),
+];
+
+/// An answer of [`epoch_answers`]: an int, or `None` for undefined.
+fn answer(v: Option<u64>) -> Option<i32> {
+    let v = v.filter(|&v| v != UNDEFINED)?;
+    assert_eq!(v, int(int32_of(v)), "not an int: {v:#x}");
+    Some(int32_of(v))
+}
+
+/// One round of [`EPOCH_SITES`]: `o.b`, `o.q`, then on new objects whose prototype is `p`:
+/// strict `x.n = 5` (-1 for a TypeError, else `x.n`), sloppy `y.m = 6` then `y.m`,
+/// CreateDataProperty(z, "d", 7) then `z.d`. Ints and undefined only, so two isolates can
+/// compare them.
+fn epoch_answers(t: &mut T, o: u64, p: u64) -> Vec<Option<i32>> {
+    let mut r = vec![
+        answer(Some(t.ok(0, o, UNDEFINED))),
+        answer(Some(t.ok(1, o, UNDEFINED))),
+    ];
+    let x = object::new_object(t.rt(), p);
+    r.push(match t.call(2, x, int(5)) {
+        Ok(_) => answer(own(t.rt(), x, "n")),
+        Err(e) => {
+            assert_eq!(e.constructor.as_deref(), Some("TypeError"), "{}", e.message);
+            Some(-1)
+        }
+    });
+    for (i, v, name) in [(3, 6, "m"), (4, 7, "d")] {
+        let y = object::new_object(t.rt(), p);
+        t.ok(i, y, int(v));
+        r.push(answer(own(t.rt(), y, name)));
+    }
+    r
+}
+
+/// What [`epoch_run`] saw after the changes.
+#[derive(Debug)]
+struct EpochRun {
+    /// Two rounds of [`epoch_answers`] after the four changes, then one after a fifth.
+    answers: Vec<Option<i32>>,
+    epoch: u32,
+    /// With the IC: the kind of each site's case for `o`'s shape, then the kind and epoch of
+    /// a 0x25 case made after the changes.
+    kinds: Option<([i32; 5], (i32, u32))>,
+}
+
+/// Sets the epoch to `warm`, warms [`EPOCH_SITES`] on `o` and new objects whose prototype is
+/// `p` = {a: 1, b: 2}, then sets the epoch to `jump` and makes four structural changes of
+/// `p`, each of which makes a warm answer wrong: delete `b`, add `c` = 30 (in `b`'s old
+/// field), add `q` = 40, add a read-only `n`. Two rounds of answers follow (the misses record
+/// new cases), then a fifth change that makes the missing `o.b` 50, and one more round.
+fn epoch_run(c: IsolateConfig, warm: u32, jump: u32) -> EpochRun {
+    let ic = c.feedback_threshold == 0;
+    let mut t = T::new(c, &EPOCH_SITES);
+    let op = object_prototype(t.rt());
+    let p = object_with(t.rt(), op, &[("a", int(1)), ("b", int(2))]);
+    let kept = t.keep(p);
+    let o = object::new_object(t.rt(), p);
+    let so = shape::shape_of(o);
+    t.rt().shapes.proto_epoch.set(warm);
+    for _ in 0..2 {
+        let warm_answers = [Some(2), None, Some(5), Some(6), Some(7)];
+        assert_eq!(epoch_answers(&mut t, o, p), warm_answers);
+    }
+    if ic {
+        let (kind, made_at, holder, _) = t.describe(0, so).unwrap();
+        assert_eq!((kind, made_at, holder), (PROTO_LOAD, warm, p));
+        assert_eq!(t.describe(1, so).map(|d| (d.0, d.1)), Some((MISSING, warm)));
+        for i in 2..5 {
+            assert_eq!(t.describe(i, so).map(|d| (d.0, d.1)), Some((ADD, warm)));
+        }
+    }
+    assert_eq!(t.epoch(), warm);
+    t.rt().shapes.proto_epoch.set(jump);
+    let b = key(t.rt(), "b");
+    assert!(property::delete(&mut t.iso.cx, p, b, true).unwrap());
+    for (name, v, a) in [
+        ("c", int(30), attr::DEFAULT),
+        ("q", int(40), attr::DEFAULT),
+        ("n", int(9), attr::CONFIGURABLE),
+    ] {
+        props::own_define(t.rt(), p, key(t.rt(), name), v, a);
+    }
+    let epoch = t.epoch();
+    let mut answers = epoch_answers(&mut t, o, p);
+    answers.extend(epoch_answers(&mut t, o, p));
+    props::own_define(t.rt(), p, b, int(50), attr::DEFAULT);
+    answers.extend(epoch_answers(&mut t, o, p));
+    let kinds = ic.then(|| {
+        // A shape the 0x25 site has not seen.
+        let z = object_with(t.rt(), op, &[("icPadZ", int(0))]);
+        let zs = shape::shape_of(z);
+        t.ok(4, z, int(8));
+        assert_eq!(own(t.rt(), z, "d"), Some(int(8)));
+        let d = t.describe(4, zs).unwrap();
+        ([0, 1, 2, 3, 4].map(|i| t.kind(i, so).unwrap()), (d.0, d.1))
+    });
+    t.release(kept);
+    EpochRun {
+        answers,
+        epoch,
+        kinds,
+    }
+}
+
+/// Runs [`epoch_run`] with the IC (eager feedback) and without it (no vector), and checks that
+/// both give the answers of the generic path, and that the epoch stays at its maximum.
+fn epoch_matches_the_generic_path(c: IsolateConfig, warm: u32, jump: u32) -> EpochRun {
+    let mut off = c.clone();
+    off.feedback_threshold = u32::MAX;
+    let without = epoch_run(off, warm, jump);
+    let with = epoch_run(c, warm, jump);
+    let mut want = [None, Some(40), Some(-1), Some(6), Some(7)].repeat(2);
+    want.extend([Some(50), Some(40), Some(-1), Some(6), Some(7)]);
+    assert_eq!(without.answers, want, "the generic path");
+    assert_eq!(
+        with.answers, want,
+        "the IC (epoch {warm} -> {jump} -> {})",
+        with.epoch
+    );
+    assert_eq!((without.epoch, with.epoch), (u32::MAX, u32::MAX));
+    with
+}
+
+#[test]
+fn a_saturated_epoch_misses_every_case_made_before_it() {
+    each(|c| {
+        // Warm at MAX - 2; the four changes take the epoch to MAX and then stay there.
+        let run = epoch_matches_the_generic_path(c, u32::MAX - 2, u32::MAX - 2);
+        // At MAX the misses record SLOW, not a case that compares the epoch (a missing case
+        // for `o.b` would answer undefined after the fifth change); the strict add threw, so
+        // it recorded nothing. A 0x25 add case ignores the epoch: the old one still hits, and
+        // a new one is still made.
+        let (kinds, define) = run.kinds.unwrap();
+        assert_eq!(kinds, [smi::SLOW, smi::SLOW, ADD, smi::SLOW, ADD]);
+        assert_eq!(define, (ADD, u32::MAX));
+    });
+}
+
+#[test]
+fn the_epoch_does_not_wrap_back_to_an_old_case() {
+    each(|c| {
+        // Warm at 3, jump to MAX: four changes would wrap the epoch to 0, 1, 2 and then 3, so
+        // every warm case would hit again with its old answer (`o.b` reading `c`, `o.q`
+        // undefined, `x.n = 5` adding past a read-only `n`).
+        let run = epoch_matches_the_generic_path(c, 3, u32::MAX);
+        let (kinds, _) = run.kinds.unwrap();
+        assert_eq!(kinds, [smi::SLOW, smi::SLOW, ADD, smi::SLOW, ADD]);
     });
 }
 

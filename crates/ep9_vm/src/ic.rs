@@ -42,6 +42,11 @@
 //!   miss when it differs (OM-8). The epoch is read through `Cx::proto_epoch` (I43). A
 //!   value store to a prototype does not bump the epoch, so a prototype load reads the
 //!   holder's field at every hit.
+//! - The epoch saturates at [`shape::EPOCH_SATURATED`] (W4-P3FIX-EPOCH-SAT). There, such a
+//!   case is `SLOW` instead ([`load_case`], [`store_pre`]), so no handler that compares the
+//!   epoch ever holds that value, and every one made before misses from then on. A 0x25 add
+//!   case may hold it: its hit does not compare the epoch, and the verifier gives 0x24 and
+//!   0x25 different slot kinds, so a 0x24 site never reads it.
 //! - A fast shape is always extensible and a non-extensible object has a dictionary shape
 //!   (OM-10), so an add-property case, which is made only for a fast shape, can never match a
 //!   non-extensible receiver. [`store`] also asserts it.
@@ -634,6 +639,11 @@ pub(crate) fn load_case(rt: &Runtime, o: u64, name: u64) -> Option<Case> {
         None if exotic_name(rt, k, name) => smi_case(SLOW),
         None => {
             let epoch = rt.shapes.proto_epoch.get();
+            if epoch == shape::EPOCH_SATURATED {
+                // The epoch no longer changes, so a case made now would never miss again
+                // (W4-P3FIX-EPOCH-SAT).
+                return smi_case(SLOW);
+            }
             let handler = match walk(rt, shape::proto(s), name) {
                 Chain::Data(holder, loc, _) => Handler::ProtoLoad {
                     holder,
@@ -700,7 +710,13 @@ pub(crate) fn store_pre(rt: &Runtime, o: u64, name: u64, define: bool) -> Option
     if k == kind::FUNCTION.get() && shape::lookup(rt, s, rt.atom(Atom::Prototype)).is_none() {
         return slow;
     }
+    let epoch = rt.shapes.proto_epoch.get();
     if !define {
+        // A 0x24 add case compares the epoch: none under the saturated one
+        // (W4-P3FIX-EPOCH-SAT).
+        if epoch == shape::EPOCH_SATURATED {
+            return slow;
+        }
         // [[Set]] adds to the receiver only if the chain has no setter and no read-only
         // property `name` (§10.1.9.2); a writable data property on the chain is fine.
         match walk(rt, shape::proto(s), name) {
@@ -708,10 +724,7 @@ pub(crate) fn store_pre(rt: &Runtime, o: u64, name: u64, define: bool) -> Option
             Chain::Data(_, _, false) | Chain::Other => return slow,
         }
     }
-    Some(StorePre::Add {
-        from: s,
-        epoch: rt.shapes.proto_epoch.get(),
-    })
+    Some(StorePre::Add { from: s, epoch })
 }
 
 /// The case of a store that ran: a decided case, or for an add, the transition from `from`
@@ -831,6 +844,11 @@ fn new_handler(rt: &Runtime, kind: i32, epoch: u32, r: u64, location: i32) -> u6
 /// polymorphic, fills a free case of a polymorphic one, or makes a full one megamorphic.
 /// A megamorphic entry stays. GC point (the handler cell and the POLY_IC cell).
 pub(crate) fn record(rt: &Runtime, v: u64, i: u32, case: Case) {
+    debug_assert!(
+        !matches!(case.handler, Handler::ProtoLoad { epoch, .. } | Handler::Missing { epoch }
+            if epoch == shape::EPOCH_SATURATED),
+        "a load case under the saturated epoch"
+    );
     // GC points below: `v` (also a unit root), the case's key and references live in Rust
     // locals (conservative scan). Each allocation comes before the entry is read, so a key
     // that dies in that GC reads undefined.

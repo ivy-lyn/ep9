@@ -194,11 +194,17 @@ mod root {
     pub const COUNT: usize = 2;
 }
 
+/// The last value of [`ShapeState::proto_epoch`]: it stays there (it never wraps). No IC case
+/// that compares the epoch is made at this value, so every such case made before misses
+/// for the rest of the isolate's life, and only the generic path runs (W4-P3FIX-EPOCH-SAT).
+/// M1's validity cells (H16 K5) replace the epoch.
+pub(crate) const EPOCH_SATURATED: u32 = u32::MAX;
+
 /// Per-isolate shape state (a `Runtime` field).
 #[derive(Debug)]
 pub(crate) struct ShapeState {
-    /// Bumped on every structural change of a prototype (OM-8); prototype IC handlers compare
-    /// it.
+    /// Bumped on every structural change of a prototype (OM-8), up to [`EPOCH_SATURATED`];
+    /// prototype IC handlers compare it.
     pub proto_epoch: Cell<u32>,
     /// Sticky, never cleared: set once a prototype-mode object has an array-index own
     /// property ([`proto_index_keys`]). While it is false no prototype chain has an index key,
@@ -1102,12 +1108,14 @@ pub(crate) fn is_prototype_object(o: u64) -> bool {
 }
 
 /// Records a structural change of `o` (add, delete, attribute change, `[[SetPrototypeOf]]`,
-/// dictionary mode, PreventExtensions): bumps the epoch if `o` is a prototype (OM-8).
+/// dictionary mode, PreventExtensions): bumps the epoch if `o` is a prototype (OM-8). The
+/// epoch saturates at [`EPOCH_SATURATED`] (W4-P3FIX-EPOCH-SAT): a wrap would bring back the
+/// epoch of an old handler, which would then hit with a stale answer.
 #[inline]
 pub(crate) fn note_change(rt: &Runtime, o: u64) {
     if is_prototype_object(o) {
         let e = &rt.shapes.proto_epoch;
-        e.set(e.get().wrapping_add(1));
+        e.set(e.get().saturating_add(1));
     }
 }
 
