@@ -6,13 +6,16 @@
 //! before every allocation, then the heap verifier), with eager feedback (threshold 0: a
 //! function has its vector from its first call). The functions under test are hand-assembled
 //! (`f0`, `f1`, ... are globals); objects come from the runtime and live in Rust locals (the
-//! conservative stack scan keeps them).
+//! conservative stack scan keeps them). A local keeps its cell only up to its last use: optimized
+//! code may drop it there. An object that an assertion about weak IC data needs alive after its
+//! last use is rooted by a handle ([`T::keep`]).
 
 use std::hint::black_box;
 
 use ep9_bytecode::{
     FeedbackSlotKind, FunctionBuilder, FunctionCode, FunctionFlags, FunctionId, VerifiedUnit,
 };
+use ep9_heap::GlobalHandle;
 
 use super::{Asm, config, isolate, meta, on_big_stack, print, unit};
 use crate::atoms;
@@ -197,6 +200,15 @@ impl T {
     fn collect(&mut self) {
         self.iso.collect_garbage();
         self.iso.verify_heap().unwrap();
+    }
+
+    /// Roots `v` (a strong handle) until [`T::release`].
+    fn keep(&self, v: u64) -> GlobalHandle {
+        self.rt().heap.new_global(val(v))
+    }
+
+    fn release(&self, h: GlobalHandle) {
+        self.rt().heap.drop_global(h);
     }
 }
 
@@ -570,6 +582,9 @@ fn a_super_load_is_keyed_on_the_home_objects_prototype() {
         let mut t = T::new(c, &[Site::Super("x"), Site::Set("x", true)]);
         let op = object_prototype(t.rt());
         let p = object_with(t.rt(), op, &[("x", int(1))]);
+        // `p` (a prototype: its shape is its own) keeps its case only while it lives, and the
+        // home object stops referencing it below.
+        let kept = t.keep(p);
         let home = object::new_object(t.rt(), p);
         let receiver = object_with(t.rt(), op, &[("x", int(100))]);
         assert_eq!(t.ok(0, home, receiver), int(1));
@@ -582,6 +597,7 @@ fn a_super_load_is_keyed_on_the_home_objects_prototype() {
         assert!(property::set_prototype_of(t.rt(), home, q));
         assert_eq!(t.ok(0, home, receiver), int(3));
         assert_eq!(t.state(0), State::Polymorphic(2));
+        t.release(kept);
         // A home object whose prototype is null: GetSuperBase gives null, and the load throws.
         assert!(property::set_prototype_of(t.rt(), home, NULL));
         t.throws(0, home, receiver, "TypeError");
@@ -601,10 +617,12 @@ fn a_dead_shape_clears_its_entry() {
         assert_not_kept(t.rt(), &dead);
         assert_eq!(feedback::key(t.vector(0), SLOT), UNDEFINED);
         assert_eq!(t.state(0), State::Uninitialized);
-        // A polymorphic case: two live shapes and one that dies.
+        // A polymorphic case: two live shapes and one that dies. Handles keep the live objects
+        // (and so their shapes) to the end.
         let p = object_prototype(t.rt());
         let a = object_with(t.rt(), p, &[("x", int(1))]);
         let b = object_with(t.rt(), p, &[("icPadB", int(0)), ("x", int(2))]);
+        let kept = [t.keep(a), t.keep(b)];
         assert_eq!(t.ok(0, a, UNDEFINED), int(1));
         assert_eq!(t.ok(0, b, UNDEFINED), int(2));
         let dead = load_from_a_lone_shape(&mut t, "icPadC");
@@ -618,10 +636,14 @@ fn a_dead_shape_clears_its_entry() {
         // The free place takes the next shape: four live cases before megamorphic.
         let d = object_with(t.rt(), p, &[("icPadD", int(0)), ("x", int(4))]);
         let e = object_with(t.rt(), p, &[("icPadE", int(0)), ("x", int(5))]);
+        let kept = [kept, [t.keep(d), t.keep(e)]];
         assert_eq!(t.ok(0, d, UNDEFINED), int(4));
         assert_eq!(t.state(0), State::Polymorphic(3));
         assert_eq!(t.ok(0, e, UNDEFINED), int(5));
         assert_eq!(t.state(0), State::Polymorphic(4));
+        for h in kept.into_iter().flatten() {
+            t.release(h);
+        }
     });
 }
 

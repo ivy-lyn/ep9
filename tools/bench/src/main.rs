@@ -5,17 +5,22 @@
 //!
 //! ```text
 //! ep9-bench [--runs N] [--warmup W] [--counter auto|time|perf|cachegrind]
-//!           [--name NAME] [--out FILE] [--show-output] -- <command> [args...]
+//!           [--name NAME] [--out FILE] [--show-output | --expect-stdout FILE]
+//!           -- <command> [args...]
 //! ```
 //!
 //! A host with no instruction counter (Windows; a VM without PMC access) still gets the runs and
 //! the JSON, with null counts and `"counter_status": "unavailable"`, and exit status 3.
+//!
+//! With `--expect-stdout`, every run (warm-up and measured) must print the expected output, so a
+//! wrong answer never gets a count (W4-PERF-REFUSE): a run that does not stops ep9-bench with exit
+//! status 4 and no JSON.
 #![forbid(unsafe_code)]
 
 mod counter;
 mod report;
 
-use counter::{Counter, Sample};
+use counter::{Counter, RunError, Sample};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -32,6 +37,9 @@ flags:
   --out FILE        write the JSON there (default: stdout)
   --show-output     keep the command's stdout and stderr (default: discarded; a failed run
                     prints the last 20 lines of its stderr)
+  --expect-stdout FILE
+                    every run must print what FILE holds (compared after CRLF -> LF and a
+                    trim of leading and trailing whitespace), else exit 4. Not with --show-output
 
 Before the runs, ep9-bench probes the counter: `true` under it must give a count above 0.
 
@@ -41,6 +49,7 @@ exit status:
   2  usage error
   3  no instruction counter on this host. The JSON is still written: \"counter\": null,
      \"counter_status\": \"unavailable\", \"counter_note\": <why>, null counts (wall time only)
+  4  a run printed something other than --expect-stdout. No JSON is written
 
 environment:
   EP9_BENCH_TIME    the `time -l` program (default /usr/bin/time; tests use a fake)
@@ -49,6 +58,9 @@ environment:
 /// Exit status when the host has no instruction counter. The JSON is still written.
 const EXIT_NO_COUNTER: u8 = 3;
 
+/// Exit status when a run's stdout is not the `--expect-stdout` text. No JSON is written.
+const EXIT_WRONG_OUTPUT: u8 = 4;
+
 struct Options {
     runs: usize,
     warmup: usize,
@@ -56,6 +68,7 @@ struct Options {
     name: Option<String>,
     out: Option<PathBuf>,
     show_output: bool,
+    expect_stdout: Option<PathBuf>,
     command: Vec<String>,
 }
 
@@ -67,6 +80,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         name: None,
         out: None,
         show_output: false,
+        expect_stdout: None,
         command: Vec::new(),
     };
     let mut it = args.iter();
@@ -84,6 +98,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--name" => o.name = Some(value()?),
             "--out" => o.out = Some(PathBuf::from(value()?)),
             "--show-output" => o.show_output = true,
+            "--expect-stdout" => o.expect_stdout = Some(PathBuf::from(value()?)),
             "--" => {
                 o.command = it.cloned().collect();
                 break;
@@ -97,6 +112,9 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     if o.runs == 0 {
         return Err("--runs must be at least 1".into());
     }
+    if o.show_output && o.expect_stdout.is_some() {
+        return Err("--show-output and --expect-stdout cannot be used together".into());
+    }
     Ok(o)
 }
 
@@ -106,7 +124,13 @@ struct Outcome {
     no_counter: Option<String>,
 }
 
-fn run(o: &Options) -> Result<Outcome, String> {
+fn run(o: &Options) -> Result<Outcome, RunError> {
+    let want = match &o.expect_stdout {
+        Some(p) => Some(
+            std::fs::read_to_string(p).map_err(|e| format!("cannot read {}: {e}", p.display()))?,
+        ),
+        None => None,
+    };
     let counter = match o.counter {
         Some(c) => c.probe().map(|()| c),
         None => Counter::detect(),
@@ -114,12 +138,11 @@ fn run(o: &Options) -> Result<Outcome, String> {
     let wrap = counter.as_ref().ok().copied();
     let program = PathBuf::from(&o.command[0]);
     let args = &o.command[1..];
+    let one = || counter::measure(wrap, &program, args, o.show_output, want.as_deref());
     for _ in 0..o.warmup {
-        counter::measure(wrap, &program, args, o.show_output)?;
+        one()?;
     }
-    let samples: Vec<Sample> = (0..o.runs)
-        .map(|_| counter::measure(wrap, &program, args, o.show_output))
-        .collect::<Result<_, _>>()?;
+    let samples: Vec<Sample> = (0..o.runs).map(|_| one()).collect::<Result<_, _>>()?;
     let name = o.name.clone().unwrap_or_else(|| o.command.join(" "));
     Ok(Outcome {
         json: report::json(&name, &o.command, &counter, &samples),
@@ -166,7 +189,10 @@ fn main() -> ExitCode {
         }
         Err(e) => {
             eprintln!("ep9-bench: {e}");
-            ExitCode::FAILURE
+            match e {
+                RunError::Failed(_) => ExitCode::FAILURE,
+                RunError::WrongOutput(_) => ExitCode::from(EXIT_WRONG_OUTPUT),
+            }
         }
     }
 }
@@ -204,6 +230,18 @@ mod tests {
                 .unwrap()
                 .counter,
             None
+        );
+        let o = parse_args(&strings(&["--expect-stdout", "want.txt", "--", "x"])).unwrap();
+        assert_eq!(o.expect_stdout, Some(PathBuf::from("want.txt")));
+        assert!(
+            parse_args(&strings(&[
+                "--expect-stdout",
+                "want.txt",
+                "--show-output",
+                "--",
+                "x"
+            ]))
+            .is_err()
         );
     }
 }

@@ -1,5 +1,6 @@
 //! Instruction counters. Each one wraps the benchmarked command in an OS tool and parses the
-//! count from the tool's output file, so the command's own stdout and stderr stay apart.
+//! count from the tool's output file, so the command's own stdout and stderr stay apart. That
+//! also lets [`measure`] check the command's stdout under any counter (`--expect-stdout`).
 //!
 //! | Counter      | Tool                                    | OS    | Counts                      |
 //! |--------------|-----------------------------------------|-------|-----------------------------|
@@ -23,6 +24,9 @@ use std::time::Instant;
 
 /// Lines of the command's stderr that a failed run prints when the output is not shown.
 const STDERR_TAIL_LINES: usize = 20;
+
+/// Bytes of the command's stdout that a run with an expected output reads; more is a wrong output.
+const MAX_STDOUT_BYTES: u64 = 1 << 20;
 
 /// The program that a probe runs.
 const PROBE_PROGRAM: &str = if cfg!(target_os = "macos") {
@@ -60,13 +64,13 @@ impl Counter {
     /// Checks that this counter gives a count on this host: one run of `true` under it must give
     /// a count above 0. `Err` tells why it does not.
     pub fn probe(self) -> Result<(), String> {
-        let why = match measure(Some(self), Path::new(PROBE_PROGRAM), &[], false) {
+        let why = match measure(Some(self), Path::new(PROBE_PROGRAM), &[], false, None) {
             Ok(Sample {
                 instructions: Some(n),
                 ..
             }) if n > 0 => return Ok(()),
             Ok(_) => "the count was 0".to_string(),
-            Err(e) => e,
+            Err(e) => e.to_string(),
         };
         Err(format!(
             "{}: {why} (probe run: {PROBE_PROGRAM}). {}",
@@ -152,16 +156,44 @@ pub struct Sample {
     pub max_rss_bytes: Option<u64>,
 }
 
+/// Why a run failed.
+#[derive(Debug)]
+pub enum RunError {
+    /// The command did not start or exited nonzero, or a counted run gave no count.
+    Failed(String),
+    /// The command exited with 0, but its stdout is not the expected output.
+    WrongOutput(String),
+}
+
+impl From<String> for RunError {
+    fn from(e: String) -> RunError {
+        RunError::Failed(e)
+    }
+}
+
+impl std::fmt::Display for RunError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunError::Failed(e) | RunError::WrongOutput(e) => f.write_str(e),
+        }
+    }
+}
+
 /// Runs `program args` once, under `counter` if there is one; with `None` it measures wall time
 /// only. A nonzero exit of the program is an error. With a counter, a run that gives no count is
 /// an error too. Without `show_output`, stdout is discarded and stderr goes to a temp file, so the
 /// error of a failed run ends with the last [`STDERR_TAIL_LINES`] lines of its stderr.
+///
+/// With `expect_stdout`, stdout goes to a temp file instead, and a run whose stdout differs from
+/// it is a [`RunError::WrongOutput`]. Both sides are compared after CRLF -> LF and a trim of
+/// leading and trailing whitespace: the refusal rule of `cross/run.mjs` (`checkRun`).
 pub fn measure(
     counter: Option<Counter>,
     program: &Path,
     args: &[String],
     show_output: bool,
-) -> Result<Sample, String> {
+    expect_stdout: Option<&str>,
+) -> Result<Sample, RunError> {
     let report = temp_path("txt");
     let mut cmd = match counter {
         Some(c) => {
@@ -176,7 +208,7 @@ pub fn measure(
     let mut capture = None;
     if !show_output {
         cmd.stdout(Stdio::null()).stderr(Stdio::null());
-        if let Some((path, f)) = stderr_capture() {
+        if let Some((path, f)) = capture_file("stderr") {
             match f.try_clone() {
                 Ok(w) => {
                     cmd.stderr(w);
@@ -185,6 +217,22 @@ pub fn measure(
                 Err(_) => {
                     let _ = fs::remove_file(&path);
                 }
+            }
+        }
+    }
+    // The same for stdout, when it is checked. No file means no check: that is an error.
+    let mut stdout_capture = None;
+    if expect_stdout.is_some() {
+        let (path, f) = capture_file("stdout")
+            .ok_or_else(|| "cannot make a temp file for the command's stdout".to_string())?;
+        match f.try_clone() {
+            Ok(w) => {
+                cmd.stdout(w);
+                stdout_capture = Some((path, f));
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&path);
+                return Err(format!("cannot capture the command's stdout: {e}").into());
             }
         }
     }
@@ -204,6 +252,11 @@ pub fn measure(
         let _ = fs::remove_file(&path);
         tail
     });
+    let stdout = stdout_capture.map(|(path, mut f)| {
+        let text = read_capped(&mut f, MAX_STDOUT_BYTES);
+        let _ = fs::remove_file(&path);
+        text
+    });
     let status = status?;
     if !status.success() {
         let mut e = format!("{} exited with {status}", program.display());
@@ -218,7 +271,12 @@ pub fn measure(
             }
             None => {}
         }
-        return Err(e);
+        return Err(e.into());
+    }
+    if let (Some(want), Some(got)) = (expect_stdout, stdout) {
+        let got =
+            got.map_err(|e| format!("cannot read the stdout of {}: {e}", program.display()))?;
+        check_stdout(program, got.as_deref(), want)?;
     }
     let Some(counter) = counter else {
         return Ok(Sample {
@@ -251,12 +309,13 @@ fn temp_path(ext: &str) -> PathBuf {
     std::env::temp_dir().join(format!("ep9-bench-{}-{n}.{ext}", std::process::id()))
 }
 
-/// A new temp file for the command's stderr and its path. `create_new` never opens a file or
-/// symlink that is already at the path (the names are predictable); on unix the mode is 0600.
-/// A taken name moves on to the next one. `None` when no file can be made.
-fn stderr_capture() -> Option<(PathBuf, fs::File)> {
+/// A new temp file with extension `ext` for the command's stderr or stdout, and its path.
+/// `create_new` never opens a file or symlink that is already at the path (the names are
+/// predictable); on unix the mode is 0600. A taken name moves on to the next one. `None` when no
+/// file can be made.
+fn capture_file(ext: &str) -> Option<(PathBuf, fs::File)> {
     for _ in 0..64 {
-        let path = temp_path("stderr");
+        let path = temp_path(ext);
         match open_new_private(&path) {
             Ok(f) => return Some((path, f)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -294,6 +353,39 @@ fn last_lines(f: &mut fs::File, n: usize) -> Vec<String> {
     let lines: Vec<&str> = text.lines().collect();
     let skip = lines.len().saturating_sub(n);
     lines[skip..].iter().map(|l| l.to_string()).collect()
+}
+
+/// The text of `f` from its start, or `None` when it has more than `max` bytes.
+fn read_capped(f: &mut fs::File, max: u64) -> std::io::Result<Option<String>> {
+    let mut bytes = Vec::new();
+    f.seek(SeekFrom::Start(0))?;
+    f.take(max + 1).read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= max).then(|| String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+/// `Err(WrongOutput)` unless `got` (`None`: more than [`MAX_STDOUT_BYTES`]) equals `want`, both
+/// after CRLF -> LF and a trim.
+fn check_stdout(program: &Path, got: Option<&str>, want: &str) -> Result<(), RunError> {
+    let norm = |s: &str| s.replace("\r\n", "\n").trim().to_string();
+    let want = norm(want);
+    let got = match got {
+        Some(got) if norm(got) == want => return Ok(()),
+        Some(got) => format!("{:?}", short(&norm(got))),
+        None => format!("more than {MAX_STDOUT_BYTES} bytes"),
+    };
+    Err(RunError::WrongOutput(format!(
+        "{} printed {got}, want {:?}",
+        program.display(),
+        short(&want)
+    )))
+}
+
+/// `s` cut to 200 characters for an error message.
+fn short(s: &str) -> String {
+    match s.char_indices().nth(200) {
+        Some((i, _)) => format!("{}...", &s[..i]),
+        None => s.to_string(),
+    }
 }
 
 /// macOS `/usr/bin/time -l` lines look like `   10906475  instructions retired`.
@@ -409,7 +501,7 @@ mod tests {
     // Review finding: a writer that kept appending made the tail read grow without a bound.
     #[test]
     fn tail_read_is_bounded_while_the_file_grows() {
-        let (path, mut f) = stderr_capture().unwrap();
+        let (path, mut f) = capture_file("stderr").unwrap();
         let mut w = f.try_clone().unwrap();
         use std::io::Write as _;
         w.write_all(&b"0123456789abcde\n".repeat(16 << 10)).unwrap();

@@ -19,7 +19,10 @@
 //   1. check  one run of ep9 with no counter: exit 0 and stdout = the expected output of
 //             tools/bench/cross/workloads.mjs (the T0 `want`; "<name> <N>" per v8-v7 benchmark),
 //             the refusal rule of cross/run.mjs. A wrong answer gets no count.
-//   2. count  ep9-bench --counter C --runs R --warmup W; its ep9-bench/v1 JSON is kept whole.
+//   2. count  ep9-bench --counter C --runs R --warmup W --expect-stdout <the expected output>; its
+//             ep9-bench/v1 JSON is kept whole. Every run it makes must print the expected output
+//             too, else it exits 4 and the workload is refused: a check run alone cannot vouch for
+//             the runs that are counted.
 // Every ep9 run gets EP9_HASH_SEED (--hash-seed; default 1). The string hash seed is random per
 // process otherwise, and it changes how far shape-index probes go: t0-call moved by 3.7% between
 // 3 cachegrind runs with random seeds, and by 609 instructions in 6.1e9 with EP9_HASH_SEED=1.
@@ -130,10 +133,12 @@ function prepare(name, work) {
   };
 }
 
-/** Runs ep9-bench on one workload; resolves to { bench, error }. */
+/** Runs ep9-bench on one workload; resolves to { bench, error, refused }. */
 function count(o, w, commit, tmp) {
   const out = path.join(tmp, `${w.name}.bench.json`);
-  const args = ["--counter", o.counter, "--runs", String(o.runs), "--warmup", String(o.warmup), "--name", w.name, "--out", out, "--", o.ep9, w.path];
+  const expect = path.join(tmp, `${w.name}.expect.txt`);
+  writeFileSync(expect, w.expect);
+  const args = ["--counter", o.counter, "--runs", String(o.runs), "--warmup", String(o.warmup), "--name", w.name, "--out", out, "--expect-stdout", expect, "--", o.ep9, w.path];
   const env = commit && !process.env.GITHUB_SHA ? { ...process.env, EP9_COMMIT: commit } : process.env;
   return new Promise((resolve) => {
     const child = spawn(o.bench, args, { env, stdio: ["ignore", "ignore", "pipe"], timeout: o.timeoutS * 1000 });
@@ -151,7 +156,8 @@ function count(o, w, commit, tmp) {
       const tail = stderr.trim().split("\n").slice(-5).join(" / ");
       const how = signal ? `signal ${signal}` : `exit ${code}`;
       // Exit 3: no counter on this host; the JSON is written with null counts and says why.
-      resolve({ bench, error: `ep9-bench ${how}${bench?.counter_note ? `: ${bench.counter_note}` : ""}${tail ? `: ${tail}` : ""}` });
+      // Exit 4: a run printed something else than the expected output; no JSON.
+      resolve({ bench, refused: code === 4, error: `ep9-bench ${how}${bench?.counter_note ? `: ${bench.counter_note}` : ""}${tail ? `: ${tail}` : ""}` });
     });
   });
 }
@@ -201,12 +207,12 @@ export async function run(o) {
     }
     const todo = rows.filter((r) => r.status === "ok");
     await pool(todo, o.jobs, async (r) => {
-      const { bench, error } = await count(o, r, commit, tmp);
+      const { bench, error, refused } = await count(o, r, commit, tmp);
       r.bench = bench;
       const s = bench ? parseBenchJson(JSON.stringify(bench)) : null;
       r.instructions = s && s.median !== null ? { min: s.min, median: s.median, max: s.max } : null;
       if (error || !r.instructions) {
-        r.status = "error";
+        r.status = refused ? "refused" : "error";
         r.error = error ?? "ep9-bench gave no count";
       }
       process.stderr.write(`perf-ci-v0: ${r.name}: ${r.instructions?.median ?? "no count"}${r.error ? ` (${r.error})` : ""}\n`);
