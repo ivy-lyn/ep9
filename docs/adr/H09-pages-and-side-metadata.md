@@ -72,7 +72,7 @@
 | H09-Q1 | Immix line size and the granularity of the mark and VO bitmaps (bits per 8 B or per 16 B) | M0 wk2 (`ep9_heap` S0 core) | 8-byte granularity, as objects are 8-byte aligned ([R05]) |
 | H09-Q2 | Page header layout: in-page header vs a side table indexed by page number | M0 wk2 | Decide in S0 core |
 | H09-Q3 | The exact LOS threshold. The plan says "about 8 KiB" | S0 | 8 KiB |
-| H09-Q4 | Which emitted code uses the page mask? The ep9 barrier reads the header byte (H11), not page flags. If any AOT code bakes the mask, the unit header needs a version that covers page size. The H35 field list has none | H35 header struct (M0 wk4) | List page size under the object-layout version |
+| H09-Q4 | Which emitted code uses the page mask? The ep9 barrier reads the header byte (H11), not page flags. If any AOT code bakes the mask, the unit header needs a version that covers page size. The H35 field list has none | H35 header struct (M0 wk4) | **Filled (M0 wk4, W4-H09-Q4).** No emitted code bakes the mask in v0: `PAGE_MASK` is used only by `ep9_heap` Rust code (`crates/ep9_heap/src/heap.rs:434`, `crates/ep9_heap/src/trace.rs:362`), and the only machine code ep9 emits is the SP-JIT-mem test stubs. The unit header carries the page size as its own field instead of folding it into the object-layout version: `heap_page_log2` at offset 122 (H35 S6, H35-Q6); a mismatch gives BYTECODE. The first emitter that bakes the mask (Spike B) must also bump the object-layout version if it changes how the mask is used |
 
 ## Reopens if
 
@@ -86,3 +86,4 @@
 |---|---|---|---|
 | 2026-10-20 | draft | First draft from 02 §6, 03 §2 and §4 (M0 wk1 list) | ADR agent |
 | 2026-10-21 | clarify | Status: S0 code built in `ep9_heap` with the H09-Q1 to Q3 defaults (8 B granule bitmaps, 256 B line marks, in-page header with first cell at offset 9472, LOS above 8 KiB in its own 256 KiB chunk run). The questions stay open until the review record | heap agent |
+| 2026-10-21 | fill | H09-Q4: no emitted code bakes the page mask in v0; the H35 unit header carries the page size as its own field (`heap_page_log2`), not under the object-layout version. Decision W4-H09-Q4 | P1-AOTU agent |
