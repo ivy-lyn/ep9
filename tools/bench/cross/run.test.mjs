@@ -254,9 +254,12 @@ test("versions.txt, host files and options", () => {
   assert.equal(h.cpu, "Apple M5 Max");
   assert.equal(h.cores, 18);
   assert.equal(h.gate_host, true);
-  // Not measured yet: the guard cannot pass.
-  assert.equal(h.idle_baseline_load1, undefined);
-  assert.equal(loadCheck(1, h.idle_baseline_load1).pass, false);
+  // Measured by the orchestrator on 2026-10-21 (fa451f6): the guard limit is 2.505 + 0.5.
+  assert.equal(h.idle_baseline_load1, 2.505);
+  assert.equal(loadCheck(3, h.idle_baseline_load1).pass, true);
+  assert.equal(loadCheck(3.1, h.idle_baseline_load1).pass, false);
+  // No baseline: the guard cannot pass.
+  assert.equal(loadCheck(0, undefined).pass, false);
 
   assert.throws(() => parseArgs(["--ep9", "x", "--rounds", "9"]), /--rounds must be an integer >= 10/);
   assert.equal(parseArgs(["--ep9", "x"]).rounds, 10);
@@ -442,7 +445,33 @@ test("CLI: class R counts every R workload on every engine", (t) => {
     ["t0-loop", "t0-call", "ci-v0"].flatMap((w) => ["ep9", "qjs", "node-jitless"].map((e) => `${w}@${e}`)),
   );
   for (const row of res.R.rows) assert.ok(row.median > 1000);
-  assert.match(renderMarkdown(res), /Class R: instructions retired/);
+  assert.equal(res.R.expect_stdout, true);
+  assert.equal(res.R.ep9_hash_seed, "1");
+  assert.match(renderMarkdown(res), /Class R: instructions retired, .*every run's output checked; ep9 with EP9_HASH_SEED=1/);
+});
+
+test("CLI: class R gives ep9-bench the expected output and ep9 (only) the hash seed", (t) => {
+  const f = fakeSetup(t);
+  const log = path.join(f.dir, "bench.log");
+  const r = f.run(["--count", path.join(DIR, "testdata/fake-bench.sh"), "--hash-seed", "7"], { FAKE_BENCH_LOG: log, EP9_HASH_SEED: "99" });
+  assert.equal(r.status, 0, r.stderr);
+  const calls = readFileSync(log, "utf8").trim().split("\n");
+  assert.equal(calls.length, 9);
+  for (const c of calls) {
+    assert.match(c, /expect=yes$/, c);
+    // ep9 gets --hash-seed; the other engines get no EP9_HASH_SEED at all.
+    assert.match(c, c.startsWith("ep9 ") ? /seed=7 / : /seed=unset /, c);
+  }
+});
+
+test("CLI: class R refuses a run that is right in the output check but wrong when counted", (t) => {
+  // Negative control: before W4-P4-PERFREP-EXPECT, countAll gave ep9-bench no --expect-stdout, so
+  // this run exited 0 and reported a count for a wrong answer.
+  const f = fakeSetup(t);
+  const r = f.run(["--count", path.join(DIR, "testdata/fake-bench.sh")], { FAKE_WRONG_COUNTED: "ep9:t0-call" });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /REFUSED: count t0-call on ep9: a counted run printed the wrong output \(ep9-bench exit 4\)\n {4}fake-bench: run 0 printed "12345", want "577789"/);
+  assert.ok(!existsSync(f.out) && !existsSync(f.md));
 });
 
 // ---- v8v7 ---------------------------------------------------------------------------------
