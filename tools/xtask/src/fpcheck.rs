@@ -876,7 +876,16 @@ fn build_object(o: &Opts, spec: &Spec) -> Result<PathBuf, String> {
         Some(c) => base.join(format!("cpu-{c}")),
         None => base.clone(),
     };
-    let objdir = base.join("obj");
+    // One directory per checked workspace: two roots that share a target dir (CARGO_TARGET_DIR)
+    // must never overwrite each other's object.
+    let root_tag = o
+        .root
+        .to_string_lossy()
+        .bytes()
+        .fold(0x811c_9dc5u32, |h, b| {
+            (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
+        });
+    let objdir = base.join("obj").join(format!("{root_tag:08x}"));
     fs::create_dir_all(&objdir).map_err(|e| format!("{}: {e}", objdir.display()))?;
     let obj = objdir.join(format!("{}-{}.o", o.bin, spec.label().replace('@', "-")));
     if obj.exists() {

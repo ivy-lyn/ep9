@@ -81,7 +81,19 @@ fn fp_check(args: &[&str]) -> Output {
 /// Runs fp-check on a fixture copy for `targets` and returns (exit code, stdout).
 fn run_case(fx: &Fixture, targets: &[&str], extra: &[&str]) -> (i32, String) {
     let root = fx.0.to_str().unwrap();
-    let mut args = vec!["--root", root, "-p", "fx_cli", "--bin", "fx"];
+    let target_dir = fx.0.join("target");
+    let target_dir = target_dir.to_str().unwrap();
+    // Its own target dir, also when CARGO_TARGET_DIR is set: the tests run in parallel.
+    let mut args = vec![
+        "--root",
+        root,
+        "-p",
+        "fx_cli",
+        "--bin",
+        "fx",
+        "--target-dir",
+        target_dir,
+    ];
     for t in targets {
         args.extend(["--target", t]);
     }
