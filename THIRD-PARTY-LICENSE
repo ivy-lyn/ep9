@@ -67,7 +67,9 @@ Project:  libm, the Rust port of the musl math library (crate libm), in
 Ported:   crates/ep9_math/src/exact.rs (SoftFma, H36): libm/src/math/generic/fma.rs
           ("origin: musl src/math/fma.c. Ported to generic Rust algorithm in 2025, TG.")
           and libm/src/math/generic/scalbn.rs, at libm 0.2.16
-          (dfd2203a4d6110820ad7bb65cafe1bf331a03a3d), monomorphized to f64 (M0 week 4).
+          (dfd2203a4d6110820ad7bb65cafe1bf331a03a3d), monomorphized to f64 (M0 week 4),
+          with one fix: the sticky bit of the shifted x * y, as in musl's fma.c
+          (libm issue rust-lang/compiler-builtins#1353).
 Copyright: libm's LICENSE.txt: "Copyright (c) 2018 Jorge Aparicio", and portions
           "Copyright © 2005-2020 Rich Felker, et al." (musl libc, entry above).
           libm offers its code under MIT; contributors also agree to Apache-2.0.

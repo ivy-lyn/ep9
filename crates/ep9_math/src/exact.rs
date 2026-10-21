@@ -130,7 +130,8 @@ pub fn fma_soft(a: f64, b: f64, c: f64) -> f64 {
 // Ported for ep9 from libm (rust-lang/compiler-builtins) libm/src/math/generic/fma.rs and
 // libm/src/math/generic/scalbn.rs at libm 0.2.16 (dfd2203a4d6110820ad7bb65cafe1bf331a03a3d).
 // ep9 changes: monomorphized to f64 (the generic `F` constants are spelled out), no status
-// flags, rounding to nearest only. Licence and copyright: THIRD-PARTY-LICENSE ("libm").
+// flags, rounding to nearest only, and one fix: the sticky bit of the shifted `x * y` (marked
+// "ep9 fix" below). Licence and copyright: THIRD-PARTY-LICENSE ("libm").
 // ---------------------------------------------------------------------------------------------
 
 const BITS: i32 = 64;
@@ -213,10 +214,12 @@ fn soft_fma(x: f64, y: f64, z: f64) -> f64 {
             if d == 0 {
                 // Exactly `sbits`, nothing to do
             } else if d < sbits {
-                // Remaining shift fits within `sbits`. Leave `z` in place, shift `x * y`
-                rlo = (rhi << (sbits - d)) | (rlo >> d);
-                // Set the sticky bit
-                rlo |= u64::from((rlo << (sbits - d)) != zero);
+                // Remaining shift fits within `sbits`. Leave `z` in place, shift `x * y`.
+                // ep9 fix: the sticky bit comes from the bits shifted out of the old `rlo`, as
+                // in musl's one expression. libm 0.2.16 reads the new `rlo` and loses them
+                // (rust-lang/compiler-builtins#1353).
+                let sticky = u64::from((rlo << (sbits - d)) != zero);
+                rlo = (rhi << (sbits - d)) | (rlo >> d) | sticky;
                 rhi >>= d;
             } else {
                 // `z`'s magnitude is enough that `x * y` is irrelevant. It was nonzero, so set
@@ -566,6 +569,34 @@ mod tests {
         v
     }
 
+    /// `2^e`, for `e` in the normal range.
+    fn pow2(e: i32) -> f64 {
+        f64::from_bits(((e + 1023) as u64) << 52)
+    }
+
+    /// `(a, b, c)` with `a * b = H * t` exactly. `H = m * ulp(c) / 2` with `m` odd puts
+    /// `|c| + H` on a rounding tie (unless the sum leaves the binade of `c`). The tail `t` is
+    /// `1 + u^3`, `1 - u^2`, `1 - u^3` or 1 (`tail` 0 to 3, `u = 2^-w`, `w` in 6..=26), so the
+    /// exact sum is just above, just below or on the tie. Only such a tail, far below the
+    /// rounding bit, shows a lost sticky bit, and random inputs almost never make one.
+    /// Needs `m < 2^(52 - w)` and a finite `c`; `signs` bits 0, 1, 2 negate `a`, `b`, `c`.
+    fn near_tie(c: f64, m: u64, w: i32, tail: u64, signs: u64) -> (f64, f64, f64) {
+        let u = pow2(-w);
+        let (x, y) = match tail {
+            0 => (1.0 + u, 1.0 - u + u * u),
+            1 => (1.0 + u, 1.0 - u),
+            2 => (1.0 - u, 1.0 + u + u * u),
+            _ => (1.0, 1.0),
+        };
+        // ulp(c) = 2^(max(biased exponent, 1) - 1075), so H = m * 2^k. Both halves of 2^k
+        // stay normal (k is in -1075..=970).
+        let k = (ex(c) as i32).max(1) - 1076;
+        let a = m as f64 * x * pow2(k / 2);
+        let b = y * pow2(k - k / 2);
+        let neg = |v: f64, bit: u64| if signs & bit != 0 { -v } else { v };
+        (neg(a, 1), neg(b, 2), neg(c.abs(), 4))
+    }
+
     /// Runs `f(a, b, c)` on edge triples and on `n` random triples from several input shapes.
     fn corpus(n: u64, mut f: impl FnMut(f64, f64, f64)) {
         let e = edges();
@@ -578,7 +609,7 @@ mod tests {
         }
         let mut r = SplitMix64(0x0EF9_4A7E_0000_0001);
         for i in 0..n {
-            let (a, b, c) = match i % 8 {
+            let (a, b, c) = match i % 10 {
                 // Any bit pattern: NaN, infinities, subnormals, huge exponent gaps.
                 0 => (
                     f64::from_bits(r.next()),
@@ -611,21 +642,31 @@ mod tests {
                     r.with_exp(1000, 1023),
                 ),
                 // z far from x*y in either direction (sticky-bit paths).
-                _ => (
+                7 => (
                     r.with_exp(-30, 30),
                     r.with_exp(-30, 30),
                     r.with_exp(-200, 200),
                 ),
+                // On or next to a rounding tie, any finite c (sticky bits decide the result).
+                _ => {
+                    let c = f64::from_bits(r.next() % (0x7FF << 52));
+                    let w = 6 + (r.next() % 21) as i32;
+                    // 1 to 52 - w bits, uniform: a short m leaves z far above x * y.
+                    let m = (r.next() >> (63 - r.next() % (52 - w as u64))) | 1;
+                    near_tie(c, m, w, r.next() % 4, r.next())
+                }
             };
             f(a, b, c);
         }
     }
 
-    fn soft_vs_hw_run(n: u64) {
+    /// Asserts that `fma_soft`, the hardware FMA and `fma_exact` give the same bits on every
+    /// triple that `feed` produces. Prints the first 10 mismatches.
+    fn assert_soft_eq_hw(label: &str, feed: impl FnOnce(&mut dyn FnMut(f64, f64, f64))) {
         let (name, hw) = hw();
         let mut mismatches = 0u64;
         let mut total = 0u64;
-        corpus(n, |a, b, c| {
+        feed(&mut |a, b, c| {
             total += 1;
             let (s, h) = (fma_soft(a, b, c), hw(a, b, c));
             if !same(s, h) {
@@ -641,11 +682,16 @@ mod tests {
                     );
                 }
             }
-            // The dispatched entry point is one of the two.
-            assert!(same(fma_exact(a, b, c), s));
+            // The dispatched entry point is one of the two (the count above still prints).
+            let d = fma_exact(a, b, c);
+            assert!(same(d, s) || same(d, h));
         });
-        eprintln!("soft_vs_hw: {total} inputs, {mismatches} mismatches, hardware = {name}");
+        eprintln!("{label}: {total} inputs, {mismatches} mismatches, hardware = {name}");
         assert_eq!(mismatches, 0);
+    }
+
+    fn soft_vs_hw_run(n: u64) {
+        assert_soft_eq_hw("soft_vs_hw", |f| corpus(n, f));
     }
 
     /// SoftFma equals the hardware FMA bit for bit (NaN: both NaN). The acceptance run:
@@ -661,6 +707,88 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     fn soft_vs_hw_quick() {
         soft_vs_hw_run(100_000);
+    }
+
+    /// `near_tie` inputs on a grid: every 37th exponent of `c` plus the subnormal, binade and
+    /// overflow edges, five significands, four `w`, four `m`, the four tails and all eight sign
+    /// patterns. The unfixed libm 0.2.16 port failed 1,852 of the 168,960 (lost sticky bit).
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn soft_vs_hw_near_ties() {
+        let mut exps: Vec<u64> = (0..2047).step_by(37).collect();
+        exps.extend([1, 2, 53, 54, 55, 1022, 1023, 1024, 2045, 2046]);
+        assert_soft_eq_hw("soft_vs_hw_near_ties", |f| {
+            for &be in &exps {
+                for sig in [0, 1, (1 << 51) | 1, SIG_MASK - 1, SIG_MASK] {
+                    let c = f64::from_bits((be << 52) | sig);
+                    for w in [6, 13, 20, 26] {
+                        for m in [1, 3, (1 << (51 - w)) | 1, (1 << (52 - w)) - 1] {
+                            for tail in 0..4 {
+                                for signs in 0..8 {
+                                    let (a, b, c) = near_tie(c, m, w, tail, signs);
+                                    f(a, b, c);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /// `z` is 65 to 127 bits above `x * y`, so `x * y` is shifted right inside the low word and
+    /// the bits shifted out must set the sticky bit. Each exact sum is a rounding tie plus or
+    /// minus a tail that only that sticky bit carries. The libm 0.2.16 port lost it and rounded
+    /// these to even (rust-lang/compiler-builtins#1353). Expected bits: exact rational
+    /// arithmetic (Python `fractions`), equal to the hardware FMA.
+    #[test]
+    fn soft_fma_sticky_of_shifted_product() {
+        let cases: &[(u64, u64, u64, u64)] = &[
+            // x * y = 1 + 3.68e-20 (about 2^-64.6), z = 2^53: 2^53 + 1 + tail rounds up to
+            // 2^53 + 2 (the port gave 2^53).
+            (
+                0x3FFB_4D42_BF52_42B8,
+                0x3FE2_C0DB_0D0F_F40D,
+                0x4340_0000_0000_0000,
+                0x4340_0000_0000_0001,
+            ),
+            // (1 + 2^-26) * (1 - 2^-26 + 2^-52) = 1 + 2^-78, z = 2^53 (the upstream issue).
+            (
+                0x3FF0_0000_0400_0000,
+                0x3FEF_FFFF_F800_0002,
+                0x4340_0000_0000_0000,
+                0x4340_0000_0000_0001,
+            ),
+            // Subtraction: x * y = 256 (1 + 2^-66.7), z = -(2^61 + 26 * 512): |sum| is just
+            // below the tie, so it rounds down to an odd significand.
+            (
+                0x3F7F_4BBC_3E57_B97D,
+                0x40E0_5C29_0AD4_BAB5,
+                0xC3C0_0000_0000_001A,
+                0xC3C0_0000_0000_0019,
+            ),
+            // Subnormal result: 2^-1022 - 2^-1075 (1 + 2^-78) rounds down to the largest
+            // subnormal (the port gave 2^-1022).
+            (
+                0x1E60_0000_0400_0000,
+                0x9E4F_FFFF_F800_0002,
+                0x0010_0000_0000_0000,
+                0x000F_FFFF_FFFF_FFFF,
+            ),
+        ];
+        for &(a, b, c, want) in cases {
+            let (a, b, c) = (f64::from_bits(a), f64::from_bits(b), f64::from_bits(c));
+            assert_eq!(
+                fma_soft(a, b, c).to_bits(),
+                want,
+                "fma({a:e}, {b:e}, {c:e})"
+            );
+            assert_eq!(
+                fma_exact(a, b, c).to_bits(),
+                want,
+                "fma({a:e}, {b:e}, {c:e})"
+            );
+        }
     }
 
     /// Vectors from the libm 0.2.16 fma tests (src/math/fma.rs) and IEEE-754 zero signs.
