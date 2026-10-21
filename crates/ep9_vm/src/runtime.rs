@@ -6,6 +6,8 @@
 //!                     heap: Heap ──root source──> Rc<Shared> (also held by Runtime)
 //!                     shared: Rc<Shared> { VM stack, pending exception, realm roots }
 //!                     units, host infos, registry, limits
+//!                     shapes, atoms, symbols, builtins   (per-isolate state of shape.rs,
+//!                                                         atoms.rs, symbol.rs, builtins.rs)
 //! ```
 //!
 //! `Runtime` is only ever shared (`&Runtime`); every mutable field is a `Cell` or `RefCell`.
@@ -22,8 +24,12 @@ use std::sync::atomic::AtomicBool;
 use ep9_heap::{CellPtr, GlobalHandle, Heap, KindId};
 use ep9_value::Value;
 
+use crate::atoms::AtomTable;
+use crate::builtins::BuiltinState;
 use crate::dispatch::RangeRegistry;
 use crate::frame::{UNDEFINED, VmStack, int32_bits, native_ptr, slot};
+use crate::shape::ShapeState;
+use crate::symbol::SymbolState;
 use crate::unit::{FunctionInfo, LoadedUnit};
 
 macro_rules! atoms {
@@ -179,20 +185,26 @@ impl Shared {
         }
     }
 
-    /// Visits every precise root the VM owns: the live VM stack, the pending exception, the
-    /// pending message and the realm roots and atoms.
+    /// Visits every precise root the VM owns: the live VM stack up to the top frame or the
+    /// scratch top (whichever is higher), the pending exception, the pending message and the
+    /// realm roots and atoms.
     fn trace(&self, t: &mut ep9_heap::Tracer<'_>) {
         let fp = self.stack.fp();
-        if !fp.is_null() {
-            let base = self.stack.base();
-            let top = frame_top(fp);
-            debug_assert!(top.addr() >= base.addr() && top.addr() <= self.stack.end().addr());
-            let n = (top.addr() - base.addr()) / 8;
-            for i in 0..n {
-                // SAFETY: [base, top) lies inside the stack allocation, and every slot there was
-                // written with a valid Value at frame push (frame.rs).
-                t.visit_bits(unsafe { *base.add(i) });
-            }
+        let base = self.stack.base();
+        let top = if fp.is_null() { base } else { frame_top(fp) };
+        let scratch = self.stack.scratch_top();
+        let end = if scratch.addr() > top.addr() {
+            scratch
+        } else {
+            top
+        };
+        debug_assert!(end.addr() >= base.addr() && end.addr() <= self.stack.end().addr());
+        let n = (end.addr() - base.addr()) / 8;
+        for i in 0..n {
+            // SAFETY: [base, end) lies inside the stack allocation; every slot below the top
+            // frame was written with a valid Value at frame push (frame.rs), and Rust code
+            // writes valid Values before it raises the scratch top past them.
+            t.visit_bits(unsafe { *base.add(i) });
         }
         let p = self.pending.get();
         if p != 0 {
@@ -235,6 +247,18 @@ pub(crate) struct Runtime {
     pub terminating: Cell<bool>,
     /// Template objects per (FunctionInfo, constant index) (§13.2.8.4 GetTemplateObject).
     pub templates: RefCell<HashMap<(usize, u32), GlobalHandle>>,
+    /// Shapes (H17): the prototype epoch and the shape roots.
+    pub shapes: ShapeState,
+    /// The atom table (H19). Shared with the heap's weak source; never borrowed across an
+    /// allocation.
+    #[allow(dead_code)] // wk4-stub
+    pub atoms: Rc<RefCell<AtomTable>>,
+    /// Symbols: the registry and the identity-hash PRNG.
+    #[allow(dead_code)] // wk4-stub
+    pub symbols: SymbolState,
+    /// Builtin tables (H20).
+    #[allow(dead_code)] // wk4-stub
+    pub builtins: BuiltinState,
 }
 
 impl Runtime {
@@ -248,7 +272,7 @@ impl Runtime {
         let shared = Rc::new(Shared::new(stack_slots));
         let sh = Rc::clone(&shared);
         heap.add_root_source(move |t| sh.trace(t));
-        Box::new(Runtime {
+        let rt = Box::new(Runtime {
             heap,
             shared,
             units: RefCell::new(Vec::new()),
@@ -262,7 +286,13 @@ impl Runtime {
             terminate: Arc::new(AtomicBool::new(false)),
             terminating: Cell::new(false),
             templates: RefCell::new(HashMap::new()),
-        })
+            shapes: ShapeState::default(),
+            atoms: Rc::new(RefCell::new(AtomTable::default())),
+            symbols: SymbolState::default(),
+            builtins: BuiltinState::default(),
+        });
+        crate::shape::init(&rt);
+        rt
     }
 
     #[inline]

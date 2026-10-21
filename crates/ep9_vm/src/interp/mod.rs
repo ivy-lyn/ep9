@@ -24,6 +24,8 @@ pub(crate) mod dsl;
 pub(crate) mod ops;
 pub(crate) mod slow;
 
+use core::cell::Cell;
+
 use ep9_bytecode::Opcode;
 
 use crate::frame::{HOLE, UNDEFINED, native_ptr, slot};
@@ -128,6 +130,14 @@ pub(crate) struct Cx {
     pub out_fp: *mut u64,
     pub out_pc: *const u8,
     pub dispatch: Dispatch,
+    /// Calls of a function before T0 makes its feedback vector (H16; 0 = at once, `u32::MAX`
+    /// = never). From `IsolateConfig::feedback_threshold`.
+    #[allow(dead_code)] // wk4-stub
+    pub feedback_threshold: u32,
+    /// The prototype epoch (`ShapeState::proto_epoch` in the runtime), read through this
+    /// pointer so a change made by a host call or a nested run is seen at once.
+    #[allow(dead_code)] // wk4-stub
+    pub proto_epoch: *const Cell<u32>,
 }
 
 const _: () = assert!(core::mem::offset_of!(Cx, table) == 0);

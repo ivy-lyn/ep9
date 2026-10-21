@@ -31,8 +31,8 @@ use crate::frame::{
 use crate::interp::dsl::{Back, CSlot, Count, Depth, FSlot, Fwd, K, R, RList, RtId, S2, S4, TyLit};
 use crate::interp::slow::{self, CmpOp, CtxKind, Lit, NameMsg, PropOp, UnOp};
 use crate::interp::{Done, Flow, St};
-use crate::object;
 use crate::runtime::ErrorKind;
+use crate::{kinds, object};
 
 macro_rules! op {
     ($Name:ident ($st:ident $(, $a:ident : $t:ty)*) $fast:block) => {
@@ -772,11 +772,12 @@ op!(TestTypeOf(st, literal: TyLit) {
         Some(TypeOfLiteral::String) => object::is_string(v),
         Some(TypeOfLiteral::Boolean) => v == TRUE || v == FALSE,
         Some(TypeOfLiteral::Undefined) => v == UNDEFINED,
-        Some(TypeOfLiteral::Function) => object::is_function(v),
+        Some(TypeOfLiteral::Function) => kinds::is_callable(v),
         Some(TypeOfLiteral::Object) => {
-            v == NULL || (object::is_object(v) && !object::is_function(v))
+            v == NULL || (object::is_object(v) && !kinds::is_callable(v))
         }
-        // v0: no symbols and no BigInts.
+        Some(TypeOfLiteral::Symbol) => kinds::is_symbol(v),
+        // v0: no BigInts (and no symbol values exist yet).
         _ => false,
     };
     st.acc = boolean(r);

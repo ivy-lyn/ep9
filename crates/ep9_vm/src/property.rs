@@ -13,19 +13,11 @@ use crate::conv::{Res, describe, num, to_property_key, to_uint32_of};
 use crate::error::throw_error;
 use crate::frame::{NULL, UNDEFINED};
 use crate::interp::Cx;
-use crate::object::{
-    self, attr, is_array, is_function, is_object, is_string, own_define, own_get, str_view,
-};
+use crate::key::{array_index_of, is_property_key, key_text};
+use crate::kinds::is_callable;
+use crate::object::{self, attr, is_array, is_function, is_object, is_string, own_define, own_get};
 use crate::runtime::{Atom, ErrorKind, Root, val};
-
-/// What `key` names on an object with virtual properties.
-fn array_index_of(key: u64) -> Option<u32> {
-    if is_string(key) {
-        str_view(key).array_index()
-    } else {
-        None
-    }
-}
+use crate::string;
 
 fn is_atom(cx: &Cx, key: u64, a: Atom) -> bool {
     object::key_eq(key, cx.rt().atom(a))
@@ -91,7 +83,7 @@ pub(crate) fn get_from(cx: &mut Cx, mut o: u64, key: u64) -> Res<u64> {
 
 /// `base[key]` with a property-key string (GetValue on a property reference).
 pub(crate) fn get(cx: &mut Cx, base: u64, key: u64) -> Res<u64> {
-    debug_assert!(is_string(key));
+    debug_assert!(is_property_key(key));
     if is_object(base) {
         return get_from(cx, base, key);
     }
@@ -100,12 +92,10 @@ pub(crate) fn get(cx: &mut Cx, base: u64, key: u64) -> Res<u64> {
         if is_atom(cx, key, Atom::Length) {
             return Ok(num(object::str_len(base) as f64));
         }
-        if let Some(i) = array_index_of(key) {
-            let s = str_view(base);
-            if (i as usize) < s.len() {
-                let u = [s.at(i as usize)];
-                return Ok(object::new_string_utf16(rt, &u));
-            }
+        if let Some(i) = array_index_of(key)
+            && (i as usize) < object::str_len(base)
+        {
+            return Ok(string::char_at(rt, base, i as usize));
         }
         rt.root(Root::StringPrototype)
     } else if val(base).is_number() {
@@ -113,7 +103,7 @@ pub(crate) fn get(cx: &mut Cx, base: u64, key: u64) -> Res<u64> {
     } else if base == object_bool(true) || base == object_bool(false) {
         rt.root(Root::BooleanPrototype)
     } else {
-        let k = str_view(key).to_string_lossy();
+        let k = key_text(rt, key);
         let msg = format!(
             "Cannot read properties of {} (reading '{k}')",
             describe(base)
@@ -137,12 +127,8 @@ pub(crate) fn get_keyed(cx: &mut Cx, base: u64, k: u64) -> Res<u64> {
             if let Some(v) = object::array_get(base, i as u32) {
                 return Ok(v);
             }
-        } else if is_string(base) {
-            let s = str_view(base);
-            if (i as usize) < s.len() {
-                let u = [s.at(i as usize)];
-                return Ok(object::new_string_utf16(cx.rt(), &u));
-            }
+        } else if is_string(base) && (i as usize) < object::str_len(base) {
+            return Ok(string::char_at(cx.rt(), base, i as usize));
         }
     }
     if base == UNDEFINED || base == NULL {
@@ -160,13 +146,13 @@ pub(crate) fn get_keyed(cx: &mut Cx, base: u64, k: u64) -> Res<u64> {
 /// OrdinarySet (§10.1.9) with receiver = `base`. v0: no accessors; a non-writable own or
 /// inherited property makes the assignment fail (TypeError in strict code).
 pub(crate) fn set(cx: &mut Cx, base: u64, key: u64, v: u64, strict: bool) -> Res<()> {
-    debug_assert!(is_string(key));
+    debug_assert!(is_property_key(key));
     if !is_object(base) {
         if base == UNDEFINED || base == NULL {
             let msg = format!(
                 "Cannot set properties of {} (setting '{}')",
                 describe(base),
-                str_view(key).to_string_lossy()
+                key_text(cx.rt(), key)
             );
             return Err(throw_error(cx, ErrorKind::TypeError, &msg));
         }
@@ -174,7 +160,7 @@ pub(crate) fn set(cx: &mut Cx, base: u64, key: u64, v: u64, strict: bool) -> Res
         if strict {
             let msg = format!(
                 "Cannot create property '{}' on {}",
-                str_view(key).to_string_lossy(),
+                key_text(cx.rt(), key),
                 describe(base)
             );
             return Err(throw_error(cx, ErrorKind::TypeError, &msg));
@@ -236,7 +222,7 @@ fn fail(cx: &mut Cx, key: u64, strict: bool) -> Res<()> {
     if strict {
         let msg = format!(
             "Cannot assign to read only property '{}' of object",
-            str_view(key).to_string_lossy()
+            key_text(cx.rt(), key)
         );
         Err(throw_error(cx, ErrorKind::TypeError, &msg))
     } else {
@@ -267,7 +253,7 @@ pub(crate) fn set_keyed(cx: &mut Cx, base: u64, k: u64, v: u64, strict: bool) ->
 
 /// CreateDataPropertyOrThrow on an object (literals, `DefineNamedOwnProperty`).
 pub(crate) fn define(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<()> {
-    debug_assert!(is_object(o) && is_string(key));
+    debug_assert!(is_object(o) && is_property_key(key));
     let rt = cx.rt();
     if is_array(o) {
         if let Some(i) = array_index_of(key)
@@ -338,7 +324,7 @@ fn deny(cx: &mut Cx, key: u64, strict: bool) -> Res<bool> {
     if strict {
         let msg = format!(
             "Cannot delete property '{}' of object",
-            str_view(key).to_string_lossy()
+            key_text(cx.rt(), key)
         );
         Err(throw_error(cx, ErrorKind::TypeError, &msg))
     } else {
@@ -375,7 +361,7 @@ pub(crate) fn has(cx: &mut Cx, o: u64, k: u64) -> Res<bool> {
 /// OrdinaryHasInstance (§7.3.22) for `v instanceof f`. v0: no `@@hasInstance`, no bound
 /// functions.
 pub(crate) fn instance_of(cx: &mut Cx, v: u64, f: u64) -> Res<bool> {
-    if !is_function(f) {
+    if !is_callable(f) {
         return Err(throw_error(
             cx,
             ErrorKind::TypeError,

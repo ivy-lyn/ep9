@@ -9,10 +9,13 @@ use ep9_value::{Throw, Value, to_int32, to_uint32};
 use crate::error::{not_implemented, throw_error};
 use crate::frame::{FALSE, NULL, TRUE, UNDEFINED};
 use crate::interp::Cx;
-use crate::numconv::{fmod, number_to_string, pow_exact, string_to_number};
+use crate::kinds::is_callable;
+use crate::numconv::{exponentiate, fmod, number_to_string, string_to_number};
 use crate::object::{self, is_function, is_object, is_string, str_view};
 use crate::property;
 use crate::runtime::{Atom, ErrorKind, val};
+
+pub(crate) use crate::key::to_property_key;
 
 pub(crate) type Res<T = u64> = Result<T, Throw>;
 
@@ -74,7 +77,7 @@ pub(crate) fn to_primitive(cx: &mut Cx, b: u64, hint: Hint) -> Res<u64> {
     };
     for name in order {
         let f = property::get(cx, b, rt.atom(name))?;
-        if is_function(f) {
+        if is_callable(f) {
             let r = crate::call::call_function(cx, f, b, &[])?;
             if !is_object(r) {
                 return Ok(r);
@@ -155,15 +158,6 @@ pub(crate) fn to_rust_string(cx: &mut Cx, b: u64) -> Res<String> {
     Ok(str_view(s).to_string_lossy())
 }
 
-/// ToPropertyKey (§7.1.19). v0: keys are strings.
-pub(crate) fn to_property_key(cx: &mut Cx, b: u64) -> Res<u64> {
-    if is_string(b) {
-        return Ok(b);
-    }
-    let p = to_primitive(cx, b, Hint::String)?;
-    to_string(cx, p)
-}
-
 /// `typeof` (§13.5.3).
 pub(crate) fn type_of(b: u64) -> Atom {
     match b {
@@ -172,7 +166,7 @@ pub(crate) fn type_of(b: u64) -> Atom {
         TRUE | FALSE => Atom::Boolean,
         _ if val(b).is_number() => Atom::Number,
         _ if is_string(b) => Atom::String,
-        _ if is_function(b) => Atom::Function,
+        _ if is_callable(b) => Atom::Function,
         _ => Atom::Object,
     }
 }
@@ -314,24 +308,6 @@ pub(crate) fn number_op(cx: &mut Cx, op: BinOp, x: f64, y: f64) -> Res<u64> {
     })
 }
 
-/// Number::exponentiate. v0: [`pow_exact`] plus the infinity and NaN rules of the spec.
-fn exponentiate(base: f64, exp: f64) -> Option<f64> {
-    if let Some(r) = pow_exact(base, exp) {
-        return Some(r);
-    }
-    if exp.is_infinite() && !base.is_nan() {
-        let a = base.abs();
-        return Some(if a == 1.0 {
-            f64::NAN
-        } else if (a > 1.0) == (exp > 0.0) {
-            f64::INFINITY
-        } else {
-            0.0
-        });
-    }
-    None
-}
-
 /// ApplyStringOrNumericBinaryOperator (§13.15.3) for `lhs OP rhs`.
 pub(crate) fn binary(cx: &mut Cx, op: BinOp, lhs: u64, rhs: u64) -> Res<u64> {
     if op == BinOp::Add {
@@ -379,6 +355,7 @@ pub(crate) fn describe(b: u64) -> String {
                 format!("function {n}")
             }
         }
+        _ if is_callable(b) => "function".into(),
         _ if object::is_array(b) => "array".into(),
         _ => "object".into(),
     }

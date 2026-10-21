@@ -7,6 +7,10 @@
 //! | JS → host function | push host frame, call the Rust fn | one Rust call, checked |
 //! | Rust → JS (`call_function`, host callbacks, ToPrimitive) | push entry frame (return pc = EXIT stub), run the dispatch | one dispatch run, checked |
 //! | `[[Construct]]` from JS | push a stub frame (return pc = construct stub) + callee frame | none |
+//!
+//! Scratch area (frame.rs): a host frame push and an entry frame push clear the VM stack's
+//! scratch top, and so does the return from a host function. So bytecode never runs with a
+//! scratch area, and the JS→JS pushes (T0 fast path, `slow::call`) need not clear it.
 
 use ep9_value::Throw;
 
@@ -15,6 +19,7 @@ use crate::error::{FrameRef, not_implemented, stack_overflow, throw_error};
 use crate::frame::{CONSTRUCT_BIT, HEADER, NULL, UNDEFINED, int32_bits, native_of, slot};
 use crate::host::{Args, HostCx};
 use crate::interp::{self, Cx, EXIT_STUB};
+use crate::kinds::is_callable;
 use crate::object::{self, function_context, function_info, is_function, is_object};
 use crate::property;
 use crate::runtime::{Atom, ErrorKind, Root, frame_top, val};
@@ -143,6 +148,7 @@ pub(crate) fn call_host(
     };
     let h = fi.host.expect("a host function");
     rt.stack().set_fp(fp);
+    rt.stack().clear_scratch();
     // SAFETY: the host frame stays live until `h` returns; its argument slots hold `argc`
     // Values from PARAM0 downward.
     let args = unsafe { Args::new(fp.offset(slot::PARAM0), argc) };
@@ -151,6 +157,7 @@ pub(crate) fn call_host(
         h(&mut hcx, val(this), args, val(new_target))
     };
     rt.stack().set_fp(caller_fp);
+    rt.stack().clear_scratch();
     r.map(|v| v.to_bits())
 }
 
@@ -161,9 +168,13 @@ pub(crate) fn call_function(cx: &mut Cx, f: u64, this: u64, args: &[u64]) -> Res
 
 fn call_internal(cx: &mut Cx, f: u64, this: u64, args: &[u64], new_target: u64) -> Res<u64> {
     let rt = cx.rt();
-    if !is_function(f) {
+    if !is_callable(f) {
         let msg = format!("{} is not a function", crate::conv::describe(f));
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
+    }
+    if !is_function(f) {
+        // A bound function: its [[Call]] comes with Function.prototype.bind.
+        return Err(not_implemented(cx, "[[Call]] of a bound function"));
     }
     if !rt.native_stack_ok() {
         return stack_overflow(cx);
@@ -218,6 +229,7 @@ fn call_internal(cx: &mut Cx, f: u64, this: u64, args: &[u64], new_target: u64) 
         return stack_overflow(cx);
     };
     rt.stack().set_fp(fp);
+    rt.stack().clear_scratch();
     cx.budget -= 1;
     // SAFETY: `fp` is a frame for `fi` that `push_frame` just wrote; its code is verified.
     let r = unsafe { interp::run(cx, fi.code, fp) };
@@ -230,6 +242,10 @@ pub(crate) fn construct(cx: &mut Cx, f: u64, args: &[u64]) -> Res<u64> {
     if !object::is_constructor(f) {
         let msg = format!("{} is not a constructor", crate::conv::describe(f));
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
+    }
+    if !is_function(f) {
+        // A bound function: its [[Construct]] comes with Function.prototype.bind.
+        return Err(not_implemented(cx, "[[Construct]] of a bound function"));
     }
     let fi = function_info(f);
     if fi.host.is_some() {

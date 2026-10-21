@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use ep9_vm::Dispatch;
+use ep9_vm::{Dispatch, IsolateConfig};
 
 pub const VERSION_LINE: &str = concat!("ep9 ", env!("CARGO_PKG_VERSION"));
 
@@ -20,6 +20,9 @@ options:
   --verify-heap        run the heap verifier after every collection
   --gc-stats           print the number of collections to stderr at exit
   --dispatch <kind>    interpreter dispatch: match, sibling (default: the build default)
+  --feedback-threshold <n>
+                       calls of a function before it gets a feedback vector (default 8;
+                       0 = at the first call, 4294967295 = never)
   --print-bytecode     print the disassembly of the unit before it runs
   --stack-size <MiB>   native stack of the isolate thread (default 64)
   -h, --help           print this text
@@ -46,6 +49,8 @@ pub struct Options {
     pub gc_stress: u32,
     pub verify_heap: bool,
     pub dispatch: Dispatch,
+    /// `IsolateConfig::feedback_threshold`.
+    pub feedback_threshold: u32,
     pub print_bytecode: bool,
     pub gc_stats: bool,
     pub stack_mib: usize,
@@ -56,6 +61,11 @@ pub enum Command {
     Run(Options),
     Version,
     Help,
+}
+
+fn feedback_threshold(v: &str) -> Result<u32, String> {
+    v.parse::<u32>()
+        .map_err(|_| format!("bad --feedback-threshold value {v:?} (0..=4294967295)"))
 }
 
 fn dispatch(name: &str) -> Result<Dispatch, String> {
@@ -81,6 +91,7 @@ pub fn parse(argv: &[String]) -> Result<Command, String> {
         gc_stress: 0,
         verify_heap: false,
         dispatch: Dispatch::DEFAULT,
+        feedback_threshold: IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD,
         print_bytecode: false,
         gc_stats: false,
         stack_mib: 64,
@@ -108,6 +119,10 @@ pub fn parse(argv: &[String]) -> Result<Command, String> {
             "--print-bytecode" => opts.print_bytecode = true,
             "--gc-stats" => opts.gc_stats = true,
             "--dispatch" => opts.dispatch = dispatch(it.next().ok_or("--dispatch needs a value")?)?,
+            "--feedback-threshold" => {
+                let v = it.next().ok_or("--feedback-threshold needs a value")?;
+                opts.feedback_threshold = feedback_threshold(v)?;
+            }
             "--stack-size" => {
                 let v = it.next().ok_or("--stack-size needs a value")?;
                 opts.stack_mib = v
@@ -126,6 +141,9 @@ pub fn parse(argv: &[String]) -> Result<Command, String> {
             }
             a if a.starts_with("--dispatch=") => {
                 opts.dispatch = dispatch(&a["--dispatch=".len()..])?;
+            }
+            a if a.starts_with("--feedback-threshold=") => {
+                opts.feedback_threshold = feedback_threshold(&a["--feedback-threshold=".len()..])?;
             }
             a if a.starts_with('-') && a != "-" => return Err(format!("unknown flag {a:?}")),
             file => set_source(&mut source, Source::File(PathBuf::from(file)))?,
@@ -168,6 +186,22 @@ mod tests {
         );
         assert!(run(&["--strict", "x.js"]).unwrap().strict);
         assert!(run(&["--module", "x.js"]).unwrap().module);
+        assert_eq!(
+            run(&["x.js"]).unwrap().feedback_threshold,
+            IsolateConfig::default().feedback_threshold
+        );
+        assert_eq!(
+            run(&["--feedback-threshold", "0", "x.js"])
+                .unwrap()
+                .feedback_threshold,
+            0
+        );
+        assert_eq!(
+            run(&["--feedback-threshold=4294967295", "x.js"])
+                .unwrap()
+                .feedback_threshold,
+            u32::MAX
+        );
     }
 
     #[test]
@@ -177,6 +211,9 @@ mod tests {
         assert!(run(&["-e"]).is_err());
         assert!(run(&["--gc-stress=0", "a.js"]).is_err());
         assert!(run(&["--dispatch", "jit", "a.js"]).is_err());
+        assert!(run(&["--feedback-threshold", "-1", "a.js"]).is_err());
+        assert!(run(&["--feedback-threshold=x", "a.js"]).is_err());
+        assert!(run(&["--feedback-threshold"]).is_err());
         assert!(run(&["--bogus", "a.js"]).is_err());
         assert!(run(&["--module", "--strict", "a.js"]).is_err());
         assert_eq!(parse(&["--version".into()]).unwrap(), Command::Version);

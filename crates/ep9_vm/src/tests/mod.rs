@@ -2,19 +2,32 @@
 //! BytecodeGen here). `run_all` runs a program under every dispatch expansion, with and
 //! without GC stress (a collection before every allocation, then the heap verifier), and
 //! checks that all runs agree.
+//!
+//! This file is frozen after the week-4 scaffold: each area adds its tests to its own module
+//! below, and host functions for tests live in `support.rs`.
 
 #![allow(clippy::unwrap_used)]
 
+mod abi;
+mod accessors;
 mod basic;
+mod builtins;
 mod calls;
 mod exceptions;
+mod feedback;
 mod gc;
+mod ic;
 mod interp;
+mod iter;
+mod objects;
+mod shapes;
+mod strings;
+mod support;
+mod symbols;
+mod wrappers;
 
 #[path = "../../../ep9_bytecode/tests/common/mod.rs"]
 pub(crate) mod common;
-
-use std::cell::RefCell;
 
 use ep9_bytecode::{
     CodeKind, FeedbackSlot, FeedbackSlotKind, FunctionBuilder, FunctionCode, FunctionFlags,
@@ -23,30 +36,9 @@ use ep9_bytecode::{
 };
 use ep9_heap::HeapConfig;
 
-use crate::{Args, Dispatch, Exception, HostCx, Isolate, IsolateConfig, JsResult, Value};
+use crate::{Dispatch, Exception, Isolate, IsolateConfig};
 
-thread_local! {
-    static OUT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-}
-
-/// `print(...args)`: ToString of each argument, joined by spaces, into the test output.
-pub(crate) fn print(
-    cx: &mut HostCx<'_>,
-    _this: Value,
-    args: Args<'_>,
-    _nt: Value,
-) -> JsResult<Value> {
-    let mut parts = Vec::new();
-    for v in args.iter() {
-        parts.push(cx.to_rust_string(v)?);
-    }
-    OUT.with(|o| o.borrow_mut().push(parts.join(" ")));
-    Ok(Value::UNDEFINED)
-}
-
-pub(crate) fn take_output() -> Vec<String> {
-    OUT.with(|o| core::mem::take(&mut *o.borrow_mut()))
-}
+pub(crate) use support::{print, take_output};
 
 pub(crate) fn opts() -> UnitOptions {
     UnitOptions {

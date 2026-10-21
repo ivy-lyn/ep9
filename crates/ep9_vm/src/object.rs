@@ -3,57 +3,42 @@
 //!
 //! All cells are `ep9_heap` cells. Every word after word0 of an object, table or context is a
 //! valid `Value` (raw pointers use the native-word encoding of `frame.rs`), so one trace
-//! function visits them all. Strings hold raw code units after a 3-word header and have no
-//! references.
+//! function visits them all. Kind ids are in `kinds.rs` (table v1). Strings live in
+//! `string.rs`, the property dictionary in `props.rs` and the key helpers in `key.rs`; this
+//! file re-exports their old names.
 //!
 //! | Kind | Id | Layout (byte offsets) | Size |
 //! |---|---|---|---|
-//! | STRING | 1 | +8 length (int32), +16 encoding (int32: 0 Latin-1, 1 UTF-16), +24 code units | 24 + len or 24 + 2 len |
-//! | OBJECT | 2 | +8 prototype, +16 property table or undefined, +24 flags (int32) | 32 |
-//! | FUNCTION | 3 | object + 32 FunctionInfo (native word), +40 context, +48 `[[HomeObject]]` or undefined | 56 |
-//! | ARRAY | 4 | object + 32 elements or undefined, +40 length (int32) | 48 |
-//! | ERROR | 5 | object + 32 unit index (int32 or undefined), +40 source offset (int32) | 48 |
-//! | PROPS | 6 | +8 capacity, +16 count (int32s), +24 entries: key, value, attributes | 24 + 24 cap |
-//! | ELEMENTS | 7 | +8 capacity (int32), +16 values (hole = empty) | 16 + 8 cap |
-//! | CONTEXT | 8 | +8 previous, +16 scope id (int32), +24 length (int32), +32 slots | 32 + 8 len |
-//! | ITERATOR | 9 | object + 32 iterated array or string (undefined when done), +40 next index (int32) | 48 |
+//! | OBJECT | 16 | +8 prototype, +16 property table or undefined, +24 flags (int32) | 32 |
+//! | FUNCTION | 17 | object + 32 FunctionInfo (native word), +40 context, +48 `[[HomeObject]]` or undefined | 56 |
+//! | ARRAY | 18 | object + 32 elements or undefined, +40 length (int32) | 48 |
+//! | ERROR | 19 | object + 32 unit index (int32 or undefined), +40 source offset (int32) | 48 |
+//! | ITERATOR | 20 | object + 32 iterated array or string (undefined when done), +40 next index (int32) | 48 |
+//! | PRIMITIVE_WRAPPER | 21 | object + 1 fixed field: the primitive | 40 |
+//! | BOUND_FUNCTION | 22 | object + 3 fixed fields: target, bound `this`, bound arguments | 56 |
+//! | ELEMENTS | 65 | +8 capacity (int32), +16 values (hole = empty) | 16 + 8 cap |
+//! | CONTEXT | 66 | +8 previous, +16 scope id (int32), +24 length (int32), +32 slots | 32 + 8 len |
+//!
+//! Fixed fields are the words after the object header (from +32). The fixed-field API
+//! ([`new_object_with_fields`], [`fixed_get`], [`fixed_set`]) reads and writes them by
+//! index, so PRIMITIVE_WRAPPER and BOUND_FUNCTION code never hard-codes an offset (H17 moves
+//! the header; these signatures stay).
 
 use ep9_heap::{CellKind, CellPtr, CellSize, Heap, KindId, Slot, Tracer};
 
 use crate::frame::{HOLE, NULL, UNDEFINED, int32_bits, int32_of, native_of, native_ptr};
+use crate::kinds as kind;
 use crate::runtime::{Root, Runtime, val};
 use crate::unit::FunctionInfo;
 
-/// The cell test on raw bits (JSC `isCell`, H6): no number tag and no immediate tag bit.
-#[inline(always)]
-pub(crate) const fn is_cell_bits(bits: u64) -> bool {
-    bits & ep9_value::encoding::NOT_CELL_MASK == 0
-}
+pub(crate) use crate::key::key_eq;
+pub(crate) use crate::kinds::{
+    cell_kind, is_array, is_context, is_error, is_function, is_iterator, is_object, is_string,
+};
+pub(crate) use crate::props::{own_count, own_define, own_delete, own_entry, own_get, own_replace};
+pub(crate) use crate::string::{concat, new_string, new_string_utf16, str_len, str_view};
 
-/// Cell kind ids (word0 byte 5).
-pub(crate) mod kind {
-    use ep9_heap::KindId;
-
-    const fn k(n: u8) -> KindId {
-        match KindId::new(n) {
-            Some(k) => k,
-            None => panic!("kind 0 is reserved"),
-        }
-    }
-
-    pub const STRING: KindId = k(1);
-    pub const OBJECT: KindId = k(2);
-    pub const FUNCTION: KindId = k(3);
-    pub const ARRAY: KindId = k(4);
-    pub const ERROR: KindId = k(5);
-    pub const PROPS: KindId = k(6);
-    pub const ELEMENTS: KindId = k(7);
-    pub const CONTEXT: KindId = k(8);
-    /// v0: the array and string iterator (%ArrayIteratorPrototype%, %StringIteratorPrototype%).
-    pub const ITERATOR: KindId = k(9);
-}
-
-/// Object fields shared by OBJECT, FUNCTION, ARRAY and ERROR.
+/// Object fields shared by every JS object kind.
 pub(crate) mod obj {
     pub const PROTO: usize = 8;
     pub const PROPS: usize = 16;
@@ -93,20 +78,12 @@ pub(crate) mod err {
     pub const SIZE: usize = 48;
 }
 
-mod strf {
-    pub const LENGTH: usize = 8;
-    pub const ENCODING: usize = 16;
-    pub const DATA: usize = 24;
-}
-
-/// Largest string length in code units (V8: 2^29 - 24).
-pub(crate) const MAX_STRING_LENGTH: usize = (1 << 29) - 24;
-
-mod props {
-    pub const CAPACITY: usize = 8;
-    pub const COUNT: usize = 16;
-    pub const ENTRIES: usize = 24;
-    pub const ENTRY: usize = 24;
+/// Fixed-field counts of the kinds that only use the fixed-field API.
+pub(crate) mod fixed {
+    /// PRIMITIVE_WRAPPER: the primitive value.
+    pub const WRAPPER: usize = 1;
+    /// BOUND_FUNCTION: target, bound `this`, bound arguments.
+    pub const BOUND: usize = 3;
 }
 
 mod elems {
@@ -140,7 +117,7 @@ pub(crate) mod attr {
 
 #[inline(always)]
 pub(crate) fn cell(b: u64) -> CellPtr {
-    debug_assert!(is_cell_bits(b) && b != 0);
+    debug_assert!(kind::is_cell_bits(b) && b != 0);
     CellPtr::from_value(val(b)).expect("a cell value")
 }
 
@@ -171,65 +148,18 @@ pub(crate) fn wr(heap: &Heap, c: CellPtr, off: usize, v: u64) {
 }
 
 #[inline(always)]
-fn rd_i32(c: CellPtr, off: usize) -> i32 {
+pub(crate) fn rd_i32(c: CellPtr, off: usize) -> i32 {
     let b = rd(c, off);
     debug_assert!(val(b).is_int32());
     int32_of(b)
 }
 
-/// The kind byte of a cell value, or 0 for a non-cell.
-#[inline(always)]
-pub(crate) fn cell_kind(b: u64) -> u8 {
-    if is_cell_bits(b) {
-        // SAFETY: a cell Value held by the VM is live (crate invariant).
-        unsafe { cell(b).header() }.kind()
-    } else {
-        0
-    }
-}
-
-#[inline(always)]
-pub(crate) fn is_object(b: u64) -> bool {
-    matches!(cell_kind(b), 2..=5 | 9)
-}
-
-#[inline(always)]
-pub(crate) fn is_iterator(b: u64) -> bool {
-    cell_kind(b) == kind::ITERATOR.get()
-}
-
-#[inline(always)]
-pub(crate) fn is_string(b: u64) -> bool {
-    cell_kind(b) == kind::STRING.get()
-}
-
-#[inline(always)]
-pub(crate) fn is_function(b: u64) -> bool {
-    cell_kind(b) == kind::FUNCTION.get()
-}
-
-#[inline(always)]
-pub(crate) fn is_array(b: u64) -> bool {
-    cell_kind(b) == kind::ARRAY.get()
-}
-
-#[inline(always)]
-pub(crate) fn is_error(b: u64) -> bool {
-    cell_kind(b) == kind::ERROR.get()
-}
-
-#[inline(always)]
-pub(crate) fn is_context(b: u64) -> bool {
-    cell_kind(b) == kind::CONTEXT.get()
-}
-
 // ---- kind registration ---------------------------------------------------------------------
 
-fn trace_none(_: CellPtr, _: &mut Tracer<'_>) {}
-
-fn trace_from_8(c: CellPtr, t: &mut Tracer<'_>, size: usize) {
+/// Visits every word in [8, size) of `c` as a Value slot.
+pub(crate) fn trace_from_8(c: CellPtr, t: &mut Tracer<'_>, size: usize) {
     // SAFETY: the heap calls trace functions with live cells of the registered kind; every
-    // word in [8, size) of these kinds is a Value slot (layout table above).
+    // word in [8, size) of these kinds is a Value slot (layout tables).
     t.visit_slots(unsafe { c.slots(8, (size - 8) / 8) });
 }
 
@@ -245,18 +175,12 @@ fn trace_function(c: CellPtr, t: &mut Tracer<'_>) {
     trace_from_8(c, t, fun::SIZE);
 }
 
-fn string_size(c: CellPtr) -> usize {
-    let len = rd_i32(c, strf::LENGTH) as usize;
-    let enc = rd_i32(c, strf::ENCODING) as usize;
-    strf::DATA + (len << enc)
+fn trace_wrapper(c: CellPtr, t: &mut Tracer<'_>) {
+    trace_from_8(c, t, obj::SIZE + 8 * fixed::WRAPPER);
 }
 
-fn props_size(c: CellPtr) -> usize {
-    props::ENTRIES + props::ENTRY * rd_i32(c, props::CAPACITY) as usize
-}
-
-fn trace_props(c: CellPtr, t: &mut Tracer<'_>) {
-    trace_from_8(c, t, props_size(c));
+fn trace_bound(c: CellPtr, t: &mut Tracer<'_>) {
+    trace_from_8(c, t, obj::SIZE + 8 * fixed::BOUND);
 }
 
 fn elements_size(c: CellPtr) -> usize {
@@ -275,17 +199,11 @@ fn trace_context(c: CellPtr, t: &mut Tracer<'_>) {
     trace_from_8(c, t, context_size(c));
 }
 
-/// Registers the v0 cell kinds with a new heap.
+/// Registers every VM cell kind with a new heap: the kinds of this file, then each module
+/// that owns a layout (strings, the property dictionary, symbols, shapes, feedback,
+/// accessors, ICs).
 pub(crate) fn register_kinds(heap: &Heap) {
     let kinds: [(KindId, CellKind); 9] = [
-        (
-            kind::STRING,
-            CellKind {
-                name: "string",
-                size: CellSize::Dynamic(string_size),
-                trace: trace_none,
-            },
-        ),
         (
             kind::OBJECT,
             CellKind {
@@ -319,11 +237,27 @@ pub(crate) fn register_kinds(heap: &Heap) {
             },
         ),
         (
-            kind::PROPS,
+            kind::ITERATOR,
             CellKind {
-                name: "property-table",
-                size: CellSize::Dynamic(props_size),
-                trace: trace_props,
+                name: "iterator",
+                size: CellSize::Fixed(iter::SIZE),
+                trace: trace_object48,
+            },
+        ),
+        (
+            kind::PRIMITIVE_WRAPPER,
+            CellKind {
+                name: "primitive-wrapper",
+                size: CellSize::Fixed(obj::SIZE + 8 * fixed::WRAPPER),
+                trace: trace_wrapper,
+            },
+        ),
+        (
+            kind::BOUND_FUNCTION,
+            CellKind {
+                name: "bound-function",
+                size: CellSize::Fixed(obj::SIZE + 8 * fixed::BOUND),
+                trace: trace_bound,
             },
         ),
         (
@@ -342,209 +276,22 @@ pub(crate) fn register_kinds(heap: &Heap) {
                 trace: trace_context,
             },
         ),
-        (
-            kind::ITERATOR,
-            CellKind {
-                name: "iterator",
-                size: CellSize::Fixed(iter::SIZE),
-                trace: trace_object48,
-            },
-        ),
     ];
+    crate::string::register_kinds(heap);
     for (id, k) in kinds {
         heap.register_kind(id, k).expect("register a VM cell kind");
     }
+    crate::props::register_kinds(heap);
+    crate::symbol::register_kinds(heap);
+    crate::shape::register_kinds(heap);
+    crate::feedback::register_kinds(heap);
+    crate::accessor::register_kinds(heap);
+    crate::ic::register_kinds(heap);
 }
 
-// ---- strings -------------------------------------------------------------------------------
+// ---- objects --------------------------------------------------------------------------------
 
-/// The code units of a string (H19 `JsStr`, v0: flat only).
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum JsStr<'a> {
-    Latin1(&'a [u8]),
-    Utf16(&'a [u16]),
-}
-
-impl<'a> JsStr<'a> {
-    pub fn len(&self) -> usize {
-        match self {
-            JsStr::Latin1(b) => b.len(),
-            JsStr::Utf16(u) => u.len(),
-        }
-    }
-
-    pub fn at(&self, i: usize) -> u16 {
-        match self {
-            JsStr::Latin1(b) => u16::from(b[i]),
-            JsStr::Utf16(u) => u[i],
-        }
-    }
-
-    pub fn to_utf16(self) -> Vec<u16> {
-        match self {
-            JsStr::Latin1(b) => b.iter().map(|&c| u16::from(c)).collect(),
-            JsStr::Utf16(u) => u.to_vec(),
-        }
-    }
-
-    /// Rust text; a lone surrogate becomes U+FFFD.
-    pub fn to_string_lossy(self) -> String {
-        match self {
-            JsStr::Latin1(b) => b.iter().map(|&c| char::from(c)).collect(),
-            JsStr::Utf16(u) => String::from_utf16_lossy(u),
-        }
-    }
-
-    pub fn eq(&self, other: &JsStr<'_>) -> bool {
-        match (self, other) {
-            (JsStr::Latin1(a), JsStr::Latin1(b)) => a == b,
-            (JsStr::Utf16(a), JsStr::Utf16(b)) => a == b,
-            _ => self.len() == other.len() && (0..self.len()).all(|i| self.at(i) == other.at(i)),
-        }
-    }
-
-    /// Code-unit order (IsLessThan on strings, §7.2.13).
-    pub fn cmp(&self, other: &JsStr<'_>) -> core::cmp::Ordering {
-        let n = self.len().min(other.len());
-        for i in 0..n {
-            match self.at(i).cmp(&other.at(i)) {
-                core::cmp::Ordering::Equal => {}
-                o => return o,
-            }
-        }
-        self.len().cmp(&other.len())
-    }
-
-    /// CanonicalNumericIndexString restricted to array indices: "0", "1", ... "4294967294".
-    pub fn array_index(&self) -> Option<u32> {
-        let n = self.len();
-        if n == 0 || n > 10 {
-            return None;
-        }
-        let first = self.at(0);
-        if first == u16::from(b'0') {
-            return (n == 1).then_some(0);
-        }
-        let mut v: u64 = 0;
-        for i in 0..n {
-            let c = self.at(i);
-            if !(u16::from(b'0')..=u16::from(b'9')).contains(&c) {
-                return None;
-            }
-            v = v * 10 + u64::from(c - u16::from(b'0'));
-        }
-        (v < u64::from(u32::MAX)).then_some(v as u32)
-    }
-}
-
-/// The code units of a live string cell. The caller keeps the cell live while it uses the
-/// view (strings never move or change).
-pub(crate) fn str_view<'a>(b: u64) -> JsStr<'a> {
-    debug_assert!(is_string(b));
-    let c = cell(b);
-    let len = rd_i32(c, strf::LENGTH) as usize;
-    let utf16 = rd_i32(c, strf::ENCODING) == 1;
-    // SAFETY: a live string cell holds `len` code units of its encoding from offset 24
-    // (layout table); its size covers them (string_size).
-    unsafe {
-        if utf16 {
-            JsStr::Utf16(core::slice::from_raw_parts(c.field::<u16>(strf::DATA), len))
-        } else {
-            JsStr::Latin1(core::slice::from_raw_parts(c.field::<u8>(strf::DATA), len))
-        }
-    }
-}
-
-pub(crate) fn str_len(b: u64) -> usize {
-    rd_i32(cell(b), strf::LENGTH) as usize
-}
-
-fn alloc_string(rt: &Runtime, len: usize, utf16: bool) -> CellPtr {
-    assert!(len <= MAX_STRING_LENGTH, "string too long");
-    let size = strf::DATA + (len << usize::from(utf16));
-    let c = rt.alloc(kind::STRING, size.max(16));
-    init(c, strf::LENGTH, int32_bits(len as i32));
-    init(c, strf::ENCODING, int32_bits(i32::from(utf16)));
-    c
-}
-
-pub(crate) fn new_string_latin1(rt: &Runtime, bytes: &[u8]) -> u64 {
-    let c = alloc_string(rt, bytes.len(), false);
-    // SAFETY: the new cell has room for `len` bytes at offset 24 (alloc_string).
-    unsafe {
-        core::ptr::copy_nonoverlapping(bytes.as_ptr(), c.field::<u8>(strf::DATA), bytes.len())
-    };
-    c.to_value().to_bits()
-}
-
-/// A string from UTF-16 code units. Latin-1 storage when every unit fits.
-pub(crate) fn new_string_utf16(rt: &Runtime, units: &[u16]) -> u64 {
-    if units.iter().all(|&u| u <= 0xFF) {
-        let bytes: Vec<u8> = units.iter().map(|&u| u as u8).collect();
-        return new_string_latin1(rt, &bytes);
-    }
-    let c = alloc_string(rt, units.len(), true);
-    // SAFETY: the new cell has room for `len` u16 at offset 24 (8-aligned).
-    unsafe {
-        core::ptr::copy_nonoverlapping(units.as_ptr(), c.field::<u16>(strf::DATA), units.len())
-    };
-    c.to_value().to_bits()
-}
-
-pub(crate) fn new_string(rt: &Runtime, s: &str) -> u64 {
-    if s.is_ascii() {
-        return new_string_latin1(rt, s.as_bytes());
-    }
-    let units: Vec<u16> = s.encode_utf16().collect();
-    new_string_utf16(rt, &units)
-}
-
-/// `a + b` for two strings. `None` if the result is too long (RangeError).
-pub(crate) fn concat(rt: &Runtime, a: u64, b: u64) -> Option<u64> {
-    let (la, lb) = (str_len(a), str_len(b));
-    if lb == 0 {
-        return Some(a);
-    }
-    if la == 0 {
-        return Some(b);
-    }
-    let len = la.checked_add(lb).filter(|&n| n <= MAX_STRING_LENGTH)?;
-    let (va, vb) = (str_view(a), str_view(b));
-    // v0: flat concatenation (H19 adds ropes for length >= 13).
-    let r = match (va, vb) {
-        (JsStr::Latin1(x), JsStr::Latin1(y)) => {
-            let c = alloc_string(rt, len, false);
-            // SAFETY: the new cell has room for la + lb bytes; the sources are live strings
-            // (the caller holds them) and do not overlap the new cell.
-            unsafe {
-                let d = c.field::<u8>(strf::DATA);
-                core::ptr::copy_nonoverlapping(x.as_ptr(), d, la);
-                core::ptr::copy_nonoverlapping(y.as_ptr(), d.add(la), lb);
-            }
-            c
-        }
-        _ => {
-            let c = alloc_string(rt, len, true);
-            // SAFETY: the new cell has room for len u16 code units.
-            let d = unsafe { core::slice::from_raw_parts_mut(c.field::<u16>(strf::DATA), len) };
-            for (i, x) in d.iter_mut().enumerate() {
-                *x = if i < la { va.at(i) } else { vb.at(i - la) };
-            }
-            c
-        }
-    };
-    Some(r.to_value().to_bits())
-}
-
-/// Property-key equality: the same cell, or two strings with equal code units.
-#[inline]
-pub(crate) fn key_eq(a: u64, b: u64) -> bool {
-    a == b || (is_string(a) && is_string(b) && str_view(a).eq(&str_view(b)))
-}
-
-// ---- objects and property tables ----------------------------------------------------------
-
-/// A new object of `kind` (OBJECT, FUNCTION, ARRAY or ERROR) with `size` bytes.
+/// A new object of `kind` (any JS object kind) with `size` bytes.
 pub(crate) fn new_object_of(rt: &Runtime, k: KindId, size: usize, proto: u64) -> CellPtr {
     let c = rt.alloc(k, size);
     init(c, obj::PROTO, proto);
@@ -561,6 +308,27 @@ pub(crate) fn new_object(rt: &Runtime, proto: u64) -> u64 {
 
 pub(crate) fn new_plain_object(rt: &Runtime) -> u64 {
     new_object(rt, rt.root(Root::ObjectPrototype))
+}
+
+/// A new extensible object of kind `k` with prototype `proto` and `n` fixed fields, all
+/// undefined. `n` must be the kind's fixed-field count (its registered size). GC point.
+#[allow(dead_code)] // wk4-stub
+pub(crate) fn new_object_with_fields(rt: &Runtime, k: KindId, proto: u64, n: usize) -> u64 {
+    new_object_of(rt, k, obj::SIZE + 8 * n, proto)
+        .to_value()
+        .to_bits()
+}
+
+/// Fixed field `i` of the object `o`.
+#[allow(dead_code)] // wk4-stub
+pub(crate) fn fixed_get(o: u64, i: usize) -> u64 {
+    rd(cell(o), obj::SIZE + 8 * i)
+}
+
+/// Stores fixed field `i` of the object `o` (barriered).
+#[allow(dead_code)] // wk4-stub
+pub(crate) fn fixed_set(rt: &Runtime, o: u64, i: usize, v: u64) {
+    wr(&rt.heap, cell(o), obj::SIZE + 8 * i, v);
 }
 
 pub(crate) fn proto_of(o: u64) -> u64 {
@@ -583,122 +351,6 @@ pub(crate) fn set_proto(rt: &Runtime, o: u64, p: u64) -> bool {
 
 pub(crate) fn flags_of(o: u64) -> i32 {
     rd_i32(cell(o), obj::FLAGS)
-}
-
-fn props_cell(o: u64) -> Option<CellPtr> {
-    let p = rd(cell(o), obj::PROPS);
-    (p != UNDEFINED).then(|| cell(p))
-}
-
-fn props_count(p: CellPtr) -> usize {
-    rd_i32(p, props::COUNT) as usize
-}
-
-fn props_capacity(p: CellPtr) -> usize {
-    rd_i32(p, props::CAPACITY) as usize
-}
-
-#[inline]
-fn entry(i: usize) -> usize {
-    props::ENTRIES + props::ENTRY * i
-}
-
-fn new_props(rt: &Runtime, cap: usize) -> CellPtr {
-    let c = rt.alloc(kind::PROPS, props::ENTRIES + props::ENTRY * cap);
-    init(c, props::CAPACITY, int32_bits(cap as i32));
-    init(c, props::COUNT, int32_bits(0));
-    c
-}
-
-/// Index of `key` in the own property table of `o`.
-fn find(o: u64, key: u64) -> Option<(CellPtr, usize)> {
-    let p = props_cell(o)?;
-    // v0: linear search with content compare. Shapes replace it (week 4).
-    (0..props_count(p))
-        .find(|&i| key_eq(rd(p, entry(i)), key))
-        .map(|i| (p, i))
-}
-
-/// An own data property: (value, attributes).
-pub(crate) fn own_get(o: u64, key: u64) -> Option<(u64, i32)> {
-    let (p, i) = find(o, key)?;
-    Some((rd(p, entry(i) + 8), rd_i32(p, entry(i) + 16)))
-}
-
-/// Writes an existing own property's value. False if `o` has no such property.
-pub(crate) fn own_replace(rt: &Runtime, o: u64, key: u64, v: u64) -> bool {
-    match find(o, key) {
-        Some((p, i)) => {
-            wr(&rt.heap, p, entry(i) + 8, v);
-            true
-        }
-        None => false,
-    }
-}
-
-/// Defines or overwrites an own data property (insertion order kept). GC point.
-pub(crate) fn own_define(rt: &Runtime, o: u64, key: u64, v: u64, attrs: i32) {
-    if let Some((p, i)) = find(o, key) {
-        wr(&rt.heap, p, entry(i) + 8, v);
-        wr(&rt.heap, p, entry(i) + 16, int32_bits(attrs));
-        return;
-    }
-    let old = props_cell(o);
-    let (count, cap) = old.map_or((0, 0), |p| (props_count(p), props_capacity(p)));
-    let p = if count < cap {
-        old.expect("a table with room")
-    } else {
-        // GC point: `o`, `key`, `v` and `old` live in Rust locals (conservative scan, H10).
-        let n = new_props(rt, (cap * 2).max(4));
-        if let Some(old) = old {
-            for j in 0..count * 3 {
-                init(n, props::ENTRIES + 8 * j, rd(old, props::ENTRIES + 8 * j));
-            }
-            init(n, props::COUNT, int32_bits(count as i32));
-        }
-        wr(&rt.heap, cell(o), obj::PROPS, n.to_value().to_bits());
-        n
-    };
-    wr(&rt.heap, p, entry(count), key);
-    wr(&rt.heap, p, entry(count) + 8, v);
-    wr(&rt.heap, p, entry(count) + 16, int32_bits(attrs));
-    wr(&rt.heap, p, props::COUNT, int32_bits(count as i32 + 1));
-}
-
-/// Removes an own property. Returns its attributes, or `None` if it was absent.
-pub(crate) fn own_delete(rt: &Runtime, o: u64, key: u64) -> Option<i32> {
-    let (p, i) = find(o, key)?;
-    let attrs = rd_i32(p, entry(i) + 16);
-    let count = props_count(p);
-    // v0: shift the tail down (keeps insertion order).
-    for j in i * 3..(count - 1) * 3 {
-        wr(
-            &rt.heap,
-            p,
-            props::ENTRIES + 8 * j,
-            rd(p, props::ENTRIES + 8 * (j + 3)),
-        );
-    }
-    for k in 0..3 {
-        wr(&rt.heap, p, entry(count - 1) + 8 * k, UNDEFINED);
-    }
-    wr(&rt.heap, p, props::COUNT, int32_bits(count as i32 - 1));
-    Some(attrs)
-}
-
-/// Number of own named properties.
-pub(crate) fn own_count(o: u64) -> usize {
-    props_cell(o).map_or(0, props_count)
-}
-
-/// Own named property `i` in insertion order: (key, value, attributes).
-pub(crate) fn own_entry(o: u64, i: usize) -> (u64, u64, i32) {
-    let p = props_cell(o).expect("own_entry on an object without properties");
-    (
-        rd(p, entry(i)),
-        rd(p, entry(i) + 8),
-        rd_i32(p, entry(i) + 16),
-    )
 }
 
 // ---- arrays --------------------------------------------------------------------------------
@@ -853,8 +505,15 @@ pub(crate) fn set_iterator_state(rt: &Runtime, it: u64, iterated: u64, next: u32
     wr(&rt.heap, c, iter::NEXT, int32_bits(next as i32));
 }
 
+/// IsConstructor (§7.2.4): a FUNCTION with `[[Construct]]`, or a bound function whose target
+/// is a constructor (`bound::is_constructor`).
 pub(crate) fn is_constructor(f: u64) -> bool {
-    is_function(f) && flags_of(f) & obj::CONSTRUCTOR != 0
+    let k = cell_kind(f);
+    if k == kind::FUNCTION.get() {
+        flags_of(f) & obj::CONSTRUCTOR != 0
+    } else {
+        k == kind::BOUND_FUNCTION.get() && crate::bound::is_constructor(f)
+    }
 }
 
 pub(crate) fn new_context(rt: &Runtime, previous: u64, scope: i32, len: usize) -> u64 {

@@ -6,6 +6,7 @@
 //! | [`string_to_number`] | StringToNumber (§7.1.4.1.1) | decimal through `str::parse::<f64>` after a JS grammar check (correctly rounded); hex/octal/binary exact up to 2^128 |
 //! | [`fmod`] | Number::remainder (§6.1.6.1.6) | exact, bit-level (musl `fmod.c`, MIT). H36: never the platform libm. v0: moves to `ep9_math::fmod` |
 //! | [`pow_exact`] | Number::exponentiate (§6.1.6.1.3) | v0: special cases and exact integer results only; else `None`. H36: `ep9_math::pow_js` replaces it |
+//! | [`exponentiate`] | Number::exponentiate (§6.1.6.1.3) | `pow_exact` plus the infinite-exponent rules; else `None` (`**` throws "not implemented") |
 
 /// Number::toString(x) in radix 10.
 pub fn number_to_string(x: f64) -> String {
@@ -298,6 +299,25 @@ pub fn pow_exact(base: f64, exp: f64) -> Option<f64> {
         }
     }
     Some(r as f64)
+}
+
+/// Number::exponentiate (§6.1.6.1.3). v0: [`pow_exact`] plus the infinity and NaN rules of
+/// the spec; `None` for the rest (H36: `ep9_math::pow_js` replaces it).
+pub fn exponentiate(base: f64, exp: f64) -> Option<f64> {
+    if let Some(r) = pow_exact(base, exp) {
+        return Some(r);
+    }
+    if exp.is_infinite() && !base.is_nan() {
+        let a = base.abs();
+        return Some(if a == 1.0 {
+            f64::NAN
+        } else if (a > 1.0) == (exp > 0.0) {
+            f64::INFINITY
+        } else {
+            0.0
+        });
+    }
+    None
 }
 
 #[cfg(test)]
