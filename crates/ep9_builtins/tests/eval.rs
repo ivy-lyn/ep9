@@ -34,6 +34,18 @@ fn print<'s>(
     Ok(Local::undefined())
 }
 
+/// `evalScript(src)`: `Cx::evaluate_script` (a sloppy Script through the compile_script hook,
+/// as `$262.evalScript` would use it).
+fn eval_script<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let src = cx.to_rust_string(args.get(0))?;
+    cx.evaluate_script(&src, "evalScript.js")
+}
+
 fn failure(e: CodegenError) -> CompileFailure {
     match e {
         CodegenError::Compile(CompileError::Syntax(errors)) => {
@@ -91,6 +103,7 @@ fn run(src: &str, stress: bool) -> Result<Vec<String>, String> {
     })
     .expect("an isolate");
     iso.register_host_function("print", 1, print);
+    iso.register_host_function("evalScript", 1, eval_script);
     OUT.with(|o| o.borrow_mut().clear());
     let r = iso.run_script(unit, "test.js");
     let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
@@ -334,6 +347,29 @@ print(e(() => eval("'" + String.fromCharCode(0xD800) + "'")));"#
         lines(&[
             "Error: not implemented in ep9 v0: unsupported: async functions",
             "Error: not implemented in ep9 v0: source text with a lone surrogate",
+        ])
+    );
+}
+
+/// `Cx::evaluate_script` runs a sloppy Script through the compile_script hook: its global
+/// declarations are script declarations (a var is not configurable), its errors are thrown to
+/// the caller, and the result is what the entry function returns (undefined: a script unit
+/// does not return its completion value).
+#[test]
+fn evaluate_script_runs_a_script() {
+    assert_eq!(
+        run_both(
+            r#"print(evalScript('var es = 1; let el = 2; function ef() { return es + el; }'), ef());
+var d = Object.getOwnPropertyDescriptor(globalThis, 'es');
+print(d.configurable, delete es, typeof el);
+try { evalScript('let el = 3'); } catch (e) { print(e.constructor.name); }
+try { evalScript('(('); } catch (e) { print(e.constructor.name); }"#
+        ),
+        lines(&[
+            "undefined 3",
+            "false false number",
+            "SyntaxError",
+            "SyntaxError"
         ])
     );
 }

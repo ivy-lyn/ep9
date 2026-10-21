@@ -363,15 +363,23 @@ fn cannot_declare(cx: &mut Cx, name: u64, redefine: bool) -> Throw {
     throw_error(cx, ErrorKind::TypeError, &msg)
 }
 
+/// What [`prologue`] reads.
+struct Prologue {
+    /// The byte range of the first `CallRuntime DeclareEval*`.
+    first: Option<(u32, u32)>,
+    /// (the constant index of the name, a function), in call order.
+    decls: Vec<(u32, bool)>,
+}
+
 /// The declarations of the sloppy eval prologue of `fi` (function 0 of eval code), in call
 /// order: (the constant index of the name, a function). Also the byte range of the first
 /// `CallRuntime DeclareEval*`. The names are unit constants (atoms that the unit roots), kept
 /// here as constant indices.
-fn prologue(fi: &FunctionInfo) -> (Option<(u32, u32)>, Vec<(u32, bool)>) {
+fn prologue(fi: &FunctionInfo) -> Prologue {
     let mut first = None;
     let mut decls = Vec::new();
     let Some(u) = fi.loaded_unit() else {
-        return (first, decls);
+        return Prologue { first, decls };
     };
     let code = &u.unit.functions[fi.function_id as usize].bytecode;
     // The constant index in the accumulator and in each register, along straight-line code.
@@ -407,7 +415,7 @@ fn prologue(fi: &FunctionInfo) -> (Option<(u32, u32)>, Vec<(u32, bool)>) {
             _ => acc = None,
         }
     }
-    (first, decls)
+    Prologue { first, decls }
 }
 
 /// At the first `DeclareEval*` call of a run of the eval code in frame `fp`: the checks of
@@ -416,7 +424,7 @@ fn prologue(fi: &FunctionInfo) -> (Option<(u32, u32)>, Vec<(u32, bool)>) {
 /// before any binding is made. Later calls of the run skip it. GC point (a poll).
 fn check_all(cx: &mut Cx, fp: *mut u64) -> Res<()> {
     let fi = info(fp);
-    let (first, decls) = prologue(fi);
+    let Prologue { first, decls } = prologue(fi);
     let at = FrameRef(fp).saved_offset();
     if !first.is_some_and(|(start, end)| (start..end).contains(&at)) {
         return Ok(());
