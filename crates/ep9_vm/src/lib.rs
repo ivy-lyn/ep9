@@ -88,7 +88,8 @@ pub use ep9_value::{JsResult, Throw, Value};
 pub use host::HostCx;
 pub use interp::Dispatch;
 pub use isolate::{
-    Exception, Isolate, IsolateConfig, IsolateError, SourceLocation, TerminateHandle,
+    Exception, InterruptHandle, Isolate, IsolateConfig, IsolateError, SourceLocation,
+    TerminateHandle,
 };
 pub use runtime::ErrorKind;
 pub use string::JsStr;
