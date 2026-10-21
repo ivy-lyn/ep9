@@ -10,8 +10,7 @@
 //!
 //! No kind id is persisted (units, snapshots and facts never hold one), so the table may
 //! change. A kind is registered by the module that owns its layout (`object::register_kinds`
-//! calls them all). Until P1 (H19 strings) one string kind, [`STRING`] = id 1, holds both
-//! encodings.
+//! calls them all). Strings use SEQ_LATIN1 (1) and SEQ_UTF16 (2) since P1 (H19).
 //!
 //! word0 flags (bytes 6-7): bits 0-7 are kind-specific (objects: the in-object slot count;
 //! strings: bit 0 ATOM), bit 8 is-prototype, bit 9 is reserved for "hash present" (H12-Q1),
@@ -38,7 +37,8 @@ pub(crate) const SLICED: KindId = k(4);
 pub(crate) const THIN: KindId = k(5);
 pub(crate) const EXT_LATIN1: KindId = k(6);
 pub(crate) const EXT_UTF16: KindId = k(7);
-/// The string kind of the week-3 layout (length and encoding fields; both encodings).
+/// Unused alias of [`SEQ_LATIN1`] from the week-3 layout. No code outside kinds.rs names it;
+/// remove it when kinds.rs is next unfrozen.
 pub(crate) const STRING: KindId = SEQ_LATIN1;
 
 // ---- symbols (8) ----

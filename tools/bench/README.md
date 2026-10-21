@@ -122,7 +122,7 @@ The rules come from the PERF-NOISE rule ([10-quality](../../docs/plan/10-quality
 - **Load guard.** With `--host`: 60 s with no benchmark process, then the 1-minute load must be at most the idle baseline + 0.5. The runner waits up to 30 min for that, then stops with "host busy" (exit 3), unless `--allow-busy`. 120 s after the last round it checks again. The JSON keeps both values and the load after each round.
 - **Provisional.** The run is provisional when there is no host file, the host is not a gate host, the host file has no idle baseline, or the load guard failed. A void row is provisional too, and so is a row with a net time of 0 or less in any round ("net invalid"; its gross ratio is still shown, marked "(gross)"). A provisional result never passes or fails a gate.
 - **Refusal.** Every run must exit with 0 and print the workload's expected output (the T0 kernels' `want`; for v8v7 kernels, one `<name> <N>` line per benchmark). Otherwise the runner prints `REFUSED`, writes no report and exits 1. Before any timing, it runs every file once on every engine to check this.
-- **Class R.** With `--count`, ep9-bench counts every R workload (all of them; ci-v0 is R only) on every engine, 5 runs after 1 warm-up, and keeps the median. On macOS `time -l` counts the whole process (user and kernel); on Linux cachegrind counts user mode only. Compare counts only within one counter.
+- **Class R.** With `--count`, ep9-bench counts every R workload (all of them; ci-v0 is R only) on every engine, 5 runs after 1 warm-up, and keeps the median. Every counted run's output is checked (`ep9-bench --expect-stdout`; a wrong answer is REFUSED), and ep9's counted runs get `EP9_HASH_SEED=1` (`--hash-seed`). On macOS `time -l` counts the whole process (user and kernel); on Linux cachegrind counts user mode only. Compare counts only within one counter.
 - Exit status: 0 done; 1 refused or error; 2 usage error; 3 host busy.
 - Tests (fake engines in `cross/testdata/`, no shells or build needed, about 6 s): `node --test tools/bench/cross/run.test.mjs`.
 
@@ -144,6 +144,5 @@ pin and the kernel's blob id. Default N: richards 200; the others give QuickJS a
 `platform`, `os`, `gate_host`, and `idle_baseline_load1`: the median 1-minute load over 10 idle
 minutes, from `node tools/bench/cross/idle.mjs` (it refuses a window in which builds or benchmarks
 run). Without `idle_baseline_load1` the load guard cannot pass, so every run there is provisional.
-`hosts/m5max-macos.toml` has no baseline yet: on 2026-10-21 the shared machine was never idle for
-10 minutes.
+`hosts/m5max-macos.toml` has `idle_baseline_load1 = 2.505`, measured on 2026-10-21 (10 idle minutes).
 

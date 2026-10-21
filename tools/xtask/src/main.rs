@@ -6,7 +6,7 @@
 //! | `disasm-check` | `disasm.rs` | tail-call disassembly and handler argument count (H15) |
 //! | `fp-check` | `fpcheck.rs` | no banned libm symbol, no FMA instruction outside `ep9_math`, no second math crate, in post-LTO objects for 5 targets (H36) |
 //! | `feature-matrix` | `features.rs` | default, jitless and `aot` builds: build, clippy and test, per package (H27) |
-//! | `gc-lint` | `gc_lint.rs` | no stack-only GC type (`Local` and friends) in a heap container, `static` or `thread_local` (H10) |
+//! | `gc-lint` | `gc_lint.rs` | no stack-only GC type (`Local` and friends) in a heap container, `static` or `thread_local`, and no boxed closure that uses one (H10, H20 R2) |
 //!
 //! Each module's doc says how far it is built. Exit codes for every task: 0 pass, 1 fail,
 //! 2 usage error, tool error or a task that is not implemented yet. An unknown task exits 2.

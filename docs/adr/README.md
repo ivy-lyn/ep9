@@ -144,7 +144,7 @@ An ADR whose row is built after M1 exit lists its parts, each with its own freez
 | H36 | FP semantics in every backend | M0 rule (wk2); FP differential CI from M1 | N | Draft (decided 2026-10-20; pow_js v0 and fp-check built 2026-10-21) | [H36-fp-semantics.md](H36-fp-semantics.md) |
 | H37 | TS hint side-table schema | v0 at A1h (by M4 exit); frozen at A4 start | N | Not started | `H37-hint-side-table.md` |
 
-Counts on 2026-10-21 (after M0 week 4 P2): 25 Draft, 12 Not started, 0 Accepted, 0 Frozen. H6, H11, H35 and H36 carry decisions of 2026-10-20, and H15 a decision of 2026-10-21; they move to Accepted when the §3.1 review record is complete. Until 2026-10-21 this line said "11 Draft, 26 Not started". That count did not include H15 or the five M0 wk3 drafts (H1, H2, H3, H5, H14).
+Counts on 2026-10-21 (after M0 week 4 P3): 25 Draft, 12 Not started, 0 Accepted, 0 Frozen. H6, H11, H35 and H36 carry decisions of 2026-10-20, and H15 a decision of 2026-10-21; they move to Accepted when the §3.1 review record is complete. Until 2026-10-21 this line said "11 Draft, 26 Not started". That count did not include H15 or the five M0 wk3 drafts (H1, H2, H3, H5, H14).
 
 ## 6. When each ADR is due in M0
 
