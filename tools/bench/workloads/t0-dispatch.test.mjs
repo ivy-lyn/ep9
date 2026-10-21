@@ -2,7 +2,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import * as stats from "../lib/stats.mjs";
 import { geomean, median, medianRanks, parseArgs, quantile, verdict } from "./t0-dispatch.mjs";
+
+test("the statistics are the shared ones of tools/bench/lib/stats.mjs", () => {
+  for (const f of ["median", "quantile", "medianRanks", "geomean"]) {
+    assert.equal({ median, quantile, medianRanks, geomean }[f], stats[f], f);
+  }
+  // verdict keeps this runner's labels on top of the shared verdict.
+  const xs = Array.from({ length: 15 }, (_, i) => 1.1 + i / 1000);
+  assert.equal(verdict(xs).median, stats.verdict(xs, 1).median);
+  assert.equal(stats.verdict(xs, 1).side, "above");
+  assert.equal(verdict(xs).side, "B faster");
+});
 
 test("median ranks match the PERF-NOISE table", () => {
   assert.deepEqual(medianRanks(31), [10, 22]);
