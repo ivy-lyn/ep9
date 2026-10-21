@@ -36,11 +36,11 @@ Copied from the plan row (02 §6): JIT: DEOPT + exit counter. Hybrid: DEOPT → 
 
 ```text
  AOT-jitless: a PROFILED or HINTED guard in optimized-AOT code fails
-   site exit counter (RW) += 1 --- < 4 ---> DEOPT: rebuild a T0 frame at the bytecode offset; function exits += 1
-        | >= 4                                   | function exits >= 16
-        v                                        v
-   SLOWPATH: generic IC call inside the AOT code   PIN: dispatch slot -> aot-baseline
-   (the site ignores its fact from now on)         (-> interp if the function has no baseline-AOT)
+   site exit counter (RW) += 1 --- < 4, or the site has no SLOWPATH variant ---> DEOPT: rebuild a T0 frame at the bytecode offset; function exits += 1
+        | >= 4 and the site has a SLOWPATH variant                               | function exits >= 16
+        v                                                                        v
+   SLOWPATH: generic IC call inside the AOT code                                 PIN: dispatch slot -> aot-baseline
+   (the site ignores its fact from now on)                                       (-> interp if the function has no baseline-AOT)
 ```
 
 - A site with 4 guard failures (est.) stops using its hint, in every mode (05 §4).
@@ -55,7 +55,7 @@ Copied from the plan row (02 §6): JIT: DEOPT + exit counter. Hybrid: DEOPT → 
 | A hint failure never throws and never changes program output | hint chaos fuzzing: random wrong hints and stale profiles, output never changes (10-quality §4); hint soundness corpus (10-quality §2) | A1h; A4 |
 | THROW appears only at SOUND module boundaries, outside test262 mode, and only if the D17 rule picks (c) | M1: Spike C / SP-Facts (the IR has no THROW policy for predicted facts); test262 runs in every mode (G12) | M1; A5 |
 | In JIT mode a failed RUNTIME, PROFILED or HINTED guard deopts to T0 and bumps an exit counter | M1: Spike C / SP-Facts (one eager deopt, tier-differential test) | M1 |
-| In AOT-jitless mode no site deopts more than its budget, and no function deopts past its budget; then SLOWPATH or PIN | RK33 check: exit counters reach their budget on JITLESS-SET (10-quality §7); mode x tier differential (10-quality §4) | A3; A4 |
+| In AOT-jitless mode a site with a SLOWPATH variant deopts at most its site budget (4, est.), then takes SLOWPATH; a site without one keeps deopting until its function reaches the function budget (16 exits, est.) and is PINned; no function deopts past its budget | RK33 check: exit counters reach their budget on JITLESS-SET (10-quality §7); mode x tier differential (10-quality §4) | A3; A4 |
 | PIN writes only the dispatch slot (to aot-baseline, or interp with no baseline-AOT); it patches no code | `dispatch::tests::*` and `tests::interp::dispatch_slots_and_code_registry` ("a tier change writes one slot", H14 Rules); unit text is RX-only (H35) | M0 wk3 (slot write); A3 (PIN) |
 | Global invariants use GuardFuse or InvalidatingFuse per the table; an InvalidatingFuse pop in jitless mode swaps the slot and patches no code | M1: Spike C / SP-Facts; H31 fuse tests | M1; M1-M2 |
 | The policy is picked per mode in the IR (H30), not in the backend | M1: Spike C / SP-Facts | M1 |
@@ -102,3 +102,4 @@ Copied from the plan row (02 §6): JIT: DEOPT + exit counter. Hybrid: DEOPT → 
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-22 | draft | First draft from 02 §6 row H32, 04 §7 and 05 §10: per-mode table, jitless budgets, reserved D17 rows; confidence, SLOWPATH coverage and the budget freeze are Open questions | P3-ADR-JIT agent (M2-P3) |
+| 2026-10-22 | rewrite | The jitless Rules row capped every site at its budget, but a site with no SLOWPATH variant keeps deopting until function PIN (05 §10). The row now names both budgets: a site with SLOWPATH stops deopting at 4 (est.), a site without one deopts until the function reaches 16 exits (est.) and is PINned. The diagram labels the SLOWPATH arrow with "the site has a SLOWPATH variant". Draft, before the freeze point: not counted by G8 | P3 review fix |
