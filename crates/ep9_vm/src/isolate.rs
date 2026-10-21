@@ -42,7 +42,7 @@ use crate::frame::{HOLE, UNDEFINED};
 use crate::host::HostFn;
 use crate::interp::{BUDGET, Cx, Dispatch};
 use crate::object::{self, attr, is_error, is_string, own_define, own_get};
-use crate::runtime::{Atom, ErrorKind, InterruptCallback, InterruptQueue, Root, Runtime, val};
+use crate::runtime::{Atom, ErrorKind, InterruptQueue, Root, Runtime, val};
 use crate::unit::{FunctionInfo, LoadedUnit};
 use crate::{abi, atoms, call, error, property, realm, shape, string};
 
@@ -198,10 +198,10 @@ pub struct InterruptHandle {
 }
 
 impl InterruptHandle {
-    /// Queues `callback` and asks the isolate to poll it. Never blocks on the isolate (only
-    /// on the queue lock, which no callback holds).
+    /// Queues `callback` and asks the isolate to run it at its next poll. It never waits for
+    /// the isolate: the queue lock is held only to push or to take the queue, never while a
+    /// callback runs.
     pub fn request(&self, callback: Box<dyn FnOnce() + Send>) {
-        let callback: InterruptCallback = callback;
         self.queue
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
