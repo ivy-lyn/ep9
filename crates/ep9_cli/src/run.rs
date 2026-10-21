@@ -114,6 +114,10 @@ pub fn uncaught_text(e: &Exception) -> String {
 }
 
 fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
+    // Test hook (crates/ep9_cli/tests/cli.rs): a panic on the isolate thread.
+    if std::env::var_os("EP9_CLI_FAULT").is_some_and(|v| v == "panic") {
+        panic!("injected panic (EP9_CLI_FAULT=panic)");
+    }
     let source_opts = if opts.module {
         SourceOpts::module()
     } else if opts.strict {
@@ -223,6 +227,37 @@ fn hook_failure(e: CodegenError) -> CompileFailure {
     }
 }
 
+/// The panic hook of the `ep9` binary. A panic on any thread is an ep9 bug: print one line and
+/// exit [`EXIT_INTERNAL`] at once. So the exit status is 70 whether the build unwinds or
+/// aborts on a panic (`panic = "abort"`, P2-INFRA2, would give 134 after the default hook).
+/// `RUST_BACKTRACE=1` adds the backtrace.
+fn internal_error(info: &std::panic::PanicHookInfo<'_>) {
+    let msg = info
+        .payload()
+        .downcast_ref::<&str>()
+        .map(ToString::to_string)
+        .or_else(|| info.payload().downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic without a message".into());
+    // Write errors are ignored: a panic inside the hook would abort.
+    let mut err = std::io::stderr().lock();
+    let _ = writeln!(err, "ep9: internal error: {msg} (this is an ep9 bug)");
+    if let Some(at) = info.location() {
+        let thread = std::thread::current();
+        let _ = writeln!(
+            err,
+            "ep9: panicked at {at} on thread '{}'",
+            thread.name().unwrap_or("?")
+        );
+    }
+    let trace = std::backtrace::Backtrace::capture();
+    if trace.status() == std::backtrace::BacktraceStatus::Captured {
+        let _ = writeln!(err, "{trace}");
+    }
+    drop(err);
+    // Flushes stdout (what the script printed so far), then ends every thread.
+    std::process::exit(i32::from(EXIT_INTERNAL));
+}
+
 /// Runs the script of `opts` on a new thread with a `stack_mib` MiB stack. Returns the exit status.
 pub fn main(opts: Options) -> u8 {
     let (file, source) = match &opts.source {
@@ -242,12 +277,14 @@ pub fn main(opts: Options) -> u8 {
         },
     };
     let stack = opts.stack_mib << 20;
+    std::panic::set_hook(Box::new(internal_error));
     let worker = std::thread::Builder::new()
         .name("ep9-isolate".into())
         .stack_size(stack)
         .spawn(move || run_on_this_thread(&opts, &file, &source));
     match worker.map(std::thread::JoinHandle::join) {
         Ok(Ok(status)) => status,
+        // Not reached while the hook exits first; kept in case a panic skips the hook.
         Ok(Err(_)) => {
             eprintln!("ep9: internal error: the engine panicked (this is an ep9 bug)");
             EXIT_INTERNAL

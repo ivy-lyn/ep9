@@ -9,8 +9,15 @@ struct Out {
 }
 
 fn ep9(args: &[&str]) -> Out {
+    ep9_env(args, &[])
+}
+
+fn ep9_env(args: &[&str], env: &[(&str, &str)]) -> Out {
     let out = Command::new(env!("CARGO_BIN_EXE_ep9"))
         .args(args)
+        .env_remove("EP9_CLI_FAULT")
+        .env_remove("RUST_BACKTRACE")
+        .envs(env.iter().copied())
         .output()
         .expect("run ep9");
     Out {
@@ -65,11 +72,50 @@ fn compile_errors_exit_1_with_a_position() {
     assert_eq!(o.code, Some(1));
     assert!(o.stderr.starts_with("[eval]:2:"), "{}", o.stderr);
     assert!(o.stderr.contains("SyntaxError"), "{}", o.stderr);
-    let o = ep9(&["-e", "function* g() {}"]);
+    // An async generator: still unsupported after P1-GEN-CG (plan-v3 §4).
+    let o = ep9(&["-e", "async function* g() {}"]);
     assert_eq!(o.code, Some(1));
     assert!(
         o.stderr
             .contains("[eval]:1:1: SyntaxError: ep9 BytecodeGen v0 does not support"),
+        "{}",
+        o.stderr
+    );
+}
+
+#[test]
+fn a_panic_is_an_internal_error_with_exit_70() {
+    // The panic hook prints one ep9 line and exits 70 on the isolate thread, before Rust's
+    // default report; under `panic = "abort"` the status stays 70 (not 134).
+    let o = ep9_env(&["-e", "print('never')"], &[("EP9_CLI_FAULT", "panic")]);
+    assert_eq!(o.code, Some(70), "{}", o.stderr);
+    assert_eq!(o.stdout, "");
+    let mut lines = o.stderr.lines();
+    assert_eq!(
+        lines.next(),
+        Some("ep9: internal error: injected panic (EP9_CLI_FAULT=panic) (this is an ep9 bug)"),
+        "{}",
+        o.stderr
+    );
+    let at = lines.next().unwrap_or("");
+    // The path separator is the host's (`crates\ep9_cli\...` on Windows).
+    assert!(
+        at.starts_with("ep9: panicked at crates")
+            && at.contains("run.rs:")
+            && at.ends_with(" on thread 'ep9-isolate'"),
+        "{}",
+        o.stderr
+    );
+    assert!(
+        !o.stderr.contains("thread 'ep9-isolate' panicked"),
+        "{}",
+        o.stderr
+    );
+    // Without the hook variable the same script runs.
+    let o = ep9(&["-e", "print('ran')"]);
+    assert_eq!(
+        (o.code, o.stdout.as_str()),
+        (Some(0), "ran\n"),
         "{}",
         o.stderr
     );
