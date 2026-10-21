@@ -33,13 +33,13 @@ PACKED/HOLEY × INT32/DOUBLE/ELEMENTS, one-way. DOUBLE stores raw f64 with a hol
 
 | Item | v0 behavior | Where |
 |---|---|---|
-| Storage | ARRAY cell plus one ELEMENTS cell of Values; a hole is the H6 empty value 0x22 | `crates/ep9_vm/src/object.rs:14`, `crates/ep9_vm/src/object.rs:17`; `new_elements` (`crates/ep9_vm/src/object.rs:716`) |
-| Dense limit | 2^26 elements (`arr::MAX_LENGTH`) | `crates/ep9_vm/src/object.rs:85-87` |
-| Growth | a store at index i makes capacity max(i + 1, 2 × capacity, 4) | `array_set` (`crates/ep9_vm/src/object.rs:748`) |
+| Storage | ARRAY cell plus one ELEMENTS cell of Values; a hole is the H6 empty value 0x22 | `crates/ep9_vm/src/object.rs:21`, `crates/ep9_vm/src/object.rs:29`; `new_elements` (`crates/ep9_vm/src/object.rs:497`) |
+| Dense limit | 2^26 elements (`arr::MAX_LENGTH`) | `crates/ep9_vm/src/object.rs:88-89` |
+| Growth | a store at index i makes capacity max(i + 1, 2 × capacity, 4) | `array_set` (`crates/ep9_vm/src/object.rs:534`) |
 | High dense index | `a[2**26 - 1] = 1` allocates 2^26 slots: 540,606,464 B peak RSS (empty script: 3,473,408 B) | measured 2026-10-21, release `ep9`, M5 Max |
-| Index at or above 2^26 | stored as a string-keyed property; `length` does not change (ECMA-262: index + 1) | `crates/ep9_vm/src/property.rs:198-200` falls through |
-| `length` above 2^26 | RangeError "Invalid array length" (ECMA-262 allows up to 2^32 - 1) | `crates/ep9_vm/src/property.rs:189-195` |
-| `delete a[i]` | writes a hole | `crates/ep9_vm/src/property.rs:319-324` |
+| Index at or above 2^26 | stored as a string-keyed property; `length` does not change (ECMA-262: index + 1) | `crates/ep9_vm/src/property.rs:274-278` falls through |
+| `length` above 2^26 | RangeError "Invalid array length" (ECMA-262 allows up to 2^32 - 1) | `crates/ep9_vm/src/property.rs:265-271` |
+| `delete a[i]` | writes a hole | `crates/ep9_vm/src/property.rs:511-518` |
 | Index keys on other objects | string keys in the property table, as every key | no number keys in week 4 (decision W4-NO-NUMBER-KEYS) |
 | Week 4 (P2-OBJ) | an array-index key on an object that is not an array moves it to dictionary mode | design OM-10 (M0 wk4 plan, P2-OBJ task 4) |
 

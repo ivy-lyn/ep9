@@ -27,12 +27,12 @@ pub type HostFn = for<'s> fn(&mut Cx<'s>, Local<'s>, Args<'s>, Local<'s>) -> JsR
 
 | Type | What it is | Where |
 |---|---|---|
-| `Cx<'s>` | the context: ObjectOps, conversions, calls, `throw_*`; exposes no `&Runtime` | `crates/ep9_vm/src/abi/mod.rs:477` |
-| `Local<'s, T>` | the value itself, `repr(transparent)` over `Value`; `Copy`, `!Send`, `!Sync`; markers `JsValue` (default), `JsObject`, `JsFunction`, `JsArray`, `JsString`, `FlatStr`, `JsSymbol`, `JsKey`; checked downcasts, `From` upcasts | `crates/ep9_vm/src/abi/local.rs:84` |
-| `Args<'s>` | one word, the host frame pointer: `len`, `get`, `this`, `new_target`, `callee`, `rest(i)` | `crates/ep9_vm/src/abi/mod.rs:69` |
-| `PropertyDescriptor<'s>` | §6.2.6, every field optional | `crates/ep9_vm/src/abi/mod.rs:197` |
-| `ScratchList<'s>` | LIFO precise list over `ep9_heap::ScratchRoots` | `crates/ep9_vm/src/abi/mod.rs:346` |
-| `ArgsBuilder<'s>` | call arguments on the VM stack above the frame top, under the scratch top (no heap list) | `crates/ep9_vm/src/abi/mod.rs:377` |
+| `Cx<'s>` | the context: ObjectOps, conversions, calls, `throw_*`; exposes no `&Runtime` | `crates/ep9_vm/src/abi/mod.rs:478` |
+| `Local<'s, T>` | the value itself, `repr(transparent)` over `Value`; `Copy`, `!Send`, `!Sync`; markers `JsValue` (default), `JsObject`, `JsFunction`, `JsArray`, `JsString`, `FlatStr`, `JsSymbol`, `JsKey`; checked downcasts, `From` upcasts | `crates/ep9_vm/src/abi/local.rs:87` |
+| `Args<'s>` | one word, the host frame pointer: `len`, `get`, `this`, `new_target`, `callee`, `rest(i)` | `crates/ep9_vm/src/abi/mod.rs:70` |
+| `PropertyDescriptor<'s>` | §6.2.6, every field optional | `crates/ep9_vm/src/abi/mod.rs:198` |
+| `ScratchList<'s>` | LIFO precise list over `ep9_heap::ScratchRoots` | `crates/ep9_vm/src/abi/mod.rs:347` |
+| `ArgsBuilder<'s>` | call arguments on the VM stack above the frame top, under the scratch top (no heap list) | `crates/ep9_vm/src/abi/mod.rs:378` |
 
 **ObjectOps v0** (`Cx` methods, spec names): `get`, `get_v`, `set`, `has_property`, `has_own_property`, `get_own_property`, `define_own_property` (ValidateAndApplyPropertyDescriptor), `define_property_or_throw`, `create_data_property(_or_throw)`, `delete`, `delete_property_or_throw`, `own_property_keys` (a JS array: indices ascending, strings in creation order, symbols), `get/set_prototype_of`, `is_extensible`, `prevent_extensions`, `is_callable`, `is_constructor`, `is_array`. Conversions: `to_boolean`, `to_number`, `to_integer_or_infinity`, `to_int32`, `to_uint32`, `to_length`, `to_string`, `to_property_key`, `to_object`, `to_primitive`, `same_value`, `is_strictly_equal`. Spec helpers: `to/from_property_descriptor`, `create_list_from_array_like` (into an `ArgsBuilder`), `get_prototype_from_constructor`, `ordinary_create_from_constructor`. Creation: `new_object(_with_proto)`, `new_array`, `create_array_from_list`, `new_string(_utf16)`, `new_wrapper`, `new_symbol`, `intrinsic(IntrinsicId)`. P3 surface (P2-BTAB): `symbol_for`, `key_for`, `symbol_description`, `descriptive_string`, `this_primitive_value(v, PrimitiveType)`, `set_function_name`, `set_function_length`, `new_bound_function(target, this, args.rest(i))`, `has_intrinsic`. Calls: `call`, `call_args(f, this, args.rest(i))`, `call_built`, `construct(f, args, new_target)` with any constructor as new.target, `construct_args`, `construct_built`. v0 limits: an accessor descriptor throws "not implemented" (accessors are P3); array `length` stays writable.
 
@@ -54,12 +54,12 @@ Isolate::new
 
 | Type | What it is | Where |
 |---|---|---|
-| `BuiltinId(u16)` | block (7 bits, < 128) + index (9 bits, < 512): definition `i` of the module with block `b`. Blocks are fixed per module; ids are append-only | `crates/ep9_vm/src/builtins.rs:51` |
-| `IntrinsicId` | 32 append-only ids: the core prototypes 0-16 (made by realm init; `SymbolPrototype` by `symbol::install`), then the constructors and `%Math%` 17-31 (made by tables). Each maps to a runtime root | `crates/ep9_vm/src/builtins.rs:95` |
-| `BuiltinDef` | `{name, length, kind: Method \| Getter \| Setter \| Constructor, f: HostFn}`; a getter is named "get x" | `crates/ep9_vm/src/builtins.rs:300` |
-| `PropDef` | `{key, value, attrs}`. Key: `Atom` (the `atoms!` list), `Str` (interned at init), `Symbol` (well-known). Value: `Builtin(i)`, `Intrinsic`, `Const`, `Symbol`, `Alias(key)` (the value of a key defined earlier on the same object: one function object under two names), `Accessor {get, set}` | `crates/ep9_vm/src/builtins.rs:513` |
-| `BuiltinModule`, `IntrinsicDef`, `ObjectProps` | a module: name, block, `defs`, the intrinsics it makes (`Builtin(i)` or a new ordinary object), the properties per target intrinsic | `crates/ep9_vm/src/builtins.rs:593` |
-| `BuiltinTable` | a name and its modules; `check_tables` checks a list of tables | `crates/ep9_vm/src/builtins.rs:672`, `:715` |
+| `BuiltinId(u16)` | block (7 bits, < 128) + index (9 bits, < 512): definition `i` of the module with block `b`. Blocks are fixed per module; ids are append-only | `crates/ep9_vm/src/builtins.rs:55` |
+| `IntrinsicId` | 32 append-only ids: the core prototypes 0-16 (made by realm init; `SymbolPrototype` by `symbol::install`), then the constructors and `%Math%` 17-31 (made by tables). Each maps to a runtime root | `crates/ep9_vm/src/builtins.rs:105` |
+| `BuiltinDef` | `{name, length, kind: Method \| Getter \| Setter \| Constructor, f: HostFn}`; a getter is named "get x" | `crates/ep9_vm/src/builtins.rs:328` |
+| `PropDef` | `{key, value, attrs}`. Key: `Atom` (the `atoms!` list), `Str` (interned at init), `Symbol` (well-known). Value: `Builtin(i)`, `Intrinsic`, `Const`, `Symbol`, `Alias(key)` (the value of a key defined earlier on the same object: one function object under two names), `Accessor {get, set}` | `crates/ep9_vm/src/builtins.rs:544` |
+| `BuiltinModule`, `IntrinsicDef`, `ObjectProps` | a module: name, block, `defs`, the intrinsics it makes (`Builtin(i)` or a new ordinary object), the properties per target intrinsic | `crates/ep9_vm/src/builtins.rs:624` |
+| `BuiltinTable` | a name and its modules; `check_tables` checks a list of tables | `crates/ep9_vm/src/builtins.rs:703`, `:749` |
 
 `check_tables` rejects: a block ≥ 128 or used twice; more than 512 definitions; an intrinsic made twice, or a core one made other than as a VM builtin; a property on, or a reference to, an intrinsic nothing makes; a definition index out of range or of the wrong kind (`Builtin` needs a Method or Constructor, `Accessor` a Getter/Setter); an `Alias` of a key not defined earlier on the same object; a key defined twice on one object. A constructor that a table makes must get `prototype` ({} attributes) as its first table key, and must get one (W4-BTAB-CTOR-PROTO-FIRST). Install also refuses, in every build, a key the target already has (a function's own `length`/`name`, or anything realm init made), with `IsolateError::BuiltinTable` (W4-BTAB-INSTALL-NO-SECOND-KEY). Install errors (a well-known symbol or an accessor that does not exist yet) fail `Isolate::new` with a message naming the module and key.
 
@@ -67,7 +67,7 @@ Isolate::new
 
 **Ids are golden-checked.** `crates/ep9_vm/tests/golden/vm-builtin-ids.txt` (the VM module plus the `IntrinsicId` list) and `crates/ep9_builtins/tests/golden/ids-<module>.txt` hold one line per definition; a reorder fails them, and `EP9_BLESS=1` rewrites them after a review that sees only appended lines.
 
-**The VM table** (`crates/ep9_vm/src/natives.rs:289`, block 0): `%Function.prototype%` (a function that returns undefined, §20.2.3), `Function` (throws "not implemented in ep9 v0: Function constructor"), `Object` (new.target, then `to_object`, §20.1.1.1), `Array`, the 7 error constructors, `Object.prototype.toString`/`valueOf`, `Array.prototype.join`/`toString`/`push`, `%ArrayIteratorPrototype%.next`, `Error.prototype.toString`, and the globals `globalThis`, `undefined`, `NaN`, `Infinity`.
+**The VM table** (`crates/ep9_vm/src/natives.rs:378`, block 0): `%Function.prototype%` (a function that returns undefined, §20.2.3), `Function` (throws "not implemented in ep9 v0: Function constructor"), `Object` (new.target, then `to_object`, §20.1.1.1), `Array`, the 7 error constructors, `Object.prototype.toString`/`valueOf`, `Array.prototype.join`/`toString`/`push`, `%ArrayIteratorPrototype%.next`, `Error.prototype.toString`, and the globals `globalThis`, `undefined`, `NaN`, `Infinity`.
 
 **Crate layout.** `ep9_builtins` (engine dependencies ep9_vm and ep9_math only, `#![forbid(unsafe_code)]`) has one file per module, each with `BLOCK`, `DEFS`, `INTRINSICS`, `PROPS` and `MODULE`: object 1, function 2, array 3, number 4, boolean 5, string 6, symbol 7, math 8, global 9. `TABLE` lists them in that order, which is the property order. Its `clippy.toml` repeats the root bans (clippy reads only the nearest file) and adds `disallowed-types`: `ep9_value::Value`, `Unpacked`, `Word0` and the ep9_heap cell types (re-exports such as `ep9_vm::Value` resolve to them). `TEMPLATES.md` is the writing guide, and its code blocks are doctests. `ep9_cli` and `tools/test262` pass `TABLE`; test262 `exec` exits 2 when an isolate has no table.
 
@@ -78,14 +78,14 @@ Isolate::new
 | Rule | Check | From |
 |---|---|---|
 | R1. A `Local` in a Rust local stays live across every call (CSS) | GC-stress tests: `tests::abi`, the test262 GC-stress run | M0 wk4 |
-| R2. No `Local`, `Args`, `Rest`, `PropertyDescriptor`, `ArgsBuilder` or `ScratchList` in Rust heap memory, a static or a thread_local | `'s` + `!Send` (compiler); `cargo xtask gc-lint` (P2-LINT); debug on-stack check in `Local::bits` (`crates/ep9_vm/src/abi/local.rs:117`, P2-LINT) | M0 wk4 |
+| R2. No `Local`, `Args`, `Rest`, `PropertyDescriptor`, `ArgsBuilder` or `ScratchList` in Rust heap memory, a static or a thread_local | `'s` + `!Send` (compiler); `cargo xtask gc-lint` (P2-LINT); debug on-stack check in `Local::bits` (`crates/ep9_vm/src/abi/local.rs:122`, P2-LINT) | M0 wk4 |
 | R3. Every `&mut Cx` method may allocate and run JS; a view into heap memory borrows `&Cx`, so none lives across one | borrow checker (`code_unit_at`, `string::view`) | M0 wk4 |
-| R4. `Err(Throw)` only with a pending exception, `Ok` only without one; a callee's `Err` passes on unchanged | debug asserts in `call_host` (`crates/ep9_vm/src/call.rs:191`); tests `*_panics_in_debug` | M0 wk4 |
+| R4. `Err(Throw)` only with a pending exception, `Ok` only without one; a callee's `Err` passes on unchanged | debug asserts in `call_host` (`crates/ep9_vm/src/call.rs:206`); tests `*_panics_in_debug` | M0 wk4 |
 | R5. A builtin creates objects in its callee's realm | v0: one realm; `Args::callee` exists for N realms (H20-Q2) | M1 |
-| R6. [[GetOwnProperty]] reports virtual properties with spec attributes: array `length` {w}, elements {w,e,c}; function `length`/`name` {c}, `prototype` {w}; String wrapper `length` and indices | `crates/ep9_vm/src/property.rs:572`; test `virtual_property_descriptors` | M0 wk4 |
-| `Local`, `Args`, `Cx`, `JsResult<Local>` are 8 bytes | `const` asserts (`crates/ep9_vm/src/abi/mod.rs:57`); test `sizes_are_one_word` | M0 wk4 |
-| `ScratchList` and `ArgsBuilder` nest LIFO; out of order panics | `ScratchRoots` depth check; `ArgsBuilder` scratch-top check (`crates/ep9_vm/src/abi/mod.rs:455`) | M0 wk4 |
-| A Rust→JS entry or host call starts above the scratch area and restores the caller's scratch top on return; bytecode never runs with one | `call::top_of`, `restore_scratch` (`crates/ep9_vm/src/call.rs:110`); test `args_builder_values_survive_gc_stress_before_the_call` (fails with the scratch scan off) | M0 wk4 |
+| R6. [[GetOwnProperty]] reports virtual properties with spec attributes: array `length` {w}, elements {w,e,c}; function `length`/`name` {c}, `prototype` {w}; String wrapper `length` and indices | `crates/ep9_vm/src/property.rs:737`; test `virtual_property_descriptors` | M0 wk4 |
+| `Local`, `Args`, `Cx`, `JsResult<Local>` are 8 bytes | `const` asserts (`crates/ep9_vm/src/abi/mod.rs:58`); test `sizes_are_one_word` | M0 wk4 |
+| `ScratchList` and `ArgsBuilder` nest LIFO; out of order panics | `ScratchRoots` depth check; `ArgsBuilder` scratch-top check (`crates/ep9_vm/src/abi/mod.rs:456`) | M0 wk4 |
+| A Rust→JS entry or host call starts above the scratch area and restores the caller's scratch top on return; bytecode never runs with one | `call::top_of`, `restore_scratch` (`crates/ep9_vm/src/call.rs:125`); test `args_builder_values_survive_gc_stress_before_the_call` (fails with the scratch scan off) | M0 wk4 |
 | Builtin crates never name `ep9_value::Value` or a heap cell type, and have no `unsafe` | `crates/ep9_builtins/clippy.toml` `disallowed-types` (test `clippy_toml_repeats_the_root_bans`); `#![forbid(unsafe_code)]` | M0 wk4 |
 | Builtin ids and `IntrinsicId`s are append-only | the id goldens; tests `swapping_two_entries_fails_the_golden` (ep9_vm) and `swapping_two_entries_fails_a_golden` (ep9_builtins) | M0 wk4 |
 | Every table passes `check_tables` before an isolate uses it; one function object per builtin; two isolates give the same property order | `IsolateError::BuiltinTable`; tests `table_checks_reject_each_broken_rule`, `a_prop_def_alias_gives_the_same_function_object`, `two_isolates_have_the_same_intrinsic_property_order` (both crates) | M0 wk4 |

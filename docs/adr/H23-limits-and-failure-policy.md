@@ -25,20 +25,20 @@ Limit checks on VM and native stacks: calls, JIT and AOT prologues, recursive bu
 
 | Item | Value today | Where |
 |---|---|---|
-| VM register stack | 2^20 slots (8 MiB) by default, 1024..=2^28 accepted; overflow gives a catchable RangeError | `crates/ep9_vm/src/isolate.rs:49`, `crates/ep9_vm/src/isolate.rs:143-147` |
-| Native stack margin | JS entries and host calls stop at stack low end + clamp(size / 4, 128 KiB, 1 MiB): catchable RangeError | `native_margin` (`crates/ep9_vm/src/isolate.rs:135-138`) |
+| VM register stack | 2^20 slots (8 MiB) by default, 1024..=2^28 accepted; overflow gives a catchable RangeError | `crates/ep9_vm/src/isolate.rs:61`, `crates/ep9_vm/src/isolate.rs:161-165` |
+| Native stack margin | JS entries and host calls stop at stack low end + clamp(size / 4, 128 KiB, 1 MiB): catchable RangeError | `native_margin` (`crates/ep9_vm/src/isolate.rs:152-155`) |
 | Debug threaded dispatch | panics 64 KiB below the native limit (debug builds have no tail calls) | `crates/ep9_vm/src/interp/dsl.rs:289-291` |
 | Depth of `function f() { f() }` | ep9 104,855; node 24.22 10,359; d8 15.8 10,360 (RangeError); QuickJS 2026-06-04 1,169 (InternalError) | measured 2026-10-21, Apple M5 Max, release builds |
-| CLI isolate thread | 64 MiB native stack (`--stack-mib`) | `crates/ep9_cli/src/args.rs:86`, `crates/ep9_cli/src/run.rs:174-178` |
-| Interrupt poll | at `JumpLoop` and function entry, once per budget of 10,000 | `BUDGET` (`crates/ep9_vm/src/interp/mod.rs:60`) |
-| Termination | `TerminateHandle` from any thread; the unwinder runs no handler, so no `catch` and no `finally`; the isolate stays usable | `crates/ep9_vm/src/error.rs:227-234`; test `crates/ep9_vm/src/tests/exceptions.rs:416` |
-| Heap out of memory | panic "ep9: heap allocation failed" | `crates/ep9_vm/src/runtime.rs:289-296` |
-| Heap limit | none: `max_heap_bytes = usize::MAX`; the 64 GiB cage bounds the heap | `crates/ep9_heap/src/heap.rs:72` |
-| String length | 2^29 - 24 code units (as V8); concat past it gives RangeError "Invalid string length" | `crates/ep9_vm/src/object.rs:103`, `crates/ep9_vm/src/conv.rs:348` |
-| Array length (v0, dense) | 2^26; a larger `length` gives RangeError "Invalid array length" (H18) | `crates/ep9_vm/src/object.rs:87` |
+| CLI isolate thread | 64 MiB native stack (`--stack-mib`) | `crates/ep9_cli/src/args.rs:97`, `crates/ep9_cli/src/run.rs:201-205` |
+| Interrupt poll | at `JumpLoop` and function entry, once per budget of 10,000 | `BUDGET` (`crates/ep9_vm/src/interp/mod.rs:62`) |
+| Termination | `TerminateHandle` from any thread; the unwinder runs no handler, so no `catch` and no `finally`; the isolate stays usable | `crates/ep9_vm/src/error.rs:228-235`; test `crates/ep9_vm/src/tests/exceptions.rs:421` |
+| Heap out of memory | panic "ep9: heap allocation failed" | `crates/ep9_vm/src/runtime.rs:300-307` |
+| Heap limit | none: `max_heap_bytes = usize::MAX`; the 64 GiB cage bounds the heap | `crates/ep9_heap/src/heap.rs:92` |
+| String length | 2^29 - 24 code units (as V8); concat past it gives RangeError "Invalid string length" | `crates/ep9_vm/src/string.rs:54`, `crates/ep9_vm/src/conv.rs:414` |
+| Array length (v0, dense) | 2^26; a larger `length` gives RangeError "Invalid array length" (H18) | `crates/ep9_vm/src/object.rs:89` |
 | Front-end depth caps | `AST_CAP` 20,000; `PRESCAN_CAP` 25,000; depth cap + 1 gives RangeError | `crates/ep9_frontend/src/depth.rs:29`, `crates/ep9_frontend/src/depth.rs:37` |
-| Release panic strategy | unwind (`[profile.release]` has no `panic` key) | root `Cargo.toml` lines 38-42 |
-| Code that catches panics | test262 exec and parse; the front-end worker; the `ep9` exit-70 path | `tools/test262/src/exec.rs:680`, `tools/test262/src/parse.rs:167`, `crates/ep9_frontend/src/worker.rs:96`, `crates/ep9_cli/src/run.rs:179-183` |
+| Release panic strategy | unwind (`[profile.release]` has no `panic` key) | root `Cargo.toml` lines 42-46 |
+| Code that catches panics | test262 exec and parse; the front-end worker; the `ep9` exit-70 path | `tools/test262/src/exec.rs:713`, `tools/test262/src/parse.rs:167`, `crates/ep9_frontend/src/worker.rs:96`, `crates/ep9_cli/src/run.rs:206-210` |
 | Native stack past the margin (guard page) | Rust std prints "has overflowed its stack" and aborts (exit 134, SIGABRT, macOS arm64); no ep9 signal handler | Rust std; no `sigaction` in `crates/` |
 
 **Fills (2026-10-21).**

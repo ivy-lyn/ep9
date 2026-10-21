@@ -30,7 +30,7 @@ One cage per isolate below 2^47 (64 GiB default, configurable); avoids 0x4001_00
                                         one code range per process: JIT code + unit text (RX)
 ```
 
-- **Cage per isolate (as built).** `Heap::new` reserves its own `Cage` (`crates/ep9_heap/src/memory.rs:117`). The in-cage test and the conservative scan look only at that heap's chunks (`crates/ep9_heap/src/memory.rs:195-197`, `crates/ep9_heap/src/trace.rs:310-311`). So one isolate's scan never finds another isolate's cells.
+- **Cage per isolate (as built).** `Heap::new` reserves its own `Cage` (`crates/ep9_heap/src/memory.rs:154`). The in-cage test and the conservative scan look only at that heap's chunks (`crates/ep9_heap/src/memory.rs:250-252`, `crates/ep9_heap/src/trace.rs:357-358`). So one isolate's scan never finds another isolate's cells.
 - **Process code range (to build).** Unit text is shared per process (05 §8, H22), and JIT stubs are shared by every isolate. One range keeps direct calls between them. SpiderMonkey also keeps one executable region per process ([SM-PEM]).
 - **Until it exists.** Each cage reserves a code range right after itself (`crates/ep9_platform/src/va.rs:37-40`, `Cage::self_check`). The engine does not use it yet: no JIT code and no unit is loaded. It costs address space only.
 - `ep9_platform` owns the VA reserve, including the code range ([08 §2](../plan/08-repo.md#2-crates)).
