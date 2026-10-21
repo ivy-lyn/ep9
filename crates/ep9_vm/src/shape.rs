@@ -57,10 +57,13 @@
 //! - No table is keyed by an address (H12): per-prototype root and dictionary shapes live in
 //!   the prototype's PROTO_INFO, null-prototype ones in the ShapeState root range.
 //! - Prototype mode (OM-8, OM-11): an object becomes a prototype the first time a shape names
-//!   it as `[[Prototype]]` ([`proto_info_for`]). It gets word0 flag IS_PROTOTYPE and a unique
-//!   shape that holds its PROTO_INFO at +40. So every shape's proto is null or a prototype-mode
-//!   object. Any structural change of a prototype-mode object bumps
-//!   [`ShapeState::proto_epoch`] ([`note_change`]).
+//!   it as `[[Prototype]]` ([`proto_info_for`], on every path: new objects, [`with_proto`]
+//!   for a unique shape too). It gets word0 flag IS_PROTOTYPE and a unique shape that holds
+//!   its PROTO_INFO at +40. So every shape's proto is null or a prototype-mode object
+//!   ([`new_shape`] asserts it in debug builds). Any structural change of a prototype-mode
+//!   object bumps [`ShapeState::proto_epoch`] ([`note_change`]): a named property or an
+//!   element that appears or goes away, new attributes, `[[SetPrototypeOf]]`,
+//!   PreventExtensions, dictionary mode. A value store does not.
 //!
 //! Hooks the rest of the VM already calls:
 //!
@@ -879,6 +882,12 @@ fn index_insert(ix: CellPtr, hash: u32, i: usize) {
 /// A new SHAPE cell in the shape space. GC point. v0: a full shape space is fatal, as a full
 /// heap is (`Runtime::alloc`; H23 adds the OOM callback).
 fn new_shape(rt: &Runtime, proto: u64, parent: u64, d: u64, counts: u64, flags: i32) -> u64 {
+    // OM-8: a `[[Prototype]]` is in prototype mode ([`proto_info_for`]), or a change to it
+    // would not bump the epoch.
+    debug_assert!(
+        proto == NULL || is_prototype_object(proto),
+        "a shape whose proto {proto:#x} is not in prototype mode"
+    );
     let s = match rt.heap.alloc_shape(kind::SHAPE, shf::SIZE) {
         Ok(c) => c,
         Err(e) => panic!("ep9: shape allocation failed: {e:?}"),
@@ -1160,19 +1169,21 @@ pub(crate) fn dictionary_shape_of(rt: &Runtime, shape: u64, extensible: bool) ->
 }
 
 /// The shape for an object with `shape` (a unique one, or one without properties) after its
-/// `[[Prototype]]` becomes `p`. A unique shape is copied with the new prototype; any other
-/// shape becomes the matching root or dictionary shape of `p` (`capacity`: the object's
-/// in-object slots). An object with properties in a shared fast shape goes to dictionary
-/// mode first (OM-10), so it never reaches here. GC point.
+/// `[[Prototype]]` becomes `p`. `p` goes into prototype mode first on every path, so a later
+/// change to it bumps the epoch (OM-8). A unique shape is copied with the new prototype; any
+/// other shape becomes the matching root or dictionary shape of `p` (`capacity`: the
+/// object's in-object slots). An object with properties in a shared fast shape goes to
+/// dictionary mode first (OM-10), so it never reaches here. GC point.
 pub(crate) fn with_proto(rt: &Runtime, shape: u64, p: u64, capacity: u8) -> u64 {
     let k = KindId::new(object_kind(shape)).expect("an object kind");
     let fl = flags(shape);
+    // GC point: `shape` and `p` live in Rust locals (CSS).
+    let info = proto_info_for(rt, p);
     if fl & flag::UNIQUE != 0 {
         let counts = rd(cell(shape), shf::COUNTS);
         let d = descriptors(shape);
         return new_unique(rt, p, d, counts, fl, unique_info(shape));
     }
-    let info = proto_info_for(rt, p);
     if fl & flag::DICTIONARY != 0 {
         dictionary_shape_for(rt, info, k, fl & flag::EXTENSIBLE != 0)
     } else {
