@@ -34,7 +34,7 @@ function drive(f, n) {                            function drive(f, n) {
 
 - n = 100,000,000. Every value stays an int32 (a ≤ n < 2^31), so no double path runs.
 - A run is valid only if `drive` returns n. A wrong result fails the run, not the gate.
-- The gate host is macOS arm64. On x86-64 the spike's release build (`panic = "abort"`) runs T0 with the match loop (`spike_b::harness::DISPATCH`): rustc puts an abort guard after each `sysv64-unwind` handler call there, so T0 handlers make no sibling calls. x86-64 numbers are reports only.
+- The gate host is macOS arm64. x86-64 numbers are reports only. T0 runs `Dispatch::DEFAULT` on every target (`spike_b::harness::DISPATCH`). The x86-64 release build (`panic = "abort"`) once ran the match loop, because its `sysv64-unwind` handlers made no sibling calls there; since M2-P2-ABORT-SYSV64 they are plain `sysv64` and end in tail jumps (282 of 282).
 - Configurations of one round:
 
 | Config | `drive` | `id` | Use |

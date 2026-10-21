@@ -17,19 +17,22 @@ use ep9_vm::{Args, Cx, Dispatch, Exception, Isolate, IsolateConfig, JsResult, Lo
 use crate::emit::{Emitter, Finalize, FunctionCode, FunctionInput, Refusal};
 use crate::jit::{InMemory, JitModule, Placed, SpikeEmitter};
 
-/// The T0 dispatch of the spike's runs.
+/// The T0 dispatch of the spike's runs: `Dispatch::DEFAULT` on every target.
 ///
-/// x86-64 with `panic = "abort"` (the spike's release profile, Cargo.toml): rustc guards
-/// every call through a `sysv64-unwind` handler pointer (`interp::Handler` on x86-64) with an
-/// abort-on-unwind landing pad (`panic_cannot_unwind`), so no handler ends in a sibling call
-/// (`cargo xtask disasm-check --binary` on the spike: 50 of 282 tail handlers end in a tail
-/// jump), and a T0 loop of 10^5 iterations overflows an 8 MiB stack. The match loop does not
-/// need sibling calls. Everywhere else: `Dispatch::DEFAULT`.
-pub const DISPATCH: Dispatch = if cfg!(all(target_arch = "x86_64", panic = "abort")) {
-    Dispatch::Match
-} else {
-    Dispatch::DEFAULT
-};
+/// History: x86-64 with `panic = "abort"` (the spike's release profile, Cargo.toml) once
+/// forced the match loop here. The handlers were `sysv64-unwind` there, and rustc guarded
+/// each call to one with an abort-on-unwind landing pad, so only 50 of 282 tail handlers
+/// ended in a tail jump and a T0 loop of 10^5 iterations overflowed an 8 MiB stack. Since
+/// M2-P2-ABORT-SYSV64 (H15) the handlers are plain `sysv64` under `panic = "abort"`, and
+/// `cargo xtask disasm-check --binary` on the spike's x86-64 release build finds 282 of 282.
+pub const DISPATCH: Dispatch = Dispatch::DEFAULT;
+
+// The x86-64 release override must not come back: the spike (and the D21 T0 baseline of
+// P3-SPIKEB-BENCH) times the default T0 expansion on every target.
+const _: () = assert!(
+    matches!(DISPATCH, Dispatch::Sibling) == matches!(Dispatch::DEFAULT, Dispatch::Sibling),
+    "spike-b must run T0 with Dispatch::DEFAULT"
+);
 
 /// Isolate settings of a run.
 #[derive(Clone, Copy, Debug)]
