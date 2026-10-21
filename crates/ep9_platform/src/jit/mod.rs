@@ -2,13 +2,18 @@
 //! and 12). Validated by SP-JIT-mem (`spikes/sp-jit-mem`).
 //!
 //! ```text
-//!   Cage::reserve_jit ──> code range (Reservation)
-//!     unsafe CodeMemory::commit(range, offset, len, mode)    pages are executable and zero
-//!       open_write(off, len) ──> WriteWindow                 pages are writable, not executable
-//!         bytes() ──> &mut [u8]                              write the code
-//!       close()                                              executable again + icache flush
-//!     exec_addr(off) ──> call it (the caller transmutes the address to a fn pointer)
+//!   CodeRange::process() ──> the process code range (one per process, H07-Q6)
+//!     alloc(len) ──> CodeChunk                               pages owned by one user
+//!       commit(mode) ──> CodeMemory                          pages are executable and zero
+//!         open_write(off, len) ──> WriteWindow               pages are writable, not executable
+//!           bytes() ──> &mut [u8]                            write the code
+//!         close()                                            executable again + icache flush
+//!       exec_addr(off) ──> call it (the caller transmutes the address to a fn pointer)
 //! ```
+//!
+//! `CodeChunk::commit` is the safe entry. The unsafe `CodeMemory::commit(range, offset, len,
+//! mode)` takes any code-range [`Reservation`] (also a plain one, and the per-cage range of
+//! `Cage::reserve_jit`, which month 2 P1 still keeps).
 //!
 //! | Mode | Targets | While a window is open | Toggle cost |
 //! |---|---|---|---|
@@ -16,8 +21,10 @@
 //! | [`WxMode::Protect`] | all (default except macOS arm64) | the window's pages are RW for all threads | 2 syscalls (`mprotect` / `VirtualProtect`) |
 //! | [`WxMode::DualMap`] | Linux | nothing changes: one memfd, an RX view in the code range, an RW view elsewhere | none |
 //!
-//! - **MapJit** needs a code range from [`crate::Cage::reserve_jit`] (macOS arm64 maps it with
-//!   `MAP_JIT`, see [`crate::va`]). The other modes need a plain range. `commit` checks this.
+//! - **MapJit** needs a `MAP_JIT` code range: on macOS arm64 [`crate::CodeRange::process`] (and
+//!   the old per-cage `Cage::reserve_jit`) maps it with `MAP_JIT`, see [`crate::va`]. The
+//!   other modes need a plain range. `commit` checks this. [`WxMode::DEFAULT`] fits the
+//!   process code range on every target.
 //! - **DualMap** saves the two syscalls per window, but a binary translator (Rosetta for
 //!   Linux) does not see writes through the RW view and runs stale code. Protect works there.
 //! - **Protect on macOS arm64** works for a binary without the hardened runtime (measured on
@@ -33,7 +40,7 @@ use std::fmt;
 use std::io;
 use std::marker::PhantomData;
 
-use crate::va::{Reservation, page_size};
+use crate::va::{CodeChunk, Reservation, page_size};
 
 #[cfg(unix)]
 mod unix;
@@ -153,7 +160,7 @@ impl<'r> CodeMemory<'r> {
         }
         if mode.needs_map_jit() != range.is_map_jit() {
             return Err(invalid(if mode.needs_map_jit() {
-                "MapJit needs a code range from Cage::reserve_jit"
+                "MapJit needs a MAP_JIT code range (CodeRange::process on macOS arm64)"
             } else {
                 "a MAP_JIT code range works only with WxMode::MapJit"
             }));
@@ -288,6 +295,21 @@ impl Drop for WriteWindow<'_, '_> {
         // On error the pages stay writable and not executable: running them faults, so W^X
         // still holds.
         let _ = self.finish();
+    }
+}
+
+impl CodeChunk<'_> {
+    /// Commits the whole chunk as code memory ([`CodeMemory::commit`] at the chunk's offset).
+    /// The result borrows the chunk, so the chunk outlives it, and only one code memory uses
+    /// the chunk at a time. Errors as `CodeMemory::commit` (on macOS arm64 the process code
+    /// range takes [`WxMode::MapJit`] only).
+    pub fn commit(&mut self, mode: WxMode) -> io::Result<CodeMemory<'_>> {
+        let range = self.code_range().reservation();
+        // SAFETY: the chunk's pages belong to this chunk alone (`CodeRange::alloc` hands out
+        // disjoint runs, and nothing outside this crate can reach the reservation). `&mut
+        // self` is held for the result's lifetime, so no second code memory uses them, and the
+        // range outlives the chunk.
+        unsafe { CodeMemory::commit(range, self.offset(), self.len(), mode) }
     }
 }
 
