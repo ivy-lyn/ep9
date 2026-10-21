@@ -144,14 +144,14 @@ pub(crate) mod genf {
 /// SLOT_OBJECT fixed fields (OBJECT_LAYOUT 2): the ObjectClass id and a separate cell for the
 /// internal slots. The internal slots are never in-object slots: property code owns those
 /// (`props::field_ref` stores named fields there, `props::to_dictionary` clears them), and it
-/// never touches fixed fields. P3-ABI-SLOTS adds the accessors.
-#[allow(dead_code)] // caller: P3-ABI-SLOTS (abi/slots.rs)
+/// never touches fixed fields. Accessors: [`new_slot_object`] and its neighbours (file end).
 pub(crate) mod slot_obj {
     /// The ObjectClass id (int32).
     pub const CLASS: usize = 24;
     /// The internal slots: an ELEMENTS cell of n Values, or undefined when the class has none.
     pub const SLOTS: usize = 32;
     pub const FIXED: usize = 2;
+    pub const MAX_SLOTS: usize = 255; // most internal slots of one object (more is a caller bug)
 }
 
 pub(crate) mod arr {
@@ -968,4 +968,77 @@ pub(crate) fn error_site(e: u64) -> Option<(u32, u32)> {
 pub(crate) fn set_error_site(rt: &Runtime, e: u64, unit: u32, offset: u32) {
     wr(&rt.heap, cell(e), err::UNIT, int32_bits(unit as i32));
     wr(&rt.heap, cell(e), err::OFFSET, int32_bits(offset as i32));
+}
+
+// ---- SLOT_OBJECT: objects with internal slots (abi/slots.rs is the builtin ABI) ----------
+
+/// A new SLOT_OBJECT with prototype `proto` (an object or null), ObjectClass id `class` and
+/// `n` internal slots, all undefined; `n` = 0 makes no slots cell. It gets no in-object
+/// slots, so a named property goes out of line. Panics if `n` > [`slot_obj::MAX_SLOTS`].
+/// GC point.
+pub(crate) fn new_slot_object(rt: &Runtime, proto: u64, class: u16, n: usize) -> u64 {
+    assert!(
+        n <= slot_obj::MAX_SLOTS,
+        "{n} internal slots (at most {})",
+        slot_obj::MAX_SLOTS
+    );
+    // GC points first (the slots cell, then the object); the cell lives in a Rust local (CSS)
+    // until the object holds it, as in `new_generator`.
+    let slots = if n == 0 {
+        UNDEFINED
+    } else {
+        let c = rt.alloc(kind::ELEMENTS, elems::DATA + 8 * n);
+        init(c, elems::CAPACITY, int32_bits(n as i32));
+        for i in 0..n {
+            init(c, elems::DATA + 8 * i, UNDEFINED);
+        }
+        c.to_value().to_bits()
+    };
+    let o = new_js_object(rt, kind::SLOT_OBJECT, proto, 0);
+    init(o, slot_obj::CLASS, int32_bits(i32::from(class)));
+    init(o, slot_obj::SLOTS, slots);
+    o.to_value().to_bits()
+}
+
+/// The ObjectClass id of `v`, or `None` when `v` is not a SLOT_OBJECT (any Value).
+#[inline]
+pub(crate) fn slot_class(v: u64) -> Option<u16> {
+    if cell_kind(v) != kind::SLOT_OBJECT.get() {
+        return None;
+    }
+    Some(rd_i32(cell(v), slot_obj::CLASS) as u16)
+}
+
+/// The internal slot count of the SLOT_OBJECT `o`.
+#[inline]
+pub(crate) fn slot_count(o: u64) -> usize {
+    debug_assert!(cell_kind(o) == kind::SLOT_OBJECT.get());
+    let s = rd(cell(o), slot_obj::SLOTS);
+    if s == UNDEFINED {
+        return 0;
+    }
+    debug_assert!(cell_kind(s) == kind::ELEMENTS.get());
+    rd_i32(cell(s), elems::CAPACITY) as usize
+}
+
+/// Internal slot `i` of the SLOT_OBJECT `o`. Panics if `i` ≥ [`slot_count`].
+#[inline]
+pub(crate) fn slot_get(o: u64, i: usize) -> u64 {
+    let n = slot_count(o);
+    assert!(i < n, "internal slot {i} out of range (the object has {n})");
+    rd(cell(rd(cell(o), slot_obj::SLOTS)), elems::DATA + 8 * i)
+}
+
+/// Stores internal slot `i` of the SLOT_OBJECT `o` (barriered). Panics if `i` ≥
+/// [`slot_count`].
+#[inline]
+pub(crate) fn slot_set(rt: &Runtime, o: u64, i: usize, v: u64) {
+    let n = slot_count(o);
+    assert!(i < n, "internal slot {i} out of range (the object has {n})");
+    wr(
+        &rt.heap,
+        cell(rd(cell(o), slot_obj::SLOTS)),
+        elems::DATA + 8 * i,
+        v,
+    );
 }
