@@ -30,11 +30,11 @@
 //! | 4 | cross JSON: richards and deltablue vs QuickJS, net interval low end >= 0.6, valid rows (a gross fallback row, net invalid, gives OPEN), a gate host, not provisional | NOT-RUN (no Windows bench job) |
 //! | 5 | verdicts: SP-GC, SP-VA, SP-Value, SP-Dispatch, SP-JIT-mem and Spike B GO (no open conditions); SP-tsrs-win recorded | the same verdicts, and these steps of the run green: SP-GC, SP-Dispatch, SP-JIT-mem and Spike B structural gates, ep9_heap barrier, cargo test --workspace, spike-native tests (ep9_vm) |
 //! | 6 | GC JSON: the whole pinned corpus (files run + skipped = the pin's count; `skipped_paths` = the set of the committed skip list, and `skipped` = its size), `timeout_ms` <= 60000 and `feedback_threshold` 0 (GC_CMD), 0 infra; the run names the committed expectation file, and its "fail" results against that file without the skip list give 0 new failures (recomputed here) | NOT-RUN (CI runs GC-stress on linux-x64 only) |
-//! | 7 | nesting log: `every_form_is_gated`, `caps_hold_end_to_end`, `uncaught_error_reports_file_line_utf16_column` ok | step "cargo test --workspace" green (it runs the three) |
+//! | 7 | nesting log: `every_form_is_gated`, `caps_hold_end_to_end`, `uncaught_error_reports_file_line_utf16_column` ok, and no cargo failure line (`error[E`, `error:`, a panic) anywhere in it | step "cargo test --workspace" green (it runs the three) |
 //! | 8 | the asserts are in ep9_value's source, and `cargo check -p ep9_value --target <host>` passes | step "cargo build --workspace --all-targets" green |
 //! | 9, 10 | docs/adr/README.md index: the ADR status of every row due at M0 (Accepted or Frozen; a Draft for "Draft M0" rows); H20 Frozen | the same |
 //! | 11 | verdicts: SP-Unit GO | the same |
-//! | 12 | corpus logs: every run in every log (a run starts at a cargo "Finished" line) prints the digest of `expectations/bytecode-corpus.digest` and its test is ok; a release and a debug run are both given | step "bytecodegen corpus digest (release)" green |
+//! | 12 | corpus logs: every run in every log (a run starts at a cargo "Finished" line) prints the digest of `expectations/bytecode-corpus.digest` and its test is ok, and no log has a cargo failure line (`error[E`, `error:`, a panic) anywhere; a release and a debug run are both given | step "bytecodegen corpus digest (release)" green |
 //!
 //! Exit 0 when every cell is PASS (the M0 exit holds), 1 otherwise, 2 on a usage error or an
 //! input that cannot be read. The JSON reader is the small one below: xtask has no JSON crate.
@@ -1242,6 +1242,10 @@ fn item7(c: &Ctx) -> (Cell, Cell) {
                 status = Status::Fail;
                 parts.push("a test binary FAILED".into());
             }
+            if let Some(l) = cargo_failure(log) {
+                status = Status::Fail;
+                parts.push(format!("a cargo failure: {l:?}"));
+            }
             cell(status, format!("{}: {}", p.display(), parts.join(", ")))
         }
     };
@@ -1487,6 +1491,10 @@ fn item12(c: &Ctx) -> (Cell, Cell) {
         let mut parts = Vec::new();
         let mut profiles = BTreeSet::new();
         for (p, log) in &c.corpus {
+            if let Some(l) = cargo_failure(log) {
+                status = Status::Fail;
+                parts.push(format!("{}: a cargo failure: {l:?}", p.display()));
+            }
             let runs = corpus_runs(log);
             if runs.is_empty() {
                 status = Status::Fail;
@@ -1557,6 +1565,22 @@ fn item12(c: &Ctx) -> (Cell, Cell) {
         ))
     });
     (host, win)
+}
+
+/// The first cargo or rustc failure in a log (items 7 and 12): a line that starts with
+/// `error[E` or `error:` (a compile error, `error: could not compile`, `error: test failed`, a
+/// crashed test binary, a usage or lockfile error) or a `thread '<name>' (<id>) panicked at`
+/// line (older Rust prints no id). Such an
+/// invocation can stop before its "Finished" line or its test result, so the log parsers would
+/// count its lines in an earlier good run. A good corpus or nesting run prints none: the report
+/// lines of the corpus test are indented counts and `e.g.` lines. A log that holds a failed
+/// attempt and then a good run is rejected too (CORPUS_CMD writes one invocation per file).
+fn cargo_failure(log: &str) -> Option<&str> {
+    log.lines().map(str::trim).find(|t| {
+        t.starts_with("error[E")
+            || t.starts_with("error:")
+            || (t.starts_with("thread '") && t.contains(" panicked at "))
+    })
 }
 
 /// One cargo test run in a corpus log: from a "Finished `<profile>` profile" line to the next
@@ -2833,6 +2857,85 @@ mod tests {
         assert_eq!(c.status, Status::Pass, "{}", c.evidence);
         let c = item12(&[format!("{release}{debug}")]);
         assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The output of a cargo invocation that stops at a compile error: no "Finished" line, no
+    /// test result (real cargo text, crate name changed).
+    const COMPILE_FAILURE: &str = "   Compiling ep9_frontend v0.0.0 (/w/crates/ep9_frontend)\n\
+        error[E0425]: cannot find value `undefined_name` in this scope\n \
+        --> crates/ep9_frontend/src/lib.rs:3:5\n  |\n3 |     undefined_name\n  \
+        |     ^^^^^^^^^^^^^^ not found in this scope\n\n\
+        For more information about this error, try `rustc --explain E0425`.\n\
+        error: could not compile `ep9_frontend` (lib test) due to 1 previous error\n";
+
+    /// A test binary that crashed after it printed the digest: no test result.
+    const CRASH: &str = "error: test failed, to rerun pass `-p ep9_frontend --lib`\n\n\
+        Caused by:\n  process didn't exit successfully: `/w/target/release/deps/ep9_frontend-1 \
+        bytecodegen::corpus --ignored --nocapture` (signal: 11, SIGSEGV: invalid memory reference)\n";
+
+    /// M2-P2-RF2-I9: a cargo or rustc failure anywhere in a corpus or nesting log rejects the
+    /// log, also when it is appended after a good run (it prints no "Finished" line, so it
+    /// would join that run).
+    #[test]
+    fn logs_with_a_cargo_failure_are_rejected() {
+        let root = fake_repo("cargo-failure");
+        write(&root, "in/ci.json", &ci_json("success"));
+        let item = |n: usize, logs: &[String]| {
+            let mut o = opts(&root);
+            o.corpus.clear();
+            for (i, log) in logs.iter().enumerate() {
+                let p = format!("in/f{i}.log");
+                write(&root, &p, log);
+                o.corpus.push(root.join(p));
+            }
+            if n == 6 {
+                write(&root, "in/nesting.log", &logs[0]);
+            }
+            run(&o).unwrap().cells[n].0.clone()
+        };
+        let item12 = |logs: &[String]| item(11, logs);
+        // A good run prints report lines with "error" in them; they are no cargo failure.
+        let report = "      568  early error (front end)\n           e.g. test262/test/a.js: 4:1: \
+            SyntaxError: error: x\n     8662  early error (negative test, expected)\n";
+        let release = corpus_log("release", "abc123", true)
+            .replace("running 1 test\n", &format!("running 1 test\n{report}"));
+        let debug = corpus_log("test", "abc123", true);
+        let c = item12(&[release.clone(), debug.clone()]);
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        // A compile failure appended to release + debug in one log, or to one of two logs.
+        let c = item12(&[format!("{release}{debug}{COMPILE_FAILURE}")]);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("error[E0425]"), "{}", c.evidence);
+        let c = item12(&[release.clone(), format!("{debug}{COMPILE_FAILURE}")]);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        // A rerun that crashed after its digest: the crash line is named.
+        let crashed = corpus_log("test", "abc123", true).replace(
+            "test bytecodegen::corpus::corpus_digest ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored\n",
+            CRASH,
+        );
+        let c = item12(&[release.clone(), format!("{debug}{crashed}")]);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("error: test failed"), "{}", c.evidence);
+        // A panic line after a good run, with and without the thread id.
+        for panic in [
+            "thread 'main' (77865648) panicked at src/x.rs:1:1:",
+            "thread 'main' panicked at src/x.rs:1:1:",
+        ] {
+            let c = item12(&[release.clone(), format!("{debug}\n{panic}\nboom\n")]);
+            assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+            assert!(c.evidence.contains("panicked at"), "{}", c.evidence);
+        }
+        // Item 7: the nesting log holds two cargo runs (NESTING_CMD); a failure appended after
+        // the good output rejects it too.
+        let nesting = read(&root.join("in/nesting.log")).unwrap();
+        let c = item(6, std::slice::from_ref(&nesting));
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        for bad in [COMPILE_FAILURE, CRASH] {
+            let c = item(6, &[format!("{nesting}{bad}")]);
+            assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+            assert!(c.evidence.contains("error"), "{}", c.evidence);
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
