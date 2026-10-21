@@ -584,7 +584,39 @@ mod tests {
     fn small_config() -> ep9_platform::CageConfig {
         ep9_platform::CageConfig {
             cage_size: 16 * PAGE_SIZE,
+            code_range_size: 0,
             ..ep9_platform::CageConfig::default()
+        }
+    }
+
+    /// H07-Q6: a heap's cage has no code range (code goes to `CodeRange::process()`), with an
+    /// explicit `code_range_size: 0` and with the default config.
+    #[cfg(not(miri))]
+    #[test]
+    fn heap_new_reserves_no_code_range() {
+        // A fixed slot far from where the OS puts its own mappings (low on macOS, near 2^47 on
+        // Linux), so only this cage can be there.
+        let small = crate::HeapConfig {
+            cage: ep9_platform::CageConfig {
+                seed: Some(3001),
+                ..small_config()
+            },
+            ..crate::HeapConfig::default()
+        };
+        for (config, small) in [(small, true), (crate::HeapConfig::default(), false)] {
+            let heap = crate::Heap::new(config).unwrap();
+            let inner = heap.inner.borrow();
+            let cage = &inner.mem.cage;
+            assert!(cage.code_range().is_none(), "{:?}", cage.config());
+            assert_eq!(cage.config().code_range_size, 0);
+            if small {
+                // The 4 MiB cage ends inside its 4 GiB slot, where no other cage can start: the
+                // bytes right after it are free.
+                let end = cage.heap().end();
+                let g = ep9_platform::allocation_granularity();
+                let after = ep9_platform::Reservation::reserve_at(end, g).unwrap();
+                assert!(after.is_some(), "nothing is reserved at {end:#x}");
+            }
         }
     }
 

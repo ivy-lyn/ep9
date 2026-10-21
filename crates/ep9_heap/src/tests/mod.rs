@@ -93,7 +93,7 @@ pub(crate) fn test_heap(tweak: impl FnOnce(&mut HeapConfig)) -> Heap {
     let mut cfg = HeapConfig {
         cage: CageConfig {
             cage_size: 1 << 30,
-            code_range_size: ep9_platform::allocation_granularity(),
+            code_range_size: 0,
             ..CageConfig::default()
         },
         zap: true,

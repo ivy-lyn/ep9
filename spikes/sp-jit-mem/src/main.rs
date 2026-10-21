@@ -27,7 +27,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use ep9_platform::jit::{CodeMemory, WxMode, flush_icache};
-use ep9_platform::{Cage, CageConfig, Reservation, allocation_granularity};
+use ep9_platform::{CodeRange, Reservation};
 
 type Callback = extern "C-unwind" fn(u64) -> u64;
 type InnerFn = unsafe extern "C-unwind" fn(u64, Callback) -> u64;
@@ -154,20 +154,6 @@ fn strip_hashes(name: &str) -> String {
 
 // ---- one mode -------------------------------------------------------------------------------
 
-enum Space {
-    Cage(Cage),
-    Plain(Reservation),
-}
-
-impl Space {
-    fn range(&self) -> &Reservation {
-        match self {
-            Space::Cage(c) => c.code(),
-            Space::Plain(r) => r,
-        }
-    }
-}
-
 fn under_rosetta() -> bool {
     cfg!(all(target_os = "linux", target_arch = "x86_64"))
         && std::fs::read_to_string("/proc/cpuinfo").is_ok_and(|s| s.contains("VirtualApple"))
@@ -182,37 +168,43 @@ fn write_at(mem: &mut CodeMemory<'_>, offset: usize, bytes: &[u8]) {
 }
 
 fn run_mode(mode: WxMode, rep: &mut Report, iters: Option<usize>) {
-    // MapJit and every mode off macOS arm64 use the cage's code range. Protect on macOS arm64
-    // needs a plain range (MAP_JIT pages cannot be mprotected), so it runs outside the cage.
-    let in_cage =
+    // MapJit and every mode off macOS arm64 use a chunk of the process code range. Protect on
+    // macOS arm64 needs a plain range (MAP_JIT pages cannot be mprotected), so it runs outside.
+    let in_range =
         mode.needs_map_jit() || !cfg!(all(target_vendor = "apple", target_arch = "aarch64"));
-    let space = if in_cage {
-        let config = CageConfig {
-            cage_size: allocation_granularity(),
-            ..CageConfig::default()
-        };
-        Space::Cage(Cage::reserve_jit(&config).expect("reserve a JIT cage"))
+    // Both outlive `mem` (declared before it).
+    let mut chunk;
+    let plain;
+    let (mut mem, place) = if in_range {
+        let range = CodeRange::process().expect("reserve the process code range");
+        chunk = range.alloc(CODE_BYTES).expect("a chunk of the code range");
+        let mem = chunk.commit(mode).expect("commit code memory");
+        let place = format!(
+            "a chunk of the process code range {:#x}..{:#x}",
+            range.base(),
+            range.end()
+        );
+        (mem, place)
     } else {
-        Space::Plain(Reservation::reserve(1 << 20).expect("reserve 1 MiB"))
+        plain = Reservation::reserve(1 << 20).expect("reserve 1 MiB");
+        // SAFETY: the range is new; this is its only code memory.
+        let mem =
+            unsafe { CodeMemory::commit(&plain, 0, CODE_BYTES, mode) }.expect("commit code memory");
+        let place = format!(
+            "a plain reservation {:#x}..{:#x}",
+            plain.base(),
+            plain.end()
+        );
+        (mem, place)
     };
-    // SAFETY: the range is new; this is its only code memory.
-    let mut mem = unsafe { CodeMemory::commit(space.range(), 0, CODE_BYTES, mode) }
-        .expect("commit code memory");
     let (inner_addr, outer_addr) = (
         mem.exec_addr(code::INNER_OFF),
         mem.exec_addr(code::OUTER_OFF),
     );
     let (inner_ret, outer_ret) = (inner_addr + code::INNER_RET, outer_addr + code::OUTER_RET);
     println!(
-        "mode {mode}: code at {:#x}, in {} {:#x}..{:#x}; inner {inner_addr:#x}, outer {outer_addr:#x}",
+        "mode {mode}: code at {:#x}, in {place}; inner {inner_addr:#x}, outer {outer_addr:#x}",
         mem.exec_base(),
-        if in_cage {
-            "the cage code range"
-        } else {
-            "a plain reservation outside the cage"
-        },
-        space.range().base(),
-        space.range().end(),
     );
 
     write_at(&mut mem, code::INNER_OFF, &code::inner());

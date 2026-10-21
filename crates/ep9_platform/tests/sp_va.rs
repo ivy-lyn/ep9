@@ -1,10 +1,10 @@
-//! SP-VA gate (M0 week 2, H7): the cage and the code range are reserved below 2^47, the code
-//! range starts at the cage end, neither overlaps the tsrs range, and pages commit, decommit
-//! and fault as expected.
+//! SP-VA gate (M0 week 2, H7): the cage and the process code range are reserved below 2^47,
+//! neither overlaps the tsrs range, a cage has no code range of its own by default, and pages
+//! commit, decommit and fault as expected.
 
 use ep9_platform::va::{
-    self, CAGE_LIMIT, Cage, CageConfig, CageError, DEFAULT_CAGE_ALIGN, DEFAULT_MIN_BASE,
-    Reservation, TSRS_RESERVATION,
+    self, CAGE_LIMIT, Cage, CageConfig, CageError, CodeRange, CodeRangeConfig, DEFAULT_CAGE_ALIGN,
+    DEFAULT_CODE_RANGE_SIZE, DEFAULT_MIN_BASE, Reservation, TSRS_RESERVATION,
 };
 
 const PATTERN: u64 = 0xE9E9_0000_0000_0001;
@@ -38,10 +38,10 @@ fn overlaps(a: &std::ops::Range<usize>, b: &std::ops::Range<usize>) -> bool {
 fn sp_va_default_cage_below_2_47() {
     let config = CageConfig::default();
     let cage = Cage::reserve(&config).expect("reserve the default cage");
-    let (h, k) = (cage.heap().range(), cage.code().range());
+    let h = cage.heap().range();
     println!(
         "SP-VA {}-{}: page {} KiB, granularity {} KiB; cage {:#x}..{:#x} ({} GiB); \
-         code range {:#x}..{:#x} ({} MiB); end {:#x} < 2^47 = {:#x}; slots tried {}",
+         end {:#x} < 2^47 = {:#x}; slots tried {}",
         std::env::consts::ARCH,
         std::env::consts::OS,
         va::page_size() >> 10,
@@ -49,28 +49,68 @@ fn sp_va_default_cage_below_2_47() {
         h.start,
         h.end,
         h.len() >> 30,
-        k.start,
-        k.end,
-        k.len() >> 20,
-        k.end,
+        h.end,
         CAGE_LIMIT,
         cage.slots_tried(),
     );
-    assert!(k.end <= CAGE_LIMIT, "code range ends above 2^47");
-    assert_eq!(k.start, h.end, "code range must start at the cage end");
+    assert!(h.end <= CAGE_LIMIT, "cage ends above 2^47");
+    assert!(
+        cage.code_range().is_none(),
+        "the default cage has no code range"
+    );
     assert_eq!(h.len(), config.cage_size);
-    assert_eq!(k.len(), config.code_range_size);
     assert!(h.start.is_multiple_of(DEFAULT_CAGE_ALIGN));
-    assert!(!overlaps(&(h.start..k.end), &TSRS_RESERVATION));
+    assert!(!overlaps(&h, &TSRS_RESERVATION));
     cage.self_check().unwrap();
     assert!(cage.contains(h.start) && cage.contains(h.end - 1));
     assert!(!cage.contains(h.end) && !cage.contains(h.start - 1));
 
     let ps = va::page_size();
-    for r in [cage.heap(), cage.code()] {
-        touch(r, 0);
-        touch(r, r.size() - ps);
-    }
+    let r = cage.heap();
+    touch(r, 0);
+    touch(r, r.size() - ps);
+}
+
+/// The process code range (H07-Q6): one per process, 128 MiB, below 2^47, outside the tsrs
+/// range. This test builds `ep9_platform` without `jit`, so the range is a plain reservation.
+#[test]
+fn sp_va_process_code_range_below_2_47() {
+    let k = CodeRange::process().expect("reserve the process code range");
+    println!(
+        "SP-VA {}-{}: process code range {:#x}..{:#x} ({} MiB); slots tried {}",
+        std::env::consts::ARCH,
+        std::env::consts::OS,
+        k.base(),
+        k.end(),
+        k.size() >> 20,
+        k.slots_tried(),
+    );
+    assert!(std::ptr::eq(k, CodeRange::process().unwrap()), "one range");
+    assert_eq!(k.size(), DEFAULT_CODE_RANGE_SIZE);
+    assert!(k.end() <= CAGE_LIMIT, "code range ends above 2^47");
+    assert!(k.base().is_multiple_of(DEFAULT_CAGE_ALIGN));
+    assert!(!overlaps(&k.range(), &TSRS_RESERVATION));
+    k.self_check().unwrap();
+    // A chunk is in the range, and the range is reserved: a fixed reserve there fails.
+    let chunk = k.alloc(1).unwrap();
+    assert!(k.contains(chunk.base()) && chunk.addr_range().end <= k.end());
+    let g = va::allocation_granularity();
+    assert!(Reservation::reserve_at(k.base(), g).unwrap().is_none());
+}
+
+/// The code-range search never tries a slot that overlaps the tsrs range either.
+#[test]
+fn sp_va_code_range_avoids_tsrs_range() {
+    let first = DEFAULT_MIN_BASE / DEFAULT_CAGE_ALIGN;
+    let tsrs_slot = TSRS_RESERVATION.start / DEFAULT_CAGE_ALIGN;
+    let k = CodeRange::reserve(&CodeRangeConfig {
+        seed: Some((tsrs_slot - first) as u64),
+        ..CodeRangeConfig::default()
+    })
+    .unwrap();
+    println!("seed at the tsrs slot: code range at {:#x}", k.base());
+    assert!(!overlaps(&k.range(), &TSRS_RESERVATION));
+    assert!(k.base() >= TSRS_RESERVATION.end);
 }
 
 /// The search never tries a slot that overlaps the tsrs range: the seed points at it.
@@ -84,7 +124,7 @@ fn sp_va_avoids_tsrs_range() {
         ..CageConfig::default()
     };
     let cage = Cage::reserve(&config).unwrap();
-    let span = cage.heap().base()..cage.code().end();
+    let span = cage.heap().range();
     println!(
         "seed at the tsrs slot {:#x}: cage at {:#x}",
         tsrs_slot * align,
@@ -246,7 +286,7 @@ fn refuse_hinted_mmaps(lo: u32, hi: u32) {
     assert_eq!(rc, 0, "PR_SET_SECCOMP: {}", std::io::Error::last_os_error());
 }
 
-/// Drop releases both parts: the same seed gets the same slot again.
+/// Drop releases the cage: the same seed gets the same slot again.
 #[test]
 fn sp_va_drop_releases() {
     let config = CageConfig {
@@ -255,10 +295,10 @@ fn sp_va_drop_releases() {
         ..CageConfig::default()
     };
     let first = Cage::reserve(&config).unwrap();
-    let (base, code) = (first.heap().base(), first.code().base());
+    let base = first.heap().base();
     drop(first);
     let second = Cage::reserve(&config).unwrap();
-    assert_eq!((second.heap().base(), second.code().base()), (base, code));
+    assert_eq!(second.heap().base(), base);
 }
 
 /// A lower limit, as on a 39-bit VA kernel, still works. The cage is 4 GiB here: macOS arm64
@@ -273,7 +313,7 @@ fn sp_va_low_limit() {
     };
     let cage = Cage::reserve(&config).unwrap();
     println!("limit 2^39: cage at {:#x}", cage.heap().base());
-    assert!(cage.code().end() <= 1 << 39);
+    assert!(cage.heap().end() <= 1 << 39);
 }
 
 #[test]
@@ -293,6 +333,14 @@ fn sp_va_rejects_bad_input() {
     };
     assert!(matches!(
         Cage::reserve(&config),
+        Err(CageError::InvalidConfig(_))
+    ));
+    let config = CodeRangeConfig {
+        size: va::DIRECT_BRANCH_REACH + g,
+        ..Default::default()
+    };
+    assert!(matches!(
+        CodeRange::reserve(&config),
         Err(CageError::InvalidConfig(_))
     ));
 }
