@@ -57,9 +57,28 @@ pub(crate) enum Root {
     UriErrorPrototype,
     /// v0: the prototype of array and string iterators (one object for both).
     ArrayIteratorPrototype,
+    // ---- week 4: the other intrinsics of `builtins::IntrinsicId` (H20 tables) ----
+    /// `%Iterator.prototype%`.
+    IteratorPrototype,
+    ObjectConstructor,
+    FunctionConstructor,
+    ArrayConstructor,
+    NumberConstructor,
+    BooleanConstructor,
+    StringConstructor,
+    SymbolConstructor,
+    ErrorConstructor,
+    TypeErrorConstructor,
+    RangeErrorConstructor,
+    ReferenceErrorConstructor,
+    SyntaxErrorConstructor,
+    EvalErrorConstructor,
+    UriErrorConstructor,
+    /// `%Math%`.
+    Math,
 }
 
-pub(crate) const ROOT_COUNT: usize = Root::ArrayIteratorPrototype as usize + 1;
+pub(crate) const ROOT_COUNT: usize = Root::Math as usize + 1;
 
 /// Root slots: realm roots, then the `atoms!` list, then the 256 single-character atoms
 /// (undefined until first use, string.rs `single_char`).
@@ -192,7 +211,9 @@ pub(crate) struct Runtime {
     /// Boxed: frames, function cells and dispatch slots point into them.
     #[allow(clippy::vec_box)]
     pub units: RefCell<Vec<Box<LoadedUnit>>>,
-    /// FunctionInfos of host functions. Boxed: frames and function cells point at them.
+    /// FunctionInfos of embedder host functions (`Isolate::register_host_function`). Boxed:
+    /// frames and function cells point at them. Table builtins use the dense arrays of
+    /// `builtins`.
     #[allow(clippy::vec_box)]
     pub infos: RefCell<Vec<Box<FunctionInfo>>>,
     /// The frame info of `[[Construct]]` stub frames (`OP_CONSTRUCT_RETURN`).
@@ -213,10 +234,9 @@ pub(crate) struct Runtime {
     /// allocation.
     pub atoms: Rc<RefCell<AtomTable>>,
     /// Symbols: the registry and the identity-hash PRNG.
-    #[allow(dead_code)] // wk4-stub
+    #[allow(dead_code)] // read by symbol.rs once P2-SYM fills it; drop this allow then
     pub symbols: SymbolState,
-    /// Builtin tables (H20).
-    #[allow(dead_code)] // wk4-stub
+    /// Builtin tables (H20): the dense FunctionInfo arrays and function roots per module.
     pub builtins: BuiltinState,
 }
 
@@ -369,8 +389,8 @@ mod tests {
         for a in Atom::ALL {
             assert!(seen.insert(a.text()), "duplicate atom {:?}", a.text());
         }
-        assert_eq!(ROOT_COUNT, 16);
-        assert_eq!(ROOT_SLOTS, 16 + Atom::ALL.len() + 256);
+        assert_eq!(ROOT_COUNT, 32);
+        assert_eq!(ROOT_SLOTS, 32 + Atom::ALL.len() + 256);
         assert_eq!(ErrorKind::UriError.name(), "URIError");
         assert_eq!(crate::frame::HEADER, 8);
     }

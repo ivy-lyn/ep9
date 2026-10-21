@@ -10,26 +10,25 @@
 //! ```
 //!
 //! A `Value` that the API returns is not a root: it stays valid until the next call into the
-//! isolate (that call may collect garbage). Copy what you need out of it first.
+//! isolate (that call may collect garbage). Copy what you need out of it first, or work inside
+//! [`Isolate::with_cx`], whose `Local`s cannot outlive the call (H20-Q4).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ep9_bytecode::VerifiedUnit;
 use ep9_heap::{Heap, HeapConfig, HeapError, VerifyError, VerifyReport};
-use ep9_value::{Throw, Value};
+use ep9_value::{JsResult, Throw, Value};
 
-use crate::builtins::BuiltinTable;
+use crate::builtins::{self, BuiltinTable};
 use crate::conv::{Res, describe};
-use crate::error;
 use crate::frame::{HOLE, UNDEFINED};
 use crate::host::HostFn;
 use crate::interp::{BUDGET, Cx, Dispatch};
 use crate::object::{self, attr, is_error, is_string, own_define, own_get};
-use crate::property;
 use crate::runtime::{Atom, Root, Runtime, val};
 use crate::unit::{FunctionInfo, LoadedUnit};
-use crate::{atoms, call, realm, shape};
+use crate::{abi, atoms, call, error, property, realm, shape, string};
 
 /// Isolate settings.
 #[derive(Clone, Debug)]
@@ -45,7 +44,8 @@ pub struct IsolateConfig {
     /// the first call (eager), `u32::MAX` = never. Default
     /// [`IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD`].
     pub feedback_threshold: u32,
-    /// The builtin table to install into the realm (H20), after the VM's own intrinsics.
+    /// The builtin table to install into the realm (H20), after the VM's own table:
+    /// `ep9_builtins::TABLE` for the ECMAScript builtins. `None`: only the VM's builtins.
     pub builtins: Option<&'static BuiltinTable>,
 }
 
@@ -72,6 +72,8 @@ impl Default for IsolateConfig {
 pub enum IsolateError {
     Heap(HeapError),
     Config(&'static str),
+    /// A builtin table breaks a table rule, or installing it failed (H20).
+    BuiltinTable(String),
 }
 
 impl std::fmt::Display for IsolateError {
@@ -79,6 +81,7 @@ impl std::fmt::Display for IsolateError {
         match self {
             IsolateError::Heap(e) => write!(f, "{e}"),
             IsolateError::Config(m) => f.write_str(m),
+            IsolateError::BuiltinTable(m) => f.write_str(m),
         }
     }
 }
@@ -152,13 +155,15 @@ fn native_margin(stack_size: usize) -> usize {
 }
 
 impl Isolate {
-    /// Creates an isolate on the current thread.
+    /// Creates an isolate on the current thread: the heap, the VM stack, and a realm with the
+    /// VM's builtins and those of `config.builtins` (checked first, once per table).
     pub fn new(config: IsolateConfig) -> Result<Isolate, IsolateError> {
         if config.vm_stack_slots < 1024 || config.vm_stack_slots > (1 << 28) {
             return Err(IsolateError::Config(
                 "vm_stack_slots must be in 1024..=2^28",
             ));
         }
+        builtins::check(config.builtins).map_err(IsolateError::BuiltinTable)?;
         let heap = Heap::new(shape::heap_config(config.heap)).map_err(IsolateError::Heap)?;
         let bounds = ep9_platform::current_thread_stack_bounds()
             .map_err(|e| IsolateError::Heap(HeapError::Stack(e)))?;
@@ -169,8 +174,9 @@ impl Isolate {
             native_limit,
             config.stack_trace_limit,
         );
-        realm::init(&rt, config.builtins);
-        let cx = Box::new(Cx {
+        builtins::prepare(&rt, config.builtins);
+        realm::init(&rt);
+        let mut cx = Box::new(Cx {
             table: *config.dispatch.table(),
             rt: &*rt,
             stack_limit: rt.stack().end(),
@@ -182,7 +188,59 @@ impl Isolate {
             feedback_threshold: config.feedback_threshold,
             proto_epoch: &rt.shapes.proto_epoch,
         });
+        builtins::install(&mut cx).map_err(IsolateError::BuiltinTable)?;
         Ok(Isolate { cx, rt })
+    }
+
+    /// The builtin table installed after the VM's own (`IsolateConfig::builtins`).
+    pub fn builtin_table(&self) -> Option<&'static BuiltinTable> {
+        self.rt.builtins.table()
+    }
+
+    /// Runs `f` with a builtin-ABI context ([`abi::Cx`], H20): the embedder's way to hold
+    /// values across calls that may collect garbage. Every `Local` that `f` sees lives on the
+    /// native stack and is found by the stack scan, and none can leave `f`: its scope `'s` is
+    /// local to the call, so the result type `R` cannot name it (H20-Q4). An `Err(Throw)` from
+    /// `f` becomes the [`Exception`] that is pending.
+    ///
+    /// ```
+    /// use ep9_vm::{Isolate, IsolateConfig};
+    /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    /// let nan = iso.with_cx(|cx| {
+    ///     let g = cx.global();
+    ///     let v = cx.get(g, "NaN")?;
+    ///     cx.collect_garbage();
+    ///     Ok(cx.to_number(v)?.is_nan())
+    /// });
+    /// assert_eq!(nan, Ok(true));
+    /// ```
+    ///
+    /// A `Local` cannot leave the call, so it cannot be used after a later collection:
+    ///
+    /// ```compile_fail
+    /// use ep9_vm::{Isolate, IsolateConfig};
+    /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    /// let global = iso.with_cx(|cx| Ok(cx.global())).unwrap();
+    /// iso.collect_garbage();
+    /// let _ = global;
+    /// ```
+    pub fn with_cx<R>(
+        &mut self,
+        f: impl for<'s> FnOnce(&mut abi::Cx<'s>) -> JsResult<R>,
+    ) -> Result<R, Exception> {
+        let r = {
+            let mut cx = abi::Cx::new(&mut self.cx);
+            f(&mut cx)
+        };
+        match r {
+            Ok(v) => {
+                // R4: `Ok` comes with no pending exception.
+                debug_assert!(self.rt.pending() == 0, "Ok with a pending exception");
+                self.rt.take_pending();
+                Ok(v)
+            }
+            Err(Throw) => Err(self.exception()),
+        }
     }
 
     pub fn dispatch(&self) -> Dispatch {
@@ -237,7 +295,7 @@ impl Isolate {
     pub fn display(&self, v: Value) -> String {
         let b = v.to_bits();
         if is_string(b) {
-            object::str_view(b).to_string_lossy()
+            string::to_rust_string(b)
         } else {
             describe(b)
         }
@@ -264,79 +322,77 @@ impl Isolate {
 
     /// Turns the result of a run into the API result; takes the pending exception.
     fn finish(&mut self, r: Res<u64>) -> Result<Value, Exception> {
-        let rt = &*self.rt;
         match r {
             // The hole never leaves the VM.
             Ok(b) => Ok(val(if b == HOLE { UNDEFINED } else { b })),
-            Err(Throw) => {
-                let exc = rt.take_pending();
-                let site = rt.shared.throw_site.take();
-                if rt.terminating.replace(false) {
-                    return Err(Exception {
-                        message: "execution terminated".into(),
-                        constructor: None,
-                        stack: None,
-                        location: None,
-                        terminated: true,
-                    });
-                }
-                debug_assert!(exc != 0, "Err(Throw) without a pending exception");
-                if exc == 0 {
-                    return Err(Exception {
-                        message: "ep9 internal error: no pending exception".into(),
-                        constructor: None,
-                        stack: None,
-                        location: None,
-                        terminated: false,
-                    });
-                }
-                let constructor = constructor_name(&mut self.cx, exc);
-                let (err_site, stack) = error::describe_exception(rt, exc);
-                let site = if is_error(exc) { err_site } else { site };
-                let message = if is_error(exc) {
-                    error::error_header(&mut self.cx, exc)
-                } else if object::is_object(exc) {
-                    // A thrown object that is not an Error (for example a test262
-                    // `Test262Error`): ToString(value), as d8 reports it. If ToString throws,
-                    // drop that second exception and use the plain description.
-                    match crate::conv::to_rust_string(&mut self.cx, exc) {
-                        Ok(s) => s,
-                        Err(Throw) => {
-                            rt.take_pending();
-                            rt.shared.throw_site.take();
-                            if rt.terminating.replace(false) {
-                                return Err(Exception {
-                                    message: "execution terminated".into(),
-                                    constructor: None,
-                                    stack: None,
-                                    location: None,
-                                    terminated: true,
-                                });
-                            }
-                            self.display(val(exc))
-                        }
+            Err(Throw) => Err(self.exception()),
+        }
+    }
+
+    /// The pending exception (taken) as an API [`Exception`].
+    fn exception(&mut self) -> Exception {
+        let rt = &*self.rt;
+        let terminated = || Exception {
+            message: "execution terminated".into(),
+            constructor: None,
+            stack: None,
+            location: None,
+            terminated: true,
+        };
+        let exc = rt.take_pending();
+        let site = rt.shared.throw_site.take();
+        if rt.terminating.replace(false) {
+            return terminated();
+        }
+        debug_assert!(exc != 0, "Err(Throw) without a pending exception");
+        if exc == 0 {
+            return Exception {
+                message: "ep9 internal error: no pending exception".into(),
+                constructor: None,
+                stack: None,
+                location: None,
+                terminated: false,
+            };
+        }
+        let constructor = constructor_name(&mut self.cx, exc);
+        let (err_site, stack) = error::describe_exception(rt, exc);
+        let site = if is_error(exc) { err_site } else { site };
+        let message = if is_error(exc) {
+            error::error_header(&mut self.cx, exc)
+        } else if object::is_object(exc) {
+            // A thrown object that is not an Error (for example a test262 `Test262Error`):
+            // ToString(value), as d8 reports it. If ToString throws, drop that second
+            // exception and use the plain description.
+            match crate::conv::to_rust_string(&mut self.cx, exc) {
+                Ok(s) => s,
+                Err(Throw) => {
+                    rt.take_pending();
+                    rt.shared.throw_site.take();
+                    if rt.terminating.replace(false) {
+                        return terminated();
                     }
-                } else {
                     self.display(val(exc))
-                };
-                let location = site.map(|s| {
-                    // SAFETY: sites name units of this isolate, which live until it drops.
-                    let u = unsafe { &*rt.unit(s.unit) };
-                    let (line, column) = u.line_column(s.offset).unwrap_or((0, 0));
-                    SourceLocation {
-                        file: u.file.clone(),
-                        line,
-                        column,
-                    }
-                });
-                Err(Exception {
-                    message,
-                    constructor,
-                    stack,
-                    location,
-                    terminated: false,
-                })
+                }
             }
+        } else {
+            self.display(val(exc))
+        };
+        let location = site.map(|s| {
+            // SAFETY: sites name units of this isolate, which live until it drops.
+            let u = unsafe { &*rt.unit(s.unit) };
+            let (line, column) = u.line_column(s.offset).unwrap_or((0, 0));
+            SourceLocation {
+                file: u.file.clone(),
+                line,
+                column,
+            }
+        });
+        Exception {
+            message,
+            constructor,
+            stack,
+            location,
+            terminated: false,
         }
     }
 }
@@ -353,5 +409,5 @@ fn constructor_name(cx: &mut Cx, v: u64) -> Option<String> {
         return None;
     }
     let name = property::get_from(cx, ctor, rt.atom(Atom::Name)).ok()?;
-    is_string(name).then(|| object::str_view(name).to_string_lossy())
+    is_string(name).then(|| string::to_rust_string(name))
 }
