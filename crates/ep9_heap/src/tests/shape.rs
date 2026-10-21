@@ -1,5 +1,6 @@
 //! The shape region (H08-Q1): ShapeId = offset from the cage base, the word0 shape edge, weak
-//! clearing, sweeping and reuse, the full region, config and space checks, GC-stress.
+//! clearing, sweeping and reuse, the full region, config and space checks, GC-stress, and the
+//! commit limit that both spaces share (sweep both queues before OutOfMemory).
 //!
 //! The heaps here have a 1 MiB region (4 chunks), which also fits the 8 MiB Miri reservation.
 //! Under Miri the cage is aligned to 256 KiB only, so the id checks use the subtract.
@@ -619,4 +620,83 @@ fn shapes_under_gc_stress() {
     assert!(st.shape_pages >= 1 && r.small_cells > 3 * LIVE);
     assert_eq!(heap.shape_region_cells(), LIVE, "{shapes:x?}");
     heap.drop_global(g);
+}
+
+/// One unrooted leaf in a fresh ordinary page, allocated in a frame of its own. Returns its
+/// address in malloc memory, which the conservative scan never reads.
+#[inline(never)]
+fn ordinary_garbage(heap: &Heap) -> Vec<usize> {
+    vec![heap.alloc(LEAF, 24).expect("leaf").addr()]
+}
+
+/// One unrooted shape in a fresh shape page, as [`ordinary_garbage`].
+#[inline(never)]
+fn shape_garbage(heap: &Heap) -> Vec<usize> {
+    vec![new_shape(heap).addr()]
+}
+
+/// The two spaces share `max_heap_bytes` (one page here). A shape page needs the commit room
+/// of an ordinary page that dies in the shape allocation's own GC. That page waits in the
+/// ordinary lazy sweep queue, so the allocation must sweep it before it gives OutOfMemory.
+/// Verifier off: it finishes the sweep and would hide the failure.
+#[test]
+fn alloc_shape_sweeps_dead_ordinary_pages_before_out_of_memory() {
+    let heap = shape_heap(|c| c.max_heap_bytes = PAGE_SIZE);
+    let dead = ordinary_garbage(&heap);
+    assert_eq!(heap.stats().committed_bytes, PAGE_SIZE);
+    clear_stack();
+    let before = heap.stats().collections;
+    let s = heap.alloc_shape(SHAPE, 24).map(|c| c.addr());
+    let st = heap.stats();
+    assert_eq!(st.last_marked_cells, 0, "the GC found no live cell");
+    assert_eq!(st.collections, before + 1, "one GC");
+    let s = s.expect("the dead ordinary page makes room");
+    assert!(in_region(&heap, s));
+    assert_eq!((st.small_pages, st.shape_pages), (1, 1));
+    assert_eq!(st.committed_bytes, PAGE_SIZE);
+    assert!(!heap.is_cell(dead[0]) && heap.is_cell(s));
+    heap.verify().expect("verifier");
+}
+
+/// The other direction: an ordinary page needs the commit room of a shape page that dies in
+/// the allocation's own GC and waits in the shape sweep queue.
+#[test]
+fn alloc_sweeps_dead_shape_pages_before_out_of_memory() {
+    let heap = shape_heap(|c| c.max_heap_bytes = PAGE_SIZE);
+    let dead = shape_garbage(&heap);
+    assert_eq!(heap.stats().committed_bytes, PAGE_SIZE);
+    clear_stack();
+    let before = heap.stats().collections;
+    let n = heap.alloc(LEAF, 24).map(|c| c.addr());
+    let st = heap.stats();
+    assert_eq!(st.last_marked_cells, 0, "the GC found no live cell");
+    assert_eq!(st.collections, before + 1, "one GC");
+    let n = n.expect("the dead shape page makes room");
+    assert!(!in_region(&heap, n));
+    assert_eq!((st.small_pages, st.shape_pages), (1, 0));
+    assert_eq!(st.committed_bytes, PAGE_SIZE);
+    assert!(!heap.is_cell(dead[0]) && heap.is_cell(n));
+    heap.verify().expect("verifier");
+}
+
+/// A large cell (LOS) needs the commit room of a shape page that dies in its own GC.
+#[test]
+fn a_large_cell_sweeps_dead_shape_pages_before_out_of_memory() {
+    let heap = shape_heap(|c| c.max_heap_bytes = PAGE_SIZE);
+    let dead = shape_garbage(&heap);
+    clear_stack();
+    let before = heap.stats().collections;
+    let big = heap.alloc(NODE, NODE_HEADER + 8 * 2000);
+    if let Ok(c) = big {
+        // SAFETY: a new NODE cell; meta word written before the next GC point.
+        unsafe { c.field::<u64>(8).write(2000) };
+    }
+    let st = heap.stats();
+    assert_eq!(st.last_marked_cells, 0, "the GC found no live cell");
+    assert_eq!(st.collections, before + 1, "one GC");
+    let big = big.expect("the dead shape page makes room");
+    assert_eq!((st.small_pages, st.large_cells), (0, 1));
+    assert!(st.committed_bytes <= PAGE_SIZE);
+    assert!(!heap.is_cell(dead[0]) && heap.is_cell(big.addr()));
+    heap.verify().expect("verifier");
 }
