@@ -501,8 +501,8 @@ mod tests {
             CodeKind, FunctionBuilder, FunctionId, FunctionMeta, Register, RegisterList, RuntimeId,
             UnitBuilder, UnitOptions,
         };
-        // r0 = r1 = the current context; r2 = "x";
-        // CallRuntimeForPair LoadLookupSlotForCall, r2, out; PopContext r0; PopContext r1.
+        // r0 = r1 = the current context; r2 = "x"; r3 = false (sloppy);
+        // CallRuntimeForPair LoadLookupSlotForCall, r2-r3, out; PopContext r0; PopContext r1.
         let errors = |out: u32| {
             let src = "f()";
             let mut b = FunctionBuilder::new(FunctionMeta::entry(CodeKind::Script, false, 3));
@@ -511,10 +511,11 @@ mod tests {
             let (r0, r1, r2) = (Register::local(0), Register::local(1), Register::local(2));
             b.lda_current_context().star(r0).star(r1);
             b.lda_constant(k).star(r2);
+            b.lda_false().star(Register::local(3));
             b.call_runtime_for_pair(
                 RuntimeId::LoadLookupSlotForCall,
-                RegisterList::new(2, 1),
-                1,
+                RegisterList::new(2, 2),
+                2,
                 RegisterList::new(out, 2),
             );
             b.pop_context(r0).pop_context(r1).lda_undefined().return_();

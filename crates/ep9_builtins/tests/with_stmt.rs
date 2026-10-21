@@ -323,3 +323,80 @@ var f7 = function g() { with ({}) { (function () { 'use strict'; try { g++; } ca
         ])
     );
 }
+
+/// A class heritage and a computed key are strict code even in sloppy code (§11.2.2), so a
+/// read there of a `with` binding that is gone by GetValue throws a ReferenceError
+/// (§9.4.2 ResolveBinding step 3 takes the strictness of the use site; §6.2.5.5 GetValue
+/// step 3.c; §9.1.1.2.6 GetBindingValue step 2.a), before the right-hand side of a compound
+/// or logical assignment runs (§13.15.2). Here the `@@unscopables` getter deletes `x` while
+/// the name resolves. Plain reads, member bases, calls, `new`, `typeof` (the reference is
+/// resolvable, §13.5.3.1 step 3), compound, logical and update assignments, `extends`, and
+/// static, accessor and field keys all throw. A sloppy read still gives undefined, and a
+/// `with` call in a key still gets the object as `this`. V8/node v24 prints `no throw` for
+/// every read here (and runs `rhs` first); these are the spec answers.
+#[test]
+fn class_keys_and_heritage_read_dynamic_names_in_strict_code() {
+    assert_eq!(
+        run_both(
+            r#"var log = [];
+function mk() { return { x: function () { return 1; }, get [Symbol.unscopables]() { delete this.x; return {}; } }; }
+function rhs() { log.push('rhs'); return 1; }
+function t(name, f) { var r; try { f(mk()); r = 'no throw'; } catch (e) { r = e.name; } print(name + ' ' + r + (log.length ? ' ' + log.join() : '')); log = []; }
+t('[x]', function (o) { with (o) { class C { [x]() {} } } });
+t('[(0,x)]', function (o) { with (o) { class C { [(0, x)]() {} } } });
+t('[x.p]', function (o) { with (o) { class C { [x.p]() {} } } });
+t('[x?.p]', function (o) { with (o) { class C { [x?.p]() {} } } });
+t('[x()]', function (o) { with (o) { class C { [x()]() {} } } });
+t('[x?.()]', function (o) { with (o) { class C { [x?.()]() {} } } });
+t('[x``]', function (o) { with (o) { class C { [x``]() {} } } });
+t('[new x]', function (o) { with (o) { class C { [new x]() {} } } });
+t('[typeof x]', function (o) { with (o) { class C { [typeof x]() {} } } });
+t('[x += rhs()]', function (o) { with (o) { class C { [x += rhs()]() {} } } });
+t('[x ??= rhs()]', function (o) { with (o) { class C { [x ??= rhs()]() {} } } });
+t('[x ||= rhs()]', function (o) { with (o) { class C { [x ||= rhs()]() {} } } });
+t('[x &&= rhs()]', function (o) { with (o) { class C { [x &&= rhs()]() {} } } });
+t('[x++]', function (o) { with (o) { class C { [x++]() {} } } });
+t('[--x]', function (o) { with (o) { class C { [--x]() {} } } });
+t('[x = rhs()]', function (o) { with (o) { class C { [x = rhs()]() {} } } });
+t('extends', function (o) { with (o) { class C extends (x, Object) {} } });
+t('static [x]', function (o) { with (o) { class C { static [x]() {} } } });
+t('get [x]', function (o) { with (o) { class C { get [x]() {} } } });
+t('field [x]', function (o) { with (o) { class C { [x] = 1; } } });
+t('static field [x]', function (o) { with (o) { class C { static [x] = 1; } } });
+t('class expr', function (o) { with (o) { (class { [x]() {} }); } });
+t('sloppy read', function (o) { with (o) { x; } });
+var so = mk(); try { with (so) { class C { [x]() {} } } print('script no throw'); } catch (e) { print('script ' + e.name); }
+with ({ k: 'm', f: function () { return this.tag; }, tag: 'w' }) {
+  class D { [k]() { return 1; } static [f()]() {} [typeof k]() {} static [typeof nope1]() {} }
+  print(new D().m(), typeof D.w, typeof D.prototype.string, typeof D.undefined);
+}"#
+        ),
+        lines(&[
+            "[x] ReferenceError",
+            "[(0,x)] ReferenceError",
+            "[x.p] ReferenceError",
+            "[x?.p] ReferenceError",
+            "[x()] ReferenceError",
+            "[x?.()] ReferenceError",
+            "[x``] ReferenceError",
+            "[new x] ReferenceError",
+            "[typeof x] ReferenceError",
+            "[x += rhs()] ReferenceError",
+            "[x ??= rhs()] ReferenceError",
+            "[x ||= rhs()] ReferenceError",
+            "[x &&= rhs()] ReferenceError",
+            "[x++] ReferenceError",
+            "[--x] ReferenceError",
+            "[x = rhs()] ReferenceError rhs",
+            "extends ReferenceError",
+            "static [x] ReferenceError",
+            "get [x] ReferenceError",
+            "field [x] ReferenceError",
+            "static field [x] ReferenceError",
+            "class expr ReferenceError",
+            "sloppy read no throw",
+            "script ReferenceError",
+            "1 function function function",
+        ])
+    );
+}

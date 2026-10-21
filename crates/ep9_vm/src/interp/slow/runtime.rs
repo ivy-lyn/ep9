@@ -13,7 +13,7 @@
 //! | 19-22 | `CreateGeneratorObject`, `GeneratorGetResumeMode`, `GeneratorClose`, `ThrowThrowMethodMissing` | §27.5 generators (`slow/generator.rs`) |
 //! | 23 | `CreatePrivateName` | Private Names (`slow/private.rs`) |
 //! | 24, 25 | `SetClassFieldsInitializer`, `RunClassFieldsInitializer` | §15.7.14 fields, InitializeInstanceElements (`slow/class_fields.rs`) |
-//! | 26 | `LoadLookupSlotForCall` | §9.1.1.2.10 WithBaseObject; a pair, only through `CallRuntimeForPair` ([`call_runtime_pair`]; `slow/lookup.rs`) |
+//! | 26 | `LoadLookupSlotForCall` | §9.1.1.2.10 WithBaseObject; a pair, only through `CallRuntimeForPair` ([`call_runtime_pair`]; `slow/lookup.rs`); the use-site strictness is an argument (ABI 4) |
 //! | 27, 28 | `DeclareEvalVar`, `DeclareEvalFunction` | §19.2.1.3 EvalDeclarationInstantiation (`slow/eval.rs`) |
 //! | 29-31 | `ResolveLookupSlot`, `LoadLookupSlotResolved`, `StoreLookupSlotResolved` | §9.4.2 ResolveBinding, then GetValue / PutValue of that reference (ABI 4, `slow/lookup.rs`) |
 //!
@@ -189,7 +189,7 @@ pub(crate) fn call_runtime(
         // slow/lookup.rs: a dynamic reference resolved before the right-hand side.
         Some(Id::ResolveLookupSlot) => super::lookup::resolve_lookup_slot(cx, fp, a(0)),
         Some(Id::LoadLookupSlotResolved) => {
-            super::lookup::load_lookup_slot_resolved(cx, fp, a(0), a(1))
+            super::lookup::load_lookup_slot_resolved(cx, a(0), a(1), a(2))
         }
         Some(Id::StoreLookupSlotResolved) => {
             super::lookup::store_lookup_slot_resolved(cx, a(0), a(1), a(2), a(3))
@@ -236,7 +236,9 @@ pub(crate) fn call_runtime_pair(
     use RuntimeId as Id;
     let r: Res<(u64, u64)> = match RuntimeId::from_u16(id) {
         // slow/lookup.rs (P2-LOOKUP).
-        Some(Id::LoadLookupSlotForCall) => super::lookup::load_lookup_slot_for_call(cx, fp, a(0)),
+        Some(Id::LoadLookupSlotForCall) => {
+            super::lookup::load_lookup_slot_for_call(cx, fp, a(0), a(1))
+        }
         // The verifier lets `CallRuntimeForPair` call only pair functions, so these arms never
         // run for verified code.
         Some(_) => Err(throw_error(

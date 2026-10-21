@@ -169,7 +169,8 @@ fn load_lookup_slot_for_call_gives_the_with_object() {
         let mut f = Asm::new(m);
         f.b.ldar(f.b.receiver()).return_();
         let mut s = Asm::script(0);
-        let (o, ctx, name) = (s.b.new_register(), s.b.new_register(), s.b.new_register());
+        let (o, ctx) = (s.b.new_register(), s.b.new_register());
+        let args = s.b.new_register_list(2);
         let out = s.b.new_register_list(2);
         let kf = s.b.function_constant(FunctionId(1));
         s.b.create_empty_object_literal().star(o);
@@ -181,13 +182,9 @@ fn load_lookup_slot_for_call_gives_the_with_object() {
         s.b.create_with_context(o, kw).push_context(ctx);
         let call = |s: &mut Asm, n: &str| {
             s.lda_str(n);
-            s.b.star(name);
-            s.b.call_runtime_for_pair(
-                RuntimeId::LoadLookupSlotForCall,
-                RegisterList::new(name.local_index().unwrap(), 1),
-                1,
-                out,
-            );
+            s.b.star(args.get(0));
+            s.b.lda_false().star(args.get(1));
+            s.b.call_runtime_for_pair(RuntimeId::LoadLookupSlotForCall, args, 2, out);
             let slot = s.call;
             s.b.call_property0(out.get(0), out.get(1), slot);
         };
@@ -523,13 +520,25 @@ fn resolve_ref(s: &mut Asm, regs: RegisterList, name: &str) {
     s.b.star(regs.get(0));
 }
 
-/// `acc = LoadLookupSlotResolved(env, name)` (runtime id 30).
+/// `acc = LoadLookupSlotResolved(env, name, false)` (runtime id 30, sloppy).
 fn load_ref(s: &mut Asm, regs: RegisterList) {
+    load_ref_in(s, regs, false);
+}
+
+/// `acc = LoadLookupSlotResolved(env, name, strict)` (runtime id 30); `regs[2]` holds the
+/// strictness, as BytecodeGen puts it.
+fn load_ref_in(s: &mut Asm, regs: RegisterList, strict: bool) {
+    if strict {
+        s.b.lda_true();
+    } else {
+        s.b.lda_false();
+    }
+    s.b.star(regs.get(2));
     let first = regs.get(0).local_index().unwrap();
     s.b.call_runtime(
         RuntimeId::LoadLookupSlotResolved,
-        RegisterList::new(first, 2),
-        2,
+        RegisterList::new(first, 3),
+        3,
     );
 }
 
@@ -660,6 +669,39 @@ fn resolved_reference_errors() {
         };
         let r = run_every(make);
         assert_eq!(err(&r), want, "case {case}");
+    }
+}
+
+/// `LoadLookupSlotResolved` takes the strictness of the read as its third argument (ABI 4,
+/// M2-P2 review fix L6), not the function's: in this sloppy script a `with` binding that was
+/// resolved and then deleted reads as undefined when the argument is false and throws a
+/// ReferenceError when it is true (§9.1.1.2.6 step 2; a class heritage or computed key is
+/// strict code in a sloppy function).
+#[test]
+fn a_resolved_read_takes_its_strictness() {
+    for (strict, want) in [
+        (false, Ok("undefined")),
+        (true, Err("ReferenceError: x is not defined")),
+    ] {
+        let make = move || {
+            let mut s = Asm::script(0);
+            decl_head(&mut s);
+            let o = s.b.new_register();
+            let regs = s.b.new_register_list(4);
+            s.b.lda_current_context_slot(0).star(o);
+            s.b.lda_smi(1);
+            s.set_named(o, "x");
+            resolve_ref(&mut s, regs, "x");
+            delete(&mut s, "x");
+            load_ref_in(&mut s, regs, strict);
+            s.b.return_();
+            decl_unit(vec![s.finish()])
+        };
+        let r = run_every(make);
+        match want {
+            Ok(v) => assert_eq!(ok(&r), v, "strict={strict}"),
+            Err(m) => assert_eq!(err(&r), m, "strict={strict}"),
+        }
     }
 }
 

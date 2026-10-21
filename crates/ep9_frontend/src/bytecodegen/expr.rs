@@ -1984,7 +1984,10 @@ impl<'a, 's> FnGen<'a, 's> {
     fn get_prepared(&mut self, p: &Prepared<'a, 's>, at: u32) {
         match p {
             Prepared::Binding(r) => self.load_ref(r, false),
-            Prepared::Dynamic { r, regs } => self.load_resolved(r.span.start, *regs),
+            Prepared::Dynamic { r, regs } => {
+                let strict = self.strict_at(r);
+                self.load_resolved(r.span.start, *regs, strict);
+            }
             Prepared::Member(m) => {
                 // GetValue stores the converted key in the reference, so the PutValue that
                 // follows does not convert it again (ECMA-262 GetValue step 3.c).

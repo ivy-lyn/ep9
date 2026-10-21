@@ -323,9 +323,11 @@ pub enum RuntimeId {
     /// `SetClassFieldsInitializer` stored on `constructor`, with `receiver` as `this` (at base
     /// constructor entry, and after `super()` returns). Does nothing if there is none.
     RunClassFieldsInitializer = 25,
-    /// `LoadLookupSlotForCall(name)`: dynamic lookup of `name` for a call. Returns a pair
-    /// (function, receiver): the receiver is the `with` object that holds `name`, else
-    /// undefined (ECMA-262 §9.1.1.2.10 WithBaseObject). Called with `CallRuntimeForPair`.
+    /// `LoadLookupSlotForCall(name, strict)`: dynamic lookup of `name` for a call. Returns a
+    /// pair (function, receiver): the receiver is the `with` object that holds `name`, else
+    /// undefined (ECMA-262 §9.1.1.2.10 WithBaseObject). `strict` is true or false: the call is
+    /// in strict code (GetValue of a `with` binding that is gone throws there; ABI 4). Called
+    /// with `CallRuntimeForPair`.
     LoadLookupSlotForCall = 26,
     /// `DeclareEvalVar(name)`: a `var` of sloppy direct eval code (EvalDeclarationInstantiation).
     DeclareEvalVar = 27,
@@ -338,8 +340,9 @@ pub enum RuntimeId {
     /// (a `with` object), undefined (the global environment) or null (unresolvable). Only
     /// `LoadLookupSlotResolved` and `StoreLookupSlotResolved` read the result. (ABI 4.)
     ResolveLookupSlot = 29,
-    /// `LoadLookupSlotResolved(env, name)`: GetValue of the reference that `ResolveLookupSlot`
-    /// gave `env` for `name` (no new resolution). (ABI 4.)
+    /// `LoadLookupSlotResolved(env, name, strict)`: GetValue of the reference that
+    /// `ResolveLookupSlot` gave `env` for `name` (no new resolution); `strict` is true or false:
+    /// the read is in strict code. (ABI 4.)
     LoadLookupSlotResolved = 30,
     /// `StoreLookupSlotResolved(env, name, value, strict)`: PutValue of `value` to that
     /// reference (SetMutableBinding of the record it names; `strict` is true or false: the
@@ -521,7 +524,7 @@ pub const RUNTIME_FUNCTIONS: &[RuntimeInfo] = &[
     RuntimeInfo {
         id: RuntimeId::LoadLookupSlotForCall,
         name: "LoadLookupSlotForCall",
-        arity: Some(1),
+        arity: Some(2),
         returns_pair: true,
     },
     RuntimeInfo {
@@ -545,7 +548,7 @@ pub const RUNTIME_FUNCTIONS: &[RuntimeInfo] = &[
     RuntimeInfo {
         id: RuntimeId::LoadLookupSlotResolved,
         name: "LoadLookupSlotResolved",
-        arity: Some(2),
+        arity: Some(3),
         returns_pair: false,
     },
     RuntimeInfo {

@@ -7,10 +7,10 @@
 //! CreateWithContext object, scope  create_with_context           a context of length 1: the object
 //! CallRuntime DeleteLookupSlot     delete_lookup_slot            (runtime id 8) DeleteBinding
 //! CallRuntimeForPair               load_lookup_slot_for_call     (runtime id 26) the function and
-//!   LoadLookupSlotForCall                                         its receiver (WithBaseObject)
+//!   LoadLookupSlotForCall, strict                                 its receiver (WithBaseObject)
 //! CallRuntime ResolveLookupSlot    resolve_lookup_slot           (runtime id 29) ResolveBinding only
 //! CallRuntime                      load_lookup_slot_resolved     (runtime id 30) GetValue of it
-//!   LoadLookupSlotResolved
+//!   LoadLookupSlotResolved, strict
 //! CallRuntime                      store_lookup_slot_resolved    (runtime id 31) PutValue to it
 //!   StoreLookupSlotResolved
 //! ```
@@ -51,6 +51,15 @@
 //! that is gone, or to a name that was unresolvable, throws a ReferenceError (§9.1.1.2.5,
 //! §6.2.5.6 step 3.a). The environment value lives only in a register of the frame
 //! (BytecodeGen temporaries), and no JS code sees it.
+//!
+//! GetValue of a `with` binding that is gone by then gives undefined in sloppy code and a
+//! ReferenceError in strict code (§9.1.1.2.6 step 2), and the strictness is that of the use
+//! site (§9.4.2 ResolveBinding step 3), not of the function: a class heritage and a computed
+//! key are strict code inside sloppy code (§11.2.2). So the runtime ids take it as an
+//! argument (26 and 30, like 31). The opcodes `LdaLookupSlot` and `LdaLookupSlotInsideTypeof`
+//! use the strictness of the function (`strict(fp)`), and BytecodeGen emits them only where
+//! the two agree; a strict read in a sloppy function (only in a class heritage or computed
+//! key) takes ids 29 and 30 instead (`bytecodegen/lookup.rs`).
 //!
 //! The opcode entries use the result protocol of `slow` (the new accumulator, or 0 with an
 //! exception pending). `name` and `scope` are constant indices of the frame's function; the
@@ -371,7 +380,8 @@ fn name_key(cx: &mut Cx, name: u64) -> Res<u64> {
 }
 
 /// `LdaLookupSlot(name)` / `LdaLookupSlotInsideTypeof(name)` (`inside_typeof`): the value of
-/// the binding `name` (ResolveBinding, then GetValue).
+/// the binding `name` (ResolveBinding, then GetValue), in code as strict as the function (see
+/// the module doc).
 #[cold]
 #[inline(never)]
 pub(crate) fn lda_lookup_slot(
@@ -458,14 +468,20 @@ pub(crate) fn delete_lookup_slot(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<u6
     Ok(conv::boolean(deleted))
 }
 
-/// `LoadLookupSlotForCall(name)` (runtime id 26, a pair; `slow::call_runtime_pair` writes the
-/// two results to the `CallRuntimeForPair` output registers): the function bound to `name`
-/// (GetValue), and the receiver of the call, which is the `with` object that holds `name`,
-/// else undefined (§13.3.6.1 step 1.b, §9.1.1.2.10 WithBaseObject).
-pub(crate) fn load_lookup_slot_for_call(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<(u64, u64)> {
+/// `LoadLookupSlotForCall(name, strict)` (runtime id 26, a pair; `slow::call_runtime_pair`
+/// writes the two results to the `CallRuntimeForPair` output registers): the function bound
+/// to `name` (GetValue; `strict` is the boolean strictness of the call site), and the receiver
+/// of the call, which is the `with` object that holds `name`, else undefined (§13.3.6.1 step
+/// 1.b, §9.1.1.2.10 WithBaseObject).
+pub(crate) fn load_lookup_slot_for_call(
+    cx: &mut Cx,
+    fp: *mut u64,
+    name: u64,
+    strict: u64,
+) -> Res<(u64, u64)> {
     let name = name_key(cx, name)?;
     let b = resolve(cx, fp, name)?;
-    let f = get_binding_value(cx, b, name, strict(fp), false)?;
+    let f = get_binding_value(cx, b, name, strict == TRUE, false)?;
     let receiver = match b {
         Binding::With(o) => o,
         _ => UNDEFINED,
@@ -527,17 +543,13 @@ fn binding_of_env(cx: &mut Cx, env: u64, name: u64) -> Res<Binding> {
     Err(Throw)
 }
 
-/// `LoadLookupSlotResolved(env, name)` (runtime id 30): GetValue (§6.2.5.5) of the reference
-/// that [`resolve_lookup_slot`] resolved to `env`. GC point.
-pub(crate) fn load_lookup_slot_resolved(
-    cx: &mut Cx,
-    fp: *mut u64,
-    env: u64,
-    name: u64,
-) -> Res<u64> {
+/// `LoadLookupSlotResolved(env, name, strict)` (runtime id 30): GetValue (§6.2.5.5) of the
+/// reference that [`resolve_lookup_slot`] resolved to `env`; `strict` is the boolean
+/// strictness of the read. GC point.
+pub(crate) fn load_lookup_slot_resolved(cx: &mut Cx, env: u64, name: u64, strict: u64) -> Res<u64> {
     let name = name_key(cx, name)?;
     let b = binding_of_env(cx, env, name)?;
-    get_binding_value(cx, b, name, strict(fp), false)
+    get_binding_value(cx, b, name, strict == TRUE, false)
 }
 
 /// `StoreLookupSlotResolved(env, name, value, strict)` (runtime id 31): PutValue (§6.2.5.6) of
