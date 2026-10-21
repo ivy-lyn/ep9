@@ -13,17 +13,22 @@
 //! walks the chain of bound functions down to the first FUNCTION (the innermost target) with
 //! a loop, never Rust recursion ([`unwrap`]), and that target's frame gets the arguments in
 //! spec order: the innermost bound arguments first, then each outer function's, then the call's
-//! own ([`chain_arg`]). The callers are the three call paths: `slow::call` (bytecode),
-//! `call::call_with` and `call::construct_with` (Rust).
+//! own. A second walk copies the bound ones in that order ([`copy_chain_args`]), so a call
+//! costs O(chain depth + bound arguments). [`unwrap`] takes one interrupt budget unit per
+//! level, so termination stops a call through a long chain. The callers are the three call
+//! paths: `slow::call` (bytecode), `call::call_with` and `call::construct_with` (Rust).
 //!
-//! GC: the bound arguments are read straight from the chain while the target's frame is
-//! written, so the caller keeps the outermost bound function rooted until then (it is in a
-//! caller register, a host frame or a Rust local); everything in the chain is reachable from it.
+//! GC: the copy goes to the VM stack's scratch area (`call.rs`), or to the argument `Vec` of
+//! `slow::call`, whose values the caller keeps rooted: the outermost bound function is in the
+//! callee register, and everything in the chain is reachable from it.
+
+use ep9_value::Throw;
 
 use crate::conv::Res;
-use crate::error::throw_error;
+use crate::error::{stack_overflow, throw_error};
 use crate::frame::UNDEFINED;
 use crate::interp::Cx;
+use crate::interp::slow::interrupt;
 use crate::kinds::{self, is_bound, is_function};
 use crate::object::{self, arr, fixed};
 use crate::runtime::ErrorKind;
@@ -141,9 +146,10 @@ pub(crate) struct Unwrapped {
 /// Walks the chain of the bound function `f` for `[[Call]]` (§10.4.1.1, `new_target`
 /// undefined) or `[[Construct]]` (§10.4.1.2). Steps 1-5 of each level, as a loop: Call(F) =
 /// Call(target, boundThis, boundArgs ++ args), Construct(F, args, nt) = Construct(target,
-/// boundArgs ++ args, nt == F ? target : nt). `None` if the bound arguments of the chain do
-/// not fit a u32 count. Not a GC point.
-pub(crate) fn unwrap(f: u64, new_target: u64) -> Option<Unwrapped> {
+/// boundArgs ++ args, nt == F ? target : nt). Each level takes one interrupt budget unit and
+/// polls when the budget runs out: a long chain is a loop with no back edge. RangeError if the
+/// bound arguments of the chain do not fit a u32 count. GC point only when it throws.
+pub(crate) fn unwrap(cx: &mut Cx, f: u64, new_target: u64) -> Res<Unwrapped> {
     debug_assert!(is_bound(f));
     let mut cur = f;
     let mut u = Unwrapped {
@@ -153,12 +159,20 @@ pub(crate) fn unwrap(f: u64, new_target: u64) -> Option<Unwrapped> {
         new_target,
     };
     while is_bound(cur) {
+        // No back edge polls a long chain: count each level here.
+        cx.budget -= 1;
+        if cx.budget <= 0 && interrupt(cx, core::ptr::null_mut()) == 0 {
+            return Err(Throw);
+        }
         // 1. Let target be F.[[BoundTargetFunction]].
         let t = target(cur);
         // 2. Let boundThis be F.[[BoundThis]].
         u.this = bound_this(cur);
         // 3-4. Let args be the list-concatenation of boundArgs and argumentsList.
-        u.bound = u.bound.checked_add(bound_len(cur))?;
+        let Some(bound) = u.bound.checked_add(bound_len(cur)) else {
+            return stack_overflow(cx);
+        };
+        u.bound = bound;
         // [[Construct]] 5. If SameValue(F, newTarget) is true, set newTarget to target.
         if u.new_target == cur {
             u.new_target = t;
@@ -166,24 +180,24 @@ pub(crate) fn unwrap(f: u64, new_target: u64) -> Option<Unwrapped> {
         cur = t;
     }
     u.target = cur;
-    Some(u)
+    Ok(u)
 }
 
-/// Argument `i` (`i < bound`) of the bound-argument prefix of a call of the bound function
-/// `f`, where `bound` is [`Unwrapped::bound`]: the innermost function's bound arguments come
-/// first, the outermost's (`f`'s) last. Counted from the end, so the walk goes from `f`
-/// inward: O(chain depth), not a GC point.
-pub(crate) fn chain_arg(f: u64, bound: u32, i: u32) -> u64 {
-    debug_assert!(i < bound);
-    // The position from the end of the prefix.
-    let mut r = bound - 1 - i;
+/// Writes the bound-argument prefix of a call of the bound function `f` to `out`, whose length
+/// is [`Unwrapped::bound`]: the innermost function's bound arguments first, `f`'s last. One
+/// walk from `f` inward puts each level's arguments right below the ones it already wrote, so
+/// the cost is O(chain depth + `out.len()`). Not a GC point.
+pub(crate) fn copy_chain_args(f: u64, out: &mut [u64]) {
+    let mut end = out.len();
     let mut cur = f;
-    loop {
-        let n = bound_len(cur);
-        if r < n {
-            return bound_arg(cur, n - 1 - r);
+    while end > 0 {
+        debug_assert!(is_bound(cur), "more bound arguments than the chain has");
+        let n = bound_len(cur) as usize;
+        let start = end - n;
+        for (k, slot) in out[start..end].iter_mut().enumerate() {
+            *slot = bound_arg(cur, k as u32);
         }
-        r -= n;
+        end = start;
         cur = target(cur);
     }
 }
