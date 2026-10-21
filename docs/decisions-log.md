@@ -654,6 +654,8 @@ P2 change: t0-call -45.0%, richards -48.2%, ci-v0 -7.3% (objects on shapes with 
 
 P3 change: t0-prop -50.8%, t0-call -45.1%, richards -67.9%, ci-v0 -10.4% (named get/set and global ICs, P3-IC); t0-loop +0.04% and t0-branchy +0.11% (flat). deltablue (`cross/v8v7.mjs --kernel deltablue`, N = 100) runs for the first time: 5,643,138,829. The same counts with EP9_HASH_SEED=1 (the perf CI rule from P3, W4-CI-PERF-SEED): t0-loop 8,998,734,644; t0-branchy 6,702,087,076; t0-call 3,730,414,171; t0-prop 6,431,328,284; ci-v0 86,549,689; richards 6,769,269,457; deltablue 5,644,111,351. Local CI on 0af31c8: 27 of 27 steps pass, including x86-sandbox (Linux x86-64: 909 tests pass in 52 binaries; test262 exec, eager exec and GC-stress + eager exec 0 new failures; perf-ci-v0 cachegrind, EP9_HASH_SEED=1: t0-loop 9,793,972,437, t0-branchy 7,940,219,903, t0-call 3,568,247,701, t0-prop 6,649,464,820, ci-v0 65,885,398, richards 6,912,425,996, deltablue 5,699,823,201).
 
+P4 (c97420b): no hot-path change (the atom-key fix is flat on t0-prop, t0-call, ci-v0 and the fast push path). Perf report run 2 (P4-PERFREP, fa451f6) is the first gate run on this host (load 2.00 before, 1.11 after, limit 3.00); its class-R ep9 counts with EP9_HASH_SEED=1 match the P3 row within 0.08%.
+
 ### 11.7 x86-64 Linux on a Cloudflare sandbox
 
 **Source.** The user, 2026-10-21: "If you want to debug & test x86 code path, you can use Cloudflare sandbox", then "cross compile locally via cargo-zigbuild and test it on Cloudflare sandbox, use a large instance".
@@ -956,3 +958,64 @@ B3  Codex BLTA       instanceof with a bound function                           
 B4  Codex BLTA       builtin toString used the mutable name                      b     fixed b19ea98 (Cx::initial_name)
 F1  Codex fixes      expect-stdout tests passed a first-run-only check           b     fixed 2cf2cfd; the loop stops here
 ```
+
+### 11.10 P4: perf report run 2, gates, docs; week-4 close
+
+Branches `m0w4/p4-perfrep`, `p4-docs` merged into `m0/wk4` (P4-GATES owns no source), then the orchestrator edits (51f5324) and the gate fix `m0w4/p4-atom`. The host idle baseline was measured first by the orchestrator.
+
+```text
+fa451f6  host idle baseline 2.505
+c659ef3  P4-PERFREP: run 2 (gate run), runner checks every counted run
+63967b0  P4-DOCS: 17 private rustdoc links, 81 path:line refs, 4 plan rows, ADR fills
+51f5324  orchestrator: xtask gc-lint row, kinds.rs STRING doc, bench README, ADR index
+c97420b  P4 gate fix: index keys built in Rust are atoms (W4-KEY-EQ)
+```
+
+Orchestrator rows:
+
+| ID | Decision | Reason | Evidence |
+|---|---|---|---|
+| W4-P4-IDLE-BASELINE | m5max-macos idle_baseline_load1 = 2.505 (60 samples over 10 minutes, 2026-10-21 08:04:52-08:14:46 UTC, nothing of ours running); the load guard limit is 3.00 (host.mjs rounds 3.005) | Plan §11 needs a baseline for a gate run. A first window gave 2.785 but overlapped a 242 MB file copy of ours, so it was measured again | scratchpad/bench/idle-p4.log, idle-p4b.log; tools/bench/hosts/m5max-macos.toml |
+| W4-P4-NONATOM-FIX | The failed P4 gate `non_atom_compares = 0` is fixed in week 4, not moved: index and number keys built in Rust are atoms (rows W4-P4-ATOM-*) | It is a week-4 gate (plan §7); one of the 3 sources (push_with_set) came from a P3 review fix | whole-suite debug run with EP9_ASSERT_ATOM_KEYS=1: panic 24 -> panic 0, 14,687 / 53,616 as in release |
+| W4-P4-ATOM-GATE-CI | The atom-key gate stays a P4/phase check, not a CI step, in week 4 | A whole-suite debug run costs minutes on every runner; GitHub CI is blocked anyway. Revisit when CI runs (month 2) | open list |
+| W4-P4-SPIKE-RECHECK | §12 re-check on the final CI run: SP-GC GO, SP-VA GO, SP-Value GO, SP-JIT-mem GO, SP-tsrs-win recorded PASS, SP-Dispatch GO with conditions (unchanged). The x86 sandbox gives sibling-vs-cgoto "void" (IQR > 5%): not a gate result, so H15 does not reopen and condition 2 (non-void x64 sysv/win64 on a quiet named-CPU host) stays open; the a64 speed re-runs (condition 1) were at load 6.63/4.58, above the 3.00 limit, so they stay provisional | Plan §12 rule: only a red gate reopens an ADR | P4-GATES report (scratchpad/week4/p4/gates.md) |
+| W4-P4-WEEK-CLOSE | §13 end-of-week check: all 8 rows PASS (instruction counts: perf-ci-v0 x86 JSON with 7 kernels + report runs 1 and 2; 8 Drafts H2, H14-H20; aot on macOS arm64, Linux arm64, x86-64 Linux cross aot build + clippy, Windows clippy; no red spike gate; week-2 leftovers green; H22/H23/H27/H07; no ABI bump with BCG-CORPUS-3; language/ 10,884 / 23,726 = 45.87% on macOS arm64, Linux arm64 and x86-64 Linux) | Plan §13 | P4-GATES report; local CI on c97420b |
+
+Agent rows:
+
+| ID | Decision | Reason | Evidence |
+|---|---|---|---|
+| W4-P4-PERFREP-EXPECT | countAll writes the expected output per workload and passes `ep9-bench --expect-stdout`. Exit 4 becomes REFUSED. | Before, the output check ran once and did not cover the counted runs (same gap as R4 / W4-PERF-REFUSE). | run.test.mjs "refuses a run that is right in the output check but wrong when counted" passes, and fails with the old runner. |
+| W4-P4-PERFREP-SEED | `--hash-seed` (default 1) sets EP9_HASH_SEED for ep9's counted runs only. Other engines get none. Timed runs keep the random seed. | W4-CI-PERF-SEED: counts move up to 3.75% otherwise. Timed runs stay comparable with run 1. | The R JSON has `ep9_hash_seed`. Run-2 counts match §11.6 within 0.08%. |
+| W4-P4-PERFREP-FILES | Run 2 goes on top of the existing md, and run 1's text stays below it unchanged. The run-2 JSON is its own file, `2026-10-21-perf-v0-run2.json`. | One ep9-cross/v1 file holds one run. | The md diff deletes only the title and 9 headings. |
+| W4-P4-PERFREP-PROFILER | Use samply 0.13.1 (4 kHz, 10 launches) instead of `sample` on attach (run 1). | Run-2 kernels take 125-250 ms, too short to attach to. | Samples per profile: 5,055 and 10,151. |
+| W4-P4-PERFREP-SHAPES | Measure live shape bytes with an uncommitted scratch probe on public APIs. | No CLI output for shape bytes, and I own no Rust path. | The shape table in the report. |
+| W4-P4-PERFREP-CANARY | The M0 exit 4 canary reads "pass" for richards and deltablue. | Gate run, both rows valid, and both intervals above 0.6. | Canary table; run-2 JSON `M.ratios[].canary`. |
+| W4-P4-GATES-SAMPLE | The 2,000-file debug sample is every 7th file (sorted) of the 14,687 files that pass in the release run. Path prefixes are passed to the runner. | Passing files run to the end, so they do the most key lookups. The pick can be repeated. | /private/tmp/claude-501/-Users-brooklyn-workspace-github-ep9/53ce3b1c-bc15-4f01-a4d1-8e97c5516415/scratchpad/p4gates/sample.py and sample-2000.txt |
+| W4-P4-GATES-ATOMGATE-CONTROL | Each gate run has a control run: the same debug binary without EP9_ASSERT_ATOM_KEYS. I also ran the whole suite. | This shows every extra failure comes from the gate (0 other differences) and gives the full scope (24 files). | debug-full-gate.log `panic 24`; debug-full-nogate.log `14687 / 53616` |
+| W4-P4-GATES-NONATOM-FAIL | non_atom_compares = 0 fails on test262. Root cause for 20 of the 24 files: property.rs:1021 (index keys in OwnPropertyKeys are not atoms), reached through copy_data_properties. | Seen in the runs and in the 2-line repro | atomgate-files.txt; mini.json (b1-b9 probes) |
+| W4-P4-GATES-AOT-X64 | The `aot` x86-64 Linux row uses a cross aot build and clippy from macOS, because the sandbox logs have no feature-matrix step. | No Cloudflare sandbox use is allowed for P4 | x64linux-feature-matrix.log: `aot clippy` PASS, `aot build` PASS |
+| W4-P4-GATES-SPIKE-ARM64 | I re-ran SP-GC and SP-JIT-mem on Linux arm64 in Docker with extras off. | The final local CI did not run spikes on Linux arm64 | linux-arm64-sp-gc.log, linux-arm64-sp-jit-mem.log |
+| W4-P4-DOCS-DRIFT-METHOD | The drift script finds the commit that first wrote each path:line token (`git log -S`) and maps the line to HEAD through `git diff -U0` hunks. A changed line falls back to a unique exact-text match. Refs that were already wrong are pinned by a regex that must match exactly one line. | A plain line map keeps a ref that was wrong at its own commit wrong (H20 at 4a29980 and 1805fea). | p4docs/path_line_drift.py, drift-dry-run.txt, drift-fix-run.txt |
+| W4-P4-DOCS-DOCLINKS-REAL-LIST | Fix the 17 errors the `--keep-going` run gives, including files outside the named list (comment lines only). | The hand-off list was out of date, and plain `-D warnings` stops at the first crate that fails. | doc-private-before-keepgoing.log |
+| W4-P4-DOCS-H20-R2-KIND | The H20 R2 change (adds JsStr, FlatStr and boxed closures; cites `Local::get` at local.rs:122) is logged as a rewrite before the freeze, even though no check changes result. | README §3.3: a change to a Rules row is a rewrite, and an unsure kind is a rewrite. G8 does not count pre-freeze changes. | H20 change log |
+| W4-P4-DOCS-PLAN-KINDS | Plan-row kinds: H7 rewrite [I51], H20 rewrite before the freeze [I53], H23 fill (matches H23-Q1) [I55]. They are listed in a new "Plan fixes 2026-10-21" row under "Changes vs plan v1". | Plan §7 and README §3.3 | docs/plan/02-architecture.md |
+| W4-P4-DOCS-BUILTINS-SPLIT | The 08 row says one `ep9_builtins` crate until M1a, and the C10 per-area split "is checked again at M1a". The 02 §8 diagram and 10-quality §6 keep `ep9_builtins_*` as the post-M1a target. | W4-BUILTINS-CRATE only fixes the layout until M1a, so this adds no new decision. | docs/plan/08-repo.md |
+| W4-P4-DOCS-UNITRS-SAFETY | The unit.rs SAFETY comment's reason: no code removes the unit root ranges, `units` only grows, and the `Runtime` field order (`heap` before `units`) drops the heap first. | There is no `LoadedUnit` Drop. I checked `remove_root` (no callers in ep9_vm), `units.borrow_mut()` (push only) and the field order. | runtime.rs, isolate.rs:269 |
+| W4-P4-ATOM-HELPER | Rust code that builds a key from an index or number uses key::index_key / key::number_key (an atom; a hit allocates nothing), not number_string + a content compare | One place to call; the W4-KEY-EQ gate needs atom keys | m_spread (2x10^5 `{...o}` with index keys) -30% instructions; helper test |
+| W4-P4-ATOM-SITES | Fixed at the source: own_property_keys (property.rs), copy_data_properties string branch (runtime.rs), push_with_set (natives.rs) | Traced with a temporary backtrace hook: the only places that build keys this way and then compare them | per-file reverts: each test fails only when its file is reverted |
+| W4-P4-ATOM-FORIN | The for-in key builders (property.rs ~640/690) stay as they are | Their keys go back to JS, and any lookup interns them first: 0 compares | for-in probe passes under the gate; whole-suite gate run panic 0 |
+| W4-P4-ATOM-PUSHSET-COST | Accept +27% wall time and +33 MB peak on the cold push [[Set]] path (only when a prototype has an index key) | Atom keys are the rule; it now costs the same as `a[i] = v` in the same situation | m_push_set vs m_idx_set |
+
+Review: Codex on the P4 diff (fa451f6..c97420b): verdict approve, no findings (atom-key tests and GC-stress probes, counted-run refusals, and the report's statistics and verdicts checked against its JSON).
+
+Week-4 result at c97420b: local CI 27 of 27 steps pass, including x86-sandbox (Linux x86-64: 913 tests pass in 52 binaries; test262 exec, eager and GC-stress + eager 0 new failures; perf-ci-v0 cachegrind with all 7 kernels). Perf report run 2 (docs/measurements/2026-10-21-perf-v0.md) is a gate run: net ratio vs QuickJS richards 1.394 (1.369-1.435), deltablue 1.558 (1.510-1.582), t0-call 1.308, t0-prop 1.160; the M0 exit 4 canary (0.6x) passes on both kernels, and the plan's baselines (richards 0.25x, t0-call 0.40x, t0-prop 0.48x) are beaten.
+
+Open after week 4 (owner, when):
+- IC hit/miss counters and the proto_epoch miss share (VM, month 2: a non-default cfg counter).
+- T0 slow paths from the run-2 profile: memset in call::push_frame, `x == null` on the cold compare path, Wide/ExtraWide operands on the cold stepper (VM, month 2).
+- SP-Dispatch conditions 1-2: a64 speed gates in a window under the load limit; non-void x64 sysv/win64 on a quiet named-CPU host (orchestrator, before M0 exit).
+- Windows x64: no host for language/, feature-matrix tests and SP-VA until GitHub CI runs (orchestrator, when billing is fixed).
+- Number::toString tie rounding (R5), Isolate::global HOLE for TDZ bindings, the open list of §11.9 and scratchpad week4/p3-handoffs.md (month 2).
+- README §3.3 change kinds not in the list (H16 "as built", H17/H19 "fix", H02 "ABI bump"/"API addition"/"evidence"), and old decisions-log rows that cite moved lines (memory.rs:117 -> :154, trace.rs, isolate.rs, heap.rs, Cargo.toml): map them with new rows when the README rules are next revised.
+
