@@ -493,11 +493,13 @@ impl<'a> FnGen<'a, '_> {
                 // A numeric literal key that is not a small integer: ToName now.
                 None => self.property_key_into(&p.key, key)?,
             }
-            let anonymous = p
-                .value
-                .as_ref()
-                .is_some_and(|v| v.is_anonymous_function_definition());
-            value(self, None)?;
+            let anonymous = match &p.value {
+                Some(v) => self.keyed_named_value(v, key)?,
+                None => {
+                    self.b.lda_undefined();
+                    false
+                }
+            };
             let flags = if anonymous { DEFINE_SET_NAME } else { 0 };
             let s = self.slot(FeedbackSlotKind::DefineKeyedOwn);
             self.expr_pos(at);

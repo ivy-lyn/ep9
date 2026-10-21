@@ -291,3 +291,44 @@ try { class I extends I {} } catch (e) { print(e.constructor.name); }"#
         ])
     );
 }
+
+/// NamedEvaluation with a computed key (a class field, a static field, an object literal key
+/// that is not a literal): ClassDefinitionEvaluation names an anonymous class (§15.7.14,
+/// SetFunctionName before the elements) before its static fields and blocks run, so they
+/// see the key as `this.name`, and a static block that sets `name` itself keeps its value.
+/// The last line follows ECMA-262: a `static name()` method replaces the name the class got
+/// first; node v24 prints "string string" there (V8 names the class after the definition).
+#[test]
+fn computed_key_names_the_class_before_static_elements() {
+    assert_eq!(
+        run_both(
+            r#"var seen = [];
+var s = Symbol('d'), k = 'y';
+class C {
+  ['x'] = class { static observed = this.name; };
+  ['b'] = class { static { seen.push(this.name); } };
+  [s] = class { static { seen.push(this.name); } };
+  ['e'] = class { static { Object.defineProperty(this, 'name', { value: '', configurable: true }); } };
+  ['p'] = (class { static { seen.push(this.name); } });
+  static ['z'] = class { static { seen.push(this.name); } };
+  ['f'] = function () {};
+  ['m'] = class { static name() {} };
+}
+var c = new C();
+print(c.x.observed, c.b.name, c[s].name, '"' + c.e.name + '"', c.p.name, C.z.name, c.f.name);
+print(seen.join());
+var lit = { [k]: class { static { seen.push(this.name); } }, [k + 'm']: class { static name() {} } };
+print(seen.join(), lit.y.name);
+var d = Object.getOwnPropertyDescriptor(c.x, 'name');
+print(d.value, d.writable, d.enumerable, d.configurable, Object.getOwnPropertyNames(c.x).join());
+print(typeof c.m.name, typeof lit.ym.name);"#
+        ),
+        lines(&[
+            r#"x b [d] "" p z f"#,
+            "z,b,[d],p",
+            "z,b,[d],p,y y",
+            "x false false true length,name,prototype,observed",
+            "function function",
+        ])
+    );
+}
