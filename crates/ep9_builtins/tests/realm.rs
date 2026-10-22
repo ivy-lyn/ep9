@@ -350,3 +350,62 @@ print('other object key', other.eval('(function (m, k) { return m.get(k); })')(m
         ])
     );
 }
+
+/// The realm steps that use GetFunctionRealm (§7.3.22): a function's lazy `prototype` object
+/// is made with the `%Object.prototype%` (or the generator prototype) of the function's realm,
+/// not of the realm that first reads it (§10.2.5 MakeConstructor runs at creation). A NativeError
+/// constructed with a newTarget whose `prototype` is not an object takes the error prototype
+/// of newTarget's realm (§20.5.6.1.1, §10.1.14 step 4). ArraySpeciesCreate (§10.4.2.3 step 4)
+/// does not use `%Array%` of another realm as the constructor.
+#[test]
+fn get_function_realm_steps() {
+    assert_eq!(
+        run_every(
+            r#"var other = createRealm();
+var f = other.eval('(function () {})');
+var fp = f.prototype;
+print('a ordinary', Object.getPrototypeOf(fp) === other.Object.prototype, fp.constructor === f);
+var g = other.eval('(function* () {})');
+var GP = other.eval('Object.getPrototypeOf(function* () {}).prototype');
+print('a generator', Object.getPrototypeOf(g.prototype) === GP);
+var C = other.eval('(class {})');
+print('a class', Object.getPrototypeOf(C.prototype) === other.Object.prototype);
+var nt = new other.Function();
+nt.prototype = null;
+var e = Reflect.construct(Error, ['m'], nt);
+print('b error', Object.getPrototypeOf(e) === other.Error.prototype, e.message);
+var te = Reflect.construct(TypeError, [], nt);
+print('b type error', Object.getPrototypeOf(te) === other.TypeError.prototype);
+var e2 = Reflect.construct(other.RangeError, [], function () {}.bind());
+print('b bound nt', Object.getPrototypeOf(e2) === RangeError.prototype);
+var oa = new other.Array(1, 2, 3);
+var m = Array.prototype.map.call(oa, function (x) { return x * 2; });
+print('c map', Object.getPrototypeOf(m) === Array.prototype, m.join());
+var s = Array.prototype.slice.call(oa, 1);
+print('c slice', Object.getPrototypeOf(s) === Array.prototype);
+var oa2 = new other.Array(1);
+oa2.constructor = Array;
+print('c own array', Object.getPrototypeOf(Array.prototype.concat.call(oa2)) === Array.prototype);
+var oa3 = [1];
+oa3.constructor = other.Array;
+print('c other ctor', Object.getPrototypeOf(oa3.filter(function () { return true; })) === Array.prototype);
+var oa4 = [1];
+oa4.constructor = other.Function('return function () {}')();
+oa4.constructor[Symbol.species] = undefined;
+print('c non-array ctor', Object.getPrototypeOf(oa4.map(function (x) { return x; })) === Array.prototype);"#
+        ),
+        lines(&[
+            "a ordinary true true",
+            "a generator true",
+            "a class true",
+            "b error true m",
+            "b type error true",
+            "b bound nt true",
+            "c map true 2,4,6",
+            "c slice true",
+            "c own array true",
+            "c other ctor true",
+            "c non-array ctor true",
+        ])
+    );
+}

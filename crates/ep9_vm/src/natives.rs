@@ -709,7 +709,10 @@ error_ctors! {
     uri_error_ctor => UriError,
 }
 
-/// NativeError(message) (§20.5.6.1.1). v0: no `options.cause`.
+/// NativeError(message) (§20.5.6.1.1). v0: no `options.cause`. The prototype is
+/// OrdinaryCreateFromConstructor's (§10.1.13): `newTarget.prototype` if it is an object,
+/// else the error prototype of GetFunctionRealm(newTarget); with no newTarget (a call), the
+/// error prototype of the current realm, which is the constructor's (`call_host` switches).
 fn construct_error(cx: &mut Cx, kind: ErrorKind, message: u64, nt: u64) -> JsResult<u64> {
     let rt = cx.rt();
     let mut proto = rt.root(kind.prototype_root());
@@ -717,6 +720,14 @@ fn construct_error(cx: &mut Cx, kind: ErrorKind, message: u64, nt: u64) -> JsRes
         let p = property::get(cx, nt, rt.atom(Atom::Prototype))?;
         if is_object(p) {
             proto = p;
+        } else {
+            // §10.1.14 step 4: the prototype of GetFunctionRealm(newTarget).
+            let r = crate::realm::get_function_realm(rt, nt);
+            let id = crate::builtins::IntrinsicId::ALL
+                .into_iter()
+                .find(|id| id.root() == Some(kind.prototype_root()))
+                .expect("an error prototype id");
+            proto = crate::realm::intrinsic_in(rt, r, id);
         }
     }
     let msg = if message == UNDEFINED {
