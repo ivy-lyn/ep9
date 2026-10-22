@@ -30,7 +30,7 @@ One cage per isolate below 2^47 (64 GiB default, configurable); avoids 0x4001_00
                                         one code range per process: JIT code + unit text (RX)
 ```
 
-- **Cage per isolate (as built).** `Heap::new` reserves its own `Cage` (`crates/ep9_heap/src/memory.rs:154`). The in-cage test and the conservative scan look only at that heap's chunks (`crates/ep9_heap/src/memory.rs:250-252`, `crates/ep9_heap/src/trace.rs:357-358`). So one isolate's scan never finds another isolate's cells.
+- **Cage per isolate (as built).** `Heap::new` reserves its own `Cage` (`crates/ep9_heap/src/memory.rs:154`). The in-cage test and the conservative scan look only at that heap's chunks (`crates/ep9_heap/src/memory.rs:262-264`, `crates/ep9_heap/src/trace.rs:357-358`). So one isolate's scan never finds another isolate's cells.
 - **Process code range (as built, M0 month 2 P1).** Unit text is shared per process (05 §8, H22), and JIT stubs are shared by every isolate. One range keeps direct calls between them. SpiderMonkey also keeps one executable region per process ([SM-PEM]).
   - `CodeRange::process()` (`crates/ep9_platform/src/va.rs:621`) reserves it at the first call, on any thread, and returns the same `&'static CodeRange` after that. Placement and size: H07-Q6.
   - Users take page-granular `CodeChunk`s from it (`CodeRange::alloc`, `crates/ep9_platform/src/va.rs:695`: lowest free run that fits, behind a mutex; drop gives the pages back and merges free runs). With `jit`, `CodeChunk::commit` makes a chunk a W^X `jit::CodeMemory`.

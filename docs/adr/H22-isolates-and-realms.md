@@ -36,12 +36,12 @@ Isolate = one heap, one thread at a time; N realms; workers are isolates; only S
 
 | Fact | Where |
 |---|---|
-| `Isolate` = `Box<Cx>` + `Box<Runtime>`, not `Send` | `crates/ep9_vm/src/isolate.rs:152-157`; `Heap` holds `PhantomData<*mut ()>` (`crates/ep9_heap/src/heap.rs:179-197`) |
+| `Isolate` = `Box<Cx>` + `Box<Runtime>`, not `Send` | `crates/ep9_vm/src/isolate.rs:238-243`; `Heap` holds `PhantomData<*mut ()>` (`crates/ep9_heap/src/heap.rs:190-208`) |
 | One heap per isolate, one 64 GiB cage per heap with no code range; one 128 MiB code range per process for JIT code and units of every isolate (`CodeRange::process`, H07-Q6) | `crates/ep9_heap/src/memory.rs:154`; `crates/ep9_platform/src/va.rs:49`, `crates/ep9_platform/src/va.rs:52`, `crates/ep9_platform/src/va.rs:621` |
-| The conservative scan finds only cells of its own cage | `Memory::contains` (`crates/ep9_heap/src/memory.rs:250-252`); `find_cell` (`crates/ep9_heap/src/trace.rs:357-358`) |
-| Roots and atoms are per isolate (`Shared.roots`) | `crates/ep9_vm/src/runtime.rs:161`, `crates/ep9_vm/src/runtime.rs:166` |
-| One realm per isolate in v0 | `Root` (`crates/ep9_vm/src/runtime.rs:38`) |
-| `TerminateHandle` (`Arc<AtomicU32>`, the interrupt word `Runtime::terminate`; bit 0 = terminate) works from any thread | `crates/ep9_vm/src/isolate.rs:139-150`; test `crates/ep9_vm/src/tests/exceptions.rs:421` |
+| The conservative scan finds only cells of its own cage | `Memory::contains` (`crates/ep9_heap/src/memory.rs:262-264`); `find_cell` (`crates/ep9_heap/src/trace.rs:357-358`) |
+| Roots and atoms are per isolate (`Shared.roots`) | `crates/ep9_vm/src/runtime.rs:161`, `crates/ep9_vm/src/runtime.rs:179` |
+| One realm per isolate in v0 | `Root` (`crates/ep9_vm/src/runtime.rs:51`) |
+| `TerminateHandle` (`Arc<AtomicU32>`, the interrupt word `Runtime::terminate`; bit 0 = terminate) works from any thread | `crates/ep9_vm/src/isolate.rs:154-165`; test `crates/ep9_vm/src/tests/exceptions.rs:421` |
 | test262 exec makes a fresh isolate per run, one after another on a worker thread | `RunCtx::isolate` (`tools/test262/src/exec.rs:559-565`) |
 | `$262` has `global` and `gc` only; `createRealm` is missing | `tools/test262/src/exec.rs:50-53` |
 | No shared mutable state between isolates | Statics are read-only tables (`EXIT_STUB`, dispatch `TABLE`), a write-once page-size cache (`OnceLock` in `ep9_platform` `sys`) and a per-thread `MAP_JIT` window counter (`jit`) |

@@ -31,11 +31,11 @@ SeqLatin1, SeqUtf16, rope (length ≥ 13), slice (length ≥ 13), thin, external
 | Hash field | 0 = not computed; bit 0 computed; bit 1 array index < 2^24 with the index in bits 2-25; else 30 hash bits in bits 2-31 (V8 Name style) | `crates/ep9_vm/src/string.rs:59` |
 | Hash | SipHash-1-3 over UTF-16 code-unit values (LE), so both encodings hash alike; a cached index hashes its u32 value | `sip13_units_with` (`crates/ep9_vm/src/string.rs:656`) |
 | Seed | one per process: random (std `RandomState`, OS source) or `EP9_HASH_SEED` (decimal, `0x` hex, or any text hashed to a seed) | `sip_keys` (`crates/ep9_vm/src/string.rs:564`) |
-| Atom table | per isolate, `Rc<RefCell<AtomTable>>`; open addressing, linear probing, ≤ 1/2 full; weak: the heap weak source drops dead entries and rebuilds | `crates/ep9_vm/src/atoms.rs:113`; `init` (`crates/ep9_vm/src/atoms.rs:264`); `crates/ep9_heap/src/heap.rs:896` |
+| Atom table | per isolate, `Rc<RefCell<AtomTable>>`; open addressing, linear probing, ≤ 1/2 full; weak: the heap weak source drops dead entries and rebuilds | `crates/ep9_vm/src/atoms.rs:113`; `init` (`crates/ep9_vm/src/atoms.rs:264`); `crates/ep9_heap/src/heap.rs:950` |
 | Interning | a string cell becomes the atom in place (no allocation); text from Rust: hash, probe, allocate first, then insert | `intern` (`crates/ep9_vm/src/atoms.rs:280`), `intern_text` (`crates/ep9_vm/src/atoms.rs:297`) |
 | `atoms!` list | 35 names, `pub enum Atom` `repr(u16)`, append-only ids; isolate roots | `crates/ep9_vm/src/atoms.rs:60` |
 | Single characters | 256 Latin-1 atoms, isolate roots, filled lazily; `s[i]` and the string iterator use them | `char_at` (`crates/ep9_vm/src/string.rs:349`) |
-| Units | every unit string is interned at load (root range of the unit) | `crates/ep9_vm/src/unit.rs:101` |
+| Units | every unit string is interned at load (root range of the unit) | `crates/ep9_vm/src/unit.rs:130` |
 | Keys | ToPropertyKey flattens and interns; no number keys: "1" is an atom with the index cached (W4-NO-NUMBER-KEYS) | `crates/ep9_vm/src/key.rs:56` |
 | Key compare | same bits, or two atoms → unequal at once; a non-atom key takes one content compare and bumps a debug counter | `key_eq` (`crates/ep9_vm/src/key.rs:43`), `probe` (`crates/ep9_vm/src/key.rs:153`) |
 | Limit | 2^29 − 24 code units (V8); `concat` returns `None` and callers throw RangeError "Invalid string length" | `crates/ep9_vm/src/string.rs:54`; `crates/ep9_vm/src/natives.rs:988` |

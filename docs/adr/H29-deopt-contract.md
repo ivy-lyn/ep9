@@ -43,7 +43,7 @@ lazy:  fuse pops -> mark dependent code -> swap return addresses on the stack ->
 |---|---|
 | Every runtime-table call from JIT code passes `(cx, fp, bytecode offset, values..)` | `crates/ep9_vm/src/native.rs:10-11`; the table fn types `RtFn0`-`RtCompareFn` `crates/ep9_vm/src/native.rs:89-98` |
 | Rules "records the state first" and "a bytecode offset, not a pc" (the same code works for JIT code and unit text) | `crates/ep9_vm/src/native.rs:21-22` |
-| `native::enter` publishes fp and saves the offset through `Runtime::enter` before the table fn body runs | `crates/ep9_vm/src/native.rs:338-355`; `crates/ep9_vm/src/runtime.rs:291-305` (offset slot fp-1, `crates/ep9_vm/src/frame.rs:68`) |
+| `native::enter` publishes fp and saves the offset through `Runtime::enter` before the table fn body runs | `crates/ep9_vm/src/native.rs:338-355`; `crates/ep9_vm/src/runtime.rs:309-323` (offset slot fp-1, `crates/ep9_vm/src/frame.rs:68`) |
 | The a64 emitter loads the offset as an immediate (w2) for each table call | `spikes/spike-b/src/jit/a64.rs:90-92` |
 | Spike B code has no absolute address and no relocation; each emitted bytecode op records its native offset from the code start | `spikes/spike-b/src/emit.rs:139-146` (`FunctionCode.code`, `native_offsets`) |
 | No deopt metadata exists: `DEOPT_META_VERSION` = 0. The unit header carries it (offset 112); a mismatch is the BYTECODE outcome (H35 S4 step 4) | `crates/ep9_vm/src/versions.rs:18-19`; `crates/ep9_unit/src/header.rs:115-116`; `docs/adr/H35-aot-unit-format.md:55` |
