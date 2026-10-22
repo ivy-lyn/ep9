@@ -167,10 +167,10 @@ ep9_baseline / ep9_opt
 - [./05-aot.md](./05-aot.md) owns the unit container, header fields and load flow (H35).
 
 **Spikes.**
-- **Spike B (M0, month 2).** A 10-opcode template JIT measures the T0 -> JIT -> T0 round trip on each target.
+- **Spike B (M0, month 2).** An 11-opcode template JIT (the planned 10 plus AddSmi) measures the T0 -> JIT -> T0 round trip on each target.
   - Keep native-stack JIT frames if one round trip costs ≤ 18 release-expansion dispatches of the loop kernel on the same host (est.). Otherwise open an ADR for one unified VM stack.
   - It also settles D21 (interpreter frame home; default: VM register stack + native control stack, Hermes model) [R14].
-- **SP-Unit (inside Spike B, +0.25 PM est.).** The same 10 opcodes go into a unit blob. It must load, call, unwind, survive a GC scan and fall back on a version mismatch. Gate: green on 4 targets.
+- **SP-Unit (inside Spike B, +0.25 PM est.).** The same 11 opcodes go into a unit blob. It must load, call, unwind, survive a GC scan and fall back on a version mismatch. Gate: green on 4 targets.
 - **Spike C (M1, throwaway, 1.5-3 PM est.).** A small SSA compiler for 2-3 v8-v7 kernels on arm64. It reads T0 feedback and has one eager deopt from a native frame to a VM-stack frame. Gate: deopt correct under the tier-differential test; kernels ≥ 3x faster than T0 (est.).
 - **SP-Facts (inside Spike C, +0.25-0.5 PM est.).** The Spike C IR uses the fact lattice and ref nodes (§6) and emits PI deopt metadata (§9). Gate: one kernel compiled from a PROFILED FactSnapshot file gives identical output at ≥ 90% of live-feedback speed (est.).
 - A failed Spike C or SP-Facts gate reopens H2, H14, H16, H17 and H29-H34 before M1 exit.

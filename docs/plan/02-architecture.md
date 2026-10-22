@@ -216,7 +216,7 @@ Stage A0 fixes the dual-mode contracts (H2, H3, H5, H8, H13, H14, H16, H29-H37) 
 | Container spec v0 + header struct + golden test | H35 | M0 exit | in total |
 | FP rule: `clippy.toml` + `xtask fp-check` stub | H36 | M0 wk2 | in total |
 | Hint-section slot only (schema v0 comes at A1h) | H37 | Slot M0 wk3 | in total |
-| SP-Unit inside Spike B: 10 opcodes as a unit blob (load, call, unwind, GC scan, version fallback) | H14, H35 | M0 month 2 | +0.25 PM (est.) |
+| SP-Unit inside Spike B: 11 opcodes (with AddSmi) as a unit blob (load, call, unwind, GC scan, version fallback) | H14, H35 | M0 month 2 | +0.25 PM (est.) |
 | SP-Facts inside Spike C: lattice + ref nodes, PI metadata, one kernel from a PROFILED FactSnapshot file | H16, H29, H30 | M1 | +0.25-0.5 PM (est.) |
 | **Total** | | M0-M1 | **about 1-2 PM (est.)** |
 

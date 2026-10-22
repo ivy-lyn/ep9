@@ -38,7 +38,7 @@ Copied from the plan row: an external-reference table. Intrinsics in fixed order
 | Runtime functions (`RuntimeId`) | `crates/ep9_bytecode/src/feedback.rs` | the ABI fingerprint (`runtime_table_text`): `abi::abi_version_matches_history` |
 | Well-known symbols (`WellKnownSymbol::ALL`) | `crates/ep9_vm/src/symbol.rs` | `tests::symbols::well_known_symbols_are_isolate_roots_in_order` |
 | Isolate roots (`Root`, 32) | `crates/ep9_vm/src/runtime.rs` | count only: `runtime::tests::atoms_and_roots_are_distinct` (H13-Q2) |
-| Native runtime-function table (`RuntimeTable`, feature `spike-native`) | `crates/ep9_vm/src/native.rs` (built by P1-NATIVE-ENTRY) | the 7 `RT_*` offsets in declaration order: `tests::native::layout_offsets_read_the_live_isolate` (spike-native builds only); no golden yet (H13-Q3) |
+| Native runtime-function table (`RuntimeTable`, feature `spike-native`) | `crates/ep9_vm/src/native.rs` (built by P1-NATIVE-ENTRY) | the 8 `RT_*` offsets in declaration order, `RT_POLL` at 0 to `RT_UNWIND` at 56 (`unwind` appended by P4-PLACEMENT-B for placement (b); `crates/ep9_vm/src/native.rs:196-203`): `tests::native::layout_offsets_read_the_live_isolate` (spike-native builds only); no golden yet (H13-Q3) |
 | Fuses, snapshot root shapes, external references | not built (H31 in M1; A1 in M4) | none yet |
 
 ## Rules
@@ -96,6 +96,7 @@ Copied from the plan row: an external-reference table. Intrinsics in fixed order
 | 2026-10-22 | clarify | Index-list table re-checked at 383a317: 39 realm intrinsics (the golden lists 39), builtin blocks 1-11, and the native `RuntimeTable` is built (offset-order test, no golden). Rules re-checked: the three `native_of` stores into cells (FUNCTION info, CONTEXT scope, FEEDBACK info) each have an index form. No check changes | P2-ACCEPT-1 |
 | 2026-10-22 | rewrite | Native-word Rules row: FUNCTION +24 = (unit, function id) holds for a bytecode info only. A table builtin's host info maps to its BuiltinId; an embedder host function has no index form yet (new Open question H13-Q5). This corrects the row above ("each have an index form"). New check `tests::objects::function_cell_infos_have_an_index_form` | P2 review fixer (Codex A1) |
 | 2026-10-22 | clarify | 1 `path:line` reference moved to the code after the M2-P4 merge (drift script, [I15]). No check changes | P4 integration fixer |
+| 2026-10-22 | clarify | The `RuntimeTable` index-list row says 8 `RT_*` offsets (P4 appended `RT_UNWIND` at 56 for placement (b)); the table is append-only. H13-Q3 stays with M3-P1 SP-UNIT. No check changes | P5-DOCS-SYNC agent (M2-P5) |
 
 ## Review record
 
