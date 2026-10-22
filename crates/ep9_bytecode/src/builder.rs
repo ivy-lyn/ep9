@@ -19,8 +19,9 @@
 //!
 //! Determinism: output order is insertion order everywhere. Hash maps only answer "seen
 //! before?"; the builder never iterates one. The unit string table order is fixed at
-//! [`UnitBuilder::finish`]: scopes in id order, then functions in id order. So the bytes do
-//! not depend on the order in which BytecodeGen finishes functions.
+//! [`UnitBuilder::finish`]: scopes in id order, then functions in id order, then the module
+//! records (ABI 5). So the bytes do not depend on the order in which BytecodeGen finishes
+//! functions.
 
 use std::collections::HashMap;
 
@@ -34,8 +35,8 @@ use crate::sha256::sha256;
 use crate::string::UnitString;
 use crate::unit::{
     BigIntConst, CodeKind, CompiledUnit, Constant, Function, FunctionFlags, FunctionKind, Handler,
-    HandlerKind, NumberBits, Oddball, PositionEntry, Scope, ScopeFlags, ScopeKind, ScopeSlot,
-    TsFlags, UnitHeader, VariableMode, VerifiedUnit,
+    HandlerKind, MappedParameters, ModuleRecords, NumberBits, Oddball, PositionEntry, Scope,
+    ScopeFlags, ScopeKind, ScopeSlot, TsFlags, UnitHeader, VariableMode, VerifiedUnit,
 };
 use crate::verify::{MAX_REGISTERS, VerifyError, verify};
 
@@ -306,6 +307,7 @@ pub struct FunctionBuilder {
     throw_position: Option<u32>,
     next_register: u32,
     max_registers: u32,
+    mapped_parameters: Option<MappedParameters>,
     error: Option<BuildError>,
 }
 
@@ -325,8 +327,16 @@ impl FunctionBuilder {
             throw_position: None,
             next_register: 0,
             max_registers: 0,
+            mapped_parameters: None,
             error: None,
         }
+    }
+
+    /// (ABI 5.) Sets the mapped-parameter list ([`MappedParameters`]): for formal parameter
+    /// `i`, the context slot of `scope` that holds it, or `None` when a later duplicate name
+    /// shadows it. An empty `slots` clears the list. The verifier checks it against `scope`.
+    pub fn set_mapped_parameters(&mut self, scope: ScopeId, slots: Vec<Option<u32>>) {
+        self.mapped_parameters = (!slots.is_empty()).then_some(MappedParameters { scope, slots });
     }
 
     /// The metadata.
@@ -796,6 +806,7 @@ impl FunctionBuilder {
             feedback_slots: self.feedback,
             handlers,
             positions,
+            mapped_parameters: self.mapped_parameters,
         })
     }
 }
@@ -856,6 +867,7 @@ pub struct FunctionCode {
     feedback_slots: Vec<FeedbackSlotKind>,
     handlers: Vec<Handler>,
     positions: Vec<PositionEntry>,
+    mapped_parameters: Option<MappedParameters>,
 }
 
 impl FunctionCode {
@@ -908,6 +920,7 @@ pub struct UnitBuilder {
     scopes: Vec<PendingScope>,
     functions: Vec<Option<FunctionCode>>,
     hints: Option<Vec<u8>>,
+    module_records: Option<ModuleRecords<UnitString>>,
     error: Option<BuildError>,
 }
 
@@ -923,6 +936,7 @@ impl UnitBuilder {
             scopes: Vec::new(),
             functions: Vec::new(),
             hints: None,
+            module_records: None,
             error: None,
         };
         if source_len.is_err() {
@@ -971,6 +985,12 @@ impl UnitBuilder {
     /// Sets the hint section bytes (format owned by `ep9_facts`).
     pub fn set_hints(&mut self, bytes: Vec<u8>) {
         self.hints = Some(bytes);
+    }
+
+    /// (ABI 5.) Sets the module records of a module unit. Without this call a module unit gets
+    /// empty records. Their strings are interned after the function strings.
+    pub fn set_module_records(&mut self, records: ModuleRecords<UnitString>) {
+        self.module_records = Some(records);
     }
 
     /// Interns strings, assembles the unit and verifies it.
@@ -1043,8 +1063,14 @@ impl UnitBuilder {
                 feedback_slots: f.feedback_slots,
                 handlers: f.handlers,
                 positions: f.positions,
+                mapped_parameters: f.mapped_parameters,
             });
         }
+        let module_records = match (self.module_records, self.opts.code_kind) {
+            (Some(m), _) => Some(m.map_strings(|s| strings.intern(s))),
+            (None, CodeKind::Module) => Some(ModuleRecords::default()),
+            (None, _) => None,
+        };
         let unit = CompiledUnit {
             header: UnitHeader {
                 code_kind: self.opts.code_kind,
@@ -1059,6 +1085,7 @@ impl UnitBuilder {
             functions,
             source: self.source,
             hints: self.hints,
+            module_records,
         };
         verify(unit).map_err(BuildError::Verify)
     }

@@ -1,6 +1,6 @@
 # lit-strings: script (sloppy)
 # | 0; "a"; "\u00e9"; "\u4e2d"; "\uD800"; "\uD83D\uDE00"; ""; 'x' + "y"; "\0\n";
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=76 source=embedded hints=none
 source_hash=12583c6194c2366f723ba491f4a01b481f7e3b65fca18b4bc33fd89d5f88357d
 strings (9):

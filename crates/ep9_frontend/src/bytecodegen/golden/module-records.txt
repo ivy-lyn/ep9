@@ -1,0 +1,99 @@
+# module-records: module
+# | import d, { a as b, 'x-y' as c } from './m.js';
+# | import * as ns from './m.js';
+# | import './side.js';
+# | export { b as bb, ns, v as 'v-v' };
+# | export { q, default as r } from './q.js' with { type: 'json', mode: 'x' };
+# | export * from './s.js';
+# | export * as all from './m.js';
+# | export var v = 1, { w } = {};
+# | export default function () {}
+; ep9 bytecode, ABI 5
+unit kind=module strict=true ts=none source_len=323 source=embedded hints=none
+source_hash=edbe957f958dd3fe353a5ac1f67afe51459c2a4ae6609d6ad4adb02eabc9e854
+strings (23):
+  str0 "w"
+  str1 "default"
+  str2 "./m.js"
+  str3 "./side.js"
+  str4 "./q.js"
+  str5 "mode"
+  str6 "x"
+  str7 "type"
+  str8 "json"
+  str9 "./s.js"
+  str10 "d"
+  str11 "a"
+  str12 "b"
+  str13 "x-y"
+  str14 "c"
+  str15 "ns"
+  str16 "v-v"
+  str17 "v"
+  str18 "*default*"
+  str19 "bb"
+  str20 "q"
+  str21 "r"
+  str22 "all"
+scopes (2):
+  scope0 module outer=- flags=[strict] slots=[]
+  scope1 function outer=scope0 flags=[strict] slots=[]
+module records: has-tla=false
+  requests (4):
+      0 "./m.js" attributes=[]
+      1 "./side.js" attributes=[]
+      2 "./q.js" attributes=["mode": "x", "type": "json"]
+      3 "./s.js" attributes=[]
+  imports (4):
+      0 request=0 import="default" local="d" cell=-1
+      1 request=0 import="a" local="b" cell=-2
+      2 request=0 import="x-y" local="c" cell=-3
+      3 request=0 import=namespace local="ns" cell=-4
+  local exports (5):
+      0 export="ns" local="ns" cell=-4
+      1 export="v-v" local="v" cell=1
+      2 export="v" local="v" cell=1
+      3 export="w" local="w" cell=2
+      4 export="default" local="*default*" cell=3
+  indirect exports (4):
+      0 export="bb" request=0 import="a"
+      1 export="q" request=2 import="q"
+      2 export="r" request=2 import="default"
+      3 export="all" request=0 import=all
+  star exports (1):
+      0 request=3
+function f0 module name=- parent=- outer_scope=- flags=[strict] params=0 length=0 regs=2 range=0..323
+  code (28 bytes):
+      0 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      4    StaModuleVariable [3], [0]                   ; 20 03 00
+      7 S> LdaSmi [1]                                   ; 04 01
+      9    StaModuleVariable [1], [0]                   ; 20 01 00
+     12 S> CreateEmptyObjectLiteral                     ; 71
+     13    Star r0                                      ; 0c 00
+     15    Ldar r0                                      ; 0b 00
+     17 E> ToObject r1                                  ; 5b 01
+     19 E> GetNamedProperty r0, k1, s1  ; k1 = String str0 "w" ; 21 00 01 01
+     23    StaModuleVariable [2], [0]                   ; 20 02 00
+     26    LdaUndefined                                 ; 05
+     27    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "w"
+  feedback (2):
+      0 CreateClosure
+      1 LoadNamed
+  handlers (0):
+  positions (5):
+      0 E 309 (9:16)
+      7 S 275 (8:12)
+     12 S 282 (8:19)
+     17 E 282 (8:19)
+     19 E 284 (8:21)
+function f1 normal name="default" parent=f0 outer_scope=scope0 flags=[strict,simple-params] params=0 length=0 regs=0 range=309..323
+  code (2 bytes):
+      0    LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (0):

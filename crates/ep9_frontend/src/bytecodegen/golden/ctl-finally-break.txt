@@ -1,6 +1,6 @@
 # ctl-finally-break: script (sloppy)
 # | function f(g) { for (;;) { try { if (g()) break; continue; } finally { g(); } } }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=81 source=embedded hints=none
 source_hash=c0df0d1572f42a1e99402ed87007954ab93202da0a716611a01506c29fc046d8
 strings (1):

@@ -1,6 +1,6 @@
 # ctl-do-while: script (sloppy)
 # | function f(a) { do { a--; } while (a > 0); }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=44 source=embedded hints=none
 source_hash=73dcaefe7caafb3718d54d152238dc2af4e30805290ea811f00520a6e124353d
 strings (1):

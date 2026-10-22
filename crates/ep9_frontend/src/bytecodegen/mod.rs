@@ -1,4 +1,4 @@
-//! BytecodeGen v0: JS source -> [`CompiledUnit`](ep9_bytecode::CompiledUnit) (bytecode ABI 4).
+//! BytecodeGen v0: JS source -> [`CompiledUnit`](ep9_bytecode::CompiledUnit) (bytecode ABI 5).
 //!
 //! ```text
 //! compile_script / compile_module / compile (and eval.rs compile_eval: own parse job, Eval root)
@@ -51,6 +51,8 @@ use crate::{
     with_front_end,
 };
 
+mod async_fn;
+mod async_gen;
 mod class;
 mod class_fields;
 mod expr;
@@ -58,6 +60,7 @@ mod func;
 mod generator;
 mod literal;
 mod lookup;
+mod module;
 mod pattern;
 mod private;
 mod stmt;
@@ -371,6 +374,10 @@ pub(crate) fn generate(
             f.kind, f.span.start
         )));
     }
+    // ABI 5 section 5 (module.rs).
+    if module {
+        unit.set_module_records(module::module_records(fe.program, sa, &cx.cells).map_err(|e| *e)?);
+    }
     unit.finish().map_err(build_error)
 }
 
@@ -649,6 +656,9 @@ fn add_scopes(
         if s.sloppy_eval {
             flags = flags | ScopeFlags::CALLS_SLOPPY_EVAL;
         }
+        if s.parameter_env {
+            flags = flags | ScopeFlags::PARAMETER_ENV;
+        }
         let script_top = s.id.0 == 0 && script;
         if s.needs_context && !script_top {
             flags = flags | ScopeFlags::NEEDS_CONTEXT;
@@ -809,7 +819,7 @@ impl<'a> FnGen<'a, '_> {
             if info.is_generator {
                 self.check_generator(info.is_async, span)?;
             } else if info.is_async {
-                return self.unsupported("async functions", span);
+                self.async_closure(span)?;
             }
             self.enter(span)?;
             let m = self.mark();

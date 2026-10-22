@@ -369,6 +369,14 @@ impl Builder<'_> {
                 self.scopes[var_scope.index()].sloppy_eval = true;
                 let owner = self.scopes[var_scope.index()].function;
                 self.functions[owner.index()].calls_sloppy_eval = true;
+                // ABI 5 PARAMETER_ENV: with parameter expressions the body has its own var
+                // scope, so an eval whose var scope is the function scope is in the parameter
+                // list (FunctionDeclarationInstantiation step 20).
+                let f = &self.functions[owner.index()];
+                if f.has_parameter_expressions && f.scope == var_scope && f.body_scope != var_scope
+                {
+                    self.scopes[var_scope.index()].parameter_env = true;
+                }
                 self.eval_ext_binding(var_scope);
             }
             // The eval code can use this, new.target, super and arguments of the nearest

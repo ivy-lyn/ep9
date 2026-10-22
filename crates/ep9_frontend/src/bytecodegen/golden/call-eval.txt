@@ -1,6 +1,6 @@
 # call-eval: script (sloppy)
 # | function f(x) { return eval(x); } function g() { return eval(); } var e = eval; e('1');
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=87 source=embedded hints=none
 source_hash=9aedf107e0a112c9793f303434566fbcff185718df19fdb4a29a87564cb8e259
 strings (10):
@@ -114,6 +114,7 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
      26 E 23 (1:24)
      53 E 23 (1:24)
      60 E 23 (1:24)
+  mapped parameters (1): scope=scope1 slots=[1]
 function f2 normal name="g" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=8 range=34..65
   code (59 bytes):
       0 E> CreateFunctionContext k0, [4]  ; k0 = Scope scope2 ; 75 00 04

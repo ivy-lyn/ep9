@@ -1,6 +1,6 @@
 # var-direct-eval: script (sloppy)
 # | function f(a) { var b; eval('a + b'); return b; }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=49 source=embedded hints=none
 source_hash=222d0166cab0d2fecf121065fbd303f90501a85a4cc23b4f45bac85fb64352ab
 strings (9):
@@ -86,3 +86,4 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
      53 E 23 (1:24)
      60 E 23 (1:24)
      65 S 38 (1:39)
+  mapped parameters (1): scope=scope1 slots=[1]

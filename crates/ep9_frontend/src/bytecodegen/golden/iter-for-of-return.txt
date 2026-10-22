@@ -1,6 +1,6 @@
 # iter-for-of-return: script (sloppy)
 # | function f(a) { for (var x of a) return x; }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=44 source=embedded hints=none
 source_hash=6619225b317bc0e811e3300a749179feb8fc5b9ed01693cd040a9889b260671b
 strings (5):

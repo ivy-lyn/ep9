@@ -1,6 +1,6 @@
 # op-delete: script (sloppy)
 # | var o, k; delete o.a; delete o[k]; delete x; delete o; delete 1; delete o?.a;
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=77 source=embedded hints=none
 source_hash=0e380f58ad9644b722070c156de6e3bac663a172bf299a8a31bdbd4debeaa386
 strings (4):

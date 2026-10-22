@@ -79,19 +79,19 @@ impl<'a> Visit<'a> for SuspendCounter {
 
 impl<'a> FnGen<'a, '_> {
     /// The check before a closure is made for a generator function node (declaration,
-    /// expression or method). An async generator keeps the "generator functions" text until
-    /// async generators exist (month 3; GEN6).
+    /// expression or method). An async generator goes to `async_gen.rs` (it keeps the
+    /// "generator functions" text until M3-P2 ASYNCGEN; GEN6).
     pub(crate) fn check_generator(&self, is_async: bool, span: Span) -> Gen {
         if is_async {
-            return self.unsupported("generator functions", span);
+            return self.async_generator_closure(span);
         }
         Ok(())
     }
 
-    /// The body of a generator function (an async generator is rejected, GEN6).
+    /// The body of a generator function (an async generator goes to `async_gen.rs`, GEN6).
     pub(crate) fn gen_generator(&mut self, node: &'a Function<'a>) -> Gen {
         if node.r#async {
-            return self.unsupported("generator functions", node.span);
+            return self.gen_async_generator(node);
         }
         let mut counter = SuspendCounter(1);
         counter.visit_formal_parameters(&node.params);

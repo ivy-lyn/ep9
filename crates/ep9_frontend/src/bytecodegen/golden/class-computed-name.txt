@@ -1,0 +1,148 @@
+# class-computed-name: script (sloppy)
+# | var k = Symbol('s'); var o = { [k]: class {}, ['x' + 1]: class { static y = this.name; } };
+; ep9 bytecode, ABI 5
+unit kind=script strict=false ts=none source_len=91 source=embedded hints=none
+source_hash=f900ef05372a54d06e42e89ed22641f907baf9192d738ecaa518b2f6a157b4af
+strings (7):
+  str0 "k"
+  str1 "o"
+  str2 "Symbol"
+  str3 "s"
+  str4 "x"
+  str5 "name"
+  str6 "y"
+scopes (6):
+  scope0 script outer=- flags=[] slots=["k":var, "o":var]
+  scope1 class outer=scope0 flags=[strict] slots=[]
+  scope2 function outer=scope1 flags=[strict] slots=[]
+  scope3 class outer=scope0 flags=[strict] slots=[]
+  scope4 function outer=scope3 flags=[strict] slots=[]
+  scope5 function outer=scope3 flags=[strict] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=7 range=0..91
+  code (123 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> LdaGlobal k0, s0  ; k0 = String str2 "Symbol" ; 10 00 00
+      8    Star r0                                      ; 0c 00
+     10    LdaConstant k1  ; k1 = String str3 "s"       ; 0a 01
+     12    Star r1                                      ; 0c 01
+     14 E> CallUndefinedReceiver1 r0, r1, s1            ; 65 00 01 01
+     18 E> StaGlobal k2, s2  ; k2 = String str0 "k"     ; 12 02 02
+     21 S> CreateEmptyObjectLiteral                     ; 71
+     22    Star r0                                      ; 0c 00
+     24 E> LdaGlobal k2, s3  ; k2 = String str0 "k"     ; 10 02 03
+     27 E> ToName                                       ; 58
+     28    Star r1                                      ; 0c 01
+     30    LdaTheHole                                   ; 07
+     31    Star r3                                      ; 0c 03
+     33 E> CreateClosure k3, s4, #0x00  ; k3 = Function f1 ; 74 03 04 00
+     37    Star r2                                      ; 0c 02
+     39    Mov r2, r5                                   ; 0d 02 05
+     42    Mov r1, r6                                   ; 0d 01 06
+     45 E> CallRuntime SetFunctionName, r5-r6           ; 68 2c 00 05 02
+     50 E> CallRuntime DefineClass, r2-r3               ; 68 04 00 02 02
+     55    Star r4                                      ; 0c 04
+     57    Ldar r2                                      ; 0b 02
+     59 E> DefineKeyedOwnPropertyInLiteral r0, r1, #0x00, s5 ; 29 00 01 00 05
+     64    LdaConstant k4  ; k4 = String str4 "x"       ; 0a 04
+     66 E> AddSmi [1], s6                               ; 36 01 06
+     69 E> ToName                                       ; 58
+     70    Star r1                                      ; 0c 01
+     72    LdaTheHole                                   ; 07
+     73    Star r3                                      ; 0c 03
+     75 E> CreateClosure k5, s7, #0x00  ; k5 = Function f2 ; 74 05 07 00
+     79    Star r2                                      ; 0c 02
+     81    Mov r2, r5                                   ; 0d 02 05
+     84    Mov r1, r6                                   ; 0d 01 06
+     87 E> CallRuntime SetFunctionName, r5-r6           ; 68 2c 00 05 02
+     92 E> CallRuntime DefineClass, r2-r3               ; 68 04 00 02 02
+     97    Star r4                                      ; 0c 04
+     99 E> CreateClosure k6, s8, #0x00  ; k6 = Function f3 ; 74 06 08 00
+    103    Star r5                                      ; 0c 05
+    105 E> CallProperty0 r5, r2, s9                     ; 60 05 02 09
+    109    Ldar r2                                      ; 0b 02
+    111 E> DefineKeyedOwnPropertyInLiteral r0, r1, #0x00, s10 ; 29 00 01 00 0a
+    116    Ldar r0                                      ; 0b 00
+    118 E> StaGlobal k7, s11  ; k7 = String str1 "o"    ; 12 07 0b
+    121    LdaUndefined                                 ; 05
+    122    Return                                       ; 92
+  constants (8):
+      0 String str2 "Symbol"
+      1 String str3 "s"
+      2 String str0 "k"
+      3 Function f1
+      4 String str4 "x"
+      5 Function f2
+      6 Function f3
+      7 String str1 "o"
+  feedback (12):
+      0 LoadGlobal
+      1 Call
+      2 StoreGlobal
+      3 LoadGlobal
+      4 CreateClosure
+      5 DefineKeyedOwn
+      6 BinaryOp
+      7 CreateClosure
+      8 CreateClosure
+      9 Call
+     10 DefineKeyedOwn
+     11 StoreGlobal
+  handlers (0):
+  positions (20):
+      0 S 0 (1:1)
+      5 S 4 (1:5)
+     14 E 8 (1:9)
+     18 E 4 (1:5)
+     21 S 25 (1:26)
+     24 E 32 (1:33)
+     27 E 32 (1:33)
+     33 E 36 (1:37)
+     45 E 36 (1:37)
+     50 E 36 (1:37)
+     59 E 29 (1:30)
+     66 E 47 (1:48)
+     69 E 47 (1:48)
+     75 E 57 (1:58)
+     87 E 57 (1:58)
+     92 E 57 (1:58)
+     99 E 57 (1:58)
+    105 E 63 (1:64)
+    111 E 29 (1:30)
+    118 E 25 (1:26)
+function f1 class-constructor name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=42..44
+  code (2 bytes):
+      0 S> LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 36 (1:37)
+function f2 class-constructor name=- parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=0 range=63..88
+  code (2 bytes):
+      0 S> LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 57 (1:58)
+function f3 class-fields-initializer name=- parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=1 range=63..88
+  code (14 bytes):
+      0 S> Ldar <this>                                  ; 0b ff
+      2    Star r0                                      ; 0c 00
+      4 E> GetNamedProperty r0, k0, s0  ; k0 = String str5 "name" ; 21 00 00 00
+      8 E> DefineNamedOwnProperty <this>, k1, s1  ; k1 = String str6 "y" ; 25 ff 01 01
+     12    LdaUndefined                                 ; 05
+     13    Return                                       ; 92
+  constants (2):
+      0 String str5 "name"
+      1 String str6 "y"
+  feedback (2):
+      0 LoadNamed
+      1 DefineNamedOwn
+  handlers (0):
+  positions (3):
+      0 S 65 (1:66)
+      4 E 81 (1:82)
+      8 E 72 (1:73)

@@ -339,7 +339,7 @@ impl<'a, 's> FnGen<'a, 's> {
             if info.is_generator {
                 self.check_generator(info.is_async, span)?;
             } else if info.is_async {
-                return self.unsupported("async functions", span);
+                self.async_closure(span)?;
             }
             self.enter(span)?;
             let k = self.b.function_constant(ep9_bytecode::FunctionId(f.0));
@@ -986,6 +986,29 @@ impl<'a, 's> FnGen<'a, 's> {
         Ok(())
     }
 
+    /// ABI 5 (P0-D16): the mapped-parameter list of a function with a mapped arguments object:
+    /// for formal parameter `i`, its context slot in the function scope `fs`, or none when a
+    /// later parameter of the same name binds that name (CreateMappedArgumentsObject maps only
+    /// the last one). Mapped parameters always live in `fs`'s context
+    /// (`ContextReason::MappedArguments`). The VM reads the list from M3-P2 (VM-ARGS).
+    fn set_mapped_parameters(&mut self, fs: ScopeId) -> Gen {
+        let mut slots = Vec::with_capacity(self.info.params.len());
+        for p in &self.info.params {
+            slots.push(match p.binding.map(|b| self.binding(b).location) {
+                None => None,
+                Some(BindingLocation::Context { scope, slot }) if scope == fs => Some(slot),
+                Some(other) => {
+                    return Err(super::internal(format!(
+                        "mapped parameter not in its function context: {other:?}"
+                    )));
+                }
+            });
+        }
+        let unit_scope = self.cx.unit_scope(fs);
+        self.b.set_mapped_parameters(unit_scope, slots);
+        Ok(())
+    }
+
     /// FunctionDeclarationInstantiation, then the body. `params` and `body` are the AST.
     pub(crate) fn prologue_and_params(&mut self, params: &'a FormalParameters<'a>) -> Gen {
         let info = self.info;
@@ -1022,6 +1045,7 @@ impl<'a, 's> FnGen<'a, 's> {
         // 5. The arguments object (before parameter initialization).
         if let Some(a) = info.arguments {
             if info.mapped_arguments {
+                self.set_mapped_parameters(fs)?;
                 self.b.create_mapped_arguments();
             } else {
                 self.b.create_unmapped_arguments();
@@ -1090,7 +1114,7 @@ impl<'a, 's> FnGen<'a, 's> {
             return self.gen_generator(node);
         }
         if node.r#async {
-            return self.unsupported("async functions", node.span);
+            return self.gen_async_function(node);
         }
         self.scope = self.info.outer_scope.unwrap_or(self.info.scope);
         // A base class constructor runs the field initializers before its parameters.
@@ -1110,7 +1134,7 @@ impl<'a, 's> FnGen<'a, 's> {
     /// An arrow function.
     pub(crate) fn gen_arrow(&mut self, node: &'a ArrowFunctionExpression<'a>) -> Gen {
         if node.r#async {
-            return self.unsupported("async functions", node.span);
+            return self.gen_async_arrow(node);
         }
         self.scope = self.info.outer_scope.unwrap_or(self.info.scope);
         self.prologue_and_params(&node.params)?;
@@ -1193,9 +1217,8 @@ impl<'a, 's> FnGen<'a, 's> {
     ) -> Gen<crate::scope::FunctionId> {
         if node.generator {
             self.check_generator(node.r#async, node.span)?;
-        }
-        if node.r#async {
-            return self.unsupported("async functions", node.span);
+        } else if node.r#async {
+            self.async_closure(node.span)?;
         }
         let id = self.function_id(node.span)?;
         self.jobs.push(Job::Function { node, id, name });

@@ -1,6 +1,6 @@
 # class-field-static-block: script (sloppy)
 # | class A { static x = 1; static { var y = this.x; function f() { return y; } let z = f; } static w = A; }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=104 source=embedded hints=none
 source_hash=438aba743cf045708f58e867a969153dc647eda62fe446d0e9a10e9429b4db96
 strings (5):

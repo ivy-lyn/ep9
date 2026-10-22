@@ -340,6 +340,49 @@ fn which_calls_are_direct_eval() {
     }
 }
 
+/// L4-A4 (ABI 5 `PARAMETER_ENV`): set on the function scope of a sloppy function whose
+/// parameter list holds a direct eval, and nowhere else.
+#[test]
+fn parameter_env_marks_an_eval_in_a_sloppy_parameter_list() {
+    let pe = |a: &ScopeAnalysis, f: u32| {
+        let info = a.func(f);
+        (
+            a.scope(info.scope).parameter_env,
+            a.scope(info.scope).sloppy_eval,
+        )
+    };
+    // The M2-P3-RF1-EVAL-PARAM case.
+    let a = script("function f(a = 1, b = eval('var a = 2')) {}");
+    assert_eq!(pe(&a, 1), (true, true), "{a}");
+    assert!(!a.scope(a.func(1).body_scope).parameter_env);
+    // An arrow's own parameter list.
+    let a = script("var g = (a = eval('var x')) => a;");
+    assert_eq!(pe(&a, 1), (true, true), "{a}");
+    // A body eval with only a destructuring pattern: same scopes, no parameter environment.
+    let a = script("function f({a}) { eval('var a'); }");
+    assert_eq!(pe(&a, 1), (false, true), "{a}");
+    // A body eval of a function with parameter expressions goes to the body scope.
+    let a = script("function f(a = 1) { eval('var a'); }");
+    assert_eq!(pe(&a, 1), (false, false), "{a}");
+    assert!(a.scope(a.func(1).body_scope).sloppy_eval);
+    // Strict code: the eval is strict, so there is no sloppy eval and no bit.
+    let a = strict("function f(a = 1, b = eval('var a = 2')) {}");
+    assert_eq!(pe(&a, 1), (false, false), "{a}");
+    // An eval inside a function in the parameter list belongs to that function.
+    let a = script("function f(a = function () { eval('var z'); }) {}");
+    assert_eq!(pe(&a, 1), (false, false), "{a}");
+    assert_eq!(pe(&a, 2), (false, true), "{a}");
+    // Every scope of these programs but the marked ones has no bit.
+    for src in [
+        "eval('var a');",
+        "function f(a, b) { eval(''); }",
+        "{ eval('') }",
+    ] {
+        let a = script(src);
+        assert!(a.scopes.iter().all(|s| !s.parameter_env), "{src}\n{a}");
+    }
+}
+
 #[test]
 fn eval_in_parameters_adds_vars_outside_the_parameters() {
     // Sloppy, split: eval vars go to the function environment outside the parameter scope.

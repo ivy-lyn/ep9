@@ -1,6 +1,6 @@
 # fn-params-split: script (sloppy)
 # | function f(a = () => b, b) { var b; var a; return a; }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=54 source=embedded hints=none
 source_hash=23fa606bf05c8753ef279fc8595999e40654947462509dbaeb59b57a71a78b09
 strings (3):
