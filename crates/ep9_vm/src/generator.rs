@@ -140,7 +140,7 @@ pub(crate) fn resume(cx: &mut Cx, g: u64, mode: i32, v: u64, method: &str) -> Re
             _ => Ok(iter_result(rt, UNDEFINED, true)),
         };
     }
-    let r = resume_frame(cx, g, mode, v);
+    let r = resume_frame::<false>(cx, g, mode, v);
     let state = object::gen_get_i32(g, genf::STATE);
     match r {
         // Suspended again: the iterator result the bytecode built (or `yield*`'s inner one).
@@ -170,7 +170,12 @@ const SUSPENDED_START: i32 = 0;
 /// `this` and context (`call::run_resumed`) and runs until it suspends again or leaves.
 /// Returns the accumulator of that `SuspendGenerator` or `Return`. An error before the frame
 /// runs (a full stack, an interrupt) leaves `g` suspended, with no input. GC point; runs JS.
-fn resume_frame(cx: &mut Cx, g: u64, mode: i32, v: u64) -> Res<u64> {
+///
+/// `ASYNC` only makes one copy per caller: each copy has its own closure type, so each gets
+/// its own `call::run_resumed`, which LLVM inlines into the sync `resume` as before (t0-gen;
+/// one shared copy was not inlined and cost about 0.4% there).
+#[inline(always)]
+fn resume_frame<const ASYNC: bool>(cx: &mut Cx, g: u64, mode: i32, v: u64) -> Res<u64> {
     let rt = cx.rt();
     let f = object::gen_get(g, genf::FUNCTION);
     let regs = object::gen_regs(g).filter(|r| {
@@ -226,7 +231,7 @@ pub(crate) fn resume_async_function(cx: &mut Cx, g: u64, mode: i32, v: u64) -> R
             "ep9 internal error: an async function resumed while it is not suspended",
         ));
     }
-    resume_frame(cx, g, mode, v)?;
+    resume_frame::<true>(cx, g, mode, v)?;
     if object::gen_get_i32(g, genf::STATE) == genf::STATE_EXECUTING {
         // The frame left without settling the promise (a BytecodeGen bug).
         return Err(throw_error(
