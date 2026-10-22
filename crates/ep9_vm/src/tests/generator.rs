@@ -1004,3 +1004,56 @@ fn a_deep_resume_chain_is_a_range_error() {
         );
     }
 }
+
+/// M2-P1-X3-DEFER (closed in M3-P1 ASYNC): `return` and `throw` on a suspended-start
+/// generator complete it without a frame (GeneratorResumeAbrupt, §27.5.3.4 step 2), so they
+/// work with a nearly full VM stack. `big` has a frame of about 600 slots and `deep` one of
+/// about 500, in a VM stack of 1024 slots: a resumed frame of `big` does not fit above `deep`
+/// (before the fix both calls threw a RangeError and left the generators unstarted).
+#[test]
+fn return_and_throw_at_the_start_need_no_frame() {
+    fn make() -> VerifiedUnit {
+        // function* big() { <600 registers>; yield 1; }
+        let mut g = Gen::new(gen_meta("big", 0), 1, 600);
+        g.s.b.lda_smi(1);
+        g.yield_(1);
+        g.s.b.lda_undefined().return_();
+        // function deep() { <500 registers>; print(a.return(9)); try { b.throw(8) } catch {} }
+        let mut d = Asm::new(meta("deep", 0, 0, 0, 0));
+        for _ in 0..500 {
+            d.b.new_register();
+        }
+        let c = Calls::new(&mut d);
+        c.step(&mut d, "a", "return", Some(9.0));
+        c.try_print(&mut d, |s| c.call(s, "b", "throw", Some(8.0)));
+        d.b.lda_undefined().return_();
+        let mut s = Asm::script(0);
+        let c = Calls::new(&mut s);
+        define(&mut s, 1, "big");
+        define(&mut s, 2, "deep");
+        call_global(&mut s, "big", &[], "a");
+        call_global(&mut s, "big", &[], "b");
+        call_global(&mut s, "deep", &[], "r");
+        // Both are completed: the body never runs.
+        c.step(&mut s, "a", "next", None);
+        c.step(&mut s, "b", "next", None);
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish(), g.finish(), d.finish()])
+    }
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let cfg = crate::IsolateConfig {
+                vm_stack_slots: 1024,
+                ..config(d, stress)
+            };
+            let r = on_big_stack(move || super::run_in(cfg, make()));
+            ok(&r);
+            assert_eq!(
+                r.output,
+                ["9", "true", "8", "undefined", "true", "undefined", "true"],
+                "{} stress={stress}",
+                d.name()
+            );
+        }
+    }
+}

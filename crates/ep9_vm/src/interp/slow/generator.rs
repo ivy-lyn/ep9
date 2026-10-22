@@ -8,6 +8,7 @@
 //!                                   table[state] and state = executing
 //! SuspendGenerator g, regs, n, id   copy the params and regs into the generator's REGS cell,
 //!                                   save the context, state = id, then return like `Return`
+//!                                   (an async function returns its promise, `slow/async_fn.rs`)
 //! ResumeGenerator g, regs, n        copy the regs back; acc = the sent value
 //! ```
 //!
@@ -129,8 +130,8 @@ pub(crate) fn switch_on_generator_state(
 }
 
 /// `SuspendGenerator(generator, registers, count, suspend_id)`; `acc` is the value to give to
-/// the caller (the generator object at the first suspend, else an iterator result).
-/// Frame-switch protocol.
+/// the caller (the generator object at the first suspend, else an iterator result; an async
+/// function gives its promise instead). Frame-switch protocol.
 ///
 /// Copies the frame's parameters and the `count` registers from `registers` into the REGS
 /// cell, saves the current context, sets the state to `suspend_id`, then returns like
@@ -186,6 +187,12 @@ pub(crate) fn suspend_generator(
     let (ret, caller) = unsafe { (*fp.offset(slot::RETURN_PC), *fp.offset(slot::CALLER_FP)) };
     cx.out_fp = native_ptr(caller);
     cx.out_pc = native_ptr(ret);
+    // An async function's `await` gives its caller the promise (§27.7.5.3 Await steps 8-9
+    // return to AsyncFunctionStart, and EvaluateAsyncFunctionBody returns the promise); the
+    // caller of a resumed frame (a reaction job) ignores it.
+    if object::gen_get_i32(g, genf::MODE) == genf::MODE_ASYNC_FUNCTION {
+        return object::gen_get(g, genf::ASYNC);
+    }
     acc
 }
 
