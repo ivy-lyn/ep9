@@ -2423,8 +2423,10 @@ mod placement_b {
 
     /// Every call shape of T0 enters (b) code on the hot path (one stub entry each), with the
     /// receiver and arguments of the (a) entry test, except a `CallAnyReceiver`/`CallProperty`
-    /// with count 0 (no receiver: `call_list_with_receiver` goes cold), which takes the cold
-    /// arm. A prefixed (`Wide`) call takes the hot path too (`scaled::step` runs the same fast
+    /// with count 0 (no receiver: `call_list_with_receiver` goes cold) and the 8 calls of a
+    /// sloppy callee with the string receiver "R" (H14-Q2: `call_fast` goes cold and
+    /// `enter_b_cold` wraps it, so `recv` returns a String object), which take the cold arm.
+    /// A prefixed (`Wide`) call takes the hot path too (`scaled::step` runs the same fast
     /// body). The cold arm also takes the spread call, the bound callee and the call that finds
     /// the budget out. Under the match loop the bytecode runs (undefined).
     #[test]
@@ -2432,7 +2434,7 @@ mod placement_b {
         use Lit::{Global, Int, Str};
         use Shape::*;
         let rows: Vec<(Shape, &str, Vec<Lit>, &str)> = vec![
-            (CallProperty0, "recv", vec![Str("R")], "R"),
+            (CallProperty0, "recv", vec![Str("R")], "[object String]"),
             (CallProperty0, "argc", vec![Str("R")], "0"),
             (CallProperty1, "p0", vec![Str("R"), Str("x")], "x"),
             (CallProperty1, "p1", vec![Str("R"), Str("x")], "undefined"),
@@ -2443,8 +2445,13 @@ mod placement_b {
                 vec![Str("R"), Str("x"), Str("y"), Str("z")],
                 "z",
             ),
-            (CallProperty, "recv", vec![Str("R")], "R"),
-            (CallAnyReceiver, "recv", vec![Str("R"), Int(1)], "R"),
+            (CallProperty, "recv", vec![Str("R")], "[object String]"),
+            (
+                CallAnyReceiver,
+                "recv",
+                vec![Str("R"), Int(1)],
+                "[object String]",
+            ),
             (CallAnyReceiver, "srecv", vec![], "undefined"),
             (CallUndefinedReceiver0, "argc", vec![], "0"),
             (CallUndefinedReceiver0, "recv", vec![], "[object Object]"),
@@ -2551,13 +2558,13 @@ mod placement_b {
                     assert_eq!(hot.1, want, "{label}");
                     // One stub entry per row; `srecv` (count 0) through the cold arm; the last
                     // row's g calls T0 bump.
-                    assert_eq!(hot.2, [rows.len() as u64, 1, 0, 0], "{label}");
+                    assert_eq!(hot.2, [rows.len() as u64, 9, 0, 0], "{label}");
                 } else {
                     let mut w: Vec<String> = vec!["undefined".into(); rows.len()];
                     // g's bytecode calls bump: the same result as its (b) stub.
                     *w.last_mut().unwrap() = "c!".into();
                     assert_eq!(hot.1, w, "{label}");
-                    assert_eq!(hot.2, [0, 1, 0, 0], "{label}");
+                    assert_eq!(hot.2, [0, 9, 0, 0], "{label}");
                 }
                 assert_eq!(cold_run.0.as_deref(), Ok("done"), "{label}");
                 if threaded {

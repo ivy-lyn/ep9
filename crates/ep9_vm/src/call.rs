@@ -171,7 +171,7 @@ pub(crate) fn bind_this(fi: &FunctionInfo, this: u64, global: u64) -> u64 {
 /// call site                          primitive receiver of a sloppy bytecode callee
 /// interp/ops.rs call_fast (2 cfgs)   None -> Flow::Cold -> slow::call
 /// slow::call, enter_b_cold           None -> wrap_this before push_frame
-/// call_function_object (from Rust)   None -> wrap_this before push_frame
+/// call_function_object (from Rust)   None -> push_frame, then wrap_this into the receiver slot
 /// call_host (host callee)            no bind, no wrap: the host function gets the raw receiver
 /// native.rs enter_native, run_b      bind_this, no wrap (spike-native only, logged gap)
 /// ```
@@ -198,9 +198,11 @@ pub(crate) fn try_bind_this(fi: &FunctionInfo, this: u64, global: u64) -> Option
 }
 
 /// ToObject(`this`) for a call that [`try_bind_this`] refused (§10.2.1.2 step 6.b). GC point:
-/// the caller keeps the callee and the arguments rooted (caller registers, the scratch area
-/// or Rust locals, which the conservative scan sees), and the wrapper stays in a Rust local
-/// until `push_frame` stores it.
+/// the caller keeps the callee and the arguments rooted. `slow::call` and `enter_b_cold`
+/// wrap before `push_frame` (the arguments are in caller registers or the spread array).
+/// `call_function_object` wraps after `push_frame`, with the frame not yet published and
+/// under the scratch top, because its `arg` may read memory that the GC does not scan. The
+/// wrapper stays in a Rust local until it is stored in the frame.
 #[cold]
 #[inline(never)]
 pub(crate) fn wrap_this(cx: &mut Cx, this: u64) -> Res<u64> {
@@ -312,7 +314,8 @@ pub(crate) fn call_function(cx: &mut Cx, f: u64, this: u64, args: &[u64]) -> Res
 
 /// Call(F, thisArg, args) or the call step of `[[Construct]]` (`new_target` not undefined)
 /// from Rust, with `argc` arguments that `arg(i)` reads. The arguments are copied once, into
-/// the callee frame; `arg` may read the caller's frame or scratch area (H20 `call_args`).
+/// the callee frame, before the first GC point; `arg` may read the caller's frame or scratch
+/// area (H20 `call_args`), or memory that the GC does not scan (`Isolate::call`).
 /// A bound `f` (§10.4.1.1 `[[Call]]`) calls its innermost target with the bound `this` and
 /// the bound arguments in front; its `[[Construct]]` goes through [`construct_with`].
 pub(crate) fn call_with(
@@ -422,14 +425,12 @@ fn call_function_object(
         return Err(not_implemented(cx, "calling code of this dispatch kind"));
     }
     poll(cx, caller)?;
-    // GC point (the wrap): `f` and `this` are Rust locals, and `arg` reads the caller's frame
-    // or scratch area, which the GC scans.
-    let this = match try_bind_this(fi, this, rt.global()) {
-        Some(t) => t,
-        None => wrap_this(cx, this)?,
-    };
+    let bound_this = try_bind_this(fi, this, rt.global());
     let saved = rt.stack().scratch_top();
     let base = top_of(cx, caller);
+    // No GC point before the push: `arg` may read memory that the GC does not scan (the heap
+    // copy of `Isolate::call`, the embedder slice of `native::call_from_rust`), so the frame
+    // copies the arguments first. A receiver to wrap goes in as it is, for now.
     // SAFETY: `base` is the first free slot above the current top frame and its scratch area.
     let fp = unsafe {
         push_frame(
@@ -437,7 +438,7 @@ fn call_function_object(
             cx.stack_limit,
             fi,
             f,
-            this,
+            bound_this.unwrap_or(this),
             argc,
             arg,
             caller,
@@ -449,6 +450,20 @@ fn call_function_object(
     let Some(fp) = fp else {
         return stack_overflow(cx);
     };
+    if bound_this.is_none() {
+        // GC point (the wrap of a primitive receiver of a sloppy callee, H14-Q2). The frame is
+        // not published yet: the scratch top covers it, so the GC scans the copied arguments
+        // and `f`, and a stack walk does not see the frame.
+        rt.stack().set_scratch_top(frame_top(fp));
+        match wrap_this(cx, this) {
+            // SAFETY: the receiver slot of the frame that `push_frame` just wrote.
+            Ok(w) => unsafe { *fp.offset(slot::RECEIVER) = w },
+            Err(e) => {
+                restore_scratch(rt, saved);
+                return Err(e);
+            }
+        }
+    }
     rt.stack().set_fp(fp);
     rt.stack().clear_scratch();
     cx.budget -= 1;

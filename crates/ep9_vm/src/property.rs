@@ -317,10 +317,19 @@ fn set_walk(cx: &mut Cx, o: u64, key: u64, v: u64, receiver: u64) -> Res<bool> {
 }
 
 /// §10.1.9.2 steps 2.c-e: the store lands on `receiver`: an existing writable data property
-/// gets the value, a missing one is CreateDataProperty. GC point.
+/// gets the value, a missing one is CreateDataProperty. An array receiver's `length` (which
+/// `own_property` does not see) is an existing writable data property: step 2.d.iv goes to
+/// ArraySetLength (a RangeError for an invalid length). GC point.
 fn define_on_receiver(cx: &mut Cx, receiver: u64, key: u64, v: u64) -> Res<bool> {
     if !is_object(receiver) {
         return Ok(false);
+    }
+    if is_array(receiver) && is_atom(cx, key, Atom::Length) {
+        let desc = Desc {
+            value: Some(v),
+            ..Desc::default()
+        };
+        return define_own_property(cx, receiver, key, desc);
     }
     match own_property(cx, receiver, key) {
         Some((_, a, _)) if a & attr::WRITABLE == 0 => Ok(false),
