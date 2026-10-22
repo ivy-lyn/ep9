@@ -3333,7 +3333,8 @@ mod placement_b {
     /// `call_function_object` does; a strict callee gets the receiver as it is. Each callee is
     /// entered through `call_any` (the native `callr` runs its `CallProperty1`) and through
     /// `call_from_rust`, with a number and a string receiver, on every dispatch, with and
-    /// without GC stress (the wrap allocates: a GC there must find the copied arguments).
+    /// without GC stress (the wrap allocates; [`wrap_receiver_keeps_the_copied_arguments_alive`]
+    /// checks that a GC there finds the copied arguments, which this test cannot see).
     /// Under a threaded expansion every (b) call enters (b) code: `callr` from T0 (hot), its
     /// callee through `call_any` -> `run_b`, and each `call_from_rust` -> `run_b`.
     #[test]
@@ -3461,6 +3462,174 @@ mod placement_b {
                         assert_eq!(n, want_n, "{label}: [stub, cold arm, (a), A-hot]");
                     }
                 }
+            }
+        }
+    }
+
+    /// Bytes of zeros between the frames of [`heap_only_arg`] and the test's frames.
+    const DEEP: usize = 64 << 10;
+
+    /// Runs `made` with [`DEEP`] bytes of zeros between its frames and the caller's, so no
+    /// copy of the cell `made` creates stays in a frame that a later conservative scan reads.
+    #[inline(never)]
+    fn below_a_pad<R>(made: impl FnOnce() -> R) -> R {
+        let mut pad = [0u8; DEEP];
+        std::hint::black_box(&mut pad);
+        let r = made();
+        std::hint::black_box(&mut pad);
+        r
+    }
+
+    /// Overwrites the stack below the caller's frame with zeros.
+    #[inline(never)]
+    fn scrub_stack() {
+        let mut words = [0usize; 1 << 15];
+        std::hint::black_box(&mut words);
+    }
+
+    /// A new string held only by the returned `Vec` (memory the GC does not scan), a weak
+    /// handle to it, and its bits in `want` (heap memory, so no copy lands on the stack).
+    #[inline(never)]
+    fn heap_only_arg(
+        iso: &mut Isolate,
+        want: &std::cell::Cell<u64>,
+    ) -> (Vec<Value>, ep9_heap::WeakHandle) {
+        let args = vec![string(iso, "arg of ta")];
+        want.set(args[0].to_bits());
+        let weak = iso.heap().new_weak(args[0]);
+        (args, weak)
+    }
+
+    /// Whether the weak handle `h` still holds its cell (no Value bits reach the caller).
+    #[inline(never)]
+    fn weak_alive(iso: &Isolate, h: ep9_heap::WeakHandle) -> bool {
+        iso.heap().weak(h).is_some()
+    }
+
+    /// The GC rooting of `wrap_receiver` (M3-P0 P0-D10). The argument of a `call_from_rust`
+    /// call is held only in the embedder's slice, here a `Vec` made with GC stress off under a
+    /// pad and a scrubbed stack. The wrap of the primitive receiver of the sloppy `ta`
+    /// allocates (a GC under stress 1), so only the scratch top over the new frame makes the
+    /// precise VM-stack scan (`Shared::trace`) read the copied argument. Three checks, each
+    /// failing without that scratch top:
+    /// - at every GC during the calls, the VM-stack range that `Shared::trace` scans holds the
+    ///   argument (a root source registered after the VM's reads the same range; this check
+    ///   does not depend on the build, as debug frames keep copies that the conservative scan
+    ///   finds);
+    /// - the weak handle to the argument is still set after each call (release build);
+    /// - `ta` returns the argument.
+    ///
+    /// Through `enter_native` (placement (a)) and `run_b` (placement (b)), on every dispatch.
+    #[test]
+    fn wrap_receiver_keeps_the_copied_arguments_alive() {
+        use std::{cell::Cell, rc::Rc};
+        for b in [false, true] {
+            for &d in Dispatch::ALL {
+                let (got, alive, seen) = on_big_stack(move || {
+                    let offs = {
+                        let mut iso = isolate(IsolateConfig::default());
+                        iso.run_script(this_defs(), "this.js").unwrap();
+                        offset_in(&iso, "callr", Opcode::CallProperty1)
+                    };
+                    let stubs = if b {
+                        vec![
+                            b_call(layout::RT_CALL_ANY, offs, &[Src::Imm(UNDEFINED)], None),
+                            b_load(layout::FP_RECEIVER),
+                            b_load(layout::FP_RECEIVER),
+                            b_load(layout::fp_param(0)),
+                        ]
+                    } else {
+                        vec![
+                            stub_call(layout::RT_CALL_ANY, offs, &[Src::Imm(UNDEFINED)]),
+                            stub_load(layout::FP_RECEIVER),
+                            stub_load(layout::FP_RECEIVER),
+                            stub_param(0),
+                        ]
+                    };
+                    with_b_stubs(&stubs, |code| {
+                        let mut iso = isolate(config(d, false));
+                        iso.run_script(this_defs(), "this.js").unwrap();
+                        for (name, range) in THIS_FNS.iter().zip(code) {
+                            let f = iso.global(name).unwrap();
+                            // SAFETY: as in
+                            // `a_primitive_receiver_of_a_sloppy_native_callee_is_wrapped`.
+                            let r = unsafe {
+                                if b {
+                                    crate::install_native_b(&iso, f, range.clone())
+                                } else {
+                                    crate::install_native(
+                                        &iso,
+                                        f,
+                                        DispatchKind::Baseline,
+                                        range.clone(),
+                                    )
+                                }
+                            };
+                            r.unwrap();
+                        }
+                        let ta = iso.global("ta").unwrap();
+                        // At each GC while `want` is set: does [base, max(top frame, scratch
+                        // top)) hold `want`? The range of `Shared::trace`.
+                        let want = Rc::new(Cell::new(0u64));
+                        let seen = Rc::new(std::cell::RefCell::new(Vec::new()));
+                        let id = {
+                            let (sh, want, seen) = (
+                                Rc::clone(&iso.rt.shared),
+                                Rc::clone(&want),
+                                Rc::clone(&seen),
+                            );
+                            iso.heap().add_root_source(move |_| {
+                                if want.get() == 0 {
+                                    return;
+                                }
+                                let (fp, base) = (sh.stack.fp(), sh.stack.base());
+                                let top = if fp.is_null() {
+                                    base
+                                } else {
+                                    crate::runtime::frame_top(fp)
+                                };
+                                let end = top.max(sh.stack.scratch_top());
+                                let n = (end.addr() - base.addr()) / 8;
+                                // SAFETY: [base, end) is the live part of the VM stack.
+                                let hit = (0..n).any(|i| unsafe { *base.add(i) } == want.get());
+                                seen.borrow_mut().push(hit);
+                            })
+                        };
+                        let (args, weak) = below_a_pad(|| heap_only_arg(&mut iso, &want));
+                        scrub_stack();
+                        iso.heap().set_gc_stress(1);
+                        let mut out = Vec::new();
+                        let mut alive = Vec::new();
+                        for _ in 0..20 {
+                            out.push(crate::call_from_rust(&mut iso, ta, Value::int32(5), &args));
+                            alive.push(weak_alive(&iso, weak));
+                        }
+                        iso.heap().set_gc_stress(0);
+                        want.set(0);
+                        assert!(iso.heap().remove_root(id));
+                        let got: Vec<Result<String, String>> = out
+                            .into_iter()
+                            .map(|r| r.map(|v| iso.display(v)).map_err(|e| e.message))
+                            .collect();
+                        drop(args);
+                        iso.collect_garbage();
+                        iso.verify_heap().unwrap();
+                        let seen = seen.borrow().clone();
+                        (got, alive, seen)
+                    })
+                });
+                let label = format!("{} {}", if b { "(b)" } else { "(a)" }, d.name());
+                assert!(
+                    seen.len() >= 20,
+                    "{label}: one GC per wrap, got {}",
+                    seen.len()
+                );
+                assert!(
+                    seen.iter().all(|&s| s),
+                    "{label}: the VM-stack scan missed the argument: {seen:?}"
+                );
+                assert_eq!(alive, vec![true; 20], "{label}: the argument died");
+                assert_eq!(got, vec![Ok("arg of ta".to_string()); 20], "{label}");
             }
         }
     }
