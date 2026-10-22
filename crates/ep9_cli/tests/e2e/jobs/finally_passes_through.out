@@ -1,0 +1,4 @@
+finally args 0
+finally on reject
+then got kept
+catch got still rejected
