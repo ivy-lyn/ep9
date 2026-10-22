@@ -410,7 +410,7 @@ fn initialize_global(cx: &mut Cx, name: u64, v: u64) -> Res<u64> {
 fn create_global_function_binding(cx: &mut Cx, name: u64, v: u64) -> Res<()> {
     let g = cx.rt().global();
     // Steps 3-5.
-    let desc = match property::get_own_property(cx, g, name) {
+    let desc = match property::get_own_property(cx, g, name)? {
         None => Desc::data(v, attr::WRITABLE | attr::ENUMERABLE),
         Some(d) if d.configurable == Some(true) => Desc::data(v, attr::WRITABLE | attr::ENUMERABLE),
         Some(_) => Desc {
@@ -562,7 +562,7 @@ pub(super) fn copy_data_properties(
             continue;
         }
         let enumerable =
-            property::get_own_property(cx, source, k).is_some_and(|d| d.enumerable == Some(true));
+            property::get_own_property(cx, source, k)?.is_some_and(|d| d.enumerable == Some(true));
         if enumerable {
             let v = property::get_from(cx, source, k)?;
             property::define(cx, target, k, v)?;

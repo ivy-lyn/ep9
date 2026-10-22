@@ -878,6 +878,9 @@ fn random_function(
                 || plan.flags.contains(FunctionFlags::GENERATOR)
                 || plan.flags.contains(FunctionFlags::ASYNC)
         })
+        // CX-ABI1: CreateMappedArguments with formal parameters needs a mapped-parameter
+        // list; only the list block above emits it there.
+        .filter(|op| *op != Opcode::CreateMappedArguments || plan.params == 0)
         .filter(|op| {
             id != 0
                 || !matches!(

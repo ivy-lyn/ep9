@@ -22,9 +22,13 @@ use crate::kinds as kind;
 use crate::object::{self, init, nsf};
 use crate::runtime::Runtime;
 
-/// A new MODULE record: every field undefined. GC point.
+/// A new MODULE record: `[[EvaluationError]]` is the hole (none, H17); every other field is
+/// undefined (STATUS, HAS_TLA and UNIT are set by MODULE when it fills the record). GC point.
 pub(crate) fn new_module_record(rt: &Runtime) -> u64 {
-    object::new_record(rt, kind::MODULE)
+    let m = object::new_record(rt, kind::MODULE);
+    // No GC point between the allocation and this store.
+    object::record_set(rt, m, object::modf::EVALUATION_ERROR, crate::frame::HOLE);
+    m
 }
 
 /// A new MODULE_NAMESPACE object for `module` (a MODULE cell) with the export names
@@ -39,15 +43,34 @@ pub(crate) fn new_namespace(rt: &Runtime, module: u64, exports: u64) -> u64 {
 
 // ---- namespace exotic hooks (`exotic.rs`): `None` = no exotic own property ----
 
-/// `[[Get]]` of an export (§10.4.6.8). Stub: none.
-pub(crate) fn get(_cx: &mut Cx, _o: u64, _key: u64, _how: Probe) -> Option<u64> {
+/// `[[Get]]` of an export (§10.4.6.8): `Some(Err)` for a binding in its TDZ (a
+/// ReferenceError). Stub: none (test builds: the probe's throw, `probe::set_throw`).
+pub(crate) fn get(cx: &mut Cx, _o: u64, _key: u64, _how: Probe) -> Option<Res<u64>> {
     probe::note("module get");
-    None
+    probe_throw(cx)
 }
 
-/// `[[GetOwnProperty]]` of an export (§10.4.6.5): (value, attribute bits). Stub: none.
-pub(crate) fn own_property(_cx: &mut Cx, _o: u64, _key: u64, _how: Probe) -> Option<(u64, i32)> {
+/// `[[GetOwnProperty]]` of an export (§10.4.6.5): (value, attribute bits); `Some(Err)` for a
+/// binding in its TDZ (step 4 reads it). Stub: none (test builds: the probe's throw).
+pub(crate) fn own_property(
+    cx: &mut Cx,
+    _o: u64,
+    _key: u64,
+    _how: Probe,
+) -> Option<Res<(u64, i32)>> {
     probe::note("module own_property");
+    probe_throw(cx)
+}
+
+/// The value stubs' answer: none; in test builds, a ReferenceError ("probe") while
+/// `probe::set_throw` is on (the routing tests, VF-TDZ).
+fn probe_throw<T>(cx: &mut Cx) -> Option<Res<T>> {
+    #[cfg(test)]
+    if probe::throwing() {
+        let e = crate::error::throw_error(cx, crate::runtime::ErrorKind::ReferenceError, "probe");
+        return Some(Err(e));
+    }
+    let _ = cx;
     None
 }
 

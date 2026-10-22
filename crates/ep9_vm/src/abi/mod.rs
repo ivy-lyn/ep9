@@ -493,6 +493,14 @@ impl Drop for ArgsBuilder<'_> {
     }
 }
 
+/// HasOwnProperty(O, P) (§7.3.13) on a routed kind: its `[[GetOwnProperty]]` (the hook may
+/// throw) is not undefined. Out of line, so [`Cx::has_own_property`] keeps one kind test.
+/// GC point.
+#[inline(never)]
+fn routed_has_own_property(cx: &mut interp::Cx, o: u64, k: u64) -> JsResult<bool> {
+    Ok(property::get_own_property(cx, o, k)?.is_some())
+}
+
 // ---- Cx ------------------------------------------------------------------------------------
 
 /// What a host function can do with the isolate (H20). It exposes no `&Runtime`: builtins
@@ -1008,8 +1016,8 @@ impl<'s> Cx<'s> {
     /// from `o` decides; a setter runs with `receiver` as `this`, and a new or writable data
     /// property lands on `receiver` (`Reflect.set`, §28.1.12) through its
     /// `[[DefineOwnProperty]]`, so an array receiver's `length` goes through ArraySetLength
-    /// (a RangeError for an invalid length). `Ok(false)` when the assignment fails, also for
-    /// a receiver that is not an object; it never throws for that.
+    /// (a RangeError for an invalid length). `Ok(false)` when the assignment fails, also for a
+    /// data store on a non-object receiver; a setter on the chain runs with any receiver.
     pub fn set_with_receiver(
         &mut self,
         o: impl Into<Local<'s, JsObject>>,
@@ -1033,7 +1041,8 @@ impl<'s> Cx<'s> {
         Ok(property::has_property(self.cx, o, k))
     }
 
-    /// HasOwnProperty(O, P) (§7.3.13).
+    /// HasOwnProperty(O, P) (§7.3.13). A routed kind (ARGUMENTS, MODULE_NAMESPACE) asks its
+    /// `[[GetOwnProperty]]`, which may throw (a namespace binding in its TDZ, §10.4.6.5).
     pub fn has_own_property(
         &mut self,
         o: impl Into<Local<'s, JsObject>>,
@@ -1041,6 +1050,9 @@ impl<'s> Cx<'s> {
     ) -> JsResult<bool> {
         let o = o.into().bits();
         let k = key.into_key(self).bits();
+        if crate::exotic::is_routed(kinds::cell_kind(o)) {
+            return routed_has_own_property(self.cx, o, k);
+        }
         Ok(property::has_own_property(self.cx, o, k))
     }
 
@@ -1052,7 +1064,7 @@ impl<'s> Cx<'s> {
     ) -> JsResult<Option<PropertyDescriptor<'s>>> {
         let o = o.into().bits();
         let k = key.into_key(self).bits();
-        Ok(property::get_own_property(self.cx, o, k).map(PropertyDescriptor::from_desc))
+        Ok(property::get_own_property(self.cx, o, k)?.map(PropertyDescriptor::from_desc))
     }
 
     /// O.`[[DefineOwnProperty]]`(P, Desc) (§10.1.6, ValidateAndApplyPropertyDescriptor). v0:
