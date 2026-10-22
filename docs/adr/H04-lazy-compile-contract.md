@@ -48,7 +48,7 @@ FunctionInfo { unit, function_id, flags, code, slot, ... }
 | Every function of a unit has bytecode (units carry eager bytecode) | `verifier::function_metadata_rules` (`EmptyBytecode`) | M0 wk3 |
 | The VM reads compile inputs only from the unit (indices, ranges), never from an AST: `ep9_vm` has no edge to oxc or `ep9_frontend` | `cargo tree -p ep9_vm -e normal,build --locked --target all \| grep -cE 'oxc_\|ep9_frontend'` prints 0 | M0 |
 | The unit keeps the source text a later compile needs | H05 rule "units keep source"; `CompileOptions::embed_source` defaults to true | M0 wk3 |
-| A call runs bytecode only through an `Interp` dispatch slot. Every call path checks the slot kind first, so a function without bytecode can get its own slot kind later with no change in callers | The T0 fast call (`crates/ep9_vm/src/interp/ops.rs:289`), `slow::call` (`runs_bytecode`) and `call::call_function_object` check the kind; `dispatch::tests::*` | M0 wk3 |
+| A call runs bytecode only through an `Interp` dispatch slot. Every call path checks the slot kind first, so a function without bytecode can get its own slot kind later with no change in callers | The T0 fast call (`crates/ep9_vm/src/interp/ops.rs:289`), `slow::call` (`runs_bytecode`), `call::call_function_object` and the generator resume path `call::run_resumed` (M0 month 2 P1) check the kind; `dispatch::tests::*` | M0 wk3 |
 | A function compiled lazily gets the same bytecode as its eager compile in the same unit | L1 differential test (H04-Q2) | M4 (L1) |
 
 ## Consequences
@@ -77,7 +77,7 @@ FunctionInfo { unit, function_id, flags, code, slot, ... }
 | H04-Q1 | How does a function with no bytecode look to the call path? | M4 (L1) | A dispatch slot of a new "lazy" state (kind byte not `Interp`); the cold call path compiles the function, writes `code` and sets the slot to `Interp` (one slot write, H14) |
 | H04-Q2 | Must a lazily compiled function get the same bytes as the eager compile of the same source? | M4 (L1) | Yes. Profiles, hints and deopt data key by (function id, bytecode offset or feedback slot) (H2, H37). A CI test compiles each corpus file eagerly and lazily and compares each function's bytes |
 | H04-Q3 | Where does flushable bytecode live, given that units own all bytecode today? | L2 | A per-function bytecode cell or allocation that the unit can drop; the dispatch slot goes back to the lazy state |
-| H04-Q4 | Is the context-flag set complete for re-parse (for example class field initializers, `arguments` use, direct eval in parameters)? | M4 (L1) | Add flags at the ABI 4 bump or later bumps (H2), not as a side table |
+| H04-Q4 | Is the context-flag set complete for re-parse (for example class field initializers, `arguments` use, direct eval in parameters)? | M4 (L1) | Add flags at the ABI 5 bump (M3-P0) or later bumps (H2), not as a side table. ABI 4 added no scope flag. The ABI 5 list has the `ScopeFlags` bit PARAMETER_ENV (1 << 3) for a direct eval in parameters (M2-P3-ABI5-LIST); class field initializers and `arguments` use have no flag on it |
 
 ## Reopens if
 
@@ -90,3 +90,14 @@ FunctionInfo { unit, function_id, flags, code, slot, ... }
 |---|---|---|---|
 | 2026-10-21 | draft | First draft from 02 §6 row H4 and 01 §8, with the v0 fields and checks as built at 55c15d0 | P0-DOCS agent (M2-P0) |
 | 2026-10-21 | clarify | 1 `path:line` reference moved to the code after M2-P0 (drift script, [I15]) | M2-P0 integration fixer |
+| 2026-10-22 | clarify | Rules row "A call runs bytecode only through an `Interp` dispatch slot": the check cell also names the generator resume path `call::run_resumed` (M0 month 2 P1), which checks the kind as the other paths do. No check changes | P4-ACCEPT-3 |
+| 2026-10-22 | clarify | H04-Q4 proposed default: ABI 4 shipped with no new scope flag, so the default names ABI 5 (M3-P0), whose list has the PARAMETER_ENV bit for a direct eval in parameters (M2-P3-ABI5-LIST). The question stays open (M4). No check changes | P4-ACCEPT-3 |
+
+## Review record
+
+| Part (README §3.1) | Who | Result | Ref |
+|---|---|---|---|
+| 1 Reviewer | P4-ACCEPT-3 (did not write the ADR) | Decision = the 02 §6 H4 row, word for word ("SFI holds optional flushable bytecode, source range, ScopeInfo and context flags. Units carry eager bytecode"), plus the v0 table. Checked at 0c4c70e: `Function::source_start`, `source_end` and `outer_scope` (its doc names H4) in `ep9_bytecode` unit.rs; `ScopeFlags` NEEDS_CONTEXT, CALLS_SLOPPY_EVAL, STRICT (bits 0-2, `ALL` = 0x07) and `FunctionFlags` STRICT, GENERATOR, ASYNC, SIMPLE_PARAMETERS; the verifier errors `SourceRange` and `EmptyBytecode` (`function_metadata_rules`); `CompileOptions::embed_source` defaults to true; `cargo tree -p ep9_vm -e normal,build --locked --target all` has 0 `oxc_` or `ep9_frontend` lines; every frame push that runs bytecode checks the kind first (`crates/ep9_vm/src/interp/ops.rs:289`, `slow::call` `runs_bytecode`, `call::call_function_object`, `call::run_resumed`; the spike-native entry checks it too; `call_host` and `push_construct_stub` run no callee bytecode). R1: the Rules check cell did not name `call::run_resumed`, added in M0 month 2 P1 (fixed, clarify). R2: H04-Q4 named the ABI 4 bump; ABI 4 is closed with no new scope flag and PARAMETER_ENV is on the ABI 5 list (fixed, clarify). Open questions due in M0: none (Q1, Q2, Q4 M4; Q3 L2). Change-log kinds: agree | branch m0m2/p4-accept-3 |
+| 2 Codex | orchestrator (Codex gpt-6.1-sol) | (filled after the P4 merge) | |
+| 3 Verifier | P5-ACCEPT-4 | (filled in P5) | |
+| 4 Data | from the "Validated by" line | `cargo test -p ep9_bytecode --locked`: 75 pass, 2 ignored (with `function_metadata_rules`, `position_rules`); `cargo test -p ep9_vm --locked --lib dispatch::tests`: 3 pass; the dependency check prints 0. The real CI run 39706792079 on 938d2bc passed 22/22 (tag m2-p3). Missing: L1 tests (M4) | local run, mac a64, 0c4c70e; logs outside the repo: scratchpad m0m2/accept3/logs/bytecode.log, vm.log, run-tests.out |

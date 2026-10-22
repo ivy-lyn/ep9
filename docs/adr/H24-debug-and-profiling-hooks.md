@@ -25,8 +25,8 @@ Copied from the plan row: lazy position tables, kept ScopeInfo, a debug bytecode
 
 | # | Rule | As built (55c15d0) |
 |---|---|---|
-| R1 | Frame pointers in every tier. VM frames link through the caller-fp slot (fp-8, H14). JIT and AOT code keep the native frame pointer (x29 on aarch64, rbp on x86-64) in every function with a frame | T0: the VM frame chain. Rust code: the target default (H24-Q1) |
-| R2 | Positions come from the canonical frame's offset slot (fp-1). JIT and AOT code store the bytecode offset there, and publish fp, before every runtime call and poll. The walker never needs a native pc to find the position of a frame below the top | T0: `Runtime::enter` writes the slot at GC points and host calls; the walker uses the return pc of the frame above otherwise (H14) |
+| R1 | Frame pointers in every tier. VM frames link through the caller-fp slot (fp-8, H14). JIT and AOT code keep the native frame pointer (x29 on aarch64, rbp on x86-64) in every function with a frame | T0: the VM frame chain. Rust code: the target default (H24-Q1). Spike B JIT (M0 month 2): every function keeps the frame record (x29/x30 on AArch64, rbp on x86-64; `spikes/spike-b/src/jit/a64.rs:123-124`) |
+| R2 | Positions come from the canonical frame's offset slot (fp-1). JIT and AOT code store the bytecode offset there, and publish fp, before every runtime call and poll. The walker never needs a native pc to find the position of a frame below the top | T0: `Runtime::enter` writes the slot at GC points and host calls; the walker uses the return pc of the frame above otherwise (H14). Spike B JIT (M0 month 2): each table call passes (cx, fp, bytecode offset), and the table function publishes fp and stores the offset through `Runtime::enter` before any of its work (`native::enter`, `crates/ep9_vm/src/native.rs:345`; M2-P1-NE-OFFSET). The JIT code itself writes no VM stack field |
 | R3 | Local writes only on T0 frames. A write to a local or parameter of a JIT or AOT frame is a protocol error; context, module and script bindings pop DebuggerBindingWrite first | No debugger yet (M4) |
 | R4 | BytecodeGen never folds a binding: each read of a `let`, `const`, `var` or parameter loads the binding | `const j = 7; return k + j` reads `j` with `Ldar r0` and `k` with `LdaGlobal` (checked with `ep9 --print-bytecode`) |
 | R5 | Position tables: UTF-8 offsets per instruction, with a statement bit for breakpoints and stepping. Line and UTF-16 column are computed only when asked | `Function::positions`; `LoadedUnit::line_column` |
@@ -63,7 +63,7 @@ Copied from the plan row: lazy position tables, kept ScopeInfo, a debug bytecode
 
 ## Validation
 
-- M0: the `ep9_vm` and bytecodegen checks above; Spike B checks (c) and (d) on macOS arm64 and Linux arm64.
+- M0: the `ep9_vm` and bytecodegen checks above; Spike B checks (c) and (d) in the CI step "Spike B structural gate" on all 4 runners (macOS arm64, Linux x64, Linux arm64, Windows x64; no check is skipped on Windows, `.github/workflows/ci.yml:382-388`).
 - M4: CDP Debugger tests per mode. M6: the sampler walks mixed T0, JIT and Rust stacks. A2: unit maps.
 
 ## Open questions
@@ -84,3 +84,14 @@ Copied from the plan row: lazy position tables, kept ScopeInfo, a debug bytecode
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-21 | draft | First draft (M0 rules R1-R6) from 02 §6 row H24 and 07 §2, with the facts as built at 55c15d0 and the frame-pointer defaults of the 5 targets | P0-DOCS agent (M2-P0) |
+| 2026-10-22 | clarify | Validation: Spike B checks (c) and (d) run on all 4 CI runners since M0 month 2 P2 (the CI spikes job), not on macOS arm64 and Linux arm64 only. No check changes | P4-ACCEPT-3 |
+| 2026-10-22 | clarify | M0 rules R1 and R2, As built column: the Spike B facts (the JIT frame record; the table function stores the offset and publishes fp through `Runtime::enter`). The rules do not change. No check changes | P4-ACCEPT-3 |
+
+## Review record
+
+| Part (README §3.1) | Who | Result | Ref |
+|---|---|---|---|
+| 1 Reviewer | P4-ACCEPT-3 (did not write the ADR) | Decision = the 02 §6 H24 row, word for word. Checked at 0c4c70e: the tests the Rules name exist and pass (`frame::tests`, `tests::exceptions`, `golden_disassembly` with the `var-closure` and `assign-const` goldens, `throwing_instructions_have_positions`, `position_rules`); SPIKEB(structural) checks (c) (Error.stack through a JIT frame at the right line) and (d) (a native backtrace through JIT frames) are in `spikes/spike-b/src/structural.rs`; the Spike B prologues keep the frame record; `Runtime::units` keeps every unit (R6); the target-spec evidence re-run with `rustc +nightly-2026-10-04`: non-leaf (aarch64 darwin and linux), always (x86_64 darwin), no key (x86_64 linux and windows): true. R1: Validation named 2 runners for checks (c) and (d); the CI step runs them on 4 (fixed, clarify). R2: the As built column of R1 and R2 was from 55c15d0, before Spike B; R2's "JIT code stores the offset before every runtime call" holds through the callee: the table function stores it in `native::enter` before its body runs (fixed, clarify; the rule text stays). Open questions due in M0: none (Q1 M6, Q2 M6 and A2, Q3 M4). Change-log kinds: agree | branch m0m2/p4-accept-3 |
+| 2 Codex | orchestrator (Codex gpt-6.1-sol) | (filled after the P4 merge) | |
+| 3 Verifier | P5-ACCEPT-4 | (filled in P5) | |
+| 4 Data | from the "Validated by" line | `cargo test -p ep9_vm --locked --lib` (filters `tests::exceptions`, `frame::tests`, ...): 27 pass, with the 3 `frame::tests` and 9 `tests::exceptions`; `golden_disassembly` and `throwing_instructions_have_positions` pass; `cargo test -p ep9_bytecode --locked` 75 pass, with `position_rules`. SPIKEB(structural) with (c) and (d): the CI step on 4 runners in the real CI run 39706792079 on 938d2bc, 22/22 (tag m2-p3); not re-run here. Missing: inspector tests (M4), the sampler (M6), A2 unit maps | local run, mac a64, 0c4c70e; logs outside the repo: scratchpad m0m2/accept3/logs/vm.log, frontend.log, bytecode.log |

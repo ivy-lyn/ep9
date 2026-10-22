@@ -6,7 +6,7 @@
 | Fix by | M0 wk1 |
 | Freeze point | M1 exit |
 | Origin | v1#24; plan status U (unchanged) |
-| Crates | Whole root workspace (`rust-toolchain.toml`, `Cargo.lock`); `ep9_frontend` (oxc, unicode-id-start); `ep9_regexp`; `ep9_intl`; `tools/ep9-typecheck` (own workspace) |
+| Crates | Whole root workspace (`rust-toolchain.toml`, `Cargo.lock`); `ep9_frontend` (oxc, unicode-id-start); `ep9_regexp` and `ep9_intl` (planned, 08 §2; not in `crates/` yet); `tools/ep9-typecheck` (own workspace; planned, A1h) |
 | Owner (plan role) | Lead + platform lead |
 | Validated by | Dependency guards ([08 §7](../plan/08-repo.md#7-dependency-guards-and-xtask-checks)); parse-only runner (M0 wk1 check) |
 | Plan sources | [02 §6 H26](../plan/02-architecture.md#6-hard-to-change-decisions-h1-h37), [08 §5](../plan/08-repo.md#5-how-third_partytsrs-is-consumed), [08 §7](../plan/08-repo.md#7-dependency-guards-and-xtask-checks), [11 §3.1 D8](../plan/11-decisions.md#31-d1-d14-from-plan-v1) |
@@ -43,12 +43,14 @@ Stable 1.99.1; nightly only for opt-in `become`, fuzz, sanitizers. Unicode 17 ev
 
 State on 2026-10-20 (skeleton report): `rust-toolchain.toml` sets `channel = "1.99.1"`. Both `cargo tree -i` guards exit 101 with "did not match any packages", because no crate uses oxc yet. In a scratch copy with all 7 oxc pins, unicode-id-start resolved to 1.5.0 with no tsrs.
 
+State on 2026-10-22 (0c4c70e): oxc is in the graph; dep-guards checks (1) and (2) pass with `unicode-id-start` 1.5.0 and no `tsrs_core`. ICU4X 2.3 is in the graph only through oxc's diagnostics (`oxc_diagnostics` -> `textwrap` -> `icu_segmenter` 2.3.0); `regress` is not in the graph (no RegExp yet). Rust std 1.99.1 is Unicode 17.0.0 (`char::UNICODE_VERSION` = (17, 0, 0)), so std case mapping is at the H26 version. `third_party/tsrs/rust-toolchain.toml` is also 1.99.1.
+
 ## Consequences
 
 - **Gains.** No nightly lock-in. The 16 Unicode 16/17 identifier tests pass. tsrs churn and its Unicode pin stay outside the engine.
 - **Costs.** Stable sibling-call dispatch is not guaranteed TCO: the debug sibling-call build overflowed the stack [R06]. So H15 needs the disassembly check and a deep-loop test (RK15).
   - Two toolchain worlds to keep in step: the root pin and tsrs's pin. Today both are 1.99.1.
-- **Follow-ups.** The pin-leak guard must treat "did not match any packages" (exit 101) as a pass for tsrs_core, and for unicode-id-start until oxc enters the graph (skeleton issue note).
+- **Follow-ups.** The pin-leak guard must treat "did not match any packages" (exit 101) as a pass for tsrs_core. For unicode-id-start that case ended when oxc entered the graph; dep-guards check (2) now reads the versions from `cargo metadata`.
 
 ## Evidence
 
@@ -84,3 +86,13 @@ State on 2026-10-20 (skeleton report): `rust-toolchain.toml` sets `channel = "1.
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-20 | draft | First draft from 02 §6 and 08 §5, §7 (M0 wk1 list) | ADR agent |
+| 2026-10-22 | clarify | Crates line: `ep9_regexp`, `ep9_intl` and `tools/ep9-typecheck` are planned and not in the tree yet. A "State on 2026-10-22" paragraph after the Rules (oxc in the graph, unicode-id-start 1.5.0, ICU4X only through oxc diagnostics, no regress, std Unicode 17.0.0); Follow-ups: the exit-101 case for unicode-id-start ended. No check changes | P4-ACCEPT-3 |
+
+## Review record
+
+| Part (README §3.1) | Who | Result | Ref |
+|---|---|---|---|
+| 1 Reviewer | P4-ACCEPT-3 (did not write the ADR) | Decision = the 02 §6 H26 row, word for word. Checked at 0c4c70e: `rust-toolchain.toml` channel 1.99.1 (the tsrs pin is 1.99.1 too); `exclude` = third_party, fuzz, tools/ep9-typecheck, spikes (root `Cargo.toml`); the `become` feature of `ep9_vm` is opt-in; dep-guards checks (1) and (2) PASS; `cargo tree -i regress` matches no package; ICU4X 2.3 reaches the graph only through `oxc_diagnostics`; a `rustc +1.99.1` program prints `char::UNICODE_VERSION` = (17, 0, 0), "ß".to_uppercase() = "SS" and "ΑΣ".to_lowercase() = "ας" (final sigma). R1: the Crates line named `ep9_regexp` and `ep9_intl`, which are not in `crates/`, and `tools/ep9-typecheck`, which does not exist yet (fixed, clarify: planned). R2: the Rules state paragraph and the Follow-ups were from 2026-10-20, before oxc entered the graph (fixed, clarify: a dated state line). Open questions due in M0: none dated in M0; H26-Q1 ("before the first bump") becomes due only if the root toolchain is bumped in M0 (none planned). Change-log kinds: agree | branch m0m2/p4-accept-3 |
+| 2 Codex | orchestrator (Codex gpt-6.1-sol) | (filled after the P4 merge) | |
+| 3 Verifier | P5-ACCEPT-4 | (filled in P5) | |
+| 4 Data | from the "Validated by" line | `bash .github/scripts/dep-guards.sh`: 29 PASS, 0 FAIL (check (1) no tsrs_core; check (2) unicode-id-start 1.5.0). Parse runner: 4,653 / 4,653 negatives and 47,357 / 47,364 positives (the 7 known misses) at e719ffa (P3-ACCEPT-2, H01 row 4); the real CI run 39706792079 on 938d2bc passed 22/22 (tag m2-p3), with the test262 parse step on 4 targets. Missing: the lock guard (A1h); not re-run here: `bash scripts/sync-tsrs.sh` | local run, mac a64, 0c4c70e; logs outside the repo: scratchpad m0m2/accept3/logs/depguards.log; scratchpad m0m2/accept2/logs/t262-parse.log |

@@ -28,13 +28,13 @@ Copied from the plan row: off-heap pointers only in `ExternalRef<T>`. Units are 
 | Units | Native unit code is trusted, like a native addon (D6). The loader checks the header, versions and content hash (H35 S4), never the machine code. With a sandbox, only signed or bytecode-only units may load (11 D6) |
 | Bytecode | The VM runs only verified bytecode, from any source (compiler, code cache or unit) |
 
-**Inventory of off-heap pointers in heap cells (55c15d0).** `native_of` makes every native word; these are its stores into heap cells.
+**Inventory of off-heap pointers in heap cells (55c15d0; checked again at 0c4c70e).** `native_of` makes every native word; these are its stores into heap cells.
 
 | Cell | Field | Points at | Store |
 |---|---|---|---|
 | FUNCTION | +24 | `FunctionInfo` (in its unit, or a host or stub info) | `crates/ep9_vm/src/object.rs:705` |
 | FEEDBACK | info word (`fv::INFO`) | `FunctionInfo` | `crates/ep9_vm/src/feedback.rs:169` |
-| CONTEXT | scope word (OBJECT_LAYOUT 2, C5) | `ContextScope { unit, scope }` | P0-VM (M2-P0) |
+| CONTEXT | scope word (OBJECT_LAYOUT 2, C5) | `ContextScope { unit, scope }` | `crates/ep9_vm/src/object.rs:919` (P0-VM, M2-P0) |
 
 The other `native_of` stores write VM stack frame slots (caller fp, return pc, function info; `crates/ep9_vm/src/call.rs`). The VM stack is not a heap cell.
 
@@ -62,7 +62,7 @@ The other `native_of` stores write VM stack frame slots (caller fp, return pc, f
 |---|---|---|
 | [R05] | S4 options include a V8-style sandbox; decide early, because it bans raw off-heap pointers inside heap objects | [../research/05-gc-design.md](../research/05-gc-design.md) |
 | [R09] | The threat model was never decided; untrusted code in an embedding implies a sandbox, W^X and CFI on JIT entries; about 45% of V8 CVEs were JIT-related | [../research/09-critic.md](../research/09-critic.md) |
-| inventory | `grep -rn 'native_of(' crates/*/src` at 55c15d0: object.rs:608, feedback.rs:169, call.rs:92-101 (3 frame slots), frame.rs:220 (test) | this ADR |
+| inventory | `grep -rn 'native_of(' crates/*/src` at 55c15d0: object.rs:608, feedback.rs:169, call.rs:92-101 (3 frame slots), frame.rs:220 (test). At 0c4c70e: the FUNCTION, FEEDBACK and CONTEXT stores of the table, the 3 frame slots of `call.rs` and the `frame.rs` test, nothing else (GENERATOR and slot objects hold Values only) | this ADR |
 
 ## Validation
 
@@ -88,3 +88,13 @@ The other `native_of` stores write VM stack frame slots (caller fp, return pc, f
 |---|---|---|---|
 | 2026-10-21 | draft | First draft from 02 §6 row H25 and 11 D6, with the inventory of off-heap pointers in heap cells at 55c15d0 | P0-DOCS agent (M2-P0) |
 | 2026-10-21 | clarify | 1 `path:line` reference moved to the code after M2-P0 (drift script, [I15]) | M2-P0 integration fixer |
+| 2026-10-22 | clarify | Inventory: the CONTEXT row names its store (`object.rs`, the scope word of `new_context`), and the inventory and its Evidence row record the grep at 0c4c70e: the same 3 heap-cell stores, the 3 frame slots and the test. No check changes | P4-ACCEPT-3 |
+
+## Review record
+
+| Part (README §3.1) | Who | Result | Ref |
+|---|---|---|---|
+| 1 Reviewer | P4-ACCEPT-3 (did not write the ADR) | Decision = the 02 §6 H25 row, word for word ("Off-heap pointers only in `ExternalRef<T>`. Units are trusted code (D6)"). Checked at 0c4c70e: `grep -rn 'native_of(' crates/*/src` gives `crates/ep9_vm/src/object.rs:705` (FUNCTION info), `crates/ep9_vm/src/feedback.rs:169` (FEEDBACK info), `crates/ep9_vm/src/object.rs:919` (CONTEXT scope), `crates/ep9_vm/src/call.rs:93-102` (3 frame slots) and the `frame.rs` test, so Rules row 2 holds; the GENERATOR fields and its REGS cell hold Values only (`object::genf`), and slot objects hold Values only (M2-P3-SLOTS-VALUES); a native word is the address + 2^49 (`native`, `DOUBLE_ENCODE_OFFSET`); `LoadedUnit::load` takes a `VerifiedUnit`; `crates/ep9_unit/tests/check.rs` exists. R1: the CONTEXT row had no store ref and the inventory was dated 55c15d0 only (fixed, clarify). `ExternalRef<T>` is not built (H25-Q1, M1a), as the Status line says. Open questions due in M0: none (Q1-Q3 M1a). Change-log kinds: agree | branch m0m2/p4-accept-3 |
+| 2 Codex | orchestrator (Codex gpt-6.1-sol) | (filled after the P4 merge) | |
+| 3 Verifier | P5-ACCEPT-4 | (filled in P5) | |
+| 4 Data | from the "Validated by" line | `frame::tests::native_words_are_valid_non_cell_values` passes; the inventory grep (above); `cargo test -p ep9_bytecode --locked` 75 pass (the verifier tests); `cargo test -p ep9_unit --locked` 28 pass (check and mutation tests). The real CI run 39706792079 on 938d2bc passed 22/22 (tag m2-p3). Missing: the H25-Q2 lint (M1a) | local run, mac a64, 0c4c70e; logs outside the repo: scratchpad m0m2/accept3/logs/vm.log, bytecode.log, unit.log |
