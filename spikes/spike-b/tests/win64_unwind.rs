@@ -1,6 +1,9 @@
-//! Win64 unwind data of the placement (a) x86-64 JIT (P4-WIN-STATIC-1; H28). The input is
-//! what `jit::x64` emits for the protocol kernels `drive` and `id`, plus the hand-written
-//! probe of gate check (g) (`jit::hold_probe`, a second prologue shape).
+//! Win64 unwind data of the Spike B x86-64 JIT code (P4-WIN-STATIC-1; H28): placement (a)
+//! (`jit::x64`) and, since M3-P0 P0-B-X64, placement (b) (`jit_b::x64`). The input is what
+//! each emitter makes for the protocol kernels `drive` and `id`, plus the hand-written probe
+//! of gate check (g) (`jit::hold_probe`, `jit_b::hold_probe`, a second prologue shape): 6
+//! functions. The (b) functions are named `bdrive`, `bid` and `bhold`; their epilogue ends with
+//! the exit jump `rex.w jmp qword ptr [rdi + rax*8]` (`48 FF 24 C7`), not `ret`.
 //!
 //! | Build | What runs | Who runs it |
 //! |---|---|---|
@@ -20,36 +23,58 @@
 use spike_b::emit::{Arch, Emitter, FunctionCode};
 use spike_b::harness::{Config, Session};
 use spike_b::jit::{SpikeEmitter, hold_probe};
+use spike_b::jit_b::BEmitter;
 use spike_b::structural::LOOP_DEFS;
 
 /// The function of gate check (g) (structural.rs `HOLD_DEFS`).
 const HOLD_DEFS: &str = "function hold(mk, scrub, gc) { let o = mk(); scrub(); gc(); return o; }\n";
 
 /// The x86-64 code of `drive` and `id` (the emitter) and `hold` (the check-(g) probe), made on
-/// this host: both generators build on every host (jit/mod.rs `SpikeEmitter::new`).
+/// this host, for placement (a) and then placement (b) (named `b<name>`): every generator
+/// builds on every host (jit/mod.rs `SpikeEmitter::new`, jit_b/mod.rs `BEmitter::new`).
 fn x64_functions() -> Vec<FunctionCode> {
     let mut s = Session::new(&Config::default()).expect("session");
     s.run(LOOP_DEFS, "defs.js").result.expect("defs");
     s.run(HOLD_DEFS, "hold.js").result.expect("hold defs");
-    let mut e = SpikeEmitter::new(Arch::X86_64);
+    let mut a = SpikeEmitter::new(Arch::X86_64);
+    let mut b = BEmitter::new(Arch::X86_64);
     let mut out = Vec::new();
-    for name in ["drive", "id"] {
-        let input = s.function_input(name).expect(name);
-        out.push(e.emit(&input).unwrap_or_else(|r| panic!("{name}: {r}")));
+    for placement in ["a", "b"] {
+        for name in ["drive", "id"] {
+            let input = s.function_input(name).expect(name);
+            let f = if placement == "a" {
+                a.emit(&input)
+            } else {
+                b.emit(&input)
+            };
+            out.push(f.unwrap_or_else(|r| panic!("{placement} {name}: {r}")));
+        }
+        let input = s.function_input("hold").expect("hold");
+        out.push(if placement == "a" {
+            hold_probe(Arch::X86_64, &input, 0).expect("hold probe")
+        } else {
+            spike_b::jit_b::hold_probe(Arch::X86_64, &input, 0).expect("(b) hold probe")
+        });
     }
-    let input = s.function_input("hold").expect("hold");
-    out.push(hold_probe(Arch::X86_64, &input, 0).expect("hold probe"));
+    for f in &mut out[3..] {
+        f.name = format!("b{}", f.name);
+    }
     for f in &out {
         assert!(f.unwind.win64.is_some(), "{}: no UNWIND_INFO", f.name);
     }
     out
 }
 
+/// The exit of an epilogue: `ret` (placement (a)) or `rex.w jmp qword ptr [rdi + rax*8]`
+/// (placement (b)).
+const EXIT_RET: &[u8] = &[0xc3];
+const EXIT_JMP: &[u8] = &[0x48, 0xff, 0x24, 0xc7];
+
 /// The frame a function's machine code builds, decoded from its bytes.
 ///
 /// ```text
 /// prologue: push r_0 ; ... ; push r_{n-1} ; lea rbp, [rsp + disp]
-/// epilogue: lea rsp, [rbp - disp] ; pop r_{n-1} ; ... ; pop r_0 ; ret
+/// epilogue: lea rsp, [rbp - disp] ; pop r_{n-1} ; ... ; pop r_0 ; ret | rex.w jmp [rdi + rax*8]
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Frame {
@@ -58,8 +83,10 @@ struct Frame {
     /// The `lea rbp, [rsp + disp]` displacement, and the offset after it (= the prologue size).
     fp_disp: u8,
     prolog_end: u32,
-    /// The offset of the epilogue's `lea rsp`, then the offset of each pop and of `ret`.
+    /// The offset of the epilogue's `lea rsp`, then the offset of each pop and of the exit.
     epilogue: Vec<u32>,
+    /// The exit instruction: [`EXIT_RET`] or [`EXIT_JMP`].
+    exit: &'static [u8],
 }
 
 const RBP: u8 = 5;
@@ -121,17 +148,25 @@ impl Frame {
                     }
                 }
             }
-            if ok && code.get(p) == Some(&0xc3) {
-                offs.push(p as u32);
-                found.push(offs);
+            if !ok {
+                continue;
+            }
+            for exit in [EXIT_RET, EXIT_JMP] {
+                if code[p..].starts_with(exit) {
+                    let mut offs = offs.clone();
+                    offs.push(p as u32);
+                    found.push((offs, exit));
+                }
             }
         }
         assert_eq!(found.len(), 1, "{name}: epilogues found: {found:?}");
+        let (epilogue, exit) = found.pop().expect("one");
         Frame {
             pushes,
             fp_disp: disp,
             prolog_end,
-            epilogue: found.pop().expect("one"),
+            epilogue,
+            exit,
         }
     }
 }
@@ -255,8 +290,8 @@ fn coff_object(functions: &[FunctionCode]) -> Vec<u8> {
 /// `win-static.sh` step 2: writes `win64-jit.obj` and `functions.txt` into
 /// `$EP9_WIN64_STATIC_OUT`. One line per function: name, code length, prologue size, the
 /// pushed registers (Win64 numbers, push order), the `lea rbp` displacement, the epilogue
-/// offsets (lea, each pop, ret), the prologue bytes, the epilogue bytes (lea to ret) and the
-/// UNWIND_INFO bytes.
+/// offsets (lea, each pop, the exit), the prologue bytes, the epilogue bytes (lea to the end
+/// of the exit), the UNWIND_INFO bytes and the exit (`ret` or `jmp`).
 #[cfg(win64_static)]
 mod static_dump {
     use super::*;
@@ -279,8 +314,9 @@ mod static_dump {
             let list = |v: &mut dyn Iterator<Item = u32>| {
                 v.map(|x| x.to_string()).collect::<Vec<_>>().join(",")
             };
+            let end = *epi.last().expect("exit") as usize + frame.exit.len();
             lines.push_str(&format!(
-                "{} {} {} {} {} {} {} {} {}\n",
+                "{} {} {} {} {} {} {} {} {} {}\n",
                 f.name,
                 f.code.len(),
                 frame.prolog_end,
@@ -288,8 +324,9 @@ mod static_dump {
                 frame.fp_disp,
                 list(&mut frame.epilogue.iter().copied()),
                 hex(&f.code[..frame.prolog_end as usize]),
-                hex(&f.code[epi[0] as usize..=*epi.last().expect("ret") as usize]),
-                hex(info)
+                hex(&f.code[epi[0] as usize..end]),
+                hex(info),
+                if frame.exit == EXIT_RET { "ret" } else { "jmp" }
             ));
         }
         std::fs::write(out.join("functions.txt"), lines).expect("functions.txt");
@@ -433,7 +470,9 @@ mod live {
     }
 
     /// Every state to unwind from: offset 0, after each push, after the `lea rbp`, each
-    /// body instruction, the epilogue `lea rsp`, before each pop and at `ret`.
+    /// body instruction, the epilogue `lea rsp`, before each pop and at the exit (`ret`, or
+    /// the (b) exit jump: the Win64 unwinder takes `rex.w jmp [mem]` as the end of an
+    /// epilogue and pops the return address, as for `ret`).
     fn states(f: &FunctionCode, fr: &Frame) -> Vec<State> {
         let n = fr.pushes.len();
         let mut v = vec![State {
@@ -464,14 +503,19 @@ mod live {
                 fp_set: true,
             });
         }
-        // epilogue[0] = lea rsp; epilogue[1 + j] = pop j (j pops done before it); last = ret.
+        // epilogue[0] = lea rsp; epilogue[1 + j] = pop j (j pops done before it); last = the
+        // exit.
         for (j, &ip) in fr.epilogue.iter().enumerate() {
             let popped = j.saturating_sub(1);
             v.push(State {
                 what: if j == 0 {
                     "epilogue lea rsp".into()
                 } else if j == fr.epilogue.len() - 1 {
-                    "ret".into()
+                    if fr.exit == EXIT_RET {
+                        "ret".into()
+                    } else {
+                        "exit jmp".into()
+                    }
                 } else {
                     format!("epilogue pop {}", fr.pushes[n - j].1)
                 },
@@ -619,33 +663,41 @@ mod live {
         Ok(report)
     }
 
+    /// Placement (a) and placement (b): 3 functions each, every state.
     #[test]
     fn every_state_of_every_function_unwinds_to_its_caller() {
         let functions = x64_functions();
         let report = check_module(functions).unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(report.len(), 3, "{report:?}");
+        assert_eq!(report.len(), 6, "{report:?}");
         eprintln!("{}", report.join("\n"));
     }
 
-    /// Negative controls: the same code with a broken UNWIND_INFO must fail the check.
+    /// Negative controls: the same code with a broken UNWIND_INFO must fail the check, for
+    /// placement (a) `drive` and placement (b) `bdrive`.
     #[test]
     fn a_broken_unwind_info_fails_the_check() {
-        let drive = x64_functions().swap_remove(0);
-        assert_eq!(drive.name, "drive");
-        let info = drive.unwind.win64.clone().expect("UNWIND_INFO");
-        // Codes are stored last prolog instruction first: [set_fpreg, push r13, push r15,
-        // push rbp]; the register is the high nibble of each code's second byte.
-        assert_eq!(info[..4], [1, 10, 4, 0x15], "{info:02x?}");
-        let mut swapped = info.clone();
-        swapped.swap(7, 9);
-        let mut off = info.clone();
-        off[3] = 0x25; // frame offset 32, not 16
-        for (what, bad) in [("pushes swapped", swapped), ("frame offset", off)] {
-            let mut f = drive.clone();
-            f.unwind.win64 = Some(bad);
-            let r = check_module(vec![f]);
-            assert!(r.is_err(), "{what}: the broken UNWIND_INFO passed: {r:?}");
-            eprintln!("{what}: {}", r.unwrap_err());
+        let functions = x64_functions();
+        for drive in [&functions[0], &functions[3]] {
+            assert!(drive.name.ends_with("drive"), "{}", drive.name);
+            let info = drive.unwind.win64.clone().expect("UNWIND_INFO");
+            // Codes are stored last prolog instruction first: [set_fpreg, push r13, push r15,
+            // push rbp]; the register is the high nibble of each code's second byte.
+            assert_eq!(info[..4], [1, 10, 4, 0x15], "{}: {info:02x?}", drive.name);
+            let mut swapped = info.clone();
+            swapped.swap(7, 9);
+            let mut off = info.clone();
+            off[3] = 0x25; // frame offset 32, not 16
+            for (what, bad) in [("pushes swapped", swapped), ("frame offset", off)] {
+                let mut f = drive.clone();
+                f.unwind.win64 = Some(bad);
+                let r = check_module(vec![f]);
+                assert!(
+                    r.is_err(),
+                    "{} {what}: the broken UNWIND_INFO passed: {r:?}",
+                    drive.name
+                );
+                eprintln!("{} {what}: {}", drive.name, r.unwrap_err());
+            }
         }
     }
 
@@ -802,14 +854,24 @@ function g(f, x) { return f(x); }
 function h(f, x) { return f(x); }
 ";
 
+    /// Runs `g(h, probe)` with `g` and `h` in placement (a) code, or (`b`) in placement (b)
+    /// code under a threaded T0 (the only dispatch that enters (b) code, plan-v6 D4).
     #[inline(never)]
-    fn run_walk() -> Vec<String> {
-        let mut s = Session::new(&Config::default()).expect("session");
+    fn run_walk(b: bool) -> Vec<String> {
+        let config = if b {
+            Config::default().threaded()
+        } else {
+            Config::default()
+        };
+        let mut s = Session::new(&config).expect("session");
         s.iso.register_host_function("probe", 0, probe);
         s.run(PATHS_DEFS, "defs.js").result.expect("defs");
-        let placed: Vec<(String, Range<usize>)> = s
-            .jit(&["g", "h"])
-            .expect("jit")
+        let placed = if b {
+            s.jit_b(&["g", "h"]).expect("jit_b")
+        } else {
+            s.jit(&["g", "h"]).expect("jit")
+        };
+        let placed: Vec<(String, Range<usize>)> = placed
             .iter()
             .map(|p| (p.name.clone(), p.code.clone()))
             .collect();
@@ -831,23 +893,27 @@ function h(f, x) { return f(x); }
             .unwrap_or_else(|e| panic!("{e}"))
     }
 
-    /// T0 -> g (JIT) -> h (JIT) -> probe (host): the walk steps through both JIT frames, each
-    /// unwind matches the frame record in memory and returns into this exe, and the walk
-    /// reaches the frame that started the run.
+    /// T0 -> g (JIT) -> h (JIT) -> probe (host), for placement (a) and placement (b): the
+    /// walk steps through both JIT frames, each unwind matches the frame record in memory and
+    /// returns into this exe (for (b): the native caller that entered the dispatch, since (b)
+    /// code is entered by a jump), and the walk reaches the frame that started the run.
     #[test]
     fn a_walk_from_running_jit_code_unwinds_each_jit_frame_to_its_caller() {
-        // Debug ep9 frames are large; the structural checks use 64 MiB too.
-        let seen = std::thread::Builder::new()
-            .stack_size(64 << 20)
-            .spawn(run_walk)
-            .expect("thread")
-            .join()
-            .expect("walk thread");
-        assert_eq!(seen.len(), 2, "JIT frames in the walk: {seen:?}");
-        assert!(
-            seen[0].starts_with("h ") && seen[1].starts_with("g "),
-            "{seen:?}"
-        );
-        eprintln!("{}", seen.join("\n"));
+        for b in [false, true] {
+            // Debug ep9 frames are large; the structural checks use 64 MiB too.
+            let seen = std::thread::Builder::new()
+                .stack_size(64 << 20)
+                .spawn(move || run_walk(b))
+                .expect("thread")
+                .join()
+                .expect("walk thread");
+            let p = if b { "(b)" } else { "(a)" };
+            assert_eq!(seen.len(), 2, "{p} JIT frames in the walk: {seen:?}");
+            assert!(
+                seen[0].starts_with("h ") && seen[1].starts_with("g "),
+                "{p} {seen:?}"
+            );
+            eprintln!("{p}\n{}", seen.join("\n"));
+        }
     }
 }
