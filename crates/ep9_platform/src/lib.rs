@@ -7,6 +7,7 @@
 //! |---|---|---|---|
 //! | [`va`] | [`Reservation`] (reserve, commit, decommit, release), [`Cage`] = one heap cage below 2^47, [`CodeRange::process`] = the one code range of the process (128 MiB below 2^47; `MAP_JIT` on macOS arm64 with `jit`) handing out [`CodeChunk`]s | mmap / VirtualAlloc | always |
 //! | [`stack`] | [`current_thread_stack_bounds`], [`stack_pointer`] | pthread / GetCurrentThreadStackLimits | always |
+//! | [`time`] | [`time::now_epoch_ns`] (the wall clock), [`time::local_offset_ms`] (LocalTZA for Date, §21.4.1.25) | SystemTime; localtime_r / `_localtime64_s` | always |
 //! | [`spill`] | spill trampolines for AAPCS64, SysV x86-64 and Win64; [`with_spilled_registers`]; [`load_word`] | naked functions | always |
 //! | `jit` | `CodeMemory` in a code-range chunk (`CodeChunk::commit`) with W^X: MAP_JIT, mprotect, dual mapping; icache flush | MAP_JIT / mprotect / memfd / VirtualProtect | `jit` |
 //! | `unwind` | `.eh_frame` and Win64 UNWIND_INFO encoders; registration; native stack walk | libgcc / libunwind / RtlAddGrowableFunctionTable | `unwind` (`jit` implies it) |
@@ -21,6 +22,7 @@ pub mod jit;
 pub mod spill;
 pub mod stack;
 mod sys;
+pub mod time;
 #[cfg(any(feature = "unwind", test))]
 pub mod unwind;
 pub mod va;
