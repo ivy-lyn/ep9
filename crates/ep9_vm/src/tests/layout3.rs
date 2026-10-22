@@ -1,11 +1,12 @@
 //! OBJECT_LAYOUT 3 (M3-P0, owner P0-VM3): the FUNCTION `[[Realm]]` field and the realm
 //! record, `Cx::realm`, the new kinds (ARGUMENTS, MODULE_NAMESPACE, MODULE, ORDERED_TABLE,
-//! REALM) and their trace functions, and the routing of the exotic hooks and of the
-//! module-variable and arguments opcodes to their month-3 files (plan V3-A5, V3-A13).
+//! REALM) and their trace functions, and the routing of the exotic hooks, of the
+//! module-variable and arguments opcodes, and of the ABI 5 runtime ids 32-43, 46 and 47 to
+//! their month-3 files (plan V3-A5, V3-A13, P0-VM3 task 8).
 
 use std::hint::black_box;
 
-use ep9_bytecode::{FunctionFlags, FunctionId, VerifiedUnit};
+use ep9_bytecode::{FunctionFlags, FunctionId, RegisterList, RuntimeId, VerifiedUnit};
 use ep9_heap::{CellKind, CellSize, GlobalHandle, KindError, KindId};
 
 use super::{Asm, Run, config, isolate, meta, on_big_stack, run_in, take_output, unit};
@@ -449,7 +450,9 @@ fn each_hook_sends_the_routed_kinds_to_their_stubs() {
 
 /// Runs `make` under every dispatch, with and without GC stress, on its own thread; returns
 /// each run with the hooks it hit.
-fn runs_with_hooks(make: fn() -> VerifiedUnit) -> Vec<(String, Run, Vec<&'static str>)> {
+fn runs_with_hooks(
+    make: impl Fn() -> VerifiedUnit + Copy + Send + 'static,
+) -> Vec<(String, Run, Vec<&'static str>)> {
     let mut out = Vec::new();
     for &d in Dispatch::ALL {
         for stress in [false, true] {
@@ -541,6 +544,65 @@ fn module_variable_opcodes_reach_slow_module() {
                 "{label}"
             );
             assert_eq!(hits, [hook], "{label}");
+        }
+    }
+}
+
+/// P0-VM3 step 2 (task 8): `CallRuntime` of ids 32-43, 46 and 47 reaches its stub in
+/// `slow/{async_fn, async_gen, module, eval}.rs`, which throws today's "not implemented" error
+/// with the id's name (the text of the old catch-all arm).
+#[test]
+fn abi5_runtime_ids_reach_their_stubs() {
+    const ROUTED: [(RuntimeId, &str); 14] = [
+        (RuntimeId::AsyncFunctionEnter, "async_fn"),
+        (RuntimeId::AsyncFunctionAwait, "async_fn"),
+        (RuntimeId::AsyncFunctionResolve, "async_fn"),
+        (RuntimeId::AsyncFunctionReject, "async_fn"),
+        (RuntimeId::AsyncGeneratorEnter, "async_gen"),
+        (RuntimeId::AsyncGeneratorAwait, "async_gen"),
+        (RuntimeId::AsyncGeneratorYield, "async_gen"),
+        (RuntimeId::AsyncGeneratorResolve, "async_gen"),
+        (RuntimeId::AsyncGeneratorReject, "async_gen"),
+        (RuntimeId::CreateAsyncFromSyncIterator, "async_gen"),
+        (RuntimeId::GetImportMeta, "module"),
+        (RuntimeId::DynamicImport, "module"),
+        (RuntimeId::DeclareEvalAnnexBFunction, "eval"),
+        (RuntimeId::StoreEvalAnnexBFunction, "eval"),
+    ];
+    let ids: Vec<u16> = ROUTED.iter().map(|&(id, _)| id as u16).collect();
+    assert_eq!(
+        ids,
+        [32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 46, 47]
+    );
+    for (id, file) in ROUTED {
+        let info = id.info();
+        let argc = info.arity.expect("fixed arity");
+        let make = move || {
+            let mut s = Asm::script(0);
+            let args = if argc == 0 {
+                RegisterList::EMPTY
+            } else {
+                s.b.new_register_list(argc)
+            };
+            for i in 0..argc {
+                s.b.lda_smi(i as i32 + 1).star(args.get(i));
+            }
+            s.b.call_runtime(id, args, argc).return_();
+            unit("", vec![s.finish()])
+        };
+        let hook = format!("{file} {}", info.name);
+        for (label, r, hits) in runs_with_hooks(make) {
+            let e = r.result.expect_err("throws");
+            assert_eq!(
+                e.to_string(),
+                format!(
+                    "test.js:1:1: Error: not implemented in ep9 v0: {}",
+                    info.name
+                ),
+                "{} {label}",
+                info.name
+            );
+            assert_eq!(hits, [hook.as_str()], "{} {label}", info.name);
         }
     }
 }

@@ -16,9 +16,27 @@
 //! | 26 | `LoadLookupSlotForCall` | §9.1.1.2.10 WithBaseObject; a pair, only through `CallRuntimeForPair` ([`call_runtime_pair`]; `slow/lookup.rs`); the use-site strictness is an argument (ABI 4) |
 //! | 27, 28 | `DeclareEvalVar`, `DeclareEvalFunction` | §19.2.1.3 EvalDeclarationInstantiation (`slow/eval.rs`) |
 //! | 29-31 | `ResolveLookupSlot`, `LoadLookupSlotResolved`, `StoreLookupSlotResolved` | §9.4.2 ResolveBinding, then GetValue / PutValue of that reference (ABI 4, `slow/lookup.rs`) |
+//! | 32 | `AsyncFunctionEnter` | §27.7.5.1 AsyncFunctionStart (ABI 5, `slow/async_fn.rs`) |
+//! | 33 | `AsyncFunctionAwait` | §27.7.5.3 Await (ABI 5, `slow/async_fn.rs`) |
+//! | 34 | `AsyncFunctionResolve` | resolve the async function's promise (ABI 5, `slow/async_fn.rs`) |
+//! | 35 | `AsyncFunctionReject` | reject the async function's promise (ABI 5, `slow/async_fn.rs`) |
+//! | 36 | `AsyncGeneratorEnter` | §27.6.3.1 AsyncGeneratorStart (ABI 5, `slow/async_gen.rs`) |
+//! | 37 | `AsyncGeneratorAwait` | Await in an async generator (ABI 5, `slow/async_gen.rs`) |
+//! | 38 | `AsyncGeneratorYield` | §27.6.3.8 AsyncGeneratorYield (ABI 5, `slow/async_gen.rs`) |
+//! | 39 | `AsyncGeneratorResolve` | §27.6.3.4 AsyncGeneratorCompleteStep, normal (ABI 5, `slow/async_gen.rs`) |
+//! | 40 | `AsyncGeneratorReject` | §27.6.3.4 AsyncGeneratorCompleteStep, throw (ABI 5, `slow/async_gen.rs`) |
+//! | 41 | `CreateAsyncFromSyncIterator` | §27.1.6.1 (ABI 5, `slow/async_gen.rs`) |
+//! | 42 | `GetImportMeta` | §13.3.12.1 `import.meta` (ABI 5, `slow/module.rs`) |
+//! | 43 | `DynamicImport` | §13.3.10.1 `import()` (ABI 5, `slow/module.rs`) |
+//! | 44 | `SetFunctionName` | §10.2.9 SetFunctionName (ABI 5, this file) |
+//! | 45 | `ThrowTypeError` | a TypeError with a string message (ABI 5, this file) |
+//! | 46 | `DeclareEvalAnnexBFunction` | B.3.2.3 step 3.a.ii, may the var binding be made (ABI 5, `slow/eval.rs`) |
+//! | 47 | `StoreEvalAnnexBFunction` | B.3.2.3, the var-env store of a block function (ABI 5, `slow/eval.rs`) |
 //!
 //! Ids 19-28 (ABI 3) are stubs in M2-P0 that throw `not implemented in ep9 v0: <name>`, as
-//! the catch-all arm did before they were routed; their owners fill them.
+//! the catch-all arm did before they were routed; their owners fill them. Ids 32-43, 46 and
+//! 47 (ABI 5) are the M3-P0 stubs of the same kind (owners: M3-P1 ASYNC, M3-P2 ASYNCGEN,
+//! MODULE and VM-ARGS).
 
 use ep9_bytecode::RuntimeId;
 
@@ -194,6 +212,35 @@ pub(crate) fn call_runtime(
         Some(Id::StoreLookupSlotResolved) => {
             super::lookup::store_lookup_slot_resolved(cx, a(0), a(1), a(2), a(3))
         }
+        // ---- ABI 5 (P0-VM3 step 2: routed to the M3-P0 stubs) ----
+        // slow/async_fn.rs (M3-P1 ASYNC).
+        Some(Id::AsyncFunctionEnter) => super::async_fn::async_function_enter(cx, fp, a(0), a(1)),
+        Some(Id::AsyncFunctionAwait) => super::async_fn::async_function_await(cx, a(0), a(1)),
+        Some(Id::AsyncFunctionResolve) => super::async_fn::async_function_resolve(cx, a(0), a(1)),
+        Some(Id::AsyncFunctionReject) => super::async_fn::async_function_reject(cx, a(0), a(1)),
+        // slow/async_gen.rs (M3-P2 ASYNCGEN).
+        Some(Id::AsyncGeneratorEnter) => {
+            super::async_gen::async_generator_enter(cx, fp, a(0), a(1))
+        }
+        Some(Id::AsyncGeneratorAwait) => super::async_gen::async_generator_await(cx, a(0), a(1)),
+        Some(Id::AsyncGeneratorYield) => super::async_gen::async_generator_yield(cx, a(0), a(1)),
+        Some(Id::AsyncGeneratorResolve) => {
+            super::async_gen::async_generator_resolve(cx, a(0), a(1), a(2))
+        }
+        Some(Id::AsyncGeneratorReject) => super::async_gen::async_generator_reject(cx, a(0), a(1)),
+        Some(Id::CreateAsyncFromSyncIterator) => {
+            super::async_gen::create_async_from_sync_iterator(cx, a(0), a(1))
+        }
+        // slow/module.rs (M3-P2 MODULE, M3-P3 IMPORT-TLA).
+        Some(Id::GetImportMeta) => super::module::get_import_meta(cx, fp),
+        Some(Id::DynamicImport) => super::module::dynamic_import(cx, fp, a(0), a(1)),
+        // slow/eval.rs (M3-P2 VM-ARGS): B.3.2.3.
+        Some(Id::DeclareEvalAnnexBFunction) => {
+            super::eval::declare_eval_annex_b_function(cx, fp, a(0))
+        }
+        Some(Id::StoreEvalAnnexBFunction) => {
+            super::eval::store_eval_annex_b_function(cx, fp, a(0), a(1))
+        }
         // ---- ABI 5 (P0-LANG4: the two ids the M3-P0 front end emits) ----
         // SetFunctionName(function, key) (§10.2.9): `key` is a property key (class.rs).
         Some(Id::SetFunctionName) => {
@@ -213,8 +260,8 @@ pub(crate) fn call_runtime(
             cx.rt().throw_value(e);
             Err(ep9_value::Throw)
         }
-        // An id that a later ABI appends and the VM does not route yet. At ABI 4 every id is
-        // routed above, so the arm is unreachable until the next ABI adds ids.
+        // An id that a later ABI appends and the VM does not route yet. At ABI 5 every id
+        // (0-47) is routed above, so the arm is unreachable until the next ABI adds ids.
         #[allow(unreachable_patterns)]
         Some(other) => Err(not_implemented(cx, other.info().name)),
         None => Err(throw_error(

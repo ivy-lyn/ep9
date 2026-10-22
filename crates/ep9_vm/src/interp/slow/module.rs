@@ -1,7 +1,7 @@
 #![allow(dead_code)] // m3-stub
 //! Modules in the interpreter (§16.2; owner M3-P2 MODULE, then M3-P3 IMPORT-TLA): the cold
 //! bodies of `LdaModuleVariable` and `StaModuleVariable` (`ops.rs`), and the runtime ids
-//! 42-43 of ABI 5 (`runtime.rs` routes them here in P0-VM3 step 2). M3-P0 stubs: each throws
+//! 42-43 of ABI 5 (`runtime.rs` routes them here since P0-VM3 step 2). M3-P0 stubs: each throws
 //! today's "not implemented" error ("module variables" for the two opcodes, the id's name
 //! for the ids).
 //!
@@ -51,6 +51,7 @@ pub(crate) fn sta_module_variable(
 
 /// Id 42: the `import.meta` object (§13.3.12.1). Stub.
 pub(crate) fn get_import_meta(cx: &mut Cx, _fp: *mut u64) -> Res<u64> {
+    probe::note("module GetImportMeta");
     Err(not_implemented(cx, "GetImportMeta"))
 }
 
@@ -61,5 +62,6 @@ pub(crate) fn dynamic_import(
     _specifier: u64,
     _options: u64,
 ) -> Res<u64> {
+    probe::note("module DynamicImport");
     Err(not_implemented(cx, "DynamicImport"))
 }

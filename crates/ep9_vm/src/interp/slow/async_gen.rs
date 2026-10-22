@@ -1,7 +1,7 @@
 #![allow(dead_code)] // m3-stub
 //! Async generators (§27.6; owner M3-P2 ASYNCGEN): the runtime ids 36-41 of ABI 5. M3-P0
 //! stubs: each throws today's "not implemented" error, with the id's name. `runtime.rs`
-//! routes the ids here (P0-VM3 step 2, after the ABI 5 merge).
+//! routes the ids here (since P0-VM3 step 2).
 //!
 //! | Id | Name | Args |
 //! |---|---|---|
@@ -14,6 +14,7 @@
 
 use crate::conv::Res;
 use crate::error::not_implemented;
+use crate::exotic::probe;
 use crate::interp::Cx;
 
 /// Id 36: the async generator object. Stub.
@@ -23,16 +24,19 @@ pub(crate) fn async_generator_enter(
     _closure: u64,
     _receiver: u64,
 ) -> Res<u64> {
+    probe::note("async_gen AsyncGeneratorEnter");
     Err(not_implemented(cx, "AsyncGeneratorEnter"))
 }
 
 /// Id 37: Await inside an async generator. Stub.
 pub(crate) fn async_generator_await(cx: &mut Cx, _generator: u64, _value: u64) -> Res<u64> {
+    probe::note("async_gen AsyncGeneratorAwait");
     Err(not_implemented(cx, "AsyncGeneratorAwait"))
 }
 
 /// Id 38: AsyncGeneratorYield (§27.6.3.8). Stub.
 pub(crate) fn async_generator_yield(cx: &mut Cx, _generator: u64, _value: u64) -> Res<u64> {
+    probe::note("async_gen AsyncGeneratorYield");
     Err(not_implemented(cx, "AsyncGeneratorYield"))
 }
 
@@ -43,15 +47,18 @@ pub(crate) fn async_generator_resolve(
     _value: u64,
     _done: u64,
 ) -> Res<u64> {
+    probe::note("async_gen AsyncGeneratorResolve");
     Err(not_implemented(cx, "AsyncGeneratorResolve"))
 }
 
 /// Id 40: AsyncGeneratorCompleteStep with a throw completion. Stub.
 pub(crate) fn async_generator_reject(cx: &mut Cx, _generator: u64, _reason: u64) -> Res<u64> {
+    probe::note("async_gen AsyncGeneratorReject");
     Err(not_implemented(cx, "AsyncGeneratorReject"))
 }
 
 /// Id 41: CreateAsyncFromSyncIterator (§27.1.6.1) over the iterator and its `next`. Stub.
 pub(crate) fn create_async_from_sync_iterator(cx: &mut Cx, _iterator: u64, _next: u64) -> Res<u64> {
+    probe::note("async_gen CreateAsyncFromSyncIterator");
     Err(not_implemented(cx, "CreateAsyncFromSyncIterator"))
 }

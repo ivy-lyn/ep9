@@ -50,6 +50,7 @@ use crate::abi::{self, Local};
 use crate::conv::Res;
 use crate::descriptor::Desc;
 use crate::error::{FrameRef, throw_error};
+use crate::exotic::probe;
 use crate::frame::{UNDEFINED, int32_of};
 use crate::interp::Cx;
 use crate::key::{self, key_text};
@@ -513,9 +514,9 @@ pub(crate) fn declare_eval_var(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<u64>
 
 /// `DeclareEvalAnnexBFunction(name)` (runtime id 46, ABI 5): B.3.2.3 step 3.a.ii, may the var
 /// binding of a block function declaration in eval code be made (true or false). M3-P0 stub
-/// (owner M3-P2 VM-ARGS; `runtime.rs` routes the id here in P0-VM3 step 2).
-#[allow(dead_code)] // routed in P0-VM3 step 2
+/// (owner M3-P2 VM-ARGS; `runtime.rs` routes the id here).
 pub(crate) fn declare_eval_annex_b_function(cx: &mut Cx, _fp: *mut u64, _name: u64) -> Res<u64> {
+    probe::note("eval DeclareEvalAnnexBFunction");
     Err(crate::error::not_implemented(
         cx,
         "DeclareEvalAnnexBFunction",
@@ -525,14 +526,14 @@ pub(crate) fn declare_eval_annex_b_function(cx: &mut Cx, _fp: *mut u64, _name: u
 /// `StoreEvalAnnexBFunction(name, value)` (runtime id 47, ABI 5, V8-A2): B.3.2.3, when the
 /// block function declaration is evaluated, SetMutableBinding(name, value, false) on the eval
 /// code's VariableEnvironment (`var_env`), not on the block binding. M3-P0 stub (owner M3-P2
-/// VM-ARGS; routed in P0-VM3 step 2).
-#[allow(dead_code)] // routed in P0-VM3 step 2
+/// VM-ARGS; `runtime.rs` routes the id here).
 pub(crate) fn store_eval_annex_b_function(
     cx: &mut Cx,
     _fp: *mut u64,
     _name: u64,
     _value: u64,
 ) -> Res<u64> {
+    probe::note("eval StoreEvalAnnexBFunction");
     Err(crate::error::not_implemented(cx, "StoreEvalAnnexBFunction"))
 }
 
