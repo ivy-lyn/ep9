@@ -48,7 +48,7 @@ FunctionInfo { unit, function_id, flags, code, slot, ... }
 | Every function of a unit has bytecode (units carry eager bytecode) | `verifier::function_metadata_rules` (`EmptyBytecode`) | M0 wk3 |
 | The VM reads compile inputs only from the unit (indices, ranges), never from an AST: `ep9_vm` has no edge to oxc or `ep9_frontend` | `cargo tree -p ep9_vm -e normal,build --locked --target all \| grep -cE 'oxc_\|ep9_frontend'` prints 0 | M0 |
 | The unit keeps the source text a later compile needs | H05 rule "units keep source"; `CompileOptions::embed_source` defaults to true | M0 wk3 |
-| A call runs bytecode only through an `Interp` dispatch slot. Every call path checks the slot kind first, so a function without bytecode can get its own slot kind later with no change in callers | The T0 fast call (`crates/ep9_vm/src/interp/ops.rs:290`), `slow::call` (`runs_bytecode`), `call::call_function_object` and the generator resume path `call::run_resumed` (M0 month 2 P1) check the kind; `dispatch::tests::*` | M0 wk3 |
+| A call runs bytecode only through an `Interp` dispatch slot. Every call path checks the slot kind first, so a function without bytecode can get its own slot kind later with no change in callers | The T0 fast call (`crates/ep9_vm/src/interp/ops.rs:290`), `slow::call` (`runs_bytecode`), `call::call_function_object` and the generator resume path `call::run_resumed` (M0 month 2 P1) check the kind. The Spike B call paths of the `spike-native` build (M0 month 2 P4; never in `ep9`) check it too: its `call_fast` (an `Interp` slot or a hot stub byte, `native::hot_stub`; else cold), `slow::call` (`native::b_callee` before `runs_bytecode`), and `native::call_at` (the `call_any` table entry) and `native::call_from_rust` (`native_callee`, `b_callee`); `dispatch::tests::*`; the `spike-native` tests `tests::native::placement_b::*` (for example `every_call_shape_enters_b_code_hot_and_the_rest_cold`, `construct_and_isolate_call_refuse_b_code_and_call_from_rust_runs_it`) | M0 wk3 |
 | A function compiled lazily gets the same bytecode as its eager compile in the same unit | L1 differential test (H04-Q2) | M4 (L1) |
 
 ## Consequences
@@ -93,6 +93,7 @@ FunctionInfo { unit, function_id, flags, code, slot, ... }
 | 2026-10-22 | clarify | Rules row "A call runs bytecode only through an `Interp` dispatch slot": the check cell also names the generator resume path `call::run_resumed` (M0 month 2 P1), which checks the kind as the other paths do. No check changes | P4-ACCEPT-3 |
 | 2026-10-22 | clarify | H04-Q4 proposed default: ABI 4 shipped with no new scope flag, so the default names ABI 5 (M3-P0), whose list has the PARAMETER_ENV bit for a direct eval in parameters (M2-P3-ABI5-LIST). The question stays open (M4). No check changes | P4-ACCEPT-3 |
 | 2026-10-22 | clarify | 2 `path:line` references moved to the code after the M2-P4 merge (drift script, [I15]). No check changes | P4 integration fixer |
+| 2026-10-22 | clarify | Rules row "A call runs bytecode only through an `Interp` dispatch slot": the check cell also names the Spike B call paths of the `spike-native` build (P4-PLACEMENT-B: `call_fast`, the (b) test in `slow::call`, `native::call_at`, `native::call_from_rust`), which check the kind as the other paths do, and the `placement_b` tests that run them. No check changes | P5-ACCEPT-4 |
 
 ## Review record
 
