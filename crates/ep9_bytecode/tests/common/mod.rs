@@ -487,6 +487,7 @@ pub fn random_unit(seed: u64) -> RandomUnit {
                         VariableMode::Const,
                         VariableMode::Function,
                         VariableMode::Class,
+                        VariableMode::FunctionName,
                     ]),
                 )
             })
@@ -687,6 +688,13 @@ fn random_function(
             let f = op.info().flags;
             !f.contains(OpcodeFlags::RESERVED) && !f.contains(OpcodeFlags::PREFIX)
         })
+        // H02 F10 (ABI 3): generator opcodes only in generator and async functions. The
+        // generic path below gives SwitchOnGeneratorState a jump table with forward labels.
+        .filter(|op| {
+            !op.info().flags.contains(OpcodeFlags::GENERATOR)
+                || plan.flags.contains(FunctionFlags::GENERATOR)
+                || plan.flags.contains(FunctionFlags::ASYNC)
+        })
         .filter(|op| {
             id != 0
                 || !matches!(
@@ -795,16 +803,27 @@ fn emit_random(
     let nscopes = scope_sizes.len() as u32;
     // Opcodes with cross-operand rules.
     match op {
-        Opcode::CallRuntime => {
-            let info = rng.pick(RUNTIME_FUNCTIONS);
+        Opcode::CallRuntime | Opcode::CallRuntimeForPair => {
+            // A function that returns a pair goes through CallRuntimeForPair only.
+            let pair = op == Opcode::CallRuntimeForPair;
+            let fit: Vec<_> = RUNTIME_FUNCTIONS
+                .iter()
+                .filter(|f| f.returns_pair == pair)
+                .collect();
+            let info = *rng.pick(&fit);
             let len = info
                 .arity
                 .unwrap_or_else(|| rng.below(u64::from(plan.regs.min(4)) + 1) as u32);
-            if len > plan.regs {
+            if len > plan.regs || (pair && plan.regs < 2) {
                 return;
             }
             let list = random_list(rng, plan, len);
-            b.call_runtime(info.id, list, len);
+            if pair {
+                let out = random_list(rng, plan, 2);
+                b.call_runtime_for_pair(info.id, list, len, out);
+            } else {
+                b.call_runtime(info.id, list, len);
+            }
             return;
         }
         Opcode::CreateFunctionContext | Opcode::CreateEvalContext => {
@@ -828,7 +847,7 @@ fn emit_random(
                 !children.is_empty()
             }
             (OperandKind::JumpBack, _) => !bound.is_empty(),
-            (OperandKind::RegPair, _) => plan.regs >= 2,
+            (OperandKind::RegPair | OperandKind::RegOutPair, _) => plan.regs >= 2,
             (OperandKind::RegOutTriple, _) => plan.regs >= 3,
             (OperandKind::CtxSlot, _) => max_ctx_slots > 0,
             _ => true,
@@ -852,7 +871,9 @@ fn emit_random(
                 ops.push(list.len().into_pending());
                 k += 1; // the count goes with the list
             }
-            (OperandKind::RegPair, _) => ops.push(random_list(rng, plan, 2).into_pending()),
+            (OperandKind::RegPair | OperandKind::RegOutPair, _) => {
+                ops.push(random_list(rng, plan, 2).into_pending())
+            }
             (OperandKind::RegOutTriple, _) => ops.push(random_list(rng, plan, 3).into_pending()),
             (OperandKind::Imm, _) => {
                 let v = if op == Opcode::JumpLoop {

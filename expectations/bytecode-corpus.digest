@@ -1,0 +1,7 @@
+# Bytecodegen corpus digest (G1 determinism): SHA-256 over the sorted (path under third_party,
+# mode, unit content hash) lines of every unit that compiled. Every host and target, debug and
+# release, must give this value. It changes only with an ABI bump or a codegen change; each
+# change gets a BCG-CORPUS row in docs/decisions-log.md.
+# Check:   cargo test -p ep9_frontend --release --locked --lib bytecodegen::corpus -- --ignored
+# Rewrite: the same command with EP9_BLESS_CORPUS=1 (crates/ep9_frontend/src/bytecodegen/corpus.rs)
+ee7dca40e70f97d57c9fe95089cdd74a58efc7447de1fdcdb55928f37cef9fa2

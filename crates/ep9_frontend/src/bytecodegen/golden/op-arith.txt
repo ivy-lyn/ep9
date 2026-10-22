@@ -1,6 +1,6 @@
 # op-arith: script (sloppy)
 # | function f(a, b) { return [a + b, a - 1, a * b, a / 2, a % b, a ** 2, a | b, a & 1, a ^ b, a << 2, a >> b, a >>> 1]; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=118 source=embedded hints=none
 source_hash=ed6ba1d007deaaa5a46cacb2dc94d3aa5959b44fe51e3f5f8293b1565ca01359
 strings (1):

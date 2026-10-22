@@ -1,6 +1,6 @@
 # lit-oddballs: script (sloppy)
 # | null; true; false; void 0; this;
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=32 source=embedded hints=none
 source_hash=33f8eb789459e42e5e25a56160ada66791a025f88374dec4a986fd8ceb4054e5
 strings (0):

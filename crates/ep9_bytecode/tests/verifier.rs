@@ -242,10 +242,41 @@ fn decoding_and_prefix_rules() {
         err(with_code(&[O::TailCall as u8, 0, 0, 0, 0])),
         VerifyErrorKind::ReservedOpcode(O::TailCall)
     );
+}
+
+/// ABI 3 (H02 F10): the generator opcodes are valid only in generator and async functions.
+#[test]
+fn generator_opcode_rules() {
+    // f1 is a plain function: SuspendGenerator r0, (), [0] is rejected.
+    let suspend = [O::SuspendGenerator as u8, 0, 0, 0, 0];
+    let resume = [O::ResumeGenerator as u8, 0, 0, 0, RET];
     assert_eq!(
-        err(with_code(&[O::ResumeGenerator as u8, 0, 0, 0, RET])),
-        VerifyErrorKind::ReservedOpcode(O::ResumeGenerator)
+        err(with_code(&suspend)),
+        VerifyErrorKind::GeneratorOpcode(O::SuspendGenerator)
     );
+    assert_eq!(
+        err(with_code(&resume)),
+        VerifyErrorKind::GeneratorOpcode(O::ResumeGenerator)
+    );
+    // The same code verifies in a generator and in an async function.
+    for flag in [FunctionFlags::GENERATOR, FunctionFlags::ASYNC] {
+        for code in [&suspend[..], &resume[..]] {
+            let mut u = with_code(code);
+            u.functions[1].flags = u.functions[1].flags.with(flag);
+            verify(u).unwrap();
+        }
+    }
+    // SwitchOnGeneratorState r0, k3 (a jump table to the Return at 3).
+    let mut u = with_code(&[O::SwitchOnGeneratorState as u8, 0, 3, RET]);
+    u.functions[1]
+        .constants
+        .push(Constant::JumpTable(Box::new([3]))); // k3
+    assert_eq!(
+        err(u.clone()),
+        VerifyErrorKind::GeneratorOpcode(O::SwitchOnGeneratorState)
+    );
+    u.functions[1].flags = u.functions[1].flags.with(FunctionFlags::GENERATOR);
+    verify(u).unwrap();
 }
 
 // ---- Operands ----
@@ -305,6 +336,23 @@ fn register_rules() {
     u.functions[1].bytecode = vec![O::ForInPrepare as u8, 1, 2, RET]; // r1-r3
     u.functions[1].positions.clear();
     assert_eq!(err(u), VerifyErrorKind::Register(0));
+    // ABI 3: the RegOutPair of CallRuntimeForPair is two locals inside the frame. f1 has 3
+    // registers, so r1-r2 is valid and r2-r3 (r(register_count - 1)) is not; nor is a
+    // parameter.
+    let out = |first: i8| {
+        with_code(&[
+            O::CallRuntimeForPair as u8,
+            RuntimeId::LoadLookupSlotForCall as u8,
+            0,
+            0,
+            2,
+            first as u8,
+            RET,
+        ])
+    };
+    verify(out(1)).unwrap();
+    assert_eq!(err(out(2)), VerifyErrorKind::Register(3));
+    assert_eq!(err(out(-2)), VerifyErrorKind::Register(3));
 }
 
 #[test]
@@ -353,6 +401,30 @@ fn flag_runtime_and_typeof_rules() {
     verify(u.clone()).unwrap();
     u.functions[1].bytecode[3] = 0x04;
     assert_eq!(err(u), VerifyErrorKind::FlagValue(2));
+    // ABI 3: DefineKeyedOwnProperty r0, r1, flags, s2 accepts bit 1 (private add); the
+    // object literal form does not.
+    let mut u = base();
+    u.functions[1]
+        .feedback_slots
+        .push(FeedbackSlotKind::DefineKeyedOwn); // s2
+    u.functions[1].positions.clear();
+    let define = |u: &CompiledUnit, op: Opcode, flags: u8| {
+        let mut u = u.clone();
+        u.functions[1].bytecode = vec![op as u8, 0, 1, flags, 2, RET];
+        u
+    };
+    for flags in [0x00, 0x01, 0x02, 0x03] {
+        verify(define(&u, O::DefineKeyedOwnProperty, flags)).unwrap();
+    }
+    assert_eq!(
+        err(define(&u, O::DefineKeyedOwnProperty, 0x04)),
+        VerifyErrorKind::FlagValue(2)
+    );
+    verify(define(&u, O::DefineKeyedOwnPropertyInLiteral, 0x01)).unwrap();
+    assert_eq!(
+        err(define(&u, O::DefineKeyedOwnPropertyInLiteral, 0x02)),
+        VerifyErrorKind::FlagValue(2)
+    );
     // TestTypeOf literal must be defined.
     verify(with_code(&[O::TestTypeOf as u8, 8, RET])).unwrap();
     assert_eq!(
@@ -374,6 +446,21 @@ fn flag_runtime_and_typeof_rules() {
             RET
         ])),
         VerifyErrorKind::RuntimeArity
+    );
+    // ABI 3: a function that returns a pair only through CallRuntimeForPair, and the others
+    // only through CallRuntime. CallRuntimeForPair id, r0 (argc arguments), out r1-r2.
+    // LoadLookupSlotForCall takes 2 arguments from ABI 4 (name, strict).
+    let lookup = RuntimeId::LoadLookupSlotForCall as u8;
+    let pair = |id: u8, argc: u8| with_code(&[O::CallRuntimeForPair as u8, id, 0, 0, argc, 1, RET]);
+    verify(pair(lookup, 2)).unwrap();
+    assert_eq!(err(pair(lookup, 1)), VerifyErrorKind::RuntimeArity);
+    assert_eq!(
+        err(pair(RuntimeId::GetHomeObject as u8, 1)),
+        VerifyErrorKind::RuntimePair
+    );
+    assert_eq!(
+        err(with_code(&[O::CallRuntime as u8, lookup, 0, 0, 2, RET])),
+        VerifyErrorKind::RuntimePair
     );
 }
 

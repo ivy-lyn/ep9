@@ -25,17 +25,30 @@
 //! (`new_wrapper`, `to_object`, `this_primitive_value`), functions (`set_function_name`,
 //! `set_function_length`, `new_bound_function`, `initial_name`) and
 //! `get_prototype_from_constructor`.
+//!
+//! Month-2 submodules (C1), one owner each: `index.rs` (index access) and `iter.rs` (the
+//! iterator protocol), `slots.rs` (internal slots), `jobs.rs` (jobs), `script.rs`
+//! (`evaluate_script`). Each adds an `impl Cx` block.
 
+mod index;
+mod iter;
+mod jobs;
 mod local;
+mod script;
+mod slots;
 
 use core::marker::PhantomData;
 
 use ep9_heap::ScratchRoots;
 use ep9_value::{JsResult, Throw};
 
+pub use self::jobs::{
+    PromiseCapability, PromiseRejectionOperation, PromiseRejectionTracker, PromiseState,
+};
 pub use self::local::{
     Downcast, FlatStr, JsArray, JsFunction, JsKey, JsObject, JsString, JsSymbol, JsValue, Local,
 };
+pub use self::{iter::IteratorRecord, slots::ObjectClass};
 use crate::builtins::{self, IntrinsicId};
 use crate::conv::{self, Hint};
 use crate::descriptor::Desc;
@@ -120,11 +133,12 @@ impl<'s> Args<'s> {
         int32_of(self.word(slot::ARGC)) as u32 & CONSTRUCT_BIT != 0
     }
 
-    /// `new.target`: the constructor of a `[[Construct]]` call, undefined for a call. v0
-    /// keeps it in the frame's feedback slot (H14-Q1, H20-Q1).
+    /// `new.target`: the constructor of a `[[Construct]]` call, undefined for a call. The
+    /// frame keeps it in `slot::NEW_TARGET` (fp - 3, H14-Q1, H20-Q1); the construct-bit gate
+    /// stays, so a host frame never reports anything else there as new.target.
     pub fn new_target(&self) -> Local<'s> {
         if self.is_construct_call() {
-            Local::from_bits(self.word(slot::FEEDBACK))
+            Local::from_bits(self.word(slot::NEW_TARGET))
         } else {
             Local::undefined()
         }
@@ -937,6 +951,19 @@ impl<'s> Cx<'s> {
         property::get(self.cx, o, k).map(Self::local)
     }
 
+    /// O.`[[Get]]`(P, Receiver) (§10.1.8.1 OrdinaryGet): a getter found on the chain from `o`
+    /// runs with `receiver` (any value) as `this` (`Reflect.get`, §28.1.5).
+    pub fn get_with_receiver(
+        &mut self,
+        o: impl Into<Local<'s, JsObject>>,
+        key: impl IntoKey<'s>,
+        receiver: impl Into<Local<'s>>,
+    ) -> JsResult<Local<'s>> {
+        let (o, r) = (o.into().bits(), receiver.into().bits());
+        let k = key.into_key(self).bits();
+        property::get_with_receiver(self.cx, o, k, r).map(Self::local)
+    }
+
     /// GetV(V, P) (§7.3.3): a property of any value; TypeError for undefined and null.
     pub fn get_v(&mut self, v: impl Into<Local<'s>>, key: impl IntoKey<'s>) -> JsResult<Local<'s>> {
         let v = v.into().bits();
@@ -966,6 +993,24 @@ impl<'s> Cx<'s> {
             return Err(self.throw_type_error(&msg));
         }
         Ok(false)
+    }
+
+    /// O.`[[Set]]`(P, V, Receiver) (§10.1.9.1 OrdinarySet): the first property on the chain
+    /// from `o` decides; a setter runs with `receiver` as `this`, and a new or writable data
+    /// property lands on `receiver` (`Reflect.set`, §28.1.12) through its
+    /// `[[DefineOwnProperty]]`, so an array receiver's `length` goes through ArraySetLength
+    /// (a RangeError for an invalid length). `Ok(false)` when the assignment fails, also for
+    /// a receiver that is not an object; it never throws for that.
+    pub fn set_with_receiver(
+        &mut self,
+        o: impl Into<Local<'s, JsObject>>,
+        key: impl IntoKey<'s>,
+        v: impl Into<Local<'s>>,
+        receiver: impl Into<Local<'s>>,
+    ) -> JsResult<bool> {
+        let (o, v, r) = (o.into().bits(), v.into().bits(), receiver.into().bits());
+        let k = key.into_key(self).bits();
+        property::set_with_receiver(self.cx, o, k, v, r)
     }
 
     /// HasProperty(O, P) (§7.3.12).

@@ -10,8 +10,8 @@
 //! | `expand_threaded!([return, "sib"])` | (b) `ep9h__sib__tail__<Name>` per opcode, `..._cold` per cold block, `TABLE` |
 //! | `expand_threaded!([become, "become"])` | (c) the same with `become` |
 //! | `expand_match!([])` | (a) `ep9loop__match__run`: one `loop { match }` |
-//! | `expand_scaled!([])` | `step::<S>`: one prefixed instruction, out of line |
-//! | `handler!` | one handler fn with the handler ABI of the target (x86-64: `sysv64-unwind`) |
+//! | `expand_scaled!([])` | `step::<S>`: one prefixed instruction, out of line; its cold blocks in `step_cold::<S>` |
+//! | `handler!` | one handler fn with the handler ABI of the target (x86-64: `sysv64-unwind`; `sysv64` under `panic = "abort"`) |
 //!
 //! Handler classes (read by `cargo xtask disasm-check`): `tail` handlers leave only through
 //! a tail jump to the next handler; `exit` handlers (`Exit`, `BadOpcode`) return to Rust.
@@ -181,6 +181,7 @@ pub(crate) mod kind {
     operand!(RegInOut, R, |p, S| R::from_operand(read_signed::<S>(p)));
     operand!(RegPair, R, |p, S| R::from_operand(read_signed::<S>(p)));
     operand!(RegOutTriple, R, |p, S| R::from_operand(read_signed::<S>(p)));
+    operand!(RegOutPair, R, |p, S| R::from_operand(read_signed::<S>(p)));
     operand!(RegList, RList, |p, S| RList(read_signed::<S>(p) as isize));
     operand!(
         RegOutList,
@@ -238,9 +239,14 @@ impl<C, A: RegArg, B: RegArg, D: RegArg, Ret: RegArg> AtMostFourRegArgs
     for for<'a> unsafe fn(&'a mut C, A, B, D) -> Ret
 {
 }
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", panic = "unwind"))]
 impl<C, A: RegArg, B: RegArg, D: RegArg, Ret: RegArg> AtMostFourRegArgs
     for for<'a> unsafe extern "sysv64-unwind" fn(&'a mut C, A, B, D) -> Ret
+{
+}
+#[cfg(all(target_arch = "x86_64", not(panic = "unwind")))]
+impl<C, A: RegArg, B: RegArg, D: RegArg, Ret: RegArg> AtMostFourRegArgs
+    for for<'a> unsafe extern "sysv64" fn(&'a mut C, A, B, D) -> Ret
 {
 }
 
@@ -248,13 +254,25 @@ impl<C, A: RegArg, B: RegArg, D: RegArg, Ret: RegArg> AtMostFourRegArgs
 /// [`crate::interp::Handler`]) with the handler ABI of the target. x86-64: `extern
 /// "sysv64-unwind"` on every OS, so Win64 handlers get the SysV register set (rsi, rdi and
 /// xmm6-xmm15 are not callee-saved there) and save fewer registers on entry. Other targets: the
-/// Rust ABI. `-unwind` keeps a panic (a VM bug) unwinding as with the Rust ABI.
+/// Rust ABI. `-unwind` keeps a panic (a VM bug) unwinding as with the Rust ABI. With `panic =
+/// "abort"` (the release profile, H23) the ABI is plain `sysv64`: nothing unwinds there, and a
+/// call to an `-unwind` function from abort code gets an abort landing pad, which turns every
+/// sibling call into a call + return (disasm-check: 50 of 282 tail jumps).
 macro_rules! handler {
     ( $(#[$($m:tt)*])* $vis:vis fn $name:ident($cx:ident, $pc:ident, $fp:ident, $acc:ident)
       $body:block ) => {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(all(target_arch = "x86_64", panic = "unwind"))]
         $(#[$($m)*])*
         $vis unsafe extern "sysv64-unwind" fn $name(
+            $cx: &mut $crate::interp::Cx,
+            $pc: *const u8,
+            $fp: *mut u64,
+            $acc: u64,
+        ) -> u64 $body
+
+        #[cfg(all(target_arch = "x86_64", not(panic = "unwind")))]
+        $(#[$($m)*])*
+        $vis unsafe extern "sysv64" fn $name(
             $cx: &mut $crate::interp::Cx,
             $pc: *const u8,
             $fp: *mut u64,
@@ -424,12 +442,61 @@ macro_rules! expand_threaded {
             }
         }
 
+        $crate::interp::dsl::handler! {
+            /// Spike B placement (b) (feature `spike-native`, P4-PLACEMENT-B): the stub byte
+            /// `OP_ENTER_B`. `fp` is the frame of a function with a (b) slot that a call just
+            /// pushed; this tail-enters its (b) code with the 4 handler arguments.
+            ///
+            /// # Safety
+            /// Only the dispatch table calls this, with `fp` the new frame of a (b) callee.
+            #[cfg(feature = "spike-native")]
+            #[unsafe(export_name = concat!("ep9h__", $exp, "__tail__EnterB"))]
+            #[allow(unused_variables)]
+            fn enter_b(cx, pc, fp, acc) {
+                #[cfg(debug_assertions)]
+                $crate::interp::dsl::debug_native_stack_check(cx);
+                // SAFETY: caller contract.
+                let (h, code) = unsafe { $crate::native::b_target(fp) };
+                // SAFETY: the (b) code has the handler ABI (`install_native_b` contract).
+                unsafe { $tail h(cx, code, fp, acc) }
+            }
+        }
+
+        $crate::interp::dsl::handler! {
+            /// Spike B report M2-P4-B-AB (feature `spike-native`): the stub byte
+            /// `native::OP_ENTER_A_HOT`. `fp` is the frame of a placement (a) callee (an
+            /// AotBaseline slot) that `call_fast` just pushed; this runs its native code
+            /// (`native::a_hot_call`) and continues at the caller's next instruction.
+            ///
+            /// # Safety
+            /// Only the dispatch table calls this, with `fp` the new frame of such a callee.
+            #[cfg(feature = "spike-native")]
+            #[unsafe(export_name = concat!("ep9h__", $exp, "__tail__EnterAHot"))]
+            #[allow(unused_variables)]
+            fn enter_a_hot(cx, pc, fp, acc) {
+                #[cfg(debug_assertions)]
+                $crate::interp::dsl::debug_native_stack_check(cx);
+                // SAFETY: caller contract.
+                let acc = unsafe { $crate::native::a_hot_call(cx, fp) };
+                let (next, fp) = (cx.out_pc, cx.out_fp);
+                // SAFETY: `next` is the caller's next instruction or a handler's pc.
+                let h = cx.table[unsafe { *next } as usize];
+                // SAFETY: as in the opcode handlers.
+                unsafe { $tail h(cx, next, fp, acc) }
+            }
+        }
+
         /// The dispatch table of this expansion.
         pub(crate) static TABLE: [Handler; 256] = {
             let mut t = [bad_opcode as Handler; 256];
             $( t[$code] = $name as Handler; )*
             t[OP_EXIT as usize] = exit as Handler;
             t[OP_CONSTRUCT_RETURN as usize] = construct_return as Handler;
+            #[cfg(feature = "spike-native")]
+            {
+                t[$crate::interp::OP_ENTER_B as usize] = enter_b as Handler;
+                t[$crate::native::OP_ENTER_A_HOT as usize] = enter_a_hot as Handler;
+            }
             t
         };
     };
@@ -511,6 +578,13 @@ macro_rules! expand_match {
                         fp = f;
                         acc = a;
                     }
+                    // Spike B (feature `spike-native`, D4): the match loop never enters native
+                    // code. A (b) or A-hot callee whose frame a call just pushed runs its
+                    // bytecode instead (the fallback).
+                    #[cfg(feature = "spike-native")]
+                    $crate::interp::OP_ENTER_B | $crate::native::OP_ENTER_A_HOT => {
+                        pc = $crate::native::bytecode_of(fp);
+                    }
                     _ => return $crate::interp::slow::bad_opcode(cx, fp, pc),
                 }
             }
@@ -585,7 +659,11 @@ macro_rules! expand_scaled {
                         match $crate::interp::ops::$name::fast(&mut st, $($oname),*) {
                             Flow::Next => Done::Next,
                             Flow::Jump(t) => Done::Jump(t),
-                            Flow::Cold => $crate::interp::ops::$name::cold(&mut st, $($oname),*),
+                            Flow::Cold => {
+                                let St { cx, fp, acc, .. } = st;
+                                // SAFETY: the cold step takes the same state as this arm.
+                                return unsafe { step_cold::<S>(cx, pc, fp, acc) };
+                            }
                         }
                     } else {
                         $crate::interp::ops::$name::fast(&mut st, $($oname),*)
@@ -598,6 +676,57 @@ macro_rules! expand_scaled {
                     cx.out_fp = f;
                     cx.out_pc = next;
                     a
+                } )*
+                _ => {
+                    let r = $crate::interp::slow::bad_opcode(cx, fp, pc);
+                    cx.out_fp = fp;
+                    cx.out_pc = $crate::interp::EXIT_STUB.as_ptr();
+                    r
+                }
+            }
+        }
+
+        /// The cold blocks of `step::<S>`, out of line, so that the rare cold paths (runtime
+        /// calls, lookups, IC misses) do not shape the register use of the fast arms. Same
+        /// contract as `step::<S>`; called only after the opcode's fast body returned
+        /// `Flow::Cold`.
+        ///
+        /// # Safety
+        /// As for `step::<S>`.
+        #[cold]
+        #[inline(never)]
+        #[allow(unused_mut, unused_variables, unused_unsafe, unreachable_code)]
+        unsafe fn step_cold<S: $crate::interp::dsl::Scale>(
+            cx: &mut Cx,
+            pc: *const u8,
+            fp: *mut u64,
+            acc: u64,
+        ) -> u64 {
+            // SAFETY: a verified prefix is followed by an opcode byte.
+            let op = unsafe { *pc.add(1) };
+            match op {
+                $( $code if const { ep9_bytecode::Opcode::$name.info().has_scalable_operands() } => {
+                    $crate::interp::ops::if_cold!($name {{
+                        // SAFETY: as in `step::<S>`.
+                        let (len, ($($oname,)*)) = unsafe {
+                            $crate::interp::dsl::decode!(S, pc; $($oname: $okind),*)
+                        };
+                        // SAFETY: as in `step::<S>`.
+                        let mut st = unsafe { St::new(&mut *cx, pc, fp, acc, pc.add(len)) };
+                        let next = match $crate::interp::ops::$name::cold(&mut st, $($oname),*) {
+                            Done::Next => st.next,
+                            Done::Jump(t) => t,
+                        };
+                        let (f, a) = (st.fp, st.acc);
+                        cx.out_fp = f;
+                        cx.out_pc = next;
+                        a
+                    }} else {{
+                        let r = $crate::interp::slow::bad_opcode(cx, fp, pc);
+                        cx.out_fp = fp;
+                        cx.out_pc = $crate::interp::EXIT_STUB.as_ptr();
+                        r
+                    }})
                 } )*
                 _ => {
                     let r = $crate::interp::slow::bad_opcode(cx, fp, pc);

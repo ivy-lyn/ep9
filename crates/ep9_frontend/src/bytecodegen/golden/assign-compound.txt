@@ -1,6 +1,6 @@
 # assign-compound: script (sloppy)
 # | var g; function f(o, k, a) { a += 1; a -= o; g *= 2; o.x |= 1; o[k] **= a; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=76 source=embedded hints=none
 source_hash=d8358d16159771328cf475774e0f0ad84e5bdf5eabdc3426066953bc841fc349
 strings (3):

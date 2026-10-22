@@ -161,7 +161,7 @@ impl std::error::Error for KindError {}
 ///
 /// let cage = CageConfig {
 ///     cage_size: 1 << 30,
-///     code_range_size: ep9_platform::allocation_granularity(),
+///     code_range_size: 0,
 ///     ..CageConfig::default()
 /// };
 /// let heap = Heap::new(HeapConfig { cage, ..HeapConfig::default() }).unwrap();

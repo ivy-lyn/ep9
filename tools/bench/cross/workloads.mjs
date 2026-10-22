@@ -26,6 +26,7 @@ export const WORKLOADS = {
   "t0-branchy": { file: `${T0_DIR}/t0-branchy.js`, classes: ["M", "R"], expect: "1090221937" },
   "t0-call": { file: `${T0_DIR}/t0-call.js`, classes: ["M", "R"], expect: "577789" },
   "t0-prop": { file: `${T0_DIR}/t0-prop.js`, classes: ["M", "R"], expect: "354392" },
+  "t0-gen": { file: `${T0_DIR}/t0-gen.js`, classes: ["M", "R"], expect: "351381" },
   "ci-v0": { file: `${T0_DIR}/ci-v0.js`, classes: ["R"], expect: "6765 37492500 2000 545003" },
   richards: { v8v7: "richards", classes: ["M", "R"] },
   deltablue: { v8v7: "deltablue", classes: ["M", "R"] },

@@ -35,10 +35,13 @@ Per W^X mode of the host (`WxMode::available()`):
 
 | Target | Modes | Code memory |
 |---|---|---|
-| macOS arm64 | `map-jit` (default), `protect` | `map-jit`: the cage code range (one `MAP_JIT` RWX mapping). `protect`: a plain reservation outside the cage (MAP_JIT pages cannot be mprotected) |
-| macOS x86-64 (Rosetta) | `protect` | cage code range |
-| Linux arm64, x86-64 | `protect` (default), `dual-map` | cage code range |
-| Windows x64 | `protect` | cage code range |
+| macOS arm64 | `map-jit` (default), `protect` | `map-jit`: a chunk of the process code range (`CodeRange::process`, one `MAP_JIT` RWX mapping). `protect`: a plain reservation outside it (MAP_JIT pages cannot be mprotected) |
+| macOS x86-64 (Rosetta) | `protect` | a chunk of the process code range |
+| Linux arm64, x86-64 | `protect` (default), `dual-map` | a chunk of the process code range |
+| Windows x64 | `protect` | a chunk of the process code range |
+
+Until month 2 (P1) the code went to a per-cage code range right after a heap cage; the
+week-3 results in docs/measurements/2026-10-21-sp-jit-mem.md were measured that way.
 
 ## Files
 

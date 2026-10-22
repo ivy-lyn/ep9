@@ -83,12 +83,35 @@ fn key_text(s: u64, i: usize) -> String {
     string::str_view(shape::key_at(s, i)).to_string_lossy()
 }
 
+// ---- dead cells: the stack must not keep them ----------------------------------------------
+//
+// A test that expects a shape to die must leave no copy of its address where the conservative
+// scan of the next collection reads: the callee-saved registers and `[sp, stack high)` at the
+// spill trampoline (ep9_heap css.rs). So the shapes that must die are made, and read, only
+// below a 64 KiB pad (W4-P3FIX-DEADSHAPE-TEST, as in tests/ic.rs):
+//
+//   test frame        gets only masked addresses, and calls nothing that reads the dead
+//                     shapes before the collection
+//   ---------------   <- the scan stops here (checked: `collect_after_a_pad`)
+//   below_a_pad       DEEP bytes of zeros
+//   ---------------   <- `pad_low`
+//   made_*            frames that make and read the dead shapes (inline(never))
+//
+// A frame may spill a caller-saved register that it never set, such as the unused payload of a
+// returned enum; on x86-64 Linux (debug) that kept a dead shape in tests/ic.rs. Hence every
+// read of a dead shape happens below the pad, `transition_count` included (it loads each
+// table entry).
+
 const MASK: usize = 0x5a5a_5a5a_5a5a_5a5a;
 
-/// Adds `name` to `s` in a frame of its own and drops the child. Returns the child's
-/// address XOR [`MASK`], so no stack word points at it.
+/// Bytes of zeros between the test's frame and the frames that make the dead shapes: far more
+/// than a collection's own frames take (`Heap::collect` down to the spill trampoline).
+const DEEP: usize = 64 << 10;
+
+/// Adds `name` to `s` in a frame of its own and drops the child. Run it [`below_a_pad`].
+/// Returns the child's address XOR [`MASK`], so no stack word points at it.
 #[inline(never)]
-fn add_and_drop(rt: &Runtime, s: u64, name: &str) -> usize {
+fn made_a_dropped_child(rt: &Runtime, s: u64, name: &str) -> usize {
     let c = add(rt, s, name);
     black_box(c as usize) ^ MASK
 }
@@ -101,9 +124,35 @@ fn scrub_stack() {
     black_box(&mut words);
 }
 
+/// Runs `made` with [`DEEP`] bytes of zeros between its frames and the caller's. `made` must
+/// only call an `#[inline(never)]` function that makes the dead shapes and returns their
+/// masked addresses. Returns that result and `pad_low`, the lowest byte of the pad: every
+/// frame of `made`'s callee lies below it.
+#[inline(never)]
+fn below_a_pad<R>(made: impl FnOnce() -> R) -> (R, usize) {
+    let mut pad = [0u8; DEEP];
+    black_box(&mut pad);
+    let r = made();
+    (r, black_box(&mut pad).as_ptr().addr())
+}
+
+/// Scrubs the stack and collects, after the dead shapes were made by [`below_a_pad`] (which
+/// gave `pad_low`). Then checks that the collection can show something about them: its
+/// conservative scan stopped above the pad, and kept none of `dead` (masked addresses).
+fn collect_after_a_pad(rt: &Runtime, pad_low: usize, dead: &[usize]) {
+    scrub_stack();
+    rt.heap.collect();
+    let high = ep9_platform::current_thread_stack_bounds().unwrap().high;
+    let scan_low = high - 8 * rt.heap.stats().last_stack_words;
+    assert!(
+        scan_low > pad_low,
+        "the conservative scan read the frames below the pad ({scan_low:#x} <= {pad_low:#x})"
+    );
+    assert_not_kept(rt, dead);
+}
+
 /// Panics if the last conservative scan kept one of `dead` (masked addresses), which would
-/// make the caller's check meaningless. Call [`scrub_stack`] and collect from the frame that
-/// made the dead cells first.
+/// make the caller's check meaningless.
 fn assert_not_kept(rt: &Runtime, dead: &[usize]) {
     let css = rt.heap.last_conservative_roots();
     for &m in dead {
@@ -254,10 +303,9 @@ fn a_dead_branch_is_cleared_after_a_gc() {
         let r = null_root(rt);
         let a = keep(&roots, add(rt, r, "a"));
         // The single-transition slot: {a} -> {a,b} dies.
-        let dead = add_and_drop(rt, kept(&roots, a), "b");
-        scrub_stack();
-        rt.heap.collect();
-        assert_not_kept(rt, &[dead]);
+        let s = kept(&roots, a);
+        let (dead, pad_low) = below_a_pad(|| made_a_dropped_child(rt, s, "b"));
+        collect_after_a_pad(rt, pad_low, &[dead]);
         assert_eq!(shape::transition_count(kept(&roots, a)), 0);
         assert!(rt.heap.stats().last_weak_cleared >= 1);
         // Adding b again makes a new child, which shares {a}'s array again: the dead
@@ -269,12 +317,9 @@ fn a_dead_branch_is_cleared_after_a_gc() {
         );
         assert_eq!(shape::transition_count(kept(&roots, a)), 1);
         // The transition table: 6 branches from {a,b}, the even ones kept.
-        // Under GC stress the dropped ones may die before `branches` returns.
-        let dead = branches(rt, &roots, kept(&roots, ab));
-        assert!(shape::transition_count(kept(&roots, ab)) >= 3);
-        scrub_stack();
-        rt.heap.collect();
-        assert_not_kept(rt, &dead);
+        let s = kept(&roots, ab);
+        let (dead, pad_low) = below_a_pad(|| made_branches(rt, &roots, s));
+        collect_after_a_pad(rt, pad_low, &dead);
         assert_eq!(shape::transition_count(kept(&roots, ab)), 3);
         for i in [0, 2, 4] {
             let name = format!("x{i}");
@@ -290,9 +335,9 @@ fn a_dead_branch_is_cleared_after_a_gc() {
 }
 
 /// Adds x0 .. x5 to `s`, keeps x0, x2 and x4 (in that order, at the end of `roots`) and
-/// returns the masked addresses of the others.
+/// returns the masked addresses of the others. Run it [`below_a_pad`].
 #[inline(never)]
-fn branches(rt: &Runtime, roots: &ScratchRoots<'_>, s: u64) -> Vec<usize> {
+fn made_branches(rt: &Runtime, roots: &ScratchRoots<'_>, s: u64) -> Vec<usize> {
     let mut dead = Vec::new();
     for i in 0..6 {
         let c = add(rt, s, &format!("x{i}"));
@@ -302,6 +347,9 @@ fn branches(rt: &Runtime, roots: &ScratchRoots<'_>, s: u64) -> Vec<usize> {
             dead.push(black_box(c as usize) ^ MASK);
         }
     }
+    // Under GC stress the dropped ones may die before this returns. The count reads every
+    // table entry, so it runs here, below the pad.
+    assert!(shape::transition_count(s) >= 3);
     dead
 }
 

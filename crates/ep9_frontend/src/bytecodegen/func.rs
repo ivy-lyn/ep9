@@ -101,6 +101,8 @@ pub(crate) struct FnGen<'a, 's> {
     /// Start offsets of the statements and expressions being generated (innermost last): the
     /// default position of a throwing instruction (G10).
     spans: Vec<u32>,
+    /// The generator state of a generator function body (`generator.rs`); `None` elsewhere.
+    pub(crate) generator: Option<super::generator::GenState>,
 }
 
 impl<'a, 's> FnGen<'a, 's> {
@@ -129,6 +131,7 @@ impl<'a, 's> FnGen<'a, 's> {
             global_slots: HashMap::new(),
             depth: 0,
             spans: Vec::new(),
+            generator: None,
         }
     }
 
@@ -332,18 +335,12 @@ impl<'a, 's> FnGen<'a, 's> {
     pub(crate) fn hoist_functions(&mut self, scope: ScopeId) -> Gen {
         for &(b, f) in &self.sa.scope(scope).hoisted_functions {
             let info = self.sa.function(f);
-            if info.is_generator || info.is_async {
-                let span = oxc_span::Span::new(info.span.start, info.span.end);
-                return self.unsupported(
-                    if info.is_generator {
-                        "generator functions"
-                    } else {
-                        "async functions"
-                    },
-                    span,
-                );
-            }
             let span = oxc_span::Span::new(info.span.start, info.span.end);
+            if info.is_generator {
+                self.check_generator(info.is_async, span)?;
+            } else if info.is_async {
+                return self.unsupported("async functions", span);
+            }
             self.enter(span)?;
             let k = self.b.function_constant(ep9_bytecode::FunctionId(f.0));
             let s = self.slot(FeedbackSlotKind::CreateClosure);
@@ -419,6 +416,17 @@ impl<'a, 's> FnGen<'a, 's> {
         }
     }
 
+    /// `acc = new.target` from the frame. In a generator body `new.target` is undefined (a
+    /// generator is never constructed), and fp-3 of a resumed frame holds the generator object
+    /// (FRAME 2), so the body loads undefined instead.
+    fn load_new_target(&mut self) {
+        if self.info.is_generator {
+            self.b.lda_undefined();
+        } else {
+            self.b.lda_new_target();
+        }
+    }
+
     /// `acc = home object` from the frame (`GetHomeObject(running function)`).
     fn load_frame_home_object(&mut self) {
         let m = self.mark();
@@ -444,9 +452,7 @@ impl<'a, 's> FnGen<'a, 's> {
             BindingLocation::Frame(FrameSlot::Receiver) => {
                 self.b.ldar(Register::RECEIVER);
             }
-            BindingLocation::Frame(FrameSlot::NewTarget) => {
-                self.b.lda_new_target();
-            }
+            BindingLocation::Frame(FrameSlot::NewTarget) => self.load_new_target(),
             BindingLocation::Frame(FrameSlot::Callee) => {
                 self.b.lda_current_function();
             }
@@ -508,6 +514,11 @@ impl<'a, 's> FnGen<'a, 's> {
                     let s = self.global_slot(FeedbackSlotKind::LoadGlobal, k);
                     self.b.lda_global(k, s);
                 }
+            }
+            // Strict code in a sloppy function (a class heritage or computed key): the
+            // opcodes read with the function's strictness (lookup.rs).
+            Resolution::Dynamic { .. } if self.strict_at(r) && !self.info.strict => {
+                self.load_dynamic_strict(r, inside_typeof);
             }
             Resolution::Dynamic { .. } => {
                 let k = self.name_const(r.name);
@@ -964,9 +975,7 @@ impl<'a, 's> FnGen<'a, 's> {
                 0 => {
                     self.b.ldar(Register::RECEIVER);
                 }
-                1 => {
-                    self.b.lda_new_target();
-                }
+                1 => self.load_new_target(),
                 2 => {
                     self.b.lda_current_function();
                 }
@@ -978,7 +987,7 @@ impl<'a, 's> FnGen<'a, 's> {
     }
 
     /// FunctionDeclarationInstantiation, then the body. `params` and `body` are the AST.
-    fn prologue_and_params(&mut self, params: &'a FormalParameters<'a>) -> Gen {
+    pub(crate) fn prologue_and_params(&mut self, params: &'a FormalParameters<'a>) -> Gen {
         let info = self.info;
         // 1. Name scope (named function expression): its own context with the callee.
         if let Some(ns) = info.name_scope {
@@ -1078,14 +1087,15 @@ impl<'a, 's> FnGen<'a, 's> {
     /// A `function` node (declaration, expression, method, accessor, constructor).
     pub(crate) fn gen_function(&mut self, node: &'a Function<'a>) -> Gen {
         if node.generator {
-            return self.unsupported("generator functions", node.span);
+            return self.gen_generator(node);
         }
         if node.r#async {
             return self.unsupported("async functions", node.span);
         }
         self.scope = self.info.outer_scope.unwrap_or(self.info.scope);
-        self.prologue_and_params(&node.params)?;
+        // A base class constructor runs the field initializers before its parameters.
         self.class_constructor_prologue()?;
+        self.prologue_and_params(&node.params)?;
         if let Some(body) = &node.body {
             self.statements(&body.statements)?;
         }
@@ -1115,7 +1125,8 @@ impl<'a, 's> FnGen<'a, 's> {
         Ok(())
     }
 
-    /// The synthetic default constructor of `class`.
+    /// The synthetic functions of `class`: the default constructor, or (dispatched on the
+    /// function kind) the instance or static members initializer (`class_fields.rs`).
     pub(crate) fn gen_default_constructor(&mut self, class: &'a Class<'a>) -> Gen {
         self.scope = self.info.outer_scope.unwrap_or(self.info.scope);
         let fs = self.info.scope;
@@ -1125,6 +1136,14 @@ impl<'a, 's> FnGen<'a, 's> {
         }
         self.b.set_statement_position(class.span.start);
         self.b.set_throw_position(Some(class.span.start));
+        if matches!(
+            self.info.kind,
+            FunctionKind::InstanceMembersInitializer | FunctionKind::StaticMembersInitializer
+        ) {
+            self.init_frame_bindings()?;
+            self.init_holes(fs);
+            return self.members_initializer(class);
+        }
         if self.info.kind == FunctionKind::DefaultDerivedConstructor {
             // constructor(...args) { super(...args); }, but with no `@@iterator` call
             // (§15.7.14 NOTE): ConstructWithSpread spreads the rest array as it is.
@@ -1138,9 +1157,16 @@ impl<'a, 's> FnGen<'a, 's> {
             let s = self.slot(FeedbackSlotKind::Call);
             self.expr_pos(class.span.start);
             self.b.construct_with_spread(sup, args, 1, s);
+            if self.has_instance_initializer() {
+                let this = self.temp();
+                self.b.star(this);
+                self.default_derived_fields(this, class.span.start);
+                self.b.ldar(this);
+            }
             self.b.return_();
             self.release(m);
         } else {
+            self.class_constructor_prologue()?;
             self.b.lda_undefined().return_();
         }
         Ok(())
@@ -1151,11 +1177,6 @@ impl<'a, 's> FnGen<'a, 's> {
         for s in list {
             self.statement(s)?;
         }
-        Ok(())
-    }
-
-    /// Class constructors: nothing extra in v0 (no instance fields).
-    fn class_constructor_prologue(&mut self) -> Gen {
         Ok(())
     }
 
@@ -1171,7 +1192,7 @@ impl<'a, 's> FnGen<'a, 's> {
         name: Option<UnitString>,
     ) -> Gen<crate::scope::FunctionId> {
         if node.generator {
-            return self.unsupported("generator functions", node.span);
+            self.check_generator(node.r#async, node.span)?;
         }
         if node.r#async {
             return self.unsupported("async functions", node.span);

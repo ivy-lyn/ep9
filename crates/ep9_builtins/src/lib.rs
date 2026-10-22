@@ -4,8 +4,10 @@
 //! type (`clippy.toml` `disallowed-types`).
 //!
 //! ```text
-//! TABLE = [object, function, array, number, boolean, string, symbol, math, global]
+//! TABLE = [object, function, array, number, boolean, string, symbol, math, global,
 //!          block 1  2         3      4       5        6       7       8     9
+//!          promise, reflect]
+//!          10       11
 //! each module: BLOCK, DEFS (id = BLOCK.i, append-only), INTRINSICS, PROPS, MODULE
 //! IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }: realm init installs the VM's
 //! table (block 0), then these modules in this order.
@@ -21,6 +23,8 @@ pub mod global;
 pub mod math;
 pub mod number;
 pub mod object;
+pub mod promise;
+pub mod reflect;
 pub mod string;
 pub mod symbol;
 
@@ -37,6 +41,8 @@ pub const MODULES: &[BuiltinModule] = &[
     symbol::MODULE,
     math::MODULE,
     global::MODULE,
+    promise::MODULE,
+    reflect::MODULE,
 ];
 
 /// The engine's builtin table: `IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }`.

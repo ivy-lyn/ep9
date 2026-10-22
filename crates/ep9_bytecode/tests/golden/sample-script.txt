@@ -1,4 +1,4 @@
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=263 source=embedded hints=none
 source_hash=21a43476ebc895ebbc9df7c099be81616f24fb1ed926e239fc902fa17794be5f
 strings (11):

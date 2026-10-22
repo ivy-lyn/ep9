@@ -288,7 +288,7 @@ impl LowMem {
         let g = allocation_granularity();
         let config = CageConfig {
             cage_size: g,
-            code_range_size: g,
+            code_range_size: 0,
             ..CageConfig::default()
         };
         let cage = Cage::reserve(&config).expect("reserve a small cage below 2^47");

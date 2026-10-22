@@ -238,7 +238,14 @@ byte_enum! {
 /// **Placeholder list.** The ids are stable ABI values (H13: stable indices). BytecodeGen and
 /// the VM add entries as they need them; each addition bumps [`crate::ABI_VERSION`] until H2
 /// freezes at M1 exit. ABI 2 added ids 6-18 for BytecodeGen v0 (`ep9_frontend::bytecodegen`)
-/// and fixed the `DefineClass` layout. [`runtime_table_text`] is part of the ABI fingerprint.
+/// and fixed the `DefineClass` layout. ABI 3 added ids 19-28 (generators, class fields and
+/// private names, `with` calls, sloppy direct eval). ABI 4 added ids 29-31 (a dynamic
+/// reference resolved before the right-hand side). [`runtime_table_text`] is part of the ABI
+/// fingerprint.
+///
+/// A function that returns a pair ([`RuntimeInfo::returns_pair`]) is called only by
+/// `CallRuntimeForPair`, and every other function only by `CallRuntime` (the verifier checks
+/// both).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u16)]
 pub enum RuntimeId {
@@ -295,6 +302,52 @@ pub enum RuntimeId {
     LoadKeyedFromSuper = 17,
     /// `StoreToSuper(receiver, home, key, value)`: `super[key] = value` and `super.x = value`.
     StoreToSuper = 18,
+    /// `CreateGeneratorObject(function, receiver)`: the generator object of the running
+    /// generator (or async) function `function`, with `receiver` as its `this`. The VM takes the
+    /// current context and the register count from the frame (V8 `CreateJSGeneratorObject`).
+    CreateGeneratorObject = 19,
+    /// `GeneratorGetResumeMode(generator)`: how the generator was resumed (next, return or
+    /// throw), as a Smi.
+    GeneratorGetResumeMode = 20,
+    /// `GeneratorClose(generator)`: marks the generator as completed.
+    GeneratorClose = 21,
+    /// `ThrowThrowMethodMissing()`: the TypeError of `yield*` when the inner iterator has no
+    /// `throw` method (ECMA-262 §15.5.5 step 7.b.iii).
+    ThrowThrowMethodMissing = 22,
+    /// `CreatePrivateName(description)`: a new private name symbol (`#x`, or a class brand).
+    CreatePrivateName = 23,
+    /// `SetClassFieldsInitializer(constructor, initializer)`: stores the instance members
+    /// initializer function on the class constructor, under a VM-internal private symbol.
+    SetClassFieldsInitializer = 24,
+    /// `RunClassFieldsInitializer(constructor, receiver)`: calls the initializer that
+    /// `SetClassFieldsInitializer` stored on `constructor`, with `receiver` as `this` (at base
+    /// constructor entry, and after `super()` returns). Does nothing if there is none.
+    RunClassFieldsInitializer = 25,
+    /// `LoadLookupSlotForCall(name, strict)`: dynamic lookup of `name` for a call. Returns a
+    /// pair (function, receiver): the receiver is the `with` object that holds `name`, else
+    /// undefined (ECMA-262 §9.1.1.2.10 WithBaseObject). `strict` is true or false: the call is
+    /// in strict code (GetValue of a `with` binding that is gone throws there; ABI 4). Called
+    /// with `CallRuntimeForPair`.
+    LoadLookupSlotForCall = 26,
+    /// `DeclareEvalVar(name)`: a `var` of sloppy direct eval code (EvalDeclarationInstantiation).
+    DeclareEvalVar = 27,
+    /// `DeclareEvalFunction(name, function)`: a function declaration of sloppy direct eval
+    /// code.
+    DeclareEvalFunction = 28,
+    /// `ResolveLookupSlot(name)`: ResolveBinding (ECMA-262 §9.4.2) of a dynamic name, without
+    /// GetValue, for a reference that is used after other code runs (`x = v`, `x op= v`,
+    /// `x++`, `var x = v`). Returns the environment that binds `name`: a context, an object
+    /// (a `with` object), undefined (the global environment) or null (unresolvable). Only
+    /// `LoadLookupSlotResolved` and `StoreLookupSlotResolved` read the result. (ABI 4.)
+    ResolveLookupSlot = 29,
+    /// `LoadLookupSlotResolved(env, name, strict)`: GetValue of the reference that
+    /// `ResolveLookupSlot` gave `env` for `name` (no new resolution); `strict` is true or false:
+    /// the read is in strict code. (ABI 4.)
+    LoadLookupSlotResolved = 30,
+    /// `StoreLookupSlotResolved(env, name, value, strict)`: PutValue of `value` to that
+    /// reference (SetMutableBinding of the record it names; `strict` is true or false: the
+    /// store is in strict code). Returns `value`. (ABI 4.)
+    StoreLookupSlotResolved = 31,
 }
 
 /// Static facts about one runtime function.
@@ -306,6 +359,8 @@ pub struct RuntimeInfo {
     pub name: &'static str,
     /// Exact argument count, or `None` for a variadic function.
     pub arity: Option<u32>,
+    /// The function returns two values: only `CallRuntimeForPair` calls it (ABI 3).
+    pub returns_pair: bool,
 }
 
 /// Every runtime function, in id order.
@@ -314,96 +369,193 @@ pub const RUNTIME_FUNCTIONS: &[RuntimeInfo] = &[
         id: RuntimeId::ThrowConstAssignError,
         name: "ThrowConstAssignError",
         arity: Some(0),
+        returns_pair: false,
     },
     RuntimeInfo {
         id: RuntimeId::ThrowIteratorResultNotAnObject,
         name: "ThrowIteratorResultNotAnObject",
         arity: Some(1),
+        returns_pair: false,
     },
     RuntimeInfo {
         id: RuntimeId::ThrowSymbolIteratorInvalid,
         name: "ThrowSymbolIteratorInvalid",
         arity: Some(0),
+        returns_pair: false,
     },
     RuntimeInfo {
         id: RuntimeId::CreateIterResultObject,
         name: "CreateIterResultObject",
         arity: Some(2),
+        returns_pair: false,
     },
     RuntimeInfo {
         id: RuntimeId::DefineClass,
         name: "DefineClass",
         arity: Some(2),
+        returns_pair: false,
     },
     RuntimeInfo {
         id: RuntimeId::DeclareGlobals,
         name: "DeclareGlobals",
         arity: Some(0),
+        returns_pair: false,
     },
     RuntimeInfo {
         id: RuntimeId::InitializeGlobal,
         name: "InitializeGlobal",
         arity: Some(2),
+        returns_pair: false,
     },
     RuntimeInfo {
         id: RuntimeId::ResolvePossiblyDirectEval,
         name: "ResolvePossiblyDirectEval",
         arity: Some(5),
+        returns_pair: false,
     },
     RuntimeInfo {
         id: RuntimeId::DeleteLookupSlot,
         name: "DeleteLookupSlot",
         arity: Some(1),
+        returns_pair: false,
     },
     RuntimeInfo {
         id: RuntimeId::CopyDataProperties,
         name: "CopyDataProperties",
         arity: Some(2),
+        returns_pair: false,
     },
     RuntimeInfo {
         id: RuntimeId::CopyDataPropertiesExcluding,
         name: "CopyDataPropertiesExcluding",
         arity: None,
+        returns_pair: false,
     },
     RuntimeInfo {
         id: RuntimeId::SetPrototypeInLiteral,
         name: "SetPrototypeInLiteral",
         arity: Some(2),
+        returns_pair: false,
     },
     RuntimeInfo {
         id: RuntimeId::DefineAccessorInLiteral,
         name: "DefineAccessorInLiteral",
         arity: Some(4),
+        returns_pair: false,
     },
     RuntimeInfo {
         id: RuntimeId::SetHomeObject,
         name: "SetHomeObject",
         arity: Some(2),
+        returns_pair: false,
     },
     RuntimeInfo {
         id: RuntimeId::GetHomeObject,
         name: "GetHomeObject",
         arity: Some(1),
+        returns_pair: false,
     },
     RuntimeInfo {
         id: RuntimeId::DefineClassMethod,
         name: "DefineClassMethod",
         arity: Some(3),
+        returns_pair: false,
     },
     RuntimeInfo {
         id: RuntimeId::DefineClassAccessor,
         name: "DefineClassAccessor",
         arity: Some(4),
+        returns_pair: false,
     },
     RuntimeInfo {
         id: RuntimeId::LoadKeyedFromSuper,
         name: "LoadKeyedFromSuper",
         arity: Some(3),
+        returns_pair: false,
     },
     RuntimeInfo {
         id: RuntimeId::StoreToSuper,
         name: "StoreToSuper",
         arity: Some(4),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::CreateGeneratorObject,
+        name: "CreateGeneratorObject",
+        arity: Some(2),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::GeneratorGetResumeMode,
+        name: "GeneratorGetResumeMode",
+        arity: Some(1),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::GeneratorClose,
+        name: "GeneratorClose",
+        arity: Some(1),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::ThrowThrowMethodMissing,
+        name: "ThrowThrowMethodMissing",
+        arity: Some(0),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::CreatePrivateName,
+        name: "CreatePrivateName",
+        arity: Some(1),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::SetClassFieldsInitializer,
+        name: "SetClassFieldsInitializer",
+        arity: Some(2),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::RunClassFieldsInitializer,
+        name: "RunClassFieldsInitializer",
+        arity: Some(2),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::LoadLookupSlotForCall,
+        name: "LoadLookupSlotForCall",
+        arity: Some(2),
+        returns_pair: true,
+    },
+    RuntimeInfo {
+        id: RuntimeId::DeclareEvalVar,
+        name: "DeclareEvalVar",
+        arity: Some(1),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::DeclareEvalFunction,
+        name: "DeclareEvalFunction",
+        arity: Some(2),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::ResolveLookupSlot,
+        name: "ResolveLookupSlot",
+        arity: Some(1),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::LoadLookupSlotResolved,
+        name: "LoadLookupSlotResolved",
+        arity: Some(3),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::StoreLookupSlotResolved,
+        name: "StoreLookupSlotResolved",
+        arity: Some(4),
+        returns_pair: false,
     },
 ];
 
@@ -434,8 +586,9 @@ impl RuntimeId {
     }
 }
 
-/// The runtime function table as stable text: one line per id (`<id> <name> <arity>`). The
-/// ABI guard (`tests/abi.rs`) hashes it, so a change to the table needs an ABI bump.
+/// The runtime function table as stable text: one line per id (`<id> <name> <arity>`, then
+/// ` pair` for a function that returns a pair). The ABI guard (`tests/abi.rs`) hashes it, so a
+/// change to the table needs an ABI bump.
 pub fn runtime_table_text() -> String {
     let mut s = String::new();
     for info in RUNTIME_FUNCTIONS {
@@ -446,6 +599,9 @@ pub fn runtime_table_text() -> String {
         match info.arity {
             Some(n) => s.push_str(&n.to_string()),
             None => s.push_str("variadic"),
+        }
+        if info.returns_pair {
+            s.push_str(" pair");
         }
         s.push('\n');
     }

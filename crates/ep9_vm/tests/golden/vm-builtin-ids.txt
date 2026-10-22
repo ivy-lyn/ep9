@@ -23,6 +23,17 @@
 0x0013   0.19         method       0       "[Symbol.iterator]"  (%String.prototype%.[Symbol.iterator] w-c)
 0x0014   0.20         method       0       "[Symbol.iterator]"  (%Iterator.prototype%.[Symbol.iterator] w-c)
 0x0015   0.21         method       0       "next"  (%StringIteratorPrototype%.next w-c)
+0x0016   0.22         constructor  1       "GeneratorFunction"  (%GeneratorFunction%)
+0x0017   0.23         method       1       "next"  (%GeneratorPrototype%.next w-c)
+0x0018   0.24         method       1       "return"  (%GeneratorPrototype%.return w-c)
+0x0019   0.25         method       1       "throw"  (%GeneratorPrototype%.throw w-c)
+0x001a   0.26         constructor  1       "AsyncFunction"  (%AsyncFunction%)
+0x001b   0.27         method       1       "eval"  (%eval%)
+0x001c   0.28         method       0       "keys"  (%Array.prototype%.keys w-c)
+0x001d   0.29         method       0       "entries"  (%Array.prototype%.entries w-c)
+0x001e   0.30         method       1       "[Symbol.hasInstance]"  (%Function.prototype%.[Symbol.hasInstance] ---)
+0x001f   0.31         getter       0       "[Symbol.toStringTag]"  (%Iterator.prototype%.[Symbol.toStringTag] --c)
+0x0020   0.32         setter       1       "[Symbol.toStringTag]"  (%Iterator.prototype%.[Symbol.toStringTag] --c)
 # IntrinsicId (append-only)
 intrinsic   0  %Object.prototype%
 intrinsic   1  %Function.prototype%
@@ -57,3 +68,15 @@ intrinsic  29  %EvalError%
 intrinsic  30  %URIError%
 intrinsic  31  %Math%
 intrinsic  32  %StringIteratorPrototype%
+intrinsic  33  %GeneratorFunction%
+intrinsic  34  %GeneratorFunction.prototype%
+intrinsic  35  %GeneratorPrototype%
+intrinsic  36  %AsyncFunction%
+intrinsic  37  %AsyncFunction.prototype%
+intrinsic  38  %eval%
+intrinsic  39  %Promise%
+intrinsic  40  %Promise.prototype%
+intrinsic  41  %AggregateError%
+intrinsic  42  %AggregateError.prototype%
+intrinsic  43  %Reflect%
+intrinsic  44  %Array.prototype%[@@unscopables]

@@ -1,6 +1,6 @@
 # var-shadow-block: script (sloppy)
 # | function f() { let a = 1; { let a = 2; (() => a)(); } return a; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=65 source=embedded hints=none
 source_hash=a7ed7507a7551f5200286a18a312a78b503c5607bde28b1391ed1945664dab49
 strings (2):

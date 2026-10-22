@@ -1,0 +1,4 @@
+caught TypeError bad
+then recovered
+passed through 5
+caught RangeError again

@@ -8,7 +8,8 @@
 //!
 //! Measured on aarch64-apple-darwin, 2026-10-21, `probe::measure_forms` (n = 500 -> 1500), worst
 //! form per column. The other targets are covered by `SAFETY` and checked by the depth tests,
-//! which run every form at the caps in debug and release on all 4 CI targets.
+//! which run every form at the caps. CI runs them in debug on all 4 CI targets (`cargo test
+//! --workspace`); the release run is local only.
 //!
 //! | Bytes per unit | debug | release | worst form |
 //! |---|---|---|---|

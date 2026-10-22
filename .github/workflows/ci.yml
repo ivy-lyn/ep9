@@ -4,15 +4,22 @@
 #   lint ............. fmt + clippy + rustdoc -D warnings; gc-lint   (Linux x64)
 #                      jetstream/run.mjs, cross/run.mjs and t0-dispatch.mjs tests
 #   build-test ....... build + test; clippy on the other 3 targets;  (4 targets)
-#                      feature matrix (default, jitless, aot; H27)
+#                      feature matrix (default, jitless, aot; H27);
+#                      ep9_vm spike-native tests (Spike B native entry)
 #   test262 .......... parse and exec runners vs expectations/;      (4 targets)
-#                      exec with eager feedback; on Linux x64 also
-#                      exec with GC-stress + eager feedback
+#                      exec with eager feedback; bytecodegen corpus
+#                      digest (G1); on Linux x64 also exec with
+#                      GC-stress + eager feedback, the debug corpus
+#                      digest and the atom-key gate (G2, debug exec)
 #   fp-check ......... no libm call, no FMA outside ep9_math (H36);  (Linux x64)
 #                      SoftFma vs hardware FMA
 #   disasm ........... ep9_vm handler check (H15); ep9_heap barrier  (4 targets)
 #   spikes ........... SP-Dispatch, SP-GC and SP-JIT-mem host gates  (4 targets)
-#                      SP-Dispatch speed gates: recorded, not blocking (H15 ADR)
+#                      SP-Dispatch speed gates: recorded, not blocking (H15 ADR);
+#                      cgoto.c built with zig cc 0.17.0 (H15-Q3);
+#                      Spike B structural gate (checks (a)-(h));
+#                      Spike B placement (b) gate (gate.sh b; SKIP on x86-64);
+#                      Spike B Win64 unwind (windows-x64; tests/win64_unwind.rs)
 #   miri ............. Miri on ep9_value, ep9_heap and ep9_math      (Linux x64)
 #   dep-guards ....... cargo tree / metadata guards; cargo deny      (Linux x64)
 #   perf-ci-v0 ....... cachegrind instruction counts of 7 workloads  (Linux x64)
@@ -99,8 +106,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # The ep9_cli e2e test checks every expected output against node, so pin the plan's named
+      # comparator (node 24.22, 10-quality.md), not the runner image's node: node 22 has no
+      # Promise.try (ES2025), which jobs/promise_try.js uses (M2-P4-CI-NODE24).
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.1'
       - run: cargo build --workspace --all-targets --locked
       - run: cargo test --workspace --locked
+      # Spike B's native entry (plan M0 month 2, D21): the ep9_vm `spike-native` tests run
+      # native code on every target, Windows x64 included (crates/ep9_vm/src/tests/native.rs).
+      # The feature is never in the ep9 graph (dep-guards check 11), so it gets its own build.
+      - name: spike-native tests (ep9_vm)
+        if: ${{ !cancelled() }}
+        run: cargo test -p ep9_vm --features spike-native --locked native
       # 10-quality section 5: clippy -D warnings on all 4 targets (the lint job covers Linux x64).
       - if: ${{ matrix.name != 'linux-x64' }}
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -116,7 +135,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # linux-x64 also runs exec under GC-stress (about 18 CPU-minutes on an M5 Max).
+        # linux-x64 also runs exec under GC-stress (about 18 CPU-minutes on an M5 Max), the debug
+        # corpus digest and the debug atom-key gate.
         include:
           - { name: macos-arm64, os: macos-15, timeout: 60 }
           - { name: linux-x64, os: ubuntu-24.04, timeout: 120 }
@@ -136,6 +156,18 @@ jobs:
           key: test262-${{ runner.os }}-${{ hashFiles('third_party/test262.commit', 'third_party/patches/test262/**') }}
       - id: sync
         run: bash scripts/sync-test262.sh
+      # The benchmark pins, for the corpus digest below (corpus.rs reads all three). JetStream
+      # inflates its .z files with node (scripts/sync-bench.sh); the runner images have node.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            third_party/bench-octane
+            third_party/bench-v8v7
+            third_party/bench-jetstream
+          key: bench-${{ runner.os }}-${{ hashFiles('third_party/bench-octane.commit', 'third_party/bench-v8v7.commit', 'third_party/bench-jetstream.commit', 'third_party/patches/bench-*/**') }}
+      - id: bench
+        if: ${{ !cancelled() }}
+        run: bash scripts/sync-bench.sh bench-octane bench-v8v7 bench-jetstream
       # Exit 1 on a regression vs expectations/test262-parse.<host-triple>.txt.
       - name: test262 parse
         run: cargo run --release --locked -p ep9_test262 -- parse
@@ -152,14 +184,55 @@ jobs:
         if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
         run: cargo run --release --locked -p ep9_test262 -- exec --feedback-threshold 0 --json test262-exec-eager.json
       # GC-stress (a collection before every allocation, the heap verifier after each) with eager
-      # feedback, against the same expectation file. The 4 tests of the skip list run past any
-      # timeout under GC-stress and fail without it too; the run prints "skipped: 4". A verifier
-      # error panics: an infrastructure error, exit 2 (tools/test262/README.md "exec").
+      # feedback, against the same expectation file. The 11 tests of the skip list run past the
+      # timeout under GC-stress (8 of them fail without it too; its header says why each one is
+      # there); the run prints "skipped: 11". A verifier error panics: an infrastructure error,
+      # exit 2 (tools/test262/README.md "exec").
       - name: test262 exec, GC-stress + eager feedback
         if: ${{ !cancelled() && steps.sync.outcome == 'success' && matrix.name == 'linux-x64' }}
         run: >-
           cargo run --release --locked -p ep9_test262 -- exec --gc-stress 1 --feedback-threshold 0
           --timeout 60 --skip-list expectations/test262-gc-skip.txt --json test262-exec-gc.json
+      # G1 determinism (decision M2-DETERMINISM): every unit of the bytecodegen corpus (test262
+      # plus the 3 benchmark pins, 54,522 files) compiles to the same bytes on every target, in
+      # release and in debug. The digest over them must equal expectations/bytecode-corpus.digest
+      # (crates/ep9_frontend/src/bytecodegen/corpus.rs). The log prints this runner's digest. It
+      # changes only with an ABI bump or a codegen change (a BCG-CORPUS row in decisions-log).
+      - name: bytecodegen corpus digest (release)
+        if: ${{ !cancelled() && steps.sync.outcome == 'success' && steps.bench.outcome == 'success' }}
+        run: cargo test -p ep9_frontend --release --locked --lib bytecodegen::corpus -- --ignored --nocapture
+      - name: bytecodegen corpus digest (debug)
+        if: ${{ !cancelled() && steps.sync.outcome == 'success' && steps.bench.outcome == 'success' && matrix.name == 'linux-x64' }}
+        run: cargo test -p ep9_frontend --locked --lib bytecodegen::corpus -- --ignored --nocapture
+      # G2 atom-key gate (W4-KEY-EQ): in a debug build with EP9_ASSERT_ATOM_KEYS=1, every isolate
+      # drop panics if a property-key compare looked at string content (crates/ep9_vm/src/atoms.rs),
+      # and the runner counts that as a panic. The gate needs "infrastructure errors: 0 (panic 0,
+      # ...)" in the summary and exit 0 or 1. Exit 2 means an infrastructure error (panic,
+      # timeout, worker crash, internal BytecodeGen error) or a runner error, and fails the step;
+      # an infrastructure error also skips the expectation compare (tools/test262/src/exec.rs).
+      # Exit 1 (the failing set differs from the expectation file, no infrastructure error) is a
+      # warning: the release steps above are the result gates. The 120 s soft timeout is for the
+      # slower debug build.
+      - name: test262 exec, atom-key gate (debug)
+        if: ${{ !cancelled() && steps.sync.outcome == 'success' && matrix.name == 'linux-x64' }}
+        run: |
+          cargo build --locked -p ep9_test262
+          rc=0
+          EP9_ASSERT_ATOM_KEYS=1 target/debug/ep9-test262 exec --timeout 120 2>&1 | tee atomgate.log || rc=$?
+          line="$(grep 'infrastructure errors:' atomgate.log | tail -n 1 || true)"
+          if [ -z "$line" ]; then
+            echo "::error::atom-key gate: the debug exec run printed no summary (exit $rc)"
+            exit 1
+          fi
+          if ! grep -qE '^ *infrastructure errors: 0 \(panic 0, timeout 0, worker crash 0, other 0\)$' <<< "$line"; then
+            echo "::error::atom-key gate (exit $rc):$line"
+            exit 1
+          fi
+          case "$rc" in
+            0) ;;
+            1) echo "::warning::atom-key gate passed (infrastructure errors 0), but the debug failing set differs from the expectation file (exit 1)" ;;
+            *) echo "::error::atom-key gate: the debug exec run exited $rc:$line"; exit 1 ;;
+          esac
       # Every failure with its cause; regenerate an expectation file from test262-exec.json
       # (status "fail").
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -224,12 +297,12 @@ jobs:
       - uses: ./.github/actions/setup-rust
       # cargo xtask disasm-check needs llvm-objdump, llvm-nm and llvm-ar from the sysroot.
       - run: rustup component add llvm-tools
-      # H15: tail handlers end in tail jumps, handler args <= 4, and every expansion has 282
+      # H15: tail handlers end in tail jumps, handler args <= 4, and every expansion has 284
       # handlers = ep9_vm::internals::THREADED_HANDLERS (opcodes + cold blocks + 3). Change the
       # number when an opcode or a cold block is added. No --match-loop gate for ep9_vm: its
       # match loop is the debug expansion, and its release shape is a report (H15 ADR, Rules).
       - name: ep9_vm handlers
-        run: cargo xtask disasm-check --manifest-path crates/ep9_vm/Cargo.toml -p ep9_vm --expect 282
+        run: cargo xtask disasm-check --manifest-path crates/ep9_vm/Cargo.toml -p ep9_vm --expect 284
       # SP-Value, H11: the barrier fast path (rustc --emit asm; no llvm-tools needed).
       - name: ep9_heap barrier
         if: ${{ !cancelled() }}
@@ -262,6 +335,38 @@ jobs:
             spikes/sp-dispatch -> target
             spikes/sp-gc -> target
             spikes/sp-jit-mem -> target
+            spikes/spike-b -> target
+      # H15-Q3: one LLVM for cgoto.c on every target. spikes/sp-dispatch/gate.sh builds it with
+      # `zig cc` when `zig version` prints 0.17.0 and logs "cc: zig cc 0.17.0 (pinned, H15-Q3)".
+      # The archive is pinned by its SHA-256 from https://ziglang.org/download/index.json
+      # (release of 2026-10-01); no third-party action.
+      - name: Install zig 0.17.0
+        env:
+          ZIG_VERSION: 0.17.0
+          MATRIX_NAME: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          exe=""
+          case "$MATRIX_NAME" in
+            linux-x64) arch=x86_64-linux ext=tar.xz sum=1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026 ;;
+            linux-arm64) arch=aarch64-linux ext=tar.xz sum=9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8 ;;
+            macos-arm64) arch=aarch64-macos ext=tar.xz sum=b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a ;;
+            windows-x64) arch=x86_64-windows ext=zip sum=b5663f69581dcf391293fbf16c06cb80d81d806545ce618b4d0bab7f0eb8c428 exe=.exe ;;
+            *) echo "::error::no zig $ZIG_VERSION archive for $MATRIX_NAME"; exit 1 ;;
+          esac
+          name="zig-$arch-$ZIG_VERSION"
+          tmp="$RUNNER_TEMP"
+          if command -v cygpath > /dev/null; then tmp="$(cygpath -u "$RUNNER_TEMP")"; fi
+          curl -sSfL --retry 3 -o "$tmp/$name.$ext" "https://ziglang.org/download/$ZIG_VERSION/$name.$ext"
+          if command -v sha256sum > /dev/null; then got="$(sha256sum "$tmp/$name.$ext")"; else got="$(shasum -a 256 "$tmp/$name.$ext")"; fi
+          got="${got%% *}"
+          if [ "$got" != "$sum" ]; then
+            echo "::error::$name.$ext has SHA-256 $got, not $sum"
+            exit 1
+          fi
+          if [ "$ext" = zip ]; then 7z x -bd -y -o"$RUNNER_TEMP" "$RUNNER_TEMP/$name.$ext" > /dev/null; else tar -xJf "$tmp/$name.$ext" -C "$tmp"; fi
+          "$tmp/$name/zig$exe" version
+          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
       # Structural gates block (build, tests, agreement, tail exits, handler args, x64 match-loop
       # shape). Speed gates are recorded, not blocking: one hosted x64 label gave 4 CPU models,
       # and the verdict changes with the model (H15 ADR; docs/measurements/2026-10-21-sp-dispatch-x64.md).
@@ -282,6 +387,31 @@ jobs:
         env:
           SP_JIT_EXTRAS: "0"
         run: bash spikes/sp-jit-mem/gate.sh
+      # Spike B structural gate (plan-v4 P2-SPIKE-B task 4): spike unit tests, `spike-b structural all`
+      # in the release (panic = abort) build, then check (h) in the debug (panic = unwind) build.
+      # Every check has a Windows path (UNWIND_INFO through FunctionTableRegistration; check (h)
+      # expects exit code 0xC0000409 there), so no check is skipped on windows-x64.
+      - name: Spike B structural gate
+        if: ${{ !cancelled() }}
+        run: bash spikes/spike-b/gate.sh structural
+      # Spike B placement (b) gate (plan-v6 P4-PLACEMENT-B, D11): the jit_b unit tests, then
+      # `spike-b structural-b all` (release) and `structural-b h` (debug). Placement (b) is built
+      # for AArch64 only; on x86-64 each (b) check prints SKIP with the Refusal text and the step
+      # passes.
+      - name: Spike B placement (b) gate
+        if: ${{ !cancelled() }}
+        run: bash spikes/spike-b/gate.sh b
+      # P4-WIN-STATIC-1 (plan-v6 D25): the real Win64 unwind run of placement (a)'s x86-64 JIT
+      # (spikes/spike-b/tests/win64_unwind.rs): per function, RtlLookupFunctionEntry finds its
+      # RUNTIME_FUNCTION and RtlVirtualUnwind from every prologue, body and epilogue state
+      # returns to its caller; a walk from a host function steps through running JIT frames.
+      # The `cargo test` of the structural gate already runs it; this step names the result.
+      # Debug, as that `cargo test`, so it reuses its build (a --release test build would
+      # rebuild the fat-LTO graph). The static half (win-static.sh, llvm-readobj and llvm-mc)
+      # runs on a Mac.
+      - name: Spike B Win64 unwind (windows-x64)
+        if: ${{ !cancelled() && matrix.name == 'windows-x64' }}
+        run: cargo test --locked --manifest-path spikes/spike-b/Cargo.toml --test win64_unwind -- --nocapture
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:

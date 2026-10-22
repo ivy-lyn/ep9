@@ -11,22 +11,38 @@
 //!
 //! A `Value` that the API returns is not a root: it stays valid until the next call into the
 //! isolate (that call may collect garbage). Copy what you need out of it first, or work inside
-//! [`Isolate::with_cx`], whose `Local`s cannot outlive the call (H20-Q4).
+//! [`Isolate::with_cx`], whose `Local`s cannot outlive the call (H20-Q4). The scoped forms
+//! (M2-P3, C11) are `Cx` methods:
+//!
+//! | Old form (raw `Value`) | Scoped form inside `with_cx` (`Local<'s>`) |
+//! |---|---|
+//! | `Isolate::run_script` | [`abi::Cx::run_script`] |
+//! | `Isolate::call` | `abi::Cx::call` |
+//! | `Isolate::global` | [`abi::Cx::global_binding`] (runs getters; TDZ throws) |
+//! | `Isolate::display` | [`abi::Cx::display`] |
+//!
+//! The old forms stay until the embedders move (M3-P3 EMBED-MIGRATE).
+//!
+//! Other threads reach a running isolate through two `Send` handles: [`TerminateHandle`]
+//! (stop the script) and [`InterruptHandle`] (run a callback on the isolate thread at the
+//! next interrupt poll).
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, PoisonError};
 
 use ep9_bytecode::VerifiedUnit;
 use ep9_heap::{Heap, HeapConfig, HeapError, VerifyError, VerifyReport};
 use ep9_value::{JsResult, Throw, Value};
 
+use crate::abi::{JsKey, JsObject, Local};
 use crate::builtins::{self, BuiltinTable};
+use crate::compiler::CompilerHooks;
 use crate::conv::{Res, describe};
 use crate::frame::{HOLE, UNDEFINED};
 use crate::host::HostFn;
 use crate::interp::{BUDGET, Cx, Dispatch};
 use crate::object::{self, attr, is_error, is_string, own_define, own_get};
-use crate::runtime::{Atom, Root, Runtime, val};
+use crate::runtime::{Atom, ErrorKind, Root, Runtime, Site, WeakInterruptQueue, val};
 use crate::unit::{FunctionInfo, LoadedUnit};
 use crate::{abi, atoms, call, error, property, realm, shape, string};
 
@@ -47,6 +63,14 @@ pub struct IsolateConfig {
     /// The builtin table to install into the realm (H20), after the VM's own table:
     /// `ep9_builtins::TABLE` for the ECMAScript builtins. `None`: only the VM's builtins.
     pub builtins: Option<&'static BuiltinTable>,
+    /// The compiler entry points for eval, `Function()` and run-time scripts (C2; ep9_vm
+    /// does not link the compiler). `None`: those paths throw their v0 errors.
+    pub compiler: Option<&'static CompilerHooks>,
+    /// HostPromiseRejectionTracker (§27.2.1.9): called when a promise is rejected while it
+    /// has no handler ("reject") and when such a promise gets one ("handle"). `None`: no hook.
+    /// Either way the isolate keeps the unhandled ones for
+    /// [`Isolate::take_unhandled_rejections`].
+    pub promise_rejection_tracker: Option<abi::PromiseRejectionTracker>,
 }
 
 impl IsolateConfig {
@@ -63,6 +87,8 @@ impl Default for IsolateConfig {
             stack_trace_limit: 10,
             feedback_threshold: IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD,
             builtins: None,
+            compiler: None,
+            promise_rejection_tracker: None,
         }
     }
 }
@@ -132,13 +158,86 @@ impl std::fmt::Display for Exception {
 }
 
 /// Stops the running script of an isolate from any thread. The isolate polls it at loop back
-/// edges and function entries; the exception it raises cannot be caught by JS.
+/// edges and function entries, and in builtin loops that have neither (`Cx::poll_interrupt`);
+/// the exception it raises cannot be caught by JS.
 #[derive(Clone, Debug)]
-pub struct TerminateHandle(Arc<AtomicBool>);
+pub struct TerminateHandle(Arc<AtomicU32>);
 
 impl TerminateHandle {
     pub fn terminate(&self) {
-        self.0.store(true, Ordering::Release);
+        self.0
+            .fetch_or(crate::interp::interrupt::TERMINATE, Ordering::Release);
+    }
+}
+
+/// Runs a callback on the isolate's thread from any thread (H23-Q6): [`InterruptHandle::request`]
+/// queues it, and the isolate runs it at its next interrupt poll, where [`TerminateHandle`] stops
+/// a script (loop back edges, function entries, builtin loops; JIT code polls the same way). A
+/// poll comes once per interrupt budget (10,000 back edges, bytecode calls or other budget units)
+/// while JS runs; a host-function call takes no budget unit, so code that only calls host
+/// functions does not poll. An idle isolate runs the callback when it next runs JS and polls.
+///
+/// The callback gets no `Cx`: it runs no JS and allocates nothing on the JS heap, so it is safe at
+/// any poll. It may call [`TerminateHandle::terminate`] (the same poll then stops the script) or
+/// [`InterruptHandle::request`] (the new callback runs at a later poll). Callbacks run in request
+/// order. A callback that panics ends the process in a release build (`panic = "abort"`, H23); in
+/// a debug build the panic unwinds out of the running script and the callbacks queued behind it
+/// are dropped. Callbacks still queued when the isolate is dropped are dropped with it, never run
+/// (the handle holds the queue weakly, so a callback that holds a handle keeps nothing alive).
+/// After that, a request is never run: the callback is dropped at once.
+///
+/// ```
+/// use std::sync::atomic::{AtomicBool, Ordering};
+/// use std::sync::Arc;
+/// use ep9_vm::{Isolate, IsolateConfig};
+/// let iso = Isolate::new(IsolateConfig::default()).unwrap();
+/// let ran = Arc::new(AtomicBool::new(false));
+/// let (h, r) = (iso.interrupt_handle(), Arc::clone(&ran));
+/// std::thread::spawn(move || h.request(Box::new(move || r.store(true, Ordering::SeqCst))))
+///     .join()
+///     .unwrap();
+/// // Not run yet: the isolate has not polled.
+/// assert!(!ran.load(Ordering::SeqCst));
+/// ```
+#[derive(Clone)]
+pub struct InterruptHandle {
+    word: Arc<AtomicU32>,
+    queue: WeakInterruptQueue,
+}
+
+impl InterruptHandle {
+    /// Queues `callback` and asks the isolate to run it at its next poll. It never waits for
+    /// the isolate: the queue lock is held only to push or to take the queue, never while a
+    /// callback runs. Once the isolate is dropped, the callback is dropped here, unrun.
+    pub fn request(&self, callback: Box<dyn FnOnce() + Send>) {
+        // No isolate: `callback` drops at the end of this function, outside any lock.
+        let Some(queue) = self.queue.upgrade() else {
+            return;
+        };
+        queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(callback);
+        // After the push: the poll that sees the bit finds the callback.
+        self.word
+            .fetch_or(crate::interp::interrupt::REQUEST, Ordering::Release);
+        // If the isolate went meanwhile, this is the last strong reference: the queue and its
+        // callbacks drop here, on this thread, after the lock is released (callbacks are
+        // `Send`).
+        drop(queue);
+    }
+}
+
+impl std::fmt::Debug for InterruptHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let queued = self
+            .queue
+            .upgrade()
+            .map_or(0, |q| q.lock().map_or(0, |v| v.len()));
+        f.debug_struct("InterruptHandle")
+            .field("word", &self.word)
+            .field("queued", &queued)
+            .finish()
     }
 }
 
@@ -173,6 +272,7 @@ impl Isolate {
             config.vm_stack_slots,
             native_limit,
             config.stack_trace_limit,
+            config.compiler,
         );
         builtins::prepare(&rt, config.builtins);
         realm::init(&rt);
@@ -187,14 +287,26 @@ impl Isolate {
             dispatch: config.dispatch,
             feedback_threshold: config.feedback_threshold,
             proto_epoch: &rt.shapes.proto_epoch,
+            interrupt: Arc::as_ptr(&rt.terminate),
+            #[cfg(feature = "spike-native")]
+            native_limit: rt.native_limit,
+            #[cfg(feature = "spike-native")]
+            runtime_table: &crate::native::RUNTIME_TABLE,
         });
         builtins::install(&mut cx).map_err(IsolateError::BuiltinTable)?;
+        rt.jobs.set_tracker(config.promise_rejection_tracker);
+        aggregate_error_prototype(&rt);
         Ok(Isolate { cx, rt })
     }
 
     /// The builtin table installed after the VM's own (`IsolateConfig::builtins`).
     pub fn builtin_table(&self) -> Option<&'static BuiltinTable> {
         self.rt.builtins.table()
+    }
+
+    /// The compiler hooks of this isolate (`IsolateConfig::compiler`, C2).
+    pub fn compiler(&self) -> Option<&'static CompilerHooks> {
+        self.rt.compiler
     }
 
     /// Runs `f` with a builtin-ABI context ([`abi::Cx`], H20): the embedder's way to hold
@@ -260,54 +372,94 @@ impl Isolate {
     /// function: `this` is the global object for a script and undefined for module code
     /// (§16.2.1.6.4 step 9; v0 runs a module unit alone, with no linking). `file` names the
     /// unit in stack traces and locations.
+    ///
+    /// Then it performs a microtask checkpoint ([`Isolate::perform_microtask_checkpoint`]),
+    /// also after a throw: the jobs the script queued run before it returns. A termination
+    /// runs no checkpoint and drops the queued jobs, so none of them runs later. A throw from
+    /// the script wins over one from a job, but a termination in a job wins over the throw; a
+    /// job that throws after a normal run makes the result that error.
     pub fn run_script(&mut self, unit: VerifiedUnit, file: &str) -> Result<Value, Exception> {
-        let rt = &*self.rt;
-        let module = unit.header.code_kind == ep9_bytecode::CodeKind::Module;
-        let index = u32::try_from(rt.units.borrow().len()).expect("fewer than 2^32 units");
-        let lu = LoadedUnit::load(rt, unit, file.to_string(), index);
-        let entry: *const FunctionInfo = &lu.infos[0];
-        rt.units.borrow_mut().push(lu);
-        let f = object::new_function(rt, entry, UNDEFINED);
-        let this = if module { UNDEFINED } else { rt.global() };
-        let r = call::call_function(&mut self.cx, f, this, &[]);
-        self.finish(r)
+        let r = run_unit(&mut self.cx, unit, file);
+        self.finish_with_checkpoint(r)
     }
 
-    /// Calls `f` with `this` and `args` (Call, §7.3.14).
+    /// Calls `f` with `this` and `args` (Call, §7.3.14), then performs a microtask checkpoint
+    /// as [`Isolate::run_script`] does.
     pub fn call(&mut self, f: Value, this: Value, args: &[Value]) -> Result<Value, Exception> {
-        // The callee frame copies the arguments onto the VM stack before the first GC point.
+        // `bits` is heap memory that the GC does not scan. That is safe: `call::call_with`
+        // copies the arguments into the callee frame before its first GC point (also before
+        // the wrap of a primitive `this`, which `call_function_object` does after the push).
         let bits: Vec<u64> = args.iter().map(|v| v.to_bits()).collect();
         let r = call::call_function(&mut self.cx, f.to_bits(), this.to_bits(), &bits);
-        self.finish(r)
+        self.finish_with_checkpoint(r)
+    }
+
+    /// Performs a microtask checkpoint: runs every queued job (promise reactions, and the jobs
+    /// of `Cx::enqueue_job`) in order, and the jobs they queue, until none is left. A job that
+    /// throws stops it: that exception is the `Err`, and the jobs behind it stay queued. A
+    /// termination stops it and drops the queue. [`Isolate::run_script`] and
+    /// [`Isolate::call`] run one after their run; an embedder that runs JS inside
+    /// [`Isolate::with_cx`] calls this afterwards.
+    pub fn perform_microtask_checkpoint(&mut self) -> Result<(), Exception> {
+        let r = abi::Cx::new(&mut self.cx).perform_microtask_checkpoint();
+        match r {
+            Ok(()) => Ok(()),
+            Err(Throw) => Err(self.exception()),
+        }
+    }
+
+    /// The promises that were rejected while they had no handler and still have none, as
+    /// [`Exception`]s of their rejection reasons, in rejection order; the isolate forgets
+    /// them. A host reports these after its last checkpoint (the ep9 CLI prints the first one
+    /// as an uncaught error and exits 1, as node does). The list drops a promise as soon as it
+    /// gets a handler.
+    pub fn take_unhandled_rejections(&mut self) -> Vec<Exception> {
+        let rt: &Runtime = self.cx.rt();
+        let reasons = rt.heap.scratch_roots();
+        abi::Cx::new(&mut self.cx).take_unhandled(&reasons);
+        let mut out = Vec::with_capacity(reasons.len());
+        for i in 0..reasons.len() {
+            let v = reasons.get(i).to_bits();
+            out.push(self.describe(v, None));
+        }
+        out
     }
 
     /// The global binding `name` (the script lexical record first), without running JS: `None`
-    /// if there is none, and also if it is an accessor property of the global object (reading
-    /// it would call the getter, as `[[Get]]` through [`Isolate::with_cx`] does).
+    /// if there is none, if it is a lexical binding in its TDZ (not initialized yet; reading
+    /// it would throw a ReferenceError), and if it is an accessor property of the global
+    /// object (reading it would call the getter). An own data property of the global object
+    /// only: [`abi::Cx::global_binding`] does the full lookup, getters and TDZ included.
     pub fn global(&self, name: &str) -> Option<Value> {
         let rt = &*self.rt;
         let key = atoms::intern_str(rt, name);
-        own_get(rt.root(Root::Lexical), key)
-            .or_else(|| own_get(rt.global(), key))
-            // An accessor's slot holds its ACCESSOR_PAIR cell, which is not a JS value.
-            .filter(|&(_, a)| a & attr::ACCESSOR == 0)
-            .map(|(v, _)| val(v))
+        match own_get(rt.root(Root::Lexical), key) {
+            // The TDZ hole never leaves the VM.
+            Some((v, _)) => (v != HOLE).then(|| val(v)),
+            None => own_get(rt.global(), key)
+                // An accessor's slot holds its ACCESSOR_PAIR cell, which is not a JS value.
+                .filter(|&(_, a)| a & attr::ACCESSOR == 0)
+                .map(|(v, _)| val(v)),
+        }
     }
 
     /// Text of `v` for a REPL or test output, without running JS: strings as they are,
     /// numbers in JS form, other values as `describe` prints them.
     pub fn display(&self, v: Value) -> String {
-        let b = v.to_bits();
-        if is_string(b) {
-            string::to_rust_string(b)
-        } else {
-            describe(b)
-        }
+        display_bits(v.to_bits())
     }
 
     /// A handle that stops the running script from another thread.
     pub fn terminate_handle(&self) -> TerminateHandle {
         TerminateHandle(Arc::clone(&self.rt.terminate))
+    }
+
+    /// A handle that runs callbacks on this isolate's thread from another thread.
+    pub fn interrupt_handle(&self) -> InterruptHandle {
+        InterruptHandle {
+            word: Arc::clone(&self.rt.terminate),
+            queue: Arc::downgrade(&self.rt.interrupt_requests),
+        }
     }
 
     /// Runs a full garbage collection.
@@ -324,6 +476,36 @@ impl Isolate {
         &self.rt.heap
     }
 
+    /// [`Isolate::finish`], then a microtask checkpoint (not after a termination, which drops
+    /// the queue). The result Value is a precise root while the jobs run. After a throw the
+    /// script's error wins over a job's error, but not over a termination in a job.
+    fn finish_with_checkpoint(&mut self, r: Res<u64>) -> Result<Value, Exception> {
+        let rt: &Runtime = self.cx.rt();
+        match r {
+            Ok(b) => {
+                let keep = rt.heap.scratch_roots();
+                keep.push(val(b));
+                let c = self.perform_microtask_checkpoint();
+                let b = keep.get(0).to_bits();
+                drop(keep);
+                c?;
+                self.finish(Ok(b))
+            }
+            Err(Throw) => {
+                // A termination: `exception` dropped the queue, so no job runs.
+                let e = self.exception();
+                if e.terminated {
+                    return Err(e);
+                }
+                match self.perform_microtask_checkpoint() {
+                    Err(c) if c.terminated => Err(c),
+                    // The script's error wins; a job's error after it is dropped.
+                    _ => Err(e),
+                }
+            }
+        }
+    }
+
     /// Turns the result of a run into the API result; takes the pending exception.
     fn finish(&mut self, r: Res<u64>) -> Result<Value, Exception> {
         match r {
@@ -333,7 +515,9 @@ impl Isolate {
         }
     }
 
-    /// The pending exception (taken) as an API [`Exception`].
+    /// The pending exception (taken) as an API [`Exception`]. A termination also drops the
+    /// job queue before it resets: no job queued before it runs on a later run, so a promise
+    /// loop cannot outlive [`TerminateHandle`].
     fn exception(&mut self) -> Exception {
         let rt = &*self.rt;
         let terminated = || Exception {
@@ -345,7 +529,7 @@ impl Isolate {
         };
         let exc = rt.take_pending();
         let site = rt.shared.throw_site.take();
-        if rt.terminating.replace(false) {
+        if end_termination(rt) {
             return terminated();
         }
         debug_assert!(exc != 0, "Err(Throw) without a pending exception");
@@ -358,6 +542,20 @@ impl Isolate {
                 terminated: false,
             };
         }
+        self.describe(exc, site)
+    }
+
+    /// The API [`Exception`] of the thrown value `exc` (`site`: where a non-Error value was
+    /// thrown). `exc` stays live in this frame (CSS) while its text is read.
+    fn describe(&mut self, exc: u64, site: Option<Site>) -> Exception {
+        let rt = &*self.rt;
+        let terminated = || Exception {
+            message: "execution terminated".into(),
+            constructor: None,
+            stack: None,
+            location: None,
+            terminated: true,
+        };
         let constructor = constructor_name(&mut self.cx, exc);
         let (err_site, stack) = error::describe_exception(rt, exc);
         let site = if is_error(exc) { err_site } else { site };
@@ -372,7 +570,7 @@ impl Isolate {
                 Err(Throw) => {
                     rt.take_pending();
                     rt.shared.throw_site.take();
-                    if rt.terminating.replace(false) {
+                    if end_termination(rt) {
                         return terminated();
                     }
                     self.display(val(exc))
@@ -401,6 +599,118 @@ impl Isolate {
     }
 }
 
+/// Loads `unit` (a new entry of `Runtime::units`, never freed) and calls its entry function:
+/// `this` is the global object for a script and undefined for module code. The shared body of
+/// [`Isolate::run_script`] and [`abi::Cx::run_script`]. Works from Rust with no frame and from
+/// a host call (a nested run on top of the caller's frames).
+fn run_unit(cx: &mut Cx, unit: VerifiedUnit, file: &str) -> Res<u64> {
+    let rt = cx.rt();
+    let module = unit.header.code_kind == ep9_bytecode::CodeKind::Module;
+    let index = u32::try_from(rt.units.borrow().len()).expect("fewer than 2^32 units");
+    let lu = LoadedUnit::load(rt, unit, file.to_string(), index);
+    let entry: *const FunctionInfo = &lu.infos[0];
+    rt.units.borrow_mut().push(lu);
+    let f = object::new_function(rt, entry, UNDEFINED);
+    let this = if module { UNDEFINED } else { rt.global() };
+    call::call_function(cx, f, this, &[])
+}
+
+/// Resets the termination state after a terminated run and gives true if there was one; then
+/// it drops the job queue (`JobState::clear_queue`), so no job queued before the termination
+/// runs at a later run or checkpoint of the isolate.
+fn end_termination(rt: &Runtime) -> bool {
+    let t = rt.terminating.replace(false);
+    if t {
+        rt.jobs.clear_queue();
+    }
+    t
+}
+
+/// The text of [`Isolate::display`] and [`abi::Cx::display`]. Runs no JS.
+fn display_bits(b: u64) -> String {
+    if is_string(b) {
+        string::to_rust_string(b)
+    } else {
+        describe(b)
+    }
+}
+
+/// The embedder forms scoped to [`Isolate::with_cx`] (H20-Q4, C11): they take and return
+/// `Local`s, which cannot leave the `with_cx` call, so no raw `Value` outlives a collection.
+/// They are `Cx` methods, so a host function can use them too.
+impl<'s> abi::Cx<'s> {
+    /// Loads `unit` and runs it, as [`Isolate::run_script`] does: `this` is the global object
+    /// for a script and undefined for module code; `file` names the unit in stack traces. The
+    /// completion value comes back as a `Local`; a throw is the pending exception (`Err`),
+    /// which `with_cx` turns into its [`Exception`].
+    ///
+    /// ```compile_fail
+    /// use ep9_vm::Isolate;
+    /// fn escape(iso: &mut Isolate, unit: ep9_bytecode::VerifiedUnit) {
+    ///     // The `Local` cannot leave `with_cx`.
+    ///     let v = iso.with_cx(|cx| cx.run_script(unit, "a.js")).unwrap();
+    ///     iso.collect_garbage();
+    ///     let _ = v;
+    /// }
+    /// ```
+    pub fn run_script(&mut self, unit: VerifiedUnit, file: &str) -> JsResult<Local<'s>> {
+        let b = run_unit(self.inner(), unit, file)?;
+        // The hole never leaves the VM.
+        Ok(Local::from_bits(if b == HOLE { UNDEFINED } else { b }))
+    }
+
+    /// The value of the global binding `name` (GetBindingValue of the global environment,
+    /// §9.1.1.4.6): the script lexical record first, where a binding in its TDZ throws a
+    /// ReferenceError, then the global object and its prototype chain (HasProperty, then
+    /// `[[Get]]`, which runs a getter). `Ok(None)` if no binding has the name (an
+    /// unresolvable reference).
+    ///
+    /// ```
+    /// use ep9_vm::{Isolate, IsolateConfig};
+    /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    /// let r = iso.with_cx(|cx| {
+    ///     let nan = cx.global_binding("NaN")?.expect("a global");
+    ///     cx.collect_garbage();
+    ///     Ok((cx.display(nan), cx.global_binding("nope")?.is_none()))
+    /// });
+    /// assert_eq!(r, Ok(("NaN".to_string(), true)));
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use ep9_vm::{Isolate, IsolateConfig};
+    /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    /// // The `Local` cannot leave `with_cx`.
+    /// let nan = iso.with_cx(|cx| cx.global_binding("NaN")).unwrap();
+    /// iso.collect_garbage();
+    /// let _ = nan;
+    /// ```
+    pub fn global_binding(&mut self, name: &str) -> JsResult<Option<Local<'s>>> {
+        let cx = self.inner();
+        let rt = cx.rt();
+        // GC point; the key stays live in this Rust local (CSS).
+        let key = atoms::intern_str(rt, name);
+        if let Some((v, _)) = own_get(rt.root(Root::Lexical), key) {
+            if v == HOLE {
+                let msg = format!("Cannot access '{name}' before initialization");
+                return Err(error::throw_error(cx, ErrorKind::ReferenceError, &msg));
+            }
+            return Ok(Some(Local::from_bits(v)));
+        }
+        let global: Local<'s, JsObject> = Local::from_bits(rt.global());
+        let key: Local<'s, JsKey> = Local::from_bits(key);
+        if !self.has_property(global, key)? {
+            return Ok(None);
+        }
+        self.get(global, key).map(Some)
+    }
+
+    /// The text of `v` for a REPL or test output, as [`Isolate::display`]: strings as they
+    /// are, numbers in JS form, other values described. Runs no JS (no `toString` call).
+    pub fn display(&self, v: impl Into<Local<'s>>) -> String {
+        display_bits(v.into().bits())
+    }
+}
+
 /// `v.constructor.name` for an object `v`, if it is a string; `None` for a primitive. It
 /// reads data properties only (an accessor counts as absent), so it runs no JS and cannot
 /// throw.
@@ -415,4 +725,16 @@ fn constructor_name(cx: &mut Cx, v: u64) -> Option<String> {
     }
     let name = property::get_data_from(cx, ctor, rt.atom(Atom::Name))?;
     is_string(name).then(|| string::to_rust_string(name))
+}
+
+/// §20.5.7.2: the `[[Prototype]]` of `%AggregateError%` is `%Error%` (a table gives a
+/// builtin's function object `%Function.prototype%`). Runs after `builtins::install`, when a
+/// table made `%AggregateError%` (`ep9_builtins` promise.rs, P4-PROMISE).
+fn aggregate_error_prototype(rt: &Runtime) {
+    let c = builtins::intrinsic(rt, builtins::IntrinsicId::AggregateError);
+    let error = builtins::intrinsic(rt, builtins::IntrinsicId::Error);
+    if object::is_object(c) && object::is_object(error) {
+        let ok = property::set_prototype_of(rt, c, error);
+        debug_assert!(ok, "%AggregateError% is extensible");
+    }
 }

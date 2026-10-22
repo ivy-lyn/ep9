@@ -1,0 +1,345 @@
+# class-field-derived: script (sloppy)
+# | class A {} class B extends A { x = 1; constructor() { super(); } } class C extends A { y = super.constructor; } class D extends A { z; constructor() { var f = () => super(); f(); } }
+; ep9 bytecode, ABI 4
+unit kind=script strict=false ts=none source_len=182 source=embedded hints=none
+source_hash=0622f1c99eb00b08ba5dd41d4164d18474fd1010236ff7777fb22bda9b48b1a2
+strings (12):
+  str0 "A"
+  str1 "B"
+  str2 "C"
+  str3 "D"
+  str4 ".callee"
+  str5 "new.target"
+  str6 "this"
+  str7 "x"
+  str8 "constructor"
+  str9 "y"
+  str10 "z"
+  str11 "f"
+scopes (13):
+  scope0 script outer=- flags=[] slots=["A":class, "B":class, "C":class, "D":class]
+  scope1 class outer=scope0 flags=[strict] slots=[]
+  scope2 function outer=scope1 flags=[strict] slots=[]
+  scope3 class outer=scope0 flags=[strict] slots=[]
+  scope4 function outer=scope3 flags=[strict] slots=[]
+  scope5 function outer=scope3 flags=[strict] slots=[]
+  scope6 class outer=scope0 flags=[strict] slots=[]
+  scope7 function outer=scope6 flags=[strict] slots=[]
+  scope8 function outer=scope6 flags=[strict] slots=[]
+  scope9 class outer=scope0 flags=[strict] slots=[]
+  scope10 function outer=scope9 flags=[strict] slots=[]
+  scope11 function outer=scope9 flags=[needs-context,strict] slots=[".callee":var, "new.target":var, "this":var]
+  scope12 function outer=scope11 flags=[strict] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=10 range=0..182
+  code (216 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> LdaTheHole                                   ; 07
+      6    Star r5                                      ; 0c 05
+      8 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+     12    Star r4                                      ; 0c 04
+     14 E> CallRuntime DefineClass, r4-r5               ; 68 04 00 04 02
+     19    Star r6                                      ; 0c 06
+     21    Ldar r4                                      ; 0b 04
+     23    Star r0                                      ; 0c 00
+     25    Ldar r4                                      ; 0b 04
+     27    Star r5                                      ; 0c 05
+     29    LdaConstant k1  ; k1 = String str0 "A"       ; 0a 01
+     31    Star r4                                      ; 0c 04
+     33 E> CallRuntime InitializeGlobal, r4-r5          ; 68 06 00 04 02
+     38    Ldar r5                                      ; 0b 05
+     40 S> LdaGlobal k1, s1  ; k1 = String str0 "A"     ; 10 01 01
+     43    Star r5                                      ; 0c 05
+     45 E> CreateClosure k2, s2, #0x00  ; k2 = Function f3 ; 74 02 02 00
+     49    Star r4                                      ; 0c 04
+     51 E> CallRuntime DefineClass, r4-r5               ; 68 04 00 04 02
+     56    Star r6                                      ; 0c 06
+     58    Ldar r4                                      ; 0b 04
+     60    Star r1                                      ; 0c 01
+     62 E> CreateClosure k3, s3, #0x00  ; k3 = Function f2 ; 74 03 03 00
+     66    Star r7                                      ; 0c 07
+     68    Mov r4, r8                                   ; 0d 04 08
+     71    Mov r7, r9                                   ; 0d 07 09
+     74 E> CallRuntime SetClassFieldsInitializer, r8-r9 ; 68 18 00 08 02
+     79    Ldar r4                                      ; 0b 04
+     81    Star r5                                      ; 0c 05
+     83    LdaConstant k4  ; k4 = String str1 "B"       ; 0a 04
+     85    Star r4                                      ; 0c 04
+     87 E> CallRuntime InitializeGlobal, r4-r5          ; 68 06 00 04 02
+     92    Ldar r5                                      ; 0b 05
+     94 S> LdaGlobal k1, s1  ; k1 = String str0 "A"     ; 10 01 01
+     97    Star r5                                      ; 0c 05
+     99 E> CreateClosure k5, s4, #0x00  ; k5 = Function f4 ; 74 05 04 00
+    103    Star r4                                      ; 0c 04
+    105 E> CallRuntime DefineClass, r4-r5               ; 68 04 00 04 02
+    110    Star r6                                      ; 0c 06
+    112    Ldar r4                                      ; 0b 04
+    114    Star r2                                      ; 0c 02
+    116 E> CreateClosure k6, s5, #0x00  ; k6 = Function f5 ; 74 06 05 00
+    120    Star r8                                      ; 0c 08
+    122    Mov r6, r9                                   ; 0d 06 09
+    125 E> CallRuntime SetHomeObject, r8-r9             ; 68 0d 00 08 02
+    130    Ldar r8                                      ; 0b 08
+    132    Star r7                                      ; 0c 07
+    134    Mov r4, r8                                   ; 0d 04 08
+    137    Mov r7, r9                                   ; 0d 07 09
+    140 E> CallRuntime SetClassFieldsInitializer, r8-r9 ; 68 18 00 08 02
+    145    Ldar r4                                      ; 0b 04
+    147    Star r5                                      ; 0c 05
+    149    LdaConstant k7  ; k7 = String str2 "C"       ; 0a 07
+    151    Star r4                                      ; 0c 04
+    153 E> CallRuntime InitializeGlobal, r4-r5          ; 68 06 00 04 02
+    158    Ldar r5                                      ; 0b 05
+    160 S> LdaGlobal k1, s1  ; k1 = String str0 "A"     ; 10 01 01
+    163    Star r5                                      ; 0c 05
+    165 E> CreateClosure k8, s6, #0x00  ; k8 = Function f7 ; 74 08 06 00
+    169    Star r4                                      ; 0c 04
+    171 E> CallRuntime DefineClass, r4-r5               ; 68 04 00 04 02
+    176    Star r6                                      ; 0c 06
+    178    Ldar r4                                      ; 0b 04
+    180    Star r3                                      ; 0c 03
+    182 E> CreateClosure k9, s7, #0x00  ; k9 = Function f6 ; 74 09 07 00
+    186    Star r7                                      ; 0c 07
+    188    Mov r4, r8                                   ; 0d 04 08
+    191    Mov r7, r9                                   ; 0d 07 09
+    194 E> CallRuntime SetClassFieldsInitializer, r8-r9 ; 68 18 00 08 02
+    199    Ldar r4                                      ; 0b 04
+    201    Star r5                                      ; 0c 05
+    203    LdaConstant k10  ; k10 = String str3 "D"     ; 0a 0a
+    205    Star r4                                      ; 0c 04
+    207 E> CallRuntime InitializeGlobal, r4-r5          ; 68 06 00 04 02
+    212    Ldar r5                                      ; 0b 05
+    214    LdaUndefined                                 ; 05
+    215    Return                                       ; 92
+  constants (11):
+      0 Function f1
+      1 String str0 "A"
+      2 Function f3
+      3 Function f2
+      4 String str1 "B"
+      5 Function f4
+      6 Function f5
+      7 String str2 "C"
+      8 Function f7
+      9 Function f6
+     10 String str3 "D"
+  feedback (8):
+      0 CreateClosure
+      1 LoadGlobal
+      2 CreateClosure
+      3 CreateClosure
+      4 CreateClosure
+      5 CreateClosure
+      6 CreateClosure
+      7 CreateClosure
+  handlers (0):
+  positions (24):
+      0 S 0 (1:1)
+      5 S 0 (1:1)
+      8 E 0 (1:1)
+     14 E 0 (1:1)
+     33 E 0 (1:1)
+     40 S 11 (1:12)
+     45 E 11 (1:12)
+     51 E 11 (1:12)
+     62 E 11 (1:12)
+     74 E 29 (1:30)
+     87 E 11 (1:12)
+     94 S 67 (1:68)
+     99 E 67 (1:68)
+    105 E 67 (1:68)
+    116 E 67 (1:68)
+    125 E 67 (1:68)
+    140 E 85 (1:86)
+    153 E 67 (1:68)
+    160 S 112 (1:113)
+    165 E 112 (1:113)
+    171 E 112 (1:113)
+    182 E 112 (1:113)
+    194 E 130 (1:131)
+    207 E 112 (1:113)
+function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=8..10
+  code (2 bytes):
+      0 S> LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 0 (1:1)
+function f2 class-fields-initializer name=- parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=0 range=29..66
+  code (8 bytes):
+      0 S> LdaSmi [1]                                   ; 04 01
+      2 E> DefineNamedOwnProperty <this>, k0, s0  ; k0 = String str7 "x" ; 25 ff 00 00
+      6    LdaUndefined                                 ; 05
+      7    Return                                       ; 92
+  constants (1):
+      0 String str7 "x"
+  feedback (1):
+      0 DefineNamedOwn
+  handlers (0):
+  positions (2):
+      0 S 31 (1:32)
+      2 E 31 (1:32)
+function f3 derived-constructor name="B" parent=f0 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=5 range=49..64
+  code (44 bytes):
+      0    LdaTheHole                                   ; 07
+      1    Star r0                                      ; 0c 00
+      3 S> LdaCurrentFunction                           ; 0e
+      4    GetSuperConstructor r1                       ; 98 01
+      6 E> ThrowIfNotSuperConstructor r1                ; 97 01
+      8    LdaNewTarget                                 ; 0f
+      9 E> Construct r1, (), s0                         ; 69 01 00 00 00
+     14    Star r2                                      ; 0c 02
+     16    Ldar r0                                      ; 0b 00
+     18 E> ThrowSuperAlreadyCalledIfNotHole             ; 96
+     19    Ldar r2                                      ; 0b 02
+     21    Star r0                                      ; 0c 00
+     23    LdaCurrentFunction                           ; 0e
+     24    Star r3                                      ; 0c 03
+     26    Mov r2, r4                                   ; 0d 02 04
+     29 E> CallRuntime RunClassFieldsInitializer, r3-r4 ; 68 19 00 03 02
+     34    Ldar r2                                      ; 0b 02
+     36    LdaUndefined                                 ; 05
+     37    JumpIfUndefined @40                          ; 85 03
+     39    Return                                       ; 92
+     40    Ldar r0                                      ; 0b 00
+     42 E> ThrowSuperNotCalledIfHole                    ; 95
+     43    Return                                       ; 92
+  constants (0):
+  feedback (1):
+      0 Call
+  handlers (0):
+  positions (6):
+      3 S 54 (1:55)
+      6 E 54 (1:55)
+      9 E 54 (1:55)
+     18 E 54 (1:55)
+     29 E 54 (1:55)
+     42 E 63 (1:64)
+function f4 derived-constructor name="C" parent=f0 outer_scope=scope6 flags=[strict,simple-params] params=0 length=0 regs=5 range=85..111
+  code (30 bytes):
+      0 S> LdaCurrentFunction                           ; 0e
+      1    GetSuperConstructor r0                       ; 98 00
+      3 E> ThrowIfNotSuperConstructor r0                ; 97 00
+      5 E> CreateRestParameter                          ; 7c
+      6    Star r1                                      ; 0c 01
+      8    LdaNewTarget                                 ; 0f
+      9 E> ConstructWithSpread r0, r1, s0               ; 6a 00 01 01 00
+     14    Star r2                                      ; 0c 02
+     16    LdaCurrentFunction                           ; 0e
+     17    Star r3                                      ; 0c 03
+     19    Mov r2, r4                                   ; 0d 02 04
+     22 E> CallRuntime RunClassFieldsInitializer, r3-r4 ; 68 19 00 03 02
+     27    Ldar r2                                      ; 0b 02
+     29    Return                                       ; 92
+  constants (0):
+  feedback (1):
+      0 Call
+  handlers (0):
+  positions (5):
+      0 S 67 (1:68)
+      3 E 67 (1:68)
+      5 E 67 (1:68)
+      9 E 67 (1:68)
+     22 E 67 (1:68)
+function f5 class-fields-initializer name=- parent=f0 outer_scope=scope6 flags=[strict,simple-params] params=0 length=0 regs=3 range=85..111
+  code (26 bytes):
+      0 S> Ldar <this>                                  ; 0b ff
+      2    Star r0                                      ; 0c 00
+      4    LdaCurrentFunction                           ; 0e
+      5    Star r2                                      ; 0c 02
+      7 E> CallRuntime GetHomeObject, r2                ; 68 0e 00 02 01
+     12    Star r1                                      ; 0c 01
+     14    Ldar r1                                      ; 0b 01
+     16 E> GetNamedPropertyFromSuper r0, k0, s0  ; k0 = String str8 "constructor" ; 22 00 00 00
+     20 E> DefineNamedOwnProperty <this>, k1, s1  ; k1 = String str9 "y" ; 25 ff 01 01
+     24    LdaUndefined                                 ; 05
+     25    Return                                       ; 92
+  constants (2):
+      0 String str8 "constructor"
+      1 String str9 "y"
+  feedback (2):
+      0 LoadNamed
+      1 DefineNamedOwn
+  handlers (0):
+  positions (4):
+      0 S 87 (1:88)
+      7 E 91 (1:92)
+     16 E 97 (1:98)
+     20 E 87 (1:88)
+function f6 class-fields-initializer name=- parent=f0 outer_scope=scope9 flags=[strict,simple-params] params=0 length=0 regs=0 range=130..182
+  code (7 bytes):
+      0 S> LdaUndefined                                 ; 05
+      1 E> DefineNamedOwnProperty <this>, k0, s0  ; k0 = String str10 "z" ; 25 ff 00 00
+      5    LdaUndefined                                 ; 05
+      6    Return                                       ; 92
+  constants (1):
+      0 String str10 "z"
+  feedback (1):
+      0 DefineNamedOwn
+  handlers (0):
+  positions (2):
+      0 S 132 (1:133)
+      1 E 132 (1:133)
+function f7 derived-constructor name="D" parent=f0 outer_scope=scope9 flags=[strict,simple-params] params=0 length=0 regs=3 range=146..180
+  code (35 bytes):
+      0 E> CreateFunctionContext k0, [3]  ; k0 = Scope scope11 ; 75 00 03
+      3    PushContext r1                               ; 13 01
+      5    LdaNewTarget                                 ; 0f
+      6    StaCurrentContextSlot [1]                    ; 1b 01
+      8    LdaCurrentFunction                           ; 0e
+      9    StaCurrentContextSlot [0]                    ; 1b 00
+     11    LdaTheHole                                   ; 07
+     12    StaCurrentContextSlot [2]                    ; 1b 02
+     14 S> CreateClosure k1, s0, #0x00  ; k1 = Function f8 ; 74 01 00 00
+     18    Star r0                                      ; 0c 00
+     20 S> Ldar r0                                      ; 0b 00
+     22    Star r2                                      ; 0c 02
+     24 E> CallUndefinedReceiver0 r2, s1                ; 64 02 01
+     27    LdaUndefined                                 ; 05
+     28    JumpIfUndefined @31                          ; 85 03
+     30    Return                                       ; 92
+     31    LdaCurrentContextSlot [2]                    ; 18 02
+     33 E> ThrowSuperNotCalledIfHole                    ; 95
+     34    Return                                       ; 92
+  constants (2):
+      0 Scope scope11
+      1 Function f8
+  feedback (2):
+      0 CreateClosure
+      1 Call
+  handlers (0):
+  positions (5):
+      0 E 146 (1:147)
+     14 S 155 (1:156)
+     20 S 174 (1:175)
+     24 E 174 (1:175)
+     33 E 179 (1:180)
+function f8 arrow name="f" parent=f7 outer_scope=scope11 flags=[strict,simple-params] params=0 length=0 regs=4 range=159..172
+  code (37 bytes):
+      0 S> LdaImmutableCurrentContextSlot [0]           ; 19 00
+      2    GetSuperConstructor r0                       ; 98 00
+      4 E> ThrowIfNotSuperConstructor r0                ; 97 00
+      6    LdaImmutableCurrentContextSlot [1]           ; 19 01
+      8 E> Construct r0, (), s0                         ; 69 00 00 00 00
+     13    Star r1                                      ; 0c 01
+     15    LdaCurrentContextSlot [2]                    ; 18 02
+     17 E> ThrowSuperAlreadyCalledIfNotHole             ; 96
+     18    Ldar r1                                      ; 0b 01
+     20    StaCurrentContextSlot [2]                    ; 1b 02
+     22    LdaImmutableCurrentContextSlot [0]           ; 19 00
+     24    Star r2                                      ; 0c 02
+     26    Mov r1, r3                                   ; 0d 01 03
+     29 E> CallRuntime RunClassFieldsInitializer, r2-r3 ; 68 19 00 02 02
+     34    Ldar r1                                      ; 0b 01
+     36    Return                                       ; 92
+  constants (0):
+  feedback (1):
+      0 Call
+  handlers (0):
+  positions (5):
+      0 S 165 (1:166)
+      4 E 165 (1:166)
+      8 E 165 (1:166)
+     17 E 165 (1:166)
+     29 E 165 (1:166)

@@ -1,0 +1,158 @@
+# gen-finally: script (sloppy)
+# | function* g(f) { try { yield 1; } catch (e) { yield e; } finally { f(); } return 2; }
+; ep9 bytecode, ABI 4
+unit kind=script strict=false ts=none source_len=85 source=embedded hints=none
+source_hash=ab9e41402490ae5107e05f5aa0b7abb20c50084fcd0420c3e08d5e7fa462591d
+strings (1):
+  str0 "g"
+scopes (6):
+  scope0 script outer=- flags=[] slots=["g":function]
+  scope1 function outer=scope0 flags=[] slots=[]
+  scope2 block outer=scope1 flags=[] slots=[]
+  scope3 catch outer=scope1 flags=[] slots=[]
+  scope4 block outer=scope3 flags=[] slots=[]
+  scope5 block outer=scope1 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..85
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "g"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "g"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="g" parent=f0 outer_scope=scope0 flags=[generator,simple-params] params=1 length=1 regs=9 range=0..85
+  code (197 bytes):
+      0    LdaNewTarget                                 ; 0f
+      1    Star r1                                      ; 0c 01
+      3    SwitchOnGeneratorState r1, k0  ; k0 = JumpTable [+21, +66, +122] ; 99 01 00
+      6    LdaCurrentFunction                           ; 0e
+      7    Star r2                                      ; 0c 02
+      9    Mov <this>, r3                               ; 0d ff 03
+     12 E> CallRuntime CreateGeneratorObject, r2-r3     ; 68 13 00 02 02
+     17    Star r1                                      ; 0c 01
+     19 E> SuspendGenerator r1, r0-r1, [0]              ; 9a 01 00 02 00
+     24    ResumeGenerator r1, r0-r1                    ; 9b 01 00 02
+     28    Star r2                                      ; 0c 02
+     30 E> CallRuntime GeneratorGetResumeMode, r1       ; 68 14 00 01 01
+     35    SwitchOnSmi k1, [0]  ; k1 = JumpTable [+9, +6] ; 8a 01 00
+     38    Ldar r2                                      ; 0b 02
+     40 E> Throw                                        ; 90
+     41    Ldar r2                                      ; 0b 02
+     43    Return                                       ; 92
+     44    Ldar r2                                      ; 0b 02
+     46 S> LdaCurrentContext                            ; 15
+     47    Star r4                                      ; 0c 04
+     49    LdaCurrentContext                            ; 15
+     50    Star r5                                      ; 0c 05
+     52 S> LdaSmi [1]                                   ; 04 01
+     54    Star r6                                      ; 0c 06
+     56    LdaFalse                                     ; 09
+     57    Star r7                                      ; 0c 07
+     59 E> CallRuntime CreateIterResultObject, r6-r7    ; 68 03 00 06 02
+     64 E> SuspendGenerator r1, r0-r5, [1]              ; 9a 01 00 06 01
+     69    ResumeGenerator r1, r0-r5                    ; 9b 01 00 06
+     73    Star r6                                      ; 0c 06
+     75 E> CallRuntime GeneratorGetResumeMode, r1       ; 68 14 00 01 01
+     80    SwitchOnSmi k2, [0]  ; k2 = JumpTable [+16, +6] ; 8a 02 00
+     83    Ldar r6                                      ; 0b 06
+     85 E> Throw                                        ; 90
+     86    Ldar r6                                      ; 0b 06
+     88    Star r3                                      ; 0c 03
+     90    LdaSmi [1]                                   ; 04 01
+     92    Star r2                                      ; 0c 02
+     94    Jump @165                                    ; 7e 47
+     96    Ldar r6                                      ; 0b 06
+     98    Jump @154                                    ; 7e 38
+    100    Star r6                                      ; 0c 06
+    102    LdaTheHole                                   ; 07
+    103    SetPendingMessage                            ; 93
+    104 S> Ldar r6                                      ; 0b 06
+    106    Star r0                                      ; 0c 00
+    108 S> Ldar r0                                      ; 0b 00
+    110    Star r7                                      ; 0c 07
+    112    LdaFalse                                     ; 09
+    113    Star r8                                      ; 0c 08
+    115 E> CallRuntime CreateIterResultObject, r7-r8    ; 68 03 00 07 02
+    120 E> SuspendGenerator r1, r0-r6, [2]              ; 9a 01 00 07 02
+    125    ResumeGenerator r1, r0-r6                    ; 9b 01 00 07
+    129    Star r7                                      ; 0c 07
+    131 E> CallRuntime GeneratorGetResumeMode, r1       ; 68 14 00 01 01
+    136    SwitchOnSmi k3, [0]  ; k3 = JumpTable [+16, +6] ; 8a 03 00
+    139    Ldar r7                                      ; 0b 07
+    141 E> Throw                                        ; 90
+    142    Ldar r7                                      ; 0b 07
+    144    Star r3                                      ; 0c 03
+    146    LdaSmi [1]                                   ; 04 01
+    148    Star r2                                      ; 0c 02
+    150    Jump @165                                    ; 7e 0f
+    152    Ldar r7                                      ; 0b 07
+    154    LdaSmi [-1]                                  ; 04 ff
+    156    Star r2                                      ; 0c 02
+    158    Jump @165                                    ; 7e 07
+    160    Star r3                                      ; 0c 03
+    162    LdaZero                                      ; 03
+    163    Star r2                                      ; 0c 02
+    165    LdaTheHole                                   ; 07
+    166    SetPendingMessage                            ; 93
+    167    Star r5                                      ; 0c 05
+    169 S> Ldar a0                                      ; 0b fe
+    171    Star r6                                      ; 0c 06
+    173 E> CallUndefinedReceiver0 r6, s0                ; 64 06 00
+    176    Ldar r5                                      ; 0b 05
+    178    SetPendingMessage                            ; 93
+    179    Ldar r2                                      ; 0b 02
+    181    SwitchOnSmi k4, [0]  ; k4 = JumpTable [+5, +8] ; 8a 04 00
+    184    Jump @192                                    ; 7e 08
+    186    Ldar r3                                      ; 0b 03
+    188 E> ReThrow                                      ; 91
+    189    Ldar r3                                      ; 0b 03
+    191    Return                                       ; 92
+    192 S> LdaSmi [2]                                   ; 04 02
+    194    Return                                       ; 92
+    195    LdaUndefined                                 ; 05
+    196    Return                                       ; 92
+  constants (5):
+      0 JumpTable [+21, +66, +122]
+      1 JumpTable [+9, +6]
+      2 JumpTable [+16, +6]
+      3 JumpTable [+16, +6]
+      4 JumpTable [+5, +8]
+  feedback (1):
+      0 Call
+  handlers (2):
+        [49, 154) -> @160 context=r4 uncaught
+        [52, 98) -> @100 context=r5 caught
+  positions (20):
+     12 E 0 (1:1)
+     19 E 0 (1:1)
+     30 E 0 (1:1)
+     40 E 0 (1:1)
+     46 S 17 (1:18)
+     52 S 23 (1:24)
+     59 E 23 (1:24)
+     64 E 23 (1:24)
+     75 E 23 (1:24)
+     85 E 23 (1:24)
+    104 S 34 (1:35)
+    108 S 46 (1:47)
+    115 E 46 (1:47)
+    120 E 46 (1:47)
+    131 E 46 (1:47)
+    141 E 46 (1:47)
+    169 S 67 (1:68)
+    173 E 67 (1:68)
+    188 E 17 (1:18)
+    192 S 74 (1:75)

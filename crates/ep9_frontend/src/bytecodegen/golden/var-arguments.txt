@@ -1,6 +1,6 @@
 # var-arguments: script (sloppy)
 # | function f(a) { a = 1; return arguments; } function g(a) { 'use strict'; return arguments[0]; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=95 source=embedded hints=none
 source_hash=c0b067f53f7c06d46974d19346c11e0f8450cdb19248ab0dd0ae340a3f244219
 strings (3):

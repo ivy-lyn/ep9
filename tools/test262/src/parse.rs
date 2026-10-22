@@ -15,19 +15,36 @@
 //! which some selected test loads it (assert.js and sta.js for every non-raw test,
 //! doneprintHandle.js for async tests). They are reported apart from the test counts, but a
 //! failure is a failure like any other. `test/harness/` and `test/staging/` are not run.
+//!
+//! Both passes (tests, then includes) run in worker processes (`parse-worker`), as `exec` does,
+//! so a crash or an abort loses one file, not the run:
+//!
+//! ```text
+//! parent (parse)                                  parse-worker, one per thread
+//!   "test\t<rel>" or "include\t<name>\t<modes>"  -> run_test / run_include
+//!   <------------- one outcome line per request -- (rel, flags, includes, runs)
+//!   worker exits (crash, abort): an infrastructure error with its stderr tail, respawn
+//! ```
+//!
+//! A panic in a run is still caught there and is an infrastructure error. Under
+//! `panic = "abort"` (P2-INFRA2) it ends the worker instead: also an infrastructure error, with
+//! the panic text from the worker's stderr. Either way the run exits 2.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
+use std::io::{self, BufRead, Write as _};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Instant;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use ep9_frontend::{SourceOpts, Strictness, check_early_errors};
 
+use crate::exec::{self, escape, unescape};
 use crate::frontmatter::{self, Meta};
 use crate::suite::{self, TestFile};
-use crate::{expect, json, pool};
+use crate::{expect, json};
 
 /// The test directories of a parse run (09-milestones §8 week 1).
 pub const DIRS: [&str; 4] = ["language", "built-ins", "annexB", "intl402"];
@@ -38,6 +55,16 @@ pub(crate) const STRICT_PREFIX: &str = "\"use strict\";\n";
 /// Worker stack. oxc has no depth limit yet (01-front-end §6), so give it room.
 pub const STACK_BYTES: usize = 256 << 20;
 
+/// Files a parent thread takes at a time (as `pool::par_map` does). It keeps up to two groups
+/// in flight, and a worker writes its replies in groups of up to this many (or sooner when no
+/// request waits), so neither side waits for a round trip per file. A file parses in about
+/// 0.25 ms of CPU; one reply per file cost about 15% more CPU in a full run (macOS arm64).
+const CHUNK: usize = 8;
+
+/// A worker with no reply for this long is stuck: kill it (an infrastructure error). A file
+/// parses in milliseconds.
+const HARD_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// How strict runs become strict.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StrictBy {
@@ -45,6 +72,23 @@ pub enum StrictBy {
     Prefix,
     /// Pass `Strictness::Strict` to ep9_frontend and keep the source as-is.
     Opts,
+}
+
+impl StrictBy {
+    fn name(self) -> &'static str {
+        match self {
+            StrictBy::Prefix => "prefix",
+            StrictBy::Opts => "opts",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<StrictBy> {
+        match s {
+            "prefix" => Some(StrictBy::Prefix),
+            "opts" => Some(StrictBy::Opts),
+            _ => None,
+        }
+    }
 }
 
 pub struct Options {
@@ -77,8 +121,25 @@ impl Mode {
             Mode::Module => "module",
         }
     }
+
+    fn from_name(s: &str) -> Option<Mode> {
+        match s {
+            "sloppy" => Some(Mode::Sloppy),
+            "strict" => Some(Mode::Strict),
+            "raw" => Some(Mode::Raw),
+            "module" => Some(Mode::Module),
+            _ => None,
+        }
+    }
 }
 
+/// The flags of `parse-worker` (internal).
+pub struct WorkerOptions {
+    pub test262: PathBuf,
+    pub strict_by: StrictBy,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 struct Run {
     mode: Mode,
     ok: bool,
@@ -88,6 +149,7 @@ struct Run {
     detail: Option<String>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 struct Outcome {
     rel: String,
     module: bool,
@@ -162,18 +224,50 @@ pub(crate) fn modes(meta: &Meta) -> Vec<Mode> {
     }
 }
 
-/// `Ok(Some(error))` = early error, `Ok(None)` = parsed, `Err(message)` = panic.
-fn has_early_error(src: &str, mode: Mode, strict_by: StrictBy) -> Result<Option<String>, String> {
-    let result = catch_unwind(AssertUnwindSafe(|| match mode {
-        Mode::Sloppy | Mode::Raw => check_early_errors(src, SourceOpts::script(Strictness::Sloppy)),
-        Mode::Module => check_early_errors(src, SourceOpts::module()),
-        Mode::Strict => match strict_by {
-            StrictBy::Prefix => check_early_errors(
-                &format!("{STRICT_PREFIX}{src}"),
-                SourceOpts::script(Strictness::Sloppy),
-            ),
-            StrictBy::Opts => check_early_errors(src, SourceOpts::script(Strictness::Strict)),
-        },
+/// Is a parse-side test hook set? (`EP9_TEST262_FAULT`; read once per process.)
+fn faults_on() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("EP9_TEST262_FAULT").is_some())
+}
+
+/// Test hooks (only for tools/test262/tests) of a parse run of `name` (a test path or
+/// `harness/<file>`), inside its `catch_unwind`: `parse-panic` panics; `parse-nounwind-panic`
+/// panics where a panic cannot unwind, so the worker aborts as under `panic = "abort"`.
+fn injected_parse_fault(name: &str) {
+    if !faults_on() {
+        return;
+    }
+    if exec::fault_for("parse-panic", name) {
+        panic!("injected parse panic for {name}");
+    }
+    if exec::fault_for("parse-nounwind-panic", name) {
+        exec::panic_without_unwind(format!("injected parse panic for {name}"));
+    }
+}
+
+/// `Ok(Some(error))` = early error, `Ok(None)` = parsed, `Err(message)` = panic. `name` is the
+/// file (for the test hooks).
+fn has_early_error(
+    src: &str,
+    mode: Mode,
+    strict_by: StrictBy,
+    name: &str,
+) -> Result<Option<String>, String> {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        injected_parse_fault(name);
+        match mode {
+            Mode::Sloppy | Mode::Raw => {
+                check_early_errors(src, SourceOpts::script(Strictness::Sloppy))
+            }
+            Mode::Module => check_early_errors(src, SourceOpts::module()),
+            Mode::Strict => match strict_by {
+                StrictBy::Prefix => check_early_errors(
+                    &format!("{STRICT_PREFIX}{src}"),
+                    SourceOpts::script(Strictness::Sloppy),
+                ),
+                StrictBy::Opts => check_early_errors(src, SourceOpts::script(Strictness::Strict)),
+            },
+        }
     }));
     match result {
         Ok(Ok(())) => Ok(None),
@@ -186,11 +280,17 @@ fn has_early_error(src: &str, mode: Mode, strict_by: StrictBy) -> Result<Option<
     }
 }
 
-fn run_modes(src: &str, modes: &[Mode], negative: bool, strict_by: StrictBy) -> Vec<Run> {
+fn run_modes(
+    src: &str,
+    modes: &[Mode],
+    negative: bool,
+    strict_by: StrictBy,
+    name: &str,
+) -> Vec<Run> {
     modes
         .iter()
         .map(|&mode| {
-            let result = has_early_error(src, mode, strict_by);
+            let result = has_early_error(src, mode, strict_by, name);
             let panicked = result.is_err();
             let (ok, detail) = match result {
                 Ok(Some(_)) if negative => (true, None),
@@ -241,7 +341,13 @@ fn run_test(file: &TestFile, strict_by: StrictBy) -> Outcome {
     };
     outcome.module = meta.has_flag("module");
     outcome.negative = meta.is_parse_negative();
-    outcome.runs = run_modes(&src, &modes(&meta), outcome.negative, strict_by);
+    outcome.runs = run_modes(
+        &src,
+        &modes(&meta),
+        outcome.negative,
+        strict_by,
+        &outcome.rel,
+    );
     outcome.meta = Some(meta);
     outcome
 }
@@ -292,12 +398,255 @@ fn run_include(root: &Path, name: &str, modes: &BTreeSet<Mode>, strict_by: Stric
     match std::fs::read(&file.path).map(String::from_utf8) {
         Ok(Ok(src)) => {
             let modes: Vec<Mode> = modes.iter().copied().collect();
-            outcome.runs = run_modes(&src, &modes, false, strict_by);
+            outcome.runs = run_modes(&src, &modes, false, strict_by, &outcome.rel);
         }
         Ok(Err(_)) => outcome.error = Some("file is not valid UTF-8".into()),
         Err(e) => outcome.error = Some(format!("cannot read: {e}")),
     }
     outcome
+}
+
+// ---------------------------------------------------------------------------------------------
+// The parse worker and its line protocol
+
+/// A request line: `test\t<rel>` or `include\t<name>\t<mode>,<mode>...` (fields escaped as in
+/// the exec protocol).
+fn test_request(rel: &str) -> String {
+    format!("test\t{}", escape(rel))
+}
+
+fn include_request(name: &str, modes: &BTreeSet<Mode>) -> String {
+    let modes: Vec<&str> = modes.iter().map(|m| m.name()).collect();
+    format!("include\t{}\t{}", escape(name), modes.join(","))
+}
+
+/// One outcome as a line: rel, module, negative, error, meta present, flags, includes, then 4
+/// fields per run (mode, ok, panicked, detail). Lists are joined by a newline before escaping;
+/// an empty error or detail is none (a real one is never empty).
+fn encode_outcome(o: &Outcome) -> String {
+    let bit = |b: bool| if b { "1" } else { "0" };
+    let (flags, includes) = o.meta.as_ref().map_or((String::new(), String::new()), |m| {
+        (m.flags.join("\n"), m.includes.join("\n"))
+    });
+    let mut line = format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        escape(&o.rel),
+        bit(o.module),
+        bit(o.negative),
+        escape(o.error.as_deref().unwrap_or("")),
+        bit(o.meta.is_some()),
+        escape(&flags),
+        escape(&includes)
+    );
+    for r in &o.runs {
+        let _ = write!(
+            line,
+            "\t{}\t{}\t{}\t{}",
+            r.mode.name(),
+            bit(r.ok),
+            bit(r.panicked),
+            escape(r.detail.as_deref().unwrap_or(""))
+        );
+    }
+    line
+}
+
+fn decode_outcome(line: &str) -> Option<Outcome> {
+    let fields: Vec<&str> = line.split('\t').collect();
+    if fields.len() < 7 || !(fields.len() - 7).is_multiple_of(4) {
+        return None;
+    }
+    let bit = |s: &str| match s {
+        "0" => Some(false),
+        "1" => Some(true),
+        _ => None,
+    };
+    let text = |s: &str| (!s.is_empty()).then(|| unescape(s));
+    let list = |s: &str| -> Vec<String> {
+        let s = unescape(s);
+        if s.is_empty() {
+            Vec::new()
+        } else {
+            s.split('\n').map(ToString::to_string).collect()
+        }
+    };
+    let meta = bit(fields[4])?.then(|| Meta {
+        flags: list(fields[5]),
+        includes: list(fields[6]),
+        ..Meta::default()
+    });
+    let runs = fields[7..]
+        .chunks(4)
+        .map(|r| {
+            Some(Run {
+                mode: Mode::from_name(r[0])?,
+                ok: bit(r[1])?,
+                panicked: bit(r[2])?,
+                detail: text(r[3]),
+            })
+        })
+        .collect::<Option<Vec<Run>>>()?;
+    Some(Outcome {
+        rel: unescape(fields[0]),
+        module: bit(fields[1])?,
+        negative: bit(fields[2])?,
+        meta,
+        runs,
+        error: text(fields[3]),
+    })
+}
+
+/// The reply to `test\t<rel>`: an outcome for `rel` with an error and no run (`run_test`
+/// stopped early), or with one run per mode of its flags, in order. `None` (a bad line, a
+/// crash) for any other line, such as one cut short: an outcome with fewer runs would pass
+/// on the runs it has.
+fn test_reply(rel: &str, line: &str) -> Option<Outcome> {
+    decode_outcome(line).filter(|o| {
+        o.rel == rel
+            && match (&o.error, &o.meta) {
+                (Some(_), _) => o.runs.is_empty(),
+                (None, Some(meta)) => o.runs.iter().map(|r| r.mode).eq(modes(meta)),
+                (None, None) => false,
+            }
+    })
+}
+
+/// The reply to `include\t<name>\t<modes>`: an outcome for `harness/<name>` with an error and
+/// no run, or with one run per requested mode, in order (as [`test_reply`]).
+fn include_reply(name: &str, modes: &BTreeSet<Mode>, line: &str) -> Option<Outcome> {
+    decode_outcome(line).filter(|o| {
+        o.rel == format!("harness/{name}")
+            && match o.error {
+                Some(_) => o.runs.is_empty(),
+                None => o.runs.iter().map(|r| r.mode).eq(modes.iter().copied()),
+            }
+    })
+}
+
+/// The outcome of a file whose worker crashed or hung on it: an infrastructure error.
+fn gone_outcome(rel: String, gone: exec::Gone) -> Outcome {
+    Outcome {
+        rel,
+        module: false,
+        negative: false,
+        meta: None,
+        runs: Vec::new(),
+        error: Some(format!("{}: {}", gone.cause, gone.detail)),
+    }
+}
+
+/// Runs one request line in a worker. `None` = a bad request. `queued`: more requests wait
+/// behind this one (for the test hook `parse-abort-in-group`).
+fn serve(opts: &WorkerOptions, line: &str, queued: bool) -> Option<Outcome> {
+    let mut fields = line.split('\t');
+    let kind = fields.next()?;
+    let name = unescape(fields.next()?);
+    let outcome = match kind {
+        "test" => {
+            parse_abort_hook(&name, queued);
+            let file = TestFile {
+                path: opts.test262.join(&name),
+                rel: name,
+            };
+            run_test(&file, opts.strict_by)
+        }
+        "include" => {
+            parse_abort_hook(&format!("harness/{name}"), queued);
+            let modes = fields
+                .next()?
+                .split(',')
+                .map(Mode::from_name)
+                .collect::<Option<BTreeSet<Mode>>>()?;
+            run_include(&opts.test262, &name, &modes, opts.strict_by)
+        }
+        _ => return None,
+    };
+    fields.next().is_none().then_some(outcome)
+}
+
+/// Test hooks: `parse-abort` aborts the worker on a matching file (a crash in the parser).
+/// `parse-abort-in-group` aborts only while more requests wait behind the file, so the crash
+/// does not repeat when the file runs alone.
+fn parse_abort_hook(name: &str, queued: bool) {
+    if faults_on()
+        && (exec::fault_for("parse-abort", name)
+            || (queued && exec::fault_for("parse-abort-in-group", name)))
+    {
+        std::process::abort();
+    }
+}
+
+/// Test hook `parse-partial-reply`: on a matching file the worker writes its reply up to the
+/// first run, with no newline, and aborts, as a worker killed while it writes a long reply.
+/// The cut line still decodes (an outcome with no run).
+fn partial_reply_hook(out: &mut impl io::Write, name: &str, reply: &str) {
+    if faults_on() && exec::fault_for("parse-partial-reply", name) {
+        let end = reply
+            .match_indices('\t')
+            .nth(6)
+            .map_or(reply.len(), |(i, _)| i);
+        let _ = out.write_all(&reply.as_bytes()[..end]);
+        let _ = out.flush();
+        std::process::abort();
+    }
+}
+
+/// `parse-worker`: reads request lines from stdin and writes one outcome line per request to
+/// stdout, in order. Replies go out in groups of up to [`CHUNK`], or sooner when no request
+/// waits. A crash loses the replies not written yet; the parent then runs those files again
+/// one at a time (`exec::in_workers`), so the crash still lands on the right file.
+pub fn worker(opts: WorkerOptions) -> ExitCode {
+    exec::install_panic_hook();
+    let runner = std::thread::Builder::new()
+        .name("ep9-test262-parse".into())
+        .stack_size(STACK_BYTES)
+        .spawn(move || {
+            let mut input = io::BufReader::new(io::stdin());
+            let mut out = io::BufWriter::new(io::stdout().lock());
+            let mut line = String::new();
+            let mut unflushed = 0;
+            loop {
+                line.clear();
+                match input.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(_) => return 2,
+                }
+                let request = line.trim_end_matches(['\n', '\r']);
+                if request.is_empty() {
+                    continue;
+                }
+                let queued = !input.buffer().is_empty();
+                let Some(outcome) = serve(&opts, request, queued) else {
+                    let _ = writeln!(
+                        io::stderr(),
+                        "ep9-test262 parse-worker: bad request {request:?}"
+                    );
+                    return 2;
+                };
+                let reply = encode_outcome(&outcome);
+                partial_reply_hook(&mut out, &outcome.rel, &reply);
+                if writeln!(out, "{reply}").is_err() {
+                    return 2;
+                }
+                unflushed += 1;
+                // A full group, or nothing more to read: the parent may be waiting.
+                if unflushed >= CHUNK || input.buffer().is_empty() {
+                    if out.flush().is_err() {
+                        return 2;
+                    }
+                    unflushed = 0;
+                }
+            }
+            if out.flush().is_err() {
+                return 2;
+            }
+            0
+        });
+    match runner.map(std::thread::JoinHandle::join) {
+        Ok(Ok(code)) => ExitCode::from(code),
+        _ => ExitCode::from(3),
+    }
 }
 
 /// Run the `parse` command. Exit code: 0 = matches the expectations, 1 = differs, 2 = error.
@@ -324,13 +673,46 @@ pub fn run(opts: &Options) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let outcomes = pool::par_map(&files, opts.threads, STACK_BYTES, |f| {
-        run_test(f, opts.strict_by)
-    });
+    let worker_args: Vec<String> = vec![
+        "--test262".into(),
+        root.display().to_string(),
+        "--strict-by".into(),
+        opts.strict_by.name().into(),
+    ];
+    let workers = exec::Workers {
+        subcommand: "parse-worker",
+        args: &worker_args,
+        threads: opts.threads,
+        chunk: CHUNK,
+        hard: HARD_TIMEOUT,
+    };
+    let outcomes = exec::in_workers(
+        &workers,
+        &files,
+        |f| test_request(&f.rel),
+        |f, line| test_reply(&f.rel, line),
+        |f, gone| gone_outcome(f.rel.clone(), gone),
+        |_| {},
+    );
+    let Ok(outcomes) =
+        outcomes.map_err(|e| eprintln!("ep9-test262: cannot start a worker process: {e}"))
+    else {
+        return ExitCode::from(2);
+    };
     let needs: Vec<(String, BTreeSet<Mode>)> = include_needs(&outcomes).into_iter().collect();
-    let includes = pool::par_map(&needs, opts.threads, STACK_BYTES, |(name, modes)| {
-        run_include(root, name, modes, opts.strict_by)
-    });
+    let includes = exec::in_workers(
+        &workers,
+        &needs,
+        |(name, modes)| include_request(name, modes),
+        |(name, modes), line| include_reply(name, modes, line),
+        |(name, _), gone| gone_outcome(format!("harness/{name}"), gone),
+        |_| {},
+    );
+    let Ok(includes) =
+        includes.map_err(|e| eprintln!("ep9-test262: cannot start a worker process: {e}"))
+    else {
+        return ExitCode::from(2);
+    };
     let wall = started.elapsed();
     let all = || outcomes.iter().chain(includes.iter());
 
@@ -343,9 +725,10 @@ pub fn run(opts: &Options) -> ExitCode {
             eprintln!("ep9-test262: {path}: {e}");
         }
         eprintln!(
-            "ep9-test262: {} files could not be checked (read error, bad front matter or parser panic); \
-             the expectations were not compared or written",
-            infra.len()
+            "ep9-test262: {} of {} files could not be checked (read error, bad front matter, parser \
+             panic, worker crash or hang); the expectations were not compared or written",
+            infra.len(),
+            all().count()
         );
         return ExitCode::from(2);
     }
@@ -615,19 +998,22 @@ mod tests {
     #[test]
     fn strict_runs_see_strict_code_both_ways() {
         for by in [StrictBy::Prefix, StrictBy::Opts] {
-            assert_eq!(has_early_error("with (a) {}", Mode::Sloppy, by), Ok(None));
+            assert_eq!(
+                has_early_error("with (a) {}", Mode::Sloppy, by, "t.js"),
+                Ok(None)
+            );
             assert!(
-                has_early_error("with (a) {}", Mode::Strict, by)
+                has_early_error("with (a) {}", Mode::Strict, by, "t.js")
                     .unwrap()
                     .is_some()
             );
             assert!(
-                has_early_error("with (a) {}", Mode::Raw, by)
+                has_early_error("with (a) {}", Mode::Raw, by, "t.js")
                     .unwrap()
                     .is_none()
             );
             assert!(
-                has_early_error("with (a) {}", Mode::Module, by)
+                has_early_error("with (a) {}", Mode::Module, by, "t.js")
                     .unwrap()
                     .is_some()
             );
@@ -641,9 +1027,10 @@ mod tests {
             &[Mode::Sloppy, Mode::Strict],
             true,
             StrictBy::Prefix,
+            "t.js",
         );
         assert!(runs.iter().all(|r| r.ok));
-        let runs = run_modes("let a;", &[Mode::Sloppy], true, StrictBy::Prefix);
+        let runs = run_modes("let a;", &[Mode::Sloppy], true, StrictBy::Prefix, "t.js");
         assert!(!runs[0].ok);
         assert!(runs[0].detail.as_deref().unwrap().starts_with("parsed"));
         let runs = run_modes(
@@ -651,6 +1038,7 @@ mod tests {
             &[Mode::Sloppy, Mode::Strict],
             false,
             StrictBy::Prefix,
+            "t.js",
         );
         assert!(runs[0].ok && !runs[1].ok);
     }
@@ -667,7 +1055,7 @@ mod tests {
         };
         // A parse mismatch is a failure that an expectation can list.
         let mismatch = outcome(
-            run_modes("let a;", &[Mode::Sloppy], true, StrictBy::Prefix),
+            run_modes("let a;", &[Mode::Sloppy], true, StrictBy::Prefix, "t.js"),
             None,
         );
         assert!(!mismatch.passed() && !mismatch.runs[0].panicked);
@@ -717,5 +1105,174 @@ mod tests {
             needs["assert.js"],
             BTreeSet::from([Mode::Sloppy, Mode::Strict])
         );
+    }
+
+    #[test]
+    fn outcome_lines_round_trip() {
+        let test = Outcome {
+            rel: "test/a\tb\\c.js".into(),
+            module: true,
+            negative: true,
+            meta: Some(Meta {
+                flags: vec!["module".into(), "async".into()],
+                includes: vec!["x.js".into()],
+                ..Meta::default()
+            }),
+            runs: vec![
+                Run {
+                    mode: Mode::Module,
+                    ok: false,
+                    panicked: true,
+                    detail: Some("panic: a\nb\tc".into()),
+                },
+                Run {
+                    mode: Mode::Strict,
+                    ok: true,
+                    panicked: false,
+                    detail: None,
+                },
+            ],
+            error: None,
+        };
+        let line = encode_outcome(&test);
+        assert!(!line.contains('\n'), "{line}");
+        assert_eq!(decode_outcome(&line).as_ref(), Some(&test));
+        // No meta (an include), an error and no runs (an unreadable file), empty lists.
+        let include = Outcome {
+            rel: "harness/assert.js".into(),
+            module: false,
+            negative: false,
+            meta: None,
+            runs: Vec::new(),
+            error: Some("cannot read: x".into()),
+        };
+        assert_eq!(
+            decode_outcome(&encode_outcome(&include)).as_ref(),
+            Some(&include)
+        );
+        let bare = Outcome {
+            meta: Some(Meta::default()),
+            error: None,
+            ..include
+        };
+        assert_eq!(decode_outcome(&encode_outcome(&bare)).as_ref(), Some(&bare));
+        // Bad lines.
+        for bad in ["", "a\t1", "a\t1\t0\t\t0\t\t\tsloppy", "a\t2\t0\t\t0\t\t"] {
+            assert_eq!(decode_outcome(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_reply_needs_every_run_its_request_asks_for() {
+        let run = |mode, ok| Run {
+            mode,
+            ok,
+            panicked: false,
+            detail: (!ok).then(|| "unexpected early error: x".to_string()),
+        };
+        let test = Outcome {
+            rel: "test/a.js".into(),
+            module: false,
+            negative: false,
+            meta: Some(Meta {
+                includes: vec!["a.js".into(), "b.js".into()],
+                ..Meta::default()
+            }),
+            runs: vec![run(Mode::Sloppy, true), run(Mode::Strict, false)],
+            error: None,
+        };
+        let line = encode_outcome(&test);
+        assert_eq!(test_reply("test/a.js", &line).as_ref(), Some(&test));
+        assert_eq!(test_reply("test/b.js", &line), None);
+        // Cut after the includes (no run), or before the failing strict run: each still
+        // decodes, and would pass with the runs it has.
+        let cut = |n: usize| line.match_indices('\t').nth(n).unwrap().0;
+        for end in [cut(6), cut(10)] {
+            let short = &line[..end];
+            assert!(decode_outcome(short).unwrap().passed(), "{short:?}");
+            assert_eq!(test_reply("test/a.js", short), None, "{short:?}");
+        }
+        // A file that could not be read has an error and no run; a run with it is bad.
+        let unread = Outcome {
+            meta: None,
+            runs: Vec::new(),
+            error: Some("cannot read: x".into()),
+            ..test
+        };
+        let line = encode_outcome(&unread);
+        assert_eq!(test_reply("test/a.js", &line).as_ref(), Some(&unread));
+        let with_run = format!("{line}\tsloppy\t1\t0\t");
+        assert_eq!(test_reply("test/a.js", &with_run), None);
+        // An include runs in each requested mode, in order.
+        let include = Outcome {
+            rel: "harness/h.js".into(),
+            module: false,
+            negative: false,
+            meta: None,
+            runs: vec![run(Mode::Sloppy, true), run(Mode::Strict, false)],
+            error: None,
+        };
+        let both = BTreeSet::from([Mode::Sloppy, Mode::Strict]);
+        let line = encode_outcome(&include);
+        assert_eq!(include_reply("h.js", &both, &line).as_ref(), Some(&include));
+        assert_eq!(
+            include_reply("h.js", &BTreeSet::from([Mode::Sloppy]), &line),
+            None
+        );
+        let short = &line[..line.match_indices('\t').nth(10).unwrap().0];
+        assert_eq!(include_reply("h.js", &both, short), None);
+    }
+
+    #[test]
+    fn requests_name_the_file_and_the_modes() {
+        assert_eq!(test_request("test/a.js"), "test\ttest/a.js");
+        let modes = BTreeSet::from([Mode::Strict, Mode::Sloppy]);
+        assert_eq!(
+            include_request("assert.js", &modes),
+            "include\tassert.js\tsloppy,strict"
+        );
+        for m in [Mode::Sloppy, Mode::Strict, Mode::Raw, Mode::Module] {
+            assert_eq!(Mode::from_name(m.name()), Some(m));
+        }
+        for by in [StrictBy::Prefix, StrictBy::Opts] {
+            assert_eq!(StrictBy::from_name(by.name()), Some(by));
+        }
+    }
+
+    #[test]
+    fn a_worker_serves_tests_and_includes() {
+        let root = std::env::temp_dir().join(format!("ep9-parse-serve-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("harness")).unwrap();
+        std::fs::create_dir_all(root.join("test")).unwrap();
+        std::fs::write(root.join("harness/h.js"), "with (a) {}\n").unwrap();
+        std::fs::write(
+            root.join("test/t.js"),
+            "/*---\nflags: [noStrict]\nincludes: [h.js]\n---*/\nvar a;\n",
+        )
+        .unwrap();
+        let opts = WorkerOptions {
+            test262: root.clone(),
+            strict_by: StrictBy::Prefix,
+        };
+        let t = serve(&opts, "test\ttest/t.js", false).unwrap();
+        assert!(t.passed());
+        assert_eq!(t.meta.as_ref().unwrap().includes, ["h.js"]);
+        let h = serve(&opts, "include\th.js\tsloppy,strict", false).unwrap();
+        assert_eq!(h.rel, "harness/h.js");
+        assert_eq!(h.runs.len(), 2);
+        assert!(
+            h.runs[0].ok && !h.runs[1].ok,
+            "with is an early error only in strict code"
+        );
+        for bad in [
+            "bogus\tx",
+            "include\th.js",
+            "include\th.js\tsloppy,bogus",
+            "test\ta\tb",
+        ] {
+            assert_eq!(serve(&opts, bad, false), None, "{bad:?}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

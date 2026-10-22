@@ -1,0 +1,225 @@
+# gen-basic: script (sloppy)
+# | function* g(a) { var x = yield a; yield; return x + new.target; } var e = function* () {}; ({ *m() { yield this; } });
+; ep9 bytecode, ABI 4
+unit kind=script strict=false ts=none source_len=118 source=embedded hints=none
+source_hash=f7c340cccfd4f0dfd57144544d08d9d3eb0a5549f5d2332a8a8940caa8a6a6fd
+strings (3):
+  str0 "g"
+  str1 "e"
+  str2 "m"
+scopes (4):
+  scope0 script outer=- flags=[] slots=["g":function, "e":var]
+  scope1 function outer=scope0 flags=[] slots=[]
+  scope2 function outer=scope0 flags=[] slots=[]
+  scope3 function outer=scope0 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..118
+  code (47 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "g"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22 S> CreateClosure k2, s1, #0x00  ; k2 = Function f2 ; 74 02 01 00
+     26 E> StaGlobal k3, s2  ; k3 = String str1 "e"     ; 12 03 02
+     29 S> CreateObjectLiteral k5, s3, #0x01  ; k5 = ObjectBoilerplate {k4: _} ; 70 05 03 01
+     33    Star r0                                      ; 0c 00
+     35 E> CreateClosure k6, s4, #0x00  ; k6 = Function f3 ; 74 06 04 00
+     39 E> DefineNamedOwnProperty r0, k4, s5  ; k4 = String str2 "m" ; 25 00 04 05
+     43    Ldar r0                                      ; 0b 00
+     45    LdaUndefined                                 ; 05
+     46    Return                                       ; 92
+  constants (7):
+      0 Function f1
+      1 String str0 "g"
+      2 Function f2
+      3 String str1 "e"
+      4 String str2 "m"
+      5 ObjectBoilerplate {k4: _}
+      6 Function f3
+  feedback (6):
+      0 CreateClosure
+      1 CreateClosure
+      2 StoreGlobal
+      3 Literal
+      4 CreateClosure
+      5 DefineNamedOwn
+  handlers (0):
+  positions (8):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+     22 S 70 (1:71)
+     26 E 70 (1:71)
+     29 S 91 (1:92)
+     35 E 92 (1:93)
+     39 E 92 (1:93)
+function f1 normal name="g" parent=f0 outer_scope=scope0 flags=[generator,simple-params] params=1 length=1 regs=4 range=0..65
+  code (136 bytes):
+      0    LdaNewTarget                                 ; 0f
+      1    Star r1                                      ; 0c 01
+      3    SwitchOnGeneratorState r1, k0  ; k0 = JumpTable [+21, +60, +100] ; 99 01 00
+      6    LdaCurrentFunction                           ; 0e
+      7    Star r2                                      ; 0c 02
+      9    Mov <this>, r3                               ; 0d ff 03
+     12 E> CallRuntime CreateGeneratorObject, r2-r3     ; 68 13 00 02 02
+     17    Star r1                                      ; 0c 01
+     19 E> SuspendGenerator r1, r0-r1, [0]              ; 9a 01 00 02 00
+     24    ResumeGenerator r1, r0-r1                    ; 9b 01 00 02
+     28    Star r2                                      ; 0c 02
+     30 E> CallRuntime GeneratorGetResumeMode, r1       ; 68 14 00 01 01
+     35    SwitchOnSmi k1, [0]  ; k1 = JumpTable [+9, +6] ; 8a 01 00
+     38    Ldar r2                                      ; 0b 02
+     40 E> Throw                                        ; 90
+     41    Ldar r2                                      ; 0b 02
+     43    Return                                       ; 92
+     44    Ldar r2                                      ; 0b 02
+     46 S> Ldar a0                                      ; 0b fe
+     48    Star r2                                      ; 0c 02
+     50    LdaFalse                                     ; 09
+     51    Star r3                                      ; 0c 03
+     53 E> CallRuntime CreateIterResultObject, r2-r3    ; 68 03 00 02 02
+     58 E> SuspendGenerator r1, r0-r1, [1]              ; 9a 01 00 02 01
+     63    ResumeGenerator r1, r0-r1                    ; 9b 01 00 02
+     67    Star r2                                      ; 0c 02
+     69 E> CallRuntime GeneratorGetResumeMode, r1       ; 68 14 00 01 01
+     74    SwitchOnSmi k2, [0]  ; k2 = JumpTable [+9, +6] ; 8a 02 00
+     77    Ldar r2                                      ; 0b 02
+     79 E> Throw                                        ; 90
+     80    Ldar r2                                      ; 0b 02
+     82    Return                                       ; 92
+     83    Ldar r2                                      ; 0b 02
+     85    Star r0                                      ; 0c 00
+     87 S> LdaUndefined                                 ; 05
+     88    Star r2                                      ; 0c 02
+     90    LdaFalse                                     ; 09
+     91    Star r3                                      ; 0c 03
+     93 E> CallRuntime CreateIterResultObject, r2-r3    ; 68 03 00 02 02
+     98 E> SuspendGenerator r1, r0-r1, [2]              ; 9a 01 00 02 02
+    103    ResumeGenerator r1, r0-r1                    ; 9b 01 00 02
+    107    Star r2                                      ; 0c 02
+    109 E> CallRuntime GeneratorGetResumeMode, r1       ; 68 14 00 01 01
+    114    SwitchOnSmi k3, [0]  ; k3 = JumpTable [+9, +6] ; 8a 03 00
+    117    Ldar r2                                      ; 0b 02
+    119 E> Throw                                        ; 90
+    120    Ldar r2                                      ; 0b 02
+    122    Return                                       ; 92
+    123    Ldar r2                                      ; 0b 02
+    125 S> Ldar r0                                      ; 0b 00
+    127    Star r2                                      ; 0c 02
+    129    LdaUndefined                                 ; 05
+    130 E> Add r2, s0                                   ; 2a 02 00
+    133    Return                                       ; 92
+    134    LdaUndefined                                 ; 05
+    135    Return                                       ; 92
+  constants (4):
+      0 JumpTable [+21, +60, +100]
+      1 JumpTable [+9, +6]
+      2 JumpTable [+9, +6]
+      3 JumpTable [+9, +6]
+  feedback (1):
+      0 BinaryOp
+  handlers (0):
+  positions (16):
+     12 E 0 (1:1)
+     19 E 0 (1:1)
+     30 E 0 (1:1)
+     40 E 0 (1:1)
+     46 S 21 (1:22)
+     53 E 25 (1:26)
+     58 E 25 (1:26)
+     69 E 25 (1:26)
+     79 E 25 (1:26)
+     87 S 34 (1:35)
+     93 E 34 (1:35)
+     98 E 34 (1:35)
+    109 E 34 (1:35)
+    119 E 34 (1:35)
+    125 S 41 (1:42)
+    130 E 48 (1:49)
+function f2 normal name="e" parent=f0 outer_scope=scope0 flags=[generator,simple-params] params=0 length=0 regs=3 range=74..89
+  code (48 bytes):
+      0    LdaNewTarget                                 ; 0f
+      1    Star r0                                      ; 0c 00
+      3    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+21] ; 99 00 00
+      6    LdaCurrentFunction                           ; 0e
+      7    Star r1                                      ; 0c 01
+      9    Mov <this>, r2                               ; 0d ff 02
+     12 E> CallRuntime CreateGeneratorObject, r1-r2     ; 68 13 00 01 02
+     17    Star r0                                      ; 0c 00
+     19 E> SuspendGenerator r0, r0, [0]                 ; 9a 00 00 01 00
+     24    ResumeGenerator r0, r0                       ; 9b 00 00 01
+     28    Star r1                                      ; 0c 01
+     30 E> CallRuntime GeneratorGetResumeMode, r0       ; 68 14 00 00 01
+     35    SwitchOnSmi k1, [0]  ; k1 = JumpTable [+9, +6] ; 8a 01 00
+     38    Ldar r1                                      ; 0b 01
+     40 E> Throw                                        ; 90
+     41    Ldar r1                                      ; 0b 01
+     43    Return                                       ; 92
+     44    Ldar r1                                      ; 0b 01
+     46    LdaUndefined                                 ; 05
+     47    Return                                       ; 92
+  constants (2):
+      0 JumpTable [+21]
+      1 JumpTable [+9, +6]
+  feedback (0):
+  handlers (0):
+  positions (4):
+     12 E 74 (1:75)
+     19 E 74 (1:75)
+     30 E 74 (1:75)
+     40 E 74 (1:75)
+function f3 method name="m" parent=f0 outer_scope=scope0 flags=[generator,simple-params] params=0 length=0 regs=3 range=96..114
+  code (87 bytes):
+      0    LdaNewTarget                                 ; 0f
+      1    Star r0                                      ; 0c 00
+      3    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+21, +60] ; 99 00 00
+      6    LdaCurrentFunction                           ; 0e
+      7    Star r1                                      ; 0c 01
+      9    Mov <this>, r2                               ; 0d ff 02
+     12 E> CallRuntime CreateGeneratorObject, r1-r2     ; 68 13 00 01 02
+     17    Star r0                                      ; 0c 00
+     19 E> SuspendGenerator r0, r0, [0]                 ; 9a 00 00 01 00
+     24    ResumeGenerator r0, r0                       ; 9b 00 00 01
+     28    Star r1                                      ; 0c 01
+     30 E> CallRuntime GeneratorGetResumeMode, r0       ; 68 14 00 00 01
+     35    SwitchOnSmi k1, [0]  ; k1 = JumpTable [+9, +6] ; 8a 01 00
+     38    Ldar r1                                      ; 0b 01
+     40 E> Throw                                        ; 90
+     41    Ldar r1                                      ; 0b 01
+     43    Return                                       ; 92
+     44    Ldar r1                                      ; 0b 01
+     46 S> Ldar <this>                                  ; 0b ff
+     48    Star r1                                      ; 0c 01
+     50    LdaFalse                                     ; 09
+     51    Star r2                                      ; 0c 02
+     53 E> CallRuntime CreateIterResultObject, r1-r2    ; 68 03 00 01 02
+     58 E> SuspendGenerator r0, r0, [1]                 ; 9a 00 00 01 01
+     63    ResumeGenerator r0, r0                       ; 9b 00 00 01
+     67    Star r1                                      ; 0c 01
+     69 E> CallRuntime GeneratorGetResumeMode, r0       ; 68 14 00 00 01
+     74    SwitchOnSmi k2, [0]  ; k2 = JumpTable [+9, +6] ; 8a 02 00
+     77    Ldar r1                                      ; 0b 01
+     79 E> Throw                                        ; 90
+     80    Ldar r1                                      ; 0b 01
+     82    Return                                       ; 92
+     83    Ldar r1                                      ; 0b 01
+     85    LdaUndefined                                 ; 05
+     86    Return                                       ; 92
+  constants (3):
+      0 JumpTable [+21, +60]
+      1 JumpTable [+9, +6]
+      2 JumpTable [+9, +6]
+  feedback (0):
+  handlers (0):
+  positions (9):
+     12 E 96 (1:97)
+     19 E 96 (1:97)
+     30 E 96 (1:97)
+     40 E 96 (1:97)
+     46 S 101 (1:102)
+     53 E 101 (1:102)
+     58 E 101 (1:102)
+     69 E 101 (1:102)
+     79 E 101 (1:102)

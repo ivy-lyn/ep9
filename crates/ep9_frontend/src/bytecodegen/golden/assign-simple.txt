@@ -1,6 +1,6 @@
 # assign-simple: script (sloppy)
 # | var g; let l; function f(p) { var r; r = 1; p = 2; g = 3; l = 4; return r; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=76 source=embedded hints=none
 source_hash=d4cda76bc693104ba25373bb107c76ac931f55cc9a694a65f4a1a82871ac6c88
 strings (3):

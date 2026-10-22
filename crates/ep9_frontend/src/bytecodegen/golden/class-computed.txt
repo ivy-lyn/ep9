@@ -1,6 +1,6 @@
 # class-computed: script (sloppy)
 # | var k; class A { [k]() {} static [k + 1]() {} get [k]() {} 'str'() {} 1() {} }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=78 source=embedded hints=none
 source_hash=cdd40fcb7bc960e1502aaa3657d1c5d063acb19f2affe4cdfbb474517ffd8bd7
 strings (4):

@@ -17,6 +17,7 @@ use oxc_span::{GetSpan, Span};
 
 use super::func::{FnGen, Gen};
 use super::literal::{self, PropertyName};
+use super::lookup::runs_no_code;
 use crate::scope::{BindingLocation, ImplicitRef, Reference, Resolution};
 
 /// A binary operator with a register form and a Smi form.
@@ -75,11 +76,27 @@ pub(crate) enum MemberRef {
         home: Register,
         key: Register,
     },
+    /// `o.#m` or `o.#a`, a private method or accessor (private.rs): `brand` holds the class
+    /// brand, `get` the method or the getter, `set` the setter (`None` for a method). `at` is
+    /// the `#name` offset.
+    PrivateBranded {
+        obj: Register,
+        brand: Register,
+        get: Register,
+        set: Option<Register>,
+        at: u32,
+    },
 }
 
 /// An assignment target with its reference parts evaluated.
 pub(crate) enum Prepared<'a, 's> {
     Binding(&'s Reference),
+    /// A dynamic name resolved before the right-hand side (`lookup.rs`
+    /// `resolve_dynamic`): `regs` = [environment, name, value, strict].
+    Dynamic {
+        r: &'s Reference,
+        regs: RegisterList,
+    },
     Member(MemberRef),
     Pattern(&'a oxc_ast::ast::AssignmentTargetPattern<'a>),
 }
@@ -135,6 +152,27 @@ impl<'a, 's> FnGen<'a, 's> {
         let result = self.expr_inner(e, name);
         self.leave();
         result
+    }
+
+    /// NamedEvaluation of `e` under a computed key: the name is the property key in `key`
+    /// (already ToPropertyKey'd). An anonymous class gets it inside ClassDefinitionEvaluation,
+    /// before its static elements run, and the result is false. Any other `e` is evaluated
+    /// without a name, and the result says whether it is an anonymous function definition:
+    /// the caller then names it at the define (flag bit 0), since a function cannot observe
+    /// its name before that.
+    pub(crate) fn keyed_named_value(&mut self, e: &'a Expression<'a>, key: Register) -> Gen<bool> {
+        if let Expression::ClassExpression(c) = e.without_parentheses()
+            && c.id.is_none()
+        {
+            self.enter(e.span())?;
+            let result = self.class(c, None, Some(key));
+            self.leave();
+            result?;
+            return Ok(false);
+        }
+        let anonymous = e.is_anonymous_function_definition();
+        self.named_value(e, None)?;
+        Ok(anonymous)
     }
 
     /// Evaluate for side effects only.
@@ -283,7 +321,7 @@ impl<'a, 's> FnGen<'a, 's> {
                     c.id.as_ref()
                         .map(|id| UnitString::new(id.name.as_str()))
                         .or(name);
-                self.class(c, name)
+                self.class(c, name, None)
             }
             Expression::ConditionalExpression(c) => self.conditional(c),
             Expression::FunctionExpression(f) => {
@@ -315,8 +353,8 @@ impl<'a, 's> FnGen<'a, 's> {
             }
             Expression::UnaryExpression(u) => self.unary(u),
             Expression::UpdateExpression(u) => self.update(u, true),
-            Expression::YieldExpression(y) => self.unsupported("yield", y.span),
-            Expression::PrivateInExpression(p) => self.unsupported("private names", p.span),
+            Expression::YieldExpression(y) => self.yield_expr(y),
+            Expression::PrivateInExpression(p) => self.private_in(p),
             Expression::ImportMeta(m) => self.unsupported("import.meta", m.span),
             Expression::NewTarget(t) => {
                 let r = self.implicit(t.span.start, ImplicitRef::NewTarget)?;
@@ -333,7 +371,7 @@ impl<'a, 's> FnGen<'a, 's> {
             Expression::V8IntrinsicExpression(v) => self.unsupported("V8 intrinsics", v.span),
             Expression::StaticMemberExpression(m) => self.static_member(m),
             Expression::ComputedMemberExpression(m) => self.computed_member(m),
-            Expression::PrivateFieldExpression(p) => self.unsupported("private names", p.span),
+            Expression::PrivateFieldExpression(p) => self.private_get(p),
         }
     }
 
@@ -767,8 +805,12 @@ impl<'a, 's> FnGen<'a, 's> {
                 }
                 _ => {
                     let key = self.property_key_to_reg(&p.key)?;
-                    let anonymous = p.method || p.value.is_anonymous_function_definition();
-                    self.object_value(p, obj, None)?;
+                    let anonymous = if p.method {
+                        self.object_value(p, obj, None)?;
+                        true
+                    } else {
+                        self.keyed_named_value(&p.value, key)?
+                    };
                     let s = self.slot(FeedbackSlotKind::DefineKeyedOwn);
                     self.b
                         .define_keyed_own_property_in_literal(obj, key, u8::from(anonymous), s);
@@ -822,6 +864,9 @@ impl<'a, 's> FnGen<'a, 's> {
             }
             _ => {
                 let Some(e) = key.as_expression() else {
+                    if let PropertyKey::PrivateIdentifier(p) = key {
+                        return self.private_key_into(p, r);
+                    }
                     return self.unsupported("private names", key.span());
                 };
                 self.expr(e)?;
@@ -868,9 +913,7 @@ impl<'a, 's> FnGen<'a, 's> {
                 let key = self.expr_to_temp(&c.expression)?;
                 Ok(MemberRef::Keyed { obj, key })
             }
-            MemberExpression::PrivateFieldExpression(p) => {
-                self.unsupported("private names", p.span)
-            }
+            MemberExpression::PrivateFieldExpression(p) => self.private_member_ref(p),
         }
     }
 
@@ -931,6 +974,13 @@ impl<'a, 's> FnGen<'a, 's> {
             MemberRef::SuperKeyed { this, home, key } => {
                 self.runtime_with_at(RuntimeId::LoadKeyedFromSuper, &[this, home, key], Some(at));
             }
+            MemberRef::PrivateBranded {
+                obj,
+                brand,
+                get,
+                set,
+                at,
+            } => self.private_branded_load(obj, brand, get, set.is_none(), at),
         }
     }
 
@@ -972,6 +1022,13 @@ impl<'a, 's> FnGen<'a, 's> {
                 self.expr_pos(at);
                 self.runtime(RuntimeId::StoreToSuper, args);
             }
+            MemberRef::PrivateBranded {
+                obj,
+                brand,
+                set,
+                at,
+                ..
+            } => self.private_branded_store(obj, brand, set, at),
         }
         if let Some(t) = saved {
             self.b.ldar(t);
@@ -1044,9 +1101,7 @@ impl<'a, 's> FnGen<'a, 's> {
                 match m {
                     MemberExpression::StaticMemberExpression(s) => self.static_member(s),
                     MemberExpression::ComputedMemberExpression(cm) => self.computed_member(cm),
-                    MemberExpression::PrivateFieldExpression(p) => {
-                        self.unsupported("private names", p.span)
-                    }
+                    MemberExpression::PrivateFieldExpression(p) => self.private_get(p),
                 }
             }
         };
@@ -1096,6 +1151,15 @@ impl<'a, 's> FnGen<'a, 's> {
             _ => None,
         };
         let Some(member) = member else {
+            // A dynamic lookup (`with`, sloppy direct eval): lookup.rs.
+            if let Expression::Identifier(id) = inner
+                && matches!(
+                    self.reference_of(id)?.resolution,
+                    Resolution::Dynamic { .. }
+                )
+            {
+                return self.dynamic_callee(callee_expr, id, callee, n);
+            }
             self.expr(callee_expr)?;
             self.b.star(callee);
             return Ok(None);
@@ -1163,7 +1227,7 @@ impl<'a, 's> FnGen<'a, 's> {
                 }
             }
             MemberExpression::PrivateFieldExpression(p) => {
-                return self.unsupported("private names", p.span);
+                self.private_callee(p, callee, list)?;
             }
         }
         Ok(list)
@@ -1323,15 +1387,39 @@ impl<'a, 's> FnGen<'a, 's> {
         }
         let m = self.mark();
         let callee = self.temp();
-        self.expr(&c.callee)?;
-        self.b.star(callee);
         let n = c.arguments.len() as u32;
-        let list = self.temps(n);
-        self.arguments_into(&c.arguments, list, 0)?;
+        // A Dynamic `eval` (inside `with` or a sloppy-eval scope) is loaded with its receiver
+        // (LoadLookupSlotForCall, M2-P2-L5-OPEN): a `with` object's own `eval` that is not
+        // %eval% is then called as a method of that object (§13.3.6.1 step 4, WithBaseObject).
+        // Direct eval code does not read its receiver, so the closure from
+        // ResolvePossiblyDirectEval gets the same call.
+        let dynamic = match c.callee.without_parentheses() {
+            Expression::Identifier(id)
+                if matches!(
+                    self.reference_of(id)?.resolution,
+                    Resolution::Dynamic { .. }
+                ) =>
+            {
+                Some(id)
+            }
+            _ => None,
+        };
+        let (list, first) = match dynamic {
+            Some(id) => {
+                let list = self.dynamic_callee(&c.callee, id, callee, n)?;
+                (list.expect("dynamic_callee gives a receiver list"), 1)
+            }
+            None => {
+                self.expr(&c.callee)?;
+                self.b.star(callee);
+                (self.temps(n), 0)
+            }
+        };
+        self.arguments_into(&c.arguments, list, first)?;
         let resolve = self.temps(5);
         self.b.mov(callee, resolve.get(0));
         if n > 0 {
-            self.b.mov(list.get(0), resolve.get(1));
+            self.b.mov(list.get(first), resolve.get(1));
         } else {
             self.b.lda_undefined().star(resolve.get(1));
         }
@@ -1342,7 +1430,7 @@ impl<'a, 's> FnGen<'a, 's> {
         self.expr_pos(c.span.start);
         self.runtime(RuntimeId::ResolvePossiblyDirectEval, resolve);
         self.b.star(callee);
-        self.emit_call(callee, list, false, false);
+        self.emit_call(callee, list, first == 1, false);
         self.release(m);
         Ok(())
     }
@@ -1389,6 +1477,7 @@ impl<'a, 's> FnGen<'a, 's> {
         self.b.throw_super_already_called_if_not_hole();
         self.b.ldar(result);
         self.store_binding_raw(binding, hops);
+        self.fields_after_super(callee_ref, result)?;
         self.release(m);
         Ok(())
     }
@@ -1798,7 +1887,7 @@ impl<'a, 's> FnGen<'a, 's> {
                 }
                 Ok(())
             }
-            Expression::PrivateFieldExpression(p) => self.unsupported("private names", p.span),
+            Expression::PrivateFieldExpression(p) => self.private_delete(p),
             _ => {
                 self.expr_effect(&u.argument)?;
                 self.b.lda_true();
@@ -1835,7 +1924,7 @@ impl<'a, 's> FnGen<'a, 's> {
                 }
             }
             MemberExpression::PrivateFieldExpression(p) => {
-                return self.unsupported("private names", p.span);
+                self.private_delete(p)?;
             }
         }
         self.release(mark);
@@ -1892,6 +1981,11 @@ impl<'a, 's> FnGen<'a, 's> {
                 self.store_ref(r, keep);
                 Ok(())
             }
+            Prepared::Dynamic { r, regs } => {
+                let strict = self.strict_at(r);
+                self.store_resolved(r.span.start, *regs, strict);
+                Ok(())
+            }
             Prepared::Member(m) => {
                 self.store_member(*m, at, keep);
                 Ok(())
@@ -1914,6 +2008,10 @@ impl<'a, 's> FnGen<'a, 's> {
     fn get_prepared(&mut self, p: &Prepared<'a, 's>, at: u32) {
         match p {
             Prepared::Binding(r) => self.load_ref(r, false),
+            Prepared::Dynamic { r, regs } => {
+                let strict = self.strict_at(r);
+                self.load_resolved(r.span.start, *regs, strict);
+            }
             Prepared::Member(m) => {
                 // GetValue stores the converted key in the reference, so the PutValue that
                 // follows does not convert it again (ECMA-262 GetValue step 3.c).
@@ -1946,6 +2044,11 @@ impl<'a, 's> FnGen<'a, 's> {
             _ => None,
         };
         let target = self.prepare_target(&a.left)?;
+        let target = if a.operator == AssignmentOperator::Assign && runs_no_code(&a.right) {
+            target
+        } else {
+            self.resolve_dynamic(target)
+        };
         match a.operator {
             AssignmentOperator::Assign => {
                 self.named_value(&a.right, name)?;
@@ -2001,6 +2104,7 @@ impl<'a, 's> FnGen<'a, 's> {
         let m = self.mark();
         let at = u.argument.span().start;
         let target = self.prepare_simple(&u.argument)?;
+        let target = self.resolve_dynamic(target);
         self.get_prepared(&target, at);
         let s = self.slot(FeedbackSlotKind::BinaryOp);
         let old = (keep && !u.prefix).then(|| {

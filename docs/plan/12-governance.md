@@ -3,7 +3,7 @@
 - This file holds the project rules for licence, repository, CI cost, review, upstream contact and line endings.
 - Source: the user's statement of 2026-10-20, verbatim: "Don't ask me questions. Deepresearch and descide yourself". The decision workflow made each decision below with the evidence in §7. The decisions log has the entries ([decisions-log §5](../decisions-log.md#5-2026-10-20-decisions-made-by-the-agent-team-under-the-users-instruction)).
 - ADR process rules (P-1 to P-4) are in [adr/README §3-§4](../adr/README.md#3-amendments).
-- Rule for every item: prefer the reversible option. Never make anything public.
+- Rule for every item: prefer the reversible option. The repo itself is public since 2026-10-21 (the user's decision, [decisions-log §12.4](../decisions-log.md)); never publish anything else (gists, pages, posts) without the user.
 - This file sits in `docs/plan/` because the decision run could edit only plan, ADR and log files. It replaces the planned `docs/governance.md`.
 
 IDs used here: D2, D3, D6, D12; H28, H36; P1; RX1; M0-M5, M8; LICENSE, REMOTE-CI, ADR-P1-ADR-P4, CODEOWNERS, UPSTREAM, GITATTRIBUTES (decision ids, [decisions-log §5](../decisions-log.md#5-2026-10-20-decisions-made-by-the-agent-team-under-the-users-instruction)).
@@ -55,10 +55,10 @@ IDs used here: D2, D3, D6, D12; H28, H36; P1; RX1; M0-M5, M8; LICENSE, REMOTE-CI
 
 | Item | Decision |
 |---|---|
-| Host | The existing private GitHub repo `ep9` under the owner account. It exists and is empty (created 2026-10-20 14:28:21 UTC; no branch, no protection rules, 1 collaborator). Use it; do not create another |
-| Visibility | Private. Only the user changes visibility. Agents never run `gh repo edit --visibility`, `gh repo create --public`, `gh gist create`, never enable GitHub Pages, never post, comment or react on any public repository (§5) |
+| Host | Since 2026-10-21: the public repo `ivy-lyn/ep9` (git remote `origin`), so GitHub Actions runs. The user said: "Push to https://github.com/ivy-lyn/ep9 instead, it's public so it can run CI". The first repo (private, owner account) stays as remote `private`; nothing new goes there |
+| Visibility | Public (user decision, 2026-10-21). Only the user changes visibility. Nothing secret is committed; the orchestrator scans each diff before a push (decisions-log M2-NO-SECRETS). Agents never run `gh repo edit --visibility`, `gh repo create --public`, `gh gist create`, never enable GitHub Pages, never post, comment or react on any public repository (§5) |
 | Default branch | `main`. The local HEAD is already `refs/heads/main`; the first push sets the GitHub default |
-| Merge settings | Squash merge only; delete the branch on merge. One commit on `main` per PR, so per-commit perf data and the ADR change log line up with PRs |
+| Merge settings | Merge commit (changed 2026-10-21, M2-MERGE-COMMIT): a PR to `main` carries a whole phase or week with its agent merges, and the merge commit keeps that history for bisect. Perf data and the ADR change log line up with the merge commit on `main`. Delete the branch on merge only when no later work is based on it |
 | Branch protection | None now (§4.3) |
 | Signing | The user's git config signs every commit. Never bypass it. If signing fails, stop and report |
 | History | All changes reach `main` through a PR, after the first commit |
@@ -158,7 +158,7 @@ So `.github/CODEOWNERS` lists the owner on the contract paths, the decision file
 | Rule | Decision |
 |---|---|
 | Who posts | Only the user, by hand. Agents never create issues, PRs, comments, reactions or reviews on any public repository, and never drive the user's account for it |
-| Drafts | In this private repo: `docs/upstream/<project>-<slug>.md`, one per request. The folder and its index exist since 2026-10-21 ([docs/upstream/README.md](../upstream/README.md)) |
+| Drafts | In this repo (public at github.com/ivy-lyn/ep9 since 2026-10-21): `docs/upstream/<project>-<slug>.md`, one per request. The folder and its index exist since 2026-10-21 ([docs/upstream/README.md](../upstream/README.md)) |
 | A draft is "ready" when | (1) a minimal repro runs on the pinned version (oxc `=0.155.0`) and on upstream main of the draft date, and an agent that did not write it reproduced it; (2) it names the ep9 need (milestone, gate) and the local workaround; (3) it stands alone: no ep9 internals, no private links, nothing that reveals unannounced plans beyond the need itself |
 | When a draft goes to the user | Only if the need is concrete and verified and one of: the local workaround fails; the local patch count would pass the cap of 3 (gate P1); or the need is due within the next milestone. Ready drafts appear in the next status report as "ready to post", as a statement |
 | Default meanwhile | Work with the local workaround or a local patch through `third_party/patches/oxc` (≤ 3, gate P1). No work waits on a post |
@@ -171,9 +171,10 @@ Status runs: draft -> ready (all 3 checks pass) -> handed over (in a status repo
 
 | File | Project | Upstream ref | ep9 need (milestone, gate) | Local workaround | Status |
 |---|---|---|---|---|---|
-| [`oxc-eval-parse-options.md`](../upstream/oxc-eval-parse-options.md) | oxc | #11793 | Eval-context early errors; M1 exit; P1 | Nova-style wrapper parse + post-checks, then a local patch | draft (2026-10-21) |
-| [`oxc-depth-limit.md`](../upstream/oxc-depth-limit.md) | oxc | #21953, #24375 | Depth error instead of abort; M1 exit; P1 | Bracket pre-scan, sized stack, AST-depth pass (M0) | draft (2026-10-21) |
-| [`oxc-function-constructor.md`](../upstream/oxc-function-constructor.md) | oxc | none yet | Parse Function() parameters and body apart; M1 exit | Nova's single-script check | draft (2026-10-21) |
+| [`oxc-eval-parse-options.md`](../upstream/oxc-eval-parse-options.md) | oxc | #11793 | Eval-context early errors; M1 exit; P1 | Script parse (no wrapper) that drops only the allowed nodes' errors, plus post-checks (`eval.rs` E1), then a local patch | ready (2026-10-21; checked by P0-OXC-VERIFY) |
+| [`oxc-depth-limit.md`](../upstream/oxc-depth-limit.md) | oxc | #21953, #24375 | Depth error instead of abort; M1 exit; P1 | Bracket pre-scan, sized stack, AST-depth pass (M0) | ready (2026-10-21; checked by P0-OXC-VERIFY) |
+| [`oxc-function-constructor.md`](../upstream/oxc-function-constructor.md) | oxc | none yet | Parse Function() parameters and body apart; M1 exit | Three parses (`function_ctor.rs` F1): the parameter text and the body text each in a wrapper whose shape is checked, then the joined text through `compile_eval` | ready (2026-10-21; checked by P0-OXC-VERIFY) |
+| [`oxc-let-as-label.md`](../upstream/oxc-let-as-label.md) | oxc | none yet | `let: 42` as a label in sloppy code (test262 `staging/sm/syntax/let-as-label.js`); no gate | None; the test stays an expected failure | draft (2026-10-22) |
 
 Draft template (fields): project and ref; status; ep9 need (milestone, gate, due date); workaround and local patch count after it (n/3); verified by (an agent role that did not write it, date); repro on the pinned version; repro on upstream main (date, commit); standalone text to post.
 

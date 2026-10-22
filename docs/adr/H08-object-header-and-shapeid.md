@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-20) |
+| Status | Draft (2026-10-20; Q1 and Q3 filled 2026-10-21: shape region, word0 flag bits; Q2 filled 2026-10-22: no shape-guarded load in Spike B). Accept needs the review record (README §3.1) and SP-Unit |
 | Fix by | M0 wk2 |
 | Freeze point | M1 exit |
 | Origin | v1#4 + R16-D5 (as corrected by R17); plan status E (extended: ShapeId rule) |
@@ -61,8 +61,8 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 | Item | Value | Where |
 |---|---|---|
 | Location | The first `HeapConfig::shape_space_bytes` of the cage; the cage base is at `Heap::CAGE_BASE_OFFSET` = 24 (offsets 0, 8, 16 unchanged) | `crates/ep9_heap/src/memory.rs`, `heap.rs` |
-| Size | 0 = no shape space (the `ep9_heap` default, so heap tests and Miri are unchanged); otherwise a power of two from 1 MiB to 4 GiB, at most the cage size. `ep9_vm` asks for 256 MiB through `shape::heap_config` (P2) | `HeapConfig::shape_space_bytes`, `check_shape_space` |
-| Alignment | Outside Miri a shape space needs `cage.align >= 4 GiB` (the default), so the id is also the low 32 bits of the address (JSC StructureID) and an IC compares `(key as u32) == word0.shape_id`. Miri's 8 MiB stand-in is aligned to 256 KiB only, so its tests use the subtract | `HeapError::Config` otherwise |
+| Size | 0 = no shape space (the `ep9_heap` default, so heap tests and Miri are unchanged); otherwise a power of two from 1 MiB to 4 GiB, at most the cage size. `ep9_vm` asks for 256 MiB through `shape::heap_config` (M0 wk4) | `HeapConfig::shape_space_bytes`, `check_shape_space` |
+| Alignment | Outside Miri a shape space needs `cage.align >= 4 GiB` (the default), so the id is also the low 32 bits of the address (JSC StructureID) and an IC compares `(key as u32) == word0.shape_id`. Under Miri this holds for `ep9_heap` tests only: their stand-in reservation (at most 8 MiB) is aligned to 256 KiB, so they use the subtract (`Heap::shape_id_of`). No `ep9_vm` isolate starts under Miri: its 256 MiB shape space does not fit the stand-in ("shape_space_bytes is larger than the heap reservation"), and `shape::init` asserts a `CAGE_ALIGN` cage (M2-P1-MIRI-VM; H08-Q4) | `HeapError::Config` otherwise |
 | Id 0 | Offset 0 holds a page header, so no shape has id 0: 0 means "none". Bits 0-2 are always 0 (8 B granule) | static assert + `alloc_shape` assert |
 | Cells | Only `Space::Shape` kinds (`Heap::register_kind_in`), only through `Heap::alloc_shape` (at most 8 KiB). `Heap::alloc` is unchanged and does not list them (`UnknownKind`); `alloc_shape` refuses ordinary kinds (`WrongSpace`) | `crates/ep9_heap/src/heap.rs` |
 | GC | Shape pages are small pages: marked, found by the conservative scan, swept lazily (own queue), and an empty one goes back to the region decommitted. A full region gives `OutOfMemory` after one GC | `crates/ep9_heap/src/tests/shape.rs` |
@@ -84,7 +84,7 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 
 | Rule | Check | From |
 |---|---|---|
-| word0 is 8 B; minimum object is 16 B | Static assert (SP-Value); xtask size asserts | M0 wk2 |
+| word0 is 8 B; minimum object is 16 B | Static asserts in `ep9_value` (`size_of::<Word0>() == 8` and the word0 field offsets; SP-Value); `ep9_heap` `MIN_CELL_SIZE` = 16, and every cell size rounds up to it. `cargo xtask m0-exit` item 8 checks that the `Word0` size assert is there and runs `cargo check -p ep9_value --lib --target <host>`, which evaluates the `ep9_value` asserts (NOT-RUN with `--no-build-check`; `tools/xtask/src/m0_exit.rs:1270-1306`); no xtask task checks `MIN_CELL_SIZE` (08 §7 lists size asserts) | M0 wk2 |
 | Object size is computable from the header (plus a length field) | Heap verifier; heap stays parsable (H9) | S0 |
 | No run-local ShapeId in AOT text or rodata | IR has no raw ShapeId for non-root shapes (ShapeRef lowers to CellRef, H30); unit golden tests | A2 |
 | Only snapshot root shapes have stable ShapeIds | Deterministic snapshot layout (H13) | A1 (M4) |
@@ -115,7 +115,7 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 ## Validation
 
 - **SP-Value** ([09 §4](../plan/09-milestones.md#4-spikes), M0 wk2): word0 = 8 B. M0 exit item 8.
-- **SP-Unit** (M0 month 2, inside Spike B): first AOT code; its 10 opcodes load, call, unwind, GC-scan and fall back (reopens H34, H35).
+- **SP-Unit** (M3-P1, moved from M0 month 2 by M2-D21-FAIL): first AOT code; its 11 opcodes (the Spike B set with AddSmi) load, call, unwind, GC-scan and fall back (reopens H34, H35).
 - A2 gate: GC-stress clean with AOT frames; 100% of header mutations end in their [H35](H35-aot-unit-format.md) S3 outcome.
 
 ## Open questions
@@ -123,8 +123,9 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 | ID | Question | Needed by | Proposed default |
 |---|---|---|---|
 | H08-Q1 | Size, alignment and location of the shape space. A u32 offset bounds it; the plan gives no number | M0 wk4 (shapes v0) | **Filled 2026-10-21:** the first `shape_space_bytes` of the cage (0 = none in `ep9_heap`; 256 MiB from `ep9_vm`); a power of two from 1 MiB to 4 GiB; cage align >= 4 GiB outside Miri; ShapeId = offset from the cage base. See "Shape space" under Decision |
-| H08-Q2 | Do SP-Unit's 10 opcodes include a shape-guarded load, so the RW-cell guard is tested in M0? | Spike B plan | Include one property load |
+| H08-Q2 | Do SP-Unit's 11 opcodes include a shape-guarded load, so the RW-cell guard is tested in M0? | Spike B plan | **Filled 2026-10-22 (M2-H08-Q2): no, not in M0.** The 11 Spike B opcodes (09 §4 said 10 until 2026-10-22; Spike B adds AddSmi) have no property load, and the spike JIT records no feedback. The RW-cell shape guard is tested in M1 (Spike C). The old default was "include one property load" |
 | H08-Q3 | Full flag-bit list beyond hash-present, pinned, is-prototype | M1a (H17 freeze) | **Filled 2026-10-21:** bits 0-7 kind-specific, bit 8 is-prototype, bit 9 reserved for hash-present, bits 10-15 reserved. See "Flag bits" under Decision |
+| H08-Q4 | Miri for `ep9_vm`: a stand-in cage with `CAGE_ALIGN` alignment, or the subtract path in `shape_of` under Miri (M2-P1-MIRI-VM)? | M1 | Heap owner (GC lead) decides |
 
 ## Reopens if
 
@@ -142,3 +143,19 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 | 2026-10-21 | fill | H08-Q1 filled: shape region = the first `shape_space_bytes` of the cage (power of two, 1 MiB-4 GiB, 0 = none); cage align >= 4 GiB outside Miri; ShapeId = (addr - cage base) as u32; id 0 = none; cage base at heap offset 24. Rules added: the region never moves; where a bare ShapeId may appear; IC data holds shapes weakly; the heap marks word0's shape; the verifier checks word0 ids. Decisions W4-SHAPEID and W4-SHAPE-ALLOC (decisions log §11) | P1-HEAP agent |
 | 2026-10-21 | fill | Rule added: both spaces share `max_heap_bytes`, so before `OutOfMemory` an allocation sweeps both lazy sweep queues and retries once (no second GC). A page that died in the allocation's own GC used to wait in the other space's queue (Codex review of P1) | P1 fix agent |
 | 2026-10-21 | fill | H08-Q3 filled: bits 0-7 kind-specific (in-object slot count for JS objects, atom for strings), bit 8 is-prototype, bit 9 reserved for hash-present, bits 10-15 reserved. Note: `ep9_vm` aligns its cage to 64 GiB so an object's shape needs no heap pointer (W4-OBJ-CAGE) | P2-OBJ agent |
+| 2026-10-22 | clarify | Status line names the Q1 and Q3 fills and what Accept needs (README §5 already lists the fills). No check changes | P2-ACCEPT-1 |
+| 2026-10-22 | clarify | Shape space, Alignment row: the Miri text holds for `ep9_heap` tests only; no `ep9_vm` isolate starts under Miri (M2-P1-MIRI-VM). New Open question H08-Q4. "(P2)" in the Size row now says "(M0 wk4)". No check changes | P2-ACCEPT-1 |
+| 2026-10-22 | clarify | Rules row 1: the size checks are `const` asserts in `ep9_value` and `MIN_CELL_SIZE` in `ep9_heap`; no xtask task checks sizes. No check changes | P2-ACCEPT-1 |
+| 2026-10-22 | fill | H08-Q2 filled with the orchestrator decision M2-H08-Q2: the RW-cell shape guard is not tested in M0; Spike C tests it in M1. Every existing check keeps its result | P2-ACCEPT-1 (decision: orchestrator) |
+| 2026-10-22 | clarify | Status line also names the H08-Q2 fill (2026-10-22), as the README §5 index row does. No check changes | P3-ACCEPT-2 |
+| 2026-10-22 | clarify | Rules row 1: m0-exit item 8 also compiles the `ep9_value` asserts (`cargo check -p ep9_value` for the host target), so "no xtask task checks sizes" (here and in the 2026-10-22 P2-ACCEPT-1 row) was false; the cell now says what item 8 runs, as H06 Rules row 1 does (Codex C3 on H06, M2-P4-B2-ROW2). No check changes | P4 integration fixer |
+| 2026-10-22 | clarify | SP-Unit has 11 opcodes (09 §4 now says 11; Spike B adds AddSmi) and runs in M3-P1 (M2-D21-FAIL): the Validation line and the H08-Q2 question. The H08-Q2 answer does not change. No check changes | P5-DOCS-SYNC agent (M2-P5) |
+
+## Review record
+
+| Part (README §3.1) | Who | Result | Ref |
+|---|---|---|---|
+| 1 Reviewer | P2-ACCEPT-1 (did not write the ADR) | Decision = the 02 §6 H8 row, word for word. Rules checked against `ep9_value` (`Word0`, const asserts), `ep9_heap` (shape space, verifier, the sweep-before-OOM tests) and `ep9_vm` (`shape::heap_config`, `CAGE_ALIGN`, the flag constants). R1: the Miri text holds for `ep9_heap` only; new Q4 (fixed). R2: there is no xtask size task; the check names the real asserts (fixed). R3: Status line (fixed). R4: Q2 filled (M2-H08-Q2). R5: "(P2)" was unclear (fixed). Change-log kinds: agree | ccaf5df |
+| 2 Codex | orchestrator (Codex gpt-6.1-sol) | No finding on H08. Codex ran on the "ADR docs" slice (31 KB) of the P2 diff at e293355 (M2-P2-REVIEW). Verdict needs-attention with 2 findings, A1 (H13) and A2 (H27, H36); a verifier reproduced both: real, category (b), fixed in P2 | decisions-log M2-P2-REVIEW, M2-P2-A1, M2-P2-A2; Codex text outside the repo: scratchpad m0m2/p2-codex-bcrhkdqte.md |
+| 3 Verifier | P3-ACCEPT-2 (wrote none of the rows it checks) | Checked at e719ffa. No Codex finding to sort. P2-ACCEPT-1 rows: the Alignment row (the Miri stand-in is at most 32 pages = 8 MiB, aligned to 256 KiB, `crates/ep9_heap/src/memory.rs:182`; `shape::init` asserts a `CAGE_ALIGN` cage, `crates/ep9_vm/src/shape.rs:361`: true); Rules row 1 (the const asserts in `crates/ep9_value/src/lib.rs:44-55`, `MIN_CELL_SIZE` = 16 in `crates/ep9_heap/src/layout.rs:36`, no xtask size task: true); the H08-Q2 fill (decision M2-H08-Q2; the 11 Spike B opcodes, `spikes/spike-b/src/jit/mod.rs:47-57`, have no property load: true); the Status row. V1: the Status line did not name the Q2 fill that README §5 names (fixed, clarify). Part 4 again at e719ffa: `cargo test -p ep9_value --locked` 20 pass; `cargo test -p ep9_heap --locked` 84 pass, with `a_shape_referenced_only_from_word0_survives` and the 3 sweep-before-OOM tests. Still missing: SP-Unit (P4); H08 is verified again by P5-ACCEPT-4 after SP-Unit. Change-log kinds: agree | c68971a; local run, mac a64, e719ffa; logs outside the repo: scratchpad m0m2/accept2/logs/value.log, heap.log |
+| 4 Data | from the "Validated by" line | SP-Value: the `ep9_value` const asserts compile and `cargo test -p ep9_value --locked` passes; SP-Value GO (decisions log W4-P4-SPIKE-RECHECK). `cargo test -p ep9_heap --locked` passes, with `a_shape_referenced_only_from_word0_survives` and the 3 sweep-before-OOM tests. Missing: SP-Unit (P4-SP-UNIT); the A2 gate (A2) | local run, mac a64, 383a317; logs outside the repo: scratchpad m0m2/accept1/h08-ep9_value-test.log, h08-ep9_heap-test.log |

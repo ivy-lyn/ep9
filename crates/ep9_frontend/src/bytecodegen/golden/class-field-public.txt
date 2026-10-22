@@ -1,0 +1,159 @@
+# class-field-public: script (sloppy)
+# | class A { x = 1; y; 'z' = () => 1; 1 = function() {}; 1.5 = 2; static s = this; }
+; ep9 bytecode, ABI 4
+unit kind=script strict=false ts=none source_len=81 source=embedded hints=none
+source_hash=65d3554072b69be0bc2101cbb7d6e67964159093396fc142d5f53eb003f017ee
+strings (6):
+  str0 "A"
+  str1 "x"
+  str2 "y"
+  str3 "z"
+  str4 "1"
+  str5 "s"
+scopes (7):
+  scope0 script outer=- flags=[] slots=["A":class]
+  scope1 class outer=scope0 flags=[strict] slots=[]
+  scope2 function outer=scope1 flags=[strict] slots=[]
+  scope3 function outer=scope1 flags=[strict] slots=[]
+  scope4 function outer=scope3 flags=[strict] slots=[]
+  scope5 function outer=scope3 flags=[strict] slots=[]
+  scope6 function outer=scope1 flags=[strict] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=7 range=0..81
+  code (69 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> LdaTheHole                                   ; 07
+      6    Star r2                                      ; 0c 02
+      8 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+     12    Star r1                                      ; 0c 01
+     14 E> CallRuntime DefineClass, r1-r2               ; 68 04 00 01 02
+     19    Star r3                                      ; 0c 03
+     21    Ldar r1                                      ; 0b 01
+     23    Star r0                                      ; 0c 00
+     25 E> CreateClosure k1, s1, #0x00  ; k1 = Function f2 ; 74 01 01 00
+     29    Star r4                                      ; 0c 04
+     31    Mov r1, r5                                   ; 0d 01 05
+     34    Mov r4, r6                                   ; 0d 04 06
+     37 E> CallRuntime SetClassFieldsInitializer, r5-r6 ; 68 18 00 05 02
+     42 E> CreateClosure k2, s2, #0x00  ; k2 = Function f5 ; 74 02 02 00
+     46    Star r5                                      ; 0c 05
+     48 E> CallProperty0 r5, r1, s3                     ; 60 05 01 03
+     52    Ldar r1                                      ; 0b 01
+     54    Star r2                                      ; 0c 02
+     56    LdaConstant k3  ; k3 = String str0 "A"       ; 0a 03
+     58    Star r1                                      ; 0c 01
+     60 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
+     65    Ldar r2                                      ; 0b 02
+     67    LdaUndefined                                 ; 05
+     68    Return                                       ; 92
+  constants (4):
+      0 Function f1
+      1 Function f2
+      2 Function f5
+      3 String str0 "A"
+  feedback (4):
+      0 CreateClosure
+      1 CreateClosure
+      2 CreateClosure
+      3 Call
+  handlers (0):
+  positions (9):
+      0 S 0 (1:1)
+      5 S 0 (1:1)
+      8 E 0 (1:1)
+     14 E 0 (1:1)
+     25 E 0 (1:1)
+     37 E 8 (1:9)
+     42 E 0 (1:1)
+     48 E 8 (1:9)
+     60 E 0 (1:1)
+function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=8..81
+  code (13 bytes):
+      0 S> LdaCurrentFunction                           ; 0e
+      1    Star r0                                      ; 0c 00
+      3    Mov <this>, r1                               ; 0d ff 01
+      6 E> CallRuntime RunClassFieldsInitializer, r0-r1 ; 68 19 00 00 02
+     11    LdaUndefined                                 ; 05
+     12    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (2):
+      0 S 0 (1:1)
+      6 E 8 (1:9)
+function f2 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=1 range=8..81
+  code (41 bytes):
+      0 S> LdaSmi [1]                                   ; 04 01
+      2 E> DefineNamedOwnProperty <this>, k0, s0  ; k0 = String str1 "x" ; 25 ff 00 00
+      6 S> LdaUndefined                                 ; 05
+      7 E> DefineNamedOwnProperty <this>, k1, s1  ; k1 = String str2 "y" ; 25 ff 01 01
+     11 S> CreateClosure k2, s2, #0x00  ; k2 = Function f3 ; 74 02 02 00
+     15 E> DefineNamedOwnProperty <this>, k3, s3  ; k3 = String str3 "z" ; 25 ff 03 03
+     19 S> CreateClosure k4, s4, #0x00  ; k4 = Function f4 ; 74 04 04 00
+     23 E> DefineNamedOwnProperty <this>, k5, s5  ; k5 = String str4 "1" ; 25 ff 05 05
+     27 S> LdaConstant k6  ; k6 = Number 1.5            ; 0a 06
+     29 E> ToName                                       ; 58
+     30    Star r0                                      ; 0c 00
+     32    LdaSmi [2]                                   ; 04 02
+     34 E> DefineKeyedOwnProperty <this>, r0, #0x00, s6 ; 27 ff 00 00 06
+     39    LdaUndefined                                 ; 05
+     40    Return                                       ; 92
+  constants (7):
+      0 String str1 "x"
+      1 String str2 "y"
+      2 Function f3
+      3 String str3 "z"
+      4 Function f4
+      5 String str4 "1"
+      6 Number 1.5
+  feedback (7):
+      0 DefineNamedOwn
+      1 DefineNamedOwn
+      2 CreateClosure
+      3 DefineNamedOwn
+      4 CreateClosure
+      5 DefineNamedOwn
+      6 DefineKeyedOwn
+  handlers (0):
+  positions (11):
+      0 S 10 (1:11)
+      2 E 10 (1:11)
+      6 S 17 (1:18)
+      7 E 17 (1:18)
+     11 S 20 (1:21)
+     15 E 20 (1:21)
+     19 S 35 (1:36)
+     23 E 35 (1:36)
+     27 S 54 (1:55)
+     29 E 54 (1:55)
+     34 E 54 (1:55)
+function f3 arrow name="z" parent=f2 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=0 range=26..33
+  code (3 bytes):
+      0 S> LdaSmi [1]                                   ; 04 01
+      2    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 32 (1:33)
+function f4 normal name="1" parent=f2 outer_scope=scope3 flags=[strict,simple-params] params=0 length=0 regs=0 range=39..52
+  code (2 bytes):
+      0    LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (0):
+function f5 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=8..81
+  code (8 bytes):
+      0 S> Ldar <this>                                  ; 0b ff
+      2 E> DefineNamedOwnProperty <this>, k0, s0  ; k0 = String str5 "s" ; 25 ff 00 00
+      6    LdaUndefined                                 ; 05
+      7    Return                                       ; 92
+  constants (1):
+      0 String str5 "s"
+  feedback (1):
+      0 DefineNamedOwn
+  handlers (0):
+  positions (2):
+      0 S 63 (1:64)
+      2 E 70 (1:71)

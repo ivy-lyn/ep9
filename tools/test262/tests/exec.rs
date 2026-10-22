@@ -123,7 +123,8 @@ fn tree(name: &str) -> PathBuf {
             "include.js",
             test("includes: [extra.js]\n", "assert.sameValue(extra(), 42);"),
         ),
-        ("unsupported.js", test("", "function* g() {}")),
+        // An async generator: still "generator functions" after P1-GEN-CG (plan-v3 §4).
+        ("unsupported.js", test("", "async function* g() {}")),
     ];
     for (name, src) in tests {
         write(&root, &format!("test/language/{name}"), src);
@@ -202,6 +203,50 @@ fn pass_and_fail_rules() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// The JSON names the skipped tests, not only their count: `cargo xtask m0-exit` item 6 checks
+/// that a GC-stress run skipped exactly the committed skip list (M2-P2-RF2-I8).
+#[test]
+fn skip_list_paths_reach_the_json() {
+    let root = tree("skip");
+    let listed: Vec<&str> = FAILING
+        .iter()
+        .copied()
+        .filter(|p| !p.ends_with("/fail.js"))
+        .collect();
+    let expect = expect_file(&root, &listed);
+    let skip = root.join("skip.txt");
+    std::fs::write(
+        &skip,
+        "# s\ntest/language/pass.js\ntest/language/fail.js\ntest/language/none.js\n",
+    )
+    .unwrap();
+    let json = root.join("summary.json");
+    let (code, text) = exec(
+        &root,
+        &expect,
+        &[
+            "--gc-stress",
+            "1",
+            "--skip-list",
+            skip.to_str().unwrap(),
+            "--json",
+            json.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("skipped: 2"), "{text}");
+    let summary = std::fs::read_to_string(&json).unwrap();
+    // Sorted; the entry that names no test is not in it.
+    assert!(
+        summary.contains(
+            "\"skipped\":2,\"skipped_paths\":[\"test/language/fail.js\",\"test/language/pass.js\"]"
+        ),
+        "{summary}"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn update_writes_only_failures() {
     let root = tree("update");
@@ -256,17 +301,25 @@ fn timeout_is_an_infra_error() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// A panic in a run is an infrastructure error in both builds of the binary. The dev profile
+/// (`cargo test`, as CI runs it) unwinds: the worker catches the panic and reports `panic`.
+/// The release profile has `panic = "abort"` (H23), and `cargo test --release` builds this
+/// binary with it: the worker ends after its panic hook, and the report line is a
+/// `worker crash` whose stderr tail carries the panic text.
 #[test]
 fn panic_is_an_infra_error() {
     let root = tree("panic");
     let expect = expect_file(&root, FAILING);
     let (code, text) = exec(&root, &expect, &[], Some("panic:/pass.js"));
     assert_eq!(code, Some(2), "{text}");
-    assert!(
-        text.contains("test/language/pass.js: [sloppy] panic: injected panic"),
-        "{text}"
-    );
-    assert!(text.contains("panic 1"), "{text}");
+    let caught = text.contains("test/language/pass.js: [sloppy] panic: injected panic")
+        && text.contains("(panic 1, timeout 0, worker crash 0, other 0)");
+    let aborted = text.contains("test/language/pass.js: the worker exited")
+        && text.contains("ep9-test262 worker panicked: injected panic for test/language/pass.js")
+        && text.contains("(panic 0, timeout 0, worker crash 1, other 0)");
+    assert!(caught || aborted, "{text}");
+    // Every other test still ran.
+    assert!(text.contains("language             8 / 18"), "{text}");
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -289,6 +342,40 @@ fn worker_crash_is_an_infra_error_and_the_run_goes_on() {
     assert!(text.contains("worker crash 1"), "{text}");
     // Every other test still ran in a new worker.
     assert!(text.contains("language             8 / 18"), "{text}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_panic_that_aborts_the_worker_reaches_the_report() {
+    // A panic that cannot unwind ends the worker after the panic hook ran, as every panic does
+    // under `panic = "abort"`: a worker crash whose line carries the panic text.
+    let root = tree("nounwind");
+    let expect = expect_file(&root, FAILING);
+    let (code, text) = exec(&root, &expect, &[], Some("nounwind-panic:/pass.js"));
+    assert_eq!(code, Some(2), "{text}");
+    assert!(
+        text.contains("test/language/pass.js: the worker exited"),
+        "{text}"
+    );
+    assert!(
+        text.contains("panicked: injected panic for test/language/pass.js"),
+        "{text}"
+    );
+    assert!(text.contains("worker crash 1"), "{text}");
+    assert!(text.contains("language             8 / 18"), "{text}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn no_fault_no_infrastructure_error() {
+    let root = tree("clean");
+    let expect = expect_file(&root, FAILING);
+    let (code, text) = exec(&root, &expect, &[], None);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(
+        text.contains("infrastructure errors: 0 (panic 0, timeout 0, worker crash 0, other 0)"),
+        "{text}"
+    );
     std::fs::remove_dir_all(root).unwrap();
 }
 

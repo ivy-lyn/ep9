@@ -25,9 +25,7 @@ use ep9_value::Value;
 use crate::call;
 use crate::conv::BinOp;
 use crate::dispatch::DispatchKind;
-use crate::frame::{
-    CONSTRUCT_BIT, FALSE, HOLE, NULL, TRUE, UNDEFINED, int32_bits, int32_of, native_ptr, slot,
-};
+use crate::frame::{FALSE, HOLE, NULL, TRUE, UNDEFINED, int32_bits, native_ptr, slot};
 use crate::interp::dsl::{Back, CSlot, Count, Depth, FSlot, Fwd, K, R, RList, RtId, S2, S4, TyLit};
 use crate::interp::slow::{self, CmpOp, CtxKind, Lit, NameMsg, PropOp, UnOp};
 use crate::interp::{Done, Flow, St};
@@ -270,12 +268,13 @@ fn jump_if(st: &St<'_>, c: bool, t: Fwd) -> Done {
 
 /// The JS→JS call fast path (H14): a bytecode callee gets its frame right above the caller's
 /// registers and the dispatch continues at its first instruction. No Rust recursion. Anything
-/// else (host callee, class constructor, interrupt due, the call that makes the callee's
-/// feedback vector, VM stack full) takes the cold path.
+/// else (host callee, class constructor, a sloppy callee with a primitive receiver, interrupt
+/// due, the call that makes the callee's feedback vector, VM stack full) takes the cold path.
 ///
 /// While the callee has no feedback vector, a call that pushes its frame here counts in
 /// `invocations`; the call that reaches `feedback_threshold` goes cold, and `slow::call`
 /// makes the vector before it pushes the frame (H16, `feedback.rs`).
+#[cfg(not(feature = "spike-native"))]
 #[inline(always)]
 fn call_fast(
     st: &mut St<'_>,
@@ -299,7 +298,10 @@ fn call_fast(
     if fi.feedback.get().is_null() && fi.invocations.get() + 1 >= st.cx.feedback_threshold {
         return Flow::Cold;
     }
-    let this = call::bind_this(fi, this, st.cx.global_this);
+    // A sloppy callee with a primitive receiver: `slow::call` wraps it (H14-Q2).
+    let Some(this) = call::try_bind_this(fi, this, st.cx.global_this) else {
+        return Flow::Cold;
+    };
     let base = st.fp.wrapping_add(st.info().register_count as usize);
     let (limit, fp, next) = (st.cx.stack_limit, st.fp, st.next);
     let context = object::function_context(callee);
@@ -329,6 +331,92 @@ fn call_fast(
             }
             st.fp = n;
             Flow::Jump(fi.code)
+        }
+        None => Flow::Cold,
+    }
+}
+
+/// `call_fast` of a `spike-native` build (Spike B, P4-PLACEMENT-B; M2-P4-B-OPS). A T0 callee
+/// takes the path of the default build above. A callee with native code that the hot path
+/// enters gets the same frame push, then the dispatch continues at a VM stub byte
+/// (`native::hot_stub`): `OP_ENTER_B` for a placement (b) slot (`DispatchKind::Opt`, written
+/// by `native::install_native_b`), whose handler tail-enters the (b) code with the 4 handler
+/// arguments; `OP_ENTER_A_HOT` for the M2-P4-B-AB report (placement (a) code in an
+/// AotBaseline slot), whose handler calls the native code. Both take one budget unit as a T0
+/// callee does, record no feedback and are never class constructors (the installs refuse
+/// them). Any other slot (placement (a) in a Baseline slot: config A of the D21 bench) goes
+/// cold, as in the default build. The match loop runs the callee's bytecode at both stub
+/// bytes (D4).
+#[cfg(feature = "spike-native")]
+#[inline(always)]
+fn call_fast(
+    st: &mut St<'_>,
+    callee: u64,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(&St<'_>, u32) -> u64,
+) -> Flow {
+    if !object::is_function(callee) {
+        return Flow::Cold;
+    }
+    let fi = object::function_info(callee);
+    let kind = fi.slot.kind_byte();
+    let interp = kind == DispatchKind::Interp as u8;
+    if interp {
+        if fi.is_class_constructor() {
+            return Flow::Cold;
+        }
+    } else if crate::native::hot_stub(kind).is_none() {
+        return Flow::Cold;
+    }
+    st.cx.budget -= 1;
+    if st.cx.budget <= 0 {
+        return Flow::Cold;
+    }
+    // Without a vector, `invocations` is below the threshold, so `+ 1` never overflows.
+    if interp && fi.feedback.get().is_null() && fi.invocations.get() + 1 >= st.cx.feedback_threshold
+    {
+        return Flow::Cold;
+    }
+    // A sloppy callee with a primitive receiver: `slow::call` wraps it (H14-Q2).
+    let Some(this) = call::try_bind_this(fi, this, st.cx.global_this) else {
+        return Flow::Cold;
+    };
+    let base = st.fp.wrapping_add(st.info().register_count as usize);
+    let (limit, fp, next) = (st.cx.stack_limit, st.fp, st.next);
+    let context = object::function_context(callee);
+    let s: &St<'_> = st;
+    // SAFETY: as in the default build's `call_fast`.
+    let nfp = unsafe {
+        call::push_frame(
+            base,
+            limit,
+            fi,
+            callee,
+            this,
+            argc,
+            |i| arg(s, i),
+            fp,
+            next,
+            context,
+            UNDEFINED,
+        )
+    };
+    match nfp {
+        Some(n) => {
+            st.fp = n;
+            // The slot kind is read again here, so no stub address stays live across the
+            // frame push (a spike-native build keeps the default build's register use).
+            match crate::native::hot_stub(fi.slot.kind_byte()) {
+                Some(s) => Flow::Jump(s),
+                None => {
+                    // Read again here, so no count stays live across the frame push.
+                    if fi.feedback.get().is_null() {
+                        fi.invocations.set(fi.invocations.get() + 1);
+                    }
+                    Flow::Jump(fi.code)
+                }
+            }
         }
         None => Flow::Cold,
     }
@@ -421,10 +509,10 @@ op!(LdaCurrentFunction(st) {
     st.acc = st.hdr(slot::CALLEE);
     Done::Next
 });
-// v0: a construct frame keeps new.target in its feedback slot (call::push_frame; H14-Q1).
+// FRAME 2 (H14-Q1): fp-3 holds new.target, undefined for a call (call::push_frame), or the
+// generator object of a resumed frame (call::push_resume_frame). No construct-bit check.
 op!(LdaNewTarget(st) {
-    let construct = int32_of(st.hdr(slot::ARGC)) as u32 & CONSTRUCT_BIT != 0;
-    st.acc = if construct { st.hdr(slot::FEEDBACK) } else { UNDEFINED };
+    st.acc = st.hdr(slot::NEW_TARGET);
     Done::Next
 });
 
@@ -512,15 +600,19 @@ op!(StaCurrentContextSlot(st, i: CSlot) {
     let c = st.hdr(slot::CONTEXT);
     ctx_store(st, c, i, 0)
 } cold { ctx_cold(st) });
-// v0: no sloppy direct eval and no `with`, so no dynamic scope lookup.
-op!(LdaLookupSlot(st, _name: K) { Flow::Cold } cold {
-    not_impl(st, "dynamic scope lookup (eval, with)")
+// Dynamic scope lookup (sloppy direct eval, `with`): slow/lookup.rs (P2-LOOKUP).
+op!(LdaLookupSlot(st, name: K) { Flow::Cold } cold {
+    let r = slow::lda_lookup_slot(st.cx, st.fp, st.pc, name.0, false);
+    st.result(r)
 });
-op!(LdaLookupSlotInsideTypeof(st, _name: K) { Flow::Cold } cold {
-    not_impl(st, "dynamic scope lookup (eval, with)")
+op!(LdaLookupSlotInsideTypeof(st, name: K) { Flow::Cold } cold {
+    let r = slow::lda_lookup_slot(st.cx, st.fp, st.pc, name.0, true);
+    st.result(r)
 });
-op!(StaLookupSlot(st, _name: K, _flags: u8) { Flow::Cold } cold {
-    not_impl(st, "dynamic scope lookup (eval, with)")
+op!(StaLookupSlot(st, name: K, flags: u8) { Flow::Cold } cold {
+    let v = st.acc;
+    let r = slow::sta_lookup_slot(st.cx, st.fp, st.pc, name.0, flags, v);
+    st.result(r)
 });
 // v0: no modules.
 op!(LdaModuleVariable(st, _cell: i32, _depth: Depth) { Flow::Cold } cold {
@@ -611,18 +703,19 @@ op!(SetKeyedProperty(st, object: R, key: R, _s: FSlot) { Flow::Cold } cold {
     let (o, k, v) = (st.reg(object), st.reg(key), st.acc);
     prop_cold(st, PropOp::SetKeyed, o, k, v)
 });
-op!(DefineKeyedOwnProperty(st, object: R, key: R, _flags: u8, _s: FSlot) { Flow::Cold } cold {
+op!(DefineKeyedOwnProperty(st, object: R, key: R, flags: u8, _s: FSlot) { Flow::Cold } cold {
     let (o, k, v) = (st.reg(object), st.reg(key), st.acc);
-    prop_cold(st, PropOp::DefineKeyed, o, k, v)
+    prop_cold(st, PropOp::DefineKeyedOwn(flags), o, k, v)
 });
 op!(StaInArrayLiteral(st, array: R, index: R, _s: FSlot) { Flow::Cold } cold {
     let (o, k, v) = (st.reg(array), st.reg(index), st.acc);
     prop_cold(st, PropOp::DefineKeyed, o, k, v)
 });
-// v0: flag bit 0 (set the function name from the key) is ignored.
-op!(DefineKeyedOwnPropertyInLiteral(st, object: R, key: R, _flags: u8, _s: FSlot) { Flow::Cold } cold {
+// Flag bit 0 (set the function name from the key) is applied in slow/class_fields.rs
+// `define_keyed_own`, from the DefineKeyedOwn arm of slow/property.rs (D15).
+op!(DefineKeyedOwnPropertyInLiteral(st, object: R, key: R, flags: u8, _s: FSlot) { Flow::Cold } cold {
     let (o, k, v) = (st.reg(object), st.reg(key), st.acc);
-    prop_cold(st, PropOp::DefineKeyed, o, k, v)
+    prop_cold(st, PropOp::DefineKeyedOwn(flags), o, k, v)
 });
 
 // ---- binary operators: acc = lhs OP acc ----------------------------------------------------
@@ -1020,8 +1113,10 @@ op!(CreateEvalContext(st, scope: K, slots: u32) { Flow::Cold } cold {
     let r = slow::create_context(st.cx, st.fp, st.pc, CtxKind::Eval, scope.0, slots, UNDEFINED);
     st.result(r)
 });
-op!(CreateWithContext(st, _object: R, _scope: K) { Flow::Cold } cold {
-    not_impl(st, "with statements")
+op!(CreateWithContext(st, object: R, scope: K) { Flow::Cold } cold {
+    let o = st.reg(object);
+    let r = slow::create_with_context(st.cx, st.fp, st.pc, o, scope.0);
+    st.result(r)
 });
 op!(CreateMappedArguments(st) { Flow::Cold } cold {
     let r = slow::arguments(st.cx, st.fp, st.pc, false);
@@ -1186,22 +1281,38 @@ op!(GetSuperConstructor(st, dst: R) {
     throw_msg(st, ErrorKind::Error, "ep9 internal error: GetSuperConstructor of a non-object")
 });
 
-// ---- generators (reserved until M1) --------------------------------------------------------
+// ---- generators: slow/generator.rs (P1-GEN-VM), frame-switch protocol ----------------------
 
-op!(SwitchOnGeneratorState(st, _generator: R, _table: K) { Flow::Cold } cold {
-    not_impl(st, "generators")
+op!(SwitchOnGeneratorState(st, generator: R, table: K) { Flow::Cold } cold {
+    let r = slow::switch_on_generator_state(st.cx, st.fp, st.pc, st.next, generator.0, table.0);
+    st.switch(r)
 });
-op!(SuspendGenerator(st, _generator: R, _registers: RList, _count: Count, _id: u32) { Flow::Cold } cold {
-    not_impl(st, "generators")
+op!(SuspendGenerator(st, generator: R, registers: RList, count: Count, id: u32) { Flow::Cold } cold {
+    let (acc, next) = (st.acc, st.next);
+    let r = slow::suspend_generator(
+        st.cx, st.fp, st.pc, next, acc, generator.0, registers.0, count.0, id,
+    );
+    st.switch(r)
 });
-op!(ResumeGenerator(st, _generator: R, _registers: RList, _count: Count) { Flow::Cold } cold {
-    not_impl(st, "generators")
+op!(ResumeGenerator(st, generator: R, registers: RList, count: Count) { Flow::Cold } cold {
+    let r = slow::resume_generator(st.cx, st.fp, st.pc, st.next, generator.0, registers.0, count.0);
+    st.switch(r)
 });
 
 // ---- debugger ------------------------------------------------------------------------------
 
 // v0: no debugger; the statement does nothing.
 op!(Debugger(st) { Done::Next });
+
+// ---- runtime calls with two results (ABI 3) ------------------------------------------------
+
+// Like `CallRuntime`, for a pair function (only those; the verifier checks it): `out` and
+// `out + 1` get the two results, and the accumulator stays (acc None).
+op!(CallRuntimeForPair(st, id: RtId, args: RList, argc: Count, out: R) { Flow::Cold } cold {
+    let acc = st.acc;
+    let r = slow::call_runtime_pair(st.cx, st.fp, st.pc, id.0, args.0, argc.0, out.0, acc);
+    st.result(r)
+});
 
 // ---- the cold list -------------------------------------------------------------------------
 
@@ -1329,6 +1440,7 @@ macro_rules! if_cold {
     (SwitchOnGeneratorState { $($y:tt)* } else { $($n:tt)* }) => { $($y)* };
     (SuspendGenerator { $($y:tt)* } else { $($n:tt)* }) => { $($y)* };
     (ResumeGenerator { $($y:tt)* } else { $($n:tt)* }) => { $($y)* };
+    (CallRuntimeForPair { $($y:tt)* } else { $($n:tt)* }) => { $($y)* };
     ($other:ident { $($y:tt)* } else { $($n:tt)* }) => { $($n)* };
 }
 pub(crate) use if_cold;

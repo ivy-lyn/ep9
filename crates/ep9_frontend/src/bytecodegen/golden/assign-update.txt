@@ -1,6 +1,6 @@
 # assign-update: script (sloppy)
 # | var g; function f(o, k, a) { a++; ++a; var x = a--; g++; o.x++; --o[k]; return x; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=83 source=embedded hints=none
 source_hash=48db74e9cd586cc393736890614ba58698d01899b4f0d65dda67609864126201
 strings (3):

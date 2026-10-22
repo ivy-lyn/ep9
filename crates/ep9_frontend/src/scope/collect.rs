@@ -101,11 +101,21 @@ pub(super) struct Builder<'a> {
     implicit: Vec<(u32, ImplicitRef, RefId)>,
     function_at: Vec<(u32, FunctionId)>,
     synthetic_blocks: Vec<(u32, ScopeId)>,
+    /// The class scopes whose heritage the walk is in, outermost first. A class's heritage
+    /// runs with the outer PrivateEnvironment (ECMA-262 §15.7.14 ClassDefinitionEvaluation
+    /// step 8), so a `#x` there must not see these classes' private names. Kept across nested
+    /// functions and class bodies: everything inside the heritage is outside the class's
+    /// PrivateEnvironment.
+    heritage_of: Vec<ScopeId>,
+    /// Private name references made inside a heritage, with the class scopes whose bindings
+    /// resolution skips (a copy of `heritage_of`). Never iterated (H2).
+    pub(super) private_skips: HashMap<RefId, Box<[ScopeId]>>,
     pub(super) n_this: NameId,
     pub(super) n_new_target: NameId,
     pub(super) n_home_object: NameId,
     pub(super) n_callee: NameId,
     pub(super) n_arguments: NameId,
+    pub(super) n_eval_ext: NameId,
     n_default: NameId,
     cur_scope: ScopeId,
     cur_fn: FunctionId,
@@ -142,11 +152,14 @@ impl<'a> Builder<'a> {
             implicit: Vec::new(),
             function_at: Vec::new(),
             synthetic_blocks: Vec::new(),
+            heritage_of: Vec::new(),
+            private_skips: HashMap::new(),
             n_this: NameId(0),
             n_new_target: NameId(0),
             n_home_object: NameId(0),
             n_callee: NameId(0),
             n_arguments: NameId(0),
+            n_eval_ext: NameId(0),
             n_default: NameId(0),
             cur_scope: ScopeId(0),
             cur_fn: FunctionId(0),
@@ -165,6 +178,7 @@ impl<'a> Builder<'a> {
         builder.n_callee = builder.name(".callee");
         builder.n_arguments = builder.name("arguments");
         builder.n_default = builder.name("*default*");
+        builder.n_eval_ext = builder.name(ep9_bytecode::EVAL_EXT_BINDING);
         builder
     }
 
@@ -413,6 +427,17 @@ impl<'a> Builder<'a> {
     fn implicit_ref(&mut self, span: Span, key: ImplicitRef, name: NameId, kind: RefKind) {
         let r = self.push_reference(name, kind, span);
         self.implicit.push((span.start, key, r));
+    }
+
+    /// A `#x` reference (`o.#x`, `#x in o`). Inside a class heritage it records the classes
+    /// whose private names it must skip (see `heritage_of`).
+    fn private_ref(&mut self, span: Span, name: NameId) {
+        let r = self.push_reference(name, RefKind::PrivateName, span);
+        self.implicit.push((span.start, ImplicitRef::Private, r));
+        if !self.heritage_of.is_empty() {
+            self.private_skips
+                .insert(r, self.heritage_of.clone().into_boxed_slice());
+        }
     }
 
     fn identifier(&mut self, it: &IdentifierReference<'a>, export: bool) {
@@ -1068,7 +1093,12 @@ impl<'a> Visit<'a> for Builder<'a> {
         self.cur_scope = class_scope;
         self.strict = true;
         if let Some(heritage) = &it.heritage {
+            // The heritage stays in the class scope (the inner name is in its TDZ there, and
+            // the class context is on the runtime chain), but its private names are the outer
+            // ones.
+            self.heritage_of.push(class_scope);
             self.visit_expression(&heritage.expression);
+            self.heritage_of.pop();
         }
 
         // Private names are visible in the whole class body: declare them first.
@@ -1098,7 +1128,87 @@ impl<'a> Visit<'a> for Builder<'a> {
             }
         }
 
-        // Synthetic functions: ids at the start of the class body, in this fixed order.
+        // Synthetic class-context bindings (P2-CLS-CG, D2). Their names start with `#.`, which
+        // no source can spell, so codegen finds them by name in the class scope and a direct
+        // eval never sees them. Like every private name they live in the class context.
+        //   #.brand          instance brand (any instance private method or accessor)
+        //   #.static-brand   static brand (any static private method or accessor)
+        //   #.set-x          the setter of private accessor `#x` (`#x` holds the getter)
+        //   #.class-field-N  the key of the N-th computed field, after ToPropertyKey
+        fn synthetic_name(names: &mut Vec<Box<str>>, text: String) -> NameId {
+            let id = NameId::of(names.len());
+            names.push(text.into_boxed_str());
+            id
+        }
+        let private_method = |e: &ClassElement<'a>, want_static: bool| {
+            matches!(e, ClassElement::MethodDefinition(m)
+                if m.r#static == want_static && matches!(m.key, PropertyKey::PrivateIdentifier(_)))
+        };
+        let brands = [(".brand", false), (".static-brand", true)];
+        for (text, is_static) in brands {
+            if elements.iter().any(|e| private_method(e, is_static)) {
+                let name = self.private_name(text);
+                self.declare(
+                    class_scope,
+                    name,
+                    BindingKind::PrivateName {
+                        kind: PrivateKind::Method,
+                        is_static,
+                    },
+                    None,
+                );
+            }
+        }
+        let accessors: Vec<(NameId, bool)> = self.scopes[class_scope.index()]
+            .bindings
+            .iter()
+            .filter_map(|b| match self.bindings[b.index()].kind {
+                BindingKind::PrivateName {
+                    kind: PrivateKind::Getter | PrivateKind::Setter | PrivateKind::GetterSetter,
+                    is_static,
+                } => Some((self.bindings[b.index()].name, is_static)),
+                _ => None,
+            })
+            .collect();
+        for (accessor, is_static) in accessors {
+            let text = format!("#.set-{}", &self.names[accessor.index()][1..]);
+            let name = synthetic_name(&mut self.names, text);
+            self.declare(
+                class_scope,
+                name,
+                BindingKind::PrivateName {
+                    kind: PrivateKind::Method,
+                    is_static,
+                },
+                None,
+            );
+        }
+        let computed_fields = elements
+            .iter()
+            .filter_map(|e| match e {
+                ClassElement::PropertyDefinition(p) if p.computed => Some(p.r#static),
+                _ => None,
+            })
+            .enumerate()
+            .collect::<Vec<_>>();
+        for (n, is_static) in computed_fields {
+            let name = synthetic_name(&mut self.names, format!("#.class-field-{n}"));
+            self.declare(
+                class_scope,
+                name,
+                BindingKind::PrivateName {
+                    kind: PrivateKind::Field,
+                    is_static,
+                },
+                None,
+            );
+        }
+
+        // Synthetic functions. Function ids must be a preorder of the parent links (the
+        // bytecode verifier's Tree rule), so each initializer is followed at once by the
+        // functions inside it: default constructor; instance initializer, then the instance
+        // field values; static initializer, then the static field values and static blocks;
+        // then the methods and computed keys in source order.
         let derived = it.heritage.is_some();
         let has_constructor = elements.iter().any(|e| {
             matches!(e, ClassElement::MethodDefinition(m) if m.kind == MethodDefinitionKind::Constructor)
@@ -1126,22 +1236,47 @@ impl<'a> Visit<'a> for Builder<'a> {
             };
             self.synthetic(kind, class_scope, body_span, false)
         });
-        let instance = needs_instance.then(|| {
-            self.synthetic(
-                FunctionKind::InstanceMembersInitializer,
-                class_scope,
-                body_span,
-                false,
-            )
-        });
-        let statics = needs_static.then(|| {
-            self.synthetic(
-                FunctionKind::StaticMembersInitializer,
-                class_scope,
-                body_span,
-                true,
-            )
-        });
+        let mut initializers = [None, None];
+        for (is_static, needed) in [(false, needs_instance), (true, needs_static)] {
+            if !needed {
+                continue;
+            }
+            let kind = if is_static {
+                FunctionKind::StaticMembersInitializer
+            } else {
+                FunctionKind::InstanceMembersInitializer
+            };
+            let f = Some(self.synthetic(kind, class_scope, body_span, is_static));
+            initializers[usize::from(is_static)] = f;
+            for element in elements {
+                let value = match element {
+                    ClassElement::PropertyDefinition(p) if p.r#static == is_static => &p.value,
+                    ClassElement::AccessorProperty(p) if p.r#static == is_static => &p.value,
+                    ClassElement::StaticBlock(block) if is_static => {
+                        self.in_synthetic(f, |s| {
+                            let parent = s.cur_scope;
+                            let scope = s.new_scope(
+                                ScopeKind::StaticBlock,
+                                Some(parent),
+                                s.cur_fn,
+                                block.span,
+                                true,
+                                block.scope_id.get(),
+                            );
+                            s.cur_scope = scope;
+                            s.var_scope = scope;
+                            s.visit_statements(&block.body);
+                        });
+                        continue;
+                    }
+                    _ => continue,
+                };
+                if let Some(value) = value {
+                    self.in_synthetic(f, |s| s.visit_expression(value));
+                }
+            }
+        }
+        let [instance, statics] = initializers;
 
         let mut constructor = default_constructor;
         for element in elements {
@@ -1170,38 +1305,14 @@ impl<'a> Visit<'a> for Builder<'a> {
                     if p.computed {
                         self.visit_property_key(&p.key);
                     }
-                    if let Some(value) = &p.value {
-                        let f = if p.r#static { statics } else { instance };
-                        self.in_synthetic(f, |s| s.visit_expression(value));
-                    }
                 }
                 ClassElement::AccessorProperty(p) => {
                     self.visit_decorators(&p.decorators);
                     if p.computed {
                         self.visit_property_key(&p.key);
                     }
-                    if let Some(value) = &p.value {
-                        let f = if p.r#static { statics } else { instance };
-                        self.in_synthetic(f, |s| s.visit_expression(value));
-                    }
                 }
-                ClassElement::StaticBlock(block) => {
-                    self.in_synthetic(statics, |s| {
-                        let parent = s.cur_scope;
-                        let scope = s.new_scope(
-                            ScopeKind::StaticBlock,
-                            Some(parent),
-                            s.cur_fn,
-                            block.span,
-                            true,
-                            block.scope_id.get(),
-                        );
-                        s.cur_scope = scope;
-                        s.var_scope = scope;
-                        s.visit_statements(&block.body);
-                    });
-                }
-                ClassElement::TSIndexSignature(_) => {}
+                ClassElement::StaticBlock(_) | ClassElement::TSIndexSignature(_) => {}
             }
         }
         for f in [default_constructor, instance, statics]
@@ -1374,22 +1485,12 @@ impl<'a> Visit<'a> for Builder<'a> {
     fn visit_private_field_expression(&mut self, it: &PrivateFieldExpression<'a>) {
         self.visit_expression(&it.object);
         let name = self.private_name(it.field.name.as_str());
-        self.implicit_ref(
-            it.field.span,
-            ImplicitRef::Private,
-            name,
-            RefKind::PrivateName,
-        );
+        self.private_ref(it.field.span, name);
     }
 
     fn visit_private_in_expression(&mut self, it: &PrivateInExpression<'a>) {
         let name = self.private_name(it.left.name.as_str());
-        self.implicit_ref(
-            it.left.span,
-            ImplicitRef::Private,
-            name,
-            RefKind::PrivateName,
-        );
+        self.private_ref(it.left.span, name);
         self.visit_expression(&it.right);
     }
 }

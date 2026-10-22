@@ -191,7 +191,11 @@ mod root {
     /// The shape of a new function: %Function.prototype%, `length` and `name` (a cache;
     /// undefined until the first function).
     pub const FUNCTION_SHAPE: usize = 1;
-    pub const COUNT: usize = 2;
+    /// The shape of a new generator function: [`FUNCTION_SHAPE`] with
+    /// %GeneratorFunction.prototype% as the prototype (a cache; undefined until the first
+    /// generator function).
+    pub const GENERATOR_FUNCTION_SHAPE: usize = 2;
+    pub const COUNT: usize = 3;
 }
 
 /// The last value of [`ShapeState::proto_epoch`]: it stays there (it never wraps). No IC case
@@ -1195,8 +1199,26 @@ pub(crate) fn initial_shape(rt: &Runtime, proto: u64, object_kind: KindId, capac
 /// (%Function.prototype%, FUNCTION, 2 slots) plus `length` and `name`, both {w: false,
 /// e: false, c: true}. Cached in the ShapeState roots. GC point.
 pub(crate) fn function_shape(rt: &Runtime) -> u64 {
-    let fp = rt.root(Root::FunctionPrototype);
-    let cached = rt.shapes.roots[root::FUNCTION_SHAPE].bits();
+    cached_function_shape(rt, rt.root(Root::FunctionPrototype), root::FUNCTION_SHAPE)
+}
+
+/// The shape of a new generator function (§15.5.3, §15.5.4: OrdinaryFunctionCreate with
+/// %GeneratorFunction.prototype%): [`function_shape`] with that prototype. Cached in the
+/// ShapeState roots. Before the intrinsic is installed it is the [`function_shape`]. GC
+/// point.
+pub(crate) fn generator_function_shape(rt: &Runtime) -> u64 {
+    use crate::builtins::{IntrinsicId, intrinsic};
+    let gfp = intrinsic(rt, IntrinsicId::GeneratorFunctionPrototype);
+    if !kind::is_object(gfp) {
+        return function_shape(rt);
+    }
+    cached_function_shape(rt, gfp, root::GENERATOR_FUNCTION_SHAPE)
+}
+
+/// The function shape over the prototype `fp` (FUNCTION, 2 slots, `length` and `name`),
+/// cached in root slot `slot`. GC point.
+fn cached_function_shape(rt: &Runtime, fp: u64, slot: usize) -> u64 {
+    let cached = rt.shapes.roots[slot].bits();
     if cached != UNDEFINED && proto(cached) == fp {
         return cached;
     }
@@ -1208,7 +1230,7 @@ pub(crate) fn function_shape(rt: &Runtime) -> u64 {
         }
     }
     // E3: a store into a root takes no barrier.
-    rt.shapes.roots[root::FUNCTION_SHAPE].init(val(s));
+    rt.shapes.roots[slot].init(val(s));
     s
 }
 

@@ -11,7 +11,7 @@
 //!
 //! | Rule (H15) | Where |
 //! |---|---|
-//! | Handler = `unsafe fn(&mut Cx, pc, fp, acc) -> u64`, ≤ 4 register-wide args; x86-64: `extern "sysv64-unwind"` on every OS | [`Handler`], `dsl::AtMostFourRegArgs`, `dsl::handler!` |
+//! | Handler = `unsafe fn(&mut Cx, pc, fp, acc) -> u64`, ≤ 4 register-wide args; x86-64: `extern "sysv64-unwind"` on every OS (`extern "sysv64"` under `panic = "abort"`) | [`Handler`], `dsl::AtMostFourRegArgs`, `dsl::handler!` |
 //! | `Cx` holds the 256-entry dispatch table at offset 0 | [`Cx`] const assert |
 //! | Every runtime call is in a cold block; the fast handler reaches it by a tail jump | `ops.rs` `cold` bodies, `<op>_cold` handlers |
 //! | Symbols `ep9h__<exp>__<tail\|exit>__<Op>`, match loop `ep9loop__match__run` | `dsl.rs` (read by `cargo xtask disasm-check`) |
@@ -25,6 +25,7 @@ pub(crate) mod ops;
 pub(crate) mod slow;
 
 use core::cell::Cell;
+use core::sync::atomic::AtomicU32;
 
 use ep9_bytecode::Opcode;
 
@@ -35,9 +36,14 @@ use crate::unit::FunctionInfo;
 /// A handler: `(cx, pc, fp, acc) -> result` (H15). The result is the accumulator bits the run
 /// returns (0 = exception pending). x86-64 handlers use the SysV ABI on every OS (see
 /// `dsl::handler!`); other targets use the Rust ABI.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", panic = "unwind"))]
 pub(crate) type Handler =
     unsafe extern "sysv64-unwind" fn(&mut Cx, *const u8, *mut u64, u64) -> u64;
+/// A handler: `(cx, pc, fp, acc) -> result` (H15), x86-64 with `panic = "abort"`: plain
+/// `sysv64`, because a call to an `-unwind` function from abort code needs an abort landing
+/// pad, and that pad stops the sibling call (see `dsl::handler!`).
+#[cfg(all(target_arch = "x86_64", not(panic = "unwind")))]
+pub(crate) type Handler = unsafe extern "sysv64" fn(&mut Cx, *const u8, *mut u64, u64) -> u64;
 /// A handler: `(cx, pc, fp, acc) -> result` (H15). The result is the accumulator bits the run
 /// returns (0 = exception pending).
 #[cfg(not(target_arch = "x86_64"))]
@@ -45,6 +51,10 @@ pub(crate) type Handler = unsafe fn(&mut Cx, *const u8, *mut u64, u64) -> u64;
 
 /// VM-internal opcode: leave the dispatch and return the accumulator to Rust.
 pub(crate) const OP_EXIT: u8 = 0xFF;
+/// Spike B placement (b), feature `spike-native` only (P4-PLACEMENT-B): the VM stub byte whose
+/// handler tail-enters the (b) code of the top frame's function (`native::ENTER_B_STUB`).
+#[cfg(feature = "spike-native")]
+pub(crate) const OP_ENTER_B: u8 = 0xFD;
 /// VM-internal opcode: the `[[Construct]]` result check of a construct stub frame.
 pub(crate) const OP_CONSTRUCT_RETURN: u8 = 0xFE;
 
@@ -137,6 +147,28 @@ pub(crate) struct Cx {
     /// pointer so a change made by a host call or a nested run is seen at once. The IC hit
     /// paths compare it (`ic.rs`).
     pub proto_epoch: *const Cell<u32>,
+    // ---- appended in M2-P0 (no field above moves; the poll fields are fixed for month 2) ----
+    /// The isolate's interrupt word (`Runtime::terminate`, bits in [`interrupt`]), read at
+    /// the interrupt poll (`slow::interrupt`). Other threads set bits (`TerminateHandle`).
+    pub interrupt: *const AtomicU32,
+    /// Spike B (feature `spike-native`): the lowest native stack address native code may
+    /// reach (`Runtime::native_limit`, copied so a JIT prologue compares one `Cx` field).
+    #[cfg(feature = "spike-native")]
+    pub native_limit: usize,
+    /// Spike B (feature `spike-native`): the runtime functions native code calls
+    /// (`native::RUNTIME_TABLE`).
+    #[cfg(feature = "spike-native")]
+    pub runtime_table: *const crate::native::RuntimeTable,
+}
+
+/// Bits of the interrupt word (`Cx::interrupt`). Bit 0 keeps its meaning; new bits are
+/// appended. `slow::interrupt` reads them at every poll.
+pub(crate) mod interrupt {
+    /// Terminate the running script (`TerminateHandle::terminate`); the poll clears it.
+    pub const TERMINATE: u32 = 1;
+    /// Run the queued embedder callbacks (`InterruptHandle::request`,
+    /// `Runtime::interrupt_requests`); the poll clears it, then runs them (M2-P3).
+    pub const REQUEST: u32 = 2;
 }
 
 const _: () = assert!(core::mem::offset_of!(Cx, table) == 0);

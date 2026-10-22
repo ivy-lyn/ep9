@@ -374,7 +374,7 @@ fn config(shape_space_bytes: usize, tweak: impl FnOnce(&mut HeapConfig)) -> Heap
     let mut c = HeapConfig {
         cage: CageConfig {
             cage_size: 1 << 30,
-            code_range_size: ep9_platform::allocation_granularity(),
+            code_range_size: 0,
             ..CageConfig::default()
         },
         shape_space_bytes,

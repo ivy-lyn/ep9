@@ -583,3 +583,81 @@ fn class_constructor_needs_new_on_rust_calls() {
         }
     }
 }
+
+/// FRAME 2 (H14-Q1): `LdaNewTarget` reads fp-3 with no construct-bit check. A call gives
+/// undefined, a `[[Construct]]` gives new.target, and a frame that `call::push_resume_frame`
+/// pushed (construct bit clear, fp-3 = the generator object) gives that object.
+#[test]
+fn lda_new_target_reads_the_resumed_frame_slot() {
+    fn make() -> VerifiedUnit {
+        // function nt() { return new.target; }
+        let mut f = Asm::new(meta("nt", 0, 0, 0, 0));
+        f.b.lda_new_target().return_();
+        let mut s = Asm::script(0);
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global("nt");
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish(), f.finish()])
+    }
+    /// Runs `f` (a bytecode function) in a resumed frame whose fp-3 holds `generator`.
+    fn run_resumed(iso: &mut crate::Isolate, f: u64, generator: u64) -> u64 {
+        use crate::frame::{UNDEFINED, int32_of, slot};
+        let cx = &mut *iso.cx;
+        let rt = cx.rt();
+        let fi = crate::object::function_info(f);
+        let caller = rt.stack().fp();
+        let base = crate::call::top_of(cx, caller);
+        // SAFETY: `base` is the first free slot above the top frame (none: the stack base);
+        // the limit is the stack end; no arguments.
+        let fp = unsafe {
+            crate::call::push_resume_frame(
+                base,
+                cx.stack_limit,
+                fi,
+                f,
+                UNDEFINED,
+                0,
+                |_| UNDEFINED,
+                caller,
+                crate::interp::EXIT_STUB.as_ptr(),
+                crate::object::function_context(f),
+                generator,
+            )
+        }
+        .unwrap();
+        // SAFETY: header slots of the frame just pushed.
+        let argc = unsafe { *fp.offset(slot::ARGC) };
+        assert_eq!(
+            int32_of(argc) as u32 & crate::frame::CONSTRUCT_BIT,
+            0,
+            "construct bit clear"
+        );
+        rt.stack().set_fp(fp);
+        rt.stack().clear_scratch();
+        // SAFETY: `fp` is a frame for `fi` that push_resume_frame just wrote; verified code.
+        let r = unsafe { crate::interp::run(cx, fi.code, fp) };
+        rt.stack().set_fp(caller);
+        r
+    }
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            super::on_big_stack(move || {
+                let mut iso = isolate(super::config(d, stress));
+                iso.run_script(make(), "nt.js").unwrap();
+                let f = iso.global("nt").unwrap();
+                // A call: undefined.
+                let r = iso.call(f, Value::UNDEFINED, &[]).unwrap();
+                assert!(r.is_undefined(), "{} stress={stress}", d.name());
+                // A resumed frame: the object in fp-3 (here a plain object for the generator).
+                let g = crate::object::new_plain_object(&iso.rt);
+                let r = run_resumed(&mut iso, f.to_bits(), g);
+                assert_eq!(r, g, "{} stress={stress}", d.name());
+                // [[Construct]]: new.target (`nt` itself; an object result is kept).
+                let fb = f.to_bits();
+                let r = crate::call::construct_with(&mut iso.cx, fb, 0, |_| 0, fb).unwrap();
+                assert_eq!(r, fb, "{} stress={stress}", d.name());
+            });
+        }
+    }
+}

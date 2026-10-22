@@ -1,6 +1,6 @@
 # pat-assign: script (sloppy)
 # | var a, b, o; [a, b] = [b, a]; ({a, b: o.x, ...o.y} = o); [o[0], ...o.z] = a;
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=76 source=embedded hints=none
 source_hash=b88b1feaef055061727c139595ef75c1f52055d571ac8828c3b3c0074554e73e
 strings (10):

@@ -18,14 +18,15 @@
 use core::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU32;
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
-use ep9_heap::{CellPtr, GlobalHandle, Heap, KindId};
+use ep9_heap::{AllocError, CellPtr, GlobalHandle, Heap, KindId};
 use ep9_value::Value;
 
 use crate::atoms::AtomTable;
 use crate::builtins::BuiltinState;
+use crate::compiler::CompilerHooks;
 use crate::dispatch::RangeRegistry;
 use crate::frame::{UNDEFINED, VmStack, int32_bits, native_ptr, slot};
 use crate::shape::ShapeState;
@@ -33,6 +34,19 @@ use crate::symbol::SymbolState;
 use crate::unit::{FunctionInfo, LoadedUnit};
 
 pub use crate::atoms::Atom;
+
+/// An embedder callback that `InterruptHandle::request` queues: it runs once, on the isolate
+/// thread, at an interrupt poll. It gets no `Cx`, so it runs no JS and allocates nothing on
+/// the JS heap (H23-Q6).
+pub(crate) type InterruptCallback = Box<dyn FnOnce() + Send>;
+
+/// The queue of [`InterruptCallback`]s: other threads push, the isolate thread takes.
+pub(crate) type InterruptQueue = Arc<Mutex<Vec<InterruptCallback>>>;
+
+/// What an `InterruptHandle` holds of the queue. Weak: the `Runtime` is the only strong owner,
+/// so a queued callback that holds a handle makes no cycle, and the queue and its callbacks
+/// go when the isolate does.
+pub(crate) type WeakInterruptQueue = Weak<Mutex<Vec<InterruptCallback>>>;
 
 /// Realm intrinsics and other runtime roots (v0: one realm per isolate; H22 allows N).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -224,8 +238,16 @@ pub(crate) struct Runtime {
     /// Lowest native stack address the VM lets JS entries and host calls reach.
     pub native_limit: usize,
     pub stack_trace_limit: usize,
-    /// Set by `TerminateHandle::terminate` (another thread); read at interrupt polls.
-    pub terminate: Arc<AtomicBool>,
+    /// The compiler hooks (`IsolateConfig::compiler`, C2), for eval and `Function()`.
+    pub compiler: Option<&'static CompilerHooks>,
+    /// The interrupt word (`interp::interrupt` bits: `TERMINATE`, `REQUEST`): set by
+    /// `TerminateHandle::terminate` and `InterruptHandle::request` (other threads), read at
+    /// interrupt polls through `Cx::interrupt`.
+    pub terminate: Arc<AtomicU32>,
+    /// The callbacks of `InterruptHandle::request`. The `REQUEST` bit of `terminate` says the
+    /// queue may be non-empty; the poll clears the bit, then takes the queue
+    /// ([`Runtime::run_interrupt_requests`]). Holds no Value.
+    pub interrupt_requests: InterruptQueue,
     /// True while a termination unwinds (no handler catches it).
     pub terminating: Cell<bool>,
     /// Template objects per (FunctionInfo, constant index) (§13.2.8.4 GetTemplateObject).
@@ -239,6 +261,9 @@ pub(crate) struct Runtime {
     pub symbols: SymbolState,
     /// Builtin tables (H20): the dense FunctionInfo arrays and function roots per module.
     pub builtins: BuiltinState,
+    /// The microtask job queue, the rejected-promise list and the built-in closure infos
+    /// (`jobs.rs`, P4-PROMISE): heap records behind a root source.
+    pub jobs: crate::jobs::JobState,
 }
 
 impl Runtime {
@@ -247,12 +272,14 @@ impl Runtime {
         stack_slots: usize,
         native_limit: usize,
         stack_trace_limit: usize,
+        compiler: Option<&'static CompilerHooks>,
     ) -> Box<Runtime> {
         crate::object::register_kinds(&heap);
         let shared = Rc::new(Shared::new(stack_slots));
         let sh = Rc::clone(&shared);
         heap.add_root_source(move |t| sh.trace(t));
         let rt = Box::new(Runtime {
+            jobs: crate::jobs::JobState::new(&heap),
             heap,
             shared,
             units: RefCell::new(Vec::new()),
@@ -263,7 +290,9 @@ impl Runtime {
             registry: RefCell::new(RangeRegistry::new()),
             native_limit,
             stack_trace_limit,
-            terminate: Arc::new(AtomicBool::new(false)),
+            compiler,
+            terminate: Arc::new(AtomicU32::new(0)),
+            interrupt_requests: Arc::new(Mutex::new(Vec::new())),
             terminating: Cell::new(false),
             templates: RefCell::new(HashMap::new()),
             shapes: ShapeState::default(),
@@ -297,13 +326,33 @@ impl Runtime {
         }
     }
 
-    /// Allocates a cell. GC point. v0: out of memory is fatal (V8 aborts too); H23 adds the
-    /// heap-limit callback.
+    /// Allocates a cell. GC point. Out of memory is fatal, never a JS exception (H23, as V8):
+    /// the heap first calls the embedder's near-limit callback (`HeapConfig::near_limit`),
+    /// which may raise the limit; if the allocation still fails, this panics with
+    /// "ep9: heap limit reached", and a release build aborts (`panic = "abort"`).
     #[inline]
     pub fn alloc(&self, kind: KindId, size: usize) -> CellPtr {
         match self.heap.alloc(kind, size) {
             Ok(c) => c,
-            Err(e) => panic!("ep9: heap allocation failed: {e:?}"),
+            Err(e) => alloc_failed(e),
+        }
+    }
+
+    /// Runs the callbacks that `InterruptHandle::request` queued, in request order, on this
+    /// (the isolate) thread. The caller has cleared the `REQUEST` bit first, so a request that
+    /// lands meanwhile runs now or at the next poll, never not at all. The lock is not held
+    /// while a callback runs: a callback may request again (it then runs at a later poll).
+    #[cold]
+    #[inline(never)]
+    pub fn run_interrupt_requests(&self) {
+        let queued = core::mem::take(
+            &mut *self
+                .interrupt_requests
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        for callback in queued {
+            callback();
         }
     }
 
@@ -359,6 +408,17 @@ impl Runtime {
     #[inline]
     pub fn native_stack_ok(&self) -> bool {
         ep9_platform::stack_pointer() > self.native_limit
+    }
+}
+
+/// The fatal path of [`Runtime::alloc`] (H23 "Out of memory"): out of its own function, so the
+/// inlined allocation stays small.
+#[cold]
+#[inline(never)]
+fn alloc_failed(e: AllocError) -> ! {
+    match e {
+        AllocError::OutOfMemory => panic!("ep9: heap limit reached"),
+        e => panic!("ep9: heap allocation failed: {e:?}"),
     }
 }
 

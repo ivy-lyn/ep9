@@ -1,20 +1,21 @@
 # var-direct-eval: script (sloppy)
 # | function f(a) { var b; eval('a + b'); return b; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=49 source=embedded hints=none
 source_hash=222d0166cab0d2fecf121065fbd303f90501a85a4cc23b4f45bac85fb64352ab
-strings (8):
+strings (9):
   str0 "f"
-  str1 "a"
-  str2 "b"
-  str3 "this"
-  str4 "new.target"
-  str5 "arguments"
-  str6 "eval"
-  str7 "a + b"
+  str1 ".eval_ext"
+  str2 "a"
+  str3 "b"
+  str4 "this"
+  str5 "new.target"
+  str6 "arguments"
+  str7 "eval"
+  str8 "a + b"
 scopes (2):
   scope0 script outer=- flags=[] slots=["f":function]
-  scope1 function outer=scope0 flags=[needs-context,sloppy-eval] slots=["a":var, "b":var, "this":var, "new.target":var, "arguments":var]
+  scope1 function outer=scope0 flags=[needs-context,sloppy-eval] slots=[".eval_ext":var, "a":var, "b":var, "this":var, "new.target":var, "arguments":var]
 function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..49
   code (24 bytes):
       0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
@@ -36,48 +37,52 @@ function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs
       0 S 0 (1:1)
       5 E 0 (1:1)
      15 E 0 (1:1)
-function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=8 range=0..49
-  code (60 bytes):
-      0 E> CreateFunctionContext k0, [5]  ; k0 = Scope scope1 ; 75 00 05
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=1 length=1 regs=9 range=0..49
+  code (70 bytes):
+      0 E> CreateFunctionContext k0, [6]  ; k0 = Scope scope1 ; 75 00 06
       3    PushContext r0                               ; 13 00
       5    Ldar a0                                      ; 0b fe
-      7    StaCurrentContextSlot [0]                    ; 1b 00
+      7    StaCurrentContextSlot [1]                    ; 1b 01
       9    Ldar <this>                                  ; 0b ff
-     11    StaCurrentContextSlot [2]                    ; 1b 02
+     11    StaCurrentContextSlot [3]                    ; 1b 03
      13    LdaNewTarget                                 ; 0f
-     14    StaCurrentContextSlot [3]                    ; 1b 03
+     14    StaCurrentContextSlot [4]                    ; 1b 04
      16 E> CreateMappedArguments                        ; 7a
-     17    StaCurrentContextSlot [4]                    ; 1b 04
-     19 S> LdaLookupSlot k1  ; k1 = String str6 "eval"  ; 1c 01
-     21    Star r1                                      ; 0c 01
-     23    LdaConstant k2  ; k2 = String str7 "a + b"   ; 0a 02
-     25    Star r2                                      ; 0c 02
-     27    Mov r1, r3                                   ; 0d 01 03
-     30    Mov r2, r4                                   ; 0d 02 04
-     33    LdaCurrentFunction                           ; 0e
-     34    Star r5                                      ; 0c 05
-     36    LdaSmi [1]                                   ; 04 01
-     38    Star r6                                      ; 0c 06
-     40    LdaSmi [23]                                  ; 04 17
-     42    Star r7                                      ; 0c 07
-     44 E> CallRuntime ResolvePossiblyDirectEval, r3-r7 ; 68 07 00 03 05
-     49    Star r1                                      ; 0c 01
-     51 E> CallUndefinedReceiver1 r1, r2, s0            ; 65 01 02 00
-     55 S> LdaCurrentContextSlot [1]                    ; 18 01
-     57    Return                                       ; 92
-     58    LdaUndefined                                 ; 05
-     59    Return                                       ; 92
+     17    StaCurrentContextSlot [5]                    ; 1b 05
+     19 S> LdaConstant k1  ; k1 = String str7 "eval"    ; 0a 01
+     21    Star r4                                      ; 0c 04
+     23    LdaFalse                                     ; 09
+     24    Star r5                                      ; 0c 05
+     26 E> CallRuntimeForPair LoadLookupSlotForCall, r4-r5, r1-r2 ; 9d 1a 00 04 02 01
+     32    LdaConstant k2  ; k2 = String str8 "a + b"   ; 0a 02
+     34    Star r3                                      ; 0c 03
+     36    Mov r1, r4                                   ; 0d 01 04
+     39    Mov r3, r5                                   ; 0d 03 05
+     42    LdaCurrentFunction                           ; 0e
+     43    Star r6                                      ; 0c 06
+     45    LdaSmi [1]                                   ; 04 01
+     47    Star r7                                      ; 0c 07
+     49    LdaSmi [23]                                  ; 04 17
+     51    Star r8                                      ; 0c 08
+     53 E> CallRuntime ResolvePossiblyDirectEval, r4-r8 ; 68 07 00 04 05
+     58    Star r1                                      ; 0c 01
+     60 E> CallProperty1 r1, r2, r3, s0                 ; 61 01 02 03 00
+     65 S> LdaCurrentContextSlot [2]                    ; 18 02
+     67    Return                                       ; 92
+     68    LdaUndefined                                 ; 05
+     69    Return                                       ; 92
   constants (3):
       0 Scope scope1
-      1 String str6 "eval"
-      2 String str7 "a + b"
+      1 String str7 "eval"
+      2 String str8 "a + b"
   feedback (1):
       0 Call
   handlers (0):
-  positions (6):
+  positions (7):
       0 E 0 (1:1)
      16 E 0 (1:1)
      19 S 23 (1:24)
-     44 E 23 (1:24)
-     51 E 23 (1:24)
-     55 S 38 (1:39)
+     26 E 23 (1:24)
+     53 E 23 (1:24)
+     60 E 23 (1:24)
+     65 S 38 (1:39)

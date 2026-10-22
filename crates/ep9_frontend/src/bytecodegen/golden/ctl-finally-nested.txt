@@ -1,6 +1,6 @@
 # ctl-finally-nested: script (sloppy)
 # | function f(g) { try { try { return 1; } finally { g(); } } finally { g(); } }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=77 source=embedded hints=none
 source_hash=9917758d18488084c6369a3df6038d7db407cb379c3e5d62fa651de2096267f2
 strings (1):

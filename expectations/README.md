@@ -14,6 +14,7 @@ Committed expectations and pinned benchmark lists ([08-repo](../docs/plan/08-rep
 | `short-run.txt` | SHORT-RUN | by hand |
 | `hint-set.txt` | HINT-SET | by hand |
 | `typed-kernels.txt` | TYPED-KERNELS | by hand |
+| `bytecode-corpus.digest` | The G1 corpus digest: SHA-256 over the sorted (path under `third_party/`, mode, unit hash) lines of every unit that BytecodeGen compiles from test262 and the 3 bench pins. Every host and target, debug and release, must give it (CI job `test262`). It changes only with an ABI bump or a codegen change, each with a BCG-CORPUS row in `docs/decisions-log.md`. Orchestrator-only after M2-P0 | `EP9_BLESS_CORPUS=1 cargo test -p ep9_frontend --release --locked --lib bytecodegen::corpus -- --ignored` |
 | `fp-check-allow.toml` | Exceptions for `cargo xtask fp-check` (H36): a banned libm symbol allowed in one function, with a reopen condition. More than 5 entries reopens H36. Format in the file header | by hand |
 
 Benchmark set files (`*-set.txt`, `short-run.txt`, `typed-kernels.txt`): one entry per line.
@@ -56,3 +57,4 @@ Both fail the job.
 | 2026-10-21 | `fp-check-allow.toml` with entry 1: `fmod` and `pow` in `oxc_semantic::ts_enum::eval::evaluate_expression` on all targets (TS enum folding; reopen at H3). It is the only finding of `cargo xtask fp-check` on the 5 targets and on x86_64 Linux with `x86-64-v3` (M0 week 4) |
 | 2026-10-21 | test262 exec files for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and `x86_64-pc-windows-msvc` from CI run 39501063919; CI checks all 4 targets |
 | 2026-10-21 | 2 tests pass after PR #1 review fixes Fr4 and Fr5 (`super[k] = v` key order; `(a?.b)()` keeps `this`): 43,849 → 43,847 failing files on all 4 targets (commits `1ee8583`, `d514b6e`) |
+| 2026-10-21 | `bytecode-corpus.digest` row. M2-P0 re-blessed the digest after ABI 3: `ffdbd454…82acb` → `8203f695…6805b` (macOS arm64, release and debug) |
