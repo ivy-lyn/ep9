@@ -17,7 +17,7 @@ use crate::frame::{NULL, UNDEFINED, int32_bits};
 use crate::object::{self, argsf, attr, cell, fun, modf, nsf, obj, realmf};
 use crate::ordered_table::{self, MAP_WIDTH, SET_WIDTH, otf};
 use crate::runtime::{Root, Runtime, val};
-use crate::{Dispatch, Isolate, arguments, kinds, module, property, versions};
+use crate::{Dispatch, Isolate, arguments, kinds, module, property, props, shape, versions};
 
 // ---- versions, kinds, fixed fields ------------------------------------------------------------
 
@@ -446,6 +446,97 @@ fn each_hook_sends_the_routed_kinds_to_their_stubs() {
         iso.collect_garbage();
         iso.verify_heap().unwrap();
     });
+}
+
+/// A new routed object of `kind` ("arguments": an ARGUMENTS object that inherits from
+/// %Object.prototype%; "module": a MODULE_NAMESPACE object with no exports).
+fn new_routed(rt: &Runtime, kind: &str) -> u64 {
+    if kind == "arguments" {
+        return arguments::new_arguments_object(rt, rt.root(Root::ObjectPrototype));
+    }
+    let m = module::new_module_record(rt);
+    let names = object::new_list(rt, 0, UNDEFINED);
+    module::new_namespace(rt, m, names)
+}
+
+/// True if `hits` holds the hook `want`.
+fn hit(hits: &[&str], want: &str) -> bool {
+    hits.contains(&want)
+}
+
+/// CX-VM1, CX-VM2, VF-FORIN: the integer-index paths (`get_index`, `has_index`,
+/// `delete_index`), the `[[Set]]` walk through a routed prototype (§10.1.9.2 step 1.b:
+/// parent.[[Set]]) and `for-in` (§14.7.5.9: [[OwnPropertyKeys]]) reach the routed hooks, on
+/// the routed object and on a child that inherits from it. A routed object that becomes a
+/// prototype sets `shape::proto_index_keys`: its index keys are not in its storage. A plain
+/// object and its child reach no hook and leave the flag off.
+#[test]
+fn index_paths_set_walk_and_for_in_reach_the_routed_hooks() {
+    for kind in ["arguments", "module", "plain"] {
+        on_big_stack(move || {
+            let mut iso = isolate(config(Dispatch::DEFAULT, true));
+            let cx: &mut crate::interp::Cx = &mut iso.cx;
+            let rt: &Runtime = &iso.rt;
+            assert!(!shape::proto_index_keys(rt), "a fresh isolate");
+            let routed = kind != "plain";
+            let o = if routed {
+                new_routed(rt, kind)
+            } else {
+                object::new_plain_object(rt)
+            };
+            let ho = rt.heap.new_global(val(o));
+            // The hooks that a path on `o` or its child must hit (none for a plain object).
+            let check = |hits: Vec<&'static str>, hook: &str, what: &str| {
+                if routed {
+                    let want = format!("{kind} {hook}");
+                    assert!(hit(&hits, &want), "{what}: {want} not in {hits:?}");
+                } else {
+                    assert_eq!(hits, Vec::<&str>::new(), "{what}");
+                }
+            };
+            // CX-VM1: the index paths on the object itself.
+            probe::take();
+            assert_eq!(property::get_index(cx, o, 0).unwrap(), UNDEFINED);
+            check(probe::take(), "get", "get_index");
+            assert!(!property::has_index(cx, o, 0));
+            check(probe::take(), "own_attrs", "has_index");
+            assert!(property::delete_index(cx, o, 0, true).unwrap());
+            check(probe::take(), "delete", "delete_index");
+            // ... and on a child: `o` becomes a prototype.
+            let child = object::new_object(rt, o);
+            let hc = rt.heap.new_global(val(child));
+            assert_eq!(shape::proto_index_keys(rt), routed, "{kind} as a prototype");
+            probe::take();
+            assert_eq!(property::get_index(cx, child, 0).unwrap(), UNDEFINED);
+            check(probe::take(), "get", "get_index on the child");
+            assert!(!property::has_index(cx, child, 0));
+            check(probe::take(), "own_attrs", "has_index on the child");
+            // CX-VM2: the set walk asks the routed prototype's [[Set]]; the stub answers
+            // OrdinarySet, so the store lands on the receiver.
+            let x = crate::atoms::intern_str(rt, "x");
+            assert!(property::set_with_receiver(cx, child, x, int32_bits(1), child).unwrap());
+            check(probe::take(), "set", "the set walk");
+            assert_eq!(
+                props::own_get(child, x),
+                Some((int32_bits(1), attr::DEFAULT))
+            );
+            assert!(props::own_get(o, x).is_none());
+            // VF-FORIN: for-in asks [[OwnPropertyKeys]] of the routed object, also as a
+            // prototype.
+            let keys = property::for_in_keys(cx, o).unwrap();
+            assert_eq!(object::array_len(keys), 0);
+            check(probe::take(), "own_property_keys", "for-in");
+            let keys = property::for_in_keys(cx, child).unwrap();
+            assert_eq!(object::array_len(keys), 1, "the child's x");
+            assert_eq!(object::array_get(keys, 0), Some(x));
+            check(probe::take(), "own_property_keys", "for-in on the child");
+            for h in [ho, hc] {
+                rt.heap.drop_global(h);
+            }
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
 }
 
 /// Runs `make` under every dispatch, with and without GC stress, on its own thread; returns

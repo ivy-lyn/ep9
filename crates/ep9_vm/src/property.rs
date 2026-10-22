@@ -30,7 +30,10 @@
 //!
 //! The kinds with exotic internal methods (ARGUMENTS, MODULE_NAMESPACE; OBJECT_LAYOUT 3) are
 //! routed at the start of `[[Set]]`, `[[DefineOwnProperty]]`, `[[Delete]]` and
-//! `[[OwnPropertyKeys]]` (`exotic::set` and its kin: one kind test). A hook that answers
+//! `[[OwnPropertyKeys]]` (`exotic::set` and its kin: one kind test), and at each routed
+//! prototype of the `[[Set]]` walk (§10.1.9.2 step 1.b). The integer-index paths
+//! ([`get_index`] and its kin) send a routed object to the key path, and `for-in`
+//! ([`for_in_keys`]) asks its `[[OwnPropertyKeys]]` and `[[GetOwnProperty]]`. A hook that answers
 //! `None` takes the ordinary method; a hook that needs the ordinary step calls
 //! [`ordinary_set_with_receiver`], [`ordinary_define_own_property`], [`ordinary_delete`] or
 //! [`ordinary_own_property_keys`].
@@ -343,9 +346,23 @@ fn ordinary_set_walk(cx: &mut Cx, o: u64, key: u64, v: u64, receiver: u64) -> Re
         if p == NULL {
             break;
         }
+        // Step 1.b: parent.[[Set]](P, V, Receiver). A routed prototype's hook decides.
+        if exotic::is_routed(kind::cell_kind(p)) {
+            return routed_proto_set(cx, p, key, v, receiver);
+        }
         cur = p;
     }
     define_on_receiver(cx, receiver, key, v)
+}
+
+/// §10.1.9.2 step 1.b on a routed prototype `p` (ARGUMENTS, MODULE_NAMESPACE) of the
+/// `[[Set]]` walk: `p.[[Set]](key, v, receiver)`. Its hook decides; `None` is OrdinarySet from
+/// `p`. Out of line: it breaks the inlined cycle `set_walk` -> `ordinary_set_walk` ->
+/// `set_walk`. GC point: `p`, `key`, `v` and `receiver` live in Rust locals.
+#[cold]
+#[inline(never)]
+fn routed_proto_set(cx: &mut Cx, p: u64, key: u64, v: u64, receiver: u64) -> Res<bool> {
+    set_with_receiver(cx, p, key, v, receiver)
 }
 
 /// §10.1.9.2 steps 2.c-e: the store lands on `receiver`: an existing writable data property
@@ -761,7 +778,8 @@ fn is_has_instance_intrinsic(rt: &Runtime, h: u64) -> bool {
 
 /// The keys a `for-in` loop visits (§14.7.5.9 EnumerateObjectProperties, v0: own and inherited
 /// enumerable string keys, array and String wrapper indices first, no duplicates; symbols are
-/// skipped), as a new array.
+/// skipped), as a new array. A routed kind on the chain lists its keys through its
+/// `[[OwnPropertyKeys]]` and `[[GetOwnProperty]]`. GC point.
 pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
     let rt = cx.rt();
     let keys = object::new_array(rt, 0);
@@ -779,7 +797,9 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
     // prototype's. A key seen before, enumerable or not, is skipped later.
     // GC: the Rust vectors hold only indices, key atoms of property storage (reachable from
     // `o`) and the `length` atom (a runtime root); a new index string goes into `keys` (a Rust
-    // local, so a root) at once.
+    // local, so a root) at once. A routed kind's keys come from its key array (`own`, a Rust
+    // local kept live until they are pushed) and stay reachable from the object: namespace
+    // export names from `nsf::EXPORTS`, arguments string keys from its storage.
     let mut seen_index: Vec<u32> = Vec::new();
     let mut seen_string: Vec<u64> = Vec::new();
     let mut cur = o;
@@ -787,28 +807,52 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
         // (index, enumerable) and (key, enumerable).
         let mut index_keys: Vec<(u32, bool)> = Vec::new();
         let mut string_keys: Vec<(u64, bool)> = Vec::new();
-        if is_array(cur) {
-            for i in 0..object::array_len(cur) {
-                if object::array_get(cur, i).is_some() {
-                    index_keys.push((i, true));
+        // The key array of a routed kind, kept live until its keys are pushed below.
+        let mut own = UNDEFINED;
+        if exotic::is_routed(kind::cell_kind(cur)) {
+            // A routed kind (ARGUMENTS, MODULE_NAMESPACE): its `[[OwnPropertyKeys]]` and
+            // `[[GetOwnProperty]]` (the hooks, else the ordinary methods). GC points.
+            own = own_property_keys(cx, cur);
+            for j in 0..object::array_len(own) {
+                let Some(k) = object::array_get(own, j) else {
+                    continue;
+                };
+                if is_symbol_key(k) {
+                    continue;
+                }
+                let Some((_, a, _)) = own_property(cx, cur, k) else {
+                    continue;
+                };
+                let enumerable = a & attr::ENUMERABLE != 0;
+                match array_index_of(k) {
+                    Some(n) => index_keys.push((n, enumerable)),
+                    None => string_keys.push((k, enumerable)),
                 }
             }
-        }
-        // A String wrapper (§10.4.3.3): its indices come first, and its `length` (not
-        // enumerable) first among the strings, so it hides an inherited `length`.
-        if let Some(s) = wrapper::wrapper_value(cur).filter(|&p| is_string(p)) {
-            index_keys.extend((0..object::str_len(s) as u32).map(|i| (i, true)));
-            string_keys.push((rt.atom(Atom::Length), false));
-        }
-        for i in 0..object::own_count(cur) {
-            let (k, _, a) = object::own_entry(cur, i);
-            if is_symbol_key(k) {
-                continue;
+        } else {
+            if is_array(cur) {
+                for i in 0..object::array_len(cur) {
+                    if object::array_get(cur, i).is_some() {
+                        index_keys.push((i, true));
+                    }
+                }
             }
-            let enumerable = a & attr::ENUMERABLE != 0;
-            match array_index_of(k) {
-                Some(n) => index_keys.push((n, enumerable)),
-                None => string_keys.push((k, enumerable)),
+            // A String wrapper (§10.4.3.3): its indices come first, and its `length` (not
+            // enumerable) first among the strings, so it hides an inherited `length`.
+            if let Some(s) = wrapper::wrapper_value(cur).filter(|&p| is_string(p)) {
+                index_keys.extend((0..object::str_len(s) as u32).map(|i| (i, true)));
+                string_keys.push((rt.atom(Atom::Length), false));
+            }
+            for i in 0..object::own_count(cur) {
+                let (k, _, a) = object::own_entry(cur, i);
+                if is_symbol_key(k) {
+                    continue;
+                }
+                let enumerable = a & attr::ENUMERABLE != 0;
+                match array_index_of(k) {
+                    Some(n) => index_keys.push((n, enumerable)),
+                    None => string_keys.push((k, enumerable)),
+                }
             }
         }
         index_keys.sort_by_key(|&(n, _)| n);
@@ -833,6 +877,7 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
                 object::array_set(cx.rt(), keys, len, k);
             }
         }
+        std::hint::black_box(own);
         let p = object::proto_of(cur);
         if p == NULL {
             break;
@@ -1214,6 +1259,7 @@ pub(crate) fn ordinary_own_property_keys(cx: &mut Cx, o: u64) -> u64 {
 //
 // ```text
 // i ≤ 2^53 - 1: find_index walks the chain from o, per object own_index(i) without the key:
+//   routed kind (ARGUMENTS, MODULE_NAMESPACE)    -> Unknown: its hooks, with the key
 //   array element / String wrapper index        -> found
 //   array-index i: fast shape                    -> absent (an array-index key makes a
 //                                                   dictionary, OM-10)
@@ -1241,7 +1287,8 @@ enum OwnIndex {
     WrapperChar(u64),
     /// The object has no such own property.
     Absent,
-    /// Too many stored keys to scan: ask this object with the key.
+    /// Too many stored keys to scan, or a routed kind (ARGUMENTS, MODULE_NAMESPACE) whose
+    /// hooks decide: ask this object with the key.
     Unknown,
 }
 
@@ -1268,12 +1315,16 @@ fn index_digits(i: u64, buf: &mut [u8; 20]) -> &[u8] {
 
 /// The own property `! ToString(𝔽(i))` of the object `o` (`text` is that string), found
 /// without the key: the exotic ones of `exotic.rs` that an integer key can name (array
-/// elements, String wrapper indices), then the stored ones. A new exotic kind with integer
-/// keys adds its case here too. Not a GC point.
+/// elements, String wrapper indices), then the stored ones. A routed kind (ARGUMENTS,
+/// MODULE_NAMESPACE) always answers `Unknown`: its hooks decide, with the key. A new exotic
+/// kind with integer keys adds its case here too. Not a GC point.
 fn own_index(o: u64, i: u64, text: &[u8]) -> OwnIndex {
+    let k = kind::cell_kind(o);
+    if exotic::is_routed(k) {
+        return OwnIndex::Unknown;
+    }
     let index = array_index_u64(i);
     if let Some(n) = index {
-        let k = kind::cell_kind(o);
         if k == kind::ARRAY.get() {
             if let Some(v) = object::array_get(o, n) {
                 return OwnIndex::Stored(v, attr::DEFAULT);

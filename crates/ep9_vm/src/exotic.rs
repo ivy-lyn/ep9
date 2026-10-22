@@ -16,8 +16,10 @@
 //! Routing (OBJECT_LAYOUT 3, P0-D7): the two exotic kinds of month 3 replace internal methods
 //! (§10.4.4, §10.4.6). Each hook here ([`get`], [`own_property`], [`own_attrs`]) and in
 //! `property.rs` ([`set`], [`define_own_property`], [`delete`], [`own_property_keys`]) makes
-//! one kind test ([`is_routed`]) and sends those kinds to their file, out of line. A routed
-//! hook that answers `None` means "ordinary": in M3-P0 every routed hook is a stub that does.
+//! one kind test ([`is_routed`]) and sends those kinds to their file, out of line. `[[Set]]`
+//! is routed at its start and at each routed prototype of its walk (§10.1.9.2 step 1.b). A
+//! routed hook that answers `None` means "ordinary": in M3-P0 every routed hook is a stub
+//! that does.
 
 use crate::conv::{Res, num};
 use crate::descriptor::Desc;
