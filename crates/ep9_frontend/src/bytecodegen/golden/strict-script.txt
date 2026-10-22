@@ -1,6 +1,6 @@
 # strict-script: script (strict)
 # | var a = 1; a = 2; function f() { return this; }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=true ts=none source_len=47 source=embedded hints=none
 source_hash=2fabb08e0ea837f5e83add6f277034b5eef70a05afc2797397b39c79b9c2207b
 strings (2):

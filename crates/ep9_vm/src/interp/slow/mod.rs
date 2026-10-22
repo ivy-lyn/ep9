@@ -22,6 +22,9 @@
 //! | `private.rs` | private names on the keyed paths (P2-CLS-VM) |
 //! | `class_fields.rs` | class fields and private methods (P2-CLS-VM) |
 //! | `eval.rs` | direct eval (P3-EVAL-VM) |
+//! | `async_fn.rs` | async function runtime ids 32-35 (M3-P0 stubs; M3-P1 ASYNC) |
+//! | `async_gen.rs` | async generator runtime ids 36-41 (M3-P0 stubs; M3-P2 ASYNCGEN) |
+//! | `module.rs` | module variables, runtime ids 42-43 (M3-P0 stubs; M3-P2 MODULE) |
 
 use core::sync::atomic::Ordering;
 
@@ -36,6 +39,8 @@ use crate::object;
 use crate::runtime::{ErrorKind, Site};
 use crate::unit::FunctionInfo;
 
+mod async_fn;
+mod async_gen;
 mod call;
 mod class_fields;
 mod eval;
@@ -43,6 +48,7 @@ mod generator;
 mod iter;
 mod literal;
 mod lookup;
+mod module;
 mod ops_misc;
 mod private;
 mod property;
@@ -57,6 +63,7 @@ pub(crate) use iter::{
 };
 pub(crate) use literal::{CtxKind, Lit, clone_object, create_closure, create_context, literal};
 pub(crate) use lookup::{create_with_context, lda_lookup_slot, sta_lookup_slot};
+pub(crate) use module::{lda_module_variable, sta_module_variable};
 pub(crate) use ops_misc::{
     CmpOp, UnOp, binary, compare, strict_equals, switch_target, to_boolean, type_of, unary,
 };

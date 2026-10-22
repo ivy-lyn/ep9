@@ -16,7 +16,8 @@
 //! - **Fact record**: the `ep9_facts` payload that a FactSnapshot stores for the slot. It
 //!   holds no ShapeId and no address.
 //!
-//! [`RuntimeId`] stays a **placeholder** with 19 ids (0-18) until the H13 index lists (M1).
+//! [`RuntimeId`] stays a **placeholder** list (48 ids, 0-47, at ABI 5) until the H13 index lists
+//! (M1).
 
 macro_rules! byte_enum {
     (
@@ -240,8 +241,11 @@ byte_enum! {
 /// freezes at M1 exit. ABI 2 added ids 6-18 for BytecodeGen v0 (`ep9_frontend::bytecodegen`)
 /// and fixed the `DefineClass` layout. ABI 3 added ids 19-28 (generators, class fields and
 /// private names, `with` calls, sloppy direct eval). ABI 4 added ids 29-31 (a dynamic
-/// reference resolved before the right-hand side). [`runtime_table_text`] is part of the ABI
-/// fingerprint.
+/// reference resolved before the right-hand side). ABI 5 added ids 32-47 (async functions,
+/// async generators, modules, `SetFunctionName`, `ThrowTypeError` and the Annex B.3.2.3 pair
+/// of sloppy direct eval); in M3-P0 the front end emits only ids 44 and 45, and the VM routes
+/// only those two (the others throw `not implemented` until their month-3 owners fill them).
+/// [`runtime_table_text`] is part of the ABI fingerprint.
 ///
 /// A function that returns a pair ([`RuntimeInfo::returns_pair`]) is called only by
 /// `CallRuntimeForPair`, and every other function only by `CallRuntime` (the verifier checks
@@ -348,6 +352,63 @@ pub enum RuntimeId {
     /// reference (SetMutableBinding of the record it names; `strict` is true or false: the
     /// store is in strict code). Returns `value`. (ABI 4.)
     StoreLookupSlotResolved = 31,
+    /// `AsyncFunctionEnter(closure, receiver)`: the start of an async function (§27.7.5.1
+    /// AsyncFunctionStart): makes the async function object (a generator object in
+    /// async-function mode) and its promise. Returns the async function object. (ABI 5.)
+    AsyncFunctionEnter = 32,
+    /// `AsyncFunctionAwait(async, value)`: `Await(value)` (§27.7.5.3) in an async function:
+    /// subscribes the resume of `async` to the promise of `value`. Returns undefined; the code
+    /// then suspends. (ABI 5.)
+    AsyncFunctionAwait = 33,
+    /// `AsyncFunctionResolve(async, value)`: resolves the promise of `async` with `value`
+    /// (a normal completion). Returns the promise. (ABI 5.)
+    AsyncFunctionResolve = 34,
+    /// `AsyncFunctionReject(async, reason)`: rejects the promise of `async` with `reason` (a
+    /// throw completion). Returns the promise. (ABI 5.)
+    AsyncFunctionReject = 35,
+    /// `AsyncGeneratorEnter(closure, receiver)`: the async generator object of the running
+    /// async generator function (§27.6.3.1 AsyncGeneratorStart). Returns it. (ABI 5.)
+    AsyncGeneratorEnter = 36,
+    /// `AsyncGeneratorAwait(generator, value)`: `Await(value)` in an async generator. Returns
+    /// undefined. (ABI 5.)
+    AsyncGeneratorAwait = 37,
+    /// `AsyncGeneratorYield(generator, value)`: AsyncGeneratorYield (§27.6.3.8) of `value`.
+    /// Returns undefined. (ABI 5.)
+    AsyncGeneratorYield = 38,
+    /// `AsyncGeneratorResolve(generator, value, done)`: AsyncGeneratorCompleteStep with a
+    /// normal completion (§27.6.3.4): resolves the first request with the iterator result
+    /// (`value`, `done`). Returns undefined. (ABI 5.)
+    AsyncGeneratorResolve = 39,
+    /// `AsyncGeneratorReject(generator, reason)`: AsyncGeneratorCompleteStep with a throw
+    /// completion: rejects the first request with `reason`. Returns undefined. (ABI 5.)
+    AsyncGeneratorReject = 40,
+    /// `CreateAsyncFromSyncIterator(iterator, next)`: CreateAsyncFromSyncIterator (§27.1.6.1)
+    /// of the Iterator Record (`iterator`, `next`); `next` is passed because reading it again
+    /// is observable. Returns the async-from-sync iterator object. (ABI 5.)
+    CreateAsyncFromSyncIterator = 41,
+    /// `GetImportMeta()`: the `import.meta` object of the running module (§13.3.12.1).
+    /// (ABI 5.)
+    GetImportMeta = 42,
+    /// `DynamicImport(specifier, options)`: `import(specifier, options)` (§13.3.10.1);
+    /// `options` is undefined when absent. Returns a promise. (ABI 5.)
+    DynamicImport = 43,
+    /// `SetFunctionName(function, key)`: SetFunctionName (§10.2.9) of `function` from the
+    /// property key `key` (already ToPropertyKey'd; a symbol gives `"[description]"`). Returns
+    /// `function`. The front end uses it for a class under a computed key (§15.7.14). (ABI 5.)
+    SetFunctionName = 44,
+    /// `ThrowTypeError(message)`: throws a new TypeError whose message is the string
+    /// `message`. Never returns. (ABI 5.)
+    ThrowTypeError = 45,
+    /// `DeclareEvalAnnexBFunction(name)`: B.3.2.3 (changes to EvalDeclarationInstantiation)
+    /// for a block function declaration `name` of sloppy direct eval code: true if the var
+    /// binding may be made (no conflict with a lexical binding between the eval code and its
+    /// variable environment), and then makes it; else false. (ABI 5.)
+    DeclareEvalAnnexBFunction = 46,
+    /// `StoreEvalAnnexBFunction(name, value)`: B.3.2.3 at the evaluation of that block function
+    /// declaration: SetMutableBinding(name, value, false) on the VariableEnvironment of the eval
+    /// code (the var binding, not the block binding of the same name). Returns undefined.
+    /// (ABI 5.)
+    StoreEvalAnnexBFunction = 47,
 }
 
 /// Static facts about one runtime function.
@@ -555,6 +616,102 @@ pub const RUNTIME_FUNCTIONS: &[RuntimeInfo] = &[
         id: RuntimeId::StoreLookupSlotResolved,
         name: "StoreLookupSlotResolved",
         arity: Some(4),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::AsyncFunctionEnter,
+        name: "AsyncFunctionEnter",
+        arity: Some(2),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::AsyncFunctionAwait,
+        name: "AsyncFunctionAwait",
+        arity: Some(2),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::AsyncFunctionResolve,
+        name: "AsyncFunctionResolve",
+        arity: Some(2),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::AsyncFunctionReject,
+        name: "AsyncFunctionReject",
+        arity: Some(2),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::AsyncGeneratorEnter,
+        name: "AsyncGeneratorEnter",
+        arity: Some(2),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::AsyncGeneratorAwait,
+        name: "AsyncGeneratorAwait",
+        arity: Some(2),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::AsyncGeneratorYield,
+        name: "AsyncGeneratorYield",
+        arity: Some(2),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::AsyncGeneratorResolve,
+        name: "AsyncGeneratorResolve",
+        arity: Some(3),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::AsyncGeneratorReject,
+        name: "AsyncGeneratorReject",
+        arity: Some(2),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::CreateAsyncFromSyncIterator,
+        name: "CreateAsyncFromSyncIterator",
+        arity: Some(2),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::GetImportMeta,
+        name: "GetImportMeta",
+        arity: Some(0),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::DynamicImport,
+        name: "DynamicImport",
+        arity: Some(2),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::SetFunctionName,
+        name: "SetFunctionName",
+        arity: Some(2),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::ThrowTypeError,
+        name: "ThrowTypeError",
+        arity: Some(1),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::DeclareEvalAnnexBFunction,
+        name: "DeclareEvalAnnexBFunction",
+        arity: Some(1),
+        returns_pair: false,
+    },
+    RuntimeInfo {
+        id: RuntimeId::StoreEvalAnnexBFunction,
+        name: "StoreEvalAnnexBFunction",
+        arity: Some(2),
         returns_pair: false,
     },
 ];

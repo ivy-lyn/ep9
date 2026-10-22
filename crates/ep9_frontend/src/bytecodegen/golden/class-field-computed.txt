@@ -1,6 +1,6 @@
 # class-field-computed: script (sloppy)
 # | var k; class A { [k] = 1; static [k + 1] = function() {}; [k]() {} [k + 2]; }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=77 source=embedded hints=none
 source_hash=83fd11c1a0fd56d4a0ba9e02b0a2ca29bc6a142dcd9debc7804e7c97979c9c9c
 strings (5):

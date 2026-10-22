@@ -1,6 +1,6 @@
 # ctl-for: script (sloppy)
 # | function f() { var s = 0; for (var i = 0; i < 10; i++) s += i; for (;;) break; return s; }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=90 source=embedded hints=none
 source_hash=ae6fdf214975fabcac01f56d4db6a4d67f60baadca1e3529afb7e73f4fdba6d9
 strings (1):

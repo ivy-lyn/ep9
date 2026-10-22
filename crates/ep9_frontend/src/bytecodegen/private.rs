@@ -23,6 +23,10 @@ use super::expr::MemberRef;
 use super::func::{FnGen, Gen};
 use crate::scope::{BindingId, BindingKind, ImplicitRef, PrivateKind, Reference, Resolution};
 
+/// The TypeError text of PrivateSet step 5 (a store to a private method), thrown through ABI 5
+/// runtime id 45 `ThrowTypeError`.
+const PRIVATE_METHOD_NOT_WRITABLE: &str = "Private method is not writable";
+
 /// A resolved `#x` reference.
 #[derive(Clone, Copy)]
 pub(crate) struct PrivateRef<'s> {
@@ -204,8 +208,9 @@ impl<'a, 's> FnGen<'a, 's> {
 
     /// PutValue of the accumulator to a `MemberRef::PrivateBranded`: the brand check, then the
     /// setter call (a getter-only accessor holds undefined: the call throws), or for a method
-    /// the TypeError of PrivateSet step 5 (ThrowConstAssignError; ABI 3 has no id with the
-    /// "Private method is not writable" text). The accumulator is not kept.
+    /// the TypeError of PrivateSet step 5 (ABI 5 runtime id 45 `ThrowTypeError` with the text
+    /// "Private method is not writable"; it replaces ThrowConstAssignError, M2-P2-OPEN-ROLES).
+    /// The accumulator is not kept.
     pub(crate) fn private_branded_store(
         &mut self,
         obj: Register,
@@ -227,10 +232,13 @@ impl<'a, 's> FnGen<'a, 's> {
                 self.b.call_property1(setter, obj, value, s);
             }
             None => {
-                self.expr_pos(at);
-                self.runtime(
-                    ep9_bytecode::RuntimeId::ThrowConstAssignError,
-                    RegisterList::EMPTY,
+                let message = self.temp();
+                let k = self.str_const(PRIVATE_METHOD_NOT_WRITABLE);
+                self.b.lda_constant(k).star(message);
+                self.runtime_with_at(
+                    ep9_bytecode::RuntimeId::ThrowTypeError,
+                    &[message],
+                    Some(at),
                 );
             }
         }

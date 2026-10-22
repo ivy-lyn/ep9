@@ -1,6 +1,6 @@
 # fn-named-expr: script (sloppy)
 # | var f = function g() { return g; }; var h = function() {}; var i = () => {};
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=76 source=embedded hints=none
 source_hash=a1023dbed0dfae799bd9f6402721102ba7d8d83d06cc5f0a530cc5ad2add475e
 strings (4):

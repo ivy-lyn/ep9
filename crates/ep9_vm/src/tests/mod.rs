@@ -6,19 +6,26 @@
 //! This file is frozen after the week-4 scaffold and again after M2-P0, which declared the
 //! month-2 modules (`abi_index`, `class_fields`, `eval`, `generator`, `isolate_api`, `jobs`,
 //! `native` (feature `spike-native`), `slots`, `with_stmt`): each area adds its tests to its own module below, and host
-//! functions for tests live in `support.rs`.
+//! functions for tests live in `support.rs`. M3-P0 declared the month-3 modules (`arguments`,
+//! `async_fn`, `async_gen`, `facts_export`, `layout3`, `module`, `ordered_table`, `realm`,
+//! `time`); `layout3` holds the OBJECT_LAYOUT 3 tests, the others are empty until their
+//! owners fill them.
 
 #![allow(clippy::unwrap_used)]
 
 mod abi;
 mod abi_index;
 mod accessors;
+mod arguments;
+mod async_fn;
+mod async_gen;
 mod basic;
 mod builtins;
 mod calls;
 mod class_fields;
 mod eval;
 mod exceptions;
+mod facts_export;
 mod feedback;
 mod gc;
 mod generator;
@@ -27,14 +34,19 @@ mod interp;
 mod isolate_api;
 mod iter;
 mod jobs;
+mod layout3;
+mod module;
 #[cfg(feature = "spike-native")]
 mod native;
 mod objects;
+mod ordered_table;
+mod realm;
 mod shapes;
 mod slots;
 mod strings;
 mod support;
 mod symbols;
+mod time;
 mod with_stmt;
 mod wrappers;
 

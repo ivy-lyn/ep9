@@ -1,16 +1,24 @@
 # module-default-class: module
 # | export default class { m() {} }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=module strict=true ts=none source_len=31 source=embedded hints=none
 source_hash=f55ef5f37d512892364419359444cd86499f97f58c75f2b544196e5bcd48cd90
-strings (2):
+strings (3):
   str0 "m"
   str1 "default"
+  str2 "*default*"
 scopes (4):
   scope0 module outer=- flags=[strict] slots=[]
   scope1 class outer=scope0 flags=[strict] slots=[]
   scope2 function outer=scope1 flags=[strict] slots=[]
   scope3 function outer=scope1 flags=[strict] slots=[]
+module records: has-tla=false
+  requests (0):
+  imports (0):
+  local exports (1):
+      0 export="default" local="*default*" cell=1
+  indirect exports (0):
+  star exports (0):
 function f0 module name=- parent=- outer_scope=- flags=[strict] params=0 length=0 regs=6 range=0..31
   code (41 bytes):
       0 S> LdaTheHole                                   ; 07

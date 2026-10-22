@@ -1,6 +1,6 @@
 # class-private-generator: script (sloppy)
 # | class A { *#g() { yield 1; } static *#h() {} t() { return this.#g(); } }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=72 source=embedded hints=none
 source_hash=73f1b60645ca07e18d9f5fdd154400a778d4e6771cf26fccfc6c7bec8126e78c
 strings (6):

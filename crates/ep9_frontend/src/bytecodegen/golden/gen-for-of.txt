@@ -1,6 +1,6 @@
 # gen-for-of: script (sloppy)
 # | function* g(xs) { for (const x of xs) { yield () => x; } }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=58 source=embedded hints=none
 source_hash=e1640d2f85a5ddf6b55c02472223d1cc2bc44608155b9c85125f537d626c00b6
 strings (6):

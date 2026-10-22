@@ -1,6 +1,6 @@
 # assign-const: script (sloppy)
 # | const c = 1; function f() { c = 2; c += 3; }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=44 source=embedded hints=none
 source_hash=4fa7ede8471f5d140b308f67e7ef750c24b7aea145635c49a4fa6366980033c7
 strings (2):

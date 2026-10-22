@@ -1,6 +1,6 @@
 # op-logical: script (sloppy)
 # | function f(a, b, c) { return [a && b, a || b, a ?? b, a && b || c, a ? b : c]; }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=80 source=embedded hints=none
 source_hash=3f539119e4e249de1dc1dfbc99fdb67090a2b9db06b80dc1f484bd6936dee9fa
 strings (1):

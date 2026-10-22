@@ -614,12 +614,15 @@ op!(StaLookupSlot(st, name: K, flags: u8) { Flow::Cold } cold {
     let r = slow::sta_lookup_slot(st.cx, st.fp, st.pc, name.0, flags, v);
     st.result(r)
 });
-// v0: no modules.
-op!(LdaModuleVariable(st, _cell: i32, _depth: Depth) { Flow::Cold } cold {
-    not_impl(st, "module variables")
+// Module variables: slow/module.rs (M3-P2 MODULE; M3-P0 stubs throw "module variables").
+op!(LdaModuleVariable(st, cell: i32, depth: Depth) { Flow::Cold } cold {
+    let r = slow::lda_module_variable(st.cx, st.fp, st.pc, cell, depth.0);
+    st.result(r)
 });
-op!(StaModuleVariable(st, _cell: i32, _depth: Depth) { Flow::Cold } cold {
-    not_impl(st, "module variables")
+op!(StaModuleVariable(st, cell: i32, depth: Depth) { Flow::Cold } cold {
+    let v = st.acc;
+    let r = slow::sta_module_variable(st.cx, st.fp, st.pc, cell, depth.0, v);
+    st.result(r)
 });
 
 // ---- property access -----------------------------------------------------------------------
@@ -1118,12 +1121,13 @@ op!(CreateWithContext(st, object: R, scope: K) { Flow::Cold } cold {
     let r = slow::create_with_context(st.cx, st.fp, st.pc, o, scope.0);
     st.result(r)
 });
+// Arguments objects: arguments.rs (M3-P2 VM-ARGS; V8-A15).
 op!(CreateMappedArguments(st) { Flow::Cold } cold {
-    let r = slow::arguments(st.cx, st.fp, st.pc, false);
+    let r = crate::arguments::create(st.cx, st.fp, st.pc, true);
     st.result(r)
 });
 op!(CreateUnmappedArguments(st) { Flow::Cold } cold {
-    let r = slow::arguments(st.cx, st.fp, st.pc, false);
+    let r = crate::arguments::create(st.cx, st.fp, st.pc, false);
     st.result(r)
 });
 op!(CreateRestParameter(st) { Flow::Cold } cold {

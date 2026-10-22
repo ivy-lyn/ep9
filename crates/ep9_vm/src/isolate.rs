@@ -292,10 +292,14 @@ impl Isolate {
             native_limit: rt.native_limit,
             #[cfg(feature = "spike-native")]
             runtime_table: &crate::native::RUNTIME_TABLE,
+            realm: rt.root(Root::Realm),
+            #[cfg(feature = "spike-native")]
+            unit_data: 0,
         });
         builtins::install(&mut cx).map_err(IsolateError::BuiltinTable)?;
         rt.jobs.set_tracker(config.promise_rejection_tracker);
         aggregate_error_prototype(&rt);
+        realm::fill_intrinsics(&rt);
         Ok(Isolate { cx, rt })
     }
 

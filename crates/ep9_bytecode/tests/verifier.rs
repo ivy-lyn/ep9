@@ -711,7 +711,12 @@ fn builder_output_meets_the_reader_rules() {
         u.set_function(FunctionId(0), b.finish().unwrap());
         u.finish()
     };
-    let (sf, ff) = (ScopeFlags(ScopeFlags::ALL), FunctionFlags::default());
+    // Every scope bit a block scope may have (PARAMETER_ENV is for a sloppy function scope
+    // only, ABI 5; `abi5_parameter_env_rules` covers it).
+    let (sf, ff) = (
+        ScopeFlags(ScopeFlags::ALL & !ScopeFlags::PARAMETER_ENV.0),
+        FunctionFlags::default(),
+    );
     for s in [UnitString::new("a"), UnitString::new("\u{20ac}")] {
         let v = build(sf, ff, s).unwrap();
         assert_eq!(*CompiledUnit::from_bytes(&v.to_bytes()).unwrap(), *v);
@@ -793,4 +798,260 @@ fn errors_name_function_and_offset() {
     assert_eq!(e.function, Some(1));
     assert_eq!(e.offset, Some(1));
     assert_eq!(e.to_string(), "f1: @1: Register(0)");
+}
+
+// ---- ABI 5 ----
+
+/// L4-A3: `PARAMETER_ENV` (bit 3) loads on a sloppy function scope with a sloppy eval; bit 4
+/// is undefined; the bit needs the eval bit, a function scope and sloppy code.
+#[test]
+fn abi5_parameter_env_rules() {
+    let pe = ScopeFlags::NEEDS_CONTEXT | ScopeFlags::CALLS_SLOPPY_EVAL | ScopeFlags::PARAMETER_ENV;
+    let mut u = base();
+    u.scopes[0].flags = pe;
+    let v = verify(u.clone()).unwrap();
+    assert_eq!(*CompiledUnit::from_bytes(&v.to_bytes()).unwrap(), *v);
+    assert!(disassemble(&v).contains("flags=[needs-context,sloppy-eval,parameter-env]"));
+    // Bit 4 is not defined: the verifier and the reader reject it.
+    let mut bad = u.clone();
+    bad.scopes[0].flags = ScopeFlags(pe.0 | 0x10);
+    assert_eq!(err(bad.clone()), VerifyErrorKind::ScopeFlags(0));
+    assert!(matches!(
+        CompiledUnit::from_bytes(&bad.to_bytes()),
+        Err(LoadError::Malformed {
+            section: Section::Scopes,
+            ..
+        })
+    ));
+    // Without the eval bit, in strict code, or on another scope kind.
+    for (kind, flags) in [
+        (
+            ScopeKind::Function,
+            ScopeFlags::NEEDS_CONTEXT | ScopeFlags::PARAMETER_ENV,
+        ),
+        (ScopeKind::Function, pe | ScopeFlags::STRICT),
+        (ScopeKind::Block, pe),
+        (ScopeKind::Eval, pe),
+    ] {
+        let mut u = base();
+        u.scopes[0].kind = kind;
+        u.scopes[0].flags = flags;
+        assert_eq!(err(u), VerifyErrorKind::ScopeFlags(0), "{kind:?} {flags:?}");
+    }
+}
+
+/// L4-A3: the arity of the ABI 5 ids (id 44 `SetFunctionName` takes 2 arguments, id 45
+/// `ThrowTypeError` 1, id 47 `StoreEvalAnnexBFunction` 2); each is a single-result function.
+#[test]
+fn abi5_runtime_arity() {
+    let call =
+        |id: RuntimeId, argc: u8| with_code(&[O::CallRuntime as u8, id as u8, 0, 0, argc, RET]);
+    verify(call(RuntimeId::SetFunctionName, 2)).unwrap();
+    assert_eq!(
+        err(call(RuntimeId::SetFunctionName, 1)),
+        VerifyErrorKind::RuntimeArity
+    );
+    verify(call(RuntimeId::ThrowTypeError, 1)).unwrap();
+    assert_eq!(
+        err(call(RuntimeId::ThrowTypeError, 0)),
+        VerifyErrorKind::RuntimeArity
+    );
+    verify(call(RuntimeId::GetImportMeta, 0)).unwrap();
+    verify(call(RuntimeId::AsyncGeneratorResolve, 3)).unwrap();
+    verify(call(RuntimeId::StoreEvalAnnexBFunction, 2)).unwrap();
+    assert_eq!(
+        err(call(RuntimeId::StoreEvalAnnexBFunction, 1)),
+        VerifyErrorKind::RuntimeArity
+    );
+    // 48 ids, dense; 48 is not defined.
+    assert_eq!(RUNTIME_FUNCTIONS.len(), 48);
+    assert!(
+        RUNTIME_FUNCTIONS
+            .iter()
+            .all(|f| !f.returns_pair || f.id == RuntimeId::LoadLookupSlotForCall)
+    );
+    assert_eq!(
+        err(with_code(&[O::CallRuntime as u8, 48, 0, 0, 0, RET])),
+        VerifyErrorKind::FlagValue(0)
+    );
+}
+
+/// f1 of `base()` with a mapped arguments object: CreateFunctionContext k2 (scope0: `a` var,
+/// `b` let), [2]; CreateMappedArguments; Return. Its list maps `a` (slot 0) and not `b`.
+fn mapped() -> CompiledUnit {
+    let mut u = with_code(&[
+        O::CreateFunctionContext as u8,
+        2,
+        2,
+        O::CreateMappedArguments as u8,
+        RET,
+    ]);
+    u.functions[1].mapped_parameters = Some(MappedParameters {
+        scope: ScopeId(0),
+        slots: vec![Some(0), None],
+    });
+    u
+}
+
+/// L4-A11: the mapped-parameter list (P0-D16).
+#[test]
+fn abi5_mapped_parameter_rules() {
+    let v = verify(mapped()).unwrap();
+    assert_eq!(*CompiledUnit::from_bytes(&v.to_bytes()).unwrap(), *v);
+    assert!(disassemble(&v).contains("mapped parameters (2): scope=scope0 slots=[0, -]"));
+    let bad = |what: &str, edit: &dyn Fn(&mut CompiledUnit)| {
+        let mut u = mapped();
+        edit(&mut u);
+        match err(u) {
+            VerifyErrorKind::MappedParameters(w) => assert_eq!(w, what),
+            other => panic!("{what}: {other:?}"),
+        }
+    };
+    let list = |u: &mut CompiledUnit| u.functions[1].mapped_parameters.as_mut().unwrap().clone();
+    let set =
+        |u: &mut CompiledUnit, m: MappedParameters| u.functions[1].mapped_parameters = Some(m);
+    // A slot out of range of the scope (scope0 has 2 slots).
+    bad("slot out of range", &|u| {
+        let mut m = list(u);
+        m.slots[0] = Some(2);
+        set(u, m);
+    });
+    // A slot that holds no var (`b` is a let).
+    bad("slot is not a var binding", &|u| {
+        let mut m = list(u);
+        m.slots = vec![Some(0), Some(1)];
+        set(u, m);
+    });
+    // Two parameters on one slot.
+    bad("slot twice", &|u| {
+        let mut m = list(u);
+        m.slots = vec![Some(0), Some(0)];
+        set(u, m);
+    });
+    // One entry per formal parameter (f1 has 2), never empty.
+    bad("length differs from the parameter count", &|u| {
+        let mut m = list(u);
+        m.slots.pop();
+        set(u, m);
+    });
+    bad("length differs from the parameter count", &|u| {
+        let mut m = list(u);
+        m.slots.clear();
+        set(u, m);
+    });
+    // A non-empty list on a function with no CreateMappedArguments.
+    bad("list in a function without CreateMappedArguments", &|u| {
+        u.functions[1].bytecode = vec![O::CreateFunctionContext as u8, 2, 2, RET];
+    });
+    // The function must make a context of the list's scope.
+    bad("the function makes no context of the scope", &|u| {
+        u.functions[1].bytecode = vec![O::CreateMappedArguments as u8, RET];
+    });
+    // The scope must be a function scope with a context.
+    bad("scope is not a function scope with a context", &|u| {
+        u.scopes[0].kind = ScopeKind::Block;
+    });
+    bad("scope is not a function scope with a context", &|u| {
+        u.scopes[0].flags = ScopeFlags::default();
+    });
+    bad("scope id", &|u| {
+        let mut m = list(u);
+        m.scope = ScopeId(7);
+        set(u, m);
+    });
+    // The reader: a list without a scope, or a scope with an empty list, does not load.
+    let mut u = mapped();
+    u.functions[1]
+        .mapped_parameters
+        .as_mut()
+        .unwrap()
+        .slots
+        .clear();
+    assert!(matches!(
+        CompiledUnit::from_bytes(&u.to_bytes()),
+        Err(LoadError::Malformed {
+            section: Section::Functions,
+            what: "empty mapped-parameter list"
+        })
+    ));
+}
+
+fn module_unit() -> CompiledUnit {
+    common::sample_module_unit().into_inner()
+}
+
+/// L4-A3: module records (section 5): present exactly in a module unit, indices in range.
+#[test]
+fn abi5_module_record_rules() {
+    let u = module_unit();
+    verify(u.clone()).unwrap();
+    // A module unit without records.
+    let mut m = u.clone();
+    m.module_records = None;
+    assert!(matches!(err(m), VerifyErrorKind::ModuleRecords(_)));
+    // A script unit with a non-empty section 5: the verifier and the loader reject it.
+    let mut s = base();
+    s.module_records = Some(ModuleRecords::default());
+    assert_eq!(
+        err(s.clone()),
+        VerifyErrorKind::ModuleRecords("module records in a script or eval unit")
+    );
+    assert!(matches!(
+        CompiledUnit::from_bytes(&s.to_bytes()),
+        Err(LoadError::Verify(VerifyError {
+            kind: VerifyErrorKind::ModuleRecords(_),
+            ..
+        }))
+    ));
+    let bad = |what: &str, edit: &dyn Fn(&mut ModuleRecords)| {
+        let mut m = module_unit();
+        edit(m.module_records.as_mut().unwrap());
+        match err(m) {
+            VerifyErrorKind::ModuleRecords(w) => assert_eq!(w, what),
+            other => panic!("{what}: {other:?}"),
+        }
+    };
+    // Request indices out of range (2 requests).
+    bad("request index", &|m| m.import_entries[0].module_request = 2);
+    bad("request index", &|m| {
+        m.indirect_export_entries[1].module_request = 9
+    });
+    bad("request index", &|m| m.star_export_entries[0] = 2);
+    // String ids out of range.
+    bad("string id", &|m| {
+        m.requested_modules[0].specifier = StringId(999)
+    });
+    bad("string id", &|m| {
+        m.local_export_entries[0].local_name = StringId(999)
+    });
+    bad("string id", &|m| {
+        m.import_entries[0].import_name = ImportName::Name(StringId(999))
+    });
+    // Module cell 0 means "no cell".
+    bad("module cell 0", &|m| m.import_entries[1].cell = 0);
+    bad("module cell 0", &|m| m.local_export_entries[1].cell = 0);
+    // Attribute keys sorted and unique.
+    bad("attribute keys not sorted or not unique", &|m| {
+        let a = m.requested_modules[1].attributes[0];
+        m.requested_modules[1].attributes.push(a);
+    });
+    // Non-zero module flag bits do not load.
+    let v = verify(module_unit()).unwrap();
+    let bytes = v.to_bytes();
+    let n = u32::from_le_bytes(
+        bytes[header_offsets::SECTIONS + 40..][..4]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let mut m = bytes.clone();
+    m[n] = 0x02;
+    let h = compute_content_hash(&m);
+    m[header_offsets::CONTENT_HASH..header_offsets::CONTENT_HASH + 32].copy_from_slice(&h);
+    assert_eq!(
+        CompiledUnit::from_bytes(&m).unwrap_err(),
+        LoadError::Malformed {
+            section: Section::ModuleRecords,
+            what: "module flags"
+        }
+    );
 }
