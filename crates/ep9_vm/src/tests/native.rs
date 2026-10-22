@@ -117,6 +117,100 @@ fn layout_offsets_read_the_live_isolate() {
     assert_eq!(layout::NATIVE_WORD_OFFSET.count_ones(), 1);
 }
 
+// ---- the runtime table as an H13 index list (M3-P1 SP-UNIT, H13-Q3) --------------------------
+
+fn runtime_table_golden() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/runtime-table.txt")
+}
+
+/// The golden text of `entries` (one line per entry, in declaration order).
+fn runtime_table_text(entries: &[(&str, usize, &str)]) -> String {
+    let mut s = String::from(
+        "# ep9 native RuntimeTable (feature spike-native; H13-Q3, M3-P1 SP-UNIT). Native code and\n\
+         # unit text call an entry by its byte offset, so the list is append-only: never reorder,\n\
+         # remove or reuse a line. `EP9_BLESS=1` rewrites this file after a review of appended\n\
+         # lines only.\n\
+         # index  offset  name  type\n",
+    );
+    for (i, (name, off, ty)) in entries.iter().enumerate() {
+        s.push_str(&format!("{i:>7}  {off:>6}  {name}  {ty}\n"));
+    }
+    s
+}
+
+fn read_runtime_table_golden() -> String {
+    std::fs::read_to_string(runtime_table_golden())
+        .unwrap_or_else(|e| {
+            panic!(
+                "{}: {e}; run with EP9_BLESS=1",
+                runtime_table_golden().display()
+            )
+        })
+        .replace("\r\n", "\n")
+}
+
+/// H13-Q3: the `RuntimeTable` entries, their offsets and types match the golden, and each
+/// entry's offset is its index times 8 (one pointer per entry, no gap, nothing after the last).
+#[test]
+fn the_runtime_table_matches_the_golden() {
+    let entries = crate::native::RuntimeTable::ENTRIES;
+    for (i, (name, off, _)) in entries.iter().enumerate() {
+        assert_eq!(*off, i * 8, "{name}");
+    }
+    assert_eq!(size_of::<crate::native::RuntimeTable>(), entries.len() * 8);
+    let actual = runtime_table_text(&entries);
+    if std::env::var_os("EP9_BLESS").is_some() {
+        std::fs::write(runtime_table_golden(), &actual).unwrap();
+        return;
+    }
+    let want = read_runtime_table_golden();
+    assert!(
+        actual == want,
+        "the RuntimeTable changed (the list is append-only).\n--- golden\n{want}\n--- now\n\
+         {actual}\nIf only lines were appended, run with EP9_BLESS=1 and review the diff."
+    );
+}
+
+/// A reorder of two entries, or a dropped last entry, fails the golden.
+#[test]
+fn a_reordered_runtime_table_fails_the_golden() {
+    let golden = read_runtime_table_golden();
+    let entries = crate::native::RuntimeTable::ENTRIES;
+    let n = entries.len();
+    for (a, b) in [(0, 1), (n - 2, n - 1)] {
+        let mut e = entries;
+        e.swap(a, b);
+        assert_ne!(runtime_table_text(&e), golden, "swap {a} and {b}");
+    }
+    assert_ne!(
+        runtime_table_text(&entries[..n - 1]),
+        golden,
+        "drop the last"
+    );
+}
+
+/// `Cx::unit_data` (SP-UNIT, H35-Q9): 0 at isolate creation, set and read through
+/// `NativeCx`, and at [`layout::CX_UNIT_DATA`] in the live Cx.
+#[test]
+fn the_unit_data_word_is_read_and_set_through_native_cx() {
+    use crate::native::NativeCx;
+    let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    assert_eq!(NativeCx::unit_data(&iso), 0);
+    let dir = [0usize; 4];
+    let addr = dir.as_ptr().addr();
+    assert_eq!(NativeCx::set_unit_data(&mut iso, addr), 0);
+    assert_eq!(NativeCx::unit_data(&iso), addr);
+    let base = NativeCx::of(&mut iso).cast::<u8>();
+    // SAFETY: CX_UNIT_DATA names the usize field `unit_data` of the live Cx.
+    let word = unsafe { base.add(layout::CX_UNIT_DATA).cast::<usize>().read() };
+    assert_eq!(word, addr);
+    assert_eq!(NativeCx::set_unit_data(&mut iso, 0), addr);
+    assert!(core::ptr::eq(
+        crate::native::RuntimeTable::process(),
+        &crate::native::RUNTIME_TABLE
+    ));
+}
+
 // ---- hand-written native code ---------------------------------------------------------------
 
 /// An operand of a table call in a stub.

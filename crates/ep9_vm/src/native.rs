@@ -163,6 +163,63 @@ pub(crate) static RUNTIME_TABLE: RuntimeTable = RuntimeTable {
     unwind: rt_unwind,
 };
 
+impl RuntimeTable {
+    /// The entries in declaration order: name, byte offset, function type. The list is an
+    /// H13 index list (H13-Q3, M3-P1 SP-UNIT): native code and unit text call an entry by its
+    /// offset, so the list is append-only (`crates/ep9_vm/tests/golden/runtime-table.txt`).
+    pub const ENTRIES: [(&'static str, usize, &'static str); 8] = [
+        ("poll", layout::RT_POLL, "RtFn0"),
+        ("call_any", layout::RT_CALL_ANY, "RtFn1"),
+        ("add", layout::RT_ADD, "RtFn2"),
+        ("inc", layout::RT_INC, "RtFn1"),
+        ("compare", layout::RT_COMPARE, "RtCompareFn"),
+        ("stack_overflow", layout::RT_STACK_OVERFLOW, "RtFn0"),
+        ("throw", layout::RT_THROW, "RtFn1"),
+        ("unwind", layout::RT_UNWIND, "RtFn0"),
+    ];
+
+    /// The one runtime table of the process (every isolate's `Cx::runtime_table` points at it).
+    /// SP-UNIT's loader resolves the unit's runtime-table link cell to it (an external
+    /// reference, H13), and its tests wrap its entries.
+    pub fn process() -> &'static RuntimeTable {
+        &RUNTIME_TABLE
+    }
+}
+
+impl NativeCx {
+    /// The `Cx` of `iso` as native code gets it (the isolate register). Only native code and
+    /// the table functions may use the pointer, and only while `iso` lives and runs nothing
+    /// else.
+    pub fn of(iso: &mut Isolate) -> *mut NativeCx {
+        core::ptr::from_mut::<Cx>(&mut iso.cx).cast::<NativeCx>()
+    }
+
+    /// `Cx::unit_data` of `iso` (M3-P1 SP-UNIT, H35-Q9; [`layout::CX_UNIT_DATA`]).
+    pub fn unit_data(iso: &Isolate) -> usize {
+        iso.cx.unit_data
+    }
+
+    /// Sets `Cx::unit_data` of `iso` and returns the old value. The value is the address of
+    /// the isolate's unit-data directory (or 0): unit code reads it on every entry, so it must
+    /// stay valid while code of a unit it names can run in `iso`.
+    pub fn set_unit_data(iso: &mut Isolate, directory: usize) -> usize {
+        core::mem::replace(&mut iso.cx.unit_data, directory)
+    }
+
+    /// The intrinsic `id` of the current realm (undefined if no table made it): the value a
+    /// unit link cell of kind "intrinsic by stable index" (H13) resolves to.
+    pub fn intrinsic(iso: &Isolate, id: crate::IntrinsicId) -> Value {
+        val(crate::builtins::intrinsic(&iso.rt, id))
+    }
+
+    /// A new string with the text `s`: the value a unit link cell of kind "unit constant"
+    /// resolves to. GC point. The result is not rooted: store it into a root (a unit link
+    /// cell in a strong root range) before the next allocation.
+    pub fn new_string(iso: &mut Isolate, s: &str) -> Value {
+        val(crate::string::new_string(&iso.rt, s))
+    }
+}
+
 /// Byte offsets native code reads and writes. All are fixed for the build (Cx and
 /// FunctionInfo are `repr(C)`; FRAME 2 and OBJECT_LAYOUT 2, `versions.rs`).
 pub mod layout {
@@ -191,6 +248,11 @@ pub mod layout {
     pub const CX_NATIVE_LIMIT: usize = offset_of!(Cx, native_limit);
     /// `Cx::runtime_table` (`*const RuntimeTable`).
     pub const CX_RUNTIME_TABLE: usize = offset_of!(Cx, runtime_table);
+    /// `Cx::unit_data` (usize; M3-P1 SP-UNIT, H35-Q9): the isolate's unit-data directory, one
+    /// word per unit slot, each the base of the isolate's RW copy of the unit in that slot (0:
+    /// none). Unit code loads its unit-data register (x27 / r14) from it on entry. 0 = no
+    /// directory.
+    pub const CX_UNIT_DATA: usize = offset_of!(Cx, unit_data);
 
     // ---- RuntimeTable ----
     pub const RT_POLL: usize = offset_of!(RuntimeTable, poll);

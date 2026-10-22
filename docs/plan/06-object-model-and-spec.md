@@ -58,7 +58,7 @@ The GC side of word0 (gc_state, kind, forwarding in S3) is owned by [03-gc.md](.
  AOT text (RX, one copy per process)            unit RW data (one copy per isolate, H22)
  ---------------------------------------        -------------------------------------------
  ld   s, [obj + 0]       ; header ShapeId       IcCell[k] = { shape_id, slot }
- ld   c, [rw + k]        ; pc-relative cell       empty at load  -> the first run misses
+ ld   c, [x27 + k]       ; unit-data register     empty at load  -> the first run misses
  cmp  s, c.shape_id                               the IC slow path fills the cell
  b.ne miss               ; H32 policy path        later runs hit; a dead shape clears it (weak)
  ld   v, [obj + c.slot]

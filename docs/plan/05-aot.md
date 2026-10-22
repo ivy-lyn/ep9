@@ -252,7 +252,7 @@ Join rules: [01-front-end](./01-front-end.md). Build and sync: [08-repo](./08-re
 **Rules**
 - Zero text relocations. The writer rejects HeapConst. An xtask check enforces this; wasmtime refuses text relocations too [R14].
 - IR heap refs (RootRef, IntrinsicRef, ShapeRef, CellRef, UnitConst; H30) lower to link-table loads, RW cells or unit constants (H34).
-- AOT code reaches the isolate through a reserved isolate register. It reaches its RW data pc-relative.
+- AOT code reaches the isolate through a reserved isolate register. It reaches its isolate's RW data through a reserved unit-data register (x27 / r14; H35-Q9), not pc-relative: the text is one copy per process, the RW data one copy per isolate.
 - Link cells and IC cells are GOT-like. Link cells resolve at load. IC cells fill at first execution. GC rules for them: [03-gc](./03-gc.md).
 - ShapeId immediates appear only for snapshot root shapes (H8). Other shape guards compare the object's ShapeId with an RW cell, like Static Hermes {clazz, slot} entries [R14][R17].
 - Realm values come through IntrinsicRef: a load from the current realm's intrinsics table by stable index (H13), never a raw pointer. Text is shared per process; RW data is per isolate (H22).

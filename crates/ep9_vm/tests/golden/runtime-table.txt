@@ -1,0 +1,13 @@
+# ep9 native RuntimeTable (feature spike-native; H13-Q3, M3-P1 SP-UNIT). Native code and
+# unit text call an entry by its byte offset, so the list is append-only: never reorder,
+# remove or reuse a line. `EP9_BLESS=1` rewrites this file after a review of appended
+# lines only.
+# index  offset  name  type
+      0       0  poll  RtFn0
+      1       8  call_any  RtFn1
+      2      16  add  RtFn2
+      3      24  inc  RtFn1
+      4      32  compare  RtCompareFn
+      5      40  stack_overflow  RtFn0
+      6      48  throw  RtFn1
+      7      56  unwind  RtFn0
