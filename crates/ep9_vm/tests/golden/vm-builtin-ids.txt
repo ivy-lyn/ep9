@@ -69,3 +69,7 @@ intrinsic  35  %GeneratorPrototype%
 intrinsic  36  %AsyncFunction%
 intrinsic  37  %AsyncFunction.prototype%
 intrinsic  38  %eval%
+intrinsic  39  %Promise%
+intrinsic  40  %Promise.prototype%
+intrinsic  41  %AggregateError%
+intrinsic  42  %AggregateError.prototype%
