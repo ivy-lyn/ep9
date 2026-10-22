@@ -151,7 +151,7 @@ Owner: the front-end lead agent (D12). Agents draft; only the user posts upstrea
 
 | Item | oxc reference | Needed by | Interim workaround |
 |---|---|---|---|
-| Eval-context parse options | #11793 (open since 2025-06) | M1 exit | Nova-style wrapper parse plus post-checks, then a local patch |
+| Eval-context parse options | #11793 (open since 2025-06) | M1 exit | Script parse (no wrapper) that drops only the allowed nodes' errors, plus post-checks (`eval.rs` E1), then a local patch |
 | Depth limit that returns an error, every recursive production | #21953, #24375 | M1 exit | Pre-scan, sized stack, AST-depth pass (M0) |
 | Parse Function() parameters and body apart | none | M1 exit | Nova's single-script check (misses some cases) |
 | Strict script without a double parse | none | M2 | Nova's double parse |

@@ -84,7 +84,7 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 
 | Rule | Check | From |
 |---|---|---|
-| word0 is 8 B; minimum object is 16 B | Static asserts in `ep9_value` (`size_of::<Word0>() == 8` and the word0 field offsets; SP-Value); `ep9_heap` `MIN_CELL_SIZE` = 16, and every cell size rounds up to it. No xtask task checks sizes yet (08 §7 lists size asserts) | M0 wk2 |
+| word0 is 8 B; minimum object is 16 B | Static asserts in `ep9_value` (`size_of::<Word0>() == 8` and the word0 field offsets; SP-Value); `ep9_heap` `MIN_CELL_SIZE` = 16, and every cell size rounds up to it. `cargo xtask m0-exit` item 8 checks that the `Word0` size assert is there and runs `cargo check -p ep9_value --lib --target <host>`, which evaluates the `ep9_value` asserts (NOT-RUN with `--no-build-check`; `tools/xtask/src/m0_exit.rs:1270-1306`); no xtask task checks `MIN_CELL_SIZE` (08 §7 lists size asserts) | M0 wk2 |
 | Object size is computable from the header (plus a length field) | Heap verifier; heap stays parsable (H9) | S0 |
 | No run-local ShapeId in AOT text or rodata | IR has no raw ShapeId for non-root shapes (ShapeRef lowers to CellRef, H30); unit golden tests | A2 |
 | Only snapshot root shapes have stable ShapeIds | Deterministic snapshot layout (H13) | A1 (M4) |
@@ -148,6 +148,7 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 | 2026-10-22 | clarify | Rules row 1: the size checks are `const` asserts in `ep9_value` and `MIN_CELL_SIZE` in `ep9_heap`; no xtask task checks sizes. No check changes | P2-ACCEPT-1 |
 | 2026-10-22 | fill | H08-Q2 filled with the orchestrator decision M2-H08-Q2: the RW-cell shape guard is not tested in M0; Spike C tests it in M1. Every existing check keeps its result | P2-ACCEPT-1 (decision: orchestrator) |
 | 2026-10-22 | clarify | Status line also names the H08-Q2 fill (2026-10-22), as the README §5 index row does. No check changes | P3-ACCEPT-2 |
+| 2026-10-22 | clarify | Rules row 1: m0-exit item 8 also compiles the `ep9_value` asserts (`cargo check -p ep9_value` for the host target), so "no xtask task checks sizes" (here and in the 2026-10-22 P2-ACCEPT-1 row) was false; the cell now says what item 8 runs, as H06 Rules row 1 does (Codex C3 on H06, M2-P4-B2-ROW2). No check changes | P4 integration fixer |
 
 ## Review record
 

@@ -43,7 +43,7 @@ Isolate = one heap, one thread at a time; N realms; workers are isolates; only S
 | One realm per isolate in v0 | `Root` (`crates/ep9_vm/src/runtime.rs:51`) |
 | `TerminateHandle` (`Arc<AtomicU32>`, the interrupt word `Runtime::terminate`; bit 0 = terminate) works from any thread | `crates/ep9_vm/src/isolate.rs:154-165`; test `crates/ep9_vm/src/tests/exceptions.rs:421` |
 | test262 exec makes a fresh isolate per run, one after another on a worker thread | `RunCtx::isolate` (`tools/test262/src/exec.rs:559-565`) |
-| `$262` has `global` and `gc` only; `createRealm` is missing | `tools/test262/src/exec.rs:50-53` |
+| `$262` has `global`, `gc` and `evalScript`; `createRealm` is missing | `tools/test262/src/exec.rs:50-54` |
 | No shared mutable state between isolates | Statics are read-only tables (`EXIT_STUB`, dispatch `TABLE`), a write-once page-size cache (`OnceLock` in `ep9_platform` `sys`) and a per-thread `MAP_JIT` window counter (`jit`) |
 
 ## Rules
@@ -107,3 +107,4 @@ Isolate = one heap, one thread at a time; N realms; workers are isolates; only S
 | 2026-10-21 | clarify | 11 `path:line` references moved to the code at `479b1cd` (P4-DOCS drift script, [I15]); the roots line of `Shared::new` is now one line | P4-DOCS agent |
 | 2026-10-21 | clarify | 7 `path:line` references moved to the code after M2-P0 (drift script); `TerminateHandle` wraps `Arc<AtomicU32>` (the interrupt word, bit 0 = terminate) since P0-VM, not `Arc<AtomicBool>` | M2-P0 integration fixer |
 | 2026-10-22 | clarify | 1 `path:line` reference (`Shared`, `runtime.rs:161`) moved after the `InterruptHandle` weak-queue fix (P3 review ISO-CYCLE) | P3 review fix |
+| 2026-10-22 | clarify | Facts: `$262` also has `evalScript` since P4-PROMISE (`Cx::evaluate_script`); the `exec.rs` reference now covers the 5 lines of the `PRELUDE` doc and text. No check changes | P4 integration fixer |

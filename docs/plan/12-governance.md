@@ -171,7 +171,7 @@ Status runs: draft -> ready (all 3 checks pass) -> handed over (in a status repo
 
 | File | Project | Upstream ref | ep9 need (milestone, gate) | Local workaround | Status |
 |---|---|---|---|---|---|
-| [`oxc-eval-parse-options.md`](../upstream/oxc-eval-parse-options.md) | oxc | #11793 | Eval-context early errors; M1 exit; P1 | Nova-style wrapper parse + post-checks, then a local patch | ready (2026-10-21; checked by P0-OXC-VERIFY) |
+| [`oxc-eval-parse-options.md`](../upstream/oxc-eval-parse-options.md) | oxc | #11793 | Eval-context early errors; M1 exit; P1 | Script parse (no wrapper) that drops only the allowed nodes' errors, plus post-checks (`eval.rs` E1), then a local patch | ready (2026-10-21; checked by P0-OXC-VERIFY) |
 | [`oxc-depth-limit.md`](../upstream/oxc-depth-limit.md) | oxc | #21953, #24375 | Depth error instead of abort; M1 exit; P1 | Bracket pre-scan, sized stack, AST-depth pass (M0) | ready (2026-10-21; checked by P0-OXC-VERIFY) |
 | [`oxc-function-constructor.md`](../upstream/oxc-function-constructor.md) | oxc | none yet | Parse Function() parameters and body apart; M1 exit | Nova's single-script check | ready (2026-10-21; checked by P0-OXC-VERIFY) |
 
