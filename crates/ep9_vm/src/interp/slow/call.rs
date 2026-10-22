@@ -399,7 +399,10 @@ unsafe fn native_entry(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> Option<Res<u
 }
 
 /// The tail of [`native_entry`] for one call shape: enters native code with return pc `next`
-/// and the receiver and arguments that `arg` reads, then sets the next pc.
+/// and the receiver and arguments that `arg` reads, then sets the next pc. `enter_native` is
+/// `#[inline(always)]`, so each shape's reader inlines into the frame push (cachegrind on
+/// linux a64, config A of the D21 bench: 262.9 Ir per call with `enter_native` outlined,
+/// 237.7 inlined).
 ///
 /// # Safety
 /// `fp` is the live top frame with no scratch Values above it, `arg(i)` returns valid Value
