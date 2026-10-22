@@ -381,3 +381,23 @@ fn array_prototype_unscopables() {
         ])
     );
 }
+
+/// Reflect (B-REFLECT-GLOBALS) calls accessors and functions from Rust
+/// (`call_function_object`), so a sloppy getter, setter or function gets a wrapper for a
+/// primitive receiver (H14-Q2), and a strict one the value as it is.
+#[test]
+fn reflect_wraps_a_primitive_receiver_for_sloppy_callees() {
+    let src = "
+        var r = [];
+        var o = { get x() { return typeof this; }, set y(v) { r.push(typeof this); } };
+        print(Reflect.get(o, 'x', 1), Reflect.get(o, 'x', 's'), Reflect.get(o, 'x'));
+        Reflect.set(o, 'y', 0, true);
+        print(r.join());
+        print(Reflect.apply(function () { return typeof this; }, 2, []), Reflect.apply(function () { 'use strict'; return typeof this; }, 2, []));
+        print(Reflect.construct(function () { this.t = typeof this; }, []).t);
+    ";
+    assert_eq!(
+        run_both(src),
+        lines(&["object object object", "object", "object number", "object"])
+    );
+}
