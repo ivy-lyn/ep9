@@ -171,20 +171,20 @@ impl TerminateHandle {
 }
 
 /// Runs a callback on the isolate's thread from any thread (H23-Q6): [`InterruptHandle::request`]
-/// queues it, and the isolate runs it at its next interrupt poll, the place where
-/// [`TerminateHandle`] stops a script (loop back edges, function entries, builtin loops; JIT
-/// code polls the same way). A poll comes once per interrupt budget (10,000 back edges or
-/// calls) while JS runs; an idle isolate runs the callback when it next runs JS and polls.
+/// queues it, and the isolate runs it at its next interrupt poll, where [`TerminateHandle`] stops
+/// a script (loop back edges, function entries, builtin loops; JIT code polls the same way). A
+/// poll comes once per interrupt budget (10,000 back edges, bytecode calls or other budget units)
+/// while JS runs; a host-function call takes no budget unit, so code that only calls host
+/// functions does not poll. An idle isolate runs the callback when it next runs JS and polls.
 ///
-/// The callback gets no `Cx`: it runs no JS and allocates nothing on the JS heap, so it is
-/// safe at any poll. It may call [`TerminateHandle::terminate`] (the same poll then stops the
-/// script) or [`InterruptHandle::request`] (the new callback runs at a later poll).
-/// Callbacks run in request order. A callback that panics ends the process in a release build
-/// (`panic = "abort"`, H23); in a debug build the panic unwinds out of the running script and
-/// the callbacks queued behind it are dropped. Callbacks still queued when the isolate is
-/// dropped are dropped with it, never run (the handle holds the queue weakly, so a callback
-/// that holds a handle keeps nothing alive). After that, a request is never run: the
-/// callback is dropped at once.
+/// The callback gets no `Cx`: it runs no JS and allocates nothing on the JS heap, so it is safe at
+/// any poll. It may call [`TerminateHandle::terminate`] (the same poll then stops the script) or
+/// [`InterruptHandle::request`] (the new callback runs at a later poll). Callbacks run in request
+/// order. A callback that panics ends the process in a release build (`panic = "abort"`, H23); in
+/// a debug build the panic unwinds out of the running script and the callbacks queued behind it
+/// are dropped. Callbacks still queued when the isolate is dropped are dropped with it, never run
+/// (the handle holds the queue weakly, so a callback that holds a handle keeps nothing alive).
+/// After that, a request is never run: the callback is dropped at once.
 ///
 /// ```
 /// use std::sync::atomic::{AtomicBool, Ordering};

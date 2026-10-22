@@ -63,7 +63,7 @@ Win64 spill trampoline, SEH unwind registration and VirtualAlloc in `ep9_platfor
 | Linux arm64, Rust's gnu link (libgcc_s) | whole-section (per-FDE also passes: libgcc reads from any FDE to the terminator, so whole-section goes first) | whole-section | same test, Docker rust:1.99.1-slim-bookworm |
 | Linux arm64, zig cc link (static LLVM libunwind) | per-FDE (whole-section misses) | whole-section (wrong) | same test; before this change `jit::tests::unwind_through_generated_frame` failed in this build |
 
-- A jitless build (`unwind` without `jit`) has no code of its own to run, so it calls `unwind::self_test` on a probe in the first loaded unit's text (SP-Unit, M2-P4) before it registers anything. Windows has one form (function tables), so it has no self-test.
+- A jitless build (`unwind` without `jit`) has no code of its own to run, so it calls `unwind::self_test` on a probe in the first loaded unit's text (SP-Unit, M3-P1; moved by M2-D21-FAIL) before it registers anything. Windows has one form (function tables), so it has no self-test.
 
 ## Rules
 
@@ -133,6 +133,7 @@ Win64 spill trampoline, SEH unwind registration and VirtualAlloc in `ep9_platfor
 | 2026-10-22 | clarify | 3 `path:line` references moved to the code after the M2-P4 merge (drift script, [I15]). No check changes | P4 integration fixer |
 | 2026-10-22 | clarify | Status Draft -> Accepted (M2-P4-ACCEPT). The §3.1 review record is complete: row 1 P3-ACCEPT-2, row 2 Codex (M2-P3-B2-ROW2 and the P4 pre-step run (M2-P4-B2-ROW2)), row 3 P4-ACCEPT-3 (and the P4 review checkers for the RF1 rows), row 4 data. The orchestrator did not write the rows it approves. No check changes | orchestrator |
 | 2026-10-22 | clarify | 1 `.github/workflows/ci.yml` line reference moved down 6 lines after the setup-node step (M2-P4-CI-NODE24; drift script, [I15]). No check changes. Accepted-path change (README §3.2: orchestrator + review record) | orchestrator |
+| 2026-10-22 | clarify | SP-Unit runs in M3-P1, not M2-P4 (M2-D21-FAIL; Codex P5 docs finding D1). Text only; no check changes. Accepted-path change (README §3.2: orchestrator + review record) | orchestrator |
 
 ## Review record
 
