@@ -959,6 +959,16 @@ fn abi5_mapped_parameter_rules() {
         m.scope = ScopeId(7);
         set(u, m);
     });
+    // CX-ABI1: CreateMappedArguments in a function with formal parameters needs the list
+    // (the VM-ARGS consumer reads it there). With no formal parameter there is no list.
+    bad("CreateMappedArguments without a list", &|u| {
+        u.functions[1].mapped_parameters = None;
+    });
+    let mut u = mapped();
+    u.functions[1].mapped_parameters = None;
+    u.functions[1].parameter_count = 0;
+    u.functions[1].length = 0;
+    verify(u).unwrap();
     // The reader: a list without a scope, or a scope with an empty list, does not load.
     let mut u = mapped();
     u.functions[1]

@@ -20,7 +20,7 @@
 //! | Tree | Function ids are a preorder of the parent links; scopes point only to earlier scopes |
 //! | Reader rules | Strings are canonical; scope and function flags use only defined bits. The reader checks the same, so a verified unit loads back |
 //! | Parameter env (ABI 5) | `PARAMETER_ENV` only with `CALLS_SLOPPY_EVAL`, on a `Function` scope that is not strict |
-//! | Mapped parameters (ABI 5) | A list only in a function that has `CreateMappedArguments` and makes a context of the list's scope with `CreateFunctionContext`; one entry per formal parameter; the scope is a `Function` scope with `NEEDS_CONTEXT`; each slot is in that scope and holds a `var`; no slot twice |
+//! | Mapped parameters (ABI 5) | A list only in a function that has `CreateMappedArguments` and makes a context of the list's scope with `CreateFunctionContext`, and always in such a function with formal parameters; one entry per formal parameter; the scope is a `Function` scope with `NEEDS_CONTEXT`; each slot is in that scope and holds a `var`; no slot twice |
 //! | Module records (ABI 5) | Present exactly in a module unit; string ids and request indices in range; attribute keys sorted (UTF-16 code units) and unique; module cells not 0 |
 //!
 //! Not checked (VM duty, ADR H02 open questions): context slot and depth against the actual
@@ -587,6 +587,13 @@ fn verify_function(
     verify_positions(&cx, &starts)?;
     if let Some(m) = &f.mapped_parameters {
         verify_mapped_parameters(&cx, m, mapped_ok, has_mapped_args)?;
+    } else if has_mapped_args && f.parameter_count > 0 {
+        // The consumer of `CreateMappedArguments` maps each formal parameter through the list;
+        // only a function with no formal parameter has none.
+        return cx.err(
+            None,
+            VerifyErrorKind::MappedParameters("CreateMappedArguments without a list"),
+        );
     }
     Ok(())
 }
