@@ -292,16 +292,34 @@ fn core_intrinsics_and_their_prototypes() {
         let tep = cx.intrinsic(IntrinsicId::TypeErrorPrototype);
         assert!(cx.get_prototype_of(tep).unwrap().is_same_bits(&ep));
         // Every constructor of the VM table is a function whose [[Prototype]] is
-        // %Function.prototype%.
+        // %Function.prototype%, except the native errors: theirs is %Error% (§20.5.6.2,
+        // `builtins::install`).
         let fp = cx.intrinsic(IntrinsicId::FunctionPrototype);
         for id in [
             IntrinsicId::Object,
             IntrinsicId::Function,
-            IntrinsicId::TypeError,
+            IntrinsicId::Error,
         ] {
             let c = cx.intrinsic(id);
             assert!(cx.is_constructor(c));
             assert!(cx.get_prototype_of(c).unwrap().is_same_bits(&fp));
+        }
+        let error = cx.intrinsic(IntrinsicId::Error);
+        for id in [
+            IntrinsicId::EvalError,
+            IntrinsicId::RangeError,
+            IntrinsicId::ReferenceError,
+            IntrinsicId::SyntaxError,
+            IntrinsicId::TypeError,
+            IntrinsicId::UriError,
+        ] {
+            let c = cx.intrinsic(id);
+            assert!(cx.is_constructor(c));
+            assert!(
+                cx.get_prototype_of(c).unwrap().is_same_bits(&error),
+                "{}",
+                id.name()
+            );
         }
         // Tables made none of these; %Symbol.prototype% comes with symbols (P2-SYM).
         assert!(!cx.has_intrinsic(IntrinsicId::Math));
