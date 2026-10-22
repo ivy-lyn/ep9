@@ -26,7 +26,7 @@ Copied from the plan row: lazy position tables, kept ScopeInfo, a debug bytecode
 | # | Rule | As built (55c15d0) |
 |---|---|---|
 | R1 | Frame pointers in every tier. VM frames link through the caller-fp slot (fp-8, H14). JIT and AOT code keep the native frame pointer (x29 on aarch64, rbp on x86-64) in every function with a frame | T0: the VM frame chain. Rust code: the target default (H24-Q1). Spike B JIT (M0 month 2): every function keeps the frame record (x29/x30 on AArch64, rbp on x86-64; `spikes/spike-b/src/jit/a64.rs:123-124`) |
-| R2 | Positions come from the canonical frame's offset slot (fp-1). JIT and AOT code store the bytecode offset there, and publish fp, before every runtime call and poll. The walker never needs a native pc to find the position of a frame below the top | T0: `Runtime::enter` writes the slot at GC points and host calls; the walker uses the return pc of the frame above otherwise (H14). Spike B JIT (M0 month 2): each table call passes (cx, fp, bytecode offset), and the table function publishes fp and stores the offset through `Runtime::enter` before any of its work (`native::enter`, `crates/ep9_vm/src/native.rs:345`; M2-P1-NE-OFFSET). The JIT code itself writes no VM stack field |
+| R2 | Positions come from the canonical frame's offset slot (fp-1). JIT and AOT code store the bytecode offset there, and publish fp, before every runtime call and poll. The walker never needs a native pc to find the position of a frame below the top | T0: `Runtime::enter` writes the slot at GC points and host calls; the walker uses the return pc of the frame above otherwise (H14). Spike B JIT (M0 month 2): each table call passes (cx, fp, bytecode offset), and the table function publishes fp and stores the offset through `Runtime::enter` before any of its work (`native::enter`, `crates/ep9_vm/src/native.rs:368`; M2-P1-NE-OFFSET). The JIT code itself writes no VM stack field |
 | R3 | Local writes only on T0 frames. A write to a local or parameter of a JIT or AOT frame is a protocol error; context, module and script bindings pop DebuggerBindingWrite first | No debugger yet (M4) |
 | R4 | BytecodeGen never folds a binding: each read of a `let`, `const`, `var` or parameter loads the binding | `const j = 7; return k + j` reads `j` with `Ldar r0` and `k` with `LdaGlobal` (checked with `ep9 --print-bytecode`) |
 | R5 | Position tables: UTF-8 offsets per instruction, with a statement bit for breakpoints and stepping. Line and UTF-16 column are computed only when asked | `Function::positions`; `LoadedUnit::line_column` |
@@ -63,7 +63,7 @@ Copied from the plan row: lazy position tables, kept ScopeInfo, a debug bytecode
 
 ## Validation
 
-- M0: the `ep9_vm` and bytecodegen checks above; Spike B checks (c) and (d) in the CI step "Spike B structural gate" on all 4 runners (macOS arm64, Linux x64, Linux arm64, Windows x64; no check is skipped on Windows, `.github/workflows/ci.yml:382-388`).
+- M0: the `ep9_vm` and bytecodegen checks above; Spike B checks (c) and (d) in the CI step "Spike B structural gate" on all 4 runners (macOS arm64, Linux x64, Linux arm64, Windows x64; no check is skipped on Windows, `.github/workflows/ci.yml:384-390`).
 - M4: CDP Debugger tests per mode. M6: the sampler walks mixed T0, JIT and Rust stacks. A2: unit maps.
 
 ## Open questions
@@ -86,6 +86,7 @@ Copied from the plan row: lazy position tables, kept ScopeInfo, a debug bytecode
 | 2026-10-21 | draft | First draft (M0 rules R1-R6) from 02 §6 row H24 and 07 §2, with the facts as built at 55c15d0 and the frame-pointer defaults of the 5 targets | P0-DOCS agent (M2-P0) |
 | 2026-10-22 | clarify | Validation: Spike B checks (c) and (d) run on all 4 CI runners since M0 month 2 P2 (the CI spikes job), not on macOS arm64 and Linux arm64 only. No check changes | P4-ACCEPT-3 |
 | 2026-10-22 | clarify | M0 rules R1 and R2, As built column: the Spike B facts (the JIT frame record; the table function stores the offset and publishes fp through `Runtime::enter`). The rules do not change. No check changes | P4-ACCEPT-3 |
+| 2026-10-22 | clarify | 2 `path:line` references moved to the code after the M2-P4 merge (drift script, [I15]). No check changes | P4 integration fixer |
 
 ## Review record
 
