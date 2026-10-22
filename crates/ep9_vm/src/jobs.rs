@@ -5,7 +5,7 @@
 //! ```text
 //! Runtime::jobs: JobState
 //!   roots (a heap root source, as symbol.rs):  queue head ──> job ──> job ──> ... <── queue tail
-//!                                              rejected head ──> record ──> ... <── rejected tail
+//!                                              rejected head ──> record <─> ... <── rejected tail (both ways)
 //!   closures: one FunctionInfo per (behaviour, name, length), boxed, never freed
 //!   tracker:  IsolateConfig::promise_rejection_tracker
 //!
@@ -42,6 +42,10 @@ pub(crate) mod promise {
     /// `[[PromiseFulfillReactions]]` and `[[PromiseRejectReactions]]`: the first reaction
     /// record of the chain (undefined: none).
     pub const REACTIONS: usize = 2;
+    /// After a rejection with no handler: the promise's entry in the rejected list (undefined:
+    /// none), so a handler unlinks it in O(1). It shares the slot of [`REACTIONS`], which a
+    /// settled promise no longer uses (`settle` clears it before it sets this).
+    pub const REJECTED_ENTRY: usize = 2;
     /// The last reaction record (undefined: none), for the append.
     pub const REACTIONS_TAIL: usize = 3;
     /// `[[PromiseIsHandled]]`: a boolean.
@@ -107,11 +111,16 @@ pub(crate) mod executor {
 }
 
 /// An entry of the rejected list: a promise that was rejected while it had no handler
-/// (HostPromiseRejectionTracker "reject"), and the next entry.
+/// (HostPromiseRejectionTracker "reject"), and its neighbours. The list is doubly linked and
+/// the promise points back at its entry ([`promise::REJECTED_ENTRY`]), so "handle" unlinks
+/// the entry in O(1).
 pub(crate) mod rejected {
     pub const PROMISE: usize = 0;
-    pub const NEXT: usize = 1;
-    pub const COUNT: usize = 2;
+    /// The previous entry (undefined: first).
+    pub const PREV: usize = 1;
+    /// The next entry (undefined: last).
+    pub const NEXT: usize = 2;
+    pub const COUNT: usize = 3;
 }
 
 /// The roots of the job state: the two lists (head and tail each).
@@ -189,6 +198,13 @@ impl JobState {
 
     pub fn set_queue_tail(&self, v: u64) {
         self.roots.queue_tail.set(v);
+    }
+
+    /// Drops every queued job (a termination: no job runs after it, as V8 drops its
+    /// microtask queue then).
+    pub fn clear_queue(&self) {
+        self.set_queue_head(UNDEFINED);
+        self.set_queue_tail(UNDEFINED);
     }
 
     pub fn rejected_head(&self) -> u64 {

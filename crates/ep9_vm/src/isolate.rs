@@ -374,9 +374,10 @@ impl Isolate {
     /// unit in stack traces and locations.
     ///
     /// Then it performs a microtask checkpoint ([`Isolate::perform_microtask_checkpoint`]),
-    /// also after a throw (not after a termination): the jobs the script queued run before it
-    /// returns. A throw from the script wins over one from a job; a job that throws after a
-    /// normal run makes the result that error.
+    /// also after a throw: the jobs the script queued run before it returns. A termination
+    /// runs no checkpoint and drops the queued jobs, so none of them runs later. A throw from
+    /// the script wins over one from a job, but a termination in a job wins over the throw; a
+    /// job that throws after a normal run makes the result that error.
     pub fn run_script(&mut self, unit: VerifiedUnit, file: &str) -> Result<Value, Exception> {
         let r = run_unit(&mut self.cx, unit, file);
         self.finish_with_checkpoint(r)
@@ -408,8 +409,8 @@ impl Isolate {
     /// The promises that were rejected while they had no handler and still have none, as
     /// [`Exception`]s of their rejection reasons, in rejection order; the isolate forgets
     /// them. A host reports these after its last checkpoint (the ep9 CLI prints the first one
-    /// as an uncaught error and exits 1, as node does). The list drops a promise once it gets
-    /// a handler, at the end of each checkpoint.
+    /// as an uncaught error and exits 1, as node does). The list drops a promise as soon as it
+    /// gets a handler.
     pub fn take_unhandled_rejections(&mut self) -> Vec<Exception> {
         let rt: &Runtime = self.cx.rt();
         let reasons = rt.heap.scratch_roots();
@@ -473,8 +474,9 @@ impl Isolate {
         &self.rt.heap
     }
 
-    /// [`Isolate::finish`], then a microtask checkpoint (not after a termination). The result
-    /// Value is a precise root while the jobs run.
+    /// [`Isolate::finish`], then a microtask checkpoint (not after a termination, which drops
+    /// the queue). The result Value is a precise root while the jobs run. After a throw the
+    /// script's error wins over a job's error, but not over a termination in a job.
     fn finish_with_checkpoint(&mut self, r: Res<u64>) -> Result<Value, Exception> {
         let rt: &Runtime = self.cx.rt();
         match r {
@@ -488,12 +490,16 @@ impl Isolate {
                 self.finish(Ok(b))
             }
             Err(Throw) => {
+                // A termination: `exception` dropped the queue, so no job runs.
                 let e = self.exception();
-                if !e.terminated {
-                    // The script's error wins; a job's error after it is dropped.
-                    let _ = self.perform_microtask_checkpoint();
+                if e.terminated {
+                    return Err(e);
                 }
-                Err(e)
+                match self.perform_microtask_checkpoint() {
+                    Err(c) if c.terminated => Err(c),
+                    // The script's error wins; a job's error after it is dropped.
+                    _ => Err(e),
+                }
             }
         }
     }
@@ -507,7 +513,9 @@ impl Isolate {
         }
     }
 
-    /// The pending exception (taken) as an API [`Exception`].
+    /// The pending exception (taken) as an API [`Exception`]. A termination also drops the
+    /// job queue before it resets: no job queued before it runs on a later run, so a promise
+    /// loop cannot outlive [`TerminateHandle`].
     fn exception(&mut self) -> Exception {
         let rt = &*self.rt;
         let terminated = || Exception {
@@ -519,7 +527,7 @@ impl Isolate {
         };
         let exc = rt.take_pending();
         let site = rt.shared.throw_site.take();
-        if rt.terminating.replace(false) {
+        if end_termination(rt) {
             return terminated();
         }
         debug_assert!(exc != 0, "Err(Throw) without a pending exception");
@@ -560,7 +568,7 @@ impl Isolate {
                 Err(Throw) => {
                     rt.take_pending();
                     rt.shared.throw_site.take();
-                    if rt.terminating.replace(false) {
+                    if end_termination(rt) {
                         return terminated();
                     }
                     self.display(val(exc))
@@ -603,6 +611,17 @@ fn run_unit(cx: &mut Cx, unit: VerifiedUnit, file: &str) -> Res<u64> {
     let f = object::new_function(rt, entry, UNDEFINED);
     let this = if module { UNDEFINED } else { rt.global() };
     call::call_function(cx, f, this, &[])
+}
+
+/// Resets the termination state after a terminated run and gives true if there was one; then
+/// it drops the job queue (`JobState::clear_queue`), so no job queued before the termination
+/// runs at a later run or checkpoint of the isolate.
+fn end_termination(rt: &Runtime) -> bool {
+    let t = rt.terminating.replace(false);
+    if t {
+        rt.jobs.clear_queue();
+    }
+    t
 }
 
 /// The text of [`Isolate::display`] and [`abi::Cx::display`]. Runs no JS.

@@ -453,3 +453,325 @@ fn on_big_stack_catch(f: fn() -> bool) -> Option<bool> {
         .join()
         .ok()
 }
+
+// ---- M2-P4-RF1: termination drops the queue (Q1, Q2); "handle" unlinks (Q3) -------------
+
+thread_local! {
+    /// The handle that `doomed` and `spin` use (each test sets it).
+    static TERM: RefCell<Option<crate::TerminateHandle>> = const { RefCell::new(None) };
+}
+
+/// Terminates the isolate from inside a host call: sets the TERMINATE bit, then polls until
+/// a poll sees it (within one interrupt budget). Gives the terminated `Err`.
+fn terminate_here<'s>(cx: &mut Cx<'s>) -> JsResult<Local<'s>> {
+    TERM.with(|t| t.borrow().as_ref().expect("TERM set").terminate());
+    loop {
+        cx.poll_interrupt()?;
+    }
+}
+
+/// `doomed(x)`: queues a job that prints `x`, then terminates the run.
+fn doomed<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let print = cx.global_binding("print")?.expect("print");
+    cx.enqueue_job(print, args.get(0))?;
+    terminate_here(cx)
+}
+
+/// `spin()`: terminates the run (a job that never ends).
+fn spin<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    terminate_here(cx)
+}
+
+/// `name(arg); print("not reached")` as a script.
+fn call_global_then_print(name: &str, arg: &str) -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let (f, a0) = (s.f, s.a.get(0));
+    s.lda_str(arg);
+    s.b.star(a0);
+    s.lda_global(name);
+    s.b.star(f);
+    s.b.call_undefined_receiver1(f, a0, s.call);
+    s.lda_str("not reached");
+    s.print_acc();
+    s.b.return_();
+    unit("", vec![s.finish()])
+}
+
+/// `print("next"); return 1` as a script.
+fn print_next() -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    s.lda_str("next");
+    s.print_acc();
+    s.b.lda_smi(1).return_();
+    unit("", vec![s.finish()])
+}
+
+/// A fresh isolate with `doomed`, `spin`, `queue_call` and `fail`, and `TERM` set to its
+/// handle.
+fn doomed_isolate(stress: bool) -> Isolate {
+    let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+    iso.register_host_function("doomed", 1, doomed);
+    iso.register_host_function("spin", 0, spin);
+    iso.register_host_function("queue_call", 1, queue_call);
+    iso.register_host_function("fail", 0, fail);
+    TERM.with(|t| *t.borrow_mut() = Some(iso.terminate_handle()));
+    take_output();
+    iso
+}
+
+/// Q1: a run that is itself terminated (`Isolate::run_script`, then `Isolate::call`) drops
+/// the jobs it queued: the queue is empty right after the terminated return, and the next
+/// run of the same isolate does not run them.
+#[test]
+fn a_terminated_run_or_call_drops_its_queued_jobs() {
+    for stress in [false, true] {
+        on_big_stack(move || {
+            let mut iso = doomed_isolate(stress);
+            let e = iso
+                .run_script(call_global_then_print("doomed", "abandoned"), "a.js")
+                .unwrap_err();
+            assert!(e.terminated, "{e:?}");
+            assert_eq!(
+                iso.rt.jobs.queue_head(),
+                UNDEFINED,
+                "run_script: queue dropped"
+            );
+            assert_eq!(iso.rt.jobs.queue_tail(), UNDEFINED);
+            let v = iso.run_script(print_next(), "b.js").unwrap();
+            assert_eq!(iso.display(v), "1");
+            assert_eq!(take_output(), ["next"], "the abandoned job never runs");
+
+            let f = iso.global("doomed").expect("doomed");
+            let e = iso
+                .call(
+                    f,
+                    crate::runtime::val(UNDEFINED),
+                    &[crate::Value::number(5.0)],
+                )
+                .unwrap_err();
+            assert!(e.terminated, "{e:?}");
+            assert_eq!(iso.rt.jobs.queue_head(), UNDEFINED, "call: queue dropped");
+            iso.perform_microtask_checkpoint().unwrap();
+            iso.run_script(print_next(), "c.js").unwrap();
+            assert_eq!(take_output(), ["next"], "the abandoned job never runs");
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
+}
+
+/// `queue_call(f)`: queues a job that calls `f` with no argument.
+fn queue_call<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    cx.enqueue_job(args.get(0), Local::undefined())?;
+    Ok(Local::undefined())
+}
+
+/// `fail()`: throws a TypeError (an ordinary job error).
+fn fail<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Err(cx.throw_type_error("job error"))
+}
+
+/// `queue_call(name); throw "script error"` as a script.
+fn queue_then_throw(name: &str) -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let (f, a0) = (s.f, s.a.get(0));
+    s.lda_global(name);
+    s.b.star(a0);
+    s.lda_global("queue_call");
+    s.b.star(f);
+    s.b.call_undefined_receiver1(f, a0, s.call);
+    s.lda_str("script error");
+    s.b.throw();
+    unit("", vec![s.finish()])
+}
+
+/// Q2: after a script error the checkpoint still runs; a termination in one of its jobs is
+/// the result (`terminated`), while an ordinary job error leaves the script's error.
+#[test]
+fn a_termination_in_a_job_after_a_script_error_is_reported() {
+    for stress in [false, true] {
+        on_big_stack(move || {
+            let mut iso = doomed_isolate(stress);
+            let e = iso
+                .run_script(queue_then_throw("spin"), "a.js")
+                .unwrap_err();
+            assert!(e.terminated, "the termination wins: {e:?}");
+            assert_eq!(iso.rt.jobs.queue_head(), UNDEFINED);
+            // An ordinary job error: the script's error wins.
+            let e = iso.run_script(queue_then_throw("fail"), "b.js");
+            let e = e.unwrap_err();
+            assert!(!e.terminated);
+            assert_eq!(e.message, "script error");
+            iso.run_script(print_next(), "c.js").unwrap();
+            assert_eq!(take_output(), ["next"]);
+        });
+    }
+}
+
+/// The number of entries in the rejected list.
+fn rejected_len(rt: &crate::runtime::Runtime) -> usize {
+    let mut n = 0;
+    let mut e = rt.jobs.rejected_head();
+    while e != UNDEFINED {
+        n += 1;
+        e = crate::object::slot_get(e, crate::jobs::rejected::NEXT);
+    }
+    n
+}
+
+/// Q3: "handle" unlinks the promise's entry at once (before any checkpoint), from the head,
+/// the middle and the tail; the rest keep their order. A handler after
+/// `take_unhandled_rejections` took the entry finds none.
+#[test]
+fn a_handler_unlinks_the_rejection_at_once() {
+    for stress in [false, true] {
+        on_big_stack(move || {
+            let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+            take_output();
+            iso.with_cx(|cx| {
+                let g = cx.global();
+                for name in ["a", "b", "c", "d"] {
+                    let p = cx.new_promise(Local::null());
+                    let why = cx.new_string(name)?;
+                    cx.reject_promise(p, why);
+                    let key = cx.key(name);
+                    cx.set(g, key, p, true)?;
+                }
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(rejected_len(&iso.rt), 4);
+            let handle = |iso: &mut Isolate, name: &'static str| {
+                iso.with_cx(move |cx| {
+                    let p = cx.global_binding(name)?.expect("p").as_object().expect("p");
+                    let print = cx.global_binding("print")?.expect("print");
+                    cx.perform_promise_then(p, Local::undefined(), print, None);
+                    Ok(())
+                })
+                .unwrap();
+            };
+            handle(&mut iso, "b");
+            assert_eq!(
+                rejected_len(&iso.rt),
+                3,
+                "middle unlinked before a checkpoint"
+            );
+            handle(&mut iso, "a");
+            handle(&mut iso, "d");
+            assert_eq!(rejected_len(&iso.rt), 1, "head and tail unlinked");
+            handle(&mut iso, "c");
+            assert_eq!(
+                iso.rt.jobs.rejected_head(),
+                UNDEFINED,
+                "empty before a checkpoint"
+            );
+            assert_eq!(iso.rt.jobs.rejected_tail(), UNDEFINED);
+            // A new rejection after the list emptied, taken, then handled.
+            iso.with_cx(|cx| {
+                let p = cx.new_promise(Local::null());
+                let why = cx.new_string("e")?;
+                cx.reject_promise(p, why);
+                let g = cx.global();
+                let key = cx.key("e");
+                cx.set(g, key, p, true)
+            })
+            .unwrap();
+            let un: Vec<String> = iso
+                .take_unhandled_rejections()
+                .into_iter()
+                .map(|e| e.message)
+                .collect();
+            assert_eq!(un, ["e"]);
+            handle(&mut iso, "e");
+            assert_eq!(iso.rt.jobs.rejected_head(), UNDEFINED);
+            iso.perform_microtask_checkpoint().unwrap();
+            assert_eq!(take_output(), ["b", "a", "d", "c", "e"]);
+            assert!(iso.take_unhandled_rejections().is_empty());
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
+}
+
+thread_local! {
+    /// The longest rejected list that `chain` saw.
+    static MAX_REJECTED: Cell<usize> = const { Cell::new(0) };
+}
+
+/// `ignore()`: a reject handler that does nothing.
+fn ignore<'s>(
+    _cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Ok(Local::undefined())
+}
+
+/// `chain(n)`, a job: records the rejected list's length, then (n > 0) rejects a new promise
+/// with no handler, gives it a handler and queues `chain(n - 1)`: one long drain of
+/// reject + catch, as `Promise.reject(x).catch(...)` in a loop of jobs.
+fn chain<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let len = rejected_len(cx.inner().rt());
+    MAX_REJECTED.with(|m| m.set(m.get().max(len)));
+    let n = cx.to_number(args.get(0))?;
+    if n <= 0.0 {
+        return Ok(Local::undefined());
+    }
+    let p = cx.new_promise(Local::null());
+    let why = cx.new_string("why")?;
+    cx.reject_promise(p, why);
+    let ignore = cx.global_binding("ignore")?.expect("ignore");
+    cx.perform_promise_then(p, Local::undefined(), ignore, None);
+    cx.enqueue_job(args.callee(), Local::number(n - 1.0))?;
+    Ok(Local::undefined())
+}
+
+/// Q3: a long drain of handled rejections keeps none of them in the rejected list (it held
+/// one entry, and its promise and reason, per rejection until the drain ended).
+#[test]
+fn a_long_reject_and_catch_drain_keeps_the_list_empty() {
+    for stress in [false, true] {
+        on_big_stack(move || {
+            MAX_REJECTED.with(|m| m.set(0));
+            let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+            iso.register_host_function("chain", 1, chain);
+            iso.register_host_function("ignore", 0, ignore);
+            iso.with_cx(|cx| {
+                let chain = cx.global_binding("chain")?.expect("chain");
+                cx.enqueue_job(chain, Local::number(300.0))
+            })
+            .unwrap();
+            iso.perform_microtask_checkpoint().unwrap();
+            assert_eq!(MAX_REJECTED.with(Cell::get), 0, "stress={stress}");
+            assert!(iso.take_unhandled_rejections().is_empty());
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
+}
