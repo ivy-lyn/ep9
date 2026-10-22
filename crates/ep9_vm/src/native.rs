@@ -280,7 +280,12 @@ pub(crate) fn native_callee<'a>(callee: u64) -> Option<&'a FunctionInfo> {
 /// `caller_fp` is the live top frame, `base` the first free slot above it (and above any
 /// scratch Values), `arg(i)` returns valid Value bits for `i < argc`, and the slot entry of
 /// `fi` is native code with the [`NativeEntry`] ABI (`install_native` contract).
+///
+/// Inlined at each caller, so each argument reader (`arg`) is inlined too: the decode-free T0
+/// entry (`slow::call`) has one per call shape (M2-P3-D21-ENTRY; cachegrind on linux a64,
+/// config A of the D21 bench: 262.9 Ir per call when outlined, 237.7 inlined).
 #[allow(clippy::too_many_arguments)]
+#[inline(always)]
 pub(crate) unsafe fn enter_native(
     cx: &mut Cx,
     base: *mut u64,
@@ -484,9 +489,8 @@ native_fns! {
 }
 
 /// The argument registers of a call instruction (frame slot offsets), without a heap copy.
-/// Also used by the decode-free T0 entry (`slow::call`, M2-P3-D21-ENTRY).
 #[derive(Clone, Copy)]
-pub(crate) enum ArgSlots {
+enum ArgSlots {
     /// A register list: `n` slots from `first` up.
     List { first: isize, n: u32 },
     /// Up to two single registers.
@@ -494,13 +498,13 @@ pub(crate) enum ArgSlots {
 }
 
 impl ArgSlots {
-    pub(crate) fn len(self) -> u32 {
+    fn len(self) -> u32 {
         match self {
             ArgSlots::List { n, .. } | ArgSlots::Few { n, .. } => n,
         }
     }
 
-    pub(crate) fn slot(self, i: u32) -> isize {
+    fn slot(self, i: u32) -> isize {
         match self {
             ArgSlots::List { first, .. } => first + i as isize,
             ArgSlots::Few { regs, .. } => regs[i as usize],

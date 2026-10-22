@@ -258,7 +258,8 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
 /// `CallProperty0`-`2`, `CallUndefinedReceiver` or `CallUndefinedReceiver0`-`2` whose callee
 /// is native-slotted (`native::native_callee`). It reads the operands at their fixed
 /// single-scale places (one byte each, checked at compile time below) and the arguments
-/// straight from the caller's registers: no `decode_call`, no `CallSite`, no `Vec`.
+/// straight from the caller's registers, with one argument reader per shape (`go`): no
+/// `decode_call`, no `CallSite`, no `Vec`.
 ///
 /// Everything else returns `None`, with no state changed, and takes `decode_call` and
 /// `do_call` as before: a `Wide`/`ExtraWide` call (`pc` is at the prefix byte), `CallWithSpread`,
@@ -286,20 +287,12 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
 #[inline(always)]
 unsafe fn native_entry(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> Option<Res<u64>> {
     use crate::interp::dsl::R;
-    use crate::native::ArgSlots;
     use ep9_bytecode::{Opcode as O, OperandScale};
 
-    const CALL_ANY_RECEIVER: u8 = O::CallAnyReceiver as u8;
-    const CALL_PROPERTY: u8 = O::CallProperty as u8;
-    const CALL_PROPERTY0: u8 = O::CallProperty0 as u8;
-    const CALL_PROPERTY1: u8 = O::CallProperty1 as u8;
-    const CALL_PROPERTY2: u8 = O::CallProperty2 as u8;
-    const CALL_UNDEFINED: u8 = O::CallUndefinedReceiver as u8;
-    const CALL_UNDEFINED0: u8 = O::CallUndefinedReceiver0 as u8;
-    const CALL_UNDEFINED1: u8 = O::CallUndefinedReceiver1 as u8;
-    const CALL_UNDEFINED2: u8 = O::CallUndefinedReceiver2 as u8;
-    // The fixed places: at single scale, every operand of these opcodes is one byte, so
-    // operand `i` is at `pc + 1 + i` and the next instruction at `pc + 1 + count`.
+    // The 9 opcodes are the bytes CallAnyReceiver ..= CallUndefinedReceiver2, in this order.
+    // At single scale every operand of each is one byte, so operand `i` is at `pc + 1 + i`.
+    const FIRST: u8 = O::CallAnyReceiver as u8;
+    const LAST: u8 = O::CallUndefinedReceiver2 as u8;
     const _: () = {
         let ops = [
             O::CallAnyReceiver,
@@ -312,9 +305,11 @@ unsafe fn native_entry(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> Option<Res<u
             O::CallUndefinedReceiver1,
             O::CallUndefinedReceiver2,
         ];
+        assert!(LAST - FIRST + 1 == ops.len() as u8);
         let mut i = 0;
         while i < ops.len() {
             let info = ops[i].info();
+            assert!(ops[i] as u8 == FIRST + i as u8);
             assert!(info.size(OperandScale::Single) == 1 + info.operands.len());
             i += 1;
         }
@@ -325,96 +320,113 @@ unsafe fn native_entry(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> Option<Res<u
             const { O::$o.info().size(OperandScale::Single) }
         };
     }
-    // `CallAnyReceiver` and `CallProperty` share one arm.
-    const _: () = assert!(len!(CallAnyReceiver) == len!(CallProperty));
 
     // SAFETY: caller contract: `pc` is a byte of verified code.
     let op = unsafe { *pc };
-    // SAFETY: called only for operand `i` of a call opcode matched below; the verifier
-    // checked that the whole instruction lies in the code.
+    if !(FIRST..=LAST).contains(&op) {
+        return None;
+    }
+    // SAFETY: called only for operand `i` of one of the 9 call opcodes (checked above); the
+    // verifier checked that the whole instruction lies in the code.
     let byte = |i: usize| unsafe { *pc.add(1 + i) };
     let reg = |i: usize| R::from_operand(i32::from(byte(i) as i8)).0;
     // SAFETY: called only for slots named by register operands of this verified instruction
     // (and each list with its count), which lie in the live frame `fp`.
     let rd = |s: isize| unsafe { *fp.offset(s) };
-    // Register lists hold locals only, so the first operand is the slot offset itself.
-    let first = || isize::from(byte(1) as i8);
-    let none = ArgSlots::Few { regs: [0, 0], n: 0 };
-    let (this, args, len) = match op {
-        CALL_ANY_RECEIVER | CALL_PROPERTY => match u32::from(byte(2)) {
-            0 => (UNDEFINED, none, len!(CallProperty)),
-            n => {
-                let args = ArgSlots::List {
-                    first: first() + 1,
-                    n: n - 1,
-                };
-                (rd(first()), args, len!(CallProperty))
-            }
-        },
-        CALL_PROPERTY0 => (rd(reg(1)), none, len!(CallProperty0)),
-        CALL_PROPERTY1 => {
-            let args = ArgSlots::Few {
-                regs: [reg(2), 0],
-                n: 1,
-            };
-            (rd(reg(1)), args, len!(CallProperty1))
-        }
-        CALL_PROPERTY2 => {
-            let args = ArgSlots::Few {
-                regs: [reg(2), reg(3)],
-                n: 2,
-            };
-            (rd(reg(1)), args, len!(CallProperty2))
-        }
-        CALL_UNDEFINED => {
-            let args = ArgSlots::List {
-                first: first(),
-                n: u32::from(byte(2)),
-            };
-            (UNDEFINED, args, len!(CallUndefinedReceiver))
-        }
-        CALL_UNDEFINED0 => (UNDEFINED, none, len!(CallUndefinedReceiver0)),
-        CALL_UNDEFINED1 => {
-            let args = ArgSlots::Few {
-                regs: [reg(1), 0],
-                n: 1,
-            };
-            (UNDEFINED, args, len!(CallUndefinedReceiver1))
-        }
-        CALL_UNDEFINED2 => {
-            let args = ArgSlots::Few {
-                regs: [reg(1), reg(2)],
-                n: 2,
-            };
-            (UNDEFINED, args, len!(CallUndefinedReceiver2))
-        }
-        _ => return None,
-    };
+    // Register lists hold locals only, so the list operand is the slot offset itself.
+    let first = isize::from(byte(1) as i8);
+    // Operand 0 is the callee in all 9.
     let callee = rd(reg(0));
     let fi = crate::native::native_callee(callee)?;
     #[cfg(test)]
     crate::native::T0_ENTRY_HITS.with(|h| h.set(h.get() + 1));
-    let next = pc.wrapping_add(len);
+    // `go` once per shape, each with its own argument reader: no slot list and no match per
+    // argument.
+    macro_rules! enter {
+        ($this:expr, $len:expr, $argc:expr, $arg:expr) => {
+            // SAFETY: caller contract; the reader reads registers of this verified
+            // instruction, and `native_callee` checked the native slot.
+            unsafe {
+                go(
+                    cx,
+                    fp,
+                    pc.wrapping_add($len),
+                    callee,
+                    fi,
+                    $this,
+                    $argc,
+                    $arg,
+                )
+            }
+        };
+    }
+    const CALL_ANY_RECEIVER: u8 = O::CallAnyReceiver as u8;
+    const CALL_PROPERTY: u8 = O::CallProperty as u8;
+    const CALL_PROPERTY0: u8 = O::CallProperty0 as u8;
+    const CALL_PROPERTY1: u8 = O::CallProperty1 as u8;
+    const CALL_PROPERTY2: u8 = O::CallProperty2 as u8;
+    const CALL_UNDEFINED: u8 = O::CallUndefinedReceiver as u8;
+    const CALL_UNDEFINED0: u8 = O::CallUndefinedReceiver0 as u8;
+    const CALL_UNDEFINED1: u8 = O::CallUndefinedReceiver1 as u8;
+    // Argument readers: `n` list registers from `from` up, or one or two registers.
+    let list = |from: isize| move |i: u32| rd(from + i as isize);
+    let one = |a: isize| move |_: u32| rd(a);
+    let two = |a: isize, b: isize| move |i: u32| rd(if i == 0 { a } else { b });
+    let none = |_: u32| UNDEFINED;
+    Some(match op {
+        // The list holds the receiver, then the arguments; count 0: no receiver.
+        CALL_ANY_RECEIVER | CALL_PROPERTY => match u32::from(byte(2)) {
+            0 => enter!(UNDEFINED, len!(CallProperty), 0, none),
+            n => enter!(rd(first), len!(CallProperty), n - 1, list(first + 1)),
+        },
+        CALL_PROPERTY0 => enter!(rd(reg(1)), len!(CallProperty0), 0, none),
+        CALL_PROPERTY1 => enter!(rd(reg(1)), len!(CallProperty1), 1, one(reg(2))),
+        CALL_PROPERTY2 => enter!(rd(reg(1)), len!(CallProperty2), 2, two(reg(2), reg(3))),
+        CALL_UNDEFINED => {
+            let n = u32::from(byte(2));
+            enter!(UNDEFINED, len!(CallUndefinedReceiver), n, list(first))
+        }
+        CALL_UNDEFINED0 => enter!(UNDEFINED, len!(CallUndefinedReceiver0), 0, none),
+        CALL_UNDEFINED1 => enter!(UNDEFINED, len!(CallUndefinedReceiver1), 1, one(reg(1))),
+        // CallUndefinedReceiver2 (the range check above).
+        _ => enter!(
+            UNDEFINED,
+            len!(CallUndefinedReceiver2),
+            2,
+            two(reg(1), reg(2))
+        ),
+    })
+}
+
+/// The tail of [`native_entry`] for one call shape: enters native code with return pc `next`
+/// and the receiver and arguments that `arg` reads, then sets the next pc.
+///
+/// # Safety
+/// `fp` is the live top frame with no scratch Values above it, `arg(i)` returns valid Value
+/// bits for `i < argc`, and `fi` is the FunctionInfo of the native-slotted `callee`
+/// (`native::native_callee`).
+#[cfg(feature = "spike-native")]
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+unsafe fn go(
+    cx: &mut Cx,
+    fp: *mut u64,
+    next: *const u8,
+    callee: u64,
+    fi: &FunctionInfo,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+) -> Res<u64> {
     // SAFETY: `frame_top(fp)` is the first free slot above the live top frame (no scratch
-    // area, caller contract), `rd` reads registers of this verified instruction, and
-    // `native_callee` checked the native slot (`install_native` contract).
+    // area), and the rest is the caller contract (the `enter_native` contract).
     let r = unsafe {
-        crate::native::enter_native(
-            cx,
-            frame_top(fp),
-            fp,
-            next,
-            callee,
-            fi,
-            this,
-            args.len(),
-            |i| rd(args.slot(i)),
-        )
+        crate::native::enter_native(cx, frame_top(fp), fp, next, callee, fi, this, argc, arg)
     };
     // After the call: a nested dispatch under native code (`call_any`) sets them too.
     cx.out_fp = fp;
     cx.out_pc = next;
-    Some(r)
+    r
 }
 
 /// Spike B (feature `spike-native`): a call (no construct, no spread) of a FUNCTION whose slot
