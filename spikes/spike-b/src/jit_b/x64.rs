@@ -11,8 +11,7 @@
 //!  3  push r13                  CFA = rsp + 32; r13 at CFA-32        UWOP_PUSH_NONVOL r13
 //!  5  lea rbp, [rsp + 16]       CFA = rbp + 16 (rbp -> saved rbp)    UWOP_SET_FPREG rbp, 16
 //! 10  mov r15, rdi ; mov r13, rdx          isolate register (cx), VM frame pointer (fp)
-//! 16  mov rax, rcx                         the incoming accumulator (acc) into the body's rax
-//!     cmp rsp, [r15 + native_limit] ; jbe overflow
+//! 16  mov rax, rcx ; cmp rsp, [r15 + native_limit] ; jbe overflow     rax = acc (rcx)
 //!     body: one label per reachable instruction, accumulator in rax (as placement (a))
 //! ret:   mov rcx, rax ; mov rsi, [r13 - 56] ; mov rdx, [r13 - 64]   return pc, caller fp
 //!        btc rsi, 49 ; btc rdx, 49                                   decode the native words
