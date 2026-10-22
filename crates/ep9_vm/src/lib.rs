@@ -18,8 +18,8 @@
 //! [`IntrinsicId`]; realm init walks the VM's table (`natives.rs`), then
 //! [`IsolateConfig::builtins`]. Contract versions: [`versions`].
 //!
-//! Month-2 stubs left after M2-P3 (each marked `m2-stub` until its owner fills it): jobs.rs,
-//! `abi/jobs.rs` and the test module `tests/jobs.rs`.
+//! Jobs and promises (P4-PROMISE): the microtask queue and the Promise records are in jobs.rs,
+//! the promise operations are `Cx` methods in `abi/jobs.rs`, the tests are in `tests/jobs.rs`.
 //!
 //! ADRs: H14 frames and dispatch (docs/adr/H14-frames-and-dispatch.md), H15 interpreter
 //! dispatch, H10 rooting, H06 values.
