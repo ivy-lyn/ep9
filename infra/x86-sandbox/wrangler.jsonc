@@ -1,7 +1,7 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	// ep9 x86-64 sandbox. Same shape as the webcodecs-x86-sandbox-v2 harness
-	// (/Users/brooklyn/workspace/github/webcodecs-node-work/x86-sandbox), with its
+	// (a local webcodecs-node-work/x86-sandbox checkout), with its
 	// own Worker and container app so the two never share state or a cap.
 	"name": "ep9-x86-sandbox",
 	"main": "src/index.ts",

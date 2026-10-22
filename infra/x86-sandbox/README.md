@@ -5,7 +5,7 @@ x86-64 builds. Use it for what the Docker (Rosetta) step of local CI cannot do: 
 real `posix_spawn` of a missing program, `PR_SET_SECCOMP`, real perf counters, cachegrind.
 
 It is a copy of the webcodecs harness
-(`/Users/brooklyn/workspace/github/webcodecs-node-work/x86-sandbox`, "v2"). Only the names,
+(`a local webcodecs-node-work/x86-sandbox checkout`, "v2"). Only the names,
 the cap (2 instead of 4), the image tools and these docs differ. The measured evidence for
 the design (one id = one container, the destroy/exec race fix, what `sbx` retries, limits,
 token rotation timing) is in that README; it is not copied here.
@@ -35,7 +35,7 @@ All commands take a sandbox `<id>` (`^[a-z0-9-]{1,40}$`). Same id = same machine
 files, same processes) until it is destroyed or sleeps (30 min after the last request).
 
 ```bash
-SBX=/Users/brooklyn/workspace/github/ep9/infra/x86-sandbox/sbx
+SBX=<ep9 checkout>/infra/x86-sandbox/sbx
 
 $SBX health                      # auth check
 $SBX health <id>                 # is it running? (never starts it)
@@ -101,7 +101,7 @@ with all 4 vCPU busy (2 at once: up to ~$0.80/h). An idle box bills until it sle
 ## Deploy
 
 ```bash
-cd /Users/brooklyn/workspace/github/ep9/infra/x86-sandbox
+cd <ep9 checkout>/infra/x86-sandbox
 export CLOUDFLARE_ACCOUNT_ID=6db7cbc0423b5d56af93d13e4e2b469b
 npm ci && npm run types && npx tsc --noEmit          # types file is generated, git-ignored
 npx wrangler deploy                                  # OrbStack Docker builds the linux/amd64 image

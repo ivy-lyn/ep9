@@ -1,6 +1,6 @@
 // ep9-x86-sandbox: authenticated x86_64 Linux sandbox for ep9 test / bench / debug.
 // Copied from the webcodecs-x86-sandbox-v2 harness
-// (/Users/brooklyn/workspace/github/webcodecs-node-work/x86-sandbox); only the
+// (a local webcodecs-node-work/x86-sandbox checkout); only the
 // names, the cap and these comments differ.
 //
 // Shape (Sandbox SDK 1.0 style, see https://developers.cloudflare.com/sandbox/reference/):
