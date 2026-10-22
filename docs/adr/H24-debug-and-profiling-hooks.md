@@ -63,7 +63,7 @@ Copied from the plan row: lazy position tables, kept ScopeInfo, a debug bytecode
 
 ## Validation
 
-- M0: the `ep9_vm` and bytecodegen checks above; Spike B checks (c) and (d) in the CI step "Spike B structural gate" on all 4 runners (macOS arm64, Linux x64, Linux arm64, Windows x64; no check is skipped on Windows, `.github/workflows/ci.yml:384-390`).
+- M0: the `ep9_vm` and bytecodegen checks above; Spike B checks (c) and (d) in the CI step "Spike B structural gate" on all 4 runners (macOS arm64, Linux x64, Linux arm64, Windows x64; no check is skipped on Windows, `.github/workflows/ci.yml:390-396`).
 - M4: CDP Debugger tests per mode. M6: the sampler walks mixed T0, JIT and Rust stacks. A2: unit maps.
 
 ## Open questions
@@ -87,6 +87,7 @@ Copied from the plan row: lazy position tables, kept ScopeInfo, a debug bytecode
 | 2026-10-22 | clarify | Validation: Spike B checks (c) and (d) run on all 4 CI runners since M0 month 2 P2 (the CI spikes job), not on macOS arm64 and Linux arm64 only. No check changes | P4-ACCEPT-3 |
 | 2026-10-22 | clarify | M0 rules R1 and R2, As built column: the Spike B facts (the JIT frame record; the table function stores the offset and publishes fp through `Runtime::enter`). The rules do not change. No check changes | P4-ACCEPT-3 |
 | 2026-10-22 | clarify | 2 `path:line` references moved to the code after the M2-P4 merge (drift script, [I15]). No check changes | P4 integration fixer |
+| 2026-10-22 | clarify | 1 `.github/workflows/ci.yml` line reference moved down 6 lines after the setup-node step (M2-P4-CI-NODE24; drift script, [I15]). No check changes. | orchestrator |
 
 ## Review record
 
