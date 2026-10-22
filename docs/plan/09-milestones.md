@@ -340,7 +340,7 @@ Roles: lead/front end, GC, VM, JIT/platform, runtime, AOT. Agents led by an orch
 
 **M0, months 2-3.**
 - Bytecode for the rest of the language: destructuring, classes with private names, spread, iterators, generators/async, labels, `with`/eval slow paths, Annex B semantics.
-- `compile_eval` and `compile_function_ctor` (Nova-style wrapper until the oxc fix lands).
+- `compile_eval` and `compile_function_ctor`, with workarounds until the oxc fixes land: eval parses the text as a Script with no wrapper and drops only the allowed nodes' errors (`eval.rs` E1); `Function()` uses a three-parse wrapper check (`function_ctor.rs` F1).
 - The oxc depth-counter patch: upstream PR first, local patch if needed.
 - Realms, `$262`, interrupts, and the minimal intrinsics the harness needs.
 - **Spike B + SP-Unit.** Spike B places the JIT frames by the D21 rule (one round trip ≤ 18 release-expansion dispatches of the loop kernel keeps native-stack JIT frames).

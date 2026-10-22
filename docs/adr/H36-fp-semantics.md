@@ -118,7 +118,7 @@ The "bit-equal to d8" column comes from one host (macOS arm64) and about 15k inp
 | H36-Q2 | Ban `powi`? | Closed: yes (clippy + `__powidf2` symbol); `**` and `Math.pow` use `pow_js` |
 | H36-Q3 | Own port or pinned crate? | Closed: own vendored CR port in `ep9_math` (CORE-MATH algorithms, pxfm seed, no NOTICE file) |
 | H36-Q4 | ToInt32 helper and FJCVTZS | Closed: `ep9_value::to_int32`; FJCVTZS allowed when JSCVT is present (JIT: CPU; AOT: unit target) |
-| H36-Q5 | Canonical NaN | Owned by H06-Q3. H36 needs no particular pattern |
+| H36-Q5 | Canonical NaN | Closed with H06-Q3: the canonical NaN is `PURE_NAN_BITS` 0x7FF8_0000_0000_0000 (`crates/ep9_value/src/value.rs:39`); every boxed NaN is purified to it. H36 needs no other pattern |
 | H36-Q6 | Rules row 5 (golden table + 1M-input SHA-256 per function) is not built: `ep9_math` has value tests only (for example `fmod_edges`, `pow_js_spec_special_values`, `soft_vs_hw_quick`), and its test-only `ep9_bytecode` dependency (for SHA-256) has no user. When does it land, and does it cover the exact v0 functions? | Open (P2-ACCEPT-1, 2026-10-22). Needed before the first CR function (M1); owner VM lead |
 
 ## Reopens if
@@ -145,6 +145,8 @@ The "bit-equal to d8" column comes from one host (macOS arm64) and about 15k inp
 | 2026-10-22 | clarify | Crates line: `ep9_builtins` (one crate until M1a) and `ep9_numconv` (planned; today a module of `ep9_vm`). Rules row 1 names the `ep9_builtins` copy of the bans and its test. Rules row 5 says that its check is not built yet; new Open question H36-Q6. Follow-ups and Validation say that `clippy.toml` and `fp-check` landed in M0 wk4. No check changes | P2-ACCEPT-1 |
 | 2026-10-22 | clarify | Kind cells set to rewrite (README §3.3) in two rows. 2026-10-20 "Critic changes": it replaced an option that the Q1-Q4 fill had chosen (a NOTICE file in `ep9_math`; decisions log H36-libm-src: "change taken"). 2026-10-21 "Correction to item (4)": it changed the result bits of the built `SoftFma` (code change in `exact.rs`; no Open question) | P2-ACCEPT-1 (critic row); P2 review fixer (Codex A2: SoftFma row, kind cells) |
 | 2026-10-22 | clarify | Status Draft -> Accepted (M2-P3-ACCEPT). The §3.1 review record is complete: row 1 P2-ACCEPT-1, row 2 Codex (M2-P2-REVIEW), row 3 P3-ACCEPT-2, row 4 data. The Codex run on the P3 ADR slice (merge 6146ec5) had no finding on this ADR. The decision text does not change | orchestrator |
+| 2026-10-22 | clarify | H36-Q5 text: closed with H06-Q3 (filled in P3, M2-P3-OQ-H06-Q3): the canonical NaN is `PURE_NAN_BITS` 0x7FF8_0000_0000_0000, and `Value::double` (so also `Value::number`) boxes every NaN as it (`crates/ep9_value/src/value.rs:92-97`; test `nan_payloads_are_purified`). The Status line already said "Q5 closes with H06-Q3". No decision, rule or check changes. Accepted-path change (README §3.2: orchestrator + review record) | P4 review fixer (docs) |
+| 2026-10-22 | clarify | Row added for 077d1fe (ADRLINE `--fix` after the P3 merges), which had none: the review record row 3 ref of `clippy_toml_repeats_the_root_bans` moved from `table.rs:165` to `crates/ep9_builtins/tests/table.rs:169` (the test moved down 4 lines). No check changes. Accepted-path change (README §3.2: orchestrator + review record) | P4 review fixer (docs) |
 
 ## Review record
 

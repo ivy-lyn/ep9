@@ -173,7 +173,8 @@ Status runs: draft -> ready (all 3 checks pass) -> handed over (in a status repo
 |---|---|---|---|---|---|
 | [`oxc-eval-parse-options.md`](../upstream/oxc-eval-parse-options.md) | oxc | #11793 | Eval-context early errors; M1 exit; P1 | Script parse (no wrapper) that drops only the allowed nodes' errors, plus post-checks (`eval.rs` E1), then a local patch | ready (2026-10-21; checked by P0-OXC-VERIFY) |
 | [`oxc-depth-limit.md`](../upstream/oxc-depth-limit.md) | oxc | #21953, #24375 | Depth error instead of abort; M1 exit; P1 | Bracket pre-scan, sized stack, AST-depth pass (M0) | ready (2026-10-21; checked by P0-OXC-VERIFY) |
-| [`oxc-function-constructor.md`](../upstream/oxc-function-constructor.md) | oxc | none yet | Parse Function() parameters and body apart; M1 exit | Nova's single-script check | ready (2026-10-21; checked by P0-OXC-VERIFY) |
+| [`oxc-function-constructor.md`](../upstream/oxc-function-constructor.md) | oxc | none yet | Parse Function() parameters and body apart; M1 exit | Three parses (`function_ctor.rs` F1): the parameter text and the body text each in a wrapper whose shape is checked, then the joined text through `compile_eval` | ready (2026-10-21; checked by P0-OXC-VERIFY) |
+| [`oxc-let-as-label.md`](../upstream/oxc-let-as-label.md) | oxc | none yet | `let: 42` as a label in sloppy code (test262 `staging/sm/syntax/let-as-label.js`); no gate | None; the test stays an expected failure | draft (2026-10-22) |
 
 Draft template (fields): project and ref; status; ep9 need (milestone, gate, due date); workaround and local patch count after it (n/3); verified by (an agent role that did not write it, date); repro on the pinned version; repro on upstream main (date, commit); standalone text to post.
 
