@@ -16,8 +16,10 @@
 //! Routing (OBJECT_LAYOUT 3, P0-D7): the two exotic kinds of month 3 replace internal methods
 //! (§10.4.4, §10.4.6). Each hook here ([`get`], [`own_property`], [`own_attrs`]) and in
 //! `property.rs` ([`set`], [`define_own_property`], [`delete`], [`own_property_keys`]) makes
-//! one kind test ([`is_routed`]) and sends those kinds to their file, out of line. A routed
-//! hook that answers `None` means "ordinary": in M3-P0 every routed hook is a stub that does.
+//! one kind test ([`is_routed`]) and sends those kinds to their file, out of line. `[[Set]]`
+//! is routed at its start and at each routed prototype of its walk (§10.1.9.2 step 1.b). A
+//! routed hook that answers `None` means "ordinary": in M3-P0 every routed hook is a stub
+//! that does.
 
 use crate::conv::{Res, num};
 use crate::descriptor::Desc;
@@ -81,25 +83,29 @@ pub(crate) fn function_prototype(rt: &Runtime, f: u64) -> u64 {
 
 /// The value of an exotic own property of `o` for a get: an array's `length` or element, a
 /// String wrapper's `length` or character, or a constructor's lazy `prototype` (made here).
-/// `None` if `key` names none of them. GC point (the lazy `prototype`). Always inlined into
-/// the `[[Get]]` walks (`property::get_with_receiver`, `property::get_data_from`).
+/// `None` if `key` names none of them. A routed kind's hook may throw (`Some(Err)`: a
+/// namespace binding in its TDZ, §10.4.6.8); the others never do. GC point (the lazy
+/// `prototype`, a routed hook). Always inlined into the `[[Get]]` walks
+/// (`property::get_with_receiver`, `property::get_data_from`).
 #[inline(always)]
-pub(crate) fn get(cx: &mut Cx, o: u64, key: u64, how: Probe) -> Option<u64> {
+pub(crate) fn get(cx: &mut Cx, o: u64, key: u64, how: Probe) -> Option<Res<u64>> {
     let k = kind::cell_kind(o);
     if k == kind::ARRAY.get() {
         if is_key(cx.rt(), key, how, Atom::Length) {
-            return Some(num(f64::from(object::array_len(o))));
+            return Some(Ok(num(f64::from(object::array_len(o)))));
         }
-        return array_index_of(key).and_then(|i| object::array_get(o, i));
+        return array_index_of(key)
+            .and_then(|i| object::array_get(o, i))
+            .map(Ok);
     }
     if k == kind::FUNCTION.get() {
         if is_lazy_prototype(cx.rt(), o, key, how) {
-            return Some(function_prototype(cx.rt(), o));
+            return Some(Ok(function_prototype(cx.rt(), o)));
         }
         return None;
     }
     if k == kind::PRIMITIVE_WRAPPER.get() {
-        return wrapper::string_own_property(cx.rt(), o, key).map(|(v, _)| v);
+        return wrapper::string_own_property(cx.rt(), o, key).map(|(v, _)| Ok(v));
     }
     if is_routed(k) {
         return routed_get(cx, k, o, key, how);
@@ -121,17 +127,18 @@ pub(crate) enum Exotic {
 
 /// The exotic own property `key` of `o` (array `length` excluded: the callers handle it):
 /// (value, attribute bits, where). A constructor's lazy `prototype` is made here and then is
-/// an ordinary property, so it gives `None`. GC point.
+/// an ordinary property, so it gives `None`. A routed kind's hook may throw (`Some(Err)`:
+/// §10.4.6.5 step 4 reads the binding); the others never do. GC point.
 pub(crate) fn own_property(
     cx: &mut Cx,
     o: u64,
     key: u64,
     how: Probe,
-) -> Option<(u64, i32, Exotic)> {
+) -> Option<Res<(u64, i32, Exotic)>> {
     let k = kind::cell_kind(o);
     if k == kind::ARRAY.get() {
         let i = array_index_of(key)?;
-        return object::array_get(o, i).map(|v| (v, attr::DEFAULT, Exotic::Element(i)));
+        return object::array_get(o, i).map(|v| Ok((v, attr::DEFAULT, Exotic::Element(i))));
     }
     if k == kind::FUNCTION.get() {
         if is_lazy_prototype(cx.rt(), o, key, how) {
@@ -140,10 +147,12 @@ pub(crate) fn own_property(
         return None;
     }
     if k == kind::PRIMITIVE_WRAPPER.get() {
-        return wrapper::string_own_property(cx.rt(), o, key).map(|(v, a)| (v, a, Exotic::Wrapper));
+        return wrapper::string_own_property(cx.rt(), o, key)
+            .map(|(v, a)| Ok((v, a, Exotic::Wrapper)));
     }
     if is_routed(k) {
-        return routed_own_property(cx, k, o, key, how).map(|(v, a)| (v, a, Exotic::Routed));
+        return routed_own_property(cx, k, o, key, how)
+            .map(|r| r.map(|(v, a)| (v, a, Exotic::Routed)));
     }
     None
 }
@@ -196,7 +205,7 @@ pub(crate) fn is_routed(k: u8) -> bool {
 }
 
 #[inline(never)]
-fn routed_get(cx: &mut Cx, k: u8, o: u64, key: u64, how: Probe) -> Option<u64> {
+fn routed_get(cx: &mut Cx, k: u8, o: u64, key: u64, how: Probe) -> Option<Res<u64>> {
     if k == kind::ARGUMENTS.get() {
         crate::arguments::get(cx, o, key, how)
     } else {
@@ -205,7 +214,13 @@ fn routed_get(cx: &mut Cx, k: u8, o: u64, key: u64, how: Probe) -> Option<u64> {
 }
 
 #[inline(never)]
-fn routed_own_property(cx: &mut Cx, k: u8, o: u64, key: u64, how: Probe) -> Option<(u64, i32)> {
+fn routed_own_property(
+    cx: &mut Cx,
+    k: u8,
+    o: u64,
+    key: u64,
+    how: Probe,
+) -> Option<Res<(u64, i32)>> {
     if k == kind::ARGUMENTS.get() {
         crate::arguments::own_property(cx, o, key, how)
     } else {
@@ -312,12 +327,27 @@ fn routed_own_property_keys(cx: &mut Cx, k: u8, o: u64) -> Option<u64> {
 
 /// Which routed hooks ran on this thread (test builds only; a no-op otherwise): the routing
 /// tests (V3-A13) check that each hook reaches its stub. The stubs call [`probe::note`]; their
-/// owners drop the calls when they fill them.
+/// owners drop the calls when they fill them. Test builds also have a switch that makes the
+/// module.rs value stubs throw ([`probe::set_throw`]).
 pub(crate) mod probe {
     #[cfg(test)]
     thread_local! {
         static HITS: core::cell::RefCell<Vec<&'static str>> =
             const { core::cell::RefCell::new(Vec::new()) };
+        static THROW: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+    }
+
+    /// While `on`, the module.rs `get` and `own_property` stubs throw a ReferenceError
+    /// ("probe") on this thread, as a namespace binding in its TDZ does (VF-TDZ).
+    #[cfg(test)]
+    pub(crate) fn set_throw(on: bool) {
+        THROW.with(|t| t.set(on));
+    }
+
+    /// True while [`set_throw`] is on.
+    #[cfg(test)]
+    pub(crate) fn throwing() -> bool {
+        THROW.with(|t| t.get())
     }
 
     /// Records a hook (test builds); nothing otherwise.

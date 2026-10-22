@@ -17,7 +17,7 @@ use crate::frame::{NULL, UNDEFINED, int32_bits};
 use crate::object::{self, argsf, attr, cell, fun, modf, nsf, obj, realmf};
 use crate::ordered_table::{self, MAP_WIDTH, SET_WIDTH, otf};
 use crate::runtime::{Root, Runtime, val};
-use crate::{Dispatch, Isolate, arguments, kinds, module, property, versions};
+use crate::{Dispatch, Isolate, arguments, kinds, module, property, props, shape, versions};
 
 // ---- versions, kinds, fixed fields ------------------------------------------------------------
 
@@ -341,6 +341,39 @@ fn new_kinds_survive_a_gc_with_every_field_traced() {
     }
 }
 
+/// F2: a new MODULE record has no `[[EvaluationError]]`: the hole (H17: hole = none, since
+/// `throw undefined` is a legal error); every other field is undefined. The hole survives a
+/// collection (the tracer and the heap verifier accept it in a MODULE slot).
+#[test]
+fn a_new_module_record_has_no_evaluation_error() {
+    for stress in [false, true] {
+        on_big_stack(move || {
+            let iso = isolate(config(Dispatch::DEFAULT, stress));
+            let rt: &Runtime = &iso.rt;
+            let m = module::new_module_record(rt);
+            assert_eq!(
+                object::record_get(m, modf::EVALUATION_ERROR),
+                crate::frame::HOLE
+            );
+            for off in (8..modf::SIZE).step_by(8) {
+                if off != modf::EVALUATION_ERROR {
+                    assert_eq!(object::record_get(m, off), UNDEFINED, "+{off}");
+                }
+            }
+            let h = rt.heap.new_global(val(m));
+            rt.heap.collect();
+            let m = rt.heap.global(h).to_bits();
+            assert_eq!(
+                object::record_get(m, modf::EVALUATION_ERROR),
+                crate::frame::HOLE,
+                "after a collection"
+            );
+            iso.verify_heap().unwrap();
+            rt.heap.drop_global(h);
+        });
+    }
+}
+
 /// An ORDERED_TABLE made with the weak flag keeps it (through GCs); its size is read from the
 /// cell: 56 + 8 x (buckets + capacity x width).
 #[test]
@@ -386,7 +419,7 @@ fn hooks_hit(iso: &mut Isolate, o: u64) -> Vec<&'static str> {
     let key = crate::atoms::intern_str(rt, "x");
     probe::take();
     assert_eq!(property::get(cx, o, key).unwrap(), UNDEFINED);
-    assert!(property::get_own_property(cx, o, key).is_none());
+    assert!(property::get_own_property(cx, o, key).unwrap().is_none());
     assert!(!property::has_own_property(cx, o, key));
     assert!(property::set_with_receiver(cx, o, key, int32_bits(1), o).unwrap());
     let desc = Desc::data(int32_bits(2), attr::DEFAULT);
@@ -446,6 +479,165 @@ fn each_hook_sends_the_routed_kinds_to_their_stubs() {
         iso.collect_garbage();
         iso.verify_heap().unwrap();
     });
+}
+
+/// A new routed object of `kind` ("arguments": an ARGUMENTS object that inherits from
+/// %Object.prototype%; "module": a MODULE_NAMESPACE object with no exports).
+fn new_routed(rt: &Runtime, kind: &str) -> u64 {
+    if kind == "arguments" {
+        return arguments::new_arguments_object(rt, rt.root(Root::ObjectPrototype));
+    }
+    let m = module::new_module_record(rt);
+    let names = object::new_list(rt, 0, UNDEFINED);
+    module::new_namespace(rt, m, names)
+}
+
+/// True if `hits` holds the hook `want`.
+fn hit(hits: &[&str], want: &str) -> bool {
+    hits.contains(&want)
+}
+
+/// CX-VM1, CX-VM2, VF-FORIN: the integer-index paths (`get_index`, `has_index`,
+/// `delete_index`), the `[[Set]]` walk through a routed prototype (§10.1.9.2 step 1.b:
+/// parent.[[Set]]) and `for-in` (§14.7.5.9: [[OwnPropertyKeys]]) reach the routed hooks, on
+/// the routed object and on a child that inherits from it. A routed object that becomes a
+/// prototype sets `shape::proto_index_keys`: its index keys are not in its storage. A plain
+/// object and its child reach no hook and leave the flag off.
+#[test]
+fn index_paths_set_walk_and_for_in_reach_the_routed_hooks() {
+    for kind in ["arguments", "module", "plain"] {
+        on_big_stack(move || {
+            let mut iso = isolate(config(Dispatch::DEFAULT, true));
+            let cx: &mut crate::interp::Cx = &mut iso.cx;
+            let rt: &Runtime = &iso.rt;
+            assert!(!shape::proto_index_keys(rt), "a fresh isolate");
+            let routed = kind != "plain";
+            let o = if routed {
+                new_routed(rt, kind)
+            } else {
+                object::new_plain_object(rt)
+            };
+            let ho = rt.heap.new_global(val(o));
+            // The hooks that a path on `o` or its child must hit (none for a plain object).
+            let check = |hits: Vec<&'static str>, hook: &str, what: &str| {
+                if routed {
+                    let want = format!("{kind} {hook}");
+                    assert!(hit(&hits, &want), "{what}: {want} not in {hits:?}");
+                } else {
+                    assert_eq!(hits, Vec::<&str>::new(), "{what}");
+                }
+            };
+            // CX-VM1: the index paths on the object itself.
+            probe::take();
+            assert_eq!(property::get_index(cx, o, 0).unwrap(), UNDEFINED);
+            check(probe::take(), "get", "get_index");
+            assert!(!property::has_index(cx, o, 0));
+            check(probe::take(), "own_attrs", "has_index");
+            assert!(property::delete_index(cx, o, 0, true).unwrap());
+            check(probe::take(), "delete", "delete_index");
+            // ... and on a child: `o` becomes a prototype.
+            let child = object::new_object(rt, o);
+            let hc = rt.heap.new_global(val(child));
+            assert_eq!(shape::proto_index_keys(rt), routed, "{kind} as a prototype");
+            probe::take();
+            assert_eq!(property::get_index(cx, child, 0).unwrap(), UNDEFINED);
+            check(probe::take(), "get", "get_index on the child");
+            assert!(!property::has_index(cx, child, 0));
+            check(probe::take(), "own_attrs", "has_index on the child");
+            // CX-VM2: the set walk asks the routed prototype's [[Set]]; the stub answers
+            // OrdinarySet, so the store lands on the receiver.
+            let x = crate::atoms::intern_str(rt, "x");
+            assert!(property::set_with_receiver(cx, child, x, int32_bits(1), child).unwrap());
+            check(probe::take(), "set", "the set walk");
+            assert_eq!(
+                props::own_get(child, x),
+                Some((int32_bits(1), attr::DEFAULT))
+            );
+            assert!(props::own_get(o, x).is_none());
+            // VF-FORIN: for-in asks [[OwnPropertyKeys]] of the routed object, also as a
+            // prototype.
+            let keys = property::for_in_keys(cx, o).unwrap();
+            assert_eq!(object::array_len(keys), 0);
+            check(probe::take(), "own_property_keys", "for-in");
+            let keys = property::for_in_keys(cx, child).unwrap();
+            assert_eq!(object::array_len(keys), 1, "the child's x");
+            assert_eq!(object::array_get(keys, 0), Some(x));
+            check(probe::take(), "own_property_keys", "for-in on the child");
+            for h in [ho, hc] {
+                rt.heap.drop_global(h);
+            }
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
+}
+
+/// Takes the pending exception and checks that it is the module.rs probe's ReferenceError.
+fn take_probe_error(cx: &mut crate::interp::Cx, what: &str) {
+    let rt = cx.rt();
+    let e = rt.take_pending();
+    assert!(object::is_object(e), "{what}: an error is pending");
+    let name = crate::atoms::intern_str(rt, "name");
+    let n = property::get_from(cx, e, name).unwrap();
+    let message = crate::atoms::intern_str(cx.rt(), "message");
+    let m = property::get_from(cx, e, message).unwrap();
+    assert_eq!(
+        (
+            crate::string::to_rust_string(n),
+            crate::string::to_rust_string(m)
+        ),
+        ("ReferenceError".to_string(), "probe".to_string()),
+        "{what}"
+    );
+}
+
+/// VF-TDZ: the routed value hooks can throw. A namespace `[[Get]]` and `[[GetOwnProperty]]`
+/// of an uninitialized binding throw a ReferenceError (§10.4.6.8, §10.4.6.5); `[[Get]]`,
+/// `[[GetOwnProperty]]`, the builtin ABI's HasOwnProperty and `for-in` pass the throw on.
+/// The module.rs stubs throw while `probe::set_throw(true)` (test builds only).
+#[test]
+fn routed_value_hooks_can_throw() {
+    for stress in [false, true] {
+        on_big_stack(move || {
+            let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+            let cx: &mut crate::interp::Cx = &mut iso.cx;
+            let rt: &Runtime = &iso.rt;
+            let ns = new_routed(rt, "module");
+            let hn = rt.heap.new_global(val(ns));
+            let x = crate::atoms::intern_str(rt, "x");
+            // `x` as an ordinary property (the define stub answers "ordinary"), so the
+            // ordinary `[[OwnPropertyKeys]]` lists it for for-in.
+            let desc = Desc::data(int32_bits(1), attr::DEFAULT);
+            assert!(property::define_own_property(cx, ns, x, desc).unwrap());
+            probe::set_throw(true);
+            assert!(property::get(cx, ns, x).is_err());
+            take_probe_error(cx, "[[Get]]");
+            assert!(property::get_own_property(cx, ns, x).is_err());
+            take_probe_error(cx, "[[GetOwnProperty]]");
+            {
+                let mut abi = crate::Cx::new(cx);
+                let o: crate::Local<'_, crate::JsObject> = crate::Local::from_bits(ns);
+                assert!(abi.has_own_property(o, "x").is_err());
+            }
+            take_probe_error(cx, "HasOwnProperty (builtin ABI)");
+            assert!(property::for_in_keys(cx, ns).is_err());
+            take_probe_error(cx, "for-in");
+            // `get_data_from` runs no JS and cannot throw: a hook's throw is no data property.
+            assert_eq!(property::get_data_from(cx, ns, x), None);
+            assert_eq!(rt.pending(), 0, "get_data_from leaves nothing pending");
+            probe::set_throw(false);
+            assert_eq!(property::get(cx, ns, x).unwrap(), int32_bits(1));
+            assert!(property::get_own_property(cx, ns, x).unwrap().is_some());
+            {
+                let mut abi = crate::Cx::new(cx);
+                let o: crate::Local<'_, crate::JsObject> = crate::Local::from_bits(ns);
+                assert!(abi.has_own_property(o, "x").unwrap());
+            }
+            rt.heap.drop_global(hn);
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
 }
 
 /// Runs `make` under every dispatch, with and without GC stress, on its own thread; returns

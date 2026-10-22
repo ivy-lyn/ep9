@@ -449,7 +449,7 @@ fn check_all(cx: &mut Cx, fp: *mut u64) -> Res<()> {
             continue;
         }
         let name = fi.constant(k);
-        let definable = match property::get_own_property(cx, g, name) {
+        let definable = match property::get_own_property(cx, g, name)? {
             None => property::is_extensible(g),
             Some(d) => {
                 d.configurable == Some(true)
@@ -568,7 +568,7 @@ pub(crate) fn declare_eval_function(
             let g = cx.rt().global();
             // CanDeclareGlobalFunction (§9.1.1.4.16), then CreateGlobalFunctionBinding
             // (§9.1.1.4.18) with D = true.
-            let desc = match property::get_own_property(cx, g, name) {
+            let desc = match property::get_own_property(cx, g, name)? {
                 None => {
                     if !property::is_extensible(g) {
                         return Err(cannot_declare(cx, name, false));

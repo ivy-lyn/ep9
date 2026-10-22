@@ -197,7 +197,7 @@ pub(crate) mod nsf {
 /// MODULE and M3-P3 IMPORT-TLA (`module.rs`).
 #[allow(dead_code)] // filled by M3-P2 MODULE
 pub(crate) mod modf {
-    /// `[[Status]]` (int32).
+    /// `[[Status]]` (int32; undefined until MODULE fills it).
     pub const STATUS: usize = 8;
     /// `[[Environment]]`: the module's CONTEXT, or undefined before linking.
     pub const ENVIRONMENT: usize = 16;
@@ -217,7 +217,7 @@ pub(crate) mod modf {
     pub const DFS_ANCESTOR_INDEX: usize = 72;
     /// `[[CycleRoot]]`: a MODULE cell, or undefined.
     pub const CYCLE_ROOT: usize = 80;
-    /// `[[HasTLA]]` (a boolean).
+    /// `[[HasTLA]]` (a boolean; undefined until MODULE fills it).
     pub const HAS_TLA: usize = 88;
     /// `[[AsyncEvaluationOrder]]` (int32, or undefined for unset, or done).
     pub const ASYNC_EVALUATION_ORDER: usize = 96;

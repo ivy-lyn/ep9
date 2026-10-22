@@ -51,14 +51,19 @@ pub(crate) fn new_arguments_object(rt: &Runtime, proto: u64) -> u64 {
 // ---- exotic hooks (`exotic.rs`): `None` = no exotic own property, take the ordinary path ----
 
 /// `[[Get]]` of an exotic own property (§10.4.4.3). Stub: none.
-pub(crate) fn get(_cx: &mut Cx, _o: u64, _key: u64, _how: Probe) -> Option<u64> {
+pub(crate) fn get(_cx: &mut Cx, _o: u64, _key: u64, _how: Probe) -> Option<Res<u64>> {
     probe::note("arguments get");
     None
 }
 
 /// `[[GetOwnProperty]]` of an exotic own property (§10.4.4.1): (value, attribute bits).
 /// Stub: none.
-pub(crate) fn own_property(_cx: &mut Cx, _o: u64, _key: u64, _how: Probe) -> Option<(u64, i32)> {
+pub(crate) fn own_property(
+    _cx: &mut Cx,
+    _o: u64,
+    _key: u64,
+    _how: Probe,
+) -> Option<Res<(u64, i32)>> {
     probe::note("arguments own_property");
     None
 }
