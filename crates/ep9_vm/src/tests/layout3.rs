@@ -341,6 +341,39 @@ fn new_kinds_survive_a_gc_with_every_field_traced() {
     }
 }
 
+/// F2: a new MODULE record has no `[[EvaluationError]]`: the hole (H17: hole = none, since
+/// `throw undefined` is a legal error); every other field is undefined. The hole survives a
+/// collection (the tracer and the heap verifier accept it in a MODULE slot).
+#[test]
+fn a_new_module_record_has_no_evaluation_error() {
+    for stress in [false, true] {
+        on_big_stack(move || {
+            let iso = isolate(config(Dispatch::DEFAULT, stress));
+            let rt: &Runtime = &iso.rt;
+            let m = module::new_module_record(rt);
+            assert_eq!(
+                object::record_get(m, modf::EVALUATION_ERROR),
+                crate::frame::HOLE
+            );
+            for off in (8..modf::SIZE).step_by(8) {
+                if off != modf::EVALUATION_ERROR {
+                    assert_eq!(object::record_get(m, off), UNDEFINED, "+{off}");
+                }
+            }
+            let h = rt.heap.new_global(val(m));
+            rt.heap.collect();
+            let m = rt.heap.global(h).to_bits();
+            assert_eq!(
+                object::record_get(m, modf::EVALUATION_ERROR),
+                crate::frame::HOLE,
+                "after a collection"
+            );
+            iso.verify_heap().unwrap();
+            rt.heap.drop_global(h);
+        });
+    }
+}
+
 /// An ORDERED_TABLE made with the weak flag keeps it (through GCs); its size is read from the
 /// cell: 56 + 8 x (buckets + capacity x width).
 #[test]

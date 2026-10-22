@@ -22,9 +22,13 @@ use crate::kinds as kind;
 use crate::object::{self, init, nsf};
 use crate::runtime::Runtime;
 
-/// A new MODULE record: every field undefined. GC point.
+/// A new MODULE record: `[[EvaluationError]]` is the hole (none, H17); every other field is
+/// undefined (STATUS, HAS_TLA and UNIT are set by MODULE when it fills the record). GC point.
 pub(crate) fn new_module_record(rt: &Runtime) -> u64 {
-    object::new_record(rt, kind::MODULE)
+    let m = object::new_record(rt, kind::MODULE);
+    // No GC point between the allocation and this store.
+    object::record_set(rt, m, object::modf::EVALUATION_ERROR, crate::frame::HOLE);
+    m
 }
 
 /// A new MODULE_NAMESPACE object for `module` (a MODULE cell) with the export names
