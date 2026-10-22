@@ -8,7 +8,8 @@
 #        list of each JITed function, then runs checks (a)-(h)
 #     3  debug build (panic = "unwind"): `spike-b structural h`, the abort at the
 #        non-unwinding table-function boundary (M2-P1-NE-PANIC)
-#     4  bench-verdict-test.sh: the verdict logic of bench.sh on fake inputs (no bench run)
+#     4  bench-verdict-test.sh: the verdict logic of bench.sh on fake inputs (no bench run);
+#        SKIP when node is not on PATH
 #   gate.sh              the same as `gate.sh structural` (later phases add more steps)
 #
 # Env: CARGO_TARGET_DIR (default: spikes/spike-b/target),
@@ -51,7 +52,14 @@ structural() {
   else
     record "structural/debug-$which" FAIL "no debug binary"
   fi
-  run "bench-verdict" bash "$here/bench-verdict-test.sh"
+  # The test drives bench.sh's host check, which needs node. The gate host and the CI runners
+  # have node; a bare container (local CI linux arm64 Docker) does not, and the logic it tests
+  # is the same shell on every host.
+  if command -v node >/dev/null; then
+    run "bench-verdict" bash "$here/bench-verdict-test.sh"
+  else
+    record "bench-verdict" SKIP "no node on PATH"
+  fi
 }
 
 step="${1:-structural}"
