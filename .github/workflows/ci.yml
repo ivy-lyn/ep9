@@ -18,7 +18,7 @@
 #                      SP-Dispatch speed gates: recorded, not blocking (H15 ADR);
 #                      cgoto.c built with zig cc 0.17.0 (H15-Q3);
 #                      Spike B structural gate (checks (a)-(h));
-#                      Spike B placement (b) gate (gate.sh b; SKIP on x86-64);
+#                      Spike B placement (b) gate (gate.sh b; aarch64 and x86-64);
 #                      Spike B Win64 unwind (windows-x64; tests/win64_unwind.rs)
 #   miri ............. Miri on ep9_value, ep9_heap and ep9_math      (Linux x64)
 #   dep-guards ....... cargo tree / metadata guards; cargo deny      (Linux x64)
@@ -396,8 +396,8 @@ jobs:
         run: bash spikes/spike-b/gate.sh structural
       # Spike B placement (b) gate (plan-v6 P4-PLACEMENT-B, D11): the jit_b unit tests, then
       # `spike-b structural-b all` (release) and `structural-b h` (debug). Placement (b) is built
-      # for AArch64 only; on x86-64 each (b) check prints SKIP with the Refusal text and the step
-      # passes.
+      # for AArch64 and x86-64 (M3-P0 P0-B-X64), so a SKIP line fails the step on every runner
+      # here (P0-D9).
       - name: Spike B placement (b) gate
         if: ${{ !cancelled() }}
         run: bash spikes/spike-b/gate.sh b
