@@ -10,6 +10,8 @@
 //! spike-b bench [--tau ..] | run <cfg> | k | ratio
 //!                                           src/bench.rs (P3-SPIKEB-BENCH)
 //! spike-b unit <args>                       src/unit/mod.rs (P4-SP-UNIT)
+//! spike-b structural-b <ops | a..h | all>   the checks on placement (b) code (gate.sh b;
+//!                                           src/jit_b/structural.rs, P4-PLACEMENT-B)
 //! ```
 
 use std::process::ExitCode;
@@ -116,6 +118,7 @@ fn main() -> ExitCode {
         "bench" => return ExitCode::from(spike_b::bench::main(rest).clamp(0, 255) as u8),
         "unit" => return ExitCode::from(spike_b::unit::main(rest).clamp(0, 255) as u8),
         "structural" => return spike_b::structural::main(rest),
+        "structural-b" => return spike_b::jit_b::structural::main(rest),
         "run" => run(rest),
         "ops" => ops(rest),
         _ => return usage(),

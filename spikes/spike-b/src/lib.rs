@@ -11,8 +11,8 @@
 //! | [`harness`] | compile JS, make isolates, JIT and install functions, capture `print` | P2-SPIKE-B |
 //! | [`structural`] | the gate checks (a)-(h) of `gate.sh structural` | P2-SPIKE-B |
 //! | [`bench`](mod@bench) | `spike-b bench`: the D21 round-trip bench (bench.sh; protocol §5-§8) | P3-SPIKEB-BENCH |
-//! | [`jit_b`] | placement (b) (stub) | P3-SPIKEB-BENCH, only after a "fail" verdict |
-//! | [`unit`](mod@unit) | `spike-b unit` (stub) | P4-SP-UNIT |
+//! | [`jit_b`] | placement (b): JIT frames on the VM stack, entered from `call_fast` (AArch64); `gate.sh b` | P4-PLACEMENT-B (M2-D21-FAIL) |
+//! | [`unit`](mod@unit) | `spike-b unit` (stub) | M3-P1 SP-UNIT |
 //!
 //! The protocol: `docs/measurements/2026-10-22-spike-b-protocol.md`.
 
