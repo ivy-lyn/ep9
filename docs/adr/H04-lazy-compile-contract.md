@@ -29,7 +29,8 @@ FunctionInfo { unit, function_id, flags, code, slot, ... }
   unit.functions[function_id]   source_start..source_end   UTF-8 range in the decoded source
                                 outer_scope                the scope that creates the closure
                                 kind, flags                strict, generator, async, simple params
-  unit.scopes[*]                kind, flags (NEEDS_CONTEXT, CALLS_SLOPPY_EVAL, STRICT), slot names
+  unit.scopes[*]                kind, flags (NEEDS_CONTEXT, CALLS_SLOPPY_EVAL, STRICT,
+                                PARAMETER_ENV from ABI 5), slot names
   unit.source                   the decoded source text (H05 A2)
 ```
 
@@ -96,6 +97,7 @@ FunctionInfo { unit, function_id, flags, code, slot, ... }
 | 2026-10-22 | clarify | Rules row "A call runs bytecode only through an `Interp` dispatch slot": the check cell also names the Spike B call paths of the `spike-native` build (P4-PLACEMENT-B: `call_fast`, the (b) test in `slow::call`, `native::call_at`, `native::call_from_rust`), which check the kind as the other paths do, and the `placement_b` tests that run them. No check changes | P5-ACCEPT-4 |
 | 2026-10-22 | clarify | Rules row "A call runs bytecode only through an `Interp` dispatch slot": the check cell names the one `spike-native` exception (under `Dispatch::Match` the match loop runs the bytecode of an `Opt` or `AotBaseline` callee at `OP_ENTER_B`/`OP_ENTER_A_HOT`, `native::bytecode_of`, D4); the default build has no such path. Review record row 3 gets V3. No check changes | M2-P5 fixer (Codex round 2 A2) |
 | 2026-10-22 | clarify | Review record row 2 names the P5 Codex run (slice accept4): 2 findings, A1 on H23 and A2 on this ADR (fixed c4ca7de, clarify; row 3 V3). Text only; no check changes | orchestrator |
+| 2026-10-22 | rewrite (ABI bump) | ABI 5 (M3-P0, H02 change log): the scope flag list gets `PARAMETER_ENV` (bit 3; `ScopeFlags::ALL` 0x07 -> 0x0F). The scope pass sets it on the function scope of a sloppy function with parameter expressions whose parameter list holds a direct eval (FunctionDeclarationInstantiation step 20: the parameters get an environment of their own, so the eval code sees them in EvalDeclarationInstantiation step 3.d); a body eval of `function f({a}) { eval('var a'); }` does not set it. The verifier accepts the bit only with `CALLS_SLOPPY_EVAL` on a sloppy `Function` scope. The VM reads it from M3-P2 (VM-ARGS). This answers the "direct eval in parameters" part of H04-Q4; the question stays open for the rest (M4). Tests: `scope::tests::parameter_env_marks_an_eval_in_a_sloppy_parameter_list`, `ep9_bytecode` `verifier::abi5_parameter_env_rules`, golden `fn-params-eval.txt` | P0-LANG4 (ABI steward) |
 
 ## Review record
 
