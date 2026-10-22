@@ -29,6 +29,14 @@
 //! no binding made. The first call of a run therefore reads the whole prologue of function 0
 //! (`gen_eval_program`: `LdaConstant name; Star r; CallRuntime DeclareEval*, r..`, straight-line
 //! code before the body) and checks every name; then each call creates its own binding.
+//!
+//! Not built yet (needs ABI 5): step 3.d over the parameter environment of a sloppy function
+//! with parameter expressions. FunctionDeclarationInstantiation step 20 puts its parameters in
+//! an environment of their own, between an eval in the parameters and the variable
+//! environment, so `function f(a = eval('var a')) {}` is a SyntaxError. The front end merges
+//! that environment into the function's var scope, and no unit field tells this scope from
+//! the one of `function f({a}) { eval('var a'); { let z } }` (same scopes, same flags), where
+//! the var is allowed. So such a var or function name is not a conflict here.
 
 use ep9_bytecode::{
     CodeKind, EVAL_EXT_BINDING, EvalContext, FunctionKind, Instructions, Opcode, Register,
