@@ -31,3 +31,4 @@
 0x021b   1.27         method       2       "__defineSetter__"  (%Object.prototype%.__defineSetter__ w-c)
 0x021c   1.28         method       1       "__lookupGetter__"  (%Object.prototype%.__lookupGetter__ w-c)
 0x021d   1.29         method       1       "__lookupSetter__"  (%Object.prototype%.__lookupSetter__ w-c)
+0x021e   1.30         method       0       "toLocaleString"  (%Object.prototype%.toLocaleString w-c)

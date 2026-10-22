@@ -739,3 +739,30 @@ fn annex_b_proto_and_legacy_accessor_methods() {
         assert!(is_type_error(&r), "{src}: {r:?}");
     }
 }
+
+/// Object.prototype.toLocaleString (§20.1.3.5) is Invoke(this, "toString"): a primitive
+/// `this` stays a primitive in strict code.
+#[test]
+fn to_locale_string_invokes_to_string() {
+    assert_eq!(
+        run_both(
+            "var p = Object.prototype.toLocaleString;
+             print(p.name, p.length, ({}).toLocaleString(), p.call(1), typeof p.call(true));
+             var o = {toString: function () { return 'mine'; }}; print(o.toLocaleString());
+             Boolean.prototype.toString = function () { 'use strict'; return typeof this; };
+             print(p.call(false));"
+        ),
+        lines(&[
+            "toLocaleString 0 [object Object] 1 string",
+            "mine",
+            "boolean"
+        ])
+    );
+    for src in [
+        "Object.prototype.toLocaleString.call(undefined)",
+        "Object.prototype.toLocaleString.call({toString: 1})",
+    ] {
+        let r = run_both(src);
+        assert!(is_type_error(&r), "{src}: {r:?}");
+    }
+}

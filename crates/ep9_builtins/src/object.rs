@@ -8,8 +8,8 @@
 //! Week 4 (P3-BLTA): `Object.prototype.hasOwnProperty`, `propertyIsEnumerable`,
 //! `Object.defineProperty`, `getOwnPropertyDescriptor`, `getOwnPropertyNames`, `keys`.
 //! M0 month 2 (P4-B-OBJECT): the rest of the `Object` statics but `fromEntries` and `groupBy`,
-//! `Object.prototype.isPrototypeOf`, and the Annex B `__proto__`, `__defineGetter__`,
-//! `__defineSetter__`, `__lookupGetter__` and `__lookupSetter__`.
+//! `Object.prototype.isPrototypeOf` and `toLocaleString`, and the Annex B `__proto__`,
+//! `__defineGetter__`, `__defineSetter__`, `__lookupGetter__` and `__lookupSetter__`.
 //!
 //! | Builtin | Template | Pattern |
 //! |---|---|---|
@@ -72,6 +72,7 @@ mod def {
     pub const DEFINE_SETTER: u16 = 27;
     pub const LOOKUP_GETTER: u16 = 28;
     pub const LOOKUP_SETTER: u16 = 29;
+    pub const TO_LOCALE_STRING: u16 = 30;
 }
 
 /// The builtin functions, in id order (append-only).
@@ -106,6 +107,7 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("__defineSetter__", 2, define_setter),  // 1.27
     BuiltinDef::method("__lookupGetter__", 1, lookup_getter),  // 1.28
     BuiltinDef::method("__lookupSetter__", 1, lookup_setter),  // 1.29
+    BuiltinDef::method("toLocaleString", 0, to_locale_string), // 1.30
 ];
 
 /// The intrinsics this module makes.
@@ -160,6 +162,7 @@ pub const PROPS: &[ObjectProps] = &[
                 def::PROPERTY_IS_ENUMERABLE,
             ),
             PropDef::method(PropKey::Str("isPrototypeOf"), def::IS_PROTOTYPE_OF),
+            PropDef::method(PropKey::Str("toLocaleString"), def::TO_LOCALE_STRING),
             PropDef::method(PropKey::Str("__defineGetter__"), def::DEFINE_GETTER),
             PropDef::method(PropKey::Str("__defineSetter__"), def::DEFINE_SETTER),
             PropDef::method(PropKey::Str("__lookupGetter__"), def::LOOKUP_GETTER),
@@ -248,6 +251,20 @@ fn is_prototype_of<'s>(
         }
         v = p;
     }
+}
+
+/// Object.prototype.toLocaleString ( \[ reserved1 \[ , reserved2 \] \] ) (§20.1.3.5).
+fn to_locale_string<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    _args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. Let O be the this value.
+    // 2. Return ? Invoke(O, "toString"). (Invoke: GetV, then Call with O as this; a primitive
+    //    O stays a primitive. Call throws the TypeError for a value that is not callable.)
+    let to_string = cx.get_v(this, "toString")?;
+    cx.call(to_string, this, &[])
 }
 
 /// get Object.prototype.__proto__ (§B.2.2.1.1).
