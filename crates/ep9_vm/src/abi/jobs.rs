@@ -199,7 +199,7 @@ impl<'s> Cx<'s> {
     /// (M2-P2-POLL), so an interrupt callback runs and `TerminateHandle` stops a job loop; a
     /// termination also clears the queue. A job that throws stops the checkpoint with its
     /// exception pending (`Err`); the jobs behind it stay queued. Then the rejected list drops
-    /// the promises that got a handler.
+    /// any promise that got a handler ("handle" unlinks one at once already).
     ///
     /// Only with no JS on the stack (the spec runs it when the execution context stack is
     /// empty): `Isolate::run_script` and `Isolate::call` run it after their run, and an
@@ -236,9 +236,7 @@ impl<'s> Cx<'s> {
     /// Drops every queued job (a termination: no job runs after it, as V8 drops its
     /// microtask queue then).
     fn clear_queue(&mut self) {
-        let rt = self.rt();
-        rt.jobs.set_queue_head(UNDEFINED);
-        rt.jobs.set_queue_tail(UNDEFINED);
+        self.rt().jobs.clear_queue();
     }
 
     fn run_job(&mut self, j: Local<'s, JsObject>) -> JsResult<()> {
@@ -482,21 +480,31 @@ impl<'s> Cx<'s> {
     }
 
     /// HostPromiseRejectionTracker(promise, operation) (§27.2.1.9): "reject" appends the
-    /// promise to the rejected list (`Isolate::take_unhandled_rejections` reads it), then the
-    /// embedder's hook runs.
+    /// promise to the rejected list (`Isolate::take_unhandled_rejections` reads it) and
+    /// "handle" unlinks it at once (O(1), through [`promise::REJECTED_ENTRY`]), as node drops
+    /// a handled promise from its list; then the embedder's hook runs.
     fn track_rejection(&mut self, p: Local<'s, JsObject>, op: PromiseRejectionOperation) {
         let rt = self.rt();
-        if op == PromiseRejectionOperation::Reject {
-            let e = self.record(rejected::COUNT);
-            self.rec_set(e, rejected::PROMISE, p);
-            self.rec_set(e, rejected::NEXT, Local::undefined());
-            let tail = rt.jobs.rejected_tail();
-            if tail == UNDEFINED {
-                rt.jobs.set_rejected_head(e.bits());
-            } else {
-                object::slot_set(rt, tail, rejected::NEXT, e.bits());
+        match op {
+            PromiseRejectionOperation::Reject => {
+                let e = self.record(rejected::COUNT);
+                let tail = Self::local::<super::JsValue>(rt.jobs.rejected_tail());
+                self.rec_set(e, rejected::PROMISE, p);
+                self.rec_set(e, rejected::PREV, tail);
+                self.rec_set(e, rejected::NEXT, Local::undefined());
+                match tail.as_object() {
+                    None => rt.jobs.set_rejected_head(e.bits()),
+                    Some(t) => self.rec_set(t, rejected::NEXT, e),
+                }
+                rt.jobs.set_rejected_tail(e.bits());
+                self.rec_set(p, promise::REJECTED_ENTRY, e);
             }
-            rt.jobs.set_rejected_tail(e.bits());
+            PromiseRejectionOperation::Handle => {
+                // No entry if `take_unhandled` took it already.
+                if let Some(e) = self.rec_get(p, promise::REJECTED_ENTRY).as_object() {
+                    self.unlink_rejected(e);
+                }
+            }
         }
         if let Some(hook) = rt.jobs.tracker() {
             hook(self, p, op);
@@ -508,10 +516,31 @@ impl<'s> Cx<'s> {
         }
     }
 
-    /// Drops the entries of the rejected list whose promise got a handler.
+    /// Unlinks the entry `e` from the rejected list, and clears its promise's back-link.
+    fn unlink_rejected(&mut self, e: Local<'s, JsObject>) {
+        let rt = self.rt();
+        let prev = self.rec_get(e, rejected::PREV);
+        let next = self.rec_get(e, rejected::NEXT);
+        match prev.as_object() {
+            None => rt.jobs.set_rejected_head(next.bits()),
+            Some(pr) => self.rec_set(pr, rejected::NEXT, next),
+        }
+        match next.as_object() {
+            None => rt.jobs.set_rejected_tail(prev.bits()),
+            Some(nx) => self.rec_set(nx, rejected::PREV, prev),
+        }
+        let p = self
+            .rec_get(e, rejected::PROMISE)
+            .as_object()
+            .expect("a promise");
+        self.rec_set(p, promise::REJECTED_ENTRY, Local::undefined());
+    }
+
+    /// Drops the entries of the rejected list whose promise got a handler. "handle" unlinks
+    /// its entry already, so this finds one only if `[[PromiseIsHandled]]` was set some other
+    /// way.
     fn prune_rejected(&mut self) {
         let rt = self.rt();
-        let mut prev: Option<Local<'s, JsObject>> = None;
         let mut e = Self::local::<super::JsValue>(rt.jobs.rejected_head());
         while let Some(rec) = e.as_object() {
             let next = self.rec_get(rec, rejected::NEXT);
@@ -520,16 +549,7 @@ impl<'s> Cx<'s> {
                 .as_object()
                 .expect("a promise");
             if self.rec_get(p, promise::IS_HANDLED).as_bool() == Some(true) {
-                match prev {
-                    None => rt.jobs.set_rejected_head(next.bits()),
-                    Some(pr) => self.rec_set(pr, rejected::NEXT, next),
-                }
-                if next.is_undefined() {
-                    rt.jobs
-                        .set_rejected_tail(prev.map_or(UNDEFINED, |pr| pr.bits()));
-                }
-            } else {
-                prev = Some(rec);
+                self.unlink_rejected(rec);
             }
             e = next;
         }
@@ -547,6 +567,8 @@ impl<'s> Cx<'s> {
                 .rec_get(rec, rejected::PROMISE)
                 .as_object()
                 .expect("a promise");
+            // The entry leaves the list: a later "handle" finds no back-link.
+            self.rec_set(p, promise::REJECTED_ENTRY, Local::undefined());
             if self.rec_get(p, promise::IS_HANDLED).as_bool() != Some(true) {
                 out.push(crate::runtime::val(self.rec_get(p, promise::RESULT).bits()));
             }
