@@ -1,0 +1,12 @@
+obj fn sym false undefined false false
+TypeError,TypeError,TypeError,TypeError,TypeError,TypeError
+true false false undefined
+true false true true true false
+TypeError,TypeError,TypeError,TypeError,TypeError,TypeError
+5 false false false
+TypeError
+TypeError
+TypeError
+20 19000 true
+undefined false false
+well-known

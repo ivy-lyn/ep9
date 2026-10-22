@@ -58,6 +58,14 @@ pub enum ObjectClass {
     /// A RegExp instance: `[[OriginalSource]]`, `[[OriginalFlags]]`, `[[RegExpRecord]]`,
     /// `[[RegExpMatcher]]`.
     RegExp,
+    /// A WeakMap instance: `[[WeakMapData]]` (M3-P1).
+    WeakMap,
+    /// A WeakSet instance: `[[WeakSetData]]` (M3-P1).
+    WeakSet,
+    /// A Map Iterator (§24.1.5): the table it walks, the next index, the kind (M3-P1).
+    MapIterator,
+    /// A Set Iterator (§24.2.6): the table it walks, the next index, the kind (M3-P1).
+    SetIterator,
 }
 
 impl ObjectClass {
@@ -70,6 +78,10 @@ impl ObjectClass {
         ObjectClass::Set,
         ObjectClass::ArrayBuffer,
         ObjectClass::RegExp,
+        ObjectClass::WeakMap,
+        ObjectClass::WeakSet,
+        ObjectClass::MapIterator,
+        ObjectClass::SetIterator,
     ];
 
     /// Most internal slots of one object.
@@ -99,6 +111,10 @@ impl ObjectClass {
             ObjectClass::Set => "Set",
             ObjectClass::ArrayBuffer => "ArrayBuffer",
             ObjectClass::RegExp => "RegExp",
+            ObjectClass::WeakMap => "WeakMap",
+            ObjectClass::WeakSet => "WeakSet",
+            ObjectClass::MapIterator => "Map Iterator",
+            ObjectClass::SetIterator => "Set Iterator",
         }
     }
 }
