@@ -1095,7 +1095,7 @@ pub(crate) fn error_to_string<'s>(
 }
 
 /// Object.prototype.toString (§20.1.3.6). v0: no `[[ParameterMap]]` (arguments objects are
-/// Arrays), and no Date or RegExp.
+/// Arrays), and no RegExp.
 pub(crate) fn object_to_string<'s>(
     cx: &mut HostCx<'s>,
     this: Local<'s>,
