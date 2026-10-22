@@ -503,7 +503,10 @@ fn new_functions_have_length_and_name() {
 }
 
 /// Loops that make a string per pass (split, replaceAll) or can run to 2^53 - 1 (String.raw)
-/// take one interrupt budget unit per pass (`Cx::poll_interrupt`): termination stops them.
+/// take one interrupt budget unit per pass (`Cx::poll_interrupt`), and a search (indexOf,
+/// lastIndexOf, includes, and the StringIndexOf of split, replace and replaceAll) takes one
+/// per 256 code units compared: termination stops them. A search that finds nothing costs
+/// length × search length (here about 2.5 × 10^9 code units compared).
 /// Termination is requested before the script runs, and nothing polls between its start and
 /// the loop (`repeat` makes the input without a loop poll), so only a poll in the loop stops
 /// it once the budget (10,000 units) runs out. Without the poll, the String.raw case ends in
@@ -516,6 +519,12 @@ fn termination_stops_the_string_loops() {
         "'a'.repeat(100000).split('')",
         "'ab'.repeat(100000).split('b')",
         "'a'.repeat(100000).replaceAll('a', 'b')",
+        "'a'.repeat(100000).indexOf('a'.repeat(50000) + 'b')",
+        "'a'.repeat(100000).lastIndexOf('a'.repeat(50000) + 'b')",
+        "'a'.repeat(100000).includes('a'.repeat(50000) + 'b')",
+        "'a'.repeat(100000).split('a'.repeat(50000) + 'b')",
+        "'a'.repeat(100000).replace('a'.repeat(50000) + 'b', 'x')",
+        "'a'.repeat(100000).replaceAll('a'.repeat(50000) + 'b', 'x')",
     ];
     for call in cases {
         let (tx, rx) = std::sync::mpsc::channel();

@@ -32,7 +32,9 @@
 //! length, that runs no JS and allocates nothing on the JS heap, is plain native work (as a
 //! copy) and does not poll. A loop that allocates a JS string per pass (split, replaceAll) or
 //! that can run to 2^53 - 1 (String.raw) calls `Cx::poll_interrupt` once per pass
-//! (M2-P2-POLL).
+//! (M2-P2-POLL). A search (StringIndexOf and the lastIndexOf scan) costs up to length ×
+//! search length, so it polls once per 256 code units compared (`SearchWork`), counting a
+//! candidate whose first unit differs as 1 unit.
 //!
 //! Owner of the templates: P3-BLTB (see `TEMPLATES.md`). Ids are append-only: definition `i`
 //! of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by `tests/golden/ids-string.txt`.
@@ -337,14 +339,70 @@ fn clamp(n: f64, len: usize) -> usize {
     }
 }
 
+/// Code units a search compares per interrupt budget unit (M2-P2-POLL).
+const SEARCH_POLL_UNITS: usize = 256;
+
+/// The work count of one string search: [`SearchWork::add`] takes one interrupt budget unit
+/// (`Cx::poll_interrupt`) per [`SEARCH_POLL_UNITS`] code units compared, so a search that
+/// costs length × length still stops when the isolate terminates.
+#[derive(Default)]
+struct SearchWork(usize);
+
+impl SearchWork {
+    /// Counts `units` code units compared (at most [`SEARCH_POLL_UNITS`]) and polls each
+    /// time the count reaches [`SEARCH_POLL_UNITS`].
+    fn add<'s>(&mut self, cx: &mut Cx<'s>, units: usize) -> JsResult<()> {
+        debug_assert!(units <= SEARCH_POLL_UNITS);
+        self.0 += units;
+        if self.0 >= SEARCH_POLL_UNITS {
+            self.0 -= SEARCH_POLL_UNITS;
+            cx.poll_interrupt()?;
+        }
+        Ok(())
+    }
+}
+
+/// Whether the substring of `string` from `at` to `at + search.len()` is `search` (it must
+/// fit). A candidate whose first code unit differs counts 1 unit in `work`; any other is
+/// compared in chunks of [`SEARCH_POLL_UNITS`] code units, each counted in full.
+fn matches_at<'s>(
+    cx: &mut Cx<'s>,
+    string: &[u16],
+    search: &[u16],
+    at: usize,
+    work: &mut SearchWork,
+) -> JsResult<bool> {
+    let Some(&first) = search.first() else {
+        return Ok(true);
+    };
+    if string[at] != first {
+        work.add(cx, 1)?;
+        return Ok(false);
+    }
+    for (k, chunk) in search.chunks(SEARCH_POLL_UNITS).enumerate() {
+        work.add(cx, chunk.len())?;
+        let start = at + k * SEARCH_POLL_UNITS;
+        if string[start..start + chunk.len()] != *chunk {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// StringIndexOf ( string, searchValue, fromIndex ) (§6.1.4.1), on code units. `None` for
-/// "not found" (the spec's -1).
-fn string_index_of(string: &[u16], search: &[u16], from: usize) -> Option<usize> {
+/// "not found" (the spec's -1). Polls per [`SEARCH_POLL_UNITS`] code units compared
+/// ([`SearchWork`]); `Err` only when the isolate terminates.
+fn string_index_of<'s>(
+    cx: &mut Cx<'s>,
+    string: &[u16],
+    search: &[u16],
+    from: usize,
+) -> JsResult<Option<usize>> {
     // 1. Let len be the length of string.
     let len = string.len();
     // 2. If searchValue is the empty String and fromIndex ≤ len, return fromIndex.
     if search.is_empty() {
-        return (from <= len).then_some(from);
+        return Ok((from <= len).then_some(from));
     }
     // 3. Let searchLen be the length of searchValue.
     let search_len = search.len();
@@ -353,10 +411,15 @@ fn string_index_of(string: &[u16], search: &[u16], from: usize) -> Option<usize>
     //    b. If candidate is searchValue, return i.
     // 5. Return not-found.
     if from >= len || search_len > len - from {
-        return None;
+        return Ok(None);
     }
-    let first = search[0];
-    (from..=len - search_len).find(|&i| string[i] == first && string[i..i + search_len] == *search)
+    let mut work = SearchWork::default();
+    for i in from..=len - search_len {
+        if matches_at(cx, string, search, i, &mut work)? {
+            return Ok(Some(i));
+        }
+    }
+    Ok(None)
 }
 
 /// The well-known symbol `Symbol.<name>`, read from `%Symbol%` (its own property is

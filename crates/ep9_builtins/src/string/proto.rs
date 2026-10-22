@@ -8,8 +8,8 @@ use core::cmp::Ordering;
 use ep9_vm::{Args, Cx, JsResult, Local};
 
 use super::{
-    MAX_LENGTH, clamp, new_str, pattern::is_reg_exp, push_units, string_index_of, this_string,
-    to_units, units, units_range,
+    MAX_LENGTH, SearchWork, clamp, matches_at, new_str, pattern::is_reg_exp, push_units,
+    string_index_of, this_string, to_units, units, units_range,
 };
 
 /// String.prototype.at ( index ) (§22.1.3.1).
@@ -206,7 +206,7 @@ pub(super) fn includes<'s>(
     // 11. If index is not-found, return false.
     // 12. Return true.
     Ok(Local::boolean(
-        string_index_of(&s, &search_str, start).is_some(),
+        string_index_of(cx, &s, &search_str, start)?.is_some(),
     ))
 }
 
@@ -232,7 +232,7 @@ pub(super) fn index_of<'s>(
     // 8. Let result be StringIndexOf(S, searchStr, start).
     // 9. If result is not-found, return -1𝔽.
     // 10. Return 𝔽(result).
-    Ok(index_value(string_index_of(&s, &search_str, start)))
+    Ok(index_value(string_index_of(cx, &s, &search_str, start)?))
 }
 
 /// An index result: `𝔽(i)`, or -1 for not-found (string indices fit an int32).
@@ -294,11 +294,14 @@ pub(super) fn last_index_of<'s>(
     //     a. Let candidate be the substring of S from i to i + searchLen.
     //     b. If candidate is searchStr, return 𝔽(i).
     // 12. Return -1𝔽.
-    Ok(index_value(
-        (0..=start)
-            .rev()
-            .find(|&i| s[i..i + search_len] == search_str[..]),
-    ))
+    //     (polled per 256 code units compared, as StringIndexOf is: `SearchWork`)
+    let mut work = SearchWork::default();
+    for i in (0..=start).rev() {
+        if matches_at(cx, &s, &search_str, i, &mut work)? {
+            return Ok(index_value(Some(i)));
+        }
+    }
+    Ok(index_value(None))
 }
 
 /// String.prototype.localeCompare ( that [ , reserved1 [ , reserved2 ] ] ) (§22.1.3.12).
