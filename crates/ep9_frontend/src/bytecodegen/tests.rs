@@ -640,6 +640,26 @@ fn golden_cases_are_deterministic() {
     }
 }
 
+/// CX-ABI1: a serialized unit whose function makes a mapped arguments object with formal
+/// parameters but carries no mapped-parameter list does not load (the verifier rejects it).
+#[test]
+fn loader_rejects_mapped_arguments_without_a_list() {
+    use ep9_bytecode::{CompiledUnit, LoadError, VerifyError, VerifyErrorKind};
+    let unit = compile_case(Sloppy, "function f(a) { return arguments; }").unwrap();
+    let mut u = unit.unit().clone();
+    assert!(u.functions[1].mapped_parameters.is_some());
+    assert!(CompiledUnit::from_bytes(&u.to_bytes()).is_ok());
+    u.functions[1].mapped_parameters = None;
+    match CompiledUnit::from_bytes(&u.to_bytes()) {
+        Err(LoadError::Verify(VerifyError {
+            kind: VerifyErrorKind::MappedParameters("CreateMappedArguments without a list"),
+            function: Some(1),
+            ..
+        })) => {}
+        other => panic!("{other:?}"),
+    }
+}
+
 /// Instructions that may throw only on allocation failure: no own position needed.
 fn allocation_only(op: Opcode) -> bool {
     matches!(
