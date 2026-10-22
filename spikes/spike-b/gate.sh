@@ -22,7 +22,14 @@
 #     Placement (b) is built for AArch64 and x86-64 (M3-P0 P0-B-X64). On an aarch64 or x86_64
 #     host a SKIP line in the output of steps 2-3 is a FAIL (P0-D9): it would hide a lost
 #     generator. On any other host steps 2-3 print SKIP with the `Refusal` text and pass.
-#   gate.sh              `gate.sh structural`, then `gate.sh b`
+#   gate.sh unit         (plan-v8 M3-P1 SP-UNIT; the SPIKEB(unit) acceptance, M0 exit item 11)
+#     1  cargo test --test unit: the checks of `spike-b unit` at test size (debug), one test
+#        each; cargo test --lib unit: the relocation scan and the unit code generators
+#     2  release build: `spike-b unit` (no argument: every check (a)-(g) at gate size): unit
+#        text with 0 relocations, load, RW copies through x27 / r14, 2 isolates on 2 threads,
+#        unwind, every fallback case (src/unit/checks.rs)
+#     A SKIP line in step 2 fails on an aarch64 or x86_64 host, as in `gate.sh b`.
+#   gate.sh              `gate.sh structural`, then `gate.sh b`, then `gate.sh unit`
 #
 # Env: CARGO_TARGET_DIR (default: spikes/spike-b/target),
 #      SPIKE_B_DEBUG_ALL=1 runs all of (a)-(h) in step 3 of `structural`, not only (h).
@@ -122,16 +129,29 @@ placement_b() {
   verdict
 }
 
+sp_unit() {
+  run "unit/tests" cargo test --locked --test unit
+  run "unit/lib-tests" cargo test --locked --lib unit::
+  run "unit/build-release" cargo build --locked --release
+  if [ -x "$CARGO_TARGET_DIR/release/spike-b$exe" ]; then
+    run_b "unit/release" "$CARGO_TARGET_DIR/release/spike-b$exe" unit
+  else
+    record "unit/release" FAIL "no release binary"
+  fi
+}
+
 step="${1:-all}"
 case "$step" in
   structural) structural ;;
   b) placement_b ;;
+  unit) sp_unit ;;
   all)
     structural
     placement_b
+    sp_unit
     ;;
   *)
-    echo "usage: gate.sh [structural | b]" >&2
+    echo "usage: gate.sh [structural | b | unit]" >&2
     exit 2
     ;;
 esac

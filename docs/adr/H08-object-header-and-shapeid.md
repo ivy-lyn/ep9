@@ -38,7 +38,7 @@ word0 (8 bytes, Relaxed atomic):
 ```
  AOT text (RX, one copy per process)            unit RW data (one copy per isolate, H22)
  ld   s, [obj + 0]       ; header ShapeId       IcCell[k] = { shape_id, slot }
- ld   c, [rw + k]        ; pc-relative cell       empty at load  -> the first run misses
+ ld   c, [x27 + k]       ; unit-data register     empty at load  -> the first run misses
  cmp  s, c.shape_id                               the IC slow path fills the cell
  b.ne miss               ; H32 policy path        later runs hit; a dead shape clears it (weak)
  ld   v, [obj + c.slot]
@@ -100,7 +100,7 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 
 - **Gains.** IC guard = one u32 compare. GC needs no shape load; the barrier reads one byte.
   - RW cells remove the need for deterministic transition trees. Property-add order, slack tracking and dictionary heuristics need not match between build and run [R17].
-- **Costs.** AOT guards on non-root shapes cost one extra pc-relative load. The first execution of each AOT site misses.
+- **Costs.** AOT guards on non-root shapes cost one extra load through the unit-data register (H35-Q9). The first execution of each AOT site misses.
 - **Follow-ups.** H13 must make the snapshot layout deterministic. H30 must lower ShapeRef to an immediate only for snapshot root shapes. H35 carries the object-layout version.
 
 ## Evidence
@@ -151,6 +151,7 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 | 2026-10-22 | clarify | Rules row 1: m0-exit item 8 also compiles the `ep9_value` asserts (`cargo check -p ep9_value` for the host target), so "no xtask task checks sizes" (here and in the 2026-10-22 P2-ACCEPT-1 row) was false; the cell now says what item 8 runs, as H06 Rules row 1 does (Codex C3 on H06, M2-P4-B2-ROW2). No check changes | P4 integration fixer |
 | 2026-10-22 | clarify | SP-Unit has 11 opcodes (09 §4 now says 11; Spike B adds AddSmi) and runs in M3-P1 (M2-D21-FAIL): the Validation line and the H08-Q2 question. The H08-Q2 answer does not change. No check changes | P5-DOCS-SYNC agent (M2-P5) |
 | 2026-10-23 | clarify | 1 `path:line` reference moved to the code after the M3-P0 merge and the M3-P0 code fixes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS). No check changes | M3-P0 integration fixer |
+| 2026-10-23 | rewrite | The AOT guard picture and Costs say the RW cell is reached through the unit-data register x27 / r14, not pc-relative (H35-Q9 filled by M3-P1 SP-UNIT, which names this a rewrite: one per-process text cannot reach a per-isolate RW copy pc-relative). The guard and its cost (one extra load) do not change; no check changes | M3-P1 SP-UNIT agent |
 
 ## Review record
 

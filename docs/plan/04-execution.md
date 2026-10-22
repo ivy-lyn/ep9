@@ -155,8 +155,8 @@ ep9_baseline / ep9_opt
 | Local | Label or branch inside the function or unit | pc-relative, resolved at emit | pc-relative, resolved at emit |
 | Stub(id) | Shared IC stub or trampoline | Direct call inside the code range | pc-relative call if the stub is in the unit; else call through a link slot |
 | Runtime(fn) | Rust slow path or builtin (H20), e.g. barrier_slow | Direct or indirect call | Indirect call through the isolate table (isolate register) |
-| LinkSlot(i) | External reference resolved at load or first run | Resolved at finalize; an immediate is allowed | pc-relative load of RW link cell i |
-| IcCell(i) | IC or feedback cell | Address of the FeedbackVector slot | pc-relative load of RW IC cell i |
+| LinkSlot(i) | External reference resolved at load or first run | Resolved at finalize; an immediate is allowed | Load of RW link cell i through the unit-data register (H35-Q9) |
+| IcCell(i) | IC or feedback cell | Address of the FeedbackVector slot | Load of RW IC cell i through the unit-data register (H35-Q9) |
 | RootIndex(n) | Isolate root, intrinsic or atom by stable index (H13) | Load from the isolate root table | Load from the isolate root table (isolate register) |
 | DeoptExit(id) | Exit to the shared deopt entry | Call the shared entry; metadata keyed by pc offset | Same; metadata keyed by pc offset |
 | HeapConst(i) | Raw heap pointer | Embedded, held weakly with a dependency | **Rejected by the unit writer** |
