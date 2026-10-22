@@ -84,4 +84,17 @@ impl<'s> Cx<'s> {
         }
         Ok(())
     }
+
+    /// The native stack check of a builtin that recurses in Rust (H23 G6): `Err` with the
+    /// catchable RangeError "Maximum call stack size exceeded" (the VM's own stack overflow
+    /// error) once the native stack passes the isolate's limit (`Runtime::native_stack_ok`),
+    /// else `Ok`. A recursive builtin calls it at the top of each recursion step, so a deep
+    /// input throws instead of overflowing the native stack.
+    #[inline]
+    pub fn check_native_stack(&mut self) -> JsResult<()> {
+        if self.rt().native_stack_ok() {
+            return Ok(());
+        }
+        Err(self.throw_range_error("Maximum call stack size exceeded"))
+    }
 }

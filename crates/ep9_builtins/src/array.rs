@@ -229,7 +229,8 @@ const MAX_ARRAY_LENGTH: u64 = u32::MAX as u64;
 
 /// How deep `flat` and `flatMap` recurse into nested arrays before the RangeError a native
 /// stack overflow would give (FlattenIntoArray recurses once per level; V8 throws the same
-/// RangeError at its stack limit).
+/// RangeError at its stack limit). Each level also calls `Cx::check_native_stack`, which
+/// throws first on a small native stack.
 const MAX_FLATTEN_DEPTH: u32 = 10_000;
 
 /// 𝔽(n) for an index or a length (at most 2^53 - 1, so exact).
@@ -475,6 +476,8 @@ fn flatten_into_array<'s>(
     mapper: Option<(Local<'s>, Local<'s>)>,
     level: u32,
 ) -> JsResult<u64> {
+    // One recursion step: the native stack check (H23 G6), then the level cap.
+    cx.check_native_stack()?;
     if level > MAX_FLATTEN_DEPTH {
         return Err(cx.throw_range_error("Maximum call stack size exceeded"));
     }
