@@ -6,6 +6,7 @@
 //!  4  mov x29, sp                    CFA = x29 + 32
 //!  8  stp x26, x28, [sp, #16]        x26 at CFA-16, x28 at CFA-8
 //! 12  mov x28, x0 ; mov x26, x2      isolate register (x0 = cx), VM frame pointer (x2 = fp)
+//! 20  mov x0, x3                     the incoming accumulator (x3 = acc) into the body's x0
 //!     ldr x16, [x28, native_limit] ; mov x17, sp ; cmp x17, x16 ; b.ls overflow
 //!     body: one label per reachable instruction, accumulator in x0 (as placement (a))
 //! ret:   mov x3, x0 ; ldur x1, [x26, #-56] ; ldur x2, [x26, #-64]   return pc, caller fp
@@ -237,6 +238,7 @@ pub(crate) fn emit(plan: &Plan) -> Result<(Vec<u8>, Unwind, Vec<u32>), Refusal> 
         ; stp x26, x28, [sp, #16]
         ; mov x28, x0
         ; mov x26, x2
+        ; mov x0, x3
         ; ldr x16, [x28, native_limit]
         ; mov x17, sp
         ; cmp x17, x16
