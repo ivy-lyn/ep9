@@ -39,10 +39,11 @@
 //! | `call::run_resumed` (generator resume) | around the nested run |
 //!
 //! Caches that hold a realm value: the function shape caches (`shape::function_shape`,
-//! `generator_function_shape`) check the prototype on each hit, so they only miss after a
-//! switch. Feedback vectors and template objects belong to one FunctionInfo, whose functions
-//! are all of one realm. `builtins::existing_function` knows the first realm's builtin
-//! functions only, so the identity fast paths that use it run their spec steps in a later realm.
+//! `generator_function_shape`, `async_function_shape`) check the prototype on each hit, so they
+//! only miss after a switch. Feedback vectors and template objects belong to one FunctionInfo,
+//! whose functions are all of one realm. `builtins::existing_function` knows the first realm's
+//! builtin functions only, so the identity fast paths that use it run their spec steps in a later
+//! realm.
 //!
 //! | Core intrinsic | Made as |
 //! |---|---|

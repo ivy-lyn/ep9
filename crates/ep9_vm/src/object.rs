@@ -909,6 +909,8 @@ pub(crate) fn new_function(rt: &Runtime, info: *const FunctionInfo, context: u64
     let name = function_name(rt, fi);
     let s = if fi.is_generator() {
         shape::generator_function_shape(rt)
+    } else if fi.is_async_function() {
+        shape::async_function_shape(rt)
     } else {
         shape::function_shape(rt)
     };

@@ -196,7 +196,10 @@ mod root {
     /// %GeneratorFunction.prototype% as the prototype (a cache; undefined until the first
     /// generator function).
     pub const GENERATOR_FUNCTION_SHAPE: usize = 2;
-    pub const COUNT: usize = 3;
+    /// The shape of a new async function: [`FUNCTION_SHAPE`] with %AsyncFunction.prototype%
+    /// as the prototype (a cache; undefined until the first async function).
+    pub const ASYNC_FUNCTION_SHAPE: usize = 3;
+    pub const COUNT: usize = 4;
 }
 
 /// The last value of [`ShapeState::proto_epoch`]: it stays there (it never wraps). No IC case
@@ -1219,6 +1222,19 @@ pub(crate) fn generator_function_shape(rt: &Runtime) -> u64 {
         return function_shape(rt);
     }
     cached_function_shape(rt, gfp, root::GENERATOR_FUNCTION_SHAPE)
+}
+
+/// The shape of a new async function (§15.8.3: OrdinaryFunctionCreate with
+/// %AsyncFunction.prototype%): [`function_shape`] with that prototype. Cached in the
+/// ShapeState roots. Before the intrinsic is installed it is the [`function_shape`]. GC
+/// point.
+pub(crate) fn async_function_shape(rt: &Runtime) -> u64 {
+    use crate::builtins::{IntrinsicId, intrinsic};
+    let afp = intrinsic(rt, IntrinsicId::AsyncFunctionPrototype);
+    if !kind::is_object(afp) {
+        return function_shape(rt);
+    }
+    cached_function_shape(rt, afp, root::ASYNC_FUNCTION_SHAPE)
 }
 
 /// The function shape over the prototype `fp` (FUNCTION, 2 slots, `length` and `name`),
