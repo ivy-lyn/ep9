@@ -99,7 +99,7 @@ fn the_functions_are_installed() {
             "length,name,prototype,getOwnPropertyDescriptor,getOwnPropertyNames,defineProperty,keys,\
              assign,create,defineProperties,entries,freeze,getOwnPropertyDescriptors,\
              getOwnPropertySymbols,getPrototypeOf,hasOwn,is,isExtensible,isFrozen,isSealed,\
-             preventExtensions,seal,setPrototypeOf,values",
+             preventExtensions,seal,setPrototypeOf,values,fromEntries,groupBy",
             "0 false",
         ])
     );

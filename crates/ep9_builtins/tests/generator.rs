@@ -134,7 +134,7 @@ var [a, b] = range(10); print(a, b);"#
 fn objects() {
     assert_eq!(
         run_both(
-            r#"// inChain(P, x): P is on x's prototype chain (no Object.getPrototypeOf in ep9 yet).
+            r#"// inChain(P, x): P is on x's prototype chain (checked with instanceof).
 function inChain(P, x) { function F() {} F.prototype = P; return x instanceof F; }
 function* g() { yield 1; }
 var GF = g.constructor;
@@ -231,7 +231,7 @@ print(d(100).next().value);"#;
 fn generator_function_constructor_inherits_from_function() {
     assert_eq!(
         run_both(
-            r#"// %GeneratorFunction%'s [[Prototype]] is %Function% (no Object.getPrototypeOf in ep9 yet).
+            r#"// %GeneratorFunction%'s [[Prototype]] is %Function% (checked with instanceof).
 function inChain(P, x) { function F() {} F.prototype = P; return x instanceof F; }
 var GF = (function* () {}).constructor;
 print(inChain(Function, GF), GF instanceof Function);"#

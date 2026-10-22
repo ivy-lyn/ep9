@@ -143,7 +143,7 @@ fn function_prototype_is_a_function() {
     );
     assert_eq!(
         common::run_both(
-            "print(Function.prototype.constructor === Function, Object.getPrototypeOf === undefined)"
+            "print(Function.prototype.constructor === Function, Object.getPrototypeOf(Function.prototype) === Object.prototype)"
         ),
         Ok(vec!["true true".to_string()])
     );
