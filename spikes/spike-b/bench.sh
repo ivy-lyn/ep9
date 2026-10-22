@@ -14,7 +14,7 @@
 #                           4 the load guard after (guardAfter, 120 s), then the verdict
 #   bench.sh cachegrind   the instruction ratio of protocol §8 (a report): valgrind cachegrind
 #                         --smc-check=all on spike-b `bench run A`, `B`, `A0`, `AH` and `C`
-#                         (n = SB_CG_N; B only where placement (b) is built), and on
+#                         (n = SB_CG_N; B where placement (b) is built: arm64 and x86_64), and on
 #                         `sp-dispatch run sibling loop.ep9d` and `sp-dispatch ops`; one ratio
 #                         per config (P4-PLACEMENT-B task 13)
 #
@@ -99,8 +99,9 @@ cachegrind() {
   echo "host: $(uname -sm); commit: $(commit)"
   echo "valgrind: $(valgrind --version); n = $n"
   local ir_c ir_loop ir_ops c cfgs=(A B A0 AH)
-  # Placement (b) is built for AArch64 only (spike-b jit_b; x86-64 is a stretch).
-  case "$(uname -m)" in arm64 | aarch64) ;; *) cfgs=(A A0 AH); echo "B: not run (placement (b) is not built for $(uname -m))" ;; esac
+  # Placement (b) is built for AArch64 and x86-64 (spike-b jit_b; x86-64 since M3-P0 P0-B-X64).
+  # An x86-64 B run is a report: the gate host and the gate config do not change.
+  case "$(uname -m)" in arm64 | aarch64 | x86_64 | amd64) ;; *) cfgs=(A A0 AH); echo "B: not run (placement (b) is not built for $(uname -m))" ;; esac
   # irs[i] is the Ir of cfgs[i] (indexed arrays: bash 3.2 has no associative arrays).
   local irs=() i
   for c in "${cfgs[@]}" C; do
