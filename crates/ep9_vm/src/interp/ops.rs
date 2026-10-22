@@ -371,9 +371,7 @@ fn call_fast(
         return Flow::Cold;
     }
     // Without a vector, `invocations` is below the threshold, so `+ 1` never overflows.
-    if interp
-        && fi.feedback.get().is_null()
-        && fi.invocations.get() + 1 >= st.cx.feedback_threshold
+    if interp && fi.feedback.get().is_null() && fi.invocations.get() + 1 >= st.cx.feedback_threshold
     {
         return Flow::Cold;
     }
