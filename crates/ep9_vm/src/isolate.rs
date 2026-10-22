@@ -386,7 +386,9 @@ impl Isolate {
     /// Calls `f` with `this` and `args` (Call, §7.3.14), then performs a microtask checkpoint
     /// as [`Isolate::run_script`] does.
     pub fn call(&mut self, f: Value, this: Value, args: &[Value]) -> Result<Value, Exception> {
-        // The callee frame copies the arguments onto the VM stack before the first GC point.
+        // `bits` is heap memory that the GC does not scan. That is safe: `call::call_with`
+        // copies the arguments into the callee frame before its first GC point (also before
+        // the wrap of a primitive `this`, which `call_function_object` does after the push).
         let bits: Vec<u64> = args.iter().map(|v| v.to_bits()).collect();
         let r = call::call_function(&mut self.cx, f.to_bits(), this.to_bits(), &bits);
         self.finish_with_checkpoint(r)
