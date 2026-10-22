@@ -1126,6 +1126,9 @@ pub(crate) fn object_to_string<'s>(
         "Number"
     } else if data.is_string() {
         "String"
+    } else if cx.object_class(local(o)) == Some(crate::abi::ObjectClass::Date) {
+        // 13. Else if O has a [[DateValue]] internal slot, let builtinTag be "Date".
+        "Date"
     } else {
         "Object"
     };
