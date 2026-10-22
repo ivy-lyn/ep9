@@ -288,8 +288,17 @@ fn a_callback_reaches_a_running_endless_loop() {
     }
 }
 
-/// The handle is `Send + Sync + Clone`, and a request after the isolate is gone is dropped
-/// with the last handle, never run.
+/// Counts its drops: a callback that captures one is dropped when the count goes up.
+struct Mark(Arc<AtomicUsize>);
+
+impl Drop for Mark {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, SeqCst);
+    }
+}
+
+/// The handle is `Send + Sync + Clone`, and a request after the isolate is gone is never run:
+/// the callback is dropped at once.
 #[test]
 fn a_request_after_the_isolate_is_dropped_never_runs() {
     fn send_sync<T: Send + Sync + Clone>() {}
@@ -298,20 +307,76 @@ fn a_request_after_the_isolate_is_dropped_never_runs() {
     let h = iso.interrupt_handle();
     drop(iso);
     let dropped = Arc::new(AtomicUsize::new(0));
-    struct Mark(Arc<AtomicUsize>);
-    impl Drop for Mark {
-        fn drop(&mut self) {
-            self.0.fetch_add(1, SeqCst);
-        }
-    }
     let mark = Mark(Arc::clone(&dropped));
     h.request(Box::new(move || {
         let _keep = &mark;
         panic!("must not run");
     }));
-    assert_eq!(dropped.load(SeqCst), 0);
+    assert_eq!(dropped.load(SeqCst), 1);
     drop(h);
     assert_eq!(dropped.load(SeqCst), 1);
+}
+
+/// A queued callback that holds a clone of its own handle (to request again, as the docs
+/// allow) is dropped with the isolate when no poll ran it: the handle does not keep the
+/// queue alive (P3 review ISO-CYCLE). Its destructor's request finds no isolate.
+#[test]
+fn a_callback_holding_its_own_handle_is_dropped_with_the_isolate() {
+    let iso = isolate(IsolateConfig::default());
+    let h = iso.interrupt_handle();
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let mark = Mark(Arc::clone(&dropped));
+    let again = h.clone();
+    h.request(Box::new(move || {
+        let _keep = &mark;
+        again.request(Box::new(|| {}));
+    }));
+    assert_eq!(dropped.load(SeqCst), 0, "queued, not run");
+    drop(iso);
+    assert_eq!(dropped.load(SeqCst), 1, "dropped with the isolate");
+    h.request(Box::new(|| panic!("must not run")));
+    drop(h);
+}
+
+/// Threads request callbacks that each hold a clone of the handle while the isolate is
+/// dropped (half the requests are sent first, so the drop lands while they still come).
+/// Every callback is dropped by the end, wherever the drop lands: with the isolate, in a
+/// request after it, or in a request that held the queue while the isolate went (that
+/// requester then drops the queue). None leaks in a cycle and none runs.
+#[test]
+fn requests_racing_the_isolate_drop_leak_nothing() {
+    const THREADS: usize = 4;
+    const PER_THREAD: usize = 2_000;
+    let iso = isolate(IsolateConfig::default());
+    let (dropped, sent) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let requesters: Vec<_> = (0..THREADS)
+        .map(|_| {
+            let (h, dropped, sent) = (
+                iso.interrupt_handle(),
+                Arc::clone(&dropped),
+                Arc::clone(&sent),
+            );
+            std::thread::spawn(move || {
+                for _ in 0..PER_THREAD {
+                    let (mark, again) = (Mark(Arc::clone(&dropped)), h.clone());
+                    h.request(Box::new(move || {
+                        let _keep = &mark;
+                        again.request(Box::new(|| {}));
+                        panic!("must not run");
+                    }));
+                    sent.fetch_add(1, SeqCst);
+                }
+            })
+        })
+        .collect();
+    while sent.load(SeqCst) < THREADS * PER_THREAD / 2 {
+        std::hint::spin_loop();
+    }
+    drop(iso);
+    for r in requesters {
+        r.join().unwrap();
+    }
+    assert_eq!(dropped.load(SeqCst), THREADS * PER_THREAD);
 }
 
 // ---- heap limit (H23) ------------------------------------------------------------------------

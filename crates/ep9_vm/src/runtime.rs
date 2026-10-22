@@ -19,7 +19,7 @@ use core::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::AtomicU32;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use ep9_heap::{AllocError, CellPtr, GlobalHandle, Heap, KindId};
 use ep9_value::Value;
@@ -42,6 +42,11 @@ pub(crate) type InterruptCallback = Box<dyn FnOnce() + Send>;
 
 /// The queue of [`InterruptCallback`]s: other threads push, the isolate thread takes.
 pub(crate) type InterruptQueue = Arc<Mutex<Vec<InterruptCallback>>>;
+
+/// What an `InterruptHandle` holds of the queue. Weak: the `Runtime` is the only strong owner,
+/// so a queued callback that holds a handle makes no cycle, and the queue and its callbacks
+/// go when the isolate does.
+pub(crate) type WeakInterruptQueue = Weak<Mutex<Vec<InterruptCallback>>>;
 
 /// Realm intrinsics and other runtime roots (v0: one realm per isolate; H22 allows N).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
