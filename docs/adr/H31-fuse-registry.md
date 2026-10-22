@@ -41,7 +41,7 @@ Copied from the plan row (02 §6): GuardFuse (explicit load + compare) and Inval
 - The registry lives in `ep9_vm`. API frozen at M1 exit; built in M1-M2 (04 §8).
 - In AOT-jitless mode an InvalidatingFuse lazily deopts and swaps the slot to aot-baseline or interp; it patches no code (04 §4, 05 §10).
 
-**As built (e719ffa).** No fuse registry exists. One T0 flag is a one-way invariant of the initial list: `ShapeState::proto_index` is set once a prototype-mode object gets an array-index own property and is never cleared (V8's "no elements" protector; `crates/ep9_vm/src/shape.rs:213-217`, read by `shape::proto_index_keys` at `crates/ep9_vm/src/shape.rs:1131-1132`). While it is false, `[[Set]]` of a missing array element skips the prototype walk (`crates/ep9_vm/src/property.rs:345-350`). It is a Rust fast-path check, like a GuardFuse, with no stable index and no dependency list (H31-Q5).
+**As built (e719ffa).** No fuse registry exists. One T0 flag is a one-way invariant of the initial list: `ShapeState::proto_index` is set once a prototype-mode object gets an array-index own property and is never cleared (V8's "no elements" protector; `crates/ep9_vm/src/shape.rs:213-217`, read by `shape::proto_index_keys` at `crates/ep9_vm/src/shape.rs:1131-1132`). While it is false, `[[Set]]` of a missing array element skips the prototype walk (`crates/ep9_vm/src/property.rs:354-359`). It is a Rust fast-path check, like a GuardFuse, with no stable index and no dependency list (H31-Q5).
 
 ## Rules
 
@@ -97,3 +97,4 @@ Copied from the plan row (02 §6): GuardFuse (explicit load + compare) and Inval
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-22 | draft | First draft from 02 §6 row H31 and 04 §8: two fuse kinds, the initial list, the debugger fuses of H24; API, scope and word format are Open questions | P3-ADR-JIT agent (M2-P3) |
+| 2026-10-22 | clarify | 1 `path:line` reference moved to the code after the M2-P5 merge and the P5 fixer changes (drift script, [I15]). No check changes | P5 integration fixer |

@@ -39,7 +39,7 @@ PACKED/HOLEY × INT32/DOUBLE/ELEMENTS, one-way. DOUBLE stores raw f64 with a hol
 | High dense index | `a[2**26 - 1] = 1` allocates 2^26 slots: 540,606,464 B peak RSS (empty script: 3,473,408 B) | measured 2026-10-21 at `dabc38a`, release `ep9`, M5 Max (not measured again; the growth rule is unchanged) |
 | Index at or above 2^26 | stored as a string-keyed property, so the array moves to dictionary mode (an index key never enters a shape, OM-10); `length` does not change (ECMA-262: index + 1) | `crates/ep9_vm/src/property.rs:274-278` falls through |
 | `length` above 2^26 | RangeError "Invalid array length" (ECMA-262 allows up to 2^32 - 1) | `crates/ep9_vm/src/property.rs:265-271` |
-| `delete a[i]` | writes a hole | `crates/ep9_vm/src/property.rs:511-518` |
+| `delete a[i]` | writes a hole | `crates/ep9_vm/src/property.rs:520-527` |
 | Index keys on other objects | string keys (an atom with the index cached; no number keys, W4-NO-NUMBER-KEYS); the first one moves the object to dictionary mode (OM-10) | `shape::add`; test `om10_an_index_key_on_a_non_array_makes_a_dictionary` |
 | Element attributes | an accessor on an array index, an element whose attributes are not {w, e, c}, and a non-writable `length` throw "not implemented in ep9 v0" until element storage has attributes; an accessor descriptor for `length` returns false (W4-ACC-ELEM) | `property::define_own_property` |
 | Index keys on a prototype | while no prototype has an index key (the sticky `shape::proto_index_keys` flag, H17), `[[Set]]` and `push` add a missing element with no chain walk; after that they walk the chain, so an inherited setter runs (W4-P3FIX-ELEM-FLAG) | `property::array_store` |
@@ -97,3 +97,4 @@ PACKED/HOLEY × INT32/DOUBLE/ELEMENTS, one-way. DOUBLE stores raw f64 with a hol
 | 2026-10-21 | clarify | 8 `path:line` references moved to the code at `479b1cd` (P4-DOCS drift script, [I15]); the RSS row names its commit; the index-key Rules row names its test | P4-DOCS agent |
 | 2026-10-21 | clarify | 4 `path:line` references moved to the code after M2-P0 (drift script, [I15]) | M2-P0 integration fixer |
 | 2026-10-22 | clarify | 3 `path:line` references moved to the code after the M2-P4 merge (drift script, [I15]). No check changes | P4 integration fixer |
+| 2026-10-22 | clarify | 1 `path:line` reference moved to the code after the M2-P5 merge and the P5 fixer changes (drift script, [I15]). No check changes | P5 integration fixer |
