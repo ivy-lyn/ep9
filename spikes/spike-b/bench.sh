@@ -13,8 +13,15 @@
 #                             marginal result re-runs with 31 kept rounds
 #                           4 the load guard after (guardAfter, 120 s), then the verdict
 #   bench.sh cachegrind   the instruction ratio of protocol §8 (a report): valgrind cachegrind
-#                         --smc-check=all on spike-b `bench run A` and `C` (n = SB_CG_N), and on
-#                         `sp-dispatch run sibling loop.ep9d` and `sp-dispatch ops`
+#                         --smc-check=all on spike-b `bench run A`, `B`, `A0`, `AH` and `C`
+#                         (n = SB_CG_N; B only where placement (b) is built), and on
+#                         `sp-dispatch run sibling loop.ep9d` and `sp-dispatch ops`; one ratio
+#                         per config (P4-PLACEMENT-B task 13)
+#
+# SB_PLACEMENT=b makes config B (placement (b), P4-PLACEMENT-B) the gate config: the rounds run
+# B, C, A0, A, AH and RT is ((t_B - t_C) / n) / tau - k; A and AH are reports. The default
+# (SB_PLACEMENT=a) is the window-1 run, gate config A. The result line names the gate config
+# (`gate=`); a line for another config fails the run.
 #
 # Verdict (decision M2-P3-SPIKEB-VERDICT): void if the bench says void (IQR of t_A or t_C >
 # 5%); else provisional if any protocol parameter is not the gate's: the host is not the gate
@@ -42,6 +49,7 @@
 #   SB_SPD_BIN           sp-dispatch binary (spikes/sp-dispatch/target/release/sp-dispatch): its
 #                        `cpu` for the tau CPU check, and cachegrind
 #   SB_CG_N=1000000      n under cachegrind
+#   SB_PLACEMENT=a       a: gate config A (placement (a)); b: gate config B (placement (b))
 #   SPIKE_B_CPU          the CPU model to print where the host hides it (lscpu prints "-" in an
 #                        arm64 Linux VM); the result says it came from this variable
 set -uo pipefail
@@ -54,6 +62,12 @@ bin="${SB_BIN:-${CARGO_TARGET_DIR:-$here/target}/release/spike-b$exe}"
 tau_json="${SB_TAU_JSON:-$root/spikes/sp-dispatch/target/gate/bench.json}"
 spd="${SB_SPD_BIN:-$root/spikes/sp-dispatch/target/release/sp-dispatch$exe}"
 mode="${1:-run}"
+placement="${SB_PLACEMENT:-a}"
+case "$placement" in
+  a) gate_cfg=A ;;
+  b) gate_cfg=B ;;
+  *) echo "bench.sh: SB_PLACEMENT=$placement: want a or b" >&2; exit 2 ;;
+esac
 
 die() { echo "bench.sh: $*" >&2; exit "${2:-1}"; }
 load() { uptime 2>/dev/null || echo "n/a (no uptime command)"; }
@@ -84,11 +98,17 @@ cachegrind() {
   echo "== Spike B cachegrind ratio (protocol §8; a report, never a gate)"
   echo "host: $(uname -sm); commit: $(commit)"
   echo "valgrind: $(valgrind --version); n = $n"
-  local ir_a ir_c ir_loop ir_ops
-  ir_a="$(ir A "$bin" bench run A --n "$n")" || die "cachegrind A failed"
-  ir_c="$(ir C "$bin" bench run C --n "$n")" || die "cachegrind C failed"
-  grep -h '^spike-b-run ' "$tmp/A.out" "$tmp/C.out"
-  for c in A C; do grep -q "result=$n\$" "$tmp/$c.out" || die "cachegrind: run $c did not return $n"; done
+  local ir_c ir_loop ir_ops c cfgs=(A B A0 AH)
+  # Placement (b) is built for AArch64 only (spike-b jit_b; x86-64 is a stretch).
+  case "$(uname -m)" in arm64 | aarch64) ;; *) cfgs=(A A0 AH); echo "B: not run (placement (b) is not built for $(uname -m))" ;; esac
+  # irs[i] is the Ir of cfgs[i] (indexed arrays: bash 3.2 has no associative arrays).
+  local irs=() i
+  for c in "${cfgs[@]}" C; do
+    i="$(ir "$c" "$bin" bench run "$c" --n "$n")" || die "cachegrind $c failed"
+    grep -h '^spike-b-run ' "$tmp/$c.out"
+    grep -q "result=$n\$" "$tmp/$c.out" || die "cachegrind: run $c did not return $n"
+    if [ "$c" = C ]; then ir_c="$i"; else irs+=("$i"); fi
+  done
   "$spd" dump loop default "$tmp/loop.ep9d" || die "sp-dispatch dump failed"
   ir_loop="$(ir loop "$spd" run sibling "$tmp/loop.ep9d")" || die "cachegrind loop failed"
   echo "sp-dispatch run sibling loop.ep9d: $(cat "$tmp/loop.out")"
@@ -104,8 +124,15 @@ print(next(k["dispatches"] for k in d["kernels"] if k["name"]=="loop") if d.get(
     [ -n "$d" ] && { disp="$d"; src="$tau_json"; }
   fi
   echo "dispatches of the loop kernel: $disp ($src)"
-  "$bin" bench ratio --ir-a "$ir_a" --ir-c "$ir_c" --ir-loop "$ir_loop" --ir-ops "$ir_ops" \
-    --dispatches "$disp" --n "$n"
+  local listing=""
+  for i in "${!cfgs[@]}"; do
+    c="${cfgs[$i]}"
+    echo
+    # shellcheck disable=SC2086 # $listing is empty or one flag
+    "$bin" bench ratio --config "$c" --ir-a "${irs[$i]}" --ir-c "$ir_c" --ir-loop "$ir_loop" \
+      --ir-ops "$ir_ops" --dispatches "$disp" --n "$n" $listing || die "ratio $c failed"
+    listing="--no-listing"
+  done
 }
 
 case "$mode" in
@@ -199,6 +226,7 @@ guard() { # guard <host|before|after> [args]: one line from host.mjs
 echo "== Spike B D21 bench.sh (docs/measurements/2026-10-22-spike-b-protocol.md)"
 echo "binary: $bin ($("$bin"))"
 echo "commit: $(commit)"
+echo "gate config: $gate_cfg (SB_PLACEMENT=$placement)"
 echo "uptime: $(load)"
 echo "tau: $tau ns = median_ns.sibling / dispatches of kernel loop ($(field dispatches) dispatches)"
 echo "tau source: $tau_json (cpu \"$(field cpu)\", $(field rounds) rounds, written $tau_age min ago)"
@@ -254,10 +282,13 @@ out="$(mktemp)"
 trap 'rm -f "$out"' EXIT
 "$bin" bench --tau "$tau" --tau-samples "$(field samples)" --dispatches "$(field dispatches)" \
   --tau-source "$tau_json" --rounds "${SB_ROUNDS:-15}" --marginal-rounds "${SB_MARGINAL_ROUNDS:-31}" \
-  --n "${SB_N:-100000000}" --commit "$(commit)" | tee "$out"
+  --n "${SB_N:-100000000}" --commit "$(commit)" --placement "$placement" | tee "$out"
 st="${PIPESTATUS[0]}"
 [ "$st" = 0 ] || die "spike-b bench exited $st: the run is invalid (protocol §2: a wrong result fails the run, not the gate)"
 res="$(grep -m1 '^SPIKE-B-RESULT ' "$out")" || die "no SPIKE-B-RESULT line"
+# The gate config of the result line; a line without one is from a window-1 binary (config A).
+res_gate="$(tr ' ' '\n' <<<"$res" | sed -n 's/^gate=//p' | head -n 1)"
+[ "${res_gate:-A}" = "$gate_cfg" ] || die "the bench result is for gate config ${res_gate:-A}, not $gate_cfg (SB_PLACEMENT=$placement): the run is invalid"
 
 # ---- 4. load guard after, verdict ------------------------------------------------------------------
 guard_after="not run"
@@ -289,6 +320,7 @@ echo "== Spike B D21 result"
 echo "load before: $guard_before"
 echo "load after:  $guard_after"
 echo "uptime: $(load)"
+echo "gate config: $gate_cfg"
 echo "bench: $res"
 marginal=""
 if [ "$raw" != marginal ] && tr ';' '\n' <<<"$labels" | sed 's/^ *//' | grep -qx marginal; then marginal=", marginal"; fi
