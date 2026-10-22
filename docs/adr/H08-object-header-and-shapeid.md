@@ -115,7 +115,7 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 ## Validation
 
 - **SP-Value** ([09 §4](../plan/09-milestones.md#4-spikes), M0 wk2): word0 = 8 B. M0 exit item 8.
-- **SP-Unit** (M0 month 2, inside Spike B): first AOT code; its 10 opcodes load, call, unwind, GC-scan and fall back (reopens H34, H35).
+- **SP-Unit** (M3-P1, moved from M0 month 2 by M2-D21-FAIL): first AOT code; its 11 opcodes (the Spike B set with AddSmi) load, call, unwind, GC-scan and fall back (reopens H34, H35).
 - A2 gate: GC-stress clean with AOT frames; 100% of header mutations end in their [H35](H35-aot-unit-format.md) S3 outcome.
 
 ## Open questions
@@ -123,7 +123,7 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 | ID | Question | Needed by | Proposed default |
 |---|---|---|---|
 | H08-Q1 | Size, alignment and location of the shape space. A u32 offset bounds it; the plan gives no number | M0 wk4 (shapes v0) | **Filled 2026-10-21:** the first `shape_space_bytes` of the cage (0 = none in `ep9_heap`; 256 MiB from `ep9_vm`); a power of two from 1 MiB to 4 GiB; cage align >= 4 GiB outside Miri; ShapeId = offset from the cage base. See "Shape space" under Decision |
-| H08-Q2 | Do SP-Unit's 10 opcodes include a shape-guarded load, so the RW-cell guard is tested in M0? | Spike B plan | **Filled 2026-10-22 (M2-H08-Q2): no, not in M0.** The 11 Spike B opcodes (09 §4 says 10; Spike B adds AddSmi) have no property load, and the spike JIT records no feedback. The RW-cell shape guard is tested in M1 (Spike C). The old default was "include one property load" |
+| H08-Q2 | Do SP-Unit's 11 opcodes include a shape-guarded load, so the RW-cell guard is tested in M0? | Spike B plan | **Filled 2026-10-22 (M2-H08-Q2): no, not in M0.** The 11 Spike B opcodes (09 §4 said 10 until 2026-10-22; Spike B adds AddSmi) have no property load, and the spike JIT records no feedback. The RW-cell shape guard is tested in M1 (Spike C). The old default was "include one property load" |
 | H08-Q3 | Full flag-bit list beyond hash-present, pinned, is-prototype | M1a (H17 freeze) | **Filled 2026-10-21:** bits 0-7 kind-specific, bit 8 is-prototype, bit 9 reserved for hash-present, bits 10-15 reserved. See "Flag bits" under Decision |
 | H08-Q4 | Miri for `ep9_vm`: a stand-in cage with `CAGE_ALIGN` alignment, or the subtract path in `shape_of` under Miri (M2-P1-MIRI-VM)? | M1 | Heap owner (GC lead) decides |
 
@@ -149,6 +149,7 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 | 2026-10-22 | fill | H08-Q2 filled with the orchestrator decision M2-H08-Q2: the RW-cell shape guard is not tested in M0; Spike C tests it in M1. Every existing check keeps its result | P2-ACCEPT-1 (decision: orchestrator) |
 | 2026-10-22 | clarify | Status line also names the H08-Q2 fill (2026-10-22), as the README §5 index row does. No check changes | P3-ACCEPT-2 |
 | 2026-10-22 | clarify | Rules row 1: m0-exit item 8 also compiles the `ep9_value` asserts (`cargo check -p ep9_value` for the host target), so "no xtask task checks sizes" (here and in the 2026-10-22 P2-ACCEPT-1 row) was false; the cell now says what item 8 runs, as H06 Rules row 1 does (Codex C3 on H06, M2-P4-B2-ROW2). No check changes | P4 integration fixer |
+| 2026-10-22 | clarify | SP-Unit has 11 opcodes (09 §4 now says 11; Spike B adds AddSmi) and runs in M3-P1 (M2-D21-FAIL): the Validation line and the H08-Q2 question. The H08-Q2 answer does not change. No check changes | P5-DOCS-SYNC agent (M2-P5) |
 
 ## Review record
 

@@ -2,13 +2,13 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft, spec skeleton (2026-10-20). Header v0, section table and load check (S4 steps 1-4) built in `crates/ep9_unit` (M0 wk4, S6); writer and loader A2 |
+| Status | Draft, spec skeleton (2026-10-20). Header v0, section table and load check (S4 steps 1-4) built in `crates/ep9_unit` (M0 wk4, S6); H35-Q8 filled 2026-10-22 (engine build id); writer and loader A2 |
 | Fix by | Spec v0 + header struct + golden test by M0 exit; writer/loader A2; frozen at A3 gate |
 | Freeze point | A3 gate |
 | Origin | R16-D6 + R17; plan status N (new) |
 | Crates | `ep9_unit` (container, header, verify, loader; writer under `aot`), `ep9_masm` (unit finalize), `ep9_platform` (mapping, unwind registration) |
 | Owner (plan role) | AOT senior |
-| Validated by | SP-Unit (M0 month 2, inside Spike B); A2 gate |
+| Validated by | SP-Unit (M3-P1, moved by M2-D21-FAIL; built on Spike B placement (b)); A2 gate |
 | Plan sources | [02 §6 H35](../plan/02-architecture.md#6-hard-to-change-decisions-h1-h37), [05 §8](../plan/05-aot.md#8-aot-unit-format-h35), [04 §5](../plan/04-execution.md#5-jit-infrastructure-and-the-relocatable-macroassembler), [03 §6](../plan/03-gc.md#6-snapshot-interaction) |
 
 ## Context
@@ -136,7 +136,7 @@ Zero text relocations. Isolate register + pc-relative RW data + link table. Link
 
 ## Validation
 
-- **SP-Unit** ([09 §4](../plan/09-milestones.md#4-spikes), M0 month 2): the Spike B 10 opcodes built as a unit blob load, call, unwind, GC-scan and fall back on a version mismatch, on 4 targets. On fail it reopens H34 and H35. M0 exit item 11.
+- **SP-Unit** ([09 §4](../plan/09-milestones.md#4-spikes), M3-P1; moved from M0 month 2 by M2-D21-FAIL): the 11 Spike B opcodes (09 §4 said 10; Spike B adds AddSmi) built as a unit blob load, call, unwind, GC-scan and fall back on a version mismatch, on 4 targets. On fail it reopens H34 and H35. M0 exit item 11.
 - Unit golden files: the header struct and container spec v0 match committed golden files (M0 exit; [08 §7](../plan/08-repo.md#7-dependency-guards-and-xtask-checks)). **Built M0 wk4** (`cargo test -p ep9_unit`): `header-v0.hex`, `header-layout.txt` and `container-history.txt` (a layout change without a container version bump fails); every header field mutated bit by bit and with random values ends in its listed outcome, and without a recomputed hash every change is a LOAD ERROR; every section-entry mutation is a LOAD ERROR or another canonical unit; 10^5 random flips, truncations and extensions never panic; a test-encoded unit gives LOAD on this build, SOURCE with another bytecode ABI, and BYTECODE with a text section (deopt version 0).
 - A2 gate: blob and `.o` on 4 targets; zero text relocations; 100% of header mutations end in their S3 outcome. Never a crash, never a wrong result.
 
@@ -152,7 +152,7 @@ Zero text relocations. Isolate register + pc-relative RW data + link table. Link
 | H35-Q6 | Is page size (H09-Q4) part of the object-layout version? | M0 wk4 | **Filled (M0 wk4, W4-AOTU-PAGE).** No: page size is its own field (`heap_page_log2`, offset 122); a mismatch gives BYTECODE. No emitted code bakes the mask in v0 (H09-Q4) |
 | H35-Q7 | S4 step 1 sends every header mismatch to the bytecode fallback. But bytecode of another ABI version, or a container with a bad magic, cannot run. Which header fields fall back to source instead? | M0 exit | **Resolved (decision H35-fallback, 2026-10-20).** Prefix (magic, container version) and hash/signature: clean load error, because no section can be trusted. Build id and bytecode ABI: source section. Native-only versions and CPU: bytecode. This differs from the earlier proposal for magic and container version, because a bad prefix hides the source section |
 | H35-Q8 | Source of the engine build id | SP-Unit (M0 month 2) | **Filled 2026-10-22 (M2-P2-INFRA2): built as proposed.** The first 16 bytes of SHA-256 over the git commit (`git rev-parse HEAD`, also in a worktree; `unknown` without git), `rustc -vV`, the target and the enabled features, with an `EP9_BUILD_ID` override (32 hex digits; any other value fails the build). "Enabled features" means `ep9_unit`'s own features only: a build script cannot see the features of other crates. Text format and rerun rules: `crates/ep9_unit/build.rs`; tests in `crates/ep9_unit/src/host.rs` |
-| H35-Q9 | Unit-data register (TOC style). The unit text is mapped once per process, but each isolate has its own RW copy (H22, S4 load step 6). A pc-relative access from the shared text reaches one address only, so it cannot reach a per-isolate RW copy, which S5 ("RW data pc-relative") assumes. How does AOT code reach its isolate's RW data? | SP-Unit (M0 month 2) | A reserved unit-data register, like a TOC pointer: x27 on aarch64, r14 on x86-64 (every OS), next to the isolate register (x28 or r15, M2-JIT-ABI). Both are callee-saved in AAPCS64, SysV and Win64. AOT code loads it on entry from the callee's per-isolate RW base, and RW accesses are register-relative. Filling Q9 rewrites the S5 rule (M2-AOT-TOC) |
+| H35-Q9 | Unit-data register (TOC style). The unit text is mapped once per process, but each isolate has its own RW copy (H22, S4 load step 6). A pc-relative access from the shared text reaches one address only, so it cannot reach a per-isolate RW copy, which S5 ("RW data pc-relative") assumes. How does AOT code reach its isolate's RW data? | M3-P1 SP-UNIT (was SP-Unit, M0 month 2; M2-P5-PLAN-D17) | A reserved unit-data register, like a TOC pointer: x27 on aarch64, r14 on x86-64 (every OS), next to the isolate register (x28 or r15, M2-JIT-ABI). Both are callee-saved in AAPCS64, SysV and Win64. AOT code loads it on entry from the callee's per-isolate RW base, and RW accesses are register-relative. Filling Q9 rewrites the S5 rule (M2-JIT-ABI) |
 
 ## Reopens if
 
@@ -174,3 +174,4 @@ Zero text relocations. Isolate register + pc-relative RW data + link table. Link
 | 2026-10-21 | clarify | New open question H35-Q9 (unit-data register, TOC style; proposal x27 or r14), due SP-Unit. No rule changes until it is filled | P0-DOCS agent (M2-P0) |
 | 2026-10-21 | clarify | 1 `path:line` reference moved to the code after M2-P0 (drift script, [I15]) | M2-P0 integration fixer |
 | 2026-10-22 | fill | H35-Q8 filled: the engine build id is SHA-256 (first 16 bytes) of the commit, `rustc -vV`, the target and `ep9_unit`'s own features, with the `EP9_BUILD_ID` override; the Build id rule row says so. Unit goldens and the corpus digest keep their values (the goldens use a fixed id; CompiledUnits keep zeros) | M2-P2-INFRA2 agent |
+| 2026-10-22 | clarify | H35-Q9: the decision id is M2-JIT-ABI (decisions-log; "M2-AOT-TOC" names no row), Needed by M3-P1 SP-UNIT; the Status line and the README §5 cell name the filled H35-Q8. SP-Unit is in M3-P1 (Validated by, Validation) and has 11 opcodes. The Q9 fill and the S5 rewrite stay with M3-P1 SP-UNIT. No rule or check changes (M2-P5-PLAN-D17) | P5-DOCS-SYNC agent (M2-P5) |
