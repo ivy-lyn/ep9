@@ -9,7 +9,9 @@
 //! | `instanceof` and `Function.prototype[@@hasInstance]` | `property::instance_of`, `natives::function_has_instance` |
 //! | `%Iterator.prototype%[@@toStringTag]` accessor | `natives::iterator_to_string_tag_{get,set}` |
 //! | `Object.prototype.valueOf`, `Array.prototype.join`/`toString` ToObject | `natives.rs` |
-//! | `Array` with a NewTarget (subclass, Reflect-free) | `natives::array_constructor` |
+//! | `Array` with a NewTarget (subclass; `Reflect.construct`) | `natives::array_constructor` |
+//! | NativeError constructors inherit from `%Error%` (step 2) | `builtins::install` |
+//! | `Array.prototype[@@unscopables]` (step 2) | `natives.rs` VM table, `IntrinsicId::ArrayUnscopables` |
 
 mod common;
 
@@ -289,6 +291,93 @@ fn array_constructor_takes_the_new_target_prototype() {
             "true",
             "true,4",
             "true",
+        ])
+    );
+}
+
+/// `Reflect.construct` (B-REFLECT-GLOBALS) gives `Array` any NewTarget: its `prototype` when it
+/// is an object, else the realm's `%Array.prototype%` (GetPrototypeFromConstructor step 4).
+#[test]
+fn array_constructor_with_reflect_construct() {
+    let src = "
+        function F() {}
+        F.prototype = { tag: 'F' };
+        var a = Reflect.construct(Array, [3], F);
+        print(Object.getPrototypeOf(a) === F.prototype, Array.isArray(a), a.length, a.tag);
+        F.prototype = 1;
+        var b = Reflect.construct(Array, [1, 2], F);
+        print(Object.getPrototypeOf(b) === Array.prototype, b.join());
+        print(Object.getPrototypeOf(Reflect.construct(Array, [], Object)) === Object.prototype);
+    ";
+    assert_eq!(run_both(src), lines(&["true true 3 F", "true 1,2", "true"]));
+}
+
+// ---- NativeError [[Prototype]] (step 2) --------------------------------------------------------
+
+/// §20.5.6.2: each NativeError constructor's [[Prototype]] is %Error%, so statics on `Error`
+/// are inherited, and a subclass chain reaches `Error`.
+#[test]
+fn native_error_constructors_inherit_from_error() {
+    let src = "
+        var es = [EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError, AggregateError];
+        print(es.map(function (E) { return Object.getPrototypeOf(E) === Error; }).join());
+        print(Object.getPrototypeOf(Error) === Function.prototype, Error.isPrototypeOf(URIError));
+        Error.inherited = 'inh';
+        print(TypeError.inherited, RangeError.hasOwnProperty('inherited'), Object.getOwnPropertyNames(SyntaxError).sort().join());
+        delete Error.inherited;
+        print(TypeError.inherited, TypeError.name, TypeError.length, Object.getPrototypeOf(TypeError.prototype) === Error.prototype);
+        class MyErr extends RangeError {}
+        var m = new MyErr('m');
+        print(Object.getPrototypeOf(MyErr) === RangeError, m instanceof RangeError, m instanceof Error, m.message, m.name, String(m));
+        print(Object.prototype.toString.call(m), Object.prototype.toString.call(EvalError));
+    ";
+    assert_eq!(
+        run_both(src),
+        lines(&[
+            "true,true,true,true,true,true,true",
+            "true true",
+            "inh false length,name,prototype",
+            "undefined TypeError 1 true",
+            "true true true m RangeError RangeError: m",
+            "[object Error] [object Function]",
+        ])
+    );
+}
+
+// ---- Array.prototype[@@unscopables] (step 2) ---------------------------------------------------
+
+/// §23.1.3.41: a null-prototype object with 16 `true` {w, e, c} keys in spec order, on
+/// `Array.prototype` with {c}; `with` skips those names on an array (§9.1.1.2.1 step 6).
+#[test]
+fn array_prototype_unscopables() {
+    let src = "
+        var u = Array.prototype[Symbol.unscopables];
+        print(Object.getPrototypeOf(u), Reflect.ownKeys(u).join());
+        var d = Object.getOwnPropertyDescriptor(u, 'flat');
+        print(d.value, d.writable, d.enumerable, d.configurable, Object.keys(u).length);
+        var p = Object.getOwnPropertyDescriptor(Array.prototype, Symbol.unscopables);
+        print(p.writable, p.enumerable, p.configurable, p.value === u, 'get' in p);
+        print(Object.getOwnPropertySymbols(Array.prototype).map(String).join());
+        var keys = 'k', values = 'v', at = 'a', join = 'j';
+        with ([1, 2]) { print(keys, values, at, typeof join, length); }
+        u.join = true;
+        with ([]) { print(typeof join); }
+        delete u.join;
+        delete Array.prototype[Symbol.unscopables];
+        with ([]) { print(typeof keys, typeof values); }
+        print(Symbol.unscopables in Array.prototype, Object.getOwnPropertySymbols(u).length);
+    ";
+    assert_eq!(
+        run_both(src),
+        lines(&[
+            "null at,copyWithin,entries,fill,find,findIndex,findLast,findLastIndex,flat,flatMap,includes,keys,toReversed,toSorted,toSpliced,values",
+            "true true true true 16",
+            "false false true true false",
+            "Symbol(Symbol.iterator),Symbol(Symbol.unscopables)",
+            "k v a function 2",
+            "string",
+            "function function",
+            "false 0",
         ])
     );
 }

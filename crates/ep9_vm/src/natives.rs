@@ -12,6 +12,7 @@
 //! | `Error.prototype.toString` | §20.5.3.4 |
 //! | `Array.prototype.join`, `toString` (ToObject, then `join` or %Object.prototype.toString%), `push` (generic: any object, through `[[Set]]`) | §23.1.3.18, §23.1.3.36, §23.1.3.23 |
 //! | `Array.prototype.values` = `Array.prototype[@@iterator]`, `keys`, `entries`, %ArrayIteratorPrototype%.next | §23.1.3.38, §23.1.3.40, §23.1.3.19, §23.1.3.5, §23.1.5.2.1 |
+//! | `Array.prototype[@@unscopables]` (a null-prototype object of 16 `true` keys; no function) | §23.1.3.41 |
 //! | `String.prototype[@@iterator]`, %StringIteratorPrototype%.next | §22.1.3.36, §22.1.5.2.1 |
 //! | `%Iterator.prototype%[@@iterator]`; `%Iterator.prototype%[@@toStringTag]` (an accessor: get "Iterator", set SetterThatIgnoresPrototypeProperties, ES2025) | §27.1.2.1, §27.1.4.14 |
 //! | `Function.prototype[@@hasInstance]` (OrdinaryHasInstance; `instanceof` runs it without a call, `property::instance_of`) | §20.2.3.6 |
@@ -239,6 +240,11 @@ const VM_INTRINSICS: &[IntrinsicDef] = &[
         id: IntrinsicId::Eval,
         value: IntrinsicValue::Builtin(vm::EVAL),
     },
+    // M2-P5. §23.1.3.41: OrdinaryObjectCreate(null).
+    IntrinsicDef {
+        id: IntrinsicId::ArrayUnscopables,
+        value: IntrinsicValue::Object { proto: None },
+    },
 ];
 
 const PROTOTYPE: PropKey = PropKey::Atom(Atom::Prototype);
@@ -249,6 +255,13 @@ const VALUES: PropKey = PropKey::Str("values");
 const ITERATOR: PropKey = PropKey::Symbol(WellKnownSymbol::ITERATOR);
 const TO_STRING_TAG: PropKey = PropKey::Symbol(WellKnownSymbol::TO_STRING_TAG);
 const HAS_INSTANCE: PropKey = PropKey::Symbol(WellKnownSymbol::HAS_INSTANCE);
+const UNSCOPABLES: PropKey = PropKey::Symbol(WellKnownSymbol::UNSCOPABLES);
+
+/// `key` = true {w, e, c}: one entry of `%Array.prototype%[@@unscopables]` (§23.1.3.41,
+/// CreateDataPropertyOrThrow).
+const fn unscopable(key: &'static str) -> PropDef {
+    PropDef::constant(PropKey::Str(key), ConstValue::Bool(true), PropAttrs::ALL)
+}
 
 /// `@@toStringTag` = `tag` ({c}, §18): the tag of `Object.prototype.toString` (step 15).
 const fn to_string_tag(tag: &'static str) -> PropDef {
@@ -356,6 +369,34 @@ const VM_PROPS: &[ObjectProps] = &[
             PropDef::alias(ITERATOR, VALUES, PropAttrs::METHOD),
             PropDef::method(PropKey::Str("keys"), vm::ARRAY_KEYS),
             PropDef::method(PropKey::Str("entries"), vm::ARRAY_ENTRIES),
+            // §23.1.3.41: {w: false, e: false, c: true}.
+            PropDef::intrinsic(
+                UNSCOPABLES,
+                IntrinsicId::ArrayUnscopables,
+                PropAttrs::CONFIGURABLE,
+            ),
+        ],
+    },
+    // §23.1.3.41 steps 2-18, in spec (and node) order.
+    ObjectProps {
+        target: IntrinsicId::ArrayUnscopables,
+        props: &[
+            unscopable("at"),
+            unscopable("copyWithin"),
+            unscopable("entries"),
+            unscopable("fill"),
+            unscopable("find"),
+            unscopable("findIndex"),
+            unscopable("findLast"),
+            unscopable("findLastIndex"),
+            unscopable("flat"),
+            unscopable("flatMap"),
+            unscopable("includes"),
+            unscopable("keys"),
+            unscopable("toReversed"),
+            unscopable("toSorted"),
+            unscopable("toSpliced"),
+            unscopable("values"),
         ],
     },
     ObjectProps {

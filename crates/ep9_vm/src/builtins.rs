@@ -166,11 +166,14 @@ pub enum IntrinsicId {
     // ---- M2-P5 (Reflect): made by `ep9_builtins` (reflect.rs), a state slot ----
     /// `%Reflect%` (§28.1).
     Reflect,
+    // ---- M2-P5 (VM-SMALL): made by the VM table (natives.rs), a state slot ----
+    /// `%Array.prototype%[@@unscopables]` (§23.1.3.41): a null-prototype object.
+    ArrayUnscopables,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 44] = [
+    pub const ALL: [IntrinsicId; 45] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -215,6 +218,7 @@ impl IntrinsicId {
         IntrinsicId::AggregateError,
         IntrinsicId::AggregateErrorPrototype,
         IntrinsicId::Reflect,
+        IntrinsicId::ArrayUnscopables,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object.
@@ -264,6 +268,7 @@ impl IntrinsicId {
             IntrinsicId::AggregateError => "%AggregateError%",
             IntrinsicId::AggregateErrorPrototype => "%AggregateError.prototype%",
             IntrinsicId::Reflect => "%Reflect%",
+            IntrinsicId::ArrayUnscopables => "%Array.prototype%[@@unscopables]",
         }
     }
 
@@ -314,7 +319,8 @@ impl IntrinsicId {
             | IntrinsicId::PromisePrototype
             | IntrinsicId::AggregateError
             | IntrinsicId::AggregateErrorPrototype
-            | IntrinsicId::Reflect => return None,
+            | IntrinsicId::Reflect
+            | IntrinsicId::ArrayUnscopables => return None,
         })
     }
 
@@ -334,6 +340,7 @@ impl IntrinsicId {
             IntrinsicId::AggregateError => Some(9),
             IntrinsicId::AggregateErrorPrototype => Some(10),
             IntrinsicId::Reflect => Some(11),
+            IntrinsicId::ArrayUnscopables => Some(12),
             _ => None,
         }
     }
@@ -974,7 +981,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 12;
+const INTRINSIC_SLOTS: usize = 13;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.
@@ -1103,7 +1110,8 @@ pub(crate) fn existing_function(rt: &Runtime, id: BuiltinId) -> Option<u64> {
 
 /// Installs the tables that [`prepare`] registered: (1) the function object of every
 /// definition, (2) the intrinsics the modules make, then the `[[Prototype]]` of
-/// %GeneratorFunction% and %AsyncFunction%, (3) the properties. Walk order: VM table,
+/// %GeneratorFunction% and %AsyncFunction% (%Function%) and of the native errors (%Error%),
+/// (3) the properties. Walk order: VM table,
 /// then the embedder's; modules, then entries, in order. Runs after `realm::init`.
 pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
     let rt = cx.rt();
@@ -1155,6 +1163,23 @@ pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
             || !is_object(c)
             || !crate::property::set_prototype_of(rt, c, function)
         {
+            return Err(format!("could not set the [[Prototype]] of {}", id.name()));
+        }
+    }
+    // §20.5.6.2: the [[Prototype]] of each NativeError constructor is %Error% (made by the
+    // VM table with %Function.prototype%, as above). %AggregateError% (§20.5.7.2) gets it
+    // in `isolate.rs`, after the embedder's table made it. GC point (dictionary mode): the intrinsics are roots.
+    let error = intrinsic(rt, IntrinsicId::Error);
+    for id in [
+        IntrinsicId::EvalError,
+        IntrinsicId::RangeError,
+        IntrinsicId::ReferenceError,
+        IntrinsicId::SyntaxError,
+        IntrinsicId::TypeError,
+        IntrinsicId::UriError,
+    ] {
+        let c = intrinsic(rt, id);
+        if !is_object(error) || !is_object(c) || !crate::property::set_prototype_of(rt, c, error) {
             return Err(format!("could not set the [[Prototype]] of {}", id.name()));
         }
     }
