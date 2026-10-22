@@ -1,0 +1,7 @@
+a 0 1 b d c (root)
+{"a":2,"b":[4,6],"c":{}}
+{"a":"A","b":[4,6],"c":{}}
+{"b":[4,6],"a":2}
+{"date":"when:date"}
+TypeError
+SyntaxError
