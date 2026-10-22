@@ -174,7 +174,7 @@ pub(crate) fn try_bind_this(fi: &FunctionInfo, this: u64, global: u64) -> Option
     if this == UNDEFINED || this == NULL {
         Some(global)
     } else if this == HOLE {
-        // Not a language value; as it is (the old `bind_this` result).
+        // The hole is not a language value: it goes in as it is (no global object, no wrapper).
         Some(this)
     } else {
         // A number or a boolean.
@@ -183,11 +183,11 @@ pub(crate) fn try_bind_this(fi: &FunctionInfo, this: u64, global: u64) -> Option
 }
 
 /// ToObject(`this`) for a call that [`try_bind_this`] refused (§10.2.1.2 step 6.b). GC point:
-/// the caller keeps the callee and the arguments rooted. `slow::call` and `enter_b_cold`
-/// wrap before `push_frame` (the arguments are in caller registers or the spread array).
-/// `call_function_object` wraps after `push_frame`, with the frame not yet published and
-/// under the scratch top, because its `arg` may read memory that the GC does not scan. The
-/// wrapper stays in a Rust local until it is stored in the frame.
+/// the caller keeps the callee and the arguments rooted. `slow::call` and `enter_b_cold` wrap
+/// before `push_frame` (the arguments are in caller registers or the spread array);
+/// `call_function_object` and the spike-native `enter_native`/`run_b` (`native::wrap_receiver`)
+/// wrap after it, with the frame not yet published and under the scratch top, as their `arg`
+/// may read memory the GC does not scan. The wrapper stays in a Rust local until it is stored.
 #[cold]
 #[inline(never)]
 pub(crate) fn wrap_this(cx: &mut Cx, this: u64) -> Res<u64> {
