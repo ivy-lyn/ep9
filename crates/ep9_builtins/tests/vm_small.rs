@@ -5,7 +5,7 @@
 //!
 //! | Area | VM code |
 //! |---|---|
-//! | sloppy primitive `this` (OrdinaryCallBindThis step 6.b, H14-Q2) | `call::wraps_this`/`wrap_this`, from `call_fast` (cold), `slow::call`, `call_function_object` |
+//! | sloppy primitive `this` (OrdinaryCallBindThis step 6.b, H14-Q2) | `call::try_bind_this`/`wrap_this`, from `call_fast` (cold), `slow::call`, `call_function_object` |
 //! | `instanceof` and `Function.prototype[@@hasInstance]` | `property::instance_of`, `natives::function_has_instance` |
 //! | `%Iterator.prototype%[@@toStringTag]` accessor | `natives::iterator_to_string_tag_{get,set}` |
 //! | `Object.prototype.valueOf`, `Array.prototype.join`/`toString` ToObject | `natives.rs` |
