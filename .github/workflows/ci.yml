@@ -386,6 +386,17 @@ jobs:
       - name: Spike B structural gate
         if: ${{ !cancelled() }}
         run: bash spikes/spike-b/gate.sh structural
+      # P4-WIN-STATIC-1 (plan-v6 D25): the real Win64 unwind run of placement (a)'s x86-64 JIT
+      # (spikes/spike-b/tests/win64_unwind.rs): per function, RtlLookupFunctionEntry finds its
+      # RUNTIME_FUNCTION and RtlVirtualUnwind from every prologue, body and epilogue state
+      # returns to its caller; a walk from a host function steps through running JIT frames.
+      # The `cargo test` of the structural gate already runs it; this step names the result.
+      # Debug, as that `cargo test`, so it reuses its build (a --release test build would
+      # rebuild the fat-LTO graph). The static half (win-static.sh, llvm-readobj and llvm-mc)
+      # runs on a Mac.
+      - name: Spike B Win64 unwind (windows-x64)
+        if: ${{ !cancelled() && matrix.name == 'windows-x64' }}
+        run: cargo test --locked --manifest-path spikes/spike-b/Cargo.toml --test win64_unwind -- --nocapture
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
