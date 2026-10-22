@@ -133,11 +133,9 @@ pub(crate) mod genf {
     /// How the frame resumes: next, return or throw (int32).
     pub const RESUME_MODE: usize = 72;
     /// Async functions and async generators: the promise or the request queue.
-    #[allow(dead_code)] // month 3 (async)
     pub const ASYNC: usize = 80;
     pub const FIXED: usize = 8;
     pub const MODE_SYNC: i32 = 0;
-    #[allow(dead_code)] // month 3 (async)
     pub const MODE_ASYNC_FUNCTION: i32 = 1;
     #[allow(dead_code)] // month 3 (async)
     pub const MODE_ASYNC_GENERATOR: i32 = 2;

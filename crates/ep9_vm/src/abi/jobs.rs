@@ -444,6 +444,20 @@ impl<'s> Cx<'s> {
         Ok(())
     }
 
+    /// The steps of a promise resolve function after its `[[AlreadyResolved]]` check
+    /// (§27.2.1.3.2 steps 7-16), for a VM-made pending promise that one resolve at most
+    /// reaches: an async function's own promise (§27.7.5.2 AsyncBlockStart step 3.f;
+    /// `interp/slow/async_fn.rs`). A thenable takes a job; a throw of its `then` getter
+    /// rejects. GC point; may run JS (the getter).
+    pub(crate) fn resolve_promise_once(
+        &mut self,
+        promise: Local<'s, JsObject>,
+        resolution: Local<'s>,
+    ) -> JsResult<()> {
+        debug_assert!(self.is_promise(promise) && self.state_of(promise) == promise::PENDING);
+        self.resolve_promise(promise, resolution)
+    }
+
     /// FulfillPromise(promise, value) (§27.2.1.4). `promise` is pending.
     pub fn fulfill_promise(&mut self, promise: Local<'s, JsObject>, value: impl Into<Local<'s>>) {
         self.settle(promise, promise::FULFILLED, value.into());

@@ -64,7 +64,10 @@ generator	"yield"	""	SyntaxError
 generator	"a = yield"	""	SyntaxError
 generator	""	"var yield"	SyntaxError
 generator	""	"}); (function*(){"	SyntaxError
-async	"a"	"return await a"	ok	ep9=unsupported: async functions
+async	"a"	"return await a"	ok
+async	"a, b = 1"	"return a + b"	ok
+async	""	"await 1; return arguments.length"	ok
+async	"a = await 1"	""	SyntaxError
 async	"await"	""	SyntaxError
 async	""	"}); (async function(){"	SyntaxError
 asyncgen	""	"yield await 1"	ok	ep9=unsupported: generator functions

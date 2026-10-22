@@ -1297,7 +1297,8 @@ op!(GetSuperConstructor(st, dst: R) {
 // ---- generators: slow/generator.rs (P1-GEN-VM), frame-switch protocol ----------------------
 
 op!(SwitchOnGeneratorState(st, generator: R, table: K) { Flow::Cold } cold {
-    let r = slow::switch_on_generator_state(st.cx, st.fp, st.pc, st.next, generator.0, table.0);
+    let (acc, next) = (st.acc, st.next);
+    let r = slow::switch_on_generator_state(st.cx, st.fp, st.pc, next, acc, generator.0, table.0);
     st.switch(r)
 });
 op!(SuspendGenerator(st, generator: R, registers: RList, count: Count, id: u32) { Flow::Cold } cold {

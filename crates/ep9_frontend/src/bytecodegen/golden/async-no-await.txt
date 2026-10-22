@@ -1,0 +1,66 @@
+# async-no-await: script (strict)
+# | async function f() { return 1; }
+; ep9 bytecode, ABI 5
+unit kind=script strict=true ts=none source_len=32 source=embedded hints=none
+source_hash=1228b50b2ab8683b1f05aa03b9b2466a2bb98d78f98f9cf73267115d7ffd2dba
+strings (1):
+  str0 "f"
+scopes (2):
+  scope0 script outer=- flags=[strict] slots=["f":function]
+  scope1 function outer=scope0 flags=[strict] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[strict] params=0 length=0 regs=2 range=0..32
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[strict,async,simple-params] params=0 length=0 regs=4 range=0..32
+  code (54 bytes):
+      0    LdaCurrentFunction                           ; 0e
+      1    Star r1                                      ; 0c 01
+      3    Mov <this>, r2                               ; 0d ff 02
+      6 E> CallRuntime AsyncFunctionEnter, r1-r2        ; 68 20 00 01 02
+     11    Star r0                                      ; 0c 00
+     13    LdaCurrentContext                            ; 15
+     14    Star r1                                      ; 0c 01
+     16 S> LdaSmi [1]                                   ; 04 01
+     18    Star r3                                      ; 0c 03
+     20    Mov r0, r2                                   ; 0d 00 02
+     23 E> CallRuntime AsyncFunctionResolve, r2-r3      ; 68 22 00 02 02
+     28    Return                                       ; 92
+     29    LdaUndefined                                 ; 05
+     30    Star r3                                      ; 0c 03
+     32    Mov r0, r2                                   ; 0d 00 02
+     35 E> CallRuntime AsyncFunctionResolve, r2-r3      ; 68 22 00 02 02
+     40    Return                                       ; 92
+     41    Star r3                                      ; 0c 03
+     43    LdaTheHole                                   ; 07
+     44    SetPendingMessage                            ; 93
+     45    Mov r0, r2                                   ; 0d 00 02
+     48 E> CallRuntime AsyncFunctionReject, r2-r3       ; 68 23 00 02 02
+     53    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (1):
+        [16, 41) -> @41 context=r1 promise
+  positions (5):
+      6 E 0 (1:1)
+     16 S 21 (1:22)
+     23 E 21 (1:22)
+     35 E 31 (1:32)
+     48 E 31 (1:32)

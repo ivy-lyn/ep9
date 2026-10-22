@@ -28,9 +28,10 @@
 //! | executing (-2) | TypeError | TypeError | TypeError |
 //! | closed (-1) | `{undefined, true}` | `{v, true}` | throw `v` |
 //!
-//! A suspended-start generator resumed with return or throw runs its prologue's resume
-//! point, which returns or throws at once (as V8 does): the same result as GeneratorResumeAbrupt
-//! (§27.5.3.4) step 2, since no user code runs before the first suspend's resume point.
+//! A suspended-start generator resumed with return or throw is completed at once and runs no
+//! frame (GeneratorResumeAbrupt, §27.5.3.4 step 2; M2-P1-X3-DEFER closed in M3-P1), so it
+//! needs no VM stack. An async function object (mode `MODE_ASYNC_FUNCTION`) is resumed only
+//! by its await closures ([`resume_async_function`], `interp/slow/async_fn.rs`).
 
 use ep9_value::{JsResult, Throw};
 
@@ -98,10 +99,12 @@ fn iter_result(rt: &Runtime, value: u64, done: bool) -> u64 {
 /// GeneratorResume / GeneratorResumeAbrupt (§27.5.3.3, §27.5.3.4) for the receiver `g` of
 /// `%GeneratorPrototype%.<method>` with resume mode `mode` (`genf::RESUME_*`) and the
 /// value `v`. See the module table. A suspended generator gets `v` as its sent value and
-/// `mode` as its resume mode, then its frame runs (`call::run_resumed`) until it suspends
+/// `mode` as its resume mode, then its frame runs ([`resume_frame`]) until it suspends
 /// again (the accumulator is the result as it is) or completes (closed; a return gives
-/// `{value, done: true}`, a throw propagates). An error before the frame runs (a full
-/// stack) leaves the generator suspended.
+/// `{value, done: true}`, a throw propagates). A suspended-start generator resumed with
+/// return or throw is completed first and runs no frame (§27.5.3.4 step 2,
+/// M2-P1-X3-DEFER). An error before the frame runs (a full stack) leaves the generator
+/// suspended.
 pub(crate) fn resume(cx: &mut Cx, g: u64, mode: i32, v: u64, method: &str) -> Res<u64> {
     // GeneratorValidate (§27.5.3.2): a sync GENERATOR (brand empty).
     if !is_generator(g) || object::gen_get_i32(g, genf::MODE) != genf::MODE_SYNC {
@@ -112,13 +115,19 @@ pub(crate) fn resume(cx: &mut Cx, g: u64, mode: i32, v: u64, method: &str) -> Re
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     }
     let rt = cx.rt();
-    let state = object::gen_get_i32(g, genf::STATE);
+    let mut state = object::gen_get_i32(g, genf::STATE);
     if state == genf::STATE_EXECUTING {
         return Err(throw_error(
             cx,
             ErrorKind::TypeError,
             "Generator is already running",
         ));
+    }
+    if state == SUSPENDED_START && mode != genf::RESUME_NEXT {
+        // §27.5.3.4 step 2: a suspended-start generator is completed before the abrupt
+        // completion is handled, so its body (and its prologue's resume point) never runs.
+        close(rt, g);
+        state = genf::STATE_CLOSED;
     }
     if state < 0 {
         // Completed (§27.5.3.3 step 4, §27.5.3.4 step 3).
@@ -131,6 +140,43 @@ pub(crate) fn resume(cx: &mut Cx, g: u64, mode: i32, v: u64, method: &str) -> Re
             _ => Ok(iter_result(rt, UNDEFINED, true)),
         };
     }
+    let r = resume_frame::<false>(cx, g, mode, v);
+    let state = object::gen_get_i32(g, genf::STATE);
+    match r {
+        // Suspended again: the iterator result the bytecode built (or `yield*`'s inner one).
+        Ok(acc) if state >= 0 => Ok(acc),
+        // Returned (executing, or closed by `GeneratorClose`): §27.5.3.3 step 9 via
+        // GeneratorStart step 4.g-j.
+        Ok(acc) => {
+            close(rt, g);
+            Ok(iter_result(rt, acc, true))
+        }
+        Err(Throw) => {
+            if state < 0 {
+                // The body threw: the generator is completed.
+                close(rt, g);
+            }
+            Err(Throw)
+        }
+    }
+}
+
+/// The suspend id of a sync generator before its first `next` (the initial suspend,
+/// `bytecodegen/generator.rs`): GeneratorState suspended-start (§27.5).
+const SUSPENDED_START: i32 = 0;
+
+/// Runs the frame of the suspended generator or async function object `g` (state >= 0) with
+/// resume mode `mode` and the sent value `v`: the frame is pushed with the saved parameters,
+/// `this` and context (`call::run_resumed`) and runs until it suspends again or leaves.
+/// Returns the accumulator of that `SuspendGenerator` or `Return`. An error before the frame
+/// runs (a full stack, an interrupt) leaves `g` suspended, with no input. GC point; runs JS.
+///
+/// `ASYNC` only makes one copy per caller: each copy has its own closure type, so each gets
+/// its own `call::run_resumed`, which LLVM inlines into the sync `resume` as before (t0-gen;
+/// one shared copy was not inlined and cost about 0.4% there).
+#[inline(always)]
+fn resume_frame<const ASYNC: bool>(cx: &mut Cx, g: u64, mode: i32, v: u64) -> Res<u64> {
+    let rt = cx.rt();
     let f = object::gen_get(g, genf::FUNCTION);
     let regs = object::gen_regs(g).filter(|r| {
         kinds::is_function(f) && (object::function_info(f).parameter_count as usize) < r.len()
@@ -159,27 +205,42 @@ pub(crate) fn resume(cx: &mut Cx, g: u64, mode: i32, v: u64, method: &str) -> Re
         context,
         g,
     );
-    let state = object::gen_get_i32(g, genf::STATE);
-    match r {
-        // Suspended again: the iterator result the bytecode built (or `yield*`'s inner one).
-        Ok(acc) if state >= 0 => Ok(acc),
-        // Returned (executing, or closed by `GeneratorClose`): §27.5.3.3 step 9 via
-        // GeneratorStart step 4.g-j.
-        Ok(acc) => {
-            close(rt, g);
-            Ok(iter_result(rt, acc, true))
-        }
-        Err(Throw) => {
-            if state < 0 {
-                // The body threw: the generator is completed.
-                close(rt, g);
-            } else if let Some(regs) = object::gen_regs(g) {
-                // The frame never ran (a full stack): still suspended; drop the input.
-                regs.set(rt, genf::REGS_INPUT, UNDEFINED);
-            }
-            Err(Throw)
-        }
+    if r.is_err()
+        && object::gen_get_i32(g, genf::STATE) >= 0
+        && let Some(regs) = object::gen_regs(g)
+    {
+        // The frame never ran: still suspended; drop the input.
+        regs.set(rt, genf::REGS_INPUT, UNDEFINED);
     }
+    r
+}
+
+/// Resumes the suspended async function object `g` (`genf::MODE_ASYNC_FUNCTION`) from an
+/// await closure (`interp/slow/async_fn.rs`): mode next with the fulfilled value, or throw
+/// with the rejection reason (§27.7.5.3 Await steps 3.c-f, 5.c-f). The frame runs until its
+/// next `await` or its end, where `AsyncFunctionResolve` or `AsyncFunctionReject` completed
+/// `g`. An `Err` means that the frame never ran or that a throw left it (the caller rejects).
+pub(crate) fn resume_async_function(cx: &mut Cx, g: u64, mode: i32, v: u64) -> Res<()> {
+    debug_assert!(
+        is_generator(g) && object::gen_get_i32(g, genf::MODE) == genf::MODE_ASYNC_FUNCTION
+    );
+    if object::gen_get_i32(g, genf::STATE) < 0 {
+        return Err(throw_error(
+            cx,
+            ErrorKind::Error,
+            "ep9 internal error: an async function resumed while it is not suspended",
+        ));
+    }
+    resume_frame::<true>(cx, g, mode, v)?;
+    if object::gen_get_i32(g, genf::STATE) == genf::STATE_EXECUTING {
+        // The frame left without settling the promise (a BytecodeGen bug).
+        return Err(throw_error(
+            cx,
+            ErrorKind::Error,
+            "ep9 internal error: an async function returned without settling its promise",
+        ));
+    }
+    Ok(())
 }
 
 /// The host side of `next`/`return`/`throw`.
@@ -237,12 +298,13 @@ pub(crate) fn generator_throw<'s>(
     resume_native(cx, this, args, genf::RESUME_THROW, "throw")
 }
 
-/// `AsyncFunction(...params, body)` (§27.7.1.1). Stub (month 3).
+/// `AsyncFunction(...params, body)` (§27.7.1.1): CreateDynamicFunction with kind async,
+/// through the compiler hook like `Function` and `GeneratorFunction` (`abi/script.rs`).
 pub(crate) fn async_function<'s>(
     cx: &mut HostCx<'s>,
     _this: Local<'s>,
-    _args: Args<'s>,
-    _nt: Local<'s>,
+    args: Args<'s>,
+    nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    Err(cx.not_implemented("AsyncFunction constructor"))
+    cx.create_dynamic_function(args, nt, ep9_bytecode::FunctionCtorKind::Async)
 }

@@ -43,14 +43,18 @@ use super::func::{Command, FnGen, Gen};
 const RESUME_NEXT: i32 = 0;
 const RESUME_RETURN: i32 = 1;
 
-/// The generator state of one generator function body.
+/// The generator state of one generator function body, or of one async function body
+/// (`async_fn.rs`: the same suspend points, ABI 5 ids 32-35).
 pub(crate) struct GenState {
-    /// The generator object (`undefined` until `CreateGeneratorObject` on the first call).
-    object: Register,
+    /// The generator object (`undefined` until `CreateGeneratorObject` or
+    /// `AsyncFunctionEnter` on the first call).
+    pub(crate) object: Register,
     /// The resume point of each suspend id: the entries of the prologue jump table.
-    resume: Vec<Label>,
+    pub(crate) resume: Vec<Label>,
     /// The next suspend id.
-    next: usize,
+    pub(crate) next: usize,
+    /// An async function body: `return` resolves its promise (`async_fn.rs`).
+    pub(crate) is_async: bool,
 }
 
 /// Counts the suspend points of a generator body (GEN2): one per `yield` / `yield*` that the
@@ -111,6 +115,7 @@ impl<'a> FnGen<'a, '_> {
             object,
             resume,
             next: 0,
+            is_async: false,
         });
         self.prologue_and_params(&node.params)?;
         // §15.5.2 steps 2-3: the generator object, after the parameters (GEN4).
@@ -156,7 +161,7 @@ impl<'a> FnGen<'a, '_> {
 
     /// `SuspendGenerator` with the value in the accumulator, then its resume point:
     /// `ResumeGenerator` (acc = the sent value). `live` registers `r0..live` are saved.
-    fn suspend(&mut self, live: u32, at: u32) -> Gen {
+    pub(crate) fn suspend(&mut self, live: u32, at: u32) -> Gen {
         let Some(g) = self.generator.as_mut() else {
             return Err(super::internal(format!(
                 "suspend outside a generator at {at}"
