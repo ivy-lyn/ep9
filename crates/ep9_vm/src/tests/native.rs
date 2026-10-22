@@ -1459,16 +1459,28 @@ fn guarded(s: &mut Asm, message: bool, body: impl FnOnce(&mut Asm)) {
 fn the_decode_free_entry_takes_every_unprefixed_call_shape() {
     use Lit::{Global, Int, Str};
     use Shape::*;
-    // (shape, callee, values (receiver first for a property shape), printed result)
+    // (shape, callee, values (receiver first for a property shape), printed result). The
+    // sloppy `recv` gets the string receiver "R" wrapped (a String object, H14-Q2):
+    // `enter_native` binds `this` as every other entry does since M3-P0 P0-D10.
     let rows: Vec<(Shape, &str, Vec<Lit>, &str)> = vec![
-        (CallProperty0, "recv", vec![Str("R")], "R"),
+        (CallProperty0, "recv", vec![Str("R")], "[object String]"),
         (CallProperty0, "argc", vec![Str("R")], "0"),
         (CallProperty1, "p0", vec![Str("R"), Str("x")], "x"),
         (CallProperty1, "argc", vec![Str("R"), Int(7)], "1"),
         (CallProperty1, "p1", vec![Str("R"), Str("x")], "undefined"),
-        (CallProperty1, "recv", vec![Str("R"), Str("x")], "R"),
+        (
+            CallProperty1,
+            "recv",
+            vec![Str("R"), Str("x")],
+            "[object String]",
+        ),
         (CallProperty2, "p1", vec![Str("R"), Str("x"), Str("y")], "y"),
-        (CallProperty2, "recv", vec![Str("R"), Int(1), Int(2)], "R"),
+        (
+            CallProperty2,
+            "recv",
+            vec![Str("R"), Int(1), Int(2)],
+            "[object String]",
+        ),
         (
             CallProperty,
             "p2",
@@ -1481,8 +1493,13 @@ fn the_decode_free_entry_takes_every_unprefixed_call_shape() {
             vec![Str("R"), Int(1), Int(2), Int(3)],
             "3",
         ),
-        (CallProperty, "recv", vec![Str("R")], "R"),
-        (CallAnyReceiver, "recv", vec![Str("R"), Int(1)], "R"),
+        (CallProperty, "recv", vec![Str("R")], "[object String]"),
+        (
+            CallAnyReceiver,
+            "recv",
+            vec![Str("R"), Int(1)],
+            "[object String]",
+        ),
         (CallAnyReceiver, "p0", vec![Str("R"), Str("a")], "a"),
         // Count 0: no receiver, so undefined; the strict callee keeps it.
         (CallAnyReceiver, "srecv", vec![], "undefined"),
@@ -1805,13 +1822,16 @@ fn a_full_vm_stack_at_the_entry_is_the_vm_stack_range_error() {
 // ---- placement (b) (P4-PLACEMENT-B) -------------------------------------------------------------
 
 /// Placement (b) of D21 (P4-PLACEMENT-B): JIT frames on the VM stack, entered with the 4
-/// handler arguments (`native::install_native_b`). AArch64 only: the x86-64 (b) code is not
-/// built (a stretch of the plan; spike-b's jit_b refuses x86-64), so these stubs exist for the
-/// AArch64 handler ABI only (the Rust ABI there: x0-x3 in, x0 out; pinned by
-/// `the_handler_abi_passes_cx_pc_fp_acc_in_x0_to_x3`).
+/// handler arguments (`native::install_native_b`). The stubs exist for both handler ABIs: the
+/// AArch64 one (the Rust ABI there: x0-x3 in, x0 out; pinned by
+/// `the_handler_abi_passes_cx_pc_fp_acc_in_x0_to_x3`) and, since M3-P0 P0-B-X64, the x86-64
+/// one (`extern "sysv64"` on every OS: rdi, rsi, rdx, rcx in, rax out; pinned by
+/// `the_handler_abi_passes_cx_pc_fp_acc_in_rdi_rsi_rdx_rcx`). The tests after the encoders run
+/// on both; on x86-64 they run in CI (linux-x64, windows-x64) and in the x86 sandbox.
 ///
 /// A (b) stub runs one function's bytecode against its frame and leaves with a tail jump to
-/// `cx.table[*pc]`, as the jit_b code does:
+/// `cx.table[*pc]`, as the jit_b code does (x86-64: the same steps with the jit_b x86-64 frame,
+/// r15 = cx, r13 = fp, and the exit `rex.w jmp qword ptr [rdi + rax*8]`):
 ///
 /// ```text
 /// leaf:   ldur x3, [x2, #word]                          acc = a frame word
@@ -1824,17 +1844,19 @@ fn a_full_vm_stack_at_the_entry_is_the_vm_stack_range_error() {
 ///   leave: mov x0, x28 ; ldrb/ldr ; ldp x26, x28 ; ldp x29, x30 ; br x16
 ///   unwind: RuntimeTable::unwind(cx, fp, off) ; x3 = x0 ; x1 = cx.out_pc ; x2 = cx.out_fp ; b leave
 /// ```
-#[cfg(target_arch = "aarch64")]
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 mod placement_b {
     use super::*;
 
     /// AArch64 encodings of the (b) stubs (checked against `clang -c` in
     /// `b_stub_bytes_are_the_documented_instructions`).
+    #[cfg(target_arch = "aarch64")]
     #[derive(Default)]
     pub(super) struct A64 {
         w: Vec<u32>,
     }
 
+    #[cfg(target_arch = "aarch64")]
     impl A64 {
         fn op(&mut self, w: u32) -> &mut Self {
             self.w.push(w);
@@ -1895,6 +1917,7 @@ mod placement_b {
     }
 
     /// A leaf (b) stub: `return [fp + off]`.
+    #[cfg(target_arch = "aarch64")]
     pub(super) fn b_load(off: isize) -> Vec<u8> {
         let mut a = A64::default();
         a.ldur(3, 2, off).ret_state(2).jump();
@@ -1903,6 +1926,7 @@ mod placement_b {
 
     /// A framed (b) stub: `r = table[entry](cx, fp, off, srcs..)`; 0 unwinds; else `return r`
     /// (or the frame word `reload`, read after the call).
+    #[cfg(target_arch = "aarch64")]
     pub(super) fn b_call(entry: usize, off: u32, srcs: &[Src], reload: Option<isize>) -> Vec<u8> {
         assert!(srcs.len() <= 3 && off < 1 << 16);
         let mut a = A64::default();
@@ -1956,6 +1980,7 @@ mod placement_b {
     /// The (b) stub of `pin(x)`: checks the 4 handler arguments, then returns acc (x3). x0 must
     /// be the `Cx` (its runtime table pointer), x1 the callee's bytecode start (from x2's
     /// FunctionInfo word), x2 its frame. A failed check returns the int32 -1.
+    #[cfg(target_arch = "aarch64")]
     pub(super) fn b_pin() -> Vec<u8> {
         let mut a = A64::default();
         let mut fails = Vec::new();
@@ -1986,10 +2011,12 @@ mod placement_b {
     }
 
     /// `x0 + 2 x1 + 4 x2 + 8 x3` then `ret`: called directly as a `Handler`.
+    #[cfg(target_arch = "aarch64")]
     fn weigh() -> Vec<u8> {
         words(&[0x8B01_0400, 0x8B02_0800, 0x8B03_0C00, 0xD65F_03C0])
     }
 
+    #[cfg(target_arch = "aarch64")]
     #[test]
     fn b_stub_bytes_are_the_documented_instructions() {
         // As `clang -c -target arm64-apple-macos` + `llvm-objdump -d` print them.
@@ -2074,6 +2101,7 @@ mod placement_b {
     /// The aarch64 handler ABI that (b) code relies on (plan-v6 task 6): `Handler` is the Rust
     /// ABI there (an unstable ABI; rustc 1.99.1 puts `(cx, pc, fp, acc)` in x0-x3 and the result
     /// in x0). A production (b) needs an `extern "C"` handler ABI on aarch64 (an H15 rewrite).
+    #[cfg(target_arch = "aarch64")]
     #[test]
     fn the_handler_abi_passes_cx_pc_fp_acc_in_x0_to_x3() {
         with_b_stubs(&[weigh()], |code| {
@@ -2102,6 +2130,390 @@ mod placement_b {
                 .wrapping_add(4 * fp as u64)
                 .wrapping_add(8 * acc);
             assert_eq!(r, want, "x0 + 2 x1 + 4 x2 + 8 x3");
+        });
+    }
+
+    /// x86-64 encodings of the (b) stubs (checked against `llvm-mc -triple=x86_64` in
+    /// `b_stub_bytes_are_the_documented_x86_64_instructions`). Register numbers are the x86
+    /// ones: rax 0, rcx 1, rdx 2, rbx 3, rsp 4, rbp 5, rsi 6, rdi 7, r8-r15 8-15. The
+    /// handler ABI is `extern "sysv64"` on every OS: cx in rdi, pc in rsi, fp in rdx, acc in
+    /// rcx (pinned by `the_handler_abi_passes_cx_pc_fp_acc_in_rdi_rsi_rdx_rcx`). The encoder
+    /// and its byte test build on every host (no x86-64 code runs there); the stubs run on
+    /// x86-64 only.
+    #[derive(Default)]
+    pub(super) struct X64 {
+        b: Vec<u8>,
+    }
+
+    impl X64 {
+        fn op(&mut self, b: &[u8]) -> &mut Self {
+            self.b.extend_from_slice(b);
+            self
+        }
+        /// A ModRM memory operand `[r<n> + off]` with register field `r` (disp8 when it fits,
+        /// else disp32; `n` is never rsp or r12, which need a SIB byte).
+        fn mem(&mut self, r: u8, n: u8, off: isize) -> &mut Self {
+            assert_ne!(n & 7, 4, "no SIB base");
+            if let Ok(d) = i8::try_from(off) {
+                self.op(&[0x40 | ((r & 7) << 3) | (n & 7), d as u8])
+            } else {
+                let d = i32::try_from(off).expect("disp32");
+                self.op(&[0x80 | ((r & 7) << 3) | (n & 7)]);
+                self.op(&d.to_le_bytes())
+            }
+        }
+        /// `mov r<d>, qword ptr [r<n> + off]`.
+        fn load(&mut self, d: u8, n: u8, off: isize) -> &mut Self {
+            self.op(&[0x48 | ((d >> 3) << 2) | (n >> 3), 0x8B])
+                .mem(d, n, off)
+        }
+        /// `mov r<d>, r<s>`.
+        fn mov(&mut self, d: u8, s: u8) -> &mut Self {
+            self.op(&[
+                0x48 | ((s >> 3) << 2) | (d >> 3),
+                0x89,
+                0xC0 | ((s & 7) << 3) | (d & 7),
+            ])
+        }
+        /// `movabs r<d>, v`.
+        fn imm(&mut self, d: u8, v: u64) -> &mut Self {
+            self.op(&[0x48 | (d >> 3), 0xB8 | (d & 7)])
+                .op(&v.to_le_bytes())
+        }
+        /// `mov edx, v` (the bytecode offset operand of a table call).
+        fn edx(&mut self, v: u32) -> &mut Self {
+            self.op(&[0xBA]).op(&v.to_le_bytes())
+        }
+        /// `btc r<d>, 49` (decodes a native word: toggles 2^49).
+        fn decode(&mut self, d: u8) -> &mut Self {
+            assert_eq!(layout::NATIVE_WORD_OFFSET, 1 << 49);
+            self.op(&[0x48 | (d >> 3), 0x0F, 0xBA, 0xF8 | (d & 7), 49])
+        }
+        /// `cmp r<n>, r<m>`.
+        fn cmp(&mut self, n: u8, m: u8) -> &mut Self {
+            self.op(&[
+                0x48 | ((m >> 3) << 2) | (n >> 3),
+                0x39,
+                0xC0 | ((m & 7) << 3) | (n & 7),
+            ])
+        }
+        /// `call qword ptr [rax + entry]`.
+        fn call(&mut self, entry: usize) -> &mut Self {
+            self.op(&[0xFF]).mem(2, 0, entry as isize)
+        }
+        /// `test rax, rax`.
+        fn test_rax(&mut self) -> &mut Self {
+            self.op(&[0x48, 0x85, 0xC0])
+        }
+        /// rsi = return pc, rdx = caller fp of the frame in r<f> (decoded).
+        fn ret_state(&mut self, f: u8) -> &mut Self {
+            self.load(6, f, layout::FP_RETURN_PC)
+                .load(2, f, layout::FP_CALLER_FP)
+                .decode(6)
+                .decode(2)
+        }
+        /// `push rbp ; push r15 ; push r13 ; lea rbp, [rsp + 16]` (the jit_b frame).
+        fn frame(&mut self) -> &mut Self {
+            self.op(&[0x55, 0x41, 0x57, 0x41, 0x55, 0x48, 0x8D, 0x6C, 0x24, 0x10])
+        }
+        /// `movzx eax, byte ptr [rsi]`, then (`framed`) `lea rsp, [rbp - 16] ; pop r13 ; pop
+        /// r15 ; pop rbp`, then the exit jump `rex.w jmp qword ptr [rdi + rax*8]`.
+        fn jump(&mut self, framed: bool) -> &mut Self {
+            self.op(&[0x0F, 0xB6, 0x06]);
+            if framed {
+                self.op(&[0x48, 0x8D, 0x65, 0xF0, 0x41, 0x5D, 0x41, 0x5F, 0x5D]);
+            }
+            self.op(&[0x48, 0xFF, 0x24, 0xC7])
+        }
+        fn here(&self) -> usize {
+            self.b.len()
+        }
+        /// A `jcc rel32` (`cc`: the second opcode byte, 0x84 jz, 0x85 jnz) or, with `cc` 0,
+        /// a `jmp rel32`, to be patched; returns its offset.
+        fn branch(&mut self, cc: u8) -> usize {
+            let at = self.here();
+            if cc == 0 {
+                self.op(&[0xE9, 0, 0, 0, 0]);
+            } else {
+                self.op(&[0x0F, cc, 0, 0, 0, 0]);
+            }
+            at
+        }
+        /// Points the branch at `at` (from [`X64::branch`]) to `to`.
+        fn patch(&mut self, at: usize, to: usize) {
+            let len = if self.b[at] == 0xE9 { 5 } else { 6 };
+            let rel = i32::try_from(to as isize - (at + len) as isize).expect("rel32");
+            self.b[at + len - 4..at + len].copy_from_slice(&rel.to_le_bytes());
+        }
+        fn bytes(&self) -> Vec<u8> {
+            self.b.clone()
+        }
+    }
+
+    /// A leaf (b) stub: `return [fp + off]` (x86-64).
+    fn x64_b_load(off: isize) -> Vec<u8> {
+        let mut a = X64::default();
+        a.load(1, 2, off).ret_state(2).jump(false);
+        a.bytes()
+    }
+
+    /// A framed (b) stub (x86-64): `r = table[entry](cx, fp, off, srcs..)`; 0 unwinds; else
+    /// `return r` (or the frame word `reload`, read after the call). The frame is jit_b's:
+    /// r15 = cx, r13 = fp, rsp 16-byte aligned at the call.
+    fn x64_b_call(entry: usize, off: u32, srcs: &[Src], reload: Option<isize>) -> Vec<u8> {
+        assert!(srcs.len() <= 3);
+        let mut a = X64::default();
+        a.frame().mov(15, 7).mov(13, 2).mov(6, 13).edx(off);
+        for (k, s) in srcs.iter().enumerate() {
+            let t = [1, 8, 9][k];
+            match *s {
+                Src::Param(i) => a.load(t, 13, layout::fp_param(i)),
+                Src::Imm(v) => a.imm(t, v),
+            };
+        }
+        a.load(0, 15, layout::CX_RUNTIME_TABLE as isize)
+            .call(entry)
+            .test_rax();
+        let jz = a.branch(0x84);
+        if let Some(r) = reload {
+            a.load(0, 13, r);
+        }
+        a.mov(1, 0).ret_state(13);
+        let leave = a.here();
+        a.mov(7, 15).jump(true);
+        let unwind = a.here();
+        a.patch(jz, unwind);
+        a.mov(7, 15)
+            .mov(6, 13)
+            .edx(off)
+            .load(0, 15, layout::CX_RUNTIME_TABLE as isize)
+            .call(layout::RT_UNWIND)
+            .mov(1, 0)
+            .load(6, 15, layout::CX_OUT_PC as isize)
+            .load(2, 15, layout::CX_OUT_FP as isize);
+        let back = a.branch(0);
+        a.patch(back, leave);
+        a.bytes()
+    }
+
+    /// The (b) stub of `pin(x)` (x86-64): checks the 4 handler arguments, then returns acc
+    /// (rcx). rdi must be the `Cx` (its runtime table pointer), rsi the callee's bytecode start
+    /// (from rdx's FunctionInfo word), rdx its frame. A failed check returns the int32 -1.
+    fn x64_b_pin() -> Vec<u8> {
+        let mut a = X64::default();
+        a.load(9, 2, layout::FP_FUNCTION_INFO)
+            .decode(9)
+            .load(9, 9, layout::FI_CODE as isize)
+            .cmp(9, 6);
+        let f1 = a.branch(0x85);
+        a.load(9, 7, layout::CX_RUNTIME_TABLE as isize).imm(
+            10,
+            core::ptr::from_ref(&crate::native::RUNTIME_TABLE).addr() as u64,
+        );
+        a.cmp(9, 10);
+        let f2 = a.branch(0x85);
+        let tail = a.here();
+        a.ret_state(2).jump(false);
+        let fail = a.here();
+        a.patch(f1, fail);
+        a.patch(f2, fail);
+        a.imm(1, crate::frame::int32_bits(-1));
+        let b = a.branch(0);
+        a.patch(b, tail);
+        a.bytes()
+    }
+
+    /// `rdi + 2 rsi + 4 rdx + 8 rcx` then `ret`: called directly as a `Handler`.
+    fn x64_weigh() -> Vec<u8> {
+        vec![
+            0x48, 0x8D, 0x04, 0x77, // lea rax, [rdi + 2*rsi]
+            0x48, 0x8D, 0x04, 0x90, // lea rax, [rax + 4*rdx]
+            0x48, 0x8D, 0x04, 0xC8, // lea rax, [rax + 8*rcx]
+            0xC3, // ret
+        ]
+    }
+
+    /// The x86-64 (b) stubs on this target.
+    #[cfg(target_arch = "x86_64")]
+    pub(super) fn b_load(off: isize) -> Vec<u8> {
+        x64_b_load(off)
+    }
+    #[cfg(target_arch = "x86_64")]
+    pub(super) fn b_call(entry: usize, off: u32, srcs: &[Src], reload: Option<isize>) -> Vec<u8> {
+        x64_b_call(entry, off, srcs, reload)
+    }
+    #[cfg(target_arch = "x86_64")]
+    pub(super) fn b_pin() -> Vec<u8> {
+        x64_b_pin()
+    }
+    #[cfg(target_arch = "x86_64")]
+    fn weigh() -> Vec<u8> {
+        x64_weigh()
+    }
+
+    /// The x86-64 encodings (any host: it only compares bytes).
+    #[test]
+    fn b_stub_bytes_are_the_documented_x86_64_instructions() {
+        // As `llvm-mc -triple=x86_64 -show-encoding` prints them (intel syntax input).
+        let mut a = X64::default();
+        a.mov(15, 7) // mov r15, rdi
+            .mov(13, 2) // mov r13, rdx
+            .mov(7, 15) // mov rdi, r15
+            .mov(6, 13) // mov rsi, r13
+            .mov(1, 0) // mov rcx, rax
+            .decode(6) // btc rsi, 49
+            .decode(2) // btc rdx, 49
+            .decode(9) // btc r9, 49
+            .load(6, 2, -56) // mov rsi, qword ptr [rdx - 56]
+            .load(2, 2, -64) // mov rdx, qword ptr [rdx - 64]
+            .load(6, 13, -56) // mov rsi, qword ptr [r13 - 56]
+            .load(9, 2, -32) // mov r9, qword ptr [rdx - 32]
+            .load(1, 2, -80) // mov rcx, qword ptr [rdx - 80]
+            .load(9, 9, 24) // mov r9, qword ptr [r9 + 24]
+            .load(0, 15, 2128) // mov rax, qword ptr [r15 + 2128]
+            .load(8, 13, -88) // mov r8, qword ptr [r13 - 88]
+            .cmp(9, 6) // cmp r9, rsi
+            .cmp(9, 10) // cmp r9, r10
+            .imm(10, 0x1_2345_6789) // movabs r10, 0x123456789
+            .edx(5) // mov edx, 5
+            .call(8) // call qword ptr [rax + 8]
+            .test_rax() // test rax, rax
+            .jump(false); // movzx eax, byte ptr [rsi] ; rex64 jmp qword ptr [rdi + 8*rax]
+        #[rustfmt::skip]
+        let want: [&[u8]; 23] = [
+            &[0x49, 0x89, 0xFF],
+            &[0x49, 0x89, 0xD5],
+            &[0x4C, 0x89, 0xFF],
+            &[0x4C, 0x89, 0xEE],
+            &[0x48, 0x89, 0xC1],
+            &[0x48, 0x0F, 0xBA, 0xFE, 0x31],
+            &[0x48, 0x0F, 0xBA, 0xFA, 0x31],
+            &[0x49, 0x0F, 0xBA, 0xF9, 0x31],
+            &[0x48, 0x8B, 0x72, 0xC8],
+            &[0x48, 0x8B, 0x52, 0xC0],
+            &[0x49, 0x8B, 0x75, 0xC8],
+            &[0x4C, 0x8B, 0x4A, 0xE0],
+            &[0x48, 0x8B, 0x4A, 0xB0],
+            &[0x4D, 0x8B, 0x49, 0x18],
+            &[0x49, 0x8B, 0x87, 0x50, 0x08, 0x00, 0x00],
+            &[0x4D, 0x8B, 0x45, 0xA8],
+            &[0x49, 0x39, 0xF1],
+            &[0x4D, 0x39, 0xD1],
+            &[0x49, 0xBA, 0x89, 0x67, 0x45, 0x23, 0x01, 0x00, 0x00, 0x00],
+            &[0xBA, 0x05, 0x00, 0x00, 0x00],
+            &[0xFF, 0x50, 0x08],
+            &[0x48, 0x85, 0xC0],
+            &[0x0F, 0xB6, 0x06, 0x48, 0xFF, 0x24, 0xC7],
+        ];
+        assert_eq!(a.b, want.concat());
+        // The leaf stub `return this` (llvm-mc --disassemble): mov rcx, [rdx - 72] ; mov rsi,
+        // [rdx - 56] ; mov rdx, [rdx - 64] ; btc rsi, 49 ; btc rdx, 49 ; movzx eax, byte ptr
+        // [rsi] ; rex64 jmp qword ptr [rdi + 8*rax].
+        assert_eq!(layout::FP_RECEIVER, -72);
+        assert_eq!(
+            x64_b_load(layout::FP_RECEIVER),
+            [
+                0x48, 0x8B, 0x4A, 0xB8, 0x48, 0x8B, 0x72, 0xC8, 0x48, 0x8B, 0x52, 0xC0, 0x48, 0x0F,
+                0xBA, 0xFE, 0x31, 0x48, 0x0F, 0xBA, 0xFA, 0x31, 0x0F, 0xB6, 0x06, 0x48, 0xFF, 0x24,
+                0xC7,
+            ]
+        );
+        // `pin`: two checks that branch forward to `fail` (jnz rel32), the leaf exit, then
+        // `fail: movabs rcx, -1 (int32) ; jmp` back to the exit.
+        let pin = x64_b_pin();
+        assert_eq!(pin[..4], [0x4C, 0x8B, 0x4A, 0xE0], "mov r9, [rdx - 32]");
+        assert_eq!(
+            pin[pin.len() - 15..pin.len() - 13],
+            [0x48, 0xB9],
+            "movabs rcx"
+        );
+        assert_eq!(pin[pin.len() - 5], 0xE9, "jmp back");
+        // lea rax, [rdi + 2*rsi] ; lea rax, [rax + 4*rdx] ; lea rax, [rax + 8*rcx] ; ret
+        assert_eq!(
+            x64_weigh(),
+            [
+                0x48, 0x8D, 0x04, 0x77, 0x48, 0x8D, 0x04, 0x90, 0x48, 0x8D, 0x04, 0xC8, 0xC3
+            ]
+        );
+        // The frame offsets these stubs use (H14, FRAME 2).
+        assert_eq!(
+            (
+                layout::FP_RETURN_PC,
+                layout::FP_CALLER_FP,
+                layout::FP_FUNCTION_INFO
+            ),
+            (-56, -64, -32)
+        );
+        // The frame and the epilogue are jit_b's (spikes/spike-b/src/jit_b/x64.rs): push rbp ;
+        // push r15 ; push r13 ; lea rbp, [rsp + 16] / lea rsp, [rbp - 16] ; pop r13 ; pop r15 ;
+        // pop rbp ; rex64 jmp qword ptr [rdi + 8*rax].
+        let call = x64_b_call(layout::RT_POLL, 0, &[], None);
+        assert_eq!(
+            call[..10],
+            [0x55, 0x41, 0x57, 0x41, 0x55, 0x48, 0x8D, 0x6C, 0x24, 0x10]
+        );
+        let epi = [
+            0x48, 0x8D, 0x65, 0xF0, 0x41, 0x5D, 0x41, 0x5F, 0x5D, 0x48, 0xFF, 0x24, 0xC7,
+        ];
+        let at = call
+            .windows(epi.len())
+            .position(|w| w == epi)
+            .expect("the epilogue");
+        // Branch patching: the forward jz goes to `unwind: mov rdi, r15` (right after the
+        // epilogue), the backward jmp at the end goes to `leave: mov rdi, r15`.
+        let unwind = at + epi.len();
+        assert_eq!(call[unwind..unwind + 3], [0x4C, 0x89, 0xFF]);
+        let jz = call.windows(2).position(|w| w == [0x0F, 0x84]).expect("jz");
+        let rel = i32::from_le_bytes(call[jz + 2..jz + 6].try_into().unwrap());
+        assert_eq!(
+            jz as isize + 6 + rel as isize,
+            unwind as isize,
+            "jz -> unwind"
+        );
+        let jmp = call.len() - 5;
+        assert_eq!(call[jmp], 0xE9);
+        let rel = i32::from_le_bytes(call[jmp + 1..].try_into().unwrap());
+        let leave = (jmp as isize + 5 + rel as isize) as usize;
+        assert_eq!(call[leave..leave + 6], [0x4C, 0x89, 0xFF, 0x0F, 0xB6, 0x06]);
+        assert_eq!(
+            leave + 6,
+            at,
+            "leave: mov rdi, r15 ; movzx eax, [rsi] ; epilogue"
+        );
+    }
+
+    /// The x86-64 handler ABI that (b) code relies on (P0-D8): `Handler` is `extern "sysv64"`
+    /// (`-unwind` under `panic = "unwind"`) on every OS, Windows too: `(cx, pc, fp, acc)` in
+    /// rdi, rsi, rdx, rcx and the result in rax. A stable ABI (unlike the aarch64 Rust ABI).
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn the_handler_abi_passes_cx_pc_fp_acc_in_rdi_rsi_rdx_rcx() {
+        with_b_stubs(&[weigh()], |code| {
+            let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+            // SAFETY: the stub is a function with 4 register arguments and a register result
+            // that reads no memory.
+            let h: crate::interp::Handler = unsafe {
+                core::mem::transmute::<*const (), crate::interp::Handler>(
+                    core::ptr::with_exposed_provenance(code[0].start),
+                )
+            };
+            let cx: &mut crate::interp::Cx = &mut iso.cx;
+            let cx_addr = core::ptr::from_mut(cx).addr() as u64;
+            let (pc, fp, acc) = (0x1000_usize, 0x2_0000_usize, 0x30_0000_u64);
+            // SAFETY: as above; the pointers are never read.
+            let r = unsafe {
+                h(
+                    cx,
+                    core::ptr::with_exposed_provenance(pc),
+                    core::ptr::with_exposed_provenance_mut(fp),
+                    acc,
+                )
+            };
+            let want = cx_addr
+                .wrapping_add(2 * pc as u64)
+                .wrapping_add(4 * fp as u64)
+                .wrapping_add(8 * acc);
+            assert_eq!(r, want, "rdi + 2 rsi + 4 rdx + 8 rcx");
         });
     }
 
@@ -2865,6 +3277,190 @@ mod placement_b {
                     rows.len() as u64
                 };
                 assert_eq!(n, [0, 0, 0, hot], "{label}");
+            }
+        }
+    }
+
+    // ---- the D14 gap (M3-P0 P0-D10): the receiver of a native callee --------------------------
+
+    /// The callees of [`a_primitive_receiver_of_a_sloppy_native_callee_is_wrapped`]: `callr(f,
+    /// r, x)` is `return f.call(r, x)` (`CallProperty1 a0, a1, a2`); `tw` (sloppy) and `stw`
+    /// (strict) return `this`; `ta` (sloppy) returns a0. Their stubs do what their bytecode
+    /// does, so every dispatch gives the same output (the match loop runs the bytecode of a
+    /// (b) function, D4).
+    const THIS_FNS: [&str; 4] = ["callr", "tw", "stw", "ta"];
+
+    fn this_defs() -> VerifiedUnit {
+        let mut callr = Asm::new(meta("callr", 3, 0, 0, 0));
+        let (a0, a1, a2) = (
+            callr.b.parameter(0),
+            callr.b.parameter(1),
+            callr.b.parameter(2),
+        );
+        let slot = callr.call;
+        callr.b.call_property1(a0, a1, a2, slot).return_();
+        let mut fns = vec![callr];
+        for name in ["tw", "stw"] {
+            let mut m = meta(name, 1, 0, 0, 0);
+            if name == "stw" {
+                m.flags = ep9_bytecode::FunctionFlags::SIMPLE_PARAMETERS
+                    | ep9_bytecode::FunctionFlags::STRICT;
+            }
+            let mut f = Asm::new(m);
+            let this = f.b.receiver();
+            f.b.ldar(this).return_();
+            fns.push(f);
+        }
+        let mut ta = Asm::new(meta("ta", 1, 0, 0, 0));
+        let a0 = ta.b.parameter(0);
+        ta.b.ldar(a0).return_();
+        fns.push(ta);
+        let mut s = Asm::script(0);
+        for (i, name) in THIS_FNS.iter().enumerate() {
+            let k = s.b.function_constant(FunctionId(i as u32 + 1));
+            s.b.create_closure(k, s.closure, 0);
+            s.sta_global(name);
+        }
+        s.b.lda_undefined().return_();
+        let mut all = vec![s.finish()];
+        all.extend(fns.into_iter().map(Asm::finish));
+        unit("", all)
+    }
+
+    /// The D14 gap is closed (M3-P0 P0-D10): `enter_native` (placement (a)) and `run_b`
+    /// (placement (b)) bind `this` with `try_bind_this` and wrap a primitive receiver of a
+    /// sloppy callee (ToObject, `wrap_receiver`) after the frame push, as
+    /// `call_function_object` does; a strict callee gets the receiver as it is. Each callee is
+    /// entered through `call_any` (the native `callr` runs its `CallProperty1`) and through
+    /// `call_from_rust`, with a number and a string receiver, on every dispatch, with and
+    /// without GC stress (the wrap allocates: a GC there must find the copied arguments).
+    /// Under a threaded expansion every (b) call enters (b) code: `callr` from T0 (hot), its
+    /// callee through `call_any` -> `run_b`, and each `call_from_rust` -> `run_b`.
+    #[test]
+    fn a_primitive_receiver_of_a_sloppy_native_callee_is_wrapped() {
+        use Lit::{Global, Int, Str};
+        // (callee, receiver, want): `typeof this === "object"` shows as the wrapper's display.
+        let rows: [(&str, Lit, &str); 4] = [
+            ("tw", Int(5), "[object Number]"),
+            ("tw", Str("R"), "[object String]"),
+            ("stw", Int(5), "5"),
+            ("ta", Int(5), "x"),
+        ];
+        let make = {
+            let rows = rows.clone();
+            move || {
+                let mut s = Asm::script(0);
+                let f = s.b.new_register();
+                let l = s.b.new_register_list(3);
+                for (callee, recv, _) in &rows {
+                    let vals = [Global(callee), recv.clone(), Str("x")];
+                    emit_call(&mut s, Shape::CallUndefinedReceiver, "callr", &vals, f, l);
+                    s.print_acc();
+                }
+                s.lda_str("done");
+                s.b.return_();
+                unit("", vec![s.finish()])
+            }
+        };
+        let want: Vec<&str> = rows.iter().map(|r| r.2).collect();
+        for b in [false, true] {
+            for &d in Dispatch::ALL {
+                for stress in [false, true] {
+                    let make = make.clone();
+                    let rows = rows.clone();
+                    let (script, rust, n) = on_big_stack(move || {
+                        let offs = {
+                            let mut iso = isolate(IsolateConfig::default());
+                            iso.run_script(this_defs(), "this.js").unwrap();
+                            offset_in(&iso, "callr", Opcode::CallProperty1)
+                        };
+                        let stubs = if b {
+                            vec![
+                                b_call(layout::RT_CALL_ANY, offs, &[Src::Imm(UNDEFINED)], None),
+                                b_load(layout::FP_RECEIVER),
+                                b_load(layout::FP_RECEIVER),
+                                b_load(layout::fp_param(0)),
+                            ]
+                        } else {
+                            vec![
+                                stub_call(layout::RT_CALL_ANY, offs, &[Src::Imm(UNDEFINED)]),
+                                stub_load(layout::FP_RECEIVER),
+                                stub_load(layout::FP_RECEIVER),
+                                stub_param(0),
+                            ]
+                        };
+                        with_b_stubs(&stubs, |code| {
+                            let mut iso = isolate(config(d, stress));
+                            iso.run_script(this_defs(), "this.js").unwrap();
+                            for (name, range) in THIS_FNS.iter().zip(code) {
+                                let f = iso.global(name).unwrap();
+                                // SAFETY: `range` holds the stub for `name`, made for the
+                                // install's ABI (b: the handler ABI; a: `NativeEntry`); it stays
+                                // mapped until `with_b_stubs` returns, after the isolate drops.
+                                let r = unsafe {
+                                    if b {
+                                        crate::install_native_b(&iso, f, range.clone())
+                                    } else {
+                                        crate::install_native(
+                                            &iso,
+                                            f,
+                                            DispatchKind::Baseline,
+                                            range.clone(),
+                                        )
+                                    }
+                                };
+                                r.unwrap();
+                            }
+                            take_output();
+                            let before = counts();
+                            let r = iso.run_script(make(), "recv.js").map(|v| iso.display(v));
+                            let script = (r, take_output());
+                            let mut rust = Vec::new();
+                            for (callee, recv, _) in &rows {
+                                let f = iso.global(callee).unwrap();
+                                let this = match recv {
+                                    Int(i) => Value::int32(*i),
+                                    Str(t) => string(&mut iso, t),
+                                    Global(_) => unreachable!(),
+                                };
+                                let x = string(&mut iso, "x");
+                                let st = entry_state(&iso);
+                                let r = crate::call_from_rust(&mut iso, f, this, &[x]);
+                                assert_eq!(entry_state(&iso), st);
+                                // `print` shows the value as the script rows do.
+                                let print = iso.global("print").unwrap();
+                                let r = r.and_then(|v| iso.call(print, Value::UNDEFINED, &[v]));
+                                rust.push(r.map(|_| take_output().concat()).map_err(|e| e.message));
+                            }
+                            let n = delta(before);
+                            iso.collect_garbage();
+                            iso.verify_heap().unwrap();
+                            (script, rust, n)
+                        })
+                    });
+                    let label = format!(
+                        "{} {} stress={stress}",
+                        if b { "(b)" } else { "(a)" },
+                        d.name()
+                    );
+                    assert_eq!(script.0.as_deref(), Ok("done"), "{label}");
+                    assert_eq!(script.1, want, "{label}: through call_any");
+                    let rust_want: Vec<Result<String, String>> =
+                        want.iter().map(|w| Ok(w.to_string())).collect();
+                    assert_eq!(rust, rust_want, "{label}: through call_from_rust");
+                    if b {
+                        // Threaded: 4 rows x (callr + its callee) + 4 calls from Rust, all in
+                        // (b) code. The match loop runs `callr`'s bytecode, whose call of a
+                        // sloppy (b) callee with a primitive receiver takes the cold arm
+                        // (`enter_b_cold` wraps it; rows 1, 2 and 4).
+                        let want_n = if d == Dispatch::Match {
+                            [0, 3, 0, 0]
+                        } else {
+                            [12, 0, 0, 0]
+                        };
+                        assert_eq!(n, want_n, "{label}: [stub, cold arm, (a), A-hot]");
+                    }
+                }
             }
         }
     }

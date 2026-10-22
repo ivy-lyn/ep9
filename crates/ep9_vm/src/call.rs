@@ -142,21 +142,6 @@ pub(crate) unsafe fn push_resume_frame(
     Some(fp)
 }
 
-/// OrdinaryCallBindThis (§10.2.1.2) for the receiver a caller passes, without the ToObject
-/// step: a sloppy callee gets the global object for undefined/null; any other receiver as it
-/// is. It never allocates. Only the spike-native entries (`native.rs` `enter_native`,
-/// `run_b`) still use it (a logged spike-only gap); every other call site that runs bytecode
-/// takes [`try_bind_this`].
-#[cfg(feature = "spike-native")]
-#[inline(always)]
-pub(crate) fn bind_this(fi: &FunctionInfo, this: u64, global: u64) -> u64 {
-    if !fi.is_strict() && (this == UNDEFINED || this == NULL) {
-        global
-    } else {
-        this
-    }
-}
-
 /// OrdinaryCallBindThis (§10.2.1.2) with no allocation: the this value of a call of `fi`, or
 /// `None` when step 6.b makes a wrapper object (a sloppy callee and a number, boolean,
 /// string or symbol receiver); the caller then takes [`wrap_this`] (a cold path). A strict
@@ -173,7 +158,7 @@ pub(crate) fn bind_this(fi: &FunctionInfo, this: u64, global: u64) -> u64 {
 /// slow::call, enter_b_cold           None -> wrap_this before push_frame
 /// call_function_object (from Rust)   None -> push_frame, then wrap_this into the receiver slot
 /// call_host (host callee)            no bind, no wrap: the host function gets the raw receiver
-/// native.rs enter_native, run_b      bind_this, no wrap (spike-native only, logged gap)
+/// native.rs enter_native, run_b      None -> push_frame, then wrap_this into the receiver slot
 /// ```
 #[inline(always)]
 pub(crate) fn try_bind_this(fi: &FunctionInfo, this: u64, global: u64) -> Option<u64> {
