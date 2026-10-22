@@ -1016,8 +1016,8 @@ impl<'s> Cx<'s> {
     /// from `o` decides; a setter runs with `receiver` as `this`, and a new or writable data
     /// property lands on `receiver` (`Reflect.set`, §28.1.12) through its
     /// `[[DefineOwnProperty]]`, so an array receiver's `length` goes through ArraySetLength
-    /// (a RangeError for an invalid length). `Ok(false)` when the assignment fails, also for
-    /// a receiver that is not an object; it never throws for that.
+    /// (a RangeError for an invalid length). `Ok(false)` when the assignment fails, also for a
+    /// data store on a non-object receiver; a setter on the chain runs with any receiver.
     pub fn set_with_receiver(
         &mut self,
         o: impl Into<Local<'s, JsObject>>,
