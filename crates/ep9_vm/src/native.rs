@@ -2,7 +2,7 @@
 //! the ep9 graph: dep-guards check 11). Owners: P1-NATIVE-ENTRY, then P2-SPIKE-B.
 //!
 //! ```text
-//! T0 call (slow/call.rs do_call) --FUNCTION, not host, not class ctor, Baseline / AotBaseline
+//! T0 call (slow/call.rs) --FUNCTION, not host, not class ctor, Baseline / AotBaseline
 //!   slot, no construct, no spread--> enter_native: push_frame (return pc = next bytecode pc),
 //!   publish fp --> slot entry (cx, fp) through extern "C" (aarch64) / extern "sysv64" (x86-64)
 //!   --> acc bits, or 0 = exception pending --> T0 continues at the next pc, or unwinds
@@ -262,17 +262,17 @@ pub(crate) fn native_callee<'a>(callee: u64) -> Option<&'a FunctionInfo> {
     (native && fi.host.is_none() && !fi.is_class_constructor()).then_some(fi)
 }
 
-/// Calls the native-slotted function `callee` (`fi`, from [`native_callee`]): pushes its frame
-/// at `base` (receiver from `this` after OrdinaryCallBindThis, `argc` arguments that `arg`
-/// reads, return pc `return_pc`), publishes it, calls the slot entry, and publishes
-/// `caller_fp` again. `Err(Throw)` when native code returned 0 (the exception is pending); the
-/// caller unwinds. RangeError if the frame does not fit the VM stack.
+/// Calls the native-slotted function `callee` (`fi`, from [`native_callee`]): pushes its frame at
+/// `base` (receiver `this` after OrdinaryCallBindThis, `argc` arguments that `arg` reads, return
+/// pc `return_pc`), publishes it, calls the slot entry, and publishes `caller_fp` again. `Err` when
+/// native code returned 0 (exception pending; the caller unwinds); RangeError on a full VM stack.
 ///
 /// # Safety
 /// `caller_fp` is the live top frame, `base` the first free slot above it (and above any
 /// scratch Values), `arg(i)` returns valid Value bits for `i < argc`, and the slot entry of
 /// `fi` is native code with the [`NativeEntry`] ABI (`install_native` contract).
 #[allow(clippy::too_many_arguments)]
+#[inline(always)]
 pub(crate) unsafe fn enter_native(
     cx: &mut Cx,
     base: *mut u64,
@@ -828,3 +828,11 @@ const _: () = {
     assert!(HEADER == 8);
     assert!(slot::PARAM0 == -10 && slot::BYTECODE_OFFSET == -1);
 };
+
+#[cfg(test)]
+std::thread_local! {
+    /// Tests only: how many calls this thread entered through the decode-free T0 entry
+    /// (`slow::call` `native_entry`, M2-P3-D21-ENTRY), so a test can tell it from the decode
+    /// path.
+    pub(crate) static T0_ENTRY_HITS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}

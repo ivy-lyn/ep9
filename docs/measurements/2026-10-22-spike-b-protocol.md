@@ -20,7 +20,7 @@ So RT_disp counts the call instruction, the JIT callee and the return to T0, in 
 
 ## 2. Kernels A and C
 
-Both run in one release build of `spikes/spike-b` (feature `spike-native`). The spike JIT compiles 11 opcodes: LdaZero, Ldar, Star, Add, AddSmi, Inc, TestLessThan, JumpIfFalse, JumpLoop, CallUndefinedReceiver1 and Return (plan-v4 P2-SPIKE-B task 1). `id` (`Ldar a0; Return`) and both `drive` kernels (`AddSmi [1]` included) JIT completely; `spike-b ops` and `gate.sh structural` print the opcode list of each. Configs A, C and A0 run `drive` in T0, so the gate measures one T0→JIT→T0 round trip. Configs J and JC run `drive` in the JIT, entered from Rust through `ep9_vm::call_from_rust` (the crate-root re-export under `spike-native`; `native` is a private module), and A, C and A0 call `drive` with `Isolate::call` (table below).
+Both run in one release build of `spikes/spike-b` (feature `spike-native`). The spike JIT compiles 11 opcodes: LdaZero, Ldar, Star, Add, AddSmi, Inc, TestLessThan, JumpIfFalse, JumpLoop, CallUndefinedReceiver1 and Return (plan-v4 P2-SPIKE-B task 1). `id` (`Ldar a0; Return`) and both `drive` kernels (`AddSmi [1]` included) JIT completely; `spike-b ops` and `gate.sh structural` print the opcode list of each. Configs A, C and A0 run `drive` in T0, so the gate measures one T0→JIT→T0 round trip. The T0→JIT call of config A enters through the decode-free native entry at the top of `slow::call` (`crates/ep9_vm/src/interp/slow/call.rs` `native_entry`, `cfg(feature = "spike-native")`, M2-P3-D21-ENTRY): T0's `call_fast` sends a call of a non-Interp slot cold, and the entry reads the `CallUndefinedReceiver1` operands in place and calls `native::enter_native`, with no second decode and no heap list. This names the measured code; the gate is unchanged (M2-D21-METHOD). Configs J and JC run `drive` in the JIT, entered from Rust through `ep9_vm::call_from_rust` (the crate-root re-export under `spike-native`; `native` is a private module), and A, C and A0 call `drive` with `Isolate::call` (table below).
 
 ```js
 // kernel A                                       // kernel C: the call statement removed
@@ -102,3 +102,9 @@ C:  6 Ldar a1 | TestLessThan r1 | JumpIfFalse | Ldar r0 | AddSmi [1] | Star r0 |
 - **pass:** placement (a) stays; SP-Unit starts in P4.
 - **fail:** placement (b) (JIT frames on the VM stack, entered with the 4 handler arguments, in `spikes/spike-b/src/jit_b/`) is built and measured with this same protocol (M2-D21-FAIL). D21 reopens only if both placements fail.
 - **Sizing note.** n was chosen so that t_C is about 0.3 s: at 55c15d0, `ep9` ran kernel C with n = 2·10^7 in 0.06 s of process wall time (2026-10-21, load 18.7, so a sizing figure only).
+
+## Change log
+
+| Date | Change kind | Change | By |
+|---|---|---|---|
+| 2026-10-22 | clarify | §2 names the measured T0→JIT entry: `slow::call`'s decode-free native entry (M2-P3-D21-ENTRY, `spike-native` only). The formula, kernels, k, tau, rounds, verdict rules and load guard do not change, and no gate run had happened yet | P3 integration fixer |
