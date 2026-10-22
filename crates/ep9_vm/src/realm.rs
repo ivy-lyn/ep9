@@ -39,10 +39,12 @@
 //! | `call::run_resumed` (generator resume) | around the nested run |
 //!
 //! Caches that hold a realm value: the function shape caches (`shape::function_shape`,
-//! `generator_function_shape`) check the prototype on each hit, so they only miss after a
-//! switch. Feedback vectors and template objects belong to one FunctionInfo, whose functions
-//! are all of one realm. `builtins::existing_function` knows the first realm's builtin
-//! functions only, so the identity fast paths that use it run their spec steps in a later realm.
+//! `generator_function_shape`) check the prototype on each hit, and [`switch`] empties them
+//! (`shape::clear_realm_caches`), so they hold only a shape of the current realm and keep no
+//! other realm live. Feedback vectors and template objects belong to one FunctionInfo, whose
+//! functions are all of one realm. `builtins::existing_function` knows the first realm's
+//! builtin functions only, so the identity fast paths that use it run their spec steps in a
+//! later realm.
 //!
 //! | Core intrinsic | Made as |
 //! |---|---|
@@ -251,8 +253,9 @@ pub(crate) fn create(cx: &mut Cx) -> conv::Res<u64> {
 
 /// Makes `realm` the current realm (V8-A10): writes its global object, lexical record, every
 /// intrinsic of its intrinsics list and the record itself into the current-realm roots, the
-/// builtin intrinsic slots and `%Symbol.prototype%`, and sets `Cx::realm` and
-/// `Cx::global_this`. About 66 stores; no allocation, no GC point.
+/// builtin intrinsic slots and `%Symbol.prototype%`, empties the function shape caches
+/// (`shape::clear_realm_caches`), and sets `Cx::realm` and `Cx::global_this`. About 68
+/// stores; no allocation, no GC point.
 #[cold]
 #[inline(never)]
 pub(crate) fn switch(cx: &mut Cx, realm: u64) {
@@ -270,6 +273,7 @@ pub(crate) fn switch(cx: &mut Cx, realm: u64) {
         object::record_get(realm, realmf::GLOBAL_LEXICAL),
     );
     rt.set_root(Root::Realm, realm);
+    crate::shape::clear_realm_caches(rt);
     cx.realm = realm;
     cx.global_this = object::record_get(realm, realmf::GLOBAL_OBJECT);
     debug_assert!(cx.global_this == rt.global());
