@@ -727,7 +727,8 @@ impl<'s> Cx<'s> {
 
     // ---- creation ----
 
-    /// The global object of the current realm.
+    /// The global object of the current realm (in a host function: the function's own realm,
+    /// H20 R5).
     pub fn global(&self) -> Local<'s, JsObject> {
         Self::local(self.rt().global())
     }
@@ -1426,18 +1427,26 @@ impl<'s> Cx<'s> {
         Ok(list)
     }
 
-    /// GetPrototypeFromConstructor (§10.1.14). v0: one realm, so the fallback is this
-    /// realm's `default` intrinsic.
+    /// GetPrototypeFromConstructor (§10.1.14): `constructor.prototype` if it is an object,
+    /// else the `default` intrinsic of GetFunctionRealm(constructor) (step 4; the realm of a
+    /// bound function's target, else the current realm).
     pub fn get_prototype_from_constructor(
         &mut self,
         constructor: impl Into<Local<'s, JsObject>>,
         default: IntrinsicId,
     ) -> JsResult<Local<'s, JsObject>> {
+        let constructor = constructor.into();
         let key = self.atom(Atom::Prototype);
         let p = self.get(constructor, key)?;
         Ok(match p.as_object() {
             Some(p) => p,
-            None => self.intrinsic(default),
+            None => {
+                let rt = self.rt();
+                let realm = crate::realm::get_function_realm(rt, constructor.bits());
+                let v = crate::realm::intrinsic_in(rt, realm, default);
+                assert!(kinds::is_object(v), "{} is not installed", default.name());
+                Self::local(v)
+            }
         })
     }
 

@@ -296,11 +296,36 @@ impl Isolate {
             #[cfg(feature = "spike-native")]
             unit_data: 0,
         });
-        builtins::install(&mut cx).map_err(IsolateError::BuiltinTable)?;
+        realm::install(&mut cx).map_err(IsolateError::BuiltinTable)?;
         rt.jobs.set_tracker(config.promise_rejection_tracker);
-        aggregate_error_prototype(&rt);
-        realm::fill_intrinsics(&rt);
         Ok(Isolate { cx, rt })
+    }
+
+    /// Makes a new realm (H22-Q3) with the isolate's builtin tables, and runs `f` in it: its
+    /// global object is `f`'s second argument, and the code and objects that `f` makes belong
+    /// to the new realm ([`abi::Cx::with_realm`]). The isolate's first realm is current again
+    /// when it returns. The realm lives while something reachable holds one of its objects or
+    /// functions; [`abi::Cx::create_realm`] is the same step inside [`Isolate::with_cx`] or a
+    /// host function. An `Err(Throw)` from `f` becomes the [`Exception`] that is pending.
+    ///
+    /// ```
+    /// use ep9_vm::{Isolate, IsolateConfig};
+    /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    /// let r = iso.create_realm(|cx, global| {
+    ///     // The new realm is the current one.
+    ///     let here = cx.global();
+    ///     Ok(cx.same_value(here, global))
+    /// });
+    /// assert_eq!(r, Ok(true));
+    /// ```
+    pub fn create_realm<R>(
+        &mut self,
+        f: impl for<'s> FnOnce(&mut abi::Cx<'s>, Local<'s, JsObject>) -> JsResult<R>,
+    ) -> Result<R, Exception> {
+        self.with_cx(|cx| {
+            let global = cx.create_realm()?;
+            cx.with_realm(global, |cx| f(cx, global))
+        })
     }
 
     /// The builtin table installed after the VM's own (`IsolateConfig::builtins`).
@@ -729,16 +754,4 @@ fn constructor_name(cx: &mut Cx, v: u64) -> Option<String> {
     }
     let name = property::get_data_from(cx, ctor, rt.atom(Atom::Name))?;
     is_string(name).then(|| string::to_rust_string(name))
-}
-
-/// §20.5.7.2: the `[[Prototype]]` of `%AggregateError%` is `%Error%` (a table gives a
-/// builtin's function object `%Function.prototype%`). Runs after `builtins::install`, when a
-/// table made `%AggregateError%` (`ep9_builtins` promise.rs, P4-PROMISE).
-fn aggregate_error_prototype(rt: &Runtime) {
-    let c = builtins::intrinsic(rt, builtins::IntrinsicId::AggregateError);
-    let error = builtins::intrinsic(rt, builtins::IntrinsicId::Error);
-    if object::is_object(c) && object::is_object(error) {
-        let ok = property::set_prototype_of(rt, c, error);
-        debug_assert!(ok, "%AggregateError% is extensible");
-    }
 }

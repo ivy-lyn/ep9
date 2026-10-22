@@ -19,6 +19,12 @@
 //! Host functions use the builtin ABI (H20, abi/mod.rs). [`call_host`] checks the throw
 //! protocol in debug builds: `Err` comes with a pending exception and `Ok` without one.
 //!
+//! Realms (H22-Q3): a callee of another realm runs with its realm current
+//! (`realm::enter_realm_of` before the call, `realm::leave` after it, also after a throw).
+//! [`call_host`], the bytecode path of [`call_function_object`] and [`run_resumed`] switch;
+//! `slow::call` sends a bytecode callee of another realm through [`call_function_object`] or
+//! [`construct_function_object`], so every cross-realm call is one of these Rust edges.
+//!
 //! Bound functions (§10.4.1, `bound.rs`) never get a frame. [`call_with`] and
 //! [`construct_with`] walk the chain to the innermost target FUNCTION and call it with the
 //! bound arguments in front of the caller's, as `slow::call` does for bytecode callers. The
@@ -43,7 +49,8 @@ use crate::interp::{self, Cx, EXIT_STUB};
 use crate::kinds::{OBJECT, cell_kind, is_callable, is_cell_bits};
 use crate::object::{self, function_context, function_info, is_function, is_object};
 use crate::property;
-use crate::runtime::{Atom, ErrorKind, Root, Runtime, frame_top};
+use crate::realm;
+use crate::runtime::{Atom, ErrorKind, Runtime, frame_top};
 use crate::unit::FunctionInfo;
 
 /// Pushes the argument area, header and register file of a frame for `fi` at `base`. Returns
@@ -266,6 +273,9 @@ pub(crate) fn call_host(
     // SAFETY: `fp` is the host frame that `push_frame` just wrote; it stays live until `h`
     // returns.
     let args = unsafe { Args::from_fp(fp) };
+    // H20 R5: a host function runs in its own realm. Not a GC point; the caller's realm stays
+    // in `saved_realm` (a Rust local) meanwhile.
+    let saved_realm = realm::enter_realm_of(cx, f);
     let r = {
         let mut hcx = abi::Cx::new(cx);
         h(
@@ -274,7 +284,9 @@ pub(crate) fn call_host(
             args,
             Local::from_bits(new_target),
         )
+        .map(|v| v.bits())
     };
+    realm::leave(cx, saved_realm);
     rt.stack().set_fp(caller_fp);
     restore_scratch(rt, saved);
     // H20 R4: the throw protocol.
@@ -288,7 +300,7 @@ pub(crate) fn call_host(
         "host function {:?} returned Ok with a pending exception",
         fi.name
     );
-    r.map(|v| v.bits())
+    r
 }
 
 /// Call(F, thisArg, args) from Rust (§7.3.14). Runs the interpreter for a bytecode callee.
@@ -369,8 +381,10 @@ fn push_bound_args(cx: &mut Cx, f: u64, bound: u32) -> Res<(*const u64, *mut u64
     Ok((start, saved))
 }
 
-/// [`call_with`] for a FUNCTION `f` (a host or a bytecode function).
-fn call_function_object(
+/// [`call_with`] for a FUNCTION `f` (a host or a bytecode function). A bytecode `f` of
+/// another realm runs with its realm current (the class-constructor TypeError too, §10.2.1
+/// step 2: it is made in the callee's realm); `slow::call` sends cross-realm calls here.
+pub(crate) fn call_function_object(
     cx: &mut Cx,
     f: u64,
     this: u64,
@@ -398,6 +412,27 @@ fn call_function_object(
             EXIT_STUB.as_ptr(),
         );
     }
+    // Not a GC point: `arg` may still read memory the GC does not scan (see below).
+    let saved_realm = realm::enter_realm_of(cx, f);
+    let r = call_bytecode(cx, f, fi, this, argc, arg, new_target, caller);
+    realm::leave(cx, saved_realm);
+    r
+}
+
+/// The bytecode part of [`call_function_object`], in the callee's realm.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn call_bytecode(
+    cx: &mut Cx,
+    f: u64,
+    fi: &FunctionInfo,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    new_target: u64,
+    caller: *mut u64,
+) -> Res<u64> {
+    let rt = cx.rt();
     // [[Call]] of a class constructor (§10.2.1 step 2), as in the `Call*` slow path.
     if new_target == UNDEFINED && fi.is_class_constructor() {
         let msg = format!(
@@ -485,6 +520,29 @@ pub(crate) fn run_resumed(
         return Err(not_implemented(cx, "calling code of this dispatch kind"));
     }
     let caller = rt.stack().fp();
+    // The generator's body runs in the realm of its function (§27.5.3.3 runs it in the
+    // generator's own execution context). Not a GC point.
+    let saved_realm = realm::enter_realm_of(cx, f);
+    let r = resume_here(cx, f, fi, this, argc, arg, context, generator, caller);
+    realm::leave(cx, saved_realm);
+    r
+}
+
+/// The frame push and run of [`run_resumed`], in the generator function's realm.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn resume_here(
+    cx: &mut Cx,
+    f: u64,
+    fi: &FunctionInfo,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    context: u64,
+    generator: u64,
+    caller: *mut u64,
+) -> Res<u64> {
+    let rt = cx.rt();
     poll(cx, caller)?;
     let saved = rt.stack().scratch_top();
     let base = top_of(cx, caller);
@@ -568,8 +626,11 @@ pub(crate) fn construct_with(
     r
 }
 
-/// [`construct_with`] for a FUNCTION `f` with `[[Construct]]` (§10.2.2).
-fn construct_function_object(
+/// [`construct_with`] for a FUNCTION `f` with `[[Construct]]` (§10.2.2). The receiver of a
+/// base constructor is made first, in the caller's context (step 3; its prototype falls back
+/// to newTarget's realm), then the call runs in `f`'s realm ([`call_function_object`]);
+/// `slow::call` sends a construct of a bytecode function of another realm here.
+pub(crate) fn construct_function_object(
     cx: &mut Cx,
     f: u64,
     argc: u32,
@@ -596,14 +657,16 @@ fn construct_function_object(
     })
 }
 
-/// OrdinaryCreateFromConstructor(F, "%Object.prototype%") (§10.1.13).
+/// OrdinaryCreateFromConstructor(F, "%Object.prototype%") (§10.1.13): a `prototype` that is
+/// not an object falls back to `%Object.prototype%` of GetFunctionRealm(F) (§10.1.14 step 4).
 pub(crate) fn ordinary_create_from_constructor(cx: &mut Cx, f: u64) -> Res<u64> {
     let rt = cx.rt();
     let p = property::get(cx, f, rt.atom(Atom::Prototype))?;
     let proto = if is_object(p) {
         p
     } else {
-        rt.root(Root::ObjectPrototype)
+        let r = realm::get_function_realm(rt, f);
+        realm::intrinsic_in(rt, r, crate::builtins::IntrinsicId::ObjectPrototype)
     };
     Ok(object::new_object(rt, proto))
 }

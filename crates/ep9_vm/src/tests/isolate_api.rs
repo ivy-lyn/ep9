@@ -469,3 +469,171 @@ fn the_default_heap_limit_is_the_cage() {
     let iso = isolate(IsolateConfig::default());
     assert_eq!(iso.heap().max_heap_bytes(), usize::MAX);
 }
+
+// ---- realms (M3-P1 REALMS, H22-Q3) -----------------------------------------------------------
+
+/// `realm()`: the global object of the realm the host function runs in (H20 R5).
+fn realm_global<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Ok(cx.global().into())
+}
+
+/// `make()`: a new ordinary object of the realm the host function runs in.
+fn make_object<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Ok(cx.new_object().into())
+}
+
+/// Makes a realm, keeps two of its host functions (`realmOf`, `make`) as globals of the first
+/// realm, and returns a weak handle to its global object. Out of line, so no Value of the new
+/// realm stays in the caller's frame (the conservative scan reads live frames).
+#[inline(never)]
+fn keep_a_realm(iso: &mut crate::Isolate) -> ep9_heap::WeakHandle {
+    let (rg, mk, weak) = iso
+        .create_realm(|cx, global| {
+            let rg = cx.new_builtin_closure(realm_global, "realm", 0, Local::undefined());
+            let mk = cx.new_builtin_closure(make_object, "make", 0, Local::undefined());
+            let rt = cx.inner().rt();
+            Ok((
+                rt.heap.new_global(crate::runtime::val(rg.bits())),
+                rt.heap.new_global(crate::runtime::val(mk.bits())),
+                rt.heap.new_weak(crate::runtime::val(global.bits())),
+            ))
+        })
+        .unwrap();
+    for (name, h) in [("realmOf", rg), ("make", mk)] {
+        let v = iso.rt.heap.global(h).to_bits();
+        iso.with_cx(|cx| {
+            let g = cx.global();
+            cx.set(g, name, Local::<crate::JsValue>::from_bits(v), true)?;
+            Ok(())
+        })
+        .unwrap();
+        iso.rt.heap.drop_global(h);
+    }
+    weak
+}
+
+/// Calls the kept functions of [`keep_a_realm`] from the first realm: (their realm's global
+/// is not the first realm's, the object `make` makes has that realm's
+/// `%Object.prototype%`, not the first realm's). Out of line, as [`keep_a_realm`].
+#[inline(never)]
+fn use_the_kept_realm(iso: &mut crate::Isolate) -> JsResult<(bool, bool, bool)> {
+    iso.with_cx(|cx| {
+        let g = cx.global();
+        let rg = cx.get(g, "realmOf")?;
+        let mk = cx.get(g, "make")?;
+        let other = cx.call(rg, Local::undefined(), &[])?;
+        let o = cx.call(mk, Local::undefined(), &[])?;
+        cx.collect_garbage();
+        let other = other.as_object().expect("a global object");
+        let object = cx.get(other, "Object")?.as_object().expect("%Object%");
+        let proto = cx.get(object, "prototype")?;
+        let o = o.as_object().expect("an object");
+        let o_proto = cx.get_prototype_of(o)?;
+        let mine = cx.intrinsic(crate::IntrinsicId::ObjectPrototype);
+        Ok((
+            cx.same_value(other, g),
+            cx.same_value(o_proto, proto),
+            cx.same_value(o_proto, mine),
+        ))
+    })
+    .map_err(|_| ep9_value::Throw)
+}
+
+/// Makes a realm that nothing holds; returns a weak handle to its global object. Out of line,
+/// as [`keep_a_realm`].
+#[inline(never)]
+fn lose_a_realm(iso: &mut crate::Isolate) -> ep9_heap::WeakHandle {
+    iso.create_realm(|cx, global| {
+        let rt = cx.inner().rt();
+        Ok(rt.heap.new_weak(crate::runtime::val(global.bits())))
+    })
+    .unwrap()
+}
+
+/// Overwrites the stack below the caller's frame with zeros, so the conservative scan finds
+/// no stale copy of a dead realm's cells there (the pattern of `tests/shapes.rs`).
+#[inline(never)]
+fn scrub_stack() {
+    let mut words = [0usize; 1 << 15];
+    std::hint::black_box(&mut words);
+}
+
+/// Is the cell of the weak handle `h` still live? Out of line, as [`keep_a_realm`]: the
+/// `Option<Value>` stays in this frame only.
+#[inline(never)]
+fn alive(iso: &crate::Isolate, h: ep9_heap::WeakHandle) -> bool {
+    iso.rt.heap.weak(h).is_some()
+}
+
+/// Makes a function of the first realm. The function shape cache (`shape::function_shape`,
+/// which checks the prototype on a hit) holds the shape of the last realm that made a
+/// function, so a realm stays reachable through it until another realm makes one (a fixer
+/// item of M3-P1 REALMS: a cache per realm).
+#[inline(never)]
+fn a_first_realm_function(iso: &mut crate::Isolate) {
+    iso.with_cx(|cx| {
+        cx.new_builtin_closure(make_object, "make", 0, Local::undefined());
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// Create, use and drop realms (`Isolate::create_realm`, `Cx::create_realm`), under every
+/// dispatch, with and without GC stress:
+/// - a realm that nothing reachable holds is collected (a weak handle to its global object
+///   clears);
+/// - a realm whose functions the first realm keeps in globals stays live with all its roots:
+///   after collections, the kept functions run in it (their realm's global, and an object
+///   with that realm's `%Object.prototype%`), and the first realm is current again after
+///   each call;
+/// - once the first realm deletes those globals, the realm is collected too.
+#[test]
+fn realms_are_made_used_and_dropped() {
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            on_big_stack(move || {
+                let label = format!("{} stress={stress}", d.name());
+                let mut iso = isolate(config(d, stress));
+                let first = iso.cx.realm;
+                let lost = lose_a_realm(&mut iso);
+                assert_eq!(iso.cx.realm, first, "{label}");
+                a_first_realm_function(&mut iso);
+                scrub_stack();
+                iso.collect_garbage();
+                assert!(!alive(&iso, lost), "{label}: lost realm collected");
+                iso.rt.heap.drop_weak(lost);
+                let kept = keep_a_realm(&mut iso);
+                for _ in 0..3 {
+                    iso.collect_garbage();
+                    assert!(alive(&iso, kept), "{label}: kept by its functions");
+                    assert_eq!(use_the_kept_realm(&mut iso), Ok((false, true, false)));
+                    assert_eq!(iso.cx.realm, first);
+                    assert_eq!(iso.cx.global_this, iso.rt.global());
+                }
+                iso.with_cx(|cx| {
+                    let g = cx.global();
+                    cx.delete_property_or_throw(g, "realmOf")?;
+                    cx.delete_property_or_throw(g, "make")?;
+                    Ok(())
+                })
+                .unwrap();
+                a_first_realm_function(&mut iso);
+                scrub_stack();
+                iso.collect_garbage();
+                assert!(!alive(&iso, kept), "{label}: dropped with its functions");
+                iso.rt.heap.drop_weak(kept);
+                iso.verify_heap().unwrap();
+            });
+        }
+    }
+}

@@ -35,8 +35,8 @@ use ep9_bytecode::{EvalContext, FunctionCtorKind};
 use ep9_frontend::{CodegenError, CompileError, CompileOptions, SourceOpts, Strictness};
 use ep9_heap::HeapConfig;
 use ep9_vm::{
-    Args, CompileFailure, CompileResult, CompilerHooks, Cx, Exception, Isolate, IsolateConfig,
-    JsResult, Local, TerminateHandle,
+    Args, CompileFailure, CompileResult, CompilerHooks, Cx, Exception, HostFn, Isolate,
+    IsolateConfig, JsResult, Local, PropertyDescriptor, TerminateHandle,
 };
 
 use crate::frontmatter::{self, Meta};
@@ -47,11 +47,21 @@ use crate::{expect, json};
 /// Native stack of the thread that runs the isolates in a worker (the CLI uses the same).
 const RUN_STACK_BYTES: usize = 64 << 20;
 
-/// The `$262` host object (INTERPRETING.md "Host-Defined Functions"). v0 has `global`, `gc`
-/// and `evalScript` (M2-P4, through `Cx::evaluate_script`); `createRealm`,
-/// `detachArrayBuffer` and `agent` are missing, so tests that use them fail.
-const PRELUDE: &str =
-    "var $262 = { global: globalThis, gc: __ep9_gc, evalScript: __ep9_eval_script };\n";
+/// The `$262` host object (INTERPRETING.md "Host-Defined Functions"): `global`, `gc`,
+/// `evalScript` (M2-P4, through `Cx::evaluate_script`) and `createRealm` (M3-P1, through
+/// `Cx::create_realm`; each realm runs this prelude over its own host functions, so its
+/// `evalScript` evaluates in that realm). `detachArrayBuffer` and `agent` are missing, so
+/// tests that use them fail.
+const PRELUDE: &str = "var $262 = { global: globalThis, gc: __ep9_gc, \
+                       evalScript: __ep9_eval_script, createRealm: __ep9_create_realm };\n";
+
+/// The host functions of every realm of a test isolate, as global names (`register`).
+const HOST_FUNCTIONS: [(&str, u32, HostFn); 4] = [
+    ("print", 1, print),
+    ("__ep9_gc", 0, gc),
+    ("__ep9_eval_script", 1, eval_script),
+    ("__ep9_create_realm", 0, create_realm),
+];
 
 pub struct Options {
     pub test262: PathBuf,
@@ -303,6 +313,29 @@ fn gc<'s>(
 ) -> JsResult<Local<'s>> {
     cx.collect_garbage();
     Ok(Local::undefined())
+}
+
+/// `$262.createRealm()` (INTERPRETING.md): a new realm (`Cx::create_realm`, every builtin
+/// table), with the host functions of [`HOST_FUNCTIONS`] made in it and [`PRELUDE`] run in it.
+/// Returns that realm's `$262`.
+fn create_realm<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let global = cx.create_realm()?;
+    cx.with_realm(global, |cx| {
+        for (name, length, f) in HOST_FUNCTIONS {
+            // A function of the current realm, as `Isolate::register_host_function` makes:
+            // writable, configurable, not enumerable.
+            let func = cx.new_builtin_closure(f, name, length, Local::undefined());
+            let desc = PropertyDescriptor::data(func.into(), true, false, true);
+            cx.define_property_or_throw(global, name, desc)?;
+        }
+        cx.evaluate_script(PRELUDE, "harness/$262 prelude")?;
+        cx.get(global, "$262")
+    })
 }
 
 /// The run that the watchdog watches.
@@ -582,9 +615,9 @@ impl RunCtx<'_> {
     fn isolate(&self) -> Result<Isolate, String> {
         let config = isolate_config(self.opts.gc_stress, self.opts.feedback_threshold);
         let mut iso = Isolate::new(config).map_err(|e| format!("cannot create an isolate: {e}"))?;
-        iso.register_host_function("print", 1, print);
-        iso.register_host_function("__ep9_gc", 0, gc);
-        iso.register_host_function("__ep9_eval_script", 1, eval_script);
+        for (name, length, f) in HOST_FUNCTIONS {
+            iso.register_host_function(name, length, f);
+        }
         Ok(iso)
     }
 
