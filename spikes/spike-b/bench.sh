@@ -16,12 +16,17 @@
 #                         --smc-check=all on spike-b `bench run A` and `C` (n = SB_CG_N), and on
 #                         `sp-dispatch run sibling loop.ep9d` and `sp-dispatch ops`
 #
-# Verdict: void if the bench says void (IQR of t_A or t_C > 5%); else provisional if the host
-# is not the gate host, a load guard failed or did not run, tau is older than
-# SB_TAU_MAX_AGE_MIN, or the build or round count is not the gate's; else the bench verdict
-# (pass, fail; "marginal" stays as a label). Exit 0 when the run is complete, whatever the
-# verdict; 1 if the run is invalid (a wrong `drive` result, a missing input); 2 on a usage
-# error; 3 "host busy" (the load guard before failed after SB_WAIT_MIN, without SB_ALLOW_BUSY).
+# Verdict (decision M2-P3-SPIKEB-VERDICT): void if the bench says void (IQR of t_A or t_C >
+# 5%); else provisional if any protocol parameter is not the gate's: the host is not the gate
+# host, a load guard failed or did not run, tau is older than SB_TAU_MAX_AGE_MIN, the tau
+# bench.json has fewer than 15 rounds or another CPU than this host's (`sp-dispatch cpu`, the
+# function that wrote it; protocol §1 "same host", §3), a debug build, fewer than 15 kept
+# rounds, n other than 10^8, a marginal re-run with fewer than 31 kept rounds, or a marginal
+# result that could not re-run (bench verdict "marginal"); else the bench verdict (pass, fail;
+# "marginal" stays as a label). Each reason prints as a "label:" line. Exit 0 when the run is
+# complete, whatever the verdict; 1 if the run is invalid (a wrong `drive` result, a missing
+# input); 2 on a usage error; 3 "host busy" (the load guard before failed after SB_WAIT_MIN,
+# without SB_ALLOW_BUSY).
 #
 # Env:
 #   SB_BIN               spike-b binary (default: $CARGO_TARGET_DIR or spikes/spike-b/target,
@@ -34,7 +39,8 @@
 #   SB_SETTLE_S=60  SB_WAIT_MIN=30  SB_AFTER_S=120   load guard timing (protocol §7)
 #   SB_ALLOW_BUSY=0      1: a failed guard before does not stop the run; it is provisional
 #   SB_COMMIT            commit text when the tree has no git (the x86 sandbox)
-#   SB_SPD_BIN           sp-dispatch binary for cachegrind (spikes/sp-dispatch/target/release/sp-dispatch)
+#   SB_SPD_BIN           sp-dispatch binary (spikes/sp-dispatch/target/release/sp-dispatch): its
+#                        `cpu` for the tau CPU check, and cachegrind
 #   SB_CG_N=1000000      n under cachegrind
 #   SPIKE_B_CPU          the CPU model to print where the host hides it (lscpu prints "-" in an
 #                        arm64 Linux VM); the result says it came from this variable
@@ -46,6 +52,7 @@ exe=""
 case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) exe=".exe" ;; esac
 bin="${SB_BIN:-${CARGO_TARGET_DIR:-$here/target}/release/spike-b$exe}"
 tau_json="${SB_TAU_JSON:-$root/spikes/sp-dispatch/target/gate/bench.json}"
+spd="${SB_SPD_BIN:-$root/spikes/sp-dispatch/target/release/sp-dispatch$exe}"
 mode="${1:-run}"
 
 die() { echo "bench.sh: $*" >&2; exit "${2:-1}"; }
@@ -61,7 +68,6 @@ commit() {
 # ---- cachegrind (protocol §8) -------------------------------------------------------------------
 cachegrind() {
   command -v valgrind >/dev/null || die "cachegrind: valgrind is not on PATH"
-  local spd="${SB_SPD_BIN:-$root/spikes/sp-dispatch/target/release/sp-dispatch$exe}"
   [ -x "$spd" ] || die "cachegrind: no sp-dispatch binary at $spd (cargo build --release in spikes/sp-dispatch)"
   local n="${SB_CG_N:-1000000}"
   # Global, so the EXIT trap still sees it after this function returns.
@@ -201,6 +207,21 @@ echo "tau source uptime after:  $(field uptime_after)"
 if awk -v a="$tau_age" -v m="${SB_TAU_MAX_AGE_MIN:-120}" 'BEGIN { exit !(a > m) }'; then
   reasons+=("tau is $tau_age min old (> ${SB_TAU_MAX_AGE_MIN:-120}; protocol §3 same session)")
 fi
+tau_rounds="$(field rounds)"
+case "$tau_rounds" in
+  "" | *[!0-9]*) reasons+=("tau source rounds is '$tau_rounds', not a number (protocol §3: SP_ROUNDS=15)") ;;
+  *) if [ "$tau_rounds" -lt 15 ]; then reasons+=("tau source has $tau_rounds rounds (< 15; protocol §3)"); fi ;;
+esac
+tau_cpu="$(field cpu)"
+if [ -x "$spd" ] && spd_cpu="$("$spd" cpu)"; then
+  echo "cpu now: \"$spd_cpu\" ($spd cpu)"
+  if [ "$spd_cpu" != "$tau_cpu" ]; then
+    reasons+=("tau source cpu \"$tau_cpu\" is not this host's \"$spd_cpu\" (protocol §1: same host)")
+  fi
+else
+  echo "cpu now: not checked (no sp-dispatch binary at $spd)"
+  reasons+=("tau source cpu not checked: no sp-dispatch binary at $spd (protocol §1: same host)")
+fi
 if [ "$have_node" = 1 ]; then
   host_line="$(guard host)"
   echo "gate host: $host_line"
@@ -250,14 +271,15 @@ fi
 raw="$(awk '{ print $2 }' <<<"$res")"
 labels="$(sed -n 's/.* labels=//p' <<<"$res")"
 [ "$labels" = "-" ] && labels=""
-# "marginal" is a label of the verdict, not a reason for "provisional"; the others are (a debug
-# build, fewer than 15 kept rounds).
+# "marginal" is a label of the verdict, not a reason for "provisional"; the others are (the
+# parameters that are not the protocol's: bench.rs `parameter_labels`, `no_rerun_label`).
 other="$(tr ';' '\n' <<<"$labels" | sed 's/^ *//' | grep -v '^marginal$' | grep -v '^$' | paste -sd ';' -)"
 if [ -n "$other" ]; then reasons+=("bench labels: $other"); fi
-case "$raw" in pass | fail | void) ;; *) die "unknown bench verdict '$raw'" ;; esac
+# A bench verdict "marginal" was not re-run (the bench labels why): never a pass or a fail.
+case "$raw" in pass | fail | void | marginal) ;; *) die "unknown bench verdict '$raw'" ;; esac
 if [ "$raw" = void ]; then
   verdict=void
-elif [ "${#reasons[@]}" -gt 0 ]; then
+elif [ "${#reasons[@]}" -gt 0 ] || [ "$raw" = marginal ]; then
   verdict=provisional
 else
   verdict="$raw"
@@ -268,6 +290,8 @@ echo "load before: $guard_before"
 echo "load after:  $guard_after"
 echo "uptime: $(load)"
 echo "bench: $res"
-echo "VERDICT: $verdict (bench verdict: $raw$(case "$labels" in *marginal*) echo ", marginal" ;; esac))"
+marginal=""
+if [ "$raw" != marginal ] && tr ';' '\n' <<<"$labels" | sed 's/^ *//' | grep -qx marginal; then marginal=", marginal"; fi
+echo "VERDICT: $verdict (bench verdict: $raw$marginal)"
 for r in ${reasons[@]+"${reasons[@]}"}; do echo "  label: $r"; done
 exit 0
