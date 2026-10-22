@@ -18,7 +18,7 @@ use oxc_span::{GetSpan, Span};
 use super::func::{FnGen, Gen};
 use super::literal::{self, PropertyName};
 use super::lookup::runs_no_code;
-use crate::scope::{BindingLocation, ImplicitRef, Reference, Resolution};
+use crate::scope::{BindingLocation, ImplicitRef, NameId, Reference, Resolution};
 
 /// A binary operator with a register form and a Smi form.
 #[derive(Clone, Copy)]
@@ -77,13 +77,15 @@ pub(crate) enum MemberRef {
         key: Register,
     },
     /// `o.#m` or `o.#a`, a private method or accessor (private.rs): `brand` holds the class
-    /// brand, `get` the method or the getter, `set` the setter (`None` for a method). `at` is
-    /// the `#name` offset.
+    /// brand, `get` the method or the getter, `set` the setter (`None` for a method). `name` is
+    /// the private name (`#m`, for the TypeError text of a store to a method). `at` is the
+    /// `#name` offset.
     PrivateBranded {
         obj: Register,
         brand: Register,
         get: Register,
         set: Option<Register>,
+        name: NameId,
         at: u32,
     },
 }
@@ -980,6 +982,7 @@ impl<'a, 's> FnGen<'a, 's> {
                 get,
                 set,
                 at,
+                ..
             } => self.private_branded_load(obj, brand, get, set.is_none(), at),
         }
     }
@@ -1026,9 +1029,10 @@ impl<'a, 's> FnGen<'a, 's> {
                 obj,
                 brand,
                 set,
+                name,
                 at,
                 ..
-            } => self.private_branded_store(obj, brand, set, at),
+            } => self.private_branded_store(obj, brand, set, name, at),
         }
         if let Some(t) = saved {
             self.b.ldar(t);
