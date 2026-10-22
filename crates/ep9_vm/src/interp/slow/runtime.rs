@@ -194,6 +194,25 @@ pub(crate) fn call_runtime(
         Some(Id::StoreLookupSlotResolved) => {
             super::lookup::store_lookup_slot_resolved(cx, a(0), a(1), a(2), a(3))
         }
+        // ---- ABI 5 (P0-LANG4: the two ids the M3-P0 front end emits) ----
+        // SetFunctionName(function, key) (§10.2.9): `key` is a property key (class.rs).
+        Some(Id::SetFunctionName) => {
+            let (f, key) = (a(0), a(1));
+            (|| -> Res<u64> {
+                if is_function(f) {
+                    set_function_name(cx, f, key, None)?;
+                }
+                Ok(f)
+            })()
+        }
+        // ThrowTypeError(message): a new TypeError with the string `message` (private.rs).
+        Some(Id::ThrowTypeError) => {
+            let m = a(0);
+            let proto = cx.rt().root(ErrorKind::TypeError.prototype_root());
+            let e = crate::error::new_error_value(cx, proto, is_string(m).then_some(m));
+            cx.rt().throw_value(e);
+            Err(ep9_value::Throw)
+        }
         // An id that a later ABI appends and the VM does not route yet. At ABI 4 every id is
         // routed above, so the arm is unreachable until the next ABI adds ids.
         #[allow(unreachable_patterns)]

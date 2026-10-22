@@ -1,6 +1,6 @@
 # pat-default-name: script (sloppy)
 # | var {f = function() {}} = {}; var [g = () => 1] = [];
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=53 source=embedded hints=none
 source_hash=6e0819997cef9683ed217635031cc3200cb04cede1d366d05d866a24983ef122
 strings (6):

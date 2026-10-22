@@ -1,9 +1,9 @@
 # class-private-assign: script (sloppy)
 # | class A { #m() {} get #a() { return 1; } set #a(v) {} get #g() {} t(o, v) { o.#a = v; o.#a += 1; o.#a++; [o.#a] = [v]; o.#m = v; return o.#g = v; } }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=149 source=embedded hints=none
 source_hash=3e352a399cf544ffc7680007655e7f3c1954b723db6c73f682d8f4d5470a57b5
-strings (15):
+strings (16):
   str0 "A"
   str1 "#m"
   str2 "#a"
@@ -19,6 +19,7 @@ strings (15):
   str12 "done"
   str13 "value"
   str14 "return"
+  str15 "Private method is not writable"
 scopes (9):
   scope0 script outer=- flags=[] slots=["A":class]
   scope1 class outer=scope0 flags=[needs-context,strict] slots=["#m":const, "#a":const, "#g":const, "#.brand":const, "#.set-a":const, "#.set-g":const]
@@ -174,7 +175,7 @@ function f6 getter name="get #g" parent=f0 outer_scope=scope1 flags=[strict,simp
   handlers (0):
   positions (0):
 function f7 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=2 length=2 regs=13 range=67..147
-  code (360 bytes):
+  code (364 bytes):
       0 S> Ldar a0                                      ; 0b fe
       2    Star r0                                      ; 0c 00
       4    LdaCurrentContextSlot [3]                    ; 18 03
@@ -314,32 +315,35 @@ function f7 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-pa
     311    Star r3                                      ; 0c 03
     313    Ldar r1                                      ; 0b 01
     315 E> GetKeyedProperty r0, s24                     ; 23 00 18
-    318 E> CallRuntime ThrowConstAssignError, ()        ; 68 00 00 00 00
-    323 S> Ldar a0                                      ; 0b fe
-    325    Star r0                                      ; 0c 00
-    327    LdaCurrentContextSlot [3]                    ; 18 03
-    329    Star r1                                      ; 0c 01
-    331    LdaCurrentContextSlot [2]                    ; 18 02
-    333    Star r2                                      ; 0c 02
-    335    LdaCurrentContextSlot [5]                    ; 18 05
-    337    Star r3                                      ; 0c 03
-    339    Ldar a1                                      ; 0b fd
-    341    Star r4                                      ; 0c 04
-    343    Star r5                                      ; 0c 05
-    345    Ldar r1                                      ; 0b 01
-    347 E> GetKeyedProperty r0, s25                     ; 23 00 19
-    350 E> CallProperty1 r3, r0, r5, s26                ; 61 03 00 05 1a
-    355    Ldar r4                                      ; 0b 04
-    357    Return                                       ; 92
-    358    LdaUndefined                                 ; 05
-    359    Return                                       ; 92
-  constants (6):
+    318    LdaConstant k6  ; k6 = String str15 "Private method is not writable" ; 0a 06
+    320    Star r4                                      ; 0c 04
+    322 E> CallRuntime ThrowTypeError, r4               ; 68 2d 00 04 01
+    327 S> Ldar a0                                      ; 0b fe
+    329    Star r0                                      ; 0c 00
+    331    LdaCurrentContextSlot [3]                    ; 18 03
+    333    Star r1                                      ; 0c 01
+    335    LdaCurrentContextSlot [2]                    ; 18 02
+    337    Star r2                                      ; 0c 02
+    339    LdaCurrentContextSlot [5]                    ; 18 05
+    341    Star r3                                      ; 0c 03
+    343    Ldar a1                                      ; 0b fd
+    345    Star r4                                      ; 0c 04
+    347    Star r5                                      ; 0c 05
+    349    Ldar r1                                      ; 0b 01
+    351 E> GetKeyedProperty r0, s25                     ; 23 00 19
+    354 E> CallProperty1 r3, r0, r5, s26                ; 61 03 00 05 1a
+    359    Ldar r4                                      ; 0b 04
+    361    Return                                       ; 92
+    362    LdaUndefined                                 ; 05
+    363    Return                                       ; 92
+  constants (7):
       0 ArrayBoilerplate [_]
       1 String str11 "next"
       2 String str12 "done"
       3 String str13 "value"
       4 String str14 "return"
       5 JumpTable [+5]
+      6 String str15 "Private method is not writable"
   feedback (27):
       0 LoadKeyed
       1 Call
@@ -405,7 +409,7 @@ function f7 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-pa
     296 E 105 (1:106)
     297 S 119 (1:120)
     315 E 121 (1:122)
-    318 E 121 (1:122)
-    323 S 129 (1:130)
-    347 E 138 (1:139)
-    350 E 138 (1:139)
+    322 E 121 (1:122)
+    327 S 129 (1:130)
+    351 E 138 (1:139)
+    354 E 138 (1:139)

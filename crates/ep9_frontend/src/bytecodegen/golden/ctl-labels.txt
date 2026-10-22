@@ -1,6 +1,6 @@
 # ctl-labels: script (sloppy)
 # | function f(a) { outer: for (var i = 0; i < 3; i++) { inner: for (;;) { if (a) continue outer; break outer; } } l: { if (a) break l; a = 1; } }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=142 source=embedded hints=none
 source_hash=f9dcc7c59201b03973de9744250e1062576cff7a12405dd136382246b55d0346
 strings (1):

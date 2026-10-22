@@ -1,6 +1,6 @@
 # op-comma: script (sloppy)
 # | var a, b; a = (1, 2, b);
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=24 source=embedded hints=none
 source_hash=57986e614f5799e0aa22aa5eb5a754f1e3f16146f53774687bcedc0f57aacd41
 strings (2):

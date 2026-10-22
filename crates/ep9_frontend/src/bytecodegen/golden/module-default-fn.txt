@@ -1,13 +1,21 @@
 # module-default-fn: module
 # | export default function () { return 1; }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=module strict=true ts=none source_len=40 source=embedded hints=none
 source_hash=878937b9594561e598a3c40c4d1bf320fb5bbd31fa6140fbe83215e7f4037a79
-strings (1):
+strings (2):
   str0 "default"
+  str1 "*default*"
 scopes (2):
   scope0 module outer=- flags=[strict] slots=[]
   scope1 function outer=scope0 flags=[strict] slots=[]
+module records: has-tla=false
+  requests (0):
+  imports (0):
+  local exports (1):
+      0 export="default" local="*default*" cell=1
+  indirect exports (0):
+  star exports (0):
 function f0 module name=- parent=- outer_scope=- flags=[strict] params=0 length=0 regs=0 range=0..40
   code (9 bytes):
       0 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00

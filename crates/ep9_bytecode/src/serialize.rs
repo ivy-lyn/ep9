@@ -6,13 +6,29 @@
 //! bytes. ADR H02 holds the byte tables.
 //!
 //! ```text
-//! header (160 bytes)
-//!   0  magic "\x89EP9BC\r\n"     8   abi_version u32       12  header_size u32 (160)
+//! header (168 bytes)
+//!   0  magic "\x89EP9BC\r\n"     8   abi_version u32       12  header_size u32 (168)
 //!   16 total_size u32           20  unit flags u32        24  hash algorithm u8 (1 = SHA-256)
 //!   25 reserved [7] = 0         32  content hash [32]     64  source hash [32]
 //!   96 engine build id [16]    112  source_len u32       116  reserved u32 = 0
-//!  120 section table: 5 x (offset u32, length u32): strings, scopes, functions, source, hints
-//! body: the 5 sections, back to back, in that order, from offset 160 to total_size
+//!  120 section table: 6 x (offset u32, length u32): strings, scopes, functions, source, hints,
+//!      module records
+//! body: the 6 sections, back to back, in that order, from offset 168 to total_size
+//! ```
+//!
+//! ABI 5 added the module records section (index 5; the header grew from 160 to 168 bytes)
+//! and the mapped-parameter list at the end of each function record. The module records
+//! section is empty for a script or eval unit and never empty for a module unit:
+//!
+//! ```text
+//! u8 flags (bit 0 = has TLA; other bits zero)
+//! u32 n, n x request:        u32 specifier, u32 m, m x (u32 key, u32 value)
+//! u32 n, n x import entry:   u32 request, u32 import name (0 = namespace-object, else
+//!                            string id + 1), u32 local name, i32 module cell
+//! u32 n, n x local export:   u32 export name, u32 local name, i32 module cell
+//! u32 n, n x indirect export: u32 export name, u32 request, u32 import name (0 = all, else
+//!                            string id + 1)
+//! u32 n, n x star export:    u32 request
 //! ```
 //!
 //! Bytes 0..20 (magic, ABI version, header size, total size) are a frozen prefix: they keep
@@ -27,9 +43,11 @@ use crate::positions::{decode_positions, encode_positions};
 use crate::sha256::{Digest, Sha256, sha256};
 use crate::string::UnitString;
 use crate::unit::{
-    ABI_VERSION, BigIntConst, CodeKind, CompiledUnit, Constant, Function, FunctionFlags,
-    FunctionKind, Handler, HandlerKind, NumberBits, Oddball, Scope, ScopeFlags, ScopeKind,
-    ScopeSlot, TsFlags, UnitHeader, VariableMode, VerifiedUnit,
+    ABI_VERSION, BigIntConst, CodeKind, CompiledUnit, Constant, ExportImportName, Function,
+    FunctionFlags, FunctionKind, Handler, HandlerKind, ImportEntry, ImportName,
+    IndirectExportEntry, LocalExportEntry, MappedParameters, ModuleRecords, ModuleRequest,
+    NumberBits, Oddball, Scope, ScopeFlags, ScopeKind, ScopeSlot, TsFlags, UnitHeader,
+    VariableMode, VerifiedUnit,
 };
 use crate::verify::{VerifyError, verify};
 
@@ -37,11 +55,11 @@ use crate::verify::{VerifyError, verify};
 /// conversion), as in the PNG signature.
 pub const MAGIC: [u8; 8] = [0x89, b'E', b'P', b'9', b'B', b'C', 0x0D, 0x0A];
 /// Header size in bytes.
-pub const HEADER_SIZE: usize = 160;
+pub const HEADER_SIZE: usize = 168;
 /// Hash algorithm id of SHA-256.
 pub const HASH_SHA256: u8 = 1;
 /// Number of sections.
-pub const SECTION_COUNT: usize = 5;
+pub const SECTION_COUNT: usize = 6;
 /// Size of the frozen prefix (magic, ABI version, header size, total size).
 pub const FROZEN_PREFIX_SIZE: usize = 20;
 
@@ -71,7 +89,7 @@ pub mod offsets {
     pub const SOURCE_LEN: usize = 112;
     /// Reserved u32, zero.
     pub const RESERVED1: usize = 116;
-    /// Section table: 5 x (offset u32, length u32).
+    /// Section table: 6 x (offset u32, length u32).
     pub const SECTIONS: usize = 120;
 }
 
@@ -89,7 +107,7 @@ pub mod flags {
     pub const TS_EXPERIMENTAL_DECORATORS: u32 = 1 << 10;
     /// Bit 11: `emitDecoratorMetadata` (H3). Only with [`TYPESCRIPT`].
     pub const TS_EMIT_DECORATOR_METADATA: u32 = 1 << 11;
-    /// Bits 12-15: reserved for later TS flags; zero in ABI 1-4.
+    /// Bits 12-15: reserved for later TS flags; zero in ABI 1-5.
     pub const TS_RESERVED: u32 = 0xf << 12;
     /// Bit 16: the source section holds the source text.
     pub const HAS_SOURCE: u32 = 1 << 16;
@@ -121,6 +139,8 @@ pub enum Section {
     Source,
     /// Hint section.
     Hints,
+    /// Module records (ABI 5).
+    ModuleRecords,
 }
 
 /// What the caller does with a unit that failed to load (H35 S4 outcomes).
@@ -316,6 +336,71 @@ fn write_function(out: &mut Vec<u8>, f: &Function) {
     let pos = encode_positions_lossy(&f.positions);
     put_len(out, pos.len());
     out.extend_from_slice(&pos);
+    // ABI 5: the mapped-parameter list (scope + 1, or 0 with no list; then the slots).
+    match &f.mapped_parameters {
+        None => {
+            put_u32(out, 0);
+            put_u32(out, 0);
+        }
+        Some(m) => {
+            put_opt(out, Some(m.scope.0));
+            put_len(out, m.slots.len());
+            for &slot in &m.slots {
+                put_opt(out, slot);
+            }
+        }
+    }
+}
+
+/// Module flag bit 0 (section 5): `[[HasTLA]]`.
+const MODULE_HAS_TLA: u8 = 1;
+
+fn write_module_records(out: &mut Vec<u8>, m: &ModuleRecords) {
+    out.push(if m.has_tla { MODULE_HAS_TLA } else { 0 });
+    put_len(out, m.requested_modules.len());
+    for r in &m.requested_modules {
+        put_u32(out, r.specifier.0);
+        put_len(out, r.attributes.len());
+        for (k, v) in &r.attributes {
+            put_u32(out, k.0);
+            put_u32(out, v.0);
+        }
+    }
+    put_len(out, m.import_entries.len());
+    for e in &m.import_entries {
+        put_u32(out, e.module_request);
+        put_opt(
+            out,
+            match e.import_name {
+                ImportName::Namespace => None,
+                ImportName::Name(n) => Some(n.0),
+            },
+        );
+        put_u32(out, e.local_name.0);
+        out.extend_from_slice(&e.cell.to_le_bytes());
+    }
+    put_len(out, m.local_export_entries.len());
+    for e in &m.local_export_entries {
+        put_u32(out, e.export_name.0);
+        put_u32(out, e.local_name.0);
+        out.extend_from_slice(&e.cell.to_le_bytes());
+    }
+    put_len(out, m.indirect_export_entries.len());
+    for e in &m.indirect_export_entries {
+        put_u32(out, e.export_name.0);
+        put_u32(out, e.module_request);
+        put_opt(
+            out,
+            match e.import_name {
+                ExportImportName::All => None,
+                ExportImportName::Name(n) => Some(n.0),
+            },
+        );
+    }
+    put_len(out, m.star_export_entries.len());
+    for &r in &m.star_export_entries {
+        put_u32(out, r);
+    }
 }
 
 /// Encodes positions even when the offsets do not increase (an unverified unit). Such bytes
@@ -393,6 +478,11 @@ impl CompiledUnit {
                 .as_deref()
                 .map_or(Vec::new(), |s| s.as_bytes().to_vec()),
             self.hints.clone().unwrap_or_default(),
+            self.module_records.as_ref().map_or(Vec::new(), |m| {
+                let mut out = Vec::new();
+                write_module_records(&mut out, m);
+                out
+            }),
         ];
         let body_len: usize = sections.iter().map(Vec::len).sum();
         let total = u32::try_from(HEADER_SIZE + body_len).expect("unit larger than 4 GiB");
@@ -695,7 +785,7 @@ fn read_constant(r: &mut Reader<'_>) -> Result<Constant, LoadError> {
 }
 
 /// Bytes of a function record without its variable parts.
-const FUNCTION_FIXED_SIZE: usize = 2 + 8 * 4 + 5 * 4;
+const FUNCTION_FIXED_SIZE: usize = 2 + 8 * 4 + 5 * 4 + 2 * 4;
 
 fn read_function(r: &mut Reader<'_>) -> Result<Function, LoadError> {
     let Some(kind) = FunctionKind::from_u8(r.u8()?) else {
@@ -751,6 +841,20 @@ fn read_function(r: &mut Reader<'_>) -> Result<Function, LoadError> {
         Ok(p) => p,
         Err(_) => return r.err("position table"),
     };
+    let mapped_scope = r.opt()?.map(ScopeId);
+    let n = r.count(4)?;
+    let mapped_parameters = match mapped_scope {
+        None if n == 0 => None,
+        None => return r.err("mapped parameters without a scope"),
+        Some(_) if n == 0 => return r.err("empty mapped-parameter list"),
+        Some(scope) => {
+            let mut slots = Vec::with_capacity(n);
+            for _ in 0..n {
+                slots.push(r.opt()?);
+            }
+            Some(MappedParameters { scope, slots })
+        }
+    };
     Ok(Function {
         kind,
         flags,
@@ -767,7 +871,91 @@ fn read_function(r: &mut Reader<'_>) -> Result<Function, LoadError> {
         feedback_slots,
         handlers,
         positions,
+        mapped_parameters,
     })
+}
+
+fn read_module_records(r: &mut Reader<'_>) -> Result<Option<ModuleRecords>, LoadError> {
+    if r.b.is_empty() {
+        return Ok(None);
+    }
+    let flags = r.u8()?;
+    if flags & !MODULE_HAS_TLA != 0 {
+        return r.err("module flags");
+    }
+    let n = r.count(8)?;
+    let mut requested_modules = Vec::with_capacity(n);
+    for _ in 0..n {
+        let specifier = StringId(r.u32()?);
+        let m = r.count(8)?;
+        let mut attributes = Vec::with_capacity(m);
+        for _ in 0..m {
+            let k = StringId(r.u32()?);
+            attributes.push((k, StringId(r.u32()?)));
+        }
+        requested_modules.push(ModuleRequest {
+            specifier,
+            attributes,
+        });
+    }
+    let n = r.count(16)?;
+    let mut import_entries = Vec::with_capacity(n);
+    for _ in 0..n {
+        let module_request = r.u32()?;
+        let import_name = match r.opt()? {
+            None => ImportName::Namespace,
+            Some(s) => ImportName::Name(StringId(s)),
+        };
+        let local_name = StringId(r.u32()?);
+        let cell = r.u32()? as i32;
+        import_entries.push(ImportEntry {
+            module_request,
+            import_name,
+            local_name,
+            cell,
+        });
+    }
+    let n = r.count(12)?;
+    let mut local_export_entries = Vec::with_capacity(n);
+    for _ in 0..n {
+        let export_name = StringId(r.u32()?);
+        let local_name = StringId(r.u32()?);
+        let cell = r.u32()? as i32;
+        local_export_entries.push(LocalExportEntry {
+            export_name,
+            local_name,
+            cell,
+        });
+    }
+    let n = r.count(12)?;
+    let mut indirect_export_entries = Vec::with_capacity(n);
+    for _ in 0..n {
+        let export_name = StringId(r.u32()?);
+        let module_request = r.u32()?;
+        let import_name = match r.opt()? {
+            None => ExportImportName::All,
+            Some(s) => ExportImportName::Name(StringId(s)),
+        };
+        indirect_export_entries.push(IndirectExportEntry {
+            export_name,
+            module_request,
+            import_name,
+        });
+    }
+    let n = r.count(4)?;
+    let mut star_export_entries = Vec::with_capacity(n);
+    for _ in 0..n {
+        star_export_entries.push(r.u32()?);
+    }
+    r.done()?;
+    Ok(Some(ModuleRecords {
+        requested_modules,
+        import_entries,
+        local_export_entries,
+        indirect_export_entries,
+        star_export_entries,
+        has_tla: flags & MODULE_HAS_TLA != 0,
+    }))
 }
 
 fn read_functions(r: &mut Reader<'_>) -> Result<Vec<Function>, LoadError> {
@@ -889,6 +1077,7 @@ pub fn decode_unit(bytes: &[u8]) -> Result<CompiledUnit, LoadError> {
         }
         None
     };
+    let module_records = read_module_records(&mut section(5, Section::ModuleRecords))?;
     Ok(CompiledUnit {
         header,
         strings,
@@ -896,5 +1085,6 @@ pub fn decode_unit(bytes: &[u8]) -> Result<CompiledUnit, LoadError> {
         functions,
         source,
         hints,
+        module_records,
     })
 }

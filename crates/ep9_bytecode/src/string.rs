@@ -63,6 +63,19 @@ impl UnitString {
         (0..self.len()).map(|i| self.code_unit(i)).collect()
     }
 
+    /// Compares two strings as sequences of UTF-16 code units (the order ECMA-262 uses to
+    /// sort import attributes by key, §16.2.2.5 WithClauseToAttributes).
+    pub fn cmp_code_units(&self, other: &UnitString) -> core::cmp::Ordering {
+        let n = self.len().min(other.len());
+        for i in 0..n {
+            match self.code_unit(i).cmp(&other.code_unit(i)) {
+                core::cmp::Ordering::Equal => {}
+                o => return o,
+            }
+        }
+        self.len().cmp(&other.len())
+    }
+
     /// True if the representation is the canonical one.
     pub fn is_canonical(&self) -> bool {
         match self {

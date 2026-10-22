@@ -1,0 +1,96 @@
+# fn-mapped-arguments: script (sloppy)
+# | function f(a, b, a) { arguments; return () => b; } function g(x, y) { 'use strict'; arguments; }
+; ep9 bytecode, ABI 5
+unit kind=script strict=false ts=none source_len=96 source=embedded hints=none
+source_hash=bc208eb0bde7bd52820fb8cf61b7dcb3797f711001850bdfc415f662096845f8
+strings (4):
+  str0 "f"
+  str1 "g"
+  str2 "a"
+  str3 "b"
+scopes (4):
+  scope0 script outer=- flags=[] slots=["f":function, "g":function]
+  scope1 function outer=scope0 flags=[needs-context] slots=["a":var, "b":var]
+  scope2 function outer=scope1 flags=[] slots=[]
+  scope3 function outer=scope0 flags=[strict] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=2 range=0..96
+  code (41 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22 E> CreateClosure k2, s1, #0x00  ; k2 = Function f3 ; 74 02 01 00
+     26    Star r1                                      ; 0c 01
+     28    LdaConstant k3  ; k3 = String str1 "g"       ; 0a 03
+     30    Star r0                                      ; 0c 00
+     32 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     37    Ldar r1                                      ; 0b 01
+     39    LdaUndefined                                 ; 05
+     40    Return                                       ; 92
+  constants (4):
+      0 Function f1
+      1 String str0 "f"
+      2 Function f3
+      3 String str1 "g"
+  feedback (2):
+      0 CreateClosure
+      1 CreateClosure
+  handlers (0):
+  positions (5):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+     22 E 51 (1:52)
+     32 E 51 (1:52)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=3 length=3 regs=2 range=0..50
+  code (25 bytes):
+      0 E> CreateFunctionContext k0, [2]  ; k0 = Scope scope1 ; 75 00 02
+      3    PushContext r1                               ; 13 01
+      5    Ldar a1                                      ; 0b fd
+      7    StaCurrentContextSlot [1]                    ; 1b 01
+      9    Ldar a2                                      ; 0b fc
+     11    StaCurrentContextSlot [0]                    ; 1b 00
+     13 E> CreateMappedArguments                        ; 7a
+     14    Star r0                                      ; 0c 00
+     16 S> Ldar r0                                      ; 0b 00
+     18 S> CreateClosure k1, s0, #0x00  ; k1 = Function f2 ; 74 01 00 00
+     22    Return                                       ; 92
+     23    LdaUndefined                                 ; 05
+     24    Return                                       ; 92
+  constants (2):
+      0 Scope scope1
+      1 Function f2
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (4):
+      0 E 0 (1:1)
+     13 E 0 (1:1)
+     16 S 22 (1:23)
+     18 S 33 (1:34)
+  mapped parameters (3): scope=scope1 slots=[-, 1, 0]
+function f2 arrow name=- parent=f1 outer_scope=scope1 flags=[simple-params] params=0 length=0 regs=0 range=40..47
+  code (3 bytes):
+      0 S> LdaCurrentContextSlot [1]                    ; 18 01
+      2    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 46 (1:47)
+function f3 normal name="g" parent=f0 outer_scope=scope0 flags=[strict,simple-params] params=2 length=2 regs=1 range=51..96
+  code (7 bytes):
+      0 E> CreateUnmappedArguments                      ; 7b
+      1    Star r0                                      ; 0c 00
+      3 S> Ldar r0                                      ; 0b 00
+      5    LdaUndefined                                 ; 05
+      6    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (2):
+      0 E 51 (1:52)
+      3 S 84 (1:85)
