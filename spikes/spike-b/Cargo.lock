@@ -181,6 +181,7 @@ name = "ep9_vm"
 version = "0.0.0"
 dependencies = [
  "ep9_bytecode",
+ "ep9_facts",
  "ep9_heap",
  "ep9_math",
  "ep9_platform",

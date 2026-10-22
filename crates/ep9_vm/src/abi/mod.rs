@@ -29,13 +29,21 @@
 //! Month-2 submodules (C1), one owner each: `index.rs` (index access) and `iter.rs` (the
 //! iterator protocol), `slots.rs` (internal slots), `jobs.rs` (jobs), `script.rs`
 //! (`evaluate_script`). Each adds an `impl Cx` block.
+//!
+//! Month-3 submodules (M3-P0 stubs, one owner each): `collections.rs` (Map and Set storage,
+//! M3-P1 B-COLLECTIONS), `realm.rs` (realms, M3-P1 REALMS), `time.rs` (the clock and the local
+//! time zone, M3-P1 B-DATE). The facts exporter is public here as [`export_facts`]
+//! (`facts_export.rs`, M3-P3 FACTS-EXPORT; V8-A13).
 
+mod collections;
 mod index;
 mod iter;
 mod jobs;
 mod local;
+mod realm;
 mod script;
 mod slots;
+mod time;
 
 use core::marker::PhantomData;
 
@@ -53,6 +61,7 @@ use crate::builtins::{self, IntrinsicId};
 use crate::conv::{self, Hint};
 use crate::descriptor::Desc;
 use crate::error;
+pub use crate::facts_export::export_facts;
 use crate::frame::{CONSTRUCT_BIT, NULL, UNDEFINED, int32_of, slot};
 use crate::interp;
 use crate::key;

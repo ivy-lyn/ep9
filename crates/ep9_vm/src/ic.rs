@@ -551,14 +551,16 @@ fn cacheable_key(k: u64) -> bool {
 
 /// True if objects of kind `k` may have the exotic own property `name` that their storage
 /// does not show (`exotic.rs`): an array's or a String wrapper's `length`, a constructor's
-/// lazy `prototype`. Array-index keys never get here.
+/// lazy `prototype`, any export of a module namespace (OBJECT_LAYOUT 3: its exports are not
+/// in its shape, `module.rs`). Array-index keys never get here, so an arguments object
+/// (whose exotic keys are mapped indices) needs no entry.
 fn exotic_name(rt: &Runtime, k: u8, name: u64) -> bool {
     if k == kind::ARRAY.get() || k == kind::PRIMITIVE_WRAPPER.get() {
         name == rt.atom(Atom::Length)
     } else if k == kind::FUNCTION.get() {
         name == rt.atom(Atom::Prototype)
     } else {
-        false
+        k == kind::MODULE_NAMESPACE.get()
     }
 }
 

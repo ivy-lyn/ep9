@@ -45,12 +45,18 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
             ("global", 9),
             ("promise", 10),
             ("reflect", 11),
+            ("date", 12),
+            ("collections", 13),
+            ("json", 14),
         ]
     );
     assert_eq!(ep9_builtins::object::BLOCK, 1);
     assert_eq!(ep9_builtins::global::BLOCK, 9);
     assert_eq!(ep9_builtins::promise::BLOCK, 10);
     assert_eq!(ep9_builtins::reflect::BLOCK, 11);
+    assert_eq!(ep9_builtins::date::BLOCK, 12);
+    assert_eq!(ep9_builtins::collections::BLOCK, 13);
+    assert_eq!(ep9_builtins::json::BLOCK, 14);
 }
 
 #[test]

@@ -159,6 +159,14 @@ pub(crate) struct Cx {
     /// (`native::RUNTIME_TABLE`).
     #[cfg(feature = "spike-native")]
     pub runtime_table: *const crate::native::RuntimeTable,
+    // ---- appended in M3-P0 (no field above moves; the list is frozen for month 3) ----
+    /// The current realm: a REALM cell (a copy of the `Root::Realm` root, like
+    /// `global_this`; OBJECT_LAYOUT 3). M3-P1 REALMS switches it on a cross-realm call.
+    pub realm: u64,
+    /// Spike B (feature `spike-native`): reserved for SP-UNIT (H35-Q9, the unit-data
+    /// register); 0 = none. Nothing reads it in M3-P0.
+    #[cfg(feature = "spike-native")]
+    pub unit_data: usize,
 }
 
 /// Bits of the interrupt word (`Cx::interrupt`). Bit 0 keeps its meaning; new bits are

@@ -267,6 +267,13 @@ impl SymbolState {
     }
 }
 
+/// The next identity hash of the isolate (30 bits, the symbol hash PRNG): for objects that
+/// need a stable hash without an address (H12-Q1; M3-P1 B-COLLECTIONS, Map and Set keys).
+#[allow(dead_code)] // first caller: M3-P1 B-COLLECTIONS
+pub(crate) fn next_identity_hash(rt: &Runtime) -> u32 {
+    rt.symbols.next_hash()
+}
+
 /// The PRNG seed of a new isolate: 60 bits of the per-process string hash key (random, or
 /// fixed by `EP9_HASH_SEED`), read through the keyed hash of two fixed texts. Never an
 /// address.

@@ -21,6 +21,11 @@
 //! Jobs and promises (P4-PROMISE): the microtask queue and the Promise records are in jobs.rs,
 //! the promise operations are `Cx` methods in `abi/jobs.rs`, the tests are in `tests/jobs.rs`.
 //!
+//! Month-3 modules (M3-P0 stubs until their owners fill them; OBJECT_LAYOUT 3): arguments.rs
+//! (arguments objects, M3-P2 VM-ARGS), module.rs (module records and namespaces, M3-P2
+//! MODULE), ordered_table.rs (Map and Set storage, M3-P1 B-COLLECTIONS), facts_export.rs (the
+//! facts exporter, M3-P3 FACTS-EXPORT).
+//!
 //! ADRs: H14 frames and dispatch (docs/adr/H14-frames-and-dispatch.md), H15 interpreter
 //! dispatch, H10 rooting, H06 values.
 #![cfg_attr(feature = "become", feature(explicit_tail_calls))]
@@ -28,6 +33,7 @@
 
 pub mod abi;
 mod accessor;
+mod arguments;
 mod atoms;
 mod bound;
 mod builtins;
@@ -38,6 +44,7 @@ mod descriptor;
 mod dispatch;
 mod error;
 mod exotic;
+mod facts_export;
 mod feedback;
 mod frame;
 mod function_info;
@@ -49,11 +56,13 @@ mod isolate;
 mod jobs;
 mod key;
 mod kinds;
+mod module;
 #[cfg(feature = "spike-native")]
 mod native;
 mod natives;
 mod numconv;
 mod object;
+mod ordered_table;
 mod property;
 mod props;
 mod realm;

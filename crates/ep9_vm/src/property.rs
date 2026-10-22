@@ -20,12 +20,20 @@
 //! | array | `length` {w}, array-index keys (elements, {w, e, c}) |
 //! | constructor function | `prototype` (created on first use, `exotic.rs`) |
 //! | primitive wrapper | `wrapper::string_own_property` (String wrappers: `length`, indices) |
+//! | arguments object, module namespace | routed hooks (`exotic.rs`): `arguments.rs`, `module.rs` |
 //! | string primitive | `length`, array-index keys; then `String.prototype` |
 //! | number / boolean primitive | `Number.prototype` / `Boolean.prototype` |
 //! | symbol primitive | `Symbol.prototype` (`symbol::prototype`) |
 //!
 //! The builtin ABI (H20 ObjectOps, abi/mod.rs) calls [`get_own_property`], [`own_property_keys`],
 //! [`define_own_property`] (ValidateAndApplyPropertyDescriptor) and [`get_index`] and its kin.
+//!
+//! The kinds with exotic internal methods (ARGUMENTS, MODULE_NAMESPACE; OBJECT_LAYOUT 3) are
+//! routed at the start of `[[Set]]`, `[[DefineOwnProperty]]`, `[[Delete]]` and
+//! `[[OwnPropertyKeys]]` (`exotic::set` and its kin: one kind test). A hook that answers
+//! `None` takes the ordinary method; a hook that needs the ordinary step calls
+//! [`ordinary_set_with_receiver`], [`ordinary_define_own_property`], [`ordinary_delete`] or
+//! [`ordinary_own_property_keys`].
 
 use crate::conv::{Res, describe, num, to_property_key, to_uint32_of};
 use crate::descriptor::Desc;
@@ -251,9 +259,33 @@ pub(crate) fn set_with_receiver(cx: &mut Cx, o: u64, key: u64, v: u64, receiver:
     set_walk(cx, o, key, v, receiver)
 }
 
-/// The body of [`set_with_receiver`], inlined into [`set`].
+/// OrdinarySet (§10.1.9.1) on the object `o`, past the `[[Set]]` hook of `o` (`exotic::set`):
+/// the ordinary step of a routed kind's `[[Set]]`. GC point.
+#[allow(dead_code)] // first caller: M3-P2 VM-ARGS (arguments.rs)
+pub(crate) fn ordinary_set_with_receiver(
+    cx: &mut Cx,
+    o: u64,
+    key: u64,
+    v: u64,
+    receiver: u64,
+) -> Res<bool> {
+    ordinary_set_walk(cx, o, key, v, receiver)
+}
+
+/// The body of [`set_with_receiver`], inlined into [`set`]: the `[[Set]]` hook of a routed
+/// kind (`exotic::set`), then OrdinarySet.
 #[inline(always)]
 fn set_walk(cx: &mut Cx, o: u64, key: u64, v: u64, receiver: u64) -> Res<bool> {
+    debug_assert!(is_object(o) && is_property_key(key));
+    if let Some(r) = exotic::set(cx, o, key, v, receiver) {
+        return r;
+    }
+    ordinary_set_walk(cx, o, key, v, receiver)
+}
+
+/// OrdinarySet (§10.1.9.1-2) on the object `o`.
+#[inline(always)]
+fn ordinary_set_walk(cx: &mut Cx, o: u64, key: u64, v: u64, receiver: u64) -> Res<bool> {
     debug_assert!(is_object(o) && is_property_key(key));
     let rt = cx.rt();
     let how = key::probe(key);
@@ -443,7 +475,8 @@ pub(crate) fn set_keyed(cx: &mut Cx, base: u64, k: u64, v: u64, strict: bool) ->
 /// CreateDataPropertyOrThrow (§7.3.7) on an object: literals, `DefineNamedOwnProperty`,
 /// `DefineKeyedOwnProperty`, `StaInArrayLiteral`, CopyDataProperties. The fast path takes a
 /// new key on an extensible object and an existing configurable data property; everything
-/// else goes through `[[DefineOwnProperty]]`, and a rejection throws a TypeError. GC point.
+/// else (a routed kind always) goes through `[[DefineOwnProperty]]`, and a rejection throws a
+/// TypeError. GC point.
 pub(crate) fn define(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<()> {
     debug_assert!(is_object(o) && is_property_key(key));
     let rt = cx.rt();
@@ -459,7 +492,8 @@ pub(crate) fn define(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<()> {
     }
     let exotic = exotic::own_attrs(rt, o, key, how);
     let stored = props::own_get_with(o, key, how);
-    if exotic.is_none() {
+    // A routed kind (ARGUMENTS, MODULE_NAMESPACE) takes its `[[DefineOwnProperty]]` hook.
+    if exotic.is_none() && !exotic::is_routed(kind::cell_kind(o)) {
         match stored {
             None if is_extensible(o) => {
                 props::own_add(rt, o, key, v, attr::DEFAULT);
@@ -515,29 +549,43 @@ pub(crate) fn delete(cx: &mut Cx, base: u64, k: u64, strict: bool) -> Res<bool> 
             !(is_string(base) && (array_index_of(key).is_some() || is_atom(cx, key, Atom::Length)))
         );
     }
-    let rt = cx.rt();
+    let deleted = match exotic::delete(cx, base, key) {
+        Some(r) => r?,
+        None => ordinary_delete(cx.rt(), base, key),
+    };
+    if deleted {
+        Ok(true)
+    } else {
+        deny(cx, key, strict)
+    }
+}
+
+/// OrdinaryDelete (§10.1.10.1) of the property key `key` on the object `o`, past the
+/// `[[Delete]]` hook of `o`: false for a non-configurable own property. GC point (a
+/// dictionary move).
+pub(crate) fn ordinary_delete(rt: &Runtime, o: u64, key: u64) -> bool {
     let how = key::probe(key);
-    if is_array(base)
+    if is_array(o)
         && let Some(i) = array_index_of(key)
-        && object::array_get(base, i).is_some()
+        && object::array_get(o, i).is_some()
     {
         // v0: a dense array keeps a hole.
-        object::array_set(rt, base, i, crate::frame::HOLE);
-        return Ok(true);
+        object::array_set(rt, o, i, crate::frame::HOLE);
+        return true;
     }
-    if let Some(a) = exotic::own_attrs(rt, base, key, how) {
+    if let Some(a) = exotic::own_attrs(rt, o, key, how) {
         // Array `length`, a constructor's lazy `prototype` and String wrapper properties are
         // not configurable; elements were handled above.
         debug_assert!(a & attr::CONFIGURABLE == 0);
-        return deny(cx, key, strict);
+        return false;
     }
-    match props::own_get_with(base, key, how) {
-        Some((_, a)) if a & attr::CONFIGURABLE == 0 => deny(cx, key, strict),
+    match props::own_get_with(o, key, how) {
+        Some((_, a)) if a & attr::CONFIGURABLE == 0 => false,
         Some(_) => {
-            object::own_delete(rt, base, key);
-            Ok(true)
+            object::own_delete(rt, o, key);
+            true
         }
-        None => Ok(true),
+        None => true,
     }
 }
 
@@ -868,8 +916,19 @@ pub(crate) fn same_value(a: u64, b: u64) -> bool {
 /// §10.1.6.3 ValidateAndApplyPropertyDescriptor; §10.4.2.1 for arrays). `Ok(false)` when the
 /// definition is rejected. An accessor gets a new ACCESSOR_PAIR on every change (pairs are
 /// immutable, `accessor.rs`). v0: a non-writable array `length`, and an array element that
-/// would not be a data property {w, e, c}, throw "not implemented". GC point.
+/// would not be a data property {w, e, c}, throw "not implemented". A routed kind's hook
+/// (`exotic::define_own_property`) runs first. GC point.
 pub(crate) fn define_own_property(cx: &mut Cx, o: u64, key: u64, desc: Desc) -> Res<bool> {
+    debug_assert!(is_object(o) && is_property_key(key));
+    if let Some(r) = exotic::define_own_property(cx, o, key, desc) {
+        return r;
+    }
+    ordinary_define_own_property(cx, o, key, desc)
+}
+
+/// [`define_own_property`] past the hook of `o`: OrdinaryDefineOwnProperty (with the array
+/// and String wrapper parts). GC point.
+pub(crate) fn ordinary_define_own_property(cx: &mut Cx, o: u64, key: u64, desc: Desc) -> Res<bool> {
     debug_assert!(is_object(o) && is_property_key(key));
     debug_assert!(
         !(desc.is_accessor() && desc.is_data()),
@@ -955,6 +1014,13 @@ pub(crate) fn define_own_property(cx: &mut Cx, o: u64, key: u64, desc: Desc) -> 
         // Validation passed on a non-writable, non-configurable property: nothing changes
         // (SameValue held for the value).
         OwnSlot::Exotic(Exotic::Wrapper) => {}
+        // A routed kind's own property: its `[[DefineOwnProperty]]` hook applies changes.
+        OwnSlot::Exotic(Exotic::Routed) => {
+            return Err(not_implemented(
+                cx,
+                "an ordinary define on a routed exotic property",
+            ));
+        }
     }
     Ok(true)
 }
@@ -1077,8 +1143,19 @@ fn array_define_length(cx: &mut Cx, a: u64, desc: Desc) -> Res<bool> {
 /// String wrappers) as a new array: array indices ascending, then strings in creation order,
 /// then symbols in creation order. The exotic properties come where the spec creates them:
 /// `length` of an array or String wrapper first among the strings; a constructor's lazy
-/// `prototype` after its `length` and `name`. GC point.
+/// `prototype` after its `length` and `name`. A routed kind's hook
+/// (`exotic::own_property_keys`) runs first. GC point.
 pub(crate) fn own_property_keys(cx: &mut Cx, o: u64) -> u64 {
+    debug_assert!(is_object(o));
+    if let Some(keys) = exotic::own_property_keys(cx, o) {
+        return keys;
+    }
+    ordinary_own_property_keys(cx, o)
+}
+
+/// [`own_property_keys`] past the hook of `o`: OrdinaryOwnPropertyKeys (with the array and
+/// String wrapper parts). GC point.
+pub(crate) fn ordinary_own_property_keys(cx: &mut Cx, o: u64) -> u64 {
     debug_assert!(is_object(o));
     let rt = cx.rt();
     // GC: `keys` is a Rust local (a root by the stack scan); the stored keys stay reachable

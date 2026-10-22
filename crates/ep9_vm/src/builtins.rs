@@ -169,11 +169,51 @@ pub enum IntrinsicId {
     // ---- M2-P5 (VM-SMALL): made by the VM table (natives.rs), a state slot ----
     /// `%Array.prototype%[@@unscopables]` (§23.1.3.41): a null-prototype object.
     ArrayUnscopables,
+    // ---- M3-P0 (P0-D3): declared for the month-3 builders, made by none yet (an id that
+    // nothing makes is undefined, `intrinsic`); state slots 13-31 ----
+    /// `%AsyncGeneratorFunction%` (§27.4.1; made by M3-P2 ASYNCGEN).
+    AsyncGeneratorFunction,
+    /// `%AsyncGeneratorFunction.prototype%` (§27.4.3; made by M3-P2 ASYNCGEN).
+    AsyncGeneratorFunctionPrototype,
+    /// `%AsyncGeneratorPrototype%` (§27.6.1; made by M3-P2 ASYNCGEN).
+    AsyncGeneratorPrototype,
+    /// `%AsyncIteratorPrototype%` (§27.1.3; made by M3-P2 ASYNCGEN).
+    AsyncIteratorPrototype,
+    /// `%AsyncFromSyncIteratorPrototype%` (§27.1.6.2; made by M3-P2 ASYNCGEN).
+    AsyncFromSyncIteratorPrototype,
+    /// `%Date%` (§21.4.2; made by M3-P1 B-DATE).
+    Date,
+    /// `%Date.prototype%` (§21.4.4; made by M3-P1 B-DATE).
+    DatePrototype,
+    /// `%Map%` (§24.1.1; made by M3-P1 B-COLLECTIONS).
+    Map,
+    /// `%Map.prototype%` (§24.1.3; made by M3-P1 B-COLLECTIONS).
+    MapPrototype,
+    /// `%Set%` (§24.2.2; made by M3-P1 B-COLLECTIONS).
+    Set,
+    /// `%Set.prototype%` (§24.2.4; made by M3-P1 B-COLLECTIONS).
+    SetPrototype,
+    /// `%WeakMap%` (§24.3.1; made by M3-P1 B-COLLECTIONS).
+    WeakMap,
+    /// `%WeakMap.prototype%` (§24.3.3; made by M3-P1 B-COLLECTIONS).
+    WeakMapPrototype,
+    /// `%WeakSet%` (§24.4.1; made by M3-P1 B-COLLECTIONS).
+    WeakSet,
+    /// `%WeakSet.prototype%` (§24.4.3; made by M3-P1 B-COLLECTIONS).
+    WeakSetPrototype,
+    /// `%MapIteratorPrototype%` (§24.1.5.2; made by M3-P1 B-COLLECTIONS).
+    MapIteratorPrototype,
+    /// `%SetIteratorPrototype%` (§24.2.6.2; made by M3-P1 B-COLLECTIONS).
+    SetIteratorPrototype,
+    /// `%JSON%` (§25.5; made by M3-P1 B-JSON).
+    Json,
+    /// `%ThrowTypeError%` (§10.2.4.1; made by M3-P2 VM-ARGS).
+    ThrowTypeError,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 45] = [
+    pub const ALL: [IntrinsicId; 64] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -219,6 +259,25 @@ impl IntrinsicId {
         IntrinsicId::AggregateErrorPrototype,
         IntrinsicId::Reflect,
         IntrinsicId::ArrayUnscopables,
+        IntrinsicId::AsyncGeneratorFunction,
+        IntrinsicId::AsyncGeneratorFunctionPrototype,
+        IntrinsicId::AsyncGeneratorPrototype,
+        IntrinsicId::AsyncIteratorPrototype,
+        IntrinsicId::AsyncFromSyncIteratorPrototype,
+        IntrinsicId::Date,
+        IntrinsicId::DatePrototype,
+        IntrinsicId::Map,
+        IntrinsicId::MapPrototype,
+        IntrinsicId::Set,
+        IntrinsicId::SetPrototype,
+        IntrinsicId::WeakMap,
+        IntrinsicId::WeakMapPrototype,
+        IntrinsicId::WeakSet,
+        IntrinsicId::WeakSetPrototype,
+        IntrinsicId::MapIteratorPrototype,
+        IntrinsicId::SetIteratorPrototype,
+        IntrinsicId::Json,
+        IntrinsicId::ThrowTypeError,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object.
@@ -269,6 +328,25 @@ impl IntrinsicId {
             IntrinsicId::AggregateErrorPrototype => "%AggregateError.prototype%",
             IntrinsicId::Reflect => "%Reflect%",
             IntrinsicId::ArrayUnscopables => "%Array.prototype%[@@unscopables]",
+            IntrinsicId::AsyncGeneratorFunction => "%AsyncGeneratorFunction%",
+            IntrinsicId::AsyncGeneratorFunctionPrototype => "%AsyncGeneratorFunction.prototype%",
+            IntrinsicId::AsyncGeneratorPrototype => "%AsyncGeneratorPrototype%",
+            IntrinsicId::AsyncIteratorPrototype => "%AsyncIteratorPrototype%",
+            IntrinsicId::AsyncFromSyncIteratorPrototype => "%AsyncFromSyncIteratorPrototype%",
+            IntrinsicId::Date => "%Date%",
+            IntrinsicId::DatePrototype => "%Date.prototype%",
+            IntrinsicId::Map => "%Map%",
+            IntrinsicId::MapPrototype => "%Map.prototype%",
+            IntrinsicId::Set => "%Set%",
+            IntrinsicId::SetPrototype => "%Set.prototype%",
+            IntrinsicId::WeakMap => "%WeakMap%",
+            IntrinsicId::WeakMapPrototype => "%WeakMap.prototype%",
+            IntrinsicId::WeakSet => "%WeakSet%",
+            IntrinsicId::WeakSetPrototype => "%WeakSet.prototype%",
+            IntrinsicId::MapIteratorPrototype => "%MapIteratorPrototype%",
+            IntrinsicId::SetIteratorPrototype => "%SetIteratorPrototype%",
+            IntrinsicId::Json => "%JSON%",
+            IntrinsicId::ThrowTypeError => "%ThrowTypeError%",
         }
     }
 
@@ -320,7 +398,26 @@ impl IntrinsicId {
             | IntrinsicId::AggregateError
             | IntrinsicId::AggregateErrorPrototype
             | IntrinsicId::Reflect
-            | IntrinsicId::ArrayUnscopables => return None,
+            | IntrinsicId::ArrayUnscopables
+            | IntrinsicId::AsyncGeneratorFunction
+            | IntrinsicId::AsyncGeneratorFunctionPrototype
+            | IntrinsicId::AsyncGeneratorPrototype
+            | IntrinsicId::AsyncIteratorPrototype
+            | IntrinsicId::AsyncFromSyncIteratorPrototype
+            | IntrinsicId::Date
+            | IntrinsicId::DatePrototype
+            | IntrinsicId::Map
+            | IntrinsicId::MapPrototype
+            | IntrinsicId::Set
+            | IntrinsicId::SetPrototype
+            | IntrinsicId::WeakMap
+            | IntrinsicId::WeakMapPrototype
+            | IntrinsicId::WeakSet
+            | IntrinsicId::WeakSetPrototype
+            | IntrinsicId::MapIteratorPrototype
+            | IntrinsicId::SetIteratorPrototype
+            | IntrinsicId::Json
+            | IntrinsicId::ThrowTypeError => return None,
         })
     }
 
@@ -341,6 +438,25 @@ impl IntrinsicId {
             IntrinsicId::AggregateErrorPrototype => Some(10),
             IntrinsicId::Reflect => Some(11),
             IntrinsicId::ArrayUnscopables => Some(12),
+            IntrinsicId::AsyncGeneratorFunction => Some(13),
+            IntrinsicId::AsyncGeneratorFunctionPrototype => Some(14),
+            IntrinsicId::AsyncGeneratorPrototype => Some(15),
+            IntrinsicId::AsyncIteratorPrototype => Some(16),
+            IntrinsicId::AsyncFromSyncIteratorPrototype => Some(17),
+            IntrinsicId::Date => Some(18),
+            IntrinsicId::DatePrototype => Some(19),
+            IntrinsicId::Map => Some(20),
+            IntrinsicId::MapPrototype => Some(21),
+            IntrinsicId::Set => Some(22),
+            IntrinsicId::SetPrototype => Some(23),
+            IntrinsicId::WeakMap => Some(24),
+            IntrinsicId::WeakMapPrototype => Some(25),
+            IntrinsicId::WeakSet => Some(26),
+            IntrinsicId::WeakSetPrototype => Some(27),
+            IntrinsicId::MapIteratorPrototype => Some(28),
+            IntrinsicId::SetIteratorPrototype => Some(29),
+            IntrinsicId::Json => Some(30),
+            IntrinsicId::ThrowTypeError => Some(31),
             _ => None,
         }
     }
@@ -981,7 +1097,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 13;
+const INTRINSIC_SLOTS: usize = 32;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.

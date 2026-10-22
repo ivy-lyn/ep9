@@ -92,9 +92,14 @@ pub(crate) enum Root {
     UriErrorConstructor,
     /// `%Math%`.
     Math,
+    // ---- M3-P0 (OBJECT_LAYOUT 3) ----
+    /// The current realm: a REALM cell (`object::realmf`), made first by `realm::init`. Every
+    /// new function stores it as its `[[Realm]]`; `Cx::realm` holds a copy. Its fields mirror
+    /// the roots above (global object, lexical record, the intrinsics).
+    Realm,
 }
 
-pub(crate) const ROOT_COUNT: usize = Root::Math as usize + 1;
+pub(crate) const ROOT_COUNT: usize = Root::Realm as usize + 1;
 
 /// Root slots: realm roots, then the `atoms!` list, then the 256 single-character atoms
 /// (undefined until first use, string.rs `single_char`).
@@ -450,8 +455,8 @@ mod tests {
         for a in Atom::ALL {
             assert!(seen.insert(a.text()), "duplicate atom {:?}", a.text());
         }
-        assert_eq!(ROOT_COUNT, 32);
-        assert_eq!(ROOT_SLOTS, 32 + Atom::ALL.len() + 256);
+        assert_eq!(ROOT_COUNT, 33);
+        assert_eq!(ROOT_SLOTS, 33 + Atom::ALL.len() + 256);
         assert_eq!(ErrorKind::UriError.name(), "URIError");
         assert_eq!(crate::frame::HEADER, 8);
     }
