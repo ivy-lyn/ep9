@@ -2,7 +2,8 @@
 //! the ep9 graph: dep-guards check 11). Owners: P1-NATIVE-ENTRY, then P2-SPIKE-B.
 //!
 //! ```text
-//! T0 call (slow/call.rs do_call) --FUNCTION, not host, not class ctor, Baseline / AotBaseline
+//! T0 call (slow/call.rs: native_entry for an unprefixed call, decode-free, M2-P3-D21-ENTRY;
+//!   do_call for a prefixed one) --FUNCTION, not host, not class ctor, Baseline / AotBaseline
 //!   slot, no construct, no spread--> enter_native: push_frame (return pc = next bytecode pc),
 //!   publish fp --> slot entry (cx, fp) through extern "C" (aarch64) / extern "sysv64" (x86-64)
 //!   --> acc bits, or 0 = exception pending --> T0 continues at the next pc, or unwinds
@@ -242,6 +243,13 @@ pub mod layout {
 
 // ---- the T0 entry --------------------------------------------------------------------------
 
+#[cfg(test)]
+std::thread_local! {
+    /// Tests only: how many calls this thread entered through the decode-free T0 entry
+    /// (`slow::call`, M2-P3-D21-ENTRY), so a test can tell it from the decode path.
+    pub(crate) static T0_ENTRY_HITS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
 /// The FunctionInfo of `callee` if a call (not a construct) enters it natively: a FUNCTION
 /// cell (not bound), not a host function, not a class constructor, not a generator function,
 /// with a Baseline or AotBaseline slot.
@@ -476,8 +484,9 @@ native_fns! {
 }
 
 /// The argument registers of a call instruction (frame slot offsets), without a heap copy.
+/// Also used by the decode-free T0 entry (`slow::call`, M2-P3-D21-ENTRY).
 #[derive(Clone, Copy)]
-enum ArgSlots {
+pub(crate) enum ArgSlots {
     /// A register list: `n` slots from `first` up.
     List { first: isize, n: u32 },
     /// Up to two single registers.
@@ -485,13 +494,13 @@ enum ArgSlots {
 }
 
 impl ArgSlots {
-    fn len(self) -> u32 {
+    pub(crate) fn len(self) -> u32 {
         match self {
             ArgSlots::List { n, .. } | ArgSlots::Few { n, .. } => n,
         }
     }
 
-    fn slot(self, i: u32) -> isize {
+    pub(crate) fn slot(self, i: u32) -> isize {
         match self {
             ArgSlots::List { first, .. } => first + i as isize,
             ArgSlots::Few { regs, .. } => regs[i as usize],

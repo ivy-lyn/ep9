@@ -10,7 +10,15 @@
 //!
 //! Spike B (feature `spike-native` only, `native.rs`): a call of a FUNCTION with a Baseline or
 //! AotBaseline slot (no construct, no spread, not host, not a class constructor) is entered
-//! natively before the argument copy (`call_native`). The default build has no such branch.
+//! natively. The default build has no such branch. Two places enter it:
+//!
+//! ```text
+//! slow::call --enter, interrupt poll--> native_entry: unprefixed CallAnyReceiver, CallProperty,
+//!   CallProperty0-2, CallUndefinedReceiver, CallUndefinedReceiver0-2 of a native-slotted
+//!   callee; operands read at their fixed places, no decode_call, no Vec (M2-P3-D21-ENTRY)
+//!   --anything else--> decode_call --> do_call --native-slotted callee, a prefixed call-->
+//!   call_native (CallSite, before the args Vec)
+//! ```
 
 use ep9_value::Throw;
 
@@ -40,6 +48,15 @@ pub(crate) fn call(cx: &mut Cx, fp: *mut u64, pc: *const u8, acc: u64) -> u64 {
     enter(cx, fp, pc);
     if cx.budget <= 0 && interrupt(cx, fp) == 0 {
         return error::unwind(cx, fp, pc);
+    }
+    #[cfg(feature = "spike-native")]
+    // SAFETY: `pc` is the call instruction (or its prefix) of verified code in the live top
+    // frame `fp`, which bytecode runs with no scratch area (call.rs).
+    if let Some(r) = unsafe { native_entry(cx, fp, pc) } {
+        return match r {
+            Ok(v) => v,
+            Err(Throw) => error::unwind(cx, fp, pc),
+        };
     }
     let site = call::decode_call(fp, pc);
     match do_call(cx, fp, &site, acc) {
@@ -235,13 +252,179 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
     Ok(UNDEFINED)
 }
 
+/// Spike B (feature `spike-native`, M2-P3-D21-ENTRY): the decode-free native entry at the top
+/// of `slow::call`, for the call that T0's `call_fast` sends cold because the callee's slot is
+/// not Interp (interp/ops.rs). It takes an unprefixed `CallAnyReceiver`, `CallProperty`,
+/// `CallProperty0`-`2`, `CallUndefinedReceiver` or `CallUndefinedReceiver0`-`2` whose callee
+/// is native-slotted (`native::native_callee`). It reads the operands at their fixed
+/// single-scale places (one byte each, checked at compile time below) and the arguments
+/// straight from the caller's registers: no `decode_call`, no `CallSite`, no `Vec`.
+///
+/// Everything else returns `None`, with no state changed, and takes `decode_call` and
+/// `do_call` as before: a `Wide`/`ExtraWide` call (`pc` is at the prefix byte), `CallWithSpread`,
+/// `Construct`, `ConstructWithSpread`, and any callee that is not native-slotted (T0, host,
+/// bound, class constructor, generator, not callable).
+///
+/// What it keeps from `do_call` -> `call_native`, which a prefixed call still takes:
+/// - receiver: the receiver register (`CallProperty*`; the first list register of
+///   `CallAnyReceiver`/`CallProperty`, undefined when the count is 0), else undefined;
+///   OrdinaryCallBindThis in `enter_native`;
+/// - arguments: the same registers in the same order, read once by `push_frame` into the
+///   callee frame. No GC point comes between the read and the frame push, the values stay in
+///   the caller's registers too, and native code runs with its frame published, so the GC
+///   scan sees them in both frames;
+/// - state: `slow::call` already published `fp` and the call's offset (`enter`) and ran the
+///   interrupt poll; `enter_native` counts one budget unit, and a full VM stack throws the
+///   RangeError. No feedback count and no native stack check (`native.rs` module doc);
+/// - result: the accumulator and the next pc (`out_fp`/`out_pc`), or `Err` and `slow::call`
+///   unwinds from this call instruction.
+///
+/// # Safety
+/// `pc` is the call instruction (or its prefix) of verified code in the live top frame `fp`,
+/// and no scratch Values lie above that frame.
+#[cfg(feature = "spike-native")]
+#[inline(always)]
+unsafe fn native_entry(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> Option<Res<u64>> {
+    use crate::interp::dsl::R;
+    use crate::native::ArgSlots;
+    use ep9_bytecode::{Opcode as O, OperandScale};
+
+    const CALL_ANY_RECEIVER: u8 = O::CallAnyReceiver as u8;
+    const CALL_PROPERTY: u8 = O::CallProperty as u8;
+    const CALL_PROPERTY0: u8 = O::CallProperty0 as u8;
+    const CALL_PROPERTY1: u8 = O::CallProperty1 as u8;
+    const CALL_PROPERTY2: u8 = O::CallProperty2 as u8;
+    const CALL_UNDEFINED: u8 = O::CallUndefinedReceiver as u8;
+    const CALL_UNDEFINED0: u8 = O::CallUndefinedReceiver0 as u8;
+    const CALL_UNDEFINED1: u8 = O::CallUndefinedReceiver1 as u8;
+    const CALL_UNDEFINED2: u8 = O::CallUndefinedReceiver2 as u8;
+    // The fixed places: at single scale, every operand of these opcodes is one byte, so
+    // operand `i` is at `pc + 1 + i` and the next instruction at `pc + 1 + count`.
+    const _: () = {
+        let ops = [
+            O::CallAnyReceiver,
+            O::CallProperty,
+            O::CallProperty0,
+            O::CallProperty1,
+            O::CallProperty2,
+            O::CallUndefinedReceiver,
+            O::CallUndefinedReceiver0,
+            O::CallUndefinedReceiver1,
+            O::CallUndefinedReceiver2,
+        ];
+        let mut i = 0;
+        while i < ops.len() {
+            let info = ops[i].info();
+            assert!(info.size(OperandScale::Single) == 1 + info.operands.len());
+            i += 1;
+        }
+    };
+    // The instruction length of `O::$o` at single scale.
+    macro_rules! len {
+        ($o:ident) => {
+            const { O::$o.info().size(OperandScale::Single) }
+        };
+    }
+    // `CallAnyReceiver` and `CallProperty` share one arm.
+    const _: () = assert!(len!(CallAnyReceiver) == len!(CallProperty));
+
+    // SAFETY: caller contract: `pc` is a byte of verified code.
+    let op = unsafe { *pc };
+    // SAFETY: called only for operand `i` of a call opcode matched below; the verifier
+    // checked that the whole instruction lies in the code.
+    let byte = |i: usize| unsafe { *pc.add(1 + i) };
+    let reg = |i: usize| R::from_operand(i32::from(byte(i) as i8)).0;
+    // SAFETY: called only for slots named by register operands of this verified instruction
+    // (and each list with its count), which lie in the live frame `fp`.
+    let rd = |s: isize| unsafe { *fp.offset(s) };
+    // Register lists hold locals only, so the first operand is the slot offset itself.
+    let first = || isize::from(byte(1) as i8);
+    let none = ArgSlots::Few { regs: [0, 0], n: 0 };
+    let (this, args, len) = match op {
+        CALL_ANY_RECEIVER | CALL_PROPERTY => match u32::from(byte(2)) {
+            0 => (UNDEFINED, none, len!(CallProperty)),
+            n => {
+                let args = ArgSlots::List {
+                    first: first() + 1,
+                    n: n - 1,
+                };
+                (rd(first()), args, len!(CallProperty))
+            }
+        },
+        CALL_PROPERTY0 => (rd(reg(1)), none, len!(CallProperty0)),
+        CALL_PROPERTY1 => {
+            let args = ArgSlots::Few {
+                regs: [reg(2), 0],
+                n: 1,
+            };
+            (rd(reg(1)), args, len!(CallProperty1))
+        }
+        CALL_PROPERTY2 => {
+            let args = ArgSlots::Few {
+                regs: [reg(2), reg(3)],
+                n: 2,
+            };
+            (rd(reg(1)), args, len!(CallProperty2))
+        }
+        CALL_UNDEFINED => {
+            let args = ArgSlots::List {
+                first: first(),
+                n: u32::from(byte(2)),
+            };
+            (UNDEFINED, args, len!(CallUndefinedReceiver))
+        }
+        CALL_UNDEFINED0 => (UNDEFINED, none, len!(CallUndefinedReceiver0)),
+        CALL_UNDEFINED1 => {
+            let args = ArgSlots::Few {
+                regs: [reg(1), 0],
+                n: 1,
+            };
+            (UNDEFINED, args, len!(CallUndefinedReceiver1))
+        }
+        CALL_UNDEFINED2 => {
+            let args = ArgSlots::Few {
+                regs: [reg(1), reg(2)],
+                n: 2,
+            };
+            (UNDEFINED, args, len!(CallUndefinedReceiver2))
+        }
+        _ => return None,
+    };
+    let callee = rd(reg(0));
+    let fi = crate::native::native_callee(callee)?;
+    #[cfg(test)]
+    crate::native::T0_ENTRY_HITS.with(|h| h.set(h.get() + 1));
+    let next = pc.wrapping_add(len);
+    // SAFETY: `frame_top(fp)` is the first free slot above the live top frame (no scratch
+    // area, caller contract), `rd` reads registers of this verified instruction, and
+    // `native_callee` checked the native slot (`install_native` contract).
+    let r = unsafe {
+        crate::native::enter_native(
+            cx,
+            frame_top(fp),
+            fp,
+            next,
+            callee,
+            fi,
+            this,
+            args.len(),
+            |i| rd(args.slot(i)),
+        )
+    };
+    // After the call: a nested dispatch under native code (`call_any`) sets them too.
+    cx.out_fp = fp;
+    cx.out_pc = next;
+    Some(r)
+}
+
 /// Spike B (feature `spike-native`): a call (no construct, no spread) of a FUNCTION whose slot
-/// holds native code (`native::native_callee`). The callee frame goes right above the
-/// caller's registers with the return pc of the next instruction, as on the T0 path, and the
-/// arguments are read straight from the caller's registers (no `Vec`). Native code runs to
-/// its return; then the dispatch continues at the next instruction with its result, or
-/// `slow::call` unwinds from this call instruction. No feedback count and no native stack
-/// check here (`native.rs` module doc).
+/// holds native code (`native::native_callee`), on the decode path: since M2-P3-D21-ENTRY
+/// only a `Wide`/`ExtraWide` call gets here (`native_entry` takes the others first). The
+/// callee frame goes right above the caller's registers with the return pc of the next
+/// instruction, as on the T0 path, and the arguments are read straight from the caller's
+/// registers (no `Vec`). Native code runs to its return; then the dispatch continues at the
+/// next instruction with its result, or `slow::call` unwinds from this call instruction. No
+/// feedback count and no native stack check here (`native.rs` module doc).
 #[cfg(feature = "spike-native")]
 fn call_native(cx: &mut Cx, fp: *mut u64, s: &CallSite, fi: &FunctionInfo) -> Res<u64> {
     let Ok(argc) = u32::try_from(s.args.len()) else {

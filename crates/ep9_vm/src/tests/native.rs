@@ -2,7 +2,10 @@
 //! P2-SPIKE-B): calls into hand-written native stubs, GC stress across a native frame, and an
 //! exception that crosses one. P2-SPIKE-B adds: a generator function gets no native code
 //! (`InstallError::Generator`, M2-P1-R1), and `call_from_rust` enters native code from Rust and
-//! restores the entry state on every exit (D20).
+//! restores the entry state on every exit (D20). The P3 integration fixer adds the tests of
+//! the decode-free T0 entry (`slow::call` `native_entry`, M2-P3-D21-ENTRY): every unprefixed
+//! call shape takes it, every other call falls through to the decode path, and exceptions and
+//! GC stress behave as on that path.
 //!
 //! The stubs are a few hand-encoded instructions per target (aarch64: AAPCS64 `extern "C"`;
 //! x86-64: `extern "sysv64"`), checked with `llvm-mc --disassemble`:
@@ -19,7 +22,7 @@
 
 use core::ops::Range;
 
-use ep9_bytecode::{FunctionId, HandlerKind, Opcode, RegisterList, VerifiedUnit};
+use ep9_bytecode::{FunctionId, HandlerKind, Opcode, Register, RegisterList, VerifiedUnit};
 use ep9_platform::jit::WxMode;
 use ep9_platform::{CodeRange, page_size};
 
@@ -134,7 +137,11 @@ fn a64_mov_imm(t: u32, v: u64) -> Vec<u32> {
 
 /// Native code for `return a<i>`.
 fn stub_param(i: u32) -> Vec<u8> {
-    let off = layout::fp_param(i);
+    stub_load(layout::fp_param(i))
+}
+
+/// Native code for `return [fp + off]` (a frame word: a parameter, the receiver, argc).
+fn stub_load(off: isize) -> Vec<u8> {
     #[cfg(target_arch = "aarch64")]
     {
         words(&[a64_ldur_fp(0, off), 0xD65F_03C0])
@@ -1252,5 +1259,453 @@ fn call_from_rust_deep_recursion_is_a_range_error_and_the_next_call_works() {
             "{}",
             d.name()
         );
+    }
+}
+
+// ---- the decode-free T0 entry (M2-P3-D21-ENTRY) -----------------------------------------------
+
+/// The extra natively run functions of the entry tests, in stub order. Their bytecode is
+/// `LdaUndefined; Return`; only the stubs run. `recv` and `srecv` (strict) return their
+/// receiver, `argc` its argument count, `p0`-`p2` (3 parameters) their parameter a0-a2.
+const ENTRY: [&str; 6] = ["recv", "srecv", "argc", "p0", "p1", "p2"];
+
+fn entry_defs() -> VerifiedUnit {
+    let mut fns = Vec::new();
+    for name in ENTRY {
+        let params = if name.starts_with('p') { 3 } else { 0 };
+        let mut m = meta(name, params, 0, 0, 0);
+        if name == "srecv" {
+            m.flags = ep9_bytecode::FunctionFlags::SIMPLE_PARAMETERS
+                | ep9_bytecode::FunctionFlags::STRICT;
+        }
+        let mut f = Asm::new(m);
+        f.b.lda_undefined().return_();
+        fns.push(f);
+    }
+    let mut s = Asm::script(0);
+    for (i, name) in ENTRY.iter().enumerate() {
+        let k = s.b.function_constant(FunctionId(i as u32 + 1));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global(name);
+    }
+    s.b.lda_undefined().return_();
+    let mut all = vec![s.finish()];
+    all.extend(fns.into_iter().map(Asm::finish));
+    unit("", all)
+}
+
+fn entry_stubs() -> Vec<Vec<u8>> {
+    vec![
+        stub_load(layout::FP_RECEIVER),
+        stub_load(layout::FP_RECEIVER),
+        stub_load(layout::FP_ARGC),
+        stub_param(0),
+        stub_param(1),
+        stub_param(2),
+    ]
+}
+
+/// The decode-free entry count of this thread (`native::T0_ENTRY_HITS`).
+fn entry_hits() -> u64 {
+    crate::native::T0_ENTRY_HITS.with(core::cell::Cell::get)
+}
+
+/// As [`run_native`], with the `ENTRY` functions defined and natively run too.
+fn run_entry<R: Send + 'static>(
+    config: IsolateConfig,
+    f: impl FnOnce(&mut Isolate) -> R + Send + 'static,
+) -> R {
+    on_big_stack(move || {
+        let mut all = {
+            let mut iso = isolate(IsolateConfig::default());
+            iso.run_script(defs(), "defs.js").unwrap();
+            stubs(|n, op| offset_in(&iso, n, op))
+        };
+        all.extend(entry_stubs());
+        with_stubs(&all, |code| {
+            let mut iso = native_isolate(config, code);
+            iso.run_script(entry_defs(), "entry-defs.js").unwrap();
+            for (name, range) in ENTRY.iter().zip(&code[NATIVE.len()..]) {
+                let f = iso.global(name).unwrap();
+                // SAFETY: `range` holds the stub for `name` (`entry_stubs`), which stays
+                // mapped until `with_stubs` returns, after the isolate drops.
+                unsafe { crate::install_native(&iso, f, DispatchKind::Baseline, range.clone()) }
+                    .unwrap();
+            }
+            let r = f(&mut iso);
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+            r
+        })
+    })
+}
+
+/// A call instruction of the entry tests. Property shapes take the receiver as their first
+/// value.
+#[derive(Clone, Copy, Debug)]
+enum Shape {
+    CallProperty0,
+    CallProperty1,
+    CallProperty2,
+    CallProperty,
+    CallAnyReceiver,
+    CallUndefinedReceiver0,
+    CallUndefinedReceiver1,
+    CallUndefinedReceiver2,
+    CallUndefinedReceiver,
+}
+
+/// Emits `acc = callee(..)` in the shape `shape`: the values go to the list `l` (first the
+/// receiver for a property shape), the callee to `f`.
+fn emit_call(s: &mut Asm, shape: Shape, callee: &str, vals: &[Lit], f: Register, l: RegisterList) {
+    for (k, v) in vals.iter().enumerate() {
+        match v {
+            Lit::Int(i) => {
+                s.b.lda_smi(*i);
+            }
+            Lit::Str(t) => {
+                s.lda_str(t);
+            }
+            Lit::Global(g) => {
+                s.lda_global(g);
+            }
+        }
+        s.b.star(l.get(k as u32));
+    }
+    s.lda_global(callee);
+    s.b.star(f);
+    let n = vals.len() as u32;
+    let list = RegisterList::new(l.get(0).local_index().unwrap(), n);
+    let slot = s.call;
+    match shape {
+        Shape::CallProperty0 => s.b.call_property0(f, l.get(0), slot),
+        Shape::CallProperty1 => s.b.call_property1(f, l.get(0), l.get(1), slot),
+        Shape::CallProperty2 => s.b.call_property2(f, l.get(0), l.get(1), l.get(2), slot),
+        Shape::CallProperty => s.b.call_property(f, list, n, slot),
+        Shape::CallAnyReceiver => s.b.call_any_receiver(f, list, n, slot),
+        Shape::CallUndefinedReceiver0 => s.b.call_undefined_receiver0(f, slot),
+        Shape::CallUndefinedReceiver1 => s.b.call_undefined_receiver1(f, l.get(0), slot),
+        Shape::CallUndefinedReceiver2 => s.b.call_undefined_receiver2(f, l.get(0), l.get(1), slot),
+        Shape::CallUndefinedReceiver => s.b.call_undefined_receiver(f, list, n, slot),
+    };
+}
+
+/// `try { <body> } catch (e) { print(e.message if `message`, else e) }`; the body's
+/// accumulator is printed when it does not throw.
+fn guarded(s: &mut Asm, message: bool, body: impl FnOnce(&mut Asm)) {
+    let ctx = s.b.new_register();
+    let e = s.b.new_register();
+    let (start, end, handler, done) = (
+        s.b.new_label(),
+        s.b.new_label(),
+        s.b.new_label(),
+        s.b.new_label(),
+    );
+    s.b.lda_current_context().star(ctx);
+    s.b.add_handler(start, end, handler, ctx, HandlerKind::Caught);
+    s.b.bind(start);
+    body(s);
+    s.b.bind(end);
+    s.print_acc();
+    s.b.jump(done);
+    s.b.bind(handler);
+    if message {
+        s.b.star(e);
+        s.get_named(e, "message");
+    }
+    s.print_acc();
+    s.b.bind(done);
+}
+
+#[test]
+fn the_decode_free_entry_takes_every_unprefixed_call_shape() {
+    use Lit::{Global, Int, Str};
+    use Shape::*;
+    // (shape, callee, values (receiver first for a property shape), printed result)
+    let rows: Vec<(Shape, &str, Vec<Lit>, &str)> = vec![
+        (CallProperty0, "recv", vec![Str("R")], "R"),
+        (CallProperty0, "argc", vec![Str("R")], "0"),
+        (CallProperty1, "p0", vec![Str("R"), Str("x")], "x"),
+        (CallProperty1, "argc", vec![Str("R"), Int(7)], "1"),
+        (CallProperty1, "p1", vec![Str("R"), Str("x")], "undefined"),
+        (CallProperty1, "recv", vec![Str("R"), Str("x")], "R"),
+        (CallProperty2, "p1", vec![Str("R"), Str("x"), Str("y")], "y"),
+        (CallProperty2, "recv", vec![Str("R"), Int(1), Int(2)], "R"),
+        (
+            CallProperty,
+            "p2",
+            vec![Str("R"), Str("x"), Str("y"), Str("z")],
+            "z",
+        ),
+        (
+            CallProperty,
+            "argc",
+            vec![Str("R"), Int(1), Int(2), Int(3)],
+            "3",
+        ),
+        (CallProperty, "recv", vec![Str("R")], "R"),
+        (CallAnyReceiver, "recv", vec![Str("R"), Int(1)], "R"),
+        (CallAnyReceiver, "p0", vec![Str("R"), Str("a")], "a"),
+        // Count 0: no receiver, so undefined; the strict callee keeps it.
+        (CallAnyReceiver, "srecv", vec![], "undefined"),
+        (CallUndefinedReceiver0, "argc", vec![], "0"),
+        (CallUndefinedReceiver0, "srecv", vec![], "undefined"),
+        // A sloppy callee gets the global object for an undefined receiver.
+        (CallUndefinedReceiver0, "recv", vec![], "[object Object]"),
+        (CallUndefinedReceiver1, "p0", vec![Str("x")], "x"),
+        (CallUndefinedReceiver1, "p2", vec![Str("x")], "undefined"),
+        (CallUndefinedReceiver2, "p1", vec![Str("x"), Str("y")], "y"),
+        (CallUndefinedReceiver2, "argc", vec![Int(1), Int(2)], "2"),
+        (
+            CallUndefinedReceiver,
+            "p2",
+            vec![Str("x"), Str("y"), Str("z")],
+            "z",
+        ),
+        (
+            CallUndefinedReceiver,
+            "argc",
+            vec![Int(1), Int(2), Int(3), Int(4)],
+            "4",
+        ),
+        (CallUndefinedReceiver, "argc", vec![], "0"),
+        // Native code that calls back: g -> call_any -> T0 bump (allocates).
+        (
+            CallProperty2,
+            "g",
+            vec![Str("R"), Global("bump"), Str("a")],
+            "a!",
+        ),
+        (
+            CallAnyReceiver,
+            "g",
+            vec![Str("R"), Global("bump"), Str("b")],
+            "b!",
+        ),
+        (
+            CallUndefinedReceiver,
+            "g",
+            vec![Global("bump"), Str("c")],
+            "c!",
+        ),
+    ];
+    let make = {
+        let rows = rows.clone();
+        move || {
+            let mut s = Asm::script(0);
+            let f = s.b.new_register();
+            let l = s.b.new_register_list(4);
+            for (shape, callee, vals, _) in &rows {
+                emit_call(&mut s, *shape, callee, vals, f, l);
+                s.print_acc();
+            }
+            s.lda_str("done");
+            s.b.return_();
+            unit("", vec![s.finish()])
+        }
+    };
+    let want: Vec<String> = rows.iter().map(|r| r.3.to_string()).collect();
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let make = make.clone();
+            let (r, out, hits) = run_entry(config(d, stress), move |iso| {
+                take_output();
+                let before = entry_hits();
+                let r = iso.run_script(make(), "entry.js").map(|v| iso.display(v));
+                (r, take_output(), entry_hits() - before)
+            });
+            let label = format!("{} stress={stress}", d.name());
+            assert_eq!(r.as_deref(), Ok("done"), "{label}");
+            assert_eq!(out, want, "{label}");
+            // One entry per row; `print` (host) and `bump` (T0, called from native code
+            // through call_any) do not take it.
+            assert_eq!(hits, rows.len() as u64, "{label}");
+        }
+    }
+}
+
+#[test]
+fn every_other_call_falls_through_to_the_decode_path() {
+    /// `this` is the target, a0 the bound `this`, the rest the bound arguments.
+    fn bind<'s>(
+        cx: &mut Cx<'s>,
+        this: Local<'s>,
+        args: Args<'s>,
+        _nt: Local<'s>,
+    ) -> JsResult<Local<'s>> {
+        let target = this.as_function().unwrap();
+        cx.new_bound_function(target, args.get(0), args.rest(1))
+            .map(|f| f.value())
+    }
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let f = s.b.new_register();
+        let l = s.b.new_register_list(3);
+        // Locals past r127 need a Wide prefix.
+        let big = s.b.new_register_list(140);
+        let (wf, wa) = (big.get(139), big.get(138));
+        // 1. A Wide CallUndefinedReceiver1 of native p0: the decode path's call_native.
+        guarded(&mut s, true, |s| {
+            s.lda_str("w");
+            s.b.star(wa);
+            s.lda_global("p0");
+            s.b.star(wf);
+            s.b.call_undefined_receiver1(wf, wa, s.call);
+        });
+        // 2. CallWithSpread of native p0 (receiver undefined, spread []): no native entry
+        //    with a spread.
+        guarded(&mut s, true, |s| {
+            s.b.lda_undefined().star(l.get(0));
+            s.b.create_empty_array_literal(s.lit).star(l.get(1));
+            s.lda_global("p0");
+            s.b.star(f);
+            let two = RegisterList::new(l.get(0).local_index().unwrap(), 2);
+            s.b.call_with_spread(f, two, 2, s.call);
+        });
+        // 3. Construct of native id: construct stays in T0.
+        guarded(&mut s, true, |s| {
+            s.b.lda_smi(1).star(l.get(0));
+            let one = RegisterList::new(l.get(0).local_index().unwrap(), 1);
+            s.construct_global("id", one);
+        });
+        // 4. A bound native function: the callee is BOUND, not a FUNCTION.
+        guarded(&mut s, true, |s| {
+            s.lda_global("p0");
+            s.b.star(l.get(0));
+            s.b.lda_undefined().star(l.get(1));
+            s.lda_global("bind");
+            s.b.star(f);
+            s.b.call_property1(f, l.get(0), l.get(1), s.call);
+            s.b.star(f);
+            s.lda_str("x");
+            s.b.star(l.get(2));
+            s.b.call_undefined_receiver1(f, l.get(2), s.call);
+        });
+        // 5. A T0 callee (bump), a host callee (print, in every print), a value that is not
+        //    callable.
+        guarded(&mut s, true, |s| {
+            emit_call(
+                s,
+                Shape::CallUndefinedReceiver1,
+                "bump",
+                &[Lit::Str("t0")],
+                f,
+                l,
+            );
+        });
+        guarded(&mut s, true, |s| {
+            s.b.lda_smi(1).star(f);
+            s.b.call_undefined_receiver0(f, s.call);
+        });
+        s.lda_str("done");
+        s.b.return_();
+        unit("", vec![s.finish()])
+    }
+    // The Wide call is really prefixed.
+    let u = make();
+    let wide = ep9_bytecode::Instructions::new(&u.function(FunctionId(0)).bytecode)
+        .map(|i| i.unwrap())
+        .filter(|i| i.opcode == Opcode::CallUndefinedReceiver1)
+        .map(|i| i.scale)
+        .collect::<Vec<_>>();
+    assert!(wide.contains(&ep9_bytecode::OperandScale::Wide), "{wide:?}");
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let (r, out, hits) = run_entry(config(d, stress), |iso| {
+                iso.register_host_function("bind", 1, bind);
+                take_output();
+                let before = entry_hits();
+                let r = iso.run_script(make(), "falls.js").map(|v| iso.display(v));
+                (r, take_output(), entry_hits() - before)
+            });
+            let label = format!("{} stress={stress}", d.name());
+            assert_eq!(r.as_deref(), Ok("done"), "{label}");
+            let ni = "not implemented in ep9 v0: calling code of this dispatch kind";
+            assert_eq!(
+                out,
+                ["w", ni, ni, ni, "t0!", "1 is not a function"],
+                "{label}"
+            );
+            assert_eq!(hits, 0, "{label}");
+        }
+    }
+}
+
+#[test]
+fn exceptions_from_the_entry_unwind_from_the_call() {
+    use Lit::{Global, Str};
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let f = s.b.new_register();
+        let l = s.b.new_register_list(4);
+        // Native nthrow (throw a0) and native g -> T0 t (throw new Error(a0)), caught, in
+        // three shapes; then the frame goes on with its registers intact.
+        guarded(&mut s, false, |s| {
+            emit_call(
+                s,
+                Shape::CallProperty1,
+                "nthrow",
+                &[Str("R"), Str("e1")],
+                f,
+                l,
+            );
+        });
+        guarded(&mut s, false, |s| {
+            emit_call(
+                s,
+                Shape::CallUndefinedReceiver,
+                "nthrow",
+                &[Str("e2")],
+                f,
+                l,
+            );
+        });
+        guarded(&mut s, true, |s| {
+            let v = [Str("R"), Global("t"), Str("e3")];
+            emit_call(s, Shape::CallAnyReceiver, "g", &v, f, l);
+        });
+        guarded(&mut s, true, |s| {
+            emit_call(s, Shape::CallProperty0, "overflow", &[Str("R")], f, l);
+        });
+        s.b.ldar(l.get(0));
+        s.print_acc();
+        // Uncaught, from a property call.
+        emit_call(
+            &mut s,
+            Shape::CallProperty2,
+            "g",
+            &[Str("R"), Global("t"), Str("late")],
+            f,
+            l,
+        );
+        s.lda_str("not reached");
+        s.b.return_();
+        unit("", vec![s.finish()])
+    }
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let (r, out, hits) = run_entry(config(d, stress), |iso| {
+                take_output();
+                let before = entry_hits();
+                let r = iso.run_script(make(), "exc.js").map(|v| iso.display(v));
+                (r, take_output(), entry_hits() - before)
+            });
+            let label = format!("{} stress={stress}", d.name());
+            assert_eq!(
+                out,
+                ["e1", "e2", "e3", "Maximum call stack size exceeded", "R"],
+                "{label}"
+            );
+            let e = r.unwrap_err();
+            assert_eq!(e.message, "Error: late", "{label}");
+            // t's frame, then g's native frame at its call of f, then the script.
+            let stack = e.stack.unwrap();
+            assert!(
+                stack.starts_with("Error: late\n    at t (defs.js:2:")
+                    && stack.contains("\n    at g (defs.js:1:"),
+                "{label}: {stack}"
+            );
+            assert_eq!(hits, 5, "{label}");
+        }
     }
 }
