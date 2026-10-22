@@ -1,7 +1,9 @@
-//! Object builtins (§20.1): `Object.prototype.hasOwnProperty` and `propertyIsEnumerable`,
-//! `Object.defineProperty`, `getOwnPropertyDescriptor`, `getOwnPropertyNames` and `keys`, and
-//! the top of test262's `harness/propertyHelper.js` that needs them. Every JS check runs with
-//! and without GC stress (`common::run_both`).
+//! Object builtins (§20.1, Annex B §B.2.2): `Object.prototype.hasOwnProperty`,
+//! `propertyIsEnumerable` and `isPrototypeOf`, the `Object` statics of the `object` module, the
+//! Annex B `__proto__` and `__define/lookup{Getter,Setter}__`, and the top of test262's
+//! `harness/propertyHelper.js` that needs them. Every JS check runs with and without GC
+//! stress (`common::run_both`). Expected outputs come from node v24.22.1, except where a
+//! test says V8 differs from the spec.
 
 mod common;
 
@@ -94,7 +96,10 @@ fn the_functions_are_installed() {
         lines(&[
             "hasOwnProperty 1 propertyIsEnumerable 1",
             "3 2 1 1",
-            "length,name,prototype,getOwnPropertyDescriptor,getOwnPropertyNames,defineProperty,keys",
+            "length,name,prototype,getOwnPropertyDescriptor,getOwnPropertyNames,defineProperty,keys,\
+             assign,create,defineProperties,entries,freeze,getOwnPropertyDescriptors,\
+             getOwnPropertySymbols,getPrototypeOf,hasOwn,is,isExtensible,isFrozen,isSealed,\
+             preventExtensions,seal,setPrototypeOf,values",
             "0 false",
         ])
     );
@@ -370,5 +375,394 @@ fn symbol_keys_are_skipped_or_found() {
             ]),
             "stress {stress}"
         );
+    }
+}
+
+// ---- P4-B-OBJECT: the rest of the Object statics, isPrototypeOf and Annex B ----------------
+
+fn is_type_error(r: &Result<Vec<String>, String>) -> bool {
+    matches!(r, Err(m) if m.starts_with("TypeError: "))
+}
+
+#[test]
+fn the_new_functions_have_their_names_and_lengths() {
+    assert_eq!(
+        run_both(
+            "var out = [];
+             var names = ['create', 'defineProperties', 'getPrototypeOf', 'setPrototypeOf', 'freeze',
+              'isFrozen', 'seal', 'isSealed', 'preventExtensions', 'isExtensible', 'entries',
+              'values', 'assign', 'is', 'hasOwn', 'getOwnPropertySymbols',
+              'getOwnPropertyDescriptors'];
+             for (var i = 0; i < names.length; i++) {
+               var f = Object[names[i]];
+               out.push(f.name + ':' + f.length + ':' + Object.prototype.propertyIsEnumerable.call(Object, names[i]));
+             }
+             print(out.join(' '));
+             out = [];
+             var p = Object.prototype;
+             names = ['isPrototypeOf', '__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__'];
+             for (var i = 0; i < names.length; i++) out.push(p[names[i]].name + ':' + p[names[i]].length);
+             print(out.join(' '));
+             var d = Object.getOwnPropertyDescriptor(p, '__proto__');
+             print(d.get.name, d.get.length, d.set.name, d.set.length, d.enumerable, d.configurable);"
+        ),
+        lines(&[
+            "create:2:false defineProperties:2:false getPrototypeOf:1:false setPrototypeOf:2:false \
+             freeze:1:false isFrozen:1:false seal:1:false isSealed:1:false \
+             preventExtensions:1:false isExtensible:1:false entries:1:false values:1:false \
+             assign:2:false is:2:false hasOwn:2:false getOwnPropertySymbols:1:false \
+             getOwnPropertyDescriptors:1:false",
+            "isPrototypeOf:1 __defineGetter__:2 __defineSetter__:2 __lookupGetter__:1 \
+             __lookupSetter__:1",
+            "get __proto__ 0 set __proto__ 1 false true",
+        ])
+    );
+}
+
+#[test]
+fn create_and_define_properties() {
+    assert_eq!(
+        run_both(
+            "var p = {a: 1};
+             var o = Object.create(p, {x: {value: 2, enumerable: true}, y: {get: function () { return 3; }}});
+             print(Object.getPrototypeOf(o) === p, o.x, o.y, o.a, Object.keys(o).join());
+             var n = Object.create(null);
+             print(Object.getPrototypeOf(n), n instanceof Object, Object.create(p, undefined).a);
+             var q = Object.defineProperties({}, {a: {value: 1, writable: true, enumerable: true, configurable: true}, b: {value: 2}});
+             var d = Object.getOwnPropertyDescriptor(q, 'b');
+             print(Object.keys(q).join(), q.b, d.writable, d.enumerable, d.configurable);
+             var hidden = Object.defineProperty({}, 'h', {value: {value: 1}, enumerable: false});
+             print(Object.getOwnPropertyNames(Object.defineProperties({}, hidden)).length);
+             var s = Symbol('k'); var sp = {}; sp[s] = {value: 5, enumerable: true};
+             var r = Object.defineProperties({}, sp); print(r[s]);"
+        ),
+        lines(&[
+            "true 2 3 1 x",
+            "null false 1",
+            "a 2 false false false",
+            "0",
+            "5",
+        ])
+    );
+    for src in [
+        "Object.create(1)",
+        "Object.create(undefined)",
+        "Object.create({}, null)",
+        "Object.defineProperties(1, {})",
+        "Object.defineProperties({}, {a: 1})",
+        "Object.defineProperties({}, undefined)",
+    ] {
+        let r = run_both(src);
+        assert!(is_type_error(&r), "{src}: {r:?}");
+    }
+}
+
+/// ObjectDefineProperties reads every descriptor (running user getters in key order) before it
+/// defines the first property (§20.1.2.3.1 steps 4-5): a throw while reading leaves the target
+/// unchanged. The descriptors live in a `ScratchList` across those calls (GC stress).
+#[test]
+fn define_properties_reads_every_descriptor_before_the_first_define() {
+    assert_eq!(
+        run_both(
+            "var order = [];
+             var props = {
+               get a() { order.push('get a'); return {value: 1}; },
+               get b() { order.push('get b'); return {get value() { order.push('b.value'); throw new RangeError('b'); }}; },
+             };
+             var t = {};
+             try { Object.defineProperties(t, props); } catch (e) { print(e.name, order.join(), Object.getOwnPropertyNames(t).length); }
+             var m = Object.defineProperties({}, {
+               v: {value: 'v', writable: true},
+               g: {get: function () { return 'g'; }, set: function (x) { this.v = x; }, enumerable: true},
+             });
+             m.g = 'set';
+             var dg = Object.getOwnPropertyDescriptor(m, 'g');
+             print(m.v, m.g, typeof dg.get, typeof dg.set, dg.enumerable, dg.configurable);"
+        ),
+        lines(&["RangeError get a,get b,b.value 0", "set g function function true false"])
+    );
+}
+
+#[test]
+fn get_and_set_prototype_of() {
+    assert_eq!(
+        run_both(
+            "var p = {}; var o = {};
+             print(Object.getPrototypeOf(o) === Object.prototype, Object.getPrototypeOf(1) === Number.prototype);
+             print(Object.setPrototypeOf(o, p) === o, Object.getPrototypeOf(o) === p);
+             print(Object.setPrototypeOf(1, null), Object.setPrototypeOf(o, null) === o, Object.getPrototypeOf(o));
+             print(Object.setPrototypeOf(Object.prototype, null) === Object.prototype);"
+        ),
+        lines(&["true true", "true true", "1 true null", "true"])
+    );
+    for src in [
+        "Object.getPrototypeOf(undefined)",
+        "Object.setPrototypeOf(undefined, null)",
+        "Object.setPrototypeOf({}, 1)",
+        "Object.setPrototypeOf(Object.preventExtensions({}), {})",
+        "var a = {}; var b = Object.create(a); Object.setPrototypeOf(a, b)",
+        "Object.setPrototypeOf(Object.prototype, {})",
+    ] {
+        let r = run_both(src);
+        assert!(is_type_error(&r), "{src}: {r:?}");
+    }
+}
+
+/// SetIntegrityLevel and TestIntegrityLevel on ordinary objects, functions and wrappers.
+#[test]
+fn freeze_seal_and_prevent_extensions() {
+    assert_eq!(
+        run_both(
+            "var s = Object.seal({k: 1});
+             print(Object.isSealed(s), Object.isFrozen(s), Object.isExtensible(s));
+             s.k = 2; s.z = 3; print(s.k, s.z, delete s.k, s.k);
+             var f = Object.freeze({k: 1, get g() { return 5; }});
+             print(Object.isSealed(f), Object.isFrozen(f), Object.isExtensible(f), f.g);
+             f.k = 9; print(f.k, Object.getOwnPropertyDescriptor(f, 'g').configurable);
+             print(Object.isFrozen({}), Object.isFrozen(Object.preventExtensions({})), Object.isSealed(Object.preventExtensions({a: 1})));
+             var fn = function a(x) {}; Object.freeze(fn); print(Object.isFrozen(fn));
+             var w = new String('ab'); Object.freeze(w); print(Object.isFrozen(w));
+             print(Object.freeze(1), Object.seal('s'), Object.preventExtensions(true));
+             print(Object.isExtensible(1), Object.isSealed(1), Object.isFrozen(1));
+             var e = Object.preventExtensions({a: 1}); e.b = 2; print(Object.isExtensible(e), e.b, e.a);"
+        ),
+        lines(&[
+            "true false false",
+            "2 undefined false 2",
+            "true true false 5",
+            "1 false",
+            "false true false",
+            "true",
+            "true",
+            "1 s true",
+            "false true true",
+            "false undefined 1",
+        ])
+    );
+    let r = run_both("'use strict'; var f = Object.freeze({k: 1}); f.k = 2;");
+    assert!(is_type_error(&r), "{r:?}");
+}
+
+/// A sealed empty array keeps a writable `length`, so TestIntegrityLevel(frozen) is false
+/// (§7.3.16 step 5.b.ii). V8 (node v24.22.1) prints true here; ep9 follows the spec.
+/// Freezing an array needs non-writable elements and `length` (dictionary elements, H18):
+/// v0 throws the not-implemented error.
+#[test]
+fn arrays_seal_and_the_v0_freeze_limit() {
+    assert_eq!(
+        run_both(
+            "var a = Object.seal([]); print(Object.isSealed(a), Object.isFrozen(a));
+             try { Object.freeze([1]); } catch (e) { print(e.message); }
+             try { Object.freeze([]); } catch (e) { print(e.message); }"
+        ),
+        lines(&[
+            "true false",
+            "not implemented in ep9 v0: array elements that are not writable, enumerable and configurable",
+            "not implemented in ep9 v0: a non-writable array length",
+        ])
+    );
+}
+
+/// M2-P2-CLSCG-NONEXT-FALSEPASS / M2-PRIVATE-EXT: freeze, seal and preventExtensions walk
+/// `[[OwnPropertyKeys]]`, which never lists a private name (§6.2.12), so private fields,
+/// methods and accessors stay usable, and the Object.* key lists never show them. A private
+/// add on a non-extensible object is a TypeError (the stage-3 proposal
+/// `nonextensible-applies-to-private`, test262 features.txt); node v24.22.1 does not throw
+/// there yet, every other line matches node.
+#[test]
+fn integrity_levels_leave_private_names_alone() {
+    assert_eq!(
+        run_both(
+            "class C {
+               #x = 1;
+               #m() { return 'm'; }
+               get #a() { return this.#x * 10; }
+               set #a(v) { this.#x = v; }
+               pub = 2;
+               bump() { this.#x++; return this.#x; }
+               seta(v) { this.#a = v; return this.#a; }
+               m() { return this.#m(); }
+             }
+             var c = new C();
+             Object.freeze(c);
+             print(Object.isFrozen(c), c.bump(), c.seta(4), c.m());
+             c.pub = 9; print(c.pub);
+             print(Object.getOwnPropertyNames(c).join(), Object.getOwnPropertySymbols(c).length,
+                   Object.keys(Object.getOwnPropertyDescriptors(c)).join());
+             var d = new C(); Object.seal(d); print(Object.isSealed(d), d.bump());
+             var e = new C(); Object.preventExtensions(e); print(Object.isExtensible(e), e.bump());
+             class Over { constructor(o) { return o; } }
+             class Add extends Over { #y = 1; static y(o) { return o.#y; } }
+             try { new Add(Object.preventExtensions({})); } catch (err) { print(err.name); }
+             var target = {}; new Add(target); Object.freeze(target); print(Add.y(target), Object.isFrozen(target));"
+        ),
+        lines(&[
+            "true 2 40 m",
+            "2",
+            "pub 0 pub",
+            "true 2",
+            "false 2",
+            "TypeError",
+            "1 true",
+        ])
+    );
+}
+
+#[test]
+fn entries_values_assign_is_and_has_own() {
+    assert_eq!(
+        run_both(
+            "var q = {a: 1, b: 2}; Object.defineProperty(q, 'h', {value: 3});
+             print(Object.entries(q).join('|'), Object.values(q).join());
+             print(Object.entries('ab').join('|'), Object.values([7, 8]).join(), Object.entries(1).length);
+             var big = {}; for (var i = 0; i < 100; i++) big['k' + i] = i;
+             var e = Object.entries(big); print(e.length, e[99].join(':'), Object.values(big)[50]);
+             print(Object.entries({get x() { delete this.y; return 1; }, y: 2}).length);
+             var log = [];
+             var src = {get a() { log.push('a'); return 1; }, b: 2};
+             var tgt = {set a(v) { log.push('set ' + v); }};
+             print(Object.assign(tgt, src, null, undefined) === tgt, log.join(), tgt.b);
+             print(Object.keys(Object.assign({}, 'xy')).join(), typeof Object.assign(1, {}));
+             print(Object.is(NaN, NaN), Object.is(0, -0), Object.is('a', 'a'), Object.is({}, {}));
+             print(Object.hasOwn({x: 1}, 'x'), Object.hasOwn({x: 1}, 'toString'), Object.hasOwn('ab', 1));"
+        ),
+        lines(&[
+            "a,1|b,2 1,2",
+            "0,a|1,b 7,8 0",
+            "100 k99:99 50",
+            "1",
+            "true a,set 1 2",
+            "0,1 object",
+            "true false true false",
+            "true false true",
+        ])
+    );
+    for src in [
+        "Object.entries(undefined)",
+        "Object.values(null)",
+        "Object.assign(null)",
+        "Object.assign(Object.freeze({x: 1}), {x: 2})",
+        "Object.hasOwn(undefined, 'x')",
+    ] {
+        let r = run_both(src);
+        assert!(is_type_error(&r), "{src}: {r:?}");
+    }
+}
+
+#[test]
+fn own_property_symbols_and_descriptors() {
+    assert_eq!(
+        run_both(
+            "var s1 = Symbol('s1'), s2 = Symbol('s2');
+             var o = {n: 1}; o[s2] = 2; o[s1] = 3;
+             var syms = Object.getOwnPropertySymbols(o);
+             print(syms.length, String(syms[0]), String(syms[1]), Object.getOwnPropertySymbols('ab').length);
+             var ds = Object.getOwnPropertyDescriptors({a: 1, get b() { return 1; }});
+             print(Object.keys(ds).join(), ds.a.value, ds.a.writable, typeof ds.b.get, ds.b.set, ds.b.enumerable);
+             var dd = Object.getOwnPropertyDescriptors(o); print(dd[s1].value, dd[s2].value);
+             print(Object.keys(Object.getOwnPropertyDescriptors([5])).join());"
+        ),
+        lines(&[
+            "2 Symbol(s2) Symbol(s1) 0",
+            "a,b 1 true function undefined true",
+            "3 2",
+            "0,length",
+        ])
+    );
+    for src in [
+        "Object.getOwnPropertySymbols(undefined)",
+        "Object.getOwnPropertyDescriptors(null)",
+    ] {
+        let r = run_both(src);
+        assert!(is_type_error(&r), "{src}: {r:?}");
+    }
+}
+
+#[test]
+fn is_prototype_of() {
+    assert_eq!(
+        run_both(
+            "var proto = {}; var child = Object.create(proto); var grand = Object.create(child);
+             print(proto.isPrototypeOf(child), proto.isPrototypeOf(grand), Object.prototype.isPrototypeOf(grand));
+             print(child.isPrototypeOf(proto), proto.isPrototypeOf(proto), Object.prototype.isPrototypeOf(Object.create(null)));
+             print(Object.prototype.isPrototypeOf.call(undefined, 1), Function.prototype.isPrototypeOf(Object));"
+        ),
+        lines(&["true true true", "false false false", "false true"])
+    );
+    let r = run_both("Object.prototype.isPrototypeOf.call(undefined, {})");
+    assert!(is_type_error(&r), "{r:?}");
+}
+
+/// Annex B §B.2.2: `__proto__` and `__define/lookup{Getter,Setter}__`.
+#[test]
+fn annex_b_proto_and_legacy_accessor_methods() {
+    assert_eq!(
+        run_both(
+            "var p = {}; var o = Object.create(p);
+             print(({}).__proto__ === Object.prototype, o.__proto__ === p, (1).__proto__ === Number.prototype);
+             o.__proto__ = null; print(Object.getPrototypeOf(o), o.__proto__);
+             var n = {}; n.__proto__ = 5; print(Object.getPrototypeOf(n) === Object.prototype);
+             var set = Object.getOwnPropertyDescriptor(Object.prototype, '__proto__').set;
+             print(set.call(1, {}), set.call({}, 1));
+             var o2 = {};
+             o2.__defineGetter__('g', function () { return 'G'; });
+             o2.__defineSetter__('g', function (v) { this.v = v; });
+             o2.g = 7;
+             var d = Object.getOwnPropertyDescriptor(o2, 'g');
+             print(o2.g, o2.v, d.enumerable, d.configurable);
+             print(o2.__lookupGetter__('g')(), typeof o2.__lookupSetter__('g'), o2.__lookupGetter__('v'));
+             print(Object.create(o2).__lookupGetter__('g') === d.get, ({}).__lookupGetter__('__proto__').name);
+             print(({}).__lookupSetter__('nope'), ({x: 1}).__lookupGetter__('x'));"
+        ),
+        lines(&[
+            "true true true",
+            "null undefined",
+            "true",
+            "undefined undefined",
+            "G 7 true true",
+            "G function undefined",
+            "true get __proto__",
+            "undefined undefined",
+        ])
+    );
+    for src in [
+        "Object.getOwnPropertyDescriptor(Object.prototype, '__proto__').get.call(undefined)",
+        "Object.getOwnPropertyDescriptor(Object.prototype, '__proto__').set.call(null, {})",
+        "var a = {}; var b = Object.create(a); a.__proto__ = b",
+        "Object.preventExtensions({}).__proto__ = {}",
+        "({}).__defineGetter__('x', 1)",
+        "({}).__defineSetter__('x', {})",
+        "Object.prototype.__lookupGetter__.call(null, 'x')",
+        "Object.defineProperty({}, 'x', {value: 1}).__defineGetter__('x', function () {})",
+    ] {
+        let r = run_both(src);
+        assert!(is_type_error(&r), "{src}: {r:?}");
+    }
+}
+
+/// Object.prototype.toLocaleString (§20.1.3.5) is Invoke(this, "toString"): a primitive
+/// `this` stays a primitive in strict code.
+#[test]
+fn to_locale_string_invokes_to_string() {
+    assert_eq!(
+        run_both(
+            "var p = Object.prototype.toLocaleString;
+             print(p.name, p.length, ({}).toLocaleString(), p.call(1), typeof p.call(true));
+             var o = {toString: function () { return 'mine'; }}; print(o.toLocaleString());
+             Boolean.prototype.toString = function () { 'use strict'; return typeof this; };
+             print(p.call(false));"
+        ),
+        lines(&[
+            "toLocaleString 0 [object Object] 1 string",
+            "mine",
+            "boolean"
+        ])
+    );
+    for src in [
+        "Object.prototype.toLocaleString.call(undefined)",
+        "Object.prototype.toLocaleString.call({toString: 1})",
+    ] {
+        let r = run_both(src);
+        assert!(is_type_error(&r), "{src}: {r:?}");
     }
 }
