@@ -232,7 +232,12 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
     // GC point: the callee, the receiver and the arguments are in caller registers (for a
     // bound callee: its target, bound `this` and bound arguments are reachable from it).
     feedback::count_call(rt, cx.feedback_threshold, fi);
-    let this = call::bind_this(fi, this, rt.global());
+    // GC point (the wrap of a primitive receiver of a sloppy callee, H14-Q2): as above; the
+    // wrapper stays in a Rust local until the frame push stores it.
+    let this = match call::try_bind_this(fi, this, rt.global()) {
+        Some(t) => t,
+        None => call::wrap_this(cx, this)?,
+    };
     // SAFETY: `frame_top(fp)` is the first free slot above the live top frame.
     let nfp = unsafe {
         call::push_frame(
@@ -476,11 +481,12 @@ fn call_native(cx: &mut Cx, fp: *mut u64, s: &CallSite, fi: &FunctionInfo) -> Re
 /// Spike B placement (b) (feature `spike-native`, P4-PLACEMENT-B task 4): the cold arm of a
 /// call of a (b) callee (`native::b_callee`), the call that T0's `call_fast` did not take: the
 /// budget poll, a prefixed (`Wide`/`ExtraWide`) call, a spread call, a bound callee, a full VM
-/// stack. It pushes the canonical frame (return pc = the caller's next instruction), takes one
-/// budget unit and sets `cx.out_fp`/`cx.out_pc` so that the dispatch continues at the
-/// `OP_ENTER_B` stub byte: the (b) code under a threaded expansion, the bytecode under the
-/// match loop (D4). No Rust recursion, no native call, no feedback count (the (b) code records
-/// none). A full VM stack is the VM stack's RangeError, unwound from the call instruction.
+/// stack, a primitive receiver of a sloppy callee (wrapped here, H14-Q2). It pushes the
+/// canonical frame (return pc = the caller's next instruction), takes one budget unit and
+/// sets `cx.out_fp`/`cx.out_pc` so that the dispatch continues at the `OP_ENTER_B` stub byte:
+/// the (b) code under a threaded expansion, the bytecode under the match loop (D4). No Rust
+/// recursion, no native call, no feedback count (the (b) code records none). A full VM stack
+/// is the VM stack's RangeError, unwound from the call instruction.
 /// `[[Construct]]` of a (b) function does not get here: it throws "not implemented", as for
 /// placement (a).
 #[cfg(feature = "spike-native")]
@@ -497,7 +503,13 @@ fn enter_b_cold(
 ) -> Res<u64> {
     #[cfg(test)]
     crate::native::B_COLD_ENTRIES.with(|h| h.set(h.get() + 1));
-    let this = call::bind_this(fi, this, cx.rt().global());
+    // GC point (the wrap of a primitive receiver of a sloppy callee, H14-Q2): the callee and
+    // the arguments are in caller registers; the wrapper stays in a Rust local until the
+    // frame push stores it.
+    let this = match call::try_bind_this(fi, this, cx.rt().global()) {
+        Some(t) => t,
+        None => call::wrap_this(cx, this)?,
+    };
     // SAFETY: `frame_top(fp)` is the first free slot above the live top frame (bytecode runs
     // with no scratch area), and `arg` reads Values the caller keeps rooted.
     let nfp = unsafe {

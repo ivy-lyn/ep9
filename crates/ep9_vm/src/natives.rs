@@ -6,14 +6,15 @@
 //! | Function | Spec |
 //! |---|---|
 //! | `%Function.prototype%` (callable, returns undefined), `Function` (CreateDynamicFunction through the compiler hook, `abi/script.rs`) | §20.2.3, §20.2.1.1 |
-//! | `Object`, `Array` | §20.1.1.1, §23.1.1.1 |
+//! | `Object`, `Array` (with NewTarget: GetPrototypeFromConstructor) | §20.1.1.1, §23.1.1.1 |
 //! | `Error` and the native errors | §20.5.1.1, §20.5.6.1.1 |
-//! | `Object.prototype.toString`, `valueOf` | §20.1.3.6, §20.1.3.7 |
+//! | `Object.prototype.toString`, `valueOf` (ToObject) | §20.1.3.6, §20.1.3.7 |
 //! | `Error.prototype.toString` | §20.5.3.4 |
-//! | `Array.prototype.join`, `toString`, `push` (generic: any object, through `[[Set]]`) | §23.1.3.18, §23.1.3.36, §23.1.3.23 |
+//! | `Array.prototype.join`, `toString` (ToObject, then `join` or %Object.prototype.toString%), `push` (generic: any object, through `[[Set]]`) | §23.1.3.18, §23.1.3.36, §23.1.3.23 |
 //! | `Array.prototype.values` = `Array.prototype[@@iterator]`, `keys`, `entries`, %ArrayIteratorPrototype%.next | §23.1.3.38, §23.1.3.40, §23.1.3.19, §23.1.3.5, §23.1.5.2.1 |
 //! | `String.prototype[@@iterator]`, %StringIteratorPrototype%.next | §22.1.3.36, §22.1.5.2.1 |
-//! | `%Iterator.prototype%[@@iterator]` | §27.1.2.1 |
+//! | `%Iterator.prototype%[@@iterator]`; `%Iterator.prototype%[@@toStringTag]` (an accessor: get "Iterator", set SetterThatIgnoresPrototypeProperties, ES2025) | §27.1.2.1, §27.1.4.14 |
+//! | `Function.prototype[@@hasInstance]` (OrdinaryHasInstance; `instanceof` runs it without a call, `property::instance_of`) | §20.2.3.6 |
 //! | `%GeneratorFunction%`, `%GeneratorPrototype%` `next`/`return`/`throw`, `%AsyncFunction%` (`generator.rs`; `%GeneratorFunction%` compiles through the compiler hook like `Function`, `abi/script.rs`; `%AsyncFunction%` is a not-implemented stub until month 3) | §27.3.1.1, §27.5.1.2-4, §27.7.1.1 |
 //! | `%eval%`, the global `eval` (indirect eval; direct eval is `interp/slow/eval.rs`), through the compiler hook (`abi/script.rs`) | §19.2.1 |
 //!
@@ -102,6 +103,13 @@ pub(crate) mod vm {
     pub const ARRAY_KEYS: u16 = 28;
     /// `Array.prototype.entries`.
     pub const ARRAY_ENTRIES: u16 = 29;
+    // ---- M2-P5 (VM-SMALL) ----
+    /// `Function.prototype[@@hasInstance]` (`property::instance_of` runs it without a call).
+    pub const FUNCTION_HAS_INSTANCE: u16 = 30;
+    /// The getter of `%Iterator.prototype%[@@toStringTag]`.
+    pub const ITERATOR_TO_STRING_TAG_GET: u16 = 31;
+    /// The setter of `%Iterator.prototype%[@@toStringTag]`.
+    pub const ITERATOR_TO_STRING_TAG_SET: u16 = 32;
 }
 
 /// The VM's block.
@@ -138,6 +146,9 @@ const VM_DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("eval", 1, eval),
     BuiltinDef::method("keys", 0, array_keys),
     BuiltinDef::method("entries", 0, array_entries),
+    BuiltinDef::method("[Symbol.hasInstance]", 1, function_has_instance),
+    BuiltinDef::getter("[Symbol.toStringTag]", iterator_to_string_tag_get),
+    BuiltinDef::setter("[Symbol.toStringTag]", iterator_to_string_tag_set),
 ];
 
 const VM_INTRINSICS: &[IntrinsicDef] = &[
@@ -237,6 +248,7 @@ const NEXT: PropKey = PropKey::Atom(Atom::Next);
 const VALUES: PropKey = PropKey::Str("values");
 const ITERATOR: PropKey = PropKey::Symbol(WellKnownSymbol::ITERATOR);
 const TO_STRING_TAG: PropKey = PropKey::Symbol(WellKnownSymbol::TO_STRING_TAG);
+const HAS_INSTANCE: PropKey = PropKey::Symbol(WellKnownSymbol::HAS_INSTANCE);
 
 /// `@@toStringTag` = `tag` ({c}, §18): the tag of `Object.prototype.toString` (step 15).
 const fn to_string_tag(tag: &'static str) -> PropDef {
@@ -318,7 +330,15 @@ const VM_PROPS: &[ObjectProps] = &[
     },
     ObjectProps {
         target: IntrinsicId::FunctionPrototype,
-        props: &[PropDef::method(CONSTRUCTOR, vm::FUNCTION)],
+        props: &[
+            PropDef::method(CONSTRUCTOR, vm::FUNCTION),
+            // §20.2.3.6: {w: false, e: false, c: false}.
+            PropDef {
+                key: HAS_INSTANCE,
+                value: PropValue::Builtin(vm::FUNCTION_HAS_INSTANCE),
+                attrs: PropAttrs::NONE,
+            },
+        ],
     },
     ObjectProps {
         target: IntrinsicId::Function,
@@ -344,7 +364,15 @@ const VM_PROPS: &[ObjectProps] = &[
     },
     ObjectProps {
         target: IntrinsicId::IteratorPrototype,
-        props: &[PropDef::method(ITERATOR, vm::ITERATOR_ITERATOR)],
+        props: &[
+            PropDef::method(ITERATOR, vm::ITERATOR_ITERATOR),
+            // §27.1.4.14 (ES2025): an accessor {e: false, c: true}, not a data property.
+            PropDef::accessor(
+                TO_STRING_TAG,
+                Some(vm::ITERATOR_TO_STRING_TAG_GET),
+                Some(vm::ITERATOR_TO_STRING_TAG_SET),
+            ),
+        ],
     },
     ObjectProps {
         target: IntrinsicId::ArrayIteratorPrototype,
@@ -564,14 +592,37 @@ pub(crate) fn object_constructor<'s>(
     Ok(cx.to_object(v)?.value())
 }
 
-/// Array(...items) and Array(length) (§23.1.1.1).
+/// Array(...items) and Array(length) (§23.1.1.1). A NewTarget other than `Array` itself (a
+/// subclass `super(...)`, `Reflect.construct`) gives the prototype through
+/// GetPrototypeFromConstructor(NewTarget, %Array.prototype%) (step 2), before the length
+/// check; `Array` itself or no NewTarget keeps %Array.prototype% (its `prototype` is not
+/// writable or configurable).
 pub(crate) fn array_constructor<'s>(
     cx: &mut HostCx<'s>,
     _this: Local<'s>,
     args: Args<'s>,
-    _nt: Local<'s>,
+    nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
+    // 2. Let proto be ? GetPrototypeFromConstructor(newTarget, "%Array.prototype%"). GC point
+    //    (a getter may run): `proto` then lives in a Rust local.
+    let proto = match nt.as_object() {
+        Some(nt) if !nt.is_same_bits(&args.callee()) => Some(
+            cx.get_prototype_from_constructor(nt, IntrinsicId::ArrayPrototype)?
+                .bits(),
+        ),
+        _ => None,
+    };
     let rt = cx.inner().rt();
+    // ArrayCreate(len, proto) (§10.4.2.2) step 3: the [[Prototype]] of a new array. Not a
+    // cycle: the array is new. GC point: `a` and `proto` live in Rust locals.
+    let with_proto = |a: u64| {
+        if let Some(p) = proto
+            && p != rt.root(Root::ArrayPrototype)
+        {
+            object::set_proto(rt, a, p);
+        }
+        a
+    };
     if args.len() == 1
         && let Some(n) = args.get(0).as_number()
     {
@@ -579,13 +630,13 @@ pub(crate) fn array_constructor<'s>(
         if f64::from(len) != n {
             return Err(cx.throw_error(ErrorKind::RangeError, "Invalid array length"));
         }
-        let a = object::new_array(rt, 0);
+        let a = with_proto(object::new_array(rt, 0));
         if !object::array_set_length(rt, a, len) {
             return Err(cx.throw_error(ErrorKind::RangeError, "Invalid array length"));
         }
         return Ok(local(a));
     }
-    let a = object::new_array(rt, args.len());
+    let a = with_proto(object::new_array(rt, args.len()));
     for (i, v) in args.iter().enumerate() {
         object::array_set(rt, a, i as u32, v.bits());
     }
@@ -720,6 +771,79 @@ pub(crate) fn iterator_iterator<'s>(
     _: Local<'s>,
 ) -> JsResult<Local<'s>> {
     Ok(this)
+}
+
+/// The getter of `%Iterator.prototype%[@@toStringTag]` (§27.1.4.14.1, ES2025): "Iterator".
+pub(crate) fn iterator_to_string_tag_get<'s>(
+    cx: &mut HostCx<'s>,
+    _this: Local<'s>,
+    _: Args<'s>,
+    _: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Ok(cx.new_string("Iterator")?.value())
+}
+
+/// The setter of `%Iterator.prototype%[@@toStringTag]` (§27.1.4.14.2, ES2025):
+/// SetterThatIgnoresPrototypeProperties(this value, %Iterator.prototype%, @@toStringTag, v)
+/// (§27.1.3.2.4), then undefined.
+pub(crate) fn iterator_to_string_tag_set<'s>(
+    cx: &mut HostCx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let cx = cx.inner();
+    let (o, v) = (this.bits(), args.get(0).bits());
+    // 1. If this is not an Object, throw a TypeError exception.
+    if !is_object(o) {
+        return Err(error::throw_error(
+            cx,
+            ErrorKind::TypeError,
+            "set Iterator.prototype[Symbol.toStringTag] called on non-object",
+        ));
+    }
+    let rt = cx.rt();
+    let key = symbol::well_known(rt, symbol::WellKnownSymbol::ToStringTag);
+    // 2. If SameValue(this, home) is true, throw a TypeError exception (the strict-mode
+    //    write to a non-writable data property on home).
+    if o == builtins::intrinsic(rt, IntrinsicId::IteratorPrototype) {
+        return Err(error::throw_error(
+            cx,
+            ErrorKind::TypeError,
+            "Cannot assign to read only property 'Symbol(Symbol.toStringTag)' of object",
+        ));
+    }
+    // 3. Let desc be ? this.[[GetOwnProperty]](p). GC point below: `o`, `key` and `v` live in
+    //    Rust locals.
+    if property::get_own_property(cx, o, key).is_none() {
+        // 4. If desc is undefined: ? CreateDataPropertyOrThrow(this, p, v).
+        let desc = crate::descriptor::Desc::data(v, attr::DEFAULT);
+        if !property::define_own_property(cx, o, key, desc)? {
+            return Err(error::throw_error(
+                cx,
+                ErrorKind::TypeError,
+                "Cannot define property Symbol(Symbol.toStringTag), object is not extensible",
+            ));
+        }
+    } else {
+        // 5. Else: ? Set(this, p, v, true).
+        property::set(cx, o, key, v, true)?;
+    }
+    Ok(Local::undefined())
+}
+
+/// `Function.prototype[@@hasInstance](V)` (§20.2.3.6): OrdinaryHasInstance(this value, V).
+/// `instanceof` does not call it: `property::instance_of` runs the same steps when it finds
+/// this function.
+pub(crate) fn function_has_instance<'s>(
+    cx: &mut HostCx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let (f, v) = (this.bits(), args.get(0).bits());
+    let r = property::ordinary_has_instance(cx.inner(), f, v)?;
+    Ok(local(if r { TRUE } else { FALSE }))
 }
 
 /// The TypeError of a `next` whose receiver is not an iterator of its kind
@@ -990,40 +1114,32 @@ pub(crate) fn object_to_string<'s>(
     Ok(local(string::new_string_utf16(rt, &units)))
 }
 
-/// Object.prototype.valueOf (§20.1.3.7, v0: primitives are not wrapped).
+/// Object.prototype.valueOf (§20.1.3.7): ? ToObject(this value), so a primitive gets its
+/// wrapper object.
 pub(crate) fn object_value_of<'s>(
     cx: &mut HostCx<'s>,
     this: Local<'s>,
     _: Args<'s>,
     _: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    if this.is_undefined_or_null() {
-        return Err(cx.throw_error(
-            ErrorKind::TypeError,
-            "Cannot convert undefined or null to object",
-        ));
-    }
-    Ok(this)
+    Ok(cx.to_object(this)?.value())
 }
 
-/// Array.prototype.join (§23.1.3.18).
+/// Array.prototype.join (§23.1.3.18): step 1 is ? ToObject(this value).
 pub(crate) fn array_join<'s>(
     cx: &mut HostCx<'s>,
     this: Local<'s>,
     args: Args<'s>,
     _: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    join(cx.inner(), this.bits(), args.get(0).bits()).map(local)
+    // GC point (a wrapper): `o` then lives in a Rust local, the separator in the arguments.
+    let o = cx.to_object(this)?.bits();
+    join(cx.inner(), o, args.get(0).bits()).map(local)
 }
 
+/// Array.prototype.join steps 2-8 on the object `o` (step 1 made it).
 fn join(cx: &mut Cx, o: u64, sep: u64) -> JsResult<u64> {
-    if !is_object(o) {
-        return Err(error::throw_error(
-            cx,
-            ErrorKind::TypeError,
-            "Array.prototype.join called on a non-object",
-        ));
-    }
+    debug_assert!(is_object(o));
     let rt = cx.rt();
     let len = property::get(cx, o, rt.atom(Atom::Length))?;
     let len = conv::to_number(cx, len)?;
@@ -1056,17 +1172,31 @@ fn concat_or_throw(cx: &mut Cx, a: u64, b: u64) -> JsResult<u64> {
         .ok_or_else(|| error::throw_error(cx, ErrorKind::RangeError, "Invalid string length"))
 }
 
-/// Array.prototype.toString (§23.1.3.36): `join`, or Object.prototype.toString.
+/// Array.prototype.toString (§23.1.3.36): ? ToObject(this value), then Call(? Get(array,
+/// "join"), array) if that is callable, else %Object.prototype.toString% on the array. The
+/// intrinsic `join` runs without a call.
 pub(crate) fn array_to_string<'s>(
     cx: &mut HostCx<'s>,
     this: Local<'s>,
     a: Args<'s>,
     nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    if is_array(this.bits()) {
-        return join(cx.inner(), this.bits(), UNDEFINED).map(local);
+    // 1. Let array be ? ToObject(this value). GC point: `array` then lives in a Rust local.
+    let array = cx.to_object(this)?.bits();
+    let cx_in = cx.inner();
+    // 2. Let func be ? Get(array, "join").
+    let key = crate::atoms::intern_str(cx_in.rt(), "join");
+    let func = property::get(cx_in, array, key)?;
+    // 3. If IsCallable(func) is false, set func to %Object.prototype.toString%.
+    if !is_callable(func) {
+        return object_to_string(cx, local(array), a, nt);
     }
-    object_to_string(cx, this, a, nt)
+    // 4. Return ? Call(func, array).
+    let id = builtins::BuiltinId::new(VM_BLOCK, vm::ARRAY_JOIN);
+    if builtins::existing_function(cx_in.rt(), id) == Some(func) {
+        return join(cx_in, array, UNDEFINED).map(local);
+    }
+    crate::call::call_function(cx_in, func, array, &[]).map(local)
 }
 
 /// Array.prototype.push ( ...items ) (§23.1.3.23). An Array takes the fast loop below (or
