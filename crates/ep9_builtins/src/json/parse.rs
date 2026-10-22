@@ -126,6 +126,26 @@ fn revive_property<'s>(
     Ok(())
 }
 
+/// CreateDataPropertyOrThrow(A, ! ToString(𝔽(i)), v) for the next index `i` of the new
+/// array `a` (extensible, ordinary, no element at `i` or above). When no object on its
+/// prototype chain has the index (HasProperty, which runs no JS and makes no atom), Set
+/// finds nothing on the chain and adds the same own data property that CreateDataProperty
+/// adds, so `Cx::set_index` stores the element without a key: a parse of a long array makes
+/// no atom per index. Else the key path.
+fn append_element<'s>(
+    cx: &mut Cx<'s>,
+    a: Local<'s, JsObject>,
+    i: u64,
+    v: Local<'s>,
+) -> JsResult<()> {
+    if !cx.has_index(a, i)? {
+        cx.set_index(a, i, v, true)?;
+        return Ok(());
+    }
+    let k = index_key(cx, i);
+    cx.create_data_property_or_throw(a, k, v)
+}
+
 /// The JSON text and the read position.
 struct Parser<'t> {
     text: &'t [u16],
@@ -272,10 +292,9 @@ impl Parser<'_> {
                 if key.is_undefined() {
                     // An array element: CreateDataPropertyOrThrow(A, ! ToString(𝔽(i)), v)
                     // (ArrayLiteral evaluation), so no Array.prototype setter runs.
-                    let i = open.next[d - 1];
-                    let k = index_key(cx, u64::from(i));
-                    cx.create_data_property_or_throw(container, k, value)?;
-                    open.next[d - 1] = i + 1;
+                    let i = u64::from(open.next[d - 1]);
+                    append_element(cx, container, i, value)?;
+                    open.next[d - 1] += 1;
                     self.skip_ws();
                     match self.peek() {
                         Some(0x2C) => {
