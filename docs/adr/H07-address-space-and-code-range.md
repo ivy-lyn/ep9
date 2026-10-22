@@ -77,7 +77,7 @@ One cage per isolate below 2^47 (64 GiB default, configurable); avoids 0x4001_00
 
 - **SP-VA** ([09 §4](../plan/09-milestones.md#4-spikes), M0 wk2, GC lead + JIT/platform lead): cage below 2^47 on 4 targets, plus the code range. On fail it reopens H7.
   - **Result: PASS** on macOS arm64, Linux x64, Linux arm64 and Windows x64: `crates/ep9_platform/tests/sp_va.rs` (8 tests; 9 on Linux) in build-test, CI run 39518270586 on the week-4 base tree.
-- SP-JIT-mem (wk3) put code in a cage's code range (`Cage::reserve_jit`, removed in month 2 P1); since month 2 P1 it puts code in a chunk of the process code range. Spike B and SP-Unit (month 2) put code in the process code range.
+- SP-JIT-mem (wk3) put code in a cage's code range (`Cage::reserve_jit`, removed in month 2 P1); since month 2 P1 it puts code in a chunk of the process code range. Spike B (month 2) puts code in the process code range. SP-Unit (M3-P1, moved by M2-D21-FAIL) will put unit text there.
 - Month 2 P1 unit tests (`crates/ep9_platform/src/jit/tests.rs`): two threads get the same range; two cages without a code range, on two threads, each run code in their own chunk at the same time; code in a chunk is callable, the system unwinder walks through it and a panic unwinds through it; the range is below 2^47 and outside the tsrs range.
 
 ## Open questions
@@ -111,6 +111,7 @@ One cage per isolate below 2^47 (64 GiB default, configurable); avoids 0x4001_00
 | 2026-10-22 | clarify | Kind cell of the 2026-10-21 P1-CODE-RANGE row set to rewrite (README §3.3 has four kinds and no combined one, and a row with a rewrite part is a rewrite; the cell is edited in place, M2-P2-RF-A2-EDIT). It changed a Decision bullet and a Rules row, as its text says | P3-ACCEPT-2 |
 | 2026-10-22 | clarify | Rules row "The process code range is 128 MiB": the per-cage range is "off by default, a plain reservation that holds no code" (was "month 2 P1 only"); a non-zero `code_range_size` still exists after P1, and `CageConfig::validate` still limits it to the direct-branch reach. No check changes | P3-ACCEPT-2 |
 | 2026-10-22 | clarify | Review record: row 2 filled from M2-P3-B2-ROW2 (the P3 "ADR docs" Codex run, no finding on H07); the row 3 owner moves from P5-ACCEPT-4 to M3-P2 ACCEPT-6, as SP-Unit moved to M3-P1 (plan-v6 D19). Text only; no check changes | P5 integration fixer |
+| 2026-10-22 | clarify | Validation: only Spike B (month 2) has put code in the process code range; SP-Unit runs in M3-P1 (M2-D21-FAIL). Text only; no check changes | P5 integration fixer |
 
 ## Review record
 

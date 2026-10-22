@@ -50,7 +50,7 @@ Copied from the plan row: an external-reference table. Intrinsics in fixed order
 | Bytecode holds no raw pointer: operands and constants are indices or owned literals, and the VM turns them into Values per isolate at load | `roundtrip::random_units_round_trip`; `determinism::builds_on_other_threads_agree` (same bytes from other threads) | M0 wk3 |
 | No heap address reaches a hash or an order, so a snapshot layout can be deterministic | `tests::strings::ep9_hash_seed_gives_the_same_hashes_in_two_runs` (`EP9_HASH_SEED`); H12 rules | M0 wk4 |
 | Each native word in a heap cell has an index form that a snapshot can write. FUNCTION +24: a bytecode info = (unit, function id); a table builtin's host info = its BuiltinId (the info's place in its module's dense `infos`, `builtins::prepare`; the info does not store the id); an embedder host function (`realm::new_host_function`: unit null, function id u32::MAX) has none yet, H13-Q5. FEEDBACK info = (unit, function id) (only bytecode infos get a vector). CONTEXT scope word (OBJECT_LAYOUT 2) = (unit, scope id) | review of each `native_of` store into a cell (H25 inventory); `tests::objects::function_cell_infos_have_an_index_form` | M2-P0 |
-| Units reach snapshot objects only by root or intrinsic index, or through a link cell | H35 zero-text-relocation check; SP-Unit link-cell test | SP-Unit (M0 month 2), A2 |
+| Units reach snapshot objects only by root or intrinsic index, or through a link cell | H35 zero-text-relocation check; SP-Unit link-cell test | SP-Unit (M3-P1), A2 |
 | Root ShapeIds are stable per engine build only; every other ShapeId is run-local (H8) | A1 snapshot test: two builds of the snapshot give the same bytes | M4 (A1) |
 | One external-reference table serves the snapshot and every unit link table (03 §5) | A1 snapshot test; SP-Unit loader test | M4 (A1) |
 
@@ -79,7 +79,7 @@ Copied from the plan row: an external-reference table. Intrinsics in fixed order
 |---|---|---|---|
 | H13-Q1 | Which lists must stay stable across engine builds, and which only within one build? A snapshot and a unit with another build id are rejected anyway (H35 S3) | M1 (index lists) | Within one build is enough for the snapshot and units. The ids that facts, hints and profiles store (builtins, intrinsics, well-known symbols, atoms) stay append-only across builds |
 | H13-Q2 | `Root` has no order check: a reorder passes every test | M1 | A golden of the `Root` names, like `vm-builtin-ids.txt` |
-| H13-Q3 | Is the native runtime-function table (JIT and AOT slow paths) an H13 list? | SP-Unit (M0 month 2) | Yes: units call it by index through the isolate table (04 §5 `Runtime(fn)`), so it is append-only with a golden |
+| H13-Q3 | Is the native runtime-function table (JIT and AOT slow paths) an H13 list? | M3-P1 SP-UNIT (moved from M0 month 2 by M2-D21-FAIL) | Yes: units call it by index through the isolate table (04 §5 `Runtime(fn)`), so it is append-only with a golden |
 | H13-Q4 | Does the global declarative record stay a plain object (`Root::Lexical`), or become a script context? | M1 (H22 realms) | Decide with H22 realms; the snapshot stores whichever exists |
 | H13-Q5 | How does a snapshot write FUNCTION +24 for a host function? An embedder host function's info is a boxed FunctionInfo in `rt.infos` (unit null, function id u32::MAX, the same pair for all of them), and its `HostFn` has no index before the external-reference table exists. A table builtin's info does not store its BuiltinId | M4 (A1 snapshot writer) | Open. Proposed: an external-reference index for the embedder's `HostFn` (the one table of 03 §5), and a BuiltinId field (or module and index) in a table builtin's FunctionInfo, set by `builtins::prepare` |
 
@@ -97,6 +97,7 @@ Copied from the plan row: an external-reference table. Intrinsics in fixed order
 | 2026-10-22 | rewrite | Native-word Rules row: FUNCTION +24 = (unit, function id) holds for a bytecode info only. A table builtin's host info maps to its BuiltinId; an embedder host function has no index form yet (new Open question H13-Q5). This corrects the row above ("each have an index form"). New check `tests::objects::function_cell_infos_have_an_index_form` | P2 review fixer (Codex A1) |
 | 2026-10-22 | clarify | 1 `path:line` reference moved to the code after the M2-P4 merge (drift script, [I15]). No check changes | P4 integration fixer |
 | 2026-10-22 | clarify | The `RuntimeTable` index-list row says 8 `RT_*` offsets (P4 appended `RT_UNWIND` at 56 for placement (b)); the table is append-only. H13-Q3 stays with M3-P1 SP-UNIT. No check changes | P5-DOCS-SYNC agent (M2-P5) |
+| 2026-10-22 | clarify | SP-Unit runs in M3-P1 (M2-D21-FAIL, M2-P4-SPUNIT-M3): the From cell of the Rules row "Units reach snapshot objects only by root or intrinsic index, or through a link cell" and the H13-Q3 Needed-by cell say M3-P1. Text only; no check changes | P5 integration fixer |
 
 ## Review record
 

@@ -170,7 +170,7 @@ ep9_baseline / ep9_opt
 - **Spike B (M0, month 2).** An 11-opcode template JIT (the planned 10 plus AddSmi) measures the T0 -> JIT -> T0 round trip on each target.
   - Keep native-stack JIT frames if one round trip costs ≤ 18 release-expansion dispatches of the loop kernel on the same host (est.). Otherwise open an ADR for one unified VM stack.
   - It also settles D21 (interpreter frame home; default: VM register stack + native control stack, Hermes model) [R14].
-- **SP-Unit (inside Spike B, +0.25 PM est.).** The same 11 opcodes go into a unit blob. It must load, call, unwind, survive a GC scan and fall back on a version mismatch. Gate: green on 4 targets.
+- **SP-Unit (M0 month 3, M3-P1; +0.25 PM est.).** It moved from month 2 by M2-D21-FAIL: placement (a) failed the D21 rule, so SP-Unit builds on placement (b). The same 11 opcodes go into a unit blob. It must load, call, unwind, survive a GC scan and fall back on a version mismatch. Gate: green on 4 targets.
 - **Spike C (M1, throwaway, 1.5-3 PM est.).** A small SSA compiler for 2-3 v8-v7 kernels on arm64. It reads T0 feedback and has one eager deopt from a native frame to a VM-stack frame. Gate: deopt correct under the tier-differential test; kernels ≥ 3x faster than T0 (est.).
 - **SP-Facts (inside Spike C, +0.25-0.5 PM est.).** The Spike C IR uses the fact lattice and ref nodes (§6) and emits PI deopt metadata (§9). Gate: one kernel compiled from a PROFILED FactSnapshot file gives identical output at ≥ 90% of live-feedback speed (est.).
 - A failed Spike C or SP-Facts gate reopens H2, H14, H16, H17 and H29-H34 before M1 exit.
@@ -337,6 +337,7 @@ lazy:  fuse pops -> mark dependent code -> swap return addresses on the stack ->
 - Decisions 2026-10-20: H36 FP rules rewritten (CR target, `ep9_math`, closed inline list, `clippy.toml` + `xtask fp-check`); H11 emitter rule and elision E1-E3; H24/H29/H31 debugger, interrupt-poll and fuse rules; D17 (d) VERIFIED candidate [R18].
 - Clarified 2026-10-21 ([decisions-log §7](../decisions-log.md#7-2026-10-21-h15-dispatch-on-x86-64-sp-dispatch-reopen), D21-UNIT): the D21 threshold for Spike B counts release-expansion dispatches of the SP-Dispatch loop kernel on the same host, not "sibling-call dispatches". The number 18 does not change.
 - Amended 2026-10-21 ([decisions-log §10](../decisions-log.md#10-2026-10-21-pr-1-review-fixes-ci-gates-and-h15-on-t0), H15-X64-T0): §2 T0 release uses sibling calls on every target, not the match loop on x86-64.
+- Clarified 2026-10-22 (decisions-log M2-D21-FAIL, M2-P4-SPUNIT-M3, M2-W2-D21-B): §5 SP-Unit runs in M3-P1 on placement (b), not inside Spike B in month 2.
 
 ## Evidence tags
 
