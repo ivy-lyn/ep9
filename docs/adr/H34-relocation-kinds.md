@@ -47,7 +47,7 @@ ep9_baseline / ep9_opt --one instruction stream + abstract relocations--> ep9_ma
 
 | Emitter | Placement, target | Check |
 |---|---|---|
-| `jit_b` (P4-PLACEMENT-B; x86-64 M3-P0 P0-B-X64) | (b), AArch64 and x86-64 | `jit_b::tests::b_code_has_no_ret_and_no_address` (`spikes/spike-b/src/jit_b/mod.rs:281-309`): the same function from two isolates gives the same bytes on both architectures, and the AArch64 code has no `ret` (it leaves by `br x16` only). x86-64: `jit_b::tests::x86_64_b_code_leaves_by_the_exit_jump_only` (no `ret` at a reported instruction start; one exit jump) and `win-static.sh` (`llvm-objdump -d`: no `ret`, one indirect jump) |
+| `jit_b` (P4-PLACEMENT-B; x86-64 M3-P0 P0-B-X64) | (b), AArch64 and x86-64 | `jit_b::tests::b_code_has_no_ret_and_no_address` (`spikes/spike-b/src/jit_b/mod.rs:286-314`): the same function from two isolates gives the same bytes on both architectures, and the AArch64 code has no `ret` (it leaves by `br x16` only). x86-64: `jit_b::tests::x86_64_b_code_leaves_by_the_exit_jump_only` (no `ret` at a reported instruction start; one exit jump) and `win-static.sh` (`llvm-objdump -d`: no `ret`, one indirect jump) |
 | `jit` (P2-SPIKE-B) | (a), AArch64 and x86-64 | No address by emitter design; no test. (a) failed the D21 rule in gate window 1 |
 | (b) on x86-64 | built (M3-P0 P0-B-X64, M2-P5-PLAN-D25; `spikes/spike-b/src/jit_b/x64.rs`) | The `jit_b` row above: the two-isolate test covers it. Its only absolute-looking operands are constants (Value tags, `Cx` and table offsets); branches are rel8/rel32 inside the function |
 
@@ -105,3 +105,4 @@ ep9_baseline / ep9_opt --one instruction stream + abstract relocations--> ep9_ma
 |---|---|---|---|
 | 2026-10-22 | draft | First draft from 02 §6 row H34 and 04 §5, with the Spike B emitter evidence: the zero-relocation rule (`emit.rs:19`) and its jit_b test for (b) on AArch64; (a) and x86-64 by design only. The 04 §5 pc-relative AOT form of LinkSlot and IcCell is not copied (it conflicts with H35-Q9) and is H34-Q1. The SP-Unit questions and H07-Q2 stay open (M2-P5-PLAN-D20, plan-v6 D18) | P5-DOCS-SYNC agent (M2-P5) |
 | 2026-10-22 | fill | M3-P0 P0-B-X64: x86-64 placement (b) is built (`spikes/spike-b/src/jit_b/x64.rs`), and the two-isolate no-address test covers it (`jit_b::tests::b_code_has_no_ret_and_no_address`, both architectures); the "(b) on x86-64" row, the (b) Rules row, the (a) Rules row and the Spike B evidence row say so. No rule changes its result | P0-B-X64 agent (M3-P0) |
+| 2026-10-23 | clarify | Line ref only: the (b) Rules row cites `b_code_has_no_ret_and_no_address` at `jit_b/mod.rs:286-314` (the CX-JIT1 fix added byte checks to the test above it). No rule, check or value changes | M3-P0 integration fixer (CX-JIT1) |

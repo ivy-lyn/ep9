@@ -139,7 +139,7 @@ pub fn hold_probe(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::{Config, Session};
+    use crate::harness::{Config, InstallKind, Session};
     use crate::structural::LOOP_DEFS;
 
     /// The function of gate check (g) (jit_b/structural.rs `HOLD_DEFS`).
@@ -171,8 +171,9 @@ mod tests {
                 match arch {
                     Arch::Aarch64 => {
                         // stp x29, x30, [sp, #-32]! ; mov x29, sp ; stp x26, x28, [sp, #16] ;
-                        // mov x28, x0 ; mov x26, x2 (placement (a): mov x26, x1)
-                        let w: Vec<u32> = b.code[..20]
+                        // mov x28, x0 ; mov x26, x2 (placement (a): mov x26, x1) ; then
+                        // mov x0, x3 (the incoming accumulator into the body's x0)
+                        let w: Vec<u32> = b.code[..24]
                             .chunks(4)
                             .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
                             .collect();
@@ -183,7 +184,8 @@ mod tests {
                                 0x9100_03FD,
                                 0xA901_73FA,
                                 0xAA00_03FC,
-                                0xAA02_03FA
+                                0xAA02_03FA,
+                                0xAA03_03E0
                             ],
                             "{name}"
                         );
@@ -191,6 +193,9 @@ mod tests {
                     }
                     Arch::X86_64 => {
                         assert_eq!(b.code[..16], X64_PROLOGUE, "{name}");
+                        // mov rax, rcx: the incoming accumulator into the body's rax, after
+                        // the prologue (the UNWIND_INFO prologue still ends at 10).
+                        assert_eq!(b.code[16..19], [0x48, 0x89, 0xC8], "{name}: mov rax, rcx");
                         assert!(b.unwind.win64.is_some(), "{name}: no UNWIND_INFO");
                         assert_eq!(b.unwind.win64, a.unwind.win64, "{name}: (a)'s frame codes");
                     }
@@ -306,5 +311,44 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The (b) entry keeps the incoming accumulator (`acc`: x3 on AArch64, rcx on x86-64) as
+    /// the body's accumulator (x0, rax), as a T0 handler does. `id` cut down to its `Return`
+    /// reads the accumulator before any instruction writes it; entered from Rust (`run_b`:
+    /// acc = undefined) under the threaded dispatch, its (b) code must return undefined, not
+    /// whatever the entry left in x0 (the cx pointer) or rax.
+    #[test]
+    fn b_return_only_returns_the_incoming_acc() {
+        let mut s = Session::new(&Config::default().threaded()).expect("session");
+        s.run(LOOP_DEFS, "defs.js").result.expect("defs");
+        let id = s.iso.global("id").expect("id");
+        let seven = ep9_vm::Value::int32(7);
+        let t0 = ep9_vm::call_from_rust(&mut s.iso, id, ep9_vm::Value::UNDEFINED, &[seven])
+            .expect("T0 id");
+        assert_eq!(t0.to_bits(), seven.to_bits(), "T0 id(7)");
+        let input = s.function_input("id").expect("input");
+        let ret = ep9_bytecode::Instructions::new(input.bytecode)
+            .map(|i| i.expect("decode"))
+            .find(|i| i.opcode == ep9_bytecode::Opcode::Return)
+            .expect("a Return");
+        let cut = FunctionInput {
+            bytecode: &input.bytecode[ret.offset as usize..],
+            ..input
+        };
+        let p = plan(&cut).expect("plan");
+        assert_eq!(p.steps.len(), 1, "only the Return");
+        let arch = Arch::HOST.expect("a host arch");
+        let code = BEmitter::new(arch).emit(&cut).expect("b");
+        s.install_as(InstallKind::B, &["id"], vec![code])
+            .expect("install");
+        let r = ep9_vm::call_from_rust(&mut s.iso, id, ep9_vm::Value::UNDEFINED, &[seven])
+            .expect("(b) id");
+        assert_eq!(
+            r.to_bits(),
+            ep9_vm::Value::UNDEFINED.to_bits(),
+            "{arch:?}: the (b) Return gave {:#x}, not the incoming undefined",
+            r.to_bits()
+        );
     }
 }

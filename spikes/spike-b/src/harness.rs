@@ -374,8 +374,9 @@ impl Session {
     }
 
     /// Placement (b): compiles the global functions `names` with [`crate::jit_b::BEmitter`]
-    /// into one module and installs each in an Opt slot. Fails if any is refused (on x86-64
-    /// every one is: [`Refusal::Arch`]).
+    /// (AArch64 or x86-64, the build's architecture) into one module and installs each in an
+    /// Opt slot. Fails if any is refused (a function the (b) planner does not cover, or
+    /// [`Refusal::Arch`] on a host with no (b) emitter).
     pub fn jit_b(&mut self, names: &[&str]) -> Result<&[Placed], String> {
         let mut codes = Vec::with_capacity(names.len());
         for name in names {
