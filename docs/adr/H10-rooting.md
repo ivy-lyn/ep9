@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-20). S0 code built 2026-10-21: root registry and handles in `crates/ep9_heap/src/roots.rs`, CSS in `css.rs` and `heap.rs` (`Heap::collect`), tests in `src/tests/css.rs`. M0 wk4: H10-Q2 filled; `cargo xtask gc-lint` and the debug on-stack check of `Local` built |
+| Status | Accepted (2026-10-22, M2-P4-ACCEPT; review record complete). Was: Draft (2026-10-20). S0 code built 2026-10-21: root registry and handles in `crates/ep9_heap/src/roots.rs`, CSS in `css.rs` and `heap.rs` (`Heap::collect`), tests in `src/tests/css.rs`. M0 wk4: H10-Q2 filled; `cargo xtask gc-lint` and the debug on-stack check of `Local` built |
 | Fix by | M0 wk2, after SP-GC |
 | Freeze point | M1 exit |
 | Origin | v1#6; plan status E (extended: AOT frames, unit RW data) |
@@ -101,6 +101,7 @@ unit RW data (one copy per isolate, H22) ---------> PRECISE, range registered by
 | 2026-10-22 | fill | H10-Q1 filled: a Rosetta run is not the gate; the CI linux-x64 and windows-x64 spike-gates jobs are the SysV and Win64 parts of the SP-GC gate, and the x86-64 sandbox is the local x86 check. Every check keeps its result (M2-P3-OQ-H10-Q1) | P3 integration fixer |
 | 2026-10-22 | clarify | 2 `path:line` references moved to the code after the M2-P4 merge (drift script, [I15]). No check changes | P4 integration fixer |
 | 2026-10-22 | rewrite | Decision diagram and the Rules row "Interior and one-past-end pointers" scoped as built: VO bits exist only for small-page cells; CSS resolves a pointer into a LOS object through the chunk table and its `LargeHeader` (`find_cell`, `crates/ep9_heap/src/trace.rs:357-382`; H09 Rules rows 2 and 3). The Rules row adds the check `interior_pointer_into_a_large_object_tail`. Codex D1 (M2-P4 docs run). Pre-freeze churn (README §3.3); H10 is Draft | P4 review fixer (docs) |
+| 2026-10-22 | clarify | Status Draft -> Accepted (M2-P4-ACCEPT). The §3.1 review record is complete: row 1 P3-ACCEPT-2, row 2 Codex (M2-P3-B2-ROW2, the P4 pre-step run and m2p4-docs (D1 fixed in RF1, approve in round 2)), row 3 P4-ACCEPT-3 (and the P4 review checkers for the RF1 rows), row 4 data. The orchestrator did not write the rows it approves. No check changes | orchestrator |
 
 ## Review record
 

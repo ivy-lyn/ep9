@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-20). SP-JIT-mem passed on 4 targets (2026-10-21); Accept needs the review record (README §3.1) |
+| Status | Accepted (2026-10-22, M2-P4-ACCEPT; review record complete). Was: Draft (2026-10-20). SP-JIT-mem passed on 4 targets (2026-10-21); Accept needs the review record (README §3.1) |
 | Fix by | M0 wk1-3 |
 | Freeze point | M1 exit |
 | Origin | v1#26; plan status U (unchanged; unit parts added in A2) |
@@ -131,6 +131,7 @@ Win64 spill trampoline, SEH unwind registration and VirtualAlloc in `ep9_platfor
 | 2026-10-22 | clarify | Rules row "unix: the registration mode comes from a run-time self-test": its x86 sandbox check is the orchestrator's script outside the repo, and no CI job sets `EP9_EXPECT_UNWIND_MODE`; the check cell says so. No check changes | P3-ACCEPT-2 |
 | 2026-10-22 | fill | H28-Q2 filled: CI runs on all 4 targets; real CI run 39677340839 (head 5c9034a) passed 22/22 checks. Every check keeps its result (M2-P3-OQ-H28-Q2) | P3 integration fixer |
 | 2026-10-22 | clarify | 3 `path:line` references moved to the code after the M2-P4 merge (drift script, [I15]). No check changes | P4 integration fixer |
+| 2026-10-22 | clarify | Status Draft -> Accepted (M2-P4-ACCEPT). The §3.1 review record is complete: row 1 P3-ACCEPT-2, row 2 Codex (M2-P3-B2-ROW2 and the P4 pre-step run (M2-P4-B2-ROW2)), row 3 P4-ACCEPT-3 (and the P4 review checkers for the RF1 rows), row 4 data. The orchestrator did not write the rows it approves. No check changes | orchestrator |
 
 ## Review record
 

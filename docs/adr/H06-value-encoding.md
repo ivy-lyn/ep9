@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-20) |
+| Status | Accepted (2026-10-22, M2-P4-ACCEPT; review record complete). Was: Draft (2026-10-20) |
 | Fix by | M0 wk2 |
 | Freeze point | M1 exit |
 | Origin | v1#2; plan status U (unchanged) |
@@ -97,6 +97,7 @@ JSC NaN-box: raw cell pointers, int32 under the 0xFFFE tag, doubles + 2^49. `Val
 | 2026-10-22 | clarify | Rules row 1: its check named "xtask size asserts", which do not exist. It now names the `ep9_value` const asserts and the m0-exit item 8 check of them, as H08 Rules row 1 does (P2-ACCEPT-1, H08 R2). No check changes | P3-ACCEPT-2 |
 | 2026-10-22 | fill | H06-Q3 filled as built: the canonical NaN is `PURE_NAN_BITS` 0x7FF8_0000_0000_0000 (JSC PNaN); test `nan_payloads_are_purified` proves the purification. Every check keeps its result (M2-P3-OQ-H06-Q3) | P3 integration fixer |
 | 2026-10-22 | clarify | Rules row 1: m0-exit item 8 also compiles the asserts (`cargo check -p ep9_value` for the host target), so "no xtask task checks sizes" was false; the cell now says what item 8 runs (Codex C3, M2-P4-B2-ROW2). No check changes | P4-ACCEPT-3 |
+| 2026-10-22 | clarify | Status Draft -> Accepted (M2-P4-ACCEPT). The §3.1 review record is complete: row 1 P3-ACCEPT-2, row 2 Codex (M2-P3-B2-ROW2 and the P4 pre-step run (M2-P4-B2-ROW2)), row 3 P4-ACCEPT-3 (and the P4 review checkers for the RF1 rows), row 4 data. The orchestrator did not write the rows it approves. No check changes | orchestrator |
 
 ## Review record
 

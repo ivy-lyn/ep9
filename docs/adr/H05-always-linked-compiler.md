@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-21): the rule, with the checks it needs. Since M2-P0, `ep9` (ep9_cli) links ep9_frontend in every mode (dep-guards check 12) and gives it to the VM through `IsolateConfig::compiler` |
+| Status | Accepted (2026-10-22, M2-P4-ACCEPT; review record complete). Was: Draft (2026-10-21): the rule, with the checks it needs. Since M2-P0, `ep9` (ep9_cli) links ep9_frontend in every mode (dep-guards check 12) and gives it to the VM through `IsolateConfig::compiler` |
 | Fix by | M0 rule (wk3) |
 | Freeze point | M1 exit |
 | Origin | R16-D9; plan status N |
@@ -86,6 +86,7 @@ The rule needs these details (kind **fill**):
 | 2026-10-22 | clarify | 2 `path:line` references moved to the code after the M2-P4 merge (drift script, [I15]). No check changes | P4 integration fixer |
 | 2026-10-22 | clarify | Kind cells of the two P3-ACCEPT-2 rows on Rules rows set to rewrite (README §3.3: a changed Rules row is a rewrite): "Units keep source" (its Check cell swapped the source check for a header-only test) and the test262 recount (the counts in the Check cell of the eval/Function/toString row changed). Codex H2 (M2-P4 H05 run). Pre-freeze churn (README §3.3); H05 is Draft | P4 review fixer (docs) |
 | 2026-10-22 | rewrite | Check cell of the Rules row "Units keep source": `determinism::source_hash_is_sha256_of_the_decoded_text` checks the header hash and length only; the Source-section presence check is the `ep9_unit` load check (test `required_sections_and_the_signature_flag`). Open: no test checks that the default front-end output keeps `Some(source)` through encode and decode (review record row 3). Codex H1 (M2-P4 H05 run). Pre-freeze churn (README §3.3); H05 is Draft | P4 review fixer (docs) |
+| 2026-10-22 | clarify | Status Draft -> Accepted (M2-P4-ACCEPT). The §3.1 review record is complete: row 1 P3-ACCEPT-2, row 2 Codex (the P4 Codex runs m2p4-h05 and m2p4-docs (findings H1, H2 fixed in RF1, approve in round 2)), row 3 P4-ACCEPT-3 (and the P4 review checkers for the RF1 rows), row 4 data. The orchestrator did not write the rows it approves. No check changes | orchestrator |
 
 ## Review record
 

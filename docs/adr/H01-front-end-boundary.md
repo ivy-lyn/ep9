@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-21): F1 built in `ep9_frontend` (depth guard, worker, scope pass v0, positions) |
+| Status | Accepted (2026-10-22, M2-P4-ACCEPT; review record complete). Was: Draft (2026-10-21): F1 built in `ep9_frontend` (depth guard, worker, scope pass v0, positions) |
 | Fix by | M0 wk3 |
 | Freeze point | M1 exit |
 | Origin | v1#1; plan status E |
@@ -96,6 +96,7 @@ F1 fills these gaps (kind **fill**):
 | 2026-10-22 | clarify | Follow-ups: eval parses its text as a Script, with no wrapper (`eval.rs` decision E1), and drops only the context-dependent errors of allowed nodes by label span. The 2026-10-22 Follow-ups row above said "wrapper parse", which the code never did (Codex C1, M2-P4-B2-ROW2). No check changes | P4-ACCEPT-3 |
 | 2026-10-22 | clarify | Validation: in release, CI runs the corpus determinism test (`bytecodegen::corpus`) on 4 targets; only the release run of the other tests is local. No check changes | P4-ACCEPT-3 |
 | 2026-10-22 | clarify | 1 `path:line` reference moved to the code after the M2-P4 merge (drift script, [I15]). No check changes | P4 integration fixer |
+| 2026-10-22 | clarify | Status Draft -> Accepted (M2-P4-ACCEPT). The §3.1 review record is complete: row 1 P3-ACCEPT-2, row 2 Codex (M2-P3-B2-ROW2 and the P4 pre-step run (M2-P4-B2-ROW2)), row 3 P4-ACCEPT-3 (and the P4 review checkers for the RF1 rows), row 4 data. The orchestrator did not write the rows it approves. No check changes | orchestrator |
 
 ## Review record
 

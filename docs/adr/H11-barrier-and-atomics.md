@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-20). Decided 2026-10-20 (gc-barrier decision, critic additions). Accept needs the review record ([README §3.1](README.md#31-review-record-p-1)). Code 2026-10-21: barrier v2 API and S0 slow path in `crates/ep9_heap/src/barrier.rs`; model test in `src/tests/model.rs`; fast-path check `crates/ep9_heap/disasm-barrier.sh` |
+| Status | Accepted (2026-10-22, M2-P4-ACCEPT; review record complete). Was: Draft (2026-10-20). Decided 2026-10-20 (gc-barrier decision, critic additions). Accept needs the review record ([README §3.1](README.md#31-review-record-p-1)). Code 2026-10-21: barrier v2 API and S0 slow path in `crates/ep9_heap/src/barrier.rs`; model test in `src/tests/model.rs`; fast-path check `crates/ep9_heap/disasm-barrier.sh` |
 | Fix by | API M0; slow paths S1/S2; unit field A2 |
 | Freeze point | M1 exit (API, fast-path shape, gc_state values, emitter rule); slow paths may change without a new barrier version |
 | Origin | v1#7; plan status E (extended: AOT code kinds, barrier version) |
@@ -141,6 +141,7 @@ store(host, slot, v):
 | 2026-10-21 | fill | H11-Q3: one counter (`BARRIER_VERSION` = 2), carried in the H35 unit header at offset 100; a mismatch gives BYTECODE. Decision W4-H11-Q3 | P1-AOTU agent |
 | 2026-10-22 | fill | H11-Q2 filled as built: the threshold is a byte at heap offset 0 (`Heap::BARRIER_THRESHOLD_OFFSET`), which T0 reaches through `Cx`. Every check keeps its result (M2-P3-OQ-H11-Q2) | P3 integration fixer |
 | 2026-10-22 | clarify | 3 `path:line` references moved to the code after the M2-P4 merge (drift script, [I15]). No check changes | P4 integration fixer |
+| 2026-10-22 | clarify | Status Draft -> Accepted (M2-P4-ACCEPT). The §3.1 review record is complete: row 1 P3-ACCEPT-2, row 2 Codex (M2-P3-B2-ROW2 and the P4 pre-step run (M2-P4-B2-ROW2)), row 3 P4-ACCEPT-3 (and the P4 review checkers for the RF1 rows), row 4 data. The orchestrator did not write the rows it approves. No check changes | orchestrator |
 
 ## Review record
 

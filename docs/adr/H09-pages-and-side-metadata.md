@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-20). S0 code built 2026-10-21: `crates/ep9_heap/src/layout.rs` (page layout), `memory.rs` (chunks, LOS), `heap.rs` (TLAB, lazy sweep). The code uses the proposed defaults of H09-Q1 to Q3: 8 B granule, 256 B lines, in-page header, LOS above 8 KiB |
+| Status | Accepted (2026-10-22, M2-P4-ACCEPT; review record complete). Was: Draft (2026-10-20). S0 code built 2026-10-21: `crates/ep9_heap/src/layout.rs` (page layout), `memory.rs` (chunks, LOS), `heap.rs` (TLAB, lazy sweep). The code uses the proposed defaults of H09-Q1 to Q3: 8 B granule, 256 B lines, in-page header, LOS above 8 KiB |
 | Fix by | M0 wk2 |
 | Freeze point | M1 exit |
 | Origin | v1#5; plan status U (unchanged) |
@@ -94,6 +94,7 @@
 | 2026-10-22 | fill | H09-Q3 filled as built: `MAX_SMALL_SIZE` 8 KiB is the LOS threshold (`layout.rs`). Every check keeps its result (M2-P3-OQ-H09-Q3) | P3 integration fixer |
 | 2026-10-22 | clarify | H09-Q2 fill text as built: the 64 B header area holds a 12 B `PageHeader`; the one-mask lookup holds for small pages only, and a LOS tail chunk finds its head through the chunk table (Codex C2, M2-P4-B2-ROW2). No check changes | P4-ACCEPT-3 |
 | 2026-10-22 | rewrite | Rules rows 2 and 3 scoped as built: only a small-page cell sets a VO bit (`init_cell` sets it only when `small`, `crates/ep9_heap/src/heap.rs:669-675`); a LOS object has none, and CSS resolves a pointer into it through the chunk table (`find_cell`, `crates/ep9_heap/src/trace.rs:357-382`). Row 3 adds the check `interior_pointer_into_a_large_object_tail`. The rows said every allocated object sets its VO bit and CSS always uses the VO bitmap (first draft). Codex D1 (M2-P4 docs run). Pre-freeze churn (README §3.3); H09 is Draft | P4 review fixer (docs) |
+| 2026-10-22 | clarify | Status Draft -> Accepted (M2-P4-ACCEPT). The §3.1 review record is complete: row 1 P3-ACCEPT-2, row 2 Codex (M2-P3-B2-ROW2, the P4 pre-step run (C2 fixed) and m2p4-docs (D1 fixed in RF1, approve in round 2)), row 3 P4-ACCEPT-3 (and the P4 review checkers for the RF1 rows), row 4 data. The orchestrator did not write the rows it approves. No check changes | orchestrator |
 
 ## Review record
 
