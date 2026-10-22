@@ -7,7 +7,7 @@
 //! TABLE = [object, function, array, number, boolean, string, symbol, math, global,
 //!          block 1  2         3      4       5        6       7       8     9
 //!          promise, reflect]
-//!          10       11        (M2-P0: empty until P4-PROMISE and P5-B-REFLECT-GLOBALS)
+//!          10       11        (reflect: empty until P5-B-REFLECT-GLOBALS)
 //! each module: BLOCK, DEFS (id = BLOCK.i, append-only), INTRINSICS, PROPS, MODULE
 //! IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }: realm init installs the VM's
 //! table (block 0), then these modules in this order.

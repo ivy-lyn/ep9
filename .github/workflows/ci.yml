@@ -17,7 +17,9 @@
 #   spikes ........... SP-Dispatch, SP-GC and SP-JIT-mem host gates  (4 targets)
 #                      SP-Dispatch speed gates: recorded, not blocking (H15 ADR);
 #                      cgoto.c built with zig cc 0.17.0 (H15-Q3);
-#                      Spike B structural gate (checks (a)-(h))
+#                      Spike B structural gate (checks (a)-(h));
+#                      Spike B placement (b) gate (gate.sh b; SKIP on x86-64);
+#                      Spike B Win64 unwind (windows-x64; tests/win64_unwind.rs)
 #   miri ............. Miri on ep9_value, ep9_heap and ep9_math      (Linux x64)
 #   dep-guards ....... cargo tree / metadata guards; cargo deny      (Linux x64)
 #   perf-ci-v0 ....... cachegrind instruction counts of 7 workloads  (Linux x64)
@@ -177,7 +179,7 @@ jobs:
         run: cargo run --release --locked -p ep9_test262 -- exec --feedback-threshold 0 --json test262-exec-eager.json
       # GC-stress (a collection before every allocation, the heap verifier after each) with eager
       # feedback, against the same expectation file. The 10 tests of the skip list run past the
-      # timeout under GC-stress (9 of them fail without it too; its header says why each one is
+      # timeout under GC-stress (8 of them fail without it too; its header says why each one is
       # there); the run prints "skipped: 10". A verifier error panics: an infrastructure error,
       # exit 2 (tools/test262/README.md "exec").
       - name: test262 exec, GC-stress + eager feedback
@@ -386,6 +388,13 @@ jobs:
       - name: Spike B structural gate
         if: ${{ !cancelled() }}
         run: bash spikes/spike-b/gate.sh structural
+      # Spike B placement (b) gate (plan-v6 P4-PLACEMENT-B, D11): the jit_b unit tests, then
+      # `spike-b structural-b all` (release) and `structural-b h` (debug). Placement (b) is built
+      # for AArch64 only; on x86-64 each (b) check prints SKIP with the Refusal text and the step
+      # passes.
+      - name: Spike B placement (b) gate
+        if: ${{ !cancelled() }}
+        run: bash spikes/spike-b/gate.sh b
       # P4-WIN-STATIC-1 (plan-v6 D25): the real Win64 unwind run of placement (a)'s x86-64 JIT
       # (spikes/spike-b/tests/win64_unwind.rs): per function, RtlLookupFunctionEntry finds its
       # RUNTIME_FUNCTION and RtlVirtualUnwind from every prologue, body and epilogue state
