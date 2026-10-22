@@ -233,7 +233,7 @@ pub(super) fn replace<'s>(
     let search_length = search.len();
     // 8. Let position be StringIndexOf(string, searchString, 0).
     // 9. If position is not-found, return string.
-    let Some(position) = string_index_of(&string, &search, 0) else {
+    let Some(position) = string_index_of(cx, &string, &search, 0)? else {
         return Ok(replacer.string_value);
     };
     // 10. Let preceding be the substring of string from 0 to position.
@@ -306,7 +306,7 @@ pub(super) fn replace_all<'s>(
     // 13. Let result be the empty String.
     let mut result = Vec::new();
     // 14. For each element p of matchPositions, do
-    let mut next = string_index_of(&string, &search, 0);
+    let mut next = string_index_of(cx, &string, &search, 0)?;
     while let Some(p) = next {
         // (one JS call or one string per pass, and no back edge)
         cx.poll_interrupt()?;
@@ -324,7 +324,7 @@ pub(super) fn replace_all<'s>(
         replacer.append(cx, &search, &string, p, &mut result)?;
         //  e. Set endOfLastMatch to p + searchLength.
         end_of_last_match = p + search_length;
-        next = string_index_of(&string, &search, p + advance_by);
+        next = string_index_of(cx, &string, &search, p + advance_by)?;
     }
     // 15. If endOfLastMatch < the length of string, then
     //     a. Set result to the string-concatenation of result and the substring of string from
@@ -402,7 +402,7 @@ pub(super) fn split<'s>(
     // 12. Let i be 0.
     let mut i = 0;
     // 13. Let j be StringIndexOf(S, R, 0).
-    let mut j = string_index_of(&s, &r, 0);
+    let mut j = string_index_of(cx, &s, &r, 0)?;
     // 14. Repeat, while j is not not-found,
     while let Some(jj) = j {
         //  a. Let T be the substring of S from i to j.
@@ -416,7 +416,7 @@ pub(super) fn split<'s>(
         //  d. Set i to j + separatorLength.
         i = jj + separator_length;
         //  e. Set j to StringIndexOf(S, R, i).
-        j = string_index_of(&s, &r, i);
+        j = string_index_of(cx, &s, &r, i)?;
     }
     // 15. Let T be the substring of S from i.
     // 16. Append T to substrings.

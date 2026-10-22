@@ -229,7 +229,8 @@ const MAX_ARRAY_LENGTH: u64 = u32::MAX as u64;
 
 /// How deep `flat` and `flatMap` recurse into nested arrays before the RangeError a native
 /// stack overflow would give (FlattenIntoArray recurses once per level; V8 throws the same
-/// RangeError at its stack limit).
+/// RangeError at its stack limit). Each level also calls `Cx::check_native_stack`, which
+/// throws first on a small native stack.
 const MAX_FLATTEN_DEPTH: u32 = 10_000;
 
 /// 𝔽(n) for an index or a length (at most 2^53 - 1, so exact).
@@ -475,6 +476,8 @@ fn flatten_into_array<'s>(
     mapper: Option<(Local<'s>, Local<'s>)>,
     level: u32,
 ) -> JsResult<u64> {
+    // One recursion step: the native stack check (H23 G6), then the level cap.
+    cx.check_native_stack()?;
     if level > MAX_FLATTEN_DEPTH {
         return Err(cx.throw_range_error("Maximum call stack size exceeded"));
     }
@@ -588,9 +591,12 @@ fn collect_items<'s>(
 
 /// SortIndexedProperties step 4 with SortCompare (§23.1.3.30.2) as the comparator: the order
 /// of `items` as a list of indices into it. A stable merge sort ([`merge_sort`]); undefined
-/// values go last. Without `comparefn`, each other value is converted with ToString once,
-/// before the first comparison (the number and order of SortCompare calls is
-/// implementation-defined, §23.1.3.30.1 step 4).
+/// values go last. Without `comparefn`, SortCompare converts x and then y with ToString at
+/// every comparison (§23.1.3.30.2 steps 5-6), so an object's `toString` runs once per
+/// comparison it takes part in and a throw ends the sort; only the sequence of SortCompare
+/// calls is implementation-defined (§23.1.3.30.1 step 4). When every value is a primitive,
+/// ToString runs no user code and its result never changes, so each one is converted once,
+/// before the first comparison.
 fn sorted_order<'s>(
     cx: &mut Cx<'s>,
     items: &ScratchList<'s>,
@@ -603,10 +609,20 @@ fn sorted_order<'s>(
     let undefined = (0..n).filter(|&i| items.get(i).is_undefined());
     let mut order = defined;
     if comparefn.is_undefined() {
-        if order.len() >= 2 {
-            // SortCompare steps 5-7: ToString of each value, then IsLessThan on the code
-            // units. The strings are rooted in a second list (pushed after `items`, dropped
-            // before it: LIFO).
+        if order.len() >= 2 && order.iter().any(|&i| items.get(i).as_object().is_some()) {
+            // SortCompare steps 5-7 at each comparison: ToString(x), then ToString(y), then
+            // IsLessThan on the code units. An object's ToString runs user code (counted and
+            // ordered as the spec says), and an Err from it ends the sort.
+            merge_sort(cx, &mut order, &mut |cx, a, b| {
+                let x = cx.to_string(items.get(a))?;
+                let y = cx.to_string(items.get(b))?;
+                Ok(compare_strings(cx, x, y)? == Ordering::Greater)
+            })?;
+        } else if order.len() >= 2 {
+            // Only primitives: ToString of each value once (no user code runs, and a Symbol
+            // throws the same TypeError before any comparison as at its first one), then
+            // IsLessThan on the code units at each comparison. The strings are rooted in a
+            // second list (pushed after `items`, dropped before it: LIFO).
             let strings = cx.scratch_list();
             for &i in &order {
                 cx.poll_interrupt()?;
