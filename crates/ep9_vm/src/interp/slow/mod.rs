@@ -49,6 +49,8 @@ mod property;
 mod runtime;
 
 pub(crate) use call::call;
+#[cfg(test)]
+pub(crate) use eval::PROLOGUE_DECODES;
 pub(crate) use generator::{resume_generator, suspend_generator, switch_on_generator_state};
 pub(crate) use iter::{
     arguments, array_from_iterable, for_in_enumerate, for_in_next, get_iterator,

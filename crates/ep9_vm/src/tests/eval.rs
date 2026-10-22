@@ -66,6 +66,32 @@ fn unit_decl() -> VerifiedUnit {
     eval_unit(vec![s.finish(), f.finish()])
 }
 
+/// The number of `var` names of [`unit_decl_many`].
+const MANY_VARS: usize = 8;
+
+/// Sloppy eval code `function fn() { return 9 } var v0, .., v7`: DeclareEvalFunction("fn",
+/// closure), then DeclareEvalVar per var name, then `return 1`.
+fn unit_decl_many() -> VerifiedUnit {
+    let mut s = eval_entry();
+    let args = s.b.new_register_list(2);
+    let k = s.b.function_constant(FunctionId(1));
+    s.b.create_closure(k, s.closure, 0);
+    s.b.star(args.get(1));
+    s.lda_str("fn");
+    s.b.star(args.get(0));
+    s.b.call_runtime(RuntimeId::DeclareEvalFunction, args, 2);
+    let one = RegisterList::new(args.first().local_index().unwrap(), 1);
+    for i in 0..MANY_VARS {
+        s.lda_str(&format!("v{i}"));
+        s.b.star(args.get(0));
+        s.b.call_runtime(RuntimeId::DeclareEvalVar, one, 1);
+    }
+    s.b.lda_smi(1).return_();
+    let mut f = Asm::new(meta("fn", 0, 0, 0, 0));
+    f.b.lda_smi(9).return_();
+    eval_unit(vec![s.finish(), f.finish()])
+}
+
 /// The `Function("a", "return a")` unit of the FNCTOR contract (D8): function 0 returns a
 /// closure of function 1, which returns its argument.
 fn unit_identity_function() -> VerifiedUnit {
@@ -84,6 +110,7 @@ fn hook_eval(source: &str, ctx: &EvalContext) -> CompileResult {
     match source {
         "unit42" => Ok(unit_42()),
         "decl" => Ok(unit_decl()),
+        "decl_many" => Ok(unit_decl_many()),
         // Direct eval at a sloppy script's top level: only `direct` is set.
         "direct?" if ctx.direct && !ctx.strict && !ctx.in_function => Ok(unit_42()),
         "syntax" => Err(CompileFailure::Syntax("bad token".into())),
@@ -315,6 +342,45 @@ fn declare_eval_ids_make_configurable_globals() {
         r.output,
         ["1", "9", "undefined", "true", "true", "1", "undefined"]
     );
+}
+
+/// A run of sloppy eval code decodes its prologue once, however many names it declares: the
+/// first DeclareEval* call of the run checks every name (EvalDeclarationInstantiation), the
+/// later calls find that they are not the first without decoding function 0 again (P3 review:
+/// one decode per call made a run with D names cost D times the function length). Two runs,
+/// each a new unit: two decodes.
+#[test]
+fn eval_prologue_is_decoded_once_per_run() {
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        print_indirect(&mut s, "decl_many");
+        print_indirect(&mut s, "decl_many");
+        s.lda_global("fn");
+        let f = s.f;
+        s.b.star(f);
+        s.b.call_undefined_receiver0(f, s.call);
+        s.print_acc();
+        s.lda_global("v7");
+        s.print_acc();
+        s.b.lda_undefined().return_();
+        script_unit(s)
+    }
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let (r, decodes) = on_big_stack(move || {
+                crate::interp::slow::PROLOGUE_DECODES.with(|n| n.set(0));
+                let c = IsolateConfig {
+                    compiler: Some(&HOOKS),
+                    ..config(d, stress)
+                };
+                let r = run_in(c, make());
+                (r, crate::interp::slow::PROLOGUE_DECODES.with(|n| n.get()))
+            });
+            let label = format!("{} stress={stress}", d.name());
+            assert_eq!(r.output, ["1", "1", "9", "undefined"], "{label}");
+            assert_eq!(decodes, 2, "{label}: 2 runs of {} names", MANY_VARS + 1);
+        }
+    }
 }
 
 /// The Function constructor runs function 0 of the hook's unit (the FNCTOR contract, D8) and

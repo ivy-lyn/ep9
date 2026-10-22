@@ -17,6 +17,7 @@
 //! `Constant` from the unit. BigInt is the hole marker: `LdaConstant` of a BigInt throws "not
 //! implemented" (v0).
 
+use core::cell::OnceCell;
 use core::ptr::NonNull;
 
 use ep9_bytecode::{Constant, EvalContext, Oddball, Scope, SourceLines, VerifiedUnit};
@@ -64,6 +65,14 @@ impl EvalReceiver {
     }
 }
 
+/// The sloppy eval prologue of a unit function (`interp/slow/eval.rs` `prologue`): the byte
+/// range of its first `CallRuntime DeclareEval*`, and its declarations in call order (the
+/// constant index of the name, a function).
+pub(crate) struct EvalPrologue {
+    pub first: Option<(u32, u32)>,
+    pub decls: Vec<(u32, bool)>,
+}
+
 /// A unit the isolate loaded. Boxed and kept until the isolate drops: frames, function cells
 /// and dispatch slots point into it.
 pub(crate) struct LoadedUnit {
@@ -79,6 +88,9 @@ pub(crate) struct LoadedUnit {
     /// The receiver flags of direct eval code ([`EvalReceiver`]); set before the unit is
     /// pushed to `Runtime::units`.
     pub eval_receiver: EvalReceiver,
+    /// The [`EvalPrologue`] of function 0, decoded at its first `DeclareEval*` call. Every
+    /// eval loads a new unit, so a run decodes its prologue once, not once per call.
+    pub eval_prologue: OnceCell<EvalPrologue>,
     strings: Box<[Slot]>,
     consts: Box<[Box<[Slot]>]>,
     roots: Vec<RootId>,
@@ -104,6 +116,7 @@ impl LoadedUnit {
             context_scopes: Box::new([]),
             feedback,
             eval_receiver: EvalReceiver::default(),
+            eval_prologue: OnceCell::new(),
             roots: Vec::new(),
         });
         // SAFETY: the slices live in boxes that the LoadedUnit owns. LoadedUnit has no Drop and
