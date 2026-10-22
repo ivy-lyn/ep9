@@ -116,7 +116,7 @@ infrastructure error.
 nor counts the listed tests, and the expectation compare ignores them. The run prints
 `skipped: <n>`, and `--json` writes `skipped` (the count) and `skipped_paths` (the sorted paths
 of the skipped tests); an entry that names no test gets a warning. `expectations/test262-gc-skip.txt`
-lists the 10 tests that run past (or on a busy host can run past) the 60 s timeout under
+lists the 11 tests that run past (or on a busy host can run past) the 60 s timeout under
 GC-stress (8 fail without it too; its header says why each one is there).
 
 `--feedback-threshold <n>` is the number of calls before a function gets its feedback vector
