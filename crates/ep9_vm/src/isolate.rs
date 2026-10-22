@@ -42,7 +42,7 @@ use crate::frame::{HOLE, UNDEFINED};
 use crate::host::HostFn;
 use crate::interp::{BUDGET, Cx, Dispatch};
 use crate::object::{self, attr, is_error, is_string, own_define, own_get};
-use crate::runtime::{Atom, ErrorKind, InterruptQueue, Root, Runtime, val};
+use crate::runtime::{Atom, ErrorKind, Root, Runtime, WeakInterruptQueue, val};
 use crate::unit::{FunctionInfo, LoadedUnit};
 use crate::{abi, atoms, call, error, property, realm, shape, string};
 
@@ -175,8 +175,10 @@ impl TerminateHandle {
 /// script) or [`InterruptHandle::request`] (the new callback runs at a later poll).
 /// Callbacks run in request order. A callback that panics ends the process in a release build
 /// (`panic = "abort"`, H23); in a debug build the panic unwinds out of the running script and
-/// the callbacks queued behind it are dropped. After the isolate is dropped, a request is
-/// never run; the callback is dropped with the last handle.
+/// the callbacks queued behind it are dropped. Callbacks still queued when the isolate is
+/// dropped are dropped with it, never run (the handle holds the queue weakly, so a callback
+/// that holds a handle keeps nothing alive). After that, a request is never run: the
+/// callback is dropped at once.
 ///
 /// ```
 /// use std::sync::atomic::{AtomicBool, Ordering};
@@ -194,27 +196,38 @@ impl TerminateHandle {
 #[derive(Clone)]
 pub struct InterruptHandle {
     word: Arc<AtomicU32>,
-    queue: InterruptQueue,
+    queue: WeakInterruptQueue,
 }
 
 impl InterruptHandle {
     /// Queues `callback` and asks the isolate to run it at its next poll. It never waits for
     /// the isolate: the queue lock is held only to push or to take the queue, never while a
-    /// callback runs.
+    /// callback runs. Once the isolate is dropped, the callback is dropped here, unrun.
     pub fn request(&self, callback: Box<dyn FnOnce() + Send>) {
-        self.queue
+        // No isolate: `callback` drops at the end of this function, outside any lock.
+        let Some(queue) = self.queue.upgrade() else {
+            return;
+        };
+        queue
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(callback);
         // After the push: the poll that sees the bit finds the callback.
         self.word
             .fetch_or(crate::interp::interrupt::REQUEST, Ordering::Release);
+        // If the isolate went meanwhile, this is the last strong reference: the queue and its
+        // callbacks drop here, on this thread, after the lock is released (callbacks are
+        // `Send`).
+        drop(queue);
     }
 }
 
 impl std::fmt::Debug for InterruptHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let queued = self.queue.lock().map_or(0, |q| q.len());
+        let queued = self
+            .queue
+            .upgrade()
+            .map_or(0, |q| q.lock().map_or(0, |v| v.len()));
         f.debug_struct("InterruptHandle")
             .field("word", &self.word)
             .field("queued", &queued)
@@ -397,7 +410,7 @@ impl Isolate {
     pub fn interrupt_handle(&self) -> InterruptHandle {
         InterruptHandle {
             word: Arc::clone(&self.rt.terminate),
-            queue: Arc::clone(&self.rt.interrupt_requests),
+            queue: Arc::downgrade(&self.rt.interrupt_requests),
         }
     }
 
