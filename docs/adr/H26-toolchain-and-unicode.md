@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-20) |
+| Status | Accepted (2026-10-22, M2-P5-ACCEPT; review record complete). Was: Draft (2026-10-20) |
 | Fix by | M0 wk1 |
 | Freeze point | M1 exit |
 | Origin | v1#24; plan status U (unchanged) |
@@ -88,6 +88,7 @@ State on 2026-10-22 (0c4c70e): oxc is in the graph; dep-guards checks (1) and (2
 | 2026-10-20 | draft | First draft from 02 §6 and 08 §5, §7 (M0 wk1 list) | ADR agent |
 | 2026-10-22 | clarify | Crates line: `ep9_regexp`, `ep9_intl` and `tools/ep9-typecheck` are planned and not in the tree yet. A "State on 2026-10-22" paragraph after the Rules (oxc in the graph, unicode-id-start 1.5.0, ICU4X only through oxc diagnostics, no regress, std Unicode 17.0.0); Follow-ups: the exit-101 case for unicode-id-start ended. No check changes | P4-ACCEPT-3 |
 | 2026-10-22 | clarify | Review record row 2 names the P5 Codex run (slice accept4): 2 findings, A1 on H23 and A2 on H04, both fixed (clarify); no finding on this ADR. Text only; no check changes | orchestrator |
+| 2026-10-22 | clarify | Status Draft -> Accepted (M2-P5-ACCEPT). The §3.1 review record is complete: row 1 P4-ACCEPT-3, row 2 Codex (m2p4-docs run; P5 accept4 run), row 3 P5-ACCEPT-4 (with the P5 round-2 notes), row 4 data. The orchestrator did not write the rows it approves. No check changes | orchestrator |
 
 ## Review record
 

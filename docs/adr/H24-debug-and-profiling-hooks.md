@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-21): the M0 rules. The inspector is built in M4, the sampler in M6, the AOT parts in A2 |
+| Status | Accepted (2026-10-22, M2-P5-ACCEPT; review record complete). Was: Draft (2026-10-21): the M0 rules. The inspector is built in M4, the sampler in M6, the AOT parts in A2 |
 | Fix by | M0 rules; AOT parts A2 |
 | Freeze point | Freeze table (README §3.4): rules at M1 exit; AOT parts at the A2 gate |
 | Origin | v1#22; plan status E |
@@ -89,6 +89,7 @@ Copied from the plan row: lazy position tables, kept ScopeInfo, a debug bytecode
 | 2026-10-22 | clarify | 2 `path:line` references moved to the code after the M2-P4 merge (drift script, [I15]). No check changes | P4 integration fixer |
 | 2026-10-22 | clarify | 1 `.github/workflows/ci.yml` line reference moved down 6 lines after the setup-node step (M2-P4-CI-NODE24; drift script, [I15]). No check changes. | orchestrator |
 | 2026-10-22 | clarify | Review record row 2 names the P5 Codex run (slice accept4): 2 findings, A1 on H23 and A2 on H04, both fixed (clarify); no finding on this ADR. Text only; no check changes | orchestrator |
+| 2026-10-22 | clarify | Status Draft -> Accepted (M2-P5-ACCEPT). The §3.1 review record is complete: row 1 P4-ACCEPT-3, row 2 Codex (m2p4-docs run; P5 accept4 run), row 3 P5-ACCEPT-4 (with the P5 round-2 notes), row 4 data. The orchestrator did not write the rows it approves. No check changes | orchestrator |
 
 ## Review record
 

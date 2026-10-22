@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-21). Late: due M0 wk3 |
+| Status | Accepted (2026-10-22, M2-P5-ACCEPT; review record complete). Was: Draft (2026-10-21). Late: due M0 wk3 |
 | Fix by | M0 wk3 |
 | Freeze point | M1 exit |
 | Origin | v1#21; plan status E (extended 2026-10-20: interrupt polls, inspector, `panic = "abort"`) |
@@ -129,6 +129,7 @@ Limit checks on VM and native stacks: calls, JIT and AOT prologues, recursive bu
 | 2026-10-22 | clarify | 1 `path:line` reference moved to the code after the M2-P5 merge and the P5 fixer changes (drift script, [I15]). No check changes | P5 integration fixer |
 | 2026-10-22 | clarify | Facts "Interrupt poll" and Consequences: a call of a host function takes no budget unit (`call_function_object` returns through `call_host` before its poll and decrement; T0 sends a host callee to `slow::call`, which calls `call_host` with no decrement), so the wait bound counts back edges, bytecode calls and the other budget units, not host calls (M2-P5 Codex round 2, A1). Review record row 3 gets V4. No Decision, Rules or check changes | P5 fixer |
 | 2026-10-22 | clarify | Review record row 2 names the P5 Codex run (slice accept4): 2 findings, A1 on this ADR (fixed 6684988, clarify; row 3 V4) and A2 on H04; and the Codex run on the P5 integration-fixer diff (ec9014c..676dc5c): approve, no finding. Text only; no check changes | orchestrator |
+| 2026-10-22 | clarify | Status Draft -> Accepted (M2-P5-ACCEPT). The §3.1 review record is complete: row 1 P4-ACCEPT-3, row 2 Codex (m2p4-docs run; P5 accept4 run), row 3 P5-ACCEPT-4 (with the P5 round-2 notes), row 4 data. The orchestrator did not write the rows it approves. No check changes | orchestrator |
 
 ## Review record
 
