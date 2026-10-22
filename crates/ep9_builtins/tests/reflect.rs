@@ -268,3 +268,47 @@ fn non_object_targets_throw() {
         lines(&["T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,T,RangeError,T,RangeError,SyntaxError",])
     );
 }
+
+/// `Reflect.set` with an array receiver that is not the target, and `super.length = v` on an
+/// array `this`: the store reaches the receiver's `length` through ArraySetLength
+/// (§10.1.9.2 step 2.d; `property::define_on_receiver`, P5 fixer R1). The length changes, no
+/// second `length` key appears, and an invalid length is a RangeError.
+#[test]
+fn set_length_on_an_array_receiver() {
+    assert_eq!(
+        common::run_both(
+            r#"
+            var r = [1, 2, 3];
+            print(Reflect.set({}, 'length', 1, r), r.length, Object.getOwnPropertyNames(r).join());
+            var q = [1, 2, 3];
+            try { print(Reflect.set({}, 'length', 'x', q), q.length); } catch (e) { print(e.name, q.length); }
+            var a = [1, 2];
+            print(Reflect.set([0, 0, 0, 0], 'length', 0, a), a.length, Object.keys(a).join());
+            var g = [1, 2, 3];
+            print(Reflect.set([9], 'length', 5, g), g.length, g[4]);
+            var pe = Object.preventExtensions([1, 2, 3]);
+            print(Reflect.set({}, 'length', 1, pe), pe.length);
+            var w = [1, 2, 3];
+            print(Reflect.set({}, 'length', '2', w), w.length, Object.getOwnPropertyNames(w).join());
+            class A extends Array { m() { super.length = 1; return this.length; } }
+            print(new A(1, 2, 3).m());
+            class C { m() { super.length = 1; return this.length; } }
+            var c = [1, 2, 3];
+            print(C.prototype.m.call(c), Object.getOwnPropertyNames(c).join());
+            var o = { __proto__: {}, m() { 'use strict'; super.length = 'x'; } };
+            try { o.m.call([1, 2]); print('no throw'); } catch (e) { print(e.name); }
+            "#
+        ),
+        lines(&[
+            "true 1 0,length",
+            "RangeError 3",
+            "true 0 ",
+            "true 5 undefined",
+            "true 1",
+            "true 2 0,1,length",
+            "1",
+            "1 0,length",
+            "RangeError",
+        ])
+    );
+}

@@ -997,8 +997,10 @@ impl<'s> Cx<'s> {
 
     /// O.`[[Set]]`(P, V, Receiver) (§10.1.9.1 OrdinarySet): the first property on the chain
     /// from `o` decides; a setter runs with `receiver` as `this`, and a new or writable data
-    /// property lands on `receiver` (`Reflect.set`, §28.1.12). `Ok(false)` when the
-    /// assignment fails, also for a receiver that is not an object; it never throws for that.
+    /// property lands on `receiver` (`Reflect.set`, §28.1.12) through its
+    /// `[[DefineOwnProperty]]`, so an array receiver's `length` goes through ArraySetLength
+    /// (a RangeError for an invalid length). `Ok(false)` when the assignment fails, also for
+    /// a receiver that is not an object; it never throws for that.
     pub fn set_with_receiver(
         &mut self,
         o: impl Into<Local<'s, JsObject>>,
