@@ -3,7 +3,9 @@
 # fake spike-b that prints a given SPIKE-B-RESULT line, SB_SPD_BIN a fake sp-dispatch that
 # prints a given CPU, SB_TAU_JSON a written bench.json, and SB_HOST_FILE a host file of this
 # machine with a load guard that always passes (no wait). So each case changes one input and
-# checks the VERDICT line and the labels. gate.sh structural runs it.
+# checks the VERDICT line and the labels. gate.sh structural runs it (and gate.sh b, when
+# structural did not). The B cases (P4-PLACEMENT-B) run bench.sh with SB_PLACEMENT=b: the
+# same verdict rules, gate config B, and a result line for another gate config is invalid.
 #
 #   bench-verdict-test.sh [bench.sh]     (default: the bench.sh next to this file)
 #
@@ -59,6 +61,12 @@ EOF
 }
 
 failed=0
+# run_bench <result line>: bench.sh with the fake inputs; SB_PLACEMENT from $placement.
+run_bench() {
+  FAKE_RESULT="$1" SB_BIN="$tmp/spike-b" SB_SPD_BIN="${spd_bin:-$tmp/sp-dispatch}" \
+    SB_TAU_JSON="$tmp/bench.json" SB_HOST_FILE="$tmp/host.toml" SB_SETTLE_S=0 SB_WAIT_MIN=0 \
+    SB_AFTER_S=0 SB_GUARD=1 SB_COMMIT=test SB_PLACEMENT="${placement:-a}" bash "$bench" 2>&1
+}
 ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; failed=1; }
 # check <name> <result line> <want VERDICT text> [<want label text>...]: runs bench.sh with
@@ -67,9 +75,7 @@ check() {
   local name="$1" result="$2" want="$3"
   shift 3
   local out st
-  out="$(FAKE_RESULT="$result" SB_BIN="$tmp/spike-b" SB_SPD_BIN="${spd_bin:-$tmp/sp-dispatch}" \
-    SB_TAU_JSON="$tmp/bench.json" SB_HOST_FILE="$tmp/host.toml" SB_SETTLE_S=0 SB_WAIT_MIN=0 \
-    SB_AFTER_S=0 SB_GUARD=1 SB_COMMIT=test bash "$bench" 2>&1)"
+  out="$(run_bench "$result")"
   st=$?
   local verdict
   verdict="$(grep '^VERDICT: ' <<<"$out")"
@@ -127,6 +133,43 @@ spd_bin="$tmp/no-such-sp-dispatch"
 check "no sp-dispatch binary to check the CPU" "$pass" "provisional (bench verdict: pass)" \
   "tau source cpu not checked"
 unset spd_bin
+
+# invalid <name> <result line> <want text>: bench.sh must exit 1 and print the text.
+invalid() {
+  local out st
+  out="$(run_bench "$2")"
+  st=$?
+  if [ "$st" != 1 ] || ! grep -qF -- "$3" <<<"$out"; then
+    bad "$1: exit $st, want 1 and '$3'"
+    printf '%s\n' "$out" | sed 's/^/     | /'
+    return
+  fi
+  ok "$1: exit 1 ($3)"
+}
+
+# The B cases: SB_PLACEMENT=b, gate config B.
+placement=b
+pass_b="pass median=10.000 lo=9.000 hi=11.000 rounds=15 k=5 tau=0.300000 gate=B labels=-"
+check "B: every input is the protocol's" "$pass_b" "pass (bench verdict: pass)"
+out_b="$(run_bench "$pass_b")"
+if grep -qx "gate config: B" <<<"$out_b"; then ok "B: prints 'gate config: B'"; else bad "B: no 'gate config: B' line"; fi
+check "B: a fail" "fail median=20.000 lo=19.000 hi=21.000 rounds=15 k=5 tau=0.300000 gate=B labels=-" \
+  "fail (bench verdict: fail)"
+check "B: void before provisional" \
+  "void median=10.000 lo=9.000 hi=11.000 rounds=15 k=5 tau=0.300000 gate=B labels=5 kept rounds (< 15)" \
+  "void (bench verdict: void)" "5 kept rounds"
+tau_json 5 "$cpu"
+check "B: tau from 5 SP rounds" "$pass_b" "provisional (bench verdict: pass)" "tau source has 5 rounds"
+tau_json 15 "$cpu"
+invalid "B: a result line for gate config A" "$pass" "is for gate config A, not B"
+invalid "B: a result line for gate config A (gate=A)" \
+  "pass median=10.000 lo=9.000 hi=11.000 rounds=15 k=5 tau=0.300000 gate=A labels=-" \
+  "is for gate config A, not B"
+placement=a
+check "A: a result line with gate=A" \
+  "pass median=10.000 lo=9.000 hi=11.000 rounds=15 k=5 tau=0.300000 gate=A labels=-" \
+  "pass (bench verdict: pass)"
+invalid "A: a result line for gate config B" "$pass_b" "is for gate config B, not A"
 
 if [ "$failed" = 0 ]; then echo "bench-verdict-test: PASS"; else echo "bench-verdict-test: FAIL"; fi
 exit "$failed"

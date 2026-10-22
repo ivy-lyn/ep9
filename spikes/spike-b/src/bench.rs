@@ -6,13 +6,23 @@
 //! ```text
 //! spike-b bench --tau NS [--tau-samples a,b,..] [--dispatches D] [--tau-source FILE]
 //!               [--rounds 15] [--marginal-rounds 31] [--n 100000000] [--commit TEXT]
+//!               [--placement a|b]
 //!                                     the rounds of protocol §5-§6, then the verdict
-//! spike-b bench run <A|C|A0|J|JC> [--n N]
+//! spike-b bench run <A|C|A0|J|JC|B|AH> [--n N]
 //!                                     one run in this process (one process per run, §5)
 //! spike-b bench k                     k and the counted listing lines (§4)
-//! spike-b bench ratio --ir-a X --ir-c Y --ir-loop Z --dispatches D --n N [--ir-ops O]
-//!                                     the cachegrind instruction ratio of §8 (a report)
+//! spike-b bench ratio [--config X] --ir-a I --ir-c Y --ir-loop Z --dispatches D --n N
+//!               [--ir-ops O] [--no-listing]
+//!                                     the cachegrind instruction ratio of §8 (a report);
+//!                                     `--ir-a` is the Ir of config X (default A)
 //! ```
+//!
+//! `--placement` picks the gate config and the configs of a round (P4-PLACEMENT-B task 10):
+//!
+//! | Placement | Gate config | Configs of a round | Reports |
+//! |---|---|---|---|
+//! | a (default; window 1) | A | A, C, A0, J, JC | A0, J |
+//! | b (`SB_PLACEMENT=b bench.sh`) | B | B, C, A0, A, AH | A0, RT of A (its window-1 path), RT of AH (M2-P4-B-AB) |
 //!
 //! | Config | `drive` | `id` | Kernel | Entry from Rust |
 //! |---|---|---|---|---|
@@ -21,6 +31,11 @@
 //! | A0 | T0 | T0 | A | `Isolate::call` |
 //! | J | JIT | T0 | A | `ep9_vm::call_from_rust` |
 //! | JC | JIT | not called | C | `ep9_vm::call_from_rust` |
+//! | B | T0 | placement (b) (Opt slot, [`crate::jit_b`]) | A | `Isolate::call` |
+//! | AH | T0 | placement (a) code, AotBaseline slot (A-hot: entered from `call_fast`) | A | `Isolate::call` |
+//!
+//! B and AH run T0 with `Dispatch::Sibling` ([`Config::threaded`]; the release default, so
+//! the same dispatch as A, C and A0 in a release build).
 //!
 //! `Isolate::call` on a function with a native slot throws not_implemented (call.rs), so the
 //! configs that JIT `drive` enter it through `call_from_rust` (`harness` tests).
@@ -62,11 +77,15 @@ pub enum Cfg {
     A0,
     J,
     JC,
+    /// Placement (b) (P4-PLACEMENT-B): `id` in (b) code, entered from `call_fast`.
+    B,
+    /// The M2-P4-B-AB report: `id` as placement (a) code entered from `call_fast`.
+    AH,
 }
 
 impl Cfg {
-    /// The configs of one round, in the order that round 0 starts with.
-    pub const ALL: [Cfg; 5] = [Cfg::A, Cfg::C, Cfg::A0, Cfg::J, Cfg::JC];
+    /// Every config (the index order of the times of one round).
+    pub const ALL: [Cfg; 7] = [Cfg::A, Cfg::C, Cfg::A0, Cfg::J, Cfg::JC, Cfg::B, Cfg::AH];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -75,6 +94,8 @@ impl Cfg {
             Cfg::A0 => "A0",
             Cfg::J => "J",
             Cfg::JC => "JC",
+            Cfg::B => "B",
+            Cfg::AH => "AH",
         }
     }
 
@@ -85,7 +106,7 @@ impl Cfg {
     /// Kernel A (with the call) or kernel C (without it).
     fn defs(self) -> &'static str {
         match self {
-            Cfg::A | Cfg::A0 | Cfg::J => LOOP_DEFS,
+            Cfg::A | Cfg::A0 | Cfg::J | Cfg::B | Cfg::AH => LOOP_DEFS,
             Cfg::C | Cfg::JC => LOOP_C_DEFS,
         }
     }
@@ -93,7 +114,7 @@ impl Cfg {
     /// The functions this config JIT-compiles and installs.
     fn jit(self) -> &'static [&'static str] {
         match self {
-            Cfg::A => &["id"],
+            Cfg::A | Cfg::B | Cfg::AH => &["id"],
             Cfg::J | Cfg::JC => &["drive"],
             Cfg::C | Cfg::A0 => &[],
         }
@@ -106,7 +127,52 @@ impl Cfg {
 
     /// True if `drive` calls `f` (= `id`).
     fn calls_id(self) -> bool {
-        matches!(self, Cfg::A | Cfg::A0 | Cfg::J)
+        matches!(self, Cfg::A | Cfg::A0 | Cfg::J | Cfg::B | Cfg::AH)
+    }
+
+    /// The slot kind of `id` in this config (when it calls `id`).
+    fn id_kind(self) -> DispatchKind {
+        match self {
+            Cfg::A => DispatchKind::Baseline,
+            Cfg::B => DispatchKind::Opt,
+            Cfg::AH => DispatchKind::AotBaseline,
+            _ => DispatchKind::Interp,
+        }
+    }
+}
+
+/// Which placement a bench run gates (`--placement`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placement {
+    /// Placement (a), gate config A (window 1; the default).
+    A,
+    /// Placement (b), gate config B (P4-PLACEMENT-B).
+    B,
+}
+
+impl Placement {
+    pub fn parse(s: &str) -> Option<Placement> {
+        match s {
+            "a" => Some(Placement::A),
+            "b" => Some(Placement::B),
+            _ => None,
+        }
+    }
+
+    /// The gate config: RT = ((t_gate - t_C) / n) / tau - k.
+    pub fn gate(self) -> Cfg {
+        match self {
+            Placement::A => Cfg::A,
+            Placement::B => Cfg::B,
+        }
+    }
+
+    /// The configs of one round, in the order that round 0 starts with.
+    pub fn configs(self) -> &'static [Cfg] {
+        match self {
+            Placement::A => &[Cfg::A, Cfg::C, Cfg::A0, Cfg::J, Cfg::JC],
+            Placement::B => &[Cfg::B, Cfg::C, Cfg::A0, Cfg::A, Cfg::AH],
+        }
     }
 }
 
@@ -158,12 +224,25 @@ fn call_drive(s: &mut Session, cfg: Cfg, n: u32) -> Result<(i64, u64), String> {
 /// One run of `cfg` in this process (protocol §5): isolate, kernel, JIT install, the untimed
 /// `drive(f, 10000)`, then one timed `drive(f, n)`. A wrong result of either call is an error.
 pub fn run_config(cfg: Cfg, n: u32) -> Result<Run, String> {
-    let mut s = Session::new(&Config::default())?;
+    let config = match cfg {
+        Cfg::B | Cfg::AH => Config::default().threaded(),
+        _ => Config::default(),
+    };
+    let mut s = Session::new(&config)?;
     s.run(cfg.defs(), "kernel.js")
         .result
         .map_err(|e| format!("kernel: {e}"))?;
-    if !cfg.jit().is_empty() {
-        s.jit(cfg.jit())?;
+    match cfg {
+        Cfg::B => {
+            s.jit_b(cfg.jit())?;
+        }
+        Cfg::AH => {
+            s.jit_a_hot(cfg.jit())?;
+        }
+        _ if !cfg.jit().is_empty() => {
+            s.jit(cfg.jit())?;
+        }
+        _ => {}
     }
     // The slots must be what the config says (the JIT refuses nothing here: `structural ops`).
     let want_drive = if cfg.native_drive() {
@@ -179,11 +258,7 @@ pub fn run_config(cfg: Cfg, n: u32) -> Result<Run, String> {
         ));
     }
     if cfg.calls_id() {
-        let want = if cfg == Cfg::A {
-            DispatchKind::Baseline
-        } else {
-            DispatchKind::Interp
-        };
+        let want = cfg.id_kind();
         let kind = slot_kind(&s, "id")?;
         if kind != Some(want) {
             return Err(format!("{}: id slot {kind:?}, want {want:?}", cfg.name()));
@@ -431,8 +506,8 @@ pub fn rounds_verdict(rt: &Summary, t_a: &Summary, t_c: &Summary) -> &'static st
 
 // ---- the rounds ----------------------------------------------------------------------------
 
-/// The times of one round, in `Cfg::ALL` order.
-type Round = [u64; 5];
+/// The times of one round, in `Cfg::ALL` order (0 for a config the round does not run).
+type Round = [u64; 7];
 
 fn idx(c: Cfg) -> usize {
     Cfg::ALL.iter().position(|&x| x == c).expect("in ALL")
@@ -481,28 +556,34 @@ fn parse_run(cfg: Cfg, n: u32, text: &str) -> Result<u64, String> {
     u64::try_from(ns).map_err(|_| format!("run {}: ns {ns}", cfg.name()))
 }
 
-/// Runs round 0 (warm-up, dropped) and `kept` more rounds. Round r starts at config `r mod 5`.
-fn run_rounds(kept: usize, n: u32, label: &str) -> Result<Vec<Round>, String> {
-    let m = Cfg::ALL.len();
+/// Runs round 0 (warm-up, dropped) and `kept` more rounds of `placement`'s configs. Round r
+/// starts at config `r mod m` of the list.
+fn run_rounds(
+    placement: Placement,
+    kept: usize,
+    n: u32,
+    label: &str,
+) -> Result<Vec<Round>, String> {
+    let list = placement.configs();
+    let m = list.len();
     let mut rounds = Vec::with_capacity(kept);
     for r in 0..=kept {
-        let mut t: Round = [0; 5];
+        let mut t: Round = [0; 7];
         let mut order = Vec::with_capacity(m);
         for j in 0..m {
-            let c = Cfg::ALL[(r + j) % m];
+            let c = list[(r + j) % m];
             t[idx(c)] = run_child(c, n)?;
             order.push(c.name());
         }
-        let ms = |c: Cfg| t[idx(c)] as f64 / 1e6;
+        let times: Vec<String> = list
+            .iter()
+            .map(|&c| format!("{} {:.1} ms", c.name(), t[idx(c)] as f64 / 1e6))
+            .collect();
         eprintln!(
-            "{label} round {r:2}{} [{}] A {:.1} ms, C {:.1} ms, A0 {:.1} ms, J {:.1} ms, JC {:.1} ms",
+            "{label} round {r:2}{} [{}] {}",
             if r == 0 { " (warm-up)" } else { "" },
             order.join(" "),
-            ms(Cfg::A),
-            ms(Cfg::C),
-            ms(Cfg::A0),
-            ms(Cfg::J),
-            ms(Cfg::JC)
+            times.join(", ")
         );
         if r > 0 {
             rounds.push(t);
@@ -513,23 +594,35 @@ fn run_rounds(kept: usize, n: u32, label: &str) -> Result<Vec<Round>, String> {
 
 /// The per-round values of one set of rounds.
 struct Derived {
+    /// RT_r of the gate config.
     rt: Vec<f64>,
     a0: Vec<f64>,
+    /// Placement a: the J report (ns).
     j_ns: Vec<f64>,
+    /// Placement b: RT_r of config A (its window-1 path) and of AH (M2-P4-B-AB), reports.
+    rt_a: Vec<f64>,
+    rt_ah: Vec<f64>,
 }
 
-fn derive(rounds: &[Round], n: u32, tau: f64, k: i64) -> Derived {
+fn derive(placement: Placement, rounds: &[Round], n: u32, tau: f64, k: i64) -> Derived {
     let per = |a: Cfg, b: Cfg, t: &Round| (t[idx(a)] as f64 - t[idx(b)] as f64) / f64::from(n);
+    let rt_of = |c: Cfg| -> Vec<f64> {
+        rounds
+            .iter()
+            .map(|t| per(c, Cfg::C, t) / tau - k as f64)
+            .collect()
+    };
+    let b = placement == Placement::B;
     Derived {
-        rt: rounds
-            .iter()
-            .map(|t| per(Cfg::A, Cfg::C, t) / tau - k as f64)
-            .collect(),
-        a0: rounds
-            .iter()
-            .map(|t| per(Cfg::A0, Cfg::C, t) / tau - k as f64)
-            .collect(),
-        j_ns: rounds.iter().map(|t| per(Cfg::J, Cfg::JC, t)).collect(),
+        rt: rt_of(placement.gate()),
+        a0: rt_of(Cfg::A0),
+        j_ns: if b {
+            Vec::new()
+        } else {
+            rounds.iter().map(|t| per(Cfg::J, Cfg::JC, t)).collect()
+        },
+        rt_a: if b { rt_of(Cfg::A) } else { Vec::new() },
+        rt_ah: if b { rt_of(Cfg::AH) } else { Vec::new() },
     }
 }
 
@@ -540,70 +633,86 @@ fn print_summary(what: &str, unit: &str, s: &Summary) {
     );
 }
 
-/// Prints one set of rounds and returns (verdict, RT summary).
+/// Prints one set of rounds and returns (verdict, RT summary). The void rule reads the IQR of
+/// the gate config's time (t_A, or t_B under placement b) and of t_C.
 fn report_rounds(
+    placement: Placement,
     label: &str,
     rounds: &[Round],
     n: u32,
     tau: f64,
     k: i64,
 ) -> (&'static str, Summary) {
-    let d = derive(rounds, n, tau, k);
+    let d = derive(placement, rounds, n, tau, k);
+    let list = placement.configs();
+    let gate = placement.gate();
     println!();
     println!(
-        "{label}: {} kept rounds, n = {n}, tau = {tau:.6} ns, k = {k}",
-        rounds.len()
+        "{label}: {} kept rounds, n = {n}, tau = {tau:.6} ns, k = {k}, gate config {}",
+        rounds.len(),
+        gate.name()
     );
-    println!(
-        "{:>5} {:>13} {:>13} {:>13} {:>13} {:>13} {:>9} {:>9} {:>9} {:>9}",
-        "round",
-        "t_A ns",
-        "t_C ns",
-        "t_A0 ns",
-        "t_J ns",
-        "t_JC ns",
-        "RT_r",
-        "A0_r",
-        "J_r ns",
-        "J_r tau"
-    );
+    let mut head: Vec<String> = list
+        .iter()
+        .map(|c| format!("{:>13}", format!("t_{} ns", c.name())))
+        .collect();
+    let extra: [&str; 4] = match placement {
+        Placement::A => ["RT_r", "A0_r", "J_r ns", "J_r tau"],
+        Placement::B => ["RT_r", "A0_r", "RT_A_r", "RT_AH_r"],
+    };
+    head.extend(extra.iter().map(|h| format!("{h:>9}")));
+    println!("{:>5} {}", "round", head.join(" "));
     for (i, t) in rounds.iter().enumerate() {
-        println!(
-            "{:>5} {:>13} {:>13} {:>13} {:>13} {:>13} {:>9.3} {:>9.3} {:>9.3} {:>9.3}",
-            i + 1,
-            t[idx(Cfg::A)],
-            t[idx(Cfg::C)],
-            t[idx(Cfg::A0)],
-            t[idx(Cfg::J)],
-            t[idx(Cfg::JC)],
-            d.rt[i],
-            d.a0[i],
-            d.j_ns[i],
-            d.j_ns[i] / tau
-        );
+        let mut row: Vec<String> = list.iter().map(|&c| format!("{:>13}", t[idx(c)])).collect();
+        let vals = match placement {
+            Placement::A => [d.rt[i], d.a0[i], d.j_ns[i], d.j_ns[i] / tau],
+            Placement::B => [d.rt[i], d.a0[i], d.rt_a[i], d.rt_ah[i]],
+        };
+        row.extend(vals.iter().map(|v| format!("{v:>9.3}")));
+        println!("{:>5} {}", i + 1, row.join(" "));
     }
     let col = |c: Cfg| -> Vec<f64> { rounds.iter().map(|t| t[idx(c)] as f64).collect() };
-    let (t_a, t_c) = (summarize(&col(Cfg::A)), summarize(&col(Cfg::C)));
-    for c in Cfg::ALL {
+    let (t_g, t_c) = (summarize(&col(gate)), summarize(&col(Cfg::C)));
+    for &c in list {
         let ms: Vec<f64> = col(c).iter().map(|t| t / 1e6).collect();
         print_summary(&format!("t_{}", c.name()), "ms", &summarize(&ms));
     }
     let rt = summarize(&d.rt);
-    print_summary("RT (gate: T0->JIT->T0 round trip)", "dispatches", &rt);
+    match placement {
+        Placement::A => print_summary("RT (gate: T0->JIT->T0 round trip)", "dispatches", &rt),
+        Placement::B => print_summary("RT (gate B: T0->(b)->T0 round trip)", "dispatches", &rt),
+    }
     print_summary(
         "A0 report (T0->T0 call, same k)",
         "dispatches",
         &summarize(&d.a0),
     );
-    let j = summarize(&d.j_ns);
-    print_summary("J report (JIT->T0->JIT round trip)", "ns", &j);
-    let j_tau: Vec<f64> = d.j_ns.iter().map(|x| x / tau).collect();
-    print_summary("J report in tau units", "dispatches", &summarize(&j_tau));
-    let v = rounds_verdict(&rt, &t_a, &t_c);
+    match placement {
+        Placement::A => {
+            let j = summarize(&d.j_ns);
+            print_summary("J report (JIT->T0->JIT round trip)", "ns", &j);
+            let j_tau: Vec<f64> = d.j_ns.iter().map(|x| x / tau).collect();
+            print_summary("J report in tau units", "dispatches", &summarize(&j_tau));
+        }
+        Placement::B => {
+            print_summary(
+                "RT_A report ((a), slow::call entry)",
+                "dispatches",
+                &summarize(&d.rt_a),
+            );
+            print_summary(
+                "RT_AH report ((a), call_fast entry; B-AB)",
+                "dispatches",
+                &summarize(&d.rt_ah),
+            );
+        }
+    }
+    let v = rounds_verdict(&rt, &t_g, &t_c);
     println!(
-        "{label} verdict: {v} (interval verdict {}; IQR t_A {:.1}%, t_C {:.1}%; void above {VOID_IQR_PCT}%)",
+        "{label} verdict: {v} (interval verdict {}; IQR t_{} {:.1}%, t_C {:.1}%; void above {VOID_IQR_PCT}%)",
         interval_verdict(&rt),
-        t_a.iqr_pct,
+        gate.name(),
+        t_g.iqr_pct,
         t_c.iqr_pct
     );
     (v, rt)
@@ -670,6 +779,7 @@ struct Opts {
     marginal_rounds: usize,
     n: u32,
     commit: String,
+    placement: Placement,
 }
 
 fn parse_opts(args: &[String]) -> Result<Opts, String> {
@@ -682,6 +792,7 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
         marginal_rounds: MARGINAL_ROUNDS,
         n: DEFAULT_N,
         commit: "(not given)".into(),
+        placement: Placement::A,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -709,6 +820,11 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
             }
             "--n" => o.n = val()?.parse().map_err(|e| format!("--n: {e}"))?,
             "--commit" => o.commit = val()?.clone(),
+            "--placement" => {
+                let v = val()?;
+                o.placement =
+                    Placement::parse(v).ok_or_else(|| format!("--placement {v}: want a or b"))?
+            }
             _ => return Err(format!("unknown option {a}")),
         }
     }
@@ -784,6 +900,21 @@ fn coordinate(args: &[String]) -> Result<bool, String> {
         "tau: {tau:.6} ns per loop-kernel dispatch (median_ns.sibling / dispatches of kernel loop)"
     );
     println!("tau source: {}", o.tau_source);
+    let gate = o.placement.gate();
+    println!(
+        "gate config: {} (placement {}; configs of a round: {})",
+        gate.name(),
+        match o.placement {
+            Placement::A => "(a)",
+            Placement::B => "(b)",
+        },
+        o.placement
+            .configs()
+            .iter()
+            .map(|c| c.name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     if let (false, Some(d)) = (o.tau_samples.is_empty(), o.dispatches) {
         let per: Vec<f64> = o.tau_samples.iter().map(|x| x / d).collect();
         print_summary(
@@ -795,8 +926,8 @@ fn coordinate(args: &[String]) -> Result<bool, String> {
     let (k, a, c) = k_value()?;
     print_k(k, &a, &c);
     let mut labels = parameter_labels(cfg!(debug_assertions), o.rounds, o.marginal_rounds, o.n);
-    let rounds = run_rounds(o.rounds, o.n, "run")?;
-    let (mut verdict, mut rt) = report_rounds("run", &rounds, o.n, tau, k);
+    let rounds = run_rounds(o.placement, o.rounds, o.n, "run")?;
+    let (mut verdict, mut rt) = report_rounds(o.placement, "run", &rounds, o.n, tau, k);
     if verdict == "marginal" {
         labels.push("marginal".into());
     }
@@ -807,8 +938,8 @@ fn coordinate(args: &[String]) -> Result<bool, String> {
         labels.push(l);
     } else if verdict == "marginal" {
         // Protocol §6: run again with 31 kept rounds; the median decides, the label stays.
-        let again = run_rounds(o.marginal_rounds, o.n, "marginal re-run")?;
-        let (v2, rt2) = report_rounds("marginal re-run", &again, o.n, tau, k);
+        let again = run_rounds(o.placement, o.marginal_rounds, o.n, "marginal re-run")?;
+        let (v2, rt2) = report_rounds(o.placement, "marginal re-run", &again, o.n, tau, k);
         rt = rt2;
         verdict = if v2 == "void" {
             "void"
@@ -824,11 +955,12 @@ fn coordinate(args: &[String]) -> Result<bool, String> {
     }
     println!();
     println!(
-        "SPIKE-B-RESULT {verdict} median={:.3} lo={:.3} hi={:.3} rounds={} k={k} tau={tau:.6} labels={}",
+        "SPIKE-B-RESULT {verdict} median={:.3} lo={:.3} hi={:.3} rounds={} k={k} tau={tau:.6} gate={} labels={}",
         rt.median,
         rt.lo,
         rt.hi,
         rt.n,
+        gate.name(),
         if labels.is_empty() {
             "-".to_string()
         } else {
@@ -841,13 +973,13 @@ fn coordinate(args: &[String]) -> Result<bool, String> {
 /// `spike-b bench run <cfg> [--n N]`.
 fn run_one(args: &[String]) -> Result<bool, String> {
     let [name, rest @ ..] = args else {
-        return Err("run <A|C|A0|J|JC> [--n N]".into());
+        return Err("run <A|C|A0|J|JC|B|AH> [--n N]".into());
     };
     let cfg = Cfg::parse(name).ok_or_else(|| format!("unknown config {name}"))?;
     let n = match rest {
         [] => DEFAULT_N,
         [flag, v] if flag == "--n" => v.parse().map_err(|e| format!("--n: {e}"))?,
-        _ => return Err("run <A|C|A0|J|JC> [--n N]".into()),
+        _ => return Err("run <A|C|A0|J|JC|B|AH> [--n N]".into()),
     };
     let r = run_config(cfg, n)?;
     println!(
@@ -860,10 +992,23 @@ fn run_one(args: &[String]) -> Result<bool, String> {
 }
 
 /// `spike-b bench ratio`: protocol §8, `((Ir_A - Ir_C) / n) / (Ir_loop / dispatches) - k`.
+/// `--config X` names the config whose Ir `--ir-a` is (default A; B, A0 and AH are reports
+/// of the (b) run, P4-PLACEMENT-B task 13); `--no-listing` prints k without its listing.
 fn ratio(args: &[String]) -> Result<bool, String> {
     let mut v = std::collections::BTreeMap::new();
+    let mut config = Cfg::A;
+    let mut listing = true;
     let mut it = args.iter();
     while let Some(a) = it.next() {
+        if a == "--no-listing" {
+            listing = false;
+            continue;
+        }
+        if a == "--config" {
+            let x = it.next().ok_or("--config needs a value")?;
+            config = Cfg::parse(x).ok_or_else(|| format!("--config {x}: unknown config"))?;
+            continue;
+        }
         let key = a
             .strip_prefix("--")
             .filter(|k| ["ir-a", "ir-c", "ir-loop", "ir-ops", "dispatches", "n"].contains(k))
@@ -889,11 +1034,16 @@ fn ratio(args: &[String]) -> Result<bool, String> {
         get("n")?,
     );
     let (k, a, c) = k_value()?;
-    print_k(k, &a, &c);
+    if listing {
+        print_k(k, &a, &c);
+    } else {
+        println!("k = {k}");
+    }
     let per_dispatch = ir_loop / d;
     let r = ((ir_a - ir_c) / n) / per_dispatch - k as f64;
+    let x = config.name();
     println!(
-        "cachegrind: Ir_A {ir_a:.0}, Ir_C {ir_c:.0}, n {n:.0}: (Ir_A - Ir_C) / n = {:.3} Ir per iteration",
+        "cachegrind: Ir_{x} {ir_a:.0}, Ir_C {ir_c:.0}, n {n:.0}: (Ir_{x} - Ir_C) / n = {:.3} Ir per iteration",
         (ir_a - ir_c) / n
     );
     println!(
@@ -906,7 +1056,7 @@ fn ratio(args: &[String]) -> Result<bool, String> {
         );
     }
     println!(
-        "CACHEGRIND-RATIO {r:.3} (dispatches; a report, never a gate; cpu: {})",
+        "CACHEGRIND-RATIO {r:.3} config={x} (dispatches; a report, never a gate; cpu: {})",
         cpu_model()
     );
     Ok(true)
@@ -924,7 +1074,7 @@ pub fn main(args: &[String]) -> i32 {
         Some("ratio") => ratio(&args[1..]),
         Some(a) if !a.starts_with("--") => {
             eprintln!(
-                "usage: spike-b bench [--tau NS ...] | run <A|C|A0|J|JC> [--n N] | k | ratio ..."
+                "usage: spike-b bench [--tau NS ...] [--placement a|b] | run <A|C|A0|J|JC|B|AH> [--n N] | k | ratio ..."
             );
             return 2;
         }
@@ -1004,13 +1154,74 @@ mod tests {
     }
 
     /// Every config returns n in this process (debug build, small n), with the slot kinds of
-    /// the protocol table.
+    /// the protocol table. B and AH run T0 with `Dispatch::Sibling`, whose debug build has no
+    /// tail calls (the native stack grows per instruction), so the configs run on a thread
+    /// with a large stack. B needs the (b) emitter (AArch64); AH runs everywhere.
     #[test]
     fn every_config_returns_n() {
-        for c in Cfg::ALL {
-            let r = run_config(c, 1000).unwrap_or_else(|e| panic!("{}: {e}", c.name()));
-            assert_eq!(r.result, 1000, "{}", c.name());
+        let r = std::thread::Builder::new()
+            .stack_size(1 << 30)
+            .spawn(|| {
+                for c in Cfg::ALL {
+                    let b_built =
+                        crate::emit::Arch::HOST.is_some_and(crate::jit_b::BEmitter::builds);
+                    if c == Cfg::B && !b_built {
+                        continue;
+                    }
+                    let r = run_config(c, 1000).unwrap_or_else(|e| panic!("{}: {e}", c.name()));
+                    assert_eq!(r.result, 1000, "{}", c.name());
+                }
+            })
+            .expect("thread")
+            .join();
+        if let Err(p) = r {
+            std::panic::resume_unwind(p);
         }
+    }
+
+    /// `--placement` picks the gate config and the round's configs; each list has C, A0 and
+    /// A once, and its gate config first.
+    #[test]
+    fn placements_name_their_gate_config_and_rounds() {
+        assert_eq!(Placement::parse("a"), Some(Placement::A));
+        assert_eq!(Placement::parse("b"), Some(Placement::B));
+        assert_eq!(Placement::parse("B"), None);
+        for p in [Placement::A, Placement::B] {
+            let l = p.configs();
+            assert_eq!(l[0], p.gate());
+            for c in [Cfg::C, Cfg::A0, Cfg::A] {
+                assert_eq!(l.iter().filter(|&&x| x == c).count(), 1, "{p:?} {c:?}");
+            }
+        }
+        assert!(Placement::B.configs().contains(&Cfg::AH));
+        let o = parse_opts(&["--placement".into(), "b".into()]).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(o.placement, Placement::B);
+        assert!(parse_opts(&["--placement".into(), "c".into()]).is_err());
+        for c in Cfg::ALL {
+            assert_eq!(Cfg::parse(c.name()), Some(c));
+        }
+    }
+
+    /// The B run's derived values: RT of B, A and AH, each against C.
+    #[test]
+    fn the_b_run_derives_rt_of_b_a_and_ah() {
+        let mut t: Round = [0; 7];
+        for (c, ns) in [
+            (Cfg::C, 1000),
+            (Cfg::B, 3000),
+            (Cfg::A, 5000),
+            (Cfg::AH, 4000),
+            (Cfg::A0, 2000),
+        ] {
+            t[idx(c)] = ns;
+        }
+        // n = 100, tau = 1, k = 5: (t_X - 1000) / 100 - 5.
+        let d = derive(Placement::B, &[t], 100, 1.0, 5);
+        assert_eq!(
+            (d.rt[0], d.a0[0], d.rt_a[0], d.rt_ah[0]),
+            (15.0, 5.0, 35.0, 25.0)
+        );
+        assert!(d.j_ns.is_empty());
     }
 
     #[test]

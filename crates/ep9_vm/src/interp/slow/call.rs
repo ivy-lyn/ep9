@@ -220,6 +220,12 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
         );
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     }
+    #[cfg(feature = "spike-native")]
+    if crate::native::b_callee(callee).is_some() {
+        return enter_b_cold(cx, fp, s.next_pc, fi, callee, this, argc, |i| {
+            args[i as usize]
+        });
+    }
     if !runs_bytecode(fi) {
         return Err(not_implemented(cx, "calling code of this dispatch kind"));
     }
@@ -465,6 +471,57 @@ fn call_native(cx: &mut Cx, fp: *mut u64, s: &CallSite, fi: &FunctionInfo) -> Re
     cx.out_fp = fp;
     cx.out_pc = s.next_pc;
     r
+}
+
+/// Spike B placement (b) (feature `spike-native`, P4-PLACEMENT-B task 4): the cold arm of a
+/// call of a (b) callee (`native::b_callee`), the call that T0's `call_fast` did not take: the
+/// budget poll, a prefixed (`Wide`/`ExtraWide`) call, a spread call, a bound callee, a full VM
+/// stack. It pushes the canonical frame (return pc = the caller's next instruction), takes one
+/// budget unit and sets `cx.out_fp`/`cx.out_pc` so that the dispatch continues at the
+/// `OP_ENTER_B` stub byte: the (b) code under a threaded expansion, the bytecode under the
+/// match loop (D4). No Rust recursion, no native call, no feedback count (the (b) code records
+/// none). A full VM stack is the VM stack's RangeError, unwound from the call instruction.
+/// `[[Construct]]` of a (b) function does not get here: it throws "not implemented", as for
+/// placement (a).
+#[cfg(feature = "spike-native")]
+#[allow(clippy::too_many_arguments)]
+fn enter_b_cold(
+    cx: &mut Cx,
+    fp: *mut u64,
+    next_pc: *const u8,
+    fi: &FunctionInfo,
+    callee: u64,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+) -> Res<u64> {
+    #[cfg(test)]
+    crate::native::B_COLD_ENTRIES.with(|h| h.set(h.get() + 1));
+    let this = call::bind_this(fi, this, cx.rt().global());
+    // SAFETY: `frame_top(fp)` is the first free slot above the live top frame (bytecode runs
+    // with no scratch area), and `arg` reads Values the caller keeps rooted.
+    let nfp = unsafe {
+        call::push_frame(
+            frame_top(fp),
+            cx.stack_limit,
+            fi,
+            callee,
+            this,
+            argc,
+            arg,
+            fp,
+            next_pc,
+            object::function_context(callee),
+            UNDEFINED,
+        )
+    };
+    let Some(nfp) = nfp else {
+        return stack_overflow(cx);
+    };
+    cx.budget -= 1;
+    cx.out_fp = nfp;
+    cx.out_pc = crate::native::ENTER_B_STUB.as_ptr();
+    Ok(UNDEFINED)
 }
 
 /// Walks the chain of the bound callee `f` (`bound::unwrap`; `new_target` undefined for a

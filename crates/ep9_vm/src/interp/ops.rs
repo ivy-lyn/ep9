@@ -274,6 +274,7 @@ fn jump_if(st: &St<'_>, c: bool, t: Fwd) -> Done {
 /// While the callee has no feedback vector, a call that pushes its frame here counts in
 /// `invocations`; the call that reaches `feedback_threshold` goes cold, and `slow::call`
 /// makes the vector before it pushes the frame (H16, `feedback.rs`).
+#[cfg(not(feature = "spike-native"))]
 #[inline(always)]
 fn call_fast(
     st: &mut St<'_>,
@@ -327,6 +328,91 @@ fn call_fast(
             }
             st.fp = n;
             Flow::Jump(fi.code)
+        }
+        None => Flow::Cold,
+    }
+}
+
+/// `call_fast` of a `spike-native` build (Spike B, P4-PLACEMENT-B; M2-P4-B-OPS). A T0 callee
+/// takes the path of the default build above. A callee with native code that the hot path
+/// enters gets the same frame push, then the dispatch continues at a VM stub byte
+/// (`native::hot_stub`): `OP_ENTER_B` for a placement (b) slot (`DispatchKind::Opt`, written
+/// by `native::install_native_b`), whose handler tail-enters the (b) code with the 4 handler
+/// arguments; `OP_ENTER_A_HOT` for the M2-P4-B-AB report (placement (a) code in an
+/// AotBaseline slot), whose handler calls the native code. Both take one budget unit as a T0
+/// callee does, record no feedback and are never class constructors (the installs refuse
+/// them). Any other slot (placement (a) in a Baseline slot: config A of the D21 bench) goes
+/// cold, as in the default build. The match loop runs the callee's bytecode at both stub
+/// bytes (D4).
+#[cfg(feature = "spike-native")]
+#[inline(always)]
+fn call_fast(
+    st: &mut St<'_>,
+    callee: u64,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(&St<'_>, u32) -> u64,
+) -> Flow {
+    if !object::is_function(callee) {
+        return Flow::Cold;
+    }
+    let fi = object::function_info(callee);
+    let kind = fi.slot.kind_byte();
+    let interp = kind == DispatchKind::Interp as u8;
+    if interp {
+        if fi.is_class_constructor() {
+            return Flow::Cold;
+        }
+    } else if crate::native::hot_stub(kind).is_none() {
+        return Flow::Cold;
+    }
+    st.cx.budget -= 1;
+    if st.cx.budget <= 0 {
+        return Flow::Cold;
+    }
+    // Without a vector, `invocations` is below the threshold, so `+ 1` never overflows.
+    if interp
+        && fi.feedback.get().is_null()
+        && fi.invocations.get() + 1 >= st.cx.feedback_threshold
+    {
+        return Flow::Cold;
+    }
+    let this = call::bind_this(fi, this, st.cx.global_this);
+    let base = st.fp.wrapping_add(st.info().register_count as usize);
+    let (limit, fp, next) = (st.cx.stack_limit, st.fp, st.next);
+    let context = object::function_context(callee);
+    let s: &St<'_> = st;
+    // SAFETY: as in the default build's `call_fast`.
+    let nfp = unsafe {
+        call::push_frame(
+            base,
+            limit,
+            fi,
+            callee,
+            this,
+            argc,
+            |i| arg(s, i),
+            fp,
+            next,
+            context,
+            UNDEFINED,
+        )
+    };
+    match nfp {
+        Some(n) => {
+            st.fp = n;
+            // The slot kind is read again here, so no stub address stays live across the
+            // frame push (a spike-native build keeps the default build's register use).
+            match crate::native::hot_stub(fi.slot.kind_byte()) {
+                Some(s) => Flow::Jump(s),
+                None => {
+                    // Read again here, so no count stays live across the frame push.
+                    if fi.feedback.get().is_null() {
+                        fi.invocations.set(fi.invocations.get() + 1);
+                    }
+                    Flow::Jump(fi.code)
+                }
+            }
         }
         None => Flow::Cold,
     }

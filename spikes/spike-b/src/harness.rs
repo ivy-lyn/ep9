@@ -92,6 +92,16 @@ impl Config {
         ]
     }
 
+    /// This config with the T0 dispatch `Dispatch::Sibling` (P4-PLACEMENT-B): placement (b)
+    /// code runs only under a threaded expansion; the match loop (the debug default) runs the
+    /// bytecode of a (b) function instead (plan-v6 D4).
+    pub fn threaded(self) -> Config {
+        Config {
+            dispatch: Dispatch::Sibling,
+            ..self
+        }
+    }
+
     pub fn isolate_config(&self) -> IsolateConfig {
         IsolateConfig {
             heap: HeapConfig {
@@ -339,6 +349,100 @@ impl Session {
     /// True if `pc` lies in JIT code of this session.
     pub fn is_jit_pc(&self, pc: usize) -> bool {
         self.modules.iter().any(|m| m.contains(pc))
+    }
+}
+
+/// How [`Session::install_as`] installs placed code (P4-PLACEMENT-B).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstallKind {
+    /// Placement (b) code ([`crate::jit_b`]): an Opt slot, `ep9_vm::install_native_b`.
+    B,
+    /// Placement (a) code in an AotBaseline slot: T0's `call_fast` enters it (the M2-P4-B-AB
+    /// report, config A-hot); config A keeps its Baseline slot and its cold entry.
+    AHot,
+}
+
+// P4-PLACEMENT-B additions: placement (b) and the A-hot report. `jit`, `install` and the
+// field order above keep their behaviour (plan-v6 D7).
+impl Session {
+    /// Compiles the global function `name` with the placement (b) emitter, without installing
+    /// it.
+    pub fn compile_function_b(&self, name: &str) -> Result<FunctionCode, String> {
+        let (_, input) = self.input(name)?;
+        let mut e = crate::jit_b::BEmitter::host().ok_or_else(|| Refusal::Arch.to_string())?;
+        e.emit(&input).map_err(|r| format!("{name}: {r}"))
+    }
+
+    /// Placement (b): compiles the global functions `names` with [`crate::jit_b::BEmitter`]
+    /// into one module and installs each in an Opt slot. Fails if any is refused (on x86-64
+    /// every one is: [`Refusal::Arch`]).
+    pub fn jit_b(&mut self, names: &[&str]) -> Result<&[Placed], String> {
+        let mut codes = Vec::with_capacity(names.len());
+        for name in names {
+            codes.push(self.compile_function_b(name)?);
+        }
+        self.install_as(InstallKind::B, names, codes)
+    }
+
+    /// The M2-P4-B-AB report: compiles `names` with the placement (a) emitter and installs
+    /// them in AotBaseline slots, which T0's `call_fast` enters (config A-hot).
+    pub fn jit_a_hot(&mut self, names: &[&str]) -> Result<&[Placed], String> {
+        let mut codes = Vec::with_capacity(names.len());
+        for name in names {
+            codes.push(self.compile_function(name)?);
+        }
+        self.install_as(InstallKind::AHot, names, codes)
+    }
+
+    /// [`Session::install`] with the install `kind`: the same module rules (all or nothing,
+    /// kept until the session drops).
+    pub fn install_as(
+        &mut self,
+        kind: InstallKind,
+        names: &[&str],
+        codes: Vec<FunctionCode>,
+    ) -> Result<&[Placed], String> {
+        let mut fns = Vec::with_capacity(names.len());
+        for (name, code) in names.iter().zip(&codes) {
+            let (f, input) = self.input(name)?;
+            if input.key != code.key {
+                return Err(format!("{name}: the code was made for another function"));
+            }
+            fns.push(f);
+        }
+        let module = InMemory.finalize(codes).map_err(|e| e.to_string())?;
+        for (i, &f) in fns.iter().enumerate() {
+            let range = module.functions()[i].code.clone();
+            // SAFETY: function `i` of the module was compiled from `f` (same global, the
+            // isolate did not run in between) by the emitter of `kind`, so it has that
+            // install's ABI (b: the T0 handler ABI and the (b) exit rules; a: `NativeEntry`).
+            // The module outlives the installation: on success it goes to `self.modules`,
+            // which drops after `self.iso`; on a refusal the loop below uninstalls functions
+            // 0..i before the module drops.
+            let r = unsafe {
+                match kind {
+                    InstallKind::B => ep9_vm::install_native_b(&self.iso, f, range),
+                    InstallKind::AHot => ep9_vm::install_native(
+                        &self.iso,
+                        f,
+                        ep9_vm::DispatchKind::AotBaseline,
+                        range,
+                    ),
+                }
+            };
+            if let Err(e) = r {
+                let stuck = fns[..i]
+                    .iter()
+                    .filter(|&&g| ep9_vm::uninstall_native(&self.iso, g).is_err())
+                    .count();
+                if stuck > 0 {
+                    self.keep(module);
+                }
+                return Err(format!("{}: install refused: {e:?}", names[i]));
+            }
+        }
+        self.keep(module);
+        Ok(self.modules.last().expect("pushed").functions())
     }
 }
 

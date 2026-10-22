@@ -10,10 +10,19 @@
 #        non-unwinding table-function boundary (M2-P1-NE-PANIC)
 #     4  bench-verdict-test.sh: the verdict logic of bench.sh on fake inputs (no bench run);
 #        SKIP when node is not on PATH
-#   gate.sh              the same as `gate.sh structural` (later phases add more steps)
+#   gate.sh b            (plan-v6 P4-PLACEMENT-B task 9; the SPIKEB(b) acceptance)
+#     1  cargo test, the jit_b tests: the (b) emitter (prologue, no `ret`, no address, CFI)
+#     2  release build: `spike-b structural-b all`, the opcode lists and checks (a)-(h) on
+#        placement (b) code (src/jit_b/structural.rs), T0 under Dispatch::Sibling
+#     3  debug build: `spike-b structural-b h` (debug sibling calls have no tail calls, so
+#        the long checks run in release only)
+#     4  bench-verdict-test.sh (the B cases too), if `structural` did not run it already
+#     On a target where placement (b) is not built (x86-64), steps 2-3 print SKIP with the
+#     `Refusal` text and pass.
+#   gate.sh              `gate.sh structural`, then `gate.sh b`
 #
 # Env: CARGO_TARGET_DIR (default: spikes/spike-b/target),
-#      SPIKE_B_DEBUG_ALL=1 runs all of (a)-(h) in step 3, not only (h).
+#      SPIKE_B_DEBUG_ALL=1 runs all of (a)-(h) in step 3 of `structural`, not only (h).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,6 +64,13 @@ structural() {
   # The test drives bench.sh's host check, which needs node. The gate host and the CI runners
   # have node; a bare container (local CI linux arm64 Docker) does not, and the logic it tests
   # is the same shell on every host.
+  verdict
+}
+
+verdict_ran=0
+verdict() {
+  if [ "$verdict_ran" = 1 ]; then return; fi
+  verdict_ran=1
   if command -v node >/dev/null; then
     run "bench-verdict" bash "$here/bench-verdict-test.sh"
   else
@@ -62,11 +78,33 @@ structural() {
   fi
 }
 
-step="${1:-structural}"
+placement_b() {
+  run "b/unit-tests" cargo test --locked jit_b
+  run "b/build-release" cargo build --locked --release
+  if [ -x "$CARGO_TARGET_DIR/release/spike-b$exe" ]; then
+    run "structural-b/release" "$CARGO_TARGET_DIR/release/spike-b$exe" structural-b all
+  else
+    record "structural-b/release" FAIL "no release binary"
+  fi
+  run "b/build-debug" cargo build --locked
+  if [ -x "$CARGO_TARGET_DIR/debug/spike-b$exe" ]; then
+    run "structural-b/debug-h" "$CARGO_TARGET_DIR/debug/spike-b$exe" structural-b h
+  else
+    record "structural-b/debug-h" FAIL "no debug binary"
+  fi
+  verdict
+}
+
+step="${1:-all}"
 case "$step" in
   structural) structural ;;
+  b) placement_b ;;
+  all)
+    structural
+    placement_b
+    ;;
   *)
-    echo "usage: gate.sh [structural]" >&2
+    echo "usage: gate.sh [structural | b]" >&2
     exit 2
     ;;
 esac

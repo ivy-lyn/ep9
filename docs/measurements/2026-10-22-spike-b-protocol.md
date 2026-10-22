@@ -1,6 +1,6 @@
 # Spike B round-trip protocol (the D21 gate), written before any spike code
 
-- **Status.** Protocol; no gate result yet. P3-SPIKEB-BENCH built `spikes/spike-b/bench.sh` and made one provisional run ([2026-10-22-spike-b.md](2026-10-22-spike-b.md)); the gate run is gate window 1. Written in M0 month 2, phase P0, on 2026-10-21 (the file name keeps the date the plan gave it), before any Spike B code exists (decision M2-D21-METHOD: a gate written first cannot be tuned to the result). A change after the first gate run needs a decisions-log row that names this file.
+- **Status.** Protocol. Gate window 1 gave **fail** for placement (a) (RT 19.069 [18.645, 19.672] > 18, [2026-10-22-spike-b.md](2026-10-22-spike-b.md)), so placement (b) is built and measured with this same protocol (§9): P4-PLACEMENT-B added config B and `SB_PLACEMENT=b bash spikes/spike-b/bench.sh`, made one provisional run, and the (b) gate run is gate window 2. P3-SPIKEB-BENCH built `spikes/spike-b/bench.sh` and made the first provisional runs. Written in M0 month 2, phase P0, on 2026-10-21 (the file name keeps the date the plan gave it), before any Spike B code exists (decision M2-D21-METHOD: a gate written first cannot be tuned to the result). A change after the first gate run needs a decisions-log row that names this file.
 - **Gate.** D21 keeps native-stack JIT frames (placement (a)) if one T0→JIT→T0 round trip costs ≤ 18 release-expansion dispatches of the SP-Dispatch loop kernel, on the same host and in the same session ([09 §4](../plan/09-milestones.md#4-spikes) Spike B row; decisions-log D21 and D21-UNIT).
 - **Class.** S (spike) of the speed-gate rule ([10-quality §3](../plan/10-quality.md), PERF-NOISE): wall time of the timed region, ≥ 15 paired rounds, order-statistic interval.
 - **Who runs what.** P3-SPIKEB-BENCH builds `spikes/spike-b/bench.sh` and does a provisional run. The gate run is the orchestrator's gate window 1, after the P3 merge, with no agent running.
@@ -43,6 +43,7 @@ function drive(f, n) {                            function drive(f, n) {
 | C | T0 | not called | gate |
 | A0 | T0 | T0 | report: T0→T0 call, same formula and k |
 | J, JC | JIT | T0 (J); not called (JC) | report: JIT→T0→JIT round trip, `(t_J - t_JC) / n` in ns and in tau units |
+| B | T0 | placement (b) (Opt slot, `spikes/spike-b/src/jit_b/`), entered from T0's `call_fast` | gate of the placement (b) run (`SB_PLACEMENT=b`; §9) |
 
 ## 3. tau
 
@@ -101,6 +102,7 @@ C:  6 Ldar a1 | TestLessThan r1 | JumpIfFalse | Ldar r0 | AddSmi [1] | Star r0 |
 - `bash spikes/spike-b/bench.sh` prints: host, CPU model, commit, load before and after, tau with its source file, k with the counted listing lines, every round's t_A, t_C and RT_r, the median, the interval, the verdict and its labels. The result goes to `docs/measurements/<date>-spike-b.md`.
 - **pass:** placement (a) stays; SP-Unit starts in P4.
 - **fail:** placement (b) (JIT frames on the VM stack, entered with the 4 handler arguments, in `spikes/spike-b/src/jit_b/`) is built and measured with this same protocol (M2-D21-FAIL). D21 reopens only if both placements fail.
+- **The placement (b) run.** `SB_PLACEMENT=b bash spikes/spike-b/bench.sh`: config B is the gate config, so RT = ((t_B - t_C) / n) / tau - k and the void rule reads the IQR of t_B and t_C. A round runs B, C, A0, A and AH; A (placement (a) on its window-1 path) and AH (placement (a) code entered from `call_fast`, M2-P4-B-AB) are reports, never the verdict. bench.sh prints "gate config: B", and the result line names it (`gate=B`).
 - **Sizing note.** n was chosen so that t_C is about 0.3 s: at 55c15d0, `ep9` ran kernel C with n = 2·10^7 in 0.06 s of process wall time (2026-10-21, load 18.7, so a sizing figure only).
 
 ## Change log
@@ -108,3 +110,4 @@ C:  6 Ldar a1 | TestLessThan r1 | JumpIfFalse | Ldar r0 | AddSmi [1] | Star r0 |
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-22 | clarify | §2 names the measured T0→JIT entry: `slow::call`'s decode-free native entry (M2-P3-D21-ENTRY, `spike-native` only). The formula, kernels, k, tau, rounds, verdict rules and load guard do not change, and no gate run had happened yet | P3 integration fixer |
+| 2026-10-22 | clarify | After the window-1 fail of placement (a): the Status line, config row B in §2, and the placement (b) run in §9 (B is the gate config; A and AH are reports). The formula, kernels, k, tau, rounds, verdict rules, load guard and limit do not change, and no (b) gate run had happened yet | P4-PLACEMENT-B |

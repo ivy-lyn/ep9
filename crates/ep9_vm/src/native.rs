@@ -128,6 +128,13 @@ pub struct RuntimeTable {
     pub stack_overflow: RtFn0,
     /// `throw v` (the `Throw` cold path: records the throw site). Always 0.
     pub throw: RtFn1,
+    /// Placement (b) (P4-PLACEMENT-B): unwinds the pending exception from the instruction at
+    /// `off` of the (b) frame `fp` (`error::unwind`). It sets `Cx::out_fp`/`Cx::out_pc` to the
+    /// frame and pc where the run goes on (a handler, or the EXIT stub) and returns the
+    /// accumulator there: the exception, or 0 when no handler of this run catches it (unlike
+    /// the other entries, 0 is a normal result here). (b) code then pops its native frame
+    /// record and tail-jumps to `cx.table[*out_pc]` with `(cx, out_pc, out_fp, result)`.
+    pub unwind: RtFn0,
 }
 
 /// The `op` codes of [`RuntimeTable::compare`].
@@ -153,6 +160,7 @@ pub(crate) static RUNTIME_TABLE: RuntimeTable = RuntimeTable {
     compare: rt_compare,
     stack_overflow: rt_stack_overflow,
     throw: rt_throw,
+    unwind: rt_unwind,
 };
 
 /// Byte offsets native code reads and writes. All are fixed for the build (Cx and
@@ -192,6 +200,21 @@ pub mod layout {
     pub const RT_COMPARE: usize = offset_of!(RuntimeTable, compare);
     pub const RT_STACK_OVERFLOW: usize = offset_of!(RuntimeTable, stack_overflow);
     pub const RT_THROW: usize = offset_of!(RuntimeTable, throw);
+    pub const RT_UNWIND: usize = offset_of!(RuntimeTable, unwind);
+
+    // ---- placement (b) (P4-PLACEMENT-B) ----
+    /// `Cx::table`: the 256 handler addresses of the dispatch (H15: at offset 0). (b) code
+    /// leaves with a tail jump to `table[*pc]`.
+    pub const CX_TABLE: usize = offset_of!(Cx, table);
+    /// `Cx::out_fp` (`*mut u64`): the frame [`RuntimeTable::unwind`] continues in.
+    pub const CX_OUT_FP: usize = offset_of!(Cx, out_fp);
+    /// `Cx::out_pc` (`*const u8`): the pc [`RuntimeTable::unwind`] continues at.
+    pub const CX_OUT_PC: usize = offset_of!(Cx, out_pc);
+    /// FunctionInfo: the start of its bytecode (`*const u8`).
+    pub const FI_CODE: usize = offset_of!(FunctionInfo, code);
+    /// A frame's caller fp and return pc words are native words: `address +
+    /// NATIVE_WORD_OFFSET` (frame.rs `native`; one bit, 2^49, so an `eor` decodes them).
+    pub const NATIVE_WORD_OFFSET: u64 = ep9_value::encoding::DOUBLE_ENCODE_OFFSET;
 
     // ---- VM frames (frame.rs, H14): byte offsets from fp ----
     /// Header words between the receiver and `r0`.
@@ -473,6 +496,24 @@ native_fns! {
         };
         slow::throw(cx, fp, pc, v, false)
     }
+
+    /// [`RuntimeTable::unwind`].
+    ///
+    /// # Safety
+    /// As [`rt_poll`], with an exception pending.
+    unsafe fn rt_unwind(cx: *mut NativeCx, fp: *mut u64, off: u32) -> u64 {
+        // SAFETY: caller contract.
+        let (cx, pc) = unsafe { enter(cx, fp, off) };
+        if cx.rt().pending() == 0 {
+            // A (b) code bug: unwind with nothing pending. Make it a catchable error.
+            let msg = format!("ep9 internal error: native code unwinds at offset {off} with no exception");
+            throw_error(cx, ErrorKind::Error, &msg);
+        }
+        // An offset outside the bytecode unwinds from the function's start (no handler of
+        // this frame covers either: (b) code has no handlers).
+        let pc = pc.unwrap_or(FrameRef(fp).info().code);
+        crate::error::unwind(cx, fp, pc)
+    }
 }
 
 /// The argument registers of a call instruction (frame slot offsets), without a heap copy.
@@ -571,6 +612,13 @@ fn call_at(cx: &mut Cx, fp: *mut u64, pc: *const u8, acc: u64) -> Res<u64> {
         // slot above it, `arg` reads registers of this verified instruction, and the callee's
         // slot holds native code (`native_callee`, `install_native` contract).
         return unsafe { enter_native(cx, base, fp, next, callee, cfi, this, argc, arg) };
+    }
+    if let Some(bfi) = b_callee(callee) {
+        let base = call::top_of(cx, fp);
+        // SAFETY: as for `enter_native` above: `fp` is the live top frame, `base` the first
+        // free slot above it, `arg` reads registers of this verified instruction, and
+        // `b_callee` checked the (b) slot.
+        return unsafe { run_b(cx, base, fp, callee, bfi, this, argc, arg) };
     }
     call::call_with(cx, callee, this, argc, arg, UNDEFINED)
 }
@@ -771,10 +819,11 @@ pub fn call_from_rust(
         };
         let arg = |i: u32| args[i as usize].to_bits();
         let (out_fp, out_pc) = (cx.out_fp, cx.out_pc);
-        let r = match native_callee(f) {
-            Some(fi) => enter_from_rust(cx, f, fi, this, argc, arg),
+        let r = match (native_callee(f), b_callee(f)) {
+            (Some(fi), _) => enter_from_rust(cx, f, fi, this, argc, arg),
+            (None, Some(fi)) => b_from_rust(cx, f, fi, this, argc, arg),
             // No native code: the T0 path of `Isolate::call`.
-            None => call::call_with(cx, f, this, argc, arg, UNDEFINED),
+            (None, None) => call::call_with(cx, f, this, argc, arg, UNDEFINED),
         };
         // Nested T0 calls under native code set them (`slow::call`); put them back.
         cx.out_fp = out_fp;
@@ -823,6 +872,264 @@ fn enter_from_rust(
     r
 }
 
+// ---- placement (b) (P4-PLACEMENT-B) ---------------------------------------------------------
+
+/// The stub byte of the M2-P4-B-AB report: its handler runs the placement (a) code of an
+/// AotBaseline slot that T0's `call_fast` entered (`a_hot_call`).
+pub(crate) const OP_ENTER_A_HOT: u8 = 0xFC;
+/// The pc `call_fast` and `slow::call` continue at after they pushed the frame of a (b)
+/// callee: one `OP_ENTER_B` byte (never in verified bytecode).
+pub(crate) static ENTER_B_STUB: [u8; 1] = [crate::interp::OP_ENTER_B];
+/// The pc `call_fast` continues at after it pushed the frame of an A-hot callee.
+pub(crate) static ENTER_A_HOT_STUB: [u8; 1] = [OP_ENTER_A_HOT];
+
+const _: () = {
+    use crate::interp::{OP_CONSTRUCT_RETURN, OP_ENTER_B, OP_EXIT};
+    assert!(Opcode::from_u8(OP_ENTER_B).is_none());
+    assert!(Opcode::from_u8(OP_ENTER_A_HOT).is_none());
+    assert!(OP_ENTER_B != OP_EXIT && OP_ENTER_B != OP_CONSTRUCT_RETURN);
+    assert!(OP_ENTER_A_HOT != OP_EXIT && OP_ENTER_A_HOT != OP_CONSTRUCT_RETURN);
+    assert!(OP_ENTER_A_HOT != OP_ENTER_B);
+};
+
+/// The stub pc for a callee with slot kind byte `kind` that T0's `call_fast` enters on its hot
+/// path: `ENTER_B_STUB` for a (b) slot (`DispatchKind::Opt`, [`install_native_b`]),
+/// `ENTER_A_HOT_STUB` for an AotBaseline slot (the M2-P4-B-AB report). `None` for every other
+/// kind (Baseline: placement (a), config A of the D21 bench, goes cold as before).
+#[inline(always)]
+pub(crate) fn hot_stub(kind: u8) -> Option<*const u8> {
+    if kind == DispatchKind::Opt as u8 {
+        Some(ENTER_B_STUB.as_ptr())
+    } else if kind == DispatchKind::AotBaseline as u8 {
+        Some(ENTER_A_HOT_STUB.as_ptr())
+    } else {
+        None
+    }
+}
+
+/// The (b) entry of the function whose frame is `fp`, as a handler, and its bytecode start
+/// (the pc the entry gets).
+///
+/// # Safety
+/// `fp` is a live frame of a function with a (b) slot ([`install_native_b`]).
+#[inline(always)]
+pub(crate) unsafe fn b_target(fp: *mut u64) -> (crate::interp::Handler, *const u8) {
+    let fi = FrameRef(fp).info();
+    debug_assert_eq!(fi.slot.kind_byte(), DispatchKind::Opt as u8);
+    #[cfg(test)]
+    B_STUB_ENTRIES.with(|h| h.set(h.get() + 1));
+    // SAFETY: the slot entry of a (b) slot is the address of code with the handler ABI
+    // (`install_native_b` contract); fn pointers and data pointers have the same size.
+    let h = unsafe {
+        core::mem::transmute::<*const (), crate::interp::Handler>(
+            core::ptr::with_exposed_provenance(fi.slot.entry()),
+        )
+    };
+    (h, fi.code)
+}
+
+/// The bytecode start of the function whose frame is `fp`: the match loop runs it at a stub
+/// byte (D4: the match loop never enters native code).
+#[inline(always)]
+pub(crate) fn bytecode_of(fp: *mut u64) -> *const u8 {
+    FrameRef(fp).info().code
+}
+
+/// The FunctionInfo of `callee` if it has a (b) slot ([`install_native_b`]): a FUNCTION (not
+/// bound, not host) whose slot kind is `DispatchKind::Opt`. The install refuses class
+/// constructors and generator functions.
+#[inline]
+pub(crate) fn b_callee<'a>(callee: u64) -> Option<&'a FunctionInfo> {
+    if !object::is_function(callee) {
+        return None;
+    }
+    let fi = object::function_info(callee);
+    (fi.slot.kind_byte() == DispatchKind::Opt as u8 && fi.host.is_none()).then_some(fi)
+}
+
+/// The M2-P4-B-AB report path (config A-hot of the D21 bench): T0's `call_fast` pushed the
+/// frame `fp` of a placement (a) callee in an AotBaseline slot and the dispatch reached
+/// `OP_ENTER_A_HOT`. This does what `enter_native` does after its frame push (publish the
+/// frame, call the slot entry with the [`NativeEntry`] ABI, publish the caller again) and
+/// sets the next state: the caller's next instruction with the result, or the unwind target
+/// (`error::unwind` from the callee frame, which has no handlers) when native code returned
+/// 0. Returns the accumulator for that state; sets `cx.out_fp`/`cx.out_pc`. Out of line, so the
+/// stub handler keeps its tail jump (no indirect call in a handler, `cargo xtask disasm-check`).
+///
+/// # Safety
+/// `fp` is the live top frame that `call_fast` pushed for a function whose slot holds native
+/// code with the [`NativeEntry`] ABI (`install_native` contract).
+#[inline(never)]
+pub(crate) unsafe fn a_hot_call(cx: &mut Cx, fp: *mut u64) -> u64 {
+    let f = FrameRef(fp);
+    let fi = f.info();
+    #[cfg(test)]
+    A_HOT_ENTRIES.with(|h| h.set(h.get() + 1));
+    let rt = cx.rt();
+    rt.stack().set_fp(fp);
+    // SAFETY: caller contract (the slot holds `NativeEntry` code).
+    let entry: NativeEntry = unsafe {
+        core::mem::transmute::<*const (), NativeEntry>(core::ptr::with_exposed_provenance(
+            fi.slot.entry(),
+        ))
+    };
+    // SAFETY: `fp` is the published frame of `fi`; native code gets the Cx as a raw pointer.
+    let r = unsafe { entry(core::ptr::from_mut(cx).cast::<NativeCx>(), fp) };
+    let caller = f.caller();
+    rt.stack().set_fp(caller.0);
+    if r == 0 {
+        debug_assert!(
+            rt.pending() != 0,
+            "native code returned 0 with nothing pending"
+        );
+        return crate::error::unwind(cx, fp, fi.code);
+    }
+    cx.out_fp = caller.0;
+    cx.out_pc = f.return_pc();
+    r
+}
+
+/// Calls the (b) function `callee` (`fi` from [`b_callee`]) from Rust code that runs under a
+/// frame (`call_any`, [`call_from_rust`]): pushes its frame at `base` with return pc = the
+/// `Exit` stub, publishes it, runs a nested dispatch from `ENTER_B_STUB` (the (b) code under
+/// `Dispatch::Sibling`/`Become`; the bytecode under `Dispatch::Match`), and publishes
+/// `caller_fp` again. One nested native level, as a T0 callee of `call::call_with`; `Err`
+/// when the run ends with an exception pending. The native and VM stack checks come first.
+///
+/// # Safety
+/// `caller_fp` is the live top frame (or null), `base` is the first free slot above it and
+/// above any scratch Values, and `arg(i)` returns valid Value bits for `i < argc`.
+#[allow(clippy::too_many_arguments)]
+unsafe fn run_b(
+    cx: &mut Cx,
+    base: *mut u64,
+    caller_fp: *mut u64,
+    callee: u64,
+    fi: &FunctionInfo,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+) -> Res<u64> {
+    let rt = cx.rt();
+    if !rt.native_stack_ok() {
+        return stack_overflow(cx);
+    }
+    let this = call::bind_this(fi, this, rt.global());
+    // SAFETY: caller contract (the `push_frame` contract).
+    let nfp = unsafe {
+        call::push_frame(
+            base,
+            cx.stack_limit,
+            fi,
+            callee,
+            this,
+            argc,
+            arg,
+            caller_fp,
+            EXIT_STUB.as_ptr(),
+            object::function_context(callee),
+            UNDEFINED,
+        )
+    };
+    let Some(nfp) = nfp else {
+        return stack_overflow(cx);
+    };
+    cx.budget -= 1;
+    rt.stack().set_fp(nfp);
+    rt.stack().clear_scratch();
+    // SAFETY: `nfp` is the frame of `fi` just pushed and published; the stub byte enters its
+    // (b) code (or its bytecode under the match loop), which ends at the `Exit` stub.
+    let r = unsafe { crate::interp::run(cx, ENTER_B_STUB.as_ptr(), nfp) };
+    rt.stack().set_fp(caller_fp);
+    if r == 0 { Err(Throw) } else { Ok(r) }
+}
+
+/// [`call_from_rust`] for the (b) function `f` (`fi` from [`b_callee`]); the state rules of
+/// [`enter_from_rust`].
+fn b_from_rust(
+    cx: &mut Cx,
+    f: u64,
+    fi: &FunctionInfo,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+) -> Res<u64> {
+    let stack = cx.rt().stack();
+    let caller = stack.fp();
+    if cx.budget <= 0 && slow::interrupt(cx, caller) == 0 {
+        return Err(Throw);
+    }
+    let saved_scratch = stack.scratch_top();
+    let base = call::top_of(cx, caller);
+    // SAFETY: `caller` is the published top frame (or null), `base` is above it and its
+    // scratch Values (`top_of`), `arg` reads live Values, `b_callee` checked the slot.
+    let r = unsafe { run_b(cx, base, caller, f, fi, this, argc, arg) };
+    stack.set_fp(caller);
+    if saved_scratch.is_null() {
+        stack.clear_scratch();
+    } else {
+        stack.set_scratch_top(saved_scratch);
+    }
+    r
+}
+
+/// Installs the placement (b) code `code` (its first byte is the entry) for the function `f`
+/// (P4-PLACEMENT-B, plan-v6 D3): one dispatch slot write of kind `DispatchKind::Opt` and a
+/// [`CodeEntry`] of that kind. The Opt byte is the spike's (b) marker only, so placement (a)
+/// ([`install_native`], Baseline/AotBaseline) and (b) can run in one process; a production
+/// (b) would use Baseline (the kind bytes are an H14/H35 contract). From then on:
+///
+/// | Caller | Path |
+/// |---|---|
+/// | T0 call, hot (`call_fast`) | frame push, then the stub byte `OP_ENTER_B`: a tail jump into the code with `(cx, pc, fp, acc)` |
+/// | T0 call, cold (`slow::call`: budget poll, feedback threshold, prefixed call, spread, bound) | frame push, then `OP_ENTER_B` (no Rust recursion) |
+/// | `call_any` from native code, [`call_from_rust`] | a nested dispatch from `OP_ENTER_B` (return pc = the `Exit` stub) |
+/// | the match loop (`Dispatch::Match`) | the bytecode (D4) |
+/// | `[[Construct]]`, a call from Rust through `call::call_with` (`Isolate::call`, builtins) | "not implemented", as for placement (a) |
+///
+/// Refused before the slot changes, as [`install_native`]: not bytecode, a class constructor,
+/// a generator function, a function that already has native code, a range the registry
+/// refuses.
+///
+/// # Safety
+/// `code.start` is the entry of code with the T0 handler ABI (`interp::Handler`: `(cx, pc, fp,
+/// acc)`, the Rust ABI on aarch64, `sysv64` on x86-64) that runs `f`'s bytecode against the
+/// frame `fp` it is entered with: it reads `cx` only through the [`layout`] offsets, calls
+/// only [`RuntimeTable`] functions, keeps every callee-saved register, and leaves only by a
+/// tail jump to `cx.table[*pc]` with `(cx, pc, fp', acc)`: after a `Return`, the frame's
+/// return pc and caller fp; after a table result of 0, the state that
+/// [`RuntimeTable::unwind`] set. The code stays mapped and unchanged until
+/// [`uninstall_native`] or the isolate drops.
+pub unsafe fn install_native_b(
+    iso: &Isolate,
+    f: Value,
+    code: Range<usize>,
+) -> Result<(), InstallError> {
+    let fi = bytecode_info(f)?;
+    if fi.is_class_constructor() {
+        return Err(InstallError::ClassConstructor);
+    }
+    if fi.is_generator() {
+        return Err(InstallError::Generator);
+    }
+    if fi.slot.kind_byte() != DispatchKind::Interp as u8 {
+        return Err(InstallError::AlreadyNative);
+    }
+    let rt: &Runtime = &iso.rt;
+    let entry = CodeEntry {
+        kind: DispatchKind::Opt,
+        start: code.start,
+        len: code.end.saturating_sub(code.start),
+        function: core::ptr::from_ref(fi).addr(),
+    };
+    rt.registry
+        .borrow_mut()
+        .register(entry)
+        .map_err(InstallError::Registry)?;
+    fi.slot.install(DispatchKind::Opt, code.start);
+    Ok(())
+}
+
 // Keep the frame layout the offsets above describe.
 const _: () = {
     assert!(HEADER == 8);
@@ -835,4 +1142,11 @@ std::thread_local! {
     /// (`slow::call` `native_entry`, M2-P3-D21-ENTRY), so a test can tell it from the decode
     /// path.
     pub(crate) static T0_ENTRY_HITS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+    /// Tests only: how many times this thread's dispatch reached `OP_ENTER_B` under a threaded
+    /// expansion (`b_target`): the hot path, the cold arm and nested runs.
+    pub(crate) static B_STUB_ENTRIES: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+    /// Tests only: how many (b) calls this thread took through the cold arm of `slow::call`.
+    pub(crate) static B_COLD_ENTRIES: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+    /// Tests only: how many A-hot calls (`a_hot_call`) this thread ran.
+    pub(crate) static A_HOT_ENTRIES: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
 }
