@@ -95,9 +95,7 @@ pub(crate) mod iter {
 /// iterators use [`VALUES`](iter_kind::VALUES).
 pub(crate) mod iter_kind {
     pub const VALUES: i32 = 0;
-    #[allow(dead_code)] // caller: P4-B-ARRAY (`Array.prototype.keys`)
     pub const KEYS: i32 = 1;
-    #[allow(dead_code)] // caller: P4-B-ARRAY (`Array.prototype.entries`)
     pub const ENTRIES: i32 = 2;
 }
 
@@ -764,7 +762,6 @@ pub(crate) fn new_iterator_of_kind(rt: &Runtime, proto: u64, iterated: u64, k: i
 }
 
 /// The iteration kind of an ITERATOR cell ([`iter_kind`]).
-#[allow(dead_code)] // caller: P4-B-ARRAY (the array iterator `next` for keys and entries)
 pub(crate) fn iterator_kind(it: u64) -> i32 {
     rd_i32(cell(it), iter::KIND)
 }

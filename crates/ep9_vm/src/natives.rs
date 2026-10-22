@@ -10,26 +10,29 @@
 //! | `Error` and the native errors | §20.5.1.1, §20.5.6.1.1 |
 //! | `Object.prototype.toString`, `valueOf` | §20.1.3.6, §20.1.3.7 |
 //! | `Error.prototype.toString` | §20.5.3.4 |
-//! | `Array.prototype.join`, `toString`, `push` | §23.1.3.18, §23.1.3.36, §23.1.3.23 |
-//! | `Array.prototype.values` = `Array.prototype[@@iterator]`, %ArrayIteratorPrototype%.next | §23.1.3.38, §23.1.3.40, §23.1.5.2.1 |
+//! | `Array.prototype.join`, `toString`, `push` (generic: any object, through `[[Set]]`) | §23.1.3.18, §23.1.3.36, §23.1.3.23 |
+//! | `Array.prototype.values` = `Array.prototype[@@iterator]`, `keys`, `entries`, %ArrayIteratorPrototype%.next | §23.1.3.38, §23.1.3.40, §23.1.3.19, §23.1.3.5, §23.1.5.2.1 |
 //! | `String.prototype[@@iterator]`, %StringIteratorPrototype%.next | §22.1.3.36, §22.1.5.2.1 |
 //! | `%Iterator.prototype%[@@iterator]` | §27.1.2.1 |
 //! | `%GeneratorFunction%`, `%GeneratorPrototype%` `next`/`return`/`throw`, `%AsyncFunction%` (`generator.rs`; `%GeneratorFunction%` compiles through the compiler hook like `Function`, `abi/script.rs`; `%AsyncFunction%` is a not-implemented stub until month 3) | §27.3.1.1, §27.5.1.2-4, §27.7.1.1 |
 //! | `%eval%`, the global `eval` (indirect eval; direct eval is `interp/slow/eval.rs`), through the compiler hook (`abi/script.rs`) | §19.2.1 |
 //!
-//! The built-in iterators are ITERATOR cells (object.rs): the iterated value and the next
-//! index. The iterated value also gives the kind, so each `next` checks its receiver
-//! (GeneratorValidate's brand) without a kind field:
+//! The built-in iterators are ITERATOR cells (object.rs): the iterated value, the next index
+//! and the iteration kind (`object::iter_kind`). The iterated value tells an array iterator
+//! from a string iterator, so each `next` checks its receiver (GeneratorValidate's brand)
+//! from it; the kind field says what an array iterator yields:
 //!
-//! | Iterator | Iterated value | Done | Executing |
-//! |---|---|---|---|
-//! | array (`CreateArrayIterator`, kind "value") | an object: an Array, or any array-like (`LengthOfArrayLike`) | undefined | null, while `next` runs user code (getters, `valueOf`) |
-//! | string (`CreateStringIterator`) | a string primitive | the empty string | never: its `next` runs no user code |
+//! | Iterator | Iterated value | Kind | Yields | Done | Executing |
+//! |---|---|---|---|---|---|
+//! | array (`CreateArrayIterator`) | an object: an Array, or any array-like (`LengthOfArrayLike`) | values (`values`, `[@@iterator]`), keys (`keys`), entries (`entries`) | the element; the index; `[index, element]` | undefined | null, while `next` runs user code (getters, `valueOf`) |
+//! | string (`CreateStringIterator`) | a string primitive | values | the code point | the empty string | never: its `next` runs no user code |
 //!
 //! A `next` on an executing iterator throws a TypeError (GeneratorValidate, §27.5.3.2).
 //!
-//! `interp/slow/iter.rs` (GetIterator, spread) makes the same cells without calling
-//! `values` or `[@@iterator]` while the method it finds is the intrinsic.
+//! `interp/slow/iter.rs` (GetIterator, spread) makes the same cells (kind values) without
+//! calling `values` or `[@@iterator]` while the method it finds is the intrinsic; the
+//! iterators of `keys` and `entries` take the generic protocol there (their `[@@iterator]` is
+//! `%Iterator.prototype%[@@iterator]`).
 
 use ep9_value::JsResult;
 
@@ -94,6 +97,11 @@ pub(crate) mod vm {
     pub const ASYNC_FUNCTION: u16 = 26;
     /// `%eval%`, also the global `eval` (P3-EVAL-VM).
     pub const EVAL: u16 = 27;
+    // ---- M2-P4 (B-ARRAY) ----
+    /// `Array.prototype.keys`.
+    pub const ARRAY_KEYS: u16 = 28;
+    /// `Array.prototype.entries`.
+    pub const ARRAY_ENTRIES: u16 = 29;
 }
 
 /// The VM's block.
@@ -128,6 +136,8 @@ const VM_DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("throw", 1, generator::generator_throw),
     BuiltinDef::constructor("AsyncFunction", 1, generator::async_function),
     BuiltinDef::method("eval", 1, eval),
+    BuiltinDef::method("keys", 0, array_keys),
+    BuiltinDef::method("entries", 0, array_entries),
 ];
 
 const VM_INTRINSICS: &[IntrinsicDef] = &[
@@ -324,6 +334,8 @@ const VM_PROPS: &[ObjectProps] = &[
             PropDef::method(VALUES, vm::ARRAY_VALUES),
             // §23.1.3.40: the same function object as `values`.
             PropDef::alias(ITERATOR, VALUES, PropAttrs::METHOD),
+            PropDef::method(PropKey::Str("keys"), vm::ARRAY_KEYS),
+            PropDef::method(PropKey::Str("entries"), vm::ARRAY_ENTRIES),
         ],
     },
     ObjectProps {
@@ -632,6 +644,13 @@ pub(crate) fn new_array_iterator(rt: &Runtime, o: u64) -> u64 {
     object::new_iterator(rt, rt.root(Root::ArrayIteratorPrototype), o)
 }
 
+/// [`new_array_iterator`] with the kind `k` (`object::iter_kind`: key, value or
+/// key+value). GC point: `o` lives in a Rust local.
+fn new_array_iterator_of_kind(rt: &Runtime, o: u64, k: i32) -> u64 {
+    debug_assert!(is_object(o));
+    object::new_iterator_of_kind(rt, rt.root(Root::ArrayIteratorPrototype), o, k)
+}
+
 /// A new string iterator over the string `s` (CreateStringIterator, §22.1.5.1). GC point.
 pub(crate) fn new_string_iterator(rt: &Runtime, s: u64) -> u64 {
     debug_assert!(is_string(s));
@@ -649,6 +668,31 @@ pub(crate) fn array_values<'s>(
 ) -> JsResult<Local<'s>> {
     let o = cx.to_object(this)?.bits();
     Ok(local(new_array_iterator(cx.inner().rt(), o)))
+}
+
+/// Array.prototype.keys (§23.1.3.19): CreateArrayIterator(? ToObject(this value), key).
+pub(crate) fn array_keys<'s>(
+    cx: &mut HostCx<'s>,
+    this: Local<'s>,
+    _: Args<'s>,
+    _: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let o = cx.to_object(this)?.bits();
+    let it = new_array_iterator_of_kind(cx.inner().rt(), o, object::iter_kind::KEYS);
+    Ok(local(it))
+}
+
+/// Array.prototype.entries (§23.1.3.5): CreateArrayIterator(? ToObject(this value),
+/// key+value).
+pub(crate) fn array_entries<'s>(
+    cx: &mut HostCx<'s>,
+    this: Local<'s>,
+    _: Args<'s>,
+    _: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let o = cx.to_object(this)?.bits();
+    let it = new_array_iterator_of_kind(cx.inner().rt(), o, object::iter_kind::ENTRIES);
+    Ok(local(it))
 }
 
 /// `String.prototype[@@iterator]` (§22.1.3.36): CreateStringIterator(? ToString(?
@@ -698,9 +742,10 @@ fn iter_result(rt: &Runtime, value: u64, done: bool) -> u64 {
 }
 
 /// %ArrayIteratorPrototype%.next (§23.1.5.2.1): one step of the CreateArrayIterator closure
-/// (§23.1.5.1, kind "value"). The length is read at every step (`LengthOfArrayLike`). Once the
-/// index reaches it, or a step throws (the closure completes), the iterator is done for good.
-/// While the step runs (getters, `valueOf` of the length), the cell holds null (executing).
+/// (§23.1.5.1) of the cell's kind: the index (key), the element (value) or `[index, element]`
+/// (key+value). The length is read at every step (`LengthOfArrayLike`). Once the index
+/// reaches it, or a step throws (the closure completes), the iterator is done for good. While
+/// the step runs (getters, `valueOf` of the length), the cell holds null (executing).
 pub(crate) fn iterator_next<'s>(
     cx: &mut HostCx<'s>,
     this: Local<'s>,
@@ -729,8 +774,9 @@ pub(crate) fn iterator_next<'s>(
     }
     // GeneratorResume step 7: executing until the step ends. GC points below: `target` is
     // only in a Rust local meanwhile.
+    let kind = object::iterator_kind(it);
     object::set_iterator_state(rt, it, NULL, i);
-    match array_iterator_step(cx, target, i) {
+    match array_iterator_step(cx, target, i, kind) {
         Ok(Some(value)) => {
             object::set_iterator_state(rt, it, target, i + 1);
             Ok(local(iter_result(rt, value, false)))
@@ -746,10 +792,12 @@ pub(crate) fn iterator_next<'s>(
     }
 }
 
-/// Element `i` of the array-like `o`, or `None` past `LengthOfArrayLike(o)` (§7.3.18). v0:
-/// the cell keeps a u32 index, so an array-like is done at 2^32 - 1 (an Array's length is
-/// below that).
-fn array_iterator_step(cx: &mut Cx, o: u64, i: u32) -> JsResult<Option<u64>> {
+/// The result of step `i` of an array iterator of kind `kind` over the array-like `o`
+/// (§23.1.5.1 steps 2.b.iii-v): the index `i` (key), element `i` (value) or a new Array
+/// `[i, element]` (key+value, CreateArrayFromList); `None` past `LengthOfArrayLike(o)`
+/// (§7.3.18). A key step reads no element. v0: the cell keeps a u32 index, so an array-like
+/// is done at 2^32 - 1 (an Array's length is below that). GC point.
+fn array_iterator_step(cx: &mut Cx, o: u64, i: u32, kind: i32) -> JsResult<Option<u64>> {
     let len = if is_array(o) {
         f64::from(object::array_len(o))
     } else {
@@ -760,7 +808,25 @@ fn array_iterator_step(cx: &mut Cx, o: u64, i: u32) -> JsResult<Option<u64>> {
     if f64::from(i) >= len || i == u32::MAX {
         return Ok(None);
     }
-    property::get_keyed(cx, o, num(f64::from(i))).map(Some)
+    let index = num(f64::from(i));
+    // iii. If kind is key, then let result be indexNumber.
+    if kind == object::iter_kind::KEYS {
+        return Ok(Some(index));
+    }
+    // iv. Else, let elementValue be ? Get(array, ! ToString(indexNumber)).
+    let element = property::get_keyed(cx, o, index)?;
+    // iv.2. If kind is value, then let result be elementValue.
+    if kind == object::iter_kind::VALUES {
+        return Ok(Some(element));
+    }
+    // iv.3. Else, kind is key+value: let result be CreateArrayFromList(« indexNumber,
+    //       elementValue »). GC point: `element` lives in a Rust local.
+    debug_assert_eq!(kind, object::iter_kind::ENTRIES);
+    let rt = cx.rt();
+    let pair = object::new_array(rt, 2);
+    object::array_set(rt, pair, 0, index);
+    object::array_set(rt, pair, 1, element);
+    Ok(Some(pair))
 }
 
 /// ToLength (§7.1.20) as an f64 in [0, 2^53 - 1].
@@ -1003,7 +1069,9 @@ pub(crate) fn array_to_string<'s>(
     object_to_string(cx, this, a, nt)
 }
 
-/// Array.prototype.push (§23.1.3.23, v0: arrays only).
+/// Array.prototype.push ( ...items ) (§23.1.3.23). An Array takes the fast loop below (or
+/// [`push_with_set`] while a prototype has an index key); any other value takes the spec
+/// steps through `[[Set]]` ([`push_generic`]).
 pub(crate) fn array_push<'s>(
     cx: &mut HostCx<'s>,
     this: Local<'s>,
@@ -1011,15 +1079,13 @@ pub(crate) fn array_push<'s>(
     _: Local<'s>,
 ) -> JsResult<Local<'s>> {
     let Some(a) = this.as_array() else {
-        return Err(cx.throw_error(
-            ErrorKind::TypeError,
-            "not implemented in ep9 v0: Array.prototype.push on a non-array",
-        ));
+        return push_generic(cx, this, args);
     };
     let a = a.bits();
     if crate::shape::proto_index_keys(cx.inner().rt()) {
         // A prototype may have an index key: each store is a `[[Set]]` walk.
-        return push_with_set(cx.inner(), a, args).map(local);
+        let len = f64::from(object::array_len(a));
+        return push_with_set(cx.inner(), a, len, args).map(local);
     }
     for v in args.iter() {
         let n = object::array_len(a);
@@ -1035,24 +1101,50 @@ pub(crate) fn array_push<'s>(
     Ok(local(num(f64::from(object::array_len(a)))))
 }
 
-/// Array.prototype.push steps 2-7 on the array `a` with `[[Set]]` for every store, so an
-/// inherited setter, getter or read-only index property decides (`shape::proto_index_keys`).
-/// Out of line, so the fast loop of [`array_push`] stays small.
+/// Array.prototype.push on a value that is not an Array (§23.1.3.23 steps 1-2, then
+/// [`push_with_set`]): ToObject, then `LengthOfArrayLike`, which may run a getter or
+/// `valueOf`. Out of line, so the fast loop of [`array_push`] stays small.
 #[cold]
 #[inline(never)]
-fn push_with_set(cx: &mut Cx, a: u64, args: Args<'_>) -> JsResult<u64> {
-    // 2. Let len be ? LengthOfArrayLike(O).
-    let mut len = f64::from(object::array_len(a));
+fn push_generic<'s>(cx: &mut HostCx<'s>, this: Local<'s>, args: Args<'s>) -> JsResult<Local<'s>> {
+    // 1. Let O be ? ToObject(this value).
+    let o = cx.to_object(this)?.bits();
+    let cx = cx.inner();
+    // 2. Let len be ? LengthOfArrayLike(O). GC point: `o` lives in a Rust local.
+    let key = cx.rt().atom(Atom::Length);
+    let len = property::get(cx, o, key)?;
+    let len = to_length(cx, len)?;
+    push_with_set(cx, o, len, args).map(local)
+}
+
+/// Array.prototype.push steps 3-7 on the object `o` of length `len` (step 2) with `[[Set]]`
+/// for every store, so a setter, a getter or a read-only index property decides (an Array
+/// while `shape::proto_index_keys` holds, or any other object). Out of line, so the fast
+/// loop of [`array_push`] stays small.
+#[cold]
+#[inline(never)]
+fn push_with_set(cx: &mut Cx, o: u64, mut len: f64, args: Args<'_>) -> JsResult<u64> {
+    // 3. Let argCount be the number of elements in items.
+    let arg_count = args.len() as f64;
+    // 4. If len + argCount > 2^53 - 1, throw a TypeError exception.
+    if len + arg_count > 9_007_199_254_740_991.0 {
+        return Err(error::throw_error(
+            cx,
+            ErrorKind::TypeError,
+            "Pushing the items would make the length exceed 2^53 - 1",
+        ));
+    }
     // 5. For each element E of items: Set(O, ! ToString(𝔽(len)), E, true); len = len + 1.
+    //    (The loop is bounded by the argument count; each Set may run JS, which polls.)
     for v in args.iter() {
-        // GC point: `a` lives in a Rust local, `v` in the argument list.
+        // GC point: `o` lives in a Rust local, `v` in the argument list.
         let key = crate::key::number_key(cx.rt(), len);
-        property::set(cx, a, key, v.bits(), true)?;
+        property::set(cx, o, key, v.bits(), true)?;
         len += 1.0;
     }
     // 6. Perform ? Set(O, "length", 𝔽(len), true).
     let key = cx.rt().atom(Atom::Length);
-    property::set(cx, a, key, num(len), true)?;
+    property::set(cx, o, key, num(len), true)?;
     // 7. Return 𝔽(len).
     Ok(num(len))
 }
