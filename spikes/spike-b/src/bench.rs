@@ -721,6 +721,38 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
     Ok(o)
 }
 
+/// The labels of a run whose parameters are not the protocol's. bench.sh makes the run
+/// provisional for each (decision M2-P3-SPIKEB-VERDICT): a debug build, fewer than 15 kept
+/// rounds (§5), n other than 10^8 (§2), a marginal re-run with fewer than 31 kept rounds (§5).
+pub fn parameter_labels(debug: bool, rounds: usize, marginal_rounds: usize, n: u32) -> Vec<String> {
+    let mut labels = Vec::new();
+    if debug {
+        labels.push("debug build (the gate uses the release build)".into());
+    }
+    if rounds < ROUNDS {
+        labels.push(format!("{rounds} kept rounds (< {ROUNDS})"));
+    }
+    if n != DEFAULT_N {
+        labels.push(format!("n = {n} (protocol §2: {DEFAULT_N})"));
+    }
+    if marginal_rounds < MARGINAL_ROUNDS {
+        labels.push(format!(
+            "{marginal_rounds} kept rounds for a marginal re-run (< {MARGINAL_ROUNDS})"
+        ));
+    }
+    labels
+}
+
+/// The label of a marginal result that cannot re-run (protocol §6 needs more rounds than the
+/// first run), or None if it can: the verdict then stays "marginal" and the run is provisional.
+pub fn no_rerun_label(rounds: usize, marginal_rounds: usize) -> Option<String> {
+    (marginal_rounds <= rounds).then(|| {
+        format!(
+            "marginal result not re-run (--marginal-rounds {marginal_rounds} is not above --rounds {rounds}; protocol §6)"
+        )
+    })
+}
+
 /// The coordinator: header, k, the rounds, the reports, the verdict.
 fn coordinate(args: &[String]) -> Result<bool, String> {
     let o = parse_opts(args)?;
@@ -762,20 +794,21 @@ fn coordinate(args: &[String]) -> Result<bool, String> {
     }
     let (k, a, c) = k_value()?;
     print_k(k, &a, &c);
-    let mut labels: Vec<String> = Vec::new();
-    if cfg!(debug_assertions) {
-        labels.push("debug build (the gate uses the release build)".into());
-    }
-    if o.rounds < ROUNDS {
-        labels.push(format!("{} kept rounds (< {ROUNDS})", o.rounds));
-    }
+    let mut labels = parameter_labels(cfg!(debug_assertions), o.rounds, o.marginal_rounds, o.n);
     let rounds = run_rounds(o.rounds, o.n, "run")?;
     let (mut verdict, mut rt) = report_rounds("run", &rounds, o.n, tau, k);
-    if verdict == "marginal" && o.marginal_rounds > o.rounds {
+    if verdict == "marginal" {
+        labels.push("marginal".into());
+    }
+    let no_rerun = no_rerun_label(o.rounds, o.marginal_rounds);
+    if let Some(l) = no_rerun.filter(|_| verdict == "marginal") {
+        // No re-run: the verdict stays "marginal", and bench.sh makes the run provisional.
+        println!("{l}: the verdict stays marginal");
+        labels.push(l);
+    } else if verdict == "marginal" {
         // Protocol §6: run again with 31 kept rounds; the median decides, the label stays.
         let again = run_rounds(o.marginal_rounds, o.n, "marginal re-run")?;
         let (v2, rt2) = report_rounds("marginal re-run", &again, o.n, tau, k);
-        labels.push("marginal".into());
         rt = rt2;
         verdict = if v2 == "void" {
             "void"
@@ -1002,6 +1035,39 @@ mod tests {
         let e = parse_run(Cfg::A, 100, bad).expect_err("wrong result");
         assert!(e.contains("the run is invalid"), "{e}");
         assert!(parse_run(Cfg::C, 100, "no line").is_err());
+    }
+
+    /// Every protocol parameter that differs makes a label (bench.sh: provisional); the
+    /// protocol's own parameters make none.
+    #[test]
+    fn parameters_other_than_the_protocols_are_labelled() {
+        assert!(parameter_labels(false, ROUNDS, MARGINAL_ROUNDS, DEFAULT_N).is_empty());
+        // More rounds than the protocol's are not fewer (protocol header: >= 15 rounds).
+        assert!(parameter_labels(false, 20, 41, DEFAULT_N).is_empty());
+        let one = |debug, rounds, marginal, n| {
+            let l = parameter_labels(debug, rounds, marginal, n);
+            assert_eq!(l.len(), 1, "{l:?}");
+            l[0].clone()
+        };
+        assert!(one(true, ROUNDS, MARGINAL_ROUNDS, DEFAULT_N).contains("debug build"));
+        assert!(one(false, 5, MARGINAL_ROUNDS, DEFAULT_N).contains("5 kept rounds (< 15)"));
+        assert!(one(false, ROUNDS, MARGINAL_ROUNDS, 10_000_000).contains("n = 10000000"));
+        assert!(one(false, ROUNDS, MARGINAL_ROUNDS, DEFAULT_N + 1).contains("protocol §2"));
+        assert!(one(false, ROUNDS, 16, DEFAULT_N).contains("16 kept rounds for a marginal re-run"));
+        assert_eq!(parameter_labels(true, 1, 1, 1000).len(), 4);
+    }
+
+    /// A marginal result re-runs only with more rounds than the first run; otherwise it gets a
+    /// label and stays marginal (bench.sh: provisional, not "unknown bench verdict").
+    #[test]
+    fn a_marginal_result_that_cannot_re_run_is_labelled() {
+        assert_eq!(no_rerun_label(ROUNDS, MARGINAL_ROUNDS), None);
+        assert_eq!(no_rerun_label(1, 2), None);
+        for (rounds, marginal) in [(15, 15), (15, 3), (40, 31)] {
+            let l = no_rerun_label(rounds, marginal).expect("no re-run");
+            assert!(l.starts_with("marginal result not re-run"), "{l}");
+            assert!(l.contains(&format!("--marginal-rounds {marginal}")), "{l}");
+        }
     }
 
     #[test]

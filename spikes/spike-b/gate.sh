@@ -8,6 +8,7 @@
 #        list of each JITed function, then runs checks (a)-(h)
 #     3  debug build (panic = "unwind"): `spike-b structural h`, the abort at the
 #        non-unwinding table-function boundary (M2-P1-NE-PANIC)
+#     4  bench-verdict-test.sh: the verdict logic of bench.sh on fake inputs (no bench run)
 #   gate.sh              the same as `gate.sh structural` (later phases add more steps)
 #
 # Env: CARGO_TARGET_DIR (default: spikes/spike-b/target),
@@ -50,6 +51,7 @@ structural() {
   else
     record "structural/debug-$which" FAIL "no debug binary"
   fi
+  run "bench-verdict" bash "$here/bench-verdict-test.sh"
 }
 
 step="${1:-structural}"
