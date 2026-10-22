@@ -47,10 +47,11 @@ use crate::{expect, json};
 /// Native stack of the thread that runs the isolates in a worker (the CLI uses the same).
 const RUN_STACK_BYTES: usize = 64 << 20;
 
-/// The `$262` host object (INTERPRETING.md "Host-Defined Functions"). v0 has `global` and
-/// `gc`; `createRealm`, `evalScript`, `detachArrayBuffer` and `agent` are missing, so tests
-/// that use them fail.
-const PRELUDE: &str = "var $262 = { global: globalThis, gc: __ep9_gc };\n";
+/// The `$262` host object (INTERPRETING.md "Host-Defined Functions"). v0 has `global`, `gc`
+/// and `evalScript` (M2-P4, through `Cx::evaluate_script`); `createRealm`,
+/// `detachArrayBuffer` and `agent` are missing, so tests that use them fail.
+const PRELUDE: &str =
+    "var $262 = { global: globalThis, gc: __ep9_gc, evalScript: __ep9_eval_script };\n";
 
 pub struct Options {
     pub test262: PathBuf,
@@ -270,6 +271,28 @@ fn print<'s>(
         o.push('\n');
     });
     Ok(Local::undefined())
+}
+
+/// `$262.evalScript(source)` (INTERPRETING.md): ParseScript and ScriptEvaluation of
+/// ToString(source) in the current realm, through `Cx::evaluate_script` (the compiler hook
+/// `compile_script`; an early error throws a SyntaxError of this realm). v0 returns what the
+/// script's entry function returns (undefined), not its completion value. Source text with a
+/// lone surrogate throws the v0 not-implemented error (it cannot be `&str`).
+fn eval_script<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let s = cx.to_string(args.get(0))?;
+    let flat = cx.flatten(s)?;
+    let units: Vec<u16> = (0..cx.string_len(s))
+        .map(|i| cx.code_unit_at(flat, i).unwrap_or(0))
+        .collect();
+    let Ok(text) = String::from_utf16(&units) else {
+        return Err(cx.not_implemented("$262.evalScript of source text with a lone surrogate"));
+    };
+    cx.evaluate_script(&text, "evalScript")
 }
 
 fn gc<'s>(
@@ -561,6 +584,7 @@ impl RunCtx<'_> {
         let mut iso = Isolate::new(config).map_err(|e| format!("cannot create an isolate: {e}"))?;
         iso.register_host_function("print", 1, print);
         iso.register_host_function("__ep9_gc", 0, gc);
+        iso.register_host_function("__ep9_eval_script", 1, eval_script);
         Ok(iso)
     }
 

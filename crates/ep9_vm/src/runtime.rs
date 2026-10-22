@@ -261,6 +261,9 @@ pub(crate) struct Runtime {
     pub symbols: SymbolState,
     /// Builtin tables (H20): the dense FunctionInfo arrays and function roots per module.
     pub builtins: BuiltinState,
+    /// The microtask job queue, the rejected-promise list and the built-in closure infos
+    /// (`jobs.rs`, P4-PROMISE): heap records behind a root source.
+    pub jobs: crate::jobs::JobState,
 }
 
 impl Runtime {
@@ -276,6 +279,7 @@ impl Runtime {
         let sh = Rc::clone(&shared);
         heap.add_root_source(move |t| sh.trace(t));
         let rt = Box::new(Runtime {
+            jobs: crate::jobs::JobState::new(&heap),
             heap,
             shared,
             units: RefCell::new(Vec::new()),

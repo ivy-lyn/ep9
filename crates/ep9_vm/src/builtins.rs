@@ -154,11 +154,20 @@ pub enum IntrinsicId {
     AsyncFunctionPrototype,
     /// `%eval%` (§19.2.1), also the global `eval` (P3-EVAL-VM).
     Eval,
+    // ---- M2-P4 (Promise, RT-9): made by `ep9_builtins` (promise.rs), state slots ----
+    /// `%Promise%` (§27.2.3).
+    Promise,
+    /// `%Promise.prototype%` (§27.2.5).
+    PromisePrototype,
+    /// `%AggregateError%` (§20.5.7.1).
+    AggregateError,
+    /// `%AggregateError.prototype%` (§20.5.7.3).
+    AggregateErrorPrototype,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 39] = [
+    pub const ALL: [IntrinsicId; 43] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -198,6 +207,10 @@ impl IntrinsicId {
         IntrinsicId::AsyncFunction,
         IntrinsicId::AsyncFunctionPrototype,
         IntrinsicId::Eval,
+        IntrinsicId::Promise,
+        IntrinsicId::PromisePrototype,
+        IntrinsicId::AggregateError,
+        IntrinsicId::AggregateErrorPrototype,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object.
@@ -242,6 +255,10 @@ impl IntrinsicId {
             IntrinsicId::AsyncFunction => "%AsyncFunction%",
             IntrinsicId::AsyncFunctionPrototype => "%AsyncFunction.prototype%",
             IntrinsicId::Eval => "%eval%",
+            IntrinsicId::Promise => "%Promise%",
+            IntrinsicId::PromisePrototype => "%Promise.prototype%",
+            IntrinsicId::AggregateError => "%AggregateError%",
+            IntrinsicId::AggregateErrorPrototype => "%AggregateError.prototype%",
         }
     }
 
@@ -287,7 +304,11 @@ impl IntrinsicId {
             | IntrinsicId::GeneratorPrototype
             | IntrinsicId::AsyncFunction
             | IntrinsicId::AsyncFunctionPrototype
-            | IntrinsicId::Eval => return None,
+            | IntrinsicId::Eval
+            | IntrinsicId::Promise
+            | IntrinsicId::PromisePrototype
+            | IntrinsicId::AggregateError
+            | IntrinsicId::AggregateErrorPrototype => return None,
         })
     }
 
@@ -302,6 +323,10 @@ impl IntrinsicId {
             IntrinsicId::AsyncFunction => Some(4),
             IntrinsicId::AsyncFunctionPrototype => Some(5),
             IntrinsicId::Eval => Some(6),
+            IntrinsicId::Promise => Some(7),
+            IntrinsicId::PromisePrototype => Some(8),
+            IntrinsicId::AggregateError => Some(9),
+            IntrinsicId::AggregateErrorPrototype => Some(10),
             _ => None,
         }
     }
@@ -942,7 +967,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 7;
+const INTRINSIC_SLOTS: usize = 11;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.

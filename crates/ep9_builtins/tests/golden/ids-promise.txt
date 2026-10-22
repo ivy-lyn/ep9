@@ -1,3 +1,17 @@
 # ep9 builtin ids: module promise, block 10. Append-only (H20, W4-BUILTIN-IDS): never
 # reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
 # id     block.index  kind         length  name  (installed as)
+0x1400   10.0         constructor  1       "Promise"  (%Promise%)
+0x1401   10.1         method       1       "all"  (%Promise%.all w-c)
+0x1402   10.2         method       1       "allSettled"  (%Promise%.allSettled w-c)
+0x1403   10.3         method       1       "any"  (%Promise%.any w-c)
+0x1404   10.4         method       1       "race"  (%Promise%.race w-c)
+0x1405   10.5         method       1       "resolve"  (%Promise%.resolve w-c)
+0x1406   10.6         method       1       "reject"  (%Promise%.reject w-c)
+0x1407   10.7         method       0       "withResolvers"  (%Promise%.withResolvers w-c)
+0x1408   10.8         method       1       "try"  (%Promise%.try w-c)
+0x1409   10.9         getter       0       "[Symbol.species]"  (%Promise%.[Symbol.species] --c)
+0x140a   10.10        method       2       "then"  (%Promise.prototype%.then w-c)
+0x140b   10.11        method       1       "catch"  (%Promise.prototype%.catch w-c)
+0x140c   10.12        method       1       "finally"  (%Promise.prototype%.finally w-c)
+0x140d   10.13        constructor  2       "AggregateError"  (%AggregateError%)
