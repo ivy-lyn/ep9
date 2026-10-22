@@ -390,6 +390,8 @@ fn hooks_hit(iso: &mut Isolate, o: u64) -> Vec<&'static str> {
     assert!(property::set_with_receiver(cx, o, key, int32_bits(1), o).unwrap());
     let desc = Desc::data(int32_bits(2), attr::DEFAULT);
     assert!(property::define_own_property(cx, o, key, desc).unwrap());
+    // CreateDataPropertyOrThrow: a routed kind skips the fast path.
+    property::define(cx, o, key, int32_bits(3)).unwrap();
     assert!(property::delete(cx, o, key, true).unwrap());
     let keys = property::own_property_keys(cx, o);
     assert_eq!(object::array_len(keys), 0);
@@ -428,6 +430,12 @@ fn each_hook_sends_the_routed_kinds_to_their_stubs() {
                 assert!(hits.iter().any(|h| *h == want), "{want} not in {hits:?}");
             }
             assert!(hits.iter().all(|h| h.starts_with(kind)), "{hits:?}");
+            let defines = format!("{kind} define_own_property");
+            let n = hits.iter().filter(|h| **h == defines).count();
+            assert_eq!(
+                n, 2,
+                "define_own_property and define reach the hook: {hits:?}"
+            );
         }
         assert_eq!(hooks_hit(&mut iso, plain), Vec::<&str>::new());
         let rt: &Runtime = &iso.rt;

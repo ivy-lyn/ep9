@@ -475,7 +475,8 @@ pub(crate) fn set_keyed(cx: &mut Cx, base: u64, k: u64, v: u64, strict: bool) ->
 /// CreateDataPropertyOrThrow (§7.3.7) on an object: literals, `DefineNamedOwnProperty`,
 /// `DefineKeyedOwnProperty`, `StaInArrayLiteral`, CopyDataProperties. The fast path takes a
 /// new key on an extensible object and an existing configurable data property; everything
-/// else goes through `[[DefineOwnProperty]]`, and a rejection throws a TypeError. GC point.
+/// else (a routed kind always) goes through `[[DefineOwnProperty]]`, and a rejection throws a
+/// TypeError. GC point.
 pub(crate) fn define(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<()> {
     debug_assert!(is_object(o) && is_property_key(key));
     let rt = cx.rt();
@@ -491,7 +492,8 @@ pub(crate) fn define(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<()> {
     }
     let exotic = exotic::own_attrs(rt, o, key, how);
     let stored = props::own_get_with(o, key, how);
-    if exotic.is_none() {
+    // A routed kind (ARGUMENTS, MODULE_NAMESPACE) takes its `[[DefineOwnProperty]]` hook.
+    if exotic.is_none() && !exotic::is_routed(kind::cell_kind(o)) {
         match stored {
             None if is_extensible(o) => {
                 props::own_add(rt, o, key, v, attr::DEFAULT);
