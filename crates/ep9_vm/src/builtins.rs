@@ -468,8 +468,8 @@ impl IntrinsicId {
     }
 }
 
-/// The intrinsic `id` of the realm: an object, or undefined if no table made it (or, for
-/// `%Symbol.prototype%`, until symbols exist).
+/// The intrinsic `id` of the current realm: an object, or undefined if no table made it (or,
+/// for `%Symbol.prototype%`, until symbols exist).
 pub(crate) fn intrinsic(rt: &Runtime, id: IntrinsicId) -> u64 {
     match (id.root(), id.slot()) {
         (Some(r), _) => rt.root(r),
@@ -479,12 +479,26 @@ pub(crate) fn intrinsic(rt: &Runtime, id: IntrinsicId) -> u64 {
     }
 }
 
+/// Makes `v` the intrinsic `id` of the current realm (a table made it), in its root or slot
+/// and in the intrinsics list of the current REALM record, so the record stays a copy of the
+/// roots (`realm::switch` reads it back). Not a GC point.
 fn set_intrinsic(rt: &Runtime, id: IntrinsicId, v: u64) {
+    match (id.root(), id.slot()) {
+        (Some(_), _) | (None, Some(_)) => load_intrinsic(rt, id, v),
+        (None, None) => unreachable!("{} is not made by a table", id.name()),
+    }
+    crate::realm::record_intrinsic(rt, id, v);
+}
+
+/// Writes `v` into the root, the builtin state slot or the symbol state that holds the
+/// intrinsic `id` of the current realm. Realm switch and realm creation (`realm.rs`) only:
+/// the caller keeps the REALM record in step. Not a GC point.
+pub(crate) fn load_intrinsic(rt: &Runtime, id: IntrinsicId, v: u64) {
     match (id.root(), id.slot()) {
         (Some(r), _) => rt.set_root(r, v),
         // E3: a store into a root slot takes no barrier.
         (None, Some(i)) => rt.builtins.intrinsics[i].init(val(v)),
-        (None, None) => unreachable!("{} is not made by a table", id.name()),
+        (None, None) => symbol::set_prototype(rt, v),
     }
 }
 
@@ -1101,15 +1115,29 @@ const INTRINSIC_SLOTS: usize = 32;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.
+///
+/// Realms (H22-Q3): the FunctionInfos are per isolate (every realm's function object of a
+/// definition points at the same one). The intrinsic slots hold the current realm's values
+/// (`realm::switch` loads them from the REALM record). The function slots of the modules hold
+/// the first realm's function objects; a later realm's install makes its own in the install
+/// list ([`begin_realm_install`]), and after its install they are reachable only through
+/// that realm's objects. So [`existing_function`] knows the function objects of the first
+/// realm only.
 pub(crate) struct BuiltinState {
     /// The embedder's table (`IsolateConfig::builtins`).
     table: Cell<Option<&'static BuiltinTable>>,
     /// The installed modules in walk order (the VM table first).
     modules: RefCell<Vec<ModuleState>>,
+    /// The number of definitions of all modules (the length of an install list).
+    definitions: Cell<usize>,
     /// The intrinsics of [`IntrinsicId::slot`], undefined until made: a strong root range
     /// that [`prepare`] registers (the heap is the Runtime's first field, so it drops with the
     /// range before this box).
     intrinsics: Box<[Slot]>,
+    /// One slot: the install list of a realm that is being installed after the first (an
+    /// ELEMENTS cell, one entry per definition in walk order), or undefined. A strong root
+    /// range that [`prepare`] registers.
+    install_list: Box<[Slot]>,
 }
 
 impl Default for BuiltinState {
@@ -1117,19 +1145,24 @@ impl Default for BuiltinState {
         BuiltinState {
             table: Cell::new(None),
             modules: RefCell::new(Vec::new()),
+            definitions: Cell::new(0),
             intrinsics: (0..INTRINSIC_SLOTS)
                 .map(|_| Slot::new(Value::UNDEFINED))
                 .collect(),
+            install_list: Box::new([Slot::new(Value::UNDEFINED)]),
         }
     }
 }
 
 struct ModuleState {
     module: &'static BuiltinModule,
+    /// The index of the module's first definition in an install list.
+    first: usize,
     /// One FunctionInfo per definition (dense; frames and function cells point into it).
     infos: Box<[FunctionInfo]>,
-    /// The function object of each definition, undefined until made: a strong root range
-    /// (the heap is the Runtime's first field, so it drops with the range before this box).
+    /// The function object of each definition in the first realm, undefined until made: a
+    /// strong root range (the heap is the Runtime's first field, so it drops with the range
+    /// before this box).
     functions: Box<[Slot]>,
 }
 
@@ -1160,7 +1193,12 @@ pub(crate) fn prepare(rt: &Runtime, embedder: Option<&'static BuiltinTable>) {
             NonNull::from(&rt.builtins.intrinsics[..]),
             RootStrength::Strong,
         );
+        rt.heap.add_root_range(
+            NonNull::from(&rt.builtins.install_list[..]),
+            RootStrength::Strong,
+        );
     }
+    let mut first = 0;
     for module in tables(embedder).flat_map(|t| t.modules.iter()) {
         let infos: Box<[FunctionInfo]> = module
             .defs
@@ -1184,14 +1222,49 @@ pub(crate) fn prepare(rt: &Runtime, embedder: Option<&'static BuiltinTable>) {
         }
         mods.push(ModuleState {
             module,
+            first,
             infos,
             functions,
         });
+        first += module.defs.len();
+    }
+    rt.builtins.definitions.set(first);
+}
+
+/// Starts the install of a realm after the first: a new install list (one undefined entry per
+/// definition), so [`function_object`] makes this realm's own function objects. GC point.
+pub(crate) fn begin_realm_install(rt: &Runtime) {
+    let n = rt.builtins.definitions.get();
+    let list = object::new_list(rt, n, UNDEFINED);
+    // E3: a store into a root slot takes no barrier.
+    rt.builtins.install_list[0].init(val(list));
+}
+
+/// Ends the install that [`begin_realm_install`] started: the list goes; the realm's function
+/// objects stay reachable through its objects. Not a GC point.
+pub(crate) fn end_realm_install(rt: &Runtime) {
+    rt.builtins.install_list[0].init(Value::UNDEFINED);
+}
+
+/// Makes every intrinsic slot undefined (a new realm's init and install fill them). Not a GC
+/// point.
+pub(crate) fn clear_intrinsic_slots(rt: &Runtime) {
+    for s in rt.builtins.intrinsics.iter() {
+        s.init(Value::UNDEFINED);
     }
 }
 
-/// (module position, FunctionInfo, current function bits) of builtin `id`.
-fn lookup(rt: &Runtime, id: BuiltinId) -> Option<(usize, *const FunctionInfo, u64)> {
+/// Where the function object of a builtin lives while its realm installs: a module slot (the
+/// first realm) or an entry of the install list (a later realm).
+#[derive(Clone, Copy)]
+enum Home {
+    Slot(usize, usize),
+    List(u64, usize),
+}
+
+/// (home, FunctionInfo, function bits) of builtin `id` in the realm being installed, or in
+/// the first realm when no install list is set.
+fn lookup(rt: &Runtime, id: BuiltinId) -> Option<(Home, *const FunctionInfo, u64)> {
     let mods = rt.builtins.modules.borrow();
     let (m, st) = mods
         .iter()
@@ -1199,29 +1272,42 @@ fn lookup(rt: &Runtime, id: BuiltinId) -> Option<(usize, *const FunctionInfo, u6
         .find(|(_, s)| s.module.block == id.block())?;
     let i = usize::from(id.index());
     let info = st.infos.get(i)?;
-    Some((m, core::ptr::from_ref(info), st.functions[i].bits()))
+    let list = rt.builtins.install_list[0].bits();
+    let (home, f) = if list == UNDEFINED {
+        (Home::Slot(m, i), st.functions[i].bits())
+    } else {
+        let at = st.first + i;
+        (Home::List(list, at), object::list_get(list, at))
+    };
+    Some((home, core::ptr::from_ref(info), f))
 }
 
-/// The function object of builtin `id` in this realm, made on first use (a GC point then).
-/// Panics if no installed module has `id`.
+/// The function object of builtin `id` in the realm being installed (the current realm), made
+/// on first use (a GC point then). Panics if no installed module has `id`.
 pub(crate) fn function_object(rt: &Runtime, id: BuiltinId) -> u64 {
-    let (m, info, f) = lookup(rt, id).unwrap_or_else(|| panic!("no builtin {id}"));
+    let (home, info, f) = lookup(rt, id).unwrap_or_else(|| panic!("no builtin {id}"));
     if f != UNDEFINED {
         return f;
     }
-    // GC point; no borrow is held (W4-GC-RULES).
+    // GC point; no borrow is held (W4-GC-RULES). The install list is a root.
     let f = object::new_function(rt, info, UNDEFINED);
-    // E3: a store into a root slot takes no barrier.
-    rt.builtins.modules.borrow()[m].functions[usize::from(id.index())].init(val(f));
+    match home {
+        // E3: a store into a root slot takes no barrier.
+        Home::Slot(m, i) => rt.builtins.modules.borrow()[m].functions[i].init(val(f)),
+        Home::List(list, at) => object::list_set(rt, list, at, f),
+    }
     f
 }
 
-/// The function object of builtin `id` if the realm has made it (no allocation): the "is
-/// this still the intrinsic?" test of the iteration fast paths (`interp/slow/iter.rs`).
+/// The function object of builtin `id` if it was made and belongs to the current realm (no
+/// allocation): the "is this still the intrinsic?" test of the fast paths
+/// (`interp/slow/iter.rs`, `property.rs`, `natives.rs`). It knows the first realm's function
+/// objects only ([`BuiltinState`]): in a later realm it gives `None`, so those fast paths
+/// take their spec steps there, and a function of another realm never passes the test.
 pub(crate) fn existing_function(rt: &Runtime, id: BuiltinId) -> Option<u64> {
     lookup(rt, id)
         .map(|(_, _, f)| f)
-        .filter(|&f| f != UNDEFINED)
+        .filter(|&f| f != UNDEFINED && object::function_realm(f) == rt.root(Root::Realm))
 }
 
 /// Installs the tables that [`prepare`] registered: (1) the function object of every

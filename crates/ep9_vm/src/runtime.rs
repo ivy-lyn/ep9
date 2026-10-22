@@ -4,7 +4,7 @@
 //! Isolate ──owns──> Box<Cx>  (interpreter: dispatch table @0, hot fields)   ──cx.rt──┐
 //!         ──owns──> Box<Runtime> <───────────────────────────────────────────────────┘
 //!                     heap: Heap ──root source──> Rc<Shared> (also held by Runtime)
-//!                     shared: Rc<Shared> { VM stack, pending exception, realm roots }
+//!                     shared: Rc<Shared> { VM stack, pending exception, current realm roots }
 //!                     units, host infos, registry, limits
 //!                     shapes, atoms, symbols, builtins   (per-isolate state of shape.rs,
 //!                                                         atoms.rs, symbol.rs, builtins.rs)
@@ -48,7 +48,9 @@ pub(crate) type InterruptQueue = Arc<Mutex<Vec<InterruptCallback>>>;
 /// go when the isolate does.
 pub(crate) type WeakInterruptQueue = Weak<Mutex<Vec<InterruptCallback>>>;
 
-/// Realm intrinsics and other runtime roots (v0: one realm per isolate; H22 allows N).
+/// Realm intrinsics and other runtime roots. The realm roots (all but [`Root::RealmKey`]) hold
+/// the values of the *current* realm: a cross-realm call writes the callee realm's values into
+/// them from its REALM record, and puts the caller's back on return (`realm::switch`, H22-Q3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum Root {
@@ -97,9 +99,17 @@ pub(crate) enum Root {
     /// new function stores it as its `[[Realm]]`; `Cx::realm` holds a copy. Its fields mirror
     /// the roots above (global object, lexical record, the intrinsics).
     Realm,
+    // ---- M3-P1 REALMS: isolate-wide, not switched with the realm ----
+    /// The VM-internal private name under which the global object of each realm holds its
+    /// REALM record (`realm::of_global`; no JS code can name it). Made by the first
+    /// `realm::init`.
+    RealmKey,
 }
 
-pub(crate) const ROOT_COUNT: usize = Root::Realm as usize + 1;
+pub(crate) const ROOT_COUNT: usize = Root::RealmKey as usize + 1;
+
+/// The roots that belong to the current realm: every root before [`Root::RealmKey`].
+pub(crate) const REALM_ROOT_COUNT: usize = Root::RealmKey as usize;
 
 /// Root slots: realm roots, then the `atoms!` list, then the 256 single-character atoms
 /// (undefined until first use, string.rs `single_char`).
@@ -369,6 +379,14 @@ impl Runtime {
         self.shared.roots[r as usize].set(v);
     }
 
+    /// Makes every current-realm root (all before `Root::RealmKey`) undefined: the first step
+    /// of a new realm's init (`realm::create`).
+    pub fn clear_realm_roots(&self) {
+        for r in &self.shared.roots[..REALM_ROOT_COUNT] {
+            r.set(UNDEFINED);
+        }
+    }
+
     pub fn atom(&self, a: Atom) -> u64 {
         self.shared.roots[ATOM_ROOTS + usize::from(a.id())].get()
     }
@@ -455,8 +473,9 @@ mod tests {
         for a in Atom::ALL {
             assert!(seen.insert(a.text()), "duplicate atom {:?}", a.text());
         }
-        assert_eq!(ROOT_COUNT, 33);
-        assert_eq!(ROOT_SLOTS, 33 + Atom::ALL.len() + 256);
+        assert_eq!(ROOT_COUNT, 34);
+        assert_eq!(REALM_ROOT_COUNT, 33);
+        assert_eq!(ROOT_SLOTS, 34 + Atom::ALL.len() + 256);
         assert_eq!(ErrorKind::UriError.name(), "URIError");
         assert_eq!(crate::frame::HEADER, 8);
     }
