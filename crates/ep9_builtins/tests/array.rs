@@ -417,6 +417,40 @@ fn sort_is_stable_and_puts_undefined_and_holes_last() {
     );
 }
 
+/// `sort` and `toSorted` without a comparator: SortCompare (§23.1.3.30.2 steps 5-6) calls
+/// ToString on both values at every comparison, so an object's `toString` runs twice per
+/// comparison of [x, x, x], and a throw from the 4th call ends the sort with the array
+/// unchanged. Primitives sort as before. The number of comparisons is
+/// implementation-defined (§23.1.3.30.1 step 4): V8 makes 2 for 3 values (node prints 4
+/// calls), ep9's merge sort makes 3 (6 calls), so the script counts the comparisons of the
+/// same sort with a comparator and prints whether the calls are twice that.
+#[test]
+fn sort_converts_both_values_at_each_comparison() {
+    assert_eq!(
+        run_both(
+            r#"function counting() { var o = {n: 0, toString: function () { o.n++; return 'a'; }}; return o; }
+             var cmp = 0; [1, 1, 1].sort(function () { cmp++; return 0; });
+             var x = counting(); [x, x, x].sort(); print('sort', x.n === 2 * cmp, x.n >= 4);
+             var y = counting(); [y, y, y].toSorted(); print('toSorted', y.n === 2 * cmp, y.n >= 4);
+             var z = counting(); [z, 'b', 1, z].sort(); print('mixed', z.n > 2);
+             function fourth() { var o = {n: 0, toString: function () { o.n++; if (o.n === 4) throw new Error('fourth'); return 'a'; }}; return o; }
+             var f = fourth(); var arr = [f, f, f]; try { arr.sort(); print('sort no throw'); } catch (e) { print('sort', e.message, f.n, arr[0] === f); }
+             var g = fourth(); try { [g, g, g].toSorted(); print('toSorted no throw'); } catch (e) { print('toSorted', e.message, g.n); }
+             print([3, 'b', 1, true, null, 'a'].sort().join());
+             try { [Symbol(), 1].sort(); } catch (e) { print(e.constructor === TypeError); }"#
+        ),
+        lines(&[
+            "sort true true",
+            "toSorted true true",
+            "mixed true",
+            "sort fourth 4 true",
+            "toSorted fourth 4",
+            "1,3,a,b,,true",
+            "true",
+        ])
+    );
+}
+
 /// The index arithmetic of `slice`, `splice`, `toSpliced`, `copyWithin`, `fill`, `reverse`,
 /// `shift`, `unshift`, `at`, `toReversed` and `with`, on arrays with holes and on array-likes,
 /// with the 2^53 - 1 length checks.
