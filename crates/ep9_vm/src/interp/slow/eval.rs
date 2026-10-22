@@ -38,6 +38,8 @@
 //! the one of `function f({a}) { eval('var a'); { let z } }` (same scopes, same flags), where
 //! the var is allowed. So such a var or function name is not a conflict here.
 
+use std::collections::HashSet;
+
 use ep9_bytecode::{
     CodeKind, EVAL_EXT_BINDING, EvalContext, FunctionKind, Instructions, Opcode, Register,
     RuntimeId, ScopeFlags, ScopeKind, UnitString, VariableMode,
@@ -56,7 +58,7 @@ use crate::object::{
 };
 use crate::property;
 use crate::runtime::{ErrorKind, Root};
-use crate::unit::{FunctionInfo, LoadedUnit};
+use crate::unit::{EvalPrologue, FunctionInfo, LoadedUnit};
 
 use super::{context, info, interrupt, throw_msg_now};
 
@@ -355,23 +357,23 @@ fn cannot_declare(cx: &mut Cx, name: u64, redefine: bool) -> Throw {
     throw_error(cx, ErrorKind::TypeError, &msg)
 }
 
-/// What [`prologue`] reads.
-struct Prologue {
-    /// The byte range of the first `CallRuntime DeclareEval*`.
-    first: Option<(u32, u32)>,
-    /// (the constant index of the name, a function), in call order.
-    decls: Vec<(u32, bool)>,
+#[cfg(test)]
+thread_local! {
+    /// Tests: how many times [`prologue`] decoded a function.
+    pub(crate) static PROLOGUE_DECODES: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
 }
 
 /// The declarations of the sloppy eval prologue of `fi` (function 0 of eval code), in call
 /// order: (the constant index of the name, a function). Also the byte range of the first
 /// `CallRuntime DeclareEval*`. The names are unit constants (atoms that the unit roots), kept
 /// here as constant indices.
-fn prologue(fi: &FunctionInfo) -> Prologue {
+fn prologue(fi: &FunctionInfo) -> EvalPrologue {
+    #[cfg(test)]
+    PROLOGUE_DECODES.with(|n| n.set(n.get() + 1));
     let mut first = None;
     let mut decls = Vec::new();
     let Some(u) = fi.loaded_unit() else {
-        return Prologue { first, decls };
+        return EvalPrologue { first, decls };
     };
     let code = &u.unit.functions[fi.function_id as usize].bytecode;
     // The constant index in the accumulator and in each register, along straight-line code.
@@ -407,22 +409,33 @@ fn prologue(fi: &FunctionInfo) -> Prologue {
             _ => acc = None,
         }
     }
-    Prologue { first, decls }
+    EvalPrologue { first, decls }
 }
 
 /// At the first `DeclareEval*` call of a run of the eval code in frame `fp`: the checks of
 /// EvalDeclarationInstantiation for every name of the prologue (step 3: SyntaxError; steps 9
 /// and 11 at the global level: CanDeclareGlobalFunction, CanDeclareGlobalVar: TypeError),
-/// before any binding is made. Later calls of the run skip it. GC point (a poll).
+/// before any binding is made. Later calls of the run skip it. The prologue of function 0 is
+/// decoded once per unit (`LoadedUnit::eval_prologue`), so a run with D names costs O(D), not
+/// D decodes of the whole function. GC point (a poll).
 fn check_all(cx: &mut Cx, fp: *mut u64) -> Res<()> {
     let fi = info(fp);
-    let Prologue { first, decls } = prologue(fi);
+    let fresh;
+    let EvalPrologue { first, decls } = match fi.loaded_unit() {
+        Some(u) if fi.function_id == 0 => u.eval_prologue.get_or_init(|| prologue(fi)),
+        // Only function 0 of eval code has a prologue (`gen_eval_program`); a hand-built unit
+        // may call DeclareEval* elsewhere.
+        _ => {
+            fresh = prologue(fi);
+            &fresh
+        }
+    };
     let at = FrameRef(fp).saved_offset();
     if !first.is_some_and(|(start, end)| (start..end).contains(&at)) {
         return Ok(());
     }
     let mut global = false;
-    for &(k, _) in &decls {
+    for &(k, _) in decls {
         let name = key::to_property_key(cx, fi.constant(k))?;
         global = matches!(var_env(cx, fp, name)?, VarEnv::Global);
     }
@@ -447,10 +460,15 @@ fn check_all(cx: &mut Cx, fp: *mut u64) -> Res<()> {
             return Err(cannot_declare(cx, name, exists));
         }
     }
-    for &(k, function) in &decls {
+    // The function names (atoms): step 11 skips a var name that is one of them.
+    let functions: HashSet<u64> = decls
+        .iter()
+        .filter(|&&(_, function)| function)
+        .map(|&(k, _)| fi.constant(k))
+        .collect();
+    for &(k, _) in decls {
         let name = fi.constant(k);
-        let is_function_name = decls.iter().any(|&(j, f)| f && fi.constant(j) == name);
-        if function || is_function_name {
+        if functions.contains(&name) {
             continue;
         }
         if !property::has_own_property(cx, g, name) && !property::is_extensible(g) {
