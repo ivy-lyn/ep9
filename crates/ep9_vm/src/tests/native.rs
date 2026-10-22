@@ -5,7 +5,8 @@
 //! restores the entry state on every exit (D20). The P3 integration fixer adds the tests of
 //! the decode-free T0 entry (`slow::call` `native_entry`, M2-P3-D21-ENTRY): every unprefixed
 //! call shape takes it, every other call falls through to the decode path, and exceptions and
-//! GC stress behave as on that path.
+//! GC stress behave as on that path. The P3 review fix adds a full VM stack at that entry: the
+//! VM stack's RangeError.
 //!
 //! The stubs are a few hand-encoded instructions per target (aarch64: AAPCS64 `extern "C"`;
 //! x86-64: `extern "sysv64"`), checked with `llvm-mc --disassemble`:
@@ -1266,19 +1267,31 @@ fn call_from_rust_deep_recursion_is_a_range_error_and_the_next_call_works() {
 
 /// The extra natively run functions of the entry tests, in stub order. Their bytecode is
 /// `LdaUndefined; Return`; only the stubs run. `recv` and `srecv` (strict) return their
-/// receiver, `argc` its argument count, `p0`-`p2` (3 parameters) their parameter a0-a2.
-const ENTRY: [&str; 6] = ["recv", "srecv", "argc", "p0", "p1", "p2"];
+/// receiver, `argc` its argument count, `p0`-`p2` (3 parameters) their parameter a0-a2, and
+/// `big` (1 parameter, [`BIG_REGISTERS`] more registers) its parameter a0.
+const ENTRY: [&str; 7] = ["recv", "srecv", "argc", "p0", "p1", "p2", "big"];
+
+/// The extra registers of `big`: its frame does not fit in the smallest VM stack
+/// (`vm_stack_slots` 1024, `Isolate::new`).
+const BIG_REGISTERS: u32 = 1100;
 
 fn entry_defs() -> VerifiedUnit {
     let mut fns = Vec::new();
     for name in ENTRY {
-        let params = if name.starts_with('p') { 3 } else { 0 };
+        let params = match name {
+            "big" => 1,
+            _ if name.starts_with('p') => 3,
+            _ => 0,
+        };
         let mut m = meta(name, params, 0, 0, 0);
         if name == "srecv" {
             m.flags = ep9_bytecode::FunctionFlags::SIMPLE_PARAMETERS
                 | ep9_bytecode::FunctionFlags::STRICT;
         }
         let mut f = Asm::new(m);
+        if name == "big" {
+            f.b.new_register_list(BIG_REGISTERS);
+        }
         f.b.lda_undefined().return_();
         fns.push(f);
     }
@@ -1302,6 +1315,7 @@ fn entry_stubs() -> Vec<Vec<u8>> {
         stub_param(0),
         stub_param(1),
         stub_param(2),
+        stub_param(0),
     ]
 }
 
@@ -1706,6 +1720,60 @@ fn exceptions_from_the_entry_unwind_from_the_call() {
                 "{label}: {stack}"
             );
             assert_eq!(hits, 5, "{label}");
+        }
+    }
+}
+
+#[test]
+fn a_full_vm_stack_at_the_entry_is_the_vm_stack_range_error() {
+    // The entry takes `big(x)` and `p0(y)`; `big`'s frame does not fit in a 1024-slot VM
+    // stack, so its push in `enter_native` fails (`push_frame` -> None -> `stack_overflow`).
+    // `big`'s stub calls nothing and the entry has no native stack check, so with the default
+    // VM stack the same call returns x: only the VM stack size makes the RangeError.
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let f = s.b.new_register();
+        let l = s.b.new_register_list(1);
+        for (callee, arg) in [("big", "x"), ("p0", "y")] {
+            guarded(&mut s, true, |s| {
+                emit_call(
+                    s,
+                    Shape::CallUndefinedReceiver1,
+                    callee,
+                    &[Lit::Str(arg)],
+                    f,
+                    l,
+                );
+            });
+        }
+        s.lda_str("done");
+        s.b.return_();
+        unit("", vec![s.finish()])
+    }
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            for slots in [1024, IsolateConfig::default().vm_stack_slots] {
+                let config = IsolateConfig {
+                    vm_stack_slots: slots,
+                    ..config(d, stress)
+                };
+                let (r, out, hits) = run_entry(config, |iso| {
+                    take_output();
+                    let before = entry_hits();
+                    let r = iso.run_script(make(), "full.js").map(|v| iso.display(v));
+                    (r, take_output(), entry_hits() - before)
+                });
+                let label = format!("{} stress={stress} vm_stack_slots={slots}", d.name());
+                assert_eq!(r.as_deref(), Ok("done"), "{label}");
+                let big = if slots == 1024 {
+                    "Maximum call stack size exceeded"
+                } else {
+                    "x"
+                };
+                assert_eq!(out, [big, "y"], "{label}");
+                // Both calls took the entry (the count is taken before the frame push).
+                assert_eq!(hits, 2, "{label}");
+            }
         }
     }
 }
