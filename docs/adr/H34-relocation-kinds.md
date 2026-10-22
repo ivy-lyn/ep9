@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-22): the plan row and the Spike B emitter evidence (JIT code holds no absolute address and no relocation; a test checks it for placement (b) on AArch64). No `ep9_masm` exists, so no relocation kind is built. The unit-text questions are open for M3-P1 SP-UNIT |
+| Status | Draft (2026-10-22): the plan row and the Spike B emitter evidence (JIT code holds no absolute address and no relocation; a test checks it for placement (b) on AArch64 and on x86-64; x86-64 (b) is built, and its x86-64 runs are in the M3-P0 sandbox and CI). No `ep9_masm` exists, so no relocation kind is built. The unit-text questions are open for M3-P1 SP-UNIT |
 | Fix by | ADR frozen M1 exit; built A2/M5 |
 | Freeze point | M1 exit, the whole row (README §2). The kinds are built after M1 exit (A2 unit finalize, M5 JIT finalize), so README §3.4 applies: H34-Q5 |
 | Origin | R16-D10 (refines N5); plan status N |
@@ -106,3 +106,4 @@ ep9_baseline / ep9_opt --one instruction stream + abstract relocations--> ep9_ma
 | 2026-10-22 | draft | First draft from 02 §6 row H34 and 04 §5, with the Spike B emitter evidence: the zero-relocation rule (`emit.rs:19`) and its jit_b test for (b) on AArch64; (a) and x86-64 by design only. The 04 §5 pc-relative AOT form of LinkSlot and IcCell is not copied (it conflicts with H35-Q9) and is H34-Q1. The SP-Unit questions and H07-Q2 stay open (M2-P5-PLAN-D20, plan-v6 D18) | P5-DOCS-SYNC agent (M2-P5) |
 | 2026-10-22 | fill | M3-P0 P0-B-X64: x86-64 placement (b) is built (`spikes/spike-b/src/jit_b/x64.rs`), and the two-isolate no-address test covers it (`jit_b::tests::b_code_has_no_ret_and_no_address`, both architectures); the "(b) on x86-64" row, the (b) Rules row, the (a) Rules row and the Spike B evidence row say so. No rule changes its result | P0-B-X64 agent (M3-P0) |
 | 2026-10-23 | clarify | Line ref only: the (b) Rules row cites `b_code_has_no_ret_and_no_address` at `jit_b/mod.rs:286-314` (the CX-JIT1 fix added byte checks to the test above it). No rule, check or value changes | M3-P0 integration fixer (CX-JIT1) |
+| 2026-10-23 | clarify | The Status line (and the README index row) names x86-64 (b) as the fill row above does: built, the two-isolate test covers it, and its x86-64 runs are in the M3-P0 sandbox and CI (the orchestrator's runs). Text only; no check changes | M3-P0 integration fixer |

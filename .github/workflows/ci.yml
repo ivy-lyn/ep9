@@ -401,10 +401,12 @@ jobs:
       - name: Spike B placement (b) gate
         if: ${{ !cancelled() }}
         run: bash spikes/spike-b/gate.sh b
-      # P4-WIN-STATIC-1 (plan-v6 D25): the real Win64 unwind run of placement (a)'s x86-64 JIT
+      # P4-WIN-STATIC-1 (plan-v6 D25): the real Win64 unwind run of the x86-64 JIT of placement
+      # (a) (drive, id, hold) and, since M3-P0 P0-B-X64, placement (b) (bdrive, bid, bhold)
       # (spikes/spike-b/tests/win64_unwind.rs): per function, RtlLookupFunctionEntry finds its
       # RUNTIME_FUNCTION and RtlVirtualUnwind from every prologue, body and epilogue state
-      # returns to its caller; a walk from a host function steps through running JIT frames.
+      # returns to its caller ((b) epilogues end in `rex.w jmp [rdi + rax*8]`); a walk from a
+      # host function steps through running JIT frames.
       # The `cargo test` of the structural gate already runs it; this step names the result.
       # Debug, as that `cargo test`, so it reuses its build (a --release test build would
       # rebuild the fat-LTO graph). The static half (win-static.sh, llvm-readobj and llvm-mc)
