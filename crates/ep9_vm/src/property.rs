@@ -88,13 +88,19 @@ pub(crate) fn get_with_receiver(cx: &mut Cx, mut o: u64, key: u64, receiver: u64
 /// property; `None` for an accessor (its getter does not run) or no property. For engine
 /// text that must run no JS: an error's "Name: message" header (`error::error_header`, made
 /// inside `throw_error`, also on stack overflow) and the reported constructor name. GC point
-/// (a lazy `prototype`), but runs no JS and cannot throw: a routed hook's throw counts as no
-/// data property (its pending exception is dropped).
+/// (a lazy `prototype`), but runs no JS and cannot throw. A routed object's hooks
+/// (ARGUMENTS, MODULE_NAMESPACE) are not asked: only its ordinary storage is read, then the
+/// walk goes on to its prototype. A hook may throw (a namespace binding in its TDZ), and the
+/// ReferenceError it makes would read its own header here again (`error::error_header` ->
+/// `get_data_from`) and recurse without bound.
 pub(crate) fn get_data_from(cx: &mut Cx, mut o: u64, key: u64) -> Option<u64> {
     debug_assert!(is_object(o) && is_property_key(key));
     let how = key::probe(key);
     loop {
-        if kind::cell_kind(o) != kind::OBJECT.get() {
+        let k = kind::cell_kind(o);
+        if k != kind::OBJECT.get() && !exotic::is_routed(k) {
+            // Only non-routed kinds get here, and their `exotic::get` never throws; the
+            // `Some(Err)` arm is defensive.
             match exotic::get(cx, o, key, how) {
                 Some(Ok(v)) => return Some(v),
                 Some(Err(_)) => {

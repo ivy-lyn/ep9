@@ -86,7 +86,8 @@ pub(crate) fn function_prototype(rt: &Runtime, f: u64) -> u64 {
 /// `None` if `key` names none of them. A routed kind's hook may throw (`Some(Err)`: a
 /// namespace binding in its TDZ, §10.4.6.8); the others never do. GC point (the lazy
 /// `prototype`, a routed hook). Always inlined into the `[[Get]]` walks
-/// (`property::get_with_receiver`, `property::get_data_from`).
+/// (`property::get_with_receiver`, `property::get_data_from`); of those, only
+/// `get_with_receiver` asks a routed kind's hook (`get_data_from` skips routed kinds).
 #[inline(always)]
 pub(crate) fn get(cx: &mut Cx, o: u64, key: u64, how: Probe) -> Option<Res<u64>> {
     let k = kind::cell_kind(o);

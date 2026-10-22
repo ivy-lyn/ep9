@@ -16,7 +16,7 @@ use crate::exotic::probe;
 use crate::frame::{NULL, UNDEFINED, int32_bits};
 use crate::object::{self, argsf, attr, cell, fun, modf, nsf, obj, realmf};
 use crate::ordered_table::{self, MAP_WIDTH, SET_WIDTH, otf};
-use crate::runtime::{Root, Runtime, val};
+use crate::runtime::{Atom, Root, Runtime, val};
 use crate::{Dispatch, Isolate, arguments, kinds, module, property, props, shape, versions};
 
 // ---- versions, kinds, fixed fields ------------------------------------------------------------
@@ -622,9 +622,15 @@ fn routed_value_hooks_can_throw() {
             take_probe_error(cx, "HasOwnProperty (builtin ABI)");
             assert!(property::for_in_keys(cx, ns).is_err());
             take_probe_error(cx, "for-in");
-            // `get_data_from` runs no JS and cannot throw: a hook's throw is no data property.
-            assert_eq!(property::get_data_from(cx, ns, x), None);
+            // `get_data_from` runs no JS and cannot throw: it does not ask a routed hook, so
+            // it reads the ordinary `x` (X-CODE1).
+            probe::take();
+            assert_eq!(property::get_data_from(cx, ns, x), Some(int32_bits(1)));
             assert_eq!(rt.pending(), 0, "get_data_from leaves nothing pending");
+            assert!(
+                probe::take().is_empty(),
+                "get_data_from asks no routed hook"
+            );
             probe::set_throw(false);
             assert_eq!(property::get(cx, ns, x).unwrap(), int32_bits(1));
             assert!(property::get_own_property(cx, ns, x).unwrap().is_some());
@@ -633,6 +639,62 @@ fn routed_value_hooks_can_throw() {
                 let o: crate::Local<'_, crate::JsObject> = crate::Local::from_bits(ns);
                 assert!(abi.has_own_property(o, "x").unwrap());
             }
+            rt.heap.drop_global(hn);
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
+}
+
+/// X-CODE1: the engine's diagnostic reads (an error's "Name: message" header, made for every
+/// new error) do not ask a routed hook. A namespace on the ReferenceError chain whose `[[Get]]`
+/// throws would otherwise make a new ReferenceError whose header asks the hook again: a
+/// stack overflow. Only the spec `[[Get]]` asks the hook; the header reads the namespace's
+/// ordinary storage.
+#[test]
+fn diagnostic_reads_skip_routed_hooks() {
+    for stress in [false, true] {
+        on_big_stack(move || {
+            let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+            let cx: &mut crate::interp::Cx = &mut iso.cx;
+            let rt: &Runtime = &iso.rt;
+            let ns = new_routed(rt, "module");
+            let hn = rt.heap.new_global(val(ns));
+            let text = crate::atoms::intern_str(rt, "NS");
+            let ht = rt.heap.new_global(val(text));
+            let name = rt.atom(Atom::Name);
+            // `name` as an ordinary property of the namespace (the define stub answers
+            // "ordinary").
+            let desc = Desc::data(text, attr::DEFAULT);
+            assert!(property::define_own_property(cx, ns, name, desc).unwrap());
+            // ReferenceError.prototype has no own `name`; its chain reaches the namespace.
+            let rep = rt.root(Root::ReferenceErrorPrototype);
+            assert!(property::delete(cx, rep, name, true).unwrap());
+            assert!(property::set_prototype_of(rt, rep, ns));
+            probe::set_throw(true);
+            probe::take();
+            let x = crate::atoms::intern_str(rt, "x");
+            assert!(property::get(cx, ns, x).is_err());
+            assert_eq!(
+                probe::take(),
+                ["module get"],
+                "only the spec [[Get]] asks the hook"
+            );
+            let e = rt.take_pending();
+            assert!(object::is_object(e));
+            assert_eq!(crate::error::error_header(cx, e), "NS: probe");
+            assert_eq!(rt.pending(), 0, "error_header leaves nothing pending");
+            let (stack, _) = props::own_get(e, rt.atom(Atom::Stack)).expect("an own stack");
+            let stack = crate::string::to_rust_string(stack);
+            assert!(stack.starts_with("NS: probe"), "{stack}");
+            assert!(probe::take().is_empty(), "the header asks no routed hook");
+            probe::set_throw(false);
+            assert!(property::set_prototype_of(
+                rt,
+                rep,
+                rt.root(Root::ErrorPrototype)
+            ));
+            rt.heap.drop_global(ht);
             rt.heap.drop_global(hn);
             iso.collect_garbage();
             iso.verify_heap().unwrap();
