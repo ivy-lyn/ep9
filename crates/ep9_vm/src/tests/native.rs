@@ -75,6 +75,8 @@ fn layout_offsets_read_the_live_isolate() {
         layout::RT_COMPARE,
         layout::RT_STACK_OVERFLOW,
         layout::RT_THROW,
+        // Appended by P4-PLACEMENT-B (placement (b)): the table is append-only.
+        layout::RT_UNWIND,
     ];
     for (i, off) in rt.into_iter().enumerate() {
         assert_eq!(off, i * 8);
@@ -91,6 +93,28 @@ fn layout_offsets_read_the_live_isolate() {
     assert_eq!(layout::FI_SLOT_KIND, 0);
     assert_eq!(layout::FI_SLOT_ENTRY, 8);
     assert_eq!(layout::FUNCTION_INFO, 24);
+    // Placement (b) (P4-PLACEMENT-B): the dispatch table, the unwind result fields, the
+    // bytecode start and the native-word encoding.
+    let iso = Isolate::new(IsolateConfig::default()).unwrap();
+    let cx = core::ptr::from_ref::<crate::interp::Cx>(&iso.cx);
+    // SAFETY: each offset names a field of the live Cx with the type read here.
+    unsafe {
+        let base = cx.cast::<u8>();
+        let word = |off: usize| base.add(off).cast::<usize>().read();
+        assert_eq!(layout::CX_TABLE, 0);
+        assert_eq!(word(layout::CX_TABLE), iso.cx.table[0] as usize);
+        assert_eq!(word(layout::CX_OUT_FP), iso.cx.out_fp.addr());
+        assert_eq!(word(layout::CX_OUT_PC), iso.cx.out_pc.addr());
+    }
+    assert_eq!(
+        layout::FI_CODE,
+        core::mem::offset_of!(crate::unit::FunctionInfo, code)
+    );
+    assert_eq!(
+        crate::frame::native(0x1234) - 0x1234,
+        layout::NATIVE_WORD_OFFSET
+    );
+    assert_eq!(layout::NATIVE_WORD_OFFSET.count_ones(), 1);
 }
 
 // ---- hand-written native code ---------------------------------------------------------------
@@ -1773,6 +1797,1067 @@ fn a_full_vm_stack_at_the_entry_is_the_vm_stack_range_error() {
                 assert_eq!(out, [big, "y"], "{label}");
                 // Both calls took the entry (the count is taken before the frame push).
                 assert_eq!(hits, 2, "{label}");
+            }
+        }
+    }
+}
+
+// ---- placement (b) (P4-PLACEMENT-B) -------------------------------------------------------------
+
+/// Placement (b) of D21 (P4-PLACEMENT-B): JIT frames on the VM stack, entered with the 4
+/// handler arguments (`native::install_native_b`). AArch64 only: the x86-64 (b) code is not
+/// built (a stretch of the plan; spike-b's jit_b refuses x86-64), so these stubs exist for the
+/// AArch64 handler ABI only (the Rust ABI there: x0-x3 in, x0 out; pinned by
+/// `the_handler_abi_passes_cx_pc_fp_acc_in_x0_to_x3`).
+///
+/// A (b) stub runs one function's bytecode against its frame and leaves with a tail jump to
+/// `cx.table[*pc]`, as the jit_b code does:
+///
+/// ```text
+/// leaf:   ldur x3, [x2, #word]                          acc = a frame word
+///         ldur x1, [x2, #ret] ; ldur x2, [x2, #caller]   the frame's return pc and caller fp
+///         eor x1/x2, #2^49                               decode the native words
+///         ldrb w9, [x1] ; ldr x16, [x0, x9, lsl #3] ; br x16   x0 = cx, x3 = acc
+/// framed: stp x29, x30, [sp, #-32]! ; mov x29, sp ; stp x26, x28, [sp, #16]
+///         mov x28, x0 ; mov x26, x2 ; <table call (cx, fp, off, ..)> ; cbz x0, unwind
+///         [reload a frame word] ; x3 = x0 ; x1, x2 from the frame
+///   leave: mov x0, x28 ; ldrb/ldr ; ldp x26, x28 ; ldp x29, x30 ; br x16
+///   unwind: RuntimeTable::unwind(cx, fp, off) ; x3 = x0 ; x1 = cx.out_pc ; x2 = cx.out_fp ; b leave
+/// ```
+#[cfg(target_arch = "aarch64")]
+mod placement_b {
+    use super::*;
+
+    /// AArch64 encodings of the (b) stubs (checked against `clang -c` in
+    /// `b_stub_bytes_are_the_documented_instructions`).
+    #[derive(Default)]
+    pub(super) struct A64 {
+        w: Vec<u32>,
+    }
+
+    impl A64 {
+        fn op(&mut self, w: u32) -> &mut Self {
+            self.w.push(w);
+            self
+        }
+        /// `ldur x<t>, [x<n>, #off]`.
+        fn ldur(&mut self, t: u32, n: u32, off: isize) -> &mut Self {
+            assert!((-256..256).contains(&off));
+            self.op(0xF840_0000 | ((off as u32 & 0x1FF) << 12) | (n << 5) | t)
+        }
+        fn ldr(&mut self, t: u32, n: u32, off: usize) -> &mut Self {
+            self.op(a64_ldr(t, n, off))
+        }
+        /// `mov x<d>, x<m>`.
+        fn mov(&mut self, d: u32, m: u32) -> &mut Self {
+            self.op(0xAA00_03E0 | (m << 16) | d)
+        }
+        fn imm(&mut self, d: u32, v: u64) -> &mut Self {
+            self.w.extend(a64_mov_imm(d, v));
+            self
+        }
+        /// `eor x<d>, x<d>, #2^49` (decodes a native word).
+        fn decode(&mut self, d: u32) -> &mut Self {
+            assert_eq!(layout::NATIVE_WORD_OFFSET, 1 << 49);
+            self.op(0xD24F_0000 | (d << 5) | d)
+        }
+        /// `cmp x<n>, x<m>`.
+        fn cmp(&mut self, n: u32, m: u32) -> &mut Self {
+            self.op(0xEB00_001F | (m << 16) | (n << 5))
+        }
+        fn here(&self) -> usize {
+            self.w.len()
+        }
+        /// Points the branch at `at` (`b`, `b.cond` or `cbz`) to `to`.
+        fn patch(&mut self, at: usize, to: usize) {
+            let d = to as i64 - at as i64;
+            let w = self.w[at];
+            self.w[at] = if w >> 26 == 0b000101 {
+                w | (d as u32 & 0x03FF_FFFF)
+            } else {
+                w | ((d as u32 & 0x7FFFF) << 5)
+            };
+        }
+        /// x1 = return pc, x2 = caller fp of the frame in x<f> (decoded).
+        fn ret_state(&mut self, f: u32) -> &mut Self {
+            self.ldur(1, f, layout::FP_RETURN_PC)
+                .ldur(2, f, layout::FP_CALLER_FP)
+                .decode(1)
+                .decode(2)
+        }
+        /// The tail jump: `ldrb w9, [x1] ; ldr x16, [x0, x9, lsl #3] ; br x16`.
+        fn jump(&mut self) -> &mut Self {
+            self.op(0x3940_0029).op(0xF869_7810).op(0xD61F_0200)
+        }
+        fn bytes(&self) -> Vec<u8> {
+            words(&self.w)
+        }
+    }
+
+    /// A leaf (b) stub: `return [fp + off]`.
+    pub(super) fn b_load(off: isize) -> Vec<u8> {
+        let mut a = A64::default();
+        a.ldur(3, 2, off).ret_state(2).jump();
+        a.bytes()
+    }
+
+    /// A framed (b) stub: `r = table[entry](cx, fp, off, srcs..)`; 0 unwinds; else `return r`
+    /// (or the frame word `reload`, read after the call).
+    pub(super) fn b_call(entry: usize, off: u32, srcs: &[Src], reload: Option<isize>) -> Vec<u8> {
+        assert!(srcs.len() <= 3 && off < 1 << 16);
+        let mut a = A64::default();
+        a.op(0xA9BE_7BFD) // stp x29, x30, [sp, #-32]!
+            .op(0x9100_03FD) // mov x29, sp
+            .op(0xA901_73FA) // stp x26, x28, [sp, #16]
+            .mov(28, 0)
+            .mov(26, 2)
+            .mov(1, 26)
+            .op(0x5280_0000 | (off << 5) | 2); // movz w2, #off
+        for (k, s) in srcs.iter().enumerate() {
+            let t = 3 + k as u32;
+            match *s {
+                Src::Param(i) => a.ldur(t, 26, layout::fp_param(i)),
+                Src::Imm(v) => a.imm(t, v),
+            };
+        }
+        a.ldr(16, 28, layout::CX_RUNTIME_TABLE)
+            .ldr(16, 16, entry)
+            .op(0xD63F_0200); // blr x16
+        let cbz = a.here();
+        a.op(0xB400_0000); // cbz x0, unwind
+        if let Some(r) = reload {
+            a.ldur(0, 26, r);
+        }
+        a.mov(3, 0).ret_state(26);
+        let leave = a.here();
+        a.mov(0, 28)
+            .op(0x3940_0029) // ldrb w9, [x1]
+            .op(0xF869_7810) // ldr x16, [x0, x9, lsl #3]
+            .op(0xA941_73FA) // ldp x26, x28, [sp, #16]
+            .op(0xA8C2_7BFD) // ldp x29, x30, [sp], #32
+            .op(0xD61F_0200); // br x16
+        let unwind = a.here();
+        a.patch(cbz, unwind);
+        a.mov(0, 28)
+            .mov(1, 26)
+            .op(0x5280_0000 | (off << 5) | 2)
+            .ldr(16, 28, layout::CX_RUNTIME_TABLE)
+            .ldr(16, 16, layout::RT_UNWIND)
+            .op(0xD63F_0200)
+            .mov(3, 0)
+            .ldr(1, 28, layout::CX_OUT_PC)
+            .ldr(2, 28, layout::CX_OUT_FP);
+        let b = a.here();
+        a.op(0x1400_0000);
+        a.patch(b, leave);
+        a.bytes()
+    }
+
+    /// The (b) stub of `pin(x)`: checks the 4 handler arguments, then returns acc (x3). x0 must
+    /// be the `Cx` (its runtime table pointer), x1 the callee's bytecode start (from x2's
+    /// FunctionInfo word), x2 its frame. A failed check returns the int32 -1.
+    pub(super) fn b_pin() -> Vec<u8> {
+        let mut a = A64::default();
+        let mut fails = Vec::new();
+        a.ldur(9, 2, layout::FP_FUNCTION_INFO)
+            .decode(9)
+            .ldr(9, 9, layout::FI_CODE)
+            .cmp(9, 1);
+        fails.push(a.here());
+        a.op(0x5400_0001); // b.ne fail
+        a.ldr(9, 0, layout::CX_RUNTIME_TABLE).imm(
+            10,
+            core::ptr::from_ref(&crate::native::RUNTIME_TABLE).addr() as u64,
+        );
+        a.cmp(9, 10);
+        fails.push(a.here());
+        a.op(0x5400_0001); // b.ne fail
+        let tail = a.here();
+        a.ret_state(2).jump();
+        let fail = a.here();
+        for f in fails {
+            a.patch(f, fail);
+        }
+        a.imm(3, crate::frame::int32_bits(-1));
+        let b = a.here();
+        a.op(0x1400_0000);
+        a.patch(b, tail);
+        a.bytes()
+    }
+
+    /// `x0 + 2 x1 + 4 x2 + 8 x3` then `ret`: called directly as a `Handler`.
+    fn weigh() -> Vec<u8> {
+        words(&[0x8B01_0400, 0x8B02_0800, 0x8B03_0C00, 0xD65F_03C0])
+    }
+
+    #[test]
+    fn b_stub_bytes_are_the_documented_instructions() {
+        // As `clang -c -target arm64-apple-macos` + `llvm-objdump -d` print them.
+        let mut a = A64::default();
+        a.mov(28, 0)
+            .mov(26, 2)
+            .mov(0, 28)
+            .mov(1, 26)
+            .mov(3, 0)
+            .decode(1)
+            .decode(2)
+            .ldur(1, 2, -56)
+            .ldur(2, 2, -64)
+            .ldur(1, 26, -56)
+            .ldur(9, 2, -32)
+            .ldur(3, 2, -80)
+            .ldr(9, 9, 24)
+            .cmp(9, 1)
+            .cmp(9, 10)
+            .jump();
+        assert_eq!(
+            a.w,
+            [
+                0xAA00_03FC, // mov x28, x0
+                0xAA02_03FA, // mov x26, x2
+                0xAA1C_03E0, // mov x0, x28
+                0xAA1A_03E1, // mov x1, x26
+                0xAA00_03E3, // mov x3, x0
+                0xD24F_0021, // eor x1, x1, #0x2000000000000
+                0xD24F_0042, // eor x2, x2, #0x2000000000000
+                0xF85C_8041, // ldur x1, [x2, #-0x38]
+                0xF85C_0042, // ldur x2, [x2, #-0x40]
+                0xF85C_8341, // ldur x1, [x26, #-0x38]
+                0xF85E_0049, // ldur x9, [x2, #-0x20]
+                0xF85B_0043, // ldur x3, [x2, #-0x50]
+                0xF940_0D29, // ldr x9, [x9, #0x18]
+                0xEB01_013F, // cmp x9, x1
+                0xEB0A_013F, // cmp x9, x10
+                0x3940_0029, // ldrb w9, [x1]
+                0xF869_7810, // ldr x16, [x0, x9, lsl #3]
+                0xD61F_0200, // br x16
+            ]
+        );
+        // The frame offsets these stubs use (H14, FRAME 2).
+        assert_eq!(
+            (
+                layout::FP_RETURN_PC,
+                layout::FP_CALLER_FP,
+                layout::FP_FUNCTION_INFO
+            ),
+            (-56, -64, -32)
+        );
+        let w = |v: Vec<u8>| -> Vec<u32> {
+            v.chunks(4)
+                .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+                .collect()
+        };
+        assert_eq!(
+            w(weigh()),
+            [0x8B01_0400, 0x8B02_0800, 0x8B03_0C00, 0xD65F_03C0] // add x0, x0, x1, lsl #1 ..
+        );
+        // Branch patching: a forward cbz and a backward b.
+        let call = w(b_call(layout::RT_POLL, 0, &[], None));
+        let cbz = call.iter().position(|&x| x >> 24 == 0xB4).unwrap();
+        let b = call.len() - 1;
+        assert_eq!(call[b] >> 26, 0b000101);
+        let back = (call[b] & 0x03FF_FFFF) as i32 - (1 << 26);
+        let leave = (b as i32 + back) as usize;
+        assert_eq!(
+            call[leave], 0xAA1C_03E0,
+            "b goes back to `leave: mov x0, x28`"
+        );
+        let fwd = ((call[cbz] >> 5) & 0x7FFFF) as usize;
+        assert_eq!(
+            call[cbz + fwd],
+            0xAA1C_03E0,
+            "cbz goes to `unwind: mov x0, x28`"
+        );
+        assert_eq!(call[cbz + fwd + 1], 0xAA1A_03E1);
+    }
+
+    /// The aarch64 handler ABI that (b) code relies on (plan-v6 task 6): `Handler` is the Rust
+    /// ABI there (an unstable ABI; rustc 1.99.1 puts `(cx, pc, fp, acc)` in x0-x3 and the result
+    /// in x0). A production (b) needs an `extern "C"` handler ABI on aarch64 (an H15 rewrite).
+    #[test]
+    fn the_handler_abi_passes_cx_pc_fp_acc_in_x0_to_x3() {
+        with_b_stubs(&[weigh()], |code| {
+            let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+            // SAFETY: the stub is a function with 4 register arguments and a register result
+            // that reads no memory.
+            let h: crate::interp::Handler = unsafe {
+                core::mem::transmute::<*const (), crate::interp::Handler>(
+                    core::ptr::with_exposed_provenance(code[0].start),
+                )
+            };
+            let cx: &mut crate::interp::Cx = &mut iso.cx;
+            let cx_addr = core::ptr::from_mut(cx).addr() as u64;
+            let (pc, fp, acc) = (0x1000_usize, 0x2_0000_usize, 0x30_0000_u64);
+            // SAFETY: as above; the pointers are never read.
+            let r = unsafe {
+                h(
+                    cx,
+                    core::ptr::with_exposed_provenance(pc),
+                    core::ptr::with_exposed_provenance_mut(fp),
+                    acc,
+                )
+            };
+            let want = cx_addr
+                .wrapping_add(2 * pc as u64)
+                .wrapping_add(4 * fp as u64)
+                .wrapping_add(8 * acc);
+            assert_eq!(r, want, "x0 + 2 x1 + 4 x2 + 8 x3");
+        });
+    }
+
+    /// Bytes per (b) stub in the code pages.
+    const B_STUB_SIZE: usize = 256;
+
+    /// [`with_stubs`] with room for the framed (b) stubs.
+    pub(super) fn with_b_stubs<R>(stubs: &[Vec<u8>], f: impl FnOnce(&[Range<usize>]) -> R) -> R {
+        let range = CodeRange::process().expect("reserve the process code range");
+        let len = (stubs.len() * B_STUB_SIZE).div_ceil(page_size()) * page_size();
+        let mut chunk = range.alloc(len).expect("a chunk of the code range");
+        let mut mem = chunk
+            .commit(WxMode::DEFAULT)
+            .expect("commit the code pages");
+        let mut ranges = Vec::new();
+        for (i, s) in stubs.iter().enumerate() {
+            assert!(s.len() <= B_STUB_SIZE, "{} bytes", s.len());
+            let off = i * B_STUB_SIZE;
+            let mut w = mem.open_write(off, s.len()).expect("open a write window");
+            w.bytes().copy_from_slice(s);
+            w.close().expect("close the write window");
+            let start = mem.exec_addr(off);
+            ranges.push(start..start + s.len());
+        }
+        f(&ranges)
+    }
+
+    /// The (b) stubs of `defs()` (same order as [`NATIVE`]): each runs its function's bytecode,
+    /// except `which` (returns a1, its bytecode a0) and `overflow` (throws the native stack
+    /// RangeError, its bytecode returns undefined).
+    fn b_stubs(offs: impl Fn(&str, Opcode) -> u32) -> Vec<Vec<u8>> {
+        use Src::{Imm, Param};
+        let call1 = Opcode::CallUndefinedReceiver1;
+        vec![
+            b_load(layout::fp_param(0)),
+            b_call(
+                layout::RT_CALL_ANY,
+                offs("g", call1),
+                &[Imm(UNDEFINED)],
+                None,
+            ),
+            b_call(
+                layout::RT_ADD,
+                offs("add2", Opcode::Add),
+                &[Param(0), Param(1)],
+                None,
+            ),
+            b_call(layout::RT_INC, offs("inc1", Opcode::Inc), &[Param(0)], None),
+            b_call(
+                layout::RT_COMPARE,
+                offs("lt", Opcode::TestLessThan),
+                &[Imm(u64::from(cmp::LT)), Param(0), Param(1)],
+                None,
+            ),
+            b_call(
+                layout::RT_THROW,
+                offs("nthrow", Opcode::Throw),
+                &[Param(0)],
+                None,
+            ),
+            b_call(layout::RT_POLL, 0, &[], None),
+            b_call(layout::RT_STACK_OVERFLOW, 0, &[], None),
+            b_load(layout::fp_param(1)),
+            b_call(
+                layout::RT_CALL_ANY,
+                offs("keep", call1),
+                &[Imm(UNDEFINED)],
+                Some(layout::fp_param(1)),
+            ),
+        ]
+    }
+
+    /// The (b) stubs of [`ENTRY`] (`entry_defs()`; their bytecode returns undefined).
+    fn b_entry_stubs() -> Vec<Vec<u8>> {
+        vec![
+            b_load(layout::FP_RECEIVER),
+            b_load(layout::FP_RECEIVER),
+            b_load(layout::FP_ARGC),
+            b_load(layout::fp_param(0)),
+            b_load(layout::fp_param(1)),
+            b_load(layout::fp_param(2)),
+            b_load(layout::fp_param(0)),
+        ]
+    }
+
+    /// `pin(x)`: `LdaUndefined; Return`; its (b) stub is [`b_pin`].
+    fn pin_defs() -> VerifiedUnit {
+        let mut f = Asm::new(meta("pin", 1, 0, 0, 0));
+        f.b.lda_undefined().return_();
+        let mut s = Asm::script(0);
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global("pin");
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish(), f.finish()])
+    }
+
+    /// How a test installs the native stubs of `defs()`.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Install {
+        /// Placement (b): `install_native_b` (the Opt slot).
+        B,
+        /// M2-P4-B-AB: the placement (a) stubs in AotBaseline slots (T0's hot entry).
+        AHot,
+    }
+
+    /// An isolate with `defs()`, `entry_defs()` and `pin_defs()`, every native function
+    /// installed as `how` says, run on a big native stack.
+    fn run_b<R: Send + 'static>(
+        how: Install,
+        config: IsolateConfig,
+        f: impl FnOnce(&mut Isolate) -> R + Send + 'static,
+    ) -> R {
+        on_big_stack(move || {
+            let offs = {
+                let mut iso = isolate(IsolateConfig::default());
+                iso.run_script(defs(), "defs.js").unwrap();
+                NATIVE
+                    .iter()
+                    .map(|n| {
+                        let op = match *n {
+                            "g" | "keep" => Some(Opcode::CallUndefinedReceiver1),
+                            "add2" => Some(Opcode::Add),
+                            "inc1" => Some(Opcode::Inc),
+                            "lt" => Some(Opcode::TestLessThan),
+                            "nthrow" => Some(Opcode::Throw),
+                            _ => None,
+                        };
+                        (*n, op.map_or(0, |op| offset_in(&iso, n, op)))
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let off = move |n: &str, _: Opcode| offs.iter().find(|(m, _)| *m == n).unwrap().1;
+            let mut all = match how {
+                Install::B => b_stubs(&off),
+                Install::AHot => stubs(&off),
+            };
+            match how {
+                Install::B => all.extend(b_entry_stubs()),
+                Install::AHot => all.extend(entry_stubs()),
+            }
+            all.push(b_pin());
+            with_b_stubs(&all, |code| {
+                let mut iso = isolate(config);
+                iso.run_script(defs(), "defs.js").unwrap();
+                iso.run_script(entry_defs(), "entry-defs.js").unwrap();
+                iso.run_script(pin_defs(), "pin.js").unwrap();
+                let mut names: Vec<&str> = NATIVE.to_vec();
+                names.extend(ENTRY);
+                if how == Install::B {
+                    names.push("pin");
+                }
+                for (name, range) in names.iter().zip(code) {
+                    let f = iso.global(name).unwrap();
+                    // SAFETY: `range` holds the stub for `name`, which runs its bytecode with
+                    // the ABI of the install (b: the handler ABI; a: `NativeEntry`) and stays
+                    // mapped until `with_b_stubs` returns, after the isolate drops.
+                    let r = unsafe {
+                        match how {
+                            Install::B => crate::install_native_b(&iso, f, range.clone()),
+                            Install::AHot => crate::install_native(
+                                &iso,
+                                f,
+                                DispatchKind::AotBaseline,
+                                range.clone(),
+                            ),
+                        }
+                    };
+                    r.unwrap();
+                }
+                let r = f(&mut iso);
+                iso.collect_garbage();
+                iso.verify_heap().unwrap();
+                r
+            })
+        })
+    }
+
+    /// (b) stub entries, (b) cold-arm entries, decode-free (a) entries and A-hot entries of
+    /// this thread.
+    fn counts() -> [u64; 4] {
+        [
+            crate::native::B_STUB_ENTRIES.with(core::cell::Cell::get),
+            crate::native::B_COLD_ENTRIES.with(core::cell::Cell::get),
+            entry_hits(),
+            crate::native::A_HOT_ENTRIES.with(core::cell::Cell::get),
+        ]
+    }
+
+    fn delta(before: [u64; 4]) -> [u64; 4] {
+        let now = counts();
+        core::array::from_fn(|i| now[i] - before[i])
+    }
+
+    /// The rows of [`t0_calls_native_code_and_native_code_calls_back`], with the outputs of
+    /// placement (b) code: `which` gives a1 where its bytecode gives a0.
+    fn calls_rows() -> (Vec<(&'static str, Vec<Lit>)>, Vec<&'static str>) {
+        use Lit::{Global, Int, Str};
+        let rows = vec![
+            ("id", vec![Int(41)]),
+            ("g", vec![Global("bump"), Str("a")]),
+            ("g", vec![Global("inc1"), Int(41)]),
+            ("g", vec![Global("print"), Str("hi")]),
+            ("add2", vec![Int(1), Int(2)]),
+            ("add2", vec![Str("a"), Str("b")]),
+            ("inc1", vec![Str("41")]),
+            ("lt", vec![Int(1), Int(2)]),
+            ("lt", vec![Str("b"), Str("a")]),
+            ("poll", vec![]),
+            ("which", vec![Int(1), Int(2)]),
+            ("keep", vec![Global("bump"), Str("k")]),
+            ("keep", vec![Global("g"), Global("bump")]),
+            // (b) keep -> call_any -> (b) g -> call_any -> (b) inc1: two nested runs.
+            ("keep", vec![Global("g"), Global("inc1")]),
+        ];
+        let want = vec![
+            "41",
+            "a!",
+            "42",
+            "hi",
+            "undefined",
+            "3",
+            "ab",
+            "42",
+            "true",
+            "false",
+            "true",
+            "2",
+            "k",
+            "[object Function]",
+            "[object Function]",
+        ];
+        (rows, want)
+    }
+
+    #[test]
+    fn t0_calls_b_code_and_b_code_calls_back() {
+        let (rows, want) = calls_rows();
+        for &d in Dispatch::ALL {
+            for stress in [false, true] {
+                let rows2 = rows.clone();
+                let (r, out, n) = run_b(Install::B, config(d, stress), move |iso| {
+                    let before = counts();
+                    let (r, out) = run_rows(iso, &rows2);
+                    (r, out, delta(before))
+                });
+                let label = format!("{} stress={stress}", d.name());
+                assert_eq!(r.as_deref(), Ok("done"), "{label}");
+                let mut want = want.clone();
+                if d == Dispatch::Match {
+                    // D4: the match loop runs the bytecode of a (b) function (which: a0).
+                    want[11] = "1";
+                }
+                assert_eq!(out, want, "{label}");
+                // Under a threaded expansion every (b) call enters the stub: 14 rows from T0,
+                // and 4 nested calls through call_any (row 3: inc1; row 13: g; row 14: g and
+                // inc1). The match loop never enters (b) code (D4).
+                let stub = if d == Dispatch::Match { 0 } else { 18 };
+                assert_eq!(n, [stub, 0, 0, 0], "{label}: [stub, cold arm, (a), A-hot]");
+            }
+        }
+    }
+
+    /// The 4 handler arguments reach (b) code in x0-x3, and its tail jump back gives T0 the
+    /// accumulator in x3: `pin` checks x0 (the Cx), x1 (its bytecode start) and x2 (its frame)
+    /// and returns x3. On the hot path x3 is the caller's accumulator at the call (`pin`
+    /// itself: the script loads the callee last); on the cold arm (the budget is out),
+    /// `slow::call`'s result (undefined). A failed check returns -1; a wrong register for any
+    /// argument gives a wrong result or a crash.
+    #[test]
+    fn b_code_gets_the_four_handler_arguments_and_tail_jumps_back() {
+        fn make() -> VerifiedUnit {
+            let mut s = Asm::script(0);
+            let f = s.b.new_register();
+            let l = s.b.new_register_list(2);
+            emit_call(
+                &mut s,
+                Shape::CallUndefinedReceiver1,
+                "pin",
+                &[Lit::Int(7)],
+                f,
+                l,
+            );
+            s.print_acc();
+            s.lda_str("done");
+            s.b.return_();
+            unit("", vec![s.finish()])
+        }
+        for &d in Dispatch::ALL {
+            for stress in [false, true] {
+                let runs = run_b(Install::B, config(d, stress), |iso| {
+                    let mut runs = Vec::new();
+                    for budget in [None, Some(1)] {
+                        if let Some(b) = budget {
+                            iso.cx.budget = b;
+                        }
+                        take_output();
+                        let before = counts();
+                        let r = iso.run_script(make(), "pin.js").map(|v| iso.display(v));
+                        runs.push((r, take_output(), delta(before)));
+                    }
+                    runs
+                });
+                let label = format!("{} stress={stress}", d.name());
+                let threaded = d != Dispatch::Match;
+                for (i, (r, out, n)) in runs.into_iter().enumerate() {
+                    let label = format!("{label} {}", ["hot", "cold"][i]);
+                    assert_eq!(r.as_deref(), Ok("done"), "{label}");
+                    let want = match (threaded, i) {
+                        (true, 0) => "[object Function]",
+                        _ => "undefined",
+                    };
+                    assert_eq!(out, [want], "{label}");
+                    assert_eq!(n, [u64::from(threaded), i as u64, 0, 0], "{label}");
+                }
+            }
+        }
+    }
+
+    /// Every call shape of T0 enters (b) code on the hot path (one stub entry each), with the
+    /// receiver and arguments of the (a) entry test, except a `CallAnyReceiver`/`CallProperty`
+    /// with count 0 (no receiver: `call_list_with_receiver` goes cold), which takes the cold
+    /// arm. A prefixed (`Wide`) call takes the hot path too (`scaled::step` runs the same fast
+    /// body). The cold arm also takes the spread call, the bound callee and the call that finds
+    /// the budget out. Under the match loop the bytecode runs (undefined).
+    #[test]
+    fn every_call_shape_enters_b_code_hot_and_the_rest_cold() {
+        use Lit::{Global, Int, Str};
+        use Shape::*;
+        let rows: Vec<(Shape, &str, Vec<Lit>, &str)> = vec![
+            (CallProperty0, "recv", vec![Str("R")], "R"),
+            (CallProperty0, "argc", vec![Str("R")], "0"),
+            (CallProperty1, "p0", vec![Str("R"), Str("x")], "x"),
+            (CallProperty1, "p1", vec![Str("R"), Str("x")], "undefined"),
+            (CallProperty2, "p1", vec![Str("R"), Str("x"), Str("y")], "y"),
+            (
+                CallProperty,
+                "p2",
+                vec![Str("R"), Str("x"), Str("y"), Str("z")],
+                "z",
+            ),
+            (CallProperty, "recv", vec![Str("R")], "R"),
+            (CallAnyReceiver, "recv", vec![Str("R"), Int(1)], "R"),
+            (CallAnyReceiver, "srecv", vec![], "undefined"),
+            (CallUndefinedReceiver0, "argc", vec![], "0"),
+            (CallUndefinedReceiver0, "recv", vec![], "[object Object]"),
+            (CallUndefinedReceiver1, "p0", vec![Str("x")], "x"),
+            (CallUndefinedReceiver2, "p1", vec![Str("x"), Str("y")], "y"),
+            (
+                CallUndefinedReceiver,
+                "argc",
+                vec![Int(1), Int(2), Int(3), Int(4)],
+                "4",
+            ),
+            (
+                CallUndefinedReceiver,
+                "g",
+                vec![Global("bump"), Str("c")],
+                "c!",
+            ),
+        ];
+        let make = {
+            let rows = rows.clone();
+            move || {
+                let mut s = Asm::script(0);
+                let f = s.b.new_register();
+                let l = s.b.new_register_list(4);
+                for (shape, callee, vals, _) in &rows {
+                    emit_call(&mut s, *shape, callee, vals, f, l);
+                    s.print_acc();
+                }
+                s.lda_str("done");
+                s.b.return_();
+                unit("", vec![s.finish()])
+            }
+        };
+        let cold = || {
+            let mut s = Asm::script(0);
+            let f = s.b.new_register();
+            let l = s.b.new_register_list(3);
+            let big = s.b.new_register_list(140);
+            let (wf, wa) = (big.get(139), big.get(138));
+            // 1. Wide CallUndefinedReceiver1 p0("w") (the hot path through `scaled::step`).
+            s.lda_str("w");
+            s.b.star(wa);
+            s.lda_global("p0");
+            s.b.star(wf);
+            s.b.call_undefined_receiver1(wf, wa, s.call);
+            s.print_acc();
+            // 2. CallWithSpread p0(...[]) with receiver undefined: argc 0, a0 undefined.
+            s.b.lda_undefined().star(l.get(0));
+            s.b.create_empty_array_literal(s.lit).star(l.get(1));
+            s.lda_global("argc");
+            s.b.star(f);
+            let two = RegisterList::new(l.get(0).local_index().unwrap(), 2);
+            s.b.call_with_spread(f, two, 2, s.call);
+            s.print_acc();
+            // 3. A bound (b) function: bind(p0, undefined)("x").
+            s.lda_global("p0");
+            s.b.star(l.get(0));
+            s.b.lda_undefined().star(l.get(1));
+            s.lda_global("bind");
+            s.b.star(f);
+            s.b.call_property1(f, l.get(0), l.get(1), s.call);
+            s.b.star(f);
+            s.lda_str("bx");
+            s.b.star(l.get(2));
+            s.b.call_undefined_receiver1(f, l.get(2), s.call);
+            s.print_acc();
+            s.lda_str("done");
+            s.b.return_();
+            unit("", vec![s.finish()])
+        };
+        fn bind<'s>(
+            cx: &mut Cx<'s>,
+            this: Local<'s>,
+            args: Args<'s>,
+            _nt: Local<'s>,
+        ) -> JsResult<Local<'s>> {
+            let target = this.as_function().unwrap();
+            cx.new_bound_function(target, args.get(0), args.rest(1))
+                .map(|f| f.value())
+        }
+        let want: Vec<String> = rows.iter().map(|r| r.3.to_string()).collect();
+        for &d in Dispatch::ALL {
+            for stress in [false, true] {
+                let make = make.clone();
+                let (hot, cold_run, budget) = run_b(Install::B, config(d, stress), move |iso| {
+                    iso.register_host_function("bind", 1, bind);
+                    take_output();
+                    let before = counts();
+                    let r = iso.run_script(make(), "shapes.js").map(|v| iso.display(v));
+                    let hot = (r, take_output(), delta(before));
+                    let before = counts();
+                    let r = iso.run_script(cold(), "cold.js").map(|v| iso.display(v));
+                    let cold_run = (r, take_output(), delta(before));
+                    // The budget poll: with 1 unit left, `call_fast` goes cold at once.
+                    iso.cx.budget = 1;
+                    let before = counts();
+                    let (r, out) = run_rows(iso, &[("p0", vec![Lit::Str("b")])]);
+                    (hot, cold_run, (r, out, delta(before)))
+                });
+                let label = format!("{} stress={stress}", d.name());
+                let threaded = d != Dispatch::Match;
+                assert_eq!(hot.0.as_deref(), Ok("done"), "{label}");
+                if threaded {
+                    assert_eq!(hot.1, want, "{label}");
+                    // One stub entry per row; `srecv` (count 0) through the cold arm; the last
+                    // row's g calls T0 bump.
+                    assert_eq!(hot.2, [rows.len() as u64, 1, 0, 0], "{label}");
+                } else {
+                    let mut w: Vec<String> = vec!["undefined".into(); rows.len()];
+                    // g's bytecode calls bump: the same result as its (b) stub.
+                    *w.last_mut().unwrap() = "c!".into();
+                    assert_eq!(hot.1, w, "{label}");
+                    assert_eq!(hot.2, [0, 1, 0, 0], "{label}");
+                }
+                assert_eq!(cold_run.0.as_deref(), Ok("done"), "{label}");
+                if threaded {
+                    assert_eq!(cold_run.1, ["w", "0", "bx"], "{label}");
+                    // Wide: hot; spread and bound: the cold arm.
+                    assert_eq!(cold_run.2, [3, 2, 0, 0], "{label}");
+                } else {
+                    assert_eq!(cold_run.1, ["undefined"; 3], "{label}");
+                    assert_eq!(cold_run.2, [0, 2, 0, 0], "{label}");
+                }
+                assert_eq!(budget.0.as_deref(), Ok("done"), "{label}");
+                let b = if threaded { "b" } else { "undefined" };
+                assert_eq!(budget.1, [b], "{label}");
+                assert_eq!(budget.2, [u64::from(threaded), 1, 0, 0], "{label}");
+            }
+        }
+    }
+
+    /// The paths that do not enter (b) code: `[[Construct]]` and a call from Rust through
+    /// `call::call_with` (`Isolate::call`) throw "not implemented", as for placement (a);
+    /// `call_from_rust` enters it (a nested dispatch) and puts the entry state back.
+    #[test]
+    fn construct_and_isolate_call_refuse_b_code_and_call_from_rust_runs_it() {
+        for &d in Dispatch::ALL {
+            let label = d.name();
+            run_b(Install::B, config(d, false), move |iso| {
+                let ni = "not implemented in ep9 v0: calling code of this dispatch kind";
+                let p0 = iso.global("p0").unwrap();
+                let e = iso
+                    .call(p0, Value::UNDEFINED, &[Value::int32(1)])
+                    .unwrap_err();
+                assert!(e.message.contains(ni), "{label}: {e:?}");
+                let rows = [("id", vec![Lit::Int(3)])];
+                let (r, _) = run_rows(iso, &rows);
+                assert_eq!(r.as_deref(), Ok("done"), "{label}");
+                // new id(1)
+                let mut s = Asm::script(0);
+                let l = s.b.new_register_list(1);
+                s.b.lda_smi(1).star(l.get(0));
+                let one = RegisterList::new(l.get(0).local_index().unwrap(), 1);
+                s.construct_global("id", one);
+                s.b.return_();
+                let e = iso
+                    .run_script(unit("", vec![s.finish()]), "new.js")
+                    .unwrap_err();
+                assert!(e.message.contains(ni), "{label}: {e:?}");
+                let before = entry_state(iso);
+                let stub0 = counts();
+                let r = crate::call_from_rust(iso, p0, Value::UNDEFINED, &[Value::int32(5)]);
+                // The match loop runs p0's bytecode (undefined), D4.
+                let want = if d == Dispatch::Match {
+                    "undefined"
+                } else {
+                    "5"
+                };
+                assert_eq!(r.map(|v| iso.display(v)).as_deref(), Ok(want), "{label}");
+                let n = delta(stub0);
+                assert_eq!(n[0], u64::from(d != Dispatch::Match), "{label}");
+                assert_eq!(entry_state(iso), before, "{label}");
+                let nthrow = iso.global("nthrow").unwrap();
+                let s = string(iso, "rt");
+                let e = crate::call_from_rust(iso, nthrow, Value::UNDEFINED, &[s]).unwrap_err();
+                assert_eq!(e.message, "rt", "{label}");
+                assert_eq!(entry_state(iso), before, "{label}");
+            });
+        }
+    }
+
+    /// Exceptions: a throw in a (b) table call (`nthrow`: `RuntimeTable::throw`), a T0 throw
+    /// under (b) `g` (call_any returns 0), the native stack RangeError of `overflow` — each
+    /// unwinds through `RuntimeTable::unwind` to the T0 handler, and the frame goes on. An
+    /// uncaught one names the (b) frame of `g` in Error.stack at its call of `f`.
+    #[test]
+    fn exceptions_in_b_code_unwind_to_t0_handlers() {
+        use Lit::{Global, Str};
+        fn make() -> VerifiedUnit {
+            let mut s = Asm::script(0);
+            let f = s.b.new_register();
+            let l = s.b.new_register_list(4);
+            guarded(&mut s, false, |s| {
+                let v = [Str("R"), Str("e1")];
+                emit_call(s, Shape::CallProperty1, "nthrow", &v, f, l);
+            });
+            guarded(&mut s, true, |s| {
+                let v = [Str("R"), Global("t"), Str("e2")];
+                emit_call(s, Shape::CallAnyReceiver, "g", &v, f, l);
+            });
+            // (b) keep -> (b) g -> T0 t: two (b) frames, the throw crosses both.
+            guarded(&mut s, true, |s| {
+                let v = [Global("g"), Global("t")];
+                emit_call(s, Shape::CallUndefinedReceiver2, "keep", &v, f, l);
+            });
+            guarded(&mut s, true, |s| {
+                emit_call(s, Shape::CallProperty0, "overflow", &[Str("R")], f, l);
+            });
+            s.b.ldar(l.get(0));
+            s.print_acc();
+            emit_call(
+                &mut s,
+                Shape::CallProperty2,
+                "g",
+                &[Str("R"), Global("t"), Str("late")],
+                f,
+                l,
+            );
+            s.lda_str("not reached");
+            s.b.return_();
+            unit("", vec![s.finish()])
+        }
+        let col = |needle: &str| {
+            let p = pos(DEFS, needle) as usize;
+            let line_start = DEFS[..p].rfind('\n').map_or(0, |i| i + 1);
+            let line = DEFS[..p].matches('\n').count() + 1;
+            format!("defs.js:{line}:{}", p - line_start + 1)
+        };
+        for &d in Dispatch::ALL {
+            for stress in [false, true] {
+                let (r, out) = run_b(Install::B, config(d, stress), |iso| {
+                    take_output();
+                    let r = iso.run_script(make(), "exc.js").map(|v| iso.display(v));
+                    (r, take_output())
+                });
+                let label = format!("{} stress={stress}", d.name());
+                // keep(g, t): g(t) -> t(undefined) throws `new Error(undefined)`: message "".
+                let overflow = if d == Dispatch::Match {
+                    "undefined"
+                } else {
+                    "Maximum call stack size exceeded"
+                };
+                assert_eq!(out, ["e1", "e2", "", overflow, "R"], "{label}");
+                let e = r.unwrap_err();
+                assert_eq!(e.message, "Error: late", "{label}");
+                assert_eq!(
+                    e.stack.unwrap(),
+                    format!(
+                        "Error: late\n    at t ({})\n    at g ({})\n    at exc.js:1:1",
+                        col("new Error"),
+                        col("f(x)")
+                    ),
+                    "{label}"
+                );
+            }
+        }
+    }
+
+    /// A full VM stack at a (b) call is the VM stack's RangeError, on the hot path and on the
+    /// cold arm (`big`'s frame does not fit in 1024 slots).
+    #[test]
+    fn a_full_vm_stack_at_a_b_call_is_the_vm_stack_range_error() {
+        fn make() -> VerifiedUnit {
+            let mut s = Asm::script(0);
+            let f = s.b.new_register();
+            let l = s.b.new_register_list(1);
+            for (callee, arg) in [("big", "x"), ("p0", "y")] {
+                guarded(&mut s, true, |s| {
+                    let v = [Lit::Str(arg)];
+                    emit_call(s, Shape::CallUndefinedReceiver1, callee, &v, f, l);
+                });
+            }
+            s.lda_str("done");
+            s.b.return_();
+            unit("", vec![s.finish()])
+        }
+        for &d in Dispatch::ALL {
+            for stress in [false, true] {
+                for slots in [1024, IsolateConfig::default().vm_stack_slots] {
+                    let config = IsolateConfig {
+                        vm_stack_slots: slots,
+                        ..config(d, stress)
+                    };
+                    let (r, out, n) = run_b(Install::B, config, |iso| {
+                        take_output();
+                        let before = counts();
+                        let r = iso.run_script(make(), "full.js").map(|v| iso.display(v));
+                        (r, take_output(), delta(before))
+                    });
+                    let label = format!("{} stress={stress} slots={slots}", d.name());
+                    assert_eq!(r.as_deref(), Ok("done"), "{label}");
+                    let threaded = d != Dispatch::Match;
+                    let (big, y) = match (slots == 1024, threaded) {
+                        (true, _) => ("Maximum call stack size exceeded", "y"),
+                        (false, true) => ("x", "y"),
+                        (false, false) => ("undefined", "undefined"),
+                    };
+                    let y = if threaded { y } else { "undefined" };
+                    assert_eq!(out, [big, y], "{label}");
+                    // The failed push on the hot path goes cold, and the cold arm's push
+                    // fails too (no stub entry for big at 1024 slots).
+                    let big_cold = u64::from(slots == 1024);
+                    let stubs = if threaded { 2 - big_cold } else { 0 };
+                    assert_eq!(n, [stubs, big_cold, 0, 0], "{label}");
+                }
+            }
+        }
+    }
+
+    /// The interrupt poll in (b) code (`RuntimeTable::poll`): a termination stops the script
+    /// at the poll; the next run works. Deep T0 <-> (b) recursion (`r` -> (b) `g` -> call_any
+    /// -> `r` ...) ends in a catchable RangeError (the native stack check of the nested runs).
+    #[test]
+    fn termination_and_deep_recursion_under_b_code() {
+        // The match loop runs `poll`'s bytecode, which has no poll (D4): threaded only.
+        for &d in Dispatch::ALL.iter().filter(|&&d| d != Dispatch::Match) {
+            let label = d.name();
+            let e = run_b(Install::B, config(d, false), |iso| {
+                iso.terminate_handle().terminate();
+                let (r, _) = run_rows(iso, &[("poll", vec![])]);
+                let e = r.unwrap_err();
+                let (again, out) = run_rows(iso, &[("poll", vec![])]);
+                let want = (Ok("done"), &["true".to_string()][..]);
+                assert_eq!((again.as_deref(), out.as_slice()), want);
+                e
+            });
+            assert!(e.terminated, "{label}: {e:?}");
+        }
+        for &d in Dispatch::ALL {
+            let (r, out) = std::thread::Builder::new()
+                .stack_size(if cfg!(debug_assertions) {
+                    64 << 20
+                } else {
+                    4 << 20
+                })
+                .spawn(move || {
+                    let probe = {
+                        let mut iso = isolate(IsolateConfig::default());
+                        iso.run_script(defs(), "defs.js").unwrap();
+                        b_stubs(|n, op| offset_in(&iso, n, op))
+                    };
+                    with_b_stubs(&probe, |code| {
+                        let mut iso = isolate(config(d, false));
+                        iso.run_script(defs(), "defs.js").unwrap();
+                        for (name, range) in NATIVE.iter().zip(code) {
+                            let f = iso.global(name).unwrap();
+                            // SAFETY: as in `run_b`.
+                            unsafe { crate::install_native_b(&iso, f, range.clone()) }.unwrap();
+                        }
+                        take_output();
+                        let r = iso.run_script(rec_unit(), "rec.js").map(|v| iso.display(v));
+                        (r, take_output())
+                    })
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+            assert_eq!(r.as_deref(), Ok("after"), "{}", d.name());
+            assert_eq!(out, ["Maximum call stack size exceeded"], "{}", d.name());
+        }
+    }
+
+    /// `try { r(1) } catch (e) { print(e.message) } return "after"`.
+    fn rec_unit() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        guarded(&mut s, true, |s| {
+            s.b.lda_smi(1).star(s.a.get(0));
+            s.lda_global("r");
+            s.b.star(s.f);
+            s.b.call_undefined_receiver1(s.f, s.a.get(0), s.call);
+            s.lda_str("no throw");
+        });
+        s.lda_str("after");
+        s.b.return_();
+        unit("", vec![s.finish()])
+    }
+
+    /// M2-P4-B-AB (config A-hot): placement (a) code in an AotBaseline slot is entered from
+    /// T0's `call_fast` (`OP_ENTER_A_HOT`, `native::a_hot_call`), not from `slow::call`: the
+    /// results equal the (a) results, and the decode-free cold entry counts nothing. The
+    /// exceptions of the (a) code unwind from its frame to the T0 handlers.
+    #[test]
+    fn a_hot_enters_placement_a_code_from_call_fast() {
+        let (rows, mut want) = calls_rows();
+        // The (a) stubs: `which` gives a1 too, like the (b) ones.
+        want[11] = "2";
+        for &d in Dispatch::ALL {
+            for stress in [false, true] {
+                let rows2 = rows.clone();
+                let (r, out, n, exc) = run_b(Install::AHot, config(d, stress), move |iso| {
+                    let before = counts();
+                    let (r, out) = run_rows(iso, &rows2);
+                    let n = delta(before);
+                    let (exc, _) = run_rows(iso, &[("nthrow", vec![Lit::Str("boom")])]);
+                    (r, out, n, exc.map_err(|e| e.message))
+                });
+                let label = format!("{} stress={stress}", d.name());
+                assert_eq!(r.as_deref(), Ok("done"), "{label}");
+                let mut want = want.clone();
+                if d == Dispatch::Match {
+                    want[11] = "1";
+                }
+                assert_eq!(out, want, "{label}");
+                assert_eq!(exc, Err("boom".to_string()), "{label}");
+                // Threaded: each of the 14 rows enters its (a) code from `call_fast`; the
+                // nested calls go through call_any (no count) and nothing takes the cold
+                // decode-free entry. The match loop runs the bytecode at the stub (D4).
+                let hot = if d == Dispatch::Match {
+                    0
+                } else {
+                    rows.len() as u64
+                };
+                assert_eq!(n, [0, 0, 0, hot], "{label}");
             }
         }
     }

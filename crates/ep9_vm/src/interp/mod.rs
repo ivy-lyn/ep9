@@ -51,6 +51,10 @@ pub(crate) type Handler = unsafe fn(&mut Cx, *const u8, *mut u64, u64) -> u64;
 
 /// VM-internal opcode: leave the dispatch and return the accumulator to Rust.
 pub(crate) const OP_EXIT: u8 = 0xFF;
+/// Spike B placement (b), feature `spike-native` only (P4-PLACEMENT-B): the VM stub byte whose
+/// handler tail-enters the (b) code of the top frame's function (`native::ENTER_B_STUB`).
+#[cfg(feature = "spike-native")]
+pub(crate) const OP_ENTER_B: u8 = 0xFD;
 /// VM-internal opcode: the `[[Construct]]` result check of a construct stub frame.
 pub(crate) const OP_CONSTRUCT_RETURN: u8 = 0xFE;
 

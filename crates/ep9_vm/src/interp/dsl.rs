@@ -442,12 +442,61 @@ macro_rules! expand_threaded {
             }
         }
 
+        $crate::interp::dsl::handler! {
+            /// Spike B placement (b) (feature `spike-native`, P4-PLACEMENT-B): the stub byte
+            /// `OP_ENTER_B`. `fp` is the frame of a function with a (b) slot that a call just
+            /// pushed; this tail-enters its (b) code with the 4 handler arguments.
+            ///
+            /// # Safety
+            /// Only the dispatch table calls this, with `fp` the new frame of a (b) callee.
+            #[cfg(feature = "spike-native")]
+            #[unsafe(export_name = concat!("ep9h__", $exp, "__tail__EnterB"))]
+            #[allow(unused_variables)]
+            fn enter_b(cx, pc, fp, acc) {
+                #[cfg(debug_assertions)]
+                $crate::interp::dsl::debug_native_stack_check(cx);
+                // SAFETY: caller contract.
+                let (h, code) = unsafe { $crate::native::b_target(fp) };
+                // SAFETY: the (b) code has the handler ABI (`install_native_b` contract).
+                unsafe { $tail h(cx, code, fp, acc) }
+            }
+        }
+
+        $crate::interp::dsl::handler! {
+            /// Spike B report M2-P4-B-AB (feature `spike-native`): the stub byte
+            /// `native::OP_ENTER_A_HOT`. `fp` is the frame of a placement (a) callee (an
+            /// AotBaseline slot) that `call_fast` just pushed; this runs its native code
+            /// (`native::a_hot_call`) and continues at the caller's next instruction.
+            ///
+            /// # Safety
+            /// Only the dispatch table calls this, with `fp` the new frame of such a callee.
+            #[cfg(feature = "spike-native")]
+            #[unsafe(export_name = concat!("ep9h__", $exp, "__tail__EnterAHot"))]
+            #[allow(unused_variables)]
+            fn enter_a_hot(cx, pc, fp, acc) {
+                #[cfg(debug_assertions)]
+                $crate::interp::dsl::debug_native_stack_check(cx);
+                // SAFETY: caller contract.
+                let acc = unsafe { $crate::native::a_hot_call(cx, fp) };
+                let (next, fp) = (cx.out_pc, cx.out_fp);
+                // SAFETY: `next` is the caller's next instruction or a handler's pc.
+                let h = cx.table[unsafe { *next } as usize];
+                // SAFETY: as in the opcode handlers.
+                unsafe { $tail h(cx, next, fp, acc) }
+            }
+        }
+
         /// The dispatch table of this expansion.
         pub(crate) static TABLE: [Handler; 256] = {
             let mut t = [bad_opcode as Handler; 256];
             $( t[$code] = $name as Handler; )*
             t[OP_EXIT as usize] = exit as Handler;
             t[OP_CONSTRUCT_RETURN as usize] = construct_return as Handler;
+            #[cfg(feature = "spike-native")]
+            {
+                t[$crate::interp::OP_ENTER_B as usize] = enter_b as Handler;
+                t[$crate::native::OP_ENTER_A_HOT as usize] = enter_a_hot as Handler;
+            }
             t
         };
     };
@@ -528,6 +577,13 @@ macro_rules! expand_match {
                         pc = next;
                         fp = f;
                         acc = a;
+                    }
+                    // Spike B (feature `spike-native`, D4): the match loop never enters native
+                    // code. A (b) or A-hot callee whose frame a call just pushed runs its
+                    // bytecode instead (the fallback).
+                    #[cfg(feature = "spike-native")]
+                    $crate::interp::OP_ENTER_B | $crate::native::OP_ENTER_A_HOT => {
+                        pc = $crate::native::bytecode_of(fp);
                     }
                     _ => return $crate::interp::slow::bad_opcode(cx, fp, pc),
                 }
