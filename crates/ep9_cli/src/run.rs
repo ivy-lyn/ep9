@@ -160,6 +160,7 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
     };
     isolate.register_host_function("print", 1, print);
     isolate.register_host_function("gc", 0, gc);
+    // `run_script` drains the microtask queue (promise jobs) before it returns.
     let result = isolate.run_script(unit, file);
     let _ = std::io::stdout().flush();
     let status = match result {
@@ -168,6 +169,18 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
             eprintln!("{}", uncaught_text(&e));
             EXIT_JS_ERROR
         }
+    };
+    // A promise rejected with no handler after the final checkpoint is reported like an
+    // uncaught exception, and the run exits 1 (node's default `--unhandled-rejections=throw`
+    // reports the first one). An uncaught exception of the script itself comes first.
+    let rejections = isolate.take_unhandled_rejections();
+    let status = match rejections.first() {
+        Some(e) if status == EXIT_OK => {
+            let _ = std::io::stdout().flush();
+            eprintln!("{}", uncaught_text(e));
+            EXIT_JS_ERROR
+        }
+        _ => status,
     };
     if opts.gc_stats {
         let st = isolate.heap().stats();

@@ -42,7 +42,7 @@ use crate::frame::{HOLE, UNDEFINED};
 use crate::host::HostFn;
 use crate::interp::{BUDGET, Cx, Dispatch};
 use crate::object::{self, attr, is_error, is_string, own_define, own_get};
-use crate::runtime::{Atom, ErrorKind, Root, Runtime, WeakInterruptQueue, val};
+use crate::runtime::{Atom, ErrorKind, Root, Runtime, Site, WeakInterruptQueue, val};
 use crate::unit::{FunctionInfo, LoadedUnit};
 use crate::{abi, atoms, call, error, property, realm, shape, string};
 
@@ -66,6 +66,11 @@ pub struct IsolateConfig {
     /// The compiler entry points for eval, `Function()` and run-time scripts (C2; ep9_vm
     /// does not link the compiler). `None`: those paths throw their v0 errors.
     pub compiler: Option<&'static CompilerHooks>,
+    /// HostPromiseRejectionTracker (§27.2.1.9): called when a promise is rejected while it
+    /// has no handler ("reject") and when such a promise gets one ("handle"). `None`: no hook.
+    /// Either way the isolate keeps the unhandled ones for
+    /// [`Isolate::take_unhandled_rejections`].
+    pub promise_rejection_tracker: Option<abi::PromiseRejectionTracker>,
 }
 
 impl IsolateConfig {
@@ -83,6 +88,7 @@ impl Default for IsolateConfig {
             feedback_threshold: IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD,
             builtins: None,
             compiler: None,
+            promise_rejection_tracker: None,
         }
     }
 }
@@ -288,6 +294,8 @@ impl Isolate {
             runtime_table: &crate::native::RUNTIME_TABLE,
         });
         builtins::install(&mut cx).map_err(IsolateError::BuiltinTable)?;
+        rt.jobs.set_tracker(config.promise_rejection_tracker);
+        aggregate_error_prototype(&rt);
         Ok(Isolate { cx, rt })
     }
 
@@ -364,17 +372,54 @@ impl Isolate {
     /// function: `this` is the global object for a script and undefined for module code
     /// (§16.2.1.6.4 step 9; v0 runs a module unit alone, with no linking). `file` names the
     /// unit in stack traces and locations.
+    ///
+    /// Then it performs a microtask checkpoint ([`Isolate::perform_microtask_checkpoint`]),
+    /// also after a throw (not after a termination): the jobs the script queued run before it
+    /// returns. A throw from the script wins over one from a job; a job that throws after a
+    /// normal run makes the result that error.
     pub fn run_script(&mut self, unit: VerifiedUnit, file: &str) -> Result<Value, Exception> {
         let r = run_unit(&mut self.cx, unit, file);
-        self.finish(r)
+        self.finish_with_checkpoint(r)
     }
 
-    /// Calls `f` with `this` and `args` (Call, §7.3.14).
+    /// Calls `f` with `this` and `args` (Call, §7.3.14), then performs a microtask checkpoint
+    /// as [`Isolate::run_script`] does.
     pub fn call(&mut self, f: Value, this: Value, args: &[Value]) -> Result<Value, Exception> {
         // The callee frame copies the arguments onto the VM stack before the first GC point.
         let bits: Vec<u64> = args.iter().map(|v| v.to_bits()).collect();
         let r = call::call_function(&mut self.cx, f.to_bits(), this.to_bits(), &bits);
-        self.finish(r)
+        self.finish_with_checkpoint(r)
+    }
+
+    /// Performs a microtask checkpoint: runs every queued job (promise reactions, and the jobs
+    /// of `Cx::enqueue_job`) in order, and the jobs they queue, until none is left. A job that
+    /// throws stops it: that exception is the `Err`, and the jobs behind it stay queued. A
+    /// termination stops it and drops the queue. [`Isolate::run_script`] and
+    /// [`Isolate::call`] run one after their run; an embedder that runs JS inside
+    /// [`Isolate::with_cx`] calls this afterwards.
+    pub fn perform_microtask_checkpoint(&mut self) -> Result<(), Exception> {
+        let r = abi::Cx::new(&mut self.cx).perform_microtask_checkpoint();
+        match r {
+            Ok(()) => Ok(()),
+            Err(Throw) => Err(self.exception()),
+        }
+    }
+
+    /// The promises that were rejected while they had no handler and still have none, as
+    /// [`Exception`]s of their rejection reasons, in rejection order; the isolate forgets
+    /// them. A host reports these after its last checkpoint (the ep9 CLI prints the first one
+    /// as an uncaught error and exits 1, as node does). The list drops a promise once it gets
+    /// a handler, at the end of each checkpoint.
+    pub fn take_unhandled_rejections(&mut self) -> Vec<Exception> {
+        let rt: &Runtime = self.cx.rt();
+        let reasons = rt.heap.scratch_roots();
+        abi::Cx::new(&mut self.cx).take_unhandled(&reasons);
+        let mut out = Vec::with_capacity(reasons.len());
+        for i in 0..reasons.len() {
+            let v = reasons.get(i).to_bits();
+            out.push(self.describe(v, None));
+        }
+        out
     }
 
     /// The global binding `name` (the script lexical record first), without running JS: `None`
@@ -428,6 +473,31 @@ impl Isolate {
         &self.rt.heap
     }
 
+    /// [`Isolate::finish`], then a microtask checkpoint (not after a termination). The result
+    /// Value is a precise root while the jobs run.
+    fn finish_with_checkpoint(&mut self, r: Res<u64>) -> Result<Value, Exception> {
+        let rt: &Runtime = self.cx.rt();
+        match r {
+            Ok(b) => {
+                let keep = rt.heap.scratch_roots();
+                keep.push(val(b));
+                let c = self.perform_microtask_checkpoint();
+                let b = keep.get(0).to_bits();
+                drop(keep);
+                c?;
+                self.finish(Ok(b))
+            }
+            Err(Throw) => {
+                let e = self.exception();
+                if !e.terminated {
+                    // The script's error wins; a job's error after it is dropped.
+                    let _ = self.perform_microtask_checkpoint();
+                }
+                Err(e)
+            }
+        }
+    }
+
     /// Turns the result of a run into the API result; takes the pending exception.
     fn finish(&mut self, r: Res<u64>) -> Result<Value, Exception> {
         match r {
@@ -462,6 +532,20 @@ impl Isolate {
                 terminated: false,
             };
         }
+        self.describe(exc, site)
+    }
+
+    /// The API [`Exception`] of the thrown value `exc` (`site`: where a non-Error value was
+    /// thrown). `exc` stays live in this frame (CSS) while its text is read.
+    fn describe(&mut self, exc: u64, site: Option<Site>) -> Exception {
+        let rt = &*self.rt;
+        let terminated = || Exception {
+            message: "execution terminated".into(),
+            constructor: None,
+            stack: None,
+            location: None,
+            terminated: true,
+        };
         let constructor = constructor_name(&mut self.cx, exc);
         let (err_site, stack) = error::describe_exception(rt, exc);
         let site = if is_error(exc) { err_site } else { site };
@@ -620,4 +704,16 @@ fn constructor_name(cx: &mut Cx, v: u64) -> Option<String> {
     }
     let name = property::get_data_from(cx, ctor, rt.atom(Atom::Name))?;
     is_string(name).then(|| string::to_rust_string(name))
+}
+
+/// §20.5.7.2: the `[[Prototype]]` of `%AggregateError%` is `%Error%` (a table gives a
+/// builtin's function object `%Function.prototype%`). Runs after `builtins::install`, when a
+/// table made `%AggregateError%` (`ep9_builtins` promise.rs, P4-PROMISE).
+fn aggregate_error_prototype(rt: &Runtime) {
+    let c = builtins::intrinsic(rt, builtins::IntrinsicId::AggregateError);
+    let error = builtins::intrinsic(rt, builtins::IntrinsicId::Error);
+    if object::is_object(c) && object::is_object(error) {
+        let ok = property::set_prototype_of(rt, c, error);
+        debug_assert!(ok, "%AggregateError% is extensible");
+    }
 }
