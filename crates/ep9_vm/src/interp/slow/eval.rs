@@ -20,12 +20,8 @@
 //! | Field | From |
 //! |---|---|
 //! | `strict` | `ScopeFlags::STRICT` of the `scope` operand: the unit scope at the call site, so class code inside a sloppy function is strict (M2-P2-L6) |
-//! | `in_function`, `in_method`, `in_derived_ctor`, `in_class_field_init` (and the `*_ok` flags) | the kind of the `function` operand's unit function, past arrows along `parent` (GetThisEnvironment). Function 0 of a script or module: global code, all false. Function 0 of eval code: the eval's own caller, by the names of the receiver function's context slots (`this`, `new.target`, `.home_object`, `.callee`), which the front end puts in a context for every direct eval site (scope/resolve.rs) |
+//! | `in_function`, `in_method`, `in_derived_ctor`, `in_class_field_init` (and the `*_ok` flags) | the kind of the `function` operand's unit function, past arrows along `parent` (GetThisEnvironment). Function 0 of a script or module: global code, all false. Function 0 of eval code: the flags the eval unit was compiled with (`LoadedUnit::eval_receiver`, set from the caller's `EvalContext` by `direct_eval`; all false for indirect eval), so a class field initializer's `in_class_field_init` holds through nested eval |
 //! | `private_names` | the `#x` slots of the Class scopes on the `scope` operand's `outer` chain (without the `#`), and for eval code also those of the Class scope contexts on the runtime chain past the eval unit's own contexts |
-//!
-//! One rule is approximate: a direct eval in eval code that a class field initializer called
-//! sees `in_class_field_init` false (slot names cannot tell a field initializer from a
-//! method). `arguments` in such nested eval code is then not an early error.
 //!
 //! EvalDeclarationInstantiation (§19.2.1.3) is split over the two runtime ids, one name per
 //! call (the order of `functionsToInitialize`, then the var names). The spec checks every name
@@ -33,6 +29,14 @@
 //! no binding made. The first call of a run therefore reads the whole prologue of function 0
 //! (`gen_eval_program`: `LdaConstant name; Star r; CallRuntime DeclareEval*, r..`, straight-line
 //! code before the body) and checks every name; then each call creates its own binding.
+//!
+//! Not built yet (needs ABI 5): step 3.d over the parameter environment of a sloppy function
+//! with parameter expressions. FunctionDeclarationInstantiation step 20 puts its parameters in
+//! an environment of their own, between an eval in the parameters and the variable
+//! environment, so `function f(a = eval('var a')) {}` is a SyntaxError. The front end merges
+//! that environment into the function's var scope, and no unit field tells this scope from
+//! the one of `function f({a}) { eval('var a'); { let z } }` (same scopes, same flags), where
+//! the var is allowed. So such a var or function name is not a conflict here.
 
 use ep9_bytecode::{
     CodeKind, EVAL_EXT_BINDING, EvalContext, FunctionKind, Instructions, Opcode, Register,
@@ -80,11 +84,6 @@ fn slot_name<'u>(u: &'u LoadedUnit, scope: &ep9_bytecode::Scope, i: usize) -> Op
         UnitString::Latin1(b) => Some(b),
         UnitString::Utf16(_) => None,
     }
-}
-
-/// The slot of `scope` named `text`.
-fn has_slot(u: &LoadedUnit, scope: &ep9_bytecode::Scope, text: &[u8]) -> bool {
-    (0..scope.slots.len()).any(|i| slot_name(u, scope, i) == Some(text))
 }
 
 /// Adds the private names of a Class scope (`#x` slots, without the `#`; the synthetic
@@ -167,16 +166,21 @@ fn eval_context(cx: &mut Cx, fp: *mut u64, function: u64, scope: u64) -> Res<Eva
             None => break,
         }
     }
-    let kind = unit.functions[id].kind;
-    let eval_code = unit.header.code_kind == CodeKind::Eval;
-    match kind {
-        FunctionKind::Script | FunctionKind::Module | FunctionKind::Eval | FunctionKind::Arrow => {}
+    match unit.functions[id].kind {
+        FunctionKind::Script | FunctionKind::Module | FunctionKind::Arrow => {}
+        // Eval code: the same this environment as the eval's own caller.
+        FunctionKind::Eval => {
+            let r = u.eval_receiver;
+            ctx.in_function = r.in_function;
+            ctx.in_method = r.in_method;
+            ctx.in_derived_ctor = r.in_derived_ctor;
+            ctx.in_class_field_init = r.in_class_field_init;
+        }
         k => set_receiver(&mut ctx, k),
     }
-    if eval_code {
+    if unit.header.code_kind == CodeKind::Eval {
         // Past this unit's own contexts, the chain is the eval caller's (and further out).
-        let receiver_known = ctx.in_function;
-        outer_context(cx, fp, u, &mut ctx, receiver_known)?;
+        outer_private_names(cx, fp, u, &mut ctx)?;
     }
     ctx.new_target_ok = ctx.in_function;
     ctx.super_property_ok = ctx.in_method;
@@ -185,14 +189,12 @@ fn eval_context(cx: &mut Cx, fp: *mut u64, function: u64, scope: u64) -> Res<Eva
 }
 
 /// For a direct eval inside eval code `u`: the private names of the Class scope contexts past
-/// the contexts of `u` on the runtime chain, and (unless `receiver_known`) the receiver flags
-/// from the first context there that binds `this` (see the module doc).
-fn outer_context(
+/// the contexts of `u` on the runtime chain.
+fn outer_private_names(
     cx: &mut Cx,
     fp: *mut u64,
     u: &LoadedUnit,
     ctx: &mut EvalContext,
-    mut receiver_known: bool,
 ) -> Res<()> {
     let mut c = context(fp);
     while is_context(c) {
@@ -200,16 +202,6 @@ fn outer_context(
         let (cu, scope) = object::context_scope(c);
         if !core::ptr::eq(cu, u) {
             add_private_names(cu, scope, &mut ctx.private_names);
-            if !receiver_known && has_slot(cu, scope, b"this") {
-                receiver_known = true;
-                // A function's own `this`; a script context or indirect eval code binds
-                // `this` too, but never `new.target` (global code).
-                if scope.kind == ScopeKind::Function && has_slot(cu, scope, b"new.target") {
-                    ctx.in_function = true;
-                    ctx.in_method = has_slot(cu, scope, b".home_object");
-                    ctx.in_derived_ctor = has_slot(cu, scope, b".callee");
-                }
-            }
         }
         c = object::context_previous(c);
     }
