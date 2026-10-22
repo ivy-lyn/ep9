@@ -511,6 +511,31 @@ pub(crate) fn declare_eval_var(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<u64>
     Ok(UNDEFINED)
 }
 
+/// `DeclareEvalAnnexBFunction(name)` (runtime id 46, ABI 5): B.3.2.3 step 3.a.ii, may the var
+/// binding of a block function declaration in eval code be made (true or false). M3-P0 stub
+/// (owner M3-P2 VM-ARGS; `runtime.rs` routes the id here in P0-VM3 step 2).
+#[allow(dead_code)] // routed in P0-VM3 step 2
+pub(crate) fn declare_eval_annex_b_function(cx: &mut Cx, _fp: *mut u64, _name: u64) -> Res<u64> {
+    Err(crate::error::not_implemented(
+        cx,
+        "DeclareEvalAnnexBFunction",
+    ))
+}
+
+/// `StoreEvalAnnexBFunction(name, value)` (runtime id 47, ABI 5, V8-A2): B.3.2.3, when the
+/// block function declaration is evaluated, SetMutableBinding(name, value, false) on the eval
+/// code's VariableEnvironment (`var_env`), not on the block binding. M3-P0 stub (owner M3-P2
+/// VM-ARGS; routed in P0-VM3 step 2).
+#[allow(dead_code)] // routed in P0-VM3 step 2
+pub(crate) fn store_eval_annex_b_function(
+    cx: &mut Cx,
+    _fp: *mut u64,
+    _name: u64,
+    _value: u64,
+) -> Res<u64> {
+    Err(crate::error::not_implemented(cx, "StoreEvalAnnexBFunction"))
+}
+
 /// `DeclareEvalFunction(name, function)` (runtime id 28): a function declaration of sloppy
 /// eval code (§19.2.1.3 steps 3, 9 and 17). In a function: SetMutableBinding of an existing
 /// var binding (a slot of the var scope or a property of its `.eval_ext` object), else a new

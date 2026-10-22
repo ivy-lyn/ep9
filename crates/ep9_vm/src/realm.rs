@@ -4,9 +4,16 @@
 //!
 //! ```text
 //! Isolate::new: builtins::check -> Runtime::new -> builtins::prepare
-//!   -> realm::init: atoms, core intrinsics, global object, symbol::install
+//!   -> realm::init: atoms, the REALM record, core intrinsics, global object, symbol::install
 //!   -> builtins::install: every builtin function, the tables' intrinsics, their properties
+//!   -> realm::fill_intrinsics: the REALM record's intrinsics list
 //! ```
+//!
+//! The REALM record (OBJECT_LAYOUT 3, `object::realmf`) is made first, so every function has
+//! it as its `[[Realm]]` (`object::new_function`). It is the `Root::Realm` root and
+//! `Cx::realm`; its fields mirror the roots (global object, lexical record) and its
+//! intrinsics list holds the same values as `builtins::intrinsic`. v0 has one realm per
+//! isolate; M3-P1 REALMS makes more and switches the roots on a cross-realm call.
 //!
 //! | Core intrinsic | Made as |
 //! |---|---|
@@ -26,8 +33,9 @@ use crate::error;
 use crate::frame::{FALSE, HOLE, NULL, UNDEFINED};
 use crate::interp::Cx;
 use crate::key::key_text;
+use crate::kinds;
 use crate::natives;
-use crate::object::{self, attr, own_define, own_get};
+use crate::object::{self, attr, own_define, own_get, realmf};
 use crate::property;
 use crate::runtime::{Atom, ErrorKind, Root, Runtime};
 use crate::unit::FunctionInfo;
@@ -53,6 +61,9 @@ pub(crate) fn new_host_function(
 /// first; `builtins::install` runs next.
 pub(crate) fn init(rt: &Runtime) {
     atoms::init_static(rt);
+    // The REALM record first: every function made from here on stores it (OBJECT_LAYOUT 3).
+    let realm = new_realm_record(rt);
+    rt.set_root(Root::Realm, realm);
     let object_proto = object::new_object(rt, NULL);
     rt.set_root(Root::ObjectPrototype, object_proto);
     // `new_function` takes a function's [[Prototype]] from this root, and the [[Prototype]]
@@ -89,7 +100,31 @@ pub(crate) fn init(rt: &Runtime) {
     rt.set_root(Root::Lexical, lexical);
     let global = object::new_object(rt, object_proto);
     rt.set_root(Root::GlobalObject, global);
+    object::record_set(rt, realm, realmf::GLOBAL_OBJECT, global);
+    object::record_set(rt, realm, realmf::GLOBAL_LEXICAL, lexical);
     symbol::install(rt);
+}
+
+/// A new REALM record: every field undefined, and an intrinsics list of
+/// `IntrinsicId::ALL.len()` undefined entries. GC point.
+pub(crate) fn new_realm_record(rt: &Runtime) -> u64 {
+    // GC points: the list, then the record; the list lives in a Rust local (CSS) until the
+    // record holds it.
+    let list = object::new_list(rt, builtins::IntrinsicId::ALL.len(), UNDEFINED);
+    let realm = object::new_record(rt, kinds::REALM);
+    object::record_set(rt, realm, realmf::INTRINSICS, list);
+    realm
+}
+
+/// Copies every intrinsic of the realm (`builtins::intrinsic`; undefined for one nothing made)
+/// into the intrinsics list of the `Root::Realm` record, at index `IntrinsicId`. Runs after
+/// `builtins::install`. Allocates nothing.
+pub(crate) fn fill_intrinsics(rt: &Runtime) {
+    let realm = rt.root(Root::Realm);
+    let list = object::record_get(realm, realmf::INTRINSICS);
+    for id in builtins::IntrinsicId::ALL {
+        object::list_set(rt, list, id as usize, builtins::intrinsic(rt, id));
+    }
 }
 
 /// `DeclareGlobals`: GlobalDeclarationInstantiation (§16.1.7) of the script (or eval) scope

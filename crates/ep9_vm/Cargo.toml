@@ -9,6 +9,8 @@ license.workspace = true
 # Engine crates only. No crates.io dependencies (08-repo section 2).
 [dependencies]
 ep9_bytecode = { path = "../ep9_bytecode" }
+# The facts exporter (`facts_export.rs`, `ep9_vm::abi::export_facts`; M3-P0 V8-A13).
+ep9_facts = { path = "../ep9_facts" }
 ep9_heap = { path = "../ep9_heap" }
 # `**`, Math and `%` use the one Rust Math (H36).
 ep9_math = { path = "../ep9_math" }
