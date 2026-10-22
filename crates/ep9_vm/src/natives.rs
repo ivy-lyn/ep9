@@ -856,7 +856,7 @@ pub(crate) fn iterator_to_string_tag_set<'s>(
     }
     // 3. Let desc be ? this.[[GetOwnProperty]](p). GC point below: `o`, `key` and `v` live in
     //    Rust locals.
-    if property::get_own_property(cx, o, key).is_none() {
+    if property::get_own_property(cx, o, key)?.is_none() {
         // 4. If desc is undefined: ? CreateDataPropertyOrThrow(this, p, v).
         let desc = crate::descriptor::Desc::data(v, attr::DEFAULT);
         if !property::define_own_property(cx, o, key, desc)? {

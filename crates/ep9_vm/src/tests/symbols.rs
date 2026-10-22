@@ -661,10 +661,10 @@ fn own_property_keys_put_symbols_last_in_creation_order() {
         assert_eq!(object::array_get(keys, 4), Some(s2));
         // [[Get]] and [[GetOwnProperty]] by symbol.
         assert_eq!(property::get(cx, o, s2).unwrap(), conv::num(5.0));
-        let d = property::get_own_property(cx, o, s1).unwrap();
+        let d = property::get_own_property(cx, o, s1).unwrap().unwrap();
         assert_eq!(d.value, Some(conv::num(2.0)));
         let other = symbol::new_symbol(rt, atoms::intern_str(rt, "s1"));
-        assert!(property::get_own_property(cx, o, other).is_none());
+        assert!(property::get_own_property(cx, o, other).unwrap().is_none());
         assert!(property::has_property(cx, o, s1) && !property::has_property(cx, o, other));
         iso.collect_garbage();
         iso.verify_heap().unwrap();

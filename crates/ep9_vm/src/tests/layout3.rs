@@ -386,7 +386,7 @@ fn hooks_hit(iso: &mut Isolate, o: u64) -> Vec<&'static str> {
     let key = crate::atoms::intern_str(rt, "x");
     probe::take();
     assert_eq!(property::get(cx, o, key).unwrap(), UNDEFINED);
-    assert!(property::get_own_property(cx, o, key).is_none());
+    assert!(property::get_own_property(cx, o, key).unwrap().is_none());
     assert!(!property::has_own_property(cx, o, key));
     assert!(property::set_with_receiver(cx, o, key, int32_bits(1), o).unwrap());
     let desc = Desc::data(int32_bits(2), attr::DEFAULT);
@@ -533,6 +533,74 @@ fn index_paths_set_walk_and_for_in_reach_the_routed_hooks() {
             for h in [ho, hc] {
                 rt.heap.drop_global(h);
             }
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
+}
+
+/// Takes the pending exception and checks that it is the module.rs probe's ReferenceError.
+fn take_probe_error(cx: &mut crate::interp::Cx, what: &str) {
+    let rt = cx.rt();
+    let e = rt.take_pending();
+    assert!(object::is_object(e), "{what}: an error is pending");
+    let name = crate::atoms::intern_str(rt, "name");
+    let n = property::get_from(cx, e, name).unwrap();
+    let message = crate::atoms::intern_str(cx.rt(), "message");
+    let m = property::get_from(cx, e, message).unwrap();
+    assert_eq!(
+        (
+            crate::string::to_rust_string(n),
+            crate::string::to_rust_string(m)
+        ),
+        ("ReferenceError".to_string(), "probe".to_string()),
+        "{what}"
+    );
+}
+
+/// VF-TDZ: the routed value hooks can throw. A namespace `[[Get]]` and `[[GetOwnProperty]]`
+/// of an uninitialized binding throw a ReferenceError (§10.4.6.8, §10.4.6.5); `[[Get]]`,
+/// `[[GetOwnProperty]]`, the builtin ABI's HasOwnProperty and `for-in` pass the throw on.
+/// The module.rs stubs throw while `probe::set_throw(true)` (test builds only).
+#[test]
+fn routed_value_hooks_can_throw() {
+    for stress in [false, true] {
+        on_big_stack(move || {
+            let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+            let cx: &mut crate::interp::Cx = &mut iso.cx;
+            let rt: &Runtime = &iso.rt;
+            let ns = new_routed(rt, "module");
+            let hn = rt.heap.new_global(val(ns));
+            let x = crate::atoms::intern_str(rt, "x");
+            // `x` as an ordinary property (the define stub answers "ordinary"), so the
+            // ordinary `[[OwnPropertyKeys]]` lists it for for-in.
+            let desc = Desc::data(int32_bits(1), attr::DEFAULT);
+            assert!(property::define_own_property(cx, ns, x, desc).unwrap());
+            probe::set_throw(true);
+            assert!(property::get(cx, ns, x).is_err());
+            take_probe_error(cx, "[[Get]]");
+            assert!(property::get_own_property(cx, ns, x).is_err());
+            take_probe_error(cx, "[[GetOwnProperty]]");
+            {
+                let mut abi = crate::Cx::new(cx);
+                let o: crate::Local<'_, crate::JsObject> = crate::Local::from_bits(ns);
+                assert!(abi.has_own_property(o, "x").is_err());
+            }
+            take_probe_error(cx, "HasOwnProperty (builtin ABI)");
+            assert!(property::for_in_keys(cx, ns).is_err());
+            take_probe_error(cx, "for-in");
+            // `get_data_from` runs no JS and cannot throw: a hook's throw is no data property.
+            assert_eq!(property::get_data_from(cx, ns, x), None);
+            assert_eq!(rt.pending(), 0, "get_data_from leaves nothing pending");
+            probe::set_throw(false);
+            assert_eq!(property::get(cx, ns, x).unwrap(), int32_bits(1));
+            assert!(property::get_own_property(cx, ns, x).unwrap().is_some());
+            {
+                let mut abi = crate::Cx::new(cx);
+                let o: crate::Local<'_, crate::JsObject> = crate::Local::from_bits(ns);
+                assert!(abi.has_own_property(o, "x").unwrap());
+            }
+            rt.heap.drop_global(hn);
             iso.collect_garbage();
             iso.verify_heap().unwrap();
         });

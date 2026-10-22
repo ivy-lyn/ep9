@@ -71,9 +71,9 @@ pub(crate) fn get_with_receiver(cx: &mut Cx, mut o: u64, key: u64, receiver: u64
     let how = key::probe(key);
     loop {
         if kind::cell_kind(o) != kind::OBJECT.get()
-            && let Some(v) = exotic::get(cx, o, key, how)
+            && let Some(r) = exotic::get(cx, o, key, how)
         {
-            return Ok(v);
+            return r;
         }
         match props::own_value_or_proto(o, key, how) {
             Ok((v, a)) if a & attr::ACCESSOR == 0 => return Ok(v),
@@ -88,15 +88,21 @@ pub(crate) fn get_with_receiver(cx: &mut Cx, mut o: u64, key: u64, receiver: u64
 /// property; `None` for an accessor (its getter does not run) or no property. For engine
 /// text that must run no JS: an error's "Name: message" header (`error::error_header`, made
 /// inside `throw_error`, also on stack overflow) and the reported constructor name. GC point
-/// (a lazy `prototype`), but runs no JS and cannot throw.
+/// (a lazy `prototype`), but runs no JS and cannot throw: a routed hook's throw counts as no
+/// data property (its pending exception is dropped).
 pub(crate) fn get_data_from(cx: &mut Cx, mut o: u64, key: u64) -> Option<u64> {
     debug_assert!(is_object(o) && is_property_key(key));
     let how = key::probe(key);
     loop {
-        if kind::cell_kind(o) != kind::OBJECT.get()
-            && let Some(v) = exotic::get(cx, o, key, how)
-        {
-            return Some(v);
+        if kind::cell_kind(o) != kind::OBJECT.get() {
+            match exotic::get(cx, o, key, how) {
+                Some(Ok(v)) => return Some(v),
+                Some(Err(_)) => {
+                    cx.rt().take_pending();
+                    return None;
+                }
+                None => {}
+            }
         }
         match props::own_value_or_proto(o, key, how) {
             Ok((v, a)) => return (a & attr::ACCESSOR == 0).then_some(v),
@@ -380,7 +386,7 @@ fn define_on_receiver(cx: &mut Cx, receiver: u64, key: u64, v: u64) -> Res<bool>
         };
         return define_own_property(cx, receiver, key, desc);
     }
-    match own_property(cx, receiver, key) {
+    match own_property(cx, receiver, key)? {
         Some((_, a, _)) if a & attr::WRITABLE == 0 => Ok(false),
         Some(_) => {
             let desc = Desc {
@@ -820,7 +826,7 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
                 if is_symbol_key(k) {
                     continue;
                 }
-                let Some((_, a, _)) = own_property(cx, cur, k) else {
+                let Some((_, a, _)) = own_property(cx, cur, k)? else {
                     continue;
                 };
                 let enumerable = a & attr::ENUMERABLE != 0;
@@ -899,25 +905,28 @@ enum OwnSlot {
 }
 
 /// The own property `key` of the object `o`: (value, attribute bits, where it lives). Array
-/// `length` is handled by the callers. GC point (a constructor's lazy `prototype` object).
-fn own_property(cx: &mut Cx, o: u64, key: u64) -> Option<(u64, i32, OwnSlot)> {
+/// `length` is handled by the callers. Only a routed kind's hook throws (§10.4.6.5 step 4).
+/// GC point (a constructor's lazy `prototype` object, a routed hook).
+fn own_property(cx: &mut Cx, o: u64, key: u64) -> Res<Option<(u64, i32, OwnSlot)>> {
     let how = key::probe(key);
-    if let Some((v, a, e)) = exotic::own_property(cx, o, key, how) {
-        return Some((v, a, OwnSlot::Exotic(e)));
+    if let Some(r) = exotic::own_property(cx, o, key, how) {
+        let (v, a, e) = r?;
+        return Ok(Some((v, a, OwnSlot::Exotic(e))));
     }
-    props::own_get_with(o, key, how).map(|(v, a)| (v, a, OwnSlot::Storage))
+    Ok(props::own_get_with(o, key, how).map(|(v, a)| (v, a, OwnSlot::Storage)))
 }
 
 /// `o.[[GetOwnProperty]](key)` (§10.1.5.1 OrdinaryGetOwnProperty, plus the exotic
-/// properties of arrays, constructors and String wrappers; H20 R6). GC point.
-pub(crate) fn get_own_property(cx: &mut Cx, o: u64, key: u64) -> Option<Desc> {
+/// properties of arrays, constructors and String wrappers; H20 R6). Only a routed kind's hook
+/// throws (a namespace binding in its TDZ, §10.4.6.5). GC point.
+pub(crate) fn get_own_property(cx: &mut Cx, o: u64, key: u64) -> Res<Option<Desc>> {
     debug_assert!(is_object(o) && is_property_key(key));
     if is_array(o) && is_atom(cx, key, Atom::Length) {
         // §10.4.2: {w: true, e: false, c: false}. v0: `length` is always writable.
         let len = num(f64::from(object::array_len(o)));
-        return Some(Desc::data(len, attr::WRITABLE));
+        return Ok(Some(Desc::data(len, attr::WRITABLE)));
     }
-    own_property(cx, o, key).map(|(v, a, _)| accessor::stored_desc(v, a))
+    Ok(own_property(cx, o, key)?.map(|(v, a, _)| accessor::stored_desc(v, a)))
 }
 
 /// IsExtensible (§7.2.5, ordinary objects): the shape's flag.
@@ -987,7 +996,7 @@ pub(crate) fn ordinary_define_own_property(cx: &mut Cx, o: u64, key: u64, desc: 
         }
         return array_define_length(cx, o, desc);
     }
-    let Some((cur_v, cur_a, slot)) = own_property(cx, o, key) else {
+    let Some((cur_v, cur_a, slot)) = own_property(cx, o, key)? else {
         // §10.1.6.3 step 2: a new property; absent fields default to undefined / false.
         if !is_extensible(o) {
             return Ok(false);

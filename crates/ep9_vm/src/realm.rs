@@ -168,7 +168,7 @@ pub(crate) fn declare_globals(
     for s in &scope.slots {
         let name = name_of(s);
         let clash = own_get(lexical, name).is_some()
-            || is_lexical(s.mode) && has_restricted_global_property(cx, global, name);
+            || is_lexical(s.mode) && has_restricted_global_property(cx, global, name)?;
         if clash {
             let msg = format!(
                 "Identifier '{}' has already been declared",
@@ -186,7 +186,7 @@ pub(crate) fn declare_globals(
     };
     for s in functions().rev() {
         let name = name_of(s);
-        if !can_declare_global_function(cx, global, name) {
+        if !can_declare_global_function(cx, global, name)? {
             let n = key_text(rt, name);
             let msg = if own_get(global, name).is_some() {
                 format!("Cannot redefine property: {n}")
@@ -240,20 +240,21 @@ pub(crate) fn declare_globals(
 }
 
 /// HasRestrictedGlobalProperty (§9.1.1.4.14): a non-configurable own property of the global.
-fn has_restricted_global_property(cx: &mut Cx, global: u64, name: u64) -> bool {
-    property::get_own_property(cx, global, name).is_some_and(|d| d.configurable == Some(false))
+fn has_restricted_global_property(cx: &mut Cx, global: u64, name: u64) -> conv::Res<bool> {
+    let desc = property::get_own_property(cx, global, name)?;
+    Ok(desc.is_some_and(|d| d.configurable == Some(false)))
 }
 
 /// CanDeclareGlobalFunction (§9.1.1.4.16).
-fn can_declare_global_function(cx: &mut Cx, global: u64, name: u64) -> bool {
-    match property::get_own_property(cx, global, name) {
+fn can_declare_global_function(cx: &mut Cx, global: u64, name: u64) -> conv::Res<bool> {
+    Ok(match property::get_own_property(cx, global, name)? {
         // 3. No property: IsExtensible(globalObject).
         None => property::is_extensible(global),
         // 4. A configurable property can be replaced.
         Some(d) if d.configurable == Some(true) => true,
         // 5. A writable, enumerable data property keeps its attributes.
         Some(d) => !d.is_accessor() && d.writable == Some(true) && d.enumerable == Some(true),
-    }
+    })
 }
 
 /// CanDeclareGlobalVar (§9.1.1.4.15).
