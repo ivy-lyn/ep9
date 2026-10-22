@@ -47,16 +47,16 @@ ep9_baseline / ep9_opt --one instruction stream + abstract relocations--> ep9_ma
 
 | Emitter | Placement, target | Check |
 |---|---|---|
-| `jit_b` (P4-PLACEMENT-B) | (b), AArch64 | `jit_b::tests::b_code_has_no_ret_and_no_address` (`spikes/spike-b/src/jit_b/mod.rs:172-187`): the same function from two isolates gives the same bytes, and the code has no `ret` (it leaves by `br x16` only). It checks AArch64 code only |
+| `jit_b` (P4-PLACEMENT-B; x86-64 M3-P0 P0-B-X64) | (b), AArch64 and x86-64 | `jit_b::tests::b_code_has_no_ret_and_no_address` (`spikes/spike-b/src/jit_b/mod.rs:281-309`): the same function from two isolates gives the same bytes on both architectures, and the AArch64 code has no `ret` (it leaves by `br x16` only). x86-64: `jit_b::tests::x86_64_b_code_leaves_by_the_exit_jump_only` (no `ret` at a reported instruction start; one exit jump) and `win-static.sh` (`llvm-objdump -d`: no `ret`, one indirect jump) |
 | `jit` (P2-SPIKE-B) | (a), AArch64 and x86-64 | No address by emitter design; no test. (a) failed the D21 rule in gate window 1 |
-| (b) on x86-64 | not built (`Refusal::Arch`, PB-9) | No address by emitter design; no test. M3-P0 P0-B-X64 builds it (M2-P5-PLAN-D25) |
+| (b) on x86-64 | built (M3-P0 P0-B-X64, M2-P5-PLAN-D25; `spikes/spike-b/src/jit_b/x64.rs`) | The `jit_b` row above: the two-isolate test covers it. Its only absolute-looking operands are constants (Value tags, `Cx` and table offsets); branches are rel8/rel32 inside the function |
 
 ## Rules
 
 | Rule | Check | From |
 |---|---|---|
-| Spike B (b) code holds no absolute address and no relocation; the same function gives the same bytes in two isolates | `cargo test` in `spikes/spike-b`: `jit_b::tests::b_code_has_no_ret_and_no_address` (AArch64 code) | Spike B (M2-P4) |
-| Spike B (a) code and x86-64 code hold no absolute address | No address by emitter design (`emit.rs:19`); no test | Spike B (M2-P2) |
+| Spike B (b) code holds no absolute address and no relocation; the same function gives the same bytes in two isolates | `cargo test` in `spikes/spike-b`: `jit_b::tests::b_code_has_no_ret_and_no_address` (AArch64 and x86-64 code) | Spike B (M2-P4); x86-64 M3-P0 |
+| Spike B (a) code holds no absolute address | No address by emitter design (`emit.rs:19`); no test | Spike B (M2-P2) |
 | Unit text has 0 relocations | SP-Unit: a text scan finds 0 absolute relocations; from A2 the xtask "zero text relocations" check on every CI unit (10-quality §5) | M3-P1; A2 |
 | The unit writer rejects HeapConst | A2: the "Zero text relocations" check ([08 §7](../plan/08-repo.md); [10 §5](../plan/10-quality.md#5-other-ci-checks)): the writer rejects HeapConst | A2 |
 | JIT and unit code come from one instruction stream; no LLVM in JIT or AOT code | Not built: `ep9_masm` does not exist yet. A dep-guards row for `ep9_masm` when the crate is added ([08 §7](../plan/08-repo.md)) | M5 (crate added) |
@@ -74,7 +74,7 @@ ep9_baseline / ep9_opt --one instruction stream + abstract relocations--> ep9_ma
 | [R06] | LLVM took > 75% of FTL compile time; Cranelift has no deopt value maps | [../research/06-execution-tiers.md](../research/06-execution-tiers.md) |
 | [R14] | One backend for JIT and AOT; Wasmtime refuses precompiled code with text relocations; position-independent, isolate-independent code through a root register (V8 embedded builtins) | [../research/14-dual-mode-architecture.md](../research/14-dual-mode-architecture.md) |
 | [R16] | D10: one Rust backend for JIT and AOT, with abstract relocation kinds | [../research/16-aot-synthesis.md](../research/16-aot-synthesis.md) |
-| Spike B | The (b) emitter rule and its test; the (a) and x86-64 emitters by design only | `spikes/spike-b/src/emit.rs`, `spikes/spike-b/src/jit_b/mod.rs` |
+| Spike B | The (b) emitter rule and its test, on AArch64 and x86-64; the (a) emitters by design only | `spikes/spike-b/src/emit.rs`, `spikes/spike-b/src/jit_b/mod.rs` |
 
 ## Validation
 
@@ -104,3 +104,4 @@ ep9_baseline / ep9_opt --one instruction stream + abstract relocations--> ep9_ma
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-22 | draft | First draft from 02 §6 row H34 and 04 §5, with the Spike B emitter evidence: the zero-relocation rule (`emit.rs:19`) and its jit_b test for (b) on AArch64; (a) and x86-64 by design only. The 04 §5 pc-relative AOT form of LinkSlot and IcCell is not copied (it conflicts with H35-Q9) and is H34-Q1. The SP-Unit questions and H07-Q2 stay open (M2-P5-PLAN-D20, plan-v6 D18) | P5-DOCS-SYNC agent (M2-P5) |
+| 2026-10-22 | fill | M3-P0 P0-B-X64: x86-64 placement (b) is built (`spikes/spike-b/src/jit_b/x64.rs`), and the two-isolate no-address test covers it (`jit_b::tests::b_code_has_no_ret_and_no_address`, both architectures); the "(b) on x86-64" row, the (b) Rules row, the (a) Rules row and the Spike B evidence row say so. No rule changes its result | P0-B-X64 agent (M3-P0) |

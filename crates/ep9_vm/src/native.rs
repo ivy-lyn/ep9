@@ -308,7 +308,10 @@ pub(crate) unsafe fn enter_native(
     arg: impl Fn(u32) -> u64,
 ) -> Res<u64> {
     let rt = cx.rt();
-    let this = call::bind_this(fi, this, rt.global());
+    // OrdinaryCallBindThis: no GC point before the push, because `arg` may read memory that
+    // the GC does not scan (the embedder slice of `call_from_rust`); a primitive receiver of a
+    // sloppy callee goes in as it is and is wrapped after the push (`wrap_receiver`, H14-Q2).
+    let bound = call::try_bind_this(fi, this, rt.global());
     // SAFETY: caller contract (the `push_frame` contract).
     let nfp = unsafe {
         call::push_frame(
@@ -316,7 +319,7 @@ pub(crate) unsafe fn enter_native(
             cx.stack_limit,
             fi,
             callee,
-            this,
+            bound.unwrap_or(this),
             argc,
             arg,
             caller_fp,
@@ -328,6 +331,11 @@ pub(crate) unsafe fn enter_native(
     let Some(nfp) = nfp else {
         return stack_overflow(cx);
     };
+    if bound.is_none() {
+        // SAFETY: `nfp` is the frame just pushed at `base`, above every live frame and scratch
+        // Value, and not published yet.
+        unsafe { wrap_receiver(cx, nfp, this) }?;
+    }
     cx.budget -= 1;
     rt.stack().set_fp(nfp);
     // Native code runs with no scratch area, as bytecode does. Only an entry from Rust
@@ -354,6 +362,34 @@ pub(crate) unsafe fn enter_native(
         return Err(Throw);
     }
     Ok(r)
+}
+
+/// OrdinaryCallBindThis step 6.b (§10.2.1.2) for a call that [`call::try_bind_this`] refused
+/// (a primitive receiver of a sloppy callee, H14-Q2; M3-P0 P0-D10): ToObject(`this`) into the
+/// receiver slot of the frame `nfp`, as `call::call_function_object` does. GC point: while the
+/// wrap runs, the scratch top covers the new frame, so the GC scans its copied arguments and
+/// its callee, and a stack walk does not see it (it is not published). The scratch top is put
+/// back on every exit. `enter_native` and `run_b` call it after `push_frame`, because their
+/// `arg` may read memory that the GC does not scan.
+///
+/// # Safety
+/// `nfp` is the frame that `push_frame` just wrote above every live frame and every scratch
+/// Value, and it is not published yet.
+#[cold]
+#[inline(never)]
+unsafe fn wrap_receiver(cx: &mut Cx, nfp: *mut u64, this: u64) -> Res<()> {
+    let stack = cx.rt().stack();
+    let saved = stack.scratch_top();
+    stack.set_scratch_top(crate::runtime::frame_top(nfp));
+    let r = call::wrap_this(cx, this);
+    if saved.is_null() {
+        stack.clear_scratch();
+    } else {
+        stack.set_scratch_top(saved);
+    }
+    // SAFETY: the receiver slot of the frame that `push_frame` just wrote (caller contract).
+    unsafe { *nfp.offset(slot::RECEIVER) = r? };
+    Ok(())
 }
 
 // ---- the runtime table ---------------------------------------------------------------------
@@ -1014,7 +1050,8 @@ unsafe fn run_b(
     if !rt.native_stack_ok() {
         return stack_overflow(cx);
     }
-    let this = call::bind_this(fi, this, rt.global());
+    // OrdinaryCallBindThis as in `enter_native`: wrap a primitive receiver after the push.
+    let bound = call::try_bind_this(fi, this, rt.global());
     // SAFETY: caller contract (the `push_frame` contract).
     let nfp = unsafe {
         call::push_frame(
@@ -1022,7 +1059,7 @@ unsafe fn run_b(
             cx.stack_limit,
             fi,
             callee,
-            this,
+            bound.unwrap_or(this),
             argc,
             arg,
             caller_fp,
@@ -1034,6 +1071,10 @@ unsafe fn run_b(
     let Some(nfp) = nfp else {
         return stack_overflow(cx);
     };
+    if bound.is_none() {
+        // SAFETY: as in `enter_native`.
+        unsafe { wrap_receiver(cx, nfp, this) }?;
+    }
     cx.budget -= 1;
     rt.stack().set_fp(nfp);
     rt.stack().clear_scratch();

@@ -1156,7 +1156,7 @@ mod tests {
     /// Every config returns n in this process (debug build, small n), with the slot kinds of
     /// the protocol table. B and AH run T0 with `Dispatch::Sibling`, whose debug build has no
     /// tail calls (the native stack grows per instruction), so the configs run on a thread
-    /// with a large stack. B needs the (b) emitter (AArch64); AH runs everywhere.
+    /// with a large stack. B needs the (b) emitter (AArch64 and x86-64); AH runs everywhere.
     #[test]
     fn every_config_returns_n() {
         let r = std::thread::Builder::new()

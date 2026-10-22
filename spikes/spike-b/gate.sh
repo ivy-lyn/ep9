@@ -12,14 +12,16 @@
 #     4  bench-verdict-test.sh: the verdict logic of bench.sh on fake inputs (no bench run);
 #        SKIP when node is not on PATH
 #   gate.sh b            (plan-v6 P4-PLACEMENT-B task 9; the SPIKEB(b) acceptance)
-#     1  cargo test, the jit_b tests: the (b) emitter (prologue, no `ret`, no address, CFI)
+#     1  cargo test, the jit_b tests: the (b) emitters of both architectures (prologue, plan,
+#        exit jumps, no `ret`, no address, CFI, Win64 UNWIND_INFO)
 #     2  release build: `spike-b structural-b all`, the opcode lists and checks (a)-(h) on
 #        placement (b) code (src/jit_b/structural.rs), T0 under Dispatch::Sibling
 #     3  debug build: `spike-b structural-b h` (debug sibling calls have no tail calls, so
 #        the long checks run in release only)
 #     4  bench-verdict-test.sh (the B cases too), if `structural` did not run it already
-#     On a target where placement (b) is not built (x86-64), steps 2-3 print SKIP with the
-#     `Refusal` text and pass.
+#     Placement (b) is built for AArch64 and x86-64 (M3-P0 P0-B-X64). On an aarch64 or x86_64
+#     host a SKIP line in the output of steps 2-3 is a FAIL (P0-D9): it would hide a lost
+#     generator. On any other host steps 2-3 print SKIP with the `Refusal` text and pass.
 #   gate.sh              `gate.sh structural`, then `gate.sh b`
 #
 # Env: CARGO_TARGET_DIR (default: spikes/spike-b/target),
@@ -79,17 +81,41 @@ verdict() {
   fi
 }
 
+# The hosts that have a placement (b) generator: a SKIP from structural-b fails there (P0-D9).
+case "$(uname -m)" in
+  arm64 | aarch64 | x86_64 | amd64) b_host=1 ;;
+  *) b_host=0 ;;
+esac
+
+run_b() { # id cmd...: as `run`, plus FAIL on a SKIP line where (b) is built
+  local id="$1"
+  shift
+  echo "== [$id] $*"
+  local log
+  log="$(mktemp)"
+  if "$@" | tee "$log"; then
+    if [ "$b_host" = 1 ] && grep -q SKIP "$log"; then
+      record "$id" FAIL "a SKIP line on $(uname -m), where placement (b) is built"
+    else
+      record "$id" PASS ""
+    fi
+  else
+    record "$id" FAIL "exit $?"
+  fi
+  rm -f "$log"
+}
+
 placement_b() {
   run "b/unit-tests" cargo test --locked jit_b
   run "b/build-release" cargo build --locked --release
   if [ -x "$CARGO_TARGET_DIR/release/spike-b$exe" ]; then
-    run "structural-b/release" "$CARGO_TARGET_DIR/release/spike-b$exe" structural-b all
+    run_b "structural-b/release" "$CARGO_TARGET_DIR/release/spike-b$exe" structural-b all
   else
     record "structural-b/release" FAIL "no release binary"
   fi
   run "b/build-debug" cargo build --locked
   if [ -x "$CARGO_TARGET_DIR/debug/spike-b$exe" ]; then
-    run "structural-b/debug-h" "$CARGO_TARGET_DIR/debug/spike-b$exe" structural-b h
+    run_b "structural-b/debug-h" "$CARGO_TARGET_DIR/debug/spike-b$exe" structural-b h
   else
     record "structural-b/debug-h" FAIL "no debug binary"
   fi
