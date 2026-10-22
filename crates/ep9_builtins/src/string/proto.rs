@@ -9,7 +9,7 @@ use ep9_vm::{Args, Cx, JsResult, Local};
 
 use super::{
     MAX_LENGTH, clamp, new_str, pattern::is_reg_exp, push_units, string_index_of, this_string,
-    to_units, units,
+    to_units, units, units_range,
 };
 
 /// String.prototype.at ( index ) (§22.1.3.1).
@@ -178,8 +178,9 @@ pub(super) fn ends_with<'s>(
     // 13. Let substring be the substring of S from start to end.
     // 14. If substring is searchStr, return true.
     // 15. Return false.
-    let s = units(cx, s)?;
-    Ok(Local::boolean(s[start..end] == search_str[..]))
+    Ok(Local::boolean(
+        units_range(cx, s, start, end)? == search_str,
+    ))
 }
 
 /// String.prototype.includes ( searchString [ , position ] ) (§22.1.3.8).
@@ -490,8 +491,8 @@ pub(super) fn slice<'s>(
         return Ok(cx.key("").value());
     }
     // 13. Return the substring of S from from to to.
-    let s = units(cx, s)?;
-    new_str(cx, &s[from..to])
+    let substring = units_range(cx, s, from, to)?;
+    new_str(cx, &substring)
 }
 
 /// String.prototype.startsWith ( searchString [ , position ] ) (§22.1.3.24).
@@ -532,8 +533,9 @@ pub(super) fn starts_with<'s>(
     // 13. Let substring be the substring of S from start to end.
     // 14. If substring is searchStr, return true.
     // 15. Return false.
-    let s = units(cx, s)?;
-    Ok(Local::boolean(s[start..end] == search_str[..]))
+    Ok(Local::boolean(
+        units_range(cx, s, start, end)? == search_str,
+    ))
 }
 
 /// String.prototype.substring ( start, end ) (§22.1.3.25).
@@ -564,8 +566,8 @@ pub(super) fn substring<'s>(
     // 9. Let to be max(finalStart, finalEnd).
     let (from, to) = (final_start.min(final_end), final_start.max(final_end));
     // 10. Return the substring of S from from to to.
-    let s = units(cx, s)?;
-    new_str(cx, &s[from..to])
+    let substring = units_range(cx, s, from, to)?;
+    new_str(cx, &substring)
 }
 
 /// String.prototype.toWellFormed ( ) (§22.1.3.31).

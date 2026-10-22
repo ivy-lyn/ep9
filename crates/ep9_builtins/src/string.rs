@@ -287,8 +287,20 @@ fn this_string<'s>(cx: &mut Cx<'s>, this: Local<'s>, name: &str) -> JsResult<Loc
 /// The code units of `s`, copied out (a view cannot live across a GC point, R3).
 fn units<'s>(cx: &mut Cx<'s>, s: Local<'s, JsString>) -> JsResult<Vec<u16>> {
     let len = cx.string_len(s);
+    units_range(cx, s, 0, len)
+}
+
+/// The code units `from..to` of `s` (`from <= to <= length`), copied out: the substring of S
+/// from `from` to `to`.
+fn units_range<'s>(
+    cx: &mut Cx<'s>,
+    s: Local<'s, JsString>,
+    from: usize,
+    to: usize,
+) -> JsResult<Vec<u16>> {
+    debug_assert!(from <= to && to <= cx.string_len(s));
     let flat = cx.flatten(s)?;
-    Ok((0..len)
+    Ok((from..to)
         .map(|i| cx.code_unit_at(flat, i).expect("i < length"))
         .collect())
 }
@@ -354,7 +366,10 @@ fn well_known<'s>(cx: &mut Cx<'s>, name: &str) -> JsResult<Local<'s, JsSymbol>> 
     let v = cx.get(ctor, name)?;
     match v.as_symbol() {
         Some(sym) => Ok(sym),
-        None => Err(cx.throw_type_error("Symbol.<name> is not a symbol")),
+        None => {
+            let msg = format!("Symbol.{name} is not a symbol");
+            Err(cx.throw_type_error(&msg))
+        }
     }
 }
 

@@ -5,7 +5,9 @@
 
 use ep9_vm::{Args, Cx, JsResult, Local};
 
-use super::{new_str, proto::relative_start, push_units, this_string, to_units, units};
+use super::{
+    new_str, proto::relative_start, push_units, this_string, to_units, units, units_range,
+};
 
 /// String.prototype.substr ( start, length ) (B.2.2.1).
 pub(super) fn substr<'s>(
@@ -40,8 +42,8 @@ pub(super) fn substr<'s>(
     if int_start >= int_end {
         return Ok(cx.key("").value());
     }
-    let s = units(cx, s)?;
-    new_str(cx, &s[int_start..int_end])
+    let substring = units_range(cx, s, int_start, int_end)?;
+    new_str(cx, &substring)
 }
 
 /// CreateHTML ( string, tag, attribute, value ) (B.2.2.2.1). `attribute` is `None` for the
