@@ -1,3 +1,16 @@
 # ep9 builtin ids: module reflect, block 11. Append-only (H20, W4-BUILTIN-IDS): never
 # reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
 # id     block.index  kind         length  name  (installed as)
+0x1600   11.0         method       3       "apply"  (%Reflect%.apply w-c)
+0x1601   11.1         method       2       "construct"  (%Reflect%.construct w-c)
+0x1602   11.2         method       3       "defineProperty"  (%Reflect%.defineProperty w-c)
+0x1603   11.3         method       2       "deleteProperty"  (%Reflect%.deleteProperty w-c)
+0x1604   11.4         method       2       "get"  (%Reflect%.get w-c)
+0x1605   11.5         method       2       "getOwnPropertyDescriptor"  (%Reflect%.getOwnPropertyDescriptor w-c)
+0x1606   11.6         method       1       "getPrototypeOf"  (%Reflect%.getPrototypeOf w-c)
+0x1607   11.7         method       2       "has"  (%Reflect%.has w-c)
+0x1608   11.8         method       1       "isExtensible"  (%Reflect%.isExtensible w-c)
+0x1609   11.9         method       1       "ownKeys"  (%Reflect%.ownKeys w-c)
+0x160a   11.10        method       1       "preventExtensions"  (%Reflect%.preventExtensions w-c)
+0x160b   11.11        method       3       "set"  (%Reflect%.set w-c)
+0x160c   11.12        method       2       "setPrototypeOf"  (%Reflect%.setPrototypeOf w-c)

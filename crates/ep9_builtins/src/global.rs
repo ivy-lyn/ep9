@@ -7,8 +7,11 @@
 //! ```
 //!
 //! The global value properties (`globalThis`, `Infinity`, `NaN`, `undefined`) come from the VM
-//! table (natives.rs); each constructor module adds its own global binding. Not in week 4:
-//! `eval`, `parseFloat`, `parseInt` and the URI functions.
+//! table (natives.rs); each constructor module adds its own global binding. `eval` is a VM
+//! builtin (`%eval%`). `parseFloat` and `parseInt` are definitions of the `number` module
+//! (number.rs), which installs each one function object as both `Number.parseX` and the global
+//! `parseX` (§21.1.2.12-13; M2-P5-PLAN-D4): here, `Number.parseInt` would land after
+//! `Number.EPSILON`, out of V8's key order. Not built yet: the URI functions.
 //!
 //! Owner of the templates: P3-BLTB (see `TEMPLATES.md`). Ids are append-only: definition `i`
 //! of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by `tests/golden/ids-global.txt`.

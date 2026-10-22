@@ -5,22 +5,35 @@
 //! ```text
 //! Number(v)          ToNumber(v) (+0 without v); with new: a Number wrapper whose prototype
 //!                    comes from new.target (GetPrototypeFromConstructor, Cx::new_wrapper)
+//! Number.<static>    isFinite, isInteger, isNaN, isSafeInteger (no conversion), parseFloat,
+//!                    parseInt ({w, c}; after `prototype`, before the constants: V8's order)
 //! Number.<constant>  MAX_VALUE, MIN_VALUE, NaN, NEGATIVE_INFINITY, POSITIVE_INFINITY,
 //!                    MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, EPSILON ({}; V8's key order)
 //! %Number.prototype% toString(radix): radix 10 is ToString; 2-36 is V8's
 //!                    DoubleToRadixCString (`radix_string`); valueOf. Both read
 //!                    thisNumberValue (Cx::this_primitive_value)
-//! global             Number {w, c}
+//! global             Number, parseFloat, parseInt {w, c} (node's order: right after Number)
 //! ```
 //!
-//! Not in week 4: `isFinite`, `isInteger`, `isNaN`, `isSafeInteger`, `parseFloat`,
-//! `parseInt`, `toExponential`, `toFixed`, `toPrecision`, `toLocaleString`.
+//! parseFloat and parseInt (§19.2.4, §19.2.5) are definitions of this module, installed on
+//! both `%Number%` and the global object, so `Number.parseInt === parseInt` (§21.1.2.12-13)
+//! with one function object (M2-P5-PLAN-D4). They trim StrWhiteSpaceChar with this module's
+//! copy of the table ([`is_str_white_space`], M2-P5-PLAN-D5). Their values follow V8:
+//!
+//! | Input | Value |
+//! |---|---|
+//! | parseFloat | the longest StrDecimalLiteral prefix; `f64::from_str` on it, correctly rounded; `Infinity` by hand |
+//! | parseInt, radix 10 | the digits through `f64::from_str` (V8: strtod), correctly rounded |
+//! | parseInt, radix 2, 4, 8, 16, 32 | exact bits, rounded half to even (V8 `InternalStringToIntDouble`) |
+//! | parseInt, other radices | V8's `HandleGenericCase`: 32-bit parts, then `result * multiplier + part` as one fused multiply-add (§19.2.5 step 14 allows an approximation) |
+//!
+//! Not built yet: `toExponential`, `toFixed`, `toPrecision`, `toLocaleString`.
 //!
 //! Owner of the templates: P3-BLTB (see `TEMPLATES.md`). Ids are append-only: definition `i`
 //! of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by `tests/golden/ids-number.txt`.
 
 use ep9_vm::{
-    Args, Atom, BuiltinDef, BuiltinModule, ConstValue, Cx, IntrinsicDef, IntrinsicId,
+    Args, Atom, BuiltinDef, BuiltinModule, ConstValue, Cx, FlatStr, IntrinsicDef, IntrinsicId,
     IntrinsicValue, JsResult, Local, ObjectProps, PrimitiveType, PropAttrs, PropDef, PropKey,
 };
 
@@ -29,10 +42,26 @@ pub const BLOCK: u8 = 4;
 
 /// The builtin functions, in id order (append-only).
 pub const DEFS: &[BuiltinDef] = &[
-    BuiltinDef::constructor("Number", 1, number), // 0
-    BuiltinDef::method("toString", 1, to_string), // 1
-    BuiltinDef::method("valueOf", 0, value_of),   // 2
+    BuiltinDef::constructor("Number", 1, number),   // 0
+    BuiltinDef::method("toString", 1, to_string),   // 1
+    BuiltinDef::method("valueOf", 0, value_of),     // 2
+    BuiltinDef::method("isFinite", 1, is_finite),   // 3
+    BuiltinDef::method("isInteger", 1, is_integer), // 4
+    BuiltinDef::method("isNaN", 1, is_nan),         // 5
+    BuiltinDef::method("isSafeInteger", 1, is_safe_integer), // 6
+    BuiltinDef::method("parseFloat", 1, parse_float), // 7
+    BuiltinDef::method("parseInt", 2, parse_int),   // 8
 ];
+
+/// Definition indices (ids `BLOCK.i`) of the statics.
+mod def {
+    pub const IS_FINITE: u16 = 3;
+    pub const IS_INTEGER: u16 = 4;
+    pub const IS_NAN: u16 = 5;
+    pub const IS_SAFE_INTEGER: u16 = 6;
+    pub const PARSE_FLOAT: u16 = 7;
+    pub const PARSE_INT: u16 = 8;
+}
 
 /// The intrinsics this module makes.
 pub const INTRINSICS: &[IntrinsicDef] = &[IntrinsicDef {
@@ -60,7 +89,14 @@ pub const PROPS: &[ObjectProps] = &[
                 IntrinsicId::NumberPrototype,
                 PropAttrs::NONE,
             ),
-            // §21.1.2.1-14, in V8's order.
+            // §21.1.2.2-5, 12-13 ({w, c}), in V8's order: before the constants.
+            PropDef::method(PropKey::Str("isFinite"), def::IS_FINITE),
+            PropDef::method(PropKey::Str("isInteger"), def::IS_INTEGER),
+            PropDef::method(PropKey::Str("isNaN"), def::IS_NAN),
+            PropDef::method(PropKey::Str("isSafeInteger"), def::IS_SAFE_INTEGER),
+            PropDef::method(PropKey::Str("parseFloat"), def::PARSE_FLOAT),
+            PropDef::method(PropKey::Str("parseInt"), def::PARSE_INT),
+            // §21.1.2.1, 6-11, 14, in V8's order.
             constant("MAX_VALUE", f64::MAX),
             // 5 × 10^-324: the smallest positive denormal (not f64::MIN_POSITIVE).
             constant("MIN_VALUE", 5e-324),
@@ -87,12 +123,17 @@ pub const PROPS: &[ObjectProps] = &[
     },
     ObjectProps {
         target: IntrinsicId::GlobalObject,
-        // §19.3 Number ( . . . ).
-        props: &[PropDef::intrinsic(
-            PropKey::Str("Number"),
-            IntrinsicId::Number,
-            PropAttrs::METHOD,
-        )],
+        // §19.3 Number ( . . . ), then §19.2.4 parseFloat and §19.2.5 parseInt: the same
+        // function objects as Number.parseFloat and Number.parseInt (node's order).
+        props: &[
+            PropDef::intrinsic(
+                PropKey::Str("Number"),
+                IntrinsicId::Number,
+                PropAttrs::METHOD,
+            ),
+            PropDef::method(PropKey::Str("parseFloat"), def::PARSE_FLOAT),
+            PropDef::method(PropKey::Str("parseInt"), def::PARSE_INT),
+        ],
     },
 ];
 
@@ -183,6 +224,401 @@ fn value_of<'s>(
 ) -> JsResult<Local<'s>> {
     // 1. Return ? thisNumberValue(this value).
     cx.this_primitive_value(this, PrimitiveType::Number)
+}
+
+// ---- Number statics (§21.1.2) ------------------------------------------------------------------
+
+/// The number in `v`, if `v` is a Number (the statics below do not convert).
+fn number_arg(v: Local<'_>) -> Option<f64> {
+    v.as_number()
+}
+
+/// Number.isFinite ( number ) (§21.1.2.2).
+fn is_finite<'s>(
+    _cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. If number is not a Number, return false.
+    // 2. If number is not finite, return false.
+    // 3. Otherwise, return true.
+    Ok(Local::boolean(
+        number_arg(args.get(0)).is_some_and(f64::is_finite),
+    ))
+}
+
+/// IsIntegralNumber ( argument ) (§7.2.6) for a number.
+fn is_integral(x: f64) -> bool {
+    // 2. If argument is not finite, return false.
+    // 3. If truncate(ℝ(argument)) ≠ ℝ(argument), return false.
+    x.is_finite() && x.trunc() == x
+}
+
+/// Number.isInteger ( number ) (§21.1.2.3).
+fn is_integer<'s>(
+    _cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. Return IsIntegralNumber(number). (Step 1 of it: not a Number gives false.)
+    Ok(Local::boolean(
+        number_arg(args.get(0)).is_some_and(is_integral),
+    ))
+}
+
+/// Number.isNaN ( number ) (§21.1.2.4).
+fn is_nan<'s>(
+    _cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. If number is not a Number, return false.
+    // 2. If number is NaN, return true.
+    // 3. Otherwise, return false.
+    Ok(Local::boolean(
+        number_arg(args.get(0)).is_some_and(f64::is_nan),
+    ))
+}
+
+/// Number.isSafeInteger ( number ) (§21.1.2.5).
+fn is_safe_integer<'s>(
+    _cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. If IsIntegralNumber(number) is true, then
+    //    a. If abs(ℝ(number)) ≤ 2^53 - 1, return true.
+    // 2. Return false.
+    Ok(Local::boolean(number_arg(args.get(0)).is_some_and(|x| {
+        is_integral(x) && x.abs() <= 9_007_199_254_740_991.0
+    })))
+}
+
+// ---- parseFloat and parseInt (§19.2.4, §19.2.5) -------------------------------------------------
+
+/// StrWhiteSpaceChar (§7.1.4.1.1): WhiteSpace (§12.2: TAB, VT, FF, ZWNBSP and the Unicode
+/// "Space_Separator" (Zs) code points of Unicode 17, all in the BMP) and LineTerminator
+/// (§12.3: LF, CR, LS, PS). A copy of the table of `String.prototype.trim`
+/// (string/proto.rs, not reachable from here: M2-P5-PLAN-D5); `tests/number.rs` checks the two
+/// agree on all 65,536 code units. U+180E is not in it (Unicode 6.3 moved it out of Zs).
+pub fn is_str_white_space(u: u16) -> bool {
+    matches!(
+        u,
+        0x09..=0x0D
+            | 0x20
+            | 0xA0
+            | 0x1680
+            | 0x2000..=0x200A
+            | 0x2028
+            | 0x2029
+            | 0x202F
+            | 0x205F
+            | 0x3000
+            | 0xFEFF
+    )
+}
+
+/// The code units of a flat string, read one at a time (no copy).
+struct Units<'a, 's> {
+    cx: &'a Cx<'s>,
+    flat: Local<'s, FlatStr>,
+    len: usize,
+}
+
+impl Units<'_, '_> {
+    /// Code unit `i`, or `None` past the end.
+    fn at(&self, i: usize) -> Option<u16> {
+        if i < self.len {
+            self.cx.code_unit_at(self.flat, i)
+        } else {
+            None
+        }
+    }
+
+    /// The index of the first code unit at or after `i` that is not StrWhiteSpaceChar:
+    /// TrimString(S, start) (§22.1.3.32.1).
+    fn skip_white_space(&self, mut i: usize) -> usize {
+        while self.at(i).is_some_and(is_str_white_space) {
+            i += 1;
+        }
+        i
+    }
+}
+
+/// ToString(v), flattened: its code units can be read.
+fn flat_string<'s>(cx: &mut Cx<'s>, v: Local<'s>) -> JsResult<(Local<'s, FlatStr>, usize)> {
+    let s = cx.to_string(v)?;
+    let len = cx.string_len(s);
+    Ok((cx.flatten(s)?, len))
+}
+
+/// `u` as an ASCII byte, if it is one.
+fn ascii(u: Option<u16>) -> Option<u8> {
+    u.and_then(|u| u8::try_from(u).ok()).filter(u8::is_ascii)
+}
+
+/// parseFloat ( string ) (§19.2.4).
+fn parse_float<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. Let inputString be ? ToString(string).
+    let (flat, len) = flat_string(cx, args.get(0))?;
+    let s = Units { cx, flat, len };
+    // 2. Let trimmedString be ! TrimString(inputString, start).
+    let start = s.skip_white_space(0);
+    // 3-4. The longest prefix of trimmedString that satisfies the syntax of a
+    //      StrDecimalLiteral (§7.1.4.1), or NaN if there is none.
+    Ok(Local::number(str_decimal_literal_prefix(&s, start)))
+}
+
+/// The value of the longest StrDecimalLiteral prefix of `s` from `start` (§19.2.4 steps 3-6),
+/// or NaN without one:
+///
+/// ```text
+/// StrDecimalLiteral         ::: ( + | - )? StrUnsignedDecimalLiteral
+/// StrUnsignedDecimalLiteral ::: Infinity
+///                             | DecimalDigits ( . DecimalDigits? )? ExponentPart?
+///                             | . DecimalDigits ExponentPart?
+/// ExponentPart              ::: ( e | E ) ( + | - )? DecimalDigits      (no separators)
+/// ```
+fn str_decimal_literal_prefix(s: &Units<'_, '_>, start: usize) -> f64 {
+    let mut text = String::new();
+    let mut i = start;
+    let mut negative = false;
+    if let Some(c @ (b'+' | b'-')) = ascii(s.at(i)) {
+        negative = c == b'-';
+        text.push(char::from(c));
+        i += 1;
+    }
+    // Infinity (case-sensitive): f64::from_str also takes "inf" and "nan", so it never
+    // sees these letters.
+    if "Infinity"
+        .bytes()
+        .enumerate()
+        .all(|(k, c)| ascii(s.at(i + k)) == Some(c))
+    {
+        return if negative {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        };
+    }
+    let digits = |text: &mut String, mut i: usize| -> usize {
+        while let Some(c) = ascii(s.at(i)).filter(u8::is_ascii_digit) {
+            text.push(char::from(c));
+            i += 1;
+        }
+        i
+    };
+    let int_end = digits(&mut text, i);
+    let mut any_digit = int_end > i;
+    i = int_end;
+    if ascii(s.at(i)) == Some(b'.') {
+        let mut with_dot = text.clone();
+        with_dot.push('.');
+        let frac_end = digits(&mut with_dot, i + 1);
+        // "1." is a literal; "." alone is not.
+        if any_digit || frac_end > i + 1 {
+            any_digit = true;
+            text = with_dot;
+            i = frac_end;
+        }
+    }
+    if !any_digit {
+        return f64::NAN;
+    }
+    // ExponentPart only when at least one digit follows the e and its sign.
+    if let Some(e @ (b'e' | b'E')) = ascii(s.at(i)) {
+        let mut exp = String::from(char::from(e));
+        let mut j = i + 1;
+        if let Some(c @ (b'+' | b'-')) = ascii(s.at(j)) {
+            exp.push(char::from(c));
+            j += 1;
+        }
+        if digits(&mut exp, j) > j {
+            text.push_str(&exp);
+        }
+    }
+    // 5-6. The StringNumericValue of the prefix (§7.1.4.1.2), rounded to the nearest double:
+    // f64::from_str rounds correctly, and keeps the sign of "-0".
+    text.parse::<f64>().unwrap_or(f64::NAN)
+}
+
+/// parseInt ( string, radix ) (§19.2.5).
+fn parse_int<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. Let inputString be ? ToString(string).
+    let (flat, len) = flat_string(cx, args.get(0))?;
+    // 6. Let R be ℝ(? ToInt32(radix)). (Before the scan: it may run JS, so the scan reads
+    //    the flat string after it.)
+    let r = cx.to_int32(args.get(1))?;
+    let s = Units { cx, flat, len };
+    Ok(Local::number(parse_int_units(&s, r)))
+}
+
+/// The value of digit `u` in `radix`, if it is one.
+fn digit_value(u: Option<u16>, radix: u32) -> Option<u32> {
+    char::from(ascii(u)?).to_digit(radix)
+}
+
+/// §19.2.5 steps 2-16 on the code units of `s` with the radix argument `r`.
+fn parse_int_units(s: &Units<'_, '_>, r: i32) -> f64 {
+    // 2. Let S be ! TrimString(inputString, start).
+    let mut i = s.skip_white_space(0);
+    // 3. Let sign be 1.
+    // 4. If S is not empty and the first code unit of S is the code unit 0x002D (HYPHEN-MINUS),
+    //    set sign to -1.
+    // 5. If S is not empty and the first code unit of S is either the code unit 0x002B (PLUS
+    //    SIGN) or the code unit 0x002D (HYPHEN-MINUS), set S to the substring of S from index 1.
+    let mut negative = false;
+    if let Some(c @ (b'+' | b'-')) = ascii(s.at(i)) {
+        negative = c == b'-';
+        i += 1;
+    }
+    // 7. Let stripPrefix be true.
+    let mut strip_prefix = true;
+    // 8. If R ≠ 0, then
+    //    a. If R < 2 or R > 36, return NaN.
+    //    b. If R ≠ 16, set stripPrefix to false.
+    // 9. Else,
+    //    a. Set R to 10.
+    let mut radix = match r {
+        0 => 10,
+        2..=36 => {
+            strip_prefix = r == 16;
+            r as u32
+        }
+        _ => return f64::NAN,
+    };
+    // 10. If stripPrefix is true, then
+    //     a. If the length of S is at least 2 and the first two code units of S are either
+    //        "0x" or "0X", then
+    //        i. Set S to the substring of S from index 2.
+    //        ii. Set R to 16.
+    if strip_prefix
+        && ascii(s.at(i)) == Some(b'0')
+        && matches!(ascii(s.at(i + 1)), Some(b'x' | b'X'))
+    {
+        i += 2;
+        radix = 16;
+    }
+    // 11. If S contains a code unit that is not a radix-R digit, let end be the index within
+    //     S of the first such code unit; otherwise, let end be the length of S.
+    // 12. Let Z be the substring of S from 0 to end.
+    let mut end = i;
+    while digit_value(s.at(end), radix).is_some() {
+        end += 1;
+    }
+    // 13. If Z is empty, return NaN.
+    if end == i {
+        return f64::NAN;
+    }
+    // Leading zeros add nothing (V8 skips them).
+    while i < end && s.at(i) == Some(u16::from(b'0')) {
+        i += 1;
+    }
+    // 14. Let mathInt be the integer value that is represented by Z in radix-R notation...
+    let digits = (i..end).map(|k| digit_value(s.at(k), radix).expect("a radix-R digit"));
+    let math_int = if radix == 10 {
+        // V8: strtod on the digits, correctly rounded.
+        let text: String = digits
+            .map(|d| char::from_digit(d, 10).expect("a decimal digit"))
+            .collect();
+        if text.is_empty() {
+            0.0
+        } else {
+            text.parse::<f64>().expect("decimal digits")
+        }
+    } else if radix.is_power_of_two() {
+        power_of_two_radix_value(digits, radix.trailing_zeros())
+    } else {
+        generic_radix_value(digits, radix)
+    };
+    // 15. If mathInt = 0, then
+    //     a. If sign = -1, return -0𝔽.
+    //     b. Return +0𝔽.
+    // 16. Return 𝔽(sign × mathInt).
+    if negative { -math_int } else { math_int }
+}
+
+/// The digits (most significant first, no leading zero) in radix `2^log2`, rounded to the
+/// nearest double, ties to even (V8 `InternalStringToIntDouble`).
+fn power_of_two_radix_value(mut digits: impl Iterator<Item = u32>, log2: u32) -> f64 {
+    let mut number: u64 = 0;
+    let mut exponent: i64 = 0;
+    while let Some(d) = digits.next() {
+        number = (number << log2) | u64::from(d);
+        let overflow = number >> 53;
+        if overflow == 0 {
+            continue;
+        }
+        // Past 53 bits: drop the low bits, and remember them and the rest of the digits for
+        // the rounding.
+        let dropped_count = 64 - overflow.leading_zeros();
+        let dropped_mask = (1u64 << dropped_count) - 1;
+        let dropped = number & dropped_mask;
+        number >>= dropped_count;
+        exponent = i64::from(dropped_count);
+        let mut zero_tail = true;
+        for d in digits.by_ref() {
+            zero_tail &= d == 0;
+            exponent += i64::from(log2);
+        }
+        let middle = 1u64 << (dropped_count - 1);
+        if dropped > middle || (dropped == middle && (number & 1 != 0 || !zero_tail)) {
+            number += 1;
+        }
+        // Rounding up may carry into bit 53.
+        if number & (1u64 << 53) != 0 {
+            exponent += 1;
+            number >>= 1;
+        }
+        break;
+    }
+    // `number` < 2^53 is exact as a double, and so is the scale 2^exponent (exponent ≤ 1023,
+    // a normal double); past that, `number` ≥ 2^52 makes the value overflow to Infinity.
+    if exponent > 1023 {
+        return f64::INFINITY;
+    }
+    number as f64 * f64::from_bits(((1023 + exponent) as u64) << 52)
+}
+
+/// The digits (most significant first) in a radix that is not 10 or a power of 2: V8's
+/// `HandleGenericCase` (src/numbers/conversions.cc). It reads parts whose multiplier stays
+/// below 2^32 / 36 in 32-bit integers, then folds each part into a double; above about 2^56
+/// the rounding errors add up, which §19.2.5 step 14 allows for these radices.
+///
+/// The fold `result * multiplier + part` is one fused multiply-add (`ep9_math::fma_exact`, the
+/// only FMA H36 allows): node v24.22.1 on arm64 gives the fused values. With a separate
+/// multiply and add, 103 of 1,400 long strings in radices 2-36 and 76 of
+/// 30,000 shorter random ones differed from node in the last digits; fused, none did. A fused
+/// fold also gives the same value on every ep9 target.
+fn generic_radix_value(digits: impl Iterator<Item = u32>, radix: u32) -> f64 {
+    const MAXIMUM_MULTIPLIER: u32 = u32::MAX / 36;
+    let mut result = 0.0f64;
+    let (mut part, mut multiplier) = (0u32, 1u32);
+    for d in digits {
+        let m = multiplier * radix;
+        if m > MAXIMUM_MULTIPLIER {
+            result = ep9_math::fma_exact(result, f64::from(multiplier), f64::from(part));
+            (part, multiplier) = (d, radix);
+        } else {
+            part = part * radix + d;
+            multiplier = m;
+        }
+    }
+    ep9_math::fma_exact(result, f64::from(multiplier), f64::from(part))
 }
 
 /// The biased exponent of `x` minus 1075 (V8 `Double::Exponent`): above 0 exactly when the
