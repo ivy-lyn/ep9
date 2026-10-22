@@ -1,49 +1,253 @@
-#![allow(dead_code)] // m3-stub
-//! Async functions, async arrows, async methods and `await` (ECMA-262 §15.8, §27.7).
-//!
-//! M3-P0 routing stub (P0-D7): every entry gives today's result (`unsupported: async
-//! functions`, `unsupported: await`), so no output changes. The M3-P1 ASYNC role owns this
-//! file whole and fills it: the generator opcodes 0x99-0x9b in a function with the `ASYNC`
-//! flag, and ABI 5 runtime ids 32-35 (`AsyncFunctionEnter`, `AsyncFunctionAwait`,
-//! `AsyncFunctionResolve`, `AsyncFunctionReject`).
+//! Async functions, async arrows, async methods and `await` (ECMA-262 §15.8, §27.7), in the
+//! V8 model: an async function body is a generator body (`generator.rs`) with the generator
+//! opcodes 0x99-0x9b, in a function with the `ASYNC` flag, and the ABI 5 runtime ids 32-35.
 //!
 //! ```text
-//! caller (site at b6109b3)                         entry here
-//! func.rs   hoist_functions (:342)                 async_closure        an async declaration
-//! func.rs   closure (:1198)                        async_closure        expression, method
-//! expr.rs   ArrowFunctionExpression (:307)         async_closure        an async arrow
-//! mod.rs    declare_eval_bindings (:812)           async_closure        sloppy eval function
-//! func.rs   gen_function (:1093)                   gen_async_function   the body
-//! func.rs   gen_arrow (:1113)                      gen_async_arrow      the body
-//! expr.rs   AwaitExpression (:315)                 await_expr           `await e`
+//! prologue:  LdaNewTarget -> r_obj          fp-3: undefined on the first call, the async
+//!            SwitchOnGeneratorState r_obj, T   function object in a resumed frame (FRAME 2)
+//!            (first call falls through; no switch when the body has no `await`)
+//!            AsyncFunctionEnter(closure, this) -> r_obj   the object and its promise (id 32)
+//!            try {                                        handler kind Promise
+//!              FunctionDeclarationInstantiation           a throw here rejects (§15.8.4)
+//!              body
+//!              return v:  AsyncFunctionResolve(r_obj, v) (id 34); Return
+//!            } catch (e) {
+//!              AsyncFunctionReject(r_obj, e) (id 35); Return
+//!            }
+//! await e:   AsyncFunctionAwait(r_obj, e) (id 33): subscribes the resume
+//!            SuspendGenerator r_obj, r0..rN, N, k    the caller gets the promise (the VM
+//!                                                    returns it for an async function)
+//!       T[k] ResumeGenerator r_obj, r0..rN, N        acc = the settled value
+//!            input = acc; SwitchOnSmi GeneratorGetResumeMode(r_obj)
+//!              throw (fall through): throw input     a rejection
+//!              next:  acc = input                    a fulfillment
 //! ```
+//!
+//! | # | Decision | Why |
+//! |---|---|---|
+//! | AF1 | One GENERATOR cell in async-function mode holds the frame state and the promise (`genf::ASYNC`); no new opcode | ABI 5 adds ids 32-35 only (P0-D5); V8 lowers async functions on the generator bytecodes too (`BuildAsyncFunction*`) |
+//! | AF2 | `AsyncFunctionEnter` runs before FunctionDeclarationInstantiation, inside no handler; the handler starts right after it | §15.8.4 EvaluateAsyncFunctionBody: the promise exists first, and an abrupt FunctionDeclarationInstantiation rejects it (test262 `dflt-params-abrupt`) |
+//! | AF3 | The suspend ids are only the `await` nodes (no initial suspend); the table length is counted before the body ([`AwaitCounter`]) | The body runs at once up to the first `await` (§27.7.5.1 AsyncFunctionStart) |
+//! | AF4 | `return v` resolves at the frame's real exit (after the finally blocks: `emit_return`), not at the `return` statement | §27.7.5.2 AsyncBlockStart: the completion of the whole body resolves the promise; `try { return 1 } finally { throw 2 }` rejects |
+//! | AF5 | `return` in an async function does not await `v`; the resolve function takes a thenable job | §27.7.5.2 step 3.f calls `promiseCapability.[[Resolve]]` (node: 3 ticks for a returned promise) |
+//! | AF6 | `await` at a module top level stays `unsupported: await` (M3-P3 IMPORT-TLA); an async generator stays "generator functions" (GEN6, M3-P2 ASYNCGEN) | Plan M3-P1 ASYNC task 1 |
 //!
 //! An async generator (`async function*`) goes to `async_gen.rs`, not here.
 
-use oxc_ast::ast::{ArrowFunctionExpression, AwaitExpression, Function};
+use ep9_bytecode::{HandlerKind, Register, RuntimeId};
+use oxc_ast::ast::{
+    ArrowFunctionExpression, AwaitExpression, FormalParameters, Function, PropertyDefinition,
+    StaticBlock,
+};
+use oxc_ast_visit::{Visit, walk};
+use oxc_semantic::ScopeFlags;
 use oxc_span::Span;
 
 use super::func::{FnGen, Gen};
+use super::generator::GenState;
+
+/// Resume mode next (`GeneratorGetResumeMode`, M2-P1-GEN-NUMBERS); a rejected `await`
+/// resumes with throw (2). An async function is never resumed with return.
+const RESUME_NEXT: i32 = 0;
+
+/// Counts the `await` nodes that the body itself evaluates (AF3), as `generator.rs`
+/// `SuspendCounter` counts `yield`: nested functions, arrows, class element bodies and static
+/// blocks are their own functions; class computed keys and heritage run in this function.
+struct AwaitCounter(usize);
+
+impl<'a> Visit<'a> for AwaitCounter {
+    fn visit_await_expression(&mut self, it: &AwaitExpression<'a>) {
+        self.0 += 1;
+        walk::walk_await_expression(self, it);
+    }
+
+    fn visit_function(&mut self, _it: &Function<'a>, _flags: ScopeFlags) {}
+
+    fn visit_arrow_function_expression(&mut self, _it: &ArrowFunctionExpression<'a>) {}
+
+    fn visit_property_definition(&mut self, it: &PropertyDefinition<'a>) {
+        if it.computed {
+            self.visit_property_key(&it.key);
+        }
+    }
+
+    fn visit_static_block(&mut self, _it: &StaticBlock<'a>) {}
+}
+
+/// The body of an async function: a function body or an arrow's concise body.
+enum Body<'a> {
+    Function(&'a Function<'a>),
+    Arrow(&'a ArrowFunctionExpression<'a>),
+}
 
 impl<'a> FnGen<'a, '_> {
     /// The check before a closure is made for an async function node that is not a generator
     /// (a declaration, an expression, a method, an arrow): `Ok` lets the caller make it.
-    pub(crate) fn async_closure(&self, span: Span) -> Gen {
-        self.unsupported("async functions", span)
+    pub(crate) fn async_closure(&self, _span: Span) -> Gen {
+        Ok(())
     }
 
     /// The body of an async function or async method (not a generator).
     pub(crate) fn gen_async_function(&mut self, node: &'a Function<'a>) -> Gen {
-        self.unsupported("async functions", node.span)
+        self.async_body(&node.params, node.span, Body::Function(node))
     }
 
     /// The body of an async arrow function.
     pub(crate) fn gen_async_arrow(&mut self, node: &'a ArrowFunctionExpression<'a>) -> Gen {
-        self.unsupported("async functions", node.span)
+        self.async_body(&node.params, node.span, Body::Arrow(node))
     }
 
-    /// `await e` (§27.7.5.3 Await), in an async function body or a module top level.
+    /// The async function object register of an async function body, else `None`.
+    pub(crate) fn async_object(&self) -> Option<Register> {
+        self.generator
+            .as_ref()
+            .and_then(|g| g.is_async.then_some(g.object))
+    }
+
+    /// The module comment's lowering: the prologue, `AsyncFunctionEnter`, then the
+    /// parameters and the body inside the handler that rejects the promise.
+    fn async_body(&mut self, params: &'a FormalParameters<'a>, span: Span, body: Body<'a>) -> Gen {
+        let mut counter = AwaitCounter(0);
+        match body {
+            Body::Function(f) => {
+                if let Some(b) = &f.body {
+                    counter.visit_function_body(b);
+                }
+            }
+            Body::Arrow(a) => counter.visit_arrow_function_body(&a.body),
+        }
+        let count =
+            u32::try_from(counter.0).map_err(|_| super::internal("too many await points"))?;
+
+        self.scope = self.info.outer_scope.unwrap_or(self.info.scope);
+        let object = self.temp();
+        let resume = if count > 0 {
+            // A resume jumps to its await point; the first call falls through.
+            self.b.lda_new_target().star(object);
+            let (table, resume) = self.b.jump_table(count);
+            self.b.switch_on_generator_state(object, table);
+            resume
+        } else {
+            Vec::new()
+        };
+        self.generator = Some(GenState {
+            object,
+            resume,
+            next: 0,
+            is_async: true,
+        });
+        // §15.8.4 step 1 (AF2): the async function object and its promise.
+        let m = self.mark();
+        let args = self.temps(2);
+        self.b.lda_current_function().star(args.get(0));
+        self.b.mov(Register::RECEIVER, args.get(1));
+        self.expr_pos(span.start);
+        self.runtime(RuntimeId::AsyncFunctionEnter, args);
+        self.release(m);
+        self.b.star(object);
+
+        // The handler that rejects the promise covers the parameters and the body.
+        let ctx = self.temp();
+        self.b.lda_current_context().star(ctx);
+        let (start, end, handler) = (self.b.new_label(), self.b.new_label(), self.b.new_label());
+        self.b.bind(start);
+        self.prologue_and_params(params)?;
+        match body {
+            Body::Function(f) => {
+                if let Some(b) = &f.body {
+                    self.statements(&b.statements)?;
+                }
+                // The implicit return reports the closing brace.
+                self.b.set_throw_position(Some(span.end.saturating_sub(1)));
+                self.b.lda_undefined();
+                self.emit_return();
+            }
+            Body::Arrow(a) => {
+                if let Some(expr) = a.get_expression() {
+                    self.b
+                        .set_statement_position(oxc_span::GetSpan::span(expr).start);
+                    self.expr(expr)?;
+                } else if let Some(b) = a.get_function_body() {
+                    self.statements(&b.statements)?;
+                    self.b.lda_undefined();
+                }
+                self.emit_return();
+            }
+        }
+        self.b.bind(end);
+        self.b
+            .add_handler(start, end, handler, ctx, HandlerKind::Promise);
+        self.b.bind(handler);
+        // A throw completion of the body (§27.7.5.2 step 3.g): reject, then leave the frame.
+        let m = self.mark();
+        let args = self.temps(2);
+        // Clear the pending message (V8): the exception is handled.
+        self.b
+            .star(args.get(1))
+            .lda_the_hole()
+            .set_pending_message();
+        self.b.mov(object, args.get(0));
+        self.runtime(RuntimeId::AsyncFunctionReject, args);
+        self.release(m);
+        self.b.return_();
+
+        let state = self.generator.take().expect("set above");
+        if state.next != state.resume.len() {
+            return Err(super::internal(format!(
+                "async function at {}: {} await points emitted, {} counted",
+                span.start,
+                state.next,
+                state.resume.len()
+            )));
+        }
+        Ok(())
+    }
+
+    /// The return of an async function body with the value in the accumulator (AF4, AF5):
+    /// resolve the promise, then return it (the first call's caller gets it).
+    pub(crate) fn async_return(&mut self, object: Register) {
+        let m = self.mark();
+        let args = self.temps(2);
+        self.b.star(args.get(1));
+        self.b.mov(object, args.get(0));
+        self.runtime(RuntimeId::AsyncFunctionResolve, args);
+        self.release(m);
+        self.b.return_();
+    }
+
+    /// `await e` (§27.7.5.3 Await), in an async function body. Leaves the settled value in
+    /// the accumulator, or throws the rejection reason. At a module top level (or anywhere
+    /// else outside an async function body) it stays unsupported (AF6).
     pub(crate) fn await_expr(&mut self, a: &'a AwaitExpression<'a>) -> Gen {
-        self.unsupported("await", a.span)
+        let Some(object) = self.async_object() else {
+            return self.unsupported("await", a.span);
+        };
+        self.expr(&a.argument)?;
+        let at = a.span.start;
+        let m = self.mark();
+        let args = self.temps(2);
+        self.b.star(args.get(1));
+        self.b.mov(object, args.get(0));
+        self.expr_pos(at);
+        self.runtime(RuntimeId::AsyncFunctionAwait, args);
+        self.release(m);
+        let m = self.mark();
+        // The highest live register + 1: every register below `input` is saved.
+        let input = self.temp();
+        let live = input.local_index().expect("a local");
+        self.suspend(live, at)?;
+        self.b.star(input);
+        self.runtime_with(RuntimeId::GeneratorGetResumeMode, &[object]);
+        let (table, cases) = self.b.jump_table(1);
+        self.b.switch_on_smi(table, RESUME_NEXT);
+        // Throw (the fall-through): a rejected promise.
+        self.b.ldar(input);
+        self.expr_pos(at);
+        self.b.throw();
+        // Next: a fulfilled promise.
+        self.b.bind(cases[0]);
+        self.b.ldar(input);
+        self.release(m);
+        Ok(())
     }
 }

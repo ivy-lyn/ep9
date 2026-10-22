@@ -540,6 +540,28 @@ const CASES: &[(&str, Mode, &str)] = &[
         Strict,
         "function* g(it) { var r = yield* it; return r; }",
     ),
+    // ---- async functions (M3-P1 ASYNC, async_fn.rs) ----
+    (
+        "async-basic",
+        Strict,
+        "async function f(a) { var b = await a; return b + 1; }",
+    ),
+    ("async-no-await", Strict, "async function f() { return 1; }"),
+    (
+        "async-arrow",
+        Strict,
+        "var f = async (a, b = 2) => a + await b; var g = async () => { await 0; };",
+    ),
+    (
+        "async-try-finally",
+        Strict,
+        "async function f(p) { try { return await p; } catch (e) { await e; } finally { await 0; } }",
+    ),
+    (
+        "async-method",
+        Strict,
+        "var o = { async m() { return await this.x; } }; class C { static async #s() { await 1; } async m(x) { return super.m(await x); } }",
+    ),
     // ---- ABI 5 mapped-parameter list and PARAMETER_ENV (P0-D16, P0-D5) ----
     (
         "fn-mapped-arguments",
@@ -820,11 +842,12 @@ fn unsupported_constructs_name_the_feature() {
         ("class A { static async *m() {} }", "generator functions"),
         ("class A { accessor x = 1 }", "class auto-accessors"),
         ("class A { accessor #x }", "class auto-accessors"),
-        ("async function f() {}", "async functions"),
-        ("(async () => 1)", "async functions"),
-        ("class A { async #m() {} }", "async functions"),
         ("class A { async *#m() {} }", "generator functions"),
-        ("class A { x = async () => 1 }", "async functions"),
+        // `for await` and `await using` in an async function stay unsupported (M3-P2).
+        (
+            "async function f(y) { for await (const x of y) ; }",
+            "for await",
+        ),
         ("import('x')", "import()"),
     ] {
         match compile_script(src, Strictness::Sloppy) {
@@ -839,6 +862,37 @@ fn unsupported_constructs_name_the_feature() {
     match compile_module("for await (const x of y) ;") {
         Err(CodegenError::Unsupported(u)) => assert_eq!(u.feature, "for await"),
         other => panic!("{other:?}"),
+    }
+    // Top-level await stays unsupported (M3-P3 IMPORT-TLA); `await` in a nested async
+    // function of a module compiles.
+    match compile_module("await 1;") {
+        Err(CodegenError::Unsupported(u)) => assert_eq!(u.feature, "await"),
+        other => panic!("{other:?}"),
+    }
+    compile_module("async function f() { await 1; }").expect("an async function in a module");
+}
+
+/// Async functions in every form compile (M3-P1 ASYNC): declarations, expressions, arrows,
+/// object and class methods (static and private), a sloppy direct eval's declaration, and
+/// `await` in nested positions; the suspend count matches the `await` nodes.
+#[test]
+fn async_functions_compile_in_every_form() {
+    for src in [
+        "async function f() {}",
+        "(async function () { await 1; })",
+        "(async () => 1)",
+        "(async x => await x)",
+        "({ async m() { await 1; } })",
+        "class A { async m() {} static async s() { await 0; } async #p() { await 2; } }",
+        "class A { x = async () => 1 }",
+        "async function f(a = 1, ...r) { return [await a, ...r]; }",
+        "async function f() { await (await 1); for (var i = 0; i < 2; i++) await i; }",
+        "async function f() { class C { [await 1]() {} } return C; }",
+        "async function f() { function g() { var await = 1; } (async () => await 2)(); }",
+        "eval('async function f() { await 1; }')",
+        "async function f() { label: { try { await 1; break label; } finally { await 2; } } }",
+    ] {
+        compile_script(src, Strictness::Sloppy).unwrap_or_else(|e| panic!("{src}: {e:?}"));
     }
 }
 

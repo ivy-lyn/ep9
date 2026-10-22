@@ -416,11 +416,11 @@ impl<'a, 's> FnGen<'a, 's> {
         }
     }
 
-    /// `acc = new.target` from the frame. In a generator body `new.target` is undefined (a
-    /// generator is never constructed), and fp-3 of a resumed frame holds the generator object
-    /// (FRAME 2), so the body loads undefined instead.
+    /// `acc = new.target` from the frame. In a generator or async function body `new.target`
+    /// is undefined (neither is ever constructed), and fp-3 of a resumed frame holds the
+    /// generator object (FRAME 2), so the body loads undefined instead.
     fn load_new_target(&mut self) {
-        if self.info.is_generator {
+        if self.info.is_generator || self.info.is_async {
             self.b.lda_undefined();
         } else {
             self.b.lda_new_target();
@@ -825,8 +825,12 @@ impl<'a, 's> FnGen<'a, 's> {
     }
 
     /// Return the accumulator from this function (derived constructors: `undefined` returns
-    /// the checked `this`).
+    /// the checked `this`; an async function resolves its promise first, `async_fn.rs` AF4).
     pub(crate) fn emit_return(&mut self) {
+        if let Some(object) = self.async_object() {
+            self.async_return(object);
+            return;
+        }
         if self.info.kind.is_derived_constructor() {
             let this_check = self.b.new_label();
             self.b.jump_if_undefined(this_check);

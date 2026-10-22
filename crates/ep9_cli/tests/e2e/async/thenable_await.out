@@ -1,0 +1,6 @@
+before
+sync end
+then called
+job 1
+from thenable
+job 2

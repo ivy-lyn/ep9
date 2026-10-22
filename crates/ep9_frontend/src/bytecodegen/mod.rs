@@ -31,7 +31,7 @@
 //! | G8 | TDZ: a binding gets an explicit hole store at scope entry only if some reference checks it (or a dynamic lookup may reach it). Globals and module cells: the VM checks | Fewer stores; V8 rule |
 //! | G9 | Runtime calls for what has no opcode: global init, direct eval, classes, super, accessors, object spread, `__proto__` (ABI 2 ids 6-18) | Opcode table unchanged |
 //! | G10 | A position entry before every instruction that may throw; statement positions at every statement | M0 exit 7 (`throw` prints file:line:col) |
-//! | G11 | Unsupported constructs fail the whole unit with [`CodegenError::Unsupported`] (async functions and async generators, class auto-accessors, decorators, ...) | No silent wrong code |
+//! | G11 | Unsupported constructs fail the whole unit with [`CodegenError::Unsupported`] (async generators, `for await`, top-level `await`, class auto-accessors, decorators, ...) | No silent wrong code |
 
 use std::collections::VecDeque;
 use std::fmt;
