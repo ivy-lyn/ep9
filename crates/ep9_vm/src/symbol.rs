@@ -31,6 +31,9 @@
 //!   name it.
 //! - The registry is strong: a registered symbol lives as long as the isolate, because
 //!   `Symbol.for` must give the same symbol again (§20.4.2.2). Its keys are atoms.
+//! - Realms (H22-Q3): the well-known symbols, the registry and the class-fields key are one per
+//!   isolate, shared by every realm. `%Symbol.prototype%` is per realm: the root here holds the
+//!   current realm's, and the realm switch loads it ([`set_prototype`]).
 
 use core::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -397,10 +400,29 @@ pub(crate) fn well_known(rt: &Runtime, w: WellKnownSymbol) -> u64 {
     rt.symbols.roots.well_known[w as usize].get()
 }
 
-/// `%Symbol.prototype%`: the prototype of Symbol wrapper objects (undefined before
-/// [`install`]).
+/// `%Symbol.prototype%` of the current realm: the prototype of Symbol wrapper objects
+/// (undefined before [`install`]).
 pub(crate) fn prototype(rt: &Runtime) -> u64 {
     rt.symbols.roots.prototype.get()
+}
+
+/// Makes `v` the current realm's `%Symbol.prototype%` (H22-Q3: the realm switch and realm
+/// creation in `realm.rs` load it from the REALM record). Not a GC point.
+pub(crate) fn set_prototype(rt: &Runtime, v: u64) {
+    rt.symbols.roots.prototype.set(v);
+}
+
+/// `%Symbol.prototype%` of a realm made after the first (`realm::create`): an ordinary object
+/// whose prototype is the current `%Object.prototype%` (§20.4.3). The well-known symbols, the
+/// registry and the class-fields key stay one per isolate (§6.1.5.1: well-known symbols are
+/// shared by all realms; §20.4.2.2: the registry is global to the agent). GC point.
+pub(crate) fn install_prototype(rt: &Runtime) {
+    debug_assert!(
+        rt.symbols.roots.prototype.get() == UNDEFINED,
+        "a new realm starts with no %Symbol.prototype%"
+    );
+    let proto = object::new_object(rt, rt.root(Root::ObjectPrototype));
+    rt.symbols.roots.prototype.set(proto);
 }
 
 /// The class-fields key: the VM-internal private name under which a class constructor holds

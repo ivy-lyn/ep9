@@ -8,6 +8,13 @@
 //! the caller's callee register, so everything its chain holds stays rooted until the frame
 //! push.
 //!
+//! Realms (H22-Q3): a bytecode callee of another realm does not get a frame here. It runs
+//! nested through `call::call_function_object` (or `call::construct_function_object`), which
+//! switches to its realm and back (`realm::enter_realm_of`, `realm::leave`): one Rust level per
+//! cross-realm call, and the dispatch continues at the next instruction with its result, as
+//! for a host callee. A host callee switches in `call::call_host`. So a frame pushed here
+//! always runs in the caller's realm, and no return path needs a realm check.
+//!
 //! Spike B (feature `spike-native` only, `native.rs`): a call of a FUNCTION with a Baseline or
 //! AotBaseline slot (no construct, no spread, not host, not a class constructor) is entered
 //! natively. The default build has no such branch. Two places enter it:
@@ -70,6 +77,7 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
     if !s.construct
         && !s.spread
         && let Some(fi) = crate::native::native_callee(s.callee)
+        && object::function_realm(s.callee) == cx.realm
     {
         return call_native(cx, fp, s, fi);
     }
@@ -135,6 +143,19 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
                 new_target,
                 fp,
                 s.next_pc,
+            )?;
+            cx.out_fp = fp;
+            cx.out_pc = s.next_pc;
+            return Ok(r);
+        }
+        if object::function_realm(callee) != cx.realm {
+            // A constructor of another realm: [[Construct]] from Rust (one nested run).
+            let r = call::construct_function_object(
+                cx,
+                callee,
+                argc,
+                |i| args[i as usize],
+                new_target,
             )?;
             cx.out_fp = fp;
             cx.out_pc = s.next_pc;
@@ -209,6 +230,16 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
             fp,
             s.next_pc,
         )?;
+        cx.out_fp = fp;
+        cx.out_pc = s.next_pc;
+        return Ok(r);
+    }
+    if object::function_realm(callee) != cx.realm {
+        // A function of another realm: a call from Rust in its realm (one nested run; its
+        // class-constructor TypeError is that realm's, §10.2.1 step 2). The arguments stay
+        // rooted in the caller's registers (and `args` for a spread or bound call, as below).
+        let r =
+            call::call_function_object(cx, callee, this, argc, |i| args[i as usize], UNDEFINED)?;
         cx.out_fp = fp;
         cx.out_pc = s.next_pc;
         return Ok(r);
@@ -349,6 +380,10 @@ unsafe fn native_entry(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> Option<Res<u
     // Operand 0 is the callee in all 9.
     let callee = rd(reg(0));
     let fi = crate::native::native_callee(callee)?;
+    // A callee of another realm takes `do_call` (its realm switch).
+    if object::function_realm(callee) != cx.realm {
+        return None;
+    }
     #[cfg(test)]
     crate::native::T0_ENTRY_HITS.with(|h| h.set(h.get() + 1));
     // `go` once per shape, each with its own argument reader: no slot list and no match per

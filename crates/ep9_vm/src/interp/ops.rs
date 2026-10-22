@@ -268,8 +268,9 @@ fn jump_if(st: &St<'_>, c: bool, t: Fwd) -> Done {
 
 /// The JS→JS call fast path (H14): a bytecode callee gets its frame right above the caller's
 /// registers and the dispatch continues at its first instruction. No Rust recursion. Anything
-/// else (host callee, class constructor, a sloppy callee with a primitive receiver, interrupt
-/// due, the call that makes the callee's feedback vector, VM stack full) takes the cold path.
+/// else (host callee, class constructor, a callee of another realm, a sloppy callee with a
+/// primitive receiver, interrupt due, the call that makes the callee's feedback vector, VM
+/// stack full) takes the cold path.
 ///
 /// While the callee has no feedback vector, a call that pushes its frame here counts in
 /// `invocations`; the call that reaches `feedback_threshold` goes cold, and `slow::call`
@@ -288,6 +289,10 @@ fn call_fast(
     }
     let fi = object::function_info(callee);
     if fi.slot.kind_byte() != DispatchKind::Interp as u8 || fi.is_class_constructor() {
+        return Flow::Cold;
+    }
+    // A callee of another realm: `slow::call` runs it in its realm (H22-Q3).
+    if object::function_realm(callee) != st.cx.realm {
         return Flow::Cold;
     }
     st.cx.budget -= 1;
@@ -357,6 +362,10 @@ fn call_fast(
     arg: impl Fn(&St<'_>, u32) -> u64,
 ) -> Flow {
     if !object::is_function(callee) {
+        return Flow::Cold;
+    }
+    // A callee of another realm: `slow::call` runs it in its realm (H22-Q3).
+    if object::function_realm(callee) != st.cx.realm {
         return Flow::Cold;
     }
     let fi = object::function_info(callee);
