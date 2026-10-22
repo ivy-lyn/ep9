@@ -3,7 +3,8 @@
 # Exit 0 only if every step that runs passes.
 #
 #   gate.sh structural   (plan-v4 P2-SPIKE-B task 4; the SPIKEB(structural) acceptance)
-#     1  cargo test: the spike's unit tests (plan, both generators, refusals)
+#     1  cargo test: the spike's unit tests (plan, both generators, refusals) and, on
+#        Windows, tests/win64_unwind.rs
 #     2  release build (panic = "abort"): `spike-b structural all`, which prints the opcode
 #        list of each JITed function, then runs checks (a)-(h)
 #     3  debug build (panic = "unwind"): `spike-b structural h`, the abort at the

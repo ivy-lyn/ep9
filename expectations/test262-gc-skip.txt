@@ -1,7 +1,8 @@
 # ep9-test262 exec --gc-stress: tests that are neither run nor counted (--skip-list).
 # Under `--gc-stress 1 --timeout 60` (a collection before every allocation) each one runs past
-# the timeout, an infrastructure error (exit 2). All but recursion.js also fail without
-# GC-stress and are listed in every expectations/test262.<triple>.jit.txt (9 of the 10):
+# the timeout, an infrastructure error (exit 2). All but recursion.js and
+# string-upper-lower-mapping.js also fail without GC-stress and are listed in every
+# expectations/test262.<triple>.jit.txt (8 of the 10):
 # - S7.4_A5.js and S7.4_A6.js: each evals one comment per UTF-16 code unit (since P3, eval
 #   exists) and fails at the first lone surrogate, 0xD800 (EVM-SURROGATE; the shim is M3).
 #   3 s each without GC-stress; alone under it 289 s (S7.4_A5) and 152 s (S7.4_A6), mac a64;
@@ -9,14 +10,15 @@
 #   recursion since P2-LOOKUP (with statements): RangeError in 0.1 s without GC-stress, more
 #   than 400 s alone under it. tco-non-eval-function-dynamic.js reaches it since P3 (direct eval
 #   through `var eval = f`): RangeError in 1 s without GC-stress, 617 s alone under it, mac a64;
-# - string-upper-lower-mapping.js (65,000 lines): TypeError, undefined is not a function
-#   (char.toUpperCase);
 # - ownkeys-linear.js: ReferenceError, no `Proxy` yet. Alone under GC-stress it takes 68 s
 #   (2 runs, mac a64 at load 9) and 101 s at load 18, so it can pass the timeout on a busy host
 #   (a slow test is a flaky gate).
 # recursion.js passes without GC-stress, and passes alone under it in about 450-490 s. It
 # recurses through generator resume (about 24,000 deep) until the native-stack RangeError, and
 # every forced collection scans that deep stack (M2-P1-GEN-GCSKIP).
+# string-upper-lower-mapping.js (65,000 lines) passes without GC-stress since P4-B-STRING
+# (0.3 s). Under GC-stress it runs past the timeout: killed after 1,898 s alone at host load
+# 20-45, mac a64.
 # Measured at test262 d53ebc8b on aarch64-apple-darwin. Paths are relative to the test262 root.
 test/language/comments/S7.4_A5.js
 test/language/comments/S7.4_A6.js
