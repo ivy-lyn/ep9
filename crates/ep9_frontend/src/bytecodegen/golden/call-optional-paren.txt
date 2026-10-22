@@ -1,6 +1,6 @@
 # call-optional-paren: script (sloppy)
 # | var o; (o?.m)(); (o?.a[0])(1); (o?.m)`x`; (o?.m)?.();
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=53 source=embedded hints=none
 source_hash=31c5e5a48f9b36998a5fd6f078354531c0814eb9b125906fee51443b15b1e023
 strings (4):

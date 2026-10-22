@@ -267,6 +267,7 @@ impl<'a> Builder<'a> {
             context_slots: Vec::new(),
             needs_context: false,
             sloppy_eval: false,
+            parameter_env: false,
             contains_eval: false,
             per_iteration: PerIteration::No,
             hoisted_functions: Vec::new(),

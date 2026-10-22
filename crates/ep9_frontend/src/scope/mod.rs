@@ -346,6 +346,11 @@ pub struct ScopeInfo {
     /// A sloppy direct eval can add `var` bindings to this scope at run time. In a function
     /// var scope, binding 0 and context slot 0 are then [`BindingKind::EvalExt`].
     pub sloppy_eval: bool,
+    /// (ABI 5 `ScopeFlags::PARAMETER_ENV`.) The function scope of a sloppy function with
+    /// parameter expressions, whose `sloppy_eval` comes from a direct eval in the parameter
+    /// list: ECMA-262 puts the parameters in an environment of their own between that eval
+    /// and the variable environment (FunctionDeclarationInstantiation step 20).
+    pub parameter_env: bool,
     /// A direct eval in this scope or an inner one (also in inner functions).
     pub contains_eval: bool,
     /// Loop head per-iteration bindings.
@@ -845,6 +850,9 @@ impl fmt::Display for ScopeAnalysis {
             }
             if scope.sloppy_eval {
                 write!(f, " sloppy-eval")?;
+            }
+            if scope.parameter_env {
+                write!(f, " parameter-env")?;
             }
             writeln!(f)?;
             for &b in &scope.bindings {

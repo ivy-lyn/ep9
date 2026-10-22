@@ -1,6 +1,6 @@
 # var-annex-b: script (sloppy)
 # | function f() { { function g() {} } return g; } if (true) function h() {}
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=72 source=embedded hints=none
 source_hash=5187e853e2fc59ff1451b36b3aae4664a4e0df90629248b1e53eda0bb1364291
 strings (3):

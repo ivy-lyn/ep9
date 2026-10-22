@@ -1,6 +1,6 @@
 # var-with-call: script (sloppy)
 # | var o = {f() {}}; with (o) { f(1); (f)(); }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=43 source=embedded hints=none
 source_hash=dda7a193f24784137b14fb1ddb33d72b509d1d5ff0592e6878ef19a1bd1b9135
 strings (2):

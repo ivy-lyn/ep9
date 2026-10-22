@@ -1,6 +1,6 @@
 # var-arguments: script (sloppy)
 # | function f(a) { a = 1; return arguments; } function g(a) { 'use strict'; return arguments[0]; }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=95 source=embedded hints=none
 source_hash=c0b067f53f7c06d46974d19346c11e0f8450cdb19248ab0dd0ae340a3f244219
 strings (3):
@@ -66,6 +66,7 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[simple-params] p
       9 E 0 (1:1)
      12 S 16 (1:17)
      16 S 23 (1:24)
+  mapped parameters (1): scope=scope1 slots=[0]
 function f2 normal name="g" parent=f0 outer_scope=scope0 flags=[strict,simple-params] params=1 length=1 regs=1 range=43..95
   code (10 bytes):
       0 E> CreateUnmappedArguments                      ; 7b

@@ -474,6 +474,12 @@ const CASES: &[(&str, Mode, &str)] = &[
         Sloppy,
         "class A { #m() {} get #a() { return 1; } set #a(v) {} get #g() {} t(o, v) { o.#a = v; o.#a += 1; o.#a++; [o.#a] = [v]; o.#m = v; return o.#g = v; } }",
     ),
+    // ABI 5 id 44: a class under a computed key is named by SetFunctionName (M2-P2-C2-DEFER).
+    (
+        "class-computed-name",
+        Sloppy,
+        "var k = Symbol('s'); var o = { [k]: class {}, ['x' + 1]: class { static y = this.name; } };",
+    ),
     (
         "class-private-generator",
         Sloppy,
@@ -500,6 +506,14 @@ const CASES: &[(&str, Mode, &str)] = &[
         Module,
         "let x = 1; export const y = () => x; x = 2;",
     ),
+    // ABI 5 section 5: requests (deduplicated, attributes sorted), imports, local exports,
+    // indirect exports (a re-exported import, `export { a } from`, `export * as`), star
+    // exports.
+    (
+        "module-records",
+        Module,
+        "import d, { a as b, 'x-y' as c } from './m.js';\nimport * as ns from './m.js';\nimport './side.js';\nexport { b as bb, ns, v as 'v-v' };\nexport { q, default as r } from './q.js' with { type: 'json', mode: 'x' };\nexport * from './s.js';\nexport * as all from './m.js';\nexport var v = 1, { w } = {};\nexport default function () {}",
+    ),
     // ---- generators (M2-P1-GEN-CG) ----
     (
         "gen-basic",
@@ -525,6 +539,17 @@ const CASES: &[(&str, Mode, &str)] = &[
         "gen-yield-star",
         Strict,
         "function* g(it) { var r = yield* it; return r; }",
+    ),
+    // ---- ABI 5 mapped-parameter list and PARAMETER_ENV (P0-D16, P0-D5) ----
+    (
+        "fn-mapped-arguments",
+        Sloppy,
+        "function f(a, b, a) { arguments; return () => b; } function g(x, y) { 'use strict'; arguments; }",
+    ),
+    (
+        "fn-params-eval",
+        Sloppy,
+        "function f(a = 1, b = eval('var a = 2')) { return a; } function g({ a }) { eval('var a'); }",
     ),
     // ---- strict and misc ----
     (
@@ -767,7 +792,7 @@ fn entry_points() {
 #[test]
 fn unsupported_constructs_name_the_feature() {
     for (src, feature) in [
-        // Async generators keep the "generator functions" text until month 3 (generator.rs).
+        // Async generators keep the "generator functions" text until M3-P2 (async_gen.rs).
         ("async function* g() {}", "generator functions"),
         ("(async function* () {})", "generator functions"),
         ("({ async *m() {} })", "generator functions"),

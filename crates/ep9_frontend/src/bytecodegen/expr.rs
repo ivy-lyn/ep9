@@ -304,7 +304,7 @@ impl<'a, 's> FnGen<'a, 's> {
             Expression::ArrayExpression(a) => self.array(a),
             Expression::ArrowFunctionExpression(f) => {
                 if f.r#async {
-                    return self.unsupported("async functions", f.span);
+                    self.async_closure(f.span)?;
                 }
                 let id = self.function_id(f.span)?;
                 self.jobs.push(super::Job::Arrow { node: f, id, name });
@@ -312,7 +312,7 @@ impl<'a, 's> FnGen<'a, 's> {
                 Ok(())
             }
             Expression::AssignmentExpression(a) => self.assignment(a, true),
-            Expression::AwaitExpression(a) => self.unsupported("await", a.span),
+            Expression::AwaitExpression(a) => self.await_expr(a),
             Expression::BinaryExpression(b) => self.binary(b),
             Expression::CallExpression(c) => self.call(c),
             Expression::ChainExpression(c) => self.chain(c),
@@ -333,7 +333,7 @@ impl<'a, 's> FnGen<'a, 's> {
                 self.create_closure(id);
                 Ok(())
             }
-            Expression::ImportExpression(i) => self.unsupported("import()", i.span),
+            Expression::ImportExpression(i) => self.import_call(i),
             Expression::LogicalExpression(l) => self.logical(l),
             Expression::NewExpression(n) => self.new_expr(n),
             Expression::ObjectExpression(o) => self.object(o),
@@ -355,7 +355,7 @@ impl<'a, 's> FnGen<'a, 's> {
             Expression::UpdateExpression(u) => self.update(u, true),
             Expression::YieldExpression(y) => self.yield_expr(y),
             Expression::PrivateInExpression(p) => self.private_in(p),
-            Expression::ImportMeta(m) => self.unsupported("import.meta", m.span),
+            Expression::ImportMeta(m) => self.import_meta(m),
             Expression::NewTarget(t) => {
                 let r = self.implicit(t.span.start, ImplicitRef::NewTarget)?;
                 self.load_ref(r, false);

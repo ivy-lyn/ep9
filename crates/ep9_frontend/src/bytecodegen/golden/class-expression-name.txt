@@ -1,6 +1,6 @@
 # class-expression-name: script (sloppy)
 # | var C = class Inner { m() { return Inner; } }; var D = class { static n() { return D; } };
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=90 source=embedded hints=none
 source_hash=eaa1e6167d41599145f84fcf54183ef67f0712162839c1e33beac72b778b8faf
 strings (5):

@@ -1,6 +1,6 @@
 # lit-array: script (sloppy)
 # | var x, y; []; [1, 2, 3]; [x, 1, y]; [1, , 2]; [[1], [2, 3]]; [...x]; [1, ...x, y, , ];
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=86 source=embedded hints=none
 source_hash=e1c7afa25fdf0bd0226a27fd06ecac44babb7d3cd7bc88855ea6defde5698ec0
 strings (6):

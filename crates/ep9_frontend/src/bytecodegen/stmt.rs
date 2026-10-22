@@ -5,10 +5,10 @@ use ep9_bytecode::{
     FeedbackSlotKind, HandlerKind, Label, Register, RegisterList, RuntimeId, UnitString,
 };
 use oxc_ast::ast::{
-    BindingPattern, BlockStatement, CatchClause, Class, DoWhileStatement,
-    ExportDefaultDeclarationKind, ForInStatement, ForOfStatement, ForStatement, ForStatementInit,
-    ForStatementLeft, Function, IfStatement, Statement, SwitchStatement, TryStatement,
-    VariableDeclaration, VariableDeclarationKind, WhileStatement, WithStatement,
+    BindingPattern, BlockStatement, CatchClause, Class, DoWhileStatement, ForInStatement,
+    ForOfStatement, ForStatement, ForStatementInit, ForStatementLeft, Function, IfStatement,
+    Statement, SwitchStatement, TryStatement, VariableDeclaration, VariableDeclarationKind,
+    WhileStatement, WithStatement,
 };
 use oxc_span::GetSpan;
 
@@ -127,12 +127,13 @@ impl<'a> FnGen<'a, '_> {
             Statement::VariableDeclaration(v) => self.var_decl(v),
             Statement::FunctionDeclaration(f) => self.function_declaration(f),
             Statement::ClassDeclaration(c) => self.class_declaration(c, None),
+            // Module items: bytecodegen/module.rs (routing stub, P0-D7; MODULE fills it).
             Statement::ImportDeclaration(_)
             | Statement::ExportAllDeclaration(_)
-            | Statement::ExportNamedDeclaration(_) => Ok(()),
+            | Statement::ExportNamedDeclaration(_)
+            | Statement::ExportFromDeclaration(_) => self.module_declaration(s),
             Statement::ExportDeclaration(e) => self.export_declaration(e),
             Statement::ExportDefaultDeclaration(e) => self.export_default(e),
-            Statement::ExportFromDeclaration(_) => Ok(()),
             Statement::TSTypeAliasDeclaration(_)
             | Statement::TSInterfaceDeclaration(_)
             | Statement::TSEnumDeclaration(_)
@@ -246,7 +247,7 @@ impl<'a> FnGen<'a, '_> {
         Ok(())
     }
 
-    fn function_declaration(&mut self, f: &'a Function<'a>) -> Gen {
+    pub(crate) fn function_declaration(&mut self, f: &'a Function<'a>) -> Gen {
         let name = f.id.as_ref().map_or_else(
             || UnitString::new("default"),
             |id| UnitString::new(id.name.as_str()),
@@ -277,49 +278,11 @@ impl<'a> FnGen<'a, '_> {
         }
     }
 
-    fn export_declaration(&mut self, e: &'a oxc_ast::ast::ExportDeclaration<'a>) -> Gen {
-        use oxc_ast::ast::Declaration as D;
-        match &e.declaration {
-            D::VariableDeclaration(v) => self.var_decl(v),
-            D::FunctionDeclaration(f) => self.function_declaration(f),
-            D::ClassDeclaration(c) => self.class_declaration(c, None),
-            _ => self.unsupported("TypeScript declarations", e.span),
-        }
-    }
-
-    fn export_default(&mut self, e: &'a oxc_ast::ast::ExportDefaultDeclaration<'a>) -> Gen {
-        match &e.declaration {
-            ExportDefaultDeclarationKind::FunctionDeclaration(f) => self.function_declaration(f),
-            ExportDefaultDeclarationKind::ClassDeclaration(c) => {
-                let default = c.id.is_none().then(|| self.default_binding()).transpose()?;
-                self.class_declaration(c, default)
-            }
-            ExportDefaultDeclarationKind::TSInterfaceDeclaration(_) => Ok(()),
-            other => {
-                let Some(expr) = other.as_expression() else {
-                    return self.unsupported("export default form", e.span);
-                };
-                self.stmt_pos(e.span);
-                self.named_value(expr, Some(UnitString::new("default")))?;
-                let b = self.default_binding()?;
-                self.store_binding_init(b);
-                Ok(())
-            }
-        }
-    }
-
-    /// The `*default*` binding of a module.
-    fn default_binding(&self) -> Gen<BindingId> {
-        self.sa
-            .scope(ScopeId(0))
-            .bindings
-            .iter()
-            .copied()
-            .find(|&b| self.sa.name(self.binding(b).name) == "*default*")
-            .ok_or_else(|| super::internal("no *default* binding"))
-    }
-
-    fn class_declaration(&mut self, c: &'a Class<'a>, binding: Option<BindingId>) -> Gen {
+    pub(crate) fn class_declaration(
+        &mut self,
+        c: &'a Class<'a>,
+        binding: Option<BindingId>,
+    ) -> Gen {
         self.stmt_pos(c.span);
         let name = c.id.as_ref().map_or_else(
             || UnitString::new("default"),
@@ -569,7 +532,7 @@ impl<'a> FnGen<'a, '_> {
 
     fn for_of(&mut self, f: &'a ForOfStatement<'a>, labels: Vec<&'a str>) -> Gen {
         if f.r#await {
-            return self.unsupported("for await", f.span);
+            return self.for_await_of(f, labels);
         }
         self.stmt_pos(f.span);
         let scope = self.scope_of(f.scope_id.get(), f.span)?;

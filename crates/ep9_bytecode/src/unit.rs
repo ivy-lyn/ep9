@@ -9,8 +9,12 @@
 //!   functions  index = stable function id (preorder); function 0 is the entry function
 //!     each: kind, flags, name, parent, outer scope, source range, parameter/register counts,
 //!           bytecode, constant pool, feedback slot kinds, handler table, position table
+//!           (ABI 5) the mapped-parameter list of a sloppy function with a mapped arguments
+//!           object
 //!   source     optional decoded source text (always present in AOT units, H5)
 //!   hints      optional hint section (format owned by ep9_facts, H37)
+//!   modules    (ABI 5) the module records of a module unit (§16.2.1.6): requested modules,
+//!              import entries, local / indirect / star export entries, has-TLA
 //! ```
 
 use crate::feedback::FeedbackSlotKind;
@@ -29,7 +33,8 @@ use crate::string::UnitString;
 /// | 2 | Runtime ids 6-18 for BytecodeGen v0; `DefineClass` takes 2 arguments; a handler target is at or after its range end (added before v2 was released, so no bump) |
 /// | 3 | Generator opcodes 0x99-0x9b valid in generator and async functions (flag `Generator`, no longer `Reserved`); `CallRuntimeForPair` 0x9d with operand kind `RegOutPair`; `DefineKeyedOwnProperty` flag bit 1 (private add); runtime ids 19-28 and the `pair` mark in the runtime table |
 /// | 4 | Runtime ids 29-31: a dynamic reference resolved before the right-hand side (`ResolveLookupSlot`, `LoadLookupSlotResolved`, `StoreLookupSlotResolved`; M2-P2 review fix L1); `VariableMode::FunctionName` = 5 (M2-P2 review fix L4); a use-site `strict` argument for ids 26 and 30 (`LoadLookupSlotForCall` 2, `LoadLookupSlotResolved` 3; M2-P2 review fix L6) |
-pub const ABI_VERSION: u32 = 4;
+/// | 5 | Runtime ids 32-47 (async functions 32-35, async generators 36-41, modules 42-43, `SetFunctionName` 44, `ThrowTypeError` 45, Annex B.3.2.3 eval functions 46-47); `ScopeFlags::PARAMETER_ENV` (bit 3); the module records section (section 5, header 168 bytes); the mapped-parameter list per function (M3-P0 P0-LANG4) |
+pub const ABI_VERSION: u32 = 5;
 
 /// The ECMA-262 code kind of the unit's entry function.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -295,8 +300,19 @@ impl ScopeFlags {
     pub const CALLS_SLOPPY_EVAL: ScopeFlags = ScopeFlags(1 << 1);
     /// Strict mode scope.
     pub const STRICT: ScopeFlags = ScopeFlags(1 << 2);
+    /// (ABI 5.) The var scope of a sloppy function with parameter expressions holds a direct
+    /// eval in its parameter list (`function f(a = 1, b = eval('var a = 2')) {}`). Then
+    /// FunctionDeclarationInstantiation step 20 (ECMA-262 §10.2.11) puts the parameters in an
+    /// environment of their own between the eval code and the variable environment, so
+    /// EvalDeclarationInstantiation step 3.d sees the parameter names (a `var a` there is a
+    /// SyntaxError). The front end merges that environment into this scope, so this bit is the
+    /// only mark of it. It is set only together with [`Self::CALLS_SLOPPY_EVAL`] on a
+    /// [`ScopeKind::Function`] scope that is not strict (the verifier checks it). A body eval
+    /// of a function with only a destructuring pattern (`function f({a}) { eval('var a'); }`)
+    /// does not set it.
+    pub const PARAMETER_ENV: ScopeFlags = ScopeFlags(1 << 3);
     /// All defined bits.
-    pub const ALL: u8 = 0x07;
+    pub const ALL: u8 = 0x0f;
 
     /// True if only defined bits are set (the reader and the verifier both require it).
     pub const fn is_defined(self) -> bool {
@@ -387,6 +403,188 @@ pub struct Scope {
     pub outer: Option<ScopeId>,
     /// Variables.
     pub slots: Vec<ScopeSlot>,
+}
+
+/// (ABI 5.) The mapped-parameter list of a function that makes a mapped arguments object
+/// (`CreateMappedArguments`, ECMA-262 §10.4.4.7 CreateMappedArgumentsObject): where the
+/// arguments object finds formal parameter `i`.
+///
+/// `slots[i]` is the context slot of `scope` that holds formal parameter `i`, or `None` when a
+/// later parameter of the same name shadows it (sloppy duplicates: only the last one is
+/// mapped). `scope` is the function's own [`ScopeKind::Function`] scope, whose context the
+/// function makes with `CreateFunctionContext` before `CreateMappedArguments` runs. A function
+/// with no formal parameter, or with an unmapped arguments object, has no list.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct MappedParameters {
+    /// The function scope whose context holds the parameters.
+    pub scope: ScopeId,
+    /// One entry per formal parameter (`slots.len() == parameter_count`, never empty).
+    pub slots: Vec<Option<u32>>,
+}
+
+/// (ABI 5.) A ModuleRequest Record (ECMA-262 §16.2.1.3): a module specifier and its import
+/// attributes.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ModuleRequest<S = StringId> {
+    /// `[[Specifier]]`.
+    pub specifier: S,
+    /// `[[Attributes]]`: (key, value), sorted by key in UTF-16 code unit order
+    /// (WithClauseToAttributes, §16.2.2.5), keys unique.
+    pub attributes: Vec<(S, S)>,
+}
+
+/// (ABI 5.) The `[[ImportName]]` of an ImportEntry Record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ImportName<S = StringId> {
+    /// `namespace-object` (`import * as ns from "m"`).
+    Namespace,
+    /// A name (`import { a } from "m"`, `import d from "m"` gives `"default"`).
+    Name(S),
+}
+
+/// (ABI 5.) An ImportEntry Record (§16.2.1.6, Table 59).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ImportEntry<S = StringId> {
+    /// `[[ModuleRequest]]`: an index into [`ModuleRecords::requested_modules`].
+    pub module_request: u32,
+    /// `[[ImportName]]`.
+    pub import_name: ImportName<S>,
+    /// `[[LocalName]]`.
+    pub local_name: S,
+    /// The module cell of the local binding (the operand of `LdaModuleVariable`; not 0).
+    pub cell: i32,
+}
+
+/// (ABI 5.) A local ExportEntry Record: `[[ModuleRequest]]` and `[[ImportName]]` are null.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LocalExportEntry<S = StringId> {
+    /// `[[ExportName]]`.
+    pub export_name: S,
+    /// `[[LocalName]]` (`"*default*"` for an anonymous default export).
+    pub local_name: S,
+    /// The module cell of the local binding (not 0). A re-export of an imported namespace
+    /// object (`import * as ns from "m"; export { ns }`) is a local export of the import's cell.
+    pub cell: i32,
+}
+
+/// (ABI 5.) The `[[ImportName]]` of an indirect ExportEntry Record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ExportImportName<S = StringId> {
+    /// `all` (`export * as ns from "m"`).
+    All,
+    /// A name (`export { a as b } from "m"`).
+    Name(S),
+}
+
+/// (ABI 5.) An indirect ExportEntry Record: a re-export of another module's binding.
+/// `[[LocalName]]` is null.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct IndirectExportEntry<S = StringId> {
+    /// `[[ExportName]]`.
+    pub export_name: S,
+    /// `[[ModuleRequest]]`: an index into [`ModuleRecords::requested_modules`].
+    pub module_request: u32,
+    /// `[[ImportName]]`.
+    pub import_name: ExportImportName<S>,
+}
+
+/// (ABI 5.) The module records of a Source Text Module Record (ECMA-262 §16.2.1.6), as
+/// ParseModule makes them (step 10 sorts the export entries into the three lists). Every list
+/// is in source order. Only a module unit has them.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ModuleRecords<S = StringId> {
+    /// `[[RequestedModules]]`: one entry per distinct (specifier, attributes) pair, in the
+    /// order of the first `import` or `export ... from` that names it.
+    pub requested_modules: Vec<ModuleRequest<S>>,
+    /// `[[ImportEntries]]`.
+    pub import_entries: Vec<ImportEntry<S>>,
+    /// `[[LocalExportEntries]]`.
+    pub local_export_entries: Vec<LocalExportEntry<S>>,
+    /// `[[IndirectExportEntries]]`.
+    pub indirect_export_entries: Vec<IndirectExportEntry<S>>,
+    /// `[[StarExportEntries]]` (`export * from "m"`): indices into `requested_modules`.
+    pub star_export_entries: Vec<u32>,
+    /// `[[HasTLA]]`: the module body holds an `await` outside any function.
+    pub has_tla: bool,
+}
+
+impl<S> Default for ModuleRecords<S> {
+    fn default() -> Self {
+        Self {
+            requested_modules: Vec::new(),
+            import_entries: Vec::new(),
+            local_export_entries: Vec::new(),
+            indirect_export_entries: Vec::new(),
+            star_export_entries: Vec::new(),
+            has_tla: false,
+        }
+    }
+}
+
+impl<S> ModuleRecords<S> {
+    /// The same records with every string mapped by `f`, in field order (requests, imports,
+    /// local, indirect exports; in each entry in field order).
+    pub fn map_strings<T>(self, mut f: impl FnMut(S) -> T) -> ModuleRecords<T> {
+        ModuleRecords {
+            requested_modules: self
+                .requested_modules
+                .into_iter()
+                .map(|r| ModuleRequest {
+                    specifier: f(r.specifier),
+                    attributes: r
+                        .attributes
+                        .into_iter()
+                        .map(|(k, v)| {
+                            let k = f(k);
+                            (k, f(v))
+                        })
+                        .collect(),
+                })
+                .collect(),
+            import_entries: self
+                .import_entries
+                .into_iter()
+                .map(|e| ImportEntry {
+                    module_request: e.module_request,
+                    import_name: match e.import_name {
+                        ImportName::Namespace => ImportName::Namespace,
+                        ImportName::Name(n) => ImportName::Name(f(n)),
+                    },
+                    local_name: f(e.local_name),
+                    cell: e.cell,
+                })
+                .collect(),
+            local_export_entries: self
+                .local_export_entries
+                .into_iter()
+                .map(|e| {
+                    let export_name = f(e.export_name);
+                    LocalExportEntry {
+                        export_name,
+                        local_name: f(e.local_name),
+                        cell: e.cell,
+                    }
+                })
+                .collect(),
+            indirect_export_entries: self
+                .indirect_export_entries
+                .into_iter()
+                .map(|e| {
+                    let export_name = f(e.export_name);
+                    IndirectExportEntry {
+                        export_name,
+                        module_request: e.module_request,
+                        import_name: match e.import_name {
+                            ExportImportName::All => ExportImportName::All,
+                            ExportImportName::Name(n) => ExportImportName::Name(f(n)),
+                        },
+                    }
+                })
+                .collect(),
+            star_export_entries: self.star_export_entries,
+            has_tla: self.has_tla,
+        }
+    }
 }
 
 /// A number constant, stored as IEEE-754 bits. NaN is always `0x7ff8_0000_0000_0000`.
@@ -679,6 +877,9 @@ pub struct Function {
     pub handlers: Vec<Handler>,
     /// Source position table.
     pub positions: Vec<PositionEntry>,
+    /// (ABI 5.) The mapped-parameter list, for a function with formal parameters that makes a
+    /// mapped arguments object; `None` otherwise.
+    pub mapped_parameters: Option<MappedParameters>,
 }
 
 /// A compiled unit. Fields are public so that tools and tests can build or change any unit;
@@ -697,6 +898,8 @@ pub struct CompiledUnit {
     pub source: Option<String>,
     /// Hint section bytes, if present (format owned by `ep9_facts`).
     pub hints: Option<Vec<u8>>,
+    /// (ABI 5.) The module records: `Some` exactly for a module unit (the verifier checks it).
+    pub module_records: Option<ModuleRecords>,
 }
 
 impl CompiledUnit {

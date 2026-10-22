@@ -1,16 +1,32 @@
 # module-basic: module
 # | import a, {b as c} from 'x'; export let d = a + c; export function e() { return d; } export default 1;
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=module strict=true ts=none source_len=102 source=embedded hints=none
 source_hash=2e7757b8bd04c06689e836127afcdb75661eebd9b0801c3a9e97213741d151cf
-strings (4):
+strings (8):
   str0 "a"
   str1 "c"
   str2 "e"
   str3 "d"
+  str4 "x"
+  str5 "default"
+  str6 "b"
+  str7 "*default*"
 scopes (2):
   scope0 module outer=- flags=[strict] slots=[]
   scope1 function outer=scope0 flags=[strict] slots=[]
+module records: has-tla=false
+  requests (1):
+      0 "x" attributes=[]
+  imports (2):
+      0 request=0 import="default" local="a" cell=-1
+      1 request=0 import="b" local="c" cell=-2
+  local exports (3):
+      0 export="d" local="d" cell=1
+      1 export="e" local="e" cell=2
+      2 export="default" local="*default*" cell=3
+  indirect exports (0):
+  star exports (0):
 function f0 module name=- parent=- outer_scope=- flags=[strict] params=0 length=0 regs=1 range=0..102
   code (32 bytes):
       0 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00

@@ -1,6 +1,6 @@
 # module-captured: module
 # | let x = 1; export const y = () => x; x = 2;
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=module strict=true ts=none source_len=43 source=embedded hints=none
 source_hash=fc39fcac21a243e4385fbbc9de2108bf09d0d1301ff619f1eedf92062baa9e4b
 strings (2):
@@ -9,6 +9,13 @@ strings (2):
 scopes (2):
   scope0 module outer=- flags=[needs-context,strict] slots=["x":let]
   scope1 function outer=scope0 flags=[strict] slots=[]
+module records: has-tla=false
+  requests (0):
+  imports (0):
+  local exports (1):
+      0 export="y" local="y" cell=1
+  indirect exports (0):
+  star exports (0):
 function f0 module name=- parent=- outer_scope=- flags=[strict] params=0 length=0 regs=1 range=0..43
   code (25 bytes):
       0 E> CreateFunctionContext k0, [1]  ; k0 = Scope scope0 ; 75 00 01
