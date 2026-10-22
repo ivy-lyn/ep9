@@ -110,7 +110,7 @@ Win64 spill trampoline, SEH unwind registration and VirtualAlloc in `ep9_platfor
 | ID | Question | Needed by | Proposed default |
 |---|---|---|---|
 | H28-Q1 | Linux executable memory: dual mapping or mprotect. The plan allows both | SP-JIT-mem (M0 wk3) | **Resolved 2026-10-21 (fill): mprotect is the default.** A pair costs about 3.6 µs on CI VMs, dual mapping about 12 ns. ICs never patch code (04 §5), so windows open only at finalize. Dual mapping runs stale code under Rosetta (F4), needs a memfd, and keeps an RW alias mapped. `DualMap` stays built for later measurement [M-JIT] |
-| H28-Q2 | Linux arm64 and Windows x64 cannot run on the dev host (macOS arm64). They run only on CI runners. When do CI runners for all 4 targets exist? | M0 wk1 check ("CI green on 4 targets") | CI owner reports it |
+| H28-Q2 | Linux arm64 and Windows x64 cannot run on the dev host (macOS arm64). They run only on CI runners. When do CI runners for all 4 targets exist? | M0 wk1 check ("CI green on 4 targets") | **Filled (M0 month 2 P3, M2-P3-OQ-H28-Q2).** CI runs on all 4 targets: macos-arm64, linux-x64, linux-arm64 and windows-x64 (the `build-test` matrix, `.github/workflows/ci.yml:95-98`; the `spikes` job uses the same 4). Real CI run 39677340839 (head 5c9034a, tag m2-p2) passed 22/22 checks on the 4 targets |
 | H28-Q3 | Signal and SEH handling policy (stack overflow, interrupts) belongs to H23 limits; which parts live here | H23 ADR (M0 wk3) | **Filled 2026-10-21: policy in [H23](H23-limits-and-failure-policy.md)** (a native stack overflow past the margin is fatal; the margin checks give a RangeError first; termination and interrupts use no signal). **Mechanism here:** stack bounds (`current_thread_stack_bounds`, `stack_pointer`), and any signal or SEH handler with its alternate stack. ep9 installs no handler today; Rust std's guard-page handler aborts (H23-Q9; decision W4-H23) |
 
 ## Reopens if
@@ -129,6 +129,7 @@ Win64 spill trampoline, SEH unwind registration and VirtualAlloc in `ep9_platfor
 | 2026-10-21 | rewrite | Unwind registration row: the unix mode is chosen at run time by a self-test (whole section, then per FDE), not by target; a failed self-test stops native code. New Rules row. Closes the week-4 open item "WHOLE_SECTION assumes libgcc on linux-gnu" | M2-P1 UNWIND-GUARD agent |
 | 2026-10-21 | clarify | W^X mode row: the `MAP_JIT` code range comes from `CodeRange::process()` (`Cage::reserve_jit` is removed) | M2-P1 integration fixer |
 | 2026-10-22 | clarify | Rules row "unix: the registration mode comes from a run-time self-test": its x86 sandbox check is the orchestrator's script outside the repo, and no CI job sets `EP9_EXPECT_UNWIND_MODE`; the check cell says so. No check changes | P3-ACCEPT-2 |
+| 2026-10-22 | fill | H28-Q2 filled: CI runs on all 4 targets; real CI run 39677340839 (head 5c9034a) passed 22/22 checks. Every check keeps its result (M2-P3-OQ-H28-Q2) | P3 integration fixer |
 
 ## Review record
 
