@@ -33,7 +33,7 @@ Copied from the plan row (02 §6): proven ⊑ predicted{source ∈ RUNTIME, PROF
 
 | Source (02 §3) | Producer | Trust | Precedence |
 |---|---|---|---|
-| PROVEN | ep9's own analysis: never-reassigned module bindings, `const`, scopes without direct eval or `with`, bitwise ops → int32, range analysis, spec invariants | proven | always holds |
+| PROVEN | ep9's own analysis: never-reassigned module bindings, `const`, scopes without direct eval or `with`, `&`, `|`, `^`, `~`, `<<` and `>>` → int32, `>>>` → uint32 (a double when ≥ 2^31), range analysis, spec invariants | proven | always holds |
 | RUNTIME | FeedbackVector and IC data of T0, T1 and baseline-AOT ICs (H16, H33) | predicted | 1 (highest) |
 | PROFILED | `.ep9prof` from a training run | predicted | 2 |
 | HINTED | `.ep9h` from ep9-typecheck, joined in `ep9_frontend` | predicted, HINT trust | 3 (lowest) |
@@ -108,3 +108,4 @@ Copied from the plan row (02 §6): proven ⊑ predicted{source ∈ RUNTIME, PROF
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-22 | draft | First draft from 02 §6 row H30, 02 §3, 04 §6 and 05 §11, with the FactSource bytes of FactSnapshot v0 as built; confidence, VERIFIED and the fact-kind table are Open questions | P3-ADR-JIT agent (M2-P3) |
+| 2026-10-22 | rewrite | PROVEN row: "bitwise ops → int32" was wrong for `>>>`, which gives uint32 (ToUint32, ECMAScript §13.9; the interpreter boxes it as a double: `crates/ep9_vm/src/interp/ops.rs:142`, `crates/ep9_vm/src/conv.rs:397`; node: `-1>>>0` is 4294967295). The row now lists the int32 operators and gives `>>>` as uint32. The same fix is in plan 02 §3 and 04 §6, which this row copies. Codex review of the P3 merge (M2-P3-RF1-H30) | P3 review fix (orchestrator) |

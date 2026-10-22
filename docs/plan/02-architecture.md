@@ -112,7 +112,7 @@ Path (a) runs in every mode. Path (b) runs at build time inside `ep9c`. Both pat
 
 | Source | Producer | When | Trust | Guard on failure | Precedence |
 |---|---|---|---|---|---|
-| PROVEN | ep9's own analysis: never-reassigned module bindings, `const`, scopes without direct eval/`with`, bitwise ops → int32, range analysis, spec invariants | JIT compile and `ep9c` build | proven | none | always holds |
+| PROVEN | ep9's own analysis: never-reassigned module bindings, `const`, scopes without direct eval/`with`, `&`, `|`, `^`, `~`, `<<` and `>>` → int32, `>>>` → uint32 (a double when ≥ 2^31), range analysis, spec invariants | JIT compile and `ep9c` build | proven | none | always holds |
 | RUNTIME | FeedbackVector / IC data written by T0, T1 and baseline-AOT ICs (H16, H33) | run time | predicted | DEOPT + exit counter (JIT, hybrid). No consumer in jitless | 1 (highest) |
 | PROFILED | `.ep9prof` from `ep9 run --profile-out` (training run) | build time | predicted | per mode (H32) | 2 |
 | HINTED | `.ep9h` from ep9-typecheck (tsrs), joined in `ep9_frontend` | build time | predicted, HINT trust | per mode (H32); never THROW | 3 (lowest) |
