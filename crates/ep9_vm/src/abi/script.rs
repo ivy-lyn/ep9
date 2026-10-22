@@ -206,7 +206,9 @@ impl<'s> Cx<'s> {
             FunctionCtorKind::Generator | FunctionCtorKind::AsyncGenerator => {
                 IntrinsicId::GeneratorFunctionPrototype
             }
-            FunctionCtorKind::Normal | FunctionCtorKind::Async => IntrinsicId::FunctionPrototype,
+            // §20.2.1.1.1 step 5: fallbackProto of kind async is %AsyncFunction.prototype%.
+            FunctionCtorKind::Async => IntrinsicId::AsyncFunctionPrototype,
+            FunctionCtorKind::Normal => IntrinsicId::FunctionPrototype,
         };
         let proto = self.get_prototype_from_constructor(new_target, fallback)?;
         let entry = self.load_entry(unit, FUNCTION_FILE, UNDEFINED, EvalReceiver::default());

@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! SwitchOnGeneratorState g, table   g undefined: out_pc = next (first call); else jump to
-//!                                   table[state] and state = executing
+//!                                   table[state] and state = executing; acc unchanged
 //! SuspendGenerator g, regs, n, id   copy the params and regs into the generator's REGS cell,
 //!                                   save the context, state = id, then return like `Return`
 //!                                   (an async function returns its promise, `slow/async_fn.rs`)
@@ -93,15 +93,18 @@ fn frame_generator(
 /// The first call of a generator function has undefined in fp-3 (no generator yet): the
 /// dispatch falls through to the prologue. A resumed frame has the generator there; its state
 /// is the suspend id, which indexes `table`: jump to that entry and mark the generator
-/// executing (GeneratorResume §27.5.3.3 step 7). The accumulator becomes the generator
-/// register's value (the stub has no accumulator input; BytecodeGen keeps nothing in it here).
+/// executing (GeneratorResume §27.5.3.3 step 7). The opcode does not change the accumulator
+/// (`acc: None`, opcodes.rs): both paths give `acc` back (GV-7, M2-P2-GEN-ACC; closed in
+/// M3-P1 ASYNC).
 #[cold]
 #[inline(never)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn switch_on_generator_state(
     cx: &mut Cx,
     fp: *mut u64,
     pc: *const u8,
     next: *const u8,
+    acc: u64,
     generator: isize,
     table: u32,
 ) -> u64 {
@@ -110,7 +113,7 @@ pub(crate) fn switch_on_generator_state(
     if g == UNDEFINED {
         cx.out_fp = fp;
         cx.out_pc = next;
-        return UNDEFINED;
+        return acc;
     }
     if !is_generator(g) {
         return internal_unwind(cx, fp, pc, "SwitchOnGeneratorState of a non-generator");
@@ -126,7 +129,7 @@ pub(crate) fn switch_on_generator_state(
     cx.out_fp = fp;
     // The verifier checked that every entry is an instruction start after `pc`.
     cx.out_pc = pc.wrapping_add(off as usize);
-    g
+    acc
 }
 
 /// `SuspendGenerator(generator, registers, count, suspend_id)`; `acc` is the value to give to

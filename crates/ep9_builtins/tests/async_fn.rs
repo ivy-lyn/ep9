@@ -5,7 +5,16 @@
 
 mod common;
 
+use std::cell::RefCell;
+
 use common::{on_big_stack, run, run_both};
+use ep9_bytecode::{EvalContext, FunctionCtorKind};
+use ep9_frontend::{CodegenError, CompileError, CompileOptions, SourceOpts, Strictness};
+use ep9_heap::HeapConfig;
+use ep9_vm::{
+    Args, CompileFailure, CompileResult, CompilerHooks, Cx, Dispatch, HostFn, IntrinsicId, Isolate,
+    IsolateConfig, JsResult, Local, PropertyDescriptor,
+};
 
 fn lines(v: &[&str]) -> Result<Vec<String>, String> {
     Ok(v.iter().map(|s| s.to_string()).collect())
@@ -236,4 +245,220 @@ fn an_unhandled_async_rejection_is_reported() {
     let reasons = iso.take_unhandled_rejections();
     assert_eq!(reasons.len(), 1);
     assert_eq!(reasons[0].message, "lost");
+}
+
+// ---- %AsyncFunction% (CreateDynamicFunction kind async) on isolates with compiler hooks ----
+// The `common` isolates have no compiler hooks. Async functions still inherit from
+// %Function.prototype% (fixer item), so `asyncFunction()` (a host function) gives
+// %AsyncFunction% of its own realm (H20 R5), and `createRealm()` makes a second realm.
+
+thread_local! {
+    static OUT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+fn print<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let mut parts = Vec::new();
+    for v in args.iter() {
+        parts.push(cx.to_rust_string(v)?);
+    }
+    OUT.with(|o| o.borrow_mut().push(parts.join(" ")));
+    Ok(Local::undefined())
+}
+
+/// `asyncFunction()`: %AsyncFunction% of the current realm.
+fn async_function<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Ok(cx.intrinsic(IntrinsicId::AsyncFunction).into())
+}
+
+/// The host functions of every realm.
+const HOST: [(&str, u32, HostFn); 3] = [
+    ("print", 1, print),
+    ("createRealm", 0, create_realm),
+    ("asyncFunction", 0, async_function),
+];
+
+/// `createRealm()`: a new realm with the host functions, made in it; returns its global.
+fn create_realm<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let global = cx.create_realm()?;
+    cx.with_realm(global, |cx| {
+        for (name, length, f) in HOST {
+            let func = cx.new_builtin_closure(f, name, length, Local::undefined());
+            let desc = PropertyDescriptor::data(func.into(), true, false, true);
+            cx.define_property_or_throw(global, name, desc)?;
+        }
+        Ok(())
+    })?;
+    Ok(global.into())
+}
+
+fn failure(e: CodegenError) -> CompileFailure {
+    match e {
+        CodegenError::Compile(CompileError::Syntax(errors)) => {
+            CompileFailure::Syntax(errors.first().message.clone())
+        }
+        CodegenError::Compile(CompileError::Range(r)) => CompileFailure::Range(r.message),
+        CodegenError::Unsupported(u) => CompileFailure::Unsupported(u.feature.to_string()),
+        CodegenError::Limit(m) => CompileFailure::Range(m),
+        CodegenError::Internal(m) => CompileFailure::Internal(m),
+    }
+}
+
+fn hook_eval(source: &str, ctx: &EvalContext) -> CompileResult {
+    ep9_frontend::compile_eval(source, ctx, CompileOptions::default()).map_err(failure)
+}
+
+fn hook_function(kind: FunctionCtorKind, params: &str, body: &str) -> CompileResult {
+    ep9_frontend::compile_function_ctor(kind, params, body, CompileOptions::default())
+        .map_err(failure)
+}
+
+fn hook_script(source: &str) -> CompileResult {
+    let opts = SourceOpts::script(Strictness::Sloppy);
+    ep9_frontend::compile(source, opts, CompileOptions::default()).map_err(failure)
+}
+
+static HOOKS: CompilerHooks = CompilerHooks {
+    compile_eval: hook_eval,
+    compile_function: hook_function,
+    compile_script: hook_script,
+};
+
+/// Runs the sloppy script `src` on an isolate with the table, [`HOOKS`] and [`HOST`] under
+/// `dispatch`: the printed lines (after the microtask checkpoint), or the uncaught exception.
+/// Then collects and verifies the heap.
+fn run_hooked(src: &str, dispatch: Dispatch, stress: bool) -> Result<Vec<String>, String> {
+    let unit = ep9_frontend::compile(
+        src,
+        SourceOpts::script(Strictness::Sloppy),
+        CompileOptions::default(),
+    )
+    .map_err(|e| format!("compile error: {e:?}"))?;
+    let mut iso = Isolate::new(IsolateConfig {
+        heap: HeapConfig {
+            gc_stress: u32::from(stress),
+            verify_after_gc: stress,
+            ..HeapConfig::default()
+        },
+        dispatch,
+        builtins: Some(&ep9_builtins::TABLE),
+        compiler: Some(&HOOKS),
+        ..IsolateConfig::default()
+    })
+    .expect("an isolate");
+    for (name, length, f) in HOST {
+        iso.register_host_function(name, length, f);
+    }
+    OUT.with(|o| o.borrow_mut().clear());
+    let r = iso.run_script(unit, "test.js");
+    let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
+    iso.collect_garbage();
+    iso.verify_heap().expect("a valid heap");
+    r.map(|_| out).map_err(|e| e.message)
+}
+
+/// [`run_hooked`] under every dispatch expansion, with and without GC stress; all must agree.
+fn run_hooked_every(src: &'static str) -> Result<Vec<String>, String> {
+    let mut first: Option<(String, Result<Vec<String>, String>)> = None;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let r = on_big_stack(move || run_hooked(src, d, stress));
+            let label = format!("{} stress={stress}", d.name());
+            match &first {
+                None => first = Some((label, r)),
+                Some((l0, r0)) => assert_eq!(&r, r0, "{label} differs from {l0} for {src:?}"),
+            }
+        }
+    }
+    first.expect("at least one dispatch").1
+}
+
+/// `%AsyncFunction%` (§27.7.1.1) makes async functions through CreateDynamicFunction kind
+/// async. Called, constructed, or through `Reflect.construct` with a `newTarget` whose
+/// `prototype` is not an object, the fallback is `%AsyncFunction.prototype%` of
+/// GetFunctionRealm(newTarget) (§20.2.1.1.1 step 5, §10.1.14 step 4), here of a second
+/// realm; a subclass gets its own prototype. Expected lines: node v24.22.1 with
+/// `createRealm` = `vm.createContext` (scratchpad m0m3/p1/async/step2/run-node.js).
+#[test]
+fn the_async_function_constructor_takes_the_realm_fallback_prototype() {
+    assert_eq!(
+        run_hooked_every(
+            r#"
+var AF = asyncFunction();
+var f = new AF('a', 'return await a;');
+print(Object.getPrototypeOf(f) === AF.prototype, f.name, f.length, 'prototype' in f);
+f(5).then(function (v) { print('f', v); });
+var g = AF('await 0; return 1');
+print(Object.getPrototypeOf(g) === AF.prototype, Object.getPrototypeOf(AF.prototype) === Function.prototype);
+function nt() {}
+nt.prototype = null;
+var h = Reflect.construct(AF, [], nt);
+print(Object.getPrototypeOf(h) === AF.prototype);
+var other = createRealm();
+var OAF = other.asyncFunction();
+var C = new other.Function();
+C.prototype = 1;
+var o = Reflect.construct(AF, ['return 2'], C);
+print(OAF !== AF, Object.getPrototypeOf(o) === OAF.prototype, Object.getPrototypeOf(o) === AF.prototype);
+o().then(function (v) { print('o', v, v === 2); });
+class Sub extends AF {}
+var s = new Sub('return 3');
+print(Object.getPrototypeOf(s) === Sub.prototype, s instanceof AF);
+s().then(function (v) { print('s', v); });
+"#
+        ),
+        lines(&[
+            "true anonymous 1 false",
+            "true true",
+            "true",
+            "true true false",
+            "true true",
+            "o 2 true",
+            "s 3",
+            "f 5",
+        ])
+    );
+}
+
+/// An async function of another realm (REALMS: `call::run_resumed` switches to the callee
+/// realm): each resume job runs it in its own realm, so its objects, its errors from bytecode
+/// and its promise are that realm's; the job order equals node's.
+#[test]
+fn an_async_function_resumes_in_its_own_realm() {
+    assert_eq!(
+        run_hooked_every(
+            r#"
+var other = createRealm();
+var of = other.eval('(async function (p) { var a = await p; var e; try { await Promise.reject(1); } catch (x) { e = new TypeError("t"); } return [a, e]; })');
+of(Promise.resolve('main')).then(function (v) {
+  print(v[0], Array.isArray(v), v instanceof Array, v instanceof other.Array, v[1] instanceof other.TypeError);
+});
+var thrower = other.eval('(async function () { await 0; null.x; })');
+thrower().catch(function (e) { print(e instanceof TypeError, e instanceof other.TypeError); });
+async function mainAwaitsOther() { var r = await of(1); print('main', r[0], r instanceof other.Array, [] instanceof Array); }
+mainAwaitsOther();
+print('sync', Object.getPrototypeOf(of(0)) === other.Promise.prototype);
+"#
+        ),
+        lines(&[
+            "sync true",
+            "false true",
+            "main 1 true true",
+            "main true false true true",
+        ])
+    );
 }

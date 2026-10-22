@@ -1057,3 +1057,53 @@ fn return_and_throw_at_the_start_need_no_frame() {
         }
     }
 }
+
+/// GV-7 (M2-P2-GEN-ACC, closed in M3-P1 ASYNC): `SwitchOnGeneratorState` does not change the
+/// accumulator (`acc: None`), on the first call and on a resume.
+#[test]
+fn switch_on_generator_state_keeps_the_accumulator() {
+    fn make() -> VerifiedUnit {
+        // function* g() { <prologue with acc = 7 at the switch>; yield acc; return acc; }: the
+        // first call falls through with acc 7 and makes the generator; the second resume
+        // jumps with acc 7 to an entry that saves acc in a register the resume does not restore.
+        let mut s0 = Asm::new(gen_meta("g", 0));
+        let g = s0.b.new_register();
+        let t = s0.b.new_register_list(2);
+        let k = s0.b.new_register();
+        let save = RegisterList::new(0, s0.b.register_count());
+        let seen = s0.b.new_register();
+        let (table, resumes) = s0.b.jump_table(2);
+        s0.b.lda_new_target().star(g);
+        s0.b.lda_smi(7);
+        s0.b.switch_on_generator_state(g, table);
+        // First call: acc is still 7.
+        s0.b.star(k);
+        s0.b.lda_current_function().star(t.get(0));
+        s0.b.mov(Register::RECEIVER, t.get(1));
+        s0.b.call_runtime(RuntimeId::CreateGeneratorObject, t, 2);
+        s0.b.star(g);
+        s0.b.suspend_generator(g, save, save.len(), 0);
+        s0.b.bind(resumes[0]);
+        s0.b.resume_generator(g, save, save.len());
+        // Yield the acc the first call saw at the switch: {value: 7, done: false}.
+        s0.b.ldar(k).star(t.get(0)).lda_false().star(t.get(1));
+        s0.b.call_runtime(RuntimeId::CreateIterResultObject, t, 2);
+        s0.b.suspend_generator(g, save, save.len(), 1);
+        s0.b.bind(resumes[1]);
+        // Resume: acc is still 7 at the table entry: {value: 7, done: true}.
+        s0.b.star(seen);
+        s0.b.resume_generator(g, save, save.len());
+        s0.b.ldar(seen).return_();
+        let mut s = Asm::script(0);
+        let c = Calls::new(&mut s);
+        define(&mut s, 1, "g");
+        call_global(&mut s, "g", &[], "it");
+        c.step(&mut s, "it", "next", None);
+        c.step(&mut s, "it", "next", None);
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish(), s0.finish()])
+    }
+    let r = run_all(make);
+    ok(&r);
+    assert_eq!(r.output, ["7", "false", "7", "true"]);
+}
