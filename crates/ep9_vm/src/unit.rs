@@ -19,7 +19,7 @@
 
 use core::ptr::NonNull;
 
-use ep9_bytecode::{Constant, Oddball, Scope, SourceLines, VerifiedUnit};
+use ep9_bytecode::{Constant, EvalContext, Oddball, Scope, SourceLines, VerifiedUnit};
 use ep9_heap::{RootId, RootStrength, Slot};
 use ep9_value::Value;
 
@@ -39,6 +39,31 @@ pub(crate) struct ContextScope {
     pub scope: *const Scope,
 }
 
+/// The receiver flags of PerformEval step 8 (§19.2.1.1) that direct eval code was compiled
+/// with: `in_function`, `in_method`, `in_derived_ctor`, `in_class_field_init` of its
+/// [`EvalContext`]. All false for every other unit (global code: a script, a module, indirect
+/// eval, `Function()`). A direct eval in the unit's function 0, or in an arrow inside it, has
+/// the same GetThisEnvironment, so it takes them over (`interp/slow/eval.rs`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct EvalReceiver {
+    pub in_function: bool,
+    pub in_method: bool,
+    pub in_derived_ctor: bool,
+    pub in_class_field_init: bool,
+}
+
+impl EvalReceiver {
+    /// The receiver flags of `ctx`.
+    pub fn of(ctx: &EvalContext) -> EvalReceiver {
+        EvalReceiver {
+            in_function: ctx.in_function,
+            in_method: ctx.in_method,
+            in_derived_ctor: ctx.in_derived_ctor,
+            in_class_field_init: ctx.in_class_field_init,
+        }
+    }
+}
+
 /// A unit the isolate loaded. Boxed and kept until the isolate drops: frames, function cells
 /// and dispatch slots point into it.
 pub(crate) struct LoadedUnit {
@@ -51,6 +76,9 @@ pub(crate) struct LoadedUnit {
     pub context_scopes: Box<[ContextScope]>,
     /// Per-function feedback (H16; `feedback.rs`).
     pub feedback: UnitFeedback,
+    /// The receiver flags of direct eval code ([`EvalReceiver`]); set before the unit is
+    /// pushed to `Runtime::units`.
+    pub eval_receiver: EvalReceiver,
     strings: Box<[Slot]>,
     consts: Box<[Box<[Slot]>]>,
     roots: Vec<RootId>,
@@ -75,6 +103,7 @@ impl LoadedUnit {
             infos: Box::new([]),
             context_scopes: Box::new([]),
             feedback,
+            eval_receiver: EvalReceiver::default(),
             roots: Vec::new(),
         });
         // SAFETY: the slices live in boxes that the LoadedUnit owns. LoadedUnit has no Drop and

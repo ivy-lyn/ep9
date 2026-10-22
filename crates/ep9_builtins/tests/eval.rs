@@ -2,8 +2,8 @@
 //! on isolates with `ep9_builtins::TABLE` and this file's own compiler hooks (the
 //! `common` isolates have none, so there `eval("..")` is an EvalError). The expected lines come
 //! from node v24 (`print` = `console.log` of the joined strings) unless a comment says why ep9
-//! differs. Every check runs with and without GC stress. The hand-built VM tests are in
-//! `crates/ep9_vm/src/tests/eval.rs`.
+//! differs. Every check runs with and without GC stress (`run_every`: also under every dispatch
+//! expansion). The hand-built VM tests are in `crates/ep9_vm/src/tests/eval.rs`.
 
 mod common;
 
@@ -13,7 +13,8 @@ use ep9_bytecode::{EvalContext, FunctionCtorKind};
 use ep9_frontend::{CodegenError, CompileError, CompileOptions, SourceOpts, Strictness};
 use ep9_heap::HeapConfig;
 use ep9_vm::{
-    Args, CompileFailure, CompileResult, CompilerHooks, Cx, Isolate, IsolateConfig, JsResult, Local,
+    Args, CompileFailure, CompileResult, CompilerHooks, Cx, Dispatch, Isolate, IsolateConfig,
+    JsResult, Local,
 };
 
 thread_local! {
@@ -83,6 +84,11 @@ static HOOKS: CompilerHooks = CompilerHooks {
 /// Runs the sloppy script `src` on an isolate with the table and [`HOOKS`]: the printed
 /// lines, or the uncaught exception as "Name: message". Then collects and verifies the heap.
 fn run(src: &str, stress: bool) -> Result<Vec<String>, String> {
+    run_in(src, Dispatch::DEFAULT, stress)
+}
+
+/// [`run`] with the dispatch expansion `dispatch`.
+fn run_in(src: &str, dispatch: Dispatch, stress: bool) -> Result<Vec<String>, String> {
     let unit = ep9_frontend::compile(
         src,
         SourceOpts::script(Strictness::Sloppy),
@@ -95,6 +101,7 @@ fn run(src: &str, stress: bool) -> Result<Vec<String>, String> {
             verify_after_gc: stress,
             ..HeapConfig::default()
         },
+        dispatch,
         builtins: Some(&ep9_builtins::TABLE),
         compiler: Some(&HOOKS),
         ..IsolateConfig::default()
@@ -116,6 +123,22 @@ fn run_both(src: &'static str) -> Result<Vec<String>, String> {
     let b = common::on_big_stack(move || run(src, true));
     assert_eq!(a, b, "GC stress changed the result of {src:?}");
     a
+}
+
+/// [`run_in`] under every dispatch expansion, with and without GC stress; all runs must agree.
+fn run_every(src: &'static str) -> Result<Vec<String>, String> {
+    let mut first: Option<(String, Result<Vec<String>, String>)> = None;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let r = common::on_big_stack(move || run_in(src, d, stress));
+            let label = format!("{} stress={stress}", d.name());
+            match &first {
+                None => first = Some((label, r)),
+                Some((l0, r0)) => assert_eq!(&r, r0, "{label} differs from {l0} for {src:?}"),
+            }
+        }
+    }
+    first.expect("at least one dispatch").1
 }
 
 fn lines(v: &[&str]) -> Result<Vec<String>, String> {
@@ -266,6 +289,46 @@ print(e(() => new F()), ran2);"#
             "number,undefined",
             "SyntaxError",
             "SyntaxError 0",
+        ])
+    );
+}
+
+/// A direct eval in eval code gets the receiver flags its eval unit was compiled with
+/// (PerformEval step 8: GetThisEnvironment is the same function), so a class field
+/// initializer keeps `arguments` an early error through nested eval, an arrow and a static
+/// field: SyntaxError before the eval code runs (`ran` stays 0). A method or a plain function
+/// in between keeps its own flags. Every dispatch, with and without GC stress.
+#[test]
+fn nested_eval_keeps_the_receiver_flags() {
+    assert_eq!(
+        run_every(
+            r#"function e(f) { try { return String(f()); } catch (x) { return x.constructor.name; } }
+var ran = 0;
+class C1 { x = eval("eval('ran = 1; arguments')"); }
+print(e(() => new C1()), ran);
+class C2 { x = eval("(() => eval('ran = 2; arguments'))()"); }
+print(e(() => new C2()), ran);
+print(e(() => { class C3 { static x = eval("eval('ran = 3; arguments')"); } }), ran);
+class C4 { x = eval("eval(\"eval('ran = 4; arguments')\")"); }
+print(e(() => new C4()), ran);
+class C5 { x = eval("eval('typeof new.target + typeof this.constructor + (super.toString === Object.prototype.toString)')"); }
+print(new C5().x);
+class C6 { m() { return eval("eval('ran = 6; arguments.length')"); } }
+print(new C6().m(1, 2), ran);
+class C7 { x = eval("(function () { return eval('arguments.length'); })(1, 2, 3)"); }
+print(new C7().x);
+function g() { return eval("eval('typeof new.target')"); }
+print(g(), new g() instanceof g, e(() => eval("eval('new.target')")));"#
+        ),
+        lines(&[
+            "SyntaxError 0",
+            "SyntaxError 0",
+            "SyntaxError 0",
+            "SyntaxError 0",
+            "undefinedfunctiontrue",
+            "2 6",
+            "3",
+            "undefined true SyntaxError",
         ])
     );
 }
