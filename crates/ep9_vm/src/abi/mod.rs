@@ -951,6 +951,19 @@ impl<'s> Cx<'s> {
         property::get(self.cx, o, k).map(Self::local)
     }
 
+    /// O.`[[Get]]`(P, Receiver) (§10.1.8.1 OrdinaryGet): a getter found on the chain from `o`
+    /// runs with `receiver` (any value) as `this` (`Reflect.get`, §28.1.5).
+    pub fn get_with_receiver(
+        &mut self,
+        o: impl Into<Local<'s, JsObject>>,
+        key: impl IntoKey<'s>,
+        receiver: impl Into<Local<'s>>,
+    ) -> JsResult<Local<'s>> {
+        let (o, r) = (o.into().bits(), receiver.into().bits());
+        let k = key.into_key(self).bits();
+        property::get_with_receiver(self.cx, o, k, r).map(Self::local)
+    }
+
     /// GetV(V, P) (§7.3.3): a property of any value; TypeError for undefined and null.
     pub fn get_v(&mut self, v: impl Into<Local<'s>>, key: impl IntoKey<'s>) -> JsResult<Local<'s>> {
         let v = v.into().bits();
@@ -980,6 +993,22 @@ impl<'s> Cx<'s> {
             return Err(self.throw_type_error(&msg));
         }
         Ok(false)
+    }
+
+    /// O.`[[Set]]`(P, V, Receiver) (§10.1.9.1 OrdinarySet): the first property on the chain
+    /// from `o` decides; a setter runs with `receiver` as `this`, and a new or writable data
+    /// property lands on `receiver` (`Reflect.set`, §28.1.12). `Ok(false)` when the
+    /// assignment fails, also for a receiver that is not an object; it never throws for that.
+    pub fn set_with_receiver(
+        &mut self,
+        o: impl Into<Local<'s, JsObject>>,
+        key: impl IntoKey<'s>,
+        v: impl Into<Local<'s>>,
+        receiver: impl Into<Local<'s>>,
+    ) -> JsResult<bool> {
+        let (o, v, r) = (o.into().bits(), v.into().bits(), receiver.into().bits());
+        let k = key.into_key(self).bits();
+        property::set_with_receiver(self.cx, o, k, v, r)
     }
 
     /// HasProperty(O, P) (§7.3.12).

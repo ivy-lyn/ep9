@@ -75,3 +75,4 @@ intrinsic  39  %Promise%
 intrinsic  40  %Promise.prototype%
 intrinsic  41  %AggregateError%
 intrinsic  42  %AggregateError.prototype%
+intrinsic  43  %Reflect%
