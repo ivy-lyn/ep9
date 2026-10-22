@@ -2,7 +2,7 @@
 //!
 //! | Function | Spec | v0 status |
 //! |---|---|---|
-//! | [`number_to_string`] | Number::toString(x, 10) (ECMA-262 §6.1.6.1.20) | digits from `core::fmt` `{:e}` (shortest round trip). v0: `ep9_numconv` (dragonbox_ecma) replaces it |
+//! | [`number_to_string`] | Number::toString(x, 10) (ECMA-262 §6.1.6.1.20) | digits from `core::fmt` `{:e}` (shortest round trip), then the even one of two closest (step 5, `even_tie`). v0: `ep9_numconv` (dragonbox_ecma) replaces it |
 //! | [`string_to_number`] | StringToNumber (§7.1.4.1.1) | decimal through `str::parse::<f64>` after a JS grammar check (correctly rounded); hex/octal/binary exact up to 2^128 |
 //! | [`fmod`] | Number::remainder (§6.1.6.1.6) | `ep9_math::fmod`: exact, bit-level (musl `fmod.c`, MIT). H36: never the platform libm |
 //! | [`exponentiate`] | Number::exponentiate (§6.1.6.1.3) | `ep9_math::pow_js` v0: every special case and exact result; else `None` (`**` throws "not implemented") until the correctly rounded core lands (month 2, H36) |
@@ -29,8 +29,13 @@ pub fn number_to_string(x: f64) -> String {
     // v0: shortest round-trip digits from core::fmt. Format: "d[.ddd]e[-]x".
     let e = format!("{x:e}");
     let (mant, exp) = e.split_once('e').expect("{:e} has an exponent");
-    let digits: String = mant.chars().filter(|c| *c != '.').collect();
-    let exp: i32 = exp.parse().expect("{:e} exponent");
+    let mut digits: String = mant.chars().filter(|c| *c != '.').collect();
+    let mut exp: i32 = exp.parse().expect("{:e} exponent");
+    // Step 5's last rule: of two closest digit strings, the even one.
+    if let Some((even, even_exp)) = even_tie(x, digits.len(), exp) {
+        digits = even;
+        exp = even_exp;
+    }
     let k = digits.len() as i32;
     let n = exp + 1;
     let mut out = String::new();
@@ -56,6 +61,67 @@ pub fn number_to_string(x: f64) -> String {
         out.push_str(&(n - 1).abs().to_string());
     }
     out
+}
+
+/// The tie rule of Number::toString (§6.1.6.1.20 step 5): "If there are two such possible
+/// values of s, choose the one that is even." `core::fmt`'s shortest digits pick the closer
+/// of two shortest candidates, and the upper one when `x` lies exactly halfway between them
+/// (`900719925474099.25`: `...099.3`; node and the spec: `...099.2`).
+///
+/// `x` (positive, finite) with `k` shortest digits and scientific exponent `exp` is such a
+/// tie when its exact decimal value has exactly `k + 1` significant digits and the last is 5.
+/// Then the candidates are the first `k` digits and that plus one; if both round-trip, the
+/// even one wins: `Some((digits, exponent))`. `None` when there is no tie, or when only one
+/// candidate round-trips (`core::fmt` already chose it).
+///
+/// The exact value `m × 2^e` (`m` odd) has more than 18 significant digits when `e < -26`
+/// (`m × 5^-e` then has more than 0.69 × 27 digits after the first) or when it is at least
+/// 10^18, and the shortest form has at most 17 digits, so only the rest is checked, in u128.
+fn even_tie(x: f64, k: usize, exp: i32) -> Option<(String, i32)> {
+    debug_assert!(x > 0.0 && x.is_finite());
+    let bits = x.to_bits();
+    let biased = ((bits >> 52) & 0x7FF) as i32;
+    let fraction = bits & ((1 << 52) - 1);
+    let (mut m, mut e) = if biased == 0 {
+        (fraction, -1074)
+    } else {
+        (fraction | (1 << 52), biased - 1075)
+    };
+    let tz = m.trailing_zeros();
+    m >>= tz;
+    e += tz as i32;
+    // x = d × 10^-t exactly.
+    let (mut d, mut t): (u128, i32) = if e >= 0 {
+        if x >= 1e18 {
+            return None;
+        }
+        (u128::from(m) << e, 0)
+    } else if e >= -26 {
+        (u128::from(m) * 5u128.pow((-e) as u32), -e)
+    } else {
+        return None;
+    };
+    while d % 10 == 0 {
+        d /= 10;
+        t -= 1;
+    }
+    let c = d.ilog10() as usize + 1;
+    if c != k + 1 || d % 10 != 5 {
+        return None;
+    }
+    let lower = d / 10;
+    let upper = lower + 1;
+    if upper == 10u128.pow(k as u32) {
+        return None;
+    }
+    let sci_exp = c as i32 - 1 - t;
+    debug_assert_eq!(sci_exp, exp, "core::fmt chose one of the two");
+    let round_trips = |s: u128| format!("{s}e{}", sci_exp - (k as i32 - 1)).parse::<f64>() == Ok(x);
+    if !(round_trips(lower) && round_trips(upper)) {
+        return None;
+    }
+    let even = if lower % 2 == 0 { lower } else { upper };
+    Some((even.to_string(), sci_exp))
 }
 
 /// JS WhiteSpace or LineTerminator (§12.2, §12.3), the set StringToNumber trims.
@@ -225,6 +291,35 @@ mod tests {
         ];
         for &(x, want) in cases {
             assert_eq!(number_to_string(x), want, "{x:?}");
+        }
+    }
+
+    /// §6.1.6.1.20 step 5: of two closest shortest digit strings, the even one (node v24's
+    /// output for each value; `core::fmt` gives the upper one at an exact half). The full
+    /// check is the node golden of
+    /// `ep9_builtins/tests/json.rs` (`number_to_string_matches_the_node_golden`).
+    #[test]
+    // The literals are the exact values of the doubles (each one halfway between two digit
+    // strings), longer than core::fmt's shortest form.
+    #[allow(clippy::excessive_precision)]
+    fn number_to_string_ties_go_to_even() {
+        let cases: &[(f64, &str)] = &[
+            (900719925474099.25, "900719925474099.2"),
+            (0.185214996337890625, "0.18521499633789062"),
+            (1.82361602783203125, "1.8236160278320312"),
+            (104.471893310546875, "104.47189331054688"),
+            (156512588.544921875, "156512588.54492188"),
+            (1071568155368862.75, "1071568155368862.8"),
+            (0.74469757080078125, "0.7446975708007812"),
+            (249274520119823.375, "249274520119823.38"),
+            (-900719925474099.25, "-900719925474099.2"),
+            // No tie: core::fmt's digits stay.
+            (0.5, "0.5"),
+            (2.5e-7, "2.5e-7"),
+            (9007199254740993.0, "9007199254740992"),
+        ];
+        for &(x, want) in cases {
+            assert_eq!(number_to_string(x), want, "{x:e}");
         }
     }
 
