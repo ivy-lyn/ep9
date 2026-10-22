@@ -27,11 +27,12 @@
 //! Not here: match, matchAll, search (they need RegExp, M1) and normalize (the normalization
 //! tables are M1).
 //!
-//! Strings are read as UTF-16 code units ([`units`]) and built in a `Vec<u16>` (no `Value` in
-//! a Rust heap list). A loop whose length is bounded by a string's length, that runs no JS and
-//! allocates nothing on the JS heap, is plain native work (as a copy) and does not poll. A loop
-//! that allocates a JS string per pass (split, replaceAll) or that can run to 2^53 - 1
-//! (String.raw) calls `Cx::poll_interrupt` once per pass (M2-P2-POLL).
+//! Strings are read as UTF-16 code units (the private `units` helper) and built in a
+//! `Vec<u16>` (no `Value` in a Rust heap list). A loop whose length is bounded by a string's
+//! length, that runs no JS and allocates nothing on the JS heap, is plain native work (as a
+//! copy) and does not poll. A loop that allocates a JS string per pass (split, replaceAll) or
+//! that can run to 2^53 - 1 (String.raw) calls `Cx::poll_interrupt` once per pass
+//! (M2-P2-POLL).
 //!
 //! Owner of the templates: P3-BLTB (see `TEMPLATES.md`). Ids are append-only: definition `i`
 //! of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by `tests/golden/ids-string.txt`.
