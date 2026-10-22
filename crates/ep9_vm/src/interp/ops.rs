@@ -268,8 +268,8 @@ fn jump_if(st: &St<'_>, c: bool, t: Fwd) -> Done {
 
 /// The JS→JS call fast path (H14): a bytecode callee gets its frame right above the caller's
 /// registers and the dispatch continues at its first instruction. No Rust recursion. Anything
-/// else (host callee, class constructor, interrupt due, the call that makes the callee's
-/// feedback vector, VM stack full) takes the cold path.
+/// else (host callee, class constructor, a sloppy callee with a primitive receiver, interrupt
+/// due, the call that makes the callee's feedback vector, VM stack full) takes the cold path.
 ///
 /// While the callee has no feedback vector, a call that pushes its frame here counts in
 /// `invocations`; the call that reaches `feedback_threshold` goes cold, and `slow::call`
@@ -298,7 +298,10 @@ fn call_fast(
     if fi.feedback.get().is_null() && fi.invocations.get() + 1 >= st.cx.feedback_threshold {
         return Flow::Cold;
     }
-    let this = call::bind_this(fi, this, st.cx.global_this);
+    // A sloppy callee with a primitive receiver: `slow::call` wraps it (H14-Q2).
+    let Some(this) = call::try_bind_this(fi, this, st.cx.global_this) else {
+        return Flow::Cold;
+    };
     let base = st.fp.wrapping_add(st.info().register_count as usize);
     let (limit, fp, next) = (st.cx.stack_limit, st.fp, st.next);
     let context = object::function_context(callee);
@@ -375,7 +378,10 @@ fn call_fast(
     {
         return Flow::Cold;
     }
-    let this = call::bind_this(fi, this, st.cx.global_this);
+    // A sloppy callee with a primitive receiver: `slow::call` wraps it (H14-Q2).
+    let Some(this) = call::try_bind_this(fi, this, st.cx.global_this) else {
+        return Flow::Cold;
+    };
     let base = st.fp.wrapping_add(st.info().register_count as usize);
     let (limit, fp, next) = (st.cx.stack_limit, st.fp, st.next);
     let context = object::function_context(callee);

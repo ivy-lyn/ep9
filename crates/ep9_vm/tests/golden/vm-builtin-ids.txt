@@ -31,6 +31,9 @@
 0x001b   0.27         method       1       "eval"  (%eval%)
 0x001c   0.28         method       0       "keys"  (%Array.prototype%.keys w-c)
 0x001d   0.29         method       0       "entries"  (%Array.prototype%.entries w-c)
+0x001e   0.30         method       1       "[Symbol.hasInstance]"  (%Function.prototype%.[Symbol.hasInstance] ---)
+0x001f   0.31         getter       0       "[Symbol.toStringTag]"  (%Iterator.prototype%.[Symbol.toStringTag] --c)
+0x0020   0.32         setter       1       "[Symbol.toStringTag]"  (%Iterator.prototype%.[Symbol.toStringTag] --c)
 # IntrinsicId (append-only)
 intrinsic   0  %Object.prototype%
 intrinsic   1  %Function.prototype%
@@ -76,3 +79,4 @@ intrinsic  40  %Promise.prototype%
 intrinsic  41  %AggregateError%
 intrinsic  42  %AggregateError.prototype%
 intrinsic  43  %Reflect%
+intrinsic  44  %Array.prototype%[@@unscopables]

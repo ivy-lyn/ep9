@@ -40,7 +40,7 @@ use crate::conv::Res;
 use crate::error::{FrameRef, not_implemented, stack_overflow, throw_error};
 use crate::frame::{CONSTRUCT_BIT, HEADER, HOLE, NULL, UNDEFINED, int32_bits, native_of, slot};
 use crate::interp::{self, Cx, EXIT_STUB};
-use crate::kinds::is_callable;
+use crate::kinds::{OBJECT, cell_kind, is_callable, is_cell_bits};
 use crate::object::{self, function_context, function_info, is_function, is_object};
 use crate::property;
 use crate::runtime::{Atom, ErrorKind, Root, Runtime, frame_top};
@@ -142,8 +142,12 @@ pub(crate) unsafe fn push_resume_frame(
     Some(fp)
 }
 
-/// OrdinaryCallBindThis (§10.2.1.2) for the receiver a caller passes. v0: a sloppy callee
-/// gets the global object for undefined/null; primitives are not wrapped.
+/// OrdinaryCallBindThis (§10.2.1.2) for the receiver a caller passes, without the ToObject
+/// step: a sloppy callee gets the global object for undefined/null; any other receiver as it
+/// is. It never allocates. Only the spike-native entries (`native.rs` `enter_native`,
+/// `run_b`) still use it (a logged spike-only gap); every other call site that runs bytecode
+/// takes [`try_bind_this`].
+#[cfg(feature = "spike-native")]
 #[inline(always)]
 pub(crate) fn bind_this(fi: &FunctionInfo, this: u64, global: u64) -> u64 {
     if !fi.is_strict() && (this == UNDEFINED || this == NULL) {
@@ -151,6 +155,56 @@ pub(crate) fn bind_this(fi: &FunctionInfo, this: u64, global: u64) -> u64 {
     } else {
         this
     }
+}
+
+/// OrdinaryCallBindThis (§10.2.1.2) with no allocation: the this value of a call of `fi`, or
+/// `None` when step 6.b makes a wrapper object (a sloppy callee and a number, boolean,
+/// string or symbol receiver); the caller then takes [`wrap_this`] (a cold path). A strict
+/// callee costs one flag test; a sloppy callee with an object receiver one cell test, one
+/// kind load and one compare (the hot T0 call of a method): a receiver is a language value,
+/// so a cell of kind 16 or more is an object (kinds 64 and up are internal cells, never a
+/// receiver), and the upper bound of `is_object` is not tested.
+///
+/// The caller wraps, not the callee prologue (H14-Q2):
+///
+/// ```text
+/// call site                          primitive receiver of a sloppy bytecode callee
+/// interp/ops.rs call_fast (2 cfgs)   None -> Flow::Cold -> slow::call
+/// slow::call, enter_b_cold           None -> wrap_this before push_frame
+/// call_function_object (from Rust)   None -> wrap_this before push_frame
+/// call_host (host callee)            no bind, no wrap: the host function gets the raw receiver
+/// native.rs enter_native, run_b      bind_this, no wrap (spike-native only, logged gap)
+/// ```
+#[inline(always)]
+pub(crate) fn try_bind_this(fi: &FunctionInfo, this: u64, global: u64) -> Option<u64> {
+    if fi.is_strict() {
+        return Some(this);
+    }
+    if is_cell_bits(this) {
+        // A string or a symbol (kinds below 16) needs the wrapper.
+        let kind = cell_kind(this);
+        debug_assert!(kind < 64, "an internal cell as a receiver");
+        return (kind >= OBJECT.get()).then_some(this);
+    }
+    if this == UNDEFINED || this == NULL {
+        Some(global)
+    } else if this == HOLE {
+        // Not a language value; as it is (the old `bind_this` result).
+        Some(this)
+    } else {
+        // A number or a boolean.
+        None
+    }
+}
+
+/// ToObject(`this`) for a call that [`try_bind_this`] refused (§10.2.1.2 step 6.b). GC point:
+/// the caller keeps the callee and the arguments rooted (caller registers, the scratch area
+/// or Rust locals, which the conservative scan sees), and the wrapper stays in a Rust local
+/// until `push_frame` stores it.
+#[cold]
+#[inline(never)]
+pub(crate) fn wrap_this(cx: &mut Cx, this: u64) -> Res<u64> {
+    crate::conv::to_object(cx, this)
 }
 
 /// The first free slot above the frame `fp` (the stack base if `fp` is null), or the scratch
@@ -368,7 +422,12 @@ fn call_function_object(
         return Err(not_implemented(cx, "calling code of this dispatch kind"));
     }
     poll(cx, caller)?;
-    let this = bind_this(fi, this, rt.global());
+    // GC point (the wrap): `f` and `this` are Rust locals, and `arg` reads the caller's frame
+    // or scratch area, which the GC scans.
+    let this = match try_bind_this(fi, this, rt.global()) {
+        Some(t) => t,
+        None => wrap_this(cx, this)?,
+    };
     let saved = rt.stack().scratch_top();
     let base = top_of(cx, caller);
     // SAFETY: `base` is the first free slot above the current top frame and its scratch area.

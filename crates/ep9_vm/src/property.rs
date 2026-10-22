@@ -588,29 +588,93 @@ fn has_own_with(rt: &Runtime, o: u64, key: u64, how: Probe) -> bool {
     props::own_get_with(o, key, how).is_some() || exotic::own_attrs(rt, o, key, how).is_some()
 }
 
-/// InstanceofOperator (§13.10.2) and OrdinaryHasInstance (§7.3.21) for `v instanceof f`. v0:
-/// no `@@hasInstance`, so InstanceofOperator is OrdinaryHasInstance after the callable check.
+/// InstanceofOperator(V, target) (§13.10.2) for `v instanceof f`:
+///
+/// ```text
+/// f not an object ───────────────────────────────> TypeError
+/// h = GetMethod(f, @@hasInstance)
+///   h is %Function.prototype%[@@hasInstance] ────> OrdinaryHasInstance(f, v), no call
+///   h is another function ───────────────────────> ToBoolean(Call(h, f, « v »))
+///   h undefined/null: f not callable ────────────> TypeError
+///                     else ──────────────────────> OrdinaryHasInstance(f, v)
+/// ```
+///
+/// OrdinaryHasInstance of a bound function is InstanceofOperator(v, its target); the loop
+/// takes that step in place, so a long bound chain costs no native stack (W4-BLTA-BOUND).
+/// GC point (the `@@hasInstance` getter and handler run JS): `v` and `f` live in Rust locals.
 pub(crate) fn instance_of(cx: &mut Cx, v: u64, f: u64) -> Res<bool> {
-    if !is_callable(f) {
-        return Err(throw_error(
-            cx,
-            ErrorKind::TypeError,
-            "Right-hand side of 'instanceof' is not callable",
-        ));
-    }
-    // OrdinaryHasInstance step 2: a bound function gives InstanceofOperator(v, its
-    // [[BoundTargetFunction]]), which is callable (BoundFunctionCreate's target is). Its own
-    // `prototype`, if any, is never read. A loop down the chain, so its depth costs no native
-    // stack (W4-BLTA-BOUND).
     let mut f = f;
-    while is_bound(f) {
-        f = bound::target(f);
+    loop {
+        // 1. If target is not an Object, throw a TypeError exception.
+        if !is_object(f) {
+            return Err(throw_error(
+                cx,
+                ErrorKind::TypeError,
+                "Right-hand side of 'instanceof' is not an object",
+            ));
+        }
+        // 2. Let instOfHandler be ? GetMethod(target, @@hasInstance).
+        let key = symbol::well_known(cx.rt(), symbol::WellKnownSymbol::HasInstance);
+        let h = get(cx, f, key)?;
+        if h != UNDEFINED && h != NULL {
+            if !is_callable(h) {
+                let msg = format!("{} is not a function", describe(h));
+                return Err(throw_error(cx, ErrorKind::TypeError, &msg));
+            }
+            // 3. Return ToBoolean(? Call(instOfHandler, target, « V »)). The intrinsic
+            //    handler is OrdinaryHasInstance(this value, V): run it here.
+            if !is_has_instance_intrinsic(cx.rt(), h) {
+                let r = crate::call::call_function(cx, h, f, &[v])?;
+                return Ok(crate::conv::to_boolean(r));
+            }
+            // OrdinaryHasInstance step 1: a non-callable C gives false.
+            if !is_callable(f) {
+                return Ok(false);
+            }
+        } else if !is_callable(f) {
+            // 4. If IsCallable(target) is false, throw a TypeError exception.
+            return Err(throw_error(
+                cx,
+                ErrorKind::TypeError,
+                "Right-hand side of 'instanceof' is not callable",
+            ));
+        }
+        // 5. Return ? OrdinaryHasInstance(target, V). Step 2: a bound function gives
+        //    InstanceofOperator(V, [[BoundTargetFunction]]): the next round of the loop.
+        if is_bound(f) {
+            f = bound::target(f);
+            continue;
+        }
+        return ordinary_has_instance_of_function(cx, f, v);
     }
-    if !is_object(v) {
+}
+
+/// OrdinaryHasInstance(C, O) (§7.3.21) for `Function.prototype[@@hasInstance]`
+/// (`natives.rs`): false for a non-callable `c`; InstanceofOperator(O, target) for a bound
+/// `c`; else the prototype chain walk. GC point: `c` and `o` live in Rust locals.
+pub(crate) fn ordinary_has_instance(cx: &mut Cx, c: u64, o: u64) -> Res<bool> {
+    // 1. If IsCallable(C) is false, return false.
+    if !is_callable(c) {
         return Ok(false);
     }
+    // 2. If C has a [[BoundTargetFunction]], return ? InstanceofOperator(O, BC).
+    if is_bound(c) {
+        return instance_of(cx, o, bound::target(c));
+    }
+    ordinary_has_instance_of_function(cx, c, o)
+}
+
+/// OrdinaryHasInstance(C, O) steps 3-7 for a callable `c` that is not bound.
+fn ordinary_has_instance_of_function(cx: &mut Cx, c: u64, o: u64) -> Res<bool> {
+    debug_assert!(is_callable(c) && !is_bound(c));
+    // 3. If O is not an Object, return false.
+    if !is_object(o) {
+        return Ok(false);
+    }
+    // 4. Let P be ? Get(C, "prototype").
     let key = cx.rt().atom(Atom::Prototype);
-    let proto = get(cx, f, key)?;
+    let proto = get(cx, c, key)?;
+    // 5. If P is not an Object, throw a TypeError exception.
     if !is_object(proto) {
         return Err(throw_error(
             cx,
@@ -618,7 +682,8 @@ pub(crate) fn instance_of(cx: &mut Cx, v: u64, f: u64) -> Res<bool> {
             "Function has non-object prototype in instanceof check",
         ));
     }
-    let mut o = object::proto_of(v);
+    // 6. Repeat: O = ? O.[[GetPrototypeOf]](); null gives false, P gives true.
+    let mut o = object::proto_of(o);
     while o != NULL {
         if o == proto {
             return Ok(true);
@@ -626,6 +691,15 @@ pub(crate) fn instance_of(cx: &mut Cx, v: u64, f: u64) -> Res<bool> {
         o = object::proto_of(o);
     }
     Ok(false)
+}
+
+/// Whether `h` is `%Function.prototype%[@@hasInstance]` (VM builtin 0.30). Allocates nothing.
+fn is_has_instance_intrinsic(rt: &Runtime, h: u64) -> bool {
+    let id = crate::builtins::BuiltinId::new(
+        crate::natives::VM_BLOCK,
+        crate::natives::vm::FUNCTION_HAS_INSTANCE,
+    );
+    crate::builtins::existing_function(rt, id) == Some(h)
 }
 
 /// The keys a `for-in` loop visits (§14.7.5.9 EnumerateObjectProperties, v0: own and inherited
