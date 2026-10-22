@@ -39,8 +39,8 @@ Isolate = one heap, one thread at a time; N realms; workers are isolates; only S
 | `Isolate` = `Box<Cx>` + `Box<Runtime>`, not `Send` | `crates/ep9_vm/src/isolate.rs:244-249`; `Heap` holds `PhantomData<*mut ()>` (`crates/ep9_heap/src/heap.rs:190-208`) |
 | One heap per isolate, one 64 GiB cage per heap with no code range; one 128 MiB code range per process for JIT code and units of every isolate (`CodeRange::process`, H07-Q6) | `crates/ep9_heap/src/memory.rs:154`; `crates/ep9_platform/src/va.rs:49`, `crates/ep9_platform/src/va.rs:52`, `crates/ep9_platform/src/va.rs:621` |
 | The conservative scan finds only cells of its own cage | `Memory::contains` (`crates/ep9_heap/src/memory.rs:262-264`); `find_cell` (`crates/ep9_heap/src/trace.rs:357-358`) |
-| Roots and atoms are per isolate (`Shared.roots`) | `crates/ep9_vm/src/runtime.rs:161`, `crates/ep9_vm/src/runtime.rs:179` |
-| One realm per isolate in v0 | `Root` (`crates/ep9_vm/src/runtime.rs:51`) |
+| Roots and atoms are per isolate (`Shared.roots`) | `crates/ep9_vm/src/runtime.rs:166`, `crates/ep9_vm/src/runtime.rs:184` |
+| One realm per isolate in v0 | `Root` (`crates/ep9_vm/src/runtime.rs:54`) |
 | `TerminateHandle` (`Arc<AtomicU32>`, the interrupt word `Runtime::terminate`; bit 0 = terminate) works from any thread | `crates/ep9_vm/src/isolate.rs:160-171`; test `crates/ep9_vm/src/tests/exceptions.rs:421` |
 | test262 exec makes a fresh isolate per run, one after another on a worker thread | `RunCtx::isolate` (`tools/test262/src/exec.rs:582-589`) |
 | `$262` has `global`, `gc` and `evalScript`; `createRealm` is missing | `tools/test262/src/exec.rs:50-54` |
@@ -109,3 +109,4 @@ Isolate = one heap, one thread at a time; N realms; workers are isolates; only S
 | 2026-10-22 | clarify | 1 `path:line` reference (`Shared`, `runtime.rs:161`) moved after the `InterruptHandle` weak-queue fix (P3 review ISO-CYCLE) | P3 review fix |
 | 2026-10-22 | clarify | Facts: `$262` also has `evalScript` since P4-PROMISE (`Cx::evaluate_script`); the `exec.rs` reference now covers the 5 lines of the `PRELUDE` doc and text. No check changes | P4 integration fixer |
 | 2026-10-22 | clarify | 3 `path:line` references moved to the code after the M2-P4 merge (drift script, [I15]). No check changes | P4 integration fixer |
+| 2026-10-23 | clarify | 3 `path:line` references moved to the code after the M3-P0 merge and the M3-P0 code fixes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS). The `Root` ref was off by 3 since 077d1fe (a pin in the drift script; the M3-P0 plan named it as a known stale ref). No check changes | M3-P0 integration fixer |

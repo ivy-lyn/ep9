@@ -41,7 +41,7 @@ Copied from the plan row (02 §6): GuardFuse (explicit load + compare) and Inval
 - The registry lives in `ep9_vm`. API frozen at M1 exit; built in M1-M2 (04 §8).
 - In AOT-jitless mode an InvalidatingFuse lazily deopts and swaps the slot to aot-baseline or interp; it patches no code (04 §4, 05 §10).
 
-**As built (e719ffa).** No fuse registry exists. One T0 flag is a one-way invariant of the initial list: `ShapeState::proto_index` is set once a prototype-mode object gets an array-index own property and is never cleared (V8's "no elements" protector; `crates/ep9_vm/src/shape.rs:213-217`, read by `shape::proto_index_keys` at `crates/ep9_vm/src/shape.rs:1131-1132`). While it is false, `[[Set]]` of a missing array element skips the prototype walk (`crates/ep9_vm/src/property.rs:354-359`). It is a Rust fast-path check, like a GuardFuse, with no stable index and no dependency list (H31-Q5).
+**As built (e719ffa).** No fuse registry exists. One T0 flag is a one-way invariant of the initial list: `ShapeState::proto_index` is set once a prototype-mode object gets an array-index own property (since M3-P0 also once a routed ARGUMENTS or MODULE_NAMESPACE object becomes a prototype, as its hooks may answer for an index) and is never cleared (V8's "no elements" protector; `crates/ep9_vm/src/shape.rs:214-219`, read by `shape::proto_index_keys` at `crates/ep9_vm/src/shape.rs:1134-1135`). While it is false, `[[Set]]` of a missing array element skips the prototype walk (`crates/ep9_vm/src/property.rs:409-414`). It is a Rust fast-path check, like a GuardFuse, with no stable index and no dependency list (H31-Q5).
 
 ## Rules
 
@@ -51,7 +51,7 @@ Copied from the plan row (02 §6): GuardFuse (explicit load + compare) and Inval
 | A GuardFuse costs one load + compare of a fuse word read through RootIndex or a link cell; it needs no deopt | M1: Spike C / SP-Facts; unit golden tests of the AOT emit (H34 `RootIndex`, `LinkSlot`) | M1; A2 |
 | An InvalidatingFuse pop lazily deopts every dependent frame by return-address swap and swaps the dispatch slot; no code is patched | M1: Spike C / SP-Facts (lazy deopt, H29); the "Tier differential + deopt" fuzz row (10-quality §4) | M1; M5 |
 | Every fast path that assumes a builtin default (the initial list) checks or depends on its fuse | fast-path differential tests (10-quality §2, "no spec deviation in fast paths") | M2 |
-| Shape constness bits and replacement watchpoints register as InvalidatingFuses | H17 rule rows (`docs/adr/H17-object-layout.md:110`); shape tests when constness is built | M1 |
+| Shape constness bits and replacement watchpoints register as InvalidatingFuses | H17 rule rows (`docs/adr/H17-object-layout.md:120`); shape tests when constness is built | M1 |
 | TS-derived CHA and enum folds exist only under a fuse | hint chaos fuzzing (10-quality §4); hint soundness corpus (10-quality §2) | A4 |
 | Session connect pops `InspectorSession`; a debugger write to a context, module or script binding pops `DebuggerBindingWrite` first | inspector protocol tests (H24 Rules, `docs/adr/H24-debug-and-profiling-hooks.md:45-46`) | M4 |
 | Fuses have stable indices, so a unit and a snapshot name a fuse by index | H13 stable-index order checks (the fuse list, H13 follow-ups) | M1 |
@@ -69,7 +69,7 @@ Copied from the plan row (02 §6): GuardFuse (explicit load + compare) and Inval
 | [R14] | V8 has 22 one-way isolate protectors; JSC uses WatchpointSets; SpiderMonkey RealmFuses split guard and invalidating fuses; lazy deopt patches return addresses, not code | [../research/14-dual-mode-architecture.md](../research/14-dual-mode-architecture.md) |
 | [R16] | D8: GuardFuse (load + compare, AOT-cheap) and InvalidatingFuse (lazy deopt + slot swap); TS CHA and enum folds use fuses | [../research/16-aot-synthesis.md](../research/16-aot-synthesis.md) |
 | [R18] | A node inspector session rewrote strict `let`/`const` locals and retyped a field in a call-free loop; fuses F1-F8 named for sound regions | [../research/18-sound-regions.md](../research/18-sound-regions.md) |
-| code | `grep -rniwE 'fuses?\|protectors?'` over `crates/*/src` at e719ffa: one match, the `proto_index` doc (`crates/ep9_vm/src/shape.rs:216`) | this ADR |
+| code | `grep -rniwE 'fuses?\|protectors?'` over `crates/*/src` at e719ffa: one match, the `proto_index` doc (`crates/ep9_vm/src/shape.rs:218`) | this ADR |
 
 ## Validation
 
@@ -98,3 +98,5 @@ Copied from the plan row (02 §6): GuardFuse (explicit load + compare) and Inval
 |---|---|---|---|
 | 2026-10-22 | draft | First draft from 02 §6 row H31 and 04 §8: two fuse kinds, the initial list, the debugger fuses of H24; API, scope and word format are Open questions | P3-ADR-JIT agent (M2-P3) |
 | 2026-10-22 | clarify | 1 `path:line` reference moved to the code after the M2-P5 merge and the P5 fixer changes (drift script, [I15]). No check changes | P5 integration fixer |
+| 2026-10-23 | clarify | 5 `path:line` references moved to the code after the M3-P0 merge and the M3-P0 code fixes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS). No check changes | M3-P0 integration fixer |
+| 2026-10-23 | rewrite (pre-freeze churn, README §3.3; H31 is Draft) | The as-built `proto_index` paragraph: since the M3-P0 code fix CX-VM1 the flag is also set when a routed ARGUMENTS or MODULE_NAMESPACE object becomes a prototype (`shape::may_have_index_keys`), as its hooks may answer for an index key. Test: `layout3` `index_paths_set_walk_and_for_in_reach_the_routed_hooks` | M3-P0 integration fixer |
