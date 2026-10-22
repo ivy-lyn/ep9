@@ -163,11 +163,14 @@ pub enum IntrinsicId {
     AggregateError,
     /// `%AggregateError.prototype%` (§20.5.7.3).
     AggregateErrorPrototype,
+    // ---- M2-P5 (Reflect): made by `ep9_builtins` (reflect.rs), a state slot ----
+    /// `%Reflect%` (§28.1).
+    Reflect,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 43] = [
+    pub const ALL: [IntrinsicId; 44] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -211,6 +214,7 @@ impl IntrinsicId {
         IntrinsicId::PromisePrototype,
         IntrinsicId::AggregateError,
         IntrinsicId::AggregateErrorPrototype,
+        IntrinsicId::Reflect,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object.
@@ -259,6 +263,7 @@ impl IntrinsicId {
             IntrinsicId::PromisePrototype => "%Promise.prototype%",
             IntrinsicId::AggregateError => "%AggregateError%",
             IntrinsicId::AggregateErrorPrototype => "%AggregateError.prototype%",
+            IntrinsicId::Reflect => "%Reflect%",
         }
     }
 
@@ -308,7 +313,8 @@ impl IntrinsicId {
             | IntrinsicId::Promise
             | IntrinsicId::PromisePrototype
             | IntrinsicId::AggregateError
-            | IntrinsicId::AggregateErrorPrototype => return None,
+            | IntrinsicId::AggregateErrorPrototype
+            | IntrinsicId::Reflect => return None,
         })
     }
 
@@ -327,6 +333,7 @@ impl IntrinsicId {
             IntrinsicId::PromisePrototype => Some(8),
             IntrinsicId::AggregateError => Some(9),
             IntrinsicId::AggregateErrorPrototype => Some(10),
+            IntrinsicId::Reflect => Some(11),
             _ => None,
         }
     }
@@ -967,7 +974,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 11;
+const INTRINSIC_SLOTS: usize = 12;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.
