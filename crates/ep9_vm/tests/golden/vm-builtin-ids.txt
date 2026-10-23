@@ -42,6 +42,7 @@
 0x0026   0.38         method       1       "next"  (%AsyncFromSyncIteratorPrototype%.next w-c)
 0x0027   0.39         method       1       "return"  (%AsyncFromSyncIteratorPrototype%.return w-c)
 0x0028   0.40         method       1       "throw"  (%AsyncFromSyncIteratorPrototype%.throw w-c)
+0x0029   0.41         method       0       ""  (%ThrowTypeError%)
 # IntrinsicId (append-only)
 intrinsic   0  %Object.prototype%
 intrinsic   1  %Function.prototype%
