@@ -406,10 +406,10 @@ jobs:
       # placement (b), with 0 relocations, the unit-data register x27/r14, a per-isolate RW copy
       # with its root ranges, 2 isolates on 2 threads, the unwind self-test and every fallback
       # (checks (a)-(g); docs/measurements/2026-10-23-sp-unit.md). A SKIP line fails it. It runs
-      # on the targets where SP-UNIT proved it (mac a64, linux a64, linux x64 in the sandbox).
-      # Not on windows-x64 yet: a CI probe decides, else M3-P2 WIN-STATIC-2 adds it (V8-A6).
+      # on every runner: SP-UNIT proved it on mac a64, linux a64, linux x64 (sandbox) and
+      # windows-x64 (CI probe run 39886596197, V8-A6).
       - name: Spike B unit gate
-        if: ${{ !cancelled() && matrix.name != 'windows-x64' }}
+        if: ${{ !cancelled() }}
         run: bash spikes/spike-b/gate.sh unit
       # P4-WIN-STATIC-1 (plan-v6 D25): the real Win64 unwind run of the x86-64 JIT of placement
       # (a) (drive, id, hold) and, since M3-P0 P0-B-X64, placement (b) (bdrive, bid, bhold)
