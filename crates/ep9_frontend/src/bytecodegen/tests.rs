@@ -492,6 +492,11 @@ const CASES: &[(&str, Mode, &str)] = &[
         "import a, {b as c} from 'x'; export let d = a + c; export function e() { return d; } export default 1;",
     ),
     (
+        "module-import-meta",
+        Module,
+        "export const m = import.meta; function f() { return () => import.meta.url; }",
+    ),
+    (
         "module-default-fn",
         Module,
         "export default function () { return 1; }",
@@ -863,10 +868,6 @@ fn unsupported_constructs_name_the_feature() {
             Err(CodegenError::Unsupported(u)) => assert_eq!(u.feature, feature, "{src}"),
             other => panic!("{src}: {other:?}"),
         }
-    }
-    match compile_module("import.meta") {
-        Err(CodegenError::Unsupported(u)) => assert_eq!(u.feature, "import.meta"),
-        other => panic!("{other:?}"),
     }
     // `for await` at a module top level is top-level await (M3-P3 IMPORT-TLA): the same
     // cause as a top-level `await`, at the statement's position (review RV-P2-AG1).

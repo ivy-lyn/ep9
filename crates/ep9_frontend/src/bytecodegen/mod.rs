@@ -390,16 +390,20 @@ fn gen_job<'a>(
     match job {
         Job::Program => {
             let info = &sa.functions()[0];
-            let meta = FunctionMeta::entry(
+            let mut meta = FunctionMeta::entry(
                 cx.code,
                 info.strict,
                 u32::try_from(fe.source.len()).unwrap_or(u32::MAX),
             );
+            if cx.module {
+                // A resumable function 0 (module.rs, M3-P2-MODULE-F0).
+                meta.flags = meta.flags | FunctionFlags::ASYNC;
+            }
             let mut g = FnGen::new(cx, info, meta);
-            if cx.code == CodeKind::Eval {
-                g.gen_eval_program(fe.program)?;
-            } else {
-                g.gen_program(fe.program)?;
+            match cx.code {
+                CodeKind::Eval => g.gen_eval_program(fe.program)?,
+                CodeKind::Module => g.gen_module_program(fe.program)?,
+                CodeKind::Script => g.gen_program(fe.program)?,
             }
             let (code, jobs) = g.finish()?;
             Ok((info.id, code, jobs))

@@ -62,33 +62,46 @@ module records: has-tla=false
       3 export="all" request=0 import=all
   star exports (1):
       0 request=3
-function f0 module name=- parent=- outer_scope=- flags=[strict] params=0 length=0 regs=2 range=0..323
-  code (28 bytes):
-      0 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
-      4    StaModuleVariable [3], [0]                   ; 20 03 00
-      7 S> LdaSmi [1]                                   ; 04 01
-      9    StaModuleVariable [1], [0]                   ; 20 01 00
-     12 S> CreateEmptyObjectLiteral                     ; 71
-     13    Star r0                                      ; 0c 00
-     15    Ldar r0                                      ; 0b 00
-     17 E> ToObject r1                                  ; 5b 01
-     19 E> GetNamedProperty r0, k1, s1  ; k1 = String str0 "w" ; 21 00 01 01
-     23    StaModuleVariable [2], [0]                   ; 20 02 00
-     26    LdaUndefined                                 ; 05
-     27    Return                                       ; 92
-  constants (2):
-      0 Function f1
-      1 String str0 "w"
+function f0 module name=- parent=- outer_scope=- flags=[strict,async] params=0 length=0 regs=3 range=0..323
+  code (56 bytes):
+      0    Ldar <this>                                  ; 0b ff
+      2    Star r0                                      ; 0c 00
+      4    LdaUndefined                                 ; 05
+      5    Star <this>                                  ; 0c ff
+      7    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+3, +24] ; 99 00 00
+     10    LdaUndefined                                 ; 05
+     11    StaModuleVariable [1], [0]                   ; 20 01 00
+     14    LdaUndefined                                 ; 05
+     15    StaModuleVariable [2], [0]                   ; 20 02 00
+     18 E> CreateClosure k1, s0, #0x00  ; k1 = Function f1 ; 74 01 00 00
+     22    StaModuleVariable [3], [0]                   ; 20 03 00
+     25    LdaUndefined                                 ; 05
+     26    SuspendGenerator r0, r0, [1]                 ; 9a 00 00 01 01
+     31    ResumeGenerator r0, r0                       ; 9b 00 00 01
+     35 S> LdaSmi [1]                                   ; 04 01
+     37    StaModuleVariable [1], [0]                   ; 20 01 00
+     40 S> CreateEmptyObjectLiteral                     ; 71
+     41    Star r1                                      ; 0c 01
+     43    Ldar r1                                      ; 0b 01
+     45 E> ToObject r2                                  ; 5b 02
+     47 E> GetNamedProperty r1, k2, s1  ; k2 = String str0 "w" ; 21 01 02 01
+     51    StaModuleVariable [2], [0]                   ; 20 02 00
+     54    LdaUndefined                                 ; 05
+     55    Return                                       ; 92
+  constants (3):
+      0 JumpTable [+3, +24]
+      1 Function f1
+      2 String str0 "w"
   feedback (2):
       0 CreateClosure
       1 LoadNamed
   handlers (0):
   positions (5):
-      0 E 309 (9:16)
-      7 S 275 (8:12)
-     12 S 282 (8:19)
-     17 E 282 (8:19)
-     19 E 284 (8:21)
+     18 E 309 (9:16)
+     35 S 275 (8:12)
+     40 S 282 (8:19)
+     45 E 282 (8:19)
+     47 E 284 (8:21)
 function f1 normal name="default" parent=f0 outer_scope=scope0 flags=[strict,simple-params] params=0 length=0 regs=0 range=309..323
   code (2 bytes):
       0    LdaUndefined                                 ; 05

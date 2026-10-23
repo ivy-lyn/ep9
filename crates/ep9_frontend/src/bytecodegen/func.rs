@@ -946,33 +946,27 @@ impl<'a, 's> FnGen<'a, 's> {
 
     // ---- Function bodies ----
 
-    /// Function 0 of a script or module.
+    /// Function 0 of a script (a module's is `module.rs` `gen_module_program`).
     pub(crate) fn gen_program(&mut self, program: &'a Program<'a>) -> Gen {
         let root = ScopeId(0);
         self.scope = root;
         let root_info = self.sa.scope(root);
-        if self.cx.module {
-            if root_info.needs_context {
-                self.push_context(root, |g| g.create_context(root));
-            }
-        } else {
-            let has_decls = root_info.bindings.iter().any(|&b| {
-                matches!(
-                    self.binding(b).location,
-                    BindingLocation::Global | BindingLocation::GlobalLexical
-                )
+        let has_decls = root_info.bindings.iter().any(|&b| {
+            matches!(
+                self.binding(b).location,
+                BindingLocation::Global | BindingLocation::GlobalLexical
+            )
+        });
+        if has_decls {
+            self.b.set_statement_position(0);
+            self.runtime(RuntimeId::DeclareGlobals, RegisterList::EMPTY);
+        }
+        if let Some(extra) = self.cx.script_ctx_scope {
+            let n = root_info.context_slots.len() as u32;
+            self.push_context(root, |g| {
+                let k = g.b.scope_constant(extra);
+                g.b.create_function_context(k, n);
             });
-            if has_decls {
-                self.b.set_statement_position(0);
-                self.runtime(RuntimeId::DeclareGlobals, RegisterList::EMPTY);
-            }
-            if let Some(extra) = self.cx.script_ctx_scope {
-                let n = root_info.context_slots.len() as u32;
-                self.push_context(root, |g| {
-                    let k = g.b.scope_constant(extra);
-                    g.b.create_function_context(k, n);
-                });
-            }
         }
         self.init_frame_bindings()?;
         self.init_holes(root);

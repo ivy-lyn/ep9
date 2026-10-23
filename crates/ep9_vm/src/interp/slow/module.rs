@@ -6,43 +6,24 @@
 //!
 //! | Entry | Args | Result |
 //! |---|---|---|
-//! | `LdaModuleVariable` | cell index, depth | the cell's value (the hole in its TDZ; see below) |
+//! | `LdaModuleVariable` | cell index, depth | the cell's value (the hole in its TDZ) |
 //! | `StaModuleVariable` | cell index, depth, the accumulator | the accumulator; an import cell throws a TypeError |
 //! | 42 `GetImportMeta` | none | the module's `import.meta` object |
 //! | 43 `DynamicImport` | specifier, options (undefined when absent) | not built (M3-P3 IMPORT-TLA) |
 //!
-//! A load gives the hole only to an instruction that checks it: the front end puts a
-//! `ThrowReferenceErrorIfHole` right after each load of a binding that may be in its TDZ.
-//! Any other load of a cell in the hole is a `var` binding read before its declaration ran
-//! (the module's `var` cells are made at Evaluate, M3-P2 step 1): undefined.
-
-use ep9_bytecode::Opcode;
+//! A cell in the hole is a binding in its TDZ: the front end puts a
+//! `ThrowReferenceErrorIfHole` right after each load of a binding that may be in it. A `var`
+//! cell is undefined from InitializeEnvironment on (function 0's first part, M3-P2 step 2),
+//! so its loads need no check.
 
 use crate::conv::Res;
 use crate::error::{not_implemented, throw_error};
 use crate::exotic::probe;
-use crate::frame::{HOLE, UNDEFINED};
 use crate::interp::Cx;
 use crate::module;
 use crate::runtime::ErrorKind;
 
-use super::{context, enter, info, not_impl};
-
-/// True if the instruction after the one at `pc` (in the frame `fp`) is
-/// `ThrowReferenceErrorIfHole`.
-fn hole_checked_next(fp: *mut u64, pc: *const u8) -> bool {
-    let fi = info(fp);
-    let Some(off) = fi.offset_of(pc) else {
-        return false;
-    };
-    // SAFETY: the code of a bytecode FunctionInfo is `code_len` bytes of verified bytecode.
-    let code = unsafe { core::slice::from_raw_parts(fi.code, fi.code_len as usize) };
-    let Ok(insn) = ep9_bytecode::decode_at(code, off) else {
-        return false;
-    };
-    let next = off + insn.bytes.len() as u32;
-    ep9_bytecode::decode_at(code, next).is_ok_and(|n| n.opcode == Opcode::ThrowReferenceErrorIfHole)
-}
+use super::{context, enter, not_impl};
 
 /// The internal error of a module cell that the module does not have (a BytecodeGen bug).
 fn bad_cell(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> u64 {
@@ -71,7 +52,6 @@ pub(crate) fn lda_module_variable(
         return not_impl(cx, fp, pc, "module variables");
     };
     match module::cell_get(m, cell) {
-        Some(HOLE) if !hole_checked_next(fp, pc) => UNDEFINED,
         Some(v) => v,
         None => bad_cell(cx, fp, pc),
     }

@@ -243,10 +243,9 @@ try { o.y = 1; } catch (e) { print(e.constructor.name); }
 /// GC stress over a graph of 3 modules with a cycle (a -> b -> c -> a): evaluation order
 /// (dependencies first, each body once), a binding in its TDZ seen from the cycle
 /// (ReferenceError through the namespace and through an import), a call of a function export
-/// of a module that has not run yet (a ReferenceError: in node v24.22.1 for `a` in its body;
-/// in ep9 for `af` itself, as the module's functions are made when its body starts until
-/// M3-P2 step 2 makes them at InitializeEnvironment), and the live values after the cycle
-/// ran. node v24.22.1 prints the same lines.
+/// of a module that has not run yet (the function exists from InitializeEnvironment on; its
+/// body throws the ReferenceError for `a`), and the live values after the cycle ran. node
+/// v24.22.1 prints the same lines.
 #[test]
 fn a_three_module_cycle_under_gc_stress() {
     const FILES: Files = &[
@@ -274,7 +273,7 @@ import * as A from './a.js';
 print('c runs', Reflect.ownKeys(A).map(String).join());
 try { a; } catch (e) { print('import', e.constructor.name); }
 try { A.a; } catch (e) { print('namespace', e.constructor.name); }
-try { af(); } catch (e) { print('function', e.constructor.name); }
+try { af(); } catch (e) { print('function', e.constructor.name, e.message); }
 export const c = 'C';
 export function cf() { return 'cf'; }
 export function later() { return a + af(); }
@@ -287,7 +286,7 @@ globalThis.later = later;
         "c runs a,af,Symbol(Symbol.toStringTag)",
         "import ReferenceError",
         "namespace ReferenceError",
-        "function ReferenceError",
+        "function ReferenceError Cannot access 'a' before initialization",
         "b runs C cf",
         "a runs B bf:BC C",
     ]);
@@ -301,6 +300,57 @@ globalThis.later = later;
     ];
     want.push("Aaf:A".to_string());
     assert_eq!(run_every(AFTER, &["a.js", "after.js"]), want);
+}
+
+/// InitializeEnvironment makes a module's functions (the default one too) and its `var`
+/// exports (undefined) before any module of the graph runs (§16.2.1.6.4 steps 21-24; function
+/// 0's first part, M3-P2-MODULE-F0): `b.js` runs first and sees them, while a `let` is still
+/// in its TDZ. `this` is undefined, also in an arrow; `import.meta` is one object per module
+/// (§13.3.12.1). node v24.22.1 prints the same lines.
+#[test]
+fn declarations_exist_before_the_body_runs() {
+    const FILES: Files = &[
+        (
+            "a.js",
+            r#"import { readA, metaB } from './b.js';
+export var v = 'V';
+export let l = 'L';
+export function fa() { return 'fa'; }
+export default function () { return 'def'; }
+const arrowThis = () => this;
+function own() { return import.meta; }
+print('a runs', readA(), arrowThis(), this);
+print(typeof import.meta, 'x' in import.meta);
+import.meta.x = 1;
+print(own() === import.meta, own().x, metaB() === import.meta, metaB().x);
+"#,
+        ),
+        (
+            "b.js",
+            r#"import { v, fa, l } from './a.js';
+import * as A from './a.js';
+import def from './a.js';
+print('b sees', v, fa(), typeof def, def.name, def());
+try { l; } catch (e) { print('l', e.constructor.name, e.message); }
+try { A.l; } catch (e) { print('A.l', e.constructor.name, e.message); }
+print(A.v, A.fa(), A.default());
+export function readA() { return v + l; }
+export function metaB() { return import.meta; }
+"#,
+        ),
+    ];
+    assert_eq!(
+        run_every(FILES, &["a.js"]),
+        lines(&[
+            "b sees undefined fa function default def",
+            "l ReferenceError Cannot access 'l' before initialization",
+            "A.l ReferenceError Cannot access 'l' before initialization",
+            "undefined fa def",
+            "a runs VL undefined undefined",
+            "object false",
+            "true 1 false undefined",
+        ])
+    );
 }
 
 /// ResolveExport (§16.2.1.6.3): `export *` skips `default` and a name two stars give from two
