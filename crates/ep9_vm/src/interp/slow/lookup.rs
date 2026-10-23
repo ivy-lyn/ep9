@@ -26,8 +26,18 @@
 //!   (`object::context_scope`: unit atom of `scope.slots[i].name`, compared by bits, H19);
 //!   then, in a CALLS_SLOPPY_EVAL var scope, the own properties of the `.eval_ext` object in
 //!   slot 0 (the vars of sloppy direct eval code)
+//! at the end of the chain, a MODULE record (direct eval in module code): the module's
+//!   cells, by local name (`module::cell_of_name`: imports and exported bindings)
 //! then the global environment: the script lexical record, then the global object
 //! ```
+//!
+//! A module cell is a box that the module Environment Record shares with other modules
+//! (`module.rs`). A read gives a ReferenceError in its TDZ (the hole), as
+//! `LdaModuleVariable` + `ThrowReferenceErrorIfHole`; a store to an import is a TypeError,
+//! as `StaModuleVariable` (eval code in a module is strict). A store to an exported binding
+//! throws the v0 not-implemented Error after the TDZ check: the module records (ABI 5) do not
+//! say which exported binding is `const`, so the store could not give the TypeError of a
+//! `const`.
 //!
 //! A name that no context binds resolves to the global environment, where an unresolvable
 //! name (no lexical binding, no property on the global object's chain) gives ReferenceError
@@ -45,8 +55,9 @@
 //! a destructuring target: §13.15.2, §13.4, §14.3.2.1, §13.15.5, §8.6.3-4 evaluate the
 //! reference first) is resolved once by
 //! `ResolveLookupSlot`, which returns its environment as a value: the declarative context
-//! that binds it (by a slot, or by its `.eval_ext` object), the `with` object, undefined for
-//! the global environment, or null for an unresolvable name. `LoadLookupSlotResolved` and
+//! that binds it (by a slot, or by its `.eval_ext` object), the `with` object, the MODULE
+//! record of a module cell, undefined for the global environment, or null for an
+//! unresolvable name. `LoadLookupSlotResolved` and
 //! `StoreLookupSlotResolved` turn it back into the binding without a walk (`binding_of_env`),
 //! so the right-hand side cannot move the reference, and a strict store to a `with` binding
 //! that is gone, or to a name that was unresolvable, throws a ReferenceError (§9.1.1.2.5,
@@ -73,11 +84,12 @@ use ep9_bytecode::{EVAL_EXT_BINDING, ScopeFlags, ScopeKind, UnitString, Variable
 use ep9_value::Throw;
 
 use crate::conv::{self, Res};
-use crate::error::throw_error;
+use crate::error::{not_implemented, throw_error};
 use crate::frame::{HOLE, NULL, TRUE, UNDEFINED};
 use crate::interp::Cx;
 use crate::key;
 use crate::kinds;
+use crate::module;
 use crate::object::{self, attr, is_context, is_object, own_get};
 use crate::property;
 use crate::runtime::{ErrorKind, Root};
@@ -103,6 +115,9 @@ enum Binding {
     /// `context` (a var of sloppy direct eval code in a declarative record: no receiver,
     /// deletable).
     EvalExt { context: u64, ext: u64 },
+    /// Cell `cell` of the MODULE record `module` (direct eval in module code): an import
+    /// (`cell` < 0) or an exported binding.
+    Module { module: u64, cell: i32 },
     /// The global environment, which also stands for an unresolvable name.
     Global,
     /// A name that was unresolvable when `ResolveLookupSlot` ran (only from
@@ -205,6 +220,9 @@ fn resolve(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<Binding> {
         }
         c = object::context_previous(c);
     }
+    if !implicit && let Some((module, cell)) = module::cell_of_name(c, name) {
+        return Ok(Binding::Module { module, cell });
+    }
     Ok(if implicit {
         Binding::GlobalImplicit
     } else {
@@ -271,6 +289,14 @@ fn get_binding_value(
             property::get(cx, o, name)
         }
         Binding::EvalExt { ext, .. } => property::get(cx, ext, name),
+        Binding::Module { module, cell } => match module::cell_get(module, cell) {
+            Some(HOLE) => Err(throw_name_now(cx, NameMsg::Tdz, name)),
+            Some(v) => Ok(v),
+            None => {
+                throw_msg_now(cx, "module cell out of range");
+                Err(Throw)
+            }
+        },
         Binding::Unresolvable => Err(throw_name_now(cx, NameMsg::NotDefined, name)),
         Binding::Global => {
             let rt = cx.rt();
@@ -337,6 +363,23 @@ fn set_binding_value(cx: &mut Cx, b: Binding, name: u64, v: u64, strict: bool) -
             property::set(cx, o, name, v, strict)
         }
         Binding::EvalExt { ext, .. } => property::set(cx, ext, name, v, strict),
+        Binding::Module { module, cell } => {
+            // An import is immutable (CreateImportBinding), as `StaModuleVariable`.
+            if cell < 0 {
+                return Err(const_assign(cx));
+            }
+            match module::cell_get(module, cell) {
+                Some(HOLE) => Err(throw_name_now(cx, NameMsg::Tdz, name)),
+                Some(_) => Err(not_implemented(
+                    cx,
+                    "assignment to an exported module binding in direct eval code",
+                )),
+                None => {
+                    throw_msg_now(cx, "module cell out of range");
+                    Err(Throw)
+                }
+            }
+        }
         Binding::Unresolvable => {
             if strict {
                 return Err(throw_name_now(cx, NameMsg::NotDefined, name));
@@ -453,7 +496,7 @@ pub(crate) fn create_with_context(
 pub(crate) fn delete_lookup_slot(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<u64> {
     let name = name_key(cx, name)?;
     let deleted = match resolve(cx, fp, name)? {
-        Binding::Slot { .. } | Binding::GlobalImplicit => false,
+        Binding::Slot { .. } | Binding::Module { .. } | Binding::GlobalImplicit => false,
         Binding::With(o) | Binding::EvalExt { ext: o, .. } => property::delete(cx, o, name, false)?,
         // `resolve` never gives it.
         Binding::Unresolvable => true,
@@ -492,13 +535,14 @@ pub(crate) fn load_lookup_slot_for_call(
 
 /// `ResolveLookupSlot(name)` (runtime id 29): ResolveBinding (§9.4.2) of `name` without
 /// GetValue. Returns the environment of the reference (see the module doc): the declarative
-/// context that binds it, the `with` object, undefined for the global environment (the
-/// script lexical record has it, or HasProperty of the global object, §9.1.1.4.1), or null
-/// for an unresolvable name. GC point (an `@@unscopables` getter, a poll, a proxy trap).
+/// context that binds it, the `with` object, the MODULE record of a module cell, undefined
+/// for the global environment (the script lexical record has it, or HasProperty of the
+/// global object, §9.1.1.4.1), or null for an unresolvable name. GC point (an `@@unscopables` getter, a poll, a proxy trap).
 pub(crate) fn resolve_lookup_slot(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<u64> {
     let name = name_key(cx, name)?;
     Ok(match resolve(cx, fp, name)? {
         Binding::Slot { context, .. } | Binding::EvalExt { context, .. } => context,
+        Binding::Module { module, .. } => module,
         Binding::With(o) => o,
         Binding::GlobalImplicit => UNDEFINED,
         Binding::Global | Binding::Unresolvable => {
@@ -529,6 +573,9 @@ fn binding_of_env(cx: &mut Cx, env: u64, name: u64) -> Res<Binding> {
     }
     if env == NULL {
         return Ok(Binding::Unresolvable);
+    }
+    if let Some((module, cell)) = module::cell_of_name(env, name) {
+        return Ok(Binding::Module { module, cell });
     }
     if is_context(env) {
         if let Some(b) = slot_binding(env, name) {
