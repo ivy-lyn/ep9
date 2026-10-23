@@ -103,6 +103,18 @@ fn run_in(src: &str, dispatch: Dispatch, stress: bool) -> Result<Vec<String>, St
         CompileOptions::default(),
     )
     .map_err(|e| format!("compile error: {e:?}"))?;
+    let mut iso = isolate(dispatch, stress);
+    OUT.with(|o| o.borrow_mut().clear());
+    let r = iso.run_script(unit, "test.js");
+    let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
+    iso.collect_garbage();
+    iso.verify_heap().expect("a valid heap");
+    r.map(|_| out).map_err(|e| e.message)
+}
+
+/// An isolate with the table, [`HOOKS`] and [`HOST`]. `stress`: a collection before every
+/// allocation, then the heap verifier.
+fn isolate(dispatch: Dispatch, stress: bool) -> Isolate {
     let mut iso = Isolate::new(IsolateConfig {
         heap: HeapConfig {
             gc_stress: u32::from(stress),
@@ -118,12 +130,7 @@ fn run_in(src: &str, dispatch: Dispatch, stress: bool) -> Result<Vec<String>, St
     for (name, length, f) in HOST {
         iso.register_host_function(name, length, f);
     }
-    OUT.with(|o| o.borrow_mut().clear());
-    let r = iso.run_script(unit, "test.js");
-    let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
-    iso.collect_garbage();
-    iso.verify_heap().expect("a valid heap");
-    r.map(|_| out).map_err(|e| e.message)
+    iso
 }
 
 /// [`run_in`] with the default dispatch, with and without GC stress; both must agree. For
@@ -292,4 +299,223 @@ print(Object.getPrototypeOf(c) === C.prototype, c instanceof other.Object, c ins
             "true true false",
         ])
     );
+}
+
+/// Map, Set, WeakMap and WeakSet used from two realms (COLL-1): an object has one identity
+/// hash for the whole isolate (the hash key is an isolate-wide private name, not a property of
+/// a realm's `%Object.prototype%`). The methods of one realm find the keys that the other
+/// realm's methods added, also after a rehash (40 keys grow a table past its first
+/// capacities).
+#[test]
+fn collections_hash_keys_across_realms() {
+    assert_eq!(
+        run_every(
+            r#"var other = createRealm();
+var o = {}, p = {};
+var m = new Map();
+m.set(o, 1);
+print('map', other.Map.prototype.get.call(m, o), other.Map.prototype.has.call(m, o));
+other.Map.prototype.set.call(m, o, 2);
+print('map size', m.size, m.get(o));
+var om = new other.Map();
+om.set(p, 'p');
+print('other map', om.get(p), Map.prototype.get.call(om, p));
+var s = new other.Set();
+s.add(o);
+print('set', s.has(o), Set.prototype.has.call(s, o), new Set([o]).has(o));
+var keys = [];
+for (var i = 0; i < 3; i++) keys.push({ i: i });
+var wm = new WeakMap();
+for (var i = 0; i < 3; i++) wm.set(keys[i], i);
+for (var i = 0; i < 40; i++) { var k = { j: i }; keys.push(k); other.WeakMap.prototype.set.call(wm, k, i); }
+var ok = true;
+for (var i = 0; i < keys.length; i++) ok = ok && wm.get(keys[i]) === (i < 3 ? i : i - 3) && other.WeakMap.prototype.has.call(wm, keys[i]);
+print('weakmap', ok);
+var ws = new other.WeakSet();
+for (var i = 0; i < keys.length; i++) WeakSet.prototype.add.call(ws, keys[i]);
+var ok2 = true;
+for (var i = 0; i < keys.length; i++) ok2 = ok2 && ws.has(keys[i]);
+print('weakset', ok2);
+var big = new Map();
+for (var i = 0; i < 40; i++) { if (i % 2) big.set(keys[i], i); else other.Map.prototype.set.call(big, keys[i], i); }
+var ok3 = big.size === 40;
+for (var i = 0; i < 40; i++) ok3 = ok3 && big.get(keys[i]) === i && other.Map.prototype.get.call(big, keys[i]) === i;
+print('rehash', ok3);
+var od = other.eval('({})');
+var m2 = new Map([[od, 'x']]);
+print('other object key', other.eval('(function (m, k) { return m.get(k); })')(m2, od));"#
+        ),
+        lines(&[
+            "map 1 true",
+            "map size 1 2",
+            "other map p p",
+            "set true true true",
+            "weakmap true",
+            "weakset true",
+            "rehash true",
+            "other object key x",
+        ])
+    );
+}
+
+/// The realm steps that use GetFunctionRealm (§7.3.22): a function's lazy `prototype` object
+/// is made with the `%Object.prototype%` (or the generator prototype) of the function's realm,
+/// not of the realm that first reads it (§10.2.5 MakeConstructor runs at creation). A NativeError
+/// constructed with a newTarget whose `prototype` is not an object takes the error prototype
+/// of newTarget's realm (§20.5.6.1.1, §10.1.14 step 4). ArraySpeciesCreate (§10.4.2.3 step 4)
+/// does not use `%Array%` of another realm as the constructor.
+#[test]
+fn get_function_realm_steps() {
+    assert_eq!(
+        run_every(
+            r#"var other = createRealm();
+var f = other.eval('(function () {})');
+var fp = f.prototype;
+print('a ordinary', Object.getPrototypeOf(fp) === other.Object.prototype, fp.constructor === f);
+var g = other.eval('(function* () {})');
+var GP = other.eval('Object.getPrototypeOf(function* () {}).prototype');
+print('a generator', Object.getPrototypeOf(g.prototype) === GP);
+var C = other.eval('(class {})');
+print('a class', Object.getPrototypeOf(C.prototype) === other.Object.prototype);
+var nt = new other.Function();
+nt.prototype = null;
+var e = Reflect.construct(Error, ['m'], nt);
+print('b error', Object.getPrototypeOf(e) === other.Error.prototype, e.message);
+var te = Reflect.construct(TypeError, [], nt);
+print('b type error', Object.getPrototypeOf(te) === other.TypeError.prototype);
+var e2 = Reflect.construct(other.RangeError, [], function () {}.bind());
+print('b bound nt', Object.getPrototypeOf(e2) === RangeError.prototype);
+var oa = new other.Array(1, 2, 3);
+var m = Array.prototype.map.call(oa, function (x) { return x * 2; });
+print('c map', Object.getPrototypeOf(m) === Array.prototype, m.join());
+var s = Array.prototype.slice.call(oa, 1);
+print('c slice', Object.getPrototypeOf(s) === Array.prototype);
+var oa2 = new other.Array(1);
+oa2.constructor = Array;
+print('c own array', Object.getPrototypeOf(Array.prototype.concat.call(oa2)) === Array.prototype);
+var oa3 = [1];
+oa3.constructor = other.Array;
+print('c other ctor', Object.getPrototypeOf(oa3.filter(function () { return true; })) === Array.prototype);
+var oa4 = [1];
+oa4.constructor = other.Function('return function () {}')();
+oa4.constructor[Symbol.species] = undefined;
+print('c non-array ctor', Object.getPrototypeOf(oa4.map(function (x) { return x; })) === Array.prototype);"#
+        ),
+        lines(&[
+            "a ordinary true true",
+            "a generator true",
+            "a class true",
+            "b error true m",
+            "b type error true",
+            "b bound nt true",
+            "c map true 2,4,6",
+            "c slice true",
+            "c own array true",
+            "c other ctor true",
+            "c non-array ctor true",
+        ])
+    );
+}
+
+/// NewPromiseResolveThenableJob (§27.2.2.2 steps 2-5): the job runs in the realm of `then`
+/// (GetFunctionRealm), so CreateResolvingFunctions makes `resolve` and `reject` there, and a
+/// self-resolution TypeError is that realm's. The realm of a bound `then` is its target's. A
+/// `then` of the first realm gets that realm's functions from a promise of the other realm.
+/// `await` of a thenable of the other realm takes the same job.
+#[test]
+fn thenable_jobs_run_in_the_realm_of_then() {
+    assert_eq!(
+        run_every(
+            r#"var other = createRealm();
+var thenable = other.eval('({then: function(resolve) { print("resolve prototype", Object.getPrototypeOf(resolve) === Function.prototype); resolve(globalThis.p); }})');
+var p = Promise.resolve(thenable);
+other.p = p;
+p.catch(function(e) { print('self-resolution error', e instanceof other.TypeError, e instanceof TypeError); });
+var target = other.eval('(function (resolve, reject) { print("bound then", Object.getPrototypeOf(resolve) === Function.prototype, Object.getPrototypeOf(reject) === Function.prototype); resolve(1); })');
+var t = { then: Function.prototype.bind.call(target, null) };
+Promise.resolve(t).then(function (v) { print('value', v); });
+var t2 = { then: function (resolve) { print('main then', Object.getPrototypeOf(resolve) === Function.prototype); resolve(2); } };
+other.Promise.resolve(t2).then(function (v) { print('value2', v); });
+async function a() { return await other.eval('({ then: function (r) { print("await then", Object.getPrototypeOf(r) === Function.prototype); r(3); } })'); }
+a().then(function (v) { print('value3', v); });"#
+        ),
+        lines(&[
+            "resolve prototype true",
+            "bound then true true",
+            "main then true",
+            "await then true",
+            "self-resolution error true false",
+            "value 1",
+            "value2 2",
+            "value3 3",
+        ])
+    );
+}
+
+/// Runs the sloppy script `src` on `iso`. Out of line, so no Value of the script stays in the
+/// caller's frame (the conservative scan reads live frames).
+#[inline(never)]
+fn run_script_on(iso: &mut Isolate, src: &str) {
+    let opts = SourceOpts::script(Strictness::Sloppy);
+    let unit = ep9_frontend::compile(src, opts, CompileOptions::default()).expect("a script");
+    iso.run_script(unit, "test.js").expect("no throw");
+}
+
+/// Overwrites the stack below the caller's frame with zeros, so the conservative scan finds
+/// no stale copy of a dead cell there.
+#[inline(never)]
+fn scrub_stack() {
+    let mut words = [0usize; 1 << 15];
+    std::hint::black_box(&mut words);
+}
+
+/// GetTemplateObject (§13.2.8.4): one template object per site and realm, the same object on
+/// each evaluation, also after collections when no script value holds it (the realm that made
+/// it owns it, `realmf::TEMPLATES`). A WeakMap tells the identity without holding the object.
+/// `many` has 10 sites, so the realm's list grows twice. Three scripts, so no frame of the
+/// first ones keeps the objects live. Every dispatch, with and without GC stress.
+#[test]
+fn template_objects_keep_their_identity_across_collections() {
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let out = common::on_big_stack(move || {
+                let mut iso = isolate(d, stress);
+                OUT.with(|o| o.borrow_mut().clear());
+                run_script_on(
+                    &mut iso,
+                    "var other = createRealm(); \
+                     other.eval('function tag(s) { return s; } function g() { return tag`x`; }'); \
+                     function tag(s) { return s; } function h() { return tag`y`; } \
+                     var src = []; for (var i = 0; i < 10; i++) src.push('tag`s' + i + '`'); \
+                     var many = eval('(function () { return [' + src.join() + ']; })');",
+                );
+                run_script_on(
+                    &mut iso,
+                    "var wm = new WeakMap(); wm.set(other.eval('g()'), 'other'); \
+                     wm.set(h(), 'main'); \
+                     var ms = many(); for (var i = 0; i < ms.length; i++) wm.set(ms[i], i); \
+                     ms = null;",
+                );
+                scrub_stack();
+                iso.collect_garbage();
+                iso.collect_garbage();
+                run_script_on(
+                    &mut iso,
+                    "var ms = many(), ok = ms.length === 10; \
+                     for (var i = 0; i < ms.length; i++) ok = ok && wm.get(ms[i]) === i; \
+                     print(wm.get(other.eval('g()')), wm.get(h()), ok, \
+                     Object.getPrototypeOf(other.eval('g()')) === other.Array.prototype, \
+                     Object.getPrototypeOf(h()) === Array.prototype);",
+                );
+                iso.verify_heap().expect("a valid heap");
+                OUT.with(|o| core::mem::take(&mut *o.borrow_mut()))
+            });
+            assert_eq!(
+                out,
+                ["other main true true true"],
+                "{} stress={stress}",
+                d.name()
+            );
+        }
+    }
 }

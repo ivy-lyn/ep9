@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-22): the plan row and the Spike B emitter evidence (JIT code holds no absolute address and no relocation; a test checks it for placement (b) on AArch64 and on x86-64; x86-64 (b) is built, and its x86-64 runs are in the M3-P0 sandbox and CI). No `ep9_masm` exists, so no relocation kind is built. The unit-text questions are open for M3-P1 SP-UNIT |
+| Status | Draft (2026-10-22): the plan row and the Spike B emitter evidence (JIT code holds no absolute address and no relocation; a test checks it for placement (b) on AArch64 and on x86-64; x86-64 (b) is built, and its x86-64 runs are in the M3-P0 sandbox and CI). No `ep9_masm` exists, so no relocation kind is built. M3-P1 SP-UNIT built unit text with 0 relocations (`spike-b unit`, `gate.sh unit`) and filled H34-Q1 to H34-Q3; H34-Q4 and H34-Q5 stay open |
 | Fix by | ADR frozen M1 exit; built A2/M5 |
 | Freeze point | M1 exit, the whole row (README §2). The kinds are built after M1 exit (A2 unit finalize, M5 JIT finalize), so README §3.4 applies: H34-Q5 |
 | Origin | R16-D10 (refines N5); plan status N |
@@ -34,13 +34,13 @@ ep9_baseline / ep9_opt --one instruction stream + abstract relocations--> ep9_ma
 | Local | Label or branch inside the function or unit | pc-relative, resolved at emit | pc-relative, resolved at emit |
 | Stub(id) | Shared IC stub or trampoline | Direct call inside the code range | pc-relative call if the stub is in the unit; else a call through a link slot |
 | Runtime(fn) | Rust slow path or builtin (H20) | Direct or indirect call | Indirect call through the isolate table (isolate register) |
-| LinkSlot(i) | External reference resolved at load or first run | Resolved at finalize; an immediate is allowed | A load of RW link cell i. How unit text reaches the cell is open (H34-Q1) |
-| IcCell(i) | IC or feedback cell | Address of the FeedbackVector slot | A load of RW IC cell i. How unit text reaches the cell is open (H34-Q1) |
+| LinkSlot(i) | External reference resolved at load or first run | Resolved at finalize; an immediate is allowed | A load of RW link cell i through the unit-data register x27/r14 (H34-Q1, H35-Q9) |
+| IcCell(i) | IC or feedback cell | Address of the FeedbackVector slot | A load of RW IC cell i through the unit-data register x27/r14 (H34-Q1, H35-Q9) |
 | RootIndex(n) | Isolate root, intrinsic or atom by stable index (H13) | Load from the isolate root table | Load from the isolate root table (isolate register) |
 | DeoptExit(id) | Exit to the shared deopt entry | Call the shared entry; metadata keyed by pc offset | Same; metadata keyed by pc offset |
 | HeapConst(i) | Raw heap pointer | Embedded, held weakly with a dependency | **Rejected by the unit writer** |
 
-- 04 §5 writes the AOT form of LinkSlot and IcCell as "pc-relative load". This ADR does not copy it as decided: unit text is mapped once per process, but each isolate has its own RW copy, so a pc-relative load reaches one copy only (H35-Q9, M2-JIT-ABI). H34-Q1 holds it.
+- 04 §5 wrote the AOT form of LinkSlot and IcCell as "pc-relative load". That reaches one RW copy only, because unit text is mapped once per process and each isolate has its own RW copy (H35-Q9, M2-JIT-ABI). H34-Q1 is filled: a load through the unit-data register, and 04 §5 now says so (M3-P1 SP-UNIT).
 - The AOT finalizer gives zero text relocations; an xtask check enforces it (04 §5). The IR has no raw heap constants (H30), so the HeapConst rejection is a backstop.
 
 **As built (Spike B, M0 month 2; spike code, not `ep9_masm`).** The Spike B emitters (`spikes/spike-b/src/emit.rs`, frozen at the P2 merge) state the zero-relocation rule for every function they emit: `FunctionCode::code` has no absolute address and no relocation; branches are pc-relative inside the function, and runtime functions are reached through `Cx::runtime_table` behind the isolate register (`spikes/spike-b/src/emit.rs:19`). Immediates are constants (Value tags, offsets, compare codes), never addresses (`spikes/spike-b/src/jit_b/a64.rs:66-67`).
@@ -108,3 +108,4 @@ ep9_baseline / ep9_opt --one instruction stream + abstract relocations--> ep9_ma
 | 2026-10-23 | clarify | Line ref only: the (b) Rules row cites `b_code_has_no_ret_and_no_address` at `jit_b/mod.rs:286-314` (the CX-JIT1 fix added byte checks to the test above it). No rule, check or value changes | M3-P0 integration fixer (CX-JIT1) |
 | 2026-10-23 | clarify | The Status line (and the README index row) names x86-64 (b) as the fill row above does: built, the two-isolate test covers it, and its x86-64 runs are in the M3-P0 sandbox and CI (the orchestrator's runs). Text only; no check changes | M3-P0 integration fixer |
 | 2026-10-23 | fill | H34-Q1 to H34-Q3 filled from the `spike-b unit` build: LinkSlot and IcCell through the unit-data register; pc-relative branches inside one function only (rodata loads stay allowed, not built); calls out of unit text are indirect through a register (the JIT code range part of Q3 stays for M5). H34-Q4 and H34-Q5 stay open. No existing check changes | M3-P1 SP-UNIT agent |
+| 2026-10-23 | clarify | After the H34-Q1 to Q3 fill: the LinkSlot and IcCell rows of the kinds table and the 04 §5 note no longer say that the unit-text form is open; 04 §5 now says unit-data register. The Status line (and the README §5 cell) names the SP-Unit build. No rule or check changes | M3-P1 integration fixer (from the SP-UNIT report) |

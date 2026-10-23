@@ -188,13 +188,17 @@ fn object_from_boilerplate(cx: &mut Cx, fi: &FunctionInfo, k: u32) -> Res<u64> {
 }
 
 /// GetTemplateObject (§13.2.8.4): one frozen array per site (v0: not frozen), cached per
-/// function and constant.
+/// function and constant. The current realm owns the object (its `[[TemplateMap]]`,
+/// `realm::add_template`); the isolate map `Runtime::templates` holds it weakly, so a realm
+/// that nothing reachable holds is collected with its template objects (X-REALM2). A cleared
+/// handle is a miss.
 fn template_object(cx: &mut Cx, fp: *mut u64, k: u32) -> Res<u64> {
     let rt = cx.rt();
     let fi = info(fp);
     let key = (core::ptr::from_ref(fi).addr(), k);
-    if let Some(h) = rt.templates.borrow().get(&key) {
-        return Ok(rt.heap.global(*h).to_bits());
+    let hit = rt.templates.borrow().get(&key).copied();
+    if let Some(v) = hit.and_then(|h| rt.heap.weak(h)) {
+        return Ok(v.to_bits());
     }
     let Constant::TemplateObject(parts) = fi.constant_entry(k) else {
         return Err(not_implemented(cx, "template object constant"));
@@ -212,8 +216,12 @@ fn template_object(cx: &mut Cx, fp: *mut u64, k: u32) -> Res<u64> {
     }
     object::array_set_length(rt, raw, parts.len() as u32);
     own_define(rt, cooked, rt.atom(Atom::Raw), raw, 0);
-    let h = rt.heap.new_global(val(cooked));
-    rt.templates.borrow_mut().insert(key, h);
+    crate::realm::add_template(rt, cooked);
+    let h = rt.heap.new_weak(val(cooked));
+    let old = rt.templates.borrow_mut().insert(key, h);
+    if let Some(old) = old {
+        rt.heap.drop_weak(old);
+    }
     Ok(cooked)
 }
 

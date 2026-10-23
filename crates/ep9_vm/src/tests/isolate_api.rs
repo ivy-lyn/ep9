@@ -549,12 +549,27 @@ fn use_the_kept_realm(iso: &mut crate::Isolate) -> JsResult<(bool, bool, bool)> 
     .map_err(|_| ep9_value::Throw)
 }
 
-/// Makes a realm that nothing holds; returns a weak handle to its global object. Out of line,
-/// as [`keep_a_realm`].
+/// A script that evaluates one tagged-template site (GetTemplateObject) and returns its
+/// template object.
+fn template_script() -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let k = s.b.template_object(vec![("x".into(), Some("x".into()))]);
+    s.b.get_template_object(k, s.lit).return_();
+    unit("", vec![s.finish()])
+}
+
+/// Makes a realm that nothing holds; returns a weak handle to its global object. It makes
+/// a function and the generator and async function shapes in that realm, so all 3 function
+/// shape caches hold a shape of it until the switch back, and a template object, which the
+/// isolate's template map finds by site (X-REALM2). Out of line, as [`keep_a_realm`].
 #[inline(never)]
 fn lose_a_realm(iso: &mut crate::Isolate) -> ep9_heap::WeakHandle {
     iso.create_realm(|cx, global| {
+        cx.new_builtin_closure(make_object, "make", 0, Local::undefined());
+        cx.run_script(template_script(), "template.js")?;
         let rt = cx.inner().rt();
+        crate::shape::generator_function_shape(rt);
+        crate::shape::async_function_shape(rt);
         Ok(rt.heap.new_weak(crate::runtime::val(global.bits())))
     })
     .unwrap()
@@ -575,28 +590,19 @@ fn alive(iso: &crate::Isolate, h: ep9_heap::WeakHandle) -> bool {
     iso.rt.heap.weak(h).is_some()
 }
 
-/// Makes a function of the first realm. The function shape cache (`shape::function_shape`,
-/// which checks the prototype on a hit) holds the shape of the last realm that made a
-/// function, so a realm stays reachable through it until another realm makes one (a fixer
-/// item of M3-P1 REALMS: a cache per realm).
-#[inline(never)]
-fn a_first_realm_function(iso: &mut crate::Isolate) {
-    iso.with_cx(|cx| {
-        cx.new_builtin_closure(make_object, "make", 0, Local::undefined());
-        Ok(())
-    })
-    .unwrap();
-}
-
 /// Create, use and drop realms (`Isolate::create_realm`, `Cx::create_realm`), under every
 /// dispatch, with and without GC stress:
 /// - a realm that nothing reachable holds is collected (a weak handle to its global object
-///   clears);
+///   clears), also when it made a template object (X-REALM2);
 /// - a realm whose functions the first realm keeps in globals stays live with all its roots:
 ///   after collections, the kept functions run in it (their realm's global, and an object
 ///   with that realm's `%Object.prototype%`), and the first realm is current again after
 ///   each call;
 /// - once the first realm deletes those globals, the realm is collected too.
+///
+/// No function is made in the first realm before a collection: the realm switch empties the
+/// function shape caches (`shape::clear_realm_caches`), so the shape of the last realm that
+/// made a function does not keep that realm live.
 #[test]
 fn realms_are_made_used_and_dropped() {
     for &d in Dispatch::ALL {
@@ -607,7 +613,6 @@ fn realms_are_made_used_and_dropped() {
                 let first = iso.cx.realm;
                 let lost = lose_a_realm(&mut iso);
                 assert_eq!(iso.cx.realm, first, "{label}");
-                a_first_realm_function(&mut iso);
                 scrub_stack();
                 iso.collect_garbage();
                 assert!(!alive(&iso, lost), "{label}: lost realm collected");
@@ -627,7 +632,6 @@ fn realms_are_made_used_and_dropped() {
                     Ok(())
                 })
                 .unwrap();
-                a_first_realm_function(&mut iso);
                 scrub_stack();
                 iso.collect_garbage();
                 assert!(!alive(&iso, kept), "{label}: dropped with its functions");

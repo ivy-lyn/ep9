@@ -55,9 +55,10 @@ pub(crate) fn is_lazy_prototype(rt: &Runtime, f: u64, key: u64, how: Probe) -> b
 /// The `prototype` object of the function `f`, created on first use
 /// (`generator::lazy_prototype_kind`): for a constructor, with a `constructor` link back to
 /// `f` (§10.2.5 MakeConstructor); for a generator function, an object that inherits from the
-/// kind's intrinsic (§15.5.4). Both are {w: true, e: false, c: false}. Also made before any
-/// later key is added to `f` (`props::own_add`), so it keeps its creation-order place among
-/// the keys. GC point.
+/// kind's intrinsic (§15.5.4). Both are {w: true, e: false, c: false}. The intrinsics are
+/// those of `f`'s realm (`[[Realm]]`), not of the realm that first reads the property: the
+/// spec makes the object when it makes `f`. Also made before any later key is added to `f`
+/// (`props::own_add`), so it keeps its creation-order place among the keys. GC point.
 pub(crate) fn function_prototype(rt: &Runtime, f: u64) -> u64 {
     let key = rt.atom(Atom::Prototype);
     if let Some((v, _)) = props::own_get(f, key) {
@@ -67,12 +68,17 @@ pub(crate) fn function_prototype(rt: &Runtime, f: u64) -> u64 {
     // GC points: `f` and `p` live in Rust locals.
     let p = match kind {
         Some(LazyPrototype::Instances(id)) => {
-            let parent = crate::builtins::intrinsic(rt, id);
+            let parent = crate::realm::intrinsic_in(rt, object::function_realm(f), id);
             debug_assert!(kind::is_object(parent), "{} is not installed", id.name());
             object::new_object(rt, parent)
         }
         Some(LazyPrototype::Ordinary) | None => {
-            let p = object::new_plain_object(rt);
+            let op = crate::realm::intrinsic_in(
+                rt,
+                object::function_realm(f),
+                crate::builtins::IntrinsicId::ObjectPrototype,
+            );
+            let p = object::new_object(rt, op);
             props::own_define(rt, p, rt.atom(Atom::Constructor), f, attr::HIDDEN);
             p
         }

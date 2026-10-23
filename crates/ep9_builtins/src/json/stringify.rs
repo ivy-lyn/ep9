@@ -13,9 +13,12 @@
 //! ```
 //!
 //! The text is written into one buffer as it is made, not as the spec's list of partial
-//! strings: a member's `"key":` is written first and cut off again when the value is
-//! undefined, which nothing can observe. Each object or array level checks the native stack
-//! (a RangeError at the limit, as in V8) and every loop over properties polls.
+//! strings: a member's `"key":` is written after its value is resolved (Get, toJSON, the
+//! replacer) and only when the value has a text. A text longer than a string can be is not
+//! an error at once: the buffer is dropped, the walk goes on (user code still runs, and its
+//! throws and the cycle TypeError come first), and the RangeError is thrown at the end, as
+//! V8 does. Each object or array level checks the native stack (a RangeError at the limit,
+//! as in V8) and every loop over properties polls.
 
 use ep9_vm::{Args, Cx, JsKey, JsObject, JsResult, Local, ScratchList};
 
@@ -24,7 +27,8 @@ use crate::array::{index_key, length_of_array_like};
 use super::{MAX_DEPTH, enumerable_own_keys, primitive_data, too_deep};
 
 /// The longest string (2^29 - 24 code units, the VM's limit): a longer text is a RangeError.
-const MAX_STRING_LENGTH: usize = (1 << 29) - 24;
+/// The unit tests use 64, so that they reach the limit fast.
+const MAX_STRING_LENGTH: usize = if cfg!(test) { 64 } else { (1 << 29) - 24 };
 
 /// The JSON Serialization Record (§25.5.2.1) and the text being made.
 struct State<'s, 'l> {
@@ -47,6 +51,9 @@ struct State<'s, 'l> {
     to_json: Local<'s, JsKey>,
     /// The text.
     out: Vec<u16>,
+    /// The text grew longer than MAX_STRING_LENGTH (`out` is then dropped). It stays set;
+    /// `stringify` throws the RangeError at the end.
+    overflow: bool,
 }
 
 /// JSON.stringify ( value [ , replacer [ , space ] ] ) (§25.5.2).
@@ -167,10 +174,14 @@ pub(super) fn stringify<'s>(
         gap,
         to_json,
         out: Vec::new(),
+        overflow: false,
     };
     // 13. Return ? SerializeJSONProperty(state, the empty String, wrapper).
     if !serialize_property(cx, &mut state, Name::Key(empty), wrapper)? {
         return Ok(Local::undefined());
+    }
+    if state.overflow {
+        return Err(cx.throw_range_error("Invalid string length"));
     }
     Ok(cx.new_string_utf16(&state.out)?.value())
 }
@@ -199,6 +210,18 @@ fn serialize_property<'s>(
     key: Name<'s>,
     holder: Local<'s, JsObject>,
 ) -> JsResult<bool> {
+    let value = property_value(cx, state, key, holder)?;
+    write_value(cx, state, value)
+}
+
+/// SerializeJSONProperty steps 1-4: the value after Get, toJSON, the replacer and the
+/// unwrap of a Number, String or Boolean object.
+fn property_value<'s>(
+    cx: &mut Cx<'s>,
+    state: &mut State<'s, '_>,
+    key: Name<'s>,
+    holder: Local<'s, JsObject>,
+) -> JsResult<Local<'s>> {
     // 1. Let value be ? Get(holder, key).
     let mut value = match key {
         Name::Key(k) => cx.get(holder, k)?,
@@ -238,6 +261,22 @@ fn serialize_property<'s>(
             value = p;
         }
     }
+    Ok(value)
+}
+
+/// True if SerializeJSONProperty steps 5-12 give a text for `value` (from
+/// `property_value`), not undefined: what `write_value` gives true for.
+fn has_text(value: Local<'_>) -> bool {
+    value.is_null()
+        || value.as_bool().is_some()
+        || value.is_string()
+        || value.is_number()
+        || value.as_object().is_some_and(|o| !o.is_callable())
+}
+
+/// SerializeJSONProperty steps 5-12: appends the text of `value` (from `property_value`)
+/// and gives true, or appends nothing and gives false (the spec's undefined).
+fn write_value<'s>(cx: &mut Cx<'s>, state: &mut State<'s, '_>, value: Local<'s>) -> JsResult<bool> {
     // 5. If value is null, return "null".
     if value.is_null() {
         push_ascii(cx, state, "null")?;
@@ -375,9 +414,13 @@ fn serialize_object<'s>(
         //         string-concatenation of member and the code unit 0x0020 (SPACE).
         //    iv. Set member to the string-concatenation of member and strP.
         //    v. Append member to partial.
-        // The member text goes into the buffer first, after the separator of steps 10-11,
-        // and is cut off when strP is undefined.
-        let mark = state.out.len();
+        // The value is resolved first (steps 1-4 of strP: the user code); then, if strP is
+        // not undefined, the separator of steps 10-11, the member's key and strP's text go
+        // into the buffer.
+        let v = property_value(cx, state, Name::Key(p), value)?;
+        if !has_text(v) {
+            continue;
+        }
         if any {
             state.out.push(0x2C);
         }
@@ -390,11 +433,9 @@ fn serialize_object<'s>(
         if !state.gap.is_empty() {
             state.out.push(0x20);
         }
-        if serialize_property(cx, state, Name::Key(p), value)? {
-            any = true;
-        } else {
-            state.out.truncate(mark);
-        }
+        let wrote = write_value(cx, state, v)?;
+        debug_assert!(wrote, "has_text and write_value agree");
+        any = true;
     }
     // 9. If partial is empty, let final be "{}".
     // 10. Else if state.[[Gap]] is the empty String: "{" + the members joined by "," + "}".
@@ -459,6 +500,10 @@ fn quote<'s>(
     value: Local<'s, ep9_vm::JsString>,
 ) -> JsResult<()> {
     const HEX: &[u8; 16] = b"0123456789abcdef";
+    // The text is already too long: nothing to add (and no long copy of a long string).
+    if state.overflow {
+        return Ok(());
+    }
     let len = cx.string_len(value);
     let flat = cx.flatten(value)?;
     let out = &mut state.out;
@@ -525,10 +570,95 @@ fn push_units<'s>(cx: &mut Cx<'s>, state: &mut State<'s, '_>, units: &[u16]) -> 
     check_length(cx, state)
 }
 
-/// A RangeError once the text is longer than a string can be.
-fn check_length<'s>(cx: &mut Cx<'s>, state: &State<'s, '_>) -> JsResult<()> {
+/// Marks the overflow once the text is longer than a string can be, and drops the text;
+/// `stringify` throws the RangeError after the walk (V8 also runs the rest of the user code
+/// first, so its throws and the cycle TypeError win).
+fn check_length<'s>(_cx: &mut Cx<'s>, state: &mut State<'s, '_>) -> JsResult<()> {
     if state.out.len() > MAX_STRING_LENGTH {
-        return Err(cx.throw_range_error("Invalid string length"));
+        state.overflow = true;
+        state.out = Vec::new();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+
+    use ep9_frontend::{CompileOptions, SourceOpts, Strictness};
+    use ep9_vm::{Args, Cx, Isolate, IsolateConfig, JsResult, Local};
+
+    thread_local! {
+        static OUT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn print<'s>(
+        cx: &mut Cx<'s>,
+        _this: Local<'s>,
+        args: Args<'s>,
+        _nt: Local<'s>,
+    ) -> JsResult<Local<'s>> {
+        let mut parts = Vec::new();
+        for v in args.iter() {
+            parts.push(cx.to_rust_string(v)?);
+        }
+        OUT.with(|o| o.borrow_mut().push(parts.join(" ")));
+        Ok(Local::undefined())
+    }
+
+    /// X-JSON2: a key that alone makes the text too long (here MAX_STRING_LENGTH is 64; the
+    /// node v24.22.1 results are for a key of 2^29 - 25 units). The key is not written before
+    /// its value is resolved, and the RangeError comes after the rest of the user code: an
+    /// undefined or function value gives "{}", a throwing getter or replacer throws first, a
+    /// later throw or a cycle wins over the overflow, and only the overflow alone is a
+    /// RangeError.
+    #[test]
+    fn output_limit_comes_after_user_code() {
+        let src = r#"
+var k = 'a'.repeat(63);
+function t(f) { try { return String(f()); } catch (e) { return e === 'S' ? 'sentinel' : e.name; } }
+var o1 = {}; o1[k] = undefined;
+var o2 = {}; Object.defineProperty(o2, k, { get: function () { throw 'S'; }, enumerable: true });
+var big = {}; big[k] = 1;
+var o3 = {}; o3[k] = function () {};
+print(t(function () { return JSON.stringify(o1); }), t(function () { return JSON.stringify(o2); }), t(function () { return JSON.stringify(o3); }));
+print(t(function () { return JSON.stringify(big, function (key, v) { return key === k ? undefined : v; }); }));
+print(t(function () { return JSON.stringify(big, function (key, v) { if (key === k) throw 'S'; return v; }); }));
+print(t(function () { return JSON.stringify([big, { get x() { throw 'S'; } }]); }));
+var nested = {}; nested[k] = { get x() { throw 'S'; } };
+print(t(function () { return JSON.stringify(nested); }));
+var cyc = [big]; cyc.push(cyc);
+print(t(function () { return JSON.stringify(cyc); }), t(function () { return JSON.stringify([big]); }), t(function () { return JSON.stringify(k + 'aa'); }));
+print(JSON.stringify({ a: 1, b: undefined, c: 'x' }, null, 1).split('\n').join('|'));
+"#;
+        let unit = ep9_frontend::compile(
+            src,
+            SourceOpts::script(Strictness::Sloppy),
+            CompileOptions::default(),
+        )
+        .expect("compiles");
+        let mut iso = Isolate::new(IsolateConfig {
+            builtins: Some(&crate::TABLE),
+            ..IsolateConfig::default()
+        })
+        .expect("an isolate");
+        iso.register_host_function("print", 1, print);
+        OUT.with(|o| o.borrow_mut().clear());
+        iso.run_script(unit, "t.js")
+            .map_err(|e| e.message)
+            .expect("no uncaught exception");
+        let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
+        assert_eq!(
+            out,
+            [
+                "{} sentinel {}",
+                "{}",
+                "sentinel",
+                "sentinel",
+                "sentinel",
+                "TypeError RangeError RangeError",
+                "{| \"a\": 1,| \"c\": \"x\"|}",
+            ]
+        );
+    }
 }

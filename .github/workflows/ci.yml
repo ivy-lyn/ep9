@@ -19,6 +19,7 @@
 #                      cgoto.c built with zig cc 0.17.0 (H15-Q3);
 #                      Spike B structural gate (checks (a)-(h));
 #                      Spike B placement (b) gate (gate.sh b; aarch64 and x86-64);
+#                      SP-Unit gate (gate.sh unit; not on windows-x64 yet);
 #                      Spike B Win64 unwind (windows-x64; tests/win64_unwind.rs)
 #   miri ............. Miri on ep9_value, ep9_heap and ep9_math      (Linux x64)
 #   dep-guards ....... cargo tree / metadata guards; cargo deny      (Linux x64)
@@ -184,9 +185,9 @@ jobs:
         if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
         run: cargo run --release --locked -p ep9_test262 -- exec --feedback-threshold 0 --json test262-exec-eager.json
       # GC-stress (a collection before every allocation, the heap verifier after each) with eager
-      # feedback, against the same expectation file. The 11 tests of the skip list run past the
-      # timeout under GC-stress (8 of them fail without it too; its header says why each one is
-      # there); the run prints "skipped: 11". A verifier error panics: an infrastructure error,
+      # feedback, against the same expectation file. The 21 tests of the skip list run past the
+      # timeout under GC-stress (9 of them fail without it too; its header says why each one is
+      # there); the run prints "skipped: 21". A verifier error panics: an infrastructure error,
       # exit 2 (tools/test262/README.md "exec").
       - name: test262 exec, GC-stress + eager feedback
         if: ${{ !cancelled() && steps.sync.outcome == 'success' && matrix.name == 'linux-x64' }}
@@ -401,6 +402,15 @@ jobs:
       - name: Spike B placement (b) gate
         if: ${{ !cancelled() }}
         run: bash spikes/spike-b/gate.sh b
+      # SP-Unit gate (M3-P1 SP-UNIT, SPIKEB(unit)): the 11 Spike B opcodes as AOT unit text on
+      # placement (b), with 0 relocations, the unit-data register x27/r14, a per-isolate RW copy
+      # with its root ranges, 2 isolates on 2 threads, the unwind self-test and every fallback
+      # (checks (a)-(g); docs/measurements/2026-10-23-sp-unit.md). A SKIP line fails it. It runs
+      # on every runner: SP-UNIT proved it on mac a64, linux a64, linux x64 (sandbox) and
+      # windows-x64 (CI probe run 39886596197, V8-A6).
+      - name: Spike B unit gate
+        if: ${{ !cancelled() }}
+        run: bash spikes/spike-b/gate.sh unit
       # P4-WIN-STATIC-1 (plan-v6 D25): the real Win64 unwind run of the x86-64 JIT of placement
       # (a) (drive, id, hold) and, since M3-P0 P0-B-X64, placement (b) (bdrive, bid, bhold)
       # (spikes/spike-b/tests/win64_unwind.rs): per function, RtlLookupFunctionEntry finds its

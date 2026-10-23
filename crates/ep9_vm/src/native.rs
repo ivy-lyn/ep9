@@ -32,6 +32,13 @@
 //! (BytecodeGen's spread array needs the iterator path of `slow::call`). Generator functions
 //! never get native code ([`InstallError::Generator`]): a resume pushes a new frame and runs
 //! T0 (`call::run_resumed`).
+//!
+//! Realms (H22-Q3): native code runs in its function's realm, as T0 code does. The T0 entries
+//! (`native_entry`, `call_native`, `enter_b_cold`, `call_fast`) take a callee of the caller's
+//! realm only. A native-slotted or (b) callee of another realm is entered nested from
+//! `slow::call` ([`call_in_its_realm`]), and `call_any`, [`call_from_rust`] and [`run_b`]
+//! switch too: `realm::enter_realm_of` before OrdinaryCallBindThis, `realm::leave` after the
+//! return or throw.
 
 use core::ops::Range;
 
@@ -47,6 +54,7 @@ use crate::interp::slow::{self, CmpOp, UnOp};
 use crate::interp::{Cx, EXIT_STUB};
 use crate::isolate::{Exception, Isolate};
 use crate::object;
+use crate::realm;
 use crate::runtime::{ErrorKind, Runtime, val};
 use crate::unit::FunctionInfo;
 
@@ -706,10 +714,14 @@ fn call_at(cx: &mut Cx, fp: *mut u64, pc: *const u8, acc: u64) -> Res<u64> {
         }
         let base = call::top_of(cx, fp);
         let next = pc.wrapping_add(insn.size() as usize);
+        // A callee of another realm runs in its realm (H22-Q3), from OrdinaryCallBindThis on.
+        let saved = realm::enter_realm_of(cx, callee);
         // SAFETY: `fp` is the live top frame (published by `enter`), `base` is the first free
         // slot above it, `arg` reads registers of this verified instruction, and the callee's
         // slot holds native code (`native_callee`, `install_native` contract).
-        return unsafe { enter_native(cx, base, fp, next, callee, cfi, this, argc, arg) };
+        let r = unsafe { enter_native(cx, base, fp, next, callee, cfi, this, argc, arg) };
+        realm::leave(cx, saved);
+        return r;
     }
     if let Some(bfi) = b_callee(callee) {
         let base = call::top_of(cx, fp);
@@ -953,11 +965,14 @@ fn enter_from_rust(
     }
     let saved_scratch = stack.scratch_top();
     let base = call::top_of(cx, caller);
+    // A function of another realm runs in its realm (H22-Q3), as `call_function_object`.
+    let saved_realm = realm::enter_realm_of(cx, f);
     // SAFETY: `caller` is the published top frame (or null at the outermost entry), `base` is
     // the first free slot above it and above the caller's scratch Values (`top_of`), `arg`
     // reads live Values for `i < argc`, and `native_callee` checked that the slot of `fi`
     // holds native code (`install_native` contract).
     let r = unsafe { enter_native(cx, base, caller, EXIT_STUB.as_ptr(), f, fi, this, argc, arg) };
+    realm::leave(cx, saved_realm);
     // Put back the frame state this call found, on every exit (`enter_native` already
     // published `caller` again, except when its frame push failed). `call_from_rust` puts
     // back `out_fp`/`out_pc`.
@@ -968,6 +983,40 @@ fn enter_from_rust(
         stack.set_scratch_top(saved_scratch);
     }
     r
+}
+
+/// T0's call (`slow::call`) of a native-slotted or (b) function `callee` of another realm
+/// (H22-Q3): runs it nested, in its realm, as `call::call_function_object` runs a T0 callee
+/// of another realm (one Rust level per cross-realm call). A native-slotted callee is
+/// entered with return pc `next_pc` (as `call_native`), a (b) callee by a nested dispatch
+/// ([`run_b`], which switches itself). `None` if `callee` has neither (the caller takes
+/// `call_function_object`). The caller sets `out_fp`/`out_pc`.
+///
+/// # Safety
+/// `fp` is the live top frame with no scratch Values above it, and `arg(i)` returns valid
+/// Value bits for `i < argc` (it is read before the first GC point).
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn call_in_its_realm(
+    cx: &mut Cx,
+    fp: *mut u64,
+    next_pc: *const u8,
+    callee: u64,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+) -> Option<Res<u64>> {
+    let base = crate::runtime::frame_top(fp);
+    if let Some(fi) = native_callee(callee) {
+        let saved = realm::enter_realm_of(cx, callee);
+        // SAFETY: caller contract; `base` is the first free slot above `fp`, and
+        // `native_callee` checked the native slot.
+        let r = unsafe { enter_native(cx, base, fp, next_pc, callee, fi, this, argc, arg) };
+        realm::leave(cx, saved);
+        return Some(r);
+    }
+    let fi = b_callee(callee)?;
+    // SAFETY: caller contract; `b_callee` checked the (b) slot.
+    Some(unsafe { run_b(cx, base, fp, callee, fi, this, argc, arg) })
 }
 
 // ---- placement (b) (P4-PLACEMENT-B) ---------------------------------------------------------
@@ -1093,6 +1142,7 @@ pub(crate) unsafe fn a_hot_call(cx: &mut Cx, fp: *mut u64) -> u64 {
 /// `Dispatch::Sibling`/`Become`; the bytecode under `Dispatch::Match`), and publishes
 /// `caller_fp` again. One nested native level, as a T0 callee of `call::call_with`; `Err`
 /// when the run ends with an exception pending. The native and VM stack checks come first.
+/// A callee of another realm runs in its realm (`realm::enter_realm_of`, `realm::leave`).
 ///
 /// # Safety
 /// `caller_fp` is the live top frame (or null), `base` is the first free slot above it and
@@ -1108,10 +1158,33 @@ unsafe fn run_b(
     argc: u32,
     arg: impl Fn(u32) -> u64,
 ) -> Res<u64> {
-    let rt = cx.rt();
-    if !rt.native_stack_ok() {
+    if !cx.rt().native_stack_ok() {
         return stack_overflow(cx);
     }
+    // A callee of another realm runs in its realm (H22-Q3), from OrdinaryCallBindThis on.
+    let saved = realm::enter_realm_of(cx, callee);
+    // SAFETY: caller contract.
+    let r = unsafe { run_b_in_realm(cx, base, caller_fp, callee, fi, this, argc, arg) };
+    realm::leave(cx, saved);
+    r
+}
+
+/// [`run_b`] after its native stack check and realm switch.
+///
+/// # Safety
+/// As [`run_b`].
+#[allow(clippy::too_many_arguments)]
+unsafe fn run_b_in_realm(
+    cx: &mut Cx,
+    base: *mut u64,
+    caller_fp: *mut u64,
+    callee: u64,
+    fi: &FunctionInfo,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+) -> Res<u64> {
+    let rt = cx.rt();
     // OrdinaryCallBindThis as in `enter_native`: wrap a primitive receiver after the push.
     let bound = call::try_bind_this(fi, this, rt.global());
     // SAFETY: caller contract (the `push_frame` contract).

@@ -33,7 +33,7 @@
 //! | ELEMENTS | 65 | +8 capacity (int32), +16 values (hole = empty) | 16 + 8 cap |
 //! | CONTEXT | 66 | +8 previous, +16 scope (native word: a [`ContextScope`] record), +24 length (int32), +32 slots | 32 + 8 len |
 //! | MODULE | 76 | the Source Text Module Record (§16.2.1.4-6), 16 Values from +8 ([`modf`]) | 136 |
-//! | ORDERED_TABLE | 77 | Map and Set storage: +8 capacity, +16 live count, +24 deleted count, +32 bucket count, +40 entry width, +48 flags (int32s; flag bit 0 = weak keys), then the bucket heads and the entries (`ordered_table.rs`) | 56 + 8 (buckets + capacity x width) |
+//! | ORDERED_TABLE | 77 | Map and Set storage: +8 capacity, +16 live count, +24 deleted count, +32 bucket count, +40 entry width, +48 flags (int32s; flag bit 0 = weak keys, bit 1 = obsolete: a rehash or `clear` replaced the table and bucket head 0 holds the forward to the new one, bit 2 = cleared: `clear` replaced it, so a cursor restarts at 0), then the bucket heads and the entries (`ordered_table.rs`) | 56 + 8 (buckets + capacity x width) |
 //! | REALM | 78 | +8 global object, +16 global lexical record, +24 intrinsics (an ELEMENTS cell, index = `IntrinsicId`), +32 template registry, +40 host-defined ([`realmf`]) | 48 |
 //!
 //! Every word after word0 is a valid `Value` (raw pointers use the native-word encoding of
@@ -231,8 +231,9 @@ pub(crate) mod modf {
     pub const SIZE: usize = 136;
 }
 
-/// REALM fields (OBJECT_LAYOUT 3, §9.3 Realm Record). One per isolate in M3-P0 (realm init,
-/// `realm.rs`); M3-P1 REALMS makes more. Every function's `[[Realm]]` ([`fun::REALM`]).
+/// REALM fields (OBJECT_LAYOUT 3, §9.3 Realm Record). N per isolate: `realm::init` makes the
+/// first, `realm::create` (`Cx::create_realm`, `$262.createRealm`) makes more, and a realm
+/// that nothing reachable holds is collected. Every function's `[[Realm]]` ([`fun::REALM`]).
 pub(crate) mod realmf {
     /// `[[GlobalObject]]`.
     pub const GLOBAL_OBJECT: usize = 8;
@@ -242,11 +243,11 @@ pub(crate) mod realmf {
     /// `[[Intrinsics]]`: an ELEMENTS cell, index = `IntrinsicId` (the H13 stable index);
     /// undefined for an intrinsic nothing made.
     pub const INTRINSICS: usize = 24;
-    /// `[[TemplateMap]]`: undefined until used.
-    #[allow(dead_code)] // filled by M3-P1 REALMS
+    /// `[[TemplateMap]]`: an ELEMENTS list (entry 0 = the used count) that owns the template
+    /// objects this realm made (`realm::add_template`); undefined until the first one.
     pub const TEMPLATES: usize = 32;
     /// `[[HostDefined]]`: any Value.
-    #[allow(dead_code)] // filled by M3-P1 REALMS
+    #[allow(dead_code)] // reserved: no embedder API sets it yet
     pub const HOST_DEFINED: usize = 40;
     /// The cell size: word0 and 5 Values.
     pub const SIZE: usize = 48;
@@ -909,6 +910,8 @@ pub(crate) fn new_function(rt: &Runtime, info: *const FunctionInfo, context: u64
     let name = function_name(rt, fi);
     let s = if fi.is_generator() {
         shape::generator_function_shape(rt)
+    } else if fi.is_async_function() {
+        shape::async_function_shape(rt)
     } else {
         shape::function_shape(rt)
     };

@@ -14,7 +14,7 @@
 //! | R2 | Never put a `Local`, `Args`, `Rest`, `PropertyDescriptor`, `ArgsBuilder` or `ScratchList` into Rust heap memory, a static or a thread_local | `'s` and `!Send` (compiler); `cargo xtask gc-lint` (P2) |
 //! | R3 | Every `&mut Cx` method may allocate and may run JS. No view into heap memory lives across one | views borrow `&Cx` |
 //! | R4 | Return `Err(Throw)` only after a `throw_*` (the exception is pending); pass a callee's `Err` on unchanged | debug assert in `call::call_host` |
-//! | R5 | A builtin creates objects in its callee's realm | v0: one realm; `Args::callee` is there for N realms (H20-Q2) |
+//! | R5 | A builtin creates objects in its callee's realm | `call::call_host` switches to the callee's realm (H22-Q3); `ep9_builtins` `tests/realm.rs` |
 //! | R6 | `[[GetOwnProperty]]` reports the virtual properties (array `length` and elements, function `length`/`name`/`prototype`, String wrapper `length` and indices) with their spec attributes | `tests/abi.rs` |
 //!
 //! Lists of values: `ScratchList` (precise, LIFO) or a JS array; call arguments built in Rust

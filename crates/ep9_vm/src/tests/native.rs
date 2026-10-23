@@ -6,7 +6,8 @@
 //! the decode-free T0 entry (`slow::call` `native_entry`, M2-P3-D21-ENTRY): every unprefixed
 //! call shape takes it, every other call falls through to the decode path, and exceptions and
 //! GC stress behave as on that path. The P3 review fix adds a full VM stack at that entry: the
-//! VM stack's RangeError.
+//! VM stack's RangeError. The M3-P1 integration fixer adds two realms (REALMS-1): native code
+//! runs in its function's realm on every entry path.
 //!
 //! The stubs are a few hand-encoded instructions per target (aarch64: AAPCS64 `extern "C"`;
 //! x86-64: `extern "sysv64"`), checked with `llvm-mc --disassemble`:
@@ -3724,6 +3725,249 @@ mod placement_b {
                 );
                 assert_eq!(alive, vec![true; 20], "{label}: the argument died");
                 assert_eq!(got, vec![Ok("arg of ta".to_string()); 20], "{label}");
+            }
+        }
+    }
+
+    // ---- realms (REALMS-1) -------------------------------------------------------------------
+
+    /// How [`run_two_realms`] installs the native stubs of `defs()` and `entry_defs()`.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Tier {
+        /// Placement (a), Baseline slots (T0 enters them cold).
+        A,
+        /// Placement (a), AotBaseline slots (T0's hot entry, M2-P4-B-AB).
+        AHot,
+        /// Placement (b), `install_native_b`.
+        B,
+    }
+
+    /// Every natively run function of `defs()` and `entry_defs()`, in stub order.
+    fn all_native() -> Vec<&'static str> {
+        NATIVE.iter().chain(ENTRY.iter()).copied().collect()
+    }
+
+    /// An isolate with `defs()` and `entry_defs()` in its first realm, and a second realm
+    /// with its own copies (the first realm's global `other` is its global object). Each
+    /// realm has the other's functions as globals with a suffix: `recvB`, `gB` and so on in
+    /// the first realm, `recvA`, `gA` and so on in the second. Every function of both realms is
+    /// natively run as `tier` says (one copy of the stubs per realm: a code range belongs to
+    /// one function). Runs `f` on a big native stack, then checks the heap.
+    fn run_two_realms<R: Send + 'static>(
+        tier: Tier,
+        config: IsolateConfig,
+        f: impl FnOnce(&mut Isolate) -> R + Send + 'static,
+    ) -> R {
+        on_big_stack(move || {
+            let one = {
+                let mut iso = isolate(IsolateConfig::default());
+                iso.run_script(defs(), "defs.js").unwrap();
+                let off = |n: &str, op: Opcode| offset_in(&iso, n, op);
+                let mut v = match tier {
+                    Tier::B => b_stubs(off),
+                    Tier::A | Tier::AHot => stubs(off),
+                };
+                v.extend(match tier {
+                    Tier::B => b_entry_stubs(),
+                    Tier::A | Tier::AHot => entry_stubs(),
+                });
+                v
+            };
+            let all: Vec<Vec<u8>> = one.iter().chain(&one).cloned().collect();
+            with_b_stubs(&all, |code| {
+                let mut iso = isolate(config);
+                iso.run_script(defs(), "defs.js").unwrap();
+                iso.run_script(entry_defs(), "entry-defs.js").unwrap();
+                iso.with_cx(|cx| {
+                    let a = cx.global();
+                    let b = cx.create_realm()?;
+                    cx.set(a, "other", b, true)?;
+                    cx.with_realm(b, |cx| {
+                        cx.run_script(defs(), "defs-b.js")?;
+                        cx.run_script(entry_defs(), "entry-defs-b.js")?;
+                        let print = cx.get(a, "print")?;
+                        cx.set(b, "print", print, true)?;
+                        for name in all_native() {
+                            let fa = cx.get(a, name)?;
+                            cx.set(b, format!("{name}A").as_str(), fa, true)?;
+                            let fb = cx.get(b, name)?;
+                            cx.set(a, format!("{name}B").as_str(), fb, true)?;
+                        }
+                        Ok(())
+                    })
+                })
+                .unwrap();
+                let n = all_native().len();
+                for (i, name) in all_native().into_iter().enumerate() {
+                    for (f, range) in [
+                        (iso.global(name).unwrap(), &code[i]),
+                        (iso.global(&format!("{name}B")).unwrap(), &code[n + i]),
+                    ] {
+                        // SAFETY: `range` holds the stub for `name` (the stubs of both realms
+                        // are the same bytes; one unit, so one set of bytecode offsets), which
+                        // runs its bytecode with the ABI of the install and stays mapped until
+                        // `with_b_stubs` returns, after the isolate drops.
+                        let r = unsafe {
+                            match tier {
+                                Tier::B => crate::install_native_b(&iso, f, range.clone()),
+                                Tier::A => crate::install_native(
+                                    &iso,
+                                    f,
+                                    DispatchKind::Baseline,
+                                    range.clone(),
+                                ),
+                                Tier::AHot => crate::install_native(
+                                    &iso,
+                                    f,
+                                    DispatchKind::AotBaseline,
+                                    range.clone(),
+                                ),
+                            }
+                        };
+                        r.unwrap();
+                    }
+                }
+                let r = f(&mut iso);
+                iso.collect_garbage();
+                iso.verify_heap().unwrap();
+                r
+            })
+        })
+    }
+
+    /// A script that returns `name(args..)` (`args`: `Lit` values, at most 2).
+    fn return_unit(name: &str, lits: &[Lit]) -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let f = s.b.new_register();
+        let args = s.b.new_register_list(2);
+        for (k, l) in lits.iter().enumerate() {
+            match l {
+                Lit::Int(i) => {
+                    s.b.lda_smi(*i);
+                }
+                Lit::Str(t) => {
+                    s.lda_str(t);
+                }
+                Lit::Global(g) => {
+                    s.lda_global(g);
+                }
+            }
+            s.b.star(args.get(k as u32));
+        }
+        s.lda_global(name);
+        s.b.star(f);
+        match lits.len() {
+            0 => s.b.call_undefined_receiver0(f, s.call),
+            1 => s.b.call_undefined_receiver1(f, args.get(0), s.call),
+            _ => {
+                s.b.call_undefined_receiver2(f, args.get(0), args.get(1), s.call)
+            }
+        };
+        s.b.return_();
+        unit("", vec![s.finish()])
+    }
+
+    /// Names a result: "A" or "B" for the global object of the first or second realm, an
+    /// int32 as its number, an exception as "Err(message)".
+    fn realm_name(iso: &Isolate, r: Result<u64, Exception>) -> String {
+        let b = iso.global("other").unwrap().to_bits();
+        match r {
+            Ok(v) if v == iso.rt.global() => "A".to_string(),
+            Ok(v) if v == b => "B".to_string(),
+            Ok(v) => match crate::runtime::val(v).as_int32() {
+                Some(i) => i.to_string(),
+                None => format!("other value {v:#x}"),
+            },
+            Err(e) => format!("Err({})", e.message),
+        }
+    }
+
+    /// Runs [`return_unit`] in the second realm (`in_b`) or the first.
+    fn run_in(iso: &mut Isolate, in_b: bool, name: &str, lits: &[Lit]) -> String {
+        let unit = return_unit(name, lits);
+        let r = iso.with_cx(|cx| {
+            if in_b {
+                let a = cx.global();
+                let b = cx.get(a, "other")?.as_object().expect("the second global");
+                cx.with_realm(b, |cx| cx.run_script(unit, "b.js").map(|v| v.bits()))
+            } else {
+                cx.run_script(unit, "a.js").map(|v| v.bits())
+            }
+        });
+        realm_name(iso, r)
+    }
+
+    /// REALMS-1: native code runs in its function's realm, on every path that enters it. The
+    /// sloppy `recv` returns its receiver, which OrdinaryCallBindThis makes the global object
+    /// of the current realm for an undefined `this`, so its result names the realm it ran in.
+    /// - T0 of one realm calls a native function of the other (`slow::call` ->
+    ///   `call_in_its_realm`; it threw "not implemented" before);
+    /// - native `g` calls a native function of the other realm through `call_any`;
+    /// - `call_from_rust` enters a native function of a realm that is not current;
+    /// - a throw from native code of the other realm, and each call above, leaves the first
+    ///   realm current.
+    ///
+    /// Placement (a) cold and A-hot under every dispatch, and (b) under the threaded ones
+    /// (the match loop runs a (b) function's bytecode, whose `recv` returns undefined); with
+    /// and without GC stress.
+    #[test]
+    fn native_code_runs_in_its_realm() {
+        use Lit::{Global, Int};
+        for tier in [Tier::A, Tier::AHot, Tier::B] {
+            for &d in Dispatch::ALL {
+                if tier == Tier::B && d == Dispatch::Match {
+                    continue;
+                }
+                for stress in [false, true] {
+                    let label = format!("{tier:?} {} stress={stress}", d.name());
+                    let rows = run_two_realms(tier, config(d, stress), move |iso| {
+                        let first = iso.cx.realm;
+                        let mut rows = Vec::new();
+                        let mut row = |iso: &mut Isolate, s: String| {
+                            assert_eq!(iso.cx.realm, first, "the first realm after {s}");
+                            rows.push(s);
+                        };
+                        // T0 (second realm) -> native of the first realm.
+                        let s = run_in(iso, true, "recvA", &[]);
+                        row(iso, s);
+                        let s = run_in(iso, true, "idA", &[Int(7)]);
+                        row(iso, s);
+                        // T0 (second) -> native g (second) -> call_any -> native recv (first).
+                        let s = run_in(iso, true, "g", &[Global("recvA"), Int(0)]);
+                        row(iso, s);
+                        // T0 (first) -> native g (second) -> call_any -> native recv (first),
+                        // and -> native recv (second).
+                        let s = run_in(iso, false, "gB", &[Global("recv"), Int(0)]);
+                        row(iso, s);
+                        let s = run_in(iso, false, "gB", &[Global("recvB"), Int(0)]);
+                        row(iso, s);
+                        // A throw from native code of the first realm, called from the second.
+                        let s = run_in(iso, true, "nthrowA", &[Int(5)]);
+                        row(iso, s);
+                        // Rust (first realm current) -> native of the second realm.
+                        let u = Value::UNDEFINED;
+                        let recv_b = iso.global("recvB").unwrap();
+                        let r = crate::call_from_rust(iso, recv_b, u, &[]).map(Value::to_bits);
+                        let s = realm_name(iso, r);
+                        row(iso, s);
+                        let (g_b, recv) = (iso.global("gB").unwrap(), iso.global("recv").unwrap());
+                        let r = crate::call_from_rust(iso, g_b, u, &[recv, Value::int32(0)])
+                            .map(Value::to_bits);
+                        let s = realm_name(iso, r);
+                        row(iso, s);
+                        let nthrow_b = iso.global("nthrowB").unwrap();
+                        let r = crate::call_from_rust(iso, nthrow_b, u, &[Value::int32(6)])
+                            .map(Value::to_bits);
+                        let s = realm_name(iso, r);
+                        row(iso, s);
+                        rows
+                    });
+                    assert_eq!(
+                        rows,
+                        ["A", "7", "A", "A", "B", "Err(5)", "B", "A", "Err(6)"],
+                        "{label}"
+                    );
+                }
             }
         }
     }

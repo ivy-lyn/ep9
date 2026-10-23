@@ -6,7 +6,8 @@
 //!    │                       ├─ object.rs / property.rs / conv.rs   v0 object model (no shapes)
 //!    │                       │    kinds.rs (kind ids v1), string.rs, props.rs, key.rs
 //!    │                       ├─ unit.rs, function_info.rs           loaded units, FunctionInfo
-//!    │                       └─ realm.rs, natives.rs                intrinsics, globals, host fns
+//!    │                       └─ realm.rs, natives.rs                N realms, intrinsics, globals,
+//!    │                                                              host fns
 //!    └─ Cx (interp/mod.rs): dispatch table @0 ── interp/dsl.rs + ops.rs + slow/
 //!                              frames and calls: frame.rs, call.rs   errors: error.rs
 //! ```
@@ -21,10 +22,19 @@
 //! Jobs and promises (P4-PROMISE): the microtask queue and the Promise records are in jobs.rs,
 //! the promise operations are `Cx` methods in `abi/jobs.rs`, the tests are in `tests/jobs.rs`.
 //!
-//! Month-3 modules (M3-P0 stubs until their owners fill them; OBJECT_LAYOUT 3): arguments.rs
-//! (arguments objects, M3-P2 VM-ARGS), module.rs (module records and namespaces, M3-P2
-//! MODULE), ordered_table.rs (Map and Set storage, M3-P1 B-COLLECTIONS), facts_export.rs (the
-//! facts exporter, M3-P3 FACTS-EXPORT).
+//! Realms (M3-P1 REALMS, H22): an isolate holds N realms. Each is a REALM record (realm.rs);
+//! the current realm's values are the roots, and a cross-realm call switches them
+//! (`realm::switch`, V8-A10). The embedder API is in `abi/realm.rs` (`Cx::create_realm`,
+//! `Cx::with_realm`, `Cx::evaluate_script_in`). Async functions (M3-P1 ASYNC): an async
+//! function's state is a GENERATOR object in `MODE_ASYNC_FUNCTION`, and the runtime ids 32-35
+//! are in `interp/slow/async_fn.rs`. Each resume after `await` is one promise reaction job
+//! (`generator::resume_async_function`), so an `await` adds no native recursion.
+//!
+//! Month-3 modules (OBJECT_LAYOUT 3). Built in M3-P1: ordered_table.rs (the Map, Set, WeakMap
+//! and WeakSet tables, B-COLLECTIONS), `abi/collections.rs`, `abi/time.rs` (the clock and
+//! LocalTZA, B-DATE) and `abi/realm.rs`. M3-P0 stubs until their owners fill them:
+//! arguments.rs (arguments objects, M3-P2 VM-ARGS), module.rs (module records and namespaces,
+//! M3-P2 MODULE), facts_export.rs (the facts exporter, M3-P3 FACTS-EXPORT).
 //!
 //! ADRs: H14 frames and dispatch (docs/adr/H14-frames-and-dispatch.md), H15 interpreter
 //! dispatch, H10 rooting, H06 values.

@@ -1,9 +1,9 @@
-//! Frame push and calls (H14). JS→JS calls never recurse in Rust: the interpreter pushes the
-//! callee frame and jumps to its code. Rust recursion happens only at the edges:
+//! Frame push and calls (H14). JS→JS calls in one realm never recurse in Rust: the interpreter
+//! pushes the callee frame and jumps to its code. Rust recursion happens only at the edges:
 //!
 //! | Path | How | Native stack |
 //! |---|---|---|
-//! | JS → JS (`Call*`, `Construct`) | push frame, jump (handler or `rt_call`) | none |
+//! | JS → JS (`Call*`, `Construct`) | push frame, jump (handler or `rt_call`); a callee of another realm: [`call_function_object`] in its realm (`slow::call`) | none; another realm: one Rust level, checked |
 //! | JS → host function | push host frame, call the Rust fn | one Rust call, checked |
 //! | Rust → JS (`call_function`, host callbacks, ToPrimitive) | push entry frame (return pc = EXIT stub), run the dispatch | one dispatch run, checked |
 //! | generator resume (`next`/`return`/`throw`, [`run_resumed`]) | push a resumed frame (fp-3 = the generator, return pc = EXIT stub), run the dispatch | one dispatch run, checked |

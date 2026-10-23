@@ -8,7 +8,7 @@
 //! | (d) threads | 2 isolates on 2 threads run one mapped text at once, after a context-sync handshake; each reaches its own RW copy (isolate 2's runtime-table cell names a counting table) |
 //! | (e) multi | units A and B (slots 0 and 1) in one isolate, loaded in both orders; each reaches its own RW copy |
 //! | (f) unwind | the unwind self-test ran on the first unit's text; a native walk from a host function passes through a unit frame; an exception crosses a unit frame to a T0 catch; the JumpLoop poll stops a unit loop |
-//! | (g) fallback | each mismatch ends in its S3 outcome (BYTECODE, SOURCE, LOAD ERROR), a slot conflict and a changed function fall back too, and the program output still equals T0 |
+//! | (g) fallback | each mismatch ends in its S3 outcome (BYTECODE, SOURCE, LOAD ERROR), a slot conflict and a changed function fall back too, and the program output still equals T0; a bad link record (intrinsic index, external-reference kind) is a LOAD ERROR before anything runs, and a GC follows it |
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
@@ -941,6 +941,17 @@ fn with_u32(bytes: &[u8], off: usize, f: impl Fn(u32) -> u32) -> Vec<u8> {
     b
 }
 
+/// The offset in `bytes` of byte `at` of its RW template section.
+fn rw_offset(bytes: &[u8], at: usize) -> Result<usize, String> {
+    let t = section(bytes, ep9_unit::SectionKind::RwTemplate)?.ok_or("no RW template")?;
+    Ok(t.as_ptr().addr() - bytes.as_ptr().addr() + at)
+}
+
+/// RW template bytes: "SPUW", version, slot, ext, links, ics, counters (7 words), then the
+/// external-reference kinds (unit A: 1), then link 0 (kind, intrinsic index).
+const RW_EXT0: usize = 28;
+const RW_LINK0_INTRINSIC: usize = 36;
+
 /// One fallback case: its bytes, the outcome name it must give, and a word its reason holds.
 struct Case {
     name: &'static str,
@@ -1047,6 +1058,23 @@ fn check_fallback(scale: Scale) -> Result<Vec<String>, String> {
             reason: "size",
             host: spike,
         },
+        // The link records: the verdict is LOAD, the unit's link fails. fallback_run shows
+        // that nothing ran and that a GC after the error finds no root range of a freed
+        // RW copy (SPUNIT-1).
+        Case {
+            name: "link: intrinsic 9999",
+            bytes: with_u32(a, rw_offset(a, RW_LINK0_INTRINSIC)?, |_| 9999),
+            want: "LOAD ERROR",
+            reason: "no intrinsic 9999",
+            host: spike,
+        },
+        Case {
+            name: "link: external reference kind 7",
+            bytes: with_u32(a, rw_offset(a, RW_EXT0)?, |_| 7),
+            want: "LOAD ERROR",
+            reason: "external reference kind 7",
+            host: spike,
+        },
     ];
     for (c, reason) in [
         (Contract::BytecodeAbi, "source"),
@@ -1144,7 +1172,8 @@ fn check_fallback(scale: Scale) -> Result<Vec<String>, String> {
 }
 
 /// Runs the main program after a fallback load and compares it with T0. After a LOAD ERROR
-/// nothing of the unit ran, so `drive` is not defined.
+/// nothing of the unit ran, so `drive` is not defined, the unit has no RW copy, and a GC
+/// runs.
 fn fallback_run(
     us: &mut UnitSession,
     l: &Loaded,
@@ -1158,7 +1187,12 @@ fn fallback_run(
             if l.run.is_some() || us.s.iso.global("drive").is_some() {
                 return Err(format!("{name}: a section ran after a load error"));
             }
-            Ok(format!("{name:36} -> {k}: {r}"))
+            if us.units.rw(0).is_some() || us.units.directory_word(0) != 0 {
+                return Err(format!("{name}: an RW copy stays after a load error"));
+            }
+            // A GC after the error: no root range may name words the loader freed.
+            expect_ok(&us.s.run("gc(); gc();", "gc.js"), name)?;
+            Ok(format!("{name:36} -> {k}: {r}; then gc()"))
         }
         _ => {
             expect_ok(l.run.as_ref().ok_or("no run")?, name)?;
