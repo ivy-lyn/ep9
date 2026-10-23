@@ -113,16 +113,17 @@ fn get(cx: &mut Cx, a: u64, i: u32) -> u64 {
 }
 
 /// The parameter in context slot `s` of the arguments object `a`'s parameter map.
-fn param(a: u64, s: u32) -> u64 {
+pub(super) fn param(a: u64, s: u32) -> u64 {
     object::context_get(object::fixed_get(a, 0), s).unwrap()
 }
 
-fn set_param(cx: &Cx, a: u64, s: u32, v: u64) {
+/// Sets the parameter in context slot `s` of the arguments object `a`'s parameter map.
+pub(super) fn set_param(cx: &Cx, a: u64, s: u32, v: u64) {
     assert!(object::context_set(cx.rt(), object::fixed_get(a, 0), s, v));
 }
 
 /// The own keys of `a` as text (symbols as `@@iterator`).
-fn keys(cx: &mut Cx, a: u64) -> Vec<String> {
+pub(super) fn keys(cx: &mut Cx, a: u64) -> Vec<String> {
     let ks = property::own_property_keys(cx, a);
     let it = symbol::well_known(cx.rt(), WellKnownSymbol::Iterator);
     (0..object::array_len(ks))
@@ -137,7 +138,9 @@ fn keys(cx: &mut Cx, a: u64) -> Vec<String> {
         .collect()
 }
 
-fn mapped_a() -> VerifiedUnit {
+/// A sloppy `function f(a, b) { return arguments; }` (function 1, `a` and `b` mapped),
+/// called as `f(1, 2, 3)`; the global `A` holds the result.
+pub(super) fn mapped_a() -> VerifiedUnit {
     call_f(mapped_f(vec![Some(0), Some(1)], |_, _| {}))
 }
 
@@ -359,7 +362,7 @@ fn the_strict_callee_is_throw_type_error() {
 }
 
 /// A strict `function g(a) { return arguments; }` (function 1), called as `f(1, 2, 3)`.
-fn unmapped_a() -> VerifiedUnit {
+pub(super) fn unmapped_a() -> VerifiedUnit {
     let mut m = meta("g", 1, 0, 0, 0);
     m.flags = FunctionFlags::SIMPLE_PARAMETERS | FunctionFlags::STRICT;
     let mut g = Asm::new(m);

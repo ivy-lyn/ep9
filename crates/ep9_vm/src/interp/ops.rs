@@ -279,10 +279,11 @@ fn jump_if(st: &St<'_>, c: bool, t: Fwd) -> Done {
 ///
 /// Budget (H23): every T0 call takes 1 unit. The decrement comes after every cold exit at
 /// which `slow::call` takes the unit of the call itself (a primitive receiver, the feedback
-/// threshold; M3-P2 PERF3). The call whose unit uses up the budget gives the unit back and
-/// goes cold ([`budget_out`]): `slow::call` takes the unit, and polls first if the budget
-/// is 0 (X-PF1). A full VM stack goes cold after the decrement, and `slow::call` throws
-/// before its own decrement. The count is taken back at both exits ([`uncount_call`]).
+/// threshold; M3-P2 PERF3). The 2 cold exits after the decrement give the unit back
+/// ([`budget_out`]), so `slow::call` takes it at its frame push, also when that push fails:
+/// the call whose unit uses up the budget (X-PF1; `slow::call` polls first if the budget is
+/// 0) and a full VM stack (R3-2; `slow::call` throws the RangeError after its decrement).
+/// The count is taken back at both exits ([`uncount_call`]).
 ///
 /// The callee starts with the accumulator undefined, as after `slow::call`, so the caller's
 /// accumulator is dead after the last cold exit (one register less in the frame push).
@@ -347,6 +348,7 @@ fn call_fast(
             Flow::Jump(fi.code)
         }
         None => {
+            budget_out(st);
             uncount_call(fi);
             Flow::Cold
         }
@@ -371,12 +373,16 @@ fn count_call(st: &St<'_>, fi: &FunctionInfo) -> bool {
     true
 }
 
-/// Gives back the budget unit of a call that `call_fast` sends cold because the unit used up
-/// the budget (X-PF1). The cold path takes the unit of the call again: `slow::call` after
-/// the frame push, `enter_native` or `enter_b_cold` (spike-native). So the call takes 1 unit,
-/// not 2. `slow::call` polls before that if the budget is now 0; at a budget of 1 it does
-/// not, and the call leaves the budget at 0, so the next unit taker (a call or a `JumpLoop`)
-/// polls: the poll comes at most 1 unit later.
+/// Gives back the budget unit of a call that `call_fast` sends cold after its decrement:
+/// the unit used up the budget (X-PF1), or the frame does not fit (R3-2). The cold path takes
+/// the unit of the call again at its frame push, whether the push succeeds or fails:
+/// `slow::call`, `enter_b_cold` (spike-native) or, for the X-PF1 exit of a spike-native
+/// AotBaseline callee, `enter_native` (after a push that succeeds only). So the call takes 1
+/// unit, not 2 and not 0. `slow::call` polls before that if the budget is now 0; at a budget
+/// of 1 it does not, and the call leaves the budget at 0, so the next unit taker (a call or
+/// a `JumpLoop`) polls: the poll comes at most 1 unit later. The same holds when the frame
+/// does not fit: the RangeError leaves the budget at 0, so caught overflows do not starve the
+/// poll.
 #[inline(always)]
 fn budget_out(st: &mut St<'_>) {
     st.cx.budget += 1;
@@ -483,6 +489,12 @@ fn call_fast(
         None => {
             if interp {
                 uncount_call(fi);
+            }
+            // A T0 or (b) callee: `slow::call` or `enter_b_cold` takes the unit, also when
+            // the push fails there (R3-2). An AotBaseline callee goes to `enter_native`,
+            // which takes no unit when the push fails, so the unit taken here stays.
+            if interp || kind == DispatchKind::Opt as u8 {
+                budget_out(st);
             }
             Flow::Cold
         }
@@ -1553,11 +1565,12 @@ pub(crate) const COLD_COUNT: usize = {
 
 /// The budget units and the T0 call count of `call_fast` (H23 "Interrupt poll", H16): one unit
 /// per call, also for a call that `call_fast` sends cold (M3-P2 PERF3; before, such a call
-/// took 2 units: RV2-H23-DOUBLE-UNIT) and for the call whose unit uses up the budget (M3-P2
-/// fix round 2, X-PF1), and one count per call while the callee has no vector.
+/// took 2 units: RV2-H23-DOUBLE-UNIT), for the call whose unit uses up the budget (M3-P2
+/// fix round 2, X-PF1) and for a call or `new` whose frame does not fit (M3-P2 fix round 3,
+/// R3-2), and one count per call while the callee has no vector.
 #[cfg(test)]
 mod call_budget {
-    use ep9_bytecode::{FunctionId, VerifiedUnit};
+    use ep9_bytecode::{FunctionId, HandlerKind, RegisterList, VerifiedUnit};
 
     use crate::tests::{Asm, config, isolate, meta, on_big_stack, unit};
     use crate::{Dispatch, IsolateConfig};
@@ -1731,5 +1744,144 @@ mod call_budget {
         let a = run_unit(|| loop_program(10_000), "10000", 8, 2);
         assert!(a.script_vector, "{a:?}");
         assert_eq!(a.count, 8, "{a:?}");
+    }
+
+    /// How [`overflow_program`] calls `f`.
+    #[derive(Clone, Copy, Debug)]
+    enum Site {
+        /// A call with the receiver `recv` (see [`Recv`]).
+        Call(Recv),
+        /// `new f()`.
+        Construct,
+    }
+
+    /// The registers of `f` in [`overflow_program`]: more than [`OVERFLOW_SLOTS`], so its
+    /// frame never fits.
+    const BIG_FRAME: u32 = 2048;
+    /// The VM stack of the overflow runs (the smallest that `Isolate::new` accepts).
+    const OVERFLOW_SLOTS: usize = 1024;
+
+    /// The script: `f = function f() { return 5 }` (sloppy, function 1, with [`BIG_FRAME`]
+    /// registers), then `calls` times `try { f() } catch {}` (the call of `site`), with no
+    /// loop. It returns 7. Each call throws the VM stack's RangeError and the script catches
+    /// it, so the calls are the only budget units after the script entry.
+    fn overflow_program(calls: u32, site: Site) -> VerifiedUnit {
+        let mut f = Asm::new(meta("f", 0, 0, 0, 0));
+        f.b.new_register_list(BIG_FRAME);
+        f.b.lda_smi(5).return_();
+        let mut s = Asm::script(0);
+        let (r, o, ctx) = (s.b.new_register(), s.b.new_register(), s.b.new_register());
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0).star(r);
+        match site {
+            Site::Call(Recv::Smi) => {
+                s.b.lda_smi(1).star(o);
+            }
+            Site::Call(Recv::Object) => {
+                s.b.ldar(r).star(o);
+            }
+            Site::Call(Recv::Undefined) | Site::Construct => {}
+        }
+        s.b.lda_current_context().star(ctx);
+        for _ in 0..calls {
+            let (start, end, handler, done) = (
+                s.b.new_label(),
+                s.b.new_label(),
+                s.b.new_label(),
+                s.b.new_label(),
+            );
+            s.b.add_handler(start, end, handler, ctx, HandlerKind::Caught);
+            s.b.bind(start);
+            match site {
+                Site::Call(Recv::Undefined) => {
+                    s.b.call_undefined_receiver0(r, s.call);
+                }
+                Site::Call(Recv::Smi | Recv::Object) => {
+                    s.b.call_property0(r, o, s.call);
+                }
+                Site::Construct => {
+                    s.b.ldar(r).construct(r, RegisterList::EMPTY, 0, s.call);
+                }
+            }
+            s.b.bind(end);
+            s.b.jump(done);
+            s.b.bind(handler);
+            s.b.bind(done);
+        }
+        s.b.lda_smi(7).return_();
+        unit("", vec![s.finish(), f.finish()])
+    }
+
+    const SITES: [Site; 4] = [
+        Site::Call(Recv::Undefined),
+        Site::Call(Recv::Smi),
+        Site::Call(Recv::Object),
+        Site::Construct,
+    ];
+
+    /// Runs `overflow_program(calls, site)` with the budget `budget`, a VM stack of
+    /// [`OVERFLOW_SLOTS`] slots and an interrupt callback queued before the run, under every
+    /// dispatch expansion. Returns the budget at the end and whether the callback ran.
+    fn run_overflow(calls: u32, site: Site, budget: i64) -> (i64, bool) {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let mut first: Option<(&str, (i64, bool))> = None;
+        for &d in Dispatch::ALL {
+            let got = on_big_stack(move || {
+                let mut iso = isolate(IsolateConfig {
+                    vm_stack_slots: OVERFLOW_SLOTS,
+                    ..config(d, false)
+                });
+                let ran = Arc::new(AtomicBool::new(false));
+                let r2 = Arc::clone(&ran);
+                iso.interrupt_handle()
+                    .request(Box::new(move || r2.store(true, Ordering::SeqCst)));
+                iso.cx.budget = budget;
+                let r = iso.run_script(overflow_program(calls, site), "overflow.js");
+                assert_eq!(r.map(|v| iso.display(v)).as_deref(), Ok("7"), "{site:?}");
+                (iso.cx.budget, ran.load(Ordering::SeqCst))
+            });
+            match first {
+                None => first = Some((d.name(), got)),
+                Some((n0, g0)) => assert_eq!(got, g0, "{} differs from {n0}", d.name()),
+            }
+        }
+        first.unwrap().1
+    }
+
+    #[test]
+    fn a_call_whose_frame_does_not_fit_takes_one_unit() {
+        // R3-2: the script entry and the 3 calls take 4 units in all, also across the poll
+        // that resets the budget (as in the X-PF1 test above). A call whose frame push fails
+        // takes its unit like a call whose push succeeds: `call_fast` gives its unit back at
+        // each cold exit after its decrement, and `slow::call` takes the unit at its frame
+        // push, also when the push fails. Before, at 1 unit left, the call took 0 units (the
+        // X-PF1 refund, then the RangeError before the decrement of `slow::call`), and a call
+        // that `call_fast` sends cold before its decrement (a primitive receiver, `new`) took
+        // 0 units at any budget.
+        use crate::interp::BUDGET;
+        for site in SITES {
+            for budget in [1, 2, 3, 4, 1000] {
+                let (left, _) = run_overflow(3, site, budget);
+                let units = if left <= budget {
+                    budget - left
+                } else {
+                    budget + (BUDGET - left)
+                };
+                assert_eq!(units, 4, "{site:?} budget {budget}");
+            }
+        }
+    }
+
+    #[test]
+    fn caught_overflows_at_one_unit_left_still_poll() {
+        // R3-2 (Codex round 2): budget 2, so 1 unit is left after the script entry. 50 caught
+        // overflows in straight-line code (no `JumpLoop`): the first one uses up the budget,
+        // and the next call polls and runs the queued interrupt callback. Before, each failed
+        // call left the budget at 1, so no poll came and the callback never ran.
+        for site in SITES {
+            let (_, ran) = run_overflow(50, site, 2);
+            assert!(ran, "{site:?}: the queued interrupt did not run");
+        }
     }
 }
