@@ -424,11 +424,55 @@ jobs:
       - name: Spike B Win64 unwind (windows-x64)
         if: ${{ !cancelled() && matrix.name == 'windows-x64' }}
         run: cargo test --locked --manifest-path spikes/spike-b/Cargo.toml --test win64_unwind -- --nocapture
+      # M3-P2 WIN-STATIC-2: the Win64 unwind data of SP-Unit x86-64 unit text
+      # (spikes/spike-b/tests/win64_unit.rs). Here the spike loader maps units A and B and
+      # registers their function table; per function (JS functions, probe, cell reader),
+      # RtlLookupFunctionEntry finds the unit's UNWIND_INFO and RtlVirtualUnwind from every
+      # prologue, body and epilogue state returns to the caller; a unit with a broken
+      # UNWIND_INFO fails. The static checks of the same file (codes against the decoded
+      # prologue, a model unwinder, llvm-readobj) run on every runner in the structural gate's
+      # `cargo test`. Debug, as the step above, so it reuses that build.
+      - name: SP-Unit Win64 unwind (windows-x64)
+        if: ${{ !cancelled() && matrix.name == 'windows-x64' }}
+        run: cargo test --locked --manifest-path spikes/spike-b/Cargo.toml --test win64_unit -- --nocapture
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
           name: sp-dispatch-gate-${{ matrix.name }}
           path: spikes/sp-dispatch/target/gate/
+          if-no-files-found: warn
+      # H15-Q2 (M3-P2 PERF3; WIN-STATIC-2 task 3): the Zen 3 branchy study, report only. PERF3's
+      # spikes/sp-dispatch/zen3-branchy.sh (no arguments; exit 0 unless the build fails) prints
+      # the CPU model and the sysv and win64 ratio of each kernel. Hosted x64 runners draw
+      # different CPU models (EPYC 7763 is Zen 3), so the log starts with the runner's CPU model
+      # and is kept as an artifact for the H15-Q2 row. It never fails the job.
+      - name: SP-Dispatch Zen 3 branchy report (x64)
+        if: ${{ !cancelled() && (matrix.name == 'linux-x64' || matrix.name == 'windows-x64') }}
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          MATRIX_NAME: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          log="spikes/sp-dispatch/target/zen3/zen3-branchy-$MATRIX_NAME.log"
+          mkdir -p "$(dirname "$log")"
+          if [ "$MATRIX_NAME" = windows-x64 ]; then
+            cpu="$(powershell -NoProfile -Command '(Get-CimInstance Win32_Processor).Name' | tr -d '\r' || true)"
+          else
+            cpu="$(sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo | head -1 || true)"
+          fi
+          printf 'runner: %s\ncpu model: %s\ncommit: %s\n' "$MATRIX_NAME" "${cpu:-unknown}" "$GITHUB_SHA" | tee "$log"
+          echo "Zen 3 branchy report ($MATRIX_NAME): CPU ${cpu:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+          if [ ! -f spikes/sp-dispatch/zen3-branchy.sh ]; then
+            echo "::warning::spikes/sp-dispatch/zen3-branchy.sh is missing" | tee -a "$log"
+            exit 1
+          fi
+          bash spikes/sp-dispatch/zen3-branchy.sh 2>&1 | tee -a "$log"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() && (matrix.name == 'linux-x64' || matrix.name == 'windows-x64') }}
+        with:
+          name: zen3-branchy-${{ matrix.name }}
+          path: spikes/sp-dispatch/target/zen3/
           if-no-files-found: warn
 
   # Miri on the unsafe code of ep9_value, ep9_heap and ep9_math (docs/plan/10-quality.md
