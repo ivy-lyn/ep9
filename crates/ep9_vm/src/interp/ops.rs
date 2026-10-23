@@ -30,6 +30,7 @@ use crate::interp::dsl::{Back, CSlot, Count, Depth, FSlot, Fwd, K, R, RList, RtI
 use crate::interp::slow::{self, CmpOp, CtxKind, Lit, NameMsg, PropOp, UnOp};
 use crate::interp::{Done, Flow, St};
 use crate::runtime::ErrorKind;
+use crate::unit::FunctionInfo;
 use crate::{ic, kinds, object};
 
 macro_rules! op {
@@ -275,6 +276,16 @@ fn jump_if(st: &St<'_>, c: bool, t: Fwd) -> Done {
 /// While the callee has no feedback vector, a call that pushes its frame here counts in
 /// `invocations`; the call that reaches `feedback_threshold` goes cold, and `slow::call`
 /// makes the vector before it pushes the frame (H16, `feedback.rs`).
+///
+/// Budget (H23): the decrement comes after every cold exit at which `slow::call` takes the
+/// unit of the call itself (a primitive receiver, the feedback threshold), so each of these
+/// calls takes 1 unit, not 2 (M3-P2 PERF3). The call whose unit uses up the budget goes cold
+/// after its decrement: `slow::call` polls, then takes the unit of the call from the new
+/// budget. A full VM stack goes cold after it too, and `slow::call` throws before its own
+/// decrement. The count is taken back at both exits ([`uncount_call`]).
+///
+/// The callee starts with the accumulator undefined, as after `slow::call`, so the caller's
+/// accumulator is dead after the last cold exit (one register less in the frame push).
 #[cfg(not(feature = "spike-native"))]
 #[inline(always)]
 fn call_fast(
@@ -295,18 +306,18 @@ fn call_fast(
     if object::function_realm(callee) != st.cx.realm {
         return Flow::Cold;
     }
-    st.cx.budget -= 1;
-    if st.cx.budget <= 0 {
-        return Flow::Cold;
-    }
-    // Without a vector, `invocations` is below the threshold, so `+ 1` never overflows.
-    if fi.feedback.get().is_null() && fi.invocations.get() + 1 >= st.cx.feedback_threshold {
-        return Flow::Cold;
-    }
     // A sloppy callee with a primitive receiver: `slow::call` wraps it (H14-Q2).
     let Some(this) = call::try_bind_this(fi, this, st.cx.global_this) else {
         return Flow::Cold;
     };
+    if !count_call(st, fi) {
+        return Flow::Cold;
+    }
+    st.cx.budget -= 1;
+    if st.cx.budget <= 0 {
+        uncount_call(fi);
+        return Flow::Cold;
+    }
     let base = st.fp.wrapping_add(st.info().register_count as usize);
     let (limit, fp, next) = (st.cx.stack_limit, st.fp, st.next);
     let context = object::function_context(callee);
@@ -330,14 +341,41 @@ fn call_fast(
     };
     match nfp {
         Some(n) => {
-            // Read again here, so no count stays live across the frame push.
-            if fi.feedback.get().is_null() {
-                fi.invocations.set(fi.invocations.get() + 1);
-            }
             st.fp = n;
+            st.acc = UNDEFINED;
             Flow::Jump(fi.code)
         }
-        None => Flow::Cold,
+        None => {
+            uncount_call(fi);
+            Flow::Cold
+        }
+    }
+}
+
+/// The T0 count of a call of `fi` while it has no feedback vector (`feedback::count_call`
+/// without the vector): `false` for the call that reaches the threshold, which goes cold so
+/// that `slow::call` makes the vector. A function with a vector costs one load and one test.
+/// The count is taken before the frame push; a cold exit after it calls [`uncount_call`], so
+/// the cold path counts the call once (in `slow::call`).
+#[inline(always)]
+fn count_call(st: &St<'_>, fi: &FunctionInfo) -> bool {
+    if fi.feedback.get().is_null() {
+        // Without a vector, `invocations` is below the threshold, so `+ 1` never overflows.
+        let calls = fi.invocations.get() + 1;
+        if calls >= st.cx.feedback_threshold {
+            return false;
+        }
+        fi.invocations.set(calls);
+    }
+    true
+}
+
+/// Takes back the count of [`count_call`] before a cold exit (the budget ran out, or the VM
+/// stack is full). No GC point lies between the two, so the vector state is the same.
+#[inline(always)]
+fn uncount_call(fi: &FunctionInfo) {
+    if fi.feedback.get().is_null() {
+        fi.invocations.set(fi.invocations.get() - 1);
     }
 }
 
@@ -378,19 +416,21 @@ fn call_fast(
     } else if crate::native::hot_stub(kind).is_none() {
         return Flow::Cold;
     }
-    st.cx.budget -= 1;
-    if st.cx.budget <= 0 {
-        return Flow::Cold;
-    }
-    // Without a vector, `invocations` is below the threshold, so `+ 1` never overflows.
-    if interp && fi.feedback.get().is_null() && fi.invocations.get() + 1 >= st.cx.feedback_threshold
-    {
-        return Flow::Cold;
-    }
     // A sloppy callee with a primitive receiver: `slow::call` wraps it (H14-Q2).
     let Some(this) = call::try_bind_this(fi, this, st.cx.global_this) else {
         return Flow::Cold;
     };
+    // A native slot records no feedback (the count is a T0 count).
+    if interp && !count_call(st, fi) {
+        return Flow::Cold;
+    }
+    st.cx.budget -= 1;
+    if st.cx.budget <= 0 {
+        if interp {
+            uncount_call(fi);
+        }
+        return Flow::Cold;
+    }
     let base = st.fp.wrapping_add(st.info().register_count as usize);
     let (limit, fp, next) = (st.cx.stack_limit, st.fp, st.next);
     let context = object::function_context(callee);
@@ -415,19 +455,24 @@ fn call_fast(
         Some(n) => {
             st.fp = n;
             // The slot kind is read again here, so no stub address stays live across the
-            // frame push (a spike-native build keeps the default build's register use).
+            // frame push (a spike-native build keeps the default build's register use). The
+            // stub gets the caller's accumulator as the 4th handler argument (the (b) entry
+            // test `b_code_gets_the_four_handler_arguments_and_tail_jumps_back` reads it); a
+            // T0 callee starts with it undefined, as in the default build.
             match crate::native::hot_stub(fi.slot.kind_byte()) {
                 Some(s) => Flow::Jump(s),
                 None => {
-                    // Read again here, so no count stays live across the frame push.
-                    if fi.feedback.get().is_null() {
-                        fi.invocations.set(fi.invocations.get() + 1);
-                    }
+                    st.acc = UNDEFINED;
                     Flow::Jump(fi.code)
                 }
             }
         }
-        None => Flow::Cold,
+        None => {
+            if interp {
+                uncount_call(fi);
+            }
+            Flow::Cold
+        }
     }
 }
 
@@ -1025,12 +1070,12 @@ op!(CallProperty0(st, callee: R, receiver: R, _s: FSlot) {
     call_fast(st, f, this, 0, |_, _| UNDEFINED)
 } cold { call_cold(st) });
 op!(CallProperty1(st, callee: R, receiver: R, a0: R, _s: FSlot) {
-    let (f, this) = (st.reg(callee), st.reg(receiver));
-    call_fast(st, f, this, 1, move |s, _| s.reg(a0))
+    let (f, this, v0) = (st.reg(callee), st.reg(receiver), st.reg(a0));
+    call_fast(st, f, this, 1, move |_, _| v0)
 } cold { call_cold(st) });
 op!(CallProperty2(st, callee: R, receiver: R, a0: R, a1: R, _s: FSlot) {
-    let (f, this) = (st.reg(callee), st.reg(receiver));
-    call_fast(st, f, this, 2, move |s, i| if i == 0 { s.reg(a0) } else { s.reg(a1) })
+    let (f, this, v0, v1) = (st.reg(callee), st.reg(receiver), st.reg(a0), st.reg(a1));
+    call_fast(st, f, this, 2, move |_, i| if i == 0 { v0 } else { v1 })
 } cold { call_cold(st) });
 op!(CallUndefinedReceiver(st, callee: R, args: RList, argc: Count, _s: FSlot) {
     let f = st.reg(callee);
@@ -1041,12 +1086,12 @@ op!(CallUndefinedReceiver0(st, callee: R, _s: FSlot) {
     call_fast(st, f, UNDEFINED, 0, |_, _| UNDEFINED)
 } cold { call_cold(st) });
 op!(CallUndefinedReceiver1(st, callee: R, a0: R, _s: FSlot) {
-    let f = st.reg(callee);
-    call_fast(st, f, UNDEFINED, 1, move |s, _| s.reg(a0))
+    let (f, v0) = (st.reg(callee), st.reg(a0));
+    call_fast(st, f, UNDEFINED, 1, move |_, _| v0)
 } cold { call_cold(st) });
 op!(CallUndefinedReceiver2(st, callee: R, a0: R, a1: R, _s: FSlot) {
-    let f = st.reg(callee);
-    call_fast(st, f, UNDEFINED, 2, move |s, i| if i == 0 { s.reg(a0) } else { s.reg(a1) })
+    let (f, v0, v1) = (st.reg(callee), st.reg(a0), st.reg(a1));
+    call_fast(st, f, UNDEFINED, 2, move |_, i| if i == 0 { v0 } else { v1 })
 } cold { call_cold(st) });
 op!(CallWithSpread(st, _callee: R, _args: RList, _argc: Count, _s: FSlot) { Flow::Cold } cold {
     call_cold(st)
@@ -1470,3 +1515,117 @@ pub(crate) const COLD_COUNT: usize = {
     }
     ep9_bytecode::for_each_opcode!(count_cold [])
 };
+
+/// The budget units and the T0 call count of `call_fast` (H23 "Interrupt poll", H16): one unit
+/// per call, also for a call that `call_fast` sends cold (M3-P2 PERF3; before, such a call
+/// took 2 units: RV2-H23-DOUBLE-UNIT), and one count per call while the callee has no vector.
+#[cfg(test)]
+mod call_budget {
+    use ep9_bytecode::{FunctionId, VerifiedUnit};
+
+    use crate::tests::{Asm, config, isolate, meta, on_big_stack, unit};
+    use crate::{Dispatch, IsolateConfig};
+
+    /// The receiver of the calls.
+    #[derive(Clone, Copy, Debug)]
+    enum Recv {
+        /// `CallUndefinedReceiver0`.
+        Undefined,
+        /// `CallProperty0` with the receiver 1: a sloppy callee needs a wrapper, so
+        /// `call_fast` goes cold (H14-Q2).
+        Smi,
+        /// `CallProperty0` with the callee itself (an object) as the receiver.
+        Object,
+    }
+
+    /// The script: `f = function f() { return 5 }` (sloppy, function 1), then `calls` calls of
+    /// `f` with the receiver `recv`; it returns the last result.
+    fn program(calls: u32, recv: Recv) -> VerifiedUnit {
+        let mut f = Asm::new(meta("f", 0, 0, 0, 0));
+        f.b.lda_smi(5).return_();
+        let mut s = Asm::script(0);
+        let r = s.b.new_register();
+        let o = s.b.new_register();
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0).star(r);
+        match recv {
+            Recv::Undefined => {}
+            Recv::Smi => {
+                s.b.lda_smi(1).star(o);
+            }
+            Recv::Object => {
+                s.b.ldar(r).star(o);
+            }
+        }
+        for _ in 0..calls {
+            match recv {
+                Recv::Undefined => s.b.call_undefined_receiver0(r, s.call),
+                Recv::Smi | Recv::Object => s.b.call_property0(r, o, s.call),
+            };
+        }
+        s.b.return_();
+        unit("", vec![s.finish(), f.finish()])
+    }
+
+    /// Runs `program(calls, recv)` with the budget `budget` and the feedback threshold
+    /// `threshold` under every dispatch expansion. Returns the units the run took (the script
+    /// entry takes one) and `f`'s call count, which must agree across the expansions.
+    fn run(calls: u32, recv: Recv, threshold: u32, budget: i64) -> (i64, u32) {
+        let mut first: Option<(&str, (i64, u32))> = None;
+        for &d in Dispatch::ALL {
+            let got = on_big_stack(move || {
+                let mut iso = isolate(IsolateConfig {
+                    feedback_threshold: threshold,
+                    ..config(d, false)
+                });
+                iso.cx.budget = budget;
+                let r = iso.run_script(program(calls, recv), "budget.js");
+                assert_eq!(r.map(|v| iso.display(v)).as_deref(), Ok("5"));
+                let units = budget - iso.cx.budget;
+                let units_ref = iso.rt.units.borrow();
+                let fi = &units_ref.last().expect("a loaded unit").infos[1];
+                (units, fi.invocations.get())
+            });
+            match first {
+                None => first = Some((d.name(), got)),
+                Some((n0, g0)) => assert_eq!(got, g0, "{} differs from {n0}", d.name()),
+            }
+        }
+        first.unwrap().1
+    }
+
+    #[test]
+    fn every_t0_call_takes_one_unit() {
+        for recv in [Recv::Undefined, Recv::Smi, Recv::Object] {
+            for calls in 1..=3 {
+                // No vector yet (threshold 8): each call counts once.
+                assert_eq!(
+                    run(calls, recv, 8, 1000),
+                    (1 + i64::from(calls), calls),
+                    "{recv:?} x{calls}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_call_that_makes_the_vector_takes_one_unit() {
+        // Threshold 2: the 2nd call goes cold in `call_fast` and `slow::call` makes the
+        // vector; the count stays 2 after it.
+        for recv in [Recv::Undefined, Recv::Smi, Recv::Object] {
+            assert_eq!(run(3, recv, 2, 1000), (4, 2), "{recv:?}");
+        }
+    }
+
+    #[test]
+    fn a_call_that_uses_up_the_budget_polls_and_counts_once() {
+        // Budget 2: the script entry takes 1; the first call's unit uses up the budget, so
+        // `call_fast` gives its count back and goes cold, `slow::call` polls (the budget is
+        // BUDGET again) and takes the unit of the call again from the new budget. Each of the
+        // 3 calls counts once.
+        let budget = 2;
+        let (units, count) = run(3, Recv::Undefined, 8, budget);
+        assert_eq!(count, 3);
+        assert_eq!(units, budget - (crate::interp::BUDGET - 3));
+    }
+}
