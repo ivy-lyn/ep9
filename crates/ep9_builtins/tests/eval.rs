@@ -526,3 +526,50 @@ print(typeof al, JSON.stringify(Object.getOwnPropertyDescriptor(globalThis, 'al'
         ])
     );
 }
+
+/// M3-P2-EVAL-CATCH (R3-1): B.3.4 skips the Environment Record of any catch clause, simple or
+/// destructured, at runtime (EvalDeclarationInstantiation steps 3.d.i.2.a.i and
+/// 13.b.ii.4.a.i.i); the rule for a simple catch parameter is only the static early error of
+/// the catch Block. So a block function of a direct eval in a destructured catch gets a var
+/// binding (B.3.2.3), at the function level and at the global level, and `var f` in such an
+/// eval is no SyntaxError. ep9 keeps the spec. node v24 (V8) skips only a simple catch
+/// parameter, so it prints other text for the 5 lines below that have a "spec" comment; the
+/// other lines are the same. Under every dispatch expansion, with and without GC stress.
+#[test]
+fn annex_b_eval_in_a_destructured_catch_follows_the_spec() {
+    assert_eq!(
+        run_every(
+            r#"function g() { try { throw { f: 1 }; } catch ({ f }) { eval('{ function f() {} }'); } return typeof f; }
+function g2() { var inner; try { throw [1]; } catch ([f]) { eval('{ function f() {} }'); inner = typeof f; } return inner + ' ' + typeof f; }
+function h() { try { throw 1; } catch (f) { eval('{ function f() {} }'); } return typeof f; }
+function v() { var inner; try { throw { f: 1 }; } catch ({ f }) { eval('var f = 2'); inner = f; } return inner + ' ' + f; }
+function vs() { var inner; try { throw 1; } catch (f) { eval('var f = 2'); inner = f; } return inner + ' ' + f; }
+print('g', g());
+print('g2', g2());
+print('h', h());
+try { print('v', v()); } catch (e) { print('v', e.constructor.name); }
+print('vs', vs());
+try { throw { gf: 1 }; } catch ({ gf }) { eval('{ function gf() {} }'); }
+print('global destr', typeof gf);
+try { throw [1]; } catch ([ga]) { eval('{ function ga() {} }'); }
+print('global array', typeof ga);
+try { throw 1; } catch (hf) { eval('{ function hf() {} }'); }
+print('global simple', typeof hf);"#
+        ),
+        lines(&[
+            // spec; node v24: "g undefined"
+            "g function",
+            // spec; node v24: "g2 number undefined"
+            "g2 number function",
+            "h function",
+            // spec; node v24: "v SyntaxError"
+            "v 2 undefined",
+            "vs 2 undefined",
+            // spec; node v24: "global destr undefined"
+            "global destr function",
+            // spec; node v24: "global array undefined"
+            "global array function",
+            "global simple function",
+        ])
+    );
+}
