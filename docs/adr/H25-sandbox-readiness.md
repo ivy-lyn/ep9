@@ -32,9 +32,9 @@ Copied from the plan row: off-heap pointers only in `ExternalRef<T>`. Units are 
 
 | Cell | Field | Points at | Store |
 |---|---|---|---|
-| FUNCTION | +24 | `FunctionInfo` (in its unit, or a host or stub info) | `crates/ep9_vm/src/object.rs:928` |
+| FUNCTION | +24 | `FunctionInfo` (in its unit, or a host or stub info) | `crates/ep9_vm/src/object.rs:929` |
 | FEEDBACK | info word (`fv::INFO`) | `FunctionInfo` | `crates/ep9_vm/src/feedback.rs:169` |
-| CONTEXT | scope word (OBJECT_LAYOUT 2, C5) | `ContextScope { unit, scope }` | `crates/ep9_vm/src/object.rs:1149` (P0-VM, M2-P0) |
+| CONTEXT | scope word (OBJECT_LAYOUT 2, C5) | `ContextScope { unit, scope }` | `crates/ep9_vm/src/object.rs:1150` (P0-VM, M2-P0) |
 
 The other `native_of` stores write VM stack frame slots (caller fp, return pc, function info; `crates/ep9_vm/src/call.rs`). The VM stack is not a heap cell.
 
@@ -95,6 +95,7 @@ The other `native_of` stores write VM stack frame slots (caller fp, return pc, f
 | 2026-10-23 | clarify (proposed; Accepted path) | 4 `path:line` references moved to the code after the M3-P0 merge and the M3-P0 code fixes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS). Text only; no check changes. A ref in a dated history row keeps the line that the named commit gave it (round-2 review finding X-ADR1: this run had moved the 375d953 destinations :703 and :916 in review row 3 to :918 and :1139; restored, and a history pin in the drift script keeps it). Review record for this amendment (README §3.1): rows 1-3 by agents that did not write it; the orchestrator approves | M3-P0 integration fixer |
 | 2026-10-23 | clarify (proposed; Accepted path) | 2 `path:line` references moved to the code after the M3-P1 merge and the M3-P1 fixer changes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS); the 4 refs in dated review-record rows go back to the lines of the commit each row names (M3-P1-REVIEWROW-REFS, X-FD1). Text only; no check changes. Review record for this amendment (README §3.1): rows 1-3 by agents that did not write it; the orchestrator approves | M3-P1 integration fixer |
 | 2026-10-23 | clarify (proposed; Accepted path) | 2 `path:line` references moved to the code after the M3-P2 merge and the M3-P2 fixer changes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS); each names the same item at the new line. Text only; no check changes. Review record for this amendment (README §3.1): rows 1-3 by agents that did not write it, row 4 the ADRLINE output; the orchestrator approves | M3-P2 integration fixer (docs) |
+| 2026-10-23 | clarify (proposed; Accepted path) | 2 `path:line` references moved to the code after the M3-P2 fix round 2 merge (m0m3/p2-fix2-docs: the module, vm and perf fixer branches) (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS); each names the same item at the new line. The refs moved by the vm fixer's 1-line doc change in `object.rs` (`modf::ENVIRONMENT`, 25286b5). Text only; no check changes. Review record for this amendment (README §3.1): rows 1-3 by agents that did not write it, row 4 the ADRLINE output; the orchestrator approves | M3-P2 fix round 2 (docs) |
 
 ## Review record
 
