@@ -203,9 +203,10 @@ impl<'s> Cx<'s> {
         };
         let unit = self.compile_with(|h| (h.compile_function)(kind, &params, &body))?;
         let fallback = match kind {
-            FunctionCtorKind::Generator | FunctionCtorKind::AsyncGenerator => {
-                IntrinsicId::GeneratorFunctionPrototype
-            }
+            FunctionCtorKind::Generator => IntrinsicId::GeneratorFunctionPrototype,
+            // §20.2.1.1.1 step 6: fallbackProto of kind async generator is
+            // %AsyncGeneratorFunction.prototype%.
+            FunctionCtorKind::AsyncGenerator => IntrinsicId::AsyncGeneratorFunctionPrototype,
             // §20.2.1.1.1 step 5: fallbackProto of kind async is %AsyncFunction.prototype%.
             FunctionCtorKind::Async => IntrinsicId::AsyncFunctionPrototype,
             FunctionCtorKind::Normal => IntrinsicId::FunctionPrototype,

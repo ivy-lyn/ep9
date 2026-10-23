@@ -17,6 +17,7 @@
 //! | `%Iterator.prototype%[@@iterator]`; `%Iterator.prototype%[@@toStringTag]` (an accessor: get "Iterator", set SetterThatIgnoresPrototypeProperties, ES2025) | §27.1.2.1, §27.1.4.14 |
 //! | `Function.prototype[@@hasInstance]` (OrdinaryHasInstance; `instanceof` runs it without a call, `property::instance_of`) | §20.2.3.6 |
 //! | `%GeneratorFunction%`, `%GeneratorPrototype%` `next`/`return`/`throw`, `%AsyncFunction%` (`generator.rs`; `%GeneratorFunction%` compiles through the compiler hook like `Function`, `abi/script.rs`; `%AsyncFunction%` is CreateDynamicFunction of kind async through the same hook, M3-P1 ASYNC) | §27.3.1.1, §27.5.1.2-4, §27.7.1.1 |
+//! | `%AsyncGeneratorFunction%`, `%AsyncGeneratorPrototype%` `next`/`return`/`throw`, `%AsyncIteratorPrototype%[@@asyncIterator]`, `%AsyncFromSyncIteratorPrototype%` `next`/`return`/`throw` (`generator.rs`, M3-P2 ASYNCGEN; `%AsyncGeneratorFunction%` compiles through the compiler hook like `Function`) | §27.4.1.1, §27.6.1.2-4, §27.1.3.1, §27.1.6.2.1-3 |
 //! | `%eval%`, the global `eval` (indirect eval; direct eval is `interp/slow/eval.rs`), through the compiler hook (`abi/script.rs`) | §19.2.1 |
 //!
 //! The built-in iterators are ITERATOR cells (object.rs): the iterated value, the next index
@@ -111,6 +112,24 @@ pub(crate) mod vm {
     pub const ITERATOR_TO_STRING_TAG_GET: u16 = 31;
     /// The setter of `%Iterator.prototype%[@@toStringTag]`.
     pub const ITERATOR_TO_STRING_TAG_SET: u16 = 32;
+    // ---- M3-P2 (ASYNCGEN, step 1 of the shared lines): async generators (§27.4, §27.6) and
+    // async iteration (§27.1.3, §27.1.6); `generator.rs` ----
+    /// `%AsyncGeneratorFunction%`.
+    pub const ASYNC_GENERATOR_FUNCTION: u16 = 33;
+    /// `%AsyncGeneratorPrototype%.next`.
+    pub const ASYNC_GENERATOR_NEXT: u16 = 34;
+    /// `%AsyncGeneratorPrototype%.return`.
+    pub const ASYNC_GENERATOR_RETURN: u16 = 35;
+    /// `%AsyncGeneratorPrototype%.throw`.
+    pub const ASYNC_GENERATOR_THROW: u16 = 36;
+    /// `%AsyncIteratorPrototype%[@@asyncIterator]`.
+    pub const ASYNC_ITERATOR_ITERATOR: u16 = 37;
+    /// `%AsyncFromSyncIteratorPrototype%.next`.
+    pub const ASYNC_FROM_SYNC_NEXT: u16 = 38;
+    /// `%AsyncFromSyncIteratorPrototype%.return`.
+    pub const ASYNC_FROM_SYNC_RETURN: u16 = 39;
+    /// `%AsyncFromSyncIteratorPrototype%.throw`.
+    pub const ASYNC_FROM_SYNC_THROW: u16 = 40;
 }
 
 /// The VM's block.
@@ -150,6 +169,22 @@ const VM_DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("[Symbol.hasInstance]", 1, function_has_instance),
     BuiltinDef::getter("[Symbol.toStringTag]", iterator_to_string_tag_get),
     BuiltinDef::setter("[Symbol.toStringTag]", iterator_to_string_tag_set),
+    BuiltinDef::constructor(
+        "AsyncGeneratorFunction",
+        1,
+        generator::async_generator_function,
+    ),
+    BuiltinDef::method("next", 1, generator::async_generator_next),
+    BuiltinDef::method("return", 1, generator::async_generator_return),
+    BuiltinDef::method("throw", 1, generator::async_generator_throw),
+    BuiltinDef::method(
+        "[Symbol.asyncIterator]",
+        0,
+        generator::async_iterator_iterator,
+    ),
+    BuiltinDef::method("next", 1, generator::async_from_sync_next),
+    BuiltinDef::method("return", 1, generator::async_from_sync_return),
+    BuiltinDef::method("throw", 1, generator::async_from_sync_throw),
 ];
 
 const VM_INTRINSICS: &[IntrinsicDef] = &[
@@ -240,6 +275,41 @@ const VM_INTRINSICS: &[IntrinsicDef] = &[
         id: IntrinsicId::Eval,
         value: IntrinsicValue::Builtin(vm::EVAL),
     },
+    // M3-P2 (ASYNCGEN). §27.1.3: an ordinary object whose [[Prototype]] is
+    // %Object.prototype%.
+    IntrinsicDef {
+        id: IntrinsicId::AsyncIteratorPrototype,
+        value: IntrinsicValue::Object {
+            proto: Some(IntrinsicId::ObjectPrototype),
+        },
+    },
+    // Its `[[Prototype]]` is %Function% (§27.4.2): set by `builtins::install` after step (2),
+    // as for %GeneratorFunction%.
+    IntrinsicDef {
+        id: IntrinsicId::AsyncGeneratorFunction,
+        value: IntrinsicValue::Builtin(vm::ASYNC_GENERATOR_FUNCTION),
+    },
+    // §27.4.3: an ordinary object whose [[Prototype]] is %Function.prototype%.
+    IntrinsicDef {
+        id: IntrinsicId::AsyncGeneratorFunctionPrototype,
+        value: IntrinsicValue::Object {
+            proto: Some(IntrinsicId::FunctionPrototype),
+        },
+    },
+    // §27.6.1: an ordinary object whose [[Prototype]] is %AsyncIteratorPrototype%.
+    IntrinsicDef {
+        id: IntrinsicId::AsyncGeneratorPrototype,
+        value: IntrinsicValue::Object {
+            proto: Some(IntrinsicId::AsyncIteratorPrototype),
+        },
+    },
+    // §27.1.6.2: an ordinary object whose [[Prototype]] is %AsyncIteratorPrototype%.
+    IntrinsicDef {
+        id: IntrinsicId::AsyncFromSyncIteratorPrototype,
+        value: IntrinsicValue::Object {
+            proto: Some(IntrinsicId::AsyncIteratorPrototype),
+        },
+    },
     // M2-P5. §23.1.3.41: OrdinaryObjectCreate(null).
     IntrinsicDef {
         id: IntrinsicId::ArrayUnscopables,
@@ -253,6 +323,7 @@ const TO_STRING: PropKey = PropKey::Atom(Atom::ToStringKey);
 const NEXT: PropKey = PropKey::Atom(Atom::Next);
 const VALUES: PropKey = PropKey::Str("values");
 const ITERATOR: PropKey = PropKey::Symbol(WellKnownSymbol::ITERATOR);
+const ASYNC_ITERATOR: PropKey = PropKey::Symbol(WellKnownSymbol::ASYNC_ITERATOR);
 const TO_STRING_TAG: PropKey = PropKey::Symbol(WellKnownSymbol::TO_STRING_TAG);
 const HAS_INSTANCE: PropKey = PropKey::Symbol(WellKnownSymbol::HAS_INSTANCE);
 const UNSCOPABLES: PropKey = PropKey::Symbol(WellKnownSymbol::UNSCOPABLES);
@@ -553,6 +624,56 @@ const VM_PROPS: &[ObjectProps] = &[
                 attrs: PropAttrs::CONFIGURABLE,
             },
             to_string_tag("AsyncFunction"),
+        ],
+    },
+    // ---- M3-P2 (ASYNCGEN): async iteration (§27.1.3, §27.1.6) and async generators (§27.4,
+    // §27.6) ----
+    ObjectProps {
+        target: IntrinsicId::AsyncIteratorPrototype,
+        props: &[PropDef::method(ASYNC_ITERATOR, vm::ASYNC_ITERATOR_ITERATOR)],
+    },
+    ObjectProps {
+        target: IntrinsicId::AsyncGeneratorFunction,
+        props: &prototype_of(IntrinsicId::AsyncGeneratorFunctionPrototype),
+    },
+    ObjectProps {
+        target: IntrinsicId::AsyncGeneratorFunctionPrototype,
+        props: &[
+            // §27.4.3.1, §27.4.3.2: {c}.
+            PropDef {
+                key: CONSTRUCTOR,
+                value: PropValue::Builtin(vm::ASYNC_GENERATOR_FUNCTION),
+                attrs: PropAttrs::CONFIGURABLE,
+            },
+            PropDef::intrinsic(
+                PROTOTYPE,
+                IntrinsicId::AsyncGeneratorPrototype,
+                PropAttrs::CONFIGURABLE,
+            ),
+            to_string_tag("AsyncGeneratorFunction"),
+        ],
+    },
+    ObjectProps {
+        target: IntrinsicId::AsyncGeneratorPrototype,
+        props: &[
+            // §27.6.1.1: {c}.
+            PropDef::intrinsic(
+                CONSTRUCTOR,
+                IntrinsicId::AsyncGeneratorFunctionPrototype,
+                PropAttrs::CONFIGURABLE,
+            ),
+            PropDef::method(NEXT, vm::ASYNC_GENERATOR_NEXT),
+            PropDef::method(PropKey::Str("return"), vm::ASYNC_GENERATOR_RETURN),
+            PropDef::method(PropKey::Str("throw"), vm::ASYNC_GENERATOR_THROW),
+            to_string_tag("AsyncGenerator"),
+        ],
+    },
+    ObjectProps {
+        target: IntrinsicId::AsyncFromSyncIteratorPrototype,
+        props: &[
+            PropDef::method(NEXT, vm::ASYNC_FROM_SYNC_NEXT),
+            PropDef::method(PropKey::Str("return"), vm::ASYNC_FROM_SYNC_RETURN),
+            PropDef::method(PropKey::Str("throw"), vm::ASYNC_FROM_SYNC_THROW),
         ],
     },
 ];
