@@ -277,12 +277,12 @@ fn jump_if(st: &St<'_>, c: bool, t: Fwd) -> Done {
 /// `invocations`; the call that reaches `feedback_threshold` goes cold, and `slow::call`
 /// makes the vector before it pushes the frame (H16, `feedback.rs`).
 ///
-/// Budget (H23): the decrement comes after every cold exit at which `slow::call` takes the
-/// unit of the call itself (a primitive receiver, the feedback threshold), so each of these
-/// calls takes 1 unit, not 2 (M3-P2 PERF3). The call whose unit uses up the budget goes cold
-/// after its decrement: `slow::call` polls, then takes the unit of the call from the new
-/// budget. A full VM stack goes cold after it too, and `slow::call` throws before its own
-/// decrement. The count is taken back at both exits ([`uncount_call`]).
+/// Budget (H23): every T0 call takes 1 unit. The decrement comes after every cold exit at
+/// which `slow::call` takes the unit of the call itself (a primitive receiver, the feedback
+/// threshold; M3-P2 PERF3). The call whose unit uses up the budget gives the unit back and
+/// goes cold ([`budget_out`]): `slow::call` takes the unit, and polls first if the budget
+/// is 0 (X-PF1). A full VM stack goes cold after the decrement, and `slow::call` throws
+/// before its own decrement. The count is taken back at both exits ([`uncount_call`]).
 ///
 /// The callee starts with the accumulator undefined, as after `slow::call`, so the caller's
 /// accumulator is dead after the last cold exit (one register less in the frame push).
@@ -315,6 +315,7 @@ fn call_fast(
     }
     st.cx.budget -= 1;
     if st.cx.budget <= 0 {
+        budget_out(st);
         uncount_call(fi);
         return Flow::Cold;
     }
@@ -368,6 +369,17 @@ fn count_call(st: &St<'_>, fi: &FunctionInfo) -> bool {
         fi.invocations.set(calls);
     }
     true
+}
+
+/// Gives back the budget unit of a call that `call_fast` sends cold because the unit used up
+/// the budget (X-PF1). The cold path takes the unit of the call again: `slow::call` after
+/// the frame push, `enter_native` or `enter_b_cold` (spike-native). So the call takes 1 unit,
+/// not 2. `slow::call` polls before that if the budget is now 0; at a budget of 1 it does
+/// not, and the call leaves the budget at 0, so the next unit taker (a call or a `JumpLoop`)
+/// polls: the poll comes at most 1 unit later.
+#[inline(always)]
+fn budget_out(st: &mut St<'_>) {
+    st.cx.budget += 1;
 }
 
 /// Takes back the count of [`count_call`] before a cold exit (the budget ran out, or the VM
@@ -426,6 +438,7 @@ fn call_fast(
     }
     st.cx.budget -= 1;
     if st.cx.budget <= 0 {
+        budget_out(st);
         if interp {
             uncount_call(fi);
         }
@@ -1540,7 +1553,8 @@ pub(crate) const COLD_COUNT: usize = {
 
 /// The budget units and the T0 call count of `call_fast` (H23 "Interrupt poll", H16): one unit
 /// per call, also for a call that `call_fast` sends cold (M3-P2 PERF3; before, such a call
-/// took 2 units: RV2-H23-DOUBLE-UNIT), and one count per call while the callee has no vector.
+/// took 2 units: RV2-H23-DOUBLE-UNIT) and for the call whose unit uses up the budget (M3-P2
+/// fix round 2, X-PF1), and one count per call while the callee has no vector.
 #[cfg(test)]
 mod call_budget {
     use ep9_bytecode::{FunctionId, VerifiedUnit};
@@ -1589,11 +1603,49 @@ mod call_budget {
         unit("", vec![s.finish(), f.finish()])
     }
 
-    /// Runs `program(calls, recv)` with the budget `budget` and the feedback threshold
-    /// `threshold` under every dispatch expansion. Returns the units the run took (the script
-    /// entry takes one) and `f`'s call count, which must agree across the expansions.
-    fn run(calls: u32, recv: Recv, threshold: u32, budget: i64) -> (i64, u32) {
-        let mut first: Option<(&str, (i64, u32))> = None;
+    /// The script: `f = function f() { return 5 }` (sloppy, function 1), then a loop of
+    /// `iters` iterations with 2 calls `f()` per back edge; it returns the iteration count.
+    fn loop_program(iters: i32) -> VerifiedUnit {
+        let mut f = Asm::new(meta("f", 0, 0, 0, 0));
+        f.b.lda_smi(5).return_();
+        let mut s = Asm::script(0);
+        let (r, i) = (s.b.new_register(), s.b.new_register());
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0).star(r);
+        s.b.lda_zero().star(i);
+        let header = s.b.bound_label();
+        let exit = s.b.new_label();
+        s.b.lda_smi(iters)
+            .test_less_than(i, s.cmp)
+            .jump_if_false(exit);
+        s.b.call_undefined_receiver0(r, s.call);
+        s.b.call_undefined_receiver0(r, s.call);
+        s.b.ldar(i).inc(s.bin).star(i);
+        s.b.jump_loop(header, 0, s.loop_);
+        s.b.bind(exit);
+        s.b.ldar(i).return_();
+        unit("", vec![s.finish(), f.finish()])
+    }
+
+    /// What a run left: the budget, `f`'s call count and whether the script function has a
+    /// feedback vector.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct After {
+        budget: i64,
+        count: u32,
+        script_vector: bool,
+    }
+
+    /// Runs the unit of `make` with the budget `budget` and the feedback threshold
+    /// `threshold` under every dispatch expansion, and checks its result `expect`. The state
+    /// after the run must agree across the expansions.
+    fn run_unit(
+        make: impl Fn() -> VerifiedUnit + Copy + Send + 'static,
+        expect: &'static str,
+        threshold: u32,
+        budget: i64,
+    ) -> After {
+        let mut first: Option<(&str, After)> = None;
         for &d in Dispatch::ALL {
             let got = on_big_stack(move || {
                 let mut iso = isolate(IsolateConfig {
@@ -1601,12 +1653,15 @@ mod call_budget {
                     ..config(d, false)
                 });
                 iso.cx.budget = budget;
-                let r = iso.run_script(program(calls, recv), "budget.js");
-                assert_eq!(r.map(|v| iso.display(v)).as_deref(), Ok("5"));
-                let units = budget - iso.cx.budget;
+                let r = iso.run_script(make(), "budget.js");
+                assert_eq!(r.map(|v| iso.display(v)).as_deref(), Ok(expect));
                 let units_ref = iso.rt.units.borrow();
-                let fi = &units_ref.last().expect("a loaded unit").infos[1];
-                (units, fi.invocations.get())
+                let infos = &units_ref.last().expect("a loaded unit").infos;
+                After {
+                    budget: iso.cx.budget,
+                    count: infos[1].invocations.get(),
+                    script_vector: !infos[0].feedback.get().is_null(),
+                }
             });
             match first {
                 None => first = Some((d.name(), got)),
@@ -1614,6 +1669,13 @@ mod call_budget {
             }
         }
         first.unwrap().1
+    }
+
+    /// Runs `program(calls, recv)` (see [`run_unit`]). Returns the units the run took (the
+    /// script entry takes one) and `f`'s call count.
+    fn run(calls: u32, recv: Recv, threshold: u32, budget: i64) -> (i64, u32) {
+        let a = run_unit(move || program(calls, recv), "5", threshold, budget);
+        (budget - a.budget, a.count)
     }
 
     #[test]
@@ -1640,14 +1702,34 @@ mod call_budget {
     }
 
     #[test]
-    fn a_call_that_uses_up_the_budget_polls_and_counts_once() {
-        // Budget 2: the script entry takes 1; the first call's unit uses up the budget, so
-        // `call_fast` gives its count back and goes cold, `slow::call` polls (the budget is
-        // BUDGET again) and takes the unit of the call again from the new budget. Each of the
-        // 3 calls counts once.
-        let budget = 2;
-        let (units, count) = run(3, Recv::Undefined, 8, budget);
-        assert_eq!(count, 3);
-        assert_eq!(units, budget - (crate::interp::BUDGET - 3));
+    fn a_call_that_uses_up_the_budget_takes_one_unit_and_counts_once() {
+        // The script entry and the 3 calls take 4 units in all, also across the poll that
+        // resets the budget (X-PF1): the units of the first budget (all of `budget`) plus the
+        // units of the new one (BUDGET - the budget at the end). The call whose `call_fast`
+        // unit uses up the budget gives the unit back and goes cold; `slow::call` takes the
+        // unit (it polls first if the budget is 0). Each call counts once.
+        use crate::interp::BUDGET;
+        for recv in [Recv::Undefined, Recv::Smi, Recv::Object] {
+            for budget in 1..=3 {
+                let (units, count) = run(3, recv, 8, budget);
+                assert_eq!(count, 3, "{recv:?} budget {budget}");
+                let left = budget - units;
+                assert_eq!(budget + (BUDGET - left), 4, "{recv:?} budget {budget}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_loop_with_two_calls_per_back_edge_gets_its_vector() {
+        // X-PF1: with 2 calls and 1 back edge per iteration (3 units), a call that took 2
+        // units at the budget's end put every poll on the same call, so the `JumpLoop` poll
+        // (where `feedback::ensure` gives the running script its vector) never came. With 1
+        // unit per call, the poll moves and a `JumpLoop` poll comes (near iteration 3,334).
+        // Other loop shapes can still put every poll on a call (3 or 4 calls per back edge
+        // at budget 2): `feedback::ensure` runs only at the `JumpLoop` poll (PERF3-PHASE,
+        // PERF3 step-2 item 4, M3-P4).
+        let a = run_unit(|| loop_program(10_000), "10000", 8, 2);
+        assert!(a.script_vector, "{a:?}");
+        assert_eq!(a.count, 8, "{a:?}");
     }
 }
