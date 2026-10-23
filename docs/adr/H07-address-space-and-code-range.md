@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted (2026-10-24, M3-P2-ACCEPT-6; review record complete). Was: Draft (2026-10-20; rewritten 2026-10-21) |
+| Status | Draft (2026-10-20; rewritten 2026-10-21) |
 | Fix by | M0 wk2 (SP-VA); the process code range before Spike B (M0 month 2) |
 | Freeze point | M1 exit |
 | Origin | v1#3; plan status E (extended: code range) |
@@ -115,7 +115,6 @@ One cage per isolate below 2^47 (64 GiB default, configurable); avoids 0x4001_00
 | 2026-10-23 | clarify | Validation: SP-Unit (M3-P1) is built and puts unit text in the process code range (the spike loader `map` in `spikes/spike-b/src/unit/load.rs`; `gate.sh unit` check (b)); the line said "will put". Review record row 3 (M3-P2 ACCEPT-6, V1). Text only; no check changes | M3-P2 ACCEPT-6 |
 | 2026-10-23 | clarify | H07-Q2 proposed-default cell points at the answer for unit text in H34-Q3 (an indirect call through a register, filled 2026-10-23 by M3-P1 SP-UNIT) and at the open JIT part (M5). H07 decides nothing new. Review record row 3 (M3-P2 ACCEPT-6, V2). Text only; no check changes | M3-P2 ACCEPT-6 |
 | 2026-10-24 | clarify | Review record: a row-2 addendum (the P5 runs and the M3-P2 ACCEPT-6 docs slice; no H07 finding) and a row-3 addendum by the M3-P2 row-3 verifier (at df87c4a; nothing to sort). No text outside the record changes; no check changes | M3-P2 records writer |
-| 2026-10-24 | clarify | Status Draft -> Accepted (M3-P2-ACCEPT-6). The §3.1 review record is complete: row 1 P3-ACCEPT-2, row 2 Codex (M2-P3-B2-ROW2, with the M3-P2 addendum), row 3 M3-P2 ACCEPT-6 (after SP-Unit) with the M3-P2 addendum, row 4 data (SP-Unit data in row 3). SP-Unit: GO in the Verdict-table row `SP-Unit` (plan-v8 §4.10 step 5, the orchestrator; written before this Accept). The orchestrator did not write the rows it approves. No check changes | orchestrator (written by the M3-P2 records writer) |
 
 ## Review record
 

@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Accepted (2026-10-24, M3-P2-ACCEPT-6; review record complete). Was: Draft (2026-10-20; Q1 and Q3 filled 2026-10-21: shape region, word0 flag bits; Q2 filled 2026-10-22: no shape-guarded load in Spike B) |
+| Status | Draft (2026-10-20; Q1 and Q3 filled 2026-10-21: shape region, word0 flag bits; Q2 filled 2026-10-22: no shape-guarded load in Spike B). Accept needs the review record (README §3.1) and SP-Unit |
 | Fix by | M0 wk2 |
 | Freeze point | M1 exit |
 | Origin | v1#4 + R16-D5 (as corrected by R17); plan status E (extended: ShapeId rule) |
@@ -157,7 +157,6 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 | 2026-10-23 | clarify | Review record: a row-1 addendum (V8-A25) by M3-P1 ACCEPT-5 step 2 over the M3-P1 SP-UNIT lines (the AOT guard picture, Costs and their 2026-10-23 rewrite row): the text matches H35-Q9 and the unit code; kind rewrite confirmed. No text outside the record changes, and no check changes | M3-P1 ACCEPT-5 (step 2) |
 | 2026-10-23 | clarify | Review record row 3 (M3-P2 ACCEPT-6): the verify of the rows written after the P3 verify and of SP-Unit, at cbae45d. No text outside the record changes; no check changes | M3-P2 ACCEPT-6 |
 | 2026-10-24 | clarify | Review record: the row-2 addendum that ACCEPT-6 row 3 asked for (the P5 docs run, the M3-P1 SP-UNIT and fixer docs slices, the M3-P2 ACCEPT-6 docs slice; no open finding) and a row-3 addendum by the M3-P2 row-3 verifier (at df87c4a; nothing to sort). No text outside the record changes; no check changes | M3-P2 records writer |
-| 2026-10-24 | clarify | Status Draft -> Accepted (M3-P2-ACCEPT-6). The §3.1 review record is complete: row 1 P2-ACCEPT-1 with the M3-P1 addendum, row 2 Codex (M2-P2-REVIEW, with the M3-P2 addendum), row 3 P3-ACCEPT-2 and M3-P2 ACCEPT-6 (after SP-Unit) with the M3-P2 addendum, row 4 data (SP-Unit data in row 3). SP-Unit: GO in the Verdict-table row `SP-Unit` (plan-v8 §4.10 step 5, the orchestrator; written before this Accept). The orchestrator did not write the rows it approves. The Status line drops "Accept needs the review record (README §3.1) and SP-Unit". No check changes | orchestrator (written by the M3-P2 records writer) |
 
 ## Review record
 
