@@ -256,7 +256,9 @@ fn hhmm_offset(w: &str) -> Option<f64> {
         b'-' => (-1.0, &w[1..]),
         _ => return None,
     };
-    if digits.len() != 4 {
+    // Four ASCII digits: the slices below then cut at char boundaries (a 4-byte word with a
+    // multibyte char in it would panic there).
+    if digits.len() != 4 || !digits.bytes().all(|c| c.is_ascii_digit()) {
         return None;
     }
     let h = number(&digits[..2], 2)?;
@@ -348,5 +350,15 @@ mod tests {
         assert_eq!(parse("Thu Jan 01 1970 07:30:00 GMT+0730 (x"), None);
         assert_eq!(parse("Jan 01 1970 07:30:00 PST"), None);
         assert_eq!(parse("Foo Jan 01 1970"), None);
+        // A 4-byte offset word with a multibyte char in it (no panic; node gives NaN).
+        for s in [
+            "Jan 01 1970 GMT+1\u{20ac}",
+            "Jan 01 1970 GMT+\u{20ac}1",
+            "Jan 01 1970 UTC-1\u{e9}1",
+            "Jan 01 1970 GMT+1\u{fffd}",
+            "Jan 01 1970 GMT+1\u{800}",
+        ] {
+            assert_eq!(parse(s), None, "{s}");
+        }
     }
 }
