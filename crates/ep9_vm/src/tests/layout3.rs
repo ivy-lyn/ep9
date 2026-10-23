@@ -219,12 +219,16 @@ fn every_function_has_the_isolate_realm() {
                     id.name()
                 );
             }
-            // Ids 45-63 are declared (P0-D3); the VM table makes 45-49 (M3-P2 ASYNCGEN); the
-            // others are not made without an embedder table.
-            for id in &IntrinsicId::ALL[45..50] {
+            // Ids 45-63 are declared (P0-D3); the VM table makes 45-49 (M3-P2 ASYNCGEN) and 63
+            // (%ThrowTypeError%, M3-P2 VM-ARGS step 2); the others are not made without an
+            // embedder table.
+            for id in IntrinsicId::ALL[45..50]
+                .iter()
+                .chain(&IntrinsicId::ALL[63..])
+            {
                 assert!(crate::kinds::is_object(intrinsic(rt, *id)), "{}", id.name());
             }
-            for id in &IntrinsicId::ALL[50..] {
+            for id in &IntrinsicId::ALL[50..63] {
                 assert_eq!(intrinsic(rt, *id), UNDEFINED, "{}", id.name());
             }
             iso.collect_garbage();
