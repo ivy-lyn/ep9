@@ -339,8 +339,8 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
 ///   the caller's registers too, and native code runs with its frame published, so the GC
 ///   scan sees them in both frames;
 /// - state: `slow::call` already published `fp` and the call's offset (`enter`) and ran the
-///   interrupt poll; `enter_native` counts one budget unit, and a full VM stack throws the
-///   RangeError. No feedback count and no native stack check (`native.rs` module doc);
+///   interrupt poll; `enter_native` takes one budget unit, also on a full VM stack (its
+///   RangeError). No feedback count and no native stack check (`native.rs` module doc);
 /// - result: the accumulator and the next pc (`out_fp`/`out_pc`), or `Err` and `slow::call`
 ///   unwinds from this call instruction.
 ///

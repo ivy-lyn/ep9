@@ -376,13 +376,13 @@ fn count_call(st: &St<'_>, fi: &FunctionInfo) -> bool {
 /// Gives back the budget unit of a call that `call_fast` sends cold after its decrement:
 /// the unit used up the budget (X-PF1), or the frame does not fit (R3-2). The cold path takes
 /// the unit of the call again at its frame push, whether the push succeeds or fails:
-/// `slow::call`, `enter_b_cold` (spike-native) or, for the X-PF1 exit of a spike-native
-/// AotBaseline callee, `enter_native` (after a push that succeeds only). So the call takes 1
-/// unit, not 2 and not 0. `slow::call` polls before that if the budget is now 0; at a budget
-/// of 1 it does not, and the call leaves the budget at 0, so the next unit taker (a call or
-/// a `JumpLoop`) polls: the poll comes at most 1 unit later. The same holds when the frame
-/// does not fit: the RangeError leaves the budget at 0, so caught overflows do not starve the
-/// poll.
+/// `slow::call`, or under spike-native `enter_b_cold` or, for an AotBaseline callee,
+/// `enter_native` (M3-P2 fix round 5, D1). So the call takes 1 unit, not 2 and not 0.
+/// `slow::call` polls before that if the budget is now 0; at a budget of 1 it does not, and
+/// the call leaves the budget at 0, so the next unit taker (a call or a `JumpLoop`) polls:
+/// the poll comes at most 1 unit later. The same holds when the frame does not fit: the
+/// RangeError leaves the budget at 0, so caught overflows do not starve the poll (also under
+/// spike-native).
 #[inline(always)]
 fn budget_out(st: &mut St<'_>) {
     st.cx.budget += 1;
@@ -490,12 +490,9 @@ fn call_fast(
             if interp {
                 uncount_call(fi);
             }
-            // A T0 or (b) callee: `slow::call` or `enter_b_cold` takes the unit, also when
-            // the push fails there (R3-2). An AotBaseline callee goes to `enter_native`,
-            // which takes no unit when the push fails, so the unit taken here stays.
-            if interp || kind == DispatchKind::Opt as u8 {
-                budget_out(st);
-            }
+            // `slow::call`, `enter_b_cold` or `enter_native` takes the unit, also when the
+            // push fails there (R3-2; `enter_native` since M3-P2 fix round 5, D1).
+            budget_out(st);
             Flow::Cold
         }
     }

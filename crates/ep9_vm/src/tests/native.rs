@@ -7,7 +7,8 @@
 //! call shape takes it, every other call falls through to the decode path, and exceptions and
 //! GC stress behave as on that path. The P3 review fix adds a full VM stack at that entry: the
 //! VM stack's RangeError. The M3-P1 integration fixer adds two realms (REALMS-1): native code
-//! runs in its function's realm on every entry path.
+//! runs in its function's realm on every entry path. M3-P2 fix round 5 (D1) adds the budget
+//! units of a call of a native callee: 1 unit per call, also when its frame does not fit.
 //!
 //! The stubs are a few hand-encoded instructions per target (aarch64: AAPCS64 `extern "C"`;
 //! x86-64: `extern "sysv64"`), checked with `llvm-mc --disassemble`:
@@ -1910,6 +1911,223 @@ fn a_full_vm_stack_at_the_entry_is_the_vm_stack_range_error() {
                 // Both calls took the entry (the count is taken before the frame push).
                 assert_eq!(hits, 2, "{label}");
             }
+        }
+    }
+}
+
+/// How [`native_overflow_program`] calls `bigf`.
+#[derive(Clone, Copy, Debug)]
+enum OverflowSite {
+    /// `CallUndefinedReceiver0`.
+    Undefined,
+    /// `CallProperty0` with the receiver 1: the sloppy callee needs a wrapper, so `call_fast`
+    /// goes cold before its decrement (H14-Q2).
+    Smi,
+    /// `CallProperty0` with the callee itself (an object) as the receiver.
+    Object,
+    /// A `Wide` `CallUndefinedReceiver0` (the callee in a register past r127): `slow::call`
+    /// takes the decode path to `call_native`.
+    Wide,
+}
+
+const OVERFLOW_SITES: [OverflowSite; 4] = [
+    OverflowSite::Undefined,
+    OverflowSite::Smi,
+    OverflowSite::Object,
+    OverflowSite::Wide,
+];
+
+/// The VM stack of the overflow runs (the smallest that `Isolate::new` accepts).
+const OVERFLOW_SLOTS: usize = 1024;
+
+/// The definitions: the global `bigf` (sloppy, one parameter). With `big`, it has 2048
+/// registers, so its frame never fits in an [`OVERFLOW_SLOTS`] VM stack; else its frame fits.
+fn native_overflow_defs(big: bool) -> VerifiedUnit {
+    let mut f = Asm::new(meta("bigf", 1, 0, 0, 0));
+    if big {
+        f.b.new_register_list(2048);
+    }
+    f.b.lda_smi(5).return_();
+    let mut s = Asm::script(0);
+    let k = s.b.function_constant(FunctionId(1));
+    s.b.create_closure(k, s.closure, 0);
+    s.sta_global("bigf");
+    s.b.lda_undefined().return_();
+    unit("", vec![s.finish(), f.finish()])
+}
+
+/// The script: `calls` times `try { bigf() } catch {}` (the call of `site`), with no loop. It
+/// returns 7. When `bigf`'s frame does not fit, each call throws the VM stack's RangeError and
+/// the script catches it. The calls are the only budget units after the script entry.
+fn native_overflow_program(calls: u32, site: OverflowSite) -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let (r, o, ctx) = (s.b.new_register(), s.b.new_register(), s.b.new_register());
+    // Locals past r127 need a `Wide` prefix.
+    let wide = s.b.new_register_list(140).get(139);
+    s.lda_global("bigf");
+    s.b.star(r).star(wide);
+    match site {
+        OverflowSite::Smi => {
+            s.b.lda_smi(1).star(o);
+        }
+        OverflowSite::Object => {
+            s.b.ldar(r).star(o);
+        }
+        OverflowSite::Undefined | OverflowSite::Wide => {}
+    }
+    s.b.lda_current_context().star(ctx);
+    for _ in 0..calls {
+        let (start, end, handler, done) = (
+            s.b.new_label(),
+            s.b.new_label(),
+            s.b.new_label(),
+            s.b.new_label(),
+        );
+        s.b.add_handler(start, end, handler, ctx, HandlerKind::Caught);
+        s.b.bind(start);
+        match site {
+            OverflowSite::Undefined => {
+                s.b.call_undefined_receiver0(r, s.call);
+            }
+            OverflowSite::Smi | OverflowSite::Object => {
+                s.b.call_property0(r, o, s.call);
+            }
+            OverflowSite::Wide => {
+                s.b.call_undefined_receiver0(wide, s.call);
+            }
+        }
+        s.b.bind(end);
+        s.b.jump(done);
+        s.b.bind(handler);
+        s.b.bind(done);
+    }
+    s.b.lda_smi(7).return_();
+    unit("", vec![s.finish()])
+}
+
+/// Runs `native_overflow_program(calls, site)` with `bigf` (`native_overflow_defs(big)`) in a
+/// `kind` slot (a stub that returns a0; it runs only when the frame fits), the budget
+/// `budget`, a VM stack of [`OVERFLOW_SLOTS`] slots and an interrupt callback queued before
+/// the run, under every dispatch expansion. Returns the budget at the end and whether the
+/// callback ran.
+fn run_native_overflow(
+    kind: DispatchKind,
+    big: bool,
+    calls: u32,
+    site: OverflowSite,
+    budget: i64,
+) -> (i64, bool) {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let mut first: Option<(&str, (i64, bool))> = None;
+    for &d in Dispatch::ALL {
+        let got = on_big_stack(move || {
+            with_stubs(&[stub_param(0)], |code| {
+                let mut iso = isolate(IsolateConfig {
+                    vm_stack_slots: OVERFLOW_SLOTS,
+                    ..config(d, false)
+                });
+                iso.run_script(native_overflow_defs(big), "defs.js")
+                    .unwrap();
+                let f = iso.global("bigf").unwrap();
+                // SAFETY: `code[0]` holds the stub for `bigf` (`return a0`), which stays
+                // mapped until `with_stubs` returns, after the isolate drops.
+                unsafe { crate::install_native(&iso, f, kind, code[0].clone()) }.unwrap();
+                let ran = Arc::new(AtomicBool::new(false));
+                let r2 = Arc::clone(&ran);
+                iso.interrupt_handle()
+                    .request(Box::new(move || r2.store(true, Ordering::SeqCst)));
+                iso.cx.budget = budget;
+                let r = iso.run_script(native_overflow_program(calls, site), "overflow.js");
+                let label = format!("{kind:?} big={big} {site:?} {}", d.name());
+                assert_eq!(r.map(|v| iso.display(v)).as_deref(), Ok("7"), "{label}");
+                let out = (iso.cx.budget, ran.load(Ordering::SeqCst));
+                drop(iso);
+                out
+            })
+        });
+        match first {
+            None => first = Some((d.name(), got)),
+            Some((n0, g0)) => {
+                let label = format!(
+                    "{kind:?} big={big} {site:?}: {} differs from {n0}",
+                    d.name()
+                );
+                assert_eq!(got, g0, "{label}");
+            }
+        }
+    }
+    first.unwrap().1
+}
+
+#[test]
+fn the_wide_overflow_call_is_prefixed() {
+    let u = native_overflow_program(1, OverflowSite::Wide);
+    let scales = ep9_bytecode::Instructions::new(&u.function(FunctionId(0)).bytecode)
+        .map(|i| i.unwrap())
+        .filter(|i| i.opcode == Opcode::CallUndefinedReceiver0)
+        .map(|i| i.scale)
+        .collect::<Vec<_>>();
+    assert_eq!(scales, [ep9_bytecode::OperandScale::Wide]);
+}
+
+#[test]
+fn a_native_callee_whose_frame_does_not_fit_takes_one_unit() {
+    // M3-P2 fix round 5 (D1): the script entry and the 3 calls take 4 units in all, also
+    // across the poll that resets the budget: the units of the first budget (all of `budget`)
+    // plus the units of the new one (BUDGET - the budget at the end). Every call of a callee
+    // in an AotBaseline or Baseline slot whose frame does not fit takes 1 unit, as a T0 call
+    // does (R3-2): `call_fast` gives its unit back at each cold exit after its decrement, and
+    // `enter_native` takes the unit before its frame push check. Before, a call that reached
+    // `enter_native` without a unit that `call_fast` kept took 0 units (a primitive receiver,
+    // the call that uses up the budget, a Baseline slot).
+    use crate::interp::BUDGET;
+    for kind in [DispatchKind::AotBaseline, DispatchKind::Baseline] {
+        for site in OVERFLOW_SITES {
+            for budget in [1, 2, 3, 4, 1000] {
+                let (left, _) = run_native_overflow(kind, true, 3, site, budget);
+                let units = if left <= budget {
+                    budget - left
+                } else {
+                    budget + (BUDGET - left)
+                };
+                assert_eq!(units, 4, "{kind:?} {site:?} budget {budget}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_native_callee_whose_frame_fits_takes_one_unit() {
+    // The guard of the D1 fix: a call whose frame push succeeds still takes exactly 1 unit
+    // (the hot A path: `call_fast`; a primitive receiver, the call that uses up the budget, a
+    // Baseline slot or a `Wide` call: `enter_native`), as in the test above.
+    use crate::interp::BUDGET;
+    for kind in [DispatchKind::AotBaseline, DispatchKind::Baseline] {
+        for site in OVERFLOW_SITES {
+            for budget in [1, 2, 3, 4, 1000] {
+                let (left, _) = run_native_overflow(kind, false, 3, site, budget);
+                let units = if left <= budget {
+                    budget - left
+                } else {
+                    budget + (BUDGET - left)
+                };
+                assert_eq!(units, 4, "{kind:?} {site:?} budget {budget}");
+            }
+        }
+    }
+}
+
+#[test]
+fn caught_overflows_of_a_native_callee_at_one_unit_left_still_poll() {
+    // D1 (as R3-2 for a T0 callee): budget 2, so 1 unit is left after the script entry. 50
+    // caught overflows in straight-line code (no `JumpLoop`): the first one uses up the
+    // budget, and the next call polls and runs the queued interrupt callback. Before, each
+    // call left the budget at 1, so no poll came and the callback never ran.
+    for kind in [DispatchKind::AotBaseline, DispatchKind::Baseline] {
+        for site in OVERFLOW_SITES {
+            let (_, ran) = run_native_overflow(kind, true, 50, site, 2);
+            assert!(ran, "{kind:?} {site:?}: the queued interrupt did not run");
         }
     }
 }

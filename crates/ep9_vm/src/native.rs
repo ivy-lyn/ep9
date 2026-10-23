@@ -398,6 +398,7 @@ pub(crate) unsafe fn enter_native(
             UNDEFINED,
         )
     };
+    cx.budget -= 1; // 1 unit per call, also when the frame does not fit (R3-2; D1).
     let Some(nfp) = nfp else {
         return stack_overflow(cx);
     };
@@ -406,7 +407,6 @@ pub(crate) unsafe fn enter_native(
         // Value, and not published yet.
         unsafe { wrap_receiver(cx, nfp, this) }?;
     }
-    cx.budget -= 1;
     rt.stack().set_fp(nfp);
     // Native code runs with no scratch area, as bytecode does. Only an entry from Rust
     // ([`call_from_rust`]) can find one here; it puts the caller's scratch top back after the
