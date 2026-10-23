@@ -69,7 +69,7 @@ Copied from the plan row (02 §6): GuardFuse (explicit load + compare) and Inval
 | [R14] | V8 has 22 one-way isolate protectors; JSC uses WatchpointSets; SpiderMonkey RealmFuses split guard and invalidating fuses; lazy deopt patches return addresses, not code | [../research/14-dual-mode-architecture.md](../research/14-dual-mode-architecture.md) |
 | [R16] | D8: GuardFuse (load + compare, AOT-cheap) and InvalidatingFuse (lazy deopt + slot swap); TS CHA and enum folds use fuses | [../research/16-aot-synthesis.md](../research/16-aot-synthesis.md) |
 | [R18] | A node inspector session rewrote strict `let`/`const` locals and retyped a field in a call-free loop; fuses F1-F8 named for sound regions | [../research/18-sound-regions.md](../research/18-sound-regions.md) |
-| code | `grep -rniwE 'fuses?\|protectors?'` over `crates/*/src` at e719ffa: one match, the `proto_index` doc (`crates/ep9_vm/src/shape.rs:224`) | this ADR |
+| code | `grep -rniwE 'fuses?\|protectors?'` over `crates/*/src` at e719ffa: one match, the `proto_index` doc (`crates/ep9_vm/src/shape.rs:216`) | this ADR |
 
 ## Validation
 
@@ -101,4 +101,4 @@ Copied from the plan row (02 §6): GuardFuse (explicit load + compare) and Inval
 | 2026-10-23 | clarify | 5 `path:line` references moved to the code after the M3-P0 merge and the M3-P0 code fixes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS). No check changes | M3-P0 integration fixer |
 | 2026-10-23 | rewrite (pre-freeze churn, README §3.3; H31 is Draft) | The as-built `proto_index` paragraph: since the M3-P0 code fix CX-VM1 the flag is also set when a routed ARGUMENTS or MODULE_NAMESPACE object becomes a prototype (`shape::may_have_index_keys`), as its hooks may answer for an index key. Test: `layout3` `index_paths_set_walk_and_for_in_reach_the_routed_hooks` | M3-P0 integration fixer |
 | 2026-10-23 | clarify | 1 `path:line` reference in `crates/ep9_vm/src/property.rs` moved to the code after the M3-P0 round-2 code fix 02cd320 (X-CODE1: `get_data_from` grew 6 lines; drift script, [I15]). No check changes | M3-P0 round-2 docs fixer |
-| 2026-10-23 | clarify | 3 `path:line` references moved to the code after the M3-P1 merge and the M3-P1 fixer changes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS). No check changes | M3-P1 integration fixer |
+| 2026-10-23 | clarify | 2 `path:line` references moved to the code after the M3-P1 merge and the M3-P1 fixer changes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS); the 1 ref in the dated Evidence row (the grep at e719ffa) goes back to the line of the commit that row names (M3-P1-REVIEWROW-REFS, X-FD1). No check changes | M3-P1 integration fixer |

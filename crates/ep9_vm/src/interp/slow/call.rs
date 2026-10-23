@@ -48,9 +48,9 @@ use super::{enter, interrupt};
 
 // ---- calls ---------------------------------------------------------------------------------
 
-/// The call or construct instruction at `pc` (all `Call*` and `Construct*` opcodes). `acc` is
-/// `new.target` for `Construct`. A bytecode callee gets a new frame and the run continues in it
-/// (no Rust recursion); a host callee runs here. Sets `cx.out_fp`/`cx.out_pc`.
+/// The call or construct instruction at `pc` (all `Call*` and `Construct*` opcodes); sets
+/// `cx.out_fp`/`cx.out_pc`. `acc` is `new.target` for `Construct`. A bytecode callee gets a new
+/// frame, no Rust recursion (a callee of another realm runs nested); a host callee runs here.
 #[cold]
 #[inline(never)]
 pub(crate) fn call(cx: &mut Cx, fp: *mut u64, pc: *const u8, acc: u64) -> u64 {

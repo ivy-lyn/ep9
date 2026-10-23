@@ -77,7 +77,7 @@ T2 (/T3)     ep9_opt       ---> T2 / T3 code                   optimized-AOT   (
 | Scope analysis puts locals that are not captured in registers. Contexts hold only captured variables | [R07] Boa +25% |
 | Lazy FeedbackVector. The interrupt budget at back-edges and returns drives tier-up, GC polls and termination | [R06] V8 waits 8 calls |
 | Global variables use property cells plus ICs. Prototype validity cells guard proto-chain ICs | [R06] |
-| Calls never recurse in Rust. Args are reversed and padded with undefined | [R06] adaptor frame: +11.2% jitless |
+| JS→JS calls in one realm never recurse in Rust (a cross-realm call nests one Rust level, H14). Args are reversed and padded with undefined | [R06] adaptor frame: +11.2% jitless |
 | Hot builtins (push, indexOf, string ops, Math) get human fast paths. Each has a differential test against its spec-layer path (N7) | [R07] |
 | RegExp parity comes from RX1 (§3) | [R08] regress 0.8-5x slower than V8's regexp interpreter; [R07] RegExp kernel 7772 / 3651 / 1046 |
 
