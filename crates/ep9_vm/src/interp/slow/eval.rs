@@ -538,8 +538,14 @@ fn caller_context(fp: *mut u64) -> u64 {
 /// the VariableEnvironment: a declarative context on the way that binds `name` (a lexical slot
 /// of the var scope too: a sloppy function's top-level lexical declarations have their own
 /// environment) means bindingExists; a `with` object and, as in V8 and [`var_env`] (B.3.4), a
-/// catch clause do not. At the global environment, fnDefinable is false for a lexical
-/// declaration of `name`, else CanDeclareGlobalVar. GC point (a poll).
+/// catch clause do not. A var scope with `ScopeFlags::PARAMETER_ENV` (an eval in the parameter
+/// list of a sloppy function with parameter expressions) holds the parameter environment of
+/// FunctionDeclarationInstantiation step 20 merged into it: the walk passes that environment
+/// before it reaches the variable environment, so any slot of `name` there (a parameter, or the
+/// `arguments` binding of step 22) means bindingExists (X-ARGS2). Its other slots (`this`,
+/// `new.target`, `.eval_ext`) have names no source text can spell. At the global environment,
+/// fnDefinable is false for a lexical declaration of `name`, else CanDeclareGlobalVar. GC
+/// point (a poll).
 fn annex_b_env(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<Option<VarEnv>> {
     let mut c = caller_context(fp);
     while is_context(c) {
@@ -551,7 +557,7 @@ fn annex_b_env(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<Option<VarEnv>> {
         }
         if is_var_scope(u, scope) {
             if let Some((_, mode)) = slot_of(c, name)
-                && is_lexical(mode)
+                && (is_lexical(mode) || scope.flags.contains(ScopeFlags::PARAMETER_ENV))
             {
                 return Ok(None);
             }

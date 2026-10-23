@@ -446,3 +446,59 @@ try { evalScript('(('); } catch (e) { print(e.constructor.name); }"#
         ])
     );
 }
+
+/// X-ARGS2 (M3-P2 fix round 2): Annex B.3.2.3 in eval code inside the parameter list of a
+/// sloppy function with parameter expressions (ABI 5 `ScopeFlags::PARAMETER_ENV`). The
+/// parameters are in their own environment between the eval code and the variable
+/// environment (FunctionDeclarationInstantiation step 20), so a block function of the eval
+/// code with a parameter's name gets no var binding (bindingExists) and the parameter keeps
+/// its value. A name that is not a parameter (`zz`), the function's own name, an eval in an
+/// arrow of the parameter list and an eval in the body still get one. With and without GC
+/// stress. Node v24.22.1 prints the same lines, except `h`: V8 keeps the arguments object
+/// binding out of the parameter environment and prints "function function"; the spec (step
+/// 22: `env` is the parameter environment) gives "object object".
+#[test]
+fn annex_b_eval_in_parameters_keeps_the_parameters() {
+    assert_eq!(
+        run_both(
+            r#"function f(af = 1, b = eval('{ function af() { return 9; } }')) { return typeof af + ' ' + af; }
+print(f());
+function g(af = 1, b = eval('{ function af() {} } typeof af')) { return b + ' ' + typeof af; }
+print(g());
+function q({ af } = { af: 1 }, b = eval('{ function af() {} } typeof af')) { return b + ' ' + typeof af; }
+print(q());
+function p(arguments = 1, b = eval('{ function arguments() {} } typeof arguments')) { return b + ' ' + typeof arguments; }
+print(p());
+function h(a = 1, b = eval('{ function arguments() {} } typeof arguments')) { return b + ' ' + typeof arguments; }
+print(h());
+function k(a = 1, b = eval('{ function zz() {} } typeof zz')) { return b + ' ' + typeof zz; }
+print(k());
+function r(x = 1, b = eval('{ function r() {} } typeof r')) { return b + ' ' + typeof r; }
+print(r());
+function t(x = 1, b = eval('{ function x() {} } typeof x'), x2 = x) { return b + ' ' + typeof x + ' ' + typeof x2; }
+print(t());
+function v(af = 1, b = () => eval('{ function af() {} } typeof af')) { return b() + ' ' + typeof af; }
+print(v());
+function n(af = 1, b = eval("eval('{ function af() {} } typeof af')")) { return b + ' ' + typeof af; }
+print(n());
+function w(af = 1, b = eval('{ function af() {} } { function bf() {} } typeof af + typeof bf')) { return b + ' ' + typeof af + ' ' + typeof bf; }
+print(w());
+function m(a, b = 2) { eval('{ function a() {} }'); return typeof a; }
+print(m(1));"#
+        ),
+        lines(&[
+            "number 1",
+            "number number",
+            "number number",
+            "number number",
+            "object object",
+            "function function",
+            "function function",
+            "number number number",
+            "function number",
+            "number number",
+            "numberfunction number function",
+            "function",
+        ])
+    );
+}
