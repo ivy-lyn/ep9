@@ -10,12 +10,28 @@ mod common;
 
 use std::cell::RefCell;
 
-use ep9_frontend::{CodegenError, CompileError, CompileOptions, SourceOpts};
+use ep9_bytecode::{EvalContext, FunctionCtorKind};
+use ep9_frontend::{CodegenError, CompileError, CompileOptions, SourceOpts, Strictness};
 use ep9_heap::HeapConfig;
-use ep9_vm::{Args, CompileFailure, Cx, Dispatch, Isolate, IsolateConfig, JsResult, Local};
+use ep9_vm::{
+    Args, CompileFailure, CompileResult, CompilerHooks, Cx, Dispatch, Isolate, IsolateConfig,
+    JsResult, Local, TerminateHandle,
+};
 
 thread_local! {
     static OUT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static TERM: RefCell<Option<TerminateHandle>> = const { RefCell::new(None) };
+}
+
+/// `stop()`: terminates the running code at its next interrupt poll (`TerminateHandle`).
+fn stop<'s>(
+    _cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    TERM.with(|t| t.borrow().as_ref().expect("a handle").terminate());
+    Ok(Local::undefined())
 }
 
 fn print<'s>(
@@ -44,6 +60,27 @@ fn failure(e: CodegenError) -> CompileFailure {
     }
 }
 
+fn hook_eval(source: &str, ctx: &EvalContext) -> CompileResult {
+    ep9_frontend::compile_eval(source, ctx, CompileOptions::default()).map_err(failure)
+}
+
+fn hook_function(kind: FunctionCtorKind, params: &str, body: &str) -> CompileResult {
+    ep9_frontend::compile_function_ctor(kind, params, body, CompileOptions::default())
+        .map_err(failure)
+}
+
+fn hook_script(source: &str) -> CompileResult {
+    let opts = SourceOpts::script(Strictness::Sloppy);
+    ep9_frontend::compile(source, opts, CompileOptions::default()).map_err(failure)
+}
+
+/// The compiler hooks (`eval`, `Function`, scripts), as the CLI has them.
+static HOOKS: CompilerHooks = CompilerHooks {
+    compile_eval: hook_eval,
+    compile_function: hook_function,
+    compile_script: hook_script,
+};
+
 /// A module graph: (name, source); a specifier `./name` names the file `name`.
 type Files = &'static [(&'static str, &'static str)];
 
@@ -67,10 +104,13 @@ fn run_in(files: Files, entries: &[&str], dispatch: Dispatch, stress: bool) -> V
         },
         dispatch,
         builtins: Some(&ep9_builtins::TABLE),
+        compiler: Some(&HOOKS),
         ..IsolateConfig::default()
     })
     .expect("an isolate");
     iso.register_host_function("print", 1, print);
+    iso.register_host_function("stop", 0, stop);
+    TERM.with(|t| *t.borrow_mut() = Some(iso.terminate_handle()));
     OUT.with(|o| o.borrow_mut().clear());
     for entry in entries {
         let unit = compile(source(files, entry).expect("an entry file")).expect("compiles");
@@ -357,9 +397,10 @@ export function metaB() { return import.meta; }
 /// bindings (ambiguous: absent from the namespace, a SyntaxError when imported by name); the
 /// same binding through two stars is not ambiguous; a local export wins over a star; a
 /// re-export of an imported namespace is an indirect export of that module's namespace
-/// (ParseModule in ES2025 and test262's ambiguous-export-bindings tests), so two modules that
-/// re-export it agree. Each failing graph throws before any module runs. node v24.22.1 prints
-/// the same lines, except the first: it still finds `nsx` ambiguous (the older rule).
+/// (ParseModule step 10 in the ES2027 draft, and test262's ambiguous-export-bindings
+/// namespace-unambiguous tests), so two modules that re-export it agree. Each failing graph
+/// throws before any module runs. node v24.22.1 prints the same lines, except the first: it
+/// still finds `nsx` ambiguous (the ES2025 rule, a SyntaxError at link).
 #[test]
 fn resolve_export_with_stars_and_ambiguity() {
     const FILES: Files = &[
@@ -488,5 +529,163 @@ fn load_errors_run_no_module() {
     assert_eq!(
         out[2],
         "uncaught SyntaxError: Import attribute \"foo\" is not supported"
+    );
+}
+
+/// A failed load leaves records in the map that are still `new` (a module whose requests did
+/// not all load), and modules whose dependencies did not load. A later entry that reaches
+/// them loads the rest again (§16.2.1.5.1.1 step 2: every `new` module is walked; a module
+/// becomes `unlinked` only when the whole graph loaded), and the failure repeats with the
+/// same error (§16.2.1.10, HostLoadImportedModule). node runs one entry per process; for each
+/// single entry it prints the same lines, with its own SyntaxError text.
+#[test]
+fn a_failed_load_strands_no_record() {
+    const FILES: Files = &[
+        ("a.js", "import './b.js';\nprint('a');\n"),
+        ("b.js", "import './c.js';\nprint('b');\n"),
+        ("c.js", "let x = 1; let x = 2;\n"),
+        ("d.js", "import './b.js';\nprint('d');\n"),
+        (
+            "x.js",
+            "import './b3.js';\nimport './missing.js';\nprint('x');\n",
+        ),
+        ("b3.js", "import './c3.js';\nprint('b3');\n"),
+        ("c3.js", "print('c3');\n"),
+        ("e.js", "import './b3.js';\nprint('e');\n"),
+        ("p.js", "import './q.js';\nprint('p');\n"),
+        ("q.js", "import './c.js';\nprint('q');\n"),
+    ];
+    let syntax = "uncaught SyntaxError: Identifier `x` has already been declared";
+    assert_eq!(
+        run_every(
+            FILES,
+            &["a.js", "d.js", "a.js", "x.js", "e.js", "p.js", "p.js"]
+        ),
+        lines(&[
+            syntax,
+            syntax,
+            syntax,
+            "uncaught Error: Cannot find module './missing.js' imported from x.js",
+            "c3",
+            "b3",
+            "e",
+            syntax,
+            syntax,
+        ])
+    );
+}
+
+/// A termination during Evaluate (H23: the isolate is used again after it) leaves no module
+/// that a later run takes as evaluated: the terminated module and each module that imports it
+/// throw, and no body runs on the incomplete module. (node has no termination of a module
+/// that the same process imports again; the error text is ep9's.)
+#[test]
+fn a_terminated_evaluation_is_not_a_success() {
+    const FILES: Files = &[
+        (
+            "half.js",
+            "globalThis.started = true;\nstop();\nfor (;;) {}\nglobalThis.finished = true;\n",
+        ),
+        (
+            "dep.js",
+            "import './half.js';\nprint('dep runs', globalThis.started, globalThis.finished);\n",
+        ),
+        ("top.js", "import './dep.js';\nprint('top runs');\n"),
+    ];
+    let aborted = "uncaught Error: the evaluation of module half.js was terminated";
+    assert_eq!(
+        run_every(FILES, &["half.js", "half.js", "dep.js", "top.js"]),
+        lines(&["uncaught execution terminated", aborted, aborted, aborted])
+    );
+}
+
+/// ResolveExport on a shallow graph with a deep resolution: `a` stars `b`, and `b` re-exports
+/// `n{i}` as `a`'s `n{i+1}`, around a cycle. The walk goes 2 levels per name, so it needs far
+/// more native stack than the graph depth. On a small stack it is a RangeError, not a native
+/// stack overflow. (node v24.22.1 crashes with SIGSEGV on this graph.)
+#[test]
+fn a_deep_resolve_export_is_a_range_error() {
+    const N: usize = 6000;
+    let b: String = (0..N)
+        .map(|i| format!("export {{ n{} as n{i} }} from './a.js';\n", (i + 1) % N))
+        .collect();
+    let files: Files = Box::leak(Box::new([
+        ("a.js", "export * from './b.js';\n"),
+        ("b.js", Box::leak(b.into_boxed_str()) as &str),
+        (
+            "main.js",
+            "import { n0 } from './a.js';\nprint('never', n0);\n",
+        ),
+        (
+            "ns.js",
+            "import * as ns from './a.js';\nprint('never', ns);\n",
+        ),
+    ]));
+    let out = std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(move || run_in(files, &["main.js", "ns.js"], Dispatch::ALL[0], false))
+        .expect("a thread")
+        .join()
+        .expect("no panic");
+    let range = "uncaught RangeError: Maximum call stack size exceeded";
+    assert_eq!(out, lines(&[range, range]));
+}
+
+/// Direct eval in module code sees the module's cells (§19.2.1.1 PerformEval: the eval code's
+/// outer environment ends at the module Environment Record): imports (named, namespace,
+/// a hoisted function), exported `let`/`var` bindings, `typeof`, a call, the TDZ, and a store
+/// to an import (TypeError). node v24.22.1 prints the same lines, except the store to an
+/// exported binding: ep9 throws its v0 not-implemented Error there, because the module records
+/// (ABI 5) do not say which exported binding is `const`.
+#[test]
+fn direct_eval_sees_module_cells() {
+    const FILES: Files = &[
+        (
+            "main.js",
+            r#"import { v, w, fx } from './x.js';
+import * as ns from './x.js';
+export let y = 'y1';
+export var z = 'z1';
+export const k = 'k1';
+function t(s) { try { print(s, String(eval(s))); } catch (e) { print(s, 'threw', e.name, e.message); } }
+t('v'); t('w'); t('fx()'); t('ns.v'); t('y'); t('z'); t('k'); t('typeof v'); t('typeof nope');
+t('late'); t('typeof late');
+t('v = 1'); t('ns = 1');
+t('y = "y2", y');
+print('after', y);
+(function () { var v = 'inner'; t2(); function t2() { print('inner', eval('v + w')); } })();
+print('arrow', (() => eval('fx() + k'))());
+export let late = 'late';
+"#,
+        ),
+        (
+            "x.js",
+            "export let v = 'xv';
+export var w = 'xw';
+export function fx() { return 'fx'; }
+",
+        ),
+    ];
+    assert_eq!(
+        run_every(FILES, &["main.js"]),
+        lines(&[
+            "v xv",
+            "w xw",
+            "fx() fx",
+            "ns.v xv",
+            "y y1",
+            "z z1",
+            "k k1",
+            "typeof v string",
+            "typeof nope undefined",
+            "late threw ReferenceError Cannot access 'late' before initialization",
+            "typeof late threw ReferenceError Cannot access 'late' before initialization",
+            "v = 1 threw TypeError Assignment to constant variable.",
+            "ns = 1 threw TypeError Assignment to constant variable.",
+            "y = \"y2\", y threw Error not implemented in ep9 v0: assignment to an exported module binding in direct eval code",
+            "after y1",
+            "inner innerxw",
+            "arrow fxk1",
+        ])
     );
 }

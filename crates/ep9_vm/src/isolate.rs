@@ -706,7 +706,10 @@ impl<'s> abi::Cx<'s> {
     /// The names are the host's: `resolve` decides what two specifiers mean the same module
     /// (the test262 runner and the CLI give a normalized path), and a name loads once per
     /// realm. `Err(text)` from `resolve` throws an `Error` with that text; a `load` failure
-    /// throws as eval code's compile failures do (`SyntaxError` for an early error). An
+    /// throws as eval code's compile failures do (`SyntaxError` for an early error), and a
+    /// later run that needs the module tries the load again. If a [`TerminateHandle`] stops
+    /// a module's evaluation, a later run that reaches that module throws an `Error`; it
+    /// never takes the module as evaluated. An
     /// import that no module exports, or that two `export *` give, is a `SyntaxError`.
     /// An import attribute key other than `type` is a `SyntaxError`; `type: "json"` throws
     /// the v0 not-implemented `Error`, another type a `TypeError`. The result is undefined; the module's code runs with `this`

@@ -20,7 +20,7 @@
 //!
 //! | MODULE field | Value |
 //! |---|---|
-//! | `STATUS` | int32 [`status`]: new, unlinked, linking, linked, evaluating, evaluating-async, evaluated |
+//! | `STATUS` | int32 [`status`]: new, unlinked, linking, linked, evaluating, evaluating-async, evaluated; and aborted (not in the spec: a termination stopped its Evaluate) |
 //! | `ENVIRONMENT` | the module environment: a CONTEXT with the slots of [`env`] (not on any context chain) |
 //! | `NAMESPACE` | the namespace object, made on first use ([`get_namespace`]) |
 //! | `UNIT` | native word: the module's `LoadedUnit` (its module records, ABI 5 section 5) |
@@ -85,6 +85,11 @@ pub(crate) mod status {
     pub const EVALUATING: i32 = 4;
     pub const EVALUATING_ASYNC: i32 = 5;
     pub const EVALUATED: i32 = 6;
+    /// Not a spec status: a termination (`TerminateHandle`, H23) stopped the module's
+    /// Evaluate. The isolate is used again after a termination, so a later Evaluate of the
+    /// module, or of a module that imports it, throws an Error; it never takes the module as
+    /// evaluated (its body did not finish). Link takes it as evaluated.
+    pub const ABORTED: i32 = 7;
 }
 
 /// The slots of a module environment (`modf::ENVIRONMENT`, a CONTEXT).
@@ -220,6 +225,33 @@ pub(crate) fn module_of_context(mut c: u64, d: u32) -> Option<u64> {
         c = object::context_previous(c);
     }
     (kind::is_cell_bits(c) && c != 0 && kind::cell_kind(c) == kind::MODULE.get()).then_some(c)
+}
+
+/// The module cell that the local name `name` (an atom) binds in `c`, if `c` is a MODULE
+/// record: (the record, an import's cell < 0 or an exported binding's cell > 0). For direct
+/// eval code (`interp/slow/lookup.rs`): its name walk ends at the MODULE record, the outer
+/// environment of the module's top-level scope (§16.2.1.6.4; the cells are the bindings of
+/// the module Environment Record that other modules see). `None` for another name: a
+/// binding that no other module sees is a context slot, which the walk finds before. Not a
+/// GC point.
+pub(crate) fn cell_of_name(c: u64, name: u64) -> Option<(u64, i32)> {
+    if !(kind::is_cell_bits(c) && c != 0 && kind::cell_kind(c) == kind::MODULE.get()) {
+        return None;
+    }
+    let lu = unit_of(c);
+    let recs = records_of(c);
+    let import = recs
+        .import_entries
+        .iter()
+        .find(|e| lu.string(e.local_name.index()) == name)
+        .map(|e| e.cell);
+    let cell = import.or_else(|| {
+        recs.local_export_entries
+            .iter()
+            .find(|e| lu.string(e.local_name.index()) == name)
+            .map(|e| e.cell)
+    })?;
+    Some((c, cell))
 }
 
 /// The `import.meta` object of `m` (§13.3.12.1): made once, an ordinary object with a null
@@ -407,49 +439,96 @@ pub(crate) struct Host<'h> {
 
 /// LoadRequestedModules (§16.2.1.5.1) with a synchronous host: every module that `root`
 /// needs, transitively, gets a record in the realm's map and its `[[LoadedModules]]` entries.
-/// A module that a former call loaded keeps its status. GC point.
+/// GC point.
+///
+/// InnerModuleLoading (§16.2.1.5.1.1) step 2: every reachable module that is still `new` is
+/// walked, also one that is in the map already. A failed load leaves such records: a module
+/// whose requests did not all load. A module that is not `new` has a fully loaded graph
+/// (it became `unlinked` only with the whole graph of its load), so the walk stops there.
+/// A module is marked `unlinked` when its own requests are loaded, which is also the
+/// visited mark of the walk; if the load fails, every module marked by this call is `new`
+/// again (ContinueModuleLoading marks the visited modules only when the whole graph loaded).
+/// The failure then repeats on a later load: the host gives the same error again (§16.2.1.10).
 fn load_graph(cx: &mut Cx, root: u64, host: &mut Host<'_>) -> Res<()> {
     let rt = cx.rt();
+    // The modules this call walks (a module can be in it twice before it is walked).
     let work = rt.heap.scratch_roots();
     work.push(val(root));
     let mut next = 0;
-    while next < work.len() {
-        let m = work.get(next).to_bits();
-        next += 1;
-        if status_of(m) != status::NEW {
-            continue;
-        }
-        let referrer = string::to_rust_string(name_of(m));
-        let n = object::list_len(object::record_get(m, modf::REQUESTED));
-        for r in 0..n as u32 {
-            if loaded(m, r) != UNDEFINED {
+    let r = (|| -> Res<()> {
+        while next < work.len() {
+            let m = work.get(next).to_bits();
+            next += 1;
+            if status_of(m) != status::NEW {
                 continue;
             }
-            check_attributes(cx, m, r)?;
-            let spec = object::list_get(object::record_get(m, modf::REQUESTED), r as usize);
-            let spec = string::to_rust_string(spec);
-            let name = match (host.resolve)(&referrer, &spec) {
-                Ok(name) => name,
-                Err(msg) => return Err(throw_error(cx, ErrorKind::Error, &msg)),
-            };
-            let key = atoms::intern_str(rt, &name);
-            let target = match map_get(cx.realm, key) {
-                Some(t) => t,
-                None => {
-                    let unit = (host.load)(&name).map_err(|f| throw_load_failure(cx, &name, f))?;
-                    let t = module_for_unit(cx, unit, &name)?;
-                    work.push(val(t));
-                    t
+            let referrer = string::to_rust_string(name_of(m));
+            let n = object::list_len(object::record_get(m, modf::REQUESTED));
+            for r in 0..n as u32 {
+                let mut target = loaded(m, r);
+                if target == UNDEFINED {
+                    check_attributes(cx, m, r)?;
+                    let spec = object::list_get(object::record_get(m, modf::REQUESTED), r as usize);
+                    let spec = string::to_rust_string(spec);
+                    let name = match (host.resolve)(&referrer, &spec) {
+                        Ok(name) => name,
+                        Err(msg) => return Err(throw_error(cx, ErrorKind::Error, &msg)),
+                    };
+                    let key = atoms::intern_str(rt, &name);
+                    target = match map_get(cx.realm, key) {
+                        Some(t) => t,
+                        None => {
+                            let unit =
+                                (host.load)(&name).map_err(|f| throw_load_failure(cx, &name, f))?;
+                            module_for_unit(cx, unit, &name)?
+                        }
+                    };
+                    object::list_set(rt, object::record_get(m, modf::LOADED), r as usize, target);
                 }
-            };
-            object::list_set(rt, object::record_get(m, modf::LOADED), r as usize, target);
+                if status_of(target) == status::NEW {
+                    work.push(val(target));
+                }
+            }
+            set_status(rt, m, status::UNLINKED);
         }
-        set_status(rt, m, status::UNLINKED);
+        Ok(())
+    })();
+    if r.is_err() {
+        for i in 0..next {
+            set_status(rt, work.get(i).to_bits(), status::NEW);
+        }
     }
-    Ok(())
+    r
 }
 
 // ---- ResolveExport and GetExportedNames (no GC point) ----------------------------------------
+//
+// Both walks recurse once per (module, name) pair or module, which a shallow graph can make
+// deep (`export { a as b } from` around a cycle of `export *`). Each level checks the native
+// stack and gives `TooDeep`, which allocates nothing; the caller throws the RangeError after
+// the walk's vectors are gone (H10: no Value in a Rust vector across a GC point).
+
+/// The native stack is too short for a ResolveExport or GetExportedNames walk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TooDeep;
+
+/// `Err(TooDeep)` once the native stack passes the isolate's limit. Not a GC point.
+fn walk_stack_ok(rt: &Runtime) -> Result<(), TooDeep> {
+    if rt.native_stack_ok() {
+        Ok(())
+    } else {
+        Err(TooDeep)
+    }
+}
+
+/// The RangeError of a walk that was [`TooDeep`]. GC point.
+fn too_deep(cx: &mut Cx) -> ep9_value::Throw {
+    throw_error(
+        cx,
+        ErrorKind::RangeError,
+        "Maximum call stack size exceeded",
+    )
+}
 
 /// A ResolvedBinding Record (§16.2.1.6.3), or null, or `ambiguous`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -469,15 +548,21 @@ fn is_default(name: u64) -> bool {
 
 /// `m.ResolveExport(name, resolveSet)` (§16.2.1.6.3). `name` is an atom; module names are unit
 /// atoms, so names compare by bits. Not a GC point: `set` holds cells only while nothing
-/// allocates.
-fn resolve_export(m: u64, name: u64, set: &mut Vec<(ModuleCell, NameAtom)>) -> Resolution {
+/// allocates. [`TooDeep`] when the native stack runs out.
+fn resolve_export(
+    rt: &Runtime,
+    m: u64,
+    name: u64,
+    set: &mut Vec<(ModuleCell, NameAtom)>,
+) -> Result<Resolution, TooDeep> {
+    walk_stack_ok(rt)?;
     if m == UNDEFINED {
-        return Resolution::None;
+        return Ok(Resolution::None);
     }
     let entry = (ModuleCell(m), NameAtom(name));
     if set.contains(&entry) {
         // A circular import request.
-        return Resolution::None;
+        return Ok(Resolution::None);
     }
     set.push(entry);
     let lu = unit_of(m);
@@ -485,51 +570,64 @@ fn resolve_export(m: u64, name: u64, set: &mut Vec<(ModuleCell, NameAtom)>) -> R
     for e in &recs.local_export_entries {
         if lu.string(e.export_name.index()) == name {
             // A re-export of an imported namespace (`import * as ns; export { ns }`) is
-            // the namespace binding of that module (ParseModule step 10.a.ii.2: an
-            // ExportEntry with [[ImportName]] all), so two modules that re-export it agree.
+            // the namespace binding of that module: ParseModule (§16.2.1.7.1 step 10 in the
+            // ES2027 draft) rewrites the entry as an indirect export of the imported
+            // module with [[ImportName]] namespace, and ResolveExport gives { that module,
+            // namespace }. So two modules that re-export it agree, and `export *` of both
+            // is not ambiguous (test262 ambiguous-export-bindings/namespace-unambiguous-*).
+            // ES2025 and node v24 kept it a local export (ambiguous): ep9 follows the
+            // current draft (G1: ES2026, ES2027 so far). The front end keeps it a local
+            // export entry of the import's cell (ABI 5), so the rewrite is here.
             if e.cell < 0
                 && let Some(ie) = recs.import_entries.iter().find(|ie| ie.cell == e.cell)
                 && ie.import_name == ImportName::Namespace
             {
-                return Resolution::Namespace(loaded(m, ie.module_request));
+                return Ok(Resolution::Namespace(loaded(m, ie.module_request)));
             }
-            return Resolution::Binding(m, e.cell);
+            return Ok(Resolution::Binding(m, e.cell));
         }
     }
     for e in &recs.indirect_export_entries {
         if lu.string(e.export_name.index()) == name {
             let target = loaded(m, e.module_request);
             return match e.import_name {
-                ExportImportName::All => Resolution::Namespace(target),
-                ExportImportName::Name(n) => resolve_export(target, lu.string(n.index()), set),
+                ExportImportName::All => Ok(Resolution::Namespace(target)),
+                ExportImportName::Name(n) => resolve_export(rt, target, lu.string(n.index()), set),
             };
         }
     }
     if is_default(name) {
         // A default export cannot come from `export *`.
-        return Resolution::None;
+        return Ok(Resolution::None);
     }
     let mut star = Resolution::None;
     for &r in &recs.star_export_entries {
-        match resolve_export(loaded(m, r), name, set) {
-            Resolution::Ambiguous => return Resolution::Ambiguous,
+        match resolve_export(rt, loaded(m, r), name, set)? {
+            Resolution::Ambiguous => return Ok(Resolution::Ambiguous),
             Resolution::None => {}
             res => {
                 if star == Resolution::None {
                     star = res;
                 } else if star != res {
-                    return Resolution::Ambiguous;
+                    return Ok(Resolution::Ambiguous);
                 }
             }
         }
     }
-    star
+    Ok(star)
 }
 
 /// `m.GetExportedNames(exportStarSet)` (§16.2.1.6.2) into `out` (atoms). Not a GC point.
-fn exported_names(m: u64, set: &mut Vec<ModuleCell>, out: &mut Vec<NameAtom>) {
+/// [`TooDeep`] when the native stack runs out.
+fn exported_names(
+    rt: &Runtime,
+    m: u64,
+    set: &mut Vec<ModuleCell>,
+    out: &mut Vec<NameAtom>,
+) -> Result<(), TooDeep> {
+    walk_stack_ok(rt)?;
     if m == UNDEFINED || set.contains(&ModuleCell(m)) {
-        return;
+        return Ok(());
     }
     set.push(ModuleCell(m));
     let lu = unit_of(m);
@@ -544,13 +642,14 @@ fn exported_names(m: u64, set: &mut Vec<ModuleCell>, out: &mut Vec<NameAtom>) {
     let mut star_names = Vec::new();
     for &r in &recs.star_export_entries {
         star_names.clear();
-        exported_names(loaded(m, r), set, &mut star_names);
+        exported_names(rt, loaded(m, r), set, &mut star_names)?;
         for n in &star_names {
             if !is_default(n.0) && !out[start..].contains(n) {
                 out.push(*n);
             }
         }
     }
+    Ok(())
 }
 
 /// An export name: a unit string atom, rooted by its unit. Held in Rust vectors only between
@@ -565,37 +664,47 @@ struct ModuleCell(u64);
 
 /// The names of the namespace of `m` (§16.2.1.10 GetModuleNamespace step 3: the exported
 /// names whose ResolveExport is a binding), sorted by code units (§10.4.6.12 step 7), each
-/// with its binding. Not a GC point.
-fn namespace_entries(m: u64) -> Vec<(NameAtom, Resolution)> {
+/// with its binding. Not a GC point. [`TooDeep`] when the native stack runs out.
+fn namespace_entries(rt: &Runtime, m: u64) -> Result<Vec<(NameAtom, Resolution)>, TooDeep> {
     let mut names = Vec::new();
-    exported_names(m, &mut Vec::new(), &mut names);
-    let mut out: Vec<(NameAtom, Resolution)> = names
-        .into_iter()
-        .filter_map(|n| match resolve_export(m, n.0, &mut Vec::new()) {
-            Resolution::None | Resolution::Ambiguous => None,
-            res => Some((n, res)),
-        })
-        .collect();
+    exported_names(rt, m, &mut Vec::new(), &mut names)?;
+    let mut out = Vec::with_capacity(names.len());
+    for n in names {
+        match resolve_export(rt, m, n.0, &mut Vec::new())? {
+            Resolution::None | Resolution::Ambiguous => {}
+            res => out.push((n, res)),
+        }
+    }
     out.sort_by(|a, b| string::str_view(a.0.0).cmp(&string::str_view(b.0.0)));
     out.dedup_by(|a, b| a.0 == b.0);
-    out
+    Ok(out)
 }
 
 // ---- namespaces -------------------------------------------------------------------------------
 
 /// GetModuleNamespace(m) (§16.2.1.10): made once, then kept in `[[Namespace]]`. The export
 /// list (`nsf::EXPORTS`) holds the n sorted names, then n bindings: the box of the binding,
-/// or the MODULE whose namespace the name is (`export * as ns`). GC point.
-pub(crate) fn get_namespace(rt: &Runtime, m: u64) -> u64 {
+/// or the MODULE whose namespace the name is (`export * as ns`). A RangeError when the
+/// native stack is too short for the walk. GC point.
+pub(crate) fn get_namespace(cx: &mut Cx, m: u64) -> Res<u64> {
+    let rt = cx.rt();
     let ns = object::record_get(m, modf::NAMESPACE);
     if ns != UNDEFINED {
-        return ns;
+        return Ok(ns);
     }
-    let n = namespace_entries(m).len();
+    let Ok(entries) = namespace_entries(rt, m) else {
+        return Err(too_deep(cx));
+    };
+    let n = entries.len();
+    drop(entries);
     let list = object::new_list(rt, 2 * n, UNDEFINED);
     let tag = atoms::intern_str(rt, "Module");
-    // No GC point from here to the fill's end: the names and bindings are read again.
-    for (i, (name, res)) in namespace_entries(m).into_iter().enumerate() {
+    // No GC point from here to the fill's end: the names and bindings are read again (the
+    // same walk from the same frame as the first one, so it passes the stack check too).
+    let Ok(entries) = namespace_entries(rt, m) else {
+        return Err(too_deep(cx));
+    };
+    for (i, (name, res)) in entries.into_iter().enumerate() {
         let binding = match res {
             Resolution::Binding(t, cell) => box_of(t, cell).unwrap_or(UNDEFINED),
             Resolution::Namespace(t) => t,
@@ -611,7 +720,7 @@ pub(crate) fn get_namespace(rt: &Runtime, m: u64) -> u64 {
     }
     property::prevent_extensions(rt, ns);
     object::record_set(rt, m, modf::NAMESPACE, ns);
-    ns
+    Ok(ns)
 }
 
 /// The index of the export `key` of the namespace `o`, if `key` is a string that it exports.
@@ -640,7 +749,7 @@ fn export_value(cx: &mut Cx, o: u64, i: usize) -> Res<u64> {
     let n = object::list_len(list) / 2;
     let b = object::list_get(list, n + i);
     if kind::is_cell_bits(b) && b != 0 && kind::cell_kind(b) == kind::MODULE.get() {
-        return Ok(get_namespace(cx.rt(), b));
+        return get_namespace(cx, b);
     }
     if !(kind::is_cell_bits(b) && b != 0 && kind::cell_kind(b) == kind::ELEMENTS.get()) {
         return Err(throw_error(
@@ -818,7 +927,9 @@ fn initialize_environment(cx: &mut Cx, m: u64) -> Res<()> {
     let recs = records_of(m);
     for e in &recs.indirect_export_entries {
         let name = lu.string(e.export_name.index());
-        let res = resolve_export(m, name, &mut Vec::new());
+        let Ok(res) = resolve_export(rt, m, name, &mut Vec::new()) else {
+            return Err(too_deep(cx));
+        };
         if matches!(res, Resolution::None | Resolution::Ambiguous) {
             return Err(unresolved(cx, m, e.module_request, name, res));
         }
@@ -829,7 +940,9 @@ fn initialize_environment(cx: &mut Cx, m: u64) -> Res<()> {
             ImportName::Namespace => Resolution::Namespace(target),
             ImportName::Name(n) => {
                 let name = lu.string(n.index());
-                let res = resolve_export(target, name, &mut Vec::new());
+                let Ok(res) = resolve_export(rt, target, name, &mut Vec::new()) else {
+                    return Err(too_deep(cx));
+                };
                 if matches!(res, Resolution::None | Resolution::Ambiguous) {
                     return Err(unresolved(cx, m, ie.module_request, name, res));
                 }
@@ -838,7 +951,7 @@ fn initialize_environment(cx: &mut Cx, m: u64) -> Res<()> {
         };
         match res {
             Resolution::Namespace(t) => {
-                let ns = get_namespace(rt, t);
+                let ns = get_namespace(cx, t)?;
                 let b = box_of(m, ie.cell).expect("an import cell has a box");
                 object::list_set(rt, b, 0, ns);
             }
@@ -899,7 +1012,8 @@ fn inner_link(cx: &mut Cx, m: u64, stack: &mut Stack<'_>, index: i32) -> Res<i32
         | status::LINKED
         | status::EVALUATING
         | status::EVALUATING_ASYNC
-        | status::EVALUATED => return Ok(index),
+        | status::EVALUATED
+        | status::ABORTED => return Ok(index),
         status::UNLINKED => {}
         _ => {
             return Err(throw_error(
@@ -978,6 +1092,13 @@ fn inner_evaluate(cx: &mut Cx, m: u64, stack: &mut Stack<'_>, index: i32) -> Res
             return Ok(index);
         }
         status::EVALUATING | status::EVALUATING_ASYNC => return Ok(index),
+        status::ABORTED => {
+            let msg = format!(
+                "the evaluation of module {} was terminated",
+                string::to_rust_string(name_of(m))
+            );
+            return Err(throw_error(cx, ErrorKind::Error, &msg));
+        }
         status::LINKED => {}
         _ => {
             return Err(throw_error(
@@ -1033,7 +1154,9 @@ fn inner_evaluate(cx: &mut Cx, m: u64, stack: &mut Stack<'_>, index: i32) -> Res
 
 /// Evaluate() (§16.2.1.5.3) without top-level `await`: on an error, every module on the
 /// stack is evaluated with that error cached (a later import of one of them throws it
-/// again). A termination caches nothing. GC point (the modules run).
+/// again). A termination makes every module on the stack [`status::ABORTED`] (no allocation
+/// while it unwinds): a later Evaluate that reaches one of them throws an Error, and the
+/// modules on that Evaluate's stack cache it. GC point (the modules run).
 fn evaluate(cx: &mut Cx, root: u64) -> Res<()> {
     let rt = cx.rt();
     let mut stack = Stack {
@@ -1043,7 +1166,11 @@ fn evaluate(cx: &mut Cx, root: u64) -> Res<()> {
     match inner_evaluate(cx, root, &mut stack, 0) {
         Ok(_) => Ok(()),
         Err(e) => {
-            if !rt.terminating.get() {
+            if rt.terminating.get() {
+                for i in 0..stack.len {
+                    set_status(rt, stack.get(i), status::ABORTED);
+                }
+            } else {
                 let error = rt.pending();
                 for i in 0..stack.len {
                     let m = stack.get(i);
