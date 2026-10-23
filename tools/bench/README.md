@@ -11,7 +11,7 @@ Benchmark tools ([10-quality](../../docs/plan/10-quality.md) section 2; perf CI 
 | `jetstream/lists.mjs` | Writes `expectations/jetstream-m2.txt` and `jetstream-m7.txt` from the pinned JetStream |
 | `jetstream/run.mjs` | Runs JetStream workloads, one process each, under several configs; prints median scores |
 | `cross/run.mjs` | Cross-engine runner: ep9 against QuickJS, node `--jitless`, d8 `--jitless` and Brimstone. Wall time in paired rounds (class M) and instruction counts (class R). Writes ep9-cross/v1 JSON and Markdown |
-| `cross/v8v7.mjs` | Generates a V8 suite v7 kernel with a stub harness from the pinned `third_party/bench-v8v7`; `--blockers` shows which kernels an engine runs |
+| `cross/v8v7.mjs` | Generates a V8 suite v7 kernel with a stub harness (or the real `base.js`, `--harness base`) from the pinned `third_party/bench-v8v7`; `--blockers` shows which kernels an engine runs |
 | `cross/workloads.mjs` | The cross workloads: T0 kernels from `workloads/`, ci-v0, richards (deltablue from run 2) |
 | `cross/idle.mjs` | Measures a host's idle baseline for its host file |
 | `lib/stats.mjs` | PERF-NOISE statistics: median, order-statistic interval, verdict, IQR void rule, geomean. Shared by `cross/run.mjs` and `workloads/t0-dispatch.mjs` |
@@ -137,6 +137,18 @@ from the pinned commit (`third_party/bench-v8v7.commit`), refuses a checkout at 
 with a changed file, and writes no date, so two runs give the same file. Its first lines name the
 pin and the kernel's blob id. Default N: richards 200; the others give QuickJS about the same time
 (`--list`).
+
+### The v8-v7 base harness (run 3)
+
+`--harness base` (v8v7.mjs and run.mjs; the default is `stub`) runs the real pinned `base.js`,
+unchanged, as its own strict script (an indirect eval, as d8 loads a separate file), then the
+kernel (sloppy, as in d8), then base.js's own `BenchmarkSuite.RunSuites`. The driver replaces one
+method only: `RunSingleBenchmark` runs `run()` N times (timed with `Date`) instead of "for 1 s",
+because class M compares wall time per process. Setup, tear-down, `NotifyResult`,
+`GeometricMean` and the score code are base.js's. The output is the stub's (`<name> <N>`); an
+error prints an `ERROR` line, so the runner refuses the run. It needs `Date`, `Math.log`,
+`Math.pow` and `Number.prototype.toFixed`; `--blockers ENGINE --harness base` shows which kernels
+run. The JSON names the harness per workload.
 
 ### Host files
 

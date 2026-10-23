@@ -23,7 +23,7 @@ import {
   renderMarkdown,
   schedule,
 } from "./run.mjs";
-import { benchmarkNames, generate } from "./v8v7.mjs";
+import { benchmarkNames, generate, HARNESSES } from "./v8v7.mjs";
 import { EMPTY, WORKLOADS } from "./workloads.mjs";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -267,6 +267,9 @@ test("versions.txt, host files and options", () => {
   assert.throws(() => parseArgs(["--ep9", "x", "--engines", "qjs,node-jitless"]), /must include ep9/);
   assert.throws(() => parseArgs(["--ep9", "x", "--engines", "ep9,bun"]), /unknown engine bun/);
   assert.throws(() => parseArgs(["--ep9", "x", "--workloads", "nope"]), /unknown workload nope/);
+  assert.equal(parseArgs(["--ep9", "x"]).harness, "stub");
+  assert.equal(parseArgs(["--ep9", "x", "--harness", "base"]).harness, "base");
+  assert.throws(() => parseArgs(["--ep9", "x", "--harness", "real"]), /--harness must be one of stub, base/);
 });
 
 test("load guard: settle, poll up to the wait limit, check after", async () => {
@@ -495,4 +498,35 @@ test("v8v7: the generated kernel is the same on two runs and names the pin", { s
 
 test("v8v7: benchmark names", () => {
   assert.deepEqual(benchmarkNames("x = [\n  new Benchmark('A', f),\n  new Benchmark(\"B\", g)];\n[new Benchmark('NavierStokes',"), ["A", "B", "NavierStokes"]);
+});
+
+test("v8v7: the base harness runs the pinned base.js unchanged and prints what the stub prints", { skip: !haveV8v7 && "third_party/bench-v8v7 not synced" }, () => {
+  assert.deepEqual(HARNESSES, ["stub", "base"]);
+  assert.throws(() => generate("richards", { harness: "real" }), /unknown harness real/);
+  const stub = generate("richards");
+  const g = generate("richards", { harness: "base" });
+  assert.equal(stub.harness, "stub");
+  assert.equal(g.harness, "base");
+  assert.equal(g.expect, stub.expect);
+  assert.equal(g.n, stub.n);
+  // base.js goes in unchanged, as one string literal of an indirect eval (its own strict script).
+  const base = readFileSync(path.join(ROOT, "third_party/bench-v8v7/bench/bench-v8/base.js"), "utf8");
+  assert.ok(g.text.includes(`(0, eval)(${JSON.stringify(base + "\nglobalThis.Benchmark = Benchmark;\nglobalThis.BenchmarkResult = BenchmarkResult;\nglobalThis.BenchmarkSuite = BenchmarkSuite;\n")});`));
+  assert.ok(g.text.includes("BenchmarkSuite.RunSuites({"));
+  assert.ok(!stub.text.includes("BenchmarkSuite.RunSuites({"));
+  // Line L of the kernel is line L + offset of the generated file.
+  const src = readFileSync(path.join(ROOT, "third_party/bench-v8v7/bench/bench-v8/richards.js"), "utf8").split("\n");
+  assert.equal(g.text.split("\n")[66 - 1 + g.offset], src[66 - 1]);
+  // The generated script runs (node here) and prints the expected output, nothing else.
+  const dir = mkdtempSync(path.join(os.tmpdir(), "v8v7-base-"));
+  try {
+    const f = path.join(dir, "deltablue.js");
+    const d = generate("deltablue", { harness: "base", n: 2 });
+    writeFileSync(f, d.text);
+    const r = spawnSync(process.execPath, [f], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout.trim(), d.expect);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
