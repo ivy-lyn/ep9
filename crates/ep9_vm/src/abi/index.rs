@@ -59,6 +59,18 @@ impl<'s> Cx<'s> {
         Ok(false)
     }
 
+    /// CreateDataPropertyOrThrow(O, ! ToString(𝔽(index)), V) (§7.3.7). A dense array element
+    /// is stored without a key (no atom).
+    pub fn create_data_property_index_or_throw(
+        &mut self,
+        o: impl Into<Local<'s, JsObject>>,
+        index: u64,
+        v: impl Into<Local<'s>>,
+    ) -> JsResult<()> {
+        let (o, v) = (o.into().bits(), v.into().bits());
+        property::define_index(self.cx, o, index, v)
+    }
+
     /// O.`[[Delete]]`(! ToString(𝔽(index))) (§10.1.10) with `throw` false, or
     /// DeletePropertyOrThrow (§7.3.10) with `throw` true (a TypeError instead of `false`). An
     /// element becomes a hole, and a missing index gives true, without a key.

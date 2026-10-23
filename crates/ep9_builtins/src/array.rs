@@ -270,8 +270,7 @@ fn callback<'s>(cx: &mut Cx<'s>, f: Local<'s>, method: &str) -> JsResult<Local<'
 
 /// CreateDataPropertyOrThrow(O, ! ToString(𝔽(k)), v) (§7.3.7).
 fn create_index<'s>(cx: &mut Cx<'s>, o: Local<'s, JsObject>, k: u64, v: Local<'s>) -> JsResult<()> {
-    let key = index_key(cx, k);
-    cx.create_data_property_or_throw(o, key, v)
+    cx.create_data_property_index_or_throw(o, k, v)
 }
 
 /// Set(O, "length", 𝔽(len), true) (§7.3.4).

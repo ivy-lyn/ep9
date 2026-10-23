@@ -90,13 +90,7 @@ pub(crate) unsafe fn push_frame(
     // SAFETY: [base, top) is inside the stack (top <= limit <= end, caller contract) and above
     // every live frame, so these writes clobber nothing live.
     unsafe {
-        for i in 0..argc {
-            *base.add(n - 1 - i as usize) = arg(i);
-        }
-        for i in argc as usize..n {
-            *base.add(n - 1 - i) = UNDEFINED;
-        }
-        *base.add(n) = this;
+        // The header and the receiver first, so their inputs are dead before the loops.
         *fp.offset(slot::CALLER_FP) = native_of(caller_fp);
         *fp.offset(slot::RETURN_PC) = native_of(return_pc);
         *fp.offset(slot::CALLEE) = callee;
@@ -110,11 +104,37 @@ pub(crate) unsafe fn push_frame(
         *fp.offset(slot::NEW_TARGET) = new_target;
         *fp.offset(slot::CONTEXT) = context;
         *fp.offset(slot::BYTECODE_OFFSET) = int32_bits(0);
-        for r in 0..fi.register_count as usize {
-            *fp.add(r) = UNDEFINED;
+        // The receiver and the arguments at fixed offsets from `fp` too (`base + n` is
+        // `fp + RECEIVER`; argument `i` is at `fp + PARAM0 - i`), so the stores need no other
+        // pointer register.
+        *fp.offset(slot::RECEIVER) = this;
+        for i in 0..argc {
+            *fp.offset(slot::PARAM0 - i as isize) = arg(i);
         }
+        fill_undefined(base, fp.offset(slot::PARAM0 + 1 - argc as isize));
+        fill_undefined(fp, top);
     }
     Some(fp)
+}
+
+/// Writes undefined to every slot of `[from, to)`: the missing arguments and the registers of
+/// a new frame. A plain loop, one store per slot: these ranges are short (most T0 functions
+/// have fewer than 10 registers), and the vector loop that LLVM makes of a plain fill costs
+/// more set-up instructions and registers than the T0 call handlers have free (M3-P2 PERF3:
+/// a64 cachegrind t0-call -1.5% against the vector loop; a loop of 2 stores per pass, or one
+/// counted down, costs more). The volatile store only keeps LLVM from making the vector loop
+/// again; it is a plain store.
+///
+/// # Safety
+/// `[from, to)` is writable stack memory.
+#[inline(always)]
+unsafe fn fill_undefined(from: *mut u64, to: *mut u64) {
+    let mut p = from;
+    while p < to {
+        // SAFETY: `p` is in `[from, to)` (caller contract).
+        unsafe { p.write_volatile(UNDEFINED) };
+        p = p.wrapping_add(1);
+    }
 }
 
 /// Pushes the frame of a resumed generator (FRAME 2): [`push_frame`] for a call (the
@@ -151,11 +171,13 @@ pub(crate) unsafe fn push_resume_frame(
 
 /// OrdinaryCallBindThis (§10.2.1.2) with no allocation: the this value of a call of `fi`, or
 /// `None` when step 6.b makes a wrapper object (a sloppy callee and a number, boolean,
-/// string or symbol receiver); the caller then takes [`wrap_this`] (a cold path). A strict
-/// callee costs one flag test; a sloppy callee with an object receiver one cell test, one
-/// kind load and one compare (the hot T0 call of a method): a receiver is a language value,
-/// so a cell of kind 16 or more is an object (kinds 64 and up are internal cells, never a
-/// receiver), and the upper bound of `is_object` is not tested.
+/// string or symbol receiver); the caller then takes [`wrap_this`] (a cold path).
+///
+/// The receiver is tested before the strictness flag (M3-P2 PERF3): an object receiver (the
+/// hot T0 call of a method) costs one cell test, one kind load and one compare, strict or
+/// sloppy, with no flag test. A receiver is a language value, so a cell of kind 16 or more is
+/// an object (kinds 64 and up are internal cells, never a receiver), and the upper bound of
+/// `is_object` is not tested. Any other receiver then costs one flag test for a strict callee.
 ///
 /// The caller wraps, not the callee prologue (H14-Q2):
 ///
@@ -169,14 +191,15 @@ pub(crate) unsafe fn push_resume_frame(
 /// ```
 #[inline(always)]
 pub(crate) fn try_bind_this(fi: &FunctionInfo, this: u64, global: u64) -> Option<u64> {
-    if fi.is_strict() {
-        return Some(this);
-    }
     if is_cell_bits(this) {
-        // A string or a symbol (kinds below 16) needs the wrapper.
+        // An object goes in as it is; a string or a symbol (kinds below 16) needs the wrapper
+        // for a sloppy callee only.
         let kind = cell_kind(this);
         debug_assert!(kind < 64, "an internal cell as a receiver");
-        return (kind >= OBJECT.get()).then_some(this);
+        return (kind >= OBJECT.get() || fi.is_strict()).then_some(this);
+    }
+    if fi.is_strict() {
+        return Some(this);
     }
     if this == UNDEFINED || this == NULL {
         Some(global)

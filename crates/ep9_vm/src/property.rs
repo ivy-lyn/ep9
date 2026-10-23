@@ -1457,6 +1457,23 @@ pub(crate) fn set_index(cx: &mut Cx, o: u64, i: u64, v: u64) -> Res<bool> {
     ordinary_set(cx, o, key, v)
 }
 
+/// CreateDataPropertyOrThrow(O, ! ToString(𝔽(i)), v) (§7.3.7) on the object `o`. A dense
+/// array element is stored without a key (as `define_keyed`); else the key path. GC point.
+pub(crate) fn define_index(cx: &mut Cx, o: u64, i: u64, v: u64) -> Res<()> {
+    debug_assert!(is_object(o));
+    if is_array(o)
+        && let Some(n) = array_index_u64(i)
+        // An existing element is {w, e, c}; a new one needs an extensible array.
+        && (object::array_get(o, n).is_some() || is_extensible(o))
+        && object::array_set(cx.rt(), o, n, v)
+    {
+        return Ok(());
+    }
+    // GC point: `o` and `v` live in Rust locals.
+    let key = index_key_of(cx.rt(), i);
+    define(cx, o, key, v)
+}
+
 /// `o.[[Delete]](! ToString(𝔽(i)))` (§10.1.10) on the object `o`, with [`delete`]'s `strict`
 /// (a TypeError instead of `false`). An element becomes a hole and a missing index answers
 /// true, without a key. GC point.
