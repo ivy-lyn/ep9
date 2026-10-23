@@ -200,7 +200,8 @@ pub(crate) mod modf {
     /// `[[Status]]` (int32; undefined until MODULE fills it).
     pub const STATUS: usize = 8;
     /// `[[Environment]]`: a CONTEXT made with the record (`module.rs` `env`): the module's
-    /// name, the closure of its function 0, `import.meta`, then one box per module cell.
+    /// name, the generator object of its function 0 (made at InitializeEnvironment, resumed
+    /// at Evaluate; MODULE step 2), `import.meta`, then one box per module cell.
     pub const ENVIRONMENT: usize = 16;
     /// `[[Namespace]]`: a MODULE_NAMESPACE object, or undefined until made.
     pub const NAMESPACE: usize = 24;

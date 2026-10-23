@@ -320,7 +320,8 @@ pub(crate) fn async_function<'s>(
 /// cells (each an ELEMENTS list of [`agf::REQUEST_LEN`]).
 ///
 /// ```text
-/// record:  [STATE (int32), HEAD (request or undefined), TAIL (request or undefined)]
+/// record:  [STATE (int32), HEAD (request or undefined), TAIL (request or undefined),
+///           RESULT (the body's completion value), RESULT_KIND (int32, or undefined)]
 /// request: [MODE (int32 genf::RESUME_*), VALUE, PROMISE (its capability's promise), NEXT]
 /// ```
 ///
@@ -334,7 +335,16 @@ pub(crate) mod agf {
     pub const HEAD: usize = 1;
     /// The last request of the queue, or undefined.
     pub const TAIL: usize = 2;
-    pub const RECORD_LEN: usize = 3;
+    /// The completion value of the body, from runtime id 39 or 40 until the runner settles
+    /// it after the frame left (`async_generator_run`, X-AG2); else undefined.
+    pub const RESULT: usize = 3;
+    /// [`RESULT_NORMAL`] or [`RESULT_THROW`] (int32) while [`RESULT`] waits; else undefined.
+    pub const RESULT_KIND: usize = 4;
+    pub const RECORD_LEN: usize = 5;
+    /// [`RESULT_KIND`]: the body returned (normal or return completion).
+    pub const RESULT_NORMAL: i32 = 0;
+    /// [`RESULT_KIND`]: the body threw.
+    pub const RESULT_THROW: i32 = 1;
     /// suspended-start (§27.6.2: the body has not run).
     pub const STATE_SUSPENDED_START: i32 = 0;
     /// suspended-yield: the frame waits at a `yield`.
@@ -483,9 +493,16 @@ fn resolve_pending(cx: &mut Cx, p: u64, value: u64) -> Res<()> {
 
 /// AsyncGeneratorCompleteStep(generator, completion, done) (§27.6.3.4): removes the first
 /// request and settles its promise: a throw completion (`throw`) rejects it with `value`, a
-/// normal one resolves it with CreateIterResultObject(value, done) of the current realm (the
-/// spec makes it in the realm of the caller of the generator's context; ep9 makes it in the
-/// current one). GC point; may run JS (a `then` getter on %Object.prototype%).
+/// normal one resolves it with CreateIterResultObject(value, done) of the current realm.
+/// The realm of each caller is the one the spec names (X-AG2):
+///
+/// | Caller | Spec realm | ep9 |
+/// |---|---|---|
+/// | AsyncGeneratorStart step 4 (the body completed; ids 39, 40) | the running context after the generator context is removed: the resumer's (a `next`/`return`/`throw` builtin, or an await closure, which the generator's realm made) | [`async_generator_run`] settles after the frame left, so `call::run_resumed` restored the resumer's realm |
+/// | AsyncGeneratorYield step 11 (id 38) | `previousRealm`: the resumer's | inside the frame, in the generator's realm. The same realm: every `yield` first awaits its operand (`yield*` awaits each inner result), so its resumer is an await closure of the generator's realm |
+/// | AsyncGeneratorDrainQueue, AsyncGeneratorAwaitReturn closures | the current realm | the current realm |
+///
+/// GC point; may run JS (a `then` getter on %Object.prototype%).
 fn ag_complete_step(cx: &mut Cx, g: u64, throw: bool, value: u64, done: bool) -> Res<()> {
     let rt = cx.rt();
     let Some(p) = ag_dequeue(rt, g) else {
@@ -605,15 +622,50 @@ fn await_return_settled<'s>(
 
 /// The body of `g` completed (AsyncGeneratorStart step 4, §27.6.3.2): the frame is dropped,
 /// the state is draining-queue, the first request completes with the body's result (`throw`:
-/// a throw completion of `value`; else `{value, done: true}`), then the queue drains. Runtime
-/// ids 39 (done) and 40 call it from the frame's last instructions; a frame that could not
-/// run calls it too. GC point; may run JS.
+/// a throw completion of `value`; else `{value, done: true}`), then the queue drains. Called
+/// when no frame of `g` runs: by [`async_generator_run`] after the frame left (the result
+/// that ids 39 and 40 kept, [`async_generator_body_done`]) and for a frame that could not
+/// run. GC point; may run JS.
 pub(crate) fn async_generator_complete(cx: &mut Cx, g: u64, throw: bool, value: u64) -> Res<()> {
     let rt = cx.rt();
     close(rt, g);
     set_ag_state(rt, g, agf::STATE_DRAINING);
     ag_complete_step(cx, g, throw, value, true)?;
     ag_drain_queue(cx, g)
+}
+
+/// Runtime ids 39 (done) and 40, from the frame's last instructions (`AsyncGeneratorResolve`
+/// or `AsyncGeneratorReject`, then `Return`): the body of `g` completed with `value`
+/// (`throw`: a throw completion). The frame is dropped and the state is draining-queue (a
+/// request that comes now waits in the queue), and the record keeps the completion in
+/// [`agf::RESULT`]. Nothing is settled here: AsyncGeneratorStart step 4 removes the
+/// generator's context first, so [`async_generator_run`] settles the request and drains
+/// the queue after the frame returned, in the resumer's realm (X-AG2). Not a GC point.
+pub(crate) fn async_generator_body_done(rt: &Runtime, g: u64, throw: bool, value: u64) {
+    close(rt, g);
+    set_ag_state(rt, g, agf::STATE_DRAINING);
+    let record = ag_record(g);
+    let kind = if throw {
+        agf::RESULT_THROW
+    } else {
+        agf::RESULT_NORMAL
+    };
+    object::list_set(rt, record, agf::RESULT, value);
+    object::list_set(rt, record, agf::RESULT_KIND, int32_bits(kind));
+}
+
+/// Takes the completion that [`async_generator_body_done`] kept for `g`, if any: (throw,
+/// value). Not a GC point.
+fn ag_take_result(rt: &Runtime, g: u64) -> Option<(bool, u64)> {
+    let record = ag_record(g);
+    let kind = object::list_get(record, agf::RESULT_KIND);
+    if kind == UNDEFINED {
+        return None;
+    }
+    let value = object::list_get(record, agf::RESULT);
+    object::list_set(rt, record, agf::RESULT, UNDEFINED);
+    object::list_set(rt, record, agf::RESULT_KIND, UNDEFINED);
+    Some((crate::frame::int32_of(kind) == agf::RESULT_THROW, value))
 }
 
 /// AsyncGeneratorYield (§27.6.3.8) steps 5-12.a for `value`, run by runtime id 38 inside the
@@ -640,7 +692,9 @@ fn ag_frame_failed(cx: &mut Cx, g: u64, t: Throw) -> Res<()> {
 /// resume mode `mode` and the value `v` until it waits in an `await`, suspends at a `yield`
 /// or completes. A `yield` with requests queued resumes the frame again with the next one
 /// (AsyncGeneratorYield step 11), in this loop: one Rust level per resume, never one per
-/// request. Throws only a termination (any other throw settles the queue). GC point; runs JS.
+/// request. When the body completed (ids 39, 40), the first request settles and the queue
+/// drains here, after the frame left: in the realm of this function's caller (X-AG2).
+/// Throws only a termination (any other throw settles the queue). GC point; runs JS.
 pub(crate) fn async_generator_run(cx: &mut Cx, g: u64, mode: i32, v: u64) -> Res<()> {
     let (mut mode, mut v) = (mode, v);
     loop {
@@ -652,7 +706,17 @@ pub(crate) fn async_generator_run(cx: &mut Cx, g: u64, mode: i32, v: u64) -> Res
             ));
         }
         set_ag_state(cx.rt(), g, agf::STATE_EXECUTING);
-        if let Err(t) = resume_frame::<true>(cx, g, mode, v) {
+        let r = resume_frame::<true>(cx, g, mode, v);
+        // AsyncGeneratorStart step 4: the generator context is gone (`run_resumed`
+        // restored the resumer's realm); then CompleteStep and DrainQueue.
+        if let Some((throw, value)) = ag_take_result(cx.rt(), g) {
+            debug_assert!(r.is_ok(), "a throw after the body completed");
+            debug_assert_eq!(ag_state(g), agf::STATE_DRAINING);
+            ag_complete_step(cx, g, throw, value, true)?;
+            ag_drain_queue(cx, g)?;
+            return r.map(|_| ());
+        }
+        if let Err(t) = r {
             return ag_frame_failed(cx, g, t);
         }
         if ag_state(g) != agf::STATE_SUSPENDED_YIELD {
