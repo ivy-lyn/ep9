@@ -45,8 +45,8 @@
 use std::collections::HashSet;
 
 use ep9_bytecode::{
-    CodeKind, EVAL_EXT_BINDING, EvalContext, FunctionKind, Instructions, Opcode, Register,
-    RuntimeId, ScopeFlags, ScopeKind, UnitString, VariableMode,
+    CodeKind, Constant, EVAL_EXT_BINDING, EvalContext, FunctionKind, Instructions, Opcode,
+    Register, RuntimeId, ScopeFlags, ScopeKind, StringId, UnitString, VariableMode,
 };
 use ep9_value::Throw;
 
@@ -464,15 +464,24 @@ fn check_all(cx: &mut Cx, fp: *mut u64) -> Res<()> {
             return Err(cannot_declare(cx, name, exists));
         }
     }
-    // The function names (atoms): step 11 skips a var name that is one of them.
-    let functions: HashSet<u64> = decls
+    // The function names: step 11 skips a var name that is one of them. The set holds unit
+    // string ids, never atom Values (cell addresses; H12-Q2 rule (a), X-ACC1). A builder
+    // unit interns its strings, so a name has one id. A unit with two ids of one text would
+    // only check such a var name again here, with the same result: the function check above
+    // passed for it on the same global object (no own property and extensible, or an own
+    // property), and either way CanDeclareGlobalVar is true.
+    let string_id = |k: u32| match fi.constant_entry(k) {
+        Constant::String(id) => Some(*id),
+        _ => None,
+    };
+    let functions: HashSet<StringId> = decls
         .iter()
         .filter(|&&(_, function)| function)
-        .map(|&(k, _)| fi.constant(k))
+        .filter_map(|&(k, _)| string_id(k))
         .collect();
     for &(k, _) in decls {
         let name = fi.constant(k);
-        if functions.contains(&name) {
+        if string_id(k).is_some_and(|id| functions.contains(&id)) {
             continue;
         }
         if !property::has_own_property(cx, g, name) && !property::is_extensible(g) {
