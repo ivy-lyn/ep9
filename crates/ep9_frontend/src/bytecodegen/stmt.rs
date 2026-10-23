@@ -267,6 +267,21 @@ impl<'a> FnGen<'a, '_> {
 
     /// genv.SetMutableBinding(F, fobj, false) for an Annex B var binding.
     fn store_annex_b_var(&mut self, var: BindingId) {
+        if let Some(&(_, flag)) = self.eval_annex_b.iter().find(|&&(v, _)| v == var) {
+            // Sloppy eval code (B.3.2.3 step ii.2.g.ii): the var binding is in the caller's
+            // variable environment, and only if DeclareEvalAnnexBFunction made it (`flag`).
+            let m = self.mark();
+            let args = self.temps(2);
+            let skip = self.b.new_label();
+            self.b.star(args.get(1));
+            self.b.ldar(flag).jump_if_false(skip);
+            let k = self.name_const(self.binding(var).name);
+            self.b.lda_constant(k).star(args.get(0));
+            self.runtime(RuntimeId::StoreEvalAnnexBFunction, args);
+            self.b.bind(skip);
+            self.release(m);
+            return;
+        }
         match self.binding(var).location {
             BindingLocation::Global | BindingLocation::GlobalLexical => {
                 let name = self.binding(var).name;
@@ -589,10 +604,11 @@ impl<'a> FnGen<'a, '_> {
     /// ForIn/OfBodyEvaluation with iteratorKind async; M3-P2 ASYNCGEN), in an async function
     /// or an async generator body: the `for-of` loop with GetIterator(rhs, async)
     /// (`async_gen.rs` AGF5), an Await of each `next` result, and AsyncIteratorClose on an
-    /// abrupt exit. At a module top level it stays unsupported (M3-P3 IMPORT-TLA).
+    /// abrupt exit. At a module top level it is top-level await, so it stays unsupported with
+    /// the cause of a top-level `await` ("await", AF6; M3-P3 IMPORT-TLA; review RV-P2-AG1).
     fn for_await_of(&mut self, f: &'a ForOfStatement<'a>, labels: Vec<&'a str>) -> Gen {
         if self.await_target().is_none() {
-            return self.unsupported("for await", f.span);
+            return self.unsupported("await", f.span);
         }
         self.stmt_pos(f.span);
         let at = f.span.start;

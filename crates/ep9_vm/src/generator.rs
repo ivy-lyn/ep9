@@ -60,15 +60,18 @@ pub(crate) enum LazyPrototype {
 
 /// The lazy `prototype` the function `fi` has, if any: `exotic::is_lazy_prototype` and
 /// `exotic::function_prototype` ask this. A constructor gets an ordinary one, a generator
-/// function one that inherits from %GeneratorPrototype%. Hot: inlined into every property
-/// lookup on a function, so it tests flag bits only (no unit pointer chase).
+/// function one that inherits from %GeneratorPrototype%, an async generator function one that
+/// inherits from %AsyncGeneratorPrototype% (§15.6.4). Hot: inlined into every property lookup
+/// on a function, so it tests flag bits only (no unit pointer chase).
 #[inline(always)]
 pub(crate) fn lazy_prototype_kind(fi: &FunctionInfo) -> Option<LazyPrototype> {
-    if fi.flags & (fi_flags::CONSTRUCTOR | fi_flags::GENERATOR) == 0 {
+    if fi.flags & (fi_flags::CONSTRUCTOR | fi_flags::GENERATOR | fi_flags::ASYNC_GENERATOR) == 0 {
         return None;
     }
     Some(if fi.is_generator() {
         LazyPrototype::Instances(IntrinsicId::GeneratorPrototype)
+    } else if fi.is_async_generator() {
+        LazyPrototype::Instances(IntrinsicId::AsyncGeneratorPrototype)
     } else {
         LazyPrototype::Ordinary
     })

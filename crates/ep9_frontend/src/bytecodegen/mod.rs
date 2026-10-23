@@ -390,16 +390,20 @@ fn gen_job<'a>(
     match job {
         Job::Program => {
             let info = &sa.functions()[0];
-            let meta = FunctionMeta::entry(
+            let mut meta = FunctionMeta::entry(
                 cx.code,
                 info.strict,
                 u32::try_from(fe.source.len()).unwrap_or(u32::MAX),
             );
+            if cx.module {
+                // A resumable function 0 (module.rs, M3-P2-MODULE-F0).
+                meta.flags = meta.flags | FunctionFlags::ASYNC;
+            }
             let mut g = FnGen::new(cx, info, meta);
-            if cx.code == CodeKind::Eval {
-                g.gen_eval_program(fe.program)?;
-            } else {
-                g.gen_program(fe.program)?;
+            match cx.code {
+                CodeKind::Eval => g.gen_eval_program(fe.program)?,
+                CodeKind::Module => g.gen_module_program(fe.program)?,
+                CodeKind::Script => g.gen_program(fe.program)?,
             }
             let (code, jobs) = g.finish()?;
             Ok((info.id, code, jobs))
@@ -742,6 +746,7 @@ impl<'a> FnGen<'a, '_> {
     /// strict:  CreateClosure + store, per hoisted function (local bindings)
     /// sloppy:  CreateClosure; CallRuntime DeclareEvalFunction (name, closure), per function
     ///          CallRuntime DeclareEvalVar (name), per other `var` name
+    ///          CallRuntime DeclareEvalAnnexBFunction (name); Star <flag>, per Annex B name
     /// statements
     /// load .result (or LdaUndefined); Return
     /// ```
@@ -791,7 +796,11 @@ impl<'a> FnGen<'a, '_> {
         Ok(())
     }
 
-    /// The sloppy eval prologue: `DeclareEvalFunction` and `DeclareEvalVar` (ids 27-28).
+    /// The sloppy eval prologue: `DeclareEvalFunction` and `DeclareEvalVar` (ids 27-28), then
+    /// `DeclareEvalAnnexBFunction` (ABI 5 id 46) per var binding of an Annex B block function
+    /// (B.3.2.3 step ii, after the checks of steps 3-9 and after the bindings of the eval
+    /// code's own functions and vars, which step ii.2.g.i skips). Its answer stays in a register
+    /// of function 0 ([`FnGen::eval_annex_b`]) until the block function declaration runs.
     fn declare_eval_bindings(&mut self, root: ScopeId) -> Gen {
         let root_info = self.sa.scope(root);
         // functionsToInitialize: walk the declarations backwards, keep the first of each name,
@@ -803,13 +812,30 @@ impl<'a> FnGen<'a, '_> {
             }
         }
         functions.reverse();
+        // Annex B.3.2.3: the var bindings of the block functions, one per name. A var binding
+        // that only Annex B made (the scope pass gives it the block function's span) is not a
+        // `var` of the eval code: it gets no DeclareEvalVar.
+        let mut annex: Vec<BindingId> = Vec::new();
+        let mut annex_only: Vec<BindingId> = Vec::new();
+        for b in self.sa.bindings() {
+            let Some(var) = b.annex_b_var else { continue };
+            if self.binding(var).scope != root {
+                continue;
+            }
+            if !annex.contains(&var) {
+                annex.push(var);
+            }
+            if self.binding(var).span == b.span && !annex_only.contains(&var) {
+                annex_only.push(var);
+            }
+        }
         let vars: Vec<BindingId> = root_info
             .bindings
             .iter()
             .copied()
-            .filter(|&b| self.binding(b).kind == BindingKind::Var)
+            .filter(|&b| self.binding(b).kind == BindingKind::Var && !annex_only.contains(&b))
             .collect();
-        if functions.is_empty() && vars.is_empty() {
+        if functions.is_empty() && vars.is_empty() && annex.is_empty() {
             return Ok(());
         }
         self.b.set_statement_position(0);
@@ -841,6 +867,18 @@ impl<'a> FnGen<'a, '_> {
             self.b.lda_constant(name).star(args.get(0));
             self.runtime(RuntimeId::DeclareEvalVar, args);
             self.release(m);
+        }
+        for var in annex {
+            // The flag register lives until the end of function 0.
+            let flag = self.temp();
+            let m = self.mark();
+            let args = self.temps(1);
+            let name = self.name_const(self.binding(var).name);
+            self.b.lda_constant(name).star(args.get(0));
+            self.runtime(RuntimeId::DeclareEvalAnnexBFunction, args);
+            self.b.star(flag);
+            self.release(m);
+            self.eval_annex_b.push((var, flag));
         }
         Ok(())
     }

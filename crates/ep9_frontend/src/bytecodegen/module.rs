@@ -1,21 +1,43 @@
-#![allow(dead_code)] // m3-stub
-//! Module code: the module records (ABI 5 section 5), the import and export declarations,
-//! `export default`, `import()` and `import.meta` (ECMA-262 §16.2).
+//! Module code: the module records (ABI 5 section 5), function 0 of a module, the import and
+//! export declarations, `export default`, `import()` and `import.meta` (ECMA-262 §16.2).
 //!
-//! M3-P0 routing stub (P0-D7, V8-C10): the statement and expression entries give today's
-//! result (an import or export declaration emits nothing; `unsupported: import()`,
-//! `unsupported: import.meta`), so no test result changes. The M3-P2 MODULE role owns this file
-//! whole and fills it (ABI 5 runtime ids 42-43 `GetImportMeta`, `DynamicImport`; the loader
-//! reads [`module_records`]); M3-P3 IMPORT-TLA builds on it.
+//! An import or export declaration emits no code (the bindings are module cells that the VM
+//! links, `ep9_vm` `module.rs`, from [`module_records`]); `import.meta` calls ABI 5 id 42
+//! `GetImportMeta` (M3-P2 MODULE); `import()` stays unsupported until M3-P3 IMPORT-TLA
+//! (id 43 `DynamicImport`).
 //!
 //! ```text
 //! caller (site at b6109b3)                         entry here
+//! mod.rs    gen_job (function 0 of a module)       gen_module_program  the resumable body
 //! mod.rs    generate (module code)                 module_records     section 5 of the unit
 //! stmt.rs   import / export arms (:130-132, :135)  module_declaration nothing (bindings are cells)
 //! stmt.rs   ExportDeclaration (:133)               export_declaration the declaration
 //! stmt.rs   ExportDefaultDeclaration (:134, :300)  export_default     the value -> `*default*`
 //! expr.rs   ImportExpression (:336)                import_call        `import(s, o)`
 //! expr.rs   ImportMeta (:358)                      import_meta        `import.meta`
+//! ```
+//!
+//! Function 0 of a module is resumable, as V8's module function (M3-P2-MODULE-F0, Option A).
+//! Its first part is InitializeEnvironment (§16.2.1.6.4, the declarations); it suspends, and
+//! its second part is ExecuteModule (§16.2.1.6.5, the statements). The VM makes its generator
+//! object and resumes it twice (`ep9_vm` `module.rs`, `initialize_environment` and
+//! `inner_evaluate`); it never calls it. Two ABI 5 verifier rules (`verify.rs`) shape it:
+//! generator opcodes need a `GENERATOR` or `ASYNC` function, and a `Module` function may be
+//! `ASYNC` only (`flags_fit_kind`), so function 0 has the `ASYNC` flag; an entry function may
+//! not read new.target (its "entry frame" rule), so the VM gives the generator object as the
+//! receiver (V8 gives it in the new.target register), and the prologue then makes `this`
+//! undefined (§16.2.1.6.5: module code has no `this` value).
+//!
+//! ```text
+//!         Ldar <this>; Star r_gen           the generator object
+//!         LdaUndefined; Star <this>         `this` of module code
+//!         SwitchOnGeneratorState r_gen, [L_init, L_run]
+//! L_init: [CreateFunctionContext scope0; PushContext]
+//!         `this`, hole stores (G8), LdaUndefined + StaModuleVariable per `var` cell,
+//!         CreateClosure + store per hoisted function
+//!         SuspendGenerator r_gen, r0..rN, N, 1        back to the VM: the module is linked
+//! L_run:  ResumeGenerator r_gen, r0..rN, N
+//!         the statements; LdaUndefined; Return
 //! ```
 //!
 //! [`module_records`] is the ParseModule part of §16.2.1.6: the requested modules (one per
@@ -29,7 +51,7 @@ use std::collections::HashMap;
 
 use ep9_bytecode::{
     ExportImportName, ImportEntry, ImportName, IndirectExportEntry, LocalExportEntry,
-    ModuleRecords, ModuleRequest, UnitString,
+    ModuleRecords, ModuleRequest, Register, RegisterList, RuntimeId, UnitString,
 };
 use oxc_ast::ast::{
     ArrowFunctionExpression, AwaitExpression, Declaration, ExportDeclaration,
@@ -43,12 +65,70 @@ use oxc_semantic::ScopeFlags;
 
 use super::func::{FnGen, Gen};
 use super::literal::js_string;
-use crate::scope::{BindingId, ScopeAnalysis, ScopeId};
+use crate::scope::{BindingId, BindingKind, BindingLocation, ScopeAnalysis, ScopeId};
 
 /// The local name of an anonymous default export (§16.2.3.7).
 const DEFAULT_LOCAL: &str = "*default*";
 
+/// The suspend id of the end of InitializeEnvironment: the VM resumes function 0 at
+/// `table[1]` for ExecuteModule (`table[0]` starts InitializeEnvironment). `ep9_vm`
+/// `module.rs` checks it.
+const RUN: u32 = 1;
+
 impl<'a> FnGen<'a, '_> {
+    /// Function 0 of a module (see the module docs): InitializeEnvironment steps 21-24 (the
+    /// VM did the imports and the indirect exports), a suspend, then the statements.
+    pub(crate) fn gen_module_program(&mut self, program: &'a Program<'a>) -> Gen {
+        let root = ScopeId(0);
+        self.scope = root;
+        let root_info = self.sa.scope(root);
+        let object = self.temp();
+        self.b.ldar(Register::RECEIVER).star(object);
+        self.b.lda_undefined().star(Register::RECEIVER);
+        let (table, entries) = self.b.jump_table(RUN + 1);
+        self.b.switch_on_generator_state(object, table);
+        self.b.bind(entries[0]);
+        if root_info.needs_context {
+            let n = root_info.context_slots.len() as u32;
+            self.push_context(root, |g| {
+                let k = g.b.scope_constant(g.cx.unit_scope(root));
+                g.b.create_function_context(k, n);
+            });
+        }
+        // `this` of module code is undefined (in the receiver from the prologue on).
+        if let Some(t) = self.info.this
+            && matches!(self.binding(t).location, BindingLocation::Context { .. })
+        {
+            self.b.lda_undefined();
+            self.store_binding_init(t);
+        }
+        self.init_holes(root);
+        // Step 21: a `var` binding that other modules can see starts as undefined (a `var`
+        // in a register or a context slot is undefined already).
+        for &b in &root_info.bindings {
+            let binding = self.binding(b);
+            if binding.kind == BindingKind::Var && binding.location == BindingLocation::Module {
+                self.b.lda_undefined();
+                self.store_binding_init(b);
+            }
+        }
+        // Step 24: the functions.
+        self.hoist_functions(root)?;
+        // Every register below `live` is saved: the named locals, the generator object and
+        // the saved context.
+        let m = self.mark();
+        let live = self.temp().local_index().expect("a local");
+        self.release(m);
+        let regs = RegisterList::new(0, live);
+        self.b.lda_undefined();
+        self.b.suspend_generator(object, regs, live, RUN);
+        self.b.bind(entries[RUN as usize]);
+        self.b.resume_generator(object, regs, live);
+        self.statements(&program.body)?;
+        self.b.lda_undefined().return_();
+        Ok(())
+    }
+
     /// An import declaration, `export { ... }`, `export { ... } from`, `export * from`: no
     /// code. The bindings are module cells; the records are in section 5.
     pub(crate) fn module_declaration(&mut self, s: &'a Statement<'a>) -> Gen {
@@ -105,9 +185,14 @@ impl<'a> FnGen<'a, '_> {
         self.unsupported("import()", i.span)
     }
 
-    /// `import.meta` (§13.3.12).
+    /// `import.meta` (§13.3.12.1): the running module's `[[ImportMeta]]` object, made on first
+    /// use (ABI 5 id 42 `GetImportMeta`; the VM finds the module at the end of the context
+    /// chain).
     pub(crate) fn import_meta(&mut self, m: &'a ImportMeta) -> Gen {
-        self.unsupported("import.meta", m.span)
+        self.enter(m.span)?;
+        self.runtime(RuntimeId::GetImportMeta, RegisterList::EMPTY);
+        self.leave();
+        Ok(())
     }
 }
 

@@ -19,6 +19,7 @@
 //! | `%GeneratorFunction%`, `%GeneratorPrototype%` `next`/`return`/`throw`, `%AsyncFunction%` (`generator.rs`; `%GeneratorFunction%` compiles through the compiler hook like `Function`, `abi/script.rs`; `%AsyncFunction%` is CreateDynamicFunction of kind async through the same hook, M3-P1 ASYNC) | §27.3.1.1, §27.5.1.2-4, §27.7.1.1 |
 //! | `%AsyncGeneratorFunction%`, `%AsyncGeneratorPrototype%` `next`/`return`/`throw`, `%AsyncIteratorPrototype%[@@asyncIterator]`, `%AsyncFromSyncIteratorPrototype%` `next`/`return`/`throw` (`generator.rs`, M3-P2 ASYNCGEN; `%AsyncGeneratorFunction%` compiles through the compiler hook like `Function`) | §27.4.1.1, §27.6.1.2-4, §27.1.3.1, §27.1.6.2.1-3 |
 //! | `%eval%`, the global `eval` (indirect eval; direct eval is `interp/slow/eval.rs`), through the compiler hook (`abi/script.rs`) | §19.2.1 |
+//! | `%ThrowTypeError%` (the strict arguments `callee` accessor; `arguments.rs` sets its attributes) | §10.2.4.1 |
 //!
 //! The built-in iterators are ITERATOR cells (object.rs): the iterated value, the next index
 //! and the iteration kind (`object::iter_kind`). The iterated value tells an array iterator
@@ -130,6 +131,10 @@ pub(crate) mod vm {
     pub const ASYNC_FROM_SYNC_RETURN: u16 = 39;
     /// `%AsyncFromSyncIteratorPrototype%.throw`.
     pub const ASYNC_FROM_SYNC_THROW: u16 = 40;
+    // ---- M3-P2 (VM-ARGS, step 2 of the shared lines) ----
+    /// `%ThrowTypeError%` (§10.2.4.1): the `callee` accessor of an unmapped arguments object
+    /// (`arguments.rs` gives it its attributes on first use).
+    pub const THROW_TYPE_ERROR: u16 = 41;
 }
 
 /// The VM's block.
@@ -185,6 +190,7 @@ const VM_DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("next", 1, generator::async_from_sync_next),
     BuiltinDef::method("return", 1, generator::async_from_sync_return),
     BuiltinDef::method("throw", 1, generator::async_from_sync_throw),
+    BuiltinDef::method("", 0, throw_type_error),
 ];
 
 const VM_INTRINSICS: &[IntrinsicDef] = &[
@@ -314,6 +320,11 @@ const VM_INTRINSICS: &[IntrinsicDef] = &[
     IntrinsicDef {
         id: IntrinsicId::ArrayUnscopables,
         value: IntrinsicValue::Object { proto: None },
+    },
+    // M3-P2 (VM-ARGS). §10.2.4.1: an anonymous built-in function.
+    IntrinsicDef {
+        id: IntrinsicId::ThrowTypeError,
+        value: IntrinsicValue::Builtin(vm::THROW_TYPE_ERROR),
     },
 ];
 
@@ -695,6 +706,20 @@ pub(crate) static VM_TABLE: BuiltinTable = BuiltinTable::new("vm", &[VM_MODULE])
 /// A `Local` of VM bits.
 fn local<'s>(b: u64) -> Local<'s> {
     Local::from_bits(b)
+}
+
+/// %ThrowTypeError% (§10.2.4.1): throws a TypeError (V8's text). Its `length` and `name`
+/// attributes and [[Extensible]] false are set by `arguments.rs` on first use.
+pub(crate) fn throw_type_error<'s>(
+    cx: &mut HostCx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Err(cx.throw_type_error(
+        "'caller', 'callee', and 'arguments' properties may not be accessed on strict mode \
+         functions or the arguments objects for calls to them",
+    ))
 }
 
 /// `%Function.prototype%` (§20.2.3): accepts any arguments and returns undefined.
@@ -1226,8 +1251,7 @@ pub(crate) fn error_to_string<'s>(
     Ok(local(object::new_string(rt, &s)))
 }
 
-/// Object.prototype.toString (§20.1.3.6). v0: no `[[ParameterMap]]` (arguments objects are
-/// Arrays), and no RegExp.
+/// Object.prototype.toString (§20.1.3.6). v0: no RegExp.
 pub(crate) fn object_to_string<'s>(
     cx: &mut HostCx<'s>,
     this: Local<'s>,
@@ -1248,6 +1272,10 @@ pub(crate) fn object_to_string<'s>(
     let data = local(wrapper::wrapper_value(o).unwrap_or(o));
     let builtin_tag = if is_array(o) {
         "Array"
+    } else if crate::kinds::cell_kind(o) == crate::kinds::ARGUMENTS.get() {
+        // 5. O has a [[ParameterMap]] internal slot (every arguments object: §10.4.4.6 step 3
+        //    gives an unmapped one [[ParameterMap]] undefined).
+        "Arguments"
     } else if is_callable(o) {
         "Function"
     } else if object::is_error(o) {
