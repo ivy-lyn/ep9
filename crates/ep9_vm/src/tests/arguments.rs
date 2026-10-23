@@ -313,3 +313,51 @@ fn an_unmapped_arguments_object_does_not_alias() {
         });
     }
 }
+
+/// CreateUnmappedArgumentsObject step 9 and %ThrowTypeError% (§10.2.4.1), once the realm has
+/// it (VM-ARGS step 2 makes it): `callee` is {get, set: %ThrowTypeError%, e: false,
+/// c: false}; %ThrowTypeError% is not extensible, its `length` (0) and `name` ("") are
+/// {w: false, e: false, c: false}, and a call throws a TypeError.
+#[test]
+fn the_strict_callee_is_throw_type_error() {
+    fn make() -> VerifiedUnit {
+        let mut m = meta("g", 1, 0, 0, 0);
+        m.flags = FunctionFlags::SIMPLE_PARAMETERS | FunctionFlags::STRICT;
+        let mut g = Asm::new(m);
+        let args = g.b.new_register();
+        g.b.create_unmapped_arguments().star(args);
+        g.b.ldar(args).return_();
+        call_f(g.finish())
+    }
+    for stress in [false, true] {
+        with_a(make, stress, |cx, a| {
+            let t = builtins::intrinsic(cx.rt(), builtins::IntrinsicId::ThrowTypeError);
+            if !kinds::is_callable(t) {
+                return;
+            }
+            let callee = crate::atoms::intern_str(cx.rt(), "callee");
+            let d = property::get_own_property(cx, a, callee).unwrap().unwrap();
+            assert_eq!((d.get, d.set), (Some(t), Some(t)));
+            assert_eq!((d.enumerable, d.configurable), (Some(false), Some(false)));
+            assert!(!property::is_extensible(t));
+            for (atom, v) in [(Atom::Length, Some(int32_bits(0))), (Atom::Name, None)] {
+                let key = cx.rt().atom(atom);
+                let d = property::get_own_property(cx, t, key).unwrap().unwrap();
+                assert_eq!(
+                    (d.writable, d.enumerable, d.configurable),
+                    (Some(false), Some(false), Some(false))
+                );
+                if let Some(v) = v {
+                    assert_eq!(d.value, Some(v));
+                } else {
+                    assert_eq!(crate::string::to_rust_string(d.value.unwrap()), "");
+                }
+            }
+            assert!(property::get(cx, a, callee).is_err());
+            let e = cx.rt().take_pending();
+            let name = crate::atoms::intern_str(cx.rt(), "name");
+            let n = property::get_from(cx, e, name).unwrap();
+            assert_eq!(crate::string::to_rust_string(n), "TypeError");
+        });
+    }
+}

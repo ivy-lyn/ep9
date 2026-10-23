@@ -113,13 +113,35 @@ pub(crate) fn create(cx: &mut Cx, fp: *mut u64, pc: *const u8, mapped: bool) -> 
         // {[[Get]]: %ThrowTypeError%, [[Set]]: %ThrowTypeError%, e: false, c: false}. A realm
         // without %ThrowTypeError% (none makes it before VM-ARGS step 2) gets no `callee`:
         // an accessor with undefined halves would let tests of %ThrowTypeError% pass falsely.
-        let t = builtins::intrinsic(rt, IntrinsicId::ThrowTypeError);
-        if kind::is_callable(t) {
+        if let Some(t) = throw_type_error(rt) {
             let pair = accessor::new_pair(rt, t, t);
             props::own_add(rt, o, callee_key, pair, attr::ACCESSOR);
         }
     }
     o
+}
+
+/// The current realm's %ThrowTypeError% (§10.2.4.1), or `None` before a table makes it. On
+/// the first use in a realm it gets the attributes the spec gives it: `length` and `name`
+/// {w: false, e: false, c: false} (a table gives a builtin function {c}) and
+/// [[Extensible]] false. The strict `callee` accessor is the only way JS code reaches it
+/// (no month-3 role builds the Function.prototype `caller` and `arguments` accessors), so
+/// no code sees it before this runs. GC point (the dictionary move of the redefinitions).
+fn throw_type_error(rt: &Runtime) -> Option<u64> {
+    let t = builtins::intrinsic(rt, IntrinsicId::ThrowTypeError);
+    if !kind::is_callable(t) {
+        return None;
+    }
+    if property::is_extensible(t) {
+        for a in [Atom::Length, Atom::Name] {
+            let key = rt.atom(a);
+            if let Some((v, _)) = props::own_get(t, key) {
+                props::own_define(rt, t, key, v, 0);
+            }
+        }
+        property::prevent_extensions(rt, t);
+    }
+    Some(t)
 }
 
 /// The parameter map of a mapped arguments object for `argc` arguments: for index
