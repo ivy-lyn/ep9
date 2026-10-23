@@ -19,8 +19,10 @@
 #                      cgoto.c built with zig cc 0.17.0 (H15-Q3);
 #                      Spike B structural gate (checks (a)-(h));
 #                      Spike B placement (b) gate (gate.sh b; aarch64 and x86-64);
-#                      SP-Unit gate (gate.sh unit; not on windows-x64 yet);
-#                      Spike B Win64 unwind (windows-x64; tests/win64_unwind.rs)
+#                      SP-Unit gate (gate.sh unit; 4 targets);
+#                      Spike B Win64 unwind (windows-x64; tests/win64_unwind.rs);
+#                      SP-Unit Win64 unwind (windows-x64; tests/win64_unit.rs);
+#                      SP-Dispatch Zen 3 branchy report (linux-x64, windows-x64; report only, H15-Q2)
 #   miri ............. Miri on ep9_value, ep9_heap and ep9_math      (Linux x64)
 #   dep-guards ....... cargo tree / metadata guards; cargo deny      (Linux x64)
 #   perf-ci-v0 ....... cachegrind instruction counts of 7 workloads  (Linux x64)

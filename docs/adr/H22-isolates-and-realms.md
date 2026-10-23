@@ -32,7 +32,7 @@ Isolate = one heap, one thread at a time; N realms; workers are isolates; only S
    SAB backing stores: off heap, shared (H25)
 ```
 
-**Facts (as built, `dabc38a`).**
+**Facts (as built; first written at `dabc38a`, rows updated through M0 month 3 P1 (REALMS), all checked at `cbae45d` by review row 1).**
 
 | Fact | Where |
 |---|---|
@@ -60,7 +60,7 @@ Isolate = one heap, one thread at a time; N realms; workers are isolates; only S
 ## Consequences
 
 - **Gains.** No cross-thread barrier or safepoint (H11 keeps one barrier). The CSS range check rejects every cell of another isolate. Dropping an isolate releases its whole cage.
-- **Costs.** Each isolate reserves 64 GiB + 128 MiB of address space by default. At most 1,926 default cages fit below 2^47 (17 slots of 4 GiB each), fewer when other mappings take slots. Workers copy data, except SAB memory.
+- **Costs.** Each isolate reserves 64 GiB of address space by default, plus 128 MiB once per process for the code range (H07). At most 2,046 default cages fit below 2^47 (H07 Costs), fewer when the code range or other mappings take slots. Workers copy data, except SAB memory.
 - **Follow-ups.** The process code range (H7, before Spike B). A smaller cage for workers (H22-Q8, M3). Realms are built (M0 month 3, H22-Q3). The realm of a promise job is settled for one job only (X-REALM3): the Job of NewPromiseResolveThenableJob runs in GetFunctionRealm(then) (§27.2.2.2). The reaction-job part stays open (X-R2-1). The realm of a reaction job is GetFunctionRealm(handler) (§27.2.2.1), but ep9 runs the job in the realm that is current at the checkpoint; only its handler and capability calls switch to their own realms. Known gap: an error that a call makes before it enters the callee realm is made in the checkpoint realm. For example, with `vm_stack_slots` 1024, a bound handler of another realm with 1,100 bound arguments rejects with a RangeError of the checkpoint realm: `push_bound_args` (from `call::call_with`) throws before `realm::enter_realm_of`. Node 24 gives the RangeError of the handler realm. The code fix has a later owner.
 
 ## Evidence
@@ -120,6 +120,7 @@ Isolate = one heap, one thread at a time; N realms; workers are isolates; only S
 | 2026-10-23 | clarify (as built) | H22-Q3, the Follow-ups and the Validation line after the M3-P1 fix round 2 (fix2-realm): a template object belongs to the realm that made it (`realmf::TEMPLATES`, `realm::add_template`) and `Runtime::templates` holds it weakly, so a dropped realm is collected (X-REALM2); the Job of NewPromiseResolveThenableJob runs in GetFunctionRealm(then) and is a call path that switches (X-REALM3), so that job's part of the promise-job realm item of the Follow-ups is closed (the reaction-job part stays open: an error made before the call enters the callee realm, for example a stack overflow while bound arguments are pushed, is made in the checkpoint realm; X-R2-1); `tests/realm.rs` has 7 tests, and `realms_are_made_used_and_dropped` also drops a realm that made a template object. No Decision or Rules row changes; H22 is Draft, so the author approves | M3-P1 docs fixer |
 | 2026-10-23 | clarify | New `## Review record` section (README §3.1; batch B5a, V8-A17) with rows 1 and 4 by M3-P2 ACCEPT-6. Rows 2 and 3 are placeholders for the orchestrator's Codex run and M3-P3 ACCEPT-7. Row 1 lists two fixes (R1, R2) for the owner and states the reaction-job realm gap (X-R2-1) as open; no text outside the record changes, and no check changes | M3-P2 ACCEPT-6 |
 | 2026-10-23 | fill | H22-Q3: the module map is per realm, in the realm's `[[HostDefined]]` field (M3-P2 MODULE, `Cx::run_module`). The field was reserved; no other check changes | M3-P2 MODULE agent (step 2) |
+| 2026-10-23 | clarify | Review row 1 findings R1 and R2 (M3-P2 ACCEPT-6; fixer items 2-3). R1, Costs: the 128 MiB code range is reserved once per process, not per isolate (H07 P1-CODE-RANGE), and the cage count is the H07 count (2,046; the old text said 1,926 with 17 blocked slots). R2: the Facts heading named only `dabc38a`, but its rows were updated through M3-P1; it now names the first commit, the last phase that changed the rows and the commit at which review row 1 checked them. Text only; no check changes. The Review record section is not changed here (ACCEPT-6 step 2 writes its addendum) | M3-P2 integration fixer (docs) |
 
 ## Review record
 

@@ -6,7 +6,7 @@
 | Fix by | M0 |
 | Freeze point | M1 exit |
 | Origin | v1#8; plan status U (unchanged) |
-| Crates | `ep9_heap` (hash storage, finalizers), `ep9_vm` (identity hash users: Map, Set, WeakMap), `ep9_unit` and `ep9_masm` (no addresses in units) |
+| Crates | `ep9_heap` (the word0 header flag bits, finalizers), `ep9_vm` (the identity hash: an own property under a VM-internal private name, with word0 flag bit 9 `FLAG_HASH_PRESENT`, `ordered_table.rs`; its users Map, Set, WeakMap, WeakSet), `ep9_unit` and `ep9_masm` (no addresses in units) |
 | Owner (plan role) | GC lead |
 | Validated by | No SP-* spike. Lints (M0 wk4), unit writer checks (A2), S3 gate (M8) |
 | Plan sources | [02 §6 H12](../plan/02-architecture.md#6-hard-to-change-decisions-h1-h37), [03 §5](../plan/03-gc.md#5-contract-items-that-exist-from-s0), [03 §1](../plan/03-gc.md#1-answer-to-hybrid-like-v8) |
@@ -96,6 +96,7 @@ Identity hash stored lazily. No raw address escapes. No Rust `Drop` on heap obje
 | 2026-10-23 | clarify | H12-Q1: the M3-P1 interim text (the private name kept on `%Object.prototype%` under the class-fields key, one per realm) is replaced by the as-built place: one private name per isolate, a `SymbolRoots` field made by `symbol::install` (`symbol::identity_hash_key`), as the H12-Q1 text said the integration fixer would do (M3-P1 fix-realm, review finding COLL-1). The Status line names the M3-P1 fill. No rule or check changes; the new test `collections_hash_keys_across_realms` covers Map, Set, WeakMap and WeakSet across 2 realms | M3-P1 integration fixer |
 | 2026-10-23 | clarify | 1 `path:line` reference moved to the code after the M3-P1 merge and the M3-P1 fixer changes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS). No check changes | M3-P1 integration fixer |
 | 2026-10-23 | clarify | New `## Review record` section (README §3.1; batch B5a, V8-A17) with rows 1 and 4 by M3-P2 ACCEPT-6. Rows 2 and 3 are placeholders for the orchestrator's Codex run and M3-P3 ACCEPT-7. Row 1 lists one fix (R1) and two notes for the owner; no text outside the record changes, and no check changes | M3-P2 ACCEPT-6 |
+| 2026-10-23 | clarify | Review row 1 finding R1 (M3-P2 ACCEPT-6; fixer item 4): the Crates line said `ep9_heap` holds the hash storage; as built (M3-P1 B-COLLECTIONS) `ep9_vm` stores the identity hash as an own property and sets word0 flag bit 9, and `ep9_heap` holds only the header with its flag bits. Text only; no check changes | M3-P2 integration fixer (docs) |
 
 ## Review record
 
