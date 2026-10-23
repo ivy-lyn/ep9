@@ -185,9 +185,9 @@ jobs:
         if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
         run: cargo run --release --locked -p ep9_test262 -- exec --feedback-threshold 0 --json test262-exec-eager.json
       # GC-stress (a collection before every allocation, the heap verifier after each) with eager
-      # feedback, against the same expectation file. The 11 tests of the skip list run past the
-      # timeout under GC-stress (8 of them fail without it too; its header says why each one is
-      # there); the run prints "skipped: 11". A verifier error panics: an infrastructure error,
+      # feedback, against the same expectation file. The 21 tests of the skip list run past the
+      # timeout under GC-stress (9 of them fail without it too; its header says why each one is
+      # there); the run prints "skipped: 21". A verifier error panics: an infrastructure error,
       # exit 2 (tools/test262/README.md "exec").
       - name: test262 exec, GC-stress + eager feedback
         if: ${{ !cancelled() && steps.sync.outcome == 'success' && matrix.name == 'linux-x64' }}

@@ -1,8 +1,9 @@
 # ep9-test262 exec --gc-stress: tests that are neither run nor counted (--skip-list).
 # Under `--gc-stress 1 --timeout 60` (a collection before every allocation) each one runs past
-# the timeout, an infrastructure error (exit 2). All but recursion.js,
-# string-upper-lower-mapping.js and toSpliced-dense.js also fail without GC-stress and are
-# listed in every expectations/test262.<triple>.jit.txt (8 of the 11):
+# the timeout, an infrastructure error (exit 2). 9 of the 21 also fail without GC-stress and are
+# listed in every expectations/test262.<triple>.jit.txt: the 8 month-2 tests other than
+# recursion.js, string-upper-lower-mapping.js and toSpliced-dense.js, and two-digit-years.js.
+# Those 3 and the other 9 M3-P1 tests pass without GC-stress:
 # - S7.4_A5.js and S7.4_A6.js: each evals one comment per UTF-16 code unit (since P3, eval
 #   exists) and fails at the first lone surrogate, 0xD800 (EVM-SURROGATE; the shim is M3).
 #   3 s each without GC-stress; alone under it 289 s (S7.4_A5) and 152 s (S7.4_A6), mac a64;
@@ -24,7 +25,19 @@
 # 17% of them in toSpliced (2.9 per call, as toReversed). Alone under it: 62 s per run (125 s
 # for both runs) at host load 18-25, mac a64; a timeout in the x86-64 sandbox run at a8eefa5
 # (M2-P4-GCSKIP-TOSPLICED).
-# Measured at test262 d53ebc8b on aarch64-apple-darwin. Paths are relative to the test262 root.
+# M3-P1 (Date, WeakMap; M3-P1 integration fixer, each file alone, --gc-stress 1
+# --feedback-threshold 0 --timeout 120 --threads 1, mac a64 release, host load 2-9):
+# - the 8 sm/Date/dst-offset-caching-*-of-8.js (B-DATE): each makes about 3M Date objects.
+#   Alone under GC-stress both runs of each pass 120 s (timeout, 241 s wall per file); without
+#   it each passes in 1-2 s wall;
+# - sm/Date/two-digit-years.js (B-DATE): fails anyway (the legacy Date.parse forms are M3
+#   milestone work). Alone under GC-stress its 2 runs take 144.8 s wall (about 72 s each, past
+#   the 60 s timeout); without it 0.1 s;
+# - sm/regress/regress-1507322-deep-weakmap.js (B-COLLECTIONS): a deep WeakMap chain, O(n^2)
+#   under --gc-stress 1. Alone under GC-stress: the hard timeout (245 s, no result); without
+#   it it passes in 0.2 s.
+# Measured at test262 d53ebc8b on aarch64-apple-darwin (the M3-P1 tests: at the M3-P1 fixer
+# head). Paths are relative to the test262 root.
 test/language/comments/S7.4_A5.js
 test/language/comments/S7.4_A6.js
 test/language/expressions/call/tco-call-args.js
@@ -33,6 +46,16 @@ test/language/expressions/call/tco-non-eval-function.js
 test/language/expressions/call/tco-non-eval-global.js
 test/language/expressions/call/tco-non-eval-with.js
 test/staging/sm/Array/toSpliced-dense.js
+test/staging/sm/Date/dst-offset-caching-1-of-8.js
+test/staging/sm/Date/dst-offset-caching-2-of-8.js
+test/staging/sm/Date/dst-offset-caching-3-of-8.js
+test/staging/sm/Date/dst-offset-caching-4-of-8.js
+test/staging/sm/Date/dst-offset-caching-5-of-8.js
+test/staging/sm/Date/dst-offset-caching-6-of-8.js
+test/staging/sm/Date/dst-offset-caching-7-of-8.js
+test/staging/sm/Date/dst-offset-caching-8-of-8.js
+test/staging/sm/Date/two-digit-years.js
 test/staging/sm/Proxy/ownkeys-linear.js
 test/staging/sm/String/string-upper-lower-mapping.js
 test/staging/sm/extensions/recursion.js
+test/staging/sm/regress/regress-1507322-deep-weakmap.js
