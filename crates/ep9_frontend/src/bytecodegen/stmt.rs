@@ -589,10 +589,11 @@ impl<'a> FnGen<'a, '_> {
     /// ForIn/OfBodyEvaluation with iteratorKind async; M3-P2 ASYNCGEN), in an async function
     /// or an async generator body: the `for-of` loop with GetIterator(rhs, async)
     /// (`async_gen.rs` AGF5), an Await of each `next` result, and AsyncIteratorClose on an
-    /// abrupt exit. At a module top level it stays unsupported (M3-P3 IMPORT-TLA).
+    /// abrupt exit. At a module top level it is top-level await, so it stays unsupported with
+    /// the cause of a top-level `await` ("await", AF6; M3-P3 IMPORT-TLA; review RV-P2-AG1).
     fn for_await_of(&mut self, f: &'a ForOfStatement<'a>, labels: Vec<&'a str>) -> Gen {
         if self.await_target().is_none() {
-            return self.unsupported("for await", f.span);
+            return self.unsupported("await", f.span);
         }
         self.stmt_pos(f.span);
         let at = f.span.start;

@@ -639,13 +639,6 @@ fn export_value(cx: &mut Cx, o: u64, i: usize) -> Res<u64> {
     Ok(v)
 }
 
-/// Test builds: the ReferenceError ("probe") of `get` and `own_property` while
-/// `probe::set_throw(true)` (the M3-P0 routing tests in `tests/layout3.rs` use it).
-#[cfg(test)]
-fn probe_throw(cx: &mut Cx) -> ep9_value::Throw {
-    throw_error(cx, ErrorKind::ReferenceError, "probe")
-}
-
 /// The attributes of an export: writable, enumerable, not configurable (§10.4.6.5 step 6).
 const EXPORT_ATTRS: i32 = attr::WRITABLE | attr::ENUMERABLE;
 
@@ -656,10 +649,6 @@ const EXPORT_ATTRS: i32 = attr::WRITABLE | attr::ENUMERABLE;
 /// @@toStringTag, or nothing: the prototype is null).
 pub(crate) fn get(cx: &mut Cx, o: u64, key: u64, how: Probe) -> Option<Res<u64>> {
     probe::note("module get");
-    #[cfg(test)]
-    if probe::throwing() {
-        return Some(Err(probe_throw(cx)));
-    }
     let i = export_index(o, key, how)?;
     Some(export_value(cx, o, i))
 }
@@ -668,10 +657,6 @@ pub(crate) fn get(cx: &mut Cx, o: u64, key: u64, how: Probe) -> Option<Res<u64>>
 /// binding in its TDZ (step 4 reads it).
 pub(crate) fn own_property(cx: &mut Cx, o: u64, key: u64, how: Probe) -> Option<Res<(u64, i32)>> {
     probe::note("module own_property");
-    #[cfg(test)]
-    if probe::throwing() {
-        return Some(Err(probe_throw(cx)));
-    }
     let i = export_index(o, key, how)?;
     Some(export_value(cx, o, i).map(|v| (v, EXPORT_ATTRS)))
 }

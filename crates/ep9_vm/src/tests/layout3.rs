@@ -13,10 +13,10 @@ use super::{Asm, Run, config, isolate, meta, on_big_stack, run_in, take_output, 
 use crate::builtins::{self, BuiltinId, IntrinsicId, intrinsic};
 use crate::descriptor::Desc;
 use crate::exotic::probe;
-use crate::frame::{NULL, UNDEFINED, int32_bits};
+use crate::frame::{UNDEFINED, int32_bits};
 use crate::object::{self, argsf, attr, cell, fun, modf, nsf, obj, realmf};
 use crate::ordered_table::{self, MAP_WIDTH, SET_WIDTH, otf};
-use crate::runtime::{Atom, Root, Runtime, val};
+use crate::runtime::{Root, Runtime, val};
 use crate::{Dispatch, Isolate, arguments, kinds, module, property, props, shape, versions};
 
 // ---- versions, kinds, fixed fields ------------------------------------------------------------
@@ -219,8 +219,12 @@ fn every_function_has_the_isolate_realm() {
                     id.name()
                 );
             }
-            // Ids 45-63 are declared, not made (P0-D3).
-            for id in &IntrinsicId::ALL[45..] {
+            // Ids 45-63 are declared (P0-D3); the VM table makes 45-49 (M3-P2 ASYNCGEN); the
+            // others are not made without an embedder table.
+            for id in &IntrinsicId::ALL[45..50] {
+                assert!(crate::kinds::is_object(intrinsic(rt, *id)), "{}", id.name());
+            }
+            for id in &IntrinsicId::ALL[50..] {
                 assert_eq!(intrinsic(rt, *id), UNDEFINED, "{}", id.name());
             }
             iso.collect_garbage();
@@ -433,8 +437,10 @@ fn hooks_hit(iso: &mut Isolate, o: u64) -> Vec<&'static str> {
 }
 
 /// Each hook (exotic.rs: get, own_property, own_attrs; property.rs: set, define, delete, own
-/// keys) sends an ARGUMENTS cell to arguments.rs and a MODULE_NAMESPACE cell to module.rs;
-/// the stubs answer "ordinary", so the ordinary results stay. A plain object reaches none.
+/// keys) on an ARGUMENTS cell with no elements gives the ordinary results. The arguments.rs
+/// hooks are built (M3-P2 VM-ARGS; `tests/arguments.rs`) and note nothing. A plain object
+/// reaches no hook either. (A MODULE_NAMESPACE cell reaches module.rs, which gives the
+/// §10.4.6 answers since M3-P2 MODULE: `tests::module`.)
 #[test]
 fn each_hook_sends_the_routed_kinds_to_their_stubs() {
     on_big_stack(|| {
@@ -442,38 +448,12 @@ fn each_hook_sends_the_routed_kinds_to_their_stubs() {
         let rt: &Runtime = &iso.rt;
         let a = arguments::new_arguments_object(rt, rt.root(Root::ObjectPrototype));
         let ha = rt.heap.new_global(val(a));
-        let m = module::new_module_record(rt);
-        let names = object::new_list(rt, 0, UNDEFINED);
-        let ns = module::new_namespace(rt, m, names);
-        let hn = rt.heap.new_global(val(ns));
         let plain = object::new_plain_object(rt);
         let hp = rt.heap.new_global(val(plain));
-        assert_eq!(object::proto_of(ns), NULL);
-        for (o, kind) in [(a, "arguments"), (ns, "module")] {
-            let hits = hooks_hit(&mut iso, o);
-            for hook in [
-                "get",
-                "own_property",
-                "own_attrs",
-                "set",
-                "define_own_property",
-                "delete",
-                "own_property_keys",
-            ] {
-                let want = format!("{kind} {hook}");
-                assert!(hits.iter().any(|h| *h == want), "{want} not in {hits:?}");
-            }
-            assert!(hits.iter().all(|h| h.starts_with(kind)), "{hits:?}");
-            let defines = format!("{kind} define_own_property");
-            let n = hits.iter().filter(|h| **h == defines).count();
-            assert_eq!(
-                n, 2,
-                "define_own_property and define reach the hook: {hits:?}"
-            );
-        }
+        assert_eq!(hooks_hit(&mut iso, a), Vec::<&str>::new());
         assert_eq!(hooks_hit(&mut iso, plain), Vec::<&str>::new());
         let rt: &Runtime = &iso.rt;
-        for h in [ha, hn, hp] {
+        for h in [ha, hp] {
             rt.heap.drop_global(h);
         }
         iso.collect_garbage();
@@ -482,19 +462,10 @@ fn each_hook_sends_the_routed_kinds_to_their_stubs() {
 }
 
 /// A new routed object of `kind` ("arguments": an ARGUMENTS object that inherits from
-/// %Object.prototype%; "module": a MODULE_NAMESPACE object with no exports).
+/// %Object.prototype%).
 fn new_routed(rt: &Runtime, kind: &str) -> u64 {
-    if kind == "arguments" {
-        return arguments::new_arguments_object(rt, rt.root(Root::ObjectPrototype));
-    }
-    let m = module::new_module_record(rt);
-    let names = object::new_list(rt, 0, UNDEFINED);
-    module::new_namespace(rt, m, names)
-}
-
-/// True if `hits` holds the hook `want`.
-fn hit(hits: &[&str], want: &str) -> bool {
-    hits.contains(&want)
+    assert_eq!(kind, "arguments");
+    arguments::new_arguments_object(rt, rt.root(Root::ObjectPrototype))
 }
 
 /// CX-VM1, CX-VM2, VF-FORIN: the integer-index paths (`get_index`, `has_index`,
@@ -502,10 +473,12 @@ fn hit(hits: &[&str], want: &str) -> bool {
 /// parent.[[Set]]) and `for-in` (§14.7.5.9: [[OwnPropertyKeys]]) reach the routed hooks, on
 /// the routed object and on a child that inherits from it. A routed object that becomes a
 /// prototype sets `shape::proto_index_keys`: its index keys are not in its storage. A plain
-/// object and its child reach no hook and leave the flag off.
+/// object and its child reach no hook and leave the flag off. The arguments.rs hooks are
+/// built (M3-P2 VM-ARGS) and note nothing, so no path notes a hook. (A namespace:
+/// `tests::module` `index_paths_set_walk_and_for_in_reach_the_namespace`.)
 #[test]
 fn index_paths_set_walk_and_for_in_reach_the_routed_hooks() {
-    for kind in ["arguments", "module", "plain"] {
+    for kind in ["arguments", "plain"] {
         on_big_stack(move || {
             let mut iso = isolate(config(Dispatch::DEFAULT, true));
             let cx: &mut crate::interp::Cx = &mut iso.cx;
@@ -518,14 +491,11 @@ fn index_paths_set_walk_and_for_in_reach_the_routed_hooks() {
                 object::new_plain_object(rt)
             };
             let ho = rt.heap.new_global(val(o));
-            // The hooks that a path on `o` or its child must hit (none for a plain object).
+            // No path on `o` or its child notes a hook: the arguments.rs hooks are built and a
+            // plain object reaches none. `hook` names the hook the path reaches on a routed
+            // object.
             let check = |hits: Vec<&'static str>, hook: &str, what: &str| {
-                if routed {
-                    let want = format!("{kind} {hook}");
-                    assert!(hit(&hits, &want), "{what}: {want} not in {hits:?}");
-                } else {
-                    assert_eq!(hits, Vec::<&str>::new(), "{what}");
-                }
+                assert_eq!(hits, Vec::<&str>::new(), "{what} ({kind} {hook})");
             };
             // CX-VM1: the index paths on the object itself.
             probe::take();
@@ -572,135 +542,10 @@ fn index_paths_set_walk_and_for_in_reach_the_routed_hooks() {
     }
 }
 
-/// Takes the pending exception and checks that it is the module.rs probe's ReferenceError.
-fn take_probe_error(cx: &mut crate::interp::Cx, what: &str) {
-    let rt = cx.rt();
-    let e = rt.take_pending();
-    assert!(object::is_object(e), "{what}: an error is pending");
-    let name = crate::atoms::intern_str(rt, "name");
-    let n = property::get_from(cx, e, name).unwrap();
-    let message = crate::atoms::intern_str(cx.rt(), "message");
-    let m = property::get_from(cx, e, message).unwrap();
-    assert_eq!(
-        (
-            crate::string::to_rust_string(n),
-            crate::string::to_rust_string(m)
-        ),
-        ("ReferenceError".to_string(), "probe".to_string()),
-        "{what}"
-    );
-}
-
-/// VF-TDZ: the routed value hooks can throw. A namespace `[[Get]]` and `[[GetOwnProperty]]`
-/// of an uninitialized binding throw a ReferenceError (§10.4.6.8, §10.4.6.5); `[[Get]]`,
-/// `[[GetOwnProperty]]`, the builtin ABI's HasOwnProperty and `for-in` pass the throw on.
-/// The module.rs stubs throw while `probe::set_throw(true)` (test builds only).
-#[test]
-fn routed_value_hooks_can_throw() {
-    for stress in [false, true] {
-        on_big_stack(move || {
-            let mut iso = isolate(config(Dispatch::DEFAULT, stress));
-            let cx: &mut crate::interp::Cx = &mut iso.cx;
-            let rt: &Runtime = &iso.rt;
-            let ns = new_routed(rt, "module");
-            let hn = rt.heap.new_global(val(ns));
-            let x = crate::atoms::intern_str(rt, "x");
-            // `x` as an ordinary property (the define stub answers "ordinary"), so the
-            // ordinary `[[OwnPropertyKeys]]` lists it for for-in.
-            let desc = Desc::data(int32_bits(1), attr::DEFAULT);
-            assert!(property::define_own_property(cx, ns, x, desc).unwrap());
-            probe::set_throw(true);
-            assert!(property::get(cx, ns, x).is_err());
-            take_probe_error(cx, "[[Get]]");
-            assert!(property::get_own_property(cx, ns, x).is_err());
-            take_probe_error(cx, "[[GetOwnProperty]]");
-            {
-                let mut abi = crate::Cx::new(cx);
-                let o: crate::Local<'_, crate::JsObject> = crate::Local::from_bits(ns);
-                assert!(abi.has_own_property(o, "x").is_err());
-            }
-            take_probe_error(cx, "HasOwnProperty (builtin ABI)");
-            assert!(property::for_in_keys(cx, ns).is_err());
-            take_probe_error(cx, "for-in");
-            // `get_data_from` runs no JS and cannot throw: it does not ask a routed hook, so
-            // it reads the ordinary `x` (X-CODE1).
-            probe::take();
-            assert_eq!(property::get_data_from(cx, ns, x), Some(int32_bits(1)));
-            assert_eq!(rt.pending(), 0, "get_data_from leaves nothing pending");
-            assert!(
-                probe::take().is_empty(),
-                "get_data_from asks no routed hook"
-            );
-            probe::set_throw(false);
-            assert_eq!(property::get(cx, ns, x).unwrap(), int32_bits(1));
-            assert!(property::get_own_property(cx, ns, x).unwrap().is_some());
-            {
-                let mut abi = crate::Cx::new(cx);
-                let o: crate::Local<'_, crate::JsObject> = crate::Local::from_bits(ns);
-                assert!(abi.has_own_property(o, "x").unwrap());
-            }
-            rt.heap.drop_global(hn);
-            iso.collect_garbage();
-            iso.verify_heap().unwrap();
-        });
-    }
-}
-
-/// X-CODE1: the engine's diagnostic reads (an error's "Name: message" header, made for every
-/// new error) do not ask a routed hook. A namespace on the ReferenceError chain whose `[[Get]]`
-/// throws would otherwise make a new ReferenceError whose header asks the hook again: a
-/// stack overflow. Only the spec `[[Get]]` asks the hook; the header reads the namespace's
-/// ordinary storage.
-#[test]
-fn diagnostic_reads_skip_routed_hooks() {
-    for stress in [false, true] {
-        on_big_stack(move || {
-            let mut iso = isolate(config(Dispatch::DEFAULT, stress));
-            let cx: &mut crate::interp::Cx = &mut iso.cx;
-            let rt: &Runtime = &iso.rt;
-            let ns = new_routed(rt, "module");
-            let hn = rt.heap.new_global(val(ns));
-            let text = crate::atoms::intern_str(rt, "NS");
-            let ht = rt.heap.new_global(val(text));
-            let name = rt.atom(Atom::Name);
-            // `name` as an ordinary property of the namespace (the define stub answers
-            // "ordinary").
-            let desc = Desc::data(text, attr::DEFAULT);
-            assert!(property::define_own_property(cx, ns, name, desc).unwrap());
-            // ReferenceError.prototype has no own `name`; its chain reaches the namespace.
-            let rep = rt.root(Root::ReferenceErrorPrototype);
-            assert!(property::delete(cx, rep, name, true).unwrap());
-            assert!(property::set_prototype_of(rt, rep, ns));
-            probe::set_throw(true);
-            probe::take();
-            let x = crate::atoms::intern_str(rt, "x");
-            assert!(property::get(cx, ns, x).is_err());
-            assert_eq!(
-                probe::take(),
-                ["module get"],
-                "only the spec [[Get]] asks the hook"
-            );
-            let e = rt.take_pending();
-            assert!(object::is_object(e));
-            assert_eq!(crate::error::error_header(cx, e), "NS: probe");
-            assert_eq!(rt.pending(), 0, "error_header leaves nothing pending");
-            let (stack, _) = props::own_get(e, rt.atom(Atom::Stack)).expect("an own stack");
-            let stack = crate::string::to_rust_string(stack);
-            assert!(stack.starts_with("NS: probe"), "{stack}");
-            assert!(probe::take().is_empty(), "the header asks no routed hook");
-            probe::set_throw(false);
-            assert!(property::set_prototype_of(
-                rt,
-                rep,
-                rt.root(Root::ErrorPrototype)
-            ));
-            rt.heap.drop_global(ht);
-            rt.heap.drop_global(hn);
-            iso.collect_garbage();
-            iso.verify_heap().unwrap();
-        });
-    }
-}
+// VF-TDZ and X-CODE1 (a namespace binding in its TDZ throws through every path; an error
+// header asks no namespace hook) are tests of real namespaces since M3-P2 MODULE:
+// `tests::module` `a_binding_in_its_tdz_throws_through_every_path` and
+// `error_headers_skip_namespace_hooks`.
 
 /// Runs `make` under every dispatch, with and without GC stress, on its own thread; returns
 /// each run with the hooks it hit.
@@ -722,7 +567,8 @@ fn runs_with_hooks(
 }
 
 /// V8-A15: `CreateMappedArguments` reaches `arguments::create` with `mapped` true,
-/// `CreateUnmappedArguments` with false; both still make today's arguments array.
+/// `CreateUnmappedArguments` with false; both make an arguments object (M3-P2 VM-ARGS,
+/// `tests/arguments.rs`), and no routed hook notes a call.
 #[test]
 fn arguments_opcodes_reach_arguments_create() {
     fn make() -> VerifiedUnit {
@@ -764,11 +610,7 @@ fn arguments_opcodes_reach_arguments_create() {
     }
     for (label, r, hits) in runs_with_hooks(make) {
         assert_eq!(r.result, Ok("32".to_string()), "{label}");
-        assert_eq!(
-            hits,
-            ["arguments create unmapped", "arguments create mapped"],
-            "{label}"
-        );
+        assert_eq!(hits, Vec::<&str>::new(), "{label}");
     }
 }
 
@@ -802,26 +644,17 @@ fn module_variable_opcodes_reach_slow_module() {
     }
 }
 
-/// P0-VM3 step 2 (task 8): `CallRuntime` of ids 36-43, 46 and 47 reaches its stub in
-/// `slow/{async_gen, module, eval}.rs`, which throws today's "not implemented" error with the
-/// id's name (the text of the old catch-all arm). Ids 32-35 are built (M3-P1 ASYNC,
-/// `slow/async_fn.rs`; `tests/async_fn.rs` checks their routing).
+/// P0-VM3 step 2 (task 8): `CallRuntime` of id 43 (`DynamicImport`) reaches its stub in
+/// `slow/module.rs`, which throws today's "not implemented" error with the id's name (the
+/// text of the old catch-all arm). The other ABI 5 ids are built: 32-35 (M3-P1 ASYNC,
+/// `slow/async_fn.rs`; `tests/async_fn.rs`), 36-41 (M3-P2 ASYNCGEN, `slow/async_gen.rs`;
+/// `tests/async_gen.rs`), 42 `GetImportMeta` (M3-P2 MODULE;
+/// `tests::module::script_code_has_no_module`) and 46-47 (M3-P2 VM-ARGS, `slow/eval.rs`).
 #[test]
 fn abi5_runtime_ids_reach_their_stubs() {
-    const ROUTED: [(RuntimeId, &str); 10] = [
-        (RuntimeId::AsyncGeneratorEnter, "async_gen"),
-        (RuntimeId::AsyncGeneratorAwait, "async_gen"),
-        (RuntimeId::AsyncGeneratorYield, "async_gen"),
-        (RuntimeId::AsyncGeneratorResolve, "async_gen"),
-        (RuntimeId::AsyncGeneratorReject, "async_gen"),
-        (RuntimeId::CreateAsyncFromSyncIterator, "async_gen"),
-        (RuntimeId::GetImportMeta, "module"),
-        (RuntimeId::DynamicImport, "module"),
-        (RuntimeId::DeclareEvalAnnexBFunction, "eval"),
-        (RuntimeId::StoreEvalAnnexBFunction, "eval"),
-    ];
+    const ROUTED: [(RuntimeId, &str); 1] = [(RuntimeId::DynamicImport, "module")];
     let ids: Vec<u16> = ROUTED.iter().map(|&(id, _)| id as u16).collect();
-    assert_eq!(ids, [36, 37, 38, 39, 40, 41, 42, 43, 46, 47]);
+    assert_eq!(ids, [43]);
     for (id, file) in ROUTED {
         let info = id.info();
         let argc = info.arity.expect("fixed arity");
