@@ -902,8 +902,10 @@ pub(crate) fn array_set_length(rt: &Runtime, a: u64, len: u32) -> bool {
 /// `length` and `name` from the FunctionInfo, {w: false, e: false, c: true} (§10.2.9
 /// SetFunctionName, §10.2.10 SetFunctionLength), in its 2 in-object slots. `prototype`
 /// stays lazy (`exotic.rs`). Its `[[Prototype]]` is %Function.prototype%, or
-/// %GeneratorFunction.prototype% for a generator function (§15.5.3). Its `[[Realm]]` is the
-/// current realm (the `Root::Realm` root; OBJECT_LAYOUT 3). GC point.
+/// %GeneratorFunction.prototype% for a generator function (§15.5.3),
+/// %AsyncFunction.prototype% for an async function (§15.8.3) and
+/// %AsyncGeneratorFunction.prototype% for an async generator function (§15.6.3). Its
+/// `[[Realm]]` is the current realm (the `Root::Realm` root; OBJECT_LAYOUT 3). GC point.
 pub(crate) fn new_function(rt: &Runtime, info: *const FunctionInfo, context: u64) -> u64 {
     // SAFETY: function infos outlive the isolate's cells (units and host infos are never
     // freed while the isolate lives).
@@ -911,12 +913,16 @@ pub(crate) fn new_function(rt: &Runtime, info: *const FunctionInfo, context: u64
     // GC points first (the name atom of a host function, the shape); the values live in
     // Rust locals (CSS).
     let name = function_name(rt, fi);
-    let s = if fi.is_generator() {
+    // One flag test on the common path; the generator and async kinds take their own shape.
+    use crate::function_info::fi_flags;
+    let s = if fi.flags & (fi_flags::GENERATOR | fi_flags::ASYNC | fi_flags::ASYNC_GENERATOR) == 0 {
+        shape::function_shape(rt)
+    } else if fi.is_generator() {
         shape::generator_function_shape(rt)
     } else if fi.is_async_function() {
         shape::async_function_shape(rt)
     } else {
-        shape::function_shape(rt)
+        shape::async_generator_function_shape(rt)
     };
     let f = alloc_with_shape(rt, kind::FUNCTION, s, fun::CAPACITY);
     init(f, fun::INFO, native_of(info));
