@@ -77,7 +77,7 @@ Every word in `[stack base, top)` is a valid Value. The GC scans that slice prec
 | Rule | Check | From |
 |---|---|---|
 | Header slots, register mapping and native words follow the layout above | `frame::tests::*`, `interp::dsl::tests::register_mapping_follows_the_frame_layout` | M0 wk3 |
-| JS→JS calls and returns in one realm do not grow the native stack; a cross-realm JS→JS call nests one Rust level and is bounded by the native-stack check (catchable RangeError) | `tests::interp::js_calls_do_not_recurse_in_rust` (same realm) (same native sp at JS depth 0 and 100 000 on a 512 KiB thread, every dispatch in release) | M0 wk3 |
+| JS→JS calls and returns in one realm do not grow the native stack; a cross-realm JS→JS call nests one Rust level and is bounded by the native-stack check (catchable RangeError) | `tests::interp::js_calls_do_not_recurse_in_rust` (same realm; same native sp at JS depth 0 and 100 000 on a 512 KiB thread, every dispatch in release) | M0 wk3 |
 | VM-stack and native-stack overflow are catchable RangeErrors | `tests::exceptions::{vm,native}_stack_overflow_is_a_catchable_range_error` | M0 wk3 |
 | Handler tables catch across frames; uncaught errors carry file:line:col (UTF-16) and a stack | `tests::exceptions::*` | M0 wk3 |
 | The VM stack is a precise root; GC stress + verifier pass | `tests::gc::*`; `run_all` runs every program under stress | M0 wk3 |
