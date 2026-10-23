@@ -174,8 +174,9 @@ impl TerminateHandle {
 /// queues it, and the isolate runs it at its next interrupt poll, where [`TerminateHandle`] stops
 /// a script (loop back edges, function entries, builtin loops; JIT code polls the same way). A
 /// poll comes once per interrupt budget (10,000 back edges, bytecode calls or other budget units)
-/// while JS runs; a host-function call takes no budget unit, so code that only calls host
-/// functions does not poll. An idle isolate runs the callback when it next runs JS and polls.
+/// while JS runs; a call of a host function that is not bound takes no budget unit (a call of a
+/// bound function takes one unit per bound level), so code that only calls host functions does
+/// not poll. An idle isolate runs the callback when it next runs JS and polls.
 ///
 /// The callback gets no `Cx`: it runs no JS and allocates nothing on the JS heap, so it is safe at
 /// any poll. It may call [`TerminateHandle::terminate`] (the same poll then stops the script) or

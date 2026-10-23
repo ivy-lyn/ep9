@@ -32,8 +32,9 @@
 //! as +0, one NaN), so SameValueZero is a bits compare for numbers; a string compares and
 //! hashes by content (the keyed string hash); a symbol uses its identity hash (+16); an object
 //! uses its identity hash (H12-Q1, [`identity_hash`]): a 30-bit value from
-//! `symbol::next_identity_hash`, stored on first use as an own property under a VM-internal
-//! private name (attributes {}; `[[OwnPropertyKeys]]` and for-in never list a private key),
+//! `symbol::next_identity_hash`, stored on first use as an own property under the
+//! isolate's VM-internal private name (`symbol::identity_hash_key`, one for all realms;
+//! attributes {}; `[[OwnPropertyKeys]]` and for-in never list a private key),
 //! with word0 flag bit 9 (`FLAG_HASH_PRESENT`) set, so a lookup of an object that was never a
 //! key reads no property. No hash input is an address (H12-Q2).
 //!
@@ -55,7 +56,7 @@ use crate::frame::{HOLE, UNDEFINED, int32_bits};
 use crate::kinds::{self as kind, is_object, is_string, is_symbol};
 use crate::object::{self, cell, init, rd, rd_i32, trace_from_8, wr};
 use crate::props;
-use crate::runtime::{Root, Runtime, val};
+use crate::runtime::{Runtime, val};
 use crate::string;
 use crate::symbol;
 
@@ -289,21 +290,12 @@ fn mix(x: u64) -> u32 {
     z as u32
 }
 
-/// The private name under which an object keeps its identity hash (H12-Q1).
-///
-/// M3-P1 interim: `symbol.rs` (REALMS in M3-P1) has no root for it yet, so the name lives on
-/// `%Object.prototype%` under the class-fields key (a private name that is read only from
-/// class constructors, `interp/slow/class_fields.rs`). The integration fixer moves it to a
-/// `SymbolRoots` field made by `symbol::install` (one name per isolate, as N realms need).
-/// GC point (the first call makes the name).
+/// The private name under which an object keeps its identity hash (H12-Q1): one per isolate
+/// (`symbol::identity_hash_key`, made by `symbol::install`), so an object has the same hash
+/// in every realm. Not a GC point.
 fn hash_key(rt: &Runtime) -> u64 {
-    if let Some(k) = hash_key_if_made(rt) {
-        return k;
-    }
-    // GC points: the holder and the class-fields key are roots.
-    let k = symbol::new_private(rt, UNDEFINED);
-    let holder = rt.root(Root::ObjectPrototype);
-    props::own_add(rt, holder, symbol::class_fields_key(rt), k, 0);
+    let k = symbol::identity_hash_key(rt);
+    debug_assert!(is_symbol(k), "symbol::install made the identity-hash key");
     k
 }
 
@@ -321,8 +313,7 @@ fn has_hash(o: u64) -> bool {
 pub(crate) fn identity_hash(rt: &Runtime, o: u64, create: bool) -> Option<u32> {
     debug_assert!(is_object(o));
     if has_hash(o)
-        && let Some(key) = hash_key_if_made(rt)
-        && let Some((h, _)) = props::own_get(o, key)
+        && let Some((h, _)) = props::own_get(o, hash_key(rt))
     {
         return val(h).as_int32().map(|h| h as u32);
     }
@@ -337,12 +328,6 @@ pub(crate) fn identity_hash(rt: &Runtime, o: u64, create: bool) -> Option<u32> {
     let header = unsafe { cell(o).header() };
     header.set_flags(header.flags() | kind::FLAG_HASH_PRESENT);
     Some(h)
-}
-
-/// The private hash name if it was made (not a GC point).
-fn hash_key_if_made(rt: &Runtime) -> Option<u64> {
-    let holder = rt.root(Root::ObjectPrototype);
-    props::own_get(holder, symbol::class_fields_key(rt)).map(|(k, _)| k)
 }
 
 /// The hash of the normalized key `k`; an object without an identity hash gets one only if

@@ -13,7 +13,9 @@
 //! switches to its realm and back (`realm::enter_realm_of`, `realm::leave`): one Rust level per
 //! cross-realm call, and the dispatch continues at the next instruction with its result, as
 //! for a host callee. A host callee switches in `call::call_host`. So a frame pushed here
-//! always runs in the caller's realm, and no return path needs a realm check.
+//! always runs in the caller's realm, and no return path needs a realm check. Spike B: a
+//! native-slotted or (b) callee of another realm runs nested in its realm too
+//! (`native::call_in_its_realm`).
 //!
 //! Spike B (feature `spike-native` only, `native.rs`): a call of a FUNCTION with a Baseline or
 //! AotBaseline slot (no construct, no spread, not host, not a class constructor) is entered
@@ -238,6 +240,20 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
         // A function of another realm: a call from Rust in its realm (one nested run; its
         // class-constructor TypeError is that realm's, §10.2.1 step 2). The arguments stay
         // rooted in the caller's registers (and `args` for a spread or bound call, as below).
+        // Spike B: a native-slotted or (b) callee is entered natively, in its realm.
+        #[cfg(feature = "spike-native")]
+        // SAFETY: `fp` is the live top frame (bytecode runs with no scratch area), and the
+        // reader reads `args`, which the push copies before any GC point.
+        if let Some(r) = unsafe {
+            crate::native::call_in_its_realm(cx, fp, s.next_pc, callee, this, argc, |i| {
+                args[i as usize]
+            })
+        } {
+            let r = r?;
+            cx.out_fp = fp;
+            cx.out_pc = s.next_pc;
+            return Ok(r);
+        }
         let r =
             call::call_function_object(cx, callee, this, argc, |i| args[i as usize], UNDEFINED)?;
         cx.out_fp = fp;

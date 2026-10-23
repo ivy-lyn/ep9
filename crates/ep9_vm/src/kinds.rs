@@ -100,7 +100,8 @@ pub(crate) const FLAG_INOBJECT_MASK: u16 = 0x00FF;
 pub(crate) const FLAG_ATOM: u16 = 0x0001;
 /// Objects: the object is a prototype (H17 prototype mode).
 pub(crate) const FLAG_IS_PROTOTYPE: u16 = 0x0100;
-/// Reserved for "hash present" (H12-Q1, M1).
+/// Objects: the object has an identity hash (H12-Q1; set by `ordered_table::identity_hash`
+/// when the object first becomes a Map, Set, WeakMap or WeakSet key).
 pub(crate) const FLAG_HASH_PRESENT: u16 = 0x0200;
 
 /// The cell test on raw bits (JSC `isCell`, H6): no number tag and no immediate tag bit.

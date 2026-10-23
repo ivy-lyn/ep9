@@ -197,6 +197,9 @@ mod root {
     /// generator function).
     pub const GENERATOR_FUNCTION_SHAPE: usize = 2;
     pub const COUNT: usize = 3;
+    /// The first function shape cache slot: the slots from here to [`COUNT`] hold a shape
+    /// over a prototype of the current realm (`clear_realm_caches`).
+    pub const FIRST_REALM_CACHE: usize = FUNCTION_SHAPE;
 }
 
 /// The last value of [`ShapeState::proto_epoch`]: it stays there (it never wraps). No IC case
@@ -1219,6 +1222,19 @@ pub(crate) fn generator_function_shape(rt: &Runtime) -> u64 {
         return function_shape(rt);
     }
     cached_function_shape(rt, gfp, root::GENERATOR_FUNCTION_SHAPE)
+}
+
+/// Empties the function shape caches ([`function_shape`], [`generator_function_shape`]): the
+/// realm switch (`realm::switch`) calls it, so a cache holds only a shape of the current realm.
+/// A cache that kept the shape of the last realm that made a function would keep that realm
+/// live (shape -> PROTO_INFO -> its `%Function.prototype%` -> its REALM record) after nothing
+/// else holds it. A hit checks the prototype, so this is not needed for correct prototypes.
+/// Not a GC point.
+pub(crate) fn clear_realm_caches(rt: &Runtime) {
+    for slot in &rt.shapes.roots[root::FIRST_REALM_CACHE..root::COUNT] {
+        // E3: a store into a root takes no barrier.
+        slot.init(Value::UNDEFINED);
+    }
 }
 
 /// The function shape over the prototype `fp` (FUNCTION, 2 slots, `length` and `name`),
