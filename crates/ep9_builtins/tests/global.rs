@@ -117,15 +117,23 @@ fn global_function_key_order() {
     );
 }
 
-/// Error.isError (§20.5.2.1): false for every primitive; length, name, {w, c}, no
-/// [[Construct]]. v0: an object argument throws "not implemented" (no [[ErrorData]] test on
-/// the builtin ABI yet).
+/// Error.isError (§20.5.2.1): true for every object with [[ErrorData]] (each native error,
+/// AggregateError, a subclass instance, an error thrown by the VM; test262
+/// errors-other-realm.js covers another realm),
+/// false for primitives and for objects that only look like errors; length, name, {w, c}, no
+/// [[Construct]].
 #[test]
 fn error_is_error() {
     assert_eq!(
         common::run_both(
             r#"
             print(Error.isError(), Error.isError(undefined), Error.isError(null), Error.isError(1), Error.isError('Error'), Error.isError(true), Error.isError(Symbol()));
+            class E extends TypeError {}
+            var caught; try { null.x; } catch (e) { caught = e; }
+            print([new Error('x'), new TypeError(), RangeError(), new ReferenceError(), new SyntaxError(), new EvalError(), new URIError(), new AggregateError([]), new E(), caught].map(Error.isError).join());
+            var fake = { __proto__: Error.prototype, name: 'Error', message: '' };
+            fake[Symbol.toStringTag] = 'Error';
+            print([fake, Error.prototype, TypeError.prototype, Object.create(new Error()), {}, [], function () {}, Error].map(Error.isError).join());
             var d = Object.getOwnPropertyDescriptor(Error, 'isError');
             print(Error.isError.length, Error.isError.name, d.writable, d.enumerable, d.configurable);
             try { new Error.isError(1); } catch (e) { print(e.name); }
@@ -133,6 +141,8 @@ fn error_is_error() {
         ),
         lines(&[
             "false false false false false false false",
+            "true,true,true,true,true,true,true,true,true,true",
+            "false,false,false,false,false,false,false,false",
             "1 isError true false true",
             "TypeError",
         ])

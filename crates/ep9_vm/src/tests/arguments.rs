@@ -282,8 +282,8 @@ fn a_shadowed_parameter_is_not_mapped() {
 }
 
 /// CreateUnmappedArgumentsObject (§10.4.4.6) for a strict function: the elements do not
-/// alias the parameters. Until the realm has %ThrowTypeError% (VM-ARGS step 2), the object
-/// gets no `callee`.
+/// alias the parameters, and the keys are the indices, `length`, `callee` (the
+/// %ThrowTypeError% accessor; the VM table makes it since VM-ARGS step 2) and @@iterator.
 #[test]
 fn an_unmapped_arguments_object_does_not_alias() {
     fn make() -> VerifiedUnit {
@@ -300,22 +300,20 @@ fn an_unmapped_arguments_object_does_not_alias() {
         with_a(make, stress, |cx, a| {
             assert_eq!(get(cx, a, 0), int32_bits(1));
             assert_eq!(object::fixed_get(a, 0), UNDEFINED);
-            let has_ttt = kinds::is_callable(builtins::intrinsic(
+            assert!(kinds::is_callable(builtins::intrinsic(
                 cx.rt(),
                 builtins::IntrinsicId::ThrowTypeError,
-            ));
-            let want: &[&str] = if has_ttt {
-                &["0", "1", "2", "length", "callee", "@@iterator"]
-            } else {
-                &["0", "1", "2", "length", "@@iterator"]
-            };
-            assert_eq!(keys(cx, a), want);
+            )));
+            assert_eq!(
+                keys(cx, a),
+                ["0", "1", "2", "length", "callee", "@@iterator"]
+            );
         });
     }
 }
 
-/// CreateUnmappedArgumentsObject step 9 and %ThrowTypeError% (§10.2.4.1), once the realm has
-/// it (VM-ARGS step 2 makes it): `callee` is {get, set: %ThrowTypeError%, e: false,
+/// CreateUnmappedArgumentsObject step 9 and %ThrowTypeError% (§10.2.4.1; the VM table makes
+/// it, VM-ARGS step 2): `callee` is {get, set: %ThrowTypeError%, e: false,
 /// c: false}; %ThrowTypeError% is not extensible, its `length` (0) and `name` ("") are
 /// {w: false, e: false, c: false}, and a call throws a TypeError.
 #[test]
@@ -332,9 +330,7 @@ fn the_strict_callee_is_throw_type_error() {
     for stress in [false, true] {
         with_a(make, stress, |cx, a| {
             let t = builtins::intrinsic(cx.rt(), builtins::IntrinsicId::ThrowTypeError);
-            if !kinds::is_callable(t) {
-                return;
-            }
+            assert!(kinds::is_callable(t));
             let callee = crate::atoms::intern_str(cx.rt(), "callee");
             let d = property::get_own_property(cx, a, callee).unwrap().unwrap();
             assert_eq!((d.get, d.set), (Some(t), Some(t)));
@@ -359,5 +355,34 @@ fn the_strict_callee_is_throw_type_error() {
             let n = property::get_from(cx, e, name).unwrap();
             assert_eq!(crate::string::to_rust_string(n), "TypeError");
         });
+    }
+}
+
+/// A strict `function g(a) { return arguments; }` (function 1), called as `f(1, 2, 3)`.
+fn unmapped_a() -> VerifiedUnit {
+    let mut m = meta("g", 1, 0, 0, 0);
+    m.flags = FunctionFlags::SIMPLE_PARAMETERS | FunctionFlags::STRICT;
+    let mut g = Asm::new(m);
+    let args = g.b.new_register();
+    g.b.create_unmapped_arguments().star(args);
+    g.b.ldar(args).return_();
+    call_f(g.finish())
+}
+
+/// Object.prototype.toString (§20.1.3.6 step 5): an arguments object has a [[ParameterMap]]
+/// slot (undefined for an unmapped one, §10.4.4.6 step 3), so its builtinTag is "Arguments",
+/// mapped or not. With no @@toStringTag the result is "[object Arguments]".
+#[test]
+fn the_builtin_tag_of_an_arguments_object_is_arguments() {
+    fn check(cx: &mut Cx, a: u64) {
+        assert_eq!(kinds::cell_kind(a), kinds::ARGUMENTS.get());
+        let id = BuiltinId::new(natives::VM_BLOCK, natives::vm::OBJECT_TO_STRING);
+        let to_string = builtins::function_object(cx.rt(), id);
+        let s = crate::call::call_function(cx, to_string, a, &[]).unwrap();
+        assert_eq!(crate::string::to_rust_string(s), "[object Arguments]");
+    }
+    for stress in [false, true] {
+        with_a(mapped_a, stress, check);
+        with_a(unmapped_a, stress, check);
     }
 }
