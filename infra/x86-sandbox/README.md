@@ -6,7 +6,7 @@ real `posix_spawn` of a missing program, `PR_SET_SECCOMP`, real perf counters, c
 
 It is a copy of the webcodecs harness
 (`a local webcodecs-node-work/x86-sandbox checkout`, "v2"). Only the names,
-the cap (2 instead of 4), the image tools and these docs differ. The measured evidence for
+the cap (8 instead of 4), the image tools and these docs differ. The measured evidence for
 the design (one id = one container, the destroy/exec race fix, what `sbx` retries, limits,
 token rotation timing) is in that README; it is not copied here.
 
@@ -19,7 +19,7 @@ token rotation timing) is in that README; it is not copied here.
         (refuses http://)      │  env.Sandbox.getByName(<id>)
                                ▼
                            Durable Object "Sandbox" (one per <id>) ──▶ Durable Object "Registry"
-                               │  ctx.container.start / exec / destroy      (cap: 2 running ids)
+                               │  ctx.container.start / exec / destroy      (cap: 8 running ids)
                                ▼
                            Container app ep9-x86-sandbox-sandbox (policy durable_object)
                            standard-4 = 4 vCPU, 12 GiB, 20 GB disk; linux/amd64, Debian 13
@@ -78,7 +78,7 @@ with `destroy`). Raw logs go to `evidence/` (git-ignored). Result on 2026-10-21:
 | `bg` + `wait`, 200 s job | 10 ticks, exit 0, wall 214 s |
 | no token / wrong token | 401 on `/exec`, `/write`, `/destroy`, `/health` |
 | plain `http://` | Worker answers 403 (no token sent); `sbx` refuses the URL, exit 99 |
-| cap | 3rd id while 2 run: HTTP 429 with `"ran": false`, nothing started |
+| cap | 3rd id while 2 run (cap 2 then; 8 since 2026-10-23): HTTP 429 with `"ran": false`, nothing started |
 | destroy | `ok:true, wasRunning:true, runningAfter:false`; then `health <id>`: `running:false` |
 
 ## Limits
@@ -86,7 +86,7 @@ with `destroy`). Raw logs go to `evidence/` (git-ignored). Result on 2026-10-21:
 | what | value |
 | --- | --- |
 | size | standard-4 (4 vCPU / 12 GiB / 20 GB) = the account limit per container: `GET /accounts/<id>/containers/me` on 2026-10-21 gave `vcpu_per_deployment 4`, `memory_mib_per_deployment 12288`, `disk_mb_per_deployment 20000`. To grow, ask Cloudflare for a limit raise, then set `INSTANCE_TYPE` in `src/index.ts` (a `{vcpu, memoryMib, diskMb}` object works too). |
-| running at once | 2 (`MAX_RUNNING` in `src/index.ts`, kept by the `Registry` Durable Object) |
+| running at once | 8 (`MAX_RUNNING` in `src/index.ts`, kept by the `Registry` Durable Object) |
 | idle sleep | 30 min after the last request; code running inside does not count (`sbx wait` keeps it awake) |
 | exec output | stdout 8 MiB, stderr 1 MiB; write big output to a file and `sbx get` it |
 | one exec | up to 6 h by timeout, but anything over ~1-2 min should be `bg` + `wait` |

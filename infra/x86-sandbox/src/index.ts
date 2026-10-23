@@ -44,7 +44,8 @@ const SCHEDULING_POLICY = "durable_object";
 // memory_mib_per_deployment 12288, disk_mb_per_deployment 20000).
 const INSTANCE_TYPE = "standard-4";
 // App-level cap on running sandboxes (cost guard). Enforced by `Registry`.
-const MAX_RUNNING = 2;
+// 8 since 2026-10-23: full test262 runs (GC stress in shards) moved off the Mac.
+const MAX_RUNNING = 8;
 const REGISTRY_NAME = "global";
 
 // The container keeps running this long after the last request (sleepAfter).
