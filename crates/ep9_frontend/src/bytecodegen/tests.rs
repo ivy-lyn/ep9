@@ -931,8 +931,7 @@ fn async_functions_compile_in_every_form() {
 
 #[test]
 fn unsupported_reports_a_position() {
-    let Err(CodegenError::Unsupported(u)) =
-        compile_script("1;\n  import('x')", Strictness::Sloppy)
+    let Err(CodegenError::Unsupported(u)) = compile_script("1;\n  import('x')", Strictness::Sloppy)
     else {
         panic!("expected Unsupported");
     };
