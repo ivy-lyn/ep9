@@ -220,10 +220,11 @@ impl<'a> FnGen<'a, '_> {
         let awaits = self.generator.as_ref().is_some_and(|g| {
             g.kind == GenKind::AsyncGenerator && g.awaited_returns.binary_search(&at).is_ok()
         });
-        if awaits && self.await_acc(at).is_err() {
-            if let Some(g) = self.generator.as_mut() {
-                g.uncounted = true;
-            }
+        if awaits
+            && self.await_acc(at).is_err()
+            && let Some(g) = self.generator.as_mut()
+        {
+            g.uncounted = true;
         }
     }
 
@@ -425,7 +426,10 @@ impl<'a> FnGen<'a, '_> {
         self.runtime_with(RuntimeId::ThrowIteratorResultNotAnObject, &[method]);
         self.b.bind(closed);
         self.expr_pos(at);
-        self.runtime(RuntimeId::ThrowThrowMethodMissing, ep9_bytecode::RegisterList::EMPTY);
+        self.runtime(
+            RuntimeId::ThrowThrowMethodMissing,
+            ep9_bytecode::RegisterList::EMPTY,
+        );
         // Await the inner result; it must be an object; stop when it is done.
         self.b.bind(after_switch);
         self.await_acc(at)?;
