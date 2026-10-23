@@ -104,7 +104,9 @@ win64_disasm_check() {
     (cd "$dir" && ar x "$rlib")
   fi
   for o in "$dir"/*.o; do
-    if "$objdump" -t "$o" 2>/dev/null | grep -q ' ep9_spill_win64$'; then obj="$o"; fi
+    # grep without -q reads all input: with -q, pipefail sees llvm-objdump's SIGPIPE (exit 141).
+    # The checks below read here-strings for the same reason (no pipe from echo).
+    if "$objdump" -t "$o" 2>/dev/null | grep ' ep9_spill_win64$' > /dev/null; then obj="$o"; fi
   done
   if [ -z "$obj" ]; then
     echo "no object in $rlib defines ep9_spill_win64"
@@ -117,15 +119,15 @@ win64_disasm_check() {
   echo "$unwind" | grep -E 'PUSH_NONVOL|ALLOC|SAVE_XMM128|PrologSize'
   rm -rf "$dir"
   for r in rbp rbx rdi rsi r12 r13 r14 r15; do
-    echo "$dis" | grep -Eq "push[[:space:]]+$r\$" || { echo "missing push $r"; ok=1; }
-    echo "$unwind" | grep -q "PUSH_NONVOL reg=$(echo "$r" | tr '[:lower:]' '[:upper:]')\$" || { echo "missing unwind push $r"; ok=1; }
+    grep -Eq "push[[:space:]]+$r\$" <<<"$dis" || { echo "missing push $r"; ok=1; }
+    grep -q "PUSH_NONVOL reg=$(echo "$r" | tr '[:lower:]' '[:upper:]')\$" <<<"$unwind" || { echo "missing unwind push $r"; ok=1; }
   done
   for i in 6 7 8 9 10 11 12 13 14 15; do
-    echo "$dis" | grep -Eq "movaps.*xmm$i\$" || { echo "missing save xmm$i"; ok=1; }
-    echo "$unwind" | grep -q "SAVE_XMM128 reg=XMM$i," || { echo "missing unwind xmm$i"; ok=1; }
+    grep -Eq "movaps.*xmm$i\$" <<<"$dis" || { echo "missing save xmm$i"; ok=1; }
+    grep -q "SAVE_XMM128 reg=XMM$i," <<<"$unwind" || { echo "missing unwind xmm$i"; ok=1; }
   done
-  echo "$dis" | grep -Eq 'sub[[:space:]]+rsp, 0xc8$' || { echo "missing sub rsp, 200"; ok=1; }
-  echo "$unwind" | grep -q 'ALLOC_LARGE size=200' || { echo "missing unwind alloc 200"; ok=1; }
+  grep -Eq 'sub[[:space:]]+rsp, 0xc8$' <<<"$dis" || { echo "missing sub rsp, 200"; ok=1; }
+  grep -q 'ALLOC_LARGE size=200' <<<"$unwind" || { echo "missing unwind alloc 200"; ok=1; }
   return $ok
 }
 if [ "$EXTRAS" != 0 ]; then
