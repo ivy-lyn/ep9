@@ -38,7 +38,7 @@ SeqLatin1, SeqUtf16, rope (length ≥ 13), slice (length ≥ 13), thin, external
 | Units | every unit string is interned at load (root range of the unit) | `crates/ep9_vm/src/unit.rs:143` |
 | Keys | ToPropertyKey flattens and interns; no number keys: "1" is an atom with the index cached (W4-NO-NUMBER-KEYS) | `crates/ep9_vm/src/key.rs:56` |
 | Key compare | same bits, or two atoms → unequal at once; a non-atom key takes one content compare and bumps a debug counter | `key_eq` (`crates/ep9_vm/src/key.rs:43`), `probe` (`crates/ep9_vm/src/key.rs:153`) |
-| Limit | 2^29 − 24 code units (V8); `concat` returns `None` and callers throw RangeError "Invalid string length" | `crates/ep9_vm/src/string.rs:54`; `crates/ep9_vm/src/natives.rs:1225` |
+| Limit | 2^29 − 24 code units (V8); `concat` returns `None` and callers throw RangeError "Invalid string length" | `crates/ep9_vm/src/string.rs:54`; `crates/ep9_vm/src/natives.rs:1374` |
 | Read API | `flatten(cx, s)` (identity in v0), then `view(&cx, s) -> JsStr<'cx>`; legacy `str_view` sites move by M1a | `crates/ep9_vm/src/string.rs:276` |
 
 - **Why a `JsStr` is safe in VM code.** The heap never moves cells (S0-S2), and the conservative scan keeps a cell alive from an interior pointer (`find_cell`, `crates/ep9_heap/src/trace.rs:357`). So a view held in a Rust local stays valid across an allocation. The borrow rule (`view` borrows `&Cx`) protects builtins, which get no `&Runtime` (H20 `abi::Cx`), and a future moving GC (S3) [I49].
@@ -137,3 +137,4 @@ SeqLatin1, SeqUtf16, rope (length ≥ 13), slice (length ≥ 13), thin, external
 | 2026-10-23 | clarify | 1 `path:line` reference in `crates/ep9_vm/src/property.rs` moved to the code after the M3-P0 round-2 code fix 02cd320 (X-CODE1: `get_data_from` grew 6 lines; drift script, [I15]). No check changes | M3-P0 round-2 docs fixer |
 | 2026-10-23 | clarify | The Roots row and H19-Q7 name the second per-isolate private symbol, the identity-hash key (`symbol::identity_hash_key`, made by `symbol::install` after the class-fields key; H12-Q1), as M3-P1 built it (fix-realm, review finding COLL-1). No rule or check changes | M3-P1 integration fixer |
 | 2026-10-23 | clarify | 14 `path:line` references moved to the code after the M3-P1 merge and the M3-P1 fixer changes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS). No check changes | M3-P1 integration fixer |
+| 2026-10-23 | clarify | 1 `path:line` reference moved to the code after the M3-P2 merge and the M3-P2 fixer changes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS); each names the same item at the new line. No check changes | M3-P2 integration fixer (docs) |

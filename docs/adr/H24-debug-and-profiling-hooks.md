@@ -63,7 +63,7 @@ Copied from the plan row: lazy position tables, kept ScopeInfo, a debug bytecode
 
 ## Validation
 
-- M0: the `ep9_vm` and bytecodegen checks above; Spike B checks (c) and (d) in the CI step "Spike B structural gate" on all 4 runners (macOS arm64, Linux x64, Linux arm64, Windows x64; no check is skipped on Windows, `.github/workflows/ci.yml:391-397`).
+- M0: the `ep9_vm` and bytecodegen checks above; Spike B checks (c) and (d) in the CI step "Spike B structural gate" on all 4 runners (macOS arm64, Linux x64, Linux arm64, Windows x64; no check is skipped on Windows, `.github/workflows/ci.yml:393-399`).
 - M4: CDP Debugger tests per mode. M6: the sampler walks mixed T0, JIT and Rust stacks. A2: unit maps.
 
 ## Open questions
@@ -92,6 +92,7 @@ Copied from the plan row: lazy position tables, kept ScopeInfo, a debug bytecode
 | 2026-10-22 | clarify | Status Draft -> Accepted (M2-P5-ACCEPT). The §3.1 review record is complete: row 1 P4-ACCEPT-3, row 2 Codex (m2p4-docs run; P5 accept4 run), row 3 P5-ACCEPT-4 (with the P5 round-2 notes), row 4 data. The orchestrator did not write the rows it approves. No check changes | orchestrator |
 | 2026-10-23 | clarify (proposed; Accepted path) | 2 `path:line` references moved to the code after the M3-P0 merge and the M3-P0 code fixes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS). Text only; no check changes. Review record for this amendment (README §3.1): rows 1-3 by agents that did not write it; the orchestrator approves | M3-P0 integration fixer |
 | 2026-10-23 | clarify (proposed; Accepted path) | 2 `path:line` references moved to the code after the M3-P1 merge and the M3-P1 fixer changes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS); the 2 refs in dated review-record rows go back to the lines of the commit each row names (M3-P1-REVIEWROW-REFS, X-FD1). Text only; no check changes. Review record for this amendment (README §3.1): rows 1-3 by agents that did not write it; the orchestrator approves | M3-P1 integration fixer |
+| 2026-10-23 | clarify (proposed; Accepted path) | 1 `path:line` reference moved to the code after the M3-P2 merge and the M3-P2 fixer changes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS); each names the same item at the new line. The ref moved because the M3-P2 docs fixer added 2 lines to the `ci.yml` header comment. Text only; no check changes. Review record for this amendment (README §3.1): rows 1-3 by agents that did not write it, row 4 the ADRLINE output; the orchestrator approves | M3-P2 integration fixer (docs) |
 
 ## Review record
 
