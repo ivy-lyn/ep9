@@ -33,9 +33,9 @@ PACKED/HOLEY × INT32/DOUBLE/ELEMENTS, one-way. DOUBLE stores raw f64 with a hol
 
 | Item | v0 behavior | Where |
 |---|---|---|
-| Storage | ARRAY cell plus one ELEMENTS cell of Values; a hole is the H6 empty value 0x22 | `crates/ep9_vm/src/object.rs:21`, `crates/ep9_vm/src/object.rs:33`; `new_elements` (`crates/ep9_vm/src/object.rs:734`) |
-| Dense limit | 2^26 elements (`arr::MAX_LENGTH`) | `crates/ep9_vm/src/object.rs:260-261` |
-| Growth | a store at index i makes capacity max(i + 1, 2 × capacity, 4) | `array_set` (`crates/ep9_vm/src/object.rs:838`) |
+| Storage | ARRAY cell plus one ELEMENTS cell of Values; a hole is the H6 empty value 0x22 | `crates/ep9_vm/src/object.rs:21`, `crates/ep9_vm/src/object.rs:33`; `new_elements` (`crates/ep9_vm/src/object.rs:733`) |
+| Dense limit | 2^26 elements (`arr::MAX_LENGTH`) | `crates/ep9_vm/src/object.rs:259-260` |
+| Growth | a store at index i makes capacity max(i + 1, 2 × capacity, 4) | `array_set` (`crates/ep9_vm/src/object.rs:837`) |
 | High dense index | `a[2**26 - 1] = 1` allocates 2^26 slots: 540,606,464 B peak RSS (empty script: 3,473,408 B) | measured 2026-10-21 at `dabc38a`, release `ep9`, M5 Max (not measured again; the growth rule is unchanged) |
 | Index at or above 2^26 | stored as a string-keyed property, so the array moves to dictionary mode (an index key never enters a shape, OM-10); `length` does not change (ECMA-262: index + 1) | `crates/ep9_vm/src/property.rs:321-325` falls through |
 | `length` above 2^26 | RangeError "Invalid array length" (ECMA-262 allows up to 2^32 - 1) | `crates/ep9_vm/src/property.rs:312-318` |
@@ -100,3 +100,4 @@ PACKED/HOLEY × INT32/DOUBLE/ELEMENTS, one-way. DOUBLE stores raw f64 with a hol
 | 2026-10-22 | clarify | 1 `path:line` reference moved to the code after the M2-P5 merge and the P5 fixer changes (drift script, [I15]). No check changes | P5 integration fixer |
 | 2026-10-23 | clarify | 7 `path:line` references moved to the code after the M3-P0 merge and the M3-P0 code fixes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS). The `delete a[i]` row cites the dense-array hole in `ordinary_delete` (set by a pin in the drift script; the script's content match had found another `if is_array` line). No check changes | M3-P0 integration fixer |
 | 2026-10-23 | clarify | 3 `path:line` references in `crates/ep9_vm/src/property.rs` moved to the code after the M3-P0 round-2 code fix 02cd320 (X-CODE1: `get_data_from` grew 6 lines; drift script, [I15]). No check changes | M3-P0 round-2 docs fixer |
+| 2026-10-23 | clarify | 3 `path:line` references moved to the code after the M3-P1 merge and the M3-P1 fixer changes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS). No check changes | M3-P1 integration fixer |
