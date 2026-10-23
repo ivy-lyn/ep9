@@ -37,14 +37,19 @@
 //! | `call::call_host` (every host function) | around the host call: a builtin runs in its own realm (H20 R5) |
 //! | `call::call_function_object` (Rust -> JS) | around the nested run |
 //! | `call::run_resumed` (generator resume) | around the nested run |
+//! | `abi/jobs.rs` NewPromiseResolveThenableJob | around the whole job (GetFunctionRealm(then), §27.2.2.2) |
 //!
 //! Caches that hold a realm value: the function shape caches (`shape::function_shape`, its
 //! generator and async forms) check the prototype on each hit, and [`switch`] empties them
 //! (`shape::clear_realm_caches`), so they hold only a shape of the current realm and keep no
-//! other realm live. Feedback vectors and template objects belong to one FunctionInfo, whose
-//! functions are all of one realm. `builtins::existing_function` knows the first realm's
-//! builtin functions only, so the identity fast paths that use it run their spec steps in a
-//! later realm.
+//! other realm live. Feedback vectors belong to one FunctionInfo, whose functions are all of
+//! one realm. Template objects (GetTemplateObject, `interp/slow/literal.rs`) too, and their
+//! lifetime follows the realm: the realm that made one owns it (`realmf::TEMPLATES`,
+//! [`add_template`]), and the isolate map `Runtime::templates` (key: FunctionInfo and
+//! constant) holds it weakly, so a realm that nothing reachable holds is collected with its
+//! template objects. (The map entry of a collected realm stays, cleared, as its unit stays
+//! loaded.) `builtins::existing_function` knows the first realm's builtin functions only, so
+//! the identity fast paths that use it run their spec steps in a later realm.
 //!
 //! | Core intrinsic | Made as |
 //! |---|---|
@@ -61,14 +66,14 @@ use crate::abi::HostFn;
 use crate::builtins::{self, BuiltinId, IntrinsicId};
 use crate::conv::{self, num};
 use crate::error;
-use crate::frame::{FALSE, HOLE, NULL, UNDEFINED};
+use crate::frame::{FALSE, HOLE, NULL, UNDEFINED, int32_bits};
 use crate::interp::Cx;
 use crate::key::key_text;
 use crate::kinds;
 use crate::natives;
 use crate::object::{self, attr, own_define, own_get, realmf};
 use crate::property;
-use crate::runtime::{Atom, ErrorKind, Root, Runtime};
+use crate::runtime::{Atom, ErrorKind, Root, Runtime, val};
 use crate::unit::FunctionInfo;
 use crate::{atoms, symbol, wrapper};
 
@@ -309,6 +314,33 @@ pub(crate) fn intrinsic_in(rt: &Runtime, realm: u64, id: IntrinsicId) -> u64 {
     }
     let list = object::record_get(realm, realmf::INTRINSICS);
     object::list_get(list, id as usize)
+}
+
+/// Appends the template object `t` to the current realm's `[[TemplateMap]]`
+/// (`realmf::TEMPLATES`, §13.2.8.4 step 9): an ELEMENTS list whose entry 0 is the used count.
+/// The realm owns its template objects; `Runtime::templates` finds them by site and holds them
+/// weakly. A full list doubles. GC point.
+pub(crate) fn add_template(rt: &Runtime, t: u64) {
+    let realm = rt.root(Root::Realm);
+    let mut list = object::record_get(realm, realmf::TEMPLATES);
+    if list == UNDEFINED {
+        list = object::new_list(rt, 4, UNDEFINED);
+        object::list_set(rt, list, 0, int32_bits(1));
+        object::record_set(rt, realm, realmf::TEMPLATES, list);
+    }
+    let used = val(object::list_get(list, 0))
+        .as_int32()
+        .expect("the used count is an int32") as usize;
+    if used == object::list_len(list) {
+        let grown = object::new_list(rt, 2 * used, UNDEFINED);
+        for i in 0..used {
+            object::list_set(rt, grown, i, object::list_get(list, i));
+        }
+        object::record_set(rt, realm, realmf::TEMPLATES, grown);
+        list = grown;
+    }
+    object::list_set(rt, list, used, t);
+    object::list_set(rt, list, 0, int32_bits(used as i32 + 1));
 }
 
 /// GetFunctionRealm(obj) (§7.3.22): the `[[Realm]]` of a function, the realm of a bound

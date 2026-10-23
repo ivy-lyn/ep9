@@ -243,8 +243,8 @@ pub(crate) mod realmf {
     /// `[[Intrinsics]]`: an ELEMENTS cell, index = `IntrinsicId` (the H13 stable index);
     /// undefined for an intrinsic nothing made.
     pub const INTRINSICS: usize = 24;
-    /// `[[TemplateMap]]`: undefined until used.
-    #[allow(dead_code)] // reserved: template objects are kept per FunctionInfo (`realm.rs`)
+    /// `[[TemplateMap]]`: an ELEMENTS list (entry 0 = the used count) that owns the template
+    /// objects this realm made (`realm::add_template`); undefined until the first one.
     pub const TEMPLATES: usize = 32;
     /// `[[HostDefined]]`: any Value.
     #[allow(dead_code)] // reserved: no embedder API sets it yet

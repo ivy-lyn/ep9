@@ -21,7 +21,7 @@ use std::rc::Rc;
 use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
-use ep9_heap::{AllocError, CellPtr, GlobalHandle, Heap, KindId};
+use ep9_heap::{AllocError, CellPtr, Heap, KindId, WeakHandle};
 use ep9_value::Value;
 
 use crate::atoms::AtomTable;
@@ -265,8 +265,8 @@ pub(crate) struct Runtime {
     pub interrupt_requests: InterruptQueue,
     /// True while a termination unwinds (no handler catches it).
     pub terminating: Cell<bool>,
-    /// Template objects per (FunctionInfo, constant index) (§13.2.8.4 GetTemplateObject).
-    pub templates: RefCell<HashMap<(usize, u32), GlobalHandle>>,
+    /// Template objects per (FunctionInfo, constant index), weak (`realm::add_template`).
+    pub templates: RefCell<HashMap<(usize, u32), WeakHandle>>,
     /// Shapes (H17): the prototype epoch and the shape roots.
     pub shapes: ShapeState,
     /// The atom table (H19). Shared with the heap's weak source; never borrowed across an
