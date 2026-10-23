@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft, spec skeleton (2026-10-20). Header v0, section table and load check (S4 steps 1-4) built in `crates/ep9_unit` (M0 wk4, S6); H35-Q8 filled 2026-10-22 (engine build id); writer and loader A2 |
+| Status | Draft, spec skeleton (2026-10-20). Header v0, section table and load check (S4 steps 1-4) built in `crates/ep9_unit` (M0 wk4, S6); H35-Q8 filled 2026-10-22 (engine build id); H35-Q2 and H35-Q9 filled 2026-10-23 (M3-P1 SP-UNIT: SHA-256 content hash, signature slot reserved; the unit-data register). SP-Unit is built (`gate.sh unit`; [data](../measurements/2026-10-23-sp-unit.md)); its verdict is the orchestrator's. Writer and loader A2 |
 | Fix by | Spec v0 + header struct + golden test by M0 exit; writer/loader A2; frozen at A3 gate |
 | Freeze point | A3 gate |
 | Origin | R16-D6 + R17; plan status N (new) |
@@ -136,7 +136,7 @@ Zero text relocations. Isolate register + unit-data register for the per-isolate
 
 ## Validation
 
-- **SP-Unit** ([09 §4](../plan/09-milestones.md#4-spikes), M3-P1; moved from M0 month 2 by M2-D21-FAIL): the 11 Spike B opcodes (09 §4 said 10; Spike B adds AddSmi) built as a unit blob load, call, unwind, GC-scan and fall back on a version mismatch, on 4 targets. On fail it reopens H34 and H35. M0 exit item 11.
+- **SP-Unit** ([09 §4](../plan/09-milestones.md#4-spikes), M3-P1; moved from M0 month 2 by M2-D21-FAIL): the 11 Spike B opcodes (09 §4 said 10; Spike B adds AddSmi) built as a unit blob load, call, unwind, GC-scan and fall back on a version mismatch, on 4 targets. On fail it reopens H34 and H35. M0 exit item 11. **Built in M3-P1** (`spikes/spike-b/src/unit/`, `bash spikes/spike-b/gate.sh unit`, checks (a)-(g); [data](../measurements/2026-10-23-sp-unit.md)): it passes on mac a64, linux a64 (Docker) and linux x64 (the sandbox); windows-x64 is open (a CI probe, or M3-P2 WIN-STATIC-2). The verdict row is the orchestrator's.
 - Unit golden files: the header struct and container spec v0 match committed golden files (M0 exit; [08 §7](../plan/08-repo.md#7-dependency-guards-and-xtask-checks)). **Built M0 wk4** (`cargo test -p ep9_unit`): `header-v0.hex`, `header-layout.txt` and `container-history.txt` (a layout change without a container version bump fails); every header field mutated bit by bit and with random values ends in its listed outcome, and without a recomputed hash every change is a LOAD ERROR; every section-entry mutation is a LOAD ERROR or another canonical unit; 10^5 random flips, truncations and extensions never panic; a test-encoded unit gives LOAD on this build, SOURCE with another bytecode ABI, and BYTECODE with a text section (deopt version 0).
 - A2 gate: blob and `.o` on 4 targets; zero text relocations; 100% of header mutations end in their S3 outcome. Never a crash, never a wrong result.
 
@@ -179,3 +179,4 @@ Zero text relocations. Isolate register + unit-data register for the per-isolate
 | 2026-10-23 | rewrite | H35-Q9 filled: the unit-data register x27 / r14 with a per-isolate slot directory (`Cx::unit_data`), built by `spike-b unit`. The S5 rule "RW data pc-relative" is replaced in the Decision, in S5 and in Costs: RW data is reached through the unit-data register; pc-relative forms reach per-process sections only | M3-P1 SP-UNIT agent |
 | 2026-10-23 | fill | H35-Q2 filled: SHA-256 content hash (as built); the signature slot stays reserved; no scheme in M0 (D6); the scheme is an A2/A3 item. Text only; no code, test or golden changes | M3-P1 SP-UNIT agent |
 | 2026-10-23 | clarify | H35-Q8 Needed-by cell: Q8 was filled by M2-P2-INFRA2, not by SP-Unit. No check changes | M3-P1 SP-UNIT agent |
+| 2026-10-23 | clarify | The Status line (and the README §5 cell) names the H35-Q2 and H35-Q9 fills and the SP-Unit build; the Validation SP-Unit item names the gate (`gate.sh unit`), the data file and the targets where it passed. No rule or check changes; the SP-Unit verdict stays with the orchestrator | M3-P1 integration fixer (from the SP-UNIT report) |

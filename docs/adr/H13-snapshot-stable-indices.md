@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-21): the rules. The index lists are due at M1; the snapshot is built in M4 (A1) |
+| Status | Draft (2026-10-21): the rules. The index lists are due at M1; the snapshot is built in M4 (A1). H13-Q3 filled 2026-10-23 (M3-P1 SP-UNIT): the native runtime table is an append-only list with a golden |
 | Fix by | Rules M0; index lists M1; built M4 (A1) |
 | Freeze point | Freeze table (README §3.4): rules and index lists at M1 exit; snapshot build at M4 exit |
 | Origin | v1#19 + R16-D5; plan status E |
@@ -38,7 +38,7 @@ Copied from the plan row: an external-reference table. Intrinsics in fixed order
 | Runtime functions (`RuntimeId`) | `crates/ep9_bytecode/src/feedback.rs` | the ABI fingerprint (`runtime_table_text`): `abi::abi_version_matches_history` |
 | Well-known symbols (`WellKnownSymbol::ALL`) | `crates/ep9_vm/src/symbol.rs` | `tests::symbols::well_known_symbols_are_isolate_roots_in_order` |
 | Isolate roots (`Root`, 32) | `crates/ep9_vm/src/runtime.rs` | count only: `runtime::tests::atoms_and_roots_are_distinct` (H13-Q2) |
-| Native runtime-function table (`RuntimeTable`, feature `spike-native`) | `crates/ep9_vm/src/native.rs` (built by P1-NATIVE-ENTRY) | the 8 `RT_*` offsets in declaration order, `RT_POLL` at 0 to `RT_UNWIND` at 56 (`unwind` appended by P4-PLACEMENT-B for placement (b); `crates/ep9_vm/src/native.rs:196-203`): `tests::native::layout_offsets_read_the_live_isolate` (spike-native builds only); no golden yet (H13-Q3) |
+| Native runtime-function table (`RuntimeTable`, feature `spike-native`) | `crates/ep9_vm/src/native.rs` (built by P1-NATIVE-ENTRY) | the 8 `RT_*` offsets in declaration order, `RT_POLL` at 0 to `RT_UNWIND` at 56 (`unwind` appended by P4-PLACEMENT-B for placement (b); `crates/ep9_vm/src/native.rs:196-203`): `tests::native::layout_offsets_read_the_live_isolate` (spike-native builds only); golden `crates/ep9_vm/tests/golden/runtime-table.txt`, tests `tests::native::the_runtime_table_matches_the_golden` and its negative control `a_reordered_runtime_table_fails_the_golden` (H13-Q3, M3-P1 SP-UNIT) |
 | Fuses, snapshot root shapes, external references | not built (H31 in M1; A1 in M4) | none yet |
 
 ## Rules
@@ -100,6 +100,7 @@ Copied from the plan row: an external-reference table. Intrinsics in fixed order
 | 2026-10-22 | clarify | SP-Unit runs in M3-P1 (M2-D21-FAIL, M2-P4-SPUNIT-M3): the From cell of the Rules row "Units reach snapshot objects only by root or intrinsic index, or through a link cell" and the H13-Q3 Needed-by cell say M3-P1. Text only; no check changes | P5 integration fixer |
 | 2026-10-23 | clarify | 1 `path:line` reference moved to the code after the M3-P0 merge and the M3-P0 code fixes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS). No check changes | M3-P0 integration fixer |
 | 2026-10-23 | fill | H13-Q3 filled: the native `RuntimeTable` is an H13 list, append-only, with the golden `crates/ep9_vm/tests/golden/runtime-table.txt` and the test `tests::native::the_runtime_table_matches_the_golden` (spike-native). Every existing check keeps its result | M3-P1 SP-UNIT agent |
+| 2026-10-23 | clarify | The `RuntimeTable` row of the lists table said "no golden yet (H13-Q3)". H13-Q3 is filled (M3-P1 SP-UNIT): the row now names the golden `crates/ep9_vm/tests/golden/runtime-table.txt` and its two tests. The Status line (and the README §5 cell) names the H13-Q3 fill. No rule or check changes | M3-P1 integration fixer (from the SP-UNIT report) |
 
 ## Review record
 

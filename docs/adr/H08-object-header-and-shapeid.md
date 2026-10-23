@@ -75,7 +75,7 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 |---|---|---|
 | 0-7 | Kind-specific. JS objects: the in-object slot count (0-255, H17). Strings: bit 0 = atom (H19) | `kinds::FLAG_INOBJECT_MASK`, `kinds::FLAG_ATOM` |
 | 8 | is-prototype: the object is some object's `[[Prototype]]` and has a unique shape (H17 prototype mode) | `kinds::FLAG_IS_PROTOTYPE` |
-| 9 | Reserved for hash-present (identity hash, not built) | `kinds::FLAG_HASH_PRESENT` |
+| 9 | Hash-present: the object has an identity hash (built in M3-P1 B-COLLECTIONS; set by `ordered_table::identity_hash`, H12-Q1) | `kinds::FLAG_HASH_PRESENT` |
 | 10-15 | Reserved (pinned, if S3 needs it, takes one of these) | none |
 
 - `ep9_vm` asks for a cage aligned to 64 GiB and at most 64 GiB in size (`shape::heap_config`, `CAGE_ALIGN`). The H08-Q1 rule (align >= 4 GiB) still holds. With it, `shape_of(o) = (o & !(64 GiB - 1)) | shape_id` needs no heap pointer (decision W4-OBJ-CAGE).
@@ -124,7 +124,7 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 |---|---|---|---|
 | H08-Q1 | Size, alignment and location of the shape space. A u32 offset bounds it; the plan gives no number | M0 wk4 (shapes v0) | **Filled 2026-10-21:** the first `shape_space_bytes` of the cage (0 = none in `ep9_heap`; 256 MiB from `ep9_vm`); a power of two from 1 MiB to 4 GiB; cage align >= 4 GiB outside Miri; ShapeId = offset from the cage base. See "Shape space" under Decision |
 | H08-Q2 | Do SP-Unit's 11 opcodes include a shape-guarded load, so the RW-cell guard is tested in M0? | Spike B plan | **Filled 2026-10-22 (M2-H08-Q2): no, not in M0.** The 11 Spike B opcodes (09 §4 said 10 until 2026-10-22; Spike B adds AddSmi) have no property load, and the spike JIT records no feedback. The RW-cell shape guard is tested in M1 (Spike C). The old default was "include one property load" |
-| H08-Q3 | Full flag-bit list beyond hash-present, pinned, is-prototype | M1a (H17 freeze) | **Filled 2026-10-21:** bits 0-7 kind-specific, bit 8 is-prototype, bit 9 reserved for hash-present, bits 10-15 reserved. See "Flag bits" under Decision |
+| H08-Q3 | Full flag-bit list beyond hash-present, pinned, is-prototype | M1a (H17 freeze) | **Filled 2026-10-21:** bits 0-7 kind-specific, bit 8 is-prototype, bit 9 reserved for hash-present (built since M3-P1, H12-Q1), bits 10-15 reserved. See "Flag bits" under Decision |
 | H08-Q4 | Miri for `ep9_vm`: a stand-in cage with `CAGE_ALIGN` alignment, or the subtract path in `shape_of` under Miri (M2-P1-MIRI-VM)? | M1 | Heap owner (GC lead) decides |
 
 ## Reopens if
@@ -152,6 +152,7 @@ shape(id)      = cage base + id                          Heap::shape_cell; JIT/A
 | 2026-10-22 | clarify | SP-Unit has 11 opcodes (09 §4 now says 11; Spike B adds AddSmi) and runs in M3-P1 (M2-D21-FAIL): the Validation line and the H08-Q2 question. The H08-Q2 answer does not change. No check changes | P5-DOCS-SYNC agent (M2-P5) |
 | 2026-10-23 | clarify | 1 `path:line` reference moved to the code after the M3-P0 merge and the M3-P0 code fixes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS). No check changes | M3-P0 integration fixer |
 | 2026-10-23 | rewrite | The AOT guard picture and Costs say the RW cell is reached through the unit-data register x27 / r14, not pc-relative (H35-Q9 filled by M3-P1 SP-UNIT, which names this a rewrite: one per-process text cannot reach a per-isolate RW copy pc-relative). The guard and its cost (one extra load) do not change; no check changes | M3-P1 SP-UNIT agent |
+| 2026-10-23 | clarify | Flag bit 9 hash-present is built (M3-P1 B-COLLECTIONS, H12-Q1): `ordered_table::identity_hash` sets `kinds::FLAG_HASH_PRESENT` when an object gets its identity hash. The Flag bits row and H08-Q3 said "reserved, not built". The bit value does not change. No rule or check changes | M3-P1 integration fixer |
 
 ## Review record
 
