@@ -103,6 +103,9 @@ pub(crate) struct FnGen<'a, 's> {
     spans: Vec<u32>,
     /// The generator state of a generator function body (`generator.rs`); `None` elsewhere.
     pub(crate) generator: Option<super::generator::GenState>,
+    /// The start offset of the last statement position set ([`FnGen::stmt_pos`]): the
+    /// `return` statement that [`FnGen::perform`] completes (`async_gen.rs` AGF4).
+    last_stmt: u32,
 }
 
 impl<'a, 's> FnGen<'a, 's> {
@@ -132,6 +135,7 @@ impl<'a, 's> FnGen<'a, 's> {
             depth: 0,
             spans: Vec::new(),
             generator: None,
+            last_stmt: u32::MAX,
         }
     }
 
@@ -168,6 +172,7 @@ impl<'a, 's> FnGen<'a, 's> {
     }
 
     pub(crate) fn stmt_pos(&mut self, span: Span) {
+        self.last_stmt = span.start;
         self.b.set_statement_position(span.start);
     }
 
@@ -758,8 +763,19 @@ impl<'a, 's> FnGen<'a, 's> {
         })
     }
 
-    /// Leave statements by `cmd`: pop contexts, run finally blocks, then jump or return.
+    /// Leave statements by `cmd` for a `break`, `continue` or `return` statement: in an async
+    /// generator, `return Expression;` first awaits the value in the accumulator (§14.10.1
+    /// step 3; `async_gen.rs` AGF4); then [`FnGen::perform_now`].
     pub(crate) fn perform(&mut self, cmd: Command) {
+        if cmd == Command::Return {
+            self.await_return_statement(self.last_stmt);
+        }
+        self.perform_now(cmd);
+    }
+
+    /// Leave statements by `cmd`: pop contexts, run finally blocks, then jump or return. The
+    /// completion value of a return is in the accumulator, as it is (no await).
+    pub(crate) fn perform_now(&mut self, cmd: Command) {
         let stop = match cmd {
             Command::Break(i) | Command::Continue(i) => i + 1,
             Command::Return => 0,
@@ -825,10 +841,15 @@ impl<'a, 's> FnGen<'a, 's> {
     }
 
     /// Return the accumulator from this function (derived constructors: `undefined` returns
-    /// the checked `this`; an async function resolves its promise first, `async_fn.rs` AF4).
+    /// the checked `this`; an async function resolves its promise first, `async_fn.rs` AF4;
+    /// an async generator completes its first request, `async_gen.rs`).
     pub(crate) fn emit_return(&mut self) {
         if let Some(object) = self.async_object() {
             self.async_return(object);
+            return;
+        }
+        if let Some(object) = self.async_generator_object() {
+            self.async_generator_return(object);
             return;
         }
         if self.info.kind.is_derived_constructor() {
@@ -904,7 +925,7 @@ impl<'a, 's> FnGen<'a, 's> {
             if cmd == Command::Return {
                 self.b.ldar(value);
             }
-            self.perform(cmd);
+            self.perform_now(cmd);
         }
         self.b.bind(after);
         self.release(m);

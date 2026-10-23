@@ -1361,11 +1361,15 @@ pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
             }
         }
     }
-    // §27.3.2, §27.7.2: the [[Prototype]] of %GeneratorFunction% and %AsyncFunction% is
-    // %Function%. A table gives a builtin's function object %Function.prototype% only. GC
-    // point (dictionary mode, OM-10): the intrinsics are roots.
+    // §27.3.2, §27.7.2, §27.4.2: the [[Prototype]] of %GeneratorFunction%, %AsyncFunction%
+    // and %AsyncGeneratorFunction% is %Function%. A table gives a builtin's function object
+    // %Function.prototype% only. GC point (dictionary mode, OM-10): the intrinsics are roots.
     let function = intrinsic(rt, IntrinsicId::Function);
-    for id in [IntrinsicId::GeneratorFunction, IntrinsicId::AsyncFunction] {
+    for id in [
+        IntrinsicId::GeneratorFunction,
+        IntrinsicId::AsyncFunction,
+        IntrinsicId::AsyncGeneratorFunction,
+    ] {
         let c = intrinsic(rt, id);
         if !is_object(function)
             || !is_object(c)

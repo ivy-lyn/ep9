@@ -34,6 +34,14 @@
 0x001e   0.30         method       1       "[Symbol.hasInstance]"  (%Function.prototype%.[Symbol.hasInstance] ---)
 0x001f   0.31         getter       0       "[Symbol.toStringTag]"  (%Iterator.prototype%.[Symbol.toStringTag] --c)
 0x0020   0.32         setter       1       "[Symbol.toStringTag]"  (%Iterator.prototype%.[Symbol.toStringTag] --c)
+0x0021   0.33         constructor  1       "AsyncGeneratorFunction"  (%AsyncGeneratorFunction%)
+0x0022   0.34         method       1       "next"  (%AsyncGeneratorPrototype%.next w-c)
+0x0023   0.35         method       1       "return"  (%AsyncGeneratorPrototype%.return w-c)
+0x0024   0.36         method       1       "throw"  (%AsyncGeneratorPrototype%.throw w-c)
+0x0025   0.37         method       0       "[Symbol.asyncIterator]"  (%AsyncIteratorPrototype%.[Symbol.asyncIterator] w-c)
+0x0026   0.38         method       1       "next"  (%AsyncFromSyncIteratorPrototype%.next w-c)
+0x0027   0.39         method       1       "return"  (%AsyncFromSyncIteratorPrototype%.return w-c)
+0x0028   0.40         method       1       "throw"  (%AsyncFromSyncIteratorPrototype%.throw w-c)
 # IntrinsicId (append-only)
 intrinsic   0  %Object.prototype%
 intrinsic   1  %Function.prototype%
