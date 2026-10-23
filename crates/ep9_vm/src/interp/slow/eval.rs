@@ -630,8 +630,10 @@ pub(crate) fn declare_eval_annex_b_function(cx: &mut Cx, fp: *mut u64, name: u64
 /// binding (id 46 gave true) is evaluated: genv.SetMutableBinding(name, value, false) on the
 /// eval code's VariableEnvironment, not on the block binding. In a function: the var scope's
 /// slot or its `.eval_ext` binding (made again if `delete` removed it, §9.1.1.1.5 step 1); at
-/// the global level: a script lexical binding (a TDZ is a ReferenceError, a constant is left
-/// alone), else Set(global object, name, value, false). GC point (a setter).
+/// the global level: a script lexical binding (a Script run by the eval code can make one
+/// after id 46: a TDZ is a ReferenceError, and a `const` is a TypeError, because a lexical
+/// binding is strict, §9.1.1.1.5 steps 2 and 5.b; X-ARGS3), else Set(global object, name,
+/// value, false). GC point (a setter).
 pub(crate) fn store_eval_annex_b_function(
     cx: &mut Cx,
     fp: *mut u64,
@@ -659,9 +661,15 @@ pub(crate) fn store_eval_annex_b_function(
                 if old == HOLE {
                     return Err(throw_name_now(cx, NameMsg::Tdz, name));
                 }
-                if a & attr::WRITABLE != 0 {
-                    object::own_replace(rt, lexical, name, value);
+                if a & attr::WRITABLE == 0 {
+                    // As a store to a global `const` (slow/lookup.rs `const_assign`).
+                    return Err(throw_error(
+                        cx,
+                        ErrorKind::TypeError,
+                        "Assignment to constant variable.",
+                    ));
                 }
+                object::own_replace(rt, lexical, name, value);
             } else {
                 let g = rt.global();
                 property::set(cx, g, name, value, false)?;

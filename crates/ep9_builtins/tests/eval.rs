@@ -502,3 +502,27 @@ print(m(1));"#
         ])
     );
 }
+
+/// X-ARGS3 (M3-P2 fix round 2): `StoreEvalAnnexBFunction` (id 47) at the global level when a
+/// Script run inside the eval code made a lexical binding of the name after id 46 made the
+/// var binding (`delete` removed it first). A `const` is an immutable strict binding, so
+/// SetMutableBinding throws a TypeError (§9.1.1.1.5 steps 2 and 5.b; node v24.22.1 prints the
+/// same lines when the script runs at the global level); a `let` takes the function.
+#[test]
+fn annex_b_eval_store_to_a_late_global_const_throws() {
+    assert_eq!(
+        run_both(
+            r#"function lateConst() { evalScript('const af = 1'); }
+function lateLet() { evalScript('let al = 1'); }
+try { eval('delete af; lateConst(); { function af() {} } print("after")'); print('no error'); } catch (e) { print(e.constructor.name, e.message); }
+print(typeof af, af, JSON.stringify(Object.getOwnPropertyDescriptor(globalThis, 'af')));
+eval('delete al; lateLet(); { function al() {} }');
+print(typeof al, JSON.stringify(Object.getOwnPropertyDescriptor(globalThis, 'al')));"#
+        ),
+        lines(&[
+            "TypeError Assignment to constant variable.",
+            "number 1 undefined",
+            "function undefined",
+        ])
+    );
+}
