@@ -8,9 +8,7 @@
 //!                                       surrogate is a URIError
 //! isFinite(v)   ToNumber(v) is finite
 //! isNaN(v)      ToNumber(v) is NaN
-//! Error.isError(v)                      §20.5.2.1: false for a primitive. v0: an object
-//!                                       throws "not implemented" (no public [[ErrorData]] test
-//!                                       on the builtin ABI yet)
+//! Error.isError(v)                      §20.5.2.1: v has [[ErrorData]] (Cx::is_error)
 //! ```
 //!
 //! The global value properties (`globalThis`, `Infinity`, `NaN`, `undefined`) come from the VM
@@ -383,11 +381,7 @@ fn is_error<'s>(
     // 1. Return IsError(arg).
     // IsError ( argument ) (§20.5.8.2):
     // 1. If argument is not an Object, return false.
-    if !args.get(0).is_object() {
-        return Ok(Local::boolean(false));
-    }
     // 2. If argument has an [[ErrorData]] internal slot, return true.
     // 3. Return false.
-    // v0: the builtin ABI has no [[ErrorData]] test yet (an Error is a VM cell kind).
-    Err(cx.not_implemented("Error.isError of an object"))
+    Ok(Local::boolean(cx.is_error(args.get(0))))
 }

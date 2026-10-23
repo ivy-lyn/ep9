@@ -1198,6 +1198,12 @@ impl<'s> Cx<'s> {
         kinds::is_array(v.into().bits())
     }
 
+    /// Whether `v` has an `[[ErrorData]]` internal slot (an Error instance, §20.5): the test
+    /// of IsError (§20.5.8.2), for `Error.isError`. Any value; never throws (v0: no proxies).
+    pub fn is_error(&self, v: impl Into<Local<'s>>) -> bool {
+        kinds::is_error(v.into().bits())
+    }
+
     // ---- conversions (§7.1) and comparisons (§7.2) ----
 
     /// ToBoolean (§7.1.2).
