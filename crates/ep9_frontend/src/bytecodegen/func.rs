@@ -106,6 +106,10 @@ pub(crate) struct FnGen<'a, 's> {
     /// The start offset of the last statement position set ([`FnGen::stmt_pos`]): the
     /// `return` statement that [`FnGen::perform`] completes (`async_gen.rs` AGF4).
     last_stmt: u32,
+    /// Function 0 of sloppy eval code: each var binding of an Annex B block function
+    /// (B.3.2.3) and the register that holds what `DeclareEvalAnnexBFunction` answered for it
+    /// (`gen_eval_program`; `stmt.rs` `store_annex_b_var` reads it).
+    pub(crate) eval_annex_b: Vec<(BindingId, Register)>,
 }
 
 impl<'a, 's> FnGen<'a, 's> {
@@ -136,6 +140,7 @@ impl<'a, 's> FnGen<'a, 's> {
             spans: Vec::new(),
             generator: None,
             last_stmt: u32::MAX,
+            eval_annex_b: Vec::new(),
         }
     }
 
