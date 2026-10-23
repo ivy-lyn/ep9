@@ -576,10 +576,14 @@ op!(LdaNewTarget(st) {
 op!(LdaGlobal(st, name: K, s: FSlot) {
     match ic::load_global(st.rt(), st.info(), st.cx.global_this, s.0) {
         Some(v) => {
+            ic::ic_count!(hit, LoadGlobal);
             st.acc = v;
             Flow::Next
         }
-        None => Flow::Cold,
+        None => {
+            ic::ic_count!(miss, LoadGlobal, st.info(), s.0);
+            Flow::Cold
+        }
     }
 } cold {
     let n = st.constant(name);
@@ -589,10 +593,14 @@ op!(LdaGlobal(st, name: K, s: FSlot) {
 op!(LdaGlobalInsideTypeof(st, name: K, s: FSlot) {
     match ic::load_global(st.rt(), st.info(), st.cx.global_this, s.0) {
         Some(v) => {
+            ic::ic_count!(hit, LoadGlobal);
             st.acc = v;
             Flow::Next
         }
-        None => Flow::Cold,
+        None => {
+            ic::ic_count!(miss, LoadGlobal, st.info(), s.0);
+            Flow::Cold
+        }
     }
 } cold {
     let n = st.constant(name);
@@ -602,8 +610,10 @@ op!(LdaGlobalInsideTypeof(st, name: K, s: FSlot) {
 op!(StaGlobal(st, name: K, s: FSlot) {
     let v = st.acc;
     if ic::store_global(st.rt(), st.info(), st.cx.global_this, s.0, v) {
+        ic::ic_count!(hit, StoreGlobal);
         Flow::Next
     } else {
+        ic::ic_count!(miss, StoreGlobal, st.info(), s.0);
         Flow::Cold
     }
 } cold {
@@ -687,10 +697,14 @@ op!(GetNamedProperty(st, object: R, name: K, s: FSlot) {
     let o = st.reg(object);
     match ic::load(st.info(), st.cx.proto_epoch, o, s.0) {
         Some(v) => {
+            ic::ic_count!(hit, Load);
             st.acc = v;
             Flow::Next
         }
-        None => Flow::Cold,
+        None => {
+            ic::ic_count!(miss, Load, st.info(), s.0);
+            Flow::Cold
+        }
     }
 } cold {
     let (o, k) = (st.reg(object), st.constant(name));
@@ -706,10 +720,14 @@ op!(GetNamedPropertyFromSuper(st, receiver: R, name: K, s: FSlot) {
     }
     match ic::load(st.info(), st.cx.proto_epoch, object::proto_of(home), s.0) {
         Some(v) => {
+            ic::ic_count!(hit, Load);
             st.acc = v;
             Flow::Next
         }
-        None => Flow::Cold,
+        None => {
+            ic::ic_count!(miss, Load, st.info(), s.0);
+            Flow::Cold
+        }
     }
 } cold {
     let (home, k, this) = (st.acc, st.constant(name), st.reg(receiver));
@@ -734,8 +752,10 @@ op!(GetKeyedProperty(st, object: R, _s: FSlot) {
 op!(SetNamedProperty(st, object: R, name: K, s: FSlot) {
     let (o, v) = (st.reg(object), st.acc);
     if ic::store::<true>(st.rt(), st.info(), st.cx.proto_epoch, o, s.0, v) {
+        ic::ic_count!(hit, Store);
         Flow::Next
     } else {
+        ic::ic_count!(miss, Store, st.info(), s.0);
         Flow::Cold
     }
 } cold {
@@ -747,8 +767,10 @@ op!(SetNamedProperty(st, object: R, name: K, s: FSlot) {
 op!(DefineNamedOwnProperty(st, object: R, name: K, s: FSlot) {
     let (o, v) = (st.reg(object), st.acc);
     if ic::store::<false>(st.rt(), st.info(), st.cx.proto_epoch, o, s.0, v) {
+        ic::ic_count!(hit, Store);
         Flow::Next
     } else {
+        ic::ic_count!(miss, Store, st.info(), s.0);
         Flow::Cold
     }
 } cold {
