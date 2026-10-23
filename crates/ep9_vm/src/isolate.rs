@@ -36,7 +36,7 @@ use ep9_value::{JsResult, Throw, Value};
 
 use crate::abi::{JsKey, JsObject, Local};
 use crate::builtins::{self, BuiltinTable};
-use crate::compiler::CompilerHooks;
+use crate::compiler::{CompileResult, CompilerHooks};
 use crate::conv::{Res, describe};
 use crate::frame::{HOLE, UNDEFINED};
 use crate::host::HostFn;
@@ -687,6 +687,53 @@ impl<'s> abi::Cx<'s> {
         let b = run_unit(self.inner(), unit, file)?;
         // The hole never leaves the VM.
         Ok(Local::from_bits(if b == HOLE { UNDEFINED } else { b }))
+    }
+
+    /// Runs the module unit `unit` (a module goal unit from ep9_frontend) as the module named
+    /// `name`, with the modules it imports (the module loader API, M3-P2; §16.2.1.5): the
+    /// steps of a host's import of an entry module, with a synchronous loader.
+    ///
+    /// ```text
+    /// the record of `name` in the current realm's module map, or a new one from `unit`
+    /// load:     for each import or re-export specifier of each module, depth first:
+    ///             resolve(referrer name, specifier) -> a name (the map key)
+    ///             not in the map: load(name) -> a module unit -> a new record
+    /// link:     imports bound to the exporting modules' bindings (live), namespaces
+    /// evaluate: each module's body once, dependencies first; a thrown error is kept and
+    ///           thrown again by each later import of that module
+    /// ```
+    ///
+    /// The names are the host's: `resolve` decides what two specifiers mean the same module
+    /// (the test262 runner and the CLI give a normalized path), and a name loads once per
+    /// realm. `Err(text)` from `resolve` throws an `Error` with that text; a `load` failure
+    /// throws as eval code's compile failures do (`SyntaxError` for an early error). An
+    /// import that no module exports, or that two `export *` give, is a `SyntaxError`.
+    /// An import attribute key other than `type` is a `SyntaxError`; `type: "json"` throws
+    /// the v0 not-implemented `Error`, another type a `TypeError`. The result is undefined; the module's code runs with `this`
+    /// undefined. Run a microtask checkpoint after it, as [`Isolate::run_script`] does.
+    /// Top-level `await` and `import()` are not built (the front end rejects them).
+    ///
+    /// ```compile_fail
+    /// use ep9_vm::Isolate;
+    /// fn escape(iso: &mut Isolate, unit: ep9_bytecode::VerifiedUnit) {
+    ///     // The `Local` cannot leave `with_cx`.
+    ///     let v = iso
+    ///         .with_cx(|cx| cx.run_module(unit, "a.js", &mut |_, s| Ok(s.into()), &mut |_| todo!()))
+    ///         .unwrap();
+    ///     iso.collect_garbage();
+    ///     let _ = v;
+    /// }
+    /// ```
+    pub fn run_module(
+        &mut self,
+        unit: VerifiedUnit,
+        name: &str,
+        resolve: &mut dyn FnMut(&str, &str) -> Result<String, String>,
+        load: &mut dyn FnMut(&str) -> CompileResult,
+    ) -> JsResult<Local<'s>> {
+        let mut host = crate::module::Host { resolve, load };
+        let b = crate::module::run_module(self.inner(), unit, name, &mut host)?;
+        Ok(Local::from_bits(b))
     }
 
     /// The value of the global binding `name` (GetBindingValue of the global environment,
