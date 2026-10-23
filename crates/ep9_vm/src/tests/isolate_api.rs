@@ -550,14 +550,15 @@ fn use_the_kept_realm(iso: &mut crate::Isolate) -> JsResult<(bool, bool, bool)> 
 }
 
 /// Makes a realm that nothing holds; returns a weak handle to its global object. It makes
-/// a function and the generator function shape in that realm, so both function shape caches
-/// hold a shape of it until the switch back. Out of line, as [`keep_a_realm`].
+/// a function and the generator and async function shapes in that realm, so all 3 function
+/// shape caches hold a shape of it until the switch back. Out of line, as [`keep_a_realm`].
 #[inline(never)]
 fn lose_a_realm(iso: &mut crate::Isolate) -> ep9_heap::WeakHandle {
     iso.create_realm(|cx, global| {
         cx.new_builtin_closure(make_object, "make", 0, Local::undefined());
         let rt = cx.inner().rt();
         crate::shape::generator_function_shape(rt);
+        crate::shape::async_function_shape(rt);
         Ok(rt.heap.new_weak(crate::runtime::val(global.bits())))
     })
     .unwrap()
