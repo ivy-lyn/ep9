@@ -646,12 +646,22 @@ impl PropKey {
         }
     }
 
-    /// The same key? (`Atom(Length)` and `Str("length")` are one key.)
+    /// The same key? (`Atom(Length)` and `Str("length")` are one key.) No allocation:
+    /// `check_tables` calls it for each pair of keys, at each process start.
     fn same(&self, other: &PropKey) -> bool {
-        match (self, other) {
-            (PropKey::Symbol(a), PropKey::Symbol(b)) => a == b,
-            (PropKey::Symbol(_), _) | (_, PropKey::Symbol(_)) => false,
-            _ => self.text() == other.text(),
+        match (self.string_text(), other.string_text()) {
+            (Some(a), Some(b)) => a == b,
+            (None, None) => self == other,
+            _ => false,
+        }
+    }
+
+    /// The text of a string key; `None` for a symbol.
+    fn string_text(&self) -> Option<&'static str> {
+        match *self {
+            PropKey::Atom(a) => Some(a.text()),
+            PropKey::Str(s) => Some(s),
+            PropKey::Symbol(_) => None,
         }
     }
 }
@@ -1004,21 +1014,21 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
         }
     }
     let prototype = PropKey::Atom(Atom::Prototype);
-    // Defined keys per target with their values, in walk order (for aliases and duplicates).
-    let mut defined: Vec<(IntrinsicId, PropKey, PropValue)> = Vec::new();
+    // Defined keys with their values, one list per target (index `IntrinsicId as usize`) in
+    // walk order, for aliases and duplicates. A check scans its own target's list only, so
+    // this stays linear in the number of keys (it runs at each process start).
+    let mut defined: Vec<Vec<(PropKey, PropValue)>> = vec![Vec::new(); IntrinsicId::ALL.len()];
     for m in modules() {
         let at = |what: String| format!("builtin table module `{}`: {what}", m.name);
         for op in m.props {
             if !made.contains(&op.target) {
                 return Err(at(format!("target {} is not made", op.target.name())));
             }
+            let on_target = &mut defined[op.target as usize];
             for p in op.props {
                 let here =
                     |what: &str| at(format!("{}.{}: {what}", op.target.name(), p.key.text()));
-                if defined
-                    .iter()
-                    .any(|(t, k, _)| *t == op.target && k.same(&p.key))
-                {
+                if on_target.iter().any(|(k, _)| k.same(&p.key)) {
                     return Err(here("defined twice"));
                 }
                 // Install adds keys in walk order, and adding a key to a function first makes
@@ -1029,9 +1039,7 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                     && !matches!(p.value, PropValue::Accessor { .. });
                 if !is_prototype
                     && constructors.iter().any(|(c, _)| *c == op.target)
-                    && !defined
-                        .iter()
-                        .any(|(t, k, _)| *t == op.target && k.same(&prototype))
+                    && !on_target.iter().any(|(k, _)| k.same(&prototype))
                 {
                     return Err(here(
                         "the first key of a constructor is `prototype`, a data property with \
@@ -1048,9 +1056,7 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                         }
                     }
                     PropValue::Alias(k) => {
-                        let of = defined
-                            .iter()
-                            .find(|(t, d, _)| *t == op.target && d.same(&k));
+                        let of = on_target.iter().find(|(d, _)| d.same(&k));
                         match of {
                             None => {
                                 return Err(here(&format!(
@@ -1061,7 +1067,7 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                             // An alias copies a data value (one function object under two
                             // names, as `Array.prototype[@@iterator]`); no spec alias is an
                             // accessor, and install would copy the internal pair.
-                            Some((_, _, PropValue::Accessor { .. })) => {
+                            Some((_, PropValue::Accessor { .. })) => {
                                 return Err(here(&format!(
                                     "alias of {}, an accessor (an alias needs a data property)",
                                     k.text()
@@ -1084,12 +1090,12 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                     }
                     PropValue::Const(_) | PropValue::Symbol(_) => {}
                 }
-                defined.push((op.target, p.key, p.value));
+                on_target.push((p.key, p.value));
             }
         }
     }
     for (c, module) in &constructors {
-        if !defined.iter().any(|(t, k, _)| t == c && k.same(&prototype)) {
+        if !defined[*c as usize].iter().any(|(k, _)| k.same(&prototype)) {
             return Err(format!(
                 "builtin table module `{module}`: the constructor {} has no `prototype`",
                 c.name()
@@ -1583,6 +1589,16 @@ mod tests {
     fn keys_compare_by_text_and_symbol() {
         assert!(PropKey::Atom(Atom::Length).same(&PropKey::Str("length")));
         assert!(!PropKey::Str("iterator").same(&PropKey::Symbol(WellKnownSymbol::ITERATOR)));
+        assert!(!PropKey::Symbol(WellKnownSymbol::ITERATOR).same(&PropKey::Str("iterator")));
+        assert!(!PropKey::Atom(Atom::Length).same(&PropKey::Str("name")));
+        assert!(
+            PropKey::Symbol(WellKnownSymbol::ITERATOR)
+                .same(&PropKey::Symbol(WellKnownSymbol::ITERATOR))
+        );
+        assert!(
+            !PropKey::Symbol(WellKnownSymbol::ITERATOR)
+                .same(&PropKey::Symbol(WellKnownSymbol::ASYNC_ITERATOR))
+        );
         assert_eq!(
             PropKey::Symbol(WellKnownSymbol::ITERATOR).text(),
             "[Symbol.iterator]"
