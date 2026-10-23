@@ -265,8 +265,7 @@ pub(crate) struct Runtime {
     pub interrupt_requests: InterruptQueue,
     /// True while a termination unwinds (no handler catches it).
     pub terminating: Cell<bool>,
-    /// Template objects per (FunctionInfo, constant index) (§13.2.8.4 GetTemplateObject), held
-    /// weakly: the realm that made one owns it (`realmf::TEMPLATES`, `realm::add_template`).
+    /// Template objects per (FunctionInfo, constant index), weak (`realm::add_template`).
     pub templates: RefCell<HashMap<(usize, u32), WeakHandle>>,
     /// Shapes (H17): the prototype epoch and the shape roots.
     pub shapes: ShapeState,

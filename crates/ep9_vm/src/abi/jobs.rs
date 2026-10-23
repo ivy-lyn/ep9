@@ -45,7 +45,6 @@ use crate::frame::{NULL, UNDEFINED};
 use crate::jobs::{executor, job, promise, reaction, rejected, resolving};
 use crate::kinds;
 use crate::object;
-use crate::realm;
 use crate::runtime::{Atom, ErrorKind};
 
 /// The state of a promise (`[[PromiseState]]`, §27.2.6).
@@ -319,14 +318,14 @@ impl<'s> Cx<'s> {
         thenable: Local<'s>,
         then: Local<'s>,
     ) -> JsResult<()> {
-        let then_realm = realm::get_function_realm(self.rt(), then.bits());
+        let then_realm = crate::realm::get_function_realm(self.rt(), then.bits());
         let saved = self.cx.realm;
         if then_realm == saved {
             return self.promise_resolve_thenable_job_in(promise, thenable, then);
         }
-        realm::switch(self.cx, then_realm);
+        crate::realm::switch(self.cx, then_realm);
         let r = self.promise_resolve_thenable_job_in(promise, thenable, then);
-        realm::switch(self.cx, saved);
+        crate::realm::switch(self.cx, saved);
         r
     }
 
