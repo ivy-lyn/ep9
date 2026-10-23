@@ -19,7 +19,7 @@ strings (16):
   str12 "done"
   str13 "value"
   str14 "return"
-  str15 "Private method is not writable"
+  str15 "Private method '#m' is not writable"
 scopes (9):
   scope0 script outer=- flags=[] slots=["A":class]
   scope1 class outer=scope0 flags=[needs-context,strict] slots=["#m":const, "#a":const, "#g":const, "#.brand":const, "#.set-a":const, "#.set-g":const]
@@ -315,7 +315,7 @@ function f7 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-pa
     311    Star r3                                      ; 0c 03
     313    Ldar r1                                      ; 0b 01
     315 E> GetKeyedProperty r0, s24                     ; 23 00 18
-    318    LdaConstant k6  ; k6 = String str15 "Private method is not writable" ; 0a 06
+    318    LdaConstant k6  ; k6 = String str15 "Private method '#m' is not writable" ; 0a 06
     320    Star r4                                      ; 0c 04
     322 E> CallRuntime ThrowTypeError, r4               ; 68 2d 00 04 01
     327 S> Ldar a0                                      ; 0b fe
@@ -343,7 +343,7 @@ function f7 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-pa
       3 String str13 "value"
       4 String str14 "return"
       5 JumpTable [+5]
-      6 String str15 "Private method is not writable"
+      6 String str15 "Private method '#m' is not writable"
   feedback (27):
       0 LoadKeyed
       1 Call

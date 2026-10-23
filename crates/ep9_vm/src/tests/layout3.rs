@@ -802,16 +802,13 @@ fn module_variable_opcodes_reach_slow_module() {
     }
 }
 
-/// P0-VM3 step 2 (task 8): `CallRuntime` of ids 32-43, 46 and 47 reaches its stub in
-/// `slow/{async_fn, async_gen, module, eval}.rs`, which throws today's "not implemented" error
-/// with the id's name (the text of the old catch-all arm).
+/// P0-VM3 step 2 (task 8): `CallRuntime` of ids 36-43, 46 and 47 reaches its stub in
+/// `slow/{async_gen, module, eval}.rs`, which throws today's "not implemented" error with the
+/// id's name (the text of the old catch-all arm). Ids 32-35 are built (M3-P1 ASYNC,
+/// `slow/async_fn.rs`; `tests/async_fn.rs` checks their routing).
 #[test]
 fn abi5_runtime_ids_reach_their_stubs() {
-    const ROUTED: [(RuntimeId, &str); 14] = [
-        (RuntimeId::AsyncFunctionEnter, "async_fn"),
-        (RuntimeId::AsyncFunctionAwait, "async_fn"),
-        (RuntimeId::AsyncFunctionResolve, "async_fn"),
-        (RuntimeId::AsyncFunctionReject, "async_fn"),
+    const ROUTED: [(RuntimeId, &str); 10] = [
         (RuntimeId::AsyncGeneratorEnter, "async_gen"),
         (RuntimeId::AsyncGeneratorAwait, "async_gen"),
         (RuntimeId::AsyncGeneratorYield, "async_gen"),
@@ -824,10 +821,7 @@ fn abi5_runtime_ids_reach_their_stubs() {
         (RuntimeId::StoreEvalAnnexBFunction, "eval"),
     ];
     let ids: Vec<u16> = ROUTED.iter().map(|&(id, _)| id as u16).collect();
-    assert_eq!(
-        ids,
-        [32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 46, 47]
-    );
+    assert_eq!(ids, [36, 37, 38, 39, 40, 41, 42, 43, 46, 47]);
     for (id, file) in ROUTED {
         let info = id.info();
         let argc = info.arity.expect("fixed arity");

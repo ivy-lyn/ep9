@@ -484,7 +484,13 @@ impl<'a> FnGen<'a, '_> {
     fn for_in(&mut self, f: &'a ForInStatement<'a>, labels: Vec<&'a str>) -> Gen {
         self.stmt_pos(f.span);
         let scope = self.scope_of(f.scope_id.get(), f.span)?;
-        self.for_in_var_initializer(&f.left)?;
+        // The initializer's own scopes (a class) are children of the for scope. A `var` head
+        // binds nothing in that scope, so it needs no context (Annex B.3.5).
+        let outer = self.scope;
+        self.scope = scope;
+        let init = self.for_in_var_initializer(&f.left);
+        self.scope = outer;
+        init?;
         let m = self.mark();
         let recv = self.temp();
         let cache = self.temps(3);

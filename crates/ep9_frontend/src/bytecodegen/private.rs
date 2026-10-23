@@ -21,11 +21,9 @@ use oxc_ast::ast::{PrivateFieldExpression, PrivateIdentifier, PrivateInExpressio
 
 use super::expr::MemberRef;
 use super::func::{FnGen, Gen};
-use crate::scope::{BindingId, BindingKind, ImplicitRef, PrivateKind, Reference, Resolution};
-
-/// The TypeError text of PrivateSet step 5 (a store to a private method), thrown through ABI 5
-/// runtime id 45 `ThrowTypeError`.
-const PRIVATE_METHOD_NOT_WRITABLE: &str = "Private method is not writable";
+use crate::scope::{
+    BindingId, BindingKind, ImplicitRef, NameId, PrivateKind, Reference, Resolution,
+};
 
 /// A resolved `#x` reference.
 #[derive(Clone, Copy)]
@@ -177,6 +175,7 @@ impl<'a, 's> FnGen<'a, 's> {
                     brand,
                     get,
                     set,
+                    name: self.binding(r.binding).name,
                     at: p.field.span.start,
                 })
             }
@@ -209,13 +208,15 @@ impl<'a, 's> FnGen<'a, 's> {
     /// PutValue of the accumulator to a `MemberRef::PrivateBranded`: the brand check, then the
     /// setter call (a getter-only accessor holds undefined: the call throws), or for a method
     /// the TypeError of PrivateSet step 5 (ABI 5 runtime id 45 `ThrowTypeError` with the text
-    /// "Private method is not writable"; it replaces ThrowConstAssignError, M2-P2-OPEN-ROLES).
-    /// The accumulator is not kept.
+    /// "Private method '#m' is not writable", node v24's text; `name` is the private name with
+    /// its `#`; it replaces ThrowConstAssignError, M2-P2-OPEN-ROLES). The accumulator is not
+    /// kept.
     pub(crate) fn private_branded_store(
         &mut self,
         obj: Register,
         brand: Register,
         set: Option<Register>,
+        name: NameId,
         at: u32,
     ) {
         let m = self.mark();
@@ -233,7 +234,8 @@ impl<'a, 's> FnGen<'a, 's> {
             }
             None => {
                 let message = self.temp();
-                let k = self.str_const(PRIVATE_METHOD_NOT_WRITABLE);
+                let text = format!("Private method '{}' is not writable", self.sa.name(name));
+                let k = self.str_const(&text);
                 self.b.lda_constant(k).star(message);
                 self.runtime_with_at(
                     ep9_bytecode::RuntimeId::ThrowTypeError,

@@ -38,8 +38,8 @@
 //! | `call::call_function_object` (Rust -> JS) | around the nested run |
 //! | `call::run_resumed` (generator resume) | around the nested run |
 //!
-//! Caches that hold a realm value: the function shape caches (`shape::function_shape`,
-//! `generator_function_shape`) check the prototype on each hit, and [`switch`] empties them
+//! Caches that hold a realm value: the function shape caches (`shape::function_shape`, its
+//! generator and async forms) check the prototype on each hit, and [`switch`] empties them
 //! (`shape::clear_realm_caches`), so they hold only a shape of the current realm and keep no
 //! other realm live. Feedback vectors and template objects belong to one FunctionInfo, whose
 //! functions are all of one realm. `builtins::existing_function` knows the first realm's

@@ -16,7 +16,7 @@
 //! | `String.prototype[@@iterator]`, %StringIteratorPrototype%.next | §22.1.3.36, §22.1.5.2.1 |
 //! | `%Iterator.prototype%[@@iterator]`; `%Iterator.prototype%[@@toStringTag]` (an accessor: get "Iterator", set SetterThatIgnoresPrototypeProperties, ES2025) | §27.1.2.1, §27.1.4.14 |
 //! | `Function.prototype[@@hasInstance]` (OrdinaryHasInstance; `instanceof` runs it without a call, `property::instance_of`) | §20.2.3.6 |
-//! | `%GeneratorFunction%`, `%GeneratorPrototype%` `next`/`return`/`throw`, `%AsyncFunction%` (`generator.rs`; `%GeneratorFunction%` compiles through the compiler hook like `Function`, `abi/script.rs`; `%AsyncFunction%` is a not-implemented stub until month 3) | §27.3.1.1, §27.5.1.2-4, §27.7.1.1 |
+//! | `%GeneratorFunction%`, `%GeneratorPrototype%` `next`/`return`/`throw`, `%AsyncFunction%` (`generator.rs`; `%GeneratorFunction%` compiles through the compiler hook like `Function`, `abi/script.rs`; `%AsyncFunction%` is CreateDynamicFunction of kind async through the same hook, M3-P1 ASYNC) | §27.3.1.1, §27.5.1.2-4, §27.7.1.1 |
 //! | `%eval%`, the global `eval` (indirect eval; direct eval is `interp/slow/eval.rs`), through the compiler hook (`abi/script.rs`) | §19.2.1 |
 //!
 //! The built-in iterators are ITERATOR cells (object.rs): the iterated value, the next index

@@ -358,9 +358,11 @@ mod tests {
             (hooks.compile_function)(FunctionCtorKind::Normal, "/*", "*/){"),
             Err(CompileFailure::Syntax(_))
         ));
+        assert!((hooks.compile_function)(FunctionCtorKind::Async, "a", "return await a").is_ok());
         assert_eq!(
-            (hooks.compile_function)(FunctionCtorKind::Async, "a", "return await a").unwrap_err(),
-            CompileFailure::Unsupported("async functions".to_string())
+            (hooks.compile_function)(FunctionCtorKind::AsyncGenerator, "", "yield await 1")
+                .unwrap_err(),
+            CompileFailure::Unsupported("generator functions".to_string())
         );
         assert!(
             Isolate::new(IsolateConfig::default())

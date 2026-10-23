@@ -414,11 +414,11 @@ fn unsupported_and_lone_surrogates_are_not_syntax_errors() {
     assert_eq!(
         run_both(
             r#"function e(f) { try { f(); return 'ok'; } catch (x) { return x.constructor.name + ': ' + x.message; } }
-print(e(() => eval('async function af() {}')));
+print(e(() => eval('async function* ag() {}')));
 print(e(() => eval("'" + String.fromCharCode(0xD800) + "'")));"#
         ),
         lines(&[
-            "Error: not implemented in ep9 v0: unsupported: async functions",
+            "Error: not implemented in ep9 v0: unsupported: generator functions",
             "Error: not implemented in ep9 v0: source text with a lone surrogate",
         ])
     );
