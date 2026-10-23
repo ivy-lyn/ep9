@@ -342,3 +342,36 @@ print(new Date(0) == new Date(0).toString(), new Date(0) < new Date(1));
         ])
     );
 }
+
+/// A legacy-form offset word of 4 bytes that holds a multibyte char ('+1€', a lone
+/// surrogate, which becomes U+FFFD): NaN, not a panic (X-DATE1).
+#[test]
+fn parse_offset_word_with_a_multibyte_char() {
+    assert_eq!(
+        run_both(
+            r#"
+print(Date.parse('Jan 01 1970 GMT+1€'), Date.parse('Jan 01 1970 GMT+1\ud800'), new Date('Jan 01 1970 UTC+1é1').getTime());
+print(Date.parse('Jan 01 1970 GMT+€1'), Date.parse('Jan 01 1970 GMT-1é1'), Date.parse('Jan 01 1970 GMT+1\u0800'));
+"#
+        ),
+        lines(&["NaN NaN NaN", "NaN NaN NaN"])
+    );
+}
+
+/// A local time far outside the Date range (an hour of -1e100) reaches the time-zone offset
+/// before TimeClip: NaN, not an i64 overflow in the equivalent-year fallback (X-DATE2).
+#[test]
+fn enormous_local_time_is_nan() {
+    assert_eq!(
+        run_both(
+            r#"
+print(new Date(2020, 0, 1, -1e100).getTime(), new Date(2020, 0, 1, 0, 0, 0, -1.7e308).getTime());
+print(new Date(2020, 0, 1, 1e100).getTime(), new Date(2020, 0, 1, -9.3e18).getTime());
+var d = new Date(0);
+print(d.setHours(-1e100), new Date(0).setMinutes(-1e100), new Date(0).setSeconds(-1e100));
+print(new Date(0).setMilliseconds(-1e100), new Date(0).setDate(-1e100), new Date(0).setHours(0, 0, 0, -Number.MAX_VALUE));
+"#
+        ),
+        lines(&["NaN NaN", "NaN NaN", "NaN NaN NaN", "NaN NaN NaN"])
+    );
+}

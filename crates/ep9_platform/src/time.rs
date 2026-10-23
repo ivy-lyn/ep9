@@ -13,6 +13,7 @@
 //! a time the C runtime cannot convert (windows: before 1970 or after 3000)
 //!                              -> the same day in an equivalent year (same leap rule, same
 //!                                 weekday of 1 January) in 2008-2035, as V8 does
+//!                                 (the move overflows i64: offset 0; TimeClip gives NaN)
 //! ```
 //!
 //! Offsets are in milliseconds, positive east of Greenwich. Later the body of
@@ -67,9 +68,20 @@ fn offset_at_utc(t_ms: f64) -> f64 {
         return off as f64 * 1000.0;
     }
     // The C runtime cannot convert this time: use the same day of an equivalent year.
+    equivalent_secs(secs)
+        .and_then(sys_offset_secs)
+        .map_or(0.0, |off| off as f64 * 1000.0)
+}
+
+/// `secs` moved to the same day and time in the equivalent year (2008-2035), or `None` when
+/// the move overflows i64. That happens only for a time far outside the Date range (the `as`
+/// cast saturates at i64::MIN below about -9.2e21 ms, for example a local time of -1e100
+/// before TimeClip); the offset is then 0 and TimeClip gives NaN. Shared by the unix and
+/// windows paths.
+fn equivalent_secs(secs: i64) -> Option<i64> {
     let year = year_from_day(secs.div_euclid(86_400));
     let shift = days_from_year(equivalent_year(year)) - days_from_year(year);
-    sys_offset_secs(secs + shift * 86_400).map_or(0.0, |off| off as f64 * 1000.0)
+    shift.checked_mul(86_400)?.checked_add(secs)
 }
 
 /// The days from 1970-01-01 to 1 January of `y` (DayFromYear, §21.4.1.3).
@@ -177,7 +189,21 @@ mod tests {
 
     #[test]
     fn offsets_are_whole_seconds_under_one_day() {
-        for t in [0.0, 1.6e12, -1e12, 8.64e15, -8.64e15, 4.1e12, 3.3e13] {
+        // The last five are far outside the Date range (a local time before TimeClip).
+        for t in [
+            0.0,
+            1.6e12,
+            -1e12,
+            8.64e15,
+            -8.64e15,
+            4.1e12,
+            3.3e13,
+            -1e100,
+            1e100,
+            -9.3e21,
+            f64::MIN,
+            f64::MAX,
+        ] {
             for is_utc in [true, false] {
                 let o = local_offset_ms(t, is_utc);
                 assert!(o.abs() < MS_PER_DAY, "offset {o} at {t}");
@@ -219,6 +245,29 @@ mod tests {
         assert_eq!(year_from_day(365), 1971);
         assert_eq!(year_from_day(-100_000_000), -271_821);
         assert_eq!(year_from_day(100_000_000), 275_760);
+    }
+
+    /// The fallback both platforms take when the C runtime cannot convert a time (windows:
+    /// before 1970 or after 3000): the same time of day in 2008-2035, and `None` instead of
+    /// an overflow at the low i64 edge (there the shift is about +1.07e14 days).
+    #[test]
+    fn equivalent_secs_keeps_the_time_of_day_and_stops_at_the_i64_edge() {
+        for secs in [
+            -8_640_000_000_000,
+            -1,
+            0,
+            32_503_680_000,
+            8_640_000_000_000,
+            i64::MAX,
+        ] {
+            let e = equivalent_secs(secs).expect("in range");
+            assert_eq!(e.rem_euclid(86_400), secs.rem_euclid(86_400), "{secs}");
+            assert!(
+                (2008..=2035).contains(&year_from_day(e.div_euclid(86_400))),
+                "{secs}"
+            );
+        }
+        assert_eq!(equivalent_secs(i64::MIN), None);
     }
 
     #[test]
