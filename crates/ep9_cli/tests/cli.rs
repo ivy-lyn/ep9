@@ -72,12 +72,12 @@ fn compile_errors_exit_1_with_a_position() {
     assert_eq!(o.code, Some(1));
     assert!(o.stderr.starts_with("[eval]:2:"), "{}", o.stderr);
     assert!(o.stderr.contains("SyntaxError"), "{}", o.stderr);
-    // An async generator: still unsupported after P1-GEN-CG (plan-v3 §4).
-    let o = ep9(&["-e", "async function* g() {}"]);
+    // A class auto-accessor: unsupported (async generators compile since M3-P2 ASYNCGEN).
+    let o = ep9(&["-e", "class A { accessor x = 1 }"]);
     assert_eq!(o.code, Some(1));
     assert!(
         o.stderr
-            .contains("[eval]:1:1: SyntaxError: ep9 BytecodeGen v0 does not support"),
+            .contains("[eval]:1:11: SyntaxError: ep9 BytecodeGen v0 does not support"),
         "{}",
         o.stderr
     );
