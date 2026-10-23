@@ -179,6 +179,8 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
         // SAFETY: `fp` is the live top frame; `this` is valid Value bits.
         let Some(stub) = (unsafe { call::push_construct_stub(cx, fp, this, callee, s.next_pc) })
         else {
+            // The call takes its unit also when its frame does not fit (R3-2).
+            cx.budget -= 1;
             return stack_overflow(cx);
         };
         // SAFETY: `stub` is the new top frame; the callee frame goes right above it.
@@ -197,10 +199,12 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
                 new_target,
             )
         };
+        // One unit per call, also when the frame does not fit (R3-2): a caught RangeError
+        // must not keep the budget from running out, or the poll never comes.
+        cx.budget -= 1;
         let Some(nfp) = nfp else {
             return stack_overflow(cx);
         };
-        cx.budget -= 1;
         cx.out_fp = nfp;
         cx.out_pc = fi.code;
         return Ok(UNDEFINED);
@@ -301,10 +305,12 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
             UNDEFINED,
         )
     };
+    // One unit per call, also when the frame does not fit (R3-2): `call_fast` gives its unit
+    // back at that exit, and a caught RangeError must not keep the budget from running out.
+    cx.budget -= 1;
     let Some(nfp) = nfp else {
         return stack_overflow(cx);
     };
-    cx.budget -= 1;
     cx.out_fp = nfp;
     cx.out_pc = fi.code;
     Ok(UNDEFINED)
@@ -578,10 +584,11 @@ fn enter_b_cold(
             UNDEFINED,
         )
     };
+    // One unit, also when the frame does not fit (R3-2), as in `do_call`.
+    cx.budget -= 1;
     let Some(nfp) = nfp else {
         return stack_overflow(cx);
     };
-    cx.budget -= 1;
     cx.out_fp = nfp;
     cx.out_pc = crate::native::ENTER_B_STUB.as_ptr();
     Ok(UNDEFINED)
