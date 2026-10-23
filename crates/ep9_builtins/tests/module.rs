@@ -92,10 +92,8 @@ fn compile(src: &str) -> Result<ep9_bytecode::VerifiedUnit, CompileFailure> {
     ep9_frontend::compile(src, SourceOpts::module(), CompileOptions::default()).map_err(failure)
 }
 
-/// Runs each entry of `entries` (file names of `files`) in turn with `Cx::run_module` on one
-/// isolate, a microtask checkpoint after each: the printed lines, and after each entry that
-/// throws, a line "uncaught Name: message". Then collects and verifies the heap.
-fn run_in(files: Files, entries: &[&str], dispatch: Dispatch, stress: bool) -> Vec<String> {
+/// An isolate with the table, [`HOOKS`], `print` and `stop`; OUT is empty.
+fn new_isolate(dispatch: Dispatch, stress: bool) -> Isolate {
     let mut iso = Isolate::new(IsolateConfig {
         heap: HeapConfig {
             gc_stress: u32::from(stress),
@@ -112,6 +110,14 @@ fn run_in(files: Files, entries: &[&str], dispatch: Dispatch, stress: bool) -> V
     iso.register_host_function("stop", 0, stop);
     TERM.with(|t| *t.borrow_mut() = Some(iso.terminate_handle()));
     OUT.with(|o| o.borrow_mut().clear());
+    iso
+}
+
+/// Runs each entry of `entries` (file names of `files`) in turn with `Cx::run_module` on one
+/// isolate, a microtask checkpoint after each: the printed lines, and after each entry that
+/// throws, a line "uncaught Name: message". Then collects and verifies the heap.
+fn run_in(files: Files, entries: &[&str], dispatch: Dispatch, stress: bool) -> Vec<String> {
+    let mut iso = new_isolate(dispatch, stress);
     for entry in entries {
         let unit = compile(source(files, entry).expect("an entry file")).expect("compiles");
         let mut resolve = |referrer: &str, spec: &str| -> Result<String, String> {
@@ -535,8 +541,9 @@ fn load_errors_run_no_module() {
 /// A failed load leaves records in the map that are still `new` (a module whose requests did
 /// not all load), and modules whose dependencies did not load. A later entry that reaches
 /// them loads the rest again (§16.2.1.5.1.1 step 2: every `new` module is walked; a module
-/// becomes `unlinked` only when the whole graph loaded), and the failure repeats with the
-/// same error (§16.2.1.10, HostLoadImportedModule). node runs one entry per process; for each
+/// becomes `unlinked` only when the whole graph loaded). This host gives the same result for
+/// each load, so the failure repeats with the same error; for a host that gives a valid
+/// module later, see [`a_failed_load_is_retried`]. node runs one entry per process; for each
 /// single entry it prints the same lines, with its own SyntaxError text.
 #[test]
 fn a_failed_load_strands_no_record() {
@@ -571,6 +578,89 @@ fn a_failed_load_strands_no_record() {
             "e",
             syntax,
             syntax,
+        ])
+    );
+}
+
+/// A failed load keeps no failed completion (H22-Q3, R3-5, RV4-3): the host fails the first
+/// load of `dep.js` (an early error), then gives a valid module. The first run of `main.js`
+/// throws and runs no body. The second run calls `resolve` and `load` again only for the
+/// request that has no module (`dep.js`; `b.js` keeps its record) and runs every body. A
+/// third run calls no hook and runs nothing. (node v24.22.1 runs b, dep and main for a
+/// dynamic `import()` of main.mjs after dep.mjs is fixed.)
+#[test]
+fn a_failed_load_is_retried() {
+    const MAIN: &str = "import './b.js';\nimport './dep.js';\nprint('main');\n";
+    let run = |dispatch: Dispatch, stress: bool| -> Vec<String> {
+        let mut iso = new_isolate(dispatch, stress);
+        let log = RefCell::new(Vec::new());
+        let dep_loads = core::cell::Cell::new(0);
+        for round in 0..3 {
+            log.borrow_mut().push(format!("round {round}"));
+            let mut resolve = |referrer: &str, spec: &str| -> Result<String, String> {
+                log.borrow_mut().push(format!("resolve {referrer} {spec}"));
+                Ok(spec.strip_prefix("./").unwrap_or(spec).to_string())
+            };
+            let mut load = |name: &str| {
+                log.borrow_mut().push(format!("load {name}"));
+                match name {
+                    "b.js" => compile("print('b');\n"),
+                    "dep.js" => {
+                        dep_loads.set(dep_loads.get() + 1);
+                        if dep_loads.get() == 1 {
+                            compile("let x = 1; let x = 2;\n")
+                        } else {
+                            compile("print('dep');\n")
+                        }
+                    }
+                    _ => panic!("no file {name}"),
+                }
+            };
+            let unit = compile(MAIN).expect("compiles");
+            let r = iso.with_cx(|cx| {
+                cx.run_module(unit, "main.js", &mut resolve, &mut load)
+                    .map(|_| ())
+            });
+            let c = iso.perform_microtask_checkpoint();
+            let printed = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
+            let mut log = log.borrow_mut();
+            log.extend(printed);
+            if let Err(e) = r.and(c) {
+                let name = e.message.split(':').next().unwrap_or("").to_string();
+                log.push(format!("uncaught {name}"));
+            }
+        }
+        iso.collect_garbage();
+        iso.verify_heap().expect("a valid heap");
+        log.into_inner()
+    };
+    let mut first: Option<(String, Vec<String>)> = None;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let r = common::on_big_stack(move || run(d, stress));
+            let label = format!("{} stress={stress}", d.name());
+            match &first {
+                None => first = Some((label, r)),
+                Some((l0, r0)) => assert_eq!(&r, r0, "{label} differs from {l0}"),
+            }
+        }
+    }
+    assert_eq!(
+        first.expect("at least one dispatch").1,
+        lines(&[
+            "round 0",
+            "resolve main.js ./b.js",
+            "load b.js",
+            "resolve main.js ./dep.js",
+            "load dep.js",
+            "uncaught SyntaxError",
+            "round 1",
+            "resolve main.js ./dep.js",
+            "load dep.js",
+            "b",
+            "dep",
+            "main",
+            "round 2",
         ])
     );
 }

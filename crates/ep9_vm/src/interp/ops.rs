@@ -1753,6 +1753,10 @@ mod call_budget {
         Call(Recv),
         /// `new f()`.
         Construct,
+        /// `new f()` in a script frame so big that the construct stub frame does not fit
+        /// (fewer than [`STUB_FRAME`] slots are free above it), so the stub push fails, not
+        /// the push of `f`'s frame (RV4-2).
+        ConstructStub,
     }
 
     /// The registers of `f` in [`overflow_program`]: more than [`OVERFLOW_SLOTS`], so its
@@ -1760,6 +1764,13 @@ mod call_budget {
     const BIG_FRAME: u32 = 2048;
     /// The VM stack of the overflow runs (the smallest that `Isolate::new` accepts).
     const OVERFLOW_SLOTS: usize = 1024;
+    /// The slots of a construct stub frame: the receiver and the header (no arguments, no
+    /// registers).
+    const STUB_FRAME: usize = 1 + crate::frame::HEADER;
+    /// The slots that [`Site::ConstructStub`] leaves free above the script frame: fewer than
+    /// [`STUB_FRAME`].
+    const STUB_FREE: usize = 4;
+    const _: () = assert!(STUB_FREE < STUB_FRAME);
 
     /// The script: `f = function f() { return 5 }` (sloppy, function 1, with [`BIG_FRAME`]
     /// registers), then `calls` times `try { f() } catch {}` (the call of `site`), with no
@@ -1780,7 +1791,7 @@ mod call_budget {
             Site::Call(Recv::Object) => {
                 s.b.ldar(r).star(o);
             }
-            Site::Call(Recv::Undefined) | Site::Construct => {}
+            Site::Call(Recv::Undefined) | Site::Construct | Site::ConstructStub => {}
         }
         s.b.lda_current_context().star(ctx);
         for _ in 0..calls {
@@ -1799,7 +1810,7 @@ mod call_budget {
                 Site::Call(Recv::Smi | Recv::Object) => {
                     s.b.call_property0(r, o, s.call);
                 }
-                Site::Construct => {
+                Site::Construct | Site::ConstructStub => {
                     s.b.ldar(r).construct(r, RegisterList::EMPTY, 0, s.call);
                 }
             }
@@ -1808,15 +1819,23 @@ mod call_budget {
             s.b.bind(handler);
             s.b.bind(done);
         }
+        if let Site::ConstructStub = site {
+            // The script frame (receiver, header and registers, from the stack base) ends
+            // [`STUB_FREE`] slots below the stack end.
+            let used = 1 + crate::frame::HEADER + s.b.register_count() as usize;
+            let pad = OVERFLOW_SLOTS - STUB_FREE - used;
+            s.b.new_register_list(u32::try_from(pad).expect("a small pad"));
+        }
         s.b.lda_smi(7).return_();
         unit("", vec![s.finish(), f.finish()])
     }
 
-    const SITES: [Site; 4] = [
+    const SITES: [Site; 5] = [
         Site::Call(Recv::Undefined),
         Site::Call(Recv::Smi),
         Site::Call(Recv::Object),
         Site::Construct,
+        Site::ConstructStub,
     ];
 
     /// Runs `overflow_program(calls, site)` with the budget `budget`, a VM stack of

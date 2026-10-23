@@ -448,7 +448,12 @@ pub(crate) struct Host<'h> {
 /// A module is marked `unlinked` when its own requests are loaded, which is also the
 /// visited mark of the walk; if the load fails, every module marked by this call is `new`
 /// again (ContinueModuleLoading marks the visited modules only when the whole graph loaded).
-/// The failure then repeats on a later load: the host gives the same error again (§16.2.1.10).
+/// These records stay in the realm's map as retryable `new` records, and no failed completion
+/// is kept (H22-Q3). A later load calls `resolve` again for each request that has no module
+/// yet (an empty `[[LoadedModules]]` entry), and `load` only when the realm's map has no
+/// module of that name. The same error comes again only if the host gives it again
+/// (HostLoadImportedModule, §16.2.1.10, needs the same result again only for a load that
+/// succeeded).
 fn load_graph(cx: &mut Cx, root: u64, host: &mut Host<'_>) -> Res<()> {
     let rt = cx.rt();
     // The modules this call walks (a module can be in it twice before it is walked).

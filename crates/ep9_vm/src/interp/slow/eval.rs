@@ -546,8 +546,12 @@ fn caller_context(fp: *mut u64) -> u64 {
 /// fnDefinable is true), else `None`. The walk goes from the caller's LexicalEnvironment out to
 /// the VariableEnvironment: a declarative context on the way that binds `name` (a lexical slot
 /// of the var scope too: a sloppy function's top-level lexical declarations have their own
-/// environment) means bindingExists; a `with` object and, as in V8 and [`var_env`] (B.3.4), a
-/// catch clause do not. A var scope with `ScopeFlags::PARAMETER_ENV` (an eval in the parameter
+/// environment) means bindingExists; a `with` object does not, and, as [`var_env`] (B.3.4)
+/// says, the environment of a catch clause, simple or destructured, does not. B.3.4 skips any
+/// Catch clause Environment Record at runtime; the rule for a simple catch parameter is only
+/// its static early error. node v24 (V8) skips only a simple catch parameter, so there
+/// `catch ({f}) { eval('{function f(){}}') }` leaves no var `f` (M3-P2-EVAL-CATCH: ep9 keeps
+/// the spec). A var scope with `ScopeFlags::PARAMETER_ENV` (an eval in the parameter
 /// list of a sloppy function with parameter expressions) holds the parameter environment of
 /// FunctionDeclarationInstantiation step 20 merged into it: the walk passes that environment
 /// before it reaches the variable environment, so any slot of `name` there (a parameter, or the
