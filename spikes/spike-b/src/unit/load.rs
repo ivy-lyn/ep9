@@ -5,13 +5,16 @@
 //!   1-4  ep9_unit::verdict(bytes, host)  LOAD ERROR -> nothing runs
 //!                                        SOURCE     -> compile the source section, run it
 //!                                        BYTECODE   -> run the bytecode section
+//!        LOAD: parse the sections and plan the link (external-reference kinds, intrinsic
+//!        indices); an error here is a LOAD ERROR, and nothing has run yet
 //!   5    map the text once per process (the registry; keyed by the content hash):
 //!        one chunk of the code range, the text bytes as they are in the file, the Win64
 //!        UNWIND_INFO after them; a unit slot that another unit holds -> BYTECODE
 //!        the first unit of the process: the unwind self-test on its probe (H28, unix)
-//!   6    run the bytecode; copy the RW template for this isolate: external references and
-//!        link cells resolved now, IC cells undefined, counters 0; link cells a strong root
-//!        range, IC cells a weak one (Heap::add_root_range); cx.unit_data[slot] = the copy
+//!   6    run the bytecode; copy the RW template for this isolate (cannot fail): external
+//!        references and link cells from the plan, IC cells undefined, counters 0; link
+//!        cells a strong root range, IC cells a weak one (Heap::add_root_range);
+//!        cx.unit_data[slot] = the copy
 //!   7    unwind registration (step 5, once per process); per isolate: the code registry
 //!   8    install each JS function in an Opt slot (ep9_vm::install_native_b), if the digest
 //!        of its bytecode equals the one in the function table; else it stays in T0
@@ -491,7 +494,11 @@ fn load_native(
     host: &HostInfo,
     opts: &LoadOptions,
 ) -> Result<(LoadKind, RunOutput), String> {
+    // Every step that can give a LOAD ERROR comes before the first run: the parse (it checks
+    // the external-reference kinds and the intrinsic indices) and the link plan. After the
+    // run, `link` cannot fail.
     let view = UnitView::parse(bytes)?;
+    let plan = LinkPlan::new(&view, opts)?;
     let hash: [u8; 32] = view.header.content_hash;
     let fallback = |us: &mut UnitSession, why: String| {
         let run = run_bytecode(&mut us.s, view.bytecode, "unit.js");
@@ -521,7 +528,7 @@ fn load_native(
             run,
         ));
     }
-    link(us, &view, opts)?;
+    link(us, &view, &plan);
     let mut installed = Vec::new();
     let mut t0 = Vec::new();
     for f in mapped.functions.iter().filter(|f| f.kind == FnKind::Js) {
@@ -533,8 +540,53 @@ fn load_native(
     Ok((LoadKind::Native { installed, t0 }, run))
 }
 
-/// Step 6: this isolate's RW copy of `view`'s unit.
-fn link(us: &mut UnitSession, view: &UnitView<'_>, opts: &LoadOptions) -> Result<(), String> {
+/// What [`link`] writes, resolved before any section of the unit runs: the external
+/// references and the intrinsic of each intrinsic link cell. A string link cell is made in
+/// [`link`] (a GC point), but it cannot fail.
+struct LinkPlan<'v> {
+    ext: Vec<u64>,
+    links: Vec<Planned<'v>>,
+}
+
+enum Planned<'v> {
+    Intrinsic(IntrinsicId),
+    Str(&'v str),
+}
+
+impl<'v> LinkPlan<'v> {
+    fn new(view: &'v UnitView<'_>, opts: &LoadOptions) -> Result<LinkPlan<'v>, String> {
+        let ext = view
+            .rw
+            .ext
+            .iter()
+            .map(|&kind| match kind {
+                EXT_KIND_RUNTIME_TABLE => Ok(std::ptr::from_ref(
+                    opts.runtime_table.unwrap_or_else(RuntimeTable::process),
+                )
+                .addr() as u64),
+                k => Err(format!("unknown external reference kind {k}")),
+            })
+            .collect::<Result<_, _>>()?;
+        let links = view
+            .rw
+            .links
+            .iter()
+            .map(|link| match link {
+                Link::Intrinsic(k) => IntrinsicId::ALL
+                    .get(*k as usize)
+                    .map(|&id| Planned::Intrinsic(id))
+                    .ok_or_else(|| format!("no intrinsic {k}")),
+                Link::Str(s) => Ok(Planned::Str(s)),
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(LinkPlan { ext, links })
+    }
+}
+
+/// Step 6: this isolate's RW copy of `view`'s unit, from `plan`. It cannot fail: the heap
+/// holds the root ranges over the words from the first `add_root_range` on, and the words must
+/// then live as long as the isolate (in `us.units`).
+fn link(us: &mut UnitSession, view: &UnitView<'_>, plan: &LinkPlan<'_>) {
     let l = view.rw.layout;
     let words: Box<[AtomicU64]> = (0..l.words())
         .map(|i| {
@@ -542,6 +594,9 @@ fn link(us: &mut UnitSession, view: &UnitView<'_>, opts: &LoadOptions) -> Result
             AtomicU64::new(if value { VALUE_UNDEFINED } else { 0 })
         })
         .collect();
+    for (i, &v) in plan.ext.iter().enumerate() {
+        words[i].store(v, Relaxed);
+    }
     let iso = &mut us.s.iso;
     let mut roots = Vec::new();
     for (range, strength) in [
@@ -557,30 +612,16 @@ fn link(us: &mut UnitSession, view: &UnitView<'_>, opts: &LoadOptions) -> Result
             cells.len(),
         );
         // SAFETY: `Slot` is a `repr(transparent)` AtomicU64; the words hold Value bits
-        // (undefined now, resolved Values below), never 0; the boxed words outlive the
-        // isolate (the `UnitSession` field order), so they stay valid until the heap drops.
+        // (undefined now, resolved Values below), never 0; the boxed words move into
+        // `us.units` below with no return in between, and outlive the isolate (the
+        // `UnitSession` field order), so they stay valid until the heap drops.
         roots.push(unsafe { iso.heap().add_root_range(slots, strength) });
     }
-    for (i, &kind) in view.rw.ext.iter().enumerate() {
-        let v = match kind {
-            EXT_KIND_RUNTIME_TABLE => {
-                std::ptr::from_ref(opts.runtime_table.unwrap_or_else(RuntimeTable::process)).addr()
-                    as u64
-            }
-            k => return Err(format!("unknown external reference kind {k}")),
-        };
-        words[i].store(v, Relaxed);
-    }
-    for (i, link) in view.rw.links.iter().enumerate() {
-        let v = match link {
-            Link::Intrinsic(k) => {
-                let id = *IntrinsicId::ALL
-                    .get(*k as usize)
-                    .ok_or_else(|| format!("no intrinsic {k}"))?;
-                NativeCx::intrinsic(iso, id)
-            }
+    for (i, link) in plan.links.iter().enumerate() {
+        let v = match *link {
+            Planned::Intrinsic(id) => NativeCx::intrinsic(iso, id),
             // A GC point; the cells resolved so far are in the strong range already.
-            Link::Str(s) => NativeCx::new_string(iso, s),
+            Planned::Str(s) => NativeCx::new_string(iso, s),
         };
         words[l.link_base() + i].store(v.to_bits(), Relaxed);
     }
@@ -592,7 +633,6 @@ fn link(us: &mut UnitSession, view: &UnitView<'_>, opts: &LoadOptions) -> Result
         words,
         roots,
     });
-    Ok(())
 }
 
 /// Step 8 for one JS function: the global function of that name must have exactly the

@@ -28,6 +28,7 @@ use ep9_unit::{
     HostInfo, SECTION_ENTRY_SIZE, SECTION_TABLE_OFFSET, SectionEntry, SectionKind, UnitHeader,
     offsets, target_arch,
 };
+use ep9_vm::IntrinsicId;
 
 use super::emit::{Assigned, RwLayout};
 use crate::emit::{Arch, Finalize, FunctionCode};
@@ -457,11 +458,23 @@ impl<'a> UnitView<'a> {
         if layout.slot != slot {
             return Err("rodata and RW template name two slots".into());
         }
-        let ext = (0..layout.ext).map(|_| r.u32()).collect::<Result<_, _>>()?;
+        // The loader resolves each external reference and link cell after the unit's script
+        // ran, so every record it can fail on is checked here: a bad unit is a LOAD ERROR
+        // before any section runs (H35 S3).
+        let ext: Vec<u32> = (0..layout.ext).map(|_| r.u32()).collect::<Result<_, _>>()?;
+        if let Some(k) = ext.iter().find(|&&k| k != EXT_KIND_RUNTIME_TABLE) {
+            return Err(format!("unknown external reference kind {k}"));
+        }
         let mut links = Vec::new();
         for _ in 0..layout.links {
             links.push(match r.u32()? {
-                1 => Link::Intrinsic(u16::try_from(r.u32()?).map_err(|_| "bad intrinsic")?),
+                1 => {
+                    let k = r.u32()?;
+                    if k as usize >= IntrinsicId::ALL.len() {
+                        return Err(format!("no intrinsic {k}"));
+                    }
+                    Link::Intrinsic(k as u16)
+                }
                 2 => Link::Str(String::from_utf8(r.bytes()?.to_vec()).map_err(|e| e.to_string())?),
                 k => return Err(format!("bad link kind {k}")),
             });
