@@ -585,6 +585,79 @@ impl<'a> FnGen<'a, '_> {
         Ok(())
     }
 
+    /// `for await (lhs of rhs) body` (§14.7.5.6 ForIn/OfHeadEvaluation and §14.7.5.7
+    /// ForIn/OfBodyEvaluation with iteratorKind async; M3-P2 ASYNCGEN), in an async function
+    /// or an async generator body: the `for-of` loop with GetIterator(rhs, async)
+    /// (`async_gen.rs` AGF5), an Await of each `next` result, and AsyncIteratorClose on an
+    /// abrupt exit. At a module top level it stays unsupported (M3-P3 IMPORT-TLA).
+    fn for_await_of(&mut self, f: &'a ForOfStatement<'a>, labels: Vec<&'a str>) -> Gen {
+        if self.await_target().is_none() {
+            return self.unsupported("for await", f.span);
+        }
+        self.stmt_pos(f.span);
+        let at = f.span.start;
+        let scope = self.scope_of(f.scope_id.get(), f.span)?;
+        let m = self.mark();
+        let iter = self.temp();
+        let next = self.temp();
+        let done = self.temp();
+        let value = self.temp();
+        self.for_head_rhs(scope, &f.right)?;
+        self.get_async_iterator(iter, next, f.right.span().start);
+        self.try_finally(
+            |g| {
+                g.loop_depth += 1;
+                let header = g.b.bound_label();
+                let (exit, cont) = (g.b.new_label(), g.b.new_label());
+                // A throw of `next`, of its Await or of the result checks does not close the
+                // iterator (step 6.a-d).
+                g.b.lda_true().star(done);
+                let call = g.slot(FeedbackSlotKind::Call);
+                g.expr_pos(at);
+                g.b.call_property0(next, iter, call);
+                g.await_acc(at)?;
+                g.b.star(value);
+                let ok = g.b.new_label();
+                g.b.jump_if_js_receiver(ok);
+                g.expr_pos(at);
+                g.runtime_with(RuntimeId::ThrowIteratorResultNotAnObject, &[value]);
+                g.b.bind(ok);
+                let k_done = g.str_const("done");
+                let s = g.slot(FeedbackSlotKind::LoadNamed);
+                g.b.get_named_property(value, k_done, s);
+                g.b.jump_if_to_boolean_true(exit);
+                let k_value = g.str_const("value");
+                let s = g.slot(FeedbackSlotKind::LoadNamed);
+                g.b.get_named_property(value, k_value, s).star(value);
+                g.b.lda_false().star(done);
+                g.loop_target(labels, exit, cont);
+                let result = (|| -> Gen {
+                    let pushed = g.enter_scope(scope);
+                    g.for_head_assign(&f.left, value)?;
+                    g.statement(&f.body)?;
+                    g.exit_scope(scope, pushed);
+                    Ok(())
+                })();
+                g.control.pop();
+                result?;
+                g.b.bind(cont);
+                g.jump_loop(header);
+                g.b.bind(exit);
+                g.loop_depth -= 1;
+                Ok(())
+            },
+            |g, token| {
+                let skip = g.b.new_label();
+                g.b.ldar(done).jump_if_true(skip);
+                g.close_async_iterator(iter, token, at)?;
+                g.b.bind(skip);
+                Ok(())
+            },
+        )?;
+        self.release(m);
+        Ok(())
+    }
+
     /// `iter = GetIterator(acc)`, `next = iter.next`.
     pub(crate) fn get_iterator(&mut self, iter: Register, next: Register, at: u32) {
         let m = self.mark();

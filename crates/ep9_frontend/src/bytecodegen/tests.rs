@@ -562,6 +562,27 @@ const CASES: &[(&str, Mode, &str)] = &[
         Strict,
         "var o = { async m() { return await this.x; } }; class C { static async #s() { await 1; } async m(x) { return super.m(await x); } }",
     ),
+    // ---- async generators and `for await` (M3-P2 ASYNCGEN, async_gen.rs) ----
+    (
+        "async-gen-basic",
+        Strict,
+        "async function* g(a) { var b = yield a; await b; return b; }",
+    ),
+    (
+        "async-gen-return",
+        Strict,
+        "async function* g(p) { try { yield 1; return p; } finally { return; } }",
+    ),
+    (
+        "async-gen-yield-star",
+        Strict,
+        "async function* g(it) { var r = yield* it; return r; }",
+    ),
+    (
+        "async-gen-for-await",
+        Strict,
+        "async function f(xs) { for await (const x of xs) { if (x) break; } } async function* g(xs) { for await (var x of xs) yield x; }",
+    ),
     // ---- ABI 5 mapped-parameter list and PARAMETER_ENV (P0-D16, P0-D5) ----
     (
         "fn-mapped-arguments",
@@ -834,20 +855,8 @@ fn entry_points() {
 #[test]
 fn unsupported_constructs_name_the_feature() {
     for (src, feature) in [
-        // Async generators keep the "generator functions" text until M3-P2 (async_gen.rs).
-        ("async function* g() {}", "generator functions"),
-        ("(async function* () {})", "generator functions"),
-        ("({ async *m() {} })", "generator functions"),
-        ("{ async function* g() {} }", "generator functions"),
-        ("class A { static async *m() {} }", "generator functions"),
         ("class A { accessor x = 1 }", "class auto-accessors"),
         ("class A { accessor #x }", "class auto-accessors"),
-        ("class A { async *#m() {} }", "generator functions"),
-        // `for await` and `await using` in an async function stay unsupported (M3-P2).
-        (
-            "async function f(y) { for await (const x of y) ; }",
-            "for await",
-        ),
         ("import('x')", "import()"),
     ] {
         match compile_script(src, Strictness::Sloppy) {
@@ -859,6 +868,7 @@ fn unsupported_constructs_name_the_feature() {
         Err(CodegenError::Unsupported(u)) => assert_eq!(u.feature, "import.meta"),
         other => panic!("{other:?}"),
     }
+    // `for await` at a module top level is top-level await (M3-P3 IMPORT-TLA).
     match compile_module("for await (const x of y) ;") {
         Err(CodegenError::Unsupported(u)) => assert_eq!(u.feature, "for await"),
         other => panic!("{other:?}"),
@@ -870,6 +880,29 @@ fn unsupported_constructs_name_the_feature() {
         other => panic!("{other:?}"),
     }
     compile_module("async function f() { await 1; }").expect("an async function in a module");
+}
+
+/// Async generators in every form compile (M3-P2 ASYNCGEN): declarations, expressions,
+/// object and class methods (static and private), nested `await`/`yield`/`yield*`, `for await`
+/// in async functions and async generators, and a sloppy direct eval's declaration; the
+/// suspend count check passes (AGF2).
+#[test]
+fn async_generators_compile_in_every_form() {
+    for src in [
+        "async function* g() {}",
+        "(async function* () { yield 1; })",
+        "({ async *m() { yield await 1; } })",
+        "{ async function* g() { yield* [1]; } }",
+        "class A { static async *m() { return 1; } async *#p() { yield; } }",
+        "async function* g(a = 1, ...r) { for await (const x of r) yield x; return [await a]; }",
+        "async function* g() { label: { try { yield 1; break label; } finally { await 2; return; } } }",
+        "async function* g() { class C { [yield 1]() {} [await 2]() {} } return yield* g(); }",
+        "async function* g() { (async () => await 1)(); function* s() { yield 1; } }",
+        "async function f() { for await (var x of []) for await (var y of []) ; }",
+        "eval('async function* g() { yield 1; }')",
+    ] {
+        compile_script(src, Strictness::Sloppy).unwrap_or_else(|e| panic!("{src}: {e:?}"));
+    }
 }
 
 /// Async functions in every form compile (M3-P1 ASYNC): declarations, expressions, arrows,
@@ -899,7 +932,7 @@ fn async_functions_compile_in_every_form() {
 #[test]
 fn unsupported_reports_a_position() {
     let Err(CodegenError::Unsupported(u)) =
-        compile_script("1;\n  async function* g() {}", Strictness::Sloppy)
+        compile_script("1;\n  import('x')", Strictness::Sloppy)
     else {
         panic!("expected Unsupported");
     };

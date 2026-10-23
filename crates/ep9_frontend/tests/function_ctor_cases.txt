@@ -70,5 +70,5 @@ async	""	"await 1; return arguments.length"	ok
 async	"a = await 1"	""	SyntaxError
 async	"await"	""	SyntaxError
 async	""	"}); (async function(){"	SyntaxError
-asyncgen	""	"yield await 1"	ok	ep9=unsupported: generator functions
+asyncgen	""	"yield await 1"	ok
 asyncgen	"a = await 1"	""	SyntaxError

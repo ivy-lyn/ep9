@@ -30,27 +30,33 @@
 //! | AF3 | The suspend ids are only the `await` nodes (no initial suspend); the table length is counted before the body ([`AwaitCounter`]) | The body runs at once up to the first `await` (§27.7.5.1 AsyncFunctionStart) |
 //! | AF4 | `return v` resolves at the frame's real exit (after the finally blocks: `emit_return`), not at the `return` statement | §27.7.5.2 AsyncBlockStart: the completion of the whole body resolves the promise; `try { return 1 } finally { throw 2 }` rejects |
 //! | AF5 | `return` in an async function does not await `v`; the resolve function takes a thenable job | §27.7.5.2 step 3.f calls `promiseCapability.[[Resolve]]` (node: 3 ticks for a returned promise) |
-//! | AF6 | `await` at a module top level stays `unsupported: await` (M3-P3 IMPORT-TLA); an async generator stays "generator functions" (GEN6, M3-P2 ASYNCGEN) | Plan M3-P1 ASYNC task 1 |
+//! | AF6 | `await` at a module top level stays `unsupported: await` (M3-P3 IMPORT-TLA) | Plan M3-P1 ASYNC task 1 |
+//! | AF7 | One `await` lowering ([`FnGen::await_acc`]) for every await point of async code: an `await` expression, `for await` and the awaits of an async generator. The id is the body's: `AsyncFunctionAwait` (33) in an async function, `AsyncGeneratorAwait` (37) in an async generator (M3-P2 ASYNCGEN, plan task 7) | An async generator's resume runs through its request queue, not through the async function closures |
+//! | AF8 | `for await` in an async function counts 3 suspend points: the await of each step and the two awaits of AsyncIteratorClose (normal and throw completion; `async_gen.rs`) | AF3: the table length is known before the body |
 //!
-//! An async generator (`async function*`) goes to `async_gen.rs`, not here.
+//! An async generator (`async function*`) goes to `async_gen.rs`, not here; `for await` is in
+//! `stmt.rs` (its iterator helpers in `async_gen.rs`).
 
 use ep9_bytecode::{HandlerKind, Register, RuntimeId};
 use oxc_ast::ast::{
-    ArrowFunctionExpression, AwaitExpression, FormalParameters, Function, PropertyDefinition,
-    StaticBlock,
+    ArrowFunctionExpression, AwaitExpression, ForOfStatement, FormalParameters, Function,
+    PropertyDefinition, StaticBlock,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_semantic::ScopeFlags;
 use oxc_span::Span;
 
 use super::func::{FnGen, Gen};
-use super::generator::GenState;
+use super::generator::{GenKind, GenState};
 
 /// Resume mode next (`GeneratorGetResumeMode`, M2-P1-GEN-NUMBERS); a rejected `await`
 /// resumes with throw (2). An async function is never resumed with return.
 const RESUME_NEXT: i32 = 0;
 
-/// Counts the `await` nodes that the body itself evaluates (AF3), as `generator.rs`
+/// The suspend points of one `for await` statement (AF8).
+pub(crate) const FOR_AWAIT_SUSPENDS: usize = 3;
+
+/// Counts the await points that the body itself evaluates (AF3, AF8), as `generator.rs`
 /// `SuspendCounter` counts `yield`: nested functions, arrows, class element bodies and static
 /// blocks are their own functions; class computed keys and heritage run in this function.
 struct AwaitCounter(usize);
@@ -59,6 +65,13 @@ impl<'a> Visit<'a> for AwaitCounter {
     fn visit_await_expression(&mut self, it: &AwaitExpression<'a>) {
         self.0 += 1;
         walk::walk_await_expression(self, it);
+    }
+
+    fn visit_for_of_statement(&mut self, it: &ForOfStatement<'a>) {
+        if it.r#await {
+            self.0 += FOR_AWAIT_SUSPENDS;
+        }
+        walk::walk_for_of_statement(self, it);
     }
 
     fn visit_function(&mut self, _it: &Function<'a>, _flags: ScopeFlags) {}
@@ -101,7 +114,18 @@ impl<'a> FnGen<'a, '_> {
     pub(crate) fn async_object(&self) -> Option<Register> {
         self.generator
             .as_ref()
-            .and_then(|g| g.is_async.then_some(g.object))
+            .and_then(|g| (g.kind == GenKind::AsyncFunction).then_some(g.object))
+    }
+
+    /// The object register and the `await` id of an async function or async generator body
+    /// (AF7), else `None`.
+    pub(crate) fn await_target(&self) -> Option<(Register, RuntimeId)> {
+        let g = self.generator.as_ref()?;
+        match g.kind {
+            GenKind::AsyncFunction => Some((g.object, RuntimeId::AsyncFunctionAwait)),
+            GenKind::AsyncGenerator => Some((g.object, RuntimeId::AsyncGeneratorAwait)),
+            GenKind::Sync => None,
+        }
     }
 
     /// The module comment's lowering: the prologue, `AsyncFunctionEnter`, then the
@@ -130,12 +154,7 @@ impl<'a> FnGen<'a, '_> {
         } else {
             Vec::new()
         };
-        self.generator = Some(GenState {
-            object,
-            resume,
-            next: 0,
-            is_async: true,
-        });
+        self.generator = Some(GenState::new(object, resume, GenKind::AsyncFunction));
         // §15.8.4 step 1 (AF2): the async function object and its promise.
         let m = self.mark();
         let args = self.temps(2);
@@ -192,7 +211,7 @@ impl<'a> FnGen<'a, '_> {
         self.b.return_();
 
         let state = self.generator.take().expect("set above");
-        if state.next != state.resume.len() {
+        if !state.complete() {
             return Err(super::internal(format!(
                 "async function at {}: {} await points emitted, {} counted",
                 span.start,
@@ -215,21 +234,29 @@ impl<'a> FnGen<'a, '_> {
         self.b.return_();
     }
 
-    /// `await e` (§27.7.5.3 Await), in an async function body. Leaves the settled value in
-    /// the accumulator, or throws the rejection reason. At a module top level (or anywhere
-    /// else outside an async function body) it stays unsupported (AF6).
+    /// `await e` (§27.7.5.3 Await), in an async function or async generator body. Leaves the
+    /// settled value in the accumulator, or throws the rejection reason. At a module top level
+    /// (or anywhere else outside async code) it stays unsupported (AF6).
     pub(crate) fn await_expr(&mut self, a: &'a AwaitExpression<'a>) -> Gen {
-        let Some(object) = self.async_object() else {
+        if self.await_target().is_none() {
             return self.unsupported("await", a.span);
-        };
+        }
         self.expr(&a.argument)?;
-        let at = a.span.start;
+        self.await_acc(a.span.start)
+    }
+
+    /// Await(acc) (§6.2.3.1) at `at` (AF7): leaves the settled value in the accumulator, or
+    /// throws the rejection reason there. One suspend point.
+    pub(crate) fn await_acc(&mut self, at: u32) -> Gen {
+        let Some((object, id)) = self.await_target() else {
+            return Err(super::internal(format!("await outside async code at {at}")));
+        };
         let m = self.mark();
         let args = self.temps(2);
         self.b.star(args.get(1));
         self.b.mov(object, args.get(0));
         self.expr_pos(at);
-        self.runtime(RuntimeId::AsyncFunctionAwait, args);
+        self.runtime(id, args);
         self.release(m);
         let m = self.mark();
         // The highest live register + 1: every register below `input` is saved.
