@@ -868,10 +868,23 @@ fn unsupported_constructs_name_the_feature() {
         Err(CodegenError::Unsupported(u)) => assert_eq!(u.feature, "import.meta"),
         other => panic!("{other:?}"),
     }
-    // `for await` at a module top level is top-level await (M3-P3 IMPORT-TLA).
-    match compile_module("for await (const x of y) ;") {
-        Err(CodegenError::Unsupported(u)) => assert_eq!(u.feature, "for await"),
-        other => panic!("{other:?}"),
+    // `for await` at a module top level is top-level await (M3-P3 IMPORT-TLA): the same
+    // cause as a top-level `await`, at the statement's position (review RV-P2-AG1).
+    for (src, at) in [
+        ("for await (const x of y) ;", (1, 1)),
+        (
+            "let y = [];\n  for await (var x of y) { if (x) break; }",
+            (2, 3),
+        ),
+        ("label: for await (x of y) ;", (1, 8)),
+    ] {
+        match compile_module(src) {
+            Err(CodegenError::Unsupported(u)) => {
+                assert_eq!(u.feature, "await", "{src}");
+                assert_eq!((u.position.line, u.position.column), at, "{src}");
+            }
+            other => panic!("{src}: {other:?}"),
+        }
     }
     // Top-level await stays unsupported (M3-P3 IMPORT-TLA); `await` in a nested async
     // function of a module compiles.
