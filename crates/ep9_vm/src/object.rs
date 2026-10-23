@@ -183,7 +183,9 @@ pub(crate) mod argsf {
 pub(crate) mod nsf {
     /// The module: a MODULE cell.
     pub const MODULE: usize = 24;
-    /// The export names: an ELEMENTS cell of strings in code-unit order.
+    /// The exports: an ELEMENTS cell of 2n Values, the n export names (strings in code-unit
+    /// order), then the n bindings (a box: an ELEMENTS of length 1, the hole while the
+    /// binding is in its TDZ; or a MODULE cell for `export * as ns`). `module.rs` makes it.
     pub const EXPORTS: usize = 32;
     pub const FIXED: usize = 2;
     /// In-object slots: @@toStringTag.
@@ -197,7 +199,8 @@ pub(crate) mod nsf {
 pub(crate) mod modf {
     /// `[[Status]]` (int32; undefined until MODULE fills it).
     pub const STATUS: usize = 8;
-    /// `[[Environment]]`: the module's CONTEXT, or undefined before linking.
+    /// `[[Environment]]`: a CONTEXT made with the record (`module.rs` `env`): the module's
+    /// name, the closure of its function 0, `import.meta`, then one box per module cell.
     pub const ENVIRONMENT: usize = 16;
     /// `[[Namespace]]`: a MODULE_NAMESPACE object, or undefined until made.
     pub const NAMESPACE: usize = 24;
@@ -246,8 +249,8 @@ pub(crate) mod realmf {
     /// `[[TemplateMap]]`: an ELEMENTS list (entry 0 = the used count) that owns the template
     /// objects this realm made (`realm::add_template`); undefined until the first one.
     pub const TEMPLATES: usize = 32;
-    /// `[[HostDefined]]`: any Value.
-    #[allow(dead_code)] // reserved: no embedder API sets it yet
+    /// `[[HostDefined]]`: the realm's module map (`module.rs` `map_get`, `map_add`): an
+    /// ELEMENTS list, entry 0 the count n, then n pairs (name atom, MODULE record).
     pub const HOST_DEFINED: usize = 40;
     /// The cell size: word0 and 5 Values.
     pub const SIZE: usize = 48;

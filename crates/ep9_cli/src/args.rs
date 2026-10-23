@@ -13,7 +13,7 @@ usage: ep9 [options] <file.js>
 
 options:
   -e, --eval <code>    run <code> as a script named [eval]
-  --module             parse the source as a module (v0: no import/export linking)
+  --module             run the source as a module, with the modules it imports (./ ../ /)
   --strict             run the script as strict code
   --gc-stress[=<n>]    collect garbage before every n-th allocation (default 1) and run the
                        heap verifier after every collection
