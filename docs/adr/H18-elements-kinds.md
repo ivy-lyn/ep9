@@ -33,9 +33,9 @@ PACKED/HOLEY × INT32/DOUBLE/ELEMENTS, one-way. DOUBLE stores raw f64 with a hol
 
 | Item | v0 behavior | Where |
 |---|---|---|
-| Storage | ARRAY cell plus one ELEMENTS cell of Values; a hole is the H6 empty value 0x22 | `crates/ep9_vm/src/object.rs:21`, `crates/ep9_vm/src/object.rs:33`; `new_elements` (`crates/ep9_vm/src/object.rs:736`) |
-| Dense limit | 2^26 elements (`arr::MAX_LENGTH`) | `crates/ep9_vm/src/object.rs:262-263` |
-| Growth | a store at index i makes capacity max(i + 1, 2 × capacity, 4) | `array_set` (`crates/ep9_vm/src/object.rs:840`) |
+| Storage | ARRAY cell plus one ELEMENTS cell of Values; a hole is the H6 empty value 0x22 | `crates/ep9_vm/src/object.rs:21`, `crates/ep9_vm/src/object.rs:33`; `new_elements` (`crates/ep9_vm/src/object.rs:737`) |
+| Dense limit | 2^26 elements (`arr::MAX_LENGTH`) | `crates/ep9_vm/src/object.rs:263-264` |
+| Growth | a store at index i makes capacity max(i + 1, 2 × capacity, 4) | `array_set` (`crates/ep9_vm/src/object.rs:841`) |
 | High dense index | `a[2**26 - 1] = 1` allocates 2^26 slots: 540,606,464 B peak RSS (empty script: 3,473,408 B) | measured 2026-10-21 at `dabc38a`, release `ep9`, M5 Max (not measured again; the growth rule is unchanged) |
 | Index at or above 2^26 | stored as a string-keyed property, so the array moves to dictionary mode (an index key never enters a shape, OM-10); `length` does not change (ECMA-262: index + 1) | `crates/ep9_vm/src/property.rs:321-325` falls through |
 | `length` above 2^26 | RangeError "Invalid array length" (ECMA-262 allows up to 2^32 - 1) | `crates/ep9_vm/src/property.rs:312-318` |
@@ -102,3 +102,4 @@ PACKED/HOLEY × INT32/DOUBLE/ELEMENTS, one-way. DOUBLE stores raw f64 with a hol
 | 2026-10-23 | clarify | 3 `path:line` references in `crates/ep9_vm/src/property.rs` moved to the code after the M3-P0 round-2 code fix 02cd320 (X-CODE1: `get_data_from` grew 6 lines; drift script, [I15]). No check changes | M3-P0 round-2 docs fixer |
 | 2026-10-23 | clarify | 3 `path:line` references moved to the code after the M3-P1 merge and the M3-P1 fixer changes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS). No check changes | M3-P1 integration fixer |
 | 2026-10-23 | clarify | 3 `path:line` references moved to the code after the M3-P2 merge and the M3-P2 fixer changes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS); each names the same item at the new line. No check changes | M3-P2 integration fixer (docs) |
+| 2026-10-23 | clarify | 3 `path:line` references moved to the code after the M3-P2 fix round 2 merge (m0m3/p2-fix2-docs: the module, vm and perf fixer branches) (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS); each names the same item at the new line. The refs moved by the vm fixer's 1-line doc change in `object.rs` (`modf::ENVIRONMENT`, 25286b5). No check changes | M3-P2 fix round 2 (docs) |

@@ -23,8 +23,10 @@
 //! a reaction job   the closure resumes the frame (mode next or throw) through the runner
 //! yield v          bytecode: Await(v), then Yield (id 38), then SuspendGenerator; the
 //!                  runner resumes again at once when a request waits (§27.6.3.8 step 11)
-//! end / throw      Resolve (id 39, done) / Reject (id 40): the frame is dropped, the first
-//!                  request settles, the queue drains (§27.6.3.2 step 4)
+//! end / throw      Resolve (id 39, done) / Reject (id 40): the frame is dropped and the
+//!                  record keeps the completion; after the frame returned, the runner
+//!                  settles the first request and drains the queue in the resumer's realm
+//!                  (§27.6.3.2 step 4: the generator context is removed first; X-AG2)
 //! ```
 //!
 //! | # | Decision | Why |
@@ -208,13 +210,14 @@ pub(crate) fn async_generator_yield(cx: &mut Cx, g: u64, value: u64) -> Res<u64>
 
 /// Id 39: AsyncGeneratorResolve(generator, value, done). `done` true: the body completed
 /// normally with `value` (§27.6.3.2 AsyncGeneratorStart step 4, normal or return completion):
-/// the frame is dropped and the queue drains. `done` false: AsyncGeneratorCompleteStep with
-/// `{value, false}` only (BytecodeGen does not emit it). The frame then returns. GC point;
-/// may run JS.
+/// the frame is dropped; the runner settles the first request and drains the queue after the
+/// frame returned (`generator::async_generator_body_done`). `done` false:
+/// AsyncGeneratorCompleteStep with `{value, false}` only (BytecodeGen does not emit it). The
+/// frame then returns. GC point; may run JS.
 pub(crate) fn async_generator_resolve(cx: &mut Cx, g: u64, value: u64, done: u64) -> Res<u64> {
     let g = running_generator(cx, g, "AsyncGeneratorResolve")?;
     if done == TRUE {
-        generator::async_generator_complete(cx, g, false, value)?;
+        generator::async_generator_body_done(cx.rt(), g, false, value);
     } else {
         generator::async_generator_yield(cx, g, value)?;
         generator::set_ag_state(cx.rt(), g, agf::STATE_EXECUTING);
@@ -223,11 +226,12 @@ pub(crate) fn async_generator_resolve(cx: &mut Cx, g: u64, value: u64, done: u64
 }
 
 /// Id 40: AsyncGeneratorReject(generator, reason): the body threw `reason` (§27.6.3.2 step 4,
-/// throw completion): the frame is dropped, the first request rejects, the queue drains. The
-/// frame then returns. GC point; may run JS.
+/// throw completion): the frame is dropped; after the frame returned, the runner rejects the
+/// first request and drains the queue (`generator::async_generator_body_done`). The frame
+/// then returns. GC point only for the check's error.
 pub(crate) fn async_generator_reject(cx: &mut Cx, g: u64, reason: u64) -> Res<u64> {
     let g = running_generator(cx, g, "AsyncGeneratorReject")?;
-    generator::async_generator_complete(cx, g, true, reason)?;
+    generator::async_generator_body_done(cx.rt(), g, true, reason);
     Ok(UNDEFINED)
 }
 

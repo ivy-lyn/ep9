@@ -519,3 +519,66 @@ fn template_objects_keep_their_identity_across_collections() {
         }
     }
 }
+
+/// X-AG2 (M3-P2 fix round 2): the result of an async generator request is made in the realm
+/// the spec names. AsyncGeneratorStart step 4 (§27.6.3.2) removes the generator's context
+/// before AsyncGeneratorCompleteStep and AsyncGeneratorDrainQueue, so a body that completes
+/// gives `{value, done}` in the realm of the context that resumed it: the borrowed `next` of
+/// the main realm (`empty`, `end after a main next`), or an await closure, which the
+/// generator's realm made (`end after an await`, `queued`). AsyncGeneratorYield passes the
+/// resumer's realm too; a `yield` always resumes from its own await, so that is the
+/// generator's realm. A completed generator and the closures of AsyncGeneratorAwaitReturn
+/// use the realm of the `next` or `return` that ran. The promise is settled there as well:
+/// the other realm's inherited `then` getter is not read. Node v24.22.1 makes the two
+/// completion results in the generator's realm (it prints `other` for them and reads the
+/// getter); the other lines are node's. Every dispatch, with and without GC stress.
+#[test]
+fn async_generator_results_in_the_resumer_realm() {
+    assert_eq!(
+        run_every(
+            r#"var other = createRealm();
+var OP = other.Object.prototype;
+var AGP = Object.getPrototypeOf(Object.getPrototypeOf((async function* () {})()));
+function where(r) { var p = Object.getPrototypeOf(r); return p === Object.prototype ? 'main' : p === OP ? 'other' : '?'; }
+Object.defineProperty(OP, 'then', { get: function () { print('other then read'); }, configurable: true });
+var it = other.eval('(async function* () {})')();
+AGP.next.call(it).then(function (r) { print('empty, main next:', where(r), r.done); });
+delete OP.then;
+AGP.next.call(it).then(function (r) { print('completed, main next:', where(r), r.done); });
+var it2 = other.eval('(async function* () { yield 1; })')();
+AGP.next.call(it2).then(function (r) {
+  print('yield:', where(r), r.value);
+  AGP.next.call(it2).then(function (r2) { print('end after a main next:', where(r2), r2.done); });
+});
+var it3 = other.eval('(async function* () { await 0; })')();
+AGP.next.call(it3).then(function (r) { print('end after an await:', where(r), r.done); });
+var it4 = other.eval('(async function* () { yield 1; })')();
+AGP.next.call(it4);
+AGP.next.call(it4).then(function (r) { print('queued end:', where(r), r.done); });
+AGP.next.call(it4).then(function (r) { print('queued drain:', where(r), r.done); });
+var it5 = other.eval('(async function* () {})')();
+AGP.return.call(it5, 5).then(function (r) { print('return at start:', where(r), r.value); });
+var it6 = other.eval('(async function* () {})')();
+other.eval('(function (it) { return it.next(); })')(it6).then(function (r) { print('other next:', where(r), r.done); });
+var it7 = (async function* () {})();
+other.eval('(function (AGP, it) { return AGP.next.call(it); })')(AGP, it7).then(function (r) { print('main gen, other caller:', where(r), r.done); });
+var it8 = other.eval('(async function* () { throw 7; })')();
+AGP.next.call(it8).then(null, function (e) { print('throw:', e); });
+AGP.next.call(it8).then(function (r) { print('after throw:', where(r), r.done); });"#
+        ),
+        lines(&[
+            "empty, main next: main true",
+            "completed, main next: main true",
+            "other next: other true",
+            "main gen, other caller: main true",
+            "throw: 7",
+            "after throw: main true",
+            "yield: other 1",
+            "end after an await: other true",
+            "queued end: other true",
+            "queued drain: other true",
+            "return at start: main 5",
+            "end after a main next: main true",
+        ])
+    );
+}

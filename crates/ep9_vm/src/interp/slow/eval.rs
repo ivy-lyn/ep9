@@ -45,8 +45,8 @@
 use std::collections::HashSet;
 
 use ep9_bytecode::{
-    CodeKind, EVAL_EXT_BINDING, EvalContext, FunctionKind, Instructions, Opcode, Register,
-    RuntimeId, ScopeFlags, ScopeKind, UnitString, VariableMode,
+    CodeKind, Constant, EVAL_EXT_BINDING, EvalContext, FunctionKind, Instructions, Opcode,
+    Register, RuntimeId, ScopeFlags, ScopeKind, StringId, UnitString, VariableMode,
 };
 use ep9_value::Throw;
 
@@ -464,15 +464,24 @@ fn check_all(cx: &mut Cx, fp: *mut u64) -> Res<()> {
             return Err(cannot_declare(cx, name, exists));
         }
     }
-    // The function names (atoms): step 11 skips a var name that is one of them.
-    let functions: HashSet<u64> = decls
+    // The function names: step 11 skips a var name that is one of them. The set holds unit
+    // string ids, never atom Values (cell addresses; H12-Q2 rule (a), X-ACC1). A builder
+    // unit interns its strings, so a name has one id. A unit with two ids of one text would
+    // only check such a var name again here, with the same result: the function check above
+    // passed for it on the same global object (no own property and extensible, or an own
+    // property), and either way CanDeclareGlobalVar is true.
+    let string_id = |k: u32| match fi.constant_entry(k) {
+        Constant::String(id) => Some(*id),
+        _ => None,
+    };
+    let functions: HashSet<StringId> = decls
         .iter()
         .filter(|&&(_, function)| function)
-        .map(|&(k, _)| fi.constant(k))
+        .filter_map(|&(k, _)| string_id(k))
         .collect();
     for &(k, _) in decls {
         let name = fi.constant(k);
-        if functions.contains(&name) {
+        if string_id(k).is_some_and(|id| functions.contains(&id)) {
             continue;
         }
         if !property::has_own_property(cx, g, name) && !property::is_extensible(g) {
@@ -538,8 +547,14 @@ fn caller_context(fp: *mut u64) -> u64 {
 /// the VariableEnvironment: a declarative context on the way that binds `name` (a lexical slot
 /// of the var scope too: a sloppy function's top-level lexical declarations have their own
 /// environment) means bindingExists; a `with` object and, as in V8 and [`var_env`] (B.3.4), a
-/// catch clause do not. At the global environment, fnDefinable is false for a lexical
-/// declaration of `name`, else CanDeclareGlobalVar. GC point (a poll).
+/// catch clause do not. A var scope with `ScopeFlags::PARAMETER_ENV` (an eval in the parameter
+/// list of a sloppy function with parameter expressions) holds the parameter environment of
+/// FunctionDeclarationInstantiation step 20 merged into it: the walk passes that environment
+/// before it reaches the variable environment, so any slot of `name` there (a parameter, or the
+/// `arguments` binding of step 22) means bindingExists (X-ARGS2). Its other slots (`this`,
+/// `new.target`, `.eval_ext`) have names no source text can spell. At the global environment,
+/// fnDefinable is false for a lexical declaration of `name`, else CanDeclareGlobalVar. GC
+/// point (a poll).
 fn annex_b_env(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<Option<VarEnv>> {
     let mut c = caller_context(fp);
     while is_context(c) {
@@ -551,7 +566,7 @@ fn annex_b_env(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<Option<VarEnv>> {
         }
         if is_var_scope(u, scope) {
             if let Some((_, mode)) = slot_of(c, name)
-                && is_lexical(mode)
+                && (is_lexical(mode) || scope.flags.contains(ScopeFlags::PARAMETER_ENV))
             {
                 return Ok(None);
             }
@@ -624,8 +639,10 @@ pub(crate) fn declare_eval_annex_b_function(cx: &mut Cx, fp: *mut u64, name: u64
 /// binding (id 46 gave true) is evaluated: genv.SetMutableBinding(name, value, false) on the
 /// eval code's VariableEnvironment, not on the block binding. In a function: the var scope's
 /// slot or its `.eval_ext` binding (made again if `delete` removed it, §9.1.1.1.5 step 1); at
-/// the global level: a script lexical binding (a TDZ is a ReferenceError, a constant is left
-/// alone), else Set(global object, name, value, false). GC point (a setter).
+/// the global level: a script lexical binding (a Script run by the eval code can make one
+/// after id 46: a TDZ is a ReferenceError, and a `const` is a TypeError, because a lexical
+/// binding is strict, §9.1.1.1.5 steps 2 and 5.b; X-ARGS3), else Set(global object, name,
+/// value, false). GC point (a setter).
 pub(crate) fn store_eval_annex_b_function(
     cx: &mut Cx,
     fp: *mut u64,
@@ -653,9 +670,15 @@ pub(crate) fn store_eval_annex_b_function(
                 if old == HOLE {
                     return Err(throw_name_now(cx, NameMsg::Tdz, name));
                 }
-                if a & attr::WRITABLE != 0 {
-                    object::own_replace(rt, lexical, name, value);
+                if a & attr::WRITABLE == 0 {
+                    // As a store to a global `const` (slow/lookup.rs `const_assign`).
+                    return Err(throw_error(
+                        cx,
+                        ErrorKind::TypeError,
+                        "Assignment to constant variable.",
+                    ));
                 }
+                object::own_replace(rt, lexical, name, value);
             } else {
                 let g = rt.global();
                 property::set(cx, g, name, value, false)?;
