@@ -199,7 +199,11 @@ mod root {
     /// The shape of a new async function: [`FUNCTION_SHAPE`] with %AsyncFunction.prototype%
     /// as the prototype (a cache; undefined until the first async function).
     pub const ASYNC_FUNCTION_SHAPE: usize = 3;
-    pub const COUNT: usize = 4;
+    /// The shape of a new async generator function: [`FUNCTION_SHAPE`] with
+    /// %AsyncGeneratorFunction.prototype% as the prototype (a cache; undefined until the
+    /// first async generator function).
+    pub const ASYNC_GENERATOR_FUNCTION_SHAPE: usize = 4;
+    pub const COUNT: usize = 5;
     /// The first function shape cache slot: the slots from here to [`COUNT`] hold a shape
     /// over a prototype of the current realm (`clear_realm_caches`).
     pub const FIRST_REALM_CACHE: usize = FUNCTION_SHAPE;
@@ -1228,8 +1232,8 @@ pub(crate) fn generator_function_shape(rt: &Runtime) -> u64 {
 }
 
 /// Empties the function shape caches ([`function_shape`], [`generator_function_shape`],
-/// [`async_function_shape`]): the realm switch (`realm::switch`) calls it, so a cache holds only
-/// a shape of the current realm.
+/// [`async_function_shape`], [`async_generator_function_shape`]): the realm switch
+/// (`realm::switch`) calls it, so a cache holds only a shape of the current realm.
 /// A cache that kept the shape of the last realm that made a function would keep that realm
 /// live (shape -> PROTO_INFO -> its `%Function.prototype%` -> its REALM record) after nothing
 /// else holds it. A hit checks the prototype, so this is not needed for correct prototypes.
@@ -1252,6 +1256,19 @@ pub(crate) fn async_function_shape(rt: &Runtime) -> u64 {
         return function_shape(rt);
     }
     cached_function_shape(rt, afp, root::ASYNC_FUNCTION_SHAPE)
+}
+
+/// The shape of a new async generator function (§15.6.3: OrdinaryFunctionCreate with
+/// %AsyncGeneratorFunction.prototype%): [`function_shape`] with that prototype. Cached in the
+/// ShapeState roots. Before the intrinsic is installed it is the [`function_shape`]. GC
+/// point.
+pub(crate) fn async_generator_function_shape(rt: &Runtime) -> u64 {
+    use crate::builtins::{IntrinsicId, intrinsic};
+    let agfp = intrinsic(rt, IntrinsicId::AsyncGeneratorFunctionPrototype);
+    if !kind::is_object(agfp) {
+        return function_shape(rt);
+    }
+    cached_function_shape(rt, agfp, root::ASYNC_GENERATOR_FUNCTION_SHAPE)
 }
 
 /// The function shape over the prototype `fp` (FUNCTION, 2 slots, `length` and `name`),

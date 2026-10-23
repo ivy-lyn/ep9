@@ -24,7 +24,7 @@
 //! | `eval.rs` | direct eval (P3-EVAL-VM) |
 //! | `async_fn.rs` | async function runtime ids 32-35 (M3-P0 stubs; M3-P1 ASYNC) |
 //! | `async_gen.rs` | async generator runtime ids 36-41 (M3-P0 stubs; M3-P2 ASYNCGEN) |
-//! | `module.rs` | module variables, runtime ids 42-43 (M3-P0 stubs; M3-P2 MODULE) |
+//! | `module.rs` | module variables and runtime id 42 (M3-P2 MODULE); id 43 (stub, M3-P3) |
 
 use core::sync::atomic::Ordering;
 

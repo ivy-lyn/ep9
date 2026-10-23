@@ -420,6 +420,11 @@ mod tests {
         .unwrap();
         let hooks = iso.compiler().unwrap();
         assert!((hooks.compile_script)("var a = 1;").is_ok());
+        // An unsupported feature (M3-P3 IMPORT-TLA builds import()).
+        assert_eq!(
+            (hooks.compile_script)("import('x')").unwrap_err(),
+            CompileFailure::Unsupported("import()".to_string())
+        );
         assert!(matches!(
             (hooks.compile_script)("let a; let a;"),
             Err(CompileFailure::Syntax(_))
@@ -436,10 +441,8 @@ mod tests {
             Err(CompileFailure::Syntax(_))
         ));
         assert!((hooks.compile_function)(FunctionCtorKind::Async, "a", "return await a").is_ok());
-        assert_eq!(
-            (hooks.compile_function)(FunctionCtorKind::AsyncGenerator, "", "yield await 1")
-                .unwrap_err(),
-            CompileFailure::Unsupported("generator functions".to_string())
+        assert!(
+            (hooks.compile_function)(FunctionCtorKind::AsyncGenerator, "", "yield await 1").is_ok()
         );
         assert!(
             Isolate::new(IsolateConfig::default())

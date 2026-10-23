@@ -1,0 +1,72 @@
+# module-import-meta: module
+# | export const m = import.meta; function f() { return () => import.meta.url; }
+; ep9 bytecode, ABI 5
+unit kind=module strict=true ts=none source_len=76 source=embedded hints=none
+source_hash=23cb8c612de8e6ad597365c7c4b5a8ab1ae5774f41defd391c761c4272eb5601
+strings (3):
+  str0 "f"
+  str1 "url"
+  str2 "m"
+scopes (3):
+  scope0 module outer=- flags=[strict] slots=[]
+  scope1 function outer=scope0 flags=[strict] slots=[]
+  scope2 function outer=scope1 flags=[strict] slots=[]
+module records: has-tla=false
+  requests (0):
+  imports (0):
+  local exports (1):
+      0 export="m" local="m" cell=1
+  indirect exports (0):
+  star exports (0):
+function f0 module name=- parent=- outer_scope=- flags=[strict,async] params=0 length=0 regs=3 range=0..76
+  code (36 bytes):
+      0    Ldar <this>                                  ; 0b ff
+      2    Star r1                                      ; 0c 01
+      4    LdaUndefined                                 ; 05
+      5    Star <this>                                  ; 0c ff
+      7    SwitchOnGeneratorState r1, k0  ; k0 = JumpTable [+3, +15] ; 99 01 00
+     10 E> CreateClosure k1, s0, #0x00  ; k1 = Function f1 ; 74 01 00 00
+     14    Star r0                                      ; 0c 00
+     16    LdaUndefined                                 ; 05
+     17    SuspendGenerator r1, r0-r1, [1]              ; 9a 01 00 02 01
+     22    ResumeGenerator r1, r0-r1                    ; 9b 01 00 02
+     26 S> CallRuntime GetImportMeta, ()                ; 68 2a 00 00 00
+     31    StaModuleVariable [1], [0]                   ; 20 01 00
+     34    LdaUndefined                                 ; 05
+     35    Return                                       ; 92
+  constants (2):
+      0 JumpTable [+3, +15]
+      1 Function f1
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (2):
+     10 E 30 (1:31)
+     26 S 13 (1:14)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[strict,simple-params] params=0 length=0 regs=0 range=30..76
+  code (7 bytes):
+      0 S> CreateClosure k0, s0, #0x00  ; k0 = Function f2 ; 74 00 00 00
+      4    Return                                       ; 92
+      5    LdaUndefined                                 ; 05
+      6    Return                                       ; 92
+  constants (1):
+      0 Function f2
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (1):
+      0 S 45 (1:46)
+function f2 arrow name=- parent=f1 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=1 range=52..73
+  code (12 bytes):
+      0 S> CallRuntime GetImportMeta, ()                ; 68 2a 00 00 00
+      5    Star r0                                      ; 0c 00
+      7 E> GetNamedProperty r0, k0, s0  ; k0 = String str1 "url" ; 21 00 00 00
+     11    Return                                       ; 92
+  constants (1):
+      0 String str1 "url"
+  feedback (1):
+      0 LoadNamed
+  handlers (0):
+  positions (2):
+      0 S 58 (1:59)
+      7 E 70 (1:71)

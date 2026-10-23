@@ -37,10 +37,24 @@
 //! import shares the box of the binding it resolves to (a live binding); a namespace import
 //! gets its own box with the namespace object.
 //!
-//! The entry function of the module unit (function 0) runs once, at Evaluate; its closure
-//! context is the MODULE cell itself, so a function of the module reaches its record by
-//! walking the context chain to its end (`module_of_context`). Other context walkers stop at
-//! a value that is not a CONTEXT.
+//! The entry function of the module unit (function 0) is resumable (M3-P2-MODULE-F0, the V8
+//! form; the front end's `bytecodegen/module.rs` shows its code). Link makes its closure and a
+//! generator object for it (`env::EVALUATE`) and resumes that from its start:
+//! InitializeEnvironment's own part runs (the module's functions, `var` cells undefined,
+//! TDZ holes) up to suspend id [`RUN`]. Evaluate resumes it once more for the statements.
+//! The VM gives the generator object as the receiver (the entry function may not read
+//! new.target, the ABI 5 verifier's entry-frame rule); the code makes `this` undefined.
+//!
+//! ```text
+//! initialize_environment   imports bound; f = closure(function 0, context = MODULE)
+//!                          g = GENERATOR(f, receiver g, context MODULE, state 0)
+//!                          resume(g): table[0] -> declarations -> SuspendGenerator id 1
+//! inner_evaluate           resume(g): table[1] -> ResumeGenerator -> statements -> Return
+//! ```
+//!
+//! The closure context is the MODULE cell itself, so a function of the module reaches its
+//! record by walking the context chain to its end (`module_of_context`). Other context
+//! walkers stop at a value that is not a CONTEXT.
 //!
 //! Each realm has a module map (`realmf::HOST_DEFINED`: the realm's host data, where HTML
 //! keeps its module map): the name the host gave a module -> its record. A name loads once
@@ -57,10 +71,10 @@ use crate::frame::{HOLE, NULL, UNDEFINED, int32_bits, int32_of, native_of, nativ
 use crate::interp::Cx;
 use crate::key::{Probe, is_symbol_key, key_eq};
 use crate::kinds as kind;
-use crate::object::{self, attr, init, modf, nsf, realmf};
+use crate::object::{self, attr, genf, init, modf, nsf, realmf};
 use crate::runtime::{ErrorKind, Runtime, val};
 use crate::unit::{FunctionInfo, LoadedUnit};
-use crate::{atoms, call, property, string, symbol};
+use crate::{atoms, generator, property, string, symbol};
 
 /// `[[Status]]` values (§16.2.1.5, Table 45), as int32.
 pub(crate) mod status {
@@ -77,13 +91,18 @@ pub(crate) mod status {
 pub(crate) mod env {
     /// The name the host gave the module (an atom).
     pub const NAME: u32 = 0;
-    /// The closure of the unit's function 0 (made at InitializeEnvironment).
+    /// The generator object of the unit's function 0 (made at InitializeEnvironment; it
+    /// waits at suspend id [`super::RUN`] until Evaluate).
     pub const EVALUATE: u32 = 1;
     /// `import.meta` (`[[ImportMeta]]`), undefined until the first `GetImportMeta`.
     pub const IMPORT_META: u32 = 2;
     /// The first cell box ([`cell_slot`]).
     pub const CELLS: u32 = 3;
 }
+
+/// The suspend id at which function 0 waits between InitializeEnvironment and Evaluate (the
+/// front end's `bytecodegen/module.rs` `RUN`): its jump table entry 1 starts the statements.
+const RUN: i32 = 1;
 
 /// The environment slot of the box of module cell `cell` (not 0): exports and imports
 /// alternate, so no count is needed.
@@ -639,13 +658,6 @@ fn export_value(cx: &mut Cx, o: u64, i: usize) -> Res<u64> {
     Ok(v)
 }
 
-/// Test builds: the ReferenceError ("probe") of `get` and `own_property` while
-/// `probe::set_throw(true)` (the M3-P0 routing tests in `tests/layout3.rs` use it).
-#[cfg(test)]
-fn probe_throw(cx: &mut Cx) -> ep9_value::Throw {
-    throw_error(cx, ErrorKind::ReferenceError, "probe")
-}
-
 /// The attributes of an export: writable, enumerable, not configurable (§10.4.6.5 step 6).
 const EXPORT_ATTRS: i32 = attr::WRITABLE | attr::ENUMERABLE;
 
@@ -656,10 +668,6 @@ const EXPORT_ATTRS: i32 = attr::WRITABLE | attr::ENUMERABLE;
 /// @@toStringTag, or nothing: the prototype is null).
 pub(crate) fn get(cx: &mut Cx, o: u64, key: u64, how: Probe) -> Option<Res<u64>> {
     probe::note("module get");
-    #[cfg(test)]
-    if probe::throwing() {
-        return Some(Err(probe_throw(cx)));
-    }
     let i = export_index(o, key, how)?;
     Some(export_value(cx, o, i))
 }
@@ -668,10 +676,6 @@ pub(crate) fn get(cx: &mut Cx, o: u64, key: u64, how: Probe) -> Option<Res<u64>>
 /// binding in its TDZ (step 4 reads it).
 pub(crate) fn own_property(cx: &mut Cx, o: u64, key: u64, how: Probe) -> Option<Res<(u64, i32)>> {
     probe::note("module own_property");
-    #[cfg(test)]
-    if probe::throwing() {
-        return Some(Err(probe_throw(cx)));
-    }
     let i = export_index(o, key, how)?;
     Some(export_value(cx, o, i).map(|v| (v, EXPORT_ATTRS)))
 }
@@ -804,9 +808,10 @@ fn unresolved(cx: &mut Cx, m: u64, r: u32, name: u64, res: Resolution) -> ep9_va
     throw_error(cx, ErrorKind::SyntaxError, &msg)
 }
 
-/// InitializeEnvironment (§16.2.1.6.4): checks the indirect exports, binds the imports, and
-/// makes the closure of the unit's function 0 over the record (it runs at Evaluate, so the
-/// module's functions and `var` bindings are made when its body starts). GC point.
+/// InitializeEnvironment (§16.2.1.6.4): checks the indirect exports and binds the imports
+/// (steps 1-20), then runs the first part of the unit's function 0 (steps 21-24: the `var`
+/// cells, the TDZ holes, the functions) up to its suspend at [`RUN`]. GC point; runs no user
+/// code (an interrupt or a full stack can throw).
 fn initialize_environment(cx: &mut Cx, m: u64) -> Res<()> {
     let rt = cx.rt();
     let lu = unit_of(m);
@@ -845,8 +850,30 @@ fn initialize_environment(cx: &mut Cx, m: u64) -> Res<()> {
         }
     }
     let entry: *const FunctionInfo = &unit_of(m).infos[0];
+    // SAFETY: the unit lives until the isolate drops (`unit_of`).
+    let fi = unsafe { &*entry };
+    let not_resumable = |cx: &mut Cx| {
+        throw_error(
+            cx,
+            ErrorKind::Error,
+            "ep9 internal error: module function 0 is not resumable",
+        )
+    };
+    if !fi.is_async_function() {
+        // A unit from before M3-P2-MODULE-F0: its body would run here.
+        return Err(not_resumable(cx));
+    }
+    // GC points: the closure, then the generator; the values live in Rust locals (CSS).
     let f = object::new_function(rt, entry, m);
-    object::context_set(rt, environment(m), env::EVALUATE, f);
+    let n = 1 + fi.parameter_count as usize + fi.register_count as usize;
+    let g = object::new_generator(rt, NULL, f, UNDEFINED, m, genf::MODE_SYNC, n);
+    object::gen_set(rt, g, genf::RECEIVER, g);
+    object::gen_set(rt, g, genf::STATE, int32_bits(0));
+    object::context_set(rt, environment(m), env::EVALUATE, g);
+    generator::resume(cx, g, genf::RESUME_NEXT, UNDEFINED, "next")?;
+    if object::gen_get_i32(g, genf::STATE) != RUN {
+        return Err(not_resumable(cx));
+    }
     Ok(())
 }
 
@@ -981,9 +1008,16 @@ fn inner_evaluate(cx: &mut Cx, m: u64, stack: &mut Stack<'_>, index: i32) -> Res
             rethrow_cached(cx, required)?;
         }
     }
-    // ExecuteModule: the unit's function 0, `this` undefined (§16.2.1.6.5 step 9).
-    let f = object::context_get(environment(m), env::EVALUATE).unwrap_or(UNDEFINED);
-    call::call_function(cx, f, UNDEFINED, &[])?;
+    // ExecuteModule (§16.2.1.6.5): the rest of the unit's function 0, `this` undefined.
+    let g = object::context_get(environment(m), env::EVALUATE).unwrap_or(UNDEFINED);
+    if !generator::is_generator(g) || object::gen_get_i32(g, genf::STATE) != RUN {
+        return Err(throw_error(
+            cx,
+            ErrorKind::Error,
+            "ep9 internal error: a module is evaluated before its environment is made",
+        ));
+    }
+    generator::resume(cx, g, genf::RESUME_NEXT, UNDEFINED, "next")?;
     if get_i32(m, modf::DFS_ANCESTOR_INDEX) == get_i32(m, modf::DFS_INDEX) {
         loop {
             let done = stack.pop();

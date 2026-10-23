@@ -334,27 +334,12 @@ fn routed_own_property_keys(cx: &mut Cx, k: u8, o: u64) -> Option<u64> {
 
 /// Which routed hooks ran on this thread (test builds only; a no-op otherwise): the routing
 /// tests (V3-A13) check that each hook reaches its stub. The stubs call [`probe::note`]; their
-/// owners drop the calls when they fill them. Test builds also have a switch that makes the
-/// module.rs value stubs throw ([`probe::set_throw`]).
+/// owners drop the calls when they fill them.
 pub(crate) mod probe {
     #[cfg(test)]
     thread_local! {
         static HITS: core::cell::RefCell<Vec<&'static str>> =
             const { core::cell::RefCell::new(Vec::new()) };
-        static THROW: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
-    }
-
-    /// While `on`, the module.rs `get` and `own_property` stubs throw a ReferenceError
-    /// ("probe") on this thread, as a namespace binding in its TDZ does (VF-TDZ).
-    #[cfg(test)]
-    pub(crate) fn set_throw(on: bool) {
-        THROW.with(|t| t.set(on));
-    }
-
-    /// True while [`set_throw`] is on.
-    #[cfg(test)]
-    pub(crate) fn throwing() -> bool {
-        THROW.with(|t| t.get())
     }
 
     /// Records a hook (test builds); nothing otherwise.

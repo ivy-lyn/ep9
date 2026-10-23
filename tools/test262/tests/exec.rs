@@ -123,8 +123,8 @@ fn tree(name: &str) -> PathBuf {
             "include.js",
             test("includes: [extra.js]\n", "assert.sameValue(extra(), 42);"),
         ),
-        // An async generator: still "generator functions" after P1-GEN-CG (plan-v3 §4).
-        ("unsupported.js", test("", "async function* g() {}")),
+        // A class auto-accessor: unsupported (async generators compile since M3-P2 ASYNCGEN).
+        ("unsupported.js", test("", "class A { accessor x = 1 }")),
     ];
     for (name, src) in tests {
         write(&root, &format!("test/language/{name}"), src);
@@ -185,7 +185,7 @@ fn pass_and_fail_rules() {
     assert!(text.contains("language             9 / 18"), "{text}");
     let summary = std::fs::read_to_string(&json).unwrap();
     assert!(
-        summary.contains("\"cause\":\"unsupported: generator functions\""),
+        summary.contains("\"cause\":\"unsupported: class auto-accessors\""),
         "{summary}"
     );
     assert!(
