@@ -549,13 +549,24 @@ fn use_the_kept_realm(iso: &mut crate::Isolate) -> JsResult<(bool, bool, bool)> 
     .map_err(|_| ep9_value::Throw)
 }
 
+/// A script that evaluates one tagged-template site (GetTemplateObject) and returns its
+/// template object.
+fn template_script() -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let k = s.b.template_object(vec![("x".into(), Some("x".into()))]);
+    s.b.get_template_object(k, s.lit).return_();
+    unit("", vec![s.finish()])
+}
+
 /// Makes a realm that nothing holds; returns a weak handle to its global object. It makes
 /// a function and the generator and async function shapes in that realm, so all 3 function
-/// shape caches hold a shape of it until the switch back. Out of line, as [`keep_a_realm`].
+/// shape caches hold a shape of it until the switch back, and a template object, which the
+/// isolate's template map finds by site (X-REALM2). Out of line, as [`keep_a_realm`].
 #[inline(never)]
 fn lose_a_realm(iso: &mut crate::Isolate) -> ep9_heap::WeakHandle {
     iso.create_realm(|cx, global| {
         cx.new_builtin_closure(make_object, "make", 0, Local::undefined());
+        cx.run_script(template_script(), "template.js")?;
         let rt = cx.inner().rt();
         crate::shape::generator_function_shape(rt);
         crate::shape::async_function_shape(rt);
@@ -582,7 +593,7 @@ fn alive(iso: &crate::Isolate, h: ep9_heap::WeakHandle) -> bool {
 /// Create, use and drop realms (`Isolate::create_realm`, `Cx::create_realm`), under every
 /// dispatch, with and without GC stress:
 /// - a realm that nothing reachable holds is collected (a weak handle to its global object
-///   clears);
+///   clears), also when it made a template object (X-REALM2);
 /// - a realm whose functions the first realm keeps in globals stays live with all its roots:
 ///   after collections, the kept functions run in it (their realm's global, and an object
 ///   with that realm's `%Object.prototype%`), and the first realm is current again after
