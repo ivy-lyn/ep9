@@ -89,8 +89,8 @@
 //! `import()` needs the hooks of a host. [`with_host`] makes a [`Host`] the module host of
 //! the isolate for the length of a call (a thread-local list, `HOSTS`); `Cx::run_module` does
 //! it for its run, its loads and its checkpoints. With no host, `import()` throws the v0
-//! not-implemented Error (as eval with no compiler hooks throws). A host for scripts and for
-//! the checkpoints after a run needs a public entry in isolate.rs (not built here).
+//! not-implemented Error (as eval with no compiler hooks throws). `Isolate::with_module_host`
+//! does it for an embedder's scripts, calls and checkpoints (isolate.rs).
 
 use std::cell::RefCell;
 
@@ -362,7 +362,7 @@ fn map_add(rt: &Runtime, realm: u64, name: u64, m: u64) {
 // ---- loading ----------------------------------------------------------------------------------
 
 /// Loads `unit` into the isolate (a new entry of `Runtime::units`, never freed), as
-/// `Isolate::run_script` does. GC point.
+/// `Cx::run_script` does. GC point.
 fn load_unit<'a>(rt: &Runtime, unit: VerifiedUnit, file: &str) -> &'a LoadedUnit {
     let index = u32::try_from(rt.units.borrow().len()).expect("fewer than 2^32 units");
     let lu = LoadedUnit::load(rt, unit, file.to_string(), index);
@@ -520,8 +520,8 @@ pub(crate) fn host_key(rt: &Runtime) -> usize {
 
 /// Runs `f` with `host` as the module host of the isolate with key `key` ([`host_key`]): the
 /// hooks of its loads and of `import()` while `f` runs. Calls nest: the innermost host of an
-/// isolate is the one in use. `Cx::run_module` uses it for its run; an embedder entry that
-/// keeps a host over scripts and microtask checkpoints would use it too (isolate.rs).
+/// isolate is the one in use. `Cx::run_module` uses it for its run, and
+/// `Isolate::with_module_host` (isolate.rs) for an embedder's scripts and checkpoints.
 pub(crate) fn with_host<R>(key: usize, host: &mut Host<'_>, f: impl FnOnce() -> R) -> R {
     /// Removes the entry of its key that it added (the innermost one) when it drops.
     struct Pop(usize);

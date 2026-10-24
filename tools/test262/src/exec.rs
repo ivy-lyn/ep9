@@ -703,11 +703,19 @@ impl RunCtx<'_> {
                 }
             }
         }
-        let result = if mode == Mode::Module {
-            run_module(&mut iso, &self.opts.test262, unit, rel)
-        } else {
-            iso.with_cx_checkpoint(|cx| cx.run_script(unit, rel).map(|_| ()))
-        };
+        // The test262 loader is the module host of the test and its jobs, so `import()`
+        // works in a script and in a job too (a module run uses the same hooks).
+        let root = &self.opts.test262;
+        let mut resolve =
+            |referrer: &str, specifier: &str| resolve_module(root, referrer, specifier);
+        let mut load = |name: &str| load_module(root, name);
+        let result = iso.with_module_host(&mut resolve, &mut load, |iso| {
+            if mode == Mode::Module {
+                run_module(iso, root, unit, rel)
+            } else {
+                iso.with_cx_checkpoint(|cx| cx.run_script(unit, rel).map(|_| ()))
+            }
+        });
         if fault_for("late", rel) {
             std::thread::sleep(self.opts.timeout + Duration::from_millis(100));
         }

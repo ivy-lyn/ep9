@@ -1003,3 +1003,85 @@ fn the_async_module_list_keeps_the_pending_modules() {
         ])
     );
 }
+
+// ---- M3-P3 EMBED-MIGRATE step 2: the module host of scripts (`Isolate::with_module_host`) ---
+
+/// Runs the script `script` (named `main.js`) on one isolate inside
+/// `Isolate::with_module_host` with the hooks of [`run_in`] over `files`, a microtask
+/// checkpoint after it; then, after the host is gone, the script `after` with no host. The
+/// printed lines, and "uncaught Name: message" after a run that throws. Then collects and
+/// verifies the heap.
+fn run_script_in(
+    files: Files,
+    script: &str,
+    after: &str,
+    dispatch: Dispatch,
+    stress: bool,
+) -> Vec<String> {
+    let mut iso = new_isolate(dispatch, stress);
+    let mut resolve = |referrer: &str, spec: &str| -> Result<String, String> {
+        let name = spec.strip_prefix("./").unwrap_or(spec);
+        match source(files, name) {
+            Some(_) => Ok(name.to_string()),
+            None => Err(format!(
+                "Cannot find module '{spec}' imported from {referrer}"
+            )),
+        }
+    };
+    let mut load = |name: &str| compile(source(files, name).expect("a resolved file"));
+    let unit = hook_script(script).expect("compiles");
+    let r = iso.with_module_host(&mut resolve, &mut load, |iso| {
+        iso.with_cx_checkpoint(|cx| cx.run_script(unit, "main.js").map(|_| ()))
+    });
+    if let Err(e) = r {
+        OUT.with(|o| o.borrow_mut().push(format!("uncaught {}", e.message)));
+    }
+    let unit = hook_script(after).expect("compiles");
+    if let Err(e) = iso.with_cx_checkpoint(|cx| cx.run_script(unit, "after.js").map(|_| ())) {
+        OUT.with(|o| o.borrow_mut().push(format!("uncaught {}", e.message)));
+    }
+    let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
+    iso.collect_garbage();
+    iso.verify_heap().expect("a valid heap");
+    out
+}
+
+/// `import()` in a script and in a promise job after the script (the host's checkpoint) uses
+/// the hooks of `Isolate::with_module_host`; a module that two imports name is loaded and
+/// evaluated once, and a load error rejects. The first five lines are node v24.22.1's output
+/// for the same script (as a CommonJS file, with `.mjs` modules). After the host is gone,
+/// `import()` throws the v0 not-implemented Error (ep9's own rule, IT-NOHOST).
+#[test]
+fn import_calls_in_scripts_and_jobs_use_the_module_host() {
+    const FILES: Files = &[
+        ("b.js", "print('b');\nexport const b = 'B';"),
+        (
+            "c.js",
+            "import { b } from './b.js';\nexport const c = 'C' + b;",
+        ),
+    ];
+    const SCRIPT: &str = "print('sync');\nimport('./b.js').then(ns => {\n  print('script', ns.b);\n  return import('./c.js');\n}).then(ns => {\n  print('job', ns.c);\n  return import('./missing.js');\n}).catch(e => print('missing', e.constructor.name));";
+    const AFTER: &str = "try { import('./b.js'); } catch (e) { print('no host', e.message); }";
+    let mut first: Option<(String, Vec<String>)> = None;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let r = common::on_big_stack(move || run_script_in(FILES, SCRIPT, AFTER, d, stress));
+            let label = format!("{} stress={stress}", d.name());
+            match &first {
+                None => first = Some((label, r)),
+                Some((l0, r0)) => assert_eq!(&r, r0, "{label} differs from {l0}"),
+            }
+        }
+    }
+    assert_eq!(
+        first.expect("at least one dispatch").1,
+        lines(&[
+            "sync",
+            "b",
+            "script B",
+            "job CB",
+            "missing Error",
+            "no host not implemented in ep9 v0: DynamicImport",
+        ])
+    );
+}

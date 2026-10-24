@@ -161,12 +161,15 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
     isolate.register_host_function("print", 1, print);
     isolate.register_host_function("gc", 0, gc);
     // `with_cx_checkpoint` drains the microtask queue (promise jobs) before it returns; a
-    // module run does the same (`run_module`).
-    let result = if opts.module {
-        run_module(&mut isolate, unit, file)
-    } else {
-        isolate.with_cx_checkpoint(|cx| cx.run_script(unit, file).map(|_| ()))
-    };
+    // module run does the same (`run_module`). The file loader is the module host of the run
+    // and its jobs, so `import()` works in a script too.
+    let result = isolate.with_module_host(&mut resolve_module, &mut load_module, |isolate| {
+        if opts.module {
+            run_module(isolate, unit, file)
+        } else {
+            isolate.with_cx_checkpoint(|cx| cx.run_script(unit, file).map(|_| ()))
+        }
+    });
     let _ = std::io::stdout().flush();
     let status = match result {
         Ok(_) => EXIT_OK,
