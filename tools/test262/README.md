@@ -63,7 +63,7 @@ test262 root. `#` lines are comments.
 
 ## `exec`
 
-Each test runs through the whole engine: `ep9_frontend::compile` -> `ep9_vm::Isolate::run_script`.
+Each test runs through the whole engine: `ep9_frontend::compile` -> `ep9_vm::Cx::run_script` (or `Cx::run_module`) in `Isolate::with_cx_checkpoint`, inside `Isolate::with_module_host` with the test262 loader, so `import()` works in scripts and jobs.
 
 ```text
 parent (exec)                         worker processes (exec-worker), one per thread
