@@ -20,7 +20,7 @@
 //!   pins the SHA-256 of [`schema_text`] and the sample snapshot's bytes per version.
 //!
 //! Its only dependency is `ep9_bytecode` (`.github/scripts/dep-guards.sh` check 7). The VM
-//! exporter (FeedbackVector to FactSnapshot) comes in month 2.
+//! exporter (FeedbackVector to FactSnapshot) is `ep9_vm::abi::export_facts` (H16-Q5).
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 

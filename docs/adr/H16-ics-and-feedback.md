@@ -85,7 +85,7 @@ FunctionRef = js (unit hash, function id >= 1) | builtin (BuiltinId u16)
 KeyRef    = string (Latin-1 or UTF-16) | well-known symbol | other symbol
 ```
 
-- No type can hold a ShapeId, an address, a cell kind id or a closure identity. The VM exporter (month 2) turns a live shape into a ShapeDesc.
+- No type can hold a ShapeId, an address, a cell kind id or a closure identity. The VM exporter (`ep9_vm::abi::export_facts`, H16-Q5, M0 month 3) turns a live shape into a ShapeDesc.
 - Bitsets (TypeSet, BinaryHint, CompareHint, ForInHint, KeySet, BindingSet) only grow and merge by OR. H30 sets precedence between sources.
 
 ## Rules
@@ -108,7 +108,7 @@ KeyRef    = string (Latin-1 or UTF-16) | well-known symbol | other symbol
 
 - **Gains.** One IC entry and one fact schema for T0, JIT, AOT and profiles. No ABI bump in week 4: the 88 BytecodeGen goldens and `abi-history.txt` stay.
 - **Costs.** A ShapeDesc is larger than a ShapeId, and it is a prediction: two live shapes can share one description (for example with an `unknown` prototype), so a consumer always guards. Per-function feedback merges closures (H16-Q1).
-- **Follow-ups.** The VM exporter and `.ep9prof` (H16-Q5); the H13 index lists that `intrinsic` and `builtin` refs name (H16-Q4); H30 merge rules.
+- **Follow-ups.** `.ep9prof` (H16-Q5b, A3); the H13 index lists that `intrinsic` and `builtin` refs name (H16-Q4); H30 merge rules.
 
 ## Evidence
 
@@ -157,6 +157,7 @@ KeyRef    = string (Latin-1 or UTF-16) | well-known symbol | other symbol
 | 2026-10-25 | clarify | Review record row 2 filled from the Codex texts; no text outside the record changes; no check changes | orchestrator (written by the M3-P3 records writer) |
 | 2026-10-25 | clarify | H16-Q5 split (V8-A21, M3-PLAN-D54): the `.ep9prof` container half becomes the new row H16-Q5b, due A3 (docs/plan/02-architecture.md:227); H16-Q5 keeps the VM exporter half. Text only | M3-P3 FACTS-EXPORT |
 | 2026-10-25 | fill | H16-Q5 filled: the VM exporter `ep9_vm::abi::export_facts` (FeedbackVector → FactSnapshot v0; the ShapeDesc root walk; the left-out cases). No slot kind, schema or encoding change (`FACT_SCHEMA_VERSION` stays 1); every Rules check keeps its result | M3-P3 FACTS-EXPORT |
+| 2026-10-25 | clarify | Two stale lines after the H16-Q5 fill and split (FACTS-EXPORT fixer items): Decision, the FactSnapshot v0 list item on ShapeDesc names the exporter `ep9_vm::abi::export_facts` (H16-Q5, M0 month 3) in place of "month 2"; Consequences, Follow-ups names `.ep9prof` (H16-Q5b, A3) in place of "The VM exporter and `.ep9prof` (H16-Q5)". Text only | M3-P3 integration fixer |
 
 ## Review record
 
