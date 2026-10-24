@@ -284,7 +284,9 @@ fn native_stack_overflow_is_a_catchable_range_error() {
                 let mut iso = isolate(config(d, false));
                 iso.register_host_function("reenter", 1, reenter);
                 take_output();
-                let r = iso.run_script(make(), "native.js").map(|v| iso.display(v));
+                let r = iso.with_cx_checkpoint(|cx| {
+                    cx.run_script(make(), "native.js").map(|v| cx.display(v))
+                });
                 (r, take_output())
             })
             .unwrap()
@@ -447,16 +449,17 @@ fn terminate_from_another_thread() {
                 h.terminate();
             });
             take_output();
-            let r = iso.run_script(make(), "loop.js");
+            let r = iso.with_cx_checkpoint(|cx| cx.run_script(make(), "loop.js").map(|_| ()));
             killer.join().unwrap();
             let out = take_output();
             // The isolate keeps working.
             let mut s = Asm::script(0);
             s.lda_str("again");
             s.b.return_();
-            let after = iso
-                .run_script(unit("", vec![s.finish()]), "again.js")
-                .map(|v| iso.display(v));
+            let after = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(unit("", vec![s.finish()]), "again.js")
+                    .map(|v| cx.display(v))
+            });
             (r.map(|_| ()), out, after)
         });
         let e = r.unwrap_err();

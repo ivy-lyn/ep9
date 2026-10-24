@@ -682,10 +682,11 @@ fn generator_function_and_object_prototypes() {
             on_big_stack(move || {
                 let mut iso = isolate(config(d, stress));
                 take_output();
-                iso.run_script(make(), "gen.js").unwrap();
+                iso.with_cx_checkpoint(|cx| cx.run_script(make(), "gen.js").map(|_| ()))
+                    .unwrap();
                 let label = format!("{} stress={stress}", d.name());
-                let g = iso.global("g").unwrap().to_bits();
-                let it = iso.global("it").unwrap().to_bits();
+                let g = iso.global_raw("g").unwrap().to_bits();
+                let it = iso.global_raw("it").unwrap().to_bits();
                 let cx = &mut *iso.cx;
                 let rt: &Runtime = cx.rt();
                 let gfp = intrinsic(rt, IntrinsicId::GeneratorFunctionPrototype);
@@ -715,7 +716,7 @@ fn generator_function_and_object_prototypes() {
                 // A new generator after `g.prototype = 1` inherits from %GeneratorPrototype%.
                 let one = crate::frame::int32_bits(1);
                 property::set(cx, g, key, one, true).unwrap();
-                let r = iso.call(val(g), Value::UNDEFINED, &[]).unwrap();
+                let r = iso.call_raw(val(g), Value::UNDEFINED, &[]).unwrap();
                 assert_eq!(object::proto_of(r.to_bits()), gp, "{label}");
                 // A generator object is a GENERATOR in state suspended-start (id 0), sync.
                 assert!(crate::generator::is_generator(it), "{label}");
@@ -747,9 +748,12 @@ fn ordinary_functions_keep_their_prototypes() {
     s.b.lda_undefined().return_();
     let mut f = Asm::new(meta("f", 0, 0, 0, 0));
     f.b.lda_undefined().return_();
-    iso.run_script(unit("", vec![s.finish(), f.finish()]), "f.js")
-        .unwrap();
-    let f = iso.global("f").unwrap().to_bits();
+    iso.with_cx_checkpoint(|cx| {
+        cx.run_script(unit("", vec![s.finish(), f.finish()]), "f.js")
+            .map(|_| ())
+    })
+    .unwrap();
+    let f = iso.global_raw("f").unwrap().to_bits();
     let cx = &mut *iso.cx;
     let rt = cx.rt();
     assert_eq!(
@@ -844,10 +848,11 @@ fn holder_unit() -> VerifiedUnit {
 /// Returns `o` (masked) from the suspended generator's saved registers.
 #[inline(never)]
 fn made_a_suspended_holder(iso: &mut crate::Isolate) -> u64 {
-    iso.run_script(holder_unit(), "holder.js").unwrap();
-    let it = iso.global("it").unwrap();
+    iso.with_cx_checkpoint(|cx| cx.run_script(holder_unit(), "holder.js").map(|_| ()))
+        .unwrap();
+    let it = iso.global_raw("it").unwrap();
     let next = next_of(iso, it);
-    iso.call(next, it, &[]).unwrap();
+    iso.call_raw(next, it, &[]).unwrap();
     let regs = object::gen_regs(it.to_bits()).unwrap();
     // REGS = [input, (no params), r0..]: `o` is the first user register, after the Asm
     // scratch registers f, a0-a2 and the Gen registers g, v, t0, t1.
@@ -865,9 +870,9 @@ fn next_of(iso: &mut crate::Isolate, it: Value) -> Value {
 /// Resumes `it` to completion in a frame of its own; returns the result's `value` as an int.
 #[inline(never)]
 fn finish_the_holder(iso: &mut crate::Isolate) -> i32 {
-    let it = iso.global("it").unwrap();
+    let it = iso.global_raw("it").unwrap();
     let next = next_of(iso, it);
-    let r = iso.call(next, it, &[]).unwrap().to_bits();
+    let r = iso.call_raw(next, it, &[]).unwrap().to_bits();
     assert!(
         object::gen_regs(it.to_bits()).is_none(),
         "closed: REGS dropped"

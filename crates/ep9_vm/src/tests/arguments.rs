@@ -93,8 +93,9 @@ fn mapped_indices_alias_the_parameters() {
 fn with_a(make: fn() -> VerifiedUnit, stress: bool, check: fn(&mut Cx, u64)) {
     on_big_stack(move || {
         let mut iso = isolate(config(Dispatch::DEFAULT, stress));
-        iso.run_script(make(), "test.js").unwrap();
-        let a = iso.global("A").expect("A").to_bits();
+        iso.with_cx_checkpoint(|cx| cx.run_script(make(), "test.js").map(|_| ()))
+            .unwrap();
+        let a = iso.global_raw("A").expect("A").to_bits();
         let h = iso.rt.heap.new_global(crate::runtime::val(a));
         check(&mut iso.cx, a);
         iso.rt.heap.drop_global(h);

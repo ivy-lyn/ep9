@@ -326,7 +326,8 @@ fn run_for_result(iso: &mut Isolate, src: &str) -> String {
         CompileOptions::default(),
     )
     .expect("compiles");
-    iso.run_script(unit, "deep.js").expect("runs");
+    iso.with_cx_checkpoint(|cx| cx.run_script(unit, "deep.js").map(|_| ()))
+        .expect("runs");
     iso.with_cx(|cx| {
         let global = cx.global();
         let v = cx.get(global, "result")?;

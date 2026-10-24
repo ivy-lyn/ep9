@@ -1072,7 +1072,10 @@ fn run(
         on_big_stack(move || {
             let mut iso = isolate(config(Dispatch::DEFAULT, stress));
             setup(&mut iso, frozen, prevent);
-            match (iso.run_script(make(), "decl.js"), error) {
+            match (
+                iso.with_cx_checkpoint(|cx| cx.run_script(make(), "decl.js").map(|_| ())),
+                error,
+            ) {
                 (Ok(_), None) => {}
                 (Err(e), Some(want)) => assert_eq!(
                     e.constructor.as_deref(),

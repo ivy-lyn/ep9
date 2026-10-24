@@ -275,7 +275,7 @@ fn read_cell(us: &mut UnitSession, m: &Mapped, word: usize) -> Result<u64, Strin
 
 /// The slot kind of the global function `name`.
 fn kind(us: &UnitSession, name: &str) -> Option<DispatchKind> {
-    let f = us.s.iso.global(name)?;
+    let f = NativeCx::global_value(&us.s.iso, name)?;
     ep9_vm::native_target(&us.s.iso, f)?.kind
 }
 
@@ -304,7 +304,7 @@ fn live_addresses(us: &mut UnitSession, m: &Mapped) -> Live {
         l.point(n, f);
     }
     for name in ["id", "drive", "half", "str"] {
-        if let Some(f) = us.s.iso.global(name) {
+        if let Some(f) = NativeCx::global_value(&us.s.iso, name) {
             l.point("a function cell", f.to_bits() as usize);
             if let Some(t) = ep9_vm::native_target(&us.s.iso, f) {
                 l.point("a FunctionInfo", t.info);
@@ -457,7 +457,9 @@ fn check_load(scale: Scale) -> Result<Vec<String>, String> {
         let f = |name: &str| view.function(FnKind::Js, name).cloned().ok_or("no fn");
         let (fd, fi) = (f("drive")?, f("id")?);
         let (cd, ci) = (rw.counter(fd.counter), rw.counter(fi.counter));
-        let id_bits = us.s.iso.global("id").ok_or("no id")?.to_bits();
+        let id_bits = NativeCx::global_value(&us.s.iso, "id")
+            .ok_or("no id")?
+            .to_bits();
         if cd != 4 || ci != u64::from(n) || rw.ic(fd.ic_base) != id_bits {
             return Err(format!(
                 "{cname}: counters drive {cd} (want 4), id {ci} (want {n}); IC cell {:#x}, \
@@ -524,7 +526,11 @@ fn check_cells(_: Scale) -> Result<Vec<String>, String> {
         .verify_heap()
         .map_err(|e| format!("heap verifier: {:?}", e.errors))?;
     let s_bits = read_cell(&mut us, m, l.link_base() + 1)?;
-    let shown = us.s.iso.display(val(s_bits));
+    let shown =
+        us.s.iso
+            .string_view(val(s_bits))
+            .map_or_else(|| format!("{:?}", val(s_bits)), |s| s.to_string_lossy());
+
     if shown != "sp-unit A" {
         return Err(format!(
             "the unit constant reads {shown:?} after 3 collections"
@@ -572,7 +578,9 @@ fn check_cells(_: Scale) -> Result<Vec<String>, String> {
     let k = cleared.ok_or("the dead closure stayed in the IC cell for 8 collections")?;
     let r = us.s.run("print(drive(id, 2));", "main.js");
     expect_ok(&r, "drive(id, 2)")?;
-    let id = us.s.iso.global("id").ok_or("no id")?.to_bits();
+    let id = NativeCx::global_value(&us.s.iso, "id")
+        .ok_or("no id")?
+        .to_bits();
     if us.units.rw(0).ok_or("no RW copy")?.ic(site) != id {
         return Err("the cleared IC cell was not filled again".into());
     }
@@ -595,7 +603,9 @@ fn fill_ic(us: &mut UnitSession, site: u32, k: u32) -> Result<(ep9_heap::WeakHan
     let r = us.s.run("print(once());", "main.js");
     expect_ok(&r, "once()")?;
     let ic = us.units.rw(0).ok_or("no RW copy")?.ic(site);
-    let id = us.s.iso.global("id").ok_or("no id")?.to_bits();
+    let id = NativeCx::global_value(&us.s.iso, "id")
+        .ok_or("no id")?
+        .to_bits();
     if ic == ep9_value::encoding::VALUE_UNDEFINED || ic == id {
         return Err(format!(
             "try {k}: IC cell {ic:#x} after once(), want the closure"
@@ -1184,7 +1194,7 @@ fn fallback_run(
     let k = l.kind.name();
     match &l.kind {
         LoadKind::LoadError(r) => {
-            if l.run.is_some() || us.s.iso.global("drive").is_some() {
+            if l.run.is_some() || NativeCx::global_value(&us.s.iso, "drive").is_some() {
                 return Err(format!("{name}: a section ran after a load error"));
             }
             if us.units.rw(0).is_some() || us.units.directory_word(0) != 0 {

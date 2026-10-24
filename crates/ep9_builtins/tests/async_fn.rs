@@ -241,7 +241,8 @@ fn an_unhandled_async_rejection_is_reported() {
     )
     .expect("compiles");
     let mut iso = common::isolate(true);
-    iso.run_script(unit, "test.js").expect("no uncaught error");
+    iso.with_cx_checkpoint(|cx| cx.run_script(unit, "test.js").map(|_| ()))
+        .expect("no uncaught error");
     let reasons = iso.take_unhandled_rejections();
     assert_eq!(reasons.len(), 1);
     assert_eq!(reasons[0].message, "lost");
@@ -364,7 +365,7 @@ fn run_hooked(src: &str, dispatch: Dispatch, stress: bool) -> Result<Vec<String>
         iso.register_host_function(name, length, f);
     }
     OUT.with(|o| o.borrow_mut().clear());
-    let r = iso.run_script(unit, "test.js");
+    let r = iso.with_cx_checkpoint(|cx| cx.run_script(unit, "test.js").map(|_| ()));
     let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
     iso.collect_garbage();
     iso.verify_heap().expect("a valid heap");

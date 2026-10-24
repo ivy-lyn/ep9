@@ -644,7 +644,7 @@ print(JSON.stringify({ a: 1, b: undefined, c: 'x' }, null, 1).split('\n').join('
         .expect("an isolate");
         iso.register_host_function("print", 1, print);
         OUT.with(|o| o.borrow_mut().clear());
-        iso.run_script(unit, "t.js")
+        iso.with_cx_checkpoint(|cx| cx.run_script(unit, "t.js").map(|_| ()))
             .map_err(|e| e.message)
             .expect("no uncaught exception");
         let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));

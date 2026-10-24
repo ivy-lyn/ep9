@@ -4,7 +4,7 @@
 //! M0 (week 3): `ep9 <file.js>` and `ep9 -e <code>` run one script through the whole engine.
 //!
 //! ```text
-//! source --ep9_frontend::compile--> VerifiedUnit --Isolate::run_script--> result
+//! source --ep9_frontend::compile--> VerifiedUnit --Cx::run_script, then the jobs--> result
 //!   compile error   -> "file:line:col: SyntaxError: ..." / "RangeError: ..."   exit 1
 //!   uncaught throw  -> "Uncaught file:line:col: Name: message" + stack lines  exit 1
 //!   bad flag, I/O   -> usage text                                             exit 2

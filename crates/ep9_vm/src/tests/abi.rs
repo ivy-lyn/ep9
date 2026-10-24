@@ -255,7 +255,8 @@ fn construct_with_a_different_new_target() {
         on_big_stack(move || {
             let mut iso = isolate(config(Dispatch::DEFAULT, stress));
             setup_probe(&mut iso);
-            iso.run_script(constructor_unit(), "ctor.js").unwrap();
+            iso.with_cx_checkpoint(|cx| cx.run_script(constructor_unit(), "ctor.js").map(|_| ()))
+                .unwrap();
             let mut cx = Cx::new(&mut iso.cx);
             let f = global(&mut cx, "F");
             let other = global(&mut cx, "Other").as_object().unwrap();

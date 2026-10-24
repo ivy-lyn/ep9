@@ -164,20 +164,21 @@ fn every_function_has_the_isolate_realm() {
     for stress in [false, true] {
         on_big_stack(move || {
             let mut iso = isolate(config(Dispatch::DEFAULT, stress));
-            iso.run_script(two_functions(), "realm.js").unwrap();
+            iso.with_cx_checkpoint(|cx| cx.run_script(two_functions(), "realm.js").map(|_| ()))
+                .unwrap();
             take_output();
             let rt: &Runtime = &iso.rt;
             let realm = rt.root(Root::Realm);
             assert_eq!(kinds::cell_kind(realm), kinds::REALM.get());
             assert_eq!(iso.cx.realm, realm, "Cx::realm is a copy of the REALM root");
-            let f = iso.global("f").unwrap().to_bits();
-            let g = iso.global("g").unwrap().to_bits();
+            let f = iso.global_raw("f").unwrap().to_bits();
+            let g = iso.global_raw("g").unwrap().to_bits();
             assert!(object::function_info(g).is_generator());
             assert_realm(rt, f, "a bytecode function");
             assert_realm(rt, g, "a generator function");
             assert_realm(
                 rt,
-                iso.global("print").unwrap().to_bits(),
+                iso.global_raw("print").unwrap().to_bits(),
                 "a host function",
             );
             // Every function of the VM table, %Function.prototype% (made before any other
@@ -545,8 +546,9 @@ fn index_paths_set_walk_and_for_in_reach_the_routed_hooks() {
         let mapped = name == "mapped";
         on_big_stack(move || {
             let mut iso = isolate(config(Dispatch::DEFAULT, true));
-            iso.run_script(make(), "args.js").unwrap();
-            let a = iso.global("A").expect("A").to_bits();
+            iso.with_cx_checkpoint(|cx| cx.run_script(make(), "args.js").map(|_| ()))
+                .unwrap();
+            let a = iso.global_raw("A").expect("A").to_bits();
             let cx: &mut crate::interp::Cx = &mut iso.cx;
             let rt: &Runtime = &iso.rt;
             let ha = rt.heap.new_global(val(a));

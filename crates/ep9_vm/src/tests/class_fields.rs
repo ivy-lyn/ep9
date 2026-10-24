@@ -209,7 +209,8 @@ fn each(test: fn(&mut Isolate)) {
         for stress in [false, true] {
             on_big_stack(move || {
                 let mut iso = isolate(config(d, stress));
-                iso.run_script(make(), "class_fields.js").unwrap();
+                iso.with_cx_checkpoint(|cx| cx.run_script(make(), "class_fields.js").map(|_| ()))
+                    .unwrap();
                 test(&mut iso);
                 iso.collect_garbage();
                 iso.verify_heap().unwrap();
@@ -220,8 +221,9 @@ fn each(test: fn(&mut Isolate)) {
 
 /// `name(args)` with `this` undefined.
 fn call(iso: &mut Isolate, name: &str, args: &[Value]) -> Result<Value, String> {
-    let f = iso.global(name).unwrap();
-    iso.call(f, Value::UNDEFINED, args).map_err(|e| e.message)
+    let f = iso.global_raw(name).unwrap();
+    iso.call_raw(f, Value::UNDEFINED, args)
+        .map_err(|e| e.message)
 }
 
 fn ok(iso: &mut Isolate, name: &str, args: &[Value]) -> Value {
@@ -230,7 +232,7 @@ fn ok(iso: &mut Isolate, name: &str, args: &[Value]) -> Value {
 
 fn err(iso: &mut Isolate, name: &str, args: &[Value]) -> String {
     match call(iso, name, args) {
-        Ok(v) => panic!("{name} returned {}", iso.display(v)),
+        Ok(v) => panic!("{name} returned {}", iso.display_raw(v)),
         Err(e) => e,
     }
 }
@@ -433,11 +435,11 @@ fn brand_errors_name_the_class() {
 fn class_fields_initializer_is_stored_hidden_and_run_own_only() {
     each(|iso| {
         let (a, b, d) = (
-            iso.global("A").unwrap(),
-            iso.global("B").unwrap(),
-            iso.global("D").unwrap(),
+            iso.global_raw("A").unwrap(),
+            iso.global_raw("B").unwrap(),
+            iso.global_raw("D").unwrap(),
         );
-        let init = iso.global("init").unwrap();
+        let init = iso.global_raw("init").unwrap();
         let keys_before = own_keys(iso, a);
         assert_eq!(
             ok(iso, "setInit", &[a, init]).to_bits(),
@@ -479,7 +481,7 @@ fn class_fields_initializer_is_stored_hidden_and_run_own_only() {
         let x = cx.get(inst.as_object().unwrap(), "x").unwrap();
         assert_eq!(x.as_int32(), Some(7));
         // An exception from the initializer propagates.
-        let t = iso.global("throwInit").unwrap();
+        let t = iso.global_raw("throwInit").unwrap();
         ok(iso, "setInit", &[b, t]);
         assert_eq!(err(iso, "runInit", &[b, o2]), "13");
         // Errors of the runtime function itself.

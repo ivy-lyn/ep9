@@ -3,25 +3,25 @@
 //! ```text
 //! let mut iso = Isolate::new(IsolateConfig::default())?;      heap, VM stack, realm
 //! iso.register_host_function("print", 1, print);              a global host function
-//! match iso.run_script(unit, "main.js") {                     VerifiedUnit from ep9_frontend
-//!     Ok(v) => println!("{}", iso.display(v)),
+//! match iso.with_cx_checkpoint(|cx| cx.run_script(unit, "main.js").map(|v| cx.display(v))) {
+//!     Ok(text) => println!("{text}"),                         a Cx scope, then the jobs
 //!     Err(e) => eprintln!("{e}"),                             "main.js:3:7: TypeError: ..."
 //! }
 //! ```
 //!
-//! A `Value` that the API returns is not a root: it stays valid until the next call into the
-//! isolate (that call may collect garbage). Copy what you need out of it first, or work inside
-//! [`Isolate::with_cx`], whose `Local`s cannot outlive the call (H20-Q4). The scoped forms
-//! (M2-P3, C11) are `Cx` methods:
+//! JS values reach the embedder only as `Local`s inside [`Isolate::with_cx`] or
+//! [`Isolate::with_cx_checkpoint`], which cannot leave the call, so no value outlives a
+//! collection (H20-Q4): copy what you need (a `String`, a number) out of the scope. The
+//! scoped forms (M2-P3, C11) are `Cx` methods:
 //!
 //! | Old form (raw `Value`) | Scoped form inside `with_cx` (`Local<'s>`) |
 //! |---|---|
-//! | `Isolate::run_script` | [`abi::Cx::run_script`] |
-//! | `Isolate::call` | `abi::Cx::call` |
+//! | `Isolate::run_script` | [`abi::Cx::run_script`] in [`Isolate::with_cx_checkpoint`] |
+//! | `Isolate::call` | `abi::Cx::call` in [`Isolate::with_cx_checkpoint`] |
 //! | `Isolate::global` | [`abi::Cx::global_binding`] (runs getters; TDZ throws) |
 //! | `Isolate::display` | [`abi::Cx::display`] |
 //!
-//! The old forms stay until the embedders move (M3-P3 EMBED-MIGRATE).
+//! M3-P3 EMBED-MIGRATE moved every caller to the scoped forms and then removes the old ones.
 //!
 //! Other threads reach a running isolate through two `Send` handles: [`TerminateHandle`]
 //! (stop the script) and [`InterruptHandle`] (run a callback on the isolate thread at the
@@ -385,6 +385,69 @@ impl Isolate {
         }
     }
 
+    /// [`Isolate::with_cx`], then a microtask checkpoint
+    /// ([`Isolate::perform_microtask_checkpoint`]), also after a throw: the jobs that `f`
+    /// queued run before it returns. This is the run of a script or a call as a host does it
+    /// (`f` calls [`abi::Cx::run_script`], [`abi::Cx::run_module`] or `abi::Cx::call`).
+    ///
+    /// The result of `f` is made before the jobs run, so `f` copies out what it needs (a
+    /// `Local` cannot leave `f`). The error rules: a termination in `f` runs no checkpoint and
+    /// drops the queued jobs, so none of them runs later; a throw from `f` wins over one from
+    /// a job, but a termination in a job wins over the throw; a job that throws after `f`
+    /// returned `Ok` makes the result that error, and the jobs behind it stay queued.
+    ///
+    /// ```
+    /// use ep9_vm::{Args, Cx, Isolate, IsolateConfig, JsResult, Local};
+    /// fn job<'s>(
+    ///     cx: &mut Cx<'s>,
+    ///     _this: Local<'s>,
+    ///     args: Args<'s>,
+    ///     _new_target: Local<'s>,
+    /// ) -> JsResult<Local<'s>> {
+    ///     let g = cx.global();
+    ///     cx.set(g, "ran", args.get(0), true)?;
+    ///     Ok(Local::undefined())
+    /// }
+    /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    /// iso.register_host_function("job", 1, job);
+    /// let r = iso.with_cx_checkpoint(|cx| {
+    ///     let f = cx.global_binding("job")?.expect("a global");
+    ///     cx.enqueue_job(f, Local::int32(7))?;
+    ///     // The job runs after this closure returns.
+    ///     Ok(cx.global_binding("ran")?.is_none())
+    /// });
+    /// assert_eq!(r, Ok(true));
+    /// let ran = iso.with_cx(|cx| Ok(cx.global_binding("ran")?.map(|v| cx.display(v))));
+    /// assert_eq!(ran, Ok(Some("7".to_string())));
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use ep9_vm::{Isolate, IsolateConfig};
+    /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    /// // The `Local` cannot leave the call.
+    /// let global = iso.with_cx_checkpoint(|cx| Ok(cx.global())).unwrap();
+    /// iso.collect_garbage();
+    /// let _ = global;
+    /// ```
+    pub fn with_cx_checkpoint<R>(
+        &mut self,
+        f: impl for<'s> FnOnce(&mut abi::Cx<'s>) -> JsResult<R>,
+    ) -> Result<R, Exception> {
+        match self.with_cx(f) {
+            Ok(v) => {
+                self.perform_microtask_checkpoint()?;
+                Ok(v)
+            }
+            // A termination: `exception` dropped the queue, so no job runs.
+            Err(e) if e.terminated => Err(e),
+            Err(e) => match self.perform_microtask_checkpoint() {
+                Err(c) if c.terminated => Err(c),
+                // The error of `f` wins; a job's error after it is dropped.
+                _ => Err(e),
+            },
+        }
+    }
+
     pub fn dispatch(&self) -> Dispatch {
         self.cx.dispatch
     }
@@ -427,9 +490,9 @@ impl Isolate {
     /// Performs a microtask checkpoint: runs every queued job (promise reactions, and the jobs
     /// of `Cx::enqueue_job`) in order, and the jobs they queue, until none is left. A job that
     /// throws stops it: that exception is the `Err`, and the jobs behind it stay queued. A
-    /// termination stops it and drops the queue. [`Isolate::run_script`] and
-    /// [`Isolate::call`] run one after their run; an embedder that runs JS inside
-    /// [`Isolate::with_cx`] calls this afterwards.
+    /// termination stops it and drops the queue. [`Isolate::with_cx_checkpoint`] runs one
+    /// after its scope; an embedder that runs JS inside [`Isolate::with_cx`] calls this
+    /// afterwards.
     pub fn perform_microtask_checkpoint(&mut self) -> Result<(), Exception> {
         let r = abi::Cx::new(&mut self.cx).perform_microtask_checkpoint();
         match r {
@@ -461,16 +524,7 @@ impl Isolate {
     /// object (reading it would call the getter). An own data property of the global object
     /// only: [`abi::Cx::global_binding`] does the full lookup, getters and TDZ included.
     pub fn global(&self, name: &str) -> Option<Value> {
-        let rt = &*self.rt;
-        let key = atoms::intern_str(rt, name);
-        match own_get(rt.root(Root::Lexical), key) {
-            // The TDZ hole never leaves the VM.
-            Some((v, _)) => (v != HOLE).then(|| val(v)),
-            None => own_get(rt.global(), key)
-                // An accessor's slot holds its ACCESSOR_PAIR cell, which is not a JS value.
-                .filter(|&(_, a)| a & attr::ACCESSOR == 0)
-                .map(|(v, _)| val(v)),
-        }
+        global_data(&self.rt, name).map(val)
     }
 
     /// Text of `v` for a REPL or test output, without running JS: strings as they are,
@@ -603,11 +657,11 @@ impl Isolate {
                     if end_termination(rt) {
                         return terminated();
                     }
-                    self.display(val(exc))
+                    display_bits(exc)
                 }
             }
         } else {
-            self.display(val(exc))
+            display_bits(exc)
         };
         let location = site.map(|s| {
             // SAFETY: sites name units of this isolate, which live until it drops.
@@ -631,7 +685,7 @@ impl Isolate {
 
 /// Loads `unit` (a new entry of `Runtime::units`, never freed) and calls its entry function:
 /// `this` is the global object for a script and undefined for module code. The shared body of
-/// [`Isolate::run_script`] and [`abi::Cx::run_script`]. Works from Rust with no frame and from
+/// `Isolate::run_script` and [`abi::Cx::run_script`]. Works from Rust with no frame and from
 /// a host call (a nested run on top of the caller's frames).
 fn run_unit(cx: &mut Cx, unit: VerifiedUnit, file: &str) -> Res<u64> {
     let rt = cx.rt();
@@ -645,6 +699,88 @@ fn run_unit(cx: &mut Cx, unit: VerifiedUnit, file: &str) -> Res<u64> {
     call::call_function(cx, f, this, &[])
 }
 
+/// The global binding `name` as `Isolate::global` reads it: the script lexical record first
+/// (`None` in its TDZ), then an own data property of the global object (`None` for an
+/// accessor). Runs no JS; interning `name` may allocate.
+fn global_data(rt: &Runtime, name: &str) -> Option<u64> {
+    let key = atoms::intern_str(rt, name);
+    match own_get(rt.root(Root::Lexical), key) {
+        // The TDZ hole never leaves the VM.
+        Some((v, _)) => (v != HOLE).then_some(v),
+        None => own_get(rt.global(), key)
+            // An accessor's slot holds its ACCESSOR_PAIR cell, which is not a JS value.
+            .filter(|&(_, a)| a & attr::ACCESSOR == 0)
+            .map(|(v, _)| v),
+    }
+}
+
+/// Test support for the in-crate tests, which drive the VM with raw values (objects they make
+/// with `object::*`, atoms, bits they read back from the heap). The embedding API has no raw
+/// form (H20-Q4); a test that checks that API uses the scoped forms. A raw `Value` here is
+/// not a root: it lives while the test's Rust frame holds it (the conservative stack scan,
+/// H10) or something reachable holds it, never in a Rust heap container.
+#[cfg(test)]
+impl Isolate {
+    /// The global binding `name` as `global_data` reads it (no JS).
+    pub(crate) fn global_raw(&self, name: &str) -> Option<Value> {
+        global_data(&self.rt, name).map(val)
+    }
+
+    /// The text of `v` as [`abi::Cx::display`] gives it (no JS).
+    pub(crate) fn display_raw(&self, v: Value) -> String {
+        display_bits(v.to_bits())
+    }
+
+    /// [`abi::Cx::run_script`] in a [`Isolate::with_cx`] scope, with no microtask checkpoint
+    /// after it (as [`Isolate::call_raw`]): the completion value as a raw `Value`.
+    pub(crate) fn run_raw(&mut self, unit: VerifiedUnit, file: &str) -> Result<Value, Exception> {
+        self.with_cx(|cx| cx.run_script(unit, file).map(|v| val(v.bits())))
+    }
+
+    /// Call(`f`, `this`, `args`) in a [`Isolate::with_cx`] scope, with no microtask
+    /// checkpoint after it (these tests queue no jobs; `tests::jobs` checks the checkpoint
+    /// through [`Isolate::with_cx_checkpoint`]). The arguments are copied into the callee
+    /// frame before its first GC point (`call::call_with`).
+    pub(crate) fn call_raw(
+        &mut self,
+        f: Value,
+        this: Value,
+        args: &[Value],
+    ) -> Result<Value, Exception> {
+        let argc = u32::try_from(args.len()).unwrap_or(u32::MAX);
+        self.with_cx(|cx| {
+            let b = call::call_with(
+                cx.inner(),
+                f.to_bits(),
+                this.to_bits(),
+                argc,
+                |i| args[i as usize].to_bits(),
+                UNDEFINED,
+            )?;
+            // The hole never leaves the VM.
+            Ok(val(if b == HOLE { UNDEFINED } else { b }))
+        })
+    }
+}
+
+/// The raw-`Value` reads of the spike-native API (feature `spike-native` only, never in the
+/// ep9 graph, guard 11). That API takes and returns raw `Value`s by design
+/// ([`crate::install_native`], [`crate::native_target`], [`crate::call_from_rust`],
+/// [`NativeCx::intrinsic`](crate::NativeCx::intrinsic)), so Spike B and its tests get the
+/// functions it installs here. The embedding API has no raw-`Value` read (H20-Q4); this one
+/// sits in isolate.rs because the global lookup is here.
+#[cfg(feature = "spike-native")]
+impl crate::native::NativeCx {
+    /// The global binding `name` of `iso`, without running JS: the script lexical record
+    /// first, then an own data property of the global object. `None` if there is none, for a
+    /// lexical binding in its TDZ, and for an accessor property. The `Value` is not a root: it
+    /// stays valid while something reachable holds it (a global binding keeps its function;
+    /// the heap does not move objects, H10).
+    pub fn global_value(iso: &Isolate, name: &str) -> Option<Value> {
+        global_data(&iso.rt, name).map(val)
+    }
+}
+
 /// Resets the termination state after a terminated run and gives true if there was one; then
 /// it drops the job queue (`JobState::clear_queue`), so no job queued before the termination
 /// runs at a later run or checkpoint of the isolate.
@@ -656,7 +792,7 @@ fn end_termination(rt: &Runtime) -> bool {
     t
 }
 
-/// The text of [`Isolate::display`] and [`abi::Cx::display`]. Runs no JS.
+/// The text of `Isolate::display` and [`abi::Cx::display`]. Runs no JS.
 fn display_bits(b: u64) -> String {
     if is_string(b) {
         string::to_rust_string(b)
@@ -669,7 +805,7 @@ fn display_bits(b: u64) -> String {
 /// `Local`s, which cannot leave the `with_cx` call, so no raw `Value` outlives a collection.
 /// They are `Cx` methods, so a host function can use them too.
 impl<'s> abi::Cx<'s> {
-    /// Loads `unit` and runs it, as [`Isolate::run_script`] does: `this` is the global object
+    /// Loads `unit` and runs it (a script or a module unit alone): `this` is the global object
     /// for a script and undefined for module code; `file` names the unit in stack traces. The
     /// completion value comes back as a `Local`; a throw is the pending exception (`Err`),
     /// which `with_cx` turns into its [`Exception`].
@@ -713,7 +849,7 @@ impl<'s> abi::Cx<'s> {
     /// import that no module exports, or that two `export *` give, is a `SyntaxError`.
     /// An import attribute key other than `type` is a `SyntaxError`; `type: "json"` throws
     /// the v0 not-implemented `Error`, another type a `TypeError`. The result is undefined; the module's code runs with `this`
-    /// undefined. Run a microtask checkpoint after it, as [`Isolate::run_script`] does.
+    /// undefined. Run a microtask checkpoint after it ([`Isolate::with_cx_checkpoint`]).
     /// Top-level `await` and `import()` are not built (the front end rejects them).
     ///
     /// ```compile_fail
@@ -784,8 +920,8 @@ impl<'s> abi::Cx<'s> {
         self.get(global, key).map(Some)
     }
 
-    /// The text of `v` for a REPL or test output, as [`Isolate::display`]: strings as they
-    /// are, numbers in JS form, other values described. Runs no JS (no `toString` call).
+    /// The text of `v` for a REPL or test output: strings as they are, numbers in JS form,
+    /// other values described. Runs no JS (no `toString` call).
     pub fn display(&self, v: impl Into<Local<'s>>) -> String {
         display_bits(v.into().bits())
     }

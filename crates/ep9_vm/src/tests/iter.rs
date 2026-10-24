@@ -192,7 +192,8 @@ fn each_isolate(check: fn(&mut Isolate)) {
 
 fn run(iso: &mut Isolate, u: VerifiedUnit) -> (Result<crate::Value, Exception>, Vec<String>) {
     take_output();
-    let r = iso.run_script(u, "iter.js");
+    let r = iso.run_raw(u, "iter.js");
+
     (r, take_output())
 }
 
@@ -292,7 +293,7 @@ fn a_symbol_iterator_iterable_works_in_for_of() {
     }
     each_isolate(|iso| {
         let (r, out) = run(iso, make());
-        assert_eq!(iso.display(r.unwrap()), "end");
+        assert_eq!(iso.display_raw(r.unwrap()), "end");
         assert_eq!(out, ["0", "10", "20", "0,10"]);
     });
 }

@@ -124,7 +124,8 @@ fn run_states(
                     feedback_threshold: threshold,
                     ..config(d, stress)
                 });
-                iso.run_script(make(), "test.js").unwrap();
+                iso.with_cx_checkpoint(|cx| cx.run_script(make(), "test.js").map(|_| ()))
+                    .unwrap();
                 iso.collect_garbage();
                 iso.verify_heap().unwrap();
                 [0, 1].map(|id| with_info(&iso, id, |_, fi| state(fi)))
@@ -216,10 +217,14 @@ fn a_loop_that_runs_once_gets_a_vector_at_its_first_budget_poll() {
 fn entries_from_rust_count_as_calls() {
     on_big_stack(|| {
         let mut iso = isolate(IsolateConfig::default());
-        iso.run_script(program(0, How::Fast, 0), "test.js").unwrap();
-        let f = iso.global("f").unwrap();
+        iso.with_cx_checkpoint(|cx| {
+            cx.run_script(program(0, How::Fast, 0), "test.js")
+                .map(|_| ())
+        })
+        .unwrap();
+        let f = iso.global_raw("f").unwrap();
         for i in 1..=8 {
-            iso.call(f, Value::UNDEFINED, &[]).unwrap();
+            iso.call_raw(f, Value::UNDEFINED, &[]).unwrap();
             let want = if i < 8 { none(i) } else { made(8) };
             assert_eq!(
                 with_info(&iso, 1, |_, fi| state(fi)),
@@ -324,7 +329,11 @@ fn eager_isolate() -> Isolate {
     c.heap.record_conservative_roots = true;
     c.feedback_threshold = 0;
     let mut iso = isolate(c);
-    iso.run_script(program(1, How::Fast, 0), "test.js").unwrap();
+    iso.with_cx_checkpoint(|cx| {
+        cx.run_script(program(1, How::Fast, 0), "test.js")
+            .map(|_| ())
+    })
+    .unwrap();
     iso
 }
 
@@ -343,8 +352,11 @@ fn the_vector_survives_gc_while_its_unit_lives() {
         }
         iso.verify_heap().unwrap();
         // More code runs (under stress, each allocation collects), and f is called again.
-        iso.run_script(program(4, How::Mixed, 0), "test2.js")
-            .unwrap();
+        iso.with_cx_checkpoint(|cx| {
+            cx.run_script(program(4, How::Mixed, 0), "test2.js")
+                .map(|_| ())
+        })
+        .unwrap();
         assert!(iso.heap().stats().collections > collections + 3);
         // The first unit's f still has the same vector, unchanged.
         let units = iso.rt.units.borrow();

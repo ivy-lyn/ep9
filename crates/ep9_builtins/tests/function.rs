@@ -384,7 +384,8 @@ fn rust_calls_reach_the_bound_internal_methods() {
             )
             .expect("compiles");
             let mut iso = common::isolate(stress);
-            iso.run_script(unit, "rust.js").map_err(|e| e.message)?;
+            iso.with_cx_checkpoint(|cx| cx.run_script(unit, "rust.js").map(|_| ()))
+                .map_err(|e| e.message)?;
             iso.with_cx(|cx| {
                 let g = cx.global();
                 let (c, bc, other, badd) = (

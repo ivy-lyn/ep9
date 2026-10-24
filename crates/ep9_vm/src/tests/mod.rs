@@ -273,7 +273,7 @@ pub(crate) fn isolate(config: IsolateConfig) -> Isolate {
 pub(crate) fn run_in(config: IsolateConfig, unit: VerifiedUnit) -> Run {
     let mut iso = isolate(config);
     take_output();
-    let r = iso.run_script(unit, "test.js").map(|v| iso.display(v));
+    let r = iso.with_cx_checkpoint(|cx| cx.run_script(unit, "test.js").map(|v| cx.display(v)));
     let output = take_output();
     iso.collect_garbage();
     iso.verify_heap().unwrap();

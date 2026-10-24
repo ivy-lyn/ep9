@@ -1663,8 +1663,10 @@ mod call_budget {
                     ..config(d, false)
                 });
                 iso.cx.budget = budget;
-                let r = iso.run_script(make(), "budget.js");
-                assert_eq!(r.map(|v| iso.display(v)).as_deref(), Ok(expect));
+                let r = iso.with_cx_checkpoint(|cx| {
+                    cx.run_script(make(), "budget.js").map(|v| cx.display(v))
+                });
+                assert_eq!(r.as_deref(), Ok(expect));
                 let units_ref = iso.rt.units.borrow();
                 let infos = &units_ref.last().expect("a loaded unit").infos;
                 After {
@@ -1853,8 +1855,12 @@ mod call_budget {
                 iso.interrupt_handle()
                     .request(Box::new(move || r2.store(true, Ordering::SeqCst)));
                 iso.cx.budget = budget;
-                let r = iso.run_script(overflow_program(calls, site), "overflow.js");
-                assert_eq!(r.map(|v| iso.display(v)).as_deref(), Ok("7"), "{site:?}");
+                let r = iso.with_cx_checkpoint(|cx| {
+                    cx.run_script(overflow_program(calls, site), "overflow.js")
+                        .map(|v| cx.display(v))
+                });
+                assert_eq!(r.as_deref(), Ok("7"), "{site:?}");
+
                 (iso.cx.budget, ran.load(Ordering::SeqCst))
             });
             match first {

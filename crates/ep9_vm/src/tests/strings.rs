@@ -80,28 +80,26 @@ fn one_name_from_two_units_and_a_concat_key_are_one_cell() {
     for stress in [false, true] {
         on_big_stack(move || {
             let mut iso = isolate(config(Dispatch::DEFAULT, stress));
-            let a = iso.run_script(returns("sharedName"), "u1.js").unwrap();
+            let a = iso.run_raw(returns("sharedName"), "u1.js").unwrap();
             let a = a.to_bits();
-            let b = iso.run_script(returns("sharedName"), "u2.js").unwrap();
+            let b = iso.run_raw(returns("sharedName"), "u2.js").unwrap();
             assert_eq!(a, b.to_bits(), "the same name from two units");
             assert!(string::is_atom(a));
             // "shared" + "Name" is a new cell; ToPropertyKey gives the unit's atom.
-            let c = iso
-                .run_script(concat_of("shared", "Name"), "u3.js")
-                .unwrap();
+            let c = iso.run_raw(concat_of("shared", "Name"), "u3.js").unwrap();
             let c = c.to_bits();
             assert_ne!(c, a);
             assert!(!string::is_atom(c));
             assert_eq!(key::to_property_key(&mut iso.cx, c).unwrap(), a);
             // A text with no atom yet: the string itself becomes the atom (no copy).
-            let d = iso.run_script(concat_of("brand", "New"), "u4.js").unwrap();
+            let d = iso.run_raw(concat_of("brand", "New"), "u4.js").unwrap();
             let d = d.to_bits();
             assert_eq!(atoms::lookup(&iso.rt, "brandNew"), None);
             assert_eq!(key::to_property_key(&mut iso.cx, d).unwrap(), d);
             assert!(string::is_atom(d));
             assert_eq!(atoms::lookup(&iso.rt, "brandNew"), Some(d));
             // A unit name equal to a static atom is that atom.
-            let l = iso.run_script(returns("length"), "u5.js").unwrap();
+            let l = iso.run_raw(returns("length"), "u5.js").unwrap();
             assert_eq!(l.to_bits(), iso.rt.atom(Atom::Length));
             atoms::verify(&iso.rt).unwrap();
         });
@@ -446,10 +444,10 @@ fn string_view_reads_script_strings_and_the_copy_outlives_gc() {
     // Isolate::string_view); the copied text can.
     let mut iso = isolate(config(Dispatch::DEFAULT, false));
     for (a, b) in [("abc", "def"), ("\u{20ac}x", "y")] {
-        let v = iso.run_script(concat_of(a, b), "view.js").unwrap();
+        let v = iso.run_raw(concat_of(a, b), "view.js").unwrap();
         let text = iso.string_view(v).map(|s| s.to_string_lossy());
         iso.heap().collect();
-        let _ = iso.global("a name interned after the view");
+        let _ = iso.global_raw("a name interned after the view");
         assert_eq!(text, Some(format!("{a}{b}")));
     }
     assert!(iso.string_view(Value::UNDEFINED).is_none());
@@ -646,7 +644,7 @@ fn over_limit_strings_throw_range_error() {
     }
     let e = on_big_stack(|| {
         let mut iso = isolate(config(Dispatch::DEFAULT, false));
-        iso.run_script(make(), "limit.js").unwrap_err()
+        iso.run_raw(make(), "limit.js").unwrap_err()
     });
     assert_eq!(e.constructor.as_deref(), Some("RangeError"), "{e}");
     assert!(e.message.contains("Invalid string length"), "{e}");

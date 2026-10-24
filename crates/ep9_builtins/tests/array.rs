@@ -207,18 +207,24 @@ fn assert_terminates(call: &'static str) {
                 .expect("compiles")
             };
             iso.terminate_handle().terminate();
-            let r = iso.run_script(
-                unit(&format!(
-                    "var stage = 'before'; var r = {call}; stage = 'reached ' + r;"
-                )),
-                "call.js",
-            );
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(
+                    unit(&format!(
+                        "var stage = 'before'; var r = {call}; stage = 'reached ' + r;"
+                    )),
+                    "call.js",
+                )
+                .map(|_| ())
+            });
             let terminated = r.is_err_and(|e| e.terminated);
-            let stage = iso.global("stage").map(|v| iso.display(v));
+            let stage = common::global_text(&mut iso, "stage");
             // The isolate keeps working.
-            iso.run_script(unit("stage = 'again'"), "again.js")
-                .expect("runs");
-            let again = iso.global("stage").map(|v| iso.display(v));
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(unit("stage = 'again'"), "again.js")
+                    .map(|_| ())
+            })
+            .expect("runs");
+            let again = common::global_text(&mut iso, "stage");
             let _ = tx.send((terminated, stage, again));
         })
         .expect("a thread");

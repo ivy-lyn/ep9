@@ -105,7 +105,7 @@ fn run_in(src: &str, dispatch: Dispatch, stress: bool) -> Result<Vec<String>, St
     .map_err(|e| format!("compile error: {e:?}"))?;
     let mut iso = isolate(dispatch, stress);
     OUT.with(|o| o.borrow_mut().clear());
-    let r = iso.run_script(unit, "test.js");
+    let r = iso.with_cx_checkpoint(|cx| cx.run_script(unit, "test.js").map(|_| ()));
     let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
     iso.collect_garbage();
     iso.verify_heap().expect("a valid heap");
@@ -458,7 +458,8 @@ a().then(function (v) { print('value3', v); });"#
 fn run_script_on(iso: &mut Isolate, src: &str) {
     let opts = SourceOpts::script(Strictness::Sloppy);
     let unit = ep9_frontend::compile(src, opts, CompileOptions::default()).expect("a script");
-    iso.run_script(unit, "test.js").expect("no throw");
+    iso.with_cx_checkpoint(|cx| cx.run_script(unit, "test.js").map(|_| ()))
+        .expect("no throw");
 }
 
 /// Overwrites the stack below the caller's frame with zeros, so the conservative scan finds
