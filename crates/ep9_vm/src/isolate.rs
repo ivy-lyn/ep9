@@ -45,9 +45,6 @@ use crate::object::{self, attr, is_error, is_string, own_define, own_get};
 use crate::runtime::{Atom, ErrorKind, Root, Runtime, Site, WeakInterruptQueue};
 use crate::unit::{FunctionInfo, LoadedUnit};
 use crate::{abi, atoms, call, error, property, realm, shape, string};
-// The raw reads of the in-crate tests and of the spike-native API.
-#[cfg(any(test, feature = "spike-native"))]
-use {crate::runtime::val, ep9_value::Value};
 
 /// Isolate settings.
 #[derive(Clone, Debug)]
@@ -666,6 +663,10 @@ fn global_data(rt: &Runtime, name: &str) -> Option<u64> {
             .map(|(v, _)| v),
     }
 }
+
+// The raw `Value` reads of the in-crate tests and of the spike-native API.
+#[cfg(any(test, feature = "spike-native"))]
+use {crate::runtime::val, ep9_value::Value};
 
 /// Test support for the in-crate tests, which drive the VM with raw values (objects they make
 /// with `object::*`, atoms, bits they read back from the heap). The embedding API has no raw
