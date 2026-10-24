@@ -779,3 +779,60 @@ export function fx() { return 'fx'; }
         ])
     );
 }
+
+// ---- M3-P3 IMPORT-TLA ----------------------------------------------------------------------
+
+/// Top-level await (§16.2.1.5.3, the async steps): the importer waits for its async
+/// dependency; a sync sibling and its job run while the dependency awaits; `run_module` runs
+/// checkpoints until the entry settles. Node v24.22.1 prints the same lines.
+#[test]
+fn top_level_await_orders_like_node() {
+    const FILES: Files = &[
+        (
+            "a.js",
+            "import { b } from './b.js';\nimport './c.js';\nprint('a', b);",
+        ),
+        (
+            "b.js",
+            "print('b start');\nawait 0;\nprint('b mid');\nawait Promise.resolve();\nexport const b = 'B';\nprint('b end');",
+        ),
+        (
+            "c.js",
+            "print('c');\nPromise.resolve().then(() => print('c job'));",
+        ),
+    ];
+    assert_eq!(
+        run_every(FILES, &["a.js"]),
+        lines(&["b start", "c", "b mid", "c job", "b end", "a B"])
+    );
+}
+
+/// `import()` in module code (§13.3.10.1): a namespace, a namespace with a `then` export (a
+/// thenable), a load error and a cached evaluation error (rejections), a non-object options
+/// value (TypeError) and a throwing ToString (its error), as node v24.22.1 gives them. A
+/// rejected top-level await is the error of the run.
+#[test]
+fn import_calls_settle_like_node() {
+    const FILES: Files = &[
+        (
+            "d.js",
+            "const ns = await import('./b.js');\nprint('d', ns.b, Object.keys(ns).join());\nconst t = await import('./t.js');\nprint('t', typeof t, t.then === undefined);\ntry { await import('./missing.js'); } catch (e) { print('missing', e.constructor.name); }\ntry { await import('./e.js'); } catch (e) { print('e1', e.message); }\ntry { await import('./e.js'); } catch (e) { print('e2', e.message); }\nimport('./b.js', 1).catch(e => print('opt', e.constructor.name));\nimport({ toString() { throw new RangeError('spec'); } }).catch(e => print('spec', e.constructor.name));",
+        ),
+        ("b.js", "await 0;\nexport const b = 'B';"),
+        ("t.js", "export function then(r) { r(42); }"),
+        ("e.js", "await 0;\nthrow new Error('boom');"),
+    ];
+    assert_eq!(
+        run_every(FILES, &["d.js", "e.js"]),
+        lines(&[
+            "d B b",
+            "t number true",
+            "missing Error",
+            "e1 boom",
+            "e2 boom",
+            "opt TypeError",
+            "spec RangeError",
+            "uncaught Error: boom",
+        ])
+    );
+}
