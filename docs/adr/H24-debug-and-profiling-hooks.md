@@ -63,7 +63,7 @@ Copied from the plan row: lazy position tables, kept ScopeInfo, a debug bytecode
 
 ## Validation
 
-- M0: the `ep9_vm` and bytecodegen checks above; Spike B checks (c) and (d) in the CI step "Spike B structural gate" on all 4 runners (macOS arm64, Linux x64, Linux arm64, Windows x64; no check is skipped on Windows, `.github/workflows/ci.yml:393-399`).
+- M0: the `ep9_vm` and bytecodegen checks above; Spike B checks (c) and (d) in the CI step "Spike B structural gate" on all 4 runners (macOS arm64, Linux x64, Linux arm64, Windows x64; no check is skipped on Windows, `.github/workflows/ci.yml:489-495`).
 - M4: CDP Debugger tests per mode. M6: the sampler walks mixed T0, JIT and Rust stacks. A2: unit maps.
 
 ## Open questions
@@ -95,6 +95,7 @@ Copied from the plan row: lazy position tables, kept ScopeInfo, a debug bytecode
 | 2026-10-23 | clarify (proposed; Accepted path) | 1 `path:line` reference moved to the code after the M3-P2 merge and the M3-P2 fixer changes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS); each names the same item at the new line. The ref moved because the M3-P2 docs fixer added 2 lines to the `ci.yml` header comment. Text only; no check changes. Review record for this amendment (README §3.1): rows 1-3 by agents that did not write it, row 4 the ADRLINE output; the orchestrator approves | M3-P2 integration fixer (docs) |
 | 2026-10-24 | clarify | Review record for the M3-P2 ADRLINE clarify row: rows 1, 2 and 4; row 3 and the Approval row are pending. No text outside the record changes; no check changes | M3-P2 records writer |
 | 2026-10-24 | clarify | Review record for the M3-P2 ADRLINE clarify row: row 3 (the M3-P2 ADRLINE row-3 verifier, checked at df87c4a: every moved ref names the same line text; nothing to sort) and the Approval row (the orchestrator approves, README §3.2). No text outside the record changes; no check changes | M3-P2 ADRLINE row-3 verifier |
+| 2026-10-25 | clarify (proposed; Accepted path) | 1 `path:line` reference moved to the code after the M3-P3 merge and the M3-P3 fixer changes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS); each names the same item at the new line. The ref moved because GATES-2 added the `test262-gc` job and the m0-exit input steps to `.github/workflows/ci.yml`. Line refs moved by M3-P3; no meaning change. Text only; no check changes. Review record for this amendment (README §3.1): rows 1-3 by agents that did not write it, row 4 the ADRLINE output; the orchestrator approves | M3-P3 integration fixer |
 
 ## Review record
 

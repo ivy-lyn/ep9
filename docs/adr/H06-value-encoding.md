@@ -40,7 +40,7 @@ JSC NaN-box: raw cell pointers, int32 under the 0xFFFE tag, doubles + 2^49. `Val
 
 | Rule | Check | From |
 |---|---|---|
-| `Value`, `JsResult<Value>` and word0 are 8 B | Static asserts in `ep9_value` (`crates/ep9_value/src/lib.rs:44-55`: `Value`, `Option<Value>`, `JsResult<Value>` and `Word0` are 8 B); `cargo xtask m0-exit` item 8 checks that the 3 size asserts are there and runs `cargo check -p ep9_value --lib --target <host>`, which evaluates them (NOT-RUN with `--no-build-check`; `tools/xtask/src/m0_exit.rs:1270-1306`); its Windows column reads the CI build step, which compiles them too ([08 §7](../plan/08-repo.md#7-dependency-guards-and-xtask-checks) lists size asserts) | SP-Value, M0 wk2; M0 exit item 8 |
+| `Value`, `JsResult<Value>` and word0 are 8 B | Static asserts in `ep9_value` (`crates/ep9_value/src/lib.rs:44-55`: `Value`, `Option<Value>`, `JsResult<Value>` and `Word0` are 8 B); `cargo xtask m0-exit` item 8 checks that the 3 size asserts are there and runs `cargo check -p ep9_value --lib --target <host>`, which evaluates them (NOT-RUN with `--no-build-check`; `tools/xtask/src/m0_exit.rs:1844-1880`); its Windows column reads the CI build step, which compiles them too ([08 §7](../plan/08-repo.md#7-dependency-guards-and-xtask-checks) lists size asserts) | SP-Value, M0 wk2; M0 exit item 8 |
 | No NaN other than the canonical one is ever boxed | Unit tests on every boxing path; FP differential (H36) | M0; M1 |
 | A boxed cell pointer is the raw address | CSS probe case S6 does not apply (03 §2) | SP-GC |
 | The encoding version is a unit header field | H35 header struct + golden test | M0 exit |
@@ -98,6 +98,7 @@ JSC NaN-box: raw cell pointers, int32 under the 0xFFFE tag, doubles + 2^49. `Val
 | 2026-10-22 | fill | H06-Q3 filled as built: the canonical NaN is `PURE_NAN_BITS` 0x7FF8_0000_0000_0000 (JSC PNaN); test `nan_payloads_are_purified` proves the purification. Every check keeps its result (M2-P3-OQ-H06-Q3) | P3 integration fixer |
 | 2026-10-22 | clarify | Rules row 1: m0-exit item 8 also compiles the asserts (`cargo check -p ep9_value` for the host target), so "no xtask task checks sizes" was false; the cell now says what item 8 runs (Codex C3, M2-P4-B2-ROW2). No check changes | P4-ACCEPT-3 |
 | 2026-10-22 | clarify | Status Draft -> Accepted (M2-P4-ACCEPT). The §3.1 review record is complete: row 1 P3-ACCEPT-2, row 2 Codex (M2-P3-B2-ROW2 and the P4 pre-step run (M2-P4-B2-ROW2)), row 3 P4-ACCEPT-3 (and the P4 review checkers for the RF1 rows), row 4 data. The orchestrator did not write the rows it approves. No check changes | orchestrator |
+| 2026-10-25 | clarify (proposed; Accepted path) | 1 `path:line` reference moved to the code after the M3-P3 merge and the M3-P3 fixer changes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS); each names the same item at the new line. The ref moved because GATES-2 changed `tools/xtask/src/m0_exit.rs` (the item 8 build check). The same ref in review row 3 (checked at 0c4c70e) keeps its line at that commit (a HISTORY pin of the drift script; M3-P1-REVIEWROW-REFS). Line refs moved by M3-P3; no meaning change. Text only; no check changes. Review record for this amendment (README §3.1): rows 1-3 by agents that did not write it, row 4 the ADRLINE output; the orchestrator approves | M3-P3 integration fixer |
 
 ## Review record
 
