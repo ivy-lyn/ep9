@@ -291,7 +291,8 @@ impl Isolate {
     /// That covers the `&mut self` calls that run JS or collect ([`Isolate::collect_garbage`])
     /// and the `&self` ones that allocate or collect ([`Isolate::heap`] gives `Heap::collect`
     /// and `Heap::alloc`). V8's `String::ValueView` has the same rule. A raw `Value` is not a
-    /// root: `v` must come from the latest call into the isolate. Copy the text out first:
+    /// root: `v` must come from the latest call into the isolate (the embedding API gives no
+    /// raw `Value`; the spike-native API does). Copy the text out first:
     ///
     /// ```
     /// use ep9_vm::{Isolate, IsolateConfig, Value};
