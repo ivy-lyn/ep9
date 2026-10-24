@@ -2512,7 +2512,8 @@ mod tests {
         assert_eq!(s[6], ("PASS", "PASS"), "{}", r.markdown);
         assert_eq!(s[7], ("NOT-RUN", "PASS"), "{}", r.markdown);
         assert_eq!(s[8], ("OPEN", "OPEN"));
-        assert_eq!(s[9], ("OPEN", "OPEN"));
+        // fake_repo copies the real ADR index: every A0 part 1 ADR is Accepted since M3-P2.
+        assert_eq!(s[9], ("PASS", "PASS"), "{}", r.markdown);
         assert_eq!(s[10], ("OPEN", "OPEN"));
         assert_eq!(s[11], ("PASS", "PASS"), "{}", r.markdown);
         assert!(!r.all_pass());
