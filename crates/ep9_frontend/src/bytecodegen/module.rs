@@ -3,8 +3,9 @@
 //!
 //! An import or export declaration emits no code (the bindings are module cells that the VM
 //! links, `ep9_vm` `module.rs`, from [`module_records`]); `import.meta` calls ABI 5 id 42
-//! `GetImportMeta` (M3-P2 MODULE); `import()` stays unsupported until M3-P3 IMPORT-TLA
-//! (id 43 `DynamicImport`).
+//! `GetImportMeta` (M3-P2 MODULE); `import(s, o)` calls id 43 `DynamicImport` (M3-P3
+//! IMPORT-TLA), in script and module code. `import.source(s)` and `import.defer(s)` (stage 3
+//! proposals) stay unsupported.
 //!
 //! ```text
 //! caller (site at b6109b3)                         entry here
@@ -31,13 +32,27 @@
 //! ```text
 //!         Ldar <this>; Star r_gen           the generator object
 //!         LdaUndefined; Star <this>         `this` of module code
-//!         SwitchOnGeneratorState r_gen, [L_init, L_run]
+//!         SwitchOnGeneratorState r_gen, [L_init, L_run, (L_2 .. L_n: the awaits)]
 //! L_init: [CreateFunctionContext scope0; PushContext]
 //!         `this`, hole stores (G8), LdaUndefined + StaModuleVariable per `var` cell,
 //!         CreateClosure + store per hoisted function
 //!         SuspendGenerator r_gen, r0..rN, N, 1        back to the VM: the module is linked
 //! L_run:  ResumeGenerator r_gen, r0..rN, N
 //!         the statements; LdaUndefined; Return
+//! ```
+//!
+//! A module with a top-level `await` (`[[HasTLA]]`, M3-P3 IMPORT-TLA) keeps this shape, and
+//! its second part is an async function body (`async_fn.rs`, the module doc): the VM makes
+//! the generator object an async function object (mode `MODE_ASYNC_FUNCTION`, with the
+//! promise of ExecuteModule's capability) before it resumes it at `L_run`, so each `await`
+//! is `AsyncFunctionAwait` and a suspend with id 2, 3, ... (AsyncBlockStart, §16.2.1.6.5).
+//!
+//! ```text
+//! L_run:  ResumeGenerator r_gen, r0..rN, N
+//!         try {                                         handler kind Promise
+//!           the statements (each `await`: AsyncFunctionAwait r_gen; SuspendGenerator id k)
+//!           LdaUndefined; AsyncFunctionResolve r_gen; Return
+//!         } catch (e) { AsyncFunctionReject r_gen, e; Return }
 //! ```
 //!
 //! [`module_records`] is the ParseModule part of §16.2.1.6: the requested modules (one per
@@ -50,20 +65,22 @@
 use std::collections::HashMap;
 
 use ep9_bytecode::{
-    ExportImportName, ImportEntry, ImportName, IndirectExportEntry, LocalExportEntry,
+    ExportImportName, HandlerKind, ImportEntry, ImportName, IndirectExportEntry, LocalExportEntry,
     ModuleRecords, ModuleRequest, Register, RegisterList, RuntimeId, UnitString,
 };
 use oxc_ast::ast::{
     ArrowFunctionExpression, AwaitExpression, Declaration, ExportDeclaration,
     ExportDefaultDeclaration, ExportDefaultDeclarationKind, ForOfStatement, Function,
-    ImportAttributeKey, ImportDeclarationSpecifier, ImportExpression, ImportMeta, ModuleExportName,
-    Program, PropertyDefinition, Statement, StaticBlock, StringLiteral, VariableDeclaration,
-    VariableDeclarationKind, WithClause,
+    ImportAttributeKey, ImportDeclarationSpecifier, ImportExpression, ImportMeta, ImportPhase,
+    ModuleExportName, Program, PropertyDefinition, Statement, StaticBlock, StringLiteral,
+    VariableDeclaration, VariableDeclarationKind, WithClause,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_semantic::ScopeFlags;
 
+use super::async_fn::FOR_AWAIT_SUSPENDS;
 use super::func::{FnGen, Gen};
+use super::generator::{GenKind, GenState};
 use super::literal::js_string;
 use crate::scope::{BindingId, BindingKind, BindingLocation, ScopeAnalysis, ScopeId};
 
@@ -82,10 +99,20 @@ impl<'a> FnGen<'a, '_> {
         let root = ScopeId(0);
         self.scope = root;
         let root_info = self.sa.scope(root);
+        // A module with a top-level `await`: one more suspend id per await point.
+        let awaits = if has_top_level_await(program) {
+            let mut counter = AwaitPoints(0);
+            for s in &program.body {
+                counter.visit_statement(s);
+            }
+            u32::try_from(counter.0).map_err(|_| super::internal("too many await points"))?
+        } else {
+            0
+        };
         let object = self.temp();
         self.b.ldar(Register::RECEIVER).star(object);
         self.b.lda_undefined().star(Register::RECEIVER);
-        let (table, entries) = self.b.jump_table(RUN + 1);
+        let (table, entries) = self.b.jump_table(RUN + 1 + awaits);
         self.b.switch_on_generator_state(object, table);
         self.b.bind(entries[0]);
         if root_info.needs_context {
@@ -124,8 +151,58 @@ impl<'a> FnGen<'a, '_> {
         self.b.suspend_generator(object, regs, live, RUN);
         self.b.bind(entries[RUN as usize]);
         self.b.resume_generator(object, regs, live);
+        if has_top_level_await(program) {
+            return self.module_async_body(program, object, entries);
+        }
         self.statements(&program.body)?;
         self.b.lda_undefined().return_();
+        Ok(())
+    }
+
+    /// The second part of function 0 of a module with a top-level `await` (the module doc):
+    /// the statements as an async function body (AsyncBlockStart, §27.7.5.2, from
+    /// ExecuteModule, §16.2.1.6.5). The VM made `object` an async function object; its awaits
+    /// take the suspend ids after [`RUN`] (`entries[RUN + 1..]`).
+    fn module_async_body(
+        &mut self,
+        program: &'a Program<'a>,
+        object: Register,
+        entries: Vec<ep9_bytecode::Label>,
+    ) -> Gen {
+        let mut state = GenState::new(object, entries, GenKind::AsyncFunction);
+        state.next = RUN as usize + 1;
+        self.generator = Some(state);
+        // The handler that rejects the promise covers the statements.
+        let ctx = self.temp();
+        self.b.lda_current_context().star(ctx);
+        let (start, end, handler) = (self.b.new_label(), self.b.new_label(), self.b.new_label());
+        self.b.bind(start);
+        self.statements(&program.body)?;
+        self.b.lda_undefined();
+        self.emit_return();
+        self.b.bind(end);
+        self.b
+            .add_handler(start, end, handler, ctx, HandlerKind::Promise);
+        self.b.bind(handler);
+        // A throw completion of the body (§27.7.5.2 step 3.g): reject, then leave the frame.
+        let m = self.mark();
+        let args = self.temps(2);
+        self.b
+            .star(args.get(1))
+            .lda_the_hole()
+            .set_pending_message();
+        self.b.mov(object, args.get(0));
+        self.runtime(RuntimeId::AsyncFunctionReject, args);
+        self.release(m);
+        self.b.return_();
+        let state = self.generator.take().expect("set above");
+        if !state.complete() {
+            return Err(super::internal(format!(
+                "module function 0: {} suspend points emitted, {} counted",
+                state.next,
+                state.resume.len()
+            )));
+        }
         Ok(())
     }
 
@@ -180,9 +257,30 @@ impl<'a> FnGen<'a, '_> {
             .ok_or_else(|| super::internal("no *default* binding"))
     }
 
-    /// `import(specifier, options)` (§13.3.10).
+    /// `import(specifier, options)` (§13.3.10.1 EvaluateImportCall): the specifier, then the
+    /// options (undefined when absent), then ABI 5 id 43 `DynamicImport`, which gives the
+    /// promise. `import.source(s)` and `import.defer(s)` (stage 3) stay unsupported.
     pub(crate) fn import_call(&mut self, i: &'a ImportExpression<'a>) -> Gen {
-        self.unsupported("import()", i.span)
+        match i.phase {
+            Some(ImportPhase::Source) => return self.unsupported("import.source()", i.span),
+            Some(ImportPhase::Defer) => return self.unsupported("import.defer()", i.span),
+            None => {}
+        }
+        self.enter(i.span)?;
+        let m = self.mark();
+        let args = self.temps(2);
+        self.expr_into(&i.source, args.get(0))?;
+        match &i.options {
+            Some(o) => self.expr_into(o, args.get(1))?,
+            None => {
+                self.b.lda_undefined().star(args.get(1));
+            }
+        }
+        self.expr_pos(i.span.start);
+        self.runtime(RuntimeId::DynamicImport, args);
+        self.release(m);
+        self.leave();
+        Ok(())
     }
 
     /// `import.meta` (§13.3.12.1): the running module's `[[ImportMeta]]` object, made on first
@@ -402,6 +500,47 @@ fn bound_names<'b>(v: &'b VariableDeclaration<'_>, out: &mut Vec<&'b str>) {
     }
 }
 
+/// `[[HasTLA]]` of a module (ParseModule, §16.2.1.7.1 step 2): its body holds an await
+/// point that the body itself evaluates ([`TopLevelAwait`]).
+fn has_top_level_await(program: &Program<'_>) -> bool {
+    let mut tla = TopLevelAwait(false);
+    for s in &program.body {
+        tla.visit_statement(s);
+    }
+    tla.0
+}
+
+/// The suspend points of the top-level awaits of a module body, counted as
+/// `async_fn.rs` counts those of an async function body (AF3, AF8): one per `await`,
+/// [`FOR_AWAIT_SUSPENDS`] per `for await`. The same nodes as [`TopLevelAwait`].
+struct AwaitPoints(usize);
+
+impl<'a> Visit<'a> for AwaitPoints {
+    fn visit_await_expression(&mut self, it: &AwaitExpression<'a>) {
+        self.0 += 1;
+        walk::walk_await_expression(self, it);
+    }
+
+    fn visit_for_of_statement(&mut self, it: &ForOfStatement<'a>) {
+        if it.r#await {
+            self.0 += FOR_AWAIT_SUSPENDS;
+        }
+        walk::walk_for_of_statement(self, it);
+    }
+
+    fn visit_function(&mut self, _it: &Function<'a>, _flags: ScopeFlags) {}
+
+    fn visit_arrow_function_expression(&mut self, _it: &ArrowFunctionExpression<'a>) {}
+
+    fn visit_property_definition(&mut self, it: &PropertyDefinition<'a>) {
+        if it.computed {
+            self.visit_property_key(&it.key);
+        }
+    }
+
+    fn visit_static_block(&mut self, _it: &StaticBlock<'a>) {}
+}
+
 /// `[[HasTLA]]`: an `await` (or `for await`, `await using`) that the module body itself
 /// evaluates. Functions, arrows, class field initializers and static blocks are their own
 /// code; class computed keys and heritage run in the module body.
@@ -520,10 +659,6 @@ pub(crate) fn module_records(
             _ => return Err(super::internal("module records: malformed export entry")),
         }
     }
-    let mut tla = TopLevelAwait(false);
-    for s in &program.body {
-        tla.visit_statement(s);
-    }
-    c.records.has_tla = tla.0;
+    c.records.has_tla = has_top_level_await(program);
     Ok(c.records)
 }

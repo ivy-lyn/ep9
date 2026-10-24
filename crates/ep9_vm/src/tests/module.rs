@@ -1,12 +1,14 @@
-//! Tests of module records and namespaces (MODULE, MODULE_NAMESPACE) (owner M3-P2 MODULE):
-//! the namespace internal methods (§10.4.6) through the routed hooks, on a namespace made by
-//! hand (export names and binding boxes, as `module::get_namespace` makes them). Module
-//! graphs (load, Link, Evaluate) are JS-level tests in `ep9_builtins/tests/module.rs`.
+//! Tests of module records and namespaces (MODULE, MODULE_NAMESPACE) (owner M3-P2 MODULE,
+//! then M3-P3 IMPORT-TLA): the namespace internal methods (§10.4.6) through the routed hooks,
+//! on a namespace made by hand (export names and binding boxes, as `module::get_namespace`
+//! makes them); the module host list of `import()`; GatherAvailableAncestors on records made
+//! by hand. Module graphs (load, Link, Evaluate, top-level await) are JS-level tests in
+//! `ep9_builtins/tests/module.rs` and test262.
 
 use super::{config, isolate, on_big_stack};
 use crate::descriptor::Desc;
 use crate::exotic::probe;
-use crate::frame::{HOLE, NULL, UNDEFINED, int32_bits};
+use crate::frame::{FALSE, HOLE, NULL, TRUE, UNDEFINED, int32_bits, int32_of};
 use crate::object::{self, attr};
 use crate::runtime::{Atom, Root, Runtime, val};
 use crate::{Dispatch, module, property, props, shape};
@@ -314,4 +316,113 @@ fn script_code_has_no_module() {
             }
         }
     }
+}
+
+/// M3-P3 IMPORT-TLA: `with_host` makes a host the module host of one isolate for the length
+/// of a call: calls nest (the innermost host answers), each isolate key has its own hosts,
+/// and the entry goes away after the call, also when the call panics.
+#[test]
+fn module_hosts_nest_and_leave_with_their_call() {
+    use crate::compiler::{CompileFailure, CompileResult};
+    let ask = |key: usize| module::call_host(key, |h| (h.resolve)("r", "s"));
+    let mut load = |_: &str| -> CompileResult { Err(CompileFailure::Internal("none".into())) };
+    let mut outer = |_: &str, s: &str| -> Result<String, String> { Ok(format!("outer {s}")) };
+    let mut inner = |_: &str, s: &str| -> Result<String, String> { Ok(format!("inner {s}")) };
+    let (a, b) = (1usize, 2usize);
+    assert_eq!(ask(a), None, "no host");
+    let mut h1 = module::Host {
+        resolve: &mut outer,
+        load: &mut load,
+    };
+    module::with_host(a, &mut h1, || {
+        assert_eq!(ask(a), Some(Ok("outer s".to_string())));
+        assert_eq!(ask(b), None, "another isolate has no host");
+        let mut load2 = |_: &str| -> CompileResult { Err(CompileFailure::Internal("none".into())) };
+        let mut h2 = module::Host {
+            resolve: &mut inner,
+            load: &mut load2,
+        };
+        module::with_host(a, &mut h2, || {
+            assert_eq!(
+                ask(a),
+                Some(Ok("inner s".to_string())),
+                "the innermost host"
+            );
+        });
+        assert_eq!(
+            ask(a),
+            Some(Ok("outer s".to_string())),
+            "the inner entry left"
+        );
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut load3 =
+                |_: &str| -> CompileResult { Err(CompileFailure::Internal("none".into())) };
+            let mut fail = |_: &str, _: &str| -> Result<String, String> { Err("x".into()) };
+            let mut h3 = module::Host {
+                resolve: &mut fail,
+                load: &mut load3,
+            };
+            module::with_host(a, &mut h3, || panic!("in the call"));
+        }));
+        assert!(r.is_err());
+        assert_eq!(
+            ask(a),
+            Some(Ok("outer s".to_string())),
+            "the entry of a panicked call left"
+        );
+    });
+    assert_eq!(ask(a), None, "no entry after the call");
+}
+
+/// M3-P3 IMPORT-TLA: GatherAvailableAncestors (§16.2.1.5.3.3) on records made by hand. Leaf
+/// `l` settles; its async parents are `p` (no TLA, one pending dependency), `q` (two
+/// pending) and `e` (its cycle root has an error). `p`'s parent `t` has TLA and one pending
+/// dependency; `t`'s parent `u` waits for `t` and is not reached (a TLA module stops the
+/// walk). The result: `p` and `t` join (once); `q` waits for one more; `e` and `u` keep their
+/// counts.
+#[test]
+fn gather_available_ancestors_follows_the_spec() {
+    on_big_stack(|| {
+        let iso = isolate(config(Dispatch::DEFAULT, false));
+        let rt: &Runtime = &iso.rt;
+        use object::modf;
+        let rec = |tla: bool, pending: i32| {
+            let m = module::new_module_record(rt);
+            object::record_set(rt, m, modf::HAS_TLA, if tla { TRUE } else { FALSE });
+            object::record_set(rt, m, modf::PENDING_ASYNC_DEPENDENCIES, int32_bits(pending));
+            m
+        };
+        let roots = rt.heap.scratch_roots();
+        let [l, p, q, e, t, u] = [
+            rec(true, 0),
+            rec(false, 1),
+            rec(false, 2),
+            rec(false, 1),
+            rec(true, 1),
+            rec(false, 1),
+        ];
+        for m in [l, p, q, e, t, u] {
+            roots.push(val(m));
+        }
+        let bad = rec(false, 0);
+        roots.push(val(bad));
+        object::record_set(rt, bad, modf::EVALUATION_ERROR, int32_bits(9));
+        object::record_set(rt, e, modf::CYCLE_ROOT, bad);
+        for parent in [p, q, e, p] {
+            module::list_append(rt, l, modf::ASYNC_PARENT_MODULES, parent);
+        }
+        module::list_append(rt, p, modf::ASYNC_PARENT_MODULES, t);
+        module::list_append(rt, t, modf::ASYNC_PARENT_MODULES, u);
+        let found: Vec<u64> = module::gather_available_ancestors(rt, l)
+            .into_iter()
+            .map(|c| c.0)
+            .collect();
+        assert_eq!(found, [p, t]);
+        let pending = |m| int32_of(object::record_get(m, modf::PENDING_ASYNC_DEPENDENCIES));
+        assert_eq!(
+            [pending(p), pending(q), pending(e), pending(t), pending(u)],
+            [0, 1, 1, 0, 1]
+        );
+        drop(roots);
+    });
 }
