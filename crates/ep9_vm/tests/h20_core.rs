@@ -6,9 +6,12 @@
 //! src/abi/*.rs     every pub item: types (fields, variants, derives), traits, the pub items
 //!                  of their impl blocks (`Cx`, `Args`, `Local`, ...), trait impls, the marker
 //!                  macro lists, the `pub use` re-exports
-//! src/isolate.rs   the `impl Cx` block (the scoped embedder forms)
+//! src/isolate.rs   the `impl Cx` block (the scoped embedder forms), and the embedder entry
+//!                  points of `impl Isolate` (`ENTRY_POINTS`: the calls that run ABI code or
+//!                  install a hook that ABI code calls; H20-Q4)
 //! src/builtins.rs  the builtin table types and `check_tables`
-//! src/lib.rs       the crate-root re-exports of `abi` and `builtins` (the public paths)
+//! src/lib.rs       the crate-root re-exports of `abi` and `builtins` (the public paths), and
+//!                  the path of `Isolate`
 //! ```
 //!
 //! A line is a signature without parameter names (a rename is not an API change), with the
@@ -507,6 +510,21 @@ fn item_name(head: &str) -> Option<String> {
     None
 }
 
+/// The `Isolate` methods in the core (H20-Q4, M3-P3 FREEZE-PREP step 2): the embedder's ways
+/// into ABI code. A `Cx` scope (`with_cx`, `with_cx_checkpoint`, `create_realm`), the job run
+/// (`perform_microtask_checkpoint`), and the hooks that ABI code calls (`register_host_function`
+/// takes a `HostFn`; `with_module_host` takes the hook types of `Cx::run_module`). The other
+/// `Isolate` methods (`new`, the handles, the heap, `string_view`, ...) are the embedder API of
+/// H22, H23 and H19, with their own freeze points, so they are not here.
+const ENTRY_POINTS: [&str; 6] = [
+    "create_realm",
+    "perform_microtask_checkpoint",
+    "register_host_function",
+    "with_cx",
+    "with_cx_checkpoint",
+    "with_module_host",
+];
+
 /// The append-only lists that have their own goldens (H20 part 2): their variants and their
 /// `ALL` values are not core lines.
 const PART2_ENUMS: [&str; 2] = ["IntrinsicId", "ObjectClass"];
@@ -678,6 +696,20 @@ fn extract(files: &[(String, String)]) -> Vec<String> {
                 }
                 continue;
             }
+            if p == "isolate.rs" && it.head == "impl Isolate" && kept_attrs(&it.attrs).is_empty() {
+                // The embedder entry points (not a `cfg(test)` or spike-native block).
+                for m in items(it.body.as_deref().unwrap_or("")) {
+                    let name = item_name(&m.head).unwrap_or_default();
+                    if is_pub(&m.head) && ENTRY_POINTS.contains(&name.as_str()) {
+                        let sig = drop_paths(&fn_sig(&m.head));
+                        out.push(format!(
+                            "embed: impl Isolate :: {}{sig}",
+                            kept_attrs(&m.attrs)
+                        ));
+                    }
+                }
+                continue;
+            }
             if it.head.starts_with("impl") {
                 let (tr, ty) = impl_target(&it.head);
                 let ours =
@@ -796,7 +828,7 @@ fn lib_paths(it: &Item, out: &mut Vec<String>) {
     for n in use_names(&use_text(it)) {
         let n = norm(&n);
         let module = n.split("::").next().unwrap_or("");
-        if module == "abi" || module == "builtins" {
+        if module == "abi" || module == "builtins" || n == "isolate::Isolate" {
             let name = n.rsplit("::").next().unwrap();
             out.push(format!("path: ep9_vm::{name} = {n}"));
         }
@@ -874,6 +906,8 @@ fn the_golden_covers_the_core() {
         "tables: #[derive(Clone, Copy)] pub struct BuiltinDef { pub name: &'static str,",
         "path: ep9_vm::Cx = abi::Cx",
         "path: ep9_vm::abi::export_facts (part 2, not core: V8-A13)",
+        "path: ep9_vm::CollectionCursor = abi::CollectionCursor",
+        "path: ep9_vm::Isolate = isolate::Isolate",
     ] {
         assert!(has(needle), "no line has {needle:?}");
     }
@@ -882,6 +916,29 @@ fn the_golden_covers_the_core() {
         .filter(|l| l.contains("impl<'s> Cx<'s> :: pub fn"))
         .count();
     assert!(cx > 100, "{cx} Cx methods");
+    assert!(
+        !lines.iter().any(|l| l.starts_with("path: (none)")),
+        "an ABI type with no public path"
+    );
+}
+
+/// Each embedder entry point (H20-Q4) has one golden line, and no other `Isolate` method has
+/// one: a rename or a removal of an entry point fails here and in the golden.
+#[test]
+fn the_golden_has_the_embedder_entry_points() {
+    let lines = golden_lines();
+    let embed: Vec<&String> = lines.iter().filter(|l| l.starts_with("embed: ")).collect();
+    for name in ENTRY_POINTS {
+        let n = embed
+            .iter()
+            .filter(|l| {
+                l.contains(&format!(":: pub fn {name}<"))
+                    || l.contains(&format!(":: pub fn {name}("))
+            })
+            .count();
+        assert_eq!(n, 1, "{name}: {embed:?}");
+    }
+    assert_eq!(embed.len(), ENTRY_POINTS.len(), "{embed:?}");
 }
 
 /// The negative control: a changed return type is a changed core line (the old line is gone,
@@ -899,6 +956,31 @@ fn changing_a_signature_fails_the_golden() {
         ["abi: impl<'s> Args<'s> :: pub fn len(&self) -> usize"]
     );
     assert_eq!(new, ["abi: impl<'s> Args<'s> :: pub fn len(&self) -> u32"]);
+}
+
+/// The negative control for the embedder entry points: a changed `Isolate` entry point is a
+/// changed core line, and a test-only `impl Isolate` block adds no line.
+#[test]
+fn changing_an_entry_point_fails_the_golden() {
+    let mut files = sources();
+    let (_, t) = files.iter_mut().find(|(p, _)| p == "isolate.rs").unwrap();
+    let from = "pub fn register_host_function(&mut self, name: &str, length: u32, f: HostFn)";
+    assert!(t.contains(from));
+    *t = t.replacen(
+        from,
+        "pub fn register_host_function(&mut self, name: &str, length: u64, f: HostFn)",
+        1,
+    );
+    t.push_str("\n#[cfg(test)]\nimpl Isolate {\n    pub fn with_cx(&self) {}\n}\n");
+    let (gone, new) = diff(&golden_lines(), &extract(&files));
+    assert_eq!(
+        gone,
+        ["embed: impl Isolate :: pub fn register_host_function(&mut self, &str, u32, HostFn)"]
+    );
+    assert_eq!(
+        new,
+        ["embed: impl Isolate :: pub fn register_host_function(&mut self, &str, u64, HostFn)"]
+    );
 }
 
 /// A new `Cx` method is an addition only: no golden line goes away.

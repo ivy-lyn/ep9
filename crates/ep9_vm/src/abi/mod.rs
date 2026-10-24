@@ -56,7 +56,7 @@ pub use self::jobs::{
 pub use self::local::{
     Downcast, FlatStr, JsArray, JsFunction, JsKey, JsObject, JsString, JsSymbol, JsValue, Local,
 };
-pub use self::{iter::IteratorRecord, slots::ObjectClass};
+pub use self::{collections::CollectionCursor, iter::IteratorRecord, slots::ObjectClass};
 use crate::builtins::{self, IntrinsicId};
 use crate::conv::{self, Hint};
 use crate::descriptor::Desc;

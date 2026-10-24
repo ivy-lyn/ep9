@@ -235,7 +235,12 @@ abi: pub trait IntoKey<'s> { fn into_key(self, &mut Cx<'s>) -> Local<'s, JsKey> 
 abi: pub type HostFn = for<'s> fn(&mut Cx<'s>, Local<'s>, Args<'s>, Local<'s>) -> JsResult<Local<'s>>
 abi: pub type PromiseRejectionTracker = for<'s> fn(&mut Cx<'s>, Local<'s, JsObject>, PromiseRejectionOperation)
 abi: upcast! { JsObject => JsValue, JsFunction => JsValue, JsArray => JsValue, JsString => JsValue, FlatStr => JsValue, JsSymbol => JsValue, JsKey => JsValue, JsFunction => JsObject, JsArray => JsObject, FlatStr => JsString, JsSymbol => JsKey }
-path: (none) CollectionCursor: pub in the private module abi::collections, not re-exported
+embed: impl Isolate :: pub fn create_realm<R>(&mut self, impl for<'s> FnOnce(&mut Cx<'s>, Local<'s, JsObject>) -> JsResult<R>) -> Result<R, Exception>
+embed: impl Isolate :: pub fn perform_microtask_checkpoint(&mut self) -> Result<(), Exception>
+embed: impl Isolate :: pub fn register_host_function(&mut self, &str, u32, HostFn)
+embed: impl Isolate :: pub fn with_cx<R>(&mut self, impl for<'s> FnOnce(&mut Cx<'s>) -> JsResult<R>) -> Result<R, Exception>
+embed: impl Isolate :: pub fn with_cx_checkpoint<R>(&mut self, impl for<'s> FnOnce(&mut Cx<'s>) -> JsResult<R>) -> Result<R, Exception>
+embed: impl Isolate :: pub fn with_module_host<R>(&mut self, &mut dyn FnMut(&str, &str) -> Result<String, String>, &mut dyn FnMut(&str) -> CompileResult, impl FnOnce(&mut Isolate) -> R) -> R
 path: ep9_vm::Args = abi::Args
 path: ep9_vm::ArgsBuilder = abi::ArgsBuilder
 path: ep9_vm::BuiltinDef = builtins::BuiltinDef
@@ -243,6 +248,7 @@ path: ep9_vm::BuiltinId = builtins::BuiltinId
 path: ep9_vm::BuiltinKind = builtins::BuiltinKind
 path: ep9_vm::BuiltinModule = builtins::BuiltinModule
 path: ep9_vm::BuiltinTable = builtins::BuiltinTable
+path: ep9_vm::CollectionCursor = abi::CollectionCursor
 path: ep9_vm::ConstValue = builtins::ConstValue
 path: ep9_vm::Cx = abi::Cx
 path: ep9_vm::Downcast = abi::Downcast
@@ -252,6 +258,7 @@ path: ep9_vm::IntoKey = abi::IntoKey
 path: ep9_vm::IntrinsicDef = builtins::IntrinsicDef
 path: ep9_vm::IntrinsicId = builtins::IntrinsicId
 path: ep9_vm::IntrinsicValue = builtins::IntrinsicValue
+path: ep9_vm::Isolate = isolate::Isolate
 path: ep9_vm::IteratorRecord = abi::IteratorRecord
 path: ep9_vm::JsArray = abi::JsArray
 path: ep9_vm::JsFunction = abi::JsFunction
@@ -279,6 +286,7 @@ path: ep9_vm::ToPrimitiveHint = abi::ToPrimitiveHint
 path: ep9_vm::WellKnownSymbol = builtins::WellKnownSymbol
 path: ep9_vm::abi::Args
 path: ep9_vm::abi::ArgsBuilder
+path: ep9_vm::abi::CollectionCursor
 path: ep9_vm::abi::Cx
 path: ep9_vm::abi::Downcast
 path: ep9_vm::abi::FlatStr
