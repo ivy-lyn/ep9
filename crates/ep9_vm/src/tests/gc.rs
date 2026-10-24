@@ -69,7 +69,8 @@ fn allocation_loop_under_stress() {
     for stress in [false, true] {
         let n = on_big_stack(move || {
             let mut iso = isolate(config(Dispatch::DEFAULT, stress));
-            iso.run_script(make(), "stress.js").unwrap();
+            iso.with_cx_checkpoint(|cx| cx.run_script(make(), "stress.js").map(|_| ()))
+                .unwrap();
             take_output();
             iso.heap().stats().collections
         });
@@ -134,7 +135,7 @@ fn collection_in_the_middle_of_js() {
                 let mut iso = isolate(config(d, stress));
                 iso.register_host_function("gc", 0, gc);
                 take_output();
-                let r = iso.run_script(make(), "gc.js");
+                let r = iso.with_cx_checkpoint(|cx| cx.run_script(make(), "gc.js").map(|_| ()));
                 assert!(r.is_ok(), "{r:?}");
                 iso.collect_garbage();
                 iso.verify_heap().unwrap();
@@ -195,9 +196,9 @@ fn values_below_the_scratch_top_survive_gc_stress() {
     for stress in [false, true] {
         let mut iso = isolate(config(Dispatch::DEFAULT, stress));
         iso.register_host_function("scratchValues", 0, scratch_values);
-        let f = iso.global("scratchValues").unwrap();
+        let f = iso.global_raw("scratchValues").unwrap();
         let before = iso.heap().stats().collections;
-        let r = iso.call(f, Value::UNDEFINED, &[]);
+        let r = iso.call_raw(f, Value::UNDEFINED, &[]);
         assert!(r.is_ok(), "{r:?}");
         let collections = iso.heap().stats().collections - before;
         if stress {
@@ -266,7 +267,7 @@ fn contexts_map_back_to_their_unit_scope() {
     }
     /// Checks the context of the closure in global `name`: unit 0, scope `scope`, names.
     fn check(iso: &crate::Isolate, name: &str, scope: u32, names: &[&str]) {
-        let f = iso.global(name).unwrap().to_bits();
+        let f = iso.global_raw(name).unwrap().to_bits();
         let c = crate::object::function_context(f);
         let (u, s) = crate::object::context_scope(c);
         assert_eq!(u.index, 0, "{name}: the first unit");
@@ -281,11 +282,15 @@ fn contexts_map_back_to_their_unit_scope() {
     for &d in Dispatch::ALL {
         on_big_stack(move || {
             let mut iso = isolate(config(d, true));
-            iso.run_script(make(), "ctx.js").unwrap();
+            iso.with_cx_checkpoint(|cx| cx.run_script(make(), "ctx.js").map(|_| ()))
+                .unwrap();
             check(&iso, "outer", 0, &["n", "m"]);
             check(&iso, "inner", 1, &["tmp"]);
             for i in 0..100 {
-                iso.run_script(small(), &format!("u{i}.js")).unwrap();
+                iso.with_cx_checkpoint(|cx| {
+                    cx.run_script(small(), &format!("u{i}.js")).map(|_| ())
+                })
+                .unwrap();
             }
             iso.collect_garbage();
             iso.verify_heap().unwrap();

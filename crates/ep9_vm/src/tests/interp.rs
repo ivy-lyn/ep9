@@ -88,9 +88,12 @@ fn run_deep(d: Dispatch, n: i32, native_stack: usize) -> String {
                 ..config(d, false)
             });
             iso.register_host_function("sp", 0, sp);
-            let r = iso.run_script(deep_unit(n), "deep.js");
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(deep_unit(n), "deep.js")
+                    .map(|v| cx.display(v))
+            });
             match r {
-                Ok(v) => iso.display(v),
+                Ok(v) => v,
                 Err(e) => format!("exception: {e}"),
             }
         })
@@ -165,7 +168,8 @@ fn dispatch_slots_and_code_registry() {
     let mut s = Asm::script(0);
     s.b.lda_undefined().return_();
     let u = unit("", vec![s.finish(), f.finish()]);
-    iso.run_script(u, "r.js").unwrap();
+    iso.with_cx_checkpoint(|cx| cx.run_script(u, "r.js").map(|_| ()))
+        .unwrap();
     let rt = &*iso.rt;
     let units = rt.units.borrow();
     let reg = rt.registry.borrow();
@@ -203,7 +207,7 @@ fn random_verified_units_never_misbehave() {
                     continue;
                 };
                 iso.terminate_handle().terminate();
-                let _ = iso.run_script(u, "random.js");
+                let _ = iso.with_cx_checkpoint(|cx| cx.run_script(u, "random.js").map(|_| ()));
                 ran += 1;
             }
             take_output();
@@ -247,9 +251,12 @@ fn sample_unit_of_ep9_bytecode_runs() {
         let (r, rec, total) = on_big_stack(move || {
             let mut iso = isolate(config(d, true));
             iso.register_host_function("tag", 1, tag);
-            let r = iso.run_script(common::sample_script_unit(), "sample.js");
-            let r = r.map(|v| iso.display(v));
-            let total = iso.global("total").map(|v| iso.display(v));
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(common::sample_script_unit(), "sample.js")
+                    .map(|v| cx.display(v))
+            });
+
+            let total = iso.global_raw("total").map(|v| iso.display_raw(v));
             (
                 r,
                 RECORD.with(|x| core::mem::take(&mut *x.borrow_mut())),
