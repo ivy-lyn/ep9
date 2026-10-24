@@ -138,11 +138,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # linux-x64 also runs exec under GC-stress, the debug corpus digest and the debug atom-key
-        # gate. After M3-P2 (5,336 more passing files run to the end) GC-stress takes about 80
-        # minutes on 4 EPYC workers and more than 115 on this runner, so the job gets 300 minutes
-        # (decision M3-P2-CI-GC-TIMEOUT). Sharding it is M3-P3 GATES-2 work: m0_exit item 6 needs
-        # one whole-corpus GC JSON.
+        # linux-x64 also runs exec under GC-stress (> 115 min after M3-P2: 300-min limit, decision
+        # M3-P2-CI-GC-TIMEOUT; sharding is M3-P3 GATES-2), the debug corpus digest and atom-key gate.
         include:
           - { name: macos-arm64, os: macos-15, timeout: 60 }
           - { name: linux-x64, os: ubuntu-24.04, timeout: 300 }
