@@ -410,10 +410,11 @@ mod tests {
         .unwrap();
         let hooks = iso.compiler().unwrap();
         assert!((hooks.compile_script)("var a = 1;").is_ok());
-        // An unsupported feature (M3-P3 IMPORT-TLA builds import()).
+        // An unsupported feature (`import.source()`, a stage 3 proposal; M3-P3 IMPORT-TLA
+        // built import()).
         assert_eq!(
-            (hooks.compile_script)("import('x')").unwrap_err(),
-            CompileFailure::Unsupported("import()".to_string())
+            (hooks.compile_script)("import.source('x')").unwrap_err(),
+            CompileFailure::Unsupported("import.source()".to_string())
         );
         assert!(matches!(
             (hooks.compile_script)("let a; let a;"),
