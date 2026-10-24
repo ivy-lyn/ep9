@@ -3,20 +3,16 @@
 //! ```text
 //! let mut iso = Isolate::new(IsolateConfig::default())?;      heap, VM stack, realm
 //! iso.register_host_function("print", 1, print);              a global host function
-//! let r = iso.with_cx_checkpoint(|cx| {                       a Cx scope, then the jobs
-//!     let v = cx.run_script(unit, "main.js")?;                VerifiedUnit from ep9_frontend
-//!     Ok(cx.display(v))                                       copy out what you need
-//! });
-//! match r {
-//!     Ok(text) => println!("{text}"),
+//! match iso.with_cx_checkpoint(|cx| cx.run_script(unit, "main.js").map(|v| cx.display(v))) {
+//!     Ok(text) => println!("{text}"),                         a Cx scope, then the jobs
 //!     Err(e) => eprintln!("{e}"),                             "main.js:3:7: TypeError: ..."
 //! }
 //! ```
 //!
 //! JS values reach the embedder only as `Local`s inside [`Isolate::with_cx`] or
-//! [`Isolate::with_cx_checkpoint`]: a `Local` cannot leave the call, so no value outlives a
-//! collection (H20-Q4). Copy what you need out of it (a `String`, a number) before the call
-//! returns. The scoped forms (M2-P3, C11) are `Cx` methods:
+//! [`Isolate::with_cx_checkpoint`], which cannot leave the call, so no value outlives a
+//! collection (H20-Q4): copy what you need (a `String`, a number) out of the scope. The
+//! scoped forms (M2-P3, C11) are `Cx` methods:
 //!
 //! | Old form (raw `Value`) | Scoped form inside `with_cx` (`Local<'s>`) |
 //! |---|---|
@@ -25,9 +21,7 @@
 //! | `Isolate::global` | [`abi::Cx::global_binding`] (runs getters; TDZ throws) |
 //! | `Isolate::display` | [`abi::Cx::display`] |
 //!
-//! The old forms run a microtask checkpoint after the run; [`Isolate::with_cx_checkpoint`]
-//! does the same after its scope. M3-P3 EMBED-MIGRATE moved every caller to the scoped forms
-//! (step 1) and removes the old forms (step 2).
+//! M3-P3 EMBED-MIGRATE moved every caller to the scoped forms and then removes the old ones.
 //!
 //! Other threads reach a running isolate through two `Send` handles: [`TerminateHandle`]
 //! (stop the script) and [`InterruptHandle`] (run a callback on the isolate thread at the
