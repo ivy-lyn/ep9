@@ -1,7 +1,7 @@
 //! Tests of class fields, private names and private methods (owner P2-CLS-VM). BytecodeGen
 //! emits none of these on this branch (P2-CLS-CG does), so the functions are hand-built with
 //! the shapes of the CLS-CG contract (scratchpad p2-clsvm-contract.md) and driven from Rust
-//! with `Isolate::call`. Each test runs under every dispatch, with and without GC stress.
+//! with `call_raw`. Each test runs under every dispatch, with and without GC stress.
 //! The JS-level tests are in `crates/ep9_builtins/tests/class_fields.rs`.
 
 use ep9_bytecode::{

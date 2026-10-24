@@ -26,7 +26,7 @@
 //! Rust -> native: [`call_from_rust`] (P2-SPIKE-B, M2-P2-SPIKEB-RUSTENTRY) enters a
 //! native-slotted function from Rust with an entry frame (return pc = the `Exit` stub), as
 //! `call::call_function_object` does for T0. The general paths still refuse native code: a call
-//! from Rust through `call::call_function_object` (for example `Isolate::call` or a builtin
+//! from Rust through `call::call_function_object` (for example `Cx::call` or a builtin
 //! callback) throws "not implemented", and so do `[[Construct]]` and a bound-function call of a
 //! native-slotted function (they take the T0 paths). `call_any` takes no spread call
 //! (BytecodeGen's spread array needs the iterator path of `slow::call`). Generator functions
@@ -889,7 +889,7 @@ pub fn lookup_code(iso: &Isolate, pc: usize) -> Option<CodeEntry> {
 // ---- Rust -> native ------------------------------------------------------------------------
 
 /// Call(`f`, `this`, `args`) from Rust into native code (M2-P2-SPIKEB-RUSTENTRY; Spike B
-/// configs J and JC time `drive` through it). The types are those of `Isolate::call`.
+/// configs J and JC time `drive` through it). It takes and returns raw `Value`s by design.
 ///
 /// A function with native code ([`install_native`]; a FUNCTION with a Baseline or AotBaseline
 /// slot, not a class constructor or generator) is entered through the T0 entry path
@@ -902,19 +902,19 @@ pub fn lookup_code(iso: &Isolate, pc: usize) -> Option<CodeEntry> {
 /// | frame | pushed above the top frame and the caller's scratch Values (`call::top_of`), return pc = the `Exit` stub, `this` after OrdinaryCallBindThis | `push_frame` with `EXIT_STUB` |
 /// | run | the slot entry, with the new frame published and no scratch area | `interp::run` |
 ///
-/// Any other callee takes the T0 path of `Isolate::call` (`call::call_with`), so this function
+/// Any other callee takes the T0 path of `Cx::call` (`call::call_with`), so this function
 /// also calls T0, host and bound functions.
 ///
 /// **State on every exit** (D20). Whether the call returns, throws, is terminated or fails its
 /// stack check, it puts back what it found: the published top frame (`VmStack::fp`), the
 /// scratch top, and `Cx::out_fp`/`out_pc`. So the VM stack depth after the call equals the
-/// depth before it, and a later `call_from_rust` or `Isolate::call` starts from the same
+/// depth before it, and a later `call_from_rust` or `Cx::call` starts from the same
 /// state. `call_function_object` does the same for the frame and the scratch top on its error
 /// path. An exception or a termination comes back as `Err`, taken from the isolate as
-/// `Isolate::call` takes it (the pending exception is cleared).
+/// `Isolate::with_cx` takes it (the pending exception is cleared).
 ///
 /// The arguments are copied into the callee frame before the first GC point; `args` must hold
-/// live values (as for `Isolate::call`).
+/// live values (as for `Cx::call`).
 pub fn call_from_rust(
     iso: &mut Isolate,
     f: Value,
@@ -932,7 +932,7 @@ pub fn call_from_rust(
         let r = match (native_callee(f), b_callee(f)) {
             (Some(fi), _) => enter_from_rust(cx, f, fi, this, argc, arg),
             (None, Some(fi)) => b_from_rust(cx, f, fi, this, argc, arg),
-            // No native code: the T0 path of `Isolate::call`.
+            // No native code: the T0 path of `Cx::call`.
             (None, None) => call::call_with(cx, f, this, argc, arg, UNDEFINED),
         };
         // Nested T0 calls under native code set them (`slow::call`); put them back.
@@ -940,7 +940,7 @@ pub fn call_from_rust(
         cx.out_pc = out_pc;
         r
     });
-    // The hole never leaves the VM (as `Isolate::call`).
+    // The hole never leaves the VM (as in `Cx::run_script`).
     r.map(|b| val(if b == HOLE { UNDEFINED } else { b }))
 }
 
@@ -1261,7 +1261,7 @@ fn b_from_rust(
 /// | T0 call, cold (`slow::call`: budget poll, feedback threshold, prefixed call, spread, bound) | frame push, then `OP_ENTER_B` (no Rust recursion) |
 /// | `call_any` from native code, [`call_from_rust`] | a nested dispatch from `OP_ENTER_B` (return pc = the `Exit` stub) |
 /// | the match loop (`Dispatch::Match`) | the bytecode (D4) |
-/// | `[[Construct]]`, a call from Rust through `call::call_with` (`Isolate::call`, builtins) | "not implemented", as for placement (a) |
+/// | `[[Construct]]`, a call from Rust through `call::call_with` (`Cx::call`, builtins) | "not implemented", as for placement (a) |
 ///
 /// Refused before the slot changes, as [`install_native`]: not bytecode, a class constructor,
 /// a generator function, a function that already has native code, a range the registry

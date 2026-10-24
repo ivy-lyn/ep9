@@ -1243,7 +1243,7 @@ fn call_from_rust_enters_native_code_and_restores_the_entry_state() {
             let label = format!("{} stress={stress}", d.name());
             let out = run_native(config(d, stress), move |iso| {
                 let g = |iso: &Isolate, n: &str| iso.global_raw(n).unwrap();
-                // `call_from_rust` puts back all four words; `Isolate::call` (T0) keeps the
+                // `call_from_rust` puts back all four words; `call_raw` (T0) keeps the
                 // stack depth (fp, scratch top) but leaves `out_fp`/`out_pc` as they are.
                 let depth = entry_state(iso)[..2].to_vec();
                 let mut rows = Vec::new();
@@ -3348,7 +3348,7 @@ mod placement_b {
     }
 
     /// The paths that do not enter (b) code: `[[Construct]]` and a call from Rust through
-    /// `call::call_with` (`Isolate::call`) throw "not implemented", as for placement (a);
+    /// `call::call_with` (`call_raw`, as `Cx::call`) throw "not implemented", as for placement (a);
     /// `call_from_rust` enters it (a nested dispatch) and puts the entry state back.
     #[test]
     fn construct_and_isolate_call_refuse_b_code_and_call_from_rust_runs_it() {
