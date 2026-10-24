@@ -519,6 +519,19 @@ const CASES: &[(&str, Mode, &str)] = &[
         Module,
         "import d, { a as b, 'x-y' as c } from './m.js';\nimport * as ns from './m.js';\nimport './side.js';\nexport { b as bb, ns, v as 'v-v' };\nexport { q, default as r } from './q.js' with { type: 'json', mode: 'x' };\nexport * from './s.js';\nexport * as all from './m.js';\nexport var v = 1, { w } = {};\nexport default function () {}",
     ),
+    // M3-P3 IMPORT-TLA: `import()` (id 43) with and without options, in a module and in a
+    // nested function; a top-level `await` and `for await` (suspend ids after 1, the
+    // Promise handler, AsyncFunctionResolve at the end).
+    (
+        "module-import-call",
+        Module,
+        "export const p = import('./a.js'); function f(s, o) { return import(s, o); }",
+    ),
+    (
+        "module-tla",
+        Module,
+        "import { a } from './a.js'; export let x = await a; for await (const y of [x]) x = y; export function f() { return x; }",
+    ),
     // ---- generators (M2-P1-GEN-CG) ----
     (
         "gen-basic",
@@ -862,37 +875,29 @@ fn unsupported_constructs_name_the_feature() {
     for (src, feature) in [
         ("class A { accessor x = 1 }", "class auto-accessors"),
         ("class A { accessor #x }", "class auto-accessors"),
-        ("import('x')", "import()"),
+        ("import.source('x')", "import.source()"),
+        ("import.defer('x')", "import.defer()"),
     ] {
         match compile_script(src, Strictness::Sloppy) {
             Err(CodegenError::Unsupported(u)) => assert_eq!(u.feature, feature, "{src}"),
             other => panic!("{src}: {other:?}"),
         }
     }
-    // `for await` at a module top level is top-level await (M3-P3 IMPORT-TLA): the same
-    // cause as a top-level `await`, at the statement's position (review RV-P2-AG1).
-    for (src, at) in [
-        ("for await (const x of y) ;", (1, 1)),
-        (
-            "let y = [];\n  for await (var x of y) { if (x) break; }",
-            (2, 3),
-        ),
-        ("label: for await (x of y) ;", (1, 8)),
+    // `import()` and top-level `await` compile (M3-P3 IMPORT-TLA): `await`, and `for await`
+    // at a module top level (also labelled, and with an early exit), in script code a nested
+    // `import()`.
+    for src in [
+        "await 1;",
+        "for await (const x of y) ;",
+        "let y = [];\n  for await (var x of y) { if (x) break; }",
+        "label: for await (x of y) ;",
+        "class C { [await 1]() {} static { var f = async () => await 2; } }",
+        "export default await import('x', { with: { type: 'json' } });",
     ] {
-        match compile_module(src) {
-            Err(CodegenError::Unsupported(u)) => {
-                assert_eq!(u.feature, "await", "{src}");
-                assert_eq!((u.position.line, u.position.column), at, "{src}");
-            }
-            other => panic!("{src}: {other:?}"),
-        }
+        compile_module(src).unwrap_or_else(|e| panic!("{src}: {e:?}"));
     }
-    // Top-level await stays unsupported (M3-P3 IMPORT-TLA); `await` in a nested async
-    // function of a module compiles.
-    match compile_module("await 1;") {
-        Err(CodegenError::Unsupported(u)) => assert_eq!(u.feature, "await"),
-        other => panic!("{other:?}"),
-    }
+    compile_script("function f() { return import('x'); }", Strictness::Sloppy)
+        .expect("import() in a script");
     compile_module("async function f() { await 1; }").expect("an async function in a module");
 }
 
@@ -945,7 +950,8 @@ fn async_functions_compile_in_every_form() {
 
 #[test]
 fn unsupported_reports_a_position() {
-    let Err(CodegenError::Unsupported(u)) = compile_script("1;\n  import('x')", Strictness::Sloppy)
+    let Err(CodegenError::Unsupported(u)) =
+        compile_script("1;\n  import.source('x')", Strictness::Sloppy)
     else {
         panic!("expected Unsupported");
     };
