@@ -289,15 +289,14 @@ impl Isolate {
     /// The code units of `v` if it is a string, without a copy. The view does not root the
     /// string, so it borrows the isolate exclusively: no isolate call can run while it lives.
     /// That covers the `&mut self` calls that run JS or collect ([`Isolate::collect_garbage`])
-    /// and the `&self` ones that allocate or collect ([`Isolate::global`] interns its name;
-    /// [`Isolate::heap`] gives `Heap::collect` and `Heap::alloc`). V8's `String::ValueView`
-    /// has the same rule. As for every API `Value`, `v` must come from the latest call into
-    /// the isolate (a `Value` is not a root). Copy the text out first:
+    /// and the `&self` ones that allocate or collect ([`Isolate::heap`] gives `Heap::collect`
+    /// and `Heap::alloc`). V8's `String::ValueView` has the same rule. A raw `Value` is not a
+    /// root: `v` must come from the latest call into the isolate. Copy the text out first:
     ///
     /// ```
     /// use ep9_vm::{Isolate, IsolateConfig, Value};
     /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
-    /// let v = Value::UNDEFINED; // a string comes from run_script, call or a host function
+    /// let v = Value::UNDEFINED; // a raw string Value, for example from the spike-native API
     /// let text = iso.string_view(v).map(|s| s.to_string_lossy());
     /// iso.collect_garbage();
     /// assert_eq!(text, None);
@@ -335,7 +334,7 @@ impl Isolate {
     /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
     /// let v = Value::UNDEFINED;
     /// let view = iso.string_view(v);
-    /// let _ = iso.global("a new name");
+    /// let _ = iso.heap().alloc(ep9_heap::KindId::new(1).unwrap(), 16);
     /// assert!(view.is_none());
     /// ```
     pub fn string_view(&mut self, v: Value) -> Option<JsStr<'_>> {

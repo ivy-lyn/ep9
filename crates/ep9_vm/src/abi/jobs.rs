@@ -202,9 +202,9 @@ impl<'s> Cx<'s> {
     /// any promise that got a handler ("handle" unlinks one at once already).
     ///
     /// Only with no JS on the stack (the spec runs it when the execution context stack is
-    /// empty): `Isolate::run_script` and `Isolate::call` run it after their run, and an
-    /// embedder inside `Isolate::with_cx` may call it there. From a host function it throws an
-    /// Error and runs nothing.
+    /// empty): `Isolate::with_cx_checkpoint` runs it after its scope, and an embedder inside
+    /// `Isolate::with_cx` may call it there. From a host function it throws an Error and runs
+    /// nothing.
     pub fn perform_microtask_checkpoint(&mut self) -> JsResult<()> {
         let rt = self.rt();
         if !rt.stack().fp().is_null() {
