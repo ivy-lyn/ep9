@@ -242,7 +242,7 @@ fn run_program(config: &Config, defs: &str, jit: &[&str], main: &str) -> Result<
 }
 
 fn slot_kind(s: &Session, name: &str) -> Result<Option<DispatchKind>, String> {
-    let f = s.iso.global(name).ok_or(format!("no global {name}"))?;
+    let f = ep9_vm::NativeCx::global_value(&s.iso, name).ok_or(format!("no global {name}"))?;
     Ok(ep9_vm::native_target(&s.iso, f)
         .ok_or(format!("{name} has no bytecode"))?
         .kind)
@@ -379,7 +379,7 @@ fn check_b() -> Result<Vec<String>, String> {
     // The Wide call is really prefixed.
     {
         let s = session(&config, &defs)?;
-        let f = s.iso.global("wide2").ok_or("no wide2")?;
+        let f = ep9_vm::NativeCx::global_value(&s.iso, "wide2").ok_or("no wide2")?;
         let t = ep9_vm::native_target(&s.iso, f).ok_or("wide2: no bytecode")?;
         let wide = ep9_bytecode::Instructions::new(t.bytecode)
             .filter_map(Result::ok)
@@ -610,7 +610,8 @@ fn run_hold(mask: u64) -> Result<(u64, Vec<usize>, Session), String> {
     let arch = Arch::HOST.ok_or("no host arch")?;
     let code = hold_probe(arch, &input, mask).map_err(|e| e.to_string())?;
     s.install_as(InstallKind::B, &["hold"], vec![code])?;
-    let g = |s: &Session, n: &str| s.iso.global(n).ok_or(format!("no {n}"));
+    let g =
+        |s: &Session, n: &str| ep9_vm::NativeCx::global_value(&s.iso, n).ok_or(format!("no {n}"));
     let (hold, mk, scrub, gc) = (g(&s, "hold")?, g(&s, "mk")?, g(&s, "scrub")?, g(&s, "gc")?);
     let r = ep9_vm::call_from_rust(&mut s.iso, hold, Value::UNDEFINED, &[mk, scrub, gc])
         .map_err(|e| format!("hold: {}", e.message))?;
@@ -638,17 +639,14 @@ fn check_g() -> Result<Vec<String>, String> {
     }
     // SAFETY: `bits` is the object `mk` made, alive (checked above).
     let obj = unsafe { Value::from_bits_unchecked(bits) };
-    let tagof = s.iso.global("tagof").ok_or("no tagof")?;
-    let tag = s
-        .iso
-        .call(tagof, Value::UNDEFINED, &[obj])
+    let tagof = ep9_vm::NativeCx::global_value(&s.iso, "tagof").ok_or("no tagof")?;
+    // `tagof` runs in T0: `call_from_rust` takes the T0 path of `call::call_with` for it.
+    let tag = ep9_vm::call_from_rust(&mut s.iso, tagof, Value::UNDEFINED, &[obj])
         .map_err(|e| e.message)?;
-    if s.iso.display(tag) != "42" {
-        return Err(format!(
-            "the held object reads tag = {}",
-            s.iso.display(tag)
-        ));
+    if tag.as_int32() != Some(42) {
+        return Err(format!("the held object reads tag = {tag:?}"));
     }
+
     s.iso.verify_heap().map_err(|e| format!("{:?}", e.errors))?;
     out.push(format!(
         "held in the (b) callee-saved register: {addr:#x} survived gc() (found by the conservative scan), tag = 42"

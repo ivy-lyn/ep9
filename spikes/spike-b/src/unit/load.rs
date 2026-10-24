@@ -421,9 +421,9 @@ fn run_bytecode(s: &mut Session, bytes: &[u8], file: &str) -> RunOutput {
     let result = match CompiledUnit::from_bytes(bytes) {
         Ok(u) => s
             .iso
-            .run_script(u, file)
-            .map(|v| s.iso.display(v))
+            .with_cx_checkpoint(|cx| cx.run_script(u, file).map(|v| cx.display(v)))
             .map_err(|e| exception_text(&e)),
+
         Err(e) => Err(format!("bytecode section: {e}")),
     };
     RunOutput {
@@ -639,9 +639,7 @@ fn link(us: &mut UnitSession, view: &UnitView<'_>, plan: &LinkPlan<'_>) {
 /// bytecode the code was made from.
 fn install(us: &mut UnitSession, m: &Mapped, f: &FnEntry) -> Result<(), String> {
     let iso = &us.s.iso;
-    let g = iso
-        .global(&f.name)
-        .ok_or_else(|| format!("no global {}", f.name))?;
+    let g = NativeCx::global_value(iso, &f.name).ok_or_else(|| format!("no global {}", f.name))?;
     let t = ep9_vm::native_target(iso, g).ok_or("not a function with bytecode")?;
     let d = super::format::function_digest(
         t.parameter_count,

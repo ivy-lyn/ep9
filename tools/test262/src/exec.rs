@@ -628,8 +628,8 @@ impl RunCtx<'_> {
             Ok(u) => u,
             Err(e) => return Some(compile_failure(&e, &what)),
         };
-        match iso.run_script(unit, &what) {
-            Ok(_) => None,
+        match iso.with_cx_checkpoint(|cx| cx.run_script(unit, &what).map(|_| ())) {
+            Ok(()) => None,
             Err(e) if e.terminated => Some(infra("timeout", format!("timeout in {what}"))),
             Err(e) => Some(fail(
                 format!("{what} threw: {}", cause_of_message(&e.message)),
@@ -706,7 +706,7 @@ impl RunCtx<'_> {
         let result = if mode == Mode::Module {
             run_module(&mut iso, &self.opts.test262, unit, rel)
         } else {
-            iso.run_script(unit, rel)
+            iso.with_cx_checkpoint(|cx| cx.run_script(unit, rel).map(|_| ()))
         };
         if fault_for("late", rel) {
             std::thread::sleep(self.opts.timeout + Duration::from_millis(100));
@@ -745,7 +745,7 @@ impl RunCtx<'_> {
                     fail(cause, e.to_string())
                 }
             },
-            Ok(_) => {
+            Ok(()) => {
                 if let Some(n) = negative {
                     return fail(
                         format!("negative {} test: no error", n.phase),
@@ -767,30 +767,20 @@ impl RunCtx<'_> {
 // ---- the module loader for `flags: [module]` files (M3-P2 MODULE) -------------------------
 
 /// Runs the module test `unit` (named `rel`) with `Cx::run_module` and the test262 loader,
-/// then a microtask checkpoint, as `Isolate::run_script` does: an error of the module wins
+/// then a microtask checkpoint (`Isolate::with_cx_checkpoint`): an error of the module wins
 /// over one of a job, but not over a termination in a job.
 fn run_module(
     iso: &mut Isolate,
     root: &Path,
     unit: ep9_bytecode::VerifiedUnit,
     rel: &str,
-) -> Result<ep9_vm::Value, Exception> {
+) -> Result<(), Exception> {
     let mut resolve = |referrer: &str, specifier: &str| resolve_module(root, referrer, specifier);
     let mut load = |name: &str| load_module(root, name);
-    let r = iso.with_cx(|cx| {
+    iso.with_cx_checkpoint(|cx| {
         cx.run_module(unit, rel, &mut resolve, &mut load)
             .map(|_| ())
-    });
-    match r {
-        Ok(()) => iso
-            .perform_microtask_checkpoint()
-            .map(|()| ep9_vm::Value::UNDEFINED),
-        Err(e) if e.terminated => Err(e),
-        Err(e) => match iso.perform_microtask_checkpoint() {
-            Err(c) if c.terminated => Err(c),
-            _ => Err(e),
-        },
-    }
+    })
 }
 
 /// HostLoadImportedModule's name step for test262: a relative specifier (`./x.js`,

@@ -7,7 +7,7 @@
 //!   built on the Promise operations of ep9_vm (`abi/jobs.rs`): new_promise,
 //!   create_resolving_functions, new_promise_capability, promise_resolve,
 //!   perform_promise_then, new_builtin_closure / closure_data, catch_exception
-//! the job queue and its checkpoint: ep9_vm (`Isolate::run_script` drains it)
+//! the job queue and its checkpoint: ep9_vm (`Isolate::with_cx_checkpoint` drains it)
 //! ```
 //!
 //! Lists that outlive one call (the values of `Promise.all`, the errors of `Promise.any`)

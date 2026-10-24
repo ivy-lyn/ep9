@@ -56,11 +56,18 @@ pub fn run(src: &str, stress: bool) -> Result<Vec<String>, String> {
     .map_err(|e| format!("compile error: {e:?}"))?;
     let mut iso = isolate(stress);
     OUT.with(|o| o.borrow_mut().clear());
-    let r = iso.run_script(unit, "test.js");
+    let r = iso.with_cx_checkpoint(|cx| cx.run_script(unit, "test.js").map(|_| ()));
     let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
     iso.collect_garbage();
     iso.verify_heap().expect("a valid heap");
     r.map(|_| out).map_err(|e| e.message)
+}
+
+/// The global binding `name` as text (`Cx::global_binding`, then `Cx::display`): `None` if
+/// there is none. Panics if the read throws.
+pub fn global_text(iso: &mut Isolate, name: &str) -> Option<String> {
+    iso.with_cx(|cx| Ok(cx.global_binding(name)?.map(|v| cx.display(v))))
+        .expect("the read does not throw")
 }
 
 /// `run` with and without GC stress; both must agree. Runs on a thread with a big stack

@@ -322,7 +322,7 @@ mod tests {
     fn b_return_only_returns_the_incoming_acc() {
         let mut s = Session::new(&Config::default().threaded()).expect("session");
         s.run(LOOP_DEFS, "defs.js").result.expect("defs");
-        let id = s.iso.global("id").expect("id");
+        let id = ep9_vm::NativeCx::global_value(&s.iso, "id").expect("id");
         let seven = ep9_vm::Value::int32(7);
         let t0 = ep9_vm::call_from_rust(&mut s.iso, id, ep9_vm::Value::UNDEFINED, &[seven])
             .expect("T0 id");
