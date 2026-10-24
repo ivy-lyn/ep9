@@ -1,6 +1,6 @@
 //! Promise and AggregateError (§27.2, §20.5.7.1): the job order of scripts, checked against
 //! node v24.22.1 output. Every script runs with and without GC stress (`common::run_both`); the
-//! isolate drains the job queue at the end of `run_script`.
+//! isolate drains the job queue after each script (`Isolate::with_cx_checkpoint`).
 
 mod common;
 
@@ -232,6 +232,11 @@ fn log_isolate(stress: bool) -> ep9_vm::Isolate {
     i
 }
 
+/// Runs the script `src` (named `file`), then a microtask checkpoint.
+fn run(i: &mut ep9_vm::Isolate, src: &str, file: &str) -> Result<(), ep9_vm::Exception> {
+    i.with_cx_checkpoint(|cx| cx.run_script(compile(src), file).map(|_| ()))
+}
+
 /// The next interrupt poll terminates the run.
 fn terminate_at_next_poll(i: &ep9_vm::Isolate) {
     let t = i.terminate_handle();
@@ -247,19 +252,14 @@ fn a_terminated_script_drops_its_reactions() {
         common::on_big_stack(move || {
             let mut i = log_isolate(stress);
             terminate_at_next_poll(&i);
-            let e = i
-                .with_cx_checkpoint(|cx| {
-                    cx.run_script(
-                    compile(
-                        "Promise.resolve().then(function () { log('abandoned'); }); for (;;) {}",
-                    ),
-                    "a.js",
-                ).map(|_| ())
-                })
-                .unwrap_err();
+            let e = run(
+                &mut i,
+                "Promise.resolve().then(function () { log('abandoned'); }); for (;;) {}",
+                "a.js",
+            )
+            .unwrap_err();
             assert!(e.terminated, "{e:?}");
-            i.with_cx_checkpoint(|cx| cx.run_script(compile("log('second');"), "b.js").map(|_| ()))
-                .unwrap();
+            run(&mut i, "log('second');", "b.js").unwrap();
             assert_eq!(take_log(), ["second"]);
         });
     }
@@ -272,12 +272,11 @@ fn a_terminated_call_drops_its_reactions() {
     for stress in [false, true] {
         common::on_big_stack(move || {
             let mut i = log_isolate(stress);
-            i.with_cx_checkpoint(|cx| cx.run_script(
-                compile(
-                    "function f() { Promise.resolve().then(function () { log('abandoned'); }); for (;;) {} }",
-                ),
+            run(
+                &mut i,
+                "function f() { Promise.resolve().then(function () { log('abandoned'); }); for (;;) {} }",
                 "def.js",
-            ).map(|_| ()))
+            )
             .unwrap();
             terminate_at_next_poll(&i);
             let e = i
@@ -286,10 +285,8 @@ fn a_terminated_call_drops_its_reactions() {
                     cx.call(f, ep9_vm::Local::undefined(), &[]).map(|_| ())
                 })
                 .unwrap_err();
-
             assert!(e.terminated, "{e:?}");
-            i.with_cx_checkpoint(|cx| cx.run_script(compile("log('next');"), "b.js").map(|_| ()))
-                .unwrap();
+            run(&mut i, "log('next');", "b.js").unwrap();
             assert_eq!(take_log(), ["next"]);
         });
     }
@@ -303,28 +300,21 @@ fn a_termination_after_a_script_error_is_reported_as_one() {
         common::on_big_stack(move || {
             let mut i = log_isolate(stress);
             terminate_at_next_poll(&i);
-            let e = i
-                .with_cx_checkpoint(|cx| {
-                    cx.run_script(
-                    compile(
-                        "Promise.resolve().then(function () { log('job'); for (;;) {} }); null.x;",
-                    ),
-                    "a.js",
-                ).map(|_| ())
-                })
-                .unwrap_err();
+            let e = run(
+                &mut i,
+                "Promise.resolve().then(function () { log('job'); for (;;) {} }); null.x;",
+                "a.js",
+            )
+            .unwrap_err();
             assert!(e.terminated, "{e:?}");
             assert_eq!(take_log(), ["job"]);
             // An ordinary job error after a script error: the script's error stays.
-            let e = i
-                .with_cx_checkpoint(|cx| {
-                    cx.run_script(
-                        compile("Promise.resolve().then(function () { log('job2'); }); null.y;"),
-                        "b.js",
-                    )
-                    .map(|_| ())
-                })
-                .unwrap_err();
+            let e = run(
+                &mut i,
+                "Promise.resolve().then(function () { log('job2'); }); null.y;",
+                "b.js",
+            )
+            .unwrap_err();
             assert!(!e.terminated);
             assert_eq!(e.constructor.as_deref(), Some("TypeError"));
             assert_eq!(take_log(), ["job2"]);
@@ -341,8 +331,7 @@ fn marked_at_the_last_job(n: u32) -> usize {
     );
     let mut i = log_isolate(false);
     GCS.with(|g| g.set(0));
-    i.with_cx_checkpoint(|cx| cx.run_script(compile(&src), "q3.js").map(|_| ()))
-        .unwrap();
+    run(&mut i, &src, "q3.js").unwrap();
     assert_eq!(GCS.with(std::cell::Cell::get), 1);
     assert!(i.take_unhandled_rejections().is_empty());
     i.heap().stats().last_marked_bytes
