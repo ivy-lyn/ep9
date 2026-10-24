@@ -27,7 +27,7 @@
 //!
 //! | MODULE field | Value |
 //! |---|---|
-//! | `STATUS` | int32 [`status`]: new, unlinked, linking, linked, evaluating, evaluating-async, evaluated; and aborted (not in the spec: a termination stopped its Evaluate) |
+//! | `STATUS` | int32 [`status`]: new, unlinked, linking, linked, evaluating, evaluating-async, evaluated; and aborted (not in the spec: a termination stopped its Evaluate, or its pending async evaluation) |
 //! | `ENVIRONMENT` | the module environment: a CONTEXT with the slots of [`env`] (not on any context chain) |
 //! | `NAMESPACE` | the namespace object, made on first use ([`get_namespace`]) |
 //! | `UNIT` | native word: the module's `LoadedUnit` (its module records, ABI 5 section 5) |
@@ -125,9 +125,11 @@ pub(crate) mod status {
     pub const EVALUATING_ASYNC: i32 = 5;
     pub const EVALUATED: i32 = 6;
     /// Not a spec status: a termination (`TerminateHandle`, H23) stopped the module's
-    /// Evaluate. The isolate is used again after a termination, so a later Evaluate of the
-    /// module, or of a module that imports it, throws an Error; it never takes the module as
-    /// evaluated (its body did not finish). Link takes it as evaluated.
+    /// Evaluate, or came while its async evaluation was pending (the termination drops the
+    /// jobs that would settle it; `abort_async_modules`). The isolate is used again after a
+    /// termination, so a later Evaluate of the module, or of a module that imports it, throws
+    /// an Error; it never takes the module as evaluated (its body did not finish). Link
+    /// takes it as evaluated.
     pub const ABORTED: i32 = 7;
 }
 
@@ -1423,6 +1425,7 @@ pub(crate) fn gather_available_ancestors(rt: &Runtime, m: u64) -> Vec<ModuleCell
             let root = object::record_get(p, modf::CYCLE_ROOT);
             let root = if root == UNDEFINED { p } else { root };
             if found.contains(&ModuleCell(p))
+                || status_of(p) == status::ABORTED
                 || object::record_get(root, modf::EVALUATION_ERROR) != HOLE
             {
                 continue;
@@ -1444,8 +1447,9 @@ pub(crate) fn gather_available_ancestors(rt: &Runtime, m: u64) -> Vec<ModuleCell
 /// (the waiting modules run).
 fn async_execution_fulfilled(cx: &mut Cx, m: u64) -> Res<()> {
     let rt = cx.rt();
-    if status_of(m) == status::EVALUATED {
-        // Rejected already (an error of a module of its cycle came first).
+    if matches!(status_of(m), status::EVALUATED | status::ABORTED) {
+        // Rejected already (an error of a module of its cycle came first), or a termination
+        // made it aborted while its body waited (`abort_async_modules`).
         return Ok(());
     }
     if status_of(m) != status::EVALUATING_ASYNC {
@@ -1510,7 +1514,7 @@ fn reject_module(cx: &mut Cx, m: u64, error: u64) {
 /// `error`. An explicit stack instead of the recursion (a module graph can be deep). GC
 /// point (the rejections).
 fn async_execution_rejected(cx: &mut Cx, m: u64, error: u64) {
-    if status_of(m) == status::EVALUATED {
+    if matches!(status_of(m), status::EVALUATED | status::ABORTED) {
         return;
     }
     reject_module(cx, m, error);
@@ -1530,7 +1534,7 @@ fn async_execution_rejected(cx: &mut Cx, m: u64, error: u64) {
         if i < list_count(x, modf::ASYNC_PARENT_MODULES) {
             next[top] = i + 1;
             let p = list_item(x, modf::ASYNC_PARENT_MODULES, i);
-            if status_of(p) != status::EVALUATED {
+            if !matches!(status_of(p), status::EVALUATED | status::ABORTED) {
                 reject_module(cx, p, error);
                 stack.push(p);
                 next.push(0);
@@ -1540,6 +1544,73 @@ fn async_execution_rejected(cx: &mut Cx, m: u64, error: u64) {
         stack.pop();
         next.pop();
     }
+}
+
+/// Adds `m` (its `[[AsyncEvaluationOrder]]` just set) to the isolate's list of async
+/// modules (`JobState::async_modules`), which [`abort_async_modules`] reads at a termination.
+/// When the list is full, the modules whose async evaluation is no longer pending leave it
+/// first, so it holds about the pending ones. GC point (the list grows): `m` lives in a Rust
+/// local.
+fn note_async_module(rt: &Runtime, m: u64) {
+    let mut list = rt.jobs.async_modules();
+    let mut n = if list == UNDEFINED {
+        0
+    } else {
+        int32_of(object::list_get(list, 0)) as usize
+    };
+    if list != UNDEFINED && 1 + n + 1 > object::list_len(list) {
+        // Compact in place: keep the modules that can still be pending.
+        let mut kept = 0;
+        for i in 0..n {
+            let x = object::list_get(list, 1 + i);
+            if is_async_pending(x) && status_of(x) != status::ABORTED {
+                object::list_set(rt, list, 1 + kept, x);
+                kept += 1;
+            }
+        }
+        for i in kept..n {
+            object::list_set(rt, list, 1 + i, UNDEFINED);
+        }
+        n = kept;
+        object::list_set(rt, list, 0, int32_bits(n as i32));
+    }
+    if list == UNDEFINED || 1 + n + 1 > object::list_len(list) {
+        let bigger = object::new_list(rt, 1 + 2 * n + 4, UNDEFINED);
+        if list != UNDEFINED {
+            for i in 0..=n {
+                object::list_set(rt, bigger, i, object::list_get(list, i));
+            }
+        }
+        rt.jobs.set_async_modules(bigger);
+        list = bigger;
+    }
+    object::list_set(rt, list, 1 + n, m);
+    object::list_set(rt, list, 0, int32_bits((n + 1) as i32));
+}
+
+/// The end of a termination (isolate.rs `end_termination`, after the job queue is dropped):
+/// each module whose async evaluation is still pending becomes [`status::ABORTED`], with no
+/// `[[TopLevelCapability]]`, as Evaluate does for the modules on its stack. The jobs that
+/// would settle it are gone, so a later Evaluate that reaches it throws the "was terminated"
+/// Error, and its importers cache that Error (no run waits for it, and a later `import()` of
+/// it rejects). A body that waits for a promise outside the dropped queue may still go on
+/// later (as any async function after a termination), but its module stays aborted. Not a
+/// GC point.
+pub(crate) fn abort_async_modules(rt: &Runtime) {
+    let list = rt.jobs.async_modules();
+    if list == UNDEFINED {
+        return;
+    }
+    for i in 0..int32_of(object::list_get(list, 0)) as usize {
+        let m = object::list_get(list, 1 + i);
+        if is_async_pending(m)
+            && matches!(status_of(m), status::EVALUATING | status::EVALUATING_ASYNC)
+        {
+            set_status(rt, m, status::ABORTED);
+            object::record_set(rt, m, modf::TOP_LEVEL_CAPABILITY, UNDEFINED);
+        }
+    }
+    rt.jobs.set_async_modules(UNDEFINED);
 }
 
 /// InnerModuleEvaluation (§16.2.1.5.3.1).
@@ -1603,6 +1674,7 @@ fn inner_evaluate(cx: &mut Cx, m: u64, stack: &mut Stack<'_>, index: i32) -> Res
             v
         });
         set_i32(rt, m, modf::ASYNC_EVALUATION_ORDER, order);
+        note_async_module(rt, m);
         if pending == 0 {
             execute_async_module(cx, m)?;
         }
@@ -1635,7 +1707,9 @@ fn inner_evaluate(cx: &mut Cx, m: u64, stack: &mut Stack<'_>, index: i32) -> Res
 /// gives the rejected promise. An `entry` promise is marked handled: its host reads it. A
 /// termination makes every module on the stack [`status::ABORTED`] (no allocation while it
 /// unwinds) and leaves no capability: a later Evaluate that reaches one of them throws an
-/// Error, and the modules on that Evaluate's stack cache it. GC point (the modules run).
+/// Error, and the modules on that Evaluate's stack cache it. A termination after a
+/// top-level `await` (in a job) does the same for each module whose async evaluation is
+/// pending ([`abort_async_modules`]). GC point (the modules run).
 fn evaluate(cx: &mut Cx, module: u64, entry: bool) -> Res<u64> {
     let rt = cx.rt();
     let mut m = module;
@@ -1660,7 +1734,10 @@ fn evaluate(cx: &mut Cx, module: u64, entry: bool) -> Res<u64> {
     };
     match inner_evaluate(cx, m, &mut stack, 0) {
         Ok(_) => {
-            if !is_async_evaluation(m) {
+            // Step 10.c: the module is evaluated (it ran now, or its async evaluation
+            // finished before this call, `[[AsyncEvaluationOrder]]` done); else it is
+            // evaluating-async and AsyncModuleExecutionFulfilled or ...Rejected settles `p`.
+            if status_of(m) == status::EVALUATED {
                 fulfill_undefined(cx, p);
             }
             Ok(p)
@@ -1885,8 +1962,13 @@ fn import_load(cx: &mut Cx, referrer: &str, specifier: u64, options: u64) -> Res
     // 6-7. ToString(specifier).
     let spec = conv::to_string(cx, specifier)?;
     let spec = string::to_rust_string(spec);
-    // 8-11. The attributes; AllImportAttributesSupported and the type (`check_attributes`).
+    // 8-11. The attributes. AllImportAttributesSupported false is a TypeError here (step
+    // 11.c), not the SyntaxError of a static request (`check_attribute_list`); then the type.
     let attributes = import_attributes(cx, options)?;
+    if let Some((key, value)) = attributes.iter().find(|(k, _)| k != "type") {
+        let msg = format!("Import attribute \"{key}\" with value \"{value}\" is not supported");
+        return Err(throw_error(cx, ErrorKind::TypeError, &msg));
+    }
     check_attribute_list(cx, &attributes)?;
     // HostLoadImportedModule.
     let name = host_resolve(cx, referrer, &spec)?;

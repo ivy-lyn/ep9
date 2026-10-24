@@ -783,11 +783,13 @@ impl crate::native::NativeCx {
 
 /// Resets the termination state after a terminated run and gives true if there was one; then
 /// it drops the job queue (`JobState::clear_queue`), so no job queued before the termination
-/// runs at a later run or checkpoint of the isolate.
+/// runs at a later run or checkpoint of the isolate, and makes each module whose async
+/// evaluation waited for those jobs aborted (`module::abort_async_modules`).
 fn end_termination(rt: &Runtime) -> bool {
     let t = rt.terminating.replace(false);
     if t {
         rt.jobs.clear_queue();
+        crate::module::abort_async_modules(rt);
     }
     t
 }
@@ -847,10 +849,14 @@ impl<'s> abi::Cx<'s> {
     /// a module's evaluation, a later run that reaches that module throws an `Error`; it
     /// never takes the module as evaluated. An
     /// import that no module exports, or that two `export *` give, is a `SyntaxError`.
-    /// An import attribute key other than `type` is a `SyntaxError`; `type: "json"` throws
-    /// the v0 not-implemented `Error`, another type a `TypeError`. The result is undefined; the module's code runs with `this`
-    /// undefined. Run a microtask checkpoint after it ([`Isolate::with_cx_checkpoint`]).
-    /// Top-level `await` and `import()` are not built (the front end rejects them).
+    /// An import attribute key other than `type` is a `SyntaxError` (in `import()` a
+    /// `TypeError`); `type: "json"` throws the v0 not-implemented `Error`, another type a
+    /// `TypeError`. The result is undefined; the module's code runs with `this` undefined.
+    /// With a top-level `await` in the graph, `run_module` runs microtask checkpoints until
+    /// the entry's evaluation settles: a rejection is the throw, and an `Error` if it never
+    /// settles. `import()` in code that runs during the call (also in those checkpoints)
+    /// uses `resolve` and `load`; after the call, `import()` throws the v0 not-implemented
+    /// `Error`. Run a microtask checkpoint after it ([`Isolate::with_cx_checkpoint`]).
     ///
     /// ```compile_fail
     /// use ep9_vm::Isolate;

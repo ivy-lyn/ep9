@@ -836,3 +836,170 @@ fn import_calls_settle_like_node() {
         ])
     );
 }
+
+// ---- M3-P3 integration fixer (the review findings TLA-1 to TLA-3) ---------------------------
+
+/// `import()` of a module whose async evaluation finished and that was not the root of an
+/// earlier Evaluate (so it has no `[[TopLevelCapability]]`): Evaluate (§16.2.1.5.3 step
+/// 10.c) fulfills the new promise because the module is `evaluated`, also when its
+/// `[[AsyncEvaluationOrder]]` is done. `d.js` has no TLA but waits for `c.js`; `a2.js` has
+/// TLA. Node v24.22.1 prints the same lines.
+#[test]
+fn import_of_an_evaluated_async_module_settles() {
+    const FILES: Files = &[
+        ("c.js", "print('c start');\nawait null;\nprint('c end');"),
+        ("d.js", "import './c.js';\nprint('d');"),
+        (
+            "m2.js",
+            "import './d.js';\nconst ns = await import('./d.js');\nprint('after import d', Object.keys(ns).length);",
+        ),
+        ("a2.js", "await 0;\nexport const x = 1;"),
+        (
+            "m3.js",
+            "import { x } from './a2.js';\nawait 0;\nconst ns = await import('./a2.js');\nprint('import a2 ok', ns.x, x);",
+        ),
+    ];
+    assert_eq!(
+        run_every(FILES, &["m2.js", "m3.js"]),
+        lines(&[
+            "c start",
+            "c end",
+            "d",
+            "after import d 0",
+            "import a2 ok 1 1",
+        ])
+    );
+}
+
+/// `import()` with an import attribute key other than `type` rejects with a TypeError
+/// (EvaluateImportCall: AllImportAttributesSupported is false), also next to a `type` key.
+/// A static import with that key is a SyntaxError ([`load_errors_run_no_module`]). Node
+/// v24.22.1 gives the same errors; its message adds " in <the module URL>".
+#[test]
+fn an_import_call_with_an_unsupported_key_is_a_type_error() {
+    const FILES: Files = &[
+        ("ok.js", "print('never');\nexport const k = 1;"),
+        (
+            "m4.js",
+            "const show = e => print(e.constructor.name, e.message);\nawait import('./ok.js', { with: { foo: 'bar' } }).then(() => print('ok?'), show);\nawait import('./ok.js', { with: { type: 'css', foo: 'bar' } }).then(() => print('ok?'), show);\nawait import('./ok.js', { with: { type: 'css' } }).then(() => print('ok?'), e => print(e.constructor.name));",
+        ),
+    ];
+    assert_eq!(
+        run_every(FILES, &["m4.js"]),
+        lines(&[
+            "TypeError Import attribute \"foo\" with value \"bar\" is not supported",
+            "TypeError Import attribute \"foo\" with value \"bar\" is not supported",
+            "TypeError",
+        ])
+    );
+}
+
+/// A termination after a top-level `await` (in a job: the checkpoint of `run_module`, or the
+/// host's checkpoint after it) also leaves no module that a later run waits for or takes as
+/// evaluated (the M3-P2 ABORTED rule of [`a_terminated_evaluation_is_not_a_success`]): a
+/// later run of the module or of an importer throws the "was terminated" Error, and a later
+/// `import()` of it rejects with that Error. (node has no termination of a module that the
+/// same process imports again; the error text is ep9's.)
+#[test]
+fn a_termination_after_a_top_level_await_is_not_a_success() {
+    const FILES: Files = &[
+        (
+            "half.js",
+            "globalThis.started = true;\nawait 0;\nstop();\nfor (;;) {}\nglobalThis.finished = true;\n",
+        ),
+        (
+            "dep.js",
+            "import './half.js';\nprint('dep runs', globalThis.started, globalThis.finished);\n",
+        ),
+        (
+            "dyn.js",
+            "import('./half.js').then(() => print('dyn ok'), e => print('dyn err', e.message));\nawait 0; await 0; await 0; await 0;\nprint('dyn end');\n",
+        ),
+        // The termination in the host's checkpoint after the run: `spawn.js` runs to its end
+        // and `half2.js` evaluates in a job of `import()`.
+        ("half2.js", "await 0;\nstop();\nfor (;;) {}\n"),
+        ("spawn.js", "import('./half2.js');\nprint('spawn');\n"),
+        ("dep2.js", "import './half2.js';\nprint('dep2 runs');\n"),
+    ];
+    let aborted = "the evaluation of module half.js was terminated";
+    assert_eq!(
+        run_every(
+            FILES,
+            &[
+                "half.js", "half.js", "dep.js", "dyn.js", "spawn.js", "dep2.js"
+            ]
+        ),
+        lines(&[
+            "uncaught execution terminated",
+            &format!("uncaught Error: {aborted}"),
+            &format!("uncaught Error: {aborted}"),
+            &format!("dyn err {aborted}"),
+            "dyn end",
+            "spawn",
+            "uncaught execution terminated",
+            "uncaught Error: the evaluation of module half2.js was terminated",
+        ])
+    );
+}
+
+/// A module body that waits for a promise outside the job queue goes on after the
+/// termination that made its module aborted (as any async function does), but the module
+/// stays aborted: its late settlement changes no record, and a later importer throws the
+/// "was terminated" Error.
+#[test]
+fn an_aborted_async_module_stays_aborted() {
+    const FILES: Files = &[
+        (
+            "half3.js",
+            "await new Promise(r => { globalThis.resume = r; });\nprint('half3 resumed');\n",
+        ),
+        (
+            "e.js",
+            "import('./half3.js');\nawait 0;\nstop();\nfor (;;) {}\n",
+        ),
+        ("r.js", "globalThis.resume();\nprint('r');\n"),
+        ("dep3.js", "import './half3.js';\nprint('dep3 runs');\n"),
+    ];
+    assert_eq!(
+        run_every(FILES, &["e.js", "r.js", "dep3.js"]),
+        lines(&[
+            "uncaught execution terminated",
+            "r",
+            "half3 resumed",
+            "uncaught Error: the evaluation of module half3.js was terminated",
+        ])
+    );
+}
+
+/// The isolate's list of async modules drops the finished ones when it is full, and keeps
+/// the pending ones: `never.js` waits forever from the second entry on, the list is full at
+/// the run of `l2.js` (4 entries), and the termination in `t.js` still makes `never.js`
+/// aborted, so `dep4.js` throws the "was terminated" Error (not the "never settled" one).
+#[test]
+fn the_async_module_list_keeps_the_pending_modules() {
+    const FILES: Files = &[
+        ("w.js", "import('./never.js');\nawait 0;\n"),
+        (
+            "never.js",
+            "await new Promise(() => {});\nprint('never');\n",
+        ),
+        ("l0.js", "await 0;\n"),
+        ("l1.js", "await 0;\n"),
+        ("l2.js", "await 0;\n"),
+        ("l3.js", "await 0;\n"),
+        ("t.js", "await 0;\nstop();\nfor (;;) {}\n"),
+        ("dep4.js", "import './never.js';\nprint('dep4 runs');\n"),
+    ];
+    assert_eq!(
+        run_every(
+            FILES,
+            &[
+                "w.js", "l0.js", "l1.js", "l2.js", "l3.js", "t.js", "dep4.js"
+            ]
+        ),
+        lines(&[
+            "uncaught execution terminated",
+            "uncaught Error: the evaluation of module never.js was terminated",
+        ])
+    );
+}
