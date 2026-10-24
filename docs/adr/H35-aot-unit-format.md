@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft, spec skeleton (2026-10-20). Header v0, section table and load check (S4 steps 1-4) built in `crates/ep9_unit` (M0 wk4, S6); H35-Q8 filled 2026-10-22 (engine build id); H35-Q2 and H35-Q9 filled 2026-10-23 (M3-P1 SP-UNIT: SHA-256 content hash, signature slot reserved; the unit-data register). SP-Unit is built (`gate.sh unit`; [data](../measurements/2026-10-23-sp-unit.md)); its verdict is the orchestrator's. Writer and loader A2 |
+| Status | Accepted (2026-10-25, M3-P2-ACCEPT-6; review record complete). Was: Draft, spec skeleton (2026-10-20). Header v0, section table and load check (S4 steps 1-4) built in `crates/ep9_unit` (M0 wk4, S6); H35-Q8 filled 2026-10-22 (engine build id); H35-Q2 and H35-Q9 filled 2026-10-23 (M3-P1 SP-UNIT: SHA-256 content hash, signature slot reserved; the unit-data register). SP-Unit is built (`gate.sh unit`; [data](../measurements/2026-10-23-sp-unit.md)); its verdict is the orchestrator's. Writer and loader A2 |
 | Fix by | Spec v0 + header struct + golden test by M0 exit; writer/loader A2; frozen at A3 gate |
 | Freeze point | A3 gate |
 | Origin | R16-D6 + R17; plan status N (new) |
@@ -184,6 +184,7 @@ Zero text relocations. Isolate register + unit-data register for the per-isolate
 | 2026-10-23 | clarify | H35-Q8 Needed-by cell: SP-Unit is in M3-P1 (moved by M2-D21-FAIL), not M0 month 2; the cell now says "M3-P1 SP-UNIT (was SP-Unit, M0 month 2; moved by M2-D21-FAIL)", as the H35-Q9 cell does. Review record row 3 and a row-4 addendum (M3-P2 ACCEPT-6, V1). Text only; no check changes | M3-P2 ACCEPT-6 |
 | 2026-10-23 | clarify | Validation, SP-Unit item: windows-x64 is no longer open; CI probe run 39886596197 passed the unit gate on windows-x64 (decision M3-P1-SPUNIT), `ci.yml` runs the gate on all 4 runners, and M3-P2 WIN-STATIC-2 adds `tests/win64_unit.rs` (WIN-STATIC-2 fixer item 2). The "Missing: windows-x64" text of review row 4 (checked at 80b7986) stays: it records that check; the M3-P2 row-4 addendum above it states the probe result. Text only; no check changes | M3-P2 integration fixer (docs) |
 | 2026-10-24 | clarify | Review record: row 2 filled from the Codex texts; it names the runs that read H35 (the old placeholder named the M3-P1 B4 slice, which had no H35 diff) and says that no Codex run gave a verdict on the 9acc400 text (the SP-UNIT slice stopped at the content filter; row 1 is the Claude review). A row-3 addendum by the M3-P2 row-3 verifier (at df87c4a; nothing to sort). No text outside the record changes; no check changes | M3-P2 records writer |
+| 2026-10-25 | clarify | Status Draft -> Accepted (M3-P2-ACCEPT-6). The §3.1 review record is complete: row 1 M3-P1 ACCEPT-5 step 2, row 2 Codex (M3-P1 and M3-P2 slices; the SP-UNIT text reviewed by Claude, row 1), row 3 M3-P2 ACCEPT-6 with the M3-P2 addendum, row 4 data with the M3-P2 addendum (SP-Unit on 4 targets). SP-Unit: GO in the Verdict-table row `SP-Unit` of docs/measurements/2026-10-23-sp-unit.md (plan-v8 §4.10 step 5, the orchestrator, 2026-10-25, CI run 40123502730 at 88dacff; written before this Accept). The orchestrator did not write the rows it approves. H35 freezes at the A3 gate (README §3.4). No check changes | orchestrator (written by the M3-P2 records writer) |
 
 ## Review record
 

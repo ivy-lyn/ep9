@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-21): the rules. The index lists are due at M1; the snapshot is built in M4 (A1). H13-Q3 filled 2026-10-23 (M3-P1 SP-UNIT): the native runtime table is an append-only list with a golden |
+| Status | Accepted (2026-10-25, M3-P2-ACCEPT-6; review record complete). Was: Draft (2026-10-21): the rules. The index lists are due at M1; the snapshot is built in M4 (A1). H13-Q3 filled 2026-10-23 (M3-P1 SP-UNIT): the native runtime table is an append-only list with a golden |
 | Fix by | Rules M0; index lists M1; built M4 (A1) |
 | Freeze point | Freeze table (README §3.4): rules and index lists at M1 exit; snapshot build at M4 exit |
 | Origin | v1#19 + R16-D5; plan status E |
@@ -105,6 +105,7 @@ Copied from the plan row: an external-reference table. Intrinsics in fixed order
 | 2026-10-23 | clarify | Review record: a row-1 addendum (V8-A25) by M3-P1 ACCEPT-5 step 2 over the H13-Q3 fill (M3-P1 SP-UNIT) and the fixer's lists-table clarify: the fill matches the code and the golden; kind fill confirmed. No text outside the record changes, and no check changes | M3-P1 ACCEPT-5 (step 2) |
 | 2026-10-23 | clarify | Lists table: the counts at cbae45d (IntrinsicId 64, ids 0-63; `ep9_builtins` blocks 1-14, with 10 and 11 filled since M0 month 2 and 12-14 since M3-P1; `Root` 34). The block text said that 10 and 11 "stay empty until P4-PROMISE and P5-B-REFLECT-GLOBALS". The older counts stay, dated. Review record row 3 (M3-P2 ACCEPT-6, V1). Text only; no check changes | M3-P2 ACCEPT-6 |
 | 2026-10-24 | clarify | Review record: the row-2 addendum that ACCEPT-6 row 3 asked for (the P5 docs run, the M3-P1 SP-UNIT and fixer docs slices, the M3-P2 ACCEPT-6 docs slice; no open finding) and a row-3 addendum by the M3-P2 row-3 verifier (at df87c4a; nothing to sort). No text outside the record changes; no check changes | M3-P2 records writer |
+| 2026-10-25 | clarify | Status Draft -> Accepted (M3-P2-ACCEPT-6). The §3.1 review record is complete: row 1 P2-ACCEPT-1 with the M3-P1 addendum, row 2 Codex (M2-P2-REVIEW, with the M3-P2 addendum), row 3 P3-ACCEPT-2 and M3-P2 ACCEPT-6 (after SP-Unit) with the M3-P2 addendum, row 4 data (SP-Unit data in row 3). SP-Unit: GO in the Verdict-table row `SP-Unit` of docs/measurements/2026-10-23-sp-unit.md (plan-v8 §4.10 step 5, the orchestrator, 2026-10-25, CI run 40123502730 at 88dacff; written before this Accept). The orchestrator did not write the rows it approves. No check changes | orchestrator (written by the M3-P2 records writer) |
 
 ## Review record
 
