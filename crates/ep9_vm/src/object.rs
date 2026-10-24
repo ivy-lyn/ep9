@@ -17,7 +17,7 @@
 //! | Kind | Id | Fixed fields (from +24) | In-object slots |
 //! |---|---|---|---|
 //! | OBJECT | 16 | none | 4 for `{}`; n for a literal with n named keys; 8 for other prototypes (`new F`) |
-//! | FUNCTION | 17 | +24 FunctionInfo (native word), +32 context, +40 `[[HomeObject]]` or undefined | 2 (`length`, `name`) |
+//! | FUNCTION | 17 | +24 FunctionInfo (native word), +32 context, +40 `[[HomeObject]]` or undefined, +48 `[[Realm]]` (a REALM cell) | 2 (`length`, `name`) |
 //! | ARRAY | 18 | +24 length (int32); elements at +16 | 0 |
 //! | ERROR | 19 | +24 unit index (int32 or undefined), +32 source offset (int32) | 2 |
 //! | ITERATOR | 20 | +24 iterated value: an object (undefined when done, null while an array iterator's `next` runs user code) or a string ("" when done), +32 next index (int32), +40 kind (int32, [`iter_kind`]: values, keys, entries) | 0 |
@@ -25,11 +25,16 @@
 //! | BOUND_FUNCTION | 22 | +24 target, +32 bound `this`, +40 bound arguments | 2 |
 //! | GENERATOR | 23 | +24 state, +32 mode (int32s), +40 function, +48 receiver, +56 context, +64 registers (an ELEMENTS cell), +72 resume mode (int32), +80 async slot ([`genf`]) | 0 |
 //! | SLOT_OBJECT | 24 | +24 ObjectClass id (int32), +32 internal slots: an ELEMENTS cell of n Values, or undefined when n = 0 ([`slot_obj`]) | 0 |
+//! | ARGUMENTS | 25 | +24 parameter map (a CONTEXT, or undefined for an unmapped object), +32 mapped count (int32); elements at +16 ([`argsf`]) | 3 (`length`, @@iterator, `callee`) |
+//! | MODULE_NAMESPACE | 26 | +24 module (a MODULE cell), +32 export names (an ELEMENTS cell of sorted strings) ([`nsf`]) | 1 (@@toStringTag) |
 //!
 //! | Kind | Id | Layout (byte offsets) | Size |
 //! |---|---|---|---|
 //! | ELEMENTS | 65 | +8 capacity (int32), +16 values (hole = empty) | 16 + 8 cap |
 //! | CONTEXT | 66 | +8 previous, +16 scope (native word: a [`ContextScope`] record), +24 length (int32), +32 slots | 32 + 8 len |
+//! | MODULE | 76 | the Source Text Module Record (§16.2.1.4-6), 16 Values from +8 ([`modf`]) | 136 |
+//! | ORDERED_TABLE | 77 | Map and Set storage: +8 capacity, +16 live count, +24 deleted count, +32 bucket count, +40 entry width, +48 flags (int32s; flag bit 0 = weak keys, bit 1 = obsolete: a rehash or `clear` replaced the table and bucket head 0 holds the forward to the new one, bit 2 = cleared: `clear` replaced it, so a cursor restarts at 0), then the bucket heads and the entries (`ordered_table.rs`) | 56 + 8 (buckets + capacity x width) |
+//! | REALM | 78 | +8 global object, +16 global lexical record, +24 intrinsics (an ELEMENTS cell, index = `IntrinsicId`), +32 template registry, +40 host-defined ([`realmf`]) | 48 |
 //!
 //! Every word after word0 is a valid `Value` (raw pointers use the native-word encoding of
 //! `frame.rs`), so one trace function per size visits them all; no trace function visits
@@ -41,6 +46,13 @@
 //! kind field (+40; the cell grows from 40 to 48 B) and the CONTEXT scope word, which is now a
 //! native word that points at the VM-side [`ContextScope`] of the context's unit scope (C5),
 //! so a context names its slots: [`context_scope`] gives the unit and the scope descriptor.
+//!
+//! OBJECT_LAYOUT 3 (`versions.rs`, M3-P0): FUNCTION gets the `[[Realm]]` field (+48; `fun::FIXED`
+//! 3 -> 4, so the in-object slots move from +48 to +56 and a function cell grows by 8 B), and
+//! every function stores its isolate's REALM cell there ([`new_function`]). New kinds:
+//! ARGUMENTS and MODULE_NAMESPACE (JS objects; their exotic internal methods are routed from
+//! `exotic.rs` and `property.rs` to `arguments.rs` and `module.rs`), MODULE, ORDERED_TABLE and
+//! REALM (internal cells). Month-3 roles fill the behaviour; the layout is fixed here.
 
 use ep9_heap::{CellKind, CellPtr, CellSize, Heap, KindId, Slot, Tracer};
 
@@ -78,7 +90,10 @@ pub(crate) mod fun {
     pub const CONTEXT: usize = 32;
     /// `[[HomeObject]]` (§10.2): set for methods; undefined otherwise.
     pub const HOME: usize = 40;
-    pub const FIXED: usize = 3;
+    /// `[[Realm]]` (§10.2): the REALM cell of the realm the function was made in
+    /// (OBJECT_LAYOUT 3). Host functions have one too.
+    pub const REALM: usize = 48;
+    pub const FIXED: usize = 4;
     /// In-object slots: `length` and `name`.
     pub const CAPACITY: u8 = 2;
 }
@@ -118,11 +133,9 @@ pub(crate) mod genf {
     /// How the frame resumes: next, return or throw (int32).
     pub const RESUME_MODE: usize = 72;
     /// Async functions and async generators: the promise or the request queue.
-    #[allow(dead_code)] // month 3 (async)
     pub const ASYNC: usize = 80;
     pub const FIXED: usize = 8;
     pub const MODE_SYNC: i32 = 0;
-    #[allow(dead_code)] // month 3 (async)
     pub const MODE_ASYNC_FUNCTION: i32 = 1;
     #[allow(dead_code)] // month 3 (async)
     pub const MODE_ASYNC_GENERATOR: i32 = 2;
@@ -150,6 +163,98 @@ pub(crate) mod slot_obj {
     pub const SLOTS: usize = 32;
     pub const FIXED: usize = 2;
     pub const MAX_SLOTS: usize = 255; // most internal slots of one object (more is a caller bug)
+}
+
+/// ARGUMENTS fixed fields (OBJECT_LAYOUT 3, §10.4.4). The elements (the argument values)
+/// sit at `obj::ELEMENTS` (+16). Filled by M3-P2 VM-ARGS (`arguments.rs`).
+pub(crate) mod argsf {
+    /// The parameter map: the function's CONTEXT whose slots alias the mapped parameters, or
+    /// undefined for an unmapped arguments object.
+    pub const MAP: usize = 24;
+    /// The number of mapped parameters (int32; 0 for an unmapped object).
+    pub const MAPPED_COUNT: usize = 32;
+    pub const FIXED: usize = 2;
+    /// In-object slots: `length`, @@iterator and `callee`.
+    pub const CAPACITY: u8 = 3;
+}
+
+/// MODULE_NAMESPACE fixed fields (OBJECT_LAYOUT 3, §10.4.6). Filled by M3-P2 MODULE
+/// (`module.rs`).
+pub(crate) mod nsf {
+    /// The module: a MODULE cell.
+    pub const MODULE: usize = 24;
+    /// The exports: an ELEMENTS cell of 2n Values, the n export names (strings in code-unit
+    /// order), then the n bindings (a box: an ELEMENTS of length 1, the hole while the
+    /// binding is in its TDZ; or a MODULE cell for `export * as ns`). `module.rs` makes it.
+    pub const EXPORTS: usize = 32;
+    pub const FIXED: usize = 2;
+    /// In-object slots: @@toStringTag.
+    pub const CAPACITY: u8 = 1;
+}
+
+/// MODULE fields (OBJECT_LAYOUT 3): a Source Text Module Record (§16.2.1.4 Cyclic Module
+/// Record, §16.2.1.6). Every field is a Value; the unit is a native word. Filled by M3-P2
+/// MODULE and M3-P3 IMPORT-TLA (`module.rs`).
+#[allow(dead_code)] // filled by M3-P2 MODULE
+pub(crate) mod modf {
+    /// `[[Status]]` (int32; undefined until MODULE fills it).
+    pub const STATUS: usize = 8;
+    /// `[[Environment]]`: a CONTEXT made with the record (`module.rs` `env`): the module's
+    /// name, the generator object of its function 0 (made at InitializeEnvironment, resumed
+    /// at Evaluate; MODULE step 2), `import.meta`, then one box per module cell.
+    pub const ENVIRONMENT: usize = 16;
+    /// `[[Namespace]]`: a MODULE_NAMESPACE object, or undefined until made.
+    pub const NAMESPACE: usize = 24;
+    /// The module's unit: a native word to its `LoadedUnit`.
+    pub const UNIT: usize = 32;
+    /// `[[RequestedModules]]`: an ELEMENTS cell of specifier strings.
+    pub const REQUESTED: usize = 40;
+    /// `[[LoadedModules]]`: an ELEMENTS cell of MODULE cells (or undefined entries).
+    pub const LOADED: usize = 48;
+    /// `[[EvaluationError]]`: the thrown value, or the hole for none.
+    pub const EVALUATION_ERROR: usize = 56;
+    /// `[[DFSIndex]]` (int32, or undefined for empty).
+    pub const DFS_INDEX: usize = 64;
+    /// `[[DFSAncestorIndex]]` (int32, or undefined for empty).
+    pub const DFS_ANCESTOR_INDEX: usize = 72;
+    /// `[[CycleRoot]]`: a MODULE cell, or undefined.
+    pub const CYCLE_ROOT: usize = 80;
+    /// `[[HasTLA]]` (a boolean; undefined until MODULE fills it).
+    pub const HAS_TLA: usize = 88;
+    /// `[[AsyncEvaluationOrder]]` (int32, or undefined for unset, or done).
+    pub const ASYNC_EVALUATION_ORDER: usize = 96;
+    /// `[[TopLevelCapability]]`: a promise capability record, or undefined.
+    pub const TOP_LEVEL_CAPABILITY: usize = 104;
+    /// `[[AsyncParentModules]]`: an ELEMENTS cell of MODULE cells, or undefined.
+    pub const ASYNC_PARENT_MODULES: usize = 112;
+    /// `[[PendingAsyncDependencies]]` (int32, or undefined for empty).
+    pub const PENDING_ASYNC_DEPENDENCIES: usize = 120;
+    /// `[[HostDefined]]`: any Value.
+    pub const HOST_DEFINED: usize = 128;
+    /// The cell size: word0 and 16 Values.
+    pub const SIZE: usize = 136;
+}
+
+/// REALM fields (OBJECT_LAYOUT 3, §9.3 Realm Record). N per isolate: `realm::init` makes the
+/// first, `realm::create` (`Cx::create_realm`, `$262.createRealm`) makes more, and a realm
+/// that nothing reachable holds is collected. Every function's `[[Realm]]` ([`fun::REALM`]).
+pub(crate) mod realmf {
+    /// `[[GlobalObject]]`.
+    pub const GLOBAL_OBJECT: usize = 8;
+    /// The global declarative record (script `let`/`const`/`class`; today a null-prototype
+    /// object, as the `Root::Lexical` root).
+    pub const GLOBAL_LEXICAL: usize = 16;
+    /// `[[Intrinsics]]`: an ELEMENTS cell, index = `IntrinsicId` (the H13 stable index);
+    /// undefined for an intrinsic nothing made.
+    pub const INTRINSICS: usize = 24;
+    /// `[[TemplateMap]]`: an ELEMENTS list (entry 0 = the used count) that owns the template
+    /// objects this realm made (`realm::add_template`); undefined until the first one.
+    pub const TEMPLATES: usize = 32;
+    /// `[[HostDefined]]`: the realm's module map (`module.rs` `map_get`, `map_add`): an
+    /// ELEMENTS list, entry 0 the count n, then n pairs (name atom, MODULE record).
+    pub const HOST_DEFINED: usize = 40;
+    /// The cell size: word0 and 5 Values.
+    pub const SIZE: usize = 48;
 }
 
 pub(crate) mod arr {
@@ -280,6 +385,8 @@ const FIXED_COUNTS: [u8; 256] = {
     t[kind::BOUND_FUNCTION.get() as usize] = fixed::BOUND as u8;
     t[kind::GENERATOR.get() as usize] = genf::FIXED as u8;
     t[kind::SLOT_OBJECT.get() as usize] = slot_obj::FIXED as u8;
+    t[kind::ARGUMENTS.get() as usize] = argsf::FIXED as u8;
+    t[kind::MODULE_NAMESPACE.get() as usize] = nsf::FIXED as u8;
     t
 };
 
@@ -296,7 +403,9 @@ pub(crate) fn fixed_count(k: u8) -> usize {
             kind::PRIMITIVE_WRAPPER,
             kind::BOUND_FUNCTION,
             kind::GENERATOR,
-            kind::SLOT_OBJECT
+            kind::SLOT_OBJECT,
+            kind::ARGUMENTS,
+            kind::MODULE_NAMESPACE
         ]
         .iter()
         .any(|x| x.get() == k),
@@ -345,11 +454,19 @@ fn object_kind(
     }
 }
 
+fn trace_module(c: CellPtr, t: &mut Tracer<'_>) {
+    trace_from_8(c, t, modf::SIZE);
+}
+
+fn trace_realm(c: CellPtr, t: &mut Tracer<'_>) {
+    trace_from_8(c, t, realmf::SIZE);
+}
+
 /// Registers every VM cell kind with a new heap: the kinds of this file, then each module
 /// that owns a layout (strings, the property dictionary, symbols, shapes, feedback,
-/// accessors, ICs).
+/// accessors, ICs, the ordered tables).
 pub(crate) fn register_kinds(heap: &Heap) {
-    let kinds: [(KindId, CellKind); 11] = [
+    let kinds: [(KindId, CellKind); 15] = [
         (
             kind::OBJECT,
             object_kind("object", object_size::<0>, trace_object::<0>),
@@ -419,6 +536,22 @@ pub(crate) fn register_kinds(heap: &Heap) {
             ),
         ),
         (
+            kind::ARGUMENTS,
+            object_kind(
+                "arguments",
+                object_size::<{ argsf::FIXED }>,
+                trace_object::<{ argsf::FIXED }>,
+            ),
+        ),
+        (
+            kind::MODULE_NAMESPACE,
+            object_kind(
+                "module-namespace",
+                object_size::<{ nsf::FIXED }>,
+                trace_object::<{ nsf::FIXED }>,
+            ),
+        ),
+        (
             kind::ELEMENTS,
             CellKind {
                 name: "elements",
@@ -434,6 +567,22 @@ pub(crate) fn register_kinds(heap: &Heap) {
                 trace: trace_context,
             },
         ),
+        (
+            kind::MODULE,
+            CellKind {
+                name: "module",
+                size: CellSize::Fixed(modf::SIZE),
+                trace: trace_module,
+            },
+        ),
+        (
+            kind::REALM,
+            CellKind {
+                name: "realm",
+                size: CellSize::Fixed(realmf::SIZE),
+                trace: trace_realm,
+            },
+        ),
     ];
     crate::string::register_kinds(heap);
     for (id, k) in kinds {
@@ -445,6 +594,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
     crate::feedback::register_kinds(heap);
     crate::accessor::register_kinds(heap);
     crate::ic::register_kinds(heap);
+    crate::ordered_table::register_kinds(heap);
 }
 
 // ---- objects --------------------------------------------------------------------------------
@@ -593,6 +743,73 @@ fn new_elements(rt: &Runtime, cap: usize) -> CellPtr {
     c
 }
 
+/// A new ELEMENTS cell of `n` Values, all `fill` (a list that a record holds: the realm's
+/// intrinsics, a module's requested modules). GC point: `fill` lives in a Rust local.
+pub(crate) fn new_list(rt: &Runtime, n: usize, fill: u64) -> u64 {
+    let c = rt.alloc(kind::ELEMENTS, elems::DATA + 8 * n);
+    init(c, elems::CAPACITY, int32_bits(n as i32));
+    for i in 0..n {
+        init(c, elems::DATA + 8 * i, fill);
+    }
+    c.to_value().to_bits()
+}
+
+/// The length of the ELEMENTS cell `l`.
+pub(crate) fn list_len(l: u64) -> usize {
+    debug_assert!(cell_kind(l) == kind::ELEMENTS.get());
+    rd_i32(cell(l), elems::CAPACITY) as usize
+}
+
+/// Entry `i` of the ELEMENTS cell `l`. Panics if `i` ≥ [`list_len`].
+#[allow(dead_code)] // callers: tests/layout3.rs; month-3 records (realms, modules)
+pub(crate) fn list_get(l: u64, i: usize) -> u64 {
+    assert!(i < list_len(l), "list index {i} out of range");
+    rd(cell(l), elems::DATA + 8 * i)
+}
+
+/// Stores entry `i` of the ELEMENTS cell `l` (barriered). Panics if `i` ≥ [`list_len`].
+pub(crate) fn list_set(rt: &Runtime, l: u64, i: usize, v: u64) {
+    assert!(i < list_len(l), "list index {i} out of range");
+    wr(&rt.heap, cell(l), elems::DATA + 8 * i, v);
+}
+
+/// Field `off` of an internal record cell (MODULE [`modf`], REALM [`realmf`]): a Value slot
+/// from +8 below the kind's size.
+pub(crate) fn record_get(r: u64, off: usize) -> u64 {
+    debug_assert!(record_field_ok(r, off), "bad record field {off}");
+    rd(cell(r), off)
+}
+
+/// Stores field `off` of an internal record cell (barriered).
+pub(crate) fn record_set(rt: &Runtime, r: u64, off: usize, v: u64) {
+    debug_assert!(record_field_ok(r, off), "bad record field {off}");
+    wr(&rt.heap, cell(r), off, v);
+}
+
+fn record_field_ok(r: u64, off: usize) -> bool {
+    let size = match cell_kind(r) {
+        k if k == kind::MODULE.get() => modf::SIZE,
+        k if k == kind::REALM.get() => realmf::SIZE,
+        _ => return false,
+    };
+    (8..size).contains(&off) && off.is_multiple_of(8)
+}
+
+/// A new internal record cell of kind `k` (MODULE or REALM), every field undefined. GC point.
+pub(crate) fn new_record(rt: &Runtime, k: KindId) -> u64 {
+    let size = if k == kind::MODULE {
+        modf::SIZE
+    } else {
+        assert!(k == kind::REALM, "kind {} is not a record kind", k.get());
+        realmf::SIZE
+    };
+    let c = rt.alloc(k, size);
+    for off in (8..size).step_by(8) {
+        init(c, off, UNDEFINED);
+    }
+    c.to_value().to_bits()
+}
+
 pub(crate) fn array_len(a: u64) -> u32 {
     rd_i32(cell(a), arr::LENGTH) as u32
 }
@@ -686,7 +903,10 @@ pub(crate) fn array_set_length(rt: &Runtime, a: u64, len: u32) -> bool {
 /// `length` and `name` from the FunctionInfo, {w: false, e: false, c: true} (§10.2.9
 /// SetFunctionName, §10.2.10 SetFunctionLength), in its 2 in-object slots. `prototype`
 /// stays lazy (`exotic.rs`). Its `[[Prototype]]` is %Function.prototype%, or
-/// %GeneratorFunction.prototype% for a generator function (§15.5.3). GC point.
+/// %GeneratorFunction.prototype% for a generator function (§15.5.3),
+/// %AsyncFunction.prototype% for an async function (§15.8.3) and
+/// %AsyncGeneratorFunction.prototype% for an async generator function (§15.6.3). Its
+/// `[[Realm]]` is the current realm (the `Root::Realm` root; OBJECT_LAYOUT 3). GC point.
 pub(crate) fn new_function(rt: &Runtime, info: *const FunctionInfo, context: u64) -> u64 {
     // SAFETY: function infos outlive the isolate's cells (units and host infos are never
     // freed while the isolate lives).
@@ -694,14 +914,21 @@ pub(crate) fn new_function(rt: &Runtime, info: *const FunctionInfo, context: u64
     // GC points first (the name atom of a host function, the shape); the values live in
     // Rust locals (CSS).
     let name = function_name(rt, fi);
-    let s = if fi.is_generator() {
-        shape::generator_function_shape(rt)
-    } else {
+    // One flag test on the common path; the generator and async kinds take their own shape.
+    use crate::function_info::fi_flags;
+    let s = if fi.flags & (fi_flags::GENERATOR | fi_flags::ASYNC | fi_flags::ASYNC_GENERATOR) == 0 {
         shape::function_shape(rt)
+    } else if fi.is_generator() {
+        shape::generator_function_shape(rt)
+    } else if fi.is_async_function() {
+        shape::async_function_shape(rt)
+    } else {
+        shape::async_generator_function_shape(rt)
     };
     let f = alloc_with_shape(rt, kind::FUNCTION, s, fun::CAPACITY);
     init(f, fun::INFO, native_of(info));
     init(f, fun::CONTEXT, context);
+    init(f, fun::REALM, rt.root(Root::Realm));
     let slots = obj::FIXED + 8 * fun::FIXED;
     init(f, slots, crate::conv::num(f64::from(fi.length)));
     init(f, slots + 8, name);
@@ -742,6 +969,13 @@ pub(crate) fn home_object(f: u64) -> u64 {
 
 pub(crate) fn set_home_object(rt: &Runtime, f: u64, home: u64) {
     wr(&rt.heap, cell(f), fun::HOME, home);
+}
+
+/// `[[Realm]]` of a function cell: a REALM cell (OBJECT_LAYOUT 3; M3-P1 REALMS reads it on a
+/// call).
+#[allow(dead_code)] // first reader: M3-P1 REALMS
+pub(crate) fn function_realm(f: u64) -> u64 {
+    rd(cell(f), fun::REALM)
 }
 
 /// A new ITERATOR cell with prototype `proto` over `iterated`: an object for an array iterator

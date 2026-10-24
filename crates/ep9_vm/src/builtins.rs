@@ -169,11 +169,51 @@ pub enum IntrinsicId {
     // ---- M2-P5 (VM-SMALL): made by the VM table (natives.rs), a state slot ----
     /// `%Array.prototype%[@@unscopables]` (§23.1.3.41): a null-prototype object.
     ArrayUnscopables,
+    // ---- M3-P0 (P0-D3): declared for the month-3 builders, made by none yet (an id that
+    // nothing makes is undefined, `intrinsic`); state slots 13-31 ----
+    /// `%AsyncGeneratorFunction%` (§27.4.1; made by M3-P2 ASYNCGEN).
+    AsyncGeneratorFunction,
+    /// `%AsyncGeneratorFunction.prototype%` (§27.4.3; made by M3-P2 ASYNCGEN).
+    AsyncGeneratorFunctionPrototype,
+    /// `%AsyncGeneratorPrototype%` (§27.6.1; made by M3-P2 ASYNCGEN).
+    AsyncGeneratorPrototype,
+    /// `%AsyncIteratorPrototype%` (§27.1.3; made by M3-P2 ASYNCGEN).
+    AsyncIteratorPrototype,
+    /// `%AsyncFromSyncIteratorPrototype%` (§27.1.6.2; made by M3-P2 ASYNCGEN).
+    AsyncFromSyncIteratorPrototype,
+    /// `%Date%` (§21.4.2; made by M3-P1 B-DATE).
+    Date,
+    /// `%Date.prototype%` (§21.4.4; made by M3-P1 B-DATE).
+    DatePrototype,
+    /// `%Map%` (§24.1.1; made by M3-P1 B-COLLECTIONS).
+    Map,
+    /// `%Map.prototype%` (§24.1.3; made by M3-P1 B-COLLECTIONS).
+    MapPrototype,
+    /// `%Set%` (§24.2.2; made by M3-P1 B-COLLECTIONS).
+    Set,
+    /// `%Set.prototype%` (§24.2.4; made by M3-P1 B-COLLECTIONS).
+    SetPrototype,
+    /// `%WeakMap%` (§24.3.1; made by M3-P1 B-COLLECTIONS).
+    WeakMap,
+    /// `%WeakMap.prototype%` (§24.3.3; made by M3-P1 B-COLLECTIONS).
+    WeakMapPrototype,
+    /// `%WeakSet%` (§24.4.1; made by M3-P1 B-COLLECTIONS).
+    WeakSet,
+    /// `%WeakSet.prototype%` (§24.4.3; made by M3-P1 B-COLLECTIONS).
+    WeakSetPrototype,
+    /// `%MapIteratorPrototype%` (§24.1.5.2; made by M3-P1 B-COLLECTIONS).
+    MapIteratorPrototype,
+    /// `%SetIteratorPrototype%` (§24.2.6.2; made by M3-P1 B-COLLECTIONS).
+    SetIteratorPrototype,
+    /// `%JSON%` (§25.5; made by M3-P1 B-JSON).
+    Json,
+    /// `%ThrowTypeError%` (§10.2.4.1; made by M3-P2 VM-ARGS).
+    ThrowTypeError,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 45] = [
+    pub const ALL: [IntrinsicId; 64] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -219,6 +259,25 @@ impl IntrinsicId {
         IntrinsicId::AggregateErrorPrototype,
         IntrinsicId::Reflect,
         IntrinsicId::ArrayUnscopables,
+        IntrinsicId::AsyncGeneratorFunction,
+        IntrinsicId::AsyncGeneratorFunctionPrototype,
+        IntrinsicId::AsyncGeneratorPrototype,
+        IntrinsicId::AsyncIteratorPrototype,
+        IntrinsicId::AsyncFromSyncIteratorPrototype,
+        IntrinsicId::Date,
+        IntrinsicId::DatePrototype,
+        IntrinsicId::Map,
+        IntrinsicId::MapPrototype,
+        IntrinsicId::Set,
+        IntrinsicId::SetPrototype,
+        IntrinsicId::WeakMap,
+        IntrinsicId::WeakMapPrototype,
+        IntrinsicId::WeakSet,
+        IntrinsicId::WeakSetPrototype,
+        IntrinsicId::MapIteratorPrototype,
+        IntrinsicId::SetIteratorPrototype,
+        IntrinsicId::Json,
+        IntrinsicId::ThrowTypeError,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object.
@@ -269,6 +328,25 @@ impl IntrinsicId {
             IntrinsicId::AggregateErrorPrototype => "%AggregateError.prototype%",
             IntrinsicId::Reflect => "%Reflect%",
             IntrinsicId::ArrayUnscopables => "%Array.prototype%[@@unscopables]",
+            IntrinsicId::AsyncGeneratorFunction => "%AsyncGeneratorFunction%",
+            IntrinsicId::AsyncGeneratorFunctionPrototype => "%AsyncGeneratorFunction.prototype%",
+            IntrinsicId::AsyncGeneratorPrototype => "%AsyncGeneratorPrototype%",
+            IntrinsicId::AsyncIteratorPrototype => "%AsyncIteratorPrototype%",
+            IntrinsicId::AsyncFromSyncIteratorPrototype => "%AsyncFromSyncIteratorPrototype%",
+            IntrinsicId::Date => "%Date%",
+            IntrinsicId::DatePrototype => "%Date.prototype%",
+            IntrinsicId::Map => "%Map%",
+            IntrinsicId::MapPrototype => "%Map.prototype%",
+            IntrinsicId::Set => "%Set%",
+            IntrinsicId::SetPrototype => "%Set.prototype%",
+            IntrinsicId::WeakMap => "%WeakMap%",
+            IntrinsicId::WeakMapPrototype => "%WeakMap.prototype%",
+            IntrinsicId::WeakSet => "%WeakSet%",
+            IntrinsicId::WeakSetPrototype => "%WeakSet.prototype%",
+            IntrinsicId::MapIteratorPrototype => "%MapIteratorPrototype%",
+            IntrinsicId::SetIteratorPrototype => "%SetIteratorPrototype%",
+            IntrinsicId::Json => "%JSON%",
+            IntrinsicId::ThrowTypeError => "%ThrowTypeError%",
         }
     }
 
@@ -320,7 +398,26 @@ impl IntrinsicId {
             | IntrinsicId::AggregateError
             | IntrinsicId::AggregateErrorPrototype
             | IntrinsicId::Reflect
-            | IntrinsicId::ArrayUnscopables => return None,
+            | IntrinsicId::ArrayUnscopables
+            | IntrinsicId::AsyncGeneratorFunction
+            | IntrinsicId::AsyncGeneratorFunctionPrototype
+            | IntrinsicId::AsyncGeneratorPrototype
+            | IntrinsicId::AsyncIteratorPrototype
+            | IntrinsicId::AsyncFromSyncIteratorPrototype
+            | IntrinsicId::Date
+            | IntrinsicId::DatePrototype
+            | IntrinsicId::Map
+            | IntrinsicId::MapPrototype
+            | IntrinsicId::Set
+            | IntrinsicId::SetPrototype
+            | IntrinsicId::WeakMap
+            | IntrinsicId::WeakMapPrototype
+            | IntrinsicId::WeakSet
+            | IntrinsicId::WeakSetPrototype
+            | IntrinsicId::MapIteratorPrototype
+            | IntrinsicId::SetIteratorPrototype
+            | IntrinsicId::Json
+            | IntrinsicId::ThrowTypeError => return None,
         })
     }
 
@@ -341,6 +438,25 @@ impl IntrinsicId {
             IntrinsicId::AggregateErrorPrototype => Some(10),
             IntrinsicId::Reflect => Some(11),
             IntrinsicId::ArrayUnscopables => Some(12),
+            IntrinsicId::AsyncGeneratorFunction => Some(13),
+            IntrinsicId::AsyncGeneratorFunctionPrototype => Some(14),
+            IntrinsicId::AsyncGeneratorPrototype => Some(15),
+            IntrinsicId::AsyncIteratorPrototype => Some(16),
+            IntrinsicId::AsyncFromSyncIteratorPrototype => Some(17),
+            IntrinsicId::Date => Some(18),
+            IntrinsicId::DatePrototype => Some(19),
+            IntrinsicId::Map => Some(20),
+            IntrinsicId::MapPrototype => Some(21),
+            IntrinsicId::Set => Some(22),
+            IntrinsicId::SetPrototype => Some(23),
+            IntrinsicId::WeakMap => Some(24),
+            IntrinsicId::WeakMapPrototype => Some(25),
+            IntrinsicId::WeakSet => Some(26),
+            IntrinsicId::WeakSetPrototype => Some(27),
+            IntrinsicId::MapIteratorPrototype => Some(28),
+            IntrinsicId::SetIteratorPrototype => Some(29),
+            IntrinsicId::Json => Some(30),
+            IntrinsicId::ThrowTypeError => Some(31),
             _ => None,
         }
     }
@@ -352,8 +468,8 @@ impl IntrinsicId {
     }
 }
 
-/// The intrinsic `id` of the realm: an object, or undefined if no table made it (or, for
-/// `%Symbol.prototype%`, until symbols exist).
+/// The intrinsic `id` of the current realm: an object, or undefined if no table made it (or,
+/// for `%Symbol.prototype%`, until symbols exist).
 pub(crate) fn intrinsic(rt: &Runtime, id: IntrinsicId) -> u64 {
     match (id.root(), id.slot()) {
         (Some(r), _) => rt.root(r),
@@ -363,12 +479,26 @@ pub(crate) fn intrinsic(rt: &Runtime, id: IntrinsicId) -> u64 {
     }
 }
 
+/// Makes `v` the intrinsic `id` of the current realm (a table made it), in its root or slot
+/// and in the intrinsics list of the current REALM record, so the record stays a copy of the
+/// roots (`realm::switch` reads it back). Not a GC point.
 fn set_intrinsic(rt: &Runtime, id: IntrinsicId, v: u64) {
+    match (id.root(), id.slot()) {
+        (Some(_), _) | (None, Some(_)) => load_intrinsic(rt, id, v),
+        (None, None) => unreachable!("{} is not made by a table", id.name()),
+    }
+    crate::realm::record_intrinsic(rt, id, v);
+}
+
+/// Writes `v` into the root, the builtin state slot or the symbol state that holds the
+/// intrinsic `id` of the current realm. Realm switch and realm creation (`realm.rs`) only:
+/// the caller keeps the REALM record in step. Not a GC point.
+pub(crate) fn load_intrinsic(rt: &Runtime, id: IntrinsicId, v: u64) {
     match (id.root(), id.slot()) {
         (Some(r), _) => rt.set_root(r, v),
         // E3: a store into a root slot takes no barrier.
         (None, Some(i)) => rt.builtins.intrinsics[i].init(val(v)),
-        (None, None) => unreachable!("{} is not made by a table", id.name()),
+        (None, None) => symbol::set_prototype(rt, v),
     }
 }
 
@@ -516,12 +646,22 @@ impl PropKey {
         }
     }
 
-    /// The same key? (`Atom(Length)` and `Str("length")` are one key.)
+    /// The same key? (`Atom(Length)` and `Str("length")` are one key.) No allocation:
+    /// `check_tables` calls it for each pair of keys, at each process start.
     fn same(&self, other: &PropKey) -> bool {
-        match (self, other) {
-            (PropKey::Symbol(a), PropKey::Symbol(b)) => a == b,
-            (PropKey::Symbol(_), _) | (_, PropKey::Symbol(_)) => false,
-            _ => self.text() == other.text(),
+        match (self.string_text(), other.string_text()) {
+            (Some(a), Some(b)) => a == b,
+            (None, None) => self == other,
+            _ => false,
+        }
+    }
+
+    /// The text of a string key; `None` for a symbol.
+    fn string_text(&self) -> Option<&'static str> {
+        match *self {
+            PropKey::Atom(a) => Some(a.text()),
+            PropKey::Str(s) => Some(s),
+            PropKey::Symbol(_) => None,
         }
     }
 }
@@ -874,21 +1014,21 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
         }
     }
     let prototype = PropKey::Atom(Atom::Prototype);
-    // Defined keys per target with their values, in walk order (for aliases and duplicates).
-    let mut defined: Vec<(IntrinsicId, PropKey, PropValue)> = Vec::new();
+    // Defined keys with their values, one list per target (index `IntrinsicId as usize`) in
+    // walk order, for aliases and duplicates. A check scans its own target's list only, so
+    // this stays linear in the number of keys (it runs at each process start).
+    let mut defined: Vec<Vec<(PropKey, PropValue)>> = vec![Vec::new(); IntrinsicId::ALL.len()];
     for m in modules() {
         let at = |what: String| format!("builtin table module `{}`: {what}", m.name);
         for op in m.props {
             if !made.contains(&op.target) {
                 return Err(at(format!("target {} is not made", op.target.name())));
             }
+            let on_target = &mut defined[op.target as usize];
             for p in op.props {
                 let here =
                     |what: &str| at(format!("{}.{}: {what}", op.target.name(), p.key.text()));
-                if defined
-                    .iter()
-                    .any(|(t, k, _)| *t == op.target && k.same(&p.key))
-                {
+                if on_target.iter().any(|(k, _)| k.same(&p.key)) {
                     return Err(here("defined twice"));
                 }
                 // Install adds keys in walk order, and adding a key to a function first makes
@@ -899,9 +1039,7 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                     && !matches!(p.value, PropValue::Accessor { .. });
                 if !is_prototype
                     && constructors.iter().any(|(c, _)| *c == op.target)
-                    && !defined
-                        .iter()
-                        .any(|(t, k, _)| *t == op.target && k.same(&prototype))
+                    && !on_target.iter().any(|(k, _)| k.same(&prototype))
                 {
                     return Err(here(
                         "the first key of a constructor is `prototype`, a data property with \
@@ -918,9 +1056,7 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                         }
                     }
                     PropValue::Alias(k) => {
-                        let of = defined
-                            .iter()
-                            .find(|(t, d, _)| *t == op.target && d.same(&k));
+                        let of = on_target.iter().find(|(d, _)| d.same(&k));
                         match of {
                             None => {
                                 return Err(here(&format!(
@@ -931,7 +1067,7 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                             // An alias copies a data value (one function object under two
                             // names, as `Array.prototype[@@iterator]`); no spec alias is an
                             // accessor, and install would copy the internal pair.
-                            Some((_, _, PropValue::Accessor { .. })) => {
+                            Some((_, PropValue::Accessor { .. })) => {
                                 return Err(here(&format!(
                                     "alias of {}, an accessor (an alias needs a data property)",
                                     k.text()
@@ -954,12 +1090,12 @@ pub fn check_tables(tables: &[&BuiltinTable]) -> Result<(), String> {
                     }
                     PropValue::Const(_) | PropValue::Symbol(_) => {}
                 }
-                defined.push((op.target, p.key, p.value));
+                on_target.push((p.key, p.value));
             }
         }
     }
     for (c, module) in &constructors {
-        if !defined.iter().any(|(t, k, _)| t == c && k.same(&prototype)) {
+        if !defined[*c as usize].iter().any(|(k, _)| k.same(&prototype)) {
             return Err(format!(
                 "builtin table module `{module}`: the constructor {} has no `prototype`",
                 c.name()
@@ -981,19 +1117,33 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 13;
+const INTRINSIC_SLOTS: usize = 32;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.
+///
+/// Realms (H22-Q3): the FunctionInfos are per isolate (every realm's function object of a
+/// definition points at the same one). The intrinsic slots hold the current realm's values
+/// (`realm::switch` loads them from the REALM record). The function slots of the modules hold
+/// the first realm's function objects; a later realm's install makes its own in the install
+/// list ([`begin_realm_install`]), and after its install they are reachable only through
+/// that realm's objects. So [`existing_function`] knows the function objects of the first
+/// realm only.
 pub(crate) struct BuiltinState {
     /// The embedder's table (`IsolateConfig::builtins`).
     table: Cell<Option<&'static BuiltinTable>>,
     /// The installed modules in walk order (the VM table first).
     modules: RefCell<Vec<ModuleState>>,
+    /// The number of definitions of all modules (the length of an install list).
+    definitions: Cell<usize>,
     /// The intrinsics of [`IntrinsicId::slot`], undefined until made: a strong root range
     /// that [`prepare`] registers (the heap is the Runtime's first field, so it drops with the
     /// range before this box).
     intrinsics: Box<[Slot]>,
+    /// One slot: the install list of a realm that is being installed after the first (an
+    /// ELEMENTS cell, one entry per definition in walk order), or undefined. A strong root
+    /// range that [`prepare`] registers.
+    install_list: Box<[Slot]>,
 }
 
 impl Default for BuiltinState {
@@ -1001,19 +1151,24 @@ impl Default for BuiltinState {
         BuiltinState {
             table: Cell::new(None),
             modules: RefCell::new(Vec::new()),
+            definitions: Cell::new(0),
             intrinsics: (0..INTRINSIC_SLOTS)
                 .map(|_| Slot::new(Value::UNDEFINED))
                 .collect(),
+            install_list: Box::new([Slot::new(Value::UNDEFINED)]),
         }
     }
 }
 
 struct ModuleState {
     module: &'static BuiltinModule,
+    /// The index of the module's first definition in an install list.
+    first: usize,
     /// One FunctionInfo per definition (dense; frames and function cells point into it).
     infos: Box<[FunctionInfo]>,
-    /// The function object of each definition, undefined until made: a strong root range
-    /// (the heap is the Runtime's first field, so it drops with the range before this box).
+    /// The function object of each definition in the first realm, undefined until made: a
+    /// strong root range (the heap is the Runtime's first field, so it drops with the range
+    /// before this box).
     functions: Box<[Slot]>,
 }
 
@@ -1044,7 +1199,12 @@ pub(crate) fn prepare(rt: &Runtime, embedder: Option<&'static BuiltinTable>) {
             NonNull::from(&rt.builtins.intrinsics[..]),
             RootStrength::Strong,
         );
+        rt.heap.add_root_range(
+            NonNull::from(&rt.builtins.install_list[..]),
+            RootStrength::Strong,
+        );
     }
+    let mut first = 0;
     for module in tables(embedder).flat_map(|t| t.modules.iter()) {
         let infos: Box<[FunctionInfo]> = module
             .defs
@@ -1068,14 +1228,49 @@ pub(crate) fn prepare(rt: &Runtime, embedder: Option<&'static BuiltinTable>) {
         }
         mods.push(ModuleState {
             module,
+            first,
             infos,
             functions,
         });
+        first += module.defs.len();
+    }
+    rt.builtins.definitions.set(first);
+}
+
+/// Starts the install of a realm after the first: a new install list (one undefined entry per
+/// definition), so [`function_object`] makes this realm's own function objects. GC point.
+pub(crate) fn begin_realm_install(rt: &Runtime) {
+    let n = rt.builtins.definitions.get();
+    let list = object::new_list(rt, n, UNDEFINED);
+    // E3: a store into a root slot takes no barrier.
+    rt.builtins.install_list[0].init(val(list));
+}
+
+/// Ends the install that [`begin_realm_install`] started: the list goes; the realm's function
+/// objects stay reachable through its objects. Not a GC point.
+pub(crate) fn end_realm_install(rt: &Runtime) {
+    rt.builtins.install_list[0].init(Value::UNDEFINED);
+}
+
+/// Makes every intrinsic slot undefined (a new realm's init and install fill them). Not a GC
+/// point.
+pub(crate) fn clear_intrinsic_slots(rt: &Runtime) {
+    for s in rt.builtins.intrinsics.iter() {
+        s.init(Value::UNDEFINED);
     }
 }
 
-/// (module position, FunctionInfo, current function bits) of builtin `id`.
-fn lookup(rt: &Runtime, id: BuiltinId) -> Option<(usize, *const FunctionInfo, u64)> {
+/// Where the function object of a builtin lives while its realm installs: a module slot (the
+/// first realm) or an entry of the install list (a later realm).
+#[derive(Clone, Copy)]
+enum Home {
+    Slot(usize, usize),
+    List(u64, usize),
+}
+
+/// (home, FunctionInfo, function bits) of builtin `id` in the realm being installed, or in
+/// the first realm when no install list is set.
+fn lookup(rt: &Runtime, id: BuiltinId) -> Option<(Home, *const FunctionInfo, u64)> {
     let mods = rt.builtins.modules.borrow();
     let (m, st) = mods
         .iter()
@@ -1083,34 +1278,48 @@ fn lookup(rt: &Runtime, id: BuiltinId) -> Option<(usize, *const FunctionInfo, u6
         .find(|(_, s)| s.module.block == id.block())?;
     let i = usize::from(id.index());
     let info = st.infos.get(i)?;
-    Some((m, core::ptr::from_ref(info), st.functions[i].bits()))
+    let list = rt.builtins.install_list[0].bits();
+    let (home, f) = if list == UNDEFINED {
+        (Home::Slot(m, i), st.functions[i].bits())
+    } else {
+        let at = st.first + i;
+        (Home::List(list, at), object::list_get(list, at))
+    };
+    Some((home, core::ptr::from_ref(info), f))
 }
 
-/// The function object of builtin `id` in this realm, made on first use (a GC point then).
-/// Panics if no installed module has `id`.
+/// The function object of builtin `id` in the realm being installed (the current realm), made
+/// on first use (a GC point then). Panics if no installed module has `id`.
 pub(crate) fn function_object(rt: &Runtime, id: BuiltinId) -> u64 {
-    let (m, info, f) = lookup(rt, id).unwrap_or_else(|| panic!("no builtin {id}"));
+    let (home, info, f) = lookup(rt, id).unwrap_or_else(|| panic!("no builtin {id}"));
     if f != UNDEFINED {
         return f;
     }
-    // GC point; no borrow is held (W4-GC-RULES).
+    // GC point; no borrow is held (W4-GC-RULES). The install list is a root.
     let f = object::new_function(rt, info, UNDEFINED);
-    // E3: a store into a root slot takes no barrier.
-    rt.builtins.modules.borrow()[m].functions[usize::from(id.index())].init(val(f));
+    match home {
+        // E3: a store into a root slot takes no barrier.
+        Home::Slot(m, i) => rt.builtins.modules.borrow()[m].functions[i].init(val(f)),
+        Home::List(list, at) => object::list_set(rt, list, at, f),
+    }
     f
 }
 
-/// The function object of builtin `id` if the realm has made it (no allocation): the "is
-/// this still the intrinsic?" test of the iteration fast paths (`interp/slow/iter.rs`).
+/// The function object of builtin `id` if it was made and belongs to the current realm (no
+/// allocation): the "is this still the intrinsic?" test of the fast paths
+/// (`interp/slow/iter.rs`, `property.rs`, `natives.rs`). It knows the first realm's function
+/// objects only ([`BuiltinState`]): in a later realm it gives `None`, so those fast paths
+/// take their spec steps there, and a function of another realm never passes the test.
 pub(crate) fn existing_function(rt: &Runtime, id: BuiltinId) -> Option<u64> {
     lookup(rt, id)
         .map(|(_, _, f)| f)
-        .filter(|&f| f != UNDEFINED)
+        .filter(|&f| f != UNDEFINED && object::function_realm(f) == rt.root(Root::Realm))
 }
 
 /// Installs the tables that [`prepare`] registered: (1) the function object of every
 /// definition, (2) the intrinsics the modules make, then the `[[Prototype]]` of
-/// %GeneratorFunction% and %AsyncFunction% (%Function%) and of the native errors (%Error%),
+/// %GeneratorFunction%, %AsyncFunction% and %AsyncGeneratorFunction% (%Function%) and of the
+/// native errors (%Error%),
 /// (3) the properties. Walk order: VM table,
 /// then the embedder's; modules, then entries, in order. Runs after `realm::init`.
 pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
@@ -1153,11 +1362,15 @@ pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
             }
         }
     }
-    // §27.3.2, §27.7.2: the [[Prototype]] of %GeneratorFunction% and %AsyncFunction% is
-    // %Function%. A table gives a builtin's function object %Function.prototype% only. GC
-    // point (dictionary mode, OM-10): the intrinsics are roots.
+    // §27.3.2, §27.7.2, §27.4.2: the [[Prototype]] of %GeneratorFunction%, %AsyncFunction%
+    // and %AsyncGeneratorFunction% is %Function%. A table gives a builtin's function object
+    // %Function.prototype% only. GC point (dictionary mode, OM-10): the intrinsics are roots.
     let function = intrinsic(rt, IntrinsicId::Function);
-    for id in [IntrinsicId::GeneratorFunction, IntrinsicId::AsyncFunction] {
+    for id in [
+        IntrinsicId::GeneratorFunction,
+        IntrinsicId::AsyncFunction,
+        IntrinsicId::AsyncGeneratorFunction,
+    ] {
         let c = intrinsic(rt, id);
         if !is_object(function)
             || !is_object(c)
@@ -1381,6 +1594,16 @@ mod tests {
     fn keys_compare_by_text_and_symbol() {
         assert!(PropKey::Atom(Atom::Length).same(&PropKey::Str("length")));
         assert!(!PropKey::Str("iterator").same(&PropKey::Symbol(WellKnownSymbol::ITERATOR)));
+        assert!(!PropKey::Symbol(WellKnownSymbol::ITERATOR).same(&PropKey::Str("iterator")));
+        assert!(!PropKey::Atom(Atom::Length).same(&PropKey::Str("name")));
+        assert!(
+            PropKey::Symbol(WellKnownSymbol::ITERATOR)
+                .same(&PropKey::Symbol(WellKnownSymbol::ITERATOR))
+        );
+        assert!(
+            !PropKey::Symbol(WellKnownSymbol::ITERATOR)
+                .same(&PropKey::Symbol(WellKnownSymbol::ASYNC_ITERATOR))
+        );
         assert_eq!(
             PropKey::Symbol(WellKnownSymbol::ITERATOR).text(),
             "[Symbol.iterator]"

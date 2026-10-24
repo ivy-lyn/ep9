@@ -1,14 +1,39 @@
-; ep9 bytecode, ABI 4
-unit kind=module strict=true ts=[useDefineForClassFields=false, experimentalDecorators=true, emitDecoratorMetadata=true] source_len=88 source=embedded hints=4 bytes
-source_hash=39cd0d46a4af26b37224612e98597ac24a49a0b169faff8cbe6532ce76fbd080
-strings (3):
+; ep9 bytecode, ABI 5
+unit kind=module strict=true ts=[useDefineForClassFields=false, experimentalDecorators=true, emitDecoratorMetadata=true] source_len=243 source=embedded hints=4 bytes
+source_hash=5936d4dc3f7f5837d5da4b389f074b02d9e5da1e0d85dbf0087e3a479e04f983
+strings (12):
   str0 "big"
   str1 "f"
   str2 "x"
+  str3 "./m.js"
+  str4 "./n.js"
+  str5 "type"
+  str6 "json"
+  str7 "default"
+  str8 "d"
+  str9 "ns"
+  str10 "e"
+  str11 "all"
 scopes (2):
   scope0 module outer=- flags=[needs-context,strict] slots=["big":const, "f":function]
   scope1 function outer=scope0 flags=[needs-context,strict] slots=["x":var]
-function f0 module name=- parent=- outer_scope=- flags=[strict] params=0 length=0 regs=0 range=0..88
+module records: has-tla=false
+  requests (2):
+      0 "./m.js" attributes=[]
+      1 "./n.js" attributes=["type": "json"]
+  imports (2):
+      0 request=0 import="default" local="d" cell=-1
+      1 request=0 import=namespace local="ns" cell=-2
+  local exports (3):
+      0 export="ns" local="ns" cell=-2
+      1 export="big" local="big" cell=1
+      2 export="f" local="f" cell=2
+  indirect exports (2):
+      0 export="e" request=0 import="default"
+      1 export="all" request=1 import=all
+  star exports (1):
+      0 request=1
+function f0 module name=- parent=- outer_scope=- flags=[strict] params=0 length=0 regs=0 range=0..243
   code (18 bytes):
       0    CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
       4    StaModuleVariable [2], [0]                   ; 20 02 00
@@ -22,8 +47,8 @@ function f0 module name=- parent=- outer_scope=- flags=[strict] params=0 length=
       0 CreateClosure
   handlers (0):
   positions (1):
-      7 S 0 (1:1)
-function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[strict,async,simple-params] params=1 length=1 regs=302 range=34..87
+      7 S 155 (5:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[strict,async,simple-params] params=1 length=1 regs=302 range=189..242
   code (22 bytes):
       0    CreateFunctionContext k0, [1]  ; k0 = Scope scope1 ; 75 00 01
       3    PushContext r0                               ; 13 00
@@ -40,8 +65,8 @@ function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[strict,async,sim
       0 CreateClosure
   handlers (0):
   positions (1):
-      9 S 64 (2:38)
-function f2 arrow name=- parent=f1 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=1 range=71..84
+      9 S 219 (6:38)
+function f2 arrow name=- parent=f1 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=1 range=226..239
   code (11 bytes):
       0 S> LdaModuleVariable [1], [1]                   ; 1f 01 01
       3    Star r0                                      ; 0c 00
@@ -53,4 +78,4 @@ function f2 arrow name=- parent=f1 outer_scope=scope1 flags=[strict,simple-param
       0 BinaryOp
   handlers (0):
   positions (1):
-      0 S 77 (2:51)
+      0 S 232 (6:51)

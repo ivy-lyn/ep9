@@ -103,6 +103,13 @@ pub(crate) struct FnGen<'a, 's> {
     spans: Vec<u32>,
     /// The generator state of a generator function body (`generator.rs`); `None` elsewhere.
     pub(crate) generator: Option<super::generator::GenState>,
+    /// The start offset of the last statement position set ([`FnGen::stmt_pos`]): the
+    /// `return` statement that [`FnGen::perform`] completes (`async_gen.rs` AGF4).
+    last_stmt: u32,
+    /// Function 0 of sloppy eval code: each var binding of an Annex B block function
+    /// (B.3.2.3) and the register that holds what `DeclareEvalAnnexBFunction` answered for it
+    /// (`gen_eval_program`; `stmt.rs` `store_annex_b_var` reads it).
+    pub(crate) eval_annex_b: Vec<(BindingId, Register)>,
 }
 
 impl<'a, 's> FnGen<'a, 's> {
@@ -132,6 +139,8 @@ impl<'a, 's> FnGen<'a, 's> {
             depth: 0,
             spans: Vec::new(),
             generator: None,
+            last_stmt: u32::MAX,
+            eval_annex_b: Vec::new(),
         }
     }
 
@@ -168,6 +177,7 @@ impl<'a, 's> FnGen<'a, 's> {
     }
 
     pub(crate) fn stmt_pos(&mut self, span: Span) {
+        self.last_stmt = span.start;
         self.b.set_statement_position(span.start);
     }
 
@@ -339,7 +349,7 @@ impl<'a, 's> FnGen<'a, 's> {
             if info.is_generator {
                 self.check_generator(info.is_async, span)?;
             } else if info.is_async {
-                return self.unsupported("async functions", span);
+                self.async_closure(span)?;
             }
             self.enter(span)?;
             let k = self.b.function_constant(ep9_bytecode::FunctionId(f.0));
@@ -416,11 +426,11 @@ impl<'a, 's> FnGen<'a, 's> {
         }
     }
 
-    /// `acc = new.target` from the frame. In a generator body `new.target` is undefined (a
-    /// generator is never constructed), and fp-3 of a resumed frame holds the generator object
-    /// (FRAME 2), so the body loads undefined instead.
+    /// `acc = new.target` from the frame. In a generator or async function body `new.target`
+    /// is undefined (neither is ever constructed), and fp-3 of a resumed frame holds the
+    /// generator object (FRAME 2), so the body loads undefined instead.
     fn load_new_target(&mut self) {
-        if self.info.is_generator {
+        if self.info.is_generator || self.info.is_async {
             self.b.lda_undefined();
         } else {
             self.b.lda_new_target();
@@ -758,8 +768,19 @@ impl<'a, 's> FnGen<'a, 's> {
         })
     }
 
-    /// Leave statements by `cmd`: pop contexts, run finally blocks, then jump or return.
+    /// Leave statements by `cmd` for a `break`, `continue` or `return` statement: in an async
+    /// generator, `return Expression;` first awaits the value in the accumulator (§14.10.1
+    /// step 3; `async_gen.rs` AGF4); then [`FnGen::perform_now`].
     pub(crate) fn perform(&mut self, cmd: Command) {
+        if cmd == Command::Return {
+            self.await_return_statement(self.last_stmt);
+        }
+        self.perform_now(cmd);
+    }
+
+    /// Leave statements by `cmd`: pop contexts, run finally blocks, then jump or return. The
+    /// completion value of a return is in the accumulator, as it is (no await).
+    pub(crate) fn perform_now(&mut self, cmd: Command) {
         let stop = match cmd {
             Command::Break(i) | Command::Continue(i) => i + 1,
             Command::Return => 0,
@@ -825,8 +846,17 @@ impl<'a, 's> FnGen<'a, 's> {
     }
 
     /// Return the accumulator from this function (derived constructors: `undefined` returns
-    /// the checked `this`).
+    /// the checked `this`; an async function resolves its promise first, `async_fn.rs` AF4;
+    /// an async generator completes its first request, `async_gen.rs`).
     pub(crate) fn emit_return(&mut self) {
+        if let Some(object) = self.async_object() {
+            self.async_return(object);
+            return;
+        }
+        if let Some(object) = self.async_generator_object() {
+            self.async_generator_return(object);
+            return;
+        }
         if self.info.kind.is_derived_constructor() {
             let this_check = self.b.new_label();
             self.b.jump_if_undefined(this_check);
@@ -900,7 +930,7 @@ impl<'a, 's> FnGen<'a, 's> {
             if cmd == Command::Return {
                 self.b.ldar(value);
             }
-            self.perform(cmd);
+            self.perform_now(cmd);
         }
         self.b.bind(after);
         self.release(m);
@@ -916,33 +946,27 @@ impl<'a, 's> FnGen<'a, 's> {
 
     // ---- Function bodies ----
 
-    /// Function 0 of a script or module.
+    /// Function 0 of a script (a module's is `module.rs` `gen_module_program`).
     pub(crate) fn gen_program(&mut self, program: &'a Program<'a>) -> Gen {
         let root = ScopeId(0);
         self.scope = root;
         let root_info = self.sa.scope(root);
-        if self.cx.module {
-            if root_info.needs_context {
-                self.push_context(root, |g| g.create_context(root));
-            }
-        } else {
-            let has_decls = root_info.bindings.iter().any(|&b| {
-                matches!(
-                    self.binding(b).location,
-                    BindingLocation::Global | BindingLocation::GlobalLexical
-                )
+        let has_decls = root_info.bindings.iter().any(|&b| {
+            matches!(
+                self.binding(b).location,
+                BindingLocation::Global | BindingLocation::GlobalLexical
+            )
+        });
+        if has_decls {
+            self.b.set_statement_position(0);
+            self.runtime(RuntimeId::DeclareGlobals, RegisterList::EMPTY);
+        }
+        if let Some(extra) = self.cx.script_ctx_scope {
+            let n = root_info.context_slots.len() as u32;
+            self.push_context(root, |g| {
+                let k = g.b.scope_constant(extra);
+                g.b.create_function_context(k, n);
             });
-            if has_decls {
-                self.b.set_statement_position(0);
-                self.runtime(RuntimeId::DeclareGlobals, RegisterList::EMPTY);
-            }
-            if let Some(extra) = self.cx.script_ctx_scope {
-                let n = root_info.context_slots.len() as u32;
-                self.push_context(root, |g| {
-                    let k = g.b.scope_constant(extra);
-                    g.b.create_function_context(k, n);
-                });
-            }
         }
         self.init_frame_bindings()?;
         self.init_holes(root);
@@ -986,6 +1010,29 @@ impl<'a, 's> FnGen<'a, 's> {
         Ok(())
     }
 
+    /// ABI 5 (P0-D16): the mapped-parameter list of a function with a mapped arguments object:
+    /// for formal parameter `i`, its context slot in the function scope `fs`, or none when a
+    /// later parameter of the same name binds that name (CreateMappedArgumentsObject maps only
+    /// the last one). Mapped parameters always live in `fs`'s context
+    /// (`ContextReason::MappedArguments`). The VM reads the list from M3-P2 (VM-ARGS).
+    fn set_mapped_parameters(&mut self, fs: ScopeId) -> Gen {
+        let mut slots = Vec::with_capacity(self.info.params.len());
+        for p in &self.info.params {
+            slots.push(match p.binding.map(|b| self.binding(b).location) {
+                None => None,
+                Some(BindingLocation::Context { scope, slot }) if scope == fs => Some(slot),
+                Some(other) => {
+                    return Err(super::internal(format!(
+                        "mapped parameter not in its function context: {other:?}"
+                    )));
+                }
+            });
+        }
+        let unit_scope = self.cx.unit_scope(fs);
+        self.b.set_mapped_parameters(unit_scope, slots);
+        Ok(())
+    }
+
     /// FunctionDeclarationInstantiation, then the body. `params` and `body` are the AST.
     pub(crate) fn prologue_and_params(&mut self, params: &'a FormalParameters<'a>) -> Gen {
         let info = self.info;
@@ -1022,6 +1069,7 @@ impl<'a, 's> FnGen<'a, 's> {
         // 5. The arguments object (before parameter initialization).
         if let Some(a) = info.arguments {
             if info.mapped_arguments {
+                self.set_mapped_parameters(fs)?;
                 self.b.create_mapped_arguments();
             } else {
                 self.b.create_unmapped_arguments();
@@ -1090,7 +1138,7 @@ impl<'a, 's> FnGen<'a, 's> {
             return self.gen_generator(node);
         }
         if node.r#async {
-            return self.unsupported("async functions", node.span);
+            return self.gen_async_function(node);
         }
         self.scope = self.info.outer_scope.unwrap_or(self.info.scope);
         // A base class constructor runs the field initializers before its parameters.
@@ -1110,7 +1158,7 @@ impl<'a, 's> FnGen<'a, 's> {
     /// An arrow function.
     pub(crate) fn gen_arrow(&mut self, node: &'a ArrowFunctionExpression<'a>) -> Gen {
         if node.r#async {
-            return self.unsupported("async functions", node.span);
+            return self.gen_async_arrow(node);
         }
         self.scope = self.info.outer_scope.unwrap_or(self.info.scope);
         self.prologue_and_params(&node.params)?;
@@ -1193,9 +1241,8 @@ impl<'a, 's> FnGen<'a, 's> {
     ) -> Gen<crate::scope::FunctionId> {
         if node.generator {
             self.check_generator(node.r#async, node.span)?;
-        }
-        if node.r#async {
-            return self.unsupported("async functions", node.span);
+        } else if node.r#async {
+            self.async_closure(node.span)?;
         }
         let id = self.function_id(node.span)?;
         self.jobs.push(Job::Function { node, id, name });

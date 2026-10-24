@@ -29,7 +29,7 @@
 //! | F2 | (a) and (b) run the parser and the depth layers only, not oxc_semantic | (c) has the same parameters and the same body in the same place, so oxc_semantic on (c) reports every early error of (a) and (b); a token cannot cross a part's end in (c) unless it does in (a) or (b) (each part is followed by the same `\n`) |
 //! | F3 | (c) goes through [`compile_eval`](crate::compile_eval) with `EvalContext::default()` (indirect, sloppy): a `CodeKind::Eval` unit whose function 0 returns the completion value (E5), run by the VM as global code (D8) | A Script unit's function 0 ends in `LdaUndefined; Return`; indirect eval is global code over the global env, which is the env of CreateDynamicFunction |
 //! | F4 | (c) wraps the function in `({anonymous: ...}).anonymous`, not `(function anonymous(...) {...})` | A named function expression binds its own name inside its body; CreateDynamicFunction does not (OrdinaryFunctionCreate over the global env, then SetFunctionName(F, "anonymous")). node 24: `new Function("return typeof anonymous")()` is `"undefined"`. The property value gets the name `anonymous` by NamedEvaluation and stays an ordinary function expression (a constructor with a `prototype`, no home object) |
-//! | F5 | The Async and AsyncGenerator kinds run the same checks; BytecodeGen then answers `Unsupported` ("async functions"; "generator functions" for an async generator, GEN6) | A text that is not valid for the kind is a SyntaxError today; a valid one is "not built yet", never a SyntaxError (D7) |
+//! | F5 | The Async and AsyncGenerator kinds run the same checks. An async function compiles (M3-P1 ASYNC); an async generator compiles (M3-P2 ASYNCGEN; before, BytecodeGen answered `Unsupported`, "generator functions") | A text that is not valid for the kind is a SyntaxError; a valid one compiles (D7) |
 //! | F6 | Error messages and positions refer to the wrapper text | The VM throws the message only (`CompileFailure`) |
 
 use ep9_bytecode::{EvalContext, FunctionCtorKind, VerifiedUnit};
@@ -54,8 +54,8 @@ use crate::{
 ///
 /// See [`CodegenError`]: a SyntaxError when `params` alone is not a parameter list, when `body`
 /// alone is not a function body, or for an early error of the whole function; a RangeError for
-/// nesting above the depth caps; [`CodegenError::Unsupported`] for the async kinds and for every
-/// construct that BytecodeGen v0 does not support.
+/// nesting above the depth caps; [`CodegenError::Unsupported`] for every construct that
+/// BytecodeGen v0 does not support.
 pub fn compile_function_ctor(
     kind: FunctionCtorKind,
     params: &str,
@@ -291,13 +291,16 @@ mod tests {
         assert_eq!(e.first().message, "Arg string terminates parameters early");
     }
 
-    /// F5: the async kinds check the text, then answer Unsupported.
+    /// F5: the async kinds check the text; an async function and an async generator compile
+    /// (M3-P2 ASYNCGEN).
     #[test]
-    fn async_kinds_are_unsupported_after_the_checks() {
+    fn async_kinds_check_the_text_and_compile() {
         let r = compile(FunctionCtorKind::Async, "a", "return await a");
-        assert_eq!(outcome(&r), "unsupported: async functions");
+        assert_eq!(outcome(&r), "ok");
         let r = compile(FunctionCtorKind::AsyncGenerator, "", "yield await 1");
-        assert_eq!(outcome(&r), "unsupported: generator functions");
+        assert_eq!(outcome(&r), "ok");
+        let r = compile(FunctionCtorKind::AsyncGenerator, "a = await 1", "");
+        assert_eq!(outcome(&r), "SyntaxError");
         let r = compile(FunctionCtorKind::Async, "", "}); (async function(){");
         assert_eq!(outcome(&r), "SyntaxError");
     }

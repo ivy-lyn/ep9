@@ -127,7 +127,7 @@ pub(crate) fn stack_lines(rt: &Runtime, frames: &[StackFrame]) -> String {
 }
 
 /// "Name: message" of an error object, without running JS: a `name` or `message` accessor
-/// counts as absent (`property::get_data_from`).
+/// counts as absent, and a routed object's hooks are not asked (`property::get_data_from`).
 pub(crate) fn error_header(cx: &mut Cx, e: u64) -> String {
     let rt = cx.rt();
     let read = |cx: &mut Cx, a: Atom| -> String {

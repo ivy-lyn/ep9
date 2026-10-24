@@ -15,8 +15,9 @@
 //! | (g) | an object held only in a (b) callee-saved register survives a GC; a masked one is collected | the (b) probe ([`crate::jit_b::hold_probe`]) under `call_from_rust` |
 //! | (h) | a panic in a runtime function called from (b) code aborts | a child process: SIGABRT (unix) or 0xC0000409 (Windows) |
 //!
-//! On a target without the (b) code generator (x86-64: not built, a stretch of the plan) every
-//! check prints SKIP with the `Refusal` text and passes.
+//! The (b) code generator is built for AArch64 and x86-64 (M3-P0 P0-B-X64), so every check
+//! runs on both. Only a target with no generator (`Arch::HOST` is `None`) prints SKIP with the
+//! `Refusal` text; `gate.sh b` fails on a SKIP line on aarch64 and x86_64 (P0-D9).
 
 use std::cell::RefCell;
 use std::process::ExitCode;
@@ -83,11 +84,15 @@ const STACK: usize = if cfg!(debug_assertions) {
     8 << 20
 };
 
-/// Why the checks do not run on this target, if they do not.
+/// Why the checks do not run on this target, if they do not: only when the build has no
+/// emitter architecture at all ([`BEmitter`] builds both).
 fn refusal() -> Option<Refusal> {
     match Arch::HOST {
-        Some(a) if BEmitter::builds(a) => None,
-        _ => Some(Refusal::Arch),
+        Some(a) => {
+            debug_assert!(BEmitter::builds(a));
+            None
+        }
+        None => Some(Refusal::Arch),
     }
 }
 

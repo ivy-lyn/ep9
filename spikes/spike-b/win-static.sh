@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
-# Spike B Win64 static check (P4-WIN-STATIC-1; H28): the UNWIND_INFO that placement (a)'s
-# x86-64 JIT emits, read back by LLVM's tools, on a host that is not Windows (made for mac a64).
+# Spike B Win64 static check (P4-WIN-STATIC-1; H28): the UNWIND_INFO that the x86-64 JIT code
+# of placement (a) and placement (b) carries (M3-P0 P0-B-X64), read back by LLVM's tools, on a
+# host that is not Windows (made for mac a64).
 # The real Windows run is tests/win64_unwind.rs on the CI windows-x64 runner. Exit 0 only if
 # every step that runs passes.
 #
 #   1  build tests/win64_unwind.rs for the host with `--cfg win64_static` (`cargo rustc`: only
 #      the test crate gets the cfg; a normal build compiles the file to nothing)
 #   2  run it: x86-64 code of `drive` and `id` (SpikeEmitter::new(Arch::X86_64)) and of `hold`
-#      (jit::hold_probe), made on this host, go into a hand-built COFF object (.text, .xdata
-#      with each UNWIND_INFO, .pdata with one RUNTIME_FUNCTION each) plus functions.txt
+#      (jit::hold_probe), then the placement (b) code of the same three (BEmitter::new,
+#      jit_b::hold_probe; named bdrive, bid, bhold), made on this host, go into a hand-built
+#      COFF object (.text, .xdata with each UNWIND_INFO, .pdata with one RUNTIME_FUNCTION
+#      each) plus functions.txt
 #   3  `llvm-readobj --unwind` (the toolchain's llvm-tools) on that object equals the golden
-#      below; each EndAddress equals the function's code length
+#      below (6 RuntimeFunctions); each EndAddress equals the function's code length
 #   4  control: `llvm-mc -triple=x86_64-pc-windows-msvc` assembles each prologue shape with
-#      `.seh_*` directives; its unwind codes equal the JIT's, and its bytes equal the JIT
-#      prologue and epilogue bytes. SKIP when no llvm-mc is found
+#      `.seh_*` directives and its epilogue (`ret` for (a); `rex64 jmp qword ptr [rdi +
+#      8*rax]` for (b)); its unwind codes equal the JIT's, and its bytes equal the JIT
+#      prologue and epilogue bytes. Then `llvm-objdump -d` of the (b) functions: no `ret`
+#      anywhere, and the exit jump is the only indirect jump. SKIP when no llvm-mc is found
 #   5  `cargo xwin build --tests` and `cargo xwin clippy` for x86_64-pc-windows-msvc (an early
 #      warning: it compiles the Windows test; it cannot run it). SKIP without cargo-xwin
 #
@@ -55,6 +60,7 @@ tool() { # name: the toolchain's llvm-tools copy, then PATH
 }
 readobj="$(tool llvm-readobj)"
 objcopy="$(tool llvm-objcopy)"
+objdump="$(tool llvm-objdump)"
 
 # The `llvm-readobj --unwind` text of win64-jit.obj. EndAddress offsets are replaced by LEN;
 # step 3 checks them against the code lengths in functions.txt.
@@ -126,25 +132,95 @@ UnwindInformation [
       ]
     }
   }
+  RuntimeFunction {
+    StartAddress: bdrive (0x24)
+    EndAddress: bdrive +LEN (0x28)
+    UnwindInfoAddress: .xdata +0x28 (0x2C)
+    UnwindInfo {
+      Version: 1
+      Flags [ (0x0)
+      ]
+      PrologSize: 10
+      FrameRegister: RBP (0x5)
+      FrameOffset: 0x1
+      UnwindCodeCount: 4
+      UnwindCodes [
+        0x0A: SET_FPREG reg=RBP, offset=0x10
+        0x05: PUSH_NONVOL reg=R13
+        0x03: PUSH_NONVOL reg=R15
+        0x01: PUSH_NONVOL reg=RBP
+      ]
+    }
+  }
+  RuntimeFunction {
+    StartAddress: bid (0x30)
+    EndAddress: bid +LEN (0x34)
+    UnwindInfoAddress: .xdata +0x34 (0x38)
+    UnwindInfo {
+      Version: 1
+      Flags [ (0x0)
+      ]
+      PrologSize: 10
+      FrameRegister: RBP (0x5)
+      FrameOffset: 0x1
+      UnwindCodeCount: 4
+      UnwindCodes [
+        0x0A: SET_FPREG reg=RBP, offset=0x10
+        0x05: PUSH_NONVOL reg=R13
+        0x03: PUSH_NONVOL reg=R15
+        0x01: PUSH_NONVOL reg=RBP
+      ]
+    }
+  }
+  RuntimeFunction {
+    StartAddress: bhold (0x3C)
+    EndAddress: bhold +LEN (0x40)
+    UnwindInfoAddress: .xdata +0x40 (0x44)
+    UnwindInfo {
+      Version: 1
+      Flags [ (0x0)
+      ]
+      PrologSize: 13
+      FrameRegister: RBP (0x5)
+      FrameOffset: 0x2
+      UnwindCodeCount: 6
+      UnwindCodes [
+        0x0D: SET_FPREG reg=RBP, offset=0x20
+        0x08: PUSH_NONVOL reg=R12
+        0x06: PUSH_NONVOL reg=RBX
+        0x05: PUSH_NONVOL reg=R13
+        0x03: PUSH_NONVOL reg=R15
+        0x01: PUSH_NONVOL reg=RBP
+      ]
+    }
+  }
 ]
 EOF
 }
 
-# The control prologues, by shape "<pushes (Win64 register numbers)>/<lea rbp displacement>"
-# (functions.txt columns 4 and 5): the same frame written with .seh_* directives, and the
-# canonical epilogue the Win64 unwinder recognizes (lea rsp, [rbp - d]; pops; ret).
+# The control prologues, by shape "<pushes (Win64 register numbers)>/<lea rbp displacement>/
+# <exit>" (functions.txt columns 4, 5 and 10): the same frame written with .seh_* directives,
+# and the canonical epilogue the Win64 unwinder recognizes: lea rsp, [rbp - d]; the pops; then
+# `ret`, or for placement (b) the indirect jump with REX.W (the form LLVM emits for a Win64
+# indirect tail call: the unwinder takes an indirect `jmp` as an epilogue end only with REX.W
+# or as `jmp [rip + disp32]`).
 control_source() { # shape
-  local pro epi setframe
-  case "$1" in
+  local pro epi setframe exit
+  case "${1##*/}" in
+    ret) exit="ret" ;;
+    jmp) exit="rex64 jmp qword ptr [rdi + 8*rax]" ;;
+    *) return 1 ;;
+  esac
+  case "${1%/*}" in
     5,15,13/16)
       pro="push rbp|.seh_pushreg rbp|push r15|.seh_pushreg r15|push r13|.seh_pushreg r13"
-      epi="lea rsp, [rbp - 16]|pop r13|pop r15|pop rbp|ret"
+      epi="lea rsp, [rbp - 16]|pop r13|pop r15|pop rbp|$exit"
       setframe="lea rbp, [rsp + 16]|.seh_setframe rbp, 16"
       ;;
     5,15,13,3,12/32)
       pro="push rbp|.seh_pushreg rbp|push r15|.seh_pushreg r15|push r13|.seh_pushreg r13"
       pro="$pro|push rbx|.seh_pushreg rbx|push r12|.seh_pushreg r12"
-      epi="lea rsp, [rbp - 32]|pop r12|pop rbx|pop r13|pop r15|pop rbp|ret"
+      epi="lea rsp, [rbp - 32]|pop r12|pop rbx|pop r13|pop r15|pop rbp|$exit"
       setframe="lea rbp, [rsp + 32]|.seh_setframe rbp, 32"
       ;;
     *) return 1 ;;
@@ -232,9 +308,9 @@ if [ -z "$mc" ]; then
   done
 fi
 control_check() {
-  local name pushes disp pro epi shape ok=0 n=0
-  while read -r name _ _ pushes disp _ pro epi _; do
-    shape="$pushes/$disp"
+  local name pushes disp pro epi exit shape ok=0 n=0
+  while read -r name _ _ pushes disp _ pro epi _ exit; do
+    shape="$pushes/$disp/$exit"
     local s="$out/control-$name.s" o="$out/control-$name.obj"
     if ! control_source "$shape" >"$s"; then
       echo "$name: no control prologue for shape $shape" >&2
@@ -269,12 +345,44 @@ control_check() {
     fi
     n=$((n + 1))
   done <"$out/functions.txt"
-  [ "$ok" = 0 ] && echo "llvm-mc control: $n functions, unwind codes and prologue/epilogue bytes equal"
+  # Placement (b): the whole code of each b* function, disassembled. No `ret` at any
+  # instruction, and its one indirect jump is the exit jump.
+  local dis="$out/disasm-b.txt" body nb=0
+  if ! "$objdump" -d --no-show-raw-insn -M intel "$out/win64-jit.obj" >"$dis"; then
+    echo "llvm-objdump failed on win64-jit.obj" >&2
+    ok=1
+  fi
+  while read -r name _; do
+    case "$name" in b*) ;; *) continue ;; esac
+    body="$(awk -v n="<$name>:" '$2 == n { on = 1; next } /^[0-9a-f]+ <.*>:$/ { on = 0 } on' "$dis")"
+    if [ -z "$body" ]; then
+      echo "$name: not in the llvm-objdump output" >&2
+      ok=1
+      continue
+    fi
+    if grep -qwE 'ret[lq]?' <<<"$body"; then
+      echo "$name: a ret in placement (b) code:" >&2
+      grep -wE 'ret[lq]?' <<<"$body" >&2
+      ok=1
+    fi
+    if [ "$(grep -cE 'jmp[[:space:]]+qword ptr' <<<"$body")" != 1 ] ||
+      ! grep -qF 'jmp	qword ptr [rdi + 8*rax]' <<<"$body"; then
+      echo "$name: want exactly one indirect jump, jmp qword ptr [rdi + 8*rax]:" >&2
+      grep -E 'jmp[[:space:]]+qword' <<<"$body" >&2
+      ok=1
+    fi
+    nb=$((nb + 1))
+  done <"$out/functions.txt"
+  if [ "$nb" != 3 ]; then
+    echo "$nb placement (b) functions in functions.txt, want 3" >&2
+    ok=1
+  fi
+  [ "$ok" = 0 ] && echo "llvm-mc control: $n functions, unwind codes and prologue/epilogue bytes equal; llvm-objdump: no ret in the $nb (b) functions, one exit jump each"
 }
 if [ -z "$mc" ] || [ ! -x "$mc" ]; then
   record "llvm-mc-control" SKIP "no llvm-mc (set LLVM_MC)"
-elif [ ! -s "$out/readobj.txt" ] || [ -z "$objcopy" ]; then
-  record "llvm-mc-control" FAIL "no readobj output or no llvm-objcopy"
+elif [ ! -s "$out/readobj.txt" ] || [ -z "$objcopy" ] || [ -z "$objdump" ]; then
+  record "llvm-mc-control" FAIL "no readobj output, no llvm-objcopy or no llvm-objdump"
 else
   echo "llvm-mc: $mc ($("$mc" --version | sed -n 's/.*LLVM version /LLVM /p' | head -1))"
   run "llvm-mc-control" control_check

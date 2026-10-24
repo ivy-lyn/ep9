@@ -1,0 +1,9 @@
+outer start
+inner start 1
+after call
+inner end 1
+outer got 2
+inner start 2
+inner end 2
+outer got 4
+result 4

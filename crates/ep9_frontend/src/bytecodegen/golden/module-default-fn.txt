@@ -1,26 +1,43 @@
 # module-default-fn: module
 # | export default function () { return 1; }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=module strict=true ts=none source_len=40 source=embedded hints=none
 source_hash=878937b9594561e598a3c40c4d1bf320fb5bbd31fa6140fbe83215e7f4037a79
-strings (1):
+strings (2):
   str0 "default"
+  str1 "*default*"
 scopes (2):
   scope0 module outer=- flags=[strict] slots=[]
   scope1 function outer=scope0 flags=[strict] slots=[]
-function f0 module name=- parent=- outer_scope=- flags=[strict] params=0 length=0 regs=0 range=0..40
-  code (9 bytes):
-      0 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
-      4    StaModuleVariable [1], [0]                   ; 20 01 00
-      7    LdaUndefined                                 ; 05
-      8    Return                                       ; 92
-  constants (1):
-      0 Function f1
+module records: has-tla=false
+  requests (0):
+  imports (0):
+  local exports (1):
+      0 export="default" local="*default*" cell=1
+  indirect exports (0):
+  star exports (0):
+function f0 module name=- parent=- outer_scope=- flags=[strict,async] params=0 length=0 regs=2 range=0..40
+  code (29 bytes):
+      0    Ldar <this>                                  ; 0b ff
+      2    Star r0                                      ; 0c 00
+      4    LdaUndefined                                 ; 05
+      5    Star <this>                                  ; 0c ff
+      7    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+3, +16] ; 99 00 00
+     10 E> CreateClosure k1, s0, #0x00  ; k1 = Function f1 ; 74 01 00 00
+     14    StaModuleVariable [1], [0]                   ; 20 01 00
+     17    LdaUndefined                                 ; 05
+     18    SuspendGenerator r0, r0, [1]                 ; 9a 00 00 01 01
+     23    ResumeGenerator r0, r0                       ; 9b 00 00 01
+     27    LdaUndefined                                 ; 05
+     28    Return                                       ; 92
+  constants (2):
+      0 JumpTable [+3, +16]
+      1 Function f1
   feedback (1):
       0 CreateClosure
   handlers (0):
   positions (1):
-      0 E 15 (1:16)
+     10 E 15 (1:16)
 function f1 normal name="default" parent=f0 outer_scope=scope0 flags=[strict,simple-params] params=0 length=0 regs=0 range=15..40
   code (5 bytes):
       0 S> LdaSmi [1]                                   ; 04 01

@@ -1,5 +1,5 @@
-//! The global functions isNaN and isFinite (§19.2), and the key order of this crate's
-//! intrinsics.
+//! The global functions isNaN, isFinite and the URI functions (§19.2), Error.isError
+//! (§20.5.2.1), and the key order of this crate's intrinsics.
 //!
 //! The expected lines are node 24's output for the same script (`print` = the
 //! arguments' ToString joined by spaces). `common::run_both` runs each script with and
@@ -40,6 +40,112 @@ fn global_functions_and_bindings() {
             r#"print(typeof isNaN, isNaN.length, isNaN.name, isFinite.length, isFinite.name, globalThis.Number === Number, globalThis.Math === Math, typeof globalThis.String, typeof globalThis.Symbol, typeof globalThis.Boolean)"#
         ),
         lines(&["function 1 isNaN 1 isFinite true true function function function"])
+    );
+}
+
+/// encodeURI and encodeURIComponent (§19.2.6.3-5): the unescaped sets, UTF-8 escapes in
+/// upper case, surrogate pairs, lone surrogates (URIError), ToString first.
+#[test]
+fn encode_uri_functions() {
+    assert_eq!(
+        common::run_both(
+            r#"
+            function r(f) { try { return f(); } catch (e) { return e.name; } }
+            var all = '', i;
+            for (i = 32; i < 128; i++) all += String.fromCharCode(i);
+            print(encodeURI(all));
+            print(encodeURIComponent(all));
+            print(encodeURI('\u00e9\u0800\uffff\ud83d\ude00\u0000'), encodeURIComponent('\u07ff\ud800\udc00'));
+            print([r(() => encodeURI('\ud800')), r(() => encodeURI('a\udc00')), r(() => encodeURIComponent('\ud800x')), r(() => encodeURIComponent('\ude00\ud83d'))].join());
+            print(encodeURI(), encodeURIComponent(null), encodeURI(12.5), encodeURI({ toString: function () { return 'a b'; } }), encodeURI(''));
+            print(encodeURI.length, encodeURI.name, encodeURIComponent.length, encodeURIComponent.name);
+"#
+        ),
+        lines(&[
+            "%20!%22#$%25&'()*+,-./0123456789:;%3C=%3E?@ABCDEFGHIJKLMNOPQRSTUVWXYZ%5B%5C%5D%5E_%60abcdefghijklmnopqrstuvwxyz%7B%7C%7D~%7F",
+            "%20!%22%23%24%25%26'()*%2B%2C-.%2F0123456789%3A%3B%3C%3D%3E%3F%40ABCDEFGHIJKLMNOPQRSTUVWXYZ%5B%5C%5D%5E_%60abcdefghijklmnopqrstuvwxyz%7B%7C%7D~%7F",
+            "%C3%A9%E0%A0%80%EF%BF%BF%F0%9F%98%80%00 %DF%BF%F0%90%80%80",
+            "URIError,URIError,URIError,URIError",
+            "undefined null 12.5 a%20b ",
+            "1 encodeURI 1 encodeURIComponent",
+        ])
+    );
+}
+
+/// decodeURI and decodeURIComponent (§19.2.6.1-2, 6): decodeURI keeps the escapes of
+/// ";/?:@&=+$,#", hex in either case, multi-byte UTF-8, and a URIError for each malformed
+/// form (short escape, bad hex, a lone continuation byte, a bad lead byte, an overlong form,
+/// a surrogate, above U+10FFFF, a missing continuation).
+#[test]
+fn decode_uri_functions() {
+    assert_eq!(
+        common::run_both(
+            r#"
+            function r(f) { try { return f(); } catch (e) { return e.name; } }
+            print(decodeURI('%3B%2F%3F%3A%40%26%3D%2B%24%2C%23%20%41%7e%25'), decodeURIComponent('%3B%2F%3F%3A%40%26%3D%2B%24%2C%23%20%41%7e%25'));
+            print(decodeURI('%c3%A9%E0%A0%80%F0%9F%98%80') === '\u00e9\u0800\ud83d\ude00', decodeURIComponent('%EF%BF%BF%F4%8F%BF%BF') === '\uffff\udbff\udfff', decodeURI('%00').charCodeAt(0), decodeURI('\ud800%41') === '\ud800A');
+            print(['%', '%4', '%G0', '%0G', 'a%2', '%80', '%BF', '%C0%80', '%C1%BF', '%E0%80%80', '%ED%A0%80', '%F0%80%80%80', '%F4%90%80%80', '%F8%80%80%80%80', '%FF', '%C3', '%C3%41', '%C3A9', '%E0%A0', '%C3%%A9'].map(function (s) { return r(() => decodeURIComponent(s)); }).join());
+            print(decodeURI(), decodeURIComponent(null), decodeURI(12), decodeURI(''), decodeURI('%%41'.slice(1)));
+            var all = ''; for (var i = 0; i < 0x800; i += 7) all += String.fromCharCode(i);
+            print(decodeURIComponent(encodeURIComponent(all)) === all, decodeURI(encodeURI(all)) === all);
+            print(decodeURI.length, decodeURI.name, decodeURIComponent.length, decodeURIComponent.name);
+"#
+        ),
+        lines(&[
+            "%3B%2F%3F%3A%40%26%3D%2B%24%2C%23 A~% ;/?:@&=+$,# A~%",
+            "true true 0 true",
+            "URIError,URIError,URIError,URIError,URIError,URIError,URIError,URIError,URIError,URIError,URIError,URIError,URIError,URIError,URIError,URIError,URIError,URIError,URIError,URIError",
+            "undefined null 12  A",
+            "true true",
+            "1 decodeURI 1 decodeURIComponent",
+        ])
+    );
+}
+
+/// The global keys in V8's order (node 24 `Object.getOwnPropertyNames(globalThis)`, the
+/// names this crate's global module installs).
+#[test]
+fn global_function_key_order() {
+    assert_eq!(
+        common::run_both(
+            r#"
+            var want = ['decodeURI', 'decodeURIComponent', 'encodeURI', 'encodeURIComponent', 'isFinite', 'isNaN'];
+            print(Object.getOwnPropertyNames(globalThis).filter(function (k) { return want.indexOf(k) >= 0; }).join());
+"#
+        ),
+        lines(&["decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,isFinite,isNaN"])
+    );
+}
+
+/// Error.isError (§20.5.2.1): true for every object with [[ErrorData]] (each native error,
+/// AggregateError, a subclass instance, an error thrown by the VM; test262
+/// errors-other-realm.js covers another realm),
+/// false for primitives and for objects that only look like errors; length, name, {w, c}, no
+/// [[Construct]].
+#[test]
+fn error_is_error() {
+    assert_eq!(
+        common::run_both(
+            r#"
+            print(Error.isError(), Error.isError(undefined), Error.isError(null), Error.isError(1), Error.isError('Error'), Error.isError(true), Error.isError(Symbol()));
+            class E extends TypeError {}
+            var caught; try { null.x; } catch (e) { caught = e; }
+            print([new Error('x'), new TypeError(), RangeError(), new ReferenceError(), new SyntaxError(), new EvalError(), new URIError(), new AggregateError([]), new E(), caught].map(Error.isError).join());
+            var fake = { __proto__: Error.prototype, name: 'Error', message: '' };
+            fake[Symbol.toStringTag] = 'Error';
+            print([fake, Error.prototype, TypeError.prototype, Object.create(new Error()), {}, [], function () {}, Error].map(Error.isError).join());
+            var d = Object.getOwnPropertyDescriptor(Error, 'isError');
+            print(Error.isError.length, Error.isError.name, d.writable, d.enumerable, d.configurable);
+            try { new Error.isError(1); } catch (e) { print(e.name); }
+"#
+        ),
+        lines(&[
+            "false false false false false false false",
+            "true,true,true,true,true,true,true,true,true,true",
+            "false,false,false,false,false,false,false,false",
+            "1 isError true false true",
+            "TypeError",
+        ])
     );
 }
 
@@ -105,7 +211,18 @@ fn intrinsic_keys_follow_v8s_order() {
         ),
         (
             IntrinsicId::NumberPrototype,
-            s(&["constructor", "toString", "valueOf"]),
+            s(&[
+                "constructor",
+                "toExponential",
+                "toFixed",
+                "toPrecision",
+                "toString",
+                "valueOf",
+            ]),
+        ),
+        (
+            IntrinsicId::Error,
+            s(&["length", "name", "prototype", "isError"]),
         ),
         (IntrinsicId::Boolean, s(&["length", "name", "prototype"])),
         (
@@ -205,6 +322,10 @@ fn property_attributes() {
                 (IntrinsicId::GlobalObject, "Math"),
                 (IntrinsicId::GlobalObject, "isNaN"),
                 (IntrinsicId::GlobalObject, "isFinite"),
+                (IntrinsicId::GlobalObject, "decodeURI"),
+                (IntrinsicId::GlobalObject, "encodeURIComponent"),
+                (IntrinsicId::Error, "isError"),
+                (IntrinsicId::NumberPrototype, "toFixed"),
                 (IntrinsicId::GlobalObject, "parseFloat"),
                 (IntrinsicId::GlobalObject, "parseInt"),
                 (IntrinsicId::GlobalObject, "Reflect"),
@@ -269,6 +390,10 @@ fn property_attributes() {
         ("globalThis.Math", METHOD),
         ("globalThis.isNaN", METHOD),
         ("globalThis.isFinite", METHOD),
+        ("globalThis.decodeURI", METHOD),
+        ("globalThis.encodeURIComponent", METHOD),
+        ("%Error%.isError", METHOD),
+        ("%Number.prototype%.toFixed", METHOD),
         ("globalThis.parseFloat", METHOD),
         ("globalThis.parseInt", METHOD),
         ("globalThis.Reflect", METHOD),

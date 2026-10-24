@@ -16,8 +16,10 @@
 //! | `String.prototype[@@iterator]`, %StringIteratorPrototype%.next | §22.1.3.36, §22.1.5.2.1 |
 //! | `%Iterator.prototype%[@@iterator]`; `%Iterator.prototype%[@@toStringTag]` (an accessor: get "Iterator", set SetterThatIgnoresPrototypeProperties, ES2025) | §27.1.2.1, §27.1.4.14 |
 //! | `Function.prototype[@@hasInstance]` (OrdinaryHasInstance; `instanceof` runs it without a call, `property::instance_of`) | §20.2.3.6 |
-//! | `%GeneratorFunction%`, `%GeneratorPrototype%` `next`/`return`/`throw`, `%AsyncFunction%` (`generator.rs`; `%GeneratorFunction%` compiles through the compiler hook like `Function`, `abi/script.rs`; `%AsyncFunction%` is a not-implemented stub until month 3) | §27.3.1.1, §27.5.1.2-4, §27.7.1.1 |
+//! | `%GeneratorFunction%`, `%GeneratorPrototype%` `next`/`return`/`throw`, `%AsyncFunction%` (`generator.rs`; `%GeneratorFunction%` compiles through the compiler hook like `Function`, `abi/script.rs`; `%AsyncFunction%` is CreateDynamicFunction of kind async through the same hook, M3-P1 ASYNC) | §27.3.1.1, §27.5.1.2-4, §27.7.1.1 |
+//! | `%AsyncGeneratorFunction%`, `%AsyncGeneratorPrototype%` `next`/`return`/`throw`, `%AsyncIteratorPrototype%[@@asyncIterator]`, `%AsyncFromSyncIteratorPrototype%` `next`/`return`/`throw` (`generator.rs`, M3-P2 ASYNCGEN; `%AsyncGeneratorFunction%` compiles through the compiler hook like `Function`) | §27.4.1.1, §27.6.1.2-4, §27.1.3.1, §27.1.6.2.1-3 |
 //! | `%eval%`, the global `eval` (indirect eval; direct eval is `interp/slow/eval.rs`), through the compiler hook (`abi/script.rs`) | §19.2.1 |
+//! | `%ThrowTypeError%` (the strict arguments `callee` accessor; `arguments.rs` sets its attributes) | §10.2.4.1 |
 //!
 //! The built-in iterators are ITERATOR cells (object.rs): the iterated value, the next index
 //! and the iteration kind (`object::iter_kind`). The iterated value tells an array iterator
@@ -111,6 +113,28 @@ pub(crate) mod vm {
     pub const ITERATOR_TO_STRING_TAG_GET: u16 = 31;
     /// The setter of `%Iterator.prototype%[@@toStringTag]`.
     pub const ITERATOR_TO_STRING_TAG_SET: u16 = 32;
+    // ---- M3-P2 (ASYNCGEN, step 1 of the shared lines): async generators (§27.4, §27.6) and
+    // async iteration (§27.1.3, §27.1.6); `generator.rs` ----
+    /// `%AsyncGeneratorFunction%`.
+    pub const ASYNC_GENERATOR_FUNCTION: u16 = 33;
+    /// `%AsyncGeneratorPrototype%.next`.
+    pub const ASYNC_GENERATOR_NEXT: u16 = 34;
+    /// `%AsyncGeneratorPrototype%.return`.
+    pub const ASYNC_GENERATOR_RETURN: u16 = 35;
+    /// `%AsyncGeneratorPrototype%.throw`.
+    pub const ASYNC_GENERATOR_THROW: u16 = 36;
+    /// `%AsyncIteratorPrototype%[@@asyncIterator]`.
+    pub const ASYNC_ITERATOR_ITERATOR: u16 = 37;
+    /// `%AsyncFromSyncIteratorPrototype%.next`.
+    pub const ASYNC_FROM_SYNC_NEXT: u16 = 38;
+    /// `%AsyncFromSyncIteratorPrototype%.return`.
+    pub const ASYNC_FROM_SYNC_RETURN: u16 = 39;
+    /// `%AsyncFromSyncIteratorPrototype%.throw`.
+    pub const ASYNC_FROM_SYNC_THROW: u16 = 40;
+    // ---- M3-P2 (VM-ARGS, step 2 of the shared lines) ----
+    /// `%ThrowTypeError%` (§10.2.4.1): the `callee` accessor of an unmapped arguments object
+    /// (`arguments.rs` gives it its attributes on first use).
+    pub const THROW_TYPE_ERROR: u16 = 41;
 }
 
 /// The VM's block.
@@ -150,6 +174,23 @@ const VM_DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("[Symbol.hasInstance]", 1, function_has_instance),
     BuiltinDef::getter("[Symbol.toStringTag]", iterator_to_string_tag_get),
     BuiltinDef::setter("[Symbol.toStringTag]", iterator_to_string_tag_set),
+    BuiltinDef::constructor(
+        "AsyncGeneratorFunction",
+        1,
+        generator::async_generator_function,
+    ),
+    BuiltinDef::method("next", 1, generator::async_generator_next),
+    BuiltinDef::method("return", 1, generator::async_generator_return),
+    BuiltinDef::method("throw", 1, generator::async_generator_throw),
+    BuiltinDef::method(
+        "[Symbol.asyncIterator]",
+        0,
+        generator::async_iterator_iterator,
+    ),
+    BuiltinDef::method("next", 1, generator::async_from_sync_next),
+    BuiltinDef::method("return", 1, generator::async_from_sync_return),
+    BuiltinDef::method("throw", 1, generator::async_from_sync_throw),
+    BuiltinDef::method("", 0, throw_type_error),
 ];
 
 const VM_INTRINSICS: &[IntrinsicDef] = &[
@@ -240,10 +281,50 @@ const VM_INTRINSICS: &[IntrinsicDef] = &[
         id: IntrinsicId::Eval,
         value: IntrinsicValue::Builtin(vm::EVAL),
     },
+    // M3-P2 (ASYNCGEN). §27.1.3: an ordinary object whose [[Prototype]] is
+    // %Object.prototype%.
+    IntrinsicDef {
+        id: IntrinsicId::AsyncIteratorPrototype,
+        value: IntrinsicValue::Object {
+            proto: Some(IntrinsicId::ObjectPrototype),
+        },
+    },
+    // Its `[[Prototype]]` is %Function% (§27.4.2): set by `builtins::install` after step (2),
+    // as for %GeneratorFunction%.
+    IntrinsicDef {
+        id: IntrinsicId::AsyncGeneratorFunction,
+        value: IntrinsicValue::Builtin(vm::ASYNC_GENERATOR_FUNCTION),
+    },
+    // §27.4.3: an ordinary object whose [[Prototype]] is %Function.prototype%.
+    IntrinsicDef {
+        id: IntrinsicId::AsyncGeneratorFunctionPrototype,
+        value: IntrinsicValue::Object {
+            proto: Some(IntrinsicId::FunctionPrototype),
+        },
+    },
+    // §27.6.1: an ordinary object whose [[Prototype]] is %AsyncIteratorPrototype%.
+    IntrinsicDef {
+        id: IntrinsicId::AsyncGeneratorPrototype,
+        value: IntrinsicValue::Object {
+            proto: Some(IntrinsicId::AsyncIteratorPrototype),
+        },
+    },
+    // §27.1.6.2: an ordinary object whose [[Prototype]] is %AsyncIteratorPrototype%.
+    IntrinsicDef {
+        id: IntrinsicId::AsyncFromSyncIteratorPrototype,
+        value: IntrinsicValue::Object {
+            proto: Some(IntrinsicId::AsyncIteratorPrototype),
+        },
+    },
     // M2-P5. §23.1.3.41: OrdinaryObjectCreate(null).
     IntrinsicDef {
         id: IntrinsicId::ArrayUnscopables,
         value: IntrinsicValue::Object { proto: None },
+    },
+    // M3-P2 (VM-ARGS). §10.2.4.1: an anonymous built-in function.
+    IntrinsicDef {
+        id: IntrinsicId::ThrowTypeError,
+        value: IntrinsicValue::Builtin(vm::THROW_TYPE_ERROR),
     },
 ];
 
@@ -253,6 +334,7 @@ const TO_STRING: PropKey = PropKey::Atom(Atom::ToStringKey);
 const NEXT: PropKey = PropKey::Atom(Atom::Next);
 const VALUES: PropKey = PropKey::Str("values");
 const ITERATOR: PropKey = PropKey::Symbol(WellKnownSymbol::ITERATOR);
+const ASYNC_ITERATOR: PropKey = PropKey::Symbol(WellKnownSymbol::ASYNC_ITERATOR);
 const TO_STRING_TAG: PropKey = PropKey::Symbol(WellKnownSymbol::TO_STRING_TAG);
 const HAS_INSTANCE: PropKey = PropKey::Symbol(WellKnownSymbol::HAS_INSTANCE);
 const UNSCOPABLES: PropKey = PropKey::Symbol(WellKnownSymbol::UNSCOPABLES);
@@ -555,6 +637,56 @@ const VM_PROPS: &[ObjectProps] = &[
             to_string_tag("AsyncFunction"),
         ],
     },
+    // ---- M3-P2 (ASYNCGEN): async iteration (§27.1.3, §27.1.6) and async generators (§27.4,
+    // §27.6) ----
+    ObjectProps {
+        target: IntrinsicId::AsyncIteratorPrototype,
+        props: &[PropDef::method(ASYNC_ITERATOR, vm::ASYNC_ITERATOR_ITERATOR)],
+    },
+    ObjectProps {
+        target: IntrinsicId::AsyncGeneratorFunction,
+        props: &prototype_of(IntrinsicId::AsyncGeneratorFunctionPrototype),
+    },
+    ObjectProps {
+        target: IntrinsicId::AsyncGeneratorFunctionPrototype,
+        props: &[
+            // §27.4.3.1, §27.4.3.2: {c}.
+            PropDef {
+                key: CONSTRUCTOR,
+                value: PropValue::Builtin(vm::ASYNC_GENERATOR_FUNCTION),
+                attrs: PropAttrs::CONFIGURABLE,
+            },
+            PropDef::intrinsic(
+                PROTOTYPE,
+                IntrinsicId::AsyncGeneratorPrototype,
+                PropAttrs::CONFIGURABLE,
+            ),
+            to_string_tag("AsyncGeneratorFunction"),
+        ],
+    },
+    ObjectProps {
+        target: IntrinsicId::AsyncGeneratorPrototype,
+        props: &[
+            // §27.6.1.1: {c}.
+            PropDef::intrinsic(
+                CONSTRUCTOR,
+                IntrinsicId::AsyncGeneratorFunctionPrototype,
+                PropAttrs::CONFIGURABLE,
+            ),
+            PropDef::method(NEXT, vm::ASYNC_GENERATOR_NEXT),
+            PropDef::method(PropKey::Str("return"), vm::ASYNC_GENERATOR_RETURN),
+            PropDef::method(PropKey::Str("throw"), vm::ASYNC_GENERATOR_THROW),
+            to_string_tag("AsyncGenerator"),
+        ],
+    },
+    ObjectProps {
+        target: IntrinsicId::AsyncFromSyncIteratorPrototype,
+        props: &[
+            PropDef::method(NEXT, vm::ASYNC_FROM_SYNC_NEXT),
+            PropDef::method(PropKey::Str("return"), vm::ASYNC_FROM_SYNC_RETURN),
+            PropDef::method(PropKey::Str("throw"), vm::ASYNC_FROM_SYNC_THROW),
+        ],
+    },
 ];
 
 /// The VM module: block 0.
@@ -574,6 +706,20 @@ pub(crate) static VM_TABLE: BuiltinTable = BuiltinTable::new("vm", &[VM_MODULE])
 /// A `Local` of VM bits.
 fn local<'s>(b: u64) -> Local<'s> {
     Local::from_bits(b)
+}
+
+/// %ThrowTypeError% (§10.2.4.1): throws a TypeError (V8's text). Its `length` and `name`
+/// attributes and [[Extensible]] false are set by `arguments.rs` on first use.
+pub(crate) fn throw_type_error<'s>(
+    cx: &mut HostCx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Err(cx.throw_type_error(
+        "'caller', 'callee', and 'arguments' properties may not be accessed on strict mode \
+         functions or the arguments objects for calls to them",
+    ))
 }
 
 /// `%Function.prototype%` (§20.2.3): accepts any arguments and returns undefined.
@@ -709,7 +855,10 @@ error_ctors! {
     uri_error_ctor => UriError,
 }
 
-/// NativeError(message) (§20.5.6.1.1). v0: no `options.cause`.
+/// NativeError(message) (§20.5.6.1.1). v0: no `options.cause`. The prototype is
+/// OrdinaryCreateFromConstructor's (§10.1.13): `newTarget.prototype` if it is an object,
+/// else the error prototype of GetFunctionRealm(newTarget); with no newTarget (a call), the
+/// error prototype of the current realm, which is the constructor's (`call_host` switches).
 fn construct_error(cx: &mut Cx, kind: ErrorKind, message: u64, nt: u64) -> JsResult<u64> {
     let rt = cx.rt();
     let mut proto = rt.root(kind.prototype_root());
@@ -717,6 +866,14 @@ fn construct_error(cx: &mut Cx, kind: ErrorKind, message: u64, nt: u64) -> JsRes
         let p = property::get(cx, nt, rt.atom(Atom::Prototype))?;
         if is_object(p) {
             proto = p;
+        } else {
+            // §10.1.14 step 4: the prototype of GetFunctionRealm(newTarget).
+            let r = crate::realm::get_function_realm(rt, nt);
+            let id = crate::builtins::IntrinsicId::ALL
+                .into_iter()
+                .find(|id| id.root() == Some(kind.prototype_root()))
+                .expect("an error prototype id");
+            proto = crate::realm::intrinsic_in(rt, r, id);
         }
     }
     let msg = if message == UNDEFINED {
@@ -856,7 +1013,7 @@ pub(crate) fn iterator_to_string_tag_set<'s>(
     }
     // 3. Let desc be ? this.[[GetOwnProperty]](p). GC point below: `o`, `key` and `v` live in
     //    Rust locals.
-    if property::get_own_property(cx, o, key).is_none() {
+    if property::get_own_property(cx, o, key)?.is_none() {
         // 4. If desc is undefined: ? CreateDataPropertyOrThrow(this, p, v).
         let desc = crate::descriptor::Desc::data(v, attr::DEFAULT);
         if !property::define_own_property(cx, o, key, desc)? {
@@ -1094,8 +1251,7 @@ pub(crate) fn error_to_string<'s>(
     Ok(local(object::new_string(rt, &s)))
 }
 
-/// Object.prototype.toString (§20.1.3.6). v0: no `[[ParameterMap]]` (arguments objects are
-/// Arrays), and no Date or RegExp.
+/// Object.prototype.toString (§20.1.3.6). v0: no RegExp.
 pub(crate) fn object_to_string<'s>(
     cx: &mut HostCx<'s>,
     this: Local<'s>,
@@ -1116,6 +1272,10 @@ pub(crate) fn object_to_string<'s>(
     let data = local(wrapper::wrapper_value(o).unwrap_or(o));
     let builtin_tag = if is_array(o) {
         "Array"
+    } else if crate::kinds::cell_kind(o) == crate::kinds::ARGUMENTS.get() {
+        // 5. O has a [[ParameterMap]] internal slot (every arguments object: §10.4.4.6 step 3
+        //    gives an unmapped one [[ParameterMap]] undefined).
+        "Arguments"
     } else if is_callable(o) {
         "Function"
     } else if object::is_error(o) {
@@ -1126,6 +1286,9 @@ pub(crate) fn object_to_string<'s>(
         "Number"
     } else if data.is_string() {
         "String"
+    } else if cx.object_class(local(o)) == Some(crate::abi::ObjectClass::Date) {
+        // 13. Else if O has a [[DateValue]] internal slot, let builtinTag be "Date".
+        "Date"
     } else {
         "Object"
     };

@@ -36,7 +36,7 @@ use ep9_value::{JsResult, Throw, Value};
 
 use crate::abi::{JsKey, JsObject, Local};
 use crate::builtins::{self, BuiltinTable};
-use crate::compiler::CompilerHooks;
+use crate::compiler::{CompileResult, CompilerHooks};
 use crate::conv::{Res, describe};
 use crate::frame::{HOLE, UNDEFINED};
 use crate::host::HostFn;
@@ -174,8 +174,9 @@ impl TerminateHandle {
 /// queues it, and the isolate runs it at its next interrupt poll, where [`TerminateHandle`] stops
 /// a script (loop back edges, function entries, builtin loops; JIT code polls the same way). A
 /// poll comes once per interrupt budget (10,000 back edges, bytecode calls or other budget units)
-/// while JS runs; a host-function call takes no budget unit, so code that only calls host
-/// functions does not poll. An idle isolate runs the callback when it next runs JS and polls.
+/// while JS runs; a call of a host function that is not bound takes no budget unit (a call of a
+/// bound function takes one unit per bound level), so code that only calls host functions does
+/// not poll. An idle isolate runs the callback when it next runs JS and polls.
 ///
 /// The callback gets no `Cx`: it runs no JS and allocates nothing on the JS heap, so it is safe at
 /// any poll. It may call [`TerminateHandle::terminate`] (the same poll then stops the script) or
@@ -292,11 +293,40 @@ impl Isolate {
             native_limit: rt.native_limit,
             #[cfg(feature = "spike-native")]
             runtime_table: &crate::native::RUNTIME_TABLE,
+            realm: rt.root(Root::Realm),
+            #[cfg(feature = "spike-native")]
+            unit_data: 0,
         });
-        builtins::install(&mut cx).map_err(IsolateError::BuiltinTable)?;
+        realm::install(&mut cx).map_err(IsolateError::BuiltinTable)?;
         rt.jobs.set_tracker(config.promise_rejection_tracker);
-        aggregate_error_prototype(&rt);
         Ok(Isolate { cx, rt })
+    }
+
+    /// Makes a new realm (H22-Q3) with the isolate's builtin tables, and runs `f` in it: its
+    /// global object is `f`'s second argument, and the code and objects that `f` makes belong
+    /// to the new realm ([`abi::Cx::with_realm`]). The isolate's first realm is current again
+    /// when it returns. The realm lives while something reachable holds one of its objects or
+    /// functions; [`abi::Cx::create_realm`] is the same step inside [`Isolate::with_cx`] or a
+    /// host function. An `Err(Throw)` from `f` becomes the [`Exception`] that is pending.
+    ///
+    /// ```
+    /// use ep9_vm::{Isolate, IsolateConfig};
+    /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    /// let r = iso.create_realm(|cx, global| {
+    ///     // The new realm is the current one.
+    ///     let here = cx.global();
+    ///     Ok(cx.same_value(here, global))
+    /// });
+    /// assert_eq!(r, Ok(true));
+    /// ```
+    pub fn create_realm<R>(
+        &mut self,
+        f: impl for<'s> FnOnce(&mut abi::Cx<'s>, Local<'s, JsObject>) -> JsResult<R>,
+    ) -> Result<R, Exception> {
+        self.with_cx(|cx| {
+            let global = cx.create_realm()?;
+            cx.with_realm(global, |cx| f(cx, global))
+        })
     }
 
     /// The builtin table installed after the VM's own (`IsolateConfig::builtins`).
@@ -659,6 +689,56 @@ impl<'s> abi::Cx<'s> {
         Ok(Local::from_bits(if b == HOLE { UNDEFINED } else { b }))
     }
 
+    /// Runs the module unit `unit` (a module goal unit from ep9_frontend) as the module named
+    /// `name`, with the modules it imports (the module loader API, M3-P2; §16.2.1.5): the
+    /// steps of a host's import of an entry module, with a synchronous loader.
+    ///
+    /// ```text
+    /// the record of `name` in the current realm's module map, or a new one from `unit`
+    /// load:     for each import or re-export specifier of each module, depth first:
+    ///             resolve(referrer name, specifier) -> a name (the map key)
+    ///             not in the map: load(name) -> a module unit -> a new record
+    /// link:     imports bound to the exporting modules' bindings (live), namespaces
+    /// evaluate: each module's body once, dependencies first; a thrown error is kept and
+    ///           thrown again by each later import of that module
+    /// ```
+    ///
+    /// The names are the host's: `resolve` decides what two specifiers mean the same module
+    /// (the test262 runner and the CLI give a normalized path), and a name loads once per
+    /// realm. `Err(text)` from `resolve` throws an `Error` with that text; a `load` failure
+    /// throws as eval code's compile failures do (`SyntaxError` for an early error), and a
+    /// later run that needs the module tries the load again. If a [`TerminateHandle`] stops
+    /// a module's evaluation, a later run that reaches that module throws an `Error`; it
+    /// never takes the module as evaluated. An
+    /// import that no module exports, or that two `export *` give, is a `SyntaxError`.
+    /// An import attribute key other than `type` is a `SyntaxError`; `type: "json"` throws
+    /// the v0 not-implemented `Error`, another type a `TypeError`. The result is undefined; the module's code runs with `this`
+    /// undefined. Run a microtask checkpoint after it, as [`Isolate::run_script`] does.
+    /// Top-level `await` and `import()` are not built (the front end rejects them).
+    ///
+    /// ```compile_fail
+    /// use ep9_vm::Isolate;
+    /// fn escape(iso: &mut Isolate, unit: ep9_bytecode::VerifiedUnit) {
+    ///     // The `Local` cannot leave `with_cx`.
+    ///     let v = iso
+    ///         .with_cx(|cx| cx.run_module(unit, "a.js", &mut |_, s| Ok(s.into()), &mut |_| todo!()))
+    ///         .unwrap();
+    ///     iso.collect_garbage();
+    ///     let _ = v;
+    /// }
+    /// ```
+    pub fn run_module(
+        &mut self,
+        unit: VerifiedUnit,
+        name: &str,
+        resolve: &mut dyn FnMut(&str, &str) -> Result<String, String>,
+        load: &mut dyn FnMut(&str) -> CompileResult,
+    ) -> JsResult<Local<'s>> {
+        let mut host = crate::module::Host { resolve, load };
+        let b = crate::module::run_module(self.inner(), unit, name, &mut host)?;
+        Ok(Local::from_bits(b))
+    }
+
     /// The value of the global binding `name` (GetBindingValue of the global environment,
     /// §9.1.1.4.6): the script lexical record first, where a binding in its TDZ throws a
     /// ReferenceError, then the global object and its prototype chain (HasProperty, then
@@ -725,16 +805,4 @@ fn constructor_name(cx: &mut Cx, v: u64) -> Option<String> {
     }
     let name = property::get_data_from(cx, ctor, rt.atom(Atom::Name))?;
     is_string(name).then(|| string::to_rust_string(name))
-}
-
-/// §20.5.7.2: the `[[Prototype]]` of `%AggregateError%` is `%Error%` (a table gives a
-/// builtin's function object `%Function.prototype%`). Runs after `builtins::install`, when a
-/// table made `%AggregateError%` (`ep9_builtins` promise.rs, P4-PROMISE).
-fn aggregate_error_prototype(rt: &Runtime) {
-    let c = builtins::intrinsic(rt, builtins::IntrinsicId::AggregateError);
-    let error = builtins::intrinsic(rt, builtins::IntrinsicId::Error);
-    if object::is_object(c) && object::is_object(error) {
-        let ok = property::set_prototype_of(rt, c, error);
-        debug_assert!(ok, "%AggregateError% is extensible");
-    }
 }

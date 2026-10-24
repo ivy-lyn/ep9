@@ -30,7 +30,8 @@ use crate::operand::{FunctionId, OperandKind, OperandScale, Register};
 use crate::positions::SourceLines;
 use crate::sha256::to_hex;
 use crate::unit::{
-    ABI_VERSION, CompiledUnit, Constant, Function, FunctionFlags, PositionEntry, ScopeFlags,
+    ABI_VERSION, CompiledUnit, Constant, ExportImportName, Function, FunctionFlags, ImportName,
+    ModuleRecords, PositionEntry, ScopeFlags,
 };
 
 /// Disassembles the whole unit.
@@ -73,6 +74,7 @@ pub fn disassemble(unit: &CompiledUnit) -> String {
             (ScopeFlags::NEEDS_CONTEXT, "needs-context"),
             (ScopeFlags::CALLS_SLOPPY_EVAL, "sloppy-eval"),
             (ScopeFlags::STRICT, "strict"),
+            (ScopeFlags::PARAMETER_ENV, "parameter-env"),
         ] {
             if sc.flags.contains(bit) {
                 flags.push(name);
@@ -92,6 +94,9 @@ pub fn disassemble(unit: &CompiledUnit) -> String {
             slots.join(", ")
         );
     }
+    if let Some(m) = &unit.module_records {
+        module_records_text(&mut s, unit, m);
+    }
     let lines = unit.source.as_deref().map(SourceLines::new);
     for i in 0..unit.functions.len() {
         s.push_str(&disassemble_function_with(
@@ -101,6 +106,71 @@ pub fn disassemble(unit: &CompiledUnit) -> String {
         ));
     }
     s
+}
+
+/// The module records (ABI 5), one entry per line.
+fn module_records_text(s: &mut String, unit: &CompiledUnit, m: &ModuleRecords) {
+    let st = |id: crate::StringId| string_text(unit, id.0);
+    let _ = writeln!(s, "module records: has-tla={}", m.has_tla);
+    let _ = writeln!(s, "  requests ({}):", m.requested_modules.len());
+    for (i, r) in m.requested_modules.iter().enumerate() {
+        let attrs: Vec<String> = r
+            .attributes
+            .iter()
+            .map(|&(k, v)| format!("{}: {}", st(k), st(v)))
+            .collect();
+        let _ = writeln!(
+            s,
+            "  {i:>5} {} attributes=[{}]",
+            st(r.specifier),
+            attrs.join(", ")
+        );
+    }
+    let _ = writeln!(s, "  imports ({}):", m.import_entries.len());
+    for (i, e) in m.import_entries.iter().enumerate() {
+        let name = match e.import_name {
+            ImportName::Namespace => "namespace".to_string(),
+            ImportName::Name(n) => st(n),
+        };
+        let _ = writeln!(
+            s,
+            "  {i:>5} request={} import={name} local={} cell={}",
+            e.module_request,
+            st(e.local_name),
+            e.cell
+        );
+    }
+    let _ = writeln!(s, "  local exports ({}):", m.local_export_entries.len());
+    for (i, e) in m.local_export_entries.iter().enumerate() {
+        let _ = writeln!(
+            s,
+            "  {i:>5} export={} local={} cell={}",
+            st(e.export_name),
+            st(e.local_name),
+            e.cell
+        );
+    }
+    let _ = writeln!(
+        s,
+        "  indirect exports ({}):",
+        m.indirect_export_entries.len()
+    );
+    for (i, e) in m.indirect_export_entries.iter().enumerate() {
+        let name = match e.import_name {
+            ExportImportName::All => "all".to_string(),
+            ExportImportName::Name(n) => st(n),
+        };
+        let _ = writeln!(
+            s,
+            "  {i:>5} export={} request={} import={name}",
+            st(e.export_name),
+            e.module_request
+        );
+    }
+    let _ = writeln!(s, "  star exports ({}):", m.star_export_entries.len());
+    for (i, r) in m.star_export_entries.iter().enumerate() {
+        let _ = writeln!(s, "  {i:>5} request={r}");
+    }
 }
 
 /// Disassembles one function.
@@ -315,6 +385,20 @@ fn disassemble_function_with(
     let _ = writeln!(s, "  positions ({}):", f.positions.len());
     for p in &f.positions {
         let _ = writeln!(s, "  {}", position_text(p, lines));
+    }
+    if let Some(m) = &f.mapped_parameters {
+        let slots: Vec<String> = m
+            .slots
+            .iter()
+            .map(|v| v.map_or("-".to_string(), |v| v.to_string()))
+            .collect();
+        let _ = writeln!(
+            s,
+            "  mapped parameters ({}): scope={} slots=[{}]",
+            m.slots.len(),
+            m.scope,
+            slots.join(", ")
+        );
     }
     s
 }

@@ -1,0 +1,6 @@
+1,2,0 3,6 1,4 true
+2 Infinity 2
+b a,c 0,1,2 true
+TypeError
+TypeError
+RangeError 1

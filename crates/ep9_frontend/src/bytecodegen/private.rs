@@ -21,7 +21,9 @@ use oxc_ast::ast::{PrivateFieldExpression, PrivateIdentifier, PrivateInExpressio
 
 use super::expr::MemberRef;
 use super::func::{FnGen, Gen};
-use crate::scope::{BindingId, BindingKind, ImplicitRef, PrivateKind, Reference, Resolution};
+use crate::scope::{
+    BindingId, BindingKind, ImplicitRef, NameId, PrivateKind, Reference, Resolution,
+};
 
 /// A resolved `#x` reference.
 #[derive(Clone, Copy)]
@@ -173,6 +175,7 @@ impl<'a, 's> FnGen<'a, 's> {
                     brand,
                     get,
                     set,
+                    name: self.binding(r.binding).name,
                     at: p.field.span.start,
                 })
             }
@@ -204,13 +207,16 @@ impl<'a, 's> FnGen<'a, 's> {
 
     /// PutValue of the accumulator to a `MemberRef::PrivateBranded`: the brand check, then the
     /// setter call (a getter-only accessor holds undefined: the call throws), or for a method
-    /// the TypeError of PrivateSet step 5 (ThrowConstAssignError; ABI 3 has no id with the
-    /// "Private method is not writable" text). The accumulator is not kept.
+    /// the TypeError of PrivateSet step 5 (ABI 5 runtime id 45 `ThrowTypeError` with the text
+    /// "Private method '#m' is not writable", node v24's text; `name` is the private name with
+    /// its `#`; it replaces ThrowConstAssignError, M2-P2-OPEN-ROLES). The accumulator is not
+    /// kept.
     pub(crate) fn private_branded_store(
         &mut self,
         obj: Register,
         brand: Register,
         set: Option<Register>,
+        name: NameId,
         at: u32,
     ) {
         let m = self.mark();
@@ -227,10 +233,14 @@ impl<'a, 's> FnGen<'a, 's> {
                 self.b.call_property1(setter, obj, value, s);
             }
             None => {
-                self.expr_pos(at);
-                self.runtime(
-                    ep9_bytecode::RuntimeId::ThrowConstAssignError,
-                    RegisterList::EMPTY,
+                let message = self.temp();
+                let text = format!("Private method '{}' is not writable", self.sa.name(name));
+                let k = self.str_const(&text);
+                self.b.lda_constant(k).star(message);
+                self.runtime_with_at(
+                    ep9_bytecode::RuntimeId::ThrowTypeError,
+                    &[message],
+                    Some(at),
                 );
             }
         }

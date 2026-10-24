@@ -5,9 +5,10 @@
 //!
 //! ```text
 //! SwitchOnGeneratorState g, table   g undefined: out_pc = next (first call); else jump to
-//!                                   table[state] and state = executing
+//!                                   table[state] and state = executing; acc unchanged
 //! SuspendGenerator g, regs, n, id   copy the params and regs into the generator's REGS cell,
 //!                                   save the context, state = id, then return like `Return`
+//!                                   (an async function returns its promise, `slow/async_fn.rs`)
 //! ResumeGenerator g, regs, n        copy the regs back; acc = the sent value
 //! ```
 //!
@@ -92,15 +93,18 @@ fn frame_generator(
 /// The first call of a generator function has undefined in fp-3 (no generator yet): the
 /// dispatch falls through to the prologue. A resumed frame has the generator there; its state
 /// is the suspend id, which indexes `table`: jump to that entry and mark the generator
-/// executing (GeneratorResume §27.5.3.3 step 7). The accumulator becomes the generator
-/// register's value (the stub has no accumulator input; BytecodeGen keeps nothing in it here).
+/// executing (GeneratorResume §27.5.3.3 step 7). The opcode does not change the accumulator
+/// (`acc: None`, opcodes.rs): both paths give `acc` back (GV-7, M2-P2-GEN-ACC; closed in
+/// M3-P1 ASYNC).
 #[cold]
 #[inline(never)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn switch_on_generator_state(
     cx: &mut Cx,
     fp: *mut u64,
     pc: *const u8,
     next: *const u8,
+    acc: u64,
     generator: isize,
     table: u32,
 ) -> u64 {
@@ -109,7 +113,7 @@ pub(crate) fn switch_on_generator_state(
     if g == UNDEFINED {
         cx.out_fp = fp;
         cx.out_pc = next;
-        return UNDEFINED;
+        return acc;
     }
     if !is_generator(g) {
         return internal_unwind(cx, fp, pc, "SwitchOnGeneratorState of a non-generator");
@@ -125,12 +129,12 @@ pub(crate) fn switch_on_generator_state(
     cx.out_fp = fp;
     // The verifier checked that every entry is an instruction start after `pc`.
     cx.out_pc = pc.wrapping_add(off as usize);
-    g
+    acc
 }
 
 /// `SuspendGenerator(generator, registers, count, suspend_id)`; `acc` is the value to give to
-/// the caller (the generator object at the first suspend, else an iterator result).
-/// Frame-switch protocol.
+/// the caller (the generator object at the first suspend, else an iterator result; an async
+/// function gives its promise instead). Frame-switch protocol.
 ///
 /// Copies the frame's parameters and the `count` registers from `registers` into the REGS
 /// cell, saves the current context, sets the state to `suspend_id`, then returns like
@@ -186,6 +190,12 @@ pub(crate) fn suspend_generator(
     let (ret, caller) = unsafe { (*fp.offset(slot::RETURN_PC), *fp.offset(slot::CALLER_FP)) };
     cx.out_fp = native_ptr(caller);
     cx.out_pc = native_ptr(ret);
+    // An async function's `await` gives its caller the promise (§27.7.5.3 Await steps 8-9
+    // return to AsyncFunctionStart, and EvaluateAsyncFunctionBody returns the promise); the
+    // caller of a resumed frame (a reaction job) ignores it.
+    if object::gen_get_i32(g, genf::MODE) == genf::MODE_ASYNC_FUNCTION {
+        return object::gen_get(g, genf::ASYNC);
+    }
     acc
 }
 

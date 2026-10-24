@@ -3,3 +3,8 @@
 # id     block.index  kind         length  name  (installed as)
 0x1200   9.0          method       1       "isFinite"  (globalThis.isFinite w-c)
 0x1201   9.1          method       1       "isNaN"  (globalThis.isNaN w-c)
+0x1202   9.2          method       1       "decodeURI"  (globalThis.decodeURI w-c)
+0x1203   9.3          method       1       "decodeURIComponent"  (globalThis.decodeURIComponent w-c)
+0x1204   9.4          method       1       "encodeURI"  (globalThis.encodeURI w-c)
+0x1205   9.5          method       1       "encodeURIComponent"  (globalThis.encodeURIComponent w-c)
+0x1206   9.6          method       1       "isError"  (%Error%.isError w-c)

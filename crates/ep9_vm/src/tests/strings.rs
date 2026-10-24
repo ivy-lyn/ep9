@@ -541,7 +541,11 @@ fn own_property_keys_hands_out_index_keys_as_atoms() {
                     let k = crate::object::array_get(keys, i).unwrap();
                     let text = string::to_rust_string(k);
                     assert!(string::is_atom(k), "{text}");
-                    assert!(crate::property::get_own_property(cx.inner(), obj.bits(), k).is_some());
+                    assert!(
+                        crate::property::get_own_property(cx.inner(), obj.bits(), k)
+                            .unwrap()
+                            .is_some()
+                    );
                     texts.push(text);
                 }
             }

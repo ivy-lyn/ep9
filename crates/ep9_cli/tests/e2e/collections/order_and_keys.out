@@ -1,0 +1,11 @@
+b,a,3 9,2,3
+a=2 3=3 b=4
+true zero Infinity 4
+nan nan true
+num str num 7
+content content
+o1 undefined false
+sym undefined
+u n t undefined u
+5 2,1,0,NaN,2 Infinity
+1 true frozen 1 0

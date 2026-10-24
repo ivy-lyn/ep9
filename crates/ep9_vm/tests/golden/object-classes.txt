@@ -8,3 +8,7 @@
    4  Set
    5  ArrayBuffer
    6  RegExp
+   7  WeakMap
+   8  WeakSet
+   9  Map Iterator
+  10  Set Iterator

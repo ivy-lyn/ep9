@@ -5,10 +5,10 @@ use ep9_bytecode::{
     FeedbackSlotKind, HandlerKind, Label, Register, RegisterList, RuntimeId, UnitString,
 };
 use oxc_ast::ast::{
-    BindingPattern, BlockStatement, CatchClause, Class, DoWhileStatement,
-    ExportDefaultDeclarationKind, ForInStatement, ForOfStatement, ForStatement, ForStatementInit,
-    ForStatementLeft, Function, IfStatement, Statement, SwitchStatement, TryStatement,
-    VariableDeclaration, VariableDeclarationKind, WhileStatement, WithStatement,
+    BindingPattern, BlockStatement, CatchClause, Class, DoWhileStatement, ForInStatement,
+    ForOfStatement, ForStatement, ForStatementInit, ForStatementLeft, Function, IfStatement,
+    Statement, SwitchStatement, TryStatement, VariableDeclaration, VariableDeclarationKind,
+    WhileStatement, WithStatement,
 };
 use oxc_span::GetSpan;
 
@@ -127,12 +127,13 @@ impl<'a> FnGen<'a, '_> {
             Statement::VariableDeclaration(v) => self.var_decl(v),
             Statement::FunctionDeclaration(f) => self.function_declaration(f),
             Statement::ClassDeclaration(c) => self.class_declaration(c, None),
+            // Module items: bytecodegen/module.rs (routing stub, P0-D7; MODULE fills it).
             Statement::ImportDeclaration(_)
             | Statement::ExportAllDeclaration(_)
-            | Statement::ExportNamedDeclaration(_) => Ok(()),
+            | Statement::ExportNamedDeclaration(_)
+            | Statement::ExportFromDeclaration(_) => self.module_declaration(s),
             Statement::ExportDeclaration(e) => self.export_declaration(e),
             Statement::ExportDefaultDeclaration(e) => self.export_default(e),
-            Statement::ExportFromDeclaration(_) => Ok(()),
             Statement::TSTypeAliasDeclaration(_)
             | Statement::TSInterfaceDeclaration(_)
             | Statement::TSEnumDeclaration(_)
@@ -246,7 +247,7 @@ impl<'a> FnGen<'a, '_> {
         Ok(())
     }
 
-    fn function_declaration(&mut self, f: &'a Function<'a>) -> Gen {
+    pub(crate) fn function_declaration(&mut self, f: &'a Function<'a>) -> Gen {
         let name = f.id.as_ref().map_or_else(
             || UnitString::new("default"),
             |id| UnitString::new(id.name.as_str()),
@@ -266,6 +267,21 @@ impl<'a> FnGen<'a, '_> {
 
     /// genv.SetMutableBinding(F, fobj, false) for an Annex B var binding.
     fn store_annex_b_var(&mut self, var: BindingId) {
+        if let Some(&(_, flag)) = self.eval_annex_b.iter().find(|&&(v, _)| v == var) {
+            // Sloppy eval code (B.3.2.3 step ii.2.g.ii): the var binding is in the caller's
+            // variable environment, and only if DeclareEvalAnnexBFunction made it (`flag`).
+            let m = self.mark();
+            let args = self.temps(2);
+            let skip = self.b.new_label();
+            self.b.star(args.get(1));
+            self.b.ldar(flag).jump_if_false(skip);
+            let k = self.name_const(self.binding(var).name);
+            self.b.lda_constant(k).star(args.get(0));
+            self.runtime(RuntimeId::StoreEvalAnnexBFunction, args);
+            self.b.bind(skip);
+            self.release(m);
+            return;
+        }
         match self.binding(var).location {
             BindingLocation::Global | BindingLocation::GlobalLexical => {
                 let name = self.binding(var).name;
@@ -277,49 +293,11 @@ impl<'a> FnGen<'a, '_> {
         }
     }
 
-    fn export_declaration(&mut self, e: &'a oxc_ast::ast::ExportDeclaration<'a>) -> Gen {
-        use oxc_ast::ast::Declaration as D;
-        match &e.declaration {
-            D::VariableDeclaration(v) => self.var_decl(v),
-            D::FunctionDeclaration(f) => self.function_declaration(f),
-            D::ClassDeclaration(c) => self.class_declaration(c, None),
-            _ => self.unsupported("TypeScript declarations", e.span),
-        }
-    }
-
-    fn export_default(&mut self, e: &'a oxc_ast::ast::ExportDefaultDeclaration<'a>) -> Gen {
-        match &e.declaration {
-            ExportDefaultDeclarationKind::FunctionDeclaration(f) => self.function_declaration(f),
-            ExportDefaultDeclarationKind::ClassDeclaration(c) => {
-                let default = c.id.is_none().then(|| self.default_binding()).transpose()?;
-                self.class_declaration(c, default)
-            }
-            ExportDefaultDeclarationKind::TSInterfaceDeclaration(_) => Ok(()),
-            other => {
-                let Some(expr) = other.as_expression() else {
-                    return self.unsupported("export default form", e.span);
-                };
-                self.stmt_pos(e.span);
-                self.named_value(expr, Some(UnitString::new("default")))?;
-                let b = self.default_binding()?;
-                self.store_binding_init(b);
-                Ok(())
-            }
-        }
-    }
-
-    /// The `*default*` binding of a module.
-    fn default_binding(&self) -> Gen<BindingId> {
-        self.sa
-            .scope(ScopeId(0))
-            .bindings
-            .iter()
-            .copied()
-            .find(|&b| self.sa.name(self.binding(b).name) == "*default*")
-            .ok_or_else(|| super::internal("no *default* binding"))
-    }
-
-    fn class_declaration(&mut self, c: &'a Class<'a>, binding: Option<BindingId>) -> Gen {
+    pub(crate) fn class_declaration(
+        &mut self,
+        c: &'a Class<'a>,
+        binding: Option<BindingId>,
+    ) -> Gen {
         self.stmt_pos(c.span);
         let name = c.id.as_ref().map_or_else(
             || UnitString::new("default"),
@@ -521,7 +499,13 @@ impl<'a> FnGen<'a, '_> {
     fn for_in(&mut self, f: &'a ForInStatement<'a>, labels: Vec<&'a str>) -> Gen {
         self.stmt_pos(f.span);
         let scope = self.scope_of(f.scope_id.get(), f.span)?;
-        self.for_in_var_initializer(&f.left)?;
+        // The initializer's own scopes (a class) are children of the for scope. A `var` head
+        // binds nothing in that scope, so it needs no context (Annex B.3.5).
+        let outer = self.scope;
+        self.scope = scope;
+        let init = self.for_in_var_initializer(&f.left);
+        self.scope = outer;
+        init?;
         let m = self.mark();
         let recv = self.temp();
         let cache = self.temps(3);
@@ -569,7 +553,7 @@ impl<'a> FnGen<'a, '_> {
 
     fn for_of(&mut self, f: &'a ForOfStatement<'a>, labels: Vec<&'a str>) -> Gen {
         if f.r#await {
-            return self.unsupported("for await", f.span);
+            return self.for_await_of(f, labels);
         }
         self.stmt_pos(f.span);
         let scope = self.scope_of(f.scope_id.get(), f.span)?;
@@ -608,6 +592,80 @@ impl<'a> FnGen<'a, '_> {
                 let skip = g.b.new_label();
                 g.b.ldar(done).jump_if_true(skip);
                 g.close_iterator(iter, token);
+                g.b.bind(skip);
+                Ok(())
+            },
+        )?;
+        self.release(m);
+        Ok(())
+    }
+
+    /// `for await (lhs of rhs) body` (§14.7.5.6 ForIn/OfHeadEvaluation and §14.7.5.7
+    /// ForIn/OfBodyEvaluation with iteratorKind async; M3-P2 ASYNCGEN), in an async function
+    /// or an async generator body: the `for-of` loop with GetIterator(rhs, async)
+    /// (`async_gen.rs` AGF5), an Await of each `next` result, and AsyncIteratorClose on an
+    /// abrupt exit. At a module top level it is top-level await, so it stays unsupported with
+    /// the cause of a top-level `await` ("await", AF6; M3-P3 IMPORT-TLA; review RV-P2-AG1).
+    fn for_await_of(&mut self, f: &'a ForOfStatement<'a>, labels: Vec<&'a str>) -> Gen {
+        if self.await_target().is_none() {
+            return self.unsupported("await", f.span);
+        }
+        self.stmt_pos(f.span);
+        let at = f.span.start;
+        let scope = self.scope_of(f.scope_id.get(), f.span)?;
+        let m = self.mark();
+        let iter = self.temp();
+        let next = self.temp();
+        let done = self.temp();
+        let value = self.temp();
+        self.for_head_rhs(scope, &f.right)?;
+        self.get_async_iterator(iter, next, f.right.span().start);
+        self.try_finally(
+            |g| {
+                g.loop_depth += 1;
+                let header = g.b.bound_label();
+                let (exit, cont) = (g.b.new_label(), g.b.new_label());
+                // A throw of `next`, of its Await or of the result checks does not close the
+                // iterator (step 6.a-d).
+                g.b.lda_true().star(done);
+                let call = g.slot(FeedbackSlotKind::Call);
+                g.expr_pos(at);
+                g.b.call_property0(next, iter, call);
+                g.await_acc(at)?;
+                g.b.star(value);
+                let ok = g.b.new_label();
+                g.b.jump_if_js_receiver(ok);
+                g.expr_pos(at);
+                g.runtime_with(RuntimeId::ThrowIteratorResultNotAnObject, &[value]);
+                g.b.bind(ok);
+                let k_done = g.str_const("done");
+                let s = g.slot(FeedbackSlotKind::LoadNamed);
+                g.b.get_named_property(value, k_done, s);
+                g.b.jump_if_to_boolean_true(exit);
+                let k_value = g.str_const("value");
+                let s = g.slot(FeedbackSlotKind::LoadNamed);
+                g.b.get_named_property(value, k_value, s).star(value);
+                g.b.lda_false().star(done);
+                g.loop_target(labels, exit, cont);
+                let result = (|| -> Gen {
+                    let pushed = g.enter_scope(scope);
+                    g.for_head_assign(&f.left, value)?;
+                    g.statement(&f.body)?;
+                    g.exit_scope(scope, pushed);
+                    Ok(())
+                })();
+                g.control.pop();
+                result?;
+                g.b.bind(cont);
+                g.jump_loop(header);
+                g.b.bind(exit);
+                g.loop_depth -= 1;
+                Ok(())
+            },
+            |g, token| {
+                let skip = g.b.new_label();
+                g.b.ldar(done).jump_if_true(skip);
+                g.close_async_iterator(iter, token, at)?;
                 g.b.bind(skip);
                 Ok(())
             },

@@ -1,6 +1,6 @@
 # class-field-public: script (sloppy)
 # | class A { x = 1; y; 'z' = () => 1; 1 = function() {}; 1.5 = 2; static s = this; }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=81 source=embedded hints=none
 source_hash=65d3554072b69be0bc2101cbb7d6e67964159093396fc142d5f53eb003f017ee
 strings (6):

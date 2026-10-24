@@ -160,8 +160,13 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
     };
     isolate.register_host_function("print", 1, print);
     isolate.register_host_function("gc", 0, gc);
-    // `run_script` drains the microtask queue (promise jobs) before it returns.
-    let result = isolate.run_script(unit, file);
+    // `run_script` drains the microtask queue (promise jobs) before it returns; a module
+    // run does the same (`run_module`).
+    let result = if opts.module {
+        run_module(&mut isolate, unit, file)
+    } else {
+        isolate.run_script(unit, file)
+    };
     let _ = std::io::stdout().flush();
     let status = match result {
         Ok(_) => EXIT_OK,
@@ -200,6 +205,78 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
         }
     }
     status
+}
+
+// ---- the file loader for `--module` (M3-P2 MODULE) ------------------------------------------
+
+/// Runs the module `unit` (the file `file`) with the modules it imports, then a microtask
+/// checkpoint, as `Isolate::run_script` does: the module's error wins over a job's, but not
+/// over a termination in a job. The module is named by its canonical path (so an import of
+/// the same file is the same module); `-e` code is named [`EVAL_NAME`].
+fn run_module(
+    isolate: &mut Isolate,
+    unit: ep9_bytecode::VerifiedUnit,
+    file: &str,
+) -> Result<ep9_vm::Value, Exception> {
+    let name = if file == EVAL_NAME {
+        file.to_string()
+    } else {
+        std::fs::canonicalize(file).map_or_else(|_| file.to_string(), |p| p.display().to_string())
+    };
+    let r = isolate.with_cx(|cx| {
+        cx.run_module(unit, &name, &mut resolve_module, &mut load_module)
+            .map(|_| ())
+    });
+    match r {
+        Ok(()) => isolate
+            .perform_microtask_checkpoint()
+            .map(|()| ep9_vm::Value::UNDEFINED),
+        Err(e) if e.terminated => Err(e),
+        Err(e) => match isolate.perform_microtask_checkpoint() {
+            Err(c) if c.terminated => Err(c),
+            _ => Err(e),
+        },
+    }
+}
+
+/// The name of the module that `specifier` names in the module `referrer` (a file path, or
+/// [`EVAL_NAME`] for the current directory): a relative (`./`, `../`) or absolute path,
+/// canonical. A bare specifier (a package name) is an error: the CLI has no package lookup
+/// yet (M4 runtime).
+fn resolve_module(referrer: &str, specifier: &str) -> Result<String, String> {
+    let relative = specifier.starts_with("./") || specifier.starts_with("../");
+    if !relative && !specifier.starts_with('/') {
+        return Err(format!(
+            "Cannot find module '{specifier}' imported from {referrer} (only relative and absolute paths are supported)"
+        ));
+    }
+    let base = if referrer == EVAL_NAME {
+        std::path::PathBuf::from(".")
+    } else {
+        std::path::Path::new(referrer).parent().map_or_else(
+            || std::path::PathBuf::from("."),
+            std::path::Path::to_path_buf,
+        )
+    };
+    let path = base.join(specifier);
+    std::fs::canonicalize(&path)
+        .map(|p| p.display().to_string())
+        .map_err(|e| format!("Cannot find module '{specifier}' imported from {referrer}: {e}"))
+}
+
+/// The module unit of the file `name` (a canonical path).
+fn load_module(name: &str) -> CompileResult {
+    let source = match std::fs::read(name).map(String::from_utf8) {
+        Ok(Ok(s)) => s,
+        Ok(Err(_)) => {
+            return Err(CompileFailure::Syntax(format!(
+                "{name}: the file is not valid UTF-8"
+            )));
+        }
+        Err(e) => return Err(CompileFailure::Internal(format!("cannot read {name}: {e}"))),
+    };
+    ep9_frontend::compile(&source, SourceOpts::module(), CompileOptions::default())
+        .map_err(hook_failure)
 }
 
 // ---- the compiler hooks (C2): ep9_frontend behind `IsolateConfig::compiler` ----------------
@@ -343,6 +420,11 @@ mod tests {
         .unwrap();
         let hooks = iso.compiler().unwrap();
         assert!((hooks.compile_script)("var a = 1;").is_ok());
+        // An unsupported feature (M3-P3 IMPORT-TLA builds import()).
+        assert_eq!(
+            (hooks.compile_script)("import('x')").unwrap_err(),
+            CompileFailure::Unsupported("import()".to_string())
+        );
         assert!(matches!(
             (hooks.compile_script)("let a; let a;"),
             Err(CompileFailure::Syntax(_))
@@ -358,9 +440,9 @@ mod tests {
             (hooks.compile_function)(FunctionCtorKind::Normal, "/*", "*/){"),
             Err(CompileFailure::Syntax(_))
         ));
-        assert_eq!(
-            (hooks.compile_function)(FunctionCtorKind::Async, "a", "return await a").unwrap_err(),
-            CompileFailure::Unsupported("async functions".to_string())
+        assert!((hooks.compile_function)(FunctionCtorKind::Async, "a", "return await a").is_ok());
+        assert!(
+            (hooks.compile_function)(FunctionCtorKind::AsyncGenerator, "", "yield await 1").is_ok()
         );
         assert!(
             Isolate::new(IsolateConfig::default())

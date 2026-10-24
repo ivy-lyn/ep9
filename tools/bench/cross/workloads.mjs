@@ -42,9 +42,10 @@ const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 
 /**
  * Writes the files of `names` (plus the empty script) into `dir`. Returns, per name, the file,
- * the expected output, the classes and where the text came from.
+ * the expected output, the classes and where the text came from. `harness` picks the v8v7
+ * harness ("stub", runs 1 and 2; "base", the real base.js, run 3; v8v7.mjs).
  */
-export function materialize(names, dir, { root = ROOT } = {}) {
+export function materialize(names, dir, { root = ROOT, harness = "stub" } = {}) {
   const out = {};
   const put = (name, text, info) => {
     const file = path.join(dir, `${name}.js`);
@@ -56,7 +57,7 @@ export function materialize(names, dir, { root = ROOT } = {}) {
     const w = WORKLOADS[name];
     if (!w) throw new Error(`unknown workload ${name} (known: ${Object.keys(WORKLOADS).join(", ")})`);
     if (w.v8v7) {
-      const g = generate(w.v8v7, { root });
+      const g = generate(w.v8v7, { root, harness });
       put(name, g.text, {
         classes: w.classes,
         expect: g.expect,
@@ -65,6 +66,7 @@ export function materialize(names, dir, { root = ROOT } = {}) {
         blob: g.blob,
         n: g.n,
         generator: "tools/bench/cross/v8v7.mjs",
+        harness: g.harness,
       });
     } else {
       put(name, PRINT_PRELUDE + readFileSync(path.join(root, w.file), "utf8"), {

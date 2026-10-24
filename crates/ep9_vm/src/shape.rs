@@ -64,9 +64,10 @@
 //!   object bumps [`ShapeState::proto_epoch`] ([`note_change`]): a named property or an
 //!   element that appears or goes away, new attributes, `[[SetPrototypeOf]]`,
 //!   PreventExtensions, dictionary mode. A value store does not.
-//! - The first array-index own property on a prototype-mode object (or an object with one
-//!   becoming a prototype) sets the sticky [`proto_index_keys`] flag: until then `[[Set]]`
-//!   adds array elements without walking the prototype chain.
+//! - The first array-index own property on a prototype-mode object (or an object with one, or
+//!   a routed ARGUMENTS or MODULE_NAMESPACE object, becoming a prototype) sets the sticky
+//!   [`proto_index_keys`] flag: until then `[[Set]]` adds array elements without walking the
+//!   prototype chain.
 //!
 //! Hooks the rest of the VM already calls:
 //!
@@ -195,7 +196,17 @@ mod root {
     /// %GeneratorFunction.prototype% as the prototype (a cache; undefined until the first
     /// generator function).
     pub const GENERATOR_FUNCTION_SHAPE: usize = 2;
-    pub const COUNT: usize = 3;
+    /// The shape of a new async function: [`FUNCTION_SHAPE`] with %AsyncFunction.prototype%
+    /// as the prototype (a cache; undefined until the first async function).
+    pub const ASYNC_FUNCTION_SHAPE: usize = 3;
+    /// The shape of a new async generator function: [`FUNCTION_SHAPE`] with
+    /// %AsyncGeneratorFunction.prototype% as the prototype (a cache; undefined until the
+    /// first async generator function).
+    pub const ASYNC_GENERATOR_FUNCTION_SHAPE: usize = 4;
+    pub const COUNT: usize = 5;
+    /// The first function shape cache slot: the slots from here to [`COUNT`] hold a shape
+    /// over a prototype of the current realm (`clear_realm_caches`).
+    pub const FIRST_REALM_CACHE: usize = FUNCTION_SHAPE;
 }
 
 /// The last value of [`ShapeState::proto_epoch`]: it stays there (it never wraps). No IC case
@@ -211,7 +222,8 @@ pub(crate) struct ShapeState {
     /// prototype IC handlers compare it.
     pub proto_epoch: Cell<u32>,
     /// Sticky, never cleared: set once a prototype-mode object has an array-index own
-    /// property ([`proto_index_keys`]). While it is false no prototype chain has an index key,
+    /// property, or a routed kind becomes a prototype ([`proto_index_keys`]). While it is
+    /// false no prototype chain has an index key,
     /// so `[[Set]]` may add a missing array element without the walk (V8's "no elements"
     /// protector).
     proto_index: Cell<bool>,
@@ -1124,7 +1136,8 @@ pub(crate) fn note_change(rt: &Runtime, o: u64) {
 }
 
 /// True if some prototype-mode object has, or once had, an array-index own property: an
-/// element, a stored index key or a String wrapper index. False means no prototype chain
+/// element, a stored index key or a String wrapper index; or is a routed kind (ARGUMENTS,
+/// MODULE_NAMESPACE), whose hooks may answer for an index. False means no prototype chain
 /// has an index key, so an inherited setter, getter or read-only property cannot decide a
 /// `[[Set]]` of an index (§10.1.9.2). One load; not a GC point.
 #[inline(always)]
@@ -1142,8 +1155,10 @@ pub(crate) fn note_proto_index_key(rt: &Runtime, o: u64) {
 }
 
 /// True if the object `o` may have an array-index own property: an array with a non-zero
-/// `length` (holes too), a String wrapper of a non-empty string, or a stored index key. Not a
-/// GC point. Out of line: [`proto_info_for`] runs it once per new prototype.
+/// `length` (holes too), a String wrapper of a non-empty string, a stored index key, or a
+/// routed kind (ARGUMENTS, MODULE_NAMESPACE: its hooks answer for index keys that are not in
+/// its storage). Not a GC point. Out of line: [`proto_info_for`] runs it once per new
+/// prototype.
 #[cold]
 #[inline(never)]
 fn may_have_index_keys(o: u64) -> bool {
@@ -1152,6 +1167,7 @@ fn may_have_index_keys(o: u64) -> bool {
         || wrapped.is_some_and(|s| kind::is_string(s) && object::str_len(s) > 0)
         || (0..object::own_count(o))
             .any(|i| key::array_index_of(object::own_entry(o, i).0).is_some())
+        || crate::exotic::is_routed(kind::cell_kind(o))
 }
 
 /// The PROTO_INFO for the prototype `p` (an object, or null). The first call for an object
@@ -1213,6 +1229,46 @@ pub(crate) fn generator_function_shape(rt: &Runtime) -> u64 {
         return function_shape(rt);
     }
     cached_function_shape(rt, gfp, root::GENERATOR_FUNCTION_SHAPE)
+}
+
+/// Empties the function shape caches ([`function_shape`], [`generator_function_shape`],
+/// [`async_function_shape`], [`async_generator_function_shape`]): the realm switch
+/// (`realm::switch`) calls it, so a cache holds only a shape of the current realm.
+/// A cache that kept the shape of the last realm that made a function would keep that realm
+/// live (shape -> PROTO_INFO -> its `%Function.prototype%` -> its REALM record) after nothing
+/// else holds it. A hit checks the prototype, so this is not needed for correct prototypes.
+/// Not a GC point.
+pub(crate) fn clear_realm_caches(rt: &Runtime) {
+    for slot in &rt.shapes.roots[root::FIRST_REALM_CACHE..root::COUNT] {
+        // E3: a store into a root takes no barrier.
+        slot.init(Value::UNDEFINED);
+    }
+}
+
+/// The shape of a new async function (§15.8.3: OrdinaryFunctionCreate with
+/// %AsyncFunction.prototype%): [`function_shape`] with that prototype. Cached in the
+/// ShapeState roots. Before the intrinsic is installed it is the [`function_shape`]. GC
+/// point.
+pub(crate) fn async_function_shape(rt: &Runtime) -> u64 {
+    use crate::builtins::{IntrinsicId, intrinsic};
+    let afp = intrinsic(rt, IntrinsicId::AsyncFunctionPrototype);
+    if !kind::is_object(afp) {
+        return function_shape(rt);
+    }
+    cached_function_shape(rt, afp, root::ASYNC_FUNCTION_SHAPE)
+}
+
+/// The shape of a new async generator function (§15.6.3: OrdinaryFunctionCreate with
+/// %AsyncGeneratorFunction.prototype%): [`function_shape`] with that prototype. Cached in the
+/// ShapeState roots. Before the intrinsic is installed it is the [`function_shape`]. GC
+/// point.
+pub(crate) fn async_generator_function_shape(rt: &Runtime) -> u64 {
+    use crate::builtins::{IntrinsicId, intrinsic};
+    let agfp = intrinsic(rt, IntrinsicId::AsyncGeneratorFunctionPrototype);
+    if !kind::is_object(agfp) {
+        return function_shape(rt);
+    }
+    cached_function_shape(rt, agfp, root::ASYNC_GENERATOR_FUNCTION_SHAPE)
 }
 
 /// The function shape over the prototype `fp` (FUNCTION, 2 slots, `length` and `name`),

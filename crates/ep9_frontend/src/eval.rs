@@ -17,8 +17,8 @@
 //!   oxc_semantic (new_compiler) ---------- an error not in the allowed set --------> Syntax
 //!   post-checks: `arguments` in a field initializer; every #x declared here or in
 //!     EvalContext::private_names ------------------------------------------------> Syntax
-//!   super(...) allowed and present, a #x of the caller's class,
-//!     Annex B function in sloppy eval ------------------------------------------> Unsupported
+//!   super(...) allowed and present, a #x of the caller's class (an Annex B function in
+//!     sloppy eval goes on: E7) -------------------------------------------------> Unsupported
 //!   scope::analyze_eval (ScopeKind::Eval root; direct: free names Dynamic, indirect: Global)
 //!   bytecodegen::generate (CodeKind::Eval; gen_eval_program)  --> VerifiedUnit
 //! ```
@@ -33,7 +33,8 @@
 //! | E4 | For indirect eval the context flags and `private_names` are ignored (treated as false and empty) | PerformEval: indirect eval is global code |
 //! | E5 | The completion value comes from an AST rewrite before oxc_semantic: value-producing statements store into the synthetic root binding `.result` (V8 `Rewriter`, src/parsing/rewriter.cc, ported statement by statement), and function 0 returns it. A function or class value is stored through a one-element sequence, so it gets no name | The statement generators (stmt.rs) have no completion register; the rewrite keeps the change inside this file. `eval("(function(){})").name` is `""` (node 24) |
 //! | E6 | `super()` in eval code is Unsupported in P2 | `super_call` (expr.rs) needs a static `this` binding; the caller's `this` is only reachable by name (C4) |
-//! | E7 | An Annex B.3.2.3 function in sloppy eval code is Unsupported in P2 | Whether it gets a var binding depends on the caller's environments at run time (EvalDeclarationInstantiation B.3.2.3 steps i.1-7); the front end alone cannot decide it |
+//! | E7 | (M3-P2 VM-ARGS) An Annex B.3.2.3 block function of sloppy eval code: the prologue calls `DeclareEvalAnnexBFunction(name)` (ABI 5 id 46) after the eval code's own declarations and keeps its answer in a register; the declaration, when it runs, calls `StoreEvalAnnexBFunction(name, f)` (id 47) if the answer was true (`gen_eval_program`, `store_annex_b_var`). A var binding that only Annex B made gets no `DeclareEvalVar` | Whether it gets a var binding depends on the caller's environments at run time (B.3.2.3 steps ii.2.a-f): the VM decides it (`interp/slow/eval.rs`). Before M3-P2 this was Unsupported |
+//! | E7-ORDER | (M3-P2, RV2-ARGS1) The E7 Annex B bindings are declared after the eval code's own function and var bindings, in V8's order. The spec runs the B.3.2.3 steps at EvalDeclarationInstantiation step 13, before steps 17-18. Only the order of new global properties differs: `var aa1; { function bb1() {} } function cc1() {}` adds cc1, aa1, bb1 (spec: bb1, cc1, aa1; node v24.22.1: aa1, cc1, bb1) | Node is the oracle (plan rule): bb1 comes last, as in V8. The names never overlap, so no binding and no error changes |
 //! | E8 | Lone surrogates never reach this function in M0 (the hook takes `&str`) | D8: the shim is milestone-M3 work (01-front-end.md:159) |
 //! | E9 | A `#x` that only the caller's class declares (`EvalContext::private_names`) is Unsupported in P2; the scope pass still resolves it `Dynamic` | The private-name codegen (bytecodegen/private.rs) needs a static binding; without this check such code would reach it as an internal error. The check goes when private.rs gets a by-name path (P3-EVAL-VM) |
 
@@ -53,7 +54,7 @@ use oxc_semantic::{ScopeFlags, SemanticBuilder};
 use oxc_span::{GetSpan, SPAN, SourceType, Span};
 
 use crate::bytecodegen::{self, CodegenError, CompileOptions, EVAL_RESULT, Unsupported};
-use crate::scope::{self, EvalKind, ScopeId};
+use crate::scope::{self, EvalKind};
 use crate::{
     AST_CAP, ByteSpan, CompileError, DepthLayer, EarlyErrors, FrontEnd, Goal, LineMap, PRESCAN_CAP,
     RangeError, RangeErrorKind, SourceOpts, Strictness, SyntaxError,
@@ -71,7 +72,7 @@ use crate::{
 ///
 /// See [`CodegenError`]: early errors (also the eval-only ones of PerformEval), depth limits,
 /// and [`CodegenError::Unsupported`] for `super()` in eval code, for a `#x` of the caller's
-/// class, for an Annex B function in sloppy eval code, and for every construct that BytecodeGen v0 does not support.
+/// class, and for every construct that BytecodeGen v0 does not support.
 pub fn compile_eval(
     source: &str,
     ctx: &EvalContext,
@@ -232,7 +233,6 @@ fn on_worker<R>(
         EvalKind::Indirect
     };
     let analysis = scope::analyze_eval(&fe, kind)?;
-    check_annex_b(source, &analysis)?;
     codegen(&fe, &analysis)
 }
 
@@ -565,27 +565,6 @@ impl<'a> Visit<'a> for PostWalk<'_> {
         self.private_ref(it.left.name.as_str(), it.left.span);
         walk::walk_private_in_expression(self, it);
     }
-}
-
-/// E7: a block function of sloppy eval code whose Annex B var binding is an eval var.
-fn check_annex_b(source: &str, sa: &scope::ScopeAnalysis) -> Result<(), CodegenError> {
-    let root = sa.scope(ScopeId(0));
-    if root.strict {
-        return Ok(());
-    }
-    for b in sa.bindings() {
-        if let Some(var) = b.annex_b_var
-            && sa.binding(var).scope == root.id
-        {
-            let span = b.span.map_or(SPAN, |s| Span::new(s.start, s.end));
-            return Err(unsupported(
-                source,
-                "Annex B function declarations in sloppy eval code",
-                span,
-            ));
-        }
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1259,25 +1238,40 @@ mod tests {
     }
 
     #[test]
-    fn annex_b_functions_in_sloppy_eval_are_unsupported() {
+    fn annex_b_functions_in_sloppy_eval_compile() {
+        // E7: the prologue asks the VM after the eval code's own declarations; the
+        // declaration copies the function only if the answer was true.
+        let text = disasm("var v; { function f() {} }", &direct());
+        let at = |what: &str| text.find(what).unwrap_or_else(|| panic!("{what}: {text}"));
+        assert!(at("CallRuntime DeclareEvalVar") < at("CallRuntime DeclareEvalAnnexBFunction"));
+        assert!(at("CallRuntime DeclareEvalAnnexBFunction") < at("JumpIfFalse"));
+        assert!(at("JumpIfFalse") < at("CallRuntime StoreEvalAnnexBFunction"));
+        // A var binding that only Annex B made gets no DeclareEvalVar.
+        let text = disasm("if (1) function f() {}", &EvalContext::default());
+        assert!(!text.contains("DeclareEvalVar"), "{text}");
         assert_eq!(
-            outcome("{ function f() {} }", &direct()),
-            "unsupported: Annex B function declarations in sloppy eval code"
+            text.matches("DeclareEvalAnnexBFunction").count(),
+            1,
+            "{text}"
         );
+        // One var binding for two block functions of one name.
+        let text = disasm("{ function f() {} } { function f() {} }", &direct());
         assert_eq!(
-            outcome("if (1) function f() {}", &EvalContext::default()),
-            "unsupported: Annex B function declarations in sloppy eval code"
+            text.matches("DeclareEvalAnnexBFunction").count(),
+            1,
+            "{text}"
         );
+        assert_eq!(text.matches("StoreEvalAnnexBFunction").count(), 2, "{text}");
+        // Strict eval code has no Annex B; inside a function of the eval code, Annex B is the
+        // function's own business.
         let strict = EvalContext {
             strict: true,
             ..direct()
         };
-        assert_eq!(outcome("{ function f() {} }", &strict), "ok");
-        // Inside a function of the eval code, Annex B is the function's own business.
-        assert_eq!(
-            outcome("function g() { { function f() {} } }", &direct()),
-            "ok"
-        );
+        assert!(!disasm("{ function f() {} }", &strict).contains("AnnexB"));
+        let text = disasm("function g() { { function f() {} } }", &direct());
+        assert!(!text.contains("AnnexB"), "{text}");
+        assert_eq!(outcome("{ function f() {} }", &direct()), "ok");
     }
 
     #[test]

@@ -46,7 +46,7 @@ Copied from the plan row (02 §6): JIT: DEOPT + exit counter. Hybrid: DEOPT → 
 - A site with 4 guard failures (est.) stops using its hint, in every mode (05 §4).
 - A site without a SLOWPATH variant keeps deopting until the function is pinned (05 §10).
 
-**As built (e719ffa).** The PIN targets exist as dispatch-slot kinds: `Interp = 0`, `AotBaseline = 3` (`crates/ep9_vm/src/dispatch.rs:21-32`); "tier-up, unit load, deopt-all, PIN ==> write one slot" (`crates/ep9_vm/src/dispatch.rs:5`; H14 dispatch slots, `docs/adr/H14-frames-and-dispatch.md:65`). No tier emits a guard, and there is no exit counter or deoptimizer (H29).
+**As built (e719ffa).** The PIN targets exist as dispatch-slot kinds: `Interp = 0`, `AotBaseline = 3` (`crates/ep9_vm/src/dispatch.rs:21-32`); "tier-up, unit load, deopt-all, PIN ==> write one slot" (`crates/ep9_vm/src/dispatch.rs:5`; H14 dispatch slots, `docs/adr/H14-frames-and-dispatch.md:69`). No tier emits a guard, and there is no exit counter or deoptimizer (H29).
 
 ## Rules
 
@@ -103,3 +103,4 @@ Copied from the plan row (02 §6): JIT: DEOPT + exit counter. Hybrid: DEOPT → 
 |---|---|---|---|
 | 2026-10-22 | draft | First draft from 02 §6 row H32, 04 §7 and 05 §10: per-mode table, jitless budgets, reserved D17 rows; confidence, SLOWPATH coverage and the budget freeze are Open questions | P3-ADR-JIT agent (M2-P3) |
 | 2026-10-22 | rewrite | The jitless Rules row capped every site at its budget, but a site with no SLOWPATH variant keeps deopting until function PIN (05 §10). The row now names both budgets: a site with SLOWPATH stops deopting at 4 (est.), a site without one deopts until the function reaches 16 exits (est.) and is PINned. The diagram labels the SLOWPATH arrow with "the site has a SLOWPATH variant". Draft, before the freeze point: not counted by G8 | P3 review fix |
+| 2026-10-23 | clarify | 1 `path:line` reference moved to the code after the M3-P1 merge and the M3-P1 fixer changes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS). No check changes | M3-P1 integration fixer |

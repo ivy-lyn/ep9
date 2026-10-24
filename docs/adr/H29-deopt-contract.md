@@ -37,17 +37,17 @@ eager: Guard fails -> DeoptExit(id) -> shared deopt entry (ep9_vm)
 lazy:  fuse pops -> mark dependent code -> swap return addresses on the stack -> frames enter the deopt entry on return
 ```
 
-**The position part as built (Spike B, feature `spike-native` only).** Placement (b) is the D21 placement since gate window 2 (H14-Q5): (b) frames live on the VM register stack. Placement (a) (native-stack frames) failed the D21 rule in gate window 1 and stays as spike code. In both, a JIT frame is a canonical VM frame (H14 JIT frames paragraph, (a) and (b), `docs/adr/H14-frames-and-dispatch.md:62-63`). JIT code never hands the runtime a native pc:
+**The position part as built (Spike B, feature `spike-native` only).** Placement (b) is the D21 placement since gate window 2 (H14-Q5): (b) frames live on the VM register stack. Placement (a) (native-stack frames) failed the D21 rule in gate window 1 and stays as spike code. In both, a JIT frame is a canonical VM frame (H14 JIT frames paragraph, (a) and (b), `docs/adr/H14-frames-and-dispatch.md:65-66`). JIT code never hands the runtime a native pc:
 
 | Fact | Where (e719ffa; the (b) refs at c39f782) |
 |---|---|
-| Every runtime-table call from JIT code passes `(cx, fp, bytecode offset, values..)` | `crates/ep9_vm/src/native.rs:10-11`; the table fn types `RtFn0`-`RtCompareFn` `crates/ep9_vm/src/native.rs:89-98` |
+| Every runtime-table call from JIT code passes `(cx, fp, bytecode offset, values..)` | `crates/ep9_vm/src/native.rs:10-11`; the table fn types `RtFn0`-`RtCompareFn` `crates/ep9_vm/src/native.rs:97-106` |
 | Rules "records the state first" and "a bytecode offset, not a pc" (the same code works for JIT code and unit text) | `crates/ep9_vm/src/native.rs:21-22` |
-| `native::enter` publishes fp and saves the offset through `Runtime::enter` before the table fn body runs | `crates/ep9_vm/src/native.rs:361-378`; `crates/ep9_vm/src/runtime.rs:313-327` (offset slot fp-1, `crates/ep9_vm/src/frame.rs:68`) |
+| `native::enter` publishes fp and saves the offset through `Runtime::enter` before the table fn body runs | `crates/ep9_vm/src/native.rs:467-484`; `crates/ep9_vm/src/runtime.rs:328-342` (offset slot fp-1, `crates/ep9_vm/src/frame.rs:68`) |
 | The a64 emitter loads the offset as an immediate (w2) for each table call | (a): `spikes/spike-b/src/jit/a64.rs:90-92`; (b): `spikes/spike-b/src/jit_b/a64.rs:107-113` |
-| (b) only: a table result of 0 runs `RuntimeTable::unwind(cx, fp, off)`, which unwinds from that bytecode offset (`error::unwind`), sets `Cx::out_fp`/`out_pc`, and the (b) code tail-jumps there | `spikes/spike-b/src/jit_b/a64.rs:16-18`; `crates/ep9_vm/src/native.rs:131-137` |
+| (b) only: a table result of 0 runs `RuntimeTable::unwind(cx, fp, off)`, which unwinds from that bytecode offset (`error::unwind`), sets `Cx::out_fp`/`out_pc`, and the (b) code tail-jumps there | `spikes/spike-b/src/jit_b/a64.rs:16-18`; `crates/ep9_vm/src/native.rs:139-145` |
 | Spike B code has no absolute address and no relocation; each emitted bytecode op records its native offset from the code start | `spikes/spike-b/src/emit.rs:139-146` (`FunctionCode.code`, `native_offsets`) |
-| No deopt metadata exists: `DEOPT_META_VERSION` = 0. The unit header carries it (offset 112); a mismatch is the BYTECODE outcome (H35 S4 step 4) | `crates/ep9_vm/src/versions.rs:18-19`; `crates/ep9_unit/src/header.rs:115-116`; `docs/adr/H35-aot-unit-format.md:55` |
+| No deopt metadata exists: `DEOPT_META_VERSION` = 0. The unit header carries it (offset 112); a mismatch is the BYTECODE outcome (H35 S4 step 4) | `crates/ep9_vm/src/versions.rs:20-21`; `crates/ep9_unit/src/header.rs:115-116`; `docs/adr/H35-aot-unit-format.md:55` |
 | `JumpLoop` is documented as the interrupt poll and H29 lazy-deopt point | `crates/ep9_bytecode/src/opcodes.rs:437` |
 
 ## Rules
@@ -112,3 +112,5 @@ lazy:  fuse pops -> mark dependent code -> swap return addresses on the stack ->
 | 2026-10-22 | clarify | 2 `path:line` references moved to the code after the M2-P4 merge (drift script, [I15]). No check changes | P4 integration fixer |
 | 2026-10-22 | reopen | The "Reopens if" row on the D21 verdict fired: gate window 2 gave pass for placement (b) (RT 14.618 [13.999, 15.006], c39f782; M2-W2-D21-B), so JIT frames live on the VM stack. The row is marked fired; H29-Q3 and H29-Q4 note that (b) → callee calls still nest one native level through `call_any`, and that a (b) frame returns through its VM return pc, so lazy deopt must handle both (M2-P5-PLAN-D16) | P5-DOCS-SYNC agent (M2-P5) |
 | 2026-10-22 | fill | The position part names placement (b): the Decision paragraph, two Facts rows (the (b) offset immediate, `RuntimeTable::unwind`), and SPIKEB(b) check (c) (`jit_b/structural.rs:11`) next to the (a) check (c) in Rules row 1 and in Validated by. Every existing check keeps its result (M2-P5-PLAN-D16) | P5-DOCS-SYNC agent (M2-P5) |
+| 2026-10-23 | clarify | 3 `path:line` references moved to the code after the M3-P0 merge and the M3-P0 code fixes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS). The H14 ref of the position part still names the two JIT-frame paragraphs ((a), then (b)); both still say a JIT frame is a canonical VM frame, also for x86-64 (b) since M3-P0, so the claim holds (a pin in the drift script: the (b) paragraph text changed). No check changes | M3-P0 integration fixer |
+| 2026-10-23 | clarify | 5 `path:line` references moved to the code after the M3-P1 merge and the M3-P1 fixer changes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS). No check changes | M3-P1 integration fixer |

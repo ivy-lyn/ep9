@@ -1,0 +1,290 @@
+# async-method: script (strict)
+# | var o = { async m() { return await this.x; } }; class C { static async #s() { await 1; } async m(x) { return super.m(await x); } }
+; ep9 bytecode, ABI 5
+unit kind=script strict=true ts=none source_len=130 source=embedded hints=none
+source_hash=ea4ad306d23722de252f9f4b1c453d0d2a312edbd0cdf13cdced2adb681ba91d
+strings (6):
+  str0 "o"
+  str1 "C"
+  str2 "#s"
+  str3 "#.static-brand"
+  str4 "m"
+  str5 "x"
+scopes (6):
+  scope0 script outer=- flags=[strict] slots=["o":var, "C":class]
+  scope1 function outer=scope0 flags=[strict] slots=[]
+  scope2 class outer=scope0 flags=[needs-context,strict] slots=["#s":const, "#.static-brand":const]
+  scope3 function outer=scope2 flags=[strict] slots=[]
+  scope4 function outer=scope2 flags=[strict] slots=[]
+  scope5 function outer=scope2 flags=[strict] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[strict] params=0 length=0 regs=8 range=0..130
+  code (112 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> CreateObjectLiteral k1, s0, #0x01  ; k1 = ObjectBoilerplate {k0: _} ; 70 01 00 01
+      9    Star r1                                      ; 0c 01
+     11 E> CreateClosure k2, s1, #0x00  ; k2 = Function f1 ; 74 02 01 00
+     15 E> DefineNamedOwnProperty r1, k0, s2  ; k0 = String str4 "m" ; 25 01 00 02
+     19    Ldar r1                                      ; 0b 01
+     21 E> StaGlobal k3, s3  ; k3 = String str0 "o"     ; 12 03 03
+     24 S> CreateBlockContext k4  ; k4 = Scope scope2   ; 76 04
+     26    PushContext r4                               ; 13 04
+     28    LdaConstant k5  ; k5 = String str1 "C"       ; 0a 05
+     30    Star r5                                      ; 0c 05
+     32 E> CallRuntime CreatePrivateName, r5            ; 68 17 00 05 01
+     37    StaCurrentContextSlot [1]                    ; 1b 01
+     39    LdaTheHole                                   ; 07
+     40    Star r2                                      ; 0c 02
+     42 E> CreateClosure k6, s4, #0x00  ; k6 = Function f2 ; 74 06 04 00
+     46    Star r1                                      ; 0c 01
+     48 E> CallRuntime DefineClass, r1-r2               ; 68 04 00 01 02
+     53    Star r3                                      ; 0c 03
+     55 E> CreateClosure k7, s5, #0x00  ; k7 = Function f3 ; 74 07 05 00
+     59    StaCurrentContextSlot [0]                    ; 1b 00
+     61    Mov r3, r5                                   ; 0d 03 05
+     64    LdaConstant k0  ; k0 = String str4 "m"       ; 0a 00
+     66    Star r6                                      ; 0c 06
+     68 E> CreateClosure k8, s6, #0x00  ; k8 = Function f4 ; 74 08 06 00
+     72    Star r7                                      ; 0c 07
+     74 E> CallRuntime DefineClassMethod, r5-r7         ; 68 0f 00 05 03
+     79    Ldar r1                                      ; 0b 01
+     81    Star r0                                      ; 0c 00
+     83    LdaCurrentContextSlot [1]                    ; 18 01
+     85    Star r5                                      ; 0c 05
+     87    LdaUndefined                                 ; 05
+     88 E> DefineKeyedOwnProperty r1, r5, #0x02, s7     ; 27 01 05 02 07
+     93    PopContext r4                                ; 14 04
+     95    Ldar r1                                      ; 0b 01
+     97    Star r2                                      ; 0c 02
+     99    LdaConstant k5  ; k5 = String str1 "C"       ; 0a 05
+    101    Star r1                                      ; 0c 01
+    103 E> CallRuntime InitializeGlobal, r1-r2          ; 68 06 00 01 02
+    108    Ldar r2                                      ; 0b 02
+    110    LdaUndefined                                 ; 05
+    111    Return                                       ; 92
+  constants (9):
+      0 String str4 "m"
+      1 ObjectBoilerplate {k0: _}
+      2 Function f1
+      3 String str0 "o"
+      4 Scope scope2
+      5 String str1 "C"
+      6 Function f2
+      7 Function f3
+      8 Function f4
+  feedback (8):
+      0 Literal
+      1 CreateClosure
+      2 DefineNamedOwn
+      3 StoreGlobal
+      4 CreateClosure
+      5 CreateClosure
+      6 CreateClosure
+      7 DefineKeyedOwn
+  handlers (0):
+  positions (14):
+      0 S 0 (1:1)
+      5 S 4 (1:5)
+     11 E 8 (1:9)
+     15 E 8 (1:9)
+     21 E 4 (1:5)
+     24 S 48 (1:49)
+     32 E 48 (1:49)
+     42 E 48 (1:49)
+     48 E 48 (1:49)
+     55 E 48 (1:49)
+     68 E 48 (1:49)
+     74 E 95 (1:96)
+     88 E 56 (1:57)
+    103 E 48 (1:49)
+function f1 method name="m" parent=f0 outer_scope=scope0 flags=[strict,async,simple-params] params=0 length=0 regs=4 range=17..44
+  code (100 bytes):
+      0    LdaNewTarget                                 ; 0f
+      1    Star r0                                      ; 0c 00
+      3    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+42] ; 99 00 00
+      6    LdaCurrentFunction                           ; 0e
+      7    Star r1                                      ; 0c 01
+      9    Mov <this>, r2                               ; 0d ff 02
+     12 E> CallRuntime AsyncFunctionEnter, r1-r2        ; 68 20 00 01 02
+     17    Star r0                                      ; 0c 00
+     19    LdaCurrentContext                            ; 15
+     20    Star r1                                      ; 0c 01
+     22 S> Ldar <this>                                  ; 0b ff
+     24    Star r2                                      ; 0c 02
+     26 E> GetNamedProperty r2, k1, s0  ; k1 = String str5 "x" ; 21 02 01 00
+     30    Star r3                                      ; 0c 03
+     32    Mov r0, r2                                   ; 0d 00 02
+     35 E> CallRuntime AsyncFunctionAwait, r2-r3        ; 68 21 00 02 02
+     40 E> SuspendGenerator r0, r0-r1, [0]              ; 9a 00 00 02 00
+     45    ResumeGenerator r0, r0-r1                    ; 9b 00 00 02
+     49    Star r2                                      ; 0c 02
+     51 E> CallRuntime GeneratorGetResumeMode, r0       ; 68 14 00 00 01
+     56    SwitchOnSmi k2, [0]  ; k2 = JumpTable [+6]   ; 8a 02 00
+     59    Ldar r2                                      ; 0b 02
+     61 E> Throw                                        ; 90
+     62    Ldar r2                                      ; 0b 02
+     64    Star r3                                      ; 0c 03
+     66    Mov r0, r2                                   ; 0d 00 02
+     69 E> CallRuntime AsyncFunctionResolve, r2-r3      ; 68 22 00 02 02
+     74    Return                                       ; 92
+     75    LdaUndefined                                 ; 05
+     76    Star r3                                      ; 0c 03
+     78    Mov r0, r2                                   ; 0d 00 02
+     81 E> CallRuntime AsyncFunctionResolve, r2-r3      ; 68 22 00 02 02
+     86    Return                                       ; 92
+     87    Star r3                                      ; 0c 03
+     89    LdaTheHole                                   ; 07
+     90    SetPendingMessage                            ; 93
+     91    Mov r0, r2                                   ; 0d 00 02
+     94 E> CallRuntime AsyncFunctionReject, r2-r3       ; 68 23 00 02 02
+     99    Return                                       ; 92
+  constants (3):
+      0 JumpTable [+42]
+      1 String str5 "x"
+      2 JumpTable [+6]
+  feedback (1):
+      0 LoadNamed
+  handlers (1):
+        [22, 87) -> @87 context=r1 promise
+  positions (10):
+     12 E 17 (1:18)
+     22 S 22 (1:23)
+     26 E 40 (1:41)
+     35 E 29 (1:30)
+     40 E 29 (1:30)
+     51 E 29 (1:30)
+     61 E 29 (1:30)
+     69 E 22 (1:23)
+     81 E 43 (1:44)
+     94 E 43 (1:44)
+function f2 class-constructor name="C" parent=f0 outer_scope=scope2 flags=[strict,simple-params] params=0 length=0 regs=0 range=56..130
+  code (2 bytes):
+      0 S> LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 48 (1:49)
+function f3 method name="#s" parent=f0 outer_scope=scope2 flags=[strict,async,simple-params] params=0 length=0 regs=4 range=73..88
+  code (83 bytes):
+      0    LdaNewTarget                                 ; 0f
+      1    Star r0                                      ; 0c 00
+      3    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+36] ; 99 00 00
+      6    LdaCurrentFunction                           ; 0e
+      7    Star r1                                      ; 0c 01
+      9    Mov <this>, r2                               ; 0d ff 02
+     12 E> CallRuntime AsyncFunctionEnter, r1-r2        ; 68 20 00 01 02
+     17    Star r0                                      ; 0c 00
+     19    LdaCurrentContext                            ; 15
+     20    Star r1                                      ; 0c 01
+     22 S> LdaSmi [1]                                   ; 04 01
+     24    Star r3                                      ; 0c 03
+     26    Mov r0, r2                                   ; 0d 00 02
+     29 E> CallRuntime AsyncFunctionAwait, r2-r3        ; 68 21 00 02 02
+     34 E> SuspendGenerator r0, r0-r1, [0]              ; 9a 00 00 02 00
+     39    ResumeGenerator r0, r0-r1                    ; 9b 00 00 02
+     43    Star r2                                      ; 0c 02
+     45 E> CallRuntime GeneratorGetResumeMode, r0       ; 68 14 00 00 01
+     50    SwitchOnSmi k1, [0]  ; k1 = JumpTable [+6]   ; 8a 01 00
+     53    Ldar r2                                      ; 0b 02
+     55 E> Throw                                        ; 90
+     56    Ldar r2                                      ; 0b 02
+     58    LdaUndefined                                 ; 05
+     59    Star r3                                      ; 0c 03
+     61    Mov r0, r2                                   ; 0d 00 02
+     64 E> CallRuntime AsyncFunctionResolve, r2-r3      ; 68 22 00 02 02
+     69    Return                                       ; 92
+     70    Star r3                                      ; 0c 03
+     72    LdaTheHole                                   ; 07
+     73    SetPendingMessage                            ; 93
+     74    Mov r0, r2                                   ; 0d 00 02
+     77 E> CallRuntime AsyncFunctionReject, r2-r3       ; 68 23 00 02 02
+     82    Return                                       ; 92
+  constants (2):
+      0 JumpTable [+36]
+      1 JumpTable [+6]
+  feedback (0):
+  handlers (1):
+        [22, 70) -> @70 context=r1 promise
+  positions (8):
+     12 E 73 (1:74)
+     22 S 78 (1:79)
+     29 E 78 (1:79)
+     34 E 78 (1:79)
+     45 E 78 (1:79)
+     55 E 78 (1:79)
+     64 E 87 (1:88)
+     77 E 87 (1:88)
+function f4 method name="m" parent=f0 outer_scope=scope2 flags=[strict,async,simple-params] params=1 length=1 regs=8 range=96..128
+  code (126 bytes):
+      0    LdaNewTarget                                 ; 0f
+      1    Star r0                                      ; 0c 00
+      3    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+61] ; 99 00 00
+      6    LdaCurrentFunction                           ; 0e
+      7    Star r1                                      ; 0c 01
+      9    Mov <this>, r2                               ; 0d ff 02
+     12 E> CallRuntime AsyncFunctionEnter, r1-r2        ; 68 20 00 01 02
+     17    Star r0                                      ; 0c 00
+     19    LdaCurrentContext                            ; 15
+     20    Star r1                                      ; 0c 01
+     22 S> Ldar <this>                                  ; 0b ff
+     24    Star r5                                      ; 0c 05
+     26    LdaCurrentFunction                           ; 0e
+     27    Star r7                                      ; 0c 07
+     29 E> CallRuntime GetHomeObject, r7                ; 68 0e 00 07 01
+     34    Star r6                                      ; 0c 06
+     36    Ldar r6                                      ; 0b 06
+     38 E> GetNamedPropertyFromSuper r5, k1, s0  ; k1 = String str4 "m" ; 22 05 01 00
+     42    Star r2                                      ; 0c 02
+     44    Mov r5, r3                                   ; 0d 05 03
+     47    Ldar a0                                      ; 0b fe
+     49    Star r6                                      ; 0c 06
+     51    Mov r0, r5                                   ; 0d 00 05
+     54 E> CallRuntime AsyncFunctionAwait, r5-r6        ; 68 21 00 05 02
+     59 E> SuspendGenerator r0, r0-r4, [0]              ; 9a 00 00 05 00
+     64    ResumeGenerator r0, r0-r4                    ; 9b 00 00 05
+     68    Star r5                                      ; 0c 05
+     70 E> CallRuntime GeneratorGetResumeMode, r0       ; 68 14 00 00 01
+     75    SwitchOnSmi k2, [0]  ; k2 = JumpTable [+6]   ; 8a 02 00
+     78    Ldar r5                                      ; 0b 05
+     80 E> Throw                                        ; 90
+     81    Ldar r5                                      ; 0b 05
+     83    Star r4                                      ; 0c 04
+     85 E> CallProperty1 r2, r3, r4, s1                 ; 61 02 03 04 01
+     90    Star r3                                      ; 0c 03
+     92    Mov r0, r2                                   ; 0d 00 02
+     95 E> CallRuntime AsyncFunctionResolve, r2-r3      ; 68 22 00 02 02
+    100    Return                                       ; 92
+    101    LdaUndefined                                 ; 05
+    102    Star r3                                      ; 0c 03
+    104    Mov r0, r2                                   ; 0d 00 02
+    107 E> CallRuntime AsyncFunctionResolve, r2-r3      ; 68 22 00 02 02
+    112    Return                                       ; 92
+    113    Star r3                                      ; 0c 03
+    115    LdaTheHole                                   ; 07
+    116    SetPendingMessage                            ; 93
+    117    Mov r0, r2                                   ; 0d 00 02
+    120 E> CallRuntime AsyncFunctionReject, r2-r3       ; 68 23 00 02 02
+    125    Return                                       ; 92
+  constants (3):
+      0 JumpTable [+61]
+      1 String str4 "m"
+      2 JumpTable [+6]
+  feedback (2):
+      0 LoadNamed
+      1 Call
+  handlers (1):
+        [22, 113) -> @113 context=r1 promise
+  positions (12):
+     12 E 96 (1:97)
+     22 S 102 (1:103)
+     29 E 109 (1:110)
+     38 E 115 (1:116)
+     54 E 117 (1:118)
+     59 E 117 (1:118)
+     70 E 117 (1:118)
+     80 E 117 (1:118)
+     85 E 115 (1:116)
+     95 E 102 (1:103)
+    107 E 127 (1:128)
+    120 E 127 (1:128)

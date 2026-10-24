@@ -77,7 +77,7 @@ T2 (/T3)     ep9_opt       ---> T2 / T3 code                   optimized-AOT   (
 | Scope analysis puts locals that are not captured in registers. Contexts hold only captured variables | [R07] Boa +25% |
 | Lazy FeedbackVector. The interrupt budget at back-edges and returns drives tier-up, GC polls and termination | [R06] V8 waits 8 calls |
 | Global variables use property cells plus ICs. Prototype validity cells guard proto-chain ICs | [R06] |
-| Calls never recurse in Rust. Args are reversed and padded with undefined | [R06] adaptor frame: +11.2% jitless |
+| JS→JS calls in one realm never recurse in Rust (a cross-realm call nests one Rust level, H14). Args are reversed and padded with undefined | [R06] adaptor frame: +11.2% jitless |
 | Hot builtins (push, indexOf, string ops, Math) get human fast paths. Each has a differential test against its spec-layer path (N7) | [R07] |
 | RegExp parity comes from RX1 (§3) | [R08] regress 0.8-5x slower than V8's regexp interpreter; [R07] RegExp kernel 7772 / 3651 / 1046 |
 
@@ -155,8 +155,8 @@ ep9_baseline / ep9_opt
 | Local | Label or branch inside the function or unit | pc-relative, resolved at emit | pc-relative, resolved at emit |
 | Stub(id) | Shared IC stub or trampoline | Direct call inside the code range | pc-relative call if the stub is in the unit; else call through a link slot |
 | Runtime(fn) | Rust slow path or builtin (H20), e.g. barrier_slow | Direct or indirect call | Indirect call through the isolate table (isolate register) |
-| LinkSlot(i) | External reference resolved at load or first run | Resolved at finalize; an immediate is allowed | pc-relative load of RW link cell i |
-| IcCell(i) | IC or feedback cell | Address of the FeedbackVector slot | pc-relative load of RW IC cell i |
+| LinkSlot(i) | External reference resolved at load or first run | Resolved at finalize; an immediate is allowed | Load of RW link cell i through the unit-data register (H35-Q9) |
+| IcCell(i) | IC or feedback cell | Address of the FeedbackVector slot | Load of RW IC cell i through the unit-data register (H35-Q9) |
 | RootIndex(n) | Isolate root, intrinsic or atom by stable index (H13) | Load from the isolate root table | Load from the isolate root table (isolate register) |
 | DeoptExit(id) | Exit to the shared deopt entry | Call the shared entry; metadata keyed by pc offset | Same; metadata keyed by pc offset |
 | HeapConst(i) | Raw heap pointer | Embedded, held weakly with a dependency | **Rejected by the unit writer** |

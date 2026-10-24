@@ -14,7 +14,7 @@
 //! | R2 | Never put a `Local`, `Args`, `Rest`, `PropertyDescriptor`, `ArgsBuilder` or `ScratchList` into Rust heap memory, a static or a thread_local | `'s` and `!Send` (compiler); `cargo xtask gc-lint` (P2) |
 //! | R3 | Every `&mut Cx` method may allocate and may run JS. No view into heap memory lives across one | views borrow `&Cx` |
 //! | R4 | Return `Err(Throw)` only after a `throw_*` (the exception is pending); pass a callee's `Err` on unchanged | debug assert in `call::call_host` |
-//! | R5 | A builtin creates objects in its callee's realm | v0: one realm; `Args::callee` is there for N realms (H20-Q2) |
+//! | R5 | A builtin creates objects in its callee's realm | `call::call_host` switches to the callee's realm (H22-Q3); `ep9_builtins` `tests/realm.rs` |
 //! | R6 | `[[GetOwnProperty]]` reports the virtual properties (array `length` and elements, function `length`/`name`/`prototype`, String wrapper `length` and indices) with their spec attributes | `tests/abi.rs` |
 //!
 //! Lists of values: `ScratchList` (precise, LIFO) or a JS array; call arguments built in Rust
@@ -29,13 +29,21 @@
 //! Month-2 submodules (C1), one owner each: `index.rs` (index access) and `iter.rs` (the
 //! iterator protocol), `slots.rs` (internal slots), `jobs.rs` (jobs), `script.rs`
 //! (`evaluate_script`). Each adds an `impl Cx` block.
+//!
+//! Month-3 submodules (M3-P0 stubs, one owner each): `collections.rs` (Map and Set storage,
+//! M3-P1 B-COLLECTIONS), `realm.rs` (realms, M3-P1 REALMS), `time.rs` (the clock and the local
+//! time zone, M3-P1 B-DATE). The facts exporter is public here as [`export_facts`]
+//! (`facts_export.rs`, M3-P3 FACTS-EXPORT; V8-A13).
 
+mod collections;
 mod index;
 mod iter;
 mod jobs;
 mod local;
+mod realm;
 mod script;
 mod slots;
+mod time;
 
 use core::marker::PhantomData;
 
@@ -53,6 +61,7 @@ use crate::builtins::{self, IntrinsicId};
 use crate::conv::{self, Hint};
 use crate::descriptor::Desc;
 use crate::error;
+pub use crate::facts_export::export_facts;
 use crate::frame::{CONSTRUCT_BIT, NULL, UNDEFINED, int32_of, slot};
 use crate::interp;
 use crate::key;
@@ -484,6 +493,14 @@ impl Drop for ArgsBuilder<'_> {
     }
 }
 
+/// HasOwnProperty(O, P) (§7.3.13) on a routed kind: its `[[GetOwnProperty]]` (the hook may
+/// throw) is not undefined. Out of line, so [`Cx::has_own_property`] keeps one kind test.
+/// GC point.
+#[inline(never)]
+fn routed_has_own_property(cx: &mut interp::Cx, o: u64, k: u64) -> JsResult<bool> {
+    Ok(property::get_own_property(cx, o, k)?.is_some())
+}
+
 // ---- Cx ------------------------------------------------------------------------------------
 
 /// What a host function can do with the isolate (H20). It exposes no `&Runtime`: builtins
@@ -710,7 +727,8 @@ impl<'s> Cx<'s> {
 
     // ---- creation ----
 
-    /// The global object of the current realm.
+    /// The global object of the current realm (in a host function: the function's own realm,
+    /// H20 R5).
     pub fn global(&self) -> Local<'s, JsObject> {
         Self::local(self.rt().global())
     }
@@ -999,8 +1017,8 @@ impl<'s> Cx<'s> {
     /// from `o` decides; a setter runs with `receiver` as `this`, and a new or writable data
     /// property lands on `receiver` (`Reflect.set`, §28.1.12) through its
     /// `[[DefineOwnProperty]]`, so an array receiver's `length` goes through ArraySetLength
-    /// (a RangeError for an invalid length). `Ok(false)` when the assignment fails, also for
-    /// a receiver that is not an object; it never throws for that.
+    /// (a RangeError for an invalid length). `Ok(false)` when the assignment fails, also for a
+    /// data store on a non-object receiver; a setter on the chain runs with any receiver.
     pub fn set_with_receiver(
         &mut self,
         o: impl Into<Local<'s, JsObject>>,
@@ -1024,7 +1042,8 @@ impl<'s> Cx<'s> {
         Ok(property::has_property(self.cx, o, k))
     }
 
-    /// HasOwnProperty(O, P) (§7.3.13).
+    /// HasOwnProperty(O, P) (§7.3.13). A routed kind (ARGUMENTS, MODULE_NAMESPACE) asks its
+    /// `[[GetOwnProperty]]`, which may throw (a namespace binding in its TDZ, §10.4.6.5).
     pub fn has_own_property(
         &mut self,
         o: impl Into<Local<'s, JsObject>>,
@@ -1032,6 +1051,9 @@ impl<'s> Cx<'s> {
     ) -> JsResult<bool> {
         let o = o.into().bits();
         let k = key.into_key(self).bits();
+        if crate::exotic::is_routed(kinds::cell_kind(o)) {
+            return routed_has_own_property(self.cx, o, k);
+        }
         Ok(property::has_own_property(self.cx, o, k))
     }
 
@@ -1043,7 +1065,7 @@ impl<'s> Cx<'s> {
     ) -> JsResult<Option<PropertyDescriptor<'s>>> {
         let o = o.into().bits();
         let k = key.into_key(self).bits();
-        Ok(property::get_own_property(self.cx, o, k).map(PropertyDescriptor::from_desc))
+        Ok(property::get_own_property(self.cx, o, k)?.map(PropertyDescriptor::from_desc))
     }
 
     /// O.`[[DefineOwnProperty]]`(P, Desc) (§10.1.6, ValidateAndApplyPropertyDescriptor). v0:
@@ -1174,6 +1196,12 @@ impl<'s> Cx<'s> {
     /// IsArray (§7.2.2). v0: no proxies, so it never throws.
     pub fn is_array(&self, v: impl Into<Local<'s>>) -> bool {
         kinds::is_array(v.into().bits())
+    }
+
+    /// Whether `v` has an `[[ErrorData]]` internal slot (an Error instance, §20.5): the test
+    /// of IsError (§20.5.8.2), for `Error.isError`. Any value; never throws (v0: no proxies).
+    pub fn is_error(&self, v: impl Into<Local<'s>>) -> bool {
+        kinds::is_error(v.into().bits())
     }
 
     // ---- conversions (§7.1) and comparisons (§7.2) ----
@@ -1405,18 +1433,26 @@ impl<'s> Cx<'s> {
         Ok(list)
     }
 
-    /// GetPrototypeFromConstructor (§10.1.14). v0: one realm, so the fallback is this
-    /// realm's `default` intrinsic.
+    /// GetPrototypeFromConstructor (§10.1.14): `constructor.prototype` if it is an object,
+    /// else the `default` intrinsic of GetFunctionRealm(constructor) (step 4; the realm of a
+    /// bound function's target, else the current realm).
     pub fn get_prototype_from_constructor(
         &mut self,
         constructor: impl Into<Local<'s, JsObject>>,
         default: IntrinsicId,
     ) -> JsResult<Local<'s, JsObject>> {
+        let constructor = constructor.into();
         let key = self.atom(Atom::Prototype);
         let p = self.get(constructor, key)?;
         Ok(match p.as_object() {
             Some(p) => p,
-            None => self.intrinsic(default),
+            None => {
+                let rt = self.rt();
+                let realm = crate::realm::get_function_realm(rt, constructor.bits());
+                let v = crate::realm::intrinsic_in(rt, realm, default);
+                assert!(kinds::is_object(v), "{} is not installed", default.name());
+                Self::local(v)
+            }
         })
     }
 

@@ -1,46 +1,71 @@
 # module-basic: module
 # | import a, {b as c} from 'x'; export let d = a + c; export function e() { return d; } export default 1;
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=module strict=true ts=none source_len=102 source=embedded hints=none
 source_hash=2e7757b8bd04c06689e836127afcdb75661eebd9b0801c3a9e97213741d151cf
-strings (4):
+strings (8):
   str0 "a"
   str1 "c"
   str2 "e"
   str3 "d"
+  str4 "x"
+  str5 "default"
+  str6 "b"
+  str7 "*default*"
 scopes (2):
   scope0 module outer=- flags=[strict] slots=[]
   scope1 function outer=scope0 flags=[strict] slots=[]
-function f0 module name=- parent=- outer_scope=- flags=[strict] params=0 length=0 regs=1 range=0..102
-  code (32 bytes):
-      0 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
-      4    StaModuleVariable [2], [0]                   ; 20 02 00
-      7 S> LdaModuleVariable [-1], [0]                  ; 1f ff 00
-     10 E> ThrowReferenceErrorIfHole k1  ; k1 = String str0 "a" ; 94 01
-     12    Star r0                                      ; 0c 00
-     14    LdaModuleVariable [-2], [0]                  ; 1f fe 00
-     17 E> ThrowReferenceErrorIfHole k2  ; k2 = String str1 "c" ; 94 02
-     19 E> Add r0, s1                                   ; 2a 00 01
-     22    StaModuleVariable [1], [0]                   ; 20 01 00
-     25 S> LdaSmi [1]                                   ; 04 01
-     27    StaModuleVariable [3], [0]                   ; 20 03 00
-     30    LdaUndefined                                 ; 05
-     31    Return                                       ; 92
-  constants (3):
-      0 Function f1
-      1 String str0 "a"
-      2 String str1 "c"
+module records: has-tla=false
+  requests (1):
+      0 "x" attributes=[]
+  imports (2):
+      0 request=0 import="default" local="a" cell=-1
+      1 request=0 import="b" local="c" cell=-2
+  local exports (3):
+      0 export="d" local="d" cell=1
+      1 export="e" local="e" cell=2
+      2 export="default" local="*default*" cell=3
+  indirect exports (0):
+  star exports (0):
+function f0 module name=- parent=- outer_scope=- flags=[strict,async] params=0 length=0 regs=2 range=0..102
+  code (52 bytes):
+      0    Ldar <this>                                  ; 0b ff
+      2    Star r0                                      ; 0c 00
+      4    LdaUndefined                                 ; 05
+      5    Star <this>                                  ; 0c ff
+      7    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+3, +16] ; 99 00 00
+     10 E> CreateClosure k1, s0, #0x00  ; k1 = Function f1 ; 74 01 00 00
+     14    StaModuleVariable [2], [0]                   ; 20 02 00
+     17    LdaUndefined                                 ; 05
+     18    SuspendGenerator r0, r0, [1]                 ; 9a 00 00 01 01
+     23    ResumeGenerator r0, r0                       ; 9b 00 00 01
+     27 S> LdaModuleVariable [-1], [0]                  ; 1f ff 00
+     30 E> ThrowReferenceErrorIfHole k2  ; k2 = String str0 "a" ; 94 02
+     32    Star r1                                      ; 0c 01
+     34    LdaModuleVariable [-2], [0]                  ; 1f fe 00
+     37 E> ThrowReferenceErrorIfHole k3  ; k3 = String str1 "c" ; 94 03
+     39 E> Add r1, s1                                   ; 2a 01 01
+     42    StaModuleVariable [1], [0]                   ; 20 01 00
+     45 S> LdaSmi [1]                                   ; 04 01
+     47    StaModuleVariable [3], [0]                   ; 20 03 00
+     50    LdaUndefined                                 ; 05
+     51    Return                                       ; 92
+  constants (4):
+      0 JumpTable [+3, +16]
+      1 Function f1
+      2 String str0 "a"
+      3 String str1 "c"
   feedback (2):
       0 CreateClosure
       1 BinaryOp
   handlers (0):
   positions (6):
-      0 E 58 (1:59)
-      7 S 40 (1:41)
-     10 E 44 (1:45)
-     17 E 48 (1:49)
-     19 E 44 (1:45)
-     25 S 85 (1:86)
+     10 E 58 (1:59)
+     27 S 40 (1:41)
+     30 E 44 (1:45)
+     37 E 48 (1:49)
+     39 E 44 (1:45)
+     45 S 85 (1:86)
 function f1 normal name="e" parent=f0 outer_scope=scope0 flags=[strict,simple-params] params=0 length=0 regs=0 range=58..84
   code (8 bytes):
       0 S> LdaModuleVariable [1], [0]                   ; 1f 01 00

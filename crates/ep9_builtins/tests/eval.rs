@@ -414,11 +414,11 @@ fn unsupported_and_lone_surrogates_are_not_syntax_errors() {
     assert_eq!(
         run_both(
             r#"function e(f) { try { f(); return 'ok'; } catch (x) { return x.constructor.name + ': ' + x.message; } }
-print(e(() => eval('async function af() {}')));
+print(e(() => eval('class A { accessor x = 1 }')));
 print(e(() => eval("'" + String.fromCharCode(0xD800) + "'")));"#
         ),
         lines(&[
-            "Error: not implemented in ep9 v0: unsupported: async functions",
+            "Error: not implemented in ep9 v0: unsupported: class auto-accessors",
             "Error: not implemented in ep9 v0: source text with a lone surrogate",
         ])
     );
@@ -443,6 +443,133 @@ try { evalScript('(('); } catch (e) { print(e.constructor.name); }"#
             "false false number",
             "SyntaxError",
             "SyntaxError"
+        ])
+    );
+}
+
+/// X-ARGS2 (M3-P2 fix round 2): Annex B.3.2.3 in eval code inside the parameter list of a
+/// sloppy function with parameter expressions (ABI 5 `ScopeFlags::PARAMETER_ENV`). The
+/// parameters are in their own environment between the eval code and the variable
+/// environment (FunctionDeclarationInstantiation step 20), so a block function of the eval
+/// code with a parameter's name gets no var binding (bindingExists) and the parameter keeps
+/// its value. A name that is not a parameter (`zz`), the function's own name, an eval in an
+/// arrow of the parameter list and an eval in the body still get one. With and without GC
+/// stress. Node v24.22.1 prints the same lines, except `h`: V8 keeps the arguments object
+/// binding out of the parameter environment and prints "function function"; the spec (step
+/// 22: `env` is the parameter environment) gives "object object".
+#[test]
+fn annex_b_eval_in_parameters_keeps_the_parameters() {
+    assert_eq!(
+        run_both(
+            r#"function f(af = 1, b = eval('{ function af() { return 9; } }')) { return typeof af + ' ' + af; }
+print(f());
+function g(af = 1, b = eval('{ function af() {} } typeof af')) { return b + ' ' + typeof af; }
+print(g());
+function q({ af } = { af: 1 }, b = eval('{ function af() {} } typeof af')) { return b + ' ' + typeof af; }
+print(q());
+function p(arguments = 1, b = eval('{ function arguments() {} } typeof arguments')) { return b + ' ' + typeof arguments; }
+print(p());
+function h(a = 1, b = eval('{ function arguments() {} } typeof arguments')) { return b + ' ' + typeof arguments; }
+print(h());
+function k(a = 1, b = eval('{ function zz() {} } typeof zz')) { return b + ' ' + typeof zz; }
+print(k());
+function r(x = 1, b = eval('{ function r() {} } typeof r')) { return b + ' ' + typeof r; }
+print(r());
+function t(x = 1, b = eval('{ function x() {} } typeof x'), x2 = x) { return b + ' ' + typeof x + ' ' + typeof x2; }
+print(t());
+function v(af = 1, b = () => eval('{ function af() {} } typeof af')) { return b() + ' ' + typeof af; }
+print(v());
+function n(af = 1, b = eval("eval('{ function af() {} } typeof af')")) { return b + ' ' + typeof af; }
+print(n());
+function w(af = 1, b = eval('{ function af() {} } { function bf() {} } typeof af + typeof bf')) { return b + ' ' + typeof af + ' ' + typeof bf; }
+print(w());
+function m(a, b = 2) { eval('{ function a() {} }'); return typeof a; }
+print(m(1));"#
+        ),
+        lines(&[
+            "number 1",
+            "number number",
+            "number number",
+            "number number",
+            "object object",
+            "function function",
+            "function function",
+            "number number number",
+            "function number",
+            "number number",
+            "numberfunction number function",
+            "function",
+        ])
+    );
+}
+
+/// X-ARGS3 (M3-P2 fix round 2): `StoreEvalAnnexBFunction` (id 47) at the global level when a
+/// Script run inside the eval code made a lexical binding of the name after id 46 made the
+/// var binding (`delete` removed it first). A `const` is an immutable strict binding, so
+/// SetMutableBinding throws a TypeError (§9.1.1.1.5 steps 2 and 5.b; node v24.22.1 prints the
+/// same lines when the script runs at the global level); a `let` takes the function.
+#[test]
+fn annex_b_eval_store_to_a_late_global_const_throws() {
+    assert_eq!(
+        run_both(
+            r#"function lateConst() { evalScript('const af = 1'); }
+function lateLet() { evalScript('let al = 1'); }
+try { eval('delete af; lateConst(); { function af() {} } print("after")'); print('no error'); } catch (e) { print(e.constructor.name, e.message); }
+print(typeof af, af, JSON.stringify(Object.getOwnPropertyDescriptor(globalThis, 'af')));
+eval('delete al; lateLet(); { function al() {} }');
+print(typeof al, JSON.stringify(Object.getOwnPropertyDescriptor(globalThis, 'al')));"#
+        ),
+        lines(&[
+            "TypeError Assignment to constant variable.",
+            "number 1 undefined",
+            "function undefined",
+        ])
+    );
+}
+
+/// M3-P2-EVAL-CATCH (R3-1): B.3.4 skips the Environment Record of any catch clause, simple or
+/// destructured, at runtime (EvalDeclarationInstantiation steps 3.d.i.2.a.i and
+/// 13.b.ii.4.a.i.i); the rule for a simple catch parameter is only the static early error of
+/// the catch Block. So a block function of a direct eval in a destructured catch gets a var
+/// binding (B.3.2.3), at the function level and at the global level, and `var f` in such an
+/// eval is no SyntaxError. ep9 keeps the spec. node v24 (V8) skips only a simple catch
+/// parameter, so it prints other text for the 5 lines below that have a "spec" comment; the
+/// other lines are the same. Under every dispatch expansion, with and without GC stress.
+#[test]
+fn annex_b_eval_in_a_destructured_catch_follows_the_spec() {
+    assert_eq!(
+        run_every(
+            r#"function g() { try { throw { f: 1 }; } catch ({ f }) { eval('{ function f() {} }'); } return typeof f; }
+function g2() { var inner; try { throw [1]; } catch ([f]) { eval('{ function f() {} }'); inner = typeof f; } return inner + ' ' + typeof f; }
+function h() { try { throw 1; } catch (f) { eval('{ function f() {} }'); } return typeof f; }
+function v() { var inner; try { throw { f: 1 }; } catch ({ f }) { eval('var f = 2'); inner = f; } return inner + ' ' + f; }
+function vs() { var inner; try { throw 1; } catch (f) { eval('var f = 2'); inner = f; } return inner + ' ' + f; }
+print('g', g());
+print('g2', g2());
+print('h', h());
+try { print('v', v()); } catch (e) { print('v', e.constructor.name); }
+print('vs', vs());
+try { throw { gf: 1 }; } catch ({ gf }) { eval('{ function gf() {} }'); }
+print('global destr', typeof gf);
+try { throw [1]; } catch ([ga]) { eval('{ function ga() {} }'); }
+print('global array', typeof ga);
+try { throw 1; } catch (hf) { eval('{ function hf() {} }'); }
+print('global simple', typeof hf);"#
+        ),
+        lines(&[
+            // spec; node v24: "g undefined"
+            "g function",
+            // spec; node v24: "g2 number undefined"
+            "g2 number function",
+            "h function",
+            // spec; node v24: "v SyntaxError"
+            "v 2 undefined",
+            "vs 2 undefined",
+            // spec; node v24: "global destr undefined"
+            "global destr function",
+            // spec; node v24: "global array undefined"
+            "global array function",
+            "global simple function",
         ])
     );
 }

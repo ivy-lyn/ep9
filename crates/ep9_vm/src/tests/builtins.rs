@@ -506,6 +506,26 @@ fn table_checks_reject_each_broken_rule() {
         ),
     ));
     assert!(e.contains("alias of z, not defined before"), "{e}");
+    // The keys of each target are checked on their own: `toString` of %Object.prototype% (the
+    // VM table) is not a key of the global object, so an alias of it there is refused, and a
+    // second `toString` there is no duplicate.
+    let e = check_one(module(
+        TEST_DEFS,
+        &[],
+        on(
+            IntrinsicId::GlobalObject,
+            const {
+                &[
+                    PropDef::method(PropKey::Str("toString"), 0),
+                    PropDef::alias(PropKey::Str("w"), PropKey::Str("valueOf"), PropAttrs::NONE),
+                ]
+            },
+        ),
+    ));
+    assert!(
+        e.contains("globalThis.w: alias of valueOf, not defined before"),
+        "{e}"
+    );
     let e = check_one(module(
         TEST_DEFS,
         &[],

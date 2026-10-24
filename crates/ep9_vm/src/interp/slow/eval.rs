@@ -1,5 +1,6 @@
-//! Direct eval in the VM (owner P3-EVAL-VM): runtime id 7 `ResolvePossiblyDirectEval`, and
-//! (ABI 3) ids 27-28 `DeclareEvalVar` and `DeclareEvalFunction`. The compiler is reached
+//! Direct eval in the VM (owner P3-EVAL-VM): runtime id 7 `ResolvePossiblyDirectEval`,
+//! (ABI 3) ids 27-28 `DeclareEvalVar` and `DeclareEvalFunction`, and (ABI 5, M3-P2 VM-ARGS)
+//! ids 46-47 `DeclareEvalAnnexBFunction` and `StoreEvalAnnexBFunction`. The compiler is reached
 //! through `IsolateConfig::compiler` (`crate::CompilerHooks`, C2); the shared steps (source
 //! text, compile failures, loading the unit) are `abi/script.rs`.
 //!
@@ -13,6 +14,9 @@
 //! sloppy eval code, before its body:
 //!   DeclareEvalFunction(name, closure) per function, DeclareEvalVar(name) per var
 //!     -> the variable environment (below): a `.eval_ext` object, or the global object
+//!   then DeclareEvalAnnexBFunction(name) per Annex B block function name -> true or false
+//! a block function declaration whose name got true, when it runs:
+//!   StoreEvalAnnexBFunction(name, function) -> the variable environment
 //! ```
 //!
 //! The [`EvalContext`] of a direct eval (PerformEval steps 4-11, §19.2.1.1):
@@ -41,8 +45,8 @@
 use std::collections::HashSet;
 
 use ep9_bytecode::{
-    CodeKind, EVAL_EXT_BINDING, EvalContext, FunctionKind, Instructions, Opcode, Register,
-    RuntimeId, ScopeFlags, ScopeKind, UnitString, VariableMode,
+    CodeKind, Constant, EVAL_EXT_BINDING, EvalContext, FunctionKind, Instructions, Opcode,
+    Register, RuntimeId, ScopeFlags, ScopeKind, StringId, UnitString, VariableMode,
 };
 use ep9_value::Throw;
 
@@ -50,7 +54,7 @@ use crate::abi::{self, Local};
 use crate::conv::Res;
 use crate::descriptor::Desc;
 use crate::error::{FrameRef, throw_error};
-use crate::frame::{UNDEFINED, int32_of};
+use crate::frame::{FALSE, HOLE, TRUE, UNDEFINED, int32_of};
 use crate::interp::Cx;
 use crate::key::{self, key_text};
 use crate::object::{
@@ -60,7 +64,7 @@ use crate::property;
 use crate::runtime::{ErrorKind, Root};
 use crate::unit::{EvalPrologue, FunctionInfo, LoadedUnit};
 
-use super::{context, info, interrupt, throw_msg_now};
+use super::{NameMsg, context, info, interrupt, throw_msg_now, throw_name_now};
 
 /// One budget unit per context of a walk; polls when the budget runs out (M2-P2-POLL): the
 /// walks have no back edge.
@@ -448,7 +452,7 @@ fn check_all(cx: &mut Cx, fp: *mut u64) -> Res<()> {
             continue;
         }
         let name = fi.constant(k);
-        let definable = match property::get_own_property(cx, g, name) {
+        let definable = match property::get_own_property(cx, g, name)? {
             None => property::is_extensible(g),
             Some(d) => {
                 d.configurable == Some(true)
@@ -460,15 +464,24 @@ fn check_all(cx: &mut Cx, fp: *mut u64) -> Res<()> {
             return Err(cannot_declare(cx, name, exists));
         }
     }
-    // The function names (atoms): step 11 skips a var name that is one of them.
-    let functions: HashSet<u64> = decls
+    // The function names: step 11 skips a var name that is one of them. The set holds unit
+    // string ids, never atom Values (cell addresses; H12-Q2 rule (a), X-ACC1). A builder
+    // unit interns its strings, so a name has one id. A unit with two ids of one text would
+    // only check such a var name again here, with the same result: the function check above
+    // passed for it on the same global object (no own property and extensible, or an own
+    // property), and either way CanDeclareGlobalVar is true.
+    let string_id = |k: u32| match fi.constant_entry(k) {
+        Constant::String(id) => Some(*id),
+        _ => None,
+    };
+    let functions: HashSet<StringId> = decls
         .iter()
         .filter(|&&(_, function)| function)
-        .map(|&(k, _)| fi.constant(k))
+        .filter_map(|&(k, _)| string_id(k))
         .collect();
     for &(k, _) in decls {
         let name = fi.constant(k);
-        if functions.contains(&name) {
+        if string_id(k).is_some_and(|id| functions.contains(&id)) {
             continue;
         }
         if !property::has_own_property(cx, g, name) && !property::is_extensible(g) {
@@ -511,6 +524,174 @@ pub(crate) fn declare_eval_var(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<u64>
     Ok(UNDEFINED)
 }
 
+// ---- Annex B.3.2.3: block functions of sloppy eval code (ABI 5 ids 46-47) ------------------
+
+/// The first context of the frame `fp`'s chain that is not a context of the running eval
+/// unit (its eval scope and its blocks): the eval caller's LexicalEnvironment. Not a GC point.
+fn caller_context(fp: *mut u64) -> u64 {
+    let own = info(fp).loaded_unit().map(core::ptr::from_ref);
+    let mut c = context(fp);
+    while is_context(c) {
+        let (u, _) = object::context_scope(c);
+        if Some(core::ptr::from_ref(u)) != own {
+            break;
+        }
+        c = object::context_previous(c);
+    }
+    c
+}
+
+/// B.3.2.3 steps ii.2.a-f for the block function name `name` of the eval code in frame `fp`:
+/// the variable environment if the function gets a var binding (bindingExists is false and
+/// fnDefinable is true), else `None`. The walk goes from the caller's LexicalEnvironment out to
+/// the VariableEnvironment: a declarative context on the way that binds `name` (a lexical slot
+/// of the var scope too: a sloppy function's top-level lexical declarations have their own
+/// environment) means bindingExists; a `with` object does not, and, as [`var_env`] (B.3.4)
+/// says, the environment of a catch clause, simple or destructured, does not. B.3.4 skips any
+/// Catch clause Environment Record at runtime; the rule for a simple catch parameter is only
+/// its static early error. node v24 (V8) skips only a simple catch parameter, so there
+/// `catch ({f}) { eval('{function f(){}}') }` leaves no var `f` (M3-P2-EVAL-CATCH: ep9 keeps
+/// the spec). A var scope with `ScopeFlags::PARAMETER_ENV` (an eval in the parameter
+/// list of a sloppy function with parameter expressions) holds the parameter environment of
+/// FunctionDeclarationInstantiation step 20 merged into it: the walk passes that environment
+/// before it reaches the variable environment, so any slot of `name` there (a parameter, or the
+/// `arguments` binding of step 22) means bindingExists (X-ARGS2). Its other slots (`this`,
+/// `new.target`, `.eval_ext`) have names no source text can spell. At the global environment,
+/// fnDefinable is false for a lexical declaration of `name`, else CanDeclareGlobalVar. GC
+/// point (a poll).
+fn annex_b_env(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<Option<VarEnv>> {
+    let mut c = caller_context(fp);
+    while is_context(c) {
+        poll(cx)?;
+        let (u, scope) = object::context_scope(c);
+        if scope.kind == ScopeKind::With {
+            c = object::context_previous(c);
+            continue;
+        }
+        if is_var_scope(u, scope) {
+            if let Some((_, mode)) = slot_of(c, name)
+                && (is_lexical(mode) || scope.flags.contains(ScopeFlags::PARAMETER_ENV))
+            {
+                return Ok(None);
+            }
+            return Ok(Some(VarEnv::Function(c)));
+        }
+        if scope.kind != ScopeKind::Catch && slot_of(c, name).is_some() {
+            return Ok(None);
+        }
+        c = object::context_previous(c);
+    }
+    let rt = cx.rt();
+    if own_get(rt.root(Root::Lexical), name).is_some() {
+        return Ok(None);
+    }
+    let g = rt.global();
+    let definable = property::has_own_property(cx, g, name) || property::is_extensible(g);
+    Ok(definable.then_some(VarEnv::Global))
+}
+
+/// The VariableEnvironment of the eval code in frame `fp` (no checks: the walk of
+/// [`annex_b_env`] without its conflicts). GC point (a poll).
+fn plain_var_env(cx: &mut Cx, fp: *mut u64) -> Res<VarEnv> {
+    let mut c = caller_context(fp);
+    while is_context(c) {
+        poll(cx)?;
+        let (u, scope) = object::context_scope(c);
+        if is_var_scope(u, scope) {
+            return Ok(VarEnv::Function(c));
+        }
+        c = object::context_previous(c);
+    }
+    Ok(VarEnv::Global)
+}
+
+/// `DeclareEvalAnnexBFunction(name)` (runtime id 46, ABI 5): B.3.2.3 step ii for a block
+/// function of sloppy eval code, at EvalDeclarationInstantiation (after the checks and the
+/// bindings of the eval code's own functions and vars: `gen_eval_program` calls it after them,
+/// so F of declaredFunctionOrVarNames already has its binding). If the function gets a var
+/// binding (see [`annex_b_env`]): in a function, a new `.eval_ext` binding initialized to
+/// undefined unless the variable environment binds `name`; at the global level,
+/// CreateGlobalVarBinding(name, true). Returns true in that case (the code then copies the
+/// function into the var binding when its declaration runs, id 47), else false. GC point.
+pub(crate) fn declare_eval_annex_b_function(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<u64> {
+    let name = key::to_property_key(cx, name)?;
+    match annex_b_env(cx, fp, name)? {
+        None => return Ok(FALSE),
+        Some(VarEnv::Function(c)) => {
+            if slot_of(c, name).is_none() {
+                let ext = eval_ext(cx, c);
+                if !property::has_own_property(cx, ext, name) {
+                    define_ext(cx, ext, name, UNDEFINED);
+                }
+            }
+        }
+        Some(VarEnv::Global) => {
+            let g = cx.rt().global();
+            if !property::has_own_property(cx, g, name) && property::is_extensible(g) {
+                let desc = Desc::data(UNDEFINED, attr::DEFAULT);
+                if !property::define_own_property(cx, g, name, desc)? {
+                    return Err(cannot_declare(cx, name, true));
+                }
+            }
+        }
+    }
+    Ok(TRUE)
+}
+
+/// `StoreEvalAnnexBFunction(name, value)` (runtime id 47, ABI 5, V8-A2): B.3.2.3 step
+/// ii.2.g.ii, when a block function declaration of sloppy eval code whose name got a var
+/// binding (id 46 gave true) is evaluated: genv.SetMutableBinding(name, value, false) on the
+/// eval code's VariableEnvironment, not on the block binding. In a function: the var scope's
+/// slot or its `.eval_ext` binding (made again if `delete` removed it, §9.1.1.1.5 step 1); at
+/// the global level: a script lexical binding (a Script run by the eval code can make one
+/// after id 46: a TDZ is a ReferenceError, and a `const` is a TypeError, because a lexical
+/// binding is strict, §9.1.1.1.5 steps 2 and 5.b; X-ARGS3), else Set(global object, name,
+/// value, false). GC point (a setter).
+pub(crate) fn store_eval_annex_b_function(
+    cx: &mut Cx,
+    fp: *mut u64,
+    name: u64,
+    value: u64,
+) -> Res<u64> {
+    let name = key::to_property_key(cx, name)?;
+    match plain_var_env(cx, fp)? {
+        VarEnv::Function(c) => {
+            if let Some((i, _)) = slot_of(c, name) {
+                object::context_set(cx.rt(), c, i, value);
+            } else {
+                let ext = eval_ext(cx, c);
+                if property::has_own_property(cx, ext, name) {
+                    property::set(cx, ext, name, value, false)?;
+                } else {
+                    define_ext(cx, ext, name, value);
+                }
+            }
+        }
+        VarEnv::Global => {
+            let rt = cx.rt();
+            let lexical = rt.root(Root::Lexical);
+            if let Some((old, a)) = own_get(lexical, name) {
+                if old == HOLE {
+                    return Err(throw_name_now(cx, NameMsg::Tdz, name));
+                }
+                if a & attr::WRITABLE == 0 {
+                    // As a store to a global `const` (slow/lookup.rs `const_assign`).
+                    return Err(throw_error(
+                        cx,
+                        ErrorKind::TypeError,
+                        "Assignment to constant variable.",
+                    ));
+                }
+                object::own_replace(rt, lexical, name, value);
+            } else {
+                let g = rt.global();
+                property::set(cx, g, name, value, false)?;
+            }
+        }
+    }
+    Ok(UNDEFINED)
+}
+
 /// `DeclareEvalFunction(name, function)` (runtime id 28): a function declaration of sloppy
 /// eval code (§19.2.1.3 steps 3, 9 and 17). In a function: SetMutableBinding of an existing
 /// var binding (a slot of the var scope or a property of its `.eval_ext` object), else a new
@@ -542,7 +723,7 @@ pub(crate) fn declare_eval_function(
             let g = cx.rt().global();
             // CanDeclareGlobalFunction (§9.1.1.4.16), then CreateGlobalFunctionBinding
             // (§9.1.1.4.18) with D = true.
-            let desc = match property::get_own_property(cx, g, name) {
+            let desc = match property::get_own_property(cx, g, name)? {
                 None => {
                     if !property::is_extensible(g) {
                         return Err(cannot_declare(cx, name, false));
@@ -569,4 +750,121 @@ pub(crate) fn declare_eval_function(
         }
     }
     Ok(UNDEFINED)
+}
+
+#[cfg(test)]
+mod tests {
+    //! Ids 46-47 on hand-built units at the global level (indirect eval). The JS-level checks
+    //! (direct and indirect, function and global variable environments, the conflicts) are the
+    //! test262 files under `annexB/language/eval-code`, which need the front end.
+
+    use ep9_bytecode::{
+        CodeKind, EvalContext, FunctionCtorKind, FunctionId, FunctionMeta, RegisterList, RuntimeId,
+        UnitBuilder, UnitOptions, VerifiedUnit,
+    };
+
+    use crate::tests::{Asm, config, meta, on_big_stack, opts, run_in};
+    use crate::{CompileFailure, CompileResult, CompilerHooks, Dispatch, IsolateConfig};
+
+    /// Sloppy eval code `{ function af() { return 7 } }` as the front end makes it (E7):
+    /// `DeclareEvalAnnexBFunction("af")` into a flag, then, where the declaration runs,
+    /// `StoreEvalAnnexBFunction("af", closure)` if the flag is true. Returns the flag.
+    fn annex_unit() -> VerifiedUnit {
+        let mut s = Asm::new(FunctionMeta::entry(CodeKind::Eval, false, 0));
+        let flag = s.b.new_register();
+        let args = s.b.new_register_list(2);
+        let one = RegisterList::new(args.first().local_index().unwrap(), 1);
+        s.lda_str("af");
+        s.b.star(args.get(0));
+        s.b.call_runtime(RuntimeId::DeclareEvalAnnexBFunction, one, 1);
+        s.b.star(flag);
+        let k = s.b.function_constant(FunctionId(1));
+        s.b.create_closure(k, s.closure, 0).star(args.get(1));
+        let skip = s.b.new_label();
+        s.b.ldar(flag).jump_if_false(skip);
+        s.lda_str("af");
+        s.b.star(args.get(0));
+        s.b.call_runtime(RuntimeId::StoreEvalAnnexBFunction, args, 2);
+        s.b.bind(skip);
+        s.b.ldar(flag).return_();
+        let mut f = Asm::new(meta("af", 0, 0, 0, 0));
+        f.b.lda_smi(7).return_();
+        let mut u = UnitBuilder::new(
+            "",
+            UnitOptions {
+                code_kind: CodeKind::Eval,
+                ..opts()
+            },
+        );
+        u.set_function(FunctionId(0), s.finish());
+        u.set_function(FunctionId(1), f.finish());
+        u.finish().unwrap()
+    }
+
+    fn hook_eval(source: &str, _: &EvalContext) -> CompileResult {
+        match source {
+            "annex" => Ok(annex_unit()),
+            _ => Err(CompileFailure::Syntax(format!("unknown {source:?}"))),
+        }
+    }
+
+    fn hook_function(_: FunctionCtorKind, _: &str, _: &str) -> CompileResult {
+        Err(CompileFailure::Unsupported("functions".into()))
+    }
+
+    fn hook_script(_: &str) -> CompileResult {
+        Err(CompileFailure::Unsupported("scripts".into()))
+    }
+
+    static HOOKS: CompilerHooks = CompilerHooks {
+        compile_eval: hook_eval,
+        compile_function: hook_function,
+        compile_script: hook_script,
+    };
+
+    /// At the global level: id 46 makes the configurable global `af` (CreateGlobalVarBinding
+    /// with D = true) and answers true; id 47 stores the function there. After `delete af`, a
+    /// second run makes it again. Every dispatch, with and without GC stress.
+    #[test]
+    fn annex_b_ids_make_and_set_a_global_var() {
+        fn make() -> VerifiedUnit {
+            let mut s = Asm::script(0);
+            let g = s.b.new_register();
+            for _ in 0..2 {
+                // print(eval("annex")); print(af()); print(delete globalThis.af)
+                s.lda_str("annex");
+                let a0 = s.a.get(0);
+                s.b.star(a0);
+                s.lda_global("eval");
+                let f = s.f;
+                s.b.star(f);
+                s.b.call_undefined_receiver1(f, a0, s.call);
+                s.print_acc();
+                s.lda_global("af");
+                s.b.star(f);
+                s.b.call_undefined_receiver0(f, s.call);
+                s.print_acc();
+                s.lda_global("globalThis");
+                s.b.star(g);
+                s.lda_str("af");
+                s.b.delete_property_sloppy(g);
+                s.print_acc();
+            }
+            s.b.lda_undefined().return_();
+            crate::tests::unit("", vec![s.finish()])
+        }
+        for &d in Dispatch::ALL {
+            for stress in [false, true] {
+                let r = on_big_stack(move || {
+                    let c = IsolateConfig {
+                        compiler: Some(&HOOKS),
+                        ..config(d, stress)
+                    };
+                    run_in(c, make())
+                });
+                assert!(r.result.is_ok(), "{r:?}");
+                assert_eq!(r.output, ["true", "7", "true", "true", "7", "true"]);
+            }
+        }
+    }
 }

@@ -6,9 +6,9 @@
 | Fix by | M1 |
 | Freeze point | M1a |
 | Origin | v1#13; plan status U |
-| Crates | `ep9_vm` (`object.rs`, `props.rs`, `shape.rs`, `exotic.rs`, `property.rs`, `accessor.rs`); `ep9_heap` (shape space, word0); later `ep9_baseline`, `ep9_opt` (shape guards, field loads) |
+| Crates | `ep9_vm` (`object.rs`, `props.rs`, `shape.rs`, `exotic.rs`, `property.rs`, `accessor.rs`, `ordered_table.rs`); `ep9_heap` (shape space, word0); later `ep9_baseline`, `ep9_opt` (shape guards, field loads) |
 | Owner (plan role) | VM lead |
-| Validated by | `ep9_vm` tests `tests/objects.rs`, `tests/shapes.rs`, `tests/accessors.rs` (GC stress + heap verifier); test262 with and without `--gc-stress 1` |
+| Validated by | `ep9_vm` tests `tests/objects.rs`, `tests/shapes.rs`, `tests/accessors.rs`, `tests/layout3.rs` (GC stress + heap verifier); test262 with and without `--gc-stress 1` |
 | Plan sources | [02 §6 H17](../plan/02-architecture.md#6-hard-to-change-decisions-h1-h37), [06 §2](../plan/06-object-model-and-spec.md#2-header-and-objects-h8-extended), [06 §2.2](../plan/06-object-model-and-spec.md#22-shapes-h17) |
 
 ## Context
@@ -33,7 +33,7 @@ v0 (M0 wk4) builds the plan's JSObject header with shapes in the shape space. Th
 | Kind | Fixed fields | Default capacity |
 |---|---|---|
 | OBJECT | none | 4 for `{}`; n for a literal with n named keys; 8 for `new F` and other prototypes |
-| FUNCTION | +24 info, +32 context, +40 home | 2 (`length`, `name`) |
+| FUNCTION | +24 info, +32 context, +40 home, +48 realm (a REALM cell; OBJECT_LAYOUT 3) | 2 (`length`, `name`), at +56 |
 | ARRAY | +24 length | 0 |
 | ERROR | +24 unit, +32 offset | 2 |
 | ITERATOR | +24 iterated (array iterator: an object, null while its `next` runs user code, undefined when done; string iterator: a string, "" when done), +32 next, +40 kind (values 0, keys 1, entries 2; OBJECT_LAYOUT 2) | 0 |
@@ -41,6 +41,16 @@ v0 (M0 wk4) builds the plan's JSObject header with shapes in the shape space. Th
 | BOUND_FUNCTION | +24 target, +32 this, +40 args | 2 |
 | GENERATOR (OBJECT_LAYOUT 2) | +24 state, +32 mode, +40 function, +48 receiver, +56 context, +64 registers (an ELEMENTS cell), +72 resume mode, +80 async slot | 0 |
 | SLOT_OBJECT (OBJECT_LAYOUT 2) | +24 ObjectClass id, +32 internal slots (an ELEMENTS cell of n Values, or undefined when n = 0); property code never touches fixed fields | 0 |
+| ARGUMENTS (25, OBJECT_LAYOUT 3) | +24 parameter map (a CONTEXT, or undefined for an unmapped object), +32 mapped count (int32); the elements at +16 | 3 (`length`, @@iterator, `callee`) |
+| MODULE_NAMESPACE (26, OBJECT_LAYOUT 3) | +24 module (a MODULE cell), +32 export names (an ELEMENTS cell of sorted strings) | 1 (@@toStringTag) |
+
+| Internal cell (OBJECT_LAYOUT 3) | Fields (from +8) | Size |
+|---|---|---|
+| MODULE (76) | the Source Text Module Record (§16.2.1.4-6): status, environment, namespace, unit (native word), requested modules, loaded modules, evaluation error (hole = none), DFS index, DFS ancestor index, cycle root, has-TLA, async evaluation order, top-level capability, async parent modules, pending async dependencies, host-defined | 136 B |
+| ORDERED_TABLE (77) | +8 capacity, +16 live count, +24 deleted count, +32 bucket count (a power of 2), +40 entry width (3 for Map, 2 for Set), +48 flags (bit 0 = weak keys, set at creation, never changed); then the bucket heads and the entries. Kind and trace function in `ordered_table.rs` | 56 + 8 x (buckets + capacity x width) |
+| REALM (78) | +8 global object, +16 global lexical record, +24 intrinsics (an ELEMENTS cell, index = `IntrinsicId`), +32 template registry, +40 host-defined. One per isolate in M3-P0 (the `Root::Realm` root, `Cx.realm`) | 48 B |
+
+Every word after word0 is a Value (a native pointer uses the native-word encoding), so each new kind has one trace function over its whole size. The exotic internal methods of ARGUMENTS and MODULE_NAMESPACE are routed from `exotic.rs` and the `property.rs` set, define, delete, own-keys, array-index and for-in paths to `arguments.rs` and `module.rs` (one kind test per hook); a routed object on a prototype chain decides the `[[Set]]` walk through its own `[[Set]]` (§10.1.9.2 step 1.b), and the `[[Get]]` and `[[GetOwnProperty]]` hooks may throw (a namespace binding in its TDZ). The M3-P0 stubs take the ordinary path.
 
 | Item | v0 rule | Where |
 |---|---|---|
@@ -153,3 +163,5 @@ ordinary value slot, so a shape describes an accessor exactly as it describes a 
 | 2026-10-21 | rewrite (version) | OBJECT_LAYOUT 1 -> 2 (`versions.rs`), as built in M2-P0: kind 23 GENERATOR, fixed fields +24 state, +32 mode, +40 function, +48 receiver, +56 context, +64 registers (an ELEMENTS cell), +72 resume mode, +80 async slot, capacity 0 (`object::genf`); kind 24 SLOT_OBJECT, fixed field +24 ObjectClass id, its in-object slots are the internal slots (`object::slot_obj`); ITERATOR gets +40 kind (values 0, keys 1, entries 2; `iter::FIXED` 2 -> 3, the cell grows 40 -> 48 B); the CONTEXT +16 word is a native word that points at the unit's `ContextScope { unit, scope }` record (C5; `object::context_scope`), not an int32 scope id. The Decision kind table still shows layout 1 for ITERATOR; object.rs has the v2 table | P0-VM agent |
 | 2026-10-21 | clarify | The Decision kind table shows OBJECT_LAYOUT 2, as the row above and the `object.rs` table: ITERATOR +40 kind, and the GENERATOR and SLOT_OBJECT rows | M2-P0 integration fixer |
 | 2026-10-21 | rewrite (version) | Before any release of OBJECT_LAYOUT 2 (it stays 2): SLOT_OBJECT gets 2 fixed fields, +24 ObjectClass id and +32 a separate internal-slots cell (an ELEMENTS cell, or undefined when n = 0). Its in-object slots are no longer the internal slots: property code uses in-object slots for named fields (`props::field_ref`) and clears them on a dictionary move (`props::to_dictionary`), so `m.foo = 1` or `Object.preventExtensions(m)` would have overwritten them. Test `tests::objects::slot_object_fixed_fields_survive_property_changes`. Pre-freeze churn (README §3.3) | M2-P0 integration fixer (hot-path review) |
+| 2026-10-22 | rewrite (version) | OBJECT_LAYOUT 2 -> 3 (`versions.rs`), as built in M3-P0 (P0-VM3; P0-D1, P0-D2, V8-A9): FUNCTION gets +48 `[[Realm]]`, a REALM cell (`fun::FIXED` 3 -> 4; the in-object slots move from +48 to +56; a function cell grows by 8 B); every function stores the isolate's REALM cell there (`object::new_function`). New JS object kinds ARGUMENTS 25 (+24 parameter map, +32 mapped count; 3 in-object slots) and MODULE_NAMESPACE 26 (+24 module, +32 export names; 1 in-object slot); new internal cells MODULE 76 (136 B), ORDERED_TABLE 77 (variable size, +48 flags with bit 0 = weak keys; kind and trace in `ordered_table.rs`) and REALM 78 (48 B). The exotic hooks and the set, define, delete and own-keys paths route ARGUMENTS and MODULE_NAMESPACE to `arguments.rs` and `module.rs` (stubs). Tests `tests::layout3` (GC stress and the heap verifier; every Value field of each new kind is traced) and `kinds::tests::table_v1_ranges` (35 ids) | M3-P0 P0-VM3 agent |
+| 2026-10-23 | rewrite (pre-freeze churn, README §3.3; H17 is Draft) | The routing sentence after the kind table follows the M3-P0 code fixes (CX-VM1, CX-VM2, VF-FORIN, VF-TDZ): the array-index paths (`get_index`, `has_index`, `delete_index`: `own_index` answers Unknown for a routed kind) and for-in also reach the hooks; a routed object on a prototype chain decides the `[[Set]]` walk through its own `[[Set]]`; the `[[Get]]` and `[[GetOwnProperty]]` hooks return a `Res`, so a namespace binding in its TDZ can throw. The stubs still answer "not exotic", so no result changes. Tests: `layout3` `index_paths_set_walk_and_for_in_reach_the_routed_hooks`, `routed_value_hooks_can_throw` | M3-P0 integration fixer |

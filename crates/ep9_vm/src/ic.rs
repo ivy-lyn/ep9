@@ -551,14 +551,16 @@ fn cacheable_key(k: u64) -> bool {
 
 /// True if objects of kind `k` may have the exotic own property `name` that their storage
 /// does not show (`exotic.rs`): an array's or a String wrapper's `length`, a constructor's
-/// lazy `prototype`. Array-index keys never get here.
+/// lazy `prototype`, any export of a module namespace (OBJECT_LAYOUT 3: its exports are not
+/// in its shape, `module.rs`). Array-index keys never get here, so an arguments object
+/// (whose exotic keys are mapped indices) needs no entry.
 fn exotic_name(rt: &Runtime, k: u8, name: u64) -> bool {
     if k == kind::ARRAY.get() || k == kind::PRIMITIVE_WRAPPER.get() {
         name == rt.atom(Atom::Length)
     } else if k == kind::FUNCTION.get() {
         name == rt.atom(Atom::Prototype)
     } else {
-        false
+        k == kind::MODULE_NAMESPACE.get()
     }
 }
 
@@ -1009,3 +1011,106 @@ pub(crate) fn describe_handler(h: u64) -> (i32, u32, u64, i32) {
         rd_i32(c, hc::LOCATION),
     )
 }
+
+/// IC hit and miss counters (feature `ic-stats`, H27; never in `ep9`, dep-guards check 11). A
+/// report build: `cargo build --release -p ep9_cli --features ep9_vm/ic-stats`. T0's fast
+/// handlers count each IC site visit as a hit (the fast path answered) or a miss (it went
+/// cold); a miss is sorted by the state of its feedback slot. The counters are per thread
+/// (the isolate's thread) and print to stderr when that thread ends, one line per site kind:
+///
+/// ```text
+/// ep9 ic-stats: load hit=N miss=N (no-vector=N uninit=N mono=N poly=N mega=N)
+/// ```
+///
+/// Without the feature the count macro expands to nothing, so the default build is unchanged
+/// (NATIVE-INV).
+#[cfg(feature = "ic-stats")]
+pub(crate) mod stats {
+    use core::cell::Cell;
+
+    use super::{MEGA, entry};
+    use crate::frame::{HOLE, UNDEFINED};
+    use crate::unit::FunctionInfo;
+
+    /// The IC site kinds of T0.
+    #[derive(Clone, Copy)]
+    pub(crate) enum Site {
+        /// `GetNamedProperty`, `GetNamedPropertyFromSuper` (0x21, 0x22).
+        Load = 0,
+        /// `SetNamedProperty`, `DefineNamedOwnProperty` (0x24, 0x25).
+        Store = 1,
+        /// `LdaGlobal`, `LdaGlobalInsideTypeof` (0x10, 0x11).
+        LoadGlobal = 2,
+        /// `StaGlobal` (0x12).
+        StoreGlobal = 3,
+    }
+
+    const SITES: [&str; 4] = ["load", "store", "load-global", "store-global"];
+    /// Columns: hit, then the misses by slot state.
+    const COLS: [&str; 6] = ["hit", "no-vector", "uninit", "mono", "poly", "mega"];
+
+    pub(crate) struct Counters([[Cell<u64>; 6]; 4]);
+
+    impl Drop for Counters {
+        fn drop(&mut self) {
+            for (s, row) in self.0.iter().enumerate() {
+                let n: Vec<u64> = row.iter().map(Cell::get).collect();
+                if n.iter().all(|&x| x == 0) {
+                    continue;
+                }
+                let miss: u64 = n[1..].iter().sum();
+                let cols: Vec<String> = (1..6).map(|i| format!("{}={}", COLS[i], n[i])).collect();
+                eprintln!(
+                    "ep9 ic-stats: {} hit={} miss={miss} ({})",
+                    SITES[s],
+                    n[0],
+                    cols.join(" ")
+                );
+            }
+        }
+    }
+
+    thread_local! {
+        static C: Counters = const { Counters([const { [const { Cell::new(0) }; 6] }; 4]) };
+    }
+
+    fn bump(site: Site, col: usize) {
+        C.with(|c| {
+            let x = &c.0[site as usize][col];
+            x.set(x.get() + 1);
+        });
+    }
+
+    /// A hit at a `site` (the fast path answered).
+    #[inline(never)]
+    pub(crate) fn hit(site: Site) {
+        bump(site, 0);
+    }
+
+    /// A miss at slot `slot` of `fi`'s vector, sorted by the slot state.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn miss(site: Site, fi: &FunctionInfo, slot: u32) {
+        let col = match entry(fi, slot) {
+            None => 1,
+            Some((UNDEFINED, _)) => 2,
+            Some((HOLE, v)) if v == MEGA => 5,
+            Some((HOLE, _)) => 4,
+            Some(_) => 3,
+        };
+        bump(site, col);
+    }
+}
+
+/// Counts an IC hit or miss with feature `ic-stats` ([`stats`]); nothing without it.
+macro_rules! ic_count {
+    (hit, $site:ident) => {
+        #[cfg(feature = "ic-stats")]
+        $crate::ic::stats::hit($crate::ic::stats::Site::$site);
+    };
+    (miss, $site:ident, $fi:expr, $slot:expr) => {
+        #[cfg(feature = "ic-stats")]
+        $crate::ic::stats::miss($crate::ic::stats::Site::$site, $fi, $slot);
+    };
+}
+pub(crate) use ic_count;

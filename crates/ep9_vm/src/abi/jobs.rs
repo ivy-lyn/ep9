@@ -308,8 +308,29 @@ impl<'s> Cx<'s> {
         self.call(f, Local::undefined(), &[value]).map(|_| ())
     }
 
-    /// The Job of NewPromiseResolveThenableJob (§27.2.2.2).
+    /// The Job of NewPromiseResolveThenableJob (§27.2.2.2). Steps 2-5: the job's realm is
+    /// GetFunctionRealm(then), so it runs there (`realm::switch`), and the resolving functions
+    /// of step a are that realm's (X-REALM3). The realm of the checkpoint is current again
+    /// after the job, also after a throw.
     fn promise_resolve_thenable_job(
+        &mut self,
+        promise: Local<'s, JsObject>,
+        thenable: Local<'s>,
+        then: Local<'s>,
+    ) -> JsResult<()> {
+        let then_realm = crate::realm::get_function_realm(self.rt(), then.bits());
+        let saved = self.cx.realm;
+        if then_realm == saved {
+            return self.promise_resolve_thenable_job_in(promise, thenable, then);
+        }
+        crate::realm::switch(self.cx, then_realm);
+        let r = self.promise_resolve_thenable_job_in(promise, thenable, then);
+        crate::realm::switch(self.cx, saved);
+        r
+    }
+
+    /// Steps a-c of the Job of NewPromiseResolveThenableJob, in the job's realm.
+    fn promise_resolve_thenable_job_in(
         &mut self,
         promise: Local<'s, JsObject>,
         thenable: Local<'s>,
@@ -442,6 +463,20 @@ impl<'s> Cx<'s> {
         // resolution, thenJobCallback); HostEnqueuePromiseJob.
         self.enqueue(job::THENABLE, promise.into(), resolution, then);
         Ok(())
+    }
+
+    /// The steps of a promise resolve function after its `[[AlreadyResolved]]` check
+    /// (§27.2.1.3.2 steps 7-16), for a VM-made pending promise that one resolve at most
+    /// reaches: an async function's own promise (§27.7.5.2 AsyncBlockStart step 3.f;
+    /// `interp/slow/async_fn.rs`). A thenable takes a job; a throw of its `then` getter
+    /// rejects. GC point; may run JS (the getter).
+    pub(crate) fn resolve_promise_once(
+        &mut self,
+        promise: Local<'s, JsObject>,
+        resolution: Local<'s>,
+    ) -> JsResult<()> {
+        debug_assert!(self.is_promise(promise) && self.state_of(promise) == promise::PENDING);
+        self.resolve_promise(promise, resolution)
     }
 
     /// FulfillPromise(promise, value) (§27.2.1.4). `promise` is pending.

@@ -14,7 +14,8 @@
 //!                          undefined
 //! GC                       one precise root source (it holds an Rc clone of SymbolRoots):
 //!                          the well-known symbols in WellKnownSymbol order, %Symbol.prototype%,
-//!                          the class-fields key, then every registry entry (key and symbol)
+//!                          the class-fields key, the identity-hash key, then every registry
+//!                          entry (key and symbol)
 //! ```
 //!
 //! - The identity hash never comes from the address (H12). It is the next value of a
@@ -29,8 +30,16 @@
 //!   [`install`]. A class constructor holds its instance members initializer under it (C8:
 //!   the FUNCTION layout has no free field; `interp/slow/class_fields.rs`). No JS code can
 //!   name it.
+//! - The identity-hash key ([`identity_hash_key`]) is one private name per isolate, made by
+//!   [`install`]. An object that is a Map, Set, WeakMap or WeakSet key keeps its identity hash
+//!   under it (H12-Q1; `ordered_table::identity_hash`). It is per isolate, not per realm, so
+//!   an object has one hash in every realm (a table can be used by the methods of any realm).
 //! - The registry is strong: a registered symbol lives as long as the isolate, because
 //!   `Symbol.for` must give the same symbol again (§20.4.2.2). Its keys are atoms.
+//! - Realms (H22-Q3): the well-known symbols, the registry, the class-fields key and the
+//!   identity-hash key are one per isolate, shared by every realm. `%Symbol.prototype%` is per
+//!   realm: the root here holds the current realm's, and the realm switch loads it
+//!   ([`set_prototype`]).
 
 use core::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -213,6 +222,8 @@ struct SymbolRoots {
     prototype: Cell<u64>,
     /// The class-fields key, a private name (undefined before [`install`]).
     class_fields: Cell<u64>,
+    /// The identity-hash key, a private name (undefined before [`install`]).
+    identity_hash: Cell<u64>,
     /// Never borrowed across an allocation (W4-GC-RULES).
     registry: RefCell<Registry>,
 }
@@ -224,6 +235,7 @@ impl SymbolRoots {
         }
         t.visit_bits(self.prototype.get());
         t.visit_bits(self.class_fields.get());
+        t.visit_bits(self.identity_hash.get());
         self.registry
             .try_borrow()
             .expect("the symbol registry is borrowed across a GC point (W4-GC-RULES)")
@@ -247,6 +259,7 @@ impl Default for SymbolState {
                 well_known: core::array::from_fn(|_| Cell::new(UNDEFINED)),
                 prototype: Cell::new(UNDEFINED),
                 class_fields: Cell::new(UNDEFINED),
+                identity_hash: Cell::new(UNDEFINED),
                 registry: RefCell::new(Registry::default()),
             }),
             rng: Cell::new(prng_seed()),
@@ -265,6 +278,12 @@ impl SymbolState {
         z ^= z >> 31;
         (z >> 34) as u32 & HASH_MASK
     }
+}
+
+/// The next identity hash of the isolate (30 bits, the symbol hash PRNG): for objects that
+/// need a stable hash without an address (H12-Q1; M3-P1 B-COLLECTIONS, Map and Set keys).
+pub(crate) fn next_identity_hash(rt: &Runtime) -> u32 {
+    rt.symbols.next_hash()
 }
 
 /// The PRNG seed of a new isolate: 60 bits of the per-process string hash key (random, or
@@ -362,7 +381,8 @@ pub(crate) fn is_well_known(sym: u64) -> bool {
 
 /// Registers the symbol root source, then creates the well-known symbols (descriptions
 /// "Symbol.iterator" and so on, §6.1.5.1), `%Symbol.prototype%` (an ordinary object whose
-/// prototype is `%Object.prototype%`, §20.4.3) and the class-fields key. Runs once, in
+/// prototype is `%Object.prototype%`, §20.4.3), the class-fields key and the identity-hash
+/// key. Runs once, in
 /// `realm::init`, after the intrinsics.
 pub(crate) fn install(rt: &Runtime) {
     let roots = Rc::clone(&rt.symbols.roots);
@@ -383,6 +403,9 @@ pub(crate) fn install(rt: &Runtime) {
     let desc = atoms::intern_str(rt, "#.class-fields");
     let key = alloc_symbol(rt, desc, flag::PRIVATE);
     roots.class_fields.set(key);
+    let desc = atoms::intern_str(rt, "#.identity-hash");
+    let key = alloc_symbol(rt, desc, flag::PRIVATE);
+    roots.identity_hash.set(key);
 }
 
 /// The well-known symbol `w` of this isolate (undefined before [`install`]).
@@ -390,10 +413,30 @@ pub(crate) fn well_known(rt: &Runtime, w: WellKnownSymbol) -> u64 {
     rt.symbols.roots.well_known[w as usize].get()
 }
 
-/// `%Symbol.prototype%`: the prototype of Symbol wrapper objects (undefined before
-/// [`install`]).
+/// `%Symbol.prototype%` of the current realm: the prototype of Symbol wrapper objects
+/// (undefined before [`install`]).
 pub(crate) fn prototype(rt: &Runtime) -> u64 {
     rt.symbols.roots.prototype.get()
+}
+
+/// Makes `v` the current realm's `%Symbol.prototype%` (H22-Q3: the realm switch and realm
+/// creation in `realm.rs` load it from the REALM record). Not a GC point.
+pub(crate) fn set_prototype(rt: &Runtime, v: u64) {
+    rt.symbols.roots.prototype.set(v);
+}
+
+/// `%Symbol.prototype%` of a realm made after the first (`realm::create`): an ordinary object
+/// whose prototype is the current `%Object.prototype%` (§20.4.3). The well-known symbols, the
+/// registry, the class-fields key and the identity-hash key stay one per isolate (§6.1.5.1:
+/// well-known symbols are shared by all realms; §20.4.2.2: the registry is global to the
+/// agent). GC point.
+pub(crate) fn install_prototype(rt: &Runtime) {
+    debug_assert!(
+        rt.symbols.roots.prototype.get() == UNDEFINED,
+        "a new realm starts with no %Symbol.prototype%"
+    );
+    let proto = object::new_object(rt, rt.root(Root::ObjectPrototype));
+    rt.symbols.roots.prototype.set(proto);
 }
 
 /// The class-fields key: the VM-internal private name under which a class constructor holds
@@ -401,6 +444,13 @@ pub(crate) fn prototype(rt: &Runtime) -> u64 {
 /// [`install`].
 pub(crate) fn class_fields_key(rt: &Runtime) -> u64 {
     rt.symbols.roots.class_fields.get()
+}
+
+/// The identity-hash key: the VM-internal private name under which an object keeps its
+/// identity hash (H12-Q1; `ordered_table::identity_hash`). One per isolate, so an object has
+/// the same hash in every realm. Undefined before [`install`].
+pub(crate) fn identity_hash_key(rt: &Runtime) -> u64 {
+    rt.symbols.roots.identity_hash.get()
 }
 
 // ---- the registry -----------------------------------------------------------------------------
