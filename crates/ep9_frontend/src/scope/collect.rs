@@ -261,6 +261,16 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// (CX2-E9-1) `heritage` holds a direct eval (see [`FindDirectEval`]).
+    fn holds_direct_eval(&self, heritage: &Expression<'a>) -> bool {
+        let mut find = FindDirectEval {
+            budget: self.cap.saturating_sub(self.depth),
+            found: false,
+        };
+        find.visit_expression(heritage);
+        find.found
+    }
+
     fn private_name(&mut self, text: &'a str) -> NameId {
         if let Some(&id) = self.private_ids.get(text) {
             return id;
@@ -852,6 +862,71 @@ fn lexical_kind(kind: VariableDeclarationKind) -> Option<BindingKind> {
     }
 }
 
+/// (M3-P4, CX2-E9-1) The marker binding of a class's heritage scope
+/// (`ClassInfo::heritage_scope`). The VM knows the name (ep9_bytecode `eval_context.rs`); it
+/// starts with `#.`, so no source text can spell it.
+pub(crate) const HERITAGE_MARKER: &str = "#.heritage";
+
+/// (CX2-E9-1) Finds a direct eval in a class heritage, also in the functions and classes
+/// inside it. Past `budget` nested nodes it answers yes: a heritage scope too many does no
+/// harm, and the main walk reports the depth.
+struct FindDirectEval {
+    budget: u32,
+    found: bool,
+}
+
+impl FindDirectEval {
+    fn enter(&mut self) -> bool {
+        if self.found {
+            return false;
+        }
+        if self.budget == 0 {
+            self.found = true;
+            return false;
+        }
+        self.budget -= 1;
+        true
+    }
+}
+
+impl<'a> Visit<'a> for FindDirectEval {
+    fn visit_expression(&mut self, it: &Expression<'a>) {
+        if self.enter() {
+            walk::walk_expression(self, it);
+            self.budget += 1;
+        }
+    }
+
+    fn visit_statement(&mut self, it: &Statement<'a>) {
+        if self.enter() {
+            walk::walk_statement(self, it);
+            self.budget += 1;
+        }
+    }
+
+    fn visit_assignment_target(&mut self, it: &AssignmentTarget<'a>) {
+        if self.enter() {
+            walk::walk_assignment_target(self, it);
+            self.budget += 1;
+        }
+    }
+
+    fn visit_binding_pattern(&mut self, it: &BindingPattern<'a>) {
+        if self.enter() {
+            walk::walk_binding_pattern(self, it);
+            self.budget += 1;
+        }
+    }
+
+    fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        if is_direct_eval(it) {
+            self.found = true;
+            return;
+        }
+        walk::walk_call_expression(self, it);
+    }
+}
+
 /// A direct eval: `eval(...)` or `(eval)(...)`, not `eval?.(...)` (ECMA-262 EvaluateCall).
 fn is_direct_eval(call: &CallExpression<'_>) -> bool {
     if call.optional {
@@ -1138,12 +1213,39 @@ impl<'a> Visit<'a> for Builder<'a> {
         self.cur_scope = class_scope;
         self.strict = true;
         let eval_sites_before = self.eval_sites.len();
+        let mut heritage_scope = None;
         if let Some(heritage) = &it.heritage {
             // The heritage stays in the class scope (the inner name is in its TDZ there, and
             // the class context is on the runtime chain), but its private names are the outer
             // ones.
             self.heritage_of.push(class_scope);
+            // (CX2-E9-1) A heritage that holds a direct eval gets a scope of its own with a
+            // marker binding in its context, so the VM can tell eval code there from eval code
+            // in a computed key (see `ClassInfo::heritage_scope`).
+            if self.holds_direct_eval(&heritage.expression) {
+                let h = self.new_scope(
+                    ScopeKind::Block,
+                    Some(class_scope),
+                    self.cur_fn,
+                    heritage.expression.span(),
+                    true,
+                    None,
+                );
+                let marker = self.private_name(&HERITAGE_MARKER[1..]);
+                self.declare(
+                    h,
+                    marker,
+                    BindingKind::PrivateName {
+                        kind: PrivateKind::Method,
+                        is_static: false,
+                    },
+                    None,
+                );
+                heritage_scope = Some(h);
+                self.cur_scope = h;
+            }
             self.visit_expression(&heritage.expression);
+            self.cur_scope = class_scope;
             self.heritage_of.pop();
         }
 
@@ -1381,6 +1483,7 @@ impl<'a> Visit<'a> for Builder<'a> {
             default_constructor,
             instance_initializer: instance,
             static_initializer: statics,
+            heritage_scope,
         });
         self.cur_scope = outer;
         self.strict = saved_strict;

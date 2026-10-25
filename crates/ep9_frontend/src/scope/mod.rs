@@ -320,6 +320,18 @@ pub struct ClassInfo {
     pub instance_initializer: Option<FunctionId>,
     /// Synthetic static members initializer, when the class has static fields or static blocks.
     pub static_initializer: Option<FunctionId>,
+    /// (M3-P4, CX2-E9-1) The heritage scope: a `Block` scope, child of the class scope, around
+    /// the `extends` expression of a class whose heritage holds a direct eval (only then). Its
+    /// one binding is the marker `#.heritage` (`collect.rs` `HERITAGE_MARKER`), so it has a
+    /// context, right inside the class context (if the class scope has one). The heritage
+    /// runs in the class context but with the outer PrivateEnvironment (ECMA-262 §15.7.14
+    /// step 8.b): the VM leaves out the private names of the context past a marker context
+    /// when that context is of this scope's parent, the class scope (ep9_bytecode
+    /// `eval_context.rs`), so eval code in the heritage does not see this class's names, and
+    /// eval code in a computed key (whose context is the class context) does. A class scope
+    /// with no context has no private names, and the context past the marker context is then
+    /// of an enclosing scope, whose names stay (fix round 3, R-FIX2-1).
+    pub heritage_scope: Option<ScopeId>,
 }
 
 /// A scope and its context layout.

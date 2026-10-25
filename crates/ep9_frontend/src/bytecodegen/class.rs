@@ -4,7 +4,9 @@
 //! ```text
 //! enter class scope (inner name in TDZ)
 //! CreatePrivateName per field #x and per brand -> class context slots
+//! [enter the heritage scope: a direct eval in the heritage, CX2-E9-1]
 //! heritage -> r_heritage (or the hole)
+//! [exit the heritage scope]
 //! CreateClosure(constructor) -> r_ctor
 //! (name from a runtime key: CallRuntime SetFunctionName(r_ctor, key), ABI 5 id 44)
 //! DefineClass(r_ctor, r_heritage) -> r_proto
@@ -58,7 +60,16 @@ impl<'a> FnGen<'a, '_> {
         self.create_private_names(c, scope, name.as_ref())?;
         match &c.heritage {
             Some(h) => {
-                self.expr(&h.expression)?;
+                // (CX2-E9-1) The heritage scope, if the class has one: its context (the
+                // `#.heritage` marker) is current while the heritage runs.
+                if let Some(hs) = info.heritage_scope {
+                    let pushed = self.enter_scope(hs);
+                    let r = self.expr(&h.expression);
+                    self.exit_scope(hs, pushed);
+                    r?;
+                } else {
+                    self.expr(&h.expression)?;
+                }
             }
             None => {
                 self.b.lda_the_hole();

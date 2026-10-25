@@ -37,7 +37,7 @@ use crate::kinds;
 use crate::object;
 use crate::runtime::ErrorKind;
 use crate::string::{self, JsStr};
-use crate::unit::{EvalReceiver, FunctionInfo, LoadedUnit};
+use crate::unit::{EvalPrivateName, EvalReceiver, FunctionInfo, LoadedUnit};
 
 /// The message of the EvalError that eval, `Function()` and [`Cx::evaluate_script`] throw on
 /// an isolate without compiler hooks (O2).
@@ -64,7 +64,7 @@ impl<'s> Cx<'s> {
     /// isolate without compiler hooks, or whatever the script throws.
     pub fn evaluate_script(&mut self, source: &str, file: &str) -> JsResult<Local<'s>> {
         let unit = self.compile_with(|h| (h.compile_script)(source))?;
-        let f = self.load_entry(unit, file, UNDEFINED, EvalReceiver::default());
+        let f = self.load_entry(unit, file, UNDEFINED, EvalReceiver::default(), Box::new([]));
         let global = self.global();
         self.call(f, global, &[])
     }
@@ -110,7 +110,8 @@ impl<'s> Cx<'s> {
     }
 
     /// Loads `unit` as [`Cx::run_script`](crate::Cx::run_script) does, with the
-    /// receiver flags `receiver` (direct eval code; the default for everything else), and
+    /// receiver flags `receiver` and the caller's private names `private` (direct eval code;
+    /// the default and empty for everything else), and
     /// returns a closure of its function 0 over `context` (undefined: no context). GC point
     /// (the unit's strings and constants, the closure).
     pub(crate) fn load_entry(
@@ -119,11 +120,13 @@ impl<'s> Cx<'s> {
         file: &str,
         context: u64,
         receiver: EvalReceiver,
+        private: Box<[EvalPrivateName]>,
     ) -> Local<'s, JsFunction> {
         let rt = self.rt();
         let index = u32::try_from(rt.units.borrow().len()).expect("fewer than 2^32 units");
         let mut lu = LoadedUnit::load(rt, unit, file.to_string(), index);
         lu.eval_receiver = receiver;
+        lu.eval_private = private;
         if lu.unit.header.code_kind == CodeKind::Eval {
             // The ScriptOrModule of the code that runs eval or `Function()` now: `import()`
             // in the new code and in its functions resolves from there (M3-P3).
@@ -137,16 +140,18 @@ impl<'s> Cx<'s> {
     /// PerformEval (§19.2.1.1) of direct eval code with the caller's `ctx`: compiles `source`
     /// and returns a closure of the unit's function 0 over `context`, the caller's current
     /// context (`interp/slow/eval.rs` calls it). The unit keeps the receiver flags of `ctx`
-    /// for the direct evals inside it. GC point.
+    /// for the direct evals inside it, and `private`, where the caller's private names are
+    /// (CX2-E9-1). GC point.
     pub(crate) fn direct_eval(
         &mut self,
         source: Local<'s, JsString>,
         ctx: &EvalContext,
         context: u64,
+        private: Box<[EvalPrivateName]>,
     ) -> JsResult<Local<'s, JsFunction>> {
         let text = self.source_text(source)?;
         let unit = self.compile_with(|h| (h.compile_eval)(&text, ctx))?;
-        Ok(self.load_entry(unit, EVAL_FILE, context, EvalReceiver::of(ctx)))
+        Ok(self.load_entry(unit, EVAL_FILE, context, EvalReceiver::of(ctx), private))
     }
 
     /// PerformEval (§19.2.1.1) of indirect eval code: `x` is the argument of `%eval%`. A value
@@ -161,7 +166,13 @@ impl<'s> Cx<'s> {
         let text = self.source_text(s)?;
         let ctx = EvalContext::default();
         let unit = self.compile_with(|h| (h.compile_eval)(&text, &ctx))?;
-        let f = self.load_entry(unit, EVAL_FILE, UNDEFINED, EvalReceiver::default());
+        let f = self.load_entry(
+            unit,
+            EVAL_FILE,
+            UNDEFINED,
+            EvalReceiver::default(),
+            Box::new([]),
+        );
         let this: Local<'s> = Self::local(self.cx.global_this);
         self.call(f, this, &[])
     }
@@ -217,7 +228,13 @@ impl<'s> Cx<'s> {
             FunctionCtorKind::Normal => IntrinsicId::FunctionPrototype,
         };
         let proto = self.get_prototype_from_constructor(new_target, fallback)?;
-        let entry = self.load_entry(unit, FUNCTION_FILE, UNDEFINED, EvalReceiver::default());
+        let entry = self.load_entry(
+            unit,
+            FUNCTION_FILE,
+            UNDEFINED,
+            EvalReceiver::default(),
+            Box::new([]),
+        );
         let this: Local<'s> = Self::local(self.cx.global_this);
         let f = self.call(entry, this, &[])?;
         let Some(fo) = f.as_function() else {

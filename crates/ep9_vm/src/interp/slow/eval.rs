@@ -25,8 +25,12 @@
 //! |---|---|
 //! | `strict` | `ScopeFlags::STRICT` of the `scope` operand: the unit scope at the call site, so class code inside a sloppy function is strict (M2-P2-L6) |
 //! | `in_function`, `in_method`, `in_derived_ctor`, `in_class_field_init` (and the `*_ok` flags) | the kind of the `function` operand's unit function, past arrows along `parent` (GetThisEnvironment). Function 0 of a script or module: global code, all false. Function 0 of eval code: the flags the eval unit was compiled with (`LoadedUnit::eval_receiver`, set from the caller's `EvalContext` by `direct_eval`; all false for indirect eval), so a class field initializer's `in_class_field_init` holds through nested eval |
-//! | `private_names` | the `#x` slots of the Class scopes on the `scope` operand's `outer` chain (without the `#`), and for eval code also those of the Class scope contexts on the runtime chain past the eval unit's own contexts |
+//! | `private_names` | (M3-P4, CX2-E9-1) the running PrivateEnvironment: the `#x` slots (without the `#`) of the Class contexts on the runtime chain from the frame's current context out, without the class whose heritage runs (a heritage scope context comes right before its class context, which is the heritage scope's `outer` scope; a class with no context has no names to leave out, R-FIX2-1), and past the contexts of eval code the names that the eval code was compiled with (`private_environment`). Before CX2-E9-1 the static scope chain of the `scope` operand gave them, so a heritage saw its own class's names |
 //! | `private_methods`, `private_accessors`, `private_static` (E9, M3-P4) | the kind of each of those names, from the slot names of the class scope that gives it (`add_private_names`) |
+//!
+//! The new eval unit keeps the private names with the hops from the site context to their
+//! class contexts (`LoadedUnit::eval_private`): a `#x` of the eval code resolves with them
+//! (`slow/lookup.rs` `resolve_private`), not by a search from the current context.
 //!
 //! EvalDeclarationInstantiation (§19.2.1.3) is split over the two runtime ids, one name per
 //! call (the order of `functionsToInitialize`, then the var names). The spec checks every name
@@ -47,8 +51,8 @@
 use std::collections::HashSet;
 
 use ep9_bytecode::{
-    CodeKind, Constant, EVAL_EXT_BINDING, EvalContext, FunctionKind, Instructions, Opcode,
-    Register, RuntimeId, ScopeFlags, ScopeKind, StringId, UnitString, VariableMode,
+    Constant, EVAL_EXT_BINDING, EvalContext, FunctionKind, Instructions, Opcode, Register,
+    RuntimeId, ScopeFlags, ScopeKind, StringId, UnitString, VariableMode,
 };
 use ep9_value::Throw;
 
@@ -64,7 +68,7 @@ use crate::object::{
 };
 use crate::property;
 use crate::runtime::{ErrorKind, Root};
-use crate::unit::{EvalPrologue, FunctionInfo, LoadedUnit};
+use crate::unit::{EvalPrivateName, EvalPrologue, FunctionInfo, LoadedUnit};
 
 use super::{NameMsg, context, info, interrupt, throw_msg_now, throw_name_now};
 
@@ -94,13 +98,30 @@ fn slot_name<'u>(u: &'u LoadedUnit, scope: &ep9_bytecode::Scope, i: usize) -> Op
     }
 }
 
+/// (M3-P4, CX2-E9-1) The marker binding of a class's heritage scope (`ep9_frontend`
+/// `scope/collect.rs` `HERITAGE_MARKER`; ep9_bytecode `eval_context.rs`): the context past a
+/// context that holds it is the class context, whose private names the heritage does not see,
+/// if the class scope has a context (else it is the context of an enclosing scope).
+const HERITAGE_MARKER: &[u8] = b"#.heritage";
+
+/// The scope of a heritage scope context (it holds the marker binding).
+fn is_heritage_scope(u: &LoadedUnit, scope: &ep9_bytecode::Scope) -> bool {
+    scope.kind == ScopeKind::Block
+        && (0..scope.slots.len()).any(|i| slot_name(u, scope, i) == Some(HERITAGE_MARKER))
+}
+
 /// Adds the private names of a Class scope (`#x` slots, without the `#`; the synthetic
 /// `#.brand`-style names are left out: no source text can spell them) that an inner class
-/// does not already give, and their kinds (E9, M3-P4): `#.set-x` makes `x` an accessor,
-/// `#.method-x` or `#.static-method-x` a method, and `#.static-method-x` or
-/// `#.static-accessor-x` static (the scope pass's kind markers, ep9_bytecode
-/// `eval_context.rs`); any other name is a field.
-fn add_private_names(u: &LoadedUnit, scope: &ep9_bytecode::Scope, ctx: &mut EvalContext) {
+/// does not already give, with their kinds (E9, M3-P4) and the hops `depth` from the site
+/// context to the class context (CX2-E9-1): `#.set-x` makes `x` an accessor, `#.method-x` or
+/// `#.static-method-x` a method, and `#.static-method-x` or `#.static-accessor-x` static (the
+/// scope pass's kind markers, ep9_bytecode `eval_context.rs`); any other name is a field.
+fn add_private_names(
+    u: &LoadedUnit,
+    scope: &ep9_bytecode::Scope,
+    depth: u32,
+    out: &mut Vec<EvalPrivateName>,
+) {
     if scope.kind != ScopeKind::Class {
         return;
     }
@@ -117,19 +138,75 @@ fn add_private_names(u: &LoadedUnit, scope: &ep9_bytecode::Scope, ctx: &mut Eval
         let Some(name) = text.strip_prefix('#') else {
             continue;
         };
-        if name.starts_with('.') || ctx.private_names.iter().any(|n| n == name) {
+        if name.starts_with('.') || out.iter().any(|e| e.name == name) {
             continue;
         }
-        ctx.private_names.push(name.to_owned());
-        if has("#.set-", name) {
-            ctx.private_accessors.push(name.to_owned());
-        } else if has("#.method-", name) || has("#.static-method-", name) {
-            ctx.private_methods.push(name.to_owned());
-        }
-        if has("#.static-method-", name) || has("#.static-accessor-", name) {
-            ctx.private_static.push(name.to_owned());
-        }
+        let accessor = has("#.set-", name);
+        out.push(EvalPrivateName {
+            name: name.to_owned(),
+            method: !accessor && (has("#.method-", name) || has("#.static-method-", name)),
+            accessor,
+            is_static: has("#.static-method-", name) || has("#.static-accessor-", name),
+            depth,
+        });
     }
+}
+
+/// (CX2-E9-1) The running PrivateEnvironment at a direct eval in the frame `fp` of unit `u`
+/// (PerformEval step 10.b): the private names of the class contexts on the runtime chain
+/// from the frame's current context (the site context, 0 hops) out, innermost class first.
+///
+/// ```text
+/// a Class context of u           its names (an inner class's name of the same text wins)
+/// a heritage scope context of u  if the next context is the context of its class (the
+///                                heritage scope's `outer` scope), that class's names are
+///                                left out (§15.7.14 step 8.b, the heritage runs with the
+///                                outer PrivateEnvironment)
+/// the first context of another unit: u is eval code and this is its site context;
+///                                the rest is the list u was compiled with
+///                                (`LoadedUnit::eval_private`), its hops moved by this depth
+/// ```
+///
+/// A class context is on the chain from its class scope's entry, before the heritage runs,
+/// so no name of a class around the site is missing. (M3-P4 fix round 3, R-FIX2-1) A class
+/// scope with no private name and no computed field key has no context, so the context right
+/// past its heritage scope context is the context of an enclosing scope: maybe the class
+/// context of a class that holds this class in a computed key, whose names the heritage does
+/// see. So only the context whose scope is the heritage scope's own class scope is left out.
+/// GC point (a poll).
+fn private_environment(cx: &mut Cx, fp: *mut u64, u: &LoadedUnit) -> Res<Vec<EvalPrivateName>> {
+    let mut out = Vec::new();
+    let mut c = context(fp);
+    let mut depth = 0u32;
+    // The class scope of the heritage scope context seen last: the next context's names are
+    // left out only if that context is of this scope.
+    let mut heritage_class: Option<&ep9_bytecode::Scope> = None;
+    while is_context(c) {
+        poll(cx)?;
+        let (cu, scope) = object::context_scope(c);
+        if !core::ptr::eq(cu, u) {
+            for e in &u.eval_private {
+                if !out.iter().any(|o: &EvalPrivateName| o.name == e.name) {
+                    out.push(EvalPrivateName {
+                        depth: depth.saturating_add(e.depth),
+                        ..e.clone()
+                    });
+                }
+            }
+            return Ok(out);
+        }
+        let skip = heritage_class
+            .take()
+            .is_some_and(|class| core::ptr::eq(class, scope));
+        if is_heritage_scope(cu, scope) {
+            heritage_class = scope.outer.and_then(|o| cu.unit.scopes.get(o.index()));
+        } else if !skip {
+            add_private_names(cu, scope, depth, &mut out);
+        }
+        c = object::context_previous(c);
+        depth = depth.saturating_add(1);
+    }
+    Ok(out)
 }
 
 /// The receiver flags of a function kind (PerformEval step 8.b): `in_function`, `in_method`,
@@ -150,9 +227,15 @@ fn set_receiver(ctx: &mut EvalContext, kind: FunctionKind) {
 }
 
 /// The [`EvalContext`] of a direct eval at the call site of the frame `fp`: `function` is the
-/// running closure and `scope` the unit scope id of the site (see the module doc). GC point
-/// (a poll).
-fn eval_context(cx: &mut Cx, fp: *mut u64, function: u64, scope: u64) -> Res<EvalContext> {
+/// running closure and `scope` the unit scope id of the site (see the module doc); and the
+/// private names with the places of their class contexts (CX2-E9-1, for the eval unit's
+/// `LoadedUnit::eval_private`). GC point (a poll).
+fn eval_context(
+    cx: &mut Cx,
+    fp: *mut u64,
+    function: u64,
+    scope: u64,
+) -> Res<(EvalContext, Vec<EvalPrivateName>)> {
     if !is_function(function) {
         return Err(internal(cx, "ResolvePossiblyDirectEval: not a function"));
     }
@@ -178,11 +261,17 @@ fn eval_context(cx: &mut Cx, fp: *mut u64, function: u64, scope: u64) -> Res<Eva
         direct: true,
         ..EvalContext::default()
     };
-    // The static scope chain of the site, in its own unit.
-    let mut s = Some(site);
-    while let Some(sc) = s {
-        add_private_names(u, sc, &mut ctx);
-        s = sc.outer.and_then(|o| unit.scopes.get(o.index()));
+    let private = private_environment(cx, fp, u)?;
+    for e in &private {
+        ctx.private_names.push(e.name.clone());
+        if e.accessor {
+            ctx.private_accessors.push(e.name.clone());
+        } else if e.method {
+            ctx.private_methods.push(e.name.clone());
+        }
+        if e.is_static {
+            ctx.private_static.push(e.name.clone());
+        }
     }
     // GetThisEnvironment: the nearest function that is not an arrow.
     let mut id = fi.function_id as usize;
@@ -204,34 +293,10 @@ fn eval_context(cx: &mut Cx, fp: *mut u64, function: u64, scope: u64) -> Res<Eva
         }
         k => set_receiver(&mut ctx, k),
     }
-    if unit.header.code_kind == CodeKind::Eval {
-        // Past this unit's own contexts, the chain is the eval caller's (and further out).
-        outer_private_names(cx, fp, u, &mut ctx)?;
-    }
     ctx.new_target_ok = ctx.in_function;
     ctx.super_property_ok = ctx.in_method;
     ctx.super_call_ok = ctx.in_derived_ctor;
-    Ok(ctx)
-}
-
-/// For a direct eval inside eval code `u`: the private names of the Class scope contexts past
-/// the contexts of `u` on the runtime chain.
-fn outer_private_names(
-    cx: &mut Cx,
-    fp: *mut u64,
-    u: &LoadedUnit,
-    ctx: &mut EvalContext,
-) -> Res<()> {
-    let mut c = context(fp);
-    while is_context(c) {
-        poll(cx)?;
-        let (cu, scope) = object::context_scope(c);
-        if !core::ptr::eq(cu, u) {
-            add_private_names(cu, scope, ctx);
-        }
-        c = object::context_previous(c);
-    }
-    Ok(())
+    Ok((ctx, private))
 }
 
 /// `ResolvePossiblyDirectEval(callee, source, function, scope, position)` (runtime id 7,
@@ -251,10 +316,15 @@ pub(crate) fn resolve_possibly_direct_eval(
     if callee != eval || callee == UNDEFINED || !is_string(source) {
         return Ok(callee);
     }
-    let ctx = eval_context(cx, fp, function, scope)?;
+    let (ctx, private) = eval_context(cx, fp, function, scope)?;
     let current = context(fp);
     let mut acx = abi::Cx::new(cx);
-    let f = acx.direct_eval(Local::from_bits(source), &ctx, current)?;
+    let f = acx.direct_eval(
+        Local::from_bits(source),
+        &ctx,
+        current,
+        private.into_boxed_slice(),
+    )?;
     Ok(f.bits())
 }
 
