@@ -33,6 +33,18 @@
 //! `#.static-accessor-x` (the slot holds nothing; only its name is read). An accessor also has
 //! its setter slot `#.set-x`; a name with neither is a field.
 //!
+//! (M3-P4, CX2-E9-1) `private_names` is the running PrivateEnvironment at the eval call
+//! (PerformEval step 10.b), and a class heritage runs with the outer one (§15.7.14 step 8.b),
+//! computed keys with the class's own. The VM takes the names from the class contexts on the
+//! runtime chain of the call; the scope pass gives a class whose heritage holds a direct eval
+//! a heritage scope (a `Block` scope inside the class scope) whose context holds the marker
+//! slot `#.heritage`, and the VM leaves out the names of the class context right past such a
+//! context. The eval unit keeps, per name, how many contexts out from the eval's site context
+//! the class context is, and the VM resolves a `#x` lookup of the eval code (the three forms
+//! above) there, not by a search from the current context: a search would find a class whose
+//! heritage holds the code. A `#x` lookup that finds no such class, a field key or a brand that
+//! is not a private name symbol, is a TypeError, never an ordinary property key.
+//!
 //! Sloppy eval code calls `DeclareEvalFunction(name, closure)` per function (spec order of
 //! `functionsToInitialize`) and then `DeclareEvalVar(name)` per other `var` name, before the
 //! body; these do the checks of EvalDeclarationInstantiation. Strict eval code keeps its
