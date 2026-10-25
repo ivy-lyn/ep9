@@ -28,7 +28,8 @@
 //!                    `Isolate` or a raw type (`RAW_TYPES`), in any module
 //!                  - the types that those lines name, to the end (the type closure): the type
 //!                    line (public fields, variants), and the pub methods and trait impls of
-//!                    the impls whose self type is that type;
+//!                    the impls in the files outside `abi/` and `builtins.rs` whose self type
+//!                    is that type;
 //!                    core `embed:` lines if a core line names the type (`Exception`,
 //!                    `IsolateConfig`, `CompileResult`, ...), else `embed (not core):` lines
 //! src/builtins.rs  the builtin table types and `check_tables`
@@ -40,9 +41,13 @@
 //! The default build: an item is read unless a `cfg` on it, on an inline module around it or
 //! on its module in `lib.rs` is false in every default build of every target: `test` and the
 //! features in `OFF_FEATURES` (`spike-native`, `ic-stats`: dep-guard 11 keeps them out of the
-//! ep9 graph; test `only_the_off_features_are_off` reads the Cargo.toml files). A target `cfg`
-//! and every other feature (`jit` is on in the default ep9_cli build) are read, and the line
-//! shows the `cfg` (Codex C2-FP1; M3-P3 fix round 6, RV5-F1 M1).
+//! ep9 graph; test `only_the_off_features_are_off` reads the Cargo.toml files). Two kinds of
+//! items are read under any `cfg` of their own: a pub method or const of an `impl Isolate`
+//! block (the reader skips only gated blocks and modules), and the module-level items of the
+//! `src/abi/*.rs`, `src/isolate.rs` (`impl Cx`) and `src/builtins.rs` rows above, with the pub
+//! items of their impl blocks. A target `cfg` and every other feature (`jit` is on in the
+//! default ep9_cli build) are read, and the line shows the `cfg` (Codex C2-FP1; M3-P3 fix
+//! round 6, RV5-F1 M1).
 //!
 //! Some forms that it cannot read are `unread:` lines, and test `the_extractor_reads_every_form`
 //! fails on them: a type alias of `Isolate` (or one that renames a raw type), a `use` that
@@ -53,14 +58,19 @@
 //! Known escape classes (no line, and every test here passes; H20 Decision, "The golden is a
 //! tripwire", classes (a)-(f); review checks them, and H20-Q6 has them as its test list):
 //! (a) an item that a macro makes outside the core files (decision M3-P3-H20-GOLDEN-LIMIT; a
-//! re-exported one is a line that says so); (b) a `#[path]` module, and a module file outside
-//! `src/`, not named `.rs` or under a gated module directory (`tests`, `native`) (RV6-G1);
-//! (c) a trait impl with a foreign self type (`impl From<Local<'s>> for Value`), and in `abi/`
-//! a trait impl whose trait and self type are not pub abi items (RV6-G2, RV6-A1); (d) an
-//! alias, a renaming `use` or a body impl of a core closure type such as `Exception` (RV6-G3);
-//! (e) an impl of an abi type (`Local`, `Cx`) outside the `abi/` files and `builtins.rs`
-//! (`impl Cx` of `isolate.rs` is read) (RV6-G4); (f) the types of other crates (`ep9_heap`,
-//! `ep9_value`, ...).
+//! re-exported one is a line that says so); (b) a `#[path]` module whose file is not read, and a
+//! module file in the same places: outside `src/`, not named `.rs`, or under a gated module
+//! directory (`tests`, `native`) (RV6-G1, RV7-3; `sources()` reads every other `.rs` file
+//! under `src/`); (c) outside `abi/` and `builtins.rs`, a trait impl whose head does not name
+//! `Isolate` and whose self type is not a closure type (in `isolate.rs`, also not `Cx`), such
+//! as `impl From<Local<'s>> for Value` in `string.rs`; and in `abi/` and `builtins.rs`, a
+//! trait impl whose head does not name `Isolate` and whose trait and self type are not pub abi
+//! or builtins items (RV6-G2, RV6-A1, RV7-2); (d) an alias, a renaming `use` or a body impl of
+//! a core closure type such as `Exception` (RV6-G3); (e) an impl of an abi type (`Local`,
+//! `Cx`) outside the `abi/` files and `builtins.rs` (`impl Cx` of `isolate.rs` is read)
+//! (RV6-G4), and an impl of a closure type (`Exception`, `IsolateConfig`, ...) in an `abi/`
+//! file or `builtins.rs`, unless it is a trait impl of a pub abi or builtins trait (RV7-1);
+//! (f) the types of other crates (`ep9_heap`, `ep9_value`, ...).
 //!
 //! The `embed (not core):` lines are the embedder API of H22, H23 and H19, with their own
 //! freeze points. They are here so that a new way for an embedder to reach the heap in a form
