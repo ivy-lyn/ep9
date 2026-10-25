@@ -257,7 +257,7 @@ abi: pub enum JsValue {}
 abi: pub struct ArgsBuilder<'s> { .. }
 abi: pub struct Cx<'s> { .. }
 abi: pub struct ScratchList<'s> { .. }
-abi: pub trait Downcast: sealed::Sealed { #[doc(hidden)] fn test(u64) -> bool }
+abi: pub trait Downcast: sealed::Sealed {  }
 abi: pub trait IntoKey<'s> { fn into_key(self, &mut Cx<'s>) -> Local<'s, JsKey> }
 abi: pub type HostFn = for<'s> fn(&mut Cx<'s>, Local<'s>, Args<'s>, Local<'s>) -> JsResult<Local<'s>>
 abi: pub type PromiseRejectionTracker = for<'s> fn(&mut Cx<'s>, Local<'s, JsObject>, PromiseRejectionOperation)
