@@ -1035,3 +1035,70 @@ fn a_global_store_miss_checks_the_entry_and_computes_the_case_once() {
         assert_eq!(t.ok(1, UNDEFINED, UNDEFINED), int(5));
     });
 }
+
+// ---- budget units of a call from Rust ------------------------------------------------------
+
+/// A call from Rust (`call::call_function_object`) whose frame does not fit takes 1 budget
+/// unit, as every call does at its frame push, also when the push fails (R3-2; M3-P2-STOP).
+#[test]
+fn a_call_from_rust_that_does_not_fit_takes_one_unit() {
+    for &d in Dispatch::ALL {
+        on_big_stack(move || {
+            let mut t = T::new(config(d, false), &[Site::GlobalTypeof("icQ")]);
+            let f = t.f(0);
+            let limit = t.iso.cx.stack_limit;
+            // No room for any frame: the push fails.
+            t.iso.cx.stack_limit = t.iso.rt.stack().base();
+            for budget in [1, 2, 10] {
+                t.iso.cx.budget = budget;
+                let e = t.iso.call_raw(f, Value::UNDEFINED, &[]).unwrap_err();
+                assert_eq!(
+                    e.constructor.as_deref(),
+                    Some("RangeError"),
+                    "{}",
+                    e.message
+                );
+                assert_eq!(t.iso.cx.budget, budget - 1, "{}", d.name());
+            }
+            t.iso.cx.stack_limit = limit;
+            // A call whose frame fits takes 1 unit too.
+            t.iso.cx.budget = 10;
+            t.iso.call_raw(f, Value::UNDEFINED, &[]).unwrap();
+            assert_eq!(t.iso.cx.budget, 9, "{}", d.name());
+        });
+    }
+}
+
+/// Under spike-native, a call from Rust of a (b) function (`native::call_from_rust`, then
+/// `run_b`) whose frame does not fit takes 1 budget unit, as `enter_native` does (D1;
+/// M3-P2-STOP). `run_b` also serves `call_any` and a T0 call of a (b) function of another
+/// realm (`call_in_its_realm`).
+#[cfg(feature = "spike-native")]
+#[test]
+fn a_b_call_from_rust_that_does_not_fit_takes_one_unit() {
+    /// Stands in for the (b) code of `f0`: every frame push below fails, so it never runs.
+    static NEVER_RUN: [u8; 16] = [0; 16];
+    for &d in Dispatch::ALL {
+        on_big_stack(move || {
+            let mut t = T::new(config(d, false), &[Site::GlobalTypeof("icQ")]);
+            let f = t.f(0);
+            let start = NEVER_RUN.as_ptr().addr();
+            // SAFETY: nothing enters the code: the only calls of `f` are below, and each one
+            // fails at its frame push, before the code would run.
+            unsafe { crate::install_native_b(&t.iso, f, start..start + NEVER_RUN.len()) }.unwrap();
+            // No room for any frame: the push fails.
+            t.iso.cx.stack_limit = t.iso.rt.stack().base();
+            for budget in [1, 2, 10] {
+                t.iso.cx.budget = budget;
+                let e = crate::call_from_rust(&mut t.iso, f, Value::UNDEFINED, &[]).unwrap_err();
+                assert_eq!(
+                    e.constructor.as_deref(),
+                    Some("RangeError"),
+                    "{}",
+                    e.message
+                );
+                assert_eq!(t.iso.cx.budget, budget - 1, "{}", d.name());
+            }
+        });
+    }
+}
