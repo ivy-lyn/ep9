@@ -101,7 +101,7 @@
 use std::cell::RefCell;
 
 use ep9_bytecode::{CodeKind, ExportImportName, ImportName, ModuleRecords, VerifiedUnit};
-use ep9_heap::WeakHandle;
+use ep9_heap::GlobalHandle;
 use ep9_value::{JsResult, Throw};
 
 use crate::abi::{self, Args, JsObject, JsValue, Local, PromiseState};
@@ -1847,7 +1847,8 @@ pub(crate) fn run_module(
 /// GetActiveScriptOrModule (§9.4.1) when the unit loaded (`LoadedUnit::script_or_module`,
 /// set by `abi::Cx::load_entry`). A function made by that code keeps it as its
 /// `[[ScriptOrModule]]` (OrdinaryFunctionCreate, §10.2.3), so its `import()` resolves from
-/// there, not from the code that calls it later. Holds no Value.
+/// there, not from the code that calls it later. Holds no Value (a realm of another realm
+/// is in a strong handle).
 pub(crate) struct EvalReferrer {
     /// The host's referrer name: a module's name or a script's file; empty for none (null).
     name: String,
@@ -1860,9 +1861,11 @@ enum ReferrerRealm {
     /// The realm that loaded the eval code, so the `[[Realm]]` of its functions (the common
     /// case: no handle).
     Own,
-    /// Another realm, weak: a realm that died has no map to load into, and the current
-    /// realm is used.
-    Other(WeakHandle),
+    /// Another realm, in a strong handle: a function of the eval code keeps its
+    /// ScriptOrModule, so that module's `[[Realm]]` and its module map, alive (C2-M1). The
+    /// handle lives as long as the unit, so until the isolate drops (`LoadedUnit` is never
+    /// freed, as its constants are not): the realm can live longer than the functions.
+    Other(GlobalHandle),
     /// A null ScriptOrModule: the current realm.
     Current,
 }
@@ -1906,7 +1909,7 @@ fn active_script_or_module(rt: &Runtime, fp: *mut u64, context: u64) -> Option<(
                             UNDEFINED
                         }
                     }
-                    ReferrerRealm::Other(h) => rt.heap.weak(h).map_or(UNDEFINED, |v| v.to_bits()),
+                    ReferrerRealm::Other(h) => rt.heap.global(h).to_bits(),
                     ReferrerRealm::Current => UNDEFINED,
                 };
                 return Some((r.name.clone(), realm));
@@ -1929,7 +1932,7 @@ pub(crate) fn eval_referrer(rt: &Runtime, context: u64) -> EvalReferrer {
             } else if realm == rt.root(Root::Realm) {
                 ReferrerRealm::Own
             } else {
-                ReferrerRealm::Other(rt.heap.new_weak(val(realm)))
+                ReferrerRealm::Other(rt.heap.new_global(val(realm)))
             },
         },
         None => EvalReferrer {

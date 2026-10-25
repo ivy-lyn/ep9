@@ -1397,3 +1397,93 @@ fn run_module_with_js_on_the_stack_has_no_checkpoint() {
         ])
     );
 }
+
+/// The module graph of [`a_function_keeps_its_referrer_realm_alive`]: `maker.js` runs in a
+/// new realm and imports `dep.js`, which counts its evaluations in `sink.evals` (`sink` is
+/// the main global).
+const KEEP_FILES: Files = &[
+    (
+        "maker.js",
+        "import './dep.js';\nsink.f = new sink.Function(\"return import('./dep.js')\");",
+    ),
+    (
+        "dep.js",
+        "sink.evals = (sink.evals | 0) + 1;\nexport function g() { return globalThis; }",
+    ),
+];
+
+/// Runs `maker.js` of [`KEEP_FILES`] in a new realm and drops every reference to that realm
+/// but the one of `sink.f` (its ScriptOrModule `maker.js`).
+#[inline(never)]
+fn make_cross_realm_importer(iso: &mut Isolate) {
+    iso.with_cx(|cx| {
+        let sink = cx.global();
+        let other = cx.create_realm()?;
+        cx.set(other, "sink", sink, true)?;
+        cx.with_realm(other, |cx| {
+            let unit = compile(source(KEEP_FILES, "maker.js").expect("a file")).expect("compiles");
+            let mut resolve = |referrer: &str, spec: &str| resolve_in(KEEP_FILES, referrer, spec);
+            let mut load = |name: &str| compile(source(KEEP_FILES, name).expect("a file"));
+            cx.run_module(unit, "maker.js", &mut resolve, &mut load)
+                .map(|_| ())
+        })
+    })
+    .expect("no throw");
+}
+
+/// A function made by eval code keeps its ScriptOrModule, and so the realm of that module,
+/// alive (C2-M1): `sink.f` is a main-realm function made by `maker.js` of another realm, so
+/// its `import('./dep.js')` gives the `dep.js` of that realm's module map (`g()` returns
+/// that realm's global), also after the realm has no other reference and collections ran.
+/// `dep.js` loads and evaluates once. Before the fix, the realm was held only by a weak
+/// handle: after a collection the import used the main realm's map, and a second `dep.js`
+/// loaded and ran (`after true`, `evals 2`).
+#[test]
+fn a_function_keeps_its_referrer_realm_alive() {
+    const SCRIPT: &str = "f().then(ns => print(tag, ns.g() === globalThis, sink.evals));";
+    let mut first: Option<(String, Vec<String>)> = None;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let r = common::on_big_stack(move || {
+                let mut iso = new_isolate(d, stress);
+                iso.with_cx(|cx| {
+                    let g = cx.global();
+                    cx.set(g, "sink", g, true)
+                })
+                .expect("no throw");
+                make_cross_realm_importer(&mut iso);
+                let mut resolve =
+                    |referrer: &str, spec: &str| resolve_in(KEEP_FILES, referrer, spec);
+                let mut loads = 0;
+                let mut load = |name: &str| {
+                    loads += 1;
+                    compile(source(KEEP_FILES, name).expect("a file"))
+                };
+                iso.with_module_host(&mut resolve, &mut load, |iso| {
+                    for tag in ["before", "after"] {
+                        let src = format!("var tag = '{tag}';\n{SCRIPT}");
+                        let unit = hook_script(&src).expect("compiles");
+                        iso.with_cx_checkpoint(|cx| cx.run_script(unit, "main.js").map(|_| ()))
+                            .expect("no throw");
+                        for _ in 0..3 {
+                            iso.collect_garbage();
+                        }
+                    }
+                });
+                let mut out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
+                out.push(format!("loads {loads}"));
+                iso.verify_heap().expect("a valid heap");
+                out
+            });
+            let label = format!("{} stress={stress}", d.name());
+            match &first {
+                None => first = Some((label, r)),
+                Some((l0, r0)) => assert_eq!(&r, r0, "{label} differs from {l0}"),
+            }
+        }
+    }
+    assert_eq!(
+        first.expect("at least one dispatch").1,
+        lines(&["before false 1", "after false 1", "loads 0"])
+    );
+}
