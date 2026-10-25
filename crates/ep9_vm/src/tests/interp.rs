@@ -160,6 +160,140 @@ fn wide_and_extra_wide_operands() {
     assert_eq!(r.output, ["60299"]);
 }
 
+/// One case of [`prefixed_smi_ops_in_the_fast_body`]: an opcode, the int32 accumulator (or a
+/// double, `None` for `LdaSmi`), the immediate, and the prefix the immediate needs.
+type SmiCase = (
+    ep9_bytecode::Opcode,
+    Option<f64>,
+    i32,
+    ep9_bytecode::OperandScale,
+);
+
+/// CX1-N1 (M3-P4 fix round 2): the `Wide` and `ExtraWide` prefix handlers run `LdaSmi` and the
+/// int32 cases of `AddSmi`, `SubSmi`, `ModSmi`, `BitwiseOrSmi`, `BitwiseXorSmi` and
+/// `BitwiseAndSmi` in their fast body (`interp/ops.rs` `scaled_fast`, M3-P4 FIXES). The unit
+/// has each of them with a 16-bit and a 32-bit immediate (the decoded scale is checked), plus
+/// the cases that leave the fast body for the cold stepper (an overflow, a negative `%`
+/// dividend, a double accumulator). Every dispatch expansion, with and without GC stress,
+/// must print the JS values: a fast body that gives a wrong value fails the test.
+#[test]
+fn prefixed_smi_ops_in_the_fast_body() {
+    use ep9_bytecode::{Instructions, Opcode as O, OperandScale as S};
+    const CASES: &[SmiCase] = &[
+        (O::LdaSmi, None, 1000, S::Wide),
+        (O::LdaSmi, None, -32768, S::Wide),
+        (O::LdaSmi, None, 100_000, S::ExtraWide),
+        (O::LdaSmi, None, i32::MIN, S::ExtraWide),
+        (O::AddSmi, Some(5.0), 1000, S::Wide),
+        (O::AddSmi, Some(-7.0), -40_000, S::ExtraWide),
+        (O::SubSmi, Some(5.0), 1000, S::Wide),
+        (O::SubSmi, Some(5.0), 100_000, S::ExtraWide),
+        (O::ModSmi, Some(123_456.0), 1000, S::Wide),
+        (O::ModSmi, Some(7_654_321.0), 100_003, S::ExtraWide),
+        (O::BitwiseOrSmi, Some(1.0), 4096, S::Wide),
+        (O::BitwiseOrSmi, Some(1.0), 65_536, S::ExtraWide),
+        (O::BitwiseXorSmi, Some(255.0), 1000, S::Wide),
+        (O::BitwiseXorSmi, Some(255.0), 70_000, S::ExtraWide),
+        (O::BitwiseAndSmi, Some(123_456.0), 1023, S::Wide),
+        (
+            O::BitwiseAndSmi,
+            Some(2_147_483_647.0),
+            65_535,
+            S::ExtraWide,
+        ),
+        // The cold stepper: overflow, a negative dividend, a double accumulator.
+        (O::AddSmi, Some(2_147_483_647.0), 1000, S::Wide),
+        (O::SubSmi, Some(-2_147_483_648.0), 100_000, S::ExtraWide),
+        (O::ModSmi, Some(-7.0), 1000, S::Wide),
+        (O::AddSmi, Some(1.5), 100_000, S::ExtraWide),
+    ];
+    // The JS value of each case (all are integers or exact halves).
+    fn want(op: O, acc: Option<f64>, imm: i32) -> String {
+        let (a, b) = (acc.unwrap_or(0.0), f64::from(imm));
+        let i = |x: f64| x as i32;
+        let v = match op {
+            O::LdaSmi => b,
+            O::AddSmi => a + b,
+            O::SubSmi => a - b,
+            O::ModSmi => a % b,
+            O::BitwiseOrSmi => f64::from(i(a) | imm),
+            O::BitwiseXorSmi => f64::from(i(a) ^ imm),
+            O::BitwiseAndSmi => f64::from(i(a) & imm),
+            _ => unreachable!(),
+        };
+        if v.fract() == 0.0 {
+            format!("{}", v as i64)
+        } else {
+            format!("{v}")
+        }
+    }
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        for &(op, acc, imm, _) in CASES {
+            match acc {
+                None => {}
+                Some(a) if a.fract() == 0.0 && i32::try_from(a as i64).is_ok() => {
+                    // A one-byte or prefixed LdaSmi of the accumulator is fine: the case is
+                    // the op after it.
+                    s.b.lda_smi(a as i32);
+                }
+                Some(a) => {
+                    let k = s.b.number_constant(a);
+                    s.b.lda_constant(k);
+                }
+            }
+            let bin = s.bin;
+            match op {
+                O::LdaSmi => s.b.lda_smi(imm),
+                O::AddSmi => s.b.add_smi(imm, bin),
+                O::SubSmi => s.b.sub_smi(imm, bin),
+                O::ModSmi => s.b.mod_smi(imm, bin),
+                O::BitwiseOrSmi => s.b.bitwise_or_smi(imm, bin),
+                O::BitwiseXorSmi => s.b.bitwise_xor_smi(imm, bin),
+                O::BitwiseAndSmi => s.b.bitwise_and_smi(imm, bin),
+                _ => unreachable!(),
+            };
+            s.print_acc();
+        }
+        s.b.lda_undefined().return_();
+        unit("", vec![s.finish()])
+    }
+    // The bytecode has each case op with its prefix, in order (an accumulator load of an
+    // int32 past i8 is a prefixed LdaSmi too).
+    let scale = |v: i32| {
+        if i8::try_from(v).is_ok() {
+            S::Single
+        } else if i16::try_from(v).is_ok() {
+            S::Wide
+        } else {
+            S::ExtraWide
+        }
+    };
+    let mut want_ops = Vec::new();
+    for &(op, acc, imm, prefix) in CASES {
+        assert_eq!(scale(imm), prefix, "{op:?} {imm}");
+        if let Some(a) = acc
+            && a.fract() == 0.0
+            && let Ok(a) = i32::try_from(a as i64)
+            && scale(a) != S::Single
+        {
+            want_ops.push((O::LdaSmi, scale(a)));
+        }
+        want_ops.push((op, prefix));
+    }
+    let u = make();
+    let ops: Vec<(O, S)> = Instructions::new(&u.functions[0].bytecode)
+        .map(|i| i.unwrap())
+        .filter(|i| i.scale != S::Single && CASES.iter().any(|c| c.0 == i.opcode))
+        .map(|i| (i.opcode, i.scale))
+        .collect();
+    assert_eq!(ops, want_ops);
+    let r = run_all(make);
+    ok(&r);
+    let expect: Vec<String> = CASES.iter().map(|&(op, a, b, _)| want(op, a, b)).collect();
+    assert_eq!(r.output, expect);
+}
+
 #[test]
 fn dispatch_slots_and_code_registry() {
     let mut iso = isolate(config(Dispatch::DEFAULT, false));
