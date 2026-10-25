@@ -37,7 +37,7 @@ Evidence tags: [R01] [R04] [R08] [R09] [R10] [R11] [R12] [R14] [R15] [R16] [R17]
 | `vm.createContext`, `$262.createRealm` | N realms per isolate | M0 | M0 month 3 (M3-P1 REALMS; the plan said M1) |
 | CommonJS wrapper | `compile_function_ctor(params, body)` | M0 | M0 month 2 (M2-P3 FNCTOR; the plan said M1) |
 | Dynamic import, `import.meta` | HostLoadImportedModule, HostGetImportMetaProperties, HostGetSupportedImportAttributes [R08] | M0 | M0 month 3 (M3-P2 MODULE, M3-P3 IMPORT-TLA; the plan said M1): `import()`, `import.meta`, the host loader (`Isolate::with_module_host`), only the `type` import attribute. HostGetImportMetaProperties: M1 (`import.meta` has no host properties yet) |
-| Unhandled rejections | HostPromiseRejectionTracker | M0 | M0 month 2 (M2-P4 PROMISE, M2-P4-PROMISE-UNHANDLED; the plan said M1): a list the host reads with `Isolate::take_unhandled_rejections`, not a callback |
+| Unhandled rejections | HostPromiseRejectionTracker | M0 | M0 month 2 (M2-P4 PROMISE, M2-P4-PROMISE-UNHANDLED; the plan said M1): an optional embedder callback for the Reject and Handle operations (`IsolateConfig::promise_rejection_tracker`, a `PromiseRejectionTracker`), and the list of unhandled rejections that the host drains with `Isolate::take_unhandled_rejections` |
 | Ctrl-C, watchdog, termination, heap limit | Thread-safe interrupt request polled at safepoints. TerminateExecution. Near-heap-limit callback | M0 | M0 month 2 (M2-P3 ISOLATE-API: `InterruptHandle`, `HeapConfig::near_limit`; `TerminateHandle` since M0 weeks 2-3; the plan said M1) |
 | `Error.stack`, CallSite | Per-frame metadata. UTF-16 columns | M0 | M1 (V8 API in M4) |
 | Inspector | Position tables, kept ScopeInfo, debug bytecode copy, deopt-all, async stack records | M0 | M4 |
