@@ -32,9 +32,9 @@ Copied from the plan row: off-heap pointers only in `ExternalRef<T>`. Units are 
 
 | Cell | Field | Points at | Store |
 |---|---|---|---|
-| FUNCTION | +24 | `FunctionInfo` (in its unit, or a host or stub info) | `crates/ep9_vm/src/object.rs:929` |
+| FUNCTION | +24 | `FunctionInfo` (in its unit, or a host or stub info) | `crates/ep9_vm/src/object.rs:936` |
 | FEEDBACK | info word (`fv::INFO`) | `FunctionInfo` | `crates/ep9_vm/src/feedback.rs:169` |
-| CONTEXT | scope word (OBJECT_LAYOUT 2, C5) | `ContextScope { unit, scope }` | `crates/ep9_vm/src/object.rs:1150` (P0-VM, M2-P0) |
+| CONTEXT | scope word (OBJECT_LAYOUT 2, C5) | `ContextScope { unit, scope }` | `crates/ep9_vm/src/object.rs:1157` (P0-VM, M2-P0) |
 
 The other `native_of` stores write VM stack frame slots (caller fp, return pc, function info; `crates/ep9_vm/src/call.rs`). The VM stack is not a heap cell.
 
@@ -98,6 +98,7 @@ The other `native_of` stores write VM stack frame slots (caller fp, return pc, f
 | 2026-10-23 | clarify (proposed; Accepted path) | 2 `path:line` references moved to the code after the M3-P2 fix round 2 merge (m0m3/p2-fix2-docs: the module, vm and perf fixer branches) (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS); each names the same item at the new line. The refs moved by the vm fixer's 1-line doc change in `object.rs` (`modf::ENVIRONMENT`, 25286b5). Text only; no check changes. Review record for this amendment (README §3.1): rows 1-3 by agents that did not write it, row 4 the ADRLINE output; the orchestrator approves | M3-P2 fix round 2 (docs) |
 | 2026-10-24 | clarify | Review record for the M3-P2 ADRLINE clarify rows: rows 1, 2 and 4; row 3 and the Approval row are pending. No text outside the record changes; no check changes | M3-P2 records writer |
 | 2026-10-24 | clarify | Review record for the M3-P2 ADRLINE clarify rows: row 3 (the M3-P2 ADRLINE row-3 verifier, checked at df87c4a: every moved ref names the same line text; nothing to sort) and the Approval row (the orchestrator approves, README §3.2). No text outside the record changes; no check changes | M3-P2 ADRLINE row-3 verifier |
+| 2026-10-25 | clarify (proposed; Accepted path) | 2 `path:line` references moved to the code (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS): `FunctionInfo` (`init(f, fun::INFO, ..)`) and `ContextScope` (`init(c, ctxf::SCOPE, ..)`) in `crates/ep9_vm/src/object.rs` moved down 7 lines in 65d9b10 (C3-M1); each ref names the same item at the new line. Text only; no check changes. Review record for this amendment (README §3.1): not yet; the orchestrator adds it | M3-P3 fix round 5 fixer |
 
 ## Review record
 
