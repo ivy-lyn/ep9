@@ -1,8 +1,9 @@
 # H20 core: the public names and signatures of the builtin ABI (docs/adr/H20-builtin-abi.md,
-# Freeze table). Frozen at M0 exit: after it, a changed or removed core line is a change to a
-# Frozen part; a new line is an addition (part 2, append only). The `embed (not core):` lines
-# are the rest of the public API of ep9_vm that an embedder reaches (the embedder API of H22,
-# H23, H19): not core, but a new one needs a review (H20-Q4). Made by
+# Freeze table), as the extractor reads them from the source text: a tripwire, not a complete
+# list (H20 Decision, the tripwire paragraph; H20-Q6). Frozen at M0 exit: after it, a
+# changed or removed core line is a change to a Frozen part; a new line is an addition (part 2,
+# append only). The `embed (not core):` lines are the embedder API of H22, H23, H19 that the
+# extractor reads: not core, but a new one needs a review (H20-Q4). Made by
 # `EP9_BLESS=1 cargo test -p ep9_vm --test h20_core`; see crates/ep9_vm/tests/h20_core.rs.
 abi: #[derive(Clone, Copy)] pub struct Args<'s> { .. }
 abi: #[derive(Clone, Copy)] pub struct Rest<'s> { .. }

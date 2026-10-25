@@ -1,10 +1,16 @@
 //! The H20 core golden (docs/adr/H20-builtin-abi.md, "Freeze table"; M3-P3 FREEZE-PREP task
-//! 5): `tests/golden/h20-core.txt` lists every public name and signature of the builtin ABI,
-//! read from the source:
+//! 5): `tests/golden/h20-core.txt` holds the public names and signatures of the builtin ABI
+//! and of the embedder API that this extractor reads from the source text.
+//!
+//! It is a tripwire, not a complete list (M3-P3 fix round 7, decision
+//! M3-P3-H20-GOLDEN-TRIPWIRE): a reader of source text cannot list a Rust API. It reads the
+//! forms below; a change in another form gives no line. A complete check needs compiler data
+//! (rustdoc JSON or a public-API tool) and is M1 work (H20-Q6).
 //!
 //! ```text
 //! src/abi/*.rs     every pub item: types (fields, variants, derives), traits, the pub items
-//!                  of their impl blocks (`Cx`, `Args`, `Local`, ...), trait impls (also the
+//!                  of their impl blocks (`Cx`, `Args`, `Local`, ...), the trait impls whose
+//!                  self type is a pub abi type or whose trait is a pub abi trait (also the
 //!                  impls that a local `macro_rules!` makes: the `upcast!` and `downcast!`
 //!                  lists, expanded, so the line has the generated signature with its
 //!                  lifetimes), the `pub use` re-exports
@@ -21,7 +27,8 @@
 //!                  - every free pub fn, const or static outside `abi/` whose line names
 //!                    `Isolate` or a raw type (`RAW_TYPES`), in any module
 //!                  - the types that those lines name, to the end (the type closure): the type
-//!                    line (public fields, variants), its pub methods and its trait impls;
+//!                    line (public fields, variants), and the pub methods and trait impls of
+//!                    the impls whose self type is that type;
 //!                    core `embed:` lines if a core line names the type (`Exception`,
 //!                    `IsolateConfig`, `CompileResult`, ...), else `embed (not core):` lines
 //! src/builtins.rs  the builtin table types and `check_tables`
@@ -37,17 +44,29 @@
 //! and every other feature (`jit` is on in the default ep9_cli build) are read, and the line
 //! shows the `cfg` (Codex C2-FP1; M3-P3 fix round 6, RV5-F1 M1).
 //!
-//! Forms that it cannot read are `unread:` lines, and test `the_extractor_reads_every_form`
+//! Some forms that it cannot read are `unread:` lines, and test `the_extractor_reads_every_form`
 //! fails on them: a type alias of `Isolate` (or one that renames a raw type), a `use` that
 //! renames `Isolate` or a raw type, an impl that names `Isolate` inside a fn, block or
-//! `macro_rules!` body, a glob re-export, a module file of a pub module. Not read: an item that
-//! a macro makes outside the core files (decision M3-P3-H20-GOLDEN-LIMIT; a re-exported one is
-//! a line that says so), and the types of other crates (`ep9_heap`, `ep9_value`, ...).
+//! `macro_rules!` body, a glob re-export, a module file of a pub module. With these rules the
+//! escape classes of the fix-round-5 review (RV5-F1 M1-M5, RV5-S1) give a line.
+//!
+//! Known escape classes (no line, and every test here passes; H20 Decision, "The golden is a
+//! tripwire", classes (a)-(f); review checks them, and H20-Q6 has them as its test list):
+//! (a) an item that a macro makes outside the core files (decision M3-P3-H20-GOLDEN-LIMIT; a
+//! re-exported one is a line that says so); (b) a `#[path]` module, and a module file outside
+//! `src/`, not named `.rs` or under a gated module directory (`tests`, `native`) (RV6-G1);
+//! (c) a trait impl with a foreign self type (`impl From<Local<'s>> for Value`), and in `abi/`
+//! a trait impl whose trait and self type are not pub abi items (RV6-G2, RV6-A1); (d) an
+//! alias, a renaming `use` or a body impl of a core closure type such as `Exception` (RV6-G3);
+//! (e) an impl of an abi type (`Local`, `Cx`) outside the `abi/` files and `builtins.rs`
+//! (`impl Cx` of `isolate.rs` is read) (RV6-G4); (f) the types of other crates (`ep9_heap`,
+//! `ep9_value`, ...).
 //!
 //! The `embed (not core):` lines are the embedder API of H22, H23 and H19, with their own
-//! freeze points. They are here so that a new way for an embedder to reach the heap (for
-//! example a raw `Value` form that comes back, H20-Q4) is a new golden line that a review must
-//! bless; test `no_embed_line_names_a_raw_type` also fails on a line that names a raw type.
+//! freeze points. They are here so that a new way for an embedder to reach the heap in a form
+//! that this file reads (for example a raw `Value` form of `Isolate` that comes back, H20-Q4)
+//! is a new golden line that a review must bless; test `no_embed_line_names_a_raw_type` also
+//! fails on a line that names a raw type.
 //!
 //! A line is a signature without parameter names (a rename is not an API change), with the
 //! attributes that matter to a caller (`derive`, `repr`, `non_exhaustive`, `cfg`,
@@ -850,15 +869,18 @@ fn item_name(head: &str) -> Option<String> {
 }
 
 /// The `Isolate` methods in the core (H20-Q4, M3-P3 FREEZE-PREP step 2; fix round 5, Codex
-/// W4-3; fix round 6, RV5-F3): the embedder's ways into ABI code. One rule: an entry point
-/// runs ABI code (a `Cx` scope, JS or a `HostFn`), or takes a hook, a function of the embedder
-/// that is called while ABI code runs. So: a `Cx` scope (`with_cx`, `with_cx_checkpoint`,
-/// `create_realm`), the calls that run JS or host functions with no scope of the embedder
-/// (`perform_microtask_checkpoint` runs the jobs; `take_unhandled_rejections` runs ToString of
-/// an object reason), and the calls that take hooks (`new` takes them in `IsolateConfig`: the
-/// builtin tables with their `HostFn`s, the `PromiseRejectionTracker` and the `CompilerHooks`,
-/// which `Cx::evaluate_script`, `eval` and `Function()` call; `register_host_function` takes a
-/// `HostFn`; `with_module_host` takes the `resolve` and `load` hooks that `import()` calls).
+/// W4-3; fix round 6, RV5-F3): the embedder's ways into ABI code. One rule: an entry point is
+/// a method of `Isolate` that runs ABI code (a `Cx` scope, JS or a `HostFn`), or that takes a
+/// hook, a function of the embedder that is called while ABI code runs. Only `impl Isolate`
+/// members are marked, so `InterruptHandle::request` (a method of `InterruptHandle`, H23-Q6)
+/// is not one, and `Isolate::interrupt_handle` takes no hook (fix round 7, RV6-A2). So: a
+/// `Cx` scope (`with_cx`, `with_cx_checkpoint`, `create_realm`), the calls that run JS or host
+/// functions with no scope of the embedder (`perform_microtask_checkpoint` runs the jobs;
+/// `take_unhandled_rejections` runs ToString of an object reason), and the calls that take
+/// hooks (`new` takes them in `IsolateConfig`: the builtin tables with their `HostFn`s, the
+/// `PromiseRejectionTracker` and the `CompilerHooks`, which `Cx::evaluate_script`, `eval` and
+/// `Function()` call; `register_host_function` takes a `HostFn`; `with_module_host` takes the
+/// `resolve` and `load` hooks that `import()` calls).
 /// The other `Isolate` methods (the handles, `collect_garbage`, `gc_stats`, `string_view`,
 /// `compiler`, which gives the hooks back and takes none, ...) are the embedder API of H22,
 /// H23 and H19, with their own freeze points: they are `embed (not core):` lines.
@@ -1691,10 +1713,11 @@ fn use_text(it: &Item) -> String {
 
 const HEADER: &str = "\
 # H20 core: the public names and signatures of the builtin ABI (docs/adr/H20-builtin-abi.md,
-# Freeze table). Frozen at M0 exit: after it, a changed or removed core line is a change to a
-# Frozen part; a new line is an addition (part 2, append only). The `embed (not core):` lines
-# are the rest of the public API of ep9_vm that an embedder reaches (the embedder API of H22,
-# H23, H19): not core, but a new one needs a review (H20-Q4). Made by
+# Freeze table), as the extractor reads them from the source text: a tripwire, not a complete
+# list (H20 Decision, the tripwire paragraph; H20-Q6). Frozen at M0 exit: after it, a
+# changed or removed core line is a change to a Frozen part; a new line is an addition (part 2,
+# append only). The `embed (not core):` lines are the embedder API of H22, H23, H19 that the
+# extractor reads: not core, but a new one needs a review (H20-Q4). Made by
 # `EP9_BLESS=1 cargo test -p ep9_vm --test h20_core`; see crates/ep9_vm/tests/h20_core.rs.
 ";
 
@@ -1937,7 +1960,8 @@ fn raw_value_lines(lines: &[String]) -> Vec<String> {
 /// H20-Q4: no line of the golden names a raw `Value` or a type that gives one
 /// ([`RAW_TYPES`]): no default-build `Isolate` method, impl that names `Isolate`, free pub
 /// item that names `Isolate`, re-exported item, item of a pub module or type that one of them
-/// names takes or gives one (M3-P3 fix round 6, RV5-F1). Two exact lines are allowed:
+/// names takes or gives one (M3-P3 fix round 6, RV5-F1). It reads the lines only, so it does
+/// not see the escape classes of the file header. Two exact lines are allowed:
 /// `string_view` (it stays: the H20 Decision, "Embedders get `Local` too"; it checks its
 /// `Value`) and `IsolateError`, whose variant is named `Heap` (it holds a `HeapError`). A
 /// changed line of either is not allowed.
@@ -1953,9 +1977,10 @@ fn no_embed_line_names_a_raw_type() {
     );
 }
 
-/// Every form in the source is one that the extractor reads: no `unread:` line (a type alias
-/// of `Isolate` or a renamed raw type, a `use` that renames one, an impl that names `Isolate`
-/// in a body, a glob re-export, a module file of a pub module).
+/// No `unread:` line: the source has none of the forms that the extractor knows it cannot read
+/// (a type alias of `Isolate` or a renamed raw type, a `use` that renames one, an impl that
+/// names `Isolate` in a body, a glob re-export, a module file of a pub module). The escape
+/// classes of the file header give no `unread:` line (a tripwire, H20-Q6).
 #[test]
 fn the_extractor_reads_every_form() {
     let unread: Vec<String> = extract(&sources())
@@ -2092,7 +2117,7 @@ fn cargo_features(text: &str) -> (Vec<(String, Vec<String>)>, Vec<String>) {
 
 /// The negative control for the other `Isolate` methods (FP2-GOLDEN-RAW): a new pub method in
 /// a default-build `impl Isolate` block, in `isolate.rs` or in another file, is a new line,
-/// and a raw `Value` form fails `no_isolate_method_takes_or_gives_a_raw_value`. So is a block
+/// and a raw `Value` form fails `no_embed_line_names_a_raw_type`. So is a block
 /// under a target `cfg` (Codex C2-FP1: `target_pointer_width = "64"` is on for this host),
 /// in a block, an inline module or a module of `lib.rs`, and its line shows the `cfg`. A
 /// block under a `cfg` that is in no default build (`test`, `spike-native`, `all(test, ..)`),
