@@ -97,13 +97,28 @@ static HOOKS: CompilerHooks = CompilerHooks {
 /// printed lines (after the microtask checkpoint), or the uncaught exception as "Name:
 /// message". Then collects and verifies the heap.
 fn run_in(src: &str, dispatch: Dispatch, stress: bool) -> Result<Vec<String>, String> {
+    run_in_slots(
+        src,
+        dispatch,
+        stress,
+        IsolateConfig::default().vm_stack_slots,
+    )
+}
+
+/// [`run_in`] on an isolate whose VM stack has `slots` slots.
+fn run_in_slots(
+    src: &str,
+    dispatch: Dispatch,
+    stress: bool,
+    slots: usize,
+) -> Result<Vec<String>, String> {
     let unit = ep9_frontend::compile(
         src,
         SourceOpts::script(Strictness::Sloppy),
         CompileOptions::default(),
     )
     .map_err(|e| format!("compile error: {e:?}"))?;
-    let mut iso = isolate(dispatch, stress);
+    let mut iso = isolate_slots(dispatch, stress, slots);
     OUT.with(|o| o.borrow_mut().clear());
     let r = iso.with_cx_checkpoint(|cx| cx.run_script(unit, "test.js").map(|_| ()));
     let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
@@ -115,6 +130,11 @@ fn run_in(src: &str, dispatch: Dispatch, stress: bool) -> Result<Vec<String>, St
 /// An isolate with the table, [`HOOKS`] and [`HOST`]. `stress`: a collection before every
 /// allocation, then the heap verifier.
 fn isolate(dispatch: Dispatch, stress: bool) -> Isolate {
+    isolate_slots(dispatch, stress, IsolateConfig::default().vm_stack_slots)
+}
+
+/// [`isolate`] with a VM stack of `slots` slots.
+fn isolate_slots(dispatch: Dispatch, stress: bool, slots: usize) -> Isolate {
     let mut iso = Isolate::new(IsolateConfig {
         heap: HeapConfig {
             gc_stress: u32::from(stress),
@@ -122,6 +142,7 @@ fn isolate(dispatch: Dispatch, stress: bool) -> Isolate {
             ..HeapConfig::default()
         },
         dispatch,
+        vm_stack_slots: slots,
         builtins: Some(&ep9_builtins::TABLE),
         compiler: Some(&HOOKS),
         ..IsolateConfig::default()
@@ -448,6 +469,63 @@ a().then(function (v) { print('value3', v); });"#
             "value 1",
             "value2 2",
             "value3 3",
+        ])
+    );
+}
+
+/// X-R2-1 (Codex M3-P1 round 2; H22-Q10): NewPromiseReactionJob (§27.2.2.1 steps 2-4) runs
+/// the job in GetFunctionRealm(handler), so an error that the job makes before the handler
+/// runs is made in that realm. Here the handler is a function bound 11 times with 100
+/// arguments each: on a VM stack of 1024 slots, the push of its 1,100 bound arguments
+/// overflows before the target is entered, and the RangeError is the realm of the handler
+/// (a bound function's realm is its target's), not the realm of the microtask checkpoint.
+/// Both halves of a reaction, a `then` of the other realm, and a reaction with no handler (its
+/// realm is the current one). Every dispatch, with and without GC stress. The expected lines
+/// are node v24.22.1's for the same script with 60,000 arguments per bind (its stack is
+/// larger).
+#[test]
+fn reaction_jobs_run_in_the_realm_of_the_handler() {
+    const SRC: &str = r#"var N = 100;
+var other = createRealm();
+function bindMany(f) {
+  var a = []; for (var i = 0; i < N; i++) a.push(i);
+  for (var j = 0; j < 11; j++) f = Function.prototype.bind.apply(f, [null].concat(a));
+  return f;
+}
+var otherBh = bindMany(other.eval('(function () { return 1; })'));
+var mainBh = bindMany(function () { return 1; });
+function report(name) {
+  return [function (v) { print(name, 'fulfilled', v); },
+          function (e) { print(name, 'rejected', e instanceof RangeError, e instanceof other.RangeError, e.message); }];
+}
+var r;
+r = report('other handler, fulfill:'); Promise.resolve().then(otherBh).then(r[0], r[1]);
+r = report('other handler, reject:'); Promise.reject(0).then(null, otherBh).then(r[0], r[1]);
+r = report('main handler, other promise:'); other.Promise.resolve().then(mainBh).then(r[0], r[1]);
+r = report('main handler:'); Promise.resolve().then(mainBh).then(r[0], r[1]);
+r = report('other then, other handler:'); other.Promise.prototype.then.call(Promise.resolve(), otherBh).then(r[0], r[1]);
+r = report('no handler, other capability:'); other.Promise.prototype.then.call(Promise.reject(new RangeError('x')), undefined).then(r[0], r[1]);"#;
+    let mut first: Option<(String, Result<Vec<String>, String>)> = None;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let r = common::on_big_stack(move || run_in_slots(SRC, d, stress, 1024));
+            let label = format!("{} stress={stress}", d.name());
+            match &first {
+                None => first = Some((label, r)),
+                Some((l0, r0)) => assert_eq!(&r, r0, "{label} differs from {l0}"),
+            }
+        }
+    }
+    let overflow = "Maximum call stack size exceeded";
+    assert_eq!(
+        first.expect("at least one dispatch").1,
+        lines(&[
+            &format!("other handler, fulfill: rejected false true {overflow}"),
+            &format!("other handler, reject: rejected false true {overflow}"),
+            &format!("main handler, other promise: rejected true false {overflow}"),
+            &format!("main handler: rejected true false {overflow}"),
+            &format!("other then, other handler: rejected false true {overflow}"),
+            "no handler, other capability: rejected true false x",
         ])
     );
 }

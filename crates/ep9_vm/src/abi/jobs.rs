@@ -261,16 +261,18 @@ impl<'s> Cx<'s> {
     }
 
     /// The Job of NewPromiseReactionJob (§27.2.2.1) for the Fulfill or the Reject half of the
-    /// reaction record `r`.
+    /// reaction record `r`. Steps 2-4: the job's realm is GetFunctionRealm(handler) when the
+    /// handler is not empty (else null: the current realm), so the job runs there
+    /// (`realm::switch`), and an error that it makes before the handler runs (a RangeError of
+    /// `call::call_with` while it pushes a bound handler's arguments) is that realm's (X-R2-1).
+    /// The realm of the checkpoint is current again after the job, also after a throw.
     fn promise_reaction_job(
         &mut self,
         r: Local<'s, JsObject>,
         argument: Local<'s>,
         reject: bool,
     ) -> JsResult<()> {
-        // a. Let promiseCapability be reaction.[[Capability]].
-        let cap_promise = self.rec_get(r, reaction::PROMISE);
-        // b-c. Let type be reaction.[[Type]]; let handler be reaction.[[Handler]].
+        // Job steps b-c. Let type be reaction.[[Type]]; let handler be reaction.[[Handler]].
         let handler = self.rec_get(
             r,
             if reject {
@@ -279,6 +281,33 @@ impl<'s> Cx<'s> {
                 reaction::ON_FULFILLED
             },
         );
+        // NewPromiseReactionJob step 3. handlerRealm = GetFunctionRealm(handler) (v0 has no
+        // Proxy, so it does not throw); an empty handler gives null: the current realm.
+        let saved = self.cx.realm;
+        let handler_realm = if handler.is_undefined() {
+            saved
+        } else {
+            crate::realm::get_function_realm(self.rt(), handler.bits())
+        };
+        if handler_realm == saved {
+            return self.promise_reaction_job_in(r, handler, argument, reject);
+        }
+        crate::realm::switch(self.cx, handler_realm);
+        let res = self.promise_reaction_job_in(r, handler, argument, reject);
+        crate::realm::switch(self.cx, saved);
+        res
+    }
+
+    /// Steps a-i of the Job of NewPromiseReactionJob, in the job's realm.
+    fn promise_reaction_job_in(
+        &mut self,
+        r: Local<'s, JsObject>,
+        handler: Local<'s>,
+        argument: Local<'s>,
+        reject: bool,
+    ) -> JsResult<()> {
+        // a. Let promiseCapability be reaction.[[Capability]].
+        let cap_promise = self.rec_get(r, reaction::PROMISE);
         // d-f. handlerResult: the argument as a normal (Fulfill) or throw (Reject) completion
         // when the handler is empty, else Completion(HostCallJobCallback(handler, undefined,
         // « argument »)).
