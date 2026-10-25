@@ -900,7 +900,8 @@ fn the_context_walk_polls() {
                 iso.terminate_handle().terminate();
                 // The entry takes one unit; the walk takes one per context.
                 iso.cx.budget = 4;
-                let r = iso.run_script(make(look), "poll.js");
+                let r =
+                    iso.with_cx_checkpoint(|cx| cx.run_script(make(look), "poll.js").map(|_| ()));
                 if look {
                     let e = r.unwrap_err();
                     assert!(e.terminated, "{} {e:?}", d.name());

@@ -762,7 +762,9 @@ fn copy_data_properties_with_index_keys_compares_atoms_only() {
             let (output, compares) = on_big_stack(move || {
                 let mut iso = isolate(config(d, stress));
                 take_output();
-                let r = iso.run_script(make(), "test.js").map(|v| iso.display(v));
+                let r = iso.with_cx_checkpoint(|cx| {
+                    cx.run_script(make(), "test.js").map(|v| cx.display(v))
+                });
                 assert!(r.is_ok(), "{r:?}");
                 let compares = iso.rt.atoms.borrow().non_atom_compares();
                 (take_output(), compares)
@@ -835,7 +837,8 @@ fn a_function_declaration_replaces_a_configurable_global_accessor() {
             cx.define_property_or_throw(g, "f", d).unwrap();
         }
         take_output();
-        iso.run_script(declare_f(), "a.js").unwrap();
+        iso.with_cx_checkpoint(|cx| cx.run_script(declare_f(), "a.js").map(|_| ()))
+            .unwrap();
         assert_eq!(take_output(), ["2"]);
         let attrs = iso
             .with_cx(|cx| {
@@ -847,7 +850,8 @@ fn a_function_declaration_replaces_a_configurable_global_accessor() {
         assert_eq!(attrs, (true, Some(true), Some(true), Some(false)));
         // A second script declares `f` again: the property is now non-configurable,
         // writable and enumerable, so only its value changes.
-        iso.run_script(declare_f(), "b.js").unwrap();
+        iso.with_cx_checkpoint(|cx| cx.run_script(declare_f(), "b.js").map(|_| ()))
+            .unwrap();
         assert_eq!(take_output(), ["2"]);
         iso.collect_garbage();
         iso.verify_heap().unwrap();
@@ -869,10 +873,12 @@ fn counting_getter<'s>(
 }
 
 #[test]
-fn isolate_global_gives_none_for_a_global_accessor() {
-    // `Isolate::global` runs no JS, so for an accessor of the global object it gives None and
-    // calls no getter. It never hands out the internal ACCESSOR_PAIR cell. A data property
-    // still reads, and [[Get]] through the ABI still runs the getter.
+fn global_reads_of_a_global_accessor() {
+    // The raw read (`global_data`: the old `Isolate::global`, now `NativeCx::global_value`
+    // and the tests' `global_raw`) runs no JS, so for an accessor of the global object it
+    // gives None and calls no getter. It never hands out the internal ACCESSOR_PAIR cell. A
+    // data property still reads. The scoped `Cx::global_binding` and [[Get]] through the ABI
+    // run the getter.
     for stress in [false, true] {
         GETTER_CALLS.with(|c| c.set(0));
         let mut iso = isolate(config(Dispatch::DEFAULT, stress));
@@ -890,9 +896,9 @@ fn isolate_global_gives_none_for_a_global_accessor() {
             cx.define_property_or_throw(g, "acc", d).unwrap();
             cx.set(g, "data", Local::int32(5), true).unwrap();
         }
-        assert!(iso.global("acc").is_none(), "an accessor gave a value");
+        assert!(iso.global_raw("acc").is_none(), "an accessor gave a value");
         assert_eq!(GETTER_CALLS.with(std::cell::Cell::get), 0);
-        let data = iso.global("data").map(|v| iso.display(v));
+        let data = iso.global_raw("data").map(|v| iso.display_raw(v));
         assert_eq!(data.as_deref(), Some("5"));
         let v = iso.with_cx(|cx| {
             let g = cx.global();
@@ -900,6 +906,14 @@ fn isolate_global_gives_none_for_a_global_accessor() {
         });
         assert_eq!(v, Ok(Some(7)));
         assert_eq!(GETTER_CALLS.with(std::cell::Cell::get), 1);
+        let v = iso.with_cx(|cx| {
+            let acc = cx.global_binding("acc")?.map(|v| v.as_int32());
+            let data = cx.global_binding("data")?.map(|v| cx.display(v));
+            Ok((acc, data))
+        });
+        assert_eq!(v, Ok((Some(Some(7)), Some("5".to_string()))));
+        assert_eq!(GETTER_CALLS.with(std::cell::Cell::get), 2);
+
         iso.collect_garbage();
         iso.verify_heap().unwrap();
     }
@@ -1106,7 +1120,8 @@ fn getters_and_setters_receive_the_receiver_also_a_primitive() {
                 let mut iso = isolate(config(d, stress));
                 setup(&mut iso);
                 take_output();
-                let r = iso.run_script(make(), "p.js").map(|v| iso.display(v));
+                let r = iso
+                    .with_cx_checkpoint(|cx| cx.run_script(make(), "p.js").map(|v| cx.display(v)));
                 let out = take_output();
                 iso.collect_garbage();
                 iso.verify_heap().unwrap();

@@ -9,7 +9,7 @@
 //! | `LdaModuleVariable` | cell index, depth | the cell's value (the hole in its TDZ) |
 //! | `StaModuleVariable` | cell index, depth, the accumulator | the accumulator; an import cell throws a TypeError |
 //! | 42 `GetImportMeta` | none | the module's `import.meta` object |
-//! | 43 `DynamicImport` | specifier, options (undefined when absent) | not built (M3-P3 IMPORT-TLA) |
+//! | 43 `DynamicImport` | specifier, options (undefined when absent) | a promise of the module's namespace (M3-P3 IMPORT-TLA; `module.rs`) |
 //!
 //! A cell in the hole is a binding in its TDZ: the front end puts a
 //! `ThrowReferenceErrorIfHole` right after each load of a binding that may be in it. A `var`
@@ -93,13 +93,10 @@ pub(crate) fn get_import_meta(cx: &mut Cx, fp: *mut u64) -> Res<u64> {
     }
 }
 
-/// Id 43: `import(specifier, options)` (§13.3.10.1): a promise. Stub (M3-P3 IMPORT-TLA).
-pub(crate) fn dynamic_import(
-    cx: &mut Cx,
-    _fp: *mut u64,
-    _specifier: u64,
-    _options: u64,
-) -> Res<u64> {
+/// Id 43: `import(specifier, options)` (§13.3.10.1): a promise (`module::dynamic_import`).
+/// With no module host in place (no `Cx::run_module` or `Isolate::with_module_host` call
+/// runs), the v0 not-implemented Error.
+pub(crate) fn dynamic_import(cx: &mut Cx, fp: *mut u64, specifier: u64, options: u64) -> Res<u64> {
     probe::note("module DynamicImport");
-    Err(not_implemented(cx, "DynamicImport"))
+    module::dynamic_import(cx, fp, context(fp), specifier, options)
 }

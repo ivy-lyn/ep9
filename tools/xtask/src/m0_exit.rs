@@ -6,7 +6,8 @@
 //! cargo xtask m0-exit --host <triple> --out m0-exit.md
 //!     [--exec <json>]       ep9-test262 exec --json                     items 1, 3 (and 2, 3 on Windows)
 //!     [--parse <json>]      ep9-test262 parse --json                    item 2
-//!     [--exec-gc <json>]    ep9-test262 exec --gc-stress 1 ... --json   item 6
+//!     [--exec-gc <json>]... ep9-test262 exec --gc-stress 1 ... --json   item 6 (one whole
+//!                           run, or every shard of one `--gc-shard` split)
 //!     [--cross <json>]      tools/bench/cross run (ep9-cross/v1)        item 4
 //!     [--nesting <log>]     cargo test output of the nesting tests      item 7
 //!     [--corpus <log>]...   cargo test output of the corpus digest test item 12 (release, debug)
@@ -14,30 +15,38 @@
 //!                           docs/measurements/*-m0-spike-review.md)     items 5, 11
 //!     [--ci-run <id>] [--ci-run-json <file>]                            the Windows column
 //!     [--no-build-check]    item 8 without `cargo check -p ep9_value`
+//! cargo xtask m0-exit --gc-shard <k>/<n>   print the test262 path prefixes of GC-stress shard k
+//!                                          of n (CI runs one shard per job)
 //! ```
 //!
 //! The task reads its inputs; it runs no test suite. A missing input gives NOT-RUN with the
 //! command that makes it. `--ci-run <id>` alone runs `gh run view <id> --json
 //! jobs,headSha,databaseId,url`; `--ci-run-json <file>` reads a file in that shape instead (an
 //! agent without gh, or a saved run). The Windows column reads NOT-RUN only when no run is given
-//! or the run does not exist; items with no Windows job (4, 6) read NOT-RUN in it.
+//! or the run does not exist. Item 4's Windows cell is N/A by design (a gate-host speed
+//! reading); N/A counts as a pass.
 //!
 //! | Item | Host column | Windows column (CI jobs `<job> (windows-x64)`) |
 //! |---|---|---|
 //! | 1 | exec JSON: full run (runs = the pin's count), wall time <= 600 s, 0 infra; the run names the committed expectation file of this tree, and its "fail" results against that file give 0 new failures and 0 stale lines (recomputed here, not the runner's diff) | step "test262 exec" green and <= 600 s; the file is committed |
 //! | 2 | parse JSON: negatives all pass (the pin's count), positives >= 99.98% | step "test262 parse" green, and the Windows parse expectation file equals this host's |
 //! | 3 | exec JSON: `language/` files >= 40% | step "test262 exec" green; passed = total (exec JSON) - the `test/language/` lines of the Windows expectation file |
-//! | 4 | cross JSON: richards and deltablue vs QuickJS, net interval low end >= 0.6, valid rows (a gross fallback row, net invalid, gives OPEN), a gate host, not provisional | NOT-RUN (no Windows bench job) |
+//! | 4 | cross JSON: richards and deltablue vs QuickJS, net interval low end >= 0.6, valid rows (a gross fallback row, net invalid, gives OPEN), a gate host, not provisional; measured at HEAD, or at an ancestor with no change under `crates/` or `tools/bench/` since (else OPEN) | N/A by design (a gate-host speed reading; no Windows bench job) |
 //! | 5 | verdicts: SP-GC, SP-VA, SP-Value, SP-Dispatch, SP-JIT-mem and Spike B GO (no open conditions); SP-tsrs-win recorded | the same verdicts, and these steps of the run green: SP-GC, SP-Dispatch, SP-JIT-mem and Spike B structural gates, ep9_heap barrier, cargo test --workspace, spike-native tests (ep9_vm) |
-//! | 6 | GC JSON: the whole pinned corpus (files run + skipped = the pin's count; `skipped_paths` = the set of the committed skip list, and `skipped` = its size), `timeout_ms` <= 60000 and `feedback_threshold` 0 (GC_CMD), 0 infra; the run names the committed expectation file, and its "fail" results against that file without the skip list give 0 new failures (recomputed here) | NOT-RUN (CI runs GC-stress on linux-x64 only) |
-//! | 7 | nesting log: `every_form_is_gated`, `caps_hold_end_to_end`, `uncaught_error_reports_file_line_utf16_column` ok, and no cargo failure line (`error[E`, `error:`, a panic) anywhere in it | step "cargo test --workspace" green (it runs the three) |
+//! | 6 | GC JSON: the whole pinned corpus (files run + skipped = the pin's count; `skipped_paths` = the set of the committed skip list, and `skipped` = its size), `timeout_ms` <= 60000 and `feedback_threshold` 0 (GC_CMD), 0 infra; the run names the committed expectation file, and its "fail" results against that file without the skip list give 0 new failures (recomputed here). Several GC JSONs must be every shard of one `--gc-shard` split of this tree's test262 checkout, each once, with the same settings: each JSON's `run_paths` (every file it ran) and `skipped_paths` are exactly the files of its shard, so together they hold every test file once; they are merged and checked as one run | every job `test262 GC-stress (windows-x64, k/n)`, k = 1..n each once, with its step "test262 exec, GC-stress + eager feedback" green |
+//! | 7 | nesting log: `every_form_is_gated`, `caps_hold_end_to_end`, `uncaught_error_reports_file_line_utf16_column` ok, each one in a cargo run that finished with exit status 0, no cargo failure line (`error[E`, `error:`, a panic) anywhere in it, and its 2 cargo runs (or more) each between a start line `m0-exit start: <label>` and an exit-status line `m0-exit status: 0`, with no run unfinished and no line outside a run | step "cargo test --workspace" green (it runs the three) |
 //! | 8 | the asserts are in ep9_value's source, and `cargo check -p ep9_value --target <host>` passes | step "cargo build --workspace --all-targets" green |
 //! | 9, 10 | docs/adr/README.md index: the ADR status of every row due at M0 (Accepted or Frozen; a Draft for "Draft M0" rows); H20 Frozen | the same |
 //! | 11 | verdicts: SP-Unit GO | the same |
-//! | 12 | corpus logs: every run in every log (a run starts at a cargo "Finished" line) prints the digest of `expectations/bytecode-corpus.digest` and its test is ok, and no log has a cargo failure line (`error[E`, `error:`, a panic) anywhere; a release and a debug run are both given | step "bytecodegen corpus digest (release)" green |
+//! | 12 | corpus logs: every cargo run in every log (from its start line `m0-exit start: <label>` to its exit-status line) prints the digest of `expectations/bytecode-corpus.digest`, its test is ok and its exit status is 0; no run is unfinished, no line is outside a run, and no log has a cargo failure line (`error[E`, `error:`, a panic) anywhere; a release and a debug run are both given | step "bytecodegen corpus digest (release)" green |
 //!
-//! Exit 0 when every cell is PASS (the M0 exit holds), 1 otherwise, 2 on a usage error or an
-//! input that cannot be read. The JSON reader is the small one below: xtask has no JSON crate.
+//! After the table, the report lists two tree checks (plan rules, not exit items, so they do not
+//! change the exit code): stub markers in crates, spikes and tools, and a `fn bind_this` in
+//! crates/ep9_vm/src/call.rs.
+//!
+//! Exit 0 when every cell is PASS or N/A (the M0 exit holds), 1 otherwise, 2 on a usage error
+//! or an input that cannot be read. The JSON reader is the small one below: xtask has no JSON
+//! crate.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -67,6 +76,18 @@ const PIN_COUNTS: &[PinCounts] = &[PinCounts {
     negatives: 4_653,
 }];
 
+/// The counts of a pin. Tests also know the small fake checkout of their GC shard tests.
+fn pin_counts_of(pin: &str) -> Option<&'static PinCounts> {
+    #[cfg(test)]
+    if let Some(c) = tests::FAKE_PIN_COUNTS
+        .iter()
+        .find(|c| pin.starts_with(c.pin_prefix))
+    {
+        return Some(c);
+    }
+    PIN_COUNTS.iter().find(|c| pin.starts_with(c.pin_prefix))
+}
+
 /// Item 10: the A0 part 1 ADRs.
 const A0_PART1: &[&str] = &[
     "H2", "H3", "H5", "H7", "H8", "H13", "H14", "H27", "H35", "H36",
@@ -79,8 +100,115 @@ const NESTING_TESTS: &[&str] = &[
     "caps_hold_end_to_end",
     "uncaught_error_reports_file_line_utf16_column",
 ];
-const NESTING_CMD: &str = "cargo test --locked -p ep9_frontend --lib depth_tests > nesting.log 2>&1; \
-     cargo test --locked -p ep9_cli --test nesting_caps --test cli >> nesting.log 2>&1";
+const NESTING_CMD: &str = "echo \"m0-exit start: depth_tests\" > nesting.log; \
+     cargo test --locked -p ep9_frontend --lib depth_tests >> nesting.log 2>&1; \
+     echo \"m0-exit status: $?\" >> nesting.log; \
+     echo \"m0-exit start: nesting_caps cli\" >> nesting.log; \
+     cargo test --locked -p ep9_cli --test nesting_caps --test cli >> nesting.log 2>&1; \
+     echo \"m0-exit status: $?\" >> nesting.log";
+
+/// The start line that CORPUS_CMD and NESTING_CMD write before each cargo run (M3-P3 fix
+/// round 2, C-G2): `m0-exit start: <label>`. With [`SENTINEL`] after the run, it makes each
+/// run of a log one pair, so a run that was killed (a start, no status) cannot hide between
+/// two good runs.
+const START: &str = "m0-exit start: ";
+
+/// The exit-status line that CORPUS_CMD and NESTING_CMD write after each cargo run
+/// (M2-P2-OPEN-I9-EXIT): `m0-exit status: <code>`. A run that is killed writes no status, or a
+/// code that is not 0, so its log cannot pass.
+const SENTINEL: &str = "m0-exit status: ";
+
+/// One cargo run of a log: the lines from its start line ([`START`]) to its exit-status line
+/// ([`SENTINEL`]).
+struct Invocation<'a> {
+    label: &'a str,
+    /// The lines between the start line and the status line, trimmed.
+    body: Vec<&'a str>,
+    /// The code of the status line: None if the run has none (killed, or the log stops), Err
+    /// if the line holds no number.
+    exit: Option<Result<i64, String>>,
+}
+
+impl Invocation<'_> {
+    fn ok(&self) -> bool {
+        self.exit == Some(Ok(0))
+    }
+}
+
+/// The cargo runs of a log, and the lines that break the pairing: a status line with no start
+/// line before it, and a non-blank line outside every run (output that no run owns). A run
+/// with no status line ends at the next start line or at the end of the log.
+fn invocations(log: &str) -> (Vec<Invocation<'_>>, Vec<String>) {
+    let mut runs: Vec<Invocation> = Vec::new();
+    let mut problems = Vec::new();
+    let mut open = false;
+    for t in log.lines().map(str::trim) {
+        if let Some(label) = t.strip_prefix(START) {
+            runs.push(Invocation {
+                label: label.trim(),
+                body: Vec::new(),
+                exit: None,
+            });
+            open = true;
+        } else if let Some(code) = t.strip_prefix(SENTINEL) {
+            match runs.last_mut() {
+                Some(r) if open => {
+                    r.exit = Some(code.parse::<i64>().map_err(|_| code.to_string()));
+                    open = false;
+                }
+                _ => problems.push(format!(
+                    "an exit-status line \"{t}\" with no start line (\"{START}<label>\") before it"
+                )),
+            }
+        } else if open {
+            if let Some(r) = runs.last_mut() {
+                r.body.push(t);
+            }
+        } else if !t.is_empty() {
+            problems.push(format!("output outside every cargo run: {t:?}"));
+        }
+    }
+    (runs, problems)
+}
+
+/// The pairing rules of a whole log: at least `min` cargo runs, each with its start line and
+/// its exit-status line, each status `0`, and no line outside a run (so nothing after the last
+/// status). Err(why).
+fn invocation_check(log: &str, min: usize) -> Result<(), String> {
+    let (runs, problems) = invocations(log);
+    if let Some(p) = problems.first() {
+        return Err(format!(
+            "{p}{}",
+            if problems.len() > 1 {
+                format!(" (and {} more such lines)", problems.len() - 1)
+            } else {
+                String::new()
+            }
+        ));
+    }
+    if let Some(r) = runs.iter().find(|r| r.exit.is_none()) {
+        return Err(format!(
+            "the cargo run \"{START}{}\" has no exit status (killed?)",
+            r.label
+        ));
+    }
+    if runs.len() < min {
+        return Err(format!(
+            "{} cargo runs with their start and exit-status lines, {min} needed: a killed run, or a log not made with the command below",
+            runs.len()
+        ));
+    }
+    if let Some(r) = runs.iter().find(|r| !r.ok()) {
+        return Err(match &r.exit {
+            Some(Ok(code)) => format!("the cargo run \"{START}{}\" exited {code}", r.label),
+            _ => format!(
+                "the cargo run \"{START}{}\" has a bad exit-status line",
+                r.label
+            ),
+        });
+    }
+    Ok(())
+}
 
 /// Item 8: the asserts that must be in crates/ep9_value/src/lib.rs.
 const STATIC_ASSERTS: &[&str] = &[
@@ -103,6 +231,9 @@ const ITEM5_SPIKES: &[&str] = &[
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Status {
     Pass,
+    /// N/A by design: the item has no reading on this column, and that counts as a pass. Only
+    /// the Windows cell of item 4 has it (a gate-host speed reading; plan-v8 V8-A22).
+    NotApplicable,
     Open,
     NotRun,
     Fail,
@@ -112,10 +243,16 @@ impl Status {
     fn name(self) -> &'static str {
         match self {
             Status::Pass => "PASS",
+            Status::NotApplicable => "N/A",
             Status::Fail => "FAIL",
             Status::Open => "OPEN",
             Status::NotRun => "NOT-RUN",
         }
+    }
+
+    /// PASS, or N/A by design.
+    fn ok(self) -> bool {
+        matches!(self, Status::Pass | Status::NotApplicable)
     }
 }
 
@@ -141,7 +278,8 @@ struct Options {
     out: PathBuf,
     exec: Option<PathBuf>,
     parse: Option<PathBuf>,
-    exec_gc: Option<PathBuf>,
+    /// One whole-corpus GC-stress JSON, or the shard JSONs of one split (`--gc-shard`).
+    exec_gc: Vec<PathBuf>,
     cross: Option<PathBuf>,
     nesting: Option<PathBuf>,
     corpus: Vec<PathBuf>,
@@ -152,8 +290,9 @@ struct Options {
 }
 
 const USAGE: &str = "usage: cargo xtask m0-exit --host <triple> --out <file.md> [--exec <json>] \
-     [--parse <json>] [--exec-gc <json>] [--cross <json>] [--nesting <log>] [--corpus <log>]... \
-     [--verdicts <md>]... [--ci-run <id>] [--ci-run-json <file>] [--no-build-check]";
+     [--parse <json>] [--exec-gc <json>]... [--cross <json>] [--nesting <log>] [--corpus <log>]... \
+     [--verdicts <md>]... [--ci-run <id>] [--ci-run-json <file>] [--no-build-check]\n   \
+     or: cargo xtask m0-exit --gc-shard <k>/<n>";
 
 fn parse_args(args: &[String], root: PathBuf) -> Result<Options, String> {
     let mut o = Options {
@@ -173,7 +312,7 @@ fn parse_args(args: &[String], root: PathBuf) -> Result<Options, String> {
             "--out" => o.out = PathBuf::from(val()?),
             "--exec" => o.exec = Some(PathBuf::from(val()?)),
             "--parse" => o.parse = Some(PathBuf::from(val()?)),
-            "--exec-gc" => o.exec_gc = Some(PathBuf::from(val()?)),
+            "--exec-gc" => o.exec_gc.push(PathBuf::from(val()?)),
             "--cross" => o.cross = Some(PathBuf::from(val()?)),
             "--nesting" => o.nesting = Some(PathBuf::from(val()?)),
             "--corpus" => o.corpus.push(PathBuf::from(val()?)),
@@ -199,6 +338,15 @@ fn parse_args(args: &[String], root: PathBuf) -> Result<Options, String> {
 pub fn main(args: &[String]) -> Result<bool, String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let root = std::fs::canonicalize(&root).unwrap_or(root);
+    if args.first().map(String::as_str) == Some("--gc-shard") {
+        let [_, spec] = args else {
+            return Err(format!("--gc-shard takes one <k>/<n> value\n{USAGE}"));
+        };
+        for p in gc_shard_prefixes(&root.join("third_party/test262"), spec)? {
+            println!("{p}");
+        }
+        return Ok(true);
+    }
     let opts = parse_args(args, root)?;
     let report = run(&opts)?;
     std::fs::write(&opts.out, &report.markdown)
@@ -218,12 +366,14 @@ struct Report {
 }
 
 impl Report {
-    /// Every cell is PASS: the M0 exit holds.
+    /// Every cell is PASS (or N/A by design): the M0 exit holds.
     fn all_pass(&self) -> bool {
-        self.cells
-            .iter()
-            .all(|(h, w)| h.status == Status::Pass && w.status == Status::Pass)
+        all_ok(&self.cells)
     }
+}
+
+fn all_ok(cells: &[(Cell, Cell)]) -> bool {
+    cells.iter().all(|(h, w)| h.status.ok() && w.status.ok())
 }
 
 /// Everything the items read, loaded once.
@@ -233,7 +383,7 @@ struct Ctx<'a> {
     pin_counts: Option<&'static PinCounts>,
     exec: Option<(PathBuf, Json)>,
     parse: Option<(PathBuf, Json)>,
-    gc: Option<(PathBuf, Json)>,
+    gc: Vec<(PathBuf, Json)>,
     cross: Option<(PathBuf, Json)>,
     nesting: Option<(PathBuf, String)>,
     corpus: Vec<(PathBuf, String)>,
@@ -243,22 +393,17 @@ struct Ctx<'a> {
 }
 
 fn run(o: &Options) -> Result<Report, String> {
-    let read_json = |p: &Option<PathBuf>| -> Result<Option<(PathBuf, Json)>, String> {
-        p.as_ref()
-            .map(|p| {
-                Ok((
-                    p.clone(),
-                    parse_json(&read(p)?).map_err(|e| format!("{}: {e}", p.display()))?,
-                ))
-            })
-            .transpose()
+    let read_one = |p: &PathBuf| -> Result<(PathBuf, Json), String> {
+        Ok((
+            p.clone(),
+            parse_json(&read(p)?).map_err(|e| format!("{}: {e}", p.display()))?,
+        ))
     };
+    let read_json = |p: &Option<PathBuf>| p.as_ref().map(read_one).transpose();
     let pin = std::fs::read_to_string(o.root.join("third_party/test262.commit"))
         .ok()
         .map(|s| s.trim().to_string());
-    let pin_counts = pin
-        .as_deref()
-        .and_then(|p| PIN_COUNTS.iter().find(|c| p.starts_with(c.pin_prefix)));
+    let pin_counts = pin.as_deref().and_then(pin_counts_of);
     let mut verdict_files = o.verdicts.clone();
     if let Some(review) = newest_spike_review(&o.root) {
         verdict_files.insert(0, review);
@@ -293,7 +438,7 @@ fn run(o: &Options) -> Result<Report, String> {
         pin_counts,
         exec: read_json(&o.exec)?,
         parse: read_json(&o.parse)?,
-        gc: read_json(&o.exec_gc)?,
+        gc: o.exec_gc.iter().map(read_one).collect::<Result<_, _>>()?,
         cross: read_json(&o.cross)?,
         nesting: o
             .nesting
@@ -309,10 +454,13 @@ fn run(o: &Options) -> Result<Report, String> {
         adr: adr_index(&read(&o.root.join("docs/adr/README.md"))?)?,
         ci,
     };
-    for (what, j) in [("--exec", &ctx.exec), ("--exec-gc", &ctx.gc)] {
-        if let Some((p, j)) = j
-            && j.get("command").and_then(Json::str) != Some("exec")
-        {
+    let execs = ctx
+        .exec
+        .iter()
+        .map(|e| ("--exec", e))
+        .chain(ctx.gc.iter().map(|e| ("--exec-gc", e)));
+    for (what, (p, j)) in execs {
+        if j.get("command").and_then(Json::str) != Some("exec") {
             return Err(format!(
                 "{what} {}: not an ep9-test262 exec JSON",
                 p.display()
@@ -327,7 +475,7 @@ fn run(o: &Options) -> Result<Report, String> {
             p.display()
         ));
     }
-    for (p, j) in [&ctx.exec, &ctx.gc, &ctx.parse].into_iter().flatten() {
+    for (p, j) in ctx.exec.iter().chain(&ctx.gc).chain(&ctx.parse) {
         let t = j.get("target").and_then(Json::str).unwrap_or("");
         if t != o.host {
             return Err(format!(
@@ -369,10 +517,20 @@ fn run(o: &Options) -> Result<Report, String> {
         ),
     ];
     let cells: Vec<(Cell, Cell)> = items.iter().map(|(_, f)| f(&ctx)).collect();
-    Ok(render(&ctx, &items.map(|(t, _)| t), cells))
+    Ok(render(
+        &ctx,
+        &items.map(|(t, _)| t),
+        cells,
+        &tree_checks(&o.root),
+    ))
 }
 
-fn render(ctx: &Ctx, titles: &[&str; 12], cells: Vec<(Cell, Cell)>) -> Report {
+fn render(
+    ctx: &Ctx,
+    titles: &[&str; 12],
+    cells: Vec<(Cell, Cell)>,
+    tree: &[(&str, Cell)],
+) -> Report {
     let o = ctx.o;
     let head = git(&o.root, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into());
     let mut table = String::new();
@@ -391,9 +549,7 @@ fn render(ctx: &Ctx, titles: &[&str; 12], cells: Vec<(Cell, Cell)>) -> Report {
             w.status.name()
         );
     }
-    let all_pass = cells
-        .iter()
-        .all(|(h, w)| h.status == Status::Pass && w.status == Status::Pass);
+    let all_pass = all_ok(&cells);
     let mut md = String::from("# M0 exit check (`cargo xtask m0-exit`)\n\n");
     let _ = writeln!(
         md,
@@ -427,7 +583,7 @@ fn render(ctx: &Ctx, titles: &[&str; 12], cells: Vec<(Cell, Cell)>) -> Report {
         md,
         "- Result: {}.\n",
         if all_pass {
-            "every item PASS on both columns: the M0 exit holds"
+            "every item PASS on both columns (N/A cells are by design): the M0 exit holds"
         } else {
             "not every cell is PASS"
         }
@@ -445,6 +601,13 @@ fn render(ctx: &Ctx, titles: &[&str; 12], cells: Vec<(Cell, Cell)>) -> Report {
             w.status.name(),
             w.evidence
         );
+    }
+    md.push_str(
+        "\n## Tree checks\n\nPlan rules for the exit tree (plan-v8 section 1 rule 4 and section 13 row 12), \
+         not exit items: they do not change the result above. A finding is OPEN and names the file.\n\n",
+    );
+    for (what, c) in tree {
+        let _ = writeln!(md, "- {what}: {} {}", c.status.name(), c.evidence);
     }
     Report {
         table,
@@ -529,13 +692,17 @@ fn exec_health(j: &Json) -> (usize, usize, usize) {
 /// The expectation diff of an exec JSON, recomputed here: its "fail" results against the
 /// committed `expectations/<file>` without `skip` (the tests the run did not run). The runner's
 /// own diff is not enough: it stays empty when the runner cannot read its expectation file, and
-/// `--expect` can name any file. So the run must name the committed file of this tree.
+/// `--expect` can name any file. So the run must name the committed file of this tree, or the
+/// same name in a checkout that is not on this host (a CI job's JSON, M3-P3-DRYRUN-CI): such a
+/// path does not exist here and ends in `/expectations/<file>` (`\` read as `/`).
 #[derive(Debug)]
 struct Recheck {
     /// Failing, and not in the file.
     new: Vec<String>,
     /// In the file, and not failing.
     stale: Vec<String>,
+    /// The run names its file in another checkout (a CI job): that path, for the evidence.
+    foreign: Option<String>,
 }
 
 fn recheck(root: &Path, j: &Json, file: &str, skip: &BTreeSet<String>) -> Result<Recheck, String> {
@@ -548,7 +715,13 @@ fn recheck(root: &Path, j: &Json, file: &str, skip: &BTreeSet<String>) -> Result
         (Ok(a), Ok(b)) => a == b,
         _ => false,
     };
-    if !same {
+    let foreign = !same
+        && !used.is_empty()
+        && !Path::new(used).exists()
+        && used
+            .replace('\\', "/")
+            .ends_with(&format!("/expectations/{file}"));
+    if !same && !foreign {
         return Err(format!(
             "the run compared with {used:?}, not expectations/{file} of this tree ({}){}",
             want.display(),
@@ -572,7 +745,20 @@ fn recheck(root: &Path, j: &Json, file: &str, skip: &BTreeSet<String>) -> Result
     Ok(Recheck {
         new: failing.difference(&expected).cloned().collect(),
         stale: expected.difference(&failing).cloned().collect(),
+        foreign: foreign.then(|| used.to_string()),
     })
+}
+
+impl Recheck {
+    /// "recomputed against `expectations/<file>`", plus the other checkout's path if any.
+    fn basis(&self, file: &str) -> String {
+        match &self.foreign {
+            None => format!("recomputed against expectations/{file}"),
+            Some(p) => format!(
+                "recomputed against expectations/{file} of this tree; the run named {p:?}, the same file in another checkout (a CI job)"
+            ),
+        }
+    }
 }
 
 /// Up to 5 paths, for the evidence.
@@ -627,19 +813,25 @@ fn item1(c: &Ctx) -> (Cell, Cell) {
                 why.push(format!("wall time {wall:.1} s > {MAX_WALL_SECONDS} s"));
             }
             // The diff against the committed file, recomputed; the runner's diff counts too.
-            let mut basis = format!("recomputed against expectations/{file}");
-            let (new, stale) = match recheck(&c.o.root, j, &file, &BTreeSet::new()) {
+            let (new, stale, basis) = match recheck(&c.o.root, j, &file, &BTreeSet::new()) {
                 Ok(d) => {
                     if !d.new.is_empty() {
                         why.push(format!("new failures: {}", some_paths(&d.new)));
                     }
-                    (d.new.len().max(runner_new), d.stale.len().max(runner_stale))
+                    (
+                        d.new.len().max(runner_new),
+                        d.stale.len().max(runner_stale),
+                        d.basis(&file),
+                    )
                 }
                 Err(e) => {
                     status = Status::Fail;
                     why.push(e);
-                    basis = "the runner's diff, not recomputed".into();
-                    (runner_new, runner_stale)
+                    (
+                        runner_new,
+                        runner_stale,
+                        "the runner's diff, not recomputed".to_string(),
+                    )
                 }
             };
             if infra > 0 || new > 0 {
@@ -858,10 +1050,67 @@ fn item4(c: &Ctx) -> (Cell, Cell) {
         Some((p, j)) => cross_canary(p, j, &c.o.root),
     };
     let win = cell(
-        Status::NotRun,
-        "no CI job runs richards or deltablue on windows-x64 (the canary is a gate-host speed reading, 10-quality section 3)",
+        Status::NotApplicable,
+        "by design: item 4 is a gate-host speed reading (10-quality section 3; the host column), and no CI job runs richards or deltablue on windows-x64 (plan-v8 V8-A22)",
     );
     (host, win)
+}
+
+/// Item 4 freshness (plan-v8 V8-A14): the cross run measured this tree, or an ancestor of HEAD
+/// with no change under `crates/` or `tools/bench/` since. Err(why) gives OPEN.
+fn cross_fresh(root: &Path, commit: &str) -> Result<String, String> {
+    let head = git(root, &["rev-parse", "--verify", "HEAD^{commit}"])
+        .ok_or("cannot read HEAD (not a git tree?)")?;
+    if commit.is_empty() || commit == "unknown" {
+        return Err("the run names no ep9 commit".into());
+    }
+    let full = git(
+        root,
+        &["rev-parse", "--verify", &format!("{commit}^{{commit}}")],
+    )
+    .ok_or_else(|| format!("its commit `{commit}` is not in this repository"))?;
+    if full == head {
+        return Ok("this tree (HEAD)".into());
+    }
+    let ancestor = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["merge-base", "--is-ancestor", &full, &head])
+        .status()
+        .map_err(|e| format!("cannot run git: {e}"))?;
+    if !ancestor.success() {
+        return Err(format!(
+            "its commit `{}` is not an ancestor of HEAD `{}`",
+            short(&full),
+            short(&head)
+        ));
+    }
+    let diff = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "diff",
+            "--quiet",
+            &full,
+            &head,
+            "--",
+            "crates",
+            "tools/bench",
+        ])
+        .status()
+        .map_err(|e| format!("cannot run git: {e}"))?;
+    match diff.code() {
+        Some(0) => Ok(format!(
+            "an ancestor of HEAD `{}` with no change under crates/ or tools/bench/ since",
+            short(&head)
+        )),
+        Some(1) => Err(format!(
+            "not this tree: crates/ or tools/bench/ changed between its commit `{}` and HEAD `{}` (a fresh gate-host run closes it)",
+            short(&full),
+            short(&head)
+        )),
+        _ => Err("git diff failed".into()),
+    }
 }
 
 fn cross_canary(p: &Path, j: &Json, root: &Path) -> Cell {
@@ -875,7 +1124,6 @@ fn cross_canary(p: &Path, j: &Json, root: &Path) -> Cell {
         .path(&["commit", "ep9"])
         .and_then(Json::str)
         .unwrap_or("unknown");
-    let head = git(root, &["rev-parse", "HEAD"]).unwrap_or_default();
     let provisional = j.get("provisional").and_then(Json::bool).unwrap_or(true);
     let gate_host = j
         .path(&["host", "gate_host"])
@@ -940,21 +1188,20 @@ fn cross_canary(p: &Path, j: &Json, root: &Path) -> Cell {
         status = status.max(Status::Open);
         parts.push(format!("provisional {provisional}, gate host {gate_host}"));
     }
+    let tree = match cross_fresh(root, commit) {
+        Ok(t) => t,
+        Err(why) => {
+            status = status.max(Status::Open);
+            why
+        }
+    };
     cell(
         status,
         format!(
-            "{}: {}; measured at ep9 commit `{}`{}",
+            "{}: {}; measured at ep9 commit `{}`: {tree}",
             p.display(),
             parts.join("; "),
             short(commit),
-            if !head.is_empty() && (head.starts_with(commit) || commit.starts_with(&head)) {
-                String::new()
-            } else {
-                format!(
-                    " (not this tree, `{}`: the canary is the newest gate-host run given)",
-                    short(&head)
-                )
-            }
         ),
     )
 }
@@ -1036,187 +1283,619 @@ const GC_CMD: &str = "cargo run --release --locked -p ep9_test262 -- exec --gc-s
 const GC_TIMEOUT_MS: f64 = 60_000.0;
 
 fn item6(c: &Ctx) -> (Cell, Cell) {
-    let host = match &c.gc {
-        None => not_given("--exec-gc", GC_CMD),
-        Some((p, j)) => {
-            let gc = j.get("gc_stress").and_then(Json::num).unwrap_or(0.0);
-            let (infra, runner_new, runner_stale) = exec_health(j);
-            let skipped = j.get("skipped").and_then(Json::num).unwrap_or(0.0) as usize;
-            // The skipped tests by path (an older runner wrote only their count).
-            let skipped_paths: Option<BTreeSet<String>> =
-                j.get("skipped_paths").and_then(Json::arr).map(|a| {
-                    a.iter()
-                        .filter_map(|p| p.str().map(str::to_string))
-                        .collect()
-                });
-            let (fp, ft) = count(j, &["files"]).unwrap_or((0, 0));
-            let mut status = Status::Pass;
-            let mut why = Vec::new();
-            if gc <= 0.0 {
+    let host = match c.gc.as_slice() {
+        [] => not_given("--exec-gc", GC_CMD),
+        [(p, j)] => gc_cell(c, &p.display().to_string(), j),
+        shards => match merge_gc_shards(c, shards) {
+            Ok((label, merged)) => gc_cell(c, &label, &merged),
+            Err(e) => e,
+        },
+    };
+    let win = with_ci(c, gc_ci_cell);
+    (host, win)
+}
+
+/// The item 6 host cell of one whole-corpus GC-stress JSON (or the merge of its shards).
+fn gc_cell(c: &Ctx, label: &str, j: &Json) -> Cell {
+    let gc = j.get("gc_stress").and_then(Json::num).unwrap_or(0.0);
+    let (infra, runner_new, runner_stale) = exec_health(j);
+    let skipped = j.get("skipped").and_then(Json::num).unwrap_or(0.0) as usize;
+    // The skipped tests by path (an older runner wrote only their count).
+    let skipped_paths: Option<BTreeSet<String>> =
+        j.get("skipped_paths").and_then(Json::arr).map(|a| {
+            a.iter()
+                .filter_map(|p| p.str().map(str::to_string))
+                .collect()
+        });
+    let (fp, ft) = count(j, &["files"]).unwrap_or((0, 0));
+    let mut status = Status::Pass;
+    let mut why = Vec::new();
+    if gc <= 0.0 {
+        status = Status::Fail;
+        why.push("not a GC-stress run".to_string());
+    }
+    // The timeout and the feedback threshold of GC_CMD: a longer timeout lets a timeout
+    // skip pass, and lazy feedback is another run.
+    match j.get("timeout_ms").and_then(Json::num) {
+        Some(t) if t <= GC_TIMEOUT_MS => {}
+        t => {
+            status = Status::Fail;
+            why.push(format!(
+                "timeout_ms {}, not at most {GC_TIMEOUT_MS} (--timeout 60)",
+                t.map_or("missing".to_string(), |t| t.to_string())
+            ));
+        }
+    }
+    match j.get("feedback_threshold").and_then(Json::num) {
+        Some(0.0) => {}
+        f => {
+            status = Status::Fail;
+            why.push(format!(
+                "feedback_threshold {}, not 0 (--feedback-threshold 0)",
+                f.map_or("missing".to_string(), |f| f.to_string())
+            ));
+        }
+    }
+    // The whole pinned corpus: every file is run or skipped by the skip list.
+    match c.pin_counts {
+        Some(pc) if ft + skipped as u64 != pc.files => {
+            status = Status::Fail;
+            why.push(format!(
+                "{ft} files run + {skipped} skipped, not the full {} of the pin (a filtered run?)",
+                pc.files
+            ));
+        }
+        Some(_) => {}
+        None => {
+            status = status.max(Status::Open);
+            why.push(format!(
+                "no full-run file count for the pin {} in m0_exit.rs PIN_COUNTS",
+                c.pin.as_deref().unwrap_or("unknown")
+            ));
+        }
+    }
+    // A skipped test is not run. One that fails without GC-stress (it is in the
+    // expectation file) is no passing test. One that passes without it is named: the
+    // skip list says why it is skipped (a timeout under GC-stress), and its decision row
+    // records the run that passed it alone.
+    let file = format!("test262.{}.jit.txt", c.o.host);
+    let listed = committed(&c.o.root, &file).and_then(|p| expectation_set(&p));
+    let skip = committed(&c.o.root, "test262-gc-skip.txt").and_then(|p| expectation_set(&p));
+    let mut skip_text = String::new();
+    let (mut new, mut stale) = (runner_new, runner_stale);
+    let mut basis = "the runner's diff, not recomputed".to_string();
+    match (listed, skip) {
+        (Ok(listed), Ok(skip)) => {
+            let passing: Vec<&str> = skip
+                .iter()
+                .filter(|s| !listed.contains(*s))
+                .map(String::as_str)
+                .collect();
+            skip_text = format!(
+                "{skipped} skipped (expectations/test262-gc-skip.txt): {} fail without GC-stress too",
+                skip.len() - passing.len()
+            );
+            if !passing.is_empty() {
+                let _ = write!(
+                    skip_text,
+                    "; {} of them pass without it and are not run under it (a timeout skip, see the skip-list header): {}",
+                    passing.len(),
+                    passing.join(", ")
+                );
+            }
+            if skipped != skip.len() {
                 status = Status::Fail;
-                why.push("not a GC-stress run".to_string());
+                why.push(format!(
+                    "the run skipped {skipped}, the skip list has {}",
+                    skip.len()
+                ));
             }
-            // The timeout and the feedback threshold of GC_CMD: a longer timeout lets a timeout
-            // skip pass, and lazy feedback is another run.
-            match j.get("timeout_ms").and_then(Json::num) {
-                Some(t) if t <= GC_TIMEOUT_MS => {}
-                t => {
-                    status = Status::Fail;
-                    why.push(format!(
-                        "timeout_ms {}, not at most {GC_TIMEOUT_MS} (--timeout 60)",
-                        t.map_or("missing".to_string(), |t| t.to_string())
-                    ));
-                }
-            }
-            match j.get("feedback_threshold").and_then(Json::num) {
-                Some(0.0) => {}
-                f => {
-                    status = Status::Fail;
-                    why.push(format!(
-                        "feedback_threshold {}, not 0 (--feedback-threshold 0)",
-                        f.map_or("missing".to_string(), |f| f.to_string())
-                    ));
-                }
-            }
-            // The whole pinned corpus: every file is run or skipped by the skip list.
-            match c.pin_counts {
-                Some(pc) if ft + skipped as u64 != pc.files => {
-                    status = Status::Fail;
-                    why.push(format!(
-                        "{ft} files run + {skipped} skipped, not the full {} of the pin (a filtered run?)",
-                        pc.files
-                    ));
-                }
-                Some(_) => {}
+            // The same tests, not only as many: another set of the same size hides a
+            // GC regression in the test skipped in place of a listed one.
+            match &skipped_paths {
                 None => {
-                    status = status.max(Status::Open);
-                    why.push(format!(
-                        "no full-run file count for the pin {} in m0_exit.rs PIN_COUNTS",
-                        c.pin.as_deref().unwrap_or("unknown")
-                    ));
-                }
-            }
-            // A skipped test is not run. One that fails without GC-stress (it is in the
-            // expectation file) is no passing test. One that passes without it is named: the
-            // skip list says why it is skipped (a timeout under GC-stress), and its decision row
-            // records the run that passed it alone.
-            let file = format!("test262.{}.jit.txt", c.o.host);
-            let listed = committed(&c.o.root, &file).and_then(|p| expectation_set(&p));
-            let skip =
-                committed(&c.o.root, "test262-gc-skip.txt").and_then(|p| expectation_set(&p));
-            let mut skip_text = String::new();
-            let (mut new, mut stale) = (runner_new, runner_stale);
-            let mut basis = "the runner's diff, not recomputed".to_string();
-            match (listed, skip) {
-                (Ok(listed), Ok(skip)) => {
-                    let passing: Vec<&str> = skip
-                        .iter()
-                        .filter(|s| !listed.contains(*s))
-                        .map(String::as_str)
-                        .collect();
-                    skip_text = format!(
-                        "{skipped} skipped (expectations/test262-gc-skip.txt): {} fail without GC-stress too",
-                        skip.len() - passing.len()
+                    status = Status::Fail;
+                    why.push(
+                        "the runner JSON has no skipped_paths (an older runner), so the skipped tests cannot be checked"
+                            .into(),
                     );
-                    if !passing.is_empty() {
-                        let _ = write!(
-                            skip_text,
-                            "; {} of them pass without it and are not run under it (a timeout skip, see the skip-list header): {}",
-                            passing.len(),
-                            passing.join(", ")
-                        );
-                    }
-                    if skipped != skip.len() {
+                }
+                Some(paths) => {
+                    if paths.len() != skipped {
                         status = Status::Fail;
                         why.push(format!(
-                            "the run skipped {skipped}, the skip list has {}",
-                            skip.len()
+                            "skipped {skipped}, but skipped_paths names {}",
+                            paths.len()
                         ));
                     }
-                    // The same tests, not only as many: another set of the same size hides a
-                    // GC regression in the test skipped in place of a listed one.
-                    match &skipped_paths {
-                        None => {
-                            status = Status::Fail;
-                            why.push(
-                                "the runner JSON has no skipped_paths (an older runner), so the skipped tests cannot be checked"
-                                    .into(),
-                            );
-                        }
-                        Some(paths) => {
-                            if paths.len() != skipped {
-                                status = Status::Fail;
-                                why.push(format!(
-                                    "skipped {skipped}, but skipped_paths names {}",
-                                    paths.len()
-                                ));
-                            }
-                            let extra: Vec<String> = paths.difference(&skip).cloned().collect();
-                            let missing: Vec<String> = skip.difference(paths).cloned().collect();
-                            if !extra.is_empty() {
-                                status = Status::Fail;
-                                why.push(format!(
-                                    "skipped but not in the skip list: {}",
-                                    some_paths(&extra)
-                                ));
-                            }
-                            if !missing.is_empty() {
-                                status = Status::Fail;
-                                why.push(format!(
-                                    "in the skip list but not skipped (run, or the entry names no test): {}",
-                                    some_paths(&missing)
-                                ));
-                            }
-                        }
+                    let extra: Vec<String> = paths.difference(&skip).cloned().collect();
+                    let missing: Vec<String> = skip.difference(paths).cloned().collect();
+                    if !extra.is_empty() {
+                        status = Status::Fail;
+                        why.push(format!(
+                            "skipped but not in the skip list: {}",
+                            some_paths(&extra)
+                        ));
                     }
-                    // The diff against the committed file without the skip list, recomputed;
-                    // the runner's diff counts too.
-                    match recheck(&c.o.root, j, &file, &skip) {
-                        Ok(d) => {
-                            if !d.new.is_empty() {
-                                why.push(format!("new failures: {}", some_paths(&d.new)));
-                            }
-                            new = new.max(d.new.len());
-                            stale = stale.max(d.stale.len());
-                            basis = format!("recomputed against expectations/{file}");
-                        }
-                        Err(e) => {
-                            status = Status::Fail;
-                            why.push(e);
-                        }
+                    if !missing.is_empty() {
+                        status = Status::Fail;
+                        why.push(format!(
+                            "in the skip list but not skipped (run, or the entry names no test): {}",
+                            some_paths(&missing)
+                        ));
                     }
                 }
-                (Err(e), _) | (_, Err(e)) => {
+            }
+            // The diff against the committed file without the skip list, recomputed;
+            // the runner's diff counts too.
+            match recheck(&c.o.root, j, &file, &skip) {
+                Ok(d) => {
+                    if !d.new.is_empty() {
+                        why.push(format!("new failures: {}", some_paths(&d.new)));
+                    }
+                    new = new.max(d.new.len());
+                    stale = stale.max(d.stale.len());
+                    basis = d.basis(&file);
+                }
+                Err(e) => {
                     status = Status::Fail;
                     why.push(e);
                 }
             }
-            if infra > 0 || new > 0 {
-                status = Status::Fail;
-                why.push(format!("{infra} infrastructure errors, {new} new failures"));
-            }
-            if stale > 0 {
-                why.push(format!("{stale} listed tests pass under GC-stress"));
-            }
-            cell(
-                status,
-                format!(
-                    "{}: --gc-stress {gc}, files {fp} / {ft}, infra {infra}, new failures {new} ({basis}); {skip_text}{}",
-                    p.display(),
-                    if why.is_empty() {
-                        String::new()
-                    } else {
-                        format!(". {}", why.join("; "))
-                    }
-                ),
-            )
         }
+        (Err(e), _) | (_, Err(e)) => {
+            status = Status::Fail;
+            why.push(e);
+        }
+    }
+    if infra > 0 || new > 0 {
+        status = Status::Fail;
+        why.push(format!("{infra} infrastructure errors, {new} new failures"));
+    }
+    if stale > 0 {
+        why.push(format!("{stale} listed tests pass under GC-stress"));
+    }
+    cell(
+        status,
+        format!(
+            "{label}: --gc-stress {gc}, files {fp} / {ft}, infra {infra}, new failures {new} ({basis}); {skip_text}{}",
+            if why.is_empty() {
+                String::new()
+            } else {
+                format!(". {}", why.join("; "))
+            }
+        ),
+    )
+}
+
+// ---------------------------------------------------------------------------------------------
+// Item 6 shards (M3-P3-GC-SHARD): one GC-stress run split by path prefixes over several jobs.
+//
+// `--gc-shard <k>/<n>` prints the prefixes of shard k of n; CI runs each shard as
+// `ep9-test262 exec ... <prefixes>` (a filtered run compares only the tests it ran, and its JSON
+// names them in `run_paths`). The split is
+// a function of the test262 checkout alone: units are path prefixes, split by their next
+// character until each holds at most 1/(4n) of the test files, packed by file count (a failing file costs about as much as a
+// passing one under GC-stress), largest first, into the shard with the fewest files. Item 6
+// computes the same split from this tree's checkout, puts each given JSON into the one shard
+// whose files are exactly the files it ran and skipped, and needs every shard exactly once.
+
+/// The CI job and step of a GC-stress shard (`.github/workflows/ci.yml`).
+const GC_JOB: &str = "test262 GC-stress";
+const GC_STEP: &str = "test262 exec, GC-stress + eager feedback";
+/// The largest split that item 6 looks for.
+const MAX_GC_SHARDS: usize = 32;
+
+/// The test files of a test262 checkout, sorted, as the runner finds them
+/// (tools/test262/src/suite.rs `discover`: every `*.js` under `test/<dir>/`, no `_FIXTURE`).
+fn test262_files(t262: &Path) -> Result<Vec<String>, String> {
+    fn walk(dir: &Path, rel: &str, out: &mut Vec<String>) -> Result<(), String> {
+        let rd =
+            std::fs::read_dir(dir).map_err(|e| format!("cannot list {}: {e}", dir.display()))?;
+        for entry in rd {
+            let entry = entry.map_err(|e| format!("cannot list {}: {e}", dir.display()))?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let kind = entry
+                .file_type()
+                .map_err(|e| format!("{}: {e}", entry.path().display()))?;
+            let child = format!("{rel}/{name}");
+            if kind.is_dir() {
+                walk(&entry.path(), &child, out)?;
+            } else if kind.is_file() && name.ends_with(".js") && !name.contains("_FIXTURE") {
+                out.push(child);
+            }
+        }
+        Ok(())
+    }
+    let test = t262.join("test");
+    let mut out = Vec::new();
+    let rd = std::fs::read_dir(&test)
+        .map_err(|e| format!("cannot list {} (no test262 checkout?): {e}", test.display()))?;
+    for entry in rd {
+        let entry = entry.map_err(|e| format!("cannot list {}: {e}", test.display()))?;
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            walk(&entry.path(), &format!("test/{name}"), &mut out)?;
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// The n shards of the split: each shard's prefixes (sorted) and its file count.
+fn gc_split(files: &[String], n: usize) -> Result<Vec<(Vec<String>, usize)>, String> {
+    if n == 0 || files.len() < n {
+        return Err(format!("cannot split {} test files {n} ways", files.len()));
+    }
+    let limit = (files.len() / (4 * n)).max(1);
+    // Units: (prefix, files). A prefix over the limit splits by the next character of its files'
+    // paths: the children are disjoint and cover it, unless a file ends at the prefix itself.
+    let mut todo = vec!["test/".to_string()];
+    let mut units: Vec<(String, usize)> = Vec::new();
+    while let Some(prefix) = todo.pop() {
+        // Sorted, so the files under a prefix are one range.
+        let lo = files.partition_point(|f| f.as_str() < prefix.as_str());
+        let hi = lo + files[lo..].partition_point(|f| f.starts_with(&prefix));
+        let under = &files[lo..hi];
+        let children: BTreeSet<String> = under
+            .iter()
+            .filter_map(|f| f[prefix.len()..].chars().next())
+            .map(|ch| format!("{prefix}{ch}"))
+            .collect();
+        if under.len() <= limit || under.iter().any(|f| f.len() == prefix.len()) {
+            if !under.is_empty() {
+                units.push((prefix, under.len()));
+            }
+        } else {
+            todo.extend(children);
+        }
+    }
+    units.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let mut bins: Vec<(Vec<String>, usize)> = vec![(Vec::new(), 0); n];
+    for (prefix, count) in units {
+        let mut best = 0;
+        for i in 1..n {
+            if bins[i].1 < bins[best].1 {
+                best = i;
+            }
+        }
+        bins[best].0.push(prefix);
+        bins[best].1 += count;
+    }
+    for (prefixes, count) in &mut bins {
+        if *count == 0 {
+            return Err(format!(
+                "a split of {} test files {n} ways leaves a shard empty",
+                files.len()
+            ));
+        }
+        prefixes.sort();
+    }
+    Ok(bins)
+}
+
+/// `--gc-shard <k>/<n>`: the prefixes of shard k (1-based) of n.
+fn gc_shard_prefixes(t262: &Path, spec: &str) -> Result<Vec<String>, String> {
+    let parsed = spec
+        .split_once('/')
+        .and_then(|(k, n)| Some((k.parse::<usize>().ok()?, n.parse::<usize>().ok()?)));
+    let Some((k, n)) = parsed.filter(|&(k, n)| (1..=n).contains(&k) && n <= MAX_GC_SHARDS) else {
+        return Err(format!(
+            "--gc-shard needs <k>/<n> with 1 <= k <= n <= {MAX_GC_SHARDS}, not {spec:?}"
+        ));
     };
-    let win = cell(
-        Status::NotRun,
-        "ci.yml runs the GC-stress step on linux-x64 only",
+    let split = gc_split(&test262_files(t262)?, n)?;
+    Ok(split[k - 1].0.clone())
+}
+
+/// The test files a filtered exec JSON selected (C-G1): its `run_paths` (every file it ran)
+/// and its `skipped_paths`, sorted. Err if the JSON cannot say: no `run_paths` (a runner
+/// before C-G1, or a run with no path filter), a list that disagrees with the file count, a
+/// file both run and skipped, or a result for a file that was not run.
+fn selected_paths(j: &Json) -> Result<Vec<&str>, String> {
+    let strings =
+        |key: &str| -> Option<Vec<&str>> { j.get(key)?.arr()?.iter().map(Json::str).collect() };
+    let run = strings("run_paths").ok_or(
+        "no run_paths, so the tests it ran cannot be checked (a runner before M3-P3 C-G1, or a run with no path filter)",
+    )?;
+    let skipped = strings("skipped_paths").ok_or("no skipped_paths")?;
+    let total = count(j, &["files"]).map_or(0, |(_, t)| t);
+    if run.len() as u64 != total {
+        return Err(format!(
+            "run_paths names {} files, \"files\" counts {total}",
+            run.len()
+        ));
+    }
+    let run_set: BTreeSet<&str> = run.iter().copied().collect();
+    if let Some(p) = skipped.iter().find(|p| run_set.contains(*p)) {
+        return Err(format!("{p} is both run and skipped"));
+    }
+    let results = j.get("results").and_then(Json::arr).unwrap_or(&[]);
+    if let Some(p) = results
+        .iter()
+        .map(|r| r.get("path").and_then(Json::str).unwrap_or(""))
+        .find(|p| !run_set.contains(p))
+    {
+        return Err(format!("a result for {p:?}, a file it did not run"));
+    }
+    let mut all: Vec<&str> = run.into_iter().chain(skipped).collect();
+    all.sort_unstable();
+    Ok(all)
+}
+
+/// The files of each shard of a split, sorted: a file is in the shard of the one prefix it
+/// starts with (the prefixes of a split do not nest, so that prefix is the greatest one that
+/// sorts at or before the file).
+fn shard_members<'a>(files: &'a [String], split: &[(Vec<String>, usize)]) -> Vec<Vec<&'a str>> {
+    let mut prefixes: Vec<(&str, usize)> = split
+        .iter()
+        .enumerate()
+        .flat_map(|(k, (pre, _))| pre.iter().map(move |p| (p.as_str(), k)))
+        .collect();
+    prefixes.sort_unstable();
+    let mut members = vec![Vec::new(); split.len()];
+    for f in files {
+        let at = prefixes.partition_point(|(p, _)| *p <= f.as_str());
+        if let Some(&(p, k)) = at.checked_sub(1).map(|i| &prefixes[i])
+            && f.starts_with(p)
+        {
+            members[k].push(f.as_str());
+        }
+    }
+    members
+}
+
+/// Several `--exec-gc` files: the shards of one split, merged into one whole-corpus JSON for
+/// [`gc_cell`]. Err is the item 6 host cell (FAIL: a missing, extra or unplaced shard, or shards
+/// of different runs).
+fn merge_gc_shards(c: &Ctx, shards: &[(PathBuf, Json)]) -> Result<(String, Json), Cell> {
+    let fail = |why: String| {
+        cell(
+            Status::Fail,
+            format!("{} GC-stress shard files: {why}", shards.len()),
+        )
+    };
+    // One run: the same settings and expectation file in every shard.
+    for key in [
+        &["gc_stress"][..],
+        &["timeout_ms"],
+        &["feedback_threshold"],
+        &["expectations", "file"],
+    ] {
+        let first = shards[0].1.path(key);
+        if let Some((p, _)) = shards.iter().find(|(_, j)| j.path(key) != first) {
+            return Err(fail(format!(
+                "{} has another {} than {}",
+                p.display(),
+                key.join("."),
+                shards[0].0.display()
+            )));
+        }
+    }
+    let files = test262_files(&c.o.root.join("third_party/test262")).map_err(|e| {
+        cell(
+            Status::Open,
+            format!(
+                "{} GC-stress shard files, but the split cannot be checked: {e}",
+                shards.len()
+            ),
+        )
+    })?;
+    // The exact files of each shard JSON (C-G1): a count and the non-passing paths do not show
+    // a shard that ran a passing test of another shard in place of one of its own.
+    let mut selected = Vec::new();
+    for (p, j) in shards {
+        selected.push(selected_paths(j).map_err(|e| fail(format!("{}: {e}", p.display())))?);
+    }
+    // The smallest split in which each JSON selected exactly the files of one shard.
+    let mut found = None;
+    for n in shards.len()..=MAX_GC_SHARDS {
+        let Ok(split) = gc_split(&files, n) else {
+            break;
+        };
+        let members = shard_members(&files, &split);
+        let placed: Option<Vec<usize>> = selected
+            .iter()
+            .map(|sel| members.iter().position(|m| m == sel))
+            .collect();
+        if let Some(placed) = placed {
+            found = Some((n, placed));
+            break;
+        }
+    }
+    let Some((n, placed)) = found else {
+        return Err(fail(format!(
+            "they are not shards of one `--gc-shard <k>/<n>` split of this tree's test262 checkout (n {}..={MAX_GC_SHARDS}): a shard did not run and skip exactly the files of one shard",
+            shards.len()
+        )));
+    };
+    let mut seen = BTreeMap::new();
+    for (i, k) in placed.iter().enumerate() {
+        if let Some(other) = seen.insert(*k, i) {
+            return Err(fail(format!(
+                "{} and {} are both shard {}/{n}",
+                shards[other].0.display(),
+                shards[i].0.display(),
+                k + 1
+            )));
+        }
+    }
+    let missing: Vec<String> = (0..n)
+        .filter(|k| !seen.contains_key(k))
+        .map(|k| format!("{}/{n}", k + 1))
+        .collect();
+    if !missing.is_empty() {
+        return Err(fail(format!(
+            "shard(s) {} of the {n}-way split are missing, so the run does not cover the corpus",
+            missing.join(", ")
+        )));
+    }
+    // Every shard once, each with exactly its own files: together they select every test file
+    // of the checkout once (the split is a partition; checked here too).
+    let union: usize = selected.iter().map(Vec::len).sum();
+    if union != files.len() {
+        return Err(fail(format!(
+            "the shards select {union} files, the checkout has {}",
+            files.len()
+        )));
+    }
+    // Merge: the counts add up, the paths join (the shards are disjoint by construction).
+    let sum = |key: &[&str], f: &str| -> f64 {
+        shards
+            .iter()
+            .filter_map(|(_, j)| j.path(key)?.get(f)?.num())
+            .sum()
+    };
+    let mut results: Vec<Json> = Vec::new();
+    let mut skipped_paths: Vec<Json> = Vec::new();
+    let mut runner_new: Vec<Json> = Vec::new();
+    let mut runner_now: Vec<Json> = Vec::new();
+    for (_, j) in shards {
+        let arr = |key: &[&str]| j.path(key).and_then(Json::arr).unwrap_or(&[]).to_vec();
+        results.extend(arr(&["results"]));
+        skipped_paths.extend(arr(&["skipped_paths"]));
+        runner_new.extend(arr(&["expectations", "new_failures"]));
+        runner_now.extend(arr(&["expectations", "now_passing"]));
+    }
+    let first = &shards[0].1;
+    let copy = |k: &str| first.get(k).cloned().unwrap_or(Json::Null);
+    let counts = |passed: f64, total: f64| {
+        Json::Obj(vec![
+            ("passed".into(), Json::Num(passed)),
+            ("total".into(), Json::Num(total)),
+        ])
+    };
+    let skipped: f64 = shards
+        .iter()
+        .filter_map(|(_, j)| j.get("skipped").and_then(Json::num))
+        .sum();
+    let merged = Json::Obj(vec![
+        ("command".into(), copy("command")),
+        ("target".into(), copy("target")),
+        ("timeout_ms".into(), copy("timeout_ms")),
+        ("gc_stress".into(), copy("gc_stress")),
+        ("feedback_threshold".into(), copy("feedback_threshold")),
+        ("skipped".into(), Json::Num(skipped)),
+        ("skipped_paths".into(), Json::Arr(skipped_paths)),
+        (
+            "files".into(),
+            counts(sum(&["files"], "passed"), sum(&["files"], "total")),
+        ),
+        ("results".into(), Json::Arr(results)),
+        (
+            "expectations".into(),
+            Json::Obj(vec![
+                (
+                    "file".into(),
+                    first
+                        .path(&["expectations", "file"])
+                        .cloned()
+                        .unwrap_or(Json::Null),
+                ),
+                ("new_failures".into(), Json::Arr(runner_new)),
+                ("now_passing".into(), Json::Arr(runner_now)),
+            ]),
+        ),
+    ]);
+    let names: Vec<String> = shards
+        .iter()
+        .zip(&placed)
+        .map(|((p, _), k)| format!("{} = {}/{n}", p.display(), k + 1))
+        .collect();
+    Ok((
+        format!(
+            "{n} shards of one `--gc-shard <k>/{n}` split, each once, merged ({})",
+            names.join(", ")
+        ),
+        merged,
+    ))
+}
+
+/// The item 6 Windows cell: every GC-stress shard job of windows-x64 in the run, k = 1..n each
+/// once, with its GC-stress step green.
+fn gc_ci_cell(ci: &Ci) -> Result<Cell, String> {
+    let head = format!("{GC_JOB} ({CI_MATRIX}, ");
+    let mut shards: Vec<(usize, usize, &Job)> = Vec::new();
+    for job in &ci.jobs {
+        let Some(spec) = job
+            .name
+            .strip_prefix(&head)
+            .and_then(|r| r.strip_suffix(')'))
+        else {
+            continue;
+        };
+        let kn = spec
+            .split_once('/')
+            .and_then(|(k, n)| Some((k.trim().parse().ok()?, n.trim().parse().ok()?)));
+        match kn {
+            Some((k, n)) if (1..=n).contains(&k) => shards.push((k, n, job)),
+            _ => {
+                return Ok(cell(
+                    Status::Fail,
+                    format!("job \"{}\" does not name its shard as k/n", job.name),
+                ));
+            }
+        }
+    }
+    let Some(&(_, n, _)) = shards.first() else {
+        return Err(format!(
+            "the run has no \"{head}k/n)\" job (the GC-stress shards of ci.yml)"
+        ));
+    };
+    if shards.iter().any(|s| s.1 != n) {
+        return Ok(cell(
+            Status::Fail,
+            format!("the {head}k/n) jobs name different n"),
+        ));
+    }
+    let mut status = Status::Pass;
+    let mut parts = Vec::new();
+    let mut seconds = 0;
+    let mut seen = BTreeSet::new();
+    for (k, _, job) in &shards {
+        if !seen.insert(*k) {
+            status = Status::Fail;
+            parts.push(format!("shard {k}/{n} has two jobs"));
+            continue;
+        }
+        match job.steps.iter().find(|s| s.name == GC_STEP) {
+            Some(s) => {
+                status = status.max(s.status());
+                seconds += s.seconds().unwrap_or(0);
+                if s.status() != Status::Pass {
+                    parts.push(format!(
+                        "shard {k}/{n}: step \"{GC_STEP}\" {}",
+                        s.describe()
+                    ));
+                }
+            }
+            None => {
+                status = status.max(Status::NotRun);
+                parts.push(format!("job \"{}\" has no step \"{GC_STEP}\"", job.name));
+            }
+        }
+    }
+    let missing: Vec<String> = (1..=n)
+        .filter(|k| !seen.contains(k))
+        .map(|k| format!("{k}/{n}"))
+        .collect();
+    if !missing.is_empty() {
+        status = Status::Fail;
+        parts.push(format!(
+            "no job for shard(s) {}: the run does not cover the corpus",
+            missing.join(", ")
+        ));
+    }
+    let text = format!(
+        "{} of {n} \"{head}k/n)\" jobs, step \"{GC_STEP}\" ({GC_CMD} on the prefixes of `cargo xtask m0-exit --gc-shard k/{n}`; {seconds} s over all shards){}",
+        seen.len(),
+        if parts.is_empty() {
+            ": all green".to_string()
+        } else {
+            format!(": {}", parts.join("; "))
+        }
     );
-    (host, win)
+    Ok(cell(status, text))
 }
 
 fn item7(c: &Ctx) -> (Cell, Cell) {
@@ -1225,10 +1904,15 @@ fn item7(c: &Ctx) -> (Cell, Cell) {
         Some((p, log)) => {
             let mut status = Status::Pass;
             let mut parts = Vec::new();
+            // A test passes only in a cargo run that finished with exit status 0 (C-G2).
+            let (runs, _) = invocations(log);
             for t in NESTING_TESTS {
                 let ok = format!("test {t} ... ok");
                 let failed = format!("test {t} ... FAILED");
-                let st = if log.lines().any(|l| l.trim_end() == ok) {
+                let st = if runs
+                    .iter()
+                    .any(|r| r.ok() && r.body.iter().any(|l| *l == ok))
+                {
                     Status::Pass
                 } else if log.lines().any(|l| l.trim_end() == failed) {
                     Status::Fail
@@ -1245,6 +1929,17 @@ fn item7(c: &Ctx) -> (Cell, Cell) {
             if let Some(l) = cargo_failure(log) {
                 status = Status::Fail;
                 parts.push(format!("a cargo failure: {l:?}"));
+            }
+            // NESTING_CMD: two cargo runs, each with its start and exit-status lines.
+            match invocation_check(log, 2) {
+                Ok(()) => parts.push(format!(
+                    "{} cargo runs, each with its start line and exit status 0",
+                    runs.len()
+                )),
+                Err(why) => {
+                    status = Status::Fail;
+                    parts.push(format!("{why} (make it with `{NESTING_CMD}`)"));
+                }
             }
             cell(status, format!("{}: {}", p.display(), parts.join(", ")))
         }
@@ -1472,7 +2167,9 @@ fn item11(c: &Ctx) -> (Cell, Cell) {
     (cell(st, t.clone()), cell(st, t))
 }
 
-const CORPUS_CMD: &str = "cargo test -p ep9_frontend --release --locked --lib bytecodegen::corpus -- --ignored --nocapture > corpus-release.log 2>&1 (and the same without --release)";
+const CORPUS_CMD: &str = "echo \"m0-exit start: corpus release\" > corpus-release.log; \
+     cargo test -p ep9_frontend --release --locked --lib bytecodegen::corpus -- --ignored --nocapture >> corpus-release.log 2>&1; \
+     echo \"m0-exit status: $?\" >> corpus-release.log (and the same without --release, into corpus-debug.log)";
 
 fn item12(c: &Ctx) -> (Cell, Cell) {
     let want = read(&c.o.root.join("expectations/bytecode-corpus.digest"))
@@ -1495,13 +2192,19 @@ fn item12(c: &Ctx) -> (Cell, Cell) {
                 status = Status::Fail;
                 parts.push(format!("{}: a cargo failure: {l:?}", p.display()));
             }
-            let runs = corpus_runs(log);
-            if runs.is_empty() {
+            if let Err(why) = invocation_check(log, 1) {
                 status = Status::Fail;
-                parts.push(format!("{}: no \"corpus digest\" line", p.display()));
+                parts.push(format!(
+                    "{}: {why} (make it with `{CORPUS_CMD}`)",
+                    p.display()
+                ));
             }
+            let runs = corpus_runs(log);
             for r in runs {
-                let ok = !r.failed && r.ok >= r.digests.len() && !r.digests.is_empty();
+                let ok = !r.failed
+                    && r.ok >= r.digests.len()
+                    && !r.digests.is_empty()
+                    && r.exit == Some(0);
                 if r.digests.is_empty() {
                     status = Status::Fail;
                     parts.push(format!(
@@ -1522,11 +2225,12 @@ fn item12(c: &Ctx) -> (Cell, Cell) {
                     .map(|(d, units)| format!("{} over {units} units", short(d)))
                     .collect();
                 parts.push(format!(
-                    "{} ({}): {}, test {}",
+                    "{} ({}): {}, test {}, exit status {}",
                     p.display(),
                     r.profile,
                     digests.join(", "),
-                    if ok { "ok" } else { "not ok" }
+                    if ok { "ok" } else { "not ok" },
+                    r.exit.map_or("missing".to_string(), |e| e.to_string())
                 ));
             }
         }
@@ -1567,6 +2271,89 @@ fn item12(c: &Ctx) -> (Cell, Cell) {
     (host, win)
 }
 
+/// The stub markers of plan-v8 section 1 rule 4. Written in two parts, so this file does not
+/// hold them.
+const STUB_MARKERS: [&str; 2] = [concat!("m3", "-stub"), concat!("m2", "-stub")];
+
+/// The tree checks of the report (plan rules, not exit items; GATES-2 task 6): no stub marker in
+/// crates, spikes or tools (rule 4: its two `grep -rn <marker> crates spikes tools` print
+/// nothing), and no `fn bind_this` in crates/ep9_vm/src/call.rs (section 13 row 12, the D14 gap).
+fn tree_checks(root: &Path) -> Vec<(&'static str, Cell)> {
+    let grep = |extra: &[&str]| {
+        let mut cmd = Command::new("git");
+        cmd.arg("-C").arg(root).args(["grep", "-n", "-I", "-F"]);
+        cmd.args(extra);
+        for m in STUB_MARKERS {
+            cmd.args(["-e", m]);
+        }
+        cmd.args(["--", "crates", "spikes", "tools"]).output()
+    };
+    // Tracked and untracked files (not ignored ones: build output), as grep -r over the tree;
+    // outside a git work tree, every file.
+    let out = grep(&["--untracked", "--exclude-standard"]).and_then(|o| {
+        if o.status.code() == Some(128) {
+            grep(&["--no-index", "--exclude-standard"])
+        } else {
+            Ok(o)
+        }
+    });
+    let stubs = match out {
+        Ok(o) if o.status.code() == Some(1) => cell(
+            Status::Pass,
+            format!("no `{}` or `{}` line", STUB_MARKERS[0], STUB_MARKERS[1]),
+        ),
+        Ok(o) if o.status.success() => {
+            let lines: Vec<String> = String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(str::to_string)
+                .collect();
+            cell(
+                Status::Open,
+                format!(
+                    "{} stub line(s); each one's owner closes it (W12 if its role slipped): {}",
+                    lines.len(),
+                    some_paths(&lines)
+                ),
+            )
+        }
+        Ok(o) => cell(
+            Status::NotRun,
+            format!(
+                "git grep failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+        ),
+        Err(e) => cell(Status::NotRun, format!("cannot run git: {e}")),
+    };
+    let call = root.join("crates/ep9_vm/src/call.rs");
+    let bind = match read(&call) {
+        Err(e) => cell(Status::NotRun, e),
+        Ok(text) => {
+            let hits: Vec<String> = text
+                .lines()
+                .enumerate()
+                .filter(|(_, l)| l.contains("fn bind_this"))
+                .map(|(i, _)| format!("crates/ep9_vm/src/call.rs:{}", i + 1))
+                .collect();
+            if hits.is_empty() {
+                cell(
+                    Status::Pass,
+                    "crates/ep9_vm/src/call.rs has no `fn bind_this`",
+                )
+            } else {
+                cell(
+                    Status::Open,
+                    format!("`fn bind_this` is back: {}", hits.join(", ")),
+                )
+            }
+        }
+    };
+    vec![
+        ("stub markers (plan-v8 section 1 rule 4)", stubs),
+        ("`fn bind_this` in call.rs (section 13 row 12)", bind),
+    ]
+}
+
 /// The first cargo or rustc failure in a log (items 7 and 12): a line that starts with
 /// `error[E` or `error:` (a compile error, `error: could not compile`, `error: test failed`, a
 /// crashed test binary, a usage or lockfile error) or a `thread '<name>' (<id>) panicked at`
@@ -1583,8 +2370,8 @@ fn cargo_failure(log: &str) -> Option<&str> {
     })
 }
 
-/// One cargo test run in a corpus log: from a "Finished `<profile>` profile" line to the next
-/// one (a log can hold several runs, appended).
+/// One cargo test run in a corpus log: one start line to its exit-status line
+/// ([`invocations`]; a log can hold several runs, appended).
 struct CorpusRun {
     profile: &'static str,
     /// (digest, units) of each `corpus digest <hex> over <n> units` line.
@@ -1593,47 +2380,50 @@ struct CorpusRun {
     ok: usize,
     /// A "test result: FAILED" line.
     failed: bool,
+    /// The code of the run's exit-status line ([`SENTINEL`]), if it has one (-1: a line with
+    /// no number).
+    exit: Option<i64>,
 }
 
-/// The runs of a corpus log. Lines before the first "Finished" line form a run of an unknown
-/// profile, kept only if it has a digest or a test result.
+/// The runs of a corpus log, one per cargo run ([`invocations`]): the digests and the test
+/// result of a run are counted only in it. The profile is that of the run's cargo "Finished
+/// `<profile>` profile" line. Lines outside every run belong to none ([`invocation_check`]
+/// rejects the log).
 fn corpus_runs(log: &str) -> Vec<CorpusRun> {
-    let new = |profile| CorpusRun {
-        profile,
-        digests: Vec::new(),
-        ok: 0,
-        failed: false,
-    };
-    let mut runs = vec![new("unknown profile")];
-    for l in log.lines() {
-        let t = l.trim();
-        if let Some(rest) = t.strip_prefix("Finished `") {
-            runs.push(new(match rest.split('`').next() {
-                Some("release") => "release",
-                Some("test" | "dev") => "debug",
-                _ => "unknown profile",
-            }));
-            continue;
-        }
-        let Some(r) = runs.last_mut() else { continue };
-        if let Some((d, units)) = t
-            .strip_prefix("corpus digest ")
-            .and_then(|rest| rest.split_once(" over "))
-        {
-            r.digests.push((
-                d.to_string(),
-                units.split(' ').next().unwrap_or("").to_string(),
-            ));
-        } else if t.starts_with("test result: FAILED") {
-            r.failed = true;
-        } else if t.starts_with("test result: ok. 1 passed") {
-            r.ok += 1;
-        }
-    }
-    if runs[0].digests.is_empty() && runs[0].ok == 0 && !runs[0].failed {
-        runs.remove(0);
-    }
-    runs
+    let (invs, _) = invocations(log);
+    invs.iter()
+        .map(|inv| {
+            let mut r = CorpusRun {
+                profile: "unknown profile",
+                digests: Vec::new(),
+                ok: 0,
+                failed: false,
+                exit: inv.exit.as_ref().map(|e| e.as_ref().map_or(-1, |c| *c)),
+            };
+            for t in &inv.body {
+                if let Some(rest) = t.strip_prefix("Finished `") {
+                    r.profile = match rest.split('`').next() {
+                        Some("release") => "release",
+                        Some("test" | "dev") => "debug",
+                        _ => "unknown profile",
+                    };
+                } else if let Some((d, units)) = t
+                    .strip_prefix("corpus digest ")
+                    .and_then(|rest| rest.split_once(" over "))
+                {
+                    r.digests.push((
+                        d.to_string(),
+                        units.split(' ').next().unwrap_or("").to_string(),
+                    ));
+                } else if t.starts_with("test result: FAILED") {
+                    r.failed = true;
+                } else if t.starts_with("test result: ok. 1 passed") {
+                    r.ok += 1;
+                }
+            }
+            r
+        })
+        .collect()
 }
 
 fn short(sha: &str) -> String {
@@ -2341,6 +3131,12 @@ mod tests {
             &format!("expectations/test262-parse.{CI_TRIPLE}.txt"),
             "# w\ntest/p.js\n",
         );
+        write(
+            &root,
+            "crates/ep9_vm/src/call.rs",
+            "pub fn try_bind_this() {}\n",
+        );
+        let head = commit_all(&root);
         let used = root.join(format!("expectations/test262.{HOST}.jit.txt"));
         let used = used.to_str().unwrap();
         // The default run fails every listed test; the GC run skips the 2 skip-list tests.
@@ -2365,20 +3161,14 @@ mod tests {
                 "positives":{{"all":{{"passed":47357,"total":47364}}}}}}"#
             ),
         );
-        write(
-            &root,
-            "in/cross.json",
-            r#"{"schema":"ep9-cross/v1","commit":{"ep9":"fa451f6"},"provisional":false,"host":{"gate_host":true},
-              "M":{"ratios":[
-                {"workload":"richards","comparator":"qjs","metric":"net","void":false,"net":{"median":1.39,"interval":[1.37,1.43]}},
-                {"workload":"deltablue","comparator":"qjs","metric":"net","void":false,"net":{"median":1.56,"interval":[1.51,1.58]}},
-                {"workload":"richards","comparator":"node-jitless","metric":"net","void":false,"net":{"median":0.1,"interval":[0.1,0.1]}}]}}"#,
-        );
+        write(&root, "in/cross.json", &cross_json(&head));
         write(
             &root,
             "in/nesting.log",
-            "test depth_tests::every_form_is_gated ... ok\ntest result: ok. 1 passed\n\
-             test caps_hold_end_to_end ... ok\ntest uncaught_error_reports_file_line_utf16_column ... ok\n",
+            "m0-exit start: depth_tests\ntest depth_tests::every_form_is_gated ... ok\n\
+             test result: ok. 1 passed\nm0-exit status: 0\nm0-exit start: nesting_caps cli\n\
+             test caps_hold_end_to_end ... ok\ntest uncaught_error_reports_file_line_utf16_column ... ok\n\
+             m0-exit status: 0\n",
         );
         write(
             &root,
@@ -2393,15 +3183,57 @@ mod tests {
         root
     }
 
-    /// The output of one corpus test run in the `profile` cargo profile.
+    /// `git add -A` and a commit in `root` (a new repo the first time); the new HEAD.
+    fn commit_all(root: &Path) -> String {
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args([
+                    "-c",
+                    "user.name=m0-exit test",
+                    "-c",
+                    "user.email=m0-exit@test.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        if !root.join(".git").exists() {
+            git(&["init", "-q"]);
+        }
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "--no-verify", "--allow-empty", "-m", "fake"]);
+        git(&["rev-parse", "HEAD"])
+    }
+
+    /// A gate-host cross run that measured `commit`, every canary row valid.
+    fn cross_json(commit: &str) -> String {
+        format!(
+            r#"{{"schema":"ep9-cross/v1","commit":{{"ep9":"{commit}"}},"provisional":false,"host":{{"gate_host":true}},
+              "M":{{"ratios":[
+                {{"workload":"richards","comparator":"qjs","metric":"net","void":false,"net":{{"median":1.39,"interval":[1.37,1.43]}}}},
+                {{"workload":"deltablue","comparator":"qjs","metric":"net","void":false,"net":{{"median":1.56,"interval":[1.51,1.58]}}}},
+                {{"workload":"richards","comparator":"node-jitless","metric":"net","void":false,"net":{{"median":0.1,"interval":[0.1,0.1]}}}}]}}}}"#
+        )
+    }
+
+    /// The output of one corpus test run in the `profile` cargo profile, with its start line
+    /// and its exit-status line (CORPUS_CMD).
     fn corpus_log(profile: &str, digest: &str, ok: bool) -> String {
         format!(
-            "    Finished `{profile}` profile [optimized] target(s) in 1s\n     Running unittests src/lib.rs\n\
+            "m0-exit start: corpus {profile}\n    Finished `{profile}` profile [optimized] target(s) in 1s\n     Running unittests src/lib.rs\n\
              running 1 test\ncorpus digest {digest} over 77183 units (compare across hosts and targets)\n{}",
             if ok {
-                "test bytecodegen::corpus::corpus_digest ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored\n"
+                "test bytecodegen::corpus::corpus_digest ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored\n\
+                 m0-exit status: 0\n"
             } else {
-                "test bytecodegen::corpus::corpus_digest ... FAILED\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored\n"
+                "test bytecodegen::corpus::corpus_digest ... FAILED\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored\n\
+                 error: test failed, to rerun pass `-p ep9_frontend --lib`\nm0-exit status: 101\n"
             }
         )
     }
@@ -2435,8 +3267,18 @@ mod tests {
                 steps.join(",")
             )
         };
+        let gc = |k: usize, n: usize| {
+            let steps: Vec<String> = conclusion(GC_STEP)
+                .map(|c| step(GC_STEP, c, "05:00", "35:00"))
+                .into_iter()
+                .collect();
+            format!(
+                r#"{{"name":"{GC_JOB} ({CI_MATRIX}, {k}/{n})","status":"completed","conclusion":"success","databaseId":8,"steps":[{}]}}"#,
+                steps.join(",")
+            )
+        };
         format!(
-            r#"{{"databaseId":39636336281,"headSha":"44c5dcb","url":"https://x","jobs":[{},{},{},{}]}}"#,
+            r#"{{"databaseId":39636336281,"headSha":"44c5dcb","url":"https://x","jobs":[{},{},{},{},{},{}]}}"#,
             job(
                 "build + test",
                 &[
@@ -2467,6 +3309,8 @@ mod tests {
                     ("Spike B structural gate", "44:00", "50:00"),
                 ]
             ),
+            gc(1, 2),
+            gc(2, 2),
         )
     }
 
@@ -2478,7 +3322,7 @@ mod tests {
             out: root.join("out.md"),
             exec: i("exec.json"),
             parse: i("parse.json"),
-            exec_gc: i("gc.json"),
+            exec_gc: vec![root.join("in/gc.json")],
             cross: i("cross.json"),
             nesting: i("nesting.log"),
             corpus: vec![root.join("in/corpus.log"), root.join("in/corpus-debug.log")],
@@ -2505,15 +3349,21 @@ mod tests {
         assert_eq!(s[0], ("PASS", "PASS"), "{}", r.markdown);
         assert_eq!(s[1], ("PASS", "PASS"), "{}", r.markdown);
         assert_eq!(s[2], ("PASS", "PASS"), "{}", r.markdown);
-        assert_eq!(s[3], ("PASS", "NOT-RUN"), "{}", r.markdown);
+        // Item 4 on Windows is N/A by design, and it counts as a pass.
+        assert_eq!(s[3], ("PASS", "N/A"), "{}", r.markdown);
         // SP-Dispatch has open conditions and Spike B is not reviewed.
         assert_eq!(s[4], ("OPEN", "OPEN"), "{}", r.markdown);
-        assert_eq!(s[5], ("PASS", "NOT-RUN"), "{}", r.markdown);
+        // Item 6 on Windows: both GC-stress shard jobs green.
+        assert_eq!(s[5], ("PASS", "PASS"), "{}", r.markdown);
         assert_eq!(s[6], ("PASS", "PASS"), "{}", r.markdown);
         assert_eq!(s[7], ("NOT-RUN", "PASS"), "{}", r.markdown);
-        assert_eq!(s[8], ("OPEN", "OPEN"));
-        // fake_repo copies the real ADR index: every A0 part 1 ADR is Accepted since M3-P2.
-        assert_eq!(s[9], ("PASS", "PASS"), "{}", r.markdown);
+        // Items 9 and 10 read the real ADR index, which moves as ADRs are accepted: the same
+        // repo-wide status in both columns, PASS or OPEN.
+        for i in [8, 9] {
+            assert_eq!(s[i].0, s[i].1, "{}", r.markdown);
+            assert!(["PASS", "OPEN"].contains(&s[i].0), "{}", r.markdown);
+        }
+        // The fake repo has only the 2026-10-21 review, where SP-Unit is not reviewed.
         assert_eq!(s[10], ("OPEN", "OPEN"));
         assert_eq!(s[11], ("PASS", "PASS"), "{}", r.markdown);
         assert!(!r.all_pass());
@@ -2631,6 +3481,26 @@ mod tests {
         // The committed file and the same failing set: PASS.
         let c = item1(&all, committed);
         assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        // A CI job's JSON names the file in the job's checkout (M3-P3-DRYRUN-CI): PASS, and the
+        // diff is still recomputed here (a new failure is still FAIL).
+        let ci_path = format!("/no-such-ci-root/Users/ep9/expectations/test262.{HOST}.jit.txt");
+        let c = item1(&all, &ci_path);
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        assert!(c.evidence.contains("another checkout"), "{}", c.evidence);
+        let c = item1(&more, &ci_path);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        // A file that exists on this host under another expectations/ dir is not this tree's.
+        write(
+            &root,
+            &format!("elsewhere/expectations/test262.{HOST}.jit.txt"),
+            "test/x.js\n",
+        );
+        let there = root.join(format!("elsewhere/expectations/test262.{HOST}.jit.txt"));
+        let c = item1(&all, there.to_str().unwrap());
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        // Another name in a CI checkout is not this file.
+        let c = item1(&all, "/no-such-ci-root/work/ep9/expectations/other.txt");
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2793,6 +3663,7 @@ mod tests {
     #[test]
     fn canary_ignores_gross_fallback() {
         let root = fake_repo("canary");
+        let head = git(&root, &["rev-parse", "HEAD"]).unwrap();
         let row = |w: &str, valid: bool| {
             if valid {
                 format!(
@@ -2808,7 +3679,7 @@ mod tests {
         };
         let canary = |valid: bool| {
             let j = format!(
-                r#"{{"schema":"ep9-cross/v1","commit":{{"ep9":"fa451f6"}},"provisional":false,"host":{{"gate_host":true}},
+                r#"{{"schema":"ep9-cross/v1","commit":{{"ep9":"{head}"}},"provisional":false,"host":{{"gate_host":true}},
                 "M":{{"ratios":[{},{}]}}}}"#,
                 row("richards", valid),
                 row("deltablue", valid)
@@ -2958,5 +3829,689 @@ mod tests {
         assert!(a(&["--host", "x", "--out", "o", "--ci-run", "12a"]).is_err());
         assert!(a(&["--host", "x", "--out", "o", "--what"]).is_err());
         assert!(a(&["--host"]).is_err());
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // M3-P3 GATES-2.
+
+    /// The pin of the small test262 checkout of [`shard_repo`] (27 test files).
+    pub(super) const FAKE_PIN_COUNTS: &[PinCounts] = &[PinCounts {
+        pin_prefix: "fa4e5ead",
+        files: 27,
+        runs: 54,
+        negatives: 1,
+    }];
+
+    /// The test files of [`shard_repo`]'s checkout (27; a `_FIXTURE` file and a .txt file are
+    /// added next to them and are not tests).
+    const FAKE_T262: [&str; 27] = [
+        "test/annexB/a1.js",
+        "test/annexB/a2.js",
+        "test/built-ins/Array/x1.js",
+        "test/built-ins/Array/x2.js",
+        "test/built-ins/Array/x3.js",
+        "test/built-ins/Array/x4.js",
+        "test/built-ins/Array/x5.js",
+        "test/built-ins/Array/x6.js",
+        "test/built-ins/Map/m1.js",
+        "test/built-ins/Map/m2.js",
+        "test/built-ins/Map/m3.js",
+        "test/built-ins/Map/m4.js",
+        "test/harness/h1.js",
+        "test/harness/h2.js",
+        "test/language/expr/e1.js",
+        "test/language/expr/e2.js",
+        "test/language/expr/e3.js",
+        "test/language/expr/e4.js",
+        "test/language/expr/e5.js",
+        "test/language/expr/e6.js",
+        "test/language/stmt/s1.js",
+        "test/language/stmt/s2.js",
+        "test/language/stmt/s3.js",
+        "test/language/stmt/s4.js",
+        "test/skip/one.js",
+        "test/skip/two.js",
+        "test/staging/st1.js",
+    ];
+
+    /// A fake repo with the small checkout (pin fa4e5ead): (root, test files, failing files).
+    /// Every other file fails, and so does skip/one.js; the skip list is [`SKIP`].
+    fn shard_repo(name: &str) -> (PathBuf, Vec<String>, BTreeSet<String>) {
+        let root = fake_repo(name);
+        write(&root, "third_party/test262.commit", "fa4e5ead00\n");
+        for f in FAKE_T262 {
+            write(&root, &format!("third_party/test262/{f}"), "// t\n");
+        }
+        write(
+            &root,
+            "third_party/test262/test/language/m_FIXTURE.js",
+            "// not a test\n",
+        );
+        write(&root, "third_party/test262/test/language/notes.txt", "x\n");
+        let files = test262_files(&root.join("third_party/test262")).unwrap();
+        assert_eq!(files, FAKE_T262.map(String::from));
+        let mut fails: BTreeSet<String> = files.iter().step_by(2).cloned().collect();
+        fails.insert(SKIP[0].into());
+        let mut text = "# f\n".to_string();
+        for f in &fails {
+            text.push_str(f);
+            text.push('\n');
+        }
+        write(
+            &root,
+            &format!("expectations/test262.{HOST}.jit.txt"),
+            &text,
+        );
+        commit_all(&root);
+        (root, files, fails)
+    }
+
+    /// The GC-stress JSON of one shard (its `prefixes`) of [`shard_repo`]: the skip list skips
+    /// its tests, and the files of `fails` fail; `used` is the expectation file it names.
+    fn shard_json(
+        files: &[String],
+        fails: &BTreeSet<String>,
+        prefixes: &[String],
+        used: &str,
+        extra_fail: Option<&str>,
+    ) -> String {
+        let mine = |f: &str| prefixes.iter().any(|p| f.starts_with(p.as_str()));
+        let skipped: Vec<&str> = SKIP.iter().copied().filter(|s| mine(s)).collect();
+        let run: Vec<&str> = files
+            .iter()
+            .map(String::as_str)
+            .filter(|f| mine(f) && !SKIP.contains(f))
+            .collect();
+        gc_json(&run, &skipped, fails, used, extra_fail)
+    }
+
+    /// A GC-stress JSON of a filtered run (as the runner writes it): the files of `run` were run
+    /// (`run_paths`), those of `skipped` skipped, and the files of `fails` (plus `extra_fail`)
+    /// fail; `used` is the expectation file it names.
+    fn gc_json(
+        run: &[&str],
+        skipped: &[&str],
+        fails: &BTreeSet<String>,
+        used: &str,
+        extra_fail: Option<&str>,
+    ) -> String {
+        let mut failing: Vec<&str> = run.iter().copied().filter(|f| fails.contains(*f)).collect();
+        failing.extend(extra_fail);
+        let results: Vec<String> = failing
+            .iter()
+            .map(|p| format!(r#"{{"path":"{p}","status":"fail","cause":"x","detail":"d"}}"#))
+            .collect();
+        let list = |paths: &[&str]| -> String {
+            paths
+                .iter()
+                .map(|p| json_str(p))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let mut sorted_run = run.to_vec();
+        sorted_run.sort_unstable();
+        format!(
+            r#"{{"command":"exec","mode":"jit","target":"{HOST}","workers":4,"timeout_ms":60000,"gc_stress":1,"feedback_threshold":0,
+            "skipped":{},"skipped_paths":[{}],"run_paths":[{}],"wall_seconds":100,"files":{{"passed":{},"total":{}}},"runs":{{"passed":1,"total":2}},
+            "by_dir":{{}},"causes":[],"results":[{}],"expectations":{{"file":{},"new_failures":[],"now_passing":[]}}}}"#,
+            skipped.len(),
+            list(skipped),
+            list(&sorted_run),
+            run.len() - failing.len().min(run.len()),
+            run.len(),
+            results.join(","),
+            json_str(used)
+        )
+    }
+
+    /// GATES-2 task 1, M3-P3-GC-SHARD: the split covers every test file exactly once, for every
+    /// n, with no empty shard; on the real checkout (when it is there) the 6 shards are even.
+    #[test]
+    fn gc_split_is_a_partition() {
+        let check = |files: &[String], n: usize| {
+            let split = gc_split(files, n).unwrap();
+            assert_eq!(split.len(), n);
+            let mut total = 0;
+            for f in files {
+                let owners = split
+                    .iter()
+                    .filter(|(pre, _)| pre.iter().any(|p| f.starts_with(p.as_str())))
+                    .count();
+                assert_eq!(owners, 1, "{f} is in {owners} shards of {n}");
+            }
+            for (pre, count) in &split {
+                let mine = files
+                    .iter()
+                    .filter(|f| pre.iter().any(|p| f.starts_with(p.as_str())))
+                    .count();
+                assert_eq!(mine, *count);
+                assert!(*count > 0);
+                total += count;
+            }
+            assert_eq!(total, files.len());
+            // C-G1: the members of each shard are the files that the runner selects with the
+            // shard's prefixes (any prefix, `starts_with`).
+            let members = shard_members(files, &split);
+            for (k, (pre, _)) in split.iter().enumerate() {
+                let selected: Vec<&str> = files
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|f| pre.iter().any(|p| f.starts_with(p.as_str())))
+                    .collect();
+                assert_eq!(members[k], selected, "shard {k} of {n}");
+            }
+            split
+        };
+        let files: Vec<String> = FAKE_T262.map(String::from).to_vec();
+        for n in 1..=8 {
+            check(&files, n);
+        }
+        assert!(gc_split(&files, 28).is_err());
+        assert!(gc_split(&files, 0).is_err());
+        // A file whose path is a prefix of another file's path is never split from it.
+        let tricky: Vec<String> = [
+            "test/a/b.js",
+            "test/a/b.js.js",
+            "test/a/c.js",
+            "test/a/d.js",
+        ]
+        .map(String::from)
+        .to_vec();
+        check(&tricky, 3);
+        let real = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../third_party/test262");
+        if real.join("test").is_dir() {
+            let files = test262_files(&real).unwrap();
+            let split = check(&files, 6);
+            let (lo, hi) = (
+                split.iter().map(|s| s.1).min().unwrap(),
+                split.iter().map(|s| s.1).max().unwrap(),
+            );
+            assert!(hi - lo <= files.len() / 24, "{lo}..{hi}");
+        }
+    }
+
+    /// `--gc-shard <k>/<n>`: shard k of the split of the checkout; bad specs are usage errors.
+    #[test]
+    fn gc_shard_spec() {
+        let (root, files, _) = shard_repo("gc-shard-spec");
+        let t262 = root.join("third_party/test262");
+        let split = gc_split(&files, 3).unwrap();
+        for k in 1..=3 {
+            assert_eq!(
+                gc_shard_prefixes(&t262, &format!("{k}/3")).unwrap(),
+                split[k - 1].0
+            );
+        }
+        for bad in ["0/3", "4/3", "1/33", "a/3", "3", "1/0", ""] {
+            assert!(gc_shard_prefixes(&t262, bad).is_err(), "{bad}");
+        }
+        assert!(gc_shard_prefixes(&root.join("no-checkout"), "1/3").is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// M3-P3-GC-SHARD: item 6 reads the shard JSONs of one split as one whole-corpus run. A
+    /// missing, doubled or foreign shard is FAIL, never PASS.
+    #[test]
+    fn gc_shards_merge_into_one_run() {
+        let (root, files, fails) = shard_repo("gc-shards");
+        write(&root, "in/ci.json", &ci_json("success"));
+        let committed = root.join(format!("expectations/test262.{HOST}.jit.txt"));
+        let committed = committed.to_str().unwrap().to_string();
+        let split = gc_split(&files, 3).unwrap();
+        let shard = |k: usize, used: &str, extra: Option<&str>| {
+            shard_json(&files, &fails, &split[k].0, used, extra)
+        };
+        let item6 = |jsons: &[String]| {
+            let mut o = opts(&root);
+            o.exec_gc.clear();
+            for (i, j) in jsons.iter().enumerate() {
+                let p = format!("in/gc-{i}.json");
+                write(&root, &p, j);
+                o.exec_gc.push(root.join(p));
+            }
+            run(&o).unwrap().cells[5].0.clone()
+        };
+        // all[k] is shard k + 1. All 3, in any order: PASS, as one run of the 27 files.
+        let all: Vec<String> = (0..3).map(|k| shard(k, &committed, None)).collect();
+        let c = item6(&[all[2].clone(), all[0].clone(), all[1].clone()]);
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        assert!(c.evidence.contains("3 shards"), "{}", c.evidence);
+        assert!(c.evidence.contains("in/gc-0.json = 3/3"), "{}", c.evidence);
+        // A missing shard: FAIL.
+        let c = item6(&[all[2].clone(), all[0].clone()]);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("missing"), "{}", c.evidence);
+        // One shard twice (and one missing): FAIL.
+        let c = item6(&[all[0].clone(), all[0].clone(), all[1].clone()]);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("both shard"), "{}", c.evidence);
+        // A shard with a result for a test of another shard: that test is not in its run_paths.
+        // FAIL.
+        let other = split[1].0[0].clone();
+        let stray = files
+            .iter()
+            .find(|f| f.starts_with(other.as_str()))
+            .unwrap();
+        let c = item6(&[
+            shard(0, &committed, Some(stray)),
+            all[1].clone(),
+            all[2].clone(),
+        ]);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("did not run"), "{}", c.evidence);
+        // Another timeout in one shard: two runs, FAIL.
+        let c = item6(&[
+            all[0].replace(r#""timeout_ms":60000"#, r#""timeout_ms":600000"#),
+            all[1].clone(),
+            all[2].clone(),
+        ]);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("timeout_ms"), "{}", c.evidence);
+        // A new failure in one shard (inside it, so the shard is placed): FAIL.
+        let own = files
+            .iter()
+            .find(|f| {
+                split[0].0.iter().any(|p| f.starts_with(p.as_str()))
+                    && !fails.contains(*f)
+                    && !SKIP.contains(&f.as_str())
+            })
+            .unwrap();
+        let c = item6(&[
+            shard(0, &committed, Some(own)),
+            all[1].clone(),
+            all[2].clone(),
+        ]);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("new failures 1"), "{}", c.evidence);
+        // CI shards name the file in their own checkout (Linux and Windows forms): PASS.
+        for ci_path in [
+            format!("/no-such-ci-root/work/ep9/expectations/test262.{HOST}.jit.txt"),
+            format!("\\\\?\\Q:\\no-such-ci-root\\ep9\\expectations/test262.{HOST}.jit.txt"),
+        ] {
+            let c = item6(&[
+                shard(0, &ci_path, None),
+                shard(1, &ci_path, None),
+                shard(2, &ci_path, None),
+            ]);
+            assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+            assert!(c.evidence.contains("another checkout"), "{}", c.evidence);
+        }
+        // No checkout to check the split against: OPEN.
+        std::fs::remove_dir_all(root.join("third_party/test262")).unwrap();
+        let c = item6(&all);
+        assert_eq!(c.status, Status::Open, "{}", c.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// M3-P3 fix round 2, C-G1: item 6 checks the exact paths of each shard (`run_paths` plus
+    /// `skipped_paths`), not only its file count and its non-passing paths. A shard that ran a
+    /// passing test of another shard in place of one of its own gave PASS before.
+    #[test]
+    fn gc_shard_membership_is_exact() {
+        let (root, files, fails) = shard_repo("gc-shard-members");
+        write(&root, "in/ci.json", &ci_json("success"));
+        let committed = root.join(format!("expectations/test262.{HOST}.jit.txt"));
+        let committed = committed.to_str().unwrap().to_string();
+        let split = gc_split(&files, 3).unwrap();
+        let item6 = |jsons: &[String]| {
+            let mut o = opts(&root);
+            o.exec_gc.clear();
+            for (i, j) in jsons.iter().enumerate() {
+                let p = format!("in/gc-{i}.json");
+                write(&root, &p, j);
+                o.exec_gc.push(root.join(p));
+            }
+            run(&o).unwrap().cells[5].0.clone()
+        };
+        let in_shard = |k: usize, f: &str| split[k].0.iter().any(|p| f.starts_with(p.as_str()));
+        let shard_run = |k: usize| -> Vec<&str> {
+            files
+                .iter()
+                .map(String::as_str)
+                .filter(|f| in_shard(k, f) && !SKIP.contains(f))
+                .collect()
+        };
+        let shard_skip =
+            |k: usize| -> Vec<&str> { SKIP.iter().copied().filter(|f| in_shard(k, f)).collect() };
+        let good = |k: usize| gc_json(&shard_run(k), &shard_skip(k), &fails, &committed, None);
+        let c = item6(&[good(0), good(1), good(2)]);
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        // Shard 1 runs a passing test of shard 2 in place of a passing test of its own: the
+        // file count and the failures are the same, but the own test ran nowhere. FAIL.
+        let passing = |k: usize| {
+            shard_run(k)
+                .into_iter()
+                .find(|f| !fails.contains(*f))
+                .unwrap()
+        };
+        let (own, other) = (passing(0), passing(1));
+        let mut swapped: Vec<&str> = shard_run(0).into_iter().filter(|f| *f != own).collect();
+        swapped.push(other);
+        let overlap = gc_json(&swapped, &shard_skip(0), &fails, &committed, None);
+        let c = item6(&[overlap, good(1), good(2)]);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("not shards of one"), "{}", c.evidence);
+        // A shard JSON with no run_paths (a runner before C-G1) cannot be placed: FAIL.
+        let old = good(0).replace(r#""run_paths":["#, r#""older_paths":["#);
+        let c = item6(&[old, good(1), good(2)]);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("run_paths"), "{}", c.evidence);
+        // run_paths that disagree with the file count, or a result outside run_paths: FAIL.
+        let mut short_run = shard_run(0);
+        short_run.pop();
+        let short = gc_json(&short_run, &shard_skip(0), &fails, &committed, None).replace(
+            &format!(r#""total":{}"#, short_run.len()),
+            &format!(r#""total":{}"#, short_run.len() + 1),
+        );
+        let c = item6(&[short, good(1), good(2)]);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        let stray = gc_json(
+            &shard_run(0),
+            &shard_skip(0),
+            &fails,
+            &committed,
+            Some(other),
+        );
+        let c = item6(&[stray, good(1), good(2)]);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// V8-A22: the item 6 Windows cell reads the windows-x64 GC-stress shard jobs of the run.
+    #[test]
+    fn windows_gc_shards_from_the_run() {
+        let ci = |text: &str| Ci::from_json(&parse_json(text).unwrap()).unwrap();
+        let c = gc_ci_cell(&ci(&ci_json("success"))).unwrap();
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        assert!(c.evidence.contains("2 of 2"), "{}", c.evidence);
+        // A shard step that failed, or is not finished.
+        let failed = ci_json_with(|n| Some(if n == GC_STEP { "failure" } else { "success" }));
+        assert_eq!(gc_ci_cell(&ci(&failed)).unwrap().status, Status::Fail);
+        let running = ci_json("success").replace(
+            r#""status":"completed","conclusion":"success","number":1,"startedAt":"2026-10-21T23:05:00Z","completedAt":"2026-10-21T23:35:00Z""#,
+            r#""status":"in_progress","conclusion":"","number":1,"startedAt":"2026-10-21T23:05:00Z","completedAt":"0001-01-01T00:00:00Z""#,
+        );
+        assert_ne!(running, ci_json("success"));
+        assert_eq!(gc_ci_cell(&ci(&running)).unwrap().status, Status::NotRun);
+        // A missing shard job: FAIL, never PASS.
+        let mut run = ci(&ci_json("success"));
+        run.jobs.retain(|j| !j.name.ends_with("2/2)"));
+        let c = gc_ci_cell(&run).unwrap();
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("2/2"), "{}", c.evidence);
+        // Two jobs for one shard, or jobs that name different n: FAIL.
+        let mut run = ci(&ci_json("success"));
+        run.jobs.iter_mut().for_each(|j| {
+            if j.name.ends_with("2/2)") {
+                j.name = format!("{GC_JOB} ({CI_MATRIX}, 1/2)");
+            }
+        });
+        assert_eq!(gc_ci_cell(&run).unwrap().status, Status::Fail);
+        let mut run = ci(&ci_json("success"));
+        run.jobs.iter_mut().for_each(|j| {
+            if j.name.ends_with("2/2)") {
+                j.name = format!("{GC_JOB} ({CI_MATRIX}, 2/3)");
+            }
+        });
+        assert_eq!(gc_ci_cell(&run).unwrap().status, Status::Fail);
+        // No GC-stress job for windows-x64 (a run of an older ci.yml): NOT-RUN in the cell.
+        let mut run = ci(&ci_json("success"));
+        run.jobs.retain(|j| !j.name.starts_with(GC_JOB));
+        assert!(gc_ci_cell(&run).unwrap_err().contains("no"));
+    }
+
+    /// GATES-2 task 1: item 4's Windows cell is N/A by design, and N/A counts as a pass.
+    #[test]
+    fn item4_windows_is_na_by_design() {
+        let pass = || cell(Status::Pass, "p");
+        let mut cells: Vec<(Cell, Cell)> = (0..12).map(|_| (pass(), pass())).collect();
+        cells[3].1 = cell(Status::NotApplicable, "by design");
+        assert!(all_ok(&cells));
+        cells[3].1 = cell(Status::NotRun, "x");
+        assert!(!all_ok(&cells));
+        cells[3].1 = cell(Status::NotApplicable, "by design");
+        cells[5].1 = cell(Status::Open, "x");
+        assert!(!all_ok(&cells));
+        assert_eq!(Status::NotApplicable.name(), "N/A");
+        let root = fake_repo("item4-na");
+        write(&root, "in/ci.json", &ci_json("success"));
+        let r = run(&opts(&root)).unwrap();
+        assert_eq!(r.cells[3].1.status, Status::NotApplicable);
+        assert!(r.cells[3].1.evidence.contains("gate-host speed reading"));
+        assert!(r.table.contains("| PASS | N/A |"), "{}", r.table);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// GATES-2 task 7 (V8-A14): item 4 is PASS only for a run of this tree, or of an ancestor
+    /// with no change under crates/ or tools/bench/ since; else OPEN with the reason.
+    #[test]
+    fn cross_run_must_be_fresh() {
+        let root = fake_repo("cross-fresh");
+        let canary = |commit: &str| {
+            cross_canary(
+                Path::new("run.json"),
+                &parse_json(&cross_json(commit)).unwrap(),
+                &root,
+            )
+        };
+        let measured = git(&root, &["rev-parse", "HEAD"]).unwrap();
+        let c = canary(&measured);
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        assert!(c.evidence.contains("this tree (HEAD)"), "{}", c.evidence);
+        let c = canary(&measured[..7]);
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        // A docs-only commit since: still PASS (an ancestor, no engine change).
+        write(&root, "docs/note.md", "x\n");
+        write(&root, "tools/xtask/x.rs", "x\n");
+        commit_all(&root);
+        let c = canary(&measured);
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        assert!(c.evidence.contains("an ancestor of HEAD"), "{}", c.evidence);
+        // A change under crates/ or tools/bench/: OPEN, not this tree.
+        for f in ["tools/bench/x.mjs", "crates/ep9_vm/src/x.rs"] {
+            let before = git(&root, &["rev-parse", "HEAD"]).unwrap();
+            write(&root, f, "x\n");
+            commit_all(&root);
+            let c = canary(&before);
+            assert_eq!(c.status, Status::Open, "{f}: {}", c.evidence);
+            assert!(c.evidence.contains("not this tree"), "{}", c.evidence);
+        }
+        let c = canary(&measured);
+        assert_eq!(c.status, Status::Open, "{}", c.evidence);
+        // An unknown commit, no commit, and a commit that is not an ancestor: OPEN.
+        for commit in ["0123456789abcdef0123456789abcdef01234567", "unknown"] {
+            let c = canary(commit);
+            assert_eq!(c.status, Status::Open, "{commit}: {}", c.evidence);
+        }
+        let orphan = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@test.invalid",
+                "commit-tree",
+                "HEAD^{tree}",
+                "-m",
+                "orphan",
+            ])
+            .output()
+            .unwrap();
+        let orphan = String::from_utf8(orphan.stdout).unwrap();
+        let c = canary(orphan.trim());
+        assert_eq!(c.status, Status::Open, "{}", c.evidence);
+        assert!(c.evidence.contains("not an ancestor"), "{}", c.evidence);
+        // A fresh run that misses the gate still FAILs: freshness never lifts a FAIL.
+        let head = git(&root, &["rev-parse", "HEAD"]).unwrap();
+        let slow = cross_json(&head).replace("[1.37,1.43]", "[0.5,1.43]");
+        let c = cross_canary(Path::new("run.json"), &parse_json(&slow).unwrap(), &root);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// GATES-2 task 2 (M2-P2-OPEN-I9-EXIT): items 7 and 12 need the exit-status line after each
+    /// cargo run, all 0, at the end of the log; a killed run cannot pass.
+    #[test]
+    fn logs_need_their_exit_status() {
+        let root = fake_repo("sentinel");
+        write(&root, "in/ci.json", &ci_json("success"));
+        let cells = |nesting: &str, release: &str| {
+            write(&root, "in/nesting.log", nesting);
+            write(&root, "in/corpus.log", release);
+            let r = run(&opts(&root)).unwrap();
+            (r.cells[6].0.clone(), r.cells[11].0.clone())
+        };
+        let nesting = read(&root.join("in/nesting.log")).unwrap();
+        let release = corpus_log("release", "abc123", true);
+        let (n, c) = cells(&nesting, &release);
+        assert_eq!(n.status, Status::Pass, "{}", n.evidence);
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        // Killed before the status line: the output is all there, the status is not.
+        let killed = |log: &str| log.replace("m0-exit status: 0\n", "");
+        let last_killed = |log: &str| {
+            let i = log.rfind("m0-exit status: 0").unwrap();
+            log[..i].to_string()
+        };
+        for (what, nest, rel) in [
+            ("no status at all", killed(&nesting), killed(&release)),
+            (
+                "the last run killed",
+                last_killed(&nesting),
+                last_killed(&release),
+            ),
+            (
+                "a run killed by a signal (exit 137)",
+                nesting.replacen("m0-exit status: 0", "m0-exit status: 137", 1),
+                release.replace("m0-exit status: 0", "m0-exit status: 137"),
+            ),
+            (
+                "output after the last status",
+                format!("{nesting}test depth_tests::every_form_is_gated ... ok\n"),
+                format!("{release}corpus digest abc123 over 77183 units\n"),
+            ),
+            (
+                "a bad status line",
+                nesting.replacen("m0-exit status: 0", "m0-exit status: x", 1),
+                release.replace("m0-exit status: 0", "m0-exit status: x"),
+            ),
+        ] {
+            let (n, c) = cells(&nest, &rel);
+            assert_eq!(n.status, Status::Fail, "{what}: {}", n.evidence);
+            assert_eq!(c.status, Status::Fail, "{what}: {}", c.evidence);
+        }
+        // The nesting log has 2 cargo runs: 1 run is not enough.
+        let one = &nesting[..nesting.find("m0-exit start: nesting_caps").unwrap()];
+        let (n, _) = cells(one, &release);
+        assert_eq!(n.status, Status::Fail, "{}", n.evidence);
+        assert!(n.evidence.contains("2 needed"), "{}", n.evidence);
+        // A corpus run with no status of its own, followed by a good run, in one log: FAIL.
+        let debug = corpus_log("test", "abc123", true);
+        let (_, c) = cells(&nesting, &format!("{}{debug}", killed(&release)));
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("exit status missing"), "{}", c.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// M3-P3 fix round 2, C-G2: each cargo run of a log has its start line and its exit-status
+    /// line. A retry that was killed between two good runs has a start and no status; it gave
+    /// PASS before (the statuses were counted, not paired with the runs).
+    #[test]
+    fn an_interrupted_retry_is_rejected() {
+        let root = fake_repo("interrupted");
+        write(&root, "in/ci.json", &ci_json("success"));
+        let cells = |nesting: &str, corpus: &str| {
+            write(&root, "in/nesting.log", nesting);
+            write(&root, "in/corpus.log", corpus);
+            let mut o = opts(&root);
+            o.corpus = vec![root.join("in/corpus.log")];
+            let r = run(&o).unwrap();
+            (r.cells[6].0.clone(), r.cells[11].0.clone())
+        };
+        let nesting = read(&root.join("in/nesting.log")).unwrap();
+        let (release, debug) = (
+            corpus_log("release", "abc123", true),
+            corpus_log("test", "abc123", true),
+        );
+        let (n, c) = cells(&nesting, &format!("{release}{debug}"));
+        assert_eq!(n.status, Status::Pass, "{}", n.evidence);
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        // A retry killed while cargo compiled: its start line and no status.
+        let killed =
+            "m0-exit start: retry\n   Compiling ep9_frontend v0.0.0 (/w/crates/ep9_frontend)\n";
+        let second = nesting.find("m0-exit start: nesting_caps").unwrap();
+        let nest = format!("{}{killed}{}", &nesting[..second], &nesting[second..]);
+        let (n, c) = cells(&nest, &format!("{release}{killed}{debug}"));
+        assert_eq!(n.status, Status::Fail, "{}", n.evidence);
+        assert!(n.evidence.contains("no exit status"), "{}", n.evidence);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("no exit status"), "{}", c.evidence);
+        // A status line with no start line, and output outside any run: FAIL.
+        let no_start = nesting.replacen("m0-exit start: depth_tests\n", "", 1);
+        let outside = format!("test caps_hold_end_to_end ... ok\n{nesting}");
+        for (what, nest) in [("no start", no_start), ("outside", outside)] {
+            let (n, _) = cells(&nest, &release);
+            assert_eq!(n.status, Status::Fail, "{what}: {}", n.evidence);
+        }
+        // A required result only in a run that did not finish: FAIL (it is not that run's
+        // result, even with good runs around it).
+        let only_ok = "m0-exit start: x\ntest caps_hold_end_to_end ... ok\n\
+            test uncaught_error_reports_file_line_utf16_column ... ok\n";
+        let nest = format!("{}{only_ok}", &nesting[..second]);
+        let (n, _) = cells(&nest, &release);
+        assert_eq!(n.status, Status::Fail, "{}", n.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// GATES-2 task 6: the report lists stub markers and a `fn bind_this` in call.rs; they do
+    /// not change the exit result.
+    #[test]
+    fn tree_checks_list_stubs_and_bind_this() {
+        let root = fake_repo("tree-checks");
+        let t = tree_checks(&root);
+        assert_eq!(t.len(), 2);
+        assert!(t.iter().all(|(_, c)| c.status == Status::Pass), "{t:?}");
+        // An untracked file with a marker, and a tracked one.
+        write(
+            &root,
+            "crates/ep9_vm/src/new.rs",
+            &format!("#![allow(dead_code)] // {}\n", STUB_MARKERS[0]),
+        );
+        write(&root, "spikes/s/x.rs", &format!("// {}\n", STUB_MARKERS[1]));
+        commit_all(&root);
+        write(&root, "tools/t/y.rs", &format!("// {}\n", STUB_MARKERS[0]));
+        write(
+            &root,
+            "crates/ep9_vm/src/call.rs",
+            "pub fn try_bind_this() {}\npub(crate) fn bind_this() {}\n",
+        );
+        let t = tree_checks(&root);
+        assert_eq!(t[0].1.status, Status::Open, "{t:?}");
+        for f in [
+            "crates/ep9_vm/src/new.rs:1",
+            "spikes/s/x.rs:1",
+            "tools/t/y.rs:1",
+        ] {
+            assert!(t[0].1.evidence.contains(f), "{f}: {}", t[0].1.evidence);
+        }
+        assert_eq!(t[1].1.status, Status::Open, "{t:?}");
+        assert!(t[1].1.evidence.contains("call.rs:2"), "{}", t[1].1.evidence);
+        // In the report, after the table; the result does not change.
+        write(&root, "in/ci.json", &ci_json("success"));
+        let r = run(&opts(&root)).unwrap();
+        assert!(r.markdown.contains("## Tree checks"), "{}", r.markdown);
+        assert!(r.markdown.contains("tools/t/y.rs:1"), "{}", r.markdown);
+        std::fs::remove_file(root.join("crates/ep9_vm/src/call.rs")).unwrap();
+        assert_eq!(tree_checks(&root)[1].1.status, Status::NotRun);
+        // Outside a git work tree, every file is searched.
+        std::fs::remove_dir_all(root.join(".git")).unwrap();
+        let t = tree_checks(&root);
+        assert_eq!(t[0].1.status, Status::Open, "{t:?}");
+        assert!(
+            t[0].1.evidence.contains("tools/t/y.rs:1"),
+            "{}",
+            t[0].1.evidence
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -48,26 +48,61 @@ pub enum JsSymbol {}
 pub enum JsKey {}
 
 mod sealed {
-    pub trait Sealed {}
+    /// Only this crate can make a `Token` (its field is private).
+    pub struct Token(());
+
+    impl Token {
+        #[inline(always)]
+        pub(crate) fn new() -> Token {
+            Token(())
+        }
+    }
+
+    pub trait Sealed {
+        /// The test on the value's bits. The kind tests read the cell header, so only the VM
+        /// calls it, on the bits of a live value. Code outside the crate can reach a supertrait
+        /// method through a `T: Downcast` bound, but it cannot make the `Token` (RV8-1).
+        fn test(bits: u64, _: Token) -> bool;
+    }
 }
 
 /// A marker that a checked downcast can test (every marker except [`JsKey`]).
-pub trait Downcast: sealed::Sealed {
-    /// The test on the value's bits.
-    #[doc(hidden)]
-    fn test(bits: u64) -> bool;
-}
+///
+/// The test on the bits is not part of this trait. Code outside the crate cannot call it on
+/// bits that it chose:
+///
+/// ```compile_fail
+/// use ep9_vm::{Downcast, JsString};
+/// let _ = <JsString as Downcast>::test(0x80_0000);
+/// ```
+///
+/// A `T: Downcast` bound reaches `test` (a supertrait method), but the call needs a
+/// `sealed::Token`, and code outside the crate cannot make one: the type has a private field,
+/// no constructor outside the crate and no `Default`. A diverging argument (`todo!()`) type
+/// checks, but it stops before the call. A token from `Default` does not compile:
+///
+/// ```compile_fail
+/// use ep9_vm::{Downcast, JsString};
+/// fn read<T: Downcast>(bits: u64) -> bool {
+///     T::test(bits, Default::default())
+/// }
+/// let _ = read::<JsString>(0x80_0000);
+/// ```
+///
+/// The same function with `todo!()` in place of `Default::default()` compiles, so this
+/// test fails only for the token (the control).
+pub trait Downcast: sealed::Sealed {}
 
 macro_rules! downcast {
     ($($m:ident => $test:expr,)*) => {$(
-        impl sealed::Sealed for $m {}
-        impl Downcast for $m {
+        impl sealed::Sealed for $m {
             #[inline(always)]
-            fn test(bits: u64) -> bool {
+            fn test(bits: u64, _: sealed::Token) -> bool {
                 let f: fn(u64) -> bool = $test;
                 f(bits)
             }
         }
+        impl Downcast for $m {}
     )*};
 }
 
@@ -83,6 +118,31 @@ downcast! {
 }
 
 /// A value held by Rust code for the host call `'s` (see the module docs).
+///
+/// An upcast keeps the scope: each `From` impl of the upcast list converts `Local<'s, A>` to
+/// `Local<'s, B>` with the same `'s`, so `.into()` cannot take a `Local` out of
+/// `Isolate::with_cx` (the H20 core golden holds these impl signatures). The same upcast
+/// inside the scope compiles:
+///
+/// ```
+/// use ep9_vm::{Isolate, IsolateConfig, JsObject, JsValue, Local};
+/// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+/// let is_object = iso.with_cx(|cx| {
+///     let v: Local<'_, JsValue> = cx.global().into();
+///     Ok(v.downcast::<JsObject>().is_some())
+/// });
+/// assert_eq!(is_object, Ok(true));
+/// ```
+///
+/// An escape through `.into()` does not compile:
+///
+/// ```compile_fail
+/// use ep9_vm::{Isolate, IsolateConfig, JsValue, Local};
+/// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+/// let global: Local<'static, JsValue> = iso.with_cx(|cx| Ok(cx.global().into())).unwrap();
+/// iso.collect_garbage();
+/// let _ = global;
+/// ```
 #[repr(transparent)]
 pub struct Local<'s, T = JsValue> {
     value: Value,
@@ -141,7 +201,7 @@ impl<'s, T> Local<'s, T> {
     #[inline]
     pub fn downcast<U: Downcast>(&self) -> Option<Local<'s, U>> {
         let b = self.bits();
-        U::test(b).then(|| Local::from_bits(b))
+        <U as sealed::Sealed>::test(b, sealed::Token::new()).then(|| Local::from_bits(b))
     }
 
     pub fn is_undefined(&self) -> bool {

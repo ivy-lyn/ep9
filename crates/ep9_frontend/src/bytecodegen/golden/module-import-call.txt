@@ -1,0 +1,66 @@
+# module-import-call: module
+# | export const p = import('./a.js'); function f(s, o) { return import(s, o); }
+; ep9 bytecode, ABI 5
+unit kind=module strict=true ts=none source_len=76 source=embedded hints=none
+source_hash=0e9464e9d1388425218da846d1f2f78576d90bc2e43bac83599de3c65b2012ab
+strings (3):
+  str0 "./a.js"
+  str1 "f"
+  str2 "p"
+scopes (2):
+  scope0 module outer=- flags=[strict] slots=[]
+  scope1 function outer=scope0 flags=[strict] slots=[]
+module records: has-tla=false
+  requests (0):
+  imports (0):
+  local exports (1):
+      0 export="p" local="p" cell=1
+  indirect exports (0):
+  star exports (0):
+function f0 module name=- parent=- outer_scope=- flags=[strict,async] params=0 length=0 regs=4 range=0..76
+  code (43 bytes):
+      0    Ldar <this>                                  ; 0b ff
+      2    Star r1                                      ; 0c 01
+      4    LdaUndefined                                 ; 05
+      5    Star <this>                                  ; 0c ff
+      7    SwitchOnGeneratorState r1, k0  ; k0 = JumpTable [+3, +15] ; 99 01 00
+     10 E> CreateClosure k1, s0, #0x00  ; k1 = Function f1 ; 74 01 00 00
+     14    Star r0                                      ; 0c 00
+     16    LdaUndefined                                 ; 05
+     17    SuspendGenerator r1, r0-r1, [1]              ; 9a 01 00 02 01
+     22    ResumeGenerator r1, r0-r1                    ; 9b 01 00 02
+     26 S> LdaConstant k2  ; k2 = String str0 "./a.js"  ; 0a 02
+     28    Star r2                                      ; 0c 02
+     30    LdaUndefined                                 ; 05
+     31    Star r3                                      ; 0c 03
+     33 E> CallRuntime DynamicImport, r2-r3             ; 68 2b 00 02 02
+     38    StaModuleVariable [1], [0]                   ; 20 01 00
+     41    LdaUndefined                                 ; 05
+     42    Return                                       ; 92
+  constants (3):
+      0 JumpTable [+3, +15]
+      1 Function f1
+      2 String str0 "./a.js"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+     10 E 35 (1:36)
+     26 S 13 (1:14)
+     33 E 17 (1:18)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[strict,simple-params] params=2 length=2 regs=2 range=35..76
+  code (16 bytes):
+      0 S> Ldar a0                                      ; 0b fe
+      2    Star r0                                      ; 0c 00
+      4    Ldar a1                                      ; 0b fd
+      6    Star r1                                      ; 0c 01
+      8 E> CallRuntime DynamicImport, r0-r1             ; 68 2b 00 00 02
+     13    Return                                       ; 92
+     14    LdaUndefined                                 ; 05
+     15    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (2):
+      0 S 54 (1:55)
+      8 E 61 (1:62)

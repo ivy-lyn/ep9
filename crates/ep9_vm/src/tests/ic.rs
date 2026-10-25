@@ -135,7 +135,8 @@ struct T {
 impl T {
     fn new(c: IsolateConfig, sites: &[Site]) -> T {
         let mut iso = isolate(c);
-        iso.run_script(program(sites), "ic.js").unwrap();
+        iso.with_cx_checkpoint(|cx| cx.run_script(program(sites), "ic.js").map(|_| ()))
+            .unwrap();
         T { iso }
     }
 
@@ -144,14 +145,14 @@ impl T {
     }
 
     fn f(&self, i: usize) -> Value {
-        self.iso.global(&format!("f{i}")).unwrap()
+        self.iso.global_raw(&format!("f{i}")).unwrap()
     }
 
     /// `f<i>(a, b)`.
     fn call(&mut self, i: usize, a: u64, b: u64) -> Result<u64, Exception> {
         let f = self.f(i);
         self.iso
-            .call(f, Value::UNDEFINED, &[val(a), val(b)])
+            .call_raw(f, Value::UNDEFINED, &[val(a), val(b)])
             .map(|v| v.to_bits())
     }
 
@@ -900,7 +901,7 @@ fn scans_of_the_global_object(t: &mut T, i: usize, a: u64) -> (u64, u32) {
     shape::SCANS.with(|c| c.set((gs, 0)));
     let r = t
         .iso
-        .call(f, Value::UNDEFINED, &[val(a)])
+        .call_raw(f, Value::UNDEFINED, &[val(a)])
         .unwrap()
         .to_bits();
     (r, shape::SCANS.with(|c| c.get().1))

@@ -6,6 +6,7 @@
 //! Runtime::jobs: JobState
 //!   roots (a heap root source, as symbol.rs):  queue head ──> job ──> job ──> ... <── queue tail
 //!                                              rejected head ──> record <─> ... <── rejected tail (both ways)
+//!                                              async modules: ELEMENTS [n, MODULE ..] (module.rs)
 //!   closures: one FunctionInfo per (behaviour, name, length), boxed, never freed
 //!   tracker:  IsolateConfig::promise_rejection_tracker
 //!
@@ -123,16 +124,19 @@ pub(crate) mod rejected {
     pub const COUNT: usize = 3;
 }
 
-/// The roots of the job state: the two lists (head and tail each).
+/// The roots of the job state: the two lists (head and tail each), and the list of the
+/// modules whose async evaluation may still be pending (`module.rs`).
 struct JobRoots {
     queue_head: Cell<u64>,
     queue_tail: Cell<u64>,
     rejected_head: Cell<u64>,
     rejected_tail: Cell<u64>,
+    async_modules: Cell<u64>,
 }
 
 impl JobRoots {
     fn trace(&self, t: &mut Tracer<'_>) {
+        t.visit_bits(self.async_modules.get());
         #[cfg(test)]
         if NEGATIVE_CONTROL_UNTRACED_QUEUE.with(Cell::get) {
             return;
@@ -174,6 +178,7 @@ impl JobState {
             queue_tail: Cell::new(UNDEFINED),
             rejected_head: Cell::new(UNDEFINED),
             rejected_tail: Cell::new(UNDEFINED),
+            async_modules: Cell::new(UNDEFINED),
         });
         let source = Rc::clone(&roots);
         heap.add_root_source(move |t| source.trace(t));
@@ -221,6 +226,18 @@ impl JobState {
 
     pub fn set_rejected_tail(&self, v: u64) {
         self.roots.rejected_tail.set(v);
+    }
+
+    /// The modules that took the async path of Evaluate since the last termination
+    /// (`module::note_async_module`): an ELEMENTS list `[n, m1 .. mn]`, or undefined. A
+    /// termination drops the job queue, so it makes the pending ones aborted
+    /// (`module::abort_async_modules`).
+    pub fn async_modules(&self) -> u64 {
+        self.roots.async_modules.get()
+    }
+
+    pub fn set_async_modules(&self, v: u64) {
+        self.roots.async_modules.set(v);
     }
 
     pub fn tracker(&self) -> Option<PromiseRejectionTracker> {

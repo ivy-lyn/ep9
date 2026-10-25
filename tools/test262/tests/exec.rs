@@ -247,6 +247,52 @@ fn skip_list_paths_reach_the_json() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// A run with path filters (a GC-stress shard) names every file it ran, sorted, in
+/// `run_paths`: `cargo xtask m0-exit` item 6 checks that each shard ran exactly the files of its
+/// shard (M3-P3 fix round 2, C-G1). A full run leaves the list out.
+#[test]
+fn filtered_runs_name_their_files() {
+    let root = tree("run-paths");
+    let expect = expect_file(&root, FAILING);
+    let skip = root.join("skip.txt");
+    std::fs::write(&skip, "# s\ntest/language/neg-runtime-t262.js\n").unwrap();
+    let json = root.join("summary.json");
+    let (code, text) = exec(
+        &root,
+        &expect,
+        &[
+            "--gc-stress",
+            "1",
+            "--skip-list",
+            skip.to_str().unwrap(),
+            "--json",
+            json.to_str().unwrap(),
+            "test/language/raw.js",
+            "test/language/neg-runtime-",
+        ],
+        None,
+    );
+    assert_eq!(code, Some(0), "{text}");
+    let summary = std::fs::read_to_string(&json).unwrap();
+    assert!(
+        summary.contains(
+            "\"skipped_paths\":[\"test/language/neg-runtime-t262.js\"],\"run_paths\":[\"test/language/neg-runtime-object.js\",\
+             \"test/language/neg-runtime-string.js\",\"test/language/neg-runtime-wrong.js\",\
+             \"test/language/raw.js\"]"
+        ),
+        "{summary}"
+    );
+    assert!(
+        summary.contains("\"files\":{\"passed\":1,\"total\":4}"),
+        "{summary}"
+    );
+    let (code, text) = exec(&root, &expect, &["--json", json.to_str().unwrap()], None);
+    assert_eq!(code, Some(0), "{text}");
+    let summary = std::fs::read_to_string(&json).unwrap();
+    assert!(!summary.contains("run_paths"), "{summary}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn update_writes_only_failures() {
     let root = tree("update");

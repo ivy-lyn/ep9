@@ -80,28 +80,26 @@ fn one_name_from_two_units_and_a_concat_key_are_one_cell() {
     for stress in [false, true] {
         on_big_stack(move || {
             let mut iso = isolate(config(Dispatch::DEFAULT, stress));
-            let a = iso.run_script(returns("sharedName"), "u1.js").unwrap();
+            let a = iso.run_raw(returns("sharedName"), "u1.js").unwrap();
             let a = a.to_bits();
-            let b = iso.run_script(returns("sharedName"), "u2.js").unwrap();
+            let b = iso.run_raw(returns("sharedName"), "u2.js").unwrap();
             assert_eq!(a, b.to_bits(), "the same name from two units");
             assert!(string::is_atom(a));
             // "shared" + "Name" is a new cell; ToPropertyKey gives the unit's atom.
-            let c = iso
-                .run_script(concat_of("shared", "Name"), "u3.js")
-                .unwrap();
+            let c = iso.run_raw(concat_of("shared", "Name"), "u3.js").unwrap();
             let c = c.to_bits();
             assert_ne!(c, a);
             assert!(!string::is_atom(c));
             assert_eq!(key::to_property_key(&mut iso.cx, c).unwrap(), a);
             // A text with no atom yet: the string itself becomes the atom (no copy).
-            let d = iso.run_script(concat_of("brand", "New"), "u4.js").unwrap();
+            let d = iso.run_raw(concat_of("brand", "New"), "u4.js").unwrap();
             let d = d.to_bits();
             assert_eq!(atoms::lookup(&iso.rt, "brandNew"), None);
             assert_eq!(key::to_property_key(&mut iso.cx, d).unwrap(), d);
             assert!(string::is_atom(d));
             assert_eq!(atoms::lookup(&iso.rt, "brandNew"), Some(d));
             // A unit name equal to a static atom is that atom.
-            let l = iso.run_script(returns("length"), "u5.js").unwrap();
+            let l = iso.run_raw(returns("length"), "u5.js").unwrap();
             assert_eq!(l.to_bits(), iso.rt.atom(Atom::Length));
             atoms::verify(&iso.rt).unwrap();
         });
@@ -446,13 +444,85 @@ fn string_view_reads_script_strings_and_the_copy_outlives_gc() {
     // Isolate::string_view); the copied text can.
     let mut iso = isolate(config(Dispatch::DEFAULT, false));
     for (a, b) in [("abc", "def"), ("\u{20ac}x", "y")] {
-        let v = iso.run_script(concat_of(a, b), "view.js").unwrap();
+        let v = iso.run_raw(concat_of(a, b), "view.js").unwrap();
         let text = iso.string_view(v).map(|s| s.to_string_lossy());
         iso.heap().collect();
-        let _ = iso.global("a name interned after the view");
+        let _ = iso.global_raw("a name interned after the view");
         assert_eq!(text, Some(format!("{a}{b}")));
     }
     assert!(iso.string_view(Value::UNDEFINED).is_none());
+}
+
+/// The text of the `i`th string of [`unrooted_strings`].
+fn unrooted_text(i: usize) -> String {
+    format!("w4-1-unrooted-{i:04}-0123456789")
+}
+
+/// `n` new strings, kept as raw `Value`s only on the Rust heap (the buffer of a `Vec`, which the
+/// conservative scan does not read): nothing roots them.
+#[inline(never)]
+fn unrooted_strings(iso: &crate::Isolate, n: usize) -> Vec<Value> {
+    let mut kept = Vec::with_capacity(n);
+    for i in 0..n {
+        let b = string::new_string(&iso.rt, &unrooted_text(i));
+        // SAFETY: `b` is a new live string cell; the test reads it only through the checked
+        // `Isolate::string_view`.
+        kept.push(unsafe { Value::from_bits_unchecked(b) });
+    }
+    kept
+}
+
+/// H20-Q4 (Codex W4-1): `Isolate::string_view` reads only a live string cell of its own heap.
+/// Raw `Value`s of strings that nothing roots: after a GC the sweep frees most of them, and
+/// the view of each freed cell is `None`, also with zap off (the release default, where the
+/// freed text is still in memory); a cell that a stale stack word kept is still read. Bits
+/// inside a live cell and bits outside the cage give `None` too.
+#[test]
+fn string_view_reads_only_live_cells_of_its_heap() {
+    for zap in [false, true] {
+        let mut cfg = config(Dispatch::DEFAULT, false);
+        cfg.heap.zap = zap;
+        let mut iso = isolate(cfg);
+        let n = 64;
+        let gcs = iso.gc_stats().collections;
+        let kept = unrooted_strings(&iso, n);
+        // No GC ran while they were made, so no address was used twice.
+        assert_eq!(iso.gc_stats().collections, gcs);
+        for (i, v) in kept.iter().enumerate() {
+            let text = iso.string_view(*v).map(|s| s.to_string_lossy());
+            assert_eq!(text, Some(unrooted_text(i)), "before the GC, string {i}");
+        }
+        clobber_stack();
+        iso.collect_garbage();
+        let mut freed = 0;
+        for (i, v) in kept.iter().enumerate() {
+            let live = iso.heap().is_cell(v.to_bits() as usize);
+            let text = iso.string_view(*v).map(|s| s.to_string_lossy());
+            if live {
+                assert_eq!(text, Some(unrooted_text(i)), "zap {zap}: kept string {i}");
+            } else {
+                freed += 1;
+                assert_eq!(text, None, "zap {zap}: freed string {i}");
+            }
+        }
+        assert!(
+            freed > n / 2,
+            "zap {zap}: only {freed} of {n} cells were freed"
+        );
+        // A live string: bits 8 bytes into its cell, and a cell address outside the cage.
+        let live = iso
+            .run_raw(concat_of("live-", "string"), "view.js")
+            .unwrap();
+        assert_eq!(
+            iso.string_view(live).map(|s| s.to_string_lossy()),
+            Some("live-string".to_string())
+        );
+        for bits in [live.to_bits() + 8, 8 << 20] {
+            // SAFETY: the bits are only given to the checked `Isolate::string_view`.
+            let v = unsafe { Value::from_bits_unchecked(bits) };
+            assert!(iso.string_view(v).is_none(), "{bits:#x}");
+        }
+    }
 }
 
 #[test]
@@ -646,7 +716,7 @@ fn over_limit_strings_throw_range_error() {
     }
     let e = on_big_stack(|| {
         let mut iso = isolate(config(Dispatch::DEFAULT, false));
-        iso.run_script(make(), "limit.js").unwrap_err()
+        iso.run_raw(make(), "limit.js").unwrap_err()
     });
     assert_eq!(e.constructor.as_deref(), Some("RangeError"), "{e}");
     assert!(e.message.contains("Invalid string length"), "{e}");

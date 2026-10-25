@@ -6,7 +6,7 @@ use ep9_bytecode::{
 };
 
 use super::{Asm, isolate, meta, ok, run_all, take_output, unit, unit_with_scopes};
-use crate::{Args, Cx, Dispatch, ErrorKind, JsResult, Local, Value};
+use crate::{Args, Cx, Dispatch, ErrorKind, JsResult, Local};
 
 #[test]
 fn recursion_fib() {
@@ -442,7 +442,8 @@ fn host_functions_and_reentry() {
             iso.register_host_function("fail", 0, fail);
             iso.register_host_function("add", 2, add_host);
             take_output();
-            let r = iso.run_script(make(), "host.js").map(|v| iso.display(v));
+            let r = iso
+                .with_cx_checkpoint(|cx| cx.run_script(make(), "host.js").map(|v| cx.display(v)));
             (r, take_output())
         });
         assert!(r.0.is_ok(), "{:?}", r.0);
@@ -565,11 +566,18 @@ fn class_constructor_needs_new_on_rust_calls() {
                 iso.register_host_function("callTwice", 1, call_twice);
                 iso.register_host_function("construct", 1, construct_host);
                 take_output();
-                let r = iso.run_script(make(), "class.js").map(|v| iso.display(v));
-                // The embedder: Isolate::call(C).
-                let c = iso.global("C").unwrap();
-                let called = iso.call(c, Value::UNDEFINED, &[]).map(|v| iso.display(v));
-                let ran = iso.display(iso.global("ran").unwrap());
+                let r = iso.with_cx_checkpoint(|cx| {
+                    cx.run_script(make(), "class.js").map(|v| cx.display(v))
+                });
+                // The embedder: Cx::call(C).
+                let called = iso.with_cx_checkpoint(|cx| {
+                    let c = cx.global_binding("C")?.expect("C");
+                    cx.call(c, Local::undefined(), &[]).map(|v| cx.display(v))
+                });
+                let ran = iso
+                    .with_cx(|cx| Ok(cx.global_binding("ran")?.map(|v| cx.display(v))))
+                    .unwrap()
+                    .expect("ran");
                 iso.collect_garbage();
                 iso.verify_heap().unwrap();
                 (r, take_output(), called.map_err(|e| e.message), ran)
@@ -644,20 +652,104 @@ fn lda_new_target_reads_the_resumed_frame_slot() {
         for stress in [false, true] {
             super::on_big_stack(move || {
                 let mut iso = isolate(super::config(d, stress));
-                iso.run_script(make(), "nt.js").unwrap();
-                let f = iso.global("nt").unwrap();
+                iso.with_cx_checkpoint(|cx| cx.run_script(make(), "nt.js").map(|_| ()))
+                    .unwrap();
+                // `nt` stays a global binding, so its bits stay valid (the heap does not move).
+                let fb = iso.global_raw("nt").unwrap().to_bits();
                 // A call: undefined.
-                let r = iso.call(f, Value::UNDEFINED, &[]).unwrap();
-                assert!(r.is_undefined(), "{} stress={stress}", d.name());
+                let r = iso
+                    .with_cx_checkpoint(|cx| {
+                        let f: Local = Local::from_bits(fb);
+                        cx.call(f, Local::undefined(), &[])
+                            .map(|v| v.is_undefined())
+                    })
+                    .unwrap();
+                assert!(r, "{} stress={stress}", d.name());
                 // A resumed frame: the object in fp-3 (here a plain object for the generator).
                 let g = crate::object::new_plain_object(&iso.rt);
-                let r = run_resumed(&mut iso, f.to_bits(), g);
+                let r = run_resumed(&mut iso, fb, g);
                 assert_eq!(r, g, "{} stress={stress}", d.name());
                 // [[Construct]]: new.target (`nt` itself; an object result is kept).
-                let fb = f.to_bits();
                 let r = crate::call::construct_with(&mut iso.cx, fb, 0, |_| 0, fb).unwrap();
+
                 assert_eq!(r, fb, "{} stress={stress}", d.name());
             });
         }
+    }
+}
+
+/// `function f(o) { return o.a; }` (sloppy), stored in the global `f`.
+fn reads_a_of_its_argument() -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let k = s.b.function_constant(FunctionId(1));
+    s.b.create_closure(k, s.closure, 0);
+    s.sta_global("f");
+    s.b.lda_undefined().return_();
+    let mut f = Asm::new(meta("f", 1, 0, 0, 0));
+    let o = f.b.parameter(0);
+    f.get_named(o, "a");
+    f.b.return_();
+    unit("", vec![s.finish(), f.finish()])
+}
+
+/// A new object `{a: 7}` whose only copy is in a heap `Vec`, which the GC does not scan.
+/// `inline(never)`: its frame is gone before the call under test.
+#[inline(never)]
+fn an_object_only_in_a_vec(iso: &crate::Isolate) -> Vec<crate::Value> {
+    let rt = &*iso.rt;
+    let key = crate::atoms::intern_str(rt, "a");
+    let o = crate::object::new_plain_object(rt);
+    crate::props::own_define(
+        rt,
+        o,
+        key,
+        crate::frame::int32_bits(7),
+        crate::object::attr::DEFAULT,
+    );
+    vec![crate::runtime::val(o)]
+}
+
+/// Plain Rust with no isolate call: zeroes a part of the native stack below the caller, so no
+/// old copy of a Value stays there for the conservative scan to find.
+#[inline(never)]
+fn clear_stack() {
+    let mut a = [1u64; 16384];
+    for x in &mut a {
+        // SAFETY: a valid, aligned element of the local array.
+        unsafe { core::ptr::write_volatile(x, 0) };
+    }
+    std::hint::black_box(&a);
+}
+
+/// The R2 rule (M2-P5-FIX-R2) for a Rust caller of `call::call_with` (the spike-native
+/// `call_from_rust`, the tests' `call_raw`; the embedder `Isolate::call` had it until M3-P3):
+/// the arguments may live only in memory the GC does not scan, so every GC point of the call
+/// comes after the callee frame copied them. The wrap of a primitive `this` for a sloppy
+/// callee (H14-Q2) is such a GC point. Under GC stress, `f(o)` with `this` = 1, true and
+/// undefined reads `o.a` = 7, and the heap verifies.
+#[test]
+fn a_rust_call_copies_the_arguments_before_the_this_wrap() {
+    for this in [
+        crate::Value::int32(1),
+        crate::Value::TRUE,
+        crate::Value::UNDEFINED,
+    ] {
+        let r = super::on_big_stack(move || {
+            let mut iso = isolate(super::config(Dispatch::DEFAULT, true));
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(reads_a_of_its_argument(), "r2.js")
+                    .map(|_| ())
+            })
+            .unwrap();
+            // `f` stays a global binding, so its Value stays valid.
+            let f = iso.global_raw("f").unwrap();
+            let args = an_object_only_in_a_vec(&iso);
+            clear_stack();
+            let r = iso.call_raw(f, this, &args).map(|v| v.as_int32());
+            drop(args);
+            iso.verify_heap().unwrap();
+            r.map_err(|e| e.message)
+        });
+        assert_eq!(r, Ok(Some(7)), "this = {this:?}");
     }
 }

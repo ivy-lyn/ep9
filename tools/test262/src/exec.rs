@@ -628,8 +628,8 @@ impl RunCtx<'_> {
             Ok(u) => u,
             Err(e) => return Some(compile_failure(&e, &what)),
         };
-        match iso.run_script(unit, &what) {
-            Ok(_) => None,
+        match iso.with_cx_checkpoint(|cx| cx.run_script(unit, &what).map(|_| ())) {
+            Ok(()) => None,
             Err(e) if e.terminated => Some(infra("timeout", format!("timeout in {what}"))),
             Err(e) => Some(fail(
                 format!("{what} threw: {}", cause_of_message(&e.message)),
@@ -703,11 +703,19 @@ impl RunCtx<'_> {
                 }
             }
         }
-        let result = if mode == Mode::Module {
-            run_module(&mut iso, &self.opts.test262, unit, rel)
-        } else {
-            iso.run_script(unit, rel)
-        };
+        // The test262 loader is the module host of the test and its jobs, so `import()`
+        // works in a script and in a job too (a module run uses the same hooks).
+        let root = &self.opts.test262;
+        let mut resolve =
+            |referrer: &str, specifier: &str| resolve_module(root, referrer, specifier);
+        let mut load = |name: &str| load_module(root, name);
+        let result = iso.with_module_host(&mut resolve, &mut load, |iso| {
+            if mode == Mode::Module {
+                run_module(iso, root, unit, rel)
+            } else {
+                iso.with_cx_checkpoint(|cx| cx.run_script(unit, rel).map(|_| ()))
+            }
+        });
         if fault_for("late", rel) {
             std::thread::sleep(self.opts.timeout + Duration::from_millis(100));
         }
@@ -745,7 +753,7 @@ impl RunCtx<'_> {
                     fail(cause, e.to_string())
                 }
             },
-            Ok(_) => {
+            Ok(()) => {
                 if let Some(n) = negative {
                     return fail(
                         format!("negative {} test: no error", n.phase),
@@ -767,30 +775,20 @@ impl RunCtx<'_> {
 // ---- the module loader for `flags: [module]` files (M3-P2 MODULE) -------------------------
 
 /// Runs the module test `unit` (named `rel`) with `Cx::run_module` and the test262 loader,
-/// then a microtask checkpoint, as `Isolate::run_script` does: an error of the module wins
+/// then a microtask checkpoint (`Isolate::with_cx_checkpoint`): an error of the module wins
 /// over one of a job, but not over a termination in a job.
 fn run_module(
     iso: &mut Isolate,
     root: &Path,
     unit: ep9_bytecode::VerifiedUnit,
     rel: &str,
-) -> Result<ep9_vm::Value, Exception> {
+) -> Result<(), Exception> {
     let mut resolve = |referrer: &str, specifier: &str| resolve_module(root, referrer, specifier);
     let mut load = |name: &str| load_module(root, name);
-    let r = iso.with_cx(|cx| {
+    iso.with_cx_checkpoint(|cx| {
         cx.run_module(unit, rel, &mut resolve, &mut load)
             .map(|_| ())
-    });
-    match r {
-        Ok(()) => iso
-            .perform_microtask_checkpoint()
-            .map(|()| ep9_vm::Value::UNDEFINED),
-        Err(e) if e.terminated => Err(e),
-        Err(e) => match iso.perform_microtask_checkpoint() {
-            Err(c) if c.terminated => Err(c),
-            _ => Err(e),
-        },
-    }
+    })
 }
 
 /// HostLoadImportedModule's name step for test262: a relative specifier (`./x.js`,
@@ -1734,6 +1732,17 @@ fn summary_json(
     // committed skip list); "skipped" stays their count.
     out.push_str(",\"skipped_paths\":");
     json::string_array(&mut out, &skipped.iter().collect::<Vec<_>>());
+    // A run with path filters (a GC-stress shard) also names every file it ran, sorted:
+    // `cargo xtask m0-exit` item 6 checks that each shard ran exactly the files of its shard
+    // (M3-P3 fix round 2, C-G1). A full run runs every file of the checkout, so it leaves the
+    // list out (it would add about 4 MB).
+    if !opts.filters.is_empty() {
+        out.push_str(",\"run_paths\":");
+        json::string_array(
+            &mut out,
+            &results.iter().map(|(rel, _)| *rel).collect::<Vec<_>>(),
+        );
+    }
     let _ = write!(out, ",\"wall_seconds\":{:.3}", wall.as_secs_f64());
     out.push_str(",\"files\":");
     count(&mut out, files_all);

@@ -308,12 +308,18 @@ fn a_suspended_async_generator_survives_a_collection() {
         let out = on_big_stack(move || {
             let mut iso = hooked_isolate(d, true);
             OUT.with(|o| o.borrow_mut().clear());
-            iso.run_script(compile(FIRST).expect("compiles"), "first.js")
-                .expect("first script");
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(compile(FIRST).expect("compiles"), "first.js")
+                    .map(|_| ())
+            })
+            .expect("first script");
             iso.collect_garbage();
             iso.verify_heap().expect("a valid heap");
-            iso.run_script(compile(SECOND).expect("compiles"), "second.js")
-                .expect("second script");
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(compile(SECOND).expect("compiles"), "second.js")
+                    .map(|_| ())
+            })
+            .expect("second script");
             iso.collect_garbage();
             iso.verify_heap().expect("a valid heap");
             OUT.with(|o| core::mem::take(&mut *o.borrow_mut()))
@@ -503,7 +509,7 @@ fn run_hooked(src: &str, dispatch: Dispatch, stress: bool) -> Result<Vec<String>
     let unit = compile(src).map_err(|e| format!("compile error: {e:?}"))?;
     let mut iso = hooked_isolate(dispatch, stress);
     OUT.with(|o| o.borrow_mut().clear());
-    let r = iso.run_script(unit, "test.js");
+    let r = iso.with_cx_checkpoint(|cx| cx.run_script(unit, "test.js").map(|_| ()));
     let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
     iso.collect_garbage();
     iso.verify_heap().expect("a valid heap");

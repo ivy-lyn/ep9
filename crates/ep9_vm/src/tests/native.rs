@@ -559,7 +559,7 @@ fn stubs(offs: impl Fn(&str, Opcode) -> u32) -> Vec<Vec<u8>> {
 
 /// The bytecode offset of the first `op` in the global function `name` of `iso`.
 fn offset_in(iso: &Isolate, name: &str, op: Opcode) -> u32 {
-    let f = iso.global(name).unwrap();
+    let f = iso.global_raw(name).unwrap();
     let t = crate::native_target(iso, f).unwrap();
     ep9_bytecode::Instructions::new(t.bytecode)
         .map(|i| i.unwrap())
@@ -571,9 +571,10 @@ fn offset_in(iso: &Isolate, name: &str, op: Opcode) -> u32 {
 /// An isolate (with `print`) that ran `defs()`, with the native stubs installed.
 fn native_isolate(config: IsolateConfig, code: &[Range<usize>]) -> Isolate {
     let mut iso = isolate(config);
-    iso.run_script(defs(), "defs.js").unwrap();
+    iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "defs.js").map(|_| ()))
+        .unwrap();
     for (name, range) in NATIVE.iter().zip(code) {
-        let f = iso.global(name).unwrap();
+        let f = iso.global_raw(name).unwrap();
         // SAFETY: `range` holds the stub for `name` (`stubs`), which runs its bytecode and
         // stays mapped until `with_stubs` returns, after the isolate drops.
         unsafe { crate::install_native(&iso, f, DispatchKind::Baseline, range.clone()) }.unwrap();
@@ -590,7 +591,8 @@ fn run_native<R: Send + 'static>(
     on_big_stack(move || {
         let probe = {
             let mut iso = isolate(IsolateConfig::default());
-            iso.run_script(defs(), "defs.js").unwrap();
+            iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "defs.js").map(|_| ()))
+                .unwrap();
             stubs(|n, op| offset_in(&iso, n, op))
         };
         with_stubs(&probe, |code| {
@@ -651,9 +653,10 @@ fn run_rows(
     rows: &[(&str, Vec<Lit>)],
 ) -> (Result<String, Exception>, Vec<String>) {
     take_output();
-    let r = iso
-        .run_script(calls_unit(rows), "calls.js")
-        .map(|v| iso.display(v));
+    let r = iso.with_cx_checkpoint(|cx| {
+        cx.run_script(calls_unit(rows), "calls.js")
+            .map(|v| cx.display(v))
+    });
     (r, take_output())
 }
 
@@ -713,7 +716,7 @@ fn t0_calls_native_code_and_native_code_calls_back() {
 #[test]
 fn native_slots_and_the_code_registry() {
     run_native(IsolateConfig::default(), |iso| {
-        let id = iso.global("id").unwrap();
+        let id = iso.global_raw("id").unwrap();
         let t = crate::native_target(iso, id).unwrap();
         assert_eq!(t.kind, Some(DispatchKind::Baseline));
         assert_eq!((t.name, t.parameter_count), ("id", 1));
@@ -740,7 +743,7 @@ fn native_slots_and_the_code_registry() {
                 crate::install_native(iso, id, DispatchKind::Opt, r.clone()),
                 Err(InstallError::Kind(DispatchKind::Opt))
             );
-            let print = iso.global("print").unwrap();
+            let print = iso.global_raw("print").unwrap();
             assert_eq!(
                 crate::install_native(iso, print, DispatchKind::Baseline, r.clone()),
                 Err(InstallError::NotBytecode)
@@ -751,7 +754,7 @@ fn native_slots_and_the_code_registry() {
             );
         }
         // Back to T0: the same call now runs the bytecode (`which` gives a0 again).
-        let which = iso.global("which").unwrap();
+        let which = iso.global_raw("which").unwrap();
         let (r, out) = run_rows(iso, &[("which", vec![Lit::Int(1), Lit::Int(2)])]);
         assert_eq!(
             (r.as_deref(), out.as_slice()),
@@ -777,7 +780,7 @@ fn native_slots_and_the_code_registry() {
             (Ok("done"), &["7".to_string()][..])
         );
         // An overlapping range is refused by the registry.
-        let g = iso.global("g").unwrap();
+        let g = iso.global_raw("g").unwrap();
         let g_entry = crate::object::function_info(g.to_bits()).slot.entry();
         // SAFETY: refused before the slot changes.
         let r = unsafe {
@@ -871,7 +874,9 @@ fn exceptions_cross_native_frames() {
         for stress in [false, true] {
             let (r, out) = run_native(config(d, stress), |iso| {
                 take_output();
-                let r = iso.run_script(make(), "exc.js").map(|v| iso.display(v));
+                let r = iso.with_cx_checkpoint(|cx| {
+                    cx.run_script(make(), "exc.js").map(|v| cx.display(v))
+                });
                 (r, take_output())
             });
             let label = format!("{} stress={stress}", d.name());
@@ -951,13 +956,16 @@ fn deep_t0_native_recursion_is_a_catchable_range_error() {
             .spawn(move || {
                 let probe = {
                     let mut iso = isolate(IsolateConfig::default());
-                    iso.run_script(defs(), "defs.js").unwrap();
+                    iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "defs.js").map(|_| ()))
+                        .unwrap();
                     stubs(|n, op| offset_in(&iso, n, op))
                 };
                 with_stubs(&probe, |code| {
                     let mut iso = native_isolate(config(d, false), code);
                     take_output();
-                    let r = iso.run_script(make(), "rec.js").map(|v| iso.display(v));
+                    let r = iso.with_cx_checkpoint(|cx| {
+                        cx.run_script(make(), "rec.js").map(|v| cx.display(v))
+                    });
                     (r, take_output())
                 })
             })
@@ -1138,13 +1146,13 @@ fn generator_unit() -> VerifiedUnit {
 
 /// `it[method](arg)` from Rust, as `"value/done"`, or the thrown value as `"throw value"`.
 fn resume(iso: &mut Isolate, it: &str, method: &str, arg: Value) -> String {
-    let it = iso.global(it).unwrap();
+    let it = iso.global_raw(it).unwrap();
     let m = {
         let cx = &mut *iso.cx;
         let k = crate::atoms::intern_str(cx.rt(), method);
         crate::runtime::val(crate::property::get(cx, it.to_bits(), k).unwrap())
     };
-    match iso.call(m, it, &[arg]) {
+    match iso.call_raw(m, it, &[arg]) {
         Ok(r) => {
             let cx = &mut *iso.cx;
             let mut field = |name: &str| {
@@ -1163,8 +1171,9 @@ fn a_generator_function_gets_no_native_code_and_its_generators_still_run() {
         for stress in [false, true] {
             let label = format!("{} stress={stress}", d.name());
             let mut iso = isolate(config(d, stress));
-            iso.run_script(generator_unit(), "gen.js").unwrap();
-            let genf = iso.global("gen").unwrap();
+            iso.with_cx_checkpoint(|cx| cx.run_script(generator_unit(), "gen.js").map(|_| ()))
+                .unwrap();
+            let genf = iso.global_raw("gen").unwrap();
             let fi = crate::object::function_info(genf.to_bits());
             assert!(fi.is_generator(), "{label}");
             // `ga` runs its first step before the install attempt.
@@ -1233,15 +1242,15 @@ fn call_from_rust_enters_native_code_and_restores_the_entry_state() {
         for stress in [false, true] {
             let label = format!("{} stress={stress}", d.name());
             let out = run_native(config(d, stress), move |iso| {
-                let g = |iso: &Isolate, n: &str| iso.global(n).unwrap();
-                // `call_from_rust` puts back all four words; `Isolate::call` (T0) keeps the
+                let g = |iso: &Isolate, n: &str| iso.global_raw(n).unwrap();
+                // `call_from_rust` puts back all four words; `call_raw` (T0) keeps the
                 // stack depth (fp, scratch top) but leaves `out_fp`/`out_pc` as they are.
                 let depth = entry_state(iso)[..2].to_vec();
                 let mut rows = Vec::new();
                 let mut show =
                     |iso: &mut Isolate, r: Result<Value, Exception>, before: [usize; 4]| {
                         let s = match r {
-                            Ok(v) => iso.display(v),
+                            Ok(v) => iso.display_raw(v),
                             Err(e) => format!("Err({}, terminated={})", e.message, e.terminated),
                         };
                         assert_eq!(entry_state(iso)[..2], depth[..], "stack depth after {s}");
@@ -1274,7 +1283,7 @@ fn call_from_rust_enters_native_code_and_restores_the_entry_state() {
                 let r = crate::call_from_rust(iso, g(iso, "id"), u, &[Value::int32(7)]);
                 show(iso, r, st);
                 let b = string(iso, "b");
-                let r = iso.call(bump, u, &[b]);
+                let r = iso.call_raw(bump, u, &[b]);
                 show(iso, r, plain);
                 // A terminated call (the native poll sees the request), then both entries work.
                 iso.terminate_handle().terminate();
@@ -1285,7 +1294,7 @@ fn call_from_rust_enters_native_code_and_restores_the_entry_state() {
                 let r = crate::call_from_rust(iso, gf, u, &[inc1, Value::int32(1)]);
                 show(iso, r, st);
                 let c = string(iso, "c");
-                let r = iso.call(bump, u, &[c]);
+                let r = iso.call_raw(bump, u, &[c]);
                 show(iso, r, plain);
                 // The native stack RangeError of a native prologue (`overflow`).
                 let st = entry_state(iso);
@@ -1309,9 +1318,9 @@ fn call_from_rust_enters_native_code_and_restores_the_entry_state() {
                 assert_eq!(entry_state(iso), before_scratch);
                 // SAFETY: the scratch slot written above.
                 let kept = unsafe { *base };
-                assert_eq!(iso.display(crate::runtime::val(kept)), "kept");
+                assert_eq!(iso.display_raw(crate::runtime::val(kept)), "kept");
                 iso.rt.stack().clear_scratch();
-                let s = iso.display(r.unwrap());
+                let s = iso.display_raw(r.unwrap());
                 rows.push(s);
                 rows
             });
@@ -1350,22 +1359,23 @@ fn call_from_rust_deep_recursion_is_a_range_error_and_the_next_call_works() {
             .spawn(move || {
                 let probe = {
                     let mut iso = isolate(IsolateConfig::default());
-                    iso.run_script(defs(), "defs.js").unwrap();
+                    iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "defs.js").map(|_| ()))
+                        .unwrap();
                     stubs(|n, op| offset_in(&iso, n, op))
                 };
                 with_stubs(&probe, |code| {
                     let mut iso = native_isolate(config(d, false), code);
                     let before = entry_state(&iso);
-                    let (g, r) = (iso.global("g").unwrap(), iso.global("r").unwrap());
+                    let (g, r) = (iso.global_raw("g").unwrap(), iso.global_raw("r").unwrap());
                     let e =
                         crate::call_from_rust(&mut iso, g, Value::UNDEFINED, &[r, Value::int32(1)])
                             .unwrap_err();
                     assert_eq!(entry_state(&iso), before);
-                    let id = iso.global("id").unwrap();
+                    let id = iso.global_raw("id").unwrap();
                     let again =
                         crate::call_from_rust(&mut iso, id, Value::UNDEFINED, &[Value::int32(3)])
                             .unwrap();
-                    (e.message, iso.display(again))
+                    (e.message, iso.display_raw(again))
                 })
             })
             .unwrap()
@@ -1452,15 +1462,17 @@ fn run_entry<R: Send + 'static>(
     on_big_stack(move || {
         let mut all = {
             let mut iso = isolate(IsolateConfig::default());
-            iso.run_script(defs(), "defs.js").unwrap();
+            iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "defs.js").map(|_| ()))
+                .unwrap();
             stubs(|n, op| offset_in(&iso, n, op))
         };
         all.extend(entry_stubs());
         with_stubs(&all, |code| {
             let mut iso = native_isolate(config, code);
-            iso.run_script(entry_defs(), "entry-defs.js").unwrap();
+            iso.with_cx_checkpoint(|cx| cx.run_script(entry_defs(), "entry-defs.js").map(|_| ()))
+                .unwrap();
             for (name, range) in ENTRY.iter().zip(&code[NATIVE.len()..]) {
-                let f = iso.global(name).unwrap();
+                let f = iso.global_raw(name).unwrap();
                 // SAFETY: `range` holds the stub for `name` (`entry_stubs`), which stays
                 // mapped until `with_stubs` returns, after the isolate drops.
                 unsafe { crate::install_native(&iso, f, DispatchKind::Baseline, range.clone()) }
@@ -1662,7 +1674,9 @@ fn the_decode_free_entry_takes_every_unprefixed_call_shape() {
             let (r, out, hits) = run_entry(config(d, stress), move |iso| {
                 take_output();
                 let before = entry_hits();
-                let r = iso.run_script(make(), "entry.js").map(|v| iso.display(v));
+                let r = iso.with_cx_checkpoint(|cx| {
+                    cx.run_script(make(), "entry.js").map(|v| cx.display(v))
+                });
                 (r, take_output(), entry_hits() - before)
             });
             let label = format!("{} stress={stress}", d.name());
@@ -1766,7 +1780,9 @@ fn every_other_call_falls_through_to_the_decode_path() {
                 iso.register_host_function("bind", 1, bind);
                 take_output();
                 let before = entry_hits();
-                let r = iso.run_script(make(), "falls.js").map(|v| iso.display(v));
+                let r = iso.with_cx_checkpoint(|cx| {
+                    cx.run_script(make(), "falls.js").map(|v| cx.display(v))
+                });
                 (r, take_output(), entry_hits() - before)
             });
             let label = format!("{} stress={stress}", d.name());
@@ -1838,7 +1854,9 @@ fn exceptions_from_the_entry_unwind_from_the_call() {
             let (r, out, hits) = run_entry(config(d, stress), |iso| {
                 take_output();
                 let before = entry_hits();
-                let r = iso.run_script(make(), "exc.js").map(|v| iso.display(v));
+                let r = iso.with_cx_checkpoint(|cx| {
+                    cx.run_script(make(), "exc.js").map(|v| cx.display(v))
+                });
                 (r, take_output(), entry_hits() - before)
             });
             let label = format!("{} stress={stress}", d.name());
@@ -1897,7 +1915,9 @@ fn a_full_vm_stack_at_the_entry_is_the_vm_stack_range_error() {
                 let (r, out, hits) = run_entry(config, |iso| {
                     take_output();
                     let before = entry_hits();
-                    let r = iso.run_script(make(), "full.js").map(|v| iso.display(v));
+                    let r = iso.with_cx_checkpoint(|cx| {
+                        cx.run_script(make(), "full.js").map(|v| cx.display(v))
+                    });
                     (r, take_output(), entry_hits() - before)
                 });
                 let label = format!("{} stress={stress} vm_stack_slots={slots}", d.name());
@@ -2027,9 +2047,12 @@ fn run_native_overflow(
                     vm_stack_slots: OVERFLOW_SLOTS,
                     ..config(d, false)
                 });
-                iso.run_script(native_overflow_defs(big), "defs.js")
-                    .unwrap();
-                let f = iso.global("bigf").unwrap();
+                iso.with_cx_checkpoint(|cx| {
+                    cx.run_script(native_overflow_defs(big), "defs.js")
+                        .map(|_| ())
+                })
+                .unwrap();
+                let f = iso.global_raw("bigf").unwrap();
                 // SAFETY: `code[0]` holds the stub for `bigf` (`return a0`), which stays
                 // mapped until `with_stubs` returns, after the isolate drops.
                 unsafe { crate::install_native(&iso, f, kind, code[0].clone()) }.unwrap();
@@ -2038,9 +2061,13 @@ fn run_native_overflow(
                 iso.interrupt_handle()
                     .request(Box::new(move || r2.store(true, Ordering::SeqCst)));
                 iso.cx.budget = budget;
-                let r = iso.run_script(native_overflow_program(calls, site), "overflow.js");
+                let r = iso.with_cx_checkpoint(|cx| {
+                    cx.run_script(native_overflow_program(calls, site), "overflow.js")
+                        .map(|v| cx.display(v))
+                });
                 let label = format!("{kind:?} big={big} {site:?} {}", d.name());
-                assert_eq!(r.map(|v| iso.display(v)).as_deref(), Ok("7"), "{label}");
+                assert_eq!(r.as_deref(), Ok("7"), "{label}");
+
                 let out = (iso.cx.budget, ran.load(Ordering::SeqCst));
                 drop(iso);
                 out
@@ -2943,7 +2970,8 @@ mod placement_b {
         on_big_stack(move || {
             let offs = {
                 let mut iso = isolate(IsolateConfig::default());
-                iso.run_script(defs(), "defs.js").unwrap();
+                iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "defs.js").map(|_| ()))
+                    .unwrap();
                 NATIVE
                     .iter()
                     .map(|n| {
@@ -2971,16 +2999,21 @@ mod placement_b {
             all.push(b_pin());
             with_b_stubs(&all, |code| {
                 let mut iso = isolate(config);
-                iso.run_script(defs(), "defs.js").unwrap();
-                iso.run_script(entry_defs(), "entry-defs.js").unwrap();
-                iso.run_script(pin_defs(), "pin.js").unwrap();
+                iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "defs.js").map(|_| ()))
+                    .unwrap();
+                iso.with_cx_checkpoint(|cx| {
+                    cx.run_script(entry_defs(), "entry-defs.js").map(|_| ())
+                })
+                .unwrap();
+                iso.with_cx_checkpoint(|cx| cx.run_script(pin_defs(), "pin.js").map(|_| ()))
+                    .unwrap();
                 let mut names: Vec<&str> = NATIVE.to_vec();
                 names.extend(ENTRY);
                 if how == Install::B {
                     names.push("pin");
                 }
                 for (name, range) in names.iter().zip(code) {
-                    let f = iso.global(name).unwrap();
+                    let f = iso.global_raw(name).unwrap();
                     // SAFETY: `range` holds the stub for `name`, which runs its bytecode with
                     // the ABI of the install (b: the handler ABI; a: `NativeEntry`) and stays
                     // mapped until `with_b_stubs` returns, after the isolate drops.
@@ -3125,7 +3158,9 @@ mod placement_b {
                         }
                         take_output();
                         let before = counts();
-                        let r = iso.run_script(make(), "pin.js").map(|v| iso.display(v));
+                        let r = iso.with_cx_checkpoint(|cx| {
+                            cx.run_script(make(), "pin.js").map(|v| cx.display(v))
+                        });
                         runs.push((r, take_output(), delta(before)));
                     }
                     runs
@@ -3265,10 +3300,14 @@ mod placement_b {
                     iso.register_host_function("bind", 1, bind);
                     take_output();
                     let before = counts();
-                    let r = iso.run_script(make(), "shapes.js").map(|v| iso.display(v));
+                    let r = iso.with_cx_checkpoint(|cx| {
+                        cx.run_script(make(), "shapes.js").map(|v| cx.display(v))
+                    });
                     let hot = (r, take_output(), delta(before));
                     let before = counts();
-                    let r = iso.run_script(cold(), "cold.js").map(|v| iso.display(v));
+                    let r = iso.with_cx_checkpoint(|cx| {
+                        cx.run_script(cold(), "cold.js").map(|v| cx.display(v))
+                    });
                     let cold_run = (r, take_output(), delta(before));
                     // The budget poll: with 1 unit left, `call_fast` goes cold at once.
                     iso.cx.budget = 1;
@@ -3309,7 +3348,7 @@ mod placement_b {
     }
 
     /// The paths that do not enter (b) code: `[[Construct]]` and a call from Rust through
-    /// `call::call_with` (`Isolate::call`) throw "not implemented", as for placement (a);
+    /// `call::call_with` (`call_raw`, as `Cx::call`) throw "not implemented", as for placement (a);
     /// `call_from_rust` enters it (a nested dispatch) and puts the entry state back.
     #[test]
     fn construct_and_isolate_call_refuse_b_code_and_call_from_rust_runs_it() {
@@ -3317,9 +3356,9 @@ mod placement_b {
             let label = d.name();
             run_b(Install::B, config(d, false), move |iso| {
                 let ni = "not implemented in ep9 v0: calling code of this dispatch kind";
-                let p0 = iso.global("p0").unwrap();
+                let p0 = iso.global_raw("p0").unwrap();
                 let e = iso
-                    .call(p0, Value::UNDEFINED, &[Value::int32(1)])
+                    .call_raw(p0, Value::UNDEFINED, &[Value::int32(1)])
                     .unwrap_err();
                 assert!(e.message.contains(ni), "{label}: {e:?}");
                 let rows = [("id", vec![Lit::Int(3)])];
@@ -3333,7 +3372,10 @@ mod placement_b {
                 s.construct_global("id", one);
                 s.b.return_();
                 let e = iso
-                    .run_script(unit("", vec![s.finish()]), "new.js")
+                    .with_cx_checkpoint(|cx| {
+                        cx.run_script(unit("", vec![s.finish()]), "new.js")
+                            .map(|_| ())
+                    })
                     .unwrap_err();
                 assert!(e.message.contains(ni), "{label}: {e:?}");
                 let before = entry_state(iso);
@@ -3345,11 +3387,15 @@ mod placement_b {
                 } else {
                     "5"
                 };
-                assert_eq!(r.map(|v| iso.display(v)).as_deref(), Ok(want), "{label}");
+                assert_eq!(
+                    r.map(|v| iso.display_raw(v)).as_deref(),
+                    Ok(want),
+                    "{label}"
+                );
                 let n = delta(stub0);
                 assert_eq!(n[0], u64::from(d != Dispatch::Match), "{label}");
                 assert_eq!(entry_state(iso), before, "{label}");
-                let nthrow = iso.global("nthrow").unwrap();
+                let nthrow = iso.global_raw("nthrow").unwrap();
                 let s = string(iso, "rt");
                 let e = crate::call_from_rust(iso, nthrow, Value::UNDEFINED, &[s]).unwrap_err();
                 assert_eq!(e.message, "rt", "{label}");
@@ -3409,7 +3455,9 @@ mod placement_b {
             for stress in [false, true] {
                 let (r, out) = run_b(Install::B, config(d, stress), |iso| {
                     take_output();
-                    let r = iso.run_script(make(), "exc.js").map(|v| iso.display(v));
+                    let r = iso.with_cx_checkpoint(|cx| {
+                        cx.run_script(make(), "exc.js").map(|v| cx.display(v))
+                    });
                     (r, take_output())
                 });
                 let label = format!("{} stress={stress}", d.name());
@@ -3463,7 +3511,9 @@ mod placement_b {
                     let (r, out, n) = run_b(Install::B, config, |iso| {
                         take_output();
                         let before = counts();
-                        let r = iso.run_script(make(), "full.js").map(|v| iso.display(v));
+                        let r = iso.with_cx_checkpoint(|cx| {
+                            cx.run_script(make(), "full.js").map(|v| cx.display(v))
+                        });
                         (r, take_output(), delta(before))
                     });
                     let label = format!("{} stress={stress} slots={slots}", d.name());
@@ -3515,19 +3565,23 @@ mod placement_b {
                 .spawn(move || {
                     let probe = {
                         let mut iso = isolate(IsolateConfig::default());
-                        iso.run_script(defs(), "defs.js").unwrap();
+                        iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "defs.js").map(|_| ()))
+                            .unwrap();
                         b_stubs(|n, op| offset_in(&iso, n, op))
                     };
                     with_b_stubs(&probe, |code| {
                         let mut iso = isolate(config(d, false));
-                        iso.run_script(defs(), "defs.js").unwrap();
+                        iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "defs.js").map(|_| ()))
+                            .unwrap();
                         for (name, range) in NATIVE.iter().zip(code) {
-                            let f = iso.global(name).unwrap();
+                            let f = iso.global_raw(name).unwrap();
                             // SAFETY: as in `run_b`.
                             unsafe { crate::install_native_b(&iso, f, range.clone()) }.unwrap();
                         }
                         take_output();
-                        let r = iso.run_script(rec_unit(), "rec.js").map(|v| iso.display(v));
+                        let r = iso.with_cx_checkpoint(|cx| {
+                            cx.run_script(rec_unit(), "rec.js").map(|v| cx.display(v))
+                        });
                         (r, take_output())
                     })
                 })
@@ -3685,7 +3739,10 @@ mod placement_b {
                     let (script, rust, n) = on_big_stack(move || {
                         let offs = {
                             let mut iso = isolate(IsolateConfig::default());
-                            iso.run_script(this_defs(), "this.js").unwrap();
+                            iso.with_cx_checkpoint(|cx| {
+                                cx.run_script(this_defs(), "this.js").map(|_| ())
+                            })
+                            .unwrap();
                             offset_in(&iso, "callr", Opcode::CallProperty1)
                         };
                         let stubs = if b {
@@ -3705,9 +3762,12 @@ mod placement_b {
                         };
                         with_b_stubs(&stubs, |code| {
                             let mut iso = isolate(config(d, stress));
-                            iso.run_script(this_defs(), "this.js").unwrap();
+                            iso.with_cx_checkpoint(|cx| {
+                                cx.run_script(this_defs(), "this.js").map(|_| ())
+                            })
+                            .unwrap();
                             for (name, range) in THIS_FNS.iter().zip(code) {
-                                let f = iso.global(name).unwrap();
+                                let f = iso.global_raw(name).unwrap();
                                 // SAFETY: `range` holds the stub for `name`, made for the
                                 // install's ABI (b: the handler ABI; a: `NativeEntry`); it stays
                                 // mapped until `with_b_stubs` returns, after the isolate drops.
@@ -3727,11 +3787,13 @@ mod placement_b {
                             }
                             take_output();
                             let before = counts();
-                            let r = iso.run_script(make(), "recv.js").map(|v| iso.display(v));
+                            let r = iso.with_cx_checkpoint(|cx| {
+                                cx.run_script(make(), "recv.js").map(|v| cx.display(v))
+                            });
                             let script = (r, take_output());
                             let mut rust = Vec::new();
                             for (callee, recv, _) in &rows {
-                                let f = iso.global(callee).unwrap();
+                                let f = iso.global_raw(callee).unwrap();
                                 let this = match recv {
                                     Int(i) => Value::int32(*i),
                                     Str(t) => string(&mut iso, t),
@@ -3742,8 +3804,8 @@ mod placement_b {
                                 let r = crate::call_from_rust(&mut iso, f, this, &[x]);
                                 assert_eq!(entry_state(&iso), st);
                                 // `print` shows the value as the script rows do.
-                                let print = iso.global("print").unwrap();
-                                let r = r.and_then(|v| iso.call(print, Value::UNDEFINED, &[v]));
+                                let print = iso.global_raw("print").unwrap();
+                                let r = r.and_then(|v| iso.call_raw(print, Value::UNDEFINED, &[v]));
                                 rust.push(r.map(|_| take_output().concat()).map_err(|e| e.message));
                             }
                             let n = delta(before);
@@ -3841,7 +3903,10 @@ mod placement_b {
                 let (got, alive, seen) = on_big_stack(move || {
                     let offs = {
                         let mut iso = isolate(IsolateConfig::default());
-                        iso.run_script(this_defs(), "this.js").unwrap();
+                        iso.with_cx_checkpoint(|cx| {
+                            cx.run_script(this_defs(), "this.js").map(|_| ())
+                        })
+                        .unwrap();
                         offset_in(&iso, "callr", Opcode::CallProperty1)
                     };
                     let stubs = if b {
@@ -3861,9 +3926,12 @@ mod placement_b {
                     };
                     with_b_stubs(&stubs, |code| {
                         let mut iso = isolate(config(d, false));
-                        iso.run_script(this_defs(), "this.js").unwrap();
+                        iso.with_cx_checkpoint(|cx| {
+                            cx.run_script(this_defs(), "this.js").map(|_| ())
+                        })
+                        .unwrap();
                         for (name, range) in THIS_FNS.iter().zip(code) {
-                            let f = iso.global(name).unwrap();
+                            let f = iso.global_raw(name).unwrap();
                             // SAFETY: as in
                             // `a_primitive_receiver_of_a_sloppy_native_callee_is_wrapped`.
                             let r = unsafe {
@@ -3880,7 +3948,7 @@ mod placement_b {
                             };
                             r.unwrap();
                         }
-                        let ta = iso.global("ta").unwrap();
+                        let ta = iso.global_raw("ta").unwrap();
                         // At each GC while `want` is set: does [base, max(top frame, scratch
                         // top)) hold `want`? The range of `Shared::trace`.
                         let want = Rc::new(Cell::new(0u64));
@@ -3922,7 +3990,7 @@ mod placement_b {
                         assert!(iso.heap().remove_root(id));
                         let got: Vec<Result<String, String>> = out
                             .into_iter()
-                            .map(|r| r.map(|v| iso.display(v)).map_err(|e| e.message))
+                            .map(|r| r.map(|v| iso.display_raw(v)).map_err(|e| e.message))
                             .collect();
                         drop(args);
                         iso.collect_garbage();
@@ -3979,7 +4047,8 @@ mod placement_b {
         on_big_stack(move || {
             let one = {
                 let mut iso = isolate(IsolateConfig::default());
-                iso.run_script(defs(), "defs.js").unwrap();
+                iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "defs.js").map(|_| ()))
+                    .unwrap();
                 let off = |n: &str, op: Opcode| offset_in(&iso, n, op);
                 let mut v = match tier {
                     Tier::B => b_stubs(off),
@@ -3994,8 +4063,12 @@ mod placement_b {
             let all: Vec<Vec<u8>> = one.iter().chain(&one).cloned().collect();
             with_b_stubs(&all, |code| {
                 let mut iso = isolate(config);
-                iso.run_script(defs(), "defs.js").unwrap();
-                iso.run_script(entry_defs(), "entry-defs.js").unwrap();
+                iso.with_cx_checkpoint(|cx| cx.run_script(defs(), "defs.js").map(|_| ()))
+                    .unwrap();
+                iso.with_cx_checkpoint(|cx| {
+                    cx.run_script(entry_defs(), "entry-defs.js").map(|_| ())
+                })
+                .unwrap();
                 iso.with_cx(|cx| {
                     let a = cx.global();
                     let b = cx.create_realm()?;
@@ -4018,8 +4091,8 @@ mod placement_b {
                 let n = all_native().len();
                 for (i, name) in all_native().into_iter().enumerate() {
                     for (f, range) in [
-                        (iso.global(name).unwrap(), &code[i]),
-                        (iso.global(&format!("{name}B")).unwrap(), &code[n + i]),
+                        (iso.global_raw(name).unwrap(), &code[i]),
+                        (iso.global_raw(&format!("{name}B")).unwrap(), &code[n + i]),
                     ] {
                         // SAFETY: `range` holds the stub for `name` (the stubs of both realms
                         // are the same bytes; one unit, so one set of bytecode offsets), which
@@ -4088,7 +4161,7 @@ mod placement_b {
     /// Names a result: "A" or "B" for the global object of the first or second realm, an
     /// int32 as its number, an exception as "Err(message)".
     fn realm_name(iso: &Isolate, r: Result<u64, Exception>) -> String {
-        let b = iso.global("other").unwrap().to_bits();
+        let b = iso.global_raw("other").unwrap().to_bits();
         match r {
             Ok(v) if v == iso.rt.global() => "A".to_string(),
             Ok(v) if v == b => "B".to_string(),
@@ -4164,16 +4237,19 @@ mod placement_b {
                         row(iso, s);
                         // Rust (first realm current) -> native of the second realm.
                         let u = Value::UNDEFINED;
-                        let recv_b = iso.global("recvB").unwrap();
+                        let recv_b = iso.global_raw("recvB").unwrap();
                         let r = crate::call_from_rust(iso, recv_b, u, &[]).map(Value::to_bits);
                         let s = realm_name(iso, r);
                         row(iso, s);
-                        let (g_b, recv) = (iso.global("gB").unwrap(), iso.global("recv").unwrap());
+                        let (g_b, recv) = (
+                            iso.global_raw("gB").unwrap(),
+                            iso.global_raw("recv").unwrap(),
+                        );
                         let r = crate::call_from_rust(iso, g_b, u, &[recv, Value::int32(0)])
                             .map(Value::to_bits);
                         let s = realm_name(iso, r);
                         row(iso, s);
-                        let nthrow_b = iso.global("nthrowB").unwrap();
+                        let nthrow_b = iso.global_raw("nthrowB").unwrap();
                         let r = crate::call_from_rust(iso, nthrow_b, u, &[Value::int32(6)])
                             .map(Value::to_bits);
                         let s = realm_name(iso, r);

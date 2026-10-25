@@ -335,7 +335,7 @@ pub(crate) fn call_function(cx: &mut Cx, f: u64, this: u64, args: &[u64]) -> Res
 /// Call(F, thisArg, args) or the call step of `[[Construct]]` (`new_target` not undefined)
 /// from Rust, with `argc` arguments that `arg(i)` reads. The arguments are copied once, into
 /// the callee frame, before the first GC point; `arg` may read the caller's frame or scratch
-/// area (H20 `call_args`), or memory that the GC does not scan (`Isolate::call`).
+/// area (H20 `call_args`), or memory that the GC does not scan (`native::call_from_rust`).
 /// A bound `f` (§10.4.1.1 `[[Call]]`) calls its innermost target with the bound `this` and
 /// the bound arguments in front; its `[[Construct]]` goes through [`construct_with`].
 pub(crate) fn call_with(
@@ -471,8 +471,8 @@ fn call_bytecode(
     let bound_this = try_bind_this(fi, this, rt.global());
     let saved = rt.stack().scratch_top();
     let base = top_of(cx, caller);
-    // No GC point before the push: `arg` may read memory that the GC does not scan (the heap
-    // copy of `Isolate::call`, the embedder slice of `native::call_from_rust`), so the frame
+    // No GC point before the push: `arg` may read memory that the GC does not scan (the
+    // embedder slice of `native::call_from_rust`, the tests' `call_raw`), so the frame
     // copies the arguments first. A receiver to wrap goes in as it is, for now.
     // SAFETY: `base` is the first free slot above the current top frame and its scratch area.
     let fp = unsafe {

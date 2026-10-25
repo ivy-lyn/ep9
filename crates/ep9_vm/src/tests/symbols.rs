@@ -107,8 +107,9 @@ fn run_sym(make: fn() -> VerifiedUnit) -> SymRun {
                 let mut iso = symbol_isolate(d, stress);
                 take_output();
                 let r = iso
-                    .run_script(make(), "symbols.js")
-                    .map(|v| iso.display(v))
+                    .with_cx_checkpoint(|cx| {
+                        cx.run_script(make(), "symbols.js").map(|v| cx.display(v))
+                    })
                     .map_err(|e| e.message);
                 let out = take_output();
                 iso.collect_garbage();

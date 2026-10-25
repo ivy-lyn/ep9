@@ -12,7 +12,7 @@
 //!   --load_entry--> LoadedUnit (Runtime::units, never freed) + a closure of function 0
 //!   --Call--> direct eval: closure over the caller's current context (the receiver is not read)
 //!             indirect eval, Function(): no context, this = the global this
-//!             evaluate_script: no context, this = the global object (as Isolate::run_script)
+//!             evaluate_script: no context, this = the global object (as Cx::run_script)
 //! ```
 //!
 //! | Compile failure (D7) | Thrown |
@@ -26,7 +26,7 @@
 //! Every unit made here stays loaded until the isolate drops (`Runtime::units` only grows):
 //! each eval or `Function()` call costs its unit (P3-EVAL-VM task 8).
 
-use ep9_bytecode::{EvalContext, FunctionCtorKind, VerifiedUnit};
+use ep9_bytecode::{CodeKind, EvalContext, FunctionCtorKind, VerifiedUnit};
 use ep9_value::{JsResult, Throw};
 
 use super::{Args, Cx, JsFunction, JsString, Local};
@@ -52,7 +52,7 @@ const FUNCTION_FILE: &str = "<anonymous>";
 
 impl<'s> Cx<'s> {
     /// Runs `source` as a sloppy Script (ScriptEvaluation, §16.1.6) through the compiler hook
-    /// `compile_script`: the unit is loaded as [`Isolate::run_script`](crate::Isolate::run_script)
+    /// `compile_script`: the unit is loaded as [`Cx::run_script`](crate::Cx::run_script)
     /// loads one, and runs with `this` = the global object. `file` names the unit in stack
     /// traces. The result is the value the script's entry function returns (undefined for a
     /// script).
@@ -109,7 +109,7 @@ impl<'s> Cx<'s> {
         }
     }
 
-    /// Loads `unit` as [`Isolate::run_script`](crate::Isolate::run_script) does, with the
+    /// Loads `unit` as [`Cx::run_script`](crate::Cx::run_script) does, with the
     /// receiver flags `receiver` (direct eval code; the default for everything else), and
     /// returns a closure of its function 0 over `context` (undefined: no context). GC point
     /// (the unit's strings and constants, the closure).
@@ -124,6 +124,11 @@ impl<'s> Cx<'s> {
         let index = u32::try_from(rt.units.borrow().len()).expect("fewer than 2^32 units");
         let mut lu = LoadedUnit::load(rt, unit, file.to_string(), index);
         lu.eval_receiver = receiver;
+        if lu.unit.header.code_kind == CodeKind::Eval {
+            // The ScriptOrModule of the code that runs eval or `Function()` now: `import()`
+            // in the new code and in its functions resolves from there (M3-P3).
+            lu.script_or_module = Some(crate::module::eval_referrer(rt, context));
+        }
         let entry: *const FunctionInfo = &lu.infos[0];
         rt.units.borrow_mut().push(lu);
         Self::local(object::new_function(rt, entry, context))

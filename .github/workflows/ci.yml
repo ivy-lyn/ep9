@@ -8,9 +8,11 @@
 #                      ep9_vm spike-native tests (Spike B native entry)
 #   test262 .......... parse and exec runners vs expectations/;      (4 targets)
 #                      exec with eager feedback; bytecodegen corpus
-#                      digest (G1); on Linux x64 also exec with
-#                      GC-stress + eager feedback, the debug corpus
-#                      digest and the atom-key gate (G2, debug exec)
+#                      digest (G1), debug too (not windows-x64); the
+#                      nesting-cap tests (not windows-x64); on Linux
+#                      x64 also the atom-key gate (G2, debug exec);
+#                      the m0-exit inputs as an artifact
+#   test262-gc ....... exec with GC-stress + eager feedback, 6 shards (4 targets)
 #   fp-check ......... no libm call, no FMA outside ep9_math (H36);  (Linux x64)
 #                      SoftFma vs hardware FMA
 #   disasm ........... ep9_vm handler check (H15); ep9_heap barrier  (4 targets)
@@ -138,11 +140,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # linux-x64 also runs exec under GC-stress (> 115 min after M3-P2: 300-min limit, decision
-        # M3-P2-CI-GC-TIMEOUT; sharding is M3-P3 GATES-2), the debug corpus digest and atom-key gate.
+        # linux-x64 also runs the atom-key gate (a debug exec run). GC-stress runs in the test262-gc
+        # job (M3-P3 GATES-2), so this job no longer needs the 300-min limit of M3-P2-CI-GC-TIMEOUT.
         include:
           - { name: macos-arm64, os: macos-15, timeout: 60 }
-          - { name: linux-x64, os: ubuntu-24.04, timeout: 300 }
+          - { name: linux-x64, os: ubuntu-24.04, timeout: 90 }
           - { name: linux-arm64, os: ubuntu-24.04-arm, timeout: 60 }
           - { name: windows-x64, os: windows-2025, timeout: 60 }
     runs-on: ${{ matrix.os }}
@@ -173,7 +175,7 @@ jobs:
         run: bash scripts/sync-bench.sh bench-octane bench-v8v7 bench-jetstream
       # Exit 1 on a regression vs expectations/test262-parse.<host-triple>.txt.
       - name: test262 parse
-        run: cargo run --release --locked -p ep9_test262 -- parse
+        run: cargo run --release --locked -p ep9_test262 -- parse --json test262-parse.json
       # The engine end to end (tools/test262/README.md "exec"): one worker process per CPU, 20 s
       # soft timeout per run (the slowest run takes < 0.5 s on an M-series Mac). Exit 1 on a change
       # vs expectations/test262.<host-triple>.jit.txt. Exit 2 on an infrastructure error (panic,
@@ -186,27 +188,51 @@ jobs:
       - name: test262 exec, eager feedback
         if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
         run: cargo run --release --locked -p ep9_test262 -- exec --feedback-threshold 0 --json test262-exec-eager.json
-      # GC-stress (a collection before every allocation, the heap verifier after each) with eager
-      # feedback, against the same expectation file. The 21 tests of the skip list run past the
-      # timeout under GC-stress (9 of them fail without it too; its header says why each one is
-      # there); the run prints "skipped: 21". A verifier error panics: an infrastructure error,
-      # exit 2 (tools/test262/README.md "exec").
-      - name: test262 exec, GC-stress + eager feedback
-        if: ${{ !cancelled() && steps.sync.outcome == 'success' && matrix.name == 'linux-x64' }}
-        run: >-
-          cargo run --release --locked -p ep9_test262 -- exec --gc-stress 1 --feedback-threshold 0
-          --timeout 60 --skip-list expectations/test262-gc-skip.txt --json test262-exec-gc.json
       # G1 determinism (decision M2-DETERMINISM): every unit of the bytecodegen corpus (test262
       # plus the 3 benchmark pins, 54,522 files) compiles to the same bytes on every target, in
       # release and in debug. The digest over them must equal expectations/bytecode-corpus.digest
       # (crates/ep9_frontend/src/bytecodegen/corpus.rs). The log prints this runner's digest. It
       # changes only with an ABI bump or a codegen change (a BCG-CORPUS row in decisions-log).
+      # The log is an m0-exit input (item 12; CORPUS_CMD in tools/xtask/src/m0_exit.rs): no color,
+      # the start line "m0-exit start: <label>" first and the exit-status line
+      # "m0-exit status: <code>" last, so a killed run (a start with no status) cannot pass.
       - name: bytecodegen corpus digest (release)
         if: ${{ !cancelled() && steps.sync.outcome == 'success' && steps.bench.outcome == 'success' }}
-        run: cargo test -p ep9_frontend --release --locked --lib bytecodegen::corpus -- --ignored --nocapture
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          echo "m0-exit start: corpus release" | tee corpus-release.log
+          rc=0
+          cargo test -p ep9_frontend --release --locked --lib bytecodegen::corpus -- --ignored --nocapture 2>&1 | tee -a corpus-release.log || rc=$?
+          echo "m0-exit status: $rc" | tee -a corpus-release.log
+          exit "$rc"
       - name: bytecodegen corpus digest (debug)
-        if: ${{ !cancelled() && steps.sync.outcome == 'success' && steps.bench.outcome == 'success' && matrix.name == 'linux-x64' }}
-        run: cargo test -p ep9_frontend --locked --lib bytecodegen::corpus -- --ignored --nocapture
+        if: ${{ !cancelled() && steps.sync.outcome == 'success' && steps.bench.outcome == 'success' && matrix.name != 'windows-x64' }}
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          echo "m0-exit start: corpus debug" | tee corpus-debug.log
+          rc=0
+          cargo test -p ep9_frontend --locked --lib bytecodegen::corpus -- --ignored --nocapture 2>&1 | tee -a corpus-debug.log || rc=$?
+          echo "m0-exit status: $rc" | tee -a corpus-debug.log
+          exit "$rc"
+      # M0 exit item 7 (nesting caps, the UTF-16 column): the m0-exit input log of NESTING_CMD
+      # (tools/xtask/src/m0_exit.rs), two cargo runs, each with its start and exit-status lines. The
+      # build + test job runs the same tests; this log is what m0-exit reads for the host column.
+      - name: nesting caps (m0-exit item 7 log)
+        if: ${{ !cancelled() && matrix.name != 'windows-x64' }}
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          echo "m0-exit start: depth_tests" | tee nesting.log
+          rc1=0
+          cargo test --locked -p ep9_frontend --lib depth_tests 2>&1 | tee -a nesting.log || rc1=$?
+          echo "m0-exit status: $rc1" | tee -a nesting.log
+          echo "m0-exit start: nesting_caps cli" | tee -a nesting.log
+          rc2=0
+          cargo test --locked -p ep9_cli --test nesting_caps --test cli 2>&1 | tee -a nesting.log || rc2=$?
+          echo "m0-exit status: $rc2" | tee -a nesting.log
+          [ "$rc1" = 0 ] && [ "$rc2" = 0 ]
       # G2 atom-key gate (W4-KEY-EQ): in a debug build with EP9_ASSERT_ATOM_KEYS=1, every isolate
       # drop panics if a property-key compare looked at string content (crates/ep9_vm/src/atoms.rs),
       # and the runner counts that as a panic. The gate needs "infrastructure errors: 0 (panic 0,
@@ -244,6 +270,83 @@ jobs:
           name: test262-exec-${{ matrix.name }}
           path: test262-exec*.json
           if-no-files-found: ignore
+      # The host-column inputs of `cargo xtask m0-exit` for this target (M3-P3-DRYRUN-CI): --parse,
+      # --exec, --corpus (release, debug), --nesting; the eager run is the T262-EAGER evidence.
+      # The GC-stress shards (--exec-gc) are in the m0-exit-inputs-gc-* artifacts.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: m0-exit-inputs-${{ matrix.name }}
+          path: |
+            test262-parse.json
+            test262-exec.json
+            test262-exec-eager.json
+            corpus-release.log
+            corpus-debug.log
+            nesting.log
+          if-no-files-found: warn
+
+  # GC-stress (a collection before every allocation, the heap verifier after each) with eager
+  # feedback, against the expectation file of each target: M0 exit item 6, on every target
+  # (V8-A22: windows-x64 too). One whole run took about 2 h on the hosted 4-CPU linux-x64 runner
+  # at M3-P2, so it runs as 6 shards, one job each (M3-P3-GC-SHARD). `cargo xtask m0-exit
+  # --gc-shard k/n` prints the test262 path prefixes of shard k: a split of the checkout by file
+  # count that puts every test file in exactly one shard. A filtered run compares only the tests
+  # it ran (tools/test262 expect::diff), and its JSON names every file it ran (run_paths).
+  # m0-exit item 6 checks that each JSON ran and skipped exactly the files of one shard, reads
+  # the n JSON files of a target back as one whole-corpus run, and its Windows cell needs every
+  # windows-x64 shard job green. The
+  # tests of the skip list run past the timeout under GC-stress (its header says why each one is
+  # there). A verifier error panics: an infrastructure error, exit 2 (tools/test262/README.md
+  # "exec"). To change n, change `shards` and the `shard` list together.
+  test262-gc:
+    name: test262 GC-stress (${{ matrix.target.name }}, ${{ matrix.shard }}/${{ matrix.shards }})
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { name: macos-arm64, os: macos-15 }
+          - { name: linux-x64, os: ubuntu-24.04 }
+          - { name: linux-arm64, os: ubuntu-24.04-arm }
+          - { name: windows-x64, os: windows-2025 }
+        shards: [6]
+        shard: [1, 2, 3, 4, 5, 6]
+    runs-on: ${{ matrix.target.os }}
+    timeout-minutes: 90
+    steps:
+      - run: git config --global core.autocrlf false && git config --global core.longpaths true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: third_party/test262
+          key: test262-${{ runner.os }}-${{ hashFiles('third_party/test262.commit', 'third_party/patches/test262/**') }}
+      - run: bash scripts/sync-test262.sh
+      - name: test262 exec, GC-stress + eager feedback
+        env:
+          SHARD: ${{ matrix.shard }}/${{ matrix.shards }}
+        run: |
+          out="$(cargo xtask m0-exit --gc-shard "$SHARD")"
+          set -f
+          # shellcheck disable=SC2206 # one prefix per line; no prefix has a space or a glob
+          prefixes=($out)
+          set +f
+          if [ "${#prefixes[@]}" -eq 0 ]; then
+            echo "::error::cargo xtask m0-exit --gc-shard $SHARD printed no prefix"
+            exit 1
+          fi
+          echo "shard $SHARD: ${#prefixes[@]} path prefixes"
+          cargo run --release --locked -p ep9_test262 -- exec --gc-stress 1 --feedback-threshold 0 \
+            --timeout 60 --skip-list expectations/test262-gc-skip.txt --json test262-exec-gc.json \
+            "${prefixes[@]}"
+      # The --exec-gc input of `cargo xtask m0-exit` (one per shard; pass all n of a target).
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: m0-exit-inputs-gc-${{ matrix.target.name }}-${{ matrix.shard }}-of-${{ matrix.shards }}
+          path: test262-exec-gc.json
+          if-no-files-found: warn
 
   # H36 (docs/plan/10-quality.md section 5): what ships calls no libm function and has no FMA
   # instruction outside ep9_math (tools/xtask/src/fpcheck.rs). fp-check builds the post-LTO

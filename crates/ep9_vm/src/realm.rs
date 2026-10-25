@@ -37,7 +37,7 @@
 //! | `call::call_host` (every host function) | around the host call: a builtin runs in its own realm (H20 R5) |
 //! | `call::call_function_object` (Rust -> JS) | around the nested run |
 //! | `call::run_resumed` (generator resume) | around the nested run |
-//! | `abi/jobs.rs` NewPromiseResolveThenableJob | around the whole job (GetFunctionRealm(then), §27.2.2.2) |
+//! | `abi/jobs.rs` NewPromiseResolveThenableJob, NewPromiseReactionJob | around the whole job (GetFunctionRealm(then), §27.2.2.2; GetFunctionRealm(handler) when the handler is not empty, §27.2.2.1) |
 //!
 //! Caches that hold a realm value: the function shape caches (`shape::function_shape`, its
 //! generator and async forms) check the prototype on each hit, and [`switch`] empties them

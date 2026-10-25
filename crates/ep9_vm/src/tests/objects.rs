@@ -62,7 +62,7 @@ fn run_define(make: fn() -> VerifiedUnit, throws: bool, check: fn(&mut Cx<'_>)) 
         on_big_stack(move || {
             let mut iso = isolate(config(Dispatch::DEFAULT, stress));
             define_setup(&mut iso);
-            match iso.run_script(make(), "define.js") {
+            match iso.with_cx_checkpoint(|cx| cx.run_script(make(), "define.js").map(|_| ())) {
                 Ok(_) => assert!(!throws, "stress={stress}: expected a TypeError"),
                 Err(e) => assert!(
                     throws && e.constructor.as_deref() == Some("TypeError"),
@@ -355,7 +355,8 @@ fn two_literals_with_the_same_keys_share_a_shape_id() {
     for stress in [false, true] {
         on_big_stack(move || {
             let mut iso = isolate(verified(stress));
-            iso.run_script(literals(), "literals.js").unwrap();
+            iso.with_cx_checkpoint(|cx| cx.run_script(literals(), "literals.js").map(|_| ()))
+                .unwrap();
             iso.collect_garbage();
             let rt = &*iso.rt;
             let g = |name: &str| own(rt, rt.global(), name).unwrap();
@@ -1336,11 +1337,14 @@ fn function_cell_infos_have_an_index_form() {
         let mut g = Asm::new(super::meta("g", 0, 0, 0, 0));
         g.b.lda_undefined().return_();
         let mut iso = isolate(verified(false));
-        iso.run_script(unit("", vec![s.finish(), g.finish()]), "t.js")
-            .unwrap();
+        iso.with_cx_checkpoint(|cx| {
+            cx.run_script(unit("", vec![s.finish(), g.finish()]), "t.js")
+                .map(|_| ())
+        })
+        .unwrap();
         let rt = &*iso.rt;
         // Bytecode: (unit, function id) names the info.
-        let gv = iso.global("g").unwrap().to_bits();
+        let gv = iso.global_raw("g").unwrap().to_bits();
         let fi = object::function_info(gv);
         let lu = fi.loaded_unit().expect("a bytecode info has its unit");
         assert!(fi.is_bytecode() && fi.host.is_none());

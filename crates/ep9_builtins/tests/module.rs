@@ -92,7 +92,41 @@ fn compile(src: &str) -> Result<ep9_bytecode::VerifiedUnit, CompileFailure> {
     ep9_frontend::compile(src, SourceOpts::module(), CompileOptions::default()).map_err(failure)
 }
 
-/// An isolate with the table, [`HOOKS`], `print` and `stop`; OUT is empty.
+/// The name of the file of `files` that `spec` names in the module or script `referrer`:
+/// `./` and `../` are relative to the directory of `referrer` (as the CLI resolves paths); a
+/// name that `files` does not have is the error of node's message.
+fn resolve_in(files: Files, referrer: &str, spec: &str) -> Result<String, String> {
+    let mut parts: Vec<&str> = referrer.split('/').collect();
+    parts.pop();
+    for p in spec.split('/') {
+        match p {
+            "." => {}
+            ".." => {
+                parts.pop();
+            }
+            _ => parts.push(p),
+        }
+    }
+    let name = parts.join("/");
+    match source(files, &name) {
+        Some(_) => Ok(name),
+        None => Err(format!(
+            "Cannot find module '{spec}' imported from {referrer}"
+        )),
+    }
+}
+
+/// `createRealm()`: the global object of a new realm (`Cx::create_realm`).
+fn create_realm<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Ok(cx.create_realm()?.into())
+}
+
+/// An isolate with the table, [`HOOKS`], `print`, `stop` and `createRealm`; OUT is empty.
 fn new_isolate(dispatch: Dispatch, stress: bool) -> Isolate {
     let mut iso = Isolate::new(IsolateConfig {
         heap: HeapConfig {
@@ -108,6 +142,7 @@ fn new_isolate(dispatch: Dispatch, stress: bool) -> Isolate {
     .expect("an isolate");
     iso.register_host_function("print", 1, print);
     iso.register_host_function("stop", 0, stop);
+    iso.register_host_function("createRealm", 0, create_realm);
     TERM.with(|t| *t.borrow_mut() = Some(iso.terminate_handle()));
     OUT.with(|o| o.borrow_mut().clear());
     iso
@@ -117,27 +152,40 @@ fn new_isolate(dispatch: Dispatch, stress: bool) -> Isolate {
 /// isolate, a microtask checkpoint after each: the printed lines, and after each entry that
 /// throws, a line "uncaught Name: message". Then collects and verifies the heap.
 fn run_in(files: Files, entries: &[&str], dispatch: Dispatch, stress: bool) -> Vec<String> {
+    run_in_with(files, entries, dispatch, stress, false)
+}
+
+/// [`run_in`]; with `host`, the runs and their checkpoints are inside
+/// `Isolate::with_module_host` with the same hooks (as the CLI runs a module).
+fn run_in_with(
+    files: Files,
+    entries: &[&str],
+    dispatch: Dispatch,
+    stress: bool,
+    host: bool,
+) -> Vec<String> {
     let mut iso = new_isolate(dispatch, stress);
-    for entry in entries {
-        let unit = compile(source(files, entry).expect("an entry file")).expect("compiles");
-        let mut resolve = |referrer: &str, spec: &str| -> Result<String, String> {
-            let name = spec.strip_prefix("./").unwrap_or(spec);
-            match source(files, name) {
-                Some(_) => Ok(name.to_string()),
-                None => Err(format!(
-                    "Cannot find module '{spec}' imported from {referrer}"
-                )),
+    let run = |iso: &mut Isolate| {
+        for entry in entries {
+            let unit = compile(source(files, entry).expect("an entry file")).expect("compiles");
+            let mut resolve = |referrer: &str, spec: &str| resolve_in(files, referrer, spec);
+            let mut load = |name: &str| compile(source(files, name).expect("a resolved file"));
+            let r = iso.with_cx(|cx| {
+                cx.run_module(unit, entry, &mut resolve, &mut load)
+                    .map(|_| ())
+            });
+            let c = iso.perform_microtask_checkpoint();
+            if let Err(e) = r.and(c) {
+                OUT.with(|o| o.borrow_mut().push(format!("uncaught {}", e.message)));
             }
-        };
-        let mut load = |name: &str| compile(source(files, name).expect("a resolved file"));
-        let r = iso.with_cx(|cx| {
-            cx.run_module(unit, entry, &mut resolve, &mut load)
-                .map(|_| ())
-        });
-        let c = iso.perform_microtask_checkpoint();
-        if let Err(e) = r.and(c) {
-            OUT.with(|o| o.borrow_mut().push(format!("uncaught {}", e.message)));
         }
+    };
+    if host {
+        let mut resolve = |referrer: &str, spec: &str| resolve_in(files, referrer, spec);
+        let mut load = |name: &str| compile(source(files, name).expect("a resolved file"));
+        iso.with_module_host(&mut resolve, &mut load, run);
+    } else {
+        run(&mut iso);
     }
     let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
     iso.collect_garbage();
@@ -147,10 +195,16 @@ fn run_in(files: Files, entries: &[&str], dispatch: Dispatch, stress: bool) -> V
 
 /// [`run_in`] under every dispatch expansion, with and without GC stress; all runs agree.
 fn run_every(files: Files, entries: &'static [&'static str]) -> Vec<String> {
+    run_every_with(files, entries, false)
+}
+
+/// [`run_in_with`] under every dispatch expansion, with and without GC stress; all runs
+/// agree.
+fn run_every_with(files: Files, entries: &'static [&'static str], host: bool) -> Vec<String> {
     let mut first: Option<(String, Vec<String>)> = None;
     for &d in Dispatch::ALL {
         for stress in [false, true] {
-            let r = common::on_big_stack(move || run_in(files, entries, d, stress));
+            let r = common::on_big_stack(move || run_in_with(files, entries, d, stress, host));
             let label = format!("{} stress={stress}", d.name());
             match &first {
                 None => first = Some((label, r)),
@@ -778,4 +832,791 @@ export function fx() { return 'fx'; }
             "arrow fxk1",
         ])
     );
+}
+
+// ---- M3-P3 IMPORT-TLA ----------------------------------------------------------------------
+
+/// Top-level await (§16.2.1.5.3, the async steps): the importer waits for its async
+/// dependency; a sync sibling and its job run while the dependency awaits; `run_module` runs
+/// checkpoints until the entry settles. Node v24.22.1 prints the same lines.
+#[test]
+fn top_level_await_orders_like_node() {
+    const FILES: Files = &[
+        (
+            "a.js",
+            "import { b } from './b.js';\nimport './c.js';\nprint('a', b);",
+        ),
+        (
+            "b.js",
+            "print('b start');\nawait 0;\nprint('b mid');\nawait Promise.resolve();\nexport const b = 'B';\nprint('b end');",
+        ),
+        (
+            "c.js",
+            "print('c');\nPromise.resolve().then(() => print('c job'));",
+        ),
+    ];
+    assert_eq!(
+        run_every(FILES, &["a.js"]),
+        lines(&["b start", "c", "b mid", "c job", "b end", "a B"])
+    );
+}
+
+/// `import()` in module code (§13.3.10.1): a namespace, a namespace with a `then` export (a
+/// thenable), a load error and a cached evaluation error (rejections), a non-object options
+/// value (TypeError) and a throwing ToString (its error), as node v24.22.1 gives them. A
+/// rejected top-level await is the error of the run.
+#[test]
+fn import_calls_settle_like_node() {
+    const FILES: Files = &[
+        (
+            "d.js",
+            "const ns = await import('./b.js');\nprint('d', ns.b, Object.keys(ns).join());\nconst t = await import('./t.js');\nprint('t', typeof t, t.then === undefined);\ntry { await import('./missing.js'); } catch (e) { print('missing', e.constructor.name); }\ntry { await import('./e.js'); } catch (e) { print('e1', e.message); }\ntry { await import('./e.js'); } catch (e) { print('e2', e.message); }\nimport('./b.js', 1).catch(e => print('opt', e.constructor.name));\nimport({ toString() { throw new RangeError('spec'); } }).catch(e => print('spec', e.constructor.name));",
+        ),
+        ("b.js", "await 0;\nexport const b = 'B';"),
+        ("t.js", "export function then(r) { r(42); }"),
+        ("e.js", "await 0;\nthrow new Error('boom');"),
+    ];
+    assert_eq!(
+        run_every(FILES, &["d.js", "e.js"]),
+        lines(&[
+            "d B b",
+            "t number true",
+            "missing Error",
+            "e1 boom",
+            "e2 boom",
+            "opt TypeError",
+            "spec RangeError",
+            "uncaught Error: boom",
+        ])
+    );
+}
+
+// ---- M3-P3 integration fixer (the review findings TLA-1 to TLA-3) ---------------------------
+
+/// `import()` of a module whose async evaluation finished and that was not the root of an
+/// earlier Evaluate (so it has no `[[TopLevelCapability]]`): Evaluate (§16.2.1.5.3 step
+/// 10.c) fulfills the new promise because the module is `evaluated`, also when its
+/// `[[AsyncEvaluationOrder]]` is done. `d.js` has no TLA but waits for `c.js`; `a2.js` has
+/// TLA. Node v24.22.1 prints the same lines.
+#[test]
+fn import_of_an_evaluated_async_module_settles() {
+    const FILES: Files = &[
+        ("c.js", "print('c start');\nawait null;\nprint('c end');"),
+        ("d.js", "import './c.js';\nprint('d');"),
+        (
+            "m2.js",
+            "import './d.js';\nconst ns = await import('./d.js');\nprint('after import d', Object.keys(ns).length);",
+        ),
+        ("a2.js", "await 0;\nexport const x = 1;"),
+        (
+            "m3.js",
+            "import { x } from './a2.js';\nawait 0;\nconst ns = await import('./a2.js');\nprint('import a2 ok', ns.x, x);",
+        ),
+    ];
+    assert_eq!(
+        run_every(FILES, &["m2.js", "m3.js"]),
+        lines(&[
+            "c start",
+            "c end",
+            "d",
+            "after import d 0",
+            "import a2 ok 1 1",
+        ])
+    );
+}
+
+/// `import()` with an import attribute key other than `type` rejects with a TypeError
+/// (EvaluateImportCall: AllImportAttributesSupported is false), also next to a `type` key.
+/// A static import with that key is a SyntaxError ([`load_errors_run_no_module`]). Node
+/// v24.22.1 gives the same errors; its message adds " in <the module URL>".
+#[test]
+fn an_import_call_with_an_unsupported_key_is_a_type_error() {
+    const FILES: Files = &[
+        ("ok.js", "print('never');\nexport const k = 1;"),
+        (
+            "m4.js",
+            "const show = e => print(e.constructor.name, e.message);\nawait import('./ok.js', { with: { foo: 'bar' } }).then(() => print('ok?'), show);\nawait import('./ok.js', { with: { type: 'css', foo: 'bar' } }).then(() => print('ok?'), show);\nawait import('./ok.js', { with: { type: 'css' } }).then(() => print('ok?'), e => print(e.constructor.name));",
+        ),
+    ];
+    assert_eq!(
+        run_every(FILES, &["m4.js"]),
+        lines(&[
+            "TypeError Import attribute \"foo\" with value \"bar\" is not supported",
+            "TypeError Import attribute \"foo\" with value \"bar\" is not supported",
+            "TypeError",
+        ])
+    );
+}
+
+/// A termination after a top-level `await` (in a job: the checkpoint of `run_module`, or the
+/// host's checkpoint after it) also leaves no module that a later run waits for or takes as
+/// evaluated (the M3-P2 ABORTED rule of [`a_terminated_evaluation_is_not_a_success`]): a
+/// later run of the module or of an importer throws the "was terminated" Error, and a later
+/// `import()` of it rejects with that Error. (node has no termination of a module that the
+/// same process imports again; the error text is ep9's.)
+#[test]
+fn a_termination_after_a_top_level_await_is_not_a_success() {
+    const FILES: Files = &[
+        (
+            "half.js",
+            "globalThis.started = true;\nawait 0;\nstop();\nfor (;;) {}\nglobalThis.finished = true;\n",
+        ),
+        (
+            "dep.js",
+            "import './half.js';\nprint('dep runs', globalThis.started, globalThis.finished);\n",
+        ),
+        (
+            "dyn.js",
+            "import('./half.js').then(() => print('dyn ok'), e => print('dyn err', e.message));\nawait 0; await 0; await 0; await 0;\nprint('dyn end');\n",
+        ),
+        // The termination in the host's checkpoint after the run: `spawn.js` runs to its end
+        // and `half2.js` evaluates in a job of `import()`.
+        ("half2.js", "await 0;\nstop();\nfor (;;) {}\n"),
+        ("spawn.js", "import('./half2.js');\nprint('spawn');\n"),
+        ("dep2.js", "import './half2.js';\nprint('dep2 runs');\n"),
+    ];
+    let aborted = "the evaluation of module half.js was terminated";
+    assert_eq!(
+        run_every(
+            FILES,
+            &[
+                "half.js", "half.js", "dep.js", "dyn.js", "spawn.js", "dep2.js"
+            ]
+        ),
+        lines(&[
+            "uncaught execution terminated",
+            &format!("uncaught Error: {aborted}"),
+            &format!("uncaught Error: {aborted}"),
+            &format!("dyn err {aborted}"),
+            "dyn end",
+            "spawn",
+            "uncaught execution terminated",
+            "uncaught Error: the evaluation of module half2.js was terminated",
+        ])
+    );
+}
+
+/// A module body that waits for a promise outside the job queue goes on after the
+/// termination that made its module aborted (as any async function does), but the module
+/// stays aborted: its late settlement changes no record, and a later importer throws the
+/// "was terminated" Error.
+#[test]
+fn an_aborted_async_module_stays_aborted() {
+    const FILES: Files = &[
+        (
+            "half3.js",
+            "await new Promise(r => { globalThis.resume = r; });\nprint('half3 resumed');\n",
+        ),
+        (
+            "e.js",
+            "import('./half3.js');\nawait 0;\nstop();\nfor (;;) {}\n",
+        ),
+        ("r.js", "globalThis.resume();\nprint('r');\n"),
+        ("dep3.js", "import './half3.js';\nprint('dep3 runs');\n"),
+    ];
+    assert_eq!(
+        run_every(FILES, &["e.js", "r.js", "dep3.js"]),
+        lines(&[
+            "uncaught execution terminated",
+            "r",
+            "half3 resumed",
+            "uncaught Error: the evaluation of module half3.js was terminated",
+        ])
+    );
+}
+
+/// The isolate's list of async modules drops the finished ones when it is full, and keeps
+/// the pending ones: `never.js` waits forever from the second entry on, the list is full at
+/// the run of `l2.js` (4 entries), and the termination in `t.js` still makes `never.js`
+/// aborted, so `dep4.js` throws the "was terminated" Error (not the "never settled" one).
+#[test]
+fn the_async_module_list_keeps_the_pending_modules() {
+    const FILES: Files = &[
+        ("w.js", "import('./never.js');\nawait 0;\n"),
+        (
+            "never.js",
+            "await new Promise(() => {});\nprint('never');\n",
+        ),
+        ("l0.js", "await 0;\n"),
+        ("l1.js", "await 0;\n"),
+        ("l2.js", "await 0;\n"),
+        ("l3.js", "await 0;\n"),
+        ("t.js", "await 0;\nstop();\nfor (;;) {}\n"),
+        ("dep4.js", "import './never.js';\nprint('dep4 runs');\n"),
+    ];
+    assert_eq!(
+        run_every(
+            FILES,
+            &[
+                "w.js", "l0.js", "l1.js", "l2.js", "l3.js", "t.js", "dep4.js"
+            ]
+        ),
+        lines(&[
+            "uncaught execution terminated",
+            "uncaught Error: the evaluation of module never.js was terminated",
+        ])
+    );
+}
+
+// ---- M3-P3 EMBED-MIGRATE step 2: the module host of scripts (`Isolate::with_module_host`) ---
+
+/// Runs the script `script` (named `main.js`) on one isolate inside
+/// `Isolate::with_module_host` with the hooks of [`run_in`] over `files`, a microtask
+/// checkpoint after it; then, after the host is gone, the script `after` with no host. The
+/// printed lines, and "uncaught Name: message" after a run that throws. Then collects and
+/// verifies the heap.
+fn run_script_in(
+    files: Files,
+    script: &str,
+    after: &str,
+    dispatch: Dispatch,
+    stress: bool,
+) -> Vec<String> {
+    let mut iso = new_isolate(dispatch, stress);
+    let mut resolve = |referrer: &str, spec: &str| -> Result<String, String> {
+        let name = spec.strip_prefix("./").unwrap_or(spec);
+        match source(files, name) {
+            Some(_) => Ok(name.to_string()),
+            None => Err(format!(
+                "Cannot find module '{spec}' imported from {referrer}"
+            )),
+        }
+    };
+    let mut load = |name: &str| compile(source(files, name).expect("a resolved file"));
+    let unit = hook_script(script).expect("compiles");
+    let r = iso.with_module_host(&mut resolve, &mut load, |iso| {
+        iso.with_cx_checkpoint(|cx| cx.run_script(unit, "main.js").map(|_| ()))
+    });
+    if let Err(e) = r {
+        OUT.with(|o| o.borrow_mut().push(format!("uncaught {}", e.message)));
+    }
+    let unit = hook_script(after).expect("compiles");
+    if let Err(e) = iso.with_cx_checkpoint(|cx| cx.run_script(unit, "after.js").map(|_| ())) {
+        OUT.with(|o| o.borrow_mut().push(format!("uncaught {}", e.message)));
+    }
+    let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
+    iso.collect_garbage();
+    iso.verify_heap().expect("a valid heap");
+    out
+}
+
+/// `import()` in a script and in a promise job after the script (the host's checkpoint) uses
+/// the hooks of `Isolate::with_module_host`; a module that two imports name is loaded and
+/// evaluated once, and a load error rejects. The first five lines are node v24.22.1's output
+/// for the same script (as a CommonJS file, with `.mjs` modules). After the host is gone,
+/// `import()` throws the v0 not-implemented Error (ep9's own rule, IT-NOHOST).
+#[test]
+fn import_calls_in_scripts_and_jobs_use_the_module_host() {
+    const FILES: Files = &[
+        ("b.js", "print('b');\nexport const b = 'B';"),
+        (
+            "c.js",
+            "import { b } from './b.js';\nexport const c = 'C' + b;",
+        ),
+    ];
+    const SCRIPT: &str = "print('sync');\nimport('./b.js').then(ns => {\n  print('script', ns.b);\n  return import('./c.js');\n}).then(ns => {\n  print('job', ns.c);\n  return import('./missing.js');\n}).catch(e => print('missing', e.constructor.name));";
+    const AFTER: &str = "try { import('./b.js'); } catch (e) { print('no host', e.message); }";
+    let mut first: Option<(String, Vec<String>)> = None;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let r = common::on_big_stack(move || run_script_in(FILES, SCRIPT, AFTER, d, stress));
+            let label = format!("{} stress={stress}", d.name());
+            match &first {
+                None => first = Some((label, r)),
+                Some((l0, r0)) => assert_eq!(&r, r0, "{label} differs from {l0}"),
+            }
+        }
+    }
+    assert_eq!(
+        first.expect("at least one dispatch").1,
+        lines(&[
+            "sync",
+            "b",
+            "script B",
+            "job CB",
+            "missing Error",
+            "no host not implemented in ep9 v0: DynamicImport",
+        ])
+    );
+}
+
+// ---- M3-P3 fix round 2 (the Codex findings C-TLA2 to C-TLA6) -------------------------------
+
+/// `import()` in a job of a module run (C-TLA2): in a promise job after a synchronous entry,
+/// and in a module that `import()` evaluates in a job. `Cx::run_module` ends with a microtask
+/// checkpoint while its hooks are the module host, so both load through them, also with no
+/// `Isolate::with_module_host` around the run (before the fix they threw the v0
+/// "DynamicImport" Error after the run). Inside `with_module_host` (as the CLI runs) the
+/// output is the same. Node v24.22.1 prints the same lines for each entry.
+#[test]
+fn import_calls_in_jobs_of_a_module_run_use_its_hooks() {
+    const FILES: Files = &[
+        ("b.js", "print('b');\nexport const b = 'B';"),
+        ("c.js", "print('c');\nexport const c = 'C';"),
+        (
+            "s.js",
+            "Promise.resolve().then(() => import('./b.js')).then(ns => print('deferred', ns.b), e => print('err', e.message));\nprint('s');",
+        ),
+        (
+            "n1.js",
+            "print('n1');\nimport('./c.js').then(m => print('n1 got', m.c), e => print('n1 err', e.message));\nexport const v = 'V';",
+        ),
+        (
+            "n.js",
+            "import('./n1.js').then(ns => print('n', ns.v), e => print('n err', e.message));\nprint('n sync');",
+        ),
+    ];
+    let expected = lines(&[
+        "s",
+        "b",
+        "deferred B",
+        "n sync",
+        "n1",
+        "c",
+        "n V",
+        "n1 got C",
+    ]);
+    assert_eq!(run_every_with(FILES, &["s.js", "n.js"], false), expected);
+    assert_eq!(run_every_with(FILES, &["s.js", "n.js"], true), expected);
+}
+
+/// `import()` from a function of another realm (C-TLA3): the function made by
+/// `new other.Function(...)` in `r.js` has `r.js` as its ScriptOrModule, so its import of
+/// `./dep.js` gives the module that `r.js` loaded (HostLoadImportedModule, §16.2.1.10: one
+/// referrer and specifier give one module; the same for a function that `other.eval` makes),
+/// and the promise is of the other realm
+/// (EvaluateImportCall: %Promise% of the current realm). A module that such a call loads
+/// first (`fresh.js`) is in `r.js`'s realm: its objects and functions are of that realm,
+/// and `r.js`'s own import of it later gives the same namespace. Before the fix, ep9 made a
+/// second record of each module in the other realm's map (`same false false`). The expected
+/// lines follow the spec (node's `vm` realms have no import() of the main module map).
+#[test]
+fn an_import_call_from_another_realm_uses_the_referrer_module_map() {
+    const FILES: Files = &[
+        ("dep.js", "export const o = {};"),
+        (
+            "fresh.js",
+            "export const arr = [];\nexport function fn() {}\nexport function g() { return globalThis; }",
+        ),
+        (
+            "r.js",
+            "import * as a from './dep.js';\nconst other = createRealm();\nconst p = new other.Function(\"return import('./dep.js')\")();\nprint('promise realm', p instanceof other.Promise, p instanceof Promise);\nconst ns = await p;\nprint('same', ns === a, ns.o === a.o);\nprint('eval same', (await other.eval(\"(function () { return import('./dep.js'); })\")()) === a);\nconst f = await new other.Function(\"return import('./fresh.js')\")();\nprint('fresh realm', Object.getPrototypeOf(f.arr) === Array.prototype, Object.getPrototypeOf(f.fn) === Function.prototype, f.g() === globalThis);\nprint('fresh same', (await import('./fresh.js')) === f);",
+        ),
+    ];
+    assert_eq!(
+        run_every(FILES, &["r.js"]),
+        lines(&[
+            "promise realm true false",
+            "same true true",
+            "eval same true",
+            "fresh realm true true true",
+            "fresh same true",
+        ])
+    );
+}
+
+/// A function made by eval code or by `Function()` keeps the ScriptOrModule of the code that
+/// made it (C-TLA4; OrdinaryFunctionCreate §10.2.3, PerformEval §19.2.1.1): called from
+/// `main.js`, its `import('./dep.js')` still resolves from `sub/creator.js` (indirect eval,
+/// `Function()`, `Function()` in indirect eval code, direct eval). Indirect eval code in
+/// `main.js` resolves from `main.js`. Before the fix, ep9 took the caller (`main.js`) for
+/// the first three and loaded `dep.js` (`root`). Node v24.22.1 prints the same lines.
+#[test]
+fn functions_made_by_eval_code_import_from_their_maker() {
+    const FILES: Files = &[
+        ("dep.js", "export const where = 'root';"),
+        ("sub/dep.js", "export const where = 'sub';"),
+        (
+            "sub/creator.js",
+            "export function make() { return (0, eval)(\"(function () { return import('./dep.js'); })\"); }\nexport function makeFn() { return new Function(\"return import('./dep.js')\"); }\nexport function makeNested() { return (0, eval)(\"new Function(\\\"return import('./dep.js')\\\")\"); }\nexport function makeDirect() { return eval(\"(function () { return import('./dep.js'); })\"); }",
+        ),
+        (
+            "main.js",
+            "import { make, makeFn, makeNested, makeDirect } from './sub/creator.js';\nconst show = (tag) => [ns => print(tag, ns.where), e => print(tag, 'err', e.message)];\nawait make()().then(...show('indirect eval'));\nawait makeFn()().then(...show('Function'));\nawait makeNested()().then(...show('Function in eval code'));\nawait makeDirect()().then(...show('direct eval'));\nawait (0, eval)(\"import('./dep.js')\").then(...show('main eval'));",
+        ),
+    ];
+    assert_eq!(
+        run_every(FILES, &["main.js"]),
+        lines(&[
+            "indirect eval sub",
+            "Function sub",
+            "Function in eval code sub",
+            "direct eval sub",
+            "main eval root",
+        ])
+    );
+}
+
+/// `import()` attributes (C-TLA6; EvaluateImportCall step 10, ES2025): EnumerableOwnProperties
+/// of the `with` object runs every getter first (a throw is the rejection), and only then
+/// the value check (a non-string value is a TypeError). Before the fix, ep9 checked each
+/// value as it read it: case `a` skipped the getter and rejected with a TypeError, case `b`
+/// did not run `get z`. Node v24.22.1 prints the same lines.
+#[test]
+fn import_attributes_run_every_getter_before_the_checks() {
+    const FILES: Files = &[
+        ("dep.js", "export const d = 1;"),
+        (
+            "at.js",
+            "const show = (tag) => [() => print(tag, 'ok'), e => print(tag, typeof e === 'object' ? e.constructor.name : e)];\nawait import('./dep.js', { with: { type: 1, get later() { print('getter'); throw 42; } } }).then(...show('a'));\nawait import('./dep.js', { with: { get type() { print('get type'); return 1; }, get z() { print('get z'); return 'x'; } } }).then(...show('b'));\nawait import('./dep.js', { with: { foo: 1, get z() { print('get z2'); return 'x'; } } }).then(...show('c'));\nconst w = { get a() { delete this.b; return 'x'; }, b: 1 };\nawait import('./dep.js', { with: w }).then(...show('d'));",
+        ),
+    ];
+    assert_eq!(
+        run_every(FILES, &["at.js"]),
+        lines(&[
+            "getter",
+            "a 42",
+            "get type",
+            "get z",
+            "b TypeError",
+            "get z2",
+            "c TypeError",
+            "d TypeError",
+        ])
+    );
+}
+
+/// The module host of `Isolate::with_module_host` belongs to its isolate only
+/// (EM2-HOST-ADDR): code in the call can put a new isolate in its place and drop the old
+/// one, and an isolate made after that can get the old one's address (the test makes 8, so
+/// the allocator is likely to give one of them that address). None has a host: `import()`
+/// throws the v0 not-implemented Error. Before the fix (hosts keyed by the `Runtime`
+/// address), a later isolate used the first one's hooks (`got B`).
+#[test]
+fn a_dropped_isolate_leaves_no_module_host() {
+    const FILES: Files = &[("b.js", "export const b = 'B';")];
+    fn script(tag: &str) -> String {
+        format!(
+            "try {{ import('./b.js').then(ns => print('{tag} got', ns.b), e => print('{tag} err', e.message)); }} catch (e) {{ print('{tag} no host', e.message); }}"
+        )
+    }
+    let mut iso = new_isolate(Dispatch::ALL[0], false);
+    let mut resolve = |referrer: &str, spec: &str| resolve_in(FILES, referrer, spec);
+    let mut load = |name: &str| compile(source(FILES, name).expect("a resolved file"));
+    let run = |iso: &mut Isolate, tag: &str| {
+        let unit = hook_script(&script(tag)).expect("compiles");
+        iso.with_cx_checkpoint(|cx| cx.run_script(unit, "main.js").map(|_| ()))
+            .expect("no throw");
+        OUT.with(|o| core::mem::take(&mut *o.borrow_mut()))
+    };
+    let out = iso.with_module_host(&mut resolve, &mut load, |iso| {
+        let old = std::mem::replace(iso, new_isolate(Dispatch::ALL[0], false));
+        drop(old);
+        let mut out = run(iso, "second");
+        let mut later: Vec<Isolate> = Vec::new();
+        for i in 0..8 {
+            let mut next = new_isolate(Dispatch::ALL[0], false);
+            out.extend(run(&mut next, &format!("later {i}")));
+            later.push(next);
+        }
+        out
+    });
+    let no_host = "not implemented in ep9 v0: DynamicImport";
+    let mut expected = vec![format!("second no host {no_host}")];
+    expected.extend((0..8).map(|i| format!("later {i} no host {no_host}")));
+    assert_eq!(out, expected);
+}
+
+thread_local! {
+    /// The module graph of `runModule` ([`run_module_from_js`]).
+    static GRAPH: std::cell::Cell<Files> = const { std::cell::Cell::new(&[]) };
+}
+
+/// `runModule(name)`: `Cx::run_module` of the file `name` of [`GRAPH`], called from JS (JS
+/// frames are on the stack).
+fn run_module_from_js<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let files = GRAPH.get();
+    let name = cx.to_rust_string(args.get(0))?;
+    let unit = compile(source(files, &name).expect("a file")).expect("compiles");
+    let mut resolve = |referrer: &str, spec: &str| resolve_in(files, referrer, spec);
+    let mut load = |name: &str| compile(source(files, name).expect("a resolved file"));
+    cx.run_module(unit, &name, &mut resolve, &mut load)?;
+    Ok(Local::undefined())
+}
+
+/// `Cx::run_module` from a host function that JS calls (RV-P3F2-1): with JS on the stack,
+/// the run has no microtask checkpoint (a checkpoint needs an empty JS stack). A module with
+/// no top-level `await` runs and the call returns; the jobs that it queued run in the
+/// caller's checkpoint, after the jobs queued before them. A top-level `await` that is
+/// still pending after Evaluate throws the checkpoint's Error, and the module goes on in the
+/// caller's checkpoint (the behaviour before C-TLA2). Before the fix, the call of `p.js`
+/// threw that Error after the module body ran (`caught a microtask checkpoint ...`).
+#[test]
+fn run_module_with_js_on_the_stack_has_no_checkpoint() {
+    const FILES: Files = &[
+        (
+            "p.js",
+            "Promise.resolve().then(() => print('p job'));\nprint('p body');",
+        ),
+        (
+            "t.js",
+            "print('t start');\nawait 0;\nprint('t after await');",
+        ),
+    ];
+    const SCRIPT: &str = "Promise.resolve().then(() => print('script job'));\ntry { runModule('p.js'); print('p returned'); } catch (e) { print('caught', e.message); }\ntry { runModule('t.js'); print('t returned'); } catch (e) { print('t caught', e.message); }\nprint('script end');";
+    let mut first: Option<(String, Vec<String>)> = None;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let r = common::on_big_stack(move || {
+                let mut iso = new_isolate(d, stress);
+                iso.register_host_function("runModule", 1, run_module_from_js);
+                GRAPH.set(FILES);
+                let unit = hook_script(SCRIPT).expect("compiles");
+                let r = iso.with_cx_checkpoint(|cx| cx.run_script(unit, "main.js").map(|_| ()));
+                if let Err(e) = r {
+                    OUT.with(|o| o.borrow_mut().push(format!("uncaught {}", e.message)));
+                }
+                let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
+                iso.collect_garbage();
+                iso.verify_heap().expect("a valid heap");
+                out
+            });
+            let label = format!("{} stress={stress}", d.name());
+            match &first {
+                None => first = Some((label, r)),
+                Some((l0, r0)) => assert_eq!(&r, r0, "{label} differs from {l0}"),
+            }
+        }
+    }
+    assert_eq!(
+        first.expect("at least one dispatch").1,
+        lines(&[
+            "p body",
+            "p returned",
+            "t start",
+            "t caught a microtask checkpoint needs an empty JS stack",
+            "script end",
+            "script job",
+            "p job",
+            "t after await",
+        ])
+    );
+}
+
+/// A function made by `Function()` in a promise job has a null ScriptOrModule (no script or
+/// module code runs in the job). GetActiveScriptOrModule (§9.4.1) skips a null component, so
+/// its `import('./dep.js')` called from `sub/main.js` resolves from `sub/main.js` (C2-M3).
+/// Before the fix, ep9 stopped at that frame with an empty referrer and loaded the root
+/// `dep.js` (the CLI threw "... imported from "); 2178586 printed `sub`. Node v24.22.1
+/// throws ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING (V8 gives the function no referrer), so the
+/// expected line follows the spec.
+#[test]
+fn a_null_script_or_module_is_skipped_for_the_caller() {
+    const FILES: Files = &[
+        ("dep.js", "export const where = 'root';"),
+        ("sub/dep.js", "export const where = 'sub';"),
+        (
+            "sub/main.js",
+            "const f = await Promise.resolve(\"return import('./dep.js')\").then(Function);\nprint((await f()).where);",
+        ),
+    ];
+    assert_eq!(run_every(FILES, &["sub/main.js"]), lines(&["sub"]));
+}
+
+/// The module graph of [`a_function_keeps_its_referrer_realm_alive`]: `maker.js` runs in a
+/// new realm and imports `dep.js`, which counts its evaluations in `sink.evals` (`sink` is
+/// the main global).
+const KEEP_FILES: Files = &[
+    (
+        "maker.js",
+        "import './dep.js';\nsink.f = new sink.Function(\"return import('./dep.js')\");",
+    ),
+    (
+        "dep.js",
+        "sink.evals = (sink.evals | 0) + 1;\nexport function g() { return globalThis; }",
+    ),
+];
+
+/// [`KEEP_FILES`] with a `sink.f` whose body drops `sink.f` (its only reference) first, then
+/// allocates (under GC stress, collections run while its frame is the only holder of the
+/// realm), then imports `dep.js`.
+const FRAME_FILES: Files = &[
+    (
+        "maker.js",
+        "import './dep.js';\nsink.f = new sink.Function(\"delete sink.f; let a = []; for (let i = 0; i < 50; i++) a.push({ i }); return import('./dep.js')\");",
+    ),
+    (
+        "dep.js",
+        "sink.evals = (sink.evals | 0) + 1;\nexport function g() { return globalThis; }",
+    ),
+];
+
+/// Runs `maker.js` of `files` ([`KEEP_FILES`], [`FRAME_FILES`]) in a new realm and drops
+/// every reference to that realm but the one of `sink.f` (its ScriptOrModule `maker.js`).
+#[inline(never)]
+fn make_cross_realm_importer(iso: &mut Isolate, files: Files) {
+    iso.with_cx(|cx| {
+        let sink = cx.global();
+        let other = cx.create_realm()?;
+        cx.set(other, "sink", sink, true)?;
+        cx.with_realm(other, |cx| {
+            let unit = compile(source(files, "maker.js").expect("a file")).expect("compiles");
+            let mut resolve = |referrer: &str, spec: &str| resolve_in(files, referrer, spec);
+            let mut load = |name: &str| compile(source(files, name).expect("a file"));
+            cx.run_module(unit, "maker.js", &mut resolve, &mut load)
+                .map(|_| ())
+        })
+    })
+    .expect("no throw");
+}
+
+/// A function made by eval code keeps its ScriptOrModule, and so the realm of that module,
+/// alive (C2-M1): `sink.f` is a main-realm function made by `maker.js` of another realm, so
+/// its `import('./dep.js')` gives the `dep.js` of that realm's module map (`g()` returns
+/// that realm's global), also after the realm has no other reference and collections ran.
+/// `dep.js` loads and evaluates once. Before the fix, the realm was held only by a weak
+/// handle: after a collection the import used the main realm's map, and a second `dep.js`
+/// loaded and ran (`after true`, `evals 2`). The realm is held by an edge that the GC traces
+/// from each function of the eval code (C3-M1): without that edge this test fails the same
+/// way.
+#[test]
+fn a_function_keeps_its_referrer_realm_alive() {
+    const SCRIPT: &str = "f().then(ns => print(tag, ns.g() === globalThis, sink.evals));";
+    let mut first: Option<(String, Vec<String>)> = None;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let r = common::on_big_stack(move || {
+                let mut iso = new_isolate(d, stress);
+                iso.with_cx(|cx| {
+                    let g = cx.global();
+                    cx.set(g, "sink", g, true)
+                })
+                .expect("no throw");
+                make_cross_realm_importer(&mut iso, KEEP_FILES);
+                let mut resolve =
+                    |referrer: &str, spec: &str| resolve_in(KEEP_FILES, referrer, spec);
+                let mut loads = 0;
+                let mut load = |name: &str| {
+                    loads += 1;
+                    compile(source(KEEP_FILES, name).expect("a file"))
+                };
+                iso.with_module_host(&mut resolve, &mut load, |iso| {
+                    for tag in ["before", "after"] {
+                        let src = format!("var tag = '{tag}';\n{SCRIPT}");
+                        let unit = hook_script(&src).expect("compiles");
+                        iso.with_cx_checkpoint(|cx| cx.run_script(unit, "main.js").map(|_| ()))
+                            .expect("no throw");
+                        for _ in 0..3 {
+                            iso.collect_garbage();
+                        }
+                    }
+                });
+                let mut out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
+                out.push(format!("loads {loads}"));
+                iso.verify_heap().expect("a valid heap");
+                out
+            });
+            let label = format!("{} stress={stress}", d.name());
+            match &first {
+                None => first = Some((label, r)),
+                Some((l0, r0)) => assert_eq!(&r, r0, "{label} differs from {l0}"),
+            }
+        }
+    }
+    assert_eq!(
+        first.expect("at least one dispatch").1,
+        lines(&["before false 1", "after false 1", "loads 0"])
+    );
+}
+
+/// A running frame of eval code keeps its referrer realm alive when no reference to its
+/// function is left (C3-M1): `sink.f` of [`FRAME_FILES`] deletes `sink.f`, allocates (GC
+/// stress collects there), then imports `dep.js`. The import gives the `dep.js` of the
+/// maker's realm, loaded and evaluated once. The frame's callee slot (a VM stack root) marks
+/// the function, and the function marks the realm.
+#[test]
+fn a_running_frame_keeps_its_referrer_realm_alive() {
+    const SCRIPT: &str =
+        "sink.f().then(ns => print(ns.g() === globalThis, sink.evals, typeof sink.f));";
+    let mut first: Option<(String, Vec<String>)> = None;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let r = common::on_big_stack(move || {
+                let mut iso = new_isolate(d, stress);
+                iso.with_cx(|cx| {
+                    let g = cx.global();
+                    cx.set(g, "sink", g, true)
+                })
+                .expect("no throw");
+                make_cross_realm_importer(&mut iso, FRAME_FILES);
+                let mut resolve =
+                    |referrer: &str, spec: &str| resolve_in(FRAME_FILES, referrer, spec);
+                let mut loads = 0;
+                let mut load = |name: &str| {
+                    loads += 1;
+                    compile(source(FRAME_FILES, name).expect("a file"))
+                };
+                iso.with_module_host(&mut resolve, &mut load, |iso| {
+                    let unit = hook_script(SCRIPT).expect("compiles");
+                    iso.with_cx_checkpoint(|cx| cx.run_script(unit, "main.js").map(|_| ()))
+                        .expect("no throw");
+                });
+                let mut out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
+                out.push(format!("loads {loads}"));
+                iso.verify_heap().expect("a valid heap");
+                out
+            });
+            let label = format!("{} stress={stress}", d.name());
+            match &first {
+                None => first = Some((label, r)),
+                Some((l0, r0)) => assert_eq!(&r, r0, "{label} differs from {l0}"),
+            }
+        }
+    }
+    assert_eq!(
+        first.expect("at least one dispatch").1,
+        lines(&["false 1 undefined", "loads 0"])
+    );
+}
+
+/// Deletes `sink.f` of [`make_cross_realm_importer`]: its realm then has no reference.
+#[inline(never)]
+fn drop_cross_realm_importer(iso: &mut Isolate) {
+    iso.with_cx(|cx| cx.evaluate_script("delete sink.f;", "drop.js").map(|_| ()))
+        .expect("no throw");
+}
+
+/// A referrer realm dies with the last function of the eval code (C3-M1): after the last
+/// reference to `sink.f` goes, a collection frees the maker's realm, its globals and its
+/// module map. Each round makes a new realm with [`KEEP_FILES`], drops `sink.f` and
+/// collects; the marked bytes stay at the value of the first round (the slack allows one
+/// realm that a stale word of the conservative stack scan keeps). With a strong handle per
+/// unit (f5149b1) each round kept its realm: about 80 KB more per round.
+#[test]
+fn a_referrer_realm_dies_with_its_last_function() {
+    const ROUNDS: usize = 6;
+    const SLACK: usize = 40_000;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let marked = common::on_big_stack(move || {
+                let mut iso = new_isolate(d, stress);
+                iso.with_cx(|cx| {
+                    let g = cx.global();
+                    cx.set(g, "sink", g, true)
+                })
+                .expect("no throw");
+                let mut marked = Vec::new();
+                for _ in 0..ROUNDS {
+                    make_cross_realm_importer(&mut iso, KEEP_FILES);
+                    drop_cross_realm_importer(&mut iso);
+                    for _ in 0..3 {
+                        iso.collect_garbage();
+                    }
+                    marked.push(iso.gc_stats().last_marked_bytes);
+                }
+                iso.verify_heap().expect("a valid heap");
+                marked
+            });
+            let label = format!("{} stress={stress}", d.name());
+            assert!(
+                marked[ROUNDS - 1] <= marked[0] + SLACK,
+                "{label}: dead realms stay marked: {marked:?}"
+            );
+        }
+    }
 }

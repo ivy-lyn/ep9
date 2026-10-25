@@ -110,22 +110,34 @@ fn queue_then_print() -> VerifiedUnit {
     unit("", vec![s.finish()])
 }
 
-/// `Isolate::run_script` and `Isolate::call` run a checkpoint after the run: the job runs
-/// after the script's own output and before the call returns; the result survives it.
+/// `Isolate::with_cx_checkpoint` runs a checkpoint after its scope, for a run and for a
+/// call: the job runs after the script's own output and before the call returns; the
+/// result that the scope copied out comes back. `with_cx` runs no checkpoint.
 #[test]
-fn run_script_and_call_drain_the_queue() {
+fn with_cx_checkpoint_drains_the_queue_after_a_run_and_a_call() {
     each(|iso, label| {
-        let v = iso.run_script(queue_then_print(), "q.js").unwrap();
-        assert_eq!(iso.display(v), "7", "{label}");
+        let v = iso
+            .with_cx_checkpoint(|cx| {
+                cx.run_script(queue_then_print(), "q.js")
+                    .map(|v| cx.display(v))
+            })
+            .unwrap();
+        assert_eq!(v, "7", "{label}");
         assert_eq!(take_output(), ["script", "job"], "{label}");
-        let q = iso.global("queue").unwrap();
-        let undefined = crate::runtime::val(UNDEFINED);
         let s = iso
             .with_cx(|cx| Ok(cx.display(Local::undefined())))
             .unwrap();
         assert_eq!(s, "undefined");
-        iso.call(q, undefined, &[crate::Value::number(5.0)])
-            .unwrap();
+        let call = |cx: &mut Cx<'_>| {
+            let q = cx.global_binding("queue")?.expect("queue");
+            cx.call(q, Local::undefined(), &[Local::number(5.0)])
+                .map(|_| ())
+        };
+        iso.with_cx(call).unwrap();
+        assert!(take_output().is_empty(), "{label}: with_cx runs no job");
+        iso.perform_microtask_checkpoint().unwrap();
+        assert_eq!(take_output(), ["5"], "{label}");
+        iso.with_cx_checkpoint(call).unwrap();
         assert_eq!(take_output(), ["5"], "{label}");
     });
 }
@@ -174,9 +186,11 @@ fn a_checkpoint_inside_a_host_call_throws() {
     }
     let mut iso = isolate(IsolateConfig::default());
     iso.register_host_function("inner", 0, inner);
-    let f = iso.global("inner").unwrap();
     let e = iso
-        .call(f, crate::runtime::val(UNDEFINED), &[])
+        .with_cx_checkpoint(|cx| {
+            let f = cx.global_binding("inner")?.expect("inner");
+            cx.call(f, Local::undefined(), &[]).map(|_| ())
+        })
         .unwrap_err();
     assert!(e.message.contains("empty JS stack"), "{}", e.message);
 }
@@ -529,16 +543,19 @@ fn doomed_isolate(stress: bool) -> Isolate {
     iso
 }
 
-/// Q1: a run that is itself terminated (`Isolate::run_script`, then `Isolate::call`) drops
-/// the jobs it queued: the queue is empty right after the terminated return, and the next
-/// run of the same isolate does not run them.
+/// Q1: a run that is itself terminated (`Cx::run_script`, then `Cx::call`, each in
+/// `Isolate::with_cx_checkpoint`) drops the jobs it queued: the queue is empty right after
+/// the terminated return, and the next run of the same isolate does not run them.
 #[test]
 fn a_terminated_run_or_call_drops_its_queued_jobs() {
     for stress in [false, true] {
         on_big_stack(move || {
             let mut iso = doomed_isolate(stress);
             let e = iso
-                .run_script(call_global_then_print("doomed", "abandoned"), "a.js")
+                .with_cx_checkpoint(|cx| {
+                    let u = call_global_then_print("doomed", "abandoned");
+                    cx.run_script(u, "a.js").map(|_| ())
+                })
                 .unwrap_err();
             assert!(e.terminated, "{e:?}");
             assert_eq!(
@@ -547,22 +564,25 @@ fn a_terminated_run_or_call_drops_its_queued_jobs() {
                 "run_script: queue dropped"
             );
             assert_eq!(iso.rt.jobs.queue_tail(), UNDEFINED);
-            let v = iso.run_script(print_next(), "b.js").unwrap();
-            assert_eq!(iso.display(v), "1");
+            let v = iso
+                .with_cx_checkpoint(|cx| cx.run_script(print_next(), "b.js").map(|v| cx.display(v)))
+                .unwrap();
+            assert_eq!(v, "1");
             assert_eq!(take_output(), ["next"], "the abandoned job never runs");
 
-            let f = iso.global("doomed").expect("doomed");
             let e = iso
-                .call(
-                    f,
-                    crate::runtime::val(UNDEFINED),
-                    &[crate::Value::number(5.0)],
-                )
+                .with_cx_checkpoint(|cx| {
+                    let f = cx.global_binding("doomed")?.expect("doomed");
+                    cx.call(f, Local::undefined(), &[Local::number(5.0)])
+                        .map(|_| ())
+                })
                 .unwrap_err();
+
             assert!(e.terminated, "{e:?}");
             assert_eq!(iso.rt.jobs.queue_head(), UNDEFINED, "call: queue dropped");
             iso.perform_microtask_checkpoint().unwrap();
-            iso.run_script(print_next(), "c.js").unwrap();
+            iso.with_cx_checkpoint(|cx| cx.run_script(print_next(), "c.js").map(|_| ()))
+                .unwrap();
             assert_eq!(take_output(), ["next"], "the abandoned job never runs");
             iso.collect_garbage();
             iso.verify_heap().unwrap();
@@ -613,17 +633,48 @@ fn a_termination_in_a_job_after_a_script_error_is_reported() {
         on_big_stack(move || {
             let mut iso = doomed_isolate(stress);
             let e = iso
-                .run_script(queue_then_throw("spin"), "a.js")
+                .with_cx_checkpoint(|cx| {
+                    cx.run_script(queue_then_throw("spin"), "a.js").map(|_| ())
+                })
                 .unwrap_err();
             assert!(e.terminated, "the termination wins: {e:?}");
             assert_eq!(iso.rt.jobs.queue_head(), UNDEFINED);
             // An ordinary job error: the script's error wins.
-            let e = iso.run_script(queue_then_throw("fail"), "b.js");
+            let e = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(queue_then_throw("fail"), "b.js").map(|_| ())
+            });
             let e = e.unwrap_err();
             assert!(!e.terminated);
             assert_eq!(e.message, "script error");
-            iso.run_script(print_next(), "c.js").unwrap();
+            iso.with_cx_checkpoint(|cx| cx.run_script(print_next(), "c.js").map(|_| ()))
+                .unwrap();
             assert_eq!(take_output(), ["next"]);
+        });
+    }
+}
+
+/// After a scope that returns `Ok`, a job that throws makes the result of
+/// `Isolate::with_cx_checkpoint` its error, and the jobs behind it stay queued.
+#[test]
+fn a_job_error_after_an_ok_scope_is_the_result() {
+    for stress in [false, true] {
+        on_big_stack(move || {
+            let mut iso = doomed_isolate(stress);
+            let e = iso
+                .with_cx_checkpoint(|cx| {
+                    let fail = cx.global_binding("fail")?.expect("fail");
+                    cx.enqueue_job(fail, Local::undefined())?;
+                    queue_prints(cx, &["behind"])?;
+                    Ok(7)
+                })
+                .unwrap_err();
+            assert!(!e.terminated);
+            assert_eq!(e.message, "TypeError: job error");
+            assert!(take_output().is_empty());
+            iso.perform_microtask_checkpoint().unwrap();
+            assert_eq!(take_output(), ["behind"]);
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
         });
     }
 }

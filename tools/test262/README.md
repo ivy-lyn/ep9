@@ -63,7 +63,7 @@ test262 root. `#` lines are comments.
 
 ## `exec`
 
-Each test runs through the whole engine: `ep9_frontend::compile` -> `ep9_vm::Isolate::run_script`.
+Each test runs through the whole engine: `ep9_frontend::compile` -> `ep9_vm::Cx::run_script` (or `Cx::run_module`) in `Isolate::with_cx_checkpoint`, inside `Isolate::with_module_host` with the test262 loader, so `import()` works in scripts and jobs.
 
 ```text
 parent (exec)                         worker processes (exec-worker), one per thread
@@ -115,7 +115,9 @@ infrastructure error.
 `--skip-list <file>` (only with `--gc-stress`, not with `--update-expectations`) neither runs
 nor counts the listed tests, and the expectation compare ignores them. The run prints
 `skipped: <n>`, and `--json` writes `skipped` (the count) and `skipped_paths` (the sorted paths
-of the skipped tests); an entry that names no test gets a warning. `expectations/test262-gc-skip.txt`
+of the skipped tests); an entry that names no test gets a warning. A run with path prefixes
+also writes `run_paths` (the sorted paths of the tests it ran; a full run leaves it out):
+`cargo xtask m0-exit` item 6 checks with it that each GC-stress shard ran exactly its own files. `expectations/test262-gc-skip.txt`
 lists the 21 tests that run past (or on a busy host can run past) the 60 s timeout under
 GC-stress (9 fail without it too; its header says why each one is there).
 
@@ -163,16 +165,21 @@ matches it).
 
 ### In CI
 
-The `test262` job of `.github/workflows/ci.yml` runs these steps, each against
-`expectations/test262.<target-triple>.jit.txt`:
+The `test262` job of `.github/workflows/ci.yml` runs the first two steps and the `test262-gc`
+job runs the third, each against `expectations/test262.<target-triple>.jit.txt`:
 
 | Step | Command (after `cargo run --release --locked -p ep9_test262 --`) | Where |
 |---|---|---|
 | test262 exec | `exec --json test262-exec.json` | 4 targets |
 | eager feedback | `exec --feedback-threshold 0 --json test262-exec-eager.json` | 4 targets |
-| GC-stress + eager feedback | `exec --gc-stress 1 --feedback-threshold 0 --timeout 60 --skip-list expectations/test262-gc-skip.txt --json test262-exec-gc.json` | Linux x64 |
+| GC-stress + eager feedback | `exec --gc-stress 1 --feedback-threshold 0 --timeout 60 --skip-list expectations/test262-gc-skip.txt --json test262-exec-gc.json <prefixes>` | `test262-gc` job: 4 targets, 6 shards each (one job per shard); `cargo xtask m0-exit --gc-shard k/6` prints the path prefixes of shard k |
 
-A failed job uploads the JSON files (`test262-exec-<target>`). At m0/wk4 b95efd3 (after P2) the
+A failed `test262` job uploads the JSON files (`test262-exec-<target>`). Every run uploads the
+`cargo xtask m0-exit` inputs: `m0-exit-inputs-<target>` (the exec, eager and parse JSON, the
+corpus and nesting logs) and, for each GC-stress shard, `m0-exit-inputs-gc-<target>-<k>-of-6`
+(its `test262-exec-gc.json`).
+
+At m0/wk4 b95efd3 (after P2) the
 GC-stress + eager run on Linux arm64 (Docker on the M5 Max, 18 workers) failed the
 same files as the default run minus the 4 skipped ones: 43,775 failures, 0 new, 0 listed but
 passing, 0 infrastructure errors, `skipped: 4`, wall time 71 s, 18 CPU-minutes. With

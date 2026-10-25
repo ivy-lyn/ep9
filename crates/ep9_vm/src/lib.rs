@@ -88,9 +88,10 @@ mod wrapper;
 mod tests;
 
 pub use abi::{
-    Args, ArgsBuilder, Cx, Downcast, FlatStr, HostFn, IntoKey, JsArray, JsFunction, JsKey,
-    JsObject, JsString, JsSymbol, JsValue, Local, PrimitiveType, PropertyDescriptor, Rest,
-    ScratchList, ToPrimitiveHint,
+    Args, ArgsBuilder, CollectionCursor, Cx, Downcast, FlatStr, HostFn, IntoKey, IteratorRecord,
+    JsArray, JsFunction, JsKey, JsObject, JsString, JsSymbol, JsValue, Local, ObjectClass,
+    PrimitiveType, PromiseCapability, PromiseRejectionOperation, PromiseRejectionTracker,
+    PromiseState, PropertyDescriptor, Rest, ScratchList, ToPrimitiveHint,
 };
 pub use atoms::Atom;
 pub use builtins::{

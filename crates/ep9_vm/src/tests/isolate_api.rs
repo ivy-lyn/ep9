@@ -1,6 +1,7 @@
 //! The `with_cx`-scoped embedding forms (`Cx::run_script`, `Cx::global_binding`,
-//! `Cx::display`), `Isolate::global` and the TDZ, `InterruptHandle::request`, and the heap
-//! limit callback (M2-P3 ISOLATE-API; H20-Q4, H23).
+//! `Cx::display`), the raw global read (`NativeCx::global_value`, the tests' `global_raw`)
+//! and the TDZ, `InterruptHandle::request`, and the heap limit callback (M2-P3 ISOLATE-API;
+//! H20-Q4, H23).
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
@@ -34,8 +35,8 @@ fn globals_script() -> VerifiedUnit {
 
 /// The scoped forms under every dispatch, with and without GC stress: the script's result and
 /// the globals it made survive a collection inside `with_cx`; `global_binding` finds a name
-/// on the global object's prototype chain, which `Isolate::global` (own data properties only)
-/// does not.
+/// on the global object's prototype chain, which the raw read (own data properties only) does
+/// not.
 #[test]
 fn scoped_forms_run_a_script_and_read_globals() {
     for &d in Dispatch::ALL {
@@ -65,10 +66,10 @@ fn scoped_forms_run_a_script_and_read_globals() {
                     "{label}"
                 );
                 assert_eq!(
-                    iso.global("y").map(|v| iso.display(v)).as_deref(),
+                    iso.global_raw("y").map(|v| iso.display_raw(v)).as_deref(),
                     Some("7")
                 );
-                assert!(iso.global("toString").is_none(), "{label}");
+                assert!(iso.global_raw("toString").is_none(), "{label}");
                 iso.collect_garbage();
                 iso.verify_heap().unwrap();
             });
@@ -110,16 +111,18 @@ fn tdz_script() -> VerifiedUnit {
     )
 }
 
-/// After the script fails, `x` stays in its TDZ: `Isolate::global` gives `None` (never the
-/// hole), and `Cx::global_binding` throws the ReferenceError that a read of `x` throws.
+/// After the script fails, `x` stays in its TDZ: the raw read gives `None` (never the hole),
+/// and `Cx::global_binding` throws the ReferenceError that a read of `x` throws.
 #[test]
 fn a_binding_in_its_tdz_is_none_or_a_reference_error() {
     for &d in Dispatch::ALL {
         on_big_stack(move || {
             let mut iso = isolate(config(d, false));
-            let e = iso.run_script(tdz_script(), "tdz.js").unwrap_err();
+            let e = iso
+                .with_cx_checkpoint(|cx| cx.run_script(tdz_script(), "tdz.js").map(|_| ()))
+                .unwrap_err();
             assert_eq!(e.message, "1");
-            assert!(iso.global("x").is_none(), "{}", d.name());
+            assert!(iso.global_raw("x").is_none(), "{}", d.name());
             let e = iso
                 .with_cx(|cx| cx.global_binding("x").map(|_| ()))
                 .unwrap_err();
@@ -184,22 +187,18 @@ fn a_requested_callback_runs_at_the_first_poll() {
             .unwrap();
             assert_eq!(RAN.with(Cell::get), 0, "nothing runs before a poll");
             iso.cx.budget = 3;
-            let r = iso.run_script(loop_then_seen(100), "poll.js");
-            assert_eq!(
-                r.map(|v| iso.display(v)).as_deref(),
-                Ok("1"),
-                "{}",
-                d.name()
-            );
+            let run = |iso: &mut crate::Isolate, file: &str| {
+                iso.with_cx_checkpoint(|cx| {
+                    cx.run_script(loop_then_seen(100), file)
+                        .map(|v| cx.display(v))
+                })
+            };
+            let r = run(&mut iso, "poll.js");
+            assert_eq!(r.as_deref(), Ok("1"), "{}", d.name());
             // The bit is clear and the queue empty: the next polls run nothing.
             iso.cx.budget = 3;
-            let r = iso.run_script(loop_then_seen(100), "again.js");
-            assert_eq!(
-                r.map(|v| iso.display(v)).as_deref(),
-                Ok("1"),
-                "{}",
-                d.name()
-            );
+            let r = run(&mut iso, "again.js");
+            assert_eq!(r.as_deref(), Ok("1"), "{}", d.name());
         });
     }
 }
@@ -221,12 +220,19 @@ fn a_callback_waits_for_a_poll_and_callbacks_keep_their_order() {
             }));
         }
         // 100 back edges of a 10,000 budget: no poll.
-        let r = iso.run_script(loop_then_seen(100), "idle.js");
-        assert_eq!(r.map(|v| iso.display(v)).as_deref(), Ok("0"));
+        let run = |iso: &mut crate::Isolate, file: &str| {
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(loop_then_seen(100), file)
+                    .map(|v| cx.display(v))
+            })
+        };
+        let r = run(&mut iso, "idle.js");
+        assert_eq!(r.as_deref(), Ok("0"));
         assert!(order.lock().unwrap().is_empty());
         iso.cx.budget = 3;
-        let r = iso.run_script(loop_then_seen(100), "poll.js");
-        assert_eq!(r.map(|v| iso.display(v)).as_deref(), Ok("3"));
+        let r = run(&mut iso, "poll.js");
+        assert_eq!(r.as_deref(), Ok("3"));
+
         assert_eq!(*order.lock().unwrap(), [0, 1, 2]);
     });
 }
@@ -266,14 +272,16 @@ fn a_callback_reaches_a_running_endless_loop() {
                 }));
             });
             take_output();
-            let r = iso.run_script(endless_loop(), "loop.js");
+            let r =
+                iso.with_cx_checkpoint(|cx| cx.run_script(endless_loop(), "loop.js").map(|_| ()));
             requester.join().unwrap();
             let mut s = Asm::script(0);
             s.lda_str("again");
             s.b.return_();
-            let after = iso
-                .run_script(unit("", vec![s.finish()]), "again.js")
-                .map(|v| iso.display(v));
+            let after = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(unit("", vec![s.finish()]), "again.js")
+                    .map(|v| cx.display(v))
+            });
             let ran_on = *ran_on.lock().unwrap();
             (r.map(|_| ()), ran_on, std::thread::current().id(), after)
         });

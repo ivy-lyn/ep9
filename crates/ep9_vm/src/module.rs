@@ -5,11 +5,18 @@
 //!
 //! ```text
 //! Cx::run_module(unit, name, resolve, load)        (isolate.rs: the loader API)
+//!   with_host: the hooks are the isolate's module host for the run         HOSTS
 //!   record of `name` (the realm's module map) or a new one          new_module
 //!   load_graph: every [[RequestedModules]] entry, depth first       resolve(referrer, specifier)
 //!     -> a name; the map, or load(name) -> a unit -> a new record   load(name)
 //!   link: InnerModuleLinking (§16.2.1.5.1.1), InitializeEnvironment (§16.2.1.6.4)
-//!   evaluate: InnerModuleEvaluation (§16.2.1.5.3.1); an error is cached in [[EvaluationError]]
+//!   evaluate: Evaluate (§16.2.1.5.3): InnerModuleEvaluation; an error is cached in
+//!     [[EvaluationError]]; the result is a promise ([[TopLevelCapability]])
+//!   a microtask checkpoint (empty JS stack only), host in place: top-level await, import() in jobs
+//!
+//! import(s, o) (id 43, slow/module.rs) -> dynamic_import            the host of the run
+//!   resolve + load (HostLoadImportedModule) -> load_graph -> a load promise
+//!   job: link, evaluate -> job: GetModuleNamespace -> the import() promise
 //!
 //! exotic.rs hooks (get, own_property, own_attrs) ──────┐
 //! property.rs hooks (set, define, delete, own keys) ───┴──> the namespace hook fns below
@@ -20,7 +27,7 @@
 //!
 //! | MODULE field | Value |
 //! |---|---|
-//! | `STATUS` | int32 [`status`]: new, unlinked, linking, linked, evaluating, evaluating-async, evaluated; and aborted (not in the spec: a termination stopped its Evaluate) |
+//! | `STATUS` | int32 [`status`]: new, unlinked, linking, linked, evaluating, evaluating-async, evaluated; and aborted (not in the spec: a termination stopped its Evaluate, or its pending async evaluation) |
 //! | `ENVIRONMENT` | the module environment: a CONTEXT with the slots of [`env`] (not on any context chain) |
 //! | `NAMESPACE` | the namespace object, made on first use ([`get_namespace`]) |
 //! | `UNIT` | native word: the module's `LoadedUnit` (its module records, ABI 5 section 5) |
@@ -28,7 +35,12 @@
 //! | `LOADED` | ELEMENTS: the MODULE of each request (undefined until loaded) |
 //! | `EVALUATION_ERROR` | the cached error of Evaluate; the hole for none |
 //! | `DFS_INDEX`, `DFS_ANCESTOR_INDEX`, `CYCLE_ROOT` | Tarjan state of Link and Evaluate |
-//! | `HAS_TLA` | false (the front end rejects top-level `await` until M3-P3) |
+//! | `HAS_TLA` | `[[HasTLA]]`: true for a module whose body holds an await point (ABI 5 `has_tla`) |
+//! | `ASYNC_EVALUATION_ORDER` | `[[AsyncEvaluationOrder]]`: undefined (unset), int32 >= 0 (the order), or [`ORDER_DONE`] |
+//! | `TOP_LEVEL_CAPABILITY` | `[[TopLevelCapability]]`: the promise of Evaluate (the VM settles it; no resolve functions are made), or undefined |
+//! | `ASYNC_PARENT_MODULES` | `[[AsyncParentModules]]`: an ELEMENTS list `[n, m1 .. mn]`, or undefined |
+//! | `PENDING_ASYNC_DEPENDENCIES` | `[[PendingAsyncDependencies]]` (int32) |
+//! | `HOST_DEFINED` | the record's `[[Realm]]`: the REALM whose module map holds it ([`realm_of`]) |
 //!
 //! A module binding that other modules can see (an export or an import) is a *cell*: the
 //! front end numbers exported bindings `1, 2, ...` and imports `-1, -2, ...`
@@ -59,22 +71,57 @@
 //! Each realm has a module map (`realmf::HOST_DEFINED`: the realm's host data, where HTML
 //! keeps its module map): the name the host gave a module -> its record. A name loads once
 //! per realm.
+//!
+//! # Top-level await (M3-P3 IMPORT-TLA)
+//!
+//! Evaluate follows §16.2.1.5.3 with the async steps: a module with `[[HasTLA]]`, or with a
+//! dependency that is still evaluating-async, gets an `[[AsyncEvaluationOrder]]`; such a
+//! module runs through ExecuteAsyncModule (§16.2.1.5.3.2), and its parents wait in
+//! `[[AsyncParentModules]]` until AsyncModuleExecutionFulfilled or ...Rejected
+//! (§16.2.1.5.3.4-5) runs them or caches the error. The function 0 of a `[[HasTLA]]`
+//! module is an async function body after suspend id [`RUN`] (the front end's module doc):
+//! ExecuteModule with a capability makes the generator object an async function object (mode
+//! `MODE_ASYNC_FUNCTION`, the capability's promise in `genf::ASYNC`) and resumes it, so its
+//! awaits are the async function awaits (`interp/slow/async_fn.rs`). The lists that live
+//! across a GC point are heap cells or scratch roots (plan rule 8).
+//!
+//! # The module host and `import()`
+//!
+//! `import()` needs the hooks of a host. [`with_host`] makes a [`Host`] the module host of
+//! the isolate for the length of a call (a thread-local list, `HOSTS`); `Cx::run_module` does
+//! it for its run, its loads and its checkpoint. With no host, `import()` throws the v0
+//! not-implemented Error (as eval with no compiler hooks throws). `Isolate::with_module_host`
+//! does it for an embedder's scripts, calls and checkpoints (isolate.rs).
+//!
+//! The referrer of `import()` is GetActiveScriptOrModule ([`active_script_or_module`]): the
+//! module or script whose code runs, or for eval code and the functions it makes, the
+//! ScriptOrModule when that code loaded ([`EvalReferrer`]). The module goes into the module
+//! map of the referrer's realm, not of the realm that runs the call.
+
+use core::ptr::NonNull;
+use std::cell::RefCell;
 
 use ep9_bytecode::{CodeKind, ExportImportName, ImportName, ModuleRecords, VerifiedUnit};
+use ep9_heap::{RootStrength, Slot, Tracer};
+use ep9_value::{JsResult, Throw};
 
+use crate::abi::{self, Args, JsObject, JsValue, Local, PromiseState};
+use crate::builtins::{IntrinsicId, intrinsic};
 use crate::compiler::{CompileFailure, CompileResult};
 use crate::conv::Res;
 use crate::descriptor::Desc;
-use crate::error::{not_implemented, throw_error};
+use crate::error::{FrameRef, not_implemented, throw_error};
 use crate::exotic::probe;
-use crate::frame::{HOLE, NULL, UNDEFINED, int32_bits, int32_of, native_of, native_ptr};
+use crate::frame::{
+    FALSE, HOLE, NULL, TRUE, UNDEFINED, int32_bits, int32_of, native_of, native_ptr,
+};
 use crate::interp::Cx;
 use crate::key::{Probe, is_symbol_key, key_eq};
 use crate::kinds as kind;
 use crate::object::{self, attr, genf, init, modf, nsf, realmf};
-use crate::runtime::{ErrorKind, Runtime, val};
+use crate::runtime::{ErrorKind, Root, Runtime, val};
 use crate::unit::{FunctionInfo, LoadedUnit};
-use crate::{atoms, generator, property, string, symbol};
+use crate::{atoms, conv, generator, jobs, property, string, symbol};
 
 /// `[[Status]]` values (§16.2.1.5, Table 45), as int32.
 pub(crate) mod status {
@@ -86,9 +133,11 @@ pub(crate) mod status {
     pub const EVALUATING_ASYNC: i32 = 5;
     pub const EVALUATED: i32 = 6;
     /// Not a spec status: a termination (`TerminateHandle`, H23) stopped the module's
-    /// Evaluate. The isolate is used again after a termination, so a later Evaluate of the
-    /// module, or of a module that imports it, throws an Error; it never takes the module as
-    /// evaluated (its body did not finish). Link takes it as evaluated.
+    /// Evaluate, or came while its async evaluation was pending (the termination drops the
+    /// jobs that would settle it; `abort_async_modules`). The isolate is used again after a
+    /// termination, so a later Evaluate of the module, or of a module that imports it, throws
+    /// an Error; it never takes the module as evaluated (its body did not finish). Link
+    /// takes it as evaluated.
     pub const ABORTED: i32 = 7;
 }
 
@@ -108,6 +157,16 @@ pub(crate) mod env {
 /// The suspend id at which function 0 waits between InitializeEnvironment and Evaluate (the
 /// front end's `bytecodegen/module.rs` `RUN`): its jump table entry 1 starts the statements.
 const RUN: i32 = 1;
+
+/// `[[AsyncEvaluationOrder]]` done (§16.2.1.5: the module's async evaluation finished).
+const ORDER_DONE: i32 = -1;
+
+std::thread_local! {
+    /// IncrementModuleAsyncEvaluationCount (§16.2.1.5.3.6): the next `[[AsyncEvaluationOrder]]`.
+    /// Only the order of two values matters, so one counter per thread serves every isolate
+    /// on it.
+    static ASYNC_EVALUATION_COUNT: core::cell::Cell<i32> = const { core::cell::Cell::new(0) };
+}
 
 /// The environment slot of the box of module cell `cell` (not 0): exports and imports
 /// alternate, so no count is needed.
@@ -181,6 +240,12 @@ fn environment(m: u64) -> u64 {
 /// The record that request `r` of `m` loaded (undefined before loading).
 fn loaded(m: u64, r: u32) -> u64 {
     object::list_get(object::record_get(m, modf::LOADED), r as usize)
+}
+
+/// `[[Realm]]` of `m`: the realm whose module map holds it (`modf::HOST_DEFINED`). Its
+/// requests load into that map, and Link makes its functions in that realm.
+fn realm_of(m: u64) -> u64 {
+    object::record_get(m, modf::HOST_DEFINED)
 }
 
 /// The name the host gave `m` (an atom).
@@ -311,7 +376,7 @@ fn map_add(rt: &Runtime, realm: u64, name: u64, m: u64) {
 // ---- loading ----------------------------------------------------------------------------------
 
 /// Loads `unit` into the isolate (a new entry of `Runtime::units`, never freed), as
-/// `Isolate::run_script` does. GC point.
+/// `Cx::run_script` does. GC point.
 fn load_unit<'a>(rt: &Runtime, unit: VerifiedUnit, file: &str) -> &'a LoadedUnit {
     let index = u32::try_from(rt.units.borrow().len()).expect("fewer than 2^32 units");
     let lu = LoadedUnit::load(rt, unit, file.to_string(), index);
@@ -349,7 +414,8 @@ fn new_module(rt: &Runtime, lu: &LoadedUnit, name: u64) -> u64 {
         .unwrap_or(0);
     let m = new_module_record(rt);
     set_status(rt, m, status::NEW);
-    object::record_set(rt, m, modf::HAS_TLA, crate::frame::FALSE);
+    let tla = if recs.has_tla { TRUE } else { FALSE };
+    object::record_set(rt, m, modf::HAS_TLA, tla);
     object::record_set(rt, m, modf::UNIT, native_of(core::ptr::from_ref(lu)));
     let n = recs.requested_modules.len();
     let requested = object::new_list(rt, n, UNDEFINED);
@@ -380,15 +446,30 @@ fn new_module(rt: &Runtime, lu: &LoadedUnit, name: u64) -> u64 {
 fn check_attributes(cx: &mut Cx, m: u64, r: u32) -> Res<()> {
     let lu = unit_of(m);
     let req = &records_of(m).requested_modules[r as usize];
-    for &(k, _) in &req.attributes {
-        let key = string::to_rust_string(lu.string(k.index()));
+    let attributes: Vec<(String, String)> = req
+        .attributes
+        .iter()
+        .map(|&(k, v)| {
+            (
+                string::to_rust_string(lu.string(k.index())),
+                string::to_rust_string(lu.string(v.index())),
+            )
+        })
+        .collect();
+    check_attribute_list(cx, &attributes)
+}
+
+/// The checks of [`check_attributes`] on a list of (key, value) pairs, sorted by key: a key
+/// other than `type` is a SyntaxError; `type: "json"` the not-implemented Error; another
+/// type a TypeError.
+fn check_attribute_list(cx: &mut Cx, attributes: &[(String, String)]) -> Res<()> {
+    for (key, _) in attributes {
         if key != "type" {
             let msg = format!("Import attribute \"{key}\" is not supported");
             return Err(throw_error(cx, ErrorKind::SyntaxError, &msg));
         }
     }
-    if let Some(&(_, v)) = req.attributes.first() {
-        let value = string::to_rust_string(lu.string(v.index()));
+    if let Some((_, value)) = attributes.first() {
         if value == "json" {
             return Err(not_implemented(cx, "JSON modules"));
         }
@@ -412,21 +493,22 @@ fn throw_load_failure(cx: &mut Cx, name: &str, f: CompileFailure) -> ep9_value::
     }
 }
 
-/// The record of the module named `name` in the current realm, made from `unit` if the map
-/// has none. GC point.
-fn module_for_unit(cx: &mut Cx, unit: VerifiedUnit, name: &str) -> Res<u64> {
+/// The record of the module named `name` in the module map of `realm`, made from `unit` if
+/// the map has none (its `[[Realm]]` is `realm`). GC point.
+fn module_for_unit(cx: &mut Cx, realm: u64, unit: VerifiedUnit, name: &str) -> Res<u64> {
     if unit.header.code_kind != CodeKind::Module {
         let msg = format!("{name} is not a module unit");
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     }
     let rt = cx.rt();
     let key = atoms::intern_str(rt, name);
-    if let Some(m) = map_get(cx.realm, key) {
+    if let Some(m) = map_get(realm, key) {
         return Ok(m);
     }
     let lu = load_unit(rt, unit, name);
     let m = new_module(rt, lu, key);
-    map_add(rt, cx.realm, key, m);
+    object::record_set(rt, m, modf::HOST_DEFINED, realm);
+    map_add(rt, realm, key, m);
     Ok(m)
 }
 
@@ -437,9 +519,91 @@ pub(crate) struct Host<'h> {
     pub load: &'h mut dyn FnMut(&str) -> CompileResult,
 }
 
-/// LoadRequestedModules (§16.2.1.5.1) with a synchronous host: every module that `root`
-/// needs, transitively, gets a record in the realm's map and its `[[LoadedModules]]` entries.
-/// GC point.
+std::thread_local! {
+    /// The module hosts in use on this thread, innermost last: (the isolate's key,
+    /// [`host_key`]; its host). [`with_host`] adds an entry for the length of one call and
+    /// removes it after, also on a panic, so an entry never outlives its host. The key is
+    /// `Runtime::id`, which no other isolate gets, also not one made after this one drops
+    /// at the same address (code in `Isolate::with_module_host`'s call can drop its isolate).
+    /// Holds no Value.
+    static HOSTS: RefCell<Vec<(u64, *mut Host<'static>)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The key of `rt`'s isolate in `HOSTS`: `Runtime::id`.
+pub(crate) fn host_key(rt: &Runtime) -> u64 {
+    rt.id
+}
+
+/// Runs `f` with `host` as the module host of the isolate with key `key` ([`host_key`]): the
+/// hooks of its loads and of `import()` while `f` runs. Calls nest: the innermost host of an
+/// isolate is the one in use. `Cx::run_module` uses it for its run, and
+/// `Isolate::with_module_host` (isolate.rs) for an embedder's scripts and checkpoints.
+pub(crate) fn with_host<R>(key: u64, host: &mut Host<'_>, f: impl FnOnce() -> R) -> R {
+    /// Removes the entry of its key that it added (the innermost one) when it drops.
+    struct Pop(u64);
+    impl Drop for Pop {
+        fn drop(&mut self) {
+            HOSTS.with_borrow_mut(|h| {
+                if let Some(i) = h.iter().rposition(|e| e.0 == self.0) {
+                    h.remove(i);
+                }
+            });
+        }
+    }
+    let p: *mut Host<'_> = host;
+    // The entry is removed (by `Pop`) before the borrow of `host` ends; only `call_host`
+    // reads it, while it is in the list.
+    HOSTS.with_borrow_mut(|h| h.push((key, p.cast::<Host<'static>>())));
+    let _pop = Pop(key);
+    f()
+}
+
+/// Calls `f` with the innermost module host of the isolate with key `key` ([`host_key`]);
+/// `None` if it has none.
+pub(crate) fn call_host<R>(key: u64, f: impl FnOnce(&mut Host<'_>) -> R) -> Option<R> {
+    let p = HOSTS.with_borrow(|h| h.iter().rev().find(|e| e.0 == key).map(|e| e.1))?;
+    // SAFETY: `p` is the host of a `with_host` call that is still running on this thread
+    // (its entry is in the list), so the host lives. Nothing else uses it now: `with_host`
+    // gave its `&mut` to the list, and the hooks get no `Cx`, so they cannot reach the list.
+    Some(f(unsafe { &mut *p }))
+}
+
+/// True if `rt`'s isolate has a module host now.
+pub(crate) fn has_host(rt: &Runtime) -> bool {
+    let key = host_key(rt);
+    HOSTS.with_borrow(|h| h.iter().any(|e| e.0 == key))
+}
+
+/// `resolve(referrer, specifier)` of the host of `cx`'s isolate: the module's name, or the
+/// thrown Error.
+fn host_resolve(cx: &mut Cx, referrer: &str, specifier: &str) -> Res<String> {
+    match call_host(host_key(cx.rt()), |h| (h.resolve)(referrer, specifier)) {
+        Some(Ok(name)) => Ok(name),
+        Some(Err(msg)) => Err(throw_error(cx, ErrorKind::Error, &msg)),
+        None => Err(not_implemented(cx, "modules without a module host")),
+    }
+}
+
+/// The record of the module named `name` in the module map of `realm` (the referrer's
+/// realm, so one referrer and name give one module, HostLoadImportedModule §16.2.1.10, also
+/// when code of another realm asks): the map's, or a new one from the host's `load(name)`
+/// (the thrown error of a failed load). GC point.
+fn host_module(cx: &mut Cx, realm: u64, name: &str) -> Res<u64> {
+    let key = atoms::intern_str(cx.rt(), name);
+    if let Some(t) = map_get(realm, key) {
+        return Ok(t);
+    }
+    let unit = match call_host(host_key(cx.rt()), |h| (h.load)(name)) {
+        Some(Ok(unit)) => unit,
+        Some(Err(f)) => return Err(throw_load_failure(cx, name, f)),
+        None => return Err(not_implemented(cx, "modules without a module host")),
+    };
+    module_for_unit(cx, realm, unit, name)
+}
+
+/// LoadRequestedModules (§16.2.1.5.1) with a synchronous host (the module host of the
+/// isolate, [`with_host`]): every module that `root` needs, transitively, gets a record in
+/// the realm's map and its `[[LoadedModules]]` entries. GC point.
 ///
 /// InnerModuleLoading (§16.2.1.5.1.1) step 2: every reachable module that is still `new` is
 /// walked, also one that is in the map already. A failed load leaves such records: a module
@@ -454,7 +618,7 @@ pub(crate) struct Host<'h> {
 /// module of that name. The same error comes again only if the host gives it again
 /// (HostLoadImportedModule, §16.2.1.10, needs the same result again only for a load that
 /// succeeded).
-fn load_graph(cx: &mut Cx, root: u64, host: &mut Host<'_>) -> Res<()> {
+fn load_graph(cx: &mut Cx, root: u64) -> Res<()> {
     let rt = cx.rt();
     // The modules this call walks (a module can be in it twice before it is walked).
     let work = rt.heap.scratch_roots();
@@ -475,19 +639,8 @@ fn load_graph(cx: &mut Cx, root: u64, host: &mut Host<'_>) -> Res<()> {
                     check_attributes(cx, m, r)?;
                     let spec = object::list_get(object::record_get(m, modf::REQUESTED), r as usize);
                     let spec = string::to_rust_string(spec);
-                    let name = match (host.resolve)(&referrer, &spec) {
-                        Ok(name) => name,
-                        Err(msg) => return Err(throw_error(cx, ErrorKind::Error, &msg)),
-                    };
-                    let key = atoms::intern_str(rt, &name);
-                    target = match map_get(cx.realm, key) {
-                        Some(t) => t,
-                        None => {
-                            let unit =
-                                (host.load)(&name).map_err(|f| throw_load_failure(cx, &name, f))?;
-                            module_for_unit(cx, unit, &name)?
-                        }
-                    };
+                    let name = host_resolve(cx, &referrer, &spec)?;
+                    target = host_module(cx, realm_of(m), &name)?;
                     object::list_set(rt, object::record_get(m, modf::LOADED), r as usize, target);
                 }
                 if status_of(target) == status::NEW {
@@ -663,9 +816,10 @@ fn exported_names(
 struct NameAtom(u64);
 
 /// A MODULE cell, rooted by the realm's module map. Held in Rust vectors only between GC
-/// points (rule 8: ResolveExport's resolveSet and GetExportedNames' exportStarSet).
+/// points (rule 8: ResolveExport's resolveSet, GetExportedNames' exportStarSet and
+/// GatherAvailableAncestors' lists).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ModuleCell(u64);
+pub(crate) struct ModuleCell(pub(crate) u64);
 
 /// The names of the namespace of `m` (§16.2.1.10 GetModuleNamespace step 3: the exported
 /// names whose ResolveExport is a binding), sorted by code units (§10.4.6.12 step 7), each
@@ -1087,16 +1241,406 @@ fn rethrow_cached(cx: &mut Cx, m: u64) -> Res<()> {
     Err(ep9_value::Throw)
 }
 
-/// InnerModuleEvaluation (§16.2.1.5.3.1) of a module with no top-level `await`.
+/// `[[HasTLA]]` of `m`.
+fn has_tla(m: u64) -> bool {
+    object::record_get(m, modf::HAS_TLA) == TRUE
+}
+
+/// `[[AsyncEvaluationOrder]]` of `m` is not unset: the module took the async path of
+/// InnerModuleEvaluation (ES2024 `[[AsyncEvaluation]]` true).
+fn is_async_evaluation(m: u64) -> bool {
+    object::record_get(m, modf::ASYNC_EVALUATION_ORDER) != UNDEFINED
+}
+
+/// `[[AsyncEvaluationOrder]]` of `m` is an integer: its async evaluation has not finished,
+/// so an importer must wait for it (InnerModuleEvaluation step 12.c.v). Not [`ORDER_DONE`]:
+/// a module that finished does not hold a new importer (test262
+/// `top-level-await/module-graphs-does-not-hang.js`).
+fn is_async_pending(m: u64) -> bool {
+    is_async_evaluation(m) && async_order(m) != ORDER_DONE
+}
+
+/// The `[[AsyncEvaluationOrder]]` of `m` (an int32 order, or [`ORDER_DONE`]).
+fn async_order(m: u64) -> i32 {
+    get_i32(m, modf::ASYNC_EVALUATION_ORDER)
+}
+
+/// The count-prefixed list in `field` of `m` (`[n, v1 .. vn]`, or undefined): its n values.
+fn list_count(m: u64, field: usize) -> usize {
+    let list = object::record_get(m, field);
+    if list == UNDEFINED {
+        0
+    } else {
+        int32_of(object::list_get(list, 0)) as usize
+    }
+}
+
+/// Value `i` of the count-prefixed list in `field` of `m`.
+fn list_item(m: u64, field: usize, i: usize) -> u64 {
+    object::list_get(object::record_get(m, field), 1 + i)
+}
+
+/// Appends `v` to the count-prefixed list in `field` of `m`. GC point (the list grows): `m`
+/// and `v` live in Rust locals.
+pub(crate) fn list_append(rt: &Runtime, m: u64, field: usize, v: u64) {
+    let mut list = object::record_get(m, field);
+    let n = list_count(m, field);
+    if list == UNDEFINED || 1 + n + 1 > object::list_len(list) {
+        let bigger = object::new_list(rt, 1 + 2 * n + 2, UNDEFINED);
+        if list != UNDEFINED {
+            for i in 1..=n {
+                object::list_set(rt, bigger, i, object::list_get(list, i));
+            }
+        }
+        object::record_set(rt, m, field, bigger);
+        list = bigger;
+    }
+    object::list_set(rt, list, 1 + n, v);
+    object::list_set(rt, list, 0, int32_bits((n + 1) as i32));
+}
+
+/// `%Promise%.prototype` of the current realm, or the v0 not-implemented Error without
+/// `%Promise%` (an embedder with no ep9_builtins tables).
+fn promise_prototype(cx: &mut Cx) -> Res<u64> {
+    let rt = cx.rt();
+    if !kind::is_object(intrinsic(rt, IntrinsicId::Promise)) {
+        return Err(not_implemented(cx, "modules without %Promise%"));
+    }
+    Ok(intrinsic(rt, IntrinsicId::PromisePrototype))
+}
+
+/// A new pending promise of the current realm (NewPromiseCapability(%Promise%): the VM
+/// settles it, so no resolve functions are made). GC point.
+fn new_promise(cx: &mut Cx) -> Res<u64> {
+    let proto = promise_prototype(cx)?;
+    Ok(abi::Cx::new(cx)
+        .new_promise(Local::<JsValue>::from_bits(proto))
+        .bits())
+}
+
+/// Fulfills the promise `p` with undefined if it is still pending.
+fn fulfill_undefined(cx: &mut Cx, p: u64) {
+    let mut acx = abi::Cx::new(cx);
+    let p = Local::<JsObject>::from_bits(p);
+    if acx.promise_state(p).ok() == Some(PromiseState::Pending) {
+        acx.fulfill_promise(p, Local::undefined());
+    }
+}
+
+/// Rejects the promise `p` with `reason` if it is still pending.
+fn reject_pending(cx: &mut Cx, p: u64, reason: u64) {
+    let mut acx = abi::Cx::new(cx);
+    let p = Local::<JsObject>::from_bits(p);
+    if acx.promise_state(p).ok() == Some(PromiseState::Pending) {
+        acx.reject_promise(p, Local::<JsValue>::from_bits(reason));
+    }
+}
+
+/// Takes the exception of the throw `t` (the thrown value); `Err(t)` again while the isolate
+/// terminates (a termination is never caught).
+fn catch(cx: &mut Cx, t: Throw) -> Res<u64> {
+    abi::Cx::new(cx).catch_exception(t).map(|v| v.bits())
+}
+
+/// The generator object of the unit's function 0 of `m`, waiting at suspend id [`RUN`].
+fn evaluate_generator(cx: &mut Cx, m: u64) -> Res<u64> {
+    let g = object::context_get(environment(m), env::EVALUATE).unwrap_or(UNDEFINED);
+    if !generator::is_generator(g) || object::gen_get_i32(g, genf::STATE) != RUN {
+        return Err(throw_error(
+            cx,
+            ErrorKind::Error,
+            "ep9 internal error: a module is evaluated before its environment is made",
+        ));
+    }
+    Ok(g)
+}
+
+/// ExecuteModule() (§16.2.1.6.5) with no capability: the rest of the unit's function 0,
+/// `this` undefined. GC point (the module runs).
+fn execute_module(cx: &mut Cx, m: u64) -> Res<()> {
+    let g = evaluate_generator(cx, m)?;
+    generator::resume(cx, g, genf::RESUME_NEXT, UNDEFINED, "next")?;
+    Ok(())
+}
+
+/// ExecuteAsyncModule(m) (§16.2.1.5.3.2): a new capability whose settlement runs
+/// AsyncModuleExecutionFulfilled or ...Rejected, then ExecuteModule(capability): the body
+/// runs as an async function body (AsyncBlockStart) up to its first `await`. `Err` only for
+/// a termination; any other throw rejects the capability. GC point (the module runs).
+fn execute_async_module(cx: &mut Cx, m: u64) -> Res<()> {
+    let g = evaluate_generator(cx, m)?;
+    let p = new_promise(cx)?;
+    let mut acx = abi::Cx::new(cx);
+    let data = Local::<JsValue>::from_bits(m);
+    let on_fulfilled = acx.new_builtin_closure(async_module_fulfilled, "", 0, data);
+    let on_rejected = acx.new_builtin_closure(async_module_rejected, "", 0, data);
+    acx.perform_promise_then(
+        Local::<JsObject>::from_bits(p),
+        on_fulfilled,
+        on_rejected,
+        None,
+    );
+    // ExecuteModule(capability): the generator object becomes the async function object of
+    // the body, with the capability's promise (`interp/slow/async_fn.rs` ids 33-35 use it).
+    let rt = cx.rt();
+    object::gen_set(rt, g, genf::MODE, int32_bits(genf::MODE_ASYNC_FUNCTION));
+    object::gen_set(rt, g, genf::ASYNC, p);
+    if let Err(t) = generator::resume_async_function(cx, g, genf::RESUME_NEXT, UNDEFINED) {
+        // The frame could not be pushed (a full stack, an interrupt), or a throw left it.
+        let e = catch(cx, t)?;
+        generator::close(cx.rt(), g);
+        reject_pending(cx, p, e);
+    }
+    Ok(())
+}
+
+/// The fulfilled closure of ExecuteAsyncModule (step 4): AsyncModuleExecutionFulfilled of
+/// the closure's module.
+fn async_module_fulfilled<'s>(
+    cx: &mut abi::Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let m = cx.closure_data(args.callee()).bits();
+    async_execution_fulfilled(cx.inner(), m)?;
+    Ok(Local::undefined())
+}
+
+/// The rejected closure of ExecuteAsyncModule (step 6): AsyncModuleExecutionRejected of the
+/// closure's module with the reason.
+fn async_module_rejected<'s>(
+    cx: &mut abi::Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let m = cx.closure_data(args.callee()).bits();
+    let error = args.get(0).bits();
+    async_execution_rejected(cx.inner(), m, error);
+    Ok(Local::undefined())
+}
+
+/// Resolves `[[TopLevelCapability]]` of `m` with undefined, if it has one.
+fn resolve_top_level(cx: &mut Cx, m: u64) {
+    let p = object::record_get(m, modf::TOP_LEVEL_CAPABILITY);
+    if p != UNDEFINED {
+        fulfill_undefined(cx, p);
+    }
+}
+
+/// GatherAvailableAncestors(m, execList) (§16.2.1.5.3.3): the async parents whose last
+/// pending dependency `m` was, and (through a parent without `[[HasTLA]]`) their parents. A
+/// work list instead of the recursion gives the same set: a module joins once, when its
+/// count reaches 0. Not a GC point, so the lists may hold cells (plan rule 8; as
+/// ResolveExport's resolveSet).
+pub(crate) fn gather_available_ancestors(rt: &Runtime, m: u64) -> Vec<ModuleCell> {
+    let mut found: Vec<ModuleCell> = Vec::new();
+    let mut work = vec![ModuleCell(m)];
+    while let Some(ModuleCell(x)) = work.pop() {
+        for i in 0..list_count(x, modf::ASYNC_PARENT_MODULES) {
+            let p = list_item(x, modf::ASYNC_PARENT_MODULES, i);
+            let root = object::record_get(p, modf::CYCLE_ROOT);
+            let root = if root == UNDEFINED { p } else { root };
+            if found.contains(&ModuleCell(p))
+                || status_of(p) == status::ABORTED
+                || object::record_get(root, modf::EVALUATION_ERROR) != HOLE
+            {
+                continue;
+            }
+            let pending = get_i32(p, modf::PENDING_ASYNC_DEPENDENCIES) - 1;
+            set_i32(rt, p, modf::PENDING_ASYNC_DEPENDENCIES, pending);
+            if pending == 0 {
+                found.push(ModuleCell(p));
+                if !has_tla(p) {
+                    work.push(ModuleCell(p));
+                }
+            }
+        }
+    }
+    found
+}
+
+/// AsyncModuleExecutionFulfilled(m) (§16.2.1.5.3.4). `Err` only for a termination. GC point
+/// (the waiting modules run).
+fn async_execution_fulfilled(cx: &mut Cx, m: u64) -> Res<()> {
+    let rt = cx.rt();
+    if matches!(status_of(m), status::EVALUATED | status::ABORTED) {
+        // Rejected already (an error of a module of its cycle came first), or a termination
+        // made it aborted while its body waited (`abort_async_modules`).
+        return Ok(());
+    }
+    if status_of(m) != status::EVALUATING_ASYNC {
+        return Err(throw_error(
+            cx,
+            ErrorKind::Error,
+            "ep9 internal error: an async module settled while it is not evaluating",
+        ));
+    }
+    set_i32(rt, m, modf::ASYNC_EVALUATION_ORDER, ORDER_DONE);
+    set_status(rt, m, status::EVALUATED);
+    resolve_top_level(cx, m);
+    // Steps 8-11: the ancestors that can run now, by [[AsyncEvaluationOrder]].
+    let mut found = gather_available_ancestors(rt, m);
+    found.sort_by_key(|x| async_order(x.0));
+    let exec = rt.heap.scratch_roots();
+    for x in found {
+        exec.push(val(x.0));
+    }
+    // Step 12.
+    for i in 0..exec.len() {
+        let x = exec.get(i).to_bits();
+        if status_of(x) == status::EVALUATED {
+            // An error of its cycle reached it first.
+            continue;
+        }
+        if has_tla(x) {
+            execute_async_module(cx, x)?;
+            continue;
+        }
+        match execute_module(cx, x) {
+            Err(t) => {
+                let e = catch(cx, t)?;
+                async_execution_rejected(cx, x, e);
+            }
+            Ok(()) => {
+                set_i32(cx.rt(), x, modf::ASYNC_EVALUATION_ORDER, ORDER_DONE);
+                set_status(cx.rt(), x, status::EVALUATED);
+                resolve_top_level(cx, x);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Steps 5-9 of AsyncModuleExecutionRejected: `m` is evaluated with `error` cached, and its
+/// `[[TopLevelCapability]]` (if any) is rejected. GC point (the rejection).
+fn reject_module(cx: &mut Cx, m: u64, error: u64) {
+    let rt = cx.rt();
+    object::record_set(rt, m, modf::EVALUATION_ERROR, error);
+    set_status(rt, m, status::EVALUATED);
+    set_i32(rt, m, modf::ASYNC_EVALUATION_ORDER, ORDER_DONE);
+    let cap = object::record_get(m, modf::TOP_LEVEL_CAPABILITY);
+    if cap != UNDEFINED {
+        reject_pending(cx, cap, error);
+    }
+}
+
+/// AsyncModuleExecutionRejected(m, error) (§16.2.1.5.3.5, the current draft: the
+/// capability is rejected before the parents, so the promises settle leaf to root; test262
+/// `top-level-await/rejection-order.js`): `m` and its async parents, depth first, cache
+/// `error`. An explicit stack instead of the recursion (a module graph can be deep). GC
+/// point (the rejections).
+fn async_execution_rejected(cx: &mut Cx, m: u64, error: u64) {
+    if matches!(status_of(m), status::EVALUATED | status::ABORTED) {
+        return;
+    }
+    reject_module(cx, m, error);
+    // The modules of the walk and, beside them, the next parent index of each.
+    let rt = cx.rt();
+    let mut stack = Stack {
+        roots: rt.heap.scratch_roots(),
+        len: 0,
+    };
+    let mut next: Vec<usize> = Vec::new();
+    stack.push(m);
+    next.push(0);
+    while stack.len > 0 {
+        let top = stack.len - 1;
+        let x = stack.get(top);
+        let i = next[top];
+        if i < list_count(x, modf::ASYNC_PARENT_MODULES) {
+            next[top] = i + 1;
+            let p = list_item(x, modf::ASYNC_PARENT_MODULES, i);
+            if !matches!(status_of(p), status::EVALUATED | status::ABORTED) {
+                reject_module(cx, p, error);
+                stack.push(p);
+                next.push(0);
+            }
+            continue;
+        }
+        stack.pop();
+        next.pop();
+    }
+}
+
+/// Adds `m` (its `[[AsyncEvaluationOrder]]` just set) to the isolate's list of async
+/// modules (`JobState::async_modules`), which [`abort_async_modules`] reads at a termination.
+/// When the list is full, the modules whose async evaluation is no longer pending leave it
+/// first, so it holds about the pending ones. GC point (the list grows): `m` lives in a Rust
+/// local.
+fn note_async_module(rt: &Runtime, m: u64) {
+    let mut list = rt.jobs.async_modules();
+    let mut n = if list == UNDEFINED {
+        0
+    } else {
+        int32_of(object::list_get(list, 0)) as usize
+    };
+    if list != UNDEFINED && 1 + n + 1 > object::list_len(list) {
+        // Compact in place: keep the modules that can still be pending.
+        let mut kept = 0;
+        for i in 0..n {
+            let x = object::list_get(list, 1 + i);
+            if is_async_pending(x) && status_of(x) != status::ABORTED {
+                object::list_set(rt, list, 1 + kept, x);
+                kept += 1;
+            }
+        }
+        for i in kept..n {
+            object::list_set(rt, list, 1 + i, UNDEFINED);
+        }
+        n = kept;
+        object::list_set(rt, list, 0, int32_bits(n as i32));
+    }
+    if list == UNDEFINED || 1 + n + 1 > object::list_len(list) {
+        let bigger = object::new_list(rt, 1 + 2 * n + 4, UNDEFINED);
+        if list != UNDEFINED {
+            for i in 0..=n {
+                object::list_set(rt, bigger, i, object::list_get(list, i));
+            }
+        }
+        rt.jobs.set_async_modules(bigger);
+        list = bigger;
+    }
+    object::list_set(rt, list, 1 + n, m);
+    object::list_set(rt, list, 0, int32_bits((n + 1) as i32));
+}
+
+/// The end of a termination (isolate.rs `end_termination`, after the job queue is dropped):
+/// each module whose async evaluation is still pending becomes [`status::ABORTED`], with no
+/// `[[TopLevelCapability]]`, as Evaluate does for the modules on its stack. The jobs that
+/// would settle it are gone, so a later Evaluate that reaches it throws the "was terminated"
+/// Error, and its importers cache that Error (no run waits for it, and a later `import()` of
+/// it rejects). A body that waits for a promise outside the dropped queue may still go on
+/// later (as any async function after a termination), but its module stays aborted. Not a
+/// GC point.
+pub(crate) fn abort_async_modules(rt: &Runtime) {
+    let list = rt.jobs.async_modules();
+    if list == UNDEFINED {
+        return;
+    }
+    for i in 0..int32_of(object::list_get(list, 0)) as usize {
+        let m = object::list_get(list, 1 + i);
+        if is_async_pending(m)
+            && matches!(status_of(m), status::EVALUATING | status::EVALUATING_ASYNC)
+        {
+            set_status(rt, m, status::ABORTED);
+            object::record_set(rt, m, modf::TOP_LEVEL_CAPABILITY, UNDEFINED);
+        }
+    }
+    rt.jobs.set_async_modules(UNDEFINED);
+}
+
+/// InnerModuleEvaluation (§16.2.1.5.3.1).
 fn inner_evaluate(cx: &mut Cx, m: u64, stack: &mut Stack<'_>, index: i32) -> Res<i32> {
     check_stack(cx)?;
     let rt = cx.rt();
     match status_of(m) {
-        status::EVALUATED => {
+        status::EVALUATED | status::EVALUATING_ASYNC => {
             rethrow_cached(cx, m)?;
             return Ok(index);
         }
-        status::EVALUATING | status::EVALUATING_ASYNC => return Ok(index),
+        status::EVALUATING => return Ok(index),
         status::ABORTED => {
             let msg = format!(
                 "the evaluation of module {} was terminated",
@@ -1116,6 +1660,7 @@ fn inner_evaluate(cx: &mut Cx, m: u64, stack: &mut Stack<'_>, index: i32) -> Res
     set_status(rt, m, status::EVALUATING);
     set_i32(rt, m, modf::DFS_INDEX, index);
     set_i32(rt, m, modf::DFS_ANCESTOR_INDEX, index);
+    set_i32(rt, m, modf::PENDING_ASYNC_DEPENDENCIES, 0);
     let mut index = index + 1;
     stack.push(m);
     let n = object::list_len(object::record_get(m, modf::LOADED));
@@ -1133,21 +1678,36 @@ fn inner_evaluate(cx: &mut Cx, m: u64, stack: &mut Stack<'_>, index: i32) -> Res
             }
             rethrow_cached(cx, required)?;
         }
+        if is_async_pending(required) {
+            let pending = get_i32(m, modf::PENDING_ASYNC_DEPENDENCIES) + 1;
+            set_i32(rt, m, modf::PENDING_ASYNC_DEPENDENCIES, pending);
+            list_append(rt, required, modf::ASYNC_PARENT_MODULES, m);
+        }
     }
-    // ExecuteModule (§16.2.1.6.5): the rest of the unit's function 0, `this` undefined.
-    let g = object::context_get(environment(m), env::EVALUATE).unwrap_or(UNDEFINED);
-    if !generator::is_generator(g) || object::gen_get_i32(g, genf::STATE) != RUN {
-        return Err(throw_error(
-            cx,
-            ErrorKind::Error,
-            "ep9 internal error: a module is evaluated before its environment is made",
-        ));
+    let pending = get_i32(m, modf::PENDING_ASYNC_DEPENDENCIES);
+    if pending > 0 || has_tla(m) {
+        let order = ASYNC_EVALUATION_COUNT.with(|c| {
+            let v = c.get();
+            c.set(v.wrapping_add(1) & i32::MAX);
+            v
+        });
+        set_i32(rt, m, modf::ASYNC_EVALUATION_ORDER, order);
+        note_async_module(rt, m);
+        if pending == 0 {
+            execute_async_module(cx, m)?;
+        }
+    } else {
+        execute_module(cx, m)?;
     }
-    generator::resume(cx, g, genf::RESUME_NEXT, UNDEFINED, "next")?;
     if get_i32(m, modf::DFS_ANCESTOR_INDEX) == get_i32(m, modf::DFS_INDEX) {
         loop {
             let done = stack.pop();
-            set_status(rt, done, status::EVALUATED);
+            let s = if is_async_evaluation(done) {
+                status::EVALUATING_ASYNC
+            } else {
+                status::EVALUATED
+            };
+            set_status(rt, done, s);
             object::record_set(rt, done, modf::CYCLE_ROOT, m);
             if done == m {
                 break;
@@ -1157,50 +1717,548 @@ fn inner_evaluate(cx: &mut Cx, m: u64, stack: &mut Stack<'_>, index: i32) -> Res
     Ok(index)
 }
 
-/// Evaluate() (§16.2.1.5.3) without top-level `await`: on an error, every module on the
-/// stack is evaluated with that error cached (a later import of one of them throws it
-/// again). A termination makes every module on the stack [`status::ABORTED`] (no allocation
-/// while it unwinds): a later Evaluate that reaches one of them throws an Error, and the
-/// modules on that Evaluate's stack cache it. GC point (the modules run).
-fn evaluate(cx: &mut Cx, root: u64) -> Res<()> {
+/// Evaluate() (§16.2.1.5.3): the promise of the evaluation of `module`'s cycle root (made
+/// once, `[[TopLevelCapability]]`; a module that ran before gives it again). On an error
+/// of the synchronous part, every module on the stack is evaluated with that error cached
+/// (a later import of one of them throws it again) and the promise is rejected; then an
+/// `entry` call (`run_module`) gives `Err` with the error still pending, and another call
+/// gives the rejected promise. An `entry` promise is marked handled: its host reads it. A
+/// termination makes every module on the stack [`status::ABORTED`] (no allocation while it
+/// unwinds) and leaves no capability: a later Evaluate that reaches one of them throws an
+/// Error, and the modules on that Evaluate's stack cache it. A termination after a
+/// top-level `await` (in a job) does the same for each module whose async evaluation is
+/// pending ([`abort_async_modules`]). GC point (the modules run).
+fn evaluate(cx: &mut Cx, module: u64, entry: bool) -> Res<u64> {
     let rt = cx.rt();
+    let mut m = module;
+    if matches!(status_of(m), status::EVALUATING_ASYNC | status::EVALUATED) {
+        let root = object::record_get(m, modf::CYCLE_ROOT);
+        if root != UNDEFINED {
+            m = root;
+        }
+    }
+    let cap = object::record_get(m, modf::TOP_LEVEL_CAPABILITY);
+    if cap != UNDEFINED {
+        return Ok(cap);
+    }
+    let p = new_promise(cx)?;
+    if entry {
+        object::slot_set(rt, p, jobs::promise::IS_HANDLED, TRUE);
+    }
+    object::record_set(rt, m, modf::TOP_LEVEL_CAPABILITY, p);
     let mut stack = Stack {
         roots: rt.heap.scratch_roots(),
         len: 0,
     };
-    match inner_evaluate(cx, root, &mut stack, 0) {
-        Ok(_) => Ok(()),
-        Err(e) => {
+    match inner_evaluate(cx, m, &mut stack, 0) {
+        Ok(_) => {
+            // Step 10.c: the module is evaluated (it ran now, or its async evaluation
+            // finished before this call, `[[AsyncEvaluationOrder]]` done); else it is
+            // evaluating-async and AsyncModuleExecutionFulfilled or ...Rejected settles `p`.
+            if status_of(m) == status::EVALUATED {
+                fulfill_undefined(cx, p);
+            }
+            Ok(p)
+        }
+        Err(t) => {
             if rt.terminating.get() {
                 for i in 0..stack.len {
                     set_status(rt, stack.get(i), status::ABORTED);
                 }
-            } else {
-                let error = rt.pending();
-                for i in 0..stack.len {
-                    let m = stack.get(i);
-                    set_status(rt, m, status::EVALUATED);
-                    object::record_set(rt, m, modf::EVALUATION_ERROR, error);
-                }
+                object::record_set(rt, m, modf::TOP_LEVEL_CAPABILITY, UNDEFINED);
+                return Err(t);
             }
-            Err(e)
+            let error = rt.pending();
+            for i in 0..stack.len {
+                let x = stack.get(i);
+                set_status(rt, x, status::EVALUATED);
+                object::record_set(rt, x, modf::EVALUATION_ERROR, error);
+            }
+            drop(stack);
+            if entry {
+                // The error stays pending: the caller throws it with its throw site.
+                reject_pending(cx, p, error);
+                return Err(t);
+            }
+            let e = catch(cx, t)?;
+            reject_pending(cx, p, e);
+            Ok(p)
+        }
+    }
+}
+
+/// The result of an entry's Evaluate promise `p` (of module `m`): undefined, or the throw of
+/// its rejection, after a microtask checkpoint, while the module host is still in place. So
+/// the jobs of the run use the host: a top-level `await` goes on, and `import()` in a job
+/// (`Promise.resolve().then(() => import(s))`), or in a module that `import()` evaluates in
+/// a job, loads through the run's hooks. An Error if `p` is still pending after the
+/// checkpoint. With JS on the stack (a host function that JS called runs the module), a
+/// checkpoint cannot run: a settled `p` gives its result with no checkpoint (the jobs stay
+/// queued for the caller's checkpoint), and a pending `p` gets the checkpoint's Error ("a
+/// microtask checkpoint needs an empty JS stack"). GC point (jobs run).
+fn settle_entry(cx: &mut Cx, m: u64, p: u64) -> Res<u64> {
+    let js_on_stack = !cx.rt().stack().fp().is_null();
+    let mut acx = abi::Cx::new(cx);
+    let pl = Local::<JsObject>::from_bits(p);
+    if !js_on_stack || acx.promise_state(pl)? == PromiseState::Pending {
+        acx.perform_microtask_checkpoint()?;
+    }
+    match acx.promise_state(pl)? {
+        PromiseState::Fulfilled => Ok(UNDEFINED),
+        PromiseState::Rejected => {
+            let reason = acx.promise_result(pl)?.bits();
+            cx.rt().throw_value(reason);
+            Err(Throw)
+        }
+        PromiseState::Pending => {
+            let msg = format!(
+                "the top-level await of module {} never settled",
+                string::to_rust_string(name_of(m))
+            );
+            Err(throw_error(cx, ErrorKind::Error, &msg))
         }
     }
 }
 
 /// Loads, links and evaluates the module unit `unit` named `name` in the current realm
-/// (the body of `Cx::run_module`, isolate.rs). If the realm's map already has `name`, that
-/// record runs and `unit` is dropped; a module that ran before does not run again (its cached
-/// error is thrown again). The result is undefined. GC point.
+/// (the body of `Cx::run_module`, isolate.rs), with `host` as the isolate's module host
+/// for the run ([`with_host`]). If the realm's map already has `name`, that record runs and
+/// `unit` is dropped; a module that ran before does not run again (its cached error is
+/// thrown again). After Evaluate, a microtask checkpoint runs with the host in place
+/// ([`settle_entry`]; none with JS on the stack): a top-level `await` settles there, and
+/// `import()` in jobs uses the host. The result is undefined. GC point.
 pub(crate) fn run_module(
     cx: &mut Cx,
     unit: VerifiedUnit,
     name: &str,
     host: &mut Host<'_>,
 ) -> Res<u64> {
-    let m = module_for_unit(cx, unit, name)?;
-    load_graph(cx, m, host)?;
-    link(cx, m)?;
-    evaluate(cx, m)?;
-    Ok(UNDEFINED)
+    with_host(host_key(cx.rt()), host, || {
+        let m = module_for_unit(cx, cx.realm, unit, name)?;
+        load_graph(cx, m)?;
+        link(cx, m)?;
+        let p = evaluate(cx, m, true)?;
+        settle_entry(cx, m, p)
+    })
+}
+
+// ---- import() (§13.3.10.1) ---------------------------------------------------------------------
+
+/// The ScriptOrModule of eval code and of a `Function()` body (a `CodeKind::Eval` unit):
+/// GetActiveScriptOrModule (§9.4.1) when the unit loaded (`LoadedUnit::script_or_module`,
+/// set by `abi::Cx::load_entry`). A function made by that code keeps it as its
+/// `[[ScriptOrModule]]` (OrdinaryFunctionCreate, §10.2.3), so its `import()` resolves from
+/// there, not from the code that calls it later. Holds no Value (a realm of another realm
+/// is in a weak root slot that the functions of the unit trace: [`ReferrerRealm::Other`]).
+pub(crate) enum EvalReferrer {
+    /// A null ScriptOrModule (no script or module code ran, for example `Function` called
+    /// by a promise job): GetActiveScriptOrModule skips the frames of this code and goes on
+    /// with their callers.
+    Null,
+    /// A script or a module.
+    Of {
+        /// The host's referrer name: a module's name or a script's file.
+        name: String,
+        /// The referrer's realm (its module map).
+        realm: ReferrerRealm,
+    },
+}
+
+/// The realm of an [`EvalReferrer`].
+pub(crate) enum ReferrerRealm {
+    /// The realm that loaded the eval code, so the `[[Realm]]` of its functions (the common
+    /// case: no handle).
+    Own,
+    /// Another realm, in a [`ReferrerSlot`]: a function of the eval code keeps its
+    /// ScriptOrModule, so that module's `[[Realm]]` and its module map, alive (C2-M1), and
+    /// only as long as such a function lives (C3-M1).
+    Other(ReferrerSlot),
+    /// A referrer with no realm in reach (script code with no function frame): the current
+    /// realm.
+    Current,
+}
+
+/// GetActiveScriptOrModule (§9.4.1) as the host sees it: (the referrer name for `resolve`,
+/// the realm whose module map holds the modules it loads; undefined for none: the caller
+/// takes the current realm, as HostLoadImportedModule takes the current Realm Record for a
+/// null referrer). A module (the end of `context`'s chain, or of the closure context of a
+/// frame's function) gives its name and `[[Realm]]`; script code its file and its
+/// function's realm; eval code its [`EvalReferrer`]. Host frames and eval code with a null
+/// ScriptOrModule ([`EvalReferrer::Null`]) are passed. `None` if no frame has one. Not a GC
+/// point.
+fn active_script_or_module(fp: *mut u64, context: u64) -> Option<(String, u64)> {
+    let of_module = |m: u64| (string::to_rust_string(name_of(m)), realm_of(m));
+    if let Some(m) = module_of_context(context, 0) {
+        return Some(of_module(m));
+    }
+    let mut f = FrameRef(fp);
+    while !f.is_null() {
+        if let Some(u) = f.info().loaded_unit() {
+            if u.unit.header.code_kind != CodeKind::Eval {
+                // SAFETY: `f` is a live frame; its header slot holds the callee (a Value).
+                let callee = unsafe { *f.0.offset(crate::frame::slot::CALLEE) };
+                if !kind::is_object(callee) || kind::cell_kind(callee) != kind::FUNCTION.get() {
+                    return Some((u.file.clone(), UNDEFINED));
+                }
+                if let Some(m) = module_of_context(object::function_context(callee), 0) {
+                    return Some(of_module(m));
+                }
+                return Some((u.file.clone(), object::function_realm(callee)));
+            }
+            if let Some(EvalReferrer::Of { name, realm }) = &u.script_or_module {
+                let realm = match realm {
+                    ReferrerRealm::Own => {
+                        // SAFETY: as above.
+                        let callee = unsafe { *f.0.offset(crate::frame::slot::CALLEE) };
+                        if kind::is_object(callee)
+                            && kind::cell_kind(callee) == kind::FUNCTION.get()
+                        {
+                            object::function_realm(callee)
+                        } else {
+                            UNDEFINED
+                        }
+                    }
+                    // A frame of this unit holds a function of it (its callee), which keeps
+                    // the realm: the slot is not cleared.
+                    ReferrerRealm::Other(s) => s.bits(),
+                    ReferrerRealm::Current => UNDEFINED,
+                };
+                return Some((name.clone(), realm));
+            }
+            // EvalReferrer::Null: a null ScriptOrModule; the caller's frame is next (C2-M3).
+        }
+        f = f.caller();
+    }
+    None
+}
+
+/// The [`EvalReferrer`] of eval code that loads now, with `context` (the caller's context
+/// for direct eval code; undefined else) and the frames of the running code
+/// (`abi::Cx::load_entry`). Not a GC point.
+pub(crate) fn eval_referrer(rt: &Runtime, context: u64) -> EvalReferrer {
+    match active_script_or_module(rt.stack().fp(), context) {
+        Some((name, realm)) => EvalReferrer::Of {
+            name,
+            realm: if realm == UNDEFINED {
+                ReferrerRealm::Current
+            } else if realm == rt.root(Root::Realm) {
+                ReferrerRealm::Own
+            } else {
+                ReferrerRealm::Other(ReferrerSlot::new(rt, realm))
+            },
+        },
+        None => EvalReferrer::Null,
+    }
+}
+
+/// The realm of [`ReferrerRealm::Other`]: one Value slot in a box, a weak root range of the
+/// heap. It is not a root: a FUNCTION cell of the unit marks it when the GC traces that cell
+/// ([`trace_referrer_realm`], `object::trace_function`), so the realm lives exactly as long
+/// as a function of the eval code (C3-M1). A frame of the unit's code holds such a function
+/// (its callee slot, or the generator object of a resumed frame), and so does a suspended
+/// generator or async function. After a GC in which no function of the unit was marked, the
+/// weak range clears the slot to undefined (the realm died; the current realm is used, as
+/// for no realm). The unit keeps the slot until the isolate drops; the range is never
+/// removed.
+///
+/// ```text
+/// FUNCTION cell --INFO--> FunctionInfo --unit--> LoadedUnit.script_or_module
+///   (marked)                                        Other(ReferrerSlot) --GC trace--> REALM
+/// ```
+///
+/// The slot is a raw pointer from `Box::leak`, not a `Box` field: the heap's range table
+/// and this struct both reach it, and moving a `Box` would assert unique access (Miri).
+pub(crate) struct ReferrerSlot(NonNull<[Slot]>);
+
+impl ReferrerSlot {
+    /// A slot that holds `realm` (a REALM cell that a live frame or context reaches now, so
+    /// it stays marked until the unit's first function holds it). Not a GC point.
+    fn new(rt: &Runtime, realm: u64) -> ReferrerSlot {
+        let slots: Box<[Slot]> = Box::new([Slot::new(val(realm))]);
+        let p = NonNull::from(Box::leak(slots));
+        // SAFETY: `p` is valid until `drop` frees it. Its `LoadedUnit` lives until the Runtime
+        // drops, which drops `heap` (and its range table) before `units` (as for the unit's
+        // string and constant ranges), so the range is never read after the free. The slot
+        // holds Value bits (never 0): the realm, or undefined after the weak range clears it.
+        let _ = unsafe { rt.heap.add_root_range(p, RootStrength::Weak) };
+        ReferrerSlot(p)
+    }
+
+    /// The slot.
+    fn slot(&self) -> &Slot {
+        // SAFETY: valid until `drop` (see `new`); Slot is atomic, so a shared reference is
+        // fine while the GC clears it.
+        unsafe { &self.0.as_ref()[0] }
+    }
+
+    /// The realm's bits; undefined after a GC in which no function of the unit was marked.
+    fn bits(&self) -> u64 {
+        self.slot().bits()
+    }
+}
+
+impl Drop for ReferrerSlot {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` came from `Box::leak` in `new` and is freed once, here; the heap
+        // that read it dropped first (see `new`).
+        drop(unsafe { Box::from_raw(self.0.as_ptr()) });
+    }
+}
+
+/// Marks the referrer realm of the eval unit of `info` (the INFO word of a FUNCTION cell
+/// that the GC traces), if the unit has a [`ReferrerRealm::Other`]. Called from the trace
+/// function of FUNCTION cells: reads only Rust data that lives until the isolate drops, and
+/// does not call into the heap.
+#[inline]
+pub(crate) fn trace_referrer_realm(info: &FunctionInfo, t: &mut Tracer<'_>) {
+    if let Some(u) = info.loaded_unit()
+        && let Some(EvalReferrer::Of {
+            realm: ReferrerRealm::Other(s),
+            ..
+        }) = &u.script_or_module
+    {
+        t.visit(s.slot());
+    }
+}
+
+/// The import attributes of `options` (EvaluateImportCall step 10, §13.3.10.1.1): the
+/// (key, value) list of its `with` object, sorted by key. A TypeError for an options or
+/// `with` value that is not an object, or a value that is not a string. The entries come
+/// first (EnumerableOwnProperties: every getter runs, and its throw is the error), then the
+/// value check. GC point; may run JS (getters).
+fn import_attributes(cx: &mut Cx, options: u64) -> Res<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    if options == UNDEFINED {
+        return Ok(out);
+    }
+    if !kind::is_object(options) {
+        return Err(throw_error(
+            cx,
+            ErrorKind::TypeError,
+            "The second argument to import() must be an object",
+        ));
+    }
+    let with = atoms::intern_str(cx.rt(), "with");
+    let attributes = property::get(cx, options, with)?;
+    if attributes == UNDEFINED {
+        return Ok(out);
+    }
+    if !kind::is_object(attributes) {
+        return Err(throw_error(
+            cx,
+            ErrorKind::TypeError,
+            "The 'with' option of import() must be an object",
+        ));
+    }
+    // 10.d.ii. EnumerableOwnProperties(attributes, key+value) (§7.3.23): the entries go to
+    // scratch roots (key, value, key, value, ...), as getters run between them.
+    let rt = cx.rt();
+    let entries = rt.heap.scratch_roots();
+    entries.push(val(attributes));
+    let keys = property::own_property_keys(cx, attributes);
+    entries.push(val(keys));
+    for i in 0..object::array_len(keys) {
+        let Some(k) = object::array_get(keys, i) else {
+            continue;
+        };
+        if !kind::is_string(k) {
+            continue;
+        }
+        let Some(desc) = property::get_own_property(cx, attributes, k)? else {
+            continue;
+        };
+        if desc.enumerable != Some(true) {
+            continue;
+        }
+        let v = property::get(cx, attributes, k)?;
+        entries.push(val(k));
+        entries.push(val(v));
+    }
+    // 10.d.iv. Each value must be a string.
+    for i in (2..entries.len()).step_by(2) {
+        let (k, v) = (entries.get(i).to_bits(), entries.get(i + 1).to_bits());
+        if !kind::is_string(v) {
+            let msg = format!(
+                "Import attribute value must be a string (attribute \"{}\")",
+                string::to_rust_string(k)
+            );
+            return Err(throw_error(cx, ErrorKind::TypeError, &msg));
+        }
+        out.push((string::to_rust_string(k), string::to_rust_string(v)));
+    }
+    out.sort_by(|a, b| {
+        let (a, b) = (a.0.encode_utf16(), b.0.encode_utf16());
+        a.cmp(b)
+    });
+    Ok(out)
+}
+
+/// Id 43: `import(specifier, options)` (§13.3.10.1.1 EvaluateImportCall steps 3-13, with
+/// HostLoadImportedModule and ContinueDynamicImport, §16.2.1.10-11) in the frame `fp`: a new
+/// promise. Every error after it exists rejects it. The host loads the module and its graph
+/// at once (a synchronous host); Link and Evaluate run in a job, and the namespace fulfills
+/// the promise in the job after Evaluate's promise settles. The referrer is the active
+/// ScriptOrModule ([`active_script_or_module`]), and the module goes into its realm's map;
+/// the promise is of the current realm. With no module host (no `Cx::run_module` or
+/// `Isolate::with_module_host` call is in progress), the v0 not-implemented Error. GC point;
+/// may run JS (ToString, the options' getters).
+pub(crate) fn dynamic_import(
+    cx: &mut Cx,
+    fp: *mut u64,
+    context: u64,
+    specifier: u64,
+    options: u64,
+) -> Res<u64> {
+    if !has_host(cx.rt()) {
+        return Err(not_implemented(cx, "DynamicImport"));
+    }
+    // 1. GetActiveScriptOrModule: its name and realm (a null referrer: the current realm).
+    let (referrer, realm) =
+        active_script_or_module(fp, context).unwrap_or_else(|| (String::new(), UNDEFINED));
+    let realm = if realm == UNDEFINED { cx.realm } else { realm };
+    // 5. NewPromiseCapability(%Promise%) of the current realm.
+    let p = new_promise(cx)?;
+    match import_load(cx, &referrer, realm, specifier, options) {
+        Ok(m) => {
+            // ContinueDynamicImport steps 2-6 with the load promise of the graph.
+            let load = new_promise(cx)?;
+            let ok = load_graph(cx, m);
+            match ok {
+                Ok(()) => fulfill_undefined(cx, load),
+                Err(t) => {
+                    let e = catch(cx, t)?;
+                    reject_pending(cx, load, e);
+                }
+            }
+            let rt = cx.rt();
+            let data = object::new_list(rt, 2, UNDEFINED);
+            object::list_set(rt, data, 0, m);
+            object::list_set(rt, data, 1, p);
+            let mut acx = abi::Cx::new(cx);
+            let data = Local::<JsValue>::from_bits(data);
+            let on_loaded = acx.new_builtin_closure(import_link_and_evaluate, "", 0, data);
+            let on_rejected =
+                acx.new_builtin_closure(import_rejected, "", 1, Local::<JsValue>::from_bits(p));
+            acx.perform_promise_then(
+                Local::<JsObject>::from_bits(load),
+                on_loaded,
+                on_rejected,
+                None,
+            );
+        }
+        Err(t) => {
+            let e = catch(cx, t)?;
+            reject_pending(cx, p, e);
+        }
+    }
+    Ok(p)
+}
+
+/// EvaluateImportCall steps 6-12 and HostLoadImportedModule (with FinishLoadingImportedModule)
+/// for `import(specifier, options)` from `referrer`, whose modules are in the map of `realm`:
+/// the module's record (its graph not loaded yet). GC point; may run JS.
+fn import_load(cx: &mut Cx, referrer: &str, realm: u64, specifier: u64, options: u64) -> Res<u64> {
+    // 6-7. ToString(specifier).
+    let spec = conv::to_string(cx, specifier)?;
+    let spec = string::to_rust_string(spec);
+    // 8-11. The attributes. AllImportAttributesSupported false is a TypeError here (step
+    // 11.c), not the SyntaxError of a static request (`check_attribute_list`); then the type.
+    let attributes = import_attributes(cx, options)?;
+    if let Some((key, value)) = attributes.iter().find(|(k, _)| k != "type") {
+        let msg = format!("Import attribute \"{key}\" with value \"{value}\" is not supported");
+        return Err(throw_error(cx, ErrorKind::TypeError, &msg));
+    }
+    check_attribute_list(cx, &attributes)?;
+    // HostLoadImportedModule.
+    let name = host_resolve(cx, referrer, &spec)?;
+    host_module(cx, realm, &name)
+}
+
+/// The rejected closure of ContinueDynamicImport (steps 3-4, 6.b): rejects the import()
+/// promise (the closure's data) with the reason.
+fn import_rejected<'s>(
+    cx: &mut abi::Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let p = cx.closure_data(args.callee()).bits();
+    reject_pending(cx.inner(), p, args.get(0).bits());
+    Ok(Local::undefined())
+}
+
+/// The linkAndEvaluate closure of ContinueDynamicImport (step 6): Link (a throw rejects),
+/// then Evaluate, then the namespace in a job after Evaluate's promise settles. The data is
+/// `[module, the import() promise]`. Link and Evaluate run in the module's `[[Realm]]` (the
+/// job runs in the realm of the `import()` call, which can be another one).
+fn import_link_and_evaluate<'s>(
+    cx: &mut abi::Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let data = cx.closure_data(args.callee()).bits();
+    let (m, p) = (object::list_get(data, 0), object::list_get(data, 1));
+    let icx = cx.inner();
+    let saved = icx.realm;
+    let realm = realm_of(m);
+    let switch = realm != saved && realm != UNDEFINED;
+    if switch {
+        crate::realm::switch(icx, realm);
+    }
+    // Err((true, _)): Link threw (a rejection); Err((false, _)): a termination in Evaluate.
+    let r = match link(icx, m) {
+        Ok(()) => evaluate(icx, m, false).map_err(|t| (false, t)),
+        Err(t) => Err((true, t)),
+    };
+    if switch {
+        crate::realm::switch(icx, saved);
+    }
+    let ep = match r {
+        Ok(ep) => ep,
+        Err((true, t)) => {
+            let e = catch(icx, t)?;
+            reject_pending(icx, p, e);
+            return Ok(Local::undefined());
+        }
+        Err((false, t)) => return Err(t),
+    };
+    let on_fulfilled =
+        cx.new_builtin_closure(import_evaluated, "", 0, Local::<JsValue>::from_bits(data));
+    let on_rejected =
+        cx.new_builtin_closure(import_rejected, "", 1, Local::<JsValue>::from_bits(p));
+    cx.perform_promise_then(
+        Local::<JsObject>::from_bits(ep),
+        on_fulfilled,
+        on_rejected,
+        None,
+    );
+    Ok(Local::undefined())
+}
+
+/// The onFulfilled closure of linkAndEvaluate (step 6.d): resolves the import() promise
+/// with the module's namespace (a namespace with a `then` export is a thenable). The data is
+/// `[module, the import() promise]`.
+fn import_evaluated<'s>(
+    cx: &mut abi::Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let data = cx.closure_data(args.callee()).bits();
+    let (m, p) = (object::list_get(data, 0), object::list_get(data, 1));
+    let icx = cx.inner();
+    let ns = match get_namespace(icx, m) {
+        Ok(ns) => ns,
+        Err(t) => {
+            let e = catch(icx, t)?;
+            reject_pending(icx, p, e);
+            return Ok(Local::undefined());
+        }
+    };
+    let pl = Local::<JsObject>::from_bits(p);
+    if cx.promise_state(pl)? == PromiseState::Pending {
+        cx.resolve_promise_once(pl, Local::<JsValue>::from_bits(ns))?;
+    }
+    Ok(Local::undefined())
 }

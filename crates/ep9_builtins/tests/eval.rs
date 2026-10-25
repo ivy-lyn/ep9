@@ -110,7 +110,7 @@ fn run_in(src: &str, dispatch: Dispatch, stress: bool) -> Result<Vec<String>, St
     iso.register_host_function("print", 1, print);
     iso.register_host_function("evalScript", 1, eval_script);
     OUT.with(|o| o.borrow_mut().clear());
-    let r = iso.run_script(unit, "test.js");
+    let r = iso.with_cx_checkpoint(|cx| cx.run_script(unit, "test.js").map(|_| ()));
     let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
     iso.collect_garbage();
     iso.verify_heap().expect("a valid heap");

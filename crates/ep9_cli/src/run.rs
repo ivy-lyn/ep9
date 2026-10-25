@@ -160,13 +160,16 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
     };
     isolate.register_host_function("print", 1, print);
     isolate.register_host_function("gc", 0, gc);
-    // `run_script` drains the microtask queue (promise jobs) before it returns; a module
-    // run does the same (`run_module`).
-    let result = if opts.module {
-        run_module(&mut isolate, unit, file)
-    } else {
-        isolate.run_script(unit, file)
-    };
+    // `with_cx_checkpoint` drains the microtask queue (promise jobs) before it returns; a
+    // module run does the same (`run_module`). The file loader is the module host of the run
+    // and its jobs, so `import()` works in a script too.
+    let result = isolate.with_module_host(&mut resolve_module, &mut load_module, |isolate| {
+        if opts.module {
+            run_module(isolate, unit, file)
+        } else {
+            isolate.with_cx_checkpoint(|cx| cx.run_script(unit, file).map(|_| ()))
+        }
+    });
     let _ = std::io::stdout().flush();
     let status = match result {
         Ok(_) => EXIT_OK,
@@ -188,7 +191,7 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
         _ => status,
     };
     if opts.gc_stats {
-        let st = isolate.heap().stats();
+        let st = isolate.gc_stats();
         eprintln!(
             "ep9: gc collections={} freed_cells={} allocated_bytes={}",
             st.collections, st.freed_cells, st.allocated_bytes
@@ -210,33 +213,23 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
 // ---- the file loader for `--module` (M3-P2 MODULE) ------------------------------------------
 
 /// Runs the module `unit` (the file `file`) with the modules it imports, then a microtask
-/// checkpoint, as `Isolate::run_script` does: the module's error wins over a job's, but not
+/// checkpoint (`Isolate::with_cx_checkpoint`): the module's error wins over a job's, but not
 /// over a termination in a job. The module is named by its canonical path (so an import of
 /// the same file is the same module); `-e` code is named [`EVAL_NAME`].
 fn run_module(
     isolate: &mut Isolate,
     unit: ep9_bytecode::VerifiedUnit,
     file: &str,
-) -> Result<ep9_vm::Value, Exception> {
+) -> Result<(), Exception> {
     let name = if file == EVAL_NAME {
         file.to_string()
     } else {
         std::fs::canonicalize(file).map_or_else(|_| file.to_string(), |p| p.display().to_string())
     };
-    let r = isolate.with_cx(|cx| {
+    isolate.with_cx_checkpoint(|cx| {
         cx.run_module(unit, &name, &mut resolve_module, &mut load_module)
             .map(|_| ())
-    });
-    match r {
-        Ok(()) => isolate
-            .perform_microtask_checkpoint()
-            .map(|()| ep9_vm::Value::UNDEFINED),
-        Err(e) if e.terminated => Err(e),
-        Err(e) => match isolate.perform_microtask_checkpoint() {
-            Err(c) if c.terminated => Err(c),
-            _ => Err(e),
-        },
-    }
+    })
 }
 
 /// The name of the module that `specifier` names in the module `referrer` (a file path, or
@@ -420,10 +413,11 @@ mod tests {
         .unwrap();
         let hooks = iso.compiler().unwrap();
         assert!((hooks.compile_script)("var a = 1;").is_ok());
-        // An unsupported feature (M3-P3 IMPORT-TLA builds import()).
+        // An unsupported feature (`import.source()`, a stage 3 proposal; M3-P3 IMPORT-TLA
+        // built import()).
         assert_eq!(
-            (hooks.compile_script)("import('x')").unwrap_err(),
-            CompileFailure::Unsupported("import()".to_string())
+            (hooks.compile_script)("import.source('x')").unwrap_err(),
+            CompileFailure::Unsupported("import.source()".to_string())
         );
         assert!(matches!(
             (hooks.compile_script)("let a; let a;"),
