@@ -458,11 +458,11 @@ fn unrooted_text(i: usize) -> String {
     format!("w4-1-unrooted-{i:04}-0123456789")
 }
 
-/// `n` new strings, kept as raw `Value`s only on the Rust heap (a `Vec` in a `Box`, which the
+/// `n` new strings, kept as raw `Value`s only on the Rust heap (the buffer of a `Vec`, which the
 /// conservative scan does not read): nothing roots them.
 #[inline(never)]
-fn unrooted_strings(iso: &crate::Isolate, n: usize) -> Box<Vec<Value>> {
-    let mut kept = Box::new(Vec::with_capacity(n));
+fn unrooted_strings(iso: &crate::Isolate, n: usize) -> Vec<Value> {
+    let mut kept = Vec::with_capacity(n);
     for i in 0..n {
         let b = string::new_string(&iso.rt, &unrooted_text(i));
         // SAFETY: `b` is a new live string cell; the test reads it only through the checked
