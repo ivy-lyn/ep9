@@ -787,16 +787,22 @@ fn item_name(head: &str) -> Option<String> {
     None
 }
 
-/// The `Isolate` methods in the core (H20-Q4, M3-P3 FREEZE-PREP step 2): the embedder's ways
-/// into ABI code. A `Cx` scope (`with_cx`, `with_cx_checkpoint`, `create_realm`), the job run
-/// (`perform_microtask_checkpoint`), and the hooks that ABI code calls (`register_host_function`
-/// takes a `HostFn`; `with_module_host` takes the hook types of `Cx::run_module`). The other
-/// `Isolate` methods (`new`, the handles, the heap, `string_view`, ...) are the embedder API of
-/// H22, H23 and H19, with their own freeze points: they are `embed (not core):` lines.
-const ENTRY_POINTS: [&str; 6] = [
+/// The `Isolate` methods in the core (H20-Q4, M3-P3 FREEZE-PREP step 2; fix round 5, Codex
+/// W4-3): the embedder's ways into ABI code. A `Cx` scope (`with_cx`, `with_cx_checkpoint`,
+/// `create_realm`), the calls that run JS or host functions with no scope of the embedder
+/// (`perform_microtask_checkpoint` runs the jobs; `take_unhandled_rejections` runs ToString of
+/// an object reason), and the hooks that ABI code calls (`new` takes them in `IsolateConfig`:
+/// the builtin tables and the `PromiseRejectionTracker`; `register_host_function` takes a
+/// `HostFn`; `with_module_host` takes the hook types of `Cx::run_module`). The other
+/// `Isolate` methods (the handles, `collect_garbage`, `gc_stats`, `string_view`, ...) are the
+/// embedder API of H22, H23 and H19, with their own freeze points: they are
+/// `embed (not core):` lines.
+const ENTRY_POINTS: [&str; 8] = [
     "create_realm",
+    "new",
     "perform_microtask_checkpoint",
     "register_host_function",
+    "take_unhandled_rejections",
     "with_cx",
     "with_cx_checkpoint",
     "with_module_host",
@@ -1269,7 +1275,9 @@ fn the_golden_covers_the_core() {
         "abi: impl<'s> From<Local<'s, JsObject>> for Local<'s, JsValue>",
         "abi: impl<'s> From<Local<'s, JsSymbol>> for Local<'s, JsKey>",
         "abi: impl Downcast for JsValue",
-        "embed (not core): impl Isolate :: pub fn new(IsolateConfig)",
+        "embed: impl Isolate :: pub fn new(IsolateConfig)",
+        "embed: impl Isolate :: pub fn take_unhandled_rejections(&mut self)",
+        "embed (not core): impl Isolate :: pub fn gc_stats(&self) -> GcStats",
         "embed (not core): impl Isolate :: pub fn string_view(&mut self, Value)",
     ] {
         assert!(has(needle), "no line has {needle:?}");
@@ -1390,18 +1398,30 @@ fn changing_a_generated_impl_fails_the_golden() {
     );
 }
 
-/// The `embed` lines that name a raw `Value` (the type, not `JsValue` or `IntrinsicValue`).
+/// The types that give a raw `Value` or a raw cell to safe code: `Value` itself, and the
+/// `ep9_heap` types whose safe methods make one (`Heap::alloc`, `Heap::find_cell` and
+/// `Heap::last_conservative_roots` give `CellPtr`s; `CellPtr::to_value`,
+/// `ScratchRoots::get` and `Slot::get` give `Value`s). An `Isolate` method that gives one of
+/// them gives a raw `Value` (Codex W4-1: `heap(&self) -> &Heap` did).
+const RAW_TYPES: [&str; 5] = ["Value", "Heap", "CellPtr", "ScratchRoots", "Slot"];
+
+/// The `embed` lines that name a raw type ([`RAW_TYPES`]; the word, so not `JsValue`,
+/// `IntrinsicValue` or `HeapConfig`).
 fn raw_value_lines(lines: &[String]) -> Vec<String> {
     lines
         .iter()
         .filter(|l| l.starts_with("embed"))
-        .filter(|l| l.split(|c: char| !is_ident(c)).any(|w| w == "Value"))
+        .filter(|l| {
+            l.split(|c: char| !is_ident(c))
+                .any(|w| RAW_TYPES.contains(&w))
+        })
         .cloned()
         .collect()
 }
 
-/// H20-Q4: no default-build `Isolate` method takes or gives a raw `Value`, except
-/// `string_view` (it stays: the H20 Decision, "Embedders get `Local` too").
+/// H20-Q4: no default-build `Isolate` method takes or gives a raw `Value` or a type that
+/// gives one ([`RAW_TYPES`]), except `string_view` (it stays: the H20 Decision, "Embedders
+/// get `Local` too"; it checks its `Value`).
 #[test]
 fn no_isolate_method_takes_or_gives_a_raw_value() {
     let raw = raw_value_lines(&extract(&sources()));
@@ -1433,6 +1453,11 @@ fn a_new_isolate_method_is_a_new_line() {
     t.push_str(
         "\n#[cfg(any(test, unix))]\nimpl Isolate {\n    pub fn any_os(&self) -> Value {}\n}\n",
     );
+    // Codex W4-1: the raw heap in a default-build block is a raw line; in the block of
+    // `isolate.rs` that is gated to tests and spike-native, it is no line.
+    t.push_str("\nimpl Isolate {\n    pub fn heap_again(&self) -> &ep9_heap::Heap {}\n}\n");
+    t.push_str("\nimpl Isolate {\n    pub fn cell(&self) -> Option<ep9_heap::CellPtr> {}\n}\n");
+    assert!(t.contains("#[cfg(any(test, feature = \"spike-native\"))]\nimpl Isolate {\n    pub fn heap(&self) -> &Heap {"));
     files.push((
         "probe.rs".to_string(),
         "mod inner {\n    impl crate::Isolate {\n        pub fn run_raw(&mut self) -> Value {}\n    }\n}\n\
@@ -1459,6 +1484,8 @@ fn a_new_isolate_method_is_a_new_line() {
         "embed (not core): impl Isolate :: #[cfg(any(test, unix))] pub fn any_os(&self) -> Value",
         "embed (not core): impl Isolate :: #[cfg(target_arch = \"aarch64\")] pub fn arm_raw(&self) -> Value",
         "embed (not core): impl Isolate :: #[cfg(debug_assertions)] pub fn debug_raw(&self) -> Value",
+        "embed (not core): impl Isolate :: pub fn heap_again(&self) -> &ep9_heap::Heap",
+        "embed (not core): impl Isolate :: pub fn cell(&self) -> Option<ep9_heap::CellPtr>",
     ];
     want.sort_unstable();
     assert_eq!(new, want);

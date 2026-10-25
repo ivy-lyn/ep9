@@ -264,16 +264,16 @@ embed (not core): impl Isolate :: pub fn builtin_table(&self) -> Option<&'static
 embed (not core): impl Isolate :: pub fn collect_garbage(&mut self)
 embed (not core): impl Isolate :: pub fn compiler(&self) -> Option<&'static CompilerHooks>
 embed (not core): impl Isolate :: pub fn dispatch(&self) -> Dispatch
-embed (not core): impl Isolate :: pub fn heap(&self) -> &Heap
+embed (not core): impl Isolate :: pub fn gc_stats(&self) -> GcStats
 embed (not core): impl Isolate :: pub fn interrupt_handle(&self) -> InterruptHandle
-embed (not core): impl Isolate :: pub fn new(IsolateConfig) -> Result<Isolate, IsolateError>
 embed (not core): impl Isolate :: pub fn string_view(&mut self, Value) -> Option<JsStr<'_>>
-embed (not core): impl Isolate :: pub fn take_unhandled_rejections(&mut self) -> Vec<Exception>
 embed (not core): impl Isolate :: pub fn terminate_handle(&self) -> TerminateHandle
 embed (not core): impl Isolate :: pub fn verify_heap(&self) -> Result<VerifyReport, VerifyError>
 embed: impl Isolate :: pub fn create_realm<R>(&mut self, impl for<'s> FnOnce(&mut Cx<'s>, Local<'s, JsObject>) -> JsResult<R>) -> Result<R, Exception>
+embed: impl Isolate :: pub fn new(IsolateConfig) -> Result<Isolate, IsolateError>
 embed: impl Isolate :: pub fn perform_microtask_checkpoint(&mut self) -> Result<(), Exception>
 embed: impl Isolate :: pub fn register_host_function(&mut self, &str, u32, HostFn)
+embed: impl Isolate :: pub fn take_unhandled_rejections(&mut self) -> Vec<Exception>
 embed: impl Isolate :: pub fn with_cx<R>(&mut self, impl for<'s> FnOnce(&mut Cx<'s>) -> JsResult<R>) -> Result<R, Exception>
 embed: impl Isolate :: pub fn with_cx_checkpoint<R>(&mut self, impl for<'s> FnOnce(&mut Cx<'s>) -> JsResult<R>) -> Result<R, Exception>
 embed: impl Isolate :: pub fn with_module_host<R>(&mut self, &mut dyn FnMut(&str, &str) -> Result<String, String>, &mut dyn FnMut(&str) -> CompileResult, impl FnOnce(&mut Isolate) -> R) -> R

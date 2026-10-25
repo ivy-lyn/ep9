@@ -334,7 +334,7 @@ fn marked_at_the_last_job(n: u32) -> usize {
     run(&mut i, &src, "q3.js").unwrap();
     assert_eq!(GCS.with(std::cell::Cell::get), 1);
     assert!(i.take_unhandled_rejections().is_empty());
-    i.heap().stats().last_marked_bytes
+    i.gc_stats().last_marked_bytes
 }
 
 /// Q3: a long drain of handled rejections keeps a bounded heap: each handled rejection

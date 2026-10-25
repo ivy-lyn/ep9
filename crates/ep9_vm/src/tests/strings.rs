@@ -453,6 +453,78 @@ fn string_view_reads_script_strings_and_the_copy_outlives_gc() {
     assert!(iso.string_view(Value::UNDEFINED).is_none());
 }
 
+/// The text of the `i`th string of [`unrooted_strings`].
+fn unrooted_text(i: usize) -> String {
+    format!("w4-1-unrooted-{i:04}-0123456789")
+}
+
+/// `n` new strings, kept as raw `Value`s only on the Rust heap (a `Vec` in a `Box`, which the
+/// conservative scan does not read): nothing roots them.
+#[inline(never)]
+fn unrooted_strings(iso: &crate::Isolate, n: usize) -> Box<Vec<Value>> {
+    let mut kept = Box::new(Vec::with_capacity(n));
+    for i in 0..n {
+        let b = string::new_string(&iso.rt, &unrooted_text(i));
+        // SAFETY: `b` is a new live string cell; the test reads it only through the checked
+        // `Isolate::string_view`.
+        kept.push(unsafe { Value::from_bits_unchecked(b) });
+    }
+    kept
+}
+
+/// H20-Q4 (Codex W4-1): `Isolate::string_view` reads only a live string cell of its own heap.
+/// Raw `Value`s of strings that nothing roots: after a GC the sweep frees most of them, and
+/// the view of each freed cell is `None`, also with zap off (the release default, where the
+/// freed text is still in memory); a cell that a stale stack word kept is still read. Bits
+/// inside a live cell and bits outside the cage give `None` too.
+#[test]
+fn string_view_reads_only_live_cells_of_its_heap() {
+    for zap in [false, true] {
+        let mut cfg = config(Dispatch::DEFAULT, false);
+        cfg.heap.zap = zap;
+        let mut iso = isolate(cfg);
+        let n = 64;
+        let gcs = iso.gc_stats().collections;
+        let kept = unrooted_strings(&iso, n);
+        // No GC ran while they were made, so no address was used twice.
+        assert_eq!(iso.gc_stats().collections, gcs);
+        for (i, v) in kept.iter().enumerate() {
+            let text = iso.string_view(*v).map(|s| s.to_string_lossy());
+            assert_eq!(text, Some(unrooted_text(i)), "before the GC, string {i}");
+        }
+        clobber_stack();
+        iso.collect_garbage();
+        let mut freed = 0;
+        for (i, v) in kept.iter().enumerate() {
+            let live = iso.heap().is_cell(v.to_bits() as usize);
+            let text = iso.string_view(*v).map(|s| s.to_string_lossy());
+            if live {
+                assert_eq!(text, Some(unrooted_text(i)), "zap {zap}: kept string {i}");
+            } else {
+                freed += 1;
+                assert_eq!(text, None, "zap {zap}: freed string {i}");
+            }
+        }
+        assert!(
+            freed > n / 2,
+            "zap {zap}: only {freed} of {n} cells were freed"
+        );
+        // A live string: bits 8 bytes into its cell, and a cell address outside the cage.
+        let live = iso
+            .run_raw(concat_of("live-", "string"), "view.js")
+            .unwrap();
+        assert_eq!(
+            iso.string_view(live).map(|s| s.to_string_lossy()),
+            Some("live-string".to_string())
+        );
+        for bits in [live.to_bits() + 8, 8 << 20] {
+            // SAFETY: the bits are only given to the checked `Isolate::string_view`.
+            let v = unsafe { Value::from_bits_unchecked(bits) };
+            assert!(iso.string_view(v).is_none(), "{bits:#x}");
+        }
+    }
+}
+
 #[test]
 fn key_compares_and_probes() {
     let iso = isolate(config(Dispatch::DEFAULT, false));

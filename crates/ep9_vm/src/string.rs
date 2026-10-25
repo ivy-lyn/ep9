@@ -286,13 +286,20 @@ pub(crate) fn view<'c>(_cx: &'c Cx, s: u64) -> JsStr<'c> {
 }
 
 impl Isolate {
-    /// The code units of `v` if it is a string, without a copy. The view does not root the
-    /// string, so it borrows the isolate exclusively: no isolate call can run while it lives.
-    /// That covers the `&mut self` calls that run JS or collect ([`Isolate::collect_garbage`])
-    /// and the `&self` ones that allocate or collect ([`Isolate::heap`] gives `Heap::collect`
-    /// and `Heap::alloc`). V8's `String::ValueView` has the same rule. A raw `Value` is not a
-    /// root: `v` must come from the latest call into the isolate (the embedding API gives no
-    /// raw `Value`; the spike-native API does). Copy the text out first:
+    /// The code units of `v` if it is a live string cell of this isolate's heap, without a
+    /// copy; `None` for any other `v`. A raw `Value` is not a root, so the method checks `v`
+    /// before it reads it (H20-Q4, Codex W4-1): a `Value` of a freed cell, of another heap
+    /// or of an isolate that was dropped, or bits that do not start a cell, give `None`. If a
+    /// freed cell's memory now holds a new live string, the view shows that string: the text
+    /// is wrong, but the read is in bounds. The default build gives safe code no raw `Value`
+    /// of a cell of this heap (no `Isolate::heap`, and `Value::from_cell_ptr` and
+    /// `Value::from_bits_unchecked` are `unsafe`); the spike-native API does.
+    ///
+    /// The view does not root the string, so it borrows the isolate exclusively: no isolate
+    /// call can run while it lives. That covers the `&mut self` calls that run JS or collect
+    /// ([`Isolate::collect_garbage`]) and the `&self` ones (in the spike-native build,
+    /// `Isolate::heap` gives `Heap::collect` and `Heap::alloc`). V8's `String::ValueView`
+    /// has the same rule. Copy the text out first:
     ///
     /// ```
     /// use ep9_vm::{Isolate, IsolateConfig, Value};
@@ -301,6 +308,29 @@ impl Isolate {
     /// let text = iso.string_view(v).map(|s| s.to_string_lossy());
     /// iso.collect_garbage();
     /// assert_eq!(text, None);
+    /// ```
+    ///
+    /// A cell of another heap is not read (the embedder can make an `ep9_heap::Heap` of its
+    /// own):
+    ///
+    /// ```
+    /// use ep9_heap::{CellKind, CellPtr, CellSize, Heap, HeapConfig, KindId, Tracer};
+    /// use ep9_vm::{Isolate, IsolateConfig};
+    /// fn size(_: CellPtr) -> usize {
+    ///     32
+    /// }
+    /// fn trace(_: CellPtr, _: &mut Tracer<'_>) {}
+    /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    /// let other = Heap::new(HeapConfig::default()).unwrap();
+    /// // Kind 1 is the VM's SEQ_LATIN1 string kind; this cell has no string layout.
+    /// let k = KindId::new(1).unwrap();
+    /// other
+    ///     .register_kind(k, CellKind { name: "fake", size: CellSize::Dynamic(size), trace })
+    ///     .unwrap();
+    /// let v = other.alloc(k, 32).unwrap().to_value();
+    /// assert!(iso.string_view(v).is_none());
+    /// drop(other);
+    /// assert!(iso.string_view(v).is_none());
     /// ```
     ///
     /// Keeping the view across a GC point does not compile: across a `&mut self` call
@@ -315,8 +345,8 @@ impl Isolate {
     /// assert!(view.is_none());
     /// ```
     ///
-    /// across a `&self` call that collects, also with the views stored on the Rust heap where
-    /// the conservative scan does not see them (`E0502`),
+    /// and across a `&self` call, also with the views stored on the Rust heap where the
+    /// conservative scan does not see them (`E0502`):
     ///
     /// ```compile_fail,E0502
     /// use ep9_vm::{Isolate, IsolateConfig, Value};
@@ -324,23 +354,15 @@ impl Isolate {
     /// let v = Value::UNDEFINED;
     /// let mut views = Vec::new();
     /// views.extend(iso.string_view(v));
-    /// iso.heap().collect();
+    /// let _ = iso.gc_stats();
     /// assert!(views.is_empty());
-    /// ```
-    ///
-    /// and across a `&self` call that allocates (`E0502`):
-    ///
-    /// ```compile_fail,E0502
-    /// use ep9_vm::{Isolate, IsolateConfig, Value};
-    /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
-    /// let v = Value::UNDEFINED;
-    /// let view = iso.string_view(v);
-    /// let _ = iso.heap().alloc(ep9_heap::KindId::new(1).unwrap(), 16);
-    /// assert!(view.is_none());
     /// ```
     pub fn string_view(&mut self, v: Value) -> Option<JsStr<'_>> {
         let b = v.to_bits();
-        is_string(b).then(|| view(&self.cx, b))
+        // `Heap::is_cell` finishes the lazy sweep, then accepts only the start of a live cell
+        // in this heap's cage, so `is_string` reads the word0 of a live cell (H20-Q4).
+        let live = is_cell_bits(b) && self.rt.heap.is_cell(b as usize);
+        (live && is_string(b)).then(|| view(&self.cx, b))
     }
 }
 
