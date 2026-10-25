@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-21). Late: due M0 wk3. M0 month 3 (M3-P1 REALMS): N realms per isolate built, H22-Q3 and H22-Q7 filled |
+| Status | Accepted (2026-10-25, M3-P3-ACCEPT-7; review record complete). Was: Draft (2026-10-21). Late: due M0 wk3. M0 month 3 (M3-P1 REALMS): N realms per isolate built, H22-Q3 and H22-Q7 filled |
 | Fix by | M0 wk3 (D14) |
 | Freeze point | M1 exit |
 | Origin | v1#18; plan status E |
@@ -132,6 +132,7 @@ Isolate = one heap, one thread at a time; N realms; workers are isolates; only S
 | 2026-10-25 | fill | H22-Q10 filled with code (M3-P3 fix round 2, X-R2-1; Codex M3-P3 round 1 ACCEPT-7 sorted it (a) for the H22 Accept): the Job of NewPromiseReactionJob runs in GetFunctionRealm(handler) when the handler is not empty (§27.2.2.1), as the thenable job already did (X-REALM3). The Follow-ups line and the H22-Q3 list of realm switches say so. New test `reaction_jobs_run_in_the_realm_of_the_handler` (`ep9_builtins` `tests/realm.rs`). No Decision or Rules row changes; every existing check, test and golden file keeps its result (test262: the Promise, async, await, dynamic-import, top-level-await and the 284 `$262.createRealm` files give the same failures before and after, exec, eager and GC stress). The Review record rows are dated and not changed: row 3 sorts X-R2-1 (c) and says it stays open; this row closes it | M3-P3 fix round 2 (fix2-realm) |
 | 2026-10-25 | clarify | Validation, the realms item: a dated update at f5149b1 after the old text (no old text is deleted): `tests/realm.rs` has 9 tests, not 7, and 107 of the 284 `$262.createRealm` files pass (mac a64 run at f5149b1, 0 NEW FAILURE). Row 3 (M3-P3 ACCEPT-7) named both numbers as stale dated text. Text only; no check changes | M3-P3 records writer |
 | 2026-10-25 | clarify | Review record: a row-2 addendum (the M3-P3 Codex runs: round 1, the ACCEPT-7 slice, X-R2-1 on H22; round 2, fix2-realm, approve) and a row-3 addendum by the M3-P3 records writer: X-R2-1 is sorted again, (a) and not (c), and it is FIXED by 12eb877 (checked at f5149b1 with the regression test, a negative control and the 284 createRealm files); the c3d7f70 ref and the 042b622 H22-Q9 text are checked. No text outside the record changes; no check changes | M3-P3 records writer |
+| 2026-10-25 | clarify | Status Draft -> Accepted (M3-P3-ACCEPT-7). The §3.1 review record is complete: row 1 M3-P2 ACCEPT-6, with its step-2 addendum; row 2 Codex, with the M3-P3 addendum; row 3 M3-P3 ACCEPT-7, with the M3-P2 addendum (X-MOD1-3 and R3-5 (b), fixed) and the M3-P3 addendum (X-R2-1 sorted again (a), FIXED by 12eb877, H22-Q10 filled); no open (a) or (b) item; row 4 data (the 2-realm test output, V8-A17; run again at f5149b1: 9 realm tests pass, 107 of the 284 createRealm files). Known limit: c3d7f70 (1 ref) and 042b622 (H22-Q9) have no Codex run of their own; the M3-P3 row-3 addendum checked them. Plan-v8 §5.5: the orchestrator sets H12, H15 and H22 to Accepted (24 Accepted). The orchestrator did not write the rows it approves. No check changes | orchestrator (written by the M3-P3 records writer) |
 
 ## Review record
 

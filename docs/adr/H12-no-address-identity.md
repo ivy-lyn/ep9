@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-20). S0 heap code (2026-10-21, `crates/ep9_heap`) has no `Drop` or finalizer hook for cells and no identity hash. M0 wk4: the `needs_drop` check is built; H12-Q1, Q2 and Q3 filled. M0 month 3 (M3-P1 B-COLLECTIONS): H12-Q1 filled again, the identity hash is built (Map, Set, WeakMap, WeakSet) |
+| Status | Accepted (2026-10-25, M3-P3-ACCEPT-7; review record complete). Was: Draft (2026-10-20). S0 heap code (2026-10-21, `crates/ep9_heap`) has no `Drop` or finalizer hook for cells and no identity hash. M0 wk4: the `needs_drop` check is built; H12-Q1, Q2 and Q3 filled. M0 month 3 (M3-P1 B-COLLECTIONS): H12-Q1 filled again, the identity hash is built (Map, Set, WeakMap, WeakSet) |
 | Fix by | M0 |
 | Freeze point | M1 exit |
 | Origin | v1#8; plan status U (unchanged) |
@@ -101,6 +101,7 @@ Identity hash stored lazily. No raw address escapes. No Rust `Drop` on heap obje
 | 2026-10-24 | clarify | Review record: row 2 filled from the Codex texts (X-ACC1 on N1, fixed by 7b38094) and a row-3 addendum by the M3-P2 row-3 verifier for the M3-P2 findings; row 3 for Accept stays with M3-P3 ACCEPT-7. No text outside the record changes; no check changes | M3-P2 records writer |
 | 2026-10-25 | clarify | Review record row 3 (B5a, V8-A17) filled: rows 1, 2 and 4 checked at 88998a1 with runs (the identity hash, the `needs_drop` check, the H12-Q2 rule over the M3-P2 code, a JS probe equal to node v24.22.1, a test262 collections subset). Kinds confirmed. No review-fix clarify; no text outside the record changes; no check changes. The Status stays Draft (the Accept step is the orchestrator's) | M3-P3 ACCEPT-7 |
 | 2026-10-25 | clarify | Review record: a row-2 addendum (the M3-P3 Codex runs: the ACCEPT-7 slice has no H12 finding; C-FX3 and C2-FX1 on the facts exporter name H12-Q2) and a row-3 addendum by the M3-P3 records writer: C-FX3 (b), FIXED by 739ebfb; C2-FX1 (b), FIXED by c59ccc6 (content interning, no address key); checked at f5149b1 with runs. No text outside the record changes; no check changes | M3-P3 records writer |
+| 2026-10-25 | clarify | Status Draft -> Accepted (M3-P3-ACCEPT-7). The §3.1 review record is complete: row 1 M3-P2 ACCEPT-6; row 2 Codex, with the M3-P3 addendum; row 3 M3-P3 ACCEPT-7, with the M3-P2 addendum (X-ACC1 (a), fixed) and the M3-P3 addendum (C-FX3 and C2-FX1 (b), fixed by 739ebfb and c59ccc6); no open (a) or (b) item; row 4 data (the identity-hash and `needs_drop` tests; run again at f5149b1). Plan-v8 §5.5: the orchestrator sets H12, H15 and H22 to Accepted (24 Accepted). The orchestrator did not write the rows it approves. No check changes | orchestrator (written by the M3-P3 records writer) |
 
 ## Review record
 
