@@ -25,7 +25,7 @@
 //! |---|---|
 //! | `strict` | `ScopeFlags::STRICT` of the `scope` operand: the unit scope at the call site, so class code inside a sloppy function is strict (M2-P2-L6) |
 //! | `in_function`, `in_method`, `in_derived_ctor`, `in_class_field_init` (and the `*_ok` flags) | the kind of the `function` operand's unit function, past arrows along `parent` (GetThisEnvironment). Function 0 of a script or module: global code, all false. Function 0 of eval code: the flags the eval unit was compiled with (`LoadedUnit::eval_receiver`, set from the caller's `EvalContext` by `direct_eval`; all false for indirect eval), so a class field initializer's `in_class_field_init` holds through nested eval |
-//! | `private_names` | (M3-P4, CX2-E9-1) the running PrivateEnvironment: the `#x` slots (without the `#`) of the Class contexts on the runtime chain from the frame's current context out, without the class whose heritage runs (a heritage scope context comes right before it), and past the contexts of eval code the names that the eval code was compiled with (`private_environment`). Before CX2-E9-1 the static scope chain of the `scope` operand gave them, so a heritage saw its own class's names |
+//! | `private_names` | (M3-P4, CX2-E9-1) the running PrivateEnvironment: the `#x` slots (without the `#`) of the Class contexts on the runtime chain from the frame's current context out, without the class whose heritage runs (a heritage scope context comes right before its class context, which is the heritage scope's `outer` scope; a class with no context has no names to leave out, R-FIX2-1), and past the contexts of eval code the names that the eval code was compiled with (`private_environment`). Before CX2-E9-1 the static scope chain of the `scope` operand gave them, so a heritage saw its own class's names |
 //! | `private_methods`, `private_accessors`, `private_static` (E9, M3-P4) | the kind of each of those names, from the slot names of the class scope that gives it (`add_private_names`) |
 //!
 //! The new eval unit keeps the private names with the hops from the site context to their
@@ -100,7 +100,8 @@ fn slot_name<'u>(u: &'u LoadedUnit, scope: &ep9_bytecode::Scope, i: usize) -> Op
 
 /// (M3-P4, CX2-E9-1) The marker binding of a class's heritage scope (`ep9_frontend`
 /// `scope/collect.rs` `HERITAGE_MARKER`; ep9_bytecode `eval_context.rs`): the context past a
-/// context that holds it is the class context, whose private names the heritage does not see.
+/// context that holds it is the class context, whose private names the heritage does not see,
+/// if the class scope has a context (else it is the context of an enclosing scope).
 const HERITAGE_MARKER: &[u8] = b"#.heritage";
 
 /// The scope of a heritage scope context (it holds the marker binding).
@@ -157,21 +158,29 @@ fn add_private_names(
 ///
 /// ```text
 /// a Class context of u           its names (an inner class's name of the same text wins)
-/// a heritage scope context of u  the next context is the class whose heritage runs: its
-///                                names are left out (§15.7.14 step 8.b, the heritage runs
-///                                with the outer PrivateEnvironment)
+/// a heritage scope context of u  if the next context is the context of its class (the
+///                                heritage scope's `outer` scope), that class's names are
+///                                left out (§15.7.14 step 8.b, the heritage runs with the
+///                                outer PrivateEnvironment)
 /// the first context of another unit: u is eval code and this is its site context;
 ///                                the rest is the list u was compiled with
 ///                                (`LoadedUnit::eval_private`), its hops moved by this depth
 /// ```
 ///
 /// A class context is on the chain from its class scope's entry, before the heritage runs,
-/// so no name of a class around the site is missing. GC point (a poll).
+/// so no name of a class around the site is missing. (M3-P4 fix round 3, R-FIX2-1) A class
+/// scope with no private name and no computed field key has no context, so the context right
+/// past its heritage scope context is the context of an enclosing scope: maybe the class
+/// context of a class that holds this class in a computed key, whose names the heritage does
+/// see. So only the context whose scope is the heritage scope's own class scope is left out.
+/// GC point (a poll).
 fn private_environment(cx: &mut Cx, fp: *mut u64, u: &LoadedUnit) -> Res<Vec<EvalPrivateName>> {
     let mut out = Vec::new();
     let mut c = context(fp);
     let mut depth = 0u32;
-    let mut in_heritage = false;
+    // The class scope of the heritage scope context seen last: the next context's names are
+    // left out only if that context is of this scope.
+    let mut heritage_class: Option<&ep9_bytecode::Scope> = None;
     while is_context(c) {
         poll(cx)?;
         let (cu, scope) = object::context_scope(c);
@@ -186,11 +195,12 @@ fn private_environment(cx: &mut Cx, fp: *mut u64, u: &LoadedUnit) -> Res<Vec<Eva
             }
             return Ok(out);
         }
-        // The context right past a heritage scope context is its class context.
-        let heritage_class = core::mem::take(&mut in_heritage);
+        let skip = heritage_class
+            .take()
+            .is_some_and(|class| core::ptr::eq(class, scope));
         if is_heritage_scope(cu, scope) {
-            in_heritage = true;
-        } else if !heritage_class {
+            heritage_class = scope.outer.and_then(|o| cu.unit.scopes.get(o.index()));
+        } else if !skip {
             add_private_names(cu, scope, depth, &mut out);
         }
         c = object::context_previous(c);

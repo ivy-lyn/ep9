@@ -39,7 +39,10 @@
 //! runtime chain of the call; the scope pass gives a class whose heritage holds a direct eval
 //! a heritage scope (a `Block` scope inside the class scope) whose context holds the marker
 //! slot `#.heritage`, and the VM leaves out the names of the class context right past such a
-//! context. The eval unit keeps, per name, how many contexts out from the eval's site context
+//! context, only if that context is of the heritage scope's own class scope (fix round 3,
+//! R-FIX2-1: a class scope with no private name and no computed field key has no context,
+//! and then the context right past is of an enclosing scope, maybe a class around this
+//! class, whose names the heritage does see). The eval unit keeps, per name, how many contexts out from the eval's site context
 //! the class context is, and the VM resolves a `#x` lookup of the eval code (the three forms
 //! above) there, not by a search from the current context: a search would find a class whose
 //! heritage holds the code. A `#x` lookup that finds no such class, a field key or a brand that
