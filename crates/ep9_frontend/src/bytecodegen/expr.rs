@@ -1473,17 +1473,44 @@ impl<'a, 's> FnGen<'a, 's> {
             self.b.construct(ctor, list, n, s);
         }
         self.b.star(result);
-        // Bind `this`: it must still be the hole.
-        let Resolution::Binding { binding, hops, .. } = this_ref.resolution else {
-            return Err(super::internal("super() without a this binding"));
-        };
-        self.load_binding_raw(binding, hops, false);
-        self.b.throw_super_already_called_if_not_hole();
-        self.b.ldar(result);
-        self.store_binding_raw(binding, hops);
-        self.fields_after_super(callee_ref, result)?;
+        match this_ref.resolution {
+            Resolution::Binding { binding, hops, .. } => {
+                // Bind `this`: it must still be the hole.
+                self.load_binding_raw(binding, hops, false);
+                self.b.throw_super_already_called_if_not_hole();
+                self.b.ldar(result);
+                self.store_binding_raw(binding, hops);
+                self.fields_after_super(callee_ref, result)?;
+            }
+            Resolution::Dynamic { .. } => self.eval_bind_this(this_ref, callee_ref, result),
+            Resolution::Global => return Err(super::internal("super() without a this binding")),
+        }
         self.release(m);
         Ok(())
+    }
+
+    /// `super()` in direct eval code (E6, M3-P4): the caller's `this`, `.callee` and
+    /// `new.target` are context slots of the derived constructor, reached by name.
+    /// BindThisValue (§13.3.7.1 step 8) is `StaLookupSlot "this"`: no source text can assign
+    /// to `this`, so the VM gives a store to that name the BindThisValue meaning (a
+    /// ReferenceError if `this` is already bound; `slow/lookup.rs`). Then
+    /// InitializeInstanceElements(result, F) with F = `.callee`: whether F's class has an
+    /// instance initializer is not known here, and `RunClassFieldsInitializer` does nothing
+    /// without one. The accumulator holds `this` afterwards.
+    fn eval_bind_this(&mut self, this_ref: &Reference, callee_ref: &Reference, result: Register) {
+        let k = self.name_const(this_ref.name);
+        let flags = u8::from(self.strict_at(this_ref));
+        self.b.ldar(result);
+        self.expr_pos(this_ref.span.start);
+        self.b.sta_lookup_slot(k, flags);
+        let m = self.mark();
+        let args = self.temps(2);
+        self.load_ref(callee_ref, false);
+        self.b.star(args.get(0)).mov(result, args.get(1));
+        self.expr_pos(callee_ref.span.start);
+        self.runtime(RuntimeId::RunClassFieldsInitializer, args);
+        self.release(m);
+        self.b.ldar(result);
     }
 
     fn new_expr(&mut self, n: &'a NewExpression<'a>) -> Gen {

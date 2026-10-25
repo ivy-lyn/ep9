@@ -20,7 +20,7 @@
 //! |---|---|---|
 //! | How function 0 runs | a closure over the caller's current context (the receiver is not read) | global code: the receiver is the global this, as for a script |
 //! | Free names (also `#x`) | `LdaLookupSlot` and friends, by name, from the eval code's context | `LdaGlobal` / `StaGlobal` |
-//! | `this`, `new.target`, `super.x`, `arguments` | looked up by the names `this`, `new.target`, `.home_object`, `arguments` in the caller's context slots. A `with` object on the way must not answer the first three (they are not identifier references); it does answer `arguments`. `super()` is not compiled yet (Unsupported) | `this` is the receiver; the rest are early errors |
+//! | `this`, `new.target`, `super.x`, `arguments` | looked up by the names `this`, `new.target`, `.home_object`, `arguments` in the caller's context slots. A `with` object on the way must not answer the first three (they are not identifier references); it does answer `arguments`. `super()` reads `.callee` and `new.target` by name and binds `this` with `StaLookupSlot "this"` (BindThisValue in the VM; E6, M3-P4) | `this` is the receiver; the rest are early errors |
 //!
 //! Sloppy eval code calls `DeclareEvalFunction(name, closure)` per function (spec order of
 //! `functionsToInitialize`) and then `DeclareEvalVar(name)` per other `var` name, before the

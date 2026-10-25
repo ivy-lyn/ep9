@@ -629,3 +629,64 @@ t('arrow-args', () => { var g = (p = eval("var arguments = 'param'")) => argumen
         ])
     );
 }
+
+/// E6 (M3-P4; M3-P2-OPEN item 2): `super()` in direct eval code in a derived constructor
+/// (PerformEval step 5 inDerivedConstructor), also through arrows and nested eval: it calls
+/// the parent constructor with the caller's `new.target`, binds the caller's `this` (a second
+/// binding is a ReferenceError, after the parent constructor ran), and runs the class field
+/// initializer once. `super.x`, `new.target` and `this` in eval code keep working. Outside a
+/// derived constructor `super()` stays a SyntaxError. Node v24.22.1 prints the same lines
+/// (its SyntaxError and TDZ messages differ, so only the error names are printed).
+#[test]
+fn super_call_in_eval_code() {
+    assert_eq!(
+        run_every(
+            r#"function t(label, f) { try { print(label, String(f())); } catch (e) { print(label, e.constructor.name); } }
+class A { constructor(...v) { this.v = v.join(','); } m() { return 'A.m'; } }
+t('call', () => { class B extends A { constructor() { eval('super(1)'); } } return new B().v; });
+t('call-ret', () => { class B extends A { constructor() { var r = eval('super(2)'); this.same = r === this; } } var b = new B(); return b.v + ' ' + b.same; });
+t('call-arrow', () => { class B extends A { constructor() { var f = () => eval('super(3)'); f(); } } return new B().v; });
+t('call-nested', () => { class B extends A { constructor() { eval("eval('super(5)')"); } } return new B().v; });
+t('arrow-in-eval', () => { class B extends A { constructor() { var f = eval('() => super(10)'); f(); } } return new B().v; });
+t('twice', () => { class B extends A { constructor() { super(1); eval('super(6)'); } } return new B().v; });
+t('twice2', () => { class B extends A { constructor() { eval('super(7)'); super(1); } } return new B().v; });
+t('this-before', () => { class B extends A { constructor() { eval('this'); super(1); } } return new B().v; });
+t('this-after', () => { class B extends A { constructor() { eval('super(8)'); this.w = eval('this.v'); } } return new B().w; });
+t('no-super', () => { class B extends A { constructor() { eval('1'); } } return new B().v; });
+t('fields', () => { var n = 0; class B extends A { f = ++n; #p = 5; g() { return this.#p; } constructor() { try { eval('super(9)'); eval('super(9)'); } catch (e) {} } } var b = new B(); return n + ' ' + b.f + ' ' + b.g(); });
+t('newtarget', () => { class B extends A { constructor() { eval('super(new.target === B ? 10 : 0)'); } } return new B().v; });
+t('reflect', () => { class B extends A { constructor() { eval('super(11)'); } } class X {} var o = Reflect.construct(B, [], X); return o.v + ' ' + (Object.getPrototypeOf(o) === X.prototype); });
+t('spread', () => { class B extends A { constructor() { eval('super(...[1, 2], 3)'); } } return new B().v; });
+t('escaped', () => { class B extends A { constructor() { super(1); this.f = () => eval('super(2)'); } } var b = new B(); try { b.f(); } catch (e) { return b.v + ' ' + e.constructor.name; } });
+t('not-ctor', () => { class B extends A { constructor() { eval('super(1)'); } } Object.setPrototypeOf(B, Object.prototype); return new B(); });
+t('super-prop', () => { class B extends A { constructor() { eval('super(13)'); this.r = eval('super.m()'); } } return new B().r; });
+t('in-method', () => { class B extends A { m() { eval('super()'); } } return new B().m(); });
+t('in-base', () => { class B { constructor() { eval('super()'); } } return new B(); });
+t('in-field', () => { class B extends A { x = eval('super()'); } return new B(); });
+t('in-eval-fn', () => { class B extends A { constructor() { eval('function q() { super(); }'); } } return new B(); });"#
+        ),
+        lines(&[
+            "call 1",
+            "call-ret 2 true",
+            "call-arrow 3",
+            "call-nested 5",
+            "arrow-in-eval 10",
+            "twice ReferenceError",
+            "twice2 ReferenceError",
+            "this-before ReferenceError",
+            "this-after 8",
+            "no-super ReferenceError",
+            "fields 1 1 5",
+            "newtarget 10",
+            "reflect 11 true",
+            "spread 1,2,3",
+            "escaped 1 ReferenceError",
+            "not-ctor TypeError",
+            "super-prop A.m",
+            "in-method SyntaxError",
+            "in-base SyntaxError",
+            "in-field SyntaxError",
+            "in-eval-fn SyntaxError",
+        ])
+    );
+}
