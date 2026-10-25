@@ -98,10 +98,11 @@
 //! ScriptOrModule when that code loaded ([`EvalReferrer`]). The module goes into the module
 //! map of the referrer's realm, not of the realm that runs the call.
 
+use core::ptr::NonNull;
 use std::cell::RefCell;
 
 use ep9_bytecode::{CodeKind, ExportImportName, ImportName, ModuleRecords, VerifiedUnit};
-use ep9_heap::GlobalHandle;
+use ep9_heap::{RootStrength, Slot, Tracer};
 use ep9_value::{JsResult, Throw};
 
 use crate::abi::{self, Args, JsObject, JsValue, Local, PromiseState};
@@ -1848,7 +1849,7 @@ pub(crate) fn run_module(
 /// set by `abi::Cx::load_entry`). A function made by that code keeps it as its
 /// `[[ScriptOrModule]]` (OrdinaryFunctionCreate, §10.2.3), so its `import()` resolves from
 /// there, not from the code that calls it later. Holds no Value (a realm of another realm
-/// is in a strong handle).
+/// is in a weak root slot that the functions of the unit trace: [`ReferrerRealm::Other`]).
 pub(crate) enum EvalReferrer {
     /// A null ScriptOrModule (no script or module code ran, for example `Function` called
     /// by a promise job): GetActiveScriptOrModule skips the frames of this code and goes on
@@ -1868,11 +1869,10 @@ pub(crate) enum ReferrerRealm {
     /// The realm that loaded the eval code, so the `[[Realm]]` of its functions (the common
     /// case: no handle).
     Own,
-    /// Another realm, in a strong handle: a function of the eval code keeps its
-    /// ScriptOrModule, so that module's `[[Realm]]` and its module map, alive (C2-M1). The
-    /// handle lives as long as the unit, so until the isolate drops (`LoadedUnit` is never
-    /// freed, as its constants are not): the realm can live longer than the functions.
-    Other(GlobalHandle),
+    /// Another realm, in a [`ReferrerSlot`]: a function of the eval code keeps its
+    /// ScriptOrModule, so that module's `[[Realm]]` and its module map, alive (C2-M1), and
+    /// only as long as such a function lives (C3-M1).
+    Other(ReferrerSlot),
     /// A referrer with no realm in reach (script code with no function frame): the current
     /// realm.
     Current,
@@ -1886,7 +1886,7 @@ pub(crate) enum ReferrerRealm {
 /// function's realm; eval code its [`EvalReferrer`]. Host frames and eval code with a null
 /// ScriptOrModule ([`EvalReferrer::Null`]) are passed. `None` if no frame has one. Not a GC
 /// point.
-fn active_script_or_module(rt: &Runtime, fp: *mut u64, context: u64) -> Option<(String, u64)> {
+fn active_script_or_module(fp: *mut u64, context: u64) -> Option<(String, u64)> {
     let of_module = |m: u64| (string::to_rust_string(name_of(m)), realm_of(m));
     if let Some(m) = module_of_context(context, 0) {
         return Some(of_module(m));
@@ -1918,7 +1918,9 @@ fn active_script_or_module(rt: &Runtime, fp: *mut u64, context: u64) -> Option<(
                             UNDEFINED
                         }
                     }
-                    ReferrerRealm::Other(h) => rt.heap.global(*h).to_bits(),
+                    // A frame of this unit holds a function of it (its callee), which keeps
+                    // the realm: the slot is not cleared.
+                    ReferrerRealm::Other(s) => s.bits(),
                     ReferrerRealm::Current => UNDEFINED,
                 };
                 return Some((name.clone(), realm));
@@ -1934,7 +1936,7 @@ fn active_script_or_module(rt: &Runtime, fp: *mut u64, context: u64) -> Option<(
 /// for direct eval code; undefined else) and the frames of the running code
 /// (`abi::Cx::load_entry`). Not a GC point.
 pub(crate) fn eval_referrer(rt: &Runtime, context: u64) -> EvalReferrer {
-    match active_script_or_module(rt, rt.stack().fp(), context) {
+    match active_script_or_module(rt.stack().fp(), context) {
         Some((name, realm)) => EvalReferrer::Of {
             name,
             realm: if realm == UNDEFINED {
@@ -1942,10 +1944,80 @@ pub(crate) fn eval_referrer(rt: &Runtime, context: u64) -> EvalReferrer {
             } else if realm == rt.root(Root::Realm) {
                 ReferrerRealm::Own
             } else {
-                ReferrerRealm::Other(rt.heap.new_global(val(realm)))
+                ReferrerRealm::Other(ReferrerSlot::new(rt, realm))
             },
         },
         None => EvalReferrer::Null,
+    }
+}
+
+/// The realm of [`ReferrerRealm::Other`]: one Value slot in a box, a weak root range of the
+/// heap. It is not a root: a FUNCTION cell of the unit marks it when the GC traces that cell
+/// ([`trace_referrer_realm`], `object::trace_function`), so the realm lives exactly as long
+/// as a function of the eval code (C3-M1). A frame of the unit's code holds such a function
+/// (its callee slot, or the generator object of a resumed frame), and so does a suspended
+/// generator or async function. After a GC in which no function of the unit was marked, the
+/// weak range clears the slot to undefined (the realm died; the current realm is used, as
+/// for no realm). The unit keeps the slot until the isolate drops; the range is never
+/// removed.
+///
+/// ```text
+/// FUNCTION cell --INFO--> FunctionInfo --unit--> LoadedUnit.script_or_module
+///   (marked)                                        Other(ReferrerSlot) --GC trace--> REALM
+/// ```
+///
+/// The slot is a raw pointer from `Box::leak`, not a `Box` field: the heap's range table
+/// and this struct both reach it, and moving a `Box` would assert unique access (Miri).
+pub(crate) struct ReferrerSlot(NonNull<[Slot]>);
+
+impl ReferrerSlot {
+    /// A slot that holds `realm` (a REALM cell that a live frame or context reaches now, so
+    /// it stays marked until the unit's first function holds it). Not a GC point.
+    fn new(rt: &Runtime, realm: u64) -> ReferrerSlot {
+        let slots: Box<[Slot]> = Box::new([Slot::new(val(realm))]);
+        let p = NonNull::from(Box::leak(slots));
+        // SAFETY: `p` is valid until `drop` frees it. Its `LoadedUnit` lives until the Runtime
+        // drops, which drops `heap` (and its range table) before `units` (as for the unit's
+        // string and constant ranges), so the range is never read after the free. The slot
+        // holds Value bits (never 0): the realm, or undefined after the weak range clears it.
+        let _ = unsafe { rt.heap.add_root_range(p, RootStrength::Weak) };
+        ReferrerSlot(p)
+    }
+
+    /// The slot.
+    fn slot(&self) -> &Slot {
+        // SAFETY: valid until `drop` (see `new`); Slot is atomic, so a shared reference is
+        // fine while the GC clears it.
+        unsafe { &self.0.as_ref()[0] }
+    }
+
+    /// The realm's bits; undefined after a GC in which no function of the unit was marked.
+    fn bits(&self) -> u64 {
+        self.slot().bits()
+    }
+}
+
+impl Drop for ReferrerSlot {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` came from `Box::leak` in `new` and is freed once, here; the heap
+        // that read it dropped first (see `new`).
+        drop(unsafe { Box::from_raw(self.0.as_ptr()) });
+    }
+}
+
+/// Marks the referrer realm of the eval unit of `info` (the INFO word of a FUNCTION cell
+/// that the GC traces), if the unit has a [`ReferrerRealm::Other`]. Called from the trace
+/// function of FUNCTION cells: reads only Rust data that lives until the isolate drops, and
+/// does not call into the heap.
+#[inline]
+pub(crate) fn trace_referrer_realm(info: &FunctionInfo, t: &mut Tracer<'_>) {
+    if let Some(u) = info.loaded_unit()
+        && let Some(EvalReferrer::Of {
+            realm: ReferrerRealm::Other(s),
+            ..
+        }) = &u.script_or_module
+    {
+        t.visit(s.slot());
     }
 }
 
@@ -2042,7 +2114,7 @@ pub(crate) fn dynamic_import(
     }
     // 1. GetActiveScriptOrModule: its name and realm (a null referrer: the current realm).
     let (referrer, realm) =
-        active_script_or_module(cx.rt(), fp, context).unwrap_or_else(|| (String::new(), UNDEFINED));
+        active_script_or_module(fp, context).unwrap_or_else(|| (String::new(), UNDEFINED));
     let realm = if realm == UNDEFINED { cx.realm } else { realm };
     // 5. NewPromiseCapability(%Promise%) of the current realm.
     let p = new_promise(cx)?;

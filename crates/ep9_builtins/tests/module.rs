@@ -1432,18 +1432,32 @@ const KEEP_FILES: Files = &[
     ),
 ];
 
-/// Runs `maker.js` of [`KEEP_FILES`] in a new realm and drops every reference to that realm
-/// but the one of `sink.f` (its ScriptOrModule `maker.js`).
+/// [`KEEP_FILES`] with a `sink.f` whose body drops `sink.f` (its only reference) first, then
+/// allocates (under GC stress, collections run while its frame is the only holder of the
+/// realm), then imports `dep.js`.
+const FRAME_FILES: Files = &[
+    (
+        "maker.js",
+        "import './dep.js';\nsink.f = new sink.Function(\"delete sink.f; let a = []; for (let i = 0; i < 50; i++) a.push({ i }); return import('./dep.js')\");",
+    ),
+    (
+        "dep.js",
+        "sink.evals = (sink.evals | 0) + 1;\nexport function g() { return globalThis; }",
+    ),
+];
+
+/// Runs `maker.js` of `files` ([`KEEP_FILES`], [`FRAME_FILES`]) in a new realm and drops
+/// every reference to that realm but the one of `sink.f` (its ScriptOrModule `maker.js`).
 #[inline(never)]
-fn make_cross_realm_importer(iso: &mut Isolate) {
+fn make_cross_realm_importer(iso: &mut Isolate, files: Files) {
     iso.with_cx(|cx| {
         let sink = cx.global();
         let other = cx.create_realm()?;
         cx.set(other, "sink", sink, true)?;
         cx.with_realm(other, |cx| {
-            let unit = compile(source(KEEP_FILES, "maker.js").expect("a file")).expect("compiles");
-            let mut resolve = |referrer: &str, spec: &str| resolve_in(KEEP_FILES, referrer, spec);
-            let mut load = |name: &str| compile(source(KEEP_FILES, name).expect("a file"));
+            let unit = compile(source(files, "maker.js").expect("a file")).expect("compiles");
+            let mut resolve = |referrer: &str, spec: &str| resolve_in(files, referrer, spec);
+            let mut load = |name: &str| compile(source(files, name).expect("a file"));
             cx.run_module(unit, "maker.js", &mut resolve, &mut load)
                 .map(|_| ())
         })
@@ -1457,7 +1471,9 @@ fn make_cross_realm_importer(iso: &mut Isolate) {
 /// that realm's global), also after the realm has no other reference and collections ran.
 /// `dep.js` loads and evaluates once. Before the fix, the realm was held only by a weak
 /// handle: after a collection the import used the main realm's map, and a second `dep.js`
-/// loaded and ran (`after true`, `evals 2`).
+/// loaded and ran (`after true`, `evals 2`). The realm is held by an edge that the GC traces
+/// from each function of the eval code (C3-M1): without that edge this test fails the same
+/// way.
 #[test]
 fn a_function_keeps_its_referrer_realm_alive() {
     const SCRIPT: &str = "f().then(ns => print(tag, ns.g() === globalThis, sink.evals));";
@@ -1471,7 +1487,7 @@ fn a_function_keeps_its_referrer_realm_alive() {
                     cx.set(g, "sink", g, true)
                 })
                 .expect("no throw");
-                make_cross_realm_importer(&mut iso);
+                make_cross_realm_importer(&mut iso, KEEP_FILES);
                 let mut resolve =
                     |referrer: &str, spec: &str| resolve_in(KEEP_FILES, referrer, spec);
                 let mut loads = 0;
@@ -1506,4 +1522,101 @@ fn a_function_keeps_its_referrer_realm_alive() {
         first.expect("at least one dispatch").1,
         lines(&["before false 1", "after false 1", "loads 0"])
     );
+}
+
+/// A running frame of eval code keeps its referrer realm alive when no reference to its
+/// function is left (C3-M1): `sink.f` of [`FRAME_FILES`] deletes `sink.f`, allocates (GC
+/// stress collects there), then imports `dep.js`. The import gives the `dep.js` of the
+/// maker's realm, loaded and evaluated once. The frame's callee slot (a VM stack root) marks
+/// the function, and the function marks the realm.
+#[test]
+fn a_running_frame_keeps_its_referrer_realm_alive() {
+    const SCRIPT: &str =
+        "sink.f().then(ns => print(ns.g() === globalThis, sink.evals, typeof sink.f));";
+    let mut first: Option<(String, Vec<String>)> = None;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let r = common::on_big_stack(move || {
+                let mut iso = new_isolate(d, stress);
+                iso.with_cx(|cx| {
+                    let g = cx.global();
+                    cx.set(g, "sink", g, true)
+                })
+                .expect("no throw");
+                make_cross_realm_importer(&mut iso, FRAME_FILES);
+                let mut resolve =
+                    |referrer: &str, spec: &str| resolve_in(FRAME_FILES, referrer, spec);
+                let mut loads = 0;
+                let mut load = |name: &str| {
+                    loads += 1;
+                    compile(source(FRAME_FILES, name).expect("a file"))
+                };
+                iso.with_module_host(&mut resolve, &mut load, |iso| {
+                    let unit = hook_script(SCRIPT).expect("compiles");
+                    iso.with_cx_checkpoint(|cx| cx.run_script(unit, "main.js").map(|_| ()))
+                        .expect("no throw");
+                });
+                let mut out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
+                out.push(format!("loads {loads}"));
+                iso.verify_heap().expect("a valid heap");
+                out
+            });
+            let label = format!("{} stress={stress}", d.name());
+            match &first {
+                None => first = Some((label, r)),
+                Some((l0, r0)) => assert_eq!(&r, r0, "{label} differs from {l0}"),
+            }
+        }
+    }
+    assert_eq!(
+        first.expect("at least one dispatch").1,
+        lines(&["false 1 undefined", "loads 0"])
+    );
+}
+
+/// Deletes `sink.f` of [`make_cross_realm_importer`]: its realm then has no reference.
+#[inline(never)]
+fn drop_cross_realm_importer(iso: &mut Isolate) {
+    iso.with_cx(|cx| cx.evaluate_script("delete sink.f;", "drop.js").map(|_| ()))
+        .expect("no throw");
+}
+
+/// A referrer realm dies with the last function of the eval code (C3-M1): after the last
+/// reference to `sink.f` goes, a collection frees the maker's realm, its globals and its
+/// module map. Each round makes a new realm with [`KEEP_FILES`], drops `sink.f` and
+/// collects; the marked bytes stay at the value of the first round (the slack allows one
+/// realm that a stale word of the conservative stack scan keeps). With a strong handle per
+/// unit (f5149b1) each round kept its realm: about 80 KB more per round.
+#[test]
+fn a_referrer_realm_dies_with_its_last_function() {
+    const ROUNDS: usize = 6;
+    const SLACK: usize = 40_000;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let marked = common::on_big_stack(move || {
+                let mut iso = new_isolate(d, stress);
+                iso.with_cx(|cx| {
+                    let g = cx.global();
+                    cx.set(g, "sink", g, true)
+                })
+                .expect("no throw");
+                let mut marked = Vec::new();
+                for _ in 0..ROUNDS {
+                    make_cross_realm_importer(&mut iso, KEEP_FILES);
+                    drop_cross_realm_importer(&mut iso);
+                    for _ in 0..3 {
+                        iso.collect_garbage();
+                    }
+                    marked.push(iso.heap().stats().last_marked_bytes);
+                }
+                iso.verify_heap().expect("a valid heap");
+                marked
+            });
+            let label = format!("{} stress={stress}", d.name());
+            assert!(
+                marked[ROUNDS - 1] <= marked[0] + SLACK,
+                "{label}: dead realms stay marked: {marked:?}"
+            );
+        }
+    }
 }

@@ -374,6 +374,17 @@ fn trace_object<const F: usize>(c: CellPtr, t: &mut Tracer<'_>) {
     trace_from_8(c, t, object_size::<F>(c));
 }
 
+/// FUNCTION: the slots (the INFO word is a native word, not a reference), then the referrer
+/// realm of its eval unit (`module::trace_referrer_realm`, C3-M1): an edge through the
+/// unit's side table, not a slot of the cell (OBJECT_LAYOUT 3 does not change).
+fn trace_function(c: CellPtr, t: &mut Tracer<'_>) {
+    trace_object::<{ fun::FIXED }>(c, t);
+    // SAFETY: the slot +24 of a FUNCTION cell holds the native word of a FunctionInfo that
+    // lives as long as the isolate (`new_function` writes it before the next GC point).
+    let fi = unsafe { &*native_ptr::<FunctionInfo>(rd(c, fun::INFO)) };
+    crate::module::trace_referrer_realm(fi, t);
+}
+
 /// Fixed-field counts by kind id (0 for OBJECT and for ids that are not JS object kinds).
 const FIXED_COUNTS: [u8; 256] = {
     let mut t = [0u8; 256];
@@ -473,11 +484,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
         ),
         (
             kind::FUNCTION,
-            object_kind(
-                "function",
-                object_size::<{ fun::FIXED }>,
-                trace_object::<{ fun::FIXED }>,
-            ),
+            object_kind("function", object_size::<{ fun::FIXED }>, trace_function),
         ),
         (
             kind::ARRAY,
