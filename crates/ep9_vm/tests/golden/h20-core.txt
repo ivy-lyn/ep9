@@ -1,6 +1,8 @@
 # H20 core: the public names and signatures of the builtin ABI (docs/adr/H20-builtin-abi.md,
-# Freeze table). Frozen at M0 exit: after it, a changed or removed line is a change to a
-# Frozen part; a new line is an addition (part 2, append only). Made by
+# Freeze table). Frozen at M0 exit: after it, a changed or removed core line is a change to a
+# Frozen part; a new line is an addition (part 2, append only). The `embed (not core):` lines
+# are the other `Isolate` methods (the embedder API of H22, H23, H19): not core, but a new one
+# needs a review (H20-Q4). Made by
 # `EP9_BLESS=1 cargo test -p ep9_vm --test h20_core`; see crates/ep9_vm/tests/h20_core.rs.
 abi: #[derive(Clone, Copy)] pub struct Args<'s> { .. }
 abi: #[derive(Clone, Copy)] pub struct Rest<'s> { .. }
@@ -14,7 +16,13 @@ abi: #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)] #[repr(u16)] #[non_exhau
 abi: #[derive(Debug)] pub struct CollectionCursor<'s> { .. }
 abi: #[derive(Debug)] pub struct IteratorRecord<'s> { .. }
 abi: #[repr(transparent)] pub struct Local<'s, T = JsValue> { .. }
-abi: downcast! { JsValue, JsObject, JsFunction, JsArray, JsString, FlatStr, JsSymbol }
+abi: impl Downcast for FlatStr
+abi: impl Downcast for JsArray
+abi: impl Downcast for JsFunction
+abi: impl Downcast for JsObject
+abi: impl Downcast for JsString
+abi: impl Downcast for JsSymbol
+abi: impl Downcast for JsValue
 abi: impl Drop for ArgsBuilder<'_>
 abi: impl ObjectClass :: pub const ALL: &'static [ObjectClass] = .. (part 2: the ObjectClass golden)
 abi: impl ObjectClass :: pub const MAX_SLOTS: usize = object::slot_obj::MAX_SLOTS
@@ -23,6 +31,13 @@ abi: impl ObjectClass :: pub const fn id(self) -> u16
 abi: impl ObjectClass :: pub const fn name(self) -> &'static str
 abi: impl PrimitiveType :: pub const fn name(self) -> &'static str
 abi: impl PrimitiveType :: pub const fn prototype(self) -> IntrinsicId
+abi: impl sealed::Sealed for FlatStr
+abi: impl sealed::Sealed for JsArray
+abi: impl sealed::Sealed for JsFunction
+abi: impl sealed::Sealed for JsObject
+abi: impl sealed::Sealed for JsString
+abi: impl sealed::Sealed for JsSymbol
+abi: impl sealed::Sealed for JsValue
 abi: impl<'s, T> Local<'s, T> :: pub fn as_array(&self) -> Option<Local<'s, JsArray>>
 abi: impl<'s, T> Local<'s, T> :: pub fn as_bool(&self) -> Option<bool>
 abi: impl<'s, T> Local<'s, T> :: pub fn as_function(&self) -> Option<Local<'s, JsFunction>>
@@ -192,6 +207,17 @@ abi: impl<'s> Cx<'s> :: pub fn to_string(&mut self, impl Into<Local<'s>>) -> JsR
 abi: impl<'s> Cx<'s> :: pub fn to_uint32(&mut self, impl Into<Local<'s>>) -> JsResult<u32>
 abi: impl<'s> Cx<'s> :: pub fn type_of(&self, impl Into<Local<'s>>) -> &'static str
 abi: impl<'s> Cx<'s> :: pub fn with_realm<R>(&mut self, impl Into<Local<'s, JsObject>>, impl FnOnce(&mut Self) -> JsResult<R>) -> JsResult<R>
+abi: impl<'s> From<Local<'s, FlatStr>> for Local<'s, JsString>
+abi: impl<'s> From<Local<'s, FlatStr>> for Local<'s, JsValue>
+abi: impl<'s> From<Local<'s, JsArray>> for Local<'s, JsObject>
+abi: impl<'s> From<Local<'s, JsArray>> for Local<'s, JsValue>
+abi: impl<'s> From<Local<'s, JsFunction>> for Local<'s, JsObject>
+abi: impl<'s> From<Local<'s, JsFunction>> for Local<'s, JsValue>
+abi: impl<'s> From<Local<'s, JsKey>> for Local<'s, JsValue>
+abi: impl<'s> From<Local<'s, JsObject>> for Local<'s, JsValue>
+abi: impl<'s> From<Local<'s, JsString>> for Local<'s, JsValue>
+abi: impl<'s> From<Local<'s, JsSymbol>> for Local<'s, JsKey>
+abi: impl<'s> From<Local<'s, JsSymbol>> for Local<'s, JsValue>
 abi: impl<'s> IntoKey<'s> for &str
 abi: impl<'s> IntoKey<'s> for Local<'s, JsKey>
 abi: impl<'s> IntoKey<'s> for Local<'s, JsString>
@@ -234,7 +260,17 @@ abi: pub trait Downcast: sealed::Sealed { #[doc(hidden)] fn test(u64) -> bool }
 abi: pub trait IntoKey<'s> { fn into_key(self, &mut Cx<'s>) -> Local<'s, JsKey> }
 abi: pub type HostFn = for<'s> fn(&mut Cx<'s>, Local<'s>, Args<'s>, Local<'s>) -> JsResult<Local<'s>>
 abi: pub type PromiseRejectionTracker = for<'s> fn(&mut Cx<'s>, Local<'s, JsObject>, PromiseRejectionOperation)
-abi: upcast! { JsObject => JsValue, JsFunction => JsValue, JsArray => JsValue, JsString => JsValue, FlatStr => JsValue, JsSymbol => JsValue, JsKey => JsValue, JsFunction => JsObject, JsArray => JsObject, FlatStr => JsString, JsSymbol => JsKey }
+embed (not core): impl Isolate :: pub fn builtin_table(&self) -> Option<&'static BuiltinTable>
+embed (not core): impl Isolate :: pub fn collect_garbage(&mut self)
+embed (not core): impl Isolate :: pub fn compiler(&self) -> Option<&'static CompilerHooks>
+embed (not core): impl Isolate :: pub fn dispatch(&self) -> Dispatch
+embed (not core): impl Isolate :: pub fn heap(&self) -> &Heap
+embed (not core): impl Isolate :: pub fn interrupt_handle(&self) -> InterruptHandle
+embed (not core): impl Isolate :: pub fn new(IsolateConfig) -> Result<Isolate, IsolateError>
+embed (not core): impl Isolate :: pub fn string_view(&mut self, Value) -> Option<JsStr<'_>>
+embed (not core): impl Isolate :: pub fn take_unhandled_rejections(&mut self) -> Vec<Exception>
+embed (not core): impl Isolate :: pub fn terminate_handle(&self) -> TerminateHandle
+embed (not core): impl Isolate :: pub fn verify_heap(&self) -> Result<VerifyReport, VerifyError>
 embed: impl Isolate :: pub fn create_realm<R>(&mut self, impl for<'s> FnOnce(&mut Cx<'s>, Local<'s, JsObject>) -> JsResult<R>) -> Result<R, Exception>
 embed: impl Isolate :: pub fn perform_microtask_checkpoint(&mut self) -> Result<(), Exception>
 embed: impl Isolate :: pub fn register_host_function(&mut self, &str, u32, HostFn)
