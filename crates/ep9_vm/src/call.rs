@@ -490,6 +490,10 @@ fn call_bytecode(
             new_target,
         )
     };
+    // 1 unit per call, also when the frame does not fit (R3-2): a loop that catches the
+    // RangeError of a full VM stack still reaches the next poll (M3-P2-STOP; the T0 and
+    // spike-native paths take it the same way, M3-P2-D1).
+    cx.budget -= 1;
     let Some(fp) = fp else {
         return stack_overflow(cx);
     };
@@ -509,7 +513,6 @@ fn call_bytecode(
     }
     rt.stack().set_fp(fp);
     rt.stack().clear_scratch();
-    cx.budget -= 1;
     // SAFETY: `fp` is a frame for `fi` that `push_frame` just wrote; its code is verified.
     let r = unsafe { interp::run(cx, fi.code, fp) };
     rt.stack().set_fp(caller);

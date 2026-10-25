@@ -1,8 +1,9 @@
 # ep9-test262 parse: known failures on x86_64-pc-windows-msvc. Paths are relative to the test262 root.
 # Regenerate: cargo run --release -p ep9_test262 -- parse --update-expectations
-# SEEDED, NOT YET RUN ON WINDOWS (2026-10-20): copied from the 4 lists that were generated on
-# macOS arm64/x64 and Linux arm64/x64, which hold the same 7 paths. The first windows-x64 CI run
-# checks it. If it differs there, regenerate it on Windows (the command above).
+# Seeded on 2026-10-20 from the 4 lists that were generated on macOS arm64/x64 and Linux
+# arm64/x64, which hold the same 7 paths. Checked on Windows since then: the windows-x64
+# "test262 parse" CI step passes with it (for example run 40188919007 at ec4b841, 46 of 46 jobs
+# green). If it differs on Windows one day, regenerate it there (the command above).
 test/annexB/language/expressions/assignmenttargettype/callexpression-as-for-in-lhs.js
 test/annexB/language/expressions/assignmenttargettype/callexpression-as-for-of-lhs.js
 test/annexB/language/expressions/assignmenttargettype/callexpression-in-compound-assignment.js

@@ -177,7 +177,8 @@ jobs:
       - name: test262 parse
         run: cargo run --release --locked -p ep9_test262 -- parse --json test262-parse.json
       # The engine end to end (tools/test262/README.md "exec"): one worker process per CPU, 20 s
-      # soft timeout per run (the slowest run takes < 0.5 s on an M-series Mac). Exit 1 on a change
+      # soft timeout per run (on an M-series Mac, each run of the 8 sm/Date dst-offset-caching
+      # files, among the slowest, takes 0.6-1.5 s, by host load). Exit 1 on a change
       # vs expectations/test262.<host-triple>.jit.txt. Exit 2 on an infrastructure error (panic,
       # timeout, worker crash): no expectation file can list one, so it always fails the job.
       - name: test262 exec

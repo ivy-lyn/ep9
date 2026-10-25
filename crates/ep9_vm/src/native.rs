@@ -1203,6 +1203,10 @@ unsafe fn run_b_in_realm(
             UNDEFINED,
         )
     };
+    // 1 unit per call, also when the frame does not fit, as in `enter_native` (R3-2, D1): a
+    // loop that catches the RangeError of a full VM stack still reaches the next poll
+    // (M3-P2-STOP).
+    cx.budget -= 1;
     let Some(nfp) = nfp else {
         return stack_overflow(cx);
     };
@@ -1210,7 +1214,6 @@ unsafe fn run_b_in_realm(
         // SAFETY: as in `enter_native`.
         unsafe { wrap_receiver(cx, nfp, this) }?;
     }
-    cx.budget -= 1;
     rt.stack().set_fp(nfp);
     rt.stack().clear_scratch();
     // SAFETY: `nfp` is the frame of `fi` just pushed and published; the stub byte enters its

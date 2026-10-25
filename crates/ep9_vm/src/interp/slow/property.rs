@@ -113,9 +113,10 @@ fn global_value(cx: &mut Cx, name: u64, in_typeof: bool) -> u64 {
     ret(r)
 }
 
-/// `StaGlobal` after an IC miss (or with no vector): SetMutableBinding of the global
-/// environment (v0), then the IC update of feedback slot `slot`. Returns the stored value.
-/// GC point.
+/// `StaGlobal` after an IC miss with no vector (T0's cold arm; a miss with a vector goes to
+/// `ic::store_global_miss`): SetMutableBinding of the global environment (v0), then the IC
+/// update of feedback slot `slot` (`ic::global_case`, computed before the store). Returns the
+/// stored value. GC point.
 #[cold]
 #[inline(never)]
 pub(crate) fn store_global(
@@ -126,17 +127,40 @@ pub(crate) fn store_global(
     v: u64,
     slot: u32,
 ) -> u64 {
-    enter(cx, fp, pc);
     let rt = cx.rt();
     let vector = feedback::vector(info(fp));
     let case = vector
         .filter(|&vec| !ic::skip_global_miss(rt, vec, slot))
         .and_then(|_| ic::global_case(rt, name, true));
+    store_global_with(cx, fp, pc, name, v, slot, vector, case)
+}
+
+/// [`store_global`] with the feedback vector of the frame and the case that the caller
+/// computed before the store (`None` if the entry needs none, [`ic::skip_global_miss`], or if
+/// there is no case):
+/// SetMutableBinding of the global environment, then the case is recorded in slot `slot` if
+/// the store succeeded. `ic::store_global_miss` calls it, so a miss checks the entry and
+/// computes the case once (P4F-R1). Returns the stored value, or 0 with a pending exception.
+/// GC point: `vector` is a root of its unit, and the case's key and references live in Rust
+/// locals until `ic::record` stores them (conservative scan, H10).
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+pub(crate) fn store_global_with(
+    cx: &mut Cx,
+    fp: *mut u64,
+    pc: *const u8,
+    name: u64,
+    v: u64,
+    slot: u32,
+    vector: Option<u64>,
+    case: Option<ic::Case>,
+) -> u64 {
+    enter(cx, fp, pc);
     let r = set_global(cx, fp, name, v);
     if r != 0
         && let (Some(vec), Some(c)) = (vector, case)
     {
-        ic::record(rt, vec, slot, c);
+        ic::record(cx.rt(), vec, slot, c);
     }
     r
 }
