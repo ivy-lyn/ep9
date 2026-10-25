@@ -9,26 +9,50 @@
 //!                  lists, expanded, so the line has the generated signature with its
 //!                  lifetimes), the `pub use` re-exports
 //! src/isolate.rs   the `impl Cx` block (the scoped embedder forms)
-//! src/**/*.rs      every pub method of every default-build `impl Isolate` block (a block
-//!                  in some default build of some target: no `cfg` that is false for every
-//!                  target, such as `test` or a feature, on it, on an inline module around it
-//!                  or on its module in `lib.rs`; a target `cfg` is read and shown in the
-//!                  line, Codex C2-FP1): the embedder entry points (`ENTRY_POINTS`: the calls that run ABI code or
-//!                  install a hook that ABI code calls; H20-Q4) are core `embed:` lines; the
-//!                  other methods are `embed (not core):` lines
+//! src/**/*.rs      in the default build (below):
+//!                  - every pub method of every `impl Isolate` block (also `impl
+//!                    crate::Isolate` and `impl Isolate where ..`): the embedder entry
+//!                    points (`ENTRY_POINTS`: the calls that run ABI code or take a hook that
+//!                    is called while ABI code runs; H20-Q4) are core `embed:` lines; the other
+//!                    methods are `embed (not core):` lines
+//!                  - every other impl whose head names `Isolate` (a trait impl such as
+//!                    `impl Drop for Isolate`, or `impl From<&Isolate> for X`): one
+//!                    `embed (not core):` line with its members
+//!                  - every free pub fn, const or static outside `abi/` whose line names
+//!                    `Isolate` or a raw type (`RAW_TYPES`), in any module
+//!                  - the types that those lines name, to the end (the type closure): the type
+//!                    line (public fields, variants), its pub methods and its trait impls;
+//!                    core `embed:` lines if a core line names the type (`Exception`,
+//!                    `IsolateConfig`, `CompileResult`, ...), else `embed (not core):` lines
 //! src/builtins.rs  the builtin table types and `check_tables`
-//! src/lib.rs       the crate-root re-exports of `abi` and `builtins` (the public paths), and
-//!                  the path of `Isolate`
+//! src/lib.rs       every `pub use` and `pub mod` (the public paths); each re-exported item of
+//!                  a module of the crate and each pub item of a pub module (`versions`,
+//!                  `internals`) is read as the type closure reads a type
 //! ```
 //!
+//! The default build: an item is read unless a `cfg` on it, on an inline module around it or
+//! on its module in `lib.rs` is false in every default build of every target: `test` and the
+//! features in `OFF_FEATURES` (`spike-native`, `ic-stats`: dep-guard 11 keeps them out of the
+//! ep9 graph; test `only_the_off_features_are_off` reads the Cargo.toml files). A target `cfg`
+//! and every other feature (`jit` is on in the default ep9_cli build) are read, and the line
+//! shows the `cfg` (Codex C2-FP1; M3-P3 fix round 6, RV5-F1 M1).
+//!
+//! Forms that it cannot read are `unread:` lines, and test `the_extractor_reads_every_form`
+//! fails on them: a type alias of `Isolate` (or one that renames a raw type), a `use` that
+//! renames `Isolate` or a raw type, an impl that names `Isolate` inside a fn, block or
+//! `macro_rules!` body, a glob re-export, a module file of a pub module. Not read: an item that
+//! a macro makes outside the core files (decision M3-P3-H20-GOLDEN-LIMIT; a re-exported one is
+//! a line that says so), and the types of other crates (`ep9_heap`, `ep9_value`, ...).
+//!
 //! The `embed (not core):` lines are the embedder API of H22, H23 and H19, with their own
-//! freeze points. They are here so that a new `Isolate` method (for example a raw `Value` form
-//! that comes back, H20-Q4) is a new golden line that a review must bless; test
-//! `no_isolate_method_takes_or_gives_a_raw_value` also fails on it.
+//! freeze points. They are here so that a new way for an embedder to reach the heap (for
+//! example a raw `Value` form that comes back, H20-Q4) is a new golden line that a review must
+//! bless; test `no_embed_line_names_a_raw_type` also fails on a line that names a raw type.
 //!
 //! A line is a signature without parameter names (a rename is not an API change), with the
 //! attributes that matter to a caller (`derive`, `repr`, `non_exhaustive`, `cfg`,
-//! `doc(hidden)`, `deprecated`). Comments, doc text and bodies are not read. Not here: the
+//! `doc(hidden)`, `deprecated`). Comments, doc text and bodies are not read. In the `embed`
+//! lines a const or static shows its name and type, not its value. Not here: the
 //! append-only lists that have their own goldens (the `IntrinsicId` and `ObjectClass` variants,
 //! `tests/golden/vm-builtin-ids.txt`, `tests/golden/object-classes.txt`), private and
 //! `pub(crate)` items, and `export_facts` (H20 part 2, V8-A13: only its path is here).
@@ -75,12 +99,19 @@ fn cfg_pred(attr: &str) -> Option<&str> {
     attr.strip_prefix("#[cfg(")?.strip_suffix(")]")
 }
 
+/// The ep9_vm features that are off in every shipped build: spike and report features that
+/// dep-guard 11 keeps out of the ep9 graph and that no workspace crate turns on by default
+/// (test `only_the_off_features_are_off`). Every other feature is read as a target `cfg`: on
+/// in some default build (`jit`: the default build of ep9_cli turns on `ep9_vm/jit`, so the
+/// shipped ep9 has it; M3-P3 fix round 6, RV5-F1 M1), so its items are in the golden.
+const OFF_FEATURES: [&str; 2] = ["ic-stats", "spike-native"];
+
 /// The value of the `cfg` predicate `p` in every default build of the crate, for any target:
-/// `Some(false)` if it is false there (`test` is off, and so is each `feature = ..`: ep9_vm
-/// has no default feature), `Some(true)` if it is true there, `None` if it depends on the
-/// target or the profile (`target_pointer_width = "64"`, `unix`, `debug_assertions`, `miri`,
-/// any other name). `not`, `all` and `any` combine the values (Codex C2-FP1: a target `cfg`
-/// is on in some default build, so its items are in the golden).
+/// `Some(false)` if it is false there (`test` is off, and so is `feature = ..` of each of
+/// [`OFF_FEATURES`]), `Some(true)` if it is true there, `None` if it depends on the target, the
+/// profile or the build (`target_pointer_width = "64"`, `unix`, `debug_assertions`, `miri`, any
+/// other feature, any other name). `not`, `all` and `any` combine the values (Codex C2-FP1: a
+/// target `cfg` is on in some default build, so its items are in the golden).
 fn cfg_value(p: &str) -> Option<bool> {
     let p = p.trim();
     let args = |op: &str| {
@@ -114,16 +145,23 @@ fn cfg_value(p: &str) -> Option<bool> {
         };
     }
     let name = p.split(['=', ' ']).next().unwrap_or("");
-    if name == "test" || name == "feature" {
+    if name == "test" {
         return Some(false);
+    }
+    if name == "feature" {
+        let f = p.split_once('=').map(|(_, v)| v.trim().trim_matches('"'));
+        if f.is_some_and(|f| OFF_FEATURES.contains(&f)) {
+            return Some(false);
+        }
     }
     None
 }
 
 /// True if an item with these attributes is in no default build: a `cfg` whose predicate is
-/// false there ([`cfg_value`]: `cfg(test)`, `cfg(feature = ..)`, `cfg(all(test, unix))`).
-/// A target `cfg` (`cfg(target_pointer_width = "64")`, `cfg(any(test, unix))`) and
-/// `cfg(not(test))` are not gated: the item is read, and its line shows the `cfg`.
+/// false there ([`cfg_value`]: `cfg(test)`, `cfg(feature = "spike-native")`,
+/// `cfg(all(test, unix))`). A target `cfg` (`cfg(target_pointer_width = "64")`,
+/// `cfg(any(test, unix))`), another feature (`cfg(feature = "jit")`) and `cfg(not(test))` are
+/// not gated: the item is read, and its line shows the `cfg`.
 fn gated(attrs: &[String]) -> bool {
     attrs
         .iter()
@@ -289,7 +327,7 @@ fn strip(src: &str) -> String {
 
 /// One item of a stripped text: its outer attributes, its head (the text before its body or
 /// its `;`) and its `{}` body, if it has one.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Item {
     attrs: Vec<String>,
     head: String,
@@ -725,9 +763,32 @@ fn fn_sig(head: &str) -> String {
     sig.trim_end_matches(',').to_string()
 }
 
+/// True if the head is an impl head (`impl`, `impl<..>`, `unsafe impl`).
+fn is_impl_head(head: &str) -> bool {
+    let h = head.strip_prefix("unsafe ").unwrap_or(head);
+    h == "impl" || h.starts_with("impl ") || h.starts_with("impl<")
+}
+
+/// True if `s` has the word `w` (an identifier, so `Isolate` is not in `IsolateConfig`).
+fn has_word(s: &str, w: &str) -> bool {
+    s.split(|c: char| !is_ident(c)).any(|x| x == w)
+}
+
+/// The identifiers of `s`, as the type closure reads them ([`type_closure`]).
+fn words(s: &str) -> impl Iterator<Item = &str> {
+    s.split(|c: char| !is_ident(c))
+        .filter(|w| w.starts_with(|c: char| c.is_alphabetic() || c == '_'))
+}
+
 /// The name of an impl's self type: `impl<'s> abi::Cx<'s>` -> `Cx`; `impl X for &str` ->
-/// `&str`. And the trait name for a trait impl.
+/// `&str`; `impl Isolate where Isolate: Sized` -> `Isolate` (the head is read before its
+/// `where`, M3-P3 fix round 6, RV5-F1 M2). And the trait name for a trait impl.
 fn impl_target(head: &str) -> (Option<String>, String) {
+    let head = head.strip_prefix("unsafe ").unwrap_or(head);
+    let head = match head.find(" where ") {
+        Some(k) => &head[..k],
+        None => head.strip_suffix(" where").unwrap_or(head),
+    };
     // Drop `impl` and its generics.
     let rest = head.trim_start_matches("impl");
     let rest = if rest.starts_with('<') {
@@ -788,15 +849,18 @@ fn item_name(head: &str) -> Option<String> {
 }
 
 /// The `Isolate` methods in the core (H20-Q4, M3-P3 FREEZE-PREP step 2; fix round 5, Codex
-/// W4-3): the embedder's ways into ABI code. A `Cx` scope (`with_cx`, `with_cx_checkpoint`,
+/// W4-3; fix round 6, RV5-F3): the embedder's ways into ABI code. One rule: an entry point
+/// runs ABI code (a `Cx` scope, JS or a `HostFn`), or takes a hook, a function of the embedder
+/// that is called while ABI code runs. So: a `Cx` scope (`with_cx`, `with_cx_checkpoint`,
 /// `create_realm`), the calls that run JS or host functions with no scope of the embedder
 /// (`perform_microtask_checkpoint` runs the jobs; `take_unhandled_rejections` runs ToString of
-/// an object reason), and the hooks that ABI code calls (`new` takes them in `IsolateConfig`:
-/// the builtin tables and the `PromiseRejectionTracker`; `register_host_function` takes a
-/// `HostFn`; `with_module_host` takes the hook types of `Cx::run_module`). The other
-/// `Isolate` methods (the handles, `collect_garbage`, `gc_stats`, `string_view`, ...) are the
-/// embedder API of H22, H23 and H19, with their own freeze points: they are
-/// `embed (not core):` lines.
+/// an object reason), and the calls that take hooks (`new` takes them in `IsolateConfig`: the
+/// builtin tables with their `HostFn`s, the `PromiseRejectionTracker` and the `CompilerHooks`,
+/// which `Cx::evaluate_script`, `eval` and `Function()` call; `register_host_function` takes a
+/// `HostFn`; `with_module_host` takes the `resolve` and `load` hooks that `import()` calls).
+/// The other `Isolate` methods (the handles, `collect_garbage`, `gc_stats`, `string_view`,
+/// `compiler`, which gives the hooks back and takes none, ...) are the embedder API of H22,
+/// H23 and H19, with their own freeze points: they are `embed (not core):` lines.
 const ENTRY_POINTS: [&str; 8] = [
     "create_realm",
     "new",
@@ -807,6 +871,11 @@ const ENTRY_POINTS: [&str; 8] = [
     "with_cx_checkpoint",
     "with_module_host",
 ];
+
+/// The types that a core line names but that another ADR owns before its own freeze point:
+/// their lines are `embed (not core):` lines. `Dispatch` (the `IsolateConfig::dispatch`
+/// field) is the list of dispatch expansions of H15, whose H15-Q2 is open.
+const NOT_CORE_TYPES: [&str; 1] = ["Dispatch"];
 
 /// The append-only lists that have their own goldens (H20 part 2): their variants and their
 /// `ALL` values are not core lines.
@@ -927,29 +996,115 @@ fn const_line(head: &str, body: Option<&str>, owner: &str) -> String {
     }
 }
 
-/// The lines of the default-build `impl Isolate` blocks of `its` and of the inline modules in
-/// it: an entry point ([`ENTRY_POINTS`]) is a core `embed:` line, any other pub method or
-/// const an `embed (not core):` line. A block or module that is in no default build
-/// ([`gated`]) is skipped. `outer` is the `cfg` text of the enclosing modules; each line
-/// shows it and the block's own `cfg` before the method's attributes.
-fn isolate_lines(its: &[Item], outer: &str, out: &mut Vec<String>) {
+/// True for a `mod` head (`mod x`, `pub mod x`, `pub(crate) mod x`).
+fn is_mod_head(head: &str) -> bool {
+    let words: Vec<&str> = head.split(' ').collect();
+    words
+        .iter()
+        .position(|w| *w == "mod")
+        .is_some_and(|k| words[..k].iter().all(|w| w.starts_with("pub")))
+}
+
+/// True for a `use` head (`use x`, `pub use x`, `pub(crate) use x`).
+fn is_use_head(head: &str) -> bool {
+    let words: Vec<&str> = head.split(' ').collect();
+    words
+        .iter()
+        .position(|w| *w == "use")
+        .is_some_and(|k| words[..k].iter().all(|w| w.starts_with("pub")))
+}
+
+/// True for a type alias head (`type X = ..`, `pub type X<T> = ..`).
+fn is_alias_head(head: &str) -> bool {
+    let words: Vec<&str> = head.split(' ').collect();
+    head.contains('=')
+        && words
+            .iter()
+            .position(|w| *w == "type")
+            .is_some_and(|k| words[..k].iter().all(|w| w.starts_with("pub")))
+}
+
+/// The module-level items of a stripped file: its top-level items and those of its inline
+/// modules (recursively), each with the `cfg` text of the modules around it (`outer` first).
+/// An item or a module that is in no default build ([`gated`]) is left out.
+fn module_items(its: &[Item], outer: &str, out: &mut Vec<(String, Item)>) {
     for it in its {
         if gated(&it.attrs) {
             continue;
         }
-        let outer = format!("{outer}{}", cfg_text(&it.attrs));
-        let words: Vec<&str> = it.head.split(' ').collect();
-        let is_mod = words
-            .iter()
-            .position(|w| *w == "mod")
-            .is_some_and(|k| words[..k].iter().all(|w| w.starts_with("pub")));
-        if is_mod {
+        if is_mod_head(&it.head) {
             if let Some(b) = &it.body {
-                isolate_lines(&items(b), &outer, out);
+                let outer = format!("{outer}{}", cfg_text(&it.attrs));
+                module_items(&items(b), &outer, out);
             }
             continue;
         }
-        if !it.head.starts_with("impl") || impl_target(&it.head) != (None, "Isolate".to_string()) {
+        out.push((outer.to_string(), it.clone()));
+    }
+}
+
+/// The signature of a member of an impl or a module, for an `embed` line: a fn without
+/// parameter names ([`fn_sig`]), a type as written, a const or static with its name and type
+/// (not its value), a macro call as `name! { .. }`. `None` for a `use` or a `mod`.
+fn member_sig(m: &Item) -> Option<String> {
+    let a = kept_attrs(&m.attrs);
+    let h = drop_paths(&m.head);
+    if is_use_head(&m.head) || is_mod_head(&m.head) {
+        return None;
+    }
+    let sig = if is_fn_head(&m.head) {
+        drop_paths(&fn_sig(&m.head))
+    } else if is_alias_head(&m.head) {
+        h
+    } else if m.head.split(' ').any(|w| w == "const" || w == "static") {
+        h.split(" = ").next().unwrap_or("").to_string()
+    } else if m.head.ends_with('!') {
+        format!("{h} {{ .. }}")
+    } else {
+        h
+    };
+    Some(format!("{a}{sig}"))
+}
+
+/// The line of an impl that is read as one line: its head and the signature of each member
+/// ([`member_sig`]): `impl std::ops::Deref for Isolate { type Target = Heap; fn deref(&self)
+/// -> &Heap }`. So a raw type in an associated type or a method fails
+/// `no_embed_line_names_a_raw_type`.
+fn impl_line(it: &Item) -> String {
+    let members: Vec<String> = items(it.body.as_deref().unwrap_or(""))
+        .iter()
+        .filter(|m| !gated(&m.attrs))
+        .filter_map(member_sig)
+        .collect();
+    let head = drop_paths(&it.head);
+    if members.is_empty() {
+        head
+    } else {
+        format!("{head} {{ {} }}", members.join("; "))
+    }
+}
+
+/// The `Isolate` lines of the module-level items `its` of one file ([`module_items`]):
+///
+/// - each pub method and const of an `impl Isolate` block (also `impl crate::Isolate` and
+///   `impl Isolate where ..`, RV5-F1 M2): an entry point ([`ENTRY_POINTS`]) is a core `embed:`
+///   line, any other an `embed (not core):` line;
+/// - one `embed (not core):` line ([`impl_line`]) for each other impl whose head names
+///   `Isolate`: a trait impl (`impl Drop for Isolate`, `impl AsRef<Heap> for Isolate`,
+///   `impl Deref for Isolate`; RV5-F1 M4) or an impl that takes it (`impl From<&Isolate> for
+///   &Heap`).
+///
+/// Each line shows the `cfg` text of the modules and of the block before the member.
+fn isolate_lines(its: &[(String, Item)], out: &mut Vec<String>) {
+    for (outer, it) in its {
+        if !is_impl_head(&it.head) {
+            continue;
+        }
+        let outer = format!("{outer}{}", cfg_text(&it.attrs));
+        if impl_target(&it.head) != (None, "Isolate".to_string()) {
+            if has_word(&it.head, "Isolate") {
+                out.push(format!("{NOT_CORE}{outer}{}", impl_line(it)));
+            }
             continue;
         }
         for m in items(it.body.as_deref().unwrap_or("")) {
@@ -978,9 +1133,260 @@ fn isolate_lines(its: &[Item], outer: &str, out: &mut Vec<String>) {
     }
 }
 
+/// The `embed` line of a module-level pub item that is not an impl, a `use` or a `mod`: a type
+/// (struct, enum, type alias, trait: [`item_lines`]) or a fn, const or static ([`member_sig`]).
+/// `None` for an item that is not `pub` (a `pub(crate)` or private item cannot be named from
+/// outside the crate).
+fn embed_item_line(g: &str, outer: &str, it: &Item) -> Option<String> {
+    let h = &it.head;
+    if !is_pub(h) || is_impl_head(h) || is_use_head(h) || is_mod_head(h) {
+        return None;
+    }
+    let ws: Vec<&str> = h.split(' ').collect();
+    let is_type = ["struct", "enum", "trait", "union"]
+        .iter()
+        .any(|k| ws.contains(k))
+        || is_alias_head(h);
+    if is_type && !ws.contains(&"union") {
+        let mut v = Vec::new();
+        item_lines(g, it, &mut v);
+        return v
+            .pop()
+            .map(|l| drop_paths(&l.replacen(&format!("{g}: "), &format!("{g}: {outer}"), 1)));
+    }
+    Some(format!("{g}: {outer}{}", member_sig(it)?))
+}
+
+/// True for a name that an `embed` line must not hide (RV5-F1 M5): `Isolate` and the raw
+/// types ([`RAW_TYPES`]).
+fn names_embed_type(s: &str) -> bool {
+    has_word(s, "Isolate") || RAW_TYPES.iter().any(|t| has_word(s, t))
+}
+
+/// The forms the extractor cannot read safely, each as an `unread:` line (the golden test and
+/// `the_extractor_reads_every_form` fail on it; RV5-F1 M3): a type alias of `Isolate` (an
+/// `impl IsoAlias` block is an `impl Isolate` block under another name), a type alias that
+/// gives a raw type ([`RAW_TYPES`]) another name, a `use` that renames `Isolate` or a raw type
+/// (`use crate::Isolate as Iso`), and an impl that names `Isolate` inside a fn or block body
+/// (or a `macro_rules!` body), which the module-level reader does not see. `ctx`: 0 at module
+/// level, 1 in an impl or trait body (an associated type such as `type Target = Heap` is read
+/// by [`impl_line`]), 2 in any other body.
+fn unread_lines(p: &str, its: &[Item], ctx: u8, out: &mut Vec<String>) {
+    for it in its {
+        if gated(&it.attrs) {
+            continue;
+        }
+        let h = &it.head;
+        if ctx != 1 && is_alias_head(h) {
+            let name = item_name(h).unwrap_or_default();
+            let rhs = h.split_once('=').map_or("", |(_, r)| r);
+            if has_word(rhs, "Isolate")
+                || RAW_TYPES
+                    .iter()
+                    .any(|t| has_word(rhs, t) && !RAW_TYPES.contains(&name.as_str()))
+            {
+                out.push(format!(
+                    "unread: src/{p}: `{h}`: a type alias of Isolate or a raw type"
+                ));
+            }
+        }
+        if is_use_head(h) {
+            let t = use_text(it);
+            let after = t.split_once("use ").map_or("", |(_, a)| a);
+            for n in use_names(&format!("pub use {after}")) {
+                let Some((path, alias)) = n.split_once(" as ") else {
+                    continue;
+                };
+                let orig = path.rsplit("::").next().unwrap_or("").trim();
+                let alias = alias.trim();
+                if (orig == "Isolate" || RAW_TYPES.contains(&orig)) && alias != orig && alias != "_"
+                {
+                    out.push(format!(
+                        "unread: src/{p}: `use {n}`: a use that renames Isolate or a raw type"
+                    ));
+                }
+            }
+            continue;
+        }
+        if ctx == 2 && is_impl_head(h) && has_word(h, "Isolate") {
+            out.push(format!(
+                "unread: src/{p}: `{h}`: an impl that names Isolate inside a body"
+            ));
+        }
+        if let Some(b) = &it.body {
+            let next = if is_mod_head(h) {
+                0
+            } else if is_impl_head(h) || h.split(' ').any(|w| w == "trait") {
+                1
+            } else {
+                2
+            };
+            unread_lines(p, &items(b), next, out);
+        }
+    }
+}
+
+/// The pub items of the files outside `abi/` and `builtins.rs`, for the type closure
+/// ([`type_closure`]): the types by name, the free fns, consts and statics by name, and the
+/// impls by the name of their self type (each with its `cfg` text).
+#[derive(Default)]
+struct Defs {
+    types: std::collections::BTreeMap<String, Vec<(String, Item)>>,
+    free: std::collections::BTreeMap<String, Vec<(String, Item)>>,
+    impls: std::collections::BTreeMap<String, Vec<(String, Item)>>,
+}
+
+impl Defs {
+    fn add(&mut self, outer: &str, it: &Item) {
+        let h = &it.head;
+        let entry = (outer.to_string(), it.clone());
+        if is_impl_head(h) {
+            self.impls.entry(impl_target(h).1).or_default().push(entry);
+        } else if is_pub(h) && !is_use_head(h) && !is_mod_head(h) {
+            let Some(name) = item_name(h) else {
+                return;
+            };
+            let ws: Vec<&str> = h.split(' ').collect();
+            let is_type = ["struct", "enum", "trait", "union"]
+                .iter()
+                .any(|k| ws.contains(k))
+                || is_alias_head(h);
+            let map = if is_type {
+                &mut self.types
+            } else {
+                &mut self.free
+            };
+            map.entry(name).or_default().push(entry);
+        }
+    }
+}
+
+/// The lines of the types that the `embed` lines name, and of the types that those lines name,
+/// to the end (decision M3-P3-H20-CORETYPES; RV5-F2): for each name that a pub type of a file
+/// outside `abi/` and `builtins.rs` has ([`Defs`]), the type's line ([`item_lines`]: its
+/// public fields or variants), the pub methods and consts of its inherent impls and one line
+/// per trait impl ([`impl_line`]). The words of each new line are read the same way. Not read:
+/// a type of another crate (`HeapConfig`, `VerifiedUnit`, `GcStats`: their crates and ADRs
+/// own them), and a name that the files outside `abi/` and `builtins.rs` give no pub type.
+/// `Isolate` gets its type line here and its impls from
+/// [`isolate_lines`]. A name of `skip` (the `abi` and `builtins.rs` types, which have their own
+/// lines) is not read. A root `(name, true)` is an item root (a `lib.rs` re-export or an item of
+/// a pub module): its free fn, const or static is read too, and a root that has no item in the
+/// source text gets a line that says so. The lines are of group `g`; `done` holds the names read
+/// before (the core closure runs first, so a type that a core line names is core).
+fn type_closure(
+    g: &str,
+    roots: Vec<(String, bool)>,
+    defs: &Defs,
+    skip: &BTreeSet<String>,
+    done: &mut (BTreeSet<String>, BTreeSet<String>),
+    out: &mut Vec<String>,
+) {
+    let mut work = roots;
+    while let Some((name, item_root)) = work.pop() {
+        if skip.contains(&name) {
+            continue;
+        }
+        let mut lines = Vec::new();
+        let mut found = false;
+        if done.0.insert(name.clone()) {
+            for (outer, it) in defs.types.get(&name).into_iter().flatten() {
+                found = true;
+                lines.extend(embed_item_line(g, outer, it));
+            }
+            // The impls of a pub type only (a `pub(crate)` type or a generic parameter of the
+            // same name is not one).
+            if found && name != "Isolate" {
+                for (outer, it) in defs.impls.get(&name).into_iter().flatten() {
+                    let outer = format!("{outer}{}", cfg_text(&it.attrs));
+                    if impl_target(&it.head).0.is_some() {
+                        lines.push(format!("{g}: {outer}{}", impl_line(it)));
+                        continue;
+                    }
+                    let ih = drop_paths(&it.head);
+                    for m in items(it.body.as_deref().unwrap_or("")) {
+                        if is_pub(&m.head) && !gated(&m.attrs) {
+                            lines
+                                .extend(member_sig(&m).map(|s| format!("{g}: {ih} :: {outer}{s}")));
+                        }
+                    }
+                }
+            }
+        } else {
+            found = true;
+        }
+        if item_root && done.1.insert(name.clone()) {
+            for (outer, it) in defs.free.get(&name).into_iter().flatten() {
+                found = true;
+                lines.extend(embed_item_line(g, outer, it));
+            }
+            if !found {
+                lines.push(format!(
+                    "{g}: {name}: no item in the source text (a macro makes it: \
+                     M3-P3-H20-GOLDEN-LIMIT)"
+                ));
+            }
+        }
+        for l in &lines {
+            work.extend(words(l).map(|w| (w.to_string(), false)));
+        }
+        out.extend(lines);
+    }
+}
+
 /// True for the files whose items (not only their `impl Isolate` blocks) the golden reads.
 fn is_core_file(p: &str) -> bool {
     p.starts_with("abi/") || ["isolate.rs", "builtins.rs", "lib.rs"].contains(&p)
+}
+
+/// The file of the module `m` that `lib.rs` declares (`m.rs` or `m/mod.rs`), if it is read.
+fn mod_file<'a>(stripped: &'a [(String, Vec<Item>)], m: &str) -> Option<&'a (String, Vec<Item>)> {
+    stripped
+        .iter()
+        .find(|(p, _)| *p == format!("{m}.rs") || *p == format!("{m}/mod.rs"))
+}
+
+/// The `path:` lines of the `pub use` items of a module at path `at` (`ep9_vm` or
+/// `ep9_vm::versions`), and their item roots for [`type_closure`]: each re-export of an item of
+/// a module that `lib.rs` declares (`local`), except `abi` and `builtins` (their lines are
+/// core). A glob re-export is an `unread:` line: the golden cannot list its names.
+fn use_paths(
+    at: &str,
+    it: &Item,
+    local: &[String],
+    out: &mut Vec<String>,
+    roots: &mut Vec<(String, bool)>,
+) {
+    for n in use_names(&use_text(it)) {
+        let n = norm(&n);
+        if n.ends_with('*') {
+            out.push(format!("unread: {at}: `pub use {n}`: a glob re-export"));
+            continue;
+        }
+        let (path, alias) = match n.split_once(" as ") {
+            Some((p, a)) => (p.trim().to_string(), a.trim().to_string()),
+            None => (n.clone(), n.rsplit("::").next().unwrap().to_string()),
+        };
+        let shown = if at == "ep9_vm" {
+            n.clone()
+        } else {
+            drop_paths(&n)
+        };
+        out.push(format!("path: {at}::{alias} = {shown}"));
+        let segs: Vec<&str> = path
+            .trim_start_matches("crate::")
+            .trim_start_matches("self::")
+            .split("::")
+            .collect();
+        let module = segs[0];
+        if segs.len() > 1
+            && local.iter().any(|m| m == module)
+            && module != "abi"
+            && module != "builtins"
+        {
+            roots.push((segs[segs.len() - 1].to_string(), true));
+        }
+    }
 }
 
 /// Every line of the golden from `files` ((path under `src/`, text)).
@@ -1023,11 +1429,13 @@ fn extract(files: &[(String, String)]) -> Vec<String> {
             }
         }
     }
-    // The `cfg` text of each module that `lib.rs` declares (a target `cfg` is read: `gated`).
-    let mod_cfgs: Vec<(String, String)> = stripped
+    let lib: &[Item] = stripped
         .iter()
-        .filter(|(p, _)| p == "lib.rs")
-        .flat_map(|(_, its)| its)
+        .find(|(p, _)| p == "lib.rs")
+        .map_or(&[], |(_, its)| its.as_slice());
+    // The `cfg` text of each module that `lib.rs` declares (a target `cfg` is read: `gated`).
+    let mod_cfgs: Vec<(String, String)> = lib
+        .iter()
         .filter(|it| it.body.is_none())
         .filter_map(|it| {
             let name = it.head.strip_prefix("pub ").unwrap_or(&it.head);
@@ -1035,7 +1443,13 @@ fn extract(files: &[(String, String)]) -> Vec<String> {
             Some((name.to_string(), cfg_text(&it.attrs)))
         })
         .collect();
+    let local: Vec<String> = lib
+        .iter()
+        .filter(|it| is_mod_head(&it.head))
+        .filter_map(|it| it.head.rsplit(' ').next().map(String::from))
+        .collect();
     let mut out = Vec::new();
+    let mut defs = Defs::default();
     let mut abi_mod_uses: BTreeSet<String> = BTreeSet::new();
     for (p, its) in &stripped {
         let top = p.split('/').next().unwrap_or("").trim_end_matches(".rs");
@@ -1043,17 +1457,32 @@ fn extract(files: &[(String, String)]) -> Vec<String> {
             .iter()
             .find(|(m, _)| m == top)
             .map_or("", |(_, c)| c.as_str());
-        isolate_lines(its, outer, &mut out);
-        if !is_core_file(p) {
+        let mut flat = Vec::new();
+        module_items(its, outer, &mut flat);
+        isolate_lines(&flat, &mut out);
+        unread_lines(p, its, 0, &mut out);
+        if !(p.starts_with("abi/") || p == "builtins.rs") {
+            for (o, it) in &flat {
+                defs.add(o, it);
+                // A free pub fn, const or static that names `Isolate` or a raw type (RV5-F1
+                // M5), in any module: a line, so the raw-type guard reads it.
+                if let Some(l) = embed_item_line("embed (not core)", o, it)
+                    && !is_alias_head(&it.head)
+                    && !["struct", "enum", "trait", "union"]
+                        .iter()
+                        .any(|k| it.head.split(' ').any(|w| w == *k))
+                    && names_embed_type(&l)
+                {
+                    out.push(l);
+                }
+            }
+        }
+        if !is_core_file(p) || p == "lib.rs" {
             continue;
         }
         let g = group(p);
         let is_abi = p.starts_with("abi/") || p == "builtins.rs";
         for it in its {
-            if p == "lib.rs" {
-                lib_paths(it, &mut out);
-                continue;
-            }
             if p == "abi/mod.rs" && it.head.starts_with("pub use ") {
                 for n in use_names(&use_text(it)) {
                     let name = n.rsplit("::").next().unwrap().to_string();
@@ -1067,7 +1496,7 @@ fn extract(files: &[(String, String)]) -> Vec<String> {
                 }
                 continue;
             }
-            if it.head.starts_with("impl") && impl_target(&it.head).1 == "Isolate" {
+            if is_impl_head(&it.head) && has_word(&it.head, "Isolate") {
                 // `isolate_lines` read it.
                 continue;
             }
@@ -1119,6 +1548,90 @@ fn extract(files: &[(String, String)]) -> Vec<String> {
             }
         }
     }
+    // The public paths of `lib.rs` (every `pub use` and `pub mod`; RV5-F1 M5) and the items of
+    // its pub modules other than `abi`: the item roots of the type closure.
+    let mut item_roots = Vec::new();
+    for it in lib.iter().filter(|it| !gated(&it.attrs)) {
+        if it.head.starts_with("pub use ") {
+            use_paths("ep9_vm", it, &local, &mut out, &mut item_roots);
+        } else if it.head.starts_with("pub mod ") {
+            let m = it.head.trim_start_matches("pub mod ").to_string();
+            out.push(format!(
+                "path: ep9_vm::{m} = {}pub mod {m}",
+                kept_attrs(&it.attrs)
+            ));
+            if m == "abi" {
+                continue;
+            }
+            let its: Vec<Item> = match &it.body {
+                Some(b) => items(b),
+                None => mod_file(&stripped, &m).map_or(Vec::new(), |(_, its)| its.clone()),
+            };
+            let mut flat = Vec::new();
+            module_items(&its, "", &mut flat);
+            for (_, m_it) in &flat {
+                if m_it.head.starts_with("pub use ") {
+                    use_paths(
+                        &format!("ep9_vm::{m}"),
+                        m_it,
+                        &local,
+                        &mut out,
+                        &mut item_roots,
+                    );
+                } else if is_pub(&m_it.head) && !is_impl_head(&m_it.head) {
+                    item_roots.extend(item_name(&m_it.head).map(|n| (n, true)));
+                }
+            }
+            for m_it in &its {
+                if m_it.head.starts_with("pub mod ") && m_it.body.is_none() && !gated(&m_it.attrs) {
+                    out.push(format!(
+                        "unread: ep9_vm::{m}: `{}`: a module file of a pub module",
+                        m_it.head
+                    ));
+                }
+            }
+        }
+    }
+    // The type closure: core from the core lines, then the rest (RV5-F2).
+    let skip: BTreeSet<String> = pub_types.union(&pub_traits).cloned().collect();
+    let core_skip: BTreeSet<String> = skip
+        .iter()
+        .cloned()
+        .chain(NOT_CORE_TYPES.map(String::from))
+        .collect();
+    let mut done = Default::default();
+    let core_roots: Vec<(String, bool)> = out
+        .iter()
+        .filter(|l| l.starts_with("embed: "))
+        .flat_map(|l| words(l).map(|w| (w.to_string(), false)).collect::<Vec<_>>())
+        .collect();
+    let mut closure = Vec::new();
+    type_closure(
+        "embed",
+        core_roots,
+        &defs,
+        &core_skip,
+        &mut done,
+        &mut closure,
+    );
+    let mut other_roots: Vec<(String, bool)> = out
+        .iter()
+        .chain(&closure)
+        .filter(|l| l.starts_with(NOT_CORE))
+        .flat_map(|l| words(l).map(|w| (w.to_string(), false)).collect::<Vec<_>>())
+        .collect();
+    other_roots.extend(item_roots);
+    other_roots.extend(NOT_CORE_TYPES.map(|n| (n.to_string(), false)));
+    other_roots.reverse();
+    type_closure(
+        "embed (not core)",
+        other_roots,
+        &defs,
+        &skip,
+        &mut done,
+        &mut closure,
+    );
+    out.extend(closure);
     // A pub type of an `abi` submodule that `abi/mod.rs` does not re-export has no path.
     for (p, its) in &stripped {
         if !p.starts_with("abi/") || p == "abi/mod.rs" {
@@ -1173,29 +1686,14 @@ fn use_text(it: &Item) -> String {
     }
 }
 
-/// The crate-root paths of `abi` and `builtins` names from a `lib.rs` item.
-fn lib_paths(it: &Item, out: &mut Vec<String>) {
-    if !it.head.starts_with("pub use ") {
-        return;
-    }
-    for n in use_names(&use_text(it)) {
-        let n = norm(&n);
-        let module = n.split("::").next().unwrap_or("");
-        if module == "abi" || module == "builtins" || n == "isolate::Isolate" {
-            let name = n.rsplit("::").next().unwrap();
-            out.push(format!("path: ep9_vm::{name} = {n}"));
-        }
-    }
-}
-
 // ---- the golden ------------------------------------------------------------------------------
 
 const HEADER: &str = "\
 # H20 core: the public names and signatures of the builtin ABI (docs/adr/H20-builtin-abi.md,
 # Freeze table). Frozen at M0 exit: after it, a changed or removed core line is a change to a
 # Frozen part; a new line is an addition (part 2, append only). The `embed (not core):` lines
-# are the other `Isolate` methods (the embedder API of H22, H23, H19): not core, but a new one
-# needs a review (H20-Q4). Made by
+# are the rest of the public API of ep9_vm that an embedder reaches (the embedder API of H22,
+# H23, H19): not core, but a new one needs a review (H20-Q4). Made by
 # `EP9_BLESS=1 cargo test -p ep9_vm --test h20_core`; see crates/ep9_vm/tests/h20_core.rs.
 ";
 
@@ -1256,7 +1754,9 @@ fn h20_core_matches_the_golden() {
 }
 
 /// The core has its parts: `HostFn`, `Args`, `Local`, the `Cx` methods (also the scoped
-/// embedder forms of isolate.rs), the table types, the public paths.
+/// embedder forms of isolate.rs), the table types, the public paths, and the types that the
+/// entry points name (RV5-F2: `Exception`, `IsolateConfig` with its fields, `CompileResult`,
+/// `CompileFailure`, `CompilerHooks`, `IsolateError`).
 #[test]
 fn the_golden_covers_the_core() {
     let lines = golden_lines();
@@ -1279,6 +1779,16 @@ fn the_golden_covers_the_core() {
         "embed: impl Isolate :: pub fn take_unhandled_rejections(&mut self)",
         "embed (not core): impl Isolate :: pub fn gc_stats(&self) -> GcStats",
         "embed (not core): impl Isolate :: pub fn string_view(&mut self, Value)",
+        "embed: #[derive(Clone, Debug, PartialEq, Eq)] pub struct Exception { pub message: String,",
+        "embed: #[derive(Clone, Debug)] pub struct IsolateConfig { pub heap: HeapConfig,",
+        "pub promise_rejection_tracker: Option<PromiseRejectionTracker> }",
+        "embed: #[derive(Clone, Copy, Debug)] pub struct CompilerHooks {",
+        "embed: pub type CompileResult = Result<VerifiedUnit, CompileFailure>",
+        "embed: #[derive(Clone, Debug, PartialEq, Eq)] pub enum CompileFailure {",
+        "embed: #[derive(Debug)] pub enum IsolateError {",
+        "embed: pub struct Isolate { .. }",
+        "path: ep9_vm::Value = ep9_value::Value",
+        "path: ep9_vm::versions = pub mod versions",
     ] {
         assert!(has(needle), "no line has {needle:?}");
     }
@@ -1298,7 +1808,10 @@ fn the_golden_covers_the_core() {
 #[test]
 fn the_golden_has_the_embedder_entry_points() {
     let lines = golden_lines();
-    let embed: Vec<&String> = lines.iter().filter(|l| l.starts_with("embed: ")).collect();
+    let embed: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.starts_with("embed: impl Isolate :: "))
+        .collect();
     for name in ENTRY_POINTS {
         let n = embed
             .iter()
@@ -1405,12 +1918,13 @@ fn changing_a_generated_impl_fails_the_golden() {
 /// them gives a raw `Value` (Codex W4-1: `heap(&self) -> &Heap` did).
 const RAW_TYPES: [&str; 5] = ["Value", "Heap", "CellPtr", "ScratchRoots", "Slot"];
 
-/// The `embed` lines that name a raw type ([`RAW_TYPES`]; the word, so not `JsValue`,
-/// `IntrinsicValue` or `HeapConfig`).
+/// The lines that name a raw type ([`RAW_TYPES`]; the word, so not `JsValue`,
+/// `IntrinsicValue` or `HeapConfig`): every line but the `path:` lines (`ep9_vm::Value` is a
+/// re-export of the type, not a producer) and the `unread:` lines (they fail on their own).
 fn raw_value_lines(lines: &[String]) -> Vec<String> {
     lines
         .iter()
-        .filter(|l| l.starts_with("embed"))
+        .filter(|l| !l.starts_with("path: ") && !l.starts_with("unread: "))
         .filter(|l| {
             l.split(|c: char| !is_ident(c))
                 .any(|w| RAW_TYPES.contains(&w))
@@ -1419,18 +1933,160 @@ fn raw_value_lines(lines: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// H20-Q4: no default-build `Isolate` method takes or gives a raw `Value` or a type that
-/// gives one ([`RAW_TYPES`]), except `string_view` (it stays: the H20 Decision, "Embedders
-/// get `Local` too"; it checks its `Value`).
+/// H20-Q4: no line of the golden names a raw `Value` or a type that gives one
+/// ([`RAW_TYPES`]): no default-build `Isolate` method, impl that names `Isolate`, free pub
+/// item that names `Isolate`, re-exported item, item of a pub module or type that one of them
+/// names takes or gives one (M3-P3 fix round 6, RV5-F1). Two exact lines are allowed:
+/// `string_view` (it stays: the H20 Decision, "Embedders get `Local` too"; it checks its
+/// `Value`) and `IsolateError`, whose variant is named `Heap` (it holds a `HeapError`). A
+/// changed line of either is not allowed.
 #[test]
-fn no_isolate_method_takes_or_gives_a_raw_value() {
+fn no_embed_line_names_a_raw_type() {
     let raw = raw_value_lines(&extract(&sources()));
     assert_eq!(
         raw,
         [
-            "embed (not core): impl Isolate :: pub fn string_view(&mut self, Value) -> Option<JsStr<'_>>"
+            "embed (not core): impl Isolate :: pub fn string_view(&mut self, Value) -> Option<JsStr<'_>>",
+            "embed: #[derive(Debug)] pub enum IsolateError { Heap(HeapError), Config(&'static str), BuiltinTable(String) }",
         ]
     );
+}
+
+/// Every form in the source is one that the extractor reads: no `unread:` line (a type alias
+/// of `Isolate` or a renamed raw type, a `use` that renames one, an impl that names `Isolate`
+/// in a body, a glob re-export, a module file of a pub module).
+#[test]
+fn the_extractor_reads_every_form() {
+    let unread: Vec<String> = extract(&sources())
+        .into_iter()
+        .filter(|l| l.starts_with("unread: "))
+        .collect();
+    assert!(unread.is_empty(), "{unread:#?}");
+}
+
+/// The features that `cfg_value` reads as off ([`OFF_FEATURES`]) are ep9_vm features that no
+/// workspace crate turns on in its default build or in a dependency line (the Cargo.toml files
+/// are read, not changed), and `jit`, which the default build of ep9_cli turns on, is seen as
+/// on (M3-P3 fix round 6, RV5-F1 M1). dep-guard 11 keeps the off features out of the ep9
+/// graph.
+#[test]
+fn only_the_off_features_are_off() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut manifests = Vec::new();
+    for dir in ["crates", "tools"] {
+        let mut names: Vec<PathBuf> = std::fs::read_dir(root.join(dir))
+            .unwrap()
+            .map(|e| e.unwrap().path().join("Cargo.toml"))
+            .filter(|p| p.is_file())
+            .collect();
+        names.sort();
+        manifests.extend(names);
+    }
+    assert!(manifests.len() >= 10, "{manifests:?}");
+    let mut on = BTreeSet::new();
+    let mut declared = BTreeSet::new();
+    for m in &manifests {
+        let text = std::fs::read_to_string(m).unwrap();
+        let (features, deps) = cargo_features(&text);
+        let is_vm = text.contains("\nname = \"ep9_vm\"");
+        if is_vm {
+            declared.extend(features.iter().map(|(k, _)| k.clone()));
+        }
+        // The default features of this crate, expanded.
+        let mut work = vec!["default".to_string()];
+        let mut seen = BTreeSet::new();
+        while let Some(f) = work.pop() {
+            if !seen.insert(f.clone()) {
+                continue;
+            }
+            for (k, v) in &features {
+                if *k != f {
+                    continue;
+                }
+                for e in v {
+                    match e.split_once('/') {
+                        Some((dep, feat)) if dep.trim_end_matches('?') == "ep9_vm" => {
+                            on.insert(feat.to_string());
+                        }
+                        Some(_) => {}
+                        None if is_vm => {
+                            on.insert(e.clone());
+                            work.push(e.clone());
+                        }
+                        None => work.push(e.clone()),
+                    }
+                }
+            }
+        }
+        on.extend(deps);
+    }
+    for f in OFF_FEATURES {
+        assert!(
+            declared.contains(f),
+            "{f} is not an ep9_vm feature: {declared:?}"
+        );
+        assert!(
+            !on.contains(f),
+            "a workspace crate turns on ep9_vm/{f} by default"
+        );
+    }
+    assert!(on.contains("jit"), "{on:?}");
+    assert_eq!(cfg_value("feature = \"jit\""), None);
+}
+
+/// The `[features]` entries of a Cargo.toml text, and the features of each dependency line on
+/// `ep9_vm` (`ep9_vm = { .., features = [..] }` or a `[..dependencies.ep9_vm]` table). A form
+/// it cannot read panics.
+fn cargo_features(text: &str) -> (Vec<(String, Vec<String>)>, Vec<String>) {
+    let lines: Vec<&str> = text
+        .lines()
+        .map(|l| l.split('#').next().unwrap_or("").trim())
+        .collect();
+    let list = |s: &str| -> Vec<String> {
+        s.trim()
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .split(',')
+            .map(|x| x.trim().trim_matches('"').to_string())
+            .filter(|x| !x.is_empty())
+            .collect()
+    };
+    let mut features = Vec::new();
+    let mut deps = Vec::new();
+    let mut section = "";
+    let mut i = 0;
+    while i < lines.len() {
+        let l = lines[i];
+        i += 1;
+        if l.starts_with('[') {
+            section = l;
+            continue;
+        }
+        let Some((k, v)) = l.split_once('=') else {
+            continue;
+        };
+        let (k, mut v) = (k.trim(), v.trim().to_string());
+        // A list over more lines.
+        if v.starts_with('[') && !v.contains(']') {
+            while i < lines.len() && !v.contains(']') {
+                v.push_str(lines[i]);
+                i += 1;
+            }
+        }
+        if section == "[features]" {
+            features.push((k.to_string(), list(&v)));
+        } else if section.ends_with("dependencies.ep9_vm]") && k == "features" {
+            deps.extend(list(&v));
+        } else if k == "ep9_vm" && section.contains("dependencies") {
+            assert!(v.starts_with('{') && v.ends_with('}'), "ep9_vm = {v}");
+            if let Some((_, f)) = v.split_once("features") {
+                let f = f.trim_start().trim_start_matches('=');
+                let end = f.find(']').expect("a features list");
+                deps.extend(list(&f[..=end]));
+            }
+        }
+    }
+    (features, deps)
 }
 
 /// The negative control for the other `Isolate` methods (FP2-GOLDEN-RAW): a new pub method in
@@ -1438,8 +2094,8 @@ fn no_isolate_method_takes_or_gives_a_raw_value() {
 /// and a raw `Value` form fails `no_isolate_method_takes_or_gives_a_raw_value`. So is a block
 /// under a target `cfg` (Codex C2-FP1: `target_pointer_width = "64"` is on for this host),
 /// in a block, an inline module or a module of `lib.rs`, and its line shows the `cfg`. A
-/// block under a `cfg` that is in no default build (`test`, a feature, `all(test, ..)`), and
-/// a file of a module that `lib.rs` gates so (`tests`, `native`), add none.
+/// block under a `cfg` that is in no default build (`test`, `spike-native`, `all(test, ..)`),
+/// and a file of a module that `lib.rs` gates so (`tests`, `native`), add none.
 #[test]
 fn a_new_isolate_method_is_a_new_line() {
     let mut files = sources();
@@ -1492,6 +2148,240 @@ fn a_new_isolate_method_is_a_new_line() {
     assert_eq!(raw_value_lines(&new), want);
 }
 
+/// The new golden lines and the new raw lines when `edit` changes the source files.
+fn mutate(edit: impl FnOnce(&mut Vec<(String, String)>)) -> (Vec<String>, Vec<String>) {
+    let mut files = sources();
+    edit(&mut files);
+    let (gone, new) = diff(&golden_lines(), &extract(&files));
+    assert!(gone.is_empty(), "{gone:?}");
+    let raw = raw_value_lines(&new);
+    (new, raw)
+}
+
+/// Appends `text` to the source file `p` (under `src/`).
+fn append(files: &mut [(String, String)], p: &str, text: &str) {
+    let (_, t) = files.iter_mut().find(|(q, _)| q == p).unwrap();
+    t.push_str(text);
+}
+
+/// The negative controls of M3-P3 fix round 6 (RV5-F1 M1-M5, RV5-S1): each way that the
+/// verifiers used to bring a `&Heap` producer back with no golden line is now a new line that
+/// the raw-type guard fails on, or an `unread:` line. One mutation at a time, on the real
+/// source text.
+#[test]
+fn each_way_to_add_a_raw_producer_fails_the_gate() {
+    let iso = "isolate.rs";
+    // M1: a block under a feature that a default build turns on (`jit`, from ep9_cli), or
+    // that may be on (`become`). An off feature (`ic-stats`) adds no line.
+    let (new, raw) = mutate(|f| {
+        append(
+            f,
+            iso,
+            "\n#[cfg(feature = \"jit\")]\nimpl Isolate {\n    pub fn heap_jit(&self) -> &Heap { todo!() }\n}\n",
+        );
+        append(
+            f,
+            iso,
+            "\n#[cfg(feature = \"become\")]\nimpl Isolate {\n    pub fn heap_become(&self) -> &Heap { todo!() }\n}\n",
+        );
+        append(
+            f,
+            iso,
+            "\n#[cfg(feature = \"ic-stats\")]\nimpl Isolate {\n    pub fn heap_stats(&self) -> &Heap { todo!() }\n}\n",
+        );
+    });
+    let want = [
+        "embed (not core): impl Isolate :: #[cfg(feature = \"become\")] pub fn heap_become(&self) -> &Heap",
+        "embed (not core): impl Isolate :: #[cfg(feature = \"jit\")] pub fn heap_jit(&self) -> &Heap",
+    ];
+    assert_eq!(new, want);
+    assert_eq!(raw, want);
+    // M2: a `where` clause on the block.
+    let (new, raw) = mutate(|f| {
+        append(
+            f,
+            iso,
+            "\nimpl Isolate where Isolate: Sized {\n    pub fn heap_where(&self) -> &Heap { todo!() }\n}\n",
+        );
+    });
+    let want = ["embed (not core): impl Isolate :: pub fn heap_where(&self) -> &Heap"];
+    assert_eq!(new, want);
+    assert_eq!(raw, want);
+    // M3: a type alias of `Isolate` (an `impl IsoAlias` block), and a `use` that renames it.
+    let (new, _) = mutate(|f| {
+        append(
+            f,
+            iso,
+            "\ntype IsoAlias = Isolate;\nimpl IsoAlias {\n    pub fn heap_alias(&self) -> &Heap { todo!() }\n}\n",
+        );
+    });
+    assert_eq!(
+        new,
+        [
+            "unread: src/isolate.rs: `type IsoAlias = Isolate`: a type alias of Isolate or a raw type"
+        ]
+    );
+    let (new, _) = mutate(|f| {
+        append(
+            f,
+            "string.rs",
+            "\nuse crate::Isolate as Iso;\nimpl Iso {\n    pub fn heap_use(&self) -> &Heap { todo!() }\n}\n",
+        );
+    });
+    assert_eq!(
+        new,
+        [
+            "unread: src/string.rs: `use crate::Isolate as Iso`: a use that renames Isolate or a raw type"
+        ]
+    );
+    let (new, _) = mutate(|f| {
+        append(f, "string.rs", "\npub type H = ep9_heap::Heap;\n");
+    });
+    assert_eq!(
+        new,
+        [
+            "unread: src/string.rs: `pub type H = ep9_heap::Heap`: a type alias of Isolate or a raw type"
+        ]
+    );
+    // M4: trait impls for `Isolate`, and an impl that takes it.
+    let (new, raw) = mutate(|f| {
+        append(
+            f,
+            iso,
+            "\nimpl std::ops::Deref for Isolate {\n    type Target = Heap;\n    fn deref(&self) -> &Heap { todo!() }\n}\n",
+        );
+        append(
+            f,
+            "string.rs",
+            "\nimpl AsRef<ep9_heap::Heap> for crate::Isolate {\n    fn as_ref(&self) -> &ep9_heap::Heap { todo!() }\n}\n",
+        );
+        append(
+            f,
+            "string.rs",
+            "\nimpl<'a> From<&'a crate::Isolate> for &'a ep9_heap::Heap {\n    fn from(i: &'a crate::Isolate) -> Self { todo!() }\n}\n",
+        );
+    });
+    let want = [
+        "embed (not core): impl AsRef<ep9_heap::Heap> for Isolate { fn as_ref(&self) -> &ep9_heap::Heap }",
+        "embed (not core): impl std::ops::Deref for Isolate { type Target = Heap; fn deref(&self) -> &Heap }",
+        "embed (not core): impl<'a> From<&'a Isolate> for &'a ep9_heap::Heap { fn from(&'a Isolate) -> Self }",
+    ];
+    assert_eq!(new, want);
+    assert_eq!(raw, want);
+    // M5: a free pub fn in a new module that lib.rs re-exports, in a pub module, and in a
+    // private module that nothing re-exports.
+    let (new, raw) = mutate(|f| {
+        append(f, "lib.rs", "\nmod helpers;\npub use helpers::heap_of;\n");
+        f.push((
+            "helpers.rs".to_string(),
+            "use crate::Isolate;\npub fn heap_of(iso: &Isolate) -> &ep9_heap::Heap { todo!() }\n"
+                .to_string(),
+        ));
+    });
+    assert_eq!(
+        new,
+        [
+            "embed (not core): pub fn heap_of(&Isolate) -> &ep9_heap::Heap",
+            "path: ep9_vm::heap_of = helpers::heap_of",
+        ]
+    );
+    assert_eq!(
+        raw,
+        ["embed (not core): pub fn heap_of(&Isolate) -> &ep9_heap::Heap"]
+    );
+    let (new, raw) = mutate(|f| {
+        append(
+            f,
+            "versions.rs",
+            "\npub fn heap_v(iso: &crate::Isolate) -> &ep9_heap::Heap { todo!() }\n",
+        );
+        append(
+            f,
+            "frame.rs",
+            "\npub static HEAP_OF: fn(&crate::Isolate) -> &ep9_heap::Heap = |_| todo!();\n",
+        );
+    });
+    let want = [
+        "embed (not core): pub fn heap_v(&Isolate) -> &ep9_heap::Heap",
+        "embed (not core): pub static HEAP_OF: fn(&Isolate) -> &ep9_heap::Heap",
+    ];
+    assert_eq!(new, want);
+    assert_eq!(raw, want);
+    // A re-exported fn whose signature names a local type that holds the raw type: the type
+    // closure reads the type.
+    let (new, raw) = mutate(|f| {
+        append(f, "lib.rs", "\nmod helpers;\npub use helpers::heap_ref;\n");
+        f.push((
+            "helpers.rs".to_string(),
+            "pub struct HeapRef<'a>(pub &'a ep9_heap::Heap);\n\
+             pub fn heap_ref(n: u8) -> HeapRef<'static> { todo!() }\n"
+                .to_string(),
+        ));
+    });
+    assert_eq!(
+        new,
+        [
+            "embed (not core): pub fn heap_ref(u8) -> HeapRef<'static>",
+            "embed (not core): pub struct HeapRef<'a>(pub &'a ep9_heap::Heap)",
+            "path: ep9_vm::heap_ref = helpers::heap_ref",
+        ]
+    );
+    assert_eq!(
+        raw,
+        ["embed (not core): pub struct HeapRef<'a>(pub &'a ep9_heap::Heap)"]
+    );
+    // The same through an `Isolate` method and through a core entry point's type.
+    let (new, raw) = mutate(|f| {
+        append(
+            f,
+            iso,
+            "\nimpl Isolate {\n    pub fn heap_ref(&self) -> HeapRef<'_> { todo!() }\n}\npub struct HeapRef<'a>(pub &'a Heap);\n",
+        );
+    });
+    assert_eq!(
+        new,
+        [
+            "embed (not core): impl Isolate :: pub fn heap_ref(&self) -> HeapRef<'_>",
+            "embed (not core): pub struct HeapRef<'a>(pub &'a Heap)",
+        ]
+    );
+    assert_eq!(
+        raw,
+        ["embed (not core): pub struct HeapRef<'a>(pub &'a Heap)"]
+    );
+    let mut files = sources();
+    let (_, t) = files.iter_mut().find(|(p, _)| p == iso).unwrap();
+    let from = "    pub terminated: bool,\n";
+    assert!(t.contains(from));
+    *t = t.replacen(
+        from,
+        "    pub terminated: bool,\n    pub heap: Option<&'static Heap>,\n",
+        1,
+    );
+    let (gone, new) = diff(&golden_lines(), &extract(&files));
+    assert_eq!(gone.len(), 1, "{gone:?}");
+    assert!(
+        gone[0].starts_with("embed: #[derive(Clone, Debug, PartialEq, Eq)] pub struct Exception {")
+    );
+    assert_eq!(raw_value_lines(&new), new);
+    // An impl that names `Isolate` in a fn body, and a glob re-export.
+    let (new, _) = mutate(|f| {
+        append(
+            f,
+            "string.rs",
+            "\nfn hidden() {\n    impl crate::Isolate {\n        pub fn heap_in_fn(&self) -> &ep9_heap::Heap { todo!() }\n    }\n}\n",
+        );
+        append(f, "lib.rs", "\npub use string::*;\n");
+    });
+    assert_eq!(
+        new,
+        [
+            "unread: ep9_vm: `pub use string::*`: a glob re-export",
+            "unread: src/string.rs: `impl crate::Isolate`: an impl that names Isolate inside a body",
+        ]
+    );
+}
+
 /// The `cfg` reader on fixed input (Codex C2-FP1): `false` only for a predicate that is false
 /// in every default build of every target; a target or profile name is unknown (`None`),
 /// so its items stay in the golden.
@@ -1500,6 +2390,11 @@ fn the_cfg_reader_knows_the_default_build() {
     for (p, v) in [
         ("test", Some(false)),
         ("feature = \"spike-native\"", Some(false)),
+        ("feature = \"ic-stats\"", Some(false)),
+        ("feature = \"jit\"", None),
+        ("not(feature = \"jit\")", None),
+        ("feature = \"become\"", None),
+        ("any(test, feature = \"jit\")", None),
         ("not(test)", Some(true)),
         ("not(feature = \"ic-stats\")", Some(true)),
         ("any(test, feature = \"spike-native\")", Some(false)),
@@ -1511,7 +2406,11 @@ fn the_cfg_reader_knows_the_default_build() {
         ("not(miri)", None),
         ("any(test, unix)", None),
         ("all(target_arch = \"x86_64\", panic = \"unwind\")", None),
-        ("all(not(test), not(feature = \"become\"))", Some(true)),
+        ("all(not(test), not(feature = \"become\"))", None),
+        (
+            "all(not(test), not(feature = \"spike-native\"))",
+            Some(true),
+        ),
         ("testing", None),
         ("allocator", None),
     ] {

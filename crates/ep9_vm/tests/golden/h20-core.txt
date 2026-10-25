@@ -1,8 +1,8 @@
 # H20 core: the public names and signatures of the builtin ABI (docs/adr/H20-builtin-abi.md,
 # Freeze table). Frozen at M0 exit: after it, a changed or removed core line is a change to a
 # Frozen part; a new line is an addition (part 2, append only). The `embed (not core):` lines
-# are the other `Isolate` methods (the embedder API of H22, H23, H19): not core, but a new one
-# needs a review (H20-Q4). Made by
+# are the rest of the public API of ep9_vm that an embedder reaches (the embedder API of H22,
+# H23, H19): not core, but a new one needs a review (H20-Q4). Made by
 # `EP9_BLESS=1 cargo test -p ep9_vm --test h20_core`; see crates/ep9_vm/tests/h20_core.rs.
 abi: #[derive(Clone, Copy)] pub struct Args<'s> { .. }
 abi: #[derive(Clone, Copy)] pub struct Rest<'s> { .. }
@@ -260,6 +260,40 @@ abi: pub trait Downcast: sealed::Sealed { #[doc(hidden)] fn test(u64) -> bool }
 abi: pub trait IntoKey<'s> { fn into_key(self, &mut Cx<'s>) -> Local<'s, JsKey> }
 abi: pub type HostFn = for<'s> fn(&mut Cx<'s>, Local<'s>, Args<'s>, Local<'s>) -> JsResult<Local<'s>>
 abi: pub type PromiseRejectionTracker = for<'s> fn(&mut Cx<'s>, Local<'s, JsObject>, PromiseRejectionOperation)
+embed (not core): #[derive(Clone)] pub struct InterruptHandle { .. }
+embed (not core): #[derive(Clone, Copy, Debug)] pub enum JsStr<'a> { Latin1(&'a [u8]), Utf16(&'a [u16]) }
+embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum ErrorKind { Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError, UriError }
+embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum RegistryError { Empty, Overlap(usize) }
+embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub struct CodeEntry { pub kind: DispatchKind, pub start: usize, pub len: usize, pub function: usize }
+embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)] #[repr(u8)] pub enum DispatchKind { Interp = 0, Baseline = 1, Opt = 2, AotBaseline = 3, AotOpt = 4 }
+embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)] pub enum Dispatch { Match, Sibling, #[cfg(feature = "become")] Become }
+embed (not core): #[derive(Clone, Debug)] pub struct TerminateHandle(_)
+embed (not core): #[derive(Debug)] #[repr(C)] pub struct DispatchSlot { .. }
+embed (not core): #[derive(Debug, Default)] pub struct RangeRegistry { .. }
+embed (not core): Atom: no item in the source text (a macro makes it: M3-P3-H20-GOLDEN-LIMIT)
+embed (not core): impl CodeEntry :: pub fn contains(&self, usize) -> bool
+embed (not core): impl CodeEntry :: pub fn range(&self) -> Range<usize>
+embed (not core): impl CodeRegistry for RangeRegistry { fn register(&mut self, CodeEntry) -> Result<(), RegistryError>; fn unregister(&mut self, usize) -> Option<CodeEntry>; fn lookup(&self, usize) -> Option<CodeEntry>; fn len(&self) -> usize }
+embed (not core): impl Dispatch :: pub const ALL: &'static [Dispatch]
+embed (not core): impl Dispatch :: pub const DEFAULT: Dispatch
+embed (not core): impl Dispatch :: pub const RELEASE: Dispatch
+embed (not core): impl Dispatch :: pub const fn name(self) -> &'static str
+embed (not core): impl DispatchKind :: pub const ALL: [DispatchKind; 5]
+embed (not core): impl DispatchKind :: pub const fn from_u8(u8) -> Option<DispatchKind>
+embed (not core): impl DispatchKind :: pub const fn is_aot(self) -> bool
+embed (not core): impl DispatchKind :: pub const fn name(self) -> &'static str
+embed (not core): impl DispatchSlot :: pub const ENTRY_OFFSET: usize
+embed (not core): impl DispatchSlot :: pub const KIND_OFFSET: usize
+embed (not core): impl DispatchSlot :: pub const fn empty() -> DispatchSlot
+embed (not core): impl DispatchSlot :: pub const fn new(DispatchKind, usize) -> DispatchSlot
+embed (not core): impl DispatchSlot :: pub fn entry(&self) -> usize
+embed (not core): impl DispatchSlot :: pub fn install(&self, DispatchKind, usize)
+embed (not core): impl DispatchSlot :: pub fn kind(&self) -> Option<DispatchKind>
+embed (not core): impl DispatchSlot :: pub fn kind_byte(&self) -> u8
+embed (not core): impl Eq for JsStr<'_>
+embed (not core): impl ErrorKind :: pub const ALL: [ErrorKind; 7]
+embed (not core): impl ErrorKind :: pub const fn name(self) -> &'static str
+embed (not core): impl InterruptHandle :: pub fn request(&self, Box<dyn FnOnce() + Send>)
 embed (not core): impl Isolate :: pub fn builtin_table(&self) -> Option<&'static BuiltinTable>
 embed (not core): impl Isolate :: pub fn collect_garbage(&mut self)
 embed (not core): impl Isolate :: pub fn compiler(&self) -> Option<&'static CompilerHooks>
@@ -269,6 +303,37 @@ embed (not core): impl Isolate :: pub fn interrupt_handle(&self) -> InterruptHan
 embed (not core): impl Isolate :: pub fn string_view(&mut self, Value) -> Option<JsStr<'_>>
 embed (not core): impl Isolate :: pub fn terminate_handle(&self) -> TerminateHandle
 embed (not core): impl Isolate :: pub fn verify_heap(&self) -> Result<VerifyReport, VerifyError>
+embed (not core): impl Ord for JsStr<'_> { fn cmp(&self, &Self) -> core::cmp::Ordering }
+embed (not core): impl PartialEq<JsStr<'_>> for JsStr<'_> { fn eq(&self, &JsStr<'_>) -> bool }
+embed (not core): impl PartialOrd for JsStr<'_> { fn partial_cmp(&self, &Self) -> Option<core::cmp::Ordering> }
+embed (not core): impl RangeRegistry :: pub fn new() -> RangeRegistry
+embed (not core): impl TerminateHandle :: pub fn terminate(&self)
+embed (not core): impl std::fmt::Debug for InterruptHandle { fn fmt(&self, &mut std::fmt::Formatter<'_>) -> std::fmt::Result }
+embed (not core): impl<'a> JsStr<'a> :: pub fn array_index(&self) -> Option<u32>
+embed (not core): impl<'a> JsStr<'a> :: pub fn at(&self, usize) -> u16
+embed (not core): impl<'a> JsStr<'a> :: pub fn is_empty(&self) -> bool
+embed (not core): impl<'a> JsStr<'a> :: pub fn len(&self) -> usize
+embed (not core): impl<'a> JsStr<'a> :: pub fn to_string_lossy(self) -> String
+embed (not core): impl<'a> JsStr<'a> :: pub fn to_utf16(self) -> Vec<u16>
+embed (not core): pub const BUILTIN_ABI_VERSION: u32
+embed (not core): pub const COLD_OPCODES: usize
+embed (not core): pub const DEOPT_META_VERSION: u32
+embed (not core): pub const FRAME_VERSION: u32
+embed (not core): pub const IC_LAYOUT_VERSION: u32
+embed (not core): pub const NO_CODE: u8
+embed (not core): pub const OBJECT_LAYOUT_VERSION: u32
+embed (not core): pub const THREADED_HANDLERS: usize
+embed (not core): pub fn export_facts(&Isolate, &ep9_facts::UnitHash) -> Result<ep9_facts::FactSnapshot, &'static str>
+embed (not core): pub static VM_BUILTINS: &BuiltinTable
+embed (not core): pub trait CodeRegistry { fn register(&mut self, CodeEntry) -> Result<(), RegistryError>; fn unregister(&mut self, usize) -> Option<CodeEntry>; fn lookup(&self, usize) -> Option<CodeEntry>; fn len(&self) -> usize; fn is_empty(&self) -> bool }
+embed (not core): pub type HostCx<'s> = Cx<'s>
+embed: #[derive(Clone, Copy, Debug)] pub struct CompilerHooks { pub compile_eval: fn(source: &str, ctx: &EvalContext) -> CompileResult, pub compile_function: fn(kind: FunctionCtorKind, params: &str, body: &str) -> CompileResult, pub compile_script: fn(source: &str) -> CompileResult }
+embed: #[derive(Clone, Debug)] pub struct IsolateConfig { pub heap: HeapConfig, pub vm_stack_slots: usize, pub dispatch: Dispatch, pub stack_trace_limit: usize, pub feedback_threshold: u32, pub builtins: Option<&'static BuiltinTable>, pub compiler: Option<&'static CompilerHooks>, pub promise_rejection_tracker: Option<PromiseRejectionTracker> }
+embed: #[derive(Clone, Debug, PartialEq, Eq)] pub enum CompileFailure { Syntax(String), Range(String), Unsupported(String), Internal(String) }
+embed: #[derive(Clone, Debug, PartialEq, Eq)] pub struct Exception { pub message: String, pub constructor: Option<String>, pub stack: Option<String>, pub location: Option<SourceLocation>, pub terminated: bool }
+embed: #[derive(Clone, Debug, PartialEq, Eq)] pub struct SourceLocation { pub file: String, pub line: u32, pub column: u32 }
+embed: #[derive(Debug)] pub enum IsolateError { Heap(HeapError), Config(&'static str), BuiltinTable(String) }
+embed: impl Default for IsolateConfig { fn default() -> Self }
 embed: impl Isolate :: pub fn create_realm<R>(&mut self, impl for<'s> FnOnce(&mut Cx<'s>, Local<'s, JsObject>) -> JsResult<R>) -> Result<R, Exception>
 embed: impl Isolate :: pub fn new(IsolateConfig) -> Result<Isolate, IsolateError>
 embed: impl Isolate :: pub fn perform_microtask_checkpoint(&mut self) -> Result<(), Exception>
@@ -277,33 +342,58 @@ embed: impl Isolate :: pub fn take_unhandled_rejections(&mut self) -> Vec<Except
 embed: impl Isolate :: pub fn with_cx<R>(&mut self, impl for<'s> FnOnce(&mut Cx<'s>) -> JsResult<R>) -> Result<R, Exception>
 embed: impl Isolate :: pub fn with_cx_checkpoint<R>(&mut self, impl for<'s> FnOnce(&mut Cx<'s>) -> JsResult<R>) -> Result<R, Exception>
 embed: impl Isolate :: pub fn with_module_host<R>(&mut self, &mut dyn FnMut(&str, &str) -> Result<String, String>, &mut dyn FnMut(&str) -> CompileResult, impl FnOnce(&mut Isolate) -> R) -> R
+embed: impl IsolateConfig :: pub const DEFAULT_FEEDBACK_THRESHOLD: u32
+embed: impl std::error::Error for IsolateError
+embed: impl std::fmt::Display for Exception { fn fmt(&self, &mut std::fmt::Formatter<'_>) -> std::fmt::Result }
+embed: impl std::fmt::Display for IsolateError { fn fmt(&self, &mut std::fmt::Formatter<'_>) -> std::fmt::Result }
+embed: impl std::fmt::Display for SourceLocation { fn fmt(&self, &mut std::fmt::Formatter<'_>) -> std::fmt::Result }
+embed: pub struct Isolate { .. }
+embed: pub type CompileResult = Result<VerifiedUnit, CompileFailure>
 path: ep9_vm::Args = abi::Args
 path: ep9_vm::ArgsBuilder = abi::ArgsBuilder
+path: ep9_vm::Atom = atoms::Atom
 path: ep9_vm::BuiltinDef = builtins::BuiltinDef
 path: ep9_vm::BuiltinId = builtins::BuiltinId
 path: ep9_vm::BuiltinKind = builtins::BuiltinKind
 path: ep9_vm::BuiltinModule = builtins::BuiltinModule
 path: ep9_vm::BuiltinTable = builtins::BuiltinTable
+path: ep9_vm::CodeEntry = dispatch::CodeEntry
+path: ep9_vm::CodeRegistry = dispatch::CodeRegistry
 path: ep9_vm::CollectionCursor = abi::CollectionCursor
+path: ep9_vm::CompileFailure = compiler::CompileFailure
+path: ep9_vm::CompileResult = compiler::CompileResult
+path: ep9_vm::CompilerHooks = compiler::CompilerHooks
 path: ep9_vm::ConstValue = builtins::ConstValue
 path: ep9_vm::Cx = abi::Cx
+path: ep9_vm::Dispatch = interp::Dispatch
+path: ep9_vm::DispatchKind = dispatch::DispatchKind
+path: ep9_vm::DispatchSlot = dispatch::DispatchSlot
 path: ep9_vm::Downcast = abi::Downcast
+path: ep9_vm::ErrorKind = runtime::ErrorKind
+path: ep9_vm::Exception = isolate::Exception
 path: ep9_vm::FlatStr = abi::FlatStr
+path: ep9_vm::HostCx = host::HostCx
 path: ep9_vm::HostFn = abi::HostFn
+path: ep9_vm::InterruptHandle = isolate::InterruptHandle
 path: ep9_vm::IntoKey = abi::IntoKey
 path: ep9_vm::IntrinsicDef = builtins::IntrinsicDef
 path: ep9_vm::IntrinsicId = builtins::IntrinsicId
 path: ep9_vm::IntrinsicValue = builtins::IntrinsicValue
 path: ep9_vm::Isolate = isolate::Isolate
+path: ep9_vm::IsolateConfig = isolate::IsolateConfig
+path: ep9_vm::IsolateError = isolate::IsolateError
 path: ep9_vm::IteratorRecord = abi::IteratorRecord
 path: ep9_vm::JsArray = abi::JsArray
 path: ep9_vm::JsFunction = abi::JsFunction
 path: ep9_vm::JsKey = abi::JsKey
 path: ep9_vm::JsObject = abi::JsObject
+path: ep9_vm::JsResult = ep9_value::JsResult
+path: ep9_vm::JsStr = string::JsStr
 path: ep9_vm::JsString = abi::JsString
 path: ep9_vm::JsSymbol = abi::JsSymbol
 path: ep9_vm::JsValue = abi::JsValue
 path: ep9_vm::Local = abi::Local
+path: ep9_vm::NO_CODE = dispatch::NO_CODE
 path: ep9_vm::ObjectClass = abi::ObjectClass
 path: ep9_vm::ObjectProps = builtins::ObjectProps
 path: ep9_vm::PrimitiveType = abi::PrimitiveType
@@ -316,10 +406,17 @@ path: ep9_vm::PropDef = builtins::PropDef
 path: ep9_vm::PropKey = builtins::PropKey
 path: ep9_vm::PropValue = builtins::PropValue
 path: ep9_vm::PropertyDescriptor = abi::PropertyDescriptor
+path: ep9_vm::RangeRegistry = dispatch::RangeRegistry
+path: ep9_vm::RegistryError = dispatch::RegistryError
 path: ep9_vm::Rest = abi::Rest
 path: ep9_vm::ScratchList = abi::ScratchList
+path: ep9_vm::SourceLocation = isolate::SourceLocation
+path: ep9_vm::TerminateHandle = isolate::TerminateHandle
+path: ep9_vm::Throw = ep9_value::Throw
 path: ep9_vm::ToPrimitiveHint = abi::ToPrimitiveHint
+path: ep9_vm::Value = ep9_value::Value
 path: ep9_vm::WellKnownSymbol = builtins::WellKnownSymbol
+path: ep9_vm::abi = pub mod abi
 path: ep9_vm::abi::Args
 path: ep9_vm::abi::ArgsBuilder
 path: ep9_vm::abi::CollectionCursor
@@ -349,6 +446,8 @@ path: ep9_vm::abi::ScratchList
 path: ep9_vm::abi::ToPrimitiveHint
 path: ep9_vm::abi::export_facts (part 2, not core: V8-A13)
 path: ep9_vm::check_tables = builtins::check_tables
+path: ep9_vm::internals = #[doc(hidden)] pub mod internals
+path: ep9_vm::versions = pub mod versions
 tables: #[derive(Clone, Copy)] pub struct BuiltinDef { pub name: &'static str, pub length: u32, pub kind: BuiltinKind, pub f: HostFn }
 tables: #[derive(Clone, Copy, Debug)] pub struct BuiltinModule { pub name: &'static str, pub block: u8, pub defs: &'static [BuiltinDef], pub intrinsics: &'static [IntrinsicDef], pub props: &'static [ObjectProps] }
 tables: #[derive(Clone, Copy, Debug)] pub struct IntrinsicDef { pub id: IntrinsicId, pub value: IntrinsicValue }
