@@ -573,3 +573,59 @@ print('global simple', typeof hf);"#
         ])
     );
 }
+
+/// D3d (M3-P4; M3-P2-OPEN item 3): EvalDeclarationInstantiation step 3.d passes the parameter
+/// environment of a sloppy function with parameter expressions (FunctionDeclarationInstantiation
+/// step 20; ABI 5 `ScopeFlags::PARAMETER_ENV`) before it reaches the variable environment. So a
+/// var or function name of eval code in the parameter list that a parameter holds is a
+/// SyntaxError, checked before any binding is made (`zz` stays undeclared) and before the body
+/// runs. A var name that no parameter holds, an eval in the body, a destructured parameter
+/// with a body eval, an eval in an arrow of the parameter list and the name of a function
+/// expression are still allowed. Node v24.22.1 prints the same lines, except the
+/// `arguments` rows: V8 keeps the arguments object out of the parameter environment and
+/// prints "undefined"; the spec (step 22: `env` is the parameter environment) and the
+/// test262 files `language/eval-code/direct/*-declare-arguments*.js` give a SyntaxError.
+#[test]
+fn eval_var_in_parameters_conflicts_with_a_parameter() {
+    assert_eq!(
+        run_every(
+            r#"function t(label, f) { try { print(label, String(f())); } catch (e) { print(label, e.constructor.name, e.message); } }
+t('a', () => { function f(a = eval('var a = 1')) { return a; } return f(); });
+t('b', () => { function f(a, b = eval('var a = 2')) { return a; } return f(5); });
+t('c', () => { function f(a = eval('function a() {}')) { return a; } return f(); });
+t('d', () => { function f(a = eval('var b'), b) { return b; } return f(); });
+t('j', () => { var f = (a = eval('var a = 8')) => a; return f(); });
+t('k', () => { function f(a, b = eval("eval('var a = 9')")) { return a; } return f(1); });
+t('q', () => { function f(a = 1, b = eval('try {} catch (a) { var a }')) { return a; } return f(); });
+t('u', () => { var n = 0; function f(a = eval('var zz = 1; var a')) { n++; } try { f(); } catch (e) {} return typeof zz + ' ' + n; });
+t('args', () => { function f(p = eval('var arguments')) {} return f(); });
+t('args-let', () => { function f(p = eval('var arguments')) { let arguments; } return f(); });
+t('f', () => { function f(a = eval('var z = 3')) { return z; } return f(); });
+t('g', () => { function f(a = 1) { eval('var a = 4'); return a; } return f(); });
+t('h', () => { function f({a}) { eval('var a = 6'); { let z; } return a; } return f({a: 1}); });
+t('i', () => { function f(a, b = () => eval('var a = 7')) { b(); return a; } return f(1); });
+t('m', () => { var g = function f(a = eval('var f = 11')) { return f; }; return g(); });
+t('arrow-args', () => { var g = (p = eval("var arguments = 'param'")) => arguments; return g(); });"#
+        ),
+        lines(&[
+            "a SyntaxError Identifier 'a' has already been declared",
+            "b SyntaxError Identifier 'a' has already been declared",
+            "c SyntaxError Identifier 'a' has already been declared",
+            "d SyntaxError Identifier 'b' has already been declared",
+            "j SyntaxError Identifier 'a' has already been declared",
+            "k SyntaxError Identifier 'a' has already been declared",
+            "q SyntaxError Identifier 'a' has already been declared",
+            "u undefined 0",
+            // spec and test262; node v24: "args undefined"
+            "args SyntaxError Identifier 'arguments' has already been declared",
+            // spec and test262; node v24: "args-let undefined"
+            "args-let SyntaxError Identifier 'arguments' has already been declared",
+            "f 3",
+            "g 4",
+            "h 6",
+            "i 1",
+            "m 11",
+            "arrow-args param",
+        ])
+    );
+}

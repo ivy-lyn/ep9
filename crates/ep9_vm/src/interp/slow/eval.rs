@@ -34,13 +34,14 @@
 //! (`gen_eval_program`: `LdaConstant name; Star r; CallRuntime DeclareEval*, r..`, straight-line
 //! code before the body) and checks every name; then each call creates its own binding.
 //!
-//! Not built yet (needs ABI 5): step 3.d over the parameter environment of a sloppy function
-//! with parameter expressions. FunctionDeclarationInstantiation step 20 puts its parameters in
-//! an environment of their own, between an eval in the parameters and the variable
-//! environment, so `function f(a = eval('var a')) {}` is a SyntaxError. The front end merges
-//! that environment into the function's var scope, and no unit field tells this scope from
-//! the one of `function f({a}) { eval('var a'); { let z } }` (same scopes, same flags), where
-//! the var is allowed. So such a var or function name is not a conflict here.
+//! Step 3.d over the parameter environment (M3-P4, D3d). FunctionDeclarationInstantiation
+//! step 20 puts the parameters of a sloppy function with parameter expressions in an
+//! environment of their own, between an eval in the parameters and the variable environment,
+//! so `function f(a = eval('var a')) {}` is a SyntaxError. The front end merges that
+//! environment into the function's var scope and marks the scope with the ABI 5
+//! `ScopeFlags::PARAMETER_ENV`: there every slot of the name (a parameter, or the `arguments`
+//! binding of step 22) is a conflict. `function f({a}) { eval('var a') }` has no such bit,
+//! and the var is allowed.
 
 use std::collections::HashSet;
 
@@ -310,9 +311,11 @@ fn var_env(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<VarEnv> {
         }
         if is_var_scope(u, scope) {
             // The var scope itself: its lexical slots conflict too (a function's top-level
-            // `let` shares the scope with its vars).
+            // `let` shares the scope with its vars). With `PARAMETER_ENV`, the scope also
+            // holds the parameter environment (step 3.d passes it before the variable
+            // environment): every slot of `name` conflicts, as in `annex_b_env`.
             if let Some((_, mode)) = slot_of(c, name)
-                && is_lexical(mode)
+                && (is_lexical(mode) || scope.flags.contains(ScopeFlags::PARAMETER_ENV))
             {
                 return Err(redeclared(cx, name));
             }
