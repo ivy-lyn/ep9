@@ -31,7 +31,7 @@ use crate::interp::slow::{self, CmpOp, CtxKind, Lit, NameMsg, PropOp, UnOp};
 use crate::interp::{Done, Flow, St};
 use crate::runtime::ErrorKind;
 use crate::unit::FunctionInfo;
-use crate::{ic, kinds, object};
+use crate::{feedback, ic, kinds, object};
 
 macro_rules! op {
     ($Name:ident ($st:ident $(, $a:ident : $t:ty)*) $fast:block) => {
@@ -640,7 +640,13 @@ op!(StaGlobal(st, name: K, s: FSlot) {
     }
 } cold {
     let n = st.constant(name);
-    let r = slow::store_global(st.cx, st.fp, st.pc, n, st.acc, s.0);
+    // With a vector, a miss that records a field case stores through it: one scan
+    // (M2-P5-PLAN-D8). With none, no case is recorded: the generic path, with no extra call.
+    let r = if feedback::vector(st.info()).is_some() {
+        ic::store_global_miss(st.cx, st.fp, st.pc, n, st.acc, s.0)
+    } else {
+        slow::store_global(st.cx, st.fp, st.pc, n, st.acc, s.0)
+    };
     st.result(r)
 });
 
