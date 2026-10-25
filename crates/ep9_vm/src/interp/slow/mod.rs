@@ -68,7 +68,7 @@ pub(crate) use ops_misc::{
     CmpOp, UnOp, binary, compare, strict_equals, switch_target, to_boolean, type_of, unary,
 };
 pub(crate) use property::{
-    PropOp, get_named, get_super, load_global, prop, set_named, store_global,
+    PropOp, get_named, get_super, load_global, prop, set_named, store_global, store_global_with,
 };
 pub(crate) use runtime::{call_runtime, call_runtime_pair};
 

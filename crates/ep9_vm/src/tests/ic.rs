@@ -1006,3 +1006,32 @@ fn a_recording_global_store_costs_one_scan_of_the_global_object() {
         assert_eq!(t.ok(1, UNDEFINED, UNDEFINED), int(7));
     });
 }
+
+/// `f<i>(a)` (a `StaGlobal` site): the scans of the global object's shape and the runs of
+/// `ic::skip_global_miss` it took (P4F-R1).
+fn store_miss_work(t: &mut T, i: usize, a: u64) -> (u32, u32) {
+    ic::SKIP_CHECKS.with(|c| c.set(0));
+    let scans = store_scans_of_the_global_object(t, i, a);
+    (scans, ic::SKIP_CHECKS.with(|c| c.get()))
+}
+
+#[test]
+fn a_global_store_miss_checks_the_entry_and_computes_the_case_once() {
+    each(|c| {
+        let mut t = T::new(c, &[Site::StoreGlobal("icR"), Site::Global("icR")]);
+        let g = t.rt().global();
+        let read_only = attr::DEFAULT & !attr::WRITABLE;
+        props::own_define(t.rt(), g, key(t.rt(), "icR"), int(5), read_only);
+        let gs = shape::shape_of(g);
+        assert!(!shape::is_dictionary(gs));
+        // The first miss: one entry check and one case (SLOW: read-only), then the generic
+        // store, which takes `[[Set]]` (sloppy: no effect). The case's lookup is 1 scan; the
+        // generic store takes the rest.
+        assert_eq!(store_miss_work(&mut t, 0, int(6)), (4, 1));
+        assert_eq!(t.kind(0, gs), Some(smi::SLOW));
+        assert_eq!(t.ok(1, UNDEFINED, UNDEFINED), int(5));
+        // A miss on the recorded SLOW case: one entry check, no case, the generic store.
+        assert_eq!(store_miss_work(&mut t, 0, int(7)), (3, 1));
+        assert_eq!(t.ok(1, UNDEFINED, UNDEFINED), int(5));
+    });
+}
