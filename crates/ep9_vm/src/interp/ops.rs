@@ -26,7 +26,9 @@ use crate::call;
 use crate::conv::BinOp;
 use crate::dispatch::DispatchKind;
 use crate::frame::{FALSE, HOLE, NULL, TRUE, UNDEFINED, int32_bits, native_ptr, slot};
-use crate::interp::dsl::{Back, CSlot, Count, Depth, FSlot, Fwd, K, R, RList, RtId, S2, S4, TyLit};
+use crate::interp::dsl::{
+    self, Back, CSlot, Count, Depth, FSlot, Fwd, K, R, RList, RtId, S2, S4, TyLit,
+};
 use crate::interp::slow::{self, CmpOp, CtxKind, Lit, NameMsg, PropOp, UnOp};
 use crate::interp::{Done, Flow, St};
 use crate::runtime::ErrorKind;
@@ -526,8 +528,55 @@ fn call_list_with_receiver(st: &mut St<'_>, callee: R, args: RList, argc: Count)
 // ---- special -------------------------------------------------------------------------------
 
 op!(Illegal(st) { Flow::Cold } cold { not_impl(st, "the Illegal opcode") });
-op!(Wide(st) { Flow::Cold } cold { st.scaled::<S2>() });
-op!(ExtraWide(st) { Flow::Cold } cold { st.scaled::<S4>() });
+op!(Wide(st) { scaled_fast::<S2>(st) } cold { st.scaled::<S2>() });
+op!(ExtraWide(st) { scaled_fast::<S4>(st) } cold { st.scaled::<S4>() });
+
+/// The fast body of `Wide` and `ExtraWide` (M3-P4 FIXES, PERF3 task 5; perf run 2 slow path
+/// 3): `LdaSmi` and the int32 cases of `AddSmi`, `SubSmi`, `ModSmi`, `BitwiseOrSmi`,
+/// `BitwiseXorSmi` and `BitwiseAndSmi` (the prefixed forms in the hot loops of the T0
+/// kernels) run here, as their one-byte forms do. Anything else (another opcode, an
+/// accumulator that is not an int32, an overflow, a `%` that is not exact in int32) takes the
+/// cold block, which runs the whole instruction in `interp::scaled::step`; nothing is changed
+/// before that. The feedback slot is not read: T0 records no binary-op feedback (H16-Q2).
+#[inline(always)]
+fn scaled_fast<S: dsl::Scale>(st: &mut St<'_>) -> Flow {
+    use ep9_bytecode::Opcode as O;
+    // SAFETY: verified code: a prefix is followed by an opcode byte and its operands at scale
+    // `S`.
+    let op = unsafe { *st.pc.add(1) };
+    if op == O::LdaSmi as u8 {
+        // SAFETY: as above, for LdaSmi's operand.
+        let (len, (value,)) = unsafe { dsl::decode!(S, st.pc; value: Imm) };
+        st.acc = int(value);
+        // SAFETY: `len` is the length of the prefixed instruction.
+        return Flow::Jump(unsafe { st.pc.add(len) });
+    }
+    let a = st.acc;
+    if !is_i32(a) || !(O::AddSmi as u8..=O::BitwiseAndSmi as u8).contains(&op) {
+        return Flow::Cold;
+    }
+    // SAFETY: as above; AddSmi to BitwiseAndSmi all take (value: Imm, slot: Slot).
+    let (len, (b, _slot)) = unsafe { dsl::decode!(S, st.pc; value: Imm, slot: Slot) };
+    let x = i32_of(a);
+    let r = match op {
+        o if o == O::AddSmi as u8 => x.checked_add(b),
+        o if o == O::SubSmi as u8 => x.checked_sub(b),
+        // As `fast_binop`: x >= 0 avoids -0 and overflow.
+        o if o == O::ModSmi as u8 => (x >= 0 && b != 0).then(|| x % b),
+        o if o == O::BitwiseOrSmi as u8 => Some(x | b),
+        o if o == O::BitwiseXorSmi as u8 => Some(x ^ b),
+        o if o == O::BitwiseAndSmi as u8 => Some(x & b),
+        _ => None,
+    };
+    match r {
+        Some(r) => {
+            st.acc = int(r);
+            // SAFETY: `len` is the length of the prefixed instruction.
+            Flow::Jump(unsafe { st.pc.add(len) })
+        }
+        None => Flow::Cold,
+    }
+}
 
 // ---- accumulator and register moves --------------------------------------------------------
 
