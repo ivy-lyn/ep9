@@ -10,8 +10,10 @@
 //!                  lifetimes), the `pub use` re-exports
 //! src/isolate.rs   the `impl Cx` block (the scoped embedder forms)
 //! src/**/*.rs      every pub method of every default-build `impl Isolate` block (a block
-//!                  with no positive `cfg`, in a module that `lib.rs` does not gate): the
-//!                  embedder entry points (`ENTRY_POINTS`: the calls that run ABI code or
+//!                  in some default build of some target: no `cfg` that is false for every
+//!                  target, such as `test` or a feature, on it, on an inline module around it
+//!                  or on its module in `lib.rs`; a target `cfg` is read and shown in the
+//!                  line, Codex C2-FP1): the embedder entry points (`ENTRY_POINTS`: the calls that run ABI code or
 //!                  install a hook that ABI code calls; H20-Q4) are core `embed:` lines; the
 //!                  other methods are `embed (not core):` lines
 //! src/builtins.rs  the builtin table types and `check_tables`
@@ -68,18 +70,80 @@ fn rs_files(dir: &str, out: &mut Vec<String>) {
     }
 }
 
-/// True if an item with these attributes is not in the default build: a positive `cfg`
-/// (`cfg(test)`, `cfg(feature = ..)`, `cfg(any(..))`); `cfg(not(..))` is default build.
+/// The predicate of a `#[cfg(..)]` attribute (normalized), else `None`.
+fn cfg_pred(attr: &str) -> Option<&str> {
+    attr.strip_prefix("#[cfg(")?.strip_suffix(")]")
+}
+
+/// The value of the `cfg` predicate `p` in every default build of the crate, for any target:
+/// `Some(false)` if it is false there (`test` is off, and so is each `feature = ..`: ep9_vm
+/// has no default feature), `Some(true)` if it is true there, `None` if it depends on the
+/// target or the profile (`target_pointer_width = "64"`, `unix`, `debug_assertions`, `miri`,
+/// any other name). `not`, `all` and `any` combine the values (Codex C2-FP1: a target `cfg`
+/// is on in some default build, so its items are in the golden).
+fn cfg_value(p: &str) -> Option<bool> {
+    let p = p.trim();
+    let args = |op: &str| {
+        let r = p.strip_prefix(op)?.trim_start().strip_prefix('(')?;
+        Some(split_top(r.strip_suffix(')')?))
+    };
+    if let Some(a) = args("not") {
+        return match a.as_slice() {
+            [q] => cfg_value(q).map(|v| !v),
+            _ => None,
+        };
+    }
+    if let Some(a) = args("all") {
+        let vs: Vec<Option<bool>> = a.iter().map(|q| cfg_value(q)).collect();
+        return if vs.contains(&Some(false)) {
+            Some(false)
+        } else if vs.iter().all(|v| *v == Some(true)) {
+            Some(true)
+        } else {
+            None
+        };
+    }
+    if let Some(a) = args("any") {
+        let vs: Vec<Option<bool>> = a.iter().map(|q| cfg_value(q)).collect();
+        return if vs.contains(&Some(true)) {
+            Some(true)
+        } else if vs.iter().all(|v| *v == Some(false)) {
+            Some(false)
+        } else {
+            None
+        };
+    }
+    let name = p.split(['=', ' ']).next().unwrap_or("");
+    if name == "test" || name == "feature" {
+        return Some(false);
+    }
+    None
+}
+
+/// True if an item with these attributes is in no default build: a `cfg` whose predicate is
+/// false there ([`cfg_value`]: `cfg(test)`, `cfg(feature = ..)`, `cfg(all(test, unix))`).
+/// A target `cfg` (`cfg(target_pointer_width = "64")`, `cfg(any(test, unix))`) and
+/// `cfg(not(test))` are not gated: the item is read, and its line shows the `cfg`.
 fn gated(attrs: &[String]) -> bool {
     attrs
         .iter()
-        .any(|a| a.starts_with("#[cfg(") && !a.starts_with("#[cfg(not("))
+        .filter_map(|a| cfg_pred(a))
+        .any(|p| cfg_value(p) == Some(false))
+}
+
+/// The `cfg` attributes of an enclosing block or module, each with a trailing space.
+fn cfg_text(attrs: &[String]) -> String {
+    attrs
+        .iter()
+        .filter(|a| cfg_pred(a).is_some())
+        .map(|a| format!("{a} "))
+        .collect()
 }
 
 /// The source files the golden reads, as (path under `src/`, text): `abi/` sorted by name,
 /// `isolate.rs`, `builtins.rs`, `lib.rs`, then the other files of the default build (sorted;
-/// read only for their `impl Isolate` blocks). A module that `lib.rs` declares under a
-/// positive `cfg` (`tests`, `native`) is not default build: its files are left out.
+/// read only for their `impl Isolate` blocks). A module that `lib.rs` declares under a `cfg`
+/// that is in no default build ([`gated`]: `tests`, `native`) is left out.
 fn sources() -> Vec<(String, String)> {
     let read = |p: &str| {
         std::fs::read_to_string(src_dir().join(p))
@@ -859,12 +923,15 @@ fn const_line(head: &str, body: Option<&str>, owner: &str) -> String {
 
 /// The lines of the default-build `impl Isolate` blocks of `its` and of the inline modules in
 /// it: an entry point ([`ENTRY_POINTS`]) is a core `embed:` line, any other pub method or
-/// const an `embed (not core):` line. A block or module under a positive `cfg` is skipped.
-fn isolate_lines(its: &[Item], out: &mut Vec<String>) {
+/// const an `embed (not core):` line. A block or module that is in no default build
+/// ([`gated`]) is skipped. `outer` is the `cfg` text of the enclosing modules; each line
+/// shows it and the block's own `cfg` before the method's attributes.
+fn isolate_lines(its: &[Item], outer: &str, out: &mut Vec<String>) {
     for it in its {
         if gated(&it.attrs) {
             continue;
         }
+        let outer = format!("{outer}{}", cfg_text(&it.attrs));
         let words: Vec<&str> = it.head.split(' ').collect();
         let is_mod = words
             .iter()
@@ -872,7 +939,7 @@ fn isolate_lines(its: &[Item], out: &mut Vec<String>) {
             .is_some_and(|k| words[..k].iter().all(|w| w.starts_with("pub")));
         if is_mod {
             if let Some(b) = &it.body {
-                isolate_lines(&items(b), out);
+                isolate_lines(&items(b), &outer, out);
             }
             continue;
         }
@@ -898,7 +965,7 @@ fn isolate_lines(its: &[Item], out: &mut Vec<String>) {
                 )
             };
             out.push(format!(
-                "{g}: impl Isolate :: {}{line}",
+                "{g}: impl Isolate :: {outer}{}{line}",
                 kept_attrs(&m.attrs)
             ));
         }
@@ -950,10 +1017,27 @@ fn extract(files: &[(String, String)]) -> Vec<String> {
             }
         }
     }
+    // The `cfg` text of each module that `lib.rs` declares (a target `cfg` is read: `gated`).
+    let mod_cfgs: Vec<(String, String)> = stripped
+        .iter()
+        .filter(|(p, _)| p == "lib.rs")
+        .flat_map(|(_, its)| its)
+        .filter(|it| it.body.is_none())
+        .filter_map(|it| {
+            let name = it.head.strip_prefix("pub ").unwrap_or(&it.head);
+            let name = name.strip_prefix("mod ")?;
+            Some((name.to_string(), cfg_text(&it.attrs)))
+        })
+        .collect();
     let mut out = Vec::new();
     let mut abi_mod_uses: BTreeSet<String> = BTreeSet::new();
     for (p, its) in &stripped {
-        isolate_lines(its, &mut out);
+        let top = p.split('/').next().unwrap_or("").trim_end_matches(".rs");
+        let outer = mod_cfgs
+            .iter()
+            .find(|(m, _)| m == top)
+            .map_or("", |(_, c)| c.as_str());
+        isolate_lines(its, outer, &mut out);
         if !is_core_file(p) {
             continue;
         }
@@ -1331,18 +1415,35 @@ fn no_isolate_method_takes_or_gives_a_raw_value() {
 
 /// The negative control for the other `Isolate` methods (FP2-GOLDEN-RAW): a new pub method in
 /// a default-build `impl Isolate` block, in `isolate.rs` or in another file, is a new line,
-/// and a raw `Value` form fails `no_isolate_method_takes_or_gives_a_raw_value`. A block under
-/// a positive `cfg`, and a file of a module that `lib.rs` gates (`tests`, `native`), add none.
+/// and a raw `Value` form fails `no_isolate_method_takes_or_gives_a_raw_value`. So is a block
+/// under a target `cfg` (Codex C2-FP1: `target_pointer_width = "64"` is on for this host),
+/// in a block, an inline module or a module of `lib.rs`, and its line shows the `cfg`. A
+/// block under a `cfg` that is in no default build (`test`, a feature, `all(test, ..)`), and
+/// a file of a module that `lib.rs` gates so (`tests`, `native`), add none.
 #[test]
 fn a_new_isolate_method_is_a_new_line() {
     let mut files = sources();
     let (_, t) = files.iter_mut().find(|(p, _)| p == "isolate.rs").unwrap();
     t.push_str("\nimpl Isolate {\n    pub fn global(&self, name: &str) -> Option<Value> {\n        None\n    }\n}\n");
     t.push_str("\n#[cfg(feature = \"spike-native\")]\nimpl Isolate {\n    pub fn spike(&self) -> Value {}\n}\n");
+    t.push_str(
+        "\n#[cfg(all(test, unix))]\nimpl Isolate {\n    pub fn in_test(&self) -> Value {}\n}\n",
+    );
+    t.push_str("\n#[cfg(target_pointer_width = \"64\")]\nimpl Isolate {\n    pub fn wide(&mut self) -> Value {}\n}\n");
+    t.push_str(
+        "\n#[cfg(any(test, unix))]\nimpl Isolate {\n    pub fn any_os(&self) -> Value {}\n}\n",
+    );
     files.push((
         "probe.rs".to_string(),
-        "mod inner {\n    impl crate::Isolate {\n        pub fn run_raw(&mut self) -> Value {}\n    }\n}\n"
+        "mod inner {\n    impl crate::Isolate {\n        pub fn run_raw(&mut self) -> Value {}\n    }\n}\n\
+         #[cfg(target_arch = \"aarch64\")]\nmod arm {\n    impl crate::Isolate {\n        pub fn arm_raw(&self) -> Value {}\n    }\n}\n"
             .to_string(),
+    ));
+    let (_, lib) = files.iter_mut().find(|(p, _)| p == "lib.rs").unwrap();
+    lib.push_str("\n#[cfg(debug_assertions)]\nmod probe_debug;\n");
+    files.push((
+        "probe_debug.rs".to_string(),
+        "impl crate::Isolate {\n    pub fn debug_raw(&self) -> Value {}\n}\n".to_string(),
     ));
     assert!(
         sources()
@@ -1351,12 +1452,49 @@ fn a_new_isolate_method_is_a_new_line() {
     );
     let (gone, new) = diff(&golden_lines(), &extract(&files));
     assert!(gone.is_empty(), "{gone:?}");
-    let want = [
+    let mut want = [
         "embed (not core): impl Isolate :: pub fn global(&self, &str) -> Option<Value>",
         "embed (not core): impl Isolate :: pub fn run_raw(&mut self) -> Value",
+        "embed (not core): impl Isolate :: #[cfg(target_pointer_width = \"64\")] pub fn wide(&mut self) -> Value",
+        "embed (not core): impl Isolate :: #[cfg(any(test, unix))] pub fn any_os(&self) -> Value",
+        "embed (not core): impl Isolate :: #[cfg(target_arch = \"aarch64\")] pub fn arm_raw(&self) -> Value",
+        "embed (not core): impl Isolate :: #[cfg(debug_assertions)] pub fn debug_raw(&self) -> Value",
     ];
+    want.sort_unstable();
     assert_eq!(new, want);
     assert_eq!(raw_value_lines(&new), want);
+}
+
+/// The `cfg` reader on fixed input (Codex C2-FP1): `false` only for a predicate that is false
+/// in every default build of every target; a target or profile name is unknown (`None`),
+/// so its items stay in the golden.
+#[test]
+fn the_cfg_reader_knows_the_default_build() {
+    for (p, v) in [
+        ("test", Some(false)),
+        ("feature = \"spike-native\"", Some(false)),
+        ("not(test)", Some(true)),
+        ("not(feature = \"ic-stats\")", Some(true)),
+        ("any(test, feature = \"spike-native\")", Some(false)),
+        ("all(debug_assertions, test)", Some(false)),
+        ("target_pointer_width = \"64\"", None),
+        ("target_arch = \"x86_64\"", None),
+        ("unix", None),
+        ("debug_assertions", None),
+        ("not(miri)", None),
+        ("any(test, unix)", None),
+        ("all(target_arch = \"x86_64\", panic = \"unwind\")", None),
+        ("all(not(test), not(feature = \"become\"))", Some(true)),
+        ("testing", None),
+        ("allocator", None),
+    ] {
+        assert_eq!(cfg_value(p), v, "cfg({p})");
+    }
+    let attrs = |a: &str| vec![a.to_string()];
+    assert!(gated(&attrs("#[cfg(test)]")));
+    assert!(!gated(&attrs("#[cfg(target_pointer_width = \"64\")]")));
+    assert!(!gated(&attrs("#[cfg(not(test))]")));
+    assert!(!gated(&attrs("#[inline]")));
 }
 
 /// A new `Cx` method is an addition only: no golden line goes away.
