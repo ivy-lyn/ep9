@@ -79,7 +79,18 @@ mod sealed {
 /// A `T: Downcast` bound reaches `test` (a supertrait method), but the call needs a
 /// `sealed::Token`, and code outside the crate cannot make one: the type has a private field,
 /// no constructor outside the crate and no `Default`. A diverging argument (`todo!()`) type
-/// checks, but it stops before the call.
+/// checks, but it stops before the call. A token from `Default` does not compile:
+///
+/// ```compile_fail
+/// use ep9_vm::{Downcast, JsString};
+/// fn read<T: Downcast>(bits: u64) -> bool {
+///     T::test(bits, Default::default())
+/// }
+/// let _ = read::<JsString>(0x80_0000);
+/// ```
+///
+/// The same function with `todo!()` in place of `Default::default()` compiles, so this
+/// test fails only for the token (the control).
 pub trait Downcast: sealed::Sealed {}
 
 macro_rules! downcast {
