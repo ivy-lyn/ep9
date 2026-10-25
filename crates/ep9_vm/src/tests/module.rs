@@ -324,11 +324,11 @@ fn script_code_has_no_module() {
 #[test]
 fn module_hosts_nest_and_leave_with_their_call() {
     use crate::compiler::{CompileFailure, CompileResult};
-    let ask = |key: usize| module::call_host(key, |h| (h.resolve)("r", "s"));
+    let ask = |key: u64| module::call_host(key, |h| (h.resolve)("r", "s"));
     let mut load = |_: &str| -> CompileResult { Err(CompileFailure::Internal("none".into())) };
     let mut outer = |_: &str, s: &str| -> Result<String, String> { Ok(format!("outer {s}")) };
     let mut inner = |_: &str, s: &str| -> Result<String, String> { Ok(format!("inner {s}")) };
-    let (a, b) = (1usize, 2usize);
+    let (a, b) = (1u64, 2u64);
     assert_eq!(ask(a), None, "no host");
     let mut h1 = module::Host {
         resolve: &mut outer,

@@ -35,7 +35,7 @@ SeqLatin1, SeqUtf16, rope (length ≥ 13), slice (length ≥ 13), thin, external
 | Interning | a string cell becomes the atom in place (no allocation); text from Rust: hash, probe, allocate first, then insert | `intern` (`crates/ep9_vm/src/atoms.rs:280`), `intern_text` (`crates/ep9_vm/src/atoms.rs:297`) |
 | `atoms!` list | 35 names, `pub enum Atom` `repr(u16)`, append-only ids; isolate roots | `crates/ep9_vm/src/atoms.rs:60` |
 | Single characters | 256 Latin-1 atoms, isolate roots, filled lazily; `s[i]` and the string iterator use them | `char_at` (`crates/ep9_vm/src/string.rs:349`) |
-| Units | every unit string is interned at load (root range of the unit) | `crates/ep9_vm/src/unit.rs:143` |
+| Units | every unit string is interned at load (root range of the unit) | `crates/ep9_vm/src/unit.rs:148` |
 | Keys | ToPropertyKey flattens and interns; no number keys: "1" is an atom with the index cached (W4-NO-NUMBER-KEYS) | `crates/ep9_vm/src/key.rs:56` |
 | Key compare | same bits, or two atoms → unequal at once; a non-atom key takes one content compare and bumps a debug counter | `key_eq` (`crates/ep9_vm/src/key.rs:43`), `probe` (`crates/ep9_vm/src/key.rs:153`) |
 | Limit | 2^29 − 24 code units (V8); `concat` returns `None` and callers throw RangeError "Invalid string length" | `crates/ep9_vm/src/string.rs:54`; `crates/ep9_vm/src/natives.rs:1374` |
@@ -139,3 +139,4 @@ SeqLatin1, SeqUtf16, rope (length ≥ 13), slice (length ≥ 13), thin, external
 | 2026-10-23 | clarify | 14 `path:line` references moved to the code after the M3-P1 merge and the M3-P1 fixer changes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS). No check changes | M3-P1 integration fixer |
 | 2026-10-23 | clarify | 1 `path:line` reference moved to the code after the M3-P2 merge and the M3-P2 fixer changes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS); each names the same item at the new line. No check changes | M3-P2 integration fixer (docs) |
 | 2026-10-25 | clarify | The embedder-view paragraph no longer names `Isolate::global` as a live `&self` call that allocates: M3-P3 EMBED-MIGRATE removed the raw `Isolate::{run_script, call, global, display}` (H20-Q4). `Isolate::heap` stays the example. No rule or check changes | M3-P3 EMBED-MIGRATE (step 2) |
+| 2026-10-25 | clarify | 1 `path:line` reference moved to the code after the M3-P3 fix round 2 change (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS): `LoadedUnit` got the `script_or_module` field (the ScriptOrModule of eval code for `import()`). The ref names the same item at the new line. No check changes | M3-P3 fix round 2 (import() and TLA) |

@@ -92,7 +92,41 @@ fn compile(src: &str) -> Result<ep9_bytecode::VerifiedUnit, CompileFailure> {
     ep9_frontend::compile(src, SourceOpts::module(), CompileOptions::default()).map_err(failure)
 }
 
-/// An isolate with the table, [`HOOKS`], `print` and `stop`; OUT is empty.
+/// The name of the file of `files` that `spec` names in the module or script `referrer`:
+/// `./` and `../` are relative to the directory of `referrer` (as the CLI resolves paths); a
+/// name that `files` does not have is the error of node's message.
+fn resolve_in(files: Files, referrer: &str, spec: &str) -> Result<String, String> {
+    let mut parts: Vec<&str> = referrer.split('/').collect();
+    parts.pop();
+    for p in spec.split('/') {
+        match p {
+            "." => {}
+            ".." => {
+                parts.pop();
+            }
+            _ => parts.push(p),
+        }
+    }
+    let name = parts.join("/");
+    match source(files, &name) {
+        Some(_) => Ok(name),
+        None => Err(format!(
+            "Cannot find module '{spec}' imported from {referrer}"
+        )),
+    }
+}
+
+/// `createRealm()`: the global object of a new realm (`Cx::create_realm`).
+fn create_realm<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Ok(cx.create_realm()?.into())
+}
+
+/// An isolate with the table, [`HOOKS`], `print`, `stop` and `createRealm`; OUT is empty.
 fn new_isolate(dispatch: Dispatch, stress: bool) -> Isolate {
     let mut iso = Isolate::new(IsolateConfig {
         heap: HeapConfig {
@@ -108,6 +142,7 @@ fn new_isolate(dispatch: Dispatch, stress: bool) -> Isolate {
     .expect("an isolate");
     iso.register_host_function("print", 1, print);
     iso.register_host_function("stop", 0, stop);
+    iso.register_host_function("createRealm", 0, create_realm);
     TERM.with(|t| *t.borrow_mut() = Some(iso.terminate_handle()));
     OUT.with(|o| o.borrow_mut().clear());
     iso
@@ -117,27 +152,40 @@ fn new_isolate(dispatch: Dispatch, stress: bool) -> Isolate {
 /// isolate, a microtask checkpoint after each: the printed lines, and after each entry that
 /// throws, a line "uncaught Name: message". Then collects and verifies the heap.
 fn run_in(files: Files, entries: &[&str], dispatch: Dispatch, stress: bool) -> Vec<String> {
+    run_in_with(files, entries, dispatch, stress, false)
+}
+
+/// [`run_in`]; with `host`, the runs and their checkpoints are inside
+/// `Isolate::with_module_host` with the same hooks (as the CLI runs a module).
+fn run_in_with(
+    files: Files,
+    entries: &[&str],
+    dispatch: Dispatch,
+    stress: bool,
+    host: bool,
+) -> Vec<String> {
     let mut iso = new_isolate(dispatch, stress);
-    for entry in entries {
-        let unit = compile(source(files, entry).expect("an entry file")).expect("compiles");
-        let mut resolve = |referrer: &str, spec: &str| -> Result<String, String> {
-            let name = spec.strip_prefix("./").unwrap_or(spec);
-            match source(files, name) {
-                Some(_) => Ok(name.to_string()),
-                None => Err(format!(
-                    "Cannot find module '{spec}' imported from {referrer}"
-                )),
+    let run = |iso: &mut Isolate| {
+        for entry in entries {
+            let unit = compile(source(files, entry).expect("an entry file")).expect("compiles");
+            let mut resolve = |referrer: &str, spec: &str| resolve_in(files, referrer, spec);
+            let mut load = |name: &str| compile(source(files, name).expect("a resolved file"));
+            let r = iso.with_cx(|cx| {
+                cx.run_module(unit, entry, &mut resolve, &mut load)
+                    .map(|_| ())
+            });
+            let c = iso.perform_microtask_checkpoint();
+            if let Err(e) = r.and(c) {
+                OUT.with(|o| o.borrow_mut().push(format!("uncaught {}", e.message)));
             }
-        };
-        let mut load = |name: &str| compile(source(files, name).expect("a resolved file"));
-        let r = iso.with_cx(|cx| {
-            cx.run_module(unit, entry, &mut resolve, &mut load)
-                .map(|_| ())
-        });
-        let c = iso.perform_microtask_checkpoint();
-        if let Err(e) = r.and(c) {
-            OUT.with(|o| o.borrow_mut().push(format!("uncaught {}", e.message)));
         }
+    };
+    if host {
+        let mut resolve = |referrer: &str, spec: &str| resolve_in(files, referrer, spec);
+        let mut load = |name: &str| compile(source(files, name).expect("a resolved file"));
+        iso.with_module_host(&mut resolve, &mut load, run);
+    } else {
+        run(&mut iso);
     }
     let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
     iso.collect_garbage();
@@ -147,10 +195,16 @@ fn run_in(files: Files, entries: &[&str], dispatch: Dispatch, stress: bool) -> V
 
 /// [`run_in`] under every dispatch expansion, with and without GC stress; all runs agree.
 fn run_every(files: Files, entries: &'static [&'static str]) -> Vec<String> {
+    run_every_with(files, entries, false)
+}
+
+/// [`run_in_with`] under every dispatch expansion, with and without GC stress; all runs
+/// agree.
+fn run_every_with(files: Files, entries: &'static [&'static str], host: bool) -> Vec<String> {
     let mut first: Option<(String, Vec<String>)> = None;
     for &d in Dispatch::ALL {
         for stress in [false, true] {
-            let r = common::on_big_stack(move || run_in(files, entries, d, stress));
+            let r = common::on_big_stack(move || run_in_with(files, entries, d, stress, host));
             let label = format!("{} stress={stress}", d.name());
             match &first {
                 None => first = Some((label, r)),
@@ -1084,4 +1138,181 @@ fn import_calls_in_scripts_and_jobs_use_the_module_host() {
             "no host not implemented in ep9 v0: DynamicImport",
         ])
     );
+}
+
+// ---- M3-P3 fix round 2 (the Codex findings C-TLA2 to C-TLA6) -------------------------------
+
+/// `import()` in a job of a module run (C-TLA2): in a promise job after a synchronous entry,
+/// and in a module that `import()` evaluates in a job. `Cx::run_module` ends with a microtask
+/// checkpoint while its hooks are the module host, so both load through them, also with no
+/// `Isolate::with_module_host` around the run (before the fix they threw the v0
+/// "DynamicImport" Error after the run). Inside `with_module_host` (as the CLI runs) the
+/// output is the same. Node v24.22.1 prints the same lines for each entry.
+#[test]
+fn import_calls_in_jobs_of_a_module_run_use_its_hooks() {
+    const FILES: Files = &[
+        ("b.js", "print('b');\nexport const b = 'B';"),
+        ("c.js", "print('c');\nexport const c = 'C';"),
+        (
+            "s.js",
+            "Promise.resolve().then(() => import('./b.js')).then(ns => print('deferred', ns.b), e => print('err', e.message));\nprint('s');",
+        ),
+        (
+            "n1.js",
+            "print('n1');\nimport('./c.js').then(m => print('n1 got', m.c), e => print('n1 err', e.message));\nexport const v = 'V';",
+        ),
+        (
+            "n.js",
+            "import('./n1.js').then(ns => print('n', ns.v), e => print('n err', e.message));\nprint('n sync');",
+        ),
+    ];
+    let expected = lines(&[
+        "s",
+        "b",
+        "deferred B",
+        "n sync",
+        "n1",
+        "c",
+        "n V",
+        "n1 got C",
+    ]);
+    assert_eq!(run_every_with(FILES, &["s.js", "n.js"], false), expected);
+    assert_eq!(run_every_with(FILES, &["s.js", "n.js"], true), expected);
+}
+
+/// `import()` from a function of another realm (C-TLA3): the function made by
+/// `new other.Function(...)` in `r.js` has `r.js` as its ScriptOrModule, so its import of
+/// `./dep.js` gives the module that `r.js` loaded (HostLoadImportedModule, §16.2.1.10: one
+/// referrer and specifier give one module; the same for a function that `other.eval` makes),
+/// and the promise is of the other realm
+/// (EvaluateImportCall: %Promise% of the current realm). A module that such a call loads
+/// first (`fresh.js`) is in `r.js`'s realm: its objects and functions are of that realm,
+/// and `r.js`'s own import of it later gives the same namespace. Before the fix, ep9 made a
+/// second record of each module in the other realm's map (`same false false`). The expected
+/// lines follow the spec (node's `vm` realms have no import() of the main module map).
+#[test]
+fn an_import_call_from_another_realm_uses_the_referrer_module_map() {
+    const FILES: Files = &[
+        ("dep.js", "export const o = {};"),
+        (
+            "fresh.js",
+            "export const arr = [];\nexport function fn() {}\nexport function g() { return globalThis; }",
+        ),
+        (
+            "r.js",
+            "import * as a from './dep.js';\nconst other = createRealm();\nconst p = new other.Function(\"return import('./dep.js')\")();\nprint('promise realm', p instanceof other.Promise, p instanceof Promise);\nconst ns = await p;\nprint('same', ns === a, ns.o === a.o);\nprint('eval same', (await other.eval(\"(function () { return import('./dep.js'); })\")()) === a);\nconst f = await new other.Function(\"return import('./fresh.js')\")();\nprint('fresh realm', Object.getPrototypeOf(f.arr) === Array.prototype, Object.getPrototypeOf(f.fn) === Function.prototype, f.g() === globalThis);\nprint('fresh same', (await import('./fresh.js')) === f);",
+        ),
+    ];
+    assert_eq!(
+        run_every(FILES, &["r.js"]),
+        lines(&[
+            "promise realm true false",
+            "same true true",
+            "eval same true",
+            "fresh realm true true true",
+            "fresh same true",
+        ])
+    );
+}
+
+/// A function made by eval code or by `Function()` keeps the ScriptOrModule of the code that
+/// made it (C-TLA4; OrdinaryFunctionCreate §10.2.3, PerformEval §19.2.1.1): called from
+/// `main.js`, its `import('./dep.js')` still resolves from `sub/creator.js` (indirect eval,
+/// `Function()`, `Function()` in indirect eval code, direct eval). Indirect eval code in
+/// `main.js` resolves from `main.js`. Before the fix, ep9 took the caller (`main.js`) for
+/// the first three and loaded `dep.js` (`root`). Node v24.22.1 prints the same lines.
+#[test]
+fn functions_made_by_eval_code_import_from_their_maker() {
+    const FILES: Files = &[
+        ("dep.js", "export const where = 'root';"),
+        ("sub/dep.js", "export const where = 'sub';"),
+        (
+            "sub/creator.js",
+            "export function make() { return (0, eval)(\"(function () { return import('./dep.js'); })\"); }\nexport function makeFn() { return new Function(\"return import('./dep.js')\"); }\nexport function makeNested() { return (0, eval)(\"new Function(\\\"return import('./dep.js')\\\")\"); }\nexport function makeDirect() { return eval(\"(function () { return import('./dep.js'); })\"); }",
+        ),
+        (
+            "main.js",
+            "import { make, makeFn, makeNested, makeDirect } from './sub/creator.js';\nconst show = (tag) => [ns => print(tag, ns.where), e => print(tag, 'err', e.message)];\nawait make()().then(...show('indirect eval'));\nawait makeFn()().then(...show('Function'));\nawait makeNested()().then(...show('Function in eval code'));\nawait makeDirect()().then(...show('direct eval'));\nawait (0, eval)(\"import('./dep.js')\").then(...show('main eval'));",
+        ),
+    ];
+    assert_eq!(
+        run_every(FILES, &["main.js"]),
+        lines(&[
+            "indirect eval sub",
+            "Function sub",
+            "Function in eval code sub",
+            "direct eval sub",
+            "main eval root",
+        ])
+    );
+}
+
+/// `import()` attributes (C-TLA6; EvaluateImportCall step 10, ES2025): EnumerableOwnProperties
+/// of the `with` object runs every getter first (a throw is the rejection), and only then
+/// the value check (a non-string value is a TypeError). Before the fix, ep9 checked each
+/// value as it read it: case `a` skipped the getter and rejected with a TypeError, case `b`
+/// did not run `get z`. Node v24.22.1 prints the same lines.
+#[test]
+fn import_attributes_run_every_getter_before_the_checks() {
+    const FILES: Files = &[
+        ("dep.js", "export const d = 1;"),
+        (
+            "at.js",
+            "const show = (tag) => [() => print(tag, 'ok'), e => print(tag, typeof e === 'object' ? e.constructor.name : e)];\nawait import('./dep.js', { with: { type: 1, get later() { print('getter'); throw 42; } } }).then(...show('a'));\nawait import('./dep.js', { with: { get type() { print('get type'); return 1; }, get z() { print('get z'); return 'x'; } } }).then(...show('b'));\nawait import('./dep.js', { with: { foo: 1, get z() { print('get z2'); return 'x'; } } }).then(...show('c'));\nconst w = { get a() { delete this.b; return 'x'; }, b: 1 };\nawait import('./dep.js', { with: w }).then(...show('d'));",
+        ),
+    ];
+    assert_eq!(
+        run_every(FILES, &["at.js"]),
+        lines(&[
+            "getter",
+            "a 42",
+            "get type",
+            "get z",
+            "b TypeError",
+            "get z2",
+            "c TypeError",
+            "d TypeError",
+        ])
+    );
+}
+
+/// The module host of `Isolate::with_module_host` belongs to its isolate only
+/// (EM2-HOST-ADDR): code in the call can put a new isolate in its place and drop the old
+/// one, and an isolate made after that can get the old one's address (the test makes 8, so
+/// the allocator is likely to give one of them that address). None has a host: `import()`
+/// throws the v0 not-implemented Error. Before the fix (hosts keyed by the `Runtime`
+/// address), a later isolate used the first one's hooks (`got B`).
+#[test]
+fn a_dropped_isolate_leaves_no_module_host() {
+    const FILES: Files = &[("b.js", "export const b = 'B';")];
+    fn script(tag: &str) -> String {
+        format!(
+            "try {{ import('./b.js').then(ns => print('{tag} got', ns.b), e => print('{tag} err', e.message)); }} catch (e) {{ print('{tag} no host', e.message); }}"
+        )
+    }
+    let mut iso = new_isolate(Dispatch::ALL[0], false);
+    let mut resolve = |referrer: &str, spec: &str| resolve_in(FILES, referrer, spec);
+    let mut load = |name: &str| compile(source(FILES, name).expect("a resolved file"));
+    let run = |iso: &mut Isolate, tag: &str| {
+        let unit = hook_script(&script(tag)).expect("compiles");
+        iso.with_cx_checkpoint(|cx| cx.run_script(unit, "main.js").map(|_| ()))
+            .expect("no throw");
+        OUT.with(|o| core::mem::take(&mut *o.borrow_mut()))
+    };
+    let out = iso.with_module_host(&mut resolve, &mut load, |iso| {
+        let old = std::mem::replace(iso, new_isolate(Dispatch::ALL[0], false));
+        drop(old);
+        let mut out = run(iso, "second");
+        let mut later: Vec<Isolate> = Vec::new();
+        for i in 0..8 {
+            let mut next = new_isolate(Dispatch::ALL[0], false);
+            out.extend(run(&mut next, &format!("later {i}")));
+            later.push(next);
+        }
+        out
+    });
+    let no_host = "not implemented in ep9 v0: DynamicImport";
+    let mut expected = vec![format!("second no host {no_host}")];
+    expected.extend((0..8).map(|i| format!("later {i} no host {no_host}")));
+    assert_eq!(out, expected);
 }

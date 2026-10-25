@@ -18,7 +18,7 @@
 use core::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use ep9_heap::{AllocError, CellPtr, Heap, KindId, WeakHandle};
@@ -279,7 +279,14 @@ pub(crate) struct Runtime {
     /// The microtask job queue, the rejected-promise list and the built-in closure infos
     /// (`jobs.rs`, P4-PROMISE): heap records behind a root source.
     pub jobs: crate::jobs::JobState,
+    /// A number that no other runtime of the process gets ([`NEXT_ID`]): the key of the
+    /// isolate's module hosts (`module::host_key`). An address can come again after a drop;
+    /// this number does not.
+    pub id: u64,
 }
+
+/// The next [`Runtime::id`].
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 impl Runtime {
     pub fn new(
@@ -314,6 +321,7 @@ impl Runtime {
             atoms: Rc::new(RefCell::new(AtomTable::default())),
             symbols: SymbolState::default(),
             builtins: BuiltinState::default(),
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
         });
         crate::atoms::init(&rt);
         crate::shape::init(&rt);
