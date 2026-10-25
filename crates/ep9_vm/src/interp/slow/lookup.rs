@@ -49,7 +49,10 @@
 //! references, so only the declarative slots that hold them answer: the walk skips `with`
 //! objects and `.eval_ext` objects for them, and the global environment gives the global
 //! this for `this` and undefined for the others, never a global property. `arguments` is an
-//! ordinary name.
+//! ordinary name. The only store to an implicit name is `StaLookupSlot "this"`, which
+//! BytecodeGen emits for `super()` in direct eval code (E6, M3-P4): it is BindThisValue
+//! (§9.1.1.3.1) on the derived constructor's `this` slot (a ReferenceError if `this` is
+//! already bound), never a TDZ error.
 //!
 //! A reference that is used after other code runs (`x = v`, `x op= v`, `x++`, `var x = v`,
 //! a destructuring target: §13.15.2, §13.4, §14.3.2.1, §13.15.5, §8.6.3-4 evaluate the
@@ -335,6 +338,20 @@ fn set_binding_value(cx: &mut Cx, b: Binding, name: u64, v: u64, strict: bool) -
             index,
             mode,
         } => {
+            // BindThisValue (§9.1.1.3.1): `super()` in direct eval code (E6) binds the
+            // derived constructor's `this` slot by its name. No source text can assign to
+            // `this`, so this is the only store to that name.
+            if string::equals_text(name, string::JsStr::Latin1(IMPLICIT_NAMES[0])) {
+                if slot_value(cx, context, index)? != HOLE {
+                    return Err(throw_error(
+                        cx,
+                        ErrorKind::ReferenceError,
+                        "Super constructor may only be called once",
+                    ));
+                }
+                object::context_set(cx.rt(), context, index, v);
+                return Ok(());
+            }
             // The TDZ check (ReferenceError) comes before the TypeError of a `const`.
             if slot_value(cx, context, index)? == HOLE {
                 return Err(throw_name_now(cx, NameMsg::Tdz, name));

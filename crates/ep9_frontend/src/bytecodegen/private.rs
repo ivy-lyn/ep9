@@ -14,16 +14,43 @@
 //! and PutValue (after the right side), a write calls the setter, and a write to a method
 //! (or a getter-only accessor, whose setter slot holds undefined) throws a TypeError.
 //!
+//! (M3-P4, E9) In direct eval code, a `#x` that only the caller's class declares resolves
+//! `Dynamic`, and its kind comes from the `EvalContext` (`ScopeAnalysis::caller_private`). Its
+//! class context slots are read by name (ep9_bytecode `eval_context.rs`):
+//!
+//! ```text
+//! field #x     key:  LdaLookupSlot "#x"
+//! method #m    env:  ResolveLookupSlot "#m"   (the class context that holds #m)
+//!              brand LoadLookupSlotResolved env, "#.brand" (static: "#.static-brand")
+//!              #m:   LoadLookupSlotResolved env, "#m"     (an accessor's setter: "#.set-x")
+//! ```
+//!
+//! then the same keyed loads, brand checks, calls and `MemberRef`s as above.
+//!
 //! Callers: `expr.rs` (load, member reference, optional chain, call, `in`, `delete`, keys).
 
-use ep9_bytecode::{FeedbackSlotKind, Register, RegisterList};
+use ep9_bytecode::{FeedbackSlotKind, Register, RegisterList, RuntimeId};
 use oxc_ast::ast::{PrivateFieldExpression, PrivateIdentifier, PrivateInExpression};
 
+use super::class_fields::{BRAND, SETTER, STATIC_BRAND};
 use super::expr::MemberRef;
 use super::func::{FnGen, Gen};
 use crate::scope::{
     BindingId, BindingKind, ImplicitRef, NameId, PrivateKind, Reference, Resolution,
 };
+
+/// (E9) A `#x` of the eval caller's class: its `Dynamic` reference, kind and static flag.
+#[derive(Clone, Copy)]
+struct CallerPrivate<'s> {
+    reference: &'s Reference,
+    kind: PrivateKind,
+    is_static: bool,
+}
+
+/// (E9) Three temporaries for `LoadLookupSlotResolved`: the class context of a caller's `#x`
+/// (from `ResolveLookupSlot`), a slot name, and `true` (class code is strict).
+#[derive(Clone, Copy)]
+struct CallerEnv(RegisterList);
 
 /// A resolved `#x` reference.
 #[derive(Clone, Copy)]
@@ -60,6 +87,107 @@ impl<'a, 's> FnGen<'a, 's> {
         })
     }
 
+    /// (E9) The `#x` at `field` if it is a private name of the eval caller's class.
+    fn caller_private(&self, field: &PrivateIdentifier<'_>) -> Gen<Option<CallerPrivate<'s>>> {
+        let reference = self.implicit(field.span.start, ImplicitRef::Private)?;
+        if !matches!(reference.resolution, Resolution::Dynamic { .. }) {
+            return Ok(None);
+        }
+        let name = self.sa.name(reference.name);
+        let Some((kind, is_static)) = self.sa.caller_private(name) else {
+            return Err(super::internal(format!(
+                "{name} at {} is not a private name of the eval caller",
+                field.span.start
+            )));
+        };
+        Ok(Some(CallerPrivate {
+            reference,
+            kind,
+            is_static,
+        }))
+    }
+
+    /// (E9) `ResolveLookupSlot "#x"` into a new [`CallerEnv`].
+    fn caller_env(&mut self, c: CallerPrivate<'s>) -> CallerEnv {
+        let regs = self.temps(3);
+        let first = regs.get(0).local_index().expect("temporaries are locals");
+        let k = self.name_const(c.reference.name);
+        self.b.lda_constant(k).star(regs.get(1));
+        self.expr_pos(c.reference.span.start);
+        self.runtime(
+            RuntimeId::ResolveLookupSlot,
+            RegisterList::new(first + 1, 1),
+        );
+        self.b.star(regs.get(0));
+        self.b.lda_true().star(regs.get(2));
+        CallerEnv(regs)
+    }
+
+    /// (E9) `acc = ` the slot `name` of the class context in `env`.
+    fn caller_slot(&mut self, env: CallerEnv, name: &str, at: u32) {
+        let k = self.str_const(name);
+        self.b.lda_constant(k).star(env.0.get(1));
+        self.expr_pos(at);
+        self.runtime(RuntimeId::LoadLookupSlotResolved, env.0);
+    }
+
+    /// (E9) `acc = ` the brand of a caller's method or accessor `#x`.
+    fn caller_brand(&mut self, c: CallerPrivate<'s>, env: CallerEnv) {
+        let brand = if c.is_static { STATIC_BRAND } else { BRAND };
+        self.caller_slot(env, brand, c.reference.span.start);
+    }
+
+    /// (E9) `acc = ` the method, or the getter (undefined when there is none), of `#x`.
+    fn caller_method(&mut self, c: CallerPrivate<'s>, env: CallerEnv) {
+        let name = self.sa.name(c.reference.name).to_owned();
+        self.caller_slot(env, &name, c.reference.span.start);
+    }
+
+    /// (E9) `acc = ` the setter (undefined when there is none) of accessor `#x`.
+    fn caller_setter(&mut self, c: CallerPrivate<'s>, env: CallerEnv) {
+        let name = format!("{SETTER}{}", &self.sa.name(c.reference.name)[1..]);
+        self.caller_slot(env, &name, c.reference.span.start);
+    }
+
+    /// (E9) `acc = ` the key that marks an object as having the caller's `#x` (the field's
+    /// symbol, else the brand).
+    fn caller_key(&mut self, c: CallerPrivate<'s>) {
+        if c.kind == PrivateKind::Field {
+            self.load_ref(c.reference, false);
+        } else {
+            let env = self.caller_env(c);
+            self.caller_brand(c, env);
+        }
+    }
+
+    /// (E9) `acc = obj.#x` for a caller's `#x` (PrivateGet, §7.3.31).
+    fn caller_private_load(&mut self, c: CallerPrivate<'s>, obj: Register) {
+        let at = c.reference.span.start;
+        let m = self.mark();
+        if c.kind == PrivateKind::Field {
+            self.load_ref(c.reference, false);
+            let s = self.slot(FeedbackSlotKind::LoadKeyed);
+            self.expr_pos(at);
+            self.b.get_keyed_property(obj, s);
+        } else {
+            let env = self.caller_env(c);
+            self.caller_brand(c, env);
+            let s = self.slot(FeedbackSlotKind::LoadKeyed);
+            self.expr_pos(at);
+            self.b.get_keyed_property(obj, s);
+            self.caller_method(c, env);
+            if c.kind != PrivateKind::Method {
+                // A setter-only `#x` holds undefined: the call throws the TypeError.
+                let getter = self.temp();
+                self.b.star(getter);
+                let s = self.slot(FeedbackSlotKind::Call);
+                self.expr_pos(at);
+                self.b.call_property0(getter, obj, s);
+            }
+        }
+        self.release(m);
+    }
+
     /// `acc = ` the key that marks an object as having `#x`: the private name symbol of a
     /// field, else the class brand.
     fn private_key(&mut self, r: PrivateRef<'s>) -> Gen {
@@ -85,6 +213,10 @@ impl<'a, 's> FnGen<'a, 's> {
 
     /// `acc = obj.#x` (PrivateGet, §7.3.31) with the object already in `obj`.
     fn private_load(&mut self, field: &PrivateIdentifier<'_>, obj: Register) -> Gen {
+        if let Some(c) = self.caller_private(field)? {
+            self.caller_private_load(c, obj);
+            return Ok(());
+        }
         let r = self.private_ref(field)?;
         let at = field.span.start;
         match r.kind {
@@ -144,6 +276,9 @@ impl<'a, 's> FnGen<'a, 's> {
         &mut self,
         p: &'a PrivateFieldExpression<'a>,
     ) -> Gen<MemberRef> {
+        if let Some(c) = self.caller_private(&p.field)? {
+            return self.caller_member_ref(p, c);
+        }
         let r = self.private_ref(&p.field)?;
         let obj = self.private_object(p)?;
         match r.kind {
@@ -180,6 +315,44 @@ impl<'a, 's> FnGen<'a, 's> {
                 })
             }
         }
+    }
+
+    /// (E9) [`Self::private_member_ref`] for a caller's `#x`.
+    fn caller_member_ref(
+        &mut self,
+        p: &'a PrivateFieldExpression<'a>,
+        c: CallerPrivate<'s>,
+    ) -> Gen<MemberRef> {
+        let obj = self.private_object(p)?;
+        if c.kind == PrivateKind::Field {
+            let key = self.temp();
+            self.load_ref(c.reference, false);
+            self.b.star(key);
+            return Ok(MemberRef::Keyed { obj, key });
+        }
+        let env = self.caller_env(c);
+        let brand = self.temp();
+        self.caller_brand(c, env);
+        self.b.star(brand);
+        let get = self.temp();
+        self.caller_method(c, env);
+        self.b.star(get);
+        let set = if c.kind == PrivateKind::Method {
+            None
+        } else {
+            let set = self.temp();
+            self.caller_setter(c, env);
+            self.b.star(set);
+            Some(set)
+        };
+        Ok(MemberRef::PrivateBranded {
+            obj,
+            brand,
+            get,
+            set,
+            name: c.reference.name,
+            at: p.field.span.start,
+        })
     }
 
     /// GetValue of a `MemberRef::PrivateBranded`: the brand check, then the method, or the
@@ -271,6 +444,18 @@ impl<'a, 's> FnGen<'a, 's> {
 
     /// `#x in o` (§13.10.1): TestIn with the field's symbol or the class brand as the key.
     pub(crate) fn private_in(&mut self, p: &'a PrivateInExpression<'a>) -> Gen {
+        if let Some(c) = self.caller_private(&p.left)? {
+            let m = self.mark();
+            let obj = self.expr_to_temp(&p.right)?;
+            let key = self.temp();
+            self.caller_key(c);
+            self.b.star(key).ldar(obj);
+            let s = self.slot(FeedbackSlotKind::HasKeyed);
+            self.expr_pos(p.left.span.start);
+            self.b.test_in(key, s);
+            self.release(m);
+            return Ok(());
+        }
         let r = self.private_ref(&p.left)?;
         if r.kind == PrivateKind::Accessor {
             return self.unsupported("class auto-accessors", p.left.span);

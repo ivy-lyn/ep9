@@ -17,9 +17,8 @@
 //!   oxc_semantic (new_compiler) ---------- an error not in the allowed set --------> Syntax
 //!   post-checks: `arguments` in a field initializer; every #x declared here or in
 //!     EvalContext::private_names ------------------------------------------------> Syntax
-//!   super(...) allowed and present, a #x of the caller's class (an Annex B function in
-//!     sloppy eval goes on: E7) -------------------------------------------------> Unsupported
 //!   scope::analyze_eval (ScopeKind::Eval root; direct: free names Dynamic, indirect: Global)
+//!     + the kinds of the caller's private names (E9)
 //!   bytecodegen::generate (CodeKind::Eval; gen_eval_program)  --> VerifiedUnit
 //! ```
 //!
@@ -32,11 +31,11 @@
 //! | E3 | `new.target` and `super` are allowed only at the eval code's own function level (also inside arrows), never inside a function, method, field initializer or static block of the eval code | Those have their own `new.target` and home object; oxc reports nothing there when they are valid |
 //! | E4 | For indirect eval the context flags and `private_names` are ignored (treated as false and empty) | PerformEval: indirect eval is global code |
 //! | E5 | The completion value comes from an AST rewrite before oxc_semantic: value-producing statements store into the synthetic root binding `.result` (V8 `Rewriter`, src/parsing/rewriter.cc, ported statement by statement), and function 0 returns it. A function or class value is stored through a one-element sequence, so it gets no name | The statement generators (stmt.rs) have no completion register; the rewrite keeps the change inside this file. `eval("(function(){})").name` is `""` (node 24) |
-//! | E6 | `super()` in eval code is Unsupported in P2 | `super_call` (expr.rs) needs a static `this` binding; the caller's `this` is only reachable by name (C4) |
+//! | E6 | (M3-P4) `super()` in eval code (allowed only when the caller's receiver function is a derived constructor: PerformEval step 10.b.iv inDerivedConstructor, also through arrows and nested eval) reaches the caller's `.callee`, `new.target` and `this` slots by name: `super_call` (expr.rs) binds `this` with `StaLookupSlot "this"`, which the VM runs as BindThisValue, and then always calls `RunClassFieldsInitializer`. Before M3-P4 it was Unsupported | No new id or opcode (ABI 5): no source text can store to `this`, so the store to that name was free to define (slow/lookup.rs) |
 //! | E7 | (M3-P2 VM-ARGS) An Annex B.3.2.3 block function of sloppy eval code: the prologue calls `DeclareEvalAnnexBFunction(name)` (ABI 5 id 46) after the eval code's own declarations and keeps its answer in a register; the declaration, when it runs, calls `StoreEvalAnnexBFunction(name, f)` (id 47) if the answer was true (`gen_eval_program`, `store_annex_b_var`). A var binding that only Annex B made gets no `DeclareEvalVar` | Whether it gets a var binding depends on the caller's environments at run time (B.3.2.3 steps ii.2.a-f): the VM decides it (`interp/slow/eval.rs`). Before M3-P2 this was Unsupported |
 //! | E7-ORDER | (M3-P2, RV2-ARGS1) The E7 Annex B bindings are declared after the eval code's own function and var bindings, in V8's order. The spec runs the B.3.2.3 steps at EvalDeclarationInstantiation step 13, before steps 17-18. Only the order of new global properties differs: `var aa1; { function bb1() {} } function cc1() {}` adds cc1, aa1, bb1 (spec: bb1, cc1, aa1; node v24.22.1: aa1, cc1, bb1) | Node is the oracle (plan rule): bb1 comes last, as in V8. The names never overlap, so no binding and no error changes |
 //! | E8 | Lone surrogates never reach this function in M0 (the hook takes `&str`) | D8: the shim is milestone-M3 work (01-front-end.md:159) |
-//! | E9 | A `#x` that only the caller's class declares (`EvalContext::private_names`) is Unsupported in P2; the scope pass still resolves it `Dynamic` | The private-name codegen (bytecodegen/private.rs) needs a static binding; without this check such code would reach it as an internal error. The check goes when private.rs gets a by-name path (P3-EVAL-VM) |
+//! | E9 | (M3-P4) A `#x` that only the caller's class declares (`EvalContext::private_names`) resolves `Dynamic` in the scope pass; BytecodeGen compiles it by its kind from the `EvalContext` lists (`ScopeAnalysis::caller_private`; bytecodegen/private.rs `caller_private`): a field by `LdaLookupSlot "#x"` (the key), a method or accessor by the slots of the `#x` class context (`ResolveLookupSlot` once, then `LoadLookupSlotResolved` of `#x`, the brand and `#.set-x`). Before M3-P4 it was Unsupported | No new id or opcode (ABI 5). The kind is not in the unit's slot modes (all `const`), so the scope pass adds kind marker slots to a class whose body holds a direct eval (scope/collect.rs `private_kind_markers`), and the VM reads them (ep9_bytecode `eval_context.rs`) |
 
 use ep9_bytecode::{EvalContext, VerifiedUnit};
 use oxc_allocator::{Allocator, CloneIn, GetAllocator, TakeIn};
@@ -53,8 +52,8 @@ use oxc_parser::{ParseOptions, Parser};
 use oxc_semantic::{ScopeFlags, SemanticBuilder};
 use oxc_span::{GetSpan, SPAN, SourceType, Span};
 
-use crate::bytecodegen::{self, CodegenError, CompileOptions, EVAL_RESULT, Unsupported};
-use crate::scope::{self, EvalKind};
+use crate::bytecodegen::{self, CodegenError, CompileOptions, EVAL_RESULT};
+use crate::scope::{self, EvalKind, PrivateKind};
 use crate::{
     AST_CAP, ByteSpan, CompileError, DepthLayer, EarlyErrors, FrontEnd, Goal, LineMap, PRESCAN_CAP,
     RangeError, RangeErrorKind, SourceOpts, Strictness, SyntaxError,
@@ -71,8 +70,7 @@ use crate::{
 /// # Errors
 ///
 /// See [`CodegenError`]: early errors (also the eval-only ones of PerformEval), depth limits,
-/// and [`CodegenError::Unsupported`] for `super()` in eval code, for a `#x` of the caller's
-/// class, and for every construct that BytecodeGen v0 does not support.
+/// and [`CodegenError::Unsupported`] for every construct that BytecodeGen v0 does not support.
 pub fn compile_eval(
     source: &str,
     ctx: &EvalContext,
@@ -113,11 +111,37 @@ struct Allow {
     /// Without the `#`. The synthetic names of class codegen (`.brand`, ...) are left out:
     /// no source text can spell them.
     private_names: Vec<String>,
+    /// (E9) The kind of each private name: `Method`, `GetterSetter` (any accessor) or
+    /// `Field`, and whether it is static (`EvalContext::private_methods` and friends).
+    private_kinds: Vec<(PrivateKind, bool)>,
 }
 
 impl Allow {
     fn from_context(ctx: &EvalContext) -> Self {
         let d = ctx.direct;
+        let private_names: Vec<String> = if d {
+            ctx.private_names
+                .iter()
+                .filter(|n| !n.starts_with('.'))
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let listed = |list: &[String], name: &str| list.iter().any(|n| n == name);
+        let private_kinds = private_names
+            .iter()
+            .map(|n| {
+                let kind = if listed(&ctx.private_accessors, n) {
+                    PrivateKind::GetterSetter
+                } else if listed(&ctx.private_methods, n) {
+                    PrivateKind::Method
+                } else {
+                    PrivateKind::Field
+                };
+                (kind, listed(&ctx.private_static, n))
+            })
+            .collect();
         Self {
             direct: d,
             strict: ctx.strict,
@@ -125,20 +149,22 @@ impl Allow {
             super_property: d && ctx.super_property_ok,
             super_call: d && ctx.super_call_ok,
             in_class_field_init: d && ctx.in_class_field_init,
-            private_names: if d {
-                ctx.private_names
-                    .iter()
-                    .filter(|n| !n.starts_with('.'))
-                    .cloned()
-                    .collect()
-            } else {
-                Vec::new()
-            },
+            private_names,
+            private_kinds,
         }
     }
 
     fn private_name_ok(&self, name: &str) -> bool {
         self.private_names.iter().any(|n| n == name)
+    }
+
+    /// The caller's private names for BytecodeGen (E9): `#x`, kind, static.
+    fn caller_private(&self) -> Vec<(Box<str>, PrivateKind, bool)> {
+        self.private_names
+            .iter()
+            .zip(&self.private_kinds)
+            .map(|(n, &(kind, is_static))| (format!("#{n}").into_boxed_str(), kind, is_static))
+            .collect()
     }
 }
 
@@ -203,17 +229,7 @@ fn on_worker<R>(
             return Err(syntax(source, kept.into_iter()));
         }
     }
-    let caller_private = post_checks(source, program, allow)?;
-    if let Some(&call) = allowed.super_calls.first() {
-        return Err(unsupported(source, "super() in eval code", call));
-    }
-    if let Some(at) = caller_private {
-        return Err(unsupported(
-            source,
-            "a private name of the caller's class in eval code",
-            at,
-        ));
-    }
+    post_checks(source, program, allow)?;
 
     let strictness = if allow.strict {
         Strictness::Strict
@@ -232,7 +248,8 @@ fn on_worker<R>(
     } else {
         EvalKind::Indirect
     };
-    let analysis = scope::analyze_eval(&fe, kind)?;
+    let mut analysis = scope::analyze_eval(&fe, kind)?;
+    analysis.set_caller_private(allow.caller_private());
     codegen(&fe, &analysis)
 }
 
@@ -260,14 +277,6 @@ fn syntax_at(source: &str, message: String, span: Span) -> CodegenError {
             position: Some(LineMap::new(source.as_bytes()).position(span.start)),
         }],
     }))
-}
-
-fn unsupported(source: &str, feature: &'static str, span: Span) -> CodegenError {
-    CodegenError::Unsupported(Unsupported {
-        feature,
-        span: ByteSpan::of(span),
-        position: LineMap::new(source.as_bytes()).position(span.start),
-    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -311,8 +320,6 @@ impl AllowKind {
 struct Allowed {
     /// Sorted, deduplicated `(start, end, kind)`.
     spans: Vec<(u32, u32, AllowKind)>,
-    /// The allowed `super(...)` calls (E6).
-    super_calls: Vec<Span>,
 }
 
 impl Allowed {
@@ -432,7 +439,6 @@ impl<'a> Visit<'a> for AllowWalk<'_> {
         if matches!(it.callee, Expression::Super(_)) {
             if self.functions == 0 && self.allow.super_call {
                 self.add(it.span, AllowKind::SuperCall);
-                self.out.super_calls.push(it.span);
             }
             self.visit_arguments(&it.arguments);
             return;
@@ -458,22 +464,17 @@ impl<'a> Visit<'a> for AllowWalk<'_> {
 // ---------------------------------------------------------------------------------------------
 // Post-checks (PerformEval steps 10-11 and AllPrivateIdentifiersValid)
 
-/// The checks; `Ok` holds the first `#x` that only the caller's class declares (E9).
-fn post_checks(
-    source: &str,
-    program: &Program<'_>,
-    allow: &Allow,
-) -> Result<Option<Span>, CodegenError> {
+/// The checks. A `#x` that only the caller's class declares passes (E9).
+fn post_checks(source: &str, program: &Program<'_>, allow: &Allow) -> Result<(), CodegenError> {
     let mut walk = PostWalk {
         allow,
         functions: 0,
         classes: Vec::new(),
         error: None,
-        caller_private: None,
     };
     walk.visit_program(program);
     match walk.error {
-        None => Ok(walk.caller_private),
+        None => Ok(()),
         Some((message, span)) => Err(syntax_at(source, message, span)),
     }
 }
@@ -486,8 +487,6 @@ struct PostWalk<'s> {
     classes: Vec<Vec<String>>,
     /// The first error (source order of the walk).
     error: Option<(String, Span)>,
-    /// The first `#x` that only the caller's class declares (E9).
-    caller_private: Option<Span>,
 }
 
 impl PostWalk<'_> {
@@ -498,17 +497,15 @@ impl PostWalk<'_> {
     }
 
     fn private_ref(&mut self, name: &str, span: Span) {
-        if self.classes.iter().any(|c| c.iter().any(|n| n == name)) {
+        if self.classes.iter().any(|c| c.iter().any(|n| n == name))
+            || self.allow.private_name_ok(name)
+        {
             return;
         }
-        if self.allow.private_name_ok(name) {
-            self.caller_private.get_or_insert(span);
-        } else {
-            self.fail(
-                format!("Private field '#{name}' must be declared in an enclosing class"),
-                span,
-            );
-        }
+        self.fail(
+            format!("Private field '#{name}' must be declared in an enclosing class"),
+            span,
+        );
     }
 }
 
@@ -916,18 +913,14 @@ mod tests {
                 "syntax: 'super' can only be referenced in members of derived classes or object \
                  literal expressions.",
             ),
-            ("super()", &derived, "unsupported: super() in eval code"),
+            ("super()", &derived, "ok"),
             (
                 "super()",
                 &method,
                 "syntax: Super calls are not permitted outside constructors or in nested \
                  functions inside constructors.",
             ),
-            (
-                "this.#x",
-                &private,
-                "unsupported: a private name of the caller's class in eval code",
-            ),
+            ("this.#x", &private, "ok"),
             (
                 "this.#x",
                 &direct(),
@@ -1110,8 +1103,8 @@ mod tests {
             private_names: vec!["x".to_owned(), ".brand".to_owned()],
             ..direct()
         };
-        // E9: a caller name passes the checks and then is Unsupported.
-        let caller = "unsupported: a private name of the caller's class in eval code";
+        // E9: a caller name passes the checks.
+        let caller = "ok";
         assert_eq!(outcome("#x in this", &names), caller);
         assert_eq!(outcome("this?.#x", &names), caller);
         assert_eq!(
@@ -1122,7 +1115,7 @@ mod tests {
             outcome("class C { #y; m() { return this.#y } }", &names),
             "ok"
         );
-        // A syntax error wins over E9.
+        // A name that neither the caller nor a class of the eval code declares.
         assert_eq!(
             outcome("this.#x; class C { m() { this.#y } }", &names),
             "syntax: Private field '#y' must be declared in an enclosing class"
@@ -1143,6 +1136,49 @@ mod tests {
         assert!(
             outcome("class C extends (this.#z, Object) { #z }", &names).starts_with("syntax: ")
         );
+    }
+
+    /// E9: a `#x` of the caller's class is compiled by its kind from the `EvalContext`: a
+    /// field reads its key by name; a method or accessor resolves the `#x` class context once
+    /// and reads the brand (static or not), the method or getter and the setter from it.
+    #[test]
+    fn caller_private_names_are_read_by_name() {
+        let ctx = EvalContext {
+            private_names: ["f", "m", "s", "a"].map(str::to_owned).to_vec(),
+            private_methods: vec!["m".to_owned(), "s".to_owned()],
+            private_accessors: vec!["a".to_owned()],
+            private_static: vec!["s".to_owned()],
+            in_method: true,
+            strict: true,
+            ..direct()
+        };
+        let named = |text: &str, op: &str, name: &str| {
+            text.lines()
+                .any(|l| l.contains(op) && l.contains(&format!("\"{name}\"")))
+        };
+        let text = disasm("this.#f", &ctx);
+        assert!(named(&text, "LdaLookupSlot", "#f"), "{text}");
+        assert!(text.contains("GetKeyedProperty"), "{text}");
+        assert!(!text.contains("ResolveLookupSlot"), "{text}");
+        let text = disasm("this.#m()", &ctx);
+        assert!(text.contains("CallRuntime ResolveLookupSlot"), "{text}");
+        for name in ["#.brand", "#m"] {
+            assert!(named(&text, "LdaConstant", name), "{name} in\n{text}");
+        }
+        assert!(
+            text.contains("CallRuntime LoadLookupSlotResolved"),
+            "{text}"
+        );
+        let text = disasm("#s in this", &ctx);
+        assert!(named(&text, "LdaConstant", "#.static-brand"), "{text}");
+        assert!(text.contains("TestIn"), "{text}");
+        let text = disasm("this.#a = this.#a + 1", &ctx);
+        for name in ["#.brand", "#a", "#.set-a"] {
+            assert!(named(&text, "LdaConstant", name), "{name} in\n{text}");
+        }
+        // A class of the eval code declares its own `#f`: a static binding.
+        let text = disasm("class C { #f; g() { return this.#f } }", &ctx);
+        assert!(!named(&text, "LdaLookupSlot", "#f"), "{text}");
     }
 
     #[test]
@@ -1208,6 +1244,46 @@ mod tests {
             !text.contains("DeclareEval") && !text.contains("LookupSlot"),
             "{text}"
         );
+    }
+
+    /// E6: `super()` in direct eval code reads `.callee` and `new.target` by name, binds
+    /// `this` with `StaLookupSlot "this"` (BindThisValue in the VM), then always calls
+    /// `RunClassFieldsInitializer` and leaves `this` in the accumulator. Also from an arrow of
+    /// the eval code.
+    #[test]
+    fn super_call_binds_this_by_name() {
+        let derived = EvalContext {
+            in_method: true,
+            in_derived_ctor: true,
+            super_property_ok: true,
+            super_call_ok: true,
+            ..direct()
+        };
+        for src in ["super(1, 2)", "(() => super(...[1]))()"] {
+            let text = disasm(src, &derived);
+            let at = |what: &str| text.find(what).unwrap_or_else(|| panic!("{what}: {text}"));
+            assert!(at("LdaLookupSlot k") < at("GetSuperConstructor"), "{text}");
+            assert!(
+                text.lines()
+                    .any(|l| l.contains("LdaLookupSlot") && l.contains("\".callee\"")),
+                "{text}"
+            );
+            assert!(
+                text.lines()
+                    .any(|l| l.contains("LdaLookupSlot") && l.contains("\"new.target\"")),
+                "{text}"
+            );
+            let bind = text
+                .lines()
+                .position(|l| l.contains("StaLookupSlot") && l.contains("\"this\""))
+                .unwrap_or_else(|| panic!("no StaLookupSlot this: {text}"));
+            let fields = text
+                .lines()
+                .position(|l| l.contains("CallRuntime RunClassFieldsInitializer"))
+                .unwrap_or_else(|| panic!("no initializer call: {text}"));
+            assert!(bind < fields, "{text}");
+            assert!(!text.contains("ThrowSuperAlreadyCalledIfNotHole"), "{text}");
+        }
     }
 
     /// The caller's `this`, `new.target`, home object and `arguments` are found by name in

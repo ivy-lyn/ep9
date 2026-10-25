@@ -787,6 +787,55 @@ fn uncaptured_this_and_home_object_stay_in_the_frame() {
 
 // Classes.
 
+/// E9 (M3-P4): a class whose body (or heritage) holds a direct eval gets one kind marker slot
+/// per private method and static accessor, in its class context; a class without a direct
+/// eval, and a field or an instance accessor, gets none.
+#[test]
+fn private_kind_markers_only_with_a_direct_eval() {
+    let src = |body: &str| {
+        format!(
+            "class C {{ #f; static #sf; #m() {{}} static #s() {{}} get #a() {{}} set #a(v) {{}}
+               static get #g() {{}} {body} }}"
+        )
+    };
+    let markers = |a: &ScopeAnalysis| {
+        let mut v: Vec<String> = (0..a.bindings().len())
+            .map(BindingId::of)
+            .map(|b| a.name(a.binding(b).name).to_owned())
+            .filter(|n| {
+                n.starts_with("#.method-")
+                    || n.starts_with("#.static-method-")
+                    || n.starts_with("#.static-accessor-")
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    for body in [
+        "x() { eval('1'); }",
+        "static { () => eval('1'); }",
+        "[eval('k')] = 1;",
+    ] {
+        let a = script(&src(body));
+        assert_eq!(
+            markers(&a),
+            ["#.method-m", "#.static-accessor-g", "#.static-method-s"],
+            "{body}\n{a}"
+        );
+        let class_scope = a
+            .scopes()
+            .iter()
+            .find(|s| s.kind == ScopeKind::Class)
+            .unwrap();
+        for name in ["#.method-m", "#.static-method-s", "#.static-accessor-g"] {
+            assert_eq!(ctx(&a, name).0, class_scope.id, "{name}");
+        }
+    }
+    for body in ["x() { (0, eval)('1'); }", "x() { new Function(''); }", ""] {
+        assert!(markers(&script(&src(body))).is_empty(), "{body}");
+    }
+}
+
 #[test]
 fn class_scopes_private_names_and_synthetic_functions() {
     let a = script(

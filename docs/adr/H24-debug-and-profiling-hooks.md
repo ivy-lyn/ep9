@@ -63,7 +63,7 @@ Copied from the plan row: lazy position tables, kept ScopeInfo, a debug bytecode
 
 ## Validation
 
-- M0: the `ep9_vm` and bytecodegen checks above; Spike B checks (c) and (d) in the CI step "Spike B structural gate" on all 4 runners (macOS arm64, Linux x64, Linux arm64, Windows x64; no check is skipped on Windows, `.github/workflows/ci.yml:496-502`).
+- M0: the `ep9_vm` and bytecodegen checks above; Spike B checks (c) and (d) in the CI step "Spike B structural gate" on all 4 runners (macOS arm64, Linux x64, Linux arm64, Windows x64; no check is skipped on Windows, `.github/workflows/ci.yml:497-503`).
 - M4: CDP Debugger tests per mode. M6: the sampler walks mixed T0, JIT and Rust stacks. A2: unit maps.
 
 ## Open questions
@@ -100,6 +100,7 @@ Copied from the plan row: lazy position tables, kept ScopeInfo, a debug bytecode
 | 2026-10-25 | clarify | Review record for the M3-P3 clarify rows (c3d7f70 and cbef98b): rows 1-4 (row 3 by the M3-P3 clarify row-3 verifier: each moved ref names the same line text at the commit that wrote the old ref and at the new commit) and two Approval rows: the cbef98b row Approved (Codex fix2-gates holds it); the c3d7f70 row Pending (no Codex run holds it; M3-P0-ADRLINE-ACCEPTED). No text outside the record changes; no check changes | M3-P3 records writer |
 | 2026-10-25 | clarify | Review record for the M3-P3 clarify row of c3d7f70: a row-2 addendum (Codex round 4, docs-wf2 slice, 8ef7da2..2178586, holds c3d7f70; its 3 findings are on H20, none on this ADR) and a row-3 addendum by the second M3-P3 records writer (nothing to sort; the moved ref still names the same text at 3f20289). The c3d7f70 Approval row stays **Pending** for the orchestrator; its Result cell now says what the record holds. No text outside the record changes; no check changes | second M3-P3 records writer |
 | 2026-10-25 | clarify | Review record: the Approval row of the M3-P3 clarify row c3d7f70 goes from Pending to **Approved** (orchestrator, 2026-10-25, M3-P3-APPROVE-CLARIFY; it wrote none of these rows). Rows 1-4 are present, and row 2 has Codex round 4, docs-wf2 slice, with no finding on this ADR. No text outside the record changes; no check changes | M3-P3 records3 accept writer |
+| 2026-10-25 | clarify (proposed; Accepted path) | 1 `path:line` reference moved to the code after M3-P4 fix round 1 (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS): `.github/workflows/ci.yml` 496-502 -> 497-503 (the Spike B structural gate step); the comment of the test262 exec step gained 1 line (3c6e0dd, RF1-1). It names the same item at the new line. No text outside the reference changes; no check changes | M3-P4 orchestrator, merge of m0m3/p4-eval |
 
 ## Review record
 

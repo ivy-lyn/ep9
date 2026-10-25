@@ -204,6 +204,7 @@ impl<'a> Builder<'a> {
             implicit: self.implicit,
             function_at: self.function_at,
             synthetic_blocks: self.synthetic_blocks,
+            caller_private: Vec::new(),
         }
     }
 
@@ -215,6 +216,49 @@ impl<'a> Builder<'a> {
         self.names.push(text.into());
         self.name_ids.insert(text, id);
         id
+    }
+
+    /// (M3-P4, E9) The kind markers of a class whose body (or heritage) holds a direct eval:
+    /// eval code can use the class's private names, and the VM tells it their kinds from the
+    /// class scope's slot names (ep9_bytecode `eval_context.rs`). One marker slot per private
+    /// method (`#.method-x`, `#.static-method-x`) and per static accessor
+    /// (`#.static-accessor-x`); an instance accessor has its setter slot `#.set-x`, and a field
+    /// has none. The slots hold nothing. A class without a direct eval gets no marker, so its
+    /// code does not change.
+    fn private_kind_markers(&mut self, class_scope: ScopeId) {
+        let mut markers = Vec::new();
+        for &b in &self.scopes[class_scope.index()].bindings {
+            let binding = &self.bindings[b.index()];
+            let BindingKind::PrivateName { kind, is_static } = binding.kind else {
+                continue;
+            };
+            let name = &self.names[binding.name.index()];
+            if name.starts_with("#.") {
+                continue;
+            }
+            let prefix = match (kind, is_static) {
+                (PrivateKind::Method, false) => "#.method-",
+                (PrivateKind::Method, true) => "#.static-method-",
+                (PrivateKind::Getter | PrivateKind::Setter | PrivateKind::GetterSetter, true) => {
+                    "#.static-accessor-"
+                }
+                _ => continue,
+            };
+            markers.push((format!("{prefix}{}", &name[1..]), is_static));
+        }
+        for (text, is_static) in markers {
+            let id = NameId::of(self.names.len());
+            self.names.push(text.into_boxed_str());
+            self.declare(
+                class_scope,
+                id,
+                BindingKind::PrivateName {
+                    kind: PrivateKind::Method,
+                    is_static,
+                },
+                None,
+            );
+        }
     }
 
     fn private_name(&mut self, text: &'a str) -> NameId {
@@ -1093,6 +1137,7 @@ impl<'a> Visit<'a> for Builder<'a> {
         let saved_strict = self.strict;
         self.cur_scope = class_scope;
         self.strict = true;
+        let eval_sites_before = self.eval_sites.len();
         if let Some(heritage) = &it.heritage {
             // The heritage stays in the class scope (the inner name is in its TDZ there, and
             // the class context is on the runtime chain), but its private names are the outer
@@ -1130,12 +1175,16 @@ impl<'a> Visit<'a> for Builder<'a> {
         }
 
         // Synthetic class-context bindings (P2-CLS-CG, D2). Their names start with `#.`, which
-        // no source can spell, so codegen finds them by name in the class scope and a direct
-        // eval never sees them. Like every private name they live in the class context.
+        // no source can spell, so codegen finds them by name in the class scope, and eval code
+        // cannot name them (its generated code reads the first three by name: E9). Like every
+        // private name they live in the class context.
         //   #.brand          instance brand (any instance private method or accessor)
         //   #.static-brand   static brand (any static private method or accessor)
         //   #.set-x          the setter of private accessor `#x` (`#x` holds the getter)
         //   #.class-field-N  the key of the N-th computed field, after ToPropertyKey
+        //   #.method-x, #.static-method-x, #.static-accessor-x
+        //                    kind markers, only with a direct eval in the class
+        //                    (`private_kind_markers`, after the body)
         fn synthetic_name(names: &mut Vec<Box<str>>, text: String) -> NameId {
             let id = NameId::of(names.len());
             names.push(text.into_boxed_str());
@@ -1321,6 +1370,9 @@ impl<'a> Visit<'a> for Builder<'a> {
             .flatten()
         {
             self.finish_function(f);
+        }
+        if self.eval_sites.len() > eval_sites_before {
+            self.private_kind_markers(class_scope);
         }
         self.scopes[class_scope.index()].class = Some(ClassInfo {
             derived,

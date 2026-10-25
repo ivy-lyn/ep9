@@ -26,6 +26,7 @@
 //! | `strict` | `ScopeFlags::STRICT` of the `scope` operand: the unit scope at the call site, so class code inside a sloppy function is strict (M2-P2-L6) |
 //! | `in_function`, `in_method`, `in_derived_ctor`, `in_class_field_init` (and the `*_ok` flags) | the kind of the `function` operand's unit function, past arrows along `parent` (GetThisEnvironment). Function 0 of a script or module: global code, all false. Function 0 of eval code: the flags the eval unit was compiled with (`LoadedUnit::eval_receiver`, set from the caller's `EvalContext` by `direct_eval`; all false for indirect eval), so a class field initializer's `in_class_field_init` holds through nested eval |
 //! | `private_names` | the `#x` slots of the Class scopes on the `scope` operand's `outer` chain (without the `#`), and for eval code also those of the Class scope contexts on the runtime chain past the eval unit's own contexts |
+//! | `private_methods`, `private_accessors`, `private_static` (E9, M3-P4) | the kind of each of those names, from the slot names of the class scope that gives it (`add_private_names`) |
 //!
 //! EvalDeclarationInstantiation (§19.2.1.3) is split over the two runtime ids, one name per
 //! call (the order of `functionsToInitialize`, then the var names). The spec checks every name
@@ -34,13 +35,14 @@
 //! (`gen_eval_program`: `LdaConstant name; Star r; CallRuntime DeclareEval*, r..`, straight-line
 //! code before the body) and checks every name; then each call creates its own binding.
 //!
-//! Not built yet (needs ABI 5): step 3.d over the parameter environment of a sloppy function
-//! with parameter expressions. FunctionDeclarationInstantiation step 20 puts its parameters in
-//! an environment of their own, between an eval in the parameters and the variable
-//! environment, so `function f(a = eval('var a')) {}` is a SyntaxError. The front end merges
-//! that environment into the function's var scope, and no unit field tells this scope from
-//! the one of `function f({a}) { eval('var a'); { let z } }` (same scopes, same flags), where
-//! the var is allowed. So such a var or function name is not a conflict here.
+//! Step 3.d over the parameter environment (M3-P4, D3d). FunctionDeclarationInstantiation
+//! step 20 puts the parameters of a sloppy function with parameter expressions in an
+//! environment of their own, between an eval in the parameters and the variable environment,
+//! so `function f(a = eval('var a')) {}` is a SyntaxError. The front end merges that
+//! environment into the function's var scope and marks the scope with the ABI 5
+//! `ScopeFlags::PARAMETER_ENV`: there every slot of the name (a parameter, or the `arguments`
+//! binding of step 22) is a conflict. `function f({a}) { eval('var a') }` has no such bit,
+//! and the var is allowed.
 
 use std::collections::HashSet;
 
@@ -93,21 +95,39 @@ fn slot_name<'u>(u: &'u LoadedUnit, scope: &ep9_bytecode::Scope, i: usize) -> Op
 }
 
 /// Adds the private names of a Class scope (`#x` slots, without the `#`; the synthetic
-/// `#.brand`-style names are left out: no source text can spell them).
-fn add_private_names(u: &LoadedUnit, scope: &ep9_bytecode::Scope, out: &mut Vec<String>) {
+/// `#.brand`-style names are left out: no source text can spell them) that an inner class
+/// does not already give, and their kinds (E9, M3-P4): `#.set-x` makes `x` an accessor,
+/// `#.method-x` or `#.static-method-x` a method, and `#.static-method-x` or
+/// `#.static-accessor-x` static (the scope pass's kind markers, ep9_bytecode
+/// `eval_context.rs`); any other name is a field.
+fn add_private_names(u: &LoadedUnit, scope: &ep9_bytecode::Scope, ctx: &mut EvalContext) {
     if scope.kind != ScopeKind::Class {
         return;
     }
-    for i in 0..scope.slots.len() {
-        let text = match &u.unit.strings[scope.slots[i].name.index()] {
+    let texts: Vec<String> = scope
+        .slots
+        .iter()
+        .map(|slot| match &u.unit.strings[slot.name.index()] {
             UnitString::Latin1(b) => b.iter().map(|&c| char::from(c)).collect::<String>(),
             UnitString::Utf16(w) => String::from_utf16_lossy(w),
+        })
+        .collect();
+    let has = |prefix: &str, name: &str| texts.iter().any(|t| t.strip_prefix(prefix) == Some(name));
+    for text in &texts {
+        let Some(name) = text.strip_prefix('#') else {
+            continue;
         };
-        if let Some(name) = text.strip_prefix('#')
-            && !name.starts_with('.')
-            && !out.iter().any(|n| n == name)
-        {
-            out.push(name.to_owned());
+        if name.starts_with('.') || ctx.private_names.iter().any(|n| n == name) {
+            continue;
+        }
+        ctx.private_names.push(name.to_owned());
+        if has("#.set-", name) {
+            ctx.private_accessors.push(name.to_owned());
+        } else if has("#.method-", name) || has("#.static-method-", name) {
+            ctx.private_methods.push(name.to_owned());
+        }
+        if has("#.static-method-", name) || has("#.static-accessor-", name) {
+            ctx.private_static.push(name.to_owned());
         }
     }
 }
@@ -161,7 +181,7 @@ fn eval_context(cx: &mut Cx, fp: *mut u64, function: u64, scope: u64) -> Res<Eva
     // The static scope chain of the site, in its own unit.
     let mut s = Some(site);
     while let Some(sc) = s {
-        add_private_names(u, sc, &mut ctx.private_names);
+        add_private_names(u, sc, &mut ctx);
         s = sc.outer.and_then(|o| unit.scopes.get(o.index()));
     }
     // GetThisEnvironment: the nearest function that is not an arrow.
@@ -207,7 +227,7 @@ fn outer_private_names(
         poll(cx)?;
         let (cu, scope) = object::context_scope(c);
         if !core::ptr::eq(cu, u) {
-            add_private_names(cu, scope, &mut ctx.private_names);
+            add_private_names(cu, scope, ctx);
         }
         c = object::context_previous(c);
     }
@@ -310,9 +330,11 @@ fn var_env(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<VarEnv> {
         }
         if is_var_scope(u, scope) {
             // The var scope itself: its lexical slots conflict too (a function's top-level
-            // `let` shares the scope with its vars).
+            // `let` shares the scope with its vars). With `PARAMETER_ENV`, the scope also
+            // holds the parameter environment (step 3.d passes it before the variable
+            // environment): every slot of `name` conflicts, as in `annex_b_env`.
             if let Some((_, mode)) = slot_of(c, name)
-                && is_lexical(mode)
+                && (is_lexical(mode) || scope.flags.contains(ScopeFlags::PARAMETER_ENV))
             {
                 return Err(redeclared(cx, name));
             }

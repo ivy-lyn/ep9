@@ -139,6 +139,9 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
     if opts.print_bytecode {
         println!("{}", ep9_bytecode::disassemble(&unit));
     }
+    // `--facts-out`: the content hash names the unit in the isolate after the run (the unit
+    // moves into the run).
+    let facts_unit = opts.facts_out.as_ref().map(|_| unit.content_hash());
     let config = IsolateConfig {
         heap: HeapConfig {
             gc_stress: opts.gc_stress,
@@ -190,6 +193,21 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
         }
         _ => status,
     };
+    let status = match (&opts.facts_out, &facts_unit) {
+        (Some(path), Some(hash)) => match write_facts(&isolate, hash, path) {
+            Ok(()) => status,
+            Err(msg) => {
+                eprintln!("ep9: {msg}");
+                // The run's own error comes first.
+                if status == EXIT_OK {
+                    EXIT_USAGE
+                } else {
+                    status
+                }
+            }
+        },
+        _ => status,
+    };
     if opts.gc_stats {
         let st = isolate.gc_stats();
         eprintln!(
@@ -208,6 +226,19 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
         }
     }
     status
+}
+
+/// `--facts-out` (H16-Q5, M3-P4 FIXES): the facts of the loaded unit `hash` (the script, or
+/// the entry module; an imported module is another unit) from `ep9_vm::abi::export_facts`, in
+/// the canonical FactSnapshot v0 encoding (`ep9_facts`), written to `path`. The bytes depend
+/// only on the program and what it did. A function that ran fewer times than
+/// `--feedback-threshold` has no feedback vector and no record. Runs after the final
+/// checkpoint, so the facts include what the jobs did. Not a GC point; runs no JS.
+fn write_facts(isolate: &Isolate, hash: &[u8; 32], path: &std::path::Path) -> Result<(), String> {
+    let facts =
+        ep9_vm::abi::export_facts(isolate, hash).map_err(|e| format!("--facts-out: {e}"))?;
+    std::fs::write(path, facts.encode())
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
 // ---- the file loader for `--module` (M3-P2 MODULE) ------------------------------------------

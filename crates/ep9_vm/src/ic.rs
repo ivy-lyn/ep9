@@ -59,15 +59,19 @@
 //!   [`init_vector`] checks this for every vector and makes a shared slot megamorphic.
 //! - The miss path computes the case before the generic operation (no GC point, no JS), runs
 //!   the operation, and records the case only if the operation succeeded. An add-property
-//!   case is checked against the shape the operation produced.
+//!   case is checked against the shape the operation produced. A global case gives the
+//!   operation itself when it is a field: a load reads through it ([`global_case_value`]), a
+//!   store writes through it ([`store_global_miss`]), so the miss scans each table once.
 
 use core::cell::Cell;
 
 use ep9_bytecode::{Instructions, Opcode, OperandKind};
 use ep9_heap::{CellKind, CellPtr, CellSize, Heap, Tracer};
 
+use crate::error::FrameRef;
 use crate::feedback;
 use crate::frame::{HOLE, NULL, UNDEFINED, int32_bits, int32_of};
+use crate::interp::{Cx, slow};
 use crate::key;
 use crate::kinds::{self as kind, is_cell_bits};
 use crate::object::{self, arr, attr, cell, init, obj, rd, rd_i32};
@@ -827,10 +831,78 @@ pub(crate) fn global_case_value(rt: &Runtime, case: &Case) -> Option<u64> {
     (v != HOLE).then_some(v)
 }
 
+/// The store form of [`global_case_value`] (M2-P5-PLAN-D8): stores `v` through a global store
+/// case, at the location that the lookup of the case found, with the barriered store of the
+/// hit path ([`store_global`]): a writable lexical binding outside its TDZ, or a writable own
+/// data property of the global object. False for a `SLOW` case and for the hole of a TDZ;
+/// nothing is stored then. Not a GC point.
+fn global_case_store(rt: &Runtime, case: &Case, v: u64) -> bool {
+    let (o, location) = match case.handler {
+        Handler::Smi(h) => (rt.root(Root::Lexical), int32_of(h)),
+        Handler::Global { location, .. } => (rt.global(), location),
+        _ => return false,
+    };
+    // `SLOW` is not a field handler (`field_ref` gives `None`).
+    let Some((c, off)) = field_ref(o, location) else {
+        return false;
+    };
+    if rd(c, off) == HOLE {
+        return false;
+    }
+    object::wr(&rt.heap, c, off, v);
+    true
+}
+
+/// `StaGlobal` (0x12) after an IC miss in a function that has a feedback vector (M2-P5-PLAN-D8,
+/// the store side of W4-P1-GLOBAL-ONE-SCAN; T0's cold arm sends a miss with no vector straight
+/// to `slow::store_global`). The miss checks the entry ([`skip_global_miss`]) and computes the
+/// case ([`global_case`]) once. When the case is a writable field outside a TDZ, `name = v` is
+/// stored through it ([`global_case_store`]) and the case is recorded in slot `slot`: a
+/// recording miss scans the lexical record's table and the global object's table once each,
+/// not twice. Every other miss runs the generic store with that check and that case
+/// (`slow::store_global_with`; P4F-R1: it does not compute them again): an entry that needs no
+/// case, or a case that is not a writable field outside a TDZ (`SLOW`: a `const`, an accessor,
+/// a read-only or dictionary-mode global; none: an inherited or a missing global; the hole).
+/// Returns the stored value, or 0 with a pending exception (as `slow::store_global`). GC point.
+#[cold]
+#[inline(never)]
+pub(crate) fn store_global_miss(
+    cx: &mut Cx,
+    fp: *mut u64,
+    pc: *const u8,
+    name: u64,
+    v: u64,
+    slot: u32,
+) -> u64 {
+    let rt = cx.rt();
+    let vector = feedback::vector(FrameRef(fp).info());
+    let case = vector
+        .filter(|&vec| !skip_global_miss(rt, vec, slot))
+        .and_then(|_| global_case(rt, name, true));
+    if let (Some(vec), Some(c)) = (vector, case)
+        && global_case_store(rt, &c, v)
+    {
+        // GC point (the stored value is in the caller's accumulator): the interpreter state
+        // first, as `slow::store_global` does.
+        rt.enter(fp, pc);
+        record(rt, vec, slot, c);
+        return v;
+    }
+    slow::store_global_with(cx, fp, pc, name, v, slot, vector, case)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests (P4F-R1): how many times [`skip_global_miss`] ran.
+    pub(crate) static SKIP_CHECKS: Cell<u32> = const { Cell::new(0) };
+}
+
 /// True if the miss path of the global slot `i` of `v` need not compute a case: the entry is
 /// megamorphic, or its case for the lexical record's or the global object's shape is `SLOW`.
 /// Not a GC point.
 pub(crate) fn skip_global_miss(rt: &Runtime, v: u64, i: u32) -> bool {
+    #[cfg(test)]
+    SKIP_CHECKS.with(|c| c.set(c.get() + 1));
     state(v, i) == State::Megamorphic
         || find(v, i, shape::shape_of(rt.root(Root::Lexical))) == Some(SLOW)
         || find(v, i, shape::shape_of(rt.global())) == Some(SLOW)
