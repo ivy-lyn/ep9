@@ -207,7 +207,7 @@ Stage A0 fixes the dual-mode contracts (H2, H3, H5, H8, H13, H14, H16, H29-H37) 
 | Dispatch-slot kinds + pc→code registry API | H14 | M0 wk3 | in total |
 | ShapeId rule | H8 | M0 wk2 | in total |
 | Stable-index rules | H13 | Rules M0; index lists M1 | in total |
-| FactSnapshot = feedback schema (slot kinds as FactSnapshot v0) | H16 | M0 wk4; frozen M1 exit | in total |
+| FactSnapshot = feedback schema (slot kinds as FactSnapshot v0) | H16 | M0 wk4; frozen M1 exit. The VM exporter (FeedbackVector -> FactSnapshot, `ep9_vm::abi::export_facts`) is built in M0 month 3 (H16-Q5); the `.ep9prof` container of PGO capture stays A3 (H16-Q5b) | in total |
 | Position-independent deopt metadata | H29 | Draft M0 month 3; frozen M1 exit | in total |
 | Fact lattice + ref nodes | H30 | Draft M0 month 3; frozen M1 exit | in total |
 | Fuse API | H31 | Frozen M1 exit | in total |
@@ -216,7 +216,7 @@ Stage A0 fixes the dual-mode contracts (H2, H3, H5, H8, H13, H14, H16, H29-H37) 
 | Container spec v0 + header struct + golden test | H35 | M0 exit | in total |
 | FP rule: `clippy.toml` + `xtask fp-check` stub | H36 | M0 wk2 | in total |
 | Hint-section slot only (schema v0 comes at A1h) | H37 | Slot M0 wk3 | in total |
-| SP-Unit after Spike B: 11 opcodes (with AddSmi) as a unit blob on placement (b) (load, call, unwind, GC scan, version fallback) | H14, H35 | M0 month 3 (M3-P1; moved by M2-D21-FAIL) | +0.25 PM (est.) |
+| SP-Unit after Spike B: 11 opcodes (with AddSmi) as a unit blob on placement (b) (load, call, unwind, GC scan, version fallback) | H14, H35 | M0 month 3 (M3-P1; moved by M2-D21-FAIL). GO on 4 targets (M3-P2 Verdict row) | +0.25 PM (est.) |
 | SP-Facts inside Spike C: lattice + ref nodes, PI metadata, one kernel from a PROFILED FactSnapshot file | H16, H29, H30 | M1 | +0.25-0.5 PM (est.) |
 | **Total** | | M0-M1 | **about 1-2 PM (est.)** |
 
@@ -291,6 +291,7 @@ Full crate table, features and binary composition: [08-repo.md](./08-repo.md).
 | Unchanged | Speed targets G2-G4, value encoding, object model, builtin ABI, all v1 rows marked U |
 | Plan fixes 2026-10-21 (M0 wk4) | H7 row: one cage per isolate, one process-wide code range before Spike B (rewrite, [W4-H07-REWRITE](../decisions-log.md#111-week-4-plan-decisions), [H07](../adr/H07-address-space-and-code-range.md)). H20 row: the result type is `JsResult<Local<'s>>` (rewrite before the M0-exit freeze, not counted by G8; [H20](../adr/H20-builtin-abi.md)). H23 row: `panic = "abort"` starts at the first JIT or AOT frame (fill, W4-PANIC-ABORT, H23-Q1). 08 §2: one `ep9_builtins` crate until M1a (W4-BUILTINS-CRATE) |
 | Decisions 2026-10-21 | H15: release expansion per target, then sibling calls on every target after the T0 result ([decisions-log §7](../decisions-log.md#7-2026-10-21-h15-dispatch-on-x86-64-sp-dispatch-reopen), [§10](../decisions-log.md#10-2026-10-21-pr-1-review-fixes-ci-gates-and-h15-on-t0)) |
+| As built 2026-10-25 (M0 month 3) | §7: the FactSnapshot row names the VM facts exporter (built in M3-P3, H16-Q5) and the `.ep9prof` container (H16-Q5b, A3); the SP-Unit row gives its result (GO on 4 targets). No H row, stage or gate changes ([decisions-log §13](../decisions-log.md)) |
 | Decisions 2026-10-20 | H11: JSC Riptide barrier; S2 is retreating wavefront, not SATB (GC algorithm change). H6: empty/hole bits stated. H23, H24, H29-H32: debugger, interrupt-poll and D17 (d) reservations [R18]. H35: mismatch outcome by field. H36: CR target, `ep9_math`. ([decisions-log §5](../decisions-log.md#5-2026-10-20-decisions-made-by-the-agent-team-under-the-users-instruction)) |
 
 ## Evidence tags
