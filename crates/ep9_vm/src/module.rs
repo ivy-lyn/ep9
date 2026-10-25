@@ -1849,15 +1849,22 @@ pub(crate) fn run_module(
 /// `[[ScriptOrModule]]` (OrdinaryFunctionCreate, §10.2.3), so its `import()` resolves from
 /// there, not from the code that calls it later. Holds no Value (a realm of another realm
 /// is in a strong handle).
-pub(crate) struct EvalReferrer {
-    /// The host's referrer name: a module's name or a script's file; empty for none (null).
-    name: String,
-    /// The referrer's realm (its module map).
-    realm: ReferrerRealm,
+pub(crate) enum EvalReferrer {
+    /// A null ScriptOrModule (no script or module code ran, for example `Function` called
+    /// by a promise job): GetActiveScriptOrModule skips the frames of this code and goes on
+    /// with their callers.
+    Null,
+    /// A script or a module.
+    Of {
+        /// The host's referrer name: a module's name or a script's file.
+        name: String,
+        /// The referrer's realm (its module map).
+        realm: ReferrerRealm,
+    },
 }
 
 /// The realm of an [`EvalReferrer`].
-enum ReferrerRealm {
+pub(crate) enum ReferrerRealm {
     /// The realm that loaded the eval code, so the `[[Realm]]` of its functions (the common
     /// case: no handle).
     Own,
@@ -1866,7 +1873,8 @@ enum ReferrerRealm {
     /// handle lives as long as the unit, so until the isolate drops (`LoadedUnit` is never
     /// freed, as its constants are not): the realm can live longer than the functions.
     Other(GlobalHandle),
-    /// A null ScriptOrModule: the current realm.
+    /// A referrer with no realm in reach (script code with no function frame): the current
+    /// realm.
     Current,
 }
 
@@ -1875,8 +1883,9 @@ enum ReferrerRealm {
 /// takes the current realm, as HostLoadImportedModule takes the current Realm Record for a
 /// null referrer). A module (the end of `context`'s chain, or of the closure context of a
 /// frame's function) gives its name and `[[Realm]]`; script code its file and its
-/// function's realm; eval code its [`EvalReferrer`]. Host frames are passed. `None` if no
-/// frame has one. Not a GC point.
+/// function's realm; eval code its [`EvalReferrer`]. Host frames and eval code with a null
+/// ScriptOrModule ([`EvalReferrer::Null`]) are passed. `None` if no frame has one. Not a GC
+/// point.
 fn active_script_or_module(rt: &Runtime, fp: *mut u64, context: u64) -> Option<(String, u64)> {
     let of_module = |m: u64| (string::to_rust_string(name_of(m)), realm_of(m));
     if let Some(m) = module_of_context(context, 0) {
@@ -1896,8 +1905,8 @@ fn active_script_or_module(rt: &Runtime, fp: *mut u64, context: u64) -> Option<(
                 }
                 return Some((u.file.clone(), object::function_realm(callee)));
             }
-            if let Some(r) = &u.script_or_module {
-                let realm = match r.realm {
+            if let Some(EvalReferrer::Of { name, realm }) = &u.script_or_module {
+                let realm = match realm {
                     ReferrerRealm::Own => {
                         // SAFETY: as above.
                         let callee = unsafe { *f.0.offset(crate::frame::slot::CALLEE) };
@@ -1909,11 +1918,12 @@ fn active_script_or_module(rt: &Runtime, fp: *mut u64, context: u64) -> Option<(
                             UNDEFINED
                         }
                     }
-                    ReferrerRealm::Other(h) => rt.heap.global(h).to_bits(),
+                    ReferrerRealm::Other(h) => rt.heap.global(*h).to_bits(),
                     ReferrerRealm::Current => UNDEFINED,
                 };
-                return Some((r.name.clone(), realm));
+                return Some((name.clone(), realm));
             }
+            // EvalReferrer::Null: a null ScriptOrModule; the caller's frame is next (C2-M3).
         }
         f = f.caller();
     }
@@ -1925,7 +1935,7 @@ fn active_script_or_module(rt: &Runtime, fp: *mut u64, context: u64) -> Option<(
 /// (`abi::Cx::load_entry`). Not a GC point.
 pub(crate) fn eval_referrer(rt: &Runtime, context: u64) -> EvalReferrer {
     match active_script_or_module(rt, rt.stack().fp(), context) {
-        Some((name, realm)) => EvalReferrer {
+        Some((name, realm)) => EvalReferrer::Of {
             name,
             realm: if realm == UNDEFINED {
                 ReferrerRealm::Current
@@ -1935,10 +1945,7 @@ pub(crate) fn eval_referrer(rt: &Runtime, context: u64) -> EvalReferrer {
                 ReferrerRealm::Other(rt.heap.new_global(val(realm)))
             },
         },
-        None => EvalReferrer {
-            name: String::new(),
-            realm: ReferrerRealm::Current,
-        },
+        None => EvalReferrer::Null,
     }
 }
 

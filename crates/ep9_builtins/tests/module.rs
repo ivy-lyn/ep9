@@ -1398,6 +1398,26 @@ fn run_module_with_js_on_the_stack_has_no_checkpoint() {
     );
 }
 
+/// A function made by `Function()` in a promise job has a null ScriptOrModule (no script or
+/// module code runs in the job). GetActiveScriptOrModule (§9.4.1) skips a null component, so
+/// its `import('./dep.js')` called from `sub/main.js` resolves from `sub/main.js` (C2-M3).
+/// Before the fix, ep9 stopped at that frame with an empty referrer and loaded the root
+/// `dep.js` (the CLI threw "... imported from "); 2178586 printed `sub`. Node v24.22.1
+/// throws ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING (V8 gives the function no referrer), so the
+/// expected line follows the spec.
+#[test]
+fn a_null_script_or_module_is_skipped_for_the_caller() {
+    const FILES: Files = &[
+        ("dep.js", "export const where = 'root';"),
+        ("sub/dep.js", "export const where = 'sub';"),
+        (
+            "sub/main.js",
+            "const f = await Promise.resolve(\"return import('./dep.js')\").then(Function);\nprint((await f()).where);",
+        ),
+    ];
+    assert_eq!(run_every(FILES, &["sub/main.js"]), lines(&["sub"]));
+}
+
 /// The module graph of [`a_function_keeps_its_referrer_realm_alive`]: `maker.js` runs in a
 /// new realm and imports `dep.js`, which counts its evaluations in `sink.evals` (`sink` is
 /// the main global).
