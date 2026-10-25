@@ -11,12 +11,29 @@
 //! prototypes that [`PRELUDE`] stored while that realm was current), so the check itself
 //! calls no builtin of `C`. The receiver and the arguments are the caller's objects, so a
 //! builtin that took its realm from them would print `caller`. Then the other realm runs the
-//! same cases the other way. Two control cases call the caller's own builtins and must print
-//! `caller`. With the realm switch of `call::call_host` removed (a probe, reverted), the test
-//! fails: 60 of the 61 cases of the first way print `caller` (`Function(..)` takes its
-//! prototype from the constructor's `prototype` property, GetPrototypeFromConstructor), and
-//! the controls of the second way print `callee` (the other realm's `eval` then compiles
-//! `CASES` in the caller's realm).
+//! same cases the other way. Three control cases call the caller's own builtins and must print
+//! `caller`.
+//!
+//! The two call paths into a host function both switch the realm (`call::call_host`):
+//!
+//! ```text
+//! bytecode ──Call──> C.Object.keys (host)                       C.Object.keys({ a: 1 })
+//! bytecode ──Call──> Reflect.apply (host, caller realm)
+//!                      └─ cx.call ──> C.Array.prototype.map     apply(C.Array.prototype.map, [1], [f])
+//! ```
+//!
+//! A method of `C` is called through the caller realm's `Reflect.apply` (Codex C-FP2): through
+//! `C.Function.prototype.call` the call would enter `C`'s realm one step early, and a lost
+//! switch on the host-to-host edge would not show. Eight cases call a direct-call builtin that
+//! way too, one through the caller's `Function.prototype.call`. Negative controls (probes,
+//! reverted): (1) with no realm switch in `call::call_host` when a host function calls a host
+//! function (the caller frame is a host frame), 38 of the 69 cases of each way print `caller`
+//! (the 34 cases called through `apply` or the caller's `call`, and the 4 iterator `next`
+//! results made from their iterators) and the test fails; the test before C-FP2 passed with
+//! this probe; (2) with no realm switch in `call::call_host` at all, 68 of the 69 cases of the
+//! first way print `caller` (`Function(..)` takes its prototype from the constructor's
+//! `prototype` property, GetPrototypeFromConstructor), and the controls of the second way
+//! print `callee` (the other realm's `eval` then compiles `CASES` in the caller's realm).
 //!
 //! The expected lines are node v24.22.1's output for the same script, where
 //! `$262.createRealm()` makes a `vm.createContext` realm with `print`, and runs [`PRELUDE`] in
@@ -121,6 +138,9 @@ static HOOKS: CompilerHooks = CompilerHooks {
 /// The cases: called as `CASES(C)` by the caller realm, with the callee realm's global `C`.
 const CASES: &str = r#"(function (C) {
   var here = globalThis;
+  // The caller realm's Reflect.apply: a builtin of C called through it is a host-to-host
+  // call from the caller's realm (C's own Function.prototype.call would enter C first).
+  var apply = here.Reflect.apply;
   function proto(name, v, ctor) {
     var p = Object.getPrototypeOf(v);
     print(name, p === C[ctor].prototype ? "callee" : p === here[ctor].prototype ? "caller" : "other");
@@ -147,49 +167,49 @@ const CASES: &str = r#"(function (C) {
   proto("Object.fromEntries", C.Object.fromEntries([["a", 1]]), "Object");
   error("Object.defineProperty", function () { C.Object.defineProperty(1, "x", {}); }, "TypeError");
   proto("Function(..)", C.Function("return 1"), "Function");
-  error("Function.prototype.toString", function () { C.Function.prototype.toString.call(1); }, "TypeError");
+  error("Function.prototype.toString", function () { apply(C.Function.prototype.toString, 1, []); }, "TypeError");
   error("Function(syntax)", function () { C.Function("("); }, "SyntaxError");
-  proto("Array.prototype.map", C.Array.prototype.map.call([1], function (x) { return x; }), "Array");
-  proto("Array.prototype.concat", C.Array.prototype.concat.call([1]), "Array");
-  proto("Array.prototype.slice (array-like)", C.Array.prototype.slice.call({ length: 1, 0: 1 }), "Array");
-  proto("Array.prototype.toSorted", C.Array.prototype.toSorted.call([2, 1]), "Array");
-  proto("Array.prototype.flat", C.Array.prototype.flat.call([[1]]), "Array");
-  proto("Array.of (no constructor this)", C.Array.of.call(undefined, 1), "Array");
-  proto("Array.from (no constructor this)", C.Array.from.call(undefined, [1]), "Array");
-  var ai = C.Array.prototype.values.call([1]);
+  proto("Array.prototype.map", apply(C.Array.prototype.map, [1], [function (x) { return x; }]), "Array");
+  proto("Array.prototype.concat", apply(C.Array.prototype.concat, [1], []), "Array");
+  proto("Array.prototype.slice (array-like)", apply(C.Array.prototype.slice, { length: 1, 0: 1 }, []), "Array");
+  proto("Array.prototype.toSorted", apply(C.Array.prototype.toSorted, [2, 1], []), "Array");
+  proto("Array.prototype.flat", apply(C.Array.prototype.flat, [[1]], []), "Array");
+  proto("Array.of (no constructor this)", apply(C.Array.of, undefined, [1]), "Array");
+  proto("Array.from (no constructor this)", apply(C.Array.from, undefined, [[1]]), "Array");
+  var ai = apply(C.Array.prototype.values, [1], []);
   iter("Array.prototype.values", ai, "array");
   proto("%ArrayIteratorPrototype%.next", ai.next(), "Object");
-  iter("Array.prototype.keys", C.Array.prototype.keys.call([1]), "array");
-  error("Array.prototype.reduce", function () { C.Array.prototype.reduce.call([], function () {}); }, "TypeError");
-  error("Array.prototype.push (not extensible)", function () { C.Array.prototype.push.call(Object.preventExtensions({ length: 0 }), 1); }, "TypeError");
+  iter("Array.prototype.keys", apply(C.Array.prototype.keys, [1], []), "array");
+  error("Array.prototype.reduce", function () { apply(C.Array.prototype.reduce, [], [function () {}]); }, "TypeError");
+  error("Array.prototype.push (not extensible)", function () { apply(C.Array.prototype.push, Object.preventExtensions({ length: 0 }), [1]); }, "TypeError");
   error("Array(-1)", function () { C.Array(-1); }, "RangeError");
-  error("Number.prototype.toFixed", function () { C.Number.prototype.toFixed.call(1, 200); }, "RangeError");
-  error("Number.prototype.toString", function () { C.Number.prototype.toString.call("x"); }, "TypeError");
-  error("Boolean.prototype.valueOf", function () { C.Boolean.prototype.valueOf.call(1); }, "TypeError");
-  proto("String.prototype.split", C.String.prototype.split.call("a,b", ","), "Array");
-  error("String.prototype.repeat", function () { C.String.prototype.repeat.call("a", -1); }, "RangeError");
-  var si = C.String.prototype[Symbol.iterator].call("ab");
+  error("Number.prototype.toFixed", function () { apply(C.Number.prototype.toFixed, 1, [200]); }, "RangeError");
+  error("Number.prototype.toString", function () { apply(C.Number.prototype.toString, "x", []); }, "TypeError");
+  error("Boolean.prototype.valueOf", function () { apply(C.Boolean.prototype.valueOf, 1, []); }, "TypeError");
+  proto("String.prototype.split", apply(C.String.prototype.split, "a,b", [","]), "Array");
+  error("String.prototype.repeat", function () { apply(C.String.prototype.repeat, "a", [-1]); }, "RangeError");
+  var si = apply(C.String.prototype[Symbol.iterator], "ab", []);
   iter("String.prototype[@@iterator]", si, "string");
   proto("%StringIteratorPrototype%.next", si.next(), "Object");
-  error("Symbol.prototype.toString", function () { C.Symbol.prototype.toString.call(1); }, "TypeError");
+  error("Symbol.prototype.toString", function () { apply(C.Symbol.prototype.toString, 1, []); }, "TypeError");
   error("Math.max", function () { C.Math.max(Symbol()); }, "TypeError");
   error("decodeURI", function () { C.decodeURI("%"); }, "URIError");
-  error("Promise.prototype.then", function () { C.Promise.prototype.then.call(1); }, "TypeError");
+  error("Promise.prototype.then", function () { apply(C.Promise.prototype.then, 1, []); }, "TypeError");
   var resolveFn;
   new C.Promise(function (res) { resolveFn = res; });
   proto("Promise resolving function", resolveFn, "Function");
   proto("Reflect.ownKeys", C.Reflect.ownKeys({ a: 1 }), "Array");
   proto("Reflect.getOwnPropertyDescriptor", C.Reflect.getOwnPropertyDescriptor({ a: 1 }, "a"), "Object");
   error("Reflect.apply", function () { C.Reflect.apply(1); }, "TypeError");
-  error("Date.prototype.toISOString", function () { C.Date.prototype.toISOString.call(new Date(NaN)); }, "RangeError");
-  error("Date.prototype.getTime", function () { C.Date.prototype.getTime.call({}); }, "TypeError");
-  var mi = C.Map.prototype.entries.call(new Map([[1, 2]]));
+  error("Date.prototype.toISOString", function () { apply(C.Date.prototype.toISOString, new Date(NaN), []); }, "RangeError");
+  error("Date.prototype.getTime", function () { apply(C.Date.prototype.getTime, {}, []); }, "TypeError");
+  var mi = apply(C.Map.prototype.entries, new Map([[1, 2]]), []);
   iter("Map.prototype.entries", mi, "map");
   var step = mi.next();
   proto("%MapIteratorPrototype%.next", step, "Object");
   proto("%MapIteratorPrototype%.next value", step.value, "Array");
-  iter("Set.prototype.values", C.Set.prototype.values.call(new Set([1])), "set");
-  error("Map.prototype.get", function () { C.Map.prototype.get.call({}, 1); }, "TypeError");
+  iter("Set.prototype.values", apply(C.Set.prototype.values, new Set([1]), []), "set");
+  error("Map.prototype.get", function () { apply(C.Map.prototype.get, {}, [1]); }, "TypeError");
   var grouped = C.Map.groupBy([1], function () { return "k"; });
   proto("Map.groupBy", grouped, "Map");
   proto("Map.groupBy group", grouped.get("k"), "Array");
@@ -200,13 +220,22 @@ const CASES: &str = r#"(function (C) {
   var cyclic = {}; cyclic.self = cyclic;
   error("JSON.stringify (cyclic)", function () { C.JSON.stringify(cyclic); }, "TypeError");
   proto("Error()", C.Error("x"), "Error");
-  error("Error.prototype.toString", function () { C.Error.prototype.toString.call(1); }, "TypeError");
+  error("Error.prototype.toString", function () { apply(C.Error.prototype.toString, 1, []); }, "TypeError");
   proto("eval", C.eval("[]"), "Array");
   proto("async function result", C.eval("(async function () {})")(), "Promise");
   proto("async generator next", C.eval("(async function* () {})")().next(), "Promise");
   proto("generator next", C.eval("(function* () { yield 1; })")().next(), "Object");
+  proto("Object() (by apply)", apply(C.Object, undefined, []), "Object");
+  proto("Object.keys (by apply)", apply(C.Object.keys, undefined, [{ a: 1 }]), "Array");
+  proto("Object.keys (by the caller's Function.prototype.call)", Function.prototype.call.call(C.Object.keys, undefined, { a: 1 }), "Array");
+  error("Function(syntax) (by apply)", function () { apply(C.Function, undefined, ["("]); }, "SyntaxError");
+  error("Array(-1) (by apply)", function () { apply(C.Array, undefined, [-1]); }, "RangeError");
+  error("Math.max (by apply)", function () { apply(C.Math.max, undefined, [Symbol()]); }, "TypeError");
+  error("JSON.parse (by apply)", function () { apply(C.JSON.parse, undefined, ["{"]); }, "SyntaxError");
+  proto("eval (by apply)", apply(C.eval, undefined, ["[]"]), "Array");
   proto("control: Object.keys of this realm", Object.keys({}), "Array");
   error("control: JSON.parse of this realm", function () { JSON.parse("{"); }, "SyntaxError");
+  proto("control: Object.keys of this realm (by apply)", apply(Object.keys, undefined, [{}]), "Array");
 })"#;
 
 /// The script: two realms, then [`CASES`] each way.
@@ -292,7 +321,7 @@ fn on_big_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T 
         .expect("no panic")
 }
 
-/// The case names, in [`CASES`] order, without the two control cases.
+/// The case names, in [`CASES`] order, without the three control cases.
 const NAMES: &[&str] = &[
     "Object()",
     "Object(1)",
@@ -355,6 +384,14 @@ const NAMES: &[&str] = &[
     "async function result",
     "async generator next",
     "generator next",
+    "Object() (by apply)",
+    "Object.keys (by apply)",
+    "Object.keys (by the caller's Function.prototype.call)",
+    "Function(syntax) (by apply)",
+    "Array(-1) (by apply)",
+    "Math.max (by apply)",
+    "JSON.parse (by apply)",
+    "eval (by apply)",
 ];
 
 /// node's lines: every case `callee`, the controls `caller`, both ways.
@@ -367,6 +404,7 @@ fn expected() -> Vec<String> {
         want.extend(NAMES.iter().map(|n| format!("{n} callee")));
         want.push("control: Object.keys of this realm caller".to_string());
         want.push("control: JSON.parse of this realm caller".to_string());
+        want.push("control: Object.keys of this realm (by apply) caller".to_string());
     }
     want
 }
