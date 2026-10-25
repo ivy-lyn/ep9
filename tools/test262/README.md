@@ -118,8 +118,9 @@ nor counts the listed tests, and the expectation compare ignores them. The run p
 of the skipped tests); an entry that names no test gets a warning. A run with path prefixes
 also writes `run_paths` (the sorted paths of the tests it ran; a full run leaves it out):
 `cargo xtask m0-exit` item 6 checks with it that each GC-stress shard ran exactly its own files. `expectations/test262-gc-skip.txt`
-lists the 21 tests that run past (or on a busy host can run past) the 60 s timeout under
-GC-stress (9 fail without it too; its header says why each one is there).
+lists the 44 tests that run past (or on a slow or busy host can run past) the 60 s timeout
+under GC-stress (9 fail without it too, and are in every `test262.<triple>.jit.txt`; the other
+35 pass without it; its header says why each one is there).
 
 `--feedback-threshold <n>` is the number of calls before a function gets its feedback vector
 (H16; default 8, `0` = at the first call, `4294967295` = never), as `ep9 --feedback-threshold`.
