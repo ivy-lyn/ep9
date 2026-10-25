@@ -1607,7 +1607,7 @@ fn a_referrer_realm_dies_with_its_last_function() {
                     for _ in 0..3 {
                         iso.collect_garbage();
                     }
-                    marked.push(iso.heap().stats().last_marked_bytes);
+                    marked.push(iso.gc_stats().last_marked_bytes);
                 }
                 iso.verify_heap().expect("a valid heap");
                 marked

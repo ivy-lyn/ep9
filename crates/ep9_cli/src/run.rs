@@ -191,7 +191,7 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
         _ => status,
     };
     if opts.gc_stats {
-        let st = isolate.heap().stats();
+        let st = isolate.gc_stats();
         eprintln!(
             "ep9: gc collections={} freed_cells={} allocated_bytes={}",
             st.collections, st.freed_cells, st.allocated_bytes

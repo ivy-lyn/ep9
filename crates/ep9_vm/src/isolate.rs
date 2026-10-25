@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, PoisonError};
 
 use ep9_bytecode::VerifiedUnit;
-use ep9_heap::{Heap, HeapConfig, HeapError, VerifyError, VerifyReport};
+use ep9_heap::{GcStats, Heap, HeapConfig, HeapError, VerifyError, VerifyReport};
 use ep9_value::{JsResult, Throw};
 
 use crate::abi::{JsKey, JsObject, Local};
@@ -509,6 +509,43 @@ impl Isolate {
     /// them. A host reports these after its last checkpoint (the ep9 CLI prints the first one
     /// as an uncaught error and exits 1, as node does). The list drops a promise as soon as it
     /// gets a handler.
+    ///
+    /// It runs ABI code, so it is an H20 core entry point (Codex W4-3): the message of a
+    /// reason that is an object but not an Error is ToString(reason), and that can call JS
+    /// or a host function (a `toString` method). A throw from that ToString is dropped (the
+    /// message is then the plain description). Jobs that this code queues stay queued: call
+    /// [`Isolate::perform_microtask_checkpoint`] after it to run them.
+    ///
+    /// ```
+    /// use std::sync::atomic::{AtomicU32, Ordering};
+    /// use ep9_vm::{Args, Cx, Isolate, IsolateConfig, JsResult, Local};
+    /// static CALLS: AtomicU32 = AtomicU32::new(0);
+    /// fn to_string<'s>(
+    ///     cx: &mut Cx<'s>,
+    ///     _this: Local<'s>,
+    ///     _args: Args<'s>,
+    ///     _new_target: Local<'s>,
+    /// ) -> JsResult<Local<'s>> {
+    ///     CALLS.fetch_add(1, Ordering::SeqCst);
+    ///     Ok(cx.new_string("a reason from a host function")?.into())
+    /// }
+    /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    /// iso.register_host_function("hostToString", 0, to_string);
+    /// iso.with_cx_checkpoint(|cx| {
+    ///     let f = cx.global_binding("hostToString")?.expect("a global");
+    ///     let reason = cx.new_object();
+    ///     cx.set(reason, "toString", f, true)?;
+    ///     let p = cx.new_promise(Local::null());
+    ///     cx.reject_promise(p, reason);
+    ///     Ok(())
+    /// })
+    /// .unwrap();
+    /// assert_eq!(CALLS.load(Ordering::SeqCst), 0);
+    /// let list = iso.take_unhandled_rejections();
+    /// // The host function ran in this call.
+    /// assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+    /// assert_eq!(list[0].message, "a reason from a host function");
+    /// ```
     pub fn take_unhandled_rejections(&mut self) -> Vec<Exception> {
         let rt: &Runtime = self.cx.rt();
         let reasons = rt.heap.scratch_roots();
@@ -544,8 +581,22 @@ impl Isolate {
         self.rt.heap.verify()
     }
 
-    pub fn heap(&self) -> &Heap {
-        &self.rt.heap
+    /// A copy of the heap counters (collections, freed and allocated bytes, the last marked
+    /// bytes, ...). The default build gives no `&Heap` (H20-Q4), so this is the embedder's
+    /// way to read them.
+    ///
+    /// ```
+    /// use ep9_vm::{Isolate, IsolateConfig};
+    /// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+    /// let before = iso.gc_stats().collections;
+    /// iso.collect_garbage();
+    /// assert_eq!(iso.gc_stats().collections, before + 1);
+    /// ```
+    ///
+    /// The raw heap is not in the default build (H20-Q4): see the `compile_fail` tests in
+    /// `isolate.rs` (`NoRawHeap`).
+    pub fn gc_stats(&self) -> GcStats {
+        self.rt.heap.stats()
     }
 
     /// The pending exception (taken) as an API [`Exception`]. A termination also drops the
@@ -629,6 +680,61 @@ impl Isolate {
             location,
             terminated: false,
         }
+    }
+}
+
+/// The raw heap is not in the default build, so safe code cannot get a raw `Value` of a
+/// heap cell from it (H20-Q4, Codex W4-1). No new cell (`Heap::alloc`, then
+/// `CellPtr::to_value`):
+///
+/// ```compile_fail,E0599
+/// use ep9_vm::{Isolate, IsolateConfig};
+/// let iso = Isolate::new(IsolateConfig::default()).unwrap();
+/// let c = iso.heap().alloc(ep9_heap::KindId::new(1).unwrap(), 16).unwrap();
+/// let _raw = c.to_value();
+/// ```
+///
+/// no cell of a `Local` from the conservative-scan log
+/// (`Heap::last_conservative_roots`):
+///
+/// ```compile_fail,E0599
+/// use ep9_vm::{Isolate, IsolateConfig};
+/// let mut cfg = IsolateConfig::default();
+/// cfg.heap.record_conservative_roots = true;
+/// let mut iso = Isolate::new(cfg).unwrap();
+/// iso.with_cx(|cx| {
+///     let _s = cx.new_string("a string")?;
+///     cx.collect_garbage();
+///     Ok(())
+/// })
+/// .unwrap();
+/// let _raw: Vec<_> = iso.heap().last_conservative_roots().iter().map(|c| c.to_value()).collect();
+/// ```
+///
+/// and no cell from a heap walk (`Heap::find_cell`):
+///
+/// ```compile_fail,E0599
+/// use ep9_vm::{Isolate, IsolateConfig};
+/// let iso = Isolate::new(IsolateConfig::default()).unwrap();
+/// let base = iso.heap().cage_base();
+/// let _raw = iso.heap().find_cell(base).map(|c| c.to_value());
+/// ```
+///
+/// (Rustdoc runs these tests on this private item; with spike-native, `heap` exists, so the
+/// item and its tests are left out.)
+#[cfg(not(feature = "spike-native"))]
+#[allow(dead_code)]
+struct NoRawHeap;
+
+/// The raw heap: only for the in-crate tests and the spike-native API, never in the default
+/// build (H20-Q4, Codex W4-1). Its safe methods give raw cells and `Value`s that no scope
+/// keeps live (`Heap::alloc`, `Heap::find_cell`, `Heap::last_conservative_roots`, then
+/// `CellPtr::to_value`). A block of its own, so the H20 golden (`tests/h20_core.rs`) has no
+/// line for it.
+#[cfg(any(test, feature = "spike-native"))]
+impl Isolate {
+    pub fn heap(&self) -> &Heap {
+        &self.rt.heap
     }
 }
 
