@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Draft (2026-10-21). Late: due M0 wk3. M0 month 3 (M3-P1 REALMS): N realms per isolate built, H22-Q3 and H22-Q7 filled |
+| Status | Accepted (2026-10-25, M3-P3-ACCEPT-7; review record complete). Was: Draft (2026-10-21). Late: due M0 wk3. M0 month 3 (M3-P1 REALMS): N realms per isolate built, H22-Q3 and H22-Q7 filled |
 | Fix by | M0 wk3 (D14) |
 | Freeze point | M1 exit |
 | Origin | v1#18; plan status E |
@@ -133,6 +133,7 @@ Isolate = one heap, one thread at a time; N realms; workers are isolates; only S
 | 2026-10-25 | clarify | Validation, the realms item: a dated update at f5149b1 after the old text (no old text is deleted): `tests/realm.rs` has 9 tests, not 7, and 107 of the 284 `$262.createRealm` files pass (mac a64 run at f5149b1, 0 NEW FAILURE). Row 3 (M3-P3 ACCEPT-7) named both numbers as stale dated text. Text only; no check changes | M3-P3 records writer |
 | 2026-10-25 | clarify | Review record: a row-2 addendum (the M3-P3 Codex runs: round 1, the ACCEPT-7 slice, X-R2-1 on H22; round 2, fix2-realm, approve) and a row-3 addendum by the M3-P3 records writer: X-R2-1 is sorted again, (a) and not (c), and it is FIXED by 12eb877 (checked at f5149b1 with the regression test, a negative control and the 284 createRealm files); the c3d7f70 ref and the 042b622 H22-Q9 text are checked. No text outside the record changes; no check changes | M3-P3 records writer |
 | 2026-10-25 | clarify | Review record: a second M3-P3 row-2 addendum (C3-M1 of Codex round 3, fix3-module, which the first M3-P3 addendum left out; Codex round 4, docs-records: R4-1 on H22; round 5, fix4-referrer: approve; round 4 docs-wf2 and rounds 6-7: no H22 item) and a row-3 addendum by the second M3-P3 records writer: C3-M1 (b), FIXED by 65d9b10 (checked at 3f20289 with the 4 referrer tests and a negative control); R4-1 (a), fixed by these two rows. No H22 text outside the record names the referrer handle, so no other text changes; no check changes | second M3-P3 records writer |
+| 2026-10-25 | clarify | Status Draft -> Accepted (M3-P3-ACCEPT-7). The §3.1 review record is complete: row 1 M3-P2 ACCEPT-6, with its step-2 addendum; row 2 Codex, with the M3-P3 addendum and the M3-P3 addendum 2 (C3-M1 of Codex round 3, R4-1 of Codex round 4 docs-records; round 4 docs-wf2 holds c3d7f70 and 042b622, no H22 finding; round 5 approves the C3-M1 fix); row 3 M3-P3 ACCEPT-7, with the M3-P2 addendum (X-MOD1-3 and R3-5 (b), fixed), the M3-P3 addendum (X-R2-1 sorted again (a), FIXED by 12eb877, H22-Q10 filled) and the M3-P3 addendum 2 (C3-M1 (b), FIXED by 65d9b10; R4-1 (a), fixed by that record); no open (a) or (b) item; row 4 data (the 2-realm test output, V8-A17; run again at f5149b1: 9 realm tests pass, 107 of the 284 createRealm files). The second M3-P3 addenda (ce0c8aa and f735e24) are in no Codex diff; the independent verifier of that records round checked them. Plan-v8 §5.5: the orchestrator sets H12, H15 and H22 to Accepted (24 Accepted). The orchestrator did not write the rows it approves. No check changes | orchestrator (written by the M3-P3 records3 accept writer) |
 
 ## Review record
 
