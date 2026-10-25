@@ -24,9 +24,25 @@
 //!   DESCRIPTORS cell (the prefix rule of `shape.rs`: the same keys as the parent chain from
 //!   the root shape, and a unique shape has them too). A prototype becomes a [`ProtoRef`]:
 //!   `null`; an intrinsic of the current realm by its `IntrinsicId` (the H13 index list is
-//!   H16-Q4, M1); the initial `prototype` of a bytecode function `F` (the object is
-//!   `F.prototype` and its own `constructor` is `F`), named by `F`'s unit hash and function
-//!   id; else `unknown`. So two runs of one program give the same bytes.
+//!   H16-Q4, M1); the initial `prototype` of a bytecode class constructor `F`, named by
+//!   `F`'s unit hash and function id; else `unknown`. So two runs of one program give the
+//!   same bytes.
+//! - `function-prototype` needs a proof that the VM keeps, not a backlink that JS can write
+//!   (`C.prototype = {constructor: C}`, or an arrow function given a `prototype`). The object's
+//!   own `constructor` only names the candidate `F`. The proof: `F` is a class constructor,
+//!   its own `prototype` is the object with {w: false, c: false} (DefineClass makes it so, and
+//!   no JS can change it), and its `[[HomeObject]]` is the object (DefineClass sets it; no JS
+//!   can). The VM keeps no such proof for a `function` declaration's lazy `prototype`
+//!   (`exotic::function_prototype`), so that object is `unknown`.
+//! - A global case's binding comes from what made it (`ic::global_case`): a field handler is
+//!   keyed on the lexical record (`lexical`), a GLOBAL cell on the global object
+//!   (`data-property`). A `SLOW` case can be keyed on either. An accessor is on the global
+//!   object (a lexical binding is never an accessor: `accessor-property`). So is a data
+//!   property (a read-only global, at a store) under a shape whose prototype is not null (the
+//!   lexical record's prototype is null for good: no JS can reach it). A null prototype does
+//!   not tell them apart, because the global object can have one too: then the key must be
+//!   the current shape of the lexical record or of the global object, and not of both; else
+//!   the case gives no binding.
 //! - A case that has no description is left out (the `ep9_facts` rule: a state may have
 //!   fewer cases than the IC had): the string key ([`ic::KEY_STRING`]), a dead key, an object
 //!   kind with no [`ObjectKind`] (generators, arguments, objects with internal slots, module
@@ -36,7 +52,8 @@
 //! - T0 v0 records no value types, call targets or counts (H16-Q2): `values` is empty, and
 //!   a global site's `bindings` come from its cases only.
 //! - The exporter reads the heap and allocates nothing, so it is not a GC point. It takes
-//!   `&Isolate`, so no JS runs while it reads.
+//!   `&Isolate`, so no JS runs while it reads. It keeps no table keyed by a heap-cell Value
+//!   (H12-Q2 (a)): each shape and prototype is described again where a case names it.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -57,7 +74,7 @@ use crate::ic::{self, State, hk, smi};
 use crate::kinds::{self as kind, is_cell_bits};
 use crate::object::{self, attr, cell, obj, rd, rd_i32};
 use crate::props;
-use crate::runtime::{Runtime, val};
+use crate::runtime::{Root, Runtime, val};
 use crate::shape::{self, slf};
 use crate::string::{self, JsStr};
 use crate::symbol::{self, WellKnownSymbol};
@@ -193,12 +210,10 @@ fn site_names(fi: &FunctionInfo, code: &[u8], n: usize) -> Vec<Option<u64>> {
     names
 }
 
-/// One export: the runtime and the descriptions made so far (one per live shape, prototype
-/// and unit).
+/// One export: the runtime and the content hashes of the units made so far, by unit index
+/// (not a heap address, H12-Q2).
 struct Exporter<'a> {
     rt: &'a Runtime,
-    shapes: HashMap<u64, Option<Arc<ShapeDesc>>>,
-    protos: HashMap<u64, ProtoRef>,
     hashes: HashMap<u32, UnitHash>,
 }
 
@@ -206,8 +221,6 @@ impl<'a> Exporter<'a> {
     fn new(rt: &'a Runtime) -> Exporter<'a> {
         Exporter {
             rt,
-            shapes: HashMap::new(),
-            protos: HashMap::new(),
             hashes: HashMap::new(),
         }
     }
@@ -332,23 +345,13 @@ impl<'a> Exporter<'a> {
             }
             let x = int32_of(h);
             match x & smi::KIND_MASK {
-                // A field case is keyed on the lexical record's shape.
+                // A field case is keyed on the lexical record's shape (`ic::global_case`).
                 smi::FIELD_IN_OBJECT | smi::FIELD_OUT_OF_LINE => bindings |= BindingSet::LEXICAL,
                 // `SLOW`: a dictionary-mode record (the name may be anywhere: nothing known),
                 // a `const` (store), or an accessor or read-only property of the global
-                // object. The lexical record has a null prototype; the global object has not.
-                smi::SLOW if !shape::is_dictionary(k) => {
-                    if shape::proto(k) == NULL {
-                        bindings |= BindingSet::LEXICAL;
-                    } else if name != HOLE
-                        && let Some(f) = shape::lookup(self.rt, k, name)
-                    {
-                        bindings |= if f.details.attrs() & attr::ACCESSOR != 0 {
-                            BindingSet::ACCESSOR
-                        } else {
-                            BindingSet::DATA
-                        };
-                    }
+                // object.
+                smi::SLOW if name != HOLE && !shape::is_dictionary(k) => {
+                    bindings |= self.slow_global(k, name);
                 }
                 _ => {}
             }
@@ -359,15 +362,38 @@ impl<'a> Exporter<'a> {
         }
     }
 
-    /// The description of the live shape `s` (cached), or `None` if its object kind has no
+    /// The binding of a `SLOW` global case for `name` keyed on the fast shape `k`: the lexical
+    /// record's or the global object's shape when the case was made (`ic::global_case`). An
+    /// accessor is on the global object (a lexical binding is a data property: `realm.rs`
+    /// defines them {} or {w}). A data property (a store to a `const` or to a read-only
+    /// global) is on the global object if `k`'s prototype is not null (the lexical record is
+    /// made with a null prototype and no JS can reach it to change that). Under a null
+    /// prototype it is lexical only if `k` is the current shape of the lexical record and not
+    /// of the global object, and the reverse; else (an old shape, or both) nothing is known:
+    /// the global object can have a null prototype too (Codex C-FX1).
+    fn slow_global(&self, k: u64, name: u64) -> BindingSet {
+        let Some(f) = shape::lookup(self.rt, k, name) else {
+            return BindingSet::EMPTY;
+        };
+        if f.details.attrs() & attr::ACCESSOR != 0 {
+            return BindingSet::ACCESSOR;
+        }
+        if shape::proto(k) != NULL {
+            return BindingSet::DATA;
+        }
+        let lexical = shape::shape_of(self.rt.root(Root::Lexical)) == k;
+        let global = shape::shape_of(self.rt.global()) == k;
+        match (lexical, global) {
+            (true, false) => BindingSet::LEXICAL,
+            (false, true) => BindingSet::DATA,
+            _ => BindingSet::EMPTY,
+        }
+    }
+
+    /// The description of the live shape `s`, or `None` if its object kind has no
     /// [`ObjectKind`].
     fn shape_desc(&mut self, s: u64) -> Option<Arc<ShapeDesc>> {
-        if let Some(d) = self.shapes.get(&s) {
-            return d.clone();
-        }
-        let d = self.describe(s).map(Arc::new);
-        self.shapes.insert(s, d.clone());
-        d
+        self.describe(s).map(Arc::new)
     }
 
     fn describe(&mut self, s: u64) -> Option<ShapeDesc> {
@@ -427,34 +453,39 @@ impl<'a> Exporter<'a> {
             .map_or(KeyRef::OtherSymbol, KeyRef::WellKnownSymbol)
     }
 
-    /// The prototype `p` (an object or null) by a position-independent name (cached).
+    /// The prototype `p` (an object or null) by a position-independent name.
     fn proto_ref(&mut self, p: u64) -> ProtoRef {
         if p == NULL {
             return ProtoRef::Null;
         }
-        if let Some(&r) = self.protos.get(&p) {
-            return r;
-        }
-        let r = IntrinsicId::ALL
+        IntrinsicId::ALL
             .into_iter()
             .find(|&id| builtins::intrinsic(self.rt, id) == p)
             .map(|id| ProtoRef::Intrinsic(id as u32))
             .or_else(|| self.function_prototype(p).map(ProtoRef::FunctionPrototype))
-            .unwrap_or(ProtoRef::Unknown);
-        self.protos.insert(p, r);
-        r
+            .unwrap_or(ProtoRef::Unknown)
     }
 
-    /// The bytecode function `F` whose initial prototype `p` is: `p`'s own data property
-    /// `constructor` is `F`, and `F`'s own data property `prototype` is `p`.
+    /// The bytecode class constructor `F` whose initial prototype `p` is, with a proof that the
+    /// VM keeps (Codex C-FX2). `p`'s own data property `constructor` names the candidate `F`
+    /// (JS can write it, so it proves nothing). The proof: `F` is a class constructor, its own
+    /// `prototype` is `p` with {w: false, c: false}, and its `[[HomeObject]]` is `p`
+    /// (DefineClass, `interp/slow/runtime.rs`, makes both, and no JS can change them). A
+    /// `function` declaration's `prototype` is writable and the VM keeps no proof of the
+    /// initial one, so it gives `None`.
     fn function_prototype(&mut self, p: u64) -> Option<FunctionRef> {
-        let data =
-            |o, a| props::own_get(o, self.rt.atom(a)).filter(|&(_, at)| at & attr::ACCESSOR == 0);
-        let (f, _) = data(p, Atom::Constructor)?;
-        if !kind::is_function(f) || data(f, Atom::Prototype)?.0 != p {
+        let (f, at) = props::own_get(p, self.rt.atom(Atom::Constructor))?;
+        if at & attr::ACCESSOR != 0 || !kind::is_function(f) {
             return None;
         }
         let fi = object::function_info(f);
+        if !fi.is_class_constructor() || object::home_object(f) != p {
+            return None;
+        }
+        let (proto, at) = props::own_get(f, self.rt.atom(Atom::Prototype))?;
+        if proto != p || at & (attr::ACCESSOR | attr::WRITABLE | attr::CONFIGURABLE) != 0 {
+            return None;
+        }
         let unit = fi.loaded_unit()?;
         // Function 0 (a unit's entry) has no closure (H02).
         if fi.function_id == 0 {

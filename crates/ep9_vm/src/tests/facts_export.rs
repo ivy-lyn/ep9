@@ -319,11 +319,16 @@ fn scenario() -> (T, FactSnapshot) {
 fn each_handler_becomes_its_fact() {
     on_big_stack(|| {
         let (t, snap) = scenario();
+        // `C` is a `function`, not a class: its `prototype` is writable, so the VM keeps no
+        // proof that C.prototype is the initial one (Codex C-FX2) and it is `unknown`.
         let c_ref = FunctionRef::Js {
             unit: t.unit.content_hash(),
             function: C_ID,
         };
-        let c_proto = plain(ProtoRef::FunctionPrototype(c_ref), &[]);
+        let c_proto = plain(ProtoRef::Unknown, &[]);
+        snap.records().for_each(|(_, r)| {
+            r.for_each_function(&mut |f| assert_ne!(*f, c_ref));
+        });
 
         // f0: own field (w, x: key 1), prototype field (C.prototype is {constructor, x, m}:
         // key 1, depth 1),
@@ -481,6 +486,50 @@ fn shape_keys_are_the_root_walk() {
         assert_eq!(prefix, ["a", "b", "c", "d"]);
         assert_eq!(object::proto_of(object::proto_of(o)), NULL);
     });
+}
+
+/// A `SLOW` global case for a data property under a null-prototype shape (`ic::global_case`
+/// for a store to a `const`) is lexical only while its key is the lexical record's current
+/// shape. After a new lexical binding the key is an old shape: the global object can have a
+/// null prototype too, so the exporter cannot tell whose shape it was, and the case gives no
+/// binding (Codex C-FX1). The miss path records no case for a store that throws, so the test
+/// records the case that `ic::global_case` computes.
+#[test]
+fn an_old_slow_global_key_gives_no_binding() {
+    on_big_stack(|| {
+        let mut t = T::new();
+        // f7 `g = a` gets a vector (the store makes the global `g`; no case yet).
+        t.call(7, int32_bits(1), UNDEFINED);
+        let v = t.vector(7).unwrap();
+        assert_eq!(ic::state(v, 0), State::Uninitialized);
+        // `const g` on the lexical record, {}.
+        let lexical = t.rt().root(Root::Lexical);
+        let g = t.key("g");
+        props::own_define(t.rt(), lexical, g, int32_bits(1), 0);
+        let case = ic::global_case(t.rt(), g, true).expect("a case");
+        let ls = shape::shape_of(lexical);
+        assert_eq!(case.key, ls);
+        ic::record(t.rt(), v, 0, case);
+        assert_eq!(ic::find(v, 0, ls), Some(ic::SLOW));
+        assert_eq!(bindings(&t.export(), 7), BindingSet::LEXICAL);
+        // `let h`: the record's shape moves on; the case keeps the old key.
+        props::own_define(t.rt(), lexical, t.key("h"), int32_bits(2), attr::WRITABLE);
+        assert_ne!(shape::shape_of(lexical), ls);
+        assert_eq!(ic::find(v, 0, ls), Some(ic::SLOW));
+        assert_eq!(ic::state(v, 0), State::Monomorphic);
+        assert_eq!(bindings(&t.export(), 7), BindingSet::EMPTY);
+        std::hint::black_box(ls);
+    });
+}
+
+/// H12-Q2 (a) (Codex C-FX3): the exporter keys no table by a heap-cell Value (a shape or a
+/// prototype). It describes each one again where a case names it.
+#[test]
+fn the_exporter_keys_no_table_by_a_cell() {
+    let src = include_str!("../facts_export.rs");
+    for bad in ["HashMap<u64", "HashSet<u64", "BTreeMap<u64", "BTreeSet<u64"] {
+        assert!(!src.contains(bad), "facts_export.rs has a {bad} table");
+    }
 }
 
 #[test]

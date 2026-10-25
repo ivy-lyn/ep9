@@ -8,11 +8,13 @@
 //! ep9_vm tests cannot compile JS, so this test lives here (ep9_facts is a dev-dependency
 //! of ep9_builtins since M3-P0).
 
-use ep9_bytecode::VerifiedUnit;
+use ep9_bytecode::{UnitString, VerifiedUnit};
 use ep9_facts::{
-    Access, BindingSet, FactSnapshot, FunctionRef, IcState, ObjectKind, ProtoRef, SlotFacts,
+    Access, BindingSet, FactSnapshot, FunctionRef, IcState, KeyRef, ObjectKind, PropertyCase,
+    ProtoRef, ShapeDesc, SlotFacts,
 };
 use ep9_frontend::{CompileOptions, SourceOpts, Strictness};
+use ep9_heap::HeapConfig;
 use ep9_vm::abi::export_facts;
 use ep9_vm::{Isolate, IsolateConfig};
 
@@ -33,15 +35,27 @@ fn compile(src: &str) -> VerifiedUnit {
 
 /// Runs richards on a fresh isolate: its unit and the facts of that unit.
 fn run(src: &str) -> (VerifiedUnit, FactSnapshot) {
+    run_with(src, IsolateConfig::default().feedback_threshold, false)
+}
+
+/// Runs the script `src` on a fresh isolate whose feedback threshold is `threshold`, with a
+/// GC at each allocation if `stress`: its unit and the facts of that unit.
+fn run_with(src: &str, threshold: u32, stress: bool) -> (VerifiedUnit, FactSnapshot) {
     let unit = compile(src);
     let mut iso = Isolate::new(IsolateConfig {
         builtins: Some(&ep9_builtins::TABLE),
+        feedback_threshold: threshold,
+        heap: HeapConfig {
+            gc_stress: u32::from(stress),
+            verify_after_gc: stress,
+            ..HeapConfig::default()
+        },
         ..IsolateConfig::default()
     })
     .expect("an isolate");
     let u = unit.clone();
-    iso.with_cx(|cx| cx.run_script(u, "richards.js").map(|_| ()))
-        .unwrap_or_else(|e| panic!("richards threw: {}", e.message));
+    iso.with_cx(|cx| cx.run_script(u, "facts.js").map(|_| ()))
+        .unwrap_or_else(|e| panic!("the script threw: {}", e.message));
     let facts = export_facts(&iso, &unit.content_hash()).expect("the unit is loaded");
     (unit, facts)
 }
@@ -84,29 +98,27 @@ fn richards_facts_round_trip() {
     on_big_stack(|| {
         let src = source();
         let (unit, facts) = run(&src);
-        let hash = unit.content_hash();
-        // A `function Name(...)` declaration, by its name.
-        let decl = |name: &str| {
-            let id = unit
-                .functions
-                .iter()
-                .position(|f| {
-                    f.name.is_some_and(|n| {
-                        unit.strings[n.index()] == ep9_bytecode::UnitString::new(name)
-                    })
-                })
-                .unwrap_or_else(|| panic!("no function {name}"));
-            FunctionRef::Js {
-                unit: hash,
-                function: id as u32,
-            }
+        // A receiver shape whose first key is `first`.
+        let starts = |s: &ShapeDesc, first: &str| {
+            s.keys.first().map(|(k, _)| k) == Some(&KeyRef::String(UnitString::new(first)))
         };
-        let tcb = decl("TaskControlBlock");
+
+        // Negative check first: richards makes its objects with `function` declarations, whose
+        // `prototype` the VM keeps no proof for (Codex C-FX2), so no shape names a function
+        // prototype; the prototypes are `unknown`.
+        for (key, r) in facts.records() {
+            r.for_each_shape(&mut |s| {
+                assert!(
+                    !matches!(s.proto, ProtoRef::FunctionPrototype(_)),
+                    "{key:?}: {s:?}"
+                );
+            });
+        }
 
         // Scheduler.prototype.schedule: `this.currentTcb.isHeldOrSuspended()` loads the method
-        // from TaskControlBlock.prototype (a prototype field, depth 1, on a receiver whose
-        // prototype is named by the constructor), and `this.currentTcb` is an own field of a
-        // Scheduler.
+        // from TaskControlBlock.prototype (a prototype field, depth 1, on a TaskControlBlock:
+        // its first key is `link`), and `this.currentTcb` is an own field of a Scheduler (its
+        // first key is `queueCount`).
         let schedule = function_after(&unit, &src, "Scheduler.prototype.schedule = ");
         let rs = records(&facts, schedule);
         assert!(!rs.is_empty(), "schedule has no records");
@@ -122,7 +134,8 @@ fn richards_facts_round_trip() {
             cases
                 .iter()
                 .any(|c| matches!(c.access, Access::ProtoField { depth: 1, .. })
-                    && c.receiver.proto == ProtoRef::FunctionPrototype(tcb)
+                    && c.receiver.proto == ProtoRef::Unknown
+                    && starts(&c.receiver, "link")
                     && c.receiver.kind == ObjectKind::Ordinary),
             "no TaskControlBlock method load in schedule: {cases:?}"
         );
@@ -130,7 +143,8 @@ fn richards_facts_round_trip() {
             cases
                 .iter()
                 .any(|c| matches!(c.access, Access::OwnField { .. })
-                    && c.receiver.proto == ProtoRef::FunctionPrototype(decl("Scheduler"))),
+                    && c.receiver.proto == ProtoRef::Unknown
+                    && starts(&c.receiver, "queueCount")),
             "no Scheduler field load in schedule: {cases:?}"
         );
 
@@ -155,10 +169,7 @@ fn richards_facts_round_trip() {
         assert_eq!(globals, [BindingSet::DATA, BindingSet::DATA], "{rs:?}");
 
         // The Packet constructor: `this.link = link` adds a field (an add case).
-        let packet = match decl("Packet") {
-            FunctionRef::Js { function, .. } => function,
-            FunctionRef::Builtin(_) => unreachable!(),
-        };
+        let packet = function_named(&unit, "Packet");
         assert!(
             records(&facts, packet)
                 .iter()
@@ -182,6 +193,175 @@ fn richards_facts_round_trip() {
         // A second isolate gives the same bytes: no ShapeId, address or closure identity.
         let (_, again) = run(&src);
         assert_eq!(again.encode(), bytes);
+    });
+}
+
+/// The id of the function named `name` (a declaration, a class or a `var` initializer).
+fn function_named(unit: &VerifiedUnit, name: &str) -> u32 {
+    unit.functions
+        .iter()
+        .position(|f| {
+            f.name
+                .is_some_and(|n| unit.strings[n.index()] == UnitString::new(name))
+        })
+        .unwrap_or_else(|| panic!("no function {name}")) as u32
+}
+
+/// The cases of the one property record of function `f`.
+fn property_cases(s: &FactSnapshot, f: u32) -> Vec<PropertyCase> {
+    let rs = records(s, f);
+    let props: Vec<_> = rs
+        .iter()
+        .filter_map(|r| match r {
+            SlotFacts::LoadNamed(p) | SlotFacts::StoreNamed(p) => Some(p),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(props.len(), 1, "{rs:?}");
+    props[0].cases.clone()
+}
+
+/// The bindings of the one global record of function `f`.
+fn global_bindings(s: &FactSnapshot, f: u32) -> BindingSet {
+    let rs = records(s, f);
+    let globals: Vec<_> = rs
+        .iter()
+        .filter_map(|r| match r {
+            SlotFacts::LoadGlobal(g) | SlotFacts::StoreGlobal(g) => Some(g.bindings),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(globals.len(), 1, "{rs:?}");
+    globals[0]
+}
+
+/// Export, encode, decode, equal; the validator keeps every record.
+fn assert_round_trip(unit: &VerifiedUnit, facts: &FactSnapshot) {
+    let bytes = facts.encode();
+    let back = FactSnapshot::decode(&bytes).expect("the exporter's bytes decode");
+    assert_eq!(&back, facts);
+    assert_eq!(back.encode(), bytes);
+    let (valid, dropped) = back.validate(unit).expect("not stale");
+    assert!(dropped.is_empty(), "{dropped:?}");
+    assert_eq!(&valid, facts);
+}
+
+/// Codex C-FX1 (M3-P3 round 1): the global object can have a null prototype (it becomes a
+/// prototype first, so its shape stays fast). A `SLOW` global case keyed on its shape is then
+/// not a lexical binding: an accessor is `accessor-property`, a read-only data property is
+/// `data-property`. The JS lines give the node v24.22.1 results.
+#[test]
+fn a_null_prototype_global_is_not_lexical() {
+    on_big_stack(|| {
+        let src = r#"
+var heir = Object.create(globalThis);
+Object.setPrototypeOf(globalThis, null);
+Object.defineProperty(globalThis, "q", { get: function () { return 7; }, configurable: true });
+Object.defineProperty(globalThis, "ro", { value: 1, writable: false, configurable: true });
+const k = 1;
+let lv = 2;
+function readQ() { return q; }
+function writeRo() { ro = 2; }
+function writeK() { try { k = 3; } catch (e) { return e.constructor.name; } }
+function readLv() { return lv; }
+for (var i = 0; i < 20; i++) {
+  var got = [readQ(), writeRo(), ro, writeK(), readLv()].join();
+  if (got !== "7,,1,TypeError,2") throw new Error(got);
+}
+if (Object.getPrototypeOf(globalThis) !== null) throw new Error("prototype");
+"#;
+        for stress in [false, true] {
+            let (unit, facts) = run_with(src, 0, stress);
+            let f = |name| global_bindings(&facts, function_named(&unit, name));
+            // Negative checks first: no global-object case is lexical.
+            assert!(
+                !f("readQ").contains(BindingSet::LEXICAL),
+                "{:?}",
+                f("readQ")
+            );
+            assert!(
+                !f("writeRo").contains(BindingSet::LEXICAL),
+                "{:?}",
+                f("writeRo")
+            );
+            assert_eq!(f("readQ"), BindingSet::ACCESSOR);
+            assert_eq!(f("writeRo"), BindingSet::DATA);
+            // A `let` load stays lexical (a field case). A store to a `const` throws, and the miss
+            // path records no case for a store that throws: no binding.
+            assert_eq!(f("readLv"), BindingSet::LEXICAL);
+            assert_eq!(f("writeK"), BindingSet::EMPTY);
+            assert_round_trip(&unit, &facts);
+        }
+    });
+}
+
+/// Codex C-FX2 (M3-P3 round 1): `constructor` and `prototype` are writable, so a backlink
+/// pair does not prove that an object is the initial prototype of a function. Only a class
+/// keeps that proof (its `prototype` is {w: false, c: false} from DefineClass, and its
+/// `[[HomeObject]]` is that object), so only a class instance's prototype is
+/// `function-prototype`; the replaced, forged and arrow cases, and a `function` declaration's
+/// prototype (no proof kept), are `unknown`. The JS lines give the node v24.22.1 results.
+#[test]
+fn only_a_proven_initial_prototype_is_named() {
+    on_big_stack(|| {
+        let src = r#"
+function C() {}
+C.prototype = { constructor: C };
+var A = () => {};
+A.prototype = { constructor: A };
+function D() {}
+var dp = Object.create(Object.prototype);
+Object.defineProperty(dp, "constructor", { value: D, writable: true, configurable: true });
+D.prototype = dp;
+function E() {}
+class K { constructor() { this.x = 1; } }
+class J {}
+J.prototype.constructor = K;
+function readC(o) { return o.x; }
+function readA(o) { return o.x; }
+function readD(o) { return o.x; }
+function readE(o) { return o.x; }
+function readK(o) { return o.x; }
+function readJ(o) { return o.x; }
+var c = new C(), a = Object.create(A.prototype), d = new D(), e = new E(), k = new K(),
+  j = new J();
+for (var i = 0; i < 20; i++) {
+  var got = [readC(c), readA(a), readD(d), readE(e), readK(k), readJ(j)].join();
+  if (got !== ",,,,1,") throw new Error(got);
+}
+if (Object.getPrototypeOf(a).constructor !== A || d.constructor !== D) throw new Error("links");
+if (j.constructor !== K || Object.getOwnPropertyDescriptor(K, "prototype").writable)
+  throw new Error("class");
+"#;
+        for stress in [false, true] {
+            let (unit, facts) = run_with(src, 0, stress);
+            let hash = unit.content_hash();
+            let proto = |reader: &str| {
+                let cases = property_cases(&facts, function_named(&unit, reader));
+                assert_eq!(cases.len(), 1, "{reader}: {cases:?}");
+                cases[0].receiver.proto
+            };
+            let named = |f: &str| {
+                ProtoRef::FunctionPrototype(FunctionRef::Js {
+                    unit: hash,
+                    function: function_named(&unit, f),
+                })
+            };
+            // Negative checks first: no forged or unproven backlink names a function.
+            for (reader, f) in [
+                ("readC", "C"),
+                ("readA", "A"),
+                ("readD", "D"),
+                ("readE", "E"),
+                ("readJ", "K"),
+                ("readJ", "J"),
+            ] {
+                assert_ne!(proto(reader), named(f), "{reader}");
+                assert_eq!(proto(reader), ProtoRef::Unknown, "{reader}");
+            }
+            assert_eq!(proto("readK"), named("K"));
+            assert_round_trip(&unit, &facts);
+        }
     });
 }
 
