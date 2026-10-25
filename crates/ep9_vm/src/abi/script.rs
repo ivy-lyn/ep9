@@ -26,7 +26,7 @@
 //! Every unit made here stays loaded until the isolate drops (`Runtime::units` only grows):
 //! each eval or `Function()` call costs its unit (P3-EVAL-VM task 8).
 
-use ep9_bytecode::{EvalContext, FunctionCtorKind, VerifiedUnit};
+use ep9_bytecode::{CodeKind, EvalContext, FunctionCtorKind, VerifiedUnit};
 use ep9_value::{JsResult, Throw};
 
 use super::{Args, Cx, JsFunction, JsString, Local};
@@ -124,6 +124,11 @@ impl<'s> Cx<'s> {
         let index = u32::try_from(rt.units.borrow().len()).expect("fewer than 2^32 units");
         let mut lu = LoadedUnit::load(rt, unit, file.to_string(), index);
         lu.eval_receiver = receiver;
+        if lu.unit.header.code_kind == CodeKind::Eval {
+            // The ScriptOrModule of the code that runs eval or `Function()` now: `import()`
+            // in the new code and in its functions resolves from there (M3-P3).
+            lu.script_or_module = Some(crate::module::eval_referrer(rt, context));
+        }
         let entry: *const FunctionInfo = &lu.infos[0];
         rt.units.borrow_mut().push(lu);
         Self::local(object::new_function(rt, entry, context))

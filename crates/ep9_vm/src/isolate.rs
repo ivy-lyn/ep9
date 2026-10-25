@@ -453,7 +453,7 @@ impl Isolate {
     /// ([`abi::Cx::run_script`]), calls and microtask checkpoints. The hooks have the rules of
     /// the hooks of [`abi::Cx::run_module`]; a `run_module` inside `f` uses its own hooks for
     /// its run. Calls nest: the innermost host is the one in use. With no module host,
-    /// `import()` throws the v0 not-implemented `Error`.
+    /// `import()` throws the v0 not-implemented `Error`. Only this isolate uses the host.
     ///
     /// ```
     /// use ep9_vm::{CompileFailure, Isolate, IsolateConfig};
@@ -806,12 +806,15 @@ impl<'s> abi::Cx<'s> {
     /// An import attribute key other than `type` is a `SyntaxError` (in `import()` a
     /// `TypeError`); `type: "json"` throws the v0 not-implemented `Error`, another type a
     /// `TypeError`. The result is undefined; the module's code runs with `this` undefined.
-    /// With a top-level `await` in the graph, `run_module` runs microtask checkpoints until
-    /// the entry's evaluation settles: a rejection is the throw, and an `Error` if it never
-    /// settles. `import()` in code that runs during the call (also in those checkpoints)
-    /// uses `resolve` and `load`; after the call, `import()` uses the host of
-    /// [`Isolate::with_module_host`], or throws the v0 not-implemented `Error`. Run a microtask
-    /// checkpoint after it ([`Isolate::with_cx_checkpoint`]).
+    /// After the evaluation, `run_module` runs a microtask checkpoint (also with no `await`
+    /// in the graph), so a top-level `await` settles in the call: a rejection is the throw,
+    /// and an `Error` if it never settles. `import()` in code that runs during the call (also
+    /// in that checkpoint: in a promise job, or in a module that `import()` evaluates) uses
+    /// `resolve` and `load`, and resolves from the module or script whose code calls it (for
+    /// a function made by eval code or `Function()`, the code that made it); its module goes
+    /// into the module map of that referrer's realm. After the call, `import()` uses the
+    /// host of [`Isolate::with_module_host`], or throws the v0 not-implemented `Error`. Run a
+    /// microtask checkpoint after it ([`Isolate::with_cx_checkpoint`]).
     ///
     /// ```compile_fail
     /// use ep9_vm::Isolate;

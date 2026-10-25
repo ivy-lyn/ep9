@@ -12,7 +12,7 @@
 //!   link: InnerModuleLinking (§16.2.1.5.1.1), InitializeEnvironment (§16.2.1.6.4)
 //!   evaluate: Evaluate (§16.2.1.5.3): InnerModuleEvaluation; an error is cached in
 //!     [[EvaluationError]]; the result is a promise ([[TopLevelCapability]])
-//!   a pending promise (top-level await): microtask checkpoints until it settles
+//!   a microtask checkpoint with the host in place: top-level await, import() in jobs
 //!
 //! import(s, o) (id 43, slow/module.rs) -> dynamic_import            the host of the run
 //!   resolve + load (HostLoadImportedModule) -> load_graph -> a load promise
@@ -40,6 +40,7 @@
 //! | `TOP_LEVEL_CAPABILITY` | `[[TopLevelCapability]]`: the promise of Evaluate (the VM settles it; no resolve functions are made), or undefined |
 //! | `ASYNC_PARENT_MODULES` | `[[AsyncParentModules]]`: an ELEMENTS list `[n, m1 .. mn]`, or undefined |
 //! | `PENDING_ASYNC_DEPENDENCIES` | `[[PendingAsyncDependencies]]` (int32) |
+//! | `HOST_DEFINED` | the record's `[[Realm]]`: the REALM whose module map holds it ([`realm_of`]) |
 //!
 //! A module binding that other modules can see (an export or an import) is a *cell*: the
 //! front end numbers exported bindings `1, 2, ...` and imports `-1, -2, ...`
@@ -88,13 +89,19 @@
 //!
 //! `import()` needs the hooks of a host. [`with_host`] makes a [`Host`] the module host of
 //! the isolate for the length of a call (a thread-local list, `HOSTS`); `Cx::run_module` does
-//! it for its run, its loads and its checkpoints. With no host, `import()` throws the v0
+//! it for its run, its loads and its checkpoint. With no host, `import()` throws the v0
 //! not-implemented Error (as eval with no compiler hooks throws). `Isolate::with_module_host`
 //! does it for an embedder's scripts, calls and checkpoints (isolate.rs).
+//!
+//! The referrer of `import()` is GetActiveScriptOrModule ([`active_script_or_module`]): the
+//! module or script whose code runs, or for eval code and the functions it makes, the
+//! ScriptOrModule when that code loaded ([`EvalReferrer`]). The module goes into the module
+//! map of the referrer's realm, not of the realm that runs the call.
 
 use std::cell::RefCell;
 
 use ep9_bytecode::{CodeKind, ExportImportName, ImportName, ModuleRecords, VerifiedUnit};
+use ep9_heap::WeakHandle;
 use ep9_value::{JsResult, Throw};
 
 use crate::abi::{self, Args, JsObject, JsValue, Local, PromiseState};
@@ -111,7 +118,7 @@ use crate::interp::Cx;
 use crate::key::{Probe, is_symbol_key, key_eq};
 use crate::kinds as kind;
 use crate::object::{self, attr, genf, init, modf, nsf, realmf};
-use crate::runtime::{ErrorKind, Runtime, val};
+use crate::runtime::{ErrorKind, Root, Runtime, val};
 use crate::unit::{FunctionInfo, LoadedUnit};
 use crate::{atoms, conv, generator, jobs, property, string, symbol};
 
@@ -232,6 +239,12 @@ fn environment(m: u64) -> u64 {
 /// The record that request `r` of `m` loaded (undefined before loading).
 fn loaded(m: u64, r: u32) -> u64 {
     object::list_get(object::record_get(m, modf::LOADED), r as usize)
+}
+
+/// `[[Realm]]` of `m`: the realm whose module map holds it (`modf::HOST_DEFINED`). Its
+/// requests load into that map, and Link makes its functions in that realm.
+fn realm_of(m: u64) -> u64 {
+    object::record_get(m, modf::HOST_DEFINED)
 }
 
 /// The name the host gave `m` (an atom).
@@ -479,21 +492,22 @@ fn throw_load_failure(cx: &mut Cx, name: &str, f: CompileFailure) -> ep9_value::
     }
 }
 
-/// The record of the module named `name` in the current realm, made from `unit` if the map
-/// has none. GC point.
-fn module_for_unit(cx: &mut Cx, unit: VerifiedUnit, name: &str) -> Res<u64> {
+/// The record of the module named `name` in the module map of `realm`, made from `unit` if
+/// the map has none (its `[[Realm]]` is `realm`). GC point.
+fn module_for_unit(cx: &mut Cx, realm: u64, unit: VerifiedUnit, name: &str) -> Res<u64> {
     if unit.header.code_kind != CodeKind::Module {
         let msg = format!("{name} is not a module unit");
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     }
     let rt = cx.rt();
     let key = atoms::intern_str(rt, name);
-    if let Some(m) = map_get(cx.realm, key) {
+    if let Some(m) = map_get(realm, key) {
         return Ok(m);
     }
     let lu = load_unit(rt, unit, name);
     let m = new_module(rt, lu, key);
-    map_add(rt, cx.realm, key, m);
+    object::record_set(rt, m, modf::HOST_DEFINED, realm);
+    map_add(rt, realm, key, m);
     Ok(m)
 }
 
@@ -505,26 +519,27 @@ pub(crate) struct Host<'h> {
 }
 
 std::thread_local! {
-    /// The module hosts in use on this thread, innermost last: (the address of the isolate's
-    /// `Runtime`, its host). [`with_host`] adds an entry for the length of one call and
-    /// removes it after, also on a panic, so an entry never outlives its host. An isolate
-    /// stays on one thread (its `Runtime` holds `Rc`s), so the address keys the entries of
-    /// one isolate. Holds no Value.
-    static HOSTS: RefCell<Vec<(usize, *mut Host<'static>)>> = const { RefCell::new(Vec::new()) };
+    /// The module hosts in use on this thread, innermost last: (the isolate's key,
+    /// [`host_key`]; its host). [`with_host`] adds an entry for the length of one call and
+    /// removes it after, also on a panic, so an entry never outlives its host. The key is
+    /// `Runtime::id`, which no other isolate gets, also not one made after this one drops
+    /// at the same address (code in `Isolate::with_module_host`'s call can drop its isolate).
+    /// Holds no Value.
+    static HOSTS: RefCell<Vec<(u64, *mut Host<'static>)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// The key of `rt`'s isolate in `HOSTS` (the address of its `Runtime`).
-pub(crate) fn host_key(rt: &Runtime) -> usize {
-    core::ptr::from_ref(rt).addr()
+/// The key of `rt`'s isolate in `HOSTS`: `Runtime::id`.
+pub(crate) fn host_key(rt: &Runtime) -> u64 {
+    rt.id
 }
 
 /// Runs `f` with `host` as the module host of the isolate with key `key` ([`host_key`]): the
 /// hooks of its loads and of `import()` while `f` runs. Calls nest: the innermost host of an
 /// isolate is the one in use. `Cx::run_module` uses it for its run, and
 /// `Isolate::with_module_host` (isolate.rs) for an embedder's scripts and checkpoints.
-pub(crate) fn with_host<R>(key: usize, host: &mut Host<'_>, f: impl FnOnce() -> R) -> R {
+pub(crate) fn with_host<R>(key: u64, host: &mut Host<'_>, f: impl FnOnce() -> R) -> R {
     /// Removes the entry of its key that it added (the innermost one) when it drops.
-    struct Pop(usize);
+    struct Pop(u64);
     impl Drop for Pop {
         fn drop(&mut self) {
             HOSTS.with_borrow_mut(|h| {
@@ -544,7 +559,7 @@ pub(crate) fn with_host<R>(key: usize, host: &mut Host<'_>, f: impl FnOnce() -> 
 
 /// Calls `f` with the innermost module host of the isolate with key `key` ([`host_key`]);
 /// `None` if it has none.
-pub(crate) fn call_host<R>(key: usize, f: impl FnOnce(&mut Host<'_>) -> R) -> Option<R> {
+pub(crate) fn call_host<R>(key: u64, f: impl FnOnce(&mut Host<'_>) -> R) -> Option<R> {
     let p = HOSTS.with_borrow(|h| h.iter().rev().find(|e| e.0 == key).map(|e| e.1))?;
     // SAFETY: `p` is the host of a `with_host` call that is still running on this thread
     // (its entry is in the list), so the host lives. Nothing else uses it now: `with_host`
@@ -568,11 +583,13 @@ fn host_resolve(cx: &mut Cx, referrer: &str, specifier: &str) -> Res<String> {
     }
 }
 
-/// The record of the module named `name` in the current realm: the map's, or a new one from
-/// the host's `load(name)` (the thrown error of a failed load). GC point.
-fn host_module(cx: &mut Cx, name: &str) -> Res<u64> {
+/// The record of the module named `name` in the module map of `realm` (the referrer's
+/// realm, so one referrer and name give one module, HostLoadImportedModule §16.2.1.10, also
+/// when code of another realm asks): the map's, or a new one from the host's `load(name)`
+/// (the thrown error of a failed load). GC point.
+fn host_module(cx: &mut Cx, realm: u64, name: &str) -> Res<u64> {
     let key = atoms::intern_str(cx.rt(), name);
-    if let Some(t) = map_get(cx.realm, key) {
+    if let Some(t) = map_get(realm, key) {
         return Ok(t);
     }
     let unit = match call_host(host_key(cx.rt()), |h| (h.load)(name)) {
@@ -580,7 +597,7 @@ fn host_module(cx: &mut Cx, name: &str) -> Res<u64> {
         Some(Err(f)) => return Err(throw_load_failure(cx, name, f)),
         None => return Err(not_implemented(cx, "modules without a module host")),
     };
-    module_for_unit(cx, unit, name)
+    module_for_unit(cx, realm, unit, name)
 }
 
 /// LoadRequestedModules (§16.2.1.5.1) with a synchronous host (the module host of the
@@ -622,7 +639,7 @@ fn load_graph(cx: &mut Cx, root: u64) -> Res<()> {
                     let spec = object::list_get(object::record_get(m, modf::REQUESTED), r as usize);
                     let spec = string::to_rust_string(spec);
                     let name = host_resolve(cx, &referrer, &spec)?;
-                    target = host_module(cx, &name)?;
+                    target = host_module(cx, realm_of(m), &name)?;
                     object::list_set(rt, object::record_get(m, modf::LOADED), r as usize, target);
                 }
                 if status_of(target) == status::NEW {
@@ -1770,15 +1787,15 @@ fn evaluate(cx: &mut Cx, module: u64, entry: bool) -> Res<u64> {
 }
 
 /// The result of an entry's Evaluate promise `p` (of module `m`): undefined, or the throw of
-/// its rejection. A pending promise (a top-level `await`) first gets microtask checkpoints
-/// (the module host stays in place for them), and an Error if it is still pending after.
-/// GC point (jobs run).
+/// its rejection, after a microtask checkpoint, while the module host is still in place. So
+/// the jobs of the run use the host: a top-level `await` goes on, and `import()` in a job
+/// (`Promise.resolve().then(() => import(s))`), or in a module that `import()` evaluates in
+/// a job, loads through the run's hooks. An Error if `p` is still pending after the
+/// checkpoint. GC point (jobs run).
 fn settle_entry(cx: &mut Cx, m: u64, p: u64) -> Res<u64> {
     let mut acx = abi::Cx::new(cx);
     let pl = Local::<JsObject>::from_bits(p);
-    if acx.promise_state(pl)? == PromiseState::Pending {
-        acx.perform_microtask_checkpoint()?;
-    }
+    acx.perform_microtask_checkpoint()?;
     match acx.promise_state(pl)? {
         PromiseState::Fulfilled => Ok(UNDEFINED),
         PromiseState::Rejected => {
@@ -1800,8 +1817,9 @@ fn settle_entry(cx: &mut Cx, m: u64, p: u64) -> Res<u64> {
 /// (the body of `Cx::run_module`, isolate.rs), with `host` as the isolate's module host
 /// for the run ([`with_host`]). If the realm's map already has `name`, that record runs and
 /// `unit` is dropped; a module that ran before does not run again (its cached error is
-/// thrown again). With a top-level `await` in the graph, microtask checkpoints run until the
-/// evaluation settles. The result is undefined. GC point.
+/// thrown again). After Evaluate, a microtask checkpoint runs with the host in place
+/// ([`settle_entry`]): a top-level `await` settles there, and `import()` in jobs uses the
+/// host. The result is undefined. GC point.
 pub(crate) fn run_module(
     cx: &mut Cx,
     unit: VerifiedUnit,
@@ -1809,7 +1827,7 @@ pub(crate) fn run_module(
     host: &mut Host<'_>,
 ) -> Res<u64> {
     with_host(host_key(cx.rt()), host, || {
-        let m = module_for_unit(cx, unit, name)?;
+        let m = module_for_unit(cx, cx.realm, unit, name)?;
         load_graph(cx, m)?;
         link(cx, m)?;
         let p = evaluate(cx, m, true)?;
@@ -1819,30 +1837,107 @@ pub(crate) fn run_module(
 
 // ---- import() (§13.3.10.1) ---------------------------------------------------------------------
 
-/// GetActiveScriptOrModule (§9.4.1) for `import()` in the frame `fp`, as the host's referrer
-/// name: the name of the module whose code runs (the end of the context chain), else the
-/// file of the script: the unit of the nearest frame, past eval code and host frames (eval
-/// code has the ScriptOrModule of its caller). Not a GC point.
-fn referrer_name(fp: *mut u64, context: u64) -> String {
+/// The ScriptOrModule of eval code and of a `Function()` body (a `CodeKind::Eval` unit):
+/// GetActiveScriptOrModule (§9.4.1) when the unit loaded (`LoadedUnit::script_or_module`,
+/// set by `abi::Cx::load_entry`). A function made by that code keeps it as its
+/// `[[ScriptOrModule]]` (OrdinaryFunctionCreate, §10.2.3), so its `import()` resolves from
+/// there, not from the code that calls it later. Holds no Value.
+pub(crate) struct EvalReferrer {
+    /// The host's referrer name: a module's name or a script's file; empty for none (null).
+    name: String,
+    /// The referrer's realm (its module map).
+    realm: ReferrerRealm,
+}
+
+/// The realm of an [`EvalReferrer`].
+enum ReferrerRealm {
+    /// The realm that loaded the eval code, so the `[[Realm]]` of its functions (the common
+    /// case: no handle).
+    Own,
+    /// Another realm, weak: a realm that died has no map to load into, and the current
+    /// realm is used.
+    Other(WeakHandle),
+    /// A null ScriptOrModule: the current realm.
+    Current,
+}
+
+/// GetActiveScriptOrModule (§9.4.1) as the host sees it: (the referrer name for `resolve`,
+/// the realm whose module map holds the modules it loads; undefined for none: the caller
+/// takes the current realm, as HostLoadImportedModule takes the current Realm Record for a
+/// null referrer). A module (the end of `context`'s chain, or of the closure context of a
+/// frame's function) gives its name and `[[Realm]]`; script code its file and its
+/// function's realm; eval code its [`EvalReferrer`]. Host frames are passed. `None` if no
+/// frame has one. Not a GC point.
+fn active_script_or_module(rt: &Runtime, fp: *mut u64, context: u64) -> Option<(String, u64)> {
+    let of_module = |m: u64| (string::to_rust_string(name_of(m)), realm_of(m));
     if let Some(m) = module_of_context(context, 0) {
-        return string::to_rust_string(name_of(m));
+        return Some(of_module(m));
     }
     let mut f = FrameRef(fp);
     while !f.is_null() {
-        if let Some(u) = f.info().loaded_unit()
-            && u.unit.header.code_kind != CodeKind::Eval
-        {
-            return u.file.clone();
+        if let Some(u) = f.info().loaded_unit() {
+            if u.unit.header.code_kind != CodeKind::Eval {
+                // SAFETY: `f` is a live frame; its header slot holds the callee (a Value).
+                let callee = unsafe { *f.0.offset(crate::frame::slot::CALLEE) };
+                if !kind::is_object(callee) || kind::cell_kind(callee) != kind::FUNCTION.get() {
+                    return Some((u.file.clone(), UNDEFINED));
+                }
+                if let Some(m) = module_of_context(object::function_context(callee), 0) {
+                    return Some(of_module(m));
+                }
+                return Some((u.file.clone(), object::function_realm(callee)));
+            }
+            if let Some(r) = &u.script_or_module {
+                let realm = match r.realm {
+                    ReferrerRealm::Own => {
+                        // SAFETY: as above.
+                        let callee = unsafe { *f.0.offset(crate::frame::slot::CALLEE) };
+                        if kind::is_object(callee)
+                            && kind::cell_kind(callee) == kind::FUNCTION.get()
+                        {
+                            object::function_realm(callee)
+                        } else {
+                            UNDEFINED
+                        }
+                    }
+                    ReferrerRealm::Other(h) => rt.heap.weak(h).map_or(UNDEFINED, |v| v.to_bits()),
+                    ReferrerRealm::Current => UNDEFINED,
+                };
+                return Some((r.name.clone(), realm));
+            }
         }
         f = f.caller();
     }
-    String::new()
+    None
 }
 
-/// The import attributes of `options` (EvaluateImportCall steps 10-11, §13.3.10.1.1): the
+/// The [`EvalReferrer`] of eval code that loads now, with `context` (the caller's context
+/// for direct eval code; undefined else) and the frames of the running code
+/// (`abi::Cx::load_entry`). Not a GC point.
+pub(crate) fn eval_referrer(rt: &Runtime, context: u64) -> EvalReferrer {
+    match active_script_or_module(rt, rt.stack().fp(), context) {
+        Some((name, realm)) => EvalReferrer {
+            name,
+            realm: if realm == UNDEFINED {
+                ReferrerRealm::Current
+            } else if realm == rt.root(Root::Realm) {
+                ReferrerRealm::Own
+            } else {
+                ReferrerRealm::Other(rt.heap.new_weak(val(realm)))
+            },
+        },
+        None => EvalReferrer {
+            name: String::new(),
+            realm: ReferrerRealm::Current,
+        },
+    }
+}
+
+/// The import attributes of `options` (EvaluateImportCall step 10, §13.3.10.1.1): the
 /// (key, value) list of its `with` object, sorted by key. A TypeError for an options or
-/// `with` value that is not an object, or a value that is not a string. GC point; may run
-/// JS (getters).
+/// `with` value that is not an object, or a value that is not a string. The entries come
+/// first (EnumerableOwnProperties: every getter runs, and its throw is the error), then the
+/// value check. GC point; may run JS (getters).
 fn import_attributes(cx: &mut Cx, options: u64) -> Res<Vec<(String, String)>> {
     let mut out = Vec::new();
     if options == UNDEFINED {
@@ -1867,8 +1962,13 @@ fn import_attributes(cx: &mut Cx, options: u64) -> Res<Vec<(String, String)>> {
             "The 'with' option of import() must be an object",
         ));
     }
-    // EnumerableOwnProperties(attributes, key+value) (§7.3.23).
+    // 10.d.ii. EnumerableOwnProperties(attributes, key+value) (§7.3.23): the entries go to
+    // scratch roots (key, value, key, value, ...), as getters run between them.
+    let rt = cx.rt();
+    let entries = rt.heap.scratch_roots();
+    entries.push(val(attributes));
     let keys = property::own_property_keys(cx, attributes);
+    entries.push(val(keys));
     for i in 0..object::array_len(keys) {
         let Some(k) = object::array_get(keys, i) else {
             continue;
@@ -1883,6 +1983,12 @@ fn import_attributes(cx: &mut Cx, options: u64) -> Res<Vec<(String, String)>> {
             continue;
         }
         let v = property::get(cx, attributes, k)?;
+        entries.push(val(k));
+        entries.push(val(v));
+    }
+    // 10.d.iv. Each value must be a string.
+    for i in (2..entries.len()).step_by(2) {
+        let (k, v) = (entries.get(i).to_bits(), entries.get(i + 1).to_bits());
         if !kind::is_string(v) {
             let msg = format!(
                 "Import attribute value must be a string (attribute \"{}\")",
@@ -1903,9 +2009,11 @@ fn import_attributes(cx: &mut Cx, options: u64) -> Res<Vec<(String, String)>> {
 /// HostLoadImportedModule and ContinueDynamicImport, §16.2.1.10-11) in the frame `fp`: a new
 /// promise. Every error after it exists rejects it. The host loads the module and its graph
 /// at once (a synchronous host); Link and Evaluate run in a job, and the namespace fulfills
-/// the promise in the job after Evaluate's promise settles. With no module host (no run of
-/// `Cx::run_module` is in progress), the v0 not-implemented Error. GC point; may run JS
-/// (ToString, the options' getters).
+/// the promise in the job after Evaluate's promise settles. The referrer is the active
+/// ScriptOrModule ([`active_script_or_module`]), and the module goes into its realm's map;
+/// the promise is of the current realm. With no module host (no `Cx::run_module` or
+/// `Isolate::with_module_host` call is in progress), the v0 not-implemented Error. GC point;
+/// may run JS (ToString, the options' getters).
 pub(crate) fn dynamic_import(
     cx: &mut Cx,
     fp: *mut u64,
@@ -1916,10 +2024,13 @@ pub(crate) fn dynamic_import(
     if !has_host(cx.rt()) {
         return Err(not_implemented(cx, "DynamicImport"));
     }
-    let referrer = referrer_name(fp, context);
-    // 5. NewPromiseCapability(%Promise%).
+    // 1. GetActiveScriptOrModule: its name and realm (a null referrer: the current realm).
+    let (referrer, realm) =
+        active_script_or_module(cx.rt(), fp, context).unwrap_or_else(|| (String::new(), UNDEFINED));
+    let realm = if realm == UNDEFINED { cx.realm } else { realm };
+    // 5. NewPromiseCapability(%Promise%) of the current realm.
     let p = new_promise(cx)?;
-    match import_load(cx, &referrer, specifier, options) {
+    match import_load(cx, &referrer, realm, specifier, options) {
         Ok(m) => {
             // ContinueDynamicImport steps 2-6 with the load promise of the graph.
             let load = new_promise(cx)?;
@@ -1956,9 +2067,9 @@ pub(crate) fn dynamic_import(
 }
 
 /// EvaluateImportCall steps 6-12 and HostLoadImportedModule (with FinishLoadingImportedModule)
-/// for `import(specifier, options)` from `referrer`: the module's record (its graph not loaded
-/// yet). GC point; may run JS.
-fn import_load(cx: &mut Cx, referrer: &str, specifier: u64, options: u64) -> Res<u64> {
+/// for `import(specifier, options)` from `referrer`, whose modules are in the map of `realm`:
+/// the module's record (its graph not loaded yet). GC point; may run JS.
+fn import_load(cx: &mut Cx, referrer: &str, realm: u64, specifier: u64, options: u64) -> Res<u64> {
     // 6-7. ToString(specifier).
     let spec = conv::to_string(cx, specifier)?;
     let spec = string::to_rust_string(spec);
@@ -1972,7 +2083,7 @@ fn import_load(cx: &mut Cx, referrer: &str, specifier: u64, options: u64) -> Res
     check_attribute_list(cx, &attributes)?;
     // HostLoadImportedModule.
     let name = host_resolve(cx, referrer, &spec)?;
-    host_module(cx, &name)
+    host_module(cx, realm, &name)
 }
 
 /// The rejected closure of ContinueDynamicImport (steps 3-4, 6.b): rejects the import()
@@ -1990,7 +2101,8 @@ fn import_rejected<'s>(
 
 /// The linkAndEvaluate closure of ContinueDynamicImport (step 6): Link (a throw rejects),
 /// then Evaluate, then the namespace in a job after Evaluate's promise settles. The data is
-/// `[module, the import() promise]`.
+/// `[module, the import() promise]`. Link and Evaluate run in the module's `[[Realm]]` (the
+/// job runs in the realm of the `import()` call, which can be another one).
 fn import_link_and_evaluate<'s>(
     cx: &mut abi::Cx<'s>,
     _this: Local<'s>,
@@ -2000,12 +2112,29 @@ fn import_link_and_evaluate<'s>(
     let data = cx.closure_data(args.callee()).bits();
     let (m, p) = (object::list_get(data, 0), object::list_get(data, 1));
     let icx = cx.inner();
-    if let Err(t) = link(icx, m) {
-        let e = catch(icx, t)?;
-        reject_pending(icx, p, e);
-        return Ok(Local::undefined());
+    let saved = icx.realm;
+    let realm = realm_of(m);
+    let switch = realm != saved && realm != UNDEFINED;
+    if switch {
+        crate::realm::switch(icx, realm);
     }
-    let ep = evaluate(icx, m, false)?;
+    // Err((true, _)): Link threw (a rejection); Err((false, _)): a termination in Evaluate.
+    let r = match link(icx, m) {
+        Ok(()) => evaluate(icx, m, false).map_err(|t| (false, t)),
+        Err(t) => Err((true, t)),
+    };
+    if switch {
+        crate::realm::switch(icx, saved);
+    }
+    let ep = match r {
+        Ok(ep) => ep,
+        Err((true, t)) => {
+            let e = catch(icx, t)?;
+            reject_pending(icx, p, e);
+            return Ok(Local::undefined());
+        }
+        Err((false, t)) => return Err(t),
+    };
     let on_fulfilled =
         cx.new_builtin_closure(import_evaluated, "", 0, Local::<JsValue>::from_bits(data));
     let on_rejected =

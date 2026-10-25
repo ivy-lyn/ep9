@@ -94,7 +94,8 @@ pub(crate) fn get_import_meta(cx: &mut Cx, fp: *mut u64) -> Res<u64> {
 }
 
 /// Id 43: `import(specifier, options)` (§13.3.10.1): a promise (`module::dynamic_import`).
-/// With no module host in place (no `Cx::run_module` runs), the v0 not-implemented Error.
+/// With no module host in place (no `Cx::run_module` or `Isolate::with_module_host` call
+/// runs), the v0 not-implemented Error.
 pub(crate) fn dynamic_import(cx: &mut Cx, fp: *mut u64, specifier: u64, options: u64) -> Res<u64> {
     probe::note("module DynamicImport");
     module::dynamic_import(cx, fp, context(fp), specifier, options)

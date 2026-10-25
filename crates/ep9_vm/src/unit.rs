@@ -91,6 +91,10 @@ pub(crate) struct LoadedUnit {
     /// The [`EvalPrologue`] of function 0, decoded at its first `DeclareEval*` call. Every
     /// eval loads a new unit, so a run decodes its prologue once, not once per call.
     pub eval_prologue: OnceCell<EvalPrologue>,
+    /// The ScriptOrModule of a `CodeKind::Eval` unit (eval code, a `Function()` body) for
+    /// `import()` in it and in the functions it makes (`module::EvalReferrer`); set before
+    /// the unit is pushed to `Runtime::units`. `None` for other units.
+    pub script_or_module: Option<crate::module::EvalReferrer>,
     strings: Box<[Slot]>,
     consts: Box<[Box<[Slot]>]>,
     roots: Vec<RootId>,
@@ -117,6 +121,7 @@ impl LoadedUnit {
             feedback,
             eval_receiver: EvalReceiver::default(),
             eval_prologue: OnceCell::new(),
+            script_or_module: None,
             roots: Vec::new(),
         });
         // SAFETY: the slices live in boxes that the LoadedUnit owns. LoadedUnit has no Drop and
