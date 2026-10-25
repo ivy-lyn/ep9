@@ -83,6 +83,13 @@ fn num(d: f64) -> u64 {
     Value::number(d).to_bits()
 }
 
+/// True for null and undefined (0x02 and 0x0a: they differ only in `encoding::UNDEFINED_TAG`).
+#[inline(always)]
+fn nullish(b: u64) -> bool {
+    const _: () = assert!(NULL | ep9_value::encoding::UNDEFINED_TAG == UNDEFINED);
+    b & !ep9_value::encoding::UNDEFINED_TAG == NULL
+}
+
 #[inline(always)]
 fn boolean(b: bool) -> u64 {
     if b { TRUE } else { FALSE }
@@ -966,6 +973,14 @@ op!(TestEqual(st, lhs: R, _s: FSlot) {
     let (l, r) = (st.reg(lhs), st.acc);
     if is_i32(l) && is_i32(r) {
         st.acc = boolean(l == r);
+        return Flow::Next;
+    }
+    // `x == null` (IsLooselyEqual, §7.2.15): with null or undefined on one side, the
+    // result is whether the other side is null or undefined too; no conversion runs (v0 has
+    // no [[IsHTMLDDA]] object, see TestUndetectable).
+    let (nl, nr) = (nullish(l), nullish(r));
+    if nl || nr {
+        st.acc = boolean(nl && nr);
         return Flow::Next;
     }
     Flow::Cold
