@@ -83,6 +83,31 @@ downcast! {
 }
 
 /// A value held by Rust code for the host call `'s` (see the module docs).
+///
+/// An upcast keeps the scope: each `From` impl of the upcast list converts `Local<'s, A>` to
+/// `Local<'s, B>` with the same `'s`, so `.into()` cannot take a `Local` out of
+/// `Isolate::with_cx` (the H20 core golden holds these impl signatures). The same upcast
+/// inside the scope compiles:
+///
+/// ```
+/// use ep9_vm::{Isolate, IsolateConfig, JsObject, JsValue, Local};
+/// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+/// let is_object = iso.with_cx(|cx| {
+///     let v: Local<'_, JsValue> = cx.global().into();
+///     Ok(v.downcast::<JsObject>().is_some())
+/// });
+/// assert_eq!(is_object, Ok(true));
+/// ```
+///
+/// An escape through `.into()` does not compile:
+///
+/// ```compile_fail
+/// use ep9_vm::{Isolate, IsolateConfig, JsValue, Local};
+/// let mut iso = Isolate::new(IsolateConfig::default()).unwrap();
+/// let global: Local<'static, JsValue> = iso.with_cx(|cx| Ok(cx.global().into())).unwrap();
+/// iso.collect_garbage();
+/// let _ = global;
+/// ```
 #[repr(transparent)]
 pub struct Local<'s, T = JsValue> {
     value: Value,

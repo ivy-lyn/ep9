@@ -4,15 +4,25 @@
 //!
 //! ```text
 //! src/abi/*.rs     every pub item: types (fields, variants, derives), traits, the pub items
-//!                  of their impl blocks (`Cx`, `Args`, `Local`, ...), trait impls, the marker
-//!                  macro lists, the `pub use` re-exports
-//! src/isolate.rs   the `impl Cx` block (the scoped embedder forms), and the embedder entry
-//!                  points of `impl Isolate` (`ENTRY_POINTS`: the calls that run ABI code or
-//!                  install a hook that ABI code calls; H20-Q4)
+//!                  of their impl blocks (`Cx`, `Args`, `Local`, ...), trait impls (also the
+//!                  impls that a local `macro_rules!` makes: the `upcast!` and `downcast!`
+//!                  lists, expanded, so the line has the generated signature with its
+//!                  lifetimes), the `pub use` re-exports
+//! src/isolate.rs   the `impl Cx` block (the scoped embedder forms)
+//! src/**/*.rs      every pub method of every default-build `impl Isolate` block (a block
+//!                  with no positive `cfg`, in a module that `lib.rs` does not gate): the
+//!                  embedder entry points (`ENTRY_POINTS`: the calls that run ABI code or
+//!                  install a hook that ABI code calls; H20-Q4) are core `embed:` lines; the
+//!                  other methods are `embed (not core):` lines
 //! src/builtins.rs  the builtin table types and `check_tables`
 //! src/lib.rs       the crate-root re-exports of `abi` and `builtins` (the public paths), and
 //!                  the path of `Isolate`
 //! ```
+//!
+//! The `embed (not core):` lines are the embedder API of H22, H23 and H19, with their own
+//! freeze points. They are here so that a new `Isolate` method (for example a raw `Value` form
+//! that comes back, H20-Q4) is a new golden line that a review must bless; test
+//! `no_isolate_method_takes_or_gives_a_raw_value` also fails on it.
 //!
 //! A line is a signature without parameter names (a rename is not an API change), with the
 //! attributes that matter to a caller (`derive`, `repr`, `non_exhaustive`, `cfg`,
@@ -21,8 +31,8 @@
 //! `tests/golden/vm-builtin-ids.txt`, `tests/golden/object-classes.txt`), private and
 //! `pub(crate)` items, and `export_facts` (H20 part 2, V8-A13: only its path is here).
 //!
-//! The core freezes at M0 exit. After that a line that changes or goes away is a change to a
-//! Frozen part (README §3.2); a new line is an addition to the part-2 `Cx` method list (append
+//! The core freezes at M0 exit. After that a core line that changes or goes away is a change to
+//! a Frozen part (README §3.2); a new line is an addition to the part-2 `Cx` method list (append
 //! only). The test tells the two apart. `EP9_BLESS=1 cargo test -p ep9_vm --test h20_core`
 //! rewrites the file; review the diff: after the freeze, only added lines are allowed.
 
@@ -37,21 +47,68 @@ fn golden_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/h20-core.txt")
 }
 
-/// The source files the golden reads, as (path under `src/`, text), `abi/` sorted by name.
-fn sources() -> Vec<(String, String)> {
-    let mut abi: Vec<String> = std::fs::read_dir(src_dir().join("abi"))
-        .expect("src/abi")
+/// The `.rs` files under `src/dir` (paths under `src/`), sorted, with the subdirectories.
+fn rs_files(dir: &str, out: &mut Vec<String>) {
+    let mut names: Vec<String> = std::fs::read_dir(src_dir().join(dir))
+        .unwrap_or_else(|e| panic!("src/{dir}: {e}"))
         .map(|e| e.expect("a dir entry").file_name().into_string().unwrap())
-        .filter(|n| n.ends_with(".rs"))
-        .map(|n| format!("abi/{n}"))
         .collect();
-    abi.sort();
+    names.sort();
+    for n in names {
+        let p = if dir.is_empty() {
+            n.clone()
+        } else {
+            format!("{dir}/{n}")
+        };
+        if src_dir().join(&p).is_dir() {
+            rs_files(&p, out);
+        } else if n.ends_with(".rs") {
+            out.push(p);
+        }
+    }
+}
+
+/// True if an item with these attributes is not in the default build: a positive `cfg`
+/// (`cfg(test)`, `cfg(feature = ..)`, `cfg(any(..))`); `cfg(not(..))` is default build.
+fn gated(attrs: &[String]) -> bool {
+    attrs
+        .iter()
+        .any(|a| a.starts_with("#[cfg(") && !a.starts_with("#[cfg(not("))
+}
+
+/// The source files the golden reads, as (path under `src/`, text): `abi/` sorted by name,
+/// `isolate.rs`, `builtins.rs`, `lib.rs`, then the other files of the default build (sorted;
+/// read only for their `impl Isolate` blocks). A module that `lib.rs` declares under a
+/// positive `cfg` (`tests`, `native`) is not default build: its files are left out.
+fn sources() -> Vec<(String, String)> {
+    let read = |p: &str| {
+        std::fs::read_to_string(src_dir().join(p))
+            .unwrap_or_else(|e| panic!("src/{p}: {e}"))
+            .replace("\r\n", "\n")
+    };
+    let gated_mods: Vec<String> = items(&strip(&read("lib.rs")))
+        .into_iter()
+        .filter(|it| it.body.is_none() && gated(&it.attrs))
+        .filter_map(|it| {
+            let name = it.head.strip_prefix("pub ").unwrap_or(&it.head);
+            name.strip_prefix("mod ").map(String::from)
+        })
+        .collect();
+    let mut abi = Vec::new();
+    rs_files("abi", &mut abi);
     abi.extend(["isolate.rs", "builtins.rs", "lib.rs"].map(String::from));
+    let mut all = Vec::new();
+    rs_files("", &mut all);
+    for p in all {
+        let top = p.split('/').next().unwrap().trim_end_matches(".rs");
+        if !abi.contains(&p) && !gated_mods.iter().any(|m| m == top) {
+            abi.push(p);
+        }
+    }
     abi.into_iter()
         .map(|p| {
-            let text = std::fs::read_to_string(src_dir().join(&p))
-                .unwrap_or_else(|e| panic!("src/{p}: {e}"));
-            (p, text.replace("\r\n", "\n"))
+            let text = read(&p);
+            (p, text)
         })
         .collect()
 }
@@ -235,6 +292,162 @@ fn items(text: &str) -> Vec<Item> {
             });
             i = next;
         }
+    }
+    out
+}
+
+/// The items of a stripped file, with each call of a `macro_rules!` macro of the same file
+/// replaced by the items that the call makes ([`expand`]). The definitions are dropped. A call
+/// of a macro from elsewhere stays an item (its head ends with `!`).
+fn file_items(text: &str) -> Vec<Item> {
+    let all = items(text);
+    let defs: Vec<(String, String)> = all
+        .iter()
+        .filter_map(|it| {
+            let name = it.head.strip_prefix("macro_rules! ")?;
+            Some((name.to_string(), it.body.clone().unwrap_or_default()))
+        })
+        .collect();
+    let mut out = Vec::new();
+    for it in all {
+        if it.head.starts_with("macro_rules!") {
+            continue;
+        }
+        let def = it
+            .head
+            .strip_suffix('!')
+            .and_then(|n| defs.iter().find(|(d, _)| d == n));
+        match def {
+            Some((name, def)) => {
+                out.extend(items(&expand(name, def, it.body.as_deref().unwrap_or(""))));
+            }
+            None => out.push(it),
+        }
+    }
+    out
+}
+
+/// The text that the call `name! { call }` makes, from the body `def` of `macro_rules! name`.
+/// The form read: one rule `($( $a:frag SEP $b:frag ... , )*) => {$( template )*}`; each
+/// entry of the call (split at the top-level commas) is split at the fixed tokens of the
+/// pattern, and gives one copy of the template with each `$a` replaced. Another form panics:
+/// teach this function the form before the golden can read it.
+fn expand(name: &str, def: &str, call: &str) -> String {
+    let bad = |why: &str| -> ! {
+        panic!("macro {name}!: {why}; tests/h20_core.rs `expand` does not read this form")
+    };
+    // `$( inner )*` -> inner.
+    let repeated = |s: &str| -> String {
+        let c: Vec<char> = s.trim().chars().collect();
+        if c.len() < 4 || c[0] != '$' || c[1] != '(' || c[c.len() - 1] != '*' {
+            bad("not a `$( .. )*` repetition");
+        }
+        if close(&c, 1) != c.len() - 1 {
+            bad("text after the repetition");
+        }
+        c[2..c.len() - 2].iter().collect()
+    };
+    let c: Vec<char> = def.chars().collect();
+    let mut i = 0;
+    let skip_ws = |i: &mut usize| {
+        while *i < c.len() && c[*i].is_whitespace() {
+            *i += 1;
+        }
+    };
+    skip_ws(&mut i);
+    if c.get(i) != Some(&'(') {
+        bad("no `(` matcher");
+    }
+    let m_end = close(&c, i);
+    let matcher = repeated(&c[i + 1..m_end - 1].iter().collect::<String>());
+    i = m_end;
+    skip_ws(&mut i);
+    if !(c.get(i) == Some(&'=') && c.get(i + 1) == Some(&'>')) {
+        bad("no `=>` after the matcher");
+    }
+    i += 2;
+    skip_ws(&mut i);
+    if c.get(i) != Some(&'{') {
+        bad("no `{` template");
+    }
+    let t_end = close(&c, i);
+    let template = repeated(&c[i + 1..t_end - 1].iter().collect::<String>());
+    i = t_end;
+    while i < c.len() && (c[i].is_whitespace() || c[i] == ';') {
+        i += 1;
+    }
+    if i != c.len() {
+        bad("more than one rule");
+    }
+    // The pattern: variables and the fixed tokens between them, then `,`.
+    let m: Vec<char> = matcher.chars().collect();
+    let mut vars = Vec::new();
+    let mut fixed = Vec::new();
+    let mut lit = String::new();
+    let mut k = 0;
+    while k < m.len() {
+        if m[k] == '$' {
+            if !vars.is_empty() {
+                fixed.push(lit.trim().to_string());
+            } else if !lit.trim().is_empty() {
+                bad("a fixed token before the first variable");
+            }
+            lit.clear();
+            k += 1;
+            let start = k;
+            while k < m.len() && is_ident(m[k]) {
+                k += 1;
+            }
+            vars.push(m[start..k].iter().collect::<String>());
+            if m.get(k) != Some(&':') {
+                bad("a variable with no fragment");
+            }
+            k += 1;
+            while k < m.len() && is_ident(m[k]) {
+                k += 1;
+            }
+        } else {
+            lit.push(m[k]);
+            k += 1;
+        }
+    }
+    if vars.is_empty() || lit.trim() != "," || fixed.iter().any(|f| f.is_empty()) {
+        bad("a pattern that does not end with `,`, or two variables with no token between");
+    }
+    let mut out = String::new();
+    for entry in split_top(call) {
+        let mut values = Vec::new();
+        let mut rest = entry.as_str();
+        for f in &fixed {
+            let Some((v, r)) = rest.split_once(f.as_str()) else {
+                bad(&format!("the entry {entry:?} has no {f:?}"));
+            };
+            values.push(v.trim().to_string());
+            rest = r;
+        }
+        values.push(rest.trim().to_string());
+        let t: Vec<char> = template.chars().collect();
+        let mut k = 0;
+        while k < t.len() {
+            if t[k] == '$' {
+                let start = k + 1;
+                k = start;
+                while k < t.len() && is_ident(t[k]) {
+                    k += 1;
+                }
+                let v: String = t[start..k].iter().collect();
+                match vars.iter().position(|x| *x == v) {
+                    Some(n) => out.push_str(&values[n]),
+                    None => bad(&format!(
+                        "the template names ${v}, which the pattern has not"
+                    )),
+                }
+            } else {
+                out.push(t[k]);
+                k += 1;
+            }
+        }
+        out.push('\n');
     }
     out
 }
@@ -515,7 +728,7 @@ fn item_name(head: &str) -> Option<String> {
 /// (`perform_microtask_checkpoint`), and the hooks that ABI code calls (`register_host_function`
 /// takes a `HostFn`; `with_module_host` takes the hook types of `Cx::run_module`). The other
 /// `Isolate` methods (`new`, the handles, the heap, `string_view`, ...) are the embedder API of
-/// H22, H23 and H19, with their own freeze points, so they are not here.
+/// H22, H23 and H19, with their own freeze points: they are `embed (not core):` lines.
 const ENTRY_POINTS: [&str; 6] = [
     "create_realm",
     "perform_microtask_checkpoint",
@@ -644,19 +857,83 @@ fn const_line(head: &str, body: Option<&str>, owner: &str) -> String {
     }
 }
 
+/// The lines of the default-build `impl Isolate` blocks of `its` and of the inline modules in
+/// it: an entry point ([`ENTRY_POINTS`]) is a core `embed:` line, any other pub method or
+/// const an `embed (not core):` line. A block or module under a positive `cfg` is skipped.
+fn isolate_lines(its: &[Item], out: &mut Vec<String>) {
+    for it in its {
+        if gated(&it.attrs) {
+            continue;
+        }
+        let words: Vec<&str> = it.head.split(' ').collect();
+        let is_mod = words
+            .iter()
+            .position(|w| *w == "mod")
+            .is_some_and(|k| words[..k].iter().all(|w| w.starts_with("pub")));
+        if is_mod {
+            if let Some(b) = &it.body {
+                isolate_lines(&items(b), out);
+            }
+            continue;
+        }
+        if !it.head.starts_with("impl") || impl_target(&it.head) != (None, "Isolate".to_string()) {
+            continue;
+        }
+        for m in items(it.body.as_deref().unwrap_or("")) {
+            if !is_pub(&m.head) {
+                continue;
+            }
+            let name = item_name(&m.head).unwrap_or_default();
+            let (g, line) = if is_fn_head(&m.head) {
+                let g = if ENTRY_POINTS.contains(&name.as_str()) {
+                    "embed"
+                } else {
+                    "embed (not core)"
+                };
+                (g, drop_paths(&fn_sig(&m.head)))
+            } else {
+                (
+                    "embed (not core)",
+                    const_line(&m.head, m.body.as_deref(), "Isolate"),
+                )
+            };
+            out.push(format!(
+                "{g}: impl Isolate :: {}{line}",
+                kept_attrs(&m.attrs)
+            ));
+        }
+    }
+}
+
+/// True for the files whose items (not only their `impl Isolate` blocks) the golden reads.
+fn is_core_file(p: &str) -> bool {
+    p.starts_with("abi/") || ["isolate.rs", "builtins.rs", "lib.rs"].contains(&p)
+}
+
 /// Every line of the golden from `files` ((path under `src/`, text)).
 fn extract(files: &[(String, String)]) -> Vec<String> {
-    let stripped: Vec<(String, String)> =
-        files.iter().map(|(p, t)| (p.clone(), strip(t))).collect();
+    let stripped: Vec<(String, Vec<Item>)> = files
+        .iter()
+        .map(|(p, t)| {
+            let t = strip(t);
+            // The local macros of the ABI files are expanded (the marker lists).
+            let its = if is_core_file(p) {
+                file_items(&t)
+            } else {
+                items(&t)
+            };
+            (p.clone(), its)
+        })
+        .collect();
     let group = |p: &str| if p == "builtins.rs" { "tables" } else { "abi" };
     // The public types and traits of the ABI files: their impls are part of the ABI.
     let mut pub_types = BTreeSet::new();
     let mut pub_traits = BTreeSet::new();
-    for (p, t) in &stripped {
+    for (p, its) in &stripped {
         if !(p.starts_with("abi/") || p == "builtins.rs") {
             continue;
         }
-        for it in items(t) {
+        for it in its {
             if !is_pub(&it.head) {
                 continue;
             }
@@ -675,16 +952,20 @@ fn extract(files: &[(String, String)]) -> Vec<String> {
     }
     let mut out = Vec::new();
     let mut abi_mod_uses: BTreeSet<String> = BTreeSet::new();
-    for (p, t) in &stripped {
+    for (p, its) in &stripped {
+        isolate_lines(its, &mut out);
+        if !is_core_file(p) {
+            continue;
+        }
         let g = group(p);
         let is_abi = p.starts_with("abi/") || p == "builtins.rs";
-        for it in items(t) {
+        for it in its {
             if p == "lib.rs" {
-                lib_paths(&it, &mut out);
+                lib_paths(it, &mut out);
                 continue;
             }
             if p == "abi/mod.rs" && it.head.starts_with("pub use ") {
-                for n in use_names(&use_text(&it)) {
+                for n in use_names(&use_text(it)) {
                     let name = n.rsplit("::").next().unwrap().to_string();
                     let note = if name == "export_facts" {
                         " (part 2, not core: V8-A13)"
@@ -696,18 +977,8 @@ fn extract(files: &[(String, String)]) -> Vec<String> {
                 }
                 continue;
             }
-            if p == "isolate.rs" && it.head == "impl Isolate" && kept_attrs(&it.attrs).is_empty() {
-                // The embedder entry points (not a `cfg(test)` or spike-native block).
-                for m in items(it.body.as_deref().unwrap_or("")) {
-                    let name = item_name(&m.head).unwrap_or_default();
-                    if is_pub(&m.head) && ENTRY_POINTS.contains(&name.as_str()) {
-                        let sig = drop_paths(&fn_sig(&m.head));
-                        out.push(format!(
-                            "embed: impl Isolate :: {}{sig}",
-                            kept_attrs(&m.attrs)
-                        ));
-                    }
-                }
+            if it.head.starts_with("impl") && impl_target(&it.head).1 == "Isolate" {
+                // `isolate_lines` read it.
                 continue;
             }
             if it.head.starts_with("impl") {
@@ -739,24 +1010,16 @@ fn extract(files: &[(String, String)]) -> Vec<String> {
             if !is_abi {
                 continue;
             }
-            if it.head.ends_with('!') && !it.head.starts_with("macro_rules") {
-                // A macro call at the top level: the marker lists of local.rs.
+            if it.head.ends_with('!') {
+                // A top-level call of a macro from outside the file (`file_items` expanded
+                // the local ones): its input, as the golden cannot see what it makes.
                 let name = it.head.trim_end_matches('!');
-                let entries: Vec<String> = split_top(it.body.as_deref().unwrap_or(""))
-                    .into_iter()
-                    .map(|e| {
-                        if name == "downcast" {
-                            e.split(" =>").next().unwrap_or("").to_string()
-                        } else {
-                            e
-                        }
-                    })
-                    .collect();
+                let entries = split_top(it.body.as_deref().unwrap_or(""));
                 out.push(format!("{g}: {name}! {{ {} }}", entries.join(", ")));
                 continue;
             }
             if is_pub(&it.head) && !it.head.starts_with("pub use") {
-                item_lines(g, &it, &mut out);
+                item_lines(g, it, &mut out);
                 if p == "abi/mod.rs"
                     && let Some(n) = item_name(&it.head)
                 {
@@ -767,11 +1030,11 @@ fn extract(files: &[(String, String)]) -> Vec<String> {
         }
     }
     // A pub type of an `abi` submodule that `abi/mod.rs` does not re-export has no path.
-    for (p, t) in &stripped {
+    for (p, its) in &stripped {
         if !p.starts_with("abi/") || p == "abi/mod.rs" {
             continue;
         }
-        for it in items(t) {
+        for it in its {
             if !is_pub(&it.head) || it.head.starts_with("pub use") {
                 continue;
             }
@@ -839,10 +1102,15 @@ fn lib_paths(it: &Item, out: &mut Vec<String>) {
 
 const HEADER: &str = "\
 # H20 core: the public names and signatures of the builtin ABI (docs/adr/H20-builtin-abi.md,
-# Freeze table). Frozen at M0 exit: after it, a changed or removed line is a change to a
-# Frozen part; a new line is an addition (part 2, append only). Made by
+# Freeze table). Frozen at M0 exit: after it, a changed or removed core line is a change to a
+# Frozen part; a new line is an addition (part 2, append only). The `embed (not core):` lines
+# are the other `Isolate` methods (the embedder API of H22, H23, H19): not core, but a new one
+# needs a review (H20-Q4). Made by
 # `EP9_BLESS=1 cargo test -p ep9_vm --test h20_core`; see crates/ep9_vm/tests/h20_core.rs.
 ";
+
+/// The prefix of a line that is not core: an `Isolate` method that is not an entry point.
+const NOT_CORE: &str = "embed (not core): ";
 
 fn text(lines: &[String]) -> String {
     let mut s = HEADER.to_string();
@@ -881,12 +1149,18 @@ fn h20_core_matches_the_golden() {
         return;
     }
     let (gone, new) = diff(&golden_lines(), &now);
+    let (other_gone, core_gone): (Vec<String>, Vec<String>) =
+        gone.into_iter().partition(|l| l.starts_with(NOT_CORE));
     assert!(
-        gone.is_empty() && new.is_empty(),
-        "the H20 core changed.\n\
-         changed or removed (the core; after M0 exit a Frozen-part change, README §3.2):\n  {}\n\
-         new (an addition, append only; review it, then run with EP9_BLESS=1):\n  {}",
-        gone.join("\n  "),
+        core_gone.is_empty() && other_gone.is_empty() && new.is_empty(),
+        "the H20 core golden changed.\n\
+         changed or removed core lines (after M0 exit a Frozen-part change, README §3.2):\n  {}\n\
+         changed or removed `embed (not core):` lines (the embedder API of H22, H23, H19; \
+         not an H20 core change):\n  {}\n\
+         new (a part-2 addition, or a new `Isolate` method: review it, H20-Q4, then run with \
+         EP9_BLESS=1):\n  {}",
+        core_gone.join("\n  "),
+        other_gone.join("\n  "),
         new.join("\n  ")
     );
 }
@@ -908,6 +1182,11 @@ fn the_golden_covers_the_core() {
         "path: ep9_vm::abi::export_facts (part 2, not core: V8-A13)",
         "path: ep9_vm::CollectionCursor = abi::CollectionCursor",
         "path: ep9_vm::Isolate = isolate::Isolate",
+        "abi: impl<'s> From<Local<'s, JsObject>> for Local<'s, JsValue>",
+        "abi: impl<'s> From<Local<'s, JsSymbol>> for Local<'s, JsKey>",
+        "abi: impl Downcast for JsValue",
+        "embed (not core): impl Isolate :: pub fn new(IsolateConfig)",
+        "embed (not core): impl Isolate :: pub fn string_view(&mut self, Value)",
     ] {
         assert!(has(needle), "no line has {needle:?}");
     }
@@ -983,6 +1262,103 @@ fn changing_an_entry_point_fails_the_golden() {
     );
 }
 
+/// The negative control for the impls that a marker macro makes (Codex C-FP1): an upcast
+/// that gives the result a free lifetime (`Local<'s, A>` to `Local<'t, B>`, so `.into()`
+/// could take a `Local` out of `with_cx`) changes every `From` line of the `upcast!` list.
+/// The `compile_fail` doctest on `Local` (src/abi/local.rs) shows that the escape does not
+/// compile with the frozen impl.
+#[test]
+fn changing_a_generated_impl_fails_the_golden() {
+    let mut files = sources();
+    let (_, t) = files.iter_mut().find(|(p, _)| p == "abi/local.rs").unwrap();
+    let from = "impl<'s> From<Local<'s, $from>> for Local<'s, $to>";
+    assert!(t.contains(from));
+    *t = t.replacen(
+        from,
+        "impl<'s, 't> From<Local<'s, $from>> for Local<'t, $to>",
+        1,
+    );
+    let (gone, new) = diff(&golden_lines(), &extract(&files));
+    let upcasts = golden_lines()
+        .iter()
+        .filter(|l| l.starts_with("abi: impl<'s> From<Local<'s, "))
+        .count();
+    assert!(upcasts >= 11, "{upcasts} upcast lines");
+    assert_eq!(gone.len(), upcasts, "{gone:?}");
+    assert_eq!(new.len(), upcasts, "{new:?}");
+    assert!(
+        gone.contains(&"abi: impl<'s> From<Local<'s, JsObject>> for Local<'s, JsValue>".into())
+    );
+    assert!(
+        new.contains(&"abi: impl<'s, 't> From<Local<'s, JsObject>> for Local<'t, JsValue>".into())
+    );
+    // A new entry of the list is an addition only.
+    let mut files = sources();
+    let (_, t) = files.iter_mut().find(|(p, _)| p == "abi/local.rs").unwrap();
+    let from = "upcast! {\n";
+    assert!(t.contains(from));
+    *t = t.replacen(from, "upcast! {\n    JsKey => JsObject,\n", 1);
+    let (gone, new) = diff(&golden_lines(), &extract(&files));
+    assert!(gone.is_empty(), "{gone:?}");
+    assert_eq!(
+        new,
+        ["abi: impl<'s> From<Local<'s, JsKey>> for Local<'s, JsObject>"]
+    );
+}
+
+/// The `embed` lines that name a raw `Value` (the type, not `JsValue` or `IntrinsicValue`).
+fn raw_value_lines(lines: &[String]) -> Vec<String> {
+    lines
+        .iter()
+        .filter(|l| l.starts_with("embed"))
+        .filter(|l| l.split(|c: char| !is_ident(c)).any(|w| w == "Value"))
+        .cloned()
+        .collect()
+}
+
+/// H20-Q4: no default-build `Isolate` method takes or gives a raw `Value`, except
+/// `string_view` (it stays: the H20 Decision, "Embedders get `Local` too").
+#[test]
+fn no_isolate_method_takes_or_gives_a_raw_value() {
+    let raw = raw_value_lines(&extract(&sources()));
+    assert_eq!(
+        raw,
+        [
+            "embed (not core): impl Isolate :: pub fn string_view(&mut self, Value) -> Option<JsStr<'_>>"
+        ]
+    );
+}
+
+/// The negative control for the other `Isolate` methods (FP2-GOLDEN-RAW): a new pub method in
+/// a default-build `impl Isolate` block, in `isolate.rs` or in another file, is a new line,
+/// and a raw `Value` form fails `no_isolate_method_takes_or_gives_a_raw_value`. A block under
+/// a positive `cfg`, and a file of a module that `lib.rs` gates (`tests`, `native`), add none.
+#[test]
+fn a_new_isolate_method_is_a_new_line() {
+    let mut files = sources();
+    let (_, t) = files.iter_mut().find(|(p, _)| p == "isolate.rs").unwrap();
+    t.push_str("\nimpl Isolate {\n    pub fn global(&self, name: &str) -> Option<Value> {\n        None\n    }\n}\n");
+    t.push_str("\n#[cfg(feature = \"spike-native\")]\nimpl Isolate {\n    pub fn spike(&self) -> Value {}\n}\n");
+    files.push((
+        "probe.rs".to_string(),
+        "mod inner {\n    impl crate::Isolate {\n        pub fn run_raw(&mut self) -> Value {}\n    }\n}\n"
+            .to_string(),
+    ));
+    assert!(
+        sources()
+            .iter()
+            .all(|(p, _)| !p.starts_with("tests/") && p != "native.rs")
+    );
+    let (gone, new) = diff(&golden_lines(), &extract(&files));
+    assert!(gone.is_empty(), "{gone:?}");
+    let want = [
+        "embed (not core): impl Isolate :: pub fn global(&self, &str) -> Option<Value>",
+        "embed (not core): impl Isolate :: pub fn run_raw(&mut self) -> Value",
+    ];
+    assert_eq!(new, want);
+    assert_eq!(raw_value_lines(&new), want);
+}
+
 /// A new `Cx` method is an addition only: no golden line goes away.
 #[test]
 fn a_new_cx_method_is_an_addition() {
@@ -1021,7 +1397,8 @@ fn renames_and_bodies_keep_the_golden() {
 
 /// The extractor on a small source: literals and comments with brackets, a lifetime, a
 /// multi-line signature with a `where` clause, private and `pub(crate)` items, a private
-/// module, a trait impl, a tuple struct and an enum.
+/// module, a trait impl, a tuple struct, an enum, and a local `macro_rules!` with its call
+/// (expanded: the line is the generated impl).
 #[test]
 fn the_extractor_reads_rust_items() {
     let src = r##"
@@ -1059,6 +1436,12 @@ impl<'s> Cx<'s> {
 impl<T> Clone for T<'_> { fn clone(&self) -> Self { *self } }
 impl Hidden { pub fn not_shown(&self) {} }
 pub fn free(x: &str) -> bool { x.is_empty() }
+macro_rules! mk {
+    ($($a:ident => $b:ty,)*) => {$(
+        impl<'s> From<Local<'s, $a>> for $b { fn from(_: Local<'s, $a>) -> Self { todo!() } }
+    )*};
+}
+mk! { S => E, T<'s> => S, }
 "##;
     let stripped = strip(src);
     assert!(!stripped.contains("Docs") && !stripped.contains("nested"));
@@ -1070,6 +1453,8 @@ pub fn free(x: &str) -> bool { x.is_empty() }
         "abi: impl<'s> Cx<'s> :: pub const K: u32 = 1 << 3",
         "abi: impl<'s> Cx<'s> :: pub fn one<F: Fn(u8) -> u8>(&mut self, Local<'s, JsObject>, (u8, u8), F) -> JsResult<()> where F: Copy",
         "abi: impl<T> Clone for T<'_>",
+        "abi: impl<'s> From<Local<'s, S>> for E",
+        "abi: impl<'s> From<Local<'s, T<'s>>> for S",
         "abi: pub fn free(&str) -> bool",
         "abi: pub struct S { pub a: u8, #[cfg(test)] pub c: u8, .. }",
     ];
