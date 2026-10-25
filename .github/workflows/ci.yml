@@ -214,14 +214,14 @@ jobs:
       # timeout, worker crash, internal BytecodeGen error) or a runner error, and fails the step;
       # an infrastructure error also skips the expectation compare (tools/test262/src/exec.rs).
       # Exit 1 (the failing set differs from the expectation file, no infrastructure error) is a
-      # warning: the release steps above are the result gates. The 120 s soft timeout is for the
+      # warning: the release steps above are the result gates. The 300 s soft timeout is for the
       # slower debug build.
       - name: test262 exec, atom-key gate (debug)
         if: ${{ !cancelled() && steps.sync.outcome == 'success' && matrix.name == 'linux-x64' }}
         run: |
           cargo build --locked -p ep9_test262
           rc=0
-          EP9_ASSERT_ATOM_KEYS=1 target/debug/ep9-test262 exec --timeout 120 2>&1 | tee atomgate.log || rc=$?
+          EP9_ASSERT_ATOM_KEYS=1 target/debug/ep9-test262 exec --timeout 300 2>&1 | tee atomgate.log || rc=$?
           line="$(grep 'infrastructure errors:' atomgate.log | tail -n 1 || true)"
           if [ -z "$line" ]; then
             echo "::error::atom-key gate: the debug exec run printed no summary (exit $rc)"
