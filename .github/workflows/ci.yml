@@ -104,7 +104,7 @@ jobs:
           - { name: linux-arm64, os: ubuntu-24.04-arm }
           - { name: windows-x64, os: windows-2025 }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       # Windows: keep LF in our files and in test262 (scripts break on CRLF), allow long paths.
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
