@@ -26,6 +26,7 @@
 //! | `strict` | `ScopeFlags::STRICT` of the `scope` operand: the unit scope at the call site, so class code inside a sloppy function is strict (M2-P2-L6) |
 //! | `in_function`, `in_method`, `in_derived_ctor`, `in_class_field_init` (and the `*_ok` flags) | the kind of the `function` operand's unit function, past arrows along `parent` (GetThisEnvironment). Function 0 of a script or module: global code, all false. Function 0 of eval code: the flags the eval unit was compiled with (`LoadedUnit::eval_receiver`, set from the caller's `EvalContext` by `direct_eval`; all false for indirect eval), so a class field initializer's `in_class_field_init` holds through nested eval |
 //! | `private_names` | the `#x` slots of the Class scopes on the `scope` operand's `outer` chain (without the `#`), and for eval code also those of the Class scope contexts on the runtime chain past the eval unit's own contexts |
+//! | `private_methods`, `private_accessors`, `private_static` (E9, M3-P4) | the kind of each of those names, from the slot names of the class scope that gives it (`add_private_names`) |
 //!
 //! EvalDeclarationInstantiation (§19.2.1.3) is split over the two runtime ids, one name per
 //! call (the order of `functionsToInitialize`, then the var names). The spec checks every name
@@ -94,21 +95,39 @@ fn slot_name<'u>(u: &'u LoadedUnit, scope: &ep9_bytecode::Scope, i: usize) -> Op
 }
 
 /// Adds the private names of a Class scope (`#x` slots, without the `#`; the synthetic
-/// `#.brand`-style names are left out: no source text can spell them).
-fn add_private_names(u: &LoadedUnit, scope: &ep9_bytecode::Scope, out: &mut Vec<String>) {
+/// `#.brand`-style names are left out: no source text can spell them) that an inner class
+/// does not already give, and their kinds (E9, M3-P4): `#.set-x` makes `x` an accessor,
+/// `#.method-x` or `#.static-method-x` a method, and `#.static-method-x` or
+/// `#.static-accessor-x` static (the scope pass's kind markers, ep9_bytecode
+/// `eval_context.rs`); any other name is a field.
+fn add_private_names(u: &LoadedUnit, scope: &ep9_bytecode::Scope, ctx: &mut EvalContext) {
     if scope.kind != ScopeKind::Class {
         return;
     }
-    for i in 0..scope.slots.len() {
-        let text = match &u.unit.strings[scope.slots[i].name.index()] {
+    let texts: Vec<String> = scope
+        .slots
+        .iter()
+        .map(|slot| match &u.unit.strings[slot.name.index()] {
             UnitString::Latin1(b) => b.iter().map(|&c| char::from(c)).collect::<String>(),
             UnitString::Utf16(w) => String::from_utf16_lossy(w),
+        })
+        .collect();
+    let has = |prefix: &str, name: &str| texts.iter().any(|t| t.strip_prefix(prefix) == Some(name));
+    for text in &texts {
+        let Some(name) = text.strip_prefix('#') else {
+            continue;
         };
-        if let Some(name) = text.strip_prefix('#')
-            && !name.starts_with('.')
-            && !out.iter().any(|n| n == name)
-        {
-            out.push(name.to_owned());
+        if name.starts_with('.') || ctx.private_names.iter().any(|n| n == name) {
+            continue;
+        }
+        ctx.private_names.push(name.to_owned());
+        if has("#.set-", name) {
+            ctx.private_accessors.push(name.to_owned());
+        } else if has("#.method-", name) || has("#.static-method-", name) {
+            ctx.private_methods.push(name.to_owned());
+        }
+        if has("#.static-method-", name) || has("#.static-accessor-", name) {
+            ctx.private_static.push(name.to_owned());
         }
     }
 }
@@ -162,7 +181,7 @@ fn eval_context(cx: &mut Cx, fp: *mut u64, function: u64, scope: u64) -> Res<Eva
     // The static scope chain of the site, in its own unit.
     let mut s = Some(site);
     while let Some(sc) = s {
-        add_private_names(u, sc, &mut ctx.private_names);
+        add_private_names(u, sc, &mut ctx);
         s = sc.outer.and_then(|o| unit.scopes.get(o.index()));
     }
     // GetThisEnvironment: the nearest function that is not an arrow.
@@ -208,7 +227,7 @@ fn outer_private_names(
         poll(cx)?;
         let (cu, scope) = object::context_scope(c);
         if !core::ptr::eq(cu, u) {
-            add_private_names(cu, scope, &mut ctx.private_names);
+            add_private_names(cu, scope, ctx);
         }
         c = object::context_previous(c);
     }

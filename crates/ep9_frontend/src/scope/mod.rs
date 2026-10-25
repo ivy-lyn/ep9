@@ -641,11 +641,31 @@ pub struct ScopeAnalysis {
     implicit: Vec<(u32, ImplicitRef, RefId)>,
     function_at: Vec<(u32, FunctionId)>,
     synthetic_blocks: Vec<(u32, ScopeId)>,
+    /// (M3-P4, E9) Direct eval code: the private names of the caller's classes (with the
+    /// `#`), their kind (`Field`, `Method` or `GetterSetter` for any accessor) and whether
+    /// they are static, from the `EvalContext`. A `#x` reference of the eval code that no class
+    /// of the eval code declares resolves `Dynamic`, and BytecodeGen compiles it by this kind.
+    caller_private: Vec<(Box<str>, PrivateKind, bool)>,
 }
 
 const NONE: u32 = u32::MAX;
 
 impl ScopeAnalysis {
+    /// (E9) Sets the private names of the caller's classes (see the field).
+    pub(crate) fn set_caller_private(&mut self, names: Vec<(Box<str>, PrivateKind, bool)>) {
+        self.caller_private = names;
+    }
+
+    /// (E9) The kind of the caller's private name `name` (with the `#`) and whether it is
+    /// static.
+    #[must_use]
+    pub(crate) fn caller_private(&self, name: &str) -> Option<(PrivateKind, bool)> {
+        self.caller_private
+            .iter()
+            .find(|(n, _, _)| &**n == name)
+            .map(|&(_, kind, is_static)| (kind, is_static))
+    }
+
     /// Functions by id. `functions()[0]` is the script or module.
     #[must_use]
     pub fn functions(&self) -> &[FunctionInfo] {

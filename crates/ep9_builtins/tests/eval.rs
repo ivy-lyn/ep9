@@ -690,3 +690,112 @@ t('in-eval-fn', () => { class B extends A { constructor() { eval('function q() {
         ])
     );
 }
+
+/// E9 (M3-P4; M3-P2-OPEN item 1): a private name of the caller's classes in direct eval code
+/// (PerformEval: the PrivateIdentifier names of the enclosing class bodies; §15.7
+/// AllPrivateIdentifiersValid): fields, methods, getters, setters, static ones, `#x in o`,
+/// through arrows, nested eval, field initializers and static blocks, with an inner class
+/// shadowing an outer name, and with both brands in one class (the brand of the right kind
+/// is checked). A name no enclosing class declares is a SyntaxError before the code runs. In a
+/// computed key, before the class defines its private method, the brand check throws the
+/// TypeError (`before-def`). Node v24.22.1 prints the same lines.
+#[test]
+fn caller_private_names_in_eval_code() {
+    assert_eq!(
+        run_every(
+            r#"function t(label, f) { try { print(label, String(f())); } catch (e) { print(label, e.constructor.name); } }
+t('field', () => { class C { #x = 1; m() { return eval('this.#x'); } } return new C().m(); });
+t('field-set', () => { class C { #x = 1; m() { eval('this.#x = 5'); return this.#x; } } return new C().m(); });
+t('field-inc', () => { class C { #x = 1; m() { eval('this.#x++; this.#x += 10'); return this.#x; } } return new C().m(); });
+t('field-other', () => { class C { #x = 1; m(o) { return eval('o.#x'); } } return new C().m({}); });
+t('field-set-other', () => { class C { #x = 1; m(o) { return eval('o.#x = 2'); } } return new C().m({}); });
+t('method', () => { class C { #m() { return 'm' + this.v; } v = 2; f() { return eval('this.#m()'); } } return new C().f(); });
+t('method-get', () => { class C { #m() {} f() { return eval('this.#m') === eval('this.#m'); } } return new C().f(); });
+t('method-other', () => { class C { #m() {} f(o) { return eval('o.#m'); } } return new C().f({}); });
+t('method-assign', () => { class C { #m() {} f() { eval('this.#m = 1'); } } return new C().f(); });
+t('getter', () => { class C { get #g() { return 'g' + this.v; } v = 3; f() { return eval('this.#g'); } } return new C().f(); });
+t('getter-set', () => { class C { get #g() { return 1; } f() { eval('this.#g = 2'); } } return new C().f(); });
+t('setter', () => { class C { set #s(v) { this.v = v; } f() { eval('this.#s = 4'); return this.v; } } return new C().f(); });
+t('setter-get', () => { class C { set #s(v) {} f() { return eval('this.#s'); } } return new C().f(); });
+t('accessor-both', () => { class C { #v = 1; get #a() { return this.#v; } set #a(x) { this.#v = x; } f() { eval('this.#a += 5'); return eval('this.#a'); } } return new C().f(); });
+t('static-field', () => { class C { static #x = 7; static f() { return eval('C.#x'); } } return C.f(); });
+t('static-method', () => { class C { static #m() { return 8; } static f() { return eval('this.#m()'); } } return C.f(); });
+t('static-method-wrong', () => { class C { static #m() { return 8; } static f() { return eval('this.#m()'); } } return C.f.call({}); });
+t('static-getter', () => { class C { static get #g() { return 9; } static f() { return eval('this.#g'); } } return C.f(); });
+t('static-setter', () => { class C { static set #s(v) { C.v = v; } static f() { eval('this.#s = 10'); return C.v; } } return C.f(); });
+t('both-brands-instance-on-ctor', () => { class C { #m() { return 1; } static #s() { return 2; } static f() { return eval('this.#m()'); } } return C.f(); });
+t('both-brands-static-on-inst', () => { class C { #m() { return 1; } static #s() { return 2; } f() { return eval('this.#s()'); } } return new C().f(); });
+t('both-brands-ok', () => { class C { #m() { return 1; } static #s() { return 2; } f() { return eval('this.#m() + C.#s()'); } } return new C().f(); });
+t('in-field', () => { class C { #x; f(o) { return eval('#x in o'); } } var c = new C(); return c.f(c) + ' ' + c.f({}); });
+t('in-method', () => { class C { #m() {} f(o) { return eval('#m in o'); } } var c = new C(); return c.f(c) + ' ' + c.f({}); });
+t('in-static', () => { class C { static #m() {} static f(o) { return eval('#m in o'); } } return C.f(C) + ' ' + C.f({}); });
+t('arrow', () => { class C { #x = 11; f() { return (() => eval('this.#x'))(); } } return new C().f(); });
+t('eval-arrow', () => { class C { #x = 12; f() { return eval('(() => this.#x)()'); } } return new C().f(); });
+t('nested-eval', () => { class C { #x = 13; f() { return eval("eval('this.#x')"); } } return new C().f(); });
+t('initializer', () => { class C { #x = 14; y = eval('this.#x'); } return new C().y; });
+t('static-block', () => { class C { static #x = 15; static { C.r = eval('C.#x'); } } return C.r; });
+t('shadow', () => { class O { #x = 'outer'; f() { class I { #x = 'inner'; g() { return eval('this.#x'); } } return new I().g(); } } return new O().f(); });
+t('outer-from-inner', () => { class O { #x = 'outer'; f() { var self = this; class I { #y = 1; g() { return eval('self.#x'); } } return new I().g(); } } return new O().f(); });
+t('outer-method-from-inner', () => { class O { #m() { return 'om'; } f() { var self = this; class I { #n() {} g() { return eval('self.#m()'); } } return new I().g(); } } return new O().f(); });
+t('eval-class', () => { class C { #x = 16; f() { return eval('class D { #x = 17; g(o) { return o.#x; } }; new D().g(this) + new D().g(new D())'); } } return new C().f(); });
+t('eval-class-caller', () => { class C { #x = 18; f() { return eval('class D { g(o) { return o.#x; } }; new D().g(this)'); } } return new C().f(); });
+t('optional', () => { class C { #x = 19; f(o) { return eval('o?.#x'); } } return new C().f(null) + ' ' + new C().f(new C()); });
+t('call-optional', () => { class C { #m() { return 20; } f(o) { return eval('o?.#m()'); } } return new C().f(undefined) + ' ' + new C().f(new C()); });
+t('destructure', () => { class C { #x = 1; f() { eval('[this.#x] = [21]'); return this.#x; } } return new C().f(); });
+t('not-declared', () => { class C { f() { return eval('this.#zz'); } } return new C().f(); });
+t('not-declared-ran', () => { var ran = false; class C { f() { eval('ran = true; this.#zz'); } } try { new C().f(); } catch (e) { return e.constructor.name + ' ' + ran; } });
+t('fn-in-eval', () => { class C { #x = 22; f() { return eval('(function(o) { return o.#x; })')(this); } } return new C().f(); });
+t('computed-key', () => { class C { #x = 23; static [eval('"k"')] = 1; } return Object.keys(C).join(); });
+t('heritage', () => { class C { #x = 1; static f() { class D extends (eval('1'), Object) {} return 1; } } return C.f(); });
+t('before-def', () => { class C { [eval('try { this.#m = 1; "none" } catch (e) { e.constructor.name }')] = 1; #m() {} } return Object.keys(new C()).join(); });
+t('before-def-get', () => { class C { static [eval('try { this.#g; "none" } catch (e) { e.constructor.name }')] = 1; get #g() { return 1; } } return Object.keys(C).join(); });"#
+        ),
+        lines(&[
+            "field 1",
+            "field-set 5",
+            "field-inc 12",
+            "field-other TypeError",
+            "field-set-other TypeError",
+            "method m2",
+            "method-get true",
+            "method-other TypeError",
+            "method-assign TypeError",
+            "getter g3",
+            "getter-set TypeError",
+            "setter 4",
+            "setter-get TypeError",
+            "accessor-both 6",
+            "static-field 7",
+            "static-method 8",
+            "static-method-wrong TypeError",
+            "static-getter 9",
+            "static-setter 10",
+            "both-brands-instance-on-ctor TypeError",
+            "both-brands-static-on-inst TypeError",
+            "both-brands-ok 3",
+            "in-field true false",
+            "in-method true false",
+            "in-static true false",
+            "arrow 11",
+            "eval-arrow 12",
+            "nested-eval 13",
+            "initializer 14",
+            "static-block 15",
+            "shadow inner",
+            "outer-from-inner outer",
+            "outer-method-from-inner om",
+            "eval-class TypeError",
+            "eval-class-caller 18",
+            "optional undefined 19",
+            "call-optional undefined 20",
+            "destructure 21",
+            "not-declared SyntaxError",
+            "not-declared-ran SyntaxError false",
+            "fn-in-eval 22",
+            "computed-key k",
+            "heritage 1",
+            "before-def TypeError",
+            "before-def-get TypeError",
+        ])
+    );
+}

@@ -22,6 +22,17 @@
 //! | Free names (also `#x`) | `LdaLookupSlot` and friends, by name, from the eval code's context | `LdaGlobal` / `StaGlobal` |
 //! | `this`, `new.target`, `super.x`, `arguments` | looked up by the names `this`, `new.target`, `.home_object`, `arguments` in the caller's context slots. A `with` object on the way must not answer the first three (they are not identifier references); it does answer `arguments`. `super()` reads `.callee` and `new.target` by name and binds `this` with `StaLookupSlot "this"` (BindThisValue in the VM; E6, M3-P4) | `this` is the receiver; the rest are early errors |
 //!
+//! A `#x` of the caller's classes (E9, M3-P4) is also found by name: a field's key is the
+//! value of the `#x` slot (`LdaLookupSlot "#x"`). For a method or an accessor the code resolves
+//! the `#x` slot's class context once (`ResolveLookupSlot "#x"`) and reads the slots of that
+//! context by name (`LoadLookupSlotResolved`): the brand `#.brand` (or `#.static-brand`), the
+//! method or getter `#x`, the setter `#.set-x`. The kind comes from the lists of
+//! [`EvalContext`]. The VM reads it from the slot names of the class scope: the scope pass
+//! (`ep9_frontend` `scope/collect.rs`) gives a class whose body holds a direct eval one marker
+//! slot per private method or static accessor, `#.method-x`, `#.static-method-x` or
+//! `#.static-accessor-x` (the slot holds nothing; only its name is read). An accessor also has
+//! its setter slot `#.set-x`; a name with neither is a field.
+//!
 //! Sloppy eval code calls `DeclareEvalFunction(name, closure)` per function (spec order of
 //! `functionsToInitialize`) and then `DeclareEvalVar(name)` per other `var` name, before the
 //! body; these do the checks of EvalDeclarationInstantiation. Strict eval code keeps its
@@ -59,8 +70,17 @@ pub struct EvalContext {
     /// `super()` is allowed in the eval code.
     pub super_call_ok: bool,
     /// The private names in scope at the eval site, without the `#` (each `#x` in the eval code
-    /// must be one of them).
+    /// must be one of them), innermost class first. A name that is not in one of the three
+    /// lists below is a field.
     pub private_names: Vec<String>,
+    /// (M3-P4, E9) The names of `private_names` that are private methods.
+    pub private_methods: Vec<String>,
+    /// (M3-P4, E9) The names of `private_names` that are private accessors (a getter, a setter
+    /// or both).
+    pub private_accessors: Vec<String>,
+    /// (M3-P4, E9) The names of `private_names` that are static methods or static accessors
+    /// (a static field needs no brand, so it is not listed).
+    pub private_static: Vec<String>,
 }
 
 /// The kind of function that the `Function` constructor family makes (ECMA-262
