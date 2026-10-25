@@ -8,6 +8,8 @@
 //! ep9_vm tests cannot compile JS, so this test lives here (ep9_facts is a dev-dependency
 //! of ep9_builtins since M3-P0).
 
+use std::sync::Arc;
+
 use ep9_bytecode::{UnitString, VerifiedUnit};
 use ep9_facts::{
     Access, BindingSet, FactSnapshot, FunctionRef, IcState, KeyRef, ObjectKind, PropertyCase,
@@ -362,6 +364,44 @@ if (j.constructor !== K || Object.getOwnPropertyDescriptor(K, "prototype").writa
             assert_eq!(proto("readK"), named("K"));
             assert_round_trip(&unit, &facts);
         }
+    });
+}
+
+/// Codex C2-FX1 (M3-P3 round 2): many sites that read one shape with a long property name
+/// keep one description of that shape, not one per site. The exporter interns each finished
+/// description by its content (no heap address in the key, H12-Q2 (a)), so the 256 cases
+/// share one `Arc` and the long name is kept once (256 copies, 16 MiB, without the intern).
+#[test]
+fn equal_descriptions_share_one_arc() {
+    on_big_stack(|| {
+        const SITES: usize = 256;
+        const LONG: usize = 64 << 10;
+        let reads = vec!["o.a"; SITES].join(" + ");
+        let src = format!(
+            "var o = {{}};\no[\"n\".repeat({LONG})] = 1;\no.a = 2;\n\
+             function read(o) {{ return {reads}; }}\n\
+             for (var i = 0; i < 20; i++) {{ if (read(o) !== {}) throw new Error(\"sum\"); }}\n",
+            2 * SITES
+        );
+        let (unit, facts) = run_with(&src, 0, false);
+        let rs = records(&facts, function_named(&unit, "read"));
+        let mut receivers = Vec::new();
+        for r in &rs {
+            if let SlotFacts::LoadNamed(p) = r {
+                assert_eq!(p.state, IcState::Monomorphic, "{:?}", p.state);
+                assert_eq!(p.cases.len(), 1);
+                receivers.push(p.cases[0].receiver.clone());
+            }
+        }
+        assert_eq!(receivers.len(), SITES);
+        let first = &receivers[0];
+        assert_eq!(
+            first.keys.first().map(|(k, _)| k),
+            Some(&KeyRef::String(UnitString::new(&"n".repeat(LONG))))
+        );
+        let shared = receivers.iter().filter(|r| Arc::ptr_eq(r, first)).count();
+        assert_eq!(shared, SITES, "each site kept its own description");
+        assert_round_trip(&unit, &facts);
     });
 }
 

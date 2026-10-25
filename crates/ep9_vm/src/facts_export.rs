@@ -53,9 +53,12 @@
 //!   a global site's `bindings` come from its cases only.
 //! - The exporter reads the heap and allocates nothing, so it is not a GC point. It takes
 //!   `&Isolate`, so no JS runs while it reads. It keeps no table keyed by a heap-cell Value
-//!   (H12-Q2 (a)): each shape and prototype is described again where a case names it.
+//!   (H12-Q2 (a)): each shape and prototype is described again where a case names it. A
+//!   finished [`ShapeDesc`] is interned by its content (Codex C2-FX1): equal descriptions
+//!   share one `Arc`, so the memory kept grows with the distinct descriptions, not with the
+//!   sites that name them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use ep9_bytecode::{ABI_VERSION, FeedbackSlotKind, Instructions, Opcode, OperandKind, UnitString};
@@ -210,11 +213,12 @@ fn site_names(fi: &FunctionInfo, code: &[u8], n: usize) -> Vec<Option<u64>> {
     names
 }
 
-/// One export: the runtime and the content hashes of the units made so far, by unit index
-/// (not a heap address, H12-Q2).
+/// One export: the runtime, the content hashes of the units made so far, by unit index, and
+/// the shape descriptions made so far, by their content (no heap address is a key, H12-Q2).
 struct Exporter<'a> {
     rt: &'a Runtime,
     hashes: HashMap<u32, UnitHash>,
+    descs: HashSet<Arc<ShapeDesc>>,
 }
 
 impl<'a> Exporter<'a> {
@@ -222,6 +226,7 @@ impl<'a> Exporter<'a> {
         Exporter {
             rt,
             hashes: HashMap::new(),
+            descs: HashSet::new(),
         }
     }
 
@@ -391,9 +396,16 @@ impl<'a> Exporter<'a> {
     }
 
     /// The description of the live shape `s`, or `None` if its object kind has no
-    /// [`ObjectKind`].
+    /// [`ObjectKind`]. An equal description made before is given again (interned by content,
+    /// Codex C2-FX1): many sites that name one shape keep one copy of its keys.
     fn shape_desc(&mut self, s: u64) -> Option<Arc<ShapeDesc>> {
-        self.describe(s).map(Arc::new)
+        let d = self.describe(s)?;
+        if let Some(a) = self.descs.get(&d) {
+            return Some(Arc::clone(a));
+        }
+        let a = Arc::new(d);
+        self.descs.insert(Arc::clone(&a));
+        Some(a)
     }
 
     fn describe(&mut self, s: u64) -> Option<ShapeDesc> {
