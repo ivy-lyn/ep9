@@ -55,7 +55,8 @@
 //! lines a const or static shows its name and type, not its value. Not here: the
 //! append-only lists that have their own goldens (the `IntrinsicId` and `ObjectClass` variants,
 //! `tests/golden/vm-builtin-ids.txt`, `tests/golden/object-classes.txt`), private and
-//! `pub(crate)` items, and `export_facts` (H20 part 2, V8-A13: only its path is here).
+//! `pub(crate)` items. `export_facts` (H20 part 2, V8-A13) is not core: it has its path and an
+//! `embed (not core):` line (it takes `&Isolate`).
 //!
 //! The core freezes at M0 exit. After that a core line that changes or goes away is a change to
 //! a Frozen part (README §3.2); a new line is an addition to the part-2 `Cx` method list (append
