@@ -34,8 +34,8 @@ Evidence tags: [R01] [R04] [R08] [R09] [R10] [R11] [R12] [R14] [R15] [R16] [R17]
 | Fast startup | Snapshot-ready heap. Stable indices for roots, intrinsics, atoms, fuses and snapshot root shapes (H13) | M0 rules; index lists M1 | M4 (A1) |
 | Code cache | Serializable `CompiledUnit`; deterministic, versioned bytecode ABI (H1, H2) | M0 week 3 | M4 (A1) |
 | Microtasks, FinalizationRegistry | Host job hooks, ClearKeptObjects, HostEnqueueFinalizationRegistryCleanupJob [R08] | M0 | M1 |
-| `vm.createContext`, `$262.createRealm` | N realms per isolate | M0 | M1 |
-| CommonJS wrapper | `compile_function_ctor(params, body)` | M0 | M1 |
+| `vm.createContext`, `$262.createRealm` | N realms per isolate | M0 | M0 month 3 (M3-P1 REALMS; the plan said M1) |
+| CommonJS wrapper | `compile_function_ctor(params, body)` | M0 | M0 month 2 (M2-P3 FNCTOR; the plan said M1) |
 | Dynamic import, `import.meta` | HostLoadImportedModule, HostGetImportMetaProperties, HostGetSupportedImportAttributes [R08] | M0 | M1 |
 | Unhandled rejections | HostPromiseRejectionTracker | M0 | M1 |
 | Ctrl-C, watchdog, termination, heap limit | Thread-safe interrupt request polled at safepoints. TerminateExecution. Near-heap-limit callback | M0 | M1 |
@@ -219,6 +219,7 @@ D16 is **no** (decided 2026-10-20, by rule): no iOS before v1, and the A3 gate s
 | Acceptance | JIT-only rows | tsc and prettier per shipped mode; G15 report; `ep9 -e 0` kept as a runtime gate |
 | iOS | Only via D11 | Conditional packaging section (D16) |
 | Unchanged | | Event loop, modules, `node:*`, web APIs, workers, inspector, Node-API, API boundary, lone-surrogate shim |
+| As built 2026-10-26 (M3-P4 DOCS) | | §2 "Built in": N realms per isolate (`$262.createRealm`; the engine side of `vm.createContext`) were built in M0 month 3 (M3-P1 REALMS), and `compile_function_ctor` in M0 month 2 (M2-P3 FNCTOR), not in M1. No contract or milestone gate changes ([decisions-log §12-§13](../decisions-log.md)) |
 | Decisions 2026-10-20 | | Unit fallback by field (H35 S3); debugger write rule (H24, [R18]); `--sound` only by the D17 rule; D4 exclusion rule; D16 = no; FP environment rule (H36). See [decisions-log §5](../decisions-log.md#5-2026-10-20-decisions-made-by-the-agent-team-under-the-users-instruction) |
 
 ## Evidence tags

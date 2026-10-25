@@ -2,8 +2,8 @@
 
 - **Status: draft body, not a review.** This file has no Verdict cells. It collects the evidence for each M0 spike since [spike review 1](2026-10-21-m0-spike-review.md) (2026-10-21, CI run 39518270586). At M3-P5 the orchestrator renames it to `<date>-m0-spike-review.md` and writes the Verdict table (plan v8 V8-A4; decisions M3-PLAN-D35 and M3-PLAN-D38). `cargo xtask m0-exit` reads only the newest file whose name ends in `-m0-spike-review.md`, so it does not read this draft.
 - **Task:** [09-milestones §4](../plan/09-milestones.md#4-spikes) (the gates) and §2.2 (M0 exit items 5 and 11). Rule: a failed spike gate reopens the named ADRs before M0 continues.
-- **Evidence base:** the M3-P3 head `63f115a` (real CI run 40177445170, 46 of 46 checks pass; decision M3-P3-CI) and `m0/m3` at `ec4b841` (the same code plus the decisions-log §13.5 text). Decision IDs are rows of the [decisions log](../decisions-log.md) §12 (month 2) and §13 (month 3).
-- **Not in this draft:** work of M3-P4 FIXES that has not merged, the M3-P5 exit run, gate window 4, and the SPD row of any later head. Step 2 of this role updates the draft after FIXES merges.
+- **Evidence base:** the M3-P3 head `63f115a` (real CI run 40177445170, 46 of 46 checks pass; decision M3-P3-CI), `m0/m3` at `ec4b841` (the same code plus the decisions-log §13.5 text), and the M3-P4 tree after FIXES (its x86-64 sandbox runs and role reports; §2.1, §2.4, §2.6). Decision IDs are rows of the [decisions log](../decisions-log.md) §12 (month 2) and §13 (month 3).
+- **Not in this draft:** the CI run of the M3-P4 head (§3 has a placeholder), the M3-P5 exit run, gate window 4, and the SPD row of any head after M3-P3.
 
 ## 1. Summary
 
@@ -28,7 +28,8 @@ The GATES-2 dry run at `63f115a` (decisions-log §13.5) reads item 5 as OPEN in 
 - **CI:** job `spike gates` × 4, step "SP-GC gate". It is green in each phase-head run of §3. The step did not change its checks after review 1.
 - **Local CI and the x86-64 sandbox:** the `sp-gc` step passes in every local CI pass (for example M2-P4-LOCALCI, M2-P5-LOCALCI) and in the x86-64 sandbox runs.
 - **Change after review 1:** M3-P2-SIGPIPE (982e9db). In local CI the win64 disassembly check gave a false FAIL: `grep -q` stopped early, the writer got SIGPIPE (141), and `set -o pipefail` reported it. The check now reads all input. 3 of 3 runs pass, and a wrong pattern still fails. The GC rules did not change.
-- **Related evidence (not the gate):** test262 under GC-stress (a collection before every allocation, the heap verifier after each) gives 0 new failures on 4 targets at `63f115a` (the `test262-gc` job, 24 shard jobs; M3-P3-CI). This is M0 exit item 6.
+- **Related evidence (not the gate):** test262 under GC-stress (a collection before every allocation, the heap verifier after each) gives 0 new failures on 4 targets at `63f115a` (the `test262-gc` job, 24 shard jobs; M3-P3-CI). This is M0 exit item 6. After M3-P4 FIXES the x86-64 Linux sandbox run gives 35,505 / 53,572 files under GC-stress (44 skipped), 0 new failures.
+- **M3-P4 (GC-stress skip list):** `has-instance-jitted.js` stays on the list (M3-P4-GCSKIP-WIN). FIXES found it CPU-bound: 132,107 full collections, each with a heap verify, 214 G instructions, 10.3 s on mac a64; no cost that only Windows has. A faster GC-stress heap verify is an M1 item. The GC rules did not change.
 - **For the verdict:** the per-runner counts (probe tests, MISSED per seed and ABI) of the M3-P5 head run, from the job logs, as in review 1 §2.1.
 
 ### 2.2 SP-VA
@@ -50,7 +51,9 @@ The GATES-2 dry run at `63f115a` (decisions-log §13.5) reads item 5 as OPEN in 
 
 Review 1 gave "GO with conditions" (its §3): (1) the a64 speed gates on the gate host in a quiet window, and `sibling-vs-match-a64` must leave "void"; (2) a non-void `sibling-vs-cgoto-x64-sysv` and `-x64-win64` result on each named x64 model; (3) if a speed gate then fails, H15 reopens.
 
-**Structural gates.** The CI step "SP-Dispatch gate" is green on 4 runners at every phase head. The T0 handler check `cargo xtask disasm-check --expect 284` passes on 5 targets (default build; 286 with `spike-native`), for example M3-P0-DISASM.
+**Structural gates.** The CI step "SP-Dispatch gate" is green on 4 runners at every phase head. The T0 handler check `cargo xtask disasm-check --expect 284` passes on 5 targets (default build; 286 with `spike-native`), for example M3-P0-DISASM. M3-P4 FIXES changed the TestEqual, Wide and ExtraWide handler bodies (PERF3 task 5); the role reports give the same handler stats after each change (284 handlers: 282 tail, 2 exit, 23 merged; the same frame-on-entry lists on 5 targets).
+
+**M3-P4 T0 instruction counts (not an SPD row).** The M3-P4 FIXES T0 fast paths ([04 §2](../plan/04-execution.md#2-t0-techniques-that-reach-parity)) lower the x86-64 cachegrind instructions of the T0 kernels against `ec4b841` (t0-loop -10.10%, t0-call -2.75%, t0-branchy 0.00%). These are counts of the T0 interpreter, not the spike's sibling / cgoto.c timing, so they close no condition. The SPD row of the M3-P4 head comes from its CI run (§3).
 
 **Condition 1: PASS.** Both a64 speed gates passed on the gate host (Apple M5 Max) with `SP_SPEED=gate`, 15 rounds and cc `zig cc 0.17.0` (pinned, H15-Q3):
 
@@ -106,7 +109,7 @@ What the rows show:
 - **The Verdict row** of [2026-10-22-spike-b.md](2026-10-22-spike-b.md) says GO (gate window 2, placement (b)). The GATES-2 dry run reads it.
 - **What changed as a result:** D21 moved to placement (b). H14 was reopened, H14-Q5 filled, and the H29 "Reopens if" row fired (P5 docs sync). H14 was accepted on 2026-10-25 (M3-P2-ADR). SP-Unit moved to M3-P1 and builds on (b) (M2-P4-SPUNIT-M3).
 - **x86-64 placement (b)** (M3-P0; M3-P0-X64B): built in `spikes/spike-b/src/jit_b/x64.rs` with placement (a)'s frame and the T0 handler ABI. The D25 fallback is not used. Evidence: the x86-64 sandbox runs of local CI (M3-P0-X64-A3: `structural-b: PASS on x86_64`, 0 SKIP lines), CI run 39846505546 on linux-x64 and windows-x64 with the live Win64 unwind test 3 of 3 (M3-P0-X64-CI). An x86-64 bench report (sandbox, not the gate host, void; M3-P0-X64-A11): RT 13.316 [12.790, 14.008]; in cachegrind a (b) round trip costs the same Ir as A0. `gate.sh b` fails on a SKIP line since M3-P0 (P0-D9).
-- **Fixes after the gate:** the D14 gap (the native entries used the plain `bind_this`) is closed (M3-P0-X64B). CX-JIT1: the (b) entry dropped the incoming accumulator on both arches; fixed with a new test (M3-P0-FIX-ACC).
+- **Fixes after the gate:** the D14 gap (the native entries used the plain `bind_this`) is closed (M3-P0-X64B). CX-JIT1: the (b) entry dropped the incoming accumulator on both arches; fixed with a new test (M3-P0-FIX-ACC). M3-P4 fix round 1 (M3-P2-STOP item 6): `native::run_b` (a call from Rust of a (b) function, `spike-native` build) now takes its budget unit before it checks the frame push, so a call whose frame does not fit takes 1 unit, not 0 (H23 Facts "Interrupt poll"); the new `spike-native` test `a_b_call_from_rust_that_does_not_fit_takes_one_unit` fails without the fix. The round trip code and the gate do not change.
 - **CI:** steps "Spike B structural gate" (since m2-p2), "Spike B placement (b) gate" (since m2-p4), "Spike B Win64 unwind" (windows-x64, since m2-p4) and "spike-native tests (ep9_vm)" (since m2-p2). All green at every head after they were added.
 
 ### 2.7 SP-Unit
@@ -142,6 +145,8 @@ Each run has all 4 tier-1 runners. A green run includes the spike gates job (SP-
 | M3-P2 | 88dacff | 40123502730 | 22 of 22 |
 | M3-P3 | 63f115a | 40177445170 | 46 of 46 (22 + the 24 `test262-gc` shard jobs) |
 
+Placeholder for the orchestrator: the CI run of the M3-P4 head (commit, run ID, checks, and its SPD row in §2.4) goes here after the push. This draft does not give it.
+
 ## 4. Notes for the Verdict table (M3-P5, orchestrator)
 
 - m0-exit reads a table with a "Spike" column and a "Verdict" column (`verdict_table` in `tools/xtask/src/m0_exit.rs`). A Spike cell can name more spikes, split by commas. The names it needs, in any case: SP-GC, SP-VA, SP-Value, SP-Dispatch, SP-JIT-mem, Spike B (item 5), SP-tsrs-win (item 5, recorded), SP-Unit (item 11).
@@ -153,3 +158,4 @@ Each run has all 4 tier-1 runners. A green run includes the spike gates job (SP-
 | Date | Change |
 |---|---|
 | 2026-10-25 | Draft body (M3-P4 DOCS, step 1): the evidence at `ec4b841`. No Verdict cells |
+| 2026-10-26 | M3-P4 DOCS step 2: the M3-P4 work that touches spikes (the GC-stress run and M3-P4-GCSKIP-WIN, the T0 handler stats, the `run_b` budget unit) and a placeholder for the M3-P4 head CI run. No Verdict cells |

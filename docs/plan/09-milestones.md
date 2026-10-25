@@ -68,7 +68,7 @@ All exit items of a milestone must hold. All 4 targets are tier-1 from week 1, W
 **M0. Contracts, spikes, skeleton + A0 part 1**
 - Scope (v1): workspace, CI on 4 targets, perf CI, test262 runner. Value, cage, header, GC S0. Bytecode v1, VM stack, frames, limits. Dispatch DSL with 3 expansions and ≤ 4 handler arguments. Front end F1, depth layers 2-3, `CompiledUnit`. Shapes v0, named-property IC v0, strings v0. H16 slot kinds and the H29 ADR draft. All M0 spikes, incl. SP-tsrs-win. Builtin ABI frozen (H20).
 - Scope (A0 part 1): ADRs for H2, H3 header fields, H5, H7, H8, H13 rules, H14, H27, H35 container spec v0 and H36. Determinism CI. SP-Unit after Spike B, on placement (b) (§4).
-- Exit (how it is checked, and the status at the M3-P3 head: §8, "M0 exit check and status"):
+- Exit (how it is checked, and the status after M3-P4: §8, "M0 exit check and status"):
   1. Full test262 run (102,994 runs at d53ebc8b) ≤ 10 min. Expectations committed per target.
   2. Parse negatives 4,653/4,653 and positives ≥ 99.98% on all 4 targets.
   3. `language/` ≥ 40%.
@@ -348,26 +348,26 @@ Roles: lead/front end, GC, VM, JIT/platform, runtime, AOT. Agents led by an orch
 - ADRs H4, H13 (rules), H24, H25. Drafts of H29-H34. Freeze the builtin ABI (H20).
 - D11 and D15 were decided on 2026-10-20 ([11-decisions](./11-decisions.md)). Run the M0 exit gates.
 
-Status of these items at the M3-P3 head (`63f115a`, 2026-10-25; decisions-log §12-§13):
+Status of these items after M3-P4 (2026-10-26; decisions-log §12-§13):
 
 | Item | Status |
 |---|---|
-| Bytecode for the rest of the language | Built: destructuring, classes with private names, spread, iterators, generators, async functions, async generators and `for await`, labels, `with` and eval slow paths, Annex B functions in sloppy eval code, ES modules with `import()` and top-level await. Bytecode ABI 5 (M3-P0); corpus digest BCG-CORPUS-13 (M3-P3) |
-| `compile_eval`, `compile_function_ctor` | Built with the E1 and F1 workarounds. Open in eval code: E6 (`super()` and dynamic `this`) and E9 (a private name of the caller's class) (M3-P2-OPEN) |
+| Bytecode for the rest of the language | Built: destructuring, classes with private names, spread, iterators, generators, async functions, async generators and `for await`, labels, `with` and eval slow paths, Annex B functions in sloppy eval code, ES modules with `import()` and top-level await. Bytecode ABI 5 (M3-P0); corpus digest BCG-CORPUS-14 (M3-P4) |
+| `compile_eval`, `compile_function_ctor` | Built with the E1 and F1 workarounds. M3-P4 built the 3 eval items that M3-P2-OPEN left open, all inside ABI 5 (M3-P4-EVAL-SCOPE): E6 (`super()` in direct eval code), E9 (a private name of the caller's class in direct eval code) and D3d (a `var` of a direct eval in a parameter list that has the name of a parameter is a SyntaxError, EvalDeclarationInstantiation step 3.d) |
 | Realms, `$262`, interrupts, intrinsics | Built: N realms per isolate (REALM cells, the realm switch at cross-realm calls), `$262.createRealm`; the interrupt budget at calls and loop back edges (H23); a promise reaction job runs in the realm of its handler (H22-Q10) |
 | Spike B + SP-Unit | Spike B: placement (b) passed in gate window 2; x86-64 (b) built in M3-P0. SP-Unit: GO on 4 targets (M3-P2). §4 and [spike review 2 draft](../measurements/2026-10-25-m0-spike-review-draft.md) |
 | ADRs H4, H13, H24, H25; drafts of H29-H34 | H4, H13, H24 and H25 Accepted. H29-H34 are Draft (H29 and H30 need only Draft at M0; H31-H34 freeze at M1 exit) |
-| Freeze the builtin ABI (H20) | M3-P3 wrote the H20 Freeze table, the R5 test with two realms and the core golden (a tripwire). H20 is Draft; plan v8 accepts and freezes it at M3-P5 |
+| Freeze the builtin ABI (H20) | M3-P3 wrote the H20 Freeze table, the R5 test with two realms and the core golden (a tripwire). M3-P4 wrote review rows 1, 2 (Codex) and 4 of H20. H20 is Draft; row 3 and the Accept and Freeze steps are M3-P5 (plan v8) |
 | Run the M0 exit gates | The GATES-2 dry run ran at M3-P3 (below). The exit run is M3-P5 |
 
 **M0 exit check and status** (the exit items are in §2.2):
 
 - How it is checked: `cargo xtask m0-exit` (`tools/xtask/src/m0_exit.rs`) prints PASS, FAIL, OPEN, NOT-RUN or N/A for each item, for one host and for Windows x64 from the jobs of a CI run. It runs no test suite: it reads the outputs of a run (the test262 parse, exec and GC-stress JSON, the corpus and nesting logs with their exit-status lines, the cross-engine run, the spike Verdict tables, the ADR index). CI makes these inputs on the 4 targets: the `test262` job uploads `m0-exit-inputs-<target>`, and the `test262-gc` job runs GC-stress as 6 shards per target (`cargo xtask m0-exit --gc-shard k/6`) and uploads one JSON per shard. Item 4 is N/A on Windows by design (a gate-host speed reading). The exit holds when the tool exits 0 on mac a64, linux a64 and x86-64 Linux, with the Windows column from the CI run of the exit head (plan v8; decisions M3-P3-GATES2-DEV, M3-P3-DRYRUN-CI).
-- Status at the M3-P3 head (`63f115a`, 2026-10-25; the GATES-2 dry run, [decisions-log §13.5](../decisions-log.md)): items 1-3, 6-8 and 10-12 PASS in every column (mac a64, linux a64, x86-64 Linux, the Windows CI column). Three items are OPEN:
+- Status at the M3-P3 head (`63f115a`, 2026-10-25; the GATES-2 dry run, [decisions-log §13.5](../decisions-log.md)): items 1-3, 6-8 and 10-12 PASS in every column (mac a64, linux a64, x86-64 Linux, the Windows CI column). Three items are OPEN (the item 9 text shows the status after M3-P4):
   - item 4 (host columns): perf run 3 passes the canary (richards 1.504x, deltablue 1.636x QuickJS, gate window 3), but it ran at `88dacff`, not this tree. Gate window 4 on the exit tree closes it (M3-P5);
   - item 5: SP-Dispatch condition 2 is open on AMD EPYC 7763 (Zen 3). The orchestrator applied the V8-A19 rule: branch 3, the gate stays (M3-P3-V8A19). Every other spike is GO, and SP-tsrs-win is recorded ([spike review 2 draft](../measurements/2026-10-25-m0-spike-review-draft.md));
-  - item 9: 26 of 28 rows due at M0 are merged; H16 and H20 are not Accepted yet, and H20 is not Frozen. 24 ADRs are Accepted.
-- Built in M0 months 2-3 ahead of the milestone that names it (decisions-log §12-§13): generators, async functions, async generators and `for await` (M1 scope); N realms per isolate and `$262.createRealm` (M1 "Realms"); ES modules with a loader API, `import()` and top-level await (M3 "Modules (rest)"; JSON modules, import defer and source-phase imports are not built); Date (M3; the legacy Date.parse forms and ECMA-402 `toLocale*String` stay); JSON, Map, Set, WeakMap and WeakSet (the WeakMap ephemeron fixpoint comes in M1 with WeakRef). Also built: the facts exporter `ep9_vm::abi::export_facts` (FeedbackVector to FactSnapshot, H16-Q5; the `.ep9prof` container is H16-Q5b, A3), and only the scoped embedder forms (`Isolate::with_cx`, `Isolate::with_module_host`; the raw `Isolate::{run_script, call, global, display}` are removed). test262 at `63f115a`: all files 35,323 / 53,616, `language/` 22,607 / 23,726.
+  - item 9: at `63f115a`, 26 of 28 rows due at M0 were merged (not H16 and H20). M3-P4 accepted H16, so 27 of 28 are merged and only H20 is open: it is Draft (review rows 1, 2 and 4 written) and not Frozen. 25 ADRs are Accepted.
+- Built in M0 months 2-3 ahead of the milestone that names it (decisions-log §12-§13): generators, async functions, async generators and `for await` (M1 scope); N realms per isolate and `$262.createRealm` (M1 "Realms"); ES modules with a loader API, `import()` and top-level await (M3 "Modules (rest)"; JSON modules, import defer and source-phase imports are not built); Date (M3; the legacy Date.parse forms and ECMA-402 `toLocale*String` stay); JSON, Map, Set, WeakMap and WeakSet (the WeakMap ephemeron fixpoint comes in M1 with WeakRef). Also built: the facts exporter `ep9_vm::abi::export_facts` (FeedbackVector to FactSnapshot, H16-Q5; the `.ep9prof` container is H16-Q5b, A3) and `ep9 --facts-out <file>`, which writes the FactSnapshot of the main unit of a run (M3-P4); E6, E9 and D3d in direct eval code (M3-P4, above); and only the scoped embedder forms (`Isolate::with_cx`, `Isolate::with_module_host`; the raw `Isolate::{run_script, call, global, display}` are removed). test262 after M3-P4 (x86-64 Linux sandbox): all files 35,540 / 53,616, `language/` 22,819 / 23,726 (at `63f115a`: 35,323 and 22,607); under GC-stress 35,505 / 53,572 (44 skipped).
 
 ---
 
@@ -387,6 +387,7 @@ Status of these items at the M3-P3 head (`63f115a`, 2026-10-25; decisions-log §
 - Clarified 2026-10-22 ([decisions-log §12.9](../decisions-log.md#129-p2-classes-withlookup-eval-front-end-spike-b-infra), M2-P2-D19): Spike B and SP-Unit have 11 opcodes (the planned 10 plus AddSmi), as the [Spike B protocol](../measurements/2026-10-22-spike-b-protocol.md) says. The §4 row, 02 §6 and 04 §5 say 11.
 - Clarified 2026-10-22 (decisions-log §12.12 and §12.14: M2-D21-FAIL, M2-P4-W1-D21, M2-P4-SPUNIT-M3, M2-W2-D21-B): placement (a) failed the D21 rule in gate window 1, so SP-Unit moved from M0 month 2 to M0 month 3 (M3-P1) and builds on placement (b). The §4 table has separate Spike B and SP-Unit rows. 02 §6 (H14), 02 §7 and 04 §5 say the same.
 - Status added 2026-10-25 (M3-P4 DOCS; decisions-log §13.2-§13.5): §2.2 M0 points to §8; §4 gets the SP-Dispatch status and the Spike B and SP-Unit results; §8 gets a status table for M0 months 2-3, how the M0 exit is checked (`cargo xtask m0-exit`), the exit-item status at the M3-P3 head and the list of items built ahead of their milestone. The A0 part 1 scope says "SP-Unit after Spike B" (it said "inside Spike B"; M2-D21-FAIL). No gate, scope or date changes.
+- Status updated 2026-10-26 (M3-P4 DOCS step 2): the §8 status table is "after M3-P4" (E6, E9 and D3d built; BCG-CORPUS-14; H20 review rows 1, 2 and 4); item 9 of the exit status has only H20 open (H16 Accepted, 25 Accepted); the built list names `ep9 --facts-out` and the M3-P4 test262 numbers. The other exit items stay at the GATES-2 dry run; the M3-P5 exit run updates them. No gate, scope or date changes.
 
 ---
 
