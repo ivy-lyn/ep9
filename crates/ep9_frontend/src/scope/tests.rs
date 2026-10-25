@@ -836,6 +836,46 @@ fn private_kind_markers_only_with_a_direct_eval() {
     }
 }
 
+/// CX2-E9-1 (M3-P4): a class whose heritage holds a direct eval (also in a function inside the
+/// heritage) gets a heritage scope: a strict `Block` child of the class scope with the marker
+/// binding `#.heritage` in its context, around the heritage only (an eval in a computed key or
+/// a method stays in the class scope or below it). No other class gets one.
+#[test]
+fn heritage_scope_only_with_a_direct_eval_in_the_heritage() {
+    let heritage = |a: &ScopeAnalysis| {
+        a.scopes()
+            .iter()
+            .filter_map(|s| s.class.as_ref().and_then(|c| c.heritage_scope))
+            .collect::<Vec<_>>()
+    };
+    for src in [
+        "class C extends (eval('1'), Object) { #x; }",
+        "class C extends (() => eval('1'))() { m() { eval('2'); } }",
+        "class C extends (class { m() { eval('1'); } }) {}",
+    ] {
+        let a = script(src);
+        let hs = heritage(&a);
+        assert_eq!(hs.len(), 1, "{src}\n{a}");
+        let h = a.scope(hs[0]);
+        let class = a.scopes().iter().find(|s| s.class.is_some()).unwrap();
+        assert_eq!(h.kind, ScopeKind::Block, "{src}");
+        assert_eq!(h.parent, Some(class.id), "{src}");
+        assert!(h.strict && h.needs_context, "{src}");
+        assert_eq!(ctx(&a, "#.heritage").0, h.id, "{src}");
+    }
+    for src in [
+        "class C extends Object { m() { eval('1'); } }",
+        "class C extends Object { [eval('k')] = 1; }",
+        "class C extends (eval?.('1'), Object) {}",
+        "class C extends ((0, eval)('1'), Object) {}",
+        "class C { m() { eval('1'); } }",
+    ] {
+        let a = script(src);
+        assert!(heritage(&a).is_empty(), "{src}\n{a}");
+        assert!(a.named("#.heritage").is_empty(), "{src}");
+    }
+}
+
 #[test]
 fn class_scopes_private_names_and_synthetic_functions() {
     let a = script(

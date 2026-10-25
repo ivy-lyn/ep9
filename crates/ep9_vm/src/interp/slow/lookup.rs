@@ -16,7 +16,8 @@
 //! ```
 //!
 //! Every entry first resolves the name (§9.1.2.1 GetIdentifierReference) with [`resolve`],
-//! which walks the context chain of the frame from the current context out:
+//! which walks the context chain of the frame from the current context out (a private name
+//! `#x` of direct eval code is the exception: [`resolve_private`], CX2-E9-1):
 //!
 //! ```text
 //! with context (unit scope kind With, slot 0 = the object): an object Environment Record
@@ -191,10 +192,79 @@ fn eval_ext(c: u64) -> Option<u64> {
     None
 }
 
+/// (M3-P4, CX2-E9-1) `name` is a private name `#x` (or a synthetic `#.` name): no identifier
+/// starts with `#`, so only the private names of direct eval code (E9) are looked up by name.
+fn is_private_name(cx: &Cx, name: u64) -> bool {
+    if !kinds::is_string(name) {
+        return false;
+    }
+    let text = string::view(cx, name);
+    !text.is_empty() && text.at(0) == u16::from(b'#')
+}
+
+/// (CX2-E9-1) The binding of the private name `name` (`#x`) of direct eval code: the slot of
+/// the class context that the VM found when it compiled the eval code
+/// (`LoadedUnit::eval_private`, `slow/eval.rs` `private_environment`): past the eval code's
+/// own contexts (the site context), then `depth` contexts out. A search by name from the
+/// current context would find a class that the reference must not see: a class of the eval
+/// code whose heritage holds the reference, or the caller's class whose heritage holds the
+/// eval (§15.7.14 step 8.b), and its slot (undefined while the heritage runs) would become an
+/// ordinary property key. A name with no entry, or a chain that does not reach a context
+/// with the slot, throws a TypeError. GC point (a poll).
+fn resolve_private(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<Binding> {
+    let text = string::to_rust_string(name);
+    let entry = info(fp).loaded_unit().and_then(|u| {
+        u.eval_private
+            .iter()
+            .find(|e| text.strip_prefix('#') == Some(e.name.as_str()))
+            .map(|e| (u, e.depth))
+    });
+    if let Some((u, depth)) = entry {
+        let mut c = context(fp);
+        while is_context(c) && core::ptr::eq(object::context_scope(c).0, u) {
+            poll(cx)?;
+            c = object::context_previous(c);
+        }
+        for _ in 0..depth {
+            if !is_context(c) {
+                break;
+            }
+            poll(cx)?;
+            c = object::context_previous(c);
+        }
+        if is_context(c)
+            && let Some(b) = slot_binding(c, name)
+        {
+            return Ok(b);
+        }
+    }
+    Err(private_not_found(cx, &text))
+}
+
+/// (CX2-E9-1) The TypeError of a private name that no class around the code gives.
+fn private_not_found(cx: &mut Cx, text: &str) -> Throw {
+    let msg = format!("Private name {text} is not declared by a class around this code");
+    throw_error(cx, ErrorKind::TypeError, &msg)
+}
+
+/// (CX2-E9-1) A private name symbol from a class context slot: a field's `#x` or a brand. Any
+/// other value (undefined while the class is not set up) would be an ordinary property key,
+/// so it is a TypeError.
+fn private_symbol(cx: &mut Cx, name: u64, v: u64) -> Res<u64> {
+    if symbol::is_private_key(v) {
+        return Ok(v);
+    }
+    let text = string::to_rust_string(name);
+    Err(private_not_found(cx, &text))
+}
+
 /// GetIdentifierReference (§9.1.2.1) of the atom `name` from the current context of the
 /// frame `fp`, out to the global environment (see the module doc). GC point (an
 /// `@@unscopables` getter, a poll).
 fn resolve(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<Binding> {
+    if is_private_name(cx, name) {
+        return resolve_private(cx, fp, name);
+    }
     let implicit = is_implicit_name(name);
     let mut c = context(fp);
     while is_context(c) {
@@ -456,7 +526,12 @@ pub(crate) fn lda_lookup_slot(
     let name = info(fp).constant(name);
     let r = (|| -> Res<u64> {
         let b = resolve(cx, fp, name)?;
-        get_binding_value(cx, b, name, strict(fp), inside_typeof)
+        let v = get_binding_value(cx, b, name, strict(fp), inside_typeof)?;
+        // (CX2-E9-1) Only a private field's key is read this way (E9).
+        if is_private_name(cx, name) {
+            return private_symbol(cx, name, v);
+        }
+        Ok(v)
     })();
     ret(r)
 }
@@ -614,8 +689,21 @@ fn binding_of_env(cx: &mut Cx, env: u64, name: u64) -> Res<Binding> {
 pub(crate) fn load_lookup_slot_resolved(cx: &mut Cx, env: u64, name: u64, strict: u64) -> Res<u64> {
     let name = name_key(cx, name)?;
     let b = binding_of_env(cx, env, name)?;
-    get_binding_value(cx, b, name, strict == TRUE, false)
+    let v = get_binding_value(cx, b, name, strict == TRUE, false)?;
+    // (CX2-E9-1) A brand that eval code reads (E9) must be a private name symbol.
+    if [BRAND, STATIC_BRAND]
+        .iter()
+        .any(|t| string::equals_text(name, string::JsStr::Latin1(t)))
+    {
+        return private_symbol(cx, name, v);
+    }
+    Ok(v)
 }
+
+/// The brand slots of a class context (`ep9_frontend` `bytecodegen/class_fields.rs`), which
+/// eval code reads by name (E9, ep9_bytecode `eval_context.rs`).
+const BRAND: &[u8] = b"#.brand";
+const STATIC_BRAND: &[u8] = b"#.static-brand";
 
 /// `StoreLookupSlotResolved(env, name, value, strict)` (runtime id 31): PutValue (§6.2.5.6) of
 /// `value` to the reference that [`resolve_lookup_slot`] resolved to `env`; `strict` is the
