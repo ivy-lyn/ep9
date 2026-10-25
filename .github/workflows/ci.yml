@@ -194,14 +194,16 @@ jobs:
       # (crates/ep9_frontend/src/bytecodegen/corpus.rs). The log prints this runner's digest. It
       # changes only with an ABI bump or a codegen change (a BCG-CORPUS row in decisions-log).
       # The log is an m0-exit input (item 12; CORPUS_CMD in tools/xtask/src/m0_exit.rs): no color,
-      # and the exit-status line "m0-exit status: <code>" last, so a killed run cannot pass.
+      # the start line "m0-exit start: <label>" first and the exit-status line
+      # "m0-exit status: <code>" last, so a killed run (a start with no status) cannot pass.
       - name: bytecodegen corpus digest (release)
         if: ${{ !cancelled() && steps.sync.outcome == 'success' && steps.bench.outcome == 'success' }}
         env:
           CARGO_TERM_COLOR: never
         run: |
+          echo "m0-exit start: corpus release" | tee corpus-release.log
           rc=0
-          cargo test -p ep9_frontend --release --locked --lib bytecodegen::corpus -- --ignored --nocapture 2>&1 | tee corpus-release.log || rc=$?
+          cargo test -p ep9_frontend --release --locked --lib bytecodegen::corpus -- --ignored --nocapture 2>&1 | tee -a corpus-release.log || rc=$?
           echo "m0-exit status: $rc" | tee -a corpus-release.log
           exit "$rc"
       - name: bytecodegen corpus digest (debug)
@@ -209,21 +211,24 @@ jobs:
         env:
           CARGO_TERM_COLOR: never
         run: |
+          echo "m0-exit start: corpus debug" | tee corpus-debug.log
           rc=0
-          cargo test -p ep9_frontend --locked --lib bytecodegen::corpus -- --ignored --nocapture 2>&1 | tee corpus-debug.log || rc=$?
+          cargo test -p ep9_frontend --locked --lib bytecodegen::corpus -- --ignored --nocapture 2>&1 | tee -a corpus-debug.log || rc=$?
           echo "m0-exit status: $rc" | tee -a corpus-debug.log
           exit "$rc"
       # M0 exit item 7 (nesting caps, the UTF-16 column): the m0-exit input log of NESTING_CMD
-      # (tools/xtask/src/m0_exit.rs), two cargo runs, each with its exit-status line. The
+      # (tools/xtask/src/m0_exit.rs), two cargo runs, each with its start and exit-status lines. The
       # build + test job runs the same tests; this log is what m0-exit reads for the host column.
       - name: nesting caps (m0-exit item 7 log)
         if: ${{ !cancelled() && matrix.name != 'windows-x64' }}
         env:
           CARGO_TERM_COLOR: never
         run: |
+          echo "m0-exit start: depth_tests" | tee nesting.log
           rc1=0
-          cargo test --locked -p ep9_frontend --lib depth_tests 2>&1 | tee nesting.log || rc1=$?
+          cargo test --locked -p ep9_frontend --lib depth_tests 2>&1 | tee -a nesting.log || rc1=$?
           echo "m0-exit status: $rc1" | tee -a nesting.log
+          echo "m0-exit start: nesting_caps cli" | tee -a nesting.log
           rc2=0
           cargo test --locked -p ep9_cli --test nesting_caps --test cli 2>&1 | tee -a nesting.log || rc2=$?
           echo "m0-exit status: $rc2" | tee -a nesting.log
@@ -287,8 +292,10 @@ jobs:
   # at M3-P2, so it runs as 6 shards, one job each (M3-P3-GC-SHARD). `cargo xtask m0-exit
   # --gc-shard k/n` prints the test262 path prefixes of shard k: a split of the checkout by file
   # count that puts every test file in exactly one shard. A filtered run compares only the tests
-  # it ran (tools/test262 expect::diff). m0-exit item 6 reads the n JSON files of a target back as
-  # one whole-corpus run, and its Windows cell needs every windows-x64 shard job green. The
+  # it ran (tools/test262 expect::diff), and its JSON names every file it ran (run_paths).
+  # m0-exit item 6 checks that each JSON ran and skipped exactly the files of one shard, reads
+  # the n JSON files of a target back as one whole-corpus run, and its Windows cell needs every
+  # windows-x64 shard job green. The
   # tests of the skip list run past the timeout under GC-stress (its header says why each one is
   # there). A verifier error panics: an infrastructure error, exit 2 (tools/test262/README.md
   # "exec"). To change n, change `shards` and the `shard` list together.

@@ -33,12 +33,12 @@
 //! | 3 | exec JSON: `language/` files >= 40% | step "test262 exec" green; passed = total (exec JSON) - the `test/language/` lines of the Windows expectation file |
 //! | 4 | cross JSON: richards and deltablue vs QuickJS, net interval low end >= 0.6, valid rows (a gross fallback row, net invalid, gives OPEN), a gate host, not provisional; measured at HEAD, or at an ancestor with no change under `crates/` or `tools/bench/` since (else OPEN) | N/A by design (a gate-host speed reading; no Windows bench job) |
 //! | 5 | verdicts: SP-GC, SP-VA, SP-Value, SP-Dispatch, SP-JIT-mem and Spike B GO (no open conditions); SP-tsrs-win recorded | the same verdicts, and these steps of the run green: SP-GC, SP-Dispatch, SP-JIT-mem and Spike B structural gates, ep9_heap barrier, cargo test --workspace, spike-native tests (ep9_vm) |
-//! | 6 | GC JSON: the whole pinned corpus (files run + skipped = the pin's count; `skipped_paths` = the set of the committed skip list, and `skipped` = its size), `timeout_ms` <= 60000 and `feedback_threshold` 0 (GC_CMD), 0 infra; the run names the committed expectation file, and its "fail" results against that file without the skip list give 0 new failures (recomputed here). Several GC JSONs must be every shard of one `--gc-shard` split of this tree's test262 checkout, each once (placed by their paths and file counts), with the same settings; they are merged and checked as one run | every job `test262 GC-stress (windows-x64, k/n)`, k = 1..n each once, with its step "test262 exec, GC-stress + eager feedback" green |
-//! | 7 | nesting log: `every_form_is_gated`, `caps_hold_end_to_end`, `uncaught_error_reports_file_line_utf16_column` ok, no cargo failure line (`error[E`, `error:`, a panic) anywhere in it, and the exit-status line `m0-exit status: 0` after each of its 2 cargo runs, last in the log | step "cargo test --workspace" green (it runs the three) |
+//! | 6 | GC JSON: the whole pinned corpus (files run + skipped = the pin's count; `skipped_paths` = the set of the committed skip list, and `skipped` = its size), `timeout_ms` <= 60000 and `feedback_threshold` 0 (GC_CMD), 0 infra; the run names the committed expectation file, and its "fail" results against that file without the skip list give 0 new failures (recomputed here). Several GC JSONs must be every shard of one `--gc-shard` split of this tree's test262 checkout, each once, with the same settings: each JSON's `run_paths` (every file it ran) and `skipped_paths` are exactly the files of its shard, so together they hold every test file once; they are merged and checked as one run | every job `test262 GC-stress (windows-x64, k/n)`, k = 1..n each once, with its step "test262 exec, GC-stress + eager feedback" green |
+//! | 7 | nesting log: `every_form_is_gated`, `caps_hold_end_to_end`, `uncaught_error_reports_file_line_utf16_column` ok, each one in a cargo run that finished with exit status 0, no cargo failure line (`error[E`, `error:`, a panic) anywhere in it, and its 2 cargo runs (or more) each between a start line `m0-exit start: <label>` and an exit-status line `m0-exit status: 0`, with no run unfinished and no line outside a run | step "cargo test --workspace" green (it runs the three) |
 //! | 8 | the asserts are in ep9_value's source, and `cargo check -p ep9_value --target <host>` passes | step "cargo build --workspace --all-targets" green |
 //! | 9, 10 | docs/adr/README.md index: the ADR status of every row due at M0 (Accepted or Frozen; a Draft for "Draft M0" rows); H20 Frozen | the same |
 //! | 11 | verdicts: SP-Unit GO | the same |
-//! | 12 | corpus logs: every run in every log (a run starts at a cargo "Finished" line) prints the digest of `expectations/bytecode-corpus.digest`, its test is ok and its exit-status line says 0, each log ends with an exit-status line, and no log has a cargo failure line (`error[E`, `error:`, a panic) anywhere; a release and a debug run are both given | step "bytecodegen corpus digest (release)" green |
+//! | 12 | corpus logs: every cargo run in every log (from its start line `m0-exit start: <label>` to its exit-status line) prints the digest of `expectations/bytecode-corpus.digest`, its test is ok and its exit status is 0; no run is unfinished, no line is outside a run, and no log has a cargo failure line (`error[E`, `error:`, a panic) anywhere; a release and a debug run are both given | step "bytecodegen corpus digest (release)" green |
 //!
 //! After the table, the report lists two tree checks (plan rules, not exit items, so they do not
 //! change the exit code): stub markers in crates, spikes and tools, and a `fn bind_this` in
@@ -100,46 +100,112 @@ const NESTING_TESTS: &[&str] = &[
     "caps_hold_end_to_end",
     "uncaught_error_reports_file_line_utf16_column",
 ];
-const NESTING_CMD: &str = "cargo test --locked -p ep9_frontend --lib depth_tests > nesting.log 2>&1; \
+const NESTING_CMD: &str = "echo \"m0-exit start: depth_tests\" > nesting.log; \
+     cargo test --locked -p ep9_frontend --lib depth_tests >> nesting.log 2>&1; \
      echo \"m0-exit status: $?\" >> nesting.log; \
+     echo \"m0-exit start: nesting_caps cli\" >> nesting.log; \
      cargo test --locked -p ep9_cli --test nesting_caps --test cli >> nesting.log 2>&1; \
      echo \"m0-exit status: $?\" >> nesting.log";
+
+/// The start line that CORPUS_CMD and NESTING_CMD write before each cargo run (M3-P3 fix
+/// round 2, C-G2): `m0-exit start: <label>`. With [`SENTINEL`] after the run, it makes each
+/// run of a log one pair, so a run that was killed (a start, no status) cannot hide between
+/// two good runs.
+const START: &str = "m0-exit start: ";
 
 /// The exit-status line that CORPUS_CMD and NESTING_CMD write after each cargo run
 /// (M2-P2-OPEN-I9-EXIT): `m0-exit status: <code>`. A run that is killed writes no status, or a
 /// code that is not 0, so its log cannot pass.
 const SENTINEL: &str = "m0-exit status: ";
 
-/// The exit codes of a log's status lines, in order.
-fn sentinels(log: &str) -> Vec<Result<i64, String>> {
-    log.lines()
-        .filter_map(|l| l.trim().strip_prefix(SENTINEL))
-        .map(|code| code.parse::<i64>().map_err(|_| code.to_string()))
-        .collect()
+/// One cargo run of a log: the lines from its start line ([`START`]) to its exit-status line
+/// ([`SENTINEL`]).
+struct Invocation<'a> {
+    label: &'a str,
+    /// The lines between the start line and the status line, trimmed.
+    body: Vec<&'a str>,
+    /// The code of the status line: None if the run has none (killed, or the log stops), Err
+    /// if the line holds no number.
+    exit: Option<Result<i64, String>>,
 }
 
-/// The sentinel rules of a whole log: at least `min` status lines, each `0`, and the log ends
-/// with one (nothing after the last status: a later run that was killed has none). Err(why).
-fn sentinel_check(log: &str, min: usize) -> Result<(), String> {
-    let codes = sentinels(log);
-    if codes.len() < min {
+impl Invocation<'_> {
+    fn ok(&self) -> bool {
+        self.exit == Some(Ok(0))
+    }
+}
+
+/// The cargo runs of a log, and the lines that break the pairing: a status line with no start
+/// line before it, and a non-blank line outside every run (output that no run owns). A run
+/// with no status line ends at the next start line or at the end of the log.
+fn invocations(log: &str) -> (Vec<Invocation<'_>>, Vec<String>) {
+    let mut runs: Vec<Invocation> = Vec::new();
+    let mut problems = Vec::new();
+    let mut open = false;
+    for t in log.lines().map(str::trim) {
+        if let Some(label) = t.strip_prefix(START) {
+            runs.push(Invocation {
+                label: label.trim(),
+                body: Vec::new(),
+                exit: None,
+            });
+            open = true;
+        } else if let Some(code) = t.strip_prefix(SENTINEL) {
+            match runs.last_mut() {
+                Some(r) if open => {
+                    r.exit = Some(code.parse::<i64>().map_err(|_| code.to_string()));
+                    open = false;
+                }
+                _ => problems.push(format!(
+                    "an exit-status line \"{t}\" with no start line (\"{START}<label>\") before it"
+                )),
+            }
+        } else if open {
+            if let Some(r) = runs.last_mut() {
+                r.body.push(t);
+            }
+        } else if !t.is_empty() {
+            problems.push(format!("output outside every cargo run: {t:?}"));
+        }
+    }
+    (runs, problems)
+}
+
+/// The pairing rules of a whole log: at least `min` cargo runs, each with its start line and
+/// its exit-status line, each status `0`, and no line outside a run (so nothing after the last
+/// status). Err(why).
+fn invocation_check(log: &str, min: usize) -> Result<(), String> {
+    let (runs, problems) = invocations(log);
+    if let Some(p) = problems.first() {
         return Err(format!(
-            "{} exit-status lines (\"{SENTINEL}<code>\"), {min} needed: a killed run, or a log not made with the command below",
-            codes.len()
+            "{p}{}",
+            if problems.len() > 1 {
+                format!(" (and {} more such lines)", problems.len() - 1)
+            } else {
+                String::new()
+            }
         ));
     }
-    if let Some(bad) = codes.iter().find(|c| *c != &Ok(0)) {
-        return Err(match bad {
-            Ok(code) => format!("a cargo run exited {code}"),
-            Err(text) => format!("a bad exit-status line \"{SENTINEL}{text}\""),
-        });
+    if let Some(r) = runs.iter().find(|r| r.exit.is_none()) {
+        return Err(format!(
+            "the cargo run \"{START}{}\" has no exit status (killed?)",
+            r.label
+        ));
     }
-    let last = log.lines().map(str::trim).rfind(|l| !l.is_empty());
-    if !last.is_some_and(|l| l.starts_with(SENTINEL)) {
-        return Err(
-            "the log goes on after its last exit-status line (a run with no exit status: killed?)"
-                .into(),
-        );
+    if runs.len() < min {
+        return Err(format!(
+            "{} cargo runs with their start and exit-status lines, {min} needed: a killed run, or a log not made with the command below",
+            runs.len()
+        ));
+    }
+    if let Some(r) = runs.iter().find(|r| !r.ok()) {
+        return Err(match &r.exit {
+            Some(Ok(code)) => format!("the cargo run \"{START}{}\" exited {code}", r.label),
+            _ => format!(
+                "the cargo run \"{START}{}\" has a bad exit-status line",
+                r.label
+            ),
+        });
     }
     Ok(())
 }
@@ -1406,12 +1472,13 @@ fn gc_cell(c: &Ctx, label: &str, j: &Json) -> Cell {
 // Item 6 shards (M3-P3-GC-SHARD): one GC-stress run split by path prefixes over several jobs.
 //
 // `--gc-shard <k>/<n>` prints the prefixes of shard k of n; CI runs each shard as
-// `ep9-test262 exec ... <prefixes>` (a filtered run compares only the tests it ran). The split is
+// `ep9-test262 exec ... <prefixes>` (a filtered run compares only the tests it ran, and its JSON
+// names them in `run_paths`). The split is
 // a function of the test262 checkout alone: units are path prefixes, split by their next
 // character until each holds at most 1/(4n) of the test files, packed by file count (a failing file costs about as much as a
 // passing one under GC-stress), largest first, into the shard with the fewest files. Item 6
 // computes the same split from this tree's checkout, puts each given JSON into the one shard
-// that holds all its paths and its file count, and needs every shard exactly once.
+// whose files are exactly the files it ran and skipped, and needs every shard exactly once.
 
 /// The CI job and step of a GC-stress shard (`.github/workflows/ci.yml`).
 const GC_JOB: &str = "test262 GC-stress";
@@ -1521,21 +1588,61 @@ fn gc_shard_prefixes(t262: &Path, spec: &str) -> Result<Vec<String>, String> {
     Ok(split[k - 1].0.clone())
 }
 
-/// The paths a JSON names: its non-passing results and its skipped tests.
-fn named_paths(j: &Json) -> Vec<&str> {
+/// The test files a filtered exec JSON selected (C-G1): its `run_paths` (every file it ran)
+/// and its `skipped_paths`, sorted. Err if the JSON cannot say: no `run_paths` (a runner
+/// before C-G1, or a run with no path filter), a list that disagrees with the file count, a
+/// file both run and skipped, or a result for a file that was not run.
+fn selected_paths(j: &Json) -> Result<Vec<&str>, String> {
+    let strings =
+        |key: &str| -> Option<Vec<&str>> { j.get(key)?.arr()?.iter().map(Json::str).collect() };
+    let run = strings("run_paths").ok_or(
+        "no run_paths, so the tests it ran cannot be checked (a runner before M3-P3 C-G1, or a run with no path filter)",
+    )?;
+    let skipped = strings("skipped_paths").ok_or("no skipped_paths")?;
+    let total = count(j, &["files"]).map_or(0, |(_, t)| t);
+    if run.len() as u64 != total {
+        return Err(format!(
+            "run_paths names {} files, \"files\" counts {total}",
+            run.len()
+        ));
+    }
+    let run_set: BTreeSet<&str> = run.iter().copied().collect();
+    if let Some(p) = skipped.iter().find(|p| run_set.contains(*p)) {
+        return Err(format!("{p} is both run and skipped"));
+    }
     let results = j.get("results").and_then(Json::arr).unwrap_or(&[]);
-    let skipped = j.get("skipped_paths").and_then(Json::arr).unwrap_or(&[]);
-    results
+    if let Some(p) = results
         .iter()
-        .filter_map(|r| r.get("path").and_then(Json::str))
-        .chain(skipped.iter().filter_map(Json::str))
-        .collect()
+        .map(|r| r.get("path").and_then(Json::str).unwrap_or(""))
+        .find(|p| !run_set.contains(p))
+    {
+        return Err(format!("a result for {p:?}, a file it did not run"));
+    }
+    let mut all: Vec<&str> = run.into_iter().chain(skipped).collect();
+    all.sort_unstable();
+    Ok(all)
 }
 
-/// Files run + skipped by an exec JSON.
-fn covered(j: &Json) -> u64 {
-    count(j, &["files"]).map_or(0, |(_, t)| t)
-        + j.get("skipped").and_then(Json::num).unwrap_or(0.0) as u64
+/// The files of each shard of a split, sorted: a file is in the shard of the one prefix it
+/// starts with (the prefixes of a split do not nest, so that prefix is the greatest one that
+/// sorts at or before the file).
+fn shard_members<'a>(files: &'a [String], split: &[(Vec<String>, usize)]) -> Vec<Vec<&'a str>> {
+    let mut prefixes: Vec<(&str, usize)> = split
+        .iter()
+        .enumerate()
+        .flat_map(|(k, (pre, _))| pre.iter().map(move |p| (p.as_str(), k)))
+        .collect();
+    prefixes.sort_unstable();
+    let mut members = vec![Vec::new(); split.len()];
+    for f in files {
+        let at = prefixes.partition_point(|(p, _)| *p <= f.as_str());
+        if let Some(&(p, k)) = at.checked_sub(1).map(|i| &prefixes[i])
+            && f.starts_with(p)
+        {
+            members[k].push(f.as_str());
+        }
+    }
+    members
 }
 
 /// Several `--exec-gc` files: the shards of one split, merged into one whole-corpus JSON for
@@ -1574,26 +1681,23 @@ fn merge_gc_shards(c: &Ctx, shards: &[(PathBuf, Json)]) -> Result<(String, Json)
             ),
         )
     })?;
-    // The smallest split that places every file in its own shard.
+    // The exact files of each shard JSON (C-G1): a count and the non-passing paths do not show
+    // a shard that ran a passing test of another shard in place of one of its own.
+    let mut selected = Vec::new();
+    for (p, j) in shards {
+        selected.push(selected_paths(j).map_err(|e| fail(format!("{}: {e}", p.display())))?);
+    }
+    // The smallest split in which each JSON selected exactly the files of one shard.
     let mut found = None;
     for n in shards.len()..=MAX_GC_SHARDS {
         let Ok(split) = gc_split(&files, n) else {
             break;
         };
-        let place = |j: &Json| {
-            let paths = named_paths(j);
-            let hits: Vec<usize> = (0..n)
-                .filter(|&k| {
-                    split[k].1 as u64 == covered(j)
-                        && !paths.is_empty()
-                        && paths
-                            .iter()
-                            .all(|p| split[k].0.iter().any(|pre| p.starts_with(pre.as_str())))
-                })
-                .collect();
-            (hits.len() == 1).then(|| hits[0])
-        };
-        let placed: Option<Vec<usize>> = shards.iter().map(|(_, j)| place(j)).collect();
+        let members = shard_members(&files, &split);
+        let placed: Option<Vec<usize>> = selected
+            .iter()
+            .map(|sel| members.iter().position(|m| m == sel))
+            .collect();
         if let Some(placed) = placed {
             found = Some((n, placed));
             break;
@@ -1601,7 +1705,7 @@ fn merge_gc_shards(c: &Ctx, shards: &[(PathBuf, Json)]) -> Result<(String, Json)
     }
     let Some((n, placed)) = found else {
         return Err(fail(format!(
-            "they are not shards of one `--gc-shard <k>/<n>` split of this tree's test262 checkout (n {}..={MAX_GC_SHARDS}): a shard holds paths of two shards or another file count",
+            "they are not shards of one `--gc-shard <k>/<n>` split of this tree's test262 checkout (n {}..={MAX_GC_SHARDS}): a shard did not run and skip exactly the files of one shard",
             shards.len()
         )));
     };
@@ -1624,6 +1728,15 @@ fn merge_gc_shards(c: &Ctx, shards: &[(PathBuf, Json)]) -> Result<(String, Json)
         return Err(fail(format!(
             "shard(s) {} of the {n}-way split are missing, so the run does not cover the corpus",
             missing.join(", ")
+        )));
+    }
+    // Every shard once, each with exactly its own files: together they select every test file
+    // of the checkout once (the split is a partition; checked here too).
+    let union: usize = selected.iter().map(Vec::len).sum();
+    if union != files.len() {
+        return Err(fail(format!(
+            "the shards select {union} files, the checkout has {}",
+            files.len()
         )));
     }
     // Merge: the counts add up, the paths join (the shards are disjoint by construction).
@@ -1791,10 +1904,15 @@ fn item7(c: &Ctx) -> (Cell, Cell) {
         Some((p, log)) => {
             let mut status = Status::Pass;
             let mut parts = Vec::new();
+            // A test passes only in a cargo run that finished with exit status 0 (C-G2).
+            let (runs, _) = invocations(log);
             for t in NESTING_TESTS {
                 let ok = format!("test {t} ... ok");
                 let failed = format!("test {t} ... FAILED");
-                let st = if log.lines().any(|l| l.trim_end() == ok) {
+                let st = if runs
+                    .iter()
+                    .any(|r| r.ok() && r.body.iter().any(|l| *l == ok))
+                {
                     Status::Pass
                 } else if log.lines().any(|l| l.trim_end() == failed) {
                     Status::Fail
@@ -1812,9 +1930,12 @@ fn item7(c: &Ctx) -> (Cell, Cell) {
                 status = Status::Fail;
                 parts.push(format!("a cargo failure: {l:?}"));
             }
-            // NESTING_CMD: two cargo runs, each with its exit-status line.
-            match sentinel_check(log, 2) {
-                Ok(()) => parts.push("2 exit-status lines, both 0".into()),
+            // NESTING_CMD: two cargo runs, each with its start and exit-status lines.
+            match invocation_check(log, 2) {
+                Ok(()) => parts.push(format!(
+                    "{} cargo runs, each with its start line and exit status 0",
+                    runs.len()
+                )),
                 Err(why) => {
                     status = Status::Fail;
                     parts.push(format!("{why} (make it with `{NESTING_CMD}`)"));
@@ -2046,7 +2167,8 @@ fn item11(c: &Ctx) -> (Cell, Cell) {
     (cell(st, t.clone()), cell(st, t))
 }
 
-const CORPUS_CMD: &str = "cargo test -p ep9_frontend --release --locked --lib bytecodegen::corpus -- --ignored --nocapture > corpus-release.log 2>&1; \
+const CORPUS_CMD: &str = "echo \"m0-exit start: corpus release\" > corpus-release.log; \
+     cargo test -p ep9_frontend --release --locked --lib bytecodegen::corpus -- --ignored --nocapture >> corpus-release.log 2>&1; \
      echo \"m0-exit status: $?\" >> corpus-release.log (and the same without --release, into corpus-debug.log)";
 
 fn item12(c: &Ctx) -> (Cell, Cell) {
@@ -2070,7 +2192,7 @@ fn item12(c: &Ctx) -> (Cell, Cell) {
                 status = Status::Fail;
                 parts.push(format!("{}: a cargo failure: {l:?}", p.display()));
             }
-            if let Err(why) = sentinel_check(log, 1) {
+            if let Err(why) = invocation_check(log, 1) {
                 status = Status::Fail;
                 parts.push(format!(
                     "{}: {why} (make it with `{CORPUS_CMD}`)",
@@ -2078,10 +2200,6 @@ fn item12(c: &Ctx) -> (Cell, Cell) {
                 ));
             }
             let runs = corpus_runs(log);
-            if runs.is_empty() {
-                status = Status::Fail;
-                parts.push(format!("{}: no \"corpus digest\" line", p.display()));
-            }
             for r in runs {
                 let ok = !r.failed
                     && r.ok >= r.digests.len()
@@ -2252,8 +2370,8 @@ fn cargo_failure(log: &str) -> Option<&str> {
     })
 }
 
-/// One cargo test run in a corpus log: from a "Finished `<profile>` profile" line to the next
-/// one (a log can hold several runs, appended).
+/// One cargo test run in a corpus log: one start line to its exit-status line
+/// ([`invocations`]; a log can hold several runs, appended).
 struct CorpusRun {
     profile: &'static str,
     /// (digest, units) of each `corpus digest <hex> over <n> units` line.
@@ -2262,57 +2380,50 @@ struct CorpusRun {
     ok: usize,
     /// A "test result: FAILED" line.
     failed: bool,
-    /// The code of the run's exit-status line ([`SENTINEL`]), if it has one.
+    /// The code of the run's exit-status line ([`SENTINEL`]), if it has one (-1: a line with
+    /// no number).
     exit: Option<i64>,
 }
 
-/// The runs of a corpus log. Lines before the first "Finished" line form a run of an unknown
-/// profile, kept only if it has a digest or a test result.
+/// The runs of a corpus log, one per cargo run ([`invocations`]): the digests and the test
+/// result of a run are counted only in it. The profile is that of the run's cargo "Finished
+/// `<profile>` profile" line. Lines outside every run belong to none ([`invocation_check`]
+/// rejects the log).
 fn corpus_runs(log: &str) -> Vec<CorpusRun> {
-    let new = |profile| CorpusRun {
-        profile,
-        digests: Vec::new(),
-        ok: 0,
-        failed: false,
-        exit: None,
-    };
-    let mut runs = vec![new("unknown profile")];
-    for l in log.lines() {
-        let t = l.trim();
-        if let Some(rest) = t.strip_prefix("Finished `") {
-            runs.push(new(match rest.split('`').next() {
-                Some("release") => "release",
-                Some("test" | "dev") => "debug",
-                _ => "unknown profile",
-            }));
-            continue;
-        }
-        let Some(r) = runs.last_mut() else { continue };
-        if let Some((d, units)) = t
-            .strip_prefix("corpus digest ")
-            .and_then(|rest| rest.split_once(" over "))
-        {
-            r.digests.push((
-                d.to_string(),
-                units.split(' ').next().unwrap_or("").to_string(),
-            ));
-        } else if t.starts_with("test result: FAILED") {
-            r.failed = true;
-        } else if t.starts_with("test result: ok. 1 passed") {
-            r.ok += 1;
-        } else if let Some(code) = t.strip_prefix(SENTINEL) {
-            // The first status after a run's output is its own; a bad code fails the run.
-            let code = code.parse::<i64>().unwrap_or(-1);
-            r.exit = Some(match r.exit {
-                Some(0) | None => code,
-                Some(e) => e,
-            });
-        }
-    }
-    if runs[0].digests.is_empty() && runs[0].ok == 0 && !runs[0].failed {
-        runs.remove(0);
-    }
-    runs
+    let (invs, _) = invocations(log);
+    invs.iter()
+        .map(|inv| {
+            let mut r = CorpusRun {
+                profile: "unknown profile",
+                digests: Vec::new(),
+                ok: 0,
+                failed: false,
+                exit: inv.exit.as_ref().map(|e| e.as_ref().map_or(-1, |c| *c)),
+            };
+            for t in &inv.body {
+                if let Some(rest) = t.strip_prefix("Finished `") {
+                    r.profile = match rest.split('`').next() {
+                        Some("release") => "release",
+                        Some("test" | "dev") => "debug",
+                        _ => "unknown profile",
+                    };
+                } else if let Some((d, units)) = t
+                    .strip_prefix("corpus digest ")
+                    .and_then(|rest| rest.split_once(" over "))
+                {
+                    r.digests.push((
+                        d.to_string(),
+                        units.split(' ').next().unwrap_or("").to_string(),
+                    ));
+                } else if t.starts_with("test result: FAILED") {
+                    r.failed = true;
+                } else if t.starts_with("test result: ok. 1 passed") {
+                    r.ok += 1;
+                }
+            }
+            r
+        })
+        .collect()
 }
 
 fn short(sha: &str) -> String {
@@ -3054,7 +3165,8 @@ mod tests {
         write(
             &root,
             "in/nesting.log",
-            "test depth_tests::every_form_is_gated ... ok\ntest result: ok. 1 passed\nm0-exit status: 0\n\
+            "m0-exit start: depth_tests\ntest depth_tests::every_form_is_gated ... ok\n\
+             test result: ok. 1 passed\nm0-exit status: 0\nm0-exit start: nesting_caps cli\n\
              test caps_hold_end_to_end ... ok\ntest uncaught_error_reports_file_line_utf16_column ... ok\n\
              m0-exit status: 0\n",
         );
@@ -3110,11 +3222,11 @@ mod tests {
         )
     }
 
-    /// The output of one corpus test run in the `profile` cargo profile, with its exit-status
-    /// line (CORPUS_CMD).
+    /// The output of one corpus test run in the `profile` cargo profile, with its start line
+    /// and its exit-status line (CORPUS_CMD).
     fn corpus_log(profile: &str, digest: &str, ok: bool) -> String {
         format!(
-            "    Finished `{profile}` profile [optimized] target(s) in 1s\n     Running unittests src/lib.rs\n\
+            "m0-exit start: corpus {profile}\n    Finished `{profile}` profile [optimized] target(s) in 1s\n     Running unittests src/lib.rs\n\
              running 1 test\ncorpus digest {digest} over 77183 units (compare across hosts and targets)\n{}",
             if ok {
                 "test bytecodegen::corpus::corpus_digest ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored\n\
@@ -3805,27 +3917,46 @@ mod tests {
     ) -> String {
         let mine = |f: &str| prefixes.iter().any(|p| f.starts_with(p.as_str()));
         let skipped: Vec<&str> = SKIP.iter().copied().filter(|s| mine(s)).collect();
-        let run: Vec<&String> = files
+        let run: Vec<&str> = files
             .iter()
-            .filter(|f| mine(f) && !SKIP.contains(&f.as_str()))
+            .map(String::as_str)
+            .filter(|f| mine(f) && !SKIP.contains(f))
             .collect();
-        let mut failing: Vec<&str> = run
-            .iter()
-            .filter(|f| fails.contains(f.as_str()))
-            .map(|f| f.as_str())
-            .collect();
+        gc_json(&run, &skipped, fails, used, extra_fail)
+    }
+
+    /// A GC-stress JSON of a filtered run (as the runner writes it): the files of `run` were run
+    /// (`run_paths`), those of `skipped` skipped, and the files of `fails` (plus `extra_fail`)
+    /// fail; `used` is the expectation file it names.
+    fn gc_json(
+        run: &[&str],
+        skipped: &[&str],
+        fails: &BTreeSet<String>,
+        used: &str,
+        extra_fail: Option<&str>,
+    ) -> String {
+        let mut failing: Vec<&str> = run.iter().copied().filter(|f| fails.contains(*f)).collect();
         failing.extend(extra_fail);
         let results: Vec<String> = failing
             .iter()
             .map(|p| format!(r#"{{"path":"{p}","status":"fail","cause":"x","detail":"d"}}"#))
             .collect();
-        let paths: Vec<String> = skipped.iter().map(|p| json_str(p)).collect();
+        let list = |paths: &[&str]| -> String {
+            paths
+                .iter()
+                .map(|p| json_str(p))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let mut sorted_run = run.to_vec();
+        sorted_run.sort_unstable();
         format!(
             r#"{{"command":"exec","mode":"jit","target":"{HOST}","workers":4,"timeout_ms":60000,"gc_stress":1,"feedback_threshold":0,
-            "skipped":{},"skipped_paths":[{}],"wall_seconds":100,"files":{{"passed":{},"total":{}}},"runs":{{"passed":1,"total":2}},
+            "skipped":{},"skipped_paths":[{}],"run_paths":[{}],"wall_seconds":100,"files":{{"passed":{},"total":{}}},"runs":{{"passed":1,"total":2}},
             "by_dir":{{}},"causes":[],"results":[{}],"expectations":{{"file":{},"new_failures":[],"now_passing":[]}}}}"#,
             skipped.len(),
-            paths.join(","),
+            list(skipped),
+            list(&sorted_run),
             run.len() - failing.len().min(run.len()),
             run.len(),
             results.join(","),
@@ -3858,6 +3989,17 @@ mod tests {
                 total += count;
             }
             assert_eq!(total, files.len());
+            // C-G1: the members of each shard are the files that the runner selects with the
+            // shard's prefixes (any prefix, `starts_with`).
+            let members = shard_members(files, &split);
+            for (k, (pre, _)) in split.iter().enumerate() {
+                let selected: Vec<&str> = files
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|f| pre.iter().any(|p| f.starts_with(p.as_str())))
+                    .collect();
+                assert_eq!(members[k], selected, "shard {k} of {n}");
+            }
             split
         };
         let files: Vec<String> = FAKE_T262.map(String::from).to_vec();
@@ -3943,7 +4085,8 @@ mod tests {
         let c = item6(&[all[0].clone(), all[0].clone(), all[1].clone()]);
         assert_eq!(c.status, Status::Fail, "{}", c.evidence);
         assert!(c.evidence.contains("both shard"), "{}", c.evidence);
-        // A shard that also ran a test of another shard: no split places it. FAIL.
+        // A shard with a result for a test of another shard: that test is not in its run_paths.
+        // FAIL.
         let other = split[1].0[0].clone();
         let stray = files
             .iter()
@@ -3955,7 +4098,7 @@ mod tests {
             all[2].clone(),
         ]);
         assert_eq!(c.status, Status::Fail, "{}", c.evidence);
-        assert!(c.evidence.contains("not shards of one"), "{}", c.evidence);
+        assert!(c.evidence.contains("did not run"), "{}", c.evidence);
         // Another timeout in one shard: two runs, FAIL.
         let c = item6(&[
             all[0].replace(r#""timeout_ms":60000"#, r#""timeout_ms":600000"#),
@@ -3997,6 +4140,80 @@ mod tests {
         std::fs::remove_dir_all(root.join("third_party/test262")).unwrap();
         let c = item6(&all);
         assert_eq!(c.status, Status::Open, "{}", c.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// M3-P3 fix round 2, C-G1: item 6 checks the exact paths of each shard (`run_paths` plus
+    /// `skipped_paths`), not only its file count and its non-passing paths. A shard that ran a
+    /// passing test of another shard in place of one of its own gave PASS before.
+    #[test]
+    fn gc_shard_membership_is_exact() {
+        let (root, files, fails) = shard_repo("gc-shard-members");
+        write(&root, "in/ci.json", &ci_json("success"));
+        let committed = root.join(format!("expectations/test262.{HOST}.jit.txt"));
+        let committed = committed.to_str().unwrap().to_string();
+        let split = gc_split(&files, 3).unwrap();
+        let item6 = |jsons: &[String]| {
+            let mut o = opts(&root);
+            o.exec_gc.clear();
+            for (i, j) in jsons.iter().enumerate() {
+                let p = format!("in/gc-{i}.json");
+                write(&root, &p, j);
+                o.exec_gc.push(root.join(p));
+            }
+            run(&o).unwrap().cells[5].0.clone()
+        };
+        let in_shard = |k: usize, f: &str| split[k].0.iter().any(|p| f.starts_with(p.as_str()));
+        let shard_run = |k: usize| -> Vec<&str> {
+            files
+                .iter()
+                .map(String::as_str)
+                .filter(|f| in_shard(k, f) && !SKIP.contains(f))
+                .collect()
+        };
+        let shard_skip =
+            |k: usize| -> Vec<&str> { SKIP.iter().copied().filter(|f| in_shard(k, f)).collect() };
+        let good = |k: usize| gc_json(&shard_run(k), &shard_skip(k), &fails, &committed, None);
+        let c = item6(&[good(0), good(1), good(2)]);
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        // Shard 1 runs a passing test of shard 2 in place of a passing test of its own: the
+        // file count and the failures are the same, but the own test ran nowhere. FAIL.
+        let passing = |k: usize| {
+            shard_run(k)
+                .into_iter()
+                .find(|f| !fails.contains(*f))
+                .unwrap()
+        };
+        let (own, other) = (passing(0), passing(1));
+        let mut swapped: Vec<&str> = shard_run(0).into_iter().filter(|f| *f != own).collect();
+        swapped.push(other);
+        let overlap = gc_json(&swapped, &shard_skip(0), &fails, &committed, None);
+        let c = item6(&[overlap, good(1), good(2)]);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("not shards of one"), "{}", c.evidence);
+        // A shard JSON with no run_paths (a runner before C-G1) cannot be placed: FAIL.
+        let old = good(0).replace(r#""run_paths":["#, r#""older_paths":["#);
+        let c = item6(&[old, good(1), good(2)]);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("run_paths"), "{}", c.evidence);
+        // run_paths that disagree with the file count, or a result outside run_paths: FAIL.
+        let mut short_run = shard_run(0);
+        short_run.pop();
+        let short = gc_json(&short_run, &shard_skip(0), &fails, &committed, None).replace(
+            &format!(r#""total":{}"#, short_run.len()),
+            &format!(r#""total":{}"#, short_run.len() + 1),
+        );
+        let c = item6(&[short, good(1), good(2)]);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        let stray = gc_json(
+            &shard_run(0),
+            &shard_skip(0),
+            &fails,
+            &committed,
+            Some(other),
+        );
+        let c = item6(&[stray, good(1), good(2)]);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -4183,9 +4400,9 @@ mod tests {
             assert_eq!(n.status, Status::Fail, "{what}: {}", n.evidence);
             assert_eq!(c.status, Status::Fail, "{what}: {}", c.evidence);
         }
-        // The nesting log has 2 cargo runs: 1 status line is not enough.
-        let one = nesting.replacen("m0-exit status: 0\n", "", 1);
-        let (n, _) = cells(&one, &release);
+        // The nesting log has 2 cargo runs: 1 run is not enough.
+        let one = &nesting[..nesting.find("m0-exit start: nesting_caps").unwrap()];
+        let (n, _) = cells(one, &release);
         assert_eq!(n.status, Status::Fail, "{}", n.evidence);
         assert!(n.evidence.contains("2 needed"), "{}", n.evidence);
         // A corpus run with no status of its own, followed by a good run, in one log: FAIL.
@@ -4193,6 +4410,56 @@ mod tests {
         let (_, c) = cells(&nesting, &format!("{}{debug}", killed(&release)));
         assert_eq!(c.status, Status::Fail, "{}", c.evidence);
         assert!(c.evidence.contains("exit status missing"), "{}", c.evidence);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// M3-P3 fix round 2, C-G2: each cargo run of a log has its start line and its exit-status
+    /// line. A retry that was killed between two good runs has a start and no status; it gave
+    /// PASS before (the statuses were counted, not paired with the runs).
+    #[test]
+    fn an_interrupted_retry_is_rejected() {
+        let root = fake_repo("interrupted");
+        write(&root, "in/ci.json", &ci_json("success"));
+        let cells = |nesting: &str, corpus: &str| {
+            write(&root, "in/nesting.log", nesting);
+            write(&root, "in/corpus.log", corpus);
+            let mut o = opts(&root);
+            o.corpus = vec![root.join("in/corpus.log")];
+            let r = run(&o).unwrap();
+            (r.cells[6].0.clone(), r.cells[11].0.clone())
+        };
+        let nesting = read(&root.join("in/nesting.log")).unwrap();
+        let (release, debug) = (
+            corpus_log("release", "abc123", true),
+            corpus_log("test", "abc123", true),
+        );
+        let (n, c) = cells(&nesting, &format!("{release}{debug}"));
+        assert_eq!(n.status, Status::Pass, "{}", n.evidence);
+        assert_eq!(c.status, Status::Pass, "{}", c.evidence);
+        // A retry killed while cargo compiled: its start line and no status.
+        let killed =
+            "m0-exit start: retry\n   Compiling ep9_frontend v0.0.0 (/w/crates/ep9_frontend)\n";
+        let second = nesting.find("m0-exit start: nesting_caps").unwrap();
+        let nest = format!("{}{killed}{}", &nesting[..second], &nesting[second..]);
+        let (n, c) = cells(&nest, &format!("{release}{killed}{debug}"));
+        assert_eq!(n.status, Status::Fail, "{}", n.evidence);
+        assert!(n.evidence.contains("no exit status"), "{}", n.evidence);
+        assert_eq!(c.status, Status::Fail, "{}", c.evidence);
+        assert!(c.evidence.contains("no exit status"), "{}", c.evidence);
+        // A status line with no start line, and output outside any run: FAIL.
+        let no_start = nesting.replacen("m0-exit start: depth_tests\n", "", 1);
+        let outside = format!("test caps_hold_end_to_end ... ok\n{nesting}");
+        for (what, nest) in [("no start", no_start), ("outside", outside)] {
+            let (n, _) = cells(&nest, &release);
+            assert_eq!(n.status, Status::Fail, "{what}: {}", n.evidence);
+        }
+        // A required result only in a run that did not finish: FAIL (it is not that run's
+        // result, even with good runs around it).
+        let only_ok = "m0-exit start: x\ntest caps_hold_end_to_end ... ok\n\
+            test uncaught_error_reports_file_line_utf16_column ... ok\n";
+        let nest = format!("{}{only_ok}", &nesting[..second]);
+        let (n, _) = cells(&nest, &release);
+        assert_eq!(n.status, Status::Fail, "{}", n.evidence);
         std::fs::remove_dir_all(root).unwrap();
     }
 
