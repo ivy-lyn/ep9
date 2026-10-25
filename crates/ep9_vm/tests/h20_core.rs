@@ -59,18 +59,21 @@
 //! tripwire", classes (a)-(f); review checks them, and H20-Q6 has them as its test list):
 //! (a) an item that a macro makes outside the core files (decision M3-P3-H20-GOLDEN-LIMIT; a
 //! re-exported one is a line that says so); (b) a `#[path]` module whose file is not read, and a
-//! module file in the same places: outside `src/`, not named `.rs`, or under a gated module
-//! directory (`tests`, `native`) (RV6-G1, RV7-3; `sources()` reads every other `.rs` file
-//! under `src/`); (c) outside `abi/` and `builtins.rs`, a trait impl whose head does not name
-//! `Isolate` and whose self type is not a closure type (in `isolate.rs`, also not `Cx`), such
-//! as `impl From<Local<'s>> for Value` in `string.rs`; and in `abi/` and `builtins.rs`, a
-//! trait impl whose head does not name `Isolate` and whose trait and self type are not pub abi
-//! or builtins items (RV6-G2, RV6-A1, RV7-2); (d) an alias, a renaming `use` or a body impl of
-//! a core closure type such as `Exception` (RV6-G3); (e) an impl of an abi type (`Local`,
-//! `Cx`) outside the `abi/` files and `builtins.rs` (`impl Cx` of `isolate.rs` is read)
-//! (RV6-G4), and an impl of a closure type (`Exception`, `IsolateConfig`, ...) in an `abi/`
-//! file or `builtins.rs`, unless it is a trait impl of a pub abi or builtins trait (RV7-1);
-//! (f) the types of other crates (`ep9_heap`, `ep9_value`, ...).
+//! module file in the same places: outside `src/`, not named `.rs`, or whose first name under
+//! `src/` is a gated module of `lib.rs` (`tests`, `native`): the directory `src/tests/` and the
+//! file `src/native.rs` (RV6-G1, RV7-3; M3-P4 ACCEPT-8 note N2; `sources()` reads every other
+//! `.rs` file under `src/`); (c) outside `abi/` and `builtins.rs`, a trait impl whose head
+//! does not name `Isolate` and whose self type is not a closure type (in `isolate.rs`, also not
+//! `Cx`), such as `impl From<Local<'s>> for Value` in `string.rs`; and in `abi/` and
+//! `builtins.rs`, a trait impl whose head does not name `Isolate` and whose trait and self type
+//! are not pub abi or builtins items (RV6-G2, RV6-A1, RV7-2); (d) an alias, a renaming `use`
+//! or a body impl of a core closure type such as `Exception` (RV6-G3); (e) an impl of an abi
+//! type (`Local`, `Cx`) outside the `abi/` files and `builtins.rs` (`impl Cx` of `isolate.rs`
+//! is read) (RV6-G4), and an impl of a closure type (`Exception`, `IsolateConfig`, ...) in an
+//! `abi/` file or `builtins.rs`, unless it is a trait impl of a pub abi or builtins trait or
+//! an impl whose head names `Isolate` (RV7-1); (f) the types of other crates (`ep9_heap`,
+//! `ep9_value`, ...). In every class, an impl whose head names `Isolate` is still a line, in
+//! every file (also in `abi/` and `builtins.rs`; M3-P4 ACCEPT-8 note N1).
 //!
 //! The `embed (not core):` lines are the embedder API of H22, H23 and H19, with their own
 //! freeze points. They are here so that a new way for an embedder to reach the heap in a form
