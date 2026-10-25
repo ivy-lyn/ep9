@@ -1316,3 +1316,84 @@ fn a_dropped_isolate_leaves_no_module_host() {
     expected.extend((0..8).map(|i| format!("later {i} no host {no_host}")));
     assert_eq!(out, expected);
 }
+
+thread_local! {
+    /// The module graph of `runModule` ([`run_module_from_js`]).
+    static GRAPH: std::cell::Cell<Files> = const { std::cell::Cell::new(&[]) };
+}
+
+/// `runModule(name)`: `Cx::run_module` of the file `name` of [`GRAPH`], called from JS (JS
+/// frames are on the stack).
+fn run_module_from_js<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let files = GRAPH.get();
+    let name = cx.to_rust_string(args.get(0))?;
+    let unit = compile(source(files, &name).expect("a file")).expect("compiles");
+    let mut resolve = |referrer: &str, spec: &str| resolve_in(files, referrer, spec);
+    let mut load = |name: &str| compile(source(files, name).expect("a resolved file"));
+    cx.run_module(unit, &name, &mut resolve, &mut load)?;
+    Ok(Local::undefined())
+}
+
+/// `Cx::run_module` from a host function that JS calls (RV-P3F2-1): with JS on the stack,
+/// the run has no microtask checkpoint (a checkpoint needs an empty JS stack). A module with
+/// no top-level `await` runs and the call returns; the jobs that it queued run in the
+/// caller's checkpoint, after the jobs queued before them. A top-level `await` that is
+/// still pending after Evaluate throws the checkpoint's Error, and the module goes on in the
+/// caller's checkpoint (the behaviour before C-TLA2). Before the fix, the call of `p.js`
+/// threw that Error after the module body ran (`caught a microtask checkpoint ...`).
+#[test]
+fn run_module_with_js_on_the_stack_has_no_checkpoint() {
+    const FILES: Files = &[
+        (
+            "p.js",
+            "Promise.resolve().then(() => print('p job'));\nprint('p body');",
+        ),
+        (
+            "t.js",
+            "print('t start');\nawait 0;\nprint('t after await');",
+        ),
+    ];
+    const SCRIPT: &str = "Promise.resolve().then(() => print('script job'));\ntry { runModule('p.js'); print('p returned'); } catch (e) { print('caught', e.message); }\ntry { runModule('t.js'); print('t returned'); } catch (e) { print('t caught', e.message); }\nprint('script end');";
+    let mut first: Option<(String, Vec<String>)> = None;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let r = common::on_big_stack(move || {
+                let mut iso = new_isolate(d, stress);
+                iso.register_host_function("runModule", 1, run_module_from_js);
+                GRAPH.set(FILES);
+                let unit = hook_script(SCRIPT).expect("compiles");
+                let r = iso.with_cx_checkpoint(|cx| cx.run_script(unit, "main.js").map(|_| ()));
+                if let Err(e) = r {
+                    OUT.with(|o| o.borrow_mut().push(format!("uncaught {}", e.message)));
+                }
+                let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
+                iso.collect_garbage();
+                iso.verify_heap().expect("a valid heap");
+                out
+            });
+            let label = format!("{} stress={stress}", d.name());
+            match &first {
+                None => first = Some((label, r)),
+                Some((l0, r0)) => assert_eq!(&r, r0, "{label} differs from {l0}"),
+            }
+        }
+    }
+    assert_eq!(
+        first.expect("at least one dispatch").1,
+        lines(&[
+            "p body",
+            "p returned",
+            "t start",
+            "t caught a microtask checkpoint needs an empty JS stack",
+            "script end",
+            "script job",
+            "p job",
+            "t after await",
+        ])
+    );
+}

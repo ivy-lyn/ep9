@@ -12,7 +12,7 @@
 //!   link: InnerModuleLinking (§16.2.1.5.1.1), InitializeEnvironment (§16.2.1.6.4)
 //!   evaluate: Evaluate (§16.2.1.5.3): InnerModuleEvaluation; an error is cached in
 //!     [[EvaluationError]]; the result is a promise ([[TopLevelCapability]])
-//!   a microtask checkpoint with the host in place: top-level await, import() in jobs
+//!   a microtask checkpoint (empty JS stack only), host in place: top-level await, import() in jobs
 //!
 //! import(s, o) (id 43, slow/module.rs) -> dynamic_import            the host of the run
 //!   resolve + load (HostLoadImportedModule) -> load_graph -> a load promise
@@ -1791,11 +1791,17 @@ fn evaluate(cx: &mut Cx, module: u64, entry: bool) -> Res<u64> {
 /// the jobs of the run use the host: a top-level `await` goes on, and `import()` in a job
 /// (`Promise.resolve().then(() => import(s))`), or in a module that `import()` evaluates in
 /// a job, loads through the run's hooks. An Error if `p` is still pending after the
-/// checkpoint. GC point (jobs run).
+/// checkpoint. With JS on the stack (a host function that JS called runs the module), a
+/// checkpoint cannot run: a settled `p` gives its result with no checkpoint (the jobs stay
+/// queued for the caller's checkpoint), and a pending `p` gets the checkpoint's Error ("a
+/// microtask checkpoint needs an empty JS stack"). GC point (jobs run).
 fn settle_entry(cx: &mut Cx, m: u64, p: u64) -> Res<u64> {
+    let js_on_stack = !cx.rt().stack().fp().is_null();
     let mut acx = abi::Cx::new(cx);
     let pl = Local::<JsObject>::from_bits(p);
-    acx.perform_microtask_checkpoint()?;
+    if !js_on_stack || acx.promise_state(pl)? == PromiseState::Pending {
+        acx.perform_microtask_checkpoint()?;
+    }
     match acx.promise_state(pl)? {
         PromiseState::Fulfilled => Ok(UNDEFINED),
         PromiseState::Rejected => {
@@ -1818,8 +1824,8 @@ fn settle_entry(cx: &mut Cx, m: u64, p: u64) -> Res<u64> {
 /// for the run ([`with_host`]). If the realm's map already has `name`, that record runs and
 /// `unit` is dropped; a module that ran before does not run again (its cached error is
 /// thrown again). After Evaluate, a microtask checkpoint runs with the host in place
-/// ([`settle_entry`]): a top-level `await` settles there, and `import()` in jobs uses the
-/// host. The result is undefined. GC point.
+/// ([`settle_entry`]; none with JS on the stack): a top-level `await` settles there, and
+/// `import()` in jobs uses the host. The result is undefined. GC point.
 pub(crate) fn run_module(
     cx: &mut Cx,
     unit: VerifiedUnit,

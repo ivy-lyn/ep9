@@ -808,13 +808,17 @@ impl<'s> abi::Cx<'s> {
     /// `TypeError`. The result is undefined; the module's code runs with `this` undefined.
     /// After the evaluation, `run_module` runs a microtask checkpoint (also with no `await`
     /// in the graph), so a top-level `await` settles in the call: a rejection is the throw,
-    /// and an `Error` if it never settles. `import()` in code that runs during the call (also
-    /// in that checkpoint: in a promise job, or in a module that `import()` evaluates) uses
-    /// `resolve` and `load`, and resolves from the module or script whose code calls it (for
-    /// a function made by eval code or `Function()`, the code that made it); its module goes
-    /// into the module map of that referrer's realm. After the call, `import()` uses the
-    /// host of [`Isolate::with_module_host`], or throws the v0 not-implemented `Error`. Run a
-    /// microtask checkpoint after it ([`Isolate::with_cx_checkpoint`]).
+    /// and an `Error` if it never settles. Called with JS on the stack (from a host function
+    /// that JS calls), it runs no checkpoint, as a checkpoint needs an empty JS stack: the
+    /// jobs of the run wait for the caller's checkpoint, and a top-level `await` that is still
+    /// pending after the evaluation throws an `Error`. `import()` in code that runs during the
+    /// call (also in that checkpoint: in a promise job, or in a module that `import()`
+    /// evaluates) uses `resolve` and `load`, and resolves from the module or script whose
+    /// code calls it (for a function made by eval code or `Function()`, the code that made
+    /// it); its module goes into the module map of that referrer's realm. After the call,
+    /// `import()` uses the host of [`Isolate::with_module_host`], or throws the v0
+    /// not-implemented `Error`. Run a microtask checkpoint after it
+    /// ([`Isolate::with_cx_checkpoint`]).
     ///
     /// ```compile_fail
     /// use ep9_vm::Isolate;
