@@ -1732,6 +1732,17 @@ fn summary_json(
     // committed skip list); "skipped" stays their count.
     out.push_str(",\"skipped_paths\":");
     json::string_array(&mut out, &skipped.iter().collect::<Vec<_>>());
+    // A run with path filters (a GC-stress shard) also names every file it ran, sorted:
+    // `cargo xtask m0-exit` item 6 checks that each shard ran exactly the files of its shard
+    // (M3-P3 fix round 2, C-G1). A full run runs every file of the checkout, so it leaves the
+    // list out (it would add about 4 MB).
+    if !opts.filters.is_empty() {
+        out.push_str(",\"run_paths\":");
+        json::string_array(
+            &mut out,
+            &results.iter().map(|(rel, _)| *rel).collect::<Vec<_>>(),
+        );
+    }
     let _ = write!(out, ",\"wall_seconds\":{:.3}", wall.as_secs_f64());
     out.push_str(",\"files\":");
     count(&mut out, files_all);
