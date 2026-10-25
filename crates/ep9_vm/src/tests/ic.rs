@@ -979,3 +979,30 @@ fn a_global_ic_follows_stores_and_misses_after_a_delete() {
         assert_eq!(t.ok(0, UNDEFINED, UNDEFINED), int(8));
     });
 }
+
+/// `f<i>(a)` (a `StaGlobal` site) and the number of scans of the global object's shape it
+/// took (M2-P5-PLAN-D8).
+fn store_scans_of_the_global_object(t: &mut T, i: usize, a: u64) -> u32 {
+    let f = t.f(i);
+    let gs = shape::shape_of(t.rt().global());
+    shape::SCANS.with(|c| c.set((gs, 0)));
+    t.iso.call_raw(f, Value::UNDEFINED, &[val(a)]).unwrap();
+    shape::SCANS.with(|c| c.get().1)
+}
+
+#[test]
+fn a_recording_global_store_costs_one_scan_of_the_global_object() {
+    each(|c| {
+        let mut t = T::new(c, &[Site::StoreGlobal("icS"), Site::Global("icS")]);
+        let g = t.rt().global();
+        props::own_define(t.rt(), g, key(t.rt(), "icS"), int(5), attr::DEFAULT);
+        assert!(!shape::is_dictionary(shape::shape_of(g)));
+        // The miss that records the case stores through the case's lookup: one scan.
+        assert_eq!(store_scans_of_the_global_object(&mut t, 0, int(6)), 1);
+        assert_eq!(t.kind(0, shape::shape_of(g)), Some(GLOBAL));
+        assert_eq!(t.ok(1, UNDEFINED, UNDEFINED), int(6));
+        // Then a hit scans nothing.
+        assert_eq!(store_scans_of_the_global_object(&mut t, 0, int(7)), 0);
+        assert_eq!(t.ok(1, UNDEFINED, UNDEFINED), int(7));
+    });
+}
