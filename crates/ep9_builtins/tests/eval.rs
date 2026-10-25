@@ -631,7 +631,7 @@ t('arrow-args', () => { var g = (p = eval("var arguments = 'param'")) => argumen
 }
 
 /// E6 (M3-P4; M3-P2-OPEN item 2): `super()` in direct eval code in a derived constructor
-/// (PerformEval step 5 inDerivedConstructor), also through arrows and nested eval: it calls
+/// (PerformEval step 10.b.iv inDerivedConstructor), also through arrows and nested eval: it calls
 /// the parent constructor with the caller's `new.target`, binds the caller's `this` (a second
 /// binding is a ReferenceError, after the parent constructor ran), and runs the class field
 /// initializer once. `super.x`, `new.target` and `this` in eval code keep working. Outside a
