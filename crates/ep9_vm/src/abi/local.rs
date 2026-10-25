@@ -48,26 +48,50 @@ pub enum JsSymbol {}
 pub enum JsKey {}
 
 mod sealed {
-    pub trait Sealed {}
+    /// Only this crate can make a `Token` (its field is private).
+    pub struct Token(());
+
+    impl Token {
+        #[inline(always)]
+        pub(crate) fn new() -> Token {
+            Token(())
+        }
+    }
+
+    pub trait Sealed {
+        /// The test on the value's bits. The kind tests read the cell header, so only the VM
+        /// calls it, on the bits of a live value. Code outside the crate can reach a supertrait
+        /// method through a `T: Downcast` bound, but it cannot make the `Token` (RV8-1).
+        fn test(bits: u64, _: Token) -> bool;
+    }
 }
 
 /// A marker that a checked downcast can test (every marker except [`JsKey`]).
-pub trait Downcast: sealed::Sealed {
-    /// The test on the value's bits.
-    #[doc(hidden)]
-    fn test(bits: u64) -> bool;
-}
+///
+/// The test on the bits is not part of this trait. Code outside the crate cannot call it on
+/// bits that it chose:
+///
+/// ```compile_fail
+/// use ep9_vm::{Downcast, JsString};
+/// let _ = <JsString as Downcast>::test(0x80_0000);
+/// ```
+///
+/// A `T: Downcast` bound reaches `test` (a supertrait method), but the call needs a
+/// `sealed::Token`, and code outside the crate cannot make one: the type has a private field,
+/// no constructor outside the crate and no `Default`. A diverging argument (`todo!()`) type
+/// checks, but it stops before the call.
+pub trait Downcast: sealed::Sealed {}
 
 macro_rules! downcast {
     ($($m:ident => $test:expr,)*) => {$(
-        impl sealed::Sealed for $m {}
-        impl Downcast for $m {
+        impl sealed::Sealed for $m {
             #[inline(always)]
-            fn test(bits: u64) -> bool {
+            fn test(bits: u64, _: sealed::Token) -> bool {
                 let f: fn(u64) -> bool = $test;
                 f(bits)
             }
         }
+        impl Downcast for $m {}
     )*};
 }
 
@@ -166,7 +190,7 @@ impl<'s, T> Local<'s, T> {
     #[inline]
     pub fn downcast<U: Downcast>(&self) -> Option<Local<'s, U>> {
         let b = self.bits();
-        U::test(b).then(|| Local::from_bits(b))
+        <U as sealed::Sealed>::test(b, sealed::Token::new()).then(|| Local::from_bits(b))
     }
 
     pub fn is_undefined(&self) -> bool {
