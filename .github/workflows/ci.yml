@@ -33,9 +33,11 @@
 #   perf-ci-v0 ....... cachegrind instruction counts of 7 workloads  (Linux x64)
 #                      as one JSON artifact and a step summary
 #   sp-tsrs-win ...... tsrs_cli on Windows: recorded, not blocking   (Windows x64)
+#   fuzz-smoke ....... cargo-fuzz, 60 s per front-end target; prints (Linux x64)
+#                      only the crash count and hashes (V9-A17)
 #
-# 51 jobs: lint 1, scope 1, build-test 4, feature-matrix 4, test262 4, test262-gc 24, fp-check 1,
-# disasm 4, spikes 4, miri 1, dep-guards 1, perf-ci-v0 1, sp-tsrs-win 1.
+# 52 jobs: lint 1, scope 1, build-test 4, feature-matrix 4, test262 4, test262-gc 24, fp-check 1,
+# disasm 4, spikes 4, miri 1, dep-guards 1, perf-ci-v0 1, sp-tsrs-win 1, fuzz-smoke 1.
 #
 # Scope (docs/plan/12-governance.md section 3; plan v9 V9-D35, V9-A18): every job except lint and
 # scope `needs: scope` and is skipped when scope says docs_only=true. docs_only is true only when
@@ -43,7 +45,7 @@
 # docs/measurements/ (code reads both); anything else fails closed to docs_only=false. A
 # docs-only change runs scope and lint only (lint stays: its adr-lint step, from M4-P3, must see
 # ADR commits). If scope fails, the other jobs still run (`!cancelled()`). GitHub counts a skipped job as green,
-# so on a code change CI is done only when every one of the 51 jobs ran and none is pending or
+# so on a code change CI is done only when every one of the 52 jobs ran and none is pending or
 # skipped. Timeouts follow the plan v9 section 9.2 budget table (rule 25: >= 1.5x the last
 # measured time).
 #
