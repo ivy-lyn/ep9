@@ -19,8 +19,10 @@
 //! `Cargo.toml` in the work tree or at `<rev>`, or a commit of the range adds, changes or deletes
 //! its `Cargo.toml` (so a tool crate deleted in the range still counts). A commit touches one
 //! when a path it adds, changes or deletes is inside it (a rename counts on both sides; paths
-//! are read NUL-split from git, never in git's quoted form). A merge commit touches only what
-//! its own resolution changed (`--cc`); the commits it merges are checked one by one.
+//! are read NUL-split from git, never in git's quoted form, by git calls on one commit at a
+//! time, so no byte of a path or a message can move a path or a trailer to another commit). A
+//! merge commit touches only what its own resolution changed (`--cc`); the commits it merges
+//! are checked one by one.
 //!
 //! `--root` (default: this workspace) is the git tree to check; the ADR files and the
 //! exceptions file are read from its work tree. Exit 0: every such commit has a good trailer or
@@ -253,78 +255,66 @@ fn base_commit(root: &Path, base: &str) -> Result<String, String> {
 }
 
 /// The commits of `<base_sha>..HEAD`, oldest first, with their trailers and the paths they touch.
+///
+/// The sha list comes from `git rev-list` (hex lines only). Each commit's subject, trailers and
+/// paths come from git calls on that one sha, so no byte of a message or a path can start a new
+/// record or move a path to another commit (a single `git log` stream split on a marker byte let a
+/// file named 0x1e + an earlier sha take the paths after it to that commit).
 fn commits(root: &Path, base_sha: &str) -> Result<Vec<Commit>, String> {
     let range = format!("{base_sha}..HEAD");
-    // Records split by 0x1e, fields by 0x1f, trailer values by 0x1d.
-    let log = git_out(
-        root,
-        &[
-            "log",
-            "--reverse",
-            "--format=%x1e%H%x1f%s%x1f%(trailers:key=ADR,valueonly,unfold,separator=%x1d)",
-            &range,
-        ],
-    )?;
+    let shas = git_out(root, &["rev-list", "--reverse", &range])?;
     let mut list: Vec<Commit> = Vec::new();
-    for rec in log.split('\u{1e}').filter(|r| !r.trim().is_empty()) {
-        let mut f = rec.trim_end_matches('\n').splitn(3, '\u{1f}');
-        let sha = f.next().unwrap_or("").to_string();
-        let subject = f.next().unwrap_or("").to_string();
-        let adr = f
-            .next()
-            .unwrap_or("")
-            .split('\u{1d}')
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(str::to_string)
-            .collect();
+    for sha in shas.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if sha.len() < 40 || !sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!("git rev-list {range}: not a sha: {sha:?}"));
+        }
+        let subject = git_out(root, &["show", "-s", "--format=%s", sha, "--"])?
+            .trim_end_matches('\n')
+            .to_string();
+        // Trailer values split by NUL (a message given to `git commit` holds no NUL).
+        let adr = git_out(
+            root,
+            &[
+                "show",
+                "-s",
+                "--format=%(trailers:key=ADR,valueonly,unfold,separator=%x00)",
+                sha,
+                "--",
+            ],
+        )?
+        .split('\0')
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .collect();
+        // `-z`: every path ends in NUL and is never quoted (without it git writes a path with a
+        // non-ASCII byte, a tab, `"` or `\\` as a C string in quotes). `--cc`: a merge lists only
+        // what its own resolution changed; `--root`: a root commit lists every path it adds.
+        let paths = git_out(
+            root,
+            &[
+                "diff-tree",
+                "-z",
+                "-r",
+                "--no-commit-id",
+                "--name-only",
+                "--no-renames",
+                "--cc",
+                "--root",
+                sha,
+                "--",
+            ],
+        )?
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect();
         list.push(Commit {
-            sha,
+            sha: sha.to_string(),
             subject,
             adr,
-            paths: Vec::new(),
+            paths,
         });
-    }
-    // `-z`: every path ends in NUL and is never quoted (without it git writes a path with a
-    // non-ASCII byte, a tab, `"` or `\\` as a C string in quotes). The stream is, per commit,
-    // `0x1e<sha>` NUL, then for a non-merge `\n` before the first path, for a merge an empty
-    // field, then `<path>` NUL each. A field is a commit header only when it is 0x1e and the sha
-    // of a commit of the first log.
-    let names = git_out(
-        root,
-        &[
-            "log",
-            "-z",
-            "--reverse",
-            "--format=%x1e%H",
-            "--name-only",
-            "--no-renames",
-            "--cc",
-            &range,
-        ],
-    )?;
-    let index: BTreeMap<String, usize> = list
-        .iter()
-        .enumerate()
-        .map(|(i, c)| (c.sha.clone(), i))
-        .collect();
-    let mut cur: Option<usize> = None;
-    let mut first = false;
-    for field in names.split('\0') {
-        if let Some(&i) = field.strip_prefix('\u{1e}').and_then(|s| index.get(s)) {
-            cur = Some(i);
-            first = true;
-            continue;
-        }
-        let path = if first {
-            field.strip_prefix('\n').unwrap_or(field)
-        } else {
-            field
-        };
-        first = false;
-        if let (false, Some(i)) = (path.is_empty(), cur) {
-            list[i].paths.push(path.to_string());
-        }
     }
     Ok(list)
 }
@@ -698,6 +688,79 @@ mod tests {
         git(&root, &["merge", "-q", "--no-ff", "--no-edit", "side"]);
         let r = trailers(&root, &base).unwrap();
         assert_eq!((r.commits, r.touching, r.missing), (3, 1, 0), "{}", r.text);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Codex r2: a file named 0x1e + an earlier sha (after a file that sorts before it) made the
+    /// paths after it count for that earlier commit, so a commit without a trailer passed. Bytes
+    /// of a path or a subject never change which commit a path or a trailer belongs to.
+    #[test]
+    fn names_cannot_move_paths_or_trailers() {
+        let (root, base) = repo("spoof");
+        let a = commit(
+            &root,
+            &[("crates/ep9_vm/src/lib.rs", "// a\n")],
+            "vm: one\n\nADR: H16",
+        );
+        let spoof = format!("\u{1e}{a}");
+        let b = commit(
+            &root,
+            &[
+                ("\u{1}", "x"),
+                (spoof.as_str(), "x"),
+                ("crates/ep9_vm/src/lib.rs", "// b\n"),
+            ],
+            "vm: two, no trailer",
+        );
+        let r = trailers(&root, &base).unwrap();
+        assert_eq!((r.commits, r.touching, r.missing), (2, 2, 1), "{}", r.text);
+        assert!(r.text.contains(&b[..12]), "{}", r.text);
+        assert!(r.text.ends_with(": FAIL\n"), "{}", r.text);
+        // Marker bytes in a subject do not make a trailer.
+        let c = commit(
+            &root,
+            &[("crates/ep9_vm/src/lib.rs", "// c\n")],
+            &format!("vm: three\u{1f}H16\u{1e}{a}\u{1f}x\u{1f}H16"),
+        );
+        let r = trailers(&root, &base).unwrap();
+        assert_eq!((r.commits, r.touching, r.missing), (3, 3, 2), "{}", r.text);
+        assert!(r.text.contains(&c[..12]), "{}", r.text);
+        std::fs::remove_dir_all(&root).unwrap();
+        // A root commit merged in from an unrelated history lists every path it adds.
+        let (root, base) = repo("root");
+        let main = git(&root, &["symbolic-ref", "--short", "HEAD"]);
+        git(&root, &["checkout", "-q", "--orphan", "other"]);
+        git(&root, &["rm", "-q", "-r", "--cached", "."]);
+        for e in std::fs::read_dir(&root).unwrap() {
+            let p = e.unwrap().path();
+            if p.file_name().unwrap() != ".git" {
+                if p.is_dir() {
+                    std::fs::remove_dir_all(&p).unwrap();
+                } else {
+                    std::fs::remove_file(&p).unwrap();
+                }
+            }
+        }
+        commit(
+            &root,
+            &[("crates/ep9_vm/src/root.rs", "// root\n")],
+            "vm: a root, no trailer",
+        );
+        git(&root, &["checkout", "-q", &main]);
+        git(
+            &root,
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "--no-edit",
+                "--allow-unrelated-histories",
+                "other",
+            ],
+        );
+        let r = trailers(&root, &base).unwrap();
+        assert_eq!((r.commits, r.touching, r.missing), (2, 1, 1), "{}", r.text);
+        assert!(r.text.contains("crates/ep9_vm/src/root.rs"), "{}", r.text);
         std::fs::remove_dir_all(&root).unwrap();
     }
 
