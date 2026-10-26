@@ -39,7 +39,7 @@ Extra columns, not exit columns: linux x64 from the CI inputs has the same cells
 
 ## 3. What M0 built
 
-M0 scope ([09 §2.2](../plan/09-milestones.md#22-scope-and-exit-criteria)): contracts, spikes, the skeleton and A0 part 1. Each month logged its work in the [decisions log](../decisions-log.md) (§11 month 1, §12 month 2, §13 month 3).
+M0 scope ([09 §2.2](../plan/09-milestones.md#22-scope-and-exit-criteria)): contracts, spikes, the skeleton and A0 part 1. Each month logged its work in the [decisions log](../decisions-log.md) (§2-§11 month 1, §12 month 2, §13 month 3).
 
 ```text
  month 1  workspace, CI on 4 targets, Value, cage, heap S0, front end F1, bytecode, VM,
@@ -138,9 +138,9 @@ A ratio above 1 means that ep9 is faster. Perf run 4 used the stub harness (deci
 | H20-Q4-X3 type-level fix (a `Local` in Rust heap memory inside one `with_cx` scope) | product call, M1, H10/H20 | M3-P3-H20-X3 |
 | M3-P5 notes: A9-3, V9-5, F4, F7, the GATES-3 tool notes; facts for the prototype of `function F(){}` give Unknown (M3-P3 candidate) | M1 planning, sorted (c) | M3-P5-FINDINGS; M3-P3-OPEN |
 
-Still open in W12 (the orchestrator): the x86-64 Linux sandbox column of the exit run (X86-EXIT-PENDING) and the W12 SP-Dispatch retry on the exit head (W12-SPD-PENDING). Closed in M3-P5: RF1-3 (the H23 flag name), H20 row 3 and the Accept and Frozen steps, spike review 2, the CI run of the M3-P4 head, and exit item 4 (M3-P5-OPEN).
+Still open in W12 (the orchestrator): the x86-64 Linux sandbox column of the exit run (X86-EXIT-PENDING). Done in W12: the SP-Dispatch retry on the exit head. Only linux-x64 ran again; it drew an Intel Xeon Platinum 8573C and passed (not void, branchy 0.968). GitHub did not re-run windows-x64. The pass is not on EPYC 7763, so item 5 stays OPEN (M3-P5-W12-SPD). Closed in M3-P5: RF1-3 (the H23 flag name), H20 row 3 and the Accept and Frozen steps, spike review 2, the CI run of the M3-P4 head, and exit item 4 (M3-P5-OPEN).
 
 ## 6. Next
 
-- W12 (plan v8 §7.2): the SP-Dispatch retry and the x86-64 sandbox column. A non-void PASS on EPYC 7763 would close item 5 by branch 1.
+- W12 (plan v8 §7.2): the x86-64 sandbox column. The SP-Dispatch retry is done and gave no EPYC 7763 reading, so branch 3 stands. The orchestrator does no more W12 retries (M3-P5-W12-SPD).
 - Then month 4: M1 planning. M1 is the perf vertical slice and A0 part 2 ([09 §2.2](../plan/09-milestones.md#22-scope-and-exit-criteria)). The items in §5 go into that plan.
