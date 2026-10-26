@@ -735,6 +735,50 @@ test("exit2: pass, fail, and no gate verdict for a provisional run, a stub harne
   assert.match(e.readings[0].reasons[0], /no qjs row for octane-raytrace/);
 });
 
+test("exit2: fewer than 10 paired rounds, or series shorter than the run says, give no gate verdict", () => {
+  const passing = () => {
+    const j = fixture();
+    for (const r of j.M.ratios.filter((x) => x.comparator === "node-jitless")) r.net.ratios = r.net.ratios.map((x) => x * 1.1);
+    return j;
+  };
+  assert.equal(readExit2(passing()).pass, true);
+  const cut = (j, n) => {
+    for (const r of j.M.ratios) {
+      r.net.ratios = r.net.ratios.slice(0, n);
+      r.gross.ratios = r.gross.ratios.slice(0, n);
+    }
+    return j;
+  };
+  // Every series cut to 6 (verdict() still gives an interval at n = 6) while the run says 10.
+  let e = readExit2(cut(passing(), 6));
+  assert.equal(e.pass, false);
+  for (const r of e.readings) {
+    assert.match(r.gate, /^no gate verdict/);
+    assert.match(r.reasons.join(), /ratio series not 10 long: .*\(6\/6\)/);
+  }
+  // The same 6 rounds, declared as 6: below the class M minimum.
+  let j = cut(passing(), 6);
+  j.M.rounds = 6;
+  j.options.rounds = 6;
+  e = readExit2(j);
+  assert.equal(e.pass, false);
+  assert.match(e.readings[0].reasons.join(), /the run has 6 paired rounds \(M\.rounds\); class M needs >= 10/);
+  // One kernel's series one short.
+  j = passing();
+  const row = j.M.ratios.find((r) => r.workload === "octane-splay" && r.comparator === "qjs");
+  row.net.ratios.pop();
+  e = readExit2(j);
+  assert.match(e.readings[0].gate, /^no gate verdict/);
+  assert.match(e.readings[0].reasons.join(), /ratio series not 10 long: octane-splay \(9\/10\)/);
+  assert.equal(e.readings[1].gate, "pass");
+  // M.rounds and options.rounds disagree.
+  j = passing();
+  j.options.rounds = 12;
+  e = readExit2(j);
+  assert.equal(e.pass, false);
+  assert.match(e.readings[1].reasons.join(), /M\.rounds \(10\) differs from options\.rounds \(12\)/);
+});
+
 test("exit2: CLI exit status and JSON", (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "exit2-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
