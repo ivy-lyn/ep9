@@ -26,6 +26,10 @@ abi: impl Downcast for JsString
 abi: impl Downcast for JsSymbol
 abi: impl Downcast for JsValue
 abi: impl Drop for ArgsBuilder<'_>
+abi: impl MatchRecord :: pub fn end(&self) -> usize
+abi: impl MatchRecord :: pub fn get(&self, usize) -> Option<(usize, usize)>
+abi: impl MatchRecord :: pub fn group_count(&self) -> usize
+abi: impl MatchRecord :: pub fn start(&self) -> usize
 abi: impl ObjectClass :: pub const ALL: &'static [ObjectClass] = .. (part 2: the ObjectClass golden)
 abi: impl ObjectClass :: pub const MAX_SLOTS: usize = object::slot_obj::MAX_SLOTS
 abi: impl ObjectClass :: pub const fn from_id(u16) -> Option<ObjectClass>
@@ -175,6 +179,8 @@ abi: impl<'s> Cx<'s> :: pub fn promise_is_handled(&mut self, impl Into<Local<'s>
 abi: impl<'s> Cx<'s> :: pub fn promise_resolve(&mut self, impl Into<Local<'s, JsObject>>, impl Into<Local<'s>>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn promise_result(&mut self, impl Into<Local<'s>>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn promise_state(&mut self, impl Into<Local<'s>>) -> JsResult<PromiseState>
+abi: impl<'s> Cx<'s> :: pub fn regexp_create(&mut self, impl Into<Local<'s>>, impl Into<Local<'s, JsString>>, impl Into<Local<'s, JsString>>) -> JsResult<Local<'s, JsObject>>
+abi: impl<'s> Cx<'s> :: pub fn regexp_exec(&mut self, impl Into<Local<'s>>, impl Into<Local<'s, JsString>>, usize) -> JsResult<Option<MatchRecord>>
 abi: impl<'s> Cx<'s> :: pub fn reject_promise(&mut self, Local<'s, JsObject>, impl Into<Local<'s>>)
 abi: impl<'s> Cx<'s> :: pub fn run_module(&mut self, VerifiedUnit, &str, &mut dyn FnMut(&str, &str) -> Result<String, String>, &mut dyn FnMut(&str) -> CompileResult) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn run_script(&mut self, VerifiedUnit, &str) -> JsResult<Local<'s>>
