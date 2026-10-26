@@ -1,27 +1,1041 @@
-#![allow(dead_code)] // m4-stub
-//! The graph builder (stub; SPIKEC-1 builds it in M4-P1): one function's verified bytecode
-//! plus its [`FunctionFacts`] -> an [`ir::Graph`] in SSA form.
+//! The graph builder (SPIKEC-1, M4-P1): one function's verified bytecode plus its
+//! [`FunctionFacts`] -> an [`ir::Graph`] in SSA form.
 //!
 //! One builder serves both fact paths (H30 rule "one graph builder reads bytecode +
 //! FactSnapshot"; V9-D32): the live path takes `ep9_vm::abi::export_facts` output
 //! ([`crate::facts::live`]), SP-Facts takes a PROFILED file ([`crate::facts::read_profiled`]).
-//! The builder never reads a FeedbackVector directly.
+//! The builder never reads a FeedbackVector: a guard that needs run-local ShapeIds names the
+//! IC cell where they live (a CellRef), and only the emitted code reads it.
 //!
-//! First target (SPIKEC-1): crypto `am3`, with int32 facts PROVEN from `&` and `>>` and the
-//! named-load facts as exported at the phase base. Liveness is computed here (H02-Q1 =
-//! computed by the graph builder, V9-D32); the builder reports its cost for H02-Q1.
+//! ```text
+//!  Cfg::build (blocks, liveness; H02-Q1)
+//!  ──> abstract interpretation in offset order, one environment (SSA value per register):
+//!        merge: a phi where the predecessors differ; loop header: a phi per live register,
+//!        back-edge inputs filled when the JumpLoop block is done
+//!  ──> trivial phis removed ──> loop phis unboxed to Int32 (an entry check in the
+//!      preheader) ──> redundant checks removed, boxes inserted ──> dead pure nodes removed
+//! ```
+//!
+//! | Bytecode | Graph | Trust of the result |
+//! |---|---|---|
+//! | `&`, `|`, `^`, `<<`, `>>` (and the Smi forms) | TruncateInt32 on each input, Int32 op | PROVEN (H30 list) |
+//! | `+`, `-`, `*`, Inc, Dec, ToNumeric | CheckInt32 on each input, Int32 op with an overflow (and -0) guard | unknown; the guards are unbacked (no BinaryOp fact at the M4-P0 base: PROFILE, P1) |
+//! | `<`, `>`, `<=`, `>=` | CheckInt32 on each input, Compare | PROVEN (a boolean) |
+//! | GetNamedProperty | CheckShape (the LoadNamed fact: an in-object own field or an Array's `length`, one location for every case) + LoadField | the check is predicted{source}; the loaded value unknown |
+//! | GetKeyedProperty, SetKeyedProperty | CheckArray, CheckInt32 on the key, LoadElement / StoreElement (an int32 value only) | unknown; unbacked guards (keyed facts: FACTS2 P2, SPIKEC-3) |
+//! | JumpLoop | Poll (budget), Jump to the header | - |
+//!
+//! A named load without a fact, a megamorphic site, an accessor, a prototype field or an
+//! out-of-line field is refused: the function stays in T0.
 
-use spike_b::emit::FunctionInput;
+use ep9_bytecode::{Opcode, Register, decode_at};
+use ep9_facts::{Access, IcState, ObjectKind, SlotFacts};
+use ep9_value::encoding::{VALUE_FALSE, VALUE_NULL, VALUE_TRUE, VALUE_UNDEFINED};
+use spike_b::emit::{FunctionInput, Refusal};
 
-use crate::NotBuilt;
+use crate::cfg::Cfg;
 use crate::facts::FunctionFacts;
-use crate::ir;
+use crate::ir::{
+    self, BlockId, Cond, FrameState, Graph, GuardBasis, Incoming, Int32Op, NodeId, Op, RefNode,
+    Repr, Trust,
+};
+use crate::vm_layout;
+
+/// The opcodes the builder translates.
+pub fn supported(op: Opcode) -> bool {
+    use Opcode::*;
+    matches!(
+        op,
+        Ldar | Star
+            | Mov
+            | LdaZero
+            | LdaSmi
+            | LdaUndefined
+            | LdaNull
+            | LdaTrue
+            | LdaFalse
+            | GetNamedProperty
+            | GetKeyedProperty
+            | SetKeyedProperty
+            | Add
+            | Sub
+            | Mul
+            | BitwiseAnd
+            | BitwiseOr
+            | BitwiseXor
+            | ShiftLeft
+            | ShiftRight
+            | AddSmi
+            | SubSmi
+            | MulSmi
+            | BitwiseAndSmi
+            | BitwiseOrSmi
+            | BitwiseXorSmi
+            | ShiftLeftSmi
+            | ShiftRightSmi
+            | Inc
+            | Dec
+            | ToNumeric
+            | TestLessThan
+            | TestGreaterThan
+            | TestLessThanOrEqual
+            | TestGreaterThanOrEqual
+            | JumpIfFalse
+            | JumpIfTrue
+            | Jump
+            | JumpLoop
+            | Return
+    )
+}
+
+/// What the builder measured (the H02-Q1 rows of the report).
+#[derive(Clone, Debug, Default)]
+pub struct BuildStats {
+    pub instructions: usize,
+    pub blocks: usize,
+    /// Liveness time, microseconds.
+    pub liveness_us: u128,
+    /// Liveness as one bit per register per instruction.
+    pub liveness_bytes: usize,
+    /// Registers (with the receiver, parameters and the accumulator).
+    pub registers: usize,
+}
+
+const PLACEHOLDER: NodeId = NodeId(u32::MAX);
+
+struct Builder<'a> {
+    g: Graph,
+    cfg: Cfg,
+    facts: &'a FunctionFacts<'a>,
+    code: &'a [u8],
+    env: Vec<Option<NodeId>>,
+    out_env: Vec<Option<Vec<Option<NodeId>>>>,
+    /// Per loop header: (register, phi) of its phis.
+    loop_phis: Vec<Vec<(usize, NodeId)>>,
+    cur: BlockId,
+    /// The instruction being translated (its index in the Cfg).
+    insn: usize,
+    /// Checks made in the current block: (op tag, input) -> node (a block-local CSE).
+    memo: Vec<(u8, NodeId, NodeId)>,
+}
 
 /// Builds the SSA graph of `input` from its bytecode and `facts`.
-pub fn build(input: &FunctionInput<'_>, facts: &FunctionFacts<'_>) -> Result<ir::Graph, NotBuilt> {
-    let _ = (input, facts);
-    Err(NotBuilt {
-        stage: "graph builder",
-        owner: "SPIKEC-1, M4-P1",
-    })
+pub fn build(
+    input: &FunctionInput<'_>,
+    facts: &FunctionFacts<'_>,
+) -> Result<(Graph, BuildStats), Refusal> {
+    let cfg = Cfg::build(input, supported)?;
+    let stats = BuildStats {
+        instructions: cfg.insns.len(),
+        blocks: cfg.blocks.len(),
+        liveness_us: cfg.liveness_time.as_micros(),
+        liveness_bytes: cfg.liveness_bytes(),
+        registers: cfg.width(),
+    };
+    let mut g = Graph::new(
+        input.name,
+        facts.source,
+        input.parameter_count,
+        input.register_count,
+    );
+    g.insns = cfg.insns.iter().map(|x| (x.offset, x.opcode)).collect();
+    for (i, cb) in cfg.blocks.iter().enumerate() {
+        g.blocks.push(ir::Block {
+            offset: cb.start,
+            nodes: Vec::new(),
+            preds: cb.preds.iter().map(|&p| BlockId(p as u32)).collect(),
+            succs: Vec::new(),
+            loop_header: cb.loop_header,
+        });
+        let _ = i;
+    }
+    let n = cfg.blocks.len();
+    let width = cfg.width();
+    let mut b = Builder {
+        g,
+        cfg,
+        facts,
+        code: input.bytecode,
+        env: vec![None; width],
+        out_env: vec![None; n],
+        loop_phis: vec![Vec::new(); n],
+        cur: BlockId(0),
+        insn: 0,
+        memo: Vec::new(),
+    };
+    for bi in 0..n {
+        b.block(bi)?;
+    }
+    b.remove_trivial_phis();
+    b.unbox_loop_phis();
+    b.fix_reprs();
+    b.dce();
+    b.g.check().map_err(Refusal::Limit)?;
+    Ok((b.g, stats))
+}
+
+impl Builder<'_> {
+    fn offset(&self) -> u32 {
+        self.cfg.insns[self.insn].offset
+    }
+
+    fn node(&self, n: NodeId) -> &ir::Node {
+        self.g.node(n)
+    }
+
+    /// Adds a node at the end of the current block.
+    fn emit(&mut self, op: Op, inputs: Vec<NodeId>, repr: Repr, trust: Trust) -> NodeId {
+        let off = self.offset();
+        let n = self.g.add(op, inputs, repr, trust, self.cur, off);
+        self.g.blocks[self.cur.0 as usize].nodes.push(n);
+        n
+    }
+
+    /// The frame state before the current instruction: T0 runs it again after a deopt.
+    fn state(&self) -> FrameState {
+        let i = self.insn;
+        let live = &self.cfg.live_before[i];
+        let acc = self.cfg.acc();
+        FrameState {
+            offset: self.cfg.insns[i].offset,
+            registers: (0..acc)
+                .filter(|&r| live[r])
+                .filter_map(|r| self.env[r].map(|v| (self.cfg.register(r), v)))
+                .collect(),
+            acc: if live[acc] { self.env[acc] } else { None },
+        }
+    }
+
+    fn guard(&mut self, n: NodeId, basis: GuardBasis, state: FrameState) {
+        self.g.set_guard(n, basis, state);
+    }
+
+    fn reg(&self, r: Register) -> Result<NodeId, Refusal> {
+        let i = self.cfg.index(r);
+        self.env[i].ok_or_else(|| Refusal::Decode {
+            offset: self.offset(),
+            detail: format!("{r} is read but has no value (liveness)"),
+        })
+    }
+
+    fn acc(&self) -> Result<NodeId, Refusal> {
+        self.env[self.cfg.acc()].ok_or_else(|| Refusal::Decode {
+            offset: self.offset(),
+            detail: "the accumulator is read but has no value".into(),
+        })
+    }
+
+    fn set_acc(&mut self, v: NodeId) {
+        let a = self.cfg.acc();
+        self.env[a] = Some(v);
+    }
+
+    fn konst(&mut self, bits: u64) -> NodeId {
+        let op = Graph::const_tagged(bits).expect("an immediate");
+        self.emit(op, vec![], Repr::Tagged, Trust::Proven)
+    }
+
+    fn int(&mut self, v: i32) -> NodeId {
+        self.emit(Op::ConstInt32(v), vec![], Repr::Int32, Trust::Proven)
+    }
+
+    fn memo(&mut self, tag: u8, input: NodeId, make: impl FnOnce(&mut Self) -> NodeId) -> NodeId {
+        if let Some(&(_, _, n)) = self.memo.iter().find(|m| m.0 == tag && m.1 == input) {
+            return n;
+        }
+        let n = make(self);
+        self.memo.push((tag, input, n));
+        n
+    }
+
+    /// `v` as an Int32 for an arithmetic use: an unbacked CheckInt32 guard unless it is one.
+    fn int32(&mut self, v: NodeId) -> NodeId {
+        match (self.node(v).repr, &self.node(v).op) {
+            (Repr::Int32, _) => v,
+            (_, Op::Const(bits)) if vm_layout::int32_of(*bits).is_some() => {
+                let x = vm_layout::int32_of(*bits).expect("int32");
+                self.int(x)
+            }
+            (Repr::Bool, _) => {
+                // A boolean in arithmetic is a number (0 or 1); the spike keeps it simple.
+                let b = self.emit(Op::BoxBool, vec![v], Repr::Tagged, self.node(v).trust);
+                self.int32(b)
+            }
+            _ => {
+                let st = self.state();
+                self.memo(0, v, |s| {
+                    let n = s.emit(Op::CheckInt32, vec![v], Repr::Int32, Trust::Unknown);
+                    s.guard(n, GuardBasis::Unbacked, st);
+                    n
+                })
+            }
+        }
+    }
+
+    /// ToInt32 of `v` for a bitwise use: a TruncateInt32 guard unless it is an Int32.
+    fn trunc(&mut self, v: NodeId) -> NodeId {
+        match (self.node(v).repr, &self.node(v).op) {
+            (Repr::Int32, _) => v,
+            (_, Op::Const(bits)) if vm_layout::int32_of(*bits).is_some() => {
+                let x = vm_layout::int32_of(*bits).expect("int32");
+                self.int(x)
+            }
+            _ => {
+                let st = self.state();
+                let v = self.tagged(v);
+                self.memo(1, v, |s| {
+                    let n = s.emit(Op::TruncateInt32, vec![v], Repr::Int32, Trust::Proven);
+                    s.guard(n, GuardBasis::Unbacked, st);
+                    n
+                })
+            }
+        }
+    }
+
+    /// `v` as a Tagged Value.
+    fn tagged(&mut self, v: NodeId) -> NodeId {
+        let t = self.node(v).trust;
+        match self.node(v).repr {
+            Repr::Int32 => self.memo(2, v, |s| s.emit(Op::BoxInt32, vec![v], Repr::Tagged, t)),
+            Repr::Bool => self.memo(3, v, |s| s.emit(Op::BoxBool, vec![v], Repr::Tagged, t)),
+            _ => v,
+        }
+    }
+
+    fn binop(&mut self, op: Int32Op, l: NodeId, r: NodeId) -> NodeId {
+        let st = self.state();
+        let (l, r) = if op.bitwise() {
+            (self.trunc(l), self.trunc(r))
+        } else {
+            (self.int32(l), self.int32(r))
+        };
+        let trust = if op.bitwise() {
+            Trust::Proven
+        } else {
+            Trust::Unknown
+        };
+        let n = self.emit(Op::Int32(op), vec![l, r], Repr::Int32, trust);
+        if !op.bitwise() {
+            self.guard(n, GuardBasis::Unbacked, st);
+        }
+        n
+    }
+
+    fn compare(&mut self, c: Cond, l: NodeId, r: NodeId) -> NodeId {
+        let (l, r) = (self.int32(l), self.int32(r));
+        self.emit(Op::Compare(c), vec![l, r], Repr::Bool, Trust::Proven)
+    }
+
+    /// The entry environment of block `bi`.
+    fn enter(&mut self, bi: usize) -> Result<(), Refusal> {
+        self.cur = BlockId(bi as u32);
+        self.memo.clear();
+        self.insn = self.cfg.blocks[bi].insns.start;
+        let width = self.cfg.width();
+        if bi == 0 {
+            let mut env = vec![None; width];
+            env[0] = Some(self.emit(
+                Op::Incoming(Incoming::Receiver),
+                vec![],
+                Repr::Tagged,
+                Trust::Unknown,
+            ));
+            for k in 0..self.cfg.parameter_count {
+                env[1 + k as usize] = Some(self.emit(
+                    Op::Incoming(Incoming::Param(k)),
+                    vec![],
+                    Repr::Tagged,
+                    Trust::Unknown,
+                ));
+            }
+            let undef = self.konst(VALUE_UNDEFINED);
+            for slot in env.iter_mut().skip(1 + self.cfg.parameter_count as usize) {
+                *slot = Some(undef);
+            }
+            self.env = env;
+            if !self.cfg.blocks[0].preds.is_empty() {
+                return Err(Refusal::Limit("the entry block is a jump target".into()));
+            }
+            return Ok(());
+        }
+        let preds = self.cfg.blocks[bi].preds.clone();
+        if preds.is_empty() {
+            return Err(Refusal::Decode {
+                offset: self.cfg.blocks[bi].start,
+                detail: "a reachable block with no predecessor".into(),
+            });
+        }
+        let live = self.cfg.live_before[self.cfg.blocks[bi].insns.start].clone();
+        let mut env = vec![None; width];
+        if self.cfg.blocks[bi].loop_header {
+            for r in 0..width {
+                if !live[r] {
+                    continue;
+                }
+                let inputs: Vec<NodeId> = preds
+                    .iter()
+                    .map(|&p| match &self.out_env[p] {
+                        Some(e) => e[r].unwrap_or(PLACEHOLDER),
+                        None => PLACEHOLDER,
+                    })
+                    .collect();
+                if preds
+                    .iter()
+                    .any(|&p| p < bi && self.out_env[p].as_ref().is_some_and(|e| e[r].is_none()))
+                {
+                    return Err(Refusal::Decode {
+                        offset: self.cfg.blocks[bi].start,
+                        detail: format!(
+                            "{} is live at a loop header without a value",
+                            self.cfg.register(r)
+                        ),
+                    });
+                }
+                let phi = self.emit(Op::Phi, inputs, Repr::Tagged, Trust::Unknown);
+                self.loop_phis[bi].push((r, phi));
+                env[r] = Some(phi);
+            }
+        } else {
+            for r in 0..width {
+                if !live[r] {
+                    continue;
+                }
+                let mut vals = Vec::with_capacity(preds.len());
+                for &p in &preds {
+                    let e = self.out_env[p]
+                        .as_ref()
+                        .ok_or(Refusal::Limit("a forward edge from a later block".into()))?;
+                    vals.push(e[r].ok_or_else(|| Refusal::Decode {
+                        offset: self.cfg.blocks[bi].start,
+                        detail: format!(
+                            "{} is live at a merge without a value",
+                            self.cfg.register(r)
+                        ),
+                    })?);
+                }
+                env[r] = Some(if vals.iter().all(|&v| v == vals[0]) {
+                    vals[0]
+                } else {
+                    let repr = if vals.iter().all(|&v| self.node(v).repr == Repr::Int32) {
+                        Repr::Int32
+                    } else {
+                        Repr::Tagged
+                    };
+                    let trust = vals
+                        .iter()
+                        .fold(Trust::Proven, |t, &v| t.join(self.node(v).trust));
+                    let vals = if repr == Repr::Int32 {
+                        vals
+                    } else {
+                        // Boxes go at the end of each predecessor (fix_reprs does it).
+                        vals
+                    };
+                    self.emit(Op::Phi, vals, repr, trust)
+                });
+            }
+        }
+        self.env = env;
+        Ok(())
+    }
+
+    fn block(&mut self, bi: usize) -> Result<(), Refusal> {
+        self.enter(bi)?;
+        let range = self.cfg.blocks[bi].insns.clone();
+        let mut terminated = false;
+        for i in range.clone() {
+            self.insn = i;
+            terminated = self.translate()?;
+        }
+        if !terminated {
+            self.insn = range.end - 1;
+            self.emit(Op::Jump, vec![], Repr::None, Trust::Unknown);
+            let s = self.cfg.blocks[bi].succs.clone();
+            self.g.blocks[bi].succs = s.iter().map(|&x| BlockId(x as u32)).collect();
+        }
+        self.out_env[bi] = Some(self.env.clone());
+        // Back edges: fill the loop header's phi inputs from this block.
+        for &s in &self.cfg.blocks[bi].succs.clone() {
+            if s > bi {
+                continue;
+            }
+            let k = self.cfg.blocks[s]
+                .preds
+                .iter()
+                .position(|&p| p == bi)
+                .expect("a pred");
+            for (r, phi) in self.loop_phis[s].clone() {
+                let v = self.env[r].ok_or_else(|| Refusal::Decode {
+                    offset: self.cfg.blocks[s].start,
+                    detail: format!("{} has no value on a back edge", self.cfg.register(r)),
+                })?;
+                self.g.node_mut(phi).inputs[k] = v;
+            }
+        }
+        Ok(())
+    }
+
+    /// Translates the current instruction; true if it ended the block (a terminator node).
+    fn translate(&mut self) -> Result<bool, Refusal> {
+        use Opcode::*;
+        let x = self.cfg.insns[self.insn].clone();
+        let insn = decode_at(self.code, x.offset).map_err(|e| Refusal::Decode {
+            offset: x.offset,
+            detail: format!("{e:?}"),
+        })?;
+        let bi = self.cur.0 as usize;
+        let succ_block = |cfg: &Cfg, off: u32| cfg.block_at(off).map(|b| BlockId(b as u32));
+        match x.opcode {
+            Ldar => {
+                let v = self.reg(insn.register(0))?;
+                self.set_acc(v);
+            }
+            Star => {
+                let v = self.acc()?;
+                let i = self.cfg.index(insn.register(0));
+                self.env[i] = Some(v);
+            }
+            Mov => {
+                let v = self.reg(insn.register(0))?;
+                let i = self.cfg.index(insn.register(1));
+                self.env[i] = Some(v);
+            }
+            LdaZero => {
+                let n = self.int(0);
+                self.set_acc(n);
+            }
+            LdaSmi => {
+                let n = self.int(insn.signed(0));
+                self.set_acc(n);
+            }
+            LdaUndefined | LdaNull | LdaTrue | LdaFalse => {
+                let bits = match x.opcode {
+                    LdaUndefined => VALUE_UNDEFINED,
+                    LdaNull => VALUE_NULL,
+                    LdaTrue => VALUE_TRUE,
+                    _ => VALUE_FALSE,
+                };
+                let n = self.konst(bits);
+                self.set_acc(n);
+            }
+            GetNamedProperty => {
+                let o = self.reg(insn.register(0))?;
+                let slot = insn.unsigned(2);
+                let v = self.named_load(o, slot)?;
+                self.set_acc(v);
+            }
+            GetKeyedProperty => {
+                let st = self.state();
+                let o = self.reg(insn.register(0))?;
+                let k = self.acc()?;
+                let a = self.check_array(o);
+                let i = self.int32(k);
+                let n = self.emit(Op::LoadElement, vec![a, i], Repr::Tagged, Trust::Unknown);
+                self.guard(n, GuardBasis::Unbacked, st);
+                self.set_acc(n);
+            }
+            SetKeyedProperty => {
+                let st = self.state();
+                let o = self.reg(insn.register(0))?;
+                let k = self.reg(insn.register(1))?;
+                let v = self.acc()?;
+                if self.node(v).repr != Repr::Int32 {
+                    return Err(Refusal::Limit(format!(
+                        "keyed store at {} of a value that is not an int32: the store barrier is not built",
+                        x.offset
+                    )));
+                }
+                let a = self.check_array(o);
+                let i = self.int32(k);
+                let n = self.emit(Op::StoreElement, vec![a, i, v], Repr::None, Trust::Unknown);
+                self.guard(n, GuardBasis::Unbacked, st);
+                let u = self.konst(VALUE_UNDEFINED);
+                self.set_acc(u);
+            }
+            Add | Sub | Mul | BitwiseAnd | BitwiseOr | BitwiseXor | ShiftLeft | ShiftRight => {
+                let l = self.reg(insn.register(0))?;
+                let r = self.acc()?;
+                let n = self.binop(int_op(x.opcode), l, r);
+                self.set_acc(n);
+            }
+            AddSmi | SubSmi | MulSmi | BitwiseAndSmi | BitwiseOrSmi | BitwiseXorSmi
+            | ShiftLeftSmi | ShiftRightSmi => {
+                let l = self.acc()?;
+                let r = self.int(insn.signed(0));
+                let n = self.binop(int_op(x.opcode), l, r);
+                self.set_acc(n);
+            }
+            Inc | Dec => {
+                let l = self.acc()?;
+                let one = self.int(1);
+                let op = if x.opcode == Inc {
+                    Int32Op::Add
+                } else {
+                    Int32Op::Sub
+                };
+                let n = self.binop(op, l, one);
+                self.set_acc(n);
+            }
+            ToNumeric => {
+                let v = self.acc()?;
+                let n = self.int32(v);
+                self.set_acc(n);
+            }
+            TestLessThan | TestGreaterThan | TestLessThanOrEqual | TestGreaterThanOrEqual => {
+                let l = self.reg(insn.register(0))?;
+                let r = self.acc()?;
+                let c = match x.opcode {
+                    TestLessThan => Cond::Lt,
+                    TestGreaterThan => Cond::Gt,
+                    TestLessThanOrEqual => Cond::Le,
+                    _ => Cond::Ge,
+                };
+                let n = self.compare(c, l, r);
+                self.set_acc(n);
+            }
+            JumpIfFalse | JumpIfTrue => {
+                let a = self.acc()?;
+                let fall = succ_block(&self.cfg, x.next)
+                    .ok_or(Refusal::Limit("no fall-through block".into()))?;
+                let target = succ_block(&self.cfg, x.target.expect("a jump"))
+                    .ok_or(Refusal::Limit("no target block".into()))?;
+                // Branch: successor 0 when the condition is true. T0 jumps only on the exact
+                // `true` / `false` Value (no ToBoolean), so a Tagged accumulator is tested with
+                // IsTrue / IsFalse; a Bool is 0 or 1.
+                let (c, succs) = if self.node(a).repr == Repr::Bool {
+                    let s = if x.opcode == JumpIfTrue {
+                        vec![target, fall]
+                    } else {
+                        vec![fall, target]
+                    };
+                    (a, s)
+                } else {
+                    let t = self.tagged(a);
+                    let op = if x.opcode == JumpIfTrue {
+                        Op::IsTrue
+                    } else {
+                        Op::IsFalse
+                    };
+                    (
+                        self.emit(op, vec![t], Repr::Bool, Trust::Proven),
+                        vec![target, fall],
+                    )
+                };
+                self.emit(Op::Branch, vec![c], Repr::None, Trust::Unknown);
+                self.g.blocks[bi].succs = succs;
+                return Ok(true);
+            }
+            Jump => {
+                let t = succ_block(&self.cfg, x.target.expect("a jump"))
+                    .ok_or(Refusal::Limit("no target block".into()))?;
+                self.emit(Op::Jump, vec![], Repr::None, Trust::Unknown);
+                self.g.blocks[bi].succs = vec![t];
+                return Ok(true);
+            }
+            JumpLoop => {
+                let t = succ_block(&self.cfg, x.target.expect("a jump"))
+                    .ok_or(Refusal::Limit("no target block".into()))?;
+                self.emit(Op::Poll, vec![], Repr::None, Trust::Unknown);
+                let u = self.konst(VALUE_UNDEFINED);
+                self.set_acc(u);
+                self.emit(Op::Jump, vec![], Repr::None, Trust::Unknown);
+                self.g.blocks[bi].succs = vec![t];
+                return Ok(true);
+            }
+            Return => {
+                let a = self.acc()?;
+                let t = self.tagged(a);
+                self.emit(Op::Return, vec![t], Repr::None, Trust::Unknown);
+                return Ok(true);
+            }
+            op => {
+                return Err(Refusal::Opcode {
+                    offset: x.offset,
+                    opcode: op,
+                });
+            }
+        }
+        Ok(false)
+    }
+
+    fn check_array(&mut self, o: NodeId) -> NodeId {
+        let st = self.state();
+        let o = self.tagged(o);
+        self.memo(4, o, |s| {
+            let n = s.emit(Op::CheckArray, vec![o], Repr::Tagged, Trust::Unknown);
+            s.guard(n, GuardBasis::Unbacked, st);
+            n
+        })
+    }
+
+    /// `o.name` from the LoadNamed fact of `slot`: a shape guard through the IC cell and an
+    /// in-object field load.
+    fn named_load(&mut self, o: NodeId, slot: u32) -> Result<NodeId, Refusal> {
+        let off = self.offset();
+        let refuse = |why: String| Refusal::Limit(format!("named load at {off}: {why}"));
+        let Some(&(_, facts)) = self.facts.records.iter().find(|(s, _)| *s == slot) else {
+            return Err(refuse("no fact (the generic path is not built)".into()));
+        };
+        let SlotFacts::LoadNamed(pf) = facts else {
+            return Err(refuse(format!(
+                "fact of kind {}",
+                crate::facts::kind_name(facts)
+            )));
+        };
+        if !matches!(pf.state, IcState::Monomorphic | IcState::Polymorphic) || pf.cases.is_empty() {
+            return Err(refuse(format!("IC state {:?}", pf.state)));
+        }
+        // Every case must read the same place: an in-object field of an ordinary object at
+        // one offset, or an Array's length (the int32 at +24).
+        let mut location: Option<(u32, u64)> = None;
+        let mut shapes = Vec::new();
+        for c in &pf.cases {
+            let here = match c.access {
+                Access::OwnField { field }
+                    if c.receiver.kind == ObjectKind::Ordinary && field < c.receiver.capacity =>
+                {
+                    let at = vm_layout::OBJECT_FIELDS + 8 * u32::from(field);
+                    (at, vm_layout::field_in_object_handler(at))
+                }
+                Access::ArrayLength if c.receiver.kind == ObjectKind::Array => {
+                    (vm_layout::ARRAY_LENGTH, vm_layout::ARRAY_LENGTH_HANDLER)
+                }
+                ref a => {
+                    return Err(refuse(format!(
+                        "access {a:?} on a {:?} shape",
+                        c.receiver.kind
+                    )));
+                }
+            };
+            if location.is_some_and(|l| l != here) {
+                return Err(refuse("the cases read different places".into()));
+            }
+            location = Some(here);
+            let i = self.g.shapes.len() as u32;
+            self.g.shapes.push(c.receiver.clone());
+            self.g.add_ref(RefNode::ShapeRef(i));
+            shapes.push(i);
+        }
+        let (at, handler) = location.expect("a case");
+        self.g.add_ref(RefNode::CellRef(slot));
+        let st = self.state();
+        let o = self.tagged(o);
+        let source = self.facts.source;
+        let chk = self.emit(
+            Op::CheckShape {
+                site: slot,
+                shapes,
+                handler,
+            },
+            vec![o],
+            Repr::Tagged,
+            Trust::Predicted(source),
+        );
+        self.guard(chk, GuardBasis::Fact(source), st);
+        Ok(self.emit(
+            Op::LoadField { offset: at },
+            vec![chk],
+            Repr::Tagged,
+            Trust::Unknown,
+        ))
+    }
+
+    /// Replaces every use of `old` (inputs and frame states) with `new`.
+    fn replace(&mut self, old: NodeId, new: NodeId) {
+        for n in &mut self.g.nodes {
+            for i in &mut n.inputs {
+                if *i == old {
+                    *i = new;
+                }
+            }
+            if let Some(g) = &mut n.guard {
+                for (_, v) in &mut g.state.registers {
+                    if *v == old {
+                        *v = new;
+                    }
+                }
+                if g.state.acc == Some(old) {
+                    g.state.acc = Some(new);
+                }
+            }
+        }
+        for phis in &mut self.loop_phis {
+            for (_, p) in phis.iter_mut() {
+                if *p == old {
+                    *p = new;
+                }
+            }
+        }
+    }
+
+    fn kill(&mut self, n: NodeId) {
+        self.g.node_mut(n).live = false;
+        let b = self.g.node(n).block.0 as usize;
+        self.g.blocks[b].nodes.retain(|&x| x != n);
+    }
+
+    /// Removes phis whose inputs are all one value (or the phi itself).
+    fn remove_trivial_phis(&mut self) {
+        loop {
+            let mut changed = false;
+            for i in 0..self.g.nodes.len() {
+                let n = NodeId(i as u32);
+                let node = self.g.node(n);
+                if !node.live || node.op != Op::Phi {
+                    continue;
+                }
+                let others: Vec<NodeId> = node.inputs.iter().copied().filter(|&x| x != n).collect();
+                if others.is_empty() || others.iter().any(|&x| x != others[0]) {
+                    continue;
+                }
+                let v = others[0];
+                self.replace(n, v);
+                self.kill(n);
+                changed = true;
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
+    /// A loop phi whose back-edge inputs are all Int32 becomes Int32: its entry input gets an
+    /// (unbacked) CheckInt32 at the end of the preheader, with the frame state of the loop
+    /// header (T0 would enter the loop there). Repeats to a fixed point (nested phis).
+    fn unbox_loop_phis(&mut self) {
+        loop {
+            let mut changed = false;
+            for h in 0..self.g.blocks.len() {
+                if !self.g.blocks[h].loop_header {
+                    continue;
+                }
+                let preds = self.g.blocks[h].preds.clone();
+                let fwd: Vec<usize> = (0..preds.len())
+                    .filter(|&k| (preds[k].0 as usize) < h)
+                    .collect();
+                let [entry] = fwd[..] else { continue };
+                let pre = preds[entry];
+                for (r, phi) in self.loop_phis[h].clone() {
+                    let node = self.g.node(phi);
+                    if !node.live || node.op != Op::Phi || node.repr != Repr::Tagged {
+                        continue;
+                    }
+                    let back_int = node
+                        .inputs
+                        .iter()
+                        .enumerate()
+                        .filter(|&(k, _)| k != entry)
+                        .all(|(_, &v)| self.is_int32_or_check_of(v, phi));
+                    if !back_int {
+                        continue;
+                    }
+                    let e = node.inputs[entry];
+                    let checked = if self.g.node(e).repr == Repr::Int32 {
+                        e
+                    } else {
+                        // The header's frame state: every live register's value at the end
+                        // of the preheader.
+                        let start = self.cfg.blocks[h].insns.start;
+                        let live = self.cfg.live_before[start].clone();
+                        let pre_env = self.out_env[pre.0 as usize].clone().expect("done");
+                        let acc = self.cfg.acc();
+                        let state = FrameState {
+                            offset: self.cfg.blocks[h].start,
+                            registers: (0..acc)
+                                .filter(|&x| live[x])
+                                .filter_map(|x| pre_env[x].map(|v| (self.cfg.register(x), v)))
+                                .collect(),
+                            acc: if live[acc] { pre_env[acc] } else { None },
+                        };
+                        let c = self.insert_before_terminator(
+                            pre,
+                            Op::CheckInt32,
+                            vec![e],
+                            Repr::Int32,
+                            Trust::Unknown,
+                        );
+                        self.g.set_guard(c, GuardBasis::Unbacked, state);
+                        c
+                    };
+                    let _ = r;
+                    let p = self.g.node_mut(phi);
+                    p.inputs[entry] = checked;
+                    p.repr = Repr::Int32;
+                    changed = true;
+                }
+            }
+            // Checks of a value that is now Int32 are no-ops.
+            for i in 0..self.g.nodes.len() {
+                let n = NodeId(i as u32);
+                let node = self.g.node(n);
+                if node.live
+                    && matches!(node.op, Op::CheckInt32 | Op::TruncateInt32)
+                    && self.g.node(node.inputs[0]).repr == Repr::Int32
+                {
+                    let v = node.inputs[0];
+                    self.replace(n, v);
+                    self.kill(n);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        // Phi trust: the join of the inputs, to a fixed point (phis of phis). Phis start at
+        // Proven here so a loop of phis settles at the least fixed point.
+        let phis: Vec<NodeId> = (0..self.g.nodes.len() as u32)
+            .map(NodeId)
+            .filter(|&n| self.g.node(n).live && self.g.node(n).op == Op::Phi)
+            .collect();
+        for &n in &phis {
+            self.g.node_mut(n).trust = Trust::Proven;
+        }
+        loop {
+            let mut changed = false;
+            for &n in &phis {
+                let t = self
+                    .g
+                    .node(n)
+                    .inputs
+                    .iter()
+                    .fold(Trust::Proven, |t, &v| t.join(self.g.node(v).trust));
+                if t != self.g.node(n).trust {
+                    self.g.node_mut(n).trust = t;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
+    /// True if `v` is an Int32, or a CheckInt32 / TruncateInt32 of `phi` (the phi's own use
+    /// inside the loop, which unboxing makes a no-op).
+    fn is_int32_or_check_of(&self, v: NodeId, phi: NodeId) -> bool {
+        let n = self.g.node(v);
+        n.repr == Repr::Int32 || (n.op == Op::Phi && v == phi)
+    }
+
+    fn insert_before_terminator(
+        &mut self,
+        b: BlockId,
+        op: Op,
+        inputs: Vec<NodeId>,
+        repr: Repr,
+        trust: Trust,
+    ) -> NodeId {
+        let blk = &self.g.blocks[b.0 as usize];
+        let last = *blk.nodes.last().expect("a terminator");
+        let off = self.g.node(last).offset;
+        let n = self.g.add(op, inputs, repr, trust, b, off);
+        let blk = &mut self.g.blocks[b.0 as usize];
+        let at = blk.nodes.len() - 1;
+        blk.nodes.insert(at, n);
+        n
+    }
+
+    /// Inserts the boxes the reprs need: a Tagged use of an Int32 or Bool value (a Tagged phi's
+    /// inputs get theirs at the end of the predecessor).
+    fn fix_reprs(&mut self) {
+        let order: Vec<NodeId> = self.g.order().collect();
+        for n in order {
+            let node = self.g.node(n).clone();
+            let want: Vec<Repr> = match &node.op {
+                Op::Phi => vec![node.repr; node.inputs.len()],
+                Op::CheckInt32
+                | Op::TruncateInt32
+                | Op::CheckShape { .. }
+                | Op::CheckArray
+                | Op::IsFalse
+                | Op::IsTrue
+                | Op::Return
+                | Op::LoadField { .. } => vec![Repr::Tagged],
+                Op::LoadElement => vec![Repr::Tagged, Repr::Int32],
+                Op::StoreElement => vec![Repr::Tagged, Repr::Int32, Repr::Int32],
+                Op::Int32(_) | Op::Compare(_) => vec![Repr::Int32, Repr::Int32],
+                Op::BoxInt32 => vec![Repr::Int32],
+                Op::BoxBool | Op::Branch => vec![Repr::Bool],
+                _ => vec![],
+            };
+            for (k, &w) in want.iter().enumerate() {
+                let v = node.inputs[k];
+                let have = self.g.node(v).repr;
+                if have == w {
+                    continue;
+                }
+                let t = self.g.node(v).trust;
+                let fix = match (have, w) {
+                    (Repr::Int32, Repr::Tagged) => Op::BoxInt32,
+                    (Repr::Bool, Repr::Tagged) => Op::BoxBool,
+                    _ => panic!(
+                        "{}: n{} wants {w:?}, input n{} is {have:?}",
+                        self.g.name, n.0, v.0
+                    ),
+                };
+                let b = if node.op == Op::Phi {
+                    let pred = self.g.blocks[node.block.0 as usize].preds[k];
+                    self.insert_before_terminator(pred, fix, vec![v], Repr::Tagged, t)
+                } else {
+                    let blk = node.block.0 as usize;
+                    let at = self.g.blocks[blk]
+                        .nodes
+                        .iter()
+                        .position(|&x| x == n)
+                        .expect("in block");
+                    let b = self
+                        .g
+                        .add(fix, vec![v], Repr::Tagged, t, node.block, node.offset);
+                    self.g.blocks[blk].nodes.insert(at, b);
+                    b
+                };
+                self.g.node_mut(n).inputs[k] = b;
+            }
+        }
+    }
+
+    /// Removes pure nodes that nothing uses (guards, effects, terminators and frame-state
+    /// values stay).
+    fn dce(&mut self) {
+        let mut used = vec![false; self.g.nodes.len()];
+        let mut work: Vec<NodeId> = self
+            .g
+            .order()
+            .filter(|&n| self.g.node(n).op.has_effect())
+            .collect();
+        while let Some(n) = work.pop() {
+            if std::mem::replace(&mut used[n.0 as usize], true) {
+                continue;
+            }
+            let node = self.g.node(n);
+            work.extend(node.inputs.iter().copied());
+            if let Some(g) = &node.guard {
+                work.extend(g.state.registers.iter().map(|&(_, v)| v));
+                work.extend(g.state.acc);
+            }
+        }
+        let dead: Vec<NodeId> = used
+            .iter()
+            .enumerate()
+            .filter(|&(i, &u)| self.g.nodes[i].live && !u)
+            .map(|(i, _)| NodeId(i as u32))
+            .collect();
+        for n in dead {
+            self.kill(n);
+        }
+    }
+}
+
+fn int_op(op: Opcode) -> Int32Op {
+    use Opcode::*;
+    match op {
+        Add | AddSmi | Inc => Int32Op::Add,
+        Sub | SubSmi | Dec => Int32Op::Sub,
+        Mul | MulSmi => Int32Op::Mul,
+        BitwiseAnd | BitwiseAndSmi => Int32Op::And,
+        BitwiseOr | BitwiseOrSmi => Int32Op::Or,
+        BitwiseXor | BitwiseXorSmi => Int32Op::Xor,
+        ShiftLeft | ShiftLeftSmi => Int32Op::Shl,
+        _ => Int32Op::Sar,
+    }
 }
