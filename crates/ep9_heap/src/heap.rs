@@ -27,16 +27,23 @@
 //!      until the page is swept)
 //! a callback (root source, trace, size, weak source) panics while marking: every mark bit
 //!   is cleared and nothing is freed; while sweeping a page: that page's mark bits are cleared
+//!   (generational: set to the VO bits instead, so every cell counts as old, and the logs stay)
+//!
+//! generational (HeapConfig::generational, S1 step 1): threshold GEN; marks are sticky
+//!   collect(): ... finish the last lazy sweep -> clear every mark bit (a full GC) -> mark ->
+//!   empty every remembered list and card table (remembered.rs) -> ...
+//!   sweep: frees the unmarked cells and keeps the mark bits of the others (old = marked)
 //!
 //! verify_after_gc (GC-stress turns it on): the verify costs no second trace of the heap
 //!   mark:  a checked mark (trace.rs) checks every edge, weak slot, word0 shape, kind, size
 //!          and space it visits (strong roots too, weak ranges in the weak pass), so every
 //!          slot of every live cell is checked once
 //!   then:  sweep every page with checks (cell order: no overlap, inside the page, small
-//!          size; no mark bit left; a dead cell is zapped only if it ends before the next
-//!          cell and inside the page), the cells kept = the cells the mark pushed (a mark
-//!          bit set before the GC hides a cell from the mark), then page and LOS headers and
-//!          weak handles (verify.rs)
+//!          size; no mark bit left, generational: none outside a kept cell; a dead cell is
+//!          zapped only if it ends before the next cell and inside the page), the cells
+//!          kept = the cells the mark pushed (a mark bit set before the GC hides a cell from
+//!          the mark), then page and LOS headers, the S1 logs (empty after a GC) and weak
+//!          handles (verify.rs)
 //!   any error: panic "heap verifier failed after GC" with the error list
 //! ```
 //!
@@ -66,6 +73,7 @@ use crate::layout::{
     PAGE_MASK, PAGE_SIZE, Page, VO_BITS_OFFSET, ZAP_WORD, cell_size_for,
 };
 use crate::memory::{HeapError, Memory};
+use crate::remembered::GenerationalCage;
 use crate::roots::{GlobalHandle, Handles, RootId, RootStrength, Roots, ScratchRoots, WeakHandle};
 use crate::trace::{Mode, Tracer, WeakVisitor, find_cell};
 
@@ -99,9 +107,13 @@ pub struct HeapConfig {
     /// Which collections run the verifier when `verify_after_gc` is on. Today the only mode is
     /// [`VerifyMode::EveryGc`] (the default): every collection verifies.
     pub verify: VerifyMode,
-    /// The S1 generational mode (03-gc; minor GCs, H09/H11). Declared in M4-P0 with no effect
-    /// yet: the heap is S0 whatever the value. `false` (the default) keeps S0; the GC role
-    /// turns it on behind this flag when S1 lands (M4-P2, M4-P3).
+    /// The S1 generational mode (03-gc §3-§4, H09/H11). `false` (the default) is S0. `true`,
+    /// S1 step 1 (M4-P2): the barrier threshold is GEN, so a store of a cell into an old
+    /// (BLACK) host takes the slow path, which logs the host in its page's remembered list
+    /// (GREY) or, for a large object, dirties the 512-byte card of the slot; marks are sticky
+    /// (the sweep keeps the mark bits of the cells it keeps: marked = old). Every collection
+    /// is still a full GC: it clears the marks first and empties the logs after its mark. The
+    /// minor GC that uses the logs is step 2 (M4-P3).
     pub generational: bool,
     /// Fill freed cells with [`ZAP_WORD`].
     pub zap: bool,
@@ -235,6 +247,9 @@ pub struct Heap {
     /// Per kind byte, for `alloc` without a borrow of `inner`: [`NOT_REGISTERED`],
     /// [`DYNAMIC_SIZE`], or the fixed size rounded by `cell_size_for`.
     kind_sizes: [Cell<usize>; 256],
+    /// The cage's entry in the thread's list of generational cages (remembered.rs); `None` in
+    /// S0. Declared before `inner`, so the entry goes before the cage is unmapped.
+    _generational: Option<GenerationalCage>,
     pub(crate) inner: RefCell<Inner>,
     pub(crate) roots: RefCell<Roots>,
     pub(crate) handles: RefCell<Handles>,
@@ -269,6 +284,8 @@ pub(crate) struct Settings {
     pub(crate) zap: bool,
     pub(crate) record_css: bool,
     pub(crate) near_limit: Option<fn(usize, usize) -> usize>,
+    /// S1 step 1: sticky marks and the barrier logs ([`HeapConfig::generational`]).
+    pub(crate) generational: bool,
 }
 
 /// Where the conservative scan reads.
@@ -297,34 +314,66 @@ enum Swept {
 /// work lists are only dropped, and the weak entries cleared so far (only after a full mark)
 /// held cells that are unreachable. So clean marks are the whole state to restore. The heap
 /// stays usable after a caught panic, and the cost is on the panic path only.
-struct UnmarkOnUnwind<'a>(&'a Memory);
+///
+/// Generational (sticky marks): the guard sets every mark bit to its VO bit and every large
+/// object's mark instead, so every cell counts as old (marked) and none is freed before the
+/// next full GC; the remembered lists and cards are emptied only after a mark completes, so
+/// they still hold every logged host, and the guard sets those hosts GREY again.
+struct UnmarkOnUnwind<'a> {
+    mem: &'a Memory,
+    sticky: bool,
+}
 
 impl Drop for UnmarkOnUnwind<'_> {
     fn drop(&mut self) {
-        let mem = self.0;
+        let mem = self.mem;
         for idx in mem.small_pages() {
-            clear_page_marks(mem.page(idx));
+            let page = mem.page(idx);
+            reset_page_marks(page, self.sticky);
+            if self.sticky {
+                // The mark set some listed (GREY) hosts BLACK; the lists stay, so they must
+                // be GREY again, or a later store into one would not be logged.
+                // SAFETY: no push runs during the unwind of a GC.
+                for &off in unsafe { page.header().remembered.offsets() } {
+                    // SAFETY: a listed offset is the start of a live cell of this page (no
+                    // cell was freed: the unwind happens before the sweep).
+                    let c =
+                        unsafe { CellPtr::from_raw(mem.ptr(page.addr() + off as usize).cast()) };
+                    // SAFETY: as above.
+                    unsafe { c.header() }.set_gc_state(gc_state::GREY);
+                }
+            }
         }
         for idx in mem.large_heads() {
             // SAFETY: chunk `idx` is the committed head of a large object.
             let large = unsafe { Large::from_base(mem.chunk_base(idx)) };
-            large.header().mark.store(0, Relaxed);
+            large.header().mark.store(u8::from(self.sticky), Relaxed);
         }
     }
 }
 
-/// Clears the mark bits of one small page when dropped (`sweep_page` holds one).
-struct UnmarkPageOnUnwind(Page);
+/// Resets the mark bits of one small page when dropped (`sweep_page` holds one), as
+/// [`UnmarkOnUnwind`] does.
+struct UnmarkPageOnUnwind {
+    page: Page,
+    sticky: bool,
+}
 
 impl Drop for UnmarkPageOnUnwind {
     fn drop(&mut self) {
-        clear_page_marks(self.0);
+        reset_page_marks(self.page, self.sticky);
     }
 }
 
-fn clear_page_marks(page: Page) {
+/// Clears the mark bits of `page`, or (`sticky`) sets them to its VO bits.
+fn reset_page_marks(page: Page, sticky: bool) {
     for w in 0..BITMAP_WORDS {
-        page.mark_word(w).store(0, Relaxed);
+        let m = if sticky {
+            page.vo_word(w).load(Relaxed)
+        } else {
+            0
+        };
+        page.mark_word(w).store(m, Relaxed);
     }
 }
 
@@ -356,6 +405,8 @@ pub(crate) struct Inner {
     mark_stack: Vec<CellPtr>,
     weak_slots: Vec<NonNull<Slot>>,
     css_log: Vec<CellPtr>,
+    /// The ephemeron fixpoint of the last GC: rounds, and whether it went linear (tests).
+    pub(crate) last_ephemeron: (u32, bool),
     pub(crate) stats: GcStats,
 }
 
@@ -393,10 +444,18 @@ impl Heap {
             zap: config.zap,
             record_css: config.record_conservative_roots,
             near_limit: config.near_limit,
+            generational: config.generational,
         };
+        let generational = config
+            .generational
+            .then(|| GenerationalCage::register(base, mem.size()));
         Ok(Heap {
             hot: Hot {
-                barrier: BarrierState::new(threshold::OFF),
+                barrier: BarrierState::new(if config.generational {
+                    threshold::GEN
+                } else {
+                    threshold::OFF
+                }),
                 _pad: [0; 7],
                 cursor: Cell::new(0),
                 limit: Cell::new(0),
@@ -405,6 +464,7 @@ impl Heap {
             base,
             shape_bytes,
             kind_sizes: [const { Cell::new(NOT_REGISTERED) }; 256],
+            _generational: generational,
             inner: RefCell::new(Inner {
                 mem,
                 kinds: KindTable::new(),
@@ -430,6 +490,7 @@ impl Heap {
                 mark_stack: Vec::new(),
                 weak_slots: Vec::new(),
                 css_log: Vec::new(),
+                last_ephemeron: (0, false),
                 stats: GcStats::default(),
             }),
             roots: RefCell::new(Roots::default()),
@@ -765,7 +826,16 @@ impl Heap {
             // function may panic. The unwind then drops this guard, which clears every mark
             // bit, so the next GC starts from clean marks. Nothing is freed before the guard
             // is forgotten.
-            let unmark = UnmarkOnUnwind(&inner.mem);
+            let sticky = inner.s.generational;
+            if sticky {
+                // A full GC: the sticky marks of the last one must not hide a cell from
+                // this mark (verify.rs counts pushed against kept).
+                inner.clear_marks();
+            }
+            let unmark = UnmarkOnUnwind {
+                mem: &inner.mem,
+                sticky,
+            };
             let mut log = core::mem::take(&mut inner.css_log);
             log.clear();
             let record = inner.s.record_css;
@@ -819,12 +889,13 @@ impl Heap {
                 t.visit_bits(b);
             }
             roots.visit_strong(&mut t, false);
-            t.drain();
+            t.drain_to_fixpoint();
 
             let mut weak_cleared = t.clear_weak_slots();
             let marked_cells = t.marked_cells;
             let marked_bytes = t.marked_bytes;
             let pushed = t.pushed_cells;
+            inner.last_ephemeron = (t.ephemeron_rounds, t.ephemeron_linear);
             let mark_errors = core::mem::take(&mut t.errors);
             let (stack, weak) = t.into_lists();
             inner.mark_stack = stack;
@@ -841,6 +912,10 @@ impl Heap {
             weak_cleared += w.cleared;
             let mark_errors = w.errors;
             core::mem::forget(unmark);
+            if sticky {
+                // Every host the logs name was traced by this full mark (or is dead).
+                inner.empty_s1_logs();
+            }
 
             let large_kept = inner.sweep_large();
             let (mut shape_pages, mut pages): (Vec<usize>, Vec<usize>) = inner
@@ -1236,7 +1311,10 @@ impl Inner {
         kept: &mut usize,
     ) -> Swept {
         let page = self.mem.page(idx);
-        let unmark = UnmarkPageOnUnwind(page);
+        let sticky = self.s.generational;
+        let unmark = UnmarkPageOnUnwind { page, sticky };
+        // Sticky marks: a kept cell keeps its mark bit (old); without them every bit goes.
+        let keep_marks = if sticky { u64::MAX } else { 0 };
         // SAFETY: the line-mark array lies in the page's committed metadata area.
         unsafe { page.line_marks().write_bytes(0, LINES_PER_PAGE) };
         let mut live = 0usize;
@@ -1310,12 +1388,13 @@ impl Inner {
                     self.stats.freed_cells += 1;
                     self.stats.freed_bytes += size as u64;
                 }
-                page.mark_word(w).store(0, Relaxed);
+                page.mark_word(w).store(vo & mk & keep_marks, Relaxed);
             }
         }
-        // The loop cleared the mark words that have a VO bit and left the others: any mark
-        // bit now is one outside a cell, which the verifier reports.
-        if CHECK && self.any_mark_bit(page) {
+        // The loop reset the mark words that have a VO bit and left the others: any mark
+        // bit now outside a kept cell (sticky) or at all (S0) is one outside a cell, which the
+        // verifier reports.
+        if CHECK && self.any_mark_bit(page, sticky) {
             sweep_error(errors, idx, format_args!("mark bit set outside a GC"));
         }
         core::mem::forget(unmark);
@@ -1331,17 +1410,24 @@ impl Inner {
         }
     }
 
-    /// True if any mark bit of `page` is set. One pass over the 4 KiB mark bitmap with plain
-    /// loads, so that it vectorizes (most pages under GC-stress hold few cells, so this pass
-    /// is most of the checked sweep's extra cost).
-    fn any_mark_bit(&self, page: Page) -> bool {
+    /// True if any mark bit of `page` is set, or (`sticky`) any mark bit without a VO bit.
+    /// One pass over the 4 KiB mark bitmap with plain loads, so that it vectorizes (most pages
+    /// under GC-stress hold few cells, so this pass is most of the checked sweep's extra cost).
+    fn any_mark_bit(&self, page: Page, sticky: bool) -> bool {
         let mk = self.mem.ptr(page.addr() + MARK_BITS_OFFSET).cast::<u64>();
+        let vo = self.mem.ptr(page.addr() + VO_BITS_OFFSET).cast::<u64>();
         let mut any = 0u64;
         for w in 0..BITMAP_WORDS {
-            // SAFETY: the mark bitmap lies in the page's committed metadata area, 8-aligned,
-            // with the provenance of the reservation. Only this thread touches it (S0), and no
-            // atomic access runs during this loop.
-            any |= unsafe { mk.add(w).read() };
+            let outside = if sticky {
+                // SAFETY: both bitmaps lie in the page's committed metadata area, 8-aligned,
+                // with the provenance of the reservation. Only this thread touches them (S0
+                // and S1 are stop-the-world), and no atomic access runs during this loop.
+                unsafe { !vo.add(w).read() }
+            } else {
+                u64::MAX
+            };
+            // SAFETY: as above.
+            any |= unsafe { mk.add(w).read() } & outside;
         }
         any != 0
     }
@@ -1466,16 +1552,18 @@ impl Inner {
             .unwrap_or_else(|| panic!("heap corrupt: cell {c:?} has an unregistered kind"))
     }
 
-    /// Frees every unmarked large object and clears the marks of the others. Returns the
-    /// number of large objects kept.
+    /// Frees every unmarked large object and clears the marks of the others (generational:
+    /// keeps them). Returns the number of large objects kept.
     fn sweep_large(&mut self) -> usize {
         let heads: Vec<usize> = self.mem.large_heads().collect();
         let mut kept = 0;
+        // Sticky marks: a kept large object stays marked (old).
+        let keep = u8::from(self.s.generational);
         for idx in heads {
             // SAFETY: chunk `idx` is the committed head of a large object.
             let large = unsafe { Large::from_base(self.mem.chunk_base(idx)) };
             let h = large.header();
-            if h.mark.swap(0, Relaxed) != 0 {
+            if h.mark.swap(keep, Relaxed) != 0 {
                 kept += 1;
                 continue;
             }
@@ -1487,6 +1575,35 @@ impl Inner {
             unsafe { self.mem.free_large(idx, committed) };
         }
         kept
+    }
+}
+
+impl Inner {
+    /// Generational, at the start of a full GC (every lazy sweep finished): clears the mark
+    /// bit of every small-page cell and every large object.
+    fn clear_marks(&mut self) {
+        for idx in self.mem.small_pages() {
+            reset_page_marks(self.mem.page(idx), false);
+        }
+        for idx in self.mem.large_heads() {
+            // SAFETY: chunk `idx` is the committed head of a large object.
+            let large = unsafe { Large::from_base(self.mem.chunk_base(idx)) };
+            large.header().mark.store(0, Relaxed);
+        }
+    }
+
+    /// Generational, after a full mark: empties every page's remembered list and cleans
+    /// every large object's cards (each logged host was traced, and set BLACK, by the mark, or
+    /// is dead). The memory stays for the next cycle.
+    fn empty_s1_logs(&mut self) {
+        for idx in self.mem.small_pages() {
+            self.mem.page(idx).header().remembered.clear();
+        }
+        for idx in self.mem.large_heads() {
+            // SAFETY: chunk `idx` is the committed head of a large object.
+            let large = unsafe { Large::from_base(self.mem.chunk_base(idx)) };
+            crate::remembered::clear_cards(large.header());
+        }
     }
 }
 

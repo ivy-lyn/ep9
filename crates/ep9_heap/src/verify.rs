@@ -3,7 +3,8 @@
 //! | Check | Where |
 //! |---|---|
 //! | Page header: magic, kind, chunk index | every small page |
-//! | No mark bit set outside a GC | small pages, LOS headers |
+//! | No mark bit set outside a GC (generational, sticky marks: no mark bit outside a cell start) | small pages, LOS headers |
+//! | Generational (S1 step 1): each remembered-list entry is a distinct GREY cell start of its page, and the page has no other GREY cell; a dirty card means the dirty byte is set; after a GC every list is empty and every card clean | small pages, LOS headers |
 //! | Cells walk in address order from the VO bitmap; none overlaps the next; none crosses the page end | small pages |
 //! | Every cell kind is registered; size is at least 16 B, at most 8 KiB in a page, above 8 KiB in LOS | all cells |
 //! | gc_state is BLACK, WHITE or GREY | all cells |
@@ -78,6 +79,7 @@ impl Heap {
         let kinds = &inner.kinds;
         let mut t = Tracer::new(mem, kinds, Mode::Verify, Vec::new(), Vec::new());
         let mut r = VerifyReport::default();
+        let sticky = inner.s.generational;
 
         for idx in 0..mem.high() {
             match mem.chunk(idx) {
@@ -92,11 +94,13 @@ impl Heap {
                         continue;
                     }
                     let mut prev_end = page.addr() + FIRST_CELL_OFFSET;
+                    let mut grey = 0usize;
                     for w in 0..BITMAP_WORDS {
-                        if page.mark_word(w).load(Relaxed) != 0 {
+                        let mut vo = page.vo_word(w).load(Relaxed);
+                        let outside = if sticky { !vo } else { u64::MAX };
+                        if page.mark_word(w).load(Relaxed) & outside != 0 {
                             t.error(format_args!("small page {idx}: mark bit set outside a GC"));
                         }
-                        let mut vo = page.vo_word(w).load(Relaxed);
                         while vo != 0 {
                             let bit = vo.trailing_zeros() as usize;
                             vo &= vo - 1;
@@ -110,6 +114,8 @@ impl Heap {
                             // SAFETY: a VO bit marks a cell start whose word0 the allocator
                             // wrote; the page is committed.
                             let c = unsafe { CellPtr::from_raw(mem.ptr(addr).cast()) };
+                            // SAFETY: as above.
+                            grey += usize::from(unsafe { c.header() }.gc_state() == gc_state::GREY);
                             match check_cell(&mut t, c, false, mem.is_shape_chunk(idx)) {
                                 Some(size) => {
                                     if addr + size > page.addr() + PAGE_SIZE {
@@ -125,11 +131,13 @@ impl Heap {
                             }
                         }
                     }
+                    check_remembered(&mut t, idx, grey);
                 }
                 Chunk::LargeHead { chunks } => {
-                    let Some(c) = check_large_header(&mut t, idx, chunks) else {
+                    let Some(c) = check_large_header(&mut t, idx, chunks, sticky) else {
                         continue;
                     };
+                    check_cards(&mut t, idx);
                     if let Some(size) = check_cell(&mut t, c, true, false) {
                         check_large_size(&mut t, idx, c, size);
                         r.large_cells += 1;
@@ -192,6 +200,7 @@ impl Heap {
         let mem = &inner.mem;
         let mut t = Tracer::new(mem, &inner.kinds, Mode::Verify, Vec::new(), Vec::new());
         t.errors = errors;
+        let sticky = inner.s.generational;
 
         for idx in 0..mem.high() {
             match mem.chunk(idx) {
@@ -203,10 +212,24 @@ impl Heap {
                         t.context = Context::Root("page header");
                         t.error(format_args!("small page {idx}: bad header"));
                     }
+                    // The GC emptied every list after its mark (generational).
+                    if h.remembered.len() != 0 {
+                        t.context = Context::Root("remembered list");
+                        t.error(format_args!(
+                            "small page {idx}: remembered list not empty after a GC"
+                        ));
+                    }
                 }
                 Chunk::LargeHead { chunks } => {
                     // The cell's slots were checked when the mark traced it.
-                    if let Some(c) = check_large_header(&mut t, idx, chunks) {
+                    if let Some(c) = check_large_header(&mut t, idx, chunks, sticky) {
+                        // SAFETY: chunk `idx` is the committed head of a large object.
+                        let h = unsafe { Large::from_base(mem.chunk_base(idx)) };
+                        if h.header().dirty.load(Relaxed) != 0 {
+                            t.error(format_args!(
+                                "large object at chunk {idx}: dirty after a GC"
+                            ));
+                        }
                         let kinds = t.kinds();
                         // `sweep_large` freed every unmarked object, so this one is live.
                         if let Some(size) = cell_checks(kinds, c, true, false, &mut t.errors) {
@@ -231,9 +254,15 @@ impl Heap {
 }
 
 /// The LOS header of the large object at chunk `idx` (`chunks` chunks): magic, kind, chunk
-/// index and count, committed size, no mark outside a GC, every tail chunk names the head.
-/// Returns the cell, or `None` when the header is bad.
-fn check_large_header(t: &mut Tracer<'_>, idx: usize, chunks: u32) -> Option<CellPtr> {
+/// index and count, committed size, no mark outside a GC (unless `sticky`: generational
+/// marks stay on old objects), every tail chunk names the head. Returns the cell, or `None`
+/// when the header is bad.
+fn check_large_header(
+    t: &mut Tracer<'_>,
+    idx: usize,
+    chunks: u32,
+    sticky: bool,
+) -> Option<CellPtr> {
     let mem = t.mem();
     // SAFETY: chunk `idx` is the committed head of a large object.
     let large = unsafe { Large::from_base(mem.chunk_base(idx)) };
@@ -250,7 +279,7 @@ fn check_large_header(t: &mut Tracer<'_>, idx: usize, chunks: u32) -> Option<Cel
         t.error(format_args!("large object at chunk {idx}: bad header"));
         return None;
     }
-    if h.mark.load(Relaxed) != 0 {
+    if !sticky && h.mark.load(Relaxed) != 0 {
         t.error(format_args!(
             "large object at chunk {idx}: mark set outside a GC"
         ));
@@ -264,6 +293,54 @@ fn check_large_header(t: &mut Tracer<'_>, idx: usize, chunks: u32) -> Option<Cel
     }
     // SAFETY: the LOS cell starts right after the header.
     Some(unsafe { CellPtr::from_raw(large.cell_ptr().cast()) })
+}
+
+/// The remembered list of small page `idx` (S1 step 1): each entry is a GREY cell start of
+/// the page, no entry repeats, and the page holds no other GREY cell (`grey`: the GREY cells
+/// the walk counted). So every GREY host is listed exactly once. Empty in S0.
+fn check_remembered(t: &mut Tracer<'_>, idx: usize, grey: usize) {
+    let mem = t.mem();
+    let page = mem.page(idx);
+    // SAFETY: the verifier pushes nothing while it reads the list.
+    let mut offsets = unsafe { page.header().remembered.offsets() }.to_vec();
+    t.context = Context::Root("remembered list");
+    for &off in &offsets {
+        let addr = page.addr() + off as usize;
+        let ok = crate::trace::cell_start(mem, addr)
+            // SAFETY: `cell_start` found a live cell start.
+            .is_some_and(|c| unsafe { c.header() }.gc_state() == gc_state::GREY);
+        if !ok {
+            t.error(format_args!(
+                "small page {idx}: remembered entry {addr:#x} is not a GREY cell start"
+            ));
+        }
+    }
+    offsets.sort_unstable();
+    offsets.dedup();
+    if offsets.len() != page.header().remembered.len() {
+        t.error(format_args!("small page {idx}: a remembered entry repeats"));
+    }
+    if offsets.len() != grey {
+        t.error(format_args!(
+            "small page {idx}: {grey} GREY cell(s) but {} remembered",
+            offsets.len()
+        ));
+    }
+}
+
+/// The cards of the large object at chunk `idx` (S1 step 1): a dirty card means the dirty
+/// byte is set.
+fn check_cards(t: &mut Tracer<'_>, idx: usize) {
+    // SAFETY: chunk `idx` is the committed head of a large object.
+    let large = unsafe { Large::from_base(t.mem().chunk_base(idx)) };
+    let h = large.header();
+    let any = crate::remembered::cards(h).is_some_and(|c| c.iter().any(|b| b.load(Relaxed) != 0));
+    if any && h.dirty.load(Relaxed) == 0 {
+        t.context = Context::Root("large header");
+        t.error(format_args!(
+            "large object at chunk {idx}: a dirty card but no dirty byte"
+        ));
+    }
 }
 
 /// The kind's size of the LOS cell `c` equals its header size.
