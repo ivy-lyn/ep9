@@ -107,17 +107,18 @@ pub fn fused(g: &Graph, n: NodeId) -> bool {
     })
 }
 
-/// Allocates registers for `graph`.
-pub fn allocate(g: &Graph) -> Result<Allocation, String> {
-    let n = g.nodes.len();
-    let mut loc = vec![Location::None; n];
-    // Positions.
-    let mut pos = vec![0u32; n];
-    let mut block_start = vec![0u32; g.blocks.len()];
+/// The linear positions: per node id, and the end of each block (where its phi moves are).
+struct Positions {
+    pos: Vec<u32>,
+    block_end: Vec<u32>,
+}
+
+/// Block start S (its phis), nodes at S+2, S+4, ..., block end E; the next block at E+2.
+fn positions(g: &Graph) -> Positions {
+    let mut pos = vec![0u32; g.nodes.len()];
     let mut block_end = vec![0u32; g.blocks.len()];
     let mut p = 0u32;
     for (bi, b) in g.blocks.iter().enumerate() {
-        block_start[bi] = p;
         for &x in &b.nodes {
             if !g.node(x).live {
                 continue;
@@ -133,6 +134,14 @@ pub fn allocate(g: &Graph) -> Result<Allocation, String> {
         block_end[bi] = p;
         p += 2;
     }
+    Positions { pos, block_end }
+}
+
+/// Allocates registers for `graph`.
+pub fn allocate(g: &Graph) -> Result<Allocation, String> {
+    let n = g.nodes.len();
+    let mut loc = vec![Location::None; n];
+    let Positions { pos, block_end } = positions(g);
     let fused_set: Vec<bool> = (0..n as u32)
         .map(|i| g.node(NodeId(i)).live && fused(g, NodeId(i)))
         .collect();
@@ -193,6 +202,10 @@ pub fn allocate(g: &Graph) -> Result<Allocation, String> {
         }
     }
     // SSA liveness per block: extend each value to the end of every block it is live out of.
+    // live_in[b] = the values live on entry to b, b's own phis not included (they are defined
+    // at b's start, by the phi moves at the end of each predecessor). A phi of another block
+    // is a value as any other: a phi of an outer loop header read in an inner loop is live
+    // through the inner back edge (Codex r1 SPIKEC-1: excluding every phi here lost it).
     let nb = g.blocks.len();
     let mut live_in: Vec<Vec<bool>> = vec![vec![false; n]; nb];
     let mut changed = true;
@@ -208,10 +221,8 @@ pub fn allocate(g: &Graph) -> Result<Allocation, String> {
                     .iter()
                     .position(|&q| q.0 as usize == bi)
                     .expect("a pred");
-                for v in 0..n {
-                    if live_in[s.0 as usize][v] && g.node(NodeId(v as u32)).op != Op::Phi {
-                        live[v] = true;
-                    }
+                for (v, &l) in live_in[s.0 as usize].iter().enumerate() {
+                    live[v] |= l;
                 }
                 for &ph in &sb.nodes {
                     if g.node(ph).live && g.node(ph).op == Op::Phi {
@@ -219,6 +230,8 @@ pub fn allocate(g: &Graph) -> Result<Allocation, String> {
                     }
                 }
             }
+            // Backwards over b: a definition ends liveness (b's own phis too), a use starts
+            // it (a phi's inputs are used at the predecessors' ends, above).
             for &x in b.nodes.iter().rev() {
                 let node = g.node(x);
                 if !node.live {
@@ -231,11 +244,6 @@ pub fn allocate(g: &Graph) -> Result<Allocation, String> {
                     }
                 }
             }
-            for &x in &b.nodes {
-                if g.node(x).live && g.node(x).op == Op::Phi {
-                    live[x.0 as usize] = true;
-                }
-            }
             if live != live_in[bi] {
                 live_in[bi] = live;
                 changed = true;
@@ -245,9 +253,8 @@ pub fn allocate(g: &Graph) -> Result<Allocation, String> {
     for (b, &bend) in g.blocks.iter().zip(&block_end) {
         for &s in &b.succs {
             for (v, &live) in live_in[s.0 as usize].iter().enumerate() {
-                let x = NodeId(v as u32);
-                if live && g.node(x).op != Op::Phi {
-                    touch(x, bend, &mut start, &mut end);
+                if live {
+                    touch(NodeId(v as u32), bend, &mut start, &mut end);
                 }
             }
         }
@@ -306,10 +313,15 @@ pub fn allocate(g: &Graph) -> Result<Allocation, String> {
     })
 }
 
-/// Checks the allocator's invariant: every register value is in an allocatable register, and
-/// no two values whose intervals meet share a register (tests and `spike-c structural` run
-/// it).
+/// Checks the allocator's invariant: every register value is in an allocatable register, its
+/// interval covers every point the value is live at, and no two values whose intervals meet
+/// share a register (`compile_input` and the tests run it).
+///
+/// The live points come from a second liveness, by value (walk back from each use to the
+/// definition), not the allocator's block dataflow: a liveness bug there makes an interval
+/// too short, and this check then fails instead of passing on wrong code.
 pub fn verify(g: &Graph, a: &Allocation) -> Result<(), String> {
+    covers_live_points(g, a)?;
     let mut by_reg: std::collections::BTreeMap<u8, Vec<(u32, u32, NodeId)>> = Default::default();
     for &(s, e, x) in &a.ranges {
         match a.of(x) {
@@ -336,6 +348,78 @@ pub fn verify(g: &Graph, a: &Allocation) -> Result<(), String> {
                         "n{} [{s1}, {e1}] and n{} [{s2}, {e2}] share x{r}",
                         x1.0, x2.0
                     ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every value with a register or a stack slot: its interval covers its definition, each use
+/// (a phi input at the end of that predecessor, a fused compare's inputs at its branch), and
+/// the end of every block it is live out of.
+fn covers_live_points(g: &Graph, a: &Allocation) -> Result<(), String> {
+    let Positions { pos, block_end } = positions(g);
+    let mut range = vec![None; g.nodes.len()];
+    for &(s, e, x) in &a.ranges {
+        range[x.0 as usize] = Some((s, e));
+    }
+    // Uses per value: (block, position). A value used in a block other than its own is live
+    // into that block; a phi input is used at the end of its predecessor.
+    let mut uses: Vec<Vec<(usize, u32)>> = vec![Vec::new(); g.nodes.len()];
+    for u in g.order() {
+        let node = g.node(u);
+        if node.op == Op::Phi {
+            for (k, &v) in node.inputs.iter().enumerate() {
+                let pred = g.block(node.block).preds[k].0 as usize;
+                uses[v.0 as usize].push((pred, block_end[pred]));
+            }
+            continue;
+        }
+        let at = if a.of(u) == Location::Fused {
+            pos[u.0 as usize] + 2
+        } else {
+            pos[u.0 as usize]
+        };
+        for &v in &node.inputs {
+            uses[v.0 as usize].push((node.block.0 as usize, at));
+        }
+    }
+    for x in g.order() {
+        if !matches!(a.of(x), Location::Reg(_) | Location::Stack(_)) {
+            continue;
+        }
+        let Some((s, e)) = range[x.0 as usize] else {
+            continue; // verify names it ("a location but no interval")
+        };
+        let def = g.node(x).block.0 as usize;
+        let need = |p: u32, what: &str| -> Result<(), String> {
+            if s <= p && p <= e {
+                Ok(())
+            } else {
+                Err(format!("n{} [{s}, {e}] does not cover {what} at {p}", x.0))
+            }
+        };
+        need(pos[x.0 as usize], "its definition")?;
+        let mut live_in = vec![false; g.blocks.len()];
+        let mut work: Vec<usize> = Vec::new();
+        for &(b, at) in &uses[x.0 as usize] {
+            need(at, "a use")?;
+            if b != def && !live_in[b] {
+                live_in[b] = true;
+                work.push(b);
+            }
+        }
+        while let Some(b) = work.pop() {
+            if g.blocks[b].preds.is_empty() {
+                return Err(format!("n{} is live into entry block b{b}", x.0));
+            }
+            for &q in &g.blocks[b].preds {
+                let q = q.0 as usize;
+                need(block_end[q], "a live-out block end")?;
+                if q != def && !live_in[q] {
+                    live_in[q] = true;
+                    work.push(q);
                 }
             }
         }
@@ -401,5 +485,104 @@ mod tests {
         assert_eq!(sorted.len(), regs.len(), "{regs:?}");
         assert_eq!(a.of(p), Location::Frame(ep9_vm::layout::fp_param(0) as i32));
         verify(&g, &a).expect("verify");
+    }
+
+    /// The Codex r1 shape, by hand: an outer loop header's phi `v` read in the inner loop.
+    /// Returns the graph, `v`, and the inner loop's last block.
+    fn nested() -> (Graph, NodeId, usize) {
+        use crate::ir::{Block, BlockId, Cond, Int32Op, Trust};
+        use ep9_facts::FactSource;
+        let mut g = Graph::new("t", FactSource::Runtime, 1, 0);
+        // b0 entry, b1 outer header, b2 inner header, b3 inner body, b4 outer latch, b5 exit.
+        let edges: [(&[usize], &[usize]); 6] = [
+            (&[], &[1]),
+            (&[0, 4], &[2, 5]),
+            (&[1, 3], &[3, 4]),
+            (&[2], &[2]),
+            (&[2], &[1]),
+            (&[1], &[]),
+        ];
+        for (preds, succs) in edges {
+            g.blocks.push(Block {
+                preds: preds.iter().map(|&b| BlockId(b as u32)).collect(),
+                succs: succs.iter().map(|&b| BlockId(b as u32)).collect(),
+                ..Block::default()
+            });
+        }
+        let add = |g: &mut Graph, b: usize, op: Op, inputs: Vec<NodeId>, repr: Repr| {
+            let x = g.add(op, inputs, repr, Trust::Unknown, BlockId(b as u32), 0);
+            g.blocks[b].nodes.push(x);
+            x
+        };
+        let p = add(
+            &mut g,
+            0,
+            Op::Incoming(ir::Incoming::Param(0)),
+            vec![],
+            Repr::Tagged,
+        );
+        let n = add(&mut g, 0, Op::CheckInt32, vec![p], Repr::Int32);
+        let c0 = add(&mut g, 0, Op::ConstInt32(0), vec![], Repr::Int32);
+        let c1 = add(&mut g, 0, Op::ConstInt32(1), vec![], Repr::Int32);
+        add(&mut g, 0, Op::Jump, vec![], Repr::None);
+        // Phi inputs are patched once the latch values exist.
+        let v = add(&mut g, 1, Op::Phi, vec![c1, c1], Repr::Int32);
+        let i = add(&mut g, 1, Op::Phi, vec![c0, c0], Repr::Int32);
+        let ci = add(&mut g, 1, Op::Compare(Cond::Lt), vec![i, n], Repr::Bool);
+        add(&mut g, 1, Op::Branch, vec![ci], Repr::None);
+        let j = add(&mut g, 2, Op::Phi, vec![c0, c0], Repr::Int32);
+        let cj = add(&mut g, 2, Op::Compare(Cond::Lt), vec![j, n], Repr::Bool);
+        add(&mut g, 2, Op::Branch, vec![cj], Repr::None);
+        let j2 = add(&mut g, 3, Op::Int32(Int32Op::Add), vec![j, v], Repr::Int32);
+        add(&mut g, 3, Op::Jump, vec![], Repr::None);
+        let i2 = add(&mut g, 4, Op::Int32(Int32Op::Add), vec![i, c1], Repr::Int32);
+        let v2 = add(&mut g, 4, Op::Int32(Int32Op::Or), vec![i2, c0], Repr::Int32);
+        add(&mut g, 4, Op::Jump, vec![], Repr::None);
+        let r = add(&mut g, 5, Op::BoxInt32, vec![i], Repr::Tagged);
+        add(&mut g, 5, Op::Return, vec![r], Repr::None);
+        g.node_mut(v).inputs[1] = v2;
+        g.node_mut(i).inputs[1] = i2;
+        g.node_mut(j).inputs[1] = j2;
+        (g, v, 3)
+    }
+
+    /// An outer phi read in the inner loop is live out of the inner loop's last block (its
+    /// interval reaches that block's end), so no inner-loop value can take its register.
+    #[test]
+    fn outer_phi_is_live_through_the_inner_back_edge() {
+        let (g, v, inner_last) = nested();
+        let a = allocate(&g).expect("alloc");
+        verify(&g, &a).expect("verify");
+        let &(_, e, _) = a
+            .ranges
+            .iter()
+            .find(|r| r.2 == v)
+            .expect("v has an interval");
+        assert!(
+            e >= positions(&g).block_end[inner_last],
+            "v ends at {e}: {:?}",
+            a.ranges
+        );
+    }
+
+    /// The verify recomputes liveness: an interval cut at the last use, before the inner back
+    /// edge that still needs the value, is an error even though no register is shared.
+    #[test]
+    fn verify_rejects_an_interval_cut_before_a_back_edge() {
+        let (g, v, _) = nested();
+        let mut a = allocate(&g).expect("alloc");
+        let last_use = g
+            .order()
+            .filter(|&u| g.node(u).op != Op::Phi && g.node(u).inputs.contains(&v))
+            .map(|u| positions(&g).pos[u.0 as usize])
+            .max()
+            .expect("a use");
+        for r in &mut a.ranges {
+            if r.2 == v {
+                r.1 = last_use;
+            }
+        }
+        let e = verify(&g, &a).expect_err("a cut interval");
+        assert!(e.contains("live-out"), "{e}");
     }
 }

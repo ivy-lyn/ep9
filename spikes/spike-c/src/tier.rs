@@ -429,6 +429,52 @@ mod tests {
         assert!(r.report.spilled > 0, "{}", r.report.line());
     }
 
+    /// Nested loops: a phi of an outer loop header stays live (keeps its register) through
+    /// the inner loop's back edge. The first case is the Codex r1 reproduction: before the
+    /// fix the compiled `f(1, 4)` returned 8, T0 4.
+    #[test]
+    fn nested_loops_keep_outer_phis() {
+        if !aarch64() {
+            return;
+        }
+        // An outer phi (`v`) read in the inner loop.
+        let f = "function f(n, m) { var s = 0, v = 1; for (var i = 0; i < n; i++) { for (var j = 0; j < m; j++) s = (s + v) & 65535; v = (i + 2) | 0; } return s; }";
+        let r = equal(
+            f,
+            "f(2, 2);",
+            "print(f(1, 4), f(2, 4), f(3, 5), f(0, 3), f(4, 0), f(30, 40));",
+            "f",
+        );
+        assert_eq!(r.t0.output, ["4 12 30 0 0 18600"]);
+        // Three deep: phis of the outer (`u`) and middle (`w`) headers read only in the
+        // innermost loop (their next values do not read them).
+        let g = "function g(a, b, c) { var s = 0, u = 1, w = 3; for (var i = 0; i < a; i++) { for (var j = 0; j < b; j++) { for (var k = 0; k < c; k++) s = (s + u + w + k) & 65535; w = (j * 7 + 3) & 255; } u = (i + 2) | 0; } return s; }";
+        equal(
+            g,
+            "g(2, 2, 2);",
+            "print(g(1, 1, 4), g(2, 3, 4), g(3, 2, 5), g(5, 6, 7), g(0, 1, 1), g(2, 0, 3));",
+            "g",
+        );
+        // Inner phis (`j`, `s`) and outer phis (`i`, `t`) read after the inner loop, and an
+        // outer-loop value (`p`, not a phi) read in and after it.
+        let h = "function h(n, m) { var s = 0, t = 0; for (var i = 0; i < n; i++) { var p = (i * 3) | 0; for (var j = 0; j < m; j++) s = (s + j + p) & 65535; t = (t + p + i + j + s) & 65535; } return s ^ t; }";
+        equal(
+            h,
+            "h(2, 2);",
+            "print(h(1, 4), h(3, 1), h(4, 5), h(0, 2), h(5, 0), h(50, 60));",
+            "h",
+        );
+        // A swap-style phi cycle in the inner loop that reads the outer phi `c` (read nowhere
+        // else).
+        let sw = "function sw(n, m) { var a = 1, b = 2, c = 1; for (var i = 0; i < n; i++) { for (var j = 0; j < m; j++) { var t = a; a = b; b = (t + b + c) & 65535; } c = (i * 5 + 1) | 0; } return (a ^ (b << 3)) | 0; }";
+        equal(
+            sw,
+            "sw(2, 2);",
+            "print(sw(1, 4), sw(2, 3), sw(3, 5), sw(0, 2), sw(6, 7), sw(20, 30));",
+            "sw",
+        );
+    }
+
     /// SPIKEC-1's acceptance as a unit test: crypto with am3 compiled equals T0 (n = 1), and
     /// the probe shows the compiled am3 runs. Skips without the v8-v7 checkout.
     #[test]
