@@ -327,6 +327,54 @@ fn the_verifier_checks_the_remembered_lists() {
     heap.drop_global(gb);
 }
 
+/// Negative control of the page rule: page A's only entry is swapped for an offset that lands
+/// on page B's listed GREY host. Every count still matches and the entry is a GREY cell start,
+/// but it is not on page A, so A's real host is unlisted: the verifier must say so.
+#[test]
+fn the_verifier_rejects_an_entry_outside_its_page() {
+    let heap = gen_heap(|_| {});
+    let a = new_node(&heap, 1, 1);
+    let mut fill = 0;
+    let b = loop {
+        // 8 KiB nodes (small cells) until one lands on another page.
+        let c = new_node(&heap, 100 + fill, 1000);
+        if c.addr() & PAGE_MASK != a.addr() & PAGE_MASK {
+            break c;
+        }
+        fill += 1;
+        assert!(fill < 64, "no second page");
+    };
+    assert_ne!(a.addr() & PAGE_MASK, b.addr() & PAGE_MASK, "two pages");
+    let ga = heap.new_global(a.to_value());
+    let gb = heap.new_global(b.to_value());
+    precise_gc(&heap);
+    store(&heap, a, 0, b.to_value());
+    store(&heap, b, 0, a.to_value());
+    assert_eq!(state(a), gc_state::GREY);
+    assert_eq!(state(b), gc_state::GREY);
+    heap.verify().expect("clean");
+    // The lower page's entry gets the offset of the host on the higher page.
+    let (lo, hi) = if a.addr() < b.addr() { (a, b) } else { (b, a) };
+    let lo_base = lo.addr() & PAGE_MASK;
+    let set_entry = |off: usize| {
+        let inner = heap.inner.borrow();
+        let page = inner.mem.page(inner.mem.chunk_index(lo_base).unwrap());
+        let list = &page.header().remembered;
+        list.clear();
+        list.push(u32::try_from(off).unwrap());
+    };
+    set_entry(hi.addr() - lo_base);
+    let e = heap
+        .verify()
+        .expect_err("an entry that points into another page");
+    assert!(e.to_string().contains("outside its page"), "{e}");
+    set_entry(lo.addr() - lo_base);
+    heap.verify().expect("restored");
+    precise_gc(&heap);
+    heap.drop_global(ga);
+    heap.drop_global(gb);
+}
+
 thread_local! {
     static PANIC_NOW: Cell<bool> = const { Cell::new(false) };
 }

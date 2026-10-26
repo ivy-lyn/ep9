@@ -4,7 +4,7 @@
 //! |---|---|
 //! | Page header: magic, kind, chunk index | every small page |
 //! | No mark bit set outside a GC (generational, sticky marks: no mark bit outside a cell start, and a marked (old) cell is not WHITE, so a store into it takes the barrier's slow path) | small pages, LOS headers |
-//! | Generational (S1 step 1): each remembered-list entry is a distinct GREY cell start of its page, and the page has no other GREY cell; a dirty card means the dirty byte is set; after a GC every list is empty and every card clean | small pages, LOS headers |
+//! | Generational (S1 step 1): each remembered-list entry is an offset inside its page's cell area and a distinct GREY cell start, and the page has no other GREY cell; a dirty card means the dirty byte is set; after a GC every list is empty and every card clean | small pages, LOS headers |
 //! | Cells walk in address order from the VO bitmap; none overlaps the next; none crosses the page end | small pages |
 //! | Every cell kind is registered; size is at least 16 B, at most 8 KiB in a page, above 8 KiB in LOS | all cells |
 //! | gc_state is BLACK, WHITE or GREY | all cells |
@@ -310,9 +310,11 @@ fn check_large_header(
     Some(c)
 }
 
-/// The remembered list of small page `idx` (S1 step 1): each entry is a GREY cell start of
-/// the page, no entry repeats, and the page holds no other GREY cell (`grey`: the GREY cells
-/// the walk counted). So every GREY host is listed exactly once. Empty in S0.
+/// The remembered list of small page `idx` (S1 step 1): each entry is an offset into the
+/// page's cell area (checked before it is resolved, so an entry cannot name a cell of another
+/// page) and a GREY cell start, no entry repeats, and the page holds no other GREY cell
+/// (`grey`: the GREY cells the walk counted). So every GREY host is listed exactly once.
+/// Empty in S0.
 fn check_remembered(t: &mut Tracer<'_>, idx: usize, grey: usize) {
     let mem = t.mem();
     let page = mem.page(idx);
@@ -321,6 +323,12 @@ fn check_remembered(t: &mut Tracer<'_>, idx: usize, grey: usize) {
     t.context = Context::Root("remembered list");
     for &off in &offsets {
         let addr = page.addr() + off as usize;
+        if !(FIRST_CELL_OFFSET..PAGE_SIZE).contains(&(off as usize)) {
+            t.error(format_args!(
+                "small page {idx}: remembered entry {addr:#x} is outside its page"
+            ));
+            continue;
+        }
         let ok = crate::trace::cell_start(mem, addr)
             // SAFETY: `cell_start` found a live cell start.
             .is_some_and(|c| unsafe { c.header() }.gc_state() == gc_state::GREY);
