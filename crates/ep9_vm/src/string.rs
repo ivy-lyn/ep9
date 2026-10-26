@@ -1003,6 +1003,12 @@ pub(crate) fn array_index(b: u64) -> Option<u32> {
             return None;
         }
     }
+    // An index has at most 10 digits (2^32 - 2), so a longer string (every rope) is not one:
+    // the answer needs no copy of a rope's text (the profile hooks call this; they allocate
+    // nothing, `profile.rs`).
+    if len_of(c) > 10 {
+        return None;
+    }
     match flat_units(b) {
         Some(v) => v.array_index(),
         None => with_text(b, |t| t.array_index()),
