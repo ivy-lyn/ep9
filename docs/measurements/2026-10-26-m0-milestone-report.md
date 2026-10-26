@@ -6,7 +6,7 @@
 
 ## 1. Verdict
 
-M0 exits with one named exception, if the x86-64 Linux sandbox column gives the same result. The pass rule (plan v8 §7.1) has 4 exit columns: mac a64, linux a64, x86-64 Linux in the sandbox, and Windows from the exit-head CI run. Exit items 1-4 and 6-12 are PASS on the 3 columns run so far: mac a64, linux a64 and Windows CI (item 4 on Windows is N/A by design). The x86-64 Linux sandbox column is X86-EXIT-PENDING. Item 5 is OPEN on one cell only: SP-Dispatch condition 2 on AMD EPYC 7763 (Zen 3), sysv and win64. The orchestrator applied the V8-A19 rule before the exit run and got branch 3 (decision M3-P5-V8A19). Branch 3 says: the gate stays, the cell stays OPEN, and M0 exits with this exception carried to M1. On the 3 columns run so far, each `cargo xtask m0-exit` run exits 1 only for that cell. The Windows-as-host extra run also exits 1 for items 7 and 12, by design (§2). This is a statement, not a question: the owner may override it.
+M0 exits with one named exception. The pass rule (plan v8 §7.1) has 4 exit columns: mac a64, linux a64, x86-64 Linux in the sandbox, and Windows from the exit-head CI run. Exit items 1-4 and 6-12 are PASS on all 4 columns (item 4 on Windows is N/A by design). Item 5 is OPEN on one cell only: SP-Dispatch condition 2 on AMD EPYC 7763 (Zen 3), sysv and win64. The orchestrator applied the V8-A19 rule before the exit run and got branch 3 (decision M3-P5-V8A19). Branch 3 says: the gate stays, the cell stays OPEN, and M0 exits with this exception carried to M1. The host runs of `cargo xtask m0-exit` (mac a64, linux a64, x86-64 Linux sandbox) each exit 1 only for that cell. The Windows CI column is the second column of each host run. The Windows-as-host extra run also exits 1 for items 7 and 12, by design (§2). This is a statement, not a question: the owner may override it.
 
 ```text
  V8-A19 rule for exit item 5 (applied at GATES-2 and again before the exit run)
@@ -18,24 +18,24 @@ M0 exits with one named exception, if the x86-64 Linux sandbox column gives the 
 
 ## 2. Exit table
 
-The M0 exit run is GATES-3 at `86be16b` (decision M3-P5-EXIT-RUN). It reads the inputs of CI run 40244283271 and perf run 4, with no `--verdicts` file. P = PASS.
+The M0 exit run is GATES-3 at `86be16b` (decision M3-P5-EXIT-RUN). It reads the inputs of CI run 40244283271 and perf run 4, with no `--verdicts` file. The x86-64 Linux sandbox column is the orchestrator's run: its host inputs come from a full sandbox run with the code of `86be16b`, and its Windows column from the same CI run (decision M3-P5-EXIT-X86). P = PASS.
 
 | # | Exit item | mac a64 | linux a64 | x86-64 Linux sandbox | Windows CI | Evidence (one line) |
 |---|---|---|---|---|---|---|
-| 1 | Full test262 run ≤ 10 min | P | P | X86-EXIT-PENDING | P | 93.4 s on macos-arm64, 52.9 s on linux-arm64, 108 s Windows step; 0 new failures, 0 stale lines |
-| 2 | Parse negatives all; positives ≥ 99.98% | P | P | X86-EXIT-PENDING | P | negatives 4,653 / 4,653; positives 47,357 / 47,364 (99.985%) |
-| 3 | `language/` ≥ 40% | P | P | X86-EXIT-PENDING | P | 22,819 / 23,726 files (96.18%) |
-| 4 | richards, deltablue ≥ 0.6x QuickJS | P | P | X86-EXIT-PENDING | N/A | perf run 4 at `a99b014`: 1.617x and 1.557x; no change under `crates/` or `tools/bench/` since. Windows: by design (V8-A22) |
-| 5 | Spikes green; SP-tsrs-win recorded | OPEN | OPEN | X86-EXIT-PENDING | OPEN | SP-Dispatch "GO with conditions (condition 2, §3)"; every other spike GO; SP-tsrs-win recorded |
-| 6 | GC-stress passes every passing test | P | P | X86-EXIT-PENDING | P | 35,505 / 53,572 files in 6 shards, 0 new failures, 44 skipped; Windows 6 of 6 shard jobs |
-| 7 | Nesting caps; UTF-16 column | P | P | X86-EXIT-PENDING | P | the 3 named tests pass; 2 cargo runs, each with exit status 0 |
-| 8 | Value, JsResult, word0 are 8 B | P | P | X86-EXIT-PENDING | P | `cargo check -p ep9_value` per target; Windows build step |
-| 9 | Every "Fix by M0" row merged; builtin ABI frozen | P | P | X86-EXIT-PENDING | P | 28 of 28 rows due at M0 merged; H20 Frozen |
-| 10 | A0 part 1 ADRs merged | P | P | X86-EXIT-PENDING | P | 10 of 10 Accepted |
-| 11 | SP-Unit green on 4 targets | P | P | X86-EXIT-PENDING | P | SP-Unit GO in spike review 2 |
-| 12 | Identical bytecode hashes | P | P | X86-EXIT-PENDING | P | BCG-CORPUS-14 `17dc1f9c…7531` over 94,502 units, release = debug |
+| 1 | Full test262 run ≤ 10 min | P | P | P | P | 93.4 s on macos-arm64, 52.9 s on linux-arm64, 54.8 s in the x86-64 sandbox, 108 s Windows step; 0 new failures, 0 stale lines |
+| 2 | Parse negatives all; positives ≥ 99.98% | P | P | P | P | negatives 4,653 / 4,653; positives 47,357 / 47,364 (99.985%) |
+| 3 | `language/` ≥ 40% | P | P | P | P | 22,819 / 23,726 files (96.18%) |
+| 4 | richards, deltablue ≥ 0.6x QuickJS | P | P | P | N/A | perf run 4 at `a99b014`: 1.617x and 1.557x; no change under `crates/` or `tools/bench/` since. Windows: by design (V8-A22) |
+| 5 | Spikes green; SP-tsrs-win recorded | OPEN | OPEN | OPEN | OPEN | SP-Dispatch "GO with conditions (condition 2, §3)"; every other spike GO; SP-tsrs-win recorded |
+| 6 | GC-stress passes every passing test | P | P | P | P | 35,505 / 53,572 files in 6 shards (one run in the x86-64 sandbox), 0 new failures, 44 skipped; Windows 6 of 6 shard jobs |
+| 7 | Nesting caps; UTF-16 column | P | P | P | P | the 3 named tests pass; 2 cargo runs, each with exit status 0 |
+| 8 | Value, JsResult, word0 are 8 B | P | P | P | P | `cargo check -p ep9_value` per target; Windows build step |
+| 9 | Every "Fix by M0" row merged; builtin ABI frozen | P | P | P | P | 28 of 28 rows due at M0 merged; H20 Frozen |
+| 10 | A0 part 1 ADRs merged | P | P | P | P | 10 of 10 Accepted |
+| 11 | SP-Unit green on 4 targets | P | P | P | P | SP-Unit GO in spike review 2 |
+| 12 | Identical bytecode hashes | P | P | P | P | BCG-CORPUS-14 `17dc1f9c…7531` over 94,502 units, release = debug |
 
-Extra columns, not exit columns: linux x64 from the CI inputs has the same cells. Windows as host has item 7 NOT-RUN and item 12 OPEN, by design (the windows-x64 artifact has no nesting log and no debug corpus log), so that run exits 1 for items 5, 7 and 12. An independent checker ran the 4 m0-exit columns again and got byte-identical reports.
+Extra columns, not exit columns: linux x64 from the CI inputs has the same cells. Windows as host has item 7 NOT-RUN and item 12 OPEN, by design (the windows-x64 artifact has no nesting log and no debug corpus log), so that run exits 1 for items 5, 7 and 12. An independent checker ran the 4 GATES-3 m0-exit columns again and got byte-identical reports.
 
 ## 3. What M0 built
 
@@ -92,7 +92,7 @@ A ratio above 1 means that ep9 is faster. Perf run 4 used the stub harness (deci
  Frozen       H20 (core; part 2 append-only)                     (1)
 ```
 
-**Pre-freeze churn.** H20's Change log has 25 rows of kind rewrite. All are dated before the freeze (2026-10-21 to 2026-10-25), so G8 does not count them. 16 of them are API additions (new `Cx` methods or ids, no change to an existing signature).
+**Pre-freeze churn.** H20's Change log has 25 rows of kind rewrite. All are dated before the freeze (2026-10-21 to 2026-10-25), so G8 does not count them. 16 of them are API additions (new `Cx` methods, ids, types or public paths; no change to an existing signature).
 
 | # | Date | Kind | What changed |
 |---|---|---|---|
@@ -138,9 +138,9 @@ A ratio above 1 means that ep9 is faster. Perf run 4 used the stub harness (deci
 | H20-Q4-X3 type-level fix (a `Local` in Rust heap memory inside one `with_cx` scope) | product call, M1, H10/H20 | M3-P3-H20-X3 |
 | M3-P5 notes: A9-3, V9-5, F4, F7, the GATES-3 tool notes; facts for the prototype of `function F(){}` give Unknown (M3-P3 candidate) | M1 planning, sorted (c) | M3-P5-FINDINGS; M3-P3-OPEN |
 
-Still open in W12 (the orchestrator): the x86-64 Linux sandbox column of the exit run (X86-EXIT-PENDING). Done in W12: the SP-Dispatch retry on the exit head. Only linux-x64 ran again; it drew an Intel Xeon Platinum 8573C and passed (not void, branchy 0.968). GitHub did not re-run windows-x64. The pass is not on EPYC 7763, so item 5 stays OPEN (M3-P5-W12-SPD). Closed in M3-P5: RF1-3 (the H23 flag name), H20 row 3 and the Accept and Frozen steps, spike review 2, the CI run of the M3-P4 head, and exit item 4 (M3-P5-OPEN).
+Done after GATES-3: the x86-64 Linux sandbox column of the exit run (the same cells as mac a64 and linux a64; M3-P5-EXIT-X86). Done in W12: the SP-Dispatch retry on the exit head. Only linux-x64 ran again; it drew an Intel Xeon Platinum 8573C and passed (not void, branchy 0.968). GitHub did not re-run windows-x64. The pass is not on EPYC 7763, so item 5 stays OPEN (M3-P5-W12-SPD). Closed in M3-P5: RF1-3 (the H23 flag name), H20 row 3 and the Accept and Frozen steps, spike review 2, the CI run of the M3-P4 head, and exit item 4 (M3-P5-OPEN).
 
 ## 6. Next
 
-- W12 (plan v8 §7.2): the x86-64 sandbox column. The SP-Dispatch retry is done and gave no EPYC 7763 reading, so branch 3 stands. The orchestrator does no more W12 retries (M3-P5-W12-SPD).
+- W12 (plan v8 §7.2): the SP-Dispatch retry is done and gave no EPYC 7763 reading, so branch 3 stands. The orchestrator does no more W12 retries (M3-P5-W12-SPD). The x86-64 sandbox column of the exit run is done (M3-P5-EXIT-X86).
 - Then month 4: M1 planning. M1 is the perf vertical slice and A0 part 2 ([09 §2.2](../plan/09-milestones.md#22-scope-and-exit-criteria)). The items in §5 go into that plan.
