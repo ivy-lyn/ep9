@@ -19,17 +19,31 @@
 //! | Bytecode | Graph | Trust of the result |
 //! |---|---|---|
 //! | `&`, `|`, `^`, `<<`, `>>` (and the Smi forms) | TruncateInt32 on each input, Int32 op | PROVEN (H30 list) |
-//! | `+`, `-`, `*`, Inc, Dec, ToNumeric | CheckInt32 on each input, Int32 op with an overflow (and -0) guard | unknown; the guards are unbacked (no BinaryOp fact at the M4-P0 base: PROFILE, P1) |
-//! | `<`, `>`, `<=`, `>=` | CheckInt32 on each input, Compare | PROVEN (a boolean) |
+//! | `+`, `-`, `*`, Inc, Dec, ToNumeric | CheckInt32 on each input, Int32 op with an overflow (and -0) guard | predicted{source} with an int32 BinaryOp fact (below), else unknown with unbacked guards |
+//! | `<`, `>`, `<=`, `>=` | CheckInt32 on each input (backed by an int32 CompareOp fact, else unbacked), Compare | PROVEN (a boolean) |
 //! | GetNamedProperty | CheckShape (the LoadNamed fact: an in-object own field or an Array's `length`, one location for every case) + LoadField | the check is predicted{source}; the loaded value unknown |
 //! | GetKeyedProperty, SetKeyedProperty | CheckArray, CheckInt32 on the key, LoadElement / StoreElement (an int32 value only) | unknown; unbacked guards (keyed facts: FACTS2 P2, SPIKEC-3) |
 //! | JumpLoop | Poll (budget), Jump to the header | - |
 //!
 //! A named load without a fact, a megamorphic site, an accessor, a prototype field or an
 //! out-of-line field is refused: the function stays in T0.
+//!
+//! **Int facts (SPIKEC-2).** The BinaryOp record of an arithmetic or bitwise site and the
+//! CompareOp record of a relational compare back that site's int32 guards (B2 of
+//! docs/plan/13-execution-modes.md: the builder picks the guard basis, the mode picks the
+//! policy). A hint inside {int32} backs them: `BinaryHint::INT32` or `CompareHint::INT32`, or
+//! the empty set, which T0 leaves for "int32 or never ran" (implicit int32, MODES-D10). A hint
+//! with any other bit (int32 overflow, number, string, ...) or no record leaves them
+//! unbacked: the spike has no double or generic path, so the guard stays and only its basis
+//! differs. The T0 profile writes these slots since M4-P1 (`ep9_vm` profile.rs); the exporter
+//! writes them out from FACTS2 (M4-P2) on, so until that merge the live snapshot has no such
+//! record and the guards are unbacked. The same SSA value checked twice in a block shares one
+//! check; a later backed site upgrades it (the value did not change in between). A loop
+//! phi's entry check (`unbox_loop_phis`) is backed if a check of the phi inside the loop was.
+//! Keyed sites stay unbacked until SPIKEC-3 reads the keyed facts (V9-A20).
 
 use ep9_bytecode::{Opcode, Register, decode_at};
-use ep9_facts::{Access, IcState, ObjectKind, SlotFacts};
+use ep9_facts::{Access, BinaryHint, CompareHint, IcState, ObjectKind, SlotFacts};
 use ep9_value::encoding::{VALUE_FALSE, VALUE_NULL, VALUE_TRUE, VALUE_UNDEFINED};
 use spike_b::emit::{FunctionInput, Refusal};
 
@@ -248,8 +262,8 @@ impl Builder<'_> {
         n
     }
 
-    /// `v` as an Int32 for an arithmetic use: an unbacked CheckInt32 guard unless it is one.
-    fn int32(&mut self, v: NodeId) -> NodeId {
+    /// `v` as an Int32 for an arithmetic use: a CheckInt32 guard with `basis` unless it is one.
+    fn int32(&mut self, v: NodeId, basis: GuardBasis) -> NodeId {
         match (self.node(v).repr, &self.node(v).op) {
             (Repr::Int32, _) => v,
             (_, Op::Const(bits)) if vm_layout::int32_of(*bits).is_some() => {
@@ -259,21 +273,24 @@ impl Builder<'_> {
             (Repr::Bool, _) => {
                 // A boolean in arithmetic is a number (0 or 1); the spike keeps it simple.
                 let b = self.emit(Op::BoxBool, vec![v], Repr::Tagged, self.node(v).trust);
-                self.int32(b)
+                self.int32(b, basis)
             }
             _ => {
                 let st = self.state();
-                self.memo(0, v, |s| {
-                    let n = s.emit(Op::CheckInt32, vec![v], Repr::Int32, Trust::Unknown);
-                    s.guard(n, GuardBasis::Unbacked, st);
+                let n = self.memo(0, v, |s| {
+                    let n = s.emit(Op::CheckInt32, vec![v], Repr::Int32, trust_of(basis));
+                    s.guard(n, basis, st);
                     n
-                })
+                });
+                self.back(n, basis);
+                n
             }
         }
     }
 
-    /// ToInt32 of `v` for a bitwise use: a TruncateInt32 guard unless it is an Int32.
-    fn trunc(&mut self, v: NodeId) -> NodeId {
+    /// ToInt32 of `v` for a bitwise use: a TruncateInt32 guard with `basis` unless it is an
+    /// Int32. Its result is PROVEN (the ToInt32 invariant) whatever the basis.
+    fn trunc(&mut self, v: NodeId, basis: GuardBasis) -> NodeId {
         match (self.node(v).repr, &self.node(v).op) {
             (Repr::Int32, _) => v,
             (_, Op::Const(bits)) if vm_layout::int32_of(*bits).is_some() => {
@@ -283,11 +300,13 @@ impl Builder<'_> {
             _ => {
                 let st = self.state();
                 let v = self.tagged(v);
-                self.memo(1, v, |s| {
+                let n = self.memo(1, v, |s| {
                     let n = s.emit(Op::TruncateInt32, vec![v], Repr::Int32, Trust::Proven);
-                    s.guard(n, GuardBasis::Unbacked, st);
+                    s.guard(n, basis, st);
                     n
-                })
+                });
+                self.back(n, basis);
+                n
             }
         }
     }
@@ -302,27 +321,50 @@ impl Builder<'_> {
         }
     }
 
-    fn binop(&mut self, op: Int32Op, l: NodeId, r: NodeId) -> NodeId {
+    /// The basis of the int32 guards of the site with feedback slot `slot`: its BinaryOp or
+    /// CompareOp record, if the hint is inside {int32} (see the module docs).
+    fn int_basis(&self, slot: u32) -> GuardBasis {
+        int_basis_of(self.facts, slot)
+    }
+
+    /// A shared check `n` now also guards a site with `basis`: a fact basis replaces an
+    /// unbacked one (the same SSA value, checked once).
+    fn back(&mut self, n: NodeId, basis: GuardBasis) {
+        let GuardBasis::Fact(src) = basis else { return };
+        let node = self.g.node_mut(n);
+        if let Some(g) = &mut node.guard
+            && g.basis == GuardBasis::Unbacked
+        {
+            g.basis = basis;
+            if node.op == Op::CheckInt32 {
+                node.trust = Trust::Predicted(src);
+            }
+        }
+    }
+
+    fn binop(&mut self, op: Int32Op, l: NodeId, r: NodeId, slot: u32) -> NodeId {
         let st = self.state();
+        let basis = self.int_basis(slot);
         let (l, r) = if op.bitwise() {
-            (self.trunc(l), self.trunc(r))
+            (self.trunc(l, basis), self.trunc(r, basis))
         } else {
-            (self.int32(l), self.int32(r))
+            (self.int32(l, basis), self.int32(r, basis))
         };
         let trust = if op.bitwise() {
             Trust::Proven
         } else {
-            Trust::Unknown
+            trust_of(basis)
         };
         let n = self.emit(Op::Int32(op), vec![l, r], Repr::Int32, trust);
         if !op.bitwise() {
-            self.guard(n, GuardBasis::Unbacked, st);
+            self.guard(n, basis, st);
         }
         n
     }
 
-    fn compare(&mut self, c: Cond, l: NodeId, r: NodeId) -> NodeId {
-        let (l, r) = (self.int32(l), self.int32(r));
+    fn compare(&mut self, c: Cond, l: NodeId, r: NodeId, slot: u32) -> NodeId {
+        let basis = self.int_basis(slot);
+        let (l, r) = (self.int32(l, basis), self.int32(r, basis));
         self.emit(Op::Compare(c), vec![l, r], Repr::Bool, Trust::Proven)
     }
 
@@ -528,7 +570,7 @@ impl Builder<'_> {
                 let o = self.reg(insn.register(0))?;
                 let k = self.acc()?;
                 let a = self.check_array(o);
-                let i = self.int32(k);
+                let i = self.int32(k, GuardBasis::Unbacked);
                 let n = self.emit(Op::LoadElement, vec![a, i], Repr::Tagged, Trust::Unknown);
                 self.guard(n, GuardBasis::Unbacked, st);
                 self.set_acc(n);
@@ -545,7 +587,7 @@ impl Builder<'_> {
                     )));
                 }
                 let a = self.check_array(o);
-                let i = self.int32(k);
+                let i = self.int32(k, GuardBasis::Unbacked);
                 let n = self.emit(Op::StoreElement, vec![a, i, v], Repr::None, Trust::Unknown);
                 self.guard(n, GuardBasis::Unbacked, st);
                 let u = self.konst(VALUE_UNDEFINED);
@@ -554,14 +596,14 @@ impl Builder<'_> {
             Add | Sub | Mul | BitwiseAnd | BitwiseOr | BitwiseXor | ShiftLeft | ShiftRight => {
                 let l = self.reg(insn.register(0))?;
                 let r = self.acc()?;
-                let n = self.binop(int_op(x.opcode), l, r);
+                let n = self.binop(int_op(x.opcode), l, r, insn.unsigned(1));
                 self.set_acc(n);
             }
             AddSmi | SubSmi | MulSmi | BitwiseAndSmi | BitwiseOrSmi | BitwiseXorSmi
             | ShiftLeftSmi | ShiftRightSmi => {
                 let l = self.acc()?;
                 let r = self.int(insn.signed(0));
-                let n = self.binop(int_op(x.opcode), l, r);
+                let n = self.binop(int_op(x.opcode), l, r, insn.unsigned(1));
                 self.set_acc(n);
             }
             Inc | Dec => {
@@ -572,12 +614,13 @@ impl Builder<'_> {
                 } else {
                     Int32Op::Sub
                 };
-                let n = self.binop(op, l, one);
+                let n = self.binop(op, l, one, insn.unsigned(0));
                 self.set_acc(n);
             }
             ToNumeric => {
                 let v = self.acc()?;
-                let n = self.int32(v);
+                let basis = self.int_basis(insn.unsigned(0));
+                let n = self.int32(v, basis);
                 self.set_acc(n);
             }
             TestLessThan | TestGreaterThan | TestLessThanOrEqual | TestGreaterThanOrEqual => {
@@ -589,7 +632,7 @@ impl Builder<'_> {
                     TestLessThanOrEqual => Cond::Le,
                     _ => Cond::Ge,
                 };
-                let n = self.compare(c, l, r);
+                let n = self.compare(c, l, r, insn.unsigned(1));
                 self.set_acc(n);
             }
             JumpIfFalse | JumpIfTrue => {
@@ -829,6 +872,19 @@ impl Builder<'_> {
                         continue;
                     }
                     let e = node.inputs[entry];
+                    // Backed if a check of the phi inside the loop is (it saw the phi's
+                    // values, the entry value of each run included).
+                    let basis = self
+                        .g
+                        .order()
+                        .filter(|&c| {
+                            let cn = self.g.node(c);
+                            matches!(cn.op, Op::CheckInt32 | Op::TruncateInt32)
+                                && cn.inputs[0] == phi
+                        })
+                        .filter_map(|c| self.g.node(c).guard.as_ref().map(|g| g.basis))
+                        .find(|b| matches!(b, GuardBasis::Fact(_)))
+                        .unwrap_or(GuardBasis::Unbacked);
                     let checked = if self.g.node(e).repr == Repr::Int32 {
                         e
                     } else {
@@ -851,9 +907,9 @@ impl Builder<'_> {
                             Op::CheckInt32,
                             vec![e],
                             Repr::Int32,
-                            Trust::Unknown,
+                            trust_of(basis),
                         );
-                        self.g.set_guard(c, GuardBasis::Unbacked, state);
+                        self.g.set_guard(c, basis, state);
                         c
                     };
                     let _ = r;
@@ -1023,6 +1079,31 @@ impl Builder<'_> {
         for n in dead {
             self.kill(n);
         }
+    }
+}
+
+/// The trust of a value that a guard with `basis` narrows: predicted{source} behind a fact,
+/// else unknown (no fact knows it).
+fn trust_of(basis: GuardBasis) -> Trust {
+    match basis {
+        GuardBasis::Fact(src) => Trust::Predicted(src),
+        GuardBasis::Unbacked => Trust::Unknown,
+    }
+}
+
+/// The guard basis that the record of `slot` in `facts` gives an int32 guard: a BinaryOp or
+/// CompareOp hint inside {int32} (the empty set included: implicit int32, MODES-D10) is a fact
+/// of the snapshot's source; anything else, or no record, is unbacked.
+pub fn int_basis_of(facts: &FunctionFacts<'_>, slot: u32) -> GuardBasis {
+    let int32 = match facts.records.iter().find(|(s, _)| *s == slot) {
+        Some((_, SlotFacts::BinaryOp(h))) => BinaryHint::INT32.contains(*h),
+        Some((_, SlotFacts::CompareOp(h))) => CompareHint::INT32.contains(*h),
+        _ => false,
+    };
+    if int32 {
+        GuardBasis::Fact(facts.source)
+    } else {
+        GuardBasis::Unbacked
     }
 }
 
