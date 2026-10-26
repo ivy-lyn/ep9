@@ -1,0 +1,61 @@
+[package]
+name = "spike-c"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Spike C (M1, throwaway): a small SSA compiler for 2-3 v8-v7 kernels on arm64, with SP-Facts"
+
+# Own workspace, as spikes/spike-b. The root workspace excludes spikes/ (Cargo.toml:13), so cargo
+# deny (root workspace only) never sees this graph, and this lock is separate from the root lock.
+# Frozen after the M4-P0 merge (plan v9 rule 2): a change goes to the orchestrator.
+[workspace]
+
+[lib]
+name = "spike_c"
+path = "src/lib.rs"
+
+[[bin]]
+name = "spike-c"
+path = "src/main.rs"
+
+[dependencies]
+# Spike B's lib: the emitter interface (`FunctionCode`, `Refusal`), the `InMemory` finalizer
+# and the placement (b) install path that Spike C code reuses.
+spike-b = { path = "../spike-b" }
+# `spike-native` (implies `jit`): the native-entry API. Never in the ep9 graph
+# (.github/scripts/dep-guards.sh check 11).
+ep9_vm = { path = "../../crates/ep9_vm", features = ["spike-native"] }
+# The kernels need the builtins (strings, Math, arrays); the ep9 binary links the same table.
+ep9_builtins = { path = "../../crates/ep9_builtins" }
+ep9_platform = { path = "../../crates/ep9_platform", features = ["jit"] }
+ep9_heap = { path = "../../crates/ep9_heap" }
+ep9_value = { path = "../../crates/ep9_value" }
+ep9_bytecode = { path = "../../crates/ep9_bytecode" }
+ep9_frontend = { path = "../../crates/ep9_frontend" }
+# FactSnapshot: the live facts (`export_facts`) and the PROFILED file of SP-Facts.
+ep9_facts = { path = "../../crates/ep9_facts" }
+# The AArch64 assembler, the same exact pins as spikes/spike-b/Cargo.toml:35-36. MPL-2.0:
+# allowed here only because this graph is outside the root workspace.
+dynasm = "=5.1.0"
+dynasmrt = "=5.1.0"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
+# Unit tests run whole v8-v7 kernels in T0, so the engine crates get optimized in the test
+# build; the spike's own code stays a plain debug build (debug assertions on everywhere).
+[profile.dev.package."*"]
+opt-level = 2
+
+# As spikes/spike-b: the root workspace release profile plus panic = "abort", the panic policy
+# of code that runs generated code (H23).
+[profile.release]
+lto = "fat"
+codegen-units = 1
+debug = "line-tables-only"
+panic = "abort"
