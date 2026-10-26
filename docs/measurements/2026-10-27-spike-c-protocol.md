@@ -72,6 +72,8 @@ The whole-kernel ratio is bounded by the share p of the compiled set: with that 
 
 So: **one compiled function per kernel cannot pass C4**; the gate needs the hot set of §2, each function several times faster than T0 (est.). This is a fact of the gate unit that M4-PLAN-ORCH-1 chose, not a reason to change it. The protocol reports, for each gate run, the implied T0 share of the compiled set from the two measured ratios (§3): p = (1 - 1/R) / (1 - 1/s).
 
+**Note (SPIKEC-2, M4-P2): the node shares are too low for ep9 T0 on crypto.** The SPIKEC-2 Mac report (`gate.sh time`, a report and never a reading; host load 28.6 from other agents, so void by the IQR rule: IQR 6.7%) gives crypto R = 4.065, interval [4.018, 4.475], with am3 alone compiled (s = 6.763, interval [6.672, 6.926]). The implied share is p = 88.5%: ep9 T0 spends about 88% of crypto's time in am3 (est., loaded host), where node --jitless spends 48.1%. An earlier 6-round run at load about 8 gave R = 4.000 [3.888, 4.103]. So on crypto one compiled function can reach R ≈ 4.0 on the Mac (est.), and the sentence "one compiled function per kernel cannot pass C4" holds for the node shares only. The gate still measures the whole kernel with the §2 hot set on the gate host (§3); the other kernels have no ep9 share yet.
+
 ### 2.2 Facts at the M4-P0 base (`spike-c facts <kernel>`, d7cc797, n = 1)
 
 | Function | Live records | Kinds |
@@ -107,6 +109,7 @@ Both configurations run in one release build of `spikes/spike-c` (panic = "abort
 - **Verdict.** Gate value = median of the paired ratios R. Interval of the median by order statistics (n = 15: ranks 4 and 12). Pass: the whole interval ≥ 3.0. Fail: the whole interval < 3.0. Otherwise marginal: once more with 2x rounds; the median decides and the label "marginal" stays. Void: IQR of the ratios > 5% of the median; run again.
 - **Host.** The gate host (macOS arm64 in a quiet window, load guard of 10-quality §3), with no agent running. A Mac timing by a SPIKEC role is a report (SPIKEC-2, SPIKEC-3), never a reading. The result names the CPU model.
 - **Reports next to the gate value:** s (H0/H1), the implied share p (§2.1), the code size of each compiled function, the guard count, and the exits taken during the timed region (expected 0).
+- **Harness (SPIKEC-2, M4-P2).** `spike-c time <kernel>` (one process per config through `spike-c once`; `spikes/spike-c/src/timing.rs`), run by `gate.sh time`, is the class S harness of this section: configs T0, C, H0 and H1 in new processes, in an order rotated by the round, ≥ 15 rounds plus 1 dropped warm-up, the median of the paired ratios, the order-statistic interval, the IQR rule and the implied share p. Every run must be right (else the report is a correctness failure), and the check line runs after the timer stops. `gate.sh time` is not part of `gate.sh all`. On the Mac it gives a report only (Host, above).
 
 ## 4. Eager deopt (C2)
 
@@ -179,6 +182,9 @@ The per-exit record holds the pc offset from the code start, the bytecode offset
 | install by function id | the navier-stokes hot functions are inner closures of `FluidField`: no JS expression reaches them, and `ep9_vm::native_target` / `install_native_b` take a function value | a `spike-native` item in `crates/ep9_vm/src/native.rs` (no month-4 owner, plan v9 rule 12): the fixer or month 5; until then `spike-c compile navier-stokes` reports it |
 | a per-function T0 profile in ep9 | §2.1 uses node --jitless shares; C4 depends on the real T0 share of each hot set | the §3 report computes the implied share; a direct T0 profile is not planned |
 | a CI step for `gate.sh structural` | SPIKEC(structural) runs in the orchestrator's local CI (plan v9 §1.2); `.github/workflows/ci.yml` has no spike-c step | the CI role, if the orchestrator wants it on GitHub |
+| a `layout` export of the `vm_layout.rs` copies (`FI_FEEDBACK`, the object, array and ELEMENTS offsets, the IC layout) | Spike C copies private VM layouts (`spikes/spike-c/src/vm_layout.rs`). The copies fail closed (a session checks them on live objects before any compile), but a layout change refuses every compile until the copy is fixed; doc 13 §5.2 asks that native code use the named `ep9_vm::native::layout` constants (SPIKEC-2 carry row) | `crates/ep9_vm/src/native.rs` `layout`: M4-P3 KEYED (decision P2-ORCH-6), else month 5 |
+| keyed load and store `RuntimeTable` entries | keyed sites keep the CheckArray, int32 key, bounds and hole guards, which end in the trap; a generic keyed path needs a runtime entry that native code can call (SPIKEC-2 carry row; in am3 these are the 6 unbacked guards: CheckArray x2, LoadElement x3, StoreElement x1) | `crates/ep9_vm/src/native.rs`: M4-P3 KEYED (P2-ORCH-6), else month 5 |
+| a guard failure that JS cannot catch | until the deopt entry exists, a failed guard ends in the trap, which throws a catchable JS error; a JS `try` around the call could catch it (SPIKEC-2 carry row; am3 green does not depend on it) | the month-5 deopt entry (C2, §4) replaces the trap |
 
 ## Change log
 
@@ -187,3 +193,4 @@ The per-exit record holds the pc offset from the code start, the bytecode offset
 | 2026-10-26 | Written (M4-P0 P0-SPIKEC), before any compiler code | - |
 | 2026-10-26 | Codex review round 1, before any gate run: §3 a wrong run fails the gate, not only the run (C4 row too); §2 the driver checks each file's blob id against the pin and needs the check line | - |
 | 2026-10-26 | Codex review round 3, before any gate run: §2 the navier-stokes check line adds order-sensitive digests of every density and velocity cell (boundary cells too) and refuses a non-finite cell; the three sums alone kept a swap of two unequal cells. Node's n = 1 line is recomputed (node v24.22.1); C1-C3 and §3 compare the whole output with T0, and the check line is made outside the timed region | - |
+| 2026-10-27 | M4-P2 integration fixer (SPIKEC-2 fixer need 2): §2.1 note (one compiled function gives crypto R ≈ 4.0 on the Mac report, because ep9 T0 spends about 88% in am3; est., loaded host); §3 names `spike-c time` / `gate.sh time` as the SPIKEC-2 class S harness; §9 gets the three SPIKEC-2 carry rows (layout export, keyed runtime entries, the catchable trap). No condition, pass rule or kernel changes | - |
