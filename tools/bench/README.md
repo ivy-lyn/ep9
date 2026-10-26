@@ -12,7 +12,10 @@ Benchmark tools ([10-quality](../../docs/plan/10-quality.md) section 2; perf CI 
 | `jetstream/run.mjs` | Runs JetStream workloads, one process each, under several configs; prints median scores |
 | `cross/run.mjs` | Cross-engine runner: ep9 against QuickJS, node `--jitless`, d8 `--jitless` and Brimstone. Wall time in paired rounds (class M) and instruction counts (class R). Writes ep9-cross/v1 JSON and Markdown |
 | `cross/v8v7.mjs` | Generates a V8 suite v7 kernel with a stub harness (or the real `base.js`, `--harness base`) from the pinned `third_party/bench-v8v7`; `--blockers` shows which kernels an engine runs |
-| `cross/workloads.mjs` | The cross workloads: T0 kernels from `workloads/`, ci-v0, richards (deltablue from run 2) |
+| `cross/octane.mjs` | Generates an Octane-7 kernel with the real Octane `base.js` and a fixed iteration count from the pinned `third_party/bench-octane`; `--blockers` as in v8v7.mjs |
+| `cross/kernels.mjs` | M1 exit 1: `--check ENGINE` runs the 15 kernels (8 v8-v7, Octane-7) once on node and on ep9, compares the output, names the blockers, writes ep9-kernels/v1 JSON for `cargo xtask m1-exit --kernels` |
+| `cross/exit2.mjs` | M1 exit 2: reads an ep9-cross/v1 run of the `exit2` set; Octane-7 geomean vs QuickJS and v8-v7 7-kernel geomean vs node `--jitless`, with intervals |
+| `cross/workloads.mjs` | The cross workloads: T0 kernels from `workloads/`, ci-v0, the 8 v8-v7 kernels, Octane-7 (`octane-<kernel>`), and the sets `v8v7-8`, `v8v7-7`, `octane-7`, `exit2` |
 | `cross/idle.mjs` | Measures a host's idle baseline for its host file |
 | `lib/stats.mjs` | PERF-NOISE statistics: median, order-statistic interval, verdict, IQR void rule, geomean. Shared by `cross/run.mjs` and `workloads/t0-dispatch.mjs` |
 | `lib/host.mjs` | Host facts, host files, the load guard |
@@ -109,8 +112,14 @@ node tools/bench/cross/run.mjs --ep9 target/release/ep9 --host tools/bench/hosts
   --count target/release/ep9-bench --out run.json --md run.md
 node tools/bench/cross/v8v7.mjs --kernel richards --out richards.js   # N = 200; same file every time
 node tools/bench/cross/v8v7.mjs --blockers target/release/ep9         # which v8-v7 kernels run
+node tools/bench/cross/octane.mjs --blockers target/release/ep9       # which Octane-7 kernels run
 node tools/bench/cross/idle.mjs                                        # idle baseline, 10 minutes
 ```
+
+`--workloads` takes workload names and set names: `v8v7-8` (the 8 v8-v7 kernels), `v8v7-7` (no
+regexp), `octane-7`, `exit2` (`v8v7-7` + `octane-7`). The default harness of the v8-v7 kernels is
+`DEFAULT_HARNESS` in `cross/v8v7.mjs` (one line; `stub` until MATH1 sets `base`, plan v9 V9-D14);
+it is also the default of `kernels.mjs` and of perf CI v0.
 
 The rules come from the PERF-NOISE rule ([10-quality](../../docs/plan/10-quality.md) section 3):
 
@@ -124,7 +133,7 @@ The rules come from the PERF-NOISE rule ([10-quality](../../docs/plan/10-quality
 - **Refusal.** Every run must exit with 0 and print the workload's expected output (the T0 kernels' `want`; for v8v7 kernels, one `<name> <N>` line per benchmark). Otherwise the runner prints `REFUSED`, writes no report and exits 1. Before any timing, it runs every file once on every engine to check this.
 - **Class R.** With `--count`, ep9-bench counts every R workload (all of them; ci-v0 is R only) on every engine, 5 runs after 1 warm-up, and keeps the median. Every counted run's output is checked (`ep9-bench --expect-stdout`; a wrong answer is REFUSED), and ep9's counted runs get `EP9_HASH_SEED=1` (`--hash-seed`). On macOS `time -l` counts the whole process (user and kernel); on Linux cachegrind counts user mode only. Compare counts only within one counter.
 - Exit status: 0 done; 1 refused or error; 2 usage error; 3 host busy.
-- Tests (fake engines in `cross/testdata/`, no shells or build needed, about 6 s): `node --test tools/bench/cross/run.test.mjs`.
+- Tests (fake engines in `cross/testdata/`, no shells or ep9 build needed; the v8-v7, Octane and kernels tests need the bench checkouts and skip without them; 66 s on the M5 Max at load 9-10, 2026-10-26): `node --test tools/bench/cross/run.test.mjs`.
 
 ### The v8-v7 stub harness
 
@@ -140,7 +149,7 @@ pin and the kernel's blob id. Default N: richards 200; the others give QuickJS a
 
 ### The v8-v7 base harness (run 3)
 
-`--harness base` (v8v7.mjs and run.mjs; the default is `stub`) runs the real pinned `base.js`,
+`--harness base` (v8v7.mjs, run.mjs and kernels.mjs; the default is `DEFAULT_HARNESS`) runs the real pinned `base.js`,
 unchanged, as its own strict script (an indirect eval, as d8 loads a separate file), then the
 kernel (sloppy, as in d8), then base.js's own `BenchmarkSuite.RunSuites`. The driver replaces one
 method only: `RunSingleBenchmark` runs `run()` N times (timed with `Date`) instead of "for 1 s",
@@ -149,6 +158,54 @@ because class M compares wall time per process. Setup, tear-down, `NotifyResult`
 error prints an `ERROR` line, so the runner refuses the run. It needs `Date`, `Math.log`,
 `Math.pow` and `Number.prototype.toFixed`; `--blockers ENGINE --harness base` shows which kernels
 run. The JSON names the harness per workload.
+
+### Octane-7
+
+Octane-7 = richards, deltablue, crypto, raytrace, earley-boyer, splay, navier-stokes from the
+pinned Octane 2 (`third_party/bench-octane`, `bash scripts/sync-bench.sh bench-octane`); regexp is
+not in it. `cross/octane.mjs` writes one file: the print prelude, the pinned `base.js` unchanged,
+the pinned kernel unchanged (d8's load order; both are sloppy scripts with no top-level `let`,
+`const` or `class`, so one script runs the same code as two), then a driver. The driver changes
+data only: `BenchmarkSuite.config` turns on base.js's deterministic mode with no warm-up, and
+each benchmark's `deterministicIterations` and `minIterations` are set to N. So base.js's own
+`RunSuites`, `RunSingleBenchmark` (timed with `Date`), setup, tear-down, scores
+(`GeometricMeanTime`: `Math.log`, `Math.pow`) and splay's latency score all run, on exactly N
+`run()` calls. It prints `<name> <N>` per benchmark; an error, or a score that is not a number
+above 0, prints an `ERROR` line, so the runner refuses the run. N = the v8v7.mjs N of the same
+kernel (`--list`). Pin check and refusal rule as in v8v7.mjs. In the cross JSON its harness is
+`octane-base`.
+
+### M1 exits 1 and 2
+
+```bash
+node tools/bench/cross/kernels.mjs --check target/release/ep9 --out kernels.json   # exit 1
+node tools/bench/cross/run.mjs --ep9 target/release/ep9 --host tools/bench/hosts/m5max-macos.toml \
+  --engines ep9,qjs,node-jitless --workloads exit2 --harness base --out run.json --md run.md
+node tools/bench/cross/exit2.mjs run.json --out exit2.json                          # exit 2
+```
+
+- **kernels.mjs** runs each of the 15 kernels (ids `v8v7/<k>` and `octane/<k>`) once (N = 1) on
+  node (the oracle; `--node`, default the node that runs it) and on ep9. A kernel is
+  "runs, output equal" when ep9 exits with 0 and prints what node prints, and node must print
+  the generator's `<name> <N>` lines (else exit 3, no verdict). A failure shows the first error,
+  its line in base.js or the kernel file, and a named blocker when the error names a feature
+  (pow core, RegExp, or the `Math.<f>` calls of that line that ep9's `Math` lacks).
+  `--not-yet LIST` names kernels that may fail (a role's NOT-YET list). The JSON (schema
+  `ep9-kernels/v1`) has the commit, the git tree ids of `crates`, `tools/bench`, `Cargo.lock`
+  and `rust-toolchain.toml`, the paths among them with uncommitted changes (`dirty`), the host
+  target triple, the ep9 binary's SHA-256 and every kernel's result. Exit 0 every kernel ran
+  (those on `--not-yet` may fail); 1 a kernel failed; 2 usage; 3 no verdict.
+- **exit2.mjs** reads one ep9-cross/v1 run. Per round, the geomean of the kernels' net ratios
+  is one paired value (each round runs every kernel), so a reading is the median of the per-round
+  geomeans with the order-statistic interval and the IQR void rule. Gate: "pass" when the
+  interval's low end is at least the threshold (Octane-7 vs QuickJS 1.0; v8-v7 7-kernel vs node
+  `--jitless` 0.75), "fail" when its high end is below it, else "marginal". No gate verdict when
+  the run is provisional, a kernel row is not valid, the per-round geomeans are void, or a v8-v7
+  kernel ran without the real base.js (V9-D14). Freshness is m1-exit's check (the JSON names the
+  commit). Exit 0 both pass; 1 otherwise; 2 usage.
+- Tests: `node --test tools/bench/cross/run.test.mjs` (fixtures in `cross/testdata/`:
+  `cross-exit2.json`, a synthetic run; `fake-kernels-ep9.sh`, an engine that runs node or fails
+  on purpose).
 
 ### Host files
 
