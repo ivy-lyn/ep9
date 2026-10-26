@@ -267,7 +267,7 @@ pub struct TargetFacts {
 /// Facts of a call site.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CallFacts {
-    /// Calls counted (saturating).
+    /// Sampled calls at a `Call*` site; cold-path constructs at a `Construct*` site (saturating).
     pub count: u32,
     /// The callees.
     pub callees: TargetFacts,
@@ -287,7 +287,7 @@ pub struct GlobalFacts {
 /// Facts of a literal site (allocation site).
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LiteralFacts {
-    /// Objects allocated (saturating).
+    /// Results of the cold path (saturating): a lower bound of the objects allocated.
     pub count: u32,
     /// The shape of the last result, if it has a description.
     pub shape: Option<Arc<ShapeDesc>>,
@@ -316,7 +316,7 @@ pub struct CloneFacts {
 /// Facts of a loop back edge.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LoopFacts {
-    /// Back edges taken (saturating).
+    /// Sampled back edges: those that poll, as the interrupt budget ran out (saturating).
     pub back_edges: u32,
 }
 

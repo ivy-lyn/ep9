@@ -51,8 +51,8 @@
 //!   misses from now on, and its chain may have changed) or whose holder or target shape is
 //!   dead, and
 //!   two cases whose receivers have equal descriptions but different accesses.
-//! - T0 v0 records no value types, call targets or counts (H16-Q2): `values` is empty, and
-//!   a global site's `bindings` come from its cases only.
+//! - T0 records no value types at property and global sites (H16-Q2; the kinds it records
+//!   since M4-P1 are not exported yet): `values` is empty; global `bindings` come from cases.
 //! - The exporter reads the heap and allocates nothing, so it is not a GC point. It takes
 //!   `&Isolate`, so no JS runs while it reads. It keeps no table keyed by a heap-cell Value
 //!   (H12-Q2 (a)): each shape and prototype is described again where a case names it. A
