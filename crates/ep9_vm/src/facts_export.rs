@@ -60,8 +60,9 @@
 //!   (H16-Q2): `values` and `CallFacts::result` are empty; global `bindings` come from cases.
 //! - **Which slots get a record (M4-P2 FACTS2).** A slot that a T0 site writes: the named and
 //!   global sites (as before), every `Call*` and `Construct*` site, and every site of the
-//!   other kinds except three that T0 leaves empty: the two slots of 0x8f `GetIterator`, the
-//!   Call slot of 0x6b `TailCall` (reserved) and the Literal slot of `GetTemplateObject`.
+//!   other kinds except four that T0 leaves empty: the two slots of 0x8f `GetIterator`, the
+//!   Call slot of 0x6b `TailCall` (reserved), the Literal slot of `GetTemplateObject` and the
+//!   Literal slot of `CreateRegExpLiteral` (`regexp::create_literal` writes no slot).
 //!   InstanceOf (14) gets a record only once its slot left the start state (undefined, int32
 //!   0): T0 does not record it before IC2 (M4-P3), and a record that says "never ran" for a
 //!   site that ran would be false.
@@ -231,8 +232,9 @@ struct SlotUse {
 
 /// What each feedback slot of a function serves, from its code. No IC site of T0 uses the two
 /// slots of 0x8f `GetIterator` (it keeps them empty), the Call slot of 0x6b `TailCall`
-/// (reserved: `not_impl`) or the Literal slot of `GetTemplateObject` (`literal_site::miss`
-/// records no template), so they give no use.
+/// (reserved: `not_impl`), the Literal slot of `GetTemplateObject` (`literal_site::miss`
+/// records no template) or the Literal slot of `CreateRegExpLiteral` (`regexp::create_literal`
+/// ignores it), so they give no use.
 fn slot_uses(fi: &FunctionInfo, code: &[u8], n: usize) -> Vec<SlotUse> {
     let mut uses = vec![SlotUse::default(); n];
     for insn in Instructions::new(code) {
@@ -276,7 +278,10 @@ fn slot_uses(fi: &FunctionInfo, code: &[u8], n: usize) -> Vec<SlotUse> {
             | Opcode::CallUndefinedReceiver2
             | Opcode::CallWithSpread => u.call = true,
             Opcode::Construct | Opcode::ConstructWithSpread => u.construct = true,
-            Opcode::GetIterator | Opcode::TailCall | Opcode::GetTemplateObject => {}
+            Opcode::GetIterator
+            | Opcode::TailCall
+            | Opcode::GetTemplateObject
+            | Opcode::CreateRegExpLiteral => {}
             _ => u.other = true,
         }
     }

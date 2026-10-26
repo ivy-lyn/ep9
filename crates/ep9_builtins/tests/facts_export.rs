@@ -431,6 +431,7 @@ function kinds(o, s, d) {
   new K();                      // Call (Construct*): K
   var cl = function () {};      // CreateClosure: many
   var io = o instanceof Array;  // InstanceOf: no record before IC2 (M4-P3)
+  var re = /a+/g;               // CreateRegExpLiteral: T0 leaves its Literal slot empty: no record
   return x;
 }
 for (var i = 0; i < 3000; i++) kinds([1, 2, 3], "s", 2.5);
