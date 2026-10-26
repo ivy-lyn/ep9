@@ -187,9 +187,11 @@ fn the_verify_after_gc_finds_what_verify_finds() {
 /// one test covers both modes (no other test of this binary calls `e2_check_init`).
 #[test]
 fn the_e2_check_reports_and_asserts_a_wrong_claim() {
-    // A GC-stress heap turns the check on (report mode in M4-P1) unless a mode is set.
+    // A GC-stress heap turns the check on in assert mode (since the M4-P1 fixer, V9-A20)
+    // unless a mode is set; only this test sets one.
     let heap = test_heap(|c| c.gc_stress = 1);
-    assert_ne!(crate::e2_check_mode(), E2Check::Off);
+    assert_eq!(crate::E2_CHECK_UNDER_GC_STRESS, E2Check::Assert);
+    assert_eq!(crate::e2_check_mode(), E2Check::Assert);
     heap.set_gc_stress(0);
 
     let host = new_node(&heap, 1, 1);
@@ -227,6 +229,6 @@ fn the_e2_check_reports_and_asserts_a_wrong_claim() {
     let p = r.expect_err("assert mode did not panic");
     let msg = p.downcast_ref::<String>().cloned().unwrap_or_default();
     assert!(msg.contains("E2 check") && msg.contains(&line), "{msg}");
-    crate::set_e2_check(E2Check::Report);
+    crate::set_e2_check(crate::E2_CHECK_UNDER_GC_STRESS);
     heap.drop_global(g);
 }

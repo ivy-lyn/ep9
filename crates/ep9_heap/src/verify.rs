@@ -364,12 +364,12 @@ pub enum E2Check {
 }
 
 /// The mode that a GC-stress heap turns on ([`HeapConfig::gc_stress`] > 0 at
-/// [`Heap::new`], or [`Heap::set_gc_stress`] with n > 0). M4-P1: report mode, so that the
-/// wrong claims can be listed before they are fixed; the M4-P1 fixer switches this to
-/// [`E2Check::Assert`] after the fixes (plan §3.9, V9-A20).
+/// [`Heap::new`], or [`Heap::set_gc_stress`] with n > 0): [`E2Check::Assert`], so a wrong
+/// E2 claim panics with its caller. GC1-VERIFY built it in report mode, which listed 0 wrong
+/// claims; the M4-P1 fixer switched it to assert mode after the merge (plan §3.9, V9-A20).
 ///
 /// [`HeapConfig::gc_stress`]: crate::HeapConfig::gc_stress
-pub const E2_CHECK_UNDER_GC_STRESS: E2Check = E2Check::Report;
+pub const E2_CHECK_UNDER_GC_STRESS: E2Check = E2Check::Assert;
 
 /// Process-wide: heaps live one per thread, and the store sites have no heap at hand. Once a
 /// GC-stress heap exists, every heap of the process checks (a wrong claim is wrong with or
