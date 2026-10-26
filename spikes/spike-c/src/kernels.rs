@@ -4,7 +4,9 @@
 //!
 //! The files are read from the pinned checkout `third_party/bench-v8v7` (pin
 //! `third_party/bench-v8v7.commit`; `bash scripts/sync-bench.sh bench-v8v7` makes it), or from
-//! the directory in `SPIKE_C_BENCH_DIR`. The driver uses the stub harness of
+//! the directory in `SPIKE_C_BENCH_DIR`. Either way each file must have the git blob id it has
+//! at the pin ([`PINNED`]; `git hash-object` of the bytes read), so a changed kernel is
+//! refused, not run as the pinned one. The driver uses the stub harness of
 //! `tools/bench/cross/v8v7.mjs` (decision PERF-2): the kernel file as it is, a stub
 //! `BenchmarkSuite`/`Benchmark`, and base.js's deterministic `Math.random` block, copied from
 //! the pinned base.js at run time.
@@ -14,7 +16,28 @@
 //!    loop: Setup(); hook(); run() n times; print(check()); TearDown(); print(name + " " + n)
 //! ```
 
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+/// The git blob id of each file the drivers read, at the pin `third_party/bench-v8v7.commit`
+/// (`git rev-parse <pin>:bench/bench-v8/<file>`; the test `pinned_blobs_are_the_pin` checks
+/// them against the checkout).
+pub const PINNED: [(&str, &str); 4] = [
+    ("base.js", "7964a4cb37dff3beb9ac18b1d43ffff9b862be1f"),
+    ("crypto.js", "a15aa80d773d54569e074792d1f04f3d678e4783"),
+    (
+        "navier-stokes.js",
+        "27c0403a7a5f2287c26fc07cee66621007787b64",
+    ),
+    ("richards.js", "2308066637c78ea4138cb23769615b01c2a64f98"),
+];
+
+/// The navier-stokes check line after one frame (n = 1): node v24.22.1 printed it for
+/// `spike-c driver navier-stokes --n 1` on 2026-10-26 (the protocol's tier-differential
+/// reference for kernel 2; §5).
+pub const NAVIER_STOKES_CHECK_N1: &str =
+    "checksum 320.5614702136357 -372.6606391856326 -366.08057515126234";
 
 /// The part a kernel plays in the Spike C gate (protocol §2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +79,8 @@ pub struct Kernel {
     /// A JS expression whose value is printed after the runs ("" = none; the kernel checks
     /// itself and throws on a wrong result).
     pub check: &'static str,
+    /// The check line node prints at n = 1 ("" = no check, or no reference).
+    pub check_n1: &'static str,
 }
 
 /// navier-stokes has no result check in v7: the driver keeps the `Field` of the last frame and
@@ -99,6 +124,7 @@ pub const KERNELS: [Kernel; 3] = [
         n: 8,
         hook: "",
         check: "",
+        check_n1: "",
     },
     Kernel {
         name: "navier-stokes",
@@ -127,6 +153,7 @@ pub const KERNELS: [Kernel; 3] = [
         n: 12,
         hook: NS_HOOK,
         check: NS_CHECK,
+        check_n1: NAVIER_STOKES_CHECK_N1,
     },
     Kernel {
         name: "richards",
@@ -149,6 +176,7 @@ pub const KERNELS: [Kernel; 3] = [
         n: 200,
         hook: "",
         check: "",
+        check_n1: "",
     },
 ];
 
@@ -171,14 +199,50 @@ pub fn bench_present() -> bool {
     bench_dir().join("base.js").is_file()
 }
 
-fn read(file: &str) -> Result<String, String> {
-    let p = bench_dir().join(file);
-    std::fs::read_to_string(&p).map_err(|e| {
+/// The git blob id of `bytes` (`git hash-object --no-filters --stdin`).
+fn blob_id(bytes: &[u8]) -> Result<String, String> {
+    let mut child = Command::new("git")
+        .args(["hash-object", "--no-filters", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("git hash-object: {e}"))?;
+    let mut stdin = child.stdin.take().ok_or("git hash-object: no stdin")?;
+    stdin
+        .write_all(bytes)
+        .map_err(|e| format!("git hash-object: {e}"))?;
+    drop(stdin);
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("git hash-object: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("git hash-object: {}", out.status));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// The text of `file` in `dir`, refused unless its blob id is the pinned one ([`PINNED`]).
+fn read(dir: &Path, file: &str) -> Result<String, String> {
+    let p = dir.join(file);
+    let bytes = std::fs::read(&p).map_err(|e| {
         format!(
             "{}: {e} (run `bash scripts/sync-bench.sh bench-v8v7`, or set SPIKE_C_BENCH_DIR)",
             p.display()
         )
-    })
+    })?;
+    let want = PINNED
+        .iter()
+        .find(|(f, _)| *f == file)
+        .ok_or_else(|| format!("{file}: no pinned blob id (kernels::PINNED)"))?
+        .1;
+    let got = blob_id(&bytes)?;
+    if got != want {
+        return Err(format!(
+            "{}: blob {got}, not the pinned blob {want} (third_party/bench-v8v7.commit)",
+            p.display()
+        ));
+    }
+    String::from_utf8(bytes).map_err(|e| format!("{}: {e}", p.display()))
 }
 
 /// base.js's `Math.random = (function() { ... })();` block (the line that starts it through
@@ -223,21 +287,40 @@ pub struct Driver {
     pub text: String,
     /// Line L of the kernel file is line L + `offset` of `text`.
     pub offset: u32,
-    /// What a right run prints: the check line (if any), then `<benchmark name> <n>` per
-    /// benchmark. The check line's value is not known here; [`Driver::matches`] skips it.
+    /// The line `<benchmark name> <n>` of each benchmark, in order. A right run prints, per
+    /// benchmark, the check line (if `has_check`) and then this line.
     pub expect: Vec<String>,
     pub has_check: bool,
+    /// The check line a right run prints, where a reference is known (n = 1,
+    /// [`Kernel::check_n1`]).
+    pub check_ref: Option<&'static str>,
 }
 
 impl Driver {
-    /// True if `output` is what a right run prints (the check lines are compared between runs,
-    /// not here).
+    /// True if `output` is what a right run prints: per benchmark, its check line (if
+    /// `has_check`) then `<name> <n>`, and nothing else. A check line must be there; it
+    /// must equal `check_ref` when that is known, and else be `checksum` and three finite
+    /// numbers (the values are compared between runs, not here).
     pub fn matches(&self, output: &[String]) -> bool {
-        let rest: Vec<&String> = output
-            .iter()
-            .filter(|l| !(self.has_check && l.starts_with("checksum ")))
-            .collect();
-        rest.len() == self.expect.len() && rest.iter().zip(&self.expect).all(|(a, b)| *a == b)
+        let per = if self.has_check { 2 } else { 1 };
+        output.len() == self.expect.len() * per
+            && output.chunks(per).zip(&self.expect).all(|(lines, name)| {
+                lines[per - 1] == *name && (!self.has_check || self.check_ok(&lines[0]))
+            })
+    }
+
+    fn check_ok(&self, line: &str) -> bool {
+        if let Some(r) = self.check_ref {
+            return line == r;
+        }
+        let Some(values) = line.strip_prefix("checksum ") else {
+            return false;
+        };
+        let values: Vec<&str> = values.split(' ').collect();
+        values.len() == 3
+            && values
+                .iter()
+                .all(|v| v.parse::<f64>().is_ok_and(f64::is_finite))
     }
 }
 
@@ -257,10 +340,16 @@ pub fn benchmark_names(text: &str) -> Vec<String> {
     names
 }
 
-/// The driver of `k` with `n` runs per benchmark.
+/// The driver of `k` with `n` runs per benchmark, from the files in [`bench_dir`].
 pub fn driver(k: &Kernel, n: u32) -> Result<Driver, String> {
-    let base = read("base.js")?;
-    let src = read(k.file)?;
+    driver_in(&bench_dir(), k, n)
+}
+
+/// The driver of `k` with `n` runs per benchmark, from the files in `dir` (each must be the
+/// pinned blob).
+pub fn driver_in(dir: &Path, k: &Kernel, n: u32) -> Result<Driver, String> {
+    let base = read(dir, "base.js")?;
+    let src = read(dir, k.file)?;
     let names = benchmark_names(&src);
     if names.is_empty() {
         return Err(format!("{}: no \"new Benchmark(\" call", k.file));
@@ -303,6 +392,7 @@ pub fn driver(k: &Kernel, n: u32) -> Result<Driver, String> {
         offset,
         expect: names.iter().map(|x| format!("{x} {n}")).collect(),
         has_check: !k.check.is_empty(),
+        check_ref: (n == 1 && !k.check_n1.is_empty()).then_some(k.check_n1),
     })
 }
 
@@ -389,9 +479,8 @@ mod tests {
         }
     }
 
-    /// The navier-stokes checksum after one frame in T0 equals node's: node v24.22.1 printed
-    /// this line for `spike-c driver navier-stokes --n 1` on 2026-10-26 (the protocol's
-    /// tier-differential reference for kernel 2; §5).
+    /// The navier-stokes checksum after one frame in T0 equals node's
+    /// ([`NAVIER_STOKES_CHECK_N1`]).
     #[test]
     fn navier_stokes_checksum_equals_node() {
         if !bench_present() {
@@ -405,12 +494,112 @@ mod tests {
         let d = driver(k, 1).expect("driver");
         let mut s = Session::new(&Config::default()).expect("session");
         let r = s.run(&d.text, "driver.js");
-        assert_eq!(
-            r.output,
-            [
-                "checksum 320.5614702136357 -372.6606391856326 -366.08057515126234",
-                "NavierStokes 1"
-            ]
+        assert_eq!(r.output, [NAVIER_STOKES_CHECK_N1, "NavierStokes 1"]);
+        assert!(d.matches(&r.output));
+    }
+
+    fn driver_with_check(check_ref: Option<&'static str>) -> Driver {
+        Driver {
+            text: String::new(),
+            offset: 0,
+            expect: vec!["NavierStokes 1".into()],
+            has_check: true,
+            check_ref,
+        }
+    }
+
+    fn lines(l: &[&str]) -> Vec<String> {
+        l.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// A missing, malformed, non-finite or misplaced check line is not a right run (Codex r1:
+    /// the old predicate dropped every `checksum` line and accepted all four).
+    #[test]
+    fn matches_needs_the_check_line() {
+        let d = driver_with_check(None);
+        assert!(d.matches(&lines(&["checksum 1.5 -2 3e-7", "NavierStokes 1"])));
+        for bad in [
+            &["NavierStokes 1"][..],
+            &["checksum NaN NaN NaN", "NavierStokes 1"],
+            &["checksum 1 2 Infinity", "NavierStokes 1"],
+            &["checksum 1 2", "NavierStokes 1"],
+            &["NavierStokes 1", "checksum 1 2 3"],
+            &["checksum 1 2 3", "checksum 1 2 3", "NavierStokes 1"],
+        ] {
+            assert!(!d.matches(&lines(bad)), "{bad:?}");
+        }
+        let d = driver_with_check(Some(NAVIER_STOKES_CHECK_N1));
+        assert!(d.matches(&lines(&[NAVIER_STOKES_CHECK_N1, "NavierStokes 1"])));
+        assert!(!d.matches(&lines(&["checksum 1 2 3", "NavierStokes 1"])));
+        let d = Driver {
+            has_check: false,
+            check_ref: None,
+            expect: vec!["Encrypt 1".into(), "Decrypt 1".into()],
+            ..driver_with_check(None)
+        };
+        assert!(d.matches(&lines(&["Encrypt 1", "Decrypt 1"])));
+        assert!(!d.matches(&lines(&["Encrypt 1"])));
+        assert!(!d.matches(&lines(&["checksum 1 2 3", "Encrypt 1", "Decrypt 1"])));
+    }
+
+    /// [`PINNED`] holds the blob ids of the pin in `third_party/bench-v8v7.commit`. Skips
+    /// (with a line) without the git checkout.
+    #[test]
+    fn pinned_blobs_are_the_pin() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let checkout = root.join("third_party/bench-v8v7");
+        if !checkout.join("bench/bench-v8/base.js").is_file() {
+            eprintln!("skip: no {} checkout", checkout.display());
+            return;
+        }
+        let pin =
+            std::fs::read_to_string(root.join("third_party/bench-v8v7.commit")).expect("pin file");
+        for (file, blob) in PINNED {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&checkout)
+                .args([
+                    "rev-parse",
+                    &format!("{}:bench/bench-v8/{file}", pin.trim()),
+                ])
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "{file}: {out:?}");
+            assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), blob, "{file}");
+        }
+    }
+
+    /// A copy of the files equal to the pin gives the same driver; a changed kernel (its
+    /// benchmark `run` made a no-op, the hot lines kept) is refused (Codex r1: it ran and
+    /// passed as the pinned kernel).
+    #[test]
+    fn a_changed_kernel_is_refused() {
+        if !bench_present() {
+            eprintln!(
+                "skip: no {} (scripts/sync-bench.sh bench-v8v7)",
+                bench_dir().display()
+            );
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("spike-c-pin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        for (file, _) in PINNED {
+            std::fs::copy(bench_dir().join(file), dir.join(file)).expect("copy");
+        }
+        let k = kernel("crypto").expect("kernel");
+        let same = driver_in(&dir, k, 1).map(|d| d.text);
+        let pinned = driver(k, 1).map(|d| d.text);
+        let src = std::fs::read_to_string(dir.join("crypto.js")).expect("read");
+        let changed = src.replace(
+            "new Benchmark(\"Encrypt\", encrypt)",
+            "new Benchmark(\"Encrypt\", function(){})",
         );
+        assert_ne!(changed, src);
+        std::fs::write(dir.join("crypto.js"), changed).expect("write");
+        let refused = driver_in(&dir, k, 1);
+        std::fs::remove_dir_all(&dir).expect("clean up");
+        assert_eq!(same, pinned);
+        let e = refused.expect_err("a changed crypto.js");
+        assert!(e.contains("not the pinned blob"), "{e}");
     }
 }

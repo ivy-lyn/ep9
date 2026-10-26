@@ -9,7 +9,9 @@
 //!   unit and map a function name or source line to its stable function id.
 //!
 //! A [`Session`] owns its isolate and the JIT modules whose code the isolate runs, and drops
-//! the isolate first (field order), so installed code never outlives its module.
+//! the isolate first (field order), so installed code never outlives its module. The isolate
+//! is a private field: code outside this module gets `&Isolate` ([`Session::iso`]) and never
+//! `&mut Isolate`, so it cannot move or swap the isolate away from its modules.
 
 use std::cell::RefCell;
 
@@ -116,9 +118,18 @@ fn line_range(text: &str, line: u32) -> Option<std::ops::Range<usize>> {
 
 /// An isolate with the builtins, `print` and `gc`, the scripts it ran, and the JIT modules
 /// whose code it runs.
+///
+/// The isolate stays inside the session: a move out would drop the modules while the
+/// isolate's Opt slots still point into them.
+///
+/// ```compile_fail,E0616
+/// let s = spike_c::harness::Session::new(&spike_b::harness::Config::default()).unwrap();
+/// let iso = s.iso; // E0616: a private field
+/// ```
 pub struct Session {
-    // Field order is drop order: the isolate goes before the code it may run.
-    pub iso: Isolate,
+    // Field order is drop order: the isolate goes before the code it may run. Private (see
+    // the type doc): only `&Isolate` leaves this module.
+    iso: Isolate,
     modules: Vec<JitModule>,
     scripts: Vec<Script>,
     targets: u32,
@@ -158,6 +169,11 @@ impl Session {
             result,
             output: take_output(),
         }
+    }
+
+    /// The isolate, shared (no `&mut`: see [`Session`]).
+    pub fn iso(&self) -> &Isolate {
+        &self.iso
     }
 
     /// The scripts that compiled in this session, in run order.
@@ -212,7 +228,26 @@ impl Session {
     /// installs each in an Opt slot (placement (b), `ep9_vm::install_native_b`). All or
     /// nothing, as `spike_b::harness::Session::install_as`: if an install is refused, the
     /// functions this call installed before it go back to T0 before the module drops.
-    pub fn install_b(
+    ///
+    /// The key check refuses code made for another function; it cannot see what the bytes
+    /// do, so the ABI is the caller's promise.
+    ///
+    /// # Safety
+    /// For each `i`, `codes[i].code` is the machine code of a placement (b) emitter for the
+    /// function `fns[i]` of this session (from [`Session::input_of`] with no JS run since),
+    /// unchanged since the emitter made it, and meets the contract of
+    /// `ep9_vm::install_native_b`: the T0 handler ABI `(cx, pc, fp, acc)`, `cx` read only
+    /// through the `ep9_vm::layout` offsets, only `RuntimeTable` calls, callee-saved
+    /// registers kept, and exits only by the (b) tail jump to `cx.table[*pc]`. Code of
+    /// another ABI (placement (a) `NativeEntry` code, `spike_b::jit::SpikeEmitter`) breaks
+    /// it. The caller does not need to keep anything alive: the session keeps the module
+    /// until the isolate drops.
+    ///
+    /// ```compile_fail,E0133
+    /// let mut s = spike_c::harness::Session::new(&spike_b::harness::Config::default()).unwrap();
+    /// let _ = s.install_b(&[], Vec::new()); // E0133: an unsafe fn
+    /// ```
+    pub unsafe fn install_b(
         &mut self,
         fns: &[Value],
         codes: Vec<FunctionCode>,
@@ -232,11 +267,12 @@ impl Session {
         let module = InMemory.finalize(codes).map_err(|e| e.to_string())?;
         for (i, &f) in fns.iter().enumerate() {
             let range = module.functions()[i].code.clone();
-            // SAFETY: function `i` of the module was made for `f` (the key check above: the
-            // same FunctionInfo, and no JS ran since) by an emitter of placement (b), so it
-            // has the T0 handler ABI and the (b) exit rules that `install_native_b` requires.
-            // The module outlives the installation: on success it goes to `self.modules`,
-            // which drops after `self.iso`; on a refusal the loop below uninstalls functions
+            // SAFETY: the caller's contract (# Safety): function `i` of the module is
+            // placement (b) code for `f` (the key check above also holds: the same
+            // FunctionInfo) with the ABI and exit rules `install_native_b` requires. The
+            // module outlives the installation: on success it goes to `self.modules`, which
+            // drops after `self.iso`, and `self.iso` never leaves the session (private
+            // field, no `&mut` accessor); on a refusal the loop below uninstalls functions
             // 0..i before the module drops (or keeps the module if one cannot be uninstalled).
             let r = unsafe { ep9_vm::install_native_b(&self.iso, f, range) };
             if let Err(e) = r {
@@ -337,7 +373,9 @@ mod tests {
         let code = emitter
             .emit(&s.input_of(f).expect("input"))
             .expect("(b) code");
-        s.install_b(&[f], vec![code]).expect("install");
+        // SAFETY: `code` is placement (b) code of Spike B's `BEmitter` for `f`, made from
+        // `input_of(f)` just above and not changed.
+        unsafe { s.install_b(&[f], vec![code]) }.expect("install");
         assert_eq!(s.slot_kind(f), Some(ep9_vm::DispatchKind::Opt));
         let jit = s.run(main, "main.js");
         assert_eq!(jit, t0);
@@ -346,7 +384,8 @@ mod tests {
         let code = emitter
             .emit(&s.input_of(f).expect("input"))
             .expect("(b) code");
-        let e = s.install_b(&[f], vec![code]).expect_err("already native");
+        // SAFETY: as above: (b) code of `BEmitter` for `f`, unchanged.
+        let e = unsafe { s.install_b(&[f], vec![code]) }.expect_err("already native");
         assert!(e.contains("AlreadyNative"), "{e}");
         assert_eq!(s.modules().len(), 1);
     }

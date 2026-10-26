@@ -7,7 +7,7 @@
 //! | install-b | Spike B's (b) emitter code for a loop function, installed by [`Session::install_b`], gives T0's output, from an Opt slot | - |
 //! | facts | live facts of a run -> PROFILED file -> read back: the same records | - |
 //! | pipeline | [`crate::compile`] refuses with "graph builder not built yet" | SPIKEC-1 replaces it with the `am3` compile check |
-//! | kernels | each protocol kernel runs in T0 (n = 1) with its expected output; SKIP without the v8-v7 checkout | - |
+//! | kernels | each protocol kernel (the pinned files) runs in T0 (n = 1) with its expected output, check line included (node's, where known); SKIP without the v8-v7 checkout | - |
 
 use std::process::ExitCode;
 
@@ -54,7 +54,9 @@ fn install_b() -> Result<String, String> {
     let f = s.function_value("sum")?;
     let code = e.emit(&s.input_of(f)?).map_err(|r| r.to_string())?;
     let bytes = code.code.len();
-    s.install_b(&[f], vec![code])?;
+    // SAFETY: `code` is placement (b) code of Spike B's `BEmitter` for `f`, made from
+    // `input_of(f)` just above (no JS ran since) and not changed.
+    unsafe { s.install_b(&[f], vec![code]) }?;
     if s.slot_kind(f) != Some(ep9_vm::DispatchKind::Opt) {
         return Err(format!("slot kind {:?}, not Opt", s.slot_kind(f)));
     }
