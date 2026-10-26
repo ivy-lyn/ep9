@@ -174,15 +174,62 @@ fn fast_binop(op: BinOp, l: u64, r: u64) -> Option<u64> {
     }
 }
 
+/// The fast body of the binary operators. The record is chosen from the operand tags before
+/// the operation, as a small constant (`profile::binary_pair_bits`), so no operand, slot or
+/// vector value is live after the result; it runs after the handler
+/// (`interp::Flow::Record`).
+///
+/// `*` and `/` take [`binop_fast_boxed`] instead: their int32 arm boxes a double too, and with
+/// the record chosen first x86-64 LLVM saves a register on entry for them.
 #[inline(always)]
 fn binop_fast(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r: u64) -> Flow {
-    profile::record_binary(st, s, op, l, r);
+    if matches!(op, BinOp::Mul | BinOp::Div) {
+        return binop_fast_boxed(st, s, op, l, r);
+    }
+    let pair = profile::binary_pair_bits(l, r);
     match fast_binop(op, l, r) {
         Some(v) => {
             st.acc = v;
-            Flow::Next
+            next_or_record(s, pair | profile::int32_result_bits(op, pair, v))
         }
         None => Flow::Cold,
+    }
+}
+
+/// The fast body of `*` and `/` (see [`binop_fast`]): the int32 arm and the double arm each
+/// end in their own constant record.
+#[inline(always)]
+fn binop_fast_boxed(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r: u64) -> Flow {
+    if is_i32(l) && is_i32(r) {
+        let (a, b) = (f64::from(i32_of(l)), f64::from(i32_of(r)));
+        // The exact product or quotient rounded once: the JS result. `num` keeps -0.
+        let v = if matches!(op, BinOp::Mul) {
+            num(a * b)
+        } else {
+            num(a / b)
+        };
+        st.acc = v;
+        return next_or_record(s, profile::int32_pair_bits(op, v));
+    }
+    let (Some(x), Some(y)) = (number(l), number(r)) else {
+        return Flow::Cold;
+    };
+    st.acc = if matches!(op, BinOp::Mul) {
+        num(x * y)
+    } else {
+        num(x / y)
+    };
+    Flow::Record(profile::Rec::new(s, profile::NUMBER_PAIR))
+}
+
+/// `Flow::Next`, or `Flow::Record` when `bits` (from a `profile` hook) is not 0. The record
+/// runs after the fast body (`interp::Flow::Record`).
+#[inline(always)]
+fn next_or_record(s: FSlot, bits: u32) -> Flow {
+    if bits == 0 {
+        Flow::Next
+    } else {
+        Flow::Record(profile::Rec::new(s, bits))
     }
 }
 
@@ -214,12 +261,26 @@ fn fast_relational(l: u64, r: u64, f: impl Fn(f64, f64) -> bool) -> Option<u64> 
     Some(boolean(f(number(l)?, number(r)?)))
 }
 
+/// The relational fast bodies: an int32 pair is implicit; another number pair records
+/// `CompareHint::NUMBER`, chosen before the operation as in [`binop_fast`]; other operands go
+/// cold.
 #[inline(always)]
-fn compare_fast(st: &mut St<'_>, r: Option<u64>) -> Flow {
-    match r {
+fn relational_fast(
+    st: &mut St<'_>,
+    s: FSlot,
+    l: u64,
+    r: u64,
+    f: impl Fn(f64, f64) -> bool,
+) -> Flow {
+    let bits = if is_i32(l) && is_i32(r) {
+        0
+    } else {
+        profile::NUMBER_COMPARE
+    };
+    match fast_relational(l, r, f) {
         Some(v) => {
             st.acc = v;
-            Flow::Next
+            next_or_record(s, bits)
         }
         None => Flow::Cold,
     }
@@ -319,7 +380,6 @@ fn call_fast(
     argc: u32,
     arg: impl Fn(&St<'_>, u32) -> u64,
 ) -> Flow {
-    profile::record_call(st, s, callee);
     if !object::is_function(callee) {
         return Flow::Cold;
     }
@@ -347,7 +407,7 @@ fn call_fast(
     let base = st.fp.wrapping_add(st.info().register_count as usize);
     let (limit, fp, next) = (st.cx.stack_limit, st.fp, st.next);
     let context = object::function_context(callee);
-    let s: &St<'_> = st;
+    let rd: &St<'_> = st;
     // SAFETY: `base` is the first free slot above the live top frame `fp`, `limit` is the VM
     // stack cap, and `arg` reads registers of the current verified instruction.
     let nfp = unsafe {
@@ -358,7 +418,7 @@ fn call_fast(
             callee,
             this,
             argc,
-            |i| arg(s, i),
+            |i| arg(rd, i),
             fp,
             next,
             context,
@@ -369,7 +429,7 @@ fn call_fast(
         Some(n) => {
             st.fp = n;
             st.acc = UNDEFINED;
-            Flow::Jump(fi.code)
+            jump_to_callee(st, fi.code, s)
         }
         None => {
             budget_out(st);
@@ -442,7 +502,6 @@ fn call_fast(
     argc: u32,
     arg: impl Fn(&St<'_>, u32) -> u64,
 ) -> Flow {
-    profile::record_call(st, s, callee);
     if !object::is_function(callee) {
         return Flow::Cold;
     }
@@ -479,7 +538,7 @@ fn call_fast(
     let base = st.fp.wrapping_add(st.info().register_count as usize);
     let (limit, fp, next) = (st.cx.stack_limit, st.fp, st.next);
     let context = object::function_context(callee);
-    let s: &St<'_> = st;
+    let rd: &St<'_> = st;
     // SAFETY: as in the default build's `call_fast`.
     let nfp = unsafe {
         call::push_frame(
@@ -489,7 +548,7 @@ fn call_fast(
             callee,
             this,
             argc,
-            |i| arg(s, i),
+            |i| arg(rd, i),
             fp,
             next,
             context,
@@ -505,10 +564,10 @@ fn call_fast(
             // test `b_code_gets_the_four_handler_arguments_and_tail_jumps_back` reads it); a
             // T0 callee starts with it undefined, as in the default build.
             match crate::native::hot_stub(fi.slot.kind_byte()) {
-                Some(s) => Flow::Jump(s),
+                Some(t) => jump_to_callee(st, t, s),
                 None => {
                     st.acc = UNDEFINED;
-                    Flow::Jump(fi.code)
+                    jump_to_callee(st, fi.code, s)
                 }
             }
         }
@@ -524,8 +583,35 @@ fn call_fast(
     }
 }
 
+/// The end of a `call_fast` that pushed the callee frame (`st.fp`): a jump to `t`, with the
+/// sampled call record (`profile::record_call`, Call slot `s`) of a call in the window, which
+/// runs after the handler (`Flow::JumpRecordCall`). The budget is read again here (a volatile
+/// load), so the value `call_fast` decremented is not kept in a register across the frame
+/// push: on x86-64 that register would be one more save on entry (M4-P1 PROFILE-X64).
+#[inline(always)]
+fn jump_to_callee(st: &St<'_>, t: *const u8, s: FSlot) -> Flow {
+    // SAFETY: a read of a field of the live `Cx`.
+    let budget = unsafe { core::ptr::read_volatile(&raw const st.cx.budget) };
+    if profile::call_window_after_unit(budget) {
+        Flow::JumpRecordCall(t, s)
+    } else {
+        Flow::Jump(t)
+    }
+}
+
 /// Every call and construct cold path: `slow::call` pushes the frame or runs the host
 /// function, then the dispatch continues where it says.
+/// The cold body of the `Call*` opcodes: the sampled call record (`profile::record_call`,
+/// once per call: a call that goes cold records here, one that `call_fast` finishes records
+/// after its frame push) and [`call_cold`]. Every cold exit of `call_fast` leaves the budget
+/// as it found it, so the window test sees the same budget as at the start of the call.
+#[inline(always)]
+fn call_record_cold(st: &mut St<'_>, callee: R, s: FSlot) -> Done {
+    let f = st.reg(callee);
+    profile::record_call(st, s, f);
+    call_cold(st)
+}
+
 #[inline(always)]
 fn call_cold(st: &mut St<'_>) -> Done {
     let v = slow::call(st.cx, st.fp, st.pc, st.acc);
@@ -537,7 +623,6 @@ fn call_cold(st: &mut St<'_>) -> Done {
 fn call_list_with_receiver(st: &mut St<'_>, callee: R, args: RList, argc: Count, s: FSlot) -> Flow {
     let f = st.reg(callee);
     if argc.0 == 0 {
-        profile::record_call(st, s, f);
         return Flow::Cold;
     }
     let this = st.list(args, 0);
@@ -556,8 +641,8 @@ op!(ExtraWide(st) { scaled_fast::<S4>(st) } cold { st.scaled::<S4>() });
 /// kernels) run here, as their one-byte forms do. Anything else (another opcode, an
 /// accumulator that is not an int32, an overflow, a `%` that is not exact in int32) takes the
 /// cold block, which runs the whole instruction in `interp::scaled::step`; nothing is changed
-/// before that. The feedback slot goes to `profile::record_binary` (M4-P0 hook, PROFILE; empty
-/// until PROFILE fills it, H16-Q2).
+/// before that. These int32 cases record nothing (implicit, `profile::int32_pair_bits`;
+/// H16-Q2), so the feedback slot is not read.
 #[inline(always)]
 fn scaled_fast<S: dsl::Scale>(st: &mut St<'_>) -> Flow {
     use ep9_bytecode::Opcode as O;
@@ -576,12 +661,12 @@ fn scaled_fast<S: dsl::Scale>(st: &mut St<'_>) -> Flow {
         return Flow::Cold;
     }
     // SAFETY: as above; AddSmi to BitwiseAndSmi all take (value: Imm, slot: Slot).
-    let (len, (b, slot)) = unsafe { dsl::decode!(S, st.pc; value: Imm, slot: Slot) };
+    let (len, (b, _slot)) = unsafe { dsl::decode!(S, st.pc; value: Imm, _slot: Slot) };
     let x = i32_of(a);
     let r = match op {
         o if o == O::AddSmi as u8 => x.checked_add(b),
         o if o == O::SubSmi as u8 => x.checked_sub(b),
-        // As `fast_binop`: x >= 0 avoids -0 and overflow.
+        // As `int32_binop`: x >= 0 avoids -0 and overflow.
         o if o == O::ModSmi as u8 => (x >= 0 && b != 0).then(|| x % b),
         o if o == O::BitwiseOrSmi as u8 => Some(x | b),
         o if o == O::BitwiseXorSmi as u8 => Some(x ^ b),
@@ -600,8 +685,9 @@ fn scaled_fast<S: dsl::Scale>(st: &mut St<'_>) -> Flow {
                 o if o == O::BitwiseXorSmi as u8 => BinOp::BitXor,
                 _ => BinOp::BitAnd,
             };
-            profile::record_binary(st, slot, bop, a, int(b));
             st.acc = int(r);
+            // These six operators never record an int32 pair (`profile::binary_bits`).
+            debug_assert_eq!(profile::int32_pair_bits(bop, int(r)), 0);
             // SAFETY: `len` is the length of the prefixed instruction.
             Flow::Jump(unsafe { st.pc.add(len) })
         }
@@ -996,54 +1082,74 @@ smi_ops! {
 
 op!(Inc(st, s: FSlot) {
     let v = st.acc;
-    profile::record_unary(st, s, v);
-    if is_i32(v) && i32_of(v) != i32::MAX {
-        st.acc = int(i32_of(v) + 1);
+    if is_i32(v) {
+        // An int32 operand is implicit (H16-Q2), also when the result is not an int32.
+        st.acc = match i32_of(v).checked_add(1) {
+            Some(i) => int(i),
+            None => num(f64::from(i32::MAX) + 1.0),
+        };
         return Flow::Next;
     }
     match number(v) {
         Some(x) => {
             st.acc = num(x + 1.0);
-            Flow::Next
+            Flow::Record(profile::Rec::new(s, profile::NUMBER_OPERAND))
         }
         None => Flow::Cold,
     }
-} cold { unary_cold(st, UnOp::Inc) });
+} cold {
+    profile::record_unary(st, s, st.acc);
+    unary_cold(st, UnOp::Inc)
+});
 op!(Dec(st, s: FSlot) {
     let v = st.acc;
-    profile::record_unary(st, s, v);
-    if is_i32(v) && i32_of(v) != i32::MIN {
-        st.acc = int(i32_of(v) - 1);
+    if is_i32(v) {
+        // An int32 operand is implicit (H16-Q2), also when the result is not an int32.
+        st.acc = match i32_of(v).checked_sub(1) {
+            Some(i) => int(i),
+            None => num(f64::from(i32::MIN) - 1.0),
+        };
         return Flow::Next;
     }
     match number(v) {
         Some(x) => {
             st.acc = num(x - 1.0);
-            Flow::Next
+            Flow::Record(profile::Rec::new(s, profile::NUMBER_OPERAND))
         }
         None => Flow::Cold,
     }
-} cold { unary_cold(st, UnOp::Dec) });
+} cold {
+    profile::record_unary(st, s, st.acc);
+    unary_cold(st, UnOp::Dec)
+});
 op!(Negate(st, s: FSlot) {
     let v = st.acc;
-    profile::record_unary(st, s, v);
+    if is_i32(v) {
+        st.acc = num(-f64::from(i32_of(v)));
+        return Flow::Next;
+    }
     match number(v) {
         Some(x) => {
             st.acc = num(-x);
-            Flow::Next
+            Flow::Record(profile::Rec::new(s, profile::NUMBER_OPERAND))
         }
         None => Flow::Cold,
     }
-} cold { unary_cold(st, UnOp::Negate) });
+} cold {
+    profile::record_unary(st, s, st.acc);
+    unary_cold(st, UnOp::Negate)
+});
 op!(BitwiseNot(st, s: FSlot) {
     let v = st.acc;
-    profile::record_unary(st, s, v);
     if is_i32(v) {
         st.acc = int(!i32_of(v));
         return Flow::Next;
     }
     Flow::Cold
-} cold { unary_cold(st, UnOp::BitNot) });
+} cold {
+    profile::record_unary(st, s, st.acc);
+    unary_cold(st, UnOp::BitNot)
+});
 op!(ToBooleanLogicalNot(st) {
     match fast_truthy(st.acc) {
         Some(b) => {
@@ -1061,11 +1167,8 @@ op!(LogicalNot(st) {
     st.acc = boolean(st.acc == FALSE);
     Done::Next
 });
-op!(TypeOf(st, s: FSlot) {
-    let v = st.acc;
-    profile::record_typeof(st, s, v);
-    Flow::Cold
-} cold {
+op!(TypeOf(st, s: FSlot) { Flow::Cold } cold {
+    profile::record_typeof(st, s, st.acc);
     st.acc = slow::type_of(st.cx, st.acc);
     Done::Next
 });
@@ -1082,7 +1185,6 @@ op!(DeletePropertySloppy(st, object: R) { Flow::Cold } cold {
 
 op!(TestEqual(st, lhs: R, s: FSlot) {
     let (l, r) = (st.reg(lhs), st.acc);
-    profile::record_compare(st, s, l, r);
     if is_i32(l) && is_i32(r) {
         st.acc = boolean(l == r);
         return Flow::Next;
@@ -1093,68 +1195,69 @@ op!(TestEqual(st, lhs: R, s: FSlot) {
     let (nl, nr) = (nullish(l), nullish(r));
     if nl || nr {
         st.acc = boolean(nl && nr);
-        return Flow::Next;
+        return Flow::RecordPair(profile::Pair::new(s, l, r));
     }
     Flow::Cold
 } cold {
     let l = st.reg(lhs);
+    profile::record_compare(st, s, l, st.acc);
     compare_cold(st, CmpOp::Eq, l)
 });
 op!(TestEqualStrict(st, lhs: R, s: FSlot) {
     let (l, r) = (st.reg(lhs), st.acc);
-    profile::record_compare(st, s, l, r);
+    if is_i32(l) && is_i32(r) {
+        st.acc = boolean(l == r);
+        return Flow::Next;
+    }
     if let (Some(x), Some(y)) = (number(l), number(r)) {
         st.acc = boolean(x == y);
-        return Flow::Next;
+        return Flow::Record(profile::Rec::new(s, profile::NUMBER_COMPARE));
     }
     if l == r {
         st.acc = TRUE;
-        return Flow::Next;
+        return Flow::RecordPair(profile::Pair::new(s, l, r));
     }
     if object::is_string(l) && object::is_string(r) {
         return Flow::Cold;
     }
     st.acc = FALSE;
-    Flow::Next
+    Flow::RecordPair(profile::Pair::new(s, l, r))
 } cold {
     let l = st.reg(lhs);
+    profile::record_compare(st, s, l, st.acc);
     st.acc = boolean(slow::strict_equals(l, st.acc));
     Done::Next
 });
 op!(TestLessThan(st, lhs: R, s: FSlot) {
     let (l, a) = (st.reg(lhs), st.acc);
-    profile::record_compare(st, s, l, a);
-    let r = fast_relational(l, a, |x, y| x < y);
-    compare_fast(st, r)
+    relational_fast(st, s, l, a, |x, y| x < y)
 } cold {
     let l = st.reg(lhs);
+    profile::record_compare(st, s, l, st.acc);
     compare_cold(st, CmpOp::Lt, l)
 });
 op!(TestGreaterThan(st, lhs: R, s: FSlot) {
     let (l, a) = (st.reg(lhs), st.acc);
-    profile::record_compare(st, s, l, a);
-    let r = fast_relational(l, a, |x, y| x > y);
-    compare_fast(st, r)
+    relational_fast(st, s, l, a, |x, y| x > y)
 } cold {
     let l = st.reg(lhs);
+    profile::record_compare(st, s, l, st.acc);
     compare_cold(st, CmpOp::Gt, l)
 });
 op!(TestLessThanOrEqual(st, lhs: R, s: FSlot) {
     let (l, a) = (st.reg(lhs), st.acc);
-    profile::record_compare(st, s, l, a);
-    let r = fast_relational(l, a, |x, y| x <= y);
-    compare_fast(st, r)
+    relational_fast(st, s, l, a, |x, y| x <= y)
 } cold {
     let l = st.reg(lhs);
+    profile::record_compare(st, s, l, st.acc);
     compare_cold(st, CmpOp::Le, l)
 });
 op!(TestGreaterThanOrEqual(st, lhs: R, s: FSlot) {
     let (l, a) = (st.reg(lhs), st.acc);
-    profile::record_compare(st, s, l, a);
-    let r = fast_relational(l, a, |x, y| x >= y);
-    compare_fast(st, r)
+    relational_fast(st, s, l, a, |x, y| x >= y)
 } cold {
     let l = st.reg(lhs);
+    profile::record_compare(st, s, l, st.acc);
     compare_cold(st, CmpOp::Ge, l)
 });
 op!(TestReferenceEqual(st, lhs: R) {
@@ -1216,14 +1319,30 @@ op!(ToName(st) {
 } cold { unary_cold(st, UnOp::ToName) });
 op!(ToNumber(st, s: FSlot) {
     let v = st.acc;
-    profile::record_unary(st, s, v);
-    if number(v).is_some() { Flow::Next } else { Flow::Cold }
-} cold { unary_cold(st, UnOp::ToNumber) });
+    if is_i32(v) {
+        Flow::Next
+    } else if number(v).is_some() {
+        Flow::Record(profile::Rec::new(s, profile::NUMBER_OPERAND))
+    } else {
+        Flow::Cold
+    }
+} cold {
+    profile::record_unary(st, s, st.acc);
+    unary_cold(st, UnOp::ToNumber)
+});
 op!(ToNumeric(st, s: FSlot) {
     let v = st.acc;
-    profile::record_unary(st, s, v);
-    if number(v).is_some() { Flow::Next } else { Flow::Cold }
-} cold { unary_cold(st, UnOp::ToNumeric) });
+    if is_i32(v) {
+        Flow::Next
+    } else if number(v).is_some() {
+        Flow::Record(profile::Rec::new(s, profile::NUMBER_OPERAND))
+    } else {
+        Flow::Cold
+    }
+} cold {
+    profile::record_unary(st, s, st.acc);
+    unary_cold(st, UnOp::ToNumeric)
+});
 op!(ToObject(st, dst: R) {
     let v = st.acc;
     if object::is_object(v) {
@@ -1259,44 +1378,58 @@ op!(ToBoolean(st) {
 
 op!(CallAnyReceiver(st, callee: R, args: RList, argc: Count, s: FSlot) {
     call_list_with_receiver(st, callee, args, argc, s)
-} cold { call_cold(st) });
+} cold {
+    call_record_cold(st, callee, s)
+});
 op!(CallProperty(st, callee: R, args: RList, argc: Count, s: FSlot) {
     call_list_with_receiver(st, callee, args, argc, s)
-} cold { call_cold(st) });
+} cold {
+    call_record_cold(st, callee, s)
+});
 op!(CallProperty0(st, callee: R, receiver: R, s: FSlot) {
     let (f, this) = (st.reg(callee), st.reg(receiver));
     call_fast(st, s, f, this, 0, |_, _| UNDEFINED)
-} cold { call_cold(st) });
+} cold {
+    call_record_cold(st, callee, s)
+});
 op!(CallProperty1(st, callee: R, receiver: R, a0: R, s: FSlot) {
     let (f, this, v0) = (st.reg(callee), st.reg(receiver), st.reg(a0));
     call_fast(st, s, f, this, 1, move |_, _| v0)
-} cold { call_cold(st) });
+} cold {
+    call_record_cold(st, callee, s)
+});
 op!(CallProperty2(st, callee: R, receiver: R, a0: R, a1: R, s: FSlot) {
     let (f, this, v0, v1) = (st.reg(callee), st.reg(receiver), st.reg(a0), st.reg(a1));
     call_fast(st, s, f, this, 2, move |_, i| if i == 0 { v0 } else { v1 })
-} cold { call_cold(st) });
+} cold {
+    call_record_cold(st, callee, s)
+});
 op!(CallUndefinedReceiver(st, callee: R, args: RList, argc: Count, s: FSlot) {
     let f = st.reg(callee);
     call_fast(st, s, f, UNDEFINED, argc.0, move |s, i| s.list(args, i))
-} cold { call_cold(st) });
+} cold {
+    call_record_cold(st, callee, s)
+});
 op!(CallUndefinedReceiver0(st, callee: R, s: FSlot) {
     let f = st.reg(callee);
     call_fast(st, s, f, UNDEFINED, 0, |_, _| UNDEFINED)
-} cold { call_cold(st) });
+} cold {
+    call_record_cold(st, callee, s)
+});
 op!(CallUndefinedReceiver1(st, callee: R, a0: R, s: FSlot) {
     let (f, v0) = (st.reg(callee), st.reg(a0));
     call_fast(st, s, f, UNDEFINED, 1, move |_, _| v0)
-} cold { call_cold(st) });
+} cold {
+    call_record_cold(st, callee, s)
+});
 op!(CallUndefinedReceiver2(st, callee: R, a0: R, a1: R, s: FSlot) {
     let (f, v0, v1) = (st.reg(callee), st.reg(a0), st.reg(a1));
     call_fast(st, s, f, UNDEFINED, 2, move |_, i| if i == 0 { v0 } else { v1 })
-} cold { call_cold(st) });
-op!(CallWithSpread(st, callee: R, _args: RList, _argc: Count, s: FSlot) {
-    let f = st.reg(callee);
-    profile::record_call(st, s, f);
-    Flow::Cold
 } cold {
-    call_cold(st)
+    call_record_cold(st, callee, s)
+});
+op!(CallWithSpread(st, callee: R, _args: RList, _argc: Count, s: FSlot) { Flow::Cold } cold {
+    call_record_cold(st, callee, s)
 });
 op!(CallRuntime(st, id: RtId, args: RList, argc: Count) { Flow::Cold } cold {
     let r = slow::call_runtime(st.cx, st.fp, st.pc, id.0, args.0, argc.0);
@@ -1462,7 +1595,6 @@ op!(ForInEnumerate(st, receiver: R) { Flow::Cold } cold {
 // v0: the key array is the cache type and the cache array (no enum caches yet).
 op!(ForInPrepare(st, cache: R, s: FSlot) {
     let keys = st.acc;
-    profile::record_for_in(st, s, keys);
     if !object::is_array(keys) {
         return Flow::Cold;
     }
@@ -1470,15 +1602,13 @@ op!(ForInPrepare(st, cache: R, s: FSlot) {
     st.set_reg(cache, keys);
     st.set_reg(cache.plus(1), keys);
     st.set_reg(cache.plus(2), n);
-    Flow::Next
+    Flow::Record(profile::Rec::new(s, profile::for_in_bits(keys)))
 } cold {
+    profile::record_for_in(st, s, st.acc);
     throw_msg(st, ErrorKind::Error, "ep9 internal error: ForInPrepare without a key array")
 });
-op!(ForInNext(st, receiver: R, index: R, cache: R, s: FSlot) {
-    let o = st.reg(receiver);
-    profile::record_for_in_next(st, s, o);
-    Flow::Cold
-} cold {
+op!(ForInNext(st, receiver: R, index: R, cache: R, s: FSlot) { Flow::Cold } cold {
+    profile::record_for_in_next(st, s, st.reg(receiver));
     let (o, keys, i) = (st.reg(receiver), st.reg(cache.plus(1)), st.reg(index));
     let r = slow::for_in_next(st.cx, st.fp, st.pc, o, keys, i);
     st.result(r)

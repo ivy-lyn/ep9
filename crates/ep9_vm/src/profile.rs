@@ -31,25 +31,41 @@
 //! in debug builds either: an out-of-line hook gets the address of the handler's `St`, and an
 //! optimized build with debug assertions (the dev profile of `spikes/spike-c`, opt-level 2 for
 //! its dependencies) then loses the sibling tail calls, so a T0 loop grows the native stack
-//! until it overflows (M4-P1 fixer). A fast-body hook runs once per execution of its
-//! instruction (a cold body runs only after its fast body returned `Flow::Cold`,
-//! `interp::dsl`); a `*_cold` hook runs on the cold path only, after the fast-body hook of the
-//! same execution.
+//! until it overflows (M4-P1 fixer). Each execution records once: in its fast body, or in
+//! its cold body (which runs only after the fast body returned `Flow::Cold`, `interp::dsl`).
+//!
+//! **No record code in a fast handler (M4-P1 PROFILE-X64).** A record inlined into a fast
+//! handler made x86-64 LLVM save 1-4 callee-saved registers on entry to 22 handlers (and one
+//! more on 2 call handlers per x64 target), on every execution, also on the implicit int32
+//! paths that record nothing: up to +9% instructions on the T0 kernels, while aarch64 (18
+//! scratch registers) did not change. A plain `#[cold]` out-of-line call made it worse (a
+//! call forces the frame). So a fast body that must record finishes its result and returns
+//! one of three `interp::Flow` values; the sibling handler then tail-calls an out-of-line
+//! function with the handler's state that records and dispatches (`interp::dsl`):
+//!
+//! | Flow | Fast bodies | Record (sibling: tail-called function) |
+//! |---|---|---|
+//! | `Record(Rec)` (constant bits) | the binary operators on a number pair that is not two int32s ([`NUMBER_PAIR`]) and an int32 `*`, `/` or `>>>` that leaves int32 ([`int32_pair_bits`]); `Inc`, `Dec`, `Negate`, `ToNumber`, `ToNumeric` on a double ([`NUMBER_OPERAND`]); the 4 relational compares on such a pair ([`NUMBER_COMPARE`]); `TestEqualStrict` on such a pair; `ForInPrepare` ([`for_in_bits`]) | [`record`] (`record_next`: it reads the slot operand again from the bytecode) |
+//! | `RecordPair(Pair)` | `TestEqual` with null or undefined on a side, `TestEqualStrict` on other pairs it finishes | [`record_pair`] = [`record_compare`] (`record_pair_next`: it gets the pair) |
+//! | `JumpRecordCall(t, slot)` | `call_fast` after its frame push, for a call in the window ([`call_window_after_unit`]) | [`record_call_pushed`] (`record_call_next`: in the callee's frame, from its header) |
+//!
+//! The match loop, `become` and the prefixed step record inline (`Flow::recorded`).
+//! An int32 operand or pair reaches none of them (implicit).
 //!
 //! | Hook | Called from | Arguments |
 //! |---|---|---|
-//! | [`record_binary`] | the fast body of the 12 binary and 12 `*Smi` operators (`binop_fast`) and the prefixed `*Smi` forms (`scaled_fast`) | slot, operator, left, right |
-//! | [`record_binary_cold`] | their cold body (`binop_cold`): an int32 `%` with a negative dividend or a 0 divisor, an int32 `**`, or other types | slot, operator, left, right |
-//! | [`record_unary`] | `Inc`, `Dec`, `Negate`, `BitwiseNot`, `ToNumber`, `ToNumeric` (BinaryOp slots) | slot, operand |
-//! | [`record_compare`] | `TestEqual`, `TestEqualStrict`, `TestLessThan`, `TestGreaterThan`, `TestLessThanOrEqual`, `TestGreaterThanOrEqual` | slot, left, right |
-//! | [`record_typeof`] | `TypeOf` | slot, operand |
-//! | [`record_call`] | every `Call*` site except `CallRuntime`: at the start of `call_fast`, or before the cold exit of a site that does not reach it (`CallWithSpread`, a `CallProperty`/`CallAnyReceiver` list without a receiver) | slot, callee |
+//! | [`binary_pair_bits`], [`int32_result_bits`], [`int32_pair_bits`], [`NUMBER_PAIR`] | the fast body of the 12 binary and 12 `*Smi` operators (`binop_fast`, `binop_fast_boxed` for `*` and `/`): the pair's record is chosen from the tags before the operation, the int32 overflow record from the result | operator, operand tags, result |
+//! | [`record_binary_cold`] | their cold body (`binop_cold`): an int32 `%` with a negative dividend or a 0 divisor, an int32 `**`, `%`, `**` and the bitwise operators on a double, or other types | slot, operator, left, right |
+//! | [`NUMBER_OPERAND`], [`record_unary`] | `Inc`, `Dec`, `Negate`, `ToNumber`, `ToNumeric` (BinaryOp slots): a double in the fast body; other operands (and every `BitwiseNot` that is not int32) in the cold body | slot, operand |
+//! | [`NUMBER_COMPARE`], [`Pair`], [`record_compare`] | `TestEqual`, `TestEqualStrict`, `TestLessThan`, `TestGreaterThan`, `TestLessThanOrEqual`, `TestGreaterThanOrEqual`: fast body as above, cold body otherwise | slot, left, right |
+//! | [`record_typeof`] | the `TypeOf` cold body (its fast body is only `Flow::Cold`) | slot, operand |
+//! | [`record_call`], [`record_call_pushed`] | every `Call*` site except `CallRuntime`: after the frame push of `call_fast`, or in the cold body (`call_record_cold`: every cold exit, `CallWithSpread`, a `CallProperty`/`CallAnyReceiver` list without a receiver) | slot, callee |
 //! | [`record_keyed`] | `GetKeyedProperty` (before the array path), `SetKeyedProperty`, `DefineKeyedOwnProperty`, `DefineKeyedOwnPropertyInLiteral` (its fast body is only this hook and `Flow::Cold`), `StaInArrayLiteral`, `TestIn` (records nothing, see below) | slot, receiver, key |
 //! | [`record_keyed_cold`] | their cold bodies (out of bounds, a hole, a non-array receiver; every execution of `DefineKeyedOwnPropertyInLiteral`) | slot, receiver, key |
 //! | [`record_jump_loop`] | `JumpLoop` | slot |
 //! | [`record_closure`] | the `CreateClosure` cold body, after the closure exists (0 = an exception is pending) | slot, the closure bits |
-//! | [`record_for_in`] | `ForInPrepare` (the key array in the accumulator) | slot, the key array |
-//! | [`record_for_in_next`] | `ForInNext` | slot, receiver |
+//! | [`for_in_bits`], [`record_for_in`] | `ForInPrepare`: its fast body after the cache registers are set, or its cold body | slot, the key array |
+//! | [`record_for_in_next`] | the `ForInNext` cold body (its fast body is only `Flow::Cold`) | slot, receiver |
 //!
 //! **What T0 records (M4-P1 PROFILE, H16-Q2).** Every value half that this module writes is
 //! an int32. A function records nothing until it has its feedback vector (`feedback.rs`,
@@ -282,6 +298,67 @@ fn add_bits(st: &St<'_>, s: FSlot, bits: u32) {
     }
 }
 
+/// A record that a fast body leaves to its dispatch (`interp::Flow::Record`): add `bits` to the
+/// int32 value half of one slot. The fast body only computes the bits; [`record`] runs after
+/// it, in `interp::dsl::record_next` (the sibling expansion: an out-of-line function that the
+/// handler reaches by a tail call, so the handler itself has no record code and, on x86-64,
+/// saves no register on entry) or inline (the match loop, `become`, prefixed instructions).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Rec(u64);
+
+impl Rec {
+    /// `bits` (not 0) for slot `s`.
+    #[inline(always)]
+    pub(crate) fn new(s: FSlot, bits: u32) -> Rec {
+        debug_assert!(bits != 0 && bits <= i32::MAX as u32);
+        Rec((u64::from(s.0) << 32) | u64::from(bits))
+    }
+
+    /// The bits and `place` (the instruction's `interp::dsl::slot_place`: where its slot
+    /// operand lies and its length) as one register-wide word: the last argument of
+    /// `interp::dsl::record_next`. The slot index is left out, so a handler keeps no register
+    /// for it.
+    #[inline(always)]
+    pub(crate) fn sib_word(self, place: u64) -> u64 {
+        (place << 32) | (self.0 & 0xFFFF_FFFF)
+    }
+}
+
+/// A comparison record that a fast body leaves to its dispatch (`interp::Flow::RecordPair`):
+/// the operand pair, whose class ([`compare_bits`]) needs cell reads, so it is computed after
+/// the fast body, in `interp::dsl::record_pair_next` (sibling expansion) or inline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Pair {
+    s: FSlot,
+    l: u64,
+    r: u64,
+}
+
+impl Pair {
+    #[inline(always)]
+    pub(crate) fn new(s: FSlot, l: u64, r: u64) -> Pair {
+        Pair { s, l, r }
+    }
+
+    /// The pair (the slot is left out: `record_pair_next` reads its operand again).
+    #[inline(always)]
+    pub(crate) fn operands(self) -> (u64, u64) {
+        (self.l, self.r)
+    }
+}
+
+/// Runs the comparison record `p`: [`record_compare`].
+#[inline(always)]
+pub(crate) fn record_pair(st: &St<'_>, p: Pair) {
+    record_compare(st, p.s, p.l, p.r);
+}
+
+/// Runs the record `r` (a load and a test; a store only when a bit is new, V9-D6).
+#[inline(always)]
+pub(crate) fn record(st: &St<'_>, r: Rec) {
+    add_bits(st, FSlot((r.0 >> 32) as u32), r.0 as u32);
+}
+
 /// Counts one execution in the int32 value half of slot `i` of `v`, saturating at `limit`.
 /// A value half that is not an int32 (a handler of a shared Call slot) is left alone: one
 /// unsigned compare tests both.
@@ -354,30 +431,59 @@ fn binary_operand(v: u64) -> u32 {
     u32::from(h.bits())
 }
 
-/// A binary operator site (BinaryOp slot), before the fast path.
-///
-/// An int32 pair is implicit (no load), except a `*`, `/` or `>>>` whose result is not an
-/// int32 (an overflow, -0, a fraction, a `>>>` past `i32::MAX`): that adds `INT32_OVERFLOW`.
-/// A number pair adds `NUMBER`. Other operands go cold, where [`record_binary_cold`] records
-/// them. An `+` or `-` that overflows takes the fast path's double arm and stays implicit:
-/// its test would add instructions to every int32 `+` and `-` (V9-D6); the double it makes
-/// is recorded as `NUMBER` at the sites it reaches.
+/// The record of a binary operator site (BinaryOp slot) whose fast path made `v` from an
+/// int32 pair: 0 (implicit), except a `*`, `/` or `>>>` whose result is not an int32 (an
+/// overflow, -0, a fraction, a `>>>` past `i32::MAX`): `INT32_OVERFLOW`. An `+` or `-` that
+/// overflows takes the fast path's double arm and stays implicit: its test would add
+/// instructions to every int32 `+` and `-` (V9-D6); the double it makes is recorded as
+/// `NUMBER` at the sites it reaches. `*` and `/` box their result with the same
+/// `Value::number` as [`int32_pair_overflows`], and `>>>` gives an int32 exactly when it is at
+/// most `i32::MAX`, so a test of the result's tag is that rule.
 #[inline(always)]
-pub(crate) fn record_binary(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r: u64) {
-    if is_i32(l) && is_i32(r) {
-        if matches!(op, BinOp::Mul | BinOp::Div | BinOp::Shr)
-            && int32_pair_overflows(op, int32_of(l), int32_of(r))
-        {
-            core::hint::cold_path();
-            add_bits(st, s, u32::from(BinaryHint::INT32_OVERFLOW.bits()));
-        }
-    } else if is_number(l) && is_number(r) {
-        add_bits(st, s, u32::from(BinaryHint::NUMBER.bits()));
+pub(crate) fn int32_pair_bits(op: BinOp, v: u64) -> u32 {
+    if matches!(op, BinOp::Mul | BinOp::Div | BinOp::Shr) && !is_i32(v) {
+        core::hint::cold_path();
+        u32::from(BinaryHint::INT32_OVERFLOW.bits())
+    } else {
+        0
     }
 }
 
-/// A binary operator site whose fast path failed (BinaryOp slot), before the generic operation.
-/// An int32 pair gets here only for `%` (not exact in int32) and `**`.
+/// The record a binary operator site chooses from its operand tags before the fast path: 0 for
+/// an int32 pair (implicit; see [`int32_result_bits`]), [`NUMBER_PAIR`] otherwise (used only
+/// when the fast path finishes, so the pair is two numbers).
+#[inline(always)]
+pub(crate) fn binary_pair_bits(l: u64, r: u64) -> u32 {
+    if is_i32(l) && is_i32(r) {
+        0
+    } else {
+        NUMBER_PAIR
+    }
+}
+
+/// The record of a fast binary operation on top of `pair` ([`binary_pair_bits`]) with result
+/// `v`: [`int32_pair_bits`] for an int32 pair, else 0.
+#[inline(always)]
+pub(crate) fn int32_result_bits(op: BinOp, pair: u32, v: u64) -> u32 {
+    if pair == 0 { int32_pair_bits(op, v) } else { 0 }
+}
+
+/// The record of a binary operator site whose fast path made its result from a number pair
+/// that is not two int32s. Operands that are not numbers go cold, where
+/// [`record_binary_cold`] records them.
+pub(crate) const NUMBER_PAIR: u32 = BinaryHint::NUMBER.bits() as u32;
+
+/// The record of a unary operator or numeric conversion site (BinaryOp slot) whose fast path
+/// took a double operand ([`unary_bits`] of a double).
+pub(crate) const NUMBER_OPERAND: u32 = BinaryHint::NUMBER.bits() as u32;
+
+/// The record of a relational comparison (CompareOp slot) whose fast path took a number pair
+/// that is not two int32s ([`compare_pair`] of such a pair).
+pub(crate) const NUMBER_COMPARE: u32 = CompareHint::NUMBER.bits() as u32;
+
+/// A binary operator site whose fast path failed (BinaryOp slot), before the generic operation:
+/// a number pair the fast path does not finish (`%`, `**` and the bitwise operators on a
+/// double, an int32 `%` that is not exact in int32, an int32 `**`) or other operands.
 #[inline(always)]
 pub(crate) fn record_binary_cold(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r: u64) {
     let bits = if is_i32(l) && is_i32(r) {
@@ -386,20 +492,28 @@ pub(crate) fn record_binary_cold(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r
         }
         BinaryHint::INT32_OVERFLOW.bits().into()
     } else if is_number(l) && is_number(r) {
-        // `record_binary` added NUMBER.
-        return;
+        BinaryHint::NUMBER.bits().into()
     } else {
         binary_operand(l) | binary_operand(r)
     };
     add_bits(st, s, bits);
 }
 
-/// A unary operator or a numeric conversion (BinaryOp slot), before the fast path. An int32
-/// operand is implicit; a double adds `NUMBER`; other operands add their class.
+/// The bits a unary operator or a numeric conversion (BinaryOp slot) records for the operand
+/// `v`: 0 for an int32 (implicit), `NUMBER` for a double, else the operand's class.
+#[inline(always)]
+pub(crate) fn unary_bits(v: u64) -> u32 {
+    if is_i32(v) { 0 } else { binary_operand(v) }
+}
+
+/// A unary operator or a numeric conversion (BinaryOp slot) whose fast path failed (the
+/// operand is not a number, or `~` of a double), before the generic operation:
+/// [`unary_bits`].
 #[inline(always)]
 pub(crate) fn record_unary(st: &mut St<'_>, s: FSlot, v: u64) {
-    if !is_i32(v) {
-        add_bits(st, s, binary_operand(v));
+    let bits = unary_bits(v);
+    if bits != 0 {
+        add_bits(st, s, bits);
     }
 }
 
@@ -450,11 +564,24 @@ fn compare_pair(l: u64, r: u64) -> u32 {
     u32::from(h)
 }
 
-/// A comparison (CompareOp slot), before the fast path. An int32 pair is implicit.
+/// The bits a comparison (CompareOp slot) records for the pair `l`, `r`: 0 for an int32 pair
+/// (implicit), else [`compare_pair`].
 #[inline(always)]
-pub(crate) fn record_compare(st: &mut St<'_>, s: FSlot, l: u64, r: u64) {
-    if !(is_i32(l) && is_i32(r)) {
-        add_bits(st, s, compare_pair(l, r));
+pub(crate) fn compare_bits(l: u64, r: u64) -> u32 {
+    if is_i32(l) && is_i32(r) {
+        0
+    } else {
+        compare_pair(l, r)
+    }
+}
+
+/// A comparison (CompareOp slot) whose fast path failed, before the generic operation:
+/// [`compare_bits`].
+#[inline(always)]
+pub(crate) fn record_compare(st: &St<'_>, s: FSlot, l: u64, r: u64) {
+    let bits = compare_bits(l, r);
+    if bits != 0 {
+        add_bits(st, s, bits);
     }
 }
 
@@ -524,8 +651,45 @@ pub(crate) fn record_call(st: &mut St<'_>, s: FSlot, callee: u64) {
         return;
     }
     core::hint::cold_path();
-    let Some(v) = vector_of(st) else { return };
-    count(st.rt(), v, s.0, i32::MAX as u32);
+    if let Some(v) = vector_of(st) {
+        record_call_in(st.rt(), v, s, callee);
+    }
+}
+
+/// True if a call whose budget unit `call_fast` has just taken (`budget` is the value after
+/// the decrement) is in the window of [`record_call`]: the budget before it was above
+/// `BUDGET - CALL_WINDOW`.
+#[inline(always)]
+pub(crate) fn call_window_after_unit(budget: i64) -> bool {
+    budget >= BUDGET - CALL_WINDOW
+}
+
+/// [`record_call`] of a call in the window whose frame `call_fast` has pushed: `st.fp` is the
+/// callee's new frame, whose header holds the caller frame and the callee; `s` is the Call
+/// slot of the caller's instruction. Same record as [`record_call`] before the push (no GC
+/// point and no write to the caller's vector lies between them). Runs after the handler
+/// (`interp::Flow::JumpRecordCall`, `interp::dsl::record_call_next`), so the call handlers
+/// keep no register for it.
+#[inline(always)]
+pub(crate) fn record_call_pushed(st: &St<'_>, s: FSlot) {
+    // SAFETY: `st.fp` is a frame that `call::push_frame` just wrote: its caller-fp slot holds
+    // the live caller frame, whose FunctionInfo slot holds a FunctionInfo native word.
+    let fi = unsafe {
+        let caller = crate::frame::native_ptr::<u64>(st.hdr(crate::frame::slot::CALLER_FP));
+        &*crate::frame::native_ptr::<crate::unit::FunctionInfo>(
+            *caller.offset(crate::frame::slot::FUNCTION_INFO),
+        )
+    };
+    if let Some(v) = feedback::vector(fi) {
+        debug_assert!(kinds::cell_kind(v) == kinds::FEEDBACK.get());
+        record_call_in(st.rt(), v, s, st.hdr(crate::frame::slot::CALLEE));
+    }
+}
+
+/// The record of a sampled call: count it, and keep the target or the hole.
+#[inline(always)]
+fn record_call_in(rt: &Runtime, v: u64, s: FSlot, callee: u64) {
+    count(rt, v, s.0, i32::MAX as u32);
     let k = key(v, s.0);
     if k != HOLE {
         let t = target_key(callee);
@@ -556,35 +720,36 @@ fn keyed_receiver(o: u64) -> u32 {
     }
 }
 
-/// The `KeySet` bits of a key.
+/// The `KeySet` bits of a key, and for a canonical array index (an int32 `>= 0`, an index
+/// string, or a Number whose `ToString` is one, -0 included) the index itself, so that every
+/// form of the same index records the same element case.
 #[inline(always)]
-fn keyed_key(k: u64) -> u32 {
-    if is_i32(k) {
-        if int32_of(k) >= 0 {
-            keyed::INDEX
-        } else {
-            keyed::OTHER_KEY
-        }
+fn keyed_key(k: u64) -> (u32, Option<u32>) {
+    let index = if is_i32(k) {
+        u32::try_from(int32_of(k)).ok()
     } else if is_number(k) {
         // Number::toString of an integral double in [0, 2^32 - 1) is an array index.
         let d = f64::from_bits(k.wrapping_sub(ep9_value::encoding::DOUBLE_ENCODE_OFFSET));
         // `as u32` and back, not `trunc` (a libm call on baseline x86-64).
-        if (0.0..4_294_967_295.0).contains(&d) && f64::from(d as u32) == d {
-            keyed::INDEX
-        } else {
-            keyed::OTHER_KEY
-        }
+        ((0.0..4_294_967_295.0).contains(&d) && f64::from(d as u32) == d).then_some(d as u32)
     } else if kinds::is_string(k) {
-        if string::array_index(k).is_some() {
-            keyed::INDEX
-        } else {
-            keyed::NAME
-        }
+        // A canonical index has at most 10 digits, so a rope (at least MIN_CONS_LENGTH
+        // units) is never one and is not copied (`string::array_index`).
+        return match string::array_index(k) {
+            Some(i) => (keyed::INDEX, Some(i)),
+            None => (keyed::NAME, None),
+        };
     } else if kinds::is_symbol(k) {
-        keyed::SYMBOL
+        return (keyed::SYMBOL, None);
+    } else {
+        None
+    };
+    let bits = if index.is_some() {
+        keyed::INDEX
     } else {
         keyed::OTHER_KEY
-    }
+    };
+    (bits, index)
 }
 
 /// What element `i` of the Array `o` is: past the length, a hole, or present (0).
@@ -612,10 +777,12 @@ pub(crate) fn record_keyed(_st: &mut St<'_>, _s: FSlot, _o: u64, _k: u64) {}
 #[inline(always)]
 pub(crate) fn record_keyed_cold(st: &mut St<'_>, s: FSlot, o: u64, k: u64) {
     let Some(v) = vector_of(st) else { return };
-    let key = keyed_key(k);
+    let (key, index) = keyed_key(k);
     let mut bits = key | keyed_receiver(o);
-    if key == keyed::INDEX && is_i32(k) && kinds::is_array(o) {
-        bits |= element_case(o, int32_of(k) as u32);
+    if let Some(i) = index
+        && kinds::is_array(o)
+    {
+        bits |= element_case(o, i);
     }
     let old = value(v, s.0);
     if old as u32 | bits != old as u32 {
@@ -649,11 +816,17 @@ pub(crate) fn record_closure(st: &mut St<'_>, s: FSlot, closure: u64) {
     }
 }
 
-/// `ForInPrepare` (ForIn slot): `keys` is the key array of the accumulator. v0 has no enum
-/// cache, so the keys always come from the generic path (`ForInEnumerate`): `ANY`.
+/// The bits of `ForInPrepare` (ForIn slot): `keys` is the key array of the accumulator. v0
+/// has no enum cache, so the keys always come from the generic path (`ForInEnumerate`): `ANY`.
 #[inline(always)]
-pub(crate) fn record_for_in(st: &mut St<'_>, s: FSlot, _keys: u64) {
-    add_bits(st, s, u32::from(ForInHint::ANY.bits()));
+pub(crate) fn for_in_bits(_keys: u64) -> u32 {
+    u32::from(ForInHint::ANY.bits())
+}
+
+/// `ForInPrepare` on its cold path (the accumulator is not a key array): [`for_in_bits`].
+#[inline(always)]
+pub(crate) fn record_for_in(st: &mut St<'_>, s: FSlot, keys: u64) {
+    add_bits(st, s, for_in_bits(keys));
 }
 
 /// `ForInNext` (ForIn slot): `receiver` is the object being enumerated. The key half keeps

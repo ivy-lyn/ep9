@@ -315,6 +315,259 @@ pub(crate) fn debug_native_stack_check(cx: &crate::interp::Cx) {
 
 // ---- (b) and (c): threaded handlers --------------------------------------------------------
 
+/// The `Flow::Record` arm of a threaded fast handler. (b) (`return`): a tail call of
+/// [`record_next`] with the handler's state (the instruction's own pc) and a constant word
+/// (the record's bits, the slot operand's offset and the instruction length,
+/// [`slot_place`]), so the handler holds no value for the record: `record_next` reads the slot
+/// operand again and finds the next pc. (c) (`become` needs the same signature): records
+/// inline and continues at the next pc.
+macro_rules! record_exit {
+    (return, $name:ident, $st:ident, $r:ident) => {{
+        let St {
+            cx, pc, fp, acc, ..
+        } = $st;
+        let w = $r.sib_word(const { $crate::interp::dsl::slot_place(ep9_bytecode::Opcode::$name) });
+        // SAFETY: `pc` is this one-byte-scale instruction of verified code in the live frame
+        // `fp`; `slot_place` gives its slot operand and its length.
+        unsafe { return $crate::interp::dsl::record_next(cx, pc, fp, acc, w) }
+    }};
+    (become, $name:ident, $st:ident, $r:ident) => {{
+        $crate::profile::record(&$st, $r);
+        $st.next
+    }};
+}
+pub(crate) use record_exit;
+
+/// The `Flow::RecordPair` arm of a threaded fast handler: as [`record_exit`], with the operand
+/// pair as the last two arguments of [`record_pair_next`] and the slot place as its const
+/// parameter.
+macro_rules! record_pair_exit {
+    (return, $name:ident, $st:ident, $p:ident) => {{
+        let St {
+            cx, pc, fp, acc, ..
+        } = $st;
+        let (l, r) = $p.operands();
+        // SAFETY: as in `record_exit`.
+        unsafe {
+            return $crate::interp::dsl::record_pair_next::<
+                { $crate::interp::dsl::slot_place(ep9_bytecode::Opcode::$name) },
+            >(cx, pc, fp, acc, l, r);
+        }
+    }};
+    (become, $name:ident, $st:ident, $p:ident) => {{
+        $crate::profile::record_pair(&$st, $p);
+        $st.next
+    }};
+}
+pub(crate) use record_pair_exit;
+
+/// The `Flow::JumpRecordCall` arm of a threaded fast handler: (b) tail-calls
+/// [`record_call_next`] with the callee's state (the handler signature: the target pc, the new
+/// frame) and the slot place of the caller's instruction as its const parameter; (c) records
+/// inline and jumps.
+macro_rules! record_call_exit {
+    (return, $name:ident, $st:ident, $t:ident, $s:ident) => {{
+        let St { cx, fp, acc, .. } = $st;
+        // SAFETY: `fp` is the frame `call_fast` pushed and `$t` its first pc (or a VM stub);
+        // its return pc is the next instruction of the caller.
+        unsafe {
+            return $crate::interp::dsl::record_call_next::<
+                { $crate::interp::dsl::slot_back(ep9_bytecode::Opcode::$name) as usize },
+            >(cx, $t, fp, acc);
+        }
+    }};
+    (become, $name:ident, $st:ident, $t:ident, $s:ident) => {{
+        $crate::profile::record_call_pushed(&$st, $s);
+        $t
+    }};
+}
+pub(crate) use record_call_exit;
+
+/// Defines [`record_call_next`] with the handler ABI (`handler!`) and a const parameter.
+macro_rules! record_call_next_fn {
+    ($($abi:literal => $cfg:meta;)*) => {$(
+        /// The record of a `Flow::JumpRecordCall` (sibling expansion): reads the caller's
+        /// Call slot operand `BACK` bytes before the return pc of the new frame `fp`, runs
+        /// `profile::record_call_pushed`, then dispatches `pc` in the new frame. It has the
+        /// handler signature (it gets the callee's state) but is not in the table;
+        /// `cargo xtask disasm-check` follows the jump to it as part of the handler.
+        ///
+        /// # Safety
+        /// `fp` is the frame `call_fast` just pushed, `pc` the instruction (or VM stub) the
+        /// dispatch runs next in it, and the caller's instruction ends at the frame's return
+        /// pc with a one-byte slot operand `BACK` bytes before it.
+        #[cfg($cfg)]
+        #[inline(never)]
+        pub(crate) unsafe extern $abi fn record_call_next<const BACK: usize>(
+            cx: &mut $crate::interp::Cx,
+            pc: *const u8,
+            fp: *mut u64,
+            acc: u64,
+        ) -> u64 {
+            #[cfg(debug_assertions)]
+            debug_native_stack_check(cx);
+            debug_assert!(BACK != 0, "Flow::JumpRecordCall from an opcode without a slot operand");
+            // SAFETY: caller contract: the return pc slot of the new frame holds the caller's
+            // next instruction as a native word.
+            let ret = crate::frame::native_ptr::<u8>(unsafe {
+                *fp.offset(crate::frame::slot::RETURN_PC)
+            });
+            // SAFETY: caller contract.
+            let slot = FSlot(u32::from(unsafe { *ret.sub(BACK) }));
+            // SAFETY: caller contract (`St::new`: `pc` is an instruction start of `fp`).
+            let st = unsafe { crate::interp::St::new(cx, pc, fp, acc, pc) };
+            $crate::profile::record_call_pushed(&st, slot);
+            let crate::interp::St { cx, fp, acc, .. } = st;
+            // SAFETY: `pc` is an instruction start of verified code or a VM stub.
+            let h = cx.table[unsafe { *pc } as usize];
+            // SAFETY: the table holds handlers of the sibling expansion; the state is valid.
+            unsafe { h(cx, pc, fp, acc) }
+        }
+    )*};
+}
+
+record_call_next_fn! {
+    "sysv64-unwind" => all(target_arch = "x86_64", panic = "unwind");
+    "sysv64" => all(target_arch = "x86_64", not(panic = "unwind"));
+    "Rust" => not(target_arch = "x86_64");
+}
+
+/// For an opcode with a feedback slot operand, at one-byte scale (no prefix): the operand's
+/// offset from the opcode byte (bits 0-7) and the instruction length (bits 8-15), for
+/// [`record_next`] and [`record_pair_next`]. 0 for an opcode without one (it never returns a
+/// record flow).
+pub(crate) const fn slot_place(op: ep9_bytecode::Opcode) -> u64 {
+    let info = op.info();
+    let mut i = 0;
+    while i < info.operands.len() {
+        if matches!(info.operands[i].kind, OperandKind::Slot) {
+            assert!(info.operands[i].kind.size(OperandScale::Single) == 1);
+            let off = info.operand_offset(i, OperandScale::Single);
+            let len = info.size(OperandScale::Single);
+            assert!(off < 256 && len < 256);
+            return (off | (len << 8)) as u64;
+        }
+        i += 1;
+    }
+    0
+}
+
+/// For an opcode with a feedback slot operand: the distance in bytes from the operand to the
+/// end of the instruction at one-byte scale (no prefix), so [`record_call_next`] finds it from
+/// the return pc. 0 for an opcode without one.
+pub(crate) const fn slot_back(op: ep9_bytecode::Opcode) -> u64 {
+    let info = op.info();
+    let mut i = 0;
+    while i < info.operands.len() {
+        if matches!(info.operands[i].kind, OperandKind::Slot) {
+            assert!(info.operands[i].kind.size(OperandScale::Single) == 1);
+            let back =
+                info.size(OperandScale::Single) - info.operand_offset(i, OperandScale::Single);
+            return back as u64;
+        }
+        i += 1;
+    }
+    0
+}
+
+/// Defines [`record_next`] with the ABI of the handlers (`handler!`) plus a 5th integer
+/// argument, which every handler ABI passes in a register (SysV: r8; AArch64: x4), so the
+/// handler's tail call to it stays a sibling call.
+macro_rules! record_next_fn {
+    ($($abi:literal => $cfg:meta;)*) => {$(
+        /// The record of a `Flow::Record` (sibling expansion): runs `profile::record` for the
+        /// frame `fp`, then dispatches the next instruction as the handler would have.
+        /// Out of line (a fast handler reaches it by a tail call), so on x86-64 the record's
+        /// registers are saved here, not on entry to every handler that may record
+        /// (M4-P1 PROFILE-X64). `cargo xtask disasm-check` follows the jump to it as part of
+        /// the handler.
+        ///
+        /// # Safety
+        /// `pc` is an instruction of verified code at one-byte scale in the live top frame
+        /// `fp`, and `rec` is a `profile::Rec::sib_word` with its `slot_place`.
+        #[cfg($cfg)]
+        #[inline(never)]
+        #[unsafe(export_name = "ep9rec__sib__record_next")]
+        pub(crate) unsafe extern $abi fn record_next(
+            cx: &mut $crate::interp::Cx,
+            pc: *const u8,
+            fp: *mut u64,
+            acc: u64,
+            rec: u64,
+        ) -> u64 {
+            #[cfg(debug_assertions)]
+            debug_native_stack_check(cx);
+            let (off, len) = (((rec >> 32) & 0xFF) as usize, ((rec >> 40) & 0xFF) as usize);
+            debug_assert!(off != 0, "Flow::Record from an opcode without a slot operand");
+            // SAFETY: caller contract: the one-byte slot operand is at `pc + off` and the
+            // instruction is `len` bytes long, in verified code.
+            let (slot, next) = unsafe { (u32::from(*pc.add(off)), pc.add(len)) };
+            let slot = $crate::interp::dsl::FSlot(slot);
+            // SAFETY: caller contract (`St::new`: `next` is an instruction start of `fp`).
+            let st = unsafe { crate::interp::St::new(cx, next, fp, acc, next) };
+            $crate::profile::record(&st, $crate::profile::Rec::new(slot, rec as u32));
+            let crate::interp::St { cx, fp, acc, .. } = st;
+            // SAFETY: `next` is an instruction start of verified code.
+            let h = cx.table[unsafe { *next } as usize];
+            // SAFETY: the table holds handlers of the sibling expansion; the state is valid.
+            unsafe { h(cx, next, fp, acc) }
+        }
+    )*};
+}
+
+/// Defines [`record_pair_next`] as [`record_next_fn`] does `record_next`, with 6 integer
+/// arguments (SysV: rdi, rsi, rdx, rcx, r8, r9; AArch64: x0-x5), all in registers.
+macro_rules! record_pair_next_fn {
+    ($($abi:literal => $cfg:meta;)*) => {$(
+        /// The record of a `Flow::RecordPair` (sibling expansion): `profile::record_compare`
+        /// of the pair `l`, `r` for the slot operand of the instruction at `pc` (`PLACE`, a
+        /// `slot_place`), then the dispatch of the next instruction. Out of line for the
+        /// reason of `record_next`.
+        ///
+        /// # Safety
+        /// `pc` is an instruction of verified code at one-byte scale in the live top frame
+        /// `fp`, and `PLACE` is its `slot_place`.
+        #[cfg($cfg)]
+        #[inline(never)]
+        pub(crate) unsafe extern $abi fn record_pair_next<const PLACE: u64>(
+            cx: &mut $crate::interp::Cx,
+            pc: *const u8,
+            fp: *mut u64,
+            acc: u64,
+            l: u64,
+            r: u64,
+        ) -> u64 {
+            #[cfg(debug_assertions)]
+            debug_native_stack_check(cx);
+            let (off, len) = ((PLACE & 0xFF) as usize, ((PLACE >> 8) & 0xFF) as usize);
+            debug_assert!(off != 0, "Flow::RecordPair from an opcode without a slot operand");
+            // SAFETY: caller contract.
+            let (slot, next) = unsafe { (u32::from(*pc.add(off)), pc.add(len)) };
+            let slot = $crate::interp::dsl::FSlot(slot);
+            // SAFETY: caller contract (`St::new`: `next` is an instruction start of `fp`).
+            let st = unsafe { crate::interp::St::new(cx, next, fp, acc, next) };
+            $crate::profile::record_pair(&st, $crate::profile::Pair::new(slot, l, r));
+            let crate::interp::St { cx, fp, acc, .. } = st;
+            // SAFETY: `next` is an instruction start of verified code.
+            let h = cx.table[unsafe { *next } as usize];
+            // SAFETY: the table holds handlers of the sibling expansion; the state is valid.
+            unsafe { h(cx, next, fp, acc) }
+        }
+    )*};
+}
+
+record_pair_next_fn! {
+    "sysv64-unwind" => all(target_arch = "x86_64", panic = "unwind");
+    "sysv64" => all(target_arch = "x86_64", not(panic = "unwind"));
+    "Rust" => not(target_arch = "x86_64");
+}
+
+record_next_fn! {
+    "sysv64-unwind" => all(target_arch = "x86_64", panic = "unwind");
+    "sysv64" => all(target_arch = "x86_64", not(panic = "unwind"));
+    "Rust" => not(target_arch = "x86_64");
+}
+
 /// One handler per opcode, one cold handler per cold block, the `Exit`, `BadOpcode` and
 /// `ConstructReturn` handlers, and the dispatch `TABLE`. `$tail` is `return` (sibling call,
 /// checked by `cargo xtask disasm-check`) or `become` (guaranteed, nightly).
@@ -350,6 +603,11 @@ macro_rules! expand_threaded {
                             let St { cx, pc, fp, acc, .. } = st;
                             // SAFETY: the cold handler takes the same state as this one.
                             unsafe { $tail cold::$name(cx, pc, fp, acc) }
+                        }
+                        Flow::Record(r) => $crate::interp::dsl::record_exit!($tail, $name, st, r),
+                        Flow::RecordPair(p) => $crate::interp::dsl::record_pair_exit!($tail, $name, st, p),
+                        Flow::JumpRecordCall(t, s) => {
+                            $crate::interp::dsl::record_call_exit!($tail, $name, st, t, s)
                         }
                     }
                 } else {
@@ -542,7 +800,8 @@ macro_rules! expand_match {
                         // SAFETY: as in the threaded handlers.
                         let mut st = unsafe { St::new(&mut *cx, pc, fp, acc, pc.add(len)) };
                         $crate::interp::ops::if_cold!($name {
-                            match $crate::interp::ops::$name::fast(&mut st, $($oname),*) {
+                            let flow = $crate::interp::ops::$name::fast(&mut st, $($oname),*);
+                            match flow.recorded(&st) {
                                 Flow::Next => {
                                     pc = st.next;
                                     fp = st.fp;
@@ -552,6 +811,10 @@ macro_rules! expand_match {
                                     pc = t;
                                     fp = st.fp;
                                     acc = st.acc;
+                                }
+                                // `recorded` (above) turned these into `Next`.
+                                Flow::Record(_) | Flow::RecordPair(_) | Flow::JumpRecordCall(..) => {
+                                    unreachable!()
                                 }
                                 Flow::Cold => {
                                     let (f, a) = (st.fp, st.acc);
@@ -659,6 +922,18 @@ macro_rules! expand_scaled {
                         match $crate::interp::ops::$name::fast(&mut st, $($oname),*) {
                             Flow::Next => Done::Next,
                             Flow::Jump(t) => Done::Jump(t),
+                            Flow::Record(r) => {
+                                $crate::profile::record(&st, r);
+                                Done::Next
+                            }
+                            Flow::RecordPair(p) => {
+                                $crate::profile::record_pair(&st, p);
+                                Done::Next
+                            }
+                            Flow::JumpRecordCall(t, s) => {
+                                $crate::profile::record_call_pushed(&st, s);
+                                Done::Jump(t)
+                            }
                             Flow::Cold => {
                                 let St { cx, fp, acc, .. } = st;
                                 // SAFETY: the cold step takes the same state as this arm.
