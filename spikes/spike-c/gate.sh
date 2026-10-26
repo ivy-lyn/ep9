@@ -9,7 +9,8 @@
 #        release build, where T0 runs the threaded dispatch and placement (b) code really runs.
 #        The kernels check prints SKIP without the v8-v7 checkout (scripts/sync-bench.sh).
 #   gate.sh am3          (plan v9 M4-P1 SPIKEC-1; protocol §2, §3 config C as a correctness run)
-#     1  release build
+#     1  release build (always: cargo decides what is fresh, so the checks never run a binary
+#        of older sources; in `all` mode the structural step's build counts, once per run)
 #     2  `spike-c compile crypto`: am3 through the whole pipeline from the live facts of an
 #        n = 1 T0 run (graph builder, lattice check, linear scan, a64 emit); prints the report
 #     3  `spike-c tier crypto --n 1` and `spike-c tier crypto` (n = 8): crypto with am3
@@ -36,6 +37,7 @@ case "$host" in *windows*) exe=".exe" ;; esac
 
 results=()
 failed=0
+built="" # this invocation's release build: "" not run yet, else PASS or FAIL
 record() { # id status note
   results+=("$(printf '%-24s %-5s %s' "$1" "$2" "$3")")
   if [ "$2" = FAIL ]; then failed=1; fi
@@ -47,10 +49,29 @@ run() { # id cmd...: runs cmd, records PASS or FAIL
   if "$@"; then record "$id" PASS ""; else record "$id" FAIL "exit $?"; fi
 }
 
+# The release build, at most once per invocation (never skipped because a binary exists: it
+# may be one of older sources). Returns 0 if it passed.
+build_release() {
+  if [ -z "$built" ]; then
+    echo "== [build-release] cargo build --locked --release"
+    local status=0
+    cargo build --locked --release || status=$?
+    if [ "$status" = 0 ]; then
+      built=PASS
+      record "build-release" PASS ""
+    else
+      built=FAIL
+      record "build-release" FAIL "exit $status"
+    fi
+  fi
+  [ "$built" = PASS ]
+}
+
 structural() {
   run "unit-tests" cargo test --locked
-  run "build-release" cargo build --locked --release
-  if [ -x "$CARGO_TARGET_DIR/release/spike-c$exe" ]; then
+  if ! build_release; then
+    record "structural/release" FAIL "release build failed"
+  elif [ -x "$CARGO_TARGET_DIR/release/spike-c$exe" ]; then
     "$CARGO_TARGET_DIR/release/spike-c$exe"
     run "structural/release" "$CARGO_TARGET_DIR/release/spike-c$exe" structural all
   else
@@ -59,8 +80,9 @@ structural() {
 }
 
 am3() {
-  if [ ! -x "$CARGO_TARGET_DIR/release/spike-c$exe" ]; then
-    run "build-release" cargo build --locked --release
+  if ! build_release; then
+    record "am3" FAIL "release build failed"
+    return
   fi
   local bin="$CARGO_TARGET_DIR/release/spike-c$exe"
   local bench="${SPIKE_C_BENCH_DIR:-$here/../../third_party/bench-v8v7/bench/bench-v8}"
