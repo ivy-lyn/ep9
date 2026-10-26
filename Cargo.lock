@@ -112,6 +112,7 @@ dependencies = [
  "ep9_frontend",
  "ep9_heap",
  "ep9_vm",
+ "libc",
 ]
 
 [[package]]
