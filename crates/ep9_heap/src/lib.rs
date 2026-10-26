@@ -49,7 +49,7 @@ pub use cell::{
     CellKind, CellPtr, CellSize, HeapLayout, KindError, KindId, SizeFn, Space, TraceFn,
 };
 pub use ep9_platform::CageConfig;
-pub use heap::{AllocError, GcStats, Heap, HeapConfig};
+pub use heap::{AllocError, GcStats, Heap, HeapConfig, VerifyMode};
 pub use memory::HeapError;
 pub use roots::{GlobalHandle, RootId, RootStrength, ScratchRoots, WeakHandle};
 pub use trace::{Tracer, WeakVisitor};
