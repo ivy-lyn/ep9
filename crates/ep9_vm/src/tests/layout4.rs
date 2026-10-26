@@ -219,13 +219,14 @@ fn ic_layout_2_constants() {
 
 // ---- Runtime fields ---------------------------------------------------------------------------
 
-/// `Cx::math_random` (V9-D16): numbers in [0, 1), multiples of 2^-52, not all equal, and the
-/// same sequence for two isolates of one process (one process hash key).
+/// `Cx::math_random` (V9-D16): numbers in [0, 1), multiples of 2^-52, not all equal, and a
+/// distinct sequence for each isolate of one process (§21.3.2.27: distinct realms give distinct
+/// sequences).
 #[test]
 fn math_random_is_xorshift128_plus_in_0_1() {
     let a: Vec<f64> = with_cx(false, |cx| (0..1000).map(|_| cx.math_random()).collect());
     let b: Vec<f64> = with_cx(false, |cx| (0..1000).map(|_| cx.math_random()).collect());
-    assert_eq!(a, b, "one seed per process key");
+    assert_ne!(a[..8], b[..8], "two isolates, two streams");
     for &x in &a {
         assert!((0.0..1.0).contains(&x), "{x}");
         assert_eq!(
@@ -242,10 +243,73 @@ fn math_random_is_xorshift128_plus_in_0_1() {
 
 #[test]
 fn the_rng_seed_is_never_zero() {
-    let s = crate::runtime::rng_seed();
-    assert_ne!(s, [0, 0]);
     let iso = isolate(config(Dispatch::DEFAULT, false));
-    assert_eq!(iso.rt.rng.get(), s);
+    let s = crate::runtime::rng_seed(iso.rt.id);
+    assert_ne!(s, [0, 0]);
+    assert_eq!(iso.rt.rng.get(), s, "the seed of the isolate's id");
+    assert_ne!(
+        s,
+        crate::runtime::rng_seed(iso.rt.id + 1),
+        "another id, another seed"
+    );
+    for id in 0..64 {
+        assert_ne!(crate::runtime::rng_seed(id), [0, 0], "id {id}");
+    }
+}
+
+/// The first `Math.random` numbers (as bits) of two new isolates of this process.
+fn random_bits_of_two_new_isolates() -> [Vec<u64>; 2] {
+    let one = || {
+        with_cx(false, |cx| {
+            (0..4).map(|_| cx.math_random().to_bits()).collect()
+        })
+    };
+    [one(), one()]
+}
+
+/// Child of `one_hash_seed_gives_one_math_random_run`: prints the `Math.random` bits of two
+/// new isolates when `EP9_RNG_CHILD=rng`.
+#[test]
+fn math_random_seed_child() {
+    if std::env::var("EP9_RNG_CHILD").as_deref() != Ok("rng") {
+        return;
+    }
+    println!("RNGBITS {:?}", random_bits_of_two_new_isolates());
+}
+
+#[cfg(not(miri))]
+fn child_random_bits(seed: &str) -> String {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "tests::layout4::math_random_seed_child",
+            "--exact",
+            "--nocapture",
+            "--test-threads",
+            "1",
+        ])
+        .env("EP9_RNG_CHILD", "rng")
+        .env("EP9_HASH_SEED", seed)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = String::from_utf8(out.stdout).unwrap();
+    let i = text
+        .find("RNGBITS ")
+        .expect("the child printed its numbers");
+    text[i..].lines().next().unwrap().to_owned()
+}
+
+/// V9-D16: two runs with one `EP9_HASH_SEED` give the same `Math.random` numbers isolate by
+/// isolate (the n-th isolate of the run has one seed); the two isolates of one run differ;
+/// another seed gives other numbers.
+#[test]
+#[cfg(not(miri))]
+fn one_hash_seed_gives_one_math_random_run() {
+    let one = child_random_bits("1");
+    assert_eq!(one, child_random_bits("1"), "EP9_HASH_SEED=1 twice");
+    assert_ne!(one, child_random_bits("2"), "another seed, other numbers");
+    let [a, b] = random_bits_of_two_new_isolates();
+    assert_ne!(a, b, "two isolates of one process");
 }
 
 /// `Runtime::kept_objects` is a strong root slot: a list stored there (by a function that has

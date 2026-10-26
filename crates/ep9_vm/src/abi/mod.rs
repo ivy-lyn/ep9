@@ -1485,8 +1485,10 @@ impl<'s> Cx<'s> {
 
     /// The next value of `Math.random` (§21.3.2.27): a number in [0, 1) from the isolate's
     /// xorshift128+ state (`Runtime::rng`, the V8 generator). The state is seeded per isolate
-    /// from the process hash key, which is random from the OS, or fixed by `EP9_HASH_SEED`
-    /// (`runtime::rng_seed`). Never throws, never allocates; not for cryptography.
+    /// from the process hash key (random from the OS, or fixed by `EP9_HASH_SEED`) and the
+    /// isolate's id (`runtime::rng_seed`): each isolate has its own sequence, and one
+    /// `EP9_HASH_SEED` repeats it run to run. Never throws, never allocates; not for
+    /// cryptography.
     pub fn math_random(&mut self) -> f64 {
         let rng = &self.rt().rng;
         let [mut s1, s0] = rng.get();
