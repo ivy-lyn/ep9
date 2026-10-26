@@ -685,9 +685,23 @@ pub(crate) fn construct_function_object(
 
 /// OrdinaryCreateFromConstructor(F, "%Object.prototype%") (§10.1.13): a `prototype` that is
 /// not an object falls back to `%Object.prototype%` of GetFunctionRealm(F) (§10.1.14 step 4).
+///
+/// A FUNCTION `f` whose `prototype` is an own data property already (not the lazy one,
+/// `exotic.rs`) reads it with one shape lookup; every other `f` (a lazy `prototype`, an
+/// accessor, a bound function, a Proxy) takes the generic `[[Get]]` (M4-P1 OBJ-ALLOC; the
+/// probe: `new` was 16% of earley-boyer samples, mostly this `[[Get]]`).
 pub(crate) fn ordinary_create_from_constructor(cx: &mut Cx, f: u64) -> Res<u64> {
     let rt = cx.rt();
-    let p = property::get(cx, f, rt.atom(Atom::Prototype))?;
+    let key = rt.atom(Atom::Prototype);
+    let own = if is_function(f) {
+        object::own_get(f, key).filter(|&(_, a)| a & object::attr::ACCESSOR == 0)
+    } else {
+        None
+    };
+    let p = match own {
+        Some((v, _)) => v,
+        None => property::get(cx, f, key)?,
+    };
     let proto = if is_object(p) {
         p
     } else {
@@ -705,15 +719,130 @@ fn poll(cx: &mut Cx, fp: *mut u64) -> Res<()> {
     Ok(())
 }
 
+/// Most arguments a call keeps inline in an [`ArgBuf`] (M4-P1 OBJ-ALLOC, PERF3 step-2 item
+/// 1): the cold call path decodes and copies up to this many with no heap allocation.
+pub(crate) const INLINE_ARGS: usize = 8;
+
+/// A short list of `T`: up to [`INLINE_ARGS`] items inline, more in a heap `Vec` (a long
+/// argument list, a spread, bound arguments). It derefs to `[T]`.
+///
+/// The cold call path keeps register offsets ([`CallSite::args`]) and the argument copy of
+/// `slow::call` in it. That copy holds Value bits that stay rooted elsewhere (the caller's
+/// registers, a bound function, a spread array that a stack slot keeps), as the `Vec` before
+/// it did; the inline part is on the native stack, which the GC scans conservatively anyway.
+pub(crate) struct ArgBuf<T: Copy + Default> {
+    len: usize,
+    inline: [T; INLINE_ARGS],
+    /// All items when `len > INLINE_ARGS`; empty (no allocation) otherwise.
+    spill: Vec<T>,
+}
+
+impl<T: Copy + Default> ArgBuf<T> {
+    #[inline]
+    pub(crate) fn new() -> Self {
+        ArgBuf {
+            len: 0,
+            inline: [T::default(); INLINE_ARGS],
+            spill: Vec::new(),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn push(&mut self, v: T) {
+        if self.len < INLINE_ARGS {
+            self.inline[self.len] = v;
+        } else {
+            if self.len == INLINE_ARGS {
+                self.spill.reserve(INLINE_ARGS * 2);
+                self.spill.extend_from_slice(&self.inline);
+            }
+            self.spill.push(v);
+        }
+        self.len += 1;
+    }
+
+    #[inline]
+    pub(crate) fn pop(&mut self) -> Option<T> {
+        if self.len == 0 {
+            return None;
+        }
+        let v = self[self.len - 1];
+        if self.len > INLINE_ARGS {
+            self.spill.pop();
+            if self.len - 1 == INLINE_ARGS {
+                self.inline.copy_from_slice(&self.spill);
+                self.spill.clear();
+            }
+        }
+        self.len -= 1;
+        Some(v)
+    }
+
+    /// Puts `n` copies of `fill` in front of the items.
+    pub(crate) fn prepend(&mut self, n: usize, fill: T) {
+        if n == 0 {
+            return;
+        }
+        let total = self.len + n;
+        if total <= INLINE_ARGS {
+            self.inline.copy_within(0..self.len, n);
+            self.inline[..n].fill(fill);
+        } else {
+            let mut v = Vec::with_capacity(total);
+            v.resize(n, fill);
+            v.extend_from_slice(&self[..]);
+            self.spill = v;
+        }
+        self.len = total;
+    }
+}
+
+impl<T: Copy + Default> core::ops::Deref for ArgBuf<T> {
+    type Target = [T];
+    #[inline]
+    fn deref(&self) -> &[T] {
+        if self.len <= INLINE_ARGS {
+            &self.inline[..self.len]
+        } else {
+            &self.spill
+        }
+    }
+}
+
+impl<T: Copy + Default> core::ops::DerefMut for ArgBuf<T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [T] {
+        if self.len <= INLINE_ARGS {
+            &mut self.inline[..self.len]
+        } else {
+            &mut self.spill
+        }
+    }
+}
+
+impl<T: Copy + Default> FromIterator<T> for ArgBuf<T> {
+    #[inline]
+    fn from_iter<I: IntoIterator<Item = T>>(it: I) -> Self {
+        let mut b = ArgBuf::new();
+        for v in it {
+            b.push(v);
+        }
+        b
+    }
+}
+
 /// The arguments of a call instruction, decoded from its bytes (slow paths only).
 pub(crate) struct CallSite {
     pub callee: u64,
     pub this: u64,
-    /// Register slot offsets (from fp) of the arguments, in order.
-    pub args: Vec<isize>,
+    /// Register slot offsets (from fp) of the arguments, in order (no heap allocation for up
+    /// to [`INLINE_ARGS`]).
+    pub args: ArgBuf<isize>,
     pub next_pc: *const u8,
     pub construct: bool,
     pub spread: bool,
+    /// The feedback slot operand (the Call slot of a `Construct*` site: `construct_ic.rs`).
+    pub slot: u32,
 }
 
 /// Decodes the `Call*`/`Construct*` instruction at `pc` of the frame `fp`.
@@ -730,35 +859,51 @@ pub(crate) fn decode_call(fp: *mut u64, pc: *const u8) -> CallSite {
     };
     // SAFETY: register operands of verified code name slots of the live frame `fp`.
     let rd = |s: isize| unsafe { *fp.offset(s) };
-    let list = |i: usize, n: usize| -> Vec<isize> {
+    let list = |i: usize, n: usize, skip: usize| -> ArgBuf<isize> {
         let first = insn.operand(i) as isize;
-        (0..n as isize).map(|k| first + k).collect()
+        (skip as isize..n as isize).map(|k| first + k).collect()
     };
+    let one = |a: isize| -> ArgBuf<isize> { core::iter::once(a).collect() };
     let next_pc = pc.wrapping_add(insn.size() as usize);
     let callee = rd(reg(0));
+    let mut slot = 0;
     let (this, args, construct, spread) = match insn.opcode {
         O::CallAnyReceiver | O::CallProperty | O::CallWithSpread => {
             let n = insn.operand(2) as usize;
-            let l = list(1, n);
-            let this = l.first().map_or(UNDEFINED, |&s| rd(s));
-            let args = l.into_iter().skip(1).collect();
-            (this, args, false, insn.opcode == O::CallWithSpread)
+            // The list holds the receiver, then the arguments.
+            let this = if n > 0 {
+                rd(insn.operand(1) as isize)
+            } else {
+                UNDEFINED
+            };
+            (this, list(1, n, 1), false, insn.opcode == O::CallWithSpread)
         }
-        O::CallProperty0 => (rd(reg(1)), vec![], false, false),
-        O::CallProperty1 => (rd(reg(1)), vec![reg(2)], false, false),
-        O::CallProperty2 => (rd(reg(1)), vec![reg(2), reg(3)], false, false),
+        O::CallProperty0 => (rd(reg(1)), ArgBuf::new(), false, false),
+        O::CallProperty1 => (rd(reg(1)), one(reg(2)), false, false),
+        O::CallProperty2 => (
+            rd(reg(1)),
+            [reg(2), reg(3)].into_iter().collect(),
+            false,
+            false,
+        ),
         O::CallUndefinedReceiver => {
             let n = insn.operand(2) as usize;
-            (UNDEFINED, list(1, n), false, false)
+            (UNDEFINED, list(1, n, 0), false, false)
         }
-        O::CallUndefinedReceiver0 => (UNDEFINED, vec![], false, false),
-        O::CallUndefinedReceiver1 => (UNDEFINED, vec![reg(1)], false, false),
-        O::CallUndefinedReceiver2 => (UNDEFINED, vec![reg(1), reg(2)], false, false),
+        O::CallUndefinedReceiver0 => (UNDEFINED, ArgBuf::new(), false, false),
+        O::CallUndefinedReceiver1 => (UNDEFINED, one(reg(1)), false, false),
+        O::CallUndefinedReceiver2 => (
+            UNDEFINED,
+            [reg(1), reg(2)].into_iter().collect(),
+            false,
+            false,
+        ),
         O::Construct | O::ConstructWithSpread => {
             let n = insn.operand(2) as usize;
+            slot = insn.unsigned(3);
             (
                 UNDEFINED,
-                list(1, n),
+                list(1, n, 0),
                 true,
                 insn.opcode == O::ConstructWithSpread,
             )
@@ -772,6 +917,7 @@ pub(crate) fn decode_call(fp: *mut u64, pc: *const u8) -> CallSite {
         next_pc,
         construct,
         spread,
+        slot,
     }
 }
 

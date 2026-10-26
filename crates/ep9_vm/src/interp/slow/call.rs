@@ -32,7 +32,7 @@
 use ep9_value::Throw;
 
 use crate::bound;
-use crate::call::{self, CallSite};
+use crate::call::{self, ArgBuf, CallSite};
 use crate::conv::{Res, describe};
 use crate::error::{self, not_implemented, stack_overflow, throw_error};
 use crate::feedback;
@@ -84,9 +84,10 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
         return call_native(cx, fp, s, fi);
     }
     let rt = cx.rt();
-    // The argument values stay rooted in the caller's registers while this copy exists.
+    // The argument values stay rooted in the caller's registers while this copy exists. Up
+    // to `call::INLINE_ARGS` of them need no heap allocation (`call::ArgBuf`).
     // SAFETY: the offsets come from register operands of verified code in the frame `fp`.
-    let mut args: Vec<u64> = s.args.iter().map(|&o| unsafe { *fp.offset(o) }).collect();
+    let mut args: ArgBuf<u64> = s.args.iter().map(|&o| unsafe { *fp.offset(o) }).collect();
     // The spread operand (`CallWithSpread`, `ConstructWithSpread`) is an Array that bytecode
     // made: BytecodeGen ran the iterator protocol already (`arguments_into`), or built the
     // list itself (a spread that is not last, a default derived constructor's rest array).
@@ -606,12 +607,12 @@ fn prepend_bound_args(
     cx: &mut Cx,
     f: u64,
     new_target: u64,
-    args: &mut Vec<u64>,
+    args: &mut ArgBuf<u64>,
 ) -> Res<bound::Unwrapped> {
     let u = bound::unwrap(cx, f, new_target)?;
     let n = u.bound as usize;
     if n > 0 {
-        args.splice(0..0, core::iter::repeat_n(UNDEFINED, n));
+        args.prepend(n, UNDEFINED);
         bound::copy_chain_args(f, &mut args[..n]);
     }
     Ok(u)
