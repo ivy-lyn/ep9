@@ -585,11 +585,24 @@ fn check_g() -> Result<Vec<String>, String> {
     out.push(format!(
         "held in the callee-saved register: {addr:#x} survived gc() (found by the conservative scan), tag = 42"
     ));
-    drop(s);
+    // Every run's session stays alive to the end of the check, so the 6 cages are reserved
+    // at once and no two runs share an address. The scan reads the whole thread stack, this
+    // frame too, and this frame may still hold an earlier run's address (`addr`, `bits`).
+    // When a dropped cage's base came back for a later round (2047 slots of 64 GiB, about 1
+    // run in 100 on linux arm64), that stale word named the new masked object and failed the
+    // round. In a live cage of its own, it is outside the masked run's heap.
+    let mut seen = vec![addr];
+    let mut keep = vec![s];
     // Negative control: the same code with the register XORed: nothing else holds the object.
     for round in 0..5 {
         let (masked, roots, s) = run_hold(MASK)?;
         let addr = (masked ^ MASK) as usize;
+        if seen.contains(&addr) {
+            return Err(format!(
+                "round {round}: the masked object {addr:#x} has an earlier run's address"
+            ));
+        }
+        seen.push(addr);
         if roots.contains(&addr) {
             return Err(format!(
                 "round {round}: the conservative scan found the masked object {addr:#x}"
@@ -600,6 +613,7 @@ fn check_g() -> Result<Vec<String>, String> {
                 "round {round}: the masked object {addr:#x} survived gc()"
             ));
         }
+        keep.push(s);
     }
     out.push("masked (XOR 0x5a5a...): the object was collected by gc(), 5 of 5 rounds".into());
     Ok(out)
