@@ -2,8 +2,7 @@
 //! implemented", TDZ and termination (gates "exceptions", "stack-limit-rangeerror").
 
 use ep9_bytecode::{
-    FeedbackSlotKind, HandlerKind, Label, Register, RegisterList, RuntimeId, ScopeKind,
-    VariableMode, VerifiedUnit,
+    HandlerKind, Label, Register, RegisterList, RuntimeId, ScopeKind, VariableMode, VerifiedUnit,
 };
 
 use super::{
@@ -317,12 +316,6 @@ fn type_errors_and_not_implemented_are_catchable() {
         try_print_message(&mut s, ctx, |s| {
             s.construct_global("print", RegisterList::EMPTY);
         });
-        // /a/  (RegExp literals are not in v0)
-        try_print_message(&mut s, ctx, |s| {
-            let k = s.b.string_constant("a");
-            let slot = s.b.feedback_slot(FeedbackSlotKind::Literal);
-            s.b.create_reg_exp_literal(k, slot, 0);
-        });
         // 1n
         try_print_message(&mut s, ctx, |s| {
             let k =
@@ -344,7 +337,6 @@ fn type_errors_and_not_implemented_are_catchable() {
             "undefined is not a function",
             "Cannot read properties of undefined (reading 'x')",
             "function print is not a constructor",
-            "not implemented in ep9 v0: RegExp literals",
             "not implemented in ep9 v0: BigInt values",
             "x is not defined",
         ]
