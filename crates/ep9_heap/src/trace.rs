@@ -11,7 +11,8 @@
 //!        unmarked is cleared to `undefined`
 //! ephemeron (key, value), e.g. a WeakMap entry: the key slot is weak; the value is traced
 //!        only once the key is marked
-//!   visit_ephemeron: key not a cell, or already marked -> visit(value) now
+//!   visit_ephemeron: key undefined (cleared) -> visit_weak(value)
+//!                    key not a cell, or already marked -> visit(value) now
 //!                    else -> pending list
 //!   drain_to_fixpoint: drain; then rounds of {pending entry whose key is now marked ->
 //!        visit(value); drain} until a round marks nothing; after EPHEMERON_ROUNDS rounds the
@@ -277,8 +278,10 @@ impl<'h> Tracer<'h> {
     /// An ephemeron: `value` is strong only while the cell in `key` is live (a WeakMap entry;
     /// 03-gc "Weak semantics"). `key` is a weak slot as [`Tracer::visit_weak`] treats it: it
     /// is cleared to `undefined` at GC end if its cell dies, and then `value` is cleared too,
-    /// unless its own cell is live by another path. A key that is not a cell keeps `value` as
-    /// a strong slot would. Both slots lie inside the live cell being traced.
+    /// unless its own cell is live by another path. A key of `undefined` is that cleared form,
+    /// so its `value` stays weak ([`Tracer::visit_weak`]) at every later GC. Any other key that
+    /// is not a cell keeps `value` as a strong slot would. Both slots lie inside the live cell
+    /// being traced.
     ///
     /// A value is traced once its key is marked, from any path, also when the key is marked
     /// later in this GC (the fixpoint, module doc). So a value that reaches only its own key,
@@ -293,9 +296,15 @@ impl<'h> Tracer<'h> {
             self.mem.contains(core::ptr::from_ref(value).addr()),
             "visit_ephemeron on a slot outside the heap"
         );
+        let kb = key.bits();
+        if kb == Value::UNDEFINED.to_bits() {
+            // A key an earlier GC cleared: the value stays weak, so it dies with its last
+            // other path (a strong visit here would keep it alive for good).
+            self.visit_weak(value);
+            return;
+        }
         let errors = self.errors.len();
         self.visit_weak(key);
-        let kb = key.bits();
         if (self.check && self.errors.len() != errors)
             || kb == 0
             || !is_cell_bits(kb)
