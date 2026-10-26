@@ -1,0 +1,6 @@
+# cargo-fuzz output. Crash inputs never leave the machine or the job (plan v9 rule 14, V9-A17).
+/target/
+/corpus/
+/artifacts/
+/coverage/
+/logs/

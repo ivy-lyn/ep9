@@ -220,11 +220,12 @@ fn on_worker<R>(
     let program = &parsed.program;
     let built = SemanticBuilder::new_compiler().build(program);
     if built.diagnostics.has_errors() {
-        let kept: Vec<&OxcDiagnostic> = built
-            .diagnostics
-            .errors()
-            .filter(|d| !allowed.drops(d))
-            .collect();
+        // The allowed set (E1-E3), then the PRE-1 post-filter (strict `eval`/`arguments`
+        // assign errors on names that are only read).
+        let kept = crate::strict_filter::kept(
+            program,
+            built.diagnostics.errors().filter(|d| !allowed.drops(d)),
+        );
         if !kept.is_empty() {
             return Err(syntax(source, kept.into_iter()));
         }

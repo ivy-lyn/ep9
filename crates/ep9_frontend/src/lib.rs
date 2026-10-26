@@ -407,14 +407,18 @@ pub(crate) fn parse<'a>(
 }
 
 /// oxc_semantic with syntax checks. Call only on a program that passed [`parse`] (layer 2), so
-/// the recursive visitor stays within the worker stack.
+/// the recursive visitors stay within the worker stack. oxc's strict `eval`/`arguments` assign
+/// errors on names that are only read go through the PRE-1 post-filter (`strict_filter`).
 pub(crate) fn semantic<'a>(
     source: &str,
     program: &'a Program<'a>,
 ) -> Result<Semantic<'a>, CompileError> {
     let built = SemanticBuilder::new_compiler().build(program);
     if built.diagnostics.has_errors() {
-        return Err(early_errors(source, built.diagnostics.errors()).into());
+        let kept = strict_filter::kept(program, built.diagnostics.errors());
+        if !kept.is_empty() {
+            return Err(early_errors(source, kept.into_iter()).into());
+        }
     }
     Ok(built.semantic)
 }

@@ -1,0 +1,137 @@
+# Front-end cargo-fuzz campaigns (plan v9 V9-D24; docs/plan/10-quality.md section 4: the
+# front-end budget is 24 CPU-h at M1). Dispatch only; the orchestrator runs it (plan v9 rule 3).
+#
+#   one job per target x runner: seeds (fuzz/seeds + a test262 sample) -> cargo fuzz run
+#   -fork=<jobs> for <seconds> -> crash count + SHA-256 per crash file -> fuzz-summary JSON
+#
+# The repo is public (plan v9 rule 14, V9-A17): fuzz/scripts/run.sh sends the fuzzer output
+# to a file inside the job and prints only the crash count, the hashes and numeric stats. The
+# job uploads only the summary JSON (target, seconds, fork, CPU-h, executed units, crash count,
+# crash hashes): no crash input, no corpus, no log. A crash fails the job with a fixed text;
+# the input is reproduced off GitHub (the orchestrator's triage host), never from this job.
+# The self-test step proves the output rule on a fixture crash before each campaign.
+#
+# CPU-h of a job = seconds x jobs / 3600 (the fork workers run all the time). Default: 3
+# targets x 2 h x 4 workers = 24 CPU-h (V9-D24 counting: one counted run after the last fix).
+name: fuzz
+
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "mutation time per job, in seconds (at most 19800: the 360-min job limit)"
+        required: true
+        default: "7200"
+        type: string
+      jobs:
+        description: "libFuzzer -fork workers per job (the runner has 4 vCPU)"
+        required: true
+        default: "4"
+        type: string
+      runner:
+        description: "runner image"
+        required: true
+        default: ubuntu-24.04
+        type: choice
+        options:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+      max_len:
+        description: "libFuzzer -max_len (deep nesting forms need about 20000-120000 bytes to reach the caps)"
+        required: true
+        default: "4096"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_FUZZ_VERSION: 0.12.0
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  campaign:
+    name: cargo-fuzz ${{ matrix.target }} (${{ inputs.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [frontend_compile, function_ctor, eval_context]
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check the inputs
+        env:
+          SECONDS_IN: ${{ inputs.seconds }}
+          JOBS_IN: ${{ inputs.jobs }}
+          MAX_LEN_IN: ${{ inputs.max_len }}
+        run: |
+          for v in "$SECONDS_IN" "$JOBS_IN" "$MAX_LEN_IN"; do
+            case "$v" in '' | *[!0-9]*) echo "::error::not a number: $v"; exit 1 ;; esac
+          done
+          [ "$SECONDS_IN" -le 19800 ] || { echo "::error::seconds > 19800"; exit 1; }
+          [ "$JOBS_IN" -ge 1 ] && [ "$JOBS_IN" -le 16 ] || { echo "::error::jobs not in 1..16"; exit 1; }
+      # The root stable pin builds cargo-fuzz; fuzz/rust-toolchain.toml builds the targets.
+      - uses: ./.github/actions/setup-rust
+      - name: Install the fuzz nightly (fuzz/rust-toolchain.toml)
+        working-directory: fuzz
+        run: |
+          chan="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+          rustup toolchain install "$chan" --profile minimal --no-self-update
+          rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: fuzz -> target
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: third_party/test262
+          key: test262-${{ runner.os }}-${{ hashFiles('third_party/test262.commit', 'third_party/patches/test262/**') }}
+      - run: bash scripts/sync-test262.sh
+      - name: Seed corpus (test262 sample)
+        run: bash fuzz/scripts/seed-test262.sh third_party/test262 fuzz/corpus
+      - name: Output rule self-test (a fixture crash shows only the count and the hash)
+        run: bash fuzz/scripts/self-test.sh
+      - name: Build the targets
+        run: bash fuzz/scripts/run.sh build
+      - name: Campaign
+        env:
+          TARGET: ${{ matrix.target }}
+          SECONDS_IN: ${{ inputs.seconds }}
+          FUZZ_FORK: ${{ inputs.jobs }}
+          FUZZ_MAX_LEN: ${{ inputs.max_len }}
+          FUZZ_SUMMARY: fuzz-summary.json
+        run: bash fuzz/scripts/run.sh "$TARGET" "$SECONDS_IN" "fuzz/corpus/$TARGET" "fuzz/seeds/$TARGET"
+      # The summary holds numbers and hashes only. It gets the commit, runner and CPU-h here.
+      - name: Summary
+        if: ${{ always() }}
+        env:
+          TARGET: ${{ matrix.target }}
+          RUNNER_IMAGE: ${{ inputs.runner }}
+          SECONDS_IN: ${{ inputs.seconds }}
+          JOBS_IN: ${{ inputs.jobs }}
+          SHA: ${{ github.sha }}
+        run: |
+          [ -f fuzz-summary.json ] || echo '{"crashes":null}' > fuzz-summary.json
+          cpu_h="$(awk -v s="$SECONDS_IN" -v j="$JOBS_IN" 'BEGIN { printf "%.2f", s * j / 3600 }')"
+          body="$(cat fuzz-summary.json)"
+          printf '{"commit":"%s","runner":"%s","cpu_hours":%s,"run":%s}\n' \
+            "$SHA" "$RUNNER_IMAGE" "$cpu_h" "$body" > "fuzz-summary-$TARGET.json"
+          { echo "## cargo-fuzz $TARGET"; echo '```'; cat "fuzz-summary-$TARGET.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: fuzz-summary-${{ matrix.target }}
+          path: fuzz-summary-${{ matrix.target }}.json
+          if-no-files-found: warn
+          retention-days: 90

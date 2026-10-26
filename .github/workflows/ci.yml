@@ -820,3 +820,61 @@ jobs:
           name: sp-tsrs-win-log
           path: sp-tsrs-win.log
           if-no-files-found: warn
+
+  # Front-end fuzz smoke (plan v9 M4-P2 FE-FUZZ; docs/plan/10-quality.md section 4): the 3
+  # cargo-fuzz targets of fuzz/ (its own nightly workspace, fuzz/README.md), seeded from
+  # fuzz/seeds and a test262 sample, FUZZ_SMOKE seconds of mutation each. The repo is public
+  # (plan v9 rule 14, V9-A17): fuzz/scripts/run.sh sends the fuzzer output to a file inside the
+  # job and prints only the crash count, the SHA-256 of each crash file and numeric stats; the
+  # job uploads nothing. The self-test step first proves that rule on a fixture crash. A CI
+  # probe of the 10-minute smoke sets frontend_compile=600 (and the timeout to 45).
+  # Rule 25: the Mac run of every step except the mutation is 172 s (cold build in the
+  # self-test 102 s, test262 seeds 57 s, seed replay 11 s) + 180 s mutation = 5.9 min; on
+  # ubuntu-24.04 (4 vCPU, cold cache, cargo-fuzz install) about 12-15 min (est.).
+  fuzz-smoke:
+    name: fuzz smoke (linux-x64)
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-24.04
+    # Plan v9 section 9.2: 30 (new job; the fixer re-reads it from the first measured run).
+    timeout-minutes: 30
+    env:
+      CARGO_FUZZ_VERSION: 0.12.0
+      # <target>=<seconds of mutation>, one per target.
+      FUZZ_SMOKE: frontend_compile=60 function_ctor=60 eval_context=60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The +toolchain of fuzz/rust-toolchain.toml (the Miri pin); the root stable pin builds
+      # cargo-fuzz itself.
+      - uses: ./.github/actions/setup-rust
+      - name: Install the fuzz nightly (fuzz/rust-toolchain.toml)
+        working-directory: fuzz
+        run: |
+          chan="$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)"
+          rustup toolchain install "$chan" --profile minimal --no-self-update
+          rustc --version
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: fuzz -> target
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: third_party/test262
+          key: test262-${{ runner.os }}-${{ hashFiles('third_party/test262.commit', 'third_party/patches/test262/**') }}
+      - run: bash scripts/sync-test262.sh
+      - name: Seed corpus (test262 sample)
+        run: bash fuzz/scripts/seed-test262.sh third_party/test262 fuzz/corpus
+      - name: Output rule self-test (a fixture crash shows only the count and the hash)
+        run: bash fuzz/scripts/self-test.sh
+      - name: Build the targets
+        run: bash fuzz/scripts/run.sh build
+      - name: Fuzz smoke
+        run: |
+          rc=0
+          for item in $FUZZ_SMOKE; do
+            t="${item%%=*}"
+            s="${item#*=}"
+            bash fuzz/scripts/run.sh "$t" "$s" "fuzz/corpus/$t" "fuzz/seeds/$t" || rc=1
+          done
+          exit "$rc"
