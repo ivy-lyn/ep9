@@ -50,7 +50,6 @@
 //!   has the same keys in the same order, all in-object.
 
 use ep9_bytecode::{Constant, Instructions, Oddball, OperandKind};
-use ep9_heap::{CellPtr, KindId};
 
 use crate::error::FrameRef;
 use crate::feedback;
@@ -60,7 +59,7 @@ use crate::interp::dsl::{FSlot, K};
 use crate::interp::slow::Lit;
 use crate::interp::{Cx, Flow, St};
 use crate::kinds::{self as kind, is_cell_bits};
-use crate::object::{self, arr, attr, cell, init, obj, rd};
+use crate::object::{self, alloc_from_shape, arr, attr, cell, elems, init, obj, rd};
 use crate::runtime::{Root, Runtime, val};
 use crate::shape::{self, slf};
 use crate::unit::FunctionInfo;
@@ -70,12 +69,6 @@ use crate::unit::FunctionInfo;
 const SHALLOW: u8 = 1;
 /// Bit 0 of the flags of `CloneObject`: the result has a null prototype (opcodes.rs).
 const CLONE_NULL_PROTO: u8 = 1;
-
-/// The ELEMENTS layout (object.rs layout table: +8 capacity (int32), +16 values).
-mod elems {
-    pub const CAPACITY: usize = 8;
-    pub const DATA: usize = 16;
-}
 
 /// CLONE handler fields (an IC_HANDLER cell, kind 70; the `ic.rs` IC_LAYOUT 2 table).
 pub(crate) mod ch {
@@ -93,26 +86,7 @@ mod pc {
     pub const SIZE: usize = CASES + CASE * crate::ic::POLY_CASES;
 }
 
-// ---- allocation (shared with construct_ic.rs) ------------------------------------------------
-
-/// A new JS object of kind `k` with `shape` (a live fast shape of that kind) and the shape's
-/// in-object capacity; every field holds undefined. GC point (the allocation): the caller has
-/// published its frame and keeps every Value it needs in a frame or a Rust local.
-///
-/// This is `object::alloc_with_shape` (private in object.rs, which this role does not own);
-/// the M4-P1 fixer may move it there.
-#[inline(always)]
-pub(crate) fn alloc_with_shape(rt: &Runtime, k: KindId, shape: u64) -> CellPtr {
-    let (cap, sk) = shape::field_layout(shape);
-    debug_assert_eq!(sk, k.get(), "a shape of another kind");
-    let size = obj::FIXED + 8 * (object::fixed_count(k.get()) + cap);
-    let c = rt.alloc(k, size);
-    // The size function reads the in-object count: set it before the next GC point.
-    // SAFETY: `c` is the new live cell.
-    unsafe { c.header() }.set_flags(cap as u16);
-    shape::install(rt, c.to_value().to_bits(), shape);
-    c
-}
+// ---- allocation ----------------------------------------------------------------------------
 
 /// A new array with `shape` (the realm's array shape), `length` = `n` and an ELEMENTS cell of
 /// capacity `n` whose element `i` is `value(i)` (the hole for none), or no ELEMENTS cell for
@@ -131,7 +105,7 @@ fn alloc_array(rt: &Runtime, shape: u64, n: usize, value: impl Fn(usize) -> u64)
     } else {
         UNDEFINED
     };
-    let a = alloc_with_shape(rt, kind::ARRAY, shape);
+    let a = alloc_from_shape(rt, kind::ARRAY, shape);
     init(a, arr::LENGTH, int32_bits(n as i32));
     if n > 0 {
         init(a, obj::ELEMENTS, e);
@@ -177,7 +151,7 @@ pub(crate) fn fast_object(st: &mut St<'_>, boilerplate: K, s: FSlot, flags: u8) 
     }
     rt.enter(st.fp, st.pc);
     // GC point; `shape` lives in a Rust local.
-    let o = alloc_with_shape(rt, kind::OBJECT, shape);
+    let o = alloc_from_shape(rt, kind::OBJECT, shape);
     for (i, &(_, v)) in props.iter().enumerate() {
         // A computed value (`None`) stays undefined: code after the creation defines it.
         if let Some(ci) = v {
@@ -286,7 +260,7 @@ pub(crate) fn fast_clone(st: &mut St<'_>, source: u64, flags: u8, s: FSlot) -> F
     rt.enter(st.fp, st.pc);
     // GC point; `result` lives in a Rust local, `source` in a frame register (its shape, and
     // so where its fields are, does not change in a GC).
-    let o = alloc_with_shape(rt, kind::OBJECT, result);
+    let o = alloc_from_shape(rt, kind::OBJECT, result);
     let sc = cell(source);
     for i in 0..n {
         let f = if i < scap {
@@ -513,7 +487,7 @@ pub(crate) fn cold_object(cx: &mut Cx, fp: *mut u64, pc: *const u8, k: u32) -> O
             arrays.push(a);
         }
     }
-    let o = alloc_with_shape(rt, kind::OBJECT, shape);
+    let o = alloc_from_shape(rt, kind::OBJECT, shape);
     let mut next = 0;
     for (j, &(_, val)) in props.iter().enumerate() {
         let Some(ci) = val else { continue };

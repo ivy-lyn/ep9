@@ -46,8 +46,7 @@ use crate::ic::hk;
 use crate::interp::dsl::{Count, FSlot, R, RList};
 use crate::interp::{CONSTRUCT_RETURN_STUB, Cx, Flow, St};
 use crate::kinds::{self as kind, is_cell_bits};
-use crate::literal_site::alloc_with_shape;
-use crate::object::{self, cell, init, obj, rd, rd_i32};
+use crate::object::{self, alloc_from_shape, cell, init, obj, rd, rd_i32};
 use crate::runtime::{Atom, frame_top, val};
 use crate::shape::{self, slf};
 use crate::unit::FunctionInfo;
@@ -111,7 +110,7 @@ pub(crate) fn fast<const SPREAD: bool>(
     let rt = st.rt();
     rt.enter(st.fp, st.pc);
     // GC point: `f` and the arguments are in this frame's registers, `shape` in a Rust local.
-    let this = alloc_with_shape(rt, kind::OBJECT, shape)
+    let this = alloc_from_shape(rt, kind::OBJECT, shape)
         .to_value()
         .to_bits();
     // SAFETY: `fp` is the live top frame (bytecode runs with no scratch area) and `this` is a

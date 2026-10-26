@@ -278,7 +278,9 @@ pub(crate) mod fixed {
     pub const BOUND: usize = 3;
 }
 
-mod elems {
+/// ELEMENTS cell fields (+8 capacity (int32), +16 values). Also used by the literal-site hit
+/// (`literal_site.rs`).
+pub(crate) mod elems {
     pub const CAPACITY: usize = 8;
     pub const DATA: usize = 16;
 }
@@ -630,6 +632,29 @@ fn alloc_with_shape(rt: &Runtime, k: KindId, s: u64, capacity: u8) -> CellPtr {
     // SAFETY: `c` is the new live cell.
     unsafe { c.header() }.set_flags(u16::from(capacity));
     shape::install(rt, c.to_value().to_bits(), s);
+    c
+}
+
+/// A new JS object of kind `k` with `shape` (a live fast shape of that kind) and the shape's
+/// in-object capacity (`shape::field_layout`); every field holds undefined. GC point (the
+/// allocation): the caller has published its frame and keeps every Value it needs in a frame
+/// or a Rust local. The literal-site and construct-site hits use it (`literal_site.rs`,
+/// `construct_ic.rs`; M4-P1 OBJ-ALLOC).
+///
+/// The body is [`alloc_with_shape`]'s, kept as a second copy on purpose: `inline(always)`
+/// keeps the allocation inside the T0 hit handlers, and leaving `alloc_with_shape` without
+/// the attribute keeps the code of its other callers as it was (one shared inline body
+/// changed the handler call counts of two targets by one, disasm-check, M4-P1 fixer).
+#[inline(always)]
+pub(crate) fn alloc_from_shape(rt: &Runtime, k: KindId, shape: u64) -> CellPtr {
+    let (cap, sk) = shape::field_layout(shape);
+    debug_assert_eq!(sk, k.get(), "a shape of another kind");
+    let size = obj::FIXED + 8 * (fixed_count(k.get()) + cap);
+    let c = rt.alloc(k, size);
+    // The size function reads the in-object count: set it before the next GC point.
+    // SAFETY: `c` is the new live cell.
+    unsafe { c.header() }.set_flags(cap as u16);
+    shape::install(rt, c.to_value().to_bits(), shape);
     c
 }
 
