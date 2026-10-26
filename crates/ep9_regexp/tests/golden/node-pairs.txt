@@ -1,4 +1,4 @@
-# RX0A differential golden (M4-P2): 523 (pattern, flags, lastIndex, input) cases and the
+# RX0A differential golden (M4-P2): 535 (pattern, flags, lastIndex, input) cases and the
 # result of one RegExp.prototype.exec in node v24.22.1. Columns are tab separated;
 # strings: printable ASCII, \\ for a backslash, \uXXXX for any other code unit. Result:
 # null | error (SyntaxError at compile) | match s-e ... (capture spans; - = not taken part).
@@ -526,3 +526,15 @@ x?	g	0		match 0-0
 \\W	i	0	\u212a	match 0-1
 \\W	i	0	\u017f	match 0-1
 (s)\\1	i	0	s\u017f	null
+\\k<\ud835\udc9c>		0	k<\ud835\udc9c>	match 0-5
+\\k<\ud835\udc9c>	i	0	k<\ud835\udc9c>	match 0-5
+\\k<\ud835\udc9c>	u	0	k<\ud835\udc9c>	error
+\\k<\\uD835\\uDC9C>		0	k<\ud835\udc9c>	match 0-5
+\\k<[a]>		0	k<a>	match 0-4
+[(?<a>x)]\\k<a>		0	ak<a>	match 0-5
+\\(?<a>x\\)\\k<a>		0	<a>x)k<a>	match 0-9
+(?<\ud835\udc9c>x)\\k<\ud835\udc9c>		0	axx	match 1-3 1-2
+\\k<\ud835\udc9c>(?<\ud835\udc9c>y)		0	y	match 0-1 0-1
+(?<a>x)\\k<\ud835\udc9c>|(?<\ud835\udc9c>y)		0	x	match 0-1 0-1 -
+(?<a>x)\\k<\ud835\udc9c>		0	x	error
+\\k<\ud835\udc9c>(?<a>x)		0	x	error
