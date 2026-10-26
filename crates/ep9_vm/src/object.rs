@@ -67,7 +67,7 @@ pub(crate) use crate::kinds::{
     cell_kind, is_array, is_context, is_error, is_function, is_iterator, is_object, is_string,
 };
 pub(crate) use crate::props::{own_count, own_define, own_delete, own_entry, own_get, own_replace};
-pub(crate) use crate::string::{concat, new_string, new_string_utf16, str_len, str_view};
+pub(crate) use crate::string::{concat, new_string, new_string_utf16, str_len};
 
 /// Object fields shared by every JS object kind (H17 v0).
 pub(crate) mod obj {
