@@ -347,7 +347,7 @@ Optimized AOT code does not produce feedback for free. .NET never instruments R2
   - A slot with RUNTIME facts ignores PROFILED and HINTED facts of the same kind (shape, call target, representation).
   - HINTED facts that feedback cannot give stay beside RUNTIME facts: CHA and enum constants under a fuse (H31), non-null, slot pre-size.
   - The JIT graph builder reads them from the CompiledUnit hint section ([04-execution](./04-execution.md) §6).
-- Costs to budget: instrumented T1 code for hot AOT functions, compile CPU for re-tiered code, and slower code while instrumented. K-A4P checks the FV2 numbers and test262 equality; on failure, v1 ships no hybrid mode.
+- Costs to budget: instrumented T1 code for hot AOT functions, compile CPU for re-tiered code, and slower code while instrumented. K-A4P checks the FV2 numbers and test262 equality; on failure, v1 ships no hybrid mode. The mode model behind §9-§11 (ExecPolicy presets, lowering classes, code sets, the fact flow across runs and the contract room for A2-A5): [13-execution-modes.md](./13-execution-modes.md).
 
 ## 12. Stages A0-A5
 
@@ -462,6 +462,7 @@ Effects, early signals and full columns: [10-quality](./10-quality.md).
 - New: stages A0-A5, cases FV1-FV3, kill criteria K-*, trust levels PROVEN/HINT/SOUND, ep9-typecheck, the .ep9h schema (H37), the unit format (H35), compile scope (D19), the jitless budgets and the hybrid feedback rule (H33). N5 refined: no LLVM in JIT or AOT; Cranelift only for an optional T3 shared by JIT and AOT emit.
 - Unchanged from v1: tier targets G2-G4, the T0 parity gate, and "no JIT tier code before M2".
 - Decisions 2026-10-20 ([decisions-log §5](../decisions-log.md#5-2026-10-20-decisions-made-by-the-agent-team-under-the-users-instruction)): unit mismatch outcome by field (H35); A5 by the D17 rule with candidate (d) VERIFIED regions [R18]; kill rules K-A5v-cov, K-A5v-bound and K-A5v; K-A5 keeps only its FV3 clause; claim (b) worded without a mechanism; the orchestrator applies the kill rules.
+- Clarified 2026-10-27 ([13-execution-modes](./13-execution-modes.md), MODES-CHECK-w13): §7 and §11: PROFILED and HINTED unit facts live in the container `facts` section; v1 writers leave the CompiledUnit hint section empty (13 F-R1, C-12). §10: PIN goes to aot-baseline, else M5c (if K-A3 tripped and M5c is built), else T0 (13 §3.2, contradiction C5); only speculation exits count toward the budgets (13 §3.6). §11: the "call and exit counters" of optimized-AOT are budget counters in the H23 unit (calls + `JumpLoop`) and exit counters; the re-tier also starts when the function's speculation exits pass its budget (13 C-08, C4). The counter unit and rule are written in M4-P2 and the numbers stay A4 tuning values (MODES-D12). No stage, gate or kill rule changes.
 
 ## Evidence tags
 
