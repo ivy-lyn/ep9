@@ -2,9 +2,14 @@
 //! VM and the builtin tables use.
 //!
 //! ```text
-//! intern(rt, s)        s is a string cell: hash it (cached in its hash field), probe the
-//!                      table; found -> that atom; else s itself becomes the atom (ATOM flag,
-//!                      insert). No allocation, so no GC point.
+//! intern(rt, s)        s is a string cell: an atom -> s; a THIN cell -> its atom; a
+//!                      flattened CONS -> intern its flat part, then the CONS becomes THIN;
+//!                      else hash it (cached in its hash field), probe the table; found -> that
+//!                      atom (a CONS or SLICED s becomes THIN, forwarding to it); else s itself
+//!                      becomes the atom (ATOM flag, insert). No allocation, so no GC point.
+//! atomize(rt, s)       intern, but a CONS or SLICED s whose text has no atom yet gets a flat
+//!                      SEQ atom (the CONS flattened in place, a SLICED text copied) and becomes
+//!                      THIN. GC point. ToPropertyKey uses it (H19-Q1, H19-Q4).
 //! intern_str(rt, text) hash the text, probe; found -> that atom; else allocate the string
 //!                      FIRST (GC point, no borrow held), set its hash field and ATOM flag,
 //!                      THEN borrow_mut and insert.
@@ -22,13 +27,18 @@
 //! - Debug counter (W4-KEY-EQ): every property-key compare that has to look at content (a key
 //!   that is not an atom) bumps [`note_non_atom_compare`]. `EP9_ASSERT_ATOM_KEYS=1` makes a
 //!   debug isolate panic at drop if its count is not 0.
+//! - Number strings (H19-Q6): a 64-entry direct-mapped cache (number bits -> string) next to
+//!   the table serves ToString of a number ([`crate::conv::number_string`]) and the key of a number
+//!   ([`number_atom`]). The GC weak source empties it at every collection, before the sweep,
+//!   so no entry outlives a GC point that could free its string (rule 8: no Value is kept in
+//!   Rust memory across a collection).
 
 #[cfg(debug_assertions)]
 use core::cell::Cell;
 use std::rc::Rc;
 
 use crate::frame::UNDEFINED;
-use crate::kinds::is_string;
+use crate::kinds::{self, is_string};
 use crate::runtime::{Runtime, val};
 use crate::string::{self, JsStr};
 
@@ -108,6 +118,17 @@ struct Entry {
 
 const MIN_CAPACITY: usize = 64;
 
+/// Entries of the number-string cache (a power of two).
+const NUMBER_CACHE_SIZE: usize = 64;
+
+/// One number-string cache entry: the f64 bits of a number and a string of its ToString
+/// (an atom once [`number_atom`] stored it). `string == 0`: empty.
+#[derive(Clone, Copy, Debug, Default)]
+struct NumberEntry {
+    number: u64,
+    string: u64,
+}
+
 /// The atom table of one isolate (`Runtime::atoms`).
 #[derive(Debug)]
 pub(crate) struct AtomTable {
@@ -115,6 +136,8 @@ pub(crate) struct AtomTable {
     len: usize,
     /// The thread's non-atom compare count when the table was made.
     compares_base: u64,
+    /// The number-string cache (H19-Q6); emptied at every GC.
+    numbers: [NumberEntry; NUMBER_CACHE_SIZE],
 }
 
 impl Default for AtomTable {
@@ -123,6 +146,7 @@ impl Default for AtomTable {
             entries: Vec::new(),
             len: 0,
             compares_base: thread_non_atom_compares(),
+            numbers: [NumberEntry::default(); NUMBER_CACHE_SIZE],
         }
     }
 }
@@ -268,6 +292,8 @@ pub(crate) fn init(rt: &Runtime) {
             .try_borrow_mut()
             .expect("the atom table is borrowed across a GC point (W4-GC-RULES)");
         t.sweep(|b| w.is_live(val(b)));
+        // The number cache holds strings strongly in Rust memory: drop it all (H19-Q6).
+        t.numbers = [NumberEntry::default(); NUMBER_CACHE_SIZE];
         #[cfg(debug_assertions)]
         if let Err(e) = t.check(|b| w.is_live(val(b))) {
             panic!("atoms::verify after GC: {e}");
@@ -276,20 +302,77 @@ pub(crate) fn init(rt: &Runtime) {
 }
 
 /// The atom for the string `s`: the existing atom of its text, or `s` itself, which becomes
-/// the atom. Not a GC point.
+/// the atom (see the module docs for THIN cells). Not a GC point. A CONS or SLICED `s` whose
+/// text has no atom yet becomes a rope or slice atom; [`atomize`] makes a flat one instead.
 pub(crate) fn intern(rt: &Runtime, s: u64) -> u64 {
     debug_assert!(is_string(s));
     if string::is_atom(s) {
         return s;
     }
+    if let Some(a) = string::thin_target(s) {
+        return a;
+    }
+    if let Some(f) = string::flat_first(s) {
+        // A flattened CONS: its flat part becomes (or finds) the atom, the CONS forwards.
+        let a = intern(rt, f);
+        forward(rt, s, a);
+        return a;
+    }
     let hash = string::hash(s);
     let found = rt.atoms.borrow().find(hash, |a| string::equals(a, s));
     if let Some(a) = found {
+        forward(rt, s, a);
         return a;
     }
     string::set_atom(s);
     rt.atoms.borrow_mut().insert(hash, s);
     s
+}
+
+/// Makes the CONS or SLICED string `s` a THIN cell forwarding to its atom `a` when `a` is a
+/// SEQ atom (H19-Q4); any other pair stays as it is. Not a GC point.
+fn forward(rt: &Runtime, s: u64, a: u64) {
+    if s != a && string::is_rope_or_slice(s) && string::is_seq(a) {
+        string::make_thin(rt, s, a);
+    }
+}
+
+/// The atom for the string `s`, always a SEQ atom unless one of another kind already holds
+/// the text (H19-Q1: flatten on atomize; H19-Q4: thin forwarders). A CONS first probes the
+/// table with the hash of a rope walk (no allocation): found -> it becomes THIN. Else it is
+/// flattened in place (a GC point), its flat part becomes the atom and the CONS becomes THIN.
+/// A SLICED string with no atom gets a SEQ copy of its text as the atom (the atom never keeps
+/// a large parent alive) and becomes THIN. GC point. Every other kind: [`intern`].
+pub(crate) fn atomize(rt: &Runtime, s: u64) -> u64 {
+    debug_assert!(is_string(s));
+    if string::is_atom(s) {
+        return s;
+    }
+    if !string::is_rope_or_slice(s) || string::flat_first(s).is_some() {
+        return intern(rt, s);
+    }
+    let hash = string::hash(s);
+    let found = rt.atoms.borrow().find(hash, |a| string::equals(a, s));
+    if let Some(a) = found {
+        forward(rt, s, a);
+        return a;
+    }
+    if kinds::cell_kind(s) == kinds::CONS.get() {
+        // GC point: `s` is in this frame (conservative scan). The flat cell copies the hash
+        // field, so `intern` probes again without a second hash.
+        let _ = string::flatten_rt(rt, s);
+        return intern(rt, s);
+    }
+    // SLICED: the view reads the parent's units, which `s` keeps alive across the allocation
+    // in `intern_text` (cells never move; the conservative scan sees `s`).
+    let a = string::with_text(s, |t| {
+        intern_text(rt, t, |rt| match t {
+            JsStr::Latin1(b) => string::new_string_latin1(rt, b),
+            JsStr::Utf16(u) => string::new_string_utf16(rt, u),
+        })
+    });
+    forward(rt, s, a);
+    a
 }
 
 /// The atom for `text`, allocating it if it is new. GC point. Every property key built from
@@ -379,6 +462,53 @@ pub(crate) fn lookup(rt: &Runtime, text: &str) -> Option<u64> {
     let t = JsStr::Utf16(&units);
     let (_, hash) = string::hash_text(t);
     rt.atoms.borrow().find(hash, |a| string::equals_text(a, t))
+}
+
+// ---- the number-string cache (H19-Q6) ------------------------------------------------------
+
+/// The cache slot of the number `d`: an int32 value picks the slot by its low bits (V8 uses
+/// a Smi's value), any other number by its mixed bits. -0 shares the slot of 0, and the bit
+/// compare keeps them apart.
+#[inline]
+fn number_slot(d: f64) -> usize {
+    let i = d as i32;
+    let h = if f64::from(i) == d {
+        i as u32 as u64
+    } else {
+        let b = d.to_bits();
+        b ^ (b >> 32) ^ (b >> 17)
+    };
+    h as usize & (NUMBER_CACHE_SIZE - 1)
+}
+
+/// The cached string of the number `d` (an atom when [`number_atom`] stored it), if any. Not a
+/// GC point.
+pub(crate) fn cached_number_string(rt: &Runtime, d: f64) -> Option<u64> {
+    let e = rt.atoms.borrow().numbers[number_slot(d)];
+    (e.string != 0 && e.number == d.to_bits()).then_some(e.string)
+}
+
+/// Stores `s`, a string of ToString(`d`), in the number cache (it replaces the slot's entry).
+/// Not a GC point; the caller allocated `s` before (no table borrow across an allocation).
+pub(crate) fn cache_number_string(rt: &Runtime, d: f64, s: u64) {
+    debug_assert!(is_string(s));
+    rt.atoms.borrow_mut().numbers[number_slot(d)] = NumberEntry {
+        number: d.to_bits(),
+        string: s,
+    };
+}
+
+/// The cached atom of ToString(`d`), if the cache has a string for `d`: an atom as it is, any
+/// other string interned (a SEQ string becomes the atom in place or finds it), and the slot
+/// then holds the atom. Not a GC point.
+pub(crate) fn number_atom(rt: &Runtime, d: f64) -> Option<u64> {
+    let s = cached_number_string(rt, d)?;
+    if string::is_atom(s) {
+        return Some(s);
+    }
+    let a = intern(rt, s);
+    cache_number_string(rt, d, a);
+    Some(a)
 }
 
 // ---- the non-atom compare counter (debug builds) -------------------------------------------

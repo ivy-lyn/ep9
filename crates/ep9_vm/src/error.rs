@@ -160,8 +160,30 @@ pub(crate) fn install_stack(cx: &mut Cx, e: u64) {
         object::set_error_site(rt, e, site.unit, site.offset);
     }
     let text = format!("{}{}", error_header(cx, e), stack_lines(rt, &frames));
-    let s = object::new_string(rt, &text);
+    let s = message_string(rt, &text);
     own_define(rt, e, rt.atom(Atom::Stack), s, attr::HIDDEN);
+}
+
+/// The text V8 gives a message that cannot be made (node v24.22.1: `undefined[s]` with `s` of
+/// 2^29 - 24 units throws a TypeError whose message is this text).
+const OVER_LIMIT_MESSAGE: &str = "<error>";
+
+/// A heap string of a message or stack text built in Rust (H19-Q5). Quoted values stay whole,
+/// as in V8; a text over the string length limit (2^29 - 24 code units) becomes
+/// [`OVER_LIMIT_MESSAGE`], so a huge key in a message never reaches the allocator's limit
+/// assert. GC point.
+pub(crate) fn message_string(rt: &Runtime, text: &str) -> u64 {
+    object::new_string(rt, bounded_text(text, crate::string::MAX_STRING_LENGTH))
+}
+
+/// `text`, or [`OVER_LIMIT_MESSAGE`] if it has more than `limit` UTF-16 code units. The exact
+/// count runs only when the UTF-8 length is over the limit (UTF-16 length <= UTF-8 length).
+fn bounded_text(text: &str, limit: usize) -> &str {
+    if text.len() > limit && text.encode_utf16().count() > limit {
+        OVER_LIMIT_MESSAGE
+    } else {
+        text
+    }
 }
 
 /// A new error of `kind` with `message` (a string value or `None`), with a stack.
@@ -177,7 +199,7 @@ pub(crate) fn new_error_value(cx: &mut Cx, proto: u64, message: Option<u64>) -> 
 
 pub(crate) fn new_error(cx: &mut Cx, kind: ErrorKind, msg: &str) -> u64 {
     let rt = cx.rt();
-    let m = object::new_string(rt, msg);
+    let m = message_string(rt, msg);
     new_error_value(cx, rt.root(kind.prototype_root()), Some(m))
 }
 
@@ -275,3 +297,11 @@ fn find_handler(fi: &FunctionInfo, off: u32) -> Option<(u32, u32)> {
 }
 
 const _: () = assert!(HEADER == 8);
+
+#[cfg(test)]
+pub(crate) mod testing {
+    //! Hooks for tests/strings.rs (H19-Q5).
+    pub(crate) fn bounded_text(text: &str, limit: usize) -> &str {
+        super::bounded_text(text, limit)
+    }
+}

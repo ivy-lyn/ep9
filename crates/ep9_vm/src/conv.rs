@@ -183,9 +183,16 @@ pub(crate) fn to_uint32_of(cx: &mut Cx, b: u64) -> Res<u32> {
     Ok(to_uint32(to_number(cx, b)?))
 }
 
-/// A heap string for the number `d`.
+/// A heap string for the number `d`: the isolate's cached string of `d` (H19-Q6), or a new
+/// one that then fills the cache slot. GC point on a miss.
 pub(crate) fn number_string(cx: &mut Cx, d: f64) -> u64 {
-    object::new_string(cx.rt(), &number_to_string(d))
+    let rt = cx.rt();
+    if let Some(s) = crate::atoms::cached_number_string(rt, d) {
+        return s;
+    }
+    let s = object::new_string(rt, &number_to_string(d));
+    crate::atoms::cache_number_string(rt, d, s);
+    s
 }
 
 /// ToString (§7.1.17), as a heap string.
