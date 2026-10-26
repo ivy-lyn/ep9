@@ -38,13 +38,14 @@
 //! with word0 flag bit 9 (`FLAG_HASH_PRESENT`) set, so a lookup of an object that was never a
 //! key reads no property. No hash input is an address (H12-Q2).
 //!
-//! Weak keys (WeakMap, WeakSet): the trace function visits each key slot of a weak table with
-//! `Tracer::visit_weak`, so the GC clears a dead key to undefined at the end of the
-//! collection. The value of an entry is strong while its key is there. The value of an entry
-//! whose key is already gone (undefined) is weak too, so the next GC frees it; the entry
-//! itself goes at the next rehash. Known gap (plan-v8 §3 B-COLLECTIONS task 3): no ephemeron
-//! fixpoint, so a value that refers to its own key keeps that key alive. The fixpoint comes
-//! with WeakRef and FinalizationRegistry in M1 (`docs/plan/03-gc.md`).
+//! Weak keys (WeakMap, WeakSet): the trace function visits each key slot of a weak table as a
+//! weak slot, so the GC clears a dead key to undefined at the end of the collection. A WeakSet
+//! entry is its key only (`Tracer::visit_weak`). A WeakMap entry is an ephemeron
+//! (`Tracer::visit_ephemeron`, M4-P2): its value is traced only once its key is marked, from
+//! any path, and the heap repeats that to a fixpoint; a value whose key dies is cleared in the
+//! same GC. So a value that refers to its own key, or a cycle of entries whose keys only the
+//! values reach, does not keep itself alive. The value of an entry whose key is already gone
+//! (undefined) is weak; the entry itself goes at the next rehash.
 //!
 //! No Rust `Vec`/`Box` holds Values across a GC point here (plan §1 rule 8): the table is a
 //! heap cell.

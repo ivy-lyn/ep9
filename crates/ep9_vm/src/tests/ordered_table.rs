@@ -8,7 +8,8 @@
 //! | `a_cursor_follows_a_spec_list_model_over_10000_steps` | inserts, deletes, clears and rehashes against a model of the spec List with a live cursor |
 //! | `a_rehash_during_iteration_keeps_the_cursor` | a cursor in an obsolete table moves to the same entry of the new one |
 //! | `same_value_zero_keys` | -0 = +0, one NaN, an int32 = its double, strings by content |
-//! | `a_dead_weak_key_is_cleared_and_its_value_freed` | the weak trace: a dead key is undefined after a GC; its value is freed by the next GC after a write |
+//! | `a_dead_weak_key_is_cleared_with_its_value` | the ephemeron trace: a dead key and its value are freed by the same GC, both slots read undefined; a later write keeps its live key |
+//! | `weak_map_entries_are_ephemerons` | a value that reaches its own key, a cycle of two entries and a key1 -> value1 -> key2 chain (M4-P2 GC2: the fixpoint) |
 //! | `a_strong_key_slot_keeps_the_key` | the negative control: the same steps on a Map keep the key, so the weak test can fail |
 //! | `a_rehash_drops_dead_weak_entries` | a rehash of a weak table copies only live keys |
 //! | `an_identity_hash_is_stable_hidden_and_not_an_address` | H12-Q1: stored once, flag bit 9, not listed, frozen objects too, the same sequence in two isolates |
@@ -334,12 +335,13 @@ fn collect(iso: &Isolate) {
     iso.rt.heap.collect();
 }
 
-/// The weak trace (the B-COLLECTIONS acceptance): a WeakMap key that only the table holds is
-/// cleared to undefined by `collect_garbage`; its value was traced in that GC (the key was
-/// there), and after the next write the next GC frees it and clears its slot. With GC stress
-/// and the heap verifier on, a dangling slot fails the verifier.
+/// The weak trace (the B-COLLECTIONS acceptance, with the M4-P2 ephemeron fixpoint): a
+/// WeakMap key that only the table holds is cleared to undefined by `collect_garbage`, and
+/// its value, which only that entry holds, dies in the same GC (the value is traced only
+/// while its key is live) and its slot is cleared. With GC stress and the heap verifier on,
+/// a dangling slot fails the verifier.
 #[test]
-fn a_dead_weak_key_is_cleared_and_its_value_freed() {
+fn a_dead_weak_key_is_cleared_with_its_value() {
     for stress in [false, true] {
         on_big_stack(move || {
             let iso = isolate(config(Dispatch::DEFAULT, stress));
@@ -347,21 +349,20 @@ fn a_dead_weak_key_is_cleared_and_its_value_freed() {
             collect(&iso);
             let rt: &Runtime = &iso.rt;
             assert!(!alive(rt, e.key), "the key died (stress={stress})");
+            assert!(!alive(rt, e.value), "its value died in the same GC");
             let t = table::table_of(rt.heap.global(e.map).to_bits());
             assert_eq!(table::key_at(t, 0), UNDEFINED, "the key slot is cleared");
-            // `WeakMap.prototype.get(undefined)` does not find the cleared entry.
-            assert_eq!(table::lookup(rt, t, UNDEFINED), None);
-            assert!(alive(rt, e.value), "traced while its key was there");
-            let k2 = write_one(rt, &e);
-            collect(&iso);
-            let rt: &Runtime = &iso.rt;
-            assert!(!alive(rt, e.value), "the value is no longer traced");
-            let t = table::table_of(rt.heap.global(e.map).to_bits());
             assert_eq!(
                 table::value_at(t, 0),
                 UNDEFINED,
                 "the value slot is cleared"
             );
+            // `WeakMap.prototype.get(undefined)` does not find the cleared entry.
+            assert_eq!(table::lookup(rt, t, UNDEFINED), None);
+            let k2 = write_one(rt, &e);
+            collect(&iso);
+            let rt: &Runtime = &iso.rt;
+            let t = table::table_of(rt.heap.global(e.map).to_bits());
             assert_ne!(table::key_at(t, 1), UNDEFINED, "the live key stays");
             iso.verify_heap().unwrap();
             rt.heap.drop_global(k2);
@@ -370,8 +371,96 @@ fn a_dead_weak_key_is_cleared_and_its_value_freed() {
     }
 }
 
+/// The handles of [`ephemeron_graph`]: the WeakMap and weak handles of its keys and values.
+struct EphemeronGraph {
+    map: GlobalHandle,
+    cells: Vec<WeakHandle>,
+}
+
+/// A WeakMap with one entry per (key, value) pair of `links`: entry i maps a fresh key object
+/// k_i to a Map v_i, and v_i holds k_j (as a Map key) for each `j` in `links[i]`. Made below a
+/// pad; `root` keeps k_0 by a global handle.
+#[inline(never)]
+fn ephemeron_graph(
+    rt: &Runtime,
+    links: &[&[usize]],
+    root: bool,
+) -> (EphemeronGraph, Option<GlobalHandle>) {
+    below_a_pad(|| {
+        let map = new_collection(rt, ObjectClass::WeakMap);
+        let hm = rt.heap.new_global(val(map));
+        let keys: Vec<GlobalHandle> = links
+            .iter()
+            .map(|_| rt.heap.new_global(val(object::new_plain_object(rt))))
+            .collect();
+        let mut cells = Vec::new();
+        // Insert in reverse order: the trace meets the end of a chain first.
+        for (i, to) in links.iter().enumerate().rev() {
+            let v = new_collection(rt, ObjectClass::Map);
+            for &j in *to {
+                table::set(rt, v, rt.heap.global(keys[j]).to_bits(), UNDEFINED).unwrap();
+            }
+            let k = rt.heap.global(keys[i]).to_bits();
+            table::set(rt, rt.heap.global(hm).to_bits(), k, v).unwrap();
+            cells.push(rt.heap.new_weak(val(k)));
+            cells.push(rt.heap.new_weak(val(v)));
+        }
+        let r = root.then(|| rt.heap.new_global(rt.heap.global(keys[0])));
+        for k in keys {
+            rt.heap.drop_global(k);
+        }
+        (EphemeronGraph { map: hm, cells }, r)
+    })
+}
+
+/// WeakMap entries are ephemerons (M4-P2 GC2): a value is traced only once its key is live
+/// by another path. A value that reaches its own key, and a cycle of two entries, die with
+/// their keys; a chain key1 -> value1 -> key2 -> value2 -> key3 lives while key1 is rooted
+/// and dies when it is not. With and without GC stress (heap verifier on).
+#[test]
+fn weak_map_entries_are_ephemerons() {
+    let own: &[&[usize]] = &[&[0]];
+    let cycle: &[&[usize]] = &[&[1], &[0]];
+    let chain: &[&[usize]] = &[&[1], &[2], &[]];
+    for stress in [false, true] {
+        for (links, root) in [
+            (own, false),
+            (cycle, false),
+            (chain, false),
+            (chain, true),
+            (cycle, true),
+        ] {
+            on_big_stack(move || {
+                let iso = isolate(config(Dispatch::DEFAULT, stress));
+                let (g, r) = ephemeron_graph(&iso.rt, links, root);
+                collect(&iso);
+                let rt: &Runtime = &iso.rt;
+                for (n, &h) in g.cells.iter().enumerate() {
+                    assert_eq!(
+                        alive(rt, h),
+                        root,
+                        "cell {n} of {links:?} (root {root}, stress {stress})"
+                    );
+                }
+                iso.verify_heap().unwrap();
+                if let Some(r) = r {
+                    rt.heap.drop_global(r);
+                    collect(&iso);
+                    let rt: &Runtime = &iso.rt;
+                    assert!(
+                        g.cells.iter().all(|&h| !alive(rt, h)),
+                        "all die without the root"
+                    );
+                    iso.verify_heap().unwrap();
+                }
+                iso.rt.heap.drop_global(g.map);
+            });
+        }
+    }
+}
+
 /// The negative control of the weak test: the same steps with a Map (strong key slots) keep
-/// the key and the value, so `a_dead_weak_key_is_cleared_and_its_value_freed` fails if the
+/// the key and the value, so `a_dead_weak_key_is_cleared_with_its_value` fails if the
 /// trace visits a weak table's keys strongly.
 #[test]
 fn a_strong_key_slot_keeps_the_key() {
