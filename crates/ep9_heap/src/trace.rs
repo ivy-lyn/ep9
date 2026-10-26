@@ -25,6 +25,11 @@
 //!                         (one chunk lookup for the cell-start test and the mark)
 //!                         not a cell start: checked mark -> error; else debug assert
 //! ```
+//!
+//! A mark bit that is already set when the checked mark reaches a cell means "traced in this
+//! GC". A bit left from before the GC would make the mark skip that cell (no trace, no
+//! check), so the verify after the GC compares the cells the sweep keeps with the cells this
+//! tracer pushed ([`Tracer::pushed_cells`], verify.rs).
 
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering::Relaxed;
@@ -73,6 +78,10 @@ pub struct Tracer<'h> {
     weak: Vec<NonNull<Slot>>,
     pub(crate) marked_cells: usize,
     pub(crate) marked_bytes: usize,
+    /// Cells whose mark bit this tracer set (each is pushed once). After a checked mark, the
+    /// checked sweep keeps exactly these cells, unless a mark bit was set before the GC
+    /// (verify.rs).
+    pub(crate) pushed_cells: usize,
     pub(crate) errors: Vec<String>,
     pub(crate) context: Context,
 }
@@ -99,6 +108,7 @@ impl<'h> Tracer<'h> {
             weak,
             marked_cells: 0,
             marked_bytes: 0,
+            pushed_cells: 0,
             errors: Vec::new(),
             context: Context::Root("none"),
         }
@@ -294,6 +304,7 @@ impl<'h> Tracer<'h> {
         // S2 marker rule, minus the fence S0 does not need: set BLACK, then read the fields.
         // SAFETY: `c` is a cell start of this heap (VO bit or LOS header).
         unsafe { c.header() }.set_gc_state(gc_state::BLACK);
+        self.pushed_cells += 1;
         self.stack.push(c);
     }
 

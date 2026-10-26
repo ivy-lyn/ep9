@@ -19,7 +19,7 @@
 //! | Entry | How |
 //! |---|---|
 //! | [`Heap::verify`] (any time) | finish the sweep, walk every page by VO bits, check and trace every cell, then every root |
-//! | after a GC with `verify_after_gc` | the GC's checked mark already checked every slot of every live cell, every strong root and every weak range (trace.rs); the sweep checks every live cell (heap.rs); this file adds the page and LOS headers and the weak handles. No second trace, no second root walk (V9-D22 step 1) |
+//! | after a GC with `verify_after_gc` | the GC's checked mark already checked every slot of every live cell, every strong root and every weak range (trace.rs); the sweep checks every live cell, and every dead cell's extent before it zaps it (heap.rs); this file checks that the sweeps kept exactly the cells the mark pushed (a mark bit set before the GC would hide a cell from the mark), and adds the page and LOS headers and the weak handles. No second trace, no second root walk (V9-D22 step 1) |
 //!
 //! The live cells after a GC are exactly the cells its mark traced, so the two entries check
 //! the same slots. A planted dangling slot fails both (tests/verify.rs).
@@ -159,12 +159,34 @@ impl Heap {
     }
 
     /// The verify right after a GC whose mark was checked (`errors`: what the checked mark
-    /// found). Finishes the sweep with the cell checks, then checks the page and LOS headers
-    /// and the weak handles. Not a GC point.
-    pub(crate) fn verify_after_collect(&self, errors: Vec<String>) -> Result<(), VerifyError> {
+    /// found; `pushed`: the cells it marked; `large_kept`: the large objects its LOS sweep
+    /// kept). Finishes the sweep with the cell checks, checks that the sweeps kept exactly the
+    /// cells the mark pushed, then checks the page and LOS headers and the weak handles. Not
+    /// a GC point.
+    pub(crate) fn verify_after_collect(
+        &self,
+        errors: Vec<String>,
+        pushed: usize,
+        large_kept: usize,
+    ) -> Result<(), VerifyError> {
         let mut inner_ref = self.inner.borrow_mut();
         let mut errors = errors;
-        inner_ref.finish_sweeping_checked(&mut errors);
+        let small_kept = inner_ref.finish_sweeping_checked(&mut errors);
+        // A cell whose mark bit was set before the GC is kept but was never pushed, so the
+        // mark neither traced nor checked it (its children may be freed). Each pushed cell
+        // stays marked until its sweep, so the counts differ exactly when such a cell exists.
+        let kept = small_kept + large_kept;
+        if kept != pushed {
+            record_error(
+                &mut errors,
+                Context::Root("mark"),
+                format_args!(
+                    "the sweeps kept {kept} cells but the mark pushed {pushed}: {} cell(s) \
+                     marked before the GC were not traced or checked",
+                    kept.abs_diff(pushed)
+                ),
+            );
+        }
         let inner = &*inner_ref;
         let handles = self.handles.borrow();
         let mem = &inner.mem;
