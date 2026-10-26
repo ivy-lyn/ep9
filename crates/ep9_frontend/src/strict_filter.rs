@@ -26,17 +26,36 @@
 //!   for-in/of head, the operand of `++`/`--`) or the binding of a shorthand `{x}` / `{x = 1}`
 //! ```
 //!
-//! The filter only removes diagnostics, never adds one, and runs only when such a diagnostic
-//! exists (no cost on the accepted path). The AST walk recurses like oxc_semantic's own walk,
+//! One exception: oxc's `check_identifier_reference` returns right after the assign diagnostic,
+//! so it skips its own class check (§15.7.1: ContainsArguments of a field initializer or a
+//! static block is an early error). For an `arguments` read there, the filter does that check:
+//!
+//! ```text
+//! `arguments` read, label S, inside a class field initializer or a static block, with no
+//!   ordinary function or method between them (arrows do not count)
+//!   -> replace the diagnostic with oxc's own "'arguments' is not allowed in class field
+//!      initializer" / "... in static initialization block" at S
+//! ```
+//!
+//! A computed key of a field or method is outside its initializer, so it takes the region
+//! around the class (as in oxc and node v24.22.1).
+//!
+//! The filter never adds a diagnostic that oxc did not report in some form, and runs only when
+//! such a diagnostic exists (no cost on the accepted path). The AST walk recurses like oxc_semantic's own walk,
 //! so it runs only on a program that passed layer 2 (the caller's order already ensures it).
 //! `semantic` in lib.rs and the semantic step of `compile_eval` (eval.rs) use it. Upstream
 //! draft: docs/upstream/oxc-strict-eval-default-init.md.
 
+use std::borrow::Cow;
+
 use oxc_ast::ast::{
-    AssignmentTargetPropertyIdentifier, IdentifierReference, Program, SimpleAssignmentTarget,
+    AssignmentTargetPropertyIdentifier, Function, IdentifierReference, Program, PropertyDefinition,
+    SimpleAssignmentTarget, StaticBlock,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_diagnostics::OxcDiagnostic;
+use oxc_semantic::ScopeFlags;
+use oxc_span::Span;
 
 /// The two messages of oxc_semantic 0.155.0 `diagnostics::unexpected_identifier_assign`.
 const MESSAGES: [&str; 2] = [
@@ -45,23 +64,38 @@ const MESSAGES: [&str; 2] = [
 ];
 
 /// The diagnostics of `errors` that stay: every one except a strict `eval`/`arguments` assign
-/// error whose label is a read of the name (see the module doc).
+/// error whose label is a read of the name, and a class `arguments` error in place of such an
+/// error inside a field initializer or a static block (see the module doc).
 pub(crate) fn kept<'d>(
     program: &Program<'_>,
     errors: impl Iterator<Item = &'d OxcDiagnostic>,
-) -> Vec<&'d OxcDiagnostic> {
+) -> Vec<Cow<'d, OxcDiagnostic>> {
     let errors: Vec<&OxcDiagnostic> = errors.collect();
     if !errors.iter().any(|d| candidate(d).is_some()) {
-        return errors;
+        return errors.into_iter().map(Cow::Borrowed).collect();
     }
     let mut reads = Reads::default();
     reads.visit_program(program);
     reads.spans.sort_unstable();
     errors
         .into_iter()
-        .filter(|d| match candidate(d) {
-            Some(span) => reads.spans.binary_search(&span).is_err(),
-            None => true,
+        .filter_map(|d| {
+            let Some(span) = candidate(d) else {
+                return Some(Cow::Borrowed(d));
+            };
+            match reads.spans.binary_search_by_key(&span, |r| r.0) {
+                Err(_) => Some(Cow::Borrowed(d)),
+                Ok(i) => reads.spans[i].1.map(|region| {
+                    // oxc_semantic 0.155.0 `diagnostics::unexpected_arguments`.
+                    Cow::Owned(
+                        OxcDiagnostic::error(format!("'arguments' is not allowed in {region}"))
+                            .with_label(Span::new(span.0, span.1))
+                            .with_help(
+                                "Assign the 'arguments' variable to a temporary variable outside",
+                            ),
+                    )
+                }),
+            }
         })
         .collect()
 }
@@ -81,10 +115,14 @@ fn candidate(d: &OxcDiagnostic) -> Option<(u32, u32)> {
     Some((start, start.checked_add(label.len())?))
 }
 
-/// The spans of every `eval`/`arguments` IdentifierReference that is read, not assigned.
+/// The spans of every `eval`/`arguments` IdentifierReference that is read, not assigned, each
+/// with the class region (§15.7.1) an `arguments` read is in, if any.
 #[derive(Default)]
 struct Reads {
-    spans: Vec<(u32, u32)>,
+    spans: Vec<((u32, u32), Option<&'static str>)>,
+    /// The innermost field initializer or static block around the current node, with no
+    /// ordinary function or method in between.
+    region: Option<&'static str>,
 }
 
 fn is_name(id: &IdentifierReference<'_>) -> bool {
@@ -94,8 +132,39 @@ fn is_name(id: &IdentifierReference<'_>) -> bool {
 impl<'a> Visit<'a> for Reads {
     fn visit_identifier_reference(&mut self, it: &IdentifierReference<'a>) {
         if is_name(it) {
-            self.spans.push((it.span.start, it.span.end));
+            let region = if it.name == "arguments" {
+                self.region
+            } else {
+                None
+            };
+            self.spans.push(((it.span.start, it.span.end), region));
         }
+    }
+
+    fn visit_function(&mut self, it: &Function<'a>, flags: ScopeFlags) {
+        // ContainsArguments is false for a function (and a method body); an arrow is not a
+        // boundary, so `visit_arrow_function_expression` keeps the walk's default.
+        let outer = self.region.take();
+        walk::walk_function(self, it, flags);
+        self.region = outer;
+    }
+
+    fn visit_property_definition(&mut self, it: &PropertyDefinition<'a>) {
+        // The key (also a computed one) belongs to the region around the class; only the
+        // initializer is the field's own region.
+        self.visit_decorators(&it.decorators);
+        self.visit_property_key(&it.key);
+        if let Some(value) = &it.value {
+            let outer = self.region.replace("class field initializer");
+            self.visit_expression(value);
+            self.region = outer;
+        }
+    }
+
+    fn visit_static_block(&mut self, it: &StaticBlock<'a>) {
+        let outer = self.region.replace("static initialization block");
+        walk::walk_static_block(self, it);
+        self.region = outer;
     }
 
     fn visit_simple_assignment_target(&mut self, it: &SimpleAssignmentTarget<'a>) {
@@ -238,6 +307,137 @@ mod tests {
         for src in TARGETS {
             let r = crate::compile_eval(src, &ctx, options);
             assert!(r.is_err(), "{src}");
+        }
+    }
+
+    /// An `arguments` read in a class field initializer or a static block, inside a
+    /// destructuring target (ECMA-262 §15.7.1 ContainsArguments; arrows are not a boundary).
+    /// node v24.22.1: "SyntaxError: 'arguments' is not allowed in class field initializer or
+    /// static initialization block" for each.
+    const CLASS_ARGS: &[&str] = &[
+        "class C{x=([v=arguments]=[])}",
+        "class C{static{({[arguments]:v}={})}}",
+        "class C{static{for([v=arguments] in {});}}",
+        "class C{static{for([v=arguments] of []);}}",
+        "class C{static x=([v=arguments]=[])}",
+        "class C{x=({a:v=arguments}={})}",
+        "class C{x=({v=arguments}={})}",
+        "class C{x=[v=arguments]=[]}",
+        "class C{x=([v=()=>arguments]=[])}",
+        "class C{x=([v=()=>()=>arguments]=[])}",
+        "class C{x=()=>{[v=arguments]=[]}}",
+        "class C{x=([v={[arguments]:1}]=[])}",
+        "class C{x=([v={[([w=arguments]=[])](){}}]=[])}",
+        "class C{x=class{ y=([v=arguments]=[]) }}",
+        "class C{static{ [v=arguments]=[] }}",
+        "class C{static{ (()=>{[v=arguments]=[]}) }}",
+        "class C{static{ class D{[([v=arguments]=[])]=1} }}",
+        "class C{static{ class D{[([v=arguments]=[])](){}} }}",
+    ];
+
+    /// The same reads behind an ordinary function or method boundary, or in a class element
+    /// key outside a static block: node v24.22.1 accepts each.
+    const CLASS_ARGS_OK: &[&str] = &[
+        "class C{x=([v=function(){return arguments}]=[])}",
+        "class C{x=([v=function(){return ()=>arguments}]=[])}",
+        "class C{x=([v={m(){return arguments}}.m]=[])}",
+        "class C{[([v=arguments]=[])]=1}",
+        "class C{static [([v=arguments]=[])]=1}",
+        "class C{[([v=arguments]=[])](){}}",
+        "function f(){ class C{[([v=arguments]=[])]=1} }",
+        "class C{m(){[v=arguments]=[]}}",
+        "class C{x=class{ m(){[v=arguments]=[]} }}",
+        "class C{static{ (function(){[v=arguments]=[]}) }}",
+        "class C{x=([v=eval]=[])}",
+        "class C{static{ [v=eval]=[] }}",
+    ];
+
+    fn is_class_args_error(r: Result<(), CompileError>) -> bool {
+        match r {
+            Err(CompileError::Syntax(e)) => e.errors.iter().any(|e| {
+                e.message == "'arguments' is not allowed in class field initializer"
+                    || e.message == "'arguments' is not allowed in static initialization block"
+            }),
+            _ => false,
+        }
+    }
+
+    fn class_args_codegen_error<T>(r: &Result<T, crate::CodegenError>) -> bool {
+        match r {
+            Err(crate::CodegenError::Compile(e)) => is_class_args_error(Err(e.clone())),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn class_arguments_reads_are_errors_in_scripts() {
+        for src in CLASS_ARGS {
+            let src = format!("var v, w; {src}");
+            for opts in [
+                SourceOpts::script(Strictness::Strict),
+                SourceOpts::script(Strictness::Sloppy),
+                SourceOpts::module(),
+            ] {
+                let r = check_early_errors(&src, opts);
+                assert!(is_class_args_error(r.clone()), "{src} {opts:?}: {r:?}");
+                let c = crate::compile(&src, opts, crate::CompileOptions::default());
+                assert!(
+                    class_args_codegen_error(&c),
+                    "{src} {opts:?}: {:?}",
+                    c.err()
+                );
+            }
+        }
+        for src in CLASS_ARGS_OK {
+            let src = format!("var v, w; {src}");
+            for opts in [
+                SourceOpts::script(Strictness::Strict),
+                SourceOpts::script(Strictness::Sloppy),
+            ] {
+                assert_eq!(check_early_errors(&src, opts), Ok(()), "{src} {opts:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn class_arguments_reads_are_errors_in_eval_code() {
+        use ep9_bytecode::EvalContext;
+        let options = crate::CompileOptions::default();
+        for strict in [true, false] {
+            let ctx = EvalContext {
+                strict,
+                ..EvalContext::default()
+            };
+            for src in CLASS_ARGS {
+                let src = format!("var v, w; {src}");
+                let r = crate::compile_eval(&src, &ctx, options);
+                assert!(
+                    class_args_codegen_error(&r),
+                    "{src} strict={strict}: {:?}",
+                    r.err()
+                );
+            }
+            for src in CLASS_ARGS_OK {
+                let src = format!("var v, w; {src}");
+                let r = crate::compile_eval(&src, &ctx, options);
+                assert!(r.is_ok(), "{src} strict={strict}: {:?}", r.err());
+            }
+        }
+    }
+
+    #[test]
+    fn class_arguments_reads_are_errors_in_function_ctor_bodies() {
+        use ep9_bytecode::FunctionCtorKind;
+        let options = crate::CompileOptions::default();
+        for src in CLASS_ARGS {
+            let body = format!("var v, w; {src}");
+            let r = crate::compile_function_ctor(FunctionCtorKind::Normal, "", &body, options);
+            assert!(class_args_codegen_error(&r), "{body}: {:?}", r.err());
+        }
+        for src in CLASS_ARGS_OK {
+            let body = format!("var v, w; {src}");
+            let r = crate::compile_function_ctor(FunctionCtorKind::Normal, "", &body, options);
+            assert!(r.is_ok(), "{body}: {:?}", r.err());
         }
     }
 }
