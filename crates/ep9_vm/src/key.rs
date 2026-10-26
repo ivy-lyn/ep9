@@ -6,10 +6,12 @@
 //!
 //! ```text
 //! producer                     key it hands on
-//! ToPropertyKey (any value) -> a symbol as it is; else flatten, then the atom of the string
+//! ToPropertyKey (any value) -> a symbol as it is; else atoms::atomize of the string (a rope
+//!                              is flattened, a rope or slice becomes a THIN forwarder)
 //! unit strings              -> atoms (interned at unit load, unit.rs)
 //! Rust text                 -> atoms::intern_str
-//! index or number (Rust)    -> index_key / number_key (the atom; no fresh string first)
+//! index or number (Rust)    -> index_key / number_key (the atom; no fresh string first;
+//!                              number_key keeps it in the number cache, H19-Q6)
 //! define paths              -> intern_key (P2-OBJ calls it; stored keys are always atoms)
 //!
 //! lookup: probe(key) once -> Bits (atom or symbol): compare bits only
@@ -52,7 +54,9 @@ pub(crate) fn key_eq(a: PropertyKey, b: PropertyKey) -> bool {
 }
 
 /// ToPropertyKey (§7.1.19): ToPrimitive(b, string); a symbol is the key, anything else
-/// becomes the atom of its ToString. An index such as "1" stays a string atom.
+/// becomes the atom of its ToString. An index such as "1" stays a string atom. A rope or a
+/// slice is atomized flat and becomes a THIN forwarder to the atom (H19-Q1, H19-Q4), so the
+/// same string as a key again costs one load. GC point.
 pub(crate) fn to_property_key(cx: &mut Cx, b: u64) -> Res<PropertyKey> {
     if string::is_atom(b) || is_symbol(b) {
         return Ok(b);
@@ -66,8 +70,7 @@ pub(crate) fn to_property_key(cx: &mut Cx, b: u64) -> Res<PropertyKey> {
         }
         to_string(cx, p)?
     };
-    let s = string::flatten(cx, s);
-    Ok(intern_key(cx.rt(), s))
+    Ok(atoms::atomize(cx.rt(), s))
 }
 
 /// The key of the index `i`: the atom of its canonical string ("0" .. "4294967295"), whose
@@ -91,12 +94,19 @@ pub(crate) fn index_key(rt: &Runtime, i: u32) -> PropertyKey {
 }
 
 /// The key of the number `d`: ToPropertyKey(𝔽(d)) as an atom ([`index_key`] for an integer
-/// in 0 ..= 2^32 - 1, else the atom of Number::toString(d)). GC point.
+/// in 0 ..= 2^32 - 1, else the atom of Number::toString(d)). A hit in the isolate's number
+/// cache (H19-Q6) skips the text, the hash and the probe; a miss fills the slot. GC point.
 pub(crate) fn number_key(rt: &Runtime, d: f64) -> PropertyKey {
-    if (0.0..=f64::from(u32::MAX)).contains(&d) && d.fract() == 0.0 {
-        return index_key(rt, d as u32);
+    if let Some(a) = atoms::number_atom(rt, d) {
+        return a;
     }
-    atoms::intern_str(rt, &crate::numconv::number_to_string(d))
+    let a = if (0.0..=f64::from(u32::MAX)).contains(&d) && d.fract() == 0.0 {
+        index_key(rt, d as u32)
+    } else {
+        atoms::intern_str(rt, &crate::numconv::number_to_string(d))
+    };
+    atoms::cache_number_string(rt, d, a);
+    a
 }
 
 /// The array index that `key` names, if it is a canonical index string ("0" .. "4294967294").

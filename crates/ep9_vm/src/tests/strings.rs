@@ -1204,3 +1204,259 @@ fn array_index_copies_no_rope_text_to_the_rust_heap() {
         "with_text copies an unflattened rope"
     );
 }
+
+// ---- thin strings and atomize (M4-P2 STR2; H19-Q1, H19-Q4) ----------------------------------
+
+/// Checks that `s` is a THIN cell forwarding to the SEQ atom `a` with the text `want`, and that
+/// every rope-safe reader sees the text through it without an allocation.
+fn assert_thin(iso: &mut crate::Isolate, s: u64, a: u64, want: &str) {
+    let rt: &Runtime = &iso.rt;
+    assert_eq!(kinds::cell_kind(s), kinds::THIN.get(), "{want:?}");
+    assert!(!string::is_atom(s));
+    assert!(string::is_atom(a));
+    assert!(string::is_seq(a));
+    assert_eq!(string::thin_target(s), Some(a));
+    assert_eq!(cell_size(rt, s), 32);
+    let before = rt.heap.stats().collections;
+    assert_eq!(string::str_len(s), want.encode_utf16().count());
+    assert_eq!(text(s), want);
+    assert!(string::equals(s, a) && string::equals(a, s));
+    assert_eq!(string::compare(s, a), core::cmp::Ordering::Equal);
+    assert_eq!(string::hash(s), string::hash(a));
+    assert_eq!(string::hash_field(s), string::hash_field(a));
+    assert!(string::is_flat(s));
+    let units: Vec<u16> = want.encode_utf16().collect();
+    assert!(string::equals_text(s, JsStr::Utf16(&units)));
+    for (i, &u) in units.iter().enumerate() {
+        assert_eq!(string::unit_at(s, i), u);
+    }
+    // intern and atomize of a THIN cell are one load; flatten gives the atom.
+    assert_eq!(atoms::intern(rt, s), a);
+    assert_eq!(atoms::atomize(rt, s), a);
+    assert_eq!(string::flatten(&mut iso.cx, s), a);
+    assert_eq!(string::view(&iso.cx, s).len(), units.len());
+    assert_eq!(
+        iso.rt.heap.stats().collections,
+        before,
+        "THIN reads allocate nothing"
+    );
+}
+
+#[test]
+fn atomize_makes_a_rope_a_thin_forwarder_to_its_flat_atom() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let a = string::new_string(rt, "atomize-rope-");
+    let b = string::new_string(rt, "with-no-atom-yet");
+    let r = cat(rt, a, b);
+    assert_eq!(kinds::cell_kind(r), kinds::CONS.get());
+    assert_eq!(atoms::lookup(rt, "atomize-rope-with-no-atom-yet"), None);
+    let k = atoms::atomize(rt, r);
+    assert_ne!(k, r);
+    assert_eq!(kinds::cell_kind(k), kinds::SEQ_LATIN1.get());
+    assert_eq!(
+        atoms::lookup(rt, "atomize-rope-with-no-atom-yet"),
+        Some(k),
+        "the flat cell is the atom"
+    );
+    assert_thin(&mut iso, r, k, "atomize-rope-with-no-atom-yet");
+    // The THIN cell keeps its atom alive (it is traced) and the table stays whole.
+    iso.collect_garbage();
+    let rt: &Runtime = &iso.rt;
+    assert_eq!(text(r), "atomize-rope-with-no-atom-yet");
+    assert_eq!(string::thin_target(r), Some(k));
+    atoms::verify(rt).unwrap();
+}
+
+#[test]
+fn atomize_of_a_rope_whose_text_has_an_atom_forwards_to_that_atom() {
+    // The rope is flattened first (V9-D13), its flat copy finds the atom, and the rope
+    // forwards to the atom; the flat copy is garbage.
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let atom = atoms::intern_str(rt, "existing-atom-text");
+    let r = cat(
+        rt,
+        string::new_string(rt, "existing-"),
+        string::new_string(rt, "atom-text"),
+    );
+    assert_eq!(atoms::atomize(rt, r), atom);
+    assert_thin(&mut iso, r, atom, "existing-atom-text");
+}
+
+#[test]
+fn intern_of_a_flattened_rope_atomizes_its_flat_part() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let r = cat(
+        rt,
+        string::new_string(rt, "flattened-"),
+        string::new_string(rt, "rope-key"),
+    );
+    let f = string::flatten(&mut iso.cx, r);
+    let rt: &Runtime = &iso.rt;
+    assert_eq!(kinds::cell_kind(r), kinds::CONS.get());
+    let before = rt.heap.stats().collections;
+    let k = atoms::intern(rt, r);
+    assert_eq!(k, f, "the flat part becomes the atom in place");
+    assert_eq!(rt.heap.stats().collections, before);
+    assert_thin(&mut iso, r, f, "flattened-rope-key");
+}
+
+#[test]
+fn a_utf16_rope_forwards_to_a_utf16_atom() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let a = string::new_string(rt, "two-byte ");
+    let b = string::new_string_utf16(rt, &[0x3b1, 0x3b2, 0x3b3, 0x20ac]);
+    let r = cat(rt, a, b);
+    assert_eq!(kinds::cell_kind(r), kinds::CONS.get());
+    let k = atoms::atomize(rt, r);
+    assert_eq!(kinds::cell_kind(k), kinds::SEQ_UTF16.get());
+    // The CONS's two-byte flag does not stay on the THIN cell (its atom says the encoding).
+    // SAFETY: `r` is a live cell (a Rust local: conservative scan).
+    let flags = unsafe { cell(r).header().flags() };
+    assert_eq!(flags & !FLAG_ATOM, 0);
+    assert_thin(&mut iso, r, k, "two-byte \u{3b1}\u{3b2}\u{3b3}\u{20ac}");
+    string::with_text(r, |t| assert!(matches!(t, JsStr::Utf16(_))));
+}
+
+#[test]
+fn atomize_copies_a_slice_into_a_seq_atom_and_the_slice_forwards() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let parent = string::new_string(rt, "0123456789abcdefghijklmnopqrstuvwxyz");
+    let s = string::substring(rt, parent, 4, 30);
+    assert_eq!(kinds::cell_kind(s), kinds::SLICED.get());
+    // No atom yet: a SEQ copy of the text becomes the atom, never the slice (a slice atom
+    // would keep the whole parent alive).
+    let k = atoms::atomize(rt, s);
+    assert_eq!(kinds::cell_kind(k), kinds::SEQ_LATIN1.get());
+    assert_thin(&mut iso, s, k, "456789abcdefghijklmnopqrst");
+    // A slice whose text has an atom forwards with no allocation.
+    let rt: &Runtime = &iso.rt;
+    let s2 = string::substring(rt, parent, 4, 30);
+    let before = rt.heap.stats().collections;
+    assert_eq!(atoms::atomize(rt, s2), k);
+    assert_eq!(rt.heap.stats().collections, before);
+    assert_thin(&mut iso, s2, k, "456789abcdefghijklmnopqrst");
+    // intern (no GC point) also forwards a slice to an existing atom.
+    let rt: &Runtime = &iso.rt;
+    let s3 = string::substring(rt, parent, 4, 30);
+    assert_eq!(atoms::intern(rt, s3), k);
+    assert_thin(&mut iso, s3, k, "456789abcdefghijklmnopqrst");
+    iso.collect_garbage();
+    atoms::verify(&iso.rt).unwrap();
+}
+
+#[test]
+fn to_property_key_of_a_rope_is_the_atom_and_the_rope_forwards() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let r = cat(
+        rt,
+        string::new_string(rt, "computed-"),
+        string::new_string(rt, "property-key"),
+    );
+    let k = key::to_property_key(&mut iso.cx, r).unwrap();
+    assert!(string::is_atom(k) && string::is_seq(k));
+    assert_thin(&mut iso, r, k, "computed-property-key");
+    // The same rope as a key again: the atom, with no allocation and no content compare.
+    let before = iso.rt.heap.stats().collections;
+    assert_eq!(key::to_property_key(&mut iso.cx, r).unwrap(), k);
+    assert_eq!(iso.rt.heap.stats().collections, before);
+    assert_eq!(key::probe(k), Probe::Bits);
+}
+
+#[test]
+fn ropes_and_thin_keys_under_gc_stress_keep_one_atom_per_text() {
+    // Many rope keys, some texts twice, atomized under GC stress: one atom per text, every
+    // rope a THIN forwarder to it, and the table check passes after each collection.
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let roots = rt.heap.scratch_roots();
+    for i in 0..60 {
+        let r = cat(
+            rt,
+            string::new_string(rt, "rope-key-number-"),
+            string::new_string(rt, &format!("{}", i % 20)),
+        );
+        roots.push(val(r));
+    }
+    let mut seen: Vec<(String, usize)> = Vec::new();
+    for i in 0..60 {
+        let r = roots.get(i).to_bits();
+        let k = key::to_property_key(&mut iso.cx, r).unwrap();
+        let rt: &Runtime = &iso.rt;
+        let t = text(r);
+        assert_eq!(text(k), t);
+        assert_eq!(kinds::cell_kind(r), kinds::THIN.get());
+        match seen.iter().find(|(x, _)| *x == t) {
+            Some(&(_, j)) => assert_eq!(k, roots.get(j).to_bits(), "{t}: one atom"),
+            None => seen.push((t, roots.push(val(k)))),
+        }
+        rt.heap.collect();
+        atoms::verify(rt).unwrap();
+    }
+    assert_eq!(seen.len(), 20);
+}
+
+// ---- the number-string cache (M4-P2 STR2; H19-Q6) --------------------------------------------
+
+#[test]
+fn number_keys_and_number_strings_share_one_cache_emptied_at_gc() {
+    for stress in [false, true] {
+        let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+        for d in [7.0, 1234.0, 1.5, -0.0, f64::NAN, 1e21, 4_294_967_295.0] {
+            let rt: &Runtime = &iso.rt;
+            let k = key::number_key(rt, d);
+            assert!(string::is_atom(k));
+            assert_eq!(text(k), crate::numconv::number_to_string(d), "{d}");
+            // A hit gives the same atom and allocates nothing.
+            let before = rt.heap.stats().collections;
+            assert_eq!(key::number_key(rt, d), k, "{d}");
+            assert_eq!(atoms::cached_number_string(rt, d), Some(k), "{d}");
+            assert_eq!(rt.heap.stats().collections, before);
+            // ToString of the number is the cached string.
+            assert_eq!(crate::conv::number_string(&mut iso.cx, d), k, "{d}");
+            // A collection empties the cache; the next key is still the text's atom.
+            iso.collect_garbage();
+            let rt: &Runtime = &iso.rt;
+            assert_eq!(atoms::cached_number_string(rt, d), None, "{d}");
+            assert_eq!(key::number_key(rt, d), atoms::intern_str(rt, &text(k)));
+        }
+        // -0 and 0 share a slot but keep their own entries (bits compare); both are "0".
+        let rt: &Runtime = &iso.rt;
+        let z = key::number_key(rt, 0.0);
+        assert_eq!(key::number_key(rt, -0.0), z);
+        // ToString fills the slot with a plain string; the key then interns that string in
+        // place and the slot holds the atom.
+        let s = crate::conv::number_string(&mut iso.cx, 98765.25);
+        let rt: &Runtime = &iso.rt;
+        assert!(!string::is_atom(s));
+        assert_eq!(atoms::cached_number_string(rt, 98765.25), Some(s));
+        let k = key::number_key(rt, 98765.25);
+        assert_eq!(k, s, "the cached SEQ string became the atom in place");
+        assert!(string::is_atom(k));
+        assert_eq!(crate::conv::number_string(&mut iso.cx, 98765.25), k);
+        atoms::verify(&iso.rt).unwrap();
+    }
+}
+
+// ---- messages over the length limit (M4-P2 STR2; H19-Q5) -------------------------------------
+
+#[test]
+fn a_message_over_the_length_limit_is_the_v8_error_text() {
+    use crate::error::testing::bounded_text;
+    // Under or at the limit: whole (quoted values are never cut, as in V8).
+    assert_eq!(bounded_text("abc", 3), "abc");
+    assert_eq!(bounded_text("é\u{3b1}x", 3), "é\u{3b1}x");
+    // 6 UTF-8 bytes, 3 UTF-16 units: the exact count keeps it.
+    assert_eq!(bounded_text("ééé", 3), "ééé");
+    // Over: V8's "<error>" (node v24.22.1 for a key of 2^29 - 24 units).
+    assert_eq!(bounded_text("abcd", 3), "<error>");
+    assert_eq!(bounded_text("😀😀", 3), "<error>");
+    // The real limit leaves every normal message alone.
+    let long = "k".repeat(100_000);
+    assert_eq!(bounded_text(&long, string::MAX_STRING_LENGTH), long);
+}

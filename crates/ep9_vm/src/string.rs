@@ -1,5 +1,5 @@
-//! Strings (H19): flat sequential strings, ropes (CONS) and slices (SLICED), the hash field,
-//! the string hash and the read API.
+//! Strings (H19): flat sequential strings, ropes (CONS), slices (SLICED) and forwarders
+//! (THIN), the hash field, the string hash and the read API.
 //!
 //! | Kind | Id | Layout (byte offsets) | Size |
 //! |---|---|---|---|
@@ -7,22 +7,32 @@
 //! | SEQ_UTF16 | 2 | +8 length (u32), +12 hash field (u32), +16 UTF-16 code units | 16 + 2 len |
 //! | CONS | 3 | +8 length (u32), +12 hash field (u32), +16 first, +24 second (strings) | 32 |
 //! | SLICED | 4 | +8 length (u32), +12 hash field (u32), +16 parent (a SEQ string), +24 offset (int32) | 32 |
+//! | THIN | 5 | +8 length (u32), +12 hash field (u32), +16 actual (a SEQ atom), +24 int32 0 | 32 |
 //!
 //! - The words after word0 of SEQ cells are raw data, not Values. SEQ kinds trace nothing,
-//!   and the size comes from the kind and the length (H9 "heap always parsable"). CONS and
-//!   SLICED trace their two words at +16 and +24 (the +8 word is raw).
+//!   and the size comes from the kind and the length (H9 "heap always parsable"). CONS,
+//!   SLICED and THIN trace their two words at +16 and +24 (the +8 word is raw).
 //! - word0 flag bit 0 ([`crate::kinds::FLAG_ATOM`]) marks an atom: the one interned cell of
 //!   its text in this isolate (`atoms.rs`). Flag bit 1 ([`FLAG_TWO_BYTE`]) marks a CONS cell
 //!   with a UTF-16 leaf (its flat form is SEQ_UTF16).
-//! - Kinds 5-7 (thin, external) are reserved and share this header, so the length is always
-//!   the u32 at +8.
+//! - Kinds 6-7 (external) are reserved and share this header, so the length is always the
+//!   u32 at +8.
 //!
 //! Ropes (M4-P1 STR1; H19, V9-D13). `a + b` makes a CONS cell when the result has at least
-//! [`MIN_CONS_LENGTH`] code units, and a substring of at least [`MIN_SLICE_LENGTH`] units
-//! is a SLICED cell over a SEQ parent ([`substring`]). [`flatten`] of a CONS writes the flat
+//! [`MIN_CONS_LENGTH`] code units, and a substring of at least `MIN_SLICE_LENGTH` (13) units
+//! is a SLICED cell over a SEQ parent (`substring`, test builds only until a `Cx::substring`
+//! caller exists; M4-P2 STR2). [`flatten`] of a CONS writes the flat
 //! form once and turns the cell into (first = flat, second = ""), V8 style: a flattened CONS
 //! reads as its first. A SLICED cell is flat for reading (its units are a range of the
 //! parent's), so [`flatten`] returns it as is.
+//!
+//! Thin strings (M4-P2 STR2; H19-Q4). Atomizing a CONS or a SLICED cell turns it, in place,
+//! into a THIN cell that forwards to the SEQ atom of its text ([`make_thin`], called by
+//! `atoms.rs`): the next atomize of the same cell is one load, and the old leaves or the
+//! parent can die. Only CONS and SLICED cells (32 B, the THIN size) change: a SEQ cell keeps
+//! its kind, because its +16 holds the code units that a live [`JsStr`] may still read, and a
+//! short SEQ cell has no room for the forward word. A THIN cell is flat for reading (it reads
+//! as its atom), and [`flatten`] returns the atom.
 //!
 //! Hash field (u32 at +12; 0 = not computed yet), V8 Name style:
 //!
@@ -72,7 +82,12 @@ mod strf {
     pub const PARENT: usize = 16;
     /// SLICED: the offset in the parent (int32).
     pub const OFFSET: usize = 24;
-    /// The size of a CONS or SLICED cell.
+    /// THIN: the SEQ atom it forwards to.
+    pub const ACTUAL: usize = 16;
+    /// THIN: the word after `ACTUAL` (int32 0; the cell keeps the 32 B of the CONS or SLICED
+    /// cell it was).
+    pub const THIN_PAD: usize = 24;
+    /// The size of a CONS, SLICED or THIN cell.
     pub const ROPE_SIZE: usize = 32;
 }
 
@@ -83,7 +98,8 @@ pub(crate) const FLAG_TWO_BYTE: u16 = 0x0002;
 pub(crate) const MIN_CONS_LENGTH: usize = 13;
 
 /// A substring of at least this many code units is a SLICED cell (H19; V8
-/// `SlicedString::kMinLength`).
+/// `SlicedString::kMinLength`). Test builds only, with `substring`.
+#[cfg(test)]
 pub(crate) const MIN_SLICE_LENGTH: usize = 13;
 
 /// Largest string length in code units (V8: 2^29 - 24). Longer results throw RangeError
@@ -104,7 +120,8 @@ pub(crate) const HASH_MASK: u32 = (1 << 30) - 1;
 
 fn trace_none(_: CellPtr, _: &mut ep9_heap::Tracer<'_>) {}
 
-/// CONS and SLICED: the two Value words at +16 and +24 (the +8 word is raw length and hash).
+/// CONS, SLICED and THIN: the two Value words at +16 and +24 (the +8 word is raw length and
+/// hash).
 fn trace_rope(c: CellPtr, t: &mut ep9_heap::Tracer<'_>) {
     // SAFETY: the heap calls trace functions with live cells of the registered kind; +16 and
     // +24 of a CONS or SLICED cell are Value slots (layout table).
@@ -161,7 +178,11 @@ pub(crate) fn register_kinds(heap: &Heap) {
         )
         .expect("register a VM cell kind");
     }
-    for (id, name) in [(kind::CONS, "string-cons"), (kind::SLICED, "string-sliced")] {
+    for (id, name) in [
+        (kind::CONS, "string-cons"),
+        (kind::SLICED, "string-sliced"),
+        (kind::THIN, "string-thin"),
+    ] {
         heap.register_kind(
             id,
             CellKind {
@@ -321,8 +342,8 @@ fn seq_units<'a>(c: CellPtr, utf16: bool) -> JsStr<'a> {
     }
 }
 
-/// The code units of a flat string `b` (SEQ, SLICED or a flattened CONS); `None` for a CONS
-/// that is not flattened. Not a GC point.
+/// The code units of a flat string `b` (SEQ, SLICED, THIN or a flattened CONS); `None` for a
+/// CONS that is not flattened. Not a GC point.
 #[inline]
 fn flat_units<'a>(b: u64) -> Option<JsStr<'a>> {
     debug_assert!(is_string(b));
@@ -335,7 +356,7 @@ fn flat_units<'a>(b: u64) -> Option<JsStr<'a>> {
     }
 }
 
-/// Is `b` a flat string (SEQ, SLICED or a flattened CONS), whose code units can be read
+/// Is `b` a flat string (SEQ, SLICED, THIN or a flattened CONS), whose code units can be read
 /// without a flatten? The test of the `FlatStr` downcast (`abi/local.rs`). Not a GC point.
 pub(crate) fn is_flat(b: u64) -> bool {
     is_string(b) && flat_units(b).is_some()
@@ -357,8 +378,16 @@ fn non_seq_units<'a>(b: u64) -> Option<JsStr<'a>> {
                 JsStr::Utf16(x) => JsStr::Utf16(&x[off..off + len]),
             })
         }
+        5 => Some(units(thin_actual(b))),
         k => panic!("string kind {k} has no reader yet"),
     }
+}
+
+/// The SEQ atom that the THIN cell `b` forwards to.
+#[inline]
+fn thin_actual(b: u64) -> u64 {
+    debug_assert_eq!(cell_kind(b), kind::THIN.get());
+    rd(cell(b), strf::ACTUAL)
 }
 
 /// The code units of a flat string cell (this file's own reads: hashing, compares, [`view`]).
@@ -383,6 +412,7 @@ fn is_two_byte(b: u64) -> bool {
         // SAFETY: `b` is a live CONS cell.
         3 => (unsafe { cell(b).header().flags() } & FLAG_TWO_BYTE) != 0,
         4 => is_two_byte(rd(cell(b), strf::PARENT)),
+        5 => is_two_byte(thin_actual(b)),
         k => panic!("string kind {k} has no reader yet"),
     }
 }
@@ -472,7 +502,6 @@ impl Iterator for Units<'_> {
 /// O(depth), no GC point. For readers that hold no `&mut Cx`, such as a check of the first
 /// unit of a name that may be an atom of rope kind (`interp/slow/lookup.rs`
 /// `is_private_name`; a fixer item of M4-P1).
-#[cfg_attr(not(test), allow(dead_code))] // caller: lookup.rs is_private_name (fixer, M4-P1)
 pub(crate) fn unit_at(b: u64, i: usize) -> u16 {
     debug_assert!(i < str_len(b));
     let (mut b, mut i) = (b, i);
@@ -579,9 +608,10 @@ pub(crate) fn with_text<R>(b: u64, f: impl FnOnce(JsStr<'_>) -> R) -> R {
     }
 }
 
-/// The flat form of the string `s` (H19, V9-D13): `s` itself when it is SEQ or SLICED; for a
-/// CONS the flat SEQ cell, which also becomes the CONS's first part (second = ""), so the
-/// next flatten of the same CONS allocates nothing. GC point (the flat cell). The caller
+/// The flat form of the string `s` (H19, V9-D13): `s` itself when it is SEQ or SLICED; the
+/// atom of a THIN cell; for a CONS the flat SEQ cell, which also becomes the CONS's first
+/// part (second = ""), so the next flatten of the same CONS allocates nothing. GC point (the
+/// flat cell; never for a SEQ, SLICED or THIN string). The caller
 /// holds every Value it needs after the call in a root (a Rust local: conservative scan).
 pub(crate) fn flatten(cx: &mut Cx, s: u64) -> u64 {
     flatten_rt(cx.rt(), s)
@@ -593,6 +623,7 @@ pub(crate) fn flatten_rt(rt: &Runtime, s: u64) -> u64 {
     match cell_kind(s) {
         1 | 2 | 4 => s,
         3 => flatten_cons(rt, s),
+        5 => thin_actual(s),
         k => panic!("string kind {k} has no reader yet"),
     }
 }
@@ -868,7 +899,12 @@ fn new_cons(rt: &Runtime, first: u64, second: u64, len: usize) -> u64 {
 /// The substring `s[from..to]` (`from <= to <= str_len(s)`), for String.prototype.substring,
 /// slice and the like. GC point. A result of at least [`MIN_SLICE_LENGTH`] code units is a
 /// SLICED cell over the flat parent (O(1) after the flatten; H19), a shorter one a copy.
-#[cfg_attr(not(test), allow(dead_code))] // caller: the Cx substring ABI (fixer, M4-P1)
+///
+/// Test builds only (M4-P2 STR2, the STR1 F4 carry): no VM caller exists, and the builtins
+/// reach it only through a part-2 `Cx::substring` ABI method that no string role owns yet
+/// (`abi/mod.rs` and the H20 golden). Until that method lands, no SLICED cell is made outside
+/// tests; the SLICED and THIN readers stay, tested here.
+#[cfg(test)]
 pub(crate) fn substring(rt: &Runtime, s: u64, from: usize, to: usize) -> u64 {
     let n = str_len(s);
     assert!(from <= to && to <= n, "substring {from}..{to} of {n} units");
@@ -910,10 +946,70 @@ pub(crate) fn substring(rt: &Runtime, s: u64, from: usize, to: usize) -> u64 {
     c.to_value().to_bits()
 }
 
+// ---- thin strings (H19-Q4; used by atoms.rs) -------------------------------------------------
+
+/// The atom that `b` forwards to, if `b` is a THIN cell. Not a GC point.
+#[inline]
+pub(crate) fn thin_target(b: u64) -> Option<u64> {
+    (cell_kind(b) == kind::THIN.get()).then(|| thin_actual(b))
+}
+
+/// The flat first part of a flattened CONS `b` (second = ""), else `None`. Not a GC point.
+pub(crate) fn flat_first(b: u64) -> Option<u64> {
+    if cell_kind(b) != kind::CONS.get() {
+        return None;
+    }
+    let (first, second) = cons_parts(b);
+    (str_len(second) == 0).then_some(first)
+}
+
+/// Is `b` a CONS (flattened or not) or a SLICED string, the kinds that [`make_thin`] takes?
+#[inline]
+pub(crate) fn is_rope_or_slice(b: u64) -> bool {
+    matches!(cell_kind(b), 3 | 4)
+}
+
+/// Is `b` a SEQ string (Latin-1 or UTF-16), the only kind a THIN cell forwards to?
+#[inline]
+pub(crate) fn is_seq(b: u64) -> bool {
+    matches!(cell_kind(b), 1 | 2)
+}
+
+/// Turns the CONS or SLICED string `s`, which is not an atom, into a THIN cell that forwards
+/// to `a`, the SEQ atom of the same text (H19-Q4). Not a GC point (no allocation). The cell
+/// keeps its 32 bytes and its length; its hash field becomes the atom's (the same text, so
+/// the same value); +16 holds `a` and +24 int32 0, so the old parts or the parent can die.
+/// A [`JsStr`] of `s` taken before the change reads the old parts or the parent, which the
+/// view keeps alive (conservative scan of interior pointers), never the THIN cell itself.
+pub(crate) fn make_thin(rt: &Runtime, s: u64, a: u64) {
+    debug_assert!(
+        is_rope_or_slice(s) && !is_atom(s),
+        "make_thin of kind {}",
+        cell_kind(s)
+    );
+    debug_assert!(
+        is_seq(a) && is_atom(a),
+        "a THIN cell forwards to a SEQ atom"
+    );
+    debug_assert_eq!(str_len(s), str_len(a));
+    debug_assert_eq!(hash_field(s), hash_field(a), "make_thin of another text");
+    let c = cell(s);
+    set_hash_field_raw(c, hash_field(a));
+    // SAFETY: `s` is a live string cell (caller contract); the kind byte and the flags are its
+    // own header. CONS, SLICED and THIN are all 32 B (Fixed), so the heap stays parsable.
+    let h = unsafe { c.header() };
+    h.set_kind(kind::THIN.get());
+    h.set_flags(h.flags() & !FLAG_TWO_BYTE);
+    // Barriered stores: the cell may be older than the last GC point.
+    wr(&rt.heap, c, strf::ACTUAL, a);
+    wr(&rt.heap, c, strf::THIN_PAD, int32_bits(0));
+}
+
 // ---- atoms, hashes and keys (used by atoms.rs and key.rs) ------------------------------------
 
-/// True if `b` is an atom: a string cell with the ATOM flag (any string kind; a rope that
-/// `atoms::intern` met keeps its kind).
+/// True if `b` is an atom: a string cell with the ATOM flag (a SEQ string, or a CONS or SLICED
+/// string that `atoms::intern` met with no atom of its text; `atoms::atomize` makes SEQ atoms
+/// only). A THIN cell is never an atom: it forwards to one.
 #[inline]
 pub(crate) fn is_atom(b: u64) -> bool {
     if !is_cell_bits(b) {
