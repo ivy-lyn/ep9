@@ -26,15 +26,16 @@
 //!
 //! | Handler kind ([`hk`]) | +16 | +24 (weak) | +32 (int32) | Writer |
 //! |---|---|---|---|---|
-//! | `PROTO_LOAD`, `MISSING`, `ADD`, `GLOBAL` | the validity cell of the prototype chain (strong; M4-P1 VALIDITY; until then the int32 epoch, as IC_LAYOUT 1) | holder, target shape or lexical shape (undefined for `MISSING`) | the location (a smi field handler) | `ic.rs` |
+//! | `PROTO_LOAD`, `MISSING`, `ADD` (0x24) | the validity cell of the receiver shape's prototype (strong; `validity.rs`, M4-P1) | holder or target shape (undefined for `MISSING`) | the location (a smi field handler) | `ic.rs` |
+//! | `ADD` (0x25) | undefined (CreateDataProperty does not look at the chain) | target shape | the location | `ic.rs` |
+//! | `GLOBAL` | int32 0 (no chain: the case is an own property of the global object, keyed on two shapes) | lexical shape | the location | `ic.rs` |
 //! | `CONSTRUCT_SITE` | int32 count | the initial shape | the `prototype` field index | `construct_ic.rs` (M4-P1 OBJ-ALLOC) |
 //! | `INSTANCEOF` | the validity cell | the rhs function's shape (the slot key is the function) | the `prototype` field index | `instance_ic.rs` (M4-P3 IC2) |
 //! | `CLONE` | int32 count | the result shape (the slot key is the source shape) | int32 0 | `literal_site.rs` (M4-P1 OBJ-ALLOC) |
 //!
 //! The size stays 40 B and no kind id is added (construct sites, instanceof and clone caches
 //! are IC_HANDLER cells; a Literal site keeps only its slot halves). The trace function visits +24
-//! weakly; the owner of the validity cell makes it visit +16 strongly (an int32 there needs no
-//! visit).
+//! weakly and +16 strongly (a validity cell; an int32 or undefined there needs no visit).
 //!
 //! | Handler | Sites | Hit |
 //! |---|---|---|
@@ -42,9 +43,9 @@
 //! | `ARRAY_LENGTH` (smi) | 0x21, 0x22 on an array's shape | the length field (+24) |
 //! | `STRING_LENGTH` (smi) | 0x21 on a string, under [`KEY_STRING`] | the string's length, after a kind-byte check |
 //! | `SLOW` (smi) | any: accessor, dictionary, exotic or read-only cases | none: the generic path runs, the case only keeps its place |
-//! | `PROTO_LOAD` (cell) | 0x21, 0x22 | epoch unchanged and holder alive: the holder's field |
-//! | `MISSING` (cell) | 0x21, 0x22 | epoch unchanged: undefined |
-//! | `ADD` (cell) | 0x24 (epoch checked), 0x25 | target alive and room in the slots: store, then install the target shape |
+//! | `PROTO_LOAD` (cell) | 0x21, 0x22 | validity cell valid and holder alive: the holder's field |
+//! | `MISSING` (cell) | 0x21, 0x22 | validity cell valid: undefined |
+//! | `ADD` (cell) | 0x24 (validity cell checked), 0x25 | target alive and room in the slots: store, then install the target shape |
 //! | smi field, keyed on the lexical record's shape | 0x10, 0x11; 0x12 if writable | a `let`/`const`/`class` binding; the hole (TDZ) misses |
 //! | `GLOBAL` (cell), keyed on the global object's shape | 0x10, 0x11; 0x12 if writable | the lexical record still has the shape in the handler: the global object's field |
 //!
@@ -54,15 +55,22 @@
 //!   cell) and a POLY_IC case's handler are strong. A dead key reads undefined after the GC,
 //!   so its case is a miss, and its place is free for the next case.
 //! - Handlers that depend on the prototype chain (prototype load, missing property, the
-//!   add-property transition of a store) keep the `proto_epoch` they were made under and
-//!   miss when it differs (OM-8). The epoch is read through `Cx::proto_epoch` (I43). A
-//!   value store to a prototype does not bump the epoch, so a prototype load reads the
-//!   holder's field at every hit.
-//! - The epoch saturates at [`shape::EPOCH_SATURATED`] (W4-P3FIX-EPOCH-SAT). There, such a
-//!   case is `SLOW` instead ([`load_case`], [`store_pre`]), so no handler that compares the
-//!   epoch ever holds that value, and every one made before misses from then on. A 0x25 add
-//!   case may hold it: its hit does not compare the epoch, and the verifier gives 0x24 and
-//!   0x25 different slot kinds, so a 0x24 site never reads it.
+//!   add-property transition of a 0x24 store) keep the validity cell of the receiver shape's
+//!   prototype (`validity.rs`, H16 K5) and miss once it is invalid: a structural change of
+//!   any prototype on that chain (OM-8, `shape::note_change`) clears it. Changes to other
+//!   prototypes do not. A value store to a prototype is not a change, so a prototype load
+//!   reads the holder's field at every hit. Nothing counts, so nothing saturates.
+//! - The case computation reads the cell it sees ([`load_case`], [`store_pre`]; no GC point).
+//!   If that cell is not valid when [`record`] runs, `record` gets the current one
+//!   (`validity::cell_for`, a GC point) and walks the chain again: the case is recorded only
+//!   if the walk gives the same answer under the valid cell. A chain deeper than
+//!   `validity::MAX_DEPTH` gets no cell, and its case is not recorded.
+//! - A 0x25 add case keeps no cell (its hit does not look at the chain); the verifier gives
+//!   0x24 and 0x25 different slot kinds, so a 0x24 site never reads one.
+//! - The debug cross-check (plan v9 R1, V9-A25): in debug builds a hit through a valid cell
+//!   walks the chain again and asserts the answer, unless no prototype changed since the
+//!   cell was made (the `proto_epoch` that `Cx::proto_epoch` points at equals the cell's).
+//!   Release builds do not read the epoch.
 //! - A fast shape is always extensible and a non-extensible object has a dictionary shape
 //!   (OM-10), so an add-property case, which is made only for a fast shape, can never match a
 //!   non-extensible receiver. [`store`] also asserts it.
@@ -96,6 +104,7 @@ use crate::shape::{self, slf};
 use crate::string;
 use crate::stub_cache;
 use crate::unit::FunctionInfo;
+use crate::validity;
 
 /// The entry and case key that stands for "a string receiver" (strings have no shape; their
 /// word0 ShapeId is 0, which is the low half of int32 0). Only [`smi::STRING_LENGTH`] uses it,
@@ -155,7 +164,8 @@ pub(crate) mod hk {
 /// IC_HANDLER fields.
 mod hc {
     pub const KIND: usize = 8;
-    pub const EPOCH: usize = 16;
+    /// The validity cell (PROTO_LOAD, MISSING, 0x24 ADD), undefined (0x25 ADD) or an int32.
+    pub const CELL: usize = 16;
     /// The holder (prototype load) or the target shape (add); undefined for a missing case.
     pub const REF: usize = 24;
     /// The field as a smi field handler.
@@ -203,8 +213,10 @@ fn trace_poly(c: CellPtr, t: &mut Tracer<'_>) {
 }
 
 fn trace_handler(c: CellPtr, t: &mut Tracer<'_>) {
-    // SAFETY: the heap passes a live IC_HANDLER cell; +24 is a Value slot (the other words
-    // are int32s).
+    // SAFETY: the heap passes a live IC_HANDLER cell; +16 is a Value slot (a validity cell,
+    // undefined or an int32).
+    t.visit(unsafe { c.slot(hc::CELL) });
+    // SAFETY: as above; +24 is a Value slot (the other words are int32s).
     t.visit_weak(unsafe { c.slot(hc::REF) });
 }
 
@@ -286,20 +298,59 @@ fn read_field(o: u64, loc: i32) -> Option<u64> {
     field_ref(o, loc).map(|(c, off)| rd(c, off))
 }
 
-#[inline(always)]
+#[cfg(debug_assertions)]
 fn epoch_now(epoch: *const Cell<u32>) -> u32 {
     // SAFETY: `Cx::proto_epoch` points at the runtime's `ShapeState::proto_epoch`, which
     // lives as long as the isolate.
     unsafe { (*epoch).get() }
 }
 
+/// The debug cross-check of a hit through the valid validity cell of the handler `c` (plan v9
+/// R1, V9-A25): unless no prototype changed since the cell was made (`epoch` equals the
+/// epoch the cell keeps, and it is not saturated), walks the chain of `o` (the receiver or
+/// lookup start whose shape is the case key) for the site's name and asserts the handler's
+/// answer. Not a GC point.
+#[cfg(debug_assertions)]
+#[cold]
+#[inline(never)]
+fn cross_check(
+    rt: &Runtime,
+    fi: &FunctionInfo,
+    epoch: *const Cell<u32>,
+    o: u64,
+    name: u32,
+    c: CellPtr,
+) {
+    let now = epoch_now(epoch);
+    if now != shape::EPOCH_SATURATED && now == validity::made_at(rd(c, hc::CELL)) {
+        return;
+    }
+    let key = fi.constant(name);
+    let chain = walk(rt, shape::proto(shape::shape_of(o)), key);
+    let ok = match (rd_i32(c, hc::KIND), chain) {
+        (hk::PROTO_LOAD, Chain::Data(holder, loc, _)) => {
+            holder == rd(c, hc::REF) && int32_of(loc) == rd_i32(c, hc::LOCATION)
+        }
+        (hk::MISSING, Chain::Missing) => true,
+        (hk::ADD, Chain::Missing | Chain::Data(_, _, true)) => true,
+        _ => false,
+    };
+    assert!(
+        ok,
+        "ic: a valid validity cell gave a stale answer (handler kind {})",
+        rd_i32(c, hc::KIND)
+    );
+}
+
 /// The hit path of a named load (opcodes 0x21 and 0x22): the value of `o.key` from slot
 /// `slot` of the vector of `fi`, or `None` on a miss (no vector, no case for `o`'s shape, a
-/// `SLOW` case, a changed epoch, a dead holder). `o` is the receiver (0x21) or the lookup
-/// start (0x22); any value. `name` is the site's name constant (an index into the constants
-/// of `fi`): a megamorphic entry probes the stub cache with it ([`stub_cache::probe_load`];
-/// M4-P0 hook, a miss until M4-P3 IC2).
+/// `SLOW` case, an invalid validity cell, a dead holder). `o` is the receiver (0x21) or the
+/// lookup start (0x22); any value. `name` is the site's name constant (an index into the
+/// constants of `fi`): a megamorphic entry probes the stub cache with it
+/// ([`stub_cache::probe_load`]; M4-P0 hook, a miss until M4-P3 IC2). `epoch` feeds only the
+/// debug cross-check ([`cross_check`]); release builds do not read it.
 #[inline(always)]
+#[cfg_attr(not(debug_assertions), allow(unused_variables))]
 pub(crate) fn load(
     rt: &Runtime,
     fi: &FunctionInfo,
@@ -328,27 +379,31 @@ pub(crate) fn load(
         };
     }
     let c = cell(h);
-    if rd_i32(c, hc::EPOCH) as u32 != epoch_now(epoch) {
+    let k = rd_i32(c, hc::KIND);
+    if (k != hk::PROTO_LOAD && k != hk::MISSING) || !validity::valid_cell(rd(c, hc::CELL)) {
         return None;
     }
-    match rd_i32(c, hc::KIND) {
-        hk::PROTO_LOAD => {
-            let holder = rd(c, hc::REF);
-            if holder == UNDEFINED {
-                return None;
-            }
-            read_field(holder, rd_i32(c, hc::LOCATION))
-        }
-        hk::MISSING => Some(UNDEFINED),
-        _ => None,
+    if k == hk::MISSING {
+        #[cfg(debug_assertions)]
+        cross_check(rt, fi, epoch, o, name, c);
+        return Some(UNDEFINED);
     }
+    let holder = rd(c, hc::REF);
+    if holder == UNDEFINED {
+        return None;
+    }
+    #[cfg(debug_assertions)]
+    cross_check(rt, fi, epoch, o, name, c);
+    read_field(holder, rd_i32(c, hc::LOCATION))
 }
 
-/// The hit path of a named store: `o.key = v` (0x24, `CHECK_EPOCH`) or CreateDataProperty
-/// (0x25) from slot `slot` of the vector of `fi`. False on a miss; nothing is stored then.
-/// `name` is the site's name constant: a megamorphic entry probes the stub cache with it
-/// ([`stub_cache::probe_store`]; M4-P0 hook, a miss until M4-P3 IC2).
+/// The hit path of a named store: `o.key = v` (0x24, `CHECK_EPOCH`: an add case checks its
+/// validity cell) or CreateDataProperty (0x25) from slot `slot` of the vector of `fi`. False
+/// on a miss; nothing is stored then. `name` is the site's name constant: a megamorphic entry
+/// probes the stub cache with it ([`stub_cache::probe_store`]; M4-P0 hook, a miss until M4-P3
+/// IC2). `epoch` feeds only the debug cross-check ([`cross_check`]).
 #[inline(always)]
+#[cfg_attr(not(debug_assertions), allow(unused_variables))]
 pub(crate) fn store<const CHECK_EPOCH: bool>(
     rt: &Runtime,
     fi: &FunctionInfo,
@@ -383,13 +438,17 @@ pub(crate) fn store<const CHECK_EPOCH: bool>(
     }
     let hcell = cell(h);
     if rd_i32(hcell, hc::KIND) != hk::ADD
-        || (CHECK_EPOCH && rd_i32(hcell, hc::EPOCH) as u32 != epoch_now(epoch))
+        || (CHECK_EPOCH && !validity::valid_cell(rd(hcell, hc::CELL)))
     {
         return false;
     }
     let target = rd(hcell, hc::REF);
     if target == UNDEFINED {
         return false;
+    }
+    #[cfg(debug_assertions)]
+    if CHECK_EPOCH {
+        cross_check(rt, fi, epoch, o, name, hcell);
     }
     let loc = rd_i32(hcell, hc::LOCATION);
     let off = (loc >> smi::SHIFT) as usize;
@@ -404,7 +463,7 @@ pub(crate) fn store<const CHECK_EPOCH: bool>(
         object::wr(&rt.heap, cell(s), off, v);
     }
     // An add case is made for a fast, extensible shape that is not in prototype mode
-    // ([`store_case`]), so `o` is extensible and its change needs no epoch bump.
+    // ([`store_pre`]), so `o` is extensible and its change invalidates no validity cell.
     debug_assert!(shape::is_extensible(shape::shape_of(o)) && !shape::is_prototype_object(o));
     shape::install(rt, o, target);
     true
@@ -563,19 +622,23 @@ pub(crate) fn skip_miss(v: u64, i: u32, o: u64) -> bool {
 pub(crate) enum Handler {
     /// An int32 handler.
     Smi(u64),
-    /// A prototype load: holder, its field (a smi field handler), the epoch.
+    /// A prototype load: holder, its field (a smi field handler), the validity cell of the
+    /// key's prototype that the case computation saw (valid, invalid or undefined; [`record`]
+    /// checks it) and the name (for the walk again in [`record`]).
     ProtoLoad {
         holder: u64,
         location: i32,
-        epoch: u32,
+        cell: u64,
+        name: u64,
     },
-    /// A missing property under the epoch.
-    Missing { epoch: u32 },
-    /// An add-property transition: the target shape, its new field, the epoch.
+    /// A missing property: the validity cell seen (as for `ProtoLoad`) and the name.
+    Missing { cell: u64, name: u64 },
+    /// An add-property transition: the target shape, its new field, and for 0x24 the
+    /// validity cell seen (as for `ProtoLoad`); `None` for 0x25 (no chain check).
     Add {
         target: u64,
         location: i32,
-        epoch: u32,
+        chain: Option<u64>,
     },
     /// An own data property of the global object (its field) under the lexical record's
     /// shape `lexical`.
@@ -701,19 +764,16 @@ pub(crate) fn load_case(rt: &Runtime, o: u64, name: u64) -> Option<Case> {
         // wrapper's `length`).
         None if exotic_name(rt, k, name) => smi_case(SLOW),
         None => {
-            let epoch = rt.shapes.proto_epoch.get();
-            if epoch == shape::EPOCH_SATURATED {
-                // The epoch no longer changes, so a case made now would never miss again
-                // (W4-P3FIX-EPOCH-SAT).
-                return smi_case(SLOW);
-            }
-            let handler = match walk(rt, shape::proto(s), name) {
+            let p = shape::proto(s);
+            let cell = chain_cell_seen(rt, p);
+            let handler = match walk(rt, p, name) {
                 Chain::Data(holder, loc, _) => Handler::ProtoLoad {
                     holder,
                     location: int32_of(loc),
-                    epoch,
+                    cell,
+                    name,
                 },
-                Chain::Missing => Handler::Missing { epoch },
+                Chain::Missing => Handler::Missing { cell, name },
                 Chain::Other => Handler::Smi(SLOW),
             };
             Some(Case { key: s, handler })
@@ -726,9 +786,10 @@ pub(crate) fn load_case(rt: &Runtime, o: u64, name: u64) -> Option<Case> {
 pub(crate) enum StorePre {
     /// The case is decided.
     Done(Case),
-    /// The store may add `name` to an object with the shape `from` under `epoch`; the shape
-    /// it produces decides ([`store_case_after`]).
-    Add { from: u64, epoch: u32 },
+    /// The store may add `name` to an object with the shape `from`; the shape it produces
+    /// decides ([`store_case_after`]). `chain`: the validity cell seen for a 0x24 store,
+    /// `None` for 0x25.
+    Add { from: u64, chain: Option<u64> },
 }
 
 /// The case for `o.name = v` (0x24, `define` false) or CreateDataPropertyOrThrow (0x25,
@@ -773,30 +834,60 @@ pub(crate) fn store_pre(rt: &Runtime, o: u64, name: u64, define: bool) -> Option
     if k == kind::FUNCTION.get() && shape::lookup(rt, s, rt.atom(Atom::Prototype)).is_none() {
         return slow;
     }
-    let epoch = rt.shapes.proto_epoch.get();
+    let mut chain = None;
     if !define {
-        // A 0x24 add case compares the epoch: none under the saturated one
-        // (W4-P3FIX-EPOCH-SAT).
-        if epoch == shape::EPOCH_SATURATED {
+        // [[Set]] adds to the receiver only if the chain has no setter and no read-only
+        // property `name` (§10.1.9.2); a writable data property on the chain is fine. The
+        // validity cell guards that answer.
+        let p = shape::proto(s);
+        chain = Some(chain_cell_seen(rt, p));
+        if !adds_past(walk(rt, p, name)) {
             return slow;
         }
-        // [[Set]] adds to the receiver only if the chain has no setter and no read-only
-        // property `name` (§10.1.9.2); a writable data property on the chain is fine.
-        match walk(rt, shape::proto(s), name) {
-            Chain::Missing | Chain::Data(_, _, true) => {}
-            Chain::Data(_, _, false) | Chain::Other => return slow,
-        }
     }
-    Some(StorePre::Add { from: s, epoch })
+    Some(StorePre::Add { from: s, chain })
+}
+
+/// True if a `[[Set]]` that finds `chain` on the prototype chain adds an own data property to
+/// the receiver: no object has the key, or a writable data property has it.
+fn adds_past(chain: Chain) -> bool {
+    matches!(chain, Chain::Missing | Chain::Data(_, _, true))
+}
+
+/// The validity cell that the PROTO_INFO of the prototype `p` keeps now (valid, invalid or
+/// undefined): what a case computation saw. Not a GC point.
+fn chain_cell_seen(rt: &Runtime, p: u64) -> u64 {
+    shape::validity_cell_of(shape::proto_info_of(rt, p))
+}
+
+/// The validity cell a handler for the case key `key` (a shape) keeps: `seen`, if it is still
+/// valid (no prototype on the chain of `key` changed since the case was computed); else the
+/// current cell of `key`'s prototype (`validity::cell_for`), if a walk for `name` gives the
+/// case's answer (`same`) under it. `None`: record nothing (the chain changed the answer, or
+/// it is deeper than `validity::MAX_DEPTH`). GC point.
+fn chain_cell(
+    rt: &Runtime,
+    key: u64,
+    seen: u64,
+    name: u64,
+    same: impl Fn(Chain) -> bool,
+) -> Option<u64> {
+    if validity::is_valid(seen) {
+        return Some(seen);
+    }
+    // GC point: `key`, `name` and the case's references live in the caller's Rust locals
+    // (CSS). A GC runs no JS, so the walk below sees the chain the new cell guards.
+    let c = validity::cell_for(rt, shape::proto(key))?;
+    same(walk(rt, shape::proto(key), name)).then_some(c)
 }
 
 /// The case of a store that ran: a decided case, or for an add, the transition from `from`
 /// to the shape `o` has now, if the store added `name` as the next data property {w, e, c}
 /// of a fast shape. Anything else (dictionary mode, another shape) is `SLOW`. Not a GC point.
-pub(crate) fn store_case_after(rt: &Runtime, pre: StorePre, o: u64, name: u64) -> Option<Case> {
-    let (from, epoch) = match pre {
+pub(crate) fn store_case_after(_rt: &Runtime, pre: StorePre, o: u64, name: u64) -> Option<Case> {
+    let (from, chain) = match pre {
         StorePre::Done(c) => return Some(c),
-        StorePre::Add { from, epoch } => (from, epoch),
+        StorePre::Add { from, chain } => (from, chain),
     };
     let to = shape::shape_of(o);
     let n = shape::count(from);
@@ -808,11 +899,11 @@ pub(crate) fn store_case_after(rt: &Runtime, pre: StorePre, o: u64, name: u64) -
         && shape::details_at(to, n).attrs() == attr::DEFAULT
         && usize::from(shape::details_at(to, n).field()) == n;
     let handler = if added {
-        debug_assert!(shape::is_extensible(from) && rt.shapes.proto_epoch.get() == epoch);
+        debug_assert!(shape::is_extensible(from));
         Handler::Add {
             target: to,
             location: int32_of(field_location(to, n)),
-            epoch,
+            chain,
         }
     } else {
         Handler::Smi(SLOW)
@@ -960,11 +1051,11 @@ pub(crate) fn skip_global_miss(rt: &Runtime, v: u64, i: u32) -> bool {
 
 // ---- recording -------------------------------------------------------------------------------
 
-/// A new IC_HANDLER cell. GC point.
-fn new_handler(rt: &Runtime, kind: i32, epoch: u32, r: u64, location: i32) -> u64 {
+/// A new IC_HANDLER cell: `chain` at +16 (a validity cell, undefined or int32 0). GC point.
+fn new_handler(rt: &Runtime, kind: i32, chain: u64, r: u64, location: i32) -> u64 {
     let c = rt.alloc(kind::IC_HANDLER, hc::SIZE);
     init(c, hc::KIND, int32_bits(kind));
-    init(c, hc::EPOCH, int32_bits(epoch as i32));
+    init(c, hc::CELL, chain);
     init(c, hc::REF, r);
     init(c, hc::LOCATION, int32_bits(location));
     c.to_value().to_bits()
@@ -975,28 +1066,53 @@ fn new_handler(rt: &Runtime, kind: i32, epoch: u32, r: u64, location: i32) -> u6
 /// polymorphic, fills a free case of a polymorphic one, or makes a full one megamorphic.
 /// A megamorphic entry stays. GC point (the handler cell and the POLY_IC cell).
 pub(crate) fn record(rt: &Runtime, v: u64, i: u32, case: Case) {
-    debug_assert!(
-        !matches!(case.handler, Handler::ProtoLoad { epoch, .. } | Handler::Missing { epoch }
-            if epoch == shape::EPOCH_SATURATED),
-        "a load case under the saturated epoch"
-    );
     // GC points below: `v` (also a unit root), the case's key and references live in Rust
     // locals (conservative scan). Each allocation comes before the entry is read, so a key
-    // that dies in that GC reads undefined.
+    // that dies in that GC reads undefined. A prototype case gets its validity cell first
+    // ([`chain_cell`]); `None` records nothing.
+    let key = case.key;
     let handler = match case.handler {
         Handler::Smi(h) => h,
         Handler::ProtoLoad {
             holder,
             location,
-            epoch,
-        } => new_handler(rt, hk::PROTO_LOAD, epoch, holder, location),
-        Handler::Missing { epoch } => new_handler(rt, hk::MISSING, epoch, UNDEFINED, 0),
+            cell,
+            name,
+        } => {
+            let same = |c: Chain| matches!(c, Chain::Data(h, l, _) if h == holder && int32_of(l) == location);
+            let Some(c) = chain_cell(rt, key, cell, name, same) else {
+                return;
+            };
+            new_handler(rt, hk::PROTO_LOAD, c, holder, location)
+        }
+        Handler::Missing { cell, name } => {
+            let same = |c: Chain| matches!(c, Chain::Missing);
+            let Some(c) = chain_cell(rt, key, cell, name, same) else {
+                return;
+            };
+            new_handler(rt, hk::MISSING, c, UNDEFINED, 0)
+        }
         Handler::Add {
             target,
             location,
-            epoch,
-        } => new_handler(rt, hk::ADD, epoch, target, location),
-        Handler::Global { lexical, location } => new_handler(rt, hk::GLOBAL, 0, lexical, location),
+            chain,
+        } => {
+            let c = match chain {
+                None => UNDEFINED,
+                Some(seen) => {
+                    // The added key: the target's last one (`store_case_after`).
+                    let name = shape::key_at(target, shape::count(key));
+                    match chain_cell(rt, key, seen, name, adds_past) {
+                        Some(c) => c,
+                        None => return,
+                    }
+                }
+            };
+            new_handler(rt, hk::ADD, c, target, location)
+        }
+        Handler::Global { lexical, location } => {
+            new_handler(rt, hk::GLOBAL, int32_bits(0), lexical, location)
+        }
     };
     let key = feedback::key(v, i);
     if key == UNDEFINED || key == case.key {
@@ -1117,18 +1233,19 @@ pub(crate) fn init_vector(fi: &FunctionInfo, code: &[u8], v: u64) {
 
 // ---- tests' view -------------------------------------------------------------------------------
 
-/// The parts of a handler, for tests: (kind, epoch, reference, location) of an IC_HANDLER, or
-/// the smi kind of an int32 handler as (kind, 0, undefined, the int32).
+/// The parts of a handler, for tests: (kind, +16, reference, location) of an IC_HANDLER (+16:
+/// the validity cell, undefined or an int32), or the smi kind of an int32 handler as (kind,
+/// undefined, undefined, the int32).
 #[cfg(test)]
-pub(crate) fn describe_handler(h: u64) -> (i32, u32, u64, i32) {
+pub(crate) fn describe_handler(h: u64) -> (i32, u64, u64, i32) {
     if is_i32(h) {
         let x = int32_of(h);
-        return (x & smi::KIND_MASK, 0, UNDEFINED, x);
+        return (x & smi::KIND_MASK, UNDEFINED, UNDEFINED, x);
     }
     let c = cell(h);
     (
         rd_i32(c, hc::KIND) | 0x100,
-        rd_i32(c, hc::EPOCH) as u32,
+        rd(c, hc::CELL),
         rd(c, hc::REF),
         rd_i32(c, hc::LOCATION),
     )
