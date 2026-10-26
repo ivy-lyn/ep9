@@ -2,6 +2,8 @@
 //! table, the hash and its seed, array-index keys, the single-character table and the length
 //! limit.
 
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::process::Command;
 
 use ep9_bytecode::{FeedbackSlotKind, VerifiedUnit};
@@ -760,6 +762,56 @@ fn computed_keys_and_string_indexing_under_gc_stress() {
 
 // ---- ropes and slices (M4-P1 STR1; H19) ------------------------------------------------------
 
+/// The allocator of the `ep9_vm` unit-test binary: `System`, plus a per-thread count of Rust
+/// heap allocations, so a test can show that a call copies nothing into a Rust `Vec` (tests
+/// run on many threads; each counts only its own). The JS heap does not use it (`ep9_heap`
+/// maps its own pages).
+struct CountingAlloc;
+
+thread_local! {
+    static RUST_ALLOCS: Cell<u64> = const { Cell::new(0) };
+}
+
+fn count_rust_alloc() {
+    // `try_with`: a thread that is tearing down its locals still allocates.
+    let _ = RUST_ALLOCS.try_with(|n| n.set(n.get() + 1));
+}
+
+/// Rust heap allocations made so far on this thread.
+fn rust_allocs() -> u64 {
+    RUST_ALLOCS.with(Cell::get)
+}
+
+// SAFETY: every method forwards to `System` with the same arguments, so `System`'s contract
+// holds; the count is a thread-local `Cell` with no destructor and allocates nothing.
+unsafe impl GlobalAlloc for CountingAlloc {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        count_rust_alloc();
+        // SAFETY: the caller keeps `GlobalAlloc::alloc`'s contract (non-zero size).
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        count_rust_alloc();
+        // SAFETY: as `alloc`.
+        unsafe { System.alloc_zeroed(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: `ptr` came from this allocator, so from `System`, with `layout`.
+        unsafe { System.dealloc(ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        count_rust_alloc();
+        // SAFETY: as `dealloc`, and the caller keeps `realloc`'s size contract.
+        unsafe { System.realloc(ptr, layout, new_size) }
+    }
+}
+
+#[global_allocator]
+static COUNTING_ALLOC: CountingAlloc = CountingAlloc;
+
 /// `a + b` through the runtime concat (the string Add path).
 fn cat(rt: &Runtime, a: u64, b: u64) -> u64 {
     string::concat(rt, a, b).expect("under the limit")
@@ -1100,4 +1152,55 @@ fn array_index_reads_ropes_and_slices_without_a_flatten() {
             assert!(string::str_len(s) >= string::MIN_CONS_LENGTH);
         }
     }
+}
+
+#[test]
+fn array_index_copies_no_rope_text_to_the_rust_heap() {
+    // Codex r2 code F2 (M4-P1): the test above counts collections, which a Rust `Vec` copy
+    // does not make. `string::array_index` answers a key longer than 10 units without
+    // `with_text` (a974ad4), so a rope key (Latin-1 or two-byte), before or after its hash is
+    // cached, costs no Rust heap allocation; a slice key is flat and never needed the copy.
+    // The control shows the counter sees the copy that the guard skips.
+    let iso = stressed();
+    let rt = &*iso.rt;
+    let ropes = [
+        cat(
+            rt,
+            string::new_string(rt, "1234567"),
+            string::new_string(rt, "890123"),
+        ),
+        cat(
+            rt,
+            string::new_string(rt, "12345\u{3b1}7"),
+            string::new_string(rt, "890123"),
+        ),
+    ];
+    let parent = string::new_string(rt, "12345678901234567890");
+    let slice = string::substring(rt, parent, 1, 15);
+    assert_eq!(kinds::cell_kind(slice), kinds::SLICED.get());
+    for (i, &s) in ropes.iter().chain([&slice]).enumerate() {
+        for cached in [false, true] {
+            if cached {
+                let _ = string::hash(s);
+            }
+            let before = rust_allocs();
+            assert_eq!(string::array_index(s), None, "case {i}");
+            assert_eq!(key::array_index_of(s), None, "case {i}");
+            let made = rust_allocs() - before;
+            assert_eq!(
+                made, 0,
+                "case {i}, hash cached {cached}: Rust heap allocations"
+            );
+        }
+        if i < ropes.len() {
+            assert_eq!(kinds::cell_kind(s), kinds::CONS.get(), "case {i}");
+        }
+    }
+    // Control: the copy that the guard skips is a Rust heap allocation the counter sees.
+    let before = rust_allocs();
+    string::with_text(ropes[0], |t| assert_eq!(t.array_index(), None));
+    assert!(
+        rust_allocs() > before,
+        "with_text copies an unflattened rope"
+    );
 }
