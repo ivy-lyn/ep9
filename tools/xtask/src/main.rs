@@ -8,12 +8,14 @@
 //! | `feature-matrix` | `features.rs` | default, jitless and `aot` builds: build, clippy and test, per package (H27) |
 //! | `gc-lint` | `gc_lint.rs` | no stack-only GC type (`Local` and friends) in a heap container, `static` or `thread_local`, and no boxed closure that uses one (H10, H20 R2) |
 //! | `m0-exit` | `m0_exit.rs` | the 12 M0 exit items per host and the Windows CI column, as a table |
+//! | `adr-lint` | `adr_lint.rs` | M1 exit item 6: ADR trailers and review records (M4-P0: only `--trailers-only`) |
 //!
 //! `m0_exit.rs` reads its inputs with the shared readers and the cell type in `exit/`.
 //!
 //! Each module's doc says how far it is built. Exit codes for every task: 0 pass, 1 fail,
 //! 2 usage error, tool error or a task that is not implemented yet. An unknown task exits 2.
 
+mod adr_lint;
 mod disasm;
 mod exit;
 mod features;
@@ -32,6 +34,7 @@ fn main() -> ExitCode {
         "feature-matrix" => features::main(&args[1..]),
         "gc-lint" => gc_lint::main(&args[1..]),
         "m0-exit" => m0_exit::main(&args[1..]),
+        "adr-lint" => adr_lint::main(&args[1..]),
         _ => {
             eprintln!("xtask: task {task:?} is not implemented yet");
             return ExitCode::from(2);
