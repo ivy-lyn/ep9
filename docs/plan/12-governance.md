@@ -49,7 +49,7 @@ IDs used here: D2, D3, D6, D12; H28, H36; P1; RX1; M0-M5, M8; LICENSE, REMOTE-CI
 | tsrs scanner port (only if option D) | tsrs | Apache-2.0 + NOTICE (derived from TypeScript) | Keep headers; copy the NOTICE lines that apply into `THIRD-PARTY-LICENSE` | Ship those NOTICE lines |
 | test262 patches | test262 | test262 BSD licence (Ecma); no patent licence | Keep the header | None: test data never ships |
 | Typed AWFY kernels | are-we-fast-yet | MIT | Keep the copyright line | None: benchmark only |
-| tsrs in `ep9-typecheck` | tsrs | Apache-2.0 + NOTICE | Never copied into the engine (dep guard) | The `ep9-typecheck` release ships tsrs `LICENSE` and `NOTICE` |
+| tsrs in `ep9-typecheck` | tsrs | Apache-2.0 + NOTICE | Never copied into the engine (dep guard) | The `ep9-typecheck` release ships tsrs `LICENSE`, `NOTICE` and `licenses/Go-LICENSE` (BSD-3-Clause; since tsrs 745eb10, `tsrs_core` compiles Go-derived tables under it) |
 
 ## 2. Repository
 

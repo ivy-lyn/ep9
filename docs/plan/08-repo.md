@@ -26,7 +26,7 @@ ep9/
 │                        # node-test-exclusions (D4), jetstream-m2.txt, jetstream-m7.txt, npm-ranking,
 │                        # hint-set.txt, typed-kernels.txt, short-run.txt, jitless-set.txt   (new)
 ├─ third_party/          # pins and patches unchanged
-│  ├─ tsrs.commit        # f527e984...  (never a dependency of any root-workspace crate)
+│  ├─ tsrs.commit        # 745eb10a...  (never a dependency of any root-workspace crate)
 │  ├─ test262.commit     # d53ebc8b...
 │  ├─ bench-octane.commit    # chromium/octane: Octane-7 kernels, TS workload
 │  ├─ bench-v8v7.commit      # boa-dev/data branch benchmarks: bench/bench-v8/combined.js (v8-v7)
@@ -143,12 +143,12 @@ The hot code stays in one crate, `ep9_vm`: interpreter, ICs, shapes, strings and
 5. **Discovery.** `ep9 check` finds `tsrs` through `EP9_TSRS`, else next to the `ep9` binary. `ep9c` finds `ep9-typecheck` through `EP9_TYPECHECK`, else next to `ep9c`.
 6. **CI sync-check.** It runs on the unix targets when any `*.commit` or patch file changes. It re-syncs, re-applies patches and builds both tools. It runs `ep9 check` smoke tests and a hint-export golden test (`.ep9h` compared byte for byte).
 7. **SP-tsrs-win (M0 week 1, 0.25 PM est.).** Build `tsrs_cli` on x86_64-pc-windows-msvc and run the smoke tests.
-   - Upstream does not build or test Windows [TSRS release.yml:132-133]. On Windows tsrs uses plain pointers, because compressed_ptrs is unix-only [TSRS crates/tsrs_core/build.rs].
+   - Upstream builds a Windows x64 release binary and smoke-tests it (`--version`, exit 2 on a type error) [TSRS .github/workflows/release.yml:292-408]. Its one Windows CI job checks `tsrs_checker` and runs the `tsrs_api_transport` tests [TSRS .github/workflows/ci.yml:43-55]; the rest of its test suite does not run on Windows. On Windows tsrs uses plain pointers, because compressed_ptrs is unix-only [TSRS crates/tsrs_core/build.rs].
    - Budget: ≤ 2 local patches. It runs again for `ep9-typecheck` in A1h. On failure, `ep9 check` on Windows prints "not supported" and `ep9c --hints` stays unix-only (D2).
 8. **Oracle build facts** [R13]. The prototype linked 21 tsrs crates (363k lines) through the public API, with no tsrs change. A clean build took 38 s; the stripped binary is 13.6 MB.
    - Drift: a 2-line fix against an 8-day-old tsrs, 6 compile errors against a 15-day-old one. Budget: ≤ 2 local tsrs patches (est., D12); upkeep above 1 PM per year trips K-A4H.
    - Limit: without tsrs regions, the fixed 32 GiB range aborted at about 4,800 composite projects (issue #597). Large monorepos may need one run per project.
-9. The local `tsrs_cli` build has no PGO or BOLT; tsrs release binaries have both [TSRS Cargo.toml:96-99]. Type-check speed is not an engine gate.
+9. The local `tsrs_cli` build has no PGO or BOLT; tsrs release binaries have both [TSRS Cargo.toml:86-89]. Type-check speed is not an engine gate.
 
 `scripts/sync-lib.sh` (shared by every `sync-<name>.sh`; v1 plus `core.autocrlf=false` in each checkout, [12-governance §6](./12-governance.md#6-line-endings)):
 

@@ -46,7 +46,7 @@ IDs used here: D1, D4, D12, D18, D20; H1-H4, H23, H36, H37; P1-P5; L0-L2; A1h, A
 | Process-wide hazards | Fixed 32 GiB reservation at 0x4001_0000_0000 that aborts; 1M source slots never reused; panic on relative file names | none | [R09] |
 | Cargo graph leak | `unicode-id-start =1.1.2` downgrades oxc (16 test262 failures) | none | [R02], [R04] |
 | Re-parse of one function; eval-context parse options | No public API; none | No public API; none (#11793 open) | [R03], [R04] |
-| Windows | Not built, tested or shipped upstream; plain pointers on Windows | Builds on Windows | [TSRS] release.yml, build.rs |
+| Windows | Not built, tested or shipped upstream at f527e984; 745eb10 adds a Windows x64 release build with a smoke check. Plain pointers on Windows | Builds on Windows | [TSRS] release.yml (f527e984 :132-133; 745eb10 :292-408), build.rs |
 | Upstream | PRs closed; about 200 commits a week | MIT, takes PRs; 60 breaking releases a year | [R01], [R04] |
 
 ### 2.2 tsrs as an offline type oracle (prototype)
