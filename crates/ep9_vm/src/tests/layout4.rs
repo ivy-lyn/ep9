@@ -78,16 +78,12 @@ fn the_month_4_kind_ids() {
 
 /// M4-P0 registers no month-4 kind (the builders do, plan v9 §2.5 task 2). M4-P1 registered
 /// CONS and SLICED (STR1, `string::register_kinds`) and VALIDITY_CELL (VALIDITY,
-/// `validity::register_kind`): those are taken on a new isolate. The ids that later phases
-/// fill (THIN in M4-P2, the proxy kinds and WEAK_CELL in M4-P4) are still free.
+/// `validity::register_kind`), and M4-P2 registered THIN (STR2, `string::register_kinds`):
+/// those are taken on a new isolate. The ids that later phases fill (the proxy kinds and
+/// WEAK_CELL in M4-P4) are still free.
 #[test]
 fn no_month_4_kind_is_registered_yet() {
-    for id in [
-        kinds::THIN,
-        kinds::PROXY,
-        kinds::PROXY_CALLABLE,
-        kinds::WEAK_CELL,
-    ] {
+    for id in [kinds::PROXY, kinds::PROXY_CALLABLE, kinds::WEAK_CELL] {
         let iso = isolate(config(Dispatch::DEFAULT, false));
         assert_eq!(
             iso.rt.heap.register_kind(id, dummy_kind("test")),
@@ -96,12 +92,17 @@ fn no_month_4_kind_is_registered_yet() {
             id.get()
         );
     }
-    for id in [kinds::CONS, kinds::SLICED, kinds::VALIDITY_CELL] {
+    for id in [
+        kinds::CONS,
+        kinds::SLICED,
+        kinds::THIN,
+        kinds::VALIDITY_CELL,
+    ] {
         let iso = isolate(config(Dispatch::DEFAULT, false));
         assert_eq!(
             iso.rt.heap.register_kind(id, dummy_kind("test")),
             Err(ep9_heap::KindError::Taken(id)),
-            "kind {} is registered by its M4-P1 builder",
+            "kind {} is registered by its M4-P1 or M4-P2 builder",
             id.get()
         );
     }
