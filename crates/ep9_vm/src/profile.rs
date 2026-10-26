@@ -314,12 +314,13 @@ impl Rec {
         Rec((u64::from(s.0) << 32) | u64::from(bits))
     }
 
-    /// The bits and `back` (where the slot operand lies before the next pc) as one
-    /// register-wide word: the last argument of `interp::dsl::record_next`. The slot index is
-    /// left out, so a handler keeps no register for it.
+    /// The bits and `place` (the instruction's `interp::dsl::slot_place`: where its slot
+    /// operand lies and its length) as one register-wide word: the last argument of
+    /// `interp::dsl::record_next`. The slot index is left out, so a handler keeps no register
+    /// for it.
     #[inline(always)]
-    pub(crate) fn sib_word(self, back: u64) -> u64 {
-        (back << 32) | (self.0 & 0xFFFF_FFFF)
+    pub(crate) fn sib_word(self, place: u64) -> u64 {
+        (place << 32) | (self.0 & 0xFFFF_FFFF)
     }
 }
 
