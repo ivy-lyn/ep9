@@ -1063,3 +1063,41 @@ fn ropes_from_bytecode_add_print_and_compare() {
     assert_eq!(ok(&r), "true");
     assert_eq!(r.output, ["ab".repeat(40)]);
 }
+
+#[test]
+fn array_index_reads_ropes_and_slices_without_a_flatten() {
+    // `profile.rs` (the keyed `KeySet` bits) and `key::array_index_of` call
+    // `string::array_index` on keys that can be a CONS not yet flattened or a SLICED string
+    // (M4-P1 PROFILE need 5). It reads them in place: no flatten, no JS-heap allocation (under
+    // GC stress an allocation would collect), before and after the hash field is cached. A
+    // rope or slice has at least 13 units, more than any array index (10 digits), so the
+    // answer is always `None`.
+    let iso = stressed();
+    let rt = &*iso.rt;
+    let digits = |s: &str| string::new_string(rt, s);
+    let cases = [
+        cat(rt, digits("1234567"), digits("890123")),
+        cat(rt, digits("0"), digits("000000000000")),
+        cat(rt, digits("4294967"), digits("294000")),
+        cat(rt, digits("abcdefg"), digits("hijklm")),
+    ];
+    let parent = digits("12345678901234567890");
+    let slice = string::substring(rt, parent, 1, 15);
+    assert_eq!(kinds::cell_kind(slice), kinds::SLICED.get());
+    for (i, &s) in cases.iter().chain([&slice]).enumerate() {
+        let before = rt.heap.stats().collections;
+        assert_eq!(string::array_index(s), None, "case {i}");
+        let _ = string::hash(s);
+        assert_eq!(string::array_index(s), None, "case {i}, hash cached");
+        assert_eq!(key::array_index_of(s), None, "case {i}");
+        assert_eq!(
+            rt.heap.stats().collections,
+            before,
+            "case {i}: no allocation"
+        );
+        if i < cases.len() {
+            assert_eq!(kinds::cell_kind(s), kinds::CONS.get(), "case {i}");
+            assert!(string::str_len(s) >= string::MIN_CONS_LENGTH);
+        }
+    }
+}

@@ -745,6 +745,50 @@ fn keyed_sites_record_keys_receivers_and_misses() {
     }
 }
 
+/// Keyed loads whose key is a rope that is not flattened (a CONS from a string `+` of 13 or
+/// more units): `o[k]` on an object and `a[k]` on an array, with a letter rope and a digit
+/// rope (13 digits: not an array index).
+fn keyed_rope_program() -> (VerifiedUnit, Vec<FeedbackSlot>) {
+    let mut s = Asm::script(0);
+    let (a, o) = (s.b.new_register(), s.b.new_register());
+    s.b.create_empty_array_literal(s.lit).star(a);
+    s.b.create_empty_object_literal().star(o);
+    let mut v = Vec::new();
+    for (head, tail, receiver) in [
+        ("abcdefg", "hijklm", o),
+        ("1234567", "890123", o),
+        ("abcdefg", "hijklm", a),
+        ("1234567", "890123", a),
+    ] {
+        let k = s.b.feedback_slot(FeedbackSlotKind::LoadKeyed);
+        let lhs = s.b.new_register();
+        s.lda_str(head);
+        s.b.star(lhs);
+        s.lda_str(tail);
+        s.b.add(lhs, s.bin).get_keyed_property(receiver, k);
+        v.push(k);
+    }
+    s.b.lda_undefined().return_();
+    (unit("", vec![s.finish()]), v)
+}
+
+#[test]
+fn keyed_sites_read_rope_keys_in_place() {
+    // `keyed_key` calls `string::array_index` on the key before the generic operation, so
+    // the key is still a CONS here (M4-P1 PROFILE need 5): the rope reads as a name.
+    let got = slots(RUN, || keyed_rope_program().0);
+    let k = keyed_rope_program().1;
+    let want = [
+        keyed::NAME | keyed::OBJECT,
+        keyed::NAME | keyed::OBJECT,
+        keyed::NAME | keyed::ARRAY,
+        keyed::NAME | keyed::ARRAY,
+    ];
+    for (i, (&slot, &w)) in k.iter().zip(&want).enumerate() {
+        assert_eq!(value(&got, 0, slot), w, "rope key case {i}");
+    }
+}
+
 // ---- calls ---------------------------------------------------------------------------------
 
 /// The script slots of `call_program`: the mono site, the mega site, the closures site, the
