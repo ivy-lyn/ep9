@@ -30,6 +30,13 @@
 //! branch right after it consumes (the emitter fuses them; its inputs are then used at the
 //! branch). A value that lives across a guard has a location the deopt exit can read
 //! (H29-Q2): a register, a native stack slot, a VM frame slot or a constant.
+//!
+//! **Frame states are uses (SPIKEC-2).** Each value in a guard's frame state (a live
+//! register or the accumulator at the guard's bytecode offset) counts as used at the guard,
+//! in the intervals and in the liveness, so it keeps its register or slot up to the guard
+//! even when no node reads it later: the month-5 deopt exit reads it there. [`verify`]
+//! checks it with its own liveness. (Before SPIKEC-2 a value read only by a frame state could
+//! lose its register before the guard; the trap reads no value, so no run went wrong.)
 
 use crate::ir::{self, Graph, NodeId, Op, Repr};
 
@@ -105,6 +112,14 @@ pub fn fused(g: &Graph, n: NodeId) -> bool {
                     gd.state.acc != Some(n) && gd.state.registers.iter().all(|&(_, v)| v != n)
                 }))
     })
+}
+
+/// The values a guard's frame state names (its live registers and the accumulator): each is
+/// used at the guard (the deopt exit reads it there).
+fn frame_state_values(node: &ir::Node) -> impl Iterator<Item = NodeId> + '_ {
+    node.guard
+        .iter()
+        .flat_map(|g| g.state.registers.iter().map(|&(_, v)| v).chain(g.state.acc))
 }
 
 /// The linear positions: per node id, and the end of each block (where its phi moves are).
@@ -200,6 +215,9 @@ pub fn allocate(g: &Graph) -> Result<Allocation, String> {
         for &v in &node.inputs {
             touch(v, at, &mut start, &mut end);
         }
+        for v in frame_state_values(node) {
+            touch(v, pos[x.0 as usize], &mut start, &mut end);
+        }
     }
     // SSA liveness per block: extend each value to the end of every block it is live out of.
     // live_in[b] = the values live on entry to b, b's own phis not included (they are defined
@@ -242,6 +260,9 @@ pub fn allocate(g: &Graph) -> Result<Allocation, String> {
                     for &v in &node.inputs {
                         live[v.0 as usize] = true;
                     }
+                }
+                for v in frame_state_values(node) {
+                    live[v.0 as usize] = true;
                 }
             }
             if live != live_in[bi] {
@@ -356,8 +377,10 @@ pub fn verify(g: &Graph, a: &Allocation) -> Result<(), String> {
 }
 
 /// Every value with a register or a stack slot: its interval covers its definition, each use
-/// (a phi input at the end of that predecessor, a fused compare's inputs at its branch), and
-/// the end of every block it is live out of.
+/// (a phi input at the end of that predecessor, a fused compare's inputs at its branch, a
+/// frame-state value at its guard), and the end of every block it is live out of. A value
+/// that a frame state names has a readable location: a register, a slot, a constant or a VM
+/// frame slot.
 fn covers_live_points(g: &Graph, a: &Allocation) -> Result<(), String> {
     let Positions { pos, block_end } = positions(g);
     let mut range = vec![None; g.nodes.len()];
@@ -383,6 +406,21 @@ fn covers_live_points(g: &Graph, a: &Allocation) -> Result<(), String> {
         };
         for &v in &node.inputs {
             uses[v.0 as usize].push((node.block.0 as usize, at));
+        }
+        for v in frame_state_values(node) {
+            uses[v.0 as usize].push((node.block.0 as usize, pos[u.0 as usize]));
+        }
+    }
+    for u in g.order() {
+        for v in frame_state_values(g.node(u)) {
+            if matches!(a.of(v), Location::None | Location::Fused) {
+                return Err(format!(
+                    "n{} is in the frame state of n{} but has no readable location ({:?})",
+                    v.0,
+                    u.0,
+                    a.of(v)
+                ));
+            }
         }
     }
     for x in g.order() {
@@ -563,6 +601,113 @@ mod tests {
             "v ends at {e}: {:?}",
             a.ranges
         );
+    }
+
+    /// A straight line of `count` int32 checks of the parameter, each read once at once by an
+    /// xor, then a guard whose frame state names all of them (registers r0..), as the
+    /// registers T0 still reads after the guard. Returns the graph, the values and the guard.
+    fn frame_state_line(count: usize) -> (Graph, Vec<NodeId>, NodeId) {
+        use crate::ir::{Block, BlockId, FrameState, GuardBasis, Int32Op, Trust};
+        use ep9_bytecode::Register;
+        use ep9_facts::FactSource;
+        let mut g = Graph::new("t", FactSource::Runtime, 1, count as u32);
+        g.blocks.push(Block::default());
+        let b = BlockId(0);
+        let add = |g: &mut Graph, op: Op, inputs: Vec<NodeId>, repr: Repr| {
+            let x = g.add(op, inputs, repr, Trust::Unknown, b, 0);
+            g.blocks[0].nodes.push(x);
+            x
+        };
+        let p = add(
+            &mut g,
+            Op::Incoming(ir::Incoming::Param(0)),
+            vec![],
+            Repr::Tagged,
+        );
+        let one = add(&mut g, Op::ConstInt32(1), vec![], Repr::Int32);
+        let mut vals = Vec::new();
+        for _ in 0..count {
+            let v = add(&mut g, Op::CheckInt32, vec![p], Repr::Int32);
+            g.set_guard(v, GuardBasis::Unbacked, FrameState::default());
+            // Its only node use, right away.
+            add(&mut g, Op::Int32(Int32Op::Xor), vec![v, one], Repr::Int32);
+            vals.push(v);
+        }
+        let guard = add(&mut g, Op::Int32(Int32Op::Add), vec![one, one], Repr::Int32);
+        let state = FrameState {
+            offset: 0,
+            registers: vals
+                .iter()
+                .enumerate()
+                .map(|(i, &v)| (Register::from_operand(i as i32), v))
+                .collect(),
+            acc: None,
+        };
+        g.set_guard(guard, GuardBasis::Unbacked, state);
+        let r = add(&mut g, Op::BoxInt32, vec![guard], Repr::Tagged);
+        add(&mut g, Op::Return, vec![r], Repr::None);
+        (g, vals, guard)
+    }
+
+    /// A value that only a later guard's frame state reads keeps its register or slot up to
+    /// that guard (the deopt exit reads it there), so no later value takes its register.
+    #[test]
+    fn frame_state_values_live_to_their_guard() {
+        let (g, vals, guard) = frame_state_line(3);
+        let a = allocate(&g).expect("alloc");
+        verify(&g, &a).expect("verify");
+        let at = positions(&g).pos[guard.0 as usize];
+        for v in &vals {
+            let &(_, e, _) = a.ranges.iter().find(|r| r.2 == *v).expect("an interval");
+            assert!(e >= at, "n{} ends at {e}, the guard is at {at}", v.0);
+        }
+        let regs: Vec<Location> = vals.iter().map(|&v| a.of(v)).collect();
+        let mut d = regs.clone();
+        d.dedup();
+        assert_eq!(d.len(), 3, "{regs:?}");
+    }
+
+    /// More frame-state values than registers: the scan spills some, every one keeps a
+    /// readable place (a register or a slot) to the guard, and verify agrees.
+    #[test]
+    fn frame_state_pressure_spills() {
+        let (g, vals, _) = frame_state_line(REGS.len() + 5);
+        let a = allocate(&g).expect("alloc");
+        verify(&g, &a).expect("verify");
+        assert!(a.spilled >= 5, "{a:?}");
+        assert!(
+            vals.iter()
+                .all(|&v| matches!(a.of(v), Location::Reg(_) | Location::Stack(_)))
+        );
+    }
+
+    /// The verify's own liveness counts frame states: an interval cut at the value's last node
+    /// use, before the guard whose frame state names it, is an error (the M4-P1-OPEN Spike C
+    /// row; in am3 it was `w_array[j]`, the accumulator of the guard of the `+` after it).
+    #[test]
+    fn verify_rejects_an_interval_cut_before_a_frame_state() {
+        let (g, vals, _) = frame_state_line(2);
+        let mut a = allocate(&g).expect("alloc");
+        let v = vals[0];
+        let last_use = g
+            .order()
+            .filter(|&u| g.node(u).inputs.contains(&v))
+            .map(|u| positions(&g).pos[u.0 as usize])
+            .max()
+            .expect("a use");
+        for r in &mut a.ranges {
+            if r.2 == v {
+                r.1 = last_use;
+            }
+        }
+        let e = verify(&g, &a).expect_err("a cut interval");
+        assert!(e.contains("does not cover a use"), "{e}");
+        // A frame-state value with no place at all is an error too.
+        let mut b = allocate(&g).expect("alloc");
+        b.loc[v.0 as usize] = Location::None;
+        b.ranges.retain(|r| r.2 != v);
+        let e = verify(&g, &b).expect_err("no location");
+        assert!(e.contains("no readable location"), "{e}");
     }
 
     /// The verify recomputes liveness: an interval cut at the last use, before the inner back
