@@ -7,7 +7,7 @@ const micros = {
   // s += part: CONS cells, one flatten at the end (H19 ropes, V9-D13).
   "concat-rope"() {
     let s = "";
-    for (let i = 0; i < 20000; i++) s += "abcdefgh" + i;
+    for (let i = 0; i < 200000; i++) s += "abcdefgh" + i;
     let h = 0;
     for (let i = 0; i < s.length; i += 97) h = (h * 31 + s.charCodeAt(i)) | 0;
     return s.length + ":" + h;
@@ -16,7 +16,7 @@ const micros = {
   "index-chars"() {
     const s = "The quick brown fox jumps over the lazy dog 0123456789".repeat(20);
     let n = 0;
-    for (let r = 0; r < 20; r++) {
+    for (let r = 0; r < 200; r++) {
       for (let i = 0; i < s.length; i++) {
         if (s[i] === "o") n++;
         n += s.charCodeAt(i) & 1;
@@ -29,7 +29,7 @@ const micros = {
     const o = {};
     for (let i = 0; i < 200; i++) o["property-name-" + i + "-suffix"] = i;
     let sum = 0;
-    for (let r = 0; r < 50; r++) {
+    for (let r = 0; r < 500; r++) {
       for (let i = 0; i < 200; i++) {
         const k = "property-name-" + i + "-suffix";
         sum += o[k];
@@ -43,7 +43,7 @@ const micros = {
     const o = {};
     for (let i = 0; i < 500; i++) o[i * 3] = i;
     let sum = 0;
-    for (let r = 0; r < 40; r++) {
+    for (let r = 0; r < 400; r++) {
       for (let i = 0; i < 500; i++) sum += o[i * 3];
     }
     return sum;
@@ -51,7 +51,7 @@ const micros = {
   // "" + n and String(n): ToString of numbers (the number-string cache, H19-Q6).
   "number-strings"() {
     let len = 0;
-    for (let i = 0; i < 20000; i++) {
+    for (let i = 0; i < 200000; i++) {
       len += ("" + (i % 300)).length;
       len += String((i % 50) + 0.5).length;
     }
@@ -62,7 +62,7 @@ const micros = {
     const words = [];
     for (let i = 0; i < 300; i++) words.push("word-" + ((i * 7919) % 300) + "-tail-of-the-word");
     let lt = 0, eq = 0;
-    for (let r = 0; r < 10; r++) {
+    for (let r = 0; r < 100; r++) {
       for (let i = 1; i < words.length; i++) {
         if (words[i - 1] < words[i]) lt++;
         if (words[i] === "word-" + ((i * 7919) % 300) + "-tail-of-the-word") eq++;
@@ -75,7 +75,7 @@ const micros = {
     let s = "";
     for (let i = 0; i < 200; i++) s += "line " + i + " of the text;";
     let n = 0;
-    for (let i = 0; i < 2000; i++) {
+    for (let i = 0; i < 20000; i++) {
       const at = (i * 37) % (s.length - 40);
       const sub = s.substring(at, at + 30);
       n += sub.indexOf("of") + sub.slice(5, 9).length;
@@ -86,13 +86,13 @@ const micros = {
 
 // Expected results (node v24.22.1). A wrong result throws, so it cannot pass as a fast run.
 const want = {
-  "concat-rope": "248890:-1229793094",
-  "index-chars": "11200",
-  "rope-keys": "1240000",
-  "number-keys": "4990000",
-  "number-strings": "128630",
-  "compare": "1740:2990",
-  "substrings": "27475",
+  "concat-rope": "2688890:2043090683",
+  "index-chars": "112000",
+  "rope-keys": "34900000",
+  "number-keys": "49900000",
+  "number-strings": "1286630",
+  "compare": "17400:29900",
+  "substrings": "274686",
 };
 
 const only = typeof ONLY === "string" ? ONLY : null;
