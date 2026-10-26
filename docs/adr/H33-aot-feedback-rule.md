@@ -4,7 +4,7 @@
 |---|---|
 | Status | Draft (2026-10-22): the plan row, the hybrid re-tier path and the override rule. Nothing is built: no tier above T0 and no AOT code exist. K-A4P decides at A4 if hybrid mode ships |
 | Fix by | Frozen M1 exit; built A3/A4 |
-| Freeze point | M1 exit, the rule (README §2). Built in A3 and A4, after M1 exit, and the re-tier threshold is tuned in A4 (04 §4), so README §3.4 applies: H33-Q5 |
+| Freeze point | Parts (the Freeze table, README §3.4; H33-Q5): the rule, the counter unit and the counting rule at M1 exit; the baseline-AOT IC cell map at the A3 gate; the threshold number at the A4 gate; the hybrid part at K-A4P |
 | Origin | R17; plan status N |
 | Crates | `ep9_vm` (FeedbackVector, dispatch slots, re-tier policy), `ep9_facts` (FactSnapshot source), later `ep9_baseline` (baseline-AOT ICs write feedback), `ep9_opt` (optimized-AOT counters, instrumented T1 → T2), `ep9_unit` (RW IC cells and counters, H35) |
 | Owner (plan role) | AOT senior (A3, A4; SP-Facts reopens H33, 09 §4); CORE T1 and T2 owners (the re-tier path) |
@@ -77,11 +77,22 @@ Copied from the plan row (02 §6): baseline-AOT ICs write the shared feedback sc
 
 | ID | Question | Needed by | Proposed default |
 |---|---|---|---|
-| H33-Q1 | Where optimized-AOT keeps its call counter (unit RW template, H35, or the FunctionInfo), and how the threshold check runs | A4 | One RW counter per function in the unit, checked at function entry beside the interrupt poll |
+| H33-Q1 | Where optimized-AOT keeps its call counter (unit RW template, H35, or the FunctionInfo), and how the threshold check runs | A4 | One RW counter per function in the unit, checked at function entry beside the interrupt poll. **Proposal 2026-10-27 (M4-P2 ADR-A0; C-08, F2): one RW budget word per optimized-AOT code object (the unit RW template, H35), counted in H23 budget units, checked where the interrupt poll runs (function entry and the `JumpLoop` back edge).** A budget unit is the H23 interrupt-poll unit (one per call and per back edge, H23 Interrupt poll row), so a hot loop in a function that is called once also re-tiers; a call count alone would miss it. The word exists only for the hybrid part: a jitless isolate never re-tiers. The "call and exit counters" text of the Decision becomes "budget and exit counters" with the month-6 rule text (C-08) |
 | H33-Q2 | Does instrumented T1 start from an empty FeedbackVector, or from the PROFILED facts the AOT code used? | A4 | Empty vector; PROFILED facts stay as lower-precedence inputs (H30) |
 | H33-Q3 | How baseline-AOT RW IC cells (H35) map to the FeedbackVector that T2 reads (one store or a copy at tier-up) | A3 | The FeedbackVector is the store; unit IC cells point into it |
-| H33-Q4 | Exit counters of optimized-AOT code in hybrid mode: do they also trigger the re-tier, or only the call counter? | A4 | Both: exits past the H32 budget also start the instrumented re-tier |
-| H33-Q5 | README §3.4 asks a Freeze table: the rule freezes at M1 exit, the threshold is tuned in A4 | M1 exit | Rule at M1 exit; the threshold at the A4 gate |
+| H33-Q4 | Exit counters of optimized-AOT code in hybrid mode: do they also trigger the re-tier, or only the call counter? | A4 | Both: exits past the H32 budget also start the instrumented re-tier. **Proposal 2026-10-27 (M4-P2 ADR-A0; C-08, MODES-D14): as proposed, with the H32 counting rule:** only speculation exits count (H32-Q5); when they pass the function budget, the function is PINned (H32-Q4) and the re-tier starts, and PIN holds until the re-tier policy lifts it. "Instrumented T1" is plain T1, which writes the full FeedbackVector (05 §11) |
+| H33-Q5 | README §3.4 asks a Freeze table: the rule freezes at M1 exit, the threshold is tuned in A4 | M1 exit | Rule at M1 exit; the threshold at the A4 gate. **Filled 2026-10-27 (M4-P2 ADR-A0; MODES-D12, MODES-D1): the Freeze table below, with the counter unit and the counting rule written now and the threshold number left to the A4 gate.** Unit: the H23 budget unit (Q1). Rule: the re-tier starts when the budget word of an optimized-AOT code object reaches the threshold, or when its speculation exits pass the H32 function budget (Q4); environment exits never count (H32-Q5). The number (1,000, est.) and whether it scales per platform (for example by core count) with no G8 count are A4 calls |
+
+## Freeze table
+
+README §3.4 form (H33-Q5; plan v9 §4.1 task 9; the design is [13](../plan/13-execution-modes.md) §3.3, §4 and §5.4, MODES-D1). A gated part freezes at the gate that ends its build. The hybrid-only rows are one part that freezes at K-A4P; if K-A4P fails, that part is removed before its freeze point, which README §3.4 does not count ("Reopens if" names that removal).
+
+| Part | What it holds | Freeze point | After the freeze point | Check |
+|---|---|---|---|---|
+| Rule | Baseline-AOT ICs write the shared feedback schema; optimized-AOT code writes only its counters, in RW data (the Decision's "call and exit counters"; the call counter counts H23 budget units, Q1); RUNTIME facts override PROFILED and HINTED per fact kind; a profile whose source hash differs is ignored; a jitless build never re-tiers; the counter unit and the counting rule (Q5) | M1 exit | Frozen-part rules (README §3.2) | SP-Facts; the profile staleness suite (A3) |
+| Baseline-AOT IC cells (gated) | How unit IC cells map to the FeedbackVector (Q3) | The A3 gate | Frozen-part rules | A3 unit tests: a baseline-AOT run exports a RUNTIME FactSnapshot that `ep9_facts` validates |
+| Threshold number (gated) | The re-tier threshold (1,000 budget units, est.); per-platform scaling | The A4 gate (M8 exit) | Frozen-part rules | K-A4P (FV2) |
+| Hybrid part (gated) | The hybrid re-tier path (aot-opt -> T1 -> T2; aot-baseline -> T2); the budget word (Q1); the T1 start state (Q2); exits that start the re-tier (Q4); the hybrid row of the event table | K-A4P (M8 exit) | Frozen-part rules | K-A4P; mode x tier differential |
 
 ## Reopens if
 
@@ -94,3 +105,4 @@ Copied from the plan row (02 §6): baseline-AOT ICs write the shared feedback sc
 | Date | Change kind | Change | By |
 |---|---|---|---|
 | 2026-10-22 | draft | First draft from 02 §6 row H33, 04 §4 and 05 §11: what each code kind writes, the hybrid re-tier path and the override rule; counter homes, the instrumented start state and the threshold freeze are Open questions | P3-ADR-JIT agent (M2-P3) |
+| 2026-10-27 | fill (H33 is Draft) | Freeze table and Open-question text (plan v9 §4.1 tasks 2 and 9; MODES-D1, MODES-D3, MODES-D12, C-08): the Freeze point field names the parts; Q1 one RW budget word per optimized-AOT code object in H23 budget units; Q4 only speculation exits count, PIN then re-tier; Q5 filled with the counter unit and the counting rule, the threshold number left to the A4 gate; a Freeze table (the rule at M1 exit; the IC cell map at the A3 gate; the threshold at the A4 gate; the hybrid part at K-A4P). The Decision text ("call" -> "budget" counters) stays for the month-6 rule text (C-08). Every check keeps its result | M4-P2 ADR-A0 (VM lead role) |
