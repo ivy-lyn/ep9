@@ -6,7 +6,7 @@
 | Fix by | M0 wk1 |
 | Freeze point | M1 exit |
 | Origin | v1#24; plan status U (unchanged) |
-| Crates | Whole root workspace (`rust-toolchain.toml`, `Cargo.lock`); `ep9_frontend` (oxc, unicode-id-start); `ep9_regexp` (in the tree since M4-P0: the `Backend` trait stub over `regress`; only `ep9_vm` depends on it, dep-guards check 14); `ep9_intl` (planned, 08 §2; not in `crates/` yet); `tools/ep9-typecheck` (own workspace; planned, A1h) |
+| Crates | Whole root workspace (`rust-toolchain.toml`, `Cargo.lock`); `ep9_frontend` (oxc, unicode-id-start); `ep9_regexp` (in the tree since M4-P0: the `Backend` trait stub over `regress`; only ep9_vm depends on it, dep-guards check 14); `ep9_intl` (planned, 08 §2; not in `crates/` yet); `tools/ep9-typecheck` (own workspace; planned, A1h) |
 | Owner (plan role) | Lead + platform lead |
 | Validated by | Dependency guards ([08 §7](../plan/08-repo.md#7-dependency-guards-and-xtask-checks)); parse-only runner (M0 wk1 check) |
 | Plan sources | [02 §6 H26](../plan/02-architecture.md#6-hard-to-change-decisions-h1-h37), [08 §5](../plan/08-repo.md#5-how-third_partytsrs-is-consumed), [08 §7](../plan/08-repo.md#7-dependency-guards-and-xtask-checks), [11 §3.1 D8](../plan/11-decisions.md#31-d1-d14-from-plan-v1) |
