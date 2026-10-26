@@ -466,6 +466,7 @@ fn the_initial_shape_of_a_handler_is_weak() {
 
 #[test]
 fn arg_buf_keeps_order_across_the_inline_limit() {
+    // Plain numbers (the cold path keeps Value bits and register offsets in it).
     for n in [
         0,
         1,
@@ -474,18 +475,18 @@ fn arg_buf_keeps_order_across_the_inline_limit() {
         INLINE_ARGS + 1,
         3 * INLINE_ARGS,
     ] {
-        let mut b: ArgBuf<u64> = (0..n as u64).collect();
+        let mut b: ArgBuf<u32> = (0..n as u32).collect();
         assert_eq!(
             &b[..],
-            (0..n as u64).collect::<Vec<_>>().as_slice(),
+            (0..n as u32).collect::<Vec<_>>().as_slice(),
             "n = {n}"
         );
         // Bound arguments in front.
         for k in [0, 1, INLINE_ARGS] {
-            let mut c: ArgBuf<u64> = b.iter().copied().collect();
+            let mut c: ArgBuf<u32> = b.iter().copied().collect();
             c.prepend(k, 99);
             let mut want = vec![99; k];
-            want.extend(0..n as u64);
+            want.extend(0..n as u32);
             assert_eq!(&c[..], want.as_slice(), "n = {n}, k = {k}");
             if !want.is_empty() {
                 c[0] = 7;
@@ -495,12 +496,12 @@ fn arg_buf_keeps_order_across_the_inline_limit() {
         }
         // Spread: pop the last, push more.
         let last = b.pop();
-        assert_eq!(last, n.checked_sub(1).map(|x| x as u64));
-        for x in 100..100 + INLINE_ARGS as u64 + 2 {
+        assert_eq!(last, n.checked_sub(1).map(|x| x as u32));
+        for x in 100..100 + INLINE_ARGS as u32 + 2 {
             b.push(x);
         }
-        let mut want: Vec<u64> = (0..n.saturating_sub(1) as u64).collect();
-        want.extend(100..100 + INLINE_ARGS as u64 + 2);
+        let mut want: Vec<u32> = (0..n.saturating_sub(1) as u32).collect();
+        want.extend(100..100 + INLINE_ARGS as u32 + 2);
         assert_eq!(&b[..], want.as_slice(), "n = {n}");
         while b.pop().is_some() {}
         assert!(b.is_empty());

@@ -212,11 +212,13 @@ fn nested_literal_flags(flags: u8) -> (VerifiedUnit, Vec<FeedbackSlot>) {
 }
 
 #[test]
-fn a_nested_literal_stays_on_the_cold_path_and_records_its_shape() {
+fn a_nested_literal_stays_on_the_cold_path_and_is_built_from_its_shape() {
     run_checked(nested_literal, &["5"], |iso, slots| {
         let (key, value) = slot_of(iso, slots[0]);
         assert!(shape::is_shape(key), "the facts get the shape");
         assert_eq!(value, int32_bits(5), "every run was cold");
+        // The first run was generic; the other 4 built from the recorded shape.
+        assert_eq!(crate::literal_site::COLD_BUILDS.with(|c| c.get()), 4);
     });
 }
 

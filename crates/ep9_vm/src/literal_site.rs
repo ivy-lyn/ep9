@@ -5,11 +5,13 @@
 //! result shape (weak), +32 int32 0), or the hole and a POLY_IC cell (2-4 cases: source shape
 //! (weak), clone handler) or the int32 [`ic::MEGA`]. A hit allocates with the result shape and
 //! copies the constants (Literal) or the source's fields (CloneObject); computed or nested
-//! values stay generic.
+//! values stay off the T0 hit. An object literal whose nested values are all shallow arrays
+//! (splay's leaf nodes) is built on its cold path from the recorded shape ([`cold_object`]),
+//! not by the generic per-key define.
 //!
 //! ```text
 //! interp/ops.rs fast bodies (M4-P0 hooks)          cold path
-//!   CreateObjectLiteral       -> fast_object       slow::literal  -> miss        (slow/literal.rs)
+//!   CreateObjectLiteral       -> fast_object       slow::literal  -> cold_object, miss (slow/literal.rs)
 //!   CreateArrayLiteral        -> fast_array        slow::literal  -> miss
 //!   CreateEmptyArrayLiteral   -> fast_empty_array  slow::literal  -> miss
 //!   CreateEmptyObjectLiteral  -> fast_empty_object slow::literal  (no slot: always cold)
@@ -410,6 +412,11 @@ pub(crate) fn miss(cx: &mut Cx, fp: *mut u64, pc: *const u8, kind: Lit, k: u32, 
     }
     let (key, value) = (feedback::key(v, i), feedback::value(v, i));
     let shape = shape::shape_of(result);
+    if key == shape {
+        // Checked when it was recorded (shapes do not change): only the count.
+        feedback::set_slot(rt, v, i, key, bump(value));
+        return;
+    }
     let describable = !shape::is_dictionary(shape) && literal_shape_ok(fi, kind, k, shape);
     // A hit trusts the shallow flag (bit 0); the verifier does not check it against the
     // boilerplate, so a site whose flag is wrong gets no key.
@@ -425,6 +432,102 @@ pub(crate) fn miss(cx: &mut Cx, fp: *mut u64, pc: *const u8, kind: Lit, k: u32, 
         UNDEFINED
     };
     feedback::set_slot(rt, v, i, new_key, bump(value));
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: object literals that [`cold_object`] built.
+    pub(crate) static COLD_BUILDS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
+/// The cold path of `CreateObjectLiteral` at `pc` (boilerplate constant `k`) in frame `fp`,
+/// before the generic build (`slow::literal`): an object literal that is not shallow, whose
+/// nested values are all shallow array boilerplates (`{array: [0, 1, 2], s: ...}`: splay's
+/// leaf nodes), built from the site's recorded shape as a hit builds a shallow one, with each
+/// nested array made like a shallow array literal. `None` (nothing made) for anything else:
+/// no recorded shape, another nested value, a BigInt, more than `call::INLINE_ARGS` nested
+/// arrays. GC point: the nested arrays live in an inline buffer on the native stack (the
+/// conservative scan) until the object holds them; the object is allocated last, so its
+/// fields are initializing stores (E2).
+pub(crate) fn cold_object(cx: &mut Cx, fp: *mut u64, pc: *const u8, k: u32) -> Option<u64> {
+    let rt = cx.rt();
+    let fi = FrameRef(fp).info();
+    let v = feedback::vector(fi)?;
+    let (i, _) = slot_at(fi, pc)?;
+    if i >= feedback::slot_count(v) {
+        return None;
+    }
+    let shape = feedback::key(v, i);
+    if !is_cell_bits(shape) {
+        return None;
+    }
+    let Constant::ObjectBoilerplate(props) = fi.constant_entry(k) else {
+        return None;
+    };
+    let n = props.len();
+    let (cap, ok) = shape::field_layout(shape);
+    if ok != kind::OBJECT.get()
+        || shape::count(shape) != n
+        || cap < n
+        || shape::proto(shape) != rt.root(Root::ObjectPrototype)
+    {
+        return None;
+    }
+    // Check every value before the first allocation.
+    let mut nested = 0;
+    for &(_, val) in props.iter() {
+        let Some(ci) = val else { continue };
+        match fi.constant_entry(ci.0) {
+            Constant::ArrayBoilerplate(elements) => {
+                let flat = elements.iter().all(|&e| {
+                    e.is_none_or(|c| {
+                        matches!(
+                            fi.constant_entry(c.0),
+                            Constant::Number(_) | Constant::String(_) | Constant::Oddball(_)
+                        )
+                    })
+                });
+                if !flat {
+                    return None;
+                }
+                nested += 1;
+            }
+            Constant::Number(_) | Constant::String(_) => {}
+            Constant::Oddball(o) if *o != Oddball::Hole => {}
+            _ => return None,
+        }
+    }
+    if nested == 0 || nested > crate::call::INLINE_ARGS {
+        return None;
+    }
+    // GC points. The array shape of the current realm (made once, then found).
+    let ashape = shape::initial_shape(rt, rt.root(Root::ArrayPrototype), kind::ARRAY, 0);
+    let mut arrays: crate::call::ArgBuf<u64> = crate::call::ArgBuf::new();
+    for &(_, val) in props.iter() {
+        if let Some(ci) = val
+            && let Constant::ArrayBoilerplate(elements) = fi.constant_entry(ci.0)
+        {
+            let a = alloc_array(rt, ashape, elements.len(), |j| {
+                elements[j].map_or(HOLE, |c| fi.constant(c.0))
+            });
+            arrays.push(a);
+        }
+    }
+    let o = alloc_with_shape(rt, kind::OBJECT, shape);
+    let mut next = 0;
+    for (j, &(_, val)) in props.iter().enumerate() {
+        let Some(ci) = val else { continue };
+        let b = if matches!(fi.constant_entry(ci.0), Constant::ArrayBoilerplate(_)) {
+            next += 1;
+            arrays[next - 1]
+        } else {
+            fi.constant(ci.0)
+        };
+        init(o, obj::FIXED + 8 * j, b);
+    }
+    #[cfg(test)]
+    COLD_BUILDS.with(|c| c.set(c.get() + 1));
+    Some(o.to_value().to_bits())
 }
 
 /// True if `shape` (the fast shape of a new result of the literal `kind`, constant `k`) is
