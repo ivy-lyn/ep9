@@ -12,9 +12,12 @@
 //! ```
 //!
 //! The forms are those of M0 exit item 7: bracket (array, paren, object, block, function),
-//! binary, member, call, comma, template (also tagged) and class (body, heritage). The programs
-//! also run, so a deep tree that compiles must also execute. The regex forms nest `v`-flag
-//! classes, which only the pre-scan limits (a regex has no AST depth).
+//! binary, member, call, comma, template (also tagged) and class (body, heritage); and those of
+//! M1 exit item 8 (M4-P2 FE-FUZZ, GFF-DEPTH-E2E): conditional (also nested in the consequent),
+//! assignment, unary (`!` and `typeof`), arrow and exponent, the same 7 forms as the `m1_*`
+//! tests of ep9_frontend `depth_tests.rs`. The programs also run, so a deep tree that compiles
+//! must also execute. The regex forms nest `v`-flag classes, which only the pre-scan limits (a
+//! regex has no AST depth).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -121,6 +124,46 @@ const FORMS: &[Form] = &[
         name: "class-heritage",
         build: |n| wrap("var x = ", "class extends ", "Object", "{}", n),
     },
+    // M1 exit item 8
+    Form {
+        name: "conditional",
+        build: |n| wrap("var a = 0;\nvar x = ", "a?a:", "a", "", n),
+    },
+    Form {
+        name: "conditional-consequent",
+        build: |n| wrap("var a = 0;\nvar x = ", "a?", "a", ":a", n),
+    },
+    Form {
+        name: "assignment",
+        build: |n| wrap("var a;\nvar x = ", "a=", "0", "", n),
+    },
+    Form {
+        name: "unary",
+        build: |n| wrap("var a = 0;\nvar x = ", "!", "a", "", n),
+    },
+    Form {
+        name: "unary-typeof",
+        build: |n| wrap("var a = 0;\nvar x = ", "typeof ", "a", "", n),
+    },
+    Form {
+        name: "arrow",
+        build: |n| wrap("var x = ", "x=>", "0", "", n),
+    },
+    Form {
+        name: "exponent",
+        build: |n| wrap("var a = 1;\nvar x = ", "a**", "a", "", n),
+    },
+];
+
+/// The M1 exit item 8 forms (the `m1_*` gate tests of ep9_frontend `depth_tests.rs`).
+const M1_FORMS: [&str; 7] = [
+    "conditional",
+    "conditional-consequent",
+    "assignment",
+    "unary",
+    "unary-typeof",
+    "arrow",
+    "exponent",
 ];
 
 /// With the `v` flag a class stays open after a nested class closes: `[[a]&&[[a]&&[a]]]` is 3
@@ -232,4 +275,14 @@ fn caps_hold_end_to_end() {
     let _ = std::fs::remove_dir_all(&dir);
     println!("{}", report.join("\n"));
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn every_m1_form_is_listed() {
+    for name in M1_FORMS {
+        assert!(
+            FORMS.iter().any(|f| f.name == name),
+            "{name}: M1 exit item 8 form missing from FORMS"
+        );
+    }
 }
