@@ -16,9 +16,11 @@
 //! An H-row crate is a crate that the "Crates" row of an ADR names (docs/adr/README.md section 1:
 //! "The ADR lint ... uses this line"): each `ep9_<name>` in backticks is `crates/ep9_<name>/`,
 //! and a backticked path such as `tools/xtask` or `spikes/spike-b` counts when it holds a
-//! `Cargo.toml`. A commit touches one when a path it adds, changes or deletes is inside it (a
-//! rename counts on both sides). A merge commit touches only what its own resolution changed
-//! (`--cc`); the commits it merges are checked one by one.
+//! `Cargo.toml` in the work tree or at `<rev>`, or a commit of the range adds, changes or deletes
+//! its `Cargo.toml` (so a tool crate deleted in the range still counts). A commit touches one
+//! when a path it adds, changes or deletes is inside it (a rename counts on both sides; paths
+//! are read NUL-split from git, never in git's quoted form). A merge commit touches only what
+//! its own resolution changed (`--cc`); the commits it merges are checked one by one.
 //!
 //! `--root` (default: this workspace) is the git tree to check; the ADR files and the
 //! exceptions file are read from its work tree. Exit 0: every such commit has a good trailer or
@@ -91,8 +93,13 @@ struct Trailers {
     text: String,
 }
 
-/// The H-row crate dirs (each ending in `/`) and the ADRs that name each one.
-fn hrow_crates(root: &Path) -> Result<BTreeMap<String, Vec<String>>, String> {
+/// The H-row crate dirs (each ending in `/`) and the ADRs that name each one. A backticked path
+/// counts when `<path>/Cargo.toml` is a file in the work tree, or `held(<path>/Cargo.toml)`
+/// (the file is in the base tree or a commit of the range touches it).
+fn hrow_crates(
+    root: &Path,
+    held: impl Fn(&str) -> bool,
+) -> Result<BTreeMap<String, Vec<String>>, String> {
     let dir = root.join("docs/adr");
     let rd = std::fs::read_dir(&dir).map_err(|e| format!("cannot list {}: {e}", dir.display()))?;
     let mut files: Vec<PathBuf> = rd
@@ -124,13 +131,10 @@ fn hrow_crates(root: &Path) -> Result<BTreeMap<String, Vec<String>>, String> {
                     && name.len() > 4
                 {
                     format!("crates/{name}/")
-                } else if name.contains('/')
-                    && !name.contains("..")
-                    && root
-                        .join(name.trim_end_matches('/'))
-                        .join("Cargo.toml")
-                        .is_file()
-                {
+                } else if name.contains('/') && !name.contains("..") && {
+                    let manifest = format!("{}/Cargo.toml", name.trim_end_matches('/'));
+                    root.join(&manifest).is_file() || held(&manifest)
+                } {
                     format!("{}/", name.trim_end_matches('/'))
                 } else {
                     continue;
@@ -233,9 +237,9 @@ struct Commit {
     paths: Vec<String>,
 }
 
-/// The commits of `<base>..HEAD`, oldest first, with their trailers and the paths they touch.
-fn commits(root: &Path, base: &str) -> Result<Vec<Commit>, String> {
-    let base_sha = git_out(
+/// The full sha of the commit `base` names in `root`.
+fn base_commit(root: &Path, base: &str) -> Result<String, String> {
+    git_out(
         root,
         &[
             "rev-parse",
@@ -244,8 +248,13 @@ fn commits(root: &Path, base: &str) -> Result<Vec<Commit>, String> {
             &format!("{base}^{{commit}}"),
         ],
     )
-    .map_err(|_| format!("--base {base:?} is not a commit of {}", root.display()))?;
-    let range = format!("{}..HEAD", base_sha.trim());
+    .map(|s| s.trim().to_string())
+    .map_err(|_| format!("--base {base:?} is not a commit of {}", root.display()))
+}
+
+/// The commits of `<base_sha>..HEAD`, oldest first, with their trailers and the paths they touch.
+fn commits(root: &Path, base_sha: &str) -> Result<Vec<Commit>, String> {
+    let range = format!("{base_sha}..HEAD");
     // Records split by 0x1e, fields by 0x1f, trailer values by 0x1d.
     let log = git_out(
         root,
@@ -276,10 +285,16 @@ fn commits(root: &Path, base: &str) -> Result<Vec<Commit>, String> {
             paths: Vec::new(),
         });
     }
+    // `-z`: every path ends in NUL and is never quoted (without it git writes a path with a
+    // non-ASCII byte, a tab, `"` or `\\` as a C string in quotes). The stream is, per commit,
+    // `0x1e<sha>` NUL, then for a non-merge `\n` before the first path, for a merge an empty
+    // field, then `<path>` NUL each. A field is a commit header only when it is 0x1e and the sha
+    // of a commit of the first log.
     let names = git_out(
         root,
         &[
             "log",
+            "-z",
             "--reverse",
             "--format=%x1e%H",
             "--name-only",
@@ -288,30 +303,45 @@ fn commits(root: &Path, base: &str) -> Result<Vec<Commit>, String> {
             &range,
         ],
     )?;
-    let mut paths: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-    for rec in names.split('\u{1e}').filter(|r| !r.trim().is_empty()) {
-        let mut lines = rec.lines();
-        let sha = lines.next().unwrap_or("").trim();
-        paths.insert(
-            sha,
-            lines
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .map(str::to_string)
-                .collect(),
-        );
-    }
-    for c in &mut list {
-        c.paths = paths.remove(c.sha.as_str()).unwrap_or_default();
+    let index: BTreeMap<String, usize> = list
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.sha.clone(), i))
+        .collect();
+    let mut cur: Option<usize> = None;
+    let mut first = false;
+    for field in names.split('\0') {
+        if let Some(&i) = field.strip_prefix('\u{1e}').and_then(|s| index.get(s)) {
+            cur = Some(i);
+            first = true;
+            continue;
+        }
+        let path = if first {
+            field.strip_prefix('\n').unwrap_or(field)
+        } else {
+            field
+        };
+        first = false;
+        if let (false, Some(i)) = (path.is_empty(), cur) {
+            list[i].paths.push(path.to_string());
+        }
     }
     Ok(list)
 }
 
 /// The trailer check over `<base>..HEAD` in `root`.
 fn trailers(root: &Path, base: &str) -> Result<Trailers, String> {
-    let crates = hrow_crates(root)?;
+    let base_sha = base_commit(root, base)?;
+    let list = commits(root, &base_sha)?;
+    let touched: std::collections::BTreeSet<&str> = list
+        .iter()
+        .flat_map(|c| c.paths.iter().map(String::as_str))
+        .collect();
+    let crates = hrow_crates(root, |manifest| {
+        touched.contains(manifest)
+            || git_out(root, &["cat-file", "-e", &format!("{base_sha}:{manifest}")]).is_ok()
+    })?;
     let exc = exceptions(root)?;
-    let list = commits(root, base)?;
     let mut r = Trailers {
         commits: list.len(),
         touching: 0,
@@ -387,6 +417,8 @@ mod tests {
     const ADR: &str = "# H16\n\n| Field | Value |\n|---|---|\n\
         | Crates | `ep9_vm` (ICs), `ep9_unit`; `tools/xtask` (`disasm-check`); `crates/`, `tools/none` |\n";
 
+    const ADR_PATH: &str = "docs/adr/H16-ics.md";
+
     fn write(root: &Path, rel: &str, text: &str) {
         let p = root.join(rel);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -436,7 +468,7 @@ mod tests {
         let base = commit(
             &root,
             &[
-                ("docs/adr/H16-ics.md", ADR),
+                (ADR_PATH, ADR),
                 ("crates/ep9_vm/src/lib.rs", "// vm\n"),
                 ("crates/ep9_other/src/lib.rs", "// not named\n"),
                 ("tools/xtask/Cargo.toml", "[package]\n"),
@@ -451,7 +483,7 @@ mod tests {
     #[test]
     fn crates_rows_name_the_hrow_dirs() {
         let (root, _) = repo("crates");
-        let c = hrow_crates(&root).unwrap();
+        let c = hrow_crates(&root, |_| false).unwrap();
         // `crates/` and `tools/none` hold no Cargo.toml; `ep9_unit` is named but not built yet.
         assert_eq!(
             c.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -563,6 +595,91 @@ mod tests {
         let r = trailers(&root2, &base2).unwrap();
         assert_eq!(r.missing, 1, "{}", r.text);
         std::fs::remove_dir_all(&root2).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Git quotes a path with a byte outside printable ASCII (`core.quotePath`) or with a tab,
+    /// quote or backslash; such a path inside an H-row crate still needs the trailer.
+    #[test]
+    fn quoted_paths_still_count() {
+        for file in [
+            "crates/ep9_vm/src/\u{3c0}.rs",
+            "crates/ep9_vm/src/a\tb.rs",
+            "crates/ep9_vm/src/a\"b.rs",
+            "crates/ep9_vm/src/a\\b.rs",
+            "tools/xtask/src/\u{e9}t\u{e9}.rs",
+        ] {
+            let (root, base) = repo("quoted");
+            commit(&root, &[(file, "// x\n")], "no trailer");
+            let r = trailers(&root, &base).unwrap();
+            assert_eq!((r.touching, r.missing), (1, 1), "{file:?}: {}", r.text);
+            assert!(r.text.contains(file), "{file:?}: {}", r.text);
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+    }
+
+    /// A tool crate (a Crates-row path with a `Cargo.toml`) deleted in the range stays an H-row
+    /// crate for every commit of the range, the deleting one included.
+    #[test]
+    fn a_deleted_tool_crate_still_counts() {
+        let (root, base) = repo("deleted");
+        commit(
+            &root,
+            &[("tools/xtask/src/main.rs", "// 2\n")],
+            "xtask: no trailer",
+        );
+        git(&root, &["rm", "-q", "-r", "tools/xtask"]);
+        git(
+            &root,
+            &[
+                "commit",
+                "-q",
+                "--no-verify",
+                "-m",
+                "xtask: delete, no trailer",
+            ],
+        );
+        let r = trailers(&root, &base).unwrap();
+        assert_eq!((r.commits, r.touching, r.missing), (2, 2, 2), "{}", r.text);
+        assert!(r.text.contains("tools/xtask/Cargo.toml"), "{}", r.text);
+        std::fs::remove_dir_all(&root).unwrap();
+        // A tool crate in the base tree counts while the work tree lacks it (not committed).
+        let (root, base) = repo("worktree-gone");
+        commit(
+            &root,
+            &[("tools/xtask/src/main.rs", "// 2\n")],
+            "xtask: no trailer",
+        );
+        std::fs::remove_dir_all(root.join("tools/xtask")).unwrap();
+        let r = trailers(&root, &base).unwrap();
+        assert_eq!((r.touching, r.missing), (1, 1), "{}", r.text);
+        std::fs::remove_dir_all(&root).unwrap();
+        // A tool crate added in the range and deleted again in it counts too.
+        let (root, _) = repo("added-deleted");
+        write(
+            &root,
+            ADR_PATH,
+            &format!("{ADR}| Crates | `tools/later` |\n"),
+        );
+        let b2 = commit(&root, &[], "docs: name tools/later\n\nADR: H16");
+        commit(
+            &root,
+            &[("tools/later/Cargo.toml", "[package]\n")],
+            "later: add, no trailer",
+        );
+        git(&root, &["rm", "-q", "-r", "tools/later"]);
+        git(
+            &root,
+            &[
+                "commit",
+                "-q",
+                "--no-verify",
+                "-m",
+                "later: delete, no trailer",
+            ],
+        );
+        let r = trailers(&root, &b2).unwrap();
+        assert_eq!((r.commits, r.touching, r.missing), (2, 2, 2), "{}", r.text);
         std::fs::remove_dir_all(&root).unwrap();
     }
 
