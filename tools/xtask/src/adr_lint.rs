@@ -416,7 +416,14 @@ mod tests {
     }
 
     fn git(root: &Path, args: &[&str]) -> String {
-        let out = Command::new("git")
+        git_in(root, args, b"")
+    }
+
+    /// Runs git in `root` with `input` on its stdin; its stdout, trimmed.
+    fn git_in(root: &Path, args: &[&str], input: &[u8]) -> String {
+        use std::io::Write;
+        use std::process::Stdio;
+        let mut child = Command::new("git")
             .arg("-C")
             .arg(root)
             .args([
@@ -430,8 +437,14 @@ mod tests {
                 "core.hooksPath=/dev/null",
             ])
             .args(args)
-            .output()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .unwrap();
+        // Dropping stdin after the write closes it.
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        let out = child.wait_with_output().unwrap();
         assert!(out.status.success(), "git {args:?}: {out:?}");
         String::from_utf8(out.stdout).unwrap().trim().to_string()
     }
@@ -445,6 +458,42 @@ mod tests {
         git(
             root,
             &["commit", "-q", "--no-verify", "--allow-empty", "-m", msg],
+        );
+        git(root, &["rev-parse", "HEAD"])
+    }
+
+    /// Like `commit`, but puts `files` into the git index only, never into the work tree: Windows
+    /// allows no file name with `"`, a tab or a byte below 0x20, and takes `\` as a separator.
+    /// Blobs come from `hash-object -w --stdin`; paths and the message go on stdin
+    /// (`update-index -z --index-info`, `commit -F -`), not as arguments. Git for Windows also
+    /// refuses such a path in the index unless `core.protectNTFS` is off. The work tree lacks
+    /// these paths, so a later `commit` (`git add -A`) would stage them as deleted: a test that
+    /// uses this keeps to it after its first call.
+    fn commit_index(root: &Path, files: &[(&str, &str)], msg: &str) -> String {
+        const NTFS: [&str; 2] = ["-c", "core.protectNTFS=false"];
+        let mut info = String::new();
+        for (p, t) in files {
+            let blob = git_in(root, &["hash-object", "-w", "--stdin"], t.as_bytes());
+            info.push_str(&format!("100644 blob {blob}\t{p}\0"));
+        }
+        git_in(
+            root,
+            &[NTFS[0], NTFS[1], "update-index", "-z", "--index-info"],
+            info.as_bytes(),
+        );
+        git_in(
+            root,
+            &[
+                NTFS[0],
+                NTFS[1],
+                "commit",
+                "-q",
+                "--no-verify",
+                "--allow-empty",
+                "-F",
+                "-",
+            ],
+            msg.as_bytes(),
         );
         git(root, &["rev-parse", "HEAD"])
     }
@@ -600,7 +649,7 @@ mod tests {
             "tools/xtask/src/\u{e9}t\u{e9}.rs",
         ] {
             let (root, base) = repo("quoted");
-            commit(&root, &[(file, "// x\n")], "no trailer");
+            commit_index(&root, &[(file, "// x\n")], "no trailer");
             let r = trailers(&root, &base).unwrap();
             assert_eq!((r.touching, r.missing), (1, 1), "{file:?}: {}", r.text);
             assert!(r.text.contains(file), "{file:?}: {}", r.text);
@@ -703,7 +752,7 @@ mod tests {
             "vm: one\n\nADR: H16",
         );
         let spoof = format!("\u{1e}{a}");
-        let b = commit(
+        let b = commit_index(
             &root,
             &[
                 ("\u{1}", "x"),
@@ -717,7 +766,7 @@ mod tests {
         assert!(r.text.contains(&b[..12]), "{}", r.text);
         assert!(r.text.ends_with(": FAIL\n"), "{}", r.text);
         // Marker bytes in a subject do not make a trailer.
-        let c = commit(
+        let c = commit_index(
             &root,
             &[("crates/ep9_vm/src/lib.rs", "// c\n")],
             &format!("vm: three\u{1f}H16\u{1e}{a}\u{1f}x\u{1f}H16"),
