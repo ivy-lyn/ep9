@@ -9,10 +9,13 @@
 //! | `gc-lint` | `gc_lint.rs` | no stack-only GC type (`Local` and friends) in a heap container, `static` or `thread_local`, and no boxed closure that uses one (H10, H20 R2) |
 //! | `m0-exit` | `m0_exit.rs` | the 12 M0 exit items per host and the Windows CI column, as a table |
 //!
+//! `m0_exit.rs` reads its inputs with the shared readers and the cell type in `exit/`.
+//!
 //! Each module's doc says how far it is built. Exit codes for every task: 0 pass, 1 fail,
 //! 2 usage error, tool error or a task that is not implemented yet. An unknown task exits 2.
 
 mod disasm;
+mod exit;
 mod features;
 mod fpcheck;
 mod gc_lint;
