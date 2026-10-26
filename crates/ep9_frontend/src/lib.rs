@@ -40,6 +40,7 @@ mod position;
 mod prescan;
 pub mod scope;
 mod stack;
+mod strict_filter;
 mod worker;
 
 pub use bytecodegen::{
