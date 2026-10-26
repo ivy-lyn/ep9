@@ -5,7 +5,7 @@
 //! | [`number_to_string`] | Number::toString(x, 10) (ECMA-262 §6.1.6.1.20) | digits from `core::fmt` `{:e}` (shortest round trip), then the even one of two closest (step 5, `even_tie`). v0: `ep9_numconv` (dragonbox_ecma) replaces it |
 //! | [`string_to_number`] | StringToNumber (§7.1.4.1.1) | decimal through `str::parse::<f64>` after a JS grammar check (correctly rounded); hex/octal/binary exact up to 2^128 |
 //! | [`fmod`] | Number::remainder (§6.1.6.1.6) | `ep9_math::fmod`: exact, bit-level (musl `fmod.c`, MIT). H36: never the platform libm |
-//! | [`exponentiate`] | Number::exponentiate (§6.1.6.1.3) | `ep9_math::pow_js` v0: every special case and exact result; else `None` (`**` throws "not implemented") until the correctly rounded core lands (month 2, H36) |
+//! | [`exponentiate`] | Number::exponentiate (§6.1.6.1.3) | `ep9_math::pow_js`: every special case and exact result, else the correctly rounded pow (CORE-MATH `cr_pow` port, M4-P1, H36) |
 
 /// Number::toString(x) in radix 10.
 pub fn number_to_string(x: f64) -> String {
@@ -250,10 +250,10 @@ fn parse_radix_integer(digits: &str, radix: u32) -> f64 {
 /// Exact IEEE-754 remainder with the sign of `x` (JS `%`). H36: the one Rust Math.
 pub use ep9_math::fmod;
 
-/// Number::exponentiate (§6.1.6.1.3) for `**`. `None` where `ep9_math::pow_js` v0 needs the
-/// correctly rounded core (month 2); the caller throws "not implemented" then.
+/// Number::exponentiate (§6.1.6.1.3) for `**`: `ep9_math::pow_js`, the exact or correctly
+/// rounded result (H36). `Math.pow` calls the same function.
 #[inline]
-pub fn exponentiate(base: f64, exp: f64) -> Option<f64> {
+pub fn exponentiate(base: f64, exp: f64) -> f64 {
     ep9_math::pow_js(base, exp)
 }
 
@@ -358,12 +358,13 @@ mod tests {
     fn remainder_and_exponent_use_ep9_math() {
         assert_eq!(fmod(-5.5, 2.0), -1.5);
         assert_eq!(fmod(0.1, 0.01), 3.469446951953614e-18);
-        assert_eq!(exponentiate(2.0, 32.0), Some(4_294_967_296.0));
-        assert_eq!(exponentiate(2.0, 0.5), Some(std::f64::consts::SQRT_2));
+        assert_eq!(exponentiate(2.0, 32.0), 4_294_967_296.0);
+        assert_eq!(exponentiate(2.0, 0.5), std::f64::consts::SQRT_2);
         assert_eq!(
-            exponentiate(f64::NEG_INFINITY, -3.0).map(f64::to_bits),
-            Some((-0.0f64).to_bits())
+            exponentiate(f64::NEG_INFINITY, -3.0).to_bits(),
+            (-0.0f64).to_bits()
         );
-        assert_eq!(exponentiate(2.0, 0.3), None);
+        // The correctly rounded core (M4-P1): 2^0.3 = 0x1.3b2c47bff8329p+0 (MPFR).
+        assert_eq!(exponentiate(2.0, 0.3).to_bits(), 0x3ff3b2c47bff8329);
     }
 }

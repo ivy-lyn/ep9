@@ -12,3 +12,8 @@
 0x1008   8.8          method       1       "sign"  (%Math%.sign w-c)
 0x1009   8.9          method       1       "sqrt"  (%Math%.sqrt w-c)
 0x100a   8.10         method       1       "trunc"  (%Math%.trunc w-c)
+0x100b   8.11         method       1       "clz32"  (%Math%.clz32 w-c)
+0x100c   8.12         method       1       "exp"  (%Math%.exp w-c)
+0x100d   8.13         method       2       "imul"  (%Math%.imul w-c)
+0x100e   8.14         method       1       "log"  (%Math%.log w-c)
+0x100f   8.15         method       0       "random"  (%Math%.random w-c)

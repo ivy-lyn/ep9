@@ -74,9 +74,10 @@ export const HARNESSES = ["stub", "base"];
 
 /**
  * The default harness of v8v7.mjs, run.mjs, workloads.mjs and kernels.mjs (and so of perf CI v0).
- * MATH1 (plan v9 M4-P1, V9-D14) sets it to "base" once Math.log and the pow core land.
+ * "base" since MATH1 (plan v9 M4-P1, V9-D14): ep9 has Math.log and the correctly rounded pow,
+ * which base.js's GeometricMean needs. "--harness stub" keeps the runs 1 and 2 form.
  */
-export const DEFAULT_HARNESS = "stub";
+export const DEFAULT_HARNESS = "base";
 
 function git(dir, args) {
   return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", maxBuffer: 1 << 26 });
