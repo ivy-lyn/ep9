@@ -26,10 +26,10 @@
 //! | Non-Unicode `i`: a class, `\w` and `\W` use Unicode simple case folding; a literal and a backreference skip the ASCII rule of Canonicalize (§22.2.2.7.3) | regress 0.12.0 defect | `/\w/i` and `/[a-z]/i` match U+017F and U+212A, `/\W/i` does not, `/\u017f/i` matches `s`, `/(s)\1/i` matches `s\u017f` (11 lines of the node golden, `tests/node_pairs.rs` KNOWN) |
 //!
 //! RX0 fixes in this crate, before regress sees the pattern or the start: `legacy_chars`
-//! (`\u{` and surrogate escapes without `u`), `unicode_chars` (a lead-surrogate escape before
-//! another `\u` escape, `u` and `v`) and the start inside a surrogate pair (Unicode mode
-//! starts at the pair, as V8). The node golden `tests/golden/node-pairs.txt` (523 cases,
-//! node v24.22.1) checks the backend.
+//! (`\u{` and surrogate escapes without `u`; a group name as code points), `unicode_chars` (a
+//! lead-surrogate escape before another `\u` escape, `u` and `v`) and the start inside a
+//! surrogate pair (Unicode mode starts at the pair, as V8). The node golden
+//! `tests/golden/node-pairs.txt` (535 cases, node v24.22.1) checks the backend.
 #![forbid(unsafe_code)]
 
 /// The flags of a RegExp (`dgimsuvy`), one bit each. The backend reads `i`, `m`, `s`, `u`,
@@ -298,12 +298,15 @@ fn hex4<T: Copy + Into<u32>>(pattern: &[T], at: usize) -> Option<u16> {
 /// | `\u{61}` | identity escape `u`, then the quantifier `{61}` | the code point U+0061 | `u{61}` |
 /// | `\uD83D\uDE00` | two characters (two code units) | one code point U+1F600, which a UCS-2 input never holds | each surrogate escape becomes its raw code unit |
 ///
-/// A group name (`(?<name>`, `\k<name>`) is copied as code points: there a `\u` pair and a
-/// raw surrogate pair are one code point in both modes (RegExpIdentifierName is
-/// `[+UnicodeMode]`); an unpaired surrogate stays one character.
+/// A group name (`(?<name>`, and `\k<name>` when the pattern has a group name) is copied as
+/// code points: there a `\u` pair and a raw surrogate pair are one code point in both modes
+/// (RegExpIdentifierName is `[+UnicodeMode]`); an unpaired surrogate stays one character.
+/// Without any group name, `\k` is the B.1.2 identity escape `k` and the text after it is
+/// read as code units like the rest of the pattern.
 fn legacy_chars(pattern: &[u16]) -> Vec<u32> {
     const BACKSLASH: u16 = b'\\' as u16;
     let unit = |c: u8| u16::from(c);
+    let named = has_group_names(pattern);
     let mut out: Vec<u32> = Vec::with_capacity(pattern.len());
     let mut in_class = false;
     let mut i = 0;
@@ -345,7 +348,7 @@ fn legacy_chars(pattern: &[u16]) -> Vec<u32> {
                     continue;
                 }
             }
-            if d == unit(b'k') && !in_class && pattern.get(i + 2) == Some(&unit(b'<')) {
+            if d == unit(b'k') && named && !in_class && pattern.get(i + 2) == Some(&unit(b'<')) {
                 i = copy_name(&mut out, i);
                 continue;
             }
@@ -357,11 +360,7 @@ fn legacy_chars(pattern: &[u16]) -> Vec<u32> {
             in_class = c != unit(b']');
         } else if c == unit(b'[') {
             in_class = true;
-        } else if c == unit(b'(')
-            && pattern.get(i + 1) == Some(&unit(b'?'))
-            && pattern.get(i + 2) == Some(&unit(b'<'))
-            && !matches!(pattern.get(i + 3), Some(&n) if n == unit(b'=') || n == unit(b'!'))
-        {
+        } else if is_group_name_open(pattern, i) {
             i = copy_name(&mut out, i);
             continue;
         }
@@ -369,6 +368,39 @@ fn legacy_chars(pattern: &[u16]) -> Vec<u32> {
         i += 1;
     }
     out
+}
+
+/// True if a `(?<` that opens a group name (not a `(?<=` or `(?<!` look-behind) starts at `i`.
+fn is_group_name_open(pattern: &[u16], i: usize) -> bool {
+    let unit = |c: u8| u16::from(c);
+    pattern.get(i) == Some(&unit(b'('))
+        && pattern.get(i + 1) == Some(&unit(b'?'))
+        && pattern.get(i + 2) == Some(&unit(b'<'))
+        && !matches!(pattern.get(i + 3), Some(&n) if n == unit(b'=') || n == unit(b'!'))
+}
+
+/// True if the pattern has a group name outside escapes and classes (B.1.2: then `\k<name>`
+/// is a backreference, else `\k` is an identity escape). The same walk as `legacy_chars`.
+fn has_group_names(pattern: &[u16]) -> bool {
+    let unit = |c: u8| u16::from(c);
+    let mut in_class = false;
+    let mut i = 0;
+    while i < pattern.len() {
+        let c = pattern[i];
+        if c == unit(b'\\') {
+            i += 2;
+            continue;
+        }
+        if in_class {
+            in_class = c != unit(b']');
+        } else if c == unit(b'[') {
+            in_class = true;
+        } else if is_group_name_open(pattern, i) {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 /// V8's message form: `Invalid regular expression: /<source>/<flags>: <reason>`.
@@ -657,6 +689,59 @@ mod tests {
             .unwrap(),
             [Some((0, 2)), Some((0, 1))]
         );
+    }
+
+    /// `\k<𝒜>` without `u` and without any named group is the B.1.2 identity escape `k`
+    /// followed by the text `<𝒜>`, whose pair stays two code units (Codex M4-P2 r2; the
+    /// golden lines 529-540). Node
+    /// v24.22.1: `/\k<𝒜>/.exec("k<𝒜>")` and the same with `i` are `["k<𝒜>"]` at index 0;
+    /// with a named group anywhere `\k<𝒜>` is a backreference (`/\k<𝒜>(?<𝒜>y)/.exec("y")` is
+    /// `["y", "y"]`, `/(?<a>x)\k<𝒜>|(?<𝒜>y)/.exec("x")` is `["x", "x", null]`) or, with no
+    /// group `𝒜`, a SyntaxError ("Invalid named capture referenced").
+    #[test]
+    fn rx0_k_without_named_groups_is_an_identity_escape() {
+        let text = utf16("k<\u{1d49c}>");
+        for f in ["", "i"] {
+            assert_eq!(
+                run("\\k<\u{1d49c}>", f, Input::Utf16(&text), 0),
+                Some(vec![Some((0, 5))]),
+                "flags {f:?}"
+            );
+        }
+        assert_eq!(
+            run("\\k<\u{1d49c}>(?<\u{1d49c}>y)", "", Input::Latin1(b"y"), 0).unwrap(),
+            [Some((0, 1)), Some((0, 1))]
+        );
+        assert_eq!(
+            run(
+                "(?<a>x)\\k<\u{1d49c}>|(?<\u{1d49c}>y)",
+                "",
+                Input::Latin1(b"x"),
+                0
+            )
+            .unwrap(),
+            [Some((0, 1)), Some((0, 1)), None]
+        );
+        // The text after an identity `\k` is read like the rest of the pattern: surrogate
+        // escapes are code units, a class is a class. A `(?<` that is escaped or in a class
+        // is no group name (node: each is `[<the whole text>]` at index 0).
+        let escaped_pair = run("\\k<\\uD835\\uDC9C>", "", Input::Utf16(&text), 0);
+        assert_eq!(escaped_pair, Some(vec![Some((0, 5))]));
+        assert_eq!(
+            run("\\k<[a]>", "", Input::Latin1(b"k<a>"), 0).unwrap(),
+            [Some((0, 4))]
+        );
+        assert_eq!(
+            run("[(?<a>x)]\\k<a>", "", Input::Latin1(b"ak<a>"), 0).unwrap(),
+            [Some((0, 5))]
+        );
+        assert_eq!(
+            run("\\(?<a>x\\)\\k<a>", "", Input::Latin1(b"<a>x)k<a>"), 0).unwrap(),
+            [Some((0, 9))]
+        );
+        for p in ["(?<a>x)\\k<\u{1d49c}>", "\\k<\u{1d49c}>(?<a>x)"] {
+            assert!(Rx0::compile(&utf16(p), Flags::empty()).is_err(), "{p}");
+        }
     }
 
     /// A lead-surrogate escape followed by a `\u` escape that is not its trail, in `u` and

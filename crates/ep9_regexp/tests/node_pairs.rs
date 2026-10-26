@@ -1,8 +1,9 @@
-//! The RX0A differential golden (plan v9 §4.5): `tests/golden/node-pairs.txt` holds 523
+//! The RX0A differential golden (plan v9 §4.5): `tests/golden/node-pairs.txt` holds 535
 //! (pattern, flags, lastIndex, input) cases with the result of one `RegExp.prototype.exec` in
 //! node v24.22.1 (its header names the format): 500 picked cases, then 23 added by the M4-P2
-//! Codex-fix step (surrogate escapes in `u` and `v`, non-Unicode ignore case). This test runs
-//! each case through [`Rx0`] and prints every line that differs.
+//! Codex-fix step (surrogate escapes in `u` and `v`, non-Unicode ignore case), then 12 by
+//! Codex r2 (`\k` with and without a group name, no `u`). This test runs each case through
+//! [`Rx0`] and prints every line that differs.
 //!
 //! ```text
 //! line     pattern \t flags \t lastIndex \t input \t result
@@ -133,7 +134,7 @@ fn rx0_matches_node() {
             None => {}
         }
     }
-    assert_eq!(cases, 523, "the golden has 523 cases");
+    assert_eq!(cases, 535, "the golden has 535 cases");
     assert_eq!(known, KNOWN.len(), "every KNOWN line is in the golden");
     println!(
         "{} of {cases} equal node, {known} known regress differences",
