@@ -54,7 +54,7 @@
 //!
 //! | Hook | Called from | Arguments |
 //! |---|---|---|
-//! | [`int32_pair_bits`], [`NUMBER_PAIR`] | the fast body of the 12 binary and 12 `*Smi` operators (`binop_fast`) | operator and result |
+//! | [`binary_pair_bits`], [`int32_result_bits`], [`int32_pair_bits`], [`NUMBER_PAIR`] | the fast body of the 12 binary and 12 `*Smi` operators (`binop_fast`, `binop_fast_boxed` for `*` and `/`): the pair's record is chosen from the tags before the operation, the int32 overflow record from the result | operator, operand tags, result |
 //! | [`record_binary_cold`] | their cold body (`binop_cold`): an int32 `%` with a negative dividend or a 0 divisor, an int32 `**`, `%`, `**` and the bitwise operators on a double, or other types | slot, operator, left, right |
 //! | [`NUMBER_OPERAND`], [`record_unary`] | `Inc`, `Dec`, `Negate`, `ToNumber`, `ToNumeric` (BinaryOp slots): a double in the fast body; other operands (and every `BitwiseNot` that is not int32) in the cold body | slot, operand |
 //! | [`NUMBER_COMPARE`], [`Pair`], [`record_compare`] | `TestEqual`, `TestEqualStrict`, `TestLessThan`, `TestGreaterThan`, `TestLessThanOrEqual`, `TestGreaterThanOrEqual`: fast body as above, cold body otherwise | slot, left, right |
@@ -447,6 +447,25 @@ pub(crate) fn int32_pair_bits(op: BinOp, v: u64) -> u32 {
     } else {
         0
     }
+}
+
+/// The record a binary operator site chooses from its operand tags before the fast path: 0 for
+/// an int32 pair (implicit; see [`int32_result_bits`]), [`NUMBER_PAIR`] otherwise (used only
+/// when the fast path finishes, so the pair is two numbers).
+#[inline(always)]
+pub(crate) fn binary_pair_bits(l: u64, r: u64) -> u32 {
+    if is_i32(l) && is_i32(r) {
+        0
+    } else {
+        NUMBER_PAIR
+    }
+}
+
+/// The record of a fast binary operation on top of `pair` ([`binary_pair_bits`]) with result
+/// `v`: [`int32_pair_bits`] for an int32 pair, else 0.
+#[inline(always)]
+pub(crate) fn int32_result_bits(op: BinOp, pair: u32, v: u64) -> u32 {
+    if pair == 0 { int32_pair_bits(op, v) } else { 0 }
 }
 
 /// The record of a binary operator site whose fast path made its result from a number pair

@@ -138,33 +138,33 @@ fn fast_truthy(v: u64) -> Option<bool> {
     }
 }
 
-/// `a OP b` for an int32 pair when the result is exact in the fast path (`+` and `-` without
-/// overflow, `%` with a dividend >= 0, the bitwise operators; `*`, `/` and `>>>` always), or
-/// `None` (the double arm or the cold path).
+/// `l OP r` for numbers, or `None` for the cold path (other types, `**`, `%` and bitwise
+/// operators on doubles).
 #[inline(always)]
-fn int32_binop(op: BinOp, a: i32, b: i32) -> Option<u64> {
-    match op {
-        BinOp::Add => a.checked_add(b).map(int),
-        BinOp::Sub => a.checked_sub(b).map(int),
-        // The exact product rounded once: the JS result. `num` keeps -0.
-        BinOp::Mul => Some(num(f64::from(a) * f64::from(b))),
-        BinOp::Div => Some(num(f64::from(a) / f64::from(b))),
-        // Same sign as the dividend in Rust and JS; a >= 0 avoids -0 and overflow.
-        BinOp::Mod => (a >= 0 && b != 0).then(|| int(a % b)),
-        BinOp::Exp => None,
-        BinOp::BitOr => Some(int(a | b)),
-        BinOp::BitXor => Some(int(a ^ b)),
-        BinOp::BitAnd => Some(int(a & b)),
-        BinOp::Shl => Some(int(a.wrapping_shl(b as u32 & 31))),
-        BinOp::Sar => Some(int(a >> (b as u32 & 31))),
-        BinOp::Shr => Some(num(f64::from((a as u32) >> (b as u32 & 31)))),
+fn fast_binop(op: BinOp, l: u64, r: u64) -> Option<u64> {
+    if is_i32(l) && is_i32(r) {
+        let (a, b) = (i32_of(l), i32_of(r));
+        let exact = match op {
+            BinOp::Add => a.checked_add(b).map(int),
+            BinOp::Sub => a.checked_sub(b).map(int),
+            // The exact product rounded once: the JS result. `num` keeps -0.
+            BinOp::Mul => Some(num(f64::from(a) * f64::from(b))),
+            BinOp::Div => Some(num(f64::from(a) / f64::from(b))),
+            // Same sign as the dividend in Rust and JS; a >= 0 avoids -0 and overflow.
+            BinOp::Mod => (a >= 0 && b != 0).then(|| int(a % b)),
+            BinOp::Exp => None,
+            BinOp::BitOr => Some(int(a | b)),
+            BinOp::BitXor => Some(int(a ^ b)),
+            BinOp::BitAnd => Some(int(a & b)),
+            BinOp::Shl => Some(int(a.wrapping_shl(b as u32 & 31))),
+            BinOp::Sar => Some(int(a >> (b as u32 & 31))),
+            BinOp::Shr => Some(num(f64::from((a as u32) >> (b as u32 & 31)))),
+        };
+        if exact.is_some() {
+            return exact;
+        }
     }
-}
-
-/// `x OP y` for two numbers, or `None` for the cold path (`**`, `%` and the bitwise
-/// operators).
-#[inline(always)]
-fn double_binop(op: BinOp, x: f64, y: f64) -> Option<u64> {
+    let (x, y) = (number(l)?, number(r)?);
     match op {
         BinOp::Add => Some(num(x + y)),
         BinOp::Sub => Some(num(x - y)),
@@ -174,20 +174,39 @@ fn double_binop(op: BinOp, x: f64, y: f64) -> Option<u64> {
     }
 }
 
-/// The fast body of the binary operators. An arm that records ends in `Flow::Record` with a
-/// constant record, so no operand is live after the result and the record runs after the
-/// handler (`dsl::record_next`), not in it.
+/// The fast body of the binary operators. The record is chosen from the operand tags before
+/// the operation, as a small constant (`profile::binary_pair_bits`), so no operand, slot or
+/// vector value is live after the result; it runs after the handler
+/// (`interp::Flow::Record`).
+///
+/// `*` and `/` take [`binop_fast_boxed`] instead: their int32 arm boxes a double too, and with
+/// the record chosen first x86-64 LLVM saves a register on entry for them.
 #[inline(always)]
 fn binop_fast(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r: u64) -> Flow {
+    if matches!(op, BinOp::Mul | BinOp::Div) {
+        return binop_fast_boxed(st, s, op, l, r);
+    }
+    let pair = profile::binary_pair_bits(l, r);
+    match fast_binop(op, l, r) {
+        Some(v) => {
+            st.acc = v;
+            next_or_record(s, pair | profile::int32_result_bits(op, pair, v))
+        }
+        None => Flow::Cold,
+    }
+}
+
+/// The fast body of `*` and `/` (see [`binop_fast`]): the int32 arm and the double arm each
+/// end in their own constant record.
+#[inline(always)]
+fn binop_fast_boxed(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r: u64) -> Flow {
     if is_i32(l) && is_i32(r) {
-        let (a, b) = (i32_of(l), i32_of(r));
-        let v = match int32_binop(op, a, b) {
-            Some(v) => v,
-            // `+` or `-` overflow, an inexact `%`: the double arm, implicit (H16-Q2).
-            None => match double_binop(op, f64::from(a), f64::from(b)) {
-                Some(v) => v,
-                None => return Flow::Cold,
-            },
+        let (a, b) = (f64::from(i32_of(l)), f64::from(i32_of(r)));
+        // The exact product or quotient rounded once: the JS result. `num` keeps -0.
+        let v = if matches!(op, BinOp::Mul) {
+            num(a * b)
+        } else {
+            num(a / b)
         };
         st.acc = v;
         return next_or_record(s, profile::int32_pair_bits(op, v));
@@ -195,13 +214,12 @@ fn binop_fast(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r: u64) -> Flow {
     let (Some(x), Some(y)) = (number(l), number(r)) else {
         return Flow::Cold;
     };
-    match double_binop(op, x, y) {
-        Some(v) => {
-            st.acc = v;
-            Flow::Record(profile::Rec::new(s, profile::NUMBER_PAIR))
-        }
-        None => Flow::Cold,
-    }
+    st.acc = if matches!(op, BinOp::Mul) {
+        num(x * y)
+    } else {
+        num(x / y)
+    };
+    Flow::Record(profile::Rec::new(s, profile::NUMBER_PAIR))
 }
 
 /// `Flow::Next`, or `Flow::Record` when `bits` (from a `profile` hook) is not 0. The record
@@ -234,9 +252,18 @@ fn compare_cold(st: &mut St<'_>, op: CmpOp, l: u64) -> Done {
     st.result(v)
 }
 
-/// `l < r` style comparisons (the relational fast bodies): an int32 pair is implicit; another
-/// number pair records `CompareHint::NUMBER` (a constant record, as in [`binop_fast`]); other
-/// operands go cold.
+/// `l < r` style comparisons on two numbers (`None`: cold path).
+#[inline(always)]
+fn fast_relational(l: u64, r: u64, f: impl Fn(f64, f64) -> bool) -> Option<u64> {
+    if is_i32(l) && is_i32(r) {
+        return Some(boolean(f(f64::from(i32_of(l)), f64::from(i32_of(r)))));
+    }
+    Some(boolean(f(number(l)?, number(r)?)))
+}
+
+/// The relational fast bodies: an int32 pair is implicit; another number pair records
+/// `CompareHint::NUMBER`, chosen before the operation as in [`binop_fast`]; other operands go
+/// cold.
 #[inline(always)]
 fn relational_fast(
     st: &mut St<'_>,
@@ -245,15 +272,18 @@ fn relational_fast(
     r: u64,
     f: impl Fn(f64, f64) -> bool,
 ) -> Flow {
-    if is_i32(l) && is_i32(r) {
-        st.acc = boolean(f(f64::from(i32_of(l)), f64::from(i32_of(r))));
-        return Flow::Next;
-    }
-    let (Some(x), Some(y)) = (number(l), number(r)) else {
-        return Flow::Cold;
+    let bits = if is_i32(l) && is_i32(r) {
+        0
+    } else {
+        profile::NUMBER_COMPARE
     };
-    st.acc = boolean(f(x, y));
-    Flow::Record(profile::Rec::new(s, profile::NUMBER_COMPARE))
+    match fast_relational(l, r, f) {
+        Some(v) => {
+            st.acc = v;
+            next_or_record(s, bits)
+        }
+        None => Flow::Cold,
+    }
 }
 
 #[inline(always)]
