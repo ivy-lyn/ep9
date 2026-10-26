@@ -104,12 +104,12 @@ After the push: set the merge settings, create the label `ci:full`, and start on
 | `workflow_dispatch` | all 4 | yes | yes | yes | yes |
 | Docs-only change | none: only the `scope` job runs | no | no | no | no |
 
-- **State on 2026-10-20.** `.github/workflows/ci.yml` has the decided `pull_request` types and the concurrency rule. The `scope` job, `.github/scripts/ci-scope.sh` and the nightly `schedule` trigger land together in one follow-up PR, after the current tools/ work. Until then every event runs every job (the old behaviour), and no nightly run exists.
+- **State on 2026-10-26 (M4-P0; plan v9 V9-D35, V9-A18).** `.github/workflows/ci.yml` has the decided `pull_request` types, the concurrency rule and the `scope` job. `.github/scripts/ci-scope.sh` is an allow-list that fails closed: a change is docs-only only when every changed path is added or modified, and is under `docs/` or is a root `*.md`, and is not `docs/adr/README.md` or under `docs/measurements/` (code and tests read both). A docs-only change runs `scope` and `lint` (lint stays, so adr-lint sees ADR commits); any other change runs every job on all 4 targets. The per-event tiers of the table above and the nightly `schedule` trigger stay off in month 4 (every phase head needs all 4 targets); the table is updated in M4-P5.
 - `.github/scripts/ci-scope.sh` computes the tier. It reads the changed paths from git, so there is no `paths-ignore`: a path-skipped workflow leaves required checks "Pending", a skipped job does not.
 - The nightly run is skipped when `main` has not moved since the last successful nightly run.
 - Concurrency: a new push to a PR cancels that PR's running CI. Push, schedule and dispatch runs are never cancelled. Each push to `main` has its own group, so every main commit gets a run (per-commit perf baseline).
 - `ci:full` is read when CI starts (open, push, ready for review). There is no `labeled` trigger: in the PR's group it would cancel the running CI on every label change. For a full run now: `gh workflow run ci.yml --ref <branch>`.
-- Timeouts cap a runaway job: 40 min (build, test262), 45 (spikes), 90 (sp-tsrs-win).
+- Timeouts cap a runaway job (plan v9 §9.2: at least 1.5x the last measured time): 110 min (build + test), 60 (feature matrix, test262 GC-stress shards, spikes, fp-check, perf CI v0), 90 (test262 parse + exec), 120 (sp-tsrs-win), 10 (scope).
 - The agent host is macOS arm64. Before a PR is marked ready, the author runs the §2 item 4 commands on the host. So a PR without macOS CI still has a macOS run.
 
 ### 3.3 Budget
