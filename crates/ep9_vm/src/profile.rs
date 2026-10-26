@@ -35,8 +35,8 @@
 //! | [`record_compare`] | `TestEqual`, `TestEqualStrict`, `TestLessThan`, `TestGreaterThan`, `TestLessThanOrEqual`, `TestGreaterThanOrEqual` | slot, left, right |
 //! | [`record_typeof`] | `TypeOf` | slot, operand |
 //! | [`record_call`] | every `Call*` site except `CallRuntime`: at the start of `call_fast`, or before the cold exit of a site that does not reach it (`CallWithSpread`, a `CallProperty`/`CallAnyReceiver` list without a receiver) | slot, callee |
-//! | [`record_keyed`] | `GetKeyedProperty` (before the array path), `SetKeyedProperty`, `DefineKeyedOwnProperty`, `StaInArrayLiteral`, `TestIn` | slot, receiver, key |
-//! | [`record_keyed_cold`] | their cold bodies (out of bounds, a hole, a non-array receiver) | slot, receiver, key |
+//! | [`record_keyed`] | `GetKeyedProperty` (before the array path), `SetKeyedProperty`, `DefineKeyedOwnProperty`, `DefineKeyedOwnPropertyInLiteral` (its fast body is only this hook and `Flow::Cold`), `StaInArrayLiteral`, `TestIn` | slot, receiver, key |
+//! | [`record_keyed_cold`] | their cold bodies (out of bounds, a hole, a non-array receiver; every execution of `DefineKeyedOwnPropertyInLiteral`) | slot, receiver, key |
 //! | [`record_jump_loop`] | `JumpLoop` | slot |
 //! | [`record_closure`] | the `CreateClosure` cold body, after the closure exists (0 = an exception is pending) | slot, the closure bits |
 //! | [`record_for_in`] | `ForInPrepare` (the key array in the accumulator) | slot, the key array |
