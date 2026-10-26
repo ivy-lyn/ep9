@@ -4,7 +4,7 @@
 // Octane tests skip when third_party/bench-v8v7 or third_party/bench-octane is not synced.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -950,4 +950,52 @@ test("kernels: the probes catch a matcher that never matches and a solver that d
   ({ r, j } = check("v8v7-regexp:replace-same"));
   assert.equal(r.status, 1, r.stderr);
   assert.deepEqual(j.summary.failing, ["v8v7/regexp"]);
+});
+
+test("kernels: the probes catch NaN, infinities, undefined and 32-bit wraps in the grids, and typed regexp results", { skip: (!haveOctane || !haveV8v7) && "bench checkouts not synced" }, (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "kernels-probe-nf-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const fake = path.join(DIR, "testdata/fake-kernels-ep9.sh");
+  const env = (fault) => ({ ...process.env, FAKE_NODE: process.execPath, FAKE_FAULT: fault });
+  const faults = [
+    ...["v8v7/navier-stokes", "octane/navier-stokes"].flatMap((id) =>
+      ["dens", "xvel", "yvel"].flatMap((grid) => ["nan", "inf", "ninf", "undef", "wrap"].map((bad) => [id, `${grid}-${bad}`]))),
+    ["v8v7/regexp", "exec-numstr"],
+  ];
+  for (const [id, fault] of faults) {
+    const g = generateKernel(id, { n: 1, harness: "base" });
+    const name = id.replace("/", "-");
+    // Without the probe, the regexp fault still prints the harness's lines. (Without it nothing
+    // reads the grids: setup's display callback is a no-op, so a grid fault changes no cell.)
+    let r;
+    if (id.endsWith("/regexp")) {
+      const plain = path.join(dir, `${name}.js`);
+      writeFileSync(plain, g.text);
+      r = spawnSync(fake, [plain], { encoding: "utf8", env: env(`${name}:${fault}`) });
+      assert.equal(r.status, 0, `${id} ${fault}: ${r.stderr}`);
+      assert.equal(r.stdout.trim(), g.expect, `${id} ${fault}`);
+    }
+    // With it, the probe line differs from node's (the --check comparison of one kernel).
+    const probed = path.join(dir, "probed", `${name}.js`);
+    mkdirSync(path.dirname(probed), { recursive: true });
+    writeFileSync(probed, withProbe(g).text);
+    const node = spawnSync(process.execPath, [probed], { encoding: "utf8" });
+    assert.equal(node.status, 0, node.stderr);
+    r = spawnSync(fake, [probed], { encoding: "utf8", env: env(`${name}:${fault}`) });
+    assert.equal(r.status, 0, `${id} ${fault}: ${r.stderr}`);
+    const probeLine = (s) => s.split("\n").filter((l) => l.startsWith("check "));
+    assert.equal(probeLine(r.stdout).length, 1, `${id} ${fault}`);
+    assert.notDeepEqual(probeLine(r.stdout), probeLine(node.stdout), `${id} ${fault}`);
+    assert.equal(r.stdout.split("\n").filter((l) => !l.startsWith("check ")).join("\n").trim(), g.expect, `${id} ${fault}`);
+  }
+  // The gate: --check reports them as "output differs" and exits 1.
+  const out = path.join(dir, "k.json");
+  const r = spawnSync(process.execPath, [KERNELS_CLI, "--check", fake, "--harness", "base", "--out", out], {
+    encoding: "utf8",
+    env: env("v8v7-regexp:exec-numstr,v8v7-navier-stokes:dens-nan,octane-navier-stokes:xvel-inf"),
+  });
+  assert.equal(r.status, 1, r.stderr);
+  const j = JSON.parse(readFileSync(out, "utf8"));
+  assert.deepEqual(j.summary.failing, ["v8v7/regexp", "v8v7/navier-stokes", "octane/navier-stokes"]);
+  for (const id of j.summary.failing) assert.equal(j.kernels.find((x) => x.id === id).status, "output differs", id);
 });
