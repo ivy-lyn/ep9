@@ -306,6 +306,41 @@ fn non_cell_keys_and_values_live_elsewhere() {
     }
 }
 
+/// A key the GC cleared (`undefined`) keeps its value weak, not strong: GC 1 clears the dead
+/// key and keeps the value (rooted elsewhere); the root then goes, and GC 2 frees the value
+/// and clears its slot. An int32 key in the same table still keeps its value (the control).
+#[test]
+fn a_cleared_key_keeps_its_value_weak_at_the_next_gc() {
+    for checked in [false, true] {
+        let heap = eph_heap(checked);
+        let t = new_table(&heap, 2);
+        let g = heap.new_global(t.to_value());
+        let (k, v, v1) = (
+            new_node(&heap, 1, 0),
+            new_node(&heap, 2, 0),
+            new_node(&heap, 3, 0),
+        );
+        set_entry(&heap, t, 0, k.to_value(), v.to_value());
+        set_entry(&heap, t, 1, Value::int32(7), v1.to_value());
+        let keep_v = heap.new_global(v.to_value());
+        let (ka, va) = (k.addr(), v.addr());
+        precise_gc(&heap);
+        assert!(!heap.is_cell(ka), "the key died");
+        assert_eq!(entry(t, 0), (UNDEF, v.to_value().to_bits()), "GC 1");
+        heap.drop_global(keep_v);
+        precise_gc(&heap);
+        assert!(!heap.is_cell(va), "GC 2 frees the value of a cleared key");
+        assert_eq!(entry(t, 0), (UNDEF, UNDEF), "and clears its slot");
+        assert!(heap.is_cell(v1.addr()), "an int32 key keeps its value");
+        assert_eq!(
+            entry(t, 1),
+            (Value::int32(7).to_bits(), v1.to_value().to_bits())
+        );
+        heap.verify().expect("verifier");
+        heap.drop_global(g);
+    }
+}
+
 /// A random graph of nodes and ephemeron tables against a model fixpoint: the cells the GC
 /// keeps are exactly the ones the model reaches, every entry with a dead key reads
 /// (undefined, value or undefined), and every other slot keeps its bits.
