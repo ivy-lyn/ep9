@@ -3,7 +3,8 @@
 //!
 //! ```text
 //! %Math%     E, LN10, LN2, LOG10E, LOG2E, PI, SQRT1_2, SQRT2 ({}), [@@toStringTag] "Math" ({c})
-//!            abs, ceil, floor, fround, max, min, pow, round, sign, sqrt, trunc ({w, c})
+//!            abs, ceil, clz32, exp, floor, fround, imul, log, max, min, pow, random, round,
+//!            sign, sqrt, trunc ({w, c})
 //! global     Math {w, c}
 //! ```
 //!
@@ -12,10 +13,13 @@
 //! | abs, ceil, floor, trunc, sqrt | the exact `f64` operations (IEEE 754; allowed by clippy.toml) |
 //! | sign, max, min | the spec steps |
 //! | round, fround | `ep9_math::round_js`, `ep9_math::fround` |
-//! | pow | `ep9_math::pow_js` v0: `None` (needs the correctly rounded core, month 2) throws "not implemented" with the text of `**` |
+//! | pow | `ep9_math::pow_js`: the JS special cases, then the correctly rounded pow (CORE-MATH port; the same function as `**`) |
+//! | exp, log | `ep9_math::exp`, `ep9_math::log`: correctly rounded (CORE-MATH ports, M4-P1) |
+//! | clz32, imul | ToUint32, then the exact integer operation |
+//! | random | `Cx::math_random`: the isolate's xorshift128+ state (V9-D16) |
 //!
-//! Not in week 4: the libm-class functions (acos ... tanh, exp, log, hypot, cbrt), clz32,
-//! imul, random, f16round: they need ep9_math's correctly rounded cores (H36, month 2).
+//! Not yet (M4-P4 MATH2): the other libm-class functions (acos ... tanh, expm1, log1p, log2,
+//! log10, hypot, cbrt) and f16round.
 //!
 //! Owner of the templates: P3-BLTB (see `TEMPLATES.md`). Ids are append-only: definition `i`
 //! of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by `tests/golden/ids-math.txt`.
@@ -41,6 +45,11 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("sign", 1, sign),     // 8
     BuiltinDef::method("sqrt", 1, sqrt),     // 9
     BuiltinDef::method("trunc", 1, trunc),   // 10
+    BuiltinDef::method("clz32", 1, clz32),   // 11 (M4-P1)
+    BuiltinDef::method("exp", 1, exp),       // 12 (M4-P1)
+    BuiltinDef::method("imul", 2, imul),     // 13 (M4-P1)
+    BuiltinDef::method("log", 1, log),       // 14 (M4-P1)
+    BuiltinDef::method("random", 0, random), // 15 (M4-P1)
 ];
 
 /// The intrinsics this module makes.
@@ -68,11 +77,16 @@ pub const PROPS: &[ObjectProps] = &[
         props: &[
             PropDef::method(PropKey::Str("abs"), 0),
             PropDef::method(PropKey::Str("ceil"), 1),
+            PropDef::method(PropKey::Str("clz32"), 11),
+            PropDef::method(PropKey::Str("exp"), 12),
             PropDef::method(PropKey::Str("floor"), 2),
             PropDef::method(PropKey::Str("fround"), 3),
+            PropDef::method(PropKey::Str("imul"), 13),
+            PropDef::method(PropKey::Str("log"), 14),
             PropDef::method(PropKey::Str("max"), 4),
             PropDef::method(PropKey::Str("min"), 5),
             PropDef::method(PropKey::Str("pow"), 6),
+            PropDef::method(PropKey::Str("random"), 15),
             PropDef::method(PropKey::Str("round"), 7),
             PropDef::method(PropKey::Str("sign"), 8),
             PropDef::method(PropKey::Str("sqrt"), 9),
@@ -115,10 +129,6 @@ pub const MODULE: BuiltinModule = BuiltinModule {
     props: PROPS,
 };
 
-/// The not-implemented text of `**` (ep9_vm conv.rs): Math.pow and `**` share
-/// Number::exponentiate, so they fail on the same inputs with the same cause.
-const POW_NOT_IMPLEMENTED: &str = "** with a result that is not an exact integer: needs the correctly rounded pow core (H36, month 2)";
-
 /// `Math.f(x)` for a function of one Number that cannot fail after ToNumber.
 fn unary<'s>(cx: &mut Cx<'s>, args: Args<'s>, f: fn(f64) -> f64) -> JsResult<Local<'s>> {
     // 1. Let n be ? ToNumber(x).
@@ -141,6 +151,87 @@ fn abs<'s>(
     // 6. Return n.
     // (`f64::abs` clears the sign bit: all of steps 2-6.)
     unary(cx, args, f64::abs)
+}
+
+/// Math.clz32 ( x ) (§21.3.2.11).
+fn clz32<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. Let n be ? ToUint32(x).
+    let n = cx.to_uint32(args.get(0))?;
+    // 2. Let p be the number of leading zero bits in the unsigned 32-bit binary
+    //    representation of n.
+    // 3. Return 𝔽(p).
+    Ok(Local::number(f64::from(n.leading_zeros())))
+}
+
+/// Math.exp ( x ) (§21.3.2.14).
+fn exp<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. Let n be ? ToNumber(x).
+    // 2. If n is either NaN or +∞𝔽, return n.
+    // 3. If n is either +0𝔽 or -0𝔽, return 1𝔽.
+    // 4. If n is -∞𝔽, return +0𝔽.
+    // 5. Return an implementation-approximated Number value representing the result of the
+    //    exponential function of ℝ(n).
+    // (`ep9_math::exp`: steps 2-4, then the correctly rounded value; H36.)
+    unary(cx, args, ep9_math::exp)
+}
+
+/// Math.imul ( x, y ) (§21.3.2.19).
+fn imul<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. Let a be ℝ(? ToUint32(x)).
+    let a = cx.to_uint32(args.get(0))?;
+    // 2. Let b be ℝ(? ToUint32(y)).
+    let b = cx.to_uint32(args.get(1))?;
+    // 3. Let product be (a × b) modulo 2^32.
+    let product = a.wrapping_mul(b);
+    // 4. If product ≥ 2^31, return 𝔽(product - 2^32); otherwise return 𝔽(product).
+    Ok(Local::number(f64::from(product as i32)))
+}
+
+/// Math.log ( x ) (§21.3.2.20).
+fn log<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. Let n be ? ToNumber(x).
+    // 2. If n is either NaN or +∞𝔽, return n.
+    // 3. If n is 1𝔽, return +0𝔽.
+    // 4. If n is either +0𝔽 or -0𝔽, return -∞𝔽.
+    // 5. If n < -0𝔽, return NaN.
+    // 6. Return an implementation-approximated Number value representing the result of the
+    //    natural logarithm of ℝ(n).
+    // (`ep9_math::log`: steps 2-5, then the correctly rounded value; H36.)
+    unary(cx, args, ep9_math::log)
+}
+
+/// Math.random ( ) (§21.3.2.27).
+fn random<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // Returns a Number value with positive sign, greater than or equal to +0𝔽 but strictly
+    // less than 1𝔽, chosen randomly or pseudo randomly with approximately uniform
+    // distribution over that range, using an implementation-defined algorithm or strategy.
+    // (`Cx::math_random`: the isolate's xorshift128+ state, V8's generator; V9-D16.)
+    Ok(Local::number(cx.math_random()))
 }
 
 /// Math.ceil ( x ) (§21.3.2.10).
@@ -276,10 +367,8 @@ fn pow<'s>(
     // 2. Set exponent to ? ToNumber(exponent).
     let exponent = cx.to_number(args.get(1))?;
     // 3. Return Number::exponentiate(base, exponent).
-    match ep9_math::pow_js(base, exponent) {
-        Some(r) => Ok(Local::number(r)),
-        None => Err(cx.not_implemented(POW_NOT_IMPLEMENTED)),
-    }
+    // (`ep9_math::pow_js`, the function of `**` too: one result for both.)
+    Ok(Local::number(ep9_math::pow_js(base, exponent)))
 }
 
 /// Math.round ( x ) (§21.3.2.28).

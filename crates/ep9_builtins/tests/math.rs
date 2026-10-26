@@ -1,5 +1,5 @@
-//! Math (§21.3): the constants, `[@@toStringTag]`, abs, ceil, floor, fround, max, min, pow,
-//! round, sign, sqrt and trunc.
+//! Math (§21.3): the constants, `[@@toStringTag]`, abs, ceil, clz32, exp, floor, fround, imul,
+//! log, max, min, pow, random, round, sign, sqrt and trunc.
 //!
 //! The expected lines are node 24's output for the same script (`print` = the
 //! arguments' ToString joined by spaces). `common::run_both` runs each script with and
@@ -119,21 +119,80 @@ fn math_function_lengths_and_names() {
     );
 }
 
-/// v0: where the result is not exact, `Math.pow` needs the correctly rounded pow core (H36,
-/// month 2). Until then it throws the catchable "not implemented" Error of `**`, with the
-/// same text: both are Number::exponentiate (`ep9_math::pow_js` gives `None`).
+/// `Math.pow` and `**` give the correctly rounded result (M4-P1, the CORE-MATH pow port in
+/// ep9_math; H36). node 24 prints the same digits for these inputs.
 #[test]
-fn pow_without_an_exact_result_is_not_implemented_like_exponentiation() {
-    const TEXT: &str = "not implemented in ep9 v0: ** with a result that is not an exact \
-                        integer: needs the correctly rounded pow core (H36, month 2)";
+fn pow_correctly_rounded() {
     assert_eq!(
         common::run_both(
-            r#"var x = 3, y = 0.3, a, b; try { Math.pow(x, y); } catch (e) { a = e.message; } try { x ** y; } catch (e) { b = e.message; } print(a === b, a)"#
+            r#"print(Math.pow(2, 0.3), 2 ** 0.3, Math.pow(10, -1.5), 3 ** 0.3, Math.pow(Math.E, 2.5), (-1.5) ** 3, Math.pow(10, 308), Math.pow(10, 309), Math.pow(10, -323), 10 ** -5, 10 ** 22, 10 ** 23, 1.0000001 ** 1e9)"#
         ),
-        Ok(vec![format!("true {TEXT}")])
+        lines(&[
+            "1.2311444133449163 1.2311444133449163 0.03162277660168379 1.3903891703159093 12.182493960703471 -3.375 1e+308 Infinity 1e-323 0.00001 1e+22 1e+23 2.6881038582144647e+43"
+        ])
     );
+}
+
+#[test]
+fn exp_and_log() {
     assert_eq!(
-        common::run_both("Math.pow(3, 0.3)"),
-        Err(format!("Error: {TEXT}"))
+        common::run_both(
+            r#"function z(x) { return x === 0 ? (1 / x > 0 ? '+0' : '-0') : String(x); } print(Math.exp(1), Math.exp(-1), z(Math.exp(-Infinity)), Math.exp(Infinity), Math.exp(NaN), Math.exp(0), Math.exp(-0), Math.exp(709.7), Math.exp(710), z(Math.exp(-746)), Math.exp(-745), Math.exp('2')); print(Math.log(Math.E), Math.log(10), z(Math.log(1)), Math.log(0), Math.log(-0), Math.log(-1), Math.log(NaN), Math.log(Infinity), Math.log(5e-324), Math.log(1.7976931348623157e308), Math.log('100'))"#
+        ),
+        lines(&[
+            "2.718281828459045 0.36787944117144233 +0 Infinity NaN 1 1 1.6549840276802644e+308 Infinity +0 5e-324 7.38905609893065",
+            "1 2.302585092994046 +0 -Infinity -Infinity NaN NaN Infinity -744.4400719213812 709.782712893384 4.605170185988092",
+        ])
+    );
+}
+
+/// The base.js score step (GeometricMean: `Math.pow(Math.E, log / n)` over `Math.log`), on a
+/// sum that node 24 prints the same way.
+#[test]
+fn log_exp_pow_sum() {
+    assert_eq!(
+        common::run_both(
+            r#"var s = 0; for (var j = 1; j < 200; j++) s += Math.log(j) + Math.exp(j / 50) + Math.pow(j, 0.37); print(s)"#
+        ),
+        lines(&["4543.1105534202625"])
+    );
+}
+
+#[test]
+fn clz32_and_imul() {
+    assert_eq!(
+        common::run_both(
+            r#"function z(x) { return x === 0 ? (1 / x > 0 ? '+0' : '-0') : String(x); } print(Math.clz32(1), Math.clz32(0), Math.clz32(-1), Math.clz32(0.5), Math.clz32(2 ** 32), Math.clz32(NaN), Math.clz32('8'), Math.clz32(), Math.clz32(-0x80000000)); print(Math.imul(2, 4), Math.imul(-1, 8), Math.imul(0xffffffff, 5), Math.imul(0xfffffffe, 5), z(Math.imul(-0, 7)), Math.imul(3.7, 2.9), Math.imul('3', 4), Math.imul(), Math.imul(0x7fffffff, 2)); var log = []; var r = Math.imul({ valueOf: function () { log.push('a'); return 2; } }, { valueOf: function () { log.push('b'); return 3; } }); print(r, log.join())"#
+        ),
+        lines(&[
+            "31 32 0 32 32 32 28 32 0",
+            "8 -8 -5 -10 +0 6 12 0 -2",
+            "6 a,b",
+        ])
+    );
+}
+
+/// Math.random: numbers in [0, 1); the per-isolate xorshift128+ state is `Cx::math_random`
+/// (its sequence tests are in ep9_vm `tests::layout4`).
+#[test]
+fn random_is_in_0_1() {
+    assert_eq!(
+        common::run_both(
+            r#"var r = Math.random(), ok = true; for (var i = 0; i < 10000; i++) { var v = Math.random(); if (!(v >= 0 && v < 1) || typeof v !== 'number') ok = false; } print(typeof r, ok, Math.random.length, Math.random.name, Math.clz32.length, Math.imul.length, Math.exp.length, Math.log.length, Math.log.name)"#
+        ),
+        lines(&["number true 0 random 1 2 1 1 log"])
+    );
+}
+
+/// The functions are own properties in V8's order (node 24 lists more: the rest are M4-P4).
+#[test]
+fn math_function_order_is_v8s() {
+    assert_eq!(
+        common::run_both(
+            r#"print(Object.getOwnPropertyNames(Math).filter(function (k) { return typeof Math[k] === 'function'; }).join())"#
+        ),
+        lines(&[
+            "abs,ceil,clz32,exp,floor,fround,imul,log,max,min,pow,random,round,sign,sqrt,trunc"
+        ])
     );
 }

@@ -372,23 +372,16 @@ pub(crate) enum BinOp {
     Shr,
 }
 
-/// `lhs OP rhs` on two numbers.
-pub(crate) fn number_op(cx: &mut Cx, op: BinOp, x: f64, y: f64) -> Res<u64> {
+/// `lhs OP rhs` on two numbers. No number operation throws since `**` has its correctly
+/// rounded core (M4-P1); the `Cx` and `Res` stay for the callers.
+pub(crate) fn number_op(_cx: &mut Cx, op: BinOp, x: f64, y: f64) -> Res<u64> {
     Ok(match op {
         BinOp::Add => num(x + y),
         BinOp::Sub => num(x - y),
         BinOp::Mul => num(x * y),
         BinOp::Div => num(x / y),
         BinOp::Mod => num(fmod(x, y)),
-        BinOp::Exp => match exponentiate(x, y) {
-            Some(r) => num(r),
-            None => {
-                return Err(not_implemented(
-                    cx,
-                    "** with a result that is not an exact integer: needs the correctly rounded pow core (H36, month 2)",
-                ));
-            }
-        },
+        BinOp::Exp => num(exponentiate(x, y)),
         BinOp::BitOr => num(f64::from(to_int32(x) | to_int32(y))),
         BinOp::BitXor => num(f64::from(to_int32(x) ^ to_int32(y))),
         BinOp::BitAnd => num(f64::from(to_int32(x) & to_int32(y))),
