@@ -295,4 +295,35 @@ else
   if [ "$users" = ep9_vm ]; then ok "(14) only ep9_vm depends on ep9_regexp"; else bad "(14) ep9_regexp must have ep9_vm as its only dependent; it has: ${users:-none}"; fi
 fi
 
+# 15) ep9_cli: only the `reprl` module opts out of `#![deny(unsafe_code)]` (plan v9 V9-A3; a
+#     crate-level `forbid` cannot be relaxed for one module, so the crate uses `deny`, which any
+#     later `allow` would relax). Every line of crates/ep9_cli/src that names `unsafe_code` must be
+#     main.rs `#![deny(unsafe_code)]` or main.rs `#[allow(unsafe_code)]` followed by `mod reprl;`.
+#     Controls: the rule accepts those two lines and rejects a sample with one more allow.
+# unsafe_code_lines <files...>: "<file>: <line>" per line that names unsafe_code; after an
+# allow, expect or warn line, " => <next line>" is added.
+unsafe_code_lines() {
+  awk '/unsafe_code/ { l = $0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", l); out = FILENAME ": " l
+      if (l ~ /allow|expect|warn/ && (getline n) > 0) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", n); out = out " => " n }
+      print out }' "$@"
+}
+cli_unsafe_ok() {
+  [ "$1" = "crates/ep9_cli/src/main.rs: #![deny(unsafe_code)]
+crates/ep9_cli/src/main.rs: #[allow(unsafe_code)] => mod reprl;" ]
+}
+good='crates/ep9_cli/src/main.rs: #![deny(unsafe_code)]
+crates/ep9_cli/src/main.rs: #[allow(unsafe_code)] => mod reprl;'
+sample="$(unsafe_code_lines <(printf '#[allow(dead_code, unsafe_code)]\nfn f() {}\n'))"
+if ! cli_unsafe_ok "$good" || cli_unsafe_ok "$good
+$sample" || [ "${sample#*: }" != '#[allow(dead_code, unsafe_code)] => fn f() {}' ]; then
+  bad "(15) control: the ep9_cli unsafe_code rule does not accept the 2 lines or does not reject one more allow"
+else
+  lines="$(unsafe_code_lines $(find crates/ep9_cli/src -name '*.rs' | LC_ALL=C sort))"
+  if cli_unsafe_ok "$lines"; then
+    ok "(15) ep9_cli denies unsafe_code; only mod reprl allows it"
+  else
+    bad "(15) ep9_cli: only main.rs '#![deny(unsafe_code)]' and '#[allow(unsafe_code)] mod reprl;' may name unsafe_code; found: $(paste -sd ';' - <<< "$lines")"
+  fi
+fi
+
 exit "$fail"
