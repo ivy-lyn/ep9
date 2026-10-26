@@ -255,21 +255,28 @@ fn hex4(pattern: &[u16], at: usize) -> Option<u16> {
 /// | `\u{61}` | identity escape `u`, then the quantifier `{61}` | the code point U+0061 | `u{61}` |
 /// | `\uD83D\uDE00` | two characters (two code units) | one code point U+1F600, which a UCS-2 input never holds | each surrogate escape becomes its raw code unit |
 ///
-/// A group name (`(?<name>`, `\k<name>`) is copied as it is: there a `\u` pair is one code
-/// point in both modes (RegExpIdentifierName is `[+UnicodeMode]`).
+/// A group name (`(?<name>`, `\k<name>`) is copied as code points: there a `\u` pair and a
+/// raw surrogate pair are one code point in both modes (RegExpIdentifierName is
+/// `[+UnicodeMode]`); an unpaired surrogate stays one character.
 fn legacy_chars(pattern: &[u16]) -> Vec<u32> {
     const BACKSLASH: u16 = b'\\' as u16;
     let unit = |c: u8| u16::from(c);
     let mut out: Vec<u32> = Vec::with_capacity(pattern.len());
     let mut in_class = false;
     let mut i = 0;
-    // Copies from `from` through the next `>` (or to the end); returns the next index.
+    // Copies from `from` through the next `>` (or to the end) as code points; returns the
+    // next index.
     let copy_name = |out: &mut Vec<u32>, from: usize| -> usize {
         let end = pattern[from..]
             .iter()
             .position(|&c| c == unit(b'>'))
             .map_or(pattern.len(), |k| from + k + 1);
-        out.extend(pattern[from..end].iter().map(|&c| u32::from(c)));
+        out.extend(
+            char::decode_utf16(pattern[from..end].iter().copied()).map(|r| match r {
+                Ok(c) => u32::from(c),
+                Err(e) => u32::from(e.unpaired_surrogate()),
+            }),
+        );
         end
     };
     while i < pattern.len() {
@@ -574,6 +581,38 @@ mod tests {
         assert_eq!(
             e.message,
             "Invalid flags supplied to RegExp constructor 'uv'"
+        );
+    }
+
+    /// A raw astral character in a group name without `u`: the name is read as code points
+    /// (RegExpIdentifierName is `[+UnicodeMode]`), as node v24.22.1 does
+    /// (`/(?<𝒜>x)\k<𝒜>/.exec("axx")` is `["xx", "x"]` at index 1).
+    #[test]
+    fn rx0_astral_group_names_without_u() {
+        assert_eq!(
+            run("(?<\u{1d49c}>x)", "", Input::Latin1(b"x"), 0).unwrap(),
+            [Some((0, 1)), Some((0, 1))]
+        );
+        assert_eq!(
+            run(
+                "(?<\u{1d49c}>x)\\k<\u{1d49c}>",
+                "",
+                Input::Latin1(b"axx"),
+                0
+            )
+            .unwrap(),
+            [Some((1, 3)), Some((1, 2))]
+        );
+        // The escaped forms of the same name, which worked before.
+        assert_eq!(
+            run(
+                "(?<\\u{1d49c}>x)\\k<\\ud835\\udc9c>",
+                "",
+                Input::Latin1(b"xx"),
+                0
+            )
+            .unwrap(),
+            [Some((0, 2)), Some((0, 1))]
         );
     }
 
