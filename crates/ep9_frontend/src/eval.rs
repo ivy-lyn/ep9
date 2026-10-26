@@ -227,7 +227,7 @@ fn on_worker<R>(
             built.diagnostics.errors().filter(|d| !allowed.drops(d)),
         );
         if !kept.is_empty() {
-            return Err(syntax(source, kept.into_iter()));
+            return Err(syntax(source, kept.iter().map(|d| &**d)));
         }
     }
     post_checks(source, program, allow)?;

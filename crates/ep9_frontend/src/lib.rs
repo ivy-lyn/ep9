@@ -417,7 +417,7 @@ pub(crate) fn semantic<'a>(
     if built.diagnostics.has_errors() {
         let kept = strict_filter::kept(program, built.diagnostics.errors());
         if !kept.is_empty() {
-            return Err(early_errors(source, kept.into_iter()).into());
+            return Err(early_errors(source, kept.iter().map(|d| &**d)).into());
         }
     }
     Ok(built.semantic)

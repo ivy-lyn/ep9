@@ -5,12 +5,14 @@
 | Project, ref | oxc, new issue |
 | Status | draft |
 | ep9 need | PRE-1 (M3-P5-OPEN carry item); M1 front-end correctness, no gate. Due: none (the workaround is in place) |
-| Workaround | `crates/ep9_frontend/src/strict_filter.rs` (M4-P2): after oxc_semantic, drop a "Cannot assign to 'eval'/'arguments' in strict mode" diagnostic whose label is an IdentifierReference that is not itself an assignment target. Used by `semantic` (lib.rs) and `compile_eval` (eval.rs). No oxc patch: local patch count stays 0/3 |
+| Workaround | `crates/ep9_frontend/src/strict_filter.rs` (M4-P2): after oxc_semantic, drop a "Cannot assign to 'eval'/'arguments' in strict mode" diagnostic whose label is an IdentifierReference that is not itself an assignment target, except an `arguments` read in a class field initializer or static block (then the class error is reported, see Cause). Used by `semantic` (lib.rs) and `compile_eval` (eval.rs). No oxc patch: local patch count stays 0/3 |
 | Verified by | not yet (a draft is "ready" only after an agent that did not write it runs the repro again, README) |
 
 ## Cause
 
 `oxc_semantic` `src/checker/javascript.rs`, `check_identifier_reference` (0.155.0 and main `def47b8`, the ancestor walk at lines 296-329): for an `eval` or `arguments` IdentifierReference in strict code, the checker walks all ancestors and reports at the first `ArrayAssignmentTarget`, `ObjectAssignmentTarget`, `AssignmentTargetPropertyIdentifier` or `UpdateExpression`. The walk stops only at a member expression. So a reference that is only read, in a default value, a computed key or a nested function inside a destructuring target, gets the error.
+
+The walk also `return`s right after it reports, so the class check below it in the same function (§15.7.1: `arguments` in a field initializer or a static block, 0.155.0 lines 331-361) never runs for that reference. In `class C{x=([v=arguments]=[])}` the only error is the assign one, which the ep9 filter drops as a read; so the filter runs that class check itself and reports oxc's "'arguments' is not allowed in class field initializer" (or "static initialization block") instead (node v24.22.1: SyntaxError).
 
 A second, related gap: the walk never meets a `ForInStatement` / `ForOfStatement`, so `for (eval of [])` and `for (arguments in {})` in strict code get no error. ep9 does not work around this one (no test262 test has it; noted as a known difference).
 
