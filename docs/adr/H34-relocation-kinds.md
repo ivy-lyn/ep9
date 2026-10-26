@@ -4,7 +4,7 @@
 |---|---|
 | Status | Draft (2026-10-22): the plan row and the Spike B emitter evidence (JIT code holds no absolute address and no relocation; a test checks it for placement (b) on AArch64 and on x86-64; x86-64 (b) is built, and its x86-64 runs are in the M3-P0 sandbox and CI). No `ep9_masm` exists, so no relocation kind is built. M3-P1 SP-UNIT built unit text with 0 relocations (`spike-b unit`, `gate.sh unit`) and filled H34-Q1 to H34-Q3; H34-Q4 and H34-Q5 stay open |
 | Fix by | ADR frozen M1 exit; built A2/M5 |
-| Freeze point | M1 exit, the whole row (README §2). The kinds are built after M1 exit (A2 unit finalize, M5 JIT finalize), so README §3.4 applies: H34-Q5 |
+| Freeze point | Parts (the Freeze table, README §3.4; H34-Q5): the backend contract at M1 exit; the relocation kinds as an append-only list; the JIT finalize forms at M5 exit; the unit finalize forms at the A3 gate |
 | Origin | R16-D10 (refines N5); plan status N |
 | Crates | `ep9_masm` (the instruction stream, the relocation kinds, `finalize_jit` and `finalize_unit`; not created yet), `ep9_unit` (the writer rejects HeapConst; zero text relocations, H35); today the throwaway emitters of `spikes/spike-b` |
 | Owner (plan role) | JIT/platform lead (Spike B emitters, `ep9_masm`); AOT senior (SP-Unit, unit finalize) ([09 §4](../plan/09-milestones.md#4-spikes)) |
@@ -90,7 +90,18 @@ ep9_baseline / ep9_opt --one instruction stream + abstract relocations--> ep9_ma
 | H34-Q2 | Which relocation forms may unit text keep: pc-relative branches inside the unit only, or also pc-relative loads of unit rodata? | M3-P1 SP-UNIT | **Filled 2026-10-23 (M3-P1 SP-UNIT).** The spike unit text keeps only pc-relative branches inside one function: no `adrp`, no `bl`, no pc-relative load. The text scan (`spikes/spike-b/src/unit/scan.rs`) rejects the other forms on AArch64, and finds 0 relocations in the AArch64 and x86-64 text. A pc-relative load of unit rodata stays allowed (rodata is one copy per process), but SP-Unit did not need one; A2 builds and checks it with real rodata. Every other reference goes through a register or a table |
 | H34-Q3 | Calls beyond direct-call reach (H07-Q2, `docs/adr/H07-address-space-and-code-range.md:88`): a veneer or an indirect call? | M3-P1 SP-UNIT (unit text); M5 (JIT code range) | **Filled 2026-10-23 for unit text (M3-P1 SP-UNIT): an indirect call through a register.** Unit text has no direct call out of a function (the scan rejects `bl`). A runtime call loads the runtime table from RW external-reference word 0, then the entry, and calls through a register (`blr x16`; x86-64 `call [rax + entry]`). No veneer was needed. The JIT code range part stays open for M5 |
 | H34-Q4 | The Stub kind in unit code: is every IC stub inside the unit, or are some called through a link slot? | A2 | Stubs that the unit uses are emitted into the unit; others through a link slot (04 §5) |
-| H34-Q5 | README §3.4 asks a Freeze table for a row built after M1 exit. Does a part (the JIT finalizer, M5) need a later freeze point? | M1 exit | The whole row freezes at M1 exit; the finalizers follow it |
+| H34-Q5 | README §3.4 asks a Freeze table for a row built after M1 exit. Does a part (the JIT finalizer, M5) need a later freeze point? | M1 exit | The whole row freezes at M1 exit; the finalizers follow it. **Filled 2026-10-27 (M4-P2 ADR-A0; MODES-D1, C-09): the Freeze table below.** The kind list does not close: a new kind that both finalizers handle or reject is a fill, as H20 part 2. The finalize forms freeze at the gate that ends their build: JIT finalize with T1 (M5 exit; the JIT code-range part of Q3), unit finalize with the unit format (the A3 gate, H35; Q4) |
+
+## Freeze table
+
+README §3.4 form (H34-Q5; plan v9 §4.1 task 9; the design is [13](../plan/13-execution-modes.md) §2.2 and §5.4, MODES-D1). An open list works as H20 part 2: a new value is a fill when built, an existing value never changes, and G8 never counts an append.
+
+| Part | What it holds | Freeze point | After the freeze point | Check |
+|---|---|---|---|---|
+| Backend contract | One instruction stream for JIT and unit code; no LLVM (Cranelift only for T3); the meaning of each kind; HeapConst rejected by the unit writer; zero text relocations; the fills of Q1-Q3 for unit text | M1 exit | Frozen-part rules (README §3.2) | the Rules table; Spike C and SP-Facts |
+| Relocation kinds (append-only) | Local, Stub, Runtime, LinkSlot, IcCell, RootIndex, DeoptExit, HeapConst (JIT only), in this order. A new kind must be handled or rejected by both `finalize_jit` and `finalize_unit` | None | Append only; a kind's meaning never changes | each finalizer rejects an unknown kind (when built) |
+| JIT finalize forms (gated) | The JIT code-range part of Q3 (a veneer or an indirect call beyond direct-call reach) and the other `finalize_jit` forms | M5 exit (T1) | Frozen-part rules | the M5 gates |
+| Unit finalize forms (gated) | The Stub kind in unit code (Q4) and the other `finalize_unit` forms | The A3 gate (with H35) | Frozen-part rules | the A2 zero-relocation check; the A3 gate |
 
 ## Reopens if
 
@@ -109,3 +120,4 @@ ep9_baseline / ep9_opt --one instruction stream + abstract relocations--> ep9_ma
 | 2026-10-23 | clarify | The Status line (and the README index row) names x86-64 (b) as the fill row above does: built, the two-isolate test covers it, and its x86-64 runs are in the M3-P0 sandbox and CI (the orchestrator's runs). Text only; no check changes | M3-P0 integration fixer |
 | 2026-10-23 | fill | H34-Q1 to H34-Q3 filled from the `spike-b unit` build: LinkSlot and IcCell through the unit-data register; pc-relative branches inside one function only (rodata loads stay allowed, not built); calls out of unit text are indirect through a register (the JIT code range part of Q3 stays for M5). H34-Q4 and H34-Q5 stay open. No existing check changes | M3-P1 SP-UNIT agent |
 | 2026-10-23 | clarify | After the H34-Q1 to Q3 fill: the LinkSlot and IcCell rows of the kinds table and the 04 §5 note no longer say that the unit-text form is open; 04 §5 now says unit-data register. The Status line (and the README §5 cell) names the SP-Unit build. No rule or check changes | M3-P1 integration fixer (from the SP-UNIT report) |
+| 2026-10-27 | fill (H34 is Draft) | Freeze table (plan v9 §4.1 tasks 2 and 9; MODES-D1, MODES-D3, C-09): the Freeze point field names the parts; Q5 filled; a Freeze table (the backend contract at M1 exit; the relocation kinds as an append-only list, each new kind handled or rejected by both finalizers; the JIT finalize forms at M5 exit; the unit finalize forms at the A3 gate). Every check keeps its result | M4-P2 ADR-A0 (VM lead role) |

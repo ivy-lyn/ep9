@@ -4,7 +4,7 @@
 |---|---|
 | Status | Draft (2026-10-22): the plan row, the two fuse kinds and the initial list. No registry is built; T0 has one sticky flag that works like the "no-elements prototypes" fuse (As built). The registry is built in M1-M2 |
 | Fix by | API frozen M1 exit; built M1-M2 |
-| Freeze point | M1 exit for the API (README §2). The registry is built partly after M1 exit (M2), so README §3.4 applies: H31-Q6 |
+| Freeze point | Parts (the Freeze table, README §3.4; H31-Q6): the API at M1 exit; the static fuse list and the dynamic descriptor kinds as append-only lists; the A5v fuses at the end of A5, only if built |
 | Origin | R16-D8; plan status N |
 | Crates | `ep9_vm` (the registry, fuse words, dependency lists, lazy deopt trigger); later `ep9_opt` and `ep9_baseline` (`Assume(fuse)`), `ep9_unit` (fuse refs in the link table, H35), `ep9_snapshot` (stable fuse indices, H13) |
 | Owner (plan role) | VM lead (the registry lives in `ep9_vm`, 04 §8); AOT senior (SP-Facts reopens H31, 09 §4) |
@@ -79,12 +79,23 @@ Copied from the plan row (02 §6): GuardFuse (explicit load + compare) and Inval
 
 | ID | Question | Needed by | Proposed default |
 |---|---|---|---|
-| H31-Q1 | The registry API: fuse id type, how code registers a dependency, how a pop finds dependent code and frames | M1 exit (API freeze) | Fuse = stable index (H13); a dependency list per fuse of weak code handles; a pop walks the list, marks code, then swaps return addresses (H29) |
+| H31-Q1 | The registry API: fuse id type, how code registers a dependency, how a pop finds dependent code and frames | M1 exit (API freeze) | Fuse = stable index (H13); a dependency list per fuse of weak code handles; a pop walks the list, marks code, then swaps return addresses (H29). **Proposal 2026-10-27 (M4-P2 ADR-A0; C-01, Q1 part; MODES-D3): FuseRef = Static(index) \| Dynamic(descriptor).** Static: a fuse with a stable index (H13 list; the builtin and debugger fuses), read through RootIndex or a unit link cell. Dynamic: a fuse made at run time per shape, field, class, enum or prototype, named by a descriptor and read through a LinkSlot whose link cell is resolved at load or first run (H34, H35); no code bakes a fuse-word address. Descriptor kinds form an append-only list (Freeze table). The first named kind is "prototype-chain validity by ProtoRef": the descriptor names the prototype (a ProtoRef, the H16 FactSnapshot form), not a VALIDITY_CELL, because an invalid cell stays invalid and the next IC miss makes a new one (`crates/ep9_vm/src/validity.rs:33-34`); the registry keeps the dependents. Dependencies are per isolate: a pop in any realm invalidates the dependent code object, and code that must survive a pop in another realm reads the fuse as a GuardFuse through the current realm. A dependency list per fuse holds weak code handles; a pop marks them Invalidated, lazily deopts their frames (H29) and rewrites each dispatch slot. The Rules row "Fuses have stable indices" changes with the fuse registry v0 in month 5, before M1a (C-01) |
 | H31-Q2 | Fuse scope: per isolate or per realm. The builtin fuses guard realm intrinsics (H22) | M1 exit | Per realm for intrinsic fuses, per isolate for the debugger fuses |
 | H31-Q3 | The fuse word format for a GuardFuse (where it lives, what "intact" reads as) | M1 exit | One word per fuse in the isolate root table, read through RootIndex (H13) or a unit link cell (H35) |
 | H31-Q4 | Do F1-F6 and F8 of [R18] (per-key prototype conditions, HasPrototype, shape stability, field type, array protectors, buffer detach, closed world) join the list? They are for sound regions (A5v) | M7 exit (D17 rule) | Not part of the decision unless the D17 rule picks (d); F5 overlaps the "no-elements prototypes" and "species" entries |
 | H31-Q5 | How T0 and Rust builtins (no compiled code) use a fuse. `proto_index` is a private flag today | M1 (registry) | Rust fast paths read the fuse word as a GuardFuse; `proto_index` becomes the "no-elements prototypes" fuse |
-| H31-Q6 | README §3.4 asks a Freeze table: the API freezes at M1 exit, the registry is built until M2. Which parts freeze when? | M1 exit | API at M1 exit; the initial list at M2 exit |
+| H31-Q6 | README §3.4 asks a Freeze table: the API freezes at M1 exit, the registry is built until M2. Which parts freeze when? | M1 exit | API at M1 exit; the initial list at M2 exit. **Filled 2026-10-27 (M4-P2 ADR-A0; MODES-D1, C-01): the Freeze table below.** The initial list does not close at M2 exit: it is an append-only list with no close point, so a fuse added later (a new builtin protector) is a fill |
+
+## Freeze table
+
+README §3.4 form (H31-Q6; plan v9 §4.1 task 9; the design is [13](../plan/13-execution-modes.md) §3.5 and §5.4, MODES-D1). An open list works as H20 part 2: a new value is a fill when built, an existing value never changes, and G8 never counts an append. A negative test probes an unknown value, never the next free one.
+
+| Part | What it holds | Freeze point | After the freeze point | Check |
+|---|---|---|---|---|
+| API | The two fuse kinds and their rules; FuseRef = Static \| Dynamic and the registry API (Q1); fuse scope (Q2); the GuardFuse word format (Q3); the T0 and Rust use (Q5) | M1 exit | Frozen-part rules (README §3.2) | fuse unit tests (registry v0, month 5); SP-Facts |
+| Static fuse list (append-only) | The stable fuse indices (an H13 index list): the initial list of the Decision, in its order | None | Append only; an index never changes | the H13 stable-index order checks |
+| Dynamic descriptor kinds (append-only) | v1: "prototype-chain validity by ProtoRef". Next by append when built: field constness and representation (H17, month 5), TS-derived class hierarchy and enum facts (A4) | None | Append only | an unknown descriptor kind -> the registry refuses it and the variant is skipped |
+| A5v fuses (gated) | F1-F8 of [R18] (Q4) | The end of A5 (the K-A5v decision), only if the D17 rule picks (d) | Frozen-part rules | A5 gates |
 
 ## Reopens if
 
@@ -105,3 +116,4 @@ Copied from the plan row (02 §6): GuardFuse (explicit load + compare) and Inval
 | 2026-10-23 | clarify | 2 `path:line` references moved to the code after the M3-P2 merge and the M3-P2 fixer changes (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS); each names the same item at the new line. No check changes | M3-P2 integration fixer (docs) |
 | 2026-10-26 | clarify | 1 `path:line` reference moved to the code after the M4-P0 merge (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS): `docs/adr/H17-object-layout.md` 120 -> 132 (the Representation and const bits row; P0-VM4 added the OBJECT_LAYOUT 4 rows to H17). Text only; no check changes | M4-P0 integration fixer |
 | 2026-10-26 | clarify | 2 `path:line` references moved to the code after the M4-P1 merge (drift script, [I15]; M2-P4-FIX-ADRLINE-ROWS): `ep9_vm/src/shape.rs` 224-229 -> 230-235 (the `proto_index` field doc) and 1144-1145 -> 1186-1187 (`proto_index_keys`); VALIDITY f58042c added the validity-cell lines above them. Text only; no check changes (H31 is Draft) | M4-P1 integration fixer |
+| 2026-10-27 | fill (H31 is Draft) | Freeze table and Open-question text (plan v9 §4.1 tasks 2 and 9; MODES-D1, MODES-D3, C-01 Q1 part, MC-w13-11): the Freeze point field names the parts; Q1 proposal FuseRef = Static(index) \| Dynamic(descriptor), per-isolate dependencies, the first descriptor kind "prototype-chain validity by ProtoRef"; a Freeze table (the API at M1 exit; the static fuse list and the descriptor kinds as append-only lists; the A5v fuses at the end of A5); Q6 filled. The Rules row on stable indices stays for the month-5 fuse registry v0 (C-01). Every check keeps its result | M4-P2 ADR-A0 (VM lead role) |
