@@ -328,9 +328,15 @@ pub(crate) fn rd(c: CellPtr, off: usize) -> u64 {
     slot_of(c, off).bits()
 }
 
-/// Initializing store into a cell allocated since the last GC point (E2: no barrier).
+/// Initializing store into a cell allocated since the last GC point (E2: no barrier). Once a
+/// GC-stress heap exists, the heap's E2 check tests the claim (`ep9_heap::e2_check_init`: the
+/// host must not have survived a GC) and names this call's caller.
 #[inline(always)]
+#[track_caller]
 pub(crate) fn init(c: CellPtr, off: usize, v: u64) {
+    if ep9_heap::e2_check_on() {
+        ep9_heap::e2_check_init(c, v, core::panic::Location::caller());
+    }
     slot_of(c, off).init(val(v));
 }
 

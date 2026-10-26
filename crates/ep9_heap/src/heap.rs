@@ -27,6 +27,14 @@
 //!      until the page is swept)
 //! a callback (root source, trace, size, weak source) panics while marking: every mark bit
 //!   is cleared and nothing is freed; while sweeping a page: that page's mark bits are cleared
+//!
+//! verify_after_gc (GC-stress turns it on): the verify costs no second trace of the heap
+//!   mark:  a checked mark (trace.rs) checks every edge, weak slot, word0 shape, kind, size
+//!          and space it visits (strong roots too, weak ranges in the weak pass), so every
+//!          slot of every live cell is checked once
+//!   then:  sweep every page with checks (cell order: no overlap, inside the page, small
+//!          size; no mark bit left), then page and LOS headers and weak handles (verify.rs)
+//!   any error: panic "heap verifier failed after GC" with the error list
 //! ```
 //!
 //! [`Heap`] keeps the fields that JIT and AOT code read at fixed offsets first
@@ -51,8 +59,8 @@ use crate::barrier::{BarrierState, Slot, gc_state, threshold};
 use crate::cell::{CellKind, CellPtr, CellSize, KindError, KindId, KindTable, Space};
 use crate::layout::{
     BITMAP_WORDS, FIRST_CELL_OFFSET, FIRST_LINE, LARGE_CELL_OFFSET, LINE_SIZE, LINES_PER_PAGE,
-    Large, MAX_LINE_CELL, MAX_SMALL_SIZE, PAGE_CELL_BYTES, PAGE_MASK, PAGE_SIZE, Page, ZAP_WORD,
-    cell_size_for,
+    Large, MARK_BITS_OFFSET, MAX_LINE_CELL, MAX_SMALL_SIZE, PAGE_CELL_BYTES, PAGE_MASK, PAGE_SIZE,
+    Page, VO_BITS_OFFSET, ZAP_WORD, cell_size_for,
 };
 use crate::memory::{HeapError, Memory};
 use crate::roots::{GlobalHandle, Handles, RootId, RootStrength, Roots, ScratchRoots, WeakHandle};
@@ -79,14 +87,14 @@ pub struct HeapConfig {
     /// Bytes allocated before the first GC. Later budgets are `max(this, live bytes)`, so the
     /// heap may double between collections.
     pub initial_budget: usize,
-    /// GC-stress: collect before every Nth allocation. 0 = off, 1 = every allocation.
+    /// GC-stress: collect before every Nth allocation. 0 = off, 1 = every allocation. A
+    /// value above 0 also turns on the process-wide E2 check
+    /// ([`crate::E2_CHECK_UNDER_GC_STRESS`], [`crate::e2_check_init`]).
     pub gc_stress: u32,
     /// Run the heap verifier after every collection and panic on an error.
     pub verify_after_gc: bool,
-    /// Which collections run the verifier when `verify_after_gc` is on. Declared in M4-P0 with
-    /// no effect yet: today every collection verifies, which is `VerifyMode::EveryGc` (the
-    /// default). The GC role (M4-P1) gives it its meaning. (`VerifyMode` is not re-exported
-    /// from the crate root yet; `HeapConfig::default().verify` names the default.)
+    /// Which collections run the verifier when `verify_after_gc` is on. Today the only mode is
+    /// [`VerifyMode::EveryGc`] (the default): every collection verifies.
     pub verify: VerifyMode,
     /// The S1 generational mode (03-gc; minor GCs, H09/H11). Declared in M4-P0 with no effect
     /// yet: the heap is S0 whatever the value. `false` (the default) keeps S0; the GC role
@@ -122,11 +130,15 @@ impl Default for HeapConfig {
     }
 }
 
-/// Which collections run the heap verifier ([`HeapConfig::verify`]). Declared in M4-P0 with
-/// no effect yet. The GC role may add a mode that verifies only some collections (M4-P1).
+/// Which collections run the heap verifier ([`HeapConfig::verify`]).
+///
+/// The verify after a GC is a checked mark plus a checked sweep (see the module doc): it
+/// covers what [`Heap::verify`] covers without a second trace of the heap (V9-D22 step 1). A
+/// cadence (a full verify every Nth GC) is step 2 and is not built: it is needed only if the
+/// x86-64 GC-stress run stays above its target.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum VerifyMode {
-    /// Every collection, as today.
+    /// Every collection.
     #[default]
     EveryGc,
 }
@@ -368,6 +380,9 @@ impl Heap {
         let base = mem.base();
         let base_addr = mem.base_addr();
         let shape_bytes = mem.shape_bytes();
+        if config.gc_stress > 0 {
+            crate::verify::e2_check_for_gc_stress();
+        }
         let s = Settings {
             initial_budget: config.initial_budget.max(PAGE_SIZE),
             gc_stress: config.gc_stress,
@@ -721,7 +736,7 @@ impl Heap {
     }
 
     fn collect_scanning(&self, scan: Scan) {
-        let verify = {
+        let (verify, mark_errors) = {
             let mut inner_ref = self.inner.borrow_mut();
             let inner = &mut *inner_ref;
             let mut roots = self.roots.borrow_mut();
@@ -751,13 +766,16 @@ impl Heap {
             let mut log = core::mem::take(&mut inner.css_log);
             log.clear();
             let record = inner.s.record_css;
-            let mut t = Tracer::new(
-                &inner.mem,
-                &inner.kinds,
-                Mode::Mark,
-                core::mem::take(&mut inner.mark_stack),
-                core::mem::take(&mut inner.weak_slots),
-            );
+            // With `verify_after_gc`, the mark checks what it visits (the verify then needs no
+            // second trace; verify.rs).
+            let verify = inner.s.verify_after_gc;
+            let stack = core::mem::take(&mut inner.mark_stack);
+            let weak = core::mem::take(&mut inner.weak_slots);
+            let mut t = if verify {
+                Tracer::new_checked(&inner.mem, &inner.kinds, stack, weak)
+            } else {
+                Tracer::new(&inner.mem, &inner.kinds, Mode::Mark, stack, weak)
+            };
 
             let stack_words = match scan {
                 #[cfg(not(miri))]
@@ -803,15 +821,21 @@ impl Heap {
             let mut weak_cleared = t.clear_weak_slots();
             let marked_cells = t.marked_cells;
             let marked_bytes = t.marked_bytes;
+            let mark_errors = core::mem::take(&mut t.errors);
             let (stack, weak) = t.into_lists();
             inner.mark_stack = stack;
             inner.weak_slots = weak;
             inner.css_log = log;
 
-            let mut w = WeakVisitor::new(&inner.mem);
+            let mut w = if verify {
+                WeakVisitor::new_checked(&inner.mem, mark_errors)
+            } else {
+                WeakVisitor::new(&inner.mem)
+            };
             handles.clear_dead(&mut w);
             roots.visit_weak(&mut w);
             weak_cleared += w.cleared;
+            let mark_errors = w.errors;
             core::mem::forget(unmark);
 
             inner.sweep_large();
@@ -833,9 +857,9 @@ impl Heap {
             st.last_conservative_roots = css_roots;
             st.last_stack_words = stack_words;
             st.last_weak_cleared = weak_cleared;
-            inner.s.verify_after_gc
+            (verify, mark_errors)
         };
-        if verify && let Err(e) = self.verify() {
+        if verify && let Err(e) = self.verify_after_collect(mark_errors) {
             panic!("heap verifier failed after GC: {e}");
         }
     }
@@ -846,8 +870,12 @@ impl Heap {
         self.inner.borrow_mut().finish_sweeping();
     }
 
-    /// Turns GC-stress on (`n` > 0: collect before every nth allocation) or off (0).
+    /// Turns GC-stress on (`n` > 0: collect before every nth allocation) or off (0). Turning
+    /// it on also turns on the process-wide E2 check ([`crate::E2_CHECK_UNDER_GC_STRESS`]).
     pub fn set_gc_stress(&self, n: u32) {
+        if n > 0 {
+            crate::verify::e2_check_for_gc_stress();
+        }
         let mut inner = self.inner.borrow_mut();
         inner.s.gc_stress = n;
         inner.stress_count = 0;
@@ -1155,13 +1183,23 @@ impl Inner {
     }
 
     pub(crate) fn finish_sweeping(&mut self) {
+        self.finish_sweeping_with::<false>(&mut Vec::new());
+    }
+
+    /// [`Inner::finish_sweeping`] with the verifier's cell checks on every live cell (errors
+    /// to `errors`; verify.rs).
+    pub(crate) fn finish_sweeping_checked(&mut self, errors: &mut Vec<String>) {
+        self.finish_sweeping_with::<true>(errors);
+    }
+
+    fn finish_sweeping_with<const CHECK: bool>(&mut self, errors: &mut Vec<String>) {
         while let Some(idx) = self.sweep_queue.pop() {
-            if self.sweep_page(idx) == Swept::Recyclable {
+            if self.sweep_page_with::<CHECK>(idx, errors) == Swept::Recyclable {
                 self.recyclable.push(idx);
             }
         }
         while let Some(idx) = self.shape_sweep_queue.pop() {
-            if self.sweep_page(idx) == Swept::Recyclable {
+            if self.sweep_page_with::<CHECK>(idx, errors) == Swept::Recyclable {
                 self.shape_recyclable.push(idx);
             }
         }
@@ -1174,55 +1212,93 @@ impl Inner {
     /// a size function panics, the unwind clears the page's mark bits; its dead cells that
     /// still have a VO bit are not zapped yet, and the next GC frees them.
     fn sweep_page(&mut self, idx: usize) -> Swept {
+        self.sweep_page_with::<false>(idx, &mut Vec::new())
+    }
+
+    /// [`Inner::sweep_page`]. `CHECK` (the verify after a GC): also checks the live cells in
+    /// address order (none overlaps the previous one or crosses the page end; each has a
+    /// small-page size) and that no mark bit lies outside a VO bit. Errors go to `errors`; a
+    /// cell whose size cannot be known counts as one granule.
+    fn sweep_page_with<const CHECK: bool>(
+        &mut self,
+        idx: usize,
+        errors: &mut Vec<String>,
+    ) -> Swept {
         let page = self.mem.page(idx);
         let unmark = UnmarkPageOnUnwind(page);
         // SAFETY: the line-mark array lies in the page's committed metadata area.
         unsafe { page.line_marks().write_bytes(0, LINES_PER_PAGE) };
         let mut live = 0usize;
-        for w in 0..crate::layout::BITMAP_WORDS {
-            let vo = page.vo_word(w).load(Relaxed);
-            if vo == 0 {
+        // CHECK: the end of the previous live cell.
+        let mut prev_end = page.addr() + FIRST_CELL_OFFSET;
+        let vo_bits = self
+            .mem
+            .ptr(page.addr() + VO_BITS_OFFSET)
+            .cast::<u64>()
+            .as_ptr();
+        // Blocks of SKIP_WORDS VO words: an empty block costs one test (under GC-stress most
+        // pages hold few cells, and this loop runs for every page at every GC).
+        for b in (0..BITMAP_WORDS).step_by(SKIP_WORDS) {
+            if block_is_empty(vo_bits, b) {
                 continue;
             }
-            let mk = page.mark_word(w).load(Relaxed);
-            debug_assert_eq!(mk & !vo, 0, "mark bit without a VO bit");
-            let mut alive = vo & mk;
-            while alive != 0 {
-                let bit = alive.trailing_zeros() as usize;
-                alive &= alive - 1;
-                let addr = page.addr() + (w * 64 + bit) * 8;
-                let size = self.size_at(addr);
-                let first = (addr - page.addr()) / LINE_SIZE;
-                let last = (addr + size - 1 - page.addr()) / LINE_SIZE;
-                // SAFETY: lines first..=last are inside the line-mark array (a cell never
-                // crosses the page end).
-                unsafe {
-                    page.line_marks()
-                        .add(first)
-                        .write_bytes(1, last - first + 1)
-                };
-                live += 1;
-            }
-            // Free the dead cells before zapping them: no VO bit is left on a zapped cell.
-            page.vo_word(w).store(vo & mk, Relaxed);
-            let mut dead = vo & !mk;
-            while dead != 0 {
-                let bit = dead.trailing_zeros() as usize;
-                dead &= dead - 1;
-                let addr = page.addr() + (w * 64 + bit) * 8;
-                let size = self.size_at(addr);
-                if self.s.zap {
-                    let p = self.mem.ptr(addr).cast::<u64>();
-                    for i in 0..size / 8 {
-                        // SAFETY: the dead cell [addr, addr + size) is committed memory that no
-                        // live cell or root reaches; nothing reads it after this sweep.
-                        unsafe { p.add(i).write(ZAP_WORD) };
-                    }
+            for w in b..b + SKIP_WORDS {
+                let vo = page.vo_word(w).load(Relaxed);
+                if vo == 0 {
+                    continue;
                 }
-                self.stats.freed_cells += 1;
-                self.stats.freed_bytes += size as u64;
+                let mk = page.mark_word(w).load(Relaxed);
+                if CHECK && mk & !vo != 0 {
+                    sweep_error(errors, idx, format_args!("mark bit without a VO bit"));
+                }
+                debug_assert!(CHECK || mk & !vo == 0, "mark bit without a VO bit");
+                let mut alive = vo & mk;
+                while alive != 0 {
+                    let bit = alive.trailing_zeros() as usize;
+                    alive &= alive - 1;
+                    let addr = page.addr() + (w * 64 + bit) * 8;
+                    let size = if CHECK {
+                        self.check_live_cell(addr, &mut prev_end, errors)
+                    } else {
+                        self.size_at(addr)
+                    };
+                    let first = (addr - page.addr()) / LINE_SIZE;
+                    let last = (addr + size - 1 - page.addr()) / LINE_SIZE;
+                    // SAFETY: lines first..=last are inside the line-mark array (a cell never
+                    // crosses the page end).
+                    unsafe {
+                        page.line_marks()
+                            .add(first)
+                            .write_bytes(1, last - first + 1)
+                    };
+                    live += 1;
+                }
+                // Free the dead cells before zapping them: no VO bit is left on a zapped cell.
+                page.vo_word(w).store(vo & mk, Relaxed);
+                let mut dead = vo & !mk;
+                while dead != 0 {
+                    let bit = dead.trailing_zeros() as usize;
+                    dead &= dead - 1;
+                    let addr = page.addr() + (w * 64 + bit) * 8;
+                    let size = self.size_at(addr);
+                    if self.s.zap {
+                        let p = self.mem.ptr(addr).cast::<u64>();
+                        for i in 0..size / 8 {
+                            // SAFETY: the dead cell [addr, addr + size) is committed memory that no
+                            // live cell or root reaches; nothing reads it after this sweep.
+                            unsafe { p.add(i).write(ZAP_WORD) };
+                        }
+                    }
+                    self.stats.freed_cells += 1;
+                    self.stats.freed_bytes += size as u64;
+                }
+                page.mark_word(w).store(0, Relaxed);
             }
-            page.mark_word(w).store(0, Relaxed);
+        }
+        // The loop cleared the mark words that have a VO bit and left the others: any mark
+        // bit now is one outside a cell, which the verifier reports.
+        if CHECK && self.any_mark_bit(page) {
+            sweep_error(errors, idx, format_args!("mark bit set outside a GC"));
         }
         core::mem::forget(unmark);
         if live == 0 {
@@ -1233,6 +1309,71 @@ impl Inner {
             Swept::Recyclable
         } else {
             Swept::Full
+        }
+    }
+
+    /// True if any mark bit of `page` is set. One pass over the 4 KiB mark bitmap with plain
+    /// loads, so that it vectorizes (most pages under GC-stress hold few cells, so this pass
+    /// is most of the checked sweep's extra cost).
+    fn any_mark_bit(&self, page: Page) -> bool {
+        let mk = self.mem.ptr(page.addr() + MARK_BITS_OFFSET).cast::<u64>();
+        let mut any = 0u64;
+        for w in 0..BITMAP_WORDS {
+            // SAFETY: the mark bitmap lies in the page's committed metadata area, 8-aligned,
+            // with the provenance of the reservation. Only this thread touches it (S0), and no
+            // atomic access runs during this loop.
+            any |= unsafe { mk.add(w).read() };
+        }
+        any != 0
+    }
+
+    /// The checked sweep's checks of the live cell at `addr` (a VO start): it starts after
+    /// the previous cell ends, its size is a small-page size, it ends inside the page. (The
+    /// checked mark checked its kind, space and slots.) Returns its size, cut at the page end;
+    /// one granule when the size cannot be known (the mark reported that).
+    #[inline]
+    fn check_live_cell(
+        &self,
+        addr: usize,
+        prev_end: &mut usize,
+        errors: &mut Vec<String>,
+    ) -> usize {
+        // SAFETY: a VO bit marks a cell start whose word0 the allocator wrote.
+        let c = unsafe { CellPtr::from_raw(self.mem.ptr(addr).cast()) };
+        let page_end = (addr & PAGE_MASK) + PAGE_SIZE;
+        let size = self.kinds.cell_size(c).unwrap_or(crate::layout::GRANULE);
+        if addr < *prev_end || size > MAX_SMALL_SIZE || addr + size > page_end {
+            self.cell_order_error(addr, size, *prev_end, errors);
+        }
+        *prev_end = addr + size;
+        size.min(page_end - addr)
+    }
+
+    #[cold]
+    fn cell_order_error(
+        &self,
+        addr: usize,
+        size: usize,
+        prev_end: usize,
+        errors: &mut Vec<String>,
+    ) {
+        let idx = (addr - self.mem.base_addr()) / PAGE_SIZE;
+        if addr < prev_end {
+            let msg = format_args!(
+                "cell {addr:#x} overlaps the previous cell or the metadata (ends {prev_end:#x})"
+            );
+            sweep_error(errors, idx, msg);
+        }
+        if size > MAX_SMALL_SIZE {
+            sweep_error(
+                errors,
+                idx,
+                format_args!("small cell {addr:#x} has size {size}"),
+            );
+        }
+        if addr + size > (addr & PAGE_MASK) + PAGE_SIZE {
+            let msg = format_args!("cell {addr:#x} of {size} B crosses the page end");
+            sweep_error(errors, idx, msg);
         }
     }
 
@@ -1264,6 +1405,34 @@ impl Inner {
             unsafe { self.mem.free_large(idx, committed) };
         }
     }
+}
+
+/// VO words per block in the sweep's empty-block test.
+const SKIP_WORDS: usize = 8;
+const _: () = assert!(BITMAP_WORDS.is_multiple_of(SKIP_WORDS));
+
+/// True if the VO words `[w, w + SKIP_WORDS)` at `vo` are all 0. Plain loads, so the test
+/// vectorizes.
+#[inline(always)]
+fn block_is_empty(vo: *const u64, w: usize) -> bool {
+    let mut any = 0u64;
+    for i in w..w + SKIP_WORDS {
+        // SAFETY: `vo` is the VO bitmap of a committed page (BITMAP_WORDS words, 8-aligned,
+        // with the reservation's provenance) and `i < BITMAP_WORDS`. Only this thread writes
+        // it (S0), and no write runs during this read.
+        any |= unsafe { vo.add(i).read() };
+    }
+    any == 0
+}
+
+/// A checked sweep's error about small page `idx`.
+#[cold]
+fn sweep_error(errors: &mut Vec<String>, idx: usize, msg: core::fmt::Arguments<'_>) {
+    crate::trace::record_error(
+        errors,
+        crate::trace::Context::Root("page"),
+        format_args!("small page {idx}: {msg}"),
+    );
 }
 
 /// The next run of free lines in `page`, from line `*line` on. Leaves `*line` after the run
