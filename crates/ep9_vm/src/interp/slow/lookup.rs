@@ -194,12 +194,12 @@ fn eval_ext(c: u64) -> Option<u64> {
 
 /// (M3-P4, CX2-E9-1) `name` is a private name `#x` (or a synthetic `#.` name): no identifier
 /// starts with `#`, so only the private names of direct eval code (E9) are looked up by name.
-fn is_private_name(cx: &Cx, name: u64) -> bool {
-    if !kinds::is_string(name) {
-        return false;
-    }
-    let text = string::view(cx, name);
-    !text.is_empty() && text.at(0) == u16::from(b'#')
+/// `name` can be a rope that is not flattened (a rope interned by `Cx::intern`, M4-P1 STR1
+/// F3), so the first unit is read with the rope-safe `string::unit_at`. Not a GC point.
+fn is_private_name(name: u64) -> bool {
+    kinds::is_string(name)
+        && string::str_len(name) != 0
+        && string::unit_at(name, 0) == u16::from(b'#')
 }
 
 /// (CX2-E9-1) The binding of the private name `name` (`#x`) of direct eval code: the slot of
@@ -262,7 +262,7 @@ fn private_symbol(cx: &mut Cx, name: u64, v: u64) -> Res<u64> {
 /// frame `fp`, out to the global environment (see the module doc). GC point (an
 /// `@@unscopables` getter, a poll).
 fn resolve(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<Binding> {
-    if is_private_name(cx, name) {
+    if is_private_name(name) {
         return resolve_private(cx, fp, name);
     }
     let implicit = is_implicit_name(name);
@@ -528,7 +528,7 @@ pub(crate) fn lda_lookup_slot(
         let b = resolve(cx, fp, name)?;
         let v = get_binding_value(cx, b, name, strict(fp), inside_typeof)?;
         // (CX2-E9-1) Only a private field's key is read this way (E9).
-        if is_private_name(cx, name) {
+        if is_private_name(name) {
             return private_symbol(cx, name, v);
         }
         Ok(v)
