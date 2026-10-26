@@ -23,7 +23,7 @@
 //! | `poll` runs once per exec, before the search | regress has no hook inside a search: one `Matches::next` call tries every start position | an interrupt waits until the running exec ends |
 //! | No backtrack budget | regress counts no steps | [`ExecResult::BudgetExceeded`] is never returned |
 //! | Sticky (`y`) is the first match from `start`, kept only if it starts at `start` | regress has no single-position attempt | a failing sticky exec scans to the end |
-//! | Non-Unicode `i`: a class, `\w` and `\W` use Unicode simple case folding; a literal skips the ASCII rule of Canonicalize (§22.2.2.7.3) | regress 0.12.0 defect | `/\w/i` matches U+017F and U+212A, `/\u017f/i` matches `s` (6 lines of the node golden, `tests/node_pairs.rs` KNOWN) |
+//! | Non-Unicode `i`: a class, `\w` and `\W` use Unicode simple case folding; a literal and a backreference skip the ASCII rule of Canonicalize (§22.2.2.7.3) | regress 0.12.0 defect | `/\w/i` and `/[a-z]/i` match U+017F and U+212A, `/\W/i` does not, `/\u017f/i` matches `s`, `/(s)\1/i` matches `s\u017f` (11 lines of the node golden, `tests/node_pairs.rs` KNOWN) |
 //!
 //! RX0 fixes in this crate, before regress sees the pattern or the start: `legacy_chars`
 //! (`\u{` and surrogate escapes without `u`), `unicode_chars` (a lead-surrogate escape before

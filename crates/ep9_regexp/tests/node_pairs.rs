@@ -1,7 +1,8 @@
-//! The RX0A differential golden (plan v9 §4.5): `tests/golden/node-pairs.txt` holds 500
+//! The RX0A differential golden (plan v9 §4.5): `tests/golden/node-pairs.txt` holds 523
 //! (pattern, flags, lastIndex, input) cases with the result of one `RegExp.prototype.exec` in
-//! node v24.22.1 (its header names the format). This test runs each case through [`Rx0`]
-//! and prints every line that differs.
+//! node v24.22.1 (its header names the format): 500 picked cases, then 23 added by the M4-P2
+//! Codex-fix step (surrogate escapes in `u` and `v`, non-Unicode ignore case). This test runs
+//! each case through [`Rx0`] and prints every line that differs.
 //!
 //! ```text
 //! line     pattern \t flags \t lastIndex \t input \t result
@@ -13,11 +14,12 @@
 //!
 //! [`KNOWN`] lists the lines where RX0 differs from node because of one regress 0.12.0
 //! defect, with the RX0 result: in non-Unicode `i` mode regress closes a character class (and
-//! `\w`, `\W`) under Unicode simple case folding, and expands a literal by toUppercase without
-//! the ASCII rule of Canonicalize (§22.2.2.7.3: a character at or above 128 whose
-//! uppercase is below 128 stays itself), so `\u017f` (long s), `\u0131` (dotless i) and
-//! `\u212a` (Kelvin) match ASCII letters. The fix belongs to the regress fork patch (month
-//! 5, V9-D15). The test fails if any other line differs, if a known line gives another
+//! `\w`, `\W`) under Unicode simple case folding, and expands a literal and a backreference
+//! by toUppercase without the ASCII rule of Canonicalize (§22.2.2.7.3: a character at or
+//! above 128 whose uppercase is below 128 stays itself), so `\u017f` (long s), `\u0131`
+//! (dotless i) and `\u212a` (Kelvin) match ASCII letters (`/[a-z]/i`, `/(s)\1/i`) and `\W`
+//! does not match them. The fix belongs to the regress fork patch (month 5, V9-D15); after
+//! it [`KNOWN`] must be empty (P2-ORCH-1). The test fails if any other line differs, if a known line gives another
 //! result, or if a known line starts to equal node (then remove it from the list).
 
 use ep9_regexp::{Backend, ExecResult, Flags, Input, Rx0};
@@ -89,6 +91,13 @@ const KNOWN: &[(&str, &str)] = &[
         "[\\\\u00c0-\\\\u024f]\ti\t0\tThe quick brown fox jumps over the lazy dog 1234\tnull",
         "match 24-25",
     ),
+    // The M4-P2 Codex-fix cases (P2-ORCH-8): the same defect in a class range, `\W` and a
+    // backreference.
+    ("[a-z]\ti\t0\t\\u212a\tnull", "match 0-1"),
+    ("[a-z]\ti\t0\t\\u017f\tnull", "match 0-1"),
+    ("\\\\W\ti\t0\t\\u212a\tmatch 0-1", "null"),
+    ("\\\\W\ti\t0\t\\u017f\tmatch 0-1", "null"),
+    ("(s)\\\\1\ti\t0\ts\\u017f\tnull", "match 0-2 0-1"),
 ];
 
 #[test]
@@ -124,7 +133,7 @@ fn rx0_matches_node() {
             None => {}
         }
     }
-    assert_eq!(cases, 500, "the golden has 500 cases");
+    assert_eq!(cases, 523, "the golden has 523 cases");
     assert_eq!(known, KNOWN.len(), "every KNOWN line is in the golden");
     println!(
         "{} of {cases} equal node, {known} known regress differences",
