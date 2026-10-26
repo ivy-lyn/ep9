@@ -12,8 +12,9 @@ use std::sync::Arc;
 
 use ep9_bytecode::{UnitString, VerifiedUnit};
 use ep9_facts::{
-    Access, BindingSet, FactSnapshot, FunctionRef, IcState, KeyRef, ObjectKind, PropertyCase,
-    ProtoRef, ShapeDesc, SlotFacts,
+    Access, BinaryHint, BindingSet, ClosureCount, CompareHint, FactSnapshot, ForInHint,
+    FunctionRef, IcState, KeyRef, KeySet, ObjectKind, PropertyCase, ProtoRef, ShapeDesc, SlotFacts,
+    TypeSet,
 };
 use ep9_frontend::{CompileOptions, SourceOpts, Strictness};
 use ep9_heap::HeapConfig;
@@ -402,6 +403,229 @@ fn equal_descriptions_share_one_arc() {
         let shared = receivers.iter().filter(|r| Arc::ptr_eq(r, first)).count();
         assert_eq!(shared, SITES, "each site kept its own description");
         assert_round_trip(&unit, &facts);
+    });
+}
+
+// ---- the kinds T0 records (M4-P2 FACTS2) ------------------------------------------------------
+
+/// One site of each kind that T0 records, in `kinds`; the comment names the record. `kinds`
+/// runs 3,000 times (a vector at call 8, then budget polls, so sampled sites are seen).
+const KINDS: &str = r#"
+function g() { return 1; }
+function K() { this.a = 1; }
+function kinds(o, s, d) {
+  var x = 0;
+  x = x + 1;                    // BinaryOp {int32}: implicit only
+  var y = d * 1.5;              // BinaryOp {int32, number}
+  var z = s + "!";              // BinaryOp {int32, string}
+  if (x < 2) x = 3;             // CompareOp {int32}
+  if (s === "q") x = 4;         // CompareOp {int32, atom}
+  if (x === 99) y = x - 1;      // a BinaryOp that never runs: {int32} ("int32 or never ran")
+  var t = typeof o;             // TypeOf {array}
+  var e = o[0];                 // LoadKeyed keys {index} (implicit)
+  o[s] = 1;                     // StoreKeyed keys {name}
+  var lit = {p: 1, q: 2};       // Literal: shape {p, q}
+  var c = {...lit};             // CloneObject: {p, q} -> {p, q}
+  for (var key in lit) y = key; // ForIn {any}; JumpLoop
+  g();                          // Call (Call*): g
+  new K();                      // Call (Construct*): K
+  var cl = function () {};      // CreateClosure: many
+  var io = o instanceof Array;  // InstanceOf: no record before IC2 (M4-P3)
+  return x;
+}
+for (var i = 0; i < 3000; i++) kinds([1, 2, 3], "s", 2.5);
+"#;
+
+/// The records of function `f` of one kind, in slot order.
+fn of_kind<'a>(s: &'a FactSnapshot, f: u32, kind: &str) -> Vec<&'a SlotFacts> {
+    records(s, f)
+        .into_iter()
+        .filter(|r| format!("{:?}", r.kind()) == kind)
+        .collect()
+}
+
+#[test]
+fn every_recorded_kind_is_exported() {
+    on_big_stack(|| {
+        let (unit, facts) = run(KINDS);
+        let f = function_named(&unit, "kinds");
+        let js = |name| FunctionRef::Js {
+            unit: unit.content_hash(),
+            function: function_named(&unit, name),
+        };
+
+        // BinaryOp: INT32 is in every record (implicit); a record of only INT32 is "int32 or
+        // never ran" (MODES-D10): the dead `x - 1` and the int32 `+` look the same.
+        let binary: Vec<BinaryHint> = of_kind(&facts, f, "BinaryOp")
+            .into_iter()
+            .map(|r| match r {
+                SlotFacts::BinaryOp(h) => *h,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert!(
+            binary.iter().all(|h| h.contains(BinaryHint::INT32)),
+            "{binary:?}"
+        );
+        let number = BinaryHint::INT32 | BinaryHint::NUMBER;
+        let string = BinaryHint::INT32 | BinaryHint::STRING;
+        assert_eq!(
+            binary.iter().filter(|&&h| h == number).count(),
+            1,
+            "{binary:?}"
+        );
+        assert_eq!(
+            binary.iter().filter(|&&h| h == string).count(),
+            1,
+            "{binary:?}"
+        );
+        assert!(binary.iter().filter(|&&h| h == BinaryHint::INT32).count() >= 2);
+        let compare: Vec<CompareHint> = of_kind(&facts, f, "CompareOp")
+            .into_iter()
+            .map(|r| match r {
+                SlotFacts::CompareOp(h) => *h,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert!(
+            compare.contains(&(CompareHint::INT32 | CompareHint::ATOM)),
+            "{compare:?}"
+        );
+        assert!(compare.contains(&CompareHint::INT32), "{compare:?}");
+        assert!(compare.iter().all(|h| h.contains(CompareHint::INT32)));
+
+        assert!(
+            matches!(of_kind(&facts, f, "TypeOf")[..], [SlotFacts::TypeOf(t)] if *t == TypeSet::ARRAY)
+        );
+        match of_kind(&facts, f, "LoadKeyed")[..] {
+            [SlotFacts::LoadKeyed(k)] => {
+                assert_eq!(k.keys, KeySet::INDEX);
+                assert_eq!(
+                    k.property.state,
+                    IcState::Uninitialized,
+                    "no keyed IC before KEYED"
+                );
+            }
+            ref r => panic!("{r:?}"),
+        }
+        assert!(
+            matches!(of_kind(&facts, f, "StoreKeyed")[..], [SlotFacts::StoreKeyed(k)] if k.keys == KeySet::NAME)
+        );
+
+        let pq = |s: &ShapeDesc| {
+            s.kind == ObjectKind::Ordinary
+                && s.keys.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>()
+                    == [
+                        KeyRef::String(UnitString::new("p")),
+                        KeyRef::String(UnitString::new("q")),
+                    ]
+        };
+        match of_kind(&facts, f, "Literal")[..] {
+            [SlotFacts::Literal(l)] => {
+                assert!(l.count >= 1, "cold-path results: {l:?}");
+                assert!(l.shape.as_deref().is_some_and(pq), "{l:?}");
+                assert_eq!(l.elements, None);
+            }
+            ref r => panic!("{r:?}"),
+        }
+        match of_kind(&facts, f, "CloneObject")[..] {
+            [SlotFacts::CloneObject(c)] => {
+                assert_eq!(c.state, IcState::Monomorphic);
+                assert_eq!(c.cases.len(), 1);
+                assert!(pq(&c.cases[0].source) && pq(&c.cases[0].result), "{c:?}");
+            }
+            ref r => panic!("{r:?}"),
+        }
+        assert!(
+            matches!(of_kind(&facts, f, "ForIn")[..], [SlotFacts::ForIn(h)] if *h == ForInHint::ANY)
+        );
+        assert_eq!(of_kind(&facts, f, "JumpLoop").len(), 1);
+        assert!(matches!(of_kind(&facts, f, "CreateClosure")[..],
+            [SlotFacts::CreateClosure(c)] if c.closures == ClosureCount::Many));
+        assert!(of_kind(&facts, f, "InstanceOf").is_empty());
+
+        // Calls: the `g()` site (sampled calls) and the `new K()` site (cold constructs).
+        let calls: Vec<_> = of_kind(&facts, f, "Call")
+            .into_iter()
+            .map(|r| match r {
+                SlotFacts::Call(c) => c.clone(),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        for (c, name) in calls.iter().zip(["g", "K"]) {
+            assert_eq!(c.callees.state, IcState::Monomorphic, "{name}: {c:?}");
+            assert_eq!(c.callees.targets, [js(name)], "{name}");
+            assert!(c.count >= 1, "{name}: {c:?}");
+            assert_eq!(c.result, TypeSet::EMPTY);
+        }
+        // The script's loop calls `kinds` (sampled) and polls (sampled back edges).
+        let top = of_kind(&facts, 0, "Call");
+        assert!(
+            top.iter().any(|r| matches!(r, SlotFacts::Call(c)
+            if c.callees.targets == [js("kinds")] && c.count >= 1)),
+            "{top:?}"
+        );
+
+        assert_round_trip(&unit, &facts);
+        let (_, again) = run(KINDS);
+        assert_eq!(again.encode(), facts.encode());
+    });
+}
+
+/// MC-w13-17 (F16): what the fixed sampling window sees of a periodic call pattern, today.
+/// `run`'s loop body is 99 call sites (98 `a()`, then `b()`) and a back edge: 100 budget units,
+/// and `BUDGET` (10,000) is 100 periods, so every poll lands on the same unit of the body and
+/// the window (the first `CALL_WINDOW` = 64 units after it) covers the same sites every time
+/// (62 of the 99). Each of those counts one sampled call per poll; the others stay uninitialized
+/// though each ran 10,008 times, and the back edge never polls (0 sampled back edges). This
+/// test pins the current behaviour; the month-5 jitter of the window start (MC-w13-17) is
+/// meant to change it (then every site gets a count).
+#[test]
+fn a_periodic_call_pattern_keeps_sites_out_of_the_fixed_window() {
+    on_big_stack(|| {
+        let mut src = String::from("function a() {}\nfunction b() {}\nfunction run(n) {\n");
+        src.push_str("  for (var i = 0; i < n; i++) {\n");
+        for _ in 0..98 {
+            src.push_str("    a();\n");
+        }
+        src.push_str("    b();\n  }\n}\n");
+        // 8 calls make `run`'s vector (the default threshold), then the periodic run.
+        src.push_str("for (var w = 0; w < 8; w++) run(1);\nrun(10000);\n");
+        let (unit, facts) = run(&src);
+        let f = function_named(&unit, "run");
+        let calls: Vec<u32> = of_kind(&facts, f, "Call")
+            .into_iter()
+            .map(|r| match r {
+                SlotFacts::Call(c) => {
+                    assert!(
+                        (c.count == 0) == (c.callees.state == IcState::Uninitialized),
+                        "{c:?}"
+                    );
+                    c.count
+                }
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(calls.len(), 99);
+        let sampled = calls.iter().filter(|&&n| n > 0).count();
+        // At most `CALL_WINDOW` (64) units, the back edge among them (62 sites at 12cfc61).
+        assert!((60..=64).contains(&sampled), "{calls:?}");
+        // One count per poll of the 10,000-iteration run: about 100 (10,000 x 100 units /
+        // BUDGET), the same at every sampled site.
+        let polls = *calls.iter().max().unwrap();
+        assert!((99..=101).contains(&polls), "{calls:?}");
+        assert!(calls.iter().all(|&n| n == 0 || n == polls), "{calls:?}");
+        // The unsampled sites are one run of the body, cyclically: a fixed phase.
+        let edges = (0..99)
+            .filter(|&i| (calls[i] == 0) != (calls[(i + 1) % 99] == 0))
+            .count();
+        assert_eq!(edges, 2, "{calls:?}");
+        // The loop's back edge never takes the last unit: 0 sampled back edges.
+        match of_kind(&facts, f, "JumpLoop")[..] {
+            [SlotFacts::JumpLoop(l)] => assert_eq!(l.back_edges, 0),
+            ref r => panic!("{r:?}"),
+        }
     });
 }
 
