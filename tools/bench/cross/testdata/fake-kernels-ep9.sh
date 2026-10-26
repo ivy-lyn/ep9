@@ -5,6 +5,8 @@
 #   FAKE_FAIL=<name>:<line>  for <name>.js: prints ep9's error form "<file>:<line>:5: Uncaught
 #                            TypeError: undefined is not a function" on stderr and exits 1
 #   FAKE_WRONG=<name>        for <name>.js: prints "Richards 2" and exits 0
+#   FAKE_FAULT=<name>:<fault>[,...]  for <name>.js: runs it on FAKE_NODE with a fault that leaves
+#                            the harness lines as they are (fake-fault.mjs)
 if [ "$1" = "--version" ]; then
   echo "fake-ep9 0.0"
   exit 0
@@ -24,4 +26,7 @@ if [ "$FAKE_WRONG" = "$n" ]; then
   echo "Richards 2"
   exit 0
 fi
+case ",$FAKE_FAULT" in
+  *",$n:"*) exec "$FAKE_NODE" "$(dirname "$0")/fake-fault.mjs" "$f" ;;
+esac
 exec "$FAKE_NODE" "$f"

@@ -16,8 +16,10 @@
 // Gate verdict: "pass" when the interval's low end is >= the threshold, "fail" when its high end
 // is below it, else "marginal". There is no gate verdict ("provisional") when: the run is
 // provisional (no gate host, load guard; run.mjs); any of the kernels' rows is not "valid" (void,
-// net invalid); the per-round geomeans are void; or a v8-v7 kernel did not run with the real
-// base.js (V9-D14: "exits 1-2 use the real base.js harness"). A missing kernel or engine makes
+// net invalid); the per-round geomeans are void; a v8-v7 kernel did not run with the real
+// base.js (V9-D14: "exits 1-2 use the real base.js harness"); or the file has fewer than the
+// class M minimum of 10 paired rounds (M.rounds, options.rounds and the length of every kernel's
+// ratio series must all be the same number >= 10). A missing kernel or engine makes
 // the reading "incomplete". Freshness (the commit against the tree) is m1-exit's check: this
 // tool prints the commit.
 //
@@ -29,6 +31,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { geomean, verdict } from "../lib/stats.mjs";
+import { MIN_ROUNDS } from "./run.mjs";
 import { OCTANE_7, V8V7_7 } from "./workloads.mjs";
 
 export const SCHEMA = "ep9-exit2/v1";
@@ -63,6 +66,13 @@ export function reading(res, spec) {
   const harness = Object.fromEntries((res.workloads ?? []).map((w) => [w.name, w.harness ?? null]));
   const wrongHarness = spec.workloads.filter((w) => harness[w] !== spec.harness);
   if (wrongHarness.length) reasons.push(`harness is not ${spec.harness} for ${wrongHarness.map((w) => `${w} (${harness[w] ?? "unknown"})`).join(", ")}`);
+  // Class M: >= MIN_ROUNDS paired rounds, and every series as long as the run says (a cut or
+  // hand-edited file must not get a verdict from fewer rounds: verdict() gives an interval at n = 6).
+  const declared = res.M?.rounds;
+  if (!(Number.isInteger(declared) && declared >= MIN_ROUNDS)) reasons.push(`the run has ${declared ?? "no"} paired rounds (M.rounds); class M needs >= ${MIN_ROUNDS}`);
+  if (res.options?.rounds !== declared) reasons.push(`M.rounds (${declared}) differs from options.rounds (${res.options?.rounds})`);
+  const cut = rows.filter((r) => !r.gross?.ratios || [r.net?.ratios, r.gross.ratios].some((xs) => xs && xs.length !== declared));
+  if (cut.length) reasons.push(`ratio series not ${declared} long: ${cut.map((r) => `${r.workload} (${[r.net?.ratios?.length, r.gross?.ratios?.length].map((x) => x ?? "-").join("/")})`).join(", ")}`);
   const notValid = rows.filter((r) => !(r.status?.length === 1 && r.status[0] === "valid"));
   if (notValid.length && !res.provisional) reasons.push(`row not valid: ${notValid.map((r) => `${r.workload} (${(r.status ?? ["no status"]).join(", ")})`).join("; ")}`);
   const kernels = rows.map((r) => ({ workload: r.workload, metric: r.metric, median: (r.net ?? r.gross).median, interval: (r.net ?? r.gross).interval, status: r.status }));

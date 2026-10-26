@@ -21,6 +21,15 @@
 // "fails" (with the first error line, its place in base.js or the kernel file, and a named
 // blocker when the error says which feature is missing) or "output differs".
 //
+// Result probes. The "<name> <N>" lines come from the harness, so they show only that run()
+// returned. Most kernels check their own result and throw (richards, deltablue, crypto's
+// decrypt, raytrace's checkNumber, earley-boyer's rewrite count, splay's tear-down). Two do not:
+// v8-v7 regexp throws away every match, and navier-stokes checks nothing (v8-v7) or only at frame
+// 15 (Octane), after the N = 1 of this check. For these kernels the checked file has a probe
+// between the kernel and the driver (PROBES; timed runs have none): it wraps each benchmark's
+// run() and prints "check <name> <i> <hash>" after the i-th call, a 32-bit hash of the results
+// so far. node prints the same lines, so "output equal" then means equal results.
+//
 // The JSON keeps what m1-exit needs for "15/15 on a fresh tree": the commit, the git tree ids
 // of crates, tools/bench, Cargo.lock and rust-toolchain.toml at HEAD, and the paths among them
 // with uncommitted changes (`dirty`; not fresh when it is not empty).
@@ -104,6 +113,114 @@ export function generateKernel(id, { n, harness, root = ROOT }) {
   throw new Error(`unknown kernel ${id}`);
 }
 
+/**
+ * Result probes of the kernels that check no result of their own (see the top of this file), by
+ * kernel name (v8-v7 and Octane alike). `install` runs once before the driver; `before` and
+ * `after` run around each run() call. __ep9Mix(x) adds String(x) to the hash.
+ */
+export const PROBES = {
+  // Every frame's density and velocity grids, through the solver's display callback (setup sets
+  // a no-op one). A run() that skips solver.update() leaves no frame: "none".
+  "navier-stokes": {
+    what: "density and velocity of the last frame",
+    install: "var __ep9Field = null;",
+    before: "__ep9Field = null; solver.setDisplayFunction(function (f) { __ep9Field = f; });",
+    after: [
+      "if (!__ep9Field) __ep9Mix(\"none\");",
+      "else for (var y = 0; y < __ep9Field.height(); y++) for (var x = 0; x < __ep9Field.width(); x++)",
+      "  __ep9Mix(~~(__ep9Field.getDensity(x, y) * 1e9) + \",\" + ~~(__ep9Field.getXVelocity(x, y) * 1e9) + \",\" + ~~(__ep9Field.getYVelocity(x, y) * 1e9));",
+    ].join("\n"),
+  },
+  // The result of every top-level exec, test, replace, match, split and search call (the methods
+  // regexp.js calls). A call made inside another wrapped call (replace calls exec, in the spec) is
+  // not hashed, so an engine that skips the inner property lookup still hashes the same. The
+  // kernel replaces the global RegExp with its BenchmarkSuite, so %RegExp.prototype% comes from a
+  // literal.
+  regexp: {
+    what: "results of exec, test, replace, match, split, search",
+    install: [
+      "(function () {",
+      "  var depth = 0;",
+      "  function val(r) {",
+      "    if (r === null || typeof r !== \"object\") return __ep9Mix(typeof r + \":\" + r);",
+      "    __ep9Mix(\"[\" + r.length + \"@\" + r.index);",
+      "    for (var i = 0; i < r.length; i++) __ep9Mix(r[i] === undefined ? \"u\" : \"s\" + r[i]);",
+      "  }",
+      "  function wrap(o, k) {",
+      "    var f = o[k];",
+      "    o[k] = function (a, b) {",
+      "      if (depth) return f.call(this, a, b);",
+      "      depth++;",
+      "      var r;",
+      "      try { r = f.call(this, a, b); } finally { depth--; }",
+      "      __ep9Mix(k);",
+      "      val(r);",
+      "      return r;",
+      "    };",
+      "  }",
+      "  var R;",
+      "  // An engine without RegExp literals fails on the kernel's own line (setup), not here.",
+      "  try { R = Object.getPrototypeOf(/a/); } catch (e) { __ep9Mix(\"no RegExp: \" + e); return; }",
+      "  wrap(R, \"exec\"); wrap(R, \"test\");",
+      "  wrap(String.prototype, \"replace\"); wrap(String.prototype, \"match\");",
+      "  wrap(String.prototype, \"split\"); wrap(String.prototype, \"search\");",
+      "})();",
+    ].join("\n"),
+    before: "",
+    after: "",
+  },
+};
+
+/** The probe line prefixes a probed kernel prints: "check <name> <i>" per benchmark and call, in order. */
+export function probeKeys(g) {
+  return g.expect.split("\n").flatMap((l) => {
+    const name = l.slice(0, l.lastIndexOf(" "));
+    return Array.from({ length: g.n }, (_, i) => `check ${name} ${i + 1}`);
+  });
+}
+
+/**
+ * The generate() result `g` with the kernel's probe (PROBES) between the kernel and the driver,
+ * or `g` itself for a kernel with no probe. The base.js and kernel lines keep their offsets.
+ */
+export function withProbe(g) {
+  const p = PROBES[g.kernel];
+  if (!p) return { ...g, probe: null };
+  const end = `// ---- end of ${g.source} ----\n`;
+  const at = g.text.indexOf(end);
+  if (at < 0 || g.text.indexOf(end, at + 1) >= 0) throw new Error(`${g.source}: no single "${end.trim()}" line to put the probe after`);
+  const block = [
+    "// ---- kernels.mjs result probe (check runs only) ----",
+    "var __ep9Hash = 0;",
+    "function __ep9Mix(x) {",
+    "  var s = String(x), h = __ep9Hash;",
+    "  for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;",
+    "  __ep9Hash = (h * 31 + 59) | 0;",
+    "}",
+    p.install,
+    "(function () {",
+    '  var list = typeof __ep9Benchmarks !== "undefined" ? __ep9Benchmarks : [];',
+    "  if (!list.length) {",
+    "    for (var i = 0; i < BenchmarkSuite.suites.length; i++)",
+    "      for (var j = 0; j < BenchmarkSuite.suites[i].benchmarks.length; j++) list.push(BenchmarkSuite.suites[i].benchmarks[j]);",
+    "  }",
+    "  for (var k = 0; k < list.length; k++) (function (b) {",
+    "    var run = b.run, calls = 0;",
+    "    b.run = function () {",
+    `      ${p.before}`,
+    "      run.call(this);",
+    `      ${p.after.split("\n").join("\n      ")}`,
+    '      print("check " + b.name + " " + ++calls + " " + __ep9Hash);',
+    "    };",
+    "  })(list[k]);",
+    "})();",
+    "// ---- end of the result probe ----",
+    "",
+  ].join("\n");
+  const cut = at + end.length;
+  return { ...g, text: g.text.slice(0, cut) + block + g.text.slice(cut), probe: p.what };
+}
+
 const clean = (s) => (s ?? "").replace(/\r\n/g, "\n").trim();
 
 function runOnce(bin, file, timeoutS) {
@@ -168,7 +285,7 @@ export function check(o, deps = {}) {
     for (const id of KERNEL_IDS) {
       let g;
       try {
-        g = generateKernel(id, { n: o.n, harness: o.harness });
+        g = withProbe(generateKernel(id, { n: o.n, harness: o.harness }));
       } catch (e) {
         throw new OracleError(`${id}: ${e.message}`);
       }
@@ -176,9 +293,14 @@ export function check(o, deps = {}) {
       writeFileSync(file, g.text);
       const node = runOnce(o.node, file, o.timeoutS);
       const nodeOut = clean(node.stdout);
-      if (node.status !== 0 || nodeOut !== g.expect) {
+      // node must print the generator's lines and, for a probed kernel, one probe line per run() call.
+      const nodeLines = nodeOut.split("\n");
+      const nodeChecks = nodeLines.filter((l) => l.startsWith("check ")).map((l) => l.replace(/ -?\d+$/, ""));
+      const wantChecks = g.probe ? probeKeys(g) : [];
+      const probeOk = nodeChecks.length === wantChecks.length && nodeChecks.every((l, i) => l === wantChecks[i]);
+      if (node.status !== 0 || nodeLines.filter((l) => !l.startsWith("check ")).join("\n") !== g.expect || !probeOk) {
         const why = node.error ? node.error.message : node.status !== 0 ? `exit ${node.status}: ${clean(node.stderr).split("\n")[0]}` : `printed ${JSON.stringify(nodeOut)}`;
-        throw new OracleError(`${id} on the oracle ${o.node}: ${why}; want ${JSON.stringify(g.expect)}`);
+        throw new OracleError(`${id} on the oracle ${o.node}: ${why}; want ${JSON.stringify(g.expect)}${g.probe ? ` and the probe lines ${JSON.stringify(wantChecks.join("\n"))}` : ""}`);
       }
       const r = runOnce(o.check, file, o.timeoutS);
       const out = clean(r.stdout);
@@ -192,6 +314,7 @@ export function check(o, deps = {}) {
         pin: g.pin,
         blob: g.blob,
         expect: g.expect,
+        probe: g.probe,
         oracle_output: nodeOut,
         output: out,
         exit: r.status,

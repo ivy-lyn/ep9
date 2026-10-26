@@ -187,7 +187,11 @@ node tools/bench/cross/exit2.mjs run.json --out exit2.json                      
 - **kernels.mjs** runs each of the 15 kernels (ids `v8v7/<k>` and `octane/<k>`) once (N = 1) on
   node (the oracle; `--node`, default the node that runs it) and on ep9. A kernel is
   "runs, output equal" when ep9 exits with 0 and prints what node prints, and node must print
-  the generator's `<name> <N>` lines (else exit 3, no verdict). A failure shows the first error,
+  the generator's `<name> <N>` lines (else exit 3, no verdict). Those lines come from the
+  harness, so the kernels that check no result of their own (v8-v7 regexp; navier-stokes, whose
+  Octane check runs only at frame 15) get a result probe in the checked file: after each run()
+  it prints `check <name> <i> <hash>`, a hash of the regexp results or of the solver's grids,
+  which ep9 must print as node does (timed runs have no probe). A failure shows the first error,
   its line in base.js or the kernel file, and a named blocker when the error names a feature
   (pow core, RegExp, or the `Math.<f>` calls of that line that ep9's `Math` lacks).
   `--not-yet LIST` names kernels that may fail (a role's NOT-YET list). The JSON (schema
@@ -200,12 +204,13 @@ node tools/bench/cross/exit2.mjs run.json --out exit2.json                      
   geomeans with the order-statistic interval and the IQR void rule. Gate: "pass" when the
   interval's low end is at least the threshold (Octane-7 vs QuickJS 1.0; v8-v7 7-kernel vs node
   `--jitless` 0.75), "fail" when its high end is below it, else "marginal". No gate verdict when
-  the run is provisional, a kernel row is not valid, the per-round geomeans are void, or a v8-v7
-  kernel ran without the real base.js (V9-D14). Freshness is m1-exit's check (the JSON names the
+  the run is provisional, a kernel row is not valid, the per-round geomeans are void, a v8-v7
+  kernel ran without the real base.js (V9-D14), or the run has fewer than 10 paired rounds
+  (`M.rounds`, `options.rounds` and every ratio series must agree). Freshness is m1-exit's check (the JSON names the
   commit). Exit 0 both pass; 1 otherwise; 2 usage.
 - Tests: `node --test tools/bench/cross/run.test.mjs` (fixtures in `cross/testdata/`:
   `cross-exit2.json`, a synthetic run; `fake-kernels-ep9.sh`, an engine that runs node or fails
-  on purpose).
+  on purpose; `fake-fault.mjs`, its faults for the probe tests).
 
 ### Host files
 
