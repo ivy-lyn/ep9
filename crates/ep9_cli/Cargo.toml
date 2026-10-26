@@ -10,13 +10,18 @@ license.workspace = true
 name = "ep9"
 path = "src/main.rs"
 
-# Engine crates only. No crates.io dependencies.
+# Engine crates only. The one crates.io dependency is libc on unix (below).
 [dependencies]
 ep9_builtins = { path = "../ep9_builtins" }
 ep9_bytecode = { path = "../ep9_bytecode" }
 ep9_frontend = { path = "../ep9_frontend" }
 ep9_heap = { path = "../ep9_heap" }
 ep9_vm = { path = "../ep9_vm" }
+
+# The Fuzzilli REPRL mode (`ep9 --reprl`, src/reprl.rs): fds, shared memory and the sancov
+# callbacks. The ep9_platform version, so Cargo.lock gets no new package. Windows has no REPRL.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
 
 [features]
 default = ["jit"]

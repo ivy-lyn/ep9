@@ -83,6 +83,15 @@ pub struct HeapConfig {
     pub gc_stress: u32,
     /// Run the heap verifier after every collection and panic on an error.
     pub verify_after_gc: bool,
+    /// Which collections run the verifier when `verify_after_gc` is on. Declared in M4-P0 with
+    /// no effect yet: today every collection verifies, which is `VerifyMode::EveryGc` (the
+    /// default). The GC role (M4-P1) gives it its meaning. (`VerifyMode` is not re-exported
+    /// from the crate root yet; `HeapConfig::default().verify` names the default.)
+    pub verify: VerifyMode,
+    /// The S1 generational mode (03-gc; minor GCs, H09/H11). Declared in M4-P0 with no effect
+    /// yet: the heap is S0 whatever the value. `false` (the default) keeps S0; the GC role
+    /// turns it on behind this flag when S1 lands (M4-P2, M4-P3).
+    pub generational: bool,
     /// Fill freed cells with [`ZAP_WORD`].
     pub zap: bool,
     /// Keep the cells that the last conservative scan found ([`Heap::last_conservative_roots`]).
@@ -104,11 +113,22 @@ impl Default for HeapConfig {
             initial_budget: 8 << 20,
             gc_stress: 0,
             verify_after_gc: false,
+            verify: VerifyMode::EveryGc,
+            generational: false,
             zap: cfg!(debug_assertions),
             record_conservative_roots: false,
             shape_space_bytes: 0,
         }
     }
+}
+
+/// Which collections run the heap verifier ([`HeapConfig::verify`]). Declared in M4-P0 with
+/// no effect yet. The GC role may add a mode that verifies only some collections (M4-P1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VerifyMode {
+    /// Every collection, as today.
+    #[default]
+    EveryGc,
 }
 
 /// Why an allocation failed.

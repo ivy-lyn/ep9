@@ -13,9 +13,15 @@
 //! The isolate runs on its own thread with a fixed native stack (`--stack-size`, default
 //! 64 MiB), so the stack-limit RangeError behaves the same on every target (the main thread
 //! of a Windows process has only 1 MiB).
-#![forbid(unsafe_code)]
+//!
+//! Only the `reprl` module may opt out of the lint below: the Fuzzilli REPRL mode needs raw
+//! fds, shared memory and exported sancov callbacks. A crate-level `forbid` cannot be relaxed
+//! for one module, so the crate uses `deny` and `reprl` alone has the `allow`.
+#![deny(unsafe_code)]
 
 mod args;
+#[allow(unsafe_code)]
+mod reprl;
 mod run;
 
 use std::process::ExitCode;
@@ -32,6 +38,7 @@ fn main() -> ExitCode {
             print!("{}", args::USAGE);
             return ExitCode::SUCCESS;
         }
+        Ok(args::Command::Reprl) => return ExitCode::from(reprl::main()),
         Err(msg) => {
             eprintln!("ep9: {msg}\n\n{}", args::USAGE);
             return ExitCode::from(2);

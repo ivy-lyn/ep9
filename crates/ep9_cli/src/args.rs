@@ -27,6 +27,7 @@ options:
   --facts-out <file>   after the run, write the feedback facts of the script (or of the entry
                        module) to <file> as an encoded FactSnapshot v0 (H16)
   --stack-size <MiB>   native stack of the isolate thread (default 64)
+  --reprl              Fuzzilli REPRL mode (not built yet: exits 2)
   -h, --help           print this text
   --version            print the version
 
@@ -65,6 +66,8 @@ pub enum Command {
     Run(Options),
     Version,
     Help,
+    /// `--reprl`: the Fuzzilli REPRL loop (reprl.rs). The other arguments are ignored.
+    Reprl,
 }
 
 fn feedback_threshold(v: &str) -> Result<u32, String> {
@@ -120,6 +123,7 @@ pub fn parse(argv: &[String]) -> Result<Command, String> {
         match arg.as_str() {
             "-h" | "--help" => return Ok(Command::Help),
             "--version" | "-v" => return Ok(Command::Version),
+            "--reprl" => return Ok(Command::Reprl),
             "-e" | "--eval" => {
                 let code = it.next().ok_or("-e needs a value")?;
                 set_source(&mut source, Source::Eval(code.clone()))?;
@@ -247,5 +251,6 @@ mod tests {
         assert!(run(&["--module", "--strict", "a.js"]).is_err());
         assert_eq!(parse(&["--version".into()]).unwrap(), Command::Version);
         assert_eq!(parse(&["-h".into()]).unwrap(), Command::Help);
+        assert_eq!(parse(&["--reprl".into()]).unwrap(), Command::Reprl);
     }
 }
