@@ -18,6 +18,9 @@
 #   FUZZ_TIMEOUT    seconds per input (default 30) FUZZ_MAX_LEN   -max_len (default 4096)
 #
 # Exit 0: no crash file and libFuzzer exit 0. Exit 1: a fixed text and the hashes only.
+# A crash file is every artifact file except libFuzzer's `slow-unit-*` (an input that took at
+# least -report_slow_units seconds, default 10, but less than -timeout): those are listed with
+# their hashes but do not fail the run (a timeout is a `timeout-*` file and does).
 set -uo pipefail
 
 fuzz_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -96,18 +99,28 @@ rc=$?
 secs=$(($(date +%s) - start))
 
 files=()
+slow=()
 while IFS= read -r f; do
-  files+=("$f")
+  case "${f##*/}" in
+    slow-unit-*) slow+=("$f") ;;
+    *) files+=("$f") ;;
+  esac
 done < <(find "$art" -type f | LC_ALL=C sort)
 n=${#files[@]}
-echo "fuzz $target ($mode, ${secs}s): libFuzzer exit $rc, $n crash file(s)"
+echo "fuzz $target ($mode, ${secs}s): libFuzzer exit $rc, $n crash file(s), ${#slow[@]} slow unit(s)"
 hashes=()
-for f in "${files[@]}"; do
+for f in ${files[@]+"${files[@]}"}; do
   base="${f##*/}"
   kind="${base%%-*}"
   h="$(sha256 "$f")"
   hashes+=("$h")
   echo "  $kind sha256:$h"
+done
+slow_hashes=()
+for f in ${slow[@]+"${slow[@]}"}; do
+  h="$(sha256 "$f")"
+  slow_hashes+=("$h")
+  echo "  slow-unit sha256:$h (not a failure)"
 done
 # Numbers only: no line of the log is printed unless it is "stat::<name>: <integer>" or
 # libFuzzer's random seed ("INFO: Seed: <integer>"; with the commit and the seed corpus it
@@ -123,7 +136,13 @@ if [ -n "${FUZZ_SUMMARY:-}" ]; then
     printf '"libfuzzer_exit":%s,"executed_units":%s,"crashes":%s,"crash_sha256":[' \
       "$rc" "${execs:-null}" "$n"
     sep=""
-    for h in "${hashes[@]}"; do
+    for h in ${hashes[@]+"${hashes[@]}"}; do
+      printf '%s"%s"' "$sep" "$h"
+      sep=","
+    done
+    printf '],"slow_units":%s,"slow_sha256":[' "${#slow[@]}"
+    sep=""
+    for h in ${slow_hashes[@]+"${slow_hashes[@]}"}; do
       printf '%s"%s"' "$sep" "$h"
       sep=","
     done

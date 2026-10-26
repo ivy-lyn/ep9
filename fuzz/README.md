@@ -26,14 +26,16 @@ crash = a panic or an abort anywhere (also on the front-end worker thread), an I
 - `scripts/seed-test262.sh <test262> <corpus root> [max]`: a test262 sample (test/language, below
   4 KiB, at most 1,500 files, front matter cut) in each target's input form.
 - `scripts/run.sh`: the only way to run a target here and in CI (below).
-- `scripts/self-test.sh`: proves run.sh's output rule on a fixture crash.
+- `scripts/self-test.sh`: proves run.sh's output rule on a fixture crash, and (with a stub
+  `cargo`) that a libFuzzer `slow-unit-*` file is not counted as a crash.
 
 ## Rules
 
 - **No input bytes leave the run** (the repo is public; plan v9 rule 14, V9-A17). libFuzzer and
   cargo-fuzz print a crash input as text, hex, Base64 and Debug bytes. `scripts/run.sh` sends all
   fuzzer output to `logs/<target>.log` and prints only the crash count, the SHA-256 of each
-  crash file and `stat::` numbers. CI uploads no log, no corpus and no crash file;
+  crash file (and of each `slow-unit-*` file, which is listed but does not fail the run) and
+  `stat::` numbers. CI uploads no log, no corpus and no crash file;
   `fuzz.yml` uploads a summary JSON of numbers and hashes. Crash files (`artifacts/`), corpora
   (`corpus/`) and logs (`logs/`) are git-ignored.
 - **The Mac builds and replays only** (plan v9 rule 23, V9-A6): `run.sh build` and
