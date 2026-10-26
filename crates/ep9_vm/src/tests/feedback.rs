@@ -68,6 +68,30 @@ fn program(calls: u32, how: How, back_edges: i32) -> VerifiedUnit {
     unit("", vec![s.finish(), f.finish()])
 }
 
+/// The script: `f = function f() { loop }` (function 1, a global; the loop has `back_edges`
+/// back edges), then one call of `f`.
+fn program_loop_in_f(back_edges: i32) -> VerifiedUnit {
+    let mut f = Asm::new(meta("f", 0, 0, 0, 0));
+    let i = f.b.new_register();
+    f.b.lda_zero().star(i);
+    let head = f.b.bound_label();
+    let exit = f.b.new_label();
+    f.b.lda_smi(back_edges)
+        .test_less_than(i, f.cmp)
+        .jump_if_false(exit);
+    f.b.ldar(i).inc(f.bin).star(i).jump_loop(head, 0, f.loop_);
+    f.b.bind(exit);
+    f.b.lda_undefined().return_();
+    let mut s = Asm::script(0);
+    let r = s.b.new_register();
+    let k = s.b.function_constant(FunctionId(1));
+    s.b.create_closure(k, s.closure, 0).star(r);
+    s.sta_global("f");
+    s.b.call_undefined_receiver0(r, s.call);
+    s.b.lda_undefined().return_();
+    unit("", vec![s.finish(), f.finish()])
+}
+
 /// The feedback state of one function after a run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct State {
@@ -185,14 +209,15 @@ fn no_vector_after_7_calls_and_a_vector_on_the_8th() {
     assert_eq!(IsolateConfig::default().feedback_threshold, 8);
     let t = IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD;
     // The T0 fast path counts and goes cold on the 8th call; `slow::call` makes the vector.
+    // The script gets its vector at entry (PERF3 step-2 item 3): no count.
     let [script, f] = run_states(t, || program(7, How::Fast, 0));
-    assert_eq!((script, f), (none(1), none(7)));
+    assert_eq!((script, f), (made(0), none(7)));
     let [_, f] = run_states(t, || program(8, How::Fast, 0));
     assert_eq!(f, made(8));
     let [_, f] = run_states(t, || program(30, How::Fast, 0));
     assert_eq!(f, made(8), "no count once the vector exists");
-    // `new f()` runs cold here: the script is entered once, so it has no vector and its
-    // construct site cannot hit (`construct_ic::fast`). `slow::call` counts and makes it.
+    // `new f()`: the cold path (`slow::call`) or, once the site keeps a `CONSTRUCT_SITE`
+    // handler, the construct-site hit (`construct_ic::fast`); both count the call.
     let [_, f] = run_states(t, || program(7, How::Construct, 0));
     assert_eq!(f, none(7));
     let [_, f] = run_states(t, || program(8, How::Construct, 0));
@@ -206,36 +231,68 @@ fn no_vector_after_7_calls_and_a_vector_on_the_8th() {
 
 #[test]
 fn thresholds_0_1_3_and_max() {
-    // 0 = eager: the script (an entry from Rust) and `f` get a vector at their first call.
+    // 0 = eager: `f` gets a vector at its first call. The script (a unit's entry code) gets
+    // its vector at entry under every threshold but u32::MAX, with no count (item 3).
     let [script, f] = run_states(0, || program(0, How::Fast, 0));
-    assert_eq!((script, f), (made(1), none(0)), "f is never called");
+    assert_eq!((script, f), (made(0), none(0)), "f is never called");
     let [script, f] = run_states(0, || program(1, How::Fast, 0));
-    assert_eq!((script, f), (made(1), made(1)));
+    assert_eq!((script, f), (made(0), made(1)));
     let [_, f] = run_states(0, || program(1, How::Construct, 0));
     assert_eq!(f, made(1));
     // 1: the first call; 3: the third.
     let [script, f] = run_states(1, || program(1, How::Fast, 0));
-    assert_eq!((script, f), (made(1), made(1)));
+    assert_eq!((script, f), (made(0), made(1)));
     let [script, f] = run_states(3, || program(2, How::Mixed, 0));
-    assert_eq!((script, f), (none(1), none(2)));
+    assert_eq!((script, f), (made(0), none(2)));
     let [_, f] = run_states(3, || program(3, How::Mixed, 0));
     assert_eq!(f, made(3));
-    // u32::MAX = never, not even at a loop's budget poll.
+    // u32::MAX = never: not at the entry, not at a loop's budget poll.
     let back_edges = 2 * BUDGET as i32;
     let [script, f] = run_states(u32::MAX, move || program(20, How::Mixed, back_edges));
-    assert_eq!((script, f), (none(1), none(20)));
+    assert_eq!((script, f), (none(0), none(20)));
+    let [_, f] = run_states(u32::MAX, move || program_loop_in_f(back_edges));
+    assert_eq!(f, none(1));
 }
 
 #[test]
 fn a_loop_that_runs_once_gets_a_vector_at_its_first_budget_poll() {
     // A fresh isolate starts with at most BUDGET units, and each back edge takes one, so the
-    // first poll comes at or before back edge BUDGET. The script is entered once (1 < 8).
+    // first poll comes at or before back edge BUDGET. `f` is called once (1 < 8).
     let t = IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD;
-    let [script, f] = run_states(t, || program(0, How::Fast, BUDGET as i32));
-    assert_eq!((script, f), (made(1), none(0)));
+    let [script, f] = run_states(t, || program_loop_in_f(BUDGET as i32));
+    assert_eq!((script, f), (made(0), made(1)));
     // A short loop has no poll.
-    let [script, _] = run_states(t, || program(0, How::Fast, 100));
-    assert_eq!(script, none(1));
+    let [_, f] = run_states(t, || program_loop_in_f(100));
+    assert_eq!(f, none(1));
+}
+
+#[test]
+fn a_script_gets_its_vector_at_entry() {
+    // PERF3 step-2 item 3 (M4-P2 FACTS2): a script's sites record from its first instruction,
+    // with no loop and no call. Before, a script (entered once) got a vector only at a loop
+    // poll, so its global loads and calls missed with no vector (ic-stats "no-vector").
+    let t = IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD;
+    let [script, _] = run_states(t, || program(0, How::Fast, 0));
+    assert_eq!(script, made(0));
+    // Its CreateClosure slot saw the one closure (`profile::record_closure`).
+    on_big_stack(|| {
+        let mut iso = isolate(IsolateConfig::default());
+        iso.with_cx_checkpoint(|cx| {
+            cx.run_script(program(1, How::Fast, 0), "test.js")
+                .map(|_| ())
+        })
+        .unwrap();
+        with_info(&iso, 0, |_, fi| {
+            let v = feedback::vector(fi).expect("the script has a vector");
+            let unit = fi.loaded_unit().unwrap();
+            let kinds_of = &unit.unit.functions[0].feedback_slots;
+            let closure = kinds_of
+                .iter()
+                .position(|&k| k == FeedbackSlotKind::CreateClosure)
+                .unwrap();
+            assert_eq!(feedback::value(v, closure as u32), int32_bits(1));
+        });
+    });
 }
 
 #[test]
