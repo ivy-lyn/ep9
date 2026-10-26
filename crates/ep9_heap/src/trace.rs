@@ -438,7 +438,7 @@ pub(crate) fn record_error(
 
 /// Passed to weak sources after marking. A slot whose cell is unmarked is dead.
 ///
-/// After a checked mark ([`Tracer::new_checked`]), [`WeakVisitor::visit`] also checks each
+/// After a checked mark (a GC with `verify_after_gc`), [`WeakVisitor::visit`] also checks each
 /// slot the way the verifier does, before it clears it: the weak root ranges are checked here,
 /// so the verify after that GC walks no root a second time.
 pub struct WeakVisitor<'h> {
