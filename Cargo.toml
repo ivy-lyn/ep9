@@ -31,6 +31,11 @@ oxc_diagnostics = "=0.155.0"
 oxc_parser = "=0.155.0"
 oxc_semantic = "=0.155.0"
 oxc_span = "=0.155.0"
+# RX0 (docs/decisions-log.md M4-PLAN-D15): the RegExp backend of ep9_regexp, from crates.io
+# with an exact pin and no patch in month 4. Only ep9_regexp imports it, and only ep9_vm depends
+# on ep9_regexp (.github/scripts/dep-guards.sh check 14). Month 5 adds the fork through
+# [patch.crates-io] (third_party/regress.commit, docs/plan/08-repo.md section 1).
+regress = "=0.12.0"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

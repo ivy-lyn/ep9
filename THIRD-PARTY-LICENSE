@@ -9,6 +9,9 @@ adds no duty for the users of ep9's own code.
 Not listed here:
 - Cargo dependencies (crates.io). Release builds ship a notice file that
   cargo-about generates from Cargo.lock (docs/plan/12-governance.md section 1).
+  For example regress 0.12.0 (MIT OR Apache-2.0), the RX0 backend of
+  ep9_regexp. Its planned fork patches (third_party/patches/regress/) are
+  code in this repository, so they get an entry here when they land.
 - Checkouts that scripts/sync-*.sh fetch into third_party/<name>/ (git-ignored).
   They are not part of this repository and ep9 binaries do not contain them.
 

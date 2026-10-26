@@ -276,4 +276,23 @@ else
   bad "(13) control: the panic scan failed on samples:$control"
 fi
 
+# 14) ep9_regexp is reached only from ep9_vm (08-repo section 2; decisions-log M4-PLAN-D15):
+#     no other workspace member has an edge to it, of any kind (normal, build or dev), so
+#     builtins reach the RegExp backend only through Cx methods. Check 8 keeps ep9_builtins'
+#     own edges. Control: the same query on a sample graph with an ep9_builtins -> ep9_regexp
+#     edge must name ep9_builtins, so a query that never matches fails here.
+# dependents_of <name> <metadata json>: the workspace members with a direct edge to <name>.
+dependents_of() {
+  jq -r --arg n "$1" '.workspace_members as $m | .packages[] | select(.id as $id | $m | index($id)) | select(any(.dependencies[]; .name == $n)) | .name' <<< "$2" | sort -u
+}
+sample='{"workspace_members":["b","v","r"],"packages":[{"id":"b","name":"ep9_builtins","dependencies":[{"name":"ep9_vm"},{"name":"ep9_regexp"}]},{"id":"v","name":"ep9_vm","dependencies":[{"name":"ep9_regexp"}]},{"id":"r","name":"ep9_regexp","dependencies":[]}]}'
+if [ "$(dependents_of ep9_regexp "$sample" | paste -sd ' ' -)" != "ep9_builtins ep9_vm" ]; then
+  bad "(14) control: the query does not find ep9_builtins -> ep9_regexp in a sample graph"
+elif ! member_exists ep9_regexp; then
+  ok "(14) ep9_regexp does not exist yet"
+else
+  users="$(dependents_of ep9_regexp "$meta" | paste -sd ' ' -)"
+  if [ "$users" = ep9_vm ]; then ok "(14) only ep9_vm depends on ep9_regexp"; else bad "(14) ep9_regexp must have ep9_vm as its only dependent; it has: ${users:-none}"; fi
+fi
+
 exit "$fail"
