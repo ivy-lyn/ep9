@@ -5,9 +5,11 @@
 //! | `barrier.rs` | barrier v2: filter, threshold compare, slow path stores, shape install, init |
 //! | `model.rs` | the H11 decision model: exhaustive interleavings, 6 scenarios, negative controls |
 //! | `alloc.rs` | TLAB, holes, overflow, LOS, pre-fill, kinds, limits, offsets |
+//! | `ephemeron.rs` | `Tracer::visit_ephemeron`: own-key values, cycles, key1 -> value1 -> key2 chains (rounds and the linear form), non-cell keys, random graphs against a model fixpoint |
 //! | `gc.rs` | mark-sweep with precise roots, weak slots, lazy sweep, zapping, GC-stress, verifier |
 //! | `css.rs` | conservative stack scan: locals, interior and one-past-end pointers, S7 (not Miri) |
 //! | `stress.rs` | randomized mutator against a model of the object graph |
+//! | `s1.rs` | S1 step 1 behind `HeapConfig::generational`: remembered lists, LOS cards, sticky marks, the verifier's S1 rules, GC-stress, a caught panic |
 //! | `shape.rs` | the shape region: ShapeId = cage offset, word0 edge, weak clearing, full region, shared commit limit, config |
 //! | `verify.rs` | the verify after a GC (checked mark + checked sweep) finds each fault `Heap::verify` finds; the planted dangling slot; the E2 check |
 
@@ -19,8 +21,10 @@ mod alloc;
 mod barrier;
 #[cfg(not(miri))]
 mod css;
+mod ephemeron;
 mod gc;
 mod model;
+mod s1;
 mod shape;
 mod stress;
 mod verify;

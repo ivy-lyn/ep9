@@ -9,6 +9,16 @@
 //!        with a shape space: word0.shape_id != 0 -> mark cage base + shape_id (H08-Q1)
 //! weak:  Tracer::visit_weak records the slot; after the fixpoint, a slot whose cell is
 //!        unmarked is cleared to `undefined`
+//! ephemeron (key, value), e.g. a WeakMap entry: the key slot is weak; the value is traced
+//!        only once the key is marked
+//!   visit_ephemeron: key not a cell, or already marked -> visit(value) now
+//!                    else -> pending list
+//!   drain_to_fixpoint: drain; then rounds of {pending entry whose key is now marked ->
+//!        visit(value); drain} until a round marks nothing; after EPHEMERON_ROUNDS rounds the
+//!        rest goes to a map key -> values, and each cell the drain pops looks itself up
+//!        (linear: each entry is resolved once, each popped cell costs one lookup)
+//!   after the fixpoint the keys left are dead: each value slot becomes a weak slot, so it is
+//!        cleared with its key unless its cell is live by another path
 //! ```
 //!
 //! The shape that word0 names is a strong edge of every cell, so no trace function visits
@@ -31,8 +41,10 @@
 //! check), so the verify after the GC compares the cells the sweep keeps with the cells this
 //! tracer pushed ([`Tracer::pushed_cells`], verify.rs).
 
+use core::hash::{BuildHasherDefault, Hasher};
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering::Relaxed;
+use std::collections::HashMap;
 
 use ep9_value::Value;
 
@@ -63,6 +75,7 @@ pub(crate) enum Context {
 /// | [`Tracer::visit_value`], [`Tracer::visit_bits`] | a `Value` copy; a raw VM-stack word |
 /// | [`Tracer::visit_cell`] | a raw cell pointer field (not a `Value`) |
 /// | [`Tracer::visit_weak`] | a weak `Value` slot inside a cell: cleared at GC end if its cell dies |
+/// | [`Tracer::visit_ephemeron`] | a (key, value) pair inside a cell: the key is weak, the value is strong only while the key is live |
 ///
 /// A trace function or root source must not call into the [`crate::Heap`].
 pub struct Tracer<'h> {
@@ -76,6 +89,14 @@ pub struct Tracer<'h> {
     shape_bytes: usize,
     stack: Vec<CellPtr>,
     weak: Vec<NonNull<Slot>>,
+    /// Ephemerons whose key was not marked when they were visited: (key slot, value slot).
+    ephemerons: Vec<(NonNull<Slot>, NonNull<Slot>)>,
+    /// The linear form of the fixpoint (after [`EPHEMERON_ROUNDS`] rounds): key address ->
+    /// the value slots that wait for it. `None` before.
+    waiting: Option<EphemeronMap>,
+    /// Rounds the last [`Tracer::drain_to_fixpoint`] ran, and whether it went linear.
+    pub(crate) ephemeron_rounds: u32,
+    pub(crate) ephemeron_linear: bool,
     pub(crate) marked_cells: usize,
     pub(crate) marked_bytes: usize,
     /// Cells whose mark bit this tracer set (each is pushed once). After a checked mark, the
@@ -88,6 +109,38 @@ pub struct Tracer<'h> {
 
 /// Errors kept by one verifier run; more are counted, not stored.
 pub(crate) const MAX_ERRORS: usize = 32;
+
+/// Rounds of the ephemeron fixpoint before it switches to the linear form. Each round scans
+/// every pending entry, so a chain of n entries met in the wrong order would cost n rounds of
+/// n (V8 bounds its rounds the same way and then goes linear). Real chains are short: most
+/// GCs end in one or two rounds.
+pub(crate) const EPHEMERON_ROUNDS: u32 = 8;
+
+/// Key address -> the value slots that wait for that key (the linear form of the fixpoint).
+type EphemeronMap = HashMap<usize, Vec<NonNull<Slot>>, BuildHasherDefault<AddrHasher>>;
+
+/// A fixed hash of a cell address for [`EphemeronMap`]: no random state, so a GC does the
+/// same work in every run (instruction counts, H12-Q2), and the map never leaves the GC.
+#[derive(Default)]
+struct AddrHasher(u64);
+
+impl Hasher for AddrHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(8) ^ u64::from(b)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+    }
+
+    fn write_usize(&mut self, addr: usize) {
+        // Cells are 8-byte aligned: drop the 3 zero bits, then a Fibonacci multiply spreads
+        // the rest over the high bits too.
+        self.0 = ((addr as u64) >> 3).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
 
 impl<'h> Tracer<'h> {
     pub(crate) fn new(
@@ -106,6 +159,10 @@ impl<'h> Tracer<'h> {
             shape_bytes: mem.shape_bytes(),
             stack,
             weak,
+            ephemerons: Vec::new(),
+            waiting: None,
+            ephemeron_rounds: 0,
+            ephemeron_linear: false,
             marked_cells: 0,
             marked_bytes: 0,
             pushed_cells: 0,
@@ -131,6 +188,7 @@ impl<'h> Tracer<'h> {
     pub(crate) fn into_lists(mut self) -> (Vec<CellPtr>, Vec<NonNull<Slot>>) {
         self.stack.clear();
         self.weak.clear();
+        debug_assert!(self.ephemerons.is_empty() && self.waiting.is_none());
         (self.stack, self.weak)
     }
 
@@ -202,24 +260,10 @@ impl<'h> Tracer<'h> {
                     self.mem.contains(core::ptr::from_ref(slot).addr()),
                     "visit_weak on a slot outside the heap"
                 );
-                if self.check {
-                    // The verifier's checks of a weak slot, before the slot can be cleared: a
-                    // dangling weak reference would otherwise be cleared without a word.
-                    if bits == 0 {
-                        self.error(format_args!("slot holds the bits 0"));
-                        return;
-                    }
-                    if !Value::is_valid_bits(bits) {
-                        self.error(format_args!("slot holds invalid Value bits {bits:#018x}"));
-                        return;
-                    }
-                    if is_cell_bits(bits) && cell_start(self.mem, bits as usize).is_none() {
-                        self.error(format_args!(
-                            "reference {:#x} is not the start of a live cell",
-                            bits as usize
-                        ));
-                        return;
-                    }
+                // The verifier's checks of a weak slot, before the slot can be cleared: a
+                // dangling weak reference would otherwise be cleared without a word.
+                if self.check && !self.check_weak_bits(bits) {
+                    return;
                 }
                 debug_assert!(bits != 0, "a weak slot holds the bits 0 (H06-empty)");
                 if bits != 0 && is_cell_bits(bits) {
@@ -228,6 +272,77 @@ impl<'h> Tracer<'h> {
             }
             Mode::Verify => self.visit_bits(bits),
         }
+    }
+
+    /// An ephemeron: `value` is strong only while the cell in `key` is live (a WeakMap entry;
+    /// 03-gc "Weak semantics"). `key` is a weak slot as [`Tracer::visit_weak`] treats it: it
+    /// is cleared to `undefined` at GC end if its cell dies, and then `value` is cleared too,
+    /// unless its own cell is live by another path. A key that is not a cell keeps `value` as
+    /// a strong slot would. Both slots lie inside the live cell being traced.
+    ///
+    /// A value is traced once its key is marked, from any path, also when the key is marked
+    /// later in this GC (the fixpoint, module doc). So a value that reaches only its own key,
+    /// or a cycle of entries whose keys only the values reach, does not keep itself alive.
+    pub fn visit_ephemeron(&mut self, key: &Slot, value: &Slot) {
+        if self.mode == Mode::Verify {
+            self.visit_bits(key.bits());
+            self.visit_bits(value.bits());
+            return;
+        }
+        debug_assert!(
+            self.mem.contains(core::ptr::from_ref(value).addr()),
+            "visit_ephemeron on a slot outside the heap"
+        );
+        let errors = self.errors.len();
+        self.visit_weak(key);
+        let kb = key.bits();
+        if (self.check && self.errors.len() != errors)
+            || kb == 0
+            || !is_cell_bits(kb)
+            || is_marked(self.mem, kb as usize)
+        {
+            // A live key (or a bad one, which the check just reported): the value is strong.
+            self.visit(value);
+            return;
+        }
+        let vb = value.bits();
+        // The value may wait to the end and then be cleared as a weak slot: check it now.
+        if self.check && !self.check_weak_bits(vb) {
+            return;
+        }
+        if vb == 0 || !is_cell_bits(vb) {
+            return;
+        }
+        match &mut self.waiting {
+            Some(map) => map
+                .entry(kb as usize)
+                .or_default()
+                .push(NonNull::from(value)),
+            None => self
+                .ephemerons
+                .push((NonNull::from(key), NonNull::from(value))),
+        }
+    }
+
+    /// The verifier's checks of a weak slot's bits (not 0, valid `Value` bits, a cell
+    /// reference is the start of a live cell). False after an error.
+    fn check_weak_bits(&mut self, bits: u64) -> bool {
+        if bits == 0 {
+            self.error(format_args!("slot holds the bits 0"));
+            return false;
+        }
+        if !Value::is_valid_bits(bits) {
+            self.error(format_args!("slot holds invalid Value bits {bits:#018x}"));
+            return false;
+        }
+        if is_cell_bits(bits) && cell_start(self.mem, bits as usize).is_none() {
+            self.error(format_args!(
+                "reference {:#x} is not the start of a live cell",
+                bits as usize
+            ));
+            return false;
+        }
+        true
     }
 
     fn edge(&mut self, addr: usize) {
@@ -322,36 +437,130 @@ impl<'h> Tracer<'h> {
     }
 
     /// Traces until the mark stack is empty. With a shape space, it also marks the shape that
-    /// each traced cell's word0 names.
+    /// each traced cell's word0 names. Ephemerons whose key is still unmarked stay pending
+    /// ([`Tracer::drain_to_fixpoint`] resolves them).
     pub(crate) fn drain(&mut self) {
         while let Some(c) = self.stack.pop() {
-            // SAFETY: only marked cell starts are pushed.
-            let h = unsafe { c.header() };
-            let kind = h.kind();
-            if self.check {
-                self.context = Context::Cell(c, kind);
-            }
-            let Some(k) = self.kinds.get(kind).copied() else {
-                if self.check {
-                    self.error(format_args!("unregistered kind {kind}"));
-                    continue;
-                }
-                panic!("heap corrupt: cell {c:?} has the unregistered kind {kind}");
-            };
-            self.marked_cells += 1;
-            let size = self.kinds.cell_size(c);
-            if self.check {
-                self.check_marked(c, kind, size);
-            }
-            self.marked_bytes += size.unwrap_or(0);
-            if self.shape_bytes != 0 {
-                let id = h.shape_id().get() as usize;
-                if id != 0 {
-                    self.mark_shape(c, id);
-                }
-            }
-            (k.trace)(c, self);
+            self.trace_one(c);
         }
+    }
+
+    /// [`Tracer::drain`] in the linear form of the ephemeron fixpoint: each popped cell first
+    /// releases the values that wait for it as a key. Rare, so out of line: the hot drain
+    /// keeps the only inlined copy of `trace_one`.
+    #[cold]
+    #[inline(never)]
+    fn drain_linear(&mut self) {
+        while let Some(c) = self.stack.pop() {
+            if let Some(values) = self.waiting.as_mut().and_then(|m| m.remove(&c.addr())) {
+                for v in values {
+                    // SAFETY: the value slot lies in a cell that this GC traced, so it stays
+                    // valid until the GC ends (nothing is freed while marking).
+                    self.visit(unsafe { v.as_ref() });
+                }
+            }
+            self.trace_one_outlined(c);
+        }
+    }
+
+    #[inline(never)]
+    fn trace_one_outlined(&mut self, c: CellPtr) {
+        self.trace_one(c);
+    }
+
+    /// Marks everything reachable from the roots given so far, ephemerons included: drains,
+    /// then traces the value of each pending ephemeron whose key got marked, and repeats until
+    /// nothing new is marked (module doc). After it, the pending entries have dead keys: their
+    /// value slots join the weak slots, so [`Tracer::clear_weak_slots`] clears each one whose
+    /// cell is unmarked. Called once per GC, after the last root.
+    pub(crate) fn drain_to_fixpoint(&mut self) {
+        self.drain();
+        let mut rounds = 0;
+        while !self.ephemerons.is_empty() {
+            if rounds == EPHEMERON_ROUNDS {
+                self.ephemerons_linear();
+                break;
+            }
+            rounds += 1;
+            self.resolve_ephemerons();
+            if self.stack.is_empty() {
+                // No key was marked since the last round: the rest stays dead.
+                break;
+            }
+            self.drain();
+        }
+        self.ephemeron_rounds = rounds;
+        let dead = self.ephemerons.drain(..).map(|(_, v)| v);
+        self.weak.extend(dead);
+        if let Some(map) = self.waiting.take() {
+            self.weak.extend(map.into_values().flatten());
+        }
+    }
+
+    /// One round: traces the value of every pending ephemeron whose key is marked now, and
+    /// drops it from the list.
+    fn resolve_ephemerons(&mut self) {
+        let mut i = 0;
+        while i < self.ephemerons.len() {
+            let (k, v) = self.ephemerons[i];
+            // SAFETY: both slots lie in cells that this GC traced; nothing is freed while
+            // marking, so they stay valid.
+            let kb = unsafe { k.as_ref() }.bits();
+            if is_marked(self.mem, kb as usize) {
+                self.ephemerons.swap_remove(i);
+                // SAFETY: as above.
+                self.visit(unsafe { v.as_ref() });
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// The linear form: one more round (so every key left is unmarked), then a map key ->
+    /// values, and a drain in which each popped cell releases its waiting values. New
+    /// ephemerons with an unmarked key go straight into the map ([`Tracer::visit_ephemeron`]).
+    fn ephemerons_linear(&mut self) {
+        self.ephemeron_linear = true;
+        self.resolve_ephemerons();
+        let mut map = EphemeronMap::default();
+        for (k, v) in self.ephemerons.drain(..) {
+            // SAFETY: as in `resolve_ephemerons`.
+            let kb = unsafe { k.as_ref() }.bits();
+            map.entry(kb as usize).or_default().push(v);
+        }
+        self.waiting = Some(map);
+        self.drain_linear();
+    }
+
+    /// Traces one marked cell.
+    #[inline(always)]
+    fn trace_one(&mut self, c: CellPtr) {
+        // SAFETY: only marked cell starts are pushed.
+        let h = unsafe { c.header() };
+        let kind = h.kind();
+        if self.check {
+            self.context = Context::Cell(c, kind);
+        }
+        let Some(k) = self.kinds.get(kind).copied() else {
+            if self.check {
+                self.error(format_args!("unregistered kind {kind}"));
+                return;
+            }
+            panic!("heap corrupt: cell {c:?} has the unregistered kind {kind}");
+        };
+        self.marked_cells += 1;
+        let size = self.kinds.cell_size(c);
+        if self.check {
+            self.check_marked(c, kind, size);
+        }
+        self.marked_bytes += size.unwrap_or(0);
+        if self.shape_bytes != 0 {
+            let id = h.shape_id().get() as usize;
+            if id != 0 {
+                self.mark_shape(c, id);
+            }
+        }
+        (k.trace)(c, self);
     }
 
     /// A checked mark's checks of a cell it traces (the context names it), besides its
@@ -373,8 +582,9 @@ impl<'h> Tracer<'h> {
         }
     }
 
-    /// Marks the shape cell at offset `id` of the region (the word0 shape of `host`).
-    #[inline]
+    /// Marks the shape cell at offset `id` of the region (the word0 shape of `host`). Inlined
+    /// into the drain: it runs for every traced cell with a shape.
+    #[inline(always)]
     fn mark_shape(&mut self, host: CellPtr, id: usize) {
         match self.shape_at(id) {
             Some(s) => {

@@ -100,10 +100,13 @@ fn table_size(c: CellPtr) -> usize {
 
 /// The trace function. A strong table (Map, Set) visits every Value slot. A weak table
 /// (WeakMap, WeakSet) visits the counts, the flags and the bucket heads strongly (int32s, or
-/// the forward of an obsolete table); each key slot with `visit_weak` (cleared to undefined
-/// at GC end if its cell dies); each value slot strongly while its key is there, else with
-/// `visit_weak` (the key died in an earlier GC: nothing may read the value again, and a
-/// dangling slot is never left behind); the chain slots hold int32s only.
+/// the forward of an obsolete table); each WeakSet key slot with `visit_weak` (cleared to
+/// undefined at GC end if its cell dies); each WeakMap entry whose key is there as an
+/// ephemeron (`visit_ephemeron`: the key is weak, and the value is traced only once the GC
+/// has marked the key by some other path, so a value that reaches its own key does not keep
+/// it alive); the value of an entry whose key is already gone (undefined: the key died in an
+/// earlier GC; HOLE: deleted) with `visit_weak` (nothing may read it again, and a dangling
+/// slot is never left behind); the chain slots hold int32s only.
 fn trace_table(c: CellPtr, t: &mut Tracer<'_>) {
     let size = table_size(c);
     if rd_i32(c, otf::FLAGS) & FLAG_WEAK_KEYS == 0 {
@@ -120,14 +123,15 @@ fn trace_table(c: CellPtr, t: &mut Tracer<'_>) {
     t.visit_slots(&slots[..head_words]);
     for i in 0..capacity {
         let e = &slots[head_words + i * width..head_words + (i + 1) * width];
+        if width != MAP_WIDTH {
+            t.visit_weak(&e[0]);
+            continue;
+        }
         let key = e[0].bits();
-        t.visit_weak(&e[0]);
-        if width == MAP_WIDTH {
-            if key == UNDEFINED || key == HOLE {
-                t.visit_weak(&e[1]);
-            } else {
-                t.visit(&e[1]);
-            }
+        if key == UNDEFINED || key == HOLE {
+            t.visit_weak(&e[1]);
+        } else {
+            t.visit_ephemeron(&e[0], &e[1]);
         }
     }
 }

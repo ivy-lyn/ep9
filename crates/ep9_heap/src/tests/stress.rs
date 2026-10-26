@@ -5,7 +5,8 @@
 //! roots: global handles, a VM-stack root source, scratch roots      (precise)
 //!        an array of addresses in this Rust frame                    (conservative, not Miri)
 //!        weak handles                                                 (weak)
-//! step:  alloc (small / medium / large) | store through Slot::set at a random threshold |
+//! step:  alloc (small / medium / large) | store through Slot::set at a random threshold
+//!        (generational heap: at its GEN threshold, so old hosts log) |
 //!        root change | weak handle | explicit collect;  GC-stress collects inside alloc
 //! after every GC:  may  = closure(precise + stack array + cells the scan reported)
 //!                  must = closure(precise + stack array)
@@ -70,6 +71,8 @@ struct Run<'h> {
     weaks: Vec<(WeakHandle, u32)>,
     stack_ids: [Option<u32>; STACK_ROOTS],
     conservative: bool,
+    /// The heap is generational: stores keep its GEN threshold.
+    generational: bool,
     seen_gcs: u64,
     checks: u64,
     freed_seen: u64,
@@ -331,12 +334,16 @@ impl<'h> Run<'h> {
             return;
         }
         let i = self.rng.below(n);
-        // Any threshold: the slow path must store exactly as the fast path does.
-        let th = [threshold::OFF, threshold::GEN, threshold::MARKING][self.rng.below(3)];
-        self.heap.barrier().set_threshold(th);
         let v = self.value(e);
-        store(self.heap, self.cell(host), i, v);
-        self.heap.barrier().set_threshold(threshold::OFF);
+        if self.generational {
+            store(self.heap, self.cell(host), i, v);
+        } else {
+            // Any threshold: the slow path must store exactly as the fast path does.
+            let th = [threshold::OFF, threshold::GEN, threshold::MARKING][self.rng.below(3)];
+            self.heap.barrier().set_threshold(th);
+            store(self.heap, self.cell(host), i, v);
+            self.heap.barrier().set_threshold(threshold::OFF);
+        }
         self.objs.get_mut(&host).unwrap().slots[i] = e;
     }
 
@@ -385,11 +392,18 @@ struct Stats {
     gcs: u64,
 }
 
-#[inline(never)]
 fn run(seed: u64, steps: usize, gc_stress: u32) -> Stats {
+    run_with(seed, steps, gc_stress, false)
+}
+
+/// `generational`: S1 step 1 with the verify after every GC (sticky marks, logs).
+#[inline(never)]
+fn run_with(seed: u64, steps: usize, gc_stress: u32, generational: bool) -> Stats {
     let heap = test_heap(|c| {
         c.gc_stress = gc_stress;
         c.initial_budget = 1 << 20;
+        c.generational = generational;
+        c.verify_after_gc = generational;
     });
     let vm_stack = Rc::new(RefCell::new(vec![Value::UNDEFINED.to_bits(); 12]));
     let src = Rc::clone(&vm_stack);
@@ -418,6 +432,7 @@ fn run(seed: u64, steps: usize, gc_stress: u32) -> Stats {
         weaks: Vec::new(),
         stack_ids: [None; STACK_ROOTS],
         conservative: cfg!(not(miri)),
+        generational,
         seen_gcs: 0,
         checks: 0,
         freed_seen: 0,
@@ -438,7 +453,7 @@ fn run(seed: u64, steps: usize, gc_stress: u32) -> Stats {
     };
     let hs = heap.stats();
     println!(
-        "seed {seed:#x} stress {gc_stress}: {steps} steps, {} GCs, {} checks, {} cells freed, \
+        "seed {seed:#x} stress {gc_stress} generational {generational}: {steps} steps, {} GCs, {} checks, {} cells freed, \
          {} live at end, {} retained-by-scan cell-checks, {} B allocated, {} pages, {} LOS",
         s.gcs,
         s.checks,
@@ -498,6 +513,40 @@ fn random_mutator_many_seeds() {
 #[test]
 fn random_mutator_small() {
     let s = run(0xE9_4D49, 120, 5);
+    assert!(
+        s.gcs >= 5 && s.freed > 0,
+        "{} GCs, {} freed",
+        s.gcs,
+        s.freed
+    );
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "the Miri variant is below")]
+fn random_mutator_generational() {
+    let s = run_with(0xE9_5100, 1500, 1, true);
+    assert!(s.gcs >= 400 && s.checks == s.gcs, "{} GCs", s.gcs);
+    assert!(s.freed > 100, "{} freed", s.freed);
+    let s = run_with(0xE9_5107, 6000, 7, true);
+    assert!(
+        s.gcs >= 200 && s.freed > 500,
+        "{} GCs, {} freed",
+        s.gcs,
+        s.freed
+    );
+    let s = run_with(0xE9_5100, 20_000, 0, true);
+    assert!(
+        s.gcs >= 20 && s.freed > 1000,
+        "{} GCs, {} freed",
+        s.gcs,
+        s.freed
+    );
+}
+
+/// The Miri variant of the generational run.
+#[test]
+fn random_mutator_generational_small() {
+    let s = run_with(0xE9_4D51, 120, 5, true);
     assert!(
         s.gcs >= 5 && s.freed > 0,
         "{} GCs, {} freed",

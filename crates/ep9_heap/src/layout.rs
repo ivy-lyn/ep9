@@ -2,7 +2,8 @@
 //!
 //! ```text
 //! small page (256 KiB, 256 KiB aligned)          large object (LOS, one run of whole chunks)
-//! +0      PageHeader (64 B)                      +0    LargeHeader (64 B): size, chunks, mark
+//! +0      PageHeader (64 B area)                 +0    LargeHeader (64 B area): size, chunks,
+//!           +16 S1 remembered list                       mark; +32 S1 card table, +40 dirty
 //! +64     mark bitmap   1 bit / 8 B  (4 KiB)     +64   the cell (word0 first)
 //! +4160   VO bitmap     1 bit / 8 B  (4 KiB)     ...   committed up to the OS page after the cell
 //! +8256   line marks    1 B / 256 B line (1 KiB)
@@ -17,6 +18,8 @@
 //! | Header | in the page | H09-Q2 decided in S0 core: one mask finds all metadata, as JIT code needs |
 //! | Small cell | 16 B ..= 8 KiB | H09-Q3 default: LOS above 8 KiB |
 //! | Medium cell | above 256 B | Immix overflow allocation, so a medium cell never wastes a hole |
+//! | Remembered list (S1) | header +16: pointer, length, capacity | the byte offsets of the page's remembered hosts (V9-D21; remembered.rs) |
+//! | Card (S1) | 512 B of a LOS cell; header +32: card table pointer, +40: dirty byte | 03-gc §3: a LOS host dirties the card of the slot (remembered.rs) |
 //!
 //! The bitmaps cover the whole page, metadata included; their first bits stay 0.
 
@@ -58,6 +61,15 @@ pub const LARGE_CELL_OFFSET: usize = 64;
 /// and in `Value::from_bits_unchecked`'s debug check.
 pub const ZAP_WORD: u64 = 0xFFFF_DEAD_DEAD_BEEF;
 
+/// Bytes of a LOS cell per S1 card (03-gc §3).
+pub const CARD_SIZE: usize = 512;
+/// Offset of the S1 remembered list in a small page's header (`PageHeader`).
+pub const PAGE_REMEMBERED_OFFSET: usize = 16;
+/// Offset of the S1 card-table pointer in a `LargeHeader`.
+pub const LARGE_CARDS_OFFSET: usize = 32;
+/// Offset of the S1 dirty byte (any card dirty) in a `LargeHeader`.
+pub const LARGE_DIRTY_OFFSET: usize = 40;
+
 pub(crate) const PAGE_MAGIC: u32 = 0xE9E9_0256;
 pub(crate) const PAGE_KIND_SMALL: u8 = 1;
 pub(crate) const PAGE_KIND_LARGE: u8 = 2;
@@ -70,6 +82,13 @@ const _: () = {
     assert!(size_of::<PageHeader>() <= HEADER_BYTES);
     assert!(size_of::<LargeHeader>() <= LARGE_CELL_OFFSET);
     assert!(MIN_CELL_SIZE.is_multiple_of(GRANULE));
+    // The kind byte sits at +4 in both headers: the S1 slow path reads it to tell a small
+    // page from a large object (remembered.rs).
+    assert!(core::mem::offset_of!(PageHeader, kind) == 4);
+    assert!(core::mem::offset_of!(LargeHeader, kind) == 4);
+    assert!(core::mem::offset_of!(PageHeader, remembered) == PAGE_REMEMBERED_OFFSET);
+    assert!(core::mem::offset_of!(LargeHeader, cards) == LARGE_CARDS_OFFSET);
+    assert!(core::mem::offset_of!(LargeHeader, dirty) == LARGE_DIRTY_OFFSET);
 };
 
 /// Size that the allocator reserves for a request of `size` bytes: at least
@@ -91,6 +110,9 @@ pub(crate) struct PageHeader {
     _pad: [u8; 3],
     /// Index of this chunk in the heap reservation.
     pub(crate) chunk: u32,
+    _pad2: u32,
+    /// S1: the page's remembered hosts (empty unless the heap is generational).
+    pub(crate) remembered: crate::remembered::Remembered,
 }
 
 /// Header at offset 0 of the first chunk of a large object.
@@ -107,6 +129,11 @@ pub(crate) struct LargeHeader {
     pub(crate) size: usize,
     /// Bytes committed from the chunk base.
     pub(crate) committed: usize,
+    /// S1: one byte per [`CARD_SIZE`] bytes of the cell, 1 = dirty; null until the first
+    /// store into the cell logs (Rust memory, freed with the object).
+    pub(crate) cards: core::sync::atomic::AtomicPtr<u8>,
+    /// S1: 1 once any card is dirty, so a GC skips clean objects with one load.
+    pub(crate) dirty: AtomicU8,
 }
 
 /// A small page, by its base pointer. The pointer carries the provenance of the heap
@@ -126,7 +153,8 @@ impl Page {
         self.0.addr().get()
     }
 
-    /// Writes a fresh header and clears all metadata.
+    /// Writes a fresh header and clears all metadata. A remembered list of the page's last
+    /// use was freed with it (`Memory::free_small_page`).
     pub(crate) fn init(self, chunk: u32) {
         // SAFETY: the page is committed (constructor contract) and the metadata area
         // [0, FIRST_CELL_OFFSET) belongs to this page; no reference into it is live while the
@@ -138,6 +166,8 @@ impl Page {
                 kind: PAGE_KIND_SMALL,
                 _pad: [0; 3],
                 chunk,
+                _pad2: 0,
+                remembered: crate::remembered::Remembered::empty(),
             });
         }
     }
@@ -274,6 +304,8 @@ impl Large {
                 chunk,
                 size,
                 committed,
+                cards: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+                dirty: AtomicU8::new(0),
             })
         };
         Large(base)
