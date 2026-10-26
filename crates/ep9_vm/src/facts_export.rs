@@ -125,7 +125,7 @@ use crate::Isolate;
 use crate::atoms::Atom;
 use crate::builtins::{self, IntrinsicId};
 use crate::feedback;
-use crate::frame::{HOLE, NULL, UNDEFINED, int32_of};
+use crate::frame::{HOLE, NULL, UNDEFINED, int32_bits, int32_of};
 use crate::ic::{self, State, hk, smi};
 use crate::kinds::{self as kind, is_cell_bits};
 use crate::object::{self, attr, cell, obj, rd, rd_i32};
@@ -423,7 +423,8 @@ impl<'a> Exporter<'a> {
             }
             (K::InstanceOf, _) => {
                 // Not recorded before IC2 (M4-P3): a slot in its start state gives no record.
-                if feedback::key(v, i) == UNDEFINED && int_value(v, i) == Some(0) {
+                // The value half may be a handler or a POLY_IC cell, so no `int_value`.
+                if feedback::key(v, i) == UNDEFINED && feedback::value(v, i) == int32_bits(0) {
                     return None;
                 }
                 SlotFacts::InstanceOf(self.instance_of(units, v, i))

@@ -719,3 +719,63 @@ fn a_shared_call_and_construct_slot_is_megamorphic() {
     assert_eq!(valid, snap);
     assert_eq!(FactSnapshot::decode(&snap.encode()).unwrap(), snap);
 }
+
+#[test]
+fn an_instanceof_slot_gets_a_record_once_it_left_its_start_state() {
+    // `io(a, b)`: `a instanceof b` (InstanceOf slot 0). T0 records nothing there before IC2
+    // (M4-P3), so a slot in its start state (undefined, int32 0) gives no record; a slot in
+    // an IC2 form (the rhs function, and a handler cell) gives TargetFacts. The handler here
+    // stands in for IC2's: any cell, which the exporter must not read as an int32.
+    on_big_stack(|| {
+        let mut s = Asm::script(0);
+        for (i, name) in ["io", "g"].iter().enumerate() {
+            let k = s.b.function_constant(FunctionId(i as u32 + 1));
+            s.b.create_closure(k, s.closure, 0);
+            s.sta_global(name);
+        }
+        s.b.lda_undefined().return_();
+        let mut b = FunctionBuilder::new(meta("io", 2, 0, 0, 0));
+        let (a, rhs) = (b.parameter(0), b.parameter(1));
+        let slot = b.feedback_slot(FeedbackSlotKind::InstanceOf);
+        b.ldar(rhs).test_instance_of(a, slot).return_();
+        let mut g = FunctionBuilder::new(meta("g", 0, 0, 0, 0));
+        g.lda_undefined().return_();
+        let unit = unit(
+            "",
+            vec![s.finish(), b.finish().unwrap(), g.finish().unwrap()],
+        );
+        let mut c = config(Dispatch::DEFAULT, false);
+        c.feedback_threshold = 0;
+        let mut iso = isolate(c);
+        let u = unit.clone();
+        iso.with_cx(|cx| cx.run_script(u, "io.js").map(|_| ()))
+            .unwrap();
+        let g = iso
+            .with_cx(|cx| {
+                let io = cx.global_binding("io")?.expect("io");
+                let g = cx.global_binding("g")?.expect("g");
+                let o = cx.new_object();
+                cx.call(io, Local::undefined(), &[o.into(), g])?;
+                Ok(g.bits())
+            })
+            .unwrap();
+        let export = |iso: &Isolate| export_facts(iso, &unit.content_hash()).unwrap();
+        assert!(export(&iso).get(1, 0).is_none(), "start state: no record");
+        let v = feedback::vector(&iso.rt.units.borrow().last().unwrap().infos[1]).unwrap();
+        let handler = object::new_plain_object(&iso.rt);
+        feedback::set_slot(&iso.rt, v, 0, g, handler);
+        let snap = export(&iso);
+        let want = FunctionRef::Js {
+            unit: unit.content_hash(),
+            function: 2,
+        };
+        match snap.get(1, 0) {
+            Some(SlotFacts::InstanceOf(t)) => {
+                assert_eq!(t.state, IcState::Monomorphic);
+                assert_eq!(t.targets, [want]);
+            }
+            r => panic!("{r:?}"),
+        }
+        std::hint::black_box(handler);
+    });
+}
