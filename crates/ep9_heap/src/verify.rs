@@ -356,7 +356,8 @@ pub(crate) fn cell_checks(
 pub enum E2Check {
     /// No check (no GC-stress heap was made in this process).
     Off = 0,
-    /// Count and print each wrong claim (stderr, `ep9: E2 check: ...`); do not panic.
+    /// Count and print each wrong claim (stderr, `ep9: E2 check: ...`, and the file that
+    /// `EP9_E2_REPORT` names, if set) at counts 1, 10, 100, ...; do not panic.
     Report = 1,
     /// Panic at the first wrong claim.
     Assert = 2,
@@ -447,12 +448,32 @@ fn e2_wrong_claim(kind: u8, at: &'static core::panic::Location<'static>) {
             };
             drop(seen);
             if is_power_of_ten(n) {
-                eprintln!(
+                let line = format!(
                     "ep9: E2 check: barrier-free init store into a cell that survived a GC \
                      (kind {kind}) at {at} (seen {n} times)"
                 );
+                eprintln!("{line}");
+                e2_report_to_file(&line);
             }
         }
+    }
+}
+
+/// `EP9_E2_REPORT=<file>`: report lines are also appended to that file, one `write` per
+/// line. For runners whose workers' stderr is not kept (tools/test262 pipes it and keeps only
+/// a crash tail): every worker process appends to the same file.
+fn e2_report_to_file(line: &str) {
+    use std::io::Write;
+    static PATH: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    let Some(path) = PATH.get_or_init(|| std::env::var_os("EP9_E2_REPORT").map(Into::into)) else {
+        return;
+    };
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = f.write_all(format!("{line}\n").as_bytes());
     }
 }
 
