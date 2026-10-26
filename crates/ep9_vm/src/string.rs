@@ -335,6 +335,12 @@ fn flat_units<'a>(b: u64) -> Option<JsStr<'a>> {
     }
 }
 
+/// Is `b` a flat string (SEQ, SLICED or a flattened CONS), whose code units can be read
+/// without a flatten? The test of the `FlatStr` downcast (`abi/local.rs`). Not a GC point.
+pub(crate) fn is_flat(b: u64) -> bool {
+    is_string(b) && flat_units(b).is_some()
+}
+
 #[inline(never)]
 fn non_seq_units<'a>(b: u64) -> Option<JsStr<'a>> {
     let c = cell(b);

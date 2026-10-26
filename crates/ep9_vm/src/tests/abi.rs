@@ -885,3 +885,28 @@ fn object_ops_and_conversions() {
         assert!(cx.key_for(r).is_some_and(|k| cx.same_value(k, d)));
     });
 }
+
+/// A rope is not a [`crate::FlatStr`]: the checked downcast takes only a flat string (SEQ,
+/// SLICED or a flattened CONS), so `Cx::code_unit_at` never reads a rope (M4-P1 review F2;
+/// H20 `Local` markers). `Cx::flatten` and a downcast after it give one.
+#[test]
+fn flat_str_downcast_refuses_a_rope() {
+    with_cx(false, no_setup, |cx, rt| {
+        let a = cx.new_string("abcdefgh").unwrap();
+        let b = cx.new_string("ijklmnop").unwrap();
+        let rope = crate::string::concat(rt, a.bits(), b.bits()).expect("under the limit");
+        let r: Local<'_> = Local::from_bits(rope);
+        assert!(
+            r.downcast::<crate::FlatStr>().is_none(),
+            "a rope passed as FlatStr"
+        );
+        assert!(a.downcast::<crate::FlatStr>().is_some());
+        let s = r.downcast::<crate::JsString>().unwrap();
+        let flat = cx.flatten(s).unwrap();
+        assert_eq!(cx.code_unit_at(flat, 15), Some(u16::from(b'p')));
+        let again = r
+            .downcast::<crate::FlatStr>()
+            .expect("a flattened CONS is flat");
+        assert_eq!(cx.code_unit_at(again, 0), Some(u16::from(b'a')));
+    });
+}
