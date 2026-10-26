@@ -60,7 +60,7 @@ use crate::cell::{CellKind, CellPtr, CellSize, KindError, KindId, KindTable, Spa
 use crate::layout::{
     BITMAP_WORDS, FIRST_CELL_OFFSET, FIRST_LINE, LARGE_CELL_OFFSET, LINE_SIZE, LINES_PER_PAGE,
     Large, MARK_BITS_OFFSET, MAX_LINE_CELL, MAX_SMALL_SIZE, PAGE_CELL_BYTES, PAGE_MASK, PAGE_SIZE,
-    Page, ZAP_WORD, cell_size_for,
+    Page, VO_BITS_OFFSET, ZAP_WORD, cell_size_for,
 };
 use crate::memory::{HeapError, Memory};
 use crate::roots::{GlobalHandle, Handles, RootId, RootStrength, Roots, ScratchRoots, WeakHandle};
@@ -1231,57 +1231,69 @@ impl Inner {
         let mut live = 0usize;
         // CHECK: the end of the previous live cell.
         let mut prev_end = page.addr() + FIRST_CELL_OFFSET;
-        for w in 0..crate::layout::BITMAP_WORDS {
-            let vo = page.vo_word(w).load(Relaxed);
-            if vo == 0 {
+        let vo_bits = self
+            .mem
+            .ptr(page.addr() + VO_BITS_OFFSET)
+            .cast::<u64>()
+            .as_ptr();
+        // Blocks of SKIP_WORDS VO words: an empty block costs one test (under GC-stress most
+        // pages hold few cells, and this loop runs for every page at every GC).
+        for b in (0..BITMAP_WORDS).step_by(SKIP_WORDS) {
+            if block_is_empty(vo_bits, b) {
                 continue;
             }
-            let mk = page.mark_word(w).load(Relaxed);
-            if CHECK && mk & !vo != 0 {
-                sweep_error(errors, idx, format_args!("mark bit without a VO bit"));
-            }
-            debug_assert!(CHECK || mk & !vo == 0, "mark bit without a VO bit");
-            let mut alive = vo & mk;
-            while alive != 0 {
-                let bit = alive.trailing_zeros() as usize;
-                alive &= alive - 1;
-                let addr = page.addr() + (w * 64 + bit) * 8;
-                let size = if CHECK {
-                    self.check_live_cell(addr, &mut prev_end, errors)
-                } else {
-                    self.size_at(addr)
-                };
-                let first = (addr - page.addr()) / LINE_SIZE;
-                let last = (addr + size - 1 - page.addr()) / LINE_SIZE;
-                // SAFETY: lines first..=last are inside the line-mark array (a cell never
-                // crosses the page end).
-                unsafe {
-                    page.line_marks()
-                        .add(first)
-                        .write_bytes(1, last - first + 1)
-                };
-                live += 1;
-            }
-            // Free the dead cells before zapping them: no VO bit is left on a zapped cell.
-            page.vo_word(w).store(vo & mk, Relaxed);
-            let mut dead = vo & !mk;
-            while dead != 0 {
-                let bit = dead.trailing_zeros() as usize;
-                dead &= dead - 1;
-                let addr = page.addr() + (w * 64 + bit) * 8;
-                let size = self.size_at(addr);
-                if self.s.zap {
-                    let p = self.mem.ptr(addr).cast::<u64>();
-                    for i in 0..size / 8 {
-                        // SAFETY: the dead cell [addr, addr + size) is committed memory that no
-                        // live cell or root reaches; nothing reads it after this sweep.
-                        unsafe { p.add(i).write(ZAP_WORD) };
-                    }
+            for w in b..b + SKIP_WORDS {
+                let vo = page.vo_word(w).load(Relaxed);
+                if vo == 0 {
+                    continue;
                 }
-                self.stats.freed_cells += 1;
-                self.stats.freed_bytes += size as u64;
+                let mk = page.mark_word(w).load(Relaxed);
+                if CHECK && mk & !vo != 0 {
+                    sweep_error(errors, idx, format_args!("mark bit without a VO bit"));
+                }
+                debug_assert!(CHECK || mk & !vo == 0, "mark bit without a VO bit");
+                let mut alive = vo & mk;
+                while alive != 0 {
+                    let bit = alive.trailing_zeros() as usize;
+                    alive &= alive - 1;
+                    let addr = page.addr() + (w * 64 + bit) * 8;
+                    let size = if CHECK {
+                        self.check_live_cell(addr, &mut prev_end, errors)
+                    } else {
+                        self.size_at(addr)
+                    };
+                    let first = (addr - page.addr()) / LINE_SIZE;
+                    let last = (addr + size - 1 - page.addr()) / LINE_SIZE;
+                    // SAFETY: lines first..=last are inside the line-mark array (a cell never
+                    // crosses the page end).
+                    unsafe {
+                        page.line_marks()
+                            .add(first)
+                            .write_bytes(1, last - first + 1)
+                    };
+                    live += 1;
+                }
+                // Free the dead cells before zapping them: no VO bit is left on a zapped cell.
+                page.vo_word(w).store(vo & mk, Relaxed);
+                let mut dead = vo & !mk;
+                while dead != 0 {
+                    let bit = dead.trailing_zeros() as usize;
+                    dead &= dead - 1;
+                    let addr = page.addr() + (w * 64 + bit) * 8;
+                    let size = self.size_at(addr);
+                    if self.s.zap {
+                        let p = self.mem.ptr(addr).cast::<u64>();
+                        for i in 0..size / 8 {
+                            // SAFETY: the dead cell [addr, addr + size) is committed memory that no
+                            // live cell or root reaches; nothing reads it after this sweep.
+                            unsafe { p.add(i).write(ZAP_WORD) };
+                        }
+                    }
+                    self.stats.freed_cells += 1;
+                    self.stats.freed_bytes += size as u64;
+                }
+                page.mark_word(w).store(0, Relaxed);
             }
-            page.mark_word(w).store(0, Relaxed);
         }
         // The loop cleared the mark words that have a VO bit and left the others: any mark
         // bit now is one outside a cell, which the verifier reports.
@@ -1393,6 +1405,24 @@ impl Inner {
             unsafe { self.mem.free_large(idx, committed) };
         }
     }
+}
+
+/// VO words per block in the sweep's empty-block test.
+const SKIP_WORDS: usize = 8;
+const _: () = assert!(BITMAP_WORDS.is_multiple_of(SKIP_WORDS));
+
+/// True if the VO words `[w, w + SKIP_WORDS)` at `vo` are all 0. Plain loads, so the test
+/// vectorizes.
+#[inline(always)]
+fn block_is_empty(vo: *const u64, w: usize) -> bool {
+    let mut any = 0u64;
+    for i in w..w + SKIP_WORDS {
+        // SAFETY: `vo` is the VO bitmap of a committed page (BITMAP_WORDS words, 8-aligned,
+        // with the reservation's provenance) and `i < BITMAP_WORDS`. Only this thread writes
+        // it (S0), and no write runs during this read.
+        any |= unsafe { vo.add(i).read() };
+    }
+    any == 0
 }
 
 /// A checked sweep's error about small page `idx`.
