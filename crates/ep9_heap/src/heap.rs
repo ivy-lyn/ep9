@@ -33,7 +33,10 @@
 //!          and space it visits (strong roots too, weak ranges in the weak pass), so every
 //!          slot of every live cell is checked once
 //!   then:  sweep every page with checks (cell order: no overlap, inside the page, small
-//!          size; no mark bit left), then page and LOS headers and weak handles (verify.rs)
+//!          size; no mark bit left; a dead cell is zapped only if it ends before the next
+//!          cell and inside the page), the cells kept = the cells the mark pushed (a mark
+//!          bit set before the GC hides a cell from the mark), then page and LOS headers and
+//!          weak handles (verify.rs)
 //!   any error: panic "heap verifier failed after GC" with the error list
 //! ```
 //!
@@ -58,9 +61,9 @@ use ep9_value::{ShapeId, Value, Word0};
 use crate::barrier::{BarrierState, Slot, gc_state, threshold};
 use crate::cell::{CellKind, CellPtr, CellSize, KindError, KindId, KindTable, Space};
 use crate::layout::{
-    BITMAP_WORDS, FIRST_CELL_OFFSET, FIRST_LINE, LARGE_CELL_OFFSET, LINE_SIZE, LINES_PER_PAGE,
-    Large, MARK_BITS_OFFSET, MAX_LINE_CELL, MAX_SMALL_SIZE, PAGE_CELL_BYTES, PAGE_MASK, PAGE_SIZE,
-    Page, VO_BITS_OFFSET, ZAP_WORD, cell_size_for,
+    BITMAP_WORDS, FIRST_CELL_OFFSET, FIRST_LINE, GRANULE, LARGE_CELL_OFFSET, LINE_SIZE,
+    LINES_PER_PAGE, Large, MARK_BITS_OFFSET, MAX_LINE_CELL, MAX_SMALL_SIZE, PAGE_CELL_BYTES,
+    PAGE_MASK, PAGE_SIZE, Page, VO_BITS_OFFSET, ZAP_WORD, cell_size_for,
 };
 use crate::memory::{HeapError, Memory};
 use crate::roots::{GlobalHandle, Handles, RootId, RootStrength, Roots, ScratchRoots, WeakHandle};
@@ -736,7 +739,7 @@ impl Heap {
     }
 
     fn collect_scanning(&self, scan: Scan) {
-        let (verify, mark_errors) = {
+        let (verify, mark_errors, pushed, large_kept) = {
             let mut inner_ref = self.inner.borrow_mut();
             let inner = &mut *inner_ref;
             let mut roots = self.roots.borrow_mut();
@@ -821,6 +824,7 @@ impl Heap {
             let mut weak_cleared = t.clear_weak_slots();
             let marked_cells = t.marked_cells;
             let marked_bytes = t.marked_bytes;
+            let pushed = t.pushed_cells;
             let mark_errors = core::mem::take(&mut t.errors);
             let (stack, weak) = t.into_lists();
             inner.mark_stack = stack;
@@ -838,7 +842,7 @@ impl Heap {
             let mark_errors = w.errors;
             core::mem::forget(unmark);
 
-            inner.sweep_large();
+            let large_kept = inner.sweep_large();
             let (mut shape_pages, mut pages): (Vec<usize>, Vec<usize>) = inner
                 .mem
                 .small_pages()
@@ -857,9 +861,9 @@ impl Heap {
             st.last_conservative_roots = css_roots;
             st.last_stack_words = stack_words;
             st.last_weak_cleared = weak_cleared;
-            (verify, mark_errors)
+            (verify, mark_errors, pushed, large_kept)
         };
-        if verify && let Err(e) = self.verify_after_collect(mark_errors) {
+        if verify && let Err(e) = self.verify_after_collect(mark_errors, pushed, large_kept) {
             panic!("heap verifier failed after GC: {e}");
         }
     }
@@ -1187,22 +1191,25 @@ impl Inner {
     }
 
     /// [`Inner::finish_sweeping`] with the verifier's cell checks on every live cell (errors
-    /// to `errors`; verify.rs).
-    pub(crate) fn finish_sweeping_checked(&mut self, errors: &mut Vec<String>) {
-        self.finish_sweeping_with::<true>(errors);
+    /// to `errors`; verify.rs). Returns the number of cells it kept (marked cells).
+    pub(crate) fn finish_sweeping_checked(&mut self, errors: &mut Vec<String>) -> usize {
+        self.finish_sweeping_with::<true>(errors)
     }
 
-    fn finish_sweeping_with<const CHECK: bool>(&mut self, errors: &mut Vec<String>) {
+    /// Returns the number of cells kept.
+    fn finish_sweeping_with<const CHECK: bool>(&mut self, errors: &mut Vec<String>) -> usize {
+        let mut kept = 0;
         while let Some(idx) = self.sweep_queue.pop() {
-            if self.sweep_page_with::<CHECK>(idx, errors) == Swept::Recyclable {
+            if self.sweep_page_with::<CHECK>(idx, errors, &mut kept) == Swept::Recyclable {
                 self.recyclable.push(idx);
             }
         }
         while let Some(idx) = self.shape_sweep_queue.pop() {
-            if self.sweep_page_with::<CHECK>(idx, errors) == Swept::Recyclable {
+            if self.sweep_page_with::<CHECK>(idx, errors, &mut kept) == Swept::Recyclable {
                 self.shape_recyclable.push(idx);
             }
         }
+        kept
     }
 
     /// Lazy sweep of one small page: frees unmarked cells (VO bit cleared, zapped), clears the
@@ -1212,17 +1219,21 @@ impl Inner {
     /// a size function panics, the unwind clears the page's mark bits; its dead cells that
     /// still have a VO bit are not zapped yet, and the next GC frees them.
     fn sweep_page(&mut self, idx: usize) -> Swept {
-        self.sweep_page_with::<false>(idx, &mut Vec::new())
+        self.sweep_page_with::<false>(idx, &mut Vec::new(), &mut 0)
     }
 
     /// [`Inner::sweep_page`]. `CHECK` (the verify after a GC): also checks the live cells in
     /// address order (none overlaps the previous one or crosses the page end; each has a
-    /// small-page size) and that no mark bit lies outside a VO bit. Errors go to `errors`; a
-    /// cell whose size cannot be known counts as one granule.
+    /// small-page size) and that no mark bit lies outside a VO bit; and, before it zaps a dead
+    /// cell, that the dead cell ends before the next cell starts and inside the page (a wrong
+    /// size would zap a live cell after its checks). Errors go to `errors`; a live cell whose
+    /// size cannot be known counts as one granule, a dead cell with a bad extent is not
+    /// zapped. Adds the number of live cells to `kept`.
     fn sweep_page_with<const CHECK: bool>(
         &mut self,
         idx: usize,
         errors: &mut Vec<String>,
+        kept: &mut usize,
     ) -> Swept {
         let page = self.mem.page(idx);
         let unmark = UnmarkPageOnUnwind(page);
@@ -1280,7 +1291,14 @@ impl Inner {
                     let bit = dead.trailing_zeros() as usize;
                     dead &= dead - 1;
                     let addr = page.addr() + (w * 64 + bit) * 8;
-                    let size = self.size_at(addr);
+                    let size = if CHECK {
+                        match self.check_dead_cell(page, w, vo, addr, errors) {
+                            Some(size) => size,
+                            None => continue,
+                        }
+                    } else {
+                        self.size_at(addr)
+                    };
                     if self.s.zap {
                         let p = self.mem.ptr(addr).cast::<u64>();
                         for i in 0..size / 8 {
@@ -1301,6 +1319,7 @@ impl Inner {
             sweep_error(errors, idx, format_args!("mark bit set outside a GC"));
         }
         core::mem::forget(unmark);
+        *kept += live;
         if live == 0 {
             self.mem.free_small_page(idx);
             return Swept::Free;
@@ -1341,12 +1360,72 @@ impl Inner {
         // SAFETY: a VO bit marks a cell start whose word0 the allocator wrote.
         let c = unsafe { CellPtr::from_raw(self.mem.ptr(addr).cast()) };
         let page_end = (addr & PAGE_MASK) + PAGE_SIZE;
-        let size = self.kinds.cell_size(c).unwrap_or(crate::layout::GRANULE);
+        let size = self.kinds.cell_size(c).unwrap_or(GRANULE);
         if addr < *prev_end || size > MAX_SMALL_SIZE || addr + size > page_end {
             self.cell_order_error(addr, size, *prev_end, errors);
         }
         *prev_end = addr + size;
         size.min(page_end - addr)
+    }
+
+    /// The checked sweep's checks of the dead cell at `addr` (a VO start in word `w`, whose
+    /// bits before this sweep were `vo`): a registered kind, a small-page size, and its extent
+    /// ends inside the page and holds no other VO start (live or dead). Returns its size, or
+    /// `None` after an error: the caller does not zap it.
+    #[inline]
+    fn check_dead_cell(
+        &self,
+        page: Page,
+        w: usize,
+        vo: u64,
+        addr: usize,
+        errors: &mut Vec<String>,
+    ) -> Option<usize> {
+        // SAFETY: a VO bit marks a cell start whose word0 the allocator wrote.
+        let c = unsafe { CellPtr::from_raw(self.mem.ptr(addr).cast()) };
+        let idx = (addr - self.mem.base_addr()) / PAGE_SIZE;
+        let Some(size) = self.kinds.cell_size(c) else {
+            // SAFETY: as above: `c` is a cell start with a word0.
+            let kind = unsafe { c.header() }.kind();
+            let msg = format_args!("dead cell {addr:#x} (kind {kind}) has no size");
+            sweep_error(errors, idx, msg);
+            return None;
+        };
+        if size > MAX_SMALL_SIZE || addr + size > page.addr() + PAGE_SIZE {
+            let msg = format_args!("dead cell {addr:#x} of {size} B crosses the page end");
+            sweep_error(errors, idx, msg);
+            return None;
+        }
+        // Granules (addr, addr + size) must hold no VO bit. Words after `w` are not swept yet,
+        // so their VO bits are the ones from before this sweep.
+        let first = (addr - page.addr()) / GRANULE + 1;
+        let end = (addr + size - page.addr()) / GRANULE;
+        let mut g = first;
+        while g < end {
+            let wi = g / 64;
+            let bits = if wi == w {
+                vo
+            } else {
+                page.vo_word(wi).load(Relaxed)
+            };
+            let hi = end.min((wi + 1) * 64);
+            let span = hi - g;
+            let mask = if span == 64 {
+                u64::MAX
+            } else {
+                ((1u64 << span) - 1) << (g % 64)
+            };
+            if bits & mask != 0 {
+                let next = page.addr() + (wi * 64 + (bits & mask).trailing_zeros() as usize) * 8;
+                let msg = format_args!(
+                    "dead cell {addr:#x} of {size} B overlaps the next cell {next:#x}"
+                );
+                sweep_error(errors, idx, msg);
+                return None;
+            }
+            g = hi;
+        }
+        Some(size)
     }
 
     #[cold]
@@ -1387,14 +1466,17 @@ impl Inner {
             .unwrap_or_else(|| panic!("heap corrupt: cell {c:?} has an unregistered kind"))
     }
 
-    /// Frees every unmarked large object and clears the marks of the others.
-    fn sweep_large(&mut self) {
+    /// Frees every unmarked large object and clears the marks of the others. Returns the
+    /// number of large objects kept.
+    fn sweep_large(&mut self) -> usize {
         let heads: Vec<usize> = self.mem.large_heads().collect();
+        let mut kept = 0;
         for idx in heads {
             // SAFETY: chunk `idx` is the committed head of a large object.
             let large = unsafe { Large::from_base(self.mem.chunk_base(idx)) };
             let h = large.header();
             if h.mark.swap(0, Relaxed) != 0 {
+                kept += 1;
                 continue;
             }
             let (size, committed) = (h.size, h.committed);
@@ -1404,6 +1486,7 @@ impl Inner {
             // is decommitted, so a stale access faults instead of reading old data.
             unsafe { self.mem.free_large(idx, committed) };
         }
+        kept
     }
 }
 
