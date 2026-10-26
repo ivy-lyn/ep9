@@ -27,9 +27,11 @@
 //! IC_LAYOUT 2 is in the `ic.rs` module docs.
 //!
 //! **Record points** (`interp/ops.rs` calls them; ops.rs has no owner after M4-P0, V9-D5).
-//! Each hook is `#[inline(always)]` in release builds and calls nothing on its fast-body path;
-//! debug builds call it out of line, so its locals do not grow every handler frame (debug
-//! sibling dispatch keeps one native frame per instruction, `interp::dsl`). A fast-body hook runs once per execution of its
+//! Each hook is `#[inline(always)]` and calls nothing on its fast-body path. Not out of line
+//! in debug builds either: an out-of-line hook gets the address of the handler's `St`, and an
+//! optimized build with debug assertions (the dev profile of `spikes/spike-c`, opt-level 2 for
+//! its dependencies) then loses the sibling tail calls, so a T0 loop grows the native stack
+//! until it overflows (M4-P1 fixer). A fast-body hook runs once per execution of its
 //! instruction (a cold body runs only after its fast body returned `Flow::Cold`,
 //! `interp::dsl`); a `*_cold` hook runs on the cold path only, after the fast-body hook of the
 //! same execution.
@@ -360,8 +362,7 @@ fn binary_operand(v: u64) -> u32 {
 /// them. An `+` or `-` that overflows takes the fast path's double arm and stays implicit:
 /// its test would add instructions to every int32 `+` and `-` (V9-D6); the double it makes
 /// is recorded as `NUMBER` at the sites it reaches.
-#[cfg_attr(debug_assertions, inline(never))]
-#[cfg_attr(not(debug_assertions), inline(always))]
+#[inline(always)]
 pub(crate) fn record_binary(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r: u64) {
     if is_i32(l) && is_i32(r) {
         if matches!(op, BinOp::Mul | BinOp::Div | BinOp::Shr)
@@ -377,8 +378,7 @@ pub(crate) fn record_binary(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r: u64
 
 /// A binary operator site whose fast path failed (BinaryOp slot), before the generic operation.
 /// An int32 pair gets here only for `%` (not exact in int32) and `**`.
-#[cfg_attr(debug_assertions, inline(never))]
-#[cfg_attr(not(debug_assertions), inline(always))]
+#[inline(always)]
 pub(crate) fn record_binary_cold(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r: u64) {
     let bits = if is_i32(l) && is_i32(r) {
         if !int32_pair_overflows(op, int32_of(l), int32_of(r)) {
@@ -396,8 +396,7 @@ pub(crate) fn record_binary_cold(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r
 
 /// A unary operator or a numeric conversion (BinaryOp slot), before the fast path. An int32
 /// operand is implicit; a double adds `NUMBER`; other operands add their class.
-#[cfg_attr(debug_assertions, inline(never))]
-#[cfg_attr(not(debug_assertions), inline(always))]
+#[inline(always)]
 pub(crate) fn record_unary(st: &mut St<'_>, s: FSlot, v: u64) {
     if !is_i32(v) {
         add_bits(st, s, binary_operand(v));
@@ -452,8 +451,7 @@ fn compare_pair(l: u64, r: u64) -> u32 {
 }
 
 /// A comparison (CompareOp slot), before the fast path. An int32 pair is implicit.
-#[cfg_attr(debug_assertions, inline(never))]
-#[cfg_attr(not(debug_assertions), inline(always))]
+#[inline(always)]
 pub(crate) fn record_compare(st: &mut St<'_>, s: FSlot, l: u64, r: u64) {
     if !(is_i32(l) && is_i32(r)) {
         add_bits(st, s, compare_pair(l, r));
@@ -495,8 +493,7 @@ fn type_of(v: u64) -> u32 {
 }
 
 /// `typeof` (TypeOf slot): the operand's `TypeSet` bit.
-#[cfg_attr(debug_assertions, inline(never))]
-#[cfg_attr(not(debug_assertions), inline(always))]
+#[inline(always)]
 pub(crate) fn record_typeof(st: &mut St<'_>, s: FSlot, v: u64) {
     add_bits(st, s, type_of(v));
 }
@@ -520,8 +517,7 @@ fn target_key(callee: u64) -> u64 {
 /// only a call that uses up the interrupt budget (`call_fast` then goes cold and polls)
 /// counts and keeps the target's FunctionInfo (monomorphic) or the hole (megamorphic). The
 /// hot path is one load and one test of the budget.
-#[cfg_attr(debug_assertions, inline(never))]
-#[cfg_attr(not(debug_assertions), inline(always))]
+#[inline(always)]
 pub(crate) fn record_call(st: &mut St<'_>, s: FSlot, callee: u64) {
     if st.cx.budget <= BUDGET - CALL_WINDOW {
         return;
@@ -607,14 +603,12 @@ fn element_case(o: u64, i: u32) -> u32 {
 /// fast (an int32 index of a present Array element at `GetKeyedProperty`) is implicit, and
 /// every other case goes cold, where [`record_keyed_cold`] records it. A fast keyed path that
 /// a later role adds must miss on a case that is new for its site (KEYED, M4-P3).
-#[cfg_attr(debug_assertions, inline(never))]
-#[cfg_attr(not(debug_assertions), inline(always))]
+#[inline(always)]
 pub(crate) fn record_keyed(_st: &mut St<'_>, _s: FSlot, _o: u64, _k: u64) {}
 
 /// A keyed access whose fast path failed, before the generic operation: the key and receiver
 /// bits, and for an index of an Array what the element access finds (out of bounds, a hole).
-#[cfg_attr(debug_assertions, inline(never))]
-#[cfg_attr(not(debug_assertions), inline(always))]
+#[inline(always)]
 pub(crate) fn record_keyed_cold(st: &mut St<'_>, s: FSlot, o: u64, k: u64) {
     let Some(v) = vector_of(st) else { return };
     let key = keyed_key(k);
@@ -633,8 +627,7 @@ pub(crate) fn record_keyed_cold(st: &mut St<'_>, s: FSlot, o: u64, k: u64) {
 /// A loop back edge (JumpLoop slot), before the budget decrement. Sampled: counts only a back
 /// edge that uses up the interrupt budget (the handler then goes cold and polls), so the hot
 /// loop path does not reach the vector.
-#[cfg_attr(debug_assertions, inline(never))]
-#[cfg_attr(not(debug_assertions), inline(always))]
+#[inline(always)]
 pub(crate) fn record_jump_loop(st: &mut St<'_>, s: FSlot) {
     if st.cx.budget <= 1
         && let Some(v) = vector_of(st)
@@ -645,8 +638,7 @@ pub(crate) fn record_jump_loop(st: &mut St<'_>, s: FSlot) {
 
 /// A closure that `CreateClosure` made (CreateClosure slot); `closure` is 0 if the creation
 /// threw. Counts none, one, many.
-#[cfg_attr(debug_assertions, inline(never))]
-#[cfg_attr(not(debug_assertions), inline(always))]
+#[inline(always)]
 pub(crate) fn record_closure(st: &mut St<'_>, s: FSlot, closure: u64) {
     if closure == 0 {
         return;
@@ -658,8 +650,7 @@ pub(crate) fn record_closure(st: &mut St<'_>, s: FSlot, closure: u64) {
 
 /// `ForInPrepare` (ForIn slot): `keys` is the key array of the accumulator. v0 has no enum
 /// cache, so the keys always come from the generic path (`ForInEnumerate`): `ANY`.
-#[cfg_attr(debug_assertions, inline(never))]
-#[cfg_attr(not(debug_assertions), inline(always))]
+#[inline(always)]
 pub(crate) fn record_for_in(st: &mut St<'_>, s: FSlot, _keys: u64) {
     add_bits(st, s, u32::from(ForInHint::ANY.bits()));
 }
@@ -667,8 +658,7 @@ pub(crate) fn record_for_in(st: &mut St<'_>, s: FSlot, _keys: u64) {
 /// `ForInNext` (ForIn slot): `receiver` is the object being enumerated. The key half keeps
 /// its shape (monomorphic) or the hole (a second shape); a receiver that is not an object
 /// records nothing.
-#[cfg_attr(debug_assertions, inline(never))]
-#[cfg_attr(not(debug_assertions), inline(always))]
+#[inline(always)]
 pub(crate) fn record_for_in_next(st: &mut St<'_>, s: FSlot, receiver: u64) {
     if !kinds::is_object(receiver) {
         return;
