@@ -22,7 +22,7 @@
 //! | after a GC with `verify_after_gc` | the GC's checked mark already checked every slot of every live cell, every strong root and every weak range (trace.rs); the sweep checks every live cell (heap.rs); this file adds the page and LOS headers and the weak handles. No second trace, no second root walk (V9-D22 step 1) |
 //!
 //! The live cells after a GC are exactly the cells its mark traced, so the two entries check
-//! the same slots. A planted dangling slot fails both (tests/gc.rs).
+//! the same slots. A planted dangling slot fails both (tests/verify.rs).
 
 use core::sync::atomic::Ordering::Relaxed;
 

@@ -65,7 +65,7 @@
 //!   attributes, `[[SetPrototypeOf]]`, PreventExtensions, dictionary mode) invalidates its
 //!   validity cell and the cells of every prototype below it (`validity.rs`, H16 K5), and
 //!   bumps [`ShapeState::proto_epoch`] (kept for the debug cross-check of the IC hit paths
-//!   until M4-P3, plan v9 V9-A25). A value store does neither.
+//!   until M5-P0, plan v9 §3.3 and V9-A25). A value store does neither.
 //! - The first array-index own property on a prototype-mode object (or an object with one, or
 //!   a routed ARGUMENTS or MODULE_NAMESPACE object, becoming a prototype) sets the sticky
 //!   [`proto_index_keys`] flag: until then `[[Set]]` adds array elements without walking the
