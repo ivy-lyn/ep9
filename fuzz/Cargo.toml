@@ -1,0 +1,49 @@
+# cargo-fuzz targets for the ep9 front end (plan v9 M4-P2 FE-FUZZ; docs/plan/10-quality.md
+# section 4, "Front end (source -> verified bytecode)"). Its own workspace on the nightly of
+# rust-toolchain.toml: the root workspace excludes `fuzz` (Cargo.toml `exclude`), so the root
+# Cargo tables and lock stay as they are. This Cargo.lock started as a copy of the root lock,
+# so the oxc crates and their dependencies have the same versions as the engine build.
+[package]
+name = "ep9-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+ep9_bytecode = { path = "../crates/ep9_bytecode" }
+ep9_frontend = { path = "../crates/ep9_frontend" }
+
+[features]
+# The fuzz-log self-test (scripts/self-test.sh): frontend_compile panics on an input that
+# starts with "EP9-FIXTURE-CRASH" and prints the input, as a real crash report would. Never on
+# in a campaign.
+fixture-crash = []
+
+[[bin]]
+name = "frontend_compile"
+path = "fuzz_targets/frontend_compile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "function_ctor"
+path = "fuzz_targets/function_ctor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "eval_context"
+path = "fuzz_targets/eval_context.rs"
+test = false
+doc = false
+bench = false

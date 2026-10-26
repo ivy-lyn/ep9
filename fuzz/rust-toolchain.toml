@@ -1,0 +1,6 @@
+# The fuzz workspace builds on a dated nightly (cargo-fuzz needs -Z flags and the sanitizer
+# runtimes). The same pin as the Miri job (.github/workflows/ci.yml, MIRI_TOOLCHAIN) and the
+# H20-Q6 rustdoc JSON tool (plan v9 V9-D38: one nightly pin). Upgrade in a PR of its own.
+[toolchain]
+channel = "nightly-2026-10-04"
+profile = "minimal"
