@@ -1,0 +1,2449 @@
+{
+ "schema": "ep9-cross/v1",
+ "label": "synthetic fixture for exit2.mjs tests (samples dropped: exit2.mjs reads M.ratios)",
+ "started": "2026-10-26T00:00:00.000Z",
+ "finished": "2026-10-26T01:00:00.000Z",
+ "commit": {
+  "ep9": "0123456789abcdef0123456789abcdef01234567",
+  "runner": "0123456789abcdef0123456789abcdef01234567",
+  "runner_dirty": false
+ },
+ "host": {
+  "file": "tools/bench/hosts/test.toml",
+  "id": "test-gate",
+  "gate_host": true,
+  "idle_baseline_load1": 1,
+  "measured": {
+   "cpu": "test cpu",
+   "cpus": 1,
+   "platform": "darwin-arm64",
+   "os": "test",
+   "node": "v24.22.1"
+  }
+ },
+ "load": {
+  "margin": 0.5,
+  "before": null,
+  "after": null,
+  "after_each_round": [
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1
+  ]
+ },
+ "provisional": false,
+ "provisional_reasons": [],
+ "options": {
+  "rounds": 10,
+  "warmup": 1
+ },
+ "engines": [
+  {
+   "id": "ep9",
+   "label": "ep9 T0",
+   "role": "subject",
+   "version": "ep9 0.0.0",
+   "bin": "ep9",
+   "args": []
+  },
+  {
+   "id": "qjs",
+   "label": "QuickJS",
+   "role": "gate",
+   "version": "fake",
+   "bin": "qjs",
+   "args": []
+  },
+  {
+   "id": "node-jitless",
+   "label": "node --jitless",
+   "role": "gate",
+   "version": "fake",
+   "bin": "node",
+   "args": [
+    "--jitless"
+   ]
+  }
+ ],
+ "workloads": [
+  {
+   "name": "empty",
+   "classes": [
+    "M",
+    "R"
+   ],
+   "expect": "",
+   "file": "empty.js"
+  },
+  {
+   "name": "richards",
+   "classes": [
+    "M",
+    "R"
+   ],
+   "harness": "base",
+   "file": "richards.js"
+  },
+  {
+   "name": "deltablue",
+   "classes": [
+    "M",
+    "R"
+   ],
+   "harness": "base",
+   "file": "deltablue.js"
+  },
+  {
+   "name": "crypto",
+   "classes": [
+    "M",
+    "R"
+   ],
+   "harness": "base",
+   "file": "crypto.js"
+  },
+  {
+   "name": "raytrace",
+   "classes": [
+    "M",
+    "R"
+   ],
+   "harness": "base",
+   "file": "raytrace.js"
+  },
+  {
+   "name": "earley-boyer",
+   "classes": [
+    "M",
+    "R"
+   ],
+   "harness": "base",
+   "file": "earley-boyer.js"
+  },
+  {
+   "name": "splay",
+   "classes": [
+    "M",
+    "R"
+   ],
+   "harness": "base",
+   "file": "splay.js"
+  },
+  {
+   "name": "navier-stokes",
+   "classes": [
+    "M",
+    "R"
+   ],
+   "harness": "base",
+   "file": "navier-stokes.js"
+  },
+  {
+   "name": "octane-richards",
+   "classes": [
+    "M",
+    "R"
+   ],
+   "harness": "octane-base",
+   "file": "octane-richards.js"
+  },
+  {
+   "name": "octane-deltablue",
+   "classes": [
+    "M",
+    "R"
+   ],
+   "harness": "octane-base",
+   "file": "octane-deltablue.js"
+  },
+  {
+   "name": "octane-crypto",
+   "classes": [
+    "M",
+    "R"
+   ],
+   "harness": "octane-base",
+   "file": "octane-crypto.js"
+  },
+  {
+   "name": "octane-raytrace",
+   "classes": [
+    "M",
+    "R"
+   ],
+   "harness": "octane-base",
+   "file": "octane-raytrace.js"
+  },
+  {
+   "name": "octane-earley-boyer",
+   "classes": [
+    "M",
+    "R"
+   ],
+   "harness": "octane-base",
+   "file": "octane-earley-boyer.js"
+  },
+  {
+   "name": "octane-splay",
+   "classes": [
+    "M",
+    "R"
+   ],
+   "harness": "octane-base",
+   "file": "octane-splay.js"
+  },
+  {
+   "name": "octane-navier-stokes",
+   "classes": [
+    "M",
+    "R"
+   ],
+   "harness": "octane-base",
+   "file": "octane-navier-stokes.js"
+  }
+ ],
+ "M": {
+  "ratio": "t(engine) / t(ep9) per round; > 1: ep9 is faster",
+  "rounds": 10,
+  "times": [
+   {
+    "workload": "richards",
+    "engine": "ep9",
+    "gross_ms": 310,
+    "net_ms": 300
+   },
+   {
+    "workload": "richards",
+    "engine": "qjs",
+    "gross_ms": 400,
+    "net_ms": 390
+   },
+   {
+    "workload": "richards",
+    "engine": "node-jitless",
+    "gross_ms": 235,
+    "net_ms": 225
+   },
+   {
+    "workload": "deltablue",
+    "engine": "ep9",
+    "gross_ms": 320,
+    "net_ms": 310
+   },
+   {
+    "workload": "deltablue",
+    "engine": "qjs",
+    "gross_ms": 413,
+    "net_ms": 403
+   },
+   {
+    "workload": "deltablue",
+    "engine": "node-jitless",
+    "gross_ms": 242.5,
+    "net_ms": 232.5
+   },
+   {
+    "workload": "crypto",
+    "engine": "ep9",
+    "gross_ms": 330,
+    "net_ms": 320
+   },
+   {
+    "workload": "crypto",
+    "engine": "qjs",
+    "gross_ms": 426,
+    "net_ms": 416
+   },
+   {
+    "workload": "crypto",
+    "engine": "node-jitless",
+    "gross_ms": 250,
+    "net_ms": 240
+   },
+   {
+    "workload": "raytrace",
+    "engine": "ep9",
+    "gross_ms": 340,
+    "net_ms": 330
+   },
+   {
+    "workload": "raytrace",
+    "engine": "qjs",
+    "gross_ms": 439,
+    "net_ms": 429
+   },
+   {
+    "workload": "raytrace",
+    "engine": "node-jitless",
+    "gross_ms": 257.5,
+    "net_ms": 247.5
+   },
+   {
+    "workload": "earley-boyer",
+    "engine": "ep9",
+    "gross_ms": 350,
+    "net_ms": 340
+   },
+   {
+    "workload": "earley-boyer",
+    "engine": "qjs",
+    "gross_ms": 452,
+    "net_ms": 442
+   },
+   {
+    "workload": "earley-boyer",
+    "engine": "node-jitless",
+    "gross_ms": 265,
+    "net_ms": 255
+   },
+   {
+    "workload": "splay",
+    "engine": "ep9",
+    "gross_ms": 360,
+    "net_ms": 350
+   },
+   {
+    "workload": "splay",
+    "engine": "qjs",
+    "gross_ms": 465,
+    "net_ms": 455
+   },
+   {
+    "workload": "splay",
+    "engine": "node-jitless",
+    "gross_ms": 272.5,
+    "net_ms": 262.5
+   },
+   {
+    "workload": "navier-stokes",
+    "engine": "ep9",
+    "gross_ms": 370,
+    "net_ms": 360
+   },
+   {
+    "workload": "navier-stokes",
+    "engine": "qjs",
+    "gross_ms": 478,
+    "net_ms": 468
+   },
+   {
+    "workload": "navier-stokes",
+    "engine": "node-jitless",
+    "gross_ms": 280,
+    "net_ms": 270
+   },
+   {
+    "workload": "octane-richards",
+    "engine": "ep9",
+    "gross_ms": 380,
+    "net_ms": 370
+   },
+   {
+    "workload": "octane-richards",
+    "engine": "qjs",
+    "gross_ms": 454,
+    "net_ms": 444
+   },
+   {
+    "workload": "octane-richards",
+    "engine": "node-jitless",
+    "gross_ms": 343,
+    "net_ms": 333
+   },
+   {
+    "workload": "octane-deltablue",
+    "engine": "ep9",
+    "gross_ms": 390,
+    "net_ms": 380
+   },
+   {
+    "workload": "octane-deltablue",
+    "engine": "qjs",
+    "gross_ms": 466,
+    "net_ms": 456
+   },
+   {
+    "workload": "octane-deltablue",
+    "engine": "node-jitless",
+    "gross_ms": 352,
+    "net_ms": 342
+   },
+   {
+    "workload": "octane-crypto",
+    "engine": "ep9",
+    "gross_ms": 400,
+    "net_ms": 390
+   },
+   {
+    "workload": "octane-crypto",
+    "engine": "qjs",
+    "gross_ms": 478,
+    "net_ms": 468
+   },
+   {
+    "workload": "octane-crypto",
+    "engine": "node-jitless",
+    "gross_ms": 361,
+    "net_ms": 351
+   },
+   {
+    "workload": "octane-raytrace",
+    "engine": "ep9",
+    "gross_ms": 410,
+    "net_ms": 400
+   },
+   {
+    "workload": "octane-raytrace",
+    "engine": "qjs",
+    "gross_ms": 490,
+    "net_ms": 480
+   },
+   {
+    "workload": "octane-raytrace",
+    "engine": "node-jitless",
+    "gross_ms": 370,
+    "net_ms": 360
+   },
+   {
+    "workload": "octane-earley-boyer",
+    "engine": "ep9",
+    "gross_ms": 420,
+    "net_ms": 410
+   },
+   {
+    "workload": "octane-earley-boyer",
+    "engine": "qjs",
+    "gross_ms": 502,
+    "net_ms": 492
+   },
+   {
+    "workload": "octane-earley-boyer",
+    "engine": "node-jitless",
+    "gross_ms": 379,
+    "net_ms": 369
+   },
+   {
+    "workload": "octane-splay",
+    "engine": "ep9",
+    "gross_ms": 430,
+    "net_ms": 420
+   },
+   {
+    "workload": "octane-splay",
+    "engine": "qjs",
+    "gross_ms": 514,
+    "net_ms": 504
+   },
+   {
+    "workload": "octane-splay",
+    "engine": "node-jitless",
+    "gross_ms": 388,
+    "net_ms": 378
+   },
+   {
+    "workload": "octane-navier-stokes",
+    "engine": "ep9",
+    "gross_ms": 440,
+    "net_ms": 430
+   },
+   {
+    "workload": "octane-navier-stokes",
+    "engine": "qjs",
+    "gross_ms": 526,
+    "net_ms": 516
+   },
+   {
+    "workload": "octane-navier-stokes",
+    "engine": "node-jitless",
+    "gross_ms": 397,
+    "net_ms": 387
+   },
+   {
+    "workload": "empty",
+    "engine": "ep9",
+    "gross_ms": 10,
+    "net_ms": null
+   },
+   {
+    "workload": "empty",
+    "engine": "qjs",
+    "gross_ms": 10,
+    "net_ms": null
+   },
+   {
+    "workload": "empty",
+    "engine": "node-jitless",
+    "gross_ms": 10,
+    "net_ms": null
+   }
+  ],
+  "ratios": [
+   {
+    "workload": "richards",
+    "comparator": "qjs",
+    "n": 10,
+    "net": {
+     "ratios": [
+      1.3,
+      1.326,
+      1.2870000000000001,
+      1.313,
+      1.274,
+      1.3,
+      1.326,
+      1.2870000000000001,
+      1.313,
+      1.274
+     ],
+     "n": 10,
+     "median": 1.3,
+     "interval": [
+      1.274,
+      1.326
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9999999999999847,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      1.2903225806451613,
+      1.3154838709677419,
+      1.277741935483871,
+      1.3029032258064515,
+      1.2651612903225806,
+      1.2903225806451613,
+      1.3154838709677419,
+      1.277741935483871,
+      1.3029032258064515,
+      1.2651612903225806
+     ],
+     "n": 10,
+     "median": 1.2903225806451613,
+     "interval": [
+      1.2651612903225806,
+      1.3154838709677419
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9499999999999817,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "metric": "net",
+    "verdict": "ep9 faster",
+    "void": false,
+    "canary": {
+     "threshold": 0.6,
+     "side": "above",
+     "gate": "pass"
+    },
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "richards",
+    "comparator": "node-jitless",
+    "n": 10,
+    "net": {
+     "ratios": [
+      0.75,
+      0.765,
+      0.7425,
+      0.7575,
+      0.735,
+      0.75,
+      0.765,
+      0.7425,
+      0.7575,
+      0.735
+     ],
+     "n": 10,
+     "median": 0.75,
+     "interval": [
+      0.735,
+      0.765
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.999999999999987,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      0.7580645161290323,
+      0.7725806451612903,
+      0.7508064516129033,
+      0.7653225806451613,
+      0.7435483870967742,
+      0.7580645161290323,
+      0.7725806451612903,
+      0.7508064516129033,
+      0.7653225806451613,
+      0.7435483870967742
+     ],
+     "n": 10,
+     "median": 0.7580645161290323,
+     "interval": [
+      0.7435483870967742,
+      0.7725806451612903
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9148936170212778,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "metric": "net",
+    "verdict": "ep9 slower",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "deltablue",
+    "comparator": "qjs",
+    "n": 10,
+    "net": {
+     "ratios": [
+      1.274,
+      1.3,
+      1.326,
+      1.2870000000000001,
+      1.313,
+      1.274,
+      1.3,
+      1.326,
+      1.2870000000000001,
+      1.313
+     ],
+     "n": 10,
+     "median": 1.3,
+     "interval": [
+      1.274,
+      1.326
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9999999999999847,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      1.2654375,
+      1.290625,
+      1.3158125,
+      1.2780312500000002,
+      1.3032187499999999,
+      1.2654375,
+      1.290625,
+      1.3158125,
+      1.2780312500000002,
+      1.3032187499999999
+     ],
+     "n": 10,
+     "median": 1.290625,
+     "interval": [
+      1.2654375,
+      1.3158125
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9515738498789112,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "metric": "net",
+    "verdict": "ep9 faster",
+    "void": false,
+    "canary": {
+     "threshold": 0.6,
+     "side": "above",
+     "gate": "pass"
+    },
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "deltablue",
+    "comparator": "node-jitless",
+    "n": 10,
+    "net": {
+     "ratios": [
+      0.735,
+      0.75,
+      0.765,
+      0.7425,
+      0.7575,
+      0.735,
+      0.75,
+      0.765,
+      0.7425,
+      0.7575
+     ],
+     "n": 10,
+     "median": 0.75,
+     "interval": [
+      0.735,
+      0.765
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.999999999999987,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      0.74328125,
+      0.7578125,
+      0.77234375,
+      0.7505468750000001,
+      0.7650781249999999,
+      0.74328125,
+      0.7578125,
+      0.77234375,
+      0.7505468750000001,
+      0.7650781249999999
+     ],
+     "n": 10,
+     "median": 0.7578125,
+     "interval": [
+      0.74328125,
+      0.77234375
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.917525773195861,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "metric": "net",
+    "verdict": "ep9 slower",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "crypto",
+    "comparator": "qjs",
+    "n": 10,
+    "net": {
+     "ratios": [
+      1.3130000000000002,
+      1.274,
+      1.3,
+      1.326,
+      1.287,
+      1.3130000000000002,
+      1.274,
+      1.3,
+      1.326,
+      1.287
+     ],
+     "n": 10,
+     "median": 1.3,
+     "interval": [
+      1.274,
+      1.326
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 2.0000000000000187,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      1.3035151515151515,
+      1.2656969696969698,
+      1.290909090909091,
+      1.316121212121212,
+      1.2783030303030303,
+      1.3035151515151515,
+      1.2656969696969698,
+      1.290909090909091,
+      1.316121212121212,
+      1.2783030303030303
+     ],
+     "n": 10,
+     "median": 1.290909090909091,
+     "interval": [
+      1.2656969696969698,
+      1.316121212121212
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9530516431924905,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "metric": "net",
+    "verdict": "ep9 faster",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "crypto",
+    "comparator": "node-jitless",
+    "n": 10,
+    "net": {
+     "ratios": [
+      0.7575000000000001,
+      0.735,
+      0.75,
+      0.765,
+      0.7424999999999999,
+      0.7575000000000001,
+      0.735,
+      0.75,
+      0.765,
+      0.7424999999999999
+     ],
+     "n": 10,
+     "median": 0.75,
+     "interval": [
+      0.735,
+      0.765
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 2.0000000000000164,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      0.7648484848484849,
+      0.743030303030303,
+      0.7575757575757576,
+      0.7721212121212122,
+      0.7503030303030302,
+      0.7648484848484849,
+      0.743030303030303,
+      0.7575757575757576,
+      0.7721212121212122,
+      0.7503030303030302
+     ],
+     "n": 10,
+     "median": 0.7575757575757576,
+     "interval": [
+      0.743030303030303,
+      0.7721212121212122
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9200000000000124,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "metric": "net",
+    "verdict": "ep9 slower",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "raytrace",
+    "comparator": "qjs",
+    "n": 10,
+    "net": {
+     "ratios": [
+      1.287,
+      1.3130000000000002,
+      1.274,
+      1.3,
+      1.3259999999999998,
+      1.287,
+      1.3130000000000002,
+      1.274,
+      1.3,
+      1.3259999999999998
+     ],
+     "n": 10,
+     "median": 1.3,
+     "interval": [
+      1.274,
+      1.3259999999999998
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 2.0000000000000187,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      1.2785588235294116,
+      1.3037941176470589,
+      1.2659411764705883,
+      1.2911764705882354,
+      1.3164117647058824,
+      1.2785588235294116,
+      1.3037941176470589,
+      1.2659411764705883,
+      1.2911764705882354,
+      1.3164117647058824
+     ],
+     "n": 10,
+     "median": 1.2911764705882354,
+     "interval": [
+      1.2659411764705883,
+      1.3164117647058824
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9544419134396498,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "metric": "net",
+    "verdict": "ep9 faster",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "raytrace",
+    "comparator": "node-jitless",
+    "n": 10,
+    "net": {
+     "ratios": [
+      0.7425,
+      0.7575000000000001,
+      0.735,
+      0.75,
+      0.765,
+      0.7425,
+      0.7575000000000001,
+      0.735,
+      0.75,
+      0.765
+     ],
+     "n": 10,
+     "median": 0.75,
+     "interval": [
+      0.735,
+      0.765
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 2.0000000000000018,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      0.7500735294117648,
+      0.7646323529411765,
+      0.7427941176470588,
+      0.7573529411764706,
+      0.7719117647058823,
+      0.7500735294117648,
+      0.7646323529411765,
+      0.7427941176470588,
+      0.7573529411764706,
+      0.7719117647058823
+     ],
+     "n": 10,
+     "median": 0.7573529411764706,
+     "interval": [
+      0.7427941176470588,
+      0.7719117647058823
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.922330097087375,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "metric": "net",
+    "verdict": "ep9 slower",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "earley-boyer",
+    "comparator": "qjs",
+    "n": 10,
+    "net": {
+     "ratios": [
+      1.3259999999999998,
+      1.287,
+      1.313,
+      1.274,
+      1.3,
+      1.3259999999999998,
+      1.287,
+      1.313,
+      1.274,
+      1.3
+     ],
+     "n": 10,
+     "median": 1.3,
+     "interval": [
+      1.274,
+      1.3259999999999998
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 2.0000000000000018,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      1.3166857142857142,
+      1.2788,
+      1.3040571428571428,
+      1.2661714285714287,
+      1.2914285714285714,
+      1.3166857142857142,
+      1.2788,
+      1.3040571428571428,
+      1.2661714285714287,
+      1.2914285714285714
+     ],
+     "n": 10,
+     "median": 1.2914285714285714,
+     "interval": [
+      1.2661714285714287,
+      1.3166857142857142
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9557522123893814,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "metric": "net",
+    "verdict": "ep9 faster",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "earley-boyer",
+    "comparator": "node-jitless",
+    "n": 10,
+    "net": {
+     "ratios": [
+      0.765,
+      0.7424999999999999,
+      0.7575000000000001,
+      0.735,
+      0.75,
+      0.765,
+      0.7424999999999999,
+      0.7575000000000001,
+      0.735,
+      0.75
+     ],
+     "n": 10,
+     "median": 0.75,
+     "interval": [
+      0.735,
+      0.765
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 2.0000000000000164,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      0.7717142857142858,
+      0.7498571428571428,
+      0.7644285714285715,
+      0.7425714285714285,
+      0.7571428571428571,
+      0.7717142857142858,
+      0.7498571428571428,
+      0.7644285714285715,
+      0.7425714285714285,
+      0.7571428571428571
+     ],
+     "n": 10,
+     "median": 0.7571428571428571,
+     "interval": [
+      0.7425714285714285,
+      0.7717142857142858
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.924528301886807,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "metric": "net",
+    "verdict": "ep9 slower",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "splay",
+    "comparator": "qjs",
+    "n": 10,
+    "net": {
+     "ratios": [
+      1.3,
+      1.326,
+      1.287,
+      1.313,
+      1.274,
+      1.3,
+      1.326,
+      1.287,
+      1.313,
+      1.274
+     ],
+     "n": 10,
+     "median": 1.3,
+     "interval": [
+      1.274,
+      1.326
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 2.0000000000000018,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      1.2916666666666667,
+      1.3169444444444445,
+      1.2790277777777777,
+      1.3043055555555556,
+      1.2663888888888888,
+      1.2916666666666667,
+      1.3169444444444445,
+      1.2790277777777777,
+      1.3043055555555556,
+      1.2663888888888888
+     ],
+     "n": 10,
+     "median": 1.2916666666666667,
+     "interval": [
+      1.2663888888888888,
+      1.3169444444444445
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9569892473118415,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "metric": "net",
+    "verdict": "ep9 faster",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "splay",
+    "comparator": "node-jitless",
+    "n": 10,
+    "net": {
+     "ratios": [
+      0.75,
+      0.765,
+      0.7425,
+      0.7575,
+      0.735,
+      0.75,
+      0.765,
+      0.7425,
+      0.7575,
+      0.735
+     ],
+     "n": 10,
+     "median": 0.75,
+     "interval": [
+      0.735,
+      0.765
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.999999999999987,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      0.7569444444444444,
+      0.7715277777777778,
+      0.7496527777777777,
+      0.7642361111111111,
+      0.7423611111111111,
+      0.7569444444444444,
+      0.7715277777777778,
+      0.7496527777777777,
+      0.7642361111111111,
+      0.7423611111111111
+     ],
+     "n": 10,
+     "median": 0.7569444444444444,
+     "interval": [
+      0.7423611111111111,
+      0.7715277777777778
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.926605504587164,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "metric": "net",
+    "verdict": "ep9 slower",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "navier-stokes",
+    "comparator": "qjs",
+    "n": 10,
+    "net": {
+     "ratios": [
+      1.274,
+      1.3,
+      1.326,
+      1.287,
+      1.313,
+      1.274,
+      1.3,
+      1.326,
+      1.287,
+      1.313
+     ],
+     "n": 10,
+     "median": 1.3,
+     "interval": [
+      1.274,
+      1.326
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 2.0000000000000018,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      1.2665945945945944,
+      1.2918918918918918,
+      1.3171891891891891,
+      1.2792432432432432,
+      1.3045405405405406,
+      1.2665945945945944,
+      1.2918918918918918,
+      1.3171891891891891,
+      1.2792432432432432,
+      1.3045405405405406
+     ],
+     "n": 10,
+     "median": 1.2918918918918918,
+     "interval": [
+      1.2665945945945944,
+      1.3171891891891891
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9581589958159038,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "metric": "net",
+    "verdict": "ep9 faster",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "navier-stokes",
+    "comparator": "node-jitless",
+    "n": 10,
+    "net": {
+     "ratios": [
+      0.7350000000000001,
+      0.75,
+      0.7649999999999999,
+      0.7425,
+      0.7575,
+      0.7350000000000001,
+      0.75,
+      0.7649999999999999,
+      0.7425,
+      0.7575
+     ],
+     "n": 10,
+     "median": 0.75,
+     "interval": [
+      0.7350000000000001,
+      0.7649999999999999
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.999999999999987,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      0.7421621621621622,
+      0.7567567567567568,
+      0.7713513513513512,
+      0.7494594594594595,
+      0.764054054054054,
+      0.7421621621621622,
+      0.7567567567567568,
+      0.7713513513513512,
+      0.7494594594594595,
+      0.764054054054054
+     ],
+     "n": 10,
+     "median": 0.7567567567567568,
+     "interval": [
+      0.7421621621621622,
+      0.7713513513513512
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9285714285714235,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "metric": "net",
+    "verdict": "ep9 slower",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "octane-richards",
+    "comparator": "qjs",
+    "n": 10,
+    "net": {
+     "ratios": [
+      1.212,
+      1.176,
+      1.2,
+      1.224,
+      1.188,
+      1.212,
+      1.176,
+      1.2,
+      1.224,
+      1.188
+     ],
+     "n": 10,
+     "median": 1.2,
+     "interval": [
+      1.176,
+      1.224
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 2.0000000000000018,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      1.2064210526315788,
+      1.1713684210526316,
+      1.194736842105263,
+      1.2181052631578948,
+      1.1830526315789474,
+      1.2064210526315788,
+      1.1713684210526316,
+      1.194736842105263,
+      1.2181052631578948,
+      1.1830526315789474
+     ],
+     "n": 10,
+     "median": 1.194736842105263,
+     "interval": [
+      1.1713684210526316,
+      1.2181052631578948
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9559471365638688,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "metric": "net",
+    "verdict": "ep9 faster",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "octane-richards",
+    "comparator": "node-jitless",
+    "n": 10,
+    "net": {
+     "ratios": [
+      0.9089999999999999,
+      0.8819999999999999,
+      0.9,
+      0.918,
+      0.891,
+      0.9089999999999999,
+      0.8819999999999999,
+      0.9,
+      0.918,
+      0.891
+     ],
+     "n": 10,
+     "median": 0.9,
+     "interval": [
+      0.8819999999999999,
+      0.918
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9999999999999893,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      0.9113947368421053,
+      0.8851052631578946,
+      0.9026315789473685,
+      0.9201578947368422,
+      0.8938684210526316,
+      0.9113947368421053,
+      0.8851052631578946,
+      0.9026315789473685,
+      0.9201578947368422,
+      0.8938684210526316
+     ],
+     "n": 10,
+     "median": 0.9026315789473685,
+     "interval": [
+      0.8851052631578946,
+      0.9201578947368422
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9416909620991174,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "metric": "net",
+    "verdict": "ep9 slower",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "octane-deltablue",
+    "comparator": "qjs",
+    "n": 10,
+    "net": {
+     "ratios": [
+      1.188,
+      1.212,
+      1.176,
+      1.2,
+      1.224,
+      1.188,
+      1.212,
+      1.176,
+      1.2,
+      1.224
+     ],
+     "n": 10,
+     "median": 1.2,
+     "interval": [
+      1.176,
+      1.224
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 2.0000000000000018,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      1.1831794871794872,
+      1.2065641025641025,
+      1.1714871794871795,
+      1.1948717948717948,
+      1.2182564102564102,
+      1.1831794871794872,
+      1.2065641025641025,
+      1.1714871794871795,
+      1.1948717948717948,
+      1.2182564102564102
+     ],
+     "n": 10,
+     "median": 1.1948717948717948,
+     "interval": [
+      1.1714871794871795,
+      1.2182564102564102
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9570815450643737,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "metric": "net",
+    "verdict": "ep9 faster",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "octane-deltablue",
+    "comparator": "node-jitless",
+    "n": 10,
+    "net": {
+     "ratios": [
+      0.8909999999999999,
+      0.909,
+      0.8820000000000001,
+      0.9,
+      0.9179999999999999,
+      0.8909999999999999,
+      0.909,
+      0.8820000000000001,
+      0.9,
+      0.9179999999999999
+     ],
+     "n": 10,
+     "median": 0.9,
+     "interval": [
+      0.8820000000000001,
+      0.9179999999999999
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 2.000000000000014,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      0.8937948717948717,
+      0.9113333333333333,
+      0.8850256410256411,
+      0.9025641025641026,
+      0.9201025641025641,
+      0.8937948717948717,
+      0.9113333333333333,
+      0.8850256410256411,
+      0.9025641025641026,
+      0.9201025641025641
+     ],
+     "n": 10,
+     "median": 0.9025641025641026,
+     "interval": [
+      0.8850256410256411,
+      0.9201025641025641
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9431818181818266,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "metric": "net",
+    "verdict": "ep9 slower",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "octane-crypto",
+    "comparator": "qjs",
+    "n": 10,
+    "net": {
+     "ratios": [
+      1.224,
+      1.188,
+      1.212,
+      1.176,
+      1.2,
+      1.224,
+      1.188,
+      1.212,
+      1.176,
+      1.2
+     ],
+     "n": 10,
+     "median": 1.2,
+     "interval": [
+      1.176,
+      1.224
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 2.0000000000000018,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      1.2184,
+      1.1833,
+      1.2067,
+      1.1716,
+      1.195,
+      1.2184,
+      1.1833,
+      1.2067,
+      1.1716,
+      1.195
+     ],
+     "n": 10,
+     "median": 1.195,
+     "interval": [
+      1.1716,
+      1.2184
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9581589958159067,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "metric": "net",
+    "verdict": "ep9 faster",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "octane-crypto",
+    "comparator": "node-jitless",
+    "n": 10,
+    "net": {
+     "ratios": [
+      0.9179999999999999,
+      0.891,
+      0.909,
+      0.882,
+      0.9,
+      0.9179999999999999,
+      0.891,
+      0.909,
+      0.882,
+      0.9
+     ],
+     "n": 10,
+     "median": 0.9,
+     "interval": [
+      0.882,
+      0.9179999999999999
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 2.0000000000000018,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      0.9200499999999999,
+      0.893725,
+      0.911275,
+      0.88495,
+      0.9025,
+      0.9200499999999999,
+      0.893725,
+      0.911275,
+      0.88495,
+      0.9025
+     ],
+     "n": 10,
+     "median": 0.9025,
+     "interval": [
+      0.88495,
+      0.9200499999999999
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9445983379501335,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "metric": "net",
+    "verdict": "ep9 slower",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "octane-raytrace",
+    "comparator": "qjs",
+    "n": 10,
+    "net": {
+     "ratios": [
+      1.2,
+      1.224,
+      1.188,
+      1.212,
+      1.176,
+      1.2,
+      1.224,
+      1.188,
+      1.212,
+      1.176
+     ],
+     "n": 10,
+     "median": 1.2,
+     "interval": [
+      1.176,
+      1.224
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 2.0000000000000018,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      1.1951219512195121,
+      1.2185365853658536,
+      1.1834146341463414,
+      1.2068292682926829,
+      1.1717073170731707,
+      1.1951219512195121,
+      1.2185365853658536,
+      1.1834146341463414,
+      1.2068292682926829,
+      1.1717073170731707
+     ],
+     "n": 10,
+     "median": 1.1951219512195121,
+     "interval": [
+      1.1717073170731707,
+      1.2185365853658536
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9591836734693895,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "metric": "net",
+    "verdict": "ep9 faster",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "octane-raytrace",
+    "comparator": "node-jitless",
+    "n": 10,
+    "net": {
+     "ratios": [
+      0.9,
+      0.9179999999999999,
+      0.8909999999999999,
+      0.909,
+      0.882,
+      0.9,
+      0.9179999999999999,
+      0.8909999999999999,
+      0.909,
+      0.882
+     ],
+     "n": 10,
+     "median": 0.9,
+     "interval": [
+      0.882,
+      0.9179999999999999
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 2.000000000000014,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      0.9024390243902439,
+      0.9199999999999999,
+      0.8936585365853658,
+      0.911219512195122,
+      0.8848780487804878,
+      0.9024390243902439,
+      0.9199999999999999,
+      0.8936585365853658,
+      0.911219512195122,
+      0.8848780487804878
+     ],
+     "n": 10,
+     "median": 0.9024390243902439,
+     "interval": [
+      0.8848780487804878,
+      0.9199999999999999
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9459459459459598,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "metric": "net",
+    "verdict": "ep9 slower",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "octane-earley-boyer",
+    "comparator": "qjs",
+    "n": 10,
+    "net": {
+     "ratios": [
+      1.1760000000000002,
+      1.2,
+      1.224,
+      1.188,
+      1.212,
+      1.1760000000000002,
+      1.2,
+      1.224,
+      1.188,
+      1.212
+     ],
+     "n": 10,
+     "median": 1.2,
+     "interval": [
+      1.1760000000000002,
+      1.224
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 2.0000000000000018,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      1.1718095238095239,
+      1.1952380952380952,
+      1.2186666666666666,
+      1.1835238095238094,
+      1.206952380952381,
+      1.1718095238095239,
+      1.1952380952380952,
+      1.2186666666666666,
+      1.1835238095238094,
+      1.206952380952381
+     ],
+     "n": 10,
+     "median": 1.1952380952380952,
+     "interval": [
+      1.1718095238095239,
+      1.2186666666666666
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9601593625498133,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "metric": "net",
+    "verdict": "ep9 faster",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "octane-earley-boyer",
+    "comparator": "node-jitless",
+    "n": 10,
+    "net": {
+     "ratios": [
+      0.882,
+      0.9,
+      0.918,
+      0.891,
+      0.909,
+      0.882,
+      0.9,
+      0.918,
+      0.891,
+      0.909
+     ],
+     "n": 10,
+     "median": 0.9,
+     "interval": [
+      0.882,
+      0.918
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 2.0000000000000018,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      0.8848095238095238,
+      0.9023809523809524,
+      0.919952380952381,
+      0.8935952380952381,
+      0.9111666666666667,
+      0.8848095238095238,
+      0.9023809523809524,
+      0.919952380952381,
+      0.8935952380952381,
+      0.9111666666666667
+     ],
+     "n": 10,
+     "median": 0.9023809523809524,
+     "interval": [
+      0.8848095238095238,
+      0.919952380952381
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9472295514511873,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "metric": "net",
+    "verdict": "ep9 slower",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "octane-splay",
+    "comparator": "qjs",
+    "n": 10,
+    "net": {
+     "ratios": [
+      1.212,
+      1.176,
+      1.2,
+      1.2240000000000002,
+      1.188,
+      1.212,
+      1.176,
+      1.2,
+      1.2240000000000002,
+      1.188
+     ],
+     "n": 10,
+     "median": 1.2,
+     "interval": [
+      1.176,
+      1.2240000000000002
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 2.0000000000000018,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      1.2070697674418605,
+      1.171906976744186,
+      1.1953488372093024,
+      1.2187906976744187,
+      1.1836279069767441,
+      1.2070697674418605,
+      1.171906976744186,
+      1.1953488372093024,
+      1.2187906976744187,
+      1.1836279069767441
+     ],
+     "n": 10,
+     "median": 1.1953488372093024,
+     "interval": [
+      1.171906976744186,
+      1.2187906976744187
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.961089494163427,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "metric": "net",
+    "verdict": "ep9 faster",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "octane-splay",
+    "comparator": "node-jitless",
+    "n": 10,
+    "net": {
+     "ratios": [
+      0.9089999999999999,
+      0.882,
+      0.9,
+      0.918,
+      0.891,
+      0.9089999999999999,
+      0.882,
+      0.9,
+      0.918,
+      0.891
+     ],
+     "n": 10,
+     "median": 0.9,
+     "interval": [
+      0.882,
+      0.918
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9999999999999893,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      0.9111162790697673,
+      0.8847441860465116,
+      0.9023255813953488,
+      0.9199069767441861,
+      0.8935348837209303,
+      0.9111162790697673,
+      0.8847441860465116,
+      0.9023255813953488,
+      0.9199069767441861,
+      0.8935348837209303
+     ],
+     "n": 10,
+     "median": 0.9023255813953488,
+     "interval": [
+      0.8847441860465116,
+      0.9199069767441861
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9484536082474073,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "metric": "net",
+    "verdict": "ep9 slower",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "octane-navier-stokes",
+    "comparator": "qjs",
+    "n": 10,
+    "net": {
+     "ratios": [
+      1.1880000000000002,
+      1.212,
+      1.176,
+      1.2,
+      1.2240000000000002,
+      1.1880000000000002,
+      1.212,
+      1.176,
+      1.2,
+      1.2240000000000002
+     ],
+     "n": 10,
+     "median": 1.2,
+     "interval": [
+      1.176,
+      1.2240000000000002
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9999999999999833,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      1.1837272727272727,
+      1.2071818181818181,
+      1.172,
+      1.1954545454545455,
+      1.218909090909091,
+      1.1837272727272727,
+      1.2071818181818181,
+      1.172,
+      1.1954545454545455,
+      1.218909090909091
+     ],
+     "n": 10,
+     "median": 1.1954545454545455,
+     "interval": [
+      1.172,
+      1.218909090909091
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9619771863117819,
+     "void": false,
+     "threshold": 1,
+     "side": "above"
+    },
+    "metric": "net",
+    "verdict": "ep9 faster",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   },
+   {
+    "workload": "octane-navier-stokes",
+    "comparator": "node-jitless",
+    "n": 10,
+    "net": {
+     "ratios": [
+      0.891,
+      0.909,
+      0.882,
+      0.9,
+      0.918,
+      0.891,
+      0.909,
+      0.882,
+      0.9,
+      0.918
+     ],
+     "n": 10,
+     "median": 0.9,
+     "interval": [
+      0.882,
+      0.918
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 2.0000000000000018,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "net_invalid": null,
+    "gross": {
+     "ratios": [
+      0.8934772727272727,
+      0.9110681818181818,
+      0.8846818181818181,
+      0.9022727272727272,
+      0.9198636363636364,
+      0.8934772727272727,
+      0.9110681818181818,
+      0.8846818181818181,
+      0.9022727272727272,
+      0.9198636363636364
+     ],
+     "n": 10,
+     "median": 0.9022727272727272,
+     "interval": [
+      0.8846818181818181,
+      0.9198636363636364
+     ],
+     "ranks": [
+      2,
+      9
+     ],
+     "iqrPct": 1.9496221662468527,
+     "void": false,
+     "threshold": 1,
+     "side": "below"
+    },
+    "metric": "net",
+    "verdict": "ep9 slower",
+    "void": false,
+    "status": [
+     "valid"
+    ]
+   }
+  ],
+  "geomean": {
+   "qjs": {
+    "workloads": [
+     "richards",
+     "deltablue",
+     "crypto",
+     "raytrace",
+     "earley-boyer",
+     "splay",
+     "navier-stokes",
+     "octane-richards",
+     "octane-deltablue",
+     "octane-crypto",
+     "octane-raytrace",
+     "octane-earley-boyer",
+     "octane-splay",
+     "octane-navier-stokes"
+    ],
+    "net": 1.2489995996796797,
+    "gross": 1.2422002353548685
+   },
+   "node-jitless": {
+    "workloads": [
+     "richards",
+     "deltablue",
+     "crypto",
+     "raytrace",
+     "earley-boyer",
+     "splay",
+     "navier-stokes",
+     "octane-richards",
+     "octane-deltablue",
+     "octane-crypto",
+     "octane-raytrace",
+     "octane-earley-boyer",
+     "octane-splay",
+     "octane-navier-stokes"
+    ],
+    "net": 0.8215838362577492,
+    "gross": 0.8267358978389108
+   }
+  },
+  "samples": []
+ },
+ "R": null
+}
