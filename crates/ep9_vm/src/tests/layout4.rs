@@ -258,13 +258,9 @@ fn the_rng_seed_is_never_zero() {
     }
 }
 
-/// The first `Math.random` numbers (as bits) of two new isolates of this process.
-fn random_bits_of_two_new_isolates() -> [Vec<u64>; 2] {
-    let one = || {
-        with_cx(false, |cx| {
-            (0..4).map(|_| cx.math_random().to_bits()).collect()
-        })
-    };
+/// The first `Math.random` numbers of two new isolates of this process.
+fn random_numbers_of_two_new_isolates() -> [Vec<f64>; 2] {
+    let one = || with_cx(false, |cx| (0..4).map(|_| cx.math_random()).collect());
     [one(), one()]
 }
 
@@ -275,11 +271,11 @@ fn math_random_seed_child() {
     if std::env::var("EP9_RNG_CHILD").as_deref() != Ok("rng") {
         return;
     }
-    println!("RNGBITS {:?}", random_bits_of_two_new_isolates());
+    println!("RNGNUMS {:?}", random_numbers_of_two_new_isolates());
 }
 
 #[cfg(not(miri))]
-fn child_random_bits(seed: &str) -> String {
+fn child_random_numbers(seed: &str) -> String {
     let out = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "tests::layout4::math_random_seed_child",
@@ -295,7 +291,7 @@ fn child_random_bits(seed: &str) -> String {
     assert!(out.status.success(), "{out:?}");
     let text = String::from_utf8(out.stdout).unwrap();
     let i = text
-        .find("RNGBITS ")
+        .find("RNGNUMS ")
         .expect("the child printed its numbers");
     text[i..].lines().next().unwrap().to_owned()
 }
@@ -306,10 +302,14 @@ fn child_random_bits(seed: &str) -> String {
 #[test]
 #[cfg(not(miri))]
 fn one_hash_seed_gives_one_math_random_run() {
-    let one = child_random_bits("1");
-    assert_eq!(one, child_random_bits("1"), "EP9_HASH_SEED=1 twice");
-    assert_ne!(one, child_random_bits("2"), "another seed, other numbers");
-    let [a, b] = random_bits_of_two_new_isolates();
+    let one = child_random_numbers("1");
+    assert_eq!(one, child_random_numbers("1"), "EP9_HASH_SEED=1 twice");
+    assert_ne!(
+        one,
+        child_random_numbers("2"),
+        "another seed, other numbers"
+    );
+    let [a, b] = random_numbers_of_two_new_isolates();
     assert_ne!(a, b, "two isolates of one process");
 }
 
