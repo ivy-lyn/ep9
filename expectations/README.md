@@ -17,6 +17,7 @@ Committed expectations and pinned benchmark lists ([08-repo](../docs/plan/08-rep
 | `typed-kernels.txt` | TYPED-KERNELS | by hand |
 | `bytecode-corpus.digest` | The G1 corpus digest: SHA-256 over the sorted (path under `third_party/`, mode, unit hash) lines of every unit that BytecodeGen compiles from test262 and the 3 bench pins. Every host and target, debug and release, must give it (CI job `test262`). It changes only with an ABI bump or a codegen change, each with a BCG-CORPUS row in `docs/decisions-log.md`. Orchestrator-only after M2-P0. After M3-P4: BCG-CORPUS-14 (`17dc1f9c…7531`; the E9 kind marker slots changed the units of classes that hold a direct eval). Before it: BCG-CORPUS-13 (`ed74e92f…1c2a`, 94,502 units; M3-P3) | `EP9_BLESS_CORPUS=1 cargo test -p ep9_frontend --release --locked --lib bytecodegen::corpus -- --ignored` |
 | `fp-check-allow.toml` | Exceptions for `cargo xtask fp-check` (H36): a banned libm symbol allowed in one function, with a reopen condition. More than 5 entries reopens H36. Format in the file header | by hand |
+| `adr-trailer-exceptions.txt` | Commits that touch an H-row crate without an `ADR:` trailer, one line `<sha> <ADR ids> <decisions-log row>` (plan v9 rule 26); `cargo xtask adr-lint --trailers-only` reads it from the work tree. Made at M4-P1 for 2 merge commits (decision M4-P1-TRAILER). Format in the file header | the orchestrator, append only |
 
 Benchmark set files (`*-set.txt`, `short-run.txt`, `typed-kernels.txt`): one entry per line.
 

@@ -1,0 +1,13 @@
+# ADR trailer exceptions (plan v9 rule 26; read by `cargo xtask adr-lint --trailers-only`).
+# A commit that touches an H-row crate and has no `ADR:` trailer passes only with a line here.
+# Orchestrator only, append only. One line per commit:
+#   <sha> <ADR ids> <decisions-log row>
+# <ADR ids> is one word (`H19` or `H20,H36`). Lines that start with `#` are comments.
+#
+# M4-P1 merge branch: the auto-merge of these 2 merge commits changed ep9_vm files, and the
+# merge messages had no trailer. No history rewrite: later record rows cite later shas.
+# 384f8dd (merge m1m4/p1-str1): facts_export.rs and object.rs read strings through
+# string::with_text, not str_view (H19).
+384f8ddf3e12eb6e92fd1047852eadc4348da09c H19 M4-P1-TRAILER
+# ccc21bb (merge m1m4/p1-math1): conv.rs number_op `**` uses the correctly rounded pow (H36).
+ccc21bba1fb4b43e7c20e846ebc1ffd2740bd819 H36 M4-P1-TRAILER
