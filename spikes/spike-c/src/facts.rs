@@ -81,12 +81,29 @@ pub fn read_profiled(
     s.validate(unit).map_err(|e| format!("stale: {e:?}"))
 }
 
+/// `snapshot` without the BinaryOp and CompareOp records of `function`: the tests' "no int
+/// fact" baseline, now that the live facts hold those records (FACTS2, M4-P2).
+pub fn without_int(snapshot: &FactSnapshot, function: u32) -> FactSnapshot {
+    let mut out = snapshot.clone();
+    let int: Vec<u32> = snapshot
+        .records()
+        .filter(|(k, f)| {
+            k.function == function && matches!(f, SlotFacts::BinaryOp(_) | SlotFacts::CompareOp(_))
+        })
+        .map(|(k, _)| k.slot)
+        .collect();
+    for slot in int {
+        out.remove(function, slot);
+    }
+    out
+}
+
 /// A test stand-in for the int facts FACTS2 exports (M4-P2): `snapshot` plus, for each
 /// BinaryOp and CompareOp slot of `function` in `unit` that has no record, the record the T0
 /// profile's reader rule gives a slot that T0 left empty (`ep9_vm` profile.rs, "Implicit
 /// int32": the reader adds `INT32` to every slot of its kind in a function that has a
-/// vector). Only the spike's tests use it: on a live run it would call a site int32 that
-/// wrote a NUMBER bit the exporter does not write out yet.
+/// vector). Only the spike's tests use it; since FACTS2 the live facts hold these records
+/// (`facts_export.rs` adds the INT32 bit to each, so a slot T0 left empty reads INT32).
 pub fn with_implicit_int32(
     snapshot: &FactSnapshot,
     unit: &CompiledUnit,

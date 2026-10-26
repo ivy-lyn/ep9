@@ -87,11 +87,15 @@ pub fn run(k: &'static Kernel, n: u32, config: &Config) -> Result<TierRun, Strin
 /// Where the int facts of a compile come from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IntFacts {
-    /// The live snapshot as `export_facts` writes it.
+    /// The live snapshot as `export_facts` writes it (since FACTS2, M4-P2, with the
+    /// BinaryOp and CompareOp records).
     Live,
     /// The live snapshot plus the test stand-in for FACTS2's int records
     /// ([`facts::with_implicit_int32`]).
     ImplicitInt32,
+    /// The live snapshot without the function's BinaryOp and CompareOp records
+    /// ([`facts::without_int`]): the tests' "no int fact" baseline.
+    WithoutInt,
 }
 
 /// Compiles the hot function `hot` of the script `file` of `s` (the kernel file's line L is
@@ -144,6 +148,7 @@ fn compile_facts(
     match int {
         IntFacts::Live => Ok(live),
         IntFacts::ImplicitInt32 => facts::with_implicit_int32(&live, script.unit.unit(), id),
+        IntFacts::WithoutInt => Ok(facts::without_int(&live, id)),
     }
 }
 
@@ -389,9 +394,12 @@ mod tests {
             "sum",
         );
         assert_eq!(r.compiled.output, ["0 0 499500 2147450880 0"]);
-        assert_eq!(r.report.fact_guards, 0);
-        // `a + i` past 2^31 is a double in JS before `| 0`; the unbacked overflow guard
-        // traps instead (T0 prints 704982704).
+        // Since FACTS2 (M4-P2) the live facts hold the BinaryOp and CompareOp records, so
+        // the 3 int32 guards are fact guards.
+        assert_eq!(r.report.fact_guards, 3, "{}", r.report.graph);
+        // `a + i` past 2^31 is a double in JS before `| 0`; the overflow guard (fact-backed:
+        // a `+` that overflows stays implicit int32 in the profile) traps instead (T0 prints
+        // 704982704).
         let r = traps(SUM, warm, "print(sum(100000));", "sum");
         assert_eq!(r.t0.output, ["704982704"]);
         // A double that is an int32 passes the entry check; 2.5 does not (unbacked: the trap).
@@ -415,7 +423,31 @@ mod tests {
         }
         let warm = "for (var k = 0; k < 20; k++) sum(10);";
         let main = "print(sum(0), sum(1), sum(1000), sum(65536), sum(-5));";
-        let plain = equal(SUM, warm, main, "sum");
+        // The baseline with no int fact (since FACTS2 the live facts hold them).
+        let plain = run_script_with(
+            &Config::default(),
+            SUM,
+            warm,
+            main,
+            "sum",
+            IntFacts::WithoutInt,
+        )
+        .expect("run");
+        assert!(
+            plain.equal() && plain.trap.is_none(),
+            "{:?} vs {:?}",
+            plain.compiled,
+            plain.t0
+        );
+        assert_eq!(plain.report.fact_guards, 0, "{}", plain.report.graph);
+        // The live records (FACTS2) back the same guards as the stand-in.
+        let live = equal(SUM, warm, main, "sum");
+        assert_eq!(
+            (live.report.fact_guards, live.report.unbacked_guards),
+            (plain.report.unbacked_guards, 0),
+            "{}",
+            live.report.graph
+        );
         let r = run_script_with(
             &Config::default(),
             SUM,
@@ -519,7 +551,8 @@ mod tests {
             "print(get(new P(5), 10), get(new Q(7), 3));",
             "get",
         );
-        assert_eq!(r.report.fact_guards, 1, "{}", r.report.graph);
+        // The shape guard of `o.v` plus, since FACTS2 (M4-P2), the 4 int32 guards.
+        assert_eq!(r.report.fact_guards, 5, "{}", r.report.graph);
         // A third shape: the guard fails (trap), never a wrong field.
         traps(NAMED, warm, "print(get({ w: 1, v: 9 }, 2));", "get");
         traps(NAMED, warm, "print(get(5, 2));", "get");
@@ -634,7 +667,14 @@ mod tests {
         let r = run(k, 1, &Config::default()).expect("run");
         assert!(r.equal, "{}", r.line());
         assert_eq!(r.probe_trap, Some(0), "{}", r.line());
-        assert_eq!(r.report.fact_guards, 2, "{}", r.report.graph);
+        // Since FACTS2 (M4-P2) the live facts back the int32 guards too: 23 fact guards
+        // and the 6 keyed guards unbacked, as with the stand-in (`am3_with_int_facts_equals_t0`).
+        assert_eq!(
+            (r.report.fact_guards, r.report.unbacked_guards),
+            (23, 6),
+            "{}",
+            r.report.graph
+        );
     }
 
     /// am3 with the FACTS2 stand-in int records: every int32 guard is a fact guard; only the
