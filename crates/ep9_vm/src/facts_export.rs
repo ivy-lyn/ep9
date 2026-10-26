@@ -9,7 +9,7 @@
 //!    └─ each function with a FEEDBACK cell (feedback.rs), each slot that an IC site uses
 //!         LoadNamed, StoreNamed, DefineNamedOwn (0x21, 0x22, 0x24, 0x25) ── PropertyFacts
 //!         LoadGlobal, LoadGlobalInsideTypeof, StoreGlobal (0x10-0x12) ──── GlobalFacts
-//!         other kinds: no record (T0 v0 does not record them, H16-Q2)
+//!         other kinds: no record (T0 records them since M4-P1, H16-Q2; not exported yet)
 //!  IC entry (ic.rs)   ── state: uninitialized | monomorphic | polymorphic | megamorphic
 //!   case (key, handler)
 //!     key: a live shape ──root walk──> ShapeDesc {proto, kind, flags, capacity, keys}
