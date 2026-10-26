@@ -6,7 +6,7 @@
 
 ## 1. Verdict
 
-M0 exits with one named exception. Exit items 1-4 and 6-12 are PASS on every exit column (item 4 on Windows is N/A by design). Item 5 is OPEN on one cell only: SP-Dispatch condition 2 on AMD EPYC 7763 (Zen 3), sysv and win64. The orchestrator applied the V8-A19 rule before the exit run and got branch 3 (decision M3-P5-V8A19). Branch 3 says: the gate stays, the cell stays OPEN, and M0 exits with this exception carried to M1. Each `cargo xtask m0-exit` run exits 1 for that one cell and for no other cause. This is a statement, not a question: the owner may override it.
+M0 exits with one named exception, if the x86-64 Linux sandbox column gives the same result. The pass rule (plan v8 §7.1) has 4 exit columns: mac a64, linux a64, x86-64 Linux in the sandbox, and Windows from the exit-head CI run. Exit items 1-4 and 6-12 are PASS on the 3 columns run so far: mac a64, linux a64 and Windows CI (item 4 on Windows is N/A by design). The x86-64 Linux sandbox column is X86-EXIT-PENDING. Item 5 is OPEN on one cell only: SP-Dispatch condition 2 on AMD EPYC 7763 (Zen 3), sysv and win64. The orchestrator applied the V8-A19 rule before the exit run and got branch 3 (decision M3-P5-V8A19). Branch 3 says: the gate stays, the cell stays OPEN, and M0 exits with this exception carried to M1. On the 3 columns run so far, each `cargo xtask m0-exit` run exits 1 only for that cell. The Windows-as-host extra run also exits 1 for items 7 and 12, by design (§2). This is a statement, not a question: the owner may override it.
 
 ```text
  V8-A19 rule for exit item 5 (applied at GATES-2 and again before the exit run)
@@ -35,7 +35,7 @@ The M0 exit run is GATES-3 at `86be16b` (decision M3-P5-EXIT-RUN). It reads the 
 | 11 | SP-Unit green on 4 targets | P | P | X86-EXIT-PENDING | P | SP-Unit GO in spike review 2 |
 | 12 | Identical bytecode hashes | P | P | X86-EXIT-PENDING | P | BCG-CORPUS-14 `17dc1f9c…7531` over 94,502 units, release = debug |
 
-Extra columns, not exit columns: linux x64 from the CI inputs has the same cells. Windows as host has item 7 NOT-RUN and item 12 OPEN, by design (the windows-x64 artifact has no nesting log and no debug corpus log). An independent checker ran the 4 m0-exit columns again and got byte-identical reports.
+Extra columns, not exit columns: linux x64 from the CI inputs has the same cells. Windows as host has item 7 NOT-RUN and item 12 OPEN, by design (the windows-x64 artifact has no nesting log and no debug corpus log), so that run exits 1 for items 5, 7 and 12. An independent checker ran the 4 m0-exit columns again and got byte-identical reports.
 
 ## 3. What M0 built
 
@@ -135,7 +135,8 @@ A ratio above 1 means that ep9 is faster. Perf run 4 used the stub harness (deci
 | A faster GC-stress heap verify; `has-instance-jitted.js` stays on the skip list | M1 | M3-P4-GCSKIP-WIN |
 | Should `take_unhandled_rejections` run the jobs its ToString queues? | product call: an M1 embedder-API question for H22 or H20 | M3-P4-UNHANDLED-JOBS-KEEP |
 | H20 Open questions Q1, Q3, Q5, Q6 (Q6: a compiler-derived public-API check) | H20, due M1 | M3-P3-OPEN; H20 |
-| M3-P5 notes: A9-3, V9-5, F4, F7, the GATES-3 tool notes | M1 planning, sorted (c) | M3-P5-FINDINGS |
+| H20-Q4-X3 type-level fix (a `Local` in Rust heap memory inside one `with_cx` scope) | product call, M1, H10/H20 | M3-P3-H20-X3 |
+| M3-P5 notes: A9-3, V9-5, F4, F7, the GATES-3 tool notes; facts for the prototype of `function F(){}` give Unknown (M3-P3 candidate) | M1 planning, sorted (c) | M3-P5-FINDINGS; M3-P3-OPEN |
 
 Still open in W12 (the orchestrator): the x86-64 Linux sandbox column of the exit run (X86-EXIT-PENDING) and the W12 SP-Dispatch retry on the exit head (W12-SPD-PENDING). Closed in M3-P5: RF1-3 (the H23 flag name), H20 row 3 and the Accept and Frozen steps, spike review 2, the CI run of the M3-P4 head, and exit item 4 (M3-P5-OPEN).
 
