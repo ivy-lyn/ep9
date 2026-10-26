@@ -25,7 +25,7 @@ import {
   schedule,
 } from "./run.mjs";
 import { readExit2, READINGS, renderMarkdown as renderExit2 } from "./exit2.mjs";
-import { blockerOf, generateKernel, KERNEL_IDS, OK, parseArgs as kernelsArgs } from "./kernels.mjs";
+import { blockerOf, generateKernel, KERNEL_IDS, OK, parseArgs as kernelsArgs, PROBES, probeKeys, withProbe } from "./kernels.mjs";
 import { generate as generateOctane, HARNESS as OCTANE_HARNESS, KERNELS as OCTANE_KERNELS } from "./octane.mjs";
 import { benchmarkNames, DEFAULT_HARNESS, errorPlace, generate, HARNESSES, PRINT_PRELUDE } from "./v8v7.mjs";
 import { EMPTY, expandWorkloads, materialize, OCTANE_7, SETS, V8V7_7, V8V7_8, WORKLOADS } from "./workloads.mjs";
@@ -887,4 +887,67 @@ test("kernels: --check runs all 15 on the oracle and the engine; JSON for m1-exi
   });
   assert.equal(r.status, 3, r.stderr);
   assert.match(r.stderr, /no verdict: v8v7\/richards on the oracle .*printed "Richards 2"/);
+});
+
+test("kernels: result probes for regexp and navier-stokes, between the kernel and the driver", { skip: (!haveOctane || !haveV8v7) && "bench checkouts not synced" }, () => {
+  assert.deepEqual(Object.keys(PROBES).sort(), ["navier-stokes", "regexp"]);
+  for (const id of KERNEL_IDS) {
+    for (const harness of HARNESSES) {
+      const g = generateKernel(id, { n: 2, harness });
+      const p = withProbe(g);
+      if (!PROBES[g.kernel]) {
+        // No probe: the file is the generator's.
+        assert.equal(p.text, g.text, id);
+        assert.equal(p.probe, null);
+        continue;
+      }
+      assert.equal(p.probe, PROBES[g.kernel].what);
+      // base.js and the kernel keep their lines; the probe comes after the kernel, before the driver.
+      const lines = p.text.split("\n");
+      for (const part of g.parts) assert.deepEqual(lines.slice(part.offset, part.offset + part.lines), g.text.split("\n").slice(part.offset, part.offset + part.lines), `${id} ${part.file}`);
+      const end = lines.indexOf(`// ---- end of ${g.source} ----`);
+      assert.equal(lines[end + 1], "// ---- kernels.mjs result probe (check runs only) ----", id);
+      assert.ok(p.text.endsWith(g.text.slice(g.text.indexOf(`// ---- end of ${g.source} ----\n`) + `// ---- end of ${g.source} ----\n`.length)), id);
+      assert.deepEqual(probeKeys(p), g.expect.split("\n").flatMap((l) => [1, 2].map((i) => `check ${l.replace(/ 2$/, "")} ${i}`)));
+    }
+  }
+});
+
+test("kernels: the probes catch a matcher that never matches and a solver that does no work", { skip: (!haveOctane || !haveV8v7) && "bench checkouts not synced" }, (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "kernels-probe-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const fake = path.join(DIR, "testdata/fake-kernels-ep9.sh");
+  const env = (fault) => ({ ...process.env, FAKE_NODE: process.execPath, FAKE_FAULT: fault });
+  // The bug the probes close: without them, each fault still prints the harness's expected lines.
+  for (const [id, fault] of [["v8v7/regexp", "exec-null"], ["v8v7/regexp", "replace-same"], ["octane/navier-stokes", "no-update"], ["v8v7/navier-stokes", "no-update"]]) {
+    const g = generateKernel(id, { n: 1, harness: "base" });
+    const name = id.replace("/", "-");
+    const f = path.join(dir, `${name}.js`);
+    writeFileSync(f, g.text);
+    const r = spawnSync(fake, [f], { encoding: "utf8", env: env(`${name}:${fault}`) });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout.trim(), g.expect, `${id} ${fault}`);
+  }
+  const out = path.join(dir, "k.json");
+  const check = (fault) => {
+    const r = spawnSync(process.execPath, [KERNELS_CLI, "--check", fake, "--harness", "base", "--out", out], { encoding: "utf8", env: env(fault) });
+    return { r, j: JSON.parse(readFileSync(out, "utf8")) };
+  };
+  let { r, j } = check("v8v7-regexp:exec-null,octane-navier-stokes:no-update,v8v7-navier-stokes:no-update");
+  assert.equal(r.status, 1, r.stderr);
+  assert.deepEqual(j.summary.failing, ["v8v7/regexp", "v8v7/navier-stokes", "octane/navier-stokes"]);
+  for (const id of j.summary.failing) {
+    const k = j.kernels.find((x) => x.id === id);
+    assert.equal(k.status, "output differs", id);
+    assert.match(k.oracle_output, /^check \w+ 1 -?\d+$/m);
+    assert.ok(k.probe);
+  }
+  // Every other kernel: output equal, no probe.
+  for (const k of j.kernels.filter((x) => !j.summary.failing.includes(x.id))) {
+    assert.equal(k.status, OK, k.id);
+    assert.equal(k.probe, PROBES[k.kernel]?.what ?? null);
+  }
+  ({ r, j } = check("v8v7-regexp:replace-same"));
+  assert.equal(r.status, 1, r.stderr);
+  assert.deepEqual(j.summary.failing, ["v8v7/regexp"]);
 });
