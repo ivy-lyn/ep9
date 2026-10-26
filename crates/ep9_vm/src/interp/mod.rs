@@ -256,6 +256,45 @@ pub(crate) enum Flow {
     Jump(*const u8),
     /// Continue in this opcode's cold block (its own handler in (b) and (c)).
     Cold,
+    /// As `Next`, after a feedback record (`profile::Rec`; T0 profile, H16-Q2). In (b) the
+    /// handler tail-calls `dsl::record_next`, which records and dispatches, so the record
+    /// code is not in the handler: on x86-64 a handler that records inline saves registers on
+    /// entry, also on its paths that record nothing (M4-P1 PROFILE-X64). (a), (c) and the
+    /// prefixed step record inline.
+    Record(crate::profile::Rec),
+    /// As `Record`, for a comparison whose record needs the operand pair
+    /// (`profile::Pair`); (b) tail-calls `dsl::record_pair_next`.
+    RecordPair(crate::profile::Pair),
+    /// As `Jump(t)` after `call_fast` pushed a callee frame (`fp` is the new frame), for a
+    /// call in the sampled window: `profile::record_call_pushed` with the caller's Call slot.
+    /// (b) tail-calls `dsl::record_call_next`.
+    JumpRecordCall(*const u8, crate::interp::dsl::FSlot),
+}
+
+impl Flow {
+    /// Runs the record of `Record` and `RecordPair` inline and gives `Next` for them; other
+    /// values pass through. For the match loop (a), the debug expansion: out of line in debug
+    /// builds, so the ~150 arms that call it add no record locals to the loop's one frame (its
+    /// size bounds the native stack a JS call chain needs, `tests::interp`).
+    #[cfg_attr(debug_assertions, inline(never))]
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    pub(crate) fn recorded(self, st: &St<'_>) -> Flow {
+        match self {
+            Flow::Record(r) => {
+                crate::profile::record(st, r);
+                Flow::Next
+            }
+            Flow::RecordPair(p) => {
+                crate::profile::record_pair(st, p);
+                Flow::Next
+            }
+            Flow::JumpRecordCall(t, s) => {
+                crate::profile::record_call_pushed(st, s);
+                Flow::Jump(t)
+            }
+            f => f,
+        }
+    }
 }
 
 /// What a cold body (or a fast body without a cold block) does next.
