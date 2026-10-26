@@ -5,22 +5,28 @@
 //! ```text
 //!  spike-c time <kernel> [--rounds R] [--n N] [--k K]
 //!    round 0 (warm-up, dropped), rounds 1..=R (R >= 15):
-//!      configs T0, C, H0, H1 in an order rotated by the round, one new process each:
+//!      configs T0, C, H0, H1 in a counterbalanced order ([`order`]: each pair's two runs
+//!      swap places from round to round), one new process each:
 //!        spike-c once <config> <kernel> --n N --k K  ->  "secs <t>" + its output lines
 //!    every run right, else the whole report is a correctness failure (exit 1):
 //!      T0: a right driver run (Driver::matches)   C: T0's output, line for line
 //!      H1: H0's output, line for line
-//!    per round: R = t(T0) / t(C) (the gate unit), s = t(H0) / t(H1) (context)
+//!    per round: R = t(T0) / t(C) (the gate unit), s = t(H0) / t(H1) (context), each from
+//!      the two runs of that round only (a round whose pair has a failed run gives no ratio)
 //!    median, the order-statistic interval of the median (n = 15: ranks 4 and 12), IQR
-//!    (void if > 5% of the median), the implied share p = (1 - 1/R) / (1 - 1/s)
+//!    (void if > 5% of the median), the implied share p = (1 - 1/R) / (1 - 1/s); no verdict
+//!    words and no exit claim when any run was wrong
 //! ```
 //!
 //! | Config | One process |
 //! |---|---|
-//! | T0 | the kernel file, Setup and one warm-up `run()` (the driver's n = 1 loop), then per benchmark: Setup (and the hook), the timed `run()` x n, then the check line, TearDown and the name line |
-//! | C | as T0, with the first hot function compiled from the live facts of the warm-up and installed (placement (b)) before the timed part |
-//! | H0 | the kernel file, then the hot function alone in a fixed-input loop ([`HOT`]): a warm-up call, the timed call with `k` rounds, then a digest of what it wrote |
-//! | H1 | as H0, with the function compiled from the live facts of the H0 warm-up |
+//! | T0 | the kernel file, Setup and one warm-up `run()` (the driver's n = 1 loop), the same compile as C (not installed), then per benchmark: Setup (and the hook), the timed `run()` x n, then the check line, TearDown and the name line |
+//! | C | as T0, with the compiled first hot function installed (placement (b)) before the timed part |
+//! | H0 | the kernel file, then the hot function alone in a fixed-input loop ([`HOT`]): a warm-up call, the same compile as H1 (not installed), the timed call with `k` rounds, then a digest of what it wrote |
+//! | H1 | as H0, with the function compiled from the live facts of the H0 warm-up and installed |
+//!
+//! The compile runs in all four configs (its global, its fact export and its allocations), so
+//! the VM state at the timer start differs only by the installed code.
 //!
 //! The timer is the process's own clock around the timed scripts only (protocol §3: the check
 //! line is made after the timer stops). Exits in the timed region are 0 in every right run:
@@ -138,6 +144,20 @@ impl Once {
     }
 }
 
+/// The order of the four configs in `round`: the pairs (T0, C) and (H0, H1) each swap their
+/// two runs every round, and the pairs swap places every two rounds, so over rounds 1..=15
+/// each run of a pair comes first in 7 or 8 rounds (a position effect, such as the CPU state
+/// left by the previous process, does not lean on one side of a ratio).
+pub fn order(round: usize) -> [Which; 4] {
+    use Which::*;
+    match round % 4 {
+        0 => [T0, C, H0, H1],
+        1 => [C, T0, H1, H0],
+        2 => [H0, H1, T0, C],
+        _ => [H1, H0, C, T0],
+    }
+}
+
 /// The hot harness of `k`'s first hot function, if it has one.
 fn hot_harness(k: &Kernel) -> Option<&'static HotHarness> {
     let h = k.hot.first()?;
@@ -168,9 +188,11 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
             // The warm-up: the driver's n = 1 loop (its lines are not part of the output).
             let mut warm = Vec::new();
             step(&mut s, &loop1, "warm.js", &mut warm)?;
+            // The compile runs in T0 too (not installed), so both start the timer from the
+            // same VM state but the installed code.
+            let (f, c, report) =
+                tier::compile_hot(&mut s, hot, "defs.js", d1.offset, IntFacts::Live)?;
             if which == Which::C {
-                let (f, c, report) =
-                    tier::compile_hot(&mut s, hot, "defs.js", d1.offset, IntFacts::Live)?;
                 code = Some((
                     report.emit.code_bytes,
                     report.fact_guards,
@@ -229,9 +251,10 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
             let h = hot_harness(k).ok_or_else(|| format!("{}: no hot harness", hot.name))?;
             step(&mut s, h.setup, "hot.js", &mut out)?;
             step(&mut s, "__spikeCHot(200);", "hot-warm.js", &mut out)?;
+            // As for T0 and C: the compile runs in H0 too, not installed.
+            let (f, c, report) =
+                tier::compile_hot(&mut s, hot, "defs.js", d1.offset, IntFacts::Live)?;
             if which == Which::H1 {
-                let (f, c, report) =
-                    tier::compile_hot(&mut s, hot, "defs.js", d1.offset, IntFacts::Live)?;
                 code = Some((
                     report.emit.code_bytes,
                     report.fact_guards,
@@ -348,6 +371,18 @@ impl Summary {
         }
     }
 
+    /// [`Summary::line`] with no verdict words (a report with a wrong run).
+    pub fn line_without_verdict(&self) -> String {
+        let iv = self
+            .interval
+            .map_or("-".to_string(), |(a, b)| format!("[{a:.3}, {b:.3}]"));
+        format!(
+            "median {:.3}, interval {iv}, IQR {:.1}% of the median; no verdict (a run was wrong)",
+            self.median,
+            100.0 * self.iqr_share
+        )
+    }
+
     pub fn line(&self, bar: f64) -> String {
         let iv = self
             .interval
@@ -409,14 +444,15 @@ pub fn time(
         k.name,
         host_line()
     );
-    let mut t: [Vec<f64>; 4] = Default::default();
+    // Per round (1..=R), the time of each config's run, if it exited 0 and printed lines.
+    let mut t: Vec<[Option<f64>; 4]> = Vec::new();
     let mut ref_t0: Option<Vec<String>> = None;
     let mut ref_h0: Option<Vec<String>> = None;
     let mut wrong = Vec::new();
     let mut code = None;
     for round in 0..=rounds {
-        for i in 0..4 {
-            let which = Which::ALL[(i + round) % 4];
+        let mut times = [None; 4];
+        for which in order(round) {
             let out = Command::new(exe)
                 .args([
                     "once",
@@ -466,38 +502,40 @@ pub fn time(
             if which == Which::C {
                 code = code.or(o.code);
             }
-            if round > 0 {
-                t[i_of(which)].push(o.secs);
-            }
+            times[i_of(which)] = Some(o.secs);
+        }
+        if round > 0 {
+            t.push(times);
         }
     }
     let ok = wrong.is_empty();
     for w in &Which::ALL {
-        let v = &t[i_of(*w)];
+        let v: Vec<f64> = t.iter().filter_map(|r| r[i_of(*w)]).collect();
         if !v.is_empty() {
             report.push_str(&format!(
                 "t({}) median {:.4} s over {} runs\n",
                 w.name(),
-                median(v),
+                median(&v),
                 v.len()
             ));
         }
     }
-    let ratios = |a: Which, b: Which| -> Vec<f64> {
-        t[i_of(a)]
-            .iter()
-            .zip(&t[i_of(b)])
-            .map(|(x, y)| x / y)
-            .collect()
+    let r = paired_ratios(&t, Which::T0, Which::C);
+    let s = paired_ratios(&t, Which::H0, Which::H1);
+    // A wrong run voids the report: the summaries are printed, the verdict words are not.
+    let words = |x: &Summary| {
+        if ok {
+            x.line(3.0)
+        } else {
+            x.line_without_verdict()
+        }
     };
-    let r = ratios(Which::T0, Which::C);
-    let s = ratios(Which::H0, Which::H1);
     if !r.is_empty() {
         let sr = Summary::of(&r);
-        report.push_str(&format!("R = t(T0) / t(C) (gate unit): {}\n", sr.line(3.0)));
+        report.push_str(&format!("R = t(T0) / t(C) (gate unit): {}\n", words(&sr)));
         if !s.is_empty() {
             let ss = Summary::of(&s);
-            report.push_str(&format!("s = t(H0) / t(H1) (context): {}\n", ss.line(3.0)));
+            report.push_str(&format!("s = t(H0) / t(H1) (context): {}\n", words(&ss)));
             if ss.median > 1.0 && sr.median > 1.0 {
                 let p = (1.0 - 1.0 / sr.median) / (1.0 - 1.0 / ss.median);
                 report.push_str(&format!(
@@ -511,10 +549,16 @@ pub fn time(
     }
     if let Some((b, f, u)) = code {
         report.push_str(&format!(
-            "compiled {}: {b} bytes, guards {f} fact + {u} unbacked; exits in the timed region: 0 \
-             (a guard failure ends a run in the trap, and every run was right)\n",
+            "compiled {}: {b} bytes, guards {f} fact + {u} unbacked",
             k.hot[0].name
         ));
+        if ok {
+            report.push_str(
+                "; exits in the timed region: 0 (a guard failure ends a run in the trap, and \
+                 every run was right)",
+            );
+        }
+        report.push('\n');
     }
     if ok {
         report.push_str("correctness: every run right (T0 a right driver run, C = T0, H1 = H0)\n");
@@ -525,6 +569,14 @@ pub fn time(
         }
     }
     Ok((report, ok))
+}
+
+/// The ratios t(a) / t(b) of the rounds in which both runs gave a time, each from its own
+/// round (a missing run drops that round's ratio; it never pairs runs of two rounds).
+pub fn paired_ratios(t: &[[Option<f64>; 4]], a: Which, b: Which) -> Vec<f64> {
+    t.iter()
+        .filter_map(|r| Some(r[i_of(a)]? / r[i_of(b)]?))
+        .collect()
 }
 
 fn i_of(w: Which) -> usize {
@@ -561,6 +613,53 @@ mod tests {
         assert!(Summary::of(&wide).side(3.0).starts_with("void"));
         let edge: Vec<f64> = (0..15).map(|i| 2.993 + 0.001 * i as f64).collect();
         assert_eq!(Summary::of(&edge).side(3.0), "marginal");
+    }
+
+    /// Review F5 (M4-P2): over rounds 1..=15 each run of a pair comes first in 7 or 8 rounds,
+    /// and every round runs each config once.
+    #[test]
+    fn the_order_is_counterbalanced() {
+        let first = |a: Which, b: Which| {
+            (1..=15)
+                .filter(|&r| {
+                    let o = order(r);
+                    let pos = |w| o.iter().position(|&x| x == w).expect("each config");
+                    pos(a) < pos(b)
+                })
+                .count()
+        };
+        for (a, b) in [(Which::T0, Which::C), (Which::H0, Which::H1)] {
+            let n = first(a, b);
+            assert!(
+                (7..=8).contains(&n),
+                "{a:?} before {b:?} in {n} of 15 rounds"
+            );
+        }
+        for r in 0..8 {
+            let mut o = order(r).to_vec();
+            o.sort_by_key(|&w| i_of(w));
+            assert_eq!(o, Which::ALL);
+        }
+    }
+
+    /// Review F7 and Codex r1 (M4-P2): a failed run drops its round's ratio and never shifts
+    /// the pairing of later rounds.
+    #[test]
+    fn a_failed_run_drops_only_its_round() {
+        let t = [
+            [Some(4.0), Some(1.0), Some(6.0), Some(1.0)],
+            [Some(8.0), None, Some(6.0), Some(2.0)],
+            [Some(9.0), Some(3.0), None, Some(1.0)],
+        ];
+        assert_eq!(paired_ratios(&t, Which::T0, Which::C), [4.0, 3.0]);
+        assert_eq!(paired_ratios(&t, Which::H0, Which::H1), [6.0, 3.0]);
+        let s = Summary::of(&[4.0; 15]);
+        assert!(s.line(3.0).contains("pass side"));
+        let quiet = s.line_without_verdict();
+        assert!(
+            quiet.contains("no verdict") && !quiet.contains("pass side"),
+            "{quiet}"
+        );
     }
 
     #[test]
