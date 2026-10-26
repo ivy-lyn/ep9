@@ -474,3 +474,72 @@ fn a_key_to_a_dead_cell_is_cleared_and_a_value_is_kept() {
         assert_eq!(feedback::value(v, 1), int32_bits(5));
     });
 }
+
+/// The script: `f = function f() {}` (function 1) and `g = function g(a) { loop }` (function
+/// 2; each iteration calls `a` `calls` times, then a back edge; `back_edges` back edges),
+/// then one call `g(f)`.
+fn program_calls_per_back_edge(calls: u32, back_edges: i32) -> VerifiedUnit {
+    let mut f = Asm::new(meta("f", 0, 0, 0, 0));
+    f.b.lda_undefined().return_();
+    let mut g = Asm::new(meta("g", 1, 0, 0, 0));
+    let a = g.b.parameter(0);
+    let i = g.b.new_register();
+    g.b.lda_zero().star(i);
+    let head = g.b.bound_label();
+    let exit = g.b.new_label();
+    g.b.lda_smi(back_edges)
+        .test_less_than(i, g.cmp)
+        .jump_if_false(exit);
+    for _ in 0..calls {
+        g.b.call_undefined_receiver0(a, g.call);
+    }
+    g.b.ldar(i).inc(g.bin).star(i).jump_loop(head, 0, g.loop_);
+    g.b.bind(exit);
+    g.b.lda_undefined().return_();
+    let mut s = Asm::script(0);
+    let (rf, rg) = (s.b.new_register(), s.b.new_register());
+    let kf = s.b.function_constant(FunctionId(1));
+    s.b.create_closure(kf, s.closure, 0).star(rf);
+    let kg = s.b.function_constant(FunctionId(2));
+    s.b.create_closure(kg, s.closure, 0).star(rg);
+    let args = s.b.new_register_list(1);
+    s.b.ldar(rf).star(args.get(0));
+    s.b.call_undefined_receiver1(rg, args.get(0), s.call);
+    s.b.lda_undefined().return_();
+    unit("", vec![s.finish(), f.finish(), g.finish()])
+}
+
+/// The state of function `id` after a run of `make()` with `threshold` in the match loop
+/// (the budget does not depend on the dispatch or on GC stress, and a debug build of the
+/// other expansions has no tail calls, so a long loop of calls would use up the native
+/// stack).
+fn run_state_of(
+    threshold: u32,
+    id: usize,
+    make: impl Fn() -> VerifiedUnit + Copy + Send + 'static,
+) -> State {
+    on_big_stack(move || {
+        let mut iso = isolate(IsolateConfig {
+            feedback_threshold: threshold,
+            ..config(Dispatch::Match, false)
+        });
+        iso.with_cx_checkpoint(|cx| cx.run_script(make(), "test.js").map(|_| ()))
+            .unwrap();
+        with_info(&iso, id, |_, fi| state(fi))
+    })
+}
+
+#[test]
+fn a_loop_whose_polls_land_on_calls_gets_its_vector() {
+    // PERF3 step-2 item 4 (the budget phase lock): with k calls and 1 back edge per
+    // iteration, k + 1 divides BUDGET for k = 1, 3, 4, so every poll lands on the same unit
+    // of the body; for some k that is a call, and `g` (called once, 1 < 8) got no vector,
+    // since `feedback::ensure` ran only at the JumpLoop poll. The call poll in `slow::call`
+    // now runs it too.
+    let t = IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD;
+    for calls in 1..=5 {
+        let back_edges = BUDGET as i32;
+        let g = run_state_of(t, 2, move || program_calls_per_back_edge(calls, back_edges));
+        assert!(g.vector, "{calls} calls per back edge: {g:?}");
+    }
+}

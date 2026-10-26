@@ -126,7 +126,8 @@ pub(crate) fn count_call(rt: &Runtime, threshold: u32, fi: &FunctionInfo) {
 }
 
 /// Makes the vector of the running bytecode function `fi` if it has none, unless the
-/// threshold is `u32::MAX` (the `JumpLoop` budget poll, OM-13). GC point; same contract as
+/// threshold is `u32::MAX`. Callers: the budget poll at a `JumpLoop` (OM-13) or at a call
+/// (`slow::call`), and the entry of a unit's entry code. GC point; same contract as
 /// [`count_call`].
 pub(crate) fn ensure(rt: &Runtime, threshold: u32, fi: &FunctionInfo) {
     if threshold != u32::MAX && fi.feedback.get().is_null() {

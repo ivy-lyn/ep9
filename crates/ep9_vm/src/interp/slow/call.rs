@@ -55,8 +55,15 @@ use super::{enter, interrupt};
 #[inline(never)]
 pub(crate) fn call(cx: &mut Cx, fp: *mut u64, pc: *const u8, acc: u64) -> u64 {
     enter(cx, fp, pc);
-    if cx.budget <= 0 && interrupt(cx, fp) == 0 {
-        return error::unwind(cx, fp, pc);
+    if cx.budget <= 0 {
+        if interrupt(cx, fp) == 0 {
+            return error::unwind(cx, fp, pc);
+        }
+        // The caller gets its vector at a call poll too (PERF3 step-2 item 4), not only at a
+        // JumpLoop poll: a loop whose polls always land on a call would get none. GC point,
+        // as `count_call` below: the callee and arguments are in the caller's registers
+        // (the frame is recorded) and `acc` is a Rust local.
+        feedback::ensure(cx.rt(), cx.feedback_threshold, super::info(fp));
     }
     #[cfg(feature = "spike-native")]
     // SAFETY: `pc` is the call instruction (or its prefix) of verified code in the live top

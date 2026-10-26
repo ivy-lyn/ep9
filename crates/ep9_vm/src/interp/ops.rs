@@ -2048,8 +2048,8 @@ mod call_budget {
         // (where `feedback::ensure` gives the running script its vector) never came. With 1
         // unit per call, the poll moves and a `JumpLoop` poll comes (near iteration 3,334).
         // Other loop shapes can still put every poll on a call (3 or 4 calls per back edge
-        // at budget 2): `feedback::ensure` runs only at the `JumpLoop` poll (PERF3-PHASE,
-        // PERF3 step-2 item 4, M3-P4).
+        // at budget 2); since M4-P2 the call poll runs `feedback::ensure` too (PERF3-PHASE,
+        // PERF3 step-2 item 4; tests::feedback::a_loop_whose_polls_land_on_calls_gets_its_vector).
         let a = run_unit(|| loop_program(10_000), "10000", 8, 2);
         assert!(a.script_vector, "{a:?}");
         assert_eq!(a.count, 8, "{a:?}");
