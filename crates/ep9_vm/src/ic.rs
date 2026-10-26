@@ -28,10 +28,11 @@
 //! |---|---|---|---|---|
 //! | `PROTO_LOAD`, `MISSING`, `ADD`, `GLOBAL` | the validity cell of the prototype chain (strong; M4-P1 VALIDITY; until then the int32 epoch, as IC_LAYOUT 1) | holder, target shape or lexical shape (undefined for `MISSING`) | the location (a smi field handler) | `ic.rs` |
 //! | `CONSTRUCT_SITE` | int32 count | the initial shape | the `prototype` field index | `construct_ic.rs` (M4-P1 OBJ-ALLOC) |
-//! | `INSTANCEOF` | the validity cell | undefined | the `prototype` field index | `instance_ic.rs` (M4-P3 IC2) |
+//! | `INSTANCEOF` | the validity cell | the rhs function's shape (the slot key is the function) | the `prototype` field index | `instance_ic.rs` (M4-P3 IC2) |
+//! | `CLONE` | int32 count | the result shape (the slot key is the source shape) | int32 0 | `literal_site.rs` (M4-P1 OBJ-ALLOC) |
 //!
-//! The size stays 40 B and no kind id is added (construct sites and instanceof caches are
-//! IC_HANDLER cells; a literal site keeps only its slot halves). The trace function visits +24
+//! The size stays 40 B and no kind id is added (construct sites, instanceof and clone caches
+//! are IC_HANDLER cells; a Literal site keeps only its slot halves). The trace function visits +24
 //! weakly; the owner of the validity cell makes it visit +16 strongly (an int32 there needs no
 //! visit).
 //!
@@ -140,10 +141,15 @@ pub(crate) mod hk {
     /// the initial shape (weak), +32 the int32 `prototype` field index.
     #[allow(dead_code)]
     pub const CONSTRUCT_SITE: i32 = 5;
-    /// IC_LAYOUT 2: an instanceof case (`instance_ic.rs`, M4-P3 IC2): +16 the validity cell,
-    /// +24 undefined, +32 the int32 `prototype` field index.
+    /// IC_LAYOUT 2: an instanceof case (`instance_ic.rs`, M4-P3 IC2), keyed by the rhs function:
+    /// +16 the validity cell, +24 the function's shape (weak), +32 the int32 `prototype` field
+    /// index.
     #[allow(dead_code)]
     pub const INSTANCEOF: i32 = 6;
+    /// IC_LAYOUT 2: a CloneObject case (`literal_site.rs`, M4-P1 OBJ-ALLOC), keyed by the source
+    /// shape: +16 int32 count, +24 the result shape (weak), +32 int32 0.
+    #[allow(dead_code)]
+    pub const CLONE: i32 = 7;
 }
 
 /// IC_HANDLER fields.

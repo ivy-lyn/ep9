@@ -213,8 +213,9 @@ fn ic_layout_2_constants() {
         ic::hk::GLOBAL,
         ic::hk::CONSTRUCT_SITE,
         ic::hk::INSTANCEOF,
+        ic::hk::CLONE,
     ];
-    assert_eq!(hk, [1, 2, 3, 4, 5, 6]);
+    assert_eq!(hk, [1, 2, 3, 4, 5, 6, 7]);
 }
 
 // ---- Runtime fields ---------------------------------------------------------------------------

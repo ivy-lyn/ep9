@@ -19,7 +19,7 @@ pub const OBJECT_LAYOUT_VERSION: u32 = 4;
 /// Inline-cache and feedback data layout (H16). 2 (M4-P0): the feedback slot table of
 /// `profile.rs` (one writer module per slot kind) and the IC_HANDLER layout of `ic.rs` (+8
 /// handler kind, +16 validity cell or int32, +24 weak ref, +32 int32; new handler kinds
-/// CONSTRUCT_SITE and INSTANCEOF).
+/// CONSTRUCT_SITE, INSTANCEOF and CLONE).
 pub const IC_LAYOUT_VERSION: u32 = 2;
 /// The frame layout: 8-slot header, arguments, registers (H14). 2 (M2-P0): fp-3 holds
 /// new.target, or the generator object in a resumed frame (`frame::slot::NEW_TARGET`).

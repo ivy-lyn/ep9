@@ -13,9 +13,15 @@
 //! | LoadKeyed, StoreKeyed, DefineKeyedOwn, HasKeyed (2, 4, 6, 10) | the receiver shape (monomorphic) or the hole | int32 bits: element form seen, key types (int32, string, symbol), out of bounds, hole read | `profile.rs` writes the bits (M4-P1); `keyed_ic.rs` reads them (KEYED, M4-P3) |
 //! | BinaryOp, CompareOp (11, 12) | undefined | int32 hint bits (int32, number, string, bigint, other) | `profile.rs` |
 //! | TypeOf (13) | undefined | int32 type bits | `profile.rs` |
-//! | InstanceOf (14) | the rhs shape | an instanceof handler (an IC_HANDLER cell, handler kind `INSTANCEOF`: +16 validity cell, +24 undefined, +32 int32 `prototype` field index; V9-A8), or an int32 state | `instance_ic.rs` (IC2, M4-P3) |
-//! | Literal, CloneObject (15, 16) | the result shape | int32 count | `literal_site.rs` (OBJ-ALLOC, M4-P1) |
+//! | InstanceOf (14) | the rhs function, or the hole (2-4 functions, or megamorphic) | an instanceof handler (an IC_HANDLER cell, handler kind `INSTANCEOF`: +16 validity cell, +24 the rhs function's shape (weak; the hit compares it, so the field index holds), +32 int32 `prototype` field index; V9-A8), a POLY_IC cell (2-4 cases: the function (weak), its handler), or an int32 state | `instance_ic.rs` (IC2, M4-P3) |
+//! | Literal (15) | the result shape | int32 count | `literal_site.rs` (OBJ-ALLOC, M4-P1) |
+//! | CloneObject (16) | the source shape, or the hole (2-4 source shapes, or megamorphic) | a clone handler (an IC_HANDLER cell, handler kind `CLONE`: +16 int32 count, +24 the result shape (weak), +32 int32 0), a POLY_IC cell (2-4 cases: the source shape (weak), its handler), or an int32 state | `literal_site.rs` (OBJ-ALLOC, M4-P1) |
 //! | StoreInArrayLiteral, ForIn, JumpLoop, CreateClosure (17-20) | ForIn: the receiver shape; others undefined | int32 bits or count | `profile.rs` |
+//!
+//! The keys of InstanceOf and CloneObject are the IC_LAYOUT 1 keys (H16 per-kind table), so the
+//! facts exporter fills `TargetFacts` (the rhs functions) and `CloneFacts` (source and result
+//! shapes) from them with no `FACT_SCHEMA_VERSION` change; CreateClosure (20) keeps a count,
+//! which gives `ClosureFacts` (none, one or many).
 //!
 //! Rules: a slot is written only when its bit or state is new (load, test, rare store;
 //! V9-D6). A hit path never allocates and never calls (H16:103). The IC_HANDLER layout under
