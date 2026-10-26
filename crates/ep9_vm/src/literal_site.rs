@@ -161,7 +161,7 @@ pub(crate) fn fast_object(st: &mut St<'_>, boilerplate: K, s: FSlot, flags: u8) 
                 // path decides. The new object is garbage.
                 return Flow::Cold;
             }
-            init(o, obj::FIXED + 8 * i, b);
+            init(o, object::OBJECT_FIELD0 + 8 * i, b);
         }
     }
     st.acc = o.to_value().to_bits();
@@ -264,11 +264,11 @@ pub(crate) fn fast_clone(st: &mut St<'_>, source: u64, flags: u8, s: FSlot) -> F
     let sc = cell(source);
     for i in 0..n {
         let f = if i < scap {
-            rd(sc, obj::FIXED + 8 * i)
+            rd(sc, object::OBJECT_FIELD0 + 8 * i)
         } else {
             rd(cell(rd(sc, obj::SLOTS)), slf::DATA + 8 * (i - scap))
         };
-        init(o, obj::FIXED + 8 * i, f);
+        init(o, object::OBJECT_FIELD0 + 8 * i, f);
     }
     st.acc = o.to_value().to_bits();
     Flow::Next
@@ -497,7 +497,7 @@ pub(crate) fn cold_object(cx: &mut Cx, fp: *mut u64, pc: *const u8, k: u32) -> O
         } else {
             fi.constant(ci.0)
         };
-        init(o, obj::FIXED + 8 * j, b);
+        init(o, object::OBJECT_FIELD0 + 8 * j, b);
     }
     #[cfg(test)]
     COLD_BUILDS.with(|c| c.set(c.get() + 1));

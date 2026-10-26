@@ -409,6 +409,13 @@ const FIXED_COUNTS: [u8; 256] = {
     t
 };
 
+/// The byte offset of in-object field 0 of an OBJECT cell: `obj::FIXED` plus OBJECT's fixed
+/// fields (none today), the offset `ic.rs` `field_location` gives field 0. The literal and
+/// clone hits write fields from here (`literal_site.rs`), so a fixed field added to OBJECT
+/// moves them too (M4-P1 review R4).
+pub(crate) const OBJECT_FIELD0: usize =
+    obj::FIXED + 8 * FIXED_COUNTS[kind::OBJECT.get() as usize] as usize;
+
 /// The fixed-field count of the JS object kind `k` (16-63): one table load.
 #[inline(always)]
 pub(crate) fn fixed_count(k: u8) -> usize {
