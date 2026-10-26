@@ -291,7 +291,8 @@ pub(crate) struct Runtime {
     #[allow(dead_code)] // read by its owner module from M4-P1 on
     pub stub_cache: crate::stub_cache::StubCache,
     /// The xorshift128+ state of `Math.random` (`Cx::math_random`; M4-P1 MATH1, V9-D16),
-    /// seeded per isolate ([`rng_seed`]). Never both words 0.
+    /// seeded per isolate from the process hash key and [`Runtime::id`] ([`rng_seed`]). Never
+    /// both words 0.
     pub rng: Cell<[u64; 2]>,
     /// The `[[KeptAlive]]` list (§9.10; `weakref.rs`, M4-P4 WEAKREF): a root slot that holds a
     /// heap list cell, undefined until the first WeakRef.
@@ -307,12 +308,14 @@ pub(crate) struct Runtime {
 /// The next [`Runtime::id`].
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-/// The `Math.random` seed of a new isolate (V9-D16): two words from the process hash key
-/// (random from the OS, or fixed by `EP9_HASH_SEED`), read through the keyed hash of fixed
-/// texts and mixed by splitmix64, as the symbol hash seed (`symbol.rs`). So two runs with one
-/// `EP9_HASH_SEED` give the same `Math.random` sequence. Never both words 0 (xorshift128+
-/// would stay at 0). Never an address.
-pub(crate) fn rng_seed() -> [u64; 2] {
+/// The `Math.random` seed of the isolate with [`Runtime::id`] `id` (V9-D16): two words from
+/// the process hash key (random from the OS, or fixed by `EP9_HASH_SEED`), read through the
+/// keyed hash of fixed texts as the symbol hash seed is (`symbol.rs`), with `id` mixed in by
+/// splitmix64. So each isolate of a process has its own sequence (§21.3.2.27: distinct realms
+/// give distinct sequences), and two runs with one `EP9_HASH_SEED` give the n-th isolate of
+/// the run the same sequence. Never both words 0 (xorshift128+ would stay at 0). Never an
+/// address.
+pub(crate) fn rng_seed(id: u64) -> [u64; 2] {
     fn splitmix64(x: u64) -> u64 {
         let mut z = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
         z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -323,7 +326,7 @@ pub(crate) fn rng_seed() -> [u64; 2] {
         let (a, b) = crate::string::hash_text(crate::string::JsStr::Latin1(text));
         splitmix64((u64::from(a) << 32) | u64::from(b))
     };
-    let s0 = word(b"ep9 Math.random seed 0");
+    let s0 = splitmix64(word(b"ep9 Math.random seed 0") ^ splitmix64(id));
     let s1 = splitmix64(word(b"ep9 Math.random seed 1") ^ s0);
     if s0 | s1 == 0 { [1, 2] } else { [s0, s1] }
 }
@@ -340,11 +343,12 @@ impl Runtime {
         let shared = Rc::new(Shared::new(stack_slots));
         let sh = Rc::clone(&shared);
         heap.add_root_source(move |t| sh.trace(t));
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let rt = Box::new(Runtime {
             // The fields that register a heap source come before `heap` moves in.
             jobs: crate::jobs::JobState::new(&heap),
             stub_cache: crate::stub_cache::StubCache::new(&heap),
-            rng: Cell::new(rng_seed()),
+            rng: Cell::new(rng_seed(id)),
             kept_objects: crate::weakref::KeptObjects::new(&heap),
             regexp_programs: crate::regexp::ProgramTable::new(&heap),
             heap,
@@ -366,7 +370,7 @@ impl Runtime {
             atoms: Rc::new(RefCell::new(AtomTable::default())),
             symbols: SymbolState::default(),
             builtins: BuiltinState::default(),
-            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            id,
         });
         crate::atoms::init(&rt);
         crate::shape::init(&rt);

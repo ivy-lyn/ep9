@@ -1,8 +1,11 @@
 #![allow(dead_code)] // m4-stub
-//! Literal sites (owner M4-P1 OBJ-ALLOC; OI-03, the V9-D8 pattern, V9-A8): the Literal and
-//! CloneObject feedback slots (15, 16; IC_LAYOUT 2, `profile.rs` table) keep the result shape
-//! (weak) and an int32 count; no cell. A hit allocates with that shape and copies the
-//! constants; computed or nested values stay generic.
+//! Literal sites (owner M4-P1 OBJ-ALLOC; OI-03, the V9-D8 pattern, V9-A8): the Literal
+//! feedback slot (15; IC_LAYOUT 2, `profile.rs` table) keeps the result shape (weak) and an
+//! int32 count; no cell. The CloneObject slot (16) keeps the source shape (weak) and a clone
+//! handler (an IC_HANDLER cell of handler kind `CLONE`, `ic::hk`: +16 int32 count, +24 the
+//! result shape (weak)), or the hole and a POLY_IC cell or an int32 state. A hit allocates with
+//! the result shape and copies the constants (Literal) or the source's fields (CloneObject);
+//! computed or nested values stay generic.
 //!
 //! ```text
 //! interp/ops.rs fast bodies (M4-P0 hooks)          cold path
