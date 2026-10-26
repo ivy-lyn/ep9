@@ -922,17 +922,15 @@ macro_rules! expand_scaled {
                         match $crate::interp::ops::$name::fast(&mut st, $($oname),*) {
                             Flow::Next => Done::Next,
                             Flow::Jump(t) => Done::Jump(t),
-                            Flow::Record(r) => {
-                                $crate::profile::record(&st, r);
-                                Done::Next
-                            }
-                            Flow::RecordPair(p) => {
-                                $crate::profile::record_pair(&st, p);
-                                Done::Next
-                            }
-                            Flow::JumpRecordCall(t, s) => {
-                                $crate::profile::record_call_pushed(&st, s);
-                                Done::Jump(t)
+                            // Out of line in debug builds, as in the match loop: inline, the
+                            // record locals of every arm made this frame ~3x bigger.
+                            f @ (Flow::Record(_)
+                            | Flow::RecordPair(_)
+                            | Flow::JumpRecordCall(..)) => {
+                                match f.recorded(&st) {
+                                    Flow::Jump(t) => Done::Jump(t),
+                                    _ => Done::Next,
+                                }
                             }
                             Flow::Cold => {
                                 let St { cx, fp, acc, .. } = st;
