@@ -103,7 +103,7 @@ solver.setDisplayFunction(function (f) { __spikeCField = f; });";
 /// double), so the digests see every cell's value and position (Codex r3: the sums alone kept
 /// a swap of two unequal cells). Every step is exact in doubles (no `Math.imul`: T0 has none
 /// at the base). The line is made after the `run()` loop, outside the timed region (protocol §3).
-const NS_CHECK: &str = "(function (f) {\n\
+pub const NS_CHECK: &str = "(function (f) {\n\
   var w = f.width(), h = f.height(), d = 0, u = 0, v = 0, ha = 2166136261, hb = 0, bad = 0;\n\
   function cell(c) {\n\
     if (typeof c !== 'number' || c - c !== 0) { bad++; return 0; }\n\

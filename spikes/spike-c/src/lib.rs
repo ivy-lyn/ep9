@@ -19,16 +19,19 @@
 //!            spike_b::jit::InMemory finalizer ──> harness::Session::install_b (Opt slot)
 //! ```
 //!
-//! | Module | Contents | State at M4-P0 | Filled by |
-//! |---|---|---|---|
-//! | [`harness`] | isolate with the builtins, `print`/`gc`, kernel runs, function lookup, placement (b) install | built | P0-SPIKEC |
-//! | [`kernels`] | the protocol kernels: source files, hot functions, drivers, checks | built | P0-SPIKEC |
-//! | [`structural`] | `spike-c structural`, the checks of `gate.sh structural` | built | P0-SPIKEC; each later role adds its checks |
-//! | [`facts`] | the FactSnapshot input of one function: live (RUNTIME) or a PROFILED file | built | P0-SPIKEC; SP-Facts (month 5) |
-//! | [`ir`] | the SSA graph, the fact lattice, the five ref nodes, guards | stub | SPIKEC-1 (M4-P1) |
-//! | [`build`](mod@build) | the graph builder: bytecode + FactSnapshot -> [`ir::Graph`] | stub | SPIKEC-1 |
-//! | [`regalloc`] | linear-scan register allocation | stub | SPIKEC-1 |
-//! | [`emit_a64`] | AArch64 code from the allocated graph (dynasm 5.1.0) | stub | SPIKEC-1 |
+//! | Module | Contents | Built by |
+//! |---|---|---|
+//! | [`harness`] | isolate with the builtins, `print`/`gc`, kernel runs, function lookup, placement (b) install | P0-SPIKEC |
+//! | [`kernels`] | the protocol kernels: source files, hot functions, drivers, checks | P0-SPIKEC |
+//! | [`structural`] | `spike-c structural`, the checks of `gate.sh structural` | P0-SPIKEC; SPIKEC-1 adds layout, compile and lattice checks |
+//! | [`facts`] | the FactSnapshot input of one function: live (RUNTIME) or a PROFILED file | P0-SPIKEC; SP-Facts (month 5) |
+//! | [`cfg`](mod@cfg) | reachable bytecode as blocks, register liveness (H02-Q1) | SPIKEC-1 (M4-P1) |
+//! | [`ir`] | the SSA graph, the fact lattice, the five ref nodes, guards with frame states | SPIKEC-1 |
+//! | [`build`](mod@build) | the graph builder: bytecode + FactSnapshot -> [`ir::Graph`] | SPIKEC-1 |
+//! | [`regalloc`] | linear-scan register allocation | SPIKEC-1 |
+//! | [`emit_a64`] | AArch64 code from the allocated graph (dynasm 5.1.0); guard exits = the "deopt not built" trap | SPIKEC-1 |
+//! | [`vm_layout`] | VM layout facts the code reads that `ep9_vm::layout` does not export, checked on live objects | SPIKEC-1 |
+//! | [`tier`] | config C of the protocol: a kernel run with its hot function compiled, against T0 | SPIKEC-1 |
 //!
 //! Rules (protocol §1):
 //! - Arm64 only (09-milestones.md:252). On any other architecture the pipeline refuses with
@@ -40,6 +43,7 @@
 //!   `ep9_vm::install_native_b`.
 
 pub mod build;
+pub mod cfg;
 pub mod emit_a64;
 pub mod facts;
 pub mod harness;
@@ -47,25 +51,82 @@ pub mod ir;
 pub mod kernels;
 pub mod regalloc;
 pub mod structural;
+pub mod tier;
+pub mod vm_layout;
 
-use std::fmt;
+use spike_b::emit::{FunctionCode, FunctionInput, Refusal};
 
-/// A pipeline stage that is not built yet. The function it was asked for stays in T0.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NotBuilt {
-    /// The stage: "graph builder", "register allocation", "a64 emit".
-    pub stage: &'static str,
-    /// The plan role that builds it.
-    pub owner: &'static str,
+/// What one compile made and measured.
+#[derive(Clone, Debug)]
+pub struct CompileReport {
+    pub name: String,
+    pub build: build::BuildStats,
+    /// Live graph nodes and blocks.
+    pub nodes: usize,
+    pub blocks: usize,
+    /// Guards backed by a fact, and unbacked guards (see [`ir`]).
+    pub fact_guards: usize,
+    pub unbacked_guards: usize,
+    pub intervals: usize,
+    pub spilled: usize,
+    pub max_live: usize,
+    pub emit: emit_a64::EmitReport,
+    /// The graph as text (`spike-c show`).
+    pub graph: String,
 }
 
-impl fmt::Display for NotBuilt {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} not built yet ({})", self.stage, self.owner)
+impl CompileReport {
+    /// One line for gate.sh and the role report.
+    pub fn line(&self) -> String {
+        format!(
+            "{}: {} bytes, {} bytecode instructions in {} blocks -> {} nodes; guards {} fact + {} unbacked; \
+             {} intervals, {} spilled, {} live at most; liveness {} us, {} bytes (H02-Q1)",
+            self.name,
+            self.emit.code_bytes,
+            self.build.instructions,
+            self.blocks,
+            self.nodes,
+            self.fact_guards,
+            self.unbacked_guards,
+            self.intervals,
+            self.spilled,
+            self.max_live,
+            self.build.liveness_us,
+            self.build.liveness_bytes,
+        )
     }
 }
 
-impl std::error::Error for NotBuilt {}
+/// The whole pipeline on one function: graph builder, lattice check, register allocation,
+/// a64 emit. Refuses with [`Refusal::Arch`] on any architecture but AArch64 (protocol §1),
+/// after the arch-independent stages ran.
+pub fn compile_input(
+    input: &FunctionInput<'_>,
+    facts: &facts::FunctionFacts<'_>,
+) -> Result<(FunctionCode, CompileReport), Refusal> {
+    let (graph, stats) = build::build(input, facts)?;
+    let alloc = regalloc::allocate(&graph).map_err(Refusal::Limit)?;
+    regalloc::verify(&graph, &alloc).map_err(Refusal::Limit)?;
+    if spike_b::emit::Arch::HOST != Some(spike_b::emit::Arch::Aarch64) {
+        return Err(Refusal::Arch);
+    }
+    let (code, emit) = emit_a64::emit(input, &graph, &alloc)?;
+    let (fact_guards, unbacked_guards) = graph.guard_counts();
+    let report = CompileReport {
+        name: input.name.to_string(),
+        build: stats,
+        nodes: graph.order().count(),
+        blocks: graph.blocks.len(),
+        fact_guards,
+        unbacked_guards,
+        intervals: alloc.intervals,
+        spilled: alloc.spilled,
+        max_live: alloc.max_live,
+        emit,
+        graph: graph.to_string(),
+    };
+    Ok((code, report))
+}
 
 /// The contract versions this build links against, as one line (the binary prints it).
 pub fn contracts_line() -> String {
@@ -81,21 +142,15 @@ pub fn contracts_line() -> String {
     )
 }
 
-/// Compiles the function `name` of `session` through the whole pipeline (build, register
-/// allocation, a64 emit). Every stage is a stub at M4-P0, so this returns the first stage's
-/// [`NotBuilt`] as a [`spike_b::emit::Refusal::Limit`].
+/// Compiles the global function `name` of `session` with `facts` (see [`compile_input`]).
+/// The VM layout copies are checked first, on a session of their own ([`vm_layout::check`]).
 pub fn compile(
     session: &harness::Session,
     name: &str,
     facts: &facts::FunctionFacts<'_>,
-) -> Result<spike_b::emit::FunctionCode, String> {
+) -> Result<(FunctionCode, CompileReport), String> {
+    let mut probe = harness::Session::new(&spike_b::harness::Config::default())?;
+    vm_layout::check(&mut probe).map_err(|e| format!("vm layout: {e}"))?;
     let input = session.function_input(name)?;
-    if spike_b::emit::Arch::HOST != Some(spike_b::emit::Arch::Aarch64) {
-        return Err(format!("{name}: {}", spike_b::emit::Refusal::Arch));
-    }
-    let not_built =
-        |e: NotBuilt| format!("{name}: {}", spike_b::emit::Refusal::Limit(e.to_string()));
-    let graph = build::build(&input, facts).map_err(not_built)?;
-    let alloc = regalloc::allocate(&graph).map_err(not_built)?;
-    emit_a64::emit(&input, &graph, &alloc).map_err(|r| format!("{name}: {r}"))
+    compile_input(&input, facts).map_err(|r| format!("{name}: {r}"))
 }

@@ -8,7 +8,20 @@
 #     2  release build (panic = "abort"): `spike-c structural all`, the same checks in the
 #        release build, where T0 runs the threaded dispatch and placement (b) code really runs.
 #        The kernels check prints SKIP without the v8-v7 checkout (scripts/sync-bench.sh).
-#   gate.sh              `gate.sh structural`
+#   gate.sh am3          (plan v9 M4-P1 SPIKEC-1; protocol §2, §3 config C as a correctness run)
+#     1  release build
+#     2  `spike-c compile crypto`: am3 through the whole pipeline from the live facts of an
+#        n = 1 T0 run (graph builder, lattice check, linear scan, a64 emit); prints the report
+#     3  `spike-c tier crypto --n 1` and `spike-c tier crypto` (n = 8): crypto with am3
+#        compiled and installed (placement (b)) after a warm-up run; output equal to T0 line
+#        for line (the kernel checks its own decrypt), then a probe call with a receiver
+#        shape no guard admits must end in the "deopt not built" trap (the compiled am3 runs)
+#     4  `spike-c tier crypto --n 1 --stress` (GC before every allocation, verifier on):
+#        report only. PASS if equal; XFAIL if it ends in a trap (a shape the GC freed drops
+#        out of the weak IC entry the guard reads; T0 would re-record it, the compiled code
+#        can only deopt, and the deopt entry is month 5); FAIL on any other result
+#     SKIP without the v8-v7 checkout (scripts/sync-bench.sh)
+#   gate.sh              `gate.sh structural` then `gate.sh am3`
 #
 # Env: CARGO_TARGET_DIR (default: spikes/spike-c/target),
 #      SPIKE_C_BENCH_DIR (default: third_party/bench-v8v7/bench/bench-v8).
@@ -45,11 +58,42 @@ structural() {
   fi
 }
 
+am3() {
+  if [ ! -x "$CARGO_TARGET_DIR/release/spike-c$exe" ]; then
+    run "build-release" cargo build --locked --release
+  fi
+  local bin="$CARGO_TARGET_DIR/release/spike-c$exe"
+  local bench="${SPIKE_C_BENCH_DIR:-$here/../../third_party/bench-v8v7/bench/bench-v8}"
+  if [ ! -f "$bench/crypto.js" ]; then
+    record "am3" SKIP "no v8-v7 checkout (bash scripts/sync-bench.sh bench-v8v7)"
+    return
+  fi
+  run "am3/compile" "$bin" compile crypto
+  run "am3/tier-n1" "$bin" tier crypto --n 1
+  run "am3/tier-n8" "$bin" tier crypto
+  echo "== [am3/stress] $bin tier crypto --n 1 --stress (report only)"
+  local out status=0
+  out="$("$bin" tier crypto --n 1 --stress 2>&1)" || status=$?
+  echo "$out"
+  if [ "$status" = 0 ]; then
+    record "am3/stress" PASS "output equal to T0 under GC stress"
+  elif [ "$status" = 1 ] && grep -q "trap of guard" <<<"$out"; then
+    record "am3/stress" XFAIL "deopt not built: $(grep -o 'trap of guard g[0-9]*' <<<"$out" | head -1) (month 5)"
+  else
+    record "am3/stress" FAIL "exit $status"
+  fi
+}
+
 step="${1:-all}"
 case "$step" in
-  structural | all) structural ;;
+  structural) structural ;;
+  am3) am3 ;;
+  all)
+    structural
+    am3
+    ;;
   *)
-    echo "usage: gate.sh [structural]" >&2
+    echo "usage: gate.sh [structural | am3]" >&2
     exit 2
     ;;
 esac

@@ -6,7 +6,10 @@
 //! | harness | an isolate with the builtins runs a script and `print` captures | - |
 //! | install-b | Spike B's (b) emitter code for a loop function, installed by [`Session::install_b`], gives T0's output, from an Opt slot | - |
 //! | facts | live facts of a run -> PROFILED file -> read back: the same records | - |
-//! | pipeline | [`crate::compile`] refuses with "graph builder not built yet" | SPIKEC-1 replaces it with the `am3` compile check |
+//! | layout | the VM layout copies of [`crate::vm_layout`] hold on live objects | - |
+//! | pipeline | a loop function compiled from its live facts (graph builder, lattice check, linear scan, a64 emit), installed in an Opt slot: output equal to T0 | - |
+//! | lattice | the protocol §6.1 checks on a graph with a named-load fact: one trust level per value, PROVEN only from the H30 list, every predicted value behind a guard of its fact, the five ref nodes only; a graph changed to break each rule is refused | - |
+//! | trap | an input no guard admits ends the run in the "deopt not built" trap, named by its guard, with no wrong value and no crash | month 5 (the deopt entry) |
 //! | kernels | each protocol kernel (the pinned files) runs in T0 (n = 1) with its expected output, check line included (node's, where known); SKIP without the v8-v7 checkout | - |
 
 use std::process::ExitCode;
@@ -20,11 +23,14 @@ use crate::kernels;
 
 type Check = fn() -> Result<String, String>;
 
-const CHECKS: [(&str, Check); 5] = [
+const CHECKS: [(&str, Check); 8] = [
     ("harness", harness),
     ("install-b", install_b),
     ("facts", facts_round_trip),
+    ("layout", layout),
     ("pipeline", pipeline),
+    ("lattice", lattice),
+    ("trap", trap),
     ("kernels", kernels_t0),
 ];
 
@@ -99,17 +105,108 @@ fn facts_round_trip() -> Result<String, String> {
     ))
 }
 
+fn layout() -> Result<String, String> {
+    crate::vm_layout::check(&mut Session::new(&Config::default())?)
+}
+
+fn aarch64() -> bool {
+    spike_b::emit::Arch::HOST == Some(spike_b::emit::Arch::Aarch64)
+}
+
 fn pipeline() -> Result<String, String> {
-    let mut s = Session::new(&Config::default())?;
-    s.run(LOOP, "defs.js").result?;
-    let f = facts::FunctionFacts::none(ep9_facts::FactSource::Runtime, 1);
-    match crate::compile(&s, "sum", &f) {
-        Ok(_) => Err("compiled, but the pipeline is a stub at M4-P0".into()),
-        Err(e) if e.contains("graph builder not built yet") || e.contains("architecture") => {
-            Ok(format!("refused as expected at M4-P0: {e}"))
-        }
-        Err(e) => Err(format!("unexpected refusal: {e}")),
+    if !aarch64() {
+        return Ok("SKIP: the emitter is aarch64 only (protocol §1)".into());
     }
+    let r = crate::tier::run_script(
+        &Config::default(),
+        LOOP,
+        "for (var k = 0; k < 20; k++) sum(10);",
+        // 60000 keeps every `a + i` an int32 (70000 does not: the overflow guard is unbacked
+        // until the P1 profile gives BinaryOp facts).
+        "print(sum(1000), sum(0), sum(60000));",
+        "sum",
+    )?;
+    if !r.equal() || r.compiled.output != ["499500 0 1799970000"] {
+        return Err(format!("compiled {:?} vs T0 {:?}", r.compiled, r.t0));
+    }
+    Ok(format!("{}; output equals T0", r.report.line()))
+}
+
+fn lattice() -> Result<String, String> {
+    use crate::ir::{Op, Trust};
+    let mut s = Session::new(&Config::default())?;
+    s.run(FACTS_SRC, "f.js").result?;
+    let script = s.script("f.js").ok_or("no script")?;
+    let get = *script.functions_named("get").first().ok_or("no get")?;
+    let live = facts::live(&s, script)?;
+    let input = s.function_input("get")?;
+    let (g, _) =
+        crate::build::build(&input, &facts::for_function(&live, get)).map_err(|e| e.to_string())?;
+    g.check()?;
+    let (fact, unbacked) = g.guard_counts();
+    if fact == 0 {
+        return Err(format!("no fact guard in\n{g}"));
+    }
+    // Negative controls: each broken graph is refused.
+    let field = g
+        .order()
+        .find(|&n| matches!(g.node(n).op, Op::LoadField { .. }))
+        .ok_or("no field load")?;
+    let shape = g
+        .order()
+        .find(|&n| matches!(g.node(n).op, Op::CheckShape { .. }))
+        .ok_or("no shape check")?;
+    let mut bad = g.clone();
+    bad.node_mut(field).trust = Trust::Proven;
+    let e1 = bad.check().err().ok_or("a PROVEN field load passed")?;
+    let mut bad = g.clone();
+    bad.node_mut(field).trust = Trust::Predicted(ep9_facts::FactSource::Runtime);
+    let e2 = bad
+        .check()
+        .err()
+        .ok_or("a predicted value without a guard passed")?;
+    let mut bad = g.clone();
+    bad.node_mut(shape).guard = None;
+    let e3 = bad
+        .check()
+        .err()
+        .ok_or("a shape check without a guard passed")?;
+    let mut bad = g.clone();
+    bad.refs.clear();
+    let e4 = bad
+        .check()
+        .err()
+        .ok_or("a shape guard without its ref nodes passed")?;
+    let _ = (e1, e2, e3, e4);
+    Ok(format!(
+        "get: {} nodes, {fact} fact guards, {unbacked} unbacked; 4 broken graphs refused",
+        g.order().count()
+    ))
+}
+
+fn trap() -> Result<String, String> {
+    if !aarch64() {
+        return Ok("SKIP: the emitter is aarch64 only (protocol §1)".into());
+    }
+    let defs = "function P(x) { this.x = x; }\n\
+        function get(ps, n) { var s = 0; for (var i = 0; i < n; i++) s = (s + ps[i].x) | 0; return s; }";
+    let warm = "var ps = []; for (var i = 0; i < 20; i++) ps.push(new P(i)); for (var k = 0; k < 30; k++) get(ps, 20);";
+    let r = crate::tier::run_script(
+        &Config::default(),
+        defs,
+        warm,
+        "print(get(ps, 20)); print(get([{ y: 1, x: 2 }], 1));",
+        "get",
+    )?;
+    let Some(g) = r.trap else {
+        return Err(format!("no trap: {:?} vs T0 {:?}", r.compiled, r.t0));
+    };
+    if r.compiled.output != ["190"] || r.t0.output != ["190", "2"] {
+        return Err(format!("{:?} vs T0 {:?}", r.compiled, r.t0));
+    }
+    Ok(format!(
+        "a new shape at `ps[i].x` ends the run in the trap of guard g{g} after the right first line"
+    ))
 }
 
 fn kernels_t0() -> Result<String, String> {

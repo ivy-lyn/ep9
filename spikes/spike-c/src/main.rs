@@ -7,7 +7,10 @@
 //! spike-c t0 <kernel | all> [--n N]         run a kernel in T0: output, check, wall time (report)
 //! spike-c facts <kernel> [--n N] [--out F]  the live facts of each hot function after a T0 run;
 //!                                           --out writes them as a PROFILED file (SP-Facts form)
-//! spike-c compile <kernel>                  run the pipeline on the kernel's first hot function
+//! spike-c compile <kernel> [--graph]        compile the kernel's first hot function (live facts, n = 1)
+//! spike-c tier <kernel> [--n N] [--stress]  config C: that function compiled, output against T0
+//!                                           (--stress: GC before every allocation, verifier on)
+//! spike-c show <kernel> [hot index]         bytecode and live facts of a hot function
 //! spike-c driver <kernel> [--n N]          print the driver script (node runs the same text)
 //! spike-c structural [check... | all]       the checks of `gate.sh structural`
 //! ```
@@ -23,7 +26,8 @@ use spike_c::{facts, structural};
 fn usage() -> ExitCode {
     eprintln!(
         "usage: spike-c [kernels | run <file.js> | t0 <kernel|all> [--n N] | facts <kernel> [--n N] [--out FILE] \
-         | compile <kernel> | driver <kernel> [--n N] | structural [check...|all]]"
+         | compile <kernel> [--graph] | tier <kernel> [--n N] [--stress] | show <kernel> [i] | driver <kernel> [--n N] \
+         | structural [check...|all]]"
     );
     ExitCode::from(2)
 }
@@ -171,11 +175,18 @@ fn driver_cmd(args: &[String]) -> Result<bool, String> {
 
 fn compile_cmd(args: &[String]) -> Result<bool, String> {
     let k = kernel_arg(args.first())?;
+    let graph = args.iter().any(|a| a == "--graph");
     let h = k.hot.first().ok_or("no hot function")?;
-    let (s, d, r, _) = run_t0(k, 1)?;
+    let (mut s, d, r, _) = run_t0(k, 1)?;
     r.result.map_err(|e| format!("{}: {e}", k.name))?;
+    let reach = h.reach.ok_or_else(|| {
+        format!(
+            "{}: an inner closure; install by function id is not built",
+            h.name
+        )
+    })?;
+    let f = s.function_value(reach)?;
     let script = s.script("driver.js").ok_or("no driver script")?;
-    let live = facts::live(&s, script)?;
     let ids = script.functions_on_line(h.lines.0 + d.offset);
     let [id] = ids[..] else {
         return Err(format!(
@@ -185,28 +196,76 @@ fn compile_cmd(args: &[String]) -> Result<bool, String> {
             h.lines.0
         ));
     };
-    let Some(reach) = h.reach else {
-        return Err(format!(
-            "{}: an inner closure; no lookup by function id yet",
-            h.name
-        ));
-    };
-    if reach.contains('.') {
-        return Err(format!(
-            "{}: only a global function name is compiled for now",
-            h.name
-        ));
-    }
-    match spike_c::compile(&s, reach, &facts::for_function(&live, id)) {
-        Ok(code) => {
-            println!("{}: {} bytes", h.name, code.code.len());
+    let live = facts::live(&s, script)?;
+    let input = s.input_of(f)?;
+    match spike_c::compile_input(&input, &facts::for_function(&live, id)) {
+        Ok((_, report)) => {
+            if graph {
+                print!("{}", report.graph);
+            }
+            println!("{}", report.line());
             Ok(true)
         }
         Err(e) => {
-            println!("{e}");
+            println!("{}: {e}", h.name);
             Ok(false)
         }
     }
+}
+
+/// `spike-c tier <kernel> [--n N]`: config C (the first hot function compiled from the live
+/// facts of a warm-up run) against T0, output compared line for line.
+fn tier_cmd(args: &[String]) -> Result<bool, String> {
+    let k = kernel_arg(args.first())?;
+    let stress = args.iter().any(|a| a == "--stress");
+    let rest: Vec<String> = args[1..]
+        .iter()
+        .filter(|a| *a != "--stress")
+        .cloned()
+        .collect();
+    let (n, _) = options(&rest)?;
+    let config = if stress {
+        Config::stress()
+    } else {
+        Config::default()
+    };
+    let run = spike_c::tier::run(k, n.unwrap_or(k.n), &config)?;
+    println!("{}", run.report.line());
+    println!("{}", run.line());
+    Ok(run.equal && (run.probe_trap.is_some() || run.function != "am3"))
+}
+
+/// `spike-c show <kernel> [hot index]`: the bytecode and the live facts (n = 1) of a hot
+/// function (a report for the graph builder's input).
+fn show_cmd(args: &[String]) -> Result<bool, String> {
+    let k = kernel_arg(args.first())?;
+    let which: usize = match args.get(1) {
+        Some(v) => v.parse().map_err(|_| format!("bad hot index {v}"))?,
+        None => 0,
+    };
+    let h = k.hot.get(which).ok_or("no such hot function")?;
+    let (s, d, r, _) = run_t0(k, 1)?;
+    r.result.map_err(|e| format!("{}: {e}", k.name))?;
+    let script = s.script("driver.js").ok_or("no driver script")?;
+    let ids = script.functions_on_line(h.lines.0 + d.offset);
+    let [id] = ids[..] else {
+        return Err(format!(
+            "{}: {} functions on line {}",
+            h.name,
+            ids.len(),
+            h.lines.0
+        ));
+    };
+    let unit = script.unit.unit();
+    print!(
+        "{}",
+        ep9_bytecode::disassemble_function(unit, ep9_bytecode::FunctionId(id))
+    );
+    let live = facts::live(&s, script)?;
+    for (slot, f) in facts::for_function(&live, id).records {
+        println!("slot {slot}: {f:?}");
+    }
+    Ok(true)
 }
 
 fn main() -> ExitCode {
@@ -222,7 +281,9 @@ fn main() -> ExitCode {
         "t0" => t0(rest),
         "facts" => facts_cmd(rest),
         "compile" => compile_cmd(rest),
+        "tier" => tier_cmd(rest),
         "driver" => driver_cmd(rest),
+        "show" => show_cmd(rest),
         "run" => run_cmd(rest),
         _ => return usage(),
     };
