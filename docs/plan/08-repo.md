@@ -87,7 +87,7 @@ The 4 new expectation files pin HINT-SET, TYPED-KERNELS, SHORT-RUN and JITLESS-S
 | `ep9_node` | `node:*` modules, Buffer, V8 stack API | no | default | x | x | - | - |
 | `ep9_inspector` | CDP server, sampling profiler, heap-snapshot writer | no | default | x | x | - | - |
 | `ep9_napi` | Node-API C ABI (D4); stack walks cover AOT frames | yes (FFI) | default | x | x | - | - |
-| `ep9_cli` | Binary `ep9`: run, repl, eval, check, snapshot build, test262 host, Fuzzilli REPRL, JSC-shell API; flags `--jitless`, `--unit`, `--profile-out` | no | default | x | x | - | - |
+| `ep9_cli` | Binary `ep9`: run, repl, eval, check, snapshot build, test262 host, Fuzzilli REPRL, JSC-shell API; flags `--jitless`, `--unit`, `--profile-out` | deny; one allowed module (`reprl`, the Fuzzilli REPRL entry, since M4-P0) | default | x | x | - | - |
 | `ep9c` (new) | Binary `ep9c`: `build --bytecode`, `--baseline`, `--opt`, `--profile`, `--hints`, `--tsconfig`, `--emit obj\|blob`, `--all`; `inspect`; `--sound` only if the D17 rule picks (c) | no | `aot` | - | - | x | - |
 
 - `ep9c` links the engine core. So its compilers use the same intrinsic, builtin and ShapeId tables as the runtime.
