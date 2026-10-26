@@ -16,6 +16,13 @@
 //!   list a type error.
 //! - Every shortcut of v0 is marked `// v0:`. Opcodes v0 does not run throw a catchable
 //!   "not implemented in ep9 v0" Error.
+//! - Month-4 hooks (M4-P0, plan v9 V9-D5): this file has no owner after M4-P0, so each handler
+//!   that a month-4 role fills calls into that role's module: `profile::record_*` (T0
+//!   recording, PROFILE), `literal_site::fast_*` and `construct_ic::fast` (OBJ-ALLOC),
+//!   `keyed_ic::fast_*` (KEYED), `instance_ic::fast` (IC2), `regexp::create_literal` (RX0A),
+//!   and the stub cache through `ic::load`/`ic::store` (IC2). In M4-P0 every hook is empty or
+//!   returns `Flow::Cold`, so T0 does not change; the hook tables are in the module docs of
+//!   `profile.rs` and each stub module.
 
 #![allow(clippy::needless_return)]
 
@@ -33,7 +40,9 @@ use crate::interp::slow::{self, CmpOp, CtxKind, Lit, NameMsg, PropOp, UnOp};
 use crate::interp::{Done, Flow, St};
 use crate::runtime::ErrorKind;
 use crate::unit::FunctionInfo;
-use crate::{feedback, ic, kinds, object};
+use crate::{
+    construct_ic, feedback, ic, instance_ic, keyed_ic, kinds, literal_site, object, profile, regexp,
+};
 
 macro_rules! op {
     ($Name:ident ($st:ident $(, $a:ident : $t:ty)*) $fast:block) => {
@@ -166,7 +175,8 @@ fn fast_binop(op: BinOp, l: u64, r: u64) -> Option<u64> {
 }
 
 #[inline(always)]
-fn binop_fast(st: &mut St<'_>, op: BinOp, l: u64, r: u64) -> Flow {
+fn binop_fast(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r: u64) -> Flow {
+    profile::record_binary(st, s, op, l, r);
     match fast_binop(op, l, r) {
         Some(v) => {
             st.acc = v;
@@ -177,7 +187,8 @@ fn binop_fast(st: &mut St<'_>, op: BinOp, l: u64, r: u64) -> Flow {
 }
 
 #[inline(always)]
-fn binop_cold(st: &mut St<'_>, op: BinOp, l: u64, r: u64) -> Done {
+fn binop_cold(st: &mut St<'_>, s: FSlot, op: BinOp, l: u64, r: u64) -> Done {
+    profile::record_binary_cold(st, s, op, l, r);
     let v = slow::binary(st.cx, st.fp, st.pc, op, l, r);
     st.result(v)
 }
@@ -296,15 +307,19 @@ fn jump_if(st: &St<'_>, c: bool, t: Fwd) -> Done {
 ///
 /// The callee starts with the accumulator undefined, as after `slow::call`, so the caller's
 /// accumulator is dead after the last cold exit (one register less in the frame push).
+///
+/// `profile::record_call` (Call slot `s`) runs first, once per call (M4-P0 hook, PROFILE).
 #[cfg(not(feature = "spike-native"))]
 #[inline(always)]
 fn call_fast(
     st: &mut St<'_>,
+    s: FSlot,
     callee: u64,
     this: u64,
     argc: u32,
     arg: impl Fn(&St<'_>, u32) -> u64,
 ) -> Flow {
+    profile::record_call(st, s, callee);
     if !object::is_function(callee) {
         return Flow::Cold;
     }
@@ -421,11 +436,13 @@ fn uncount_call(fi: &FunctionInfo) {
 #[inline(always)]
 fn call_fast(
     st: &mut St<'_>,
+    s: FSlot,
     callee: u64,
     this: u64,
     argc: u32,
     arg: impl Fn(&St<'_>, u32) -> u64,
 ) -> Flow {
+    profile::record_call(st, s, callee);
     if !object::is_function(callee) {
         return Flow::Cold;
     }
@@ -517,12 +534,14 @@ fn call_cold(st: &mut St<'_>) -> Done {
 
 /// `CallProperty`/`CallAnyReceiver`: the list holds the receiver, then the arguments.
 #[inline(always)]
-fn call_list_with_receiver(st: &mut St<'_>, callee: R, args: RList, argc: Count) -> Flow {
+fn call_list_with_receiver(st: &mut St<'_>, callee: R, args: RList, argc: Count, s: FSlot) -> Flow {
+    let f = st.reg(callee);
     if argc.0 == 0 {
+        profile::record_call(st, s, f);
         return Flow::Cold;
     }
-    let (f, this) = (st.reg(callee), st.list(args, 0));
-    call_fast(st, f, this, argc.0 - 1, move |s, i| s.list(args, i + 1))
+    let this = st.list(args, 0);
+    call_fast(st, s, f, this, argc.0 - 1, move |s, i| s.list(args, i + 1))
 }
 
 // ---- special -------------------------------------------------------------------------------
@@ -537,7 +556,8 @@ op!(ExtraWide(st) { scaled_fast::<S4>(st) } cold { st.scaled::<S4>() });
 /// kernels) run here, as their one-byte forms do. Anything else (another opcode, an
 /// accumulator that is not an int32, an overflow, a `%` that is not exact in int32) takes the
 /// cold block, which runs the whole instruction in `interp::scaled::step`; nothing is changed
-/// before that. The feedback slot is not read: T0 records no binary-op feedback (H16-Q2).
+/// before that. The feedback slot goes to `profile::record_binary` (M4-P0 hook, PROFILE; empty
+/// until PROFILE fills it, H16-Q2).
 #[inline(always)]
 fn scaled_fast<S: dsl::Scale>(st: &mut St<'_>) -> Flow {
     use ep9_bytecode::Opcode as O;
@@ -556,7 +576,7 @@ fn scaled_fast<S: dsl::Scale>(st: &mut St<'_>) -> Flow {
         return Flow::Cold;
     }
     // SAFETY: as above; AddSmi to BitwiseAndSmi all take (value: Imm, slot: Slot).
-    let (len, (b, _slot)) = unsafe { dsl::decode!(S, st.pc; value: Imm, slot: Slot) };
+    let (len, (b, slot)) = unsafe { dsl::decode!(S, st.pc; value: Imm, slot: Slot) };
     let x = i32_of(a);
     let r = match op {
         o if o == O::AddSmi as u8 => x.checked_add(b),
@@ -570,6 +590,17 @@ fn scaled_fast<S: dsl::Scale>(st: &mut St<'_>) -> Flow {
     };
     match r {
         Some(r) => {
+            // Recorded here only on success: a cold exit runs the opcode's own fast body in
+            // `interp::scaled::step`, which records it (once per execution).
+            let bop = match op {
+                o if o == O::AddSmi as u8 => BinOp::Add,
+                o if o == O::SubSmi as u8 => BinOp::Sub,
+                o if o == O::ModSmi as u8 => BinOp::Mod,
+                o if o == O::BitwiseOrSmi as u8 => BinOp::BitOr,
+                o if o == O::BitwiseXorSmi as u8 => BinOp::BitXor,
+                _ => BinOp::BitAnd,
+            };
+            profile::record_binary(st, slot, bop, a, int(b));
             st.acc = int(r);
             // SAFETY: `len` is the length of the prefixed instruction.
             Flow::Jump(unsafe { st.pc.add(len) })
@@ -779,7 +810,7 @@ op!(StaModuleVariable(st, cell: i32, depth: Depth) { Flow::Cold } cold {
 // operation and records a case.
 op!(GetNamedProperty(st, object: R, name: K, s: FSlot) {
     let o = st.reg(object);
-    match ic::load(st.info(), st.cx.proto_epoch, o, s.0) {
+    match ic::load(st.rt(), st.info(), st.cx.proto_epoch, o, s.0, name.0) {
         Some(v) => {
             ic::ic_count!(hit, Load);
             st.acc = v;
@@ -802,7 +833,7 @@ op!(GetNamedPropertyFromSuper(st, receiver: R, name: K, s: FSlot) {
     if !object::is_object(home) {
         return Flow::Cold;
     }
-    match ic::load(st.info(), st.cx.proto_epoch, object::proto_of(home), s.0) {
+    match ic::load(st.rt(), st.info(), st.cx.proto_epoch, object::proto_of(home), s.0, name.0) {
         Some(v) => {
             ic::ic_count!(hit, Load);
             st.acc = v;
@@ -818,8 +849,9 @@ op!(GetNamedPropertyFromSuper(st, receiver: R, name: K, s: FSlot) {
     let r = slow::get_super(st.cx, st.fp, st.pc, home, k, this, s.0);
     st.result(r)
 });
-op!(GetKeyedProperty(st, object: R, _s: FSlot) {
+op!(GetKeyedProperty(st, object: R, s: FSlot) {
     let (o, k) = (st.reg(object), st.acc);
+    profile::record_keyed(st, s, o, k);
     if is_i32(k)
         && i32_of(k) >= 0
         && object::is_array(o)
@@ -828,14 +860,15 @@ op!(GetKeyedProperty(st, object: R, _s: FSlot) {
         st.acc = v;
         return Flow::Next;
     }
-    Flow::Cold
+    keyed_ic::fast_get(st, o, k, s)
 } cold {
     let (o, k) = (st.reg(object), st.acc);
+    profile::record_keyed_cold(st, s, o, k);
     prop_cold(st, PropOp::GetKeyed, o, k, UNDEFINED)
 });
 op!(SetNamedProperty(st, object: R, name: K, s: FSlot) {
     let (o, v) = (st.reg(object), st.acc);
-    if ic::store::<true>(st.rt(), st.info(), st.cx.proto_epoch, o, s.0, v) {
+    if ic::store::<true>(st.rt(), st.info(), st.cx.proto_epoch, o, s.0, name.0, v) {
         ic::ic_count!(hit, Store);
         Flow::Next
     } else {
@@ -850,7 +883,7 @@ op!(SetNamedProperty(st, object: R, name: K, s: FSlot) {
 // CreateDataPropertyOrThrow: an add needs no epoch (the prototype chain does not matter).
 op!(DefineNamedOwnProperty(st, object: R, name: K, s: FSlot) {
     let (o, v) = (st.reg(object), st.acc);
-    if ic::store::<false>(st.rt(), st.info(), st.cx.proto_epoch, o, s.0, v) {
+    if ic::store::<false>(st.rt(), st.info(), st.cx.proto_epoch, o, s.0, name.0, v) {
         ic::ic_count!(hit, Store);
         Flow::Next
     } else {
@@ -862,16 +895,31 @@ op!(DefineNamedOwnProperty(st, object: R, name: K, s: FSlot) {
     let r = slow::set_named(st.cx, st.fp, st.pc, o, k, v, s.0, true);
     st.result(r)
 });
-op!(SetKeyedProperty(st, object: R, key: R, _s: FSlot) { Flow::Cold } cold {
+op!(SetKeyedProperty(st, object: R, key: R, s: FSlot) {
     let (o, k, v) = (st.reg(object), st.reg(key), st.acc);
+    profile::record_keyed(st, s, o, k);
+    keyed_ic::fast_set(st, o, k, v, s)
+} cold {
+    let (o, k, v) = (st.reg(object), st.reg(key), st.acc);
+    profile::record_keyed_cold(st, s, o, k);
     prop_cold(st, PropOp::SetKeyed, o, k, v)
 });
-op!(DefineKeyedOwnProperty(st, object: R, key: R, flags: u8, _s: FSlot) { Flow::Cold } cold {
+op!(DefineKeyedOwnProperty(st, object: R, key: R, flags: u8, s: FSlot) {
     let (o, k, v) = (st.reg(object), st.reg(key), st.acc);
+    profile::record_keyed(st, s, o, k);
+    keyed_ic::fast_define_own(st, o, k, v, flags, s)
+} cold {
+    let (o, k, v) = (st.reg(object), st.reg(key), st.acc);
+    profile::record_keyed_cold(st, s, o, k);
     prop_cold(st, PropOp::DefineKeyedOwn(flags), o, k, v)
 });
-op!(StaInArrayLiteral(st, array: R, index: R, _s: FSlot) { Flow::Cold } cold {
+op!(StaInArrayLiteral(st, array: R, index: R, s: FSlot) {
     let (o, k, v) = (st.reg(array), st.reg(index), st.acc);
+    profile::record_keyed(st, s, o, k);
+    keyed_ic::fast_sta_in_array_literal(st, o, k, v, s)
+} cold {
+    let (o, k, v) = (st.reg(array), st.reg(index), st.acc);
+    profile::record_keyed_cold(st, s, o, k);
     prop_cold(st, PropOp::DefineKeyed, o, k, v)
 });
 // Flag bit 0 (set the function name from the key) is applied in slow/class_fields.rs
@@ -885,12 +933,12 @@ op!(DefineKeyedOwnPropertyInLiteral(st, object: R, key: R, flags: u8, _s: FSlot)
 
 macro_rules! binary_ops {
     ($($Name:ident => $op:ident,)*) => {$(
-        op!($Name(st, lhs: R, _s: FSlot) {
+        op!($Name(st, lhs: R, s: FSlot) {
             let (l, r) = (st.reg(lhs), st.acc);
-            binop_fast(st, BinOp::$op, l, r)
+            binop_fast(st, s, BinOp::$op, l, r)
         } cold {
             let (l, r) = (st.reg(lhs), st.acc);
-            binop_cold(st, BinOp::$op, l, r)
+            binop_cold(st, s, BinOp::$op, l, r)
         });
     )*};
 }
@@ -914,12 +962,12 @@ binary_ops! {
 
 macro_rules! smi_ops {
     ($($Name:ident => $op:ident,)*) => {$(
-        op!($Name(st, value: i32, _s: FSlot) {
+        op!($Name(st, value: i32, s: FSlot) {
             let l = st.acc;
-            binop_fast(st, BinOp::$op, l, int(value))
+            binop_fast(st, s, BinOp::$op, l, int(value))
         } cold {
             let l = st.acc;
-            binop_cold(st, BinOp::$op, l, int(value))
+            binop_cold(st, s, BinOp::$op, l, int(value))
         });
     )*};
 }
@@ -941,8 +989,9 @@ smi_ops! {
 
 // ---- unary operators -----------------------------------------------------------------------
 
-op!(Inc(st, _s: FSlot) {
+op!(Inc(st, s: FSlot) {
     let v = st.acc;
+    profile::record_unary(st, s, v);
     if is_i32(v) && i32_of(v) != i32::MAX {
         st.acc = int(i32_of(v) + 1);
         return Flow::Next;
@@ -955,8 +1004,9 @@ op!(Inc(st, _s: FSlot) {
         None => Flow::Cold,
     }
 } cold { unary_cold(st, UnOp::Inc) });
-op!(Dec(st, _s: FSlot) {
+op!(Dec(st, s: FSlot) {
     let v = st.acc;
+    profile::record_unary(st, s, v);
     if is_i32(v) && i32_of(v) != i32::MIN {
         st.acc = int(i32_of(v) - 1);
         return Flow::Next;
@@ -969,8 +1019,10 @@ op!(Dec(st, _s: FSlot) {
         None => Flow::Cold,
     }
 } cold { unary_cold(st, UnOp::Dec) });
-op!(Negate(st, _s: FSlot) {
-    match number(st.acc) {
+op!(Negate(st, s: FSlot) {
+    let v = st.acc;
+    profile::record_unary(st, s, v);
+    match number(v) {
         Some(x) => {
             st.acc = num(-x);
             Flow::Next
@@ -978,8 +1030,9 @@ op!(Negate(st, _s: FSlot) {
         None => Flow::Cold,
     }
 } cold { unary_cold(st, UnOp::Negate) });
-op!(BitwiseNot(st, _s: FSlot) {
+op!(BitwiseNot(st, s: FSlot) {
     let v = st.acc;
+    profile::record_unary(st, s, v);
     if is_i32(v) {
         st.acc = int(!i32_of(v));
         return Flow::Next;
@@ -1003,7 +1056,11 @@ op!(LogicalNot(st) {
     st.acc = boolean(st.acc == FALSE);
     Done::Next
 });
-op!(TypeOf(st, _s: FSlot) { Flow::Cold } cold {
+op!(TypeOf(st, s: FSlot) {
+    let v = st.acc;
+    profile::record_typeof(st, s, v);
+    Flow::Cold
+} cold {
     st.acc = slow::type_of(st.cx, st.acc);
     Done::Next
 });
@@ -1018,8 +1075,9 @@ op!(DeletePropertySloppy(st, object: R) { Flow::Cold } cold {
 
 // ---- comparisons: acc = lhs OP acc ---------------------------------------------------------
 
-op!(TestEqual(st, lhs: R, _s: FSlot) {
+op!(TestEqual(st, lhs: R, s: FSlot) {
     let (l, r) = (st.reg(lhs), st.acc);
+    profile::record_compare(st, s, l, r);
     if is_i32(l) && is_i32(r) {
         st.acc = boolean(l == r);
         return Flow::Next;
@@ -1037,8 +1095,9 @@ op!(TestEqual(st, lhs: R, _s: FSlot) {
     let l = st.reg(lhs);
     compare_cold(st, CmpOp::Eq, l)
 });
-op!(TestEqualStrict(st, lhs: R, _s: FSlot) {
+op!(TestEqualStrict(st, lhs: R, s: FSlot) {
     let (l, r) = (st.reg(lhs), st.acc);
+    profile::record_compare(st, s, l, r);
     if let (Some(x), Some(y)) = (number(l), number(r)) {
         st.acc = boolean(x == y);
         return Flow::Next;
@@ -1057,29 +1116,37 @@ op!(TestEqualStrict(st, lhs: R, _s: FSlot) {
     st.acc = boolean(slow::strict_equals(l, st.acc));
     Done::Next
 });
-op!(TestLessThan(st, lhs: R, _s: FSlot) {
-    let r = fast_relational(st.reg(lhs), st.acc, |x, y| x < y);
+op!(TestLessThan(st, lhs: R, s: FSlot) {
+    let (l, a) = (st.reg(lhs), st.acc);
+    profile::record_compare(st, s, l, a);
+    let r = fast_relational(l, a, |x, y| x < y);
     compare_fast(st, r)
 } cold {
     let l = st.reg(lhs);
     compare_cold(st, CmpOp::Lt, l)
 });
-op!(TestGreaterThan(st, lhs: R, _s: FSlot) {
-    let r = fast_relational(st.reg(lhs), st.acc, |x, y| x > y);
+op!(TestGreaterThan(st, lhs: R, s: FSlot) {
+    let (l, a) = (st.reg(lhs), st.acc);
+    profile::record_compare(st, s, l, a);
+    let r = fast_relational(l, a, |x, y| x > y);
     compare_fast(st, r)
 } cold {
     let l = st.reg(lhs);
     compare_cold(st, CmpOp::Gt, l)
 });
-op!(TestLessThanOrEqual(st, lhs: R, _s: FSlot) {
-    let r = fast_relational(st.reg(lhs), st.acc, |x, y| x <= y);
+op!(TestLessThanOrEqual(st, lhs: R, s: FSlot) {
+    let (l, a) = (st.reg(lhs), st.acc);
+    profile::record_compare(st, s, l, a);
+    let r = fast_relational(l, a, |x, y| x <= y);
     compare_fast(st, r)
 } cold {
     let l = st.reg(lhs);
     compare_cold(st, CmpOp::Le, l)
 });
-op!(TestGreaterThanOrEqual(st, lhs: R, _s: FSlot) {
-    let r = fast_relational(st.reg(lhs), st.acc, |x, y| x >= y);
+op!(TestGreaterThanOrEqual(st, lhs: R, s: FSlot) {
+    let (l, a) = (st.reg(lhs), st.acc);
+    profile::record_compare(st, s, l, a);
+    let r = fast_relational(l, a, |x, y| x >= y);
     compare_fast(st, r)
 } cold {
     let l = st.reg(lhs);
@@ -1089,12 +1156,20 @@ op!(TestReferenceEqual(st, lhs: R) {
     st.acc = boolean(st.reg(lhs) == st.acc);
     Done::Next
 });
-op!(TestInstanceOf(st, lhs: R, _s: FSlot) { Flow::Cold } cold {
+op!(TestInstanceOf(st, lhs: R, s: FSlot) {
+    let (l, c) = (st.reg(lhs), st.acc);
+    instance_ic::fast(st, l, c, s)
+} cold {
     let l = st.reg(lhs);
     compare_cold(st, CmpOp::InstanceOf, l)
 });
-op!(TestIn(st, lhs: R, _s: FSlot) { Flow::Cold } cold {
+op!(TestIn(st, lhs: R, s: FSlot) {
+    let (k, o) = (st.reg(lhs), st.acc);
+    profile::record_keyed(st, s, o, k);
+    keyed_ic::fast_has(st, k, o, s)
+} cold {
     let l = st.reg(lhs);
+    profile::record_keyed_cold(st, s, st.acc, l);
     compare_cold(st, CmpOp::In, l)
 });
 // v0: no `document.all`, so only null and undefined are undetectable (as in V8 otherwise).
@@ -1134,11 +1209,15 @@ op!(TestTypeOf(st, literal: TyLit) {
 op!(ToName(st) {
     if object::is_string(st.acc) { Flow::Next } else { Flow::Cold }
 } cold { unary_cold(st, UnOp::ToName) });
-op!(ToNumber(st, _s: FSlot) {
-    if number(st.acc).is_some() { Flow::Next } else { Flow::Cold }
+op!(ToNumber(st, s: FSlot) {
+    let v = st.acc;
+    profile::record_unary(st, s, v);
+    if number(v).is_some() { Flow::Next } else { Flow::Cold }
 } cold { unary_cold(st, UnOp::ToNumber) });
-op!(ToNumeric(st, _s: FSlot) {
-    if number(st.acc).is_some() { Flow::Next } else { Flow::Cold }
+op!(ToNumeric(st, s: FSlot) {
+    let v = st.acc;
+    profile::record_unary(st, s, v);
+    if number(v).is_some() { Flow::Next } else { Flow::Cold }
 } cold { unary_cold(st, UnOp::ToNumeric) });
 op!(ToObject(st, dst: R) {
     let v = st.acc;
@@ -1173,41 +1252,45 @@ op!(ToBoolean(st) {
 
 // ---- calls ---------------------------------------------------------------------------------
 
-op!(CallAnyReceiver(st, callee: R, args: RList, argc: Count, _s: FSlot) {
-    call_list_with_receiver(st, callee, args, argc)
+op!(CallAnyReceiver(st, callee: R, args: RList, argc: Count, s: FSlot) {
+    call_list_with_receiver(st, callee, args, argc, s)
 } cold { call_cold(st) });
-op!(CallProperty(st, callee: R, args: RList, argc: Count, _s: FSlot) {
-    call_list_with_receiver(st, callee, args, argc)
+op!(CallProperty(st, callee: R, args: RList, argc: Count, s: FSlot) {
+    call_list_with_receiver(st, callee, args, argc, s)
 } cold { call_cold(st) });
-op!(CallProperty0(st, callee: R, receiver: R, _s: FSlot) {
+op!(CallProperty0(st, callee: R, receiver: R, s: FSlot) {
     let (f, this) = (st.reg(callee), st.reg(receiver));
-    call_fast(st, f, this, 0, |_, _| UNDEFINED)
+    call_fast(st, s, f, this, 0, |_, _| UNDEFINED)
 } cold { call_cold(st) });
-op!(CallProperty1(st, callee: R, receiver: R, a0: R, _s: FSlot) {
+op!(CallProperty1(st, callee: R, receiver: R, a0: R, s: FSlot) {
     let (f, this, v0) = (st.reg(callee), st.reg(receiver), st.reg(a0));
-    call_fast(st, f, this, 1, move |_, _| v0)
+    call_fast(st, s, f, this, 1, move |_, _| v0)
 } cold { call_cold(st) });
-op!(CallProperty2(st, callee: R, receiver: R, a0: R, a1: R, _s: FSlot) {
+op!(CallProperty2(st, callee: R, receiver: R, a0: R, a1: R, s: FSlot) {
     let (f, this, v0, v1) = (st.reg(callee), st.reg(receiver), st.reg(a0), st.reg(a1));
-    call_fast(st, f, this, 2, move |_, i| if i == 0 { v0 } else { v1 })
+    call_fast(st, s, f, this, 2, move |_, i| if i == 0 { v0 } else { v1 })
 } cold { call_cold(st) });
-op!(CallUndefinedReceiver(st, callee: R, args: RList, argc: Count, _s: FSlot) {
+op!(CallUndefinedReceiver(st, callee: R, args: RList, argc: Count, s: FSlot) {
     let f = st.reg(callee);
-    call_fast(st, f, UNDEFINED, argc.0, move |s, i| s.list(args, i))
+    call_fast(st, s, f, UNDEFINED, argc.0, move |s, i| s.list(args, i))
 } cold { call_cold(st) });
-op!(CallUndefinedReceiver0(st, callee: R, _s: FSlot) {
+op!(CallUndefinedReceiver0(st, callee: R, s: FSlot) {
     let f = st.reg(callee);
-    call_fast(st, f, UNDEFINED, 0, |_, _| UNDEFINED)
+    call_fast(st, s, f, UNDEFINED, 0, |_, _| UNDEFINED)
 } cold { call_cold(st) });
-op!(CallUndefinedReceiver1(st, callee: R, a0: R, _s: FSlot) {
+op!(CallUndefinedReceiver1(st, callee: R, a0: R, s: FSlot) {
     let (f, v0) = (st.reg(callee), st.reg(a0));
-    call_fast(st, f, UNDEFINED, 1, move |_, _| v0)
+    call_fast(st, s, f, UNDEFINED, 1, move |_, _| v0)
 } cold { call_cold(st) });
-op!(CallUndefinedReceiver2(st, callee: R, a0: R, a1: R, _s: FSlot) {
+op!(CallUndefinedReceiver2(st, callee: R, a0: R, a1: R, s: FSlot) {
     let (f, v0, v1) = (st.reg(callee), st.reg(a0), st.reg(a1));
-    call_fast(st, f, UNDEFINED, 2, move |_, i| if i == 0 { v0 } else { v1 })
+    call_fast(st, s, f, UNDEFINED, 2, move |_, i| if i == 0 { v0 } else { v1 })
 } cold { call_cold(st) });
-op!(CallWithSpread(st, _callee: R, _args: RList, _argc: Count, _s: FSlot) { Flow::Cold } cold {
+op!(CallWithSpread(st, callee: R, _args: RList, _argc: Count, s: FSlot) {
+    let f = st.reg(callee);
+    profile::record_call(st, s, f);
+    Flow::Cold
+} cold {
     call_cold(st)
 });
 op!(CallRuntime(st, id: RtId, args: RList, argc: Count) { Flow::Cold } cold {
@@ -1215,10 +1298,14 @@ op!(CallRuntime(st, id: RtId, args: RList, argc: Count) { Flow::Cold } cold {
     st.result(r)
 });
 // The accumulator holds `new.target`.
-op!(Construct(st, _ctor: R, _args: RList, _argc: Count, _s: FSlot) { Flow::Cold } cold {
+op!(Construct(st, ctor: R, args: RList, argc: Count, s: FSlot) {
+    construct_ic::fast::<false>(st, ctor, args, argc, s)
+} cold {
     call_cold(st)
 });
-op!(ConstructWithSpread(st, _ctor: R, _args: RList, _argc: Count, _s: FSlot) { Flow::Cold } cold {
+op!(ConstructWithSpread(st, ctor: R, args: RList, argc: Count, s: FSlot) {
+    construct_ic::fast::<true>(st, ctor, args, argc, s)
+} cold {
     call_cold(st)
 });
 // Reserved (D7): the verifier rejects it.
@@ -1228,14 +1315,17 @@ op!(TailCall(st, _callee: R, _args: RList, _argc: Count, _s: FSlot) { Flow::Cold
 
 // ---- literals ------------------------------------------------------------------------------
 
-op!(CreateRegExpLiteral(st, _pattern: K, _s: FSlot, _flags: u16) { Flow::Cold } cold {
-    not_impl(st, "RegExp literals")
+op!(CreateRegExpLiteral(st, pattern: K, s: FSlot, flags: u16) { Flow::Cold } cold {
+    let r = regexp::create_literal(st.cx, st.fp, st.pc, pattern.0, s.0, flags);
+    st.result(r)
 });
-op!(CreateArrayLiteral(st, boilerplate: K, _s: FSlot, _flags: u8) { Flow::Cold } cold {
+op!(CreateArrayLiteral(st, boilerplate: K, s: FSlot, flags: u8) {
+    literal_site::fast_array(st, boilerplate, s, flags)
+} cold {
     let r = slow::literal(st.cx, st.fp, st.pc, Lit::Array, boilerplate.0);
     st.result(r)
 });
-op!(CreateEmptyArrayLiteral(st, _s: FSlot) { Flow::Cold } cold {
+op!(CreateEmptyArrayLiteral(st, s: FSlot) { literal_site::fast_empty_array(st, s) } cold {
     let r = slow::literal(st.cx, st.fp, st.pc, Lit::EmptyArray, 0);
     st.result(r)
 });
@@ -1243,15 +1333,20 @@ op!(CreateArrayFromIterable(st) { Flow::Cold } cold {
     let r = slow::array_from_iterable(st.cx, st.fp, st.pc, st.acc);
     st.result(r)
 });
-op!(CreateObjectLiteral(st, boilerplate: K, _s: FSlot, _flags: u8) { Flow::Cold } cold {
+op!(CreateObjectLiteral(st, boilerplate: K, s: FSlot, flags: u8) {
+    literal_site::fast_object(st, boilerplate, s, flags)
+} cold {
     let r = slow::literal(st.cx, st.fp, st.pc, Lit::Object, boilerplate.0);
     st.result(r)
 });
-op!(CreateEmptyObjectLiteral(st) { Flow::Cold } cold {
+op!(CreateEmptyObjectLiteral(st) { literal_site::fast_empty_object(st) } cold {
     let r = slow::literal(st.cx, st.fp, st.pc, Lit::EmptyObject, 0);
     st.result(r)
 });
-op!(CloneObject(st, source: R, _flags: u8, _s: FSlot) { Flow::Cold } cold {
+op!(CloneObject(st, source: R, flags: u8, s: FSlot) {
+    let v = st.reg(source);
+    literal_site::fast_clone(st, v, flags, s)
+} cold {
     let s = st.reg(source);
     let r = slow::clone_object(st.cx, st.fp, st.pc, s);
     st.result(r)
@@ -1263,8 +1358,9 @@ op!(GetTemplateObject(st, description: K, _s: FSlot) { Flow::Cold } cold {
 
 // ---- closures, contexts, arguments ---------------------------------------------------------
 
-op!(CreateClosure(st, function: K, _s: FSlot, _flags: u8) { Flow::Cold } cold {
+op!(CreateClosure(st, function: K, s: FSlot, _flags: u8) { Flow::Cold } cold {
     let r = slow::create_closure(st.cx, st.fp, st.pc, function.0);
+    profile::record_closure(st, s, r);
     st.result(r)
 });
 op!(CreateFunctionContext(st, scope: K, slots: u32) { Flow::Cold } cold {
@@ -1306,7 +1402,8 @@ op!(CreateRestParameter(st) { Flow::Cold } cold {
 // ---- control flow --------------------------------------------------------------------------
 
 // The interrupt poll of loops (04 §2): one budget unit per back edge.
-op!(JumpLoop(st, target: Back, _depth: i32, _s: FSlot) {
+op!(JumpLoop(st, target: Back, _depth: i32, s: FSlot) {
+    profile::record_jump_loop(st, s);
     st.cx.budget -= 1;
     if st.cx.budget > 0 { Flow::Jump(st.back(target)) } else { Flow::Cold }
 } cold {
@@ -1358,8 +1455,9 @@ op!(ForInEnumerate(st, receiver: R) { Flow::Cold } cold {
     st.result(r)
 });
 // v0: the key array is the cache type and the cache array (no enum caches yet).
-op!(ForInPrepare(st, cache: R, _s: FSlot) {
+op!(ForInPrepare(st, cache: R, s: FSlot) {
     let keys = st.acc;
+    profile::record_for_in(st, s, keys);
     if !object::is_array(keys) {
         return Flow::Cold;
     }
@@ -1371,7 +1469,11 @@ op!(ForInPrepare(st, cache: R, _s: FSlot) {
 } cold {
     throw_msg(st, ErrorKind::Error, "ep9 internal error: ForInPrepare without a key array")
 });
-op!(ForInNext(st, receiver: R, index: R, cache: R, _s: FSlot) { Flow::Cold } cold {
+op!(ForInNext(st, receiver: R, index: R, cache: R, s: FSlot) {
+    let o = st.reg(receiver);
+    profile::record_for_in_next(st, s, o);
+    Flow::Cold
+} cold {
     let (o, keys, i) = (st.reg(receiver), st.reg(cache.plus(1)), st.reg(index));
     let r = slow::for_in_next(st.cx, st.fp, st.pc, o, keys, i);
     st.result(r)

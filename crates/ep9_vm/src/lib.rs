@@ -36,6 +36,15 @@
 //! arguments.rs (arguments objects, M3-P2 VM-ARGS), module.rs (module records and namespaces,
 //! M3-P2 MODULE), facts_export.rs (the facts exporter, M3-P3 FACTS-EXPORT).
 //!
+//! Month-4 modules (M4-P0 stubs, OBJECT_LAYOUT 4 and IC_LAYOUT 2; plan v9 §2.5). Each is
+//! empty or a hook that changes nothing until its owner fills it: validity.rs (validity cells,
+//! M4-P1 VALIDITY), profile.rs (T0 recording and the IC_LAYOUT 2 slot table, M4-P1 PROFILE),
+//! literal_site.rs and construct_ic.rs (allocation sites, M4-P1 OBJ-ALLOC), keyed_ic.rs (keyed
+//! access, M4-P3 KEYED), instance_ic.rs and stub_cache.rs (M4-P3 IC2), regexp.rs and
+//! `abi/regexp.rs` (M4-P2 RX0A, M4-P3 REGEXP1), proxy.rs (M4-P4 PROXY1), weakref.rs and
+//! `abi/weakref.rs` (M4-P4 WEAKREF). `interp/ops.rs` calls the hooks (it has no owner after
+//! M4-P0).
+//!
 //! ADRs: H14 frames and dispatch (docs/adr/H14-frames-and-dispatch.md), H15 interpreter
 //! dispatch, H10 rooting, H06 values.
 #![cfg_attr(feature = "become", feature(explicit_tail_calls))]
@@ -49,6 +58,7 @@ mod bound;
 mod builtins;
 mod call;
 mod compiler;
+mod construct_ic;
 mod conv;
 mod descriptor;
 mod dispatch;
@@ -61,11 +71,14 @@ mod function_info;
 mod generator;
 mod host;
 mod ic;
+mod instance_ic;
 mod interp;
 mod isolate;
 mod jobs;
 mod key;
+mod keyed_ic;
 mod kinds;
+mod literal_site;
 mod module;
 #[cfg(feature = "spike-native")]
 mod native;
@@ -73,15 +86,21 @@ mod natives;
 mod numconv;
 mod object;
 mod ordered_table;
+mod profile;
 mod property;
 mod props;
+mod proxy;
 mod realm;
+mod regexp;
 mod runtime;
 mod shape;
 mod string;
+mod stub_cache;
 mod symbol;
 mod unit;
+mod validity;
 pub mod versions;
+mod weakref;
 mod wrapper;
 
 #[cfg(test)]
@@ -89,9 +108,9 @@ mod tests;
 
 pub use abi::{
     Args, ArgsBuilder, CollectionCursor, Cx, Downcast, FlatStr, HostFn, IntoKey, IteratorRecord,
-    JsArray, JsFunction, JsKey, JsObject, JsString, JsSymbol, JsValue, Local, ObjectClass,
-    PrimitiveType, PromiseCapability, PromiseRejectionOperation, PromiseRejectionTracker,
-    PromiseState, PropertyDescriptor, Rest, ScratchList, ToPrimitiveHint,
+    JsArray, JsFunction, JsKey, JsObject, JsString, JsSymbol, JsValue, Local, MatchRecord,
+    ObjectClass, PrimitiveType, PromiseCapability, PromiseRejectionOperation,
+    PromiseRejectionTracker, PromiseState, PropertyDescriptor, Rest, ScratchList, ToPrimitiveHint,
 };
 pub use atoms::Atom;
 pub use builtins::{

@@ -66,6 +66,15 @@ pub enum ObjectClass {
     MapIterator,
     /// A Set Iterator (§24.2.6): the table it walks, the next index, the kind (M3-P1).
     SetIterator,
+    /// A WeakRef instance (§26.1): `[[WeakRefTarget]]` in a WEAK_CELL (kind 80). Declared in
+    /// M4-P0 (V9-D23); made by M4-P4 WEAKREF.
+    WeakRef,
+    /// A FinalizationRegistry instance (§26.2): `[[CleanupCallback]]`, `[[Cells]]` (WEAK_CELL
+    /// entries). Declared in M4-P0 (V9-D23); made by M4-P4 WEAKREF.
+    FinalizationRegistry,
+    /// A RegExp String Iterator (§22.2.9): `[[IteratingRegExp]]`, `[[IteratedString]]`,
+    /// `[[Global]]`, `[[Unicode]]`, `[[Done]]`. Declared in M4-P0; made by M4-P3 REGEXP1.
+    RegExpStringIterator,
 }
 
 impl ObjectClass {
@@ -82,6 +91,9 @@ impl ObjectClass {
         ObjectClass::WeakSet,
         ObjectClass::MapIterator,
         ObjectClass::SetIterator,
+        ObjectClass::WeakRef,
+        ObjectClass::FinalizationRegistry,
+        ObjectClass::RegExpStringIterator,
     ];
 
     /// Most internal slots of one object.
@@ -115,6 +127,9 @@ impl ObjectClass {
             ObjectClass::WeakSet => "WeakSet",
             ObjectClass::MapIterator => "Map Iterator",
             ObjectClass::SetIterator => "Set Iterator",
+            ObjectClass::WeakRef => "WeakRef",
+            ObjectClass::FinalizationRegistry => "FinalizationRegistry",
+            ObjectClass::RegExpStringIterator => "RegExp String Iterator",
         }
     }
 }

@@ -14,6 +14,7 @@ abi: #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum PromiseRejectionOpera
 abi: #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum PromiseState { Pending, Fulfilled, Rejected }
 abi: #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum ToPrimitiveHint { Default, Number, String }
 abi: #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)] #[repr(u16)] #[non_exhaustive] pub enum ObjectClass { .. (part 2: the ObjectClass golden) }
+abi: #[derive(Clone, Debug, Default, PartialEq, Eq)] pub struct MatchRecord { .. }
 abi: #[derive(Debug)] pub struct CollectionCursor<'s> { .. }
 abi: #[derive(Debug)] pub struct IteratorRecord<'s> { .. }
 abi: #[repr(transparent)] pub struct Local<'s, T = JsValue> { .. }
@@ -145,6 +146,7 @@ abi: impl<'s> Cx<'s> :: pub fn iterator_step_value(&mut self, &mut IteratorRecor
 abi: impl<'s> Cx<'s> :: pub fn key(&mut self, &str) -> Local<'s, JsKey>
 abi: impl<'s> Cx<'s> :: pub fn key_for(&self, Local<'s, JsSymbol>) -> Option<Local<'s, JsString>>
 abi: impl<'s> Cx<'s> :: pub fn local_tz_offset_ms(&mut self, f64, bool) -> f64
+abi: impl<'s> Cx<'s> :: pub fn math_random(&mut self) -> f64
 abi: impl<'s> Cx<'s> :: pub fn new_array(&mut self) -> Local<'s, JsArray>
 abi: impl<'s> Cx<'s> :: pub fn new_bound_function(&mut self, impl Into<Local<'s, JsFunction>>, impl Into<Local<'s>>, Rest<'s>) -> JsResult<Local<'s, JsFunction>>
 abi: impl<'s> Cx<'s> :: pub fn new_builtin_closure(&mut self, HostFn, &str, u32, impl Into<Local<'s>>) -> Local<'s, JsFunction>
@@ -394,6 +396,7 @@ path: ep9_vm::JsString = abi::JsString
 path: ep9_vm::JsSymbol = abi::JsSymbol
 path: ep9_vm::JsValue = abi::JsValue
 path: ep9_vm::Local = abi::Local
+path: ep9_vm::MatchRecord = abi::MatchRecord
 path: ep9_vm::NO_CODE = dispatch::NO_CODE
 path: ep9_vm::ObjectClass = abi::ObjectClass
 path: ep9_vm::ObjectProps = builtins::ObjectProps
@@ -435,6 +438,7 @@ path: ep9_vm::abi::JsString
 path: ep9_vm::abi::JsSymbol
 path: ep9_vm::abi::JsValue
 path: ep9_vm::abi::Local
+path: ep9_vm::abi::MatchRecord
 path: ep9_vm::abi::ObjectClass
 path: ep9_vm::abi::PrimitiveType
 path: ep9_vm::abi::PromiseCapability

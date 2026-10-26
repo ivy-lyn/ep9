@@ -12,3 +12,6 @@
    8  WeakSet
    9  Map Iterator
   10  Set Iterator
+  11  WeakRef
+  12  FinalizationRegistry
+  13  RegExp String Iterator

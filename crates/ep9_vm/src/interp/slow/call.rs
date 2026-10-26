@@ -176,6 +176,10 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
             // GC point; `this` then lives in a Rust local until the stub frame holds it.
             call::ordinary_create_from_constructor(cx, new_target)?
         };
+        // The construct-site hook (M4-P0; filled by M4-P1 OBJ-ALLOC, `construct_ic.rs`): a stub
+        // that records nothing. GC point allowed: `this` is a Rust local, the rest is in caller
+        // registers.
+        crate::construct_ic::miss(cx, fp, s, callee, new_target, this);
         // SAFETY: `fp` is the live top frame; `this` is valid Value bits.
         let Some(stub) = (unsafe { call::push_construct_stub(cx, fp, this, callee, s.next_pc) })
         else {

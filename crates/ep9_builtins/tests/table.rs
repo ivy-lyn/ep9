@@ -48,6 +48,9 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
             ("date", 12),
             ("collections", 13),
             ("json", 14),
+            ("proxy", 15),
+            ("regexp", 16),
+            ("weakref", 17),
         ]
     );
     assert_eq!(ep9_builtins::object::BLOCK, 1);
@@ -57,6 +60,9 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
     assert_eq!(ep9_builtins::date::BLOCK, 12);
     assert_eq!(ep9_builtins::collections::BLOCK, 13);
     assert_eq!(ep9_builtins::json::BLOCK, 14);
+    assert_eq!(ep9_builtins::proxy::BLOCK, 15);
+    assert_eq!(ep9_builtins::regexp::BLOCK, 16);
+    assert_eq!(ep9_builtins::weakref::BLOCK, 17);
 }
 
 #[test]
