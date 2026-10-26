@@ -46,8 +46,9 @@
 //! - A case that has no description is left out (the `ep9_facts` rule: a state may have
 //!   fewer cases than the IC had): the string key ([`ic::KEY_STRING`]), a dead key, an object
 //!   kind with no [`ObjectKind`] (generators, arguments, objects with internal slots, module
-//!   namespaces), a prototype handler whose epoch is not the current `proto_epoch` (it misses
-//!   from now on, and its chain may have changed) or whose holder or target shape is dead, and
+//!   namespaces), a prototype handler whose validity cell is invalid (`validity.rs`: it
+//!   misses from now on, and its chain may have changed) or whose holder or target shape is
+//!   dead, and
 //!   two cases whose receivers have equal descriptions but different accesses.
 //! - T0 v0 records no value types, call targets or counts (H16-Q2): `values` is empty, and
 //!   a global site's `bindings` come from its cases only.
@@ -82,12 +83,13 @@ use crate::shape::{self, slf};
 use crate::string::{self, JsStr};
 use crate::symbol::{self, WellKnownSymbol};
 use crate::unit::{FunctionInfo, LoadedUnit};
+use crate::validity;
 
-/// The fields of an IC_HANDLER cell (the `ic.rs` layout table: +8 kind, +16 epoch, +24 holder
-/// or target shape (weak), +32 location).
+/// The fields of an IC_HANDLER cell (the `ic.rs` layout table: +8 kind, +16 the validity cell
+/// (or undefined for a 0x25 add), +24 holder or target shape (weak), +32 location).
 mod hc {
     pub const KIND: usize = 8;
-    pub const EPOCH: usize = 16;
+    pub const CELL: usize = 16;
     pub const REF: usize = 24;
     pub const LOCATION: usize = 32;
 }
@@ -153,7 +155,7 @@ pub fn export_facts(
             let facts = match k {
                 FeedbackSlotKind::LoadNamed => SlotFacts::LoadNamed(ex.property(v, i, true)),
                 FeedbackSlotKind::StoreNamed => SlotFacts::StoreNamed(ex.property(v, i, true)),
-                // 0x25 add cases do not compare the epoch (ic.rs).
+                // 0x25 add cases keep no validity cell (ic.rs).
                 FeedbackSlotKind::DefineNamedOwn => {
                     SlotFacts::DefineNamedOwn(ex.property(v, i, false))
                 }
@@ -255,9 +257,9 @@ impl<'a> Exporter<'a> {
         }
     }
 
-    /// The facts of a named-property slot. `check_epoch`: an add case compares the epoch (0x24,
-    /// not 0x25).
-    fn property(&mut self, v: u64, i: u32, check_epoch: bool) -> PropertyFacts {
+    /// The facts of a named-property slot. `check_chain`: an add case checks its validity cell
+    /// (0x24, not 0x25).
+    fn property(&mut self, v: u64, i: u32, check_chain: bool) -> PropertyFacts {
         let (state, keys) = self.entry(v, i);
         let mut cases: Vec<PropertyCase> = Vec::new();
         for k in keys {
@@ -265,7 +267,7 @@ impl<'a> Exporter<'a> {
                 debug_assert!(false, "a case key with no handler");
                 continue;
             };
-            if let Some(c) = self.case(k, h, check_epoch) {
+            if let Some(c) = self.case(k, h, check_chain) {
                 cases.push(c);
             }
         }
@@ -290,7 +292,7 @@ impl<'a> Exporter<'a> {
     }
 
     /// The case for key `k` (a shape) and handler `h`, if both have a description.
-    fn case(&mut self, k: u64, h: u64, check_epoch: bool) -> Option<PropertyCase> {
+    fn case(&mut self, k: u64, h: u64, check_chain: bool) -> Option<PropertyCase> {
         if k == ic::KEY_STRING || !is_cell_bits(k) || !shape::is_shape(k) {
             return None;
         }
@@ -308,8 +310,8 @@ impl<'a> Exporter<'a> {
             }
         } else {
             let c = cell(h);
-            let epoch = rd_i32(c, hc::EPOCH) as u32;
-            let current = epoch == self.rt.shapes.proto_epoch.get();
+            // The stale rule (H16 K5): a prototype case holds only while its cell is valid.
+            let current = validity::is_valid(rd(c, hc::CELL));
             let r = rd(c, hc::REF);
             let location = rd_i32(c, hc::LOCATION);
             match rd_i32(c, hc::KIND) {
@@ -320,7 +322,7 @@ impl<'a> Exporter<'a> {
                 hk::MISSING if current => Access::Missing {
                     depth: chain_depth(shape::proto(k), None)?,
                 },
-                hk::ADD if (current || !check_epoch) && r != UNDEFINED => Access::AddField {
+                hk::ADD if (current || !check_chain) && r != UNDEFINED => Access::AddField {
                     to: self.shape_desc(r)?,
                     field: key_index(r, location)?,
                 },
