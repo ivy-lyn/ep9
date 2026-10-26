@@ -18,7 +18,7 @@ use ep9_value::Throw;
 use crate::conv::Res;
 use crate::frame::{CONSTRUCT_BIT, HEADER, int32_of, native_ptr, slot};
 use crate::interp::{Cx, EXIT_STUB};
-use crate::object::{self, attr, is_error, is_string, own_define, str_view};
+use crate::object::{self, attr, is_error, is_string, own_define};
 use crate::runtime::{Atom, ErrorKind, Runtime, Site};
 use crate::unit::FunctionInfo;
 
@@ -133,7 +133,8 @@ pub(crate) fn error_header(cx: &mut Cx, e: u64) -> String {
     let read = |cx: &mut Cx, a: Atom| -> String {
         let key = rt.atom(a);
         match crate::property::get_data_from(cx, e, key) {
-            Some(v) if is_string(v) => str_view(v).to_string_lossy(),
+            // Rope-safe and no GC point (an error report may run near the heap limit).
+            Some(v) if is_string(v) => crate::string::to_rust_string(v),
             _ => String::new(),
         }
     };
@@ -211,7 +212,7 @@ pub(crate) fn describe_exception(rt: &Runtime, exc: u64) -> (Option<Site>, Optio
         let site = object::error_site(exc).map(|(unit, offset)| Site { unit, offset });
         let stack = object::own_get(exc, rt.atom(Atom::Stack))
             .filter(|(v, _)| is_string(*v))
-            .map(|(v, _)| str_view(v).to_string_lossy());
+            .map(|(v, _)| crate::string::to_rust_string(v));
         (site, stack)
     } else {
         (rt.shared.throw_site.get(), None)

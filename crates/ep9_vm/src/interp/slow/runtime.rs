@@ -538,13 +538,15 @@ pub(super) fn copy_data_properties(
                 .any(|j| object::array_get(excluded, j).is_some_and(|e| object::key_eq(e, k)))
     };
     if is_string(source) {
+        // GC point for a rope; then each unit is an O(1) read of the flat form.
+        let source = crate::string::flatten(cx, source);
         for i in 0..object::str_len(source) {
             // A string is shorter than 2^29 units, so `i` fits a u32.
             let k = crate::key::index_key(rt, i as u32);
             if skip(k) {
                 continue;
             }
-            let u = [object::str_view(source).at(i)];
+            let u = [crate::string::view(cx, source).at(i)];
             let c = object::new_string_utf16(rt, &u);
             property::define(cx, target, k, c)?;
         }
