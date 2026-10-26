@@ -9,7 +9,8 @@
 //!    └─ each function with a FEEDBACK cell (feedback.rs), each slot that an IC site uses
 //!         LoadNamed, StoreNamed, DefineNamedOwn (0x21, 0x22, 0x24, 0x25) ── PropertyFacts
 //!         LoadGlobal, LoadGlobalInsideTypeof, StoreGlobal (0x10-0x12) ──── GlobalFacts
-//!         other kinds: no record (T0 records them since M4-P1, H16-Q2; not exported yet)
+//!         other kinds: no record (T0 records all but InstanceOf since M4-P1, H16-Q2;
+//!         InstanceOf from IC2, M4-P3; FACTS2 exports them, M4-P2)
 //!  IC entry (ic.rs)   ── state: uninitialized | monomorphic | polymorphic | megamorphic
 //!   case (key, handler)
 //!     key: a live shape ──root walk──> ShapeDesc {proto, kind, flags, capacity, keys}
@@ -164,7 +165,8 @@ pub fn export_facts(
                     SlotFacts::LoadGlobalInsideTypeof(ex.global(v, i, name))
                 }
                 FeedbackSlotKind::StoreGlobal => SlotFacts::StoreGlobal(ex.global(v, i, name)),
-                // T0 v0 records no other kind (H16-Q2): no record, not an empty one.
+                // Not exported yet (FACTS2, M4-P2), though T0 records every other kind but
+                // InstanceOf (H16-Q2): no record, not an empty one.
                 _ => continue,
             };
             let r = snapshot.insert(f as u32, i, facts);
