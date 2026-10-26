@@ -39,7 +39,10 @@
 //! writes them out from FACTS2 (M4-P2) on, so until that merge the live snapshot has no such
 //! record and the guards are unbacked. The same SSA value checked twice in a block shares one
 //! check; a later backed site upgrades it (the value did not change in between). A loop
-//! phi's entry check (`unbox_loop_phis`) is backed if a check of the phi inside the loop was.
+//! phi's entry check (`unbox_loop_phis`) is backed if a check of the phi in the loop header
+//! block was (the header runs with the entry value). The overflow guard of `+`, `-`, Inc and
+//! Dec is always unbacked: T0 leaves an int32 `+` or `-` that overflows implicit int32, so
+//! the hint does not cover it (`*` records its overflow and -0, so its guard keeps the basis).
 //! Keyed sites stay unbacked until SPIKEC-3 reads the keyed facts (V9-A20).
 
 use ep9_bytecode::{Opcode, Register, decode_at};
@@ -328,14 +331,17 @@ impl Builder<'_> {
     }
 
     /// A shared check `n` now also guards a site with `basis`: a fact basis replaces an
-    /// unbacked one (the same SSA value, checked once).
+    /// unbacked one (the same SSA value, checked once), and the guard takes the mode's policy
+    /// for that basis.
     fn back(&mut self, n: NodeId, basis: GuardBasis) {
         let GuardBasis::Fact(src) = basis else { return };
+        let policy = self.g.mode.exit_policy(basis);
         let node = self.g.node_mut(n);
         if let Some(g) = &mut node.guard
             && g.basis == GuardBasis::Unbacked
         {
             g.basis = basis;
+            g.policy = policy;
             if node.op == Op::CheckInt32 {
                 node.trust = Trust::Predicted(src);
             }
@@ -350,14 +356,22 @@ impl Builder<'_> {
         } else {
             (self.int32(l, basis), self.int32(r, basis))
         };
+        // The op's own guard (overflow, and -0 for `*`): T0 records an overflow of `*` in the
+        // BinaryOp hint (INT32_OVERFLOW), but an int32 `+` or `-` (also Inc and Dec) that
+        // overflows stays implicit int32 (ep9_vm profile.rs), so a hint inside {int32} does
+        // not cover that guard: it is unbacked. The input checks keep the site's basis.
+        let op_basis = match op {
+            Int32Op::Add | Int32Op::Sub => GuardBasis::Unbacked,
+            _ => basis,
+        };
         let trust = if op.bitwise() {
             Trust::Proven
         } else {
-            trust_of(basis)
+            trust_of(op_basis)
         };
         let n = self.emit(Op::Int32(op), vec![l, r], Repr::Int32, trust);
         if !op.bitwise() {
-            self.guard(n, basis, st);
+            self.guard(n, op_basis, st);
         }
         n
     }
@@ -872,14 +886,19 @@ impl Builder<'_> {
                         continue;
                     }
                     let e = node.inputs[entry];
-                    // Backed if a check of the phi inside the loop is (it saw the phi's
-                    // values, the entry value of each run included).
-                    let basis = self
-                        .g
-                        .order()
+                    // Backed only if a check of the phi in the header block is: the header
+                    // runs once at each entry with the entry value, so that site's record
+                    // saw the entry value of each run. A check elsewhere in the loop (in a
+                    // branch, or one that runs only on later iterations) or after it may
+                    // never have seen an entry value.
+                    let basis = self.g.blocks[h]
+                        .nodes
+                        .iter()
+                        .copied()
                         .filter(|&c| {
                             let cn = self.g.node(c);
-                            matches!(cn.op, Op::CheckInt32 | Op::TruncateInt32)
+                            cn.live
+                                && matches!(cn.op, Op::CheckInt32 | Op::TruncateInt32)
                                 && cn.inputs[0] == phi
                         })
                         .filter_map(|c| self.g.node(c).guard.as_ref().map(|g| g.basis))

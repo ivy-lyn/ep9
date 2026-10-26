@@ -395,11 +395,16 @@ mod tests {
         );
         assert_eq!(r.compiled.output, ["0 0 499500 2147450880 0"]);
         // Since FACTS2 (M4-P2) the live facts hold the BinaryOp and CompareOp records, so
-        // the 3 int32 guards are fact guards.
-        assert_eq!(r.report.fact_guards, 3, "{}", r.report.graph);
-        // `a + i` past 2^31 is a double in JS before `| 0`; the overflow guard (fact-backed:
-        // a `+` that overflows stays implicit int32 in the profile) traps instead (T0 prints
-        // 704982704).
+        // the input check of `i < n` is a fact guard; the overflow guards of `a + i` and
+        // `i++` stay unbacked (a `+` that overflows stays implicit int32 in the profile).
+        assert_eq!(
+            (r.report.fact_guards, r.report.unbacked_guards),
+            (1, 2),
+            "{}",
+            r.report.graph
+        );
+        // `a + i` past 2^31 is a double in JS before `| 0`; the overflow guard traps instead
+        // (T0 prints 704982704).
         let r = traps(SUM, warm, "print(sum(100000));", "sum");
         assert_eq!(r.t0.output, ["704982704"]);
         // A double that is an int32 passes the entry check; 2.5 does not (unbacked: the trap).
@@ -413,9 +418,10 @@ mod tests {
         traps(SUM, "sum(3);", "print(sum('3'));", "sum");
     }
 
-    /// With int records (the FACTS2 stand-in) every int32 guard of `sum` is a fact guard; the
-    /// guard basis is data: the code is the same bytes as with no int fact, and a failing
-    /// fact guard still ends in the trap (JIT mode: deopt, month 5).
+    /// With int records (the FACTS2 stand-in, and the live records since FACTS2) every int32
+    /// input check of `sum` is a fact guard and only the overflow guards of `+` stay unbacked;
+    /// the guard basis is data: the code is the same bytes as with no int fact, and a failing
+    /// guard still ends in the trap (JIT mode: deopt, month 5).
     #[test]
     fn int_facts_back_the_int32_guards() {
         if !aarch64() {
@@ -440,11 +446,19 @@ mod tests {
             plain.t0
         );
         assert_eq!(plain.report.fact_guards, 0, "{}", plain.report.graph);
+        // The overflow guards of `+` (`a + i`, `i++`): never backed (see `crate::build`).
+        let overflow = |g: &str| {
+            g.lines()
+                .filter(|l| l.contains("Int32(Add)") && l.contains(" guard g"))
+                .count()
+        };
+        assert_eq!(overflow(&plain.report.graph), 2, "{}", plain.report.graph);
+        let backed = (plain.report.unbacked_guards - 2, 2);
         // The live records (FACTS2) back the same guards as the stand-in.
         let live = equal(SUM, warm, main, "sum");
         assert_eq!(
             (live.report.fact_guards, live.report.unbacked_guards),
-            (plain.report.unbacked_guards, 0),
+            backed,
             "{}",
             live.report.graph
         );
@@ -465,7 +479,7 @@ mod tests {
         );
         assert_eq!(
             (r.report.fact_guards, r.report.unbacked_guards),
-            (plain.report.unbacked_guards, 0),
+            backed,
             "{}",
             r.report.graph
         );
@@ -514,6 +528,75 @@ mod tests {
         assert_eq!(got, [fact, fact, u, u, fact, u, u, u]);
     }
 
+    /// Review F2 (M4-P2): an int32 `+` that overflows in the very warm-up the facts come from
+    /// still reads as an int32 hint (the profile leaves it implicit), so its overflow guard is
+    /// unbacked; the input checks keep the fact basis.
+    #[test]
+    fn an_add_overflow_guard_is_never_fact_backed() {
+        if !aarch64() {
+            return;
+        }
+        let defs = "function wrap(a, n) { var s = 0; for (var i = 0; i < n; i++) { s = (s + a) | 0; } return s; }";
+        let r = run_script(
+            &Config::default(),
+            defs,
+            "for (var k = 0; k < 20; k++) wrap(1073741824, 10);",
+            "print(wrap(1073741824, 10));",
+            "wrap",
+        )
+        .expect("run");
+        assert_eq!(r.t0.output, ["-2147483648"]);
+        assert!(
+            r.trap.is_some(),
+            "the overflow guard traps: {:?}",
+            r.compiled
+        );
+        let g = &r.report.graph;
+        for l in g.lines().filter(|l| l.contains(" guard g")) {
+            if l.contains("Int32(Add)") {
+                assert!(l.contains("Unbacked"), "{l}\n{g}");
+            } else {
+                assert!(l.contains("Fact(Runtime)"), "{l}\n{g}");
+            }
+        }
+        assert!(g.contains("Int32(Add)"));
+    }
+
+    /// Review F3 (M4-P2): a loop phi's entry check is backed only by a check of the phi in the
+    /// loop header. Here the only check of `i` runs in a branch on later iterations (`i` is
+    /// then `k - 1`); the entry value 1.5 never reached a profiled int site, so the entry
+    /// check is unbacked (before the fix it was a fact guard that failed on every call).
+    #[test]
+    fn a_phi_entry_check_is_backed_only_from_the_header() {
+        if !aarch64() {
+            return;
+        }
+        let defs = "function g(x, n) { var i = x; var s = 0; for (var k = 0; k < n; k = k + 1) { if (k > 0) { s = i + 1; } i = k; } return i + s; }";
+        let r = run_script(
+            &Config::default(),
+            defs,
+            "for (var j = 0; j < 20; j++) g(1.5, 5);",
+            "print(g(1.5, 5));",
+            "g",
+        )
+        .expect("run");
+        assert_eq!(r.t0.output, ["8"]);
+        let g = &r.report.graph;
+        let entry: Vec<&str> = g
+            .lines()
+            .filter(|l| l.contains("CheckInt32(n1)") && l.contains(" guard g"))
+            .collect();
+        assert_eq!(entry.len(), 1, "{g}");
+        assert!(entry[0].contains("Unbacked"), "{g}");
+        // The header check of `k < n` still backs the entry check of `k` (a constant 0, so
+        // no check) and the check of `n`.
+        assert!(
+            g.lines()
+                .any(|l| l.contains("CheckInt32(n2)") && l.contains("Fact(Runtime)")),
+            "{g}"
+        );
+    }
+
     const ARR: &str = "function fill(a, n) { for (var i = 0; i < n; i++) { a[i] = (a[i] * 3 + i) & 1023; } return a[0]; }";
 
     #[test]
@@ -551,8 +634,14 @@ mod tests {
             "print(get(new P(5), 10), get(new Q(7), 3));",
             "get",
         );
-        // The shape guard of `o.v` plus, since FACTS2 (M4-P2), the 4 int32 guards.
-        assert_eq!(r.report.fact_guards, 5, "{}", r.report.graph);
+        // The shape guard of `o.v` plus, since FACTS2 (M4-P2), the 2 int32 input checks; the
+        // 2 overflow guards of `+` stay unbacked.
+        assert_eq!(
+            (r.report.fact_guards, r.report.unbacked_guards),
+            (3, 2),
+            "{}",
+            r.report.graph
+        );
         // A third shape: the guard fails (trap), never a wrong field.
         traps(NAMED, warm, "print(get({ w: 1, v: 9 }, 2));", "get");
         traps(NAMED, warm, "print(get(5, 2));", "get");
@@ -667,18 +756,22 @@ mod tests {
         let r = run(k, 1, &Config::default()).expect("run");
         assert!(r.equal, "{}", r.line());
         assert_eq!(r.probe_trap, Some(0), "{}", r.line());
-        // Since FACTS2 (M4-P2) the live facts back the int32 guards too: 23 fact guards
-        // and the 6 keyed guards unbacked, as with the stand-in (`am3_with_int_facts_equals_t0`).
+        // Since FACTS2 (M4-P2) the live facts back the int32 input checks too, as with the
+        // stand-in (`am3_with_int_facts_equals_t0`): 11 fact guards; unbacked are the 6 keyed
+        // guards, the 9 overflow guards of `+` and `-`, and the entry checks of the loop
+        // phis `i`, `j` and `c`, whose only checks are in the loop body, not the header.
         assert_eq!(
             (r.report.fact_guards, r.report.unbacked_guards),
-            (23, 6),
+            (11, 18),
             "{}",
             r.report.graph
         );
     }
 
-    /// am3 with the FACTS2 stand-in int records: every int32 guard is a fact guard; only the
-    /// keyed guards stay unbacked (keyed facts: SPIKEC-3), and the output still equals T0.
+    /// am3 with the FACTS2 stand-in int records: the int32 input checks are fact guards; the
+    /// keyed guards (keyed facts: SPIKEC-3), the overflow guards of `+` and `-` and the entry
+    /// checks of the phis that the header does not check stay unbacked, and the output still
+    /// equals T0.
     #[test]
     fn am3_with_int_facts_equals_t0() {
         if !aarch64() {
@@ -698,15 +791,22 @@ mod tests {
             .lines()
             .filter(|l| l.contains("Unbacked"))
             .collect();
-        assert!(
-            unbacked.iter().all(|l| l.contains("CheckArray")
-                || l.contains("LoadElement")
-                || l.contains("StoreElement")),
+        let count = |what: &[&str]| {
+            unbacked
+                .iter()
+                .filter(|l| what.iter().any(|w| l.contains(w)))
+                .count()
+        };
+        let keyed = count(&["CheckArray", "LoadElement", "StoreElement"]);
+        let overflow = count(&["Int32(Add)", "Int32(Sub)"]);
+        let entry = count(&["CheckInt32"]);
+        assert_eq!(r.report.unbacked_guards, unbacked.len());
+        assert_eq!(
+            (keyed, overflow, entry, unbacked.len()),
+            (6, 9, 3, 18),
             "{}",
             r.report.graph
         );
-        assert_eq!(r.report.unbacked_guards, unbacked.len());
-        assert_eq!(r.report.unbacked_guards, 6, "{}", r.report.graph);
     }
 
     /// GC stress (a collection before every allocation, the verifier after each): the
