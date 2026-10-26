@@ -5,11 +5,13 @@
 
 use std::hint::black_box;
 
-use ep9_bytecode::{FunctionId, RegisterList, VerifiedUnit};
+use ep9_bytecode::{FeedbackSlotKind, FunctionId, RegisterList, VerifiedUnit};
 
 use super::{Asm, config, isolate, meta, on_big_stack, unit};
+use crate::construct_ic::{cs, handler_i32};
 use crate::feedback;
-use crate::frame::{UNDEFINED, int32_bits};
+use crate::frame::{UNDEFINED, int32_bits, int32_of};
+use crate::ic::hk;
 use crate::interp::BUDGET;
 use crate::kinds;
 use crate::object;
@@ -22,7 +24,8 @@ use crate::{Dispatch, Isolate, IsolateConfig, Value};
 enum How {
     /// `f()`: the T0 call fast path.
     Fast,
-    /// `new f()`: always the cold path (`slow::call`).
+    /// `new f()`: the T0 construct-site hit once the site has a `CONSTRUCT_SITE` handler
+    /// (`construct_ic.rs`, M4-P1), else the cold path (`slow::call`).
     Construct,
     /// `f()` and `new f()` in turn, starting with `f()`.
     Mixed,
@@ -91,7 +94,13 @@ fn state(fi: &FunctionInfo) -> State {
 }
 
 /// The vector `v` of `fi`: a FEEDBACK cell in `fi`'s unit slot, with one slot per feedback
-/// slot of the function, pointing back at `fi`. Every slot is still (undefined, int32 0).
+/// slot of the function, pointing back at `fi`. These programs have no property IC site, so
+/// only two writers touch the vector: T0 profile recording (M4-P1 PROFILE, `profile.rs`)
+/// writes int32 counts into the Call, CreateClosure and JumpLoop slots, and a Call key that is
+/// the hole or a FunctionInfo native word (not a cell); a `new f()` site (M4-P1 OBJ-ALLOC,
+/// `construct_ic.rs`) keeps in its Call slot the constructor (a FUNCTION cell, weak) or the
+/// hole, and an int32 count or a `CONSTRUCT_SITE` handler. Every other slot is still
+/// (undefined, int32 0).
 fn check_vector(fi: &FunctionInfo, v: u64) {
     assert!(feedback::is_vector(v), "not a FEEDBACK cell: {v:#x}");
     let unit = fi.loaded_unit().unwrap();
@@ -103,9 +112,24 @@ fn check_vector(fi: &FunctionInfo, v: u64) {
         .feedback_slots
         .len();
     assert_eq!(feedback::slot_count(v) as usize, n);
+    let kinds_of = &unit.unit.functions[fi.function_id as usize].feedback_slots;
     for i in 0..n as u32 {
-        assert_eq!(feedback::key(v, i), UNDEFINED, "key of slot {i}");
-        assert_eq!(feedback::value(v, i), int32_bits(0), "value of slot {i}");
+        let (key, value) = (feedback::key(v, i), feedback::value(v, i));
+        let call = kinds_of[i as usize] == FeedbackSlotKind::Call;
+        if !call {
+            assert_eq!(key, UNDEFINED, "key of slot {i}");
+        } else if kinds::is_cell_bits(key) {
+            assert!(kinds::is_function(key), "key of Call slot {i}: {key:#x}");
+        }
+        if call && kinds::is_cell_bits(value) {
+            assert_eq!(kinds::cell_kind(value), kinds::IC_HANDLER.get(), "slot {i}");
+            assert_eq!(handler_i32(value, cs::KIND), hk::CONSTRUCT_SITE, "slot {i}");
+        } else {
+            assert!(
+                value == int32_bits(int32_of(value)) && int32_of(value) >= 0,
+                "value of slot {i}: {value:#x}"
+            );
+        }
     }
 }
 
@@ -167,7 +191,8 @@ fn no_vector_after_7_calls_and_a_vector_on_the_8th() {
     assert_eq!(f, made(8));
     let [_, f] = run_states(t, || program(30, How::Fast, 0));
     assert_eq!(f, made(8), "no count once the vector exists");
-    // `new f()` is always cold: `slow::call` counts and makes it.
+    // `new f()` runs cold here: the script is entered once, so it has no vector and its
+    // construct site cannot hit (`construct_ic::fast`). `slow::call` counts and makes it.
     let [_, f] = run_states(t, || program(7, How::Construct, 0));
     assert_eq!(f, none(7));
     let [_, f] = run_states(t, || program(8, How::Construct, 0));
