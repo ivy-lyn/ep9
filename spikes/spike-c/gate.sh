@@ -22,6 +22,10 @@
 #        out of the weak IC entry the guard reads; T0 would re-record it, the compiled code
 #        can only deopt, and the deopt entry is month 5); FAIL on any other result
 #     SKIP without the v8-v7 checkout (scripts/sync-bench.sh)
+#   gate.sh time         (plan v9 M4-P2 SPIKEC-2; protocol §3) the class S timing of crypto on
+#     this host: `spike-c time crypto` (15 rounds + 1 warm-up; T0, C, H0, H1 in new processes,
+#     rotated order; paired ratios, the median's interval). A REPORT, never a reading: PASS
+#     means every run was right, whatever the ratios; FAIL only on a wrong run. Not in `all`
 #   gate.sh              `gate.sh structural` then `gate.sh am3`
 #
 # Env: CARGO_TARGET_DIR (default: spikes/spike-c/target),
@@ -106,16 +110,31 @@ am3() {
   fi
 }
 
+timing() {
+  if ! build_release; then
+    record "time" FAIL "release build failed"
+    return
+  fi
+  local bin="$CARGO_TARGET_DIR/release/spike-c$exe"
+  local bench="${SPIKE_C_BENCH_DIR:-$here/../../third_party/bench-v8v7/bench/bench-v8}"
+  if [ ! -f "$bench/crypto.js" ]; then
+    record "time" SKIP "no v8-v7 checkout (bash scripts/sync-bench.sh bench-v8v7)"
+    return
+  fi
+  run "time/crypto (report)" "$bin" time crypto
+}
+
 step="${1:-all}"
 case "$step" in
   structural) structural ;;
   am3) am3 ;;
+  time) timing ;;
   all)
     structural
     am3
     ;;
   *)
-    echo "usage: gate.sh [structural | am3]" >&2
+    echo "usage: gate.sh [structural | am3 | time]" >&2
     exit 2
     ;;
 esac
