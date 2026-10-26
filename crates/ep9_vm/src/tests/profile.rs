@@ -728,7 +728,7 @@ fn keyed_sites_record_keys_receivers_and_misses() {
         keyed::INDEX | keyed::STRING,
         keyed::OTHER_KEY | keyed::ARRAY,
         keyed::OTHER_KEY | keyed::ARRAY,
-        keyed::INDEX | keyed::ARRAY,
+        ia | keyed::OUT_OF_BOUNDS,
         keyed::INDEX | keyed::PRIMITIVE,
         keyed::NAME | keyed::OBJECT,
         keyed::NAME | keyed::OBJECT,
@@ -743,6 +743,120 @@ fn keyed_sites_record_keys_receivers_and_misses() {
             "keyed case {i}: key untouched"
         );
     }
+}
+
+/// One key form of `keyed_index_program`.
+#[derive(Clone, Copy)]
+enum IndexKey {
+    Int(i32),
+    Num(f64),
+    Str(&'static str),
+    /// The string `head + tail` made at run time (a flat string: shorter than a rope), so
+    /// its hash is not computed when the profile reads it.
+    Concat(&'static str, &'static str),
+}
+
+/// The site of each `keyed_index_program` case and its keyed bits: an op on the array
+/// `a = [, , , 1]` (length 4: holes at 0 to 2, present at 3).
+const INDEX_CASES: [(FeedbackSlotKind, IndexKey, u32); 21] = {
+    use FeedbackSlotKind::{HasKeyed, LoadKeyed, StoreKeyed};
+    use IndexKey::{Concat, Int, Num, Str};
+    let ia = keyed::INDEX | keyed::ARRAY;
+    let (hole, oob) = (ia | keyed::HOLE, ia | keyed::OUT_OF_BOUNDS);
+    let (name, other) = (keyed::NAME | keyed::ARRAY, keyed::OTHER_KEY | keyed::ARRAY);
+    [
+        // int32 keys (the reference: the element case was already recorded).
+        (LoadKeyed, Int(1), hole),
+        (LoadKeyed, Int(4), oob),
+        // Index strings.
+        (LoadKeyed, Str("3"), ia),
+        (LoadKeyed, Str("1"), hole),
+        (LoadKeyed, Str("4"), oob),
+        (LoadKeyed, Str("4294967294"), oob),
+        (LoadKeyed, Concat("42949", "67294"), oob),
+        (LoadKeyed, Str("4294967295"), name),
+        (LoadKeyed, Str("01"), name),
+        // Integral doubles; -0 is the index 0.
+        (LoadKeyed, Num(-0.0), hole),
+        // An integral double constant in the int32 range loads as an int32: the implicit
+        // fast case (a present element), so nothing is recorded.
+        (LoadKeyed, Num(3.0), 0),
+        (LoadKeyed, Num(2_147_483_648.0), oob),
+        (LoadKeyed, Num(3e9), oob),
+        (LoadKeyed, Num(4_294_967_294.0), oob),
+        (LoadKeyed, Num(4_294_967_295.0), other),
+        // A store and `in` record the same element cases.
+        (StoreKeyed, Str("9"), oob),
+        (StoreKeyed, Num(2_147_483_648.0), oob),
+        (HasKeyed, Str("2"), hole),
+        (HasKeyed, Num(-0.0), hole),
+        (HasKeyed, Num(3e9), oob),
+        (HasKeyed, Str("4294967294"), oob),
+    ]
+};
+
+/// Each [`INDEX_CASES`] op at its own slot, on a fresh `a = [, , , 1]` (a store does not
+/// change the array of a later case).
+fn keyed_index_program() -> (VerifiedUnit, Vec<FeedbackSlot>) {
+    let mut s = Asm::script(0);
+    let (a, key, val) = (s.b.new_register(), s.b.new_register(), s.b.new_register());
+    let mut v = Vec::new();
+    for (kind, k, _) in INDEX_CASES {
+        s.b.create_empty_array_literal(s.lit).star(a);
+        s.b.lda_smi(1).star(val).lda_smi(3).star(key).ldar(val);
+        let k3 = s.b.feedback_slot(FeedbackSlotKind::StoreKeyed);
+        s.b.set_keyed_property(a, key, k3);
+        match k {
+            IndexKey::Int(i) => {
+                s.b.lda_smi(i);
+            }
+            IndexKey::Num(d) => {
+                s.lda_num(d);
+            }
+            IndexKey::Str(t) => {
+                s.lda_str(t);
+            }
+            IndexKey::Concat(head, tail) => {
+                let lhs = s.b.new_register();
+                s.lda_str(head);
+                s.b.star(lhs);
+                s.lda_str(tail);
+                s.b.add(lhs, s.bin);
+            }
+        }
+        let slot = s.b.feedback_slot(kind);
+        match kind {
+            FeedbackSlotKind::LoadKeyed => {
+                s.b.get_keyed_property(a, slot);
+            }
+            FeedbackSlotKind::StoreKeyed => {
+                s.b.star(key).ldar(val).set_keyed_property(a, key, slot);
+            }
+            _ => {
+                s.b.star(key).ldar(a).test_in(key, slot);
+            }
+        }
+        v.push(slot);
+    }
+    s.b.lda_undefined().return_();
+    (unit("", vec![s.finish()]), v)
+}
+
+#[test]
+fn keyed_sites_record_the_element_case_of_every_index_key_form() {
+    // An index string, -0 or an integral double up to 2^32 - 2 is the same array index as
+    // the int32 key: a hole or an index past the length records HOLE or OUT_OF_BOUNDS.
+    let got = slots(RUN, || keyed_index_program().0);
+    let k = keyed_index_program().1;
+    assert_eq!(k.len(), INDEX_CASES.len());
+    let wrong: Vec<(usize, u32, u32)> = k
+        .iter()
+        .zip(&INDEX_CASES)
+        .enumerate()
+        .map(|(i, (&slot, &(_, _, w)))| (i, value(&got, 0, slot), w))
+        .filter(|&(_, g, w)| g != w)
+        .collect();
+    assert!(wrong.is_empty(), "(case, got, want): {wrong:?}");
 }
 
 /// Keyed loads whose key is a rope that is not flattened (a CONS from a string `+` of 13 or

@@ -556,35 +556,36 @@ fn keyed_receiver(o: u64) -> u32 {
     }
 }
 
-/// The `KeySet` bits of a key.
+/// The `KeySet` bits of a key, and for a canonical array index (an int32 `>= 0`, an index
+/// string, or a Number whose `ToString` is one, -0 included) the index itself, so that every
+/// form of the same index records the same element case.
 #[inline(always)]
-fn keyed_key(k: u64) -> u32 {
-    if is_i32(k) {
-        if int32_of(k) >= 0 {
-            keyed::INDEX
-        } else {
-            keyed::OTHER_KEY
-        }
+fn keyed_key(k: u64) -> (u32, Option<u32>) {
+    let index = if is_i32(k) {
+        u32::try_from(int32_of(k)).ok()
     } else if is_number(k) {
         // Number::toString of an integral double in [0, 2^32 - 1) is an array index.
         let d = f64::from_bits(k.wrapping_sub(ep9_value::encoding::DOUBLE_ENCODE_OFFSET));
         // `as u32` and back, not `trunc` (a libm call on baseline x86-64).
-        if (0.0..4_294_967_295.0).contains(&d) && f64::from(d as u32) == d {
-            keyed::INDEX
-        } else {
-            keyed::OTHER_KEY
-        }
+        ((0.0..4_294_967_295.0).contains(&d) && f64::from(d as u32) == d).then_some(d as u32)
     } else if kinds::is_string(k) {
-        if string::array_index(k).is_some() {
-            keyed::INDEX
-        } else {
-            keyed::NAME
-        }
+        // A canonical index has at most 10 digits, so a rope (at least MIN_CONS_LENGTH
+        // units) is never one and is not copied (`string::array_index`).
+        return match string::array_index(k) {
+            Some(i) => (keyed::INDEX, Some(i)),
+            None => (keyed::NAME, None),
+        };
     } else if kinds::is_symbol(k) {
-        keyed::SYMBOL
+        return (keyed::SYMBOL, None);
+    } else {
+        None
+    };
+    let bits = if index.is_some() {
+        keyed::INDEX
     } else {
         keyed::OTHER_KEY
-    }
+    };
+    (bits, index)
 }
 
 /// What element `i` of the Array `o` is: past the length, a hole, or present (0).
@@ -612,10 +613,12 @@ pub(crate) fn record_keyed(_st: &mut St<'_>, _s: FSlot, _o: u64, _k: u64) {}
 #[inline(always)]
 pub(crate) fn record_keyed_cold(st: &mut St<'_>, s: FSlot, o: u64, k: u64) {
     let Some(v) = vector_of(st) else { return };
-    let key = keyed_key(k);
+    let (key, index) = keyed_key(k);
     let mut bits = key | keyed_receiver(o);
-    if key == keyed::INDEX && is_i32(k) && kinds::is_array(o) {
-        bits |= element_case(o, int32_of(k) as u32);
+    if let Some(i) = index
+        && kinds::is_array(o)
+    {
+        bits |= element_case(o, i);
     }
     let old = value(v, s.0);
     if old as u32 | bits != old as u32 {
