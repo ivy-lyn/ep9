@@ -2,7 +2,7 @@
 
 - Status: Decided design (orchestrator, 2026-10-26/27); adoption in progress: see §7 and §8.
 - Cites at 281e628 (the M4-P1 head). Every `file:line` names the line at 281e628, except in section 12, which records the critique check of the first version at fc6ac78. Section 13 says how the cites were checked.
-- Origin: the execution-modes design that the user asked for on 2026-10-26 ("proper architecture around the AOT/JIT/Hybrid modes" that keeps room to optimize AOT and hybrid later). It went through an adversarial critique (section 12) and the first weekly check MODES-CHECK-w13 (plan v9 rule 29; window d7cc797..a99838f; section 13). MODES-D1..D12 are the orchestrator decisions on it; their rows and the MODES-CHECK-w13 row go into decisions-log §14.3 at the m4-p1 tag.
+- Origin: the execution-modes design that the user asked for on 2026-10-26 ("proper architecture around the AOT/JIT/Hybrid modes" that keeps room to optimize AOT and hybrid later). It went through an adversarial critique (section 12) and the first weekly check MODES-CHECK-w13 (plan v9 rule 29; window d7cc797..a99838f; section 13). MODES-D1..D14 are the orchestrator decisions on it; their rows and the MODES-CHECK-w13 row go into decisions-log §14.3 at the m4-p1 tag.
 - Short forms: P02 = `docs/plan/02-architecture.md`, P03 = `docs/plan/03-gc.md`, P04 = `docs/plan/04-execution.md`, P05 = `docs/plan/05-aot.md`, P08 = `docs/plan/08-repo.md`, M09 = `docs/plan/09-milestones.md`, AR = `docs/adr/README.md`, DL = `docs/decisions-log.md`, SCP = `docs/measurements/2026-10-27-spike-c-protocol.md`, Hnn = `docs/adr/Hnn-*.md`, golden = `crates/ep9_vm/tests/golden/h20-core.txt`. Plan v9 (the month-4 plan) is kept outside the repo (DL:2743); this file cites it as "plan v9 §x" or "plan v9 rule n". MC-w13-n = finding n of MODES-CHECK-w13; On = its outside-evidence item n.
 - "(est.)" marks an estimate. "Reserved" means: named now, refused by code today, built only when its gate passes.
 
@@ -36,10 +36,10 @@ The design has five structures:
  RUNTIME (ep9_vm)                                                                                          v
    FunctionInfo.slot {kind, entry} <== select(code set, ExecPolicy, session) <== code set <== load | tier-up
         ^ one hot read per call                 |                                   ^
-        |                                       +-- deopt, PIN/Demote, fuse pop, debugger attach/breakpoint
-   ExecPolicy presets:  JIT     = Opt > Baseline > Interp
+        |                                       +-- deopt, PIN, fuse pop, debugger attach/breakpoint
+   ExecPolicy presets:  JIT     = Opt > Baseline > Interp                          (lowering jit only)
                         jitless = AotOpt > AotBaseline > GenInterp > Interp        (lowering jitless only)
-                        hybrid  = Opt > Baseline > AotOpt > AotBaseline > Interp   (lowering hybrid, then jitless)
+                        hybrid  = Opt > Baseline > AotOpt > AotBaseline > Interp   (lowering jit, hybrid, jitless)
  mode branches exist in 3 places only: B1 fact selection, B2 guard creation, B3 finalizer
 ```
 
@@ -101,15 +101,16 @@ Why not `IsolateConfig`: it is a core line of the Frozen H20 core (golden:334). 
    load      policy auto | strict (strict = `--unit-strict`, P05:282; H35:90)
              forms  {o, ep9u}: which unit forms may load. iOS takes `.o` only (P08:117)
 
- preset    install rank                                     accept           produce             unit facts at run time                     type feedback
- JIT       Opt > Baseline > Interp                          -                all producers       none in v1 (warm start reserved, F17)      full
- jitless   AotOpt > AotBaseline > GenInterp > Interp        jitless          none (also no RX2)  n/a (baked at build)                       ics_only (full in a training run, `--profile-out`)
- hybrid    Opt > Baseline > AotOpt > AotBaseline > Interp   hybrid, jitless  all producers       PROFILED + HINTED, lower precedence (H33:81) full
+ preset    install rank                                     accept                 produce             unit facts at run time                     type feedback
+ JIT       Opt > Baseline > Interp                          jit                    all producers       none in v1 (warm start reserved, F17)      full
+ jitless   AotOpt > AotBaseline > GenInterp > Interp        jitless                none (also no RX2)  n/a (baked at build)                       ics_only (full in a training run, `--profile-out`)
+ hybrid    Opt > Baseline > AotOpt > AotBaseline > Interp   jit, hybrid, jitless   all producers       PROFILED + HINTED, lower precedence (H33:81) full
 ```
 
 - The presets are the three plan modes (P02:126-135). A new mode later (sound regions, a closed-world bundle) is a new preset or a new guard-table row. It is not a new branch in a compiler.
 - The jitless preset empties every producer, regexp JIT included. V8's `--jitless` also turns off regexp JIT and Wasm (the prior-art survey of the design work, kept outside the repo).
 - The hybrid rank puts Baseline above AotOpt on purpose. A re-tiered function runs instrumented T1 for a while to collect fresh feedback. That is the H33 path "hot -> instrumented T1 -> T2" (H33:29). T1 already writes the full FeedbackVector (P05:336), so "instrumented T1" is plain T1. It needs no new kind.
+- **Accept lists (MODES-D13).** `accept` is one filter for every code object: unit code and runtime JIT code alike (`select()`, section 3.2). Code that T1, T2 or the hybrid re-tier makes has lowering `jit` (section 1.4). So JIT accepts {`jit`}, hybrid accepts {`jit`, `hybrid`, `jitless`} and jitless accepts {`jitless`}. A preset that runs runtime producers must list `jit`, or `select()` would never pick the code its own tier-up makes.
 - The shape of `new_with` and `ExecOptions` is decided (MODES-D7, C-23). The code and its H20 part-2 row land with the first caller, latest at A2 start. It may ride M5-P0 with the `Cx` change. It is an addition whenever it lands.
 - **Type feedback (MODES-D11, MC-w13-10).** In the jitless preset T0 is the top tier, and nothing reads the T0 records except a training run. The records cost a64 navier-stokes +9.39%, richards +6.05% and crypto +1.30% (the W-PROFILE-1b share). So the jitless preset defaults to `ics_only`. A training run (`--profile-out`) and the JIT and hybrid presets use `full`. The W-PROFILE-1b reason "hot code leaves T0 once T1 exists" holds for JIT and hybrid only (MC-w13-19).
   - Build: a second T0 handler table with no record hook, chosen per `Cx`. Each `Cx` has its own handler table (`crates/ep9_vm/src/interp/mod.rs:131`), so the choice costs 0 instructions in either table. It is built in month 5 only after a SIZE-REPORT measure of the extra handler copy (the record points are listed in `crates/ep9_vm/src/profile.rs:46-68`; the size is not measured yet, and it matters for jitless and iOS).
@@ -125,7 +126,7 @@ Why not `IsolateConfig`: it is a core line of the Frozen H20 core (golden:334). 
 | Baseline (1) | `ep9_baseline`, run time | yes (M5) | no | re-tier tier (= instrumented T1) | n/a (data ICs) | full FeedbackVector |
 | Opt (2) | `ep9_opt`, run time | yes (M7) | no | re-tier target | DEOPT + exit counter (H32:28) | exit counters |
 | AotBaseline (3) | `ep9_baseline` via `ep9c` | no | all reachable fns if K-A3 (P02:147) | optional | n/a (data ICs) | full schema via IC cells (H33:28) |
-| AotOpt (4) | `ep9_opt` via `ep9c` | no | PGO hot set if K-A4J (P02:148) | PGO hot set, start tier | lowering jitless: SLOWPATH / DEOPT in budget / PIN; lowering hybrid: DEOPT, then re-tier | budget and exit counters (C-08) |
+| AotOpt (4) | `ep9_opt` via `ep9c` | no | PGO hot set if K-A4J (P02:148) | PGO hot set, start tier | lowering jitless: SLOWPATH / DEOPT in budget / PIN; lowering hybrid: DEOPT, then PIN + re-tier at the function budget (T4) | budget and exit counters (C-08) |
 | GenInterp (candidate 5) | M5c, engine build | no | top tier if K-A3 trips (P04:316-318; P05:378) | no | n/a | full FeedbackVector |
 | Lazy (candidate 6) | none: "no bytecode yet" state (H04-Q1, H04:78) | all | all | all | n/a | n/a |
 | later kinds | appended to the list when built (C-03) | | | | | |
@@ -144,12 +145,13 @@ Design: every code object carries a 1-byte **lowering class**. The name is not "
 
 | Lowering | Value | Built for | Guard lowering | Needs at run time | Accepted by |
 |---|---|---|---|---|---|
-| `jit` | 0 | in-memory JIT code | H32 JIT column; HeapConst allowed (H34:41) | codegen permitted | never stored in a unit |
+| `jit` | 0 | in-memory JIT code (T1, T2, hybrid re-tier) | H32 JIT column; HeapConst allowed (H34:41) | codegen permitted | JIT and hybrid presets; never stored in a unit |
 | `hybrid` | 1 | hybrid units | H32 hybrid column (DEOPT, then re-tier) | `produce` not empty | hybrid preset |
 | `jitless` | 2 | jitless units | H32 jitless column (SLOWPATH, budget, PIN) | nothing | jitless and hybrid presets |
 | later | 3+ | appended when built (for example VERIFIED region code, H32:33) | | | refused until appended |
 
-- Loader rule: a variant whose lowering is not in `accept` is skipped. The function keeps its next code (bytecode at worst). The skip is counted by reason, as every other fallback is (H35:90).
+- Loader rule: a variant whose lowering is not in `accept` is skipped. The function keeps its next code (bytecode at worst). The skip is counted by reason, as every other fallback is (H35:90). A unit variant that names `jit` is skipped in every preset, because `jit` is never stored in a unit; so `jit` in the hybrid list admits only runtime code.
+- One filter (MODES-D13): `select()` applies this `accept` test to every code object in the code set, unit code and runtime JIT code alike (section 3.2). There is no second rule for unit objects.
 - One unit may carry a `hybrid` and a `jitless` variant of a hot function. The function table holds both (C-17).
 - Home: the list (append-only part) and the acceptance rule go into H32 (C-07). The `hybrid` value and its rule go into the hybrid part, frozen at K-A4P (section 5.4). The byte goes into the H35 function table at A2 (C-17).
 
@@ -260,12 +262,12 @@ Rules:
  +--------------------------------------------+
             |
             v
- CodeSet: [CodeRef; small, typically <= 3 (est.)]  + Interp variants {normal, debug copy (H24-Q3)}
+ CodeSet: [CodeRef; small, typically <= 3 (est.)]  + Interp variants {normal, debug copy (H24-Q3)}  + pinned: bool (PIN, section 3.2)
             |
             v
  CodeObject (one per compiled body; text shared per process, RW per isolate)
    kind (slot byte), variant {lowering, region|sibling, cpu level}, origin {jit | unit id + fn index}
-   state: Active | Demoted | Invalidated
+   state: Active | Invalidated   (PIN is a function state in the CodeSet, not an object state)
    entry, text range, meta -> exits, polls, calls, resume map, osr entries, positions, unwind   (the CodeDesc)
    rw   -> exit counters[], budget counter
    deps -> fuse refs, inlined FunctionRefs + digests
@@ -287,7 +289,8 @@ Rules:
    if session.connected and f has a breakpoint:  return Interp(debug copy)       -- H24-Q3, H24:75
    for kind in policy.install (rank order):
      for obj in f.code_set where obj.kind == kind, obj.state == Active,
-                 obj.variant.lowering in policy.accept (rank order),
+                 obj.variant.lowering in policy.accept (rank order),   -- every object, `jit` ones too
+                 not (obj.kind == AotOpt and f.code_set.pinned),       -- PIN, MODES-D14
                  obj.deps intact (per isolate, section 3.5), obj.variant.cpu bits present:
        return obj
    return Interp(debug copy if session.connected and f has one, else normal)    -- or Lazy, once H04-Q1 builds it
@@ -296,7 +299,7 @@ Rules:
 
 - `select()` is a pure function. It can be tested with fake code objects and no codegen (C-15).
 - The debug copy is a variant of Interp, so a fuse pop or a deopt during a session keeps the breakpoints. Breakpoints and `debugger` statements still deopt to T0 before the pause (H24:22).
-- **PIN** = mark the AotOpt object Demoted, then `select()`. In jitless this gives AotBaseline, else GenInterp, else Interp. That is the H32 target "aot-baseline (-> interp if the function has no baseline-AOT)" (H32:42-43) plus the K-A3 case "M5c or T0" (P05:378). PIN is final for the isolate (H32-Q4 default, H32:91). This fixes C5.
+- **PIN (MODES-D14)** = set `pinned` in the function's code set, then `select()`. PIN is a function state, not an object state. It excludes every AotOpt variant of the function (CPU levels, region and sibling, `hybrid` and `jitless` builds), also AotOpt objects installed after it (T1). In jitless this gives AotBaseline, else GenInterp, else Interp. That is the H32 target "aot-baseline (-> interp if the function has no baseline-AOT)" (H32:42-43) plus the K-A3 case "M5c or T0" (P05:378). In jitless PIN is final for the isolate (H32-Q4 default, H32:91). In hybrid it holds until the re-tier policy lifts it (T4; the lift rule is open, section 9). This fixes C5. Marking only one AotOpt object would not do: `select()` would pick another Active AotOpt variant before AotBaseline, and the function would keep taking speculation exits past its budget.
 - A jitless InvalidatingFuse pop "swaps the slot to aot-baseline or interp" (P04:120). With `select()` this is the same rule, with no special case.
 
 ### 3.3 State machine (per function)
@@ -311,8 +314,8 @@ Rules:
        |  |                                                 |  |      or fn exits >= budget (16 est.)                                  |
        |  +-- unit load --> [AotBaseline] -- hot (hybrid) --|--|--------------------------------------------------------> [Opt]      |
        |                         ^                          |  |                                                                     |
-       |                         +---- PIN / Demote --------+  +-- jitless: site budget -> SLOWPATH (stays in AotOpt)             |
-       |                         (AotOpt := Demoted; select())                                                                       |
+       |                         +---- PIN -----------------+  +-- jitless: site budget -> SLOWPATH (stays in AotOpt)             |
+       |                         (code_set.pinned := true; select())                                                                 |
        |                                                                                                                             |
        +------- fuse pop: dependents := Invalidated, lazy deopt of their frames, select() <------------------------------------------+
                 debugger attach: see T10 (per code kind, not one path)
@@ -320,10 +323,10 @@ Rules:
 
 | # | Event | JIT | hybrid | jitless | Slot write | Contract |
 |---|---|---|---|---|---|---|
-| T1 | unit load | n/a | add AotOpt/AotBaseline objects; select() | same | yes | H35:73; C-17 |
-| T2 | T0 gets hot | TierHooks.on_hot -> T1 -> T2 | same | never re-tiers (P04:118) | yes | H14; S-2 |
+| T1 | unit load | n/a | add AotOpt/AotBaseline objects; select() (a PINned function skips the new AotOpt objects) | same | yes | H35:73; C-17 |
+| T2 | T0 gets hot | TierHooks.on_hot -> T1 -> T2 (lowering `jit`, in the JIT accept list) | same (`jit` is in the hybrid accept list) | never re-tiers (P04:118) | yes | H14; S-2 |
 | T3 | AotOpt gets hot | n/a | budget counter -> T1 -> T2 | never | yes | H33:29; C-08 |
-| T4 | AotOpt speculation exits pass budget (O2: environment exits do not count) | n/a | Demote + start re-tier (H33-Q4 default, H33:83) | PIN = Demote (H32:40-43) | yes | C-07, C-08 |
+| T4 | AotOpt speculation exits pass budget (O2: environment exits do not count) | n/a | PIN + start re-tier (H33-Q4 default, H33:83); PIN holds until the re-tier policy lifts it | PIN, final (H32:40-43; H32-Q4) | yes | C-07, C-08 |
 | T5 | eager deopt | frame -> T0; code stays (SCP:125); exit counter | frame -> T0; code stays until T4 | SLOWPATH or DEOPT in budget (H32:37-47) | no | H29, H32 |
 | T6 | fuse pop | dependents Invalidated; lazy deopt; select() | same | GuardFuse code takes the slow path; InvalidatingFuse as JIT (H31:28-29) | yes | H31, H29 |
 | T7 | OSR into optimized code | T0 -> Opt at a loop header | same | n/a | yes + frame copy | H29-Q6 |
@@ -332,7 +335,7 @@ Rules:
 | T10 | debugger attach | JIT code: InspectorSession is an InvalidatingFuse -> Invalidated; lazy deopt; re-tier later builds session-aware code | JIT code as JIT mode; AOT code as jitless | AOT code reads InspectorSession as a GuardFuse at polls ("treat every interrupt poll as a heap effect point", H24:22): objects stay Active; frames on the stack at attach deopt lazily ("AOT frames lazily", H24:22) | yes | H24, H31; C-22 |
 | T11 | breakpoint set / cleared | select() picks or drops the Interp debug copy | same | same | yes | H24-Q3; C-22 |
 
-- **Contradiction C4 (hybrid deopt).** P02:130 and P04:119 say "DEOPT, then instrumented re-tier". P05:341-343 and H33:32-34 draw "DEOPT -> T0 frame" and "re-tier by calls". Rule: the frame goes to T0. The function keeps AotOpt, because most calls still win. When the exits pass the function budget, the AotOpt object is Demoted and the re-tier starts (T4). So the function cannot deopt on every call while T1 compiles. The budget number freezes at the A4 gate (H32-Q5, H32:92).
+- **Contradiction C4 (hybrid deopt).** P02:130 and P04:119 say "DEOPT, then instrumented re-tier". P05:341-343 and H33:32-34 draw "DEOPT -> T0 frame" and "re-tier by calls". Rule: the frame goes to T0. The function keeps AotOpt, because most calls still win. When the exits pass the function budget, the function is PINned (no AotOpt variant is selected) and the re-tier starts (T4). So the function cannot deopt on every call while T1 compiles. The budget number freezes at the A4 gate (H32-Q5, H32:92).
 - **Why T10 differs per kind.** Fuses are one-way (H31:40). If attach marked AOT code Invalidated, one attach in jitless mode would send the isolate to T0 for good. H24:22 lets AOT code keep running during a session. The DebuggerBindingWrite fuse is separate: code that used PROVEN binding facts depends on it as an InvalidatingFuse in every mode (H31:24).
 
 ### 3.4 One native entry
@@ -368,7 +371,7 @@ Rules:
    -> registry lookup(pc) -> CodeEntry.code -> CodeObject.meta -> exit record at the pc offset
    -> rebuild the canonical frame in place (placement (b)) -> exit counter[i] += 1 (CodeObject RW)
    -> resume at the bytecode offset: T0 (always legal), or resume-capable code of the same function (gated part)
-   -> tier manager reads counters: JIT recompile rule | hybrid Demote + re-tier | jitless SLOWPATH / PIN
+   -> tier manager reads counters: JIT recompile rule | hybrid PIN + re-tier | jitless SLOWPATH / PIN
  lazy deopt (H29:37): the return-address swap lands at a CALL RETURN POINT, so every call site of optimized code
    needs a record with value locations, beside the exit and poll records.
 ```
@@ -379,14 +382,14 @@ Exit-record content. Only tag values are reserved now. The record format (bytes 
 |---|---|---|---|
 | record tag | exit, poll, **call** (return point) | osr-entry; more by append | T9 OSR into AOT; later record kinds |
 | pc offset, bytecode offset | as H29:27-28 | | |
-| exit reason | guard kind + fact source (format by Spike C) + a class bit {speculation, environment} (O2) | | deopt-reason feedback into the next build (F14); only speculation exits count toward Demote and PIN (T4) |
+| exit reason | guard kind + fact source (format by Spike C) + a class bit {speculation, environment} (O2) | | deopt-reason feedback into the next build (F14); only speculation exits count toward PIN (T4) |
 | value location tag | 0 reg, 1 stack, 2 const-index | materialize, duplicate, more by append | escape analysis (F10) |
 | inline-chain entry | frame kind "bytecode frame"; function = index into a per-code FunctionRef table (`crates/ep9_facts/src/facts.rs:37-45`) + bytecode offset | builtin continuation, construct stub, more by append | builtin inlining (F9); cross-unit inlining (F11) |
 | exit counter | index into an RW array per code object (H29-Q5 default, H29:96) | | |
 | resume rule | T0 at the bytecode offset (H29:36) | "or resume-capable code of the same function" (gated part, A4) | deopt into AotBaseline in jitless; native generators (F12) |
 
 - Spike C builds location tags 0-2 only and refuses materialize (SCP:124). That is enough for the M1 gate.
-- **Exit classes (O2).** A speculation failure (a guard whose fact did not hold) is a "speculation" exit. A lazy deopt from an outside event (a fuse pop from another realm, a debugger attach, T6 and T10) is an "environment" exit. Only speculation exits count toward the function budget, Demote and PIN, so an outside event does not punish stable code. JSC made the same split in 2026 ("Only speculation failures mark functions as Unstable", WebKit commit 1837781c8a). ADR-A0 names the bit (C-04); Spike C fills its format.
+- **Exit classes (O2).** A speculation failure (a guard whose fact did not hold) is a "speculation" exit. A lazy deopt from an outside event (a fuse pop from another realm, a debugger attach, T6 and T10) is an "environment" exit. Only speculation exits count toward the function budget and PIN, so an outside event does not punish stable code. JSC made the same split in 2026 ("Only speculation failures mark functions as Unstable", WebKit commit 1837781c8a). ADR-A0 names the bit (C-04); Spike C fills its format.
 - **Feedback slot (MC-w13-7; a note for H29-Q1, not a rule).** The exit record names the feedback slot of its guard. Reason: a recompile from the same feedback makes the same guard again when T0 left the slot implicit (an int32 `+` that overflowed, F-R9). The H32 budgets and exit counters already bound that loop. The slot in the record lets F14 feed the reason back.
 - **Positions inside inlined callees (F11).** H24 R2 says positions come from the frame's offset slot, and the walker never needs a native pc (H24:29). H14 finds a handler "for each bytecode frame" from that offset (H14:73). With inlining, one physical frame holds several bytecode frames, and one offset cannot name them. H29 already requires an inline frame chain per exit (H29:30). Rule (C-22): in an optimized frame, the offset slot holds a bytecode offset or a **position id** that the code object maps to an inline chain (function + bytecode offset per frame). The walker, Error.stack and the handler search expand the id. They still need no native pc. The rewrite is accepted (MODES-D2): H24 and H14 are Accepted, not Frozen, so it is pre-freeze churn with data (H29:30).
 
@@ -557,7 +560,7 @@ Exit-record content. Only tag values are reserved now. The record format (bytes 
 | H32, H33 | budget and threshold numbers (4 per site, 16 per function, the re-tier threshold). The counter unit (the H23 budget unit: call + `JumpLoop`) and the rule (only speculation exits count, O2) are written by ADR-A0 in M4-P2 and are not part of this gated part (MODES-D12). Whether the numbers become ExecPolicy defaults that change per platform without a G8 count is an A4 call (O4) | A4 | A4 gate (H32-Q5, H33-Q5) |
 | H16 | T0 recording policy (C-25): the implicit cases, `CALL_WINDOW`, the sampled kinds. Today these values sit in the H16-Q2 cell (H16:133), which freezes at M1 exit, so a retune after M1 exit would count toward G8 (MC-w13-15) | A4 (with the AOT consumers of the facts) | A4 gate |
 
-**Kind C: the hybrid part (F9).** Hybrid ships only if K-A4P passes at M8 exit (P05:380). H33 says a failed K-A4P removes the hybrid rows, "a rewrite" (H33:88). So the hybrid-only rows freeze at K-A4P, as H33-Q5 already does for the threshold (H33:84): lowering `hybrid` and its acceptance rule (H32), the hybrid Demote + re-tier rule (H32, H33), budget counters for re-tier (H33), the hybrid preset (text). If K-A4P fails, the part is removed before its freeze point, which AR:84 does not count.
+**Kind C: the hybrid part (F9).** Hybrid ships only if K-A4P passes at M8 exit (P05:380). H33 says a failed K-A4P removes the hybrid rows, "a rewrite" (H33:88). So the hybrid-only rows freeze at K-A4P, as H33-Q5 already does for the threshold (H33:84): lowering `hybrid` and its acceptance rule (H32), the hybrid PIN + re-tier rule and the rule that lifts PIN (H32, H33), budget counters for re-tier (H33), the hybrid preset (text). If K-A4P fails, the part is removed before its freeze point, which AR:84 does not count.
 
 - Decided (MODES-D1): this is the reading of AR:84. The orchestrator adds the rows to the AR §3.4 table in M4-P5, and an agent of another plan role approves them (C-13; AR:68). AR:84 already allows it, so this is a table fill, not a new AR §3.3 clause.
 
@@ -573,7 +576,7 @@ There are 24 items, F1-F24. The weekly MODES-CHECK (plan v9 rule 29) checks all 
 | F2 | Hybrid re-tier that also catches hot loops | budget counter = H23 unit (call + `JumpLoop`, H23:33) | H33 | "call counters" -> "budget counters" (H33:23, H33:32) | K-A4P (hybrid part) | text |
 | F3 | OSR out of AOT frames | polls are lazy-deopt points (P04:286) | H29-Q6 | rule: lazy deopt at the poll, then T0 OSR | M1 exit | text |
 | F4 | OSR into AOT code (jitless hot loops) | osr-entry record tag; function-table field | H29, H35 | tag in the append-only list; field at A2 | tag: open list; format: A4 gates | text |
-| F5 | PIN to a lower AOT body; jitless fuse swap | code set + select() | H14, H32 | name the code set; PIN = Demote | M1 exit | text + model tests (C-15) |
+| F5 | PIN to a lower AOT body; jitless fuse swap | code set + select() | H14, H32 | name the code set; PIN = a function state (MODES-D14) | M1 exit | text + model tests (C-15) |
 | F6 | Variants: CPU levels; jitless + hybrid in one unit | variant list; lowering class | H32, H35 | list now; function table at A2 | open list; A3 | text; 1 day at A2 |
 | F7 | Sound typed regions (A5) | VERIFIED region table; region + generic sibling as variants; dynamic fuses | H30, H31, H32, H14 | gated parts | end of A5 | text |
 | F8 | Dynamic fuses: TS CHA, enum folds, shape constness | FuseRef Dynamic via LinkSlot | H31, H17 | rule row H31:57; H17:132 | **M1a** | text |
@@ -624,14 +627,14 @@ Kinds follow AR §3.3 (AR:72-77). All of these land before the named freeze, so 
 | C-04 | H29 (Draft) | Freeze table: append-only lists of record tags (v1: exit, poll, **call**; osr-entry next), value-location tags (v1: 0-2) and inline frame kinds; gated part "resume in non-T0 code, osr-entry format, materialize" frozen at the A4 gates. Q5 default: RW counter array per code object. Q6: out of AOT = lazy deopt at the poll; into AOT = later. Q1 names an exit class bit {speculation, environment} (O2) and, as a note, the feedback slot of the guard (MC-w13-7). Q1, Q2, Q4 formats stay with Spike C and the month-6 probe | Draft edit | Freeze table and Q5/Q6: **A0**. Q1/Q2/Q4: **SC** |
 | C-05 | H30 (Draft) | Q1: confidence = 1 byte per record, PROFILED and HINTED (in the month-6 bump, DL:2756). Q2: VERIFIED = 3 stays a refused name; VERIFIED facts live in their own region table, never in FactSnapshot records (F-R5). Q4: one `ep9_facts::merge` for JIT and `ep9_aot`. P-R2: HeapConst only inside `finalize_jit`. Rule H30:65 text: "chosen in the graph builder when the Guard node is made" (F3) | fill | Open-question text of Q1, Q2 and Q4: **A0** (MODES-D3; plan v9 §4.1 tasks 3 and 9). Rule text (P-R2, H30:65): **SC**, before batch 2 |
 | C-06 | H16 (Accepted) | F-R4: L2 tables live in their container, no schema bump. F-R1 pointer. The month-6 bump adds no VERIFIED field; it adds the keyed bits 4-9 fields (MC-w13-9) and, if FACTS2's measure asks for it, the sampled "ran" bit (F-R9). The L2 tier-hint shape (O3). The count units (F-R7), the Call-key rule (F-R8) and the meaning of implicit int32 (F-R9) | fill (count units, Call keys, implicit int32: clarify of the H16-Q2 fill) | count units, Call keys, implicit int32: **FACTS2** (M4-P2). Rest: **B1** with the schema bump (plan v9 §10, H16 row) |
-| C-07 | H32 (Draft) | Lowering classes `jit`/`hybrid`/`jitless` as an append-only list; acceptance rule (1.4). B2 rule: Guard.policy set in the graph builder; DEOPT narrows, SLOWPATH-capable is a diamond (F3). PIN = Demote + select() -> AotBaseline > GenInterp > Interp (C5). JIT PROFILED row = any JIT code with a PROFILED input (C1). "Lower confidence" = the C-05 byte (C7). Hybrid part (frozen at K-A4P): `hybrid` lowering, frame -> T0 + counter, speculation exits >= budget -> Demote + re-tier (C4, O2). H32-Q5: the counter unit and the rule (only speculation exits count) are written now; the numbers stay open to the A4 gate (MODES-D12). Plan fix: P02:189 | fill + clarify | Freeze table, parts and the Q5 unit and rule: **A0** (M4-P2). Rule text: **SC**, before batch 2 |
+| C-07 | H32 (Draft) | Lowering classes `jit`/`hybrid`/`jitless` as an append-only list; acceptance rule (1.4) with the accept list per preset: JIT {`jit`}, hybrid {`jit`, `hybrid`, `jitless`}, jitless {`jitless`}, one filter for every code object (MODES-D13). B2 rule: Guard.policy set in the graph builder; DEOPT narrows, SLOWPATH-capable is a diamond (F3). PIN = a function state that excludes every AotOpt variant, also ones installed later, then select() -> AotBaseline > GenInterp > Interp (C5); final in jitless (H32-Q4), in hybrid until the re-tier policy lifts it (MODES-D14). JIT PROFILED row = any JIT code with a PROFILED input (C1). "Lower confidence" = the C-05 byte (C7). Hybrid part (frozen at K-A4P): `hybrid` lowering, frame -> T0 + counter, speculation exits >= budget -> PIN + re-tier (C4, O2). H32-Q5: the counter unit and the rule (only speculation exits count) are written now; the numbers stay open to the A4 gate (MODES-D12). Plan fix: P02:189 | fill + clarify | Freeze table, parts and the Q5 unit and rule: **A0** (M4-P2). Rule text: **SC**, before batch 2 |
 | C-08 | H33 (Draft) | Decision H33:23 "call and exit counters" -> "budget and exit counters" (H23 unit: call + `JumpLoop`). Q1: one RW budget word per code object. Q2-Q4: take the defaults (H33:81-83). "Instrumented T1" = T1 (P05:336). All hybrid-only text goes into the hybrid part (K-A4P). H33-Q5: the counter unit (the H23 budget unit) and the rule are written now; the threshold number stays open to the A4 gate (MODES-D12, O4). Plan fixes: P02:190, P04:124, P05:338 | Draft edit (fill + phrase) | Freeze table and the Q5 unit and rule: **A0** (M4-P2). Text: **SC**, before batch 2 |
 | C-09 | H34 (Draft) | The kind list (H34:23) becomes an append-only part: "a new kind that both finalizers handle or reject is a fill", as H20 part 2 (H20:89). Q5 default. Plan fix: P02:191 | Draft edit (fill) | **A0** (H34-Q5 Freeze table) |
 | C-10 | H27 (Accepted) | The native entry, tier manager and deoptimizer build without `jit`; `jit` adds producers only, the regexp JIT included. Whether producers may run is the process permit (L-P), set once before the first isolate; workers inherit it | clarify (first sentence) + fill (permit row; the reviewer confirms the kind) | **B3** (every other row, plan v9 §10) |
 | C-12 | H02 (Accepted) + plan | The CompiledUnit hint section stays in ABI 5; v1 writers leave it empty (flag bit 17 = 0). Plan fixes: P04:227, P05:229, P05:349 ("from the unit's facts section"); P02:129 hybrid row (C1); P04:119 (C4 wording) | clarify | **B1** (H2, plan v9 §10); plan fixes to the plan owner (AR:44) |
 | C-13 | AR §3.4 table | Add the gated-part and hybrid-part rows of 5.4, and name the append-only lists | process (uses §3.4) | M4-P5: the orchestrator writes, an agent of another plan role approves (AR:68; MODES-D1) |
 | C-14 | plan | New `docs/plan/13-execution-modes.md`: this design as the plan home, with the MODES-CHECK-w13 result folded in. It cites the ADR rows. ADR-A0 may cite it, because it exists before M4-P2 | plan | **done in M4-P1** by the P1 docs agent (MODES-D9; it replaces MODES-D4); the P2 integration fixer refreshes its cites after ADR-A0 |
-| C-15 | tests | `select()` as a pure function in `ep9_vm` with no caller yet, plus table tests for T1-T11 with fake code objects; negative tests for each append-only list | test | month 6, before batches 1-2 (MODES-D6: the tests fix the rule before the freeze) |
+| C-15 | tests | `select()` as a pure function in `ep9_vm` with no caller yet, plus table tests for T1-T11 with fake code objects; negative tests for each append-only list; selector tests for JIT and hybrid tier-up (a `jit` Baseline or Opt object is selected under the JIT and hybrid presets and skipped under jitless) and for PIN with two Active AotOpt variants (neither is selected after PIN, nor an AotOpt object installed after it; MODES-D13, MODES-D14) | test | month 6, before batches 1-2 (MODES-D6: the tests fix the rule before the freeze) |
 | C-22 | H24 (Accepted), H14, H31 | (1) R2 and the H14 positions paragraph (H14:73): in an optimized frame the offset slot holds a bytecode offset or a position id that the code object maps to an inline chain (F11). (2) H24-Q3 fill: the debug copy is an Interp variant in the code set; `select()` reads the session (F7). (3) Per kind: InspectorSession is an InvalidatingFuse for JIT code and a GuardFuse at polls for AOT code (H24:22) | (1) rewrite (pre-freeze churn; data: H29:30 needs an inline chain, H24:29 has one offset per frame); (2) fill; (3) clarify of H24:22 + H31 Draft edit | **B3** for H24 and H14 text (H14 in **B1**); H31 part via **FR0** |
 | C-23 | H20 part 2 (text only now) | The shape of `Isolate::new_with(IsolateConfig, ExecOptions)` and an opaque `ExecOptions` (section 1.2). No `IsolateConfig` change. Code lands with its first caller as a part-2 addition. A setter for `type feedback: full | ics_only` (MODES-D11) is one more new line | fill (addition) when the code lands; now a design note in C-14 | Decided (MODES-D7). The code and its H20 part-2 row land with the first caller, latest at A2 start; it may ride M5-P0 |
 | C-24 | H17 (Draft), H16 (Accepted) | Cell kind ids (H17) and IC handler kinds (H16) become append-only lists in the H20 part-2 form (5.4); `crates/ep9_vm/src/kinds.rs:30-31` loses "may change". Reserve a range for the callable kinds so that `is_callable` is one compare, or record why not (`crates/ep9_vm/src/kinds.rs:178-181` has 3 compares since kind 28; MC-w13-22) | H17: Draft edit; H16: fill (a Freeze-table part) | H17: the M1a step (month 5); H16: **B1** |
@@ -705,6 +708,7 @@ Total now (est.): about 6-8 agent-days of ADR and plan text across A0, FR0, SC a
 | JIT warm start from a profile (F17) | No data; K-A4H and K-A4P decide hint and hybrid value (P05:379-380) | M8 exit | AOT role with data |
 | Rank order of each preset beyond 1.2 | Needs T2 and A4 data | A4 gate | AOT role |
 | Budget and threshold numbers (4/site, 16/function, 1,000 calls) | Tuning values with later freeze points (H32-Q5, H33-Q5). The counter unit and the rule are not open: ADR-A0 writes them in M4-P2 (MODES-D12). JSC scales its thresholds by core count (O4), so the A4 call also decides whether the numbers become ExecPolicy defaults outside G8 | A4 gate | AOT role; product call for the G8 question |
+| When the hybrid re-tier lifts PIN (MODES-D14) | Part of the hybrid re-tier policy; no data before A4. In jitless PIN never lifts (H32-Q4) | K-A4P (the hybrid part, 5.4 kind C) | AOT role |
 | Unit-data slot rule (64 slots fixed at build, H35:155) | Options: slot 0 for the engine unit + `ep9c`-assigned slots; a map-time slot word in an RW page (one more load per entry, est.); or one exported header symbol per unit, resolved by the embedder, slot assigned at load (O6: the .NET 11 platform-native ReadyToRun form). Unit unloading must also handle Call keys: a feedback vector can name another unit's FunctionInfo, whatever that unit's reachability; `Runtime.units` and `Runtime.infos` are never freed today (`crates/ep9_vm/src/runtime.rs:246`, `crates/ep9_vm/src/runtime.rs:251`; F-R8, F20) | A2 | AOT role with a measure |
 | Unit placement outside the code range (C-11) | Gives away the H07:58 gain; no size data yet | A2 (SIZE-REPORT) | JIT/platform role with data |
 | Deopt record format, location encoding, swap rule (H29-Q1/Q2/Q4) | Spike C and the month-6 probe measure them (SCP:30) | M1 exit (or the M5 part, DL:2778) | SC role |
@@ -726,7 +730,7 @@ Total now (est.): about 6-8 agent-days of ADR and plan text across A0, FR0, SC a
 | R2 | Append-only lists used to dodge G8 | Rewrites hide as appends | An append only adds a value; an existing value never changes (H20:89 form). Negative tests probe the top of the range, so an append keeps every result. The reviewer confirms the kind (AR:79) |
 | R3 | Month 5-6 slips | Rows freeze without the fills | Text items are small and spread over A0, FR0, SC and the batches. C-01 has the earliest deadline (M1a); A0 writes its Q1 default in M4-P2. C-15 can move to month 7 |
 | R4 | REBASE matches the wrong function | Stale facts reach the compiler | Digest = bytecode body + source-text hash. Facts stay guarded (H30:60). The worst case is speed, never output (P04:325) |
-| R5 | Hybrid deopt storm while T1 compiles | Slow warm-up | Demote at the function exit budget (T4) |
+| R5 | Hybrid deopt storm while T1 compiles | Slow warm-up | PIN at the function exit budget (T4) |
 | R6 | After C-19, builds with different native layouts share a build id | Native code reads wrong `Cx` offsets | C-18 lands with C-19; `--unit-strict` in CI |
 | R7 | Lowering class adds a test axis | More A3/A4 test cost | `jitless` lowering runs everywhere. The mode x tier differential (P04:324) adds one axis value, not a suite (est.) |
 | R8 | 128 MiB code range shared by JIT code and unit text (H07:53) | Many units plus hybrid JIT exceed it | SIZE-REPORT tracks size (P05:429); C-11 decides at A2 with data |
@@ -803,7 +807,7 @@ Source: the adversarial critique of the first version (23 findings; the text is 
 
 ---
 
-## 13. Changes since the first version (MODES-CHECK-w13 and MODES-D9..D12, 2026-10-27)
+## 13. Changes since the first version (MODES-CHECK-w13 and MODES-D9..D14, 2026-10-27)
 
 Sources: the MODES-CHECK-w13 report (§3 findings, §6 updates 1-10) and its research notes (kept outside the repo), and the orchestrator decisions MODES-D9..D12.
 
@@ -827,5 +831,6 @@ Sources: the MODES-CHECK-w13 report (§3 findings, §6 updates 1-10) and its res
 18. §11: 4 rejected alternatives from the check.
 19. Plan v9 line cites became "plan v9 §x" cites, because plan v9 line numbers move.
 20. Critic of the M4-P1 commits (2026-10-27): the decided items read as decided (MODES-D1 §5.4 and C-13; MODES-D2 §3.6; MODES-D6 C-15; MODES-D7 §1.2 and C-23); R9 and R10 closed, their fallbacks moved to section 11; one owner (A0) for the H17 validity sentence; the C-05 Open-question text routed to A0 (MODES-D3); C-22 (H14 part) in batch 1 (MODES-D5); new C-27 (H16-Q2 under `ics_only`); §4.2 says IC-side counts stay under `ics_only`; C-26 kind rewrite; DL:2833 -> DL:2832; the §7.1 table is one table again (a blank line split it before C-24).
+21. Codex review of this file (M4-P1 round 3, 2026-10-27), 2 findings [medium], both a defect in this design. (1) The `accept` filter rejected runtime JIT code: no preset listed `jit` (MODES-D13). Now JIT accepts {`jit`}, hybrid {`jit`, `hybrid`, `jitless`}, jitless {`jitless`}, one filter for every code object; a unit variant that names `jit` is skipped (§0 diagram, §1.2 table and bullet, §1.4, §3.2, T2, C-07). (2) PIN marked one AotOpt object Demoted, so `select()` could pick another AotOpt variant (MODES-D14). Now PIN is a function state in the code set that excludes every AotOpt variant, also later ones; final in jitless (H32-Q4), in hybrid until the re-tier policy lifts it. The object state Demoted is gone and "Demote" reads PIN (§1.3, §3.1, §3.2, §3.3 diagram, T1, T4, C4, §3.6, §5.4 kind C, F5, C-07, R5). C-15 gets the tier-up tests and the PIN test with two Active AotOpt variants; §9 gets the open hybrid lift rule.
 
 **Cite check (281e628).** A script read every `file:line` cite of the first version (469 cites) at fc6ac78 and at 281e628, and mapped each through the `git diff -U0` hunks (a script kept outside the repo). 361 are in files that did not change, 100 are in changed files at the same line with the same text, and 2 sit in a changed table row whose rule text is the same (H04:52, H23:33). 6 moved: 5 were updated (`interp/ops.rs` 327 -> 390 and 330-333 -> 393-396; `interp/mod.rs` 156-165 -> 159-168 and 156-169 -> 159-172, twice); the 6th is in the section 12 history and keeps its fc6ac78 line. Reading each cite with its claim found 1 wrong cite: P05:283 -> P05:279 ("BYTECODE ... Drop native code"). The 46 new cites were read at 281e628. In this file, code paths are written from the repo root (`crates/...`, `spikes/...`), so the ADRLINE drift script tracks them.
