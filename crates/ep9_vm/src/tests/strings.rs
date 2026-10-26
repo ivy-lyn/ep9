@@ -1269,9 +1269,9 @@ fn atomize_makes_a_rope_a_thin_forwarder_to_its_flat_atom() {
 }
 
 #[test]
-fn atomize_of_a_rope_whose_text_has_an_atom_allocates_nothing() {
-    // The probe uses the hash of a rope walk, so a rope key that names an existing atom
-    // costs no flat copy: no allocation, so no collection under GC stress.
+fn atomize_of_a_rope_whose_text_has_an_atom_forwards_to_that_atom() {
+    // The rope is flattened first (V9-D13), its flat copy finds the atom, and the rope
+    // forwards to the atom; the flat copy is garbage.
     let mut iso = stressed();
     let rt: &Runtime = &iso.rt;
     let atom = atoms::intern_str(rt, "existing-atom-text");
@@ -1280,9 +1280,7 @@ fn atomize_of_a_rope_whose_text_has_an_atom_allocates_nothing() {
         string::new_string(rt, "existing-"),
         string::new_string(rt, "atom-text"),
     );
-    let before = rt.heap.stats().collections;
     assert_eq!(atoms::atomize(rt, r), atom);
-    assert_eq!(rt.heap.stats().collections, before, "no allocation");
     assert_thin(&mut iso, r, atom, "existing-atom-text");
 }
 

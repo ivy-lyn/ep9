@@ -7,9 +7,9 @@
 //!                      else hash it (cached in its hash field), probe the table; found -> that
 //!                      atom (a CONS or SLICED s becomes THIN, forwarding to it); else s itself
 //!                      becomes the atom (ATOM flag, insert). No allocation, so no GC point.
-//! atomize(rt, s)       intern, but a CONS or SLICED s whose text has no atom yet gets a flat
-//!                      SEQ atom (the CONS flattened in place, a SLICED text copied) and becomes
-//!                      THIN. GC point. ToPropertyKey uses it (H19-Q1, H19-Q4).
+//! atomize(rt, s)       intern, but a CONS is flattened in place first, and a SLICED s whose
+//!                      text has no atom yet gets a SEQ copy as the atom; both become THIN.
+//!                      GC point. ToPropertyKey uses it (H19-Q1, H19-Q4).
 //! intern_str(rt, text) hash the text, probe; found -> that atom; else allocate the string
 //!                      FIRST (GC point, no borrow held), set its hash field and ATOM flag,
 //!                      THEN borrow_mut and insert.
@@ -27,11 +27,12 @@
 //! - Debug counter (W4-KEY-EQ): every property-key compare that has to look at content (a key
 //!   that is not an atom) bumps [`note_non_atom_compare`]. `EP9_ASSERT_ATOM_KEYS=1` makes a
 //!   debug isolate panic at drop if its count is not 0.
-//! - Number strings (H19-Q6): a 64-entry direct-mapped cache (number bits -> string) next to
-//!   the table serves ToString of a number ([`crate::conv::number_string`]) and the key of a number
-//!   ([`number_atom`]). The GC weak source empties it at every collection, before the sweep,
-//!   so no entry outlives a GC point that could free its string (rule 8: no Value is kept in
-//!   Rust memory across a collection).
+//! - Number strings (H19-Q6): a 1,024-entry direct-mapped cache (number bits -> string) next
+//!   to the table serves ToString of a number ([`crate::conv::number_string`]) and the key of
+//!   a number ([`number_atom`]). The GC weak source empties it at every collection, before the
+//!   sweep, in O(1): it bumps the cache epoch, and an entry of an older epoch is empty (its
+//!   string bits are never read again). So no entry outlives a GC point that could free its
+//!   string (rule 8: no live Value is kept in Rust memory across a collection).
 
 #[cfg(debug_assertions)]
 use core::cell::Cell;
@@ -118,15 +119,19 @@ struct Entry {
 
 const MIN_CAPACITY: usize = 64;
 
-/// Entries of the number-string cache (a power of two).
-const NUMBER_CACHE_SIZE: usize = 64;
+/// Entries of the number-string cache (a power of two; 24 KiB). V8 starts at 256 and grows
+/// to 16 Ki; 1,024 holds a loop over a few hundred keys (strings-m1 `number-keys` thrashes a
+/// 64-entry cache: +2.7% instructions; M4-P2 STR2 measure).
+const NUMBER_CACHE_SIZE: usize = 1024;
 
 /// One number-string cache entry: the f64 bits of a number and a string of its ToString
-/// (an atom once [`number_atom`] stored it). `string == 0`: empty.
+/// (an atom once [`number_atom`] stored it), valid only in the cache epoch it was stored in.
 #[derive(Clone, Copy, Debug, Default)]
 struct NumberEntry {
     number: u64,
     string: u64,
+    /// The cache epoch of the store; 0 (never a live epoch): empty.
+    epoch: u64,
 }
 
 /// The atom table of one isolate (`Runtime::atoms`).
@@ -136,8 +141,10 @@ pub(crate) struct AtomTable {
     len: usize,
     /// The thread's non-atom compare count when the table was made.
     compares_base: u64,
-    /// The number-string cache (H19-Q6); emptied at every GC.
-    numbers: [NumberEntry; NUMBER_CACHE_SIZE],
+    /// The number-string cache (H19-Q6); emptied at every GC by an epoch bump.
+    numbers: Box<[NumberEntry; NUMBER_CACHE_SIZE]>,
+    /// The live cache epoch (starts at 1; +1 at every GC; a u64 never wraps).
+    numbers_epoch: u64,
 }
 
 impl Default for AtomTable {
@@ -146,7 +153,8 @@ impl Default for AtomTable {
             entries: Vec::new(),
             len: 0,
             compares_base: thread_non_atom_compares(),
-            numbers: [NumberEntry::default(); NUMBER_CACHE_SIZE],
+            numbers: Box::new([NumberEntry::default(); NUMBER_CACHE_SIZE]),
+            numbers_epoch: 1,
         }
     }
 }
@@ -292,8 +300,8 @@ pub(crate) fn init(rt: &Runtime) {
             .try_borrow_mut()
             .expect("the atom table is borrowed across a GC point (W4-GC-RULES)");
         t.sweep(|b| w.is_live(val(b)));
-        // The number cache holds strings strongly in Rust memory: drop it all (H19-Q6).
-        t.numbers = [NumberEntry::default(); NUMBER_CACHE_SIZE];
+        // The number cache holds string bits in Rust memory: empty it (H19-Q6), O(1).
+        t.numbers_epoch += 1;
         #[cfg(debug_assertions)]
         if let Err(e) = t.check(|b| w.is_live(val(b))) {
             panic!("atoms::verify after GC: {e}");
@@ -338,30 +346,31 @@ fn forward(rt: &Runtime, s: u64, a: u64) {
 }
 
 /// The atom for the string `s`, always a SEQ atom unless one of another kind already holds
-/// the text (H19-Q1: flatten on atomize; H19-Q4: thin forwarders). A CONS first probes the
-/// table with the hash of a rope walk (no allocation): found -> it becomes THIN. Else it is
-/// flattened in place (a GC point), its flat part becomes the atom and the CONS becomes THIN.
-/// A SLICED string with no atom gets a SEQ copy of its text as the atom (the atom never keeps
-/// a large parent alive) and becomes THIN. GC point. Every other kind: [`intern`].
+/// the text (H19-Q1, V9-D13: flatten on atomize; H19-Q4: thin forwarders). A CONS is
+/// flattened in place first (a GC point; the flat hash and compare are much cheaper than a
+/// rope walk, M4-P2 STR2 measure), then [`intern`] makes its flat part the atom or finds the
+/// atom, and the CONS becomes THIN. A SLICED string probes first (its units are flat); with
+/// no atom it gets a SEQ copy of its text as the atom (the atom never keeps a large parent
+/// alive) and becomes THIN. GC point. Every other kind: [`intern`].
 pub(crate) fn atomize(rt: &Runtime, s: u64) -> u64 {
     debug_assert!(is_string(s));
     if string::is_atom(s) {
         return s;
     }
-    if !string::is_rope_or_slice(s) || string::flat_first(s).is_some() {
-        return intern(rt, s);
+    match kinds::cell_kind(s) {
+        3 => {
+            // GC point: `s` is in this frame (conservative scan).
+            let _ = string::flatten_rt(rt, s);
+            return intern(rt, s);
+        }
+        4 => {}
+        _ => return intern(rt, s),
     }
     let hash = string::hash(s);
     let found = rt.atoms.borrow().find(hash, |a| string::equals(a, s));
     if let Some(a) = found {
         forward(rt, s, a);
         return a;
-    }
-    if kinds::cell_kind(s) == kinds::CONS.get() {
-        // GC point: `s` is in this frame (conservative scan). The flat cell copies the hash
-        // field, so `intern` probes again without a second hash.
-        let _ = string::flatten_rt(rt, s);
-        return intern(rt, s);
     }
     // SLICED: the view reads the parent's units, which `s` keeps alive across the allocation
     // in `intern_text` (cells never move; the conservative scan sees `s`).
@@ -484,17 +493,21 @@ fn number_slot(d: f64) -> usize {
 /// The cached string of the number `d` (an atom when [`number_atom`] stored it), if any. Not a
 /// GC point.
 pub(crate) fn cached_number_string(rt: &Runtime, d: f64) -> Option<u64> {
-    let e = rt.atoms.borrow().numbers[number_slot(d)];
-    (e.string != 0 && e.number == d.to_bits()).then_some(e.string)
+    let t = rt.atoms.borrow();
+    let e = t.numbers[number_slot(d)];
+    (e.epoch == t.numbers_epoch && e.number == d.to_bits()).then_some(e.string)
 }
 
 /// Stores `s`, a string of ToString(`d`), in the number cache (it replaces the slot's entry).
 /// Not a GC point; the caller allocated `s` before (no table borrow across an allocation).
 pub(crate) fn cache_number_string(rt: &Runtime, d: f64, s: u64) {
     debug_assert!(is_string(s));
-    rt.atoms.borrow_mut().numbers[number_slot(d)] = NumberEntry {
+    let mut t = rt.atoms.borrow_mut();
+    let epoch = t.numbers_epoch;
+    t.numbers[number_slot(d)] = NumberEntry {
         number: d.to_bits(),
         string: s,
+        epoch,
     };
 }
 
