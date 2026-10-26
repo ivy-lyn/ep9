@@ -1,4 +1,3 @@
-#![allow(dead_code)] // m4-stub
 //! RegExp backends (docs/plan/08-repo.md section 2; docs/plan/04-execution.md "RX0").
 //!
 //! ```text
@@ -13,12 +12,29 @@
 //!
 //! | Backend | State |
 //! |---|---|
-//! | RX0 (regress 0.12.0, then its fork) | Not built: this file has the trait signatures only (M4-P0 stub; the RX0A role fills it) |
+//! | RX0 ([`Rx0`]: regress 0.12.0 from crates.io, unpatched; V9-D15) | Built (M4-P2 RX0A). Its fork (`third_party/regress.commit`, `[patch.crates-io]`) comes in M5-P0 |
 //! | RX1, RX2 (irregexp port) | Not started (M2-M5) |
+//!
+//! RX0 limits, until the fork patch (month 5):
+//!
+//! | Limit | Why | Effect |
+//! |---|---|---|
+//! | A Latin-1 subject is widened to UTF-16 on every exec | regress has no Latin-1 input (`find_from_utf16` and `find_from_ucs2` take `&[u16]`) | one copy of the subject per exec (plan v9 R16) |
+//! | `poll` runs once per exec, before the search | regress has no hook inside a search: one `Matches::next` call tries every start position | an interrupt waits until the running exec ends |
+//! | No backtrack budget | regress counts no steps | [`ExecResult::BudgetExceeded`] is never returned |
+//! | Sticky (`y`) is the first match from `start`, kept only if it starts at `start` | regress has no single-position attempt | a failing sticky exec scans to the end |
+//! | Non-Unicode `i`: a class, `\w` and `\W` use Unicode simple case folding; a literal skips the ASCII rule of Canonicalize (§22.2.2.7.3) | regress 0.12.0 defect | `/\w/i` matches U+017F and U+212A, `/\u017f/i` matches `s` (6 lines of the node golden, `tests/node_pairs.rs` KNOWN) |
+//!
+//! RX0 fixes in this crate, before regress sees the pattern or the start: `legacy_chars`
+//! (`\u{` and surrogate escapes without `u`) and the start inside a surrogate pair (Unicode
+//! mode starts at the pair, as V8). The node golden `tests/golden/node-pairs.txt` (500 cases,
+//! node v24.22.1) checks the backend.
 #![forbid(unsafe_code)]
 
-/// The flags of a RegExp (`dgimsuvy`), one bit each. The backend reads `i`, `m`, `s`, `u` and
-/// `v`; `d`, `g` and `y` are for the caller (the `lastIndex` loop and the match indices).
+/// The flags of a RegExp (`dgimsuvy`), one bit each. The backend reads `i`, `m`, `s`, `u`,
+/// `v` and `y`; `d` and `g` are for the caller (the match indices and the `lastIndex` loop).
+/// The bit order is the bytecode's (`CreateRegExpLiteral` flags operand, d = bit 0 ... y =
+/// bit 7; `ep9_frontend` bytecodegen/literal.rs `regexp_flags`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Flags(u8);
 
@@ -39,6 +55,9 @@ impl Flags {
     pub const UNICODE_SETS: Flags = Flags(1 << 6);
     /// `y`: sticky (match only at the start index).
     pub const STICKY: Flags = Flags(1 << 7);
+
+    /// The flag letters in bit order (also the order of the `flags` getter, §22.2.6.4).
+    const LETTERS: [u8; 8] = *b"dgimsuvy";
 
     /// No flag.
     pub const fn empty() -> Flags {
@@ -63,6 +82,34 @@ impl Flags {
     /// Both sets of flags.
     pub const fn union(self, other: Flags) -> Flags {
         Flags(self.0 | other.0)
+    }
+
+    /// The flags of a flags string (RegExpInitialize, §22.2.3.3 step 5): `None` if a code
+    /// unit is not one of `dgimsuvy` or a flag comes twice. `u` with `v` is a compile error
+    /// ([`Backend::compile`]), not a parse error here, as in the spec text.
+    pub fn parse(units: &[u16]) -> Option<Flags> {
+        let mut bits = 0u8;
+        for &c in units {
+            let at = Self::LETTERS.iter().position(|&l| u16::from(l) == c)?;
+            let bit = 1u8 << at;
+            if bits & bit != 0 {
+                return None;
+            }
+            bits |= bit;
+        }
+        Some(Flags(bits))
+    }
+
+    /// The flags string in the canonical order `dgimsuvy` (what the `flags` getter of a
+    /// RegExp with these flags returns).
+    pub fn to_letters(self) -> String {
+        let mut s = String::with_capacity(8);
+        for (i, &l) in Self::LETTERS.iter().enumerate() {
+            if self.0 & (1 << i) != 0 {
+                s.push(char::from(l));
+            }
+        }
+        s
     }
 }
 
@@ -110,6 +157,9 @@ pub enum ExecResult {
     BudgetExceeded,
 }
 
+/// A capture span: (start, end) in code units.
+pub type Span = (usize, usize);
+
 /// A RegExp engine. Every function is static: a backend keeps its state in [`Backend::Program`]
 /// and in the arguments.
 pub trait Backend {
@@ -119,17 +169,253 @@ pub trait Backend {
     /// Compiles `pattern` (the RegExp source as UTF-16 code units) with `flags`.
     fn compile(pattern: &[u16], flags: Flags) -> Result<Self::Program, SyntaxErr>;
 
-    /// Runs `program` on `input` from code unit `start`. On [`ExecResult::Match`] the capture
-    /// ranges (start, end) in code units are in `caps`; `caps.len()` is the group count + 1.
-    /// The backend calls `poll` from time to time during a long match (between match attempts
-    /// at least); a `true` return stops it with [`ExecResult::Interrupted`].
+    /// Runs `program` on `input` from code unit `start` (`start` > the length: no match). On
+    /// [`ExecResult::Match`] the capture spans in code units are in `caps` (cleared first):
+    /// `caps.len()` is the group count + 1, `caps[0]` is the whole match. The backend calls
+    /// `poll` from time to time (at least once per call, before the search); a `true` return
+    /// stops it with [`ExecResult::Interrupted`].
     fn exec(
         program: &Self::Program,
         input: Input<'_>,
         start: usize,
-        caps: &mut [Option<(usize, usize)>],
+        caps: &mut Vec<Option<Span>>,
         poll: &mut dyn FnMut() -> bool,
     ) -> ExecResult;
+}
+
+// ---- RX0: regress 0.12.0 --------------------------------------------------------------------
+
+/// The RX0 backend: regress 0.12.0 (backtracking, UTF-16 input).
+///
+/// ```text
+/// compile  pattern units -> code points (u/v: surrogate pairs joined; else one per unit)
+///          -> regress::Regex::from_unicode (flags i m s u v; v also sets regress `unicode`)
+/// exec     Latin-1 -> widened copy; u/v -> find_from_utf16, else find_from_ucs2; one
+///          `next()`; sticky keeps the match only if it starts at `start`
+/// ```
+#[derive(Debug)]
+pub enum Rx0 {}
+
+/// A program of [`Rx0`].
+#[derive(Debug)]
+pub struct Rx0Program {
+    re: regress::Regex,
+    /// `u` or `v`: the input is code points (surrogate pairs are one character).
+    unicode: bool,
+    sticky: bool,
+}
+
+impl Rx0Program {
+    /// True if the pattern runs in Unicode mode (`u` or `v`).
+    pub fn is_unicode(&self) -> bool {
+        self.unicode
+    }
+}
+
+/// The pattern as code points for regress: in Unicode mode a surrogate pair is one code point
+/// (§22.2.2: the pattern is read as UTF-16 code points); otherwise each code unit is one
+/// character, so `/\u{1F600}+/` without `u` repeats the low surrogate only, as in V8, and
+/// `legacy_chars` rewrites two escape forms that regress reads in the Unicode way.
+fn pattern_chars(pattern: &[u16], unicode: bool) -> Vec<u32> {
+    if !unicode {
+        return legacy_chars(pattern);
+    }
+    char::decode_utf16(pattern.iter().copied())
+        .map(|r| match r {
+            Ok(c) => u32::from(c),
+            Err(e) => u32::from(e.unpaired_surrogate()),
+        })
+        .collect()
+}
+
+fn is_lead(u: u16) -> bool {
+    (0xd800..=0xdbff).contains(&u)
+}
+
+fn is_trail(u: u16) -> bool {
+    (0xdc00..=0xdfff).contains(&u)
+}
+
+/// The value of four hex digits at `at`, if there are four.
+fn hex4(pattern: &[u16], at: usize) -> Option<u16> {
+    let digits = pattern.get(at..at + 4)?;
+    let mut v = 0u16;
+    for &d in digits {
+        let d = char::from_u32(u32::from(d))?.to_digit(16)?;
+        v = v * 16 + d as u16;
+    }
+    Some(v)
+}
+
+/// The non-Unicode pattern for regress, one character per code unit, with two rewrites where
+/// regress 0.12.0 reads the pattern as in Unicode mode (B.1.2, `[~UnicodeMode]`):
+///
+/// | Source | Spec (no `u`, no `v`) | regress | Rewrite |
+/// |---|---|---|---|
+/// | `\u{61}` | identity escape `u`, then the quantifier `{61}` | the code point U+0061 | `u{61}` |
+/// | `\uD83D\uDE00` | two characters (two code units) | one code point U+1F600, which a UCS-2 input never holds | each surrogate escape becomes its raw code unit |
+///
+/// A group name (`(?<name>`, `\k<name>`) is copied as it is: there a `\u` pair is one code
+/// point in both modes (RegExpIdentifierName is `[+UnicodeMode]`).
+fn legacy_chars(pattern: &[u16]) -> Vec<u32> {
+    const BACKSLASH: u16 = b'\\' as u16;
+    let unit = |c: u8| u16::from(c);
+    let mut out: Vec<u32> = Vec::with_capacity(pattern.len());
+    let mut in_class = false;
+    let mut i = 0;
+    // Copies from `from` through the next `>` (or to the end); returns the next index.
+    let copy_name = |out: &mut Vec<u32>, from: usize| -> usize {
+        let end = pattern[from..]
+            .iter()
+            .position(|&c| c == unit(b'>'))
+            .map_or(pattern.len(), |k| from + k + 1);
+        out.extend(pattern[from..end].iter().map(|&c| u32::from(c)));
+        end
+    };
+    while i < pattern.len() {
+        let c = pattern[i];
+        if c == BACKSLASH {
+            let Some(&d) = pattern.get(i + 1) else {
+                out.push(u32::from(c));
+                break;
+            };
+            if d == unit(b'u') {
+                if let Some(v) = hex4(pattern, i + 2) {
+                    if is_lead(v) || is_trail(v) {
+                        out.push(u32::from(v));
+                    } else {
+                        out.extend(pattern[i..i + 6].iter().map(|&c| u32::from(c)));
+                    }
+                    i += 6;
+                    continue;
+                }
+                if pattern.get(i + 2) == Some(&unit(b'{')) {
+                    out.push(u32::from(d));
+                    i += 2;
+                    continue;
+                }
+            }
+            if d == unit(b'k') && !in_class && pattern.get(i + 2) == Some(&unit(b'<')) {
+                i = copy_name(&mut out, i);
+                continue;
+            }
+            out.extend([u32::from(c), u32::from(d)]);
+            i += 2;
+            continue;
+        }
+        if in_class {
+            in_class = c != unit(b']');
+        } else if c == unit(b'[') {
+            in_class = true;
+        } else if c == unit(b'(')
+            && pattern.get(i + 1) == Some(&unit(b'?'))
+            && pattern.get(i + 2) == Some(&unit(b'<'))
+            && !matches!(pattern.get(i + 3), Some(&n) if n == unit(b'=') || n == unit(b'!'))
+        {
+            i = copy_name(&mut out, i);
+            continue;
+        }
+        out.push(u32::from(c));
+        i += 1;
+    }
+    out
+}
+
+/// V8's message form: `Invalid regular expression: /<source>/<flags>: <reason>`.
+fn syntax_error(pattern: &[u16], flags: Flags, reason: &str) -> SyntaxErr {
+    SyntaxErr {
+        message: format!(
+            "Invalid regular expression: /{}/{}: {reason}",
+            String::from_utf16_lossy(pattern),
+            flags.to_letters()
+        ),
+    }
+}
+
+impl Backend for Rx0 {
+    type Program = Rx0Program;
+
+    fn compile(pattern: &[u16], flags: Flags) -> Result<Rx0Program, SyntaxErr> {
+        if flags.contains(Flags::UNICODE.union(Flags::UNICODE_SETS)) {
+            // RegExpInitialize step 11 (§22.2.3.3): u and v together.
+            return Err(SyntaxErr {
+                message: format!(
+                    "Invalid flags supplied to RegExp constructor '{}'",
+                    flags.to_letters()
+                ),
+            });
+        }
+        let unicode = flags.contains(Flags::UNICODE) || flags.contains(Flags::UNICODE_SETS);
+        let rf = regress::Flags {
+            icase: flags.contains(Flags::IGNORE_CASE),
+            multiline: flags.contains(Flags::MULTILINE),
+            dot_all: flags.contains(Flags::DOT_ALL),
+            no_opt: false,
+            unicode,
+            unicode_sets: flags.contains(Flags::UNICODE_SETS),
+        };
+        let chars = pattern_chars(pattern, unicode);
+        let re = regress::Regex::from_unicode(chars.into_iter(), rf)
+            .map_err(|e| syntax_error(pattern, flags, &e.text))?;
+        Ok(Rx0Program {
+            re,
+            unicode,
+            sticky: flags.contains(Flags::STICKY),
+        })
+    }
+
+    fn exec(
+        program: &Rx0Program,
+        input: Input<'_>,
+        start: usize,
+        caps: &mut Vec<Option<Span>>,
+        poll: &mut dyn FnMut() -> bool,
+    ) -> ExecResult {
+        if poll() {
+            return ExecResult::Interrupted;
+        }
+        if start > input.len() {
+            return ExecResult::NoMatch;
+        }
+        let widened: Vec<u16>;
+        let units: &[u16] = match input {
+            Input::Utf16(u) => u,
+            Input::Latin1(b) => {
+                widened = b.iter().map(|&c| u16::from(c)).collect();
+                &widened
+            }
+        };
+        // Unicode mode: a start inside a surrogate pair starts at the pair (V8; RegExpBuiltinExec
+        // reads "the character obtained from element lastIndex", §22.2.7.2 step 13).
+        let mut start = start;
+        if program.unicode
+            && start > 0
+            && start < units.len()
+            && is_trail(units[start])
+            && is_lead(units[start - 1])
+        {
+            start -= 1;
+        }
+        let found = if program.unicode {
+            program.re.find_from_utf16(units, start).next()
+        } else {
+            program.re.find_from_ucs2(units, start).next()
+        };
+        let Some(m) = found else {
+            return ExecResult::NoMatch;
+        };
+        if program.sticky && m.start() != start {
+            return ExecResult::NoMatch;
+        }
+        caps.clear();
+        caps.push(Some((m.start(), m.end())));
+        caps.extend(
+            m.captures
+                .iter()
+                .map(|r| r.as_ref().map(|r| (r.start, r.end))),
+        );
+        ExecResult::Match
+    }
 }
 
 #[cfg(test)]
@@ -155,7 +441,7 @@ mod tests {
             program: &Vec<u16>,
             input: Input<'_>,
             start: usize,
-            caps: &mut [Option<(usize, usize)>],
+            caps: &mut Vec<Option<Span>>,
             poll: &mut dyn FnMut() -> bool,
         ) -> ExecResult {
             let unit = |i: usize| match input {
@@ -168,7 +454,8 @@ mod tests {
                     return ExecResult::Interrupted;
                 }
                 if program.iter().enumerate().all(|(k, &c)| unit(at + k) == c) {
-                    caps[0] = Some((at, at + program.len()));
+                    caps.clear();
+                    caps.push(Some((at, at + program.len())));
                     return ExecResult::Match;
                 }
                 at += 1;
@@ -181,11 +468,14 @@ mod tests {
         s.encode_utf16().collect()
     }
 
+    fn never() -> bool {
+        false
+    }
+
     #[test]
     fn trait_signatures_work_for_both_input_forms() {
         let p = Literal::compile(&utf16("lo"), Flags::GLOBAL).unwrap();
-        let mut caps = [None];
-        let mut never = || false;
+        let mut caps = Vec::new();
         let r = Literal::exec(&p, Input::Latin1(b"hello"), 0, &mut caps, &mut never);
         assert_eq!((r, caps[0]), (ExecResult::Match, Some((3, 5))));
         let text = utf16("h\u{e9}llo");
@@ -209,5 +499,94 @@ mod tests {
         let f = Flags::IGNORE_CASE.union(Flags::STICKY);
         assert!(f.contains(Flags::STICKY) && !f.contains(Flags::GLOBAL));
         assert!(Input::Latin1(b"").is_empty());
+    }
+
+    #[test]
+    fn flags_parse_and_letters() {
+        let all = Flags::parse(&utf16("yvsmigd")).unwrap();
+        assert_eq!(all.bits(), 0b1101_1111);
+        assert_eq!(all.to_letters(), "dgimsvy");
+        assert_eq!(Flags::parse(&[]), Some(Flags::empty()));
+        assert_eq!(Flags::parse(&utf16("gg")), None, "a flag twice");
+        assert_eq!(Flags::parse(&utf16("x")), None, "not a flag");
+        assert_eq!(Flags::parse(&utf16("G")), None, "flags are lower case");
+        assert_eq!(Flags::parse(&utf16("uv")).map(Flags::bits), Some(0x60));
+        assert_eq!(Flags::from_bits(0xff).to_letters(), "dgimsuvy");
+    }
+
+    fn run(p: &str, f: &str, input: Input<'_>, start: usize) -> Option<Vec<Option<Span>>> {
+        let prog = Rx0::compile(&utf16(p), Flags::parse(&utf16(f)).unwrap()).unwrap();
+        let mut caps = Vec::new();
+        match Rx0::exec(&prog, input, start, &mut caps, &mut never) {
+            ExecResult::Match => Some(caps),
+            ExecResult::NoMatch => None,
+            r => panic!("{r:?}"),
+        }
+    }
+
+    #[test]
+    fn rx0_matches_both_input_forms() {
+        let m = run("(a)(x)?b", "", Input::Latin1(b"zzab"), 0).unwrap();
+        assert_eq!(m, [Some((2, 4)), Some((2, 3)), None]);
+        // Latin-1 above 0x7f is widened per unit (no UTF-8 decoding).
+        let m = run("\u{e9}+", "", Input::Latin1(&[b'c', 0xe9, 0xe9]), 0).unwrap();
+        assert_eq!(m, [Some((1, 3))]);
+        let text = utf16("x\u{1F600}y");
+        assert_eq!(
+            run("^.", "", Input::Utf16(&text[1..]), 0).unwrap(),
+            [Some((0, 1))]
+        );
+        assert_eq!(
+            run("^.", "u", Input::Utf16(&text[1..]), 0).unwrap(),
+            [Some((0, 2))]
+        );
+        assert_eq!(
+            run("y", "", Input::Utf16(&text), 4),
+            None,
+            "start past the match"
+        );
+        assert_eq!(run("", "", Input::Utf16(&text), 4).unwrap(), [Some((4, 4))]);
+        assert_eq!(run("", "", Input::Utf16(&text), 5), None, "start > length");
+    }
+
+    #[test]
+    fn rx0_sticky_matches_only_at_start() {
+        assert_eq!(run("a", "y", Input::Latin1(b"ba"), 0), None);
+        assert_eq!(
+            run("a", "y", Input::Latin1(b"ba"), 1).unwrap(),
+            [Some((1, 2))]
+        );
+        assert_eq!(
+            run("a", "g", Input::Latin1(b"ba"), 0).unwrap(),
+            [Some((1, 2))]
+        );
+    }
+
+    #[test]
+    fn rx0_compile_errors_are_syntax_errors() {
+        let e = Rx0::compile(&utf16("("), Flags::GLOBAL).unwrap_err();
+        assert!(
+            e.message.starts_with("Invalid regular expression: /(/g: "),
+            "{}",
+            e.message
+        );
+        let e = Rx0::compile(&utf16("a"), Flags::parse(&utf16("uv")).unwrap()).unwrap_err();
+        assert_eq!(
+            e.message,
+            "Invalid flags supplied to RegExp constructor 'uv'"
+        );
+    }
+
+    #[test]
+    fn rx0_polls_before_the_search() {
+        let prog = Rx0::compile(&utf16("a"), Flags::empty()).unwrap();
+        let mut caps = Vec::new();
+        let mut polls = 0;
+        let mut stop = || {
+            polls += 1;
+            true
+        };
+        let r = Rx0::exec(&prog, Input::Latin1(b"a"), 0, &mut caps, &mut stop);
+        assert_eq!((r, polls), (ExecResult::Interrupted, 1));
     }
 }
