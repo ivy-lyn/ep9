@@ -5,13 +5,10 @@
 //!
 //! ```text
 //! Correctly rounded exponential function for binary64 values.
-//! Copyright (c) 2022-2026 Alexei Sibidanov.
+//! Copyright (c) 2022-2026 Alexei Sibidanov <sibid@uvic.ca>.
 //! This file is part of the CORE-MATH project (https://core-math.gitlabpages.inria.fr/).
 //! SPDX-License-Identifier: MIT
 //! ```
-//!
-//! (The C notice also gives the author's e-mail address; ep9's public tree carries no e-mail
-//! addresses, so it is left out here and in `THIRD-PARTY-LICENSE`.)
 //!
 //! Licence text: `THIRD-PARTY-LICENSE` ("CORE-MATH"). The tables, constants and steps are the
 //! C ones; the tables keep their C text through [`crate::hf`]. ep9 changes:

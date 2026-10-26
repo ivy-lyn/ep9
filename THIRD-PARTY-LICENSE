@@ -120,8 +120,7 @@ Ported:   at commit 1f876c544231f310f483f0a523e163850141dd7e (2026-10-26), to Ru
           hexadecimal text). Each file's header lists its changes.
           pxfm (the planned seed, below) was not used for these three functions: the
           port is direct from the CORE-MATH C source, which names its authors.
-Copyright: exp.c: "Copyright (c) 2022-2026 Alexei Sibidanov" (the C line also
-          gives an e-mail address, left out here).
+Copyright: exp.c: "Copyright (c) 2022-2026 Alexei Sibidanov <sibid@uvic.ca>."
           log.c: "Copyright (c) 2022 INRIA and CERN. Authors: Paul Zimmermann and
           Tom Hubrecht."
           log/dint.h: "Copyright (c) 2022 CERN. Author: Tom Hubrecht"
