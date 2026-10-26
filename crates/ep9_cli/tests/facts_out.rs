@@ -72,8 +72,9 @@ fn check_header(b: &[u8], hash: &[u8; 32]) -> u32 {
     u32_at(b, 56)
 }
 
-/// P runs 100 times (2 named stores), f runs 100 times (2 named loads, a global load and a
-/// global store); the top-level code runs once, below the default threshold of 8.
+/// P runs 100 times (2 named stores), f runs 100 times (2 named loads, a global load, an add
+/// and a global store); the top-level code runs once, below the default threshold of 8, but
+/// gets its vector at entry (M4-P2 FACTS2, PERF3 step-2 item 3).
 const SCRIPT: &str = "\
 var g = 0;
 function P(x) { this.x = x; this.y = 1; }
@@ -94,7 +95,15 @@ fn a_script_run_writes_its_facts() {
     assert_eq!(o.code, Some(0), "{}", o.stderr);
     assert_eq!((o.stdout.as_str(), o.stderr.as_str()), ("4950\n", ""));
     let a = std::fs::read(&out).expect("the facts file");
-    assert_eq!(check_header(&a, &hash), 6, "6 IC sites in P and f");
+    // Since M4-P2 FACTS2 the exporter writes every kind T0 records, and the top-level code has
+    // its vector at entry: 7 records in P and f (2 StoreNamed; LoadGlobal, 2 LoadNamed,
+    // BinaryOp, StoreGlobal) and 15 in the top-level code (2 CreateClosure, 2 StoreGlobal,
+    // 5 LoadGlobal, CompareOp, 3 Call, BinaryOp, JumpLoop). Before FACTS2: the 6 IC sites.
+    assert_eq!(
+        check_header(&a, &hash),
+        22,
+        "22 sites in P, f and the top-level code"
+    );
 
     // The same program gives the same bytes: in a second run, and with a GC before every
     // allocation (no address or ShapeId is in the output).
@@ -106,11 +115,11 @@ fn a_script_run_writes_its_facts() {
     assert_eq!(o.code, Some(0), "{}", o.stderr);
     assert_eq!(std::fs::read(&out2).unwrap(), a);
 
-    // With a vector at the first call, the top-level code has records too; with none, the
-    // snapshot is empty.
+    // With a vector at the first call, the same 22 sites have records (the top-level code
+    // has its vector at entry either way); with none, the snapshot is empty.
     let o = ep9(&["--feedback-threshold", "0", "--facts-out", s(&out2), s(&js)]);
     assert_eq!(o.code, Some(0), "{}", o.stderr);
-    assert!(check_header(&std::fs::read(&out2).unwrap(), &hash) > 6);
+    assert_eq!(check_header(&std::fs::read(&out2).unwrap(), &hash), 22);
     let o = ep9(&[
         "--feedback-threshold",
         "4294967295",
@@ -137,11 +146,14 @@ fn eval_code_and_the_entry_module_have_facts() {
     let o = ep9(&["-e", code, "--facts-out", s(&out)]);
     assert_eq!(o.code, Some(0), "{}", o.stderr);
     let hash = unit_hash(code, SourceOpts::script(Strictness::Sloppy));
-    assert_eq!(check_header(&std::fs::read(&out).unwrap(), &hash), 1);
+    // 1 record in h (LoadNamed) and, since M4-P2 FACTS2 (a vector at entry, every kind), 8 in
+    // the eval code: CreateClosure, CompareOp, LoadGlobal, Literal, DefineNamedOwn, Call,
+    // BinaryOp, JumpLoop.
+    assert_eq!(check_header(&std::fs::read(&out).unwrap(), &hash), 9);
     let o = ep9(&["--strict", "-e", code, "--facts-out", s(&out)]);
     assert_eq!(o.code, Some(0), "{}", o.stderr);
     let hash = unit_hash(code, SourceOpts::script(Strictness::Strict));
-    assert_eq!(check_header(&std::fs::read(&out).unwrap(), &hash), 1);
+    assert_eq!(check_header(&std::fs::read(&out).unwrap(), &hash), 9);
 
     // The entry module's unit; the imported module is another unit, not in the file.
     let main = "import { v } from './dep.mjs';\n\
@@ -158,7 +170,9 @@ fn eval_code_and_the_entry_module_have_facts() {
     assert_eq!(o.code, Some(0), "{}", o.stderr);
     assert_eq!(o.stdout, "7\n");
     let hash = unit_hash(main, SourceOpts::module());
-    assert_eq!(check_header(&std::fs::read(&out).unwrap(), &hash), 1);
+    // 1 record in h and 12 in the module body (M4-P2 FACTS2): CreateClosure, CompareOp,
+    // 2 Literal, 2 DefineNamedOwn, 3 Call, BinaryOp, JumpLoop, LoadGlobal (`print`).
+    assert_eq!(check_header(&std::fs::read(&out).unwrap(), &hash), 13);
     let _ = std::fs::remove_dir_all(&d);
 }
 
