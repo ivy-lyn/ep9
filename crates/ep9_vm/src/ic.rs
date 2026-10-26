@@ -213,9 +213,10 @@ fn trace_poly(c: CellPtr, t: &mut Tracer<'_>) {
 }
 
 fn trace_handler(c: CellPtr, t: &mut Tracer<'_>) {
-    // SAFETY: the heap passes a live IC_HANDLER cell; +16 (a validity cell, undefined or an
-    // int32) and +24 are Value slots (the other words are int32s).
+    // SAFETY: the heap passes a live IC_HANDLER cell; +16 is a Value slot (a validity cell,
+    // undefined or an int32).
     t.visit(unsafe { c.slot(hc::CELL) });
+    // SAFETY: as above; +24 is a Value slot (the other words are int32s).
     t.visit_weak(unsafe { c.slot(hc::REF) });
 }
 
