@@ -404,6 +404,7 @@ mod tests {
 
     /// The hardware and the software FMA give the same bits (H36: one result on every target).
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn exp_soft_equals_hw() {
         let mut s = 0x9e3779b97f4a7c15u64;
         for _ in 0..200_000 {

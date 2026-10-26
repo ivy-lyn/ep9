@@ -1350,6 +1350,7 @@ mod tests {
     /// The accurate path alone gives the same bits as `log` (whose fast path answers most
     /// inputs), on the hardest-to-round input of the C comment and on a spread of inputs.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn log_accurate_path_agrees() {
         assert_eq!(
             log(hf("0x1.62a88613629b6p+678")),
@@ -1369,6 +1370,7 @@ mod tests {
 
     /// The hardware and the software FMA give the same bits (H36: one result on every target).
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn log_soft_equals_hw() {
         let mut s = 0x2545f4914f6cdd1du64;
         for _ in 0..200_000 {

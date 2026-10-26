@@ -3734,6 +3734,7 @@ mod tests {
     /// The hardware and the software FMA give the same bits (H36: one result on every target),
     /// in phase 1 and through the accurate phases.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn pow_soft_equals_hw() {
         let mut s = 0x2545f4914f6cdd1du64;
         let mut next = || {
