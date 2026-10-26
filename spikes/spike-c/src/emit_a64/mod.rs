@@ -22,8 +22,11 @@
 //!  stubs, guard traps, throw stubs, the unwind call
 //! ```
 //!
-//! **Guards (H32, JIT mode).** A failed guard jumps to its exit stub. Until month 5 builds the
-//! eager deopt entry in `ep9_vm`, each exit is the **"deopt not built" trap**: it throws the
+//! **Guards (H32, JIT mode).** A failed guard jumps to its exit stub, made from the guard's
+//! `Guard.policy` (data the graph builder set: the emitter reads no mode,
+//! docs/plan/13-execution-modes.md B2, P-R1). The one policy is `ExitPolicy::Deopt`. Until
+//! month 5 builds the eager deopt entry in `ep9_vm`, its stub is the **"deopt not built"
+//! trap**: it throws the
 //! int32 [`TRAP_BASE`] + guard id through `RuntimeTable::throw` and unwinds as any throw from
 //! (b) code. The run then ends with that uncaught number ([`trap_of`] reads it back), never
 //! with a wrong value. It is a stand-in, not a policy: H32 never throws on a fact failure, and
@@ -54,7 +57,7 @@ use ep9_value::encoding::{
 use ep9_vm::layout;
 use spike_b::emit::{Arch, FunctionCode, FunctionInput, Refusal, Unwind};
 
-use crate::ir::{BlockId, Cond, Graph, Int32Op, NodeId, Op};
+use crate::ir::{BlockId, Cond, ExitPolicy, Graph, Int32Op, NodeId, Op};
 use crate::regalloc::{Allocation, Location};
 use crate::vm_layout;
 
@@ -140,6 +143,21 @@ fn mov64(ops: &mut Ops, rd: u8, v: u64) {
     }
 }
 
+/// `ep9_vm::layout::NATIVE_WORD_OFFSET`, the offset of a frame's native words, for an `eor`
+/// that decodes one (MC-w13-14: native code uses the named constant). It must be one bit,
+/// so it is a logical immediate and an `eor` undoes the `+` (frame.rs `native`); otherwise
+/// the compile is refused.
+fn native_word_offset() -> Result<u64, Refusal> {
+    let w = layout::NATIVE_WORD_OFFSET;
+    if w.is_power_of_two() {
+        Ok(w)
+    } else {
+        Err(Refusal::Limit(format!(
+            "NATIVE_WORD_OFFSET {w:#x} is not one bit: an eor cannot decode a native word"
+        )))
+    }
+}
+
 /// x`rt` = the VM frame slot at byte offset `off` from x26.
 fn load_fp(ops: &mut Ops, rt: u8, off: i32) {
     if off >= 0 && off % 8 == 0 && off <= 32760 {
@@ -183,8 +201,8 @@ struct Emitter<'a> {
     a: &'a Allocation,
     labels: Vec<DynamicLabel>,
     frame: u32,
-    /// Guard traps: (label, guard id, bytecode offset).
-    traps: Vec<(DynamicLabel, u32, u32)>,
+    /// Guard exits: (label, guard id, bytecode offset, the guard's policy).
+    traps: Vec<(DynamicLabel, u32, u32, ExitPolicy)>,
     throws: BTreeMap<u32, DynamicLabel>,
     unwind: DynamicLabel,
     leave: DynamicLabel,
@@ -308,7 +326,7 @@ impl Emitter<'_> {
         let node = self.g.node(n);
         let g = node.guard.as_ref().expect("a guard");
         let l = self.ops.new_dynamic_label();
-        self.traps.push((l, g.id, g.state.offset));
+        self.traps.push((l, g.id, g.state.offset, g.policy));
         l
     }
 
@@ -473,6 +491,7 @@ impl Emitter<'_> {
                 let entry = vm_layout::FEEDBACK_SLOTS + vm_layout::FEEDBACK_SLOT_SIZE * site;
                 let (poly, hit) = (self.ops.new_dynamic_label(), self.ops.new_dynamic_label());
                 let hole = vm_layout::HOLE as u32;
+                let native_word = native_word_offset()?;
                 mov64(&mut self.ops, 17, NOT_CELL_MASK);
                 dynasm!(self.ops
                     ; .arch aarch64
@@ -485,7 +504,7 @@ impl Emitter<'_> {
                 load_fp(&mut self.ops, 16, fi_word);
                 dynasm!(self.ops
                     ; .arch aarch64
-                    ; eor x16, x16, #0x0002_0000_0000_0000_u64
+                    ; eor x16, x16, native_word
                     ; ldr x16, [x16, fi_feedback]
                     ; cbz x16, =>trap
                     ; ldr x16, [x16]
@@ -835,7 +854,8 @@ impl Emitter<'_> {
     fn ret_and_leave(&mut self) -> Result<u32, Refusal> {
         let ret_pc = layout::FP_RETURN_PC as i32;
         let caller = layout::FP_CALLER_FP as i32;
-        if layout::NATIVE_WORD_OFFSET != 1 << 49 || layout::CX_TABLE != 0 {
+        let native_word = native_word_offset()?;
+        if layout::CX_TABLE != 0 {
             return Err(Refusal::Limit("the (b) exit layout changed".into()));
         }
         let (ret, leave) = (self.ret, self.leave);
@@ -844,8 +864,8 @@ impl Emitter<'_> {
         load_fp(&mut self.ops, 2, caller);
         dynasm!(self.ops
             ; .arch aarch64
-            ; eor x1, x1, #0x0002_0000_0000_0000_u64
-            ; eor x2, x2, #0x0002_0000_0000_0000_u64
+            ; eor x1, x1, native_word
+            ; eor x2, x2, native_word
             ; =>leave
             ; mov x0, x28
             ; ldrb w9, [x1]
@@ -902,18 +922,24 @@ impl Emitter<'_> {
             let t = self.labels[to];
             dynasm!(self.ops ; .arch aarch64 ; b =>t);
         }
-        for (l, id, off) in self.traps.clone() {
+        for (l, id, off, policy) in self.traps.clone() {
             let throw = self.throw_at(off);
             dynasm!(self.ops ; .arch aarch64 ; =>l);
             let here = self.ops.offset().0 as u32;
             self.trap_at.push((id, here));
-            mov64(
-                &mut self.ops,
-                3,
-                vm_layout::int32_bits(TRAP_BASE + id as i32),
-            );
-            call_table(&mut self.ops, layout::RT_THROW, off)?;
-            dynasm!(self.ops ; .arch aarch64 ; b =>throw);
+            match policy {
+                // Eager deopt to T0 at `off` plus an exit counter (H32, JIT mode). The deopt
+                // entry is month 5; until then the stand-in trap.
+                ExitPolicy::Deopt => {
+                    mov64(
+                        &mut self.ops,
+                        3,
+                        vm_layout::int32_bits(TRAP_BASE + id as i32),
+                    );
+                    call_table(&mut self.ops, layout::RT_THROW, off)?;
+                    dynasm!(self.ops ; .arch aarch64 ; b =>throw);
+                }
+            }
         }
         let unwind = self.unwind;
         for (&off, &l) in &self.throws.clone() {
@@ -1003,6 +1029,23 @@ mod tests {
             0xD2FF_FFD1
         );
         assert!(scaled(32768).is_err() && scaled(12).is_err() && scaled(8).is_ok());
+    }
+
+    /// The `eor` with the named NATIVE_WORD_OFFSET is the instruction the literal 2^49 gave
+    /// before (MC-w13-14), so naming the constant changed no byte.
+    #[test]
+    fn native_word_eor_by_name_is_the_literal() {
+        let w = native_word_offset().expect("one bit");
+        let mut a = Ops::new(0);
+        dynasm!(a ; .arch aarch64 ; eor x16, x16, w ; eor x1, x1, w);
+        let mut b = Ops::new(0);
+        dynasm!(b
+            ; .arch aarch64
+            ; eor x16, x16, #0x0002_0000_0000_0000_u64
+            ; eor x1, x1, #0x0002_0000_0000_0000_u64
+        );
+        assert_eq!(w, 1 << 49);
+        assert_eq!(a.finalize().expect("a"), b.finalize().expect("b"));
     }
 
     /// The largest frame that `emit` accepts encodes in both the prologue `stp` (pre-index,

@@ -32,6 +32,7 @@
 //! | [`emit_a64`] | AArch64 code from the allocated graph (dynasm 5.1.0); guard exits = the "deopt not built" trap | SPIKEC-1 |
 //! | [`vm_layout`] | VM layout facts the code reads that `ep9_vm::layout` does not export, checked on live objects | SPIKEC-1 |
 //! | [`tier`] | config C of the protocol: a kernel run with its hot function compiled, against T0 | SPIKEC-1 |
+//! | [`timing`] | the class S timing of protocol §3 (T0, C, H0, H1; paired ratios, the median interval), a Mac report | SPIKEC-2 |
 //!
 //! Rules (protocol §1):
 //! - Arm64 only (09-milestones.md:252). On any other architecture the pipeline refuses with
@@ -52,6 +53,7 @@ pub mod kernels;
 pub mod regalloc;
 pub mod structural;
 pub mod tier;
+pub mod timing;
 pub mod vm_layout;
 
 use spike_b::emit::{FunctionCode, FunctionInput, Refusal};

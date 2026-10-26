@@ -81,13 +81,86 @@ pub fn split(d: &kernels::Driver, file: &str) -> Result<(String, String), String
 
 /// Runs config C of `k` (its first hot function compiled) and T0, with `n` timed runs.
 pub fn run(k: &'static Kernel, n: u32, config: &Config) -> Result<TierRun, String> {
-    let hot = k.hot.first().ok_or("no hot function")?;
+    run_with(k, n, config, IntFacts::Live)
+}
+
+/// Where the int facts of a compile come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntFacts {
+    /// The live snapshot as `export_facts` writes it.
+    Live,
+    /// The live snapshot plus the test stand-in for FACTS2's int records
+    /// ([`facts::with_implicit_int32`]).
+    ImplicitInt32,
+}
+
+/// Compiles the hot function `hot` of the script `file` of `s` (the kernel file's line L is
+/// line L + `offset` there) from the live facts of what `s` ran so far (with the stand-in int
+/// records if `int` asks for them). Returns the function value, the code and the report; the
+/// caller installs the code.
+pub fn compile_hot(
+    s: &mut Session,
+    hot: &kernels::Hot,
+    file: &str,
+    offset: u32,
+    int: IntFacts,
+) -> Result<(ep9_vm::Value, spike_b::emit::FunctionCode, CompileReport), String> {
     let reach = hot.reach.ok_or_else(|| {
         format!(
             "{}: an inner closure; install by function id is not built",
             hot.name
         )
     })?;
+    // The function value first: `function_value` runs a one-line script (a global
+    // assignment), which calls nothing, so the feedback the facts come from does not change.
+    let f = s.function_value(reach)?;
+    let script = s.script(file).ok_or_else(|| format!("no script {file}"))?;
+    let ids = script.functions_on_line(hot.lines.0 + offset);
+    let [id] = ids[..] else {
+        return Err(format!(
+            "{}: {} functions on line {}",
+            hot.name,
+            ids.len(),
+            hot.lines.0
+        ));
+    };
+    let live = compile_facts(s, script, id, int)?;
+    let facts = facts::for_function(&live, id);
+    let input = s.input_of(f)?;
+    let (code, report) =
+        crate::compile_input(&input, &facts).map_err(|r| format!("{}: {r}", hot.name))?;
+    Ok((f, code, report))
+}
+
+/// The facts of function `id` of `script` for a compile: the live snapshot, with the stand-in
+/// int records if `int` asks for them.
+fn compile_facts(
+    s: &Session,
+    script: &crate::harness::Script,
+    id: u32,
+    int: IntFacts,
+) -> Result<ep9_facts::FactSnapshot, String> {
+    let live = facts::live(s, script)?;
+    match int {
+        IntFacts::Live => Ok(live),
+        IntFacts::ImplicitInt32 => facts::with_implicit_int32(&live, script.unit.unit(), id),
+    }
+}
+
+/// [`run`] with the int facts of `int`.
+pub fn run_with(
+    k: &'static Kernel,
+    n: u32,
+    config: &Config,
+    int: IntFacts,
+) -> Result<TierRun, String> {
+    let hot = k.hot.first().ok_or("no hot function")?;
+    if hot.reach.is_none() {
+        return Err(format!(
+            "{}: an inner closure; install by function id is not built",
+            hot.name
+        ));
+    }
     let d1 = kernels::driver(k, 1)?;
     let dn = kernels::driver(k, n)?;
     let (defs, loop1) = split(&d1, k.file)?;
@@ -120,25 +193,7 @@ pub fn run(k: &'static Kernel, n: u32, config: &Config) -> Result<TierRun, Strin
     if w2.output != w.output {
         return Err("the two warm-up runs differ (both are T0)".into());
     }
-    // The function value first: `function_value` runs a one-line script (a global
-    // assignment), which calls nothing, so the feedback the facts come from does not change.
-    let f = s.function_value(reach)?;
-    let (code, report) = {
-        let script = s.script("defs.js").ok_or("no defs script")?;
-        let ids = script.functions_on_line(hot.lines.0 + d1.offset);
-        let [id] = ids[..] else {
-            return Err(format!(
-                "{}: {} functions on line {}",
-                hot.name,
-                ids.len(),
-                hot.lines.0
-            ));
-        };
-        let live = facts::live(&s, script)?;
-        let facts = facts::for_function(&live, id);
-        let input = s.input_of(f)?;
-        crate::compile_input(&input, &facts).map_err(|r| format!("{}: {r}", hot.name))?
-    };
+    let (f, code, report) = compile_hot(&mut s, hot, "defs.js", d1.offset, int)?;
     // SAFETY: `code` is the placement (b) code `emit_a64` made for `f` from `input_of(f)` just
     // above (no JS ran since), unchanged. emit_a64 keeps the (b) contract: the T0 handler
     // ABI, Cx read through `ep9_vm::layout` offsets (and the `vm_layout` copies, checked at
@@ -224,6 +279,18 @@ pub fn run_script(
     main: &str,
     name: &str,
 ) -> Result<ScriptRun, String> {
+    run_script_with(config, defs, warm, main, name, IntFacts::Live)
+}
+
+/// [`run_script`] with the int facts of `int`.
+pub fn run_script_with(
+    config: &Config,
+    defs: &str,
+    warm: &str,
+    main: &str,
+    name: &str,
+    int: IntFacts,
+) -> Result<ScriptRun, String> {
     let config = config.threaded();
     let mut t0s = Session::new(&config)?;
     t0s.run(defs, "defs.js")
@@ -247,7 +314,7 @@ pub fn run_script(
         let [id] = ids[..] else {
             return Err(format!("{name}: {} functions of that name", ids.len()));
         };
-        let live = facts::live(&s, script)?;
+        let live = compile_facts(&s, script, id, int)?;
         let facts = facts::for_function(&live, id);
         let input = s.input_of(f)?;
         crate::compile_input(&input, &facts).map_err(|r| format!("{name}: {r}"))?
@@ -336,6 +403,83 @@ mod tests {
         );
         traps(SUM, "sum(3);", "print(sum(2.5));", "sum");
         traps(SUM, "sum(3);", "print(sum('3'));", "sum");
+    }
+
+    /// With int records (the FACTS2 stand-in) every int32 guard of `sum` is a fact guard; the
+    /// guard basis is data: the code is the same bytes as with no int fact, and a failing
+    /// fact guard still ends in the trap (JIT mode: deopt, month 5).
+    #[test]
+    fn int_facts_back_the_int32_guards() {
+        if !aarch64() {
+            return;
+        }
+        let warm = "for (var k = 0; k < 20; k++) sum(10);";
+        let main = "print(sum(0), sum(1), sum(1000), sum(65536), sum(-5));";
+        let plain = equal(SUM, warm, main, "sum");
+        let r = run_script_with(
+            &Config::default(),
+            SUM,
+            warm,
+            main,
+            "sum",
+            IntFacts::ImplicitInt32,
+        )
+        .expect("run");
+        assert!(
+            r.equal() && r.trap.is_none(),
+            "{:?} vs {:?}",
+            r.compiled,
+            r.t0
+        );
+        assert_eq!(
+            (r.report.fact_guards, r.report.unbacked_guards),
+            (plain.report.unbacked_guards, 0),
+            "{}",
+            r.report.graph
+        );
+        assert_eq!(r.report.emit.code_bytes, plain.report.emit.code_bytes);
+        let t = run_script_with(
+            &Config::default(),
+            SUM,
+            warm,
+            "print(sum(100000));",
+            "sum",
+            IntFacts::ImplicitInt32,
+        )
+        .expect("run");
+        assert!(t.trap.is_some(), "{:?}", t.compiled);
+    }
+
+    /// Only a hint inside {int32} (the empty set included, MODES-D10) backs a guard: a hint
+    /// with an overflow, number or other bit, a record of another kind and no record leave it
+    /// unbacked ([`crate::build::int_basis_of`]).
+    #[test]
+    fn int_basis_reads_only_int32_hints() {
+        use crate::build::int_basis_of;
+        use crate::ir::GuardBasis;
+        use ep9_facts::{BinaryHint, CompareHint, FactSource, SlotFacts};
+        let recs = [
+            SlotFacts::BinaryOp(BinaryHint::INT32),
+            SlotFacts::BinaryOp(BinaryHint::EMPTY),
+            SlotFacts::BinaryOp(BinaryHint::INT32.union(BinaryHint::INT32_OVERFLOW)),
+            SlotFacts::BinaryOp(BinaryHint::NUMBER),
+            SlotFacts::CompareOp(CompareHint::INT32),
+            SlotFacts::CompareOp(CompareHint::INT32.union(CompareHint::NUMBER)),
+            SlotFacts::TypeOf(ep9_facts::TypeSet::EMPTY),
+        ];
+        let f = facts::FunctionFacts {
+            source: FactSource::Profiled,
+            function: 1,
+            records: recs
+                .iter()
+                .enumerate()
+                .map(|(i, r)| (i as u32, r))
+                .collect(),
+        };
+        let fact = GuardBasis::Fact(FactSource::Profiled);
+        let got: Vec<GuardBasis> = (0..8).map(|s| int_basis_of(&f, s)).collect();
+        let u = GuardBasis::Unbacked;
+        assert_eq!(got, [fact, fact, u, u, fact, u, u, u]);
     }
 
     const ARR: &str = "function fill(a, n) { for (var i = 0; i < n; i++) { a[i] = (a[i] * 3 + i) & 1023; } return a[0]; }";
@@ -491,6 +635,38 @@ mod tests {
         assert!(r.equal, "{}", r.line());
         assert_eq!(r.probe_trap, Some(0), "{}", r.line());
         assert_eq!(r.report.fact_guards, 2, "{}", r.report.graph);
+    }
+
+    /// am3 with the FACTS2 stand-in int records: every int32 guard is a fact guard; only the
+    /// keyed guards stay unbacked (keyed facts: SPIKEC-3), and the output still equals T0.
+    #[test]
+    fn am3_with_int_facts_equals_t0() {
+        if !aarch64() {
+            return;
+        }
+        if !kernels::bench_present() {
+            eprintln!("skip: no v8-v7 checkout");
+            return;
+        }
+        let k = kernels::kernel("crypto").expect("crypto");
+        let r = run_with(k, 1, &Config::default(), IntFacts::ImplicitInt32).expect("run");
+        assert!(r.equal, "{}", r.line());
+        assert_eq!(r.probe_trap, Some(0), "{}", r.line());
+        let unbacked: Vec<&str> = r
+            .report
+            .graph
+            .lines()
+            .filter(|l| l.contains("Unbacked"))
+            .collect();
+        assert!(
+            unbacked.iter().all(|l| l.contains("CheckArray")
+                || l.contains("LoadElement")
+                || l.contains("StoreElement")),
+            "{}",
+            r.report.graph
+        );
+        assert_eq!(r.report.unbacked_guards, unbacked.len());
+        assert_eq!(r.report.unbacked_guards, 6, "{}", r.report.graph);
     }
 
     /// GC stress (a collection before every allocation, the verifier after each): the

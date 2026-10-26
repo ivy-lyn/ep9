@@ -10,6 +10,10 @@
 //! spike-c compile <kernel> [--graph]        compile the kernel's first hot function (live facts, n = 1)
 //! spike-c tier <kernel> [--n N] [--stress]  config C: that function compiled, output against T0
 //!                                           (--stress: GC before every allocation, verifier on)
+//! spike-c time <kernel> [--rounds R] [--n N] [--k K]
+//!                                           class S timing (protocol §3): T0, C, H0, H1 in new
+//!                                           processes, paired ratios; a report, never a reading
+//! spike-c once <t0|c|h0|h1> <kernel> [--n N] [--k K]   one timed configuration (`time` runs it)
 //! spike-c show <kernel> [hot index]         bytecode and live facts of a hot function
 //! spike-c driver <kernel> [--n N]          print the driver script (node runs the same text)
 //! spike-c structural [check... | all]       the checks of `gate.sh structural`
@@ -26,7 +30,8 @@ use spike_c::{facts, structural};
 fn usage() -> ExitCode {
     eprintln!(
         "usage: spike-c [kernels | run <file.js> | t0 <kernel|all> [--n N] | facts <kernel> [--n N] [--out FILE] \
-         | compile <kernel> [--graph] | tier <kernel> [--n N] [--stress] | show <kernel> [i] | driver <kernel> [--n N] \
+         | compile <kernel> [--graph] | tier <kernel> [--n N] [--stress] | time <kernel> [--rounds R] [--n N] [--k K] \
+         | once <t0|c|h0|h1> <kernel> [--n N] [--k K] | show <kernel> [i] | driver <kernel> [--n N] \
          | structural [check...|all]]"
     );
     ExitCode::from(2)
@@ -235,6 +240,52 @@ fn tier_cmd(args: &[String]) -> Result<bool, String> {
     Ok(run.equal && (run.probe_trap.is_some() || run.function != "am3"))
 }
 
+/// The value after `flag` in `args`, parsed.
+fn flag<T: std::str::FromStr>(args: &[String], flag: &str) -> Result<Option<T>, String> {
+    match args.iter().position(|a| a == flag) {
+        None => Ok(None),
+        Some(i) => {
+            let v = args
+                .get(i + 1)
+                .ok_or_else(|| format!("{flag} needs a value"))?;
+            v.parse()
+                .map(Some)
+                .map_err(|_| format!("bad {flag} value {v}"))
+        }
+    }
+}
+
+/// The hot-harness call count per kernel (H0, H1): about 0.15 s of T0 time on an M-series Mac.
+const HOT_K: u32 = 100_000;
+
+/// `spike-c time <kernel> [--rounds R] [--n N] [--k K]`: the class S report (exit 1 on a wrong
+/// run).
+fn time_cmd(args: &[String]) -> Result<bool, String> {
+    let k = kernel_arg(args.first())?;
+    let rounds = flag(args, "--rounds")?.unwrap_or(15usize);
+    let n = flag(args, "--n")?.unwrap_or(k.n);
+    let hot_k = flag(args, "--k")?.unwrap_or(HOT_K);
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let (report, ok) = spike_c::timing::time(&exe, k, rounds, n, hot_k)?;
+    print!("{report}");
+    Ok(ok)
+}
+
+/// `spike-c once <t0|c|h0|h1> <kernel> [--n N] [--k K]`: one timed configuration, in the
+/// line form `timing::Once::parse` reads.
+fn once_cmd(args: &[String]) -> Result<bool, String> {
+    let which = args
+        .first()
+        .and_then(|w| spike_c::timing::Which::parse(w))
+        .ok_or("once: t0, c, h0 or h1")?;
+    let k = kernel_arg(args.get(1))?;
+    let n = flag(&args[1..], "--n")?.unwrap_or(k.n);
+    let hot_k = flag(&args[1..], "--k")?.unwrap_or(HOT_K);
+    let o = spike_c::timing::once(which, k, n, hot_k)?;
+    print!("{}", o.text());
+    Ok(true)
+}
+
 /// `spike-c show <kernel> [hot index]`: the bytecode and the live facts (n = 1) of a hot
 /// function (a report for the graph builder's input).
 fn show_cmd(args: &[String]) -> Result<bool, String> {
@@ -282,6 +333,8 @@ fn main() -> ExitCode {
         "facts" => facts_cmd(rest),
         "compile" => compile_cmd(rest),
         "tier" => tier_cmd(rest),
+        "time" => time_cmd(rest),
+        "once" => once_cmd(rest),
         "driver" => driver_cmd(rest),
         "show" => show_cmd(rest),
         "run" => run_cmd(rest),

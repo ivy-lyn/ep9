@@ -23,9 +23,11 @@
 //!   the generic path, but the runtime table has no generic entry for the operation yet
 //!   (`ep9_vm::RuntimeTable`: poll, call_any, add, inc, compare, stack_overflow, throw,
 //!   unwind), so SPIKEC-1 checks the fast case inline instead. Each one is counted in the
-//!   report; the int facts of the P1 profile (SPIKEC-2) and the keyed facts of FACTS2
-//!   (SPIKEC-3) turn them into fact guards. A value that an unbacked guard narrows keeps the
-//!   trust [`Trust::Unknown`]: no fact knows it.
+//!   report. An int32 BinaryOp or CompareOp record makes the int32 guards of its site fact
+//!   guards (SPIKEC-2, [`crate::build`]; the exporter writes those records from FACTS2, M4-P2,
+//!   on), and the keyed facts of FACTS2 do the same for keyed sites (SPIKEC-3). A value that an
+//!   unbacked guard narrows keeps the trust [`Trust::Unknown`]: no fact knows it. The basis
+//!   is a label: the emitted code of a guard is the same either way.
 //!
 //! Until month 5 builds the deopt entry, the emitter lowers every exit to the "deopt not
 //! built" trap ([`crate::emit_a64`]); each guard keeps the frame state a deopt will need

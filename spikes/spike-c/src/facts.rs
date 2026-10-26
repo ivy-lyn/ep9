@@ -13,8 +13,10 @@
 //! FactSnapshot encoding with the source byte PROFILED ([`to_profiled`]), the form the
 //! protocol (§6) names.
 
-use ep9_bytecode::CompiledUnit;
-use ep9_facts::{Dropped, FactHeader, FactSnapshot, FactSource, SlotFacts};
+use ep9_bytecode::{CompiledUnit, FeedbackSlotKind};
+use ep9_facts::{
+    BinaryHint, CompareHint, Dropped, FactHeader, FactSnapshot, FactSource, SlotFacts,
+};
 
 use crate::harness::{Script, Session};
 
@@ -77,6 +79,38 @@ pub fn read_profiled(
         ));
     }
     s.validate(unit).map_err(|e| format!("stale: {e:?}"))
+}
+
+/// A test stand-in for the int facts FACTS2 exports (M4-P2): `snapshot` plus, for each
+/// BinaryOp and CompareOp slot of `function` in `unit` that has no record, the record the T0
+/// profile's reader rule gives a slot that T0 left empty (`ep9_vm` profile.rs, "Implicit
+/// int32": the reader adds `INT32` to every slot of its kind in a function that has a
+/// vector). Only the spike's tests use it: on a live run it would call a site int32 that
+/// wrote a NUMBER bit the exporter does not write out yet.
+pub fn with_implicit_int32(
+    snapshot: &FactSnapshot,
+    unit: &CompiledUnit,
+    function: u32,
+) -> Result<FactSnapshot, String> {
+    let mut out = snapshot.clone();
+    let f = unit
+        .functions
+        .get(function as usize)
+        .ok_or_else(|| format!("no function {function}"))?;
+    for (slot, kind) in f.feedback_slots.iter().enumerate() {
+        let slot = slot as u32;
+        if out.get(function, slot).is_some() {
+            continue;
+        }
+        let rec = match kind {
+            FeedbackSlotKind::BinaryOp => SlotFacts::BinaryOp(BinaryHint::INT32),
+            FeedbackSlotKind::CompareOp => SlotFacts::CompareOp(CompareHint::INT32),
+            _ => continue,
+        };
+        out.insert(function, slot, rec)
+            .map_err(|e| format!("record {function}/{slot}: {e:?}"))?;
+    }
+    Ok(out)
 }
 
 /// The records of function `function` in `snapshot`.
