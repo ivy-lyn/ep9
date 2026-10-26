@@ -19,9 +19,9 @@
 //!
 //! | Kind | Id | Layout (byte offsets) | Builder |
 //! |---|---|---|---|
-//! | CONS | 3 | +8 length (int32), +16 first, +24 second (strings) | M4-P1 STR1 |
-//! | SLICED | 4 | +8 length (int32), +16 parent (a flat string), +24 offset (int32) | M4-P1 STR1 |
-//! | THIN | 5 | +8 length (int32), +16 actual (the atom it forwards to) | M4-P2 STR2 |
+//! | CONS | 3 | the string header (`string.rs`: +8 length (u32), +12 hash field (u32)), +16 first, +24 second (strings) | M4-P1 STR1 |
+//! | SLICED | 4 | the string header (+8 length (u32), +12 hash field (u32)), +16 parent (a flat string), +24 offset (int32) | M4-P1 STR1 |
+//! | THIN | 5 | the string header (+8 length (u32), +12 hash field (u32)), +16 actual (the atom it forwards to) | M4-P2 STR2 |
 //! | PROXY | 27 | a Proxy exotic object (§10.5) whose target is not callable: `[[ProxyTarget]]` and `[[ProxyHandler]]` in fixed fields (PROXY1 sets the offsets) | M4-P4 PROXY1 (`proxy.rs`) |
 //! | PROXY_CALLABLE | 28 | a Proxy whose target is callable (IsCallable stays a kind test, [`is_callable`]) | M4-P4 PROXY1 |
 //! | VALIDITY_CELL | 79 | a prototype's validity cell (V8 style; PROTO_INFO +32): a valid bit and a weak users list | M4-P1 VALIDITY (`validity.rs`) |

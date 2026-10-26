@@ -11,10 +11,10 @@
 /// cells MODULE (76), ORDERED_TABLE (77, with a weak-keys flag) and REALM (78). 4 (M4-P0):
 /// the JS object kinds PROXY (27) and PROXY_CALLABLE (28, callable); the internal cells
 /// VALIDITY_CELL (79) and WEAK_CELL (80); the PROTO_INFO +32 word holds the prototype's
-/// validity cell (was reserved); the string cells CONS (3: +8 length, +16 first, +24
-/// second), SLICED (4: +8 length, +16 parent, +24 offset) and THIN (5: +8 length, +16 actual)
-/// (`kinds.rs` has the table). The kinds are declared here; the roles that build them register
-/// their trace functions.
+/// validity cell (was reserved); the string cells CONS (3: +16 first, +24 second), SLICED (4:
+/// +16 parent, +24 offset) and THIN (5: +16 actual), each after the string header of
+/// `string.rs` (+8 length (u32), +12 hash field (u32)) (`kinds.rs` has the table). The kinds
+/// are declared here; the roles that build them register their trace functions.
 pub const OBJECT_LAYOUT_VERSION: u32 = 4;
 /// Inline-cache and feedback data layout (H16). 2 (M4-P0): the feedback slot table of
 /// `profile.rs` (one writer module per slot kind) and the IC_HANDLER layout of `ic.rs` (+8
