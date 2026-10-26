@@ -13,8 +13,8 @@ use crate::atoms::{self, Atom};
 use crate::key::{self, Probe};
 use crate::kinds::{self, FLAG_ATOM};
 use crate::object::cell;
-use crate::runtime::Runtime;
-use crate::string::{self, testing};
+use crate::runtime::{Runtime, val};
+use crate::string::{self, JsStr, testing};
 use crate::{Dispatch, IntrinsicId, IsolateConfig, Local};
 
 /// Allocated size of the cell of `b`.
@@ -756,4 +756,310 @@ fn computed_keys_and_string_indexing_under_gc_stress() {
     let r = run_all(make);
     assert_eq!(ok(&r), "name");
     assert_eq!(r.output, ["1", "five", "b", "true"]);
+}
+
+// ---- ropes and slices (M4-P1 STR1; H19) ------------------------------------------------------
+
+/// `a + b` through the runtime concat (the string Add path).
+fn cat(rt: &Runtime, a: u64, b: u64) -> u64 {
+    string::concat(rt, a, b).expect("under the limit")
+}
+
+/// The text of a string through the rope-safe reader.
+fn text(b: u64) -> String {
+    string::to_rust_string(b)
+}
+
+/// The rope and slice tests run on a stressed isolate: a collection before every allocation
+/// and the heap verifier after each one (plan v9 §3.6 acceptance).
+fn stressed() -> crate::Isolate {
+    isolate(config(Dispatch::DEFAULT, true))
+}
+
+#[test]
+fn concat_makes_a_cons_from_13_units_and_a_flat_string_below() {
+    let iso = stressed();
+    let rt = &*iso.rt;
+    let a = string::new_string(rt, "abcdef");
+    let b = string::new_string(rt, "ghijkl");
+    let short = cat(rt, a, b);
+    assert_eq!(kinds::cell_kind(short), kinds::SEQ_LATIN1.get());
+    assert_eq!(text(short), "abcdefghijkl");
+    let m = string::new_string(rt, "m");
+    let long = cat(rt, short, m);
+    assert_eq!(kinds::cell_kind(long), kinds::CONS.get());
+    assert_eq!(cell_size(rt, long), 32);
+    assert_eq!(string::str_len(long), string::MIN_CONS_LENGTH);
+    assert_eq!(text(long), "abcdefghijklm");
+    // "" + s and s + "" are s.
+    let e = rt.atom(Atom::Empty);
+    assert_eq!(cat(rt, e, long), long);
+    assert_eq!(cat(rt, long, e), long);
+    rt.heap.collect();
+    assert_eq!(text(long), "abcdefghijklm");
+}
+
+#[test]
+fn flatten_writes_the_flat_form_once_into_the_cons() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let mut s = string::new_string(rt, "x");
+    for i in 0..200 {
+        let p = string::new_string(rt, &format!("{i},"));
+        s = cat(rt, s, p);
+    }
+    let want: String = std::iter::once("x".to_string())
+        .chain((0..200).map(|i| format!("{i},")))
+        .collect();
+    assert_eq!(kinds::cell_kind(s), kinds::CONS.get());
+    let f = string::flatten(&mut iso.cx, s);
+    let rt: &Runtime = &iso.rt;
+    assert_eq!(kinds::cell_kind(f), kinds::SEQ_LATIN1.get());
+    assert_eq!(text(f), want);
+    // The CONS is now (flat, ""): a second flatten returns the same cell and allocates
+    // nothing (under GC stress an allocation would collect); the CONS reads as its flat form.
+    let before = rt.heap.stats().collections;
+    assert_eq!(string::flatten(&mut iso.cx, s), f);
+    assert_eq!(iso.rt.heap.stats().collections, before);
+    assert_eq!(kinds::cell_kind(s), kinds::CONS.get());
+    assert_eq!(string::view(&iso.cx, f).len(), want.len());
+    assert_eq!(text(s), want);
+    assert!(string::equals(s, f));
+    assert_eq!(string::hash(s), string::hash(f));
+}
+
+#[test]
+fn deep_ropes_read_flatten_and_compare_without_recursion() {
+    // A 100k-deep left rope (s += x) and right rope (s = x + s) on the test thread's normal
+    // stack: the walks keep their work on a Rust Vec, not the native stack. GC stress runs a
+    // smaller depth (a collection per allocation is quadratic).
+    for (stress, n) in [(false, 100_000), (true, 1_500)] {
+        let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+        let rt: &Runtime = &iso.rt;
+        // The parts live in scratch roots: a Rust Vec buffer is not scanned (rule 8).
+        let roots = rt.heap.scratch_roots();
+        for d in 0..10 {
+            roots.push(val(string::new_string(rt, &format!("<{d}>"))));
+        }
+        let part = |i: usize| roots.get(i % 10).to_bits();
+        let (mut left, mut right) = (rt.atom(Atom::Empty), rt.atom(Atom::Empty));
+        for i in 0..n {
+            left = cat(rt, left, part(i));
+            right = cat(rt, part(n - 1 - i), right);
+        }
+        let want: String = (0..n).map(|i| format!("<{}>", i % 10)).collect();
+        assert_eq!(text(left), want);
+        assert_eq!(text(right), want);
+        assert!(string::equals(left, right));
+        assert_eq!(string::compare(left, right), core::cmp::Ordering::Equal);
+        assert_eq!(string::hash(left), string::hash(right));
+        assert!(string::equals_text(left, JsStr::Latin1(want.as_bytes())));
+        // One part more on the left: greater, not equal.
+        let bigger = cat(rt, left, part(0));
+        assert_eq!(string::compare(bigger, right), core::cmp::Ordering::Greater);
+        assert_eq!(string::compare(right, bigger), core::cmp::Ordering::Less);
+        assert!(!string::equals(bigger, right));
+        drop(roots);
+        let fl = string::flatten(&mut iso.cx, left);
+        let fr = string::flatten(&mut iso.cx, right);
+        assert_eq!(text(fl), want);
+        assert!(string::equals(fl, fr));
+        iso.collect_garbage();
+        assert_eq!(text(left), want);
+        assert_eq!(text(bigger), format!("{want}<0>"));
+    }
+}
+
+#[test]
+fn a_rope_hashes_and_compares_like_its_flat_text() {
+    let iso = stressed();
+    let rt = &*iso.rt;
+    let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+    for round in 0..200 {
+        // Random parts, some with a unit above 0xFF, glued in a random tree shape. The parts
+        // live in scratch roots; `pieces` holds their root indices.
+        let roots = rt.heap.scratch_roots();
+        let mut pieces: Vec<usize> = Vec::new();
+        let mut all: Vec<u16> = Vec::new();
+        for _ in 0..(1 + rng.next() % 6) {
+            let len = (rng.next() % 9) as usize;
+            let wide = rng.next().is_multiple_of(4);
+            let units: Vec<u16> = (0..len)
+                .map(|_| {
+                    let u = (rng.next() % 0x7f) as u16 + 1;
+                    if wide && rng.next().is_multiple_of(3) {
+                        u + 0x400
+                    } else {
+                        u
+                    }
+                })
+                .collect();
+            all.extend(&units);
+            pieces.push(roots.push(val(string::new_string_utf16(rt, &units))));
+        }
+        while pieces.len() > 1 {
+            let i = (rng.next() as usize) % (pieces.len() - 1);
+            let (x, y) = (
+                roots.get(pieces[i]).to_bits(),
+                roots.get(pieces[i + 1]).to_bits(),
+            );
+            let joined = roots.push(val(cat(rt, x, y)));
+            pieces.splice(i..i + 2, [joined]);
+        }
+        let r = roots.get(pieces[0]).to_bits();
+        let flat = string::new_string_utf16(rt, &all);
+        assert_eq!(string::str_len(r), all.len());
+        assert!(string::equals(r, flat), "round {round}");
+        assert!(string::equals(flat, r), "round {round}");
+        assert_eq!(string::hash(r), string::hash(flat), "round {round}");
+        assert_eq!(string::compare(r, flat), core::cmp::Ordering::Equal);
+        assert!(string::equals_text(r, JsStr::Utf16(&all)), "round {round}");
+        assert_eq!(text(r), String::from_utf16_lossy(&all));
+        for (i, &u) in all.iter().enumerate() {
+            assert_eq!(string::unit_at(r, i), u, "round {round} unit {i}");
+        }
+        assert_eq!(string::array_index(r), JsStr::Utf16(&all).array_index());
+        let wide = all.iter().any(|&u| u > 0xFF);
+        string::with_text(r, |t| {
+            assert_eq!(matches!(t, JsStr::Utf16(_)), wide, "round {round}");
+            assert_eq!(t.to_utf16(), all);
+        });
+    }
+}
+
+#[test]
+fn rope_hash_matches_the_slice_hash() {
+    // The streaming SipHash over a rope walk equals the slice form for every tail length.
+    let iso = stressed();
+    let rt = &*iso.rt;
+    for len in 13..40 {
+        let units: Vec<u16> = (0..len as u16).map(|i| 0x61 + i % 26).collect();
+        let (a, b) = units.split_at(len / 3);
+        let r = cat(
+            rt,
+            string::new_string_utf16(rt, a),
+            string::new_string_utf16(rt, b),
+        );
+        assert_eq!(kinds::cell_kind(r), kinds::CONS.get());
+        assert_eq!(string::hash(r), string::hash_text(JsStr::Utf16(&units)).1);
+    }
+}
+
+#[test]
+fn a_cons_with_a_utf16_leaf_flattens_to_utf16() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let a = string::new_string(rt, "latin-one ");
+    let b = string::new_string_utf16(rt, &[0x20ac, 0x41, 0x42]);
+    let r = cat(rt, a, b);
+    assert_eq!(kinds::cell_kind(r), kinds::CONS.get());
+    let f = string::flatten(&mut iso.cx, r);
+    assert_eq!(kinds::cell_kind(f), kinds::SEQ_UTF16.get());
+    assert_eq!(text(f), "latin-one \u{20ac}AB");
+    // A Latin-1-only rope flattens to Latin-1.
+    let rt: &Runtime = &iso.rt;
+    let r2 = cat(rt, a, a);
+    let f2 = string::flatten(&mut iso.cx, r2);
+    assert_eq!(kinds::cell_kind(f2), kinds::SEQ_LATIN1.get());
+}
+
+#[test]
+fn substring_makes_a_slice_from_13_units_over_the_flat_parent() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let p = string::new_string(rt, "0123456789abcdefghijklmnopqrstuvwxyz");
+    let s = string::substring(rt, p, 3, 20);
+    assert_eq!(kinds::cell_kind(s), kinds::SLICED.get());
+    assert_eq!(cell_size(rt, s), 32);
+    assert_eq!(text(s), "3456789abcdefghij");
+    assert_eq!(string::view(&iso.cx, s).len(), 17);
+    // A slice of a slice points at the same parent.
+    let rt: &Runtime = &iso.rt;
+    let s2 = string::substring(rt, s, 2, 15);
+    assert_eq!(kinds::cell_kind(s2), kinds::SLICED.get());
+    assert_eq!(text(s2), "56789abcdefgh");
+    // Below 13 units: a flat copy; the whole string: itself; empty: "".
+    let s3 = string::substring(rt, s, 0, 12);
+    assert_eq!(kinds::cell_kind(s3), kinds::SEQ_LATIN1.get());
+    assert_eq!(text(s3), "3456789abcde");
+    assert_eq!(string::substring(rt, p, 0, 36), p);
+    assert_eq!(string::substring(rt, p, 5, 5), rt.atom(Atom::Empty));
+    // flatten leaves a slice as is; hash and compare see its text.
+    assert_eq!(string::flatten(&mut iso.cx, s), s);
+    let rt: &Runtime = &iso.rt;
+    let same = string::new_string(rt, "3456789abcdefghij");
+    assert!(string::equals(s, same));
+    assert_eq!(string::hash(s), string::hash(same));
+    // A substring of a rope flattens it first; a UTF-16 parent gives a UTF-16 slice.
+    let w = string::new_string_utf16(rt, &[0x3b1; 20]);
+    let r = cat(rt, p, w);
+    let s4 = string::substring(rt, r, 30, 45);
+    assert_eq!(kinds::cell_kind(s4), kinds::SLICED.get());
+    let mut want: Vec<u16> = "uvwxyz".encode_utf16().collect();
+    want.extend([0x3b1; 9]);
+    assert!(string::equals_text(s4, JsStr::Utf16(&want)));
+    // The slice keeps its parent alive across collections.
+    drop(want);
+    iso.collect_garbage();
+    assert_eq!(text(s2), "56789abcdefgh");
+}
+
+#[test]
+fn char_at_and_string_view_flatten_a_rope() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let a = string::new_string(rt, "abcdefghij");
+    let r = cat(rt, a, a);
+    assert_eq!(kinds::cell_kind(r), kinds::CONS.get());
+    let c = string::char_at(rt, r, 13);
+    assert_eq!(text(c), "d");
+    // SAFETY: `r` is a live string cell of this isolate (a Rust local: conservative scan).
+    let v = unsafe { Value::from_bits_unchecked(r) };
+    let got = iso.string_view(v).map(|s| s.to_string_lossy());
+    assert_eq!(got.as_deref(), Some("abcdefghijabcdefghij"));
+}
+
+#[test]
+fn an_interned_rope_is_one_key_with_its_flat_text() {
+    // atoms::intern takes any string kind (it is not a GC point, so it keeps the CONS): a
+    // rope atom and the same text from Rust are one key.
+    let iso = stressed();
+    let rt = &*iso.rt;
+    let a = string::new_string(rt, "property-");
+    let b = string::new_string(rt, "name-long");
+    let r = cat(rt, a, b);
+    let k = atoms::intern(rt, r);
+    assert_eq!(k, r);
+    assert!(string::is_atom(r));
+    assert_eq!(atoms::intern_str(rt, "property-name-long"), r);
+    assert_eq!(atoms::lookup(rt, "property-name-long"), Some(r));
+    rt.heap.collect();
+    atoms::verify(rt).unwrap();
+}
+
+#[test]
+fn ropes_from_bytecode_add_print_and_compare() {
+    // var s = ""; for (i = 0; i < 40; i++) s = s + "ab"; print(s); return s === s + "";
+    fn make() -> VerifiedUnit {
+        let mut s = Asm::script(0);
+        let (str_, i, t) = (s.b.new_register(), s.b.new_register(), s.b.new_register());
+        s.lda_str("");
+        s.b.star(str_).lda_zero().star(i);
+        let head = s.b.bound_label();
+        let exit = s.b.new_label();
+        s.b.lda_smi(40).test_less_than(i, s.cmp).jump_if_false(exit);
+        s.lda_str("ab");
+        s.b.add(str_, s.bin).star(str_);
+        s.b.ldar(i).inc(s.bin).star(i).jump_loop(head, 0, s.loop_);
+        s.b.bind(exit);
+        s.b.ldar(str_);
+        s.print_acc();
+        s.lda_str("");
+        s.b.add(str_, s.bin).star(t);
+        s.b.ldar(t).test_equal_strict(str_, s.cmp).return_();
+        unit("", vec![s.finish()])
+    }
+    let r = run_all(make);
+    assert_eq!(ok(&r), "true");
+    assert_eq!(r.output, ["ab".repeat(40)]);
 }

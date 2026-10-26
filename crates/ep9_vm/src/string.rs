@@ -1,16 +1,28 @@
-//! Strings (H19 v0): flat sequential strings, the hash field, the string hash and the read API.
+//! Strings (H19): flat sequential strings, ropes (CONS) and slices (SLICED), the hash field,
+//! the string hash and the read API.
 //!
 //! | Kind | Id | Layout (byte offsets) | Size |
 //! |---|---|---|---|
 //! | SEQ_LATIN1 | 1 | +8 length (u32), +12 hash field (u32), +16 bytes | 16 + len |
 //! | SEQ_UTF16 | 2 | +8 length (u32), +12 hash field (u32), +16 UTF-16 code units | 16 + 2 len |
+//! | CONS | 3 | +8 length (u32), +12 hash field (u32), +16 first, +24 second (strings) | 32 |
+//! | SLICED | 4 | +8 length (u32), +12 hash field (u32), +16 parent (a SEQ string), +24 offset (int32) | 32 |
 //!
-//! - The words after word0 are raw data, not Values. String kinds trace nothing, and the size
-//!   comes from the kind and the length (H9 "heap always parsable").
+//! - The words after word0 of SEQ cells are raw data, not Values. SEQ kinds trace nothing,
+//!   and the size comes from the kind and the length (H9 "heap always parsable"). CONS and
+//!   SLICED trace their two words at +16 and +24 (the +8 word is raw).
 //! - word0 flag bit 0 ([`crate::kinds::FLAG_ATOM`]) marks an atom: the one interned cell of
-//!   its text in this isolate (`atoms.rs`).
-//! - Kinds 3-7 (cons, sliced, thin, external) are reserved for M1 and share this header, so
-//!   the length is always the u32 at +8.
+//!   its text in this isolate (`atoms.rs`). Flag bit 1 ([`FLAG_TWO_BYTE`]) marks a CONS cell
+//!   with a UTF-16 leaf (its flat form is SEQ_UTF16).
+//! - Kinds 5-7 (thin, external) are reserved and share this header, so the length is always
+//!   the u32 at +8.
+//!
+//! Ropes (M4-P1 STR1; H19, V9-D13). `a + b` makes a CONS cell when the result has at least
+//! [`MIN_CONS_LENGTH`] code units, and a substring of at least [`MIN_SLICE_LENGTH`] units
+//! is a SLICED cell over a SEQ parent ([`substring`]). [`flatten`] of a CONS writes the flat
+//! form once and turns the cell into (first = flat, second = ""), V8 style: a flattened CONS
+//! reads as its first. A SLICED cell is flat for reading (its units are a range of the
+//! parent's), so [`flatten`] returns it as is.
 //!
 //! Hash field (u32 at +12; 0 = not computed yet), V8 Name style:
 //!
@@ -21,33 +33,58 @@
 //! ```
 //!
 //! The hash is SipHash-1-3 over the UTF-16 code-unit values (little-endian), so the Latin-1
-//! and UTF-16 forms of one text hash alike. The key is chosen once per process, at random,
-//! or from `EP9_HASH_SEED`. A hash never goes into bytecode, units, snapshots or property
-//! order (W4-HASH, H12).
+//! and UTF-16 forms of one text hash alike, and a rope hashes like its flat form. The key is
+//! chosen once per process, at random, or from `EP9_HASH_SEED`. A hash never goes into
+//! bytecode, units, snapshots or property order (W4-HASH, H12).
 //!
-//! Read API for new code: [`flatten`] (a GC point once ropes exist; the identity in v0),
-//! then [`view`], whose borrow of the `Cx` ends at the next `&mut Cx` call. [`str_view`] lets
-//! the caller pick the lifetime; its call sites move to `view` by M1a (W4-STRVIEW). VM code
-//! may still hold a `JsStr` across an allocation because the heap never moves cells and the
-//! conservative scan keeps interior pointers (H19, `crates/ep9_heap/src/trace.rs` find_cell).
+//! Read API: [`flatten`] (a GC point: it may allocate the flat form), then [`view`], whose
+//! borrow of the `Cx` ends at the next `&mut Cx` call. The helpers that take no `Cx`
+//! ([`equals`], [`equals_text`], [`compare`], [`hash`], [`hash_field`], [`array_index`],
+//! [`to_rust_string`], [`with_text`]) read ropes without a GC allocation (a walk over the
+//! rope). [`str_view`] is the legacy flat-only read; no VM code outside tests calls it since
+//! M4-P1 (W4-STRVIEW, V9-A2). VM code may still hold a `JsStr` across an allocation because
+//! the heap never moves cells and the conservative scan keeps interior pointers (H19,
+//! `crates/ep9_heap/src/trace.rs` find_cell); an in-place flatten replaces the CONS fields
+//! but never frees the old leaves while a view of them is on the stack.
 
 use std::sync::OnceLock;
 
 use ep9_heap::{CellKind, CellPtr, CellSize, Heap};
 use ep9_value::Value;
 
-use crate::frame::UNDEFINED;
+use crate::atoms::Atom;
+use crate::frame::{UNDEFINED, int32_bits, int32_of};
 use crate::interp::Cx;
 use crate::isolate::Isolate;
 use crate::kinds::{self as kind, FLAG_ATOM, cell_kind, is_cell_bits, is_string};
-use crate::object::cell;
+use crate::object::{cell, init, rd, wr};
 use crate::runtime::Runtime;
 
 mod strf {
     pub const LENGTH: usize = 8;
     pub const HASH: usize = 12;
     pub const DATA: usize = 16;
+    /// CONS: the first part (a string).
+    pub const FIRST: usize = 16;
+    /// CONS: the second part (a string; "" once the cell is flattened).
+    pub const SECOND: usize = 24;
+    /// SLICED: the parent (a SEQ string).
+    pub const PARENT: usize = 16;
+    /// SLICED: the offset in the parent (int32).
+    pub const OFFSET: usize = 24;
+    /// The size of a CONS or SLICED cell.
+    pub const ROPE_SIZE: usize = 32;
 }
+
+/// word0 flag bit 1 of a CONS cell: some leaf is UTF-16, so the flat form is SEQ_UTF16.
+pub(crate) const FLAG_TWO_BYTE: u16 = 0x0002;
+
+/// `a + b` of at least this many code units is a CONS cell (H19; V8 `ConsString::kMinLength`).
+pub(crate) const MIN_CONS_LENGTH: usize = 13;
+
+/// A substring of at least this many code units is a SLICED cell (H19; V8
+/// `SlicedString::kMinLength`).
+pub(crate) const MIN_SLICE_LENGTH: usize = 13;
 
 /// Largest string length in code units (V8: 2^29 - 24). Longer results throw RangeError
 /// ("Invalid string length"); see [`concat()`].
@@ -66,6 +103,13 @@ pub(crate) const MAX_CACHED_INDEX: u32 = 1 << 24;
 pub(crate) const HASH_MASK: u32 = (1 << 30) - 1;
 
 fn trace_none(_: CellPtr, _: &mut ep9_heap::Tracer<'_>) {}
+
+/// CONS and SLICED: the two Value words at +16 and +24 (the +8 word is raw length and hash).
+fn trace_rope(c: CellPtr, t: &mut ep9_heap::Tracer<'_>) {
+    // SAFETY: the heap calls trace functions with live cells of the registered kind; +16 and
+    // +24 of a CONS or SLICED cell are Value slots (layout table).
+    t.visit_slots(unsafe { c.slots(strf::FIRST, 2) });
+}
 
 /// The length of a live string cell.
 #[inline(always)]
@@ -113,6 +157,17 @@ pub(crate) fn register_kinds(heap: &Heap) {
                 name,
                 size: CellSize::Dynamic(size),
                 trace: trace_none,
+            },
+        )
+        .expect("register a VM cell kind");
+    }
+    for (id, name) in [(kind::CONS, "string-cons"), (kind::SLICED, "string-sliced")] {
+        heap.register_kind(
+            id,
+            CellKind {
+                name,
+                size: CellSize::Fixed(strf::ROPE_SIZE),
+                trace: trace_rope,
             },
         )
         .expect("register a VM cell kind");
@@ -241,28 +296,71 @@ impl PartialOrd for JsStr<'_> {
     }
 }
 
-/// The code units of a live string cell, for any lifetime the caller picks. The caller keeps
-/// the cell live while it uses the view (cells never move; strings never change). Legacy
-/// API outside this file: new code uses [`flatten`] and [`view`] (W4-STRVIEW).
+/// The code units of a live flat string cell (SEQ, SLICED or a flattened CONS), for any
+/// lifetime the caller picks. The caller keeps the cell live while it uses the view (cells
+/// never move; strings never change). Legacy API: VM code uses [`flatten`] and [`view`], or a
+/// rope-safe helper (W4-STRVIEW, V9-A2); panics on a CONS that is not flattened.
+#[cfg_attr(not(test), allow(dead_code))] // callers: tests only
 pub(crate) fn str_view<'a>(b: u64) -> JsStr<'a> {
     units(b)
 }
 
-/// The code units of a live flat string cell (this file's own reads: hashing, compares,
-/// [`view`]).
-fn units<'a>(b: u64) -> JsStr<'a> {
-    debug_assert!(is_string(b));
-    let c = cell(b);
+/// The code units of a SEQ cell.
+#[inline(always)]
+fn seq_units<'a>(c: CellPtr, utf16: bool) -> JsStr<'a> {
     let len = len_of(c);
-    // SAFETY: a live string cell holds `len` code units of its kind's encoding from +16
+    // SAFETY: a live SEQ string cell holds `len` code units of its kind's encoding from +16
     // (layout table), and its size covers them (`latin1_size`, `utf16_size`). +16 is
     // 8-aligned, so the u16 slice is aligned.
     unsafe {
-        if c.header().kind() == kind::SEQ_UTF16.get() {
+        if utf16 {
             JsStr::Utf16(core::slice::from_raw_parts(c.field::<u16>(strf::DATA), len))
         } else {
             JsStr::Latin1(core::slice::from_raw_parts(c.field::<u8>(strf::DATA), len))
         }
+    }
+}
+
+/// The code units of a flat string `b` (SEQ, SLICED or a flattened CONS); `None` for a CONS
+/// that is not flattened. Not a GC point.
+#[inline]
+fn flat_units<'a>(b: u64) -> Option<JsStr<'a>> {
+    debug_assert!(is_string(b));
+    let c = cell(b);
+    // SAFETY: a string Value held by the VM is a live cell (crate invariant, object.rs).
+    match unsafe { c.header().kind() } {
+        1 => Some(seq_units(c, false)),
+        2 => Some(seq_units(c, true)),
+        _ => non_seq_units(b),
+    }
+}
+
+#[inline(never)]
+fn non_seq_units<'a>(b: u64) -> Option<JsStr<'a>> {
+    let c = cell(b);
+    match cell_kind(b) {
+        3 => {
+            let second = rd(c, strf::SECOND);
+            (len_of(cell(second)) == 0).then(|| units(rd(c, strf::FIRST)))
+        }
+        4 => {
+            let (parent, off) = (rd(c, strf::PARENT), int32_of(rd(c, strf::OFFSET)) as usize);
+            let len = len_of(c);
+            Some(match units(parent) {
+                JsStr::Latin1(x) => JsStr::Latin1(&x[off..off + len]),
+                JsStr::Utf16(x) => JsStr::Utf16(&x[off..off + len]),
+            })
+        }
+        k => panic!("string kind {k} has no reader yet"),
+    }
+}
+
+/// The code units of a flat string cell (this file's own reads: hashing, compares, [`view`]).
+/// Panics on a CONS that is not flattened: callers check [`flat_units`] first or flatten.
+fn units<'a>(b: u64) -> JsStr<'a> {
+    match flat_units(b) {
+        Some(v) => v,
+        None => panic!("a flat read of a rope that is not flattened (flatten it first)"),
     }
 }
 
@@ -271,23 +369,274 @@ pub(crate) fn str_len(b: u64) -> usize {
     len_of(cell(b))
 }
 
-/// The flat form of the string `s` (H19). A GC point once strings can be ropes (M1); the
-/// identity in v0, where every string is SEQ_LATIN1 or SEQ_UTF16.
-pub(crate) fn flatten(_cx: &mut Cx, s: u64) -> u64 {
-    debug_assert!(matches!(cell_kind(s), 1 | 2), "v0 strings are flat");
-    s
+/// Does the flat form of `b` need UTF-16 storage? Not a GC point.
+fn is_two_byte(b: u64) -> bool {
+    match cell_kind(b) {
+        1 => false,
+        2 => true,
+        // SAFETY: `b` is a live CONS cell.
+        3 => (unsafe { cell(b).header().flags() } & FLAG_TWO_BYTE) != 0,
+        4 => is_two_byte(rd(cell(b), strf::PARENT)),
+        k => panic!("string kind {k} has no reader yet"),
+    }
 }
 
-/// The code units of the flat string `s`. The view borrows `cx`, so it ends before the next
-/// `&mut Cx` call (a GC point); [`Isolate::string_view`] shows the rule with a compile_fail
-/// test.
+/// The parts of a CONS cell that is not flattened.
+fn cons_parts(b: u64) -> (u64, u64) {
+    debug_assert_eq!(cell_kind(b), kind::CONS.get());
+    let c = cell(b);
+    (rd(c, strf::FIRST), rd(c, strf::SECOND))
+}
+
+/// The leaves of the string `b` in order (each a flat view), by a walk over the rope that
+/// allocates nothing on the JS heap (the parts still to visit are on a Rust `Vec`, empty for
+/// a flat string).
+struct Leaves<'a> {
+    next: Option<u64>,
+    /// Right parts still to visit (cells, so no raw Value list lives here; not a GC point).
+    stack: Vec<CellPtr>,
+    _view: core::marker::PhantomData<JsStr<'a>>,
+}
+
+impl<'a> Leaves<'a> {
+    fn new(b: u64) -> Leaves<'a> {
+        Leaves {
+            next: Some(b),
+            stack: Vec::new(),
+            _view: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<'a> Iterator for Leaves<'a> {
+    type Item = JsStr<'a>;
+
+    fn next(&mut self) -> Option<JsStr<'a>> {
+        let mut b = match self.next.take() {
+            Some(b) => b,
+            None => self.stack.pop()?.to_value().to_bits(),
+        };
+        loop {
+            if let Some(v) = flat_units(b) {
+                return Some(v);
+            }
+            // Visit `first`, then `second`, then the parts pending before.
+            let (first, second) = cons_parts(b);
+            if let Some(n) = self.next.replace(second) {
+                self.stack.push(cell(n));
+            }
+            b = first;
+        }
+    }
+}
+
+/// The code units of the string `b` in order (any kind; not a GC point).
+struct Units<'a> {
+    leaves: Leaves<'a>,
+    cur: JsStr<'a>,
+    i: usize,
+}
+
+impl<'a> Units<'a> {
+    fn new(b: u64) -> Units<'a> {
+        Units {
+            leaves: Leaves::new(b),
+            cur: JsStr::Latin1(&[]),
+            i: 0,
+        }
+    }
+}
+
+impl Iterator for Units<'_> {
+    type Item = u16;
+
+    #[inline]
+    fn next(&mut self) -> Option<u16> {
+        while self.i >= self.cur.len() {
+            self.cur = self.leaves.next()?;
+            self.i = 0;
+        }
+        let u = self.cur.at(self.i);
+        self.i += 1;
+        Some(u)
+    }
+}
+
+/// Code unit `i` of the string `b` (any kind; `i < str_len(b)`), by a walk down the rope:
+/// O(depth), no GC point. For readers that hold no `&mut Cx`, such as a check of the first
+/// unit of a name that may be an atom of rope kind (`interp/slow/lookup.rs`
+/// `is_private_name`; a fixer item of M4-P1).
+#[cfg_attr(not(test), allow(dead_code))] // caller: lookup.rs is_private_name (fixer, M4-P1)
+pub(crate) fn unit_at(b: u64, i: usize) -> u16 {
+    debug_assert!(i < str_len(b));
+    let (mut b, mut i) = (b, i);
+    loop {
+        if let Some(v) = flat_units(b) {
+            return v.at(i);
+        }
+        let (first, second) = cons_parts(b);
+        let lf = str_len(first);
+        if i < lf {
+            b = first;
+        } else {
+            (b, i) = (second, i - lf);
+        }
+    }
+}
+
+/// A destination of [`write_flat`]: Latin-1 bytes or UTF-16 code units.
+trait FlatUnit: Copy {
+    fn copy_from(dst: &mut [Self], src: JsStr<'_>);
+}
+
+impl FlatUnit for u8 {
+    fn copy_from(dst: &mut [u8], src: JsStr<'_>) {
+        match src {
+            JsStr::Latin1(x) => dst.copy_from_slice(x),
+            // A one-byte rope has only Latin-1 leaves (FLAG_TWO_BYTE); a SEQ_UTF16 leaf whose
+            // units all fit (tests make one) narrows exactly.
+            JsStr::Utf16(x) => {
+                for (d, &u) in dst.iter_mut().zip(x) {
+                    debug_assert!(u <= 0xFF);
+                    *d = u as u8;
+                }
+            }
+        }
+    }
+}
+
+impl FlatUnit for u16 {
+    fn copy_from(dst: &mut [u16], src: JsStr<'_>) {
+        match src {
+            JsStr::Latin1(x) => {
+                for (d, &u) in dst.iter_mut().zip(x) {
+                    *d = u16::from(u);
+                }
+            }
+            JsStr::Utf16(x) => dst.copy_from_slice(x),
+        }
+    }
+}
+
+/// Writes the code units of the string `b` (any kind) to `dst` (`dst.len() == str_len(b)`).
+/// Not a GC point. A part that is flat is written at once; the walk goes on into the other
+/// part, so the work stack grows only where both parts of a CONS are ropes.
+fn write_flat<T: FlatUnit>(b: u64, dst: &mut [T]) {
+    debug_assert_eq!(dst.len(), str_len(b));
+    let mut work: Vec<(CellPtr, usize)> = Vec::new();
+    let mut cur = Some((b, 0usize));
+    while let Some((s, at)) = cur.take() {
+        if let Some(v) = flat_units(s) {
+            T::copy_from(&mut dst[at..at + v.len()], v);
+        } else {
+            let (first, second) = cons_parts(s);
+            let mid = at + str_len(first);
+            match (flat_units(first), flat_units(second)) {
+                (Some(x), Some(y)) => {
+                    T::copy_from(&mut dst[at..mid], x);
+                    T::copy_from(&mut dst[mid..mid + y.len()], y);
+                }
+                (Some(x), None) => {
+                    T::copy_from(&mut dst[at..mid], x);
+                    cur = Some((second, mid));
+                }
+                (None, Some(y)) => {
+                    T::copy_from(&mut dst[mid..mid + y.len()], y);
+                    cur = Some((first, at));
+                }
+                (None, None) => {
+                    work.push((cell(second), mid));
+                    cur = Some((first, at));
+                }
+            }
+        }
+        if cur.is_none() {
+            cur = work.pop().map(|(c, at)| (c.to_value().to_bits(), at));
+        }
+    }
+}
+
+/// The text of the string `b` (any kind) as a view for `f`: the cell's own units when it is
+/// flat, else a Rust copy (Latin-1 when every leaf is). Not a GC point.
+pub(crate) fn with_text<R>(b: u64, f: impl FnOnce(JsStr<'_>) -> R) -> R {
+    if let Some(v) = flat_units(b) {
+        return f(v);
+    }
+    if is_two_byte(b) {
+        let mut buf = vec![0u16; str_len(b)];
+        write_flat(b, &mut buf);
+        f(JsStr::Utf16(&buf))
+    } else {
+        let mut buf = vec![0u8; str_len(b)];
+        write_flat(b, &mut buf);
+        f(JsStr::Latin1(&buf))
+    }
+}
+
+/// The flat form of the string `s` (H19, V9-D13): `s` itself when it is SEQ or SLICED; for a
+/// CONS the flat SEQ cell, which also becomes the CONS's first part (second = ""), so the
+/// next flatten of the same CONS allocates nothing. GC point (the flat cell). The caller
+/// holds every Value it needs after the call in a root (a Rust local: conservative scan).
+pub(crate) fn flatten(cx: &mut Cx, s: u64) -> u64 {
+    flatten_rt(cx.rt(), s)
+}
+
+/// [`flatten`] for callers that hold the runtime (GC point).
+pub(crate) fn flatten_rt(rt: &Runtime, s: u64) -> u64 {
+    debug_assert!(is_string(s));
+    match cell_kind(s) {
+        1 | 2 | 4 => s,
+        3 => flatten_cons(rt, s),
+        k => panic!("string kind {k} has no reader yet"),
+    }
+}
+
+#[inline(never)]
+fn flatten_cons(rt: &Runtime, s: u64) -> u64 {
+    let c = cell(s);
+    if str_len(rd(c, strf::SECOND)) == 0 {
+        return rd(c, strf::FIRST);
+    }
+    let len = len_of(c);
+    let two = is_two_byte(s);
+    // GC point: `s` is in a Rust local (conservative scan), and it holds its parts.
+    let f = alloc_string(rt, len, two);
+    // SAFETY: the new cell has room for `len` units of its encoding at +16 (alloc_string);
+    // no other reference to its data exists yet, and the parts are other cells.
+    unsafe {
+        if two {
+            write_flat(
+                s,
+                core::slice::from_raw_parts_mut(f.field::<u16>(strf::DATA), len),
+            );
+        } else {
+            write_flat(
+                s,
+                core::slice::from_raw_parts_mut(f.field::<u8>(strf::DATA), len),
+            );
+        }
+    }
+    // Same text, same hash field.
+    set_hash_field_raw(f, hash_field_raw(c));
+    let fb = f.to_value().to_bits();
+    // Barriered stores: the CONS may be older than the last GC point.
+    wr(&rt.heap, c, strf::FIRST, fb);
+    wr(&rt.heap, c, strf::SECOND, rt.atom(Atom::Empty));
+    fb
+}
+
+/// The code units of the flat string `s` (the result of [`flatten`], or any SEQ or SLICED
+/// string). The view borrows `cx`, so it ends before the next `&mut Cx` call (a GC point);
+/// [`Isolate::string_view`] shows the rule with a compile_fail test. Panics on a CONS that is
+/// not flattened (debug and release: a read of its +16 would not be code units).
 pub(crate) fn view<'c>(_cx: &'c Cx, s: u64) -> JsStr<'c> {
     units(s)
 }
 
 impl Isolate {
     /// The code units of `v` if it is a live string cell of this isolate's heap, without a
-    /// copy; `None` for any other `v`. A raw `Value` is not a root, so the method checks `v`
+    /// copy (a rope is flattened first, H19: that allocation is the call's only GC point, and
+    /// the flat form is kept); `None` for any other `v`. A raw `Value` is not a root, so the method checks `v`
     /// before it reads it (H20-Q4, Codex W4-1): a `Value` of a freed cell, of another heap
     /// or of an isolate that was dropped, or bits that do not start a cell, give `None`. If a
     /// freed cell's memory now holds a new live string, the view shows that string: the text
@@ -362,13 +711,20 @@ impl Isolate {
         // `Heap::is_cell` finishes the lazy sweep, then accepts only the start of a live cell
         // in this heap's cage, so `is_string` reads the word0 of a live cell (H20-Q4).
         let live = is_cell_bits(b) && self.rt.heap.is_cell(b as usize);
-        (live && is_string(b)).then(|| view(&self.cx, b))
+        if !(live && is_string(b)) {
+            return None;
+        }
+        // GC point for a rope only: `b` is in this frame (conservative scan).
+        let f = flatten_rt(&self.rt, b);
+        Some(view(&self.cx, f))
     }
 }
 
 /// The string of `s[i]` (`i < str_len(s)`): the single-character atom for a Latin-1 code unit
-/// (one table per isolate, filled lazily), a new string otherwise. GC point.
+/// (one table per isolate, filled lazily), a new string otherwise. GC point (a rope is
+/// flattened first, so a loop over `s[i]` reads it in O(1) per unit).
 pub(crate) fn char_at(rt: &Runtime, s: u64, i: usize) -> u64 {
+    let s = flatten_rt(rt, s);
     let u = units(s).at(i);
     match u8::try_from(u) {
         Ok(c) => single_char(rt, c),
@@ -448,7 +804,8 @@ pub(crate) fn new_string(rt: &Runtime, s: &str) -> u64 {
 }
 
 /// `a + b` for two strings. `None` if the result is longer than [`MAX_STRING_LENGTH`]; the
-/// caller throws RangeError "Invalid string length".
+/// caller throws RangeError "Invalid string length". GC point. A result of at least
+/// [`MIN_CONS_LENGTH`] code units is a CONS cell (O(1); H19), a shorter one a flat copy.
 pub(crate) fn concat(rt: &Runtime, a: u64, b: u64) -> Option<u64> {
     let (la, lb) = (str_len(a), str_len(b));
     if lb == 0 {
@@ -458,36 +815,99 @@ pub(crate) fn concat(rt: &Runtime, a: u64, b: u64) -> Option<u64> {
         return Some(b);
     }
     let len = la.checked_add(lb).filter(|&n| n <= MAX_STRING_LENGTH)?;
-    let (va, vb) = (units(a), units(b));
-    // v0: flat concatenation (H19 adds ropes for length >= 13).
-    let r = match (va, vb) {
-        (JsStr::Latin1(x), JsStr::Latin1(y)) => {
-            let c = alloc_string(rt, len, false);
-            // SAFETY: the new cell has room for la + lb bytes; the sources are live strings
-            // (the caller holds them) and do not overlap the new cell.
-            unsafe {
-                let d = c.field::<u8>(strf::DATA);
-                core::ptr::copy_nonoverlapping(x.as_ptr(), d, la);
-                core::ptr::copy_nonoverlapping(y.as_ptr(), d.add(la), lb);
-            }
-            c
+    if len >= MIN_CONS_LENGTH {
+        return Some(new_cons(rt, a, b, len));
+    }
+    // Both parts are shorter than MIN_CONS_LENGTH, so they are flat (SEQ); `write_flat`
+    // reads any kind anyway.
+    let two = is_two_byte(a) || is_two_byte(b);
+    let c = alloc_string(rt, len, two);
+    // SAFETY: the new cell has room for `len` units of its encoding at +16 (alloc_string);
+    // the sources are live strings (the caller holds them) and other cells.
+    unsafe {
+        if two {
+            let d = core::slice::from_raw_parts_mut(c.field::<u16>(strf::DATA), len);
+            write_flat(a, &mut d[..la]);
+            write_flat(b, &mut d[la..]);
+        } else {
+            let d = core::slice::from_raw_parts_mut(c.field::<u8>(strf::DATA), len);
+            write_flat(a, &mut d[..la]);
+            write_flat(b, &mut d[la..]);
         }
-        _ => {
-            let c = alloc_string(rt, len, true);
-            // SAFETY: the new cell has room for len u16 code units.
-            let d = unsafe { core::slice::from_raw_parts_mut(c.field::<u16>(strf::DATA), len) };
-            for (i, x) in d.iter_mut().enumerate() {
-                *x = if i < la { va.at(i) } else { vb.at(i - la) };
-            }
-            c
+    }
+    Some(c.to_value().to_bits())
+}
+
+/// A new CONS cell `first + second` of `len` code units (both parts non-empty). GC point.
+fn new_cons(rt: &Runtime, first: u64, second: u64, len: usize) -> u64 {
+    debug_assert!(len == str_len(first) + str_len(second) && len <= MAX_STRING_LENGTH);
+    let two = is_two_byte(first) || is_two_byte(second);
+    // GC point: `first` and `second` are in this frame (conservative scan).
+    let c = rt.alloc(kind::CONS, strf::ROPE_SIZE);
+    // SAFETY: the new cell is 32 bytes; +8 and +12 are its length and hash field.
+    unsafe {
+        c.field::<u32>(strf::LENGTH).write(len as u32);
+        c.field::<u32>(strf::HASH).write(0);
+        if two {
+            let h = c.header();
+            h.set_flags(h.flags() | FLAG_TWO_BYTE);
         }
+    }
+    // E2: initializing stores, no GC point since the allocation.
+    init(c, strf::FIRST, first);
+    init(c, strf::SECOND, second);
+    c.to_value().to_bits()
+}
+
+/// The substring `s[from..to]` (`from <= to <= str_len(s)`), for String.prototype.substring,
+/// slice and the like. GC point. A result of at least [`MIN_SLICE_LENGTH`] code units is a
+/// SLICED cell over the flat parent (O(1) after the flatten; H19), a shorter one a copy.
+#[cfg_attr(not(test), allow(dead_code))] // caller: the Cx substring ABI (fixer, M4-P1)
+pub(crate) fn substring(rt: &Runtime, s: u64, from: usize, to: usize) -> u64 {
+    let n = str_len(s);
+    assert!(from <= to && to <= n, "substring {from}..{to} of {n} units");
+    let len = to - from;
+    if len == n {
+        return s;
+    }
+    if len == 0 {
+        return rt.atom(Atom::Empty);
+    }
+    // GC point for a rope: `s` is in this frame.
+    let f = flatten_rt(rt, s);
+    if len < MIN_SLICE_LENGTH {
+        let r = match units(f) {
+            JsStr::Latin1(x) => new_string_latin1(rt, &x[from..to]),
+            JsStr::Utf16(x) => new_string_utf16(rt, &x[from..to]),
+        };
+        return r;
+    }
+    let (parent, off) = if cell_kind(f) == kind::SLICED.get() {
+        let c = cell(f);
+        (
+            rd(c, strf::PARENT),
+            int32_of(rd(c, strf::OFFSET)) as usize + from,
+        )
+    } else {
+        (f, from)
     };
-    Some(r.to_value().to_bits())
+    // GC point: `parent` is in this frame.
+    let c = rt.alloc(kind::SLICED, strf::ROPE_SIZE);
+    // SAFETY: the new cell is 32 bytes; +8 and +12 are its length and hash field.
+    unsafe {
+        c.field::<u32>(strf::LENGTH).write(len as u32);
+        c.field::<u32>(strf::HASH).write(0);
+    }
+    // E2: initializing stores. The offset is below 2^29, so it fits an int32.
+    init(c, strf::PARENT, parent);
+    init(c, strf::OFFSET, int32_bits(off as i32));
+    c.to_value().to_bits()
 }
 
 // ---- atoms, hashes and keys (used by atoms.rs and key.rs) ------------------------------------
 
-/// True if `b` is an atom: a string cell with the ATOM flag.
+/// True if `b` is an atom: a string cell with the ATOM flag (any string kind; a rope that
+/// `atoms::intern` met keeps its kind).
 #[inline]
 pub(crate) fn is_atom(b: u64) -> bool {
     if !is_cell_bits(b) {
@@ -513,15 +933,30 @@ pub(crate) fn hash_field(b: u64) -> u32 {
     if f & HASH_COMPUTED != 0 {
         return f;
     }
-    let f = units(b).hash_field();
+    let f = match flat_units(b) {
+        Some(v) => v.hash_field(),
+        None => rope_hash_field(b),
+    };
     set_hash_field_raw(c, f);
     f
+}
+
+/// The hash field of a CONS that is not flattened, by a walk (no JS-heap allocation).
+#[inline(never)]
+fn rope_hash_field(b: u64) -> u32 {
+    // An array index has at most 10 digits; a rope that short (none today: CONS cells have
+    // at least MIN_CONS_LENGTH units) takes the flat path on a copy.
+    if str_len(b) <= 10 {
+        return with_text(b, |t| t.hash_field());
+    }
+    let h = sip13_iter(sip_keys(), str_len(b), Units::new(b));
+    HASH_COMPUTED | ((h as u32 & HASH_MASK) << HASH_SHIFT)
 }
 
 /// Stores the hash field of a new string whose text was hashed before allocation.
 pub(crate) fn set_hash_field(b: u64, field: u32) {
     debug_assert!(field & HASH_COMPUTED != 0);
-    debug_assert_eq!(field, units(b).hash_field());
+    debug_assert_eq!(field, with_text(b, |t| t.hash_field()));
     set_hash_field_raw(cell(b), field);
 }
 
@@ -562,22 +997,54 @@ pub(crate) fn array_index(b: u64) -> Option<u32> {
             return None;
         }
     }
-    units(b).array_index()
+    match flat_units(b) {
+        Some(v) => v.array_index(),
+        None => with_text(b, |t| t.array_index()),
+    }
 }
 
-/// Equal code units.
+/// Equal code units (any string kinds; not a GC point).
 pub(crate) fn equals(a: u64, b: u64) -> bool {
-    a == b || units(a).eq(&units(b))
+    if a == b {
+        return true;
+    }
+    match (flat_units(a), flat_units(b)) {
+        (Some(x), Some(y)) => x.eq(&y),
+        _ => rope_equals(a, b),
+    }
 }
 
-/// Equal code units with a text that is not a cell.
+#[inline(never)]
+fn rope_equals(a: u64, b: u64) -> bool {
+    if str_len(a) != str_len(b) {
+        return false;
+    }
+    let (fa, fb) = (hash_field_raw(cell(a)), hash_field_raw(cell(b)));
+    if fa & fb & HASH_COMPUTED != 0 && fa != fb {
+        return false;
+    }
+    Units::new(a).eq(Units::new(b))
+}
+
+/// Equal code units with a text that is not a cell (any string kind; not a GC point).
 pub(crate) fn equals_text(a: u64, text: JsStr<'_>) -> bool {
-    units(a).eq(&text)
+    match flat_units(a) {
+        Some(v) => v.eq(&text),
+        None => str_len(a) == text.len() && Units::new(a).eq((0..text.len()).map(|i| text.at(i))),
+    }
 }
 
-/// The text of the string `b` (lone surrogates become U+FFFD).
+/// Code-unit order of two strings (IsLessThan, §7.2.13; any kinds; not a GC point).
+pub(crate) fn compare(a: u64, b: u64) -> core::cmp::Ordering {
+    match (flat_units(a), flat_units(b)) {
+        (Some(x), Some(y)) => x.cmp(&y),
+        _ => Units::new(a).cmp(Units::new(b)),
+    }
+}
+
+/// The text of the string `b` (any kind; lone surrogates become U+FFFD). Not a GC point.
 pub(crate) fn to_rust_string(b: u64) -> String {
-    units(b).to_string_lossy()
+    with_text(b, |t| t.to_string_lossy())
 }
 
 // ---- the hash function -------------------------------------------------------------------------
@@ -687,6 +1154,21 @@ fn sip13_units_with<T: Copy + Into<u64>>(keys: (u64, u64), units: &[T]) -> u64 {
         last |= w(u) << (16 * j);
     }
     s.finish(last)
+}
+
+/// [`sip13_units_with`] over `len` code units from an iterator (a rope walk).
+fn sip13_iter(keys: (u64, u64), len: usize, units: impl Iterator<Item = u16>) -> u64 {
+    let mut s = Sip::new(keys);
+    let (mut word, mut n) = (0u64, 0u32);
+    for u in units {
+        word |= u64::from(u) << (16 * n);
+        n += 1;
+        if n == 4 {
+            s.word(word);
+            (word, n) = (0, 0);
+        }
+    }
+    s.finish(word | ((2 * len) as u64 & 0xff) << 56)
 }
 
 /// The process hash of code units (Latin-1 bytes or UTF-16 units hash alike).
