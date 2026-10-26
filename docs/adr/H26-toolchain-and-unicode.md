@@ -74,7 +74,7 @@ State on 2026-10-26 (M4-P0): `regress` is in the graph, as the crates.io release
 | ID | Question | Needed by | Proposed default |
 |---|---|---|---|
 | H26-Q1 | How the root toolchain is bumped, and whether a bump is an ADR amendment. The plan says only "same as tsrs" (08 §1) | Before the first bump | A bump PR of its own; kind **fill**; needs the 4-target CI and the parse runner green |
-| H26-Q2 | What happens when tsrs moves to a newer channel than the root pin? `sync-tsrs.sh` reads tsrs's channel, so the tools follow tsrs; the engine does not | Next tsrs pin bump | Engine stays; bump it in a separate PR |
+| H26-Q2 | What happens when tsrs moves to a newer channel than the root pin? `sync-tsrs.sh` reads tsrs's channel, so the tools follow tsrs; the engine does not | The first tsrs pin bump that moves tsrs's channel (the 745eb10 bump, 2026-10-26, kept 1.99.1 on both sides, so the case did not come up) | Engine stays; bump it in a separate PR |
 | H26-Q3 | Which nightly date is pinned for `fuzz/` and sanitizers | M1 (fuzzing starts) | Pin one date in `fuzz/rust-toolchain.toml` |
 
 ## Reopens if
@@ -92,6 +92,7 @@ State on 2026-10-26 (M4-P0): `regress` is in the graph, as the crates.io release
 | 2026-10-22 | clarify | Review record row 2 names the P5 Codex run (slice accept4): 2 findings, A1 on H23 and A2 on H04, both fixed (clarify); no finding on this ADR. Text only; no check changes | orchestrator |
 | 2026-10-22 | clarify | Status Draft -> Accepted (M2-P5-ACCEPT). The §3.1 review record is complete: row 1 P4-ACCEPT-3, row 2 Codex (m2p4-docs run; P5 accept4 run), row 3 P5-ACCEPT-4 (with the P5 round-2 notes), row 4 data. The orchestrator did not write the rows it approves. No check changes | orchestrator |
 | 2026-10-26 | clarify (proposed; Accepted path) | Crates line: `ep9_regexp` is in the tree since M4-P0 (the `Backend` trait stub; only `ep9_vm` depends on it). A "State on 2026-10-26 (M4-P0)" paragraph after the 2026-10-22 one: `regress` =0.12.0 (crates.io, feature `utf16`) is in the graph only through `ep9_regexp`; no code calls it; no fork yet; its Unicode version is not checked yet. The 2026-10-22 paragraph stays as history. Text only; no check changes. Review record for this amendment (README §3.1; plan v9 rule 21): rows 1 and 3 the M4-P0 Claude reviewer (the fixer wrote this row), row 2 the orchestrator's Codex run (row text by the M4-P0 integration fixer from the Codex texts), row 4 data (copied by the M4-P0 integration fixer); the rows are Pending; the orchestrator approves | M4-P0 integration fixer |
+| 2026-10-26 | clarify | H26-Q2 "Needed by": the tsrs pin bump f527e984 -> 745eb10a kept `channel = "1.99.1"` in tsrs's `rust-toolchain.toml`, the same as the root pin, so Q2 is now due at the first bump that moves tsrs's channel. The question and its proposed default are unchanged. Text only; no check changes. Review record rows 1-4 and Approval: pending | tsrs bump implementer |
 
 ## Review record
 
@@ -106,3 +107,4 @@ State on 2026-10-26 (M4-P0): `regress` is in the graph, as the crates.io release
 | 3 Verifier (M4-P0 amendment: the 2026-10-26 ep9_regexp and regress state clarify) | Pending (M4-P0 Claude reviewer: the integration fixer wrote the change, so it does not fill this row; plan v9 rule 21) | Pending | |
 | 4 Data (M4-P0 amendment: the 2026-10-26 ep9_regexp and regress state clarify) | Pending (M4-P0 integration fixer, runs only) | Pending | |
 | Approval (M4-P0 amendment: the 2026-10-26 ep9_regexp and regress state clarify) | orchestrator (README §3.2); it wrote none of the change and none of rows 1-4 | **Pending** | README §3.2 |
+| 1-4, Approval (tsrs-bump amendment: the 2026-10-26 H26-Q2 clarify row) | pending | Pending. Agents that did not write the clarify row fill rows 1-4 and the Approval row (README §3.1, §3.2). Data for row 4 from the bump run: tsrs 745eb10a `rust-toolchain.toml` channel 1.99.1 (root pin 1.99.1); `bash scripts/sync-tsrs.sh` exit 0; `bash .github/scripts/dep-guards.sh` 29 PASS, 0 FAIL | pending |
