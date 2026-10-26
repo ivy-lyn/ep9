@@ -45,6 +45,8 @@ fn one_space(t: &str) -> String {
 }
 
 #[test]
+// Miri runs with isolation on, so it cannot open the source files this test reads.
+#[cfg_attr(miri, ignore)]
 fn core_math_ports_keep_the_upstream_notices() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let licence = one_space(&read(&dir.join("../../THIRD-PARTY-LICENSE")));
