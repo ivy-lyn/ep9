@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 # The CI scope of a commit range (docs/plan/12-governance.md section 3; plan v9 V9-A18).
 #
-#   bash .github/scripts/ci-scope.sh <base> <head>
+#   bash .github/scripts/ci-scope.sh <base> <head>               (push, workflow_dispatch)
+#   bash .github/scripts/ci-scope.sh --merge-base <base> <head>  (pull_request)
 #   bash .github/scripts/ci-scope.sh --self-test
 #
 # Prints one line on stdout: docs_only=true or docs_only=false. The reasons go to stderr.
 #
+# The range. Without --merge-base it is <base>..<head>, and <base> must be an ancestor of <head>:
+# a push's `before` that is not an ancestor (a force-push) gives docs_only=false, because the
+# merge base is not the tree that was there before (the push may drop a code change). With
+# --merge-base it is merge-base(<base>, <head>)..<head>: the changes of a pull request's head
+# since it left the base branch (the base branch's own commits had their own push runs).
+#
 # It is an allow-list and it fails closed. docs_only=true only when every path that changed
-# between merge-base(<base>, <head>) and <head> was added or modified (git status A or M), and
+# in the range was added or modified (git status A or M), and
 # each one is under docs/ or is a *.md file in the repo root, and none of them is:
 #   - docs/adr/README.md     (m0-exit reads it from the live tree, also in its tests:
 #                             tools/xtask/src/m0_exit.rs adr_index and its tests)
@@ -15,8 +22,8 @@
 # Any other path (a *.md under crates/, tools/, spikes/, expectations/ or infra/ too: for example
 # crates/ep9_builtins/TEMPLATES.md is a doctest source), a delete, a rename (with --no-renames git
 # shows it as a delete plus an add), a type change, an empty range (an empty commit is a CI
-# re-run, plan v9 rule 27), a base or head that git cannot find, no merge base, or any git error
-# gives docs_only=false. A code reader of another docs/ path must be added to EXCLUDED below.
+# re-run, plan v9 rule 27), a base or head that git cannot find, a base that is not an ancestor
+# of head (without --merge-base), no merge base, or any git error gives docs_only=false. A code reader of another docs/ path must be added to EXCLUDED below.
 #
 # Exit 0 with the line above; exit 2 on a usage error (and no line). --self-test builds a
 # throwaway repo in a temp dir, runs this script on its fixture ranges and exits 0 only if every
@@ -27,7 +34,7 @@ set -u
 EXCLUDED=(docs/adr/README.md docs/measurements/)
 
 usage() {
-  echo "usage: bash .github/scripts/ci-scope.sh <base> <head> | --self-test" >&2
+  echo "usage: bash .github/scripts/ci-scope.sh [--merge-base] <base> <head> | --self-test" >&2
   exit 2
 }
 
@@ -55,14 +62,25 @@ docs_path() {
   return 1
 }
 
+# scope <ancestor|merge-base> <base> <head>
 scope() {
-  local base="$1" head="$2" b h mb status path n=0
+  local mode="$1" base="$2" head="$3" b h mb rc status path n=0
   [ -n "$base" ] && [ -n "$head" ] || closed "empty base or head"
   case "$base$head" in -* | *[[:space:]]*) closed "base or head looks like an option or has a space" ;; esac
   case "$head" in -*) closed "head looks like an option" ;; esac
   b="$(git rev-parse --verify --quiet "$base^{commit}")" || closed "base $base is not a commit here"
   h="$(git rev-parse --verify --quiet "$head^{commit}")" || closed "head $head is not a commit here"
-  mb="$(git merge-base "$b" "$h")" || closed "no merge base of $b and $h"
+  if [ "$mode" = merge-base ]; then
+    mb="$(git merge-base "$b" "$h")" || closed "no merge base of $b and $h"
+  else
+    rc=0
+    git merge-base --is-ancestor "$b" "$h" || rc=$?
+    case "$rc" in
+      0) mb="$b" ;;
+      1) closed "base $b is not an ancestor of head $h (a force-push?)" ;;
+      *) closed "git merge-base --is-ancestor $b $h failed ($rc)" ;;
+    esac
+  fi
   # -z: one NUL after the status and one after the path, so no path is quoted or split.
   # A temp file keeps git's exit status (a pipe or a process substitution would lose it).
   list="$(mktemp)" || closed "mktemp failed"
@@ -150,10 +168,31 @@ c.md"'
   if [ "$got" = docs_only=false ]; then echo "PASS empty base: $got"; else echo "FAIL empty base: got '$got'"; fail=1; fi
   got="$(cd "$tmp" && bash "$self" --output=x "$c0" 2> /dev/null)"
   if [ "$got" = docs_only=false ] && [ ! -e "$tmp/x" ]; then echo "PASS option as base: $got"; else echo "FAIL option as base: got '$got'"; fail=1; fi
+  # A force-push: main was c0 -> C (a code change); the push replaces it with c0 -> D (docs
+  # only). The tree moves from C to D, which drops C's code change, so a push range C..D is not
+  # docs-only. A pull request with base C and head D is (D's own change since c0 is docs).
+  local c_code c_docs
+  git -C "$tmp" checkout -q --detach "$c0"
+  (cd "$tmp" && echo f >> crates/ep9_builtins/src/lib.rs && git commit -qam C) > /dev/null 2>&1
+  c_code="$(git -C "$tmp" rev-parse HEAD)"
+  git -C "$tmp" checkout -q --detach "$c0"
+  (cd "$tmp" && echo f >> docs/adr/H16.md && git commit -qam D) > /dev/null 2>&1
+  c_docs="$(git -C "$tmp" rev-parse HEAD)"
+  got="$(cd "$tmp" && bash "$self" "$c_code" "$c_docs" 2> /dev/null)"
+  if [ "$got" = docs_only=false ]; then echo "PASS force-push (base not an ancestor): $got"; else echo "FAIL force-push (base not an ancestor): got '$got'"; fail=1; fi
+  got="$(cd "$tmp" && bash "$self" --merge-base "$c_code" "$c_docs" 2> /dev/null)"
+  if [ "$got" = docs_only=true ]; then echo "PASS pull request (--merge-base) docs head: $got"; else echo "FAIL pull request (--merge-base) docs head: got '$got'"; fail=1; fi
+  got="$(cd "$tmp" && bash "$self" --merge-base "$c_docs" "$c_code" 2> /dev/null)"
+  if [ "$got" = docs_only=false ]; then echo "PASS pull request (--merge-base) code head: $got"; else echo "FAIL pull request (--merge-base) code head: got '$got'"; fail=1; fi
+  got="$(cd "$tmp" && bash "$self" "$c_docs" "$c_docs" 2> /dev/null)"
+  if [ "$got" = docs_only=false ]; then echo "PASS base = head: $got"; else echo "FAIL base = head: got '$got'"; fail=1; fi
+
   git -C "$tmp" checkout -q --orphan other > /dev/null 2>&1
   (cd "$tmp" && git rm -rq --cached . && echo z > docs/z.md && git add docs/z.md && git commit -q -m other) > /dev/null 2>&1
   got="$(cd "$tmp" && bash "$self" "$c0" other 2> /dev/null)"
-  if [ "$got" = docs_only=false ]; then echo "PASS no merge base: $got"; else echo "FAIL no merge base: got '$got'"; fail=1; fi
+  if [ "$got" = docs_only=false ]; then echo "PASS no common history: $got"; else echo "FAIL no common history: got '$got'"; fail=1; fi
+  got="$(cd "$tmp" && bash "$self" --merge-base "$c0" other 2> /dev/null)"
+  if [ "$got" = docs_only=false ]; then echo "PASS no merge base (--merge-base): $got"; else echo "FAIL no merge base (--merge-base): got '$got'"; fail=1; fi
 
   rm -rf "$tmp"
   if [ "$fail" -eq 0 ]; then echo "ci-scope self-test: all fixtures pass"; else echo "ci-scope self-test: FAIL"; fi
@@ -162,6 +201,7 @@ c.md"'
 
 case "$#:${1-}" in
   1:--self-test) self_test; exit $? ;;
-  2:*) scope "$1" "$2" ;;
+  2:*) scope ancestor "$1" "$2" ;;
+  3:--merge-base) scope merge-base "$2" "$3" ;;
   *) usage ;;
 esac

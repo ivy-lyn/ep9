@@ -61,8 +61,8 @@ on:
   # needs all 4 targets, and a nightly run would start every job even when main did not move.
   workflow_dispatch:
     inputs:
-      # A dispatch has no pushed range. Empty: docs_only=false, every job runs. A commit: scope
-      # reads the range from it to the dispatched commit (a CI probe of the docs-only path).
+      # A dispatch has no pushed range. Empty: docs_only=false, every job runs. A commit: the range
+      # from it to the dispatched commit, an ancestor or false (a CI probe of the docs-only path).
       scope_base:
         description: "scope: base commit of the range (empty: run every job)"
         required: false
@@ -117,9 +117,9 @@ jobs:
       # t0-dispatch.mjs statistics (PERF-NOISE ranks, verdicts, arguments); no ep9 build needed.
       - run: node --test tools/bench/workloads/t0-dispatch.test.mjs
 
-  # docs_only for the range of this event: pull_request: merge-base(base, head)..head; push:
-  # before..sha; workflow_dispatch: inputs.scope_base..sha (empty input: false). The script is an
-  # allow-list and fails closed (an unknown range, a delete, a rename, an empty range: false).
+  # docs_only for the range of this event: pull_request: merge-base(base, head)..head (--merge-base);
+  # push: before..sha, workflow_dispatch: inputs.scope_base..sha, base an ancestor of sha or false
+  # (a force-push, no input). The script is an allow-list and fails closed (see its header).
   # Full history, no blobs: the script needs commits and trees only (--no-renames).
   scope:
     name: scope
@@ -146,17 +146,17 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           case "$EVENT" in
-            pull_request) base="$PR_BASE" head="$PR_HEAD" ;;
-            push) base="$PUSH_BEFORE" head="$SHA" ;;
-            workflow_dispatch) base="$DISPATCH_BASE" head="$SHA" ;;
-            *) base="" head="$SHA" ;;
+            pull_request) base="$PR_BASE" head="$PR_HEAD" mode=(--merge-base) ;;
+            push) base="$PUSH_BEFORE" head="$SHA" mode=() ;;
+            workflow_dispatch) base="$DISPATCH_BASE" head="$SHA" mode=() ;;
+            *) base="" head="$SHA" mode=() ;;
           esac
           rc=0
           if [ -z "$base" ]; then
             echo "scope: no base for event $EVENT"
             out="docs_only=false"
           else
-            out="$(bash .github/scripts/ci-scope.sh "$base" "$head")" || rc=$?
+            out="$(bash .github/scripts/ci-scope.sh "${mode[@]}" "$base" "$head")" || rc=$?
           fi
           case "$out" in
             docs_only=true | docs_only=false) ;;
