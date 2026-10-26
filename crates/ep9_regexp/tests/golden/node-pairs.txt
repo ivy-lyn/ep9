@@ -1,4 +1,4 @@
-# RX0A differential golden (M4-P2): 500 (pattern, flags, lastIndex, input) cases and the
+# RX0A differential golden (M4-P2): 523 (pattern, flags, lastIndex, input) cases and the
 # result of one RegExp.prototype.exec in node v24.22.1. Columns are tab separated;
 # strings: printable ASCII, \\ for a backslash, \uXXXX for any other code unit. Result:
 # null | error (SyntaxError at compile) | match s-e ... (capture spans; - = not taken part).
@@ -503,3 +503,26 @@ x?	g	0		match 0-0
 \\B		0	emoji \ud83d\ude00\ud83d\ude4a and \ud800 lone	match 1-1
 \\B		0	line1\u000aline2\u000d\u000aline3\u2028end	match 1-1
 \\B		0		match 0-0
+\\uD800\\u0061	u	0	\ud800a	match 0-2
+\\uD800\\u0061	u	0	\ud8000061	null
+\\uD800\\u{61}	u	0	\ud800a	match 0-2
+\\uD800\\uD800	u	0	\ud800\ud800	match 0-2
+\\uD800\\uDC00	u	0	\ud800\udc00	match 0-2
+[\\uD800\\u0061]	u	0	a	match 0-1
+\\uDC00\\u0061	u	0	\udc00a	match 0-2
+\\\\uD800\\u0061	u	0	\\uD800a	match 0-7
+\\uD800\\u12	u	0	\ud800	error
+\\uD800\\u0061	v	0	\ud800a	match 0-2
+\\uD800\\u0061	v	0	\ud8000061	null
+\\uD800\\u{61}	v	0	\ud800a	match 0-2
+\\uD800\\uD800	v	0	\ud800\ud800	match 0-2
+\\uD800\\uDC00	v	0	\ud800\udc00	match 0-2
+[\\uD800\\u0061]	v	0	a	match 0-1
+\\uDC00\\u0061	v	0	\udc00a	match 0-2
+\\\\uD800\\u0061	v	0	\\uD800a	match 0-7
+\\uD800\\u12	v	0	\ud800	error
+[a-z]	i	0	\u212a	null
+[a-z]	i	0	\u017f	null
+\\W	i	0	\u212a	match 0-1
+\\W	i	0	\u017f	match 0-1
+(s)\\1	i	0	s\u017f	null

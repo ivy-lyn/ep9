@@ -10,6 +10,7 @@
 //! | `a_dead_regexp_frees_its_program` | the weak source frees the table entry of a RegExp that died, and the index is reused (V9-A7) |
 //! | `exec_runs_a_pending_interrupt` | a requested interrupt runs at the exec's poll, then the match goes on |
 //! | `exec_stops_on_termination` | a termination request ends the exec with the uncatchable termination |
+//! | `exec_keeps_the_receiver_across_the_flatten` | under GC stress, an exec whose only RegExp root is its argument keeps the program while the rope subject is flattened (fails before the fix in release only) |
 
 use core::hint::black_box;
 use std::sync::Arc;
@@ -364,4 +365,60 @@ fn exec_stops_on_termination() {
         cx.regexp_exec(r, s, 0).map(|m| m.is_some())
     });
     assert!(out.is_err(), "the termination ends the exec: {out:?}");
+}
+
+// ---- the receiver stays live through the exec (Codex M4-P2 R1B, high) ----
+// The caller's only copy of the RegExp is the argument of `regexp_exec`: it is made in a
+// frame below a pad, only its masked bits come back, and the stack is scrubbed before the
+// call. Flattening the rope subject then allocates, and under GC stress that collects; in an
+// optimized build `exec` must still hold the receiver, or the weak source frees its program
+// and the exec panics ("a live RegExp holds a live program index"). Debug builds keep every
+// local in a stack slot, so this test fails before the fix only in release
+// (`cargo test --release -p ep9_vm --lib tests::regexp`).
+
+/// A RegExp `b+` made below a pad; returns its masked bits only.
+#[inline(never)]
+fn masked_regexp(cx: &mut Cx<'_>) -> usize {
+    let mut pad = [0usize; 8192];
+    black_box(&mut pad);
+    let r = re(cx, "b+", "");
+    let m = black_box(r.bits() as usize) ^ MASK;
+    black_box(&mut pad);
+    m
+}
+
+/// One exec on `s` of the RegExp whose masked bits are `masked`; nothing else holds the
+/// RegExp (the bits are unmasked only into the argument).
+#[inline(never)]
+fn exec_unrooted<'s>(cx: &mut Cx<'s>, masked: usize, s: u64) -> Option<(usize, usize)> {
+    let r: Local<'s> = Local::from_bits((black_box(masked) ^ MASK) as u64);
+    let s: Local<'s> = Local::from_bits(s);
+    let m = cx
+        .regexp_exec(r, s.as_string().unwrap(), 0)
+        .unwrap()
+        .unwrap();
+    Some((m.start(), m.end()))
+}
+
+#[test]
+fn exec_keeps_the_receiver_across_the_flatten() {
+    let mut iso = isolate(config(Dispatch::DEFAULT, true));
+    {
+        let mut cx = Cx::new(&mut iso.cx);
+        for i in 0..64 {
+            let rt = cx.inner().rt();
+            let a = object_string(rt, &"a".repeat(200));
+            let b = object_string(rt, &"b".repeat(200));
+            let rope = black_box(crate::string::concat(rt, a, b).expect("a rope"));
+            let masked = masked_regexp(&mut cx);
+            scrub_stack();
+            assert_eq!(
+                exec_unrooted(&mut cx, masked, rope),
+                Some((200, 400)),
+                "iteration {i}"
+            );
+        }
+    }
+    iso.collect_garbage();
+    iso.verify_heap().unwrap();
 }

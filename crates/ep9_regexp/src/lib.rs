@@ -23,11 +23,12 @@
 //! | `poll` runs once per exec, before the search | regress has no hook inside a search: one `Matches::next` call tries every start position | an interrupt waits until the running exec ends |
 //! | No backtrack budget | regress counts no steps | [`ExecResult::BudgetExceeded`] is never returned |
 //! | Sticky (`y`) is the first match from `start`, kept only if it starts at `start` | regress has no single-position attempt | a failing sticky exec scans to the end |
-//! | Non-Unicode `i`: a class, `\w` and `\W` use Unicode simple case folding; a literal skips the ASCII rule of Canonicalize (§22.2.2.7.3) | regress 0.12.0 defect | `/\w/i` matches U+017F and U+212A, `/\u017f/i` matches `s` (6 lines of the node golden, `tests/node_pairs.rs` KNOWN) |
+//! | Non-Unicode `i`: a class, `\w` and `\W` use Unicode simple case folding; a literal and a backreference skip the ASCII rule of Canonicalize (§22.2.2.7.3) | regress 0.12.0 defect | `/\w/i` and `/[a-z]/i` match U+017F and U+212A, `/\W/i` does not, `/\u017f/i` matches `s`, `/(s)\1/i` matches `s\u017f` (11 lines of the node golden, `tests/node_pairs.rs` KNOWN) |
 //!
 //! RX0 fixes in this crate, before regress sees the pattern or the start: `legacy_chars`
-//! (`\u{` and surrogate escapes without `u`) and the start inside a surrogate pair (Unicode
-//! mode starts at the pair, as V8). The node golden `tests/golden/node-pairs.txt` (500 cases,
+//! (`\u{` and surrogate escapes without `u`), `unicode_chars` (a lead-surrogate escape before
+//! another `\u` escape, `u` and `v`) and the start inside a surrogate pair (Unicode mode
+//! starts at the pair, as V8). The node golden `tests/golden/node-pairs.txt` (523 cases,
 //! node v24.22.1) checks the backend.
 #![forbid(unsafe_code)]
 
@@ -213,19 +214,61 @@ impl Rx0Program {
 }
 
 /// The pattern as code points for regress: in Unicode mode a surrogate pair is one code point
-/// (§22.2.2: the pattern is read as UTF-16 code points); otherwise each code unit is one
-/// character, so `/\u{1F600}+/` without `u` repeats the low surrogate only, as in V8, and
-/// `legacy_chars` rewrites two escape forms that regress reads in the Unicode way.
+/// (§22.2.2: the pattern is read as UTF-16 code points) and `unicode_chars` rewrites one
+/// escape form; otherwise each code unit is one character, so `/\u{1F600}+/` without `u`
+/// repeats the low surrogate only, as in V8, and `legacy_chars` rewrites two escape forms
+/// that regress reads in the Unicode way.
 fn pattern_chars(pattern: &[u16], unicode: bool) -> Vec<u32> {
     if !unicode {
         return legacy_chars(pattern);
     }
-    char::decode_utf16(pattern.iter().copied())
+    unicode_chars(pattern)
+}
+
+/// The Unicode-mode (`u`, `v`) pattern for regress: surrogate pairs joined, and one rewrite
+/// for a regress 0.12.0 escape-parser defect:
+///
+/// | Source | Spec | regress | Rewrite |
+/// |---|---|---|---|
+/// | `\uD800\u0061` (a lead-surrogate escape, then a `\u` that is not a trail-surrogate escape) | the lone code point U+D800, then the next escape | after the failed pair it rewinds to after the second `\u`, so `0061` is read as text | the lead escape becomes `\u{D800}` (the same code point; regress reads it without a look-ahead) |
+///
+/// A lead escape followed by a trail escape (a pair) or by no `\u` is left as is.
+fn unicode_chars(pattern: &[u16]) -> Vec<u32> {
+    const BACKSLASH: u32 = b'\\' as u32;
+    const U: u32 = b'u' as u32;
+    let cps: Vec<u32> = char::decode_utf16(pattern.iter().copied())
         .map(|r| match r {
             Ok(c) => u32::from(c),
             Err(e) => u32::from(e.unpaired_surrogate()),
         })
-        .collect()
+        .collect();
+    let mut out = Vec::with_capacity(cps.len());
+    let mut i = 0;
+    while i < cps.len() {
+        if cps[i] != BACKSLASH {
+            out.push(cps[i]);
+            i += 1;
+            continue;
+        }
+        let lone_lead = cps.get(i + 1) == Some(&U)
+            && hex4(&cps, i + 2).is_some_and(is_lead)
+            && cps.get(i + 6) == Some(&BACKSLASH)
+            && cps.get(i + 7) == Some(&U)
+            && !hex4(&cps, i + 8).is_some_and(is_trail);
+        if lone_lead {
+            out.extend([BACKSLASH, U, u32::from(b'{')]);
+            out.extend_from_slice(&cps[i + 2..i + 6]);
+            out.push(u32::from(b'}'));
+            i += 6;
+        } else {
+            // An escape: the backslash and the character after it (so `\\u` is not read
+            // as an escape).
+            let end = (i + 2).min(cps.len());
+            out.extend_from_slice(&cps[i..end]);
+            i = end;
+        }
+    }
+    out
 }
 
 fn is_lead(u: u16) -> bool {
@@ -236,12 +279,12 @@ fn is_trail(u: u16) -> bool {
     (0xdc00..=0xdfff).contains(&u)
 }
 
-/// The value of four hex digits at `at`, if there are four.
-fn hex4(pattern: &[u16], at: usize) -> Option<u16> {
+/// The value of four hex digits at `at` (code units or code points), if there are four.
+fn hex4<T: Copy + Into<u32>>(pattern: &[T], at: usize) -> Option<u16> {
     let digits = pattern.get(at..at + 4)?;
     let mut v = 0u16;
     for &d in digits {
-        let d = char::from_u32(u32::from(d))?.to_digit(16)?;
+        let d = char::from_u32(d.into())?.to_digit(16)?;
         v = v * 16 + d as u16;
     }
     Some(v)
@@ -614,6 +657,47 @@ mod tests {
             .unwrap(),
             [Some((0, 2)), Some((0, 1))]
         );
+    }
+
+    /// A lead-surrogate escape followed by a `\u` escape that is not its trail, in `u` and
+    /// `v` mode (Codex M4-P2 R1B; node v24.22.1 results, the golden lines 506-523).
+    #[test]
+    fn rx0_lone_lead_escape_before_another_escape() {
+        for f in ["u", "v"] {
+            let lead_a = [0xd800, u16::from(b'a')];
+            assert_eq!(
+                run("\\uD800\\u0061", f, Input::Utf16(&lead_a), 0).unwrap(),
+                [Some((0, 2))]
+            );
+            let mut lead_text = vec![0xd800];
+            lead_text.extend(utf16("0061"));
+            assert_eq!(run("\\uD800\\u0061", f, Input::Utf16(&lead_text), 0), None);
+            assert_eq!(
+                run("\\uD800\\u{61}", f, Input::Utf16(&lead_a), 0).unwrap(),
+                [Some((0, 2))]
+            );
+            assert_eq!(
+                run("[\\uD800\\u0061]", f, Input::Latin1(b"a"), 0).unwrap(),
+                [Some((0, 1))]
+            );
+            let leads = [0xd800, 0xd800];
+            assert_eq!(
+                run("\\uD800\\uD800", f, Input::Utf16(&leads), 0).unwrap(),
+                [Some((0, 2))]
+            );
+            // Still a pair; an escaped backslash is no escape.
+            let pair = utf16("\u{10000}");
+            assert_eq!(
+                run("\\uD800\\uDC00", f, Input::Utf16(&pair), 0).unwrap(),
+                [Some((0, 2))]
+            );
+            assert_eq!(
+                run("\\\\uD800\\u0061", f, Input::Latin1(b"\\uD800a"), 0).unwrap(),
+                [Some((0, 7))]
+            );
+            let flags = Flags::parse(&utf16(f)).unwrap();
+            assert!(Rx0::compile(&utf16("\\uD800\\u12"), flags).is_err());
+        }
     }
 
     #[test]

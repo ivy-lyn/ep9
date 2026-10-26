@@ -313,11 +313,15 @@ pub(crate) fn exec(cx: &mut Cx, re: u64, s: u64, index: usize) -> Res<Option<Vec
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     }
     let program = program_index(cx, re)?;
-    // GC point: `re` and `s` stay in Rust locals (conservative scan).
+    // GC points below: the flatten, an interrupt callback, an error. The table holds `re`
+    // only weakly, so `re` must stay in a Rust local (conservative scan) until the program
+    // has run: the `black_box` after the loop keeps it live, or an optimized build may drop
+    // it after `program_index` and the GC frees the program (Codex M4-P2 R1B). `s` stays
+    // live until the flatten, then `flat` does.
     let flat = string::flatten(cx, s);
     let word = cx.interrupt;
     let mut caps = Vec::new();
-    loop {
+    let out = loop {
         let rt = cx.rt();
         let r = {
             let input = match string::view(cx, flat) {
@@ -334,17 +338,19 @@ pub(crate) fn exec(cx: &mut Cx, re: u64, s: u64, index: usize) -> Res<Option<Vec
                 .exec(program, input, index, &mut caps, &mut poll)
         };
         match r {
-            ExecResult::Match => return Ok(Some(caps)),
-            ExecResult::NoMatch => return Ok(None),
+            ExecResult::Match => break Ok(Some(caps)),
+            ExecResult::NoMatch => break Ok(None),
             ExecResult::Interrupted => {
                 if slow::interrupt(cx, core::ptr::null_mut()) == 0 {
-                    return Err(Throw);
+                    break Err(Throw);
                 }
             }
             ExecResult::BudgetExceeded => {
                 let msg = "Maximum regular expression backtrack budget exceeded";
-                return Err(throw_error(cx, ErrorKind::RangeError, msg));
+                break Err(throw_error(cx, ErrorKind::RangeError, msg));
             }
         }
-    }
+    };
+    core::hint::black_box(&re);
+    out
 }

@@ -116,7 +116,7 @@ Why not `IsolateConfig`: it is a core line of the Frozen H20 core (golden:334). 
   - Build: a second T0 handler table with no record hook, chosen per `Cx`. Each `Cx` has its own handler table (`crates/ep9_vm/src/interp/mod.rs:131`), so the choice costs 0 instructions in either table. It is built in month 5 only after a SIZE-REPORT measure of the extra handler copy (the record points are listed in `crates/ep9_vm/src/profile.rs:46-68`; the size is not measured yet, and it matters for jitless and iOS).
   - Fallback if the size is too high: one flag test in each hook (option C), only if its JIT-mode cost is ≤ +0.5% on the gate set.
   - Not an off switch: `feedback_threshold = u32::MAX` makes no feedback vector (`crates/ep9_vm/src/interp/mod.rs:143-145`), and the ICs live in the vector (`crates/ep9_vm/src/feedback.rs:174-179`), so it turns off every IC too.
-- **RegExp producer (MC-w13-16).** The RegExp backend is chosen at build time today: a trait of static functions with an associated `Program` type (`crates/ep9_regexp/src/lib.rs:165-183`). RX2 is a JIT producer, so it must be chosen per isolate from `produce` (M-R3). The trait does not block this. One line goes into the H27 / RX role text before RX2.
+- **RegExp producer (MC-w13-16).** The RegExp backend is chosen at build time today: a trait of static functions with an associated `Program` type (`crates/ep9_regexp/src/lib.rs:166-184`). RX2 is a JIT producer, so it must be chosen per isolate from `produce` (M-R3). The trait does not block this. One line goes into the H27 / RX role text before RX2.
 
 ### 1.3 Mode x code-kind matrix (extends P02:141-150)
 
