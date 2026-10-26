@@ -35,9 +35,9 @@ pub const PINNED: [(&str, &str); 4] = [
 
 /// The navier-stokes check line after one frame (n = 1): node v24.22.1 printed it for
 /// `spike-c driver navier-stokes --n 1` on 2026-10-26 (the protocol's tier-differential
-/// reference for kernel 2; §5).
-pub const NAVIER_STOKES_CHECK_N1: &str =
-    "checksum 320.5614702136357 -372.6606391856326 -366.08057515126234";
+/// reference for kernel 2; §5). Its form is that of [`NS_CHECK`].
+pub const NAVIER_STOKES_CHECK_N1: &str = "checksum 328.09114083768867 -376.62445547361995 \
+     -376.82420862988374 digest 104004329 1915391150";
 
 /// The part a kernel plays in the Spike C gate (protocol §2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,15 +84,43 @@ pub struct Kernel {
 }
 
 /// navier-stokes has no result check in v7: the driver keeps the `Field` of the last frame and
-/// prints a checksum of its density and velocity.
+/// prints a check line of its density and velocity fields.
 const NS_HOOK: &str = "var __spikeCField = null;\n\
 solver.setDisplayFunction(function (f) { __spikeCField = f; });";
+/// The navier-stokes check line: `checksum <d> <u> <v> digest <ha> <hb>`, over every cell of the
+/// three fields (the boundary cells too: x and y from -1 to the size), in index order.
+///
+/// ```text
+///  each cell, density then x velocity then y velocity:
+///    a number that is not finite, or not a number  -> counted; any such cell: "checksum bad <count>"
+///    else its text ("-0" for -0, else String(c)), then ","  -> both digests
+///  d, u, v   the plain sums (a reader's check only: a swap of two cells keeps them)
+///  ha        FNV-1a 32 of that text  (ha * 16777619 mod 2^32, as (ha << 24) + ha * 403)
+///  hb        hb * 1000003 + char mod 4294967291
+/// ```
+///
+/// The text of a finite double is exact (the shortest form that reads back as the same
+/// double), so the digests see every cell's value and position (Codex r3: the sums alone kept
+/// a swap of two unequal cells). Every step is exact in doubles (no `Math.imul`: T0 has none
+/// at the base). The line is made after the `run()` loop, outside the timed region (protocol §3).
 const NS_CHECK: &str = "(function (f) {\n\
-  var d = 0, u = 0, v = 0, w = f.width(), h = f.height();\n\
-  for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) {\n\
-    d += f.getDensity(x, y); u += f.getXVelocity(x, y); v += f.getYVelocity(x, y);\n\
+  var w = f.width(), h = f.height(), d = 0, u = 0, v = 0, ha = 2166136261, hb = 0, bad = 0;\n\
+  function cell(c) {\n\
+    if (typeof c !== 'number' || c - c !== 0) { bad++; return 0; }\n\
+    var s = c === 0 && 1 / c < 0 ? '-0' : '' + c;\n\
+    for (var j = 0; j <= s.length; j++) {\n\
+      var k = j < s.length ? s.charCodeAt(j) : 44;\n\
+      ha = (ha ^ k) >>> 0;\n\
+      ha = (((ha << 24) >>> 0) + ha * 403) % 4294967296;\n\
+      hb = (hb * 1000003 + k) % 4294967291;\n\
+    }\n\
+    return c;\n\
   }\n\
-  return 'checksum ' + d + ' ' + u + ' ' + v;\n\
+  for (var y = -1; y <= h; y++) for (var x = -1; x <= w; x++) {\n\
+    d += cell(f.getDensity(x, y)); u += cell(f.getXVelocity(x, y)); v += cell(f.getYVelocity(x, y));\n\
+  }\n\
+  if (bad) return 'checksum bad ' + bad;\n\
+  return 'checksum ' + d + ' ' + u + ' ' + v + ' digest ' + ha + ' ' + hb;\n\
 })(__spikeCField)";
 
 /// The kernels of the protocol (§2). The line numbers are those of the pinned files.
@@ -299,14 +327,22 @@ pub struct Driver {
 impl Driver {
     /// True if `output` is what a right run prints: per benchmark, its check line (if
     /// `has_check`) then `<name> <n>`, and nothing else. A check line must be there; it
-    /// must equal `check_ref` when that is known, and else be `checksum` and three finite
-    /// numbers (the values are compared between runs, not here).
+    /// must equal `check_ref` when that is known, and else have the form of [`NS_CHECK`]:
+    /// `checksum`, three finite numbers, `digest` and two 32-bit integers (the values are
+    /// compared with the T0 run in [`Driver::matches_t0`], not here).
     pub fn matches(&self, output: &[String]) -> bool {
         let per = if self.has_check { 2 } else { 1 };
         output.len() == self.expect.len() * per
             && output.chunks(per).zip(&self.expect).all(|(lines, name)| {
                 lines[per - 1] == *name && (!self.has_check || self.check_ok(&lines[0]))
             })
+    }
+
+    /// True if `output` is a right run ([`Driver::matches`]) and equals the T0 run `t0` of the
+    /// same driver line for line: the check line holds the cell digests, so a compiled run with
+    /// any cell changed or moved differs (protocol §3, §5).
+    pub fn matches_t0(&self, t0: &[String], output: &[String]) -> bool {
+        self.matches(t0) && self.matches(output) && output == t0
     }
 
     fn check_ok(&self, line: &str) -> bool {
@@ -317,10 +353,12 @@ impl Driver {
             return false;
         };
         let values: Vec<&str> = values.split(' ').collect();
-        values.len() == 3
-            && values
+        values.len() == 6
+            && values[..3]
                 .iter()
                 .all(|v| v.parse::<f64>().is_ok_and(f64::is_finite))
+            && values[3] == "digest"
+            && values[4..].iter().all(|v| v.parse::<u32>().is_ok())
     }
 }
 
@@ -498,6 +536,75 @@ mod tests {
         assert!(d.matches(&r.output));
     }
 
+    /// The fields of a check line after `checksum`.
+    fn fields(line: &str) -> Vec<&str> {
+        line.split(' ').skip(1).collect()
+    }
+
+    /// Negative controls for the navier-stokes check (Codex r3: the three sums alone kept a
+    /// swap of the unequal density cells (58,0) and (59,0)). Each control changes the last
+    /// frame's fields just before the check line; the true run passes, each changed run fails,
+    /// both against node's line (n = 1) and against the T0 run (the rule for any n).
+    #[test]
+    fn navier_stokes_check_sees_each_cell() {
+        if !bench_present() {
+            eprintln!(
+                "skip: no {} (scripts/sync-bench.sh bench-v8v7)",
+                bench_dir().display()
+            );
+            return;
+        }
+        let k = kernel("navier-stokes").expect("kernel");
+        let d = driver(k, 1).expect("driver");
+        let at = "    print((function (f) {";
+        let run = |js: &str| {
+            let text = d.text.replacen(at, &format!("    {js}\n{at}"), 1);
+            assert_ne!(text, d.text, "no check line in the driver");
+            let mut s = Session::new(&Config::default()).expect("session");
+            let r = s.run(&text, "driver.js");
+            assert_eq!(
+                r.result,
+                Ok("undefined".to_string()),
+                "{js}: {:?}",
+                r.output
+            );
+            r.output
+        };
+        let right = run("");
+        assert!(d.matches(&right));
+        let no_ref = Driver {
+            check_ref: None,
+            ..d.clone()
+        };
+        assert!(no_ref.matches_t0(&right, &right));
+
+        let swap = run(
+            "(function (f) { var a = f.getDensity(58, 0), b = f.getDensity(59, 0); \
+             if (a === b) throw new Error('equal cells'); \
+             f.setDensity(58, 0, b); f.setDensity(59, 0, a); })(__spikeCField);",
+        );
+        // The sums stay (the old check passed this run); the digests do not.
+        assert_eq!(fields(&swap[0])[..3], fields(&right[0])[..3]);
+        assert_ne!(swap[0], right[0]);
+        assert!(!d.matches(&swap), "{swap:?}");
+        assert!(no_ref.matches(&swap), "the form is right: {swap:?}");
+        assert!(!no_ref.matches_t0(&right, &swap));
+
+        // -0 in a 0 cell: the sums stay, the cell text differs.
+        let neg_zero = run("__spikeCField.setDensity(58, 0, -0);");
+        assert_eq!(fields(&neg_zero[0])[..3], fields(&right[0])[..3]);
+        assert!(!d.matches(&neg_zero) && !no_ref.matches_t0(&right, &neg_zero));
+
+        // A non-finite cell is refused, with or without a reference.
+        for bad in ["NaN", "Infinity", "undefined", "'0'"] {
+            let out = run(&format!(
+                "__spikeCField.setVelocity(10, 20, {bad}, __spikeCField.getYVelocity(10, 20));"
+            ));
+            assert_eq!(out[0], "checksum bad 1", "{bad}");
+            assert!(!d.matches(&out) && !no_ref.matches(&out), "{bad}");
+        }
+    }
+
     fn driver_with_check(check_ref: Option<&'static str>) -> Driver {
         Driver {
             text: String::new(),
@@ -517,20 +624,31 @@ mod tests {
     #[test]
     fn matches_needs_the_check_line() {
         let d = driver_with_check(None);
-        assert!(d.matches(&lines(&["checksum 1.5 -2 3e-7", "NavierStokes 1"])));
+        let good = "checksum 1.5 -2 3e-7 digest 0 4294967295";
+        assert!(d.matches(&lines(&[good, "NavierStokes 1"])));
         for bad in [
             &["NavierStokes 1"][..],
-            &["checksum NaN NaN NaN", "NavierStokes 1"],
-            &["checksum 1 2 Infinity", "NavierStokes 1"],
-            &["checksum 1 2", "NavierStokes 1"],
-            &["NavierStokes 1", "checksum 1 2 3"],
-            &["checksum 1 2 3", "checksum 1 2 3", "NavierStokes 1"],
+            &["checksum NaN NaN NaN digest 1 2", "NavierStokes 1"],
+            &["checksum 1 2 Infinity digest 1 2", "NavierStokes 1"],
+            &["checksum 1 2 3", "NavierStokes 1"],
+            &["checksum bad 1", "NavierStokes 1"],
+            &["checksum 1 2 3 digest 1.5 2", "NavierStokes 1"],
+            &["checksum 1 2 3 digest 1 -2", "NavierStokes 1"],
+            &["checksum 1 2 3 digest 1 4294967296", "NavierStokes 1"],
+            &["checksum 1 2 3 sums 1 2", "NavierStokes 1"],
+            &["NavierStokes 1", good],
+            &[good, good, "NavierStokes 1"],
         ] {
             assert!(!d.matches(&lines(bad)), "{bad:?}");
         }
         let d = driver_with_check(Some(NAVIER_STOKES_CHECK_N1));
         assert!(d.matches(&lines(&[NAVIER_STOKES_CHECK_N1, "NavierStokes 1"])));
-        assert!(!d.matches(&lines(&["checksum 1 2 3", "NavierStokes 1"])));
+        assert!(!d.matches(&lines(&[good, "NavierStokes 1"])));
+        // The round-1 line (sums only) is not node's line any more.
+        assert!(!d.matches(&lines(&[
+            "checksum 320.5614702136357 -372.6606391856326 -366.08057515126234",
+            "NavierStokes 1"
+        ])));
         let d = Driver {
             has_check: false,
             check_ref: None,
