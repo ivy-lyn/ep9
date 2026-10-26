@@ -27,7 +27,8 @@
 //!      until the page is swept)
 //! a callback (root source, trace, size, weak source) panics while marking: every mark bit
 //!   is cleared and nothing is freed; while sweeping a page: that page's mark bits are cleared
-//!   (generational: set to the VO bits instead, so every cell counts as old, and the logs stay)
+//!   (generational: set to the VO bits instead, so every cell counts as old, and the logs stay;
+//!   after a mark panic a WHITE cell also becomes BLACK, so a store into it is still logged)
 //!
 //! generational (HeapConfig::generational, S1 step 1): threshold GEN; marks are sticky
 //!   collect(): ... finish the last lazy sweep -> clear every mark bit (a full GC) -> mark ->
@@ -318,7 +319,10 @@ enum Swept {
 /// Generational (sticky marks): the guard sets every mark bit to its VO bit and every large
 /// object's mark instead, so every cell counts as old (marked) and none is freed before the
 /// next full GC; the remembered lists and cards are emptied only after a mark completes, so
-/// they still hold every logged host, and the guard sets those hosts GREY again.
+/// they still hold every logged host, and the guard sets those hosts GREY again. A young cell
+/// (WHITE) that the mark had not reached becomes BLACK: a marked cell is BLACK, or GREY and
+/// listed, so a later store of a new cell into it takes the slow path and is logged (the
+/// verifier checks this).
 struct UnmarkOnUnwind<'a> {
     mem: &'a Memory,
     sticky: bool,
@@ -331,6 +335,20 @@ impl Drop for UnmarkOnUnwind<'_> {
             let page = mem.page(idx);
             reset_page_marks(page, self.sticky);
             if self.sticky {
+                // Old now: a WHITE cell would take the barrier's fast path (no log).
+                for w in 0..BITMAP_WORDS {
+                    let mut vo = page.vo_word(w).load(Relaxed);
+                    while vo != 0 {
+                        let bit = vo.trailing_zeros() as usize;
+                        vo &= vo - 1;
+                        // SAFETY: a VO bit marks a live cell start of this committed page (no
+                        // cell was freed: the unwind happens before the sweep).
+                        let c = unsafe {
+                            CellPtr::from_raw(mem.ptr(page.addr() + (w * 64 + bit) * 8).cast())
+                        };
+                        blacken_white(c);
+                    }
+                }
                 // The mark set some listed (GREY) hosts BLACK; the lists stay, so they must
                 // be GREY again, or a later store into one would not be logged.
                 // SAFETY: no push runs during the unwind of a GC.
@@ -348,7 +366,20 @@ impl Drop for UnmarkOnUnwind<'_> {
             // SAFETY: chunk `idx` is the committed head of a large object.
             let large = unsafe { Large::from_base(mem.chunk_base(idx)) };
             large.header().mark.store(u8::from(self.sticky), Relaxed);
+            if self.sticky {
+                // SAFETY: the LOS cell starts right after the header and is live.
+                blacken_white(unsafe { CellPtr::from_raw(large.cell_ptr().cast()) });
+            }
         }
+    }
+}
+
+/// Sets a WHITE (young) cell BLACK; a BLACK or GREY cell keeps its state.
+fn blacken_white(c: CellPtr) {
+    // SAFETY: callers pass a live cell start of this heap.
+    let h = unsafe { c.header() };
+    if h.gc_state() == gc_state::WHITE {
+        h.set_gc_state(gc_state::BLACK);
     }
 }
 

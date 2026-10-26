@@ -343,8 +343,9 @@ fn panicky_trace(c: CellPtr, t: &mut Tracer<'_>) {
 }
 
 /// A trace function panics during a GC of a generational heap: every cell counts as old
-/// (marks = VO bits, LOS marked), every logged host is GREY and listed again, the verifier
-/// is clean, and the next GC works.
+/// (marks = VO bits, LOS marked), a young cell the mark had not reached is BLACK (so a store
+/// into it is logged), every logged host is GREY and listed again, the verifier is clean, and
+/// the next GC works.
 #[test]
 fn a_caught_panic_keeps_every_cell_old_and_every_log() {
     let heap = gen_heap(|_| {});
@@ -362,10 +363,13 @@ fn a_caught_panic_keeps_every_cell_old_and_every_log() {
     let p = heap.alloc(PANICKY, 24).unwrap();
     let gs = [host, big, p].map(|c| heap.new_global(c.to_value()));
     precise_gc(&heap);
-    let young = new_node(&heap, 3, 0);
+    let young = new_node(&heap, 3, 1);
+    let young_big = new_node(&heap, 5, 1100);
     store(&heap, host, 0, young.to_value());
     store(&heap, big, 7, young.to_value());
+    store(&heap, big, 8, young_big.to_value());
     assert_eq!(state(host), gc_state::GREY);
+    assert_eq!(state(young), gc_state::WHITE);
 
     PANIC_NOW.set(true);
     let r = catch_unwind(AssertUnwindSafe(|| precise_gc(&heap)));
@@ -375,13 +379,46 @@ fn a_caught_panic_keeps_every_cell_old_and_every_log() {
     assert_eq!(remembered(&heap), vec![host.addr()], "the list stays");
     assert_eq!(cards(&heap, big).0, 1, "the cards stay");
     assert!(
-        marked(&heap, young) && marked(&heap, host) && marked(&heap, big),
+        marked(&heap, young)
+            && marked(&heap, host)
+            && marked(&heap, big)
+            && marked(&heap, young_big),
         "all old"
+    );
+    assert_eq!(state(young), gc_state::BLACK, "old means not WHITE");
+    assert_eq!(
+        state(young_big),
+        gc_state::BLACK,
+        "old means not WHITE (LOS)"
     );
     heap.verify().expect("clean after the caught panic");
 
+    // A store of a new cell into the now-old cell takes the slow path and is logged.
+    let before = slow_counter::get();
+    let newer = new_node(&heap, 4, 0);
+    store(&heap, young, 0, newer.to_value());
+    assert_eq!(slow_counter::get() - before, 1, "logged");
+    assert_eq!(state(young), gc_state::GREY);
+    assert!(remembered(&heap).contains(&young.addr()));
+    heap.verify().expect("clean after the store");
+
+    // The verifier's rule: a marked (old) cell that is WHITE is an error.
+    // SAFETY: `young_big` is reachable from `big`; the test restores its state.
+    unsafe { young_big.header() }.set_gc_state(gc_state::WHITE);
+    let e = heap.verify().expect_err("a marked WHITE large object");
+    assert!(e.to_string().contains("marked (old) but WHITE"), "{e}");
+    // SAFETY: as above.
+    unsafe { young_big.header() }.set_gc_state(gc_state::BLACK);
+    let (newer_addr, young_addr) = (newer.addr(), young.addr());
+    // SAFETY: `newer` is reachable from `young`; the test restores its state.
+    unsafe { newer.header() }.set_gc_state(gc_state::BLACK);
+    heap.verify().expect("an unmarked BLACK cell is fine");
+    // SAFETY: as above.
+    unsafe { newer.header() }.set_gc_state(gc_state::WHITE);
+
     precise_gc(&heap);
-    assert!(heap.is_cell(young.addr()));
+    assert!(heap.is_cell(young_addr) && heap.is_cell(newer_addr));
+    assert!(heap.is_cell(young_big.addr()));
     assert!(remembered(&heap).is_empty());
     heap.verify().expect("verifier");
     for g in gs {

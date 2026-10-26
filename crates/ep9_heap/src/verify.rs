@@ -3,7 +3,7 @@
 //! | Check | Where |
 //! |---|---|
 //! | Page header: magic, kind, chunk index | every small page |
-//! | No mark bit set outside a GC (generational, sticky marks: no mark bit outside a cell start) | small pages, LOS headers |
+//! | No mark bit set outside a GC (generational, sticky marks: no mark bit outside a cell start, and a marked (old) cell is not WHITE, so a store into it takes the barrier's slow path) | small pages, LOS headers |
 //! | Generational (S1 step 1): each remembered-list entry is a distinct GREY cell start of its page, and the page has no other GREY cell; a dirty card means the dirty byte is set; after a GC every list is empty and every card clean | small pages, LOS headers |
 //! | Cells walk in address order from the VO bitmap; none overlaps the next; none crosses the page end | small pages |
 //! | Every cell kind is registered; size is at least 16 B, at most 8 KiB in a page, above 8 KiB in LOS | all cells |
@@ -98,7 +98,8 @@ impl Heap {
                     for w in 0..BITMAP_WORDS {
                         let mut vo = page.vo_word(w).load(Relaxed);
                         let outside = if sticky { !vo } else { u64::MAX };
-                        if page.mark_word(w).load(Relaxed) & outside != 0 {
+                        let marks = page.mark_word(w).load(Relaxed);
+                        if marks & outside != 0 {
                             t.error(format_args!("small page {idx}: mark bit set outside a GC"));
                         }
                         while vo != 0 {
@@ -115,7 +116,13 @@ impl Heap {
                             // wrote; the page is committed.
                             let c = unsafe { CellPtr::from_raw(mem.ptr(addr).cast()) };
                             // SAFETY: as above.
-                            grey += usize::from(unsafe { c.header() }.gc_state() == gc_state::GREY);
+                            let st = unsafe { c.header() }.gc_state();
+                            grey += usize::from(st == gc_state::GREY);
+                            if sticky && marks & (1 << bit) != 0 && st == gc_state::WHITE {
+                                t.error(format_args!(
+                                    "small page {idx}: cell {addr:#x} is marked (old) but WHITE"
+                                ));
+                            }
                             match check_cell(&mut t, c, false, mem.is_shape_chunk(idx)) {
                                 Some(size) => {
                                     if addr + size > page.addr() + PAGE_SIZE {
@@ -279,7 +286,8 @@ fn check_large_header(
         t.error(format_args!("large object at chunk {idx}: bad header"));
         return None;
     }
-    if !sticky && h.mark.load(Relaxed) != 0 {
+    let marked = h.mark.load(Relaxed) != 0;
+    if !sticky && marked {
         t.error(format_args!(
             "large object at chunk {idx}: mark set outside a GC"
         ));
@@ -292,7 +300,14 @@ fn check_large_header(
         }
     }
     // SAFETY: the LOS cell starts right after the header.
-    Some(unsafe { CellPtr::from_raw(large.cell_ptr().cast()) })
+    let c = unsafe { CellPtr::from_raw(large.cell_ptr().cast()) };
+    // SAFETY: the header checks passed, so the cell's word0 is the allocator's.
+    if sticky && marked && unsafe { c.header() }.gc_state() == gc_state::WHITE {
+        t.error(format_args!(
+            "large object at chunk {idx}: marked (old) but WHITE"
+        ));
+    }
+    Some(c)
 }
 
 /// The remembered list of small page `idx` (S1 step 1): each entry is a GREY cell start of
