@@ -8,7 +8,7 @@
 //! [`crate::harness::Session::install_b`] installs it.
 //!
 //! ```text
-//!  0  stp x29, x30, [sp, #-S]!        S = 96 + 8 * spill slots, rounded up to 16 (at most 512)
+//!  0  stp x29, x30, [sp, #-S]!        S = 96 + 8 * spill slots, rounded up to 16 (at most 496)
 //!  4  mov x29, sp
 //!  8  stp x26, x28, [sp, #16] ; stp x19, x20, [sp, #32] ; stp x21, x22, [sp, #48]
 //!     stp x23, x24, [sp, #64] ; stp x25, x27, [sp, #80]     spill slots from sp + 96
@@ -100,8 +100,21 @@ const SAVED: [(u8, u32); 10] = [
 ];
 /// The first spill slot (sp + 96).
 const SPILL_BASE: u32 = 96;
-/// The largest frame `stp x29, x30, [sp, #-S]!` can make.
-const MAX_FRAME: u32 = 512;
+/// The largest frame: the epilogue's `ldp x29, x30, [sp], #S` takes a post-index immediate of
+/// at most +504 (the prologue's `stp` reaches -512), so 496, the largest multiple of 16 below
+/// it (50 spill slots).
+const MAX_FRAME: u32 = 496;
+
+/// The frame size for `spill_slots` spill slots, or a refusal past [`MAX_FRAME`].
+fn frame_bytes(spill_slots: u32) -> Result<u32, Refusal> {
+    let frame = (SPILL_BASE + 8 * spill_slots).next_multiple_of(16);
+    if frame > MAX_FRAME {
+        return Err(Refusal::Limit(format!(
+            "{spill_slots} spill slots: a frame of {frame} bytes"
+        )));
+    }
+    Ok(frame)
+}
 
 /// `ldr`/`str` with an unsigned scaled 12-bit offset: 0..=32760, a multiple of 8.
 fn scaled(off: usize) -> Result<u32, Refusal> {
@@ -192,13 +205,7 @@ pub fn emit(
     graph: &Graph,
     alloc: &Allocation,
 ) -> Result<(FunctionCode, EmitReport), Refusal> {
-    let frame = (SPILL_BASE + 8 * alloc.spill_slots).next_multiple_of(16);
-    if frame > MAX_FRAME {
-        return Err(Refusal::Limit(format!(
-            "{} spill slots: a frame of {frame} bytes",
-            alloc.spill_slots
-        )));
-    }
+    let frame = frame_bytes(alloc.spill_slots)?;
     let mut ops = Ops::new(0);
     let labels = graph
         .blocks
@@ -996,5 +1003,23 @@ mod tests {
             0xD2FF_FFD1
         );
         assert!(scaled(32768).is_err() && scaled(12).is_err() && scaled(8).is_ok());
+    }
+
+    /// The largest frame that `emit` accepts encodes in both the prologue `stp` (pre-index,
+    /// down to -512) and the epilogue `ldp` (post-index, up to +504); one more spill slot is
+    /// a refusal, not a dynasm panic (M4-P1 review F3).
+    #[test]
+    fn the_largest_frame_encodes_and_one_more_slot_is_refused() {
+        let max_slots = (MAX_FRAME - SPILL_BASE) / 8;
+        assert_eq!(frame_bytes(max_slots).ok(), Some(MAX_FRAME));
+        assert!(matches!(frame_bytes(max_slots + 1), Err(Refusal::Limit(_))));
+        let (neg, pos) = (-(MAX_FRAME as i32), MAX_FRAME as i32);
+        let mut ops = Ops::new(0);
+        dynasm!(ops
+            ; .arch aarch64
+            ; stp x29, x30, [sp, neg]!
+            ; ldp x29, x30, [sp], pos
+        );
+        assert_eq!(ops.finalize().expect("code").len(), 8);
     }
 }
