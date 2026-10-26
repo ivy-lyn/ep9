@@ -23,17 +23,9 @@ use crate::{Dispatch, Isolate, arguments, kinds, module, property, props, shape,
 
 #[test]
 fn layout_3_versions_kinds_and_fixed_fields() {
-    assert_eq!(versions::OBJECT_LAYOUT_VERSION, 3);
-    // The other contract versions do not change in M3-P0.
-    assert_eq!(
-        (
-            versions::FRAME_VERSION,
-            versions::IC_LAYOUT_VERSION,
-            versions::BUILTIN_ABI_VERSION,
-            versions::DEOPT_META_VERSION
-        ),
-        (2, 1, 1, 0)
-    );
+    // OBJECT_LAYOUT 4 (M4-P0) keeps every layout-3 kind and field checked here; the version
+    // numbers are pinned by `tests::layout4`.
+    assert!(black_box(versions::OBJECT_LAYOUT_VERSION) >= 3);
     let ids = [
         kinds::ARGUMENTS,
         kinds::MODULE_NAMESPACE,
@@ -211,7 +203,7 @@ fn every_function_has_the_isolate_realm() {
             assert_eq!(object::record_get(realm, realmf::HOST_DEFINED), UNDEFINED);
             let list = object::record_get(realm, realmf::INTRINSICS);
             assert_eq!(object::list_len(list), IntrinsicId::ALL.len());
-            assert_eq!(IntrinsicId::ALL.len(), 64);
+            assert_eq!(IntrinsicId::ALL.len(), 72); // 64 in M3-P0; 72 since M4-P0
             for id in IntrinsicId::ALL {
                 assert_eq!(
                     object::list_get(list, id as usize),
@@ -225,11 +217,15 @@ fn every_function_has_the_isolate_realm() {
             // embedder table.
             for id in IntrinsicId::ALL[45..50]
                 .iter()
-                .chain(&IntrinsicId::ALL[63..])
+                .chain(&IntrinsicId::ALL[63..64])
             {
                 assert!(crate::kinds::is_object(intrinsic(rt, *id)), "{}", id.name());
             }
-            for id in &IntrinsicId::ALL[50..63] {
+            // Ids 64-71 (M4-P0) are not made yet either (`tests::layout4`).
+            for id in IntrinsicId::ALL[50..63]
+                .iter()
+                .chain(&IntrinsicId::ALL[64..])
+            {
                 assert_eq!(intrinsic(rt, *id), UNDEFINED, "{}", id.name());
             }
             iso.collect_garbage();

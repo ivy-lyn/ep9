@@ -209,11 +209,29 @@ pub enum IntrinsicId {
     Json,
     /// `%ThrowTypeError%` (§10.2.4.1; made by M3-P2 VM-ARGS).
     ThrowTypeError,
+    // ---- M4-P0 (plan v9 §2.5 task 3, rule 18): declared for the month-4 builders, made by
+    // none yet; state slots 32-39 ----
+    /// `%Proxy%` (§28.2.1; made by M4-P4 PROXY1).
+    Proxy,
+    /// `%RegExp%` (§22.2.4; made by M4-P3 REGEXP1).
+    RegExp,
+    /// `%RegExp.prototype%` (§22.2.6; made by M4-P2 RX0A, an ordinary object first; V9-A9).
+    RegExpPrototype,
+    /// `%RegExpStringIteratorPrototype%` (§22.2.9.2; made by M4-P3 REGEXP1).
+    RegExpStringIteratorPrototype,
+    /// `%WeakRef%` (§26.1.1; made by M4-P4 WEAKREF).
+    WeakRef,
+    /// `%WeakRef.prototype%` (§26.1.3; made by M4-P4 WEAKREF).
+    WeakRefPrototype,
+    /// `%FinalizationRegistry%` (§26.2.1; made by M4-P4 WEAKREF).
+    FinalizationRegistry,
+    /// `%FinalizationRegistry.prototype%` (§26.2.3; made by M4-P4 WEAKREF).
+    FinalizationRegistryPrototype,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 64] = [
+    pub const ALL: [IntrinsicId; 72] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -278,6 +296,14 @@ impl IntrinsicId {
         IntrinsicId::SetIteratorPrototype,
         IntrinsicId::Json,
         IntrinsicId::ThrowTypeError,
+        IntrinsicId::Proxy,
+        IntrinsicId::RegExp,
+        IntrinsicId::RegExpPrototype,
+        IntrinsicId::RegExpStringIteratorPrototype,
+        IntrinsicId::WeakRef,
+        IntrinsicId::WeakRefPrototype,
+        IntrinsicId::FinalizationRegistry,
+        IntrinsicId::FinalizationRegistryPrototype,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object.
@@ -347,6 +373,14 @@ impl IntrinsicId {
             IntrinsicId::SetIteratorPrototype => "%SetIteratorPrototype%",
             IntrinsicId::Json => "%JSON%",
             IntrinsicId::ThrowTypeError => "%ThrowTypeError%",
+            IntrinsicId::Proxy => "%Proxy%",
+            IntrinsicId::RegExp => "%RegExp%",
+            IntrinsicId::RegExpPrototype => "%RegExp.prototype%",
+            IntrinsicId::RegExpStringIteratorPrototype => "%RegExpStringIteratorPrototype%",
+            IntrinsicId::WeakRef => "%WeakRef%",
+            IntrinsicId::WeakRefPrototype => "%WeakRef.prototype%",
+            IntrinsicId::FinalizationRegistry => "%FinalizationRegistry%",
+            IntrinsicId::FinalizationRegistryPrototype => "%FinalizationRegistry.prototype%",
         }
     }
 
@@ -417,7 +451,15 @@ impl IntrinsicId {
             | IntrinsicId::MapIteratorPrototype
             | IntrinsicId::SetIteratorPrototype
             | IntrinsicId::Json
-            | IntrinsicId::ThrowTypeError => return None,
+            | IntrinsicId::ThrowTypeError
+            | IntrinsicId::Proxy
+            | IntrinsicId::RegExp
+            | IntrinsicId::RegExpPrototype
+            | IntrinsicId::RegExpStringIteratorPrototype
+            | IntrinsicId::WeakRef
+            | IntrinsicId::WeakRefPrototype
+            | IntrinsicId::FinalizationRegistry
+            | IntrinsicId::FinalizationRegistryPrototype => return None,
         })
     }
 
@@ -457,6 +499,14 @@ impl IntrinsicId {
             IntrinsicId::SetIteratorPrototype => Some(29),
             IntrinsicId::Json => Some(30),
             IntrinsicId::ThrowTypeError => Some(31),
+            IntrinsicId::Proxy => Some(32),
+            IntrinsicId::RegExp => Some(33),
+            IntrinsicId::RegExpPrototype => Some(34),
+            IntrinsicId::RegExpStringIteratorPrototype => Some(35),
+            IntrinsicId::WeakRef => Some(36),
+            IntrinsicId::WeakRefPrototype => Some(37),
+            IntrinsicId::FinalizationRegistry => Some(38),
+            IntrinsicId::FinalizationRegistryPrototype => Some(39),
             _ => None,
         }
     }
@@ -1117,7 +1167,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 32;
+const INTRINSIC_SLOTS: usize = 40;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.

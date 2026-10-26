@@ -18,7 +18,22 @@
 //! | Kind | Id | Layout (byte offsets) | Size |
 //! |---|---|---|---|
 //! | POLY_IC | 69 | 4 cases from +8: key (weak), handler (strong) | 72 |
-//! | IC_HANDLER | 70 | +8 kind, +16 epoch (int32s), +24 holder or target shape (weak), +32 location (an int32 field handler) | 40 |
+//! | IC_HANDLER | 70 | IC_LAYOUT 2 (below): +8 int32 handler kind, +16 the validity cell (strong) or an int32, +24 a weak ref, +32 an int32 | 40 |
+//!
+//! **IC_LAYOUT 2** (`versions::IC_LAYOUT_VERSION`, M4-P0; plan v9 §2.3, V9-A8). The feedback
+//! slot table (which module writes which slot kind) is in the `profile.rs` module docs. The
+//! IC_HANDLER cell:
+//!
+//! | Handler kind ([`hk`]) | +16 | +24 (weak) | +32 (int32) | Writer |
+//! |---|---|---|---|---|
+//! | `PROTO_LOAD`, `MISSING`, `ADD`, `GLOBAL` | the validity cell of the prototype chain (strong; M4-P1 VALIDITY; until then the int32 epoch, as IC_LAYOUT 1) | holder, target shape or lexical shape (undefined for `MISSING`) | the location (a smi field handler) | `ic.rs` |
+//! | `CONSTRUCT_SITE` | int32 count | the initial shape | the `prototype` field index | `construct_ic.rs` (M4-P1 OBJ-ALLOC) |
+//! | `INSTANCEOF` | the validity cell | undefined | the `prototype` field index | `instance_ic.rs` (M4-P3 IC2) |
+//!
+//! The size stays 40 B and no kind id is added (construct sites and instanceof caches are
+//! IC_HANDLER cells; a literal site keeps only its slot halves). The trace function visits +24
+//! weakly; the owner of the validity cell makes it visit +16 strongly (an int32 there needs no
+//! visit).
 //!
 //! | Handler | Sites | Hit |
 //! |---|---|---|
@@ -78,6 +93,7 @@ use crate::object::{self, arr, attr, cell, init, obj, rd, rd_i32};
 use crate::runtime::{Atom, Root, Runtime};
 use crate::shape::{self, slf};
 use crate::string;
+use crate::stub_cache;
 use crate::unit::FunctionInfo;
 
 /// The entry and case key that stands for "a string receiver" (strings have no shape; their
@@ -120,6 +136,14 @@ pub(crate) mod hk {
     /// A global site (0x10-0x12): an own data property of the global object, while the
     /// lexical record has the shape in `REF` (weak; no `let`/`const`/`class` shadows it).
     pub const GLOBAL: i32 = 4;
+    /// IC_LAYOUT 2: a construct site (`construct_ic.rs`, M4-P1 OBJ-ALLOC): +16 int32 count, +24
+    /// the initial shape (weak), +32 the int32 `prototype` field index.
+    #[allow(dead_code)]
+    pub const CONSTRUCT_SITE: i32 = 5;
+    /// IC_LAYOUT 2: an instanceof case (`instance_ic.rs`, M4-P3 IC2): +16 the validity cell,
+    /// +24 undefined, +32 the int32 `prototype` field index.
+    #[allow(dead_code)]
+    pub const INSTANCEOF: i32 = 6;
 }
 
 /// IC_HANDLER fields.
@@ -266,14 +290,28 @@ fn epoch_now(epoch: *const Cell<u32>) -> u32 {
 /// The hit path of a named load (opcodes 0x21 and 0x22): the value of `o.key` from slot
 /// `slot` of the vector of `fi`, or `None` on a miss (no vector, no case for `o`'s shape, a
 /// `SLOW` case, a changed epoch, a dead holder). `o` is the receiver (0x21) or the lookup
-/// start (0x22); any value.
+/// start (0x22); any value. `name` is the site's name constant (an index into the constants
+/// of `fi`): a megamorphic entry probes the stub cache with it ([`stub_cache::probe_load`];
+/// M4-P0 hook, a miss until M4-P3 IC2).
 #[inline(always)]
-pub(crate) fn load(fi: &FunctionInfo, epoch: *const Cell<u32>, o: u64, slot: u32) -> Option<u64> {
+pub(crate) fn load(
+    rt: &Runtime,
+    fi: &FunctionInfo,
+    epoch: *const Cell<u32>,
+    o: u64,
+    slot: u32,
+    name: u32,
+) -> Option<u64> {
     if !is_cell_bits(o) {
         return None;
     }
     let (key, value) = entry(fi, slot)?;
-    let h = handler_for(key, value, shape_id(o))?;
+    let Some(h) = handler_for(key, value, shape_id(o)) else {
+        if key == HOLE && value == MEGA {
+            return stub_cache::probe_load(rt, fi, o, name);
+        }
+        return None;
+    };
     if is_i32(h) {
         let x = int32_of(h);
         return match x & smi::KIND_MASK {
@@ -302,6 +340,8 @@ pub(crate) fn load(fi: &FunctionInfo, epoch: *const Cell<u32>, o: u64, slot: u32
 
 /// The hit path of a named store: `o.key = v` (0x24, `CHECK_EPOCH`) or CreateDataProperty
 /// (0x25) from slot `slot` of the vector of `fi`. False on a miss; nothing is stored then.
+/// `name` is the site's name constant: a megamorphic entry probes the stub cache with it
+/// ([`stub_cache::probe_store`]; M4-P0 hook, a miss until M4-P3 IC2).
 #[inline(always)]
 pub(crate) fn store<const CHECK_EPOCH: bool>(
     rt: &Runtime,
@@ -309,6 +349,7 @@ pub(crate) fn store<const CHECK_EPOCH: bool>(
     epoch: *const Cell<u32>,
     o: u64,
     slot: u32,
+    name: u32,
     v: u64,
 ) -> bool {
     if !is_cell_bits(o) {
@@ -318,6 +359,9 @@ pub(crate) fn store<const CHECK_EPOCH: bool>(
         return false;
     };
     let Some(h) = handler_for(key, value, shape_id(o)) else {
+        if key == HOLE && value == MEGA {
+            return stub_cache::probe_store(rt, fi, o, name, v, !CHECK_EPOCH);
+        }
         return false;
     };
     let c = cell(o);

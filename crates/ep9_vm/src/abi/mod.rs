@@ -34,6 +34,11 @@
 //! M3-P1 B-COLLECTIONS), `realm.rs` (realms, M3-P1 REALMS), `time.rs` (the clock and the local
 //! time zone, M3-P1 B-DATE). The facts exporter is public here as [`export_facts`]
 //! (`facts_export.rs`, M3-P3 FACTS-EXPORT; V8-A13).
+//!
+//! Month-4 submodules (M4-P0 stubs, one owner each): `regexp.rs` (RegExp on the ABI and its
+//! [`MatchRecord`], M4-P2 RX0A, then M4-P3 REGEXP1) and `weakref.rs` (WeakRef and
+//! FinalizationRegistry, M4-P4 WEAKREF). `Cx::math_random` (Math.random over the isolate's
+//! xorshift128+ state, V9-D16) is in this file.
 
 mod collections;
 mod index;
@@ -41,9 +46,11 @@ mod iter;
 mod jobs;
 mod local;
 mod realm;
+mod regexp;
 mod script;
 mod slots;
 mod time;
+mod weakref;
 
 use core::marker::PhantomData;
 
@@ -56,6 +63,7 @@ pub use self::jobs::{
 pub use self::local::{
     Downcast, FlatStr, JsArray, JsFunction, JsKey, JsObject, JsString, JsSymbol, JsValue, Local,
 };
+pub use self::regexp::MatchRecord;
 pub use self::{collections::CollectionCursor, iter::IteratorRecord, slots::ObjectClass};
 use crate::builtins::{self, IntrinsicId};
 use crate::conv::{self, Hint};
@@ -1471,5 +1479,24 @@ impl<'s> Cx<'s> {
     /// Runs a full garbage collection now (test hooks such as `gc()`).
     pub fn collect_garbage(&mut self) {
         self.rt().heap.collect();
+    }
+
+    // ---- Math.random (M4-P0, part 2; V9-D16) ----
+
+    /// The next value of `Math.random` (§21.3.2.27): a number in [0, 1) from the isolate's
+    /// xorshift128+ state (`Runtime::rng`, the V8 generator). The state is seeded per isolate
+    /// from the process hash key, which is random from the OS, or fixed by `EP9_HASH_SEED`
+    /// (`runtime::rng_seed`). Never throws, never allocates; not for cryptography.
+    pub fn math_random(&mut self) -> f64 {
+        let rng = &self.rt().rng;
+        let [mut s1, s0] = rng.get();
+        s1 ^= s1 << 23;
+        s1 ^= s1 >> 17;
+        s1 ^= s0;
+        s1 ^= s0 >> 26;
+        rng.set([s0, s1]);
+        // The top 52 bits of the first word as the mantissa of a number in [1, 2), minus 1:
+        // every result is a multiple of 2^-52 below 1 (exact operations only, H36).
+        f64::from_bits((s0 >> 12) | 0x3FF0_0000_0000_0000) - 1.0
     }
 }

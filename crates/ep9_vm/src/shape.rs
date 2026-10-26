@@ -26,7 +26,7 @@
 //! | DESCRIPTORS | 72 | +8 capacity, +16 length, +24 DESC_INDEX or undefined, +32 entries: key, details | 32 + 16 cap |
 //! | DESC_INDEX | 73 | +8 bucket count (a power of 2), +16 buckets: descriptor index or undefined | 16 + 8 buckets |
 //! | TRANSITIONS | 74 | +8 capacity, +16 child shapes (weak) or undefined | 16 + 8 cap |
-//! | PROTO_INFO | 75 | +8 prototype (or null), +16 shape count, +24 SLOTS of shapes, +32 reserved (M1 validity cell) | 40 |
+//! | PROTO_INFO | 75 | +8 prototype (or null), +16 shape count, +24 SLOTS of shapes, +32 the prototype's VALIDITY_CELL (79; OBJECT_LAYOUT 4, undefined until M4-P1 VALIDITY makes it; traced strongly) | 40 |
 //!
 //! - **counts** (int32): property count in bits 0-11, in-object capacity in bits 12-19, the
 //!   object kind id in bits 20-27.
