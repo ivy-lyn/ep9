@@ -455,10 +455,10 @@ impl<'a> Exporter<'a> {
     /// A shape key (an atom or a symbol) by content.
     fn key_ref(&self, k: u64) -> KeyRef {
         if kind::is_string(k) {
-            return KeyRef::String(match string::str_view(k) {
+            return KeyRef::String(string::with_text(k, |t| match t {
                 JsStr::Latin1(b) => UnitString::from_latin1(b),
                 JsStr::Utf16(u) => UnitString::from_utf16(u),
-            });
+            }));
         }
         WellKnownSymbol::ALL
             .into_iter()

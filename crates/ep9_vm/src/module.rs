@@ -834,7 +834,7 @@ fn namespace_entries(rt: &Runtime, m: u64) -> Result<Vec<(NameAtom, Resolution)>
             res => out.push((n, res)),
         }
     }
-    out.sort_by(|a, b| string::str_view(a.0.0).cmp(&string::str_view(b.0.0)));
+    out.sort_by(|a, b| string::compare(a.0.0, b.0.0));
     out.dedup_by(|a, b| a.0 == b.0);
     Ok(out)
 }

@@ -217,7 +217,8 @@ pub(crate) fn throw_name(cx: &mut Cx, fp: *mut u64, pc: *const u8, m: NameMsg, n
 }
 
 fn throw_name_now(cx: &mut Cx, m: NameMsg, name: u64) -> Throw {
-    let n = object::str_view(name).to_string_lossy();
+    let name = crate::string::flatten(cx, name);
+    let n = crate::string::view(cx, name).to_string_lossy();
     let msg = match m {
         NameMsg::Tdz => format!("Cannot access '{n}' before initialization"),
         NameMsg::NotDefined => format!("{n} is not defined"),
