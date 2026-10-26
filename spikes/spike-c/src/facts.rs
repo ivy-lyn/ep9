@@ -43,7 +43,7 @@ impl FunctionFacts<'_> {
 /// The live facts (source RUNTIME) of the unit of `script`, from the feedback of `session`'s
 /// isolate (`ep9_vm::abi::export_facts`).
 pub fn live(session: &Session, script: &Script) -> Result<FactSnapshot, String> {
-    ep9_vm::abi::export_facts(&session.iso, &script.unit.content_hash())
+    ep9_vm::abi::export_facts(session.iso(), &script.unit.content_hash())
         .map_err(|e| format!("{}: export_facts: {e}", script.file))
 }
 

@@ -54,7 +54,9 @@ fn install_b() -> Result<String, String> {
     let f = s.function_value("sum")?;
     let code = e.emit(&s.input_of(f)?).map_err(|r| r.to_string())?;
     let bytes = code.code.len();
-    s.install_b(&[f], vec![code])?;
+    // SAFETY: `code` is placement (b) code of Spike B's `BEmitter` for `f`, made from
+    // `input_of(f)` just above (no JS ran since) and not changed.
+    unsafe { s.install_b(&[f], vec![code]) }?;
     if s.slot_kind(f) != Some(ep9_vm::DispatchKind::Opt) {
         return Err(format!("slot kind {:?}, not Opt", s.slot_kind(f)));
     }
