@@ -7,7 +7,7 @@
 //! | install-b | Spike B's (b) emitter code for a loop function, installed by [`Session::install_b`], gives T0's output, from an Opt slot | - |
 //! | facts | live facts of a run -> PROFILED file -> read back: the same records | - |
 //! | pipeline | [`crate::compile`] refuses with "graph builder not built yet" | SPIKEC-1 replaces it with the `am3` compile check |
-//! | kernels | each protocol kernel runs in T0 (n = 1) with its expected output; SKIP without the v8-v7 checkout | - |
+//! | kernels | each protocol kernel (the pinned files) runs in T0 (n = 1) with its expected output, check line included (node's, where known); SKIP without the v8-v7 checkout | - |
 
 use std::process::ExitCode;
 

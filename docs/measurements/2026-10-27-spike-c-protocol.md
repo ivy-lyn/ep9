@@ -13,7 +13,7 @@
 | C1 | "Small SSA compiler for 2-3 v8-v7 kernels on arm64" | §1, §2 | the hot set of 2 gate kernels compiles from live facts on aarch64 and runs with output equal to T0; a third kernel is named (§2.3) | M4 (crypto), M5 (navier-stokes) |
 | C2 | "One eager deopt from a native frame to a VM-stack frame" | §4 | a forced guard failure in compiled code resumes T0 at the exit's bytecode offset in the same VM frame; output equal; the exit counter counts it | M5 (the deopt entry in `ep9_vm`, behind `spike-native`) |
 | C3 | "Deopt correct under the tier-differential test" | §5 | 0 output mismatches between T0 and Spike C over the kernels and the seeded corpus, with every guard forced to fail at least once | M5 |
-| C4 | "Kernels ≥ 3x faster than T0 (est.)" | §3 | the **whole-kernel** ratio t(T0) / t(Spike C) ≥ 3.0 for each gate kernel, class S verdict (the interval on the pass side); the hot-function ratio is reported, never gated | M6 gate window |
+| C4 | "Kernels ≥ 3x faster than T0 (est.)" | §3 | the **whole-kernel** ratio t(T0) / t(Spike C) ≥ 3.0 for each gate kernel, class S verdict (the interval on the pass side), and every gate-window run right (§3: one wrong run fails the gate); the hot-function ratio is reported, never gated | M6 gate window |
 | C5a | SP-Facts: "the Spike C IR uses the fact lattice and ref nodes" | §6.1 | structural checks on every compiled graph | M4-M5 |
 | C5b | SP-Facts: "its deopt metadata is position-independent" | §6.2 | the metadata holds offsets only; a moved copy of code + metadata deopts the same | M5 |
 | C5c | SP-Facts: "one kernel compiled from a PROFILED FactSnapshot file gives identical output at ≥ 90% of live-feedback speed (est.)" | §6.3 | identical output; t(live) / t(PROFILED) ≥ 0.90, class S; after the time box a speed-only miss is recorded in H30, not blocking (09-milestones.md:241) | M5-M6 |
@@ -31,12 +31,12 @@
 
 ## 2. Kernels
 
-All files are the pinned v8-v7 files (`third_party/bench-v8v7.commit`, `bench/bench-v8/`). The driver is the stub harness of `tools/bench/cross/v8v7.mjs` (decision PERF-2): the kernel file as it is, a stub `BenchmarkSuite`/`Benchmark`, base.js's deterministic `Math.random`, then Setup, the hook, `run()` n times, the check line, TearDown. `spike-c driver <kernel> [--n N]` prints the text; node runs the same text (`spike-c run <file.js>` runs any script in T0 on the same harness).
+All files are the pinned v8-v7 files (`third_party/bench-v8v7.commit`, `bench/bench-v8/`): the driver refuses a file whose git blob id is not the one at the pin (`spike_c::kernels::PINNED`), a `SPIKE_C_BENCH_DIR` copy included. The driver is the stub harness of `tools/bench/cross/v8v7.mjs` (decision PERF-2): the kernel file as it is, a stub `BenchmarkSuite`/`Benchmark`, base.js's deterministic `Math.random`, then Setup, the hook, `run()` n times, the check line, TearDown. `spike-c driver <kernel> [--n N]` prints the text; node runs the same text (`spike-c run <file.js>` runs any script in T0 on the same harness).
 
 | Kernel | Role | Hot set (file lines) | Check |
 |---|---|---|---|
 | crypto | gate kernel 1 | `am3` (crypto.js:101-115), `montReduce` (:576-593), `bnpSquareTo` (:424-441) | the kernel throws on a wrong decrypt (crypto.js:1689) |
-| navier-stokes | gate kernel 2 | `lin_solve` (navier-stokes.js:122-149), `project` (:233-269), `advect` (:198-231) | the v7 file has no check: the driver prints a checksum of the last frame's density and velocity fields; T0 equals node v24.22.1 (test `navier_stokes_checksum_equals_node`) |
+| navier-stokes | gate kernel 2 | `lin_solve` (navier-stokes.js:122-149), `project` (:233-269), `advect` (:198-231) | the v7 file has no check: the driver prints a checksum of the last frame's density and velocity fields; T0 equals node v24.22.1 (test `navier_stokes_checksum_equals_node`). A run without the check line, or with a non-finite value in it, is wrong; at n = 1 the line must equal node's (`Driver::matches`) |
 | richards | third candidate | `Scheduler.prototype.schedule` (richards.js:183-193), `TaskControlBlock.prototype.run` (:319-333) | the kernel throws on wrong counts |
 
 The first compile target is `am3` (SPIKEC-1). The other hot functions follow (the plan names `lin_solve` for SPIKEC-4). The plan text cites am3 as crypto.js:101-114 and lin_solve as navier-stokes.js:122-150; the functions end on lines 115 and 149.
@@ -101,7 +101,8 @@ Both configurations run in one release build of `spikes/spike-c` (panic = "abort
 | H0, H1 | the first hot function alone in a class S harness with fixed inputs, in T0 (H0) and compiled (H1) | context: the hot-function ratio s = t(H0) / t(H1) (JA-D1) |
 | P | as C, with the facts from a PROFILED file (§6.3) | SP-Facts speed (C5c) |
 
-- **One run.** A new process per config and round. Script 1: the kernel file, Setup and one warm-up `run()` (the feedback). Then config C (or P) compiles and installs. Script 2, the timed region: `run()` n times (n of `tools/bench/cross/v8v7.mjs`: crypto 8, navier-stokes 12, richards 200), then the check line. A run is valid only if its output equals the T0 output (and node's for the checksum); a wrong output fails the run, not the gate.
+- **One run.** A new process per config and round. Script 1: the kernel file, Setup and one warm-up `run()` (the feedback). Then config C (or P) compiles and installs. Script 2, the timed region: `run()` n times (n of `tools/bench/cross/v8v7.mjs`: crypto 8, navier-stokes 12, richards 200), then the check line.
+- **Correctness is part of the gate.** Every run of config C (or P), the warm-up round included, must print the T0 output (for the checksum also node's) and end with no uncaught error and no crash. One wrong output, uncaught error or crash in any run fails the gate as a correctness failure (C1 for config C, the identical-output rule of C5c for config P; §8: the named ADRs reopen). Such a run is never dropped, and rounds are not run again to get past it. Only host reasons void a set of rounds (the load guard of 10-quality §3, the IQR rule below); a void set runs again whole, and its wrong runs still count.
 - **Round.** T0 and C (and H0/H1, P when measured) once each, back to back, in rotated order. Statistic: the per-round ratio. ≥ 15 rounds plus 1 warm-up round dropped.
 - **Verdict.** Gate value = median of the paired ratios R. Interval of the median by order statistics (n = 15: ranks 4 and 12). Pass: the whole interval ≥ 3.0. Fail: the whole interval < 3.0. Otherwise marginal: once more with 2x rounds; the median decides and the label "marginal" stays. Void: IQR of the ratios > 5% of the median; run again.
 - **Host.** The gate host (macOS arm64 in a quiet window, load guard of 10-quality §3), with no agent running. A Mac timing by a SPIKEC role is a report (SPIKEC-2, SPIKEC-3), never a reading. The result names the CPU model.
@@ -184,3 +185,4 @@ The per-exit record holds the pc offset from the code start, the bytecode offset
 | Date | Change | Row |
 |---|---|---|
 | 2026-10-26 | Written (M4-P0 P0-SPIKEC), before any compiler code | - |
+| 2026-10-26 | Codex review round 1, before any gate run: §3 a wrong run fails the gate, not only the run (C4 row too); §2 the driver checks each file's blob id against the pin and needs the check line | - |
