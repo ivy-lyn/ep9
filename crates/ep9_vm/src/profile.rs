@@ -640,7 +640,9 @@ fn target_key(callee: u64) -> u64 {
     }
 }
 
-/// A `Call*` site (Call slot), once per execution, before any test of the callee. Sampled:
+/// A `Call*` site (Call slot) whose call went cold: called once per execution, from the cold
+/// body (`interp::ops::call_record_cold`), after the fast tests of the callee failed; a call
+/// that `call_fast` finishes records with [`record_call_pushed`] instead. Sampled:
 /// only a call in the first [`CALL_WINDOW`] units of the budget (`cx.budget` above
 /// `BUDGET - CALL_WINDOW`; the budget is reset at each poll) counts and keeps the target's
 /// FunctionInfo (monomorphic) or the hole (megamorphic). The hot path is one load and one

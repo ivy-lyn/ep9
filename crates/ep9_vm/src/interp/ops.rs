@@ -369,7 +369,10 @@ fn jump_if(st: &St<'_>, c: bool, t: Fwd) -> Done {
 /// The callee starts with the accumulator undefined, as after `slow::call`, so the caller's
 /// accumulator is dead after the last cold exit (one register less in the frame push).
 ///
-/// `profile::record_call` (Call slot `s`) runs first, once per call (M4-P0 hook, PROFILE).
+/// The sampled call record (Call slot `s`; M4-P0 hook, PROFILE) runs once per call, after
+/// the test of the callee: after the frame push (`profile::record_call_pushed`, through
+/// `Flow::JumpRecordCall`, see [`jump_to_callee`]) or, at a cold exit, in the cold body
+/// (`profile::record_call` in `call_record_cold`; M4-P1 PROFILE-X64).
 #[cfg(not(feature = "spike-native"))]
 #[inline(always)]
 fn call_fast(
@@ -599,8 +602,6 @@ fn jump_to_callee(st: &St<'_>, t: *const u8, s: FSlot) -> Flow {
     }
 }
 
-/// Every call and construct cold path: `slow::call` pushes the frame or runs the host
-/// function, then the dispatch continues where it says.
 /// The cold body of the `Call*` opcodes: the sampled call record (`profile::record_call`,
 /// once per call: a call that goes cold records here, one that `call_fast` finishes records
 /// after its frame push) and [`call_cold`]. Every cold exit of `call_fast` leaves the budget
@@ -612,6 +613,8 @@ fn call_record_cold(st: &mut St<'_>, callee: R, s: FSlot) -> Done {
     call_cold(st)
 }
 
+/// Every call and construct cold path: `slow::call` pushes the frame or runs the host
+/// function, then the dispatch continues where it says.
 #[inline(always)]
 fn call_cold(st: &mut St<'_>) -> Done {
     let v = slow::call(st.cx, st.fp, st.pc, st.acc);
@@ -686,7 +689,7 @@ fn scaled_fast<S: dsl::Scale>(st: &mut St<'_>) -> Flow {
                 _ => BinOp::BitAnd,
             };
             st.acc = int(r);
-            // These six operators never record an int32 pair (`profile::binary_bits`).
+            // These six operators never record an int32 pair (`profile::int32_pair_bits`).
             debug_assert_eq!(profile::int32_pair_bits(bop, int(r)), 0);
             // SAFETY: `len` is the length of the prefixed instruction.
             Flow::Jump(unsafe { st.pc.add(len) })
