@@ -76,12 +76,12 @@ pub(crate) fn short(sha: &str) -> String {
     }
 }
 
-/// The stub-marker tree check (plan rule 4): every line of a file in crates, spikes or tools that
-/// holds one of `markers` (`git grep -F`, tracked and untracked files, not ignored ones; outside
-/// a git work tree, every file). PASS when there is none, OPEN with the lines when there are
-/// some, NOT-RUN when git fails. Cut out of m0-exit's `tree_checks` (M4-P0): same text for its
-/// two markers.
-pub(crate) fn stub_markers(root: &Path, markers: &[&str]) -> Cell {
+/// The stub-marker tree check (plan rule 4): every line of a file under one of `dirs` that holds
+/// one of `markers` (`git grep -F`, tracked and untracked files, not ignored ones; outside a git
+/// work tree, every file; a dir that does not exist matches nothing). PASS when there is none,
+/// OPEN with the lines when there are some, NOT-RUN when git fails. Cut out of m0-exit's
+/// `tree_checks` (M4-P0): same text for its two markers and its dirs crates, spikes and tools.
+pub(crate) fn stub_markers(root: &Path, markers: &[&str], dirs: &[&str]) -> Cell {
     let grep = |extra: &[&str]| {
         let mut cmd = Command::new("git");
         cmd.arg("-C").arg(root).args(["grep", "-n", "-I", "-F"]);
@@ -89,7 +89,7 @@ pub(crate) fn stub_markers(root: &Path, markers: &[&str]) -> Cell {
         for &m in markers {
             cmd.args(["-e", m]);
         }
-        cmd.args(["--", "crates", "spikes", "tools"]).output()
+        cmd.arg("--").args(dirs).output()
     };
     // Tracked and untracked files (not ignored ones: build output), as grep -r over the tree;
     // outside a git work tree, every file.

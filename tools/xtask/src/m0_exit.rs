@@ -1448,7 +1448,7 @@ const STUB_MARKERS: [&str; 2] = [concat!("m3", "-stub"), concat!("m2", "-stub")]
 /// crates, spikes or tools (rule 4: its two `grep -rn <marker> crates spikes tools` print
 /// nothing), and no `fn bind_this` in crates/ep9_vm/src/call.rs (section 13 row 12, the D14 gap).
 fn tree_checks(root: &Path) -> Vec<(&'static str, Cell)> {
-    let stubs = stub_markers(root, &STUB_MARKERS);
+    let stubs = stub_markers(root, &STUB_MARKERS, &["crates", "spikes", "tools"]);
     let call = root.join("crates/ep9_vm/src/call.rs");
     let bind = match read(&call) {
         Err(e) => cell(Status::NotRun, e),

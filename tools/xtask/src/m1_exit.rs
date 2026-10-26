@@ -46,6 +46,10 @@ const STUB_MARKERS: [&str; 3] = [
     concat!("m4", "-stub"),
 ];
 
+/// The dirs of the stub-marker row: the four dirs that plan v9 rule 4 greps (`fuzz/` is FE-FUZZ's
+/// nightly workspace from M4-P2). m0-exit keeps its three dirs.
+const STUB_DIRS: [&str; 4] = ["crates", "spikes", "tools", "fuzz"];
+
 /// The 10 M1 exit items (09-milestones section 2.2, M1 exit), short titles.
 const TITLES: [&str; 10] = [
     "All 8 v8-v7 kernels and Octane-7 run correctly",
@@ -268,7 +272,7 @@ fn extra_rows(root: &Path) -> Vec<(&'static str, Cell)> {
         ("carried M0 item 5 (SP-Dispatch condition 2)", m0_item5),
         (
             "stub markers (plan v9 rule 4)",
-            stub_markers(root, &STUB_MARKERS),
+            stub_markers(root, &STUB_MARKERS, &STUB_DIRS),
         ),
         ("ADR Counts line", counts),
     ]
@@ -484,7 +488,8 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// Task 4 (V9-A4): the stub-marker row reads the m2, m3 and m4 markers.
+    /// Task 4 (V9-A4): the stub-marker row reads the m2, m3 and m4 markers, in the rule-4 dirs
+    /// (with `fuzz`, M4-P0 review F6).
     #[test]
     fn the_stub_row_reads_three_markers() {
         let root = fake_repo("stubs");
@@ -512,6 +517,15 @@ mod tests {
         for f in ["crates/a.rs:1", "spikes/b.rs:1", "tools/c.rs:1"] {
             assert!(c.evidence.contains(f), "{f}: {}", c.evidence);
         }
+        // A marker under fuzz/ alone is found too.
+        for f in ["crates/a.rs", "spikes/b.rs", "tools/c.rs"] {
+            std::fs::remove_file(root.join(f)).unwrap();
+        }
+        write(&root, "fuzz/d.rs", &format!("// {}\n", STUB_MARKERS[2]));
+        let r = run(&opts(&root)).unwrap();
+        let c = &r.extra[1].1;
+        assert_eq!(c.status, Status::Open, "{c:?}");
+        assert!(c.evidence.contains("fuzz/d.rs:1"), "{}", c.evidence);
         std::fs::remove_dir_all(root).unwrap();
     }
 
