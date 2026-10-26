@@ -15,7 +15,16 @@
 //! it. Without a shape space, word0's shape_id is not a heap reference and is ignored.
 //!
 //! The same `Tracer` runs in verify mode for the heap verifier: it checks each edge instead of
-//! marking.
+//! marking. A checked mark (`verify_after_gc`, M4-P1) does both: it marks, and it checks each
+//! edge, weak slot and word0 shape the way the verifier does, so the verify after that GC does
+//! not trace the heap again (V9-D22 step 1).
+//!
+//! ```text
+//! edge(addr), mark mode:  chunk_index -> Small: offset >= first cell, VO bit -> mark bit
+//!                                     -> LargeHead: addr == cell start -> header mark
+//!                         (one chunk lookup for the cell-start test and the mark)
+//!                         not a cell start: checked mark -> error; else debug assert
+//! ```
 
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering::Relaxed;
@@ -55,6 +64,9 @@ pub struct Tracer<'h> {
     mem: &'h Memory,
     kinds: &'h KindTable,
     mode: Mode,
+    /// Check every visited slot as the verifier does: always in verify mode, and in mark mode
+    /// for a checked mark ([`Tracer::new_checked`]).
+    check: bool,
     /// Bytes of the shape region (0: no shape space).
     shape_bytes: usize,
     stack: Vec<CellPtr>,
@@ -81,6 +93,7 @@ impl<'h> Tracer<'h> {
             mem,
             kinds,
             mode,
+            check: mode == Mode::Verify,
             shape_bytes: mem.shape_bytes(),
             stack,
             weak,
@@ -89,6 +102,19 @@ impl<'h> Tracer<'h> {
             errors: Vec::new(),
             context: Context::Root("none"),
         }
+    }
+
+    /// A mark-mode tracer that also checks each edge, weak slot and word0 shape (errors in
+    /// [`Tracer::errors`]), so that no verify pass has to trace the heap again.
+    pub(crate) fn new_checked(
+        mem: &'h Memory,
+        kinds: &'h KindTable,
+        stack: Vec<CellPtr>,
+        weak: Vec<NonNull<Slot>>,
+    ) -> Tracer<'h> {
+        let mut t = Tracer::new(mem, kinds, Mode::Mark, stack, weak);
+        t.check = true;
+        t
     }
 
     /// Returns the work lists (empty) so the heap can keep their capacity.
@@ -133,14 +159,14 @@ impl<'h> Tracer<'h> {
     #[inline]
     pub fn visit_bits(&mut self, bits: u64) {
         if bits == 0 {
-            if self.mode == Mode::Verify {
+            if self.check {
                 self.error(format_args!("slot holds the bits 0"));
                 return;
             }
             debug_assert!(bits != 0, "a GC-visible slot holds the bits 0 (H06-empty)");
             return;
         }
-        if self.mode == Mode::Verify && !Value::is_valid_bits(bits) {
+        if self.check && !Value::is_valid_bits(bits) {
             self.error(format_args!("slot holds invalid Value bits {bits:#018x}"));
             return;
         }
@@ -162,11 +188,30 @@ impl<'h> Tracer<'h> {
         let bits = slot.bits();
         match self.mode {
             Mode::Mark => {
-                debug_assert!(bits != 0, "a weak slot holds the bits 0 (H06-empty)");
                 debug_assert!(
                     self.mem.contains(core::ptr::from_ref(slot).addr()),
                     "visit_weak on a slot outside the heap"
                 );
+                if self.check {
+                    // The verifier's checks of a weak slot, before the slot can be cleared: a
+                    // dangling weak reference would otherwise be cleared without a word.
+                    if bits == 0 {
+                        self.error(format_args!("slot holds the bits 0"));
+                        return;
+                    }
+                    if !Value::is_valid_bits(bits) {
+                        self.error(format_args!("slot holds invalid Value bits {bits:#018x}"));
+                        return;
+                    }
+                    if is_cell_bits(bits) && cell_start(self.mem, bits as usize).is_none() {
+                        self.error(format_args!(
+                            "reference {:#x} is not the start of a live cell",
+                            bits as usize
+                        ));
+                        return;
+                    }
+                }
+                debug_assert!(bits != 0, "a weak slot holds the bits 0 (H06-empty)");
                 if bits != 0 && is_cell_bits(bits) {
                     self.weak.push(NonNull::from(slot));
                 }
@@ -178,10 +223,14 @@ impl<'h> Tracer<'h> {
     fn edge(&mut self, addr: usize) {
         match self.mode {
             Mode::Mark => {
-                if let Some(c) = cell_start(self.mem, addr) {
-                    self.mark(c);
-                } else {
-                    debug_assert!(false, "{addr:#x} is not the start of a cell of this heap");
+                if !self.mark_start(addr) {
+                    if self.check {
+                        self.error(format_args!(
+                            "reference {addr:#x} is not the start of a live cell"
+                        ));
+                    } else {
+                        debug_assert!(false, "{addr:#x} is not the start of a cell of this heap");
+                    }
                 }
             }
             Mode::Verify => {
@@ -194,16 +243,58 @@ impl<'h> Tracer<'h> {
         }
     }
 
+    /// The cell-start test and the mark in one chunk lookup: false if no live cell starts at
+    /// `addr`; otherwise marks the cell and pushes it if it was not marked.
+    #[inline]
+    fn mark_start(&mut self, addr: usize) -> bool {
+        if !addr.is_multiple_of(8) {
+            return false;
+        }
+        let Some(idx) = self.mem.chunk_index(addr) else {
+            return false;
+        };
+        let newly = match self.mem.chunk(idx) {
+            Chunk::Small => {
+                let page = self.mem.page(idx);
+                if addr - page.addr() < FIRST_CELL_OFFSET || !page.vo(addr) {
+                    return false;
+                }
+                page.mark(addr)
+            }
+            Chunk::LargeHead { .. } => {
+                // SAFETY: chunk `idx` is the committed first chunk of a large object.
+                let large = unsafe { Large::from_base(self.mem.chunk_base(idx)) };
+                if addr != large.cell_addr() {
+                    return false;
+                }
+                large.header().mark.swap(1, Relaxed) == 0
+            }
+            _ => return false,
+        };
+        if newly {
+            // SAFETY: a live cell of this heap starts at `addr` (checked above).
+            let c = unsafe { CellPtr::from_raw(self.mem.ptr(addr).cast()) };
+            self.pushed(c);
+        }
+        true
+    }
+
     /// Marks a cell start; pushes it if it was not marked.
     fn mark(&mut self, c: CellPtr) -> bool {
         if !set_mark(self.mem, c.addr()) {
             return false;
         }
+        self.pushed(c);
+        true
+    }
+
+    /// A cell whose mark bit this tracer just set.
+    #[inline]
+    fn pushed(&mut self, c: CellPtr) {
         // S2 marker rule, minus the fence S0 does not need: set BLACK, then read the fields.
         // SAFETY: `c` is a cell start of this heap (VO bit or LOS header).
         unsafe { c.header() }.set_gc_state(gc_state::BLACK);
         self.stack.push(c);
-        true
     }
 
     /// Conservative candidate `word` (with the end rule: `word - 1` too). Returns the newly
@@ -226,11 +317,22 @@ impl<'h> Tracer<'h> {
             // SAFETY: only marked cell starts are pushed.
             let h = unsafe { c.header() };
             let kind = h.kind();
+            if self.check {
+                self.context = Context::Cell(c, kind);
+            }
             let Some(k) = self.kinds.get(kind).copied() else {
+                if self.check {
+                    self.error(format_args!("unregistered kind {kind}"));
+                    continue;
+                }
                 panic!("heap corrupt: cell {c:?} has the unregistered kind {kind}");
             };
             self.marked_cells += 1;
-            self.marked_bytes += self.kinds.cell_size(c).unwrap_or(0);
+            let size = self.kinds.cell_size(c);
+            if self.check {
+                self.check_marked(c, kind, size);
+            }
+            self.marked_bytes += size.unwrap_or(0);
             if self.shape_bytes != 0 {
                 let id = h.shape_id().get() as usize;
                 if id != 0 {
@@ -241,6 +343,25 @@ impl<'h> Tracer<'h> {
         }
     }
 
+    /// A checked mark's checks of a cell it traces (the context names it), besides its
+    /// slots and word0 shape: a size, and the shape region holds exactly the shape-space
+    /// kinds. The checked sweep checks the size class and the cell order (heap.rs); the
+    /// verify after the GC checks LOS cells (verify.rs). No gc_state check: the mark has just
+    /// set BLACK.
+    fn check_marked(&mut self, c: CellPtr, kind: u8, size: Option<usize>) {
+        if size.is_none() {
+            self.error(format_args!("size overflows"));
+        }
+        let in_region = c.addr().wrapping_sub(self.mem.base_addr()) < self.shape_bytes;
+        let space = self.kinds.space(kind);
+        if (space == Space::Shape) != in_region {
+            self.error(format_args!(
+                "a {space:?}-space cell {} the shape region",
+                if in_region { "inside" } else { "outside" }
+            ));
+        }
+    }
+
     /// Marks the shape cell at offset `id` of the region (the word0 shape of `host`).
     #[inline]
     fn mark_shape(&mut self, host: CellPtr, id: usize) {
@@ -248,6 +369,9 @@ impl<'h> Tracer<'h> {
             Some(s) => {
                 self.mark(s);
             }
+            None if self.check => self.error(format_args!(
+                "word0 ShapeId {id:#x} does not name a live shape-space cell"
+            )),
             None => debug_assert!(false, "{host:?}: word0 ShapeId {id:#x} names no shape cell"),
         }
     }
@@ -290,27 +414,59 @@ impl<'h> Tracer<'h> {
     }
 
     pub(crate) fn error(&mut self, msg: core::fmt::Arguments<'_>) {
-        if self.errors.len() < MAX_ERRORS {
-            let at = match self.context {
-                Context::Root(r) => format!("root {r}"),
-                Context::Cell(c, k) => format!("cell {c:?} (kind {k})"),
-            };
-            self.errors.push(format!("{at}: {msg}"));
-        } else if self.errors.len() == MAX_ERRORS {
-            self.errors.push("more errors not shown".into());
-        }
+        record_error(&mut self.errors, self.context, msg);
+    }
+}
+
+/// Adds one verifier error at `context`; keeps the first [`MAX_ERRORS`].
+#[cold]
+pub(crate) fn record_error(
+    errors: &mut Vec<String>,
+    context: Context,
+    msg: core::fmt::Arguments<'_>,
+) {
+    if errors.len() < MAX_ERRORS {
+        let at = match context {
+            Context::Root(r) => format!("root {r}"),
+            Context::Cell(c, k) => format!("cell {c:?} (kind {k})"),
+        };
+        errors.push(format!("{at}: {msg}"));
+    } else if errors.len() == MAX_ERRORS {
+        errors.push("more errors not shown".into());
     }
 }
 
 /// Passed to weak sources after marking. A slot whose cell is unmarked is dead.
+///
+/// After a checked mark ([`Tracer::new_checked`]), [`WeakVisitor::visit`] also checks each
+/// slot the way the verifier does, before it clears it: the weak root ranges are checked here,
+/// so the verify after that GC walks no root a second time.
 pub struct WeakVisitor<'h> {
     mem: &'h Memory,
     pub(crate) cleared: usize,
+    check: bool,
+    pub(crate) errors: Vec<String>,
 }
 
 impl<'h> WeakVisitor<'h> {
     pub(crate) fn new(mem: &'h Memory) -> WeakVisitor<'h> {
-        WeakVisitor { mem, cleared: 0 }
+        WeakVisitor {
+            mem,
+            cleared: 0,
+            check: false,
+            errors: Vec::new(),
+        }
+    }
+
+    /// A visitor whose `visit` checks each slot first (errors in `errors`, appended to
+    /// `errors`).
+    pub(crate) fn new_checked(mem: &'h Memory, errors: Vec<String>) -> WeakVisitor<'h> {
+        WeakVisitor {
+            mem,
+            cleared: 0,
+            check: true,
+            errors,
+        }
     }
 
     /// False only for a cell that this GC did not mark.
@@ -321,9 +477,40 @@ impl<'h> WeakVisitor<'h> {
     /// Clears `slot` to `undefined` if it holds a dead cell. Returns true if it cleared.
     pub fn visit(&mut self, slot: &Slot) -> bool {
         let bits = slot.bits();
+        if self.check && !self.check_weak(bits) {
+            return false;
+        }
         if bits != 0 && is_cell_bits(bits) && !is_marked(self.mem, bits as usize) {
             slot.gc_store(Value::UNDEFINED);
             self.cleared += 1;
+            return true;
+        }
+        false
+    }
+
+    /// The verifier's checks of a weak root slot: not 0, valid `Value` bits, a cell reference
+    /// is the start of a cell (live or dead in this GC; the sweep has not run yet). False on
+    /// an error: the slot is left as it is.
+    fn check_weak(&mut self, bits: u64) -> bool {
+        let ctx = Context::Root("weak range");
+        if bits == 0 {
+            record_error(&mut self.errors, ctx, format_args!("slot holds the bits 0"));
+        } else if !Value::is_valid_bits(bits) {
+            record_error(
+                &mut self.errors,
+                ctx,
+                format_args!("slot holds invalid Value bits {bits:#018x}"),
+            );
+        } else if is_cell_bits(bits) && cell_start(self.mem, bits as usize).is_none() {
+            record_error(
+                &mut self.errors,
+                ctx,
+                format_args!(
+                    "reference {:#x} is not the start of a live cell",
+                    bits as usize
+                ),
+            );
+        } else {
             return true;
         }
         false

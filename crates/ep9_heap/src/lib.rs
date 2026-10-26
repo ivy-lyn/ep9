@@ -18,7 +18,7 @@
 //!   |   css:     spill trampoline + scan [sp, stack high), end rule (H10)                  |
 //!   |   roots:   handles, ScratchRoots, root sources, root ranges, weak sources            |
 //!   |   barrier: version 2, Riptide fast path, slow paths (H11)                            |
-//!   |   verify:  heap verifier                                                             |
+//!   |   verify:  heap verifier (after a GC: checked mark + checked sweep); E2 check        |
 //!   +---------------------------------------------------------------------------------------+
 //! ```
 //!
@@ -53,7 +53,10 @@ pub use heap::{AllocError, GcStats, Heap, HeapConfig, VerifyMode};
 pub use memory::HeapError;
 pub use roots::{GlobalHandle, RootId, RootStrength, ScratchRoots, WeakHandle};
 pub use trace::{Tracer, WeakVisitor};
-pub use verify::{VerifyError, VerifyReport};
+pub use verify::{
+    E2_CHECK_UNDER_GC_STRESS, E2Check, VerifyError, VerifyReport, e2_check_init, e2_check_mode,
+    e2_check_on, e2_reports, set_e2_check,
+};
 
 #[cfg(test)]
 mod tests;

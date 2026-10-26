@@ -9,6 +9,7 @@
 //! | `css.rs` | conservative stack scan: locals, interior and one-past-end pointers, S7 (not Miri) |
 //! | `stress.rs` | randomized mutator against a model of the object graph |
 //! | `shape.rs` | the shape region: ShapeId = cage offset, word0 edge, weak clearing, full region, shared commit limit, config |
+//! | `verify.rs` | the verify after a GC (checked mark + checked sweep) finds each fault `Heap::verify` finds; the planted dangling slot; the E2 check |
 
 use ep9_value::Value;
 
@@ -22,6 +23,7 @@ mod gc;
 mod model;
 mod shape;
 mod stress;
+mod verify;
 
 /// A test node: word0, a raw meta word `(id << 32) | n`, then `n` Value slots.
 pub(crate) const NODE: KindId = KindId::new(10).unwrap();
