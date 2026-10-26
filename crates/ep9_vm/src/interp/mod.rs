@@ -273,9 +273,10 @@ pub(crate) enum Flow {
 
 impl Flow {
     /// Runs the record of `Record` and `RecordPair` inline and gives `Next` for them; other
-    /// values pass through. For the match loop (a), the debug expansion: out of line in debug
-    /// builds, so the ~150 arms that call it add no record locals to the loop's one frame (its
-    /// size bounds the native stack a JS call chain needs, `tests::interp`).
+    /// values pass through. For the match loop (a), the debug expansion, and the prefixed
+    /// steps (`step::<S>`): out of line in debug builds, so the ~150 arms that call it add no
+    /// record locals to the one frame of the loop or of a step (their sizes bound the native
+    /// stack a JS call chain or a host re-entry needs, `tests::interp`).
     #[cfg_attr(debug_assertions, inline(never))]
     #[cfg_attr(not(debug_assertions), inline(always))]
     pub(crate) fn recorded(self, st: &St<'_>) -> Flow {
