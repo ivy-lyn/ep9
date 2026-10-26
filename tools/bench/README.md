@@ -191,7 +191,9 @@ node tools/bench/cross/exit2.mjs run.json --out exit2.json                      
   harness, so the kernels that check no result of their own (v8-v7 regexp; navier-stokes, whose
   Octane check runs only at frame 15) get a result probe in the checked file: after each run()
   it prints `check <name> <i> <hash>`, a hash of the regexp results or of the solver's grids,
-  which ep9 must print as node does (timed runs have no probe). A failure shows the first error,
+  which ep9 must print as node does (timed runs have no probe). The hash names each value's
+  type, so NaN, an infinity, undefined or a number in place of a string never hashes as node's
+  value; a grid cell counts at a 1e-9 grain with no 32-bit wrap. A failure shows the first error,
   its line in base.js or the kernel file, and a named blocker when the error names a feature
   (pow core, RegExp, or the `Math.<f>` calls of that line that ep9's `Math` lacks).
   `--not-yet LIST` names kernels that may fail (a role's NOT-YET list). The JSON (schema

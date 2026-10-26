@@ -28,7 +28,9 @@
 // 15 (Octane), after the N = 1 of this check. For these kernels the checked file has a probe
 // between the kernel and the driver (PROBES; timed runs have none): it wraps each benchmark's
 // run() and prints "check <name> <i> <hash>" after the i-th call, a 32-bit hash of the results
-// so far. node prints the same lines, so "output equal" then means equal results.
+// so far. node prints the same lines, so "output equal" then means equal results. The hash input
+// names each value's type and keeps every value apart (a length before each piece), so a value
+// of another type, NaN, an infinity or undefined never hashes as a number or string node gave.
 //
 // The JSON keeps what m1-exit needs for "15/15 on a fresh tree": the commit, the git tree ids
 // of crates, tools/bench, Cargo.lock and rust-toolchain.toml at HEAD, and the paths among them
@@ -120,31 +122,44 @@ export function generateKernel(id, { n, harness, root = ROOT }) {
  */
 export const PROBES = {
   // Every frame's density and velocity grids, through the solver's display callback (setup sets
-  // a no-op one). A run() that skips solver.update() leaves no frame: "none".
+  // a no-op one). A run() that skips solver.update() leaves no frame: "none". A cell is hashed
+  // as its value * 1e9 cut to an integer (a 1e-9 grain; printing a whole number needs no
+  // shortest-digits formatting), with no 32-bit wrap; a value that is not a finite number (NaN,
+  // an infinity, undefined) is hashed by its type and name, never read as 0.
   "navier-stokes": {
     what: "density and velocity of the last frame",
-    install: "var __ep9Field = null;",
+    install: [
+      "var __ep9Field = null;",
+      "function __ep9Num(v) {",
+      "  if (typeof v !== \"number\") return typeof v + \":\" + v;",
+      "  var q = v * 1e9;",
+      "  if (q - q !== 0) return \"nf:\" + v;",
+      "  return String(q - q % 1);",
+      "}",
+    ].join("\n"),
     before: "__ep9Field = null; solver.setDisplayFunction(function (f) { __ep9Field = f; });",
     after: [
       "if (!__ep9Field) __ep9Mix(\"none\");",
       "else for (var y = 0; y < __ep9Field.height(); y++) for (var x = 0; x < __ep9Field.width(); x++)",
-      "  __ep9Mix(~~(__ep9Field.getDensity(x, y) * 1e9) + \",\" + ~~(__ep9Field.getXVelocity(x, y) * 1e9) + \",\" + ~~(__ep9Field.getYVelocity(x, y) * 1e9));",
+      "  __ep9Mix(__ep9Num(__ep9Field.getDensity(x, y)) + \",\" + __ep9Num(__ep9Field.getXVelocity(x, y)) + \",\" + __ep9Num(__ep9Field.getYVelocity(x, y)));",
     ].join("\n"),
   },
   // The result of every top-level exec, test, replace, match, split and search call (the methods
   // regexp.js calls). A call made inside another wrapped call (replace calls exec, in the spec) is
   // not hashed, so an engine that skips the inner property lookup still hashes the same. The
   // kernel replaces the global RegExp with its BenchmarkSuite, so %RegExp.prototype% comes from a
-  // literal.
+  // literal. Each element, length and index is hashed with its type ("s" + a string, "u" for
+  // undefined, else "<typeof>:<value>"), so a number never hashes as the string of its digits.
   regexp: {
     what: "results of exec, test, replace, match, split, search",
     install: [
       "(function () {",
       "  var depth = 0;",
+      "  function enc(x) { return x === undefined ? \"u\" : typeof x === \"string\" ? \"s\" + x : typeof x + \":\" + x; }",
       "  function val(r) {",
       "    if (r === null || typeof r !== \"object\") return __ep9Mix(typeof r + \":\" + r);",
-      "    __ep9Mix(\"[\" + r.length + \"@\" + r.index);",
-      "    for (var i = 0; i < r.length; i++) __ep9Mix(r[i] === undefined ? \"u\" : \"s\" + r[i]);",
+      "    __ep9Mix(\"[\" + enc(r.length) + \"@\" + enc(r.index));",
+      "    for (var i = 0; i < r.length; i++) __ep9Mix(enc(r[i]));",
       "  }",
       "  function wrap(o, k) {",
       "    var f = o[k];",
@@ -193,7 +208,7 @@ export function withProbe(g) {
     "// ---- kernels.mjs result probe (check runs only) ----",
     "var __ep9Hash = 0;",
     "function __ep9Mix(x) {",
-    "  var s = String(x), h = __ep9Hash;",
+    "  var s = String(x), h = (__ep9Hash * 31 + s.length) | 0;",
     "  for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;",
     "  __ep9Hash = (h * 31 + 59) | 0;",
     "}",
