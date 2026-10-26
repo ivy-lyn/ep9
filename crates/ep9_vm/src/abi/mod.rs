@@ -689,9 +689,11 @@ impl<'s> Cx<'s> {
         Self::local(atoms::intern_str(self.rt(), s))
     }
 
-    /// The property key (atom) for the string `s`.
+    /// The property key (atom) for the string `s`. A rope or slice is flattened or copied
+    /// first, so a builtin never makes a rope or slice atom (`atoms::atomize`, H19-Q1, Q4). A
+    /// GC point, as every `&mut Cx` call is.
     pub fn intern(&mut self, s: Local<'s, JsString>) -> Local<'s, JsKey> {
-        Self::local(atoms::intern(self.rt(), s.bits()))
+        Self::local(atoms::atomize(self.rt(), s.bits()))
     }
 
     /// A new string from Rust text. RangeError past the string length limit (2^29 - 24).

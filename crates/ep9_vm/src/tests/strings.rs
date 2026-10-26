@@ -1269,6 +1269,27 @@ fn atomize_makes_a_rope_a_thin_forwarder_to_its_flat_atom() {
 }
 
 #[test]
+fn cx_intern_of_a_rope_gives_a_flat_atom() {
+    // STR2 need 4 (M4-P2 fixer): `Cx::intern` (the builtin ABI, also `IntoKey` for a string)
+    // atomizes, so a rope from a builtin never becomes a rope atom; the rope forwards.
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let r = cat(
+        rt,
+        string::new_string(rt, "cx-intern-rope-"),
+        string::new_string(rt, "with-no-atom-yet"),
+    );
+    assert_eq!(kinds::cell_kind(r), kinds::CONS.get());
+    let k = iso
+        .with_cx(|cx| Ok(cx.intern(Local::from_bits(r)).bits()))
+        .unwrap();
+    assert_ne!(k, r);
+    assert_eq!(kinds::cell_kind(k), kinds::SEQ_LATIN1.get());
+    assert_thin(&mut iso, r, k, "cx-intern-rope-with-no-atom-yet");
+    atoms::verify(&iso.rt).unwrap();
+}
+
+#[test]
 fn atomize_of_a_rope_whose_text_has_an_atom_forwards_to_that_atom() {
     // The rope is flattened first (V9-D13), its flat copy finds the atom, and the rope
     // forwards to the atom; the flat copy is garbage.

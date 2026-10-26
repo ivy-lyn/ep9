@@ -194,8 +194,9 @@ fn eval_ext(c: u64) -> Option<u64> {
 
 /// (M3-P4, CX2-E9-1) `name` is a private name `#x` (or a synthetic `#.` name): no identifier
 /// starts with `#`, so only the private names of direct eval code (E9) are looked up by name.
-/// `name` can be a rope that is not flattened (a rope interned by `Cx::intern`, M4-P1 STR1
-/// F3), so the first unit is read with the rope-safe `string::unit_at`. Not a GC point.
+/// `name` can be a rope that is not flattened (a rope that `atoms::intern` made an atom, M4-P1
+/// STR1 F3; `key::intern_key` still does, `Cx::intern` atomizes since M4-P2), so the first
+/// unit is read with the rope-safe `string::unit_at`. Not a GC point.
 fn is_private_name(name: u64) -> bool {
     kinds::is_string(name)
         && string::str_len(name) != 0
