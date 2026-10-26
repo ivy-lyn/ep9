@@ -69,28 +69,43 @@ export const KERNELS = {
   "navier-stokes": { file: "navier-stokes.js", n: 12 }, // 28.4 ms
 };
 
+/** The harnesses: "stub" (decision PERF-2, runs 1 and 2) and "base" (the real base.js, run 3). */
+export const HARNESSES = ["stub", "base"];
+
+/**
+ * The default harness of v8v7.mjs, run.mjs, workloads.mjs and kernels.mjs (and so of perf CI v0).
+ * MATH1 (plan v9 M4-P1, V9-D14) sets it to "base" once Math.log and the pow core land.
+ */
+export const DEFAULT_HARNESS = "stub";
+
 function git(dir, args) {
   return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", maxBuffer: 1 << 26 });
 }
 
-/** The checkout and its pin; throws when HEAD is not the pin. EP9_V8V7_DIR overrides the dir. */
-export function checkPin(root = ROOT) {
-  const dir = process.env.EP9_V8V7_DIR || path.join(root, "third_party/bench-v8v7");
-  const pin = readFileSync(path.join(root, "third_party/bench-v8v7.commit"), "utf8").trim();
-  if (!/^[0-9a-f]{40}$/.test(pin)) throw new Error(`third_party/bench-v8v7.commit: not a commit id: ${pin}`);
+/** The pinned bench checkouts (scripts/sync-bench.sh) and the variable that overrides each dir. */
+export const PIN_DIR_ENV = { "bench-v8v7": "EP9_V8V7_DIR", "bench-octane": "EP9_OCTANE_DIR" };
+
+/**
+ * The checkout third_party/<repo> and its pin (third_party/<repo>.commit); throws when HEAD is not
+ * the pin. EP9_V8V7_DIR (EP9_OCTANE_DIR for bench-octane) overrides the dir.
+ */
+export function checkPin(root = ROOT, repo = "bench-v8v7") {
+  if (!PIN_DIR_ENV[repo]) throw new Error(`unknown bench checkout ${repo}`);
+  const dir = process.env[PIN_DIR_ENV[repo]] || path.join(root, "third_party", repo);
+  const pin = readFileSync(path.join(root, "third_party", `${repo}.commit`), "utf8").trim();
+  if (!/^[0-9a-f]{40}$/.test(pin)) throw new Error(`third_party/${repo}.commit: not a commit id: ${pin}`);
   let head;
   try {
     head = git(dir, ["rev-parse", "HEAD"]).trim();
   } catch (e) {
     throw new Error(`${dir}: not a git checkout (run bash scripts/sync-bench.sh): ${e.message.split("\n")[0]}`);
   }
-  if (head !== pin) throw new Error(`${dir} is at ${head}, the pin is ${pin}: run bash scripts/sync-bench.sh`);
+  if (head !== pin) throw new Error(`${dir} is at ${head}, the pin is ${pin}: run bash scripts/sync-bench.sh ${repo}`);
   return { dir, pin };
 }
 
-/** A file of bench/bench-v8 at the pin, and its blob id. The file on disk must be the same. */
-function pinned({ dir, pin }, file) {
-  const rel = `bench/bench-v8/${file}`;
+/** A file of the checkout (`rel` inside it) at the pin, and its blob id. The file on disk must be the same. */
+export function pinned({ dir, pin }, rel) {
   const blob = git(dir, ["rev-parse", `${pin}:${rel}`]).trim();
   const text = git(dir, ["cat-file", "blob", blob]);
   const disk = readFileSync(path.join(dir, rel), "utf8");
@@ -114,15 +129,15 @@ export function benchmarkNames(text) {
  * The generated text of a kernel and what it prints. `n` defaults to the KERNELS table.
  * Returns { text, expect, kernel, n, pin, blob, source, offset }.
  */
-export function generate(kernel, { n, root = ROOT, harness = "stub" } = {}) {
+export function generate(kernel, { n, root = ROOT, harness = DEFAULT_HARNESS } = {}) {
   if (!HARNESSES.includes(harness)) throw new Error(`unknown harness ${harness} (known: ${HARNESSES.join(", ")})`);
   const k = KERNELS[kernel];
   if (!k) throw new Error(`unknown kernel ${kernel} (known: ${Object.keys(KERNELS).join(", ")})`);
   const iterations = n ?? k.n;
   if (!Number.isInteger(iterations) || iterations < 1) throw new Error(`bad --n ${n}`);
   const at = checkPin(root);
-  const src = pinned(at, k.file);
-  const base = pinned(at, "base.js");
+  const src = pinned(at, `bench/bench-v8/${k.file}`);
+  const base = pinned(at, "bench/bench-v8/base.js");
   const names = benchmarkNames(src.text);
   if (!names.length) throw new Error(`${src.rel}: no "new Benchmark(" call`);
   if (harness === "base") return generateBase({ at, src, base, names, iterations, kernel });
@@ -173,11 +188,13 @@ export function generate(kernel, { n, root = ROOT, harness = "stub" } = {}) {
     harness,
     // Line L of the kernel file is line L + offset of the generated file.
     offset: before.split("\n").length - 1,
+    parts: [{ file: src.rel, offset: before.split("\n").length - 1, lines: lineCount(src.text) }],
   };
 }
 
-/** The harnesses: "stub" (decision PERF-2, runs 1 and 2) and "base" (the real base.js, run 3). */
-export const HARNESSES = ["stub", "base"];
+/** The number of lines of a text (a last line without "\n" counts). */
+const lineCount = (t) => t.split("\n").length - (t.endsWith("\n") ? 1 : 0);
+
 
 /** generate() with the real base.js harness (see the comment at the top of this file). */
 function generateBase({ at, src, base, names, iterations, kernel }) {
@@ -217,6 +234,9 @@ function generateBase({ at, src, base, names, iterations, kernel }) {
     harness: "base",
     harness_blob: base.blob,
     offset: before.split("\n").length - 1,
+    parts: [{ file: src.rel, offset: before.split("\n").length - 1, lines: lineCount(src.text) }],
+    // An error inside base.js is reported at "<eval>:<line>": line L of base.js.
+    eval_source: base.rel,
   };
 }
 
@@ -224,7 +244,7 @@ function generateBase({ at, src, base, names, iterations, kernel }) {
  * Runs every kernel once on `engine` (N = 1) and returns a Markdown table: "runs (prints ...)", or
  * the first error line, with the generated file's line mapped back to the kernel file.
  */
-export function blockers(engine, n = 1, harness = "stub") {
+export function blockers(engine, n = 1, harness = DEFAULT_HARNESS) {
   const dir = mkdtempSync(path.join(os.tmpdir(), "ep9-v8v7-"));
   const rows = [`| kernel | result on ${path.basename(engine)} (N = ${n}, harness ${harness}) | source line |`, "|---|---|---|"];
   try {
@@ -238,13 +258,9 @@ export function blockers(engine, n = 1, harness = "stub") {
         rows.push(`| ${k} | runs (prints ${JSON.stringify(out)}) | |`);
         continue;
       }
-      const err = (r.stderr || "").split("\n").find((l) => l.trim()) ?? `exit ${r.status}, printed ${JSON.stringify(out)}`;
-      // "<file>:<line>:<col>: message" -> "<kernel>.js:<line - offset>: message"
-      const m = err.match(/^(.*?):(\d+):(\d+): (.*)$/);
-      const line = m && m[1] === file ? Number(m[2]) - g.offset : null;
+      const e = errorPlace(g, file, r);
       const cell = (x) => x.replaceAll("|", "\\|").replaceAll("`", "'");
-      const src = line ? `\`${cell(g.text.split("\n")[line - 1 + g.offset].trim().slice(0, 80))}\`` : "";
-      rows.push(`| ${k} | ${line ? `${KERNELS[k].file}:${line}: ` : ""}${cell(m ? m[4] : err)} | ${src} |`);
+      rows.push(`| ${k} | ${e.place ? `${e.place}: ` : ""}${cell(e.message)} | ${e.line ? `\`${cell(e.line.slice(0, 80))}\`` : ""} |`);
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -252,8 +268,44 @@ export function blockers(engine, n = 1, harness = "stub") {
   return rows.join("\n");
 }
 
+/**
+ * The first error of a failed run of the generated file `file` (a generate() result `g` of this
+ * file or of octane.mjs): { message, place ("richards.js:66" or "base.js:152"), line (that source
+ * line, trimmed) }. ep9 prints "<file>:<line>:<col>: <message>" first, and "<eval>:<line>:..." for
+ * an error in eval code (the v8v7 base harness evals base.js); other engines' forms are kept as
+ * they are. With no stderr, a driver "ERROR ..." line on stdout is the error.
+ */
+export function errorPlace(g, file, r) {
+  const out = (r.stdout || "").replace(/\r\n/g, "\n").trim();
+  const err = (
+    (r.stderr || "").split("\n").find((l) => l.trim()) ??
+    out.split("\n").find((l) => l.startsWith("ERROR ")) ??
+    `${r.error ? r.error.message : `exit ${r.status}${r.signal ? ` (signal ${r.signal})` : ""}`}, printed ${JSON.stringify(out)}`
+  ).trim();
+  const m = err.match(/^(.*?):(\d+):(\d+): (.*)$/);
+  if (!m) return { message: err, place: null, line: null };
+  const at = Number(m[2]);
+  if (m[1] === "<eval>" && g.eval_source) {
+    // Only the base harness evals, and it evals base.js alone (plus three export lines).
+    return { message: m[4], place: `${path.basename(g.eval_source)}:${at}`, line: evalLine(g, at) };
+  }
+  if (m[1] !== file) return { message: err, place: null, line: null };
+  const text = g.text.split("\n")[at - 1]?.trim() ?? null;
+  for (const p of g.parts ?? []) {
+    if (at > p.offset && at <= p.offset + p.lines) return { message: m[4], place: `${path.basename(p.file)}:${at - p.offset}`, line: text };
+  }
+  return { message: m[4], place: `generated:${at}`, line: text };
+}
+
+/** Line `at` of the text that a base-harness file evals (base.js), from its eval string. */
+function evalLine(g, at) {
+  const m = g.text.match(/^\(0, eval\)\((".*")\);$/m);
+  if (!m) return null;
+  return JSON.parse(m[1]).split("\n")[at - 1]?.trim() ?? null;
+}
+
 export function parseArgs(argv) {
-  const o = { kernel: null, n: undefined, out: null, list: false, blockers: null, harness: "stub" };
+  const o = { kernel: null, n: undefined, out: null, list: false, blockers: null, harness: DEFAULT_HARNESS };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const val = () => {
