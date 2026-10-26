@@ -403,21 +403,22 @@ fn exec_unrooted<'s>(cx: &mut Cx<'s>, masked: usize, s: u64) -> Option<(usize, u
 #[test]
 fn exec_keeps_the_receiver_across_the_flatten() {
     let mut iso = isolate(config(Dispatch::DEFAULT, true));
-    let mut cx = Cx::new(&mut iso.cx);
-    for i in 0..64 {
-        let rt = cx.inner().rt();
-        let a = object_string(rt, &"a".repeat(200));
-        let b = object_string(rt, &"b".repeat(200));
-        let rope = black_box(crate::string::concat(rt, a, b).expect("a rope"));
-        let masked = masked_regexp(&mut cx);
-        scrub_stack();
-        assert_eq!(
-            exec_unrooted(&mut cx, masked, rope),
-            Some((200, 400)),
-            "iteration {i}"
-        );
+    {
+        let mut cx = Cx::new(&mut iso.cx);
+        for i in 0..64 {
+            let rt = cx.inner().rt();
+            let a = object_string(rt, &"a".repeat(200));
+            let b = object_string(rt, &"b".repeat(200));
+            let rope = black_box(crate::string::concat(rt, a, b).expect("a rope"));
+            let masked = masked_regexp(&mut cx);
+            scrub_stack();
+            assert_eq!(
+                exec_unrooted(&mut cx, masked, rope),
+                Some((200, 400)),
+                "iteration {i}"
+            );
+        }
     }
-    drop(cx);
     iso.collect_garbage();
     iso.verify_heap().unwrap();
 }
