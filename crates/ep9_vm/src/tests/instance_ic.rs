@@ -270,6 +270,10 @@ fn bound_and_non_function_rhs_are_slow_and_throws_record_nothing() {
         let c3 = class(&t, 3);
         let o = instance(&mut t, c3);
         let b = bound::new_bound_function(&mut t.iso.cx, c3, UNDEFINED, &[]).unwrap();
+        // The slot's keys are weak, and the state below counts `b`'s case: a handle keeps `b`
+        // after its last use. Without it a release build under GC stress freed `b`, and the
+        // record of `h` took its dead case (Monomorphic; M4-P4 P4-ORCH-9).
+        let kept_b = t.keep(b);
         assert!(test(&mut t, o, b));
         assert_eq!(t.handler(0, b), Some(ic::SLOW));
         assert!(test(&mut t, o, b));
@@ -278,6 +282,7 @@ fn bound_and_non_function_rhs_are_slow_and_throws_record_nothing() {
         let yes = global(&t, "Yes");
         let hi = has_instance(&t);
         props::own_define(t.rt(), h, hi, yes, attr::DEFAULT);
+        let kept_h = t.keep(h);
         assert!(test(&mut t, int(5), h));
         assert_eq!(t.handler(0, h), Some(ic::SLOW));
         assert_eq!(t.state(0), State::Polymorphic(2));
@@ -286,6 +291,8 @@ fn bound_and_non_function_rhs_are_slow_and_throws_record_nothing() {
         let plain = object::new_plain_object(t.rt());
         t.throws(0, o, plain, "TypeError");
         assert_eq!(t.state(0), State::Polymorphic(2));
+        t.release(kept_b);
+        t.release(kept_h);
     });
 }
 

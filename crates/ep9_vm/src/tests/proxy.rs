@@ -516,12 +516,18 @@ fn proxy_cycle<'s>(cx: &mut Cx<'s>) -> (Local<'s, JsObject>, Local<'s, JsObject>
 /// end (scratchpad m1m4/p4/fixB/js/cycle.js).
 const STACK_TEXT: &str = "RangeError: Maximum call stack size exceeded";
 
-/// The forwarding depth bound (`proxy::MAX_FORWARD_DEPTH`) ends the cycle by itself: on a
-/// 512 MiB stack the native stack check is far away, and `[[Get]]`, `[[HasProperty]]` and
-/// `[[Set]]` of a missing key still end in the RangeError, in debug and release builds. Own
-/// keys answer before the walk reaches the proxy. The depth count is back at 0 after each.
+/// A forward is never a tail call: each level holds its depth guard until the target's
+/// method returns, so on the cycle `[[Get]]`, `[[HasProperty]]` and `[[Set]]` of a missing
+/// key end in the RangeError on a 512 MiB stack too, in debug and release builds. Which stop
+/// fires first is not pinned here: the depth bound (`proxy::MAX_FORWARD_DEPTH`) or the native
+/// stack check (its limit is near the low end of the running thread's stack, `isolate.rs`), so
+/// with the bound taken out this test still passes (M4-P4 verifier B, V-B2); the bound itself
+/// is pinned by `a_chain_of_max_forward_depth_proxies_answers_and_one_more_throws`. With the
+/// level given back at once (a tail call is possible again) this test runs past 60 s in
+/// release (M4-P4 fixer C mutation run). Own keys answer before the walk reaches the proxy.
+/// The depth count is back at 0 after each.
 #[test]
-fn the_forwarding_depth_bound_ends_a_proxy_cycle_without_the_stack_check() {
+fn a_proxy_cycle_ends_in_the_range_error_because_a_forward_is_never_a_tail_call() {
     on_big_stack(|| {
         with_cx(false, |cx, rt| {
             let (a, p) = proxy_cycle(cx);
