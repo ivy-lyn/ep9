@@ -64,8 +64,8 @@
 //!   Call slot of 0x6b `TailCall` (reserved), the Literal slot of `GetTemplateObject` and the
 //!   Literal slot of `CreateRegExpLiteral` (`regexp::create_literal` writes no slot).
 //!   InstanceOf (14) gets a record only once its slot left the start state (undefined, int32
-//!   0): T0 does not record it before IC2 (M4-P3), and a record that says "never ran" for a
-//!   site that ran would be false.
+//!   0): `instance_ic.rs` (M4-P3 IC2) records a run only when it gives a result (a rhs that
+//!   throws records nothing), so a slot in its start state has no rhs to name.
 //! - **Implicit bits (H16-Q2 (1); MODES-D10, F-R9).** T0 writes no bit for an int32 pair with
 //!   an int32 result at a BinaryOp site (also an int32 operand of a unary site), an int32 pair
 //!   at a CompareOp site, and a present int32 index of an Array at `GetKeyedProperty`. The
@@ -427,7 +427,7 @@ impl<'a> Exporter<'a> {
                 SlotFacts::TypeOf(known(TypeSet::from_bits(int_value(v, i)? as u16))?)
             }
             (K::InstanceOf, _) => {
-                // Not recorded before IC2 (M4-P3): a slot in its start state gives no record.
+                // A slot in its start state (no run gave a result, `instance_ic.rs`): no record.
                 // The value half may be a handler or a POLY_IC cell, so no `int_value`.
                 if feedback::key(v, i) == UNDEFINED && feedback::value(v, i) == int32_bits(0) {
                     return None;

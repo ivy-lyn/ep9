@@ -400,13 +400,11 @@ pub mod layout {
     pub const FEEDBACK_KEY: u32 = fv::KEY as u32;
     /// C-18 set. A feedback slot: the value half (strong).
     pub const FEEDBACK_VALUE: u32 = fv::VALUE as u32;
-    /// C-18 set. POLY_IC cell: the first case, a key (weak) then a handler. `ic.rs` keeps
-    /// the case layout in a private module (`pc`: `CASES`, `CASE`; IC2's file in M4-P3), so
-    /// this value and [`POLY_CASE_SIZE`] are written here and proved on a live POLY_IC cell
-    /// by `tests::native` (the integration fixer may point them at `ic::pc`).
-    pub const POLY_CASES: u32 = 8;
-    /// C-18 set. POLY_IC cell: bytes per case.
-    pub const POLY_CASE_SIZE: u32 = 16;
+    /// C-18 set. POLY_IC cell: the first case, a key (weak) then a handler (`ic::pc::CASES`;
+    /// also proved on a live POLY_IC cell by `tests::native`).
+    pub const POLY_CASES: u32 = crate::ic::pc::CASES as u32;
+    /// C-18 set. POLY_IC cell: bytes per case (`ic::pc::CASE`).
+    pub const POLY_CASE_SIZE: u32 = crate::ic::pc::CASE as u32;
     /// C-18 set. POLY_IC cell: cases per cell (`ic::POLY_CASES`).
     pub const POLY_COUNT: u32 = crate::ic::POLY_CASES as u32;
     /// C-18 set. Smi handler: the kind is in bits 0-3 (`ic::smi::KIND_MASK`).

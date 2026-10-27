@@ -317,6 +317,10 @@ pub(crate) fn get_named(
     enter(cx, fp, pc);
     let rt = cx.rt();
     let vector = feedback::vector(info(fp));
+    // A megamorphic slot: the stub cache first (M4-P3 IC2, stub_cache.rs).
+    if let Some(r) = vector.and_then(|v| ic::mega_load(rt, v, slot, o, key)) {
+        return ret(Ok(r));
+    }
     let case = vector
         .filter(|&v| !ic::skip_miss(v, slot, o))
         .and_then(|_| ic::load_case(rt, o, key));
@@ -352,6 +356,11 @@ pub(crate) fn get_super(
         NULL
     };
     let vector = feedback::vector(info(fp));
+    // The lookup start's case serves `receiver` too: a prototype load reads the holder's field
+    // and a missing name gives undefined, whatever the receiver.
+    if let Some(r) = vector.and_then(|v| ic::mega_load(rt, v, slot, start, key)) {
+        return ret(Ok(r));
+    }
     let case = vector
         .filter(|&v| !ic::skip_miss(v, slot, start))
         .and_then(|_| ic::load_case(rt, start, key));
@@ -384,6 +393,9 @@ pub(crate) fn set_named(
     enter(cx, fp, pc);
     let rt = cx.rt();
     let vector = feedback::vector(info(fp));
+    if vector.is_some_and(|vec| ic::mega_store(rt, vec, slot, o, key, v, define)) {
+        return ret(Ok(v));
+    }
     let pre = vector
         .filter(|&vec| !ic::skip_miss(vec, slot, o))
         .and_then(|_| ic::store_pre(rt, o, key, define));

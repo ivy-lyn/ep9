@@ -16,9 +16,6 @@
 //! ```
 //!
 //! Rules:
-//! - Wiring (M4-P3): the calls in `slow/property.rs` come from the integration fixer, which
-//!   also sets `ic::MEGA_FILL`; until then the table is filled only in tests (and when a site
-//!   goes megamorphic) and never probed outside them.
 //! - The probe is on the miss path, not in `ic::load` / `ic::store`: there it would cost every
 //!   monomorphic hit two more loads (the site's name operand and the runtime pointer; measured
 //!   +1.4% instructions on t0-prop, mac a64). The miss path still saves the generic lookup.
@@ -147,10 +144,6 @@ fn index(op: Op, id: u32, name: u64) -> usize {
 /// The handler of the entry for (`op`, ShapeId `id`, `name`), or `None`. Called only from
 /// `ic::mega_load` and `ic::mega_store` (the miss path); never allocates, never calls. A ShapeId
 /// of 0 (a string or a symbol) never matches.
-#[allow(
-    dead_code,
-    reason = "called by slow::get_named / get_super / set_named once the integration fixer wires it (M4-P3 IC2 report)"
-)]
 #[inline(always)]
 pub(crate) fn probe(rt: &Runtime, op: Op, id: u32, name: u64) -> Option<u64> {
     let e = &rt.stub_cache.entries[index(op, id, name)];

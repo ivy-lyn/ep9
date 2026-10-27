@@ -19,10 +19,11 @@
 //! - Month-4 hooks (M4-P0, plan v9 V9-D5): this file has no owner after M4-P0, so each handler
 //!   that a month-4 role fills calls into that role's module: `profile::record_*` (T0
 //!   recording, PROFILE), `literal_site::fast_*` and `construct_ic::fast` (OBJ-ALLOC),
-//!   `keyed_ic::fast_*` (KEYED), `instance_ic::fast` (IC2), `regexp::create_literal` (RX0A),
-//!   and the stub cache through `ic::load`/`ic::store` (IC2). In M4-P0 every hook is empty or
-//!   returns `Flow::Cold`, so T0 does not change; the hook tables are in the module docs of
-//!   `profile.rs` and each stub module.
+//!   `keyed_ic::fast_*` (KEYED), `instance_ic::fast` (IC2), `regexp::create_literal` (RX0A);
+//!   the stub cache (IC2) is probed on the miss path (`slow::get_named`, `get_super`,
+//!   `set_named` through `ic::mega_load`/`ic::mega_store`), not here. In M4-P0 every hook
+//!   is empty or returns `Flow::Cold`, so T0 does not change; the hook tables are in the
+//!   module docs of `profile.rs` and each stub module.
 
 #![allow(clippy::needless_return)]
 

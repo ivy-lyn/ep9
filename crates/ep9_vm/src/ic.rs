@@ -187,8 +187,8 @@ mod hc {
     pub const SIZE: usize = 40;
 }
 
-/// POLY_IC fields.
-mod pc {
+/// POLY_IC fields (`native::layout` exports `CASES` and `CASE` for Spike C, C-18).
+pub(crate) mod pc {
     pub const CASES: usize = 8;
     pub const CASE: usize = 16;
     pub const SIZE: usize = CASES + CASE * super::POLY_CASES;
@@ -380,7 +380,10 @@ pub(crate) fn load(
     let (key, value) = entry(fi, slot)?;
     let id = shape_id(o);
     let h = handler_for(key, value, id)?;
-    load_with(rt, epoch, o, id, || fi.constant(name), h)
+    // `move`: a closure that borrowed `name` would keep it in memory, and the T0 handler then
+    // loses its sibling tail call in a debug-assertions build at opt-level 2 (Spike C's test
+    // profile), so each GetNamedProperty grew the native stack until the RangeError.
+    load_with(rt, epoch, o, id, move || fi.constant(name), h)
 }
 
 /// The value the handler `h` gives for `o` (ShapeId `id`), as for [`load`]. `key` gives the
@@ -452,7 +455,8 @@ pub(crate) fn store<const CHECK_EPOCH: bool>(
     let Some(h) = handler_for(key, value, shape_id(o)) else {
         return false;
     };
-    store_with::<CHECK_EPOCH>(rt, epoch, o, || fi.constant(name), v, h)
+    // `move`: as in [`load`] (the sibling tail call of the handler).
+    store_with::<CHECK_EPOCH>(rt, epoch, o, move || fi.constant(name), v, h)
 }
 
 /// Stores `v` through the handler `h` for `o`, as for [`store`]. False if `h` does not apply;
@@ -519,10 +523,6 @@ fn store_with<const CHECK_EPOCH: bool>(
 /// has an entry for `o`'s shape and the name `key` (an atom), the value its handler gives.
 /// `None`: take the generic path (which then records the case in the stub cache, [`record`]).
 /// No allocation, no JS, not a GC point.
-#[allow(
-    dead_code,
-    reason = "called by slow::get_named / get_super / set_named once the integration fixer wires it (M4-P3 IC2 report)"
-)]
 pub(crate) fn mega_load(rt: &Runtime, v: u64, slot: u32, o: u64, key: u64) -> Option<u64> {
     if !kind::is_object(o) || !is_mega(v, slot) {
         return None;
@@ -538,10 +538,6 @@ pub(crate) fn mega_load(rt: &Runtime, v: u64, slot: u32, o: u64, key: u64) -> Op
 /// (0x24) or CreateDataProperty (0x25, `define`) through the stub cache entry for `o`'s shape,
 /// if slot `slot` of `v` is megamorphic and there is one. True if it stored; false: take the
 /// generic path. No allocation, no JS, not a GC point.
-#[allow(
-    dead_code,
-    reason = "called by slow::get_named / get_super / set_named once the integration fixer wires it (M4-P3 IC2 report)"
-)]
 pub(crate) fn mega_store(
     rt: &Runtime,
     v: u64,
@@ -566,10 +562,6 @@ pub(crate) fn mega_store(
 }
 
 /// True if slot `i` of the vector `v` is megamorphic (the hole and int32 MEGA). Not a GC point.
-#[allow(
-    dead_code,
-    reason = "called by slow::get_named / get_super / set_named once the integration fixer wires it (M4-P3 IC2 report)"
-)]
 #[inline]
 fn is_mega(v: u64, i: u32) -> bool {
     feedback::key(v, i) == HOLE && feedback::value(v, i) == MEGA
@@ -709,11 +701,9 @@ fn case_key(o: u64) -> Option<u64> {
 }
 
 /// True if the miss path of a megamorphic entry fills the stub cache (computes the case of an
-/// object receiver for [`record`]). False in the build until the miss paths probe the table
-/// (`slow::get_named`, `get_super`, `set_named` calling [`mega_load`] and [`mega_store`]; the
-/// M4-P3 integration fixer wires them and sets this to true): a fill that nothing probes only
-/// costs (raytrace +7.8% instructions, mac a64). The tests run the filled table.
-const MEGA_FILL: bool = cfg!(test);
+/// object receiver for [`record`]), which the miss paths probe (`slow::get_named`,
+/// `get_super`, `set_named` calling [`mega_load`] and [`mega_store`]).
+const MEGA_FILL: bool = true;
 
 /// True if the miss path of slot `i` of `v` for the receiver `o` need not compute a case: `o`
 /// has no case key, or its case is `SLOW` (the generic path runs every time). A megamorphic
