@@ -468,6 +468,40 @@ fn the_budget_policy_runs_minor_gcs_then_a_major_one() {
     heap.drop_global(g);
 }
 
+/// A huge `initial_budget` (an embedder that never wants a budget GC) builds a heap: the
+/// initial major-GC limit saturates as `after_gc` does (`2 * usize::MAX` overflowed in
+/// `Heap::new`, a panic with overflow checks). S0 and S1; both GC kinds then still run.
+/// Under Miri 50 cells instead of 2000 (time).
+#[test]
+fn a_huge_initial_budget_saturates_the_major_limit() {
+    for generational in [false, true] {
+        let heap = test_heap(|c| {
+            c.initial_budget = usize::MAX;
+            c.generational = generational;
+        });
+        let head = new_node(&heap, 1, 1);
+        let g = heap.new_global(head.to_value());
+        let cells: u32 = if cfg!(miri) { 50 } else { 2_000 };
+        for i in 2..cells {
+            let c = new_node(&heap, i, 30);
+            if i == 2 {
+                store(&heap, head, 0, c.to_value());
+            }
+        }
+        assert_eq!(heap.stats().collections, 0, "no budget GC ({generational})");
+        heap.collect_minor_with_words(&[]);
+        assert_eq!(heap.stats().last_minor, generational);
+        heap.collect_with_words(&[]);
+        assert!(!heap.stats().last_minor);
+        assert_eq!(
+            node_id(CellPtr::from_value(slot(head, 0).get()).unwrap()),
+            2
+        );
+        heap.verify().expect("verifier");
+        heap.drop_global(g);
+    }
+}
+
 /// `collect_minor` on an S0 heap is a full collection.
 #[test]
 fn collect_minor_on_an_s0_heap_is_a_full_gc() {

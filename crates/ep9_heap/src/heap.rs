@@ -569,7 +569,7 @@ impl Heap {
                 stats: GcStats::default(),
                 next_major: false,
                 old_bytes: 0,
-                major_limit: 2 * s.initial_budget,
+                major_limit: s.initial_budget.saturating_mul(2),
                 stress_gcs: 0,
             }),
             roots: RefCell::new(Roots::default()),
