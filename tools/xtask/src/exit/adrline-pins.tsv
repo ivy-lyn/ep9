@@ -124,3 +124,22 @@ history	H10-rooting.md	crates/ep9_heap/src/trace.rs:357-382	| 2026-10-22 | rewri
 history	H10-rooting.md	crates/ep9_heap/src/trace.rs:357-382	| 3 Verifier | P4-ACCEPT-3	0c4c70e	^pub\(crate\) fn find_cell\(
 history	H16-ics-and-feedback.md	crates/ep9_vm/src/profile.rs:8-19	| 1 Reviewer (M4-P0 addendum	f1a70ed	^//! \| Slot kind \(ABI byte\) \|
 history	H30-ir-fact-model.md	crates/ep9_vm/src/conv.rs:397	| 2026-10-22 | rewrite | PROVEN row	65f346b	BinOp::Shr => num\(f64::from\(to_uint32\(x\) >>
+
+# M4-P3 integration fixer, part B (ADRLINE after the P3 code fixes): refs in dated review rows keep
+# the line of the commit their row names (M3-P1-REVIEWROW-REFS): code moved by KEYED, IC2, the
+# P3 fixer's 82b71b1 and 7ef5308, and the isolate_config doc fix e6d1e11.
+history	H11-barrier-and-atomics.md	tools/test262/src/exec.rs:552	| 3 Verifier (M4-P3 amendment: the 2026-10-27 H11-Q7 fill row	2c2502a	let generational \= std\:\:env\:\:var_os\(\"EP9_GC_GENERATIONAL\"\)\.is_some_and
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/ic.rs:920-964	| 1 Reviewer (M4-P2 amendment: the 2026-10-27 CacheIR global-store fil	7b954ac	pub\(crate\) fn global_case\(rt\: \&Runtime\, name\: u64\, store\: bool\) \-\> Opt
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/ic.rs:920-964	| 3 Verifier (M4-P2 amendment: the 2026-10-27 CacheIR global-store fil	7b954ac	pub\(crate\) fn global_case\(rt\: \&Runtime\, name\: u64\, store\: bool\) \-\> Opt
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/facts_export.rs:69-79	| 3 Verifier (M4-P2 amendment: the 2026-10-27 Fact meanings fill row	7b954ac	\/\/\! \- \*\*Implicit bits \(H16\-Q2 \(1\)\; MODES\-D10\, F\-R9\)\.\*\* T0 writes no bi
+history	H16-ics-and-feedback.md	`:80-94`	| 3 Verifier (M4-P2 amendment: the 2026-10-27 Fact meanings fill row	7b954ac	\/\/\! \- \*\*Count units \(F\-R7\, MC\-w13\-2\)\.\*\* Each count names its unit\, and
+history	H16-ics-and-feedback.md	`:95-103`	| 3 Verifier (M4-P2 amendment: the 2026-10-27 Fact meanings fill row	7b954ac	\/\/\! \- \*\*Call keys are never written out \(F\-R8\, MC\-w13\-8\)\.\*\* A \`Call\*\` 
+history	H16-ics-and-feedback.md	`:395-408`	| 3 Verifier (M4-P2 amendment: the 2026-10-27 Fact meanings fill row	7b954ac	\(K\:\:Call\, _\) \=\> SlotFacts\:\:Call\(match \(u\.call\, u\.construct\) \{
+history	H16-ics-and-feedback.md	`:420-425`	| 3 Verifier (M4-P2 amendment: the 2026-10-27 Fact meanings fill row	7b954ac	\(K\:\:BinaryOp\, _\) \=\> SlotFacts\:\:BinaryOp\(
+history	H16-ics-and-feedback.md	crates/ep9_builtins/tests/facts_export.rs:586	| 3 Verifier (M4-P2 amendment: the 2026-10-27 Fact meanings fill row	7b954ac	fn a_periodic_call_pattern_keeps_sites_out_of_the_fixed_window\(\) \{
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/stub_cache.rs:113	| 4 Data (M4-P3 amendment: the 2026-10-27 H16-Q3 fill row	2c2502a	heap\.add_weak_source\(move \|_\| flush\(\&e\[\.\.\]\, \&u\)\)\;
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/ic.rs:1357	| 4 Data (M4-P3 amendment: the 2026-10-27 H16-Q3 fill row	2c2502a	if case\.key \=\= KEY_STRING \|\| handler \=\= SLOW \{
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/ic.rs:716	| 4 Data (M4-P3 amendment: the 2026-10-27 H16-Q3 fill row	2c2502a	const MEGA_FILL\: bool \= cfg\!\(test\)\;
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/ic.rs:412-415	| 4 Data (M4-P3 amendment: the 2026-10-27 string method cases rewrite row	2c2502a	\/\/ ShapeId 0 is a string\'s or a symbol\'s\: a KEY_STRING prototype case 
+history	H23-limits-and-failure-policy.md	crates/ep9_vm/src/native.rs:401	| 1 Reviewer (M3-P2 amendment: the 2026-10-23 PERF3 budget rewrite, addendum for the round-5 fix D1)	26513a2	cx\.budget \-\= 1\; \/\/ 1 unit per call\, also when the frame does not fit \(
+history	H23-limits-and-failure-policy.md	crates/ep9_vm/src/native.rs:401	| 3 Verifier (M3-P2 amendment: the 2026-10-23 PERF3 budget rewrite, 2026-10-24 addendum for the round-5 fix D1	ed431b7	cx\.budget \-\= 1\; \/\/ 1 unit per call\, also when the frame does not fit \(
