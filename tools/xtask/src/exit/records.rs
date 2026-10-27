@@ -20,7 +20,8 @@
 //!   counts, `Not Approved` and `**Not approved**` do not).
 //! - For each date: the complete records that name it (the smallest count of rows 1, 2, 3, 4 and
 //!   Approval among the rows that name it) must be at least the amendment rows of that date. A
-//!   Pending row that names the date is a gap.
+//!   Pending row that names the date is a gap, and so is a row whose Who or Result cell is empty
+//!   (blank, or only markdown emphasis, code ticks or a dash): it counts for nothing.
 //! - The approver of each approval names no writer of a row 1-4 of the same date (README section
 //!   3.2: "The orchestrator never approves its own change"). The writer of a row is the text
 //!   after `row text by ` in its Who cell, else the Who cell; in both cases up to the first ` (`,
@@ -73,6 +74,12 @@ fn cells(l: &str) -> Vec<String> {
         .split(" | ")
         .map(|c| c.trim().to_string())
         .collect()
+}
+
+/// A cell with no content: empty, or only markdown emphasis, code ticks or a dash.
+fn blank(cell: &str) -> bool {
+    cell.chars()
+        .all(|c| c.is_whitespace() || "*_`-\u{2013}\u{2014}".contains(c))
 }
 
 /// The body rows of the first table under the `## <name>` heading (header and rule dropped).
@@ -296,6 +303,12 @@ pub(crate) fn records(root: &Path, base_sha: &str) -> Result<Records, String> {
             if result.starts_with("Pending") || who.starts_with("Pending") {
                 r.gaps.push(format!(
                     "{rel}: record row {part_cell:?} is Pending (the {d} amendment rows wait for it)"
+                ));
+                continue;
+            }
+            if blank(who) || blank(result) {
+                r.gaps.push(format!(
+                    "{rel}: record row {part_cell:?} has an empty Who or Result cell (no reviewer or no result; the {d} amendment rows need both)"
                 ));
                 continue;
             }
