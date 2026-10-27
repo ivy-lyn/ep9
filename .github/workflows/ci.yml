@@ -3,6 +3,7 @@
 #
 #   lint ............. fmt + clippy + rustdoc -D warnings; gc-lint   (Linux x64)
 #                      jetstream/run.mjs, cross/run.mjs and t0-dispatch.mjs tests
+#                      adr-lint since m0-exit (M1 exit item 6, plan v9 rule 26)
 #   scope ............ docs_only for the pushed range                (Linux x64)
 #                      (.github/scripts/ci-scope.sh, its self-test first)
 #   build-test ....... build + test; clippy on the other 3 targets;  (4 targets)
@@ -107,8 +108,8 @@ jobs:
       # JsStr or FlatStr in a heap container, a static, a thread_local or a boxed closure
       # (tools/xtask/src/gc_lint.rs). Each finding names its file:line; every allow is listed.
       - run: cargo xtask gc-lint
-      # Broken intra-doc links and other rustdoc warnings fail the job.
-      - run: cargo doc --workspace --no-deps --locked
+      # Broken intra-doc links and other rustdoc warnings fail the job, private items too.
+      - run: cargo doc --workspace --no-deps --locked --document-private-items
         env:
           RUSTDOCFLAGS: -D warnings
       # run.mjs gate logic with a fake engine; no JetStream checkout needed.
