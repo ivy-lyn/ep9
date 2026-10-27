@@ -24,18 +24,46 @@
 
 #[macro_use]
 pub mod exact;
+mod acos;
+mod acosh;
+mod asin;
+mod asinh;
+mod atan;
+mod atanh;
+mod cbrt;
+mod cosh;
 mod exp;
+mod expm1;
 mod fmod;
 mod log;
+mod log10;
+mod log1p;
+mod log2;
 mod pow;
 mod round;
+mod sinh;
+mod tanh;
 
+pub use acos::acos;
+pub use acosh::acosh;
+pub use asin::asin;
+pub use asinh::asinh;
+pub use atan::atan;
+pub use atanh::atanh;
+pub use cbrt::cbrt;
+pub use cosh::cosh;
 pub use exact::{fma_exact, fma_soft, two_prod, two_sum};
 pub use exp::exp;
+pub use expm1::expm1;
 pub use fmod::fmod;
 pub use log::log;
+pub use log1p::log1p;
+pub use log2::log2;
+pub use log10::log10;
 pub use pow::pow_js;
 pub use round::{fround, round_js};
+pub use sinh::sinh;
+pub use tanh::tanh;
 
 /// The value of a C99 hexadecimal floating literal such as `"0x1.62e42fefa39efp-13"`,
 /// `"-0x1p-1074"` or `"0x0p+0"`, at compile time. The CORE-MATH ports write their tables with
