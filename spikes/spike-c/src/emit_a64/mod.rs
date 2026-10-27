@@ -19,21 +19,36 @@
 //!  leave: mov x0, x28 ; ldrb w9, [x1] ; ldr x16, [x0, x9, lsl #3]
 //!         ldp (the five pairs, reversed) ; ldp x29, x30, [sp], #S ; br x16
 //!  out of line: overflow, poll slow paths (x4-x15 saved around RuntimeTable::poll), edge
-//!  stubs, guard traps, throw stubs, the unwind call
+//!     stubs, exit stubs (one per guard), the shared exit of each exit policy, throw stubs,
+//!     the unwind call
 //! ```
 //!
-//! **Guards (H32, JIT mode).** A failed guard jumps to its exit stub, made from the guard's
-//! `Guard.policy` (data the graph builder set: the emitter reads no mode,
-//! docs/plan/13-execution-modes.md B2, P-R1). The one policy is `ExitPolicy::Deopt`. Until
-//! month 5 builds the eager deopt entry in `ep9_vm`, its stub is the **"deopt not built"
-//! trap**: it throws the
-//! int32 [`TRAP_BASE`] + guard id through `RuntimeTable::throw` and unwinds as any throw from
-//! (b) code. The run then ends with that uncaught number ([`trap_of`] reads it back), never
-//! with a wrong value. It is a stand-in, not a policy: H32 never throws on a fact failure, and
-//! JS code could catch the number (the protocol kernels do not catch around compiled
-//! functions). SPIKEC-4 makes the per-exit position-independent metadata (pc offset from the
-//! code start, bytecode offset, value locations, RW exit-counter index; H29-Q1, Q2, Q5) from
-//! the guards' frame states.
+//! **Guards (H32, JIT mode).** Every branch of a failed guard goes to that guard's **exit
+//! stub**; the stub goes to the **shared exit** of the guard's `Guard.policy` (data the graph
+//! builder set: the emitter reads no mode, docs/plan/13-execution-modes.md B2, P-R1). The one
+//! policy is `ExitPolicy::Deopt`.
+//!
+//! ```text
+//!  guard g fails ──> exit stub g (12 bytes while id and offset fit in 16 bits):
+//!                      movz x16, #g ; movz x17, #<bytecode offset of g's frame state>
+//!                      b <shared exit of g's policy>
+//!                    clobbers only x16, x17 (never allocated): every frame-state value is
+//!                    still where the allocation put it (a register, a native stack slot, a
+//!                    VM frame slot, a constant; H29-Q2)
+//!  shared exit (Deopt, one per function): month 5 = the eager deopt entry (read the exit's
+//!                    metadata by x16, write the values back, resume T0 at x17);
+//!                    until then the "deopt not built" trap
+//! ```
+//!
+//! Month 5 replaces only the shared exit; the stubs and the guard branches stay. The
+//! **"deopt not built" trap** throws the int32 [`TRAP_BASE`] + guard id through
+//! `RuntimeTable::throw` at the stub's bytecode offset and unwinds as any throw from (b)
+//! code. The run then ends with that uncaught number ([`trap_of`] reads it back), never with
+//! a wrong value. It is a stand-in, not a policy: H32 never throws on a fact failure, and JS
+//! code could catch the number (the protocol kernels do not catch around compiled
+//! functions). [`EmitReport`] gives the bytes per exit. SPIKEC-4 makes the per-exit
+//! position-independent metadata (pc offset from the code start, bytecode offset, value
+//! locations, RW exit-counter index; H29-Q1, Q2, Q5) from the guards' frame states.
 //!
 //! Scratch: x12-x14 stage inputs that are not in registers, x15 stages a spilled result (and
 //! is a temporary in the poll and store paths), x16 and x17 are temporaries. No absolute
@@ -80,8 +95,38 @@ pub struct EmitReport {
     pub code_bytes: usize,
     pub frame_bytes: u32,
     pub guards: usize,
-    /// Native offset of each guard's trap stub: (guard id, offset).
+    /// Native offset of each guard's exit stub: (guard id, offset).
     pub traps: Vec<(u32, u32)>,
+    /// Bytes of all exit stubs (one per guard).
+    pub stub_bytes: u32,
+    /// Bytes of the shared exits (one per exit policy used; today the trap).
+    pub shared_exit_bytes: u32,
+}
+
+impl EmitReport {
+    /// Out-of-line bytes per exit: the stubs plus the shared exits, over the guards. The
+    /// in-line branches of each guard are in the body and not counted here.
+    pub fn bytes_per_exit(&self) -> f64 {
+        if self.guards == 0 {
+            return 0.0;
+        }
+        f64::from(self.stub_bytes + self.shared_exit_bytes) / self.guards as f64
+    }
+
+    /// One report line: the exits and their bytes (MC-w14 SPIKEC-3: bytes per exit).
+    pub fn exits_line(&self) -> String {
+        let per = |b: f64, n: usize| if n == 0 { 0.0 } else { b / n as f64 };
+        format!(
+            "exits {}: stubs {} bytes ({:.1} per exit) + shared exit {} bytes = {:.1} bytes per exit \
+             out of line; {:.1} exits per KB of code",
+            self.guards,
+            self.stub_bytes,
+            per(f64::from(self.stub_bytes), self.guards),
+            self.shared_exit_bytes,
+            self.bytes_per_exit(),
+            per(self.guards as f64 * 1024.0, self.code_bytes),
+        )
+    }
 }
 
 /// DWARF register numbers.
@@ -213,8 +258,11 @@ struct Emitter<'a> {
     edges: Vec<(DynamicLabel, usize, usize)>,
     /// First native offset of each bytecode offset that made code.
     native_at: BTreeMap<u32, u32>,
-    /// (guard id, native offset of its trap stub).
+    /// (guard id, native offset of its exit stub).
     trap_at: Vec<(u32, u32)>,
+    /// Bytes of the exit stubs and of the shared exits.
+    stub_bytes: u32,
+    shared_exit_bytes: u32,
 }
 
 /// Emits the code of `graph` (built from `input`) with the registers of `alloc`.
@@ -250,6 +298,8 @@ pub fn emit(
         edges: Vec::new(),
         native_at: BTreeMap::new(),
         trap_at: Vec::new(),
+        stub_bytes: 0,
+        shared_exit_bytes: 0,
     };
     let overflow = e.ops.new_dynamic_label();
     e.prologue(overflow)?;
@@ -270,6 +320,8 @@ pub fn emit(
         frame_bytes: frame,
         guards,
         traps: report_traps,
+        stub_bytes: e.stub_bytes,
+        shared_exit_bytes: e.shared_exit_bytes,
     };
     // ops / native_offsets: every reachable instruction, with the first native offset of its
     // code (an instruction that made none gets the next one's).
@@ -922,32 +974,65 @@ impl Emitter<'_> {
             let t = self.labels[to];
             dynasm!(self.ops ; .arch aarch64 ; b =>t);
         }
+        // Exit stubs: x16 = the guard id, x17 = the bytecode offset of its frame state, then
+        // the shared exit of its policy (module docs). Only x16 and x17 change.
+        let mut shared: Vec<(ExitPolicy, DynamicLabel)> = Vec::new();
+        let start = self.ops.offset().0 as u32;
         for (l, id, off, policy) in self.traps.clone() {
-            let throw = self.throw_at(off);
+            let exit = match shared.iter().find(|(p, _)| *p == policy) {
+                Some(&(_, x)) => x,
+                None => {
+                    let x = self.ops.new_dynamic_label();
+                    shared.push((policy, x));
+                    x
+                }
+            };
             dynasm!(self.ops ; .arch aarch64 ; =>l);
             let here = self.ops.offset().0 as u32;
             self.trap_at.push((id, here));
+            mov64(&mut self.ops, 16, u64::from(id));
+            mov64(&mut self.ops, 17, u64::from(off));
+            dynasm!(self.ops ; .arch aarch64 ; b =>exit);
+        }
+        let stubs_end = self.ops.offset().0 as u32;
+        self.stub_bytes = stubs_end - start;
+        let unwind = self.unwind;
+        let table = scaled(layout::CX_RUNTIME_TABLE)?;
+        let throw_entry = scaled(layout::RT_THROW)?;
+        for (policy, x) in shared {
+            dynasm!(self.ops ; .arch aarch64 ; =>x);
             match policy {
-                // Eager deopt to T0 at `off` plus an exit counter (H32, JIT mode). The deopt
-                // entry is month 5; until then the stand-in trap.
+                // Eager deopt to T0 at x17 plus an exit counter (H32, JIT mode). The deopt
+                // entry is month 5; until then the stand-in trap: throw TRAP_BASE + x16 at
+                // offset x17, then unwind from there. x19 keeps the offset across the call
+                // (callee-saved; the value it held is dead on this path, and `leave`
+                // restores the caller's x19 from the frame).
                 ExitPolicy::Deopt => {
-                    mov64(
-                        &mut self.ops,
-                        3,
-                        vm_layout::int32_bits(TRAP_BASE + id as i32),
+                    dynasm!(self.ops ; .arch aarch64 ; mov x19, x17);
+                    mov64(&mut self.ops, 3, u64::from(TRAP_BASE as u32));
+                    dynasm!(self.ops ; .arch aarch64 ; add w3, w3, w16);
+                    mov64(&mut self.ops, 17, NUMBER_TAG);
+                    dynasm!(self.ops
+                        ; .arch aarch64
+                        ; orr x3, x3, x17
+                        ; mov x0, x28
+                        ; mov x1, x26
+                        ; mov w2, w19
+                        ; ldr x16, [x28, table]
+                        ; ldr x16, [x16, throw_entry]
+                        ; blr x16
+                        ; mov x2, x19
+                        ; b =>unwind
                     );
-                    call_table(&mut self.ops, layout::RT_THROW, off)?;
-                    dynasm!(self.ops ; .arch aarch64 ; b =>throw);
                 }
             }
         }
-        let unwind = self.unwind;
+        self.shared_exit_bytes = self.ops.offset().0 as u32 - stubs_end;
         for (&off, &l) in &self.throws.clone() {
             dynasm!(self.ops ; .arch aarch64 ; =>l);
             mov64(&mut self.ops, 2, u64::from(off));
             dynasm!(self.ops ; .arch aarch64 ; b =>unwind);
         }
-        let table = scaled(layout::CX_RUNTIME_TABLE)?;
         let entry = scaled(layout::RT_UNWIND)?;
         let out_pc = scaled(layout::CX_OUT_PC)?;
         let out_fp = scaled(layout::CX_OUT_FP)?;

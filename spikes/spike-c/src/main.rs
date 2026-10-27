@@ -209,6 +209,8 @@ fn compile_cmd(args: &[String]) -> Result<bool, String> {
                 print!("{}", report.graph);
             }
             println!("{}", report.line());
+            println!("{}", report.keyed_line());
+            println!("{}: {}", report.name, report.emit.exits_line());
             Ok(true)
         }
         Err(e) => {
