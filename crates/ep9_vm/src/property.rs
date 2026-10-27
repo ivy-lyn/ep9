@@ -61,13 +61,11 @@
 
 use crate::conv::{Res, describe, num, to_property_key, to_uint32_of};
 use crate::descriptor::Desc;
-use crate::error::{not_implemented, throw_error};
+use crate::error::{Part::Key, Part::Text, bounded_message, not_implemented, throw_error};
 use crate::exotic::{self, Exotic};
 use crate::frame::{NULL, UNDEFINED};
 use crate::interp::Cx;
-use crate::key::{
-    self, Probe, array_index_of, intern_key, is_property_key, is_symbol_key, key_text,
-};
+use crate::key::{self, Probe, array_index_of, intern_key, is_property_key, is_symbol_key};
 use crate::kinds::{self as kind, is_bound, is_callable, is_symbol};
 use crate::object::{self, attr, is_array, is_function, is_object, is_string};
 use crate::props;
@@ -166,11 +164,13 @@ fn get_primitive(cx: &mut Cx, base: u64, key: u64) -> Res<u64> {
         }
     }
     let Some(proto) = primitive_proto(rt, base) else {
-        let k = key_text(rt, key);
-        let msg = format!(
-            "Cannot read properties of {} (reading '{k}')",
-            describe(base)
-        );
+        let msg = bounded_message(&[
+            Text("Cannot read properties of "),
+            Key(base),
+            Text(" (reading '"),
+            Key(key),
+            Text("')"),
+        ]);
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     };
     get_with_receiver(cx, proto, key, base)
@@ -199,19 +199,19 @@ fn object_bool(b: bool) -> u64 {
     crate::conv::boolean(b)
 }
 
-/// A string, number, boolean or symbol in V8's message form: `string 'ab'`, `number '1.5'`,
-/// `boolean 'true'`, `symbol 'Symbol(x)'`.
-fn primitive_text(b: u64) -> String {
-    let (ty, text) = if is_string(b) {
-        ("string", string::to_rust_string(b))
+/// The start of a string, number, boolean or symbol in V8's message form (`string 'ab'`,
+/// `number '1.5'`, `boolean 'true'`, `symbol 'Symbol(x)'`): the type and the opening quote;
+/// the value's text is a [`Key`] part (bounded, H19-Q5).
+fn primitive_type(b: u64) -> &'static str {
+    if is_string(b) {
+        "string '"
     } else if is_symbol(b) {
-        ("symbol", describe(b))
+        "symbol '"
     } else if val(b).is_number() {
-        ("number", describe(b))
+        "number '"
     } else {
-        ("boolean", describe(b))
-    };
-    format!("{ty} '{text}'")
+        "boolean '"
+    }
 }
 
 /// `base[k]` for any key value (keyed load). An int32 index `>= 0` on an object makes no
@@ -233,11 +233,15 @@ pub(crate) fn get_keyed(cx: &mut Cx, base: u64, k: u64) -> Res<u64> {
         }
     }
     if base == UNDEFINED || base == NULL {
-        let msg = format!(
-            "Cannot read properties of {} (reading '{}')",
-            describe(base),
-            describe(k).trim_matches('"')
-        );
+        // The key's length is checked before its text is read (H19-Q5, Codex H19 H-1): a
+        // rope key near the length limit gives `<error>` with no flatten and no copy.
+        let msg = bounded_message(&[
+            Text("Cannot read properties of "),
+            Key(base),
+            Text(" (reading '"),
+            Key(k),
+            Text("')"),
+        ]);
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     }
     let key = to_property_key(cx, k)?;
@@ -279,11 +283,13 @@ pub(crate) fn set(cx: &mut Cx, base: u64, key: u64, v: u64, strict: bool) -> Res
 #[inline(never)]
 fn set_primitive(cx: &mut Cx, base: u64, key: u64, v: u64, strict: bool) -> Res<()> {
     let Some(proto) = primitive_proto(cx.rt(), base) else {
-        let msg = format!(
-            "Cannot set properties of {} (setting '{}')",
-            describe(base),
-            key_text(cx.rt(), key)
-        );
+        let msg = bounded_message(&[
+            Text("Cannot set properties of "),
+            Key(base),
+            Text(" (setting '"),
+            Key(key),
+            Text("')"),
+        ]);
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     };
     // Step 5.a: ToObject(base).[[Set]](key, v, base). The wrapper's own properties come
@@ -479,11 +485,11 @@ fn fail(cx: &mut Cx, base: u64, start: u64, key: u64, strict: bool) -> Res<()> {
         return Ok(());
     }
     let rt = cx.rt();
-    let k = key_text(rt, key);
+    // `what`: the receiver as V8 names it, `#<Object>` or a primitive's `type 'text'`.
     let what = if is_object(base) {
-        "#<Object>".to_string()
+        [Text("#<Object>"), Text(""), Text("")]
     } else {
-        primitive_text(base)
+        [Text(primitive_type(base)), Key(base), Text("'")]
     };
     let own_string = is_string(base)
         && (is_atom(cx, key, Atom::Length)
@@ -493,18 +499,48 @@ fn fail(cx: &mut Cx, base: u64, start: u64, key: u64, strict: bool) -> Res<()> {
     } else {
         first_attrs_on_chain(rt, start, key)
     };
+    let [w0, w1, w2] = what;
+    let k = Key(key);
     let msg = match found {
-        Some(a) if a & attr::ACCESSOR != 0 => {
-            format!("Cannot set property {k} of {what} which has only a getter")
-        }
-        Some(a) if a & attr::WRITABLE == 0 && is_object(base) => {
-            format!("Cannot assign to read only property '{k}' of object '{what}'")
-        }
-        Some(a) if a & attr::WRITABLE == 0 => {
-            format!("Cannot assign to read only property '{k}' of {what}")
-        }
-        _ if is_object(base) => format!("Cannot add property {k}, object is not extensible"),
-        _ => format!("Cannot create property '{k}' on {what}"),
+        Some(a) if a & attr::ACCESSOR != 0 => bounded_message(&[
+            Text("Cannot set property "),
+            k,
+            Text(" of "),
+            w0,
+            w1,
+            w2,
+            Text(" which has only a getter"),
+        ]),
+        Some(a) if a & attr::WRITABLE == 0 && is_object(base) => bounded_message(&[
+            Text("Cannot assign to read only property '"),
+            k,
+            Text("' of object '"),
+            w0,
+            w1,
+            w2,
+            Text("'"),
+        ]),
+        Some(a) if a & attr::WRITABLE == 0 => bounded_message(&[
+            Text("Cannot assign to read only property '"),
+            k,
+            Text("' of "),
+            w0,
+            w1,
+            w2,
+        ]),
+        _ if is_object(base) => bounded_message(&[
+            Text("Cannot add property "),
+            k,
+            Text(", object is not extensible"),
+        ]),
+        _ => bounded_message(&[
+            Text("Cannot create property '"),
+            k,
+            Text("' on "),
+            w0,
+            w1,
+            w2,
+        ]),
     };
     Err(throw_error(cx, ErrorKind::TypeError, &msg))
 }
@@ -550,11 +586,13 @@ pub(crate) fn set_keyed(cx: &mut Cx, base: u64, k: u64, v: u64, strict: bool) ->
         }
     }
     if base == UNDEFINED || base == NULL {
-        let msg = format!(
-            "Cannot set properties of {} (setting '{}')",
-            describe(base),
-            describe(k).trim_matches('"')
-        );
+        let msg = bounded_message(&[
+            Text("Cannot set properties of "),
+            Key(base),
+            Text(" (setting '"),
+            Key(k),
+            Text("')"),
+        ]);
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     }
     let key = to_property_key(cx, k)?;
@@ -613,10 +651,11 @@ fn define_routed(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<()> {
         if define_own_property(cx, o, key, Desc::data(v, attr::DEFAULT))? {
             return Ok(());
         }
-        let msg = format!(
-            "'defineProperty' on proxy: trap returned falsish for property '{}'",
-            key_text(cx.rt(), key)
-        );
+        let msg = bounded_message(&[
+            Text("'defineProperty' on proxy: trap returned falsish for property '"),
+            Key(key),
+            Text("'"),
+        ]);
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     }
     let how = key::probe(key);
@@ -631,11 +670,14 @@ fn define_slow(cx: &mut Cx, o: u64, key: u64, v: u64, exists: bool) -> Res<()> {
     if define_own_property(cx, o, key, Desc::data(v, attr::DEFAULT))? {
         return Ok(());
     }
-    let k = key_text(cx.rt(), key);
     let msg = if exists {
-        format!("Cannot redefine property: {k}")
+        bounded_message(&[Text("Cannot redefine property: "), Key(key)])
     } else {
-        format!("Cannot define property {k}, object is not extensible")
+        bounded_message(&[
+            Text("Cannot define property "),
+            Key(key),
+            Text(", object is not extensible"),
+        ])
     };
     Err(throw_error(cx, ErrorKind::TypeError, &msg))
 }
@@ -716,10 +758,11 @@ pub(crate) fn ordinary_delete(rt: &Runtime, o: u64, key: u64) -> bool {
 
 fn deny(cx: &mut Cx, key: u64, strict: bool) -> Res<bool> {
     if strict {
-        let msg = format!(
-            "Cannot delete property '{}' of object",
-            key_text(cx.rt(), key)
-        );
+        let msg = bounded_message(&[
+            Text("Cannot delete property '"),
+            Key(key),
+            Text("' of object"),
+        ]);
         Err(throw_error(cx, ErrorKind::TypeError, &msg))
     } else {
         Ok(false)

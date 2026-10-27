@@ -770,11 +770,13 @@ struct CountingAlloc;
 
 thread_local! {
     static RUST_ALLOCS: Cell<u64> = const { Cell::new(0) };
+    static RUST_BYTES: Cell<u64> = const { Cell::new(0) };
 }
 
-fn count_rust_alloc() {
+fn count_rust_alloc(bytes: usize) {
     // `try_with`: a thread that is tearing down its locals still allocates.
     let _ = RUST_ALLOCS.try_with(|n| n.set(n.get() + 1));
+    let _ = RUST_BYTES.try_with(|n| n.set(n.get() + bytes as u64));
 }
 
 /// Rust heap allocations made so far on this thread.
@@ -782,17 +784,23 @@ fn rust_allocs() -> u64 {
     RUST_ALLOCS.with(Cell::get)
 }
 
+/// Bytes of the Rust heap allocations made so far on this thread (a `realloc` counts its new
+/// size).
+fn rust_bytes() -> u64 {
+    RUST_BYTES.with(Cell::get)
+}
+
 // SAFETY: every method forwards to `System` with the same arguments, so `System`'s contract
 // holds; the count is a thread-local `Cell` with no destructor and allocates nothing.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        count_rust_alloc();
+        count_rust_alloc(layout.size());
         // SAFETY: the caller keeps `GlobalAlloc::alloc`'s contract (non-zero size).
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        count_rust_alloc();
+        count_rust_alloc(layout.size());
         // SAFETY: as `alloc`.
         unsafe { System.alloc_zeroed(layout) }
     }
@@ -803,7 +811,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        count_rust_alloc();
+        count_rust_alloc(new_size);
         // SAFETY: as `dealloc`, and the caller keeps `realloc`'s size contract.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
@@ -1087,6 +1095,66 @@ fn an_interned_rope_is_one_key_with_its_flat_text() {
     assert_eq!(atoms::lookup(rt, "property-name-long"), Some(r));
     rt.heap.collect();
     atoms::verify(rt).unwrap();
+}
+
+/// H19-Q4, Rules (Codex H19 H-3; M4-P4 fixer B): `key::intern_key` (the define paths) calls
+/// `atoms::intern`, which makes a CONS with a new text the atom in place. Then `atomize` and
+/// `Cx::intern` of an equal rope give that CONS atom, not a SEQ one, and the rope stays a
+/// (flattened) CONS, not a THIN forwarder (`forward` needs a SEQ atom). One atom per text
+/// holds, the key compares by bits, and a property stored under the rope atom is found
+/// through the other rope.
+#[test]
+fn a_rope_atom_from_intern_key_is_what_atomize_and_cx_intern_give_later() {
+    let mut iso = stressed();
+    let rt: &Runtime = &iso.rt;
+    let text = "seeded-rope-atom-text";
+    let r1 = cat(
+        rt,
+        string::new_string(rt, "seeded-rope-"),
+        string::new_string(rt, "atom-text"),
+    );
+    let k = key::intern_key(rt, r1);
+    assert_eq!(k, r1);
+    assert_eq!(kinds::cell_kind(r1), kinds::CONS.get());
+    assert!(string::is_atom(r1));
+    // atomize of an equal rope: the CONS atom; the rope is flattened, not THIN.
+    let r2 = cat(
+        rt,
+        string::new_string(rt, "seeded-"),
+        string::new_string(rt, "rope-atom-text"),
+    );
+    let a2 = atoms::atomize(rt, r2);
+    assert_eq!(a2, r1);
+    assert!(!string::is_seq(a2));
+    assert_eq!(kinds::cell_kind(r2), kinds::CONS.get(), "no THIN forwarder");
+    assert!(!string::is_atom(r2));
+    // Cx::intern of a third equal rope: the same CONS atom.
+    let r3 = cat(
+        rt,
+        string::new_string(rt, "seeded-rope-atom"),
+        string::new_string(rt, "-text"),
+    );
+    let a3 = iso
+        .with_cx(|cx| Ok(cx.intern(Local::from_bits(r3)).bits()))
+        .unwrap();
+    assert_eq!(a3, r1);
+    assert_eq!(kinds::cell_kind(r3), kinds::CONS.get(), "no THIN forwarder");
+    let rt: &Runtime = &iso.rt;
+    assert_eq!(atoms::intern_str(rt, text), r1, "one atom per text");
+    assert_eq!(string::to_rust_string(r1), text);
+    // A property stored under the rope atom is found by the other rope's key.
+    let found = iso
+        .with_cx(|cx| {
+            let o = cx.new_object();
+            let k1: Local<'_, crate::JsKey> = Local::from_bits(r1);
+            cx.set(o, k1, Local::int32(5), true)?;
+            let k2 = cx.intern(Local::from_bits(r2));
+            Ok(cx.get(o, k2)?.as_int32())
+        })
+        .unwrap();
+    assert_eq!(found, Some(5));
+    iso.collect_garbage();
+    atoms::verify(&iso.rt).unwrap();
 }
 
 #[test]
@@ -1480,4 +1548,78 @@ fn a_message_over_the_length_limit_is_the_v8_error_text() {
     // The real limit leaves every normal message alone.
     let long = "k".repeat(100_000);
     assert_eq!(bounded_text(&long, string::MAX_STRING_LENGTH), long);
+}
+
+/// A string of `n` units ("x" repeated) as a balanced rope of shared halves: about 2 log2(n)
+/// cells, whatever `n` is, so a string near the length limit costs almost no memory.
+fn x_rope(rt: &Runtime, n: usize) -> u64 {
+    if n < 2 * string::MIN_CONS_LENGTH {
+        return string::new_string(rt, &"x".repeat(n));
+    }
+    let half = x_rope(rt, n / 2);
+    let r = cat(rt, half, half);
+    if n % 2 == 1 {
+        cat(rt, r, string::new_string(rt, "x"))
+    } else {
+        r
+    }
+}
+
+/// `undefined[K]` through the interpreter's keyed load, `K` a global; the thrown error.
+fn read_undefined_at_global_k() -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let u = s.b.new_register();
+    s.b.lda_undefined().star(u);
+    s.lda_global("K");
+    s.b.get_keyed_property(u, s.keyed).return_();
+    unit("", vec![s.finish()])
+}
+
+/// H19-Q5 end to end (M4-P4 fixer B, Codex H19 H-1): `undefined[k]` with a rope key whose
+/// message would pass the length limit throws the TypeError "<error>" (node v24.22.1 for a
+/// key of 2^29 - 24 units) and reads nothing of the key: the length is checked first, so the
+/// rope stays an unflattened CONS and the run makes under 1 MiB of Rust allocations (the old
+/// path copied the key into Rust text twice, about 1 GiB, before the limit check). A key under
+/// the limit stays whole, as in V8: node gives a 1,000,048-unit message for a 1,000,000-unit
+/// key (scratchpad m1m4/p4/fixB/js/limit.js).
+#[test]
+fn a_keyed_read_of_undefined_with_a_rope_key_past_the_limit_copies_nothing() {
+    on_big_stack(|| {
+        let mut iso = isolate(config(Dispatch::DEFAULT, false));
+        // 48 units of text around the key: over the limit by 38.
+        let n = string::MAX_STRING_LENGTH - 10;
+        let k = x_rope(&iso.rt, n);
+        assert_eq!(string::str_len(k), n);
+        assert_eq!(kinds::cell_kind(k), kinds::CONS.get());
+        iso.with_cx(|cx| {
+            let g = cx.global();
+            cx.set(g, "K", Local::<'_, crate::JsValue>::from_bits(k), true)
+        })
+        .unwrap();
+        let before = rust_bytes();
+        let e = iso
+            .run_raw(read_undefined_at_global_k(), "limit.js")
+            .unwrap_err();
+        let made = rust_bytes() - before;
+        assert_eq!(e.constructor.as_deref(), Some("TypeError"), "{e}");
+        assert_eq!(e.message, "TypeError: <error>");
+        assert!(made < 1 << 20, "{made} bytes of Rust allocations");
+        assert_eq!(kinds::cell_kind(k), kinds::CONS.get());
+        assert!(!string::is_flat(k), "the key was flattened");
+
+        // Under the limit: the whole key, as V8.
+        let k = x_rope(&iso.rt, 1_000_000);
+        iso.with_cx(|cx| {
+            let g = cx.global();
+            cx.set(g, "K", Local::<'_, crate::JsValue>::from_bits(k), true)
+        })
+        .unwrap();
+        let e = iso
+            .run_raw(read_undefined_at_global_k(), "limit.js")
+            .unwrap_err();
+        let msg = e.message.strip_prefix("TypeError: ").expect("a TypeError");
+        assert_eq!(msg.len(), 1_000_048);
+        assert!(msg.starts_with("Cannot read properties of undefined (reading 'xxx"));
+        assert!(msg.ends_with("xxx')"));
+    });
 }

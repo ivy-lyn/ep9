@@ -176,6 +176,71 @@ pub(crate) fn message_string(rt: &Runtime, text: &str) -> u64 {
     object::new_string(rt, bounded_text(text, crate::string::MAX_STRING_LENGTH))
 }
 
+/// One part of a message built by [`bounded_message`].
+#[derive(Clone, Copy)]
+pub(crate) enum Part<'a> {
+    /// Rust text of the message itself (short).
+    Text(&'a str),
+    /// The text of a key or value as V8 quotes it: a string's text (whole, H19-Q5), a
+    /// symbol's `Symbol(desc)`, else `conv::describe` (a number's text, `undefined`, ...).
+    Key(u64),
+}
+
+/// The UTF-16 length of [`Part::Key`]'s text, from the string lengths: O(1) for a rope.
+fn key_units(k: u64) -> usize {
+    if is_string(k) {
+        crate::string::str_len(k)
+    } else if crate::kinds::is_symbol(k) {
+        let d = crate::symbol::description(k);
+        "Symbol()".len()
+            + if is_string(d) {
+                crate::string::str_len(d)
+            } else {
+                0
+            }
+    } else {
+        crate::conv::describe(k).encode_utf16().count()
+    }
+}
+
+/// The text of [`Part::Key`] (lone surrogates become U+FFFD, one unit each, so its UTF-16
+/// length is [`key_units`]).
+fn key_text(k: u64) -> String {
+    if is_string(k) {
+        crate::string::to_rust_string(k)
+    } else if crate::kinds::is_symbol(k) {
+        crate::symbol::descriptive_text(k)
+    } else {
+        crate::conv::describe(k)
+    }
+}
+
+/// A message that quotes keys or values, as Rust text for [`throw_error`] (H19-Q5; M4-P4
+/// fixer B, Codex H19 H-1): the UTF-16 length is counted first, from the string lengths, so
+/// a message over the length limit is [`OVER_LIMIT_MESSAGE`] with no copy of any quoted
+/// string (a rope near the limit is never flattened or read into Rust text). Under the limit
+/// every quoted value is whole, as in V8. Not a GC point.
+pub(crate) fn bounded_message(parts: &[Part<'_>]) -> String {
+    let units: usize = parts
+        .iter()
+        .map(|p| match *p {
+            Part::Text(t) => t.encode_utf16().count(),
+            Part::Key(k) => key_units(k),
+        })
+        .sum();
+    if units > crate::string::MAX_STRING_LENGTH {
+        return OVER_LIMIT_MESSAGE.into();
+    }
+    let mut out = String::new();
+    for p in parts {
+        match *p {
+            Part::Text(t) => out.push_str(t),
+            Part::Key(k) => out.push_str(&key_text(k)),
+        }
+    }
+    out
+}
+
 /// `text`, or [`OVER_LIMIT_MESSAGE`] if it has more than `limit` UTF-16 code units. The exact
 /// count runs only when the UTF-8 length is over the limit (UTF-16 length <= UTF-8 length).
 fn bounded_text(text: &str, limit: usize) -> &str {
