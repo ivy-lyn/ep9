@@ -11,3 +11,11 @@
 384f8ddf3e12eb6e92fd1047852eadc4348da09c H19 M4-P1-TRAILER
 # ccc21bb (merge m1m4/p1-math1): conv.rs number_op `**` uses the correctly rounded pow (H36).
 ccc21bba1fb4b43e7c20e846ebc1ffd2740bd819 H36 M4-P1-TRAILER
+#
+# M4-P4: PRs #2 (m0/m2) and #3 (m0/m3) were squash-merged into main by GitHub (the repo allows
+# only squash). The 2 squash commits copy the trees of m0/m2 8970a29 and m0/m3 d7cc797, whose
+# commits carry their own trailers; the squash messages have none. fc0477e merges main into the
+# M4-P4 merge branch with `-s ours` (no tree change; main's tree is d7cc797, already here).
+847468b4fdad5f054e2a686ce13bf49918839a1e none M4-P4-MAIN-MERGE
+b98e44442838f3e2bdfb4bc8228957ca9e1ad781 none M4-P4-MAIN-MERGE
+fc0477eae1f786b400c3fb454f3dee627902fa9a none M4-P4-MAIN-MERGE
