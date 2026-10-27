@@ -1361,6 +1361,147 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// M4-P3 review (jit-tools finding 4): only a result that starts with `Approved` approves.
+    #[test]
+    fn not_approved_is_no_approval() {
+        let (root, base, day) = full_repo("not-approved");
+        add_rows(
+            &root,
+            H16,
+            "Change log",
+            &[format!("| {day} | clarify | A word fixed | docs agent |")],
+        );
+        let label = format!("the {day} clarify row");
+        add_rows(
+            &root,
+            H16,
+            "Review record",
+            &record(&label, "orchestrator", "Not Approved: row 3 is wrong"),
+        );
+        let lint = full(&root, &base).unwrap();
+        assert!(!lint.pass, "{}", lint.text);
+        assert!(lint.text.contains("Approval: 0)"), "{}", lint.text);
+        let text = read(&root.join(H16)).unwrap();
+        write(
+            &root,
+            H16,
+            &text.replace(
+                "Not Approved: row 3 is wrong",
+                "**Approved** (orchestrator)",
+            ),
+        );
+        let lint = full(&root, &base).unwrap();
+        assert!(lint.pass, "{}", lint.text);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// M4-P3 review (jit-tools finding 5): a record that the base file already has does not
+    /// cover a new Change-log row of the same date.
+    #[test]
+    fn a_base_record_covers_no_new_row() {
+        let (root, _, day) = full_repo("base-record");
+        add_rows(
+            &root,
+            H16,
+            "Change log",
+            &[format!("| {day} | clarify | A word fixed | docs agent |")],
+        );
+        add_rows(
+            &root,
+            H16,
+            "Review record",
+            &record(
+                &format!("the {day} clarify row"),
+                "orchestrator",
+                "Approved",
+            ),
+        );
+        let base = commit(&root, &[], "docs/adr: H16 clarify, recorded");
+        assert!(full(&root, &base).unwrap().pass);
+        add_rows(
+            &root,
+            H16,
+            "Change log",
+            &[format!("| {day} | clarify | Another word | docs agent |")],
+        );
+        commit(&root, &[], "docs/adr: H16 second clarify, no record");
+        let lint = full(&root, &base).unwrap();
+        assert!(!lint.pass, "{}", lint.text);
+        assert!(
+            lint.text.contains(&format!(
+                "docs/adr/H16-ics.md: 1 amendment row(s) dated {day} since the base, 0 complete"
+            )),
+            "{}",
+            lint.text
+        );
+        // Its own record (new since the base) passes; a copy of the base rows counts too.
+        add_rows(
+            &root,
+            H16,
+            "Review record",
+            &record(
+                &format!("the {day} clarify row"),
+                "orchestrator",
+                "Approved",
+            ),
+        );
+        let lint = full(&root, &base).unwrap();
+        assert!(lint.pass, "{}", lint.text);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// M4-P3 review (jit-tools finding 3): a change of an Accepted ADR outside its Change log and
+    /// Review record needs a new Change-log row.
+    #[test]
+    fn a_body_change_needs_a_change_log_row() {
+        let (root, base, day) = full_repo("body");
+        let text = read(&root.join(H16)).unwrap();
+        commit(
+            &root,
+            &[(
+                H16,
+                &text.replace("The IC entry point", "The one IC entry point"),
+            )],
+            "docs/adr: H16 body, no row",
+        );
+        let lint = full(&root, &base).unwrap();
+        assert!(!lint.pass, "{}", lint.text);
+        assert!(
+            lint.text.contains(&format!(
+                "docs/adr/H16-ics.md: the text outside `## Change log` and `## Review record` changed since the base, and no new Change-log row dated on or after {day}"
+            )),
+            "{}",
+            lint.text
+        );
+        assert!(
+            lint.summary.contains("review records FAIL"),
+            "{}",
+            lint.summary
+        );
+        // A Draft ADR's body is free; a row with its record makes H16 pass.
+        let h29 = read(&root.join(H29)).unwrap();
+        write(&root, H29, &format!("{h29}\nMore draft text.\n"));
+        add_rows(
+            &root,
+            H16,
+            "Change log",
+            &[format!("| {day} | clarify | One word | docs agent |")],
+        );
+        add_rows(
+            &root,
+            H16,
+            "Review record",
+            &record(
+                &format!("the {day} clarify row"),
+                "orchestrator",
+                "Approved",
+            ),
+        );
+        let lint = full(&root, &base).unwrap();
+        assert!(lint.pass, "{}", lint.text);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn rows_that_need_no_record_and_bad_kinds() {
         let (root, base, day) = full_repo("kinds");
@@ -1461,7 +1602,9 @@ mod tests {
             .unwrap()
             .replace("lib.rs:2", "lib.rs:3");
         commit(&root, &[(H16, &t)], "docs/adr: H16 ref");
-        assert!(full(&root, &base).unwrap().pass);
+        // (The body edit has no Change-log row, so the review-record part fails: drift only.)
+        let drift_pass = |l: &Lint| l.summary.contains("path:line drift PASS");
+        assert!(drift_pass(&full(&root, &base).unwrap()));
         // A token new in the work tree must lie inside the file.
         write(&root, H16, &t.replace("lib.rs:3", "lib.rs:99"));
         let lint = full(&root, &base).unwrap();
@@ -1477,7 +1620,7 @@ mod tests {
         );
         write(&root, drift::PINS_FILE, &pins);
         let lint = full(&root, &base).unwrap();
-        assert!(lint.pass, "{}", lint.text);
+        assert!(drift_pass(&lint), "{}", lint.text);
         assert!(lint.text.contains("pinned=1"), "{}", lint.text);
         write(
             &root,
