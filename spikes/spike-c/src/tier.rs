@@ -818,6 +818,145 @@ mod tests {
         assert_eq!(m1, m2, "metadata bytes differ between isolates");
     }
 
+    /// The double path (SPIKEC-4): a `+` or `*` whose record saw a double takes CheckNumber
+    /// and Float64 ops; the result boxes as `Value::number` does (an int32 Value for an
+    /// integer, -0 and NaN kept apart), equal to T0; a string operand fails the number check
+    /// (the trap, never a wrong value).
+    const DOT: &str = "function dot(a, b, n) { var s = 0; for (var i = 0; i < n; i++) { s = s + a[i] * b[i]; } return s; }";
+
+    #[test]
+    fn doubles_equal_t0() {
+        if !aarch64() {
+            return;
+        }
+        let warm = "for (var q = 0; q < 20; q++) dot([0.5, 1.5, 2], [2, 0.25, 3], 3);";
+        let r = equal(
+            DOT,
+            warm,
+            "print(dot([0.5, 2], [4, 0.25], 2), dot([1, 2, 3], [4, 5, 6], 3), dot([0.1, 0.2], [1, 1], 2));\n\
+             print(dot([NaN], [1], 1), 1 / dot([-0], [1], 1), dot([1e300], [1e300], 1), dot([-1e300], [1e300], 1));\n\
+             print(dot([3], [1], 0), dot([2147483647, 1], [1, 1], 2), dot([-2147483648], [1], 1), dot([0.5, 0.5], [1, 1], 2) === 1);",
+            "dot",
+        );
+        assert_eq!(
+            r.compiled.output,
+            [
+                "2.5 32 0.30000000000000004",
+                "NaN Infinity Infinity -Infinity",
+                "0 2147483648 -2147483648 true"
+            ]
+        );
+        let g = &r.report.graph;
+        assert!(g.contains("Float64(Mul)") && g.contains("Float64(Add)"), "{g}");
+        for l in g.lines().filter(|l| l.contains("CheckNumber")) {
+            assert!(l.contains("Fact(Runtime)"), "{l}\n{g}");
+        }
+        traps(DOT, warm, "print(dot(['x'], [1], 1));", "dot");
+        // GC stress: the boxed doubles and the arrays around the compiled loop.
+        let r = run_script(
+            &Config::stress(),
+            DOT,
+            warm,
+            "var xs = []; for (var k = 0; k < 300; k++) xs.push(k / 7); print(dot(xs, xs, 300));",
+            "dot",
+        )
+        .expect("run");
+        assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+    }
+
+    /// `/` always takes the double path; `===` compares int32s behind CheckInt32 (SPIKEC-4).
+    #[test]
+    fn division_and_strict_equality_equal_t0() {
+        if !aarch64() {
+            return;
+        }
+        let defs = "function ratio(a, b, c) { if (c === 1) { return a / b; } return b / a; }";
+        let r = equal(
+            defs,
+            "for (var q = 0; q < 20; q++) { ratio(1, 4, 1); ratio(3, 6, 0); }",
+            "print(ratio(1, 4, 1), ratio(6, 3, 1), ratio(1, 0, 1), ratio(-1, 0, 1), 1 / ratio(0, -5, 1), ratio(0, 0, 1), ratio(2, 1, 0), ratio(1.5, 3, 1));",
+            "ratio",
+        );
+        assert_eq!(
+            r.compiled.output,
+            ["0.25 2 Infinity -Infinity -Infinity NaN 0.5 0.5"]
+        );
+        assert!(r.report.graph.contains("Float64(Div)"), "{}", r.report.graph);
+        assert!(r.report.graph.contains("Compare(Eq)"), "{}", r.report.graph);
+        // A string `c` fails the int32 check of `===` (T0 says false).
+        traps(
+            defs,
+            "for (var q = 0; q < 20; q++) { ratio(1, 4, 1); ratio(3, 6, 0); }",
+            "print(ratio(1, 4, '1'));",
+            "ratio",
+        );
+    }
+
+    /// Context slot loads and calls build into the graph (SPIKEC-4), and the emitter refuses
+    /// them with the reason: no CONTEXT slot offsets in `ep9_vm::layout`, and calls wait for
+    /// month 5.
+    #[test]
+    fn context_loads_and_calls_build_and_the_emitter_names_why_not() {
+        let mut s = Session::new(&Config::default().threaded()).expect("session");
+        let defs = "function outer(k) { function inner(x) { return (x + k) | 0; } return inner; }\n\
+            function callit(f, x) { return f(x); }\n\
+            var inner5 = outer(5); for (var q = 0; q < 20; q++) { inner5(q); callit(inner5, q); }";
+        s.run(defs, "defs.js").result.expect("defs");
+        let script = s.script("defs.js").expect("defs");
+        let live = facts::live(&s, script).expect("facts");
+        for (name, op, why) in [
+            ("inner", "LoadContextSlot", "CONTEXT cell's slot offsets"),
+            ("callit", "Call", "RuntimeTable::call_any"),
+        ] {
+            let id = script.functions_named(name)[0];
+            let input = script.unit_input(id, name).expect("input");
+            let g = crate::graph_report(&input, &facts::for_function(&live, id)).expect("graph");
+            assert!(g.ops.contains_key(op), "{name}: {:?}", g.ops);
+            if aarch64() {
+                let e = g.emit.expect_err("refused");
+                assert!(e.contains(why), "{name}: {e}");
+            }
+        }
+    }
+
+    /// Kernel 2 (SPIKEC-4): `lin_solve` (an inner closure of navier-stokes, found by its
+    /// function id) builds into a checked graph from the live facts of an n = 1 run, its
+    /// registers allocate and verify, and the emitter stops at the first context slot load.
+    #[test]
+    fn lin_solve_graph_builds() {
+        if !kernels::bench_present() {
+            eprintln!("skip: no v8-v7 checkout");
+            return;
+        }
+        let k = kernels::kernel("navier-stokes").expect("navier-stokes");
+        let h = &k.hot[0];
+        assert_eq!(h.name, "lin_solve");
+        let d = kernels::driver(k, 1).expect("driver");
+        let mut s = Session::new(&Config::default()).expect("session");
+        s.run(&d.text, "driver.js").result.expect("T0");
+        let script = s.script("driver.js").expect("script");
+        let ids = script.functions_on_line(h.lines.0 + d.offset);
+        let [id] = ids[..] else {
+            panic!("{ids:?}")
+        };
+        let live = facts::live(&s, script).expect("facts");
+        let input = script.unit_input(id, h.name).expect("input");
+        let g = crate::graph_report(&input, &facts::for_function(&live, id)).expect("graph");
+        let lines = g.lines().join("\n");
+        for op in ["Float64", "CheckNumber", "LoadContextSlot", "Call", "LoadElement"] {
+            assert!(g.ops.contains_key(op), "{op}: {lines}");
+        }
+        assert!(g.fact_guards > 0, "{lines}");
+        // The inner loop's double sum: every CheckNumber is backed by its number record.
+        for l in g.graph.lines().filter(|l| l.contains("CheckNumber")) {
+            assert!(l.contains("Fact(Runtime)"), "{l}\n{}", g.graph);
+        }
+        if aarch64() {
+            let e = g.emit.as_ref().expect_err("refused");
+            assert!(e.contains("context slot"), "{e}");
+        }
+    }
+
     /// Keyed facts (SPIKEC-3): an index-only LoadKeyed record backs the key's int32 check;
     /// the element guards stay unbacked (FACT_SCHEMA 1 has no receiver, bounds or hole field);
     /// a site that saw a key that is not an index takes the generic keyed entry (SPIKEC-4;

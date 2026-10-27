@@ -161,6 +161,15 @@ impl Int32Op {
     }
 }
 
+/// A double binary operation (IEEE, as JS: the result is a number for any number inputs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloatOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
 /// A signed int32 comparison.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cond {
@@ -213,6 +222,26 @@ pub enum Op {
     /// Guard: stores the Int32 value into an existing element (same bounds and hole checks).
     /// An int32 is not a cell, so no barrier is needed (H11 elision E1).
     StoreElement,
+    /// Guard: the Tagged input is a number (an int32 or a double Value); its value as a
+    /// double. Float64 (SPIKEC-4).
+    CheckNumber,
+    /// The Int32 input as a double: Float64, PROVEN (every int32 is a number).
+    Int32ToFloat64,
+    /// A double op on two Float64 inputs: Float64, PROVEN (a number op on numbers gives a
+    /// number). Not a guard: it cannot fail.
+    Float64(FloatOp),
+    /// Float64 to a Tagged number Value, in the form `Value::number` gives (an int32 Value
+    /// for an integer in int32 range that is not -0, else a double with NaN purified).
+    BoxFloat64,
+    /// Slot `index` of the current context (the frame's context; `LdaCurrentContextSlot`):
+    /// Tagged, unknown. Reads mutable memory: never shared or moved across an effect
+    /// (SPIKEC-4, lin_solve).
+    LoadContextSlot(u32),
+    /// A call with an undefined receiver (`CallUndefinedReceiver0/1/2`): inputs = the callee,
+    /// then the arguments, all Tagged; `regs` are the instruction's operand registers in the
+    /// same order (`RuntimeTable::call_any` reads the operands from their VM frame slots).
+    /// A Tagged, unknown result. An effect and a GC point; a throw unwinds (SPIKEC-4).
+    Call { regs: Vec<Register> },
     /// `o[k]` by the generic keyed load (`ep9_vm::RuntimeTable::get_keyed`, entry 8,
     /// `layout::RT_GET_KEYED`; SPIKEC-4, P3-ORCH-9): the Tagged receiver and key, a Tagged
     /// result. Not a guard: any receiver and key take it. An effect and a GC point (a getter
@@ -254,6 +283,8 @@ impl Op {
             Op::Const(_) | Op::ConstInt32(_) | Op::TruncateInt32 => true,
             Op::Int32(o) => o.bitwise(),
             Op::Compare(_) | Op::IsFalse | Op::IsTrue => true,
+            // A number from numbers (SPIKEC-4).
+            Op::Int32ToFloat64 | Op::Float64(_) => true,
             _ => false,
         }
     }
@@ -265,6 +296,7 @@ impl Op {
             | Op::TruncateInt32
             | Op::CheckShape { .. }
             | Op::CheckArray
+            | Op::CheckNumber
             | Op::LoadElement
             | Op::StoreElement => true,
             Op::Int32(o) => !o.bitwise(),
@@ -284,14 +316,21 @@ impl Op {
     pub fn is_effect(&self) -> bool {
         matches!(
             self,
-            Op::StoreElement | Op::Poll | Op::GetKeyedGeneric | Op::SetKeyedGeneric
+            Op::StoreElement
+                | Op::Poll
+                | Op::GetKeyedGeneric
+                | Op::SetKeyedGeneric
+                | Op::Call { .. }
         )
     }
 
     /// True for a call into the runtime table that may run JS or a GC and throw: the
     /// allocated caller-saved registers live across it are saved around the call.
     pub fn is_call(&self) -> bool {
-        matches!(self, Op::GetKeyedGeneric | Op::SetKeyedGeneric)
+        matches!(
+            self,
+            Op::GetKeyedGeneric | Op::SetKeyedGeneric | Op::Call { .. }
+        )
     }
 
     /// True if the node has an effect other than its result (it stays without uses).
@@ -606,8 +645,9 @@ impl Graph {
                         return Err(format!("{at}: a ShapeRef is not in the ref list"));
                     }
                 }
-                let carrier = matches!(node.op, Op::Phi | Op::BoxInt32 | Op::BoxBool)
-                    && !node.inputs.is_empty();
+                let carrier =
+                    matches!(node.op, Op::Phi | Op::BoxInt32 | Op::BoxBool | Op::BoxFloat64)
+                        && !node.inputs.is_empty();
                 match node.trust {
                     Trust::Proven => {
                         let ok = node.op.proven_by_spec()
@@ -648,7 +688,9 @@ impl Graph {
                             g.policy
                         ));
                     }
-                    if g.state.offset < node.offset && !matches!(node.op, Op::CheckInt32) {
+                    if g.state.offset < node.offset
+                        && !matches!(node.op, Op::CheckInt32 | Op::CheckNumber)
+                    {
                         return Err(format!("{at}: frame state before the guard"));
                     }
                     for &(_, v) in &g.state.registers {

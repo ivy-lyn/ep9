@@ -87,12 +87,12 @@ use dynasmrt::aarch64::Aarch64Relocation;
 use dynasmrt::{DynamicLabel, DynasmApi, DynasmLabelApi, VecAssembler, dynasm};
 use ep9_platform::unwind::cfi::CfiProgram;
 use ep9_value::encoding::{
-    DOUBLE_ENCODE_OFFSET, NOT_CELL_MASK, NUMBER_TAG, VALUE_FALSE, VALUE_TRUE,
+    DOUBLE_ENCODE_OFFSET, NOT_CELL_MASK, NUMBER_TAG, PURE_NAN_BITS, VALUE_FALSE, VALUE_TRUE,
 };
 use ep9_vm::layout;
 use spike_b::emit::{Arch, FunctionCode, FunctionInput, Refusal, Unwind};
 
-use crate::ir::{BlockId, Cond, ExitPolicy, Graph, Int32Op, NodeId, Op};
+use crate::ir::{BlockId, Cond, ExitPolicy, FloatOp, Graph, Int32Op, NodeId, Op};
 use crate::regalloc::{Allocation, Location};
 use crate::vm_layout;
 
@@ -846,6 +846,110 @@ impl Emitter<'_> {
                 let f = VALUE_FALSE as u32;
                 dynasm!(self.ops ; .arch aarch64 ; add WSP(d), WSP(x), f);
                 self.finish(n);
+            }
+            Op::CheckNumber => {
+                // An int32 Value converts; a double Value is its bits minus the offset; any
+                // other Value (a cell, an immediate: no number tag bit) exits.
+                let trap = self.trap(n);
+                let x = self.src(ins[0], 12)?;
+                let d = self.dst(n)?;
+                let (dbl, done) = (self.ops.new_dynamic_label(), self.ops.new_dynamic_label());
+                mov64(&mut self.ops, 17, NUMBER_TAG);
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; cmp X(x), x17
+                    ; b.lo =>dbl
+                    ; scvtf d16, W(x)
+                    ; fmov X(d), d16
+                    ; b =>done
+                    ; =>dbl
+                    ; tst X(x), x17
+                    ; b.eq =>trap
+                );
+                mov64(&mut self.ops, 16, DOUBLE_ENCODE_OFFSET);
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; sub X(d), X(x), x16
+                    ; =>done
+                );
+                self.finish(n);
+            }
+            Op::Int32ToFloat64 => {
+                let x = self.src(ins[0], 12)?;
+                let d = self.dst(n)?;
+                dynasm!(self.ops ; .arch aarch64 ; scvtf d16, W(x) ; fmov X(d), d16);
+                self.finish(n);
+            }
+            Op::Float64(op) => {
+                let l = self.src(ins[0], 12)?;
+                let r = self.src(ins[1], 13)?;
+                let d = self.dst(n)?;
+                dynasm!(self.ops ; .arch aarch64 ; fmov d16, X(l) ; fmov d17, X(r));
+                match op {
+                    FloatOp::Add => dynasm!(self.ops ; .arch aarch64 ; fadd d16, d16, d17),
+                    FloatOp::Sub => dynasm!(self.ops ; .arch aarch64 ; fsub d16, d16, d17),
+                    FloatOp::Mul => dynasm!(self.ops ; .arch aarch64 ; fmul d16, d16, d17),
+                    FloatOp::Div => dynasm!(self.ops ; .arch aarch64 ; fdiv d16, d16, d17),
+                }
+                dynasm!(self.ops ; .arch aarch64 ; fmov X(d), d16);
+                self.finish(n);
+            }
+            Op::BoxFloat64 => {
+                // `Value::number`: an int32 Value for an integer in int32 range that is not
+                // -0; else a double Value with NaN purified.
+                let x = self.src(ins[0], 12)?;
+                let d = self.dst(n)?;
+                let (int, dbl, purified, done) = (
+                    self.ops.new_dynamic_label(),
+                    self.ops.new_dynamic_label(),
+                    self.ops.new_dynamic_label(),
+                    self.ops.new_dynamic_label(),
+                );
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; fmov d16, X(x)
+                    ; fcvtzs w16, d16
+                    ; scvtf d17, w16
+                    ; fcmp d16, d17
+                    ; b.ne =>dbl
+                    ; cbnz w16, =>int
+                    ; fmov x17, d16
+                    ; tbnz x17, #63, =>dbl
+                    ; =>int
+                    ; mov w16, w16
+                );
+                mov64(&mut self.ops, 17, NUMBER_TAG);
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; orr X(d), x16, x17
+                    ; b =>done
+                    ; =>dbl
+                    ; fcmp d16, d16
+                    ; b.vc =>purified
+                );
+                mov64(&mut self.ops, 16, PURE_NAN_BITS);
+                dynasm!(self.ops ; .arch aarch64 ; fmov d16, x16 ; =>purified ; fmov x16, d16);
+                mov64(&mut self.ops, 17, DOUBLE_ENCODE_OFFSET);
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; add X(d), x16, x17
+                    ; =>done
+                );
+                self.finish(n);
+            }
+            Op::LoadContextSlot(i) => {
+                return Err(Refusal::Limit(format!(
+                    "context slot {i} at @{}: the CONTEXT cell's slot offsets are not in \
+                     ep9_vm::layout (crates/ep9_vm/src/native.rs, no month-4 owner)",
+                    node.offset
+                )));
+            }
+            Op::Call { .. } => {
+                return Err(Refusal::Limit(format!(
+                    "call at @{}: not emitted yet (month 5: RuntimeTable::call_any reads its \
+                     operands from their VM frame slots, which compiled code must write first)",
+                    node.offset
+                )));
             }
             Op::GetKeyedGeneric | Op::SetKeyedGeneric => {
                 // The generic keyed entries (RuntimeTable 8 and 9, SPIKEC-4): stage the

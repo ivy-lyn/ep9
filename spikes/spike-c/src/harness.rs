@@ -104,6 +104,29 @@ impl Script {
     }
 }
 
+impl Script {
+    /// The graph-builder input of function `id` read from the unit, for a function no JS
+    /// expression reaches (an inner closure such as navier-stokes' `lin_solve`; SPIKEC-4).
+    /// Its key is 0: the code it gives cannot be installed (install by function id is a
+    /// `native.rs` need, protocol §9), only built, allocated and emitted for a report.
+    pub fn unit_input<'a>(&'a self, id: u32, name: &'a str) -> Result<FunctionInput<'a>, String> {
+        let f = self
+            .unit
+            .unit()
+            .functions
+            .get(id as usize)
+            .ok_or_else(|| format!("{}: no function {id}", self.file))?;
+        Ok(FunctionInput {
+            name,
+            bytecode: &f.bytecode,
+            parameter_count: f.parameter_count,
+            register_count: f.register_count,
+            handler_count: f.handlers.len() as u32,
+            key: 0,
+        })
+    }
+}
+
 /// The byte range of line `line` (1-based) of `text`, without its line end.
 fn line_range(text: &str, line: u32) -> Option<std::ops::Range<usize>> {
     let mut start = 0;

@@ -23,6 +23,10 @@
 //! | `<`, `>`, `<=`, `>=` | CheckInt32 on each input (backed by an int32 CompareOp fact, else unbacked), Compare | PROVEN (a boolean) |
 //! | GetNamedProperty | CheckShape (the LoadNamed fact: an in-object own field or an Array's `length`, one location for every case) + LoadField | the check is predicted{source}; the loaded value unknown |
 //! | GetKeyedProperty, SetKeyedProperty | CheckArray, CheckInt32 on the key, LoadElement / StoreElement (an int32 value); or the generic keyed entry (a key that is not an index, a value that is not an int32; SPIKEC-4) | unknown; the key check is backed by an index-only keyed record, the element guards are unbacked (keyed facts, SPIKEC-3, below) |
+//! | `+`, `-`, `*` whose BinaryOp record saw a double (hint inside {int32, int32-overflow, number}, with number), and `/` always | CheckNumber on each Tagged input (an Int32 input converts), a Float64 op (SPIKEC-4) | the check is predicted{source} with the record, else unknown; the op's result PROVEN (a number from numbers) |
+//! | `===` | CheckInt32 on each input (backed by an int32 CompareOp fact), Compare(Eq) (SPIKEC-4) | PROVEN (a boolean) |
+//! | LdaCurrentContextSlot, LdaImmutableCurrentContextSlot | LoadContextSlot (SPIKEC-4) | unknown |
+//! | CallUndefinedReceiver0/1/2 | Call: the callee and the arguments Tagged (SPIKEC-4) | unknown |
 //! | JumpLoop | Poll (budget), Jump to the header | - |
 //!
 //! A named load without a fact, a megamorphic site, an accessor, a prototype field or an
@@ -88,8 +92,8 @@ use spike_b::emit::{FunctionInput, Refusal};
 use crate::cfg::Cfg;
 use crate::facts::FunctionFacts;
 use crate::ir::{
-    self, BlockId, Cond, ExitPolicy, FrameState, Graph, GuardBasis, Incoming, Int32Op, NodeId, Op,
-    RefNode, Repr, Trust,
+    self, BlockId, Cond, ExitPolicy, FloatOp, FrameState, Graph, GuardBasis, Incoming, Int32Op,
+    NodeId, Op, RefNode, Repr, Trust,
 };
 use crate::vm_layout;
 
@@ -128,6 +132,13 @@ pub fn supported(op: Opcode) -> bool {
             | Inc
             | Dec
             | ToNumeric
+            | Div
+            | TestEqualStrict
+            | LdaCurrentContextSlot
+            | LdaImmutableCurrentContextSlot
+            | CallUndefinedReceiver0
+            | CallUndefinedReceiver1
+            | CallUndefinedReceiver2
             | TestLessThan
             | TestGreaterThan
             | TestLessThanOrEqual
@@ -511,6 +522,44 @@ impl Builder<'_> {
         n
     }
 
+    /// `v` as a Float64 for a number use: a CheckNumber guard with `basis` if it is Tagged
+    /// (an Int32 converts, PROVEN).
+    fn number(&mut self, v: NodeId, basis: GuardBasis) -> NodeId {
+        match (self.node(v).repr, &self.node(v).op) {
+            (Repr::Float64, _) => v,
+            (_, Op::Const(bits)) if vm_layout::int32_of(*bits).is_some() => {
+                let x = vm_layout::int32_of(*bits).expect("int32");
+                let i = self.int(x);
+                self.number(i, basis)
+            }
+            (Repr::Int32, _) => {
+                let p = self.policy(GuardBasis::Unbacked);
+                self.memo(6, v, p, |s| {
+                    s.emit(Op::Int32ToFloat64, vec![v], Repr::Float64, Trust::Proven)
+                })
+            }
+            _ => {
+                let st = self.state();
+                let v = self.tagged(v);
+                let policy = self.policy(basis);
+                let n = self.memo(5, v, policy, |s| {
+                    let n = s.emit(Op::CheckNumber, vec![v], Repr::Float64, trust_of(basis));
+                    s.guard(n, basis, st);
+                    n
+                });
+                self.back(n, basis);
+                n
+            }
+        }
+    }
+
+    /// A double op of the site with feedback slot `slot` (see the module docs).
+    fn float_op(&mut self, op: FloatOp, l: NodeId, r: NodeId, slot: u32) -> NodeId {
+        let basis = number_basis_of(self.facts, slot);
+        let (l, r) = (self.number(l, basis), self.number(r, basis));
+        self.emit(Op::Float64(op), vec![l, r], Repr::Float64, Trust::Proven)
+    }
+
     fn compare(&mut self, c: Cond, l: NodeId, r: NodeId, slot: u32) -> NodeId {
         let basis = self.int_basis(slot);
         let (l, r) = (self.int32(l, basis), self.int32(r, basis));
@@ -761,7 +810,47 @@ impl Builder<'_> {
             Add | Sub | Mul | BitwiseAnd | BitwiseOr | BitwiseXor | ShiftLeft | ShiftRight => {
                 let l = self.reg(insn.register(0))?;
                 let r = self.acc()?;
-                let n = self.binop(int_op(x.opcode), l, r, insn.unsigned(1));
+                let slot = insn.unsigned(1);
+                let n = match float_op_of(x.opcode) {
+                    Some(op) if saw_double(self.facts, slot) => self.float_op(op, l, r, slot),
+                    _ => self.binop(int_op(x.opcode), l, r, slot),
+                };
+                self.set_acc(n);
+            }
+            Div => {
+                let l = self.reg(insn.register(0))?;
+                let r = self.acc()?;
+                let n = self.float_op(FloatOp::Div, l, r, insn.unsigned(1));
+                self.set_acc(n);
+            }
+            TestEqualStrict => {
+                let l = self.reg(insn.register(0))?;
+                let r = self.acc()?;
+                let n = self.compare(Cond::Eq, l, r, insn.unsigned(1));
+                self.set_acc(n);
+            }
+            LdaCurrentContextSlot | LdaImmutableCurrentContextSlot => {
+                let n = self.emit(
+                    Op::LoadContextSlot(insn.unsigned(0)),
+                    vec![],
+                    Repr::Tagged,
+                    Trust::Unknown,
+                );
+                self.set_acc(n);
+            }
+            CallUndefinedReceiver0 | CallUndefinedReceiver1 | CallUndefinedReceiver2 => {
+                let argc = match x.opcode {
+                    CallUndefinedReceiver0 => 0,
+                    CallUndefinedReceiver1 => 1,
+                    _ => 2,
+                };
+                let regs: Vec<Register> = (0..=argc).map(|i| insn.register(i)).collect();
+                let mut inputs = Vec::new();
+                for &r in &regs {
+                    let v = self.reg(r)?;
+                    inputs.push(self.tagged(v));
+                }
+                let n = self.emit(Op::Call { regs }, inputs, Repr::Tagged, Trust::Unknown);
                 self.set_acc(n);
             }
             AddSmi | SubSmi | MulSmi | BitwiseAndSmi | BitwiseOrSmi | BitwiseXorSmi
@@ -1090,14 +1179,18 @@ impl Builder<'_> {
                     changed = true;
                 }
             }
-            // Checks of a value that is now Int32 are no-ops.
+            // Checks of a value that is now Int32 are no-ops; so is a CheckNumber of a value
+            // that is now Float64 (a loop-invariant double whose trivial phi went away).
             for i in 0..self.g.nodes.len() {
                 let n = NodeId(i as u32);
                 let node = self.g.node(n);
-                if node.live
-                    && matches!(node.op, Op::CheckInt32 | Op::TruncateInt32)
-                    && self.g.node(node.inputs[0]).repr == Repr::Int32
-                {
+                let input = node.inputs.first().map(|&v| self.g.node(v).repr);
+                let noop = match node.op {
+                    Op::CheckInt32 | Op::TruncateInt32 => input == Some(Repr::Int32),
+                    Op::CheckNumber => input == Some(Repr::Float64),
+                    _ => false,
+                };
+                if node.live && noop {
                     let v = node.inputs[0];
                     self.replace(n, v);
                     self.kill(n);
@@ -1180,6 +1273,11 @@ impl Builder<'_> {
                 | Op::LoadField { .. } => vec![Repr::Tagged],
                 Op::LoadElement => vec![Repr::Tagged, Repr::Int32],
                 Op::StoreElement => vec![Repr::Tagged, Repr::Int32, Repr::Int32],
+                Op::CheckNumber => vec![Repr::Tagged],
+                Op::Int32ToFloat64 => vec![Repr::Int32],
+                Op::Float64(_) => vec![Repr::Float64, Repr::Float64],
+                Op::BoxFloat64 => vec![Repr::Float64],
+                Op::Call { regs } => vec![Repr::Tagged; regs.len()],
                 Op::GetKeyedGeneric => vec![Repr::Tagged, Repr::Tagged],
                 Op::SetKeyedGeneric => vec![Repr::Tagged, Repr::Tagged, Repr::Tagged],
                 Op::Int32(_) | Op::Compare(_) => vec![Repr::Int32, Repr::Int32],
@@ -1197,14 +1295,21 @@ impl Builder<'_> {
                 let fix = match (have, w) {
                     (Repr::Int32, Repr::Tagged) => Op::BoxInt32,
                     (Repr::Bool, Repr::Tagged) => Op::BoxBool,
+                    (Repr::Float64, Repr::Tagged) => Op::BoxFloat64,
+                    (Repr::Int32, Repr::Float64) => Op::Int32ToFloat64,
                     _ => panic!(
                         "{}: n{} wants {w:?}, input n{} is {have:?}",
                         self.g.name, n.0, v.0
                     ),
                 };
+                let (t, fix_repr) = if fix == Op::Int32ToFloat64 {
+                    (Trust::Proven, Repr::Float64)
+                } else {
+                    (t, Repr::Tagged)
+                };
                 let b = if node.op == Op::Phi {
                     let pred = self.g.blocks[node.block.0 as usize].preds[k];
-                    self.insert_before_terminator(pred, fix, vec![v], Repr::Tagged, t)
+                    self.insert_before_terminator(pred, fix, vec![v], fix_repr, t)
                 } else {
                     let blk = node.block.0 as usize;
                     let at = self.g.blocks[blk]
@@ -1214,7 +1319,7 @@ impl Builder<'_> {
                         .expect("in block");
                     let b = self
                         .g
-                        .add(fix, vec![v], Repr::Tagged, t, node.block, node.offset);
+                        .add(fix, vec![v], fix_repr, t, node.block, node.offset);
                     self.g.blocks[blk].nodes.insert(at, b);
                     b
                 };
@@ -1291,6 +1396,42 @@ pub fn keyed_path_of(k: &ep9_facts::KeyedFacts, source: ep9_facts::FactSource) -
         KeyedPath::Element(GuardBasis::Fact(source))
     } else {
         KeyedPath::Element(GuardBasis::Unbacked)
+    }
+}
+
+/// The doubles a BinaryOp site may see and still back its CheckNumber guards: int32
+/// operands (with any result) and number operands.
+const NUMBER_HINTS: BinaryHint = BinaryHint::INT32
+    .union(BinaryHint::INT32_OVERFLOW)
+    .union(BinaryHint::NUMBER);
+
+/// True if the BinaryOp record of `slot` saw a number operand that is not an int32 and only
+/// numbers: the site takes the double path (SPIKEC-4). Any other hint keeps the int32 path.
+pub fn saw_double(facts: &FunctionFacts<'_>, slot: u32) -> bool {
+    matches!(
+        facts.records.iter().find(|(s, _)| *s == slot),
+        Some((_, SlotFacts::BinaryOp(h))) if h.contains(BinaryHint::NUMBER) && NUMBER_HINTS.contains(*h)
+    )
+}
+
+/// The basis of the CheckNumber guards of the double site with feedback slot `slot`: a
+/// BinaryOp record whose hint has only number bits (the empty set included: implicit int32,
+/// MODES-D10) is a fact of the snapshot's source; anything else, or no record, is unbacked.
+pub fn number_basis_of(facts: &FunctionFacts<'_>, slot: u32) -> GuardBasis {
+    match facts.records.iter().find(|(s, _)| *s == slot) {
+        Some((_, SlotFacts::BinaryOp(h))) if NUMBER_HINTS.contains(*h) => {
+            GuardBasis::Fact(facts.source)
+        }
+        _ => GuardBasis::Unbacked,
+    }
+}
+
+fn float_op_of(op: Opcode) -> Option<FloatOp> {
+    match op {
+        Opcode::Add => Some(FloatOp::Add),
+        Opcode::Sub => Some(FloatOp::Sub),
+        Opcode::Mul => Some(FloatOp::Mul),
+        _ => None,
     }
 }
 

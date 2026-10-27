@@ -23,11 +23,19 @@
 #        out of the weak IC entry the guard reads; T0 would re-record it, the compiled code
 #        can only deopt, and the deopt entry is month 5); FAIL on any other result
 #     SKIP without the v8-v7 checkout (scripts/sync-bench.sh)
+#   gate.sh linsolve     (plan v9 M4-P4 SPIKEC-4; protocol §7 "lin_solve graph build") kernel 2:
+#     1  release build (as am3)
+#     2  `spike-c graph navier-stokes`: lin_solve (an inner closure, found by its function id)
+#        built from the live facts of an n = 1 T0 run, the graph checked (lattice, guard
+#        placement), registers allocated and verified. PASS if those hold; the emitter's
+#        result is a report line (it refuses the context slot loads until ep9_vm::layout
+#        exports the CONTEXT slot offsets, and calls until month 5)
+#     SKIP without the v8-v7 checkout
 #   gate.sh time         (plan v9 M4-P2 SPIKEC-2; protocol §3) the class S timing of crypto on
 #     this host: `spike-c time crypto` (15 rounds + 1 warm-up; T0, C, H0, H1 in new processes,
 #     rotated order; paired ratios, the median's interval). A REPORT, never a reading: PASS
 #     means every run was right, whatever the ratios; FAIL only on a wrong run. Not in `all`
-#   gate.sh              `gate.sh structural` then `gate.sh am3`
+#   gate.sh              `gate.sh structural`, `gate.sh am3`, then `gate.sh linsolve`
 #
 # Env: CARGO_TARGET_DIR (default: spikes/spike-c/target),
 #      SPIKE_C_BENCH_DIR (default: third_party/bench-v8v7/bench/bench-v8).
@@ -111,6 +119,20 @@ am3() {
   fi
 }
 
+linsolve() {
+  if ! build_release; then
+    record "linsolve" FAIL "release build failed"
+    return
+  fi
+  local bin="$CARGO_TARGET_DIR/release/spike-c$exe"
+  local bench="${SPIKE_C_BENCH_DIR:-$here/../../third_party/bench-v8v7/bench/bench-v8}"
+  if [ ! -f "$bench/navier-stokes.js" ]; then
+    record "linsolve" SKIP "no v8-v7 checkout (bash scripts/sync-bench.sh bench-v8v7)"
+    return
+  fi
+  run "linsolve/graph" "$bin" graph navier-stokes
+}
+
 timing() {
   if ! build_release; then
     record "time" FAIL "release build failed"
@@ -129,13 +151,15 @@ step="${1:-all}"
 case "$step" in
   structural) structural ;;
   am3) am3 ;;
+  linsolve) linsolve ;;
   time) timing ;;
   all)
     structural
     am3
+    linsolve
     ;;
   *)
-    echo "usage: gate.sh [structural | am3 | time]" >&2
+    echo "usage: gate.sh [structural | am3 | linsolve | time]" >&2
     exit 2
     ;;
 esac
