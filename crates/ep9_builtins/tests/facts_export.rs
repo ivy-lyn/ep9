@@ -581,6 +581,63 @@ fn every_recorded_kind_is_exported() {
     });
 }
 
+/// The keyed IC state is live only at a StoreKeyed site (MC-w15-1; `keyed_ic.rs`): only its
+/// fast case (a present element of an Array) writes the key half. A hot in-bounds StoreKeyed
+/// site exports `Monomorphic` with no case; a hot append StoreKeyed site and every hot
+/// LoadKeyed and HasKeyed site export `Uninitialized`, which there means "no state", not
+/// "never ran" (`ep9_facts` `IcState` docs).
+#[test]
+fn keyed_ic_state_is_live_only_for_store_keyed_present_elements() {
+    on_big_stack(|| {
+        let src = r#"
+function keyed(a, b) {
+  a[0] = 1;
+  b[b.length] = 1;
+  var x = a[1];
+  var h = 0 in a;
+  return h ? x : 0;
+}
+var A = [1, 2, 3];
+for (var i = 0; i < 3000; i++) keyed(A, []);
+"#;
+        let (unit, facts) = run(src);
+        let f = function_named(&unit, "keyed");
+        let stores: Vec<_> = of_kind(&facts, f, "StoreKeyed")
+            .into_iter()
+            .map(|r| match r {
+                SlotFacts::StoreKeyed(k) => k.clone(),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(stores.len(), 2, "{stores:?}");
+        // `a[0] = 1`: the fast case ran cold once with A's shape, then hit.
+        assert_eq!(stores[0].property.state, IcState::Monomorphic, "{stores:?}");
+        assert!(stores[0].property.cases.is_empty(), "{stores:?}");
+        assert_eq!(stores[0].keys, KeySet::INDEX, "{stores:?}");
+        // `b[b.length] = 1`: an append is never the fast case, so the key half stays new.
+        assert_eq!(
+            stores[1].property.state,
+            IcState::Uninitialized,
+            "{stores:?}"
+        );
+        assert_eq!(stores[1].keys, KeySet::INDEX, "{stores:?}");
+        match of_kind(&facts, f, "LoadKeyed")[..] {
+            [SlotFacts::LoadKeyed(k)] => {
+                assert_eq!(k.property.state, IcState::Uninitialized, "{k:?}");
+                assert_eq!(k.keys, KeySet::INDEX, "{k:?}");
+            }
+            ref r => panic!("{r:?}"),
+        }
+        match of_kind(&facts, f, "HasKeyed")[..] {
+            [SlotFacts::HasKeyed(k)] => {
+                assert_eq!(k.property.state, IcState::Uninitialized, "{k:?}");
+                assert!(k.keys.contains(KeySet::INDEX), "{k:?}");
+            }
+            ref r => panic!("{r:?}"),
+        }
+    });
+}
+
 /// MC-w13-17 (F16): what the fixed sampling window sees of a periodic call pattern, today.
 /// `run`'s loop body is 99 call sites (98 `a()`, then `b()`) and a back edge: 100 budget units,
 /// and `BUDGET` (10,000) is 100 periods, so every poll lands on the same unit of the body and

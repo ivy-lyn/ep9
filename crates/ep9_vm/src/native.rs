@@ -246,7 +246,7 @@ impl NativeCx {
 }
 
 /// Byte offsets native code reads and writes. All are fixed for the build (Cx and
-/// FunctionInfo are `repr(C)`; FRAME 2 and OBJECT_LAYOUT 2, `versions.rs`).
+/// FunctionInfo are `repr(C)`; FRAME 2 and OBJECT_LAYOUT 4, `versions.rs`).
 pub mod layout {
     use core::mem::offset_of;
 
@@ -357,67 +357,69 @@ pub mod layout {
     // ---- the layout facts Spike C bakes (M4-P3 KEYED, P2-ORCH-6, MC-w14-7) ----
     //
     // Each constant below is a copy that `spikes/spike-c/src/vm_layout.rs` kept by hand (same
-    // name there), now taken from the VM's own definitions, so a layout change moves it.
-    // Every one of them belongs to the future `VM_LAYOUT_VERSION` set (C-18, doc 13 section
-    // 5.2): a change of any value is a VM layout change for native code and unit text. They
-    // stay behind `spike-native` with the rest of this module until C-18 moves them out of
-    // the gate (M5-P0).
+    // name there), now taken from the VM's own definitions, so a layout change moves it
+    // (Spike C reads them since M4-P4 SPIKEC-4). A change of any value is a layout change for
+    // native code and unit text. Each doc names the one version that owns the value (MC-w15-5,
+    // doc 13 C-18 and section 7.3: one owner per fact): OBJECT_LAYOUT 4, IC_LAYOUT 2, Value encoding 1
+    // (`ep9_value::Value::VERSION`), or the future `VM_LAYOUT_VERSION` (C-18) only for what no
+    // other version owns. They stay behind `spike-native` with the rest of this module until
+    // C-18 moves them out of the gate (M5-P0).
 
-    /// C-18 set. Word0 bytes 0-3: the ShapeId that an IC guard compares (`ep9_value`
+    /// OBJECT_LAYOUT 4. Word0 bytes 0-3: the ShapeId that an IC guard compares (`ep9_value`
     /// `Word0::SHAPE_ID_OFFSET`; an `ldr w` at +0).
     pub const SHAPE_ID_BYTE: u32 = ep9_value::Word0::SHAPE_ID_OFFSET as u32;
-    /// C-18 set. The kind byte of a cell: byte 5 of word0 (`ep9_value` `Word0::KIND_OFFSET`;
+    /// OBJECT_LAYOUT 4. The kind byte of a cell: byte 5 of word0 (`ep9_value` `Word0::KIND_OFFSET`;
     /// an `ldrb` at +5).
     pub const KIND_BYTE: u32 = ep9_value::Word0::KIND_OFFSET as u32;
-    /// C-18 set. Kind id of an ordinary object (`kinds::OBJECT`).
+    /// OBJECT_LAYOUT 4. Kind id of an ordinary object (`kinds::OBJECT`).
     pub const KIND_OBJECT: u8 = crate::kinds::OBJECT.get();
-    /// C-18 set. Kind id of an Array (`kinds::ARRAY`).
+    /// OBJECT_LAYOUT 4. Kind id of an Array (`kinds::ARRAY`).
     pub const KIND_ARRAY: u8 = crate::kinds::ARRAY.get();
-    /// C-18 set. The first in-object field of an OBJECT (no fixed fields): field `f` is at
+    /// OBJECT_LAYOUT 4. The first in-object field of an OBJECT (no fixed fields): field `f` is at
     /// `OBJECT_FIELDS + 8f` (`object::obj::FIXED`).
     pub const OBJECT_FIELDS: u32 = obj::FIXED as u32;
-    /// C-18 set. ARRAY: the ELEMENTS cell, or undefined (`object::obj::ELEMENTS`).
+    /// OBJECT_LAYOUT 4. ARRAY: the ELEMENTS cell, or undefined (`object::obj::ELEMENTS`).
     pub const ARRAY_ELEMENTS: u32 = obj::ELEMENTS as u32;
-    /// C-18 set. ARRAY: the length, an int32 Value (`object::arr::LENGTH`).
+    /// OBJECT_LAYOUT 4. ARRAY: the length, an int32 Value (`object::arr::LENGTH`).
     pub const ARRAY_LENGTH: u32 = arr::LENGTH as u32;
-    /// C-18 set. ELEMENTS: the capacity, an int32 Value (`object::elems::CAPACITY`).
+    /// OBJECT_LAYOUT 4. ELEMENTS: the capacity, an int32 Value (`object::elems::CAPACITY`).
     pub const ELEMENTS_CAPACITY: u32 = elems::CAPACITY as u32;
-    /// C-18 set. ELEMENTS: the first value; value `i` is at `ELEMENTS_DATA + 8i`
+    /// OBJECT_LAYOUT 4. ELEMENTS: the first value; value `i` is at `ELEMENTS_DATA + 8i`
     /// (`object::elems::DATA`).
     pub const ELEMENTS_DATA: u32 = elems::DATA as u32;
-    /// C-18 set. The hole (`frame::HOLE`, `Value::EMPTY`): an empty element; in a feedback
+    /// Value encoding 1. The hole (`frame::HOLE`, `Value::EMPTY`): an empty element; in a feedback
     /// key half, the polymorphic or megamorphic marker (an empty key half is undefined).
     pub const HOLE: u64 = crate::frame::HOLE;
-    /// C-18 set. FEEDBACK cell: the FunctionInfo of its function, a native word
+    /// IC_LAYOUT 2. FEEDBACK cell: the FunctionInfo of its function, a native word
     /// (`feedback::fv::INFO`).
     pub const FEEDBACK_INFO: u32 = fv::INFO as u32;
-    /// C-18 set. FEEDBACK cell: the first slot (`feedback::fv::SLOTS`).
+    /// IC_LAYOUT 2. FEEDBACK cell: the first slot (`feedback::fv::SLOTS`).
     pub const FEEDBACK_SLOTS: u32 = fv::SLOTS as u32;
-    /// C-18 set. FEEDBACK cell: bytes per slot, the key (weak) then the value
+    /// IC_LAYOUT 2. FEEDBACK cell: bytes per slot, the key (weak) then the value
     /// (`feedback::fv::SLOT_SIZE`, `KEY`, `VALUE`).
     pub const FEEDBACK_SLOT_SIZE: u32 = fv::SLOT_SIZE as u32;
-    /// C-18 set. A feedback slot: the key half (weak).
+    /// IC_LAYOUT 2. A feedback slot: the key half (weak).
     pub const FEEDBACK_KEY: u32 = fv::KEY as u32;
-    /// C-18 set. A feedback slot: the value half (strong).
+    /// IC_LAYOUT 2. A feedback slot: the value half (strong).
     pub const FEEDBACK_VALUE: u32 = fv::VALUE as u32;
-    /// C-18 set. POLY_IC cell: the first case, a key (weak) then a handler (`ic::pc::CASES`;
+    /// IC_LAYOUT 2. POLY_IC cell: the first case, a key (weak) then a handler (`ic::pc::CASES`;
     /// also proved on a live POLY_IC cell by `tests::native`).
     pub const POLY_CASES: u32 = crate::ic::pc::CASES as u32;
-    /// C-18 set. POLY_IC cell: bytes per case (`ic::pc::CASE`).
+    /// IC_LAYOUT 2. POLY_IC cell: bytes per case (`ic::pc::CASE`).
     pub const POLY_CASE_SIZE: u32 = crate::ic::pc::CASE as u32;
-    /// C-18 set. POLY_IC cell: cases per cell (`ic::POLY_CASES`).
+    /// IC_LAYOUT 2. POLY_IC cell: cases per cell (`ic::POLY_CASES`).
     pub const POLY_COUNT: u32 = crate::ic::POLY_CASES as u32;
-    /// C-18 set. Smi handler: the kind is in bits 0-3 (`ic::smi::KIND_MASK`).
+    /// IC_LAYOUT 2. Smi handler: the kind is in bits 0-3 (`ic::smi::KIND_MASK`).
     pub const SMI_KIND_MASK: i32 = smi::KIND_MASK;
-    /// C-18 set. Smi handler: the byte offset starts at this bit (`ic::smi::SHIFT`).
+    /// IC_LAYOUT 2. Smi handler: the byte offset starts at this bit (`ic::smi::SHIFT`).
     pub const SMI_SHIFT: u32 = smi::SHIFT;
-    /// C-18 set. Smi handler kind: the field at the byte offset of the object cell
+    /// IC_LAYOUT 2. Smi handler kind: the field at the byte offset of the object cell
     /// (`ic::smi::FIELD_IN_OBJECT`).
     pub const SMI_FIELD_IN_OBJECT: i32 = smi::FIELD_IN_OBJECT;
-    /// C-18 set. Smi handler kind: an Array's `length`, the int32 at [`ARRAY_LENGTH`]
+    /// IC_LAYOUT 2. Smi handler kind: an Array's `length`, the int32 at [`ARRAY_LENGTH`]
     /// (`ic::smi::ARRAY_LENGTH`).
     pub const SMI_ARRAY_LENGTH: i32 = smi::ARRAY_LENGTH;
-    /// C-18 set (MC-w13-14). FunctionInfo: `feedback`, a pointer to the unit slot that holds
+    /// VM_LAYOUT (C-18, MC-w13-14). FunctionInfo: `feedback`, a pointer to the unit slot that holds
     /// the function's FEEDBACK cell (null: no vector yet).
     pub const FI_FEEDBACK: usize = offset_of!(FunctionInfo, feedback);
 }

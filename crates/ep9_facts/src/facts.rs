@@ -246,7 +246,10 @@ pub struct PropertyFacts {
     pub values: TypeSet,
 }
 
-/// Facts of a keyed property site.
+/// Facts of a keyed property site. Its `property.state` is live only for StoreKeyed (the
+/// present-element fast case writes the IC key half); at the other keyed kinds
+/// `Uninitialized` means "no state", not "never ran", and a keyed `Monomorphic` has no case
+/// in `property.cases` ([`IcState`], MC-w15-1). `keys` is the record that runs.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KeyedFacts {
     /// The property facts.

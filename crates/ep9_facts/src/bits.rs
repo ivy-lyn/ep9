@@ -134,10 +134,16 @@ byte_enum! {
 byte_enum! {
     /// The state of an inline cache (H16): uninitialized, then monomorphic, then polymorphic
     /// (at most 4 cases), then megamorphic (sticky).
+    ///
+    /// Keyed sites (LoadKeyed, StoreKeyed, DefineKeyedOwn, HasKeyed, StoreInArrayLiteral): the
+    /// state is live only for StoreKeyed, whose fast case (a present element of an Array)
+    /// writes the IC key half. At the other keyed kinds, and for a StoreKeyed site that never
+    /// took that fast case, `Uninitialized` means "no state", not "never ran". A keyed
+    /// `Monomorphic` exports no case (MC-w15-1).
     pub enum IcState {
-        /// No execution recorded.
+        /// No execution recorded (at a keyed site: no IC state; see above).
         Uninitialized = 0 => "uninitialized",
-        /// One case.
+        /// One case (at a keyed site: one receiver shape, exported with no case).
         Monomorphic = 1 => "monomorphic",
         /// 2 to 4 cases.
         Polymorphic = 2 => "polymorphic",
