@@ -64,3 +64,36 @@ the same commit, the same seed corpus and the libFuzzer seed that run.sh prints
 (`INFO: Seed: <n>`) replay a single-process run; the SHA-256 tells when the same input is
 found. The fix gets a regression test in the crate; the input goes into the repo only once the
 fix is public.
+
+## Fuzzilli (REPRL)
+
+Fuzzilli (Google Project Zero's JavaScript fuzzer) drives `ep9 --reprl`
+(`crates/ep9_cli/src/reprl.rs`, plan v9 §5.5): the REPRL loop on fds 100-103, a fresh isolate
+per script, the `fuzzilli('FUZZILLI_CRASH', n)` / `fuzzilli('FUZZILLI_PRINT', s)` builtin and
+the SanitizerCoverage callbacks. The status word is 0 (ok) or 0x100 (JS error); a panic, a
+wild store or a trap kills the child by a signal (a crash for Fuzzilli); a full GC heap exits
+71 with no status word (a failed run, not a crash).
+
+```text
+third_party/fuzzilli.commit + patches/fuzzilli/0001-ep9-profile.patch
+   │ scripts/sync-fuzzilli.sh (Swift >= 6.3)                infra/fuzz/build-ep9.sh (stable rustc)
+   ▼                                                         ▼
+FuzzilliCli --profile=ep9, REPRLRun ──── fds 100-103 ───▶ target/sancov/<triple>/release/ep9 --reprl
+```
+
+```sh
+# Mac: build and check only (no fuzz run, plan v9 rule 23)
+bash scripts/sync-fuzzilli.sh                # prints the FuzzilliCli and REPRLRun paths
+bash infra/fuzz/build-ep9.sh                 # prints the ep9 path
+printf '42\nthrow 1\n' | <REPRLRun> <ep9> --reprl     # REPRLRun's own tests, then status 0 and 256
+cargo test --locked -p ep9_cli reprl         # the fake-parent test (200 scripts, crashes, OOM)
+# infra/fuzz image only (Cloudflare, the orchestrator; never the Mac):
+infra/fuzz/run.sh 10 /work/fuzz-out          # exit 0 when coverage grows; prints hashes only
+infra/fuzz/triage.sh /work/fuzz-out/storage/crashes
+```
+
+Settings of the child (environment): `EP9_REPRL_HEAP_MB` (512), `EP9_REPRL_STACK_MB` (64),
+`EP9_REPRL_GC_STRESS` (0). A mutation run is an orchestrator run on Cloudflare `infra/fuzz` (at
+most 4 boxes), asked for by a request file (plan v9 rule 17, V9-A6, V9-D24). Crash files and the
+Fuzzilli log hold program text: they stay on the box or in the scratchpad, never in the repo
+or a public log (rule 14).
