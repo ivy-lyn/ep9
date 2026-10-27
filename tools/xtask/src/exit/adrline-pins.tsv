@@ -143,3 +143,22 @@ history	H16-ics-and-feedback.md	crates/ep9_vm/src/ic.rs:716	| 4 Data (M4-P3 amen
 history	H16-ics-and-feedback.md	crates/ep9_vm/src/ic.rs:412-415	| 4 Data (M4-P3 amendment: the 2026-10-27 string method cases rewrite row	2c2502a	\/\/ ShapeId 0 is a string\'s or a symbol\'s\: a KEY_STRING prototype case 
 history	H23-limits-and-failure-policy.md	crates/ep9_vm/src/native.rs:401	| 1 Reviewer (M3-P2 amendment: the 2026-10-23 PERF3 budget rewrite, addendum for the round-5 fix D1)	26513a2	cx\.budget \-\= 1\; \/\/ 1 unit per call\, also when the frame does not fit \(
 history	H23-limits-and-failure-policy.md	crates/ep9_vm/src/native.rs:401	| 3 Verifier (M3-P2 amendment: the 2026-10-23 PERF3 budget rewrite, 2026-10-24 addendum for the round-5 fix D1	ed431b7	cx\.budget \-\= 1\; \/\/ 1 unit per call\, also when the frame does not fit \(
+# M4-P4 integration fixer A (ADRLINE of the M4-P4 merge head): dated record and Change-log rows keep the line their commit had
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/heap.rs:1228	| 1 Reviewer (M4-P3 amendment: the 2026-10-27 H09-Q6 fill row, GC3-S1)	eef801d	^fn trace_s1_logs\(mem\: \&Memory\, t\: \&mut Tracer\<\'_\>\) \{$
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/heap.rs:873	| 3 Verifier (M4-P3 amendment: the 2026-10-27 H09-Q6 fill row, GC3)	eef801d	^    pub fn collect_minor\(\&self\) \{$
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/heap.rs:1260	| 3 Verifier (M4-P3 amendment: the 2026-10-27 H09-Q6 fill row, GC3)	eef801d	^    fn gc_trigger\(\&mut self\, size\: usize\) \-\> Option\<GcKind\> \{$
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/heap.rs:1228	| 3 Verifier (M4-P3 amendment: the 2026-10-27 H09-Q6 fill row, GC3)	eef801d	^fn trace_s1_logs\(mem\: \&Memory\, t\: \&mut Tracer\<\'_\>\) \{$
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/heap.rs:1040	| 3 Verifier (M4-P3 amendment: the 2026-10-27 H09-Q6 fill row, GC3)	eef801d	^                inner\.empty_s1_logs\(\)\;$
+history	H09-pages-and-side-metadata.md	crates/ep9_heap/src/heap.rs:950	| 3 Verifier (M4-P3 amendment: the 2026-10-27 H09-Q6 fill row, GC3)	dd82391	^                inner\.clear_marks\(\)\;$
+history	H11-barrier-and-atomics.md	crates/ep9_heap/src/verify.rs:283	| 1 Reviewer (M4-P3 amendment: the 2026-10-27 H11-Q7 fill row, GC3-S1)	eef801d	^pub\(crate\) fn check_old_cells\(inner\: \&Inner\, errors\: \&mut Vec\<String\>\) \-\> usize \{$
+history	H11-barrier-and-atomics.md	crates/ep9_heap/src/verify.rs:283	| 3 Verifier (M4-P3 amendment: the 2026-10-27 H11-Q7 fill row, GC3)	eef801d	^pub\(crate\) fn check_old_cells\(inner\: \&Inner\, errors\: \&mut Vec\<String\>\) \-\> usize \{$
+history	H11-barrier-and-atomics.md	crates/ep9_heap/src/heap.rs:938	| 3 Verifier (M4-P3 amendment: the 2026-10-27 H11-Q7 fill row, GC3)	dd82391	^                Some\(crate\:\:verify\:\:check_old_cells\(inner\, \&mut pre_errors\)\)$
+history	H11-barrier-and-atomics.md	crates/ep9_vm/src/object.rs:333-340	| 3 Verifier (M4-P3 amendment: the 2026-10-27 H11-Q7 fill row, GC3)	dd82391	^\/\/\/ Initializing store into a cell allocated since the last GC point \(E2\: no barrier\)\. Once a$
+history	H11-barrier-and-atomics.md	crates/ep9_heap/src/heap.rs:158	| 3 Verifier (M4-P3 amendment: the 2026-10-27 H11-Q7 fill row, GC3)	dd82391	^            stress_major_every\: 64\,$
+history	H16-ics-and-feedback.md	crates/ep9_facts/src/facts.rs:260-265	| 2026-10-26	36d1092	^pub struct TargetFacts \{$
+history	H16-ics-and-feedback.md	crates/ep9_facts/src/facts.rs:300-305	| 2026-10-26	36d1092	^pub struct CloneCase \{$
+history	H16-ics-and-feedback.md	crates/ep9_facts/src/facts.rs:260-265	| 1 Reviewer (M4-P0 addendum: the 2026-10-26 rewrite (version) row, IC_LAYOUT 1 -> 2; re-c	36d1092	^pub struct TargetFacts \{$
+history	H16-ics-and-feedback.md	`:300-305`	| 1 Reviewer (M4-P0 addendum: the 2026-10-26 rewrite (version) row, IC_LAYOUT 1 -> 2; re-c	d1c350b	^pub struct CloneCase \{$	crates/ep9_facts/src/facts.rs
+history	H16-ics-and-feedback.md	crates/ep9_vm/src/object.rs:347	| 3 Verifier (M4-P2 amendment: the 2026-10-27 CacheIR global-store fill row, P2-ORCH-9)	2dbf2b0	^pub\(crate\) fn wr\(heap\: \&Heap\, c\: CellPtr\, off\: usize\, v\: u64\) \{$
+history	H36-fp-semantics.md	crates/ep9_math/src/exact.rs:745	| 3 Verifier	b34fd01	^    fn soft_fma_sticky_of_shifted_product\(\) \{$
+pin	H23-limits-and-failure-policy.md	crates/ep9_heap/src/heap.rs:111	crates/ep9_heap/src/heap.rs	^    pub near_limit\: Option<fn\(committed\: usize, limit\: usize\) \-> usize>,$	0
