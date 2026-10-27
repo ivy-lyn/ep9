@@ -176,7 +176,7 @@ pub fn run_with(
         return Err("the drivers differ before the loop".into());
     }
     let config = config.threaded();
-    // The layout copies, on a session of their own (so both runs see the same scripts).
+    // The layout export, proved on a session of their own (so both runs see the same scripts).
     crate::vm_layout::check(&mut Session::new(&config)?).map_err(|e| format!("vm layout: {e}"))?;
 
     let mut t0s = Session::new(&config)?;
@@ -201,8 +201,8 @@ pub fn run_with(
     let (f, code, report) = compile_hot(&mut s, hot, "defs.js", d1.offset, int)?;
     // SAFETY: `code` is the placement (b) code `emit_a64` made for `f` from `input_of(f)` just
     // above (no JS ran since), unchanged. emit_a64 keeps the (b) contract: the T0 handler
-    // ABI, Cx read through `ep9_vm::layout` offsets (and the `vm_layout` copies, checked at
-    // the start of this run), only RuntimeTable calls, x19-x28 saved and restored, and every
+    // ABI, Cx and the heap read through `ep9_vm::layout` offsets (`vm_layout`, proved at the
+    // start of this run), only RuntimeTable calls, x19-x28 saved and restored, and every
     // exit is the tail jump to `cx.table[*pc]`.
     unsafe { s.install_b(&[f], vec![code]) }?;
     if s.slot_kind(f) != Some(ep9_vm::DispatchKind::Opt) {
@@ -674,7 +674,8 @@ mod tests {
 
     /// Keyed facts (SPIKEC-3): an index-only LoadKeyed record backs the key's int32 check;
     /// the element guards stay unbacked (FACT_SCHEMA 1 has no receiver, bounds or hole field);
-    /// a site that saw a key that is not an index is refused (no generic keyed path).
+    /// a site that saw a key that is not an index takes the generic keyed entry (SPIKEC-4;
+    /// SPIKEC-3 refused it).
     const AT: &str = "function at(a, k) { return a[k] | 0; }";
 
     #[test]
@@ -707,16 +708,140 @@ mod tests {
         // wrong value (T0 prints 8).
         let t = traps(AT, warm, "print(at([7, 8, 9], '1'));", "at");
         assert_eq!(t.t0.output, ["8"]);
-        // A name key in the warm-up: the site is refused, the function stays in T0.
-        let e = run_script(
-            &Config::default(),
+        // A name key in the warm-up: the generic path (SPIKEC-4), no keyed guard.
+        let r = equal(
             AT,
             "var w = [1, 2]; for (var q = 0; q < 20; q++) at(w, q & 1); at(w, 'length');",
-            "print(at(w, 0));",
+            "print(at(w, 0), at(w, 'length'), at([4, 5, 6], '2'), at({ x: 9 }, 'x'));",
             "at",
-        )
-        .expect_err("refused");
-        assert!(e.contains("not an index"), "{e}");
+        );
+        assert_eq!(r.compiled.output, ["1 2 6 9"]);
+        let g = &r.report.graph;
+        assert!(g.contains("GetKeyedGeneric"), "{g}");
+        assert!(!g.contains("CheckArray") && !g.contains("LoadElement"), "{g}");
+        let sites = &r.report.build.keyed;
+        assert!(sites.len() == 1 && sites[0].generic, "{sites:?}");
+    }
+
+    /// The generic keyed path (SPIKEC-4, RuntimeTable 8 and 9): name, symbol and other keys,
+    /// getters and setters (JS runs inside the call), stores of strings and objects (the
+    /// entry's store barrier), a throw from inside the call that the caller catches, all
+    /// equal to T0; and values in caller-saved registers live across the call.
+    /// `s` lives in a register across each call; `t[0]` shows it after the loop.
+    const GEN: &str = "function gen(o, k, v, n, t) {\n\
+        var s = 0;\n\
+        for (var i = 0; i < n; i++) { o[k] = v; s = (s + i) | 0; }\n\
+        t[0] = s;\n\
+        return o[k];\n\
+    }";
+
+    #[test]
+    fn generic_keyed_path_equals_t0() {
+        if !aarch64() {
+            return;
+        }
+        let warm = "var t = [0]; var w = {}; var sy = Symbol('s'); for (var q = 0; q < 20; q++) { gen(w, 'a', q, 3, t); gen(w, sy, 'x', 2, t); gen([1, 2], q & 1, 'y', 1, t); }";
+        let main = "var log = [];\n\
+            var acc = { get z() { log.push('get'); return 'Z'; }, set z(v) { log.push('set ' + v); } };\n\
+            print(gen({}, 'p', 'str', 4, t), t[0], typeof gen({}, sy, { u: 1 }, 2, t), gen([0, 0, 0], 2, 'el', 3, t), t[0]);\n\
+            print(gen(acc, 'z', 7, 2, t), t[0], log.join());\n\
+            print(gen({}, 1.5, 3, 2, t), gen({}, true, 4, 1, t), gen({}, null, 5, 1, t), gen({}, 'x', 0.5, 300, t), t[0]);\n\
+            try { gen(null, 'q', 1, 1, t); } catch (e) { print('caught', e instanceof TypeError); }\n\
+            gen(Object.freeze({ f: 1 }), 'f', 2, 1, t); print('sloppy ok');";
+        let r = equal(GEN, warm, main, "gen");
+        assert_eq!(
+            r.compiled.output,
+            [
+                "str 6 object el 3",
+                "Z 1 set 7,set 7,get",
+                "3 4 5 0.5 44850",
+                "caught true",
+                "sloppy ok"
+            ]
+        );
+        let g = &r.report.graph;
+        assert!(g.contains("SetKeyedGeneric") && g.contains("GetKeyedGeneric"), "{g}");
+        // `o[k] = v` and `o[k]` saw names and symbols. `t[0] = s` saw only indexes but stores
+        // the loop phi `s`, which is still Tagged when the builder translates the store (the
+        // phis are unboxed after the walk), so it takes the generic store too.
+        let sites = &r.report.build.keyed;
+        assert_eq!(sites.len(), 3, "{sites:?}");
+        assert!(sites.iter().all(|k| k.generic), "{sites:?}");
+        assert_eq!(sites[1].keys, Some(ep9_facts::KeySet::INDEX), "{sites:?}");
+        // Under GC stress (a collection before every allocation): the setter, the getter and
+        // the string concatenation allocate inside and after the call.
+        let r = run_script(&Config::stress(), GEN, warm, main, "gen").expect("run");
+        assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+    }
+
+    /// A store of a value that is not an int32 takes the generic store even on an index-only
+    /// site (the entry does the barrier); an int32 value keeps the element path.
+    #[test]
+    fn a_store_of_a_non_int32_value_is_generic() {
+        if !aarch64() {
+            return;
+        }
+        let defs = "function put(a, i, n) { for (var k = 0; k < n; k++) { a[i] = a; } return a[i]; }";
+        let r = equal(
+            defs,
+            "var w = [0, 0]; for (var q = 0; q < 20; q++) put(w, q & 1, 2);",
+            "var b = [1, 2, 3]; print(put(b, 2, 3) === b, b.length, b[2] === b); gc(); print(b[2].length);",
+            "put",
+        );
+        assert_eq!(r.compiled.output, ["true 3 true", "3"]);
+        let store: Vec<_> = r.report.build.keyed.iter().filter(|k| k.store).collect();
+        assert!(store.len() == 1 && store[0].generic, "{store:?}");
+        assert_eq!(store[0].keys, Some(ep9_facts::KeySet::INDEX));
+    }
+
+    /// Native code records no feedback (MC-w15-6): after the compiled `gen` ran with new key
+    /// kinds through the generic entries, its live facts are what they were before; the same
+    /// script in T0 changes them (the control: the test can see a change).
+    #[test]
+    fn the_generic_path_records_no_feedback() {
+        if !aarch64() {
+            return;
+        }
+        let config = Config::default().threaded();
+        let warm = "var t = [0]; var w = {}; for (var q = 0; q < 20; q++) gen(w, 'a', q, 2, t);";
+        let main = "var sy = Symbol('n'); gen({}, sy, 1, 2, t); gen({}, 3, 1, 2, t); gen({}, {}, 1, 1, t);";
+        let facts_of = |s: &Session| {
+            let script = s.script("defs.js").expect("defs");
+            let id = script.functions_named("gen")[0];
+            let live = facts::live(s, script).expect("facts");
+            let recs: Vec<(u32, ep9_facts::SlotFacts)> = facts::for_function(&live, id)
+                .records
+                .into_iter()
+                .map(|(k, f)| (k, f.clone()))
+                .collect();
+            recs
+        };
+        let mut t0 = Session::new(&config).expect("session");
+        t0.run(GEN, "defs.js").result.expect("defs");
+        t0.run(warm, "warm.js").result.expect("warm");
+        let before_t0 = facts_of(&t0);
+        t0.run(main, "main.js").result.expect("main");
+        assert_ne!(facts_of(&t0), before_t0, "T0 records the new keys");
+
+        let mut s = Session::new(&config).expect("session");
+        s.run(GEN, "defs.js").result.expect("defs");
+        s.run(warm, "warm.js").result.expect("warm");
+        let before = facts_of(&s);
+        assert_eq!(before, before_t0);
+        let f = s.function_value("gen").expect("gen");
+        let (code, report) = {
+            let script = s.script("defs.js").expect("defs");
+            let id = script.functions_named("gen")[0];
+            let live = facts::live(&s, script).expect("facts");
+            let input = s.input_of(f).expect("input");
+            crate::compile_input(&input, &facts::for_function(&live, id)).expect("compile")
+        };
+        assert!(report.build.keyed.iter().all(|k| k.generic));
+        // SAFETY: as in `run`: emit_a64's placement (b) code for `f`, from `input_of(f)` with
+        // no JS run since, unchanged.
+        unsafe { s.install_b(&[f], vec![code]) }.expect("install");
+        s.run(main, "main.js").result.expect("main");
+        assert_eq!(facts_of(&s), before, "the compiled gen recorded feedback");
     }
 
     /// A store site that never ran has a record with no keys: its key check stays unbacked
@@ -747,11 +872,12 @@ mod tests {
         assert_eq!(store[0].key_basis, crate::ir::GuardBasis::Unbacked);
     }
 
-    /// [`crate::build::key_basis_of`]: only keys = {index} backs the key check, whatever the
-    /// IC state; no keys leaves it unbacked; a name, symbol or other key refuses.
+    /// [`crate::build::keyed_path_of`]: only keys = {index} backs the key check, whatever the
+    /// IC state; no keys leaves it unbacked; a name, symbol or other key takes the generic
+    /// path (SPIKEC-4).
     #[test]
     fn key_basis_reads_index_only_records() {
-        use crate::build::key_basis_of;
+        use crate::build::{KeyedPath, keyed_path_of};
         use crate::ir::GuardBasis;
         use ep9_facts::{FactSource, IcState, KeySet, KeyedFacts, PropertyFacts};
         let rec = |keys: KeySet, state: IcState| KeyedFacts {
@@ -762,31 +888,23 @@ mod tests {
             keys,
         };
         let src = FactSource::Profiled;
-        let ok = |k: KeySet, s: IcState| key_basis_of(&rec(k, s), src);
-        assert_eq!(
-            ok(KeySet::INDEX, IcState::Uninitialized),
-            Ok(GuardBasis::Fact(src))
-        );
-        assert_eq!(
-            ok(KeySet::INDEX, IcState::Monomorphic),
-            Ok(GuardBasis::Fact(src))
-        );
+        let ok = |k: KeySet, s: IcState| keyed_path_of(&rec(k, s), src);
+        let fact = KeyedPath::Element(GuardBasis::Fact(src));
+        assert_eq!(ok(KeySet::INDEX, IcState::Uninitialized), fact);
+        assert_eq!(ok(KeySet::INDEX, IcState::Monomorphic), fact);
         assert_eq!(
             ok(KeySet::EMPTY, IcState::Uninitialized),
-            Ok(GuardBasis::Unbacked)
+            KeyedPath::Element(GuardBasis::Unbacked)
         );
-        for bad in [
+        for other in [
             KeySet::INDEX.union(KeySet::NAME),
             KeySet::SYMBOL,
             KeySet::OTHER,
             KeySet::NAME,
         ] {
-            assert!(ok(bad, IcState::Uninitialized).is_err(), "{bad:?}");
+            assert_eq!(ok(other, IcState::Uninitialized), KeyedPath::Generic, "{other:?}");
         }
-        assert_eq!(
-            ok(KeySet::INDEX, IcState::Megamorphic),
-            Ok(GuardBasis::Fact(src))
-        );
+        assert_eq!(ok(KeySet::INDEX, IcState::Megamorphic), fact);
     }
 
     const NAMED: &str = "function P(x) { this.v = x; this.w = x * 2; }\n\

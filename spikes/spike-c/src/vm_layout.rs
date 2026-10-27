@@ -1,134 +1,44 @@
-//! The VM layout facts the emitted code reads that `ep9_vm::layout` does not export yet:
-//! object, array and ELEMENTS offsets, kind ids, the named-load IC (feedback slot, smi
-//! handler, POLY_IC cell) and the offset of `FunctionInfo.feedback`. They are copied from the
-//! ep9_vm module docs at the M4-P0 head (OBJECT_LAYOUT 4, IC_LAYOUT 2), and [`check`] proves
-//! them on live objects before any compile ([`crate::compile`] runs it once per session).
+//! The VM layout facts the emitted code reads, taken from the `ep9_vm::layout` export (M4-P3
+//! KEYED, 8140b68; SPIKEC-4 switched to it, decision P3-ORCH-9). Until SPIKEC-4 this module
+//! kept hand copies of them; now every offset, kind id and handler field below is the VM's
+//! own constant, so a layout change moves the compiled code with it. [`check`] still proves
+//! them on live objects (a session runs it before any compile): an export that names the
+//! wrong field would fail there, not in compiled code.
 //!
-//! | Fact | Value | ep9_vm source (private) |
+//! Each fact names the version that owns it (MC-w15-5: one owner per fact, doc 13 §7.3; the
+//! C-18 `VM_LAYOUT` version covers only what no other version owns):
+//!
+//! | Fact | Export (`ep9_vm::layout`) | Owning version |
 //! |---|---|---|
-//! | word0: ShapeId in bytes 0-3, kind in byte 5 | `ldr w` at +0, `ldrb` at +5 | `ic.rs` "hit: (key as u32) == word0.shape_id"; `ep9_heap` cell.rs |
-//! | OBJECT kind 16, ARRAY kind 18 | | `kinds.rs` |
-//! | in-object field `f` of an OBJECT (no fixed fields) | +24 + 8f | `object.rs` `obj::FIXED`, `ic.rs` `field_location` |
-//! | ARRAY: ELEMENTS at +16, length (int32 Value) at +24 | | `object.rs` `obj::ELEMENTS`, `arr::LENGTH` |
-//! | ELEMENTS: capacity (int32 Value) at +8, values from +16, a hole is `Value::EMPTY` | | `object.rs` `elems` |
-//! | FEEDBACK cell: slot `i` at +24 + 16i: key (weak), then value | | `feedback.rs` `fv` |
-//! | smi handler: int32, kind in bits 0-3 (FIELD_IN_OBJECT = 1, ARRAY_LENGTH = 3), byte offset in bits 4-31 | | `ic.rs` `smi` |
-//! | POLY_IC: case `i` at +8 + 16i: key (weak), then handler | | `ic.rs` `pc` |
-//! | `FunctionInfo.feedback`: a pointer to the unit slot that holds the FEEDBACK cell (null: none) | [`FunctionInfoMirror`] | `function_info.rs` (`repr(C)`) |
+//! | word0: ShapeId in bytes 0-3, kind in byte 5 | `SHAPE_ID_BYTE`, `KIND_BYTE` | OBJECT_LAYOUT 4 |
+//! | OBJECT kind 16, ARRAY kind 18 | `KIND_OBJECT`, `KIND_ARRAY` | OBJECT_LAYOUT 4 |
+//! | in-object field `f` of an OBJECT (no fixed fields) at `OBJECT_FIELDS + 8f` | `OBJECT_FIELDS` | OBJECT_LAYOUT 4 |
+//! | ARRAY: ELEMENTS, length (an int32 Value) | `ARRAY_ELEMENTS`, `ARRAY_LENGTH` | OBJECT_LAYOUT 4 |
+//! | ELEMENTS: capacity (an int32 Value), values from `ELEMENTS_DATA` | `ELEMENTS_CAPACITY`, `ELEMENTS_DATA` | OBJECT_LAYOUT 4 |
+//! | the hole (`Value::EMPTY`) | `HOLE` | Value encoding 1 |
+//! | FEEDBACK cell: its FunctionInfo, slot `i` at `FEEDBACK_SLOTS + FEEDBACK_SLOT_SIZE * i`: key (weak), then value | `FEEDBACK_INFO`, `FEEDBACK_SLOTS`, `FEEDBACK_SLOT_SIZE`, `FEEDBACK_KEY`, `FEEDBACK_VALUE` | IC_LAYOUT 2 |
+//! | smi handler: kind in bits 0-3 (FIELD_IN_OBJECT, ARRAY_LENGTH), byte offset from bit 4 | `SMI_KIND_MASK`, `SMI_SHIFT`, `SMI_FIELD_IN_OBJECT`, `SMI_ARRAY_LENGTH` | IC_LAYOUT 2 |
+//! | POLY_IC: case `i` at `POLY_CASES + POLY_CASE_SIZE * i`: key (weak), then handler; `POLY_COUNT` cases | `POLY_CASES`, `POLY_CASE_SIZE`, `POLY_COUNT` | IC_LAYOUT 2 |
+//! | `FunctionInfo.feedback`: a pointer to the unit slot that holds the FEEDBACK cell (null: none) | `FI_FEEDBACK` | VM_LAYOUT (C-18; the one fact no other version owns) |
 //!
-//! These are a plan v9 rule 12 need: `crates/ep9_vm/src/native.rs` has no month-4 owner, so
-//! the spike keeps the copies and the checks, and the integration fixer (or month 5) moves
-//! them into `ep9_vm::layout`.
-
-use std::cell::Cell;
-use std::mem::offset_of;
+//! The export stays behind `spike-native` until C-18 moves it (M5-P0). What is left here
+//! is derived from it: the two smi handlers the shape guards compare and the Value helpers.
 
 use ep9_value::encoding::{DOUBLE_ENCODE_OFFSET, NOT_CELL_MASK, NUMBER_TAG};
-use ep9_vm::{Value, layout};
 
-/// The kind byte of a cell (word0 byte 5).
-pub const KIND_BYTE: u32 = 5;
-/// Kind id of an ordinary object.
-pub const KIND_OBJECT: u8 = 16;
-/// Kind id of an Array.
-pub const KIND_ARRAY: u8 = 18;
-/// First in-object field of an OBJECT (it has no fixed fields).
-pub const OBJECT_FIELDS: u32 = 24;
-/// ARRAY: the ELEMENTS cell (or undefined).
-pub const ARRAY_ELEMENTS: u32 = 16;
-/// ARRAY: the length (an int32 Value).
-pub const ARRAY_LENGTH: u32 = 24;
-/// ELEMENTS: the capacity (an int32 Value).
-pub const ELEMENTS_CAPACITY: u32 = 8;
-/// ELEMENTS: the first value.
-pub const ELEMENTS_DATA: u32 = 16;
-/// The hole (`Value::EMPTY`).
-pub const HOLE: u64 = Value::EMPTY.to_bits();
-/// FEEDBACK cell: the first slot.
-pub const FEEDBACK_SLOTS: u32 = 24;
-/// FEEDBACK cell: bytes per slot (key, then value).
-pub const FEEDBACK_SLOT_SIZE: u32 = 16;
-/// POLY_IC: the first case (key, then handler).
-pub const POLY_CASES: u32 = 8;
-/// POLY_IC: bytes per case.
-pub const POLY_CASE_SIZE: u32 = 16;
-/// POLY_IC: cases per cell.
-pub const POLY_COUNT: u32 = 4;
-/// Smi handler kind: the field at the byte offset of the object cell.
-pub const SMI_FIELD_IN_OBJECT: i32 = 1;
-/// Smi handler kind: an Array's `length` (the int32 at [`ARRAY_LENGTH`]).
-pub const SMI_ARRAY_LENGTH: i32 = 3;
-/// The smi handler of `length` on an Array shape.
+pub use ep9_vm::layout::{
+    ARRAY_ELEMENTS, ARRAY_LENGTH, ELEMENTS_CAPACITY, ELEMENTS_DATA, FEEDBACK_INFO, FEEDBACK_KEY,
+    FEEDBACK_SLOT_SIZE, FEEDBACK_SLOTS, FEEDBACK_VALUE, FI_FEEDBACK, HOLE, KIND_ARRAY, KIND_BYTE,
+    KIND_OBJECT, OBJECT_FIELDS, POLY_CASE_SIZE, POLY_CASES, POLY_COUNT, SHAPE_ID_BYTE,
+    SMI_ARRAY_LENGTH, SMI_FIELD_IN_OBJECT, SMI_KIND_MASK, SMI_SHIFT,
+};
+
+/// The smi handler of `length` on an Array shape (an int32 Value of kind ARRAY_LENGTH).
 pub const ARRAY_LENGTH_HANDLER: u64 = NUMBER_TAG | SMI_ARRAY_LENGTH as u32 as u64;
-/// Smi handler: bits 0-3 are the kind.
-pub const SMI_KIND_MASK: i32 = 0xF;
-/// Smi handler: the byte offset starts at bit 4.
-pub const SMI_SHIFT: u32 = 4;
 
 /// The smi handler (an int32 Value) of an in-object field at byte offset `offset`.
 pub const fn field_in_object_handler(offset: u32) -> u64 {
     NUMBER_TAG | (SMI_FIELD_IN_OBJECT | ((offset as i32) << SMI_SHIFT)) as u32 as u64
-}
-
-/// `repr(C)` copy of `ep9_vm`'s `FunctionInfo` (function_info.rs; "New fields go at the end"),
-/// only to find the byte offset of its `feedback` field. Every field before it has the same
-/// type or the same size and alignment as the original; [`check`] compares the offsets that
-/// `ep9_vm::layout` does export (code, counts, dispatch slot) and then follows the `feedback`
-/// pointer of a live function back to the same FunctionInfo.
-#[repr(C)]
-pub struct FunctionInfoMirror {
-    slot: ep9_vm::DispatchSlot,
-    register_count: u32,
-    parameter_count: u32,
-    flags: u32,
-    function_id: u32,
-    code: *const u8,
-    code_len: u32,
-    length: u32,
-    consts: *const u64,
-    unit: *const u8,
-    host: Option<fn()>,
-    name: String,
-    kind: Option<ep9_bytecode::FunctionKind>,
-    feedback: Cell<*const u64>,
-    invocations: Cell<u32>,
-}
-
-/// Byte offset of `FunctionInfo.feedback`.
-pub const FI_FEEDBACK: usize = offset_of!(FunctionInfoMirror, feedback);
-
-/// The offsets `ep9_vm::layout` exports agree with the mirror.
-pub fn mirror_agrees() -> Result<(), String> {
-    let pairs = [
-        (
-            "code",
-            offset_of!(FunctionInfoMirror, code),
-            layout::FI_CODE,
-        ),
-        (
-            "register_count",
-            offset_of!(FunctionInfoMirror, register_count),
-            layout::FI_REGISTER_COUNT,
-        ),
-        (
-            "parameter_count",
-            offset_of!(FunctionInfoMirror, parameter_count),
-            layout::FI_PARAMETER_COUNT,
-        ),
-        (
-            "slot",
-            offset_of!(FunctionInfoMirror, slot) + ep9_vm::DispatchSlot::KIND_OFFSET,
-            layout::FI_SLOT_KIND,
-        ),
-    ];
-    for (name, mine, vm) in pairs {
-        if mine != vm {
-            return Err(format!(
-                "FunctionInfo.{name}: the mirror says {mine}, ep9_vm::layout {vm}"
-            ));
-        }
-    }
-    Ok(())
 }
 
 /// True if `bits` is a cell (no number tag, no immediate tag bit).
@@ -146,16 +56,15 @@ unsafe fn word(addr: u64, off: u32) -> u64 {
 }
 
 /// The FEEDBACK cell of the function whose FunctionInfo is at `info`, through
-/// [`FI_FEEDBACK`], checked by the cell's back pointer (+16: the FunctionInfo as a native
-/// word). `None` if the function has no vector yet.
+/// [`FI_FEEDBACK`], checked by the cell's back pointer ([`FEEDBACK_INFO`]: the FunctionInfo
+/// as a native word). `None` if the function has no vector yet.
 ///
 /// # Safety
 /// `info` is the address of a live FunctionInfo (`NativeTarget::info`), and its isolate runs
 /// nothing while this reads.
 pub unsafe fn feedback_cell(info: usize) -> Result<Option<u64>, String> {
-    mirror_agrees()?;
-    // SAFETY: `info` is a live FunctionInfo (caller); FI_FEEDBACK is a field inside it (the
-    // mirror agrees with ep9_vm::layout on every field it can compare).
+    // SAFETY: `info` is a live FunctionInfo (caller); FI_FEEDBACK is the offset of a field
+    // inside it (`offset_of!` in ep9_vm).
     let slot = unsafe { word(info as u64, FI_FEEDBACK as u32) };
     if slot == 0 {
         return Ok(None);
@@ -171,11 +80,11 @@ pub unsafe fn feedback_cell(info: usize) -> Result<Option<u64>, String> {
     if !is_cell(cell) {
         return Err(format!("feedback slot holds {cell:#x}, not a cell"));
     }
-    // SAFETY: `cell` is the live FEEDBACK cell; +16 is its FunctionInfo word.
-    let back = unsafe { word(cell, 16) };
-    if back != info as u64 + layout::NATIVE_WORD_OFFSET {
+    // SAFETY: `cell` is the live FEEDBACK cell; FEEDBACK_INFO is its FunctionInfo word.
+    let back = unsafe { word(cell, FEEDBACK_INFO) };
+    if back != info as u64 + ep9_vm::layout::NATIVE_WORD_OFFSET {
         return Err(format!(
-            "FEEDBACK cell +16 is {back:#x}, not the FunctionInfo {info:#x} (layout drift)"
+            "FEEDBACK cell +{FEEDBACK_INFO} is {back:#x}, not the FunctionInfo {info:#x} (layout drift)"
         ));
     }
     Ok(Some(cell))
@@ -188,7 +97,7 @@ pub unsafe fn feedback_cell(info: usize) -> Result<Option<u64>, String> {
 pub unsafe fn feedback_slot(cell: u64, i: u32) -> (u64, u64) {
     let at = FEEDBACK_SLOTS + FEEDBACK_SLOT_SIZE * i;
     // SAFETY: the caller's contract.
-    unsafe { (word(cell, at), word(cell, at + 8)) }
+    unsafe { (word(cell, at + FEEDBACK_KEY), word(cell, at + FEEDBACK_VALUE)) }
 }
 
 /// The handlers the named-load IC entry `(key, value)` holds for objects whose ShapeId is
@@ -203,7 +112,7 @@ pub unsafe fn ic_handler_for(key: u64, value: u64, id: u32) -> Option<u64> {
     if key == HOLE && is_cell(value) {
         for i in 0..POLY_COUNT {
             let at = POLY_CASES + POLY_CASE_SIZE * i;
-            // SAFETY: `value` is a live POLY_IC cell (4 cases).
+            // SAFETY: `value` is a live POLY_IC cell (POLY_COUNT cases).
             let (k, h) = unsafe { (word(value, at), word(value, at + 8)) };
             if k as u32 == id {
                 return Some(h);
@@ -219,7 +128,7 @@ pub unsafe fn ic_handler_for(key: u64, value: u64, id: u32) -> Option<u64> {
 /// `v` is a live cell of an isolate that runs nothing.
 pub unsafe fn shape_id(v: u64) -> u32 {
     // SAFETY: the caller's contract.
-    unsafe { word(v, 0) as u32 }
+    unsafe { word(v, SHAPE_ID_BYTE) as u32 }
 }
 
 /// The kind byte of the cell `v`.
@@ -259,9 +168,9 @@ function layoutLen(a) { return a.length; }\n\
 var layoutObj = new LayoutProbe();\n\
 for (var layoutI = 0; layoutI < 20; layoutI++) { layoutGet(layoutObj); layoutLen(layoutObj.b); }\n";
 
-/// Checks every copied layout fact on live objects of `session` (runs [`CHECK_SRC`] there).
+/// Proves every exported fact the emitter reads on live objects of `session` (runs
+/// [`CHECK_SRC`] there).
 pub fn check(session: &mut crate::harness::Session) -> Result<String, String> {
-    mirror_agrees()?;
     let r = session.run(CHECK_SRC, "layout-probe.js");
     r.result.map_err(|e| format!("layout probe: {e}"))?;
     let o = session.function_value("layoutObj")?.to_bits();
@@ -280,10 +189,13 @@ pub fn check(session: &mut crate::harness::Session) -> Result<String, String> {
             return Err(format!("kind bytes {} and {}", kind(o), kind(a)));
         }
         if word(o, OBJECT_FIELDS) != int32_bits(7) || word(o, OBJECT_FIELDS + 8) != a {
-            return Err("in-object fields are not at +24, +32".into());
+            return Err(format!(
+                "in-object fields are not at +{OBJECT_FIELDS}, +{}",
+                OBJECT_FIELDS + 8
+            ));
         }
         if int32_of(word(a, ARRAY_LENGTH)) != Some(3) {
-            return Err("array length is not an int32 at +24".into());
+            return Err(format!("array length is not an int32 at +{ARRAY_LENGTH}"));
         }
         let e = word(a, ARRAY_ELEMENTS);
         if !is_cell(e) || int32_of(word(e, ELEMENTS_CAPACITY)).is_none_or(|c| c < 3) {
@@ -291,7 +203,7 @@ pub fn check(session: &mut crate::harness::Session) -> Result<String, String> {
         }
         for (i, want) in [11, 22, 33].into_iter().enumerate() {
             if word(e, ELEMENTS_DATA + 8 * i as u32) != int32_bits(want) {
-                return Err(format!("element {i} is not at +16 + 8i"));
+                return Err(format!("element {i} is not at +{ELEMENTS_DATA} + 8i"));
             }
         }
         let cell = feedback_cell(info)?.ok_or("layoutGet has no feedback vector")?;
@@ -300,9 +212,13 @@ pub fn check(session: &mut crate::harness::Session) -> Result<String, String> {
         let h = ic_handler_for(k, v, shape_id(o)).ok_or("no IC case for the probe's shape")?;
         if h != field_in_object_handler(OBJECT_FIELDS + 8) {
             return Err(format!(
-                "IC handler {h:#x}, not FIELD_IN_OBJECT at +32 ({:#x})",
+                "IC handler {h:#x}, not FIELD_IN_OBJECT at +{} ({:#x})",
+                OBJECT_FIELDS + 8,
                 field_in_object_handler(OBJECT_FIELDS + 8)
             ));
+        }
+        if h as i32 & SMI_KIND_MASK != SMI_FIELD_IN_OBJECT {
+            return Err(format!("IC handler {h:#x}: kind bits"));
         }
         let cell = feedback_cell(info_len)?.ok_or("layoutLen has no feedback vector")?;
         let (k, v) = feedback_slot(cell, 0);
@@ -314,7 +230,8 @@ pub fn check(session: &mut crate::harness::Session) -> Result<String, String> {
         }
     }
     Ok(format!(
-        "objects, arrays, ELEMENTS, the named-load IC and FunctionInfo.feedback (+{FI_FEEDBACK}) as copied"
+        "objects, arrays, ELEMENTS, the named-load IC and FunctionInfo.feedback (+{FI_FEEDBACK}) \
+         as ep9_vm::layout exports them"
     ))
 }
 
@@ -324,10 +241,36 @@ mod tests {
     use spike_b::harness::Config;
 
     #[test]
-    fn layout_copies_hold() {
+    fn layout_export_holds() {
         let mut s = crate::harness::Session::new(&Config::default()).expect("session");
         let note = check(&mut s).expect("layout");
         assert!(note.contains("FunctionInfo.feedback"), "{note}");
+    }
+
+    /// The values the emitter baked before the switch (the M4-P0 hand copies) are the
+    /// export's values today: switching changed no byte of compiled code. A later layout
+    /// change fails here and in [`check`], and the emitter follows the export.
+    #[test]
+    fn export_equals_the_old_copies() {
+        assert_eq!(
+            (SHAPE_ID_BYTE, KIND_BYTE, KIND_OBJECT, KIND_ARRAY),
+            (0, 5, 16, 18)
+        );
+        assert_eq!(
+            (OBJECT_FIELDS, ARRAY_ELEMENTS, ARRAY_LENGTH),
+            (24, 16, 24)
+        );
+        assert_eq!((ELEMENTS_CAPACITY, ELEMENTS_DATA), (8, 16));
+        assert_eq!(HOLE, ep9_vm::Value::EMPTY.to_bits());
+        assert_eq!(
+            (FEEDBACK_INFO, FEEDBACK_SLOTS, FEEDBACK_SLOT_SIZE, FEEDBACK_KEY, FEEDBACK_VALUE),
+            (16, 24, 16, 0, 8)
+        );
+        assert_eq!((POLY_CASES, POLY_CASE_SIZE, POLY_COUNT), (8, 16, 4));
+        assert_eq!(
+            (SMI_KIND_MASK, SMI_SHIFT, SMI_FIELD_IN_OBJECT, SMI_ARRAY_LENGTH),
+            (0xF, 4, 1, 3)
+        );
     }
 
     #[test]

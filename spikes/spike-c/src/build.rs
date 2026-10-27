@@ -22,7 +22,7 @@
 //! | `+`, `-`, `*`, Inc, Dec, ToNumeric | CheckInt32 on each input, Int32 op with an overflow (and -0) guard | predicted{source} with an int32 BinaryOp fact (below), else unknown with unbacked guards |
 //! | `<`, `>`, `<=`, `>=` | CheckInt32 on each input (backed by an int32 CompareOp fact, else unbacked), Compare | PROVEN (a boolean) |
 //! | GetNamedProperty | CheckShape (the LoadNamed fact: an in-object own field or an Array's `length`, one location for every case) + LoadField | the check is predicted{source}; the loaded value unknown |
-//! | GetKeyedProperty, SetKeyedProperty | CheckArray, CheckInt32 on the key, LoadElement / StoreElement (an int32 value only) | unknown; the key check is backed by an index-only keyed record, the element guards are unbacked (keyed facts, SPIKEC-3, below) |
+//! | GetKeyedProperty, SetKeyedProperty | CheckArray, CheckInt32 on the key, LoadElement / StoreElement (an int32 value); or the generic keyed entry (a key that is not an index, a value that is not an int32; SPIKEC-4) | unknown; the key check is backed by an index-only keyed record, the element guards are unbacked (keyed facts, SPIKEC-3, below) |
 //! | JumpLoop | Poll (budget), Jump to the header | - |
 //!
 //! A named load without a fact, a megamorphic site, an accessor, a prototype field or an
@@ -58,16 +58,27 @@
 //!
 //! | Record of the site | Graph |
 //! |---|---|
-//! | keys = {index} (at a LoadKeyed site also "never ran": the implicit INDEX bit, MODES-D10) | the key's int32 check is backed by the record (an index of another form, an index string or a Number past int32, fails it and exits) |
-//! | no keys (a StoreKeyed site that never ran) or no record | the key's int32 check is unbacked |
-//! | a name, symbol or other key | refused: the function stays in T0 |
+//! | keys = {index} (at a LoadKeyed site also "never ran": the implicit INDEX bit, MODES-D10) | the element path; the key's int32 check is backed by the record (an index of another form, an index string or a Number past int32, fails it and exits) |
+//! | no keys (a StoreKeyed site that never ran) or no record | the element path; the key's int32 check is unbacked |
+//! | a name, symbol or other key | the generic path: [`ir::Op::GetKeyedGeneric`] / [`ir::Op::SetKeyedGeneric`], no guard (SPIKEC-4) |
 //!
 //! The IC state (the key half: undefined, a receiver shape, or the hole once KEYED writes it)
 //! is not read: the element guards test the receiver's kind and the element, not its shape.
-//! CheckArray, LoadElement and StoreElement stay unbacked in every case. A site with a key
-//! that is not an index is refused because its element guards would exit on those keys and
-//! the generic keyed path is not built: `ep9_vm::RuntimeTable` has no keyed entry at the M4-P2
-//! head (P2-ORCH-6 gives them to M4-P3 KEYED), so the guarded element path stays.
+//! CheckArray, LoadElement and StoreElement stay unbacked in every case (the receiver,
+//! bounds and hole bits come with the month-6 schema bump, MODES-D18).
+//!
+//! **The generic keyed path (SPIKEC-4, P3-ORCH-9).** A site whose record saw a key that is not
+//! an index would exit on those keys from every element guard, so it calls the generic keyed
+//! entries of `ep9_vm::RuntimeTable` that M4-P3 KEYED appended (8 `get_keyed`, 9 `set_keyed`;
+//! `layout::RT_GET_KEYED`, `RT_SET_KEYED`) in place of the refusal SPIKEC-3 made. A
+//! SetKeyedProperty whose value is not an int32 takes the generic store too (the entry does
+//! the store barrier; StoreElement stores only int32s, which need none). Both entries run
+//! the T0 miss-path functions (`slow::prop`: `property::get_keyed` / `set_keyed`), which
+//! record no feedback, so the compiled code still records none (native.rs:149-158;
+//! MC-w15-6: a RuntimeTable entry calls only non-recording generic functions). A generic
+//! access is an effect (a getter, a setter or a proxy trap may run JS) and a GC point; the
+//! emitter saves the allocated caller-saved registers around the call, and a throw unwinds
+//! from the access's bytecode offset.
 
 use ep9_bytecode::{Opcode, Register, decode_at};
 use ep9_facts::{Access, BinaryHint, CompareHint, IcState, KeySet, ObjectKind, SlotFacts};
@@ -155,8 +166,20 @@ pub struct KeyedSite {
     pub store: bool,
     /// The keys of its record, if it has one.
     pub keys: Option<KeySet>,
-    /// The basis the record gives the key's int32 check.
+    /// The basis the record gives the key's int32 check (unbacked on the generic path, which
+    /// has no key check).
     pub key_basis: GuardBasis,
+    /// True if the site takes the generic keyed entry (SPIKEC-4).
+    pub generic: bool,
+}
+
+/// How a keyed site is compiled (see the module docs, "Keyed facts").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyedPath {
+    /// CheckArray, the key's CheckInt32 with this basis, then LoadElement or StoreElement.
+    Element(GuardBasis),
+    /// The generic keyed entry of the runtime table: no guard.
+    Generic,
 }
 
 const PLACEHOLDER: NodeId = NodeId(u32::MAX);
@@ -422,9 +445,11 @@ impl Builder<'_> {
     }
 
     /// The keyed record of `slot` at the access at the current offset (`store` for
-    /// SetKeyedProperty): the basis of the key's int32 check, or a refusal (see the module
-    /// docs, "Keyed facts"). Records the site for the report.
-    fn keyed_site(&mut self, slot: u32, store: bool) -> Result<GuardBasis, Refusal> {
+    /// SetKeyedProperty): the path of the site, or a refusal for a record of another kind
+    /// (see the module docs, "Keyed facts"). `generic` takes the generic path whatever the
+    /// record says (a store of a value that is not an int32). Records the site for the
+    /// report.
+    fn keyed_site(&mut self, slot: u32, store: bool, generic: bool) -> Result<KeyedPath, Refusal> {
         let off = self.offset();
         let refuse = |why: String| Refusal::Limit(format!("keyed access at {off}: {why}"));
         let rec = self.facts.records.iter().find(|(s, _)| *s == slot);
@@ -439,18 +464,23 @@ impl Builder<'_> {
                 )));
             }
         };
-        let basis = match keyed {
-            None => GuardBasis::Unbacked,
-            Some(k) => key_basis_of(k, self.facts.source).map_err(refuse)?,
+        let path = match keyed {
+            _ if generic => KeyedPath::Generic,
+            None => KeyedPath::Element(GuardBasis::Unbacked),
+            Some(k) => keyed_path_of(k, self.facts.source),
         };
         self.keyed.push(KeyedSite {
             offset: off,
             slot,
             store,
             keys: keyed.map(|k| k.keys),
-            key_basis: basis,
+            key_basis: match path {
+                KeyedPath::Element(b) => b,
+                KeyedPath::Generic => GuardBasis::Unbacked,
+            },
+            generic: path == KeyedPath::Generic,
         });
-        Ok(basis)
+        Ok(path)
     }
 
     fn binop(&mut self, op: Int32Op, l: NodeId, r: NodeId, slot: u32) -> NodeId {
@@ -688,11 +718,20 @@ impl Builder<'_> {
                 let st = self.state();
                 let o = self.reg(insn.register(0))?;
                 let k = self.acc()?;
-                let key_basis = self.keyed_site(insn.unsigned(1), false)?;
-                let a = self.check_array(o);
-                let i = self.int32(k, key_basis);
-                let n = self.emit(Op::LoadElement, vec![a, i], Repr::Tagged, Trust::Unknown);
-                self.guard(n, GuardBasis::Unbacked, st);
+                let n = match self.keyed_site(insn.unsigned(1), false, false)? {
+                    KeyedPath::Element(key_basis) => {
+                        let a = self.check_array(o);
+                        let i = self.int32(k, key_basis);
+                        let n =
+                            self.emit(Op::LoadElement, vec![a, i], Repr::Tagged, Trust::Unknown);
+                        self.guard(n, GuardBasis::Unbacked, st);
+                        n
+                    }
+                    KeyedPath::Generic => {
+                        let (o, k) = (self.tagged(o), self.tagged(k));
+                        self.emit(Op::GetKeyedGeneric, vec![o, k], Repr::Tagged, Trust::Unknown)
+                    }
+                };
                 self.set_acc(n);
             }
             SetKeyedProperty => {
@@ -700,17 +739,22 @@ impl Builder<'_> {
                 let o = self.reg(insn.register(0))?;
                 let k = self.reg(insn.register(1))?;
                 let v = self.acc()?;
-                if self.node(v).repr != Repr::Int32 {
-                    return Err(Refusal::Limit(format!(
-                        "keyed store at {} of a value that is not an int32: the store barrier is not built",
-                        x.offset
-                    )));
+                // StoreElement stores an int32 (no barrier); any other value goes through the
+                // generic store, whose entry does the barrier.
+                let not_int32 = self.node(v).repr != Repr::Int32;
+                match self.keyed_site(insn.unsigned(2), true, not_int32)? {
+                    KeyedPath::Element(key_basis) => {
+                        let a = self.check_array(o);
+                        let i = self.int32(k, key_basis);
+                        let n =
+                            self.emit(Op::StoreElement, vec![a, i, v], Repr::None, Trust::Unknown);
+                        self.guard(n, GuardBasis::Unbacked, st);
+                    }
+                    KeyedPath::Generic => {
+                        let (o, k, v) = (self.tagged(o), self.tagged(k), self.tagged(v));
+                        self.emit(Op::SetKeyedGeneric, vec![o, k, v], Repr::None, Trust::Unknown);
+                    }
                 }
-                let key_basis = self.keyed_site(insn.unsigned(2), true)?;
-                let a = self.check_array(o);
-                let i = self.int32(k, key_basis);
-                let n = self.emit(Op::StoreElement, vec![a, i, v], Repr::None, Trust::Unknown);
-                self.guard(n, GuardBasis::Unbacked, st);
                 let u = self.konst(VALUE_UNDEFINED);
                 self.set_acc(u);
             }
@@ -1136,6 +1180,8 @@ impl Builder<'_> {
                 | Op::LoadField { .. } => vec![Repr::Tagged],
                 Op::LoadElement => vec![Repr::Tagged, Repr::Int32],
                 Op::StoreElement => vec![Repr::Tagged, Repr::Int32, Repr::Int32],
+                Op::GetKeyedGeneric => vec![Repr::Tagged, Repr::Tagged],
+                Op::SetKeyedGeneric => vec![Repr::Tagged, Repr::Tagged, Repr::Tagged],
                 Op::Int32(_) | Op::Compare(_) => vec![Repr::Int32, Repr::Int32],
                 Op::BoxInt32 => vec![Repr::Int32],
                 Op::BoxBool | Op::Branch => vec![Repr::Bool],
@@ -1234,25 +1280,18 @@ pub fn int_basis_of(facts: &FunctionFacts<'_>, slot: u32) -> GuardBasis {
     }
 }
 
-/// The basis that the keyed record `k` (of a snapshot of `source`) gives the key's int32
-/// check at its site, or why the site is refused (see the module docs, "Keyed facts"). Only
-/// the keys are read.
-pub fn key_basis_of(
-    k: &ep9_facts::KeyedFacts,
-    source: ep9_facts::FactSource,
-) -> Result<GuardBasis, String> {
+/// The path that the keyed record `k` (of a snapshot of `source`) gives its site: the
+/// generic entry for a key that is not an index, else the element path with the basis of
+/// the key's int32 check (see the module docs, "Keyed facts"). Only the keys are read.
+pub fn keyed_path_of(k: &ep9_facts::KeyedFacts, source: ep9_facts::FactSource) -> KeyedPath {
     let other = KeySet::NAME.union(KeySet::SYMBOL).union(KeySet::OTHER);
     if k.keys.bits() & other.bits() != 0 {
-        return Err(format!(
-            "keys {:?} include a key that is not an index (the generic keyed path is not built)",
-            k.keys
-        ));
-    }
-    Ok(if k.keys == KeySet::INDEX {
-        GuardBasis::Fact(source)
+        KeyedPath::Generic
+    } else if k.keys == KeySet::INDEX {
+        KeyedPath::Element(GuardBasis::Fact(source))
     } else {
-        GuardBasis::Unbacked
-    })
+        KeyedPath::Element(GuardBasis::Unbacked)
+    }
 }
 
 fn int_op(op: Opcode) -> Int32Op {

@@ -20,9 +20,12 @@
 //! why it is there:
 //! - [`GuardBasis::Fact`]: a predicted fact of that source (H32: JIT mode, DEOPT + counter).
 //! - [`GuardBasis::Unbacked`]: a speculation that no fact backs. An unknown value should take
-//!   the generic path, but the runtime table has no generic entry for the operation yet
+//!   the generic path, but the runtime table has no generic entry for most operations
 //!   (`ep9_vm::RuntimeTable`: poll, call_any, add, inc, compare, stack_overflow, throw,
-//!   unwind), so SPIKEC-1 checks the fast case inline instead. Each one is counted in the
+//!   unwind, and since M4-P3 get_keyed and set_keyed), so SPIKEC-1 checks the fast case
+//!   inline instead. A keyed site whose record saw a key that is not an index, or a store
+//!   of a value that is not an int32, takes the generic keyed entries instead and has no
+//!   guard ([`Op::GetKeyedGeneric`], [`Op::SetKeyedGeneric`]; SPIKEC-4). Each one is counted in the
 //!   report. An int32 BinaryOp or CompareOp record makes the int32 guards of its site fact
 //!   guards (SPIKEC-2, [`crate::build`]; the exporter writes those records from FACTS2, M4-P2,
 //!   on); an index-only keyed record of FACTS2 does the same for the key's int32 check of
@@ -207,6 +210,17 @@ pub enum Op {
     /// Guard: stores the Int32 value into an existing element (same bounds and hole checks).
     /// An int32 is not a cell, so no barrier is needed (H11 elision E1).
     StoreElement,
+    /// `o[k]` by the generic keyed load (`ep9_vm::RuntimeTable::get_keyed`, entry 8,
+    /// `layout::RT_GET_KEYED`; SPIKEC-4, P3-ORCH-9): the Tagged receiver and key, a Tagged
+    /// result. Not a guard: any receiver and key take it. An effect and a GC point (a getter
+    /// or a proxy trap may run JS); a throw unwinds from its bytecode offset. The entry
+    /// records no feedback (native code records none, MC-w15-6).
+    GetKeyedGeneric,
+    /// `o[k] = v` by the generic keyed store (`RuntimeTable::set_keyed`, entry 9,
+    /// `layout::RT_SET_KEYED`): the Tagged receiver, key and value. The entry does the
+    /// store barrier, so any value may be stored. An effect and a GC point, as
+    /// [`Op::GetKeyedGeneric`].
+    SetKeyedGeneric,
     /// An int32 binary op; Add, Sub and Mul are guards (overflow, -0).
     Int32(Int32Op),
     /// An int32 comparison: Bool.
@@ -261,15 +275,25 @@ impl Op {
     }
 
     /// True for an op that changes the heap or the VM (a store, a poll, which may run a GC
-    /// or an interrupt): a deopt must not resume T0 before it once it ran (guard placement,
-    /// [`Graph::check`]). A guard's own checks run before its effect.
+    /// or an interrupt, a generic keyed access, which may run JS): a deopt must not resume
+    /// T0 before it once it ran (guard placement, [`Graph::check`]). A guard's own checks
+    /// run before its effect.
     pub fn is_effect(&self) -> bool {
-        matches!(self, Op::StoreElement | Op::Poll)
+        matches!(
+            self,
+            Op::StoreElement | Op::Poll | Op::GetKeyedGeneric | Op::SetKeyedGeneric
+        )
+    }
+
+    /// True for a call into the runtime table that may run JS or a GC and throw: the
+    /// allocated caller-saved registers live across it are saved around the call.
+    pub fn is_call(&self) -> bool {
+        matches!(self, Op::GetKeyedGeneric | Op::SetKeyedGeneric)
     }
 
     /// True if the node has an effect other than its result (it stays without uses).
     pub fn has_effect(&self) -> bool {
-        self.is_guard() || self.is_terminator() || matches!(self, Op::Poll)
+        self.is_guard() || self.is_terminator() || self.is_effect()
     }
 }
 

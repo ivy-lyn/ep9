@@ -30,7 +30,7 @@
 //! | [`build`](mod@build) | the graph builder: bytecode + FactSnapshot -> [`ir::Graph`] | SPIKEC-1; int facts SPIKEC-2; keyed facts SPIKEC-3 |
 //! | [`regalloc`] | linear-scan register allocation | SPIKEC-1 |
 //! | [`emit_a64`] | AArch64 code from the allocated graph (dynasm 5.1.0); guard exits = one exit stub per guard to a shared "deopt not built" trap | SPIKEC-1; exit stubs SPIKEC-3 |
-//! | [`vm_layout`] | VM layout facts the code reads that `ep9_vm::layout` does not export, checked on live objects | SPIKEC-1 |
+//! | [`vm_layout`] | the VM layout facts the code reads, from the `ep9_vm::layout` export (each with its owning version), proved on live objects | SPIKEC-1; the export SPIKEC-4 |
 //! | [`tier`] | config C of the protocol: a kernel run with its hot function compiled, against T0 | SPIKEC-1 |
 //! | [`timing`] | the class S timing of protocol §3 (T0, C, H0, H1; paired ratios, the median interval), a Mac report | SPIKEC-2 |
 //!
@@ -98,7 +98,8 @@ impl CompileReport {
         )
     }
 
-    /// The keyed sites and what their records gave (SPIKEC-3), one line.
+    /// The keyed sites and what their records gave (SPIKEC-3; the generic path SPIKEC-4),
+    /// one line.
     pub fn keyed_line(&self) -> String {
         let sites: Vec<String> = self
             .build
@@ -106,7 +107,7 @@ impl CompileReport {
             .iter()
             .map(|k| {
                 format!(
-                    "@{} {} s{} keys {} -> key check {:?}",
+                    "@{} {} s{} keys {} -> {}",
                     k.offset,
                     if k.store { "store" } else { "load" },
                     k.slot,
@@ -118,7 +119,14 @@ impl CompileReport {
                             .collect();
                         format!("{{{}}}", names.join(" "))
                     }),
-                    k.key_basis,
+                    if k.generic {
+                        format!(
+                            "generic (RuntimeTable {})",
+                            if k.store { "set_keyed" } else { "get_keyed" }
+                        )
+                    } else {
+                        format!("key check {:?}", k.key_basis)
+                    },
                 )
             })
             .collect();
@@ -178,7 +186,7 @@ pub fn contracts_line() -> String {
 }
 
 /// Compiles the global function `name` of `session` with `facts` (see [`compile_input`]).
-/// The VM layout copies are checked first, on a session of their own ([`vm_layout::check`]).
+/// The VM layout export is proved first, on a session of their own ([`vm_layout::check`]).
 pub fn compile(
     session: &harness::Session,
     name: &str,

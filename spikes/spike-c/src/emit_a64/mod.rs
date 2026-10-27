@@ -23,6 +23,13 @@
 //!     the unwind call
 //! ```
 //!
+//! **Runtime calls in the body (SPIKEC-4).** A generic keyed access calls
+//! `RuntimeTable::get_keyed` / `set_keyed` (entries 8 and 9, `layout::RT_GET_KEYED`,
+//! `RT_SET_KEYED`) in line: x4-x11 are saved below sp around the call (x19-x25 are
+//! callee-saved), and a 0 result unwinds from the access's bytecode offset. The heap is
+//! non-moving and the GC scans the native stack conservatively (H10), so a cell held in a
+//! register or a saved slot stays valid across the call. The entries record no feedback.
+//!
 //! **Guards (H32, JIT mode).** Every branch of a failed guard goes to that guard's **exit
 //! stub**; the stub goes to the **shared exit** of the guard's `Guard.policy` (data the graph
 //! builder set: the emitter reads no mode, docs/plan/13-execution-modes.md B2, P-R1). The one
@@ -230,6 +237,30 @@ fn call_table(ops: &mut Ops, entry: usize, off: u32) -> Result<(), Refusal> {
         ; blr x16
     );
     Ok(())
+}
+
+/// Saves the allocatable caller-saved registers x4-x11 below sp (64 bytes; sp stays
+/// 16-aligned) around a runtime-table call that is not the poll. Spill slots are
+/// sp-relative, so nothing reads one until [`restore_caller_saved`].
+fn save_caller_saved(ops: &mut Ops) {
+    dynasm!(ops
+        ; .arch aarch64
+        ; stp x4, x5, [sp, #-64]!
+        ; stp x6, x7, [sp, #16]
+        ; stp x8, x9, [sp, #32]
+        ; stp x10, x11, [sp, #48]
+    );
+}
+
+/// Restores what [`save_caller_saved`] saved.
+fn restore_caller_saved(ops: &mut Ops) {
+    dynasm!(ops
+        ; .arch aarch64
+        ; ldp x10, x11, [sp, #48]
+        ; ldp x8, x9, [sp, #32]
+        ; ldp x6, x7, [sp, #16]
+        ; ldp x4, x5, [sp], #64
+    );
 }
 
 /// A source of a phi move.
@@ -544,13 +575,18 @@ impl Emitter<'_> {
                 let (poly, hit) = (self.ops.new_dynamic_label(), self.ops.new_dynamic_label());
                 let hole = vm_layout::HOLE as u32;
                 let native_word = native_word_offset()?;
+                let (shape_id, key, value) = (
+                    vm_layout::SHAPE_ID_BYTE,
+                    vm_layout::FEEDBACK_KEY,
+                    vm_layout::FEEDBACK_VALUE,
+                );
                 mov64(&mut self.ops, 17, NOT_CELL_MASK);
                 dynasm!(self.ops
                     ; .arch aarch64
                     ; tst X(x), x17
                     ; b.ne =>trap
                     ; cbz X(x), =>trap
-                    ; ldr w15, [X(x)]
+                    ; ldr w15, [X(x), shape_id]
                 );
                 // The IC entry: fp's FunctionInfo -> its feedback slot -> the FEEDBACK cell.
                 load_fp(&mut self.ops, 16, fi_word);
@@ -565,15 +601,15 @@ impl Emitter<'_> {
                 dynasm!(self.ops
                     ; .arch aarch64
                     ; add x16, x16, x17
-                    ; ldr x17, [x16]
+                    ; ldr x17, [x16, key]
                     ; cmp w17, w15
                     ; b.ne =>poly
-                    ; ldr x17, [x16, #8]
+                    ; ldr x17, [x16, value]
                     ; b =>hit
                     ; =>poly
                     ; cmp x17, hole
                     ; b.ne =>trap
-                    ; ldr x16, [x16, #8]
+                    ; ldr x16, [x16, value]
                 );
                 mov64(&mut self.ops, 17, NOT_CELL_MASK);
                 dynasm!(self.ops
@@ -746,6 +782,41 @@ impl Emitter<'_> {
                 let f = VALUE_FALSE as u32;
                 dynasm!(self.ops ; .arch aarch64 ; add WSP(d), WSP(x), f);
                 self.finish(n);
+            }
+            Op::GetKeyedGeneric | Op::SetKeyedGeneric => {
+                // The generic keyed entries (RuntimeTable 8 and 9, SPIKEC-4): stage the
+                // operands in x12-x14 (a spilled operand is read sp-relative, so before the
+                // save moves sp), save the allocatable caller-saved x4-x11, call with x3..x5
+                // = the operands, keep the result in x16 (the restore does not touch it),
+                // restore, then unwind on 0 (an exception is pending).
+                let store = node.op == Op::SetKeyedGeneric;
+                for (k, &v) in ins.iter().enumerate() {
+                    let stage = 12 + k as u8;
+                    let r = self.src(v, stage)?;
+                    if r != stage {
+                        dynasm!(self.ops ; .arch aarch64 ; mov X(stage), X(r));
+                    }
+                }
+                save_caller_saved(&mut self.ops);
+                dynasm!(self.ops ; .arch aarch64 ; mov x3, x12 ; mov x4, x13);
+                if store {
+                    dynasm!(self.ops ; .arch aarch64 ; mov x5, x14);
+                }
+                let entry = if store {
+                    layout::RT_SET_KEYED
+                } else {
+                    layout::RT_GET_KEYED
+                };
+                call_table(&mut self.ops, entry, node.offset)?;
+                dynasm!(self.ops ; .arch aarch64 ; mov x16, x0);
+                restore_caller_saved(&mut self.ops);
+                let throw = self.throw_at(node.offset);
+                dynasm!(self.ops ; .arch aarch64 ; cbz x16, =>throw);
+                if !store {
+                    let d = self.dst(n)?;
+                    dynasm!(self.ops ; .arch aarch64 ; mov X(d), x16);
+                    self.finish(n);
+                }
             }
             Op::Poll => {
                 let budget = scaled(layout::CX_BUDGET)?;
