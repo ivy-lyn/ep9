@@ -29,6 +29,8 @@ abi: impl Drop for ArgsBuilder<'_>
 abi: impl MatchRecord :: pub fn end(&self) -> usize
 abi: impl MatchRecord :: pub fn get(&self, usize) -> Option<(usize, usize)>
 abi: impl MatchRecord :: pub fn group_count(&self) -> usize
+abi: impl MatchRecord :: pub fn group_name(&self, usize) -> Option<&[u16]>
+abi: impl MatchRecord :: pub fn has_group_names(&self) -> bool
 abi: impl MatchRecord :: pub fn start(&self) -> usize
 abi: impl ObjectClass :: pub const ALL: &'static [ObjectClass] = .. (part 2: the ObjectClass golden)
 abi: impl ObjectClass :: pub const MAX_SLOTS: usize = object::slot_obj::MAX_SLOTS
@@ -139,6 +141,7 @@ abi: impl<'s> Cx<'s> :: pub fn initial_name(&mut self, impl Into<Local<'s, JsFun
 abi: impl<'s> Cx<'s> :: pub fn intern(&mut self, Local<'s, JsString>) -> Local<'s, JsKey>
 abi: impl<'s> Cx<'s> :: pub fn intrinsic(&self, IntrinsicId) -> Local<'s, JsObject>
 abi: impl<'s> Cx<'s> :: pub fn is_array(&self, impl Into<Local<'s>>) -> bool
+abi: impl<'s> Cx<'s> :: pub fn is_builtin(&self, impl Into<Local<'s>>, BuiltinId) -> bool
 abi: impl<'s> Cx<'s> :: pub fn is_callable(&self, impl Into<Local<'s>>) -> bool
 abi: impl<'s> Cx<'s> :: pub fn is_constructor(&self, impl Into<Local<'s>>) -> bool
 abi: impl<'s> Cx<'s> :: pub fn is_error(&self, impl Into<Local<'s>>) -> bool
