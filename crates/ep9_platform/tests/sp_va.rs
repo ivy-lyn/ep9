@@ -286,9 +286,13 @@ fn refuse_hinted_mmaps(lo: u32, hi: u32) {
     assert_eq!(rc, 0, "PR_SET_SECCOMP: {}", std::io::Error::last_os_error());
 }
 
-/// Drop releases the cage: the same seed gets the same slot again.
+/// Run in a child process by `sp_va_drop_releases`: drop releases the cage, so the same seed
+/// gets the same slot again.
 #[test]
-fn sp_va_drop_releases() {
+fn sp_va_child_drop_releases() {
+    if std::env::var_os(CHILD_ENV).is_none() {
+        return;
+    }
     let config = CageConfig {
         seed: Some(2000),
         avoid: vec![],
@@ -299,6 +303,35 @@ fn sp_va_drop_releases() {
     drop(first);
     let second = Cage::reserve(&config).unwrap();
     assert_eq!(second.heap().base(), base);
+    eprintln!("child: same base again");
+}
+
+/// The other tests of this process reserve cages at random slots on other threads, and one can
+/// take the freed slot between the drop and the second reserve (seen once on windows-x64 CI).
+/// A child process that runs only `sp_va_child_drop_releases` has no such thread.
+#[test]
+fn sp_va_drop_releases() {
+    let exe = std::env::current_exe().unwrap();
+    let out = std::process::Command::new(exe)
+        .args([
+            "sp_va_child_drop_releases",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(CHILD_ENV, "1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "child failed: {:?}: {stderr}",
+        out.status
+    );
+    assert!(
+        stderr.contains("child: same base again"),
+        "the child test did not run: {stderr}"
+    );
 }
 
 /// A lower limit, as on a 39-bit VA kernel, still works. The cage is 4 GiB here: macOS arm64
