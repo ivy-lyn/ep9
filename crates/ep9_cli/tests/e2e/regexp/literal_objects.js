@@ -1,5 +1,5 @@
 // RegExp literals (M4-P2 RX0A): each evaluation is a new object with %RegExp.prototype%
-// and an own lastIndex of 0. The prototype methods come in M4-P3 (REGEXP1).
+// and an own lastIndex of 0.
 var a = /x/gi, b = /x/gi;
 print(a === b, Object.getPrototypeOf(a) === Object.getPrototypeOf(/y/));
 print(Object.getPrototypeOf(Object.getPrototypeOf(a)) === Object.prototype);
