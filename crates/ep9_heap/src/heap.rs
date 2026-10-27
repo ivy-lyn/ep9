@@ -1241,8 +1241,15 @@ impl Heap {
 /// every remembered small host again, and each old large object with a dirty card through its
 /// dirty cards. The logs are emptied after the mark (`Inner::empty_s1_logs`).
 fn trace_s1_logs(mem: &Memory, t: &mut Tracer<'_>) {
+    #[cfg(test)]
+    let (skip_hosts, skip_cards) = (
+        minor_controls::SKIP_REMEMBERED.get(),
+        minor_controls::SKIP_CARDS.get(),
+    );
+    #[cfg(not(test))]
+    let (skip_hosts, skip_cards) = (false, false);
     t.context = crate::trace::Context::Root("remembered list");
-    for idx in mem.small_pages() {
+    for idx in mem.small_pages().filter(|_| !skip_hosts) {
         let page = mem.page(idx);
         // SAFETY: no store (push) runs during a GC.
         for &off in unsafe { page.header().remembered.offsets() } {
@@ -1256,7 +1263,7 @@ fn trace_s1_logs(mem: &Memory, t: &mut Tracer<'_>) {
         }
     }
     t.context = crate::trace::Context::Root("large object cards");
-    for idx in mem.large_heads() {
+    for idx in mem.large_heads().filter(|_| !skip_cards) {
         // SAFETY: chunk `idx` is the committed head of a large object.
         let large = unsafe { Large::from_base(mem.chunk_base(idx)) };
         let h = large.header();
@@ -1267,6 +1274,19 @@ fn trace_s1_logs(mem: &Memory, t: &mut Tracer<'_>) {
             // SAFETY: the LOS cell starts right after the header and is live.
             t.trace_by_cards(unsafe { CellPtr::from_raw(large.cell_ptr().cast()) }, cards);
         }
+    }
+}
+
+/// Tests only: collector-side negative controls (tests/v1.rs), the S1 forms of 03-gc §7 "no
+/// root rescan" and "no card rescan": the minor GC skips the remembered hosts, or the dirty
+/// cards, of the S1 logs.
+#[cfg(test)]
+pub(crate) mod minor_controls {
+    use core::cell::Cell;
+
+    std::thread_local! {
+        pub(crate) static SKIP_REMEMBERED: Cell<bool> = const { Cell::new(false) };
+        pub(crate) static SKIP_CARDS: Cell<bool> = const { Cell::new(false) };
     }
 }
 

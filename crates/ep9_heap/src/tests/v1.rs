@@ -20,7 +20,10 @@
 //! ```
 //!
 //! The other two controls of 03-gc §7 ("no root rescan", "no card rescan at termination")
-//! break the S2 fixpoint, not the S1 logs: V2 and V3 (month 5) must catch those.
+//! break the S2 fixpoint, not a store site: V2 and V3 (month 5) must catch those. Their S1
+//! forms are collector bugs: the minor GC skips the remembered hosts or the dirty cards
+//! (`heap.rs` `minor_controls`, tests only). The young cell dies under its old host, and V1
+//! fails at the next minor GC (a test below).
 //!
 //! **Elide after escape in S1.** A host that saw no GC since its allocation is young, so a
 //! store into it needs no log in S1, escaped or not (a companion check below). The model
@@ -438,5 +441,47 @@ fn each_negative_control_makes_v1_fail_in_the_random_mutator() {
                 "seed {seed:#x} stress {stress} {control:?}: {msg}"
             );
         }
+    }
+}
+
+/// The S1 forms of "no root rescan" and "no card rescan" (module doc): the minor GC skips the
+/// remembered hosts, or the dirty cards. It frees the young cell that an old host holds, and
+/// V1 fails before the next minor GC. With the control off both GCs pass and the cell lives.
+#[test]
+fn a_minor_gc_that_skips_the_logs_fails_v1_at_the_next_one() {
+    use crate::heap::minor_controls::{SKIP_CARDS, SKIP_REMEMBERED};
+    for (skip, large) in [(false, false), (false, true), (true, false), (true, true)] {
+        let flag = if large { &SKIP_CARDS } else { &SKIP_REMEMBERED };
+        let heap = gen_heap(true, |_| {});
+        let n = if large { 1100 } else { 1 };
+        let host = new_node(&heap, 1, n);
+        let g = heap.new_global(host.to_value());
+        major(&heap);
+        let young = new_node(&heap, 2, 0);
+        let young_addr = young.addr();
+        store(&heap, host, n - 1, young.to_value());
+        flag.with(|f| f.set(skip));
+        minor(&heap);
+        flag.with(|f| f.set(false));
+        if skip {
+            assert!(
+                !heap.is_cell(young_addr),
+                "large {large}: the young cell was freed"
+            );
+            let msg = minor_fails_v1(&heap);
+            assert!(
+                msg.contains("is not the start of a live cell"),
+                "large {large}: the dangling slot of the old host: {msg}"
+            );
+            // Undo the dangling slot, so the heap can be dropped.
+            slot(host, n - 1).init(Value::UNDEFINED);
+            // SAFETY: `host` is rooted.
+            unsafe { host.header() }.set_gc_state(gc_state::BLACK);
+        } else {
+            assert!(heap.is_cell(young_addr) && old(&heap, young));
+            minor(&heap);
+            heap.verify().expect("verifier");
+        }
+        heap.drop_global(g);
     }
 }
