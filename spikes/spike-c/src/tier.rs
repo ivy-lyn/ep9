@@ -319,7 +319,15 @@ pub fn run_script_with(
     name: &str,
     int: IntFacts,
 ) -> Result<ScriptRun, String> {
-    run_script_opts(config, defs, warm, main, name, int, emit_a64::StubForm::Movz)
+    run_script_opts(
+        config,
+        defs,
+        warm,
+        main,
+        name,
+        int,
+        emit_a64::StubForm::Movz,
+    )
 }
 
 /// [`run_script`] with the int facts of `int` and the exit stubs of `form`.
@@ -719,11 +727,27 @@ mod tests {
         use emit_a64::StubForm;
         let warm = "var w = [1, 2, 3, 4]; for (var k = 0; k < 20; k++) fill(w, 4);";
         let run = |main: &str, form| {
-            run_script_opts(&Config::default(), ARR, warm, main, "fill", IntFacts::Live, form)
-                .expect("run")
+            run_script_opts(
+                &Config::default(),
+                ARR,
+                warm,
+                main,
+                "fill",
+                IntFacts::Live,
+                form,
+            )
+            .expect("run")
         };
-        let ok = run("var b = [5, 6, 7, 8, 9]; print(fill(b, 5), b.join());", StubForm::Call);
-        assert!(ok.equal() && ok.trap.is_none(), "{:?} vs {:?}", ok.compiled, ok.t0);
+        let ok = run(
+            "var b = [5, 6, 7, 8, 9]; print(fill(b, 5), b.join());",
+            StubForm::Call,
+        );
+        assert!(
+            ok.equal() && ok.trap.is_none(),
+            "{:?} vs {:?}",
+            ok.compiled,
+            ok.t0
+        );
         for main in [
             "print(fill([1, 2], 3));",
             "var h = [1, , 3]; print(fill(h, 3));",
@@ -743,10 +767,16 @@ mod tests {
             assert_eq!(w[1].1 - w[0].1, 4, "{:?}", e.traps);
         }
         // The same records either way, except the stub pcs.
-        let m = run("print(fill([1, 2], 2));", StubForm::Movz).report.emit.meta;
+        let m = run("print(fill([1, 2], 2));", StubForm::Movz)
+            .report
+            .emit
+            .meta;
         assert_eq!(m.exits.len(), e.meta.exits.len());
         for (a, b) in m.exits.iter().zip(&e.meta.exits) {
-            assert_eq!((a.guard, a.bytecode, &a.values), (b.guard, b.bytecode, &b.values));
+            assert_eq!(
+                (a.guard, a.bytecode, &a.values),
+                (b.guard, b.bytecode, &b.values)
+            );
         }
     }
 
@@ -796,9 +826,12 @@ mod tests {
             let mut s = Session::new(&Config::default().threaded()).expect("session");
             // Different allocations before the function, so its heap and FunctionInfo
             // addresses differ between the two.
-            s.run(&format!("var pad = []; for (var i = 0; i < {pad}; i++) pad.push({{ i: i }});"), "pad.js")
-                .result
-                .expect("pad");
+            s.run(
+                &format!("var pad = []; for (var i = 0; i < {pad}; i++) pad.push({{ i: i }});"),
+                "pad.js",
+            )
+            .result
+            .expect("pad");
             s.run(ARR, "defs.js").result.expect("defs");
             s.run(warm, "warm.js").result.expect("warm");
             let f = s.function_value("fill").expect("fill");
@@ -848,7 +881,10 @@ mod tests {
             ]
         );
         let g = &r.report.graph;
-        assert!(g.contains("Float64(Mul)") && g.contains("Float64(Add)"), "{g}");
+        assert!(
+            g.contains("Float64(Mul)") && g.contains("Float64(Add)"),
+            "{g}"
+        );
         for l in g.lines().filter(|l| l.contains("CheckNumber")) {
             assert!(l.contains("Fact(Runtime)"), "{l}\n{g}");
         }
@@ -882,7 +918,11 @@ mod tests {
             r.compiled.output,
             ["0.25 2 Infinity -Infinity -Infinity NaN 0.5 0.5"]
         );
-        assert!(r.report.graph.contains("Float64(Div)"), "{}", r.report.graph);
+        assert!(
+            r.report.graph.contains("Float64(Div)"),
+            "{}",
+            r.report.graph
+        );
         assert!(r.report.graph.contains("Compare(Eq)"), "{}", r.report.graph);
         // A string `c` fails the int32 check of `===` (T0 says false).
         traps(
@@ -937,14 +977,18 @@ mod tests {
         s.run(&d.text, "driver.js").result.expect("T0");
         let script = s.script("driver.js").expect("script");
         let ids = script.functions_on_line(h.lines.0 + d.offset);
-        let [id] = ids[..] else {
-            panic!("{ids:?}")
-        };
+        let [id] = ids[..] else { panic!("{ids:?}") };
         let live = facts::live(&s, script).expect("facts");
         let input = script.unit_input(id, h.name).expect("input");
         let g = crate::graph_report(&input, &facts::for_function(&live, id)).expect("graph");
         let lines = g.lines().join("\n");
-        for op in ["Float64", "CheckNumber", "LoadContextSlot", "Call", "LoadElement"] {
+        for op in [
+            "Float64",
+            "CheckNumber",
+            "LoadContextSlot",
+            "Call",
+            "LoadElement",
+        ] {
             assert!(g.ops.contains_key(op), "{op}: {lines}");
         }
         assert!(g.fact_guards > 0, "{lines}");
@@ -1004,7 +1048,10 @@ mod tests {
         assert_eq!(r.compiled.output, ["1 2 6 9"]);
         let g = &r.report.graph;
         assert!(g.contains("GetKeyedGeneric"), "{g}");
-        assert!(!g.contains("CheckArray") && !g.contains("LoadElement"), "{g}");
+        assert!(
+            !g.contains("CheckArray") && !g.contains("LoadElement"),
+            "{g}"
+        );
         let sites = &r.report.build.keyed;
         assert!(sites.len() == 1 && sites[0].generic, "{sites:?}");
     }
@@ -1046,7 +1093,10 @@ mod tests {
             ]
         );
         let g = &r.report.graph;
-        assert!(g.contains("SetKeyedGeneric") && g.contains("GetKeyedGeneric"), "{g}");
+        assert!(
+            g.contains("SetKeyedGeneric") && g.contains("GetKeyedGeneric"),
+            "{g}"
+        );
         // `o[k] = v` and `o[k]` saw names and symbols. `t[0] = s` saw only indexes but stores
         // the loop phi `s`, which is still Tagged when the builder translates the store (the
         // phis are unboxed after the walk), so it takes the generic store too.
@@ -1067,7 +1117,8 @@ mod tests {
         if !aarch64() {
             return;
         }
-        let defs = "function put(a, i, n) { for (var k = 0; k < n; k++) { a[i] = a; } return a[i]; }";
+        let defs =
+            "function put(a, i, n) { for (var k = 0; k < n; k++) { a[i] = a; } return a[i]; }";
         let r = equal(
             defs,
             "var w = [0, 0]; for (var q = 0; q < 20; q++) put(w, q & 1, 2);",
@@ -1188,7 +1239,11 @@ mod tests {
             KeySet::OTHER,
             KeySet::NAME,
         ] {
-            assert_eq!(ok(other, IcState::Uninitialized), KeyedPath::Generic, "{other:?}");
+            assert_eq!(
+                ok(other, IcState::Uninitialized),
+                KeyedPath::Generic,
+                "{other:?}"
+            );
         }
         assert_eq!(ok(KeySet::INDEX, IcState::Megamorphic), fact);
     }

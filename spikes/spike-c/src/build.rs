@@ -778,7 +778,12 @@ impl Builder<'_> {
                     }
                     KeyedPath::Generic => {
                         let (o, k) = (self.tagged(o), self.tagged(k));
-                        self.emit(Op::GetKeyedGeneric, vec![o, k], Repr::Tagged, Trust::Unknown)
+                        self.emit(
+                            Op::GetKeyedGeneric,
+                            vec![o, k],
+                            Repr::Tagged,
+                            Trust::Unknown,
+                        )
                     }
                 };
                 self.set_acc(n);
@@ -801,7 +806,12 @@ impl Builder<'_> {
                     }
                     KeyedPath::Generic => {
                         let (o, k, v) = (self.tagged(o), self.tagged(k), self.tagged(v));
-                        self.emit(Op::SetKeyedGeneric, vec![o, k, v], Repr::None, Trust::Unknown);
+                        self.emit(
+                            Op::SetKeyedGeneric,
+                            vec![o, k, v],
+                            Repr::None,
+                            Trust::Unknown,
+                        );
                     }
                 }
                 let u = self.konst(VALUE_UNDEFINED);

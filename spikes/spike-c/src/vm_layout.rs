@@ -97,7 +97,12 @@ pub unsafe fn feedback_cell(info: usize) -> Result<Option<u64>, String> {
 pub unsafe fn feedback_slot(cell: u64, i: u32) -> (u64, u64) {
     let at = FEEDBACK_SLOTS + FEEDBACK_SLOT_SIZE * i;
     // SAFETY: the caller's contract.
-    unsafe { (word(cell, at + FEEDBACK_KEY), word(cell, at + FEEDBACK_VALUE)) }
+    unsafe {
+        (
+            word(cell, at + FEEDBACK_KEY),
+            word(cell, at + FEEDBACK_VALUE),
+        )
+    }
 }
 
 /// The handlers the named-load IC entry `(key, value)` holds for objects whose ShapeId is
@@ -256,19 +261,27 @@ mod tests {
             (SHAPE_ID_BYTE, KIND_BYTE, KIND_OBJECT, KIND_ARRAY),
             (0, 5, 16, 18)
         );
-        assert_eq!(
-            (OBJECT_FIELDS, ARRAY_ELEMENTS, ARRAY_LENGTH),
-            (24, 16, 24)
-        );
+        assert_eq!((OBJECT_FIELDS, ARRAY_ELEMENTS, ARRAY_LENGTH), (24, 16, 24));
         assert_eq!((ELEMENTS_CAPACITY, ELEMENTS_DATA), (8, 16));
         assert_eq!(HOLE, ep9_vm::Value::EMPTY.to_bits());
         assert_eq!(
-            (FEEDBACK_INFO, FEEDBACK_SLOTS, FEEDBACK_SLOT_SIZE, FEEDBACK_KEY, FEEDBACK_VALUE),
+            (
+                FEEDBACK_INFO,
+                FEEDBACK_SLOTS,
+                FEEDBACK_SLOT_SIZE,
+                FEEDBACK_KEY,
+                FEEDBACK_VALUE
+            ),
             (16, 24, 16, 0, 8)
         );
         assert_eq!((POLY_CASES, POLY_CASE_SIZE, POLY_COUNT), (8, 16, 4));
         assert_eq!(
-            (SMI_KIND_MASK, SMI_SHIFT, SMI_FIELD_IN_OBJECT, SMI_ARRAY_LENGTH),
+            (
+                SMI_KIND_MASK,
+                SMI_SHIFT,
+                SMI_FIELD_IN_OBJECT,
+                SMI_ARRAY_LENGTH
+            ),
             (0xF, 4, 1, 3)
         );
     }

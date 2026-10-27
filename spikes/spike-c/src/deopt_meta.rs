@@ -197,7 +197,12 @@ impl ExitTable {
     }
 
     /// The form and place of the value `v` at an exit.
-    fn place(&mut self, g: &Graph, a: &Allocation, v: NodeId) -> Result<(ValueRepr, ValueLoc), String> {
+    fn place(
+        &mut self,
+        g: &Graph,
+        a: &Allocation,
+        v: NodeId,
+    ) -> Result<(ValueRepr, ValueLoc), String> {
         let node = g.node(v);
         let repr = match node.repr {
             Repr::Tagged => ValueRepr::Tagged,
@@ -321,7 +326,10 @@ impl ExitTable {
             });
         }
         if r.at != bytes.len() {
-            return Err(format!("{} bytes after the last record", bytes.len() - r.at));
+            return Err(format!(
+                "{} bytes after the last record",
+                bytes.len() - r.at
+            ));
         }
         Ok(t)
     }

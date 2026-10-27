@@ -153,8 +153,7 @@ impl EmitReport {
         if self.guards == 0 {
             return 0.0;
         }
-        f64::from(self.stub_bytes + self.shared_exit_bytes + self.table_bytes)
-            / self.guards as f64
+        f64::from(self.stub_bytes + self.shared_exit_bytes + self.table_bytes) / self.guards as f64
     }
 
     /// One report line: the exits and their bytes (MC-w14 SPIKEC-3: bytes per exit).
@@ -405,8 +404,8 @@ pub fn emit_with(
         .ops
         .finalize()
         .map_err(|e| Refusal::Limit(format!("dynasm: {e}")))?;
-    let meta = crate::deopt_meta::ExitTable::build(graph, alloc, &report_traps)
-        .map_err(Refusal::Limit)?;
+    let meta =
+        crate::deopt_meta::ExitTable::build(graph, alloc, &report_traps).map_err(Refusal::Limit)?;
     let report = EmitReport {
         code_bytes: code.len(),
         frame_bytes: frame,

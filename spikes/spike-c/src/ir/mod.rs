@@ -645,9 +645,10 @@ impl Graph {
                         return Err(format!("{at}: a ShapeRef is not in the ref list"));
                     }
                 }
-                let carrier =
-                    matches!(node.op, Op::Phi | Op::BoxInt32 | Op::BoxBool | Op::BoxFloat64)
-                        && !node.inputs.is_empty();
+                let carrier = matches!(
+                    node.op,
+                    Op::Phi | Op::BoxInt32 | Op::BoxBool | Op::BoxFloat64
+                ) && !node.inputs.is_empty();
                 match node.trust {
                     Trust::Proven => {
                         let ok = node.op.proven_by_spec()
