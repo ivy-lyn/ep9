@@ -11,9 +11,9 @@ Benchmark tools ([10-quality](../../docs/plan/10-quality.md) section 2; perf CI 
 | `jetstream/lists.mjs` | Writes `expectations/jetstream-m2.txt` and `jetstream-m7.txt` from the pinned JetStream |
 | `jetstream/run.mjs` | Runs JetStream workloads, one process each, under several configs; prints median scores |
 | `cross/run.mjs` | Cross-engine runner: ep9 against QuickJS, node `--jitless`, d8 `--jitless` and Brimstone. Wall time in paired rounds (class M) and instruction counts (class R). Writes ep9-cross/v1 JSON and Markdown |
-| `cross/v8v7.mjs` | Generates a V8 suite v7 kernel with a stub harness (or the real `base.js`, `--harness base`) from the pinned `third_party/bench-v8v7`; `--blockers` shows which kernels an engine runs |
+| `cross/v8v7.mjs` | Generates a V8 suite v7 kernel with the real `base.js` (the default since MATH1, V9-D14) or a stub harness (`--harness stub`) from the pinned `third_party/bench-v8v7`; `--blockers` shows which kernels an engine runs |
 | `cross/octane.mjs` | Generates an Octane-7 kernel with the real Octane `base.js` and a fixed iteration count from the pinned `third_party/bench-octane`; `--blockers` as in v8v7.mjs |
-| `cross/kernels.mjs` | M1 exit 1: `--check ENGINE` runs the 15 kernels (8 v8-v7, Octane-7) once on node and on ep9, compares the output, names the blockers, writes ep9-kernels/v1 JSON for `cargo xtask m1-exit --kernels` |
+| `cross/kernels.mjs` | M1 exit 1: `--check ENGINE` runs the 15 kernels (8 v8-v7 with the default harness `base`, Octane-7) once on node and on ep9, compares the output, names the blockers, writes ep9-kernels/v1 JSON for `cargo xtask m1-exit --kernels` (item 1 passes at 15 of 15 on a fresh tree) |
 | `cross/exit2.mjs` | M1 exit 2: reads an ep9-cross/v1 run of the `exit2` set; Octane-7 geomean vs QuickJS and v8-v7 7-kernel geomean vs node `--jitless`, with intervals |
 | `cross/workloads.mjs` | The cross workloads: T0 kernels from `workloads/`, ci-v0, the 8 v8-v7 kernels, Octane-7 (`octane-<kernel>`), and the sets `v8v7-8`, `v8v7-7`, `octane-7`, `exit2` |
 | `cross/idle.mjs` | Measures a host's idle baseline for its host file |
@@ -118,8 +118,9 @@ node tools/bench/cross/idle.mjs                                        # idle ba
 
 `--workloads` takes workload names and set names: `v8v7-8` (the 8 v8-v7 kernels), `v8v7-7` (no
 regexp), `octane-7`, `exit2` (`v8v7-7` + `octane-7`). The default harness of the v8-v7 kernels is
-`DEFAULT_HARNESS` in `cross/v8v7.mjs` (one line; `stub` until MATH1 sets `base`, plan v9 V9-D14);
-it is also the default of `kernels.mjs` and of perf CI v0.
+`DEFAULT_HARNESS` in `cross/v8v7.mjs` (one line, `cross/v8v7.mjs:80`): `base` since MATH1
+(5495858, M4-P1; plan v9 V9-D14: exits 1 and 2 use the real base.js), `stub` before; `--harness
+stub` keeps the runs 1 and 2 form. It is also the default of `kernels.mjs` and of perf CI v0.
 
 The rules come from the PERF-NOISE rule ([10-quality](../../docs/plan/10-quality.md) section 3):
 
