@@ -94,10 +94,11 @@ pub(crate) fn is_constructor(f: u64) -> bool {
 /// callable; `target`, `this` and `args` are rooted by the caller. GC point.
 pub(crate) fn new_bound_function(cx: &mut Cx, target: u64, this: u64, args: &[u64]) -> Res<u64> {
     debug_assert!(kinds::is_callable(target));
-    let rt = cx.rt();
-    // 1. Let proto be ? targetFunction.[[GetPrototypeOf]]() (v0: ordinary objects only).
-    let proto = object::proto_of(target);
+    // 1. Let proto be ? targetFunction.[[GetPrototypeOf]]() (a callable proxy asks its own;
+    //    GC point).
+    let proto = crate::property::try_get_prototype_of(cx, target)?;
     // 2-4. MakeBasicObject with [[Prototype]] proto (below, after the argument list).
+    let rt = cx.rt();
     // 9. (the list) GC point first; the list then lives in a Rust local (CSS).
     let list = if args.is_empty() {
         UNDEFINED

@@ -9,6 +9,7 @@
 //! | constructor or generator function | `prototype` until first use, then an ordinary property | {w} |
 //! | arguments object (kind ARGUMENTS) | routed to `arguments.rs` (M3-P2 VM-ARGS) | - |
 //! | module namespace (kind MODULE_NAMESPACE) | routed to `module.rs` (M3-P2 MODULE) | - |
+//! | proxy (kinds PROXY, PROXY_CALLABLE) | routed to `proxy.rs` (M4-P4 PROXY1) | - |
 //!
 //! Function `length` and `name` are ordinary own data properties (`object::new_function`).
 //! The lazy `prototype` follows V8, which also creates it on first access.
@@ -20,6 +21,17 @@
 //! is routed at its start and at each routed prototype of its walk (§10.1.9.2 step 1.b). A
 //! routed hook that answers `None` means "ordinary": in M3-P0 every routed hook is a stub
 //! that does.
+//!
+//! Proxies (OBJECT_LAYOUT 4, M4-P4 PROXY1; MC-w15-12): PROXY and PROXY_CALLABLE are routed
+//! kinds too (ids 25-28 are adjacent, so [`is_routed`] stays one compare). Every hook that
+//! can throw ([`get`], [`own_property`], [`set`], [`define_own_property`], [`delete`]) sends
+//! a proxy to `proxy.rs` and never answers `None` for it, except [`own_property`] for a
+//! missing property. The two hooks that cannot throw ([`own_attrs`], [`own_property_keys`])
+//! never see a proxy (a debug assert; release builds answer "ordinary", which reads the
+//! proxy cell's empty storage); their fallible forms ([`try_own_attrs`],
+//! `property::try_own_property_keys`) ask `proxy.rs`. So only routed kinds answer an index
+//! through hooks (H31 fast-path row 3): `property::own_index` answers `Unknown` for every
+//! routed kind, proxies included.
 
 use crate::conv::{Res, num};
 use crate::descriptor::Desc;
@@ -90,12 +102,13 @@ pub(crate) fn function_prototype(rt: &Runtime, f: u64) -> u64 {
 /// The value of an exotic own property of `o` for a get: an array's `length` or element, a
 /// String wrapper's `length` or character, or a constructor's lazy `prototype` (made here).
 /// `None` if `key` names none of them. A routed kind's hook may throw (`Some(Err)`: a
-/// namespace binding in its TDZ, §10.4.6.8); the others never do. GC point (the lazy
+/// namespace binding in its TDZ, §10.4.6.8; a proxy); the others never do. A proxy answers
+/// its whole `[[Get]]` (`Some` always), with `receiver` as the receiver. GC point (the lazy
 /// `prototype`, a routed hook). Always inlined into the `[[Get]]` walks
 /// (`property::get_with_receiver`, `property::get_data_from`); of those, only
 /// `get_with_receiver` asks a routed kind's hook (`get_data_from` skips routed kinds).
 #[inline(always)]
-pub(crate) fn get(cx: &mut Cx, o: u64, key: u64, how: Probe) -> Option<Res<u64>> {
+pub(crate) fn get(cx: &mut Cx, o: u64, key: u64, how: Probe, receiver: u64) -> Option<Res<u64>> {
     let k = kind::cell_kind(o);
     if k == kind::ARRAY.get() {
         if is_key(cx.rt(), key, how, Atom::Length) {
@@ -115,7 +128,7 @@ pub(crate) fn get(cx: &mut Cx, o: u64, key: u64, how: Probe) -> Option<Res<u64>>
         return wrapper::string_own_property(cx.rt(), o, key).map(|(v, _)| Ok(v));
     }
     if is_routed(k) {
-        return routed_get(cx, k, o, key, how);
+        return routed_get(cx, k, o, key, how, receiver);
     }
     None
 }
@@ -135,7 +148,8 @@ pub(crate) enum Exotic {
 /// The exotic own property `key` of `o` (array `length` excluded: the callers handle it):
 /// (value, attribute bits, where). A constructor's lazy `prototype` is made here and then is
 /// an ordinary property, so it gives `None`. A routed kind's hook may throw (`Some(Err)`:
-/// §10.4.6.5 step 4 reads the binding); the others never do. GC point.
+/// §10.4.6.5 step 4 reads the binding; a proxy); the others never do. For a proxy this is
+/// its whole `[[GetOwnProperty]]`: `None` only for a missing property. GC point.
 pub(crate) fn own_property(
     cx: &mut Cx,
     o: u64,
@@ -166,7 +180,8 @@ pub(crate) fn own_property(
 
 /// The attributes of an exotic own property of `o`, without making anything: an array's
 /// `length` or element, a String wrapper's `length` or index, a constructor's lazy
-/// `prototype`. Not a GC point.
+/// `prototype`. Not a GC point, runs no JS. Never for a proxy (a debug assert; its
+/// `[[GetOwnProperty]]` may run JS): [`try_own_attrs`] takes one.
 pub(crate) fn own_attrs(rt: &Runtime, o: u64, key: u64, how: Probe) -> Option<i32> {
     let k = kind::cell_kind(o);
     if k == kind::ARRAY.get() {
@@ -188,6 +203,17 @@ pub(crate) fn own_attrs(rt: &Runtime, o: u64, key: u64, how: Probe) -> Option<i3
     None
 }
 
+/// [`own_attrs`] for any object, a proxy too: a proxy's attributes come from its
+/// `[[GetOwnProperty]]` (`proxy.rs`; the attributes of the whole own property, since a
+/// proxy's storage holds no property key). GC point when `o` is a proxy (it may run JS
+/// from PROXY2 on); never otherwise.
+pub(crate) fn try_own_attrs(cx: &mut Cx, o: u64, key: u64, how: Probe) -> Res<Option<i32>> {
+    if crate::proxy::is_proxy_kind(kind::cell_kind(o)) {
+        return Ok(crate::proxy::get_own_property(cx, o, key)?.map(|(_, a)| a));
+    }
+    Ok(own_attrs(cx.rt(), o, key, how))
+}
+
 /// The lazy `prototype` key to list among the string keys of `o` (`[[OwnPropertyKeys]]`), if
 /// `o` is a constructor whose `prototype` is not made yet. It goes after every stored string
 /// key: adding a key makes it first (`props::own_add`), so all stored keys are older.
@@ -202,21 +228,30 @@ pub(crate) fn virtual_length_key(rt: &Runtime, o: u64) -> Option<u64> {
     (kind::is_array(o) || wrapped_string).then(|| rt.atom(Atom::Length))
 }
 
-// ---- routing to arguments.rs and module.rs (OBJECT_LAYOUT 3, P0-D7) --------------------------
+// ---- routing to arguments.rs, module.rs (OBJECT_LAYOUT 3, P0-D7) and proxy.rs (OBJECT_LAYOUT 4)
 
-/// True for the kinds whose internal methods are routed: ARGUMENTS (25) and
-/// MODULE_NAMESPACE (26). One compare on adjacent ids.
+/// True for the kinds whose internal methods are routed: ARGUMENTS (25), MODULE_NAMESPACE
+/// (26), PROXY (27) and PROXY_CALLABLE (28). One compare on adjacent ids. Only these kinds
+/// answer an index through hooks (H31 fast-path row 3, MC-w15-12): a new kind that does must
+/// join them, or `property::own_index` must refuse it.
 #[inline(always)]
 pub(crate) fn is_routed(k: u8) -> bool {
-    k == kind::ARGUMENTS.get() || k == kind::MODULE_NAMESPACE.get()
+    const _: () = assert!(
+        kind::ARGUMENTS.get() + 1 == kind::MODULE_NAMESPACE.get()
+            && kind::MODULE_NAMESPACE.get() + 1 == kind::PROXY.get()
+            && kind::PROXY.get() + 1 == kind::PROXY_CALLABLE.get()
+    );
+    k.wrapping_sub(kind::ARGUMENTS.get()) <= kind::PROXY_CALLABLE.get() - kind::ARGUMENTS.get()
 }
 
 #[inline(never)]
-fn routed_get(cx: &mut Cx, k: u8, o: u64, key: u64, how: Probe) -> Option<Res<u64>> {
+fn routed_get(cx: &mut Cx, k: u8, o: u64, key: u64, how: Probe, receiver: u64) -> Option<Res<u64>> {
     if k == kind::ARGUMENTS.get() {
         crate::arguments::get(cx, o, key, how)
-    } else {
+    } else if k == kind::MODULE_NAMESPACE.get() {
         crate::module::get(cx, o, key, how)
+    } else {
+        Some(crate::proxy::get(cx, o, key, receiver))
     }
 }
 
@@ -230,8 +265,10 @@ fn routed_own_property(
 ) -> Option<Res<(u64, i32)>> {
     if k == kind::ARGUMENTS.get() {
         crate::arguments::own_property(cx, o, key, how)
-    } else {
+    } else if k == kind::MODULE_NAMESPACE.get() {
         crate::module::own_property(cx, o, key, how)
+    } else {
+        crate::proxy::get_own_property(cx, o, key).transpose()
     }
 }
 
@@ -239,8 +276,11 @@ fn routed_own_property(
 fn routed_own_attrs(rt: &Runtime, k: u8, o: u64, key: u64, how: Probe) -> Option<i32> {
     if k == kind::ARGUMENTS.get() {
         crate::arguments::own_attrs(rt, o, key, how)
-    } else {
+    } else if k == kind::MODULE_NAMESPACE.get() {
         crate::module::own_attrs(rt, o, key, how)
+    } else {
+        debug_assert!(false, "own_attrs on a proxy: use exotic::try_own_attrs");
+        None
     }
 }
 
@@ -259,8 +299,10 @@ pub(crate) fn set(cx: &mut Cx, o: u64, key: u64, v: u64, receiver: u64) -> Optio
 fn routed_set(cx: &mut Cx, k: u8, o: u64, key: u64, v: u64, receiver: u64) -> Option<Res<bool>> {
     if k == kind::ARGUMENTS.get() {
         crate::arguments::set(cx, o, key, v, receiver)
-    } else {
+    } else if k == kind::MODULE_NAMESPACE.get() {
         crate::module::set(cx, o, key, v, receiver)
+    } else {
+        Some(crate::proxy::set(cx, o, key, v, receiver))
     }
 }
 
@@ -286,8 +328,10 @@ fn routed_define_own_property(
 ) -> Option<Res<bool>> {
     if k == kind::ARGUMENTS.get() {
         crate::arguments::define_own_property(cx, o, key, desc)
-    } else {
+    } else if k == kind::MODULE_NAMESPACE.get() {
         crate::module::define_own_property(cx, o, key, desc)
+    } else {
+        Some(crate::proxy::define_own_property(cx, o, key, desc))
     }
 }
 
@@ -306,13 +350,16 @@ pub(crate) fn delete(cx: &mut Cx, o: u64, key: u64) -> Option<Res<bool>> {
 fn routed_delete(cx: &mut Cx, k: u8, o: u64, key: u64) -> Option<Res<bool>> {
     if k == kind::ARGUMENTS.get() {
         crate::arguments::delete(cx, o, key)
-    } else {
+    } else if k == kind::MODULE_NAMESPACE.get() {
         crate::module::delete(cx, o, key)
+    } else {
+        Some(crate::proxy::delete(cx, o, key))
     }
 }
 
 /// The `[[OwnPropertyKeys]]` hook of `o` (`property::own_property_keys`): `None` =
-/// OrdinaryOwnPropertyKeys.
+/// OrdinaryOwnPropertyKeys. Never for a proxy (a debug assert; its keys may come from JS):
+/// `property::try_own_property_keys` asks `proxy.rs` first.
 #[inline(always)]
 pub(crate) fn own_property_keys(cx: &mut Cx, o: u64) -> Option<u64> {
     let k = kind::cell_kind(o);
@@ -327,8 +374,14 @@ pub(crate) fn own_property_keys(cx: &mut Cx, o: u64) -> Option<u64> {
 fn routed_own_property_keys(cx: &mut Cx, k: u8, o: u64) -> Option<u64> {
     if k == kind::ARGUMENTS.get() {
         crate::arguments::own_property_keys(cx, o)
-    } else {
+    } else if k == kind::MODULE_NAMESPACE.get() {
         crate::module::own_property_keys(cx, o)
+    } else {
+        debug_assert!(
+            false,
+            "own_property_keys on a proxy: use property::try_own_property_keys"
+        );
+        None
     }
 }
 

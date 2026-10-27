@@ -78,12 +78,13 @@ fn the_month_4_kind_ids() {
 
 /// M4-P0 registers no month-4 kind (the builders do, plan v9 §2.5 task 2). M4-P1 registered
 /// CONS and SLICED (STR1, `string::register_kinds`) and VALIDITY_CELL (VALIDITY,
-/// `validity::register_kind`), and M4-P2 registered THIN (STR2, `string::register_kinds`):
-/// those are taken on a new isolate. The ids that later phases fill (the proxy kinds and
-/// WEAK_CELL in M4-P4) are still free.
+/// `validity::register_kind`), M4-P2 registered THIN (STR2, `string::register_kinds`), and
+/// M4-P4 registered PROXY and PROXY_CALLABLE (PROXY1, `object::register_kinds`): those are
+/// taken on a new isolate. WEAK_CELL (M4-P4 WEAKREF) is still free.
 #[test]
 fn no_month_4_kind_is_registered_yet() {
-    for id in [kinds::PROXY, kinds::PROXY_CALLABLE, kinds::WEAK_CELL] {
+    {
+        let id = kinds::WEAK_CELL;
         let iso = isolate(config(Dispatch::DEFAULT, false));
         assert_eq!(
             iso.rt.heap.register_kind(id, dummy_kind("test")),
@@ -97,40 +98,37 @@ fn no_month_4_kind_is_registered_yet() {
         kinds::SLICED,
         kinds::THIN,
         kinds::VALIDITY_CELL,
+        kinds::PROXY,
+        kinds::PROXY_CALLABLE,
     ] {
         let iso = isolate(config(Dispatch::DEFAULT, false));
         assert_eq!(
             iso.rt.heap.register_kind(id, dummy_kind("test")),
             Err(ep9_heap::KindError::Taken(id)),
-            "kind {} is registered by its M4-P1 or M4-P2 builder",
+            "kind {} is registered by its M4-P1, M4-P2 or M4-P4 builder",
             id.get()
         );
     }
 }
 
 /// IsCallable (§7.2.3) is a kind test that also takes PROXY_CALLABLE (V9-D19), and `is_object`
-/// takes both proxy kinds. The cells are made under test kinds with the proxy ids.
+/// takes both proxy kinds. The cells are real proxies (`proxy::proxy_create`, M4-P4 PROXY1).
 #[test]
 fn is_callable_takes_proxy_callable() {
-    let iso = isolate(config(Dispatch::DEFAULT, false));
-    let rt = &iso.rt;
-    for id in [kinds::PROXY, kinds::PROXY_CALLABLE] {
-        rt.heap.register_kind(id, dummy_kind("test proxy")).unwrap();
-    }
-    let plain = val_bits(rt.alloc(kinds::PROXY, 16));
-    let callable = val_bits(rt.alloc(kinds::PROXY_CALLABLE, 16));
-    assert!(kinds::is_object(plain) && kinds::is_object(callable));
-    assert!(!kinds::is_callable(plain));
-    assert!(kinds::is_callable(callable));
-    assert!(!kinds::is_function(callable), "a proxy has no FunctionInfo");
-    // The cells are unreachable; the next GC frees them.
-    iso.rt.heap.collect();
-}
-
-fn val_bits(c: ep9_heap::CellPtr) -> u64 {
-    let v = c.to_value().to_bits();
-    debug_assert_eq!(val(v).to_bits(), v);
-    v
+    with_cx(false, |cx| {
+        let target = cx.new_object().bits();
+        let f = crate::builtins::intrinsic(cx.inner().rt(), IntrinsicId::FunctionPrototype);
+        let handler = cx.new_object().bits();
+        let plain = crate::proxy::proxy_create(cx.inner(), target, handler).unwrap();
+        let callable = crate::proxy::proxy_create(cx.inner(), f, handler).unwrap();
+        assert_eq!(kinds::cell_kind(plain), kinds::PROXY.get());
+        assert_eq!(kinds::cell_kind(callable), kinds::PROXY_CALLABLE.get());
+        assert!(kinds::is_object(plain) && kinds::is_object(callable));
+        assert!(!kinds::is_callable(plain));
+        assert!(kinds::is_callable(callable));
+        assert!(!kinds::is_function(callable), "a proxy has no FunctionInfo");
+        assert_eq!(val(plain).to_bits(), plain);
+    });
 }
 
 // ---- ids --------------------------------------------------------------------------------------

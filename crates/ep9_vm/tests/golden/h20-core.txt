@@ -141,6 +141,7 @@ abi: impl<'s> Cx<'s> :: pub fn initial_name(&mut self, impl Into<Local<'s, JsFun
 abi: impl<'s> Cx<'s> :: pub fn intern(&mut self, Local<'s, JsString>) -> Local<'s, JsKey>
 abi: impl<'s> Cx<'s> :: pub fn intrinsic(&self, IntrinsicId) -> Local<'s, JsObject>
 abi: impl<'s> Cx<'s> :: pub fn is_array(&self, impl Into<Local<'s>>) -> bool
+abi: impl<'s> Cx<'s> :: pub fn is_array_or_throw(&mut self, impl Into<Local<'s>>) -> JsResult<bool>
 abi: impl<'s> Cx<'s> :: pub fn is_builtin(&self, impl Into<Local<'s>>, BuiltinId) -> bool
 abi: impl<'s> Cx<'s> :: pub fn is_callable(&self, impl Into<Local<'s>>) -> bool
 abi: impl<'s> Cx<'s> :: pub fn is_constructor(&self, impl Into<Local<'s>>) -> bool

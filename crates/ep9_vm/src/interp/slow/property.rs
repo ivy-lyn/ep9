@@ -83,7 +83,11 @@ fn global_value(cx: &mut Cx, name: u64, in_typeof: bool) -> u64 {
     let how = key::probe(name);
     let mut o = g;
     loop {
-        if exotic::own_attrs(rt, o, name, how).is_some() {
+        // A proxy on the chain (`Object.setPrototypeOf(globalThis, p)`) takes HasProperty
+        // and `[[Get]]` below, which ask it.
+        if crate::proxy::is_proxy_kind(crate::kinds::cell_kind(o))
+            || exotic::own_attrs(rt, o, name, how).is_some()
+        {
             break;
         }
         match props::own_get_with(o, name, how) {

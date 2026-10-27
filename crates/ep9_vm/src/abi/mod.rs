@@ -501,14 +501,6 @@ impl Drop for ArgsBuilder<'_> {
     }
 }
 
-/// HasOwnProperty(O, P) (§7.3.13) on a routed kind: its `[[GetOwnProperty]]` (the hook may
-/// throw) is not undefined. Out of line, so [`Cx::has_own_property`] keeps one kind test.
-/// GC point.
-#[inline(never)]
-fn routed_has_own_property(cx: &mut interp::Cx, o: u64, k: u64) -> JsResult<bool> {
-    Ok(property::get_own_property(cx, o, k)?.is_some())
-}
-
 // ---- Cx ------------------------------------------------------------------------------------
 
 /// What a host function can do with the isolate (H20). It exposes no `&Runtime`: builtins
@@ -1049,11 +1041,12 @@ impl<'s> Cx<'s> {
     ) -> JsResult<bool> {
         let o = o.into().bits();
         let k = key.into_key(self).bits();
-        Ok(property::has_property(self.cx, o, k))
+        property::try_has_property(self.cx, o, k)
     }
 
-    /// HasOwnProperty(O, P) (§7.3.13). A routed kind (ARGUMENTS, MODULE_NAMESPACE) asks its
-    /// `[[GetOwnProperty]]`, which may throw (a namespace binding in its TDZ, §10.4.6.5).
+    /// HasOwnProperty(O, P) (§7.3.13). A routed kind (ARGUMENTS, MODULE_NAMESPACE, a proxy)
+    /// asks its `[[GetOwnProperty]]`, which may throw (a namespace binding in its TDZ,
+    /// §10.4.6.5; a revoked proxy).
     pub fn has_own_property(
         &mut self,
         o: impl Into<Local<'s, JsObject>>,
@@ -1061,10 +1054,7 @@ impl<'s> Cx<'s> {
     ) -> JsResult<bool> {
         let o = o.into().bits();
         let k = key.into_key(self).bits();
-        if crate::exotic::is_routed(kinds::cell_kind(o)) {
-            return routed_has_own_property(self.cx, o, k);
-        }
-        Ok(property::has_own_property(self.cx, o, k))
+        property::try_has_own_property(self.cx, o, k)
     }
 
     /// O.`[[GetOwnProperty]]`(P) (§10.1.5), with the virtual properties (R6).
@@ -1161,12 +1151,15 @@ impl<'s> Cx<'s> {
         o: impl Into<Local<'s, JsObject>>,
     ) -> JsResult<Local<'s, JsArray>> {
         let o = o.into().bits();
-        Ok(Self::local(property::own_property_keys(self.cx, o)))
+        Ok(Self::local(property::try_own_property_keys(self.cx, o)?))
     }
 
     /// O.`[[GetPrototypeOf]]`() (§10.1.1): an object or null.
     pub fn get_prototype_of(&mut self, o: impl Into<Local<'s, JsObject>>) -> JsResult<Local<'s>> {
-        Ok(Self::local(object::proto_of(o.into().bits())))
+        Ok(Self::local(property::try_get_prototype_of(
+            self.cx,
+            o.into().bits(),
+        )?))
     }
 
     /// O.`[[SetPrototypeOf]]`(V) (§10.1.2); `proto` is an object or null.
@@ -1179,17 +1172,17 @@ impl<'s> Cx<'s> {
         if p != NULL && !kinds::is_object(p) {
             return Err(self.throw_type_error("Object prototype may only be an Object or null"));
         }
-        Ok(property::set_prototype_of(self.rt(), o, p))
+        property::try_set_prototype_of(self.cx, o, p)
     }
 
     /// O.`[[IsExtensible]]`() (§10.1.3).
     pub fn is_extensible(&mut self, o: impl Into<Local<'s, JsObject>>) -> JsResult<bool> {
-        Ok(property::is_extensible(o.into().bits()))
+        property::try_is_extensible(self.cx, o.into().bits())
     }
 
     /// O.`[[PreventExtensions]]`() (§10.1.4).
     pub fn prevent_extensions(&mut self, o: impl Into<Local<'s, JsObject>>) -> JsResult<bool> {
-        Ok(property::prevent_extensions(self.rt(), o.into().bits()))
+        property::try_prevent_extensions(self.cx, o.into().bits())
     }
 
     /// IsCallable (§7.2.3).
@@ -1203,9 +1196,17 @@ impl<'s> Cx<'s> {
         kinds::is_callable(b) && object::is_constructor(b)
     }
 
-    /// IsArray (§7.2.2). v0: no proxies, so it never throws.
+    /// IsArray (§7.2.2). v0: no proxies, so it never throws. A Proxy gives false here (the
+    /// frozen signature cannot throw); [`Cx::is_array_or_throw`] takes the Proxy step.
     pub fn is_array(&self, v: impl Into<Local<'s>>) -> bool {
         kinds::is_array(v.into().bits())
+    }
+
+    /// IsArray (§7.2.2) with the Proxy step (part 2, M4-P4 PROXY1; V9-D12): an Array is an
+    /// array, a Proxy answers for its `[[ProxyTarget]]` (down a chain of proxies), and a
+    /// revoked Proxy throws a TypeError (step 3.a). Any value. Allocates only the error.
+    pub fn is_array_or_throw(&mut self, v: impl Into<Local<'s>>) -> JsResult<bool> {
+        crate::proxy::is_array(self.cx, v.into().bits())
     }
 
     /// Whether `v` has an `[[ErrorData]]` internal slot (an Error instance, §20.5): the test
