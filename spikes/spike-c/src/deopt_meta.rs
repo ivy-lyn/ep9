@@ -83,11 +83,28 @@ pub struct ExitRecord {
     pub values: Vec<ExitValue>,
 }
 
+/// An immediate Value (an int32, a double, undefined, null, a boolean): never a cell, so a
+/// table of them holds nothing the GC must see (plan rule 8; H30: no raw heap constant).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Immediate(u64);
+
+impl Immediate {
+    /// `bits` as an immediate, or `None` for a cell.
+    pub fn new(bits: u64) -> Option<Immediate> {
+        (!crate::vm_layout::is_cell(bits)).then_some(Immediate(bits))
+    }
+
+    /// The Value bits.
+    pub fn bits(self) -> u64 {
+        self.0
+    }
+}
+
 /// The exit metadata of one compiled function.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExitTable {
     /// Immediate Values the records name by index.
-    pub consts: Vec<u64>,
+    pub consts: Vec<Immediate>,
     /// One record per exit, in stub order (`counter` = the index).
     pub exits: Vec<ExitRecord>,
 }
@@ -200,13 +217,11 @@ impl ExitTable {
                     Op::ConstInt32(i) => crate::vm_layout::int32_bits(i),
                     ref op => return Err(format!("n{} is a constant op {op:?}", v.0)),
                 };
-                if crate::vm_layout::is_cell(bits) {
-                    return Err(format!("n{} is a heap constant", v.0));
-                }
-                let i = match self.consts.iter().position(|&c| c == bits) {
+                let c = Immediate::new(bits).ok_or(format!("n{} is a heap constant", v.0))?;
+                let i = match self.consts.iter().position(|&x| x == c) {
                     Some(i) => i,
                     None => {
-                        self.consts.push(bits);
+                        self.consts.push(c);
                         self.consts.len() - 1
                     }
                 };
@@ -224,7 +239,7 @@ impl ExitTable {
         uleb(&mut out, self.exits.len() as u64);
         uleb(&mut out, self.consts.len() as u64);
         for &c in &self.consts {
-            out.extend_from_slice(&c.to_le_bytes());
+            out.extend_from_slice(&c.bits().to_le_bytes());
         }
         for e in &self.exits {
             for f in [e.pc, e.guard, e.bytecode, e.counter, e.values.len() as u32] {
@@ -260,7 +275,9 @@ impl ExitTable {
         let mut t = ExitTable::default();
         for _ in 0..nc {
             let s = bytes.get(r.at..r.at + 8).ok_or("truncated const")?;
-            t.consts.push(u64::from_le_bytes(s.try_into().expect("8 bytes")));
+            let bits = u64::from_le_bytes(s.try_into().expect("8 bytes"));
+            t.consts
+                .push(Immediate::new(bits).ok_or(format!("const {bits:#x} is a cell"))?);
             r.at += 8;
         }
         for _ in 0..n {
@@ -348,7 +365,12 @@ mod tests {
     #[test]
     fn encode_decode() {
         let t = ExitTable {
-            consts: vec![crate::vm_layout::int32_bits(7), ep9_value::encoding::VALUE_UNDEFINED],
+            consts: [
+                crate::vm_layout::int32_bits(7),
+                ep9_value::encoding::VALUE_UNDEFINED,
+            ]
+            .map(|b| Immediate::new(b).expect("immediate"))
+            .to_vec(),
             exits: vec![
                 ExitRecord {
                     pc: 2100,
@@ -389,8 +411,13 @@ mod tests {
         let b = t.encode();
         assert_eq!(ExitTable::decode(&b), Ok(t.clone()));
         assert!(ExitTable::decode(&b[..b.len() - 1]).is_err());
-        let mut bad = t;
+        let mut bad = t.clone();
         bad.exits[1].values[0].loc = ValueLoc::Const(5);
         assert!(ExitTable::decode(&bad.encode()).is_err());
+        // A cell address in the const list is refused on both sides.
+        assert!(Immediate::new(0x1000).is_none());
+        let mut cell = t.encode();
+        cell[2..10].copy_from_slice(&0x1000u64.to_le_bytes());
+        assert!(ExitTable::decode(&cell).is_err());
     }
 }
