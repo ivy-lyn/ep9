@@ -7,7 +7,9 @@
 //!   uninitialized                            undefined                  int32 0
 //!   monomorphic                              a shape | KEY_STRING       a handler
 //!   polymorphic (2-4 cases)                  hole                       POLY_IC cell
-//!   megamorphic (sticky, generic path)       hole                       int32 MEGA
+//!   megamorphic (sticky)                     hole                       int32 MEGA
+//!     named sites: a miss; the miss path probes the stub cache (stub_cache.rs, M4-P3 IC2),
+//!     then takes the generic path
 //!
 //!  hit: (key as u32) == word0.shape_id of the receiver (the cage is aligned, so a shape's
 //!       low 32 bits are its ShapeId), then the handler:
@@ -45,6 +47,7 @@
 //! | `SLOW` (smi) | any: accessor, dictionary, exotic or read-only cases | none: the generic path runs, the case only keeps its place |
 //! | `PROTO_LOAD` (cell) | 0x21, 0x22 | validity cell valid and holder alive: the holder's field |
 //! | `MISSING` (cell) | 0x21, 0x22 | validity cell valid: undefined |
+//! | `PROTO_LOAD`, `MISSING` (cell) under [`KEY_STRING`] (M4-P3 IC2) | 0x21 on a string: a method (`s.charCodeAt`), from %String.prototype% | as above, after a kind-byte check (a symbol has ShapeId 0 too) |
 //! | `ADD` (cell) | 0x24 (validity cell checked), 0x25 | target alive and room in the slots: store, then install the target shape |
 //! | smi field, keyed on the lexical record's shape | 0x10, 0x11; 0x12 if writable | a `let`/`const`/`class` binding; the hole (TDZ) misses |
 //! | `GLOBAL` (cell), keyed on the global object's shape | 0x10, 0x11; 0x12 if writable | the lexical record still has the shape in the handler: the global object's field |
@@ -74,6 +77,17 @@
 //! - A fast shape is always extensible and a non-extensible object has a dictionary shape
 //!   (OM-10), so an add-property case, which is made only for a fast shape, can never match a
 //!   non-extensible receiver. [`store`] also asserts it.
+//! - The megamorphic stub cache (M4-P3 IC2, `stub_cache.rs`, H16-Q3): a megamorphic named
+//!   site misses in the hit path ([`load`], [`store`] are unchanged, so a monomorphic hit
+//!   costs no more); its miss path first probes a per-isolate table by (operation, receiver
+//!   ShapeId, name) and runs the handler it finds with the code above ([`mega_load`],
+//!   [`mega_store`]); on a table miss it computes the case for an object receiver
+//!   ([`skip_miss`], if [`MEGA_FILL`]) and [`record`] puts it in the table (not `SLOW`, not a
+//!   string). The table is emptied at every GC.
+//! - A string's method load (M4-P3 IC2) is a prototype case keyed on [`KEY_STRING`]: its chain
+//!   starts at %String.prototype% (which gets its PROTO_INFO, prototype mode, when the first
+//!   such case is recorded). Global and InstanceOf cases (`instance_ic.rs`) never reach the
+//!   stub cache.
 //! - Objects whose shape cannot tell their own properties are not cached: dictionary shapes
 //!   are shared (`SLOW`), prototype-mode (unique) shapes change at every add (no add case),
 //!   and the exotic keys of `exotic.rs` (array and String wrapper `length`, a constructor's
@@ -308,25 +322,22 @@ fn epoch_now(epoch: *const Cell<u32>) -> u32 {
 /// The debug cross-check of a hit through the valid validity cell of the handler `c` (plan v9
 /// R1, V9-A25): unless no prototype changed since the cell was made (`epoch` equals the
 /// epoch the cell keeps, and it is not saturated), walks the chain of `o` (the receiver or
-/// lookup start whose shape is the case key) for the site's name and asserts the handler's
-/// answer. Not a GC point.
+/// lookup start whose shape is the case key; a string's starts at %String.prototype%) for
+/// the site's name `key` and asserts the handler's answer. Not a GC point.
 #[cfg(debug_assertions)]
 #[cold]
 #[inline(never)]
-fn cross_check(
-    rt: &Runtime,
-    fi: &FunctionInfo,
-    epoch: *const Cell<u32>,
-    o: u64,
-    name: u32,
-    c: CellPtr,
-) {
+fn cross_check(rt: &Runtime, epoch: *const Cell<u32>, o: u64, key: u64, c: CellPtr) {
     let now = epoch_now(epoch);
     if now != shape::EPOCH_SATURATED && now == validity::made_at(rd(c, hc::CELL)) {
         return;
     }
-    let key = fi.constant(name);
-    let chain = walk(rt, shape::proto(shape::shape_of(o)), key);
+    let start = if kind::is_string(o) {
+        rt.root(Root::StringPrototype)
+    } else {
+        shape::proto(shape::shape_of(o))
+    };
+    let chain = walk(rt, start, key);
     let ok = match (rd_i32(c, hc::KIND), chain) {
         (hk::PROTO_LOAD, Chain::Data(holder, loc, _)) => {
             holder == rd(c, hc::REF) && int32_of(loc) == rd_i32(c, hc::LOCATION)
@@ -344,11 +355,15 @@ fn cross_check(
 
 /// The hit path of a named load (opcodes 0x21 and 0x22): the value of `o.key` from slot
 /// `slot` of the vector of `fi`, or `None` on a miss (no vector, no case for `o`'s shape, a
-/// `SLOW` case, an invalid validity cell, a dead holder). `o` is the receiver (0x21) or the
-/// lookup start (0x22); any value. `name` is the site's name constant (an index into the
-/// constants of `fi`): a megamorphic entry probes the stub cache with it
-/// ([`stub_cache::probe_load`]; M4-P0 hook, a miss until M4-P3 IC2). `epoch` feeds only the
-/// debug cross-check ([`cross_check`]); release builds do not read it.
+/// `SLOW` case, an invalid validity cell, a dead holder, a megamorphic entry). `o` is the
+/// receiver (0x21) or the lookup start (0x22); any value. `name` is the site's name constant
+/// (an index into the constants of `fi`) and `epoch` the prototype epoch: both feed only the
+/// debug cross-check ([`cross_check`]); release builds do not read them.
+///
+/// A megamorphic entry misses here: its miss path probes the stub cache ([`mega_load`], M4-P3
+/// IC2). A probe here would cost every monomorphic hit two loads (the site's name operand and
+/// the runtime pointer are arguments that the handler loads before any branch; measured
+/// +1.4% instructions on t0-prop, mac a64), so the hit path stays as it was.
 #[inline(always)]
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
 pub(crate) fn load(
@@ -363,12 +378,23 @@ pub(crate) fn load(
         return None;
     }
     let (key, value) = entry(fi, slot)?;
-    let Some(h) = handler_for(key, value, shape_id(o)) else {
-        if key == HOLE && value == MEGA {
-            return stub_cache::probe_load(rt, fi, o, name);
-        }
-        return None;
-    };
+    let id = shape_id(o);
+    let h = handler_for(key, value, id)?;
+    load_with(rt, epoch, o, id, || fi.constant(name), h)
+}
+
+/// The value the handler `h` gives for `o` (ShapeId `id`), as for [`load`]. `key` gives the
+/// site's name for the debug cross-check only. Not a GC point.
+#[inline(always)]
+#[cfg_attr(not(debug_assertions), allow(unused_variables))]
+fn load_with(
+    rt: &Runtime,
+    epoch: *const Cell<u32>,
+    o: u64,
+    id: u32,
+    key: impl Fn() -> u64,
+    h: u64,
+) -> Option<u64> {
     if is_i32(h) {
         let x = int32_of(h);
         return match x & smi::KIND_MASK {
@@ -383,9 +409,13 @@ pub(crate) fn load(
     if (k != hk::PROTO_LOAD && k != hk::MISSING) || !validity::valid_cell(rd(c, hc::CELL)) {
         return None;
     }
+    // ShapeId 0 is a string's or a symbol's: a KEY_STRING prototype case serves strings only.
+    if id == 0 && !kind::is_string(o) {
+        return None;
+    }
     if k == hk::MISSING {
         #[cfg(debug_assertions)]
-        cross_check(rt, fi, epoch, o, name, c);
+        cross_check(rt, epoch, o, key(), c);
         return Some(UNDEFINED);
     }
     let holder = rd(c, hc::REF);
@@ -393,15 +423,15 @@ pub(crate) fn load(
         return None;
     }
     #[cfg(debug_assertions)]
-    cross_check(rt, fi, epoch, o, name, c);
+    cross_check(rt, epoch, o, key(), c);
     read_field(holder, rd_i32(c, hc::LOCATION))
 }
 
 /// The hit path of a named store: `o.key = v` (0x24, `CHECK_EPOCH`: an add case checks its
 /// validity cell) or CreateDataProperty (0x25) from slot `slot` of the vector of `fi`. False
-/// on a miss; nothing is stored then. `name` is the site's name constant: a megamorphic entry
-/// probes the stub cache with it ([`stub_cache::probe_store`]; M4-P0 hook, a miss until M4-P3
-/// IC2). `epoch` feeds only the debug cross-check ([`cross_check`]).
+/// on a miss (also a megamorphic entry: its miss path probes the stub cache, [`mega_store`]);
+/// nothing is stored then. `name` (the site's name constant) and `epoch` feed only the debug
+/// cross-check ([`cross_check`]).
 #[inline(always)]
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
 pub(crate) fn store<const CHECK_EPOCH: bool>(
@@ -420,11 +450,24 @@ pub(crate) fn store<const CHECK_EPOCH: bool>(
         return false;
     };
     let Some(h) = handler_for(key, value, shape_id(o)) else {
-        if key == HOLE && value == MEGA {
-            return stub_cache::probe_store(rt, fi, o, name, v, !CHECK_EPOCH);
-        }
         return false;
     };
+    store_with::<CHECK_EPOCH>(rt, epoch, o, || fi.constant(name), v, h)
+}
+
+/// Stores `v` through the handler `h` for `o`, as for [`store`]. False if `h` does not apply;
+/// nothing is stored then. `key` gives the site's name for the debug cross-check only. Not a
+/// GC point.
+#[inline(always)]
+#[cfg_attr(not(debug_assertions), allow(unused_variables))]
+fn store_with<const CHECK_EPOCH: bool>(
+    rt: &Runtime,
+    epoch: *const Cell<u32>,
+    o: u64,
+    key: impl Fn() -> u64,
+    v: u64,
+    h: u64,
+) -> bool {
     let c = cell(o);
     if is_i32(h) {
         let x = int32_of(h);
@@ -448,7 +491,7 @@ pub(crate) fn store<const CHECK_EPOCH: bool>(
     }
     #[cfg(debug_assertions)]
     if CHECK_EPOCH {
-        cross_check(rt, fi, epoch, o, name, hcell);
+        cross_check(rt, epoch, o, key(), hcell);
     }
     let loc = rd_i32(hcell, hc::LOCATION);
     let off = (loc >> smi::SHIFT) as usize;
@@ -467,6 +510,69 @@ pub(crate) fn store<const CHECK_EPOCH: bool>(
     debug_assert!(shape::is_extensible(shape::shape_of(o)) && !shape::is_prototype_object(o));
     shape::install(rt, o, target);
     true
+}
+
+// ---- the megamorphic stub cache (M4-P3 IC2): probes of the miss path ----------------------
+
+/// The miss path of a named load (`slow::get_named`, `slow::get_super`) before the generic
+/// load: if slot `slot` of the vector `v` is megamorphic and the stub cache (`stub_cache.rs`)
+/// has an entry for `o`'s shape and the name `key` (an atom), the value its handler gives.
+/// `None`: take the generic path (which then records the case in the stub cache, [`record`]).
+/// No allocation, no JS, not a GC point.
+#[allow(
+    dead_code,
+    reason = "called by slow::get_named / get_super / set_named once the integration fixer wires it (M4-P3 IC2 report)"
+)]
+pub(crate) fn mega_load(rt: &Runtime, v: u64, slot: u32, o: u64, key: u64) -> Option<u64> {
+    if !kind::is_object(o) || !is_mega(v, slot) {
+        return None;
+    }
+    let id = shape_id(o);
+    let r = stub_cache::probe(rt, stub_cache::Op::Load, id, key)
+        .and_then(|h| load_with(rt, &rt.shapes.proto_epoch, o, id, || key, h));
+    stub_stats!(Load, r.is_some());
+    r
+}
+
+/// The miss path of a named store (`slow::set_named`) before the generic store: `o.key = val`
+/// (0x24) or CreateDataProperty (0x25, `define`) through the stub cache entry for `o`'s shape,
+/// if slot `slot` of `v` is megamorphic and there is one. True if it stored; false: take the
+/// generic path. No allocation, no JS, not a GC point.
+#[allow(
+    dead_code,
+    reason = "called by slow::get_named / get_super / set_named once the integration fixer wires it (M4-P3 IC2 report)"
+)]
+pub(crate) fn mega_store(
+    rt: &Runtime,
+    v: u64,
+    slot: u32,
+    o: u64,
+    key: u64,
+    val: u64,
+    define: bool,
+) -> bool {
+    if !kind::is_object(o) || !is_mega(v, slot) {
+        return false;
+    }
+    let id = shape_id(o);
+    let epoch: *const Cell<u32> = &rt.shapes.proto_epoch;
+    let done = match stub_cache::probe(rt, store_op(define), id, key) {
+        Some(h) if define => store_with::<false>(rt, epoch, o, || key, val, h),
+        Some(h) => store_with::<true>(rt, epoch, o, || key, val, h),
+        None => false,
+    };
+    stub_stats!(Store, done);
+    done
+}
+
+/// True if slot `i` of the vector `v` is megamorphic (the hole and int32 MEGA). Not a GC point.
+#[allow(
+    dead_code,
+    reason = "called by slow::get_named / get_super / set_named once the integration fixer wires it (M4-P3 IC2 report)"
+)]
+#[inline]
+fn is_mega(v: u64, i: u32) -> bool {
+    feedback::key(v, i) == HOLE && feedback::value(v, i) == MEGA
 }
 
 /// The global-object handler `h` of a global site, if it is one and the lexical record still
@@ -602,12 +708,20 @@ fn case_key(o: u64) -> Option<u64> {
     }
 }
 
-/// True if the miss path of slot `i` of `v` for the receiver `o` need not compute a case:
-/// the entry is megamorphic, `o` has no case key, or its case is `SLOW` (the generic path
-/// runs every time). Not a GC point.
+/// True if the miss path of a megamorphic entry fills the stub cache (computes the case of an
+/// object receiver for [`record`]). False in the build until the miss paths probe the table
+/// (`slow::get_named`, `get_super`, `set_named` calling [`mega_load`] and [`mega_store`]; the
+/// M4-P3 integration fixer wires them and sets this to true): a fill that nothing probes only
+/// costs (raytrace +7.8% instructions, mac a64). The tests run the filled table.
+const MEGA_FILL: bool = cfg!(test);
+
+/// True if the miss path of slot `i` of `v` for the receiver `o` need not compute a case: `o`
+/// has no case key, or its case is `SLOW` (the generic path runs every time). A megamorphic
+/// entry computes a case for an object receiver (M4-P3 IC2, if [`MEGA_FILL`]): [`record`]
+/// puts it in the stub cache. Not a GC point.
 pub(crate) fn skip_miss(v: u64, i: u32, o: u64) -> bool {
     if state(v, i) == State::Megamorphic {
-        return true;
+        return !MEGA_FILL || !kind::is_object(o);
     }
     match case_key(o) {
         None => true,
@@ -643,15 +757,21 @@ pub(crate) enum Handler {
     /// An own data property of the global object (its field) under the lexical record's
     /// shape `lexical`.
     Global { lexical: u64, location: i32 },
+    /// A handler that its writer module made (an `INSTANCEOF` IC_HANDLER cell or `SLOW`,
+    /// `instance_ic.rs`); recorded as it is.
+    Ready(u64),
 }
 
-/// A case for one entry: its key (a shape or [`KEY_STRING`]) and its handler. The shape and
-/// the holder live in Rust locals until [`record`] stores them (the conservative stack scan
-/// keeps them, H10).
+/// A case for one entry: its key (a shape, [`KEY_STRING`], or the rhs function of an
+/// InstanceOf case) and its handler. The shape and the holder live in Rust locals until
+/// [`record`] stores them (the conservative stack scan keeps them, H10). `stub`: the
+/// operation and the name of a named-property case, for the stub cache when its entry is
+/// megamorphic (`stub_cache.rs`); `None` for global and InstanceOf cases.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Case {
     pub key: u64,
     pub handler: Handler,
+    pub stub: Option<(stub_cache::Op, u64)>,
 }
 
 /// True if `k` is a key the IC may cache: an atom that is not an array index. Every IC case
@@ -734,10 +854,32 @@ pub(crate) fn load_case(rt: &Runtime, o: u64, name: u64) -> Option<Case> {
         return None;
     }
     if kind::is_string(o) {
-        // v0: only `length`; a method load on a string takes the generic path.
-        return (name == rt.atom(Atom::Length)).then_some(Case {
+        if name == rt.atom(Atom::Length) {
+            return Some(Case {
+                key: KEY_STRING,
+                handler: Handler::Smi(smi_handler(smi::STRING_LENGTH, 0)),
+                stub: None,
+            });
+        }
+        // M4-P3 IC2: a method load (`s.charCodeAt`, crypto's misses, plan v9 §12.1) is a
+        // prototype case from %String.prototype%, keyed on KEY_STRING. A string's other own
+        // properties are its indices, which are never cached.
+        let p = rt.root(Root::StringPrototype);
+        let cell = chain_cell_seen(rt, p);
+        let handler = match walk(rt, p, name) {
+            Chain::Data(holder, loc, _) => Handler::ProtoLoad {
+                holder,
+                location: int32_of(loc),
+                cell,
+                name,
+            },
+            Chain::Missing => Handler::Missing { cell, name },
+            Chain::Other => Handler::Smi(SLOW),
+        };
+        return Some(Case {
             key: KEY_STRING,
-            handler: Handler::Smi(smi_handler(smi::STRING_LENGTH, 0)),
+            handler,
+            stub: None,
         });
     }
     if !kind::is_object(o) {
@@ -745,10 +887,12 @@ pub(crate) fn load_case(rt: &Runtime, o: u64, name: u64) -> Option<Case> {
     }
     let s = shape::shape_of(o);
     let k = shape::object_kind(s);
+    let stub = Some((stub_cache::Op::Load, name));
     let smi_case = |h| {
         Some(Case {
             key: s,
             handler: Handler::Smi(h),
+            stub,
         })
     };
     if k == kind::ARRAY.get() && name == rt.atom(Atom::Length) {
@@ -776,7 +920,11 @@ pub(crate) fn load_case(rt: &Runtime, o: u64, name: u64) -> Option<Case> {
                 Chain::Missing => Handler::Missing { cell, name },
                 Chain::Other => Handler::Smi(SLOW),
             };
-            Some(Case { key: s, handler })
+            Some(Case {
+                key: s,
+                handler,
+                stub,
+            })
         }
     }
 }
@@ -800,9 +948,11 @@ pub(crate) fn store_pre(rt: &Runtime, o: u64, name: u64, define: bool) -> Option
     }
     let s = shape::shape_of(o);
     let k = shape::object_kind(s);
+    let stub = Some((store_op(define), name));
     let slow = Some(StorePre::Done(Case {
         key: s,
         handler: Handler::Smi(SLOW),
+        stub,
     }));
     if shape::is_dictionary(s) || exotic_name(rt, k, name) {
         return slow;
@@ -822,6 +972,7 @@ pub(crate) fn store_pre(rt: &Runtime, o: u64, name: u64, define: bool) -> Option
         return Some(StorePre::Done(Case {
             key: s,
             handler: Handler::Smi(field_location(s, usize::from(f.details.field()))),
+            stub,
         }));
     }
     // An add. A prototype-mode object gets a new unique shape at every add, so a case for its
@@ -848,6 +999,15 @@ pub(crate) fn store_pre(rt: &Runtime, o: u64, name: u64, define: bool) -> Option
     Some(StorePre::Add { from: s, chain })
 }
 
+/// The stub cache operation of a named store: 0x25 (`define`) or 0x24.
+fn store_op(define: bool) -> stub_cache::Op {
+    if define {
+        stub_cache::Op::Define
+    } else {
+        stub_cache::Op::Store
+    }
+}
+
 /// True if a `[[Set]]` that finds `chain` on the prototype chain adds an own data property to
 /// the receiver: no object has the key, or a writable data property has it.
 fn adds_past(chain: Chain) -> bool {
@@ -855,8 +1015,12 @@ fn adds_past(chain: Chain) -> bool {
 }
 
 /// The validity cell that the PROTO_INFO of the prototype `p` keeps now (valid, invalid or
-/// undefined): what a case computation saw. Not a GC point.
+/// undefined): what a case computation saw. Undefined for an object that is not in prototype
+/// mode yet (%String.prototype% until a shape or [`chain_cell`] names it). Not a GC point.
 fn chain_cell_seen(rt: &Runtime, p: u64) -> u64 {
+    if p != NULL && !shape::is_prototype_object(p) {
+        return UNDEFINED;
+    }
     shape::validity_cell_of(shape::proto_info_of(rt, p))
 }
 
@@ -877,8 +1041,25 @@ fn chain_cell(
     }
     // GC point: `key`, `name` and the case's references live in the caller's Rust locals
     // (CSS). A GC runs no JS, so the walk below sees the chain the new cell guards.
-    let c = validity::cell_for(rt, shape::proto(key))?;
-    same(walk(rt, shape::proto(key), name)).then_some(c)
+    let p = key_proto(rt, key);
+    if p != NULL && !shape::is_prototype_object(p) {
+        // %String.prototype% (KEY_STRING) gets its PROTO_INFO here (prototype mode).
+        shape::proto_info_for(rt, p);
+    }
+    let c = validity::cell_for(rt, p)?;
+    same(walk(rt, p, name)).then_some(c)
+}
+
+/// The prototype a case for the key `key` starts its chain at: the shape's, or
+/// %String.prototype% for [`KEY_STRING`] (a string's prototype in the current realm; a vector
+/// belongs to one FunctionInfo, whose functions are all of one realm, `realm.rs`). Not a GC
+/// point.
+fn key_proto(rt: &Runtime, key: u64) -> u64 {
+    if key == KEY_STRING {
+        rt.root(Root::StringPrototype)
+    } else {
+        shape::proto(key)
+    }
 }
 
 /// The case of a store that ran: a decided case, or for an add, the transition from `from`
@@ -908,7 +1089,11 @@ pub(crate) fn store_case_after(_rt: &Runtime, pre: StorePre, o: u64, name: u64) 
     } else {
         Handler::Smi(SLOW)
     };
-    Some(Case { key: from, handler })
+    Some(Case {
+        key: from,
+        handler,
+        stub: Some((store_op(chain.is_none()), name)),
+    })
 }
 
 /// The case for a global load (`store` false) or store of `name`, before it runs: a binding
@@ -925,6 +1110,7 @@ pub(crate) fn global_case(rt: &Runtime, name: u64, store: bool) -> Option<Case> 
         Some(Case {
             key,
             handler: Handler::Smi(SLOW),
+            stub: None,
         })
     };
     let usable = |a: i32| a & attr::ACCESSOR == 0 && (!store || a & attr::WRITABLE != 0);
@@ -940,6 +1126,7 @@ pub(crate) fn global_case(rt: &Runtime, name: u64, store: bool) -> Option<Case> 
         return Some(Case {
             key: ls,
             handler: Handler::Smi(loc),
+            stub: None,
         });
     }
     let gs = shape::shape_of(rt.global());
@@ -956,6 +1143,7 @@ pub(crate) fn global_case(rt: &Runtime, name: u64, store: bool) -> Option<Case> 
             lexical: ls,
             location: int32_of(field_location(gs, usize::from(f.details.field()))),
         },
+        stub: None,
     })
 }
 
@@ -1113,6 +1301,7 @@ pub(crate) fn record(rt: &Runtime, v: u64, i: u32, case: Case) {
         Handler::Global { lexical, location } => {
             new_handler(rt, hk::GLOBAL, int32_bits(0), lexical, location)
         }
+        Handler::Ready(h) => h,
     };
     let key = feedback::key(v, i);
     if key == UNDEFINED || key == case.key {
@@ -1138,7 +1327,9 @@ pub(crate) fn record(rt: &Runtime, v: u64, i: u32, case: Case) {
     }
     let value = feedback::value(v, i);
     if is_i32(value) {
-        return; // megamorphic: sticky
+        // Megamorphic: sticky; the case goes to the stub cache.
+        stub_insert(rt, &case, handler);
+        return;
     }
     let p = cell(value);
     let at = (0..POLY_CASES)
@@ -1149,8 +1340,25 @@ pub(crate) fn record(rt: &Runtime, v: u64, i: u32, case: Case) {
             object::wr(&rt.heap, p, case_key_off(c), case.key);
             object::wr(&rt.heap, p, case_key_off(c) + 8, handler);
         }
-        None => feedback::set_slot(rt, v, i, HOLE, MEGA),
+        None => {
+            feedback::set_slot(rt, v, i, HOLE, MEGA);
+            stub_insert(rt, &case, handler);
+        }
     }
+}
+
+/// Puts the case of a megamorphic entry in the stub cache (`stub_cache.rs`): a named-property
+/// case keyed on a fast shape whose handler is not `SLOW`. Not a GC point (after the last
+/// allocation of [`record`]).
+fn stub_insert(rt: &Runtime, case: &Case, handler: u64) {
+    let Some((op, name)) = case.stub else {
+        return;
+    };
+    if case.key == KEY_STRING || handler == SLOW {
+        return;
+    }
+    debug_assert!(shape::is_shape(case.key));
+    stub_cache::insert(rt, op, case.key as u32, name, handler);
 }
 
 // ---- vectors -----------------------------------------------------------------------------------
@@ -1254,18 +1462,24 @@ pub(crate) fn describe_handler(h: u64) -> (i32, u64, u64, i32) {
 /// IC hit and miss counters (feature `ic-stats`, H27; never in `ep9`, dep-guards check 11). A
 /// report build: `cargo build --release -p ep9_cli --features ep9_vm/ic-stats`. T0's fast
 /// handlers count each IC site visit as a hit (the fast path answered) or a miss (it went
-/// cold); a miss is sorted by the state of its feedback slot. The counters are per thread
-/// (the isolate's thread) and print to stderr when that thread ends, one line per site kind:
+/// cold); a miss is sorted by the state of its feedback slot, and a megamorphic named miss
+/// also counts its stub cache probe (`stub-cache load hit=.. miss=..`). The counters are per thread (the isolate's thread) and
+/// print to stderr when that thread ends, one line per site kind, then the 10 sites with the
+/// most misses in each of the states uninit and mega (M4-P3 IC2: the raytrace and crypto
+/// probes):
 ///
 /// ```text
 /// ep9 ic-stats: load hit=N miss=N (no-vector=N uninit=N mono=N poly=N mega=N)
+/// ep9 ic-stats: mega-site load <function>@<slot> miss=N
+/// ep9 ic-stats: uninit-site load <function>@<slot> miss=N
 /// ```
 ///
 /// Without the feature the count macro expands to nothing, so the default build is unchanged
 /// (NATIVE-INV).
 #[cfg(feature = "ic-stats")]
 pub(crate) mod stats {
-    use core::cell::Cell;
+    use core::cell::{Cell, RefCell};
+    use std::collections::HashMap;
 
     use super::{MEGA, entry};
     use crate::frame::{HOLE, UNDEFINED};
@@ -1282,17 +1496,26 @@ pub(crate) mod stats {
         LoadGlobal = 2,
         /// `StaGlobal` (0x12).
         StoreGlobal = 3,
+        /// `TestInstanceOf` (`instance_ic.rs`, M4-P3 IC2).
+        InstanceOf = 4,
     }
 
-    const SITES: [&str; 4] = ["load", "store", "load-global", "store-global"];
+    const SITES: [&str; 5] = ["load", "store", "load-global", "store-global", "instanceof"];
     /// Columns: hit, then the misses by slot state.
     const COLS: [&str; 6] = ["hit", "no-vector", "uninit", "mono", "poly", "mega"];
 
-    pub(crate) struct Counters([[Cell<u64>; 6]; 4]);
+    pub(crate) struct Counters {
+        n: [[Cell<u64>; 6]; 5],
+        /// Misses per (state column, site kind, function name, slot), for the columns uninit
+        /// and mega.
+        sites: RefCell<HashMap<(usize, usize, String, u32), u64>>,
+        /// Stub cache probes of megamorphic misses (`mega_load`, `mega_store`): [site][hit?].
+        stub: [[Cell<u64>; 2]; 2],
+    }
 
     impl Drop for Counters {
         fn drop(&mut self) {
-            for (s, row) in self.0.iter().enumerate() {
+            for (s, row) in self.n.iter().enumerate() {
                 let n: Vec<u64> = row.iter().map(Cell::get).collect();
                 if n.iter().all(|&x| x == 0) {
                     continue;
@@ -1306,16 +1529,45 @@ pub(crate) mod stats {
                     cols.join(" ")
                 );
             }
+            for (s, row) in self.stub.iter().enumerate() {
+                let (miss, hit) = (row[0].get(), row[1].get());
+                if hit + miss > 0 {
+                    eprintln!(
+                        "ep9 ic-stats: stub-cache {} hit={hit} miss={miss}",
+                        SITES[s]
+                    );
+                }
+            }
+            for col in [5, 2] {
+                let mut sites: Vec<_> = self
+                    .sites
+                    .borrow()
+                    .iter()
+                    .filter(|(k, _)| k.0 == col)
+                    .map(|(k, &v)| (v, k.clone()))
+                    .collect();
+                sites.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+                for (count, (_, s, name, slot)) in sites.into_iter().take(10) {
+                    eprintln!(
+                        "ep9 ic-stats: {}-site {} {name}@{slot} miss={count}",
+                        COLS[col], SITES[s]
+                    );
+                }
+            }
         }
     }
 
     thread_local! {
-        static C: Counters = const { Counters([const { [const { Cell::new(0) }; 6] }; 4]) };
+        static C: Counters = Counters {
+            n: [const { [const { Cell::new(0) }; 6] }; 5],
+            sites: RefCell::new(HashMap::new()),
+            stub: [const { [const { Cell::new(0) }; 2] }; 2],
+        };
     }
 
     fn bump(site: Site, col: usize) {
         C.with(|c| {
-            let x = &c.0[site as usize][col];
+            let x = &c.n[site as usize][col];
             x.set(x.get() + 1);
         });
     }
@@ -1324,6 +1576,15 @@ pub(crate) mod stats {
     #[inline(never)]
     pub(crate) fn hit(site: Site) {
         bump(site, 0);
+    }
+
+    /// A stub cache probe at a megamorphic `site` (`Load` or `Store`); `hit` if it answered.
+    #[inline(never)]
+    pub(crate) fn stub(site: Site, hit: bool) {
+        C.with(|c| {
+            let x = &c.stub[site as usize][usize::from(hit)];
+            x.set(x.get() + 1);
+        });
     }
 
     /// A miss at slot `slot` of `fi`'s vector, sorted by the slot state.
@@ -1338,10 +1599,18 @@ pub(crate) mod stats {
             Some(_) => 3,
         };
         bump(site, col);
+        if col == 2 || col == 5 {
+            C.with(|c| {
+                *c.sites
+                    .borrow_mut()
+                    .entry((col, site as usize, fi.name.clone(), slot))
+                    .or_insert(0) += 1;
+            });
+        }
     }
 }
 
-/// Counts an IC hit or miss with feature `ic-stats` ([`stats`]); nothing without it.
+/// Counts an IC hit or miss with feature `ic-stats` (the `stats` module); nothing without it.
 macro_rules! ic_count {
     (hit, $site:ident) => {
         #[cfg(feature = "ic-stats")]
@@ -1353,3 +1622,12 @@ macro_rules! ic_count {
     };
 }
 pub(crate) use ic_count;
+
+/// Counts a stub cache probe of a megamorphic miss with feature `ic-stats`; nothing without it.
+macro_rules! stub_stats {
+    ($site:ident, $hit:expr) => {
+        #[cfg(feature = "ic-stats")]
+        $crate::ic::stats::stub($crate::ic::stats::Site::$site, $hit);
+    };
+}
+use stub_stats;

@@ -728,6 +728,21 @@ fn has_own_with(rt: &Runtime, o: u64, key: u64, how: Probe) -> bool {
 /// takes that step in place, so a long bound chain costs no native stack (W4-BLTA-BOUND).
 /// GC point (the `@@hasInstance` getter and handler run JS): `v` and `f` live in Rust locals.
 pub(crate) fn instance_of(cx: &mut Cx, v: u64, f: u64) -> Res<bool> {
+    // The InstanceOf IC (M4-P3 IC2, `instance_ic.rs`): the site, read before any JS runs;
+    // the case of `f` is recorded once the generic answer is known.
+    let site = crate::instance_ic::site(cx);
+    let r = instance_of_generic(cx, v, f);
+    if r.is_ok()
+        && let Some((vector, slot)) = site
+    {
+        // GC point: `f` lives in a Rust local.
+        crate::instance_ic::record(cx.rt(), vector, slot, f);
+    }
+    r
+}
+
+/// InstanceofOperator(v, f) without the IC: the loop of [`instance_of`].
+fn instance_of_generic(cx: &mut Cx, v: u64, f: u64) -> Res<bool> {
     let mut f = f;
     loop {
         // 1. If target is not an Object, throw a TypeError exception.
