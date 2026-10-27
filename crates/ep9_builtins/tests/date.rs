@@ -224,7 +224,12 @@ fn constructor_now_and_utc() {
 var t0 = Date.now();
 var a = new Date(), b = Date.now();
 print(typeof t0, t0 > 1.5e12, a.getTime() >= t0 && a.getTime() <= b, Number.isInteger(t0));
-print(typeof Date(), typeof Date(0), Date(1, 2) === Date(), Date.length, Date.name);
+// Date(1, 2) ignores its arguments and gives the time now, to the second; GC stress is slow,
+// so look for its text among the seconds between Date.now() before and after it (string
+// compare: an offset with seconds makes Date.parse of local text miss).
+var lo = Date.now(), now = Date(1, 2), hi = Date.now(), seen = false;
+for (var t = Math.floor(lo / 1000) * 1000; t <= hi; t += 1000) seen = seen || String(new Date(t)) === now;
+print(typeof Date(), typeof Date(0), seen, Date.length, Date.name);
 print(new Date(new Date(5)).getTime(), new Date('1970-01-01T00:00:00.007Z').getTime());
 print(new Date({ valueOf: function () { return 9; } }).getTime());
 print(new Date({ [Symbol.toPrimitive]: function () { return '1970-01-01T00:00:01Z'; } }).getTime());
