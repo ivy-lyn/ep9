@@ -11,7 +11,7 @@
 //! | Part | Passes when | Module |
 //! |---|---|---|
 //! | 1 trailers | every commit that touches an H-row crate has an `ADR:` trailer, or a line in `expectations/adr-trailer-exceptions.txt` (below) | this file |
-//! | 2 review records | every amendment row of an Accepted or Frozen ADR since `<rev>` has review rows 1-4 and an approval by an agent that wrote none of them (V9-A15; README sections 3.1, 3.2) | `exit::records` |
+//! | 2 review records | every amendment row of an Accepted or Frozen ADR since `<rev>` has review rows 1-4 and an approval by an agent that wrote none of them (V9-A15; README sections 3.1, 3.2), and such an ADR whose text outside its Change log and Review record changed has a new amendment row | `exit::records` |
 //! | 3 Counts | the README Counts line and index column equal the Status lines | `exit::records` |
 //! | 4 path:line drift | every `path:line` reference of `docs/adr` and `docs/plan` names the same line at HEAD as when it was written (no FIX and no UNFIXABLE line of the ADRLINE dry run) | `exit::drift` |
 //!
