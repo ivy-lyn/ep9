@@ -178,6 +178,18 @@ pub(crate) fn expected_live(heap: &Heap, roots: &[usize]) -> std::collections::B
     seen
 }
 
+/// Writes `dead[0]` into every word of 16 KiB of stack below the caller's frame: the worst
+/// stale words a garbage helper can leave in its dead frame. Call it right after the helper.
+/// Then a test whose GC must find no live cell fails on every target, not only where two
+/// frames happen to line up, if anything copies a stale stack word into the test's own frame
+/// before [`clear_stack`]. Example: `heap.stats()` returns a `GcStats` whose 7 padding bytes
+/// (after `last_minor`) come from the callee's stack as they were.
+#[inline(never)]
+pub(crate) fn paint_stack(dead: &[usize]) {
+    let mut words = [dead[0]; 2048];
+    std::hint::black_box(&mut words);
+}
+
 /// Zeroes 64 KiB of stack below the caller's frame. Stale words that earlier calls left there
 /// (cell addresses in dead frames) then cannot keep a cell alive in the next conservative scan.
 #[inline(never)]
