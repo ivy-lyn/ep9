@@ -93,7 +93,8 @@ infra/fuzz/triage.sh /work/fuzz-out/storage/crashes
 ```
 
 Settings of the child (environment): `EP9_REPRL_HEAP_MB` (512), `EP9_REPRL_STACK_MB` (64),
-`EP9_REPRL_GC_STRESS` (0). A mutation run is an orchestrator run on Cloudflare `infra/fuzz` (at
+`EP9_REPRL_GC_STRESS` (0); the ep9 profile forwards each one that FuzzilliCli's environment
+sets (the child gets only the profile's environment). A mutation run is an orchestrator run on Cloudflare `infra/fuzz` (at
 most 4 boxes), asked for by a request file (plan v9 rule 17, V9-A6, V9-D24). Crash files and the
 Fuzzilli log hold program text: they stay on the box or in the scratchpad, never in the repo
 or a public log (rule 14).
