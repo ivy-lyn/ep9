@@ -294,9 +294,9 @@ pub(crate) struct Runtime {
     /// seeded per isolate from the process hash key and [`Runtime::id`] ([`rng_seed`]). Never
     /// both words 0.
     pub rng: Cell<[u64; 2]>,
-    /// The `[[KeptAlive]]` list (§9.10; `weakref.rs`, M4-P4 WEAKREF): a root slot that holds a
-    /// heap list cell, undefined until the first WeakRef.
-    #[allow(dead_code)] // read by its owner module from M4-P1 on
+    /// The WeakRef state (§9.10; `weakref.rs`, M4-P4 WEAKREF): the `[[KeptAlive]]` set (a
+    /// strong root), the chain of FinalizationRegistry objects (each held weakly) and the
+    /// cleanup flag that the GC's weak source sets.
     pub kept_objects: crate::weakref::KeptObjects,
     /// The compiled RegExp programs (`regexp.rs`, M4-P2 RX0A; V9-A7): Rust memory with no
     /// Value; a RegExp object holds its int32 index, and the table's weak source frees the

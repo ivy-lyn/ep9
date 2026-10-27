@@ -89,7 +89,7 @@ fn layout_3_versions_kinds_and_fixed_fields() {
 
 /// `object::register_kinds` registers the 5 new kinds (15 entries of its own array, plus the
 /// `ordered_table::register_kinds` call): a second registration of each is refused. A reserved
-/// id (27) is still free.
+/// id (29) is still free (27 and 28 are the proxy kinds since M4-P4).
 #[test]
 fn register_kinds_registers_the_five_new_kinds() {
     let iso = isolate(config(Dispatch::DEFAULT, false));

@@ -294,3 +294,104 @@ var fr = new FinalizationRegistry(function (held) { log('cleanup', held); throw 
         });
     }
 }
+
+/// Runs the sloppy script `src` through the normal embedder path,
+/// `Isolate::with_cx_checkpoint` (the CLI's path): the script, then a microtask checkpoint.
+/// No job-end hook is called by hand (M4-P4-CX-R1 W-1). Below a pad of zeros, as [`run`].
+#[inline(never)]
+fn run_checkpoint(i: &mut Isolate, src: &str) -> Result<(), String> {
+    let mut pad = [0u8; 64 << 10];
+    black_box(&mut pad);
+    let unit = ep9_frontend::compile(
+        src,
+        ep9_frontend::SourceOpts::script(ep9_frontend::Strictness::Sloppy),
+        ep9_frontend::CompileOptions::default(),
+    )
+    .expect("compiles");
+    let r = i
+        .with_cx_checkpoint(|cx| cx.run_script(unit, "weakref.js").map(|_| ()))
+        .map_err(|e| e.message);
+    black_box(&mut pad);
+    r
+}
+
+/// The checkpoint clears the kept list (M4-P4-CX-R1 W-1): a WeakRef target with no other
+/// reference lives through its script's jobs, and after the checkpoint and a GC it is gone.
+/// The control runs the same scripts with `with_cx` (no checkpoint): the kept list still
+/// holds the target, so it survives the GC. Only the embedder API is used.
+#[test]
+fn a_checkpoint_lets_a_weakref_target_die_at_the_next_gc() {
+    for stress in [false, true] {
+        common::on_big_stack(move || {
+            let src = r#"
+var w = new WeakRef((function () { return { name: 'temp' }; })());
+Promise.resolve().then(function () { log('job', w.deref() !== undefined); });
+log('script', w.deref().name);
+"#;
+            let mut i = log_isolate(stress);
+            run_checkpoint(&mut i, src).unwrap();
+            scrub_and_collect(&mut i);
+            run_checkpoint(&mut i, "log('later', w.deref() === undefined);").unwrap();
+            assert_eq!(
+                take_log(),
+                ["script temp", "job true", "later true"],
+                "stress={stress}"
+            );
+            i.verify_heap().expect("a valid heap");
+
+            // Control: no checkpoint, so nothing clears the kept list.
+            let mut i = log_isolate(stress);
+            run(&mut i, src).unwrap();
+            scrub_and_collect(&mut i);
+            run(&mut i, "log('later', w.deref() === undefined);").unwrap();
+            assert_eq!(
+                take_log(),
+                ["script temp", "later false"],
+                "stress={stress}"
+            );
+        });
+    }
+}
+
+/// The checkpoint runs the FinalizationRegistry cleanup (M4-P4-CX-R1 W-1): after a GC that
+/// finds the target dead, the next checkpoint calls the callback with the held value once, and
+/// a job the callback queues runs in the same checkpoint. Only the embedder API is used.
+#[test]
+fn a_checkpoint_runs_the_finalization_callback_with_the_held_value() {
+    for stress in [false, true] {
+        common::on_big_stack(move || {
+            let mut i = log_isolate(stress);
+            run_checkpoint(
+                &mut i,
+                r#"
+var fr = new FinalizationRegistry(function (held) {
+  log('cleanup', held);
+  Promise.resolve().then(function () { log('job from cleanup', held); });
+});
+var keep = {};
+(function () { fr.register({}, 'held-1'); })();
+fr.register(keep, 'kept');
+log('registered');
+"#,
+            )
+            .unwrap();
+            scrub_and_collect(&mut i);
+            i.perform_microtask_checkpoint()
+                .map_err(|e| e.message)
+                .unwrap();
+            // Under GC stress the target may die during the script; the callback then runs in
+            // the script's own checkpoint. Either way: once, then its job.
+            assert_eq!(
+                take_log(),
+                ["registered", "cleanup held-1", "job from cleanup held-1"],
+                "stress={stress}"
+            );
+            scrub_and_collect(&mut i);
+            i.perform_microtask_checkpoint()
+                .map_err(|e| e.message)
+                .unwrap();
+            assert_eq!(take_log(), Vec::<String>::new(), "stress={stress}");
+            i.verify_heap().expect("a valid heap");
+        });
+    }
+}

@@ -79,20 +79,10 @@ fn the_month_4_kind_ids() {
 /// M4-P0 registers no month-4 kind (the builders do, plan v9 §2.5 task 2). M4-P1 registered
 /// CONS and SLICED (STR1, `string::register_kinds`) and VALIDITY_CELL (VALIDITY,
 /// `validity::register_kind`), M4-P2 registered THIN (STR2, `string::register_kinds`), and
-/// M4-P4 registered PROXY and PROXY_CALLABLE (PROXY1, `object::register_kinds`): those are
-/// taken on a new isolate. WEAK_CELL (M4-P4 WEAKREF) is still free.
+/// M4-P4 registered PROXY and PROXY_CALLABLE (PROXY1, `object::register_kinds`) and WEAK_CELL
+/// (WEAKREF, `weakref::KeptObjects::new`): every month-4 kind is taken on a new isolate.
 #[test]
-fn no_month_4_kind_is_registered_yet() {
-    {
-        let id = kinds::WEAK_CELL;
-        let iso = isolate(config(Dispatch::DEFAULT, false));
-        assert_eq!(
-            iso.rt.heap.register_kind(id, dummy_kind("test")),
-            Ok(()),
-            "kind {} is free",
-            id.get()
-        );
-    }
+fn every_month_4_kind_is_registered() {
     for id in [
         kinds::CONS,
         kinds::SLICED,
@@ -100,6 +90,7 @@ fn no_month_4_kind_is_registered_yet() {
         kinds::VALIDITY_CELL,
         kinds::PROXY,
         kinds::PROXY_CALLABLE,
+        kinds::WEAK_CELL,
     ] {
         let iso = isolate(config(Dispatch::DEFAULT, false));
         assert_eq!(

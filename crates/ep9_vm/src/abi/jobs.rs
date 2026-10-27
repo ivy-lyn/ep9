@@ -195,7 +195,10 @@ impl<'s> Cx<'s> {
     }
 
     /// Performs a microtask checkpoint: runs the queued jobs in order, and the jobs they
-    /// queue, until the queue is empty. Each job takes one interrupt budget unit and polls
+    /// queue, until the queue is empty. Each time the queue is empty it runs ClearKeptObjects
+    /// and then the FinalizationRegistry cleanup jobs (`abi/weakref.rs`, M4-P4); the jobs a
+    /// cleanup callback queues run in the same checkpoint, and a callback that throws stops it
+    /// like a job that throws. Each job takes one interrupt budget unit and polls
     /// (M2-P2-POLL), so an interrupt callback runs and `TerminateHandle` stops a job loop; a
     /// termination also clears the queue. A job that throws stops the checkpoint with its
     /// exception pending (`Err`); the jobs behind it stay queued. Then the rejected list drops
@@ -215,7 +218,15 @@ impl<'s> Cx<'s> {
         }
         loop {
             if rt.jobs.queue_head() == UNDEFINED {
-                break;
+                // The queue is empty: ClearKeptObjects, then the FinalizationRegistry cleanup
+                // jobs (07-runtime.md "Job order"; `abi/weakref.rs`), as HTML's microtask
+                // checkpoint and node do: a target stays alive through every job of the
+                // checkpoint. A callback may queue jobs: they run in this checkpoint.
+                self.clear_kept_objects();
+                self.cleanup_finalization_registries()?;
+                if rt.jobs.queue_head() == UNDEFINED {
+                    break;
+                }
             }
             if let Err(t) = self.poll_interrupt() {
                 self.clear_queue();
