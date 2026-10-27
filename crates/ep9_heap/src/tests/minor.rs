@@ -420,6 +420,10 @@ fn gc_stress_runs_a_major_gc_every_64th_collection() {
 /// The budget policy: budget GCs are minor while the old bytes stay below twice the live
 /// bytes of the last major GC; then one is major.
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "20,000 allocations; the stress model covers the policy under Miri"
+)]
 fn the_budget_policy_runs_minor_gcs_then_a_major_one() {
     let heap = gen_heap(false, |c| c.initial_budget = PAGE_SIZE);
     // A rooted list that grows: its cells become old, so the old bytes grow.
@@ -480,6 +484,7 @@ fn collect_minor_on_an_s0_heap_is_a_full_gc() {
 
 /// A conservative root keeps a young cell in a minor GC (the scan marks it).
 #[test]
+#[cfg_attr(miri, ignore = "no conservative scan under Miri")]
 fn a_conservative_root_keeps_a_young_cell() {
     let heap = gen_heap(true, |_| {});
     major(&heap);
