@@ -809,10 +809,11 @@ mod tests {
             let key = input.key;
             let (code, report) =
                 crate::compile_input(&input, &facts::for_function(&live, id)).expect("compile");
-            (key, code.code, report.emit.meta.encode())
+            (key, code.code, report.emit.meta.encode(), s)
         };
-        let (k1, c1, m1) = compile(0);
-        let (k2, c2, m2) = compile(5000);
+        // Both sessions stay alive, so the two FunctionInfos cannot share an address.
+        let (k1, c1, m1, _s1) = compile(0);
+        let (k2, c2, m2, _s2) = compile(5000);
         assert_ne!(k1, k2, "the two FunctionInfos are at different addresses");
         assert_eq!(c1, c2, "code bytes differ between isolates");
         assert_eq!(m1, m2, "metadata bytes differ between isolates");
