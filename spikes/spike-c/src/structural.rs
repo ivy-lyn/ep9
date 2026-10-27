@@ -8,7 +8,7 @@
 //! | facts | live facts of a run -> PROFILED file -> read back: the same records | - |
 //! | layout | the VM layout copies of [`crate::vm_layout`] hold on live objects | - |
 //! | pipeline | a loop function compiled from its live facts (graph builder, lattice check, linear scan, a64 emit), installed in an Opt slot: output equal to T0 | - |
-//! | lattice | the protocol §6.1 checks on a graph with a named-load fact: one trust level per value, PROVEN only from the H30 list, every predicted value behind a guard of its fact, the five ref nodes only; a graph changed to break each rule is refused | - |
+//! | lattice | the protocol §6.1 checks on a graph with a named-load fact: one trust level per value, PROVEN only from the H30 list, every predicted value behind a guard of its fact, the five ref nodes only, every guard resumable (SPIKEC-3 guard placement); a graph changed to break each rule is refused | - |
 //! | trap | an input no guard admits ends the run in the "deopt not built" trap, named by its guard, with no wrong value and no crash | month 5 (the deopt entry) |
 //! | kernels | each protocol kernel (the pinned files) runs in T0 (n = 1) with its expected output, check line included (node's, where known); SKIP without the v8-v7 checkout | - |
 
@@ -133,7 +133,7 @@ fn pipeline() -> Result<String, String> {
 }
 
 fn lattice() -> Result<String, String> {
-    use crate::ir::{Op, Trust};
+    use crate::ir::{Op, Repr, Trust};
     let mut s = Session::new(&Config::default())?;
     s.run(FACTS_SRC, "f.js").result?;
     let script = s.script("f.js").ok_or("no script")?;
@@ -177,9 +177,27 @@ fn lattice() -> Result<String, String> {
         .check()
         .err()
         .ok_or("a shape guard without its ref nodes passed")?;
+    // Guard placement (SPIKEC-3): a poll of the shape guard's own instruction placed before
+    // it; a deopt there would resume T0 before the poll and run it again.
+    let mut bad = g.clone();
+    let (b, off) = (bad.node(shape).block, bad.node(shape).offset);
+    let poll = bad.add(Op::Poll, vec![], Repr::None, Trust::Unknown, b, off);
+    let blk = &mut bad.blocks[b.0 as usize].nodes;
+    let at = blk
+        .iter()
+        .position(|&n| n == shape)
+        .ok_or("shape not in its block")?;
+    blk.insert(at, poll);
+    let e5 = bad
+        .check()
+        .err()
+        .ok_or("a guard after an effect of its own instruction passed")?;
+    if !e5.contains("not replayable") {
+        return Err(format!("placement: wrong refusal {e5}"));
+    }
     let _ = (e1, e2, e3, e4);
     Ok(format!(
-        "get: {} nodes, {fact} fact guards, {unbacked} unbacked; 4 broken graphs refused",
+        "get: {} nodes, {fact} fact guards, {unbacked} unbacked; 5 broken graphs refused",
         g.order().count()
     ))
 }

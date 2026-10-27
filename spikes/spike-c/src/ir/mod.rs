@@ -25,13 +25,20 @@
 //!   unwind), so SPIKEC-1 checks the fast case inline instead. Each one is counted in the
 //!   report. An int32 BinaryOp or CompareOp record makes the int32 guards of its site fact
 //!   guards (SPIKEC-2, [`crate::build`]; the exporter writes those records from FACTS2, M4-P2,
-//!   on), and the keyed facts of FACTS2 do the same for keyed sites (SPIKEC-3). A value that an
+//!   on); an index-only keyed record of FACTS2 does the same for the key's int32 check of
+//!   its site, while the element guards stay unbacked (SPIKEC-3: FACT_SCHEMA 1 has no
+//!   receiver, bounds or hole field; [`crate::build`] "Keyed facts"). A value that an
 //!   unbacked guard narrows keeps the trust [`Trust::Unknown`]: no fact knows it. The basis
 //!   is a label: the emitted code of a guard is the same either way.
 //!
-//! Until month 5 builds the deopt entry, the emitter lowers every exit to the "deopt not
-//! built" trap ([`crate::emit_a64`]); each guard keeps the frame state a deopt will need
-//! (the bytecode offset and the SSA value of every live register).
+//! A guard's [`ExitPolicy`] is set once, from the mode and the basis, when the guard is made
+//! ([`Graph::set_guard`]); the builder never rewrites it, and shares a check only between
+//! sites of one policy (MC-w14-20).
+//!
+//! Until month 5 builds the deopt entry, every exit goes through its exit stub to the shared
+//! "deopt not built" trap ([`crate::emit_a64`]); each guard keeps the frame state a deopt
+//! will need (the bytecode offset and the SSA value of every live register), placed so that
+//! T0 can resume there ([`Graph::check`], guard placement).
 
 use std::fmt;
 use std::sync::Arc;
@@ -251,6 +258,13 @@ impl Op {
     /// True for a block terminator.
     pub fn is_terminator(&self) -> bool {
         matches!(self, Op::Jump | Op::Branch | Op::Return)
+    }
+
+    /// True for an op that changes the heap or the VM (a store, a poll, which may run a GC
+    /// or an interrupt): a deopt must not resume T0 before it once it ran (guard placement,
+    /// [`Graph::check`]). A guard's own checks run before its effect.
+    pub fn is_effect(&self) -> bool {
+        matches!(self, Op::StoreElement | Op::Poll)
     }
 
     /// True if the node has an effect other than its result (it stays without uses).
@@ -474,6 +488,13 @@ impl Graph {
     /// such values); every guard has the mode's exit policy and a frame state at its own
     /// offset or later; no raw heap constant; SSA (an input is defined before its use in
     /// block order, or is a phi input).
+    ///
+    /// Guard placement (SPIKEC-3; the month-5 eager deopt resumes T0 at the frame state's
+    /// offset and runs the code from there again, protocol §4):
+    /// - every frame-state value is defined before the guard (in block order), so the exit
+    ///   can read it there;
+    /// - no effect (a StoreElement, a Poll) of an instruction at or after the frame state's
+    ///   offset runs before the guard in its block: T0 would run that effect a second time.
     pub fn check(&self) -> Result<(), String> {
         let mut seen = vec![false; self.nodes.len()];
         for b in &self.blocks {
@@ -485,12 +506,35 @@ impl Graph {
         }
         let mut defined = vec![false; self.nodes.len()];
         for b in &self.blocks {
+            // Bytecode offsets of the effects made so far in this block.
+            let mut effects: Vec<u32> = Vec::new();
             for &n in &b.nodes {
                 let node = self.node(n);
                 if !node.live {
                     continue;
                 }
                 let at = format!("{}: n{} {:?}", self.name, n.0, node.op);
+                if let Some(g) = &node.guard {
+                    let state = g.state.registers.iter().map(|&(_, v)| v).chain(g.state.acc);
+                    for v in state {
+                        if !defined[v.0 as usize] {
+                            return Err(format!(
+                                "{at}: frame-state value n{} is not defined before the guard",
+                                v.0
+                            ));
+                        }
+                    }
+                    if let Some(&e) = effects.iter().find(|&&e| e >= g.state.offset) {
+                        return Err(format!(
+                            "{at}: guard g{} resumes T0 at @{}, after which an effect at @{e} \
+                             already ran (not replayable)",
+                            g.id, g.state.offset
+                        ));
+                    }
+                }
+                if node.op.is_effect() {
+                    effects.push(node.offset);
+                }
                 for &i in &node.inputs {
                     if !self.node(i).live || !seen[i.0 as usize] {
                         return Err(format!("{at}: input n{} is not in the graph", i.0));
@@ -674,5 +718,56 @@ mod tests {
         g.set_guard(c, GuardBasis::Unbacked, FrameState::default());
         assert!(g.check().is_ok());
         assert_eq!(g.guard_counts(), (0, 1));
+    }
+
+    /// Guard placement: a guard after an effect of its own resume range is refused (T0
+    /// would run the effect again), and so is a frame state that names a value made after
+    /// the guard; the same guard before the effect, or resuming after it, passes.
+    #[test]
+    fn check_refuses_a_guard_that_cannot_resume() {
+        let block = |g: &mut Graph, op: Op, inputs: Vec<NodeId>, repr: Repr, off: u32| {
+            let n = g.add(op, inputs, repr, Trust::Unknown, BlockId(0), off);
+            g.blocks[0].nodes.push(n);
+            n
+        };
+        let build = |guard_after: u32, state_off: u32| {
+            let mut g = Graph::new("t", FactSource::Runtime, 1, 0);
+            g.blocks.push(Block::default());
+            let p = block(
+                &mut g,
+                Op::Incoming(Incoming::Param(0)),
+                vec![],
+                Repr::Tagged,
+                0,
+            );
+            let poll = block(&mut g, Op::Poll, vec![], Repr::None, 10);
+            let c = block(&mut g, Op::CheckInt32, vec![p], Repr::Int32, guard_after);
+            g.set_guard(
+                c,
+                GuardBasis::Unbacked,
+                FrameState {
+                    offset: state_off,
+                    registers: vec![(Register::parameter(0), p)],
+                    acc: None,
+                },
+            );
+            let _ = poll;
+            g
+        };
+        // The poll at @10 ran; resuming at @10 runs it again.
+        let e = build(12, 10).check().unwrap_err();
+        assert!(e.contains("not replayable"), "{e}");
+        let e = build(12, 4).check().unwrap_err();
+        assert!(e.contains("not replayable"), "{e}");
+        // Resuming after the poll is fine.
+        assert!(build(12, 12).check().is_ok());
+        // A frame-state value made after the guard.
+        let mut g = build(12, 12);
+        let late = block(&mut g, Op::ConstInt32(1), vec![], Repr::Int32, 14);
+        g.node_mut(late).trust = Trust::Proven;
+        let c = g.blocks[0].nodes[2];
+        g.node_mut(c).guard.as_mut().expect("guard").state.acc = Some(late);
+        let e = g.check().unwrap_err();
+        assert!(e.contains("not defined before the guard"), "{e}");
     }
 }

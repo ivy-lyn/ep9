@@ -29,7 +29,7 @@
 //! | [`ir`] | the SSA graph, the fact lattice, the five ref nodes, guards with frame states | SPIKEC-1 |
 //! | [`build`](mod@build) | the graph builder: bytecode + FactSnapshot -> [`ir::Graph`] | SPIKEC-1; int facts SPIKEC-2; keyed facts SPIKEC-3 |
 //! | [`regalloc`] | linear-scan register allocation | SPIKEC-1 |
-//! | [`emit_a64`] | AArch64 code from the allocated graph (dynasm 5.1.0); guard exits = the "deopt not built" trap | SPIKEC-1 |
+//! | [`emit_a64`] | AArch64 code from the allocated graph (dynasm 5.1.0); guard exits = one exit stub per guard to a shared "deopt not built" trap | SPIKEC-1; exit stubs SPIKEC-3 |
 //! | [`vm_layout`] | VM layout facts the code reads that `ep9_vm::layout` does not export, checked on live objects | SPIKEC-1 |
 //! | [`tier`] | config C of the protocol: a kernel run with its hot function compiled, against T0 | SPIKEC-1 |
 //! | [`timing`] | the class S timing of protocol §3 (T0, C, H0, H1; paired ratios, the median interval), a Mac report | SPIKEC-2 |

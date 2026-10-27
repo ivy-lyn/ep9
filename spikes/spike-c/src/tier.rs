@@ -617,6 +617,61 @@ mod tests {
         traps(ARR, warm, "print(fill({0: 1, length: 1}, 1));", "fill");
     }
 
+    /// The ids of the guards on the graph lines that contain `op`.
+    fn guard_ids(graph: &str, op: &str) -> Vec<u32> {
+        graph
+            .lines()
+            .filter(|l| l.contains(op))
+            .filter_map(|l| l.split(" guard g").nth(1))
+            .filter_map(|t| t.split(' ').next()?.parse().ok())
+            .collect()
+    }
+
+    /// Exit stubs (SPIKEC-3): one stub per guard (12 bytes while the id and the offset fit in
+    /// 16 bits) and one shared exit; each failing guard still traps with its own id, so the
+    /// stub passed the right one.
+    #[test]
+    fn each_guard_exits_through_its_own_stub() {
+        if !aarch64() {
+            return;
+        }
+        let warm = "var w = [1, 2, 3, 4]; for (var k = 0; k < 20; k++) fill(w, 4);";
+        let oob = traps(ARR, warm, "print(fill([1, 2], 3));", "fill");
+        let g = &oob.report.graph;
+        let loads = guard_ids(g, "LoadElement");
+        let arrays = guard_ids(g, "CheckArray");
+        assert!(!loads.is_empty() && !arrays.is_empty(), "{g}");
+        assert!(
+            loads.contains(&oob.trap.expect("trap")),
+            "{:?} {g}",
+            oob.trap
+        );
+        let hole = traps(ARR, warm, "var h = [1, , 3]; print(fill(h, 3));", "fill");
+        assert!(
+            loads.contains(&hole.trap.expect("trap")),
+            "{:?} {g}",
+            hole.trap
+        );
+        let obj = traps(ARR, warm, "print(fill({0: 1, length: 1}, 1));", "fill");
+        assert!(
+            arrays.contains(&obj.trap.expect("trap")),
+            "{:?} {g}",
+            obj.trap
+        );
+        let e = &oob.report.emit;
+        assert_eq!(e.traps.len(), e.guards);
+        assert_eq!(e.stub_bytes as usize, 12 * e.guards, "{}", e.exits_line());
+        assert!(
+            e.shared_exit_bytes > 0 && e.shared_exit_bytes <= 80,
+            "{}",
+            e.exits_line()
+        );
+        // The stubs sit one after another in guard order.
+        for w in e.traps.windows(2) {
+            assert_eq!(w[1].1 - w[0].1, 12, "{:?}", e.traps);
+        }
+    }
+
     /// Keyed facts (SPIKEC-3): an index-only LoadKeyed record backs the key's int32 check;
     /// the element guards stay unbacked (FACT_SCHEMA 1 has no receiver, bounds or hole field);
     /// a site that saw a key that is not an index is refused (no generic keyed path).
@@ -894,6 +949,14 @@ mod tests {
             k.iter().all(|s| s.keys == Some(ep9_facts::KeySet::INDEX)
                 && s.key_basis == crate::ir::GuardBasis::Fact(ep9_facts::FactSource::Runtime)),
             "{k:?}"
+        );
+        // One 12-byte exit stub per guard.
+        let e = &r.report.emit;
+        assert_eq!(
+            (e.guards, e.stub_bytes),
+            (29, 29 * 12),
+            "{}",
+            e.exits_line()
         );
     }
 

@@ -12,7 +12,8 @@
 #     1  release build (always: cargo decides what is fresh, so the checks never run a binary
 #        of older sources; in `all` mode the structural step's build counts, once per run)
 #     2  `spike-c compile crypto`: am3 through the whole pipeline from the live facts of an
-#        n = 1 T0 run (graph builder, lattice check, linear scan, a64 emit); prints the report
+#        n = 1 T0 run (graph builder, lattice and guard-placement check, linear scan, a64
+#        emit); prints the report, the keyed sites and the bytes per exit (SPIKEC-3)
 #     3  `spike-c tier crypto --n 1` and `spike-c tier crypto` (n = 8): crypto with am3
 #        compiled and installed (placement (b)) after a warm-up run; output equal to T0 line
 #        for line (the kernel checks its own decrypt), then a probe call with a receiver
