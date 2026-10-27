@@ -430,7 +430,7 @@ function kinds(o, s, d) {
   g();                          // Call (Call*): g
   new K();                      // Call (Construct*): K
   var cl = function () {};      // CreateClosure: many
-  var io = o instanceof Array;  // InstanceOf: no record before IC2 (M4-P3)
+  var io = o instanceof Array;  // InstanceOf (IC2, M4-P3): Array, monomorphic
   var re = /a+/g;               // CreateRegExpLiteral: T0 leaves its Literal slot empty: no record
   return x;
 }
@@ -504,7 +504,7 @@ fn every_recorded_kind_is_exported() {
                 assert_eq!(
                     k.property.state,
                     IcState::Uninitialized,
-                    "no keyed IC before KEYED"
+                    "KEYED keeps no LoadKeyed state (fast_get is cold)"
                 );
             }
             ref r => panic!("{r:?}"),
@@ -543,7 +543,14 @@ fn every_recorded_kind_is_exported() {
         assert_eq!(of_kind(&facts, f, "JumpLoop").len(), 1);
         assert!(matches!(of_kind(&facts, f, "CreateClosure")[..],
             [SlotFacts::CreateClosure(c)] if c.closures == ClosureCount::Many));
-        assert!(of_kind(&facts, f, "InstanceOf").is_empty());
+        // IC2 (M4-P3, instance_ic.rs) records a run that gives a result: the rhs `Array`.
+        match of_kind(&facts, f, "InstanceOf")[..] {
+            [SlotFacts::InstanceOf(t)] => {
+                assert_eq!(t.state, IcState::Monomorphic, "{t:?}");
+                assert!(matches!(t.targets[..], [FunctionRef::Builtin(_)]), "{t:?}");
+            }
+            ref r => panic!("{r:?}"),
+        }
 
         // Calls: the `g()` site (sampled calls) and the `new K()` site (cold constructs).
         let calls: Vec<_> = of_kind(&facts, f, "Call")
