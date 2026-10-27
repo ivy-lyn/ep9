@@ -1462,6 +1462,75 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// M4-P3 Codex round 2 (tools, empty cells): a Who or Result cell of one space (`| |`) is an
+    /// empty cell, not a part of the next one: the gap still names the row.
+    #[test]
+    fn a_one_space_empty_cell_is_no_record() {
+        let (root, base, day) = full_repo("one-space-cells");
+        add_rows(
+            &root,
+            H16,
+            "Change log",
+            &[format!("| {day} | clarify | A word fixed | docs agent |")],
+        );
+        let label = format!("the {day} clarify row");
+        let good = record(&label, "orchestrator", "**Approved**");
+        // Codex's case: rows 1-4 with empty Who and Result, an Evidence cell, an approval.
+        let mut rows: Vec<String> = ["1 Reviewer", "2 Codex", "3 Verifier", "4 Data"]
+            .iter()
+            .map(|p| format!("| {p} ({label}) | | | evidence |"))
+            .collect();
+        rows.push(good[4].clone());
+        add_rows(&root, H16, "Review record", &rows);
+        let lint = full(&root, &base).unwrap();
+        assert!(!lint.pass, "{}", lint.text);
+        for p in ["1 Reviewer", "2 Codex", "3 Verifier", "4 Data"] {
+            assert!(
+                lint.text.contains(&format!(
+                    "record row \"{p} ({label})\" has an empty Who or Result cell"
+                )),
+                "{p}: {}",
+                lint.text
+            );
+        }
+        assert!(
+            lint.text
+                .contains("found 1: 0, 2: 0, 3: 0, 4: 0, Approval: 1)"),
+            "{}",
+            lint.text
+        );
+        // Each of the 5 rows with a one-space Who or Result (with and without the last
+        // delimiter), the other 4 rows complete.
+        let clean = read(&root.join(H16)).unwrap();
+        let rows_text = rows.join("\n");
+        let part = |row: &str| row.split(" | ").next().unwrap().to_string();
+        for (i, row) in good.iter().enumerate() {
+            let p = part(row);
+            for bad in [
+                format!("{p} | | Checked | evidence |"),
+                format!("{p} | reviewer C (Claude) | | evidence |"),
+                format!("{p} | | | evidence"),
+                format!("{p} | reviewer C (Claude) | |"),
+            ] {
+                let mut set = good.clone();
+                set[i] = bad.clone();
+                write(&root, H16, &clean.replace(&rows_text, &set.join("\n")));
+                let lint = full(&root, &base).unwrap();
+                assert!(!lint.pass, "{bad}: {}", lint.text);
+                assert!(
+                    lint.text.contains("has an empty Who or Result cell"),
+                    "{bad}: {}",
+                    lint.text
+                );
+            }
+        }
+        // The complete record: PASS.
+        write(&root, H16, &clean.replace(&rows_text, &good.join("\n")));
+        let lint = full(&root, &base).unwrap();
+        assert!(lint.pass, "{}", lint.text);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     /// M4-P3 review (jit-tools finding 5): a record that the base file already has does not
     /// cover a new Change-log row of the same date.
     #[test]

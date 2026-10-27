@@ -67,13 +67,29 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The cells of a markdown table row.
+/// The cells of a markdown table row, each trimmed, an empty cell kept (`| a | | b |` is 3
+/// cells). The delimiters are the `|` that no backslash comes just before (GFM: `\|` is a pipe
+/// in the cell text, and stays as written); a leading and a trailing delimiter are optional.
 fn cells(l: &str) -> Vec<String> {
-    l.trim()
-        .trim_matches('|')
-        .split(" | ")
-        .map(|c| c.trim().to_string())
-        .collect()
+    let t = l.trim();
+    let t = t.strip_prefix('|').unwrap_or(t);
+    let mut out = Vec::new();
+    let mut cell = String::new();
+    let mut escaped = false;
+    for ch in t.chars() {
+        if ch == '|' && !escaped {
+            out.push(cell.trim().to_string());
+            cell.clear();
+        } else {
+            cell.push(ch);
+        }
+        escaped = ch == '\\';
+    }
+    // A row without its trailing delimiter: the text after the last one is the last cell.
+    if !cell.trim().is_empty() || out.is_empty() {
+        out.push(cell.trim().to_string());
+    }
+    out
 }
 
 /// A cell with no content: empty, or only markdown emphasis, code ticks or a dash.
@@ -478,10 +494,25 @@ mod tests {
             ),
             "# H\n\n## Decision\n\nA\n\n## Notes\nB\n"
         );
+        let v = |s: &[&str]| s.iter().map(|c| c.to_string()).collect::<Vec<_>>();
+        assert_eq!(cells("| a | b \\| c | d |"), v(&["a", "b \\| c", "d"]));
         assert_eq!(
-            cells("| a | b \\| c | d |"),
-            vec!["a".to_string(), "b \\| c".into(), "d".into()]
+            cells("| a | `x \\|\\| y` | d"),
+            v(&["a", "`x \\|\\| y`", "d"])
         );
+        // M4-P3 Codex round 2: one-space empty cells are cells (the old ` | ` split read
+        // `| p | | | e |` as `p`, `|`, `e`).
+        assert_eq!(cells("| p | | | e |"), v(&["p", "", "", "e"]));
+        assert_eq!(cells("| p |  |  | |"), v(&["p", "", "", ""]));
+        assert_eq!(cells("| p || | e |"), v(&["p", "", "", "e"]));
+        // With and without the leading and the trailing delimiter.
+        assert_eq!(cells("| a | b |"), v(&["a", "b"]));
+        assert_eq!(cells("| a | b"), v(&["a", "b"]));
+        assert_eq!(cells("a | b |"), v(&["a", "b"]));
+        assert_eq!(cells("  | a | b |  "), v(&["a", "b"]));
+        assert_eq!(cells("| a | |"), v(&["a", ""]));
+        assert_eq!(cells("| a | b \\|"), v(&["a", "b \\|"]));
+        assert_eq!(cells("|"), v(&[""]));
         assert_eq!(
             section_rows(
                 "## Change log\n\n| A | B |\n|---|---|\n| 1 | 2 |\n## Next\n| x | y |\n",
