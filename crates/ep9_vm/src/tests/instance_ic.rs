@@ -405,3 +405,40 @@ fn the_object_prototype_function_is_cached_too() {
         assert!(!test(&mut t, k, object_ctor));
     });
 }
+
+// ---- the interrupt budget of the hit walk (M4-P4 fixer C; Codex B1-1) -------------------------
+
+/// A warm site's hit walk takes one interrupt budget unit per step and misses when the budget
+/// runs out; the generic walk then polls. On a chain longer than the whole budget: without a
+/// termination the site answers true and keeps its handler; with a termination requested
+/// before the call, the call stops (it cannot be caught), and the site answers again after.
+/// Before the fix the hit walked the whole chain with no poll and returned true. No GC stress
+/// (the chain is 12,000 objects, made from Rust).
+#[test]
+fn a_termination_stops_the_hit_walk_of_a_warm_site_on_a_long_chain() {
+    each(|c| {
+        if c.heap.gc_stress != 0 {
+            return;
+        }
+        let mut t = new_t(c);
+        let c0 = class(&t, 0);
+        let short = instance(&mut t, c0);
+        assert!(test(&mut t, short, c0));
+        let warm = t.handler(0, c0);
+        assert_eq!(describe(&t, c0).map(|d| d.0), Some(INSTANCEOF));
+        let mut long = short;
+        for _ in 0..(crate::interp::BUDGET as usize + 2_000) {
+            long = object::new_object(t.rt(), long);
+        }
+        assert!(test(&mut t, long, c0));
+        assert_eq!(t.handler(0, c0), warm, "the miss writes nothing");
+        t.iso.terminate_handle().terminate();
+        let e = t
+            .call(0, long, c0)
+            .expect_err("the termination stops the walk");
+        assert!(e.terminated, "{}", e.message);
+        assert!(test(&mut t, short, c0));
+        assert!(test(&mut t, long, c0));
+        assert_eq!(t.handler(0, c0), warm);
+    });
+}

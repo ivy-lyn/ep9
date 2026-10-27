@@ -20,7 +20,9 @@
 //! handler is a cell, `c`'s shape is the one at +24, the validity cell at +16 is valid. Then:
 //! `o` not an object gives false (step 3); else `P` = the field at +32 of `c`, which must be
 //! an object (else the generic path throws); then the chain walk of `o` (step 6), which
-//! misses on a Proxy (its `[[GetPrototypeOf]]` is a trap; M4-P4 PROXY1).
+//! misses on a Proxy (its `[[GetPrototypeOf]]` is a trap; M4-P4 PROXY1) and when the
+//! interrupt budget runs out (one unit per step, as the generic walk, checked per 8 steps;
+//! the generic walk then polls; M4-P4 fixer C, Codex B1-1).
 //!
 //! Rules:
 //! - What the handler guards. InstanceofOperator (§13.10.2) is OrdinaryHasInstance when
@@ -84,9 +86,13 @@ const POLY_CASE: usize = ic::pc::CASE;
 // ---- the hit path -------------------------------------------------------------------------------
 
 /// `o instanceof c` (InstanceOf slot `s`): on a hit the boolean goes to the accumulator.
+/// The hit's chain walk takes interrupt budget units ([`hit`]); they are taken on a miss too.
 #[inline(always)]
 pub(crate) fn fast(st: &mut St<'_>, o: u64, c: u64, s: FSlot) -> Flow {
-    match hit(st.rt(), st.info(), o, c, s.0) {
+    let mut budget = st.cx.budget;
+    let r = hit(st.rt(), st.info(), o, c, s.0, &mut budget);
+    st.cx.budget = budget;
+    match r {
         Some(b) => {
             ic::ic_count!(hit, InstanceOf);
             st.acc = b;
@@ -131,10 +137,24 @@ fn field(c: u64, s: u64, field: usize) -> u64 {
     }
 }
 
-/// The hit: the boolean (TRUE or FALSE bits), or `None` for the cold path.
+/// The hit: the boolean (TRUE or FALSE bits), or `None` for the cold path. The chain walk
+/// takes one interrupt budget unit (`budget`, the isolate's) per step, as the generic walk
+/// does (`property::prototype_walk_step`), in groups of [`WALK_STEPS`] (one check per group:
+/// a check per step cost +7.2% instructions on a monomorphic 20-deep walk, a group of 8
+/// +1.2%). It does not poll: when the budget runs out it misses, and the generic walk of the
+/// cold path polls at its first step and answers (M4-P4 fixer C, Codex B1-1: a warm site
+/// walked a long chain with no poll, so a termination waited for the walk's end). The record
+/// after that writes nothing (the handler is current).
 #[inline(always)]
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
-fn hit(rt: &Runtime, fi: &FunctionInfo, o: u64, c: u64, slot: u32) -> Option<u64> {
+fn hit(
+    rt: &Runtime,
+    fi: &FunctionInfo,
+    o: u64,
+    c: u64,
+    slot: u32,
+    budget: &mut i64,
+) -> Option<u64> {
     if !is_cell_bits(c) {
         return None;
     }
@@ -159,21 +179,33 @@ fn hit(rt: &Runtime, fi: &FunctionInfo, o: u64, c: u64, slot: u32) -> Option<u64
     if !kind::is_object(p) {
         return None;
     }
-    // Step 6: the chain of `o`. A Proxy's [[GetPrototypeOf]] is a trap: the generic path.
+    // Step 6: the chain of `o`. A Proxy's [[GetPrototypeOf]] is a trap: the generic path. So
+    // is a walk that uses up the budget: the generic walk polls.
     let mut q = o;
     loop {
-        if is_proxy(q) {
+        // The budget is taken per WALK_STEPS steps, after them: a walk may pass the budget by
+        // fewer than WALK_STEPS steps.
+        for _ in 0..WALK_STEPS {
+            if is_proxy(q) {
+                return None;
+            }
+            q = object::proto_of(q);
+            if q == NULL {
+                return Some(FALSE);
+            }
+            if q == p {
+                return Some(TRUE);
+            }
+        }
+        *budget -= WALK_STEPS as i64;
+        if *budget <= 0 {
             return None;
-        }
-        q = object::proto_of(q);
-        if q == NULL {
-            return Some(FALSE);
-        }
-        if q == p {
-            return Some(TRUE);
         }
     }
 }
+
+/// The chain steps of a hit walk between two budget checks ([`hit`]).
+const WALK_STEPS: usize = 8;
 
 #[inline(always)]
 fn is_proxy(o: u64) -> bool {

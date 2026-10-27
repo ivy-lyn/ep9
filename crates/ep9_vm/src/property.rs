@@ -1020,18 +1020,33 @@ pub(crate) const MAX_PROXY_HOPS: u32 = 100 * 1024;
 /// `o.[[GetPrototypeOf]]()`. `hops` counts the proxies the walk has asked; past
 /// [`MAX_PROXY_HOPS`] the step throws the RangeError "Maximum call stack size exceeded"
 /// instead. The caller starts `hops` at 0. GC point (a proxy, the poll).
+///
+/// The hot part is inlined: the budget unit and, for an ordinary object, its shape's
+/// prototype; the proxy part is a cold call (M4-P4 verifier B V-B1: the walk had cost about
+/// 22 more instructions per step than before fixer B). The instanceof cache's hit walk takes
+/// the same unit per step and leaves the poll to this walk (`instance_ic::hit`, Codex B1-1).
+#[inline]
 pub(crate) fn prototype_walk_step(cx: &mut Cx, o: u64, hops: &mut u32) -> Res<u64> {
     cx.budget -= 1;
     if cx.budget <= 0 && crate::interp::slow::interrupt(cx, core::ptr::null_mut()) == 0 {
         return Err(ep9_value::Throw);
     }
-    if crate::proxy::is_proxy_kind(kind::cell_kind(o)) {
-        *hops += 1;
-        if *hops > MAX_PROXY_HOPS {
-            return stack_overflow(cx);
-        }
+    if !crate::proxy::is_proxy_kind(kind::cell_kind(o)) {
+        return Ok(object::proto_of(o));
     }
-    try_get_prototype_of(cx, o)
+    proxy_walk_step(cx, o, hops)
+}
+
+/// The proxy part of [`prototype_walk_step`]: counts the hop, then the proxy's
+/// `[[GetPrototypeOf]]` (`proxy::get_prototype_of`). GC point.
+#[cold]
+#[inline(never)]
+fn proxy_walk_step(cx: &mut Cx, o: u64, hops: &mut u32) -> Res<u64> {
+    *hops += 1;
+    if *hops > MAX_PROXY_HOPS {
+        return stack_overflow(cx);
+    }
+    crate::proxy::get_prototype_of(cx, o)
 }
 
 /// Whether `h` is `%Function.prototype%[@@hasInstance]` (VM builtin 0.30). Allocates nothing.

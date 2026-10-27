@@ -1168,6 +1168,7 @@ impl<'s> Cx<'s> {
     /// counts the proxies the walk has asked (the caller starts it at 0); a proxy may make the
     /// chain a cycle, so past 100 × 1024 of them (V8's `JSProxy::kMaxIterationLimit`) the step
     /// throws the RangeError "Maximum call stack size exceeded", as V8 does.
+    #[inline]
     pub fn prototype_walk_step(
         &mut self,
         o: impl Into<Local<'s, JsObject>>,
