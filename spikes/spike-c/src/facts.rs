@@ -203,6 +203,39 @@ print(r);\n";
         );
     }
 
+    /// Why keyed records back no element guard (SPIKEC-3): in FACT_SCHEMA 1 a LoadKeyed site
+    /// whose reads went out of bounds, hit a hole or had a non-array receiver exports the
+    /// same keys, {index}, as a site that only read present elements (the receiver, bounds
+    /// and hole bits of the slot have no schema field, `ep9_vm` facts_export.rs `keyed`).
+    #[test]
+    fn keyed_records_do_not_show_bounds_holes_or_receivers() {
+        use ep9_facts::KeySet;
+        let mut s = Session::new(&Config::default()).expect("session");
+        let src = "\
+function present(a, i) { return a[i]; }\n\
+function oob(a, i) { return a[i]; }\n\
+function hole(a, i) { return a[i]; }\n\
+function obj(a, i) { return a[i]; }\n\
+function name(a, i) { return a[i]; }\n\
+var xs = [1, 2, 3], hs = [1, , 3], o = { 0: 1, 1: 2 };\n\
+for (var k = 0; k < 30; k++) { present(xs, k % 3); oob(xs, 3 + k); hole(hs, 1); obj(o, k & 1); name(xs, 'length'); }\n";
+        assert!(s.run(src, "k.js").result.is_ok());
+        let script = s.script("k.js").expect("script");
+        let live = live(&s, script).expect("live");
+        let keys = |f: &str| {
+            let id = script.functions_named(f)[0];
+            let recs = for_function(&live, id).records;
+            let [(_, SlotFacts::LoadKeyed(k))] = recs[..] else {
+                panic!("{f}: {recs:?}");
+            };
+            k.keys
+        };
+        for f in ["present", "oob", "hole", "obj"] {
+            assert_eq!(keys(f), KeySet::INDEX, "{f}");
+        }
+        assert_eq!(keys("name"), KeySet::INDEX.union(KeySet::NAME));
+    }
+
     #[test]
     fn none_has_no_records() {
         let f = FunctionFacts::none(FactSource::Profiled, 3);

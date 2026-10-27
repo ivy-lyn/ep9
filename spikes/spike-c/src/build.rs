@@ -22,7 +22,7 @@
 //! | `+`, `-`, `*`, Inc, Dec, ToNumeric | CheckInt32 on each input, Int32 op with an overflow (and -0) guard | predicted{source} with an int32 BinaryOp fact (below), else unknown with unbacked guards |
 //! | `<`, `>`, `<=`, `>=` | CheckInt32 on each input (backed by an int32 CompareOp fact, else unbacked), Compare | PROVEN (a boolean) |
 //! | GetNamedProperty | CheckShape (the LoadNamed fact: an in-object own field or an Array's `length`, one location for every case) + LoadField | the check is predicted{source}; the loaded value unknown |
-//! | GetKeyedProperty, SetKeyedProperty | CheckArray, CheckInt32 on the key, LoadElement / StoreElement (an int32 value only) | unknown; unbacked guards (keyed facts: FACTS2 P2, SPIKEC-3) |
+//! | GetKeyedProperty, SetKeyedProperty | CheckArray, CheckInt32 on the key, LoadElement / StoreElement (an int32 value only) | unknown; the key check is backed by an index-only keyed record, the element guards are unbacked (keyed facts, SPIKEC-3, below) |
 //! | JumpLoop | Poll (budget), Jump to the header | - |
 //!
 //! A named load without a fact, a megamorphic site, an accessor, a prototype field or an
@@ -43,18 +43,42 @@
 //! block was (the header runs with the entry value). The overflow guard of `+`, `-`, Inc and
 //! Dec is always unbacked: T0 leaves an int32 `+` or `-` that overflows implicit int32, so
 //! the hint does not cover it (`*` records its overflow and -0, so its guard keeps the basis).
-//! Keyed sites stay unbacked until SPIKEC-3 reads the keyed facts (V9-A20).
+//!
+//! **Checks are shared by (value, policy) (SPIKEC-3, MC-w14-20).** The block-local memo keys
+//! a check by its op, its input and the exit policy that the mode gives the site's basis
+//! ([`crate::ir::Mode::exit_policy`]). A later site with the same three shares the check and
+//! may only relabel its basis (unbacked to a fact); a guard's policy is set once, when the
+//! guard is made, and never rewritten. A site whose policy differs gets its own check. JIT
+//! mode has one policy, so the graphs are the same as with the (op, input) key.
+//!
+//! **Keyed facts (SPIKEC-3, V9-A20).** The LoadKeyed and StoreKeyed records of FACTS2
+//! (`ep9_vm` facts_export.rs `keyed`) carry, in FACT_SCHEMA 1, the keys a site saw
+//! ([`KeySet`]) and the key half's IC state, nothing about the receiver, the bounds or holes
+//! (those value bits have no schema field until the month-6 bump, MC-w13-9). So:
+//!
+//! | Record of the site | Graph |
+//! |---|---|
+//! | keys = {index} (at a LoadKeyed site also "never ran": the implicit INDEX bit, MODES-D10) | the key's int32 check is backed by the record (an index of another form, an index string or a Number past int32, fails it and exits) |
+//! | no keys (a StoreKeyed site that never ran) or no record | the key's int32 check is unbacked |
+//! | a name, symbol or other key | refused: the function stays in T0 |
+//!
+//! The IC state (the key half: undefined, a receiver shape, or the hole once KEYED writes it)
+//! is not read: the element guards test the receiver's kind and the element, not its shape.
+//! CheckArray, LoadElement and StoreElement stay unbacked in every case. A site with a key
+//! that is not an index is refused because its element guards would exit on those keys and
+//! the generic keyed path is not built: `ep9_vm::RuntimeTable` has no keyed entry at the M4-P2
+//! head (P2-ORCH-6 gives them to M4-P3 KEYED), so the guarded element path stays.
 
 use ep9_bytecode::{Opcode, Register, decode_at};
-use ep9_facts::{Access, BinaryHint, CompareHint, IcState, ObjectKind, SlotFacts};
+use ep9_facts::{Access, BinaryHint, CompareHint, IcState, KeySet, ObjectKind, SlotFacts};
 use ep9_value::encoding::{VALUE_FALSE, VALUE_NULL, VALUE_TRUE, VALUE_UNDEFINED};
 use spike_b::emit::{FunctionInput, Refusal};
 
 use crate::cfg::Cfg;
 use crate::facts::FunctionFacts;
 use crate::ir::{
-    self, BlockId, Cond, FrameState, Graph, GuardBasis, Incoming, Int32Op, NodeId, Op, RefNode,
-    Repr, Trust,
+    self, BlockId, Cond, ExitPolicy, FrameState, Graph, GuardBasis, Incoming, Int32Op, NodeId, Op,
+    RefNode, Repr, Trust,
 };
 use crate::vm_layout;
 
@@ -116,6 +140,23 @@ pub struct BuildStats {
     pub liveness_bytes: usize,
     /// Registers (with the receiver, parameters and the accumulator).
     pub registers: usize,
+    /// The keyed sites and what their records gave (SPIKEC-3).
+    pub keyed: Vec<KeyedSite>,
+}
+
+/// One keyed site of the graph (the report).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyedSite {
+    /// The bytecode offset of the access.
+    pub offset: u32,
+    /// Its feedback slot.
+    pub slot: u32,
+    /// True for a store (SetKeyedProperty).
+    pub store: bool,
+    /// The keys of its record, if it has one.
+    pub keys: Option<KeySet>,
+    /// The basis the record gives the key's int32 check.
+    pub key_basis: GuardBasis,
 }
 
 const PLACEHOLDER: NodeId = NodeId(u32::MAX);
@@ -132,8 +173,10 @@ struct Builder<'a> {
     cur: BlockId,
     /// The instruction being translated (its index in the Cfg).
     insn: usize,
-    /// Checks made in the current block: (op tag, input) -> node (a block-local CSE).
-    memo: Vec<(u8, NodeId, NodeId)>,
+    /// Checks made in the current block: (op tag, input, exit policy) -> node (a block-local
+    /// CSE by value and policy, MC-w14-20).
+    memo: Vec<(u8, NodeId, ExitPolicy, NodeId)>,
+    keyed: Vec<KeyedSite>,
 }
 
 /// Builds the SSA graph of `input` from its bytecode and `facts`.
@@ -142,12 +185,13 @@ pub fn build(
     facts: &FunctionFacts<'_>,
 ) -> Result<(Graph, BuildStats), Refusal> {
     let cfg = Cfg::build(input, supported)?;
-    let stats = BuildStats {
+    let mut stats = BuildStats {
         instructions: cfg.insns.len(),
         blocks: cfg.blocks.len(),
         liveness_us: cfg.liveness_time.as_micros(),
         liveness_bytes: cfg.liveness_bytes(),
         registers: cfg.width(),
+        keyed: Vec::new(),
     };
     let mut g = Graph::new(
         input.name,
@@ -179,6 +223,7 @@ pub fn build(
         cur: BlockId(0),
         insn: 0,
         memo: Vec::new(),
+        keyed: Vec::new(),
     };
     for bi in 0..n {
         b.block(bi)?;
@@ -188,6 +233,7 @@ pub fn build(
     b.fix_reprs();
     b.dce();
     b.g.check().map_err(Refusal::Limit)?;
+    stats.keyed = b.keyed;
     Ok((b.g, stats))
 }
 
@@ -256,13 +302,32 @@ impl Builder<'_> {
         self.emit(Op::ConstInt32(v), vec![], Repr::Int32, Trust::Proven)
     }
 
-    fn memo(&mut self, tag: u8, input: NodeId, make: impl FnOnce(&mut Self) -> NodeId) -> NodeId {
-        if let Some(&(_, _, n)) = self.memo.iter().find(|m| m.0 == tag && m.1 == input) {
+    /// The check `tag` of `input` with the exit policy `policy` in the current block: the one
+    /// made before, or a new one from `make` (MC-w14-20: shared by value and policy, never by
+    /// value alone).
+    fn memo(
+        &mut self,
+        tag: u8,
+        input: NodeId,
+        policy: ExitPolicy,
+        make: impl FnOnce(&mut Self) -> NodeId,
+    ) -> NodeId {
+        if let Some(&(.., n)) = self
+            .memo
+            .iter()
+            .find(|m| m.0 == tag && m.1 == input && m.2 == policy)
+        {
             return n;
         }
         let n = make(self);
-        self.memo.push((tag, input, n));
+        self.memo.push((tag, input, policy, n));
         n
+    }
+
+    /// The exit policy the graph's mode gives a guard with `basis` (read once, when a guard
+    /// or a memo key is made).
+    fn policy(&self, basis: GuardBasis) -> ExitPolicy {
+        self.g.mode.exit_policy(basis)
     }
 
     /// `v` as an Int32 for an arithmetic use: a CheckInt32 guard with `basis` unless it is one.
@@ -280,7 +345,8 @@ impl Builder<'_> {
             }
             _ => {
                 let st = self.state();
-                let n = self.memo(0, v, |s| {
+                let policy = self.policy(basis);
+                let n = self.memo(0, v, policy, |s| {
                     let n = s.emit(Op::CheckInt32, vec![v], Repr::Int32, trust_of(basis));
                     s.guard(n, basis, st);
                     n
@@ -303,7 +369,8 @@ impl Builder<'_> {
             _ => {
                 let st = self.state();
                 let v = self.tagged(v);
-                let n = self.memo(1, v, |s| {
+                let policy = self.policy(basis);
+                let n = self.memo(1, v, policy, |s| {
                     let n = s.emit(Op::TruncateInt32, vec![v], Repr::Int32, Trust::Proven);
                     s.guard(n, basis, st);
                     n
@@ -317,9 +384,11 @@ impl Builder<'_> {
     /// `v` as a Tagged Value.
     fn tagged(&mut self, v: NodeId) -> NodeId {
         let t = self.node(v).trust;
+        // A box is no guard: its key takes the one policy of an unbacked guard as a filler.
+        let p = self.policy(GuardBasis::Unbacked);
         match self.node(v).repr {
-            Repr::Int32 => self.memo(2, v, |s| s.emit(Op::BoxInt32, vec![v], Repr::Tagged, t)),
-            Repr::Bool => self.memo(3, v, |s| s.emit(Op::BoxBool, vec![v], Repr::Tagged, t)),
+            Repr::Int32 => self.memo(2, v, p, |s| s.emit(Op::BoxInt32, vec![v], Repr::Tagged, t)),
+            Repr::Bool => self.memo(3, v, p, |s| s.emit(Op::BoxBool, vec![v], Repr::Tagged, t)),
             _ => v,
         }
     }
@@ -331,21 +400,57 @@ impl Builder<'_> {
     }
 
     /// A shared check `n` now also guards a site with `basis`: a fact basis replaces an
-    /// unbacked one (the same SSA value, checked once), and the guard takes the mode's policy
-    /// for that basis.
+    /// unbacked one (the same SSA value, checked once). The memo shared `n` only with a site
+    /// of the same exit policy, so the relabel keeps the guard's policy as it was made: the
+    /// policy is never rewritten (MC-w14-20).
     fn back(&mut self, n: NodeId, basis: GuardBasis) {
         let GuardBasis::Fact(src) = basis else { return };
-        let policy = self.g.mode.exit_policy(basis);
+        let policy = self.policy(basis);
         let node = self.g.node_mut(n);
         if let Some(g) = &mut node.guard
             && g.basis == GuardBasis::Unbacked
         {
+            assert_eq!(
+                g.policy, policy,
+                "a check shared across exit policies (the memo keys the policy)"
+            );
             g.basis = basis;
-            g.policy = policy;
             if node.op == Op::CheckInt32 {
                 node.trust = Trust::Predicted(src);
             }
         }
+    }
+
+    /// The keyed record of `slot` at the access at the current offset (`store` for
+    /// SetKeyedProperty): the basis of the key's int32 check, or a refusal (see the module
+    /// docs, "Keyed facts"). Records the site for the report.
+    fn keyed_site(&mut self, slot: u32, store: bool) -> Result<GuardBasis, Refusal> {
+        let off = self.offset();
+        let refuse = |why: String| Refusal::Limit(format!("keyed access at {off}: {why}"));
+        let rec = self.facts.records.iter().find(|(s, _)| *s == slot);
+        let keyed = match rec {
+            None => None,
+            Some((_, SlotFacts::LoadKeyed(k))) if !store => Some(k),
+            Some((_, SlotFacts::StoreKeyed(k))) if store => Some(k),
+            Some((_, f)) => {
+                return Err(refuse(format!(
+                    "fact of kind {}",
+                    crate::facts::kind_name(f)
+                )));
+            }
+        };
+        let basis = match keyed {
+            None => GuardBasis::Unbacked,
+            Some(k) => key_basis_of(k, self.facts.source).map_err(refuse)?,
+        };
+        self.keyed.push(KeyedSite {
+            offset: off,
+            slot,
+            store,
+            keys: keyed.map(|k| k.keys),
+            key_basis: basis,
+        });
+        Ok(basis)
     }
 
     fn binop(&mut self, op: Int32Op, l: NodeId, r: NodeId, slot: u32) -> NodeId {
@@ -583,8 +688,9 @@ impl Builder<'_> {
                 let st = self.state();
                 let o = self.reg(insn.register(0))?;
                 let k = self.acc()?;
+                let key_basis = self.keyed_site(insn.unsigned(1), false)?;
                 let a = self.check_array(o);
-                let i = self.int32(k, GuardBasis::Unbacked);
+                let i = self.int32(k, key_basis);
                 let n = self.emit(Op::LoadElement, vec![a, i], Repr::Tagged, Trust::Unknown);
                 self.guard(n, GuardBasis::Unbacked, st);
                 self.set_acc(n);
@@ -600,8 +706,9 @@ impl Builder<'_> {
                         x.offset
                     )));
                 }
+                let key_basis = self.keyed_site(insn.unsigned(2), true)?;
                 let a = self.check_array(o);
-                let i = self.int32(k, GuardBasis::Unbacked);
+                let i = self.int32(k, key_basis);
                 let n = self.emit(Op::StoreElement, vec![a, i, v], Repr::None, Trust::Unknown);
                 self.guard(n, GuardBasis::Unbacked, st);
                 let u = self.konst(VALUE_UNDEFINED);
@@ -717,7 +824,8 @@ impl Builder<'_> {
     fn check_array(&mut self, o: NodeId) -> NodeId {
         let st = self.state();
         let o = self.tagged(o);
-        self.memo(4, o, |s| {
+        let policy = self.policy(GuardBasis::Unbacked);
+        self.memo(4, o, policy, |s| {
             let n = s.emit(Op::CheckArray, vec![o], Repr::Tagged, Trust::Unknown);
             s.guard(n, GuardBasis::Unbacked, st);
             n
@@ -1124,6 +1232,27 @@ pub fn int_basis_of(facts: &FunctionFacts<'_>, slot: u32) -> GuardBasis {
     } else {
         GuardBasis::Unbacked
     }
+}
+
+/// The basis that the keyed record `k` (of a snapshot of `source`) gives the key's int32
+/// check at its site, or why the site is refused (see the module docs, "Keyed facts"). Only
+/// the keys are read.
+pub fn key_basis_of(
+    k: &ep9_facts::KeyedFacts,
+    source: ep9_facts::FactSource,
+) -> Result<GuardBasis, String> {
+    let other = KeySet::NAME.union(KeySet::SYMBOL).union(KeySet::OTHER);
+    if k.keys.bits() & other.bits() != 0 {
+        return Err(format!(
+            "keys {:?} include a key that is not an index (the generic keyed path is not built)",
+            k.keys
+        ));
+    }
+    Ok(if k.keys == KeySet::INDEX {
+        GuardBasis::Fact(source)
+    } else {
+        GuardBasis::Unbacked
+    })
 }
 
 fn int_op(op: Opcode) -> Int32Op {

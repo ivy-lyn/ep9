@@ -617,6 +617,123 @@ mod tests {
         traps(ARR, warm, "print(fill({0: 1, length: 1}, 1));", "fill");
     }
 
+    /// Keyed facts (SPIKEC-3): an index-only LoadKeyed record backs the key's int32 check;
+    /// the element guards stay unbacked (FACT_SCHEMA 1 has no receiver, bounds or hole field);
+    /// a site that saw a key that is not an index is refused (no generic keyed path).
+    const AT: &str = "function at(a, k) { return a[k] | 0; }";
+
+    #[test]
+    fn keyed_facts_back_only_the_key_check() {
+        if !aarch64() {
+            return;
+        }
+        let warm = "var w = [1, 2, 3, 4]; for (var q = 0; q < 20; q++) at(w, q & 3);";
+        let r = equal(AT, warm, "print(at([7, 8, 9], 2), at([5], 0));", "at");
+        assert_eq!(r.compiled.output, ["9 5"]);
+        let g = &r.report.graph;
+        // The key `k` is parameter 1 (n2).
+        let key: Vec<&str> = g
+            .lines()
+            .filter(|l| l.contains("CheckInt32(n2)") && l.contains(" guard g"))
+            .collect();
+        assert_eq!(key.len(), 1, "{g}");
+        assert!(key[0].contains("Fact(Runtime)"), "{g}");
+        for l in g
+            .lines()
+            .filter(|l| l.contains("CheckArray") || l.contains("LoadElement"))
+        {
+            assert!(l.contains("Unbacked"), "{l}\n{g}");
+        }
+        let sites = &r.report.build.keyed;
+        assert_eq!(sites.len(), 1, "{sites:?}");
+        assert_eq!(sites[0].keys, Some(ep9_facts::KeySet::INDEX));
+        assert!(!sites[0].store);
+        // An index of another form (a string) fails the int32 key check: the trap, never a
+        // wrong value (T0 prints 8).
+        let t = traps(AT, warm, "print(at([7, 8, 9], '1'));", "at");
+        assert_eq!(t.t0.output, ["8"]);
+        // A name key in the warm-up: the site is refused, the function stays in T0.
+        let e = run_script(
+            &Config::default(),
+            AT,
+            "var w = [1, 2]; for (var q = 0; q < 20; q++) at(w, q & 1); at(w, 'length');",
+            "print(at(w, 0));",
+            "at",
+        )
+        .expect_err("refused");
+        assert!(e.contains("not an index"), "{e}");
+    }
+
+    /// A store site that never ran has a record with no keys: its key check stays unbacked
+    /// (a never-run store backs nothing); the load's constant key needs no check.
+    #[test]
+    fn a_never_run_store_backs_no_key_check() {
+        if !aarch64() {
+            return;
+        }
+        let defs = "function put(a, k, f) { if (f > 0) { a[k] = 1; } return a[0] | 0; }";
+        let r = equal(
+            defs,
+            "var w = [1, 2]; for (var q = 0; q < 20; q++) put(w, 1, 0);",
+            "var b = [3, 4]; print(put(b, 1, 1), b.join());",
+            "put",
+        );
+        assert_eq!(r.compiled.output, ["3 3,1"]);
+        let g = &r.report.graph;
+        let key: Vec<&str> = g
+            .lines()
+            .filter(|l| l.contains("CheckInt32(n2)") && l.contains(" guard g"))
+            .collect();
+        assert_eq!(key.len(), 1, "{g}");
+        assert!(key[0].contains("Unbacked"), "{g}");
+        let store: Vec<_> = r.report.build.keyed.iter().filter(|k| k.store).collect();
+        assert_eq!(store.len(), 1, "{:?}", r.report.build.keyed);
+        assert_eq!(store[0].keys, Some(ep9_facts::KeySet::EMPTY));
+        assert_eq!(store[0].key_basis, crate::ir::GuardBasis::Unbacked);
+    }
+
+    /// [`crate::build::key_basis_of`]: only keys = {index} backs the key check, whatever the
+    /// IC state; no keys leaves it unbacked; a name, symbol or other key refuses.
+    #[test]
+    fn key_basis_reads_index_only_records() {
+        use crate::build::key_basis_of;
+        use crate::ir::GuardBasis;
+        use ep9_facts::{FactSource, IcState, KeySet, KeyedFacts, PropertyFacts};
+        let rec = |keys: KeySet, state: IcState| KeyedFacts {
+            property: PropertyFacts {
+                state,
+                ..PropertyFacts::default()
+            },
+            keys,
+        };
+        let src = FactSource::Profiled;
+        let ok = |k: KeySet, s: IcState| key_basis_of(&rec(k, s), src);
+        assert_eq!(
+            ok(KeySet::INDEX, IcState::Uninitialized),
+            Ok(GuardBasis::Fact(src))
+        );
+        assert_eq!(
+            ok(KeySet::INDEX, IcState::Monomorphic),
+            Ok(GuardBasis::Fact(src))
+        );
+        assert_eq!(
+            ok(KeySet::EMPTY, IcState::Uninitialized),
+            Ok(GuardBasis::Unbacked)
+        );
+        for bad in [
+            KeySet::INDEX.union(KeySet::NAME),
+            KeySet::SYMBOL,
+            KeySet::OTHER,
+            KeySet::NAME,
+        ] {
+            assert!(ok(bad, IcState::Uninitialized).is_err(), "{bad:?}");
+        }
+        assert_eq!(
+            ok(KeySet::INDEX, IcState::Megamorphic),
+            Ok(GuardBasis::Fact(src))
+        );
+    }
+
     const NAMED: &str = "function P(x) { this.v = x; this.w = x * 2; }\n\
         function Q(x) { this.v = x; this.z = 1; }\n\
         function get(o, n) { var s = 0; for (var i = 0; i < n; i++) { s = (s + o.v) | 0; } return s; }";
@@ -766,10 +883,22 @@ mod tests {
             "{}",
             r.report.graph
         );
+        // Keyed facts (SPIKEC-3): the 4 keyed sites (3 loads, 1 store) have index-only
+        // records, so each key check would be a fact guard; but every key is a loop phi
+        // (`i`, `j`) that is already int32, so no key check is left in the graph, and the
+        // element guards stay unbacked (no receiver, bounds or hole field in schema 1).
+        let k = &r.report.build.keyed;
+        assert_eq!(k.len(), 4, "{k:?}");
+        assert_eq!(k.iter().filter(|s| s.store).count(), 1, "{k:?}");
+        assert!(
+            k.iter().all(|s| s.keys == Some(ep9_facts::KeySet::INDEX)
+                && s.key_basis == crate::ir::GuardBasis::Fact(ep9_facts::FactSource::Runtime)),
+            "{k:?}"
+        );
     }
 
     /// am3 with the FACTS2 stand-in int records: the int32 input checks are fact guards; the
-    /// keyed guards (keyed facts: SPIKEC-3), the overflow guards of `+` and `-` and the entry
+    /// keyed element guards (no schema-1 field backs them), the overflow guards of `+` and `-` and the entry
     /// checks of the phis that the header does not check stay unbacked, and the output still
     /// equals T0.
     #[test]
