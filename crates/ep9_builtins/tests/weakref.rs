@@ -395,3 +395,90 @@ log('registered');
         });
     }
 }
+
+/// `gc()` for the scripts below: a collection after a stack scrub (the words below this frame
+/// are zeroed, so the frames of earlier calls leave no stale pointer for the scan).
+#[inline(never)]
+fn gc_scrubbed<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let mut words = [0usize; 1 << 15];
+    black_box(&mut words);
+    collect_now(cx);
+    Ok(Local::undefined())
+}
+
+#[inline(never)]
+fn collect_now(cx: &mut Cx<'_>) {
+    cx.collect_garbage();
+}
+
+/// `registerFresh(fr, held)`: `fr.register({}, held)` with the new target made here, in Rust,
+/// so no live interpreter frame keeps a stale copy of it for the conservative scan (a debug
+/// build keeps every temporary of the dispatch loop in its own stack slot).
+#[inline(never)]
+fn register_fresh<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let fr = args.get(0);
+    let held = args.get(1);
+    let o = cx.new_object();
+    let register = cx.get(fr.as_object().expect("a registry"), "register")?;
+    cx.call(register, fr, &[o.into(), held])?;
+    Ok(Local::undefined())
+}
+
+/// A GC inside a cleanup callback finds another dead target (R-GC-P4-3; M4-P4 fixer B): the
+/// checkpoint serves that cell too before it ends, with no job queued to keep it going. node
+/// v24.22.1 `--expose-gc` prints the same 3 lines (scratchpad m1m4/p4/fixB/js/fr-gc-in-cb.js,
+/// with `registerFresh = (fr, h) => fr.register({}, h)`: `registered`, `cleanup outer`,
+/// `cleanup inner`). Before the fix the checkpoint stopped
+/// after `cleanup outer`, and `inner` waited for the next one.
+#[test]
+fn a_gc_in_a_cleanup_callback_is_served_in_the_same_checkpoint() {
+    for stress in [false, true] {
+        common::on_big_stack(move || {
+            let mut i = log_isolate(stress);
+            i.register_host_function("gc", 0, gc_scrubbed);
+            i.register_host_function("registerFresh", 2, register_fresh);
+            run_checkpoint(
+                &mut i,
+                r#"
+var fr = new FinalizationRegistry(function (held) {
+  log('cleanup', held);
+  if (held === 'outer') {
+    registerFresh(fr, 'inner');
+    gc();
+  }
+});
+registerFresh(fr, 'outer');
+log('registered');
+"#,
+            )
+            .unwrap();
+            scrub_and_collect(&mut i);
+            i.perform_microtask_checkpoint()
+                .map_err(|e| e.message)
+                .unwrap();
+            // Under GC stress `outer` may die during the script; its callback then runs in the
+            // script's own checkpoint. Either way: both, once each, in this order.
+            assert_eq!(
+                take_log(),
+                ["registered", "cleanup outer", "cleanup inner"],
+                "stress={stress}"
+            );
+            scrub_and_collect(&mut i);
+            i.perform_microtask_checkpoint()
+                .map_err(|e| e.message)
+                .unwrap();
+            assert_eq!(take_log(), Vec::<String>::new(), "stress={stress}");
+            i.verify_heap().expect("a valid heap");
+        });
+    }
+}

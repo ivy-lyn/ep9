@@ -47,6 +47,12 @@ use crate::kinds;
 use crate::object;
 use crate::runtime::{Atom, ErrorKind};
 
+/// The most FinalizationRegistry cleanup rounds in a row that a microtask checkpoint runs
+/// with an empty job queue ([`Cx::perform_microtask_checkpoint`]): the first, then one more
+/// each time a GC during the callbacks found more dead targets. Past it the cleanup flag
+/// stays set and the next checkpoint serves the rest.
+pub(crate) const MAX_CLEANUP_ROUNDS: u32 = 8;
+
 /// The state of a promise (`[[PromiseState]]`, §27.2.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PromiseState {
@@ -198,9 +204,12 @@ impl<'s> Cx<'s> {
     /// queue, until the queue is empty. Each time the queue is empty it runs ClearKeptObjects
     /// and then the FinalizationRegistry cleanup jobs (`abi/weakref.rs`, M4-P4); the jobs a
     /// cleanup callback queues run in the same checkpoint, and a callback that throws stops it
-    /// like a job that throws. Each job takes one interrupt budget unit and polls
-    /// (M2-P2-POLL), so an interrupt callback runs and `TerminateHandle` stops a job loop; a
-    /// termination also clears the queue. A job that throws stops the checkpoint with its
+    /// like a job that throws. A GC during a callback may find more dead targets: their
+    /// callbacks run in the same checkpoint too, for at most 8 cleanup rounds in a row with
+    /// an empty queue (`MAX_CLEANUP_ROUNDS`; M4-P4 fixer B, R-GC-P4-3; node runs them); what
+    /// is left then waits for the next checkpoint. Each job takes one interrupt budget unit
+    /// and polls (M2-P2-POLL), so an interrupt callback runs and `TerminateHandle` stops a job
+    /// loop; a termination also clears the queue. A job that throws stops the checkpoint with its
     /// exception pending (`Err`); the jobs behind it stay queued. Then the rejected list drops
     /// any promise that got a handler ("handle" unlinks one at once already).
     ///
@@ -216,6 +225,8 @@ impl<'s> Cx<'s> {
                 "a microtask checkpoint needs an empty JS stack",
             ));
         }
+        // Cleanup rounds in a row that left the queue empty (R-GC-P4-3).
+        let mut idle_rounds = 0;
         loop {
             if rt.jobs.queue_head() == UNDEFINED {
                 // The queue is empty: ClearKeptObjects, then the FinalizationRegistry cleanup
@@ -225,8 +236,19 @@ impl<'s> Cx<'s> {
                 self.clear_kept_objects();
                 self.cleanup_finalization_registries()?;
                 if rt.jobs.queue_head() == UNDEFINED {
+                    // A GC inside a callback set the cleanup flag again: serve those cells
+                    // now (bounded: a callback that always kills a new target would loop).
+                    idle_rounds += 1;
+                    if rt.kept_objects.is_pending() && idle_rounds < MAX_CLEANUP_ROUNDS {
+                        if let Err(t) = self.poll_interrupt() {
+                            self.clear_queue();
+                            return Err(t);
+                        }
+                        continue;
+                    }
                     break;
                 }
+                idle_rounds = 0;
             }
             if let Err(t) = self.poll_interrupt() {
                 self.clear_queue();

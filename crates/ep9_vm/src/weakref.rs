@@ -56,6 +56,7 @@
 //! | [`KeptObjects::clear`] | no | ClearKeptObjects (§9.10.1) |
 //! | [`KeptObjects::add_registry`] | yes | puts a new registry in the isolate's chain |
 //! | [`KeptObjects::take_pending`] | no | the cleanup hook's "anything to do?" test |
+//! | [`KeptObjects::is_pending`] | no | the job loop's "more cleanup?" test (the flag stays) |
 //! | [`KeptObjects::registries`] | no | the first link of the chain |
 //! | [`unlink_dead_registries`] | no | drops the links of dead registries |
 //! | [`collect_cleared`] | no | moves the empty cells of a registry from CELLS to CLEARED |
@@ -344,6 +345,13 @@ impl KeptObjects {
     /// the flag). Not a GC point.
     pub(crate) fn take_pending(&self) -> bool {
         self.roots.pending.replace(false)
+    }
+
+    /// True if a GC since the last [`KeptObjects::take_pending`] saw a dead registry or an
+    /// empty target; the flag stays as it is (the job loop's "more cleanup?" test, M4-P4
+    /// fixer B, R-GC-P4-3). Not a GC point.
+    pub(crate) fn is_pending(&self) -> bool {
+        self.roots.pending.get()
     }
 
     /// Sets the flag again (a cleanup hook that stopped at a throw leaves work behind).
