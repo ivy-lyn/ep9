@@ -11,3 +11,5 @@
       5      40  stack_overflow  RtFn0
       6      48  throw  RtFn1
       7      56  unwind  RtFn0
+      8      64  get_keyed  RtFn2
+      9      72  set_keyed  RtFn3

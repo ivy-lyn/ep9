@@ -51,7 +51,7 @@ use crate::kinds::{self as kind, is_bound, is_callable, is_symbol};
 use crate::object::{self, attr, is_array, is_function, is_object, is_string};
 use crate::props;
 use crate::runtime::{Atom, ErrorKind, Root, Runtime, val};
-use crate::{accessor, bound, shape, string, symbol, wrapper};
+use crate::{accessor, arguments, bound, shape, string, symbol, wrapper};
 
 fn is_atom(cx: &Cx, key: u64, a: Atom) -> bool {
     object::key_eq(key, cx.rt().atom(a))
@@ -193,7 +193,9 @@ fn primitive_text(b: u64) -> String {
     format!("{ty} '{text}'")
 }
 
-/// `base[k]` for any key value (keyed load).
+/// `base[k]` for any key value (keyed load). An int32 index `>= 0` on an object makes no
+/// string key (M4-P3 KEYED, OI-04): an array element, an arguments element ([`get_int`]),
+/// then [`get_index`] (a hole, a String wrapper's character, a stored index, the chain).
 pub(crate) fn get_keyed(cx: &mut Cx, base: u64, k: u64) -> Res<u64> {
     if let Some(i) = val(k).as_int32()
         && i >= 0
@@ -204,6 +206,9 @@ pub(crate) fn get_keyed(cx: &mut Cx, base: u64, k: u64) -> Res<u64> {
             }
         } else if is_string(base) && (i as usize) < object::str_len(base) {
             return Ok(string::char_at(cx.rt(), base, i as usize));
+        }
+        if is_object(base) {
+            return get_int(cx, base, i as u32);
         }
     }
     if base == UNDEFINED || base == NULL {
@@ -216,6 +221,21 @@ pub(crate) fn get_keyed(cx: &mut Cx, base: u64, k: u64) -> Res<u64> {
     }
     let key = to_property_key(cx, k)?;
     get(cx, base, key)
+}
+
+/// `o[i]` (`[[Get]]` with receiver `o`) for the object `o` and an array index `i`, without a
+/// string key: an element of an arguments object (a mapped index reads its parameter), then
+/// [`get_index`], which answers an array hole, a String wrapper's character and a missing
+/// index without a key, and asks a routed kind with the key. GC point (a getter, the key
+/// path).
+#[inline]
+pub(crate) fn get_int(cx: &mut Cx, o: u64, i: u32) -> Res<u64> {
+    if kind::cell_kind(o) == kind::ARGUMENTS.get()
+        && let Some(v) = arguments::element_value(o, i)
+    {
+        return Ok(v);
+    }
+    get_index(cx, o, u64::from(i))
 }
 
 /// PutValue on a property reference (§6.2.5.6): `base[key] = v` with receiver `base`. A
@@ -480,14 +500,20 @@ fn first_attrs_on_chain(rt: &Runtime, mut o: u64, key: u64) -> Option<i32> {
     }
 }
 
-/// `base[k] = v` for any key value (keyed store).
+/// `base[k] = v` for any key value (keyed store). An int32 index `>= 0` stores a dense array
+/// element ([`array_store`]) or a writable arguments element (its parameter too while it is
+/// mapped, §10.4.4.4) without a string key (M4-P3 KEYED); every other case takes the key.
 pub(crate) fn set_keyed(cx: &mut Cx, base: u64, k: u64, v: u64, strict: bool) -> Res<()> {
-    if is_array(base)
-        && let Some(i) = val(k).as_int32()
+    if let Some(i) = val(k).as_int32()
         && i >= 0
-        && array_store(cx.rt(), base, i as u32, v)
     {
-        return Ok(());
+        let kd = kind::cell_kind(base);
+        if kd == kind::ARRAY.get() && array_store(cx.rt(), base, i as u32, v) {
+            return Ok(());
+        }
+        if kd == kind::ARGUMENTS.get() && arguments::set_element_value(cx.rt(), base, i as u32, v) {
+            return Ok(());
+        }
     }
     if base == UNDEFINED || base == NULL {
         let msg = format!(
@@ -641,6 +667,19 @@ pub(crate) fn has(cx: &mut Cx, o: u64, k: u64) -> Res<bool> {
                 describe(o)
             ),
         ));
+    }
+    // An int32 index `>= 0` needs no string key (M4-P3 KEYED): [`has_index`] answers an
+    // element, a String wrapper index and a missing index, and asks a routed kind with the
+    // key (an arguments element answers first).
+    if let Some(i) = val(k).as_int32()
+        && i >= 0
+    {
+        if kind::cell_kind(o) == kind::ARGUMENTS.get()
+            && arguments::element_value(o, i as u32).is_some()
+        {
+            return Ok(true);
+        }
+        return Ok(has_index(cx, o, i as u64));
     }
     let key = to_property_key(cx, k)?;
     Ok(has_property(cx, o, key))

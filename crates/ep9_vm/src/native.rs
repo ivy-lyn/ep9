@@ -50,7 +50,7 @@ use crate::conv::{BinOp, Res};
 use crate::dispatch::{CodeEntry, CodeRegistry, DispatchKind, RegistryError};
 use crate::error::{FrameRef, not_implemented, stack_overflow, throw_error};
 use crate::frame::{HEADER, HOLE, UNDEFINED, slot};
-use crate::interp::slow::{self, CmpOp, UnOp};
+use crate::interp::slow::{self, CmpOp, PropOp, UnOp};
 use crate::interp::{Cx, EXIT_STUB};
 use crate::isolate::{Exception, Isolate};
 use crate::object;
@@ -104,6 +104,9 @@ native_fn_types! {
     /// The compare function: `(cx, fp, bytecode offset, op, l, r) -> true/false bits or 0`
     /// (`op` from [`cmp`]).
     RtCompareFn = fn(*mut NativeCx, *mut u64, u32, u32, u64, u64);
+    /// A table function with three value operands: `(cx, fp, bytecode offset, a, b, c) -> acc
+    /// or 0` (M4-P3 KEYED: [`RuntimeTable::set_keyed`]).
+    RtFn3 = fn(*mut NativeCx, *mut u64, u32, u64, u64, u64);
 }
 
 /// The runtime functions native code calls, at fixed offsets (`#[repr(C)]`, [`layout`]
@@ -143,6 +146,16 @@ pub struct RuntimeTable {
     /// the other entries, 0 is a normal result here). (b) code then pops its native frame
     /// record and tail-jumps to `cx.table[*out_pc]` with `(cx, out_pc, out_fp, result)`.
     pub unwind: RtFn0,
+    /// `o[k]` (M4-P3 KEYED, P2-ORCH-6): the generic keyed load of the `GetKeyedProperty` at
+    /// `off` (`slow::prop`, `property::get_keyed`; a private name takes the private path).
+    /// Operands: the receiver and the key. The loaded value, or 0. It records no feedback
+    /// (native code records none), so a keyed site of native code has a real generic path.
+    pub get_keyed: RtFn2,
+    /// `o[k] = v` (M4-P3 KEYED, P2-ORCH-6): the generic keyed store of the `SetKeyedProperty`
+    /// at `off`, strict when the frame's function is strict (a failed store throws a
+    /// TypeError there). Operands: the receiver, the key and the value. `v`, or 0. No
+    /// feedback.
+    pub set_keyed: RtFn3,
 }
 
 /// The `op` codes of [`RuntimeTable::compare`].
@@ -169,13 +182,15 @@ pub(crate) static RUNTIME_TABLE: RuntimeTable = RuntimeTable {
     stack_overflow: rt_stack_overflow,
     throw: rt_throw,
     unwind: rt_unwind,
+    get_keyed: rt_get_keyed,
+    set_keyed: rt_set_keyed,
 };
 
 impl RuntimeTable {
     /// The entries in declaration order: name, byte offset, function type. The list is an
     /// H13 index list (H13-Q3, M3-P1 SP-UNIT): native code and unit text call an entry by its
     /// offset, so the list is append-only (`crates/ep9_vm/tests/golden/runtime-table.txt`).
-    pub const ENTRIES: [(&'static str, usize, &'static str); 8] = [
+    pub const ENTRIES: [(&'static str, usize, &'static str); 10] = [
         ("poll", layout::RT_POLL, "RtFn0"),
         ("call_any", layout::RT_CALL_ANY, "RtFn1"),
         ("add", layout::RT_ADD, "RtFn2"),
@@ -184,6 +199,8 @@ impl RuntimeTable {
         ("stack_overflow", layout::RT_STACK_OVERFLOW, "RtFn0"),
         ("throw", layout::RT_THROW, "RtFn1"),
         ("unwind", layout::RT_UNWIND, "RtFn0"),
+        ("get_keyed", layout::RT_GET_KEYED, "RtFn2"),
+        ("set_keyed", layout::RT_SET_KEYED, "RtFn3"),
     ];
 
     /// The one runtime table of the process (every isolate's `Cx::runtime_table` points at it).
@@ -234,9 +251,11 @@ pub mod layout {
     use core::mem::offset_of;
 
     use crate::dispatch::DispatchSlot;
+    use crate::feedback::fv;
     use crate::frame::{HEADER, slot};
+    use crate::ic::smi;
     use crate::interp::Cx;
-    use crate::object::fun;
+    use crate::object::{arr, elems, fun, obj};
     use crate::unit::FunctionInfo;
 
     use super::RuntimeTable;
@@ -271,6 +290,9 @@ pub mod layout {
     pub const RT_STACK_OVERFLOW: usize = offset_of!(RuntimeTable, stack_overflow);
     pub const RT_THROW: usize = offset_of!(RuntimeTable, throw);
     pub const RT_UNWIND: usize = offset_of!(RuntimeTable, unwind);
+    /// Appended by M4-P3 KEYED (P2-ORCH-6): the generic keyed load and store.
+    pub const RT_GET_KEYED: usize = offset_of!(RuntimeTable, get_keyed);
+    pub const RT_SET_KEYED: usize = offset_of!(RuntimeTable, set_keyed);
 
     // ---- placement (b) (P4-PLACEMENT-B) ----
     /// `Cx::table`: the 256 handler addresses of the dispatch (H15: at offset 0). (b) code
@@ -331,6 +353,75 @@ pub mod layout {
     pub const FI_REGISTER_COUNT: usize = offset_of!(FunctionInfo, register_count);
     /// FunctionInfo: parameter count (u32).
     pub const FI_PARAMETER_COUNT: usize = offset_of!(FunctionInfo, parameter_count);
+
+    // ---- the layout facts Spike C bakes (M4-P3 KEYED, P2-ORCH-6, MC-w14-7) ----
+    //
+    // Each constant below is a copy that `spikes/spike-c/src/vm_layout.rs` kept by hand (same
+    // name there), now taken from the VM's own definitions, so a layout change moves it.
+    // Every one of them belongs to the future `VM_LAYOUT_VERSION` set (C-18, doc 13 section
+    // 5.2): a change of any value is a VM layout change for native code and unit text. They
+    // stay behind `spike-native` with the rest of this module until C-18 moves them out of
+    // the gate (M5-P0).
+
+    /// C-18 set. Word0 bytes 0-3: the ShapeId that an IC guard compares (`ep9_value`
+    /// `Word0::SHAPE_ID_OFFSET`; an `ldr w` at +0).
+    pub const SHAPE_ID_BYTE: u32 = ep9_value::Word0::SHAPE_ID_OFFSET as u32;
+    /// C-18 set. The kind byte of a cell: byte 5 of word0 (`ep9_value` `Word0::KIND_OFFSET`;
+    /// an `ldrb` at +5).
+    pub const KIND_BYTE: u32 = ep9_value::Word0::KIND_OFFSET as u32;
+    /// C-18 set. Kind id of an ordinary object (`kinds::OBJECT`).
+    pub const KIND_OBJECT: u8 = crate::kinds::OBJECT.get();
+    /// C-18 set. Kind id of an Array (`kinds::ARRAY`).
+    pub const KIND_ARRAY: u8 = crate::kinds::ARRAY.get();
+    /// C-18 set. The first in-object field of an OBJECT (no fixed fields): field `f` is at
+    /// `OBJECT_FIELDS + 8f` (`object::obj::FIXED`).
+    pub const OBJECT_FIELDS: u32 = obj::FIXED as u32;
+    /// C-18 set. ARRAY: the ELEMENTS cell, or undefined (`object::obj::ELEMENTS`).
+    pub const ARRAY_ELEMENTS: u32 = obj::ELEMENTS as u32;
+    /// C-18 set. ARRAY: the length, an int32 Value (`object::arr::LENGTH`).
+    pub const ARRAY_LENGTH: u32 = arr::LENGTH as u32;
+    /// C-18 set. ELEMENTS: the capacity, an int32 Value (`object::elems::CAPACITY`).
+    pub const ELEMENTS_CAPACITY: u32 = elems::CAPACITY as u32;
+    /// C-18 set. ELEMENTS: the first value; value `i` is at `ELEMENTS_DATA + 8i`
+    /// (`object::elems::DATA`).
+    pub const ELEMENTS_DATA: u32 = elems::DATA as u32;
+    /// C-18 set. The hole: an empty element, an empty feedback key (`frame::HOLE`,
+    /// `Value::EMPTY`).
+    pub const HOLE: u64 = crate::frame::HOLE;
+    /// C-18 set. FEEDBACK cell: the FunctionInfo of its function, a native word
+    /// (`feedback::fv::INFO`).
+    pub const FEEDBACK_INFO: u32 = fv::INFO as u32;
+    /// C-18 set. FEEDBACK cell: the first slot (`feedback::fv::SLOTS`).
+    pub const FEEDBACK_SLOTS: u32 = fv::SLOTS as u32;
+    /// C-18 set. FEEDBACK cell: bytes per slot, the key (weak) then the value
+    /// (`feedback::fv::SLOT_SIZE`, `KEY`, `VALUE`).
+    pub const FEEDBACK_SLOT_SIZE: u32 = fv::SLOT_SIZE as u32;
+    /// C-18 set. A feedback slot: the key half (weak).
+    pub const FEEDBACK_KEY: u32 = fv::KEY as u32;
+    /// C-18 set. A feedback slot: the value half (strong).
+    pub const FEEDBACK_VALUE: u32 = fv::VALUE as u32;
+    /// C-18 set. POLY_IC cell: the first case, a key (weak) then a handler. `ic.rs` keeps
+    /// the case layout in a private module (`pc`: `CASES`, `CASE`; IC2's file in M4-P3), so
+    /// this value and [`POLY_CASE_SIZE`] are written here and proved on a live POLY_IC cell
+    /// by `tests::native` (the integration fixer may point them at `ic::pc`).
+    pub const POLY_CASES: u32 = 8;
+    /// C-18 set. POLY_IC cell: bytes per case.
+    pub const POLY_CASE_SIZE: u32 = 16;
+    /// C-18 set. POLY_IC cell: cases per cell (`ic::POLY_CASES`).
+    pub const POLY_COUNT: u32 = crate::ic::POLY_CASES as u32;
+    /// C-18 set. Smi handler: the kind is in bits 0-3 (`ic::smi::KIND_MASK`).
+    pub const SMI_KIND_MASK: i32 = smi::KIND_MASK;
+    /// C-18 set. Smi handler: the byte offset starts at this bit (`ic::smi::SHIFT`).
+    pub const SMI_SHIFT: u32 = smi::SHIFT;
+    /// C-18 set. Smi handler kind: the field at the byte offset of the object cell
+    /// (`ic::smi::FIELD_IN_OBJECT`).
+    pub const SMI_FIELD_IN_OBJECT: i32 = smi::FIELD_IN_OBJECT;
+    /// C-18 set. Smi handler kind: an Array's `length`, the int32 at [`ARRAY_LENGTH`]
+    /// (`ic::smi::ARRAY_LENGTH`).
+    pub const SMI_ARRAY_LENGTH: i32 = smi::ARRAY_LENGTH;
+    /// C-18 set (MC-w13-14). FunctionInfo: `feedback`, a pointer to the unit slot that holds
+    /// the function's FEEDBACK cell (null: no vector yet).
+    pub const FI_FEEDBACK: usize = offset_of!(FunctionInfo, feedback);
 }
 
 // ---- the T0 entry --------------------------------------------------------------------------
@@ -601,6 +692,32 @@ native_fns! {
             return bad_offset(cx, off);
         };
         slow::throw(cx, fp, pc, v, false)
+    }
+
+    /// [`RuntimeTable::get_keyed`] (M4-P3 KEYED).
+    ///
+    /// # Safety
+    /// As [`rt_poll`].
+    unsafe fn rt_get_keyed(cx: *mut NativeCx, fp: *mut u64, off: u32, o: u64, k: u64) -> u64 {
+        // SAFETY: caller contract.
+        let (cx, pc) = unsafe { enter(cx, fp, off) };
+        let Some(pc) = pc else {
+            return bad_offset(cx, off);
+        };
+        slow::prop(cx, fp, pc, PropOp::GetKeyed, o, k, UNDEFINED)
+    }
+
+    /// [`RuntimeTable::set_keyed`] (M4-P3 KEYED).
+    ///
+    /// # Safety
+    /// As [`rt_poll`].
+    unsafe fn rt_set_keyed(cx: *mut NativeCx, fp: *mut u64, off: u32, o: u64, k: u64, v: u64) -> u64 {
+        // SAFETY: caller contract.
+        let (cx, pc) = unsafe { enter(cx, fp, off) };
+        let Some(pc) = pc else {
+            return bad_offset(cx, off);
+        };
+        slow::prop(cx, fp, pc, PropOp::SetKeyed, o, k, v)
     }
 
     /// [`RuntimeTable::unwind`].
