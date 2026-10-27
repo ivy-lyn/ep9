@@ -190,10 +190,18 @@ fn end_of_job(i: &mut Isolate) -> Result<(), String> {
         .map_err(|e| e.message)
 }
 
+/// A collection after a stack scrub: [`scrub_below`] zeroes the stack below this frame, then
+/// the collection runs from here, so its own frames (`Isolate::collect_garbage` down to the
+/// spill trampoline, which the conservative scan reads) lie on zeros. The scrub must be a
+/// call of its own (fixer E): with the zeroed array in this frame, the collection's frames
+/// lay below the array, on the stale words of a script's frames (a debug match loop takes
+/// about 200 KiB of stack, so a script run below a 64 KiB pad reaches past a 256 KiB array),
+/// and a slot that those frames leave unwritten could hold a dead target's address. On
+/// linux-x64 debug that kept the target of
+/// [`a_checkpoint_lets_a_weakref_target_die_at_the_next_gc`] alive (CI run 40564429974).
 #[inline(never)]
 fn scrub_and_collect(i: &mut Isolate) {
-    let mut words = [0usize; 1 << 15];
-    black_box(&mut words);
+    scrub_below();
     i.collect_garbage();
 }
 
@@ -399,8 +407,10 @@ log('registered');
     }
 }
 
-/// `gc()` for the scripts below: a collection after a stack scrub (the words below this frame
-/// are zeroed, so the frames of earlier calls leave no stale pointer for the scan).
+/// `gc()` for the scripts below: a collection after a stack scrub ([`scrub_then_collect`]: the
+/// words below this frame are zeroed first, and the collection's frames then lie on them, as
+/// in [`scrub_and_collect`]), so the frames of earlier calls leave no stale pointer for the
+/// scan.
 #[inline(never)]
 fn gc_scrubbed<'s>(
     cx: &mut Cx<'s>,
@@ -408,9 +418,7 @@ fn gc_scrubbed<'s>(
     _args: Args<'s>,
     _nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    let mut words = [0usize; 1 << 15];
-    black_box(&mut words);
-    collect_now(cx);
+    scrub_then_collect(cx);
     Ok(Local::undefined())
 }
 
@@ -512,13 +520,16 @@ fn drop_below<'s>(cx: &mut Cx<'s>, keep: Local<'s>, k: Local<'s>) -> JsResult<()
     cx.set_index(keep, k, Local::null(), true).map(|_| ())
 }
 
+/// A collection after a stack scrub, from inside a host function ([`scrub_and_collect`] from
+/// Rust): the scrub is a call of its own, so the collection's frames lie on its zeros.
 #[inline(never)]
 fn scrub_then_collect(cx: &mut Cx<'_>) {
     scrub_below();
     collect_now(cx);
 }
 
-/// Zeroes 512 KiB of stack below the caller's frame.
+/// Zeroes 512 KiB of stack below the caller's frame. The caller's next call (a collection)
+/// then has zeros under its frames, where the conservative scan reads.
 #[inline(never)]
 fn scrub_below() {
     let mut words = [0usize; 1 << 16];
