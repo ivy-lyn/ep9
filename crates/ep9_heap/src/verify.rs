@@ -5,7 +5,8 @@
 //! | Page header: magic, kind, chunk index | every small page |
 //! | No mark bit set outside a GC (generational, sticky marks: no mark bit outside a cell start, and a marked (old) cell is not WHITE, so a store into it takes the barrier's slow path) | small pages, LOS headers |
 //! | Generational (S1 step 1): each remembered-list entry is an offset inside its page's cell area and a distinct GREY cell start, and the page has no other GREY cell; a dirty card means the dirty byte is set; after a GC every list is empty and every card clean | small pages, LOS headers |
-//! | Generational invariant (S1 step 2): an old (marked) cell that the S1 logs do not name holds no young (unmarked) cell, in a slot or as its word0 shape. A GREY small host may; an old large object may in the slots of its dirty cards (and, when it has one, in slots its trace function does not visit through `visit_slots`). A break is a store without the write barrier: a minor GC would free the young cell | old cells: [`Heap::verify`], and before every minor GC with `verify_after_gc` |
+//! | Generational invariant (S1 step 2): an old (marked) cell that the S1 logs do not name holds no young (unmarked) cell, in a slot or as its word0 shape. A GREY small host may; an old large object may in the slots of its dirty cards (word0 is in card 0; and, when its dirty byte is set, in slots its trace function does not visit through `visit_slots`, which the minor GC traces whole). A break is a store without the write barrier: a minor GC would free the young cell | old cells: [`Heap::verify`], and V1 |
+//! | Ages are colours (S1, GC4-V1): a young (unmarked) cell is WHITE; an old (marked) one is BLACK or GREY, and an old large object is BLACK (a large host is never GREY). With this rule the generational invariant reads as H11's V1 text: no BLACK cell points to a WHITE one, and a large object that holds a WHITE cell has that slot's card dirty. An unmarked BLACK cell in S1 is an old cell that lost its mark: the minor GC would free it under its old hosts | V1 only. [`Heap::verify`] checks only "marked (old) but WHITE": it may run at any time, and an S2 full cycle (month 5) has unmarked BLACK cells while it marks (03-gc §3, the S2 slow path) |
 //! | Cells walk in address order from the VO bitmap; none overlaps the next; none crosses the page end | small pages |
 //! | Every cell kind is registered; size is at least 16 B, at most 8 KiB in a page, above 8 KiB in LOS | all cells |
 //! | gc_state is BLACK, WHITE or GREY | all cells |
@@ -22,7 +23,7 @@
 //! |---|---|
 //! | [`Heap::verify`] (any time) | finish the sweep, walk every page by VO bits, check and trace every cell, then every root |
 //! | after a GC with `verify_after_gc` | the GC's checked mark already checked every slot of every live cell, every strong root and every weak range (trace.rs); the sweep checks every live cell, and every dead cell's extent before it zaps it (heap.rs); this file checks that the sweeps kept exactly the cells the mark pushed (a mark bit set before the GC would hide a cell from the mark), and adds the page and LOS headers and the weak handles. No second trace, no second root walk (V9-D22 step 1) |
-//! | a minor GC with `verify_after_gc` (S1 step 2) | its mark stops at old cells, so before the mark [`check_old_cells`] checks every old cell as [`Heap::verify`] does (with the generational invariant) and counts them; after it, the sweeps must keep the old cells plus the cells the mark pushed. Each old cell is traced once more per minor GC (the price of the check; GC-stress only) |
+//! | V1, the remembered-set verifier (H11, 03-gc §7; GC4-V1): before the mark of every minor GC with `verify_after_gc` or GC-stress | [`check_old_cells`] checks every old cell as [`Heap::verify`] does (the generational invariant, ages are colours, the remembered lists and cards) and counts them. A V1 error panics there, before the mark ("heap verifier failed before a minor GC (V1)"), so the minor GC frees nothing. With `verify_after_gc`, after the GC the sweeps must keep the old cells plus the cells the mark pushed. Each old cell is traced once more per minor GC (the price of the check; GC-stress only) |
 //!
 //! The live cells after a GC are exactly the cells its mark traced, so the two entries check
 //! the same slots. A planted dangling slot fails both (tests/verify.rs).
@@ -276,10 +277,20 @@ impl Heap {
     }
 }
 
-/// S1 minor GC with `verify_after_gc`, after the lazy sweep and before the mark: checks every
-/// old (marked) cell as [`Heap::verify`] does, with the generational invariant (module doc),
-/// and the remembered lists and cards. Errors go after `errors`. Returns the number of old
-/// cells. Not a GC point; changes nothing.
+/// V1, the remembered-set verifier (H11, 03-gc §7): an S1 minor GC with `verify_after_gc` or
+/// GC-stress runs it after the lazy sweep and before the mark. It checks every old (marked)
+/// cell as [`Heap::verify`] does, with the generational invariant (module doc), the age of
+/// every cell against its colour ([`age_colour`]), and the remembered lists and cards. Errors
+/// go after `errors`. Returns the number of old cells. Not a GC point; changes nothing.
+///
+/// ```text
+/// every small page (VO bits):  age_colour; old and not GREY -> young_strict trace + word0
+///                              the remembered list: each entry a GREY cell start, no repeat,
+///                              no other GREY cell on the page
+/// every large object:          a dirty card -> the dirty byte; age_colour (never GREY);
+///                              old -> trace: no dirty byte: strict; else strict in the clean
+///                              cards of visit_slots, and for word0 if card 0 is clean
+/// ```
 pub(crate) fn check_old_cells(inner: &Inner, errors: &mut Vec<String>) -> usize {
     let mem = &inner.mem;
     let mut t = Tracer::new(mem, &inner.kinds, Mode::Verify, Vec::new(), Vec::new());
@@ -307,16 +318,17 @@ pub(crate) fn check_old_cells(inner: &Inner, errors: &mut Vec<String>) -> usize 
                 // SAFETY: as above.
                 let st = unsafe { c.header() }.gc_state();
                 grey += usize::from(st == gc_state::GREY);
-                if marks & (1 << bit) == 0 {
-                    continue;
-                }
-                old += 1;
-                if st == gc_state::WHITE {
+                let marked = marks & (1 << bit) != 0;
+                if let Some(e) = age_colour(marked, st, false) {
                     // SAFETY: as above.
                     let kind = unsafe { c.header() }.kind();
                     t.context = Context::Cell(c, kind);
-                    t.error(format_args!("marked (old) but WHITE"));
+                    t.error(format_args!("{e}"));
                 }
+                if !marked {
+                    continue;
+                }
+                old += 1;
                 t.young_strict = st != gc_state::GREY;
                 check_cell(&mut t, c, false, mem.is_shape_chunk(idx));
                 t.young_strict = false;
@@ -327,21 +339,20 @@ pub(crate) fn check_old_cells(inner: &Inner, errors: &mut Vec<String>) -> usize 
     for idx in mem.large_heads() {
         let h = large_header(mem, idx);
         check_cards(&mut t, idx);
-        if h.mark.load(Relaxed) == 0 {
-            continue;
-        }
-        old += 1;
         // SAFETY: chunk `idx` is the committed head of a large object.
         let large = unsafe { Large::from_base(mem.chunk_base(idx)) };
         // SAFETY: the LOS cell starts right after the header.
         let c = unsafe { CellPtr::from_raw(large.cell_ptr().cast()) };
+        let marked = h.mark.load(Relaxed) != 0;
         // SAFETY: as above.
-        if unsafe { c.header() }.gc_state() == gc_state::WHITE {
+        if let Some(e) = age_colour(marked, unsafe { c.header() }.gc_state(), true) {
             t.context = Context::Root("large header");
-            t.error(format_args!(
-                "large object at chunk {idx}: marked (old) but WHITE"
-            ));
+            t.error(format_args!("large object at chunk {idx}: {e}"));
         }
+        if !marked {
+            continue;
+        }
+        old += 1;
         check_large_cell(&mut t, idx, c, true);
     }
     *errors = core::mem::take(&mut t.errors);
@@ -357,9 +368,24 @@ fn large_header(mem: &crate::memory::Memory, idx: usize) -> &crate::layout::Larg
     unsafe { &*core::ptr::from_ref(large.header()) }
 }
 
+/// Ages are colours (S1; module doc): `None` if a cell with this mark (`marked` = old) may
+/// have gc_state `st`, else what is wrong. A young cell is WHITE (every allocation writes
+/// WHITE, and only the mark sets BLACK); an old one is BLACK or GREY (only the barrier sets
+/// GREY, and only on a BLACK host); a large object is never GREY (its store logs a card).
+fn age_colour(marked: bool, st: u8, large: bool) -> Option<&'static str> {
+    match (marked, st) {
+        (true, gc_state::WHITE) => Some("marked (old) but WHITE"),
+        (false, gc_state::BLACK) => Some("not marked (young) but BLACK"),
+        (false, gc_state::GREY) => Some("not marked (young) but GREY"),
+        (true, gc_state::GREY) if large => Some("GREY, but a large object is never GREY"),
+        _ => None,
+    }
+}
+
 /// [`check_cell`] for the large object at chunk `idx`. `old` (generational, marked): the
 /// generational invariant: strict without a dirty card; with one, strict only in the clean
-/// cards of `visit_slots` (trace.rs).
+/// cards of `visit_slots` (trace.rs), and for the word0 shape only if card 0 is clean (a shape
+/// install logs the cell start, card 0: `barrier_slow_shape`).
 fn check_large_cell(t: &mut Tracer<'_>, idx: usize, c: CellPtr, old: bool) -> Option<usize> {
     if !old {
         return check_cell(t, c, true, false);
@@ -368,9 +394,9 @@ fn check_large_cell(t: &mut Tracer<'_>, idx: usize, c: CellPtr, old: bool) -> Op
     let cards = (h.dirty.load(Relaxed) != 0)
         .then(|| CardView::of(h, c.addr()))
         .flatten();
-    t.young_strict = cards.is_none();
+    t.young_strict = cards.is_none_or(|v| !v.dirty(0));
     t.set_cards(cards);
-    let size = check_cell(t, c, true, false);
+    let size = check_cell_with(t, c, true, false, Some(cards.is_none()));
     t.set_cards(None);
     t.young_strict = false;
     size
@@ -507,12 +533,27 @@ fn check_large_tail(t: &mut Tracer<'_>, idx: usize, head: u32) {
 /// kind is unknown (the size cannot be known then). `in_region`: the cell lies in the shape
 /// region.
 fn check_cell(t: &mut Tracer<'_>, c: CellPtr, large: bool, in_region: bool) -> Option<usize> {
+    check_cell_with(t, c, large, in_region, None)
+}
+
+/// [`check_cell`]; `trace_strict`, if set, replaces `young_strict` after the word0 check, for
+/// the trace (an old large object: word0 and the slots follow different card rules).
+fn check_cell_with(
+    t: &mut Tracer<'_>,
+    c: CellPtr,
+    large: bool,
+    in_region: bool,
+    trace_strict: Option<bool>,
+) -> Option<usize> {
     // SAFETY: callers pass a cell start (VO bit or LOS header) in committed memory.
     let h = unsafe { c.header() };
     t.context = Context::Cell(c, h.kind());
     let kinds = t.kinds();
     let size = cell_checks(kinds, c, large, in_region, &mut t.errors)?;
     t.verify_word0_shape(h.shape_id().get());
+    if let Some(strict) = trace_strict {
+        t.young_strict = strict;
+    }
     let k = kinds
         .get(h.kind())
         .copied()

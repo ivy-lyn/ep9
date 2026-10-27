@@ -160,7 +160,7 @@ impl CardView {
         (i < self.len).then_some(i)
     }
 
-    fn dirty(self, card: usize) -> bool {
+    pub(crate) fn dirty(self, card: usize) -> bool {
         debug_assert!(card < self.len);
         // SAFETY: `card < len`, and the table lives as long as its large object, which is live
         // for the whole GC (nothing is freed while marking) or verify. Atomic access only.

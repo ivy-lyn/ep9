@@ -34,13 +34,15 @@
 //!   major GC (collect(), the policy, every 64th GC-stress GC): ... finish the last lazy
 //!     sweep -> clear every mark bit -> full mark -> empty every remembered list and card
 //!     table (remembered.rs) -> ...
-//!   minor GC (the policy, GC-stress): ... finish the last lazy sweep -> (verify: check the
-//!     generational invariant, verify.rs) -> mark from the roots; an old cell stops the mark
-//!     (its bit is set) -> trace the S1 logs: every remembered (GREY) small host again, set
-//!     BLACK, and the dirty cards of each old large object -> the ephemeron fixpoint (an old
-//!     key counts as marked, a young key waits) -> clear weak slots and run the weak sources
-//!     (a young cell left unmarked is dead; an old one is live) -> empty the logs -> sweep:
-//!     frees the unmarked (dead young) cells, keeps every mark (survivors become old)
+//!   minor GC (the policy, GC-stress): ... finish the last lazy sweep -> (V1, with
+//!     verify_after_gc or GC-stress: the generational invariant, verify.rs; an error panics
+//!     "heap verifier failed before a minor GC (V1)") -> mark from the roots; an old cell
+//!     stops the mark (its bit is set) -> trace the S1 logs: every remembered (GREY) small
+//!     host again, set BLACK, and the dirty cards of each old large object -> the ephemeron
+//!     fixpoint (an old key counts as marked, a young key waits) -> clear weak slots and run
+//!     the weak sources (a young cell left unmarked is dead; an old one is live) -> empty the
+//!     logs -> sweep: frees the unmarked (dead young) cells, keeps every mark (survivors
+//!     become old)
 //!   sweep: frees the unmarked cells and keeps the mark bits of the others (old = marked)
 //!   policy: a minor GC when the allocation budget is spent (budget = max(initial budget,
 //!     old bytes / 2)); a major GC instead once the old bytes passed twice the live bytes of
@@ -112,7 +114,9 @@ pub struct HeapConfig {
     pub initial_budget: usize,
     /// GC-stress: collect before every Nth allocation. 0 = off, 1 = every allocation. A
     /// value above 0 also turns on the process-wide E2 check
-    /// ([`crate::E2_CHECK_UNDER_GC_STRESS`], [`crate::e2_check_init`]).
+    /// ([`crate::E2_CHECK_UNDER_GC_STRESS`], [`crate::e2_check_init`]). With
+    /// [`HeapConfig::generational`] it also runs V1, the remembered-set verifier, before
+    /// every minor GC (as `verify_after_gc` does; verify.rs).
     pub gc_stress: u32,
     /// Run the heap verifier after every collection and panic on an error.
     pub verify_after_gc: bool,
@@ -482,6 +486,8 @@ pub(crate) struct Inner {
     major_limit: usize,
     /// S1 GC-stress: collections so far (every `stress_major_every`th is major).
     stress_gcs: u32,
+    /// V1 runs so far (one before each minor GC with `verify_after_gc` or GC-stress).
+    pub(crate) v1_runs: u64,
 }
 
 impl Heap {
@@ -571,6 +577,7 @@ impl Heap {
                 old_bytes: 0,
                 major_limit: s.initial_budget.saturating_mul(2),
                 stress_gcs: 0,
+                v1_runs: 0,
             }),
             roots: RefCell::new(Roots::default()),
             handles: RefCell::new(Handles::default()),
@@ -922,23 +929,32 @@ impl Heap {
             inner.shape_page = None;
             // Mark bits and VO bits must be exact before marking.
             inner.finish_sweeping();
-            inner.recyclable.clear();
-            inner.shape_recyclable.clear();
 
             // With `verify_after_gc`, the mark checks what it visits (the verify then needs no
             // second trace; verify.rs).
             let verify = inner.s.verify_after_gc;
             let sticky = inner.s.generational;
             let minor = sticky && kind == GcKind::Minor;
-            // A minor GC keeps the old cells' marks, so its mark does not trace them: the
-            // verify checks them first (no old cell outside the S1 logs holds a young cell)
-            // and counts them (the sweeps then keep the old cells and the cells pushed).
-            let mut pre_errors = Vec::new();
-            let old_before = if minor && verify {
-                Some(crate::verify::check_old_cells(inner, &mut pre_errors))
+            // V1 (H11, 03-gc §7): a minor GC keeps the old cells' marks, so its mark does not
+            // trace them. Before the mark, V1 checks them (no old cell outside the S1 logs
+            // holds a young cell) and counts them (the sweeps then keep the old cells and the
+            // cells pushed). It runs with the verify, and under GC-stress without it. An
+            // error panics here, before anything changes: the minor GC would free the young
+            // cell that the unlogged old host still holds.
+            let old_before = if minor && (verify || inner.s.gc_stress > 0) {
+                let mut v1_errors = Vec::new();
+                let old = crate::verify::check_old_cells(inner, &mut v1_errors);
+                inner.v1_runs += 1;
+                if !v1_errors.is_empty() {
+                    let e = crate::verify::VerifyError { errors: v1_errors };
+                    panic!("heap verifier failed before a minor GC (V1): {e}");
+                }
+                verify.then_some(old)
             } else {
                 None
             };
+            inner.recyclable.clear();
+            inner.shape_recyclable.clear();
 
             // From here until the weak sources are done, a root source, trace, size or weak
             // function may panic. The unwind then drops this guard, which clears every mark
@@ -963,7 +979,6 @@ impl Heap {
             } else {
                 Tracer::new(&inner.mem, &inner.kinds, Mode::Mark, stack, weak)
             };
-            t.errors = pre_errors;
 
             let stack_words = match scan {
                 #[cfg(not(miri))]
@@ -1226,8 +1241,15 @@ impl Heap {
 /// every remembered small host again, and each old large object with a dirty card through its
 /// dirty cards. The logs are emptied after the mark (`Inner::empty_s1_logs`).
 fn trace_s1_logs(mem: &Memory, t: &mut Tracer<'_>) {
+    #[cfg(test)]
+    let (skip_hosts, skip_cards) = (
+        minor_controls::SKIP_REMEMBERED.get(),
+        minor_controls::SKIP_CARDS.get(),
+    );
+    #[cfg(not(test))]
+    let (skip_hosts, skip_cards) = (false, false);
     t.context = crate::trace::Context::Root("remembered list");
-    for idx in mem.small_pages() {
+    for idx in mem.small_pages().filter(|_| !skip_hosts) {
         let page = mem.page(idx);
         // SAFETY: no store (push) runs during a GC.
         for &off in unsafe { page.header().remembered.offsets() } {
@@ -1241,7 +1263,7 @@ fn trace_s1_logs(mem: &Memory, t: &mut Tracer<'_>) {
         }
     }
     t.context = crate::trace::Context::Root("large object cards");
-    for idx in mem.large_heads() {
+    for idx in mem.large_heads().filter(|_| !skip_cards) {
         // SAFETY: chunk `idx` is the committed head of a large object.
         let large = unsafe { Large::from_base(mem.chunk_base(idx)) };
         let h = large.header();
@@ -1252,6 +1274,19 @@ fn trace_s1_logs(mem: &Memory, t: &mut Tracer<'_>) {
             // SAFETY: the LOS cell starts right after the header and is live.
             t.trace_by_cards(unsafe { CellPtr::from_raw(large.cell_ptr().cast()) }, cards);
         }
+    }
+}
+
+/// Tests only: collector-side negative controls (tests/v1.rs), the S1 forms of 03-gc §7 "no
+/// root rescan" and "no card rescan": the minor GC skips the remembered hosts, or the dirty
+/// cards, of the S1 logs.
+#[cfg(test)]
+pub(crate) mod minor_controls {
+    use core::cell::Cell;
+
+    std::thread_local! {
+        pub(crate) static SKIP_REMEMBERED: Cell<bool> = const { Cell::new(false) };
+        pub(crate) static SKIP_CARDS: Cell<bool> = const { Cell::new(false) };
     }
 }
 
