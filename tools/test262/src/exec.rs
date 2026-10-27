@@ -542,13 +542,18 @@ fn injected_fault(rel: &str) {
     }
 }
 
+/// Whether `EP9_GC_GENERATIONAL=1` turns on the S1 generational heap (see [`isolate_config`]).
+fn generational_from_env() -> bool {
+    std::env::var_os("EP9_GC_GENERATIONAL").is_some_and(|v| v == "1")
+}
+
 /// The config of every test isolate: the builtins of `ep9_builtins` (H20) on top of the VM's.
 /// `EP9_GC_GENERATIONAL=1` in the environment (inherited by the workers) turns on the S1
 /// generational heap (`HeapConfig::generational`): with `--gc-stress` that is the S1
 /// GC-stress mode, a minor GC at every Nth allocation and a major one every 64th GC (V9-D27;
 /// plan v9 §5.1). The switch lives in `HeapConfig`, never in `IsolateConfig`.
 fn isolate_config(gc_stress: u32, feedback_threshold: u32) -> IsolateConfig {
-    let generational = std::env::var_os("EP9_GC_GENERATIONAL").is_some_and(|v| v == "1");
+    let generational = generational_from_env();
     IsolateConfig {
         heap: HeapConfig {
             gc_stress,
@@ -1749,6 +1754,15 @@ fn summary_json(
             &results.iter().map(|(rel, _)| *rel).collect::<Vec<_>>(),
         );
     }
+    // `cargo xtask m1-exit` item 4 reads these two (TOOLS F6, GC4 need 3): the S1 generational
+    // heap (`EP9_GC_GENERATIONAL=1`, `isolate_config`) and how often the heap verifier runs
+    // (after every collection under GC-stress, else never).
+    let _ = write!(
+        out,
+        ",\"generational\":{},\"verify_cadence\":{}",
+        generational_from_env(),
+        u32::from(opts.gc_stress > 0),
+    );
     let _ = write!(out, ",\"wall_seconds\":{:.3}", wall.as_secs_f64());
     out.push_str(",\"files\":");
     count(&mut out, files_all);
