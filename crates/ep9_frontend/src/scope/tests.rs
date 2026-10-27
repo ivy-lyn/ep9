@@ -876,6 +876,106 @@ fn heritage_scope_only_with_a_direct_eval_in_the_heritage() {
     }
 }
 
+/// The heritage scopes of `src` and the nodes the heritage walks entered (one count per
+/// analysis, read on the front-end worker), with depth cap `cap`; `None` for a RangeError.
+fn heritage_walk(src: &str, cap: u32) -> (Option<usize>, u64) {
+    with_front_end(src, SourceOpts::script(Strictness::Sloppy), move |fe| {
+        super::collect::HERITAGE_NODES.with(|n| n.set(0));
+        let scopes = analyze_with_cap(fe, cap).ok().map(|a| {
+            a.scopes()
+                .iter()
+                .filter(|s| s.class.as_ref().is_some_and(|c| c.heritage_scope.is_some()))
+                .count()
+        });
+        Ok((scopes, super::collect::HERITAGE_NODES.with(|n| n.get())))
+    })
+    .unwrap()
+}
+
+/// CX2-E9-1: n nested class heritages (`class extends class extends ... Object {} {}`) cost
+/// O(n) heritage-walk nodes, not one walk per class (n(n+1)/2: 2,001,000 for n = 2,000, the
+/// class-heritage form of nesting_caps). An eval at the bottom gives every class a heritage
+/// scope, as a walk per class does.
+#[test]
+fn nested_heritages_are_walked_once() {
+    for n in [500, 1_000, 2_000] {
+        for (bottom, scopes) in [("Object", 0), ("(eval('1'), Object)", n)] {
+            let src = format!(
+                "var x = {}{bottom}{};",
+                "class extends ".repeat(n),
+                " {}".repeat(n)
+            );
+            let (found, nodes) = heritage_walk(&src, crate::AST_CAP);
+            assert_eq!(found, Some(scopes), "n = {n}, {bottom}");
+            assert!(
+                nodes <= 4 * n as u64 + 16,
+                "n = {n}, {bottom}: {nodes} heritage nodes walked"
+            );
+        }
+    }
+    // The inner heritage holds the eval, so both classes get a heritage scope.
+    let (found, _) = heritage_walk(
+        "class A extends (class B extends (eval('1'), Object) {}) {}",
+        crate::AST_CAP,
+    );
+    assert_eq!(found, Some(2));
+}
+
+/// CX2-E9-1: near the depth cap. A heritage walk that runs out of budget answers yes, and a
+/// walk kept from an outer class answers for an inner class only when a walk with the inner
+/// class's own budget gives the same answer. For every cap from 3 to 39 the program is a
+/// RangeError below its first good cap and has the same heritage scopes at every good cap.
+/// The counts and the first good caps are those of the walk per class (434b27c;
+/// the same for all 8,880 programs x caps of a wider sweep).
+#[test]
+fn heritage_answers_near_the_cap_match_a_walk_per_class() {
+    // (bottom, its first good cap for n = 1, heritage scopes per class, more scopes).
+    let bottoms = [
+        ("Object", 3, 0, 0),
+        ("(() => [[[[[0]]]]])()", 11, 0, 0),
+        (
+            "(() => { if (1) { while (0) { [[[eval('1')]]]; } } })()",
+            15,
+            1,
+            0,
+        ),
+        (
+            "(class extends (class extends (eval('1'), Object) {}) { [[[[0]]]] = 1 })",
+            10,
+            1,
+            2,
+        ),
+        (
+            "(() => { try {} catch ({a: [[b]]}) { [[[[eval('1')]]]] } })",
+            12,
+            1,
+            0,
+        ),
+    ];
+    for (bottom, first, per_class, more) in bottoms {
+        for tail in ["", " m() { [[[[0]]]]; }"] {
+            for n in 1..=4usize {
+                let src = format!(
+                    "var x = {}{bottom}{};",
+                    "class extends ".repeat(n),
+                    format!(" {{{tail}}}").repeat(n)
+                );
+                // A method body is deeper than the heritage of `Object` only.
+                let first = if bottom == "Object" && !tail.is_empty() {
+                    8
+                } else {
+                    first
+                } + n as u32
+                    - 1;
+                for cap in 3..40 {
+                    let want = (cap >= first).then_some(per_class * n + more);
+                    assert_eq!(heritage_walk(&src, cap).0, want, "{src} cap {cap}");
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn class_scopes_private_names_and_synthetic_functions() {
     let a = script(

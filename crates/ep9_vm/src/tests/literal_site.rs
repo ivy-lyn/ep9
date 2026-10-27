@@ -269,6 +269,94 @@ fn a_shared_literal_slot_gets_no_key() {
     );
 }
 
+/// Array sites and object sites of [`many_sites`].
+const MANY_ARRAYS: usize = 1_000;
+const MANY_OBJECTS: usize = 250;
+
+/// Straight-line top-level code (no loop): `a = [1, 2]` at [`MANY_ARRAYS`] sites, then
+/// `o = {p: 1}` at [`MANY_OBJECTS`] sites, each with its own Literal slot, each run once (the
+/// shape of a deep or long script); then print a.length and o.p.
+fn many_sites() -> (VerifiedUnit, Vec<FeedbackSlot>) {
+    let mut s = Asm::script(0);
+    let (k1, k2, kp) = (
+        s.b.number_constant(1.0),
+        s.b.number_constant(2.0),
+        s.b.string_constant("p"),
+    );
+    let abp = s.b.array_boilerplate(vec![Some(k1), Some(k2)]);
+    let obp = s.b.object_boilerplate(vec![(kp, Some(k1))]);
+    let (a, o) = (s.b.new_register(), s.b.new_register());
+    let mut slots = Vec::new();
+    for _ in 0..MANY_ARRAYS {
+        let lit = s.b.feedback_slot(FeedbackSlotKind::Literal);
+        s.b.create_array_literal(abp, lit, SHALLOW).star(a);
+        slots.push(lit);
+    }
+    for _ in 0..MANY_OBJECTS {
+        let lit = s.b.feedback_slot(FeedbackSlotKind::Literal);
+        s.b.create_object_literal(obp, lit, SHALLOW).star(o);
+        slots.push(lit);
+    }
+    s.get_named(a, "length");
+    s.print_acc();
+    s.get_named(o, "p");
+    s.print_acc();
+    s.b.lda_undefined().return_();
+    (unit("", vec![s.finish()]), slots)
+}
+
+/// The miss path asks once per site whether its slot is shared (`literal_site::shared_slot`).
+/// The answer costs one walk of the function's code in all, not one per miss: the old walk
+/// per miss decoded about sites x instructions (1,250 x ~2,500 here), which made deep or long
+/// top-level scripts quadratic once a script got its vector at entry (M4-P2 nesting_caps).
+/// Every site still records its key. No GC stress (a GC per allocation makes it slow; the
+/// walk allocates nothing); every dispatch expansion with eager vectors, and the default
+/// threshold (a script gets its vector at entry).
+#[test]
+fn literal_misses_walk_the_code_once_per_function() {
+    let mut cs: Vec<_> = configs()
+        .into_iter()
+        .filter(|(_, c)| c.heap.gc_stress == 0)
+        .collect();
+    cs.push(("default threshold".into(), config(Dispatch::ALL[0], false)));
+    for (label, c) in cs {
+        on_big_stack(move || {
+            let (u, slots) = many_sites();
+            let instructions =
+                ep9_bytecode::Instructions::new(&u.unit().functions[0].bytecode).count() as u64;
+            let mut iso = isolate(c);
+            take_output();
+            crate::literal_site::SCANNED.with(|n| n.set(0));
+            let r = iso.with_cx_checkpoint(|cx| cx.run_script(u, "test.js").map(|_| ()));
+            let scanned = crate::literal_site::SCANNED.with(|n| n.get());
+            let out = take_output();
+            if let Err(e) = r {
+                panic!("{label}: uncaught {e}");
+            }
+            assert_eq!(out, ["2", "1"], "{label}");
+            assert!(
+                scanned <= instructions,
+                "{label}: {scanned} instructions decoded for {} misses of a function of \
+                 {instructions} instructions (one walk is at most {instructions})",
+                slots.len()
+            );
+            for (n, &slot) in slots.iter().enumerate() {
+                let (key, value) = slot_of(&iso, slot);
+                assert!(shape::is_shape(key), "{label}: site {n} has a key");
+                let want = if n < MANY_ARRAYS {
+                    kinds::ARRAY
+                } else {
+                    kinds::OBJECT
+                };
+                assert_eq!(shape::object_kind(key), want.get(), "{label}: site {n}");
+                assert_eq!(value, int32_bits(1), "{label}: site {n}");
+            }
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
+}
+
 /// For n = 1 ..= `shapes`: `src_n = {}; src_n["x" + n] = n` (one source shape per n; each
 /// source stays in its own register, so under GC stress its shape and its case stay alive),
 /// then 4 times `c = {...src_n}` at one CloneObject site, and `t += c["x" + n]`; print t.

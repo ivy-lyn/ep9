@@ -7,10 +7,10 @@ use std::collections::HashMap;
 use oxc_ast::ast::BlockStatement;
 use oxc_ast::ast::{
     ArrowFunctionExpression, AssignmentTarget, BindingIdentifier, BindingPattern, CallExpression,
-    CatchClause, Class, ClassElement, ClassType, ExportAllDeclaration, ExportDeclaration,
-    ExportDefaultDeclaration, ExportDefaultDeclarationKind, ExportFromDeclaration,
-    ExportNamedDeclaration, Expression, ForInStatement, ForOfStatement, ForStatement,
-    ForStatementInit, ForStatementLeft, FormalParameters, Function, FunctionType,
+    CatchClause, Class, ClassElement, ClassHeritage, ClassType, ExportAllDeclaration,
+    ExportDeclaration, ExportDefaultDeclaration, ExportDefaultDeclarationKind,
+    ExportFromDeclaration, ExportNamedDeclaration, Expression, ForInStatement, ForOfStatement,
+    ForStatement, ForStatementInit, ForStatementLeft, FormalParameters, Function, FunctionType,
     IdentifierReference, IfStatement, ImportDeclaration, ImportDeclarationSpecifier,
     MethodDefinitionKind, ModuleExportName, NewTarget, ObjectProperty, PrivateFieldExpression,
     PrivateInExpression, Program, PropertyKey, PropertyKind, Statement, Super, SwitchStatement,
@@ -110,6 +110,10 @@ pub(super) struct Builder<'a> {
     /// Private name references made inside a heritage, with the class scopes whose bindings
     /// resolution skips (a copy of `heritage_of`). Never iterated (H2).
     pub(super) private_skips: HashMap<RefId, Box<[ScopeId]>>,
+    /// (CX2-E9-1) What [`FindDirectEval`] found in each heritage expression it walked, by the
+    /// expression's span, so each heritage inside another is walked once in all, not once per
+    /// class around it. Never iterated (H2).
+    heritage_walks: HashMap<(u32, u32), HeritageWalk>,
     pub(super) n_this: NameId,
     pub(super) n_new_target: NameId,
     pub(super) n_home_object: NameId,
@@ -154,6 +158,7 @@ impl<'a> Builder<'a> {
             synthetic_blocks: Vec::new(),
             heritage_of: Vec::new(),
             private_skips: HashMap::new(),
+            heritage_walks: HashMap::new(),
             n_this: NameId(0),
             n_new_target: NameId(0),
             n_home_object: NameId(0),
@@ -261,14 +266,31 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// (CX2-E9-1) `heritage` holds a direct eval (see [`FindDirectEval`]).
-    fn holds_direct_eval(&self, heritage: &Expression<'a>) -> bool {
+    /// (CX2-E9-1) `heritage` holds a direct eval (see [`FindDirectEval`]). The walk of an
+    /// outer heritage has already walked this one if it is nested: then the kept result
+    /// answers, when it can, for this class's budget.
+    fn holds_direct_eval(&mut self, heritage: &Expression<'a>) -> bool {
+        let budget = self.cap.saturating_sub(self.depth);
+        let key = heritage_key(heritage);
+        if let Some(found) = self
+            .heritage_walks
+            .get(&key)
+            .and_then(|w| w.holds_direct_eval(budget))
+        {
+            return found;
+        }
         let mut find = FindDirectEval {
-            budget: self.cap.saturating_sub(self.depth),
-            found: false,
+            budget,
+            nesting: 0,
+            peak: 0,
+            evals: 0,
+            trips: 0,
+            walks: &mut self.heritage_walks,
         };
-        find.visit_expression(heritage);
-        find.found
+        find.heritage(heritage);
+        self.heritage_walks[&key]
+            .holds_direct_eval(budget)
+            .expect("a walk with this budget answers for it")
     }
 
     fn private_name(&mut self, text: &'a str) -> NameId {
@@ -870,58 +892,139 @@ pub(crate) const HERITAGE_MARKER: &str = "#.heritage";
 /// (CX2-E9-1) Finds a direct eval in a class heritage, also in the functions and classes
 /// inside it. Past `budget` nested nodes it answers yes: a heritage scope too many does no
 /// harm, and the main walk reports the depth.
-struct FindDirectEval {
+///
+/// The answer for a heritage with budget `b` is: it holds a direct eval, or its nesting
+/// height (nodes counted by `enter`) is more than `b` (then any walk with budget `b` trips).
+/// One walk keeps that for every heritage it passes ([`HeritageWalk`]), so a heritage nested
+/// in n others is walked once, not n times: n nested heritages cost O(n) nodes, not
+/// O(n^2). The walk does not stop at the first eval, so every kept result is whole.
+struct FindDirectEval<'w> {
     budget: u32,
-    found: bool,
+    /// Nodes entered and not yet left, and the most at once since the last reset.
+    nesting: u32,
+    peak: u32,
+    /// Direct evals found and budget trips, in all.
+    evals: u64,
+    trips: u64,
+    walks: &'w mut HashMap<(u32, u32), HeritageWalk>,
 }
 
-impl FindDirectEval {
-    fn enter(&mut self) -> bool {
-        if self.found {
-            return false;
+/// What one [`FindDirectEval`] walk found in one heritage expression.
+#[derive(Clone, Copy)]
+struct HeritageWalk {
+    /// The walk found a direct eval.
+    eval: bool,
+    /// The budget the walk had at the heritage.
+    budget: u32,
+    /// No trip: `height` is the heritage's nesting height (at most `budget`). A trip: the
+    /// height is more than `budget`.
+    whole: bool,
+    height: u32,
+}
+
+impl HeritageWalk {
+    /// The answer of a walk of this heritage with budget `b`, if this walk tells it.
+    fn holds_direct_eval(&self, b: u32) -> Option<bool> {
+        if self.eval {
+            Some(true)
+        } else if self.whole {
+            Some(self.height > b)
+        } else {
+            // height > self.budget: a walk with a budget no larger trips too.
+            (b <= self.budget).then_some(true)
         }
-        if self.budget == 0 {
-            self.found = true;
-            return false;
-        }
-        self.budget -= 1;
-        true
     }
 }
 
-impl<'a> Visit<'a> for FindDirectEval {
+/// The key of a heritage expression in [`Builder::heritage_walks`]: its span. Two heritage
+/// expressions never have the same span (a nested one starts after its `class`).
+fn heritage_key(e: &Expression<'_>) -> (u32, u32) {
+    let s = e.span();
+    (s.start, s.end)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: nodes that [`FindDirectEval`] entered.
+    pub(super) static HERITAGE_NODES: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+impl FindDirectEval<'_> {
+    fn enter(&mut self) -> bool {
+        #[cfg(test)]
+        HERITAGE_NODES.with(|n| n.set(n.get() + 1));
+        if self.budget == 0 {
+            self.trips += 1;
+            return false;
+        }
+        self.budget -= 1;
+        self.nesting += 1;
+        self.peak = self.peak.max(self.nesting);
+        true
+    }
+
+    fn leave(&mut self) {
+        self.budget += 1;
+        self.nesting -= 1;
+    }
+
+    /// Walks the heritage expression `e` and keeps what it found.
+    fn heritage(&mut self, e: &Expression<'_>) {
+        let (evals, trips, peak, nesting, budget) =
+            (self.evals, self.trips, self.peak, self.nesting, self.budget);
+        self.peak = nesting;
+        self.visit_expression(e);
+        let walk = HeritageWalk {
+            eval: self.evals > evals,
+            budget,
+            whole: self.trips == trips,
+            height: self.peak - nesting,
+        };
+        self.peak = self.peak.max(peak);
+        self.walks.insert(heritage_key(e), walk);
+    }
+}
+
+impl<'a> Visit<'a> for FindDirectEval<'_> {
     fn visit_expression(&mut self, it: &Expression<'a>) {
         if self.enter() {
             walk::walk_expression(self, it);
-            self.budget += 1;
+            self.leave();
         }
     }
 
     fn visit_statement(&mut self, it: &Statement<'a>) {
         if self.enter() {
             walk::walk_statement(self, it);
-            self.budget += 1;
+            self.leave();
         }
     }
 
     fn visit_assignment_target(&mut self, it: &AssignmentTarget<'a>) {
         if self.enter() {
             walk::walk_assignment_target(self, it);
-            self.budget += 1;
+            self.leave();
         }
     }
 
     fn visit_binding_pattern(&mut self, it: &BindingPattern<'a>) {
         if self.enter() {
             walk::walk_binding_pattern(self, it);
-            self.budget += 1;
+            self.leave();
+        }
+    }
+
+    fn visit_class_heritage(&mut self, it: &ClassHeritage<'a>) {
+        // As `walk_class_heritage`, keeping what the expression holds.
+        self.heritage(&it.expression);
+        if let Some(type_arguments) = &it.type_arguments {
+            self.visit_ts_type_parameter_instantiation(type_arguments);
         }
     }
 
     fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
         if is_direct_eval(it) {
-            self.found = true;
-            return;
+            self.evals += 1;
         }
         walk::walk_call_expression(self, it);
     }
