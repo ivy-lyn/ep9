@@ -20,9 +20,12 @@
 //! why it is there:
 //! - [`GuardBasis::Fact`]: a predicted fact of that source (H32: JIT mode, DEOPT + counter).
 //! - [`GuardBasis::Unbacked`]: a speculation that no fact backs. An unknown value should take
-//!   the generic path, but the runtime table has no generic entry for the operation yet
+//!   the generic path, but the runtime table has no generic entry for most operations
 //!   (`ep9_vm::RuntimeTable`: poll, call_any, add, inc, compare, stack_overflow, throw,
-//!   unwind), so SPIKEC-1 checks the fast case inline instead. Each one is counted in the
+//!   unwind, and since M4-P3 get_keyed and set_keyed), so SPIKEC-1 checks the fast case
+//!   inline instead. A keyed site whose record saw a key that is not an index, or a store
+//!   of a value that is not an int32, takes the generic keyed entries instead and has no
+//!   guard ([`Op::GetKeyedGeneric`], [`Op::SetKeyedGeneric`]; SPIKEC-4). Each one is counted in the
 //!   report. An int32 BinaryOp or CompareOp record makes the int32 guards of its site fact
 //!   guards (SPIKEC-2, [`crate::build`]; the exporter writes those records from FACTS2, M4-P2,
 //!   on); an index-only keyed record of FACTS2 does the same for the key's int32 check of
@@ -113,6 +116,9 @@ pub enum Repr {
     Int32,
     /// 0 or 1.
     Bool,
+    /// A double, as its IEEE bits in a general register (SPIKEC-4; the emitter moves it to a
+    /// d register for each op).
+    Float64,
     /// No value (effects and control).
     None,
 }
@@ -153,6 +159,15 @@ impl Int32Op {
             Int32Op::And | Int32Op::Or | Int32Op::Xor | Int32Op::Shl | Int32Op::Sar
         )
     }
+}
+
+/// A double binary operation (IEEE, as JS: the result is a number for any number inputs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloatOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
 }
 
 /// A signed int32 comparison.
@@ -207,6 +222,37 @@ pub enum Op {
     /// Guard: stores the Int32 value into an existing element (same bounds and hole checks).
     /// An int32 is not a cell, so no barrier is needed (H11 elision E1).
     StoreElement,
+    /// Guard: the Tagged input is a number (an int32 or a double Value); its value as a
+    /// double. Float64 (SPIKEC-4).
+    CheckNumber,
+    /// The Int32 input as a double: Float64, PROVEN (every int32 is a number).
+    Int32ToFloat64,
+    /// A double op on two Float64 inputs: Float64, PROVEN (a number op on numbers gives a
+    /// number). Not a guard: it cannot fail.
+    Float64(FloatOp),
+    /// Float64 to a Tagged number Value, in the form `Value::number` gives (an int32 Value
+    /// for an integer in int32 range that is not -0, else a double with NaN purified).
+    BoxFloat64,
+    /// Slot `index` of the current context (the frame's context; `LdaCurrentContextSlot`):
+    /// Tagged, unknown. Reads mutable memory: never shared or moved across an effect
+    /// (SPIKEC-4, lin_solve).
+    LoadContextSlot(u32),
+    /// A call with an undefined receiver (`CallUndefinedReceiver0/1/2`): inputs = the callee,
+    /// then the arguments, all Tagged; `regs` are the instruction's operand registers in the
+    /// same order (`RuntimeTable::call_any` reads the operands from their VM frame slots).
+    /// A Tagged, unknown result. An effect and a GC point; a throw unwinds (SPIKEC-4).
+    Call { regs: Vec<Register> },
+    /// `o[k]` by the generic keyed load (`ep9_vm::RuntimeTable::get_keyed`, entry 8,
+    /// `layout::RT_GET_KEYED`; SPIKEC-4, P3-ORCH-9): the Tagged receiver and key, a Tagged
+    /// result. Not a guard: any receiver and key take it. An effect and a GC point (a getter
+    /// or a proxy trap may run JS); a throw unwinds from its bytecode offset. The entry
+    /// records no feedback (native code records none, MC-w15-6).
+    GetKeyedGeneric,
+    /// `o[k] = v` by the generic keyed store (`RuntimeTable::set_keyed`, entry 9,
+    /// `layout::RT_SET_KEYED`): the Tagged receiver, key and value. The entry does the
+    /// store barrier, so any value may be stored. An effect and a GC point, as
+    /// [`Op::GetKeyedGeneric`].
+    SetKeyedGeneric,
     /// An int32 binary op; Add, Sub and Mul are guards (overflow, -0).
     Int32(Int32Op),
     /// An int32 comparison: Bool.
@@ -237,6 +283,8 @@ impl Op {
             Op::Const(_) | Op::ConstInt32(_) | Op::TruncateInt32 => true,
             Op::Int32(o) => o.bitwise(),
             Op::Compare(_) | Op::IsFalse | Op::IsTrue => true,
+            // A number from numbers (SPIKEC-4).
+            Op::Int32ToFloat64 | Op::Float64(_) => true,
             _ => false,
         }
     }
@@ -248,6 +296,7 @@ impl Op {
             | Op::TruncateInt32
             | Op::CheckShape { .. }
             | Op::CheckArray
+            | Op::CheckNumber
             | Op::LoadElement
             | Op::StoreElement => true,
             Op::Int32(o) => !o.bitwise(),
@@ -261,15 +310,32 @@ impl Op {
     }
 
     /// True for an op that changes the heap or the VM (a store, a poll, which may run a GC
-    /// or an interrupt): a deopt must not resume T0 before it once it ran (guard placement,
-    /// [`Graph::check`]). A guard's own checks run before its effect.
+    /// or an interrupt, a generic keyed access, which may run JS): a deopt must not resume
+    /// T0 before it once it ran (guard placement, [`Graph::check`]). A guard's own checks
+    /// run before its effect.
     pub fn is_effect(&self) -> bool {
-        matches!(self, Op::StoreElement | Op::Poll)
+        matches!(
+            self,
+            Op::StoreElement
+                | Op::Poll
+                | Op::GetKeyedGeneric
+                | Op::SetKeyedGeneric
+                | Op::Call { .. }
+        )
+    }
+
+    /// True for a call into the runtime table that may run JS or a GC and throw: the
+    /// allocated caller-saved registers live across it are saved around the call.
+    pub fn is_call(&self) -> bool {
+        matches!(
+            self,
+            Op::GetKeyedGeneric | Op::SetKeyedGeneric | Op::Call { .. }
+        )
     }
 
     /// True if the node has an effect other than its result (it stays without uses).
     pub fn has_effect(&self) -> bool {
-        self.is_guard() || self.is_terminator() || matches!(self, Op::Poll)
+        self.is_guard() || self.is_terminator() || self.is_effect()
     }
 }
 
@@ -499,7 +565,7 @@ impl Graph {
     ///   the state's block to the guard's, and no effect on any such path: none at or after
     ///   the state's offset in the state's block, none in a block between, none before the
     ///   guard in its own block, and none at all in either end block when it lies on a cycle
-    ///   of those paths (conservative: [`Graph::effect_on_the_way`]).
+    ///   of those paths (conservative: `Graph::effect_on_the_way`).
     pub fn check(&self) -> Result<(), String> {
         let mut seen = vec![false; self.nodes.len()];
         for b in &self.blocks {
@@ -579,8 +645,10 @@ impl Graph {
                         return Err(format!("{at}: a ShapeRef is not in the ref list"));
                     }
                 }
-                let carrier = matches!(node.op, Op::Phi | Op::BoxInt32 | Op::BoxBool)
-                    && !node.inputs.is_empty();
+                let carrier = matches!(
+                    node.op,
+                    Op::Phi | Op::BoxInt32 | Op::BoxBool | Op::BoxFloat64
+                ) && !node.inputs.is_empty();
                 match node.trust {
                     Trust::Proven => {
                         let ok = node.op.proven_by_spec()
@@ -621,7 +689,9 @@ impl Graph {
                             g.policy
                         ));
                     }
-                    if g.state.offset < node.offset && !matches!(node.op, Op::CheckInt32) {
+                    if g.state.offset < node.offset
+                        && !matches!(node.op, Op::CheckInt32 | Op::CheckNumber)
+                    {
                         return Err(format!("{at}: frame state before the guard"));
                     }
                     for &(_, v) in &g.state.registers {

@@ -27,10 +27,11 @@
 //! | [`facts`] | the FactSnapshot input of one function: live (RUNTIME) or a PROFILED file | P0-SPIKEC; SP-Facts (month 5) |
 //! | [`cfg`](mod@cfg) | reachable bytecode as blocks, register liveness (H02-Q1) | SPIKEC-1 (M4-P1) |
 //! | [`ir`] | the SSA graph, the fact lattice, the five ref nodes, guards with frame states | SPIKEC-1 |
-//! | [`build`](mod@build) | the graph builder: bytecode + FactSnapshot -> [`ir::Graph`] | SPIKEC-1; int facts SPIKEC-2; keyed facts SPIKEC-3 |
+//! | [`build`](mod@build) | the graph builder: bytecode + FactSnapshot -> [`ir::Graph`] | SPIKEC-1; int facts SPIKEC-2; keyed facts SPIKEC-3; the generic keyed path, doubles, `===`, context loads and calls (the `lin_solve` graph) SPIKEC-4 |
 //! | [`regalloc`] | linear-scan register allocation | SPIKEC-1 |
-//! | [`emit_a64`] | AArch64 code from the allocated graph (dynasm 5.1.0); guard exits = one exit stub per guard to a shared "deopt not built" trap | SPIKEC-1; exit stubs SPIKEC-3 |
-//! | [`vm_layout`] | VM layout facts the code reads that `ep9_vm::layout` does not export, checked on live objects | SPIKEC-1 |
+//! | [`emit_a64`] | AArch64 code from the allocated graph (dynasm 5.1.0); guard exits = one exit stub per guard to a shared "deopt not built" trap | SPIKEC-1; exit stubs SPIKEC-3; the call stub form and the generic keyed calls SPIKEC-4 |
+//! | [`deopt_meta`] | the per-exit deopt metadata form: pc, guard, bytecode offset, counter, value places; offsets only | SPIKEC-4 |
+//! | [`vm_layout`] | the VM layout facts the code reads, from the `ep9_vm::layout` export (each with its owning version), proved on live objects | SPIKEC-1; the export SPIKEC-4 |
 //! | [`tier`] | config C of the protocol: a kernel run with its hot function compiled, against T0 | SPIKEC-1 |
 //! | [`timing`] | the class S timing of protocol §3 (T0, C, H0, H1; paired ratios, the median interval), a Mac report | SPIKEC-2 |
 //!
@@ -45,6 +46,7 @@
 
 pub mod build;
 pub mod cfg;
+pub mod deopt_meta;
 pub mod emit_a64;
 pub mod facts;
 pub mod harness;
@@ -98,7 +100,8 @@ impl CompileReport {
         )
     }
 
-    /// The keyed sites and what their records gave (SPIKEC-3), one line.
+    /// The keyed sites and what their records gave (SPIKEC-3; the generic path SPIKEC-4),
+    /// one line.
     pub fn keyed_line(&self) -> String {
         let sites: Vec<String> = self
             .build
@@ -106,7 +109,7 @@ impl CompileReport {
             .iter()
             .map(|k| {
                 format!(
-                    "@{} {} s{} keys {} -> key check {:?}",
+                    "@{} {} s{} keys {} -> {}",
                     k.offset,
                     if k.store { "store" } else { "load" },
                     k.slot,
@@ -118,7 +121,14 @@ impl CompileReport {
                             .collect();
                         format!("{{{}}}", names.join(" "))
                     }),
-                    k.key_basis,
+                    if k.generic {
+                        format!(
+                            "generic (RuntimeTable {})",
+                            if k.store { "set_keyed" } else { "get_keyed" }
+                        )
+                    } else {
+                        format!("key check {:?}", k.key_basis)
+                    },
                 )
             })
             .collect();
@@ -139,13 +149,23 @@ pub fn compile_input(
     input: &FunctionInput<'_>,
     facts: &facts::FunctionFacts<'_>,
 ) -> Result<(FunctionCode, CompileReport), Refusal> {
+    compile_input_with(input, facts, emit_a64::StubForm::Movz)
+}
+
+/// [`compile_input`] with the exit stubs of `form` (SPIKEC-4: the call form is a report next
+/// to the default 12-byte form, MC-w15-14).
+pub fn compile_input_with(
+    input: &FunctionInput<'_>,
+    facts: &facts::FunctionFacts<'_>,
+    form: emit_a64::StubForm,
+) -> Result<(FunctionCode, CompileReport), Refusal> {
     let (graph, stats) = build::build(input, facts)?;
     let alloc = regalloc::allocate(&graph).map_err(Refusal::Limit)?;
     regalloc::verify(&graph, &alloc).map_err(Refusal::Limit)?;
     if spike_b::emit::Arch::HOST != Some(spike_b::emit::Arch::Aarch64) {
         return Err(Refusal::Arch);
     }
-    let (code, emit) = emit_a64::emit(input, &graph, &alloc)?;
+    let (code, emit) = emit_a64::emit_with(input, &graph, &alloc, form)?;
     let (fact_guards, unbacked_guards) = graph.guard_counts();
     let report = CompileReport {
         name: input.name.to_string(),
@@ -163,6 +183,101 @@ pub fn compile_input(
     Ok((code, report))
 }
 
+/// How far the pipeline got on one function (SPIKEC-4: the `lin_solve` graph build starts):
+/// the graph is built and checked and its registers allocated; the emit result is reported,
+/// a refusal included.
+#[derive(Clone, Debug)]
+pub struct GraphReport {
+    pub name: String,
+    pub build: build::BuildStats,
+    pub nodes: usize,
+    pub blocks: usize,
+    pub fact_guards: usize,
+    pub unbacked_guards: usize,
+    /// Live nodes per op name.
+    pub ops: std::collections::BTreeMap<String, usize>,
+    pub intervals: usize,
+    pub spilled: usize,
+    pub max_live: usize,
+    /// The emitter's code size and exit line, or its refusal (or `Refusal::Arch` off
+    /// AArch64).
+    pub emit: Result<(usize, String), String>,
+    pub graph: String,
+}
+
+impl GraphReport {
+    /// One line per stage.
+    pub fn lines(&self) -> Vec<String> {
+        let ops: Vec<String> = self.ops.iter().map(|(k, n)| format!("{k} {n}")).collect();
+        vec![
+            format!(
+                "{}: graph built and checked: {} bytecode instructions in {} blocks -> {} nodes; \
+                 guards {} fact + {} unbacked; liveness {} us, {} bytes (H02-Q1)",
+                self.name,
+                self.build.instructions,
+                self.blocks,
+                self.nodes,
+                self.fact_guards,
+                self.unbacked_guards,
+                self.build.liveness_us,
+                self.build.liveness_bytes,
+            ),
+            format!("{}: nodes by op: {}", self.name, ops.join(", ")),
+            format!(
+                "{}: registers allocated and verified: {} intervals, {} spilled, {} live at most",
+                self.name, self.intervals, self.spilled, self.max_live
+            ),
+            match &self.emit {
+                Ok((bytes, exits)) => format!("{}: emitted {bytes} bytes; {exits}", self.name),
+                Err(e) => format!("{}: emit refused: {e}", self.name),
+            },
+        ]
+    }
+}
+
+/// Builds, checks and allocates the graph of `input` from `facts`, then tries the emitter
+/// ([`GraphReport`]). Errors only if the graph build, the check or the allocation fails.
+pub fn graph_report(
+    input: &FunctionInput<'_>,
+    facts: &facts::FunctionFacts<'_>,
+) -> Result<GraphReport, Refusal> {
+    let (graph, stats) = build::build(input, facts)?;
+    let alloc = regalloc::allocate(&graph).map_err(Refusal::Limit)?;
+    regalloc::verify(&graph, &alloc).map_err(Refusal::Limit)?;
+    let mut ops = std::collections::BTreeMap::new();
+    for n in graph.order() {
+        let name = format!("{:?}", graph.node(n).op);
+        let name = name
+            .split(['(', ' ', '{'])
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        *ops.entry(name).or_insert(0) += 1;
+    }
+    let emit = if spike_b::emit::Arch::HOST != Some(spike_b::emit::Arch::Aarch64) {
+        Err(Refusal::Arch.to_string())
+    } else {
+        emit_a64::emit(input, &graph, &alloc)
+            .map(|(code, e)| (code.code.len(), e.exits_line()))
+            .map_err(|r| r.to_string())
+    };
+    let (fact_guards, unbacked_guards) = graph.guard_counts();
+    Ok(GraphReport {
+        name: input.name.to_string(),
+        build: stats,
+        nodes: graph.order().count(),
+        blocks: graph.blocks.len(),
+        fact_guards,
+        unbacked_guards,
+        ops,
+        intervals: alloc.intervals,
+        spilled: alloc.spilled,
+        max_live: alloc.max_live,
+        emit,
+        graph: graph.to_string(),
+    })
+}
+
 /// The contract versions this build links against, as one line (the binary prints it).
 pub fn contracts_line() -> String {
     use ep9_vm::versions as vm;
@@ -178,7 +293,7 @@ pub fn contracts_line() -> String {
 }
 
 /// Compiles the global function `name` of `session` with `facts` (see [`compile_input`]).
-/// The VM layout copies are checked first, on a session of their own ([`vm_layout::check`]).
+/// The VM layout export is proved first, on a session of their own ([`vm_layout::check`]).
 pub fn compile(
     session: &harness::Session,
     name: &str,

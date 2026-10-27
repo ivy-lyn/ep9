@@ -23,6 +23,13 @@
 //!     the unwind call
 //! ```
 //!
+//! **Runtime calls in the body (SPIKEC-4).** A generic keyed access calls
+//! `RuntimeTable::get_keyed` / `set_keyed` (entries 8 and 9, `layout::RT_GET_KEYED`,
+//! `RT_SET_KEYED`) in line: x4-x11 are saved below sp around the call (x19-x25 are
+//! callee-saved), and a 0 result unwinds from the access's bytecode offset. The heap is
+//! non-moving and the GC scans the native stack conservatively (H10), so a cell held in a
+//! register or a saved slot stays valid across the call. The entries record no feedback.
+//!
 //! **Guards (H32, JIT mode).** Every branch of a failed guard goes to that guard's **exit
 //! stub**; the stub goes to the **shared exit** of the guard's `Guard.policy` (data the graph
 //! builder set: the emitter reads no mode, docs/plan/13-execution-modes.md B2, P-R1). The one
@@ -38,7 +45,19 @@
 //!  shared exit (Deopt, one per function): month 5 = the eager deopt entry (read the exit's
 //!                    metadata by x16, write the values back, resume T0 at x17);
 //!                    until then the "deopt not built" trap
+//!
+//!  call form (StubForm::Call, SPIKEC-4 report, MC-w15-14; V8's eager exit):
+//!    guard g fails ──> stub k: bl <dispatch>                       4 bytes
+//!    dispatch:  x16 = x30 - stubs start = 4(k + 1); (x16, x17) = (id, offset) of entry k of
+//!               an in-code table (8 bytes per exit) ──> the same shared exit
+//!               In month 5 the index k selects the exit's metadata record, so the table goes.
 //! ```
+//!
+//! am3 (SPIKEC-4, `spike-c compile crypto`): movz form 12.0 + 1.9 = 13.9 bytes per exit out
+//! of line; call form 4.0 + 2.8 (dispatch and shared exit) + 8.0 (table) = 14.8, or 6.8
+//! without the table. **The month-5 deopt entry saves x16 and x17 (x30 for the call form)
+//! before any table call or far branch:** an AAPCS64 linker veneer or a call may change
+//! them, and they are the only state the stub passes (MC-w15-14).
 //!
 //! Month 5 replaces only the shared exit; the stubs and the guard branches stay. The
 //! **"deopt not built" trap** throws the int32 [`TRAP_BASE`] + guard id through
@@ -46,9 +65,10 @@
 //! code. The run then ends with that uncaught number ([`trap_of`] reads it back), never with
 //! a wrong value. It is a stand-in, not a policy: H32 never throws on a fact failure, and JS
 //! code could catch the number (the protocol kernels do not catch around compiled
-//! functions). [`EmitReport`] gives the bytes per exit. SPIKEC-4 makes the per-exit
-//! position-independent metadata (pc offset from the code start, bytecode offset, value
-//! locations, RW exit-counter index; H29-Q1, Q2, Q5) from the guards' frame states.
+//! functions). [`EmitReport`] gives the bytes per exit, and (SPIKEC-4) the per-exit
+//! position-independent metadata ([`crate::deopt_meta`]: the stub's pc offset from the code
+//! start, the bytecode offset, the place of every live value, the RW exit-counter index;
+//! H29-Q1, Q2, Q5), made from the guards' frame states and the allocation.
 //!
 //! Scratch: x12-x14 stage inputs that are not in registers, x15 stages a spilled result (and
 //! is a temporary in the poll and store paths), x16 and x17 are temporaries. No absolute
@@ -67,12 +87,12 @@ use dynasmrt::aarch64::Aarch64Relocation;
 use dynasmrt::{DynamicLabel, DynasmApi, DynasmLabelApi, VecAssembler, dynasm};
 use ep9_platform::unwind::cfi::CfiProgram;
 use ep9_value::encoding::{
-    DOUBLE_ENCODE_OFFSET, NOT_CELL_MASK, NUMBER_TAG, VALUE_FALSE, VALUE_TRUE,
+    DOUBLE_ENCODE_OFFSET, NOT_CELL_MASK, NUMBER_TAG, PURE_NAN_BITS, VALUE_FALSE, VALUE_TRUE,
 };
 use ep9_vm::layout;
 use spike_b::emit::{Arch, FunctionCode, FunctionInput, Refusal, Unwind};
 
-use crate::ir::{BlockId, Cond, ExitPolicy, Graph, Int32Op, NodeId, Op};
+use crate::ir::{BlockId, Cond, ExitPolicy, FloatOp, Graph, Int32Op, NodeId, Op};
 use crate::regalloc::{Allocation, Location};
 use crate::vm_layout;
 
@@ -89,42 +109,72 @@ pub fn trap_of(text: &str) -> Option<u32> {
         .map(|n| (n - i64::from(TRAP_BASE)) as u32)
 }
 
+/// The form of the exit stubs (MC-w15-14: SPIKEC-4 reports the call form next to the
+/// 12-byte one).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StubForm {
+    /// `movz x16, #id ; movz x17, #offset ; b <shared exit>`: 12 bytes while the id and the
+    /// offset fit in 16 bits. The default.
+    #[default]
+    Movz,
+    /// `bl <dispatch>`: 4 bytes. The dispatch of the policy finds the stub index from the
+    /// return pc (x30 - stubs start), reads (id, offset) from an in-code table of 8 bytes per
+    /// exit and goes to the same shared exit (V8's eager exit: one call, the index from the
+    /// pc). In month 5 the index selects the metadata record instead of the in-code table.
+    Call,
+}
+
 /// What the emitter made (the report).
 #[derive(Clone, Debug, Default)]
 pub struct EmitReport {
     pub code_bytes: usize,
     pub frame_bytes: u32,
     pub guards: usize,
+    /// The stub form used.
+    pub form: StubForm,
     /// Native offset of each guard's exit stub: (guard id, offset).
     pub traps: Vec<(u32, u32)>,
     /// Bytes of all exit stubs (one per guard).
     pub stub_bytes: u32,
-    /// Bytes of the shared exits (one per exit policy used; today the trap).
+    /// Bytes of the shared exits (one per exit policy used; today the trap), with the call
+    /// form's dispatch code.
     pub shared_exit_bytes: u32,
+    /// The call form's in-code (guard id, bytecode offset) table (0 for the movz form).
+    pub table_bytes: u32,
+    /// The per-exit metadata (SPIKEC-4; [`crate::deopt_meta`]).
+    pub meta: crate::deopt_meta::ExitTable,
 }
 
 impl EmitReport {
-    /// Out-of-line bytes per exit: the stubs plus the shared exits, over the guards. The
-    /// in-line branches of each guard are in the body and not counted here.
+    /// Out-of-line bytes per exit: the stubs plus the shared exits (and the call form's
+    /// table), over the guards. The in-line branches of each guard are in the body and not
+    /// counted here.
     pub fn bytes_per_exit(&self) -> f64 {
         if self.guards == 0 {
             return 0.0;
         }
-        f64::from(self.stub_bytes + self.shared_exit_bytes) / self.guards as f64
+        f64::from(self.stub_bytes + self.shared_exit_bytes + self.table_bytes) / self.guards as f64
     }
 
     /// One report line: the exits and their bytes (MC-w14 SPIKEC-3: bytes per exit).
     pub fn exits_line(&self) -> String {
         let per = |b: f64, n: usize| if n == 0 { 0.0 } else { b / n as f64 };
+        let table = if self.form == StubForm::Call {
+            format!(" + id/offset table {} bytes", self.table_bytes)
+        } else {
+            String::new()
+        };
         format!(
-            "exits {}: stubs {} bytes ({:.1} per exit) + shared exit {} bytes = {:.1} bytes per exit \
-             out of line; {:.1} exits per KB of code",
+            "exits {} ({:?} stubs): stubs {} bytes ({:.1} per exit) + shared exit {} bytes{table} \
+             = {:.1} bytes per exit out of line; {:.1} exits per KB of code ({} bytes)",
             self.guards,
+            self.form,
             self.stub_bytes,
             per(f64::from(self.stub_bytes), self.guards),
             self.shared_exit_bytes,
             self.bytes_per_exit(),
             per(self.guards as f64 * 1024.0, self.code_bytes),
+            self.code_bytes,
         )
     }
 }
@@ -232,6 +282,30 @@ fn call_table(ops: &mut Ops, entry: usize, off: u32) -> Result<(), Refusal> {
     Ok(())
 }
 
+/// Saves the allocatable caller-saved registers x4-x11 below sp (64 bytes; sp stays
+/// 16-aligned) around a runtime-table call that is not the poll. Spill slots are
+/// sp-relative, so nothing reads one until [`restore_caller_saved`].
+fn save_caller_saved(ops: &mut Ops) {
+    dynasm!(ops
+        ; .arch aarch64
+        ; stp x4, x5, [sp, #-64]!
+        ; stp x6, x7, [sp, #16]
+        ; stp x8, x9, [sp, #32]
+        ; stp x10, x11, [sp, #48]
+    );
+}
+
+/// Restores what [`save_caller_saved`] saved.
+fn restore_caller_saved(ops: &mut Ops) {
+    dynasm!(ops
+        ; .arch aarch64
+        ; ldp x10, x11, [sp, #48]
+        ; ldp x8, x9, [sp, #32]
+        ; ldp x6, x7, [sp, #16]
+        ; ldp x4, x5, [sp], #64
+    );
+}
+
 /// A source of a phi move.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Src {
@@ -263,13 +337,26 @@ struct Emitter<'a> {
     /// Bytes of the exit stubs and of the shared exits.
     stub_bytes: u32,
     shared_exit_bytes: u32,
+    table_bytes: u32,
+    form: StubForm,
 }
 
-/// Emits the code of `graph` (built from `input`) with the registers of `alloc`.
+/// Emits the code of `graph` (built from `input`) with the registers of `alloc` and the
+/// 12-byte exit stubs.
 pub fn emit(
     input: &FunctionInput<'_>,
     graph: &Graph,
     alloc: &Allocation,
+) -> Result<(FunctionCode, EmitReport), Refusal> {
+    emit_with(input, graph, alloc, StubForm::Movz)
+}
+
+/// [`emit`] with the exit stubs of `form`.
+pub fn emit_with(
+    input: &FunctionInput<'_>,
+    graph: &Graph,
+    alloc: &Allocation,
+    form: StubForm,
 ) -> Result<(FunctionCode, EmitReport), Refusal> {
     let frame = frame_bytes(alloc.spill_slots)?;
     let mut ops = Ops::new(0);
@@ -300,6 +387,8 @@ pub fn emit(
         trap_at: Vec::new(),
         stub_bytes: 0,
         shared_exit_bytes: 0,
+        table_bytes: 0,
+        form,
     };
     let overflow = e.ops.new_dynamic_label();
     e.prologue(overflow)?;
@@ -315,13 +404,18 @@ pub fn emit(
         .ops
         .finalize()
         .map_err(|e| Refusal::Limit(format!("dynasm: {e}")))?;
+    let meta =
+        crate::deopt_meta::ExitTable::build(graph, alloc, &report_traps).map_err(Refusal::Limit)?;
     let report = EmitReport {
         code_bytes: code.len(),
         frame_bytes: frame,
         guards,
+        form,
         traps: report_traps,
         stub_bytes: e.stub_bytes,
         shared_exit_bytes: e.shared_exit_bytes,
+        table_bytes: e.table_bytes,
+        meta,
     };
     // ops / native_offsets: every reachable instruction, with the first native offset of its
     // code (an instruction that made none gets the next one's).
@@ -544,13 +638,18 @@ impl Emitter<'_> {
                 let (poly, hit) = (self.ops.new_dynamic_label(), self.ops.new_dynamic_label());
                 let hole = vm_layout::HOLE as u32;
                 let native_word = native_word_offset()?;
+                let (shape_id, key, value) = (
+                    vm_layout::SHAPE_ID_BYTE,
+                    vm_layout::FEEDBACK_KEY,
+                    vm_layout::FEEDBACK_VALUE,
+                );
                 mov64(&mut self.ops, 17, NOT_CELL_MASK);
                 dynasm!(self.ops
                     ; .arch aarch64
                     ; tst X(x), x17
                     ; b.ne =>trap
                     ; cbz X(x), =>trap
-                    ; ldr w15, [X(x)]
+                    ; ldr w15, [X(x), shape_id]
                 );
                 // The IC entry: fp's FunctionInfo -> its feedback slot -> the FEEDBACK cell.
                 load_fp(&mut self.ops, 16, fi_word);
@@ -565,15 +664,15 @@ impl Emitter<'_> {
                 dynasm!(self.ops
                     ; .arch aarch64
                     ; add x16, x16, x17
-                    ; ldr x17, [x16]
+                    ; ldr x17, [x16, key]
                     ; cmp w17, w15
                     ; b.ne =>poly
-                    ; ldr x17, [x16, #8]
+                    ; ldr x17, [x16, value]
                     ; b =>hit
                     ; =>poly
                     ; cmp x17, hole
                     ; b.ne =>trap
-                    ; ldr x16, [x16, #8]
+                    ; ldr x16, [x16, value]
                 );
                 mov64(&mut self.ops, 17, NOT_CELL_MASK);
                 dynasm!(self.ops
@@ -746,6 +845,145 @@ impl Emitter<'_> {
                 let f = VALUE_FALSE as u32;
                 dynasm!(self.ops ; .arch aarch64 ; add WSP(d), WSP(x), f);
                 self.finish(n);
+            }
+            Op::CheckNumber => {
+                // An int32 Value converts; a double Value is its bits minus the offset; any
+                // other Value (a cell, an immediate: no number tag bit) exits.
+                let trap = self.trap(n);
+                let x = self.src(ins[0], 12)?;
+                let d = self.dst(n)?;
+                let (dbl, done) = (self.ops.new_dynamic_label(), self.ops.new_dynamic_label());
+                mov64(&mut self.ops, 17, NUMBER_TAG);
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; cmp X(x), x17
+                    ; b.lo =>dbl
+                    ; scvtf d16, W(x)
+                    ; fmov X(d), d16
+                    ; b =>done
+                    ; =>dbl
+                    ; tst X(x), x17
+                    ; b.eq =>trap
+                );
+                mov64(&mut self.ops, 16, DOUBLE_ENCODE_OFFSET);
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; sub X(d), X(x), x16
+                    ; =>done
+                );
+                self.finish(n);
+            }
+            Op::Int32ToFloat64 => {
+                let x = self.src(ins[0], 12)?;
+                let d = self.dst(n)?;
+                dynasm!(self.ops ; .arch aarch64 ; scvtf d16, W(x) ; fmov X(d), d16);
+                self.finish(n);
+            }
+            Op::Float64(op) => {
+                let l = self.src(ins[0], 12)?;
+                let r = self.src(ins[1], 13)?;
+                let d = self.dst(n)?;
+                dynasm!(self.ops ; .arch aarch64 ; fmov d16, X(l) ; fmov d17, X(r));
+                match op {
+                    FloatOp::Add => dynasm!(self.ops ; .arch aarch64 ; fadd d16, d16, d17),
+                    FloatOp::Sub => dynasm!(self.ops ; .arch aarch64 ; fsub d16, d16, d17),
+                    FloatOp::Mul => dynasm!(self.ops ; .arch aarch64 ; fmul d16, d16, d17),
+                    FloatOp::Div => dynasm!(self.ops ; .arch aarch64 ; fdiv d16, d16, d17),
+                }
+                dynasm!(self.ops ; .arch aarch64 ; fmov X(d), d16);
+                self.finish(n);
+            }
+            Op::BoxFloat64 => {
+                // `Value::number`: an int32 Value for an integer in int32 range that is not
+                // -0; else a double Value with NaN purified.
+                let x = self.src(ins[0], 12)?;
+                let d = self.dst(n)?;
+                let (int, dbl, purified, done) = (
+                    self.ops.new_dynamic_label(),
+                    self.ops.new_dynamic_label(),
+                    self.ops.new_dynamic_label(),
+                    self.ops.new_dynamic_label(),
+                );
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; fmov d16, X(x)
+                    ; fcvtzs w16, d16
+                    ; scvtf d17, w16
+                    ; fcmp d16, d17
+                    ; b.ne =>dbl
+                    ; cbnz w16, =>int
+                    ; fmov x17, d16
+                    ; tbnz x17, #63, =>dbl
+                    ; =>int
+                    ; mov w16, w16
+                );
+                mov64(&mut self.ops, 17, NUMBER_TAG);
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; orr X(d), x16, x17
+                    ; b =>done
+                    ; =>dbl
+                    ; fcmp d16, d16
+                    ; b.vc =>purified
+                );
+                mov64(&mut self.ops, 16, PURE_NAN_BITS);
+                dynasm!(self.ops ; .arch aarch64 ; fmov d16, x16 ; =>purified ; fmov x16, d16);
+                mov64(&mut self.ops, 17, DOUBLE_ENCODE_OFFSET);
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; add X(d), x16, x17
+                    ; =>done
+                );
+                self.finish(n);
+            }
+            Op::LoadContextSlot(i) => {
+                return Err(Refusal::Limit(format!(
+                    "context slot {i} at @{}: the CONTEXT cell's slot offsets are not in \
+                     ep9_vm::layout (crates/ep9_vm/src/native.rs, no month-4 owner)",
+                    node.offset
+                )));
+            }
+            Op::Call { .. } => {
+                return Err(Refusal::Limit(format!(
+                    "call at @{}: not emitted yet (month 5: RuntimeTable::call_any reads its \
+                     operands from their VM frame slots, which compiled code must write first)",
+                    node.offset
+                )));
+            }
+            Op::GetKeyedGeneric | Op::SetKeyedGeneric => {
+                // The generic keyed entries (RuntimeTable 8 and 9, SPIKEC-4): stage the
+                // operands in x12-x14 (a spilled operand is read sp-relative, so before the
+                // save moves sp), save the allocatable caller-saved x4-x11, call with x3..x5
+                // = the operands, keep the result in x16 (the restore does not touch it),
+                // restore, then unwind on 0 (an exception is pending).
+                let store = node.op == Op::SetKeyedGeneric;
+                for (k, &v) in ins.iter().enumerate() {
+                    let stage = 12 + k as u8;
+                    let r = self.src(v, stage)?;
+                    if r != stage {
+                        dynasm!(self.ops ; .arch aarch64 ; mov X(stage), X(r));
+                    }
+                }
+                save_caller_saved(&mut self.ops);
+                dynasm!(self.ops ; .arch aarch64 ; mov x3, x12 ; mov x4, x13);
+                if store {
+                    dynasm!(self.ops ; .arch aarch64 ; mov x5, x14);
+                }
+                let entry = if store {
+                    layout::RT_SET_KEYED
+                } else {
+                    layout::RT_GET_KEYED
+                };
+                call_table(&mut self.ops, entry, node.offset)?;
+                dynasm!(self.ops ; .arch aarch64 ; mov x16, x0);
+                restore_caller_saved(&mut self.ops);
+                let throw = self.throw_at(node.offset);
+                dynasm!(self.ops ; .arch aarch64 ; cbz x16, =>throw);
+                if !store {
+                    let d = self.dst(n)?;
+                    dynasm!(self.ops ; .arch aarch64 ; mov X(d), x16);
+                    self.finish(n);
+                }
             }
             Op::Poll => {
                 let budget = scaled(layout::CX_BUDGET)?;
@@ -974,32 +1212,70 @@ impl Emitter<'_> {
             let t = self.labels[to];
             dynasm!(self.ops ; .arch aarch64 ; b =>t);
         }
-        // Exit stubs: x16 = the guard id, x17 = the bytecode offset of its frame state, then
-        // the shared exit of its policy (module docs). Only x16 and x17 change.
-        let mut shared: Vec<(ExitPolicy, DynamicLabel)> = Vec::new();
+        // Exit stubs (module docs): the movz form sets x16 = the guard id, x17 = the bytecode
+        // offset of its frame state, then goes to the shared exit of its policy; the call
+        // form calls its policy's dispatch, which sets the same two from the in-code table.
+        // Only x16, x17 (and x30 in the call form) change.
+        // (policy, shared exit, the call form's dispatch)
+        let mut shared: Vec<(ExitPolicy, DynamicLabel, DynamicLabel)> = Vec::new();
         let start = self.ops.offset().0 as u32;
+        let stubs_start = self.ops.new_dynamic_label();
+        dynasm!(self.ops ; .arch aarch64 ; =>stubs_start);
         for (l, id, off, policy) in self.traps.clone() {
-            let exit = match shared.iter().find(|(p, _)| *p == policy) {
-                Some(&(_, x)) => x,
+            let (exit, dispatch) = match shared.iter().find(|(p, ..)| *p == policy) {
+                Some(&(_, x, d)) => (x, d),
                 None => {
                     let x = self.ops.new_dynamic_label();
-                    shared.push((policy, x));
-                    x
+                    let d = self.ops.new_dynamic_label();
+                    shared.push((policy, x, d));
+                    (x, d)
                 }
             };
             dynasm!(self.ops ; .arch aarch64 ; =>l);
             let here = self.ops.offset().0 as u32;
             self.trap_at.push((id, here));
-            mov64(&mut self.ops, 16, u64::from(id));
-            mov64(&mut self.ops, 17, u64::from(off));
-            dynasm!(self.ops ; .arch aarch64 ; b =>exit);
+            match self.form {
+                StubForm::Movz => {
+                    mov64(&mut self.ops, 16, u64::from(id));
+                    mov64(&mut self.ops, 17, u64::from(off));
+                    dynasm!(self.ops ; .arch aarch64 ; b =>exit);
+                }
+                StubForm::Call => {
+                    dynasm!(self.ops ; .arch aarch64 ; bl =>dispatch);
+                }
+            }
         }
         let stubs_end = self.ops.offset().0 as u32;
         self.stub_bytes = stubs_end - start;
+        if self.form == StubForm::Call {
+            // The dispatch: stub k returns to stubs_start + 4(k + 1); entry k of the table
+            // (8 bytes: id, offset) is at table + 8(k + 1) - 8.
+            let table = self.ops.new_dynamic_label();
+            for &(_, exit, dispatch) in &shared {
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; =>dispatch
+                    ; adr x16, =>stubs_start
+                    ; sub x16, x30, x16
+                    ; adr x17, =>table
+                    ; add x17, x17, x16, lsl #1
+                    ; ldp w16, w17, [x17, #-8]
+                    ; b =>exit
+                );
+            }
+            let table_start = self.ops.offset().0 as u32;
+            dynasm!(self.ops ; .arch aarch64 ; =>table);
+            for &(_, id, off, _) in &self.traps {
+                dynasm!(self.ops ; .arch aarch64 ; .u32 id ; .u32 off);
+            }
+            self.table_bytes = self.ops.offset().0 as u32 - table_start;
+        }
+        let stubs_end = self.ops.offset().0 as u32 - self.table_bytes;
         let unwind = self.unwind;
         let table = scaled(layout::CX_RUNTIME_TABLE)?;
         let throw_entry = scaled(layout::RT_THROW)?;
-        for (policy, x) in shared {
+        let shared_start = self.ops.offset().0 as u32;
+        for (policy, x, _) in shared {
             dynasm!(self.ops ; .arch aarch64 ; =>x);
             match policy {
                 // Eager deopt to T0 at x17 plus an exit counter (H32, JIT mode). The deopt
@@ -1027,7 +1303,10 @@ impl Emitter<'_> {
                 }
             }
         }
-        self.shared_exit_bytes = self.ops.offset().0 as u32 - stubs_end;
+        // The shared exits, plus the call form's dispatch code (between the stubs and the
+        // table).
+        self.shared_exit_bytes =
+            self.ops.offset().0 as u32 - shared_start + (stubs_end - (start + self.stub_bytes));
         for (&off, &l) in &self.throws.clone() {
             dynasm!(self.ops ; .arch aarch64 ; =>l);
             mov64(&mut self.ops, 2, u64::from(off));

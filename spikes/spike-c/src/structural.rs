@@ -6,7 +6,7 @@
 //! | harness | an isolate with the builtins runs a script and `print` captures | - |
 //! | install-b | Spike B's (b) emitter code for a loop function, installed by [`Session::install_b`], gives T0's output, from an Opt slot | - |
 //! | facts | live facts of a run -> PROFILED file -> read back: the same records | - |
-//! | layout | the VM layout copies of [`crate::vm_layout`] hold on live objects | - |
+//! | layout | the `ep9_vm::layout` facts [`crate::vm_layout`] takes hold on live objects | - |
 //! | pipeline | a loop function compiled from its live facts (graph builder, lattice check, linear scan, a64 emit), installed in an Opt slot: output equal to T0 | - |
 //! | lattice | the protocol §6.1 checks on a graph with a named-load fact: one trust level per value, PROVEN only from the H30 list, every predicted value behind a guard of its fact, the five ref nodes only, every guard resumable (SPIKEC-3 guard placement); a graph changed to break each rule is refused | - |
 //! | trap | an input no guard admits ends the run in the "deopt not built" trap, named by its guard, with no wrong value and no crash | month 5 (the deopt entry) |

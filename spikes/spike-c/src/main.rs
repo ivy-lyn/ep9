@@ -8,6 +8,10 @@
 //! spike-c facts <kernel> [--n N] [--out F]  the live facts of each hot function after a T0 run;
 //!                                           --out writes them as a PROFILED file (SP-Facts form)
 //! spike-c compile <kernel> [--graph]        compile the kernel's first hot function (live facts, n = 1)
+//! spike-c graph <kernel> [hot index] [--graph]
+//!                                           build, check and allocate the graph of a hot function
+//!                                           (live facts, n = 1; by function id, so an inner
+//!                                           closure too), then report what the emitter does
 //! spike-c tier <kernel> [--n N] [--stress]  config C: that function compiled, output against T0
 //!                                           (--stress: GC before every allocation, verifier on)
 //! spike-c time <kernel> [--rounds R] [--n N] [--k K]
@@ -30,7 +34,7 @@ use spike_c::{facts, structural};
 fn usage() -> ExitCode {
     eprintln!(
         "usage: spike-c [kernels | run <file.js> | t0 <kernel|all> [--n N] | facts <kernel> [--n N] [--out FILE] \
-         | compile <kernel> [--graph] | tier <kernel> [--n N] [--stress] | time <kernel> [--rounds R] [--n N] [--k K] \
+         | compile <kernel> [--graph] | graph <kernel> [i] [--graph] | tier <kernel> [--n N] [--stress] | time <kernel> [--rounds R] [--n N] [--k K] \
          | once <t0|c|h0|h1> <kernel> [--n N] [--k K] | show <kernel> [i] | driver <kernel> [--n N] \
          | structural [check...|all]]"
     );
@@ -203,14 +207,28 @@ fn compile_cmd(args: &[String]) -> Result<bool, String> {
     };
     let live = facts::live(&s, script)?;
     let input = s.input_of(f)?;
-    match spike_c::compile_input(&input, &facts::for_function(&live, id)) {
-        Ok((_, report)) => {
+    let ff = facts::for_function(&live, id);
+    match spike_c::compile_input(&input, &ff) {
+        Ok((code, report)) => {
             if graph {
                 print!("{}", report.graph);
             }
             println!("{}", report.line());
             println!("{}", report.keyed_line());
             println!("{}: {}", report.name, report.emit.exits_line());
+            // The call form of the stubs, a report next to the default (MC-w15-14).
+            let (_, call) =
+                spike_c::compile_input_with(&input, &ff, spike_c::emit_a64::StubForm::Call)
+                    .map_err(|e| format!("{}: call stubs: {e}", h.name))?;
+            println!("{}: {}", report.name, call.emit.exits_line());
+            println!("{}: {}", report.name, report.emit.meta.line());
+            let meta = report.emit.meta.encode();
+            println!(
+                "{}: code fnv1a64 {:016x}, exit metadata fnv1a64 {:016x} (no address in either)",
+                report.name,
+                fnv1a64(&code.code),
+                fnv1a64(&meta)
+            );
             Ok(true)
         }
         Err(e) => {
@@ -218,6 +236,56 @@ fn compile_cmd(args: &[String]) -> Result<bool, String> {
             Ok(false)
         }
     }
+}
+
+/// `spike-c graph <kernel> [hot index] [--graph]`: the graph build of a hot function from the
+/// live facts of an n = 1 T0 run, found by its function id (SPIKEC-4: kernel 2's `lin_solve`
+/// is an inner closure, so no JS value reaches it). Exit 0 if the graph builds, checks and
+/// allocates; the emitter's result is a report line.
+fn graph_cmd(args: &[String]) -> Result<bool, String> {
+    let k = kernel_arg(args.first())?;
+    let show = args.iter().any(|a| a == "--graph");
+    let which: usize = match args.get(1).filter(|a| !a.starts_with("--")) {
+        Some(v) => v.parse().map_err(|_| format!("bad hot index {v}"))?,
+        None => 0,
+    };
+    let h = k.hot.get(which).ok_or("no such hot function")?;
+    let (s, d, r, _) = run_t0(k, 1)?;
+    r.result.map_err(|e| format!("{}: {e}", k.name))?;
+    let script = s.script("driver.js").ok_or("no driver script")?;
+    let ids = script.functions_on_line(h.lines.0 + d.offset);
+    let [id] = ids[..] else {
+        return Err(format!(
+            "{}: {} functions on line {}",
+            h.name,
+            ids.len(),
+            h.lines.0
+        ));
+    };
+    let live = facts::live(&s, script)?;
+    let input = script.unit_input(id, h.name)?;
+    match spike_c::graph_report(&input, &facts::for_function(&live, id)) {
+        Ok(g) => {
+            if show {
+                print!("{}", g.graph);
+            }
+            for l in g.lines() {
+                println!("{l}");
+            }
+            Ok(true)
+        }
+        Err(e) => {
+            println!("{}: graph build refused: {e}", h.name);
+            Ok(false)
+        }
+    }
+}
+
+/// FNV-1a, 64 bits (the report's code and metadata digests).
+fn fnv1a64(b: &[u8]) -> u64 {
+    b.iter().fold(0xcbf2_9ce4_8422_2325, |h, &x| {
+        (h ^ u64::from(x)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 /// `spike-c tier <kernel> [--n N]`: config C (the first hot function compiled from the live
@@ -334,6 +402,7 @@ fn main() -> ExitCode {
         "t0" => t0(rest),
         "facts" => facts_cmd(rest),
         "compile" => compile_cmd(rest),
+        "graph" => graph_cmd(rest),
         "tier" => tier_cmd(rest),
         "time" => time_cmd(rest),
         "once" => once_cmd(rest),
