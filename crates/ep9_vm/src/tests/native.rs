@@ -32,7 +32,7 @@ use ep9_platform::{CodeRange, page_size};
 use super::{Asm, config, isolate, meta, on_big_stack, pos, take_output, unit};
 use crate::dispatch::DispatchKind;
 use crate::frame::UNDEFINED;
-use crate::native::{InstallError, cmp, layout};
+use crate::native::{InstallError, NativeCx, cmp, layout};
 use crate::{
     Args, Cx, Dispatch, Exception, Isolate, IsolateConfig, JsResult, Local, RegistryError, Value,
 };
@@ -79,6 +79,9 @@ fn layout_offsets_read_the_live_isolate() {
         layout::RT_THROW,
         // Appended by P4-PLACEMENT-B (placement (b)): the table is append-only.
         layout::RT_UNWIND,
+        // Appended by M4-P3 KEYED (P2-ORCH-6): the generic keyed load and store.
+        layout::RT_GET_KEYED,
+        layout::RT_SET_KEYED,
     ];
     for (i, off) in rt.into_iter().enumerate() {
         assert_eq!(off, i * 8);
@@ -4264,5 +4267,469 @@ mod placement_b {
                 }
             }
         }
+    }
+}
+
+// ---- M4-P3 KEYED (P2-ORCH-6): the keyed table entries and the layout export --------------
+
+/// The keyed functions unit: `kget(o, k) { return o[k]; }`, `kset(o, k, v) { o[k] = v;
+/// return v; }` (sloppy) and `ksetS` (the same, strict), as globals, plus the globals
+/// `arr = [10, 20, 30]`, `obj = {x: 5}` and `str = "abc"`.
+fn keyed_defs() -> VerifiedUnit {
+    let mut kget = Asm::new(meta("kget", 2, 0, 0, 0));
+    let (a0, a1) = (kget.b.parameter(0), kget.b.parameter(1));
+    let ks = kget.keyed;
+    kget.b.ldar(a1).get_keyed_property(a0, ks).return_();
+    let kset = |name: &str, strict: bool| {
+        let mut m = meta(name, 3, 0, 0, 0);
+        if strict {
+            m.flags = ep9_bytecode::FunctionFlags::SIMPLE_PARAMETERS
+                | ep9_bytecode::FunctionFlags::STRICT;
+        }
+        let mut f = Asm::new(m);
+        let (a0, a1, a2) = (f.b.parameter(0), f.b.parameter(1), f.b.parameter(2));
+        let ss = f.set_keyed;
+        f.b.ldar(a2)
+            .set_keyed_property(a0, a1, ss)
+            .ldar(a2)
+            .return_();
+        f
+    };
+    let fns = vec![
+        ("kget", kget),
+        ("kset", kset("kset", false)),
+        ("ksetS", kset("ksetS", true)),
+    ];
+    let mut s = Asm::script(0);
+    for (i, (name, _)) in fns.iter().enumerate() {
+        let k = s.b.function_constant(FunctionId(i as u32 + 1));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global(name);
+    }
+    let (a, key) = (s.b.new_register(), s.b.new_register());
+    s.b.create_empty_array_literal(s.lit).star(a);
+    for (i, v) in [10, 20, 30].into_iter().enumerate() {
+        s.b.lda_smi(i as i32)
+            .star(key)
+            .lda_smi(v)
+            .set_keyed_property(a, key, s.set_keyed);
+    }
+    s.b.ldar(a);
+    s.sta_global("arr");
+    s.b.create_empty_object_literal().star(a);
+    s.b.lda_smi(5);
+    s.set_named(a, "x");
+    s.b.ldar(a);
+    s.sta_global("obj");
+    s.lda_str("abc");
+    s.sta_global("str");
+    s.b.lda_undefined().return_();
+    let mut all = vec![s.finish()];
+    all.extend(fns.into_iter().map(|(_, a)| a.finish()));
+    unit("", all)
+}
+
+/// The natively run keyed functions and their stubs: each stub is one table call.
+const KEYED_NATIVE: [&str; 3] = ["kget", "kset", "ksetS"];
+
+fn keyed_stubs(offs: impl Fn(&str, Opcode) -> u32) -> Vec<Vec<u8>> {
+    use Src::Param;
+    let set = |name| {
+        stub_call(
+            layout::RT_SET_KEYED,
+            offs(name, Opcode::SetKeyedProperty),
+            &[Param(0), Param(1), Param(2)],
+        )
+    };
+    vec![
+        stub_call(
+            layout::RT_GET_KEYED,
+            offs("kget", Opcode::GetKeyedProperty),
+            &[Param(0), Param(1)],
+        ),
+        set("kset"),
+        set("ksetS"),
+    ]
+}
+
+/// Runs `f` on an isolate that ran `keyed_defs()` with the keyed stubs installed (on a big
+/// native stack); checks the heap after `f`.
+fn run_keyed_native<R: Send + 'static>(
+    config: IsolateConfig,
+    f: impl FnOnce(&mut Isolate) -> R + Send + 'static,
+) -> R {
+    on_big_stack(move || {
+        let probe = {
+            let mut iso = isolate(IsolateConfig::default());
+            iso.with_cx_checkpoint(|cx| cx.run_script(keyed_defs(), "keyed.js").map(|_| ()))
+                .unwrap();
+            keyed_stubs(|n, op| offset_in(&iso, n, op))
+        };
+        with_stubs(&probe, |code| {
+            let mut iso = isolate(config);
+            iso.with_cx_checkpoint(|cx| cx.run_script(keyed_defs(), "keyed.js").map(|_| ()))
+                .unwrap();
+            for (name, range) in KEYED_NATIVE.iter().zip(code) {
+                let f = iso.global_raw(name).unwrap();
+                // SAFETY: `range` holds the stub for `name` (`keyed_stubs`), which runs its
+                // bytecode and stays mapped until `with_stubs` returns, after `iso` drops.
+                unsafe { crate::install_native(&iso, f, DispatchKind::Baseline, range.clone()) }
+                    .unwrap();
+            }
+            let r = f(&mut iso);
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+            r
+        })
+    })
+}
+
+/// One call of a native keyed function from Rust: the result's text, or `Err(message)`.
+fn keyed_call(iso: &mut Isolate, name: &str, args: &[Value]) -> Result<String, String> {
+    let f = iso.global_raw(name).unwrap();
+    match crate::call_from_rust(iso, f, Value::UNDEFINED, args) {
+        Ok(v) => Ok(iso.display_raw(v)),
+        Err(e) => Err(e.message),
+    }
+}
+
+/// The keyed load and store entries (M4-P3 KEYED, P2-ORCH-6) run the generic keyed
+/// operations for native code: elements, named keys, strings, growth, strict and sloppy
+/// failed stores, and the TypeError of an undefined or null base. Every dispatch, with and
+/// without GC stress.
+#[test]
+fn the_keyed_table_entries_run_the_generic_operations() {
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let got = run_keyed_native(config(d, stress), |iso| {
+                let g = |iso: &Isolate, n: &str| iso.global_raw(n).unwrap();
+                let (arr, obj, s) = (g(iso, "arr"), g(iso, "obj"), g(iso, "str"));
+                let i = Value::int32;
+                let x = NativeCx::new_string(iso, "x");
+                let y = NativeCx::new_string(iso, "y");
+                let one = NativeCx::new_string(iso, "1");
+                let length = NativeCx::new_string(iso, "length");
+                [
+                    keyed_call(iso, "kget", &[arr, i(1)]),
+                    keyed_call(iso, "kget", &[arr, one]),
+                    keyed_call(iso, "kget", &[arr, i(7)]),
+                    keyed_call(iso, "kget", &[obj, x]),
+                    keyed_call(iso, "kget", &[s, i(1)]),
+                    keyed_call(iso, "kget", &[Value::UNDEFINED, i(0)]),
+                    // Growth past the end: holes at 3 and 4.
+                    keyed_call(iso, "kset", &[arr, i(5), i(9)]),
+                    keyed_call(iso, "kget", &[arr, i(5)]),
+                    keyed_call(iso, "kget", &[arr, length]),
+                    keyed_call(iso, "kget", &[arr, i(4)]),
+                    keyed_call(iso, "kset", &[obj, y, i(1)]),
+                    keyed_call(iso, "kget", &[obj, y]),
+                    // A string's index is read-only: ignored in sloppy code, a TypeError in
+                    // strict code.
+                    keyed_call(iso, "kset", &[s, i(0), i(1)]),
+                    keyed_call(iso, "ksetS", &[s, i(0), i(1)]),
+                    keyed_call(iso, "ksetS", &[arr, i(0), i(8)]),
+                    keyed_call(iso, "kget", &[arr, i(0)]),
+                    keyed_call(iso, "kset", &[Value::NULL, i(0), i(1)]),
+                ]
+            });
+            let label = format!("{} stress={stress}", d.name());
+            let ok = |t: &str| Ok(t.to_string());
+            let err = |t: &str| Err(t.to_string());
+            assert_eq!(
+                got,
+                [
+                    ok("20"),
+                    ok("20"),
+                    ok("undefined"),
+                    ok("5"),
+                    ok("b"),
+                    err("TypeError: Cannot read properties of undefined (reading '0')"),
+                    ok("9"),
+                    ok("9"),
+                    ok("6"),
+                    ok("undefined"),
+                    ok("1"),
+                    ok("1"),
+                    ok("1"),
+                    err("TypeError: Cannot assign to read only property '0' of string 'abc'"),
+                    ok("8"),
+                    ok("8"),
+                    err("TypeError: Cannot set properties of null (setting '0')"),
+                ],
+                "{label}"
+            );
+        }
+    }
+}
+
+/// The keyed entries refuse an offset outside the frame's bytecode (the internal error of
+/// every table function), and they record no feedback: native code records none.
+#[test]
+fn the_keyed_entries_check_the_offset_and_record_nothing() {
+    on_big_stack(|| {
+        let probe = keyed_stubs(|_, _| 4000);
+        with_stubs(&probe, |code| {
+            let mut iso = isolate(IsolateConfig {
+                feedback_threshold: 0,
+                ..IsolateConfig::default()
+            });
+            iso.with_cx_checkpoint(|cx| cx.run_script(keyed_defs(), "keyed.js").map(|_| ()))
+                .unwrap();
+            for (name, range) in KEYED_NATIVE.iter().zip(code) {
+                let f = iso.global_raw(name).unwrap();
+                // SAFETY: as in `run_keyed_native`.
+                unsafe { crate::install_native(&iso, f, DispatchKind::Baseline, range.clone()) }
+                    .unwrap();
+            }
+            let arr = iso.global_raw("arr").unwrap();
+            let r = keyed_call(&mut iso, "kget", &[arr, Value::int32(0)]);
+            assert_eq!(
+                r,
+                Err("Error: ep9 internal error: native code passed bytecode offset 4000".into())
+            );
+            for name in KEYED_NATIVE {
+                let f = iso.global_raw(name).unwrap();
+                let fi = crate::object::function_info(f.to_bits());
+                assert!(crate::feedback::vector(fi).is_none(), "{name}: no vector");
+            }
+        })
+    });
+}
+
+/// The layout program: `ld(o) { return o.b; }` (mono), `ld2` (the same code; polymorphic),
+/// `len(a) { return a.length; }`, and the globals `arr = [11, 22, 33]`, `holey = [, , 1]`,
+/// `o1 = {a: 7, b: arr}`, `o2 = {b: 1}`. The script calls `ld(o1)` and `len(arr)` twice and
+/// `ld2` with `o1`, then `o2`.
+fn layout_program() -> VerifiedUnit {
+    let ld = |name: &str| {
+        let mut f = Asm::new(meta(name, 1, 0, 0, 0));
+        let a0 = f.b.parameter(0);
+        f.get_named(a0, "b");
+        f.b.return_();
+        f
+    };
+    let mut len = Asm::new(meta("len", 1, 0, 0, 0));
+    let a0 = len.b.parameter(0);
+    len.get_named(a0, "length");
+    len.b.return_();
+    let fns = vec![("ld", ld("ld")), ("ld2", ld("ld2")), ("len", len)];
+    let mut s = Asm::script(0);
+    for (i, (name, _)) in fns.iter().enumerate() {
+        let k = s.b.function_constant(FunctionId(i as u32 + 1));
+        s.b.create_closure(k, s.closure, 0);
+        s.sta_global(name);
+    }
+    let (a, h, o1, o2, key) = (
+        s.b.new_register(),
+        s.b.new_register(),
+        s.b.new_register(),
+        s.b.new_register(),
+        s.b.new_register(),
+    );
+    s.b.create_empty_array_literal(s.lit).star(a);
+    for (i, v) in [11, 22, 33].into_iter().enumerate() {
+        s.b.lda_smi(i as i32)
+            .star(key)
+            .lda_smi(v)
+            .set_keyed_property(a, key, s.set_keyed);
+    }
+    s.b.ldar(a);
+    s.sta_global("arr");
+    s.b.create_empty_array_literal(s.lit).star(h);
+    s.b.lda_smi(2)
+        .star(key)
+        .lda_smi(1)
+        .set_keyed_property(h, key, s.set_keyed);
+    s.b.ldar(h);
+    s.sta_global("holey");
+    s.b.create_empty_object_literal().star(o1);
+    s.b.lda_smi(7);
+    s.set_named(o1, "a");
+    s.b.ldar(a);
+    s.set_named(o1, "b");
+    s.b.ldar(o1);
+    s.sta_global("o1");
+    s.b.create_empty_object_literal().star(o2);
+    s.b.lda_smi(1);
+    s.set_named(o2, "b");
+    s.b.ldar(o2);
+    s.sta_global("o2");
+    let f = s.f;
+    for (name, arg) in [
+        ("ld", o1),
+        ("ld", o1),
+        ("len", a),
+        ("len", a),
+        ("ld2", o1),
+        ("ld2", o2),
+    ] {
+        s.lda_global(name);
+        s.b.star(f).call_undefined_receiver1(f, arg, s.call);
+    }
+    s.b.lda_undefined().return_();
+    let mut all = vec![s.finish()];
+    all.extend(fns.into_iter().map(|(_, a)| a.finish()));
+    unit("", all)
+}
+
+/// The word at `addr + off`.
+///
+/// # Safety
+/// `addr + off` is an 8-aligned word of a live cell or FunctionInfo, and the isolate runs
+/// nothing.
+unsafe fn word_at(addr: u64, off: usize) -> u64 {
+    // SAFETY: the caller's contract.
+    unsafe { ((addr as usize + off) as *const u64).read() }
+}
+
+/// MC-w14-7: every layout fact that Spike C copied (`spikes/spike-c/src/vm_layout.rs`) is
+/// exported by `layout` and reads the live cells: kinds and ShapeIds in word0, object fields,
+/// array length, ELEMENTS capacity, values and holes, the FEEDBACK cell (its FunctionInfo
+/// word and slots), the smi handlers of a field and of an Array's `length`, a POLY_IC cell,
+/// and `FunctionInfo.feedback`. The values are pinned: a change is a VM layout change (C-18:
+/// it moves `VM_LAYOUT_VERSION` when that exists, and the spike's copies).
+#[test]
+fn the_layout_export_reads_live_cells() {
+    // Pinned values (the spike's copies at the M4-P2 head).
+    assert_eq!((layout::SHAPE_ID_BYTE, layout::KIND_BYTE), (0, 5));
+    assert_eq!((layout::KIND_OBJECT, layout::KIND_ARRAY), (16, 18));
+    assert_eq!(
+        (
+            layout::OBJECT_FIELDS,
+            layout::ARRAY_ELEMENTS,
+            layout::ARRAY_LENGTH,
+            layout::ELEMENTS_CAPACITY,
+            layout::ELEMENTS_DATA,
+        ),
+        (24, 16, 24, 8, 16)
+    );
+    assert_eq!(layout::HOLE, Value::EMPTY.to_bits());
+    assert_eq!(
+        (
+            layout::FEEDBACK_INFO,
+            layout::FEEDBACK_SLOTS,
+            layout::FEEDBACK_SLOT_SIZE,
+            layout::FEEDBACK_KEY,
+            layout::FEEDBACK_VALUE,
+        ),
+        (16, 24, 16, 0, 8)
+    );
+    assert_eq!(
+        (
+            layout::POLY_CASES,
+            layout::POLY_CASE_SIZE,
+            layout::POLY_COUNT
+        ),
+        (8, 16, 4)
+    );
+    assert_eq!(
+        (
+            layout::SMI_KIND_MASK,
+            layout::SMI_SHIFT,
+            layout::SMI_FIELD_IN_OBJECT,
+            layout::SMI_ARRAY_LENGTH,
+        ),
+        (0xF, 4, 1, 3)
+    );
+    let smi =
+        |kind: i32, off: u32| crate::frame::int32_bits(kind | (off << layout::SMI_SHIFT) as i32);
+    let mut iso = isolate(IsolateConfig {
+        feedback_threshold: 0,
+        ..IsolateConfig::default()
+    });
+    iso.with_cx_checkpoint(|cx| cx.run_script(layout_program(), "layout.js").map(|_| ()))
+        .unwrap();
+    let g = |n: &str| iso.global_raw(n).unwrap().to_bits();
+    let (arr, holey, o1, o2) = (g("arr"), g("holey"), g("o1"), g("o2"));
+    let int = crate::frame::int32_bits;
+    // SAFETY: every address below is a field of a live cell held by a global of `iso`, or of
+    // a live FunctionInfo, and `iso` runs nothing while this reads.
+    unsafe {
+        let kind = |c: u64| ((c as usize + layout::KIND_BYTE as usize) as *const u8).read();
+        let shape_id =
+            |c: u64| ((c as usize + layout::SHAPE_ID_BYTE as usize) as *const u32).read();
+        assert_eq!(
+            (kind(o1), kind(arr)),
+            (layout::KIND_OBJECT, layout::KIND_ARRAY)
+        );
+        let field = |o: u64, f: usize| word_at(o, layout::OBJECT_FIELDS as usize + 8 * f);
+        assert_eq!(
+            (field(o1, 0), field(o1, 1), field(o2, 0)),
+            (int(7), arr, int(1))
+        );
+        assert_eq!(word_at(arr, layout::ARRAY_LENGTH as usize), int(3));
+        let e = word_at(arr, layout::ARRAY_ELEMENTS as usize);
+        assert!(crate::kinds::is_cell_bits(e));
+        let cap = crate::frame::int32_of(word_at(e, layout::ELEMENTS_CAPACITY as usize));
+        assert!(cap >= 3, "capacity {cap}");
+        for (i, v) in [11, 22, 33].into_iter().enumerate() {
+            assert_eq!(word_at(e, layout::ELEMENTS_DATA as usize + 8 * i), int(v));
+        }
+        let he = word_at(holey, layout::ARRAY_ELEMENTS as usize);
+        let data = |i: usize| word_at(he, layout::ELEMENTS_DATA as usize + 8 * i);
+        assert_eq!(
+            (data(0), data(1), data(2)),
+            (layout::HOLE, layout::HOLE, int(1))
+        );
+        // The vector of `f` through `FunctionInfo.feedback`, checked by the cell's
+        // FunctionInfo word.
+        let vector = |name: &str| {
+            let fi = crate::object::function_info(g(name));
+            let at = core::ptr::from_ref(fi) as u64;
+            let slot = word_at(at, layout::FI_FEEDBACK);
+            assert_ne!(slot, 0, "{name} has a vector");
+            let v = (slot as *const u64).read();
+            assert_eq!(Some(v), crate::feedback::vector(fi));
+            assert_eq!(
+                word_at(v, layout::FEEDBACK_INFO as usize),
+                at + layout::NATIVE_WORD_OFFSET
+            );
+            v
+        };
+        let slot = |v: u64, i: usize| {
+            let at = layout::FEEDBACK_SLOTS as usize + layout::FEEDBACK_SLOT_SIZE as usize * i;
+            (
+                word_at(v, at + layout::FEEDBACK_KEY as usize),
+                word_at(v, at + layout::FEEDBACK_VALUE as usize),
+            )
+        };
+        // `ld`: slot `named` holds o1's shape and the in-object field handler of `b` (+32).
+        let named = Asm::new(meta("x", 0, 0, 0, 0)).named.index();
+        let (k, h) = slot(vector("ld"), named);
+        assert_eq!(k as u32, shape_id(o1));
+        assert_eq!(
+            h,
+            smi(layout::SMI_FIELD_IN_OBJECT, layout::OBJECT_FIELDS + 8)
+        );
+        assert_eq!(
+            h as i32 & layout::SMI_KIND_MASK,
+            layout::SMI_FIELD_IN_OBJECT
+        );
+        // `len`: the Array `length` handler.
+        let (k, h) = slot(vector("len"), named);
+        assert_eq!(k as u32, shape_id(arr));
+        assert_eq!(h, smi(layout::SMI_ARRAY_LENGTH, 0));
+        // `ld2`: a POLY_IC cell with o1's and o2's shapes (field 1 and field 0).
+        let (k, p) = slot(vector("ld2"), named);
+        assert_eq!(k, layout::HOLE);
+        assert!(crate::kinds::is_cell_bits(p));
+        let case = |i: u32| {
+            let at = (layout::POLY_CASES + layout::POLY_CASE_SIZE * i) as usize;
+            (word_at(p, at) as u32, word_at(p, at + 8))
+        };
+        const { assert!(layout::POLY_COUNT >= 2) };
+        assert_eq!(
+            [case(0), case(1)],
+            [
+                (
+                    shape_id(o1),
+                    smi(layout::SMI_FIELD_IN_OBJECT, layout::OBJECT_FIELDS + 8)
+                ),
+                (
+                    shape_id(o2),
+                    smi(layout::SMI_FIELD_IN_OBJECT, layout::OBJECT_FIELDS)
+                ),
+            ]
+        );
     }
 }
