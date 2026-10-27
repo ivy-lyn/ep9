@@ -259,3 +259,20 @@ impl JobState {
         &**info
     }
 }
+
+// ---- WeakRef (M4-P4 WEAKREF): ClearKeptObjects and the cleanup-job hook ----------------------
+//
+// The WeakRef state is not here: the kept list, the registry chain and the cleanup flag are
+// `Runtime::kept_objects` (`weakref.rs`), heap cells behind their own root source. The job
+// loop runs the two job-end steps through `Cx` (`abi/weakref.rs`), in the order of
+// 07-runtime.md "Job order" (promise jobs, then ClearKeptObjects, then the
+// FinalizationRegistry cleanup). As HTML's microtask checkpoint and node v24.22.1, a target
+// stays alive through every job of one checkpoint:
+//
+//   queue empty ──> Cx::clear_kept_objects                (ClearKeptObjects, §9.10.1), then
+//                   Cx::cleanup_finalization_registries   (the cleanup jobs, §9.5.4, §9.13.1);
+//                   the jobs a callback queued run next, in the same checkpoint
+//
+// A GC only notes that a target died (the weak source of `weakref.rs`); no callback and no JS
+// runs during a GC. The cleanup jobs are not records in this queue: a callback runs when the
+// hook finds a registry with an empty cell.
