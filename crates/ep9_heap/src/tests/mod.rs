@@ -13,6 +13,7 @@
 //! | `minor.rs` | S1 step 2: the minor GC (old cells stay, remembered hosts and dirty cards traced, weak parts and young-key ephemerons), the major GC, the policy, generational GC-stress, the generational invariant check, a caught panic |
 //! | `shape.rs` | the shape region: ShapeId = cage offset, word0 edge, weak clearing, full region, shared commit limit, config |
 //! | `verify.rs` | the verify after a GC (checked mark + checked sweep) finds each fault `Heap::verify` finds; the planted dangling slot; the E2 check |
+//! | `v1.rs` | V1, the remembered-set verifier before every minor GC: when it runs, ages against colours, the card of each young reference of a large object; each negative control of 03-gc §7 for S1 (drop 1 in N barriers, old-only filter, elide after escape) fails V1, in a scenario and in the random mutator, and passes with the control off |
 
 use ep9_value::Value;
 
@@ -29,6 +30,7 @@ mod model;
 mod s1;
 mod shape;
 mod stress;
+mod v1;
 mod verify;
 
 /// A test node: word0, a raw meta word `(id << 32) | n`, then `n` Value slots.

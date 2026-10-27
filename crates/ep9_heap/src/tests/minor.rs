@@ -222,8 +222,8 @@ fn a_minor_gc_traces_only_the_dirty_cards() {
 }
 
 /// The generational invariant (verify.rs): an old host outside the S1 logs that holds a young
-/// cell is a store without the barrier. `Heap::verify` reports it, and so does the verify of
-/// a minor GC, before its mark (which would free the young cell).
+/// cell is a store without the barrier. `Heap::verify` reports it, and so does V1 before the
+/// mark of a minor GC, which then panics before it frees the young cell.
 #[test]
 fn the_verifier_reports_a_store_without_the_barrier() {
     let heap = gen_heap(false, |_| {});
@@ -254,17 +254,21 @@ fn the_verifier_reports_a_store_without_the_barrier() {
     heap.verify().expect("both cards are dirty");
 
     // The word0 shape is an edge too (no shape space here: checked in the shape case).
-    // The verify of a minor GC finds the same break before its mark frees the young cell.
+    // V1 finds the same break before the minor GC's mark, and nothing is freed.
     heap.set_verify_after_gc(true);
     store_without_barrier(host, 0, young.to_value());
     heap.drop_global(gy);
+    let collections = heap.stats().collections;
     let r = catch_unwind(AssertUnwindSafe(|| minor(&heap)));
     let msg = r.expect_err("the verify must fail");
     let msg = msg.downcast_ref::<String>().cloned().unwrap_or_default();
     assert!(
-        msg.contains("heap verifier failed after GC") && msg.contains("not in the S1 logs"),
+        msg.contains("heap verifier failed before a minor GC (V1)")
+            && msg.contains("not in the S1 logs"),
         "{msg}"
     );
+    assert_eq!(heap.stats().collections, collections, "no GC ran");
+    assert!(heap.is_cell(young.addr()), "the young cell was not freed");
     for g in gs {
         heap.drop_global(g);
     }

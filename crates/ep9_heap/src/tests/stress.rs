@@ -16,6 +16,17 @@
 //!                  weak handle: cleared <=> its cell died;  stack-array cells were found
 //! ```
 //!
+//! V1 (tests/v1.rs): [`run_controlled`] runs the generational form with a negative control
+//! of 03-gc §7 at its store site, and optionally with E2 elisions:
+//!
+//! ```text
+//! E2 (elide):  a store into a host that the region calls fresh is a plain store (Slot::init)
+//!   control off:         fresh = allocated with no GC point since, not escaped (stored into a
+//!                        cell, a root, a weak handle); such a host must be WHITE
+//!   ElideAfterEscape:    fresh = allocated in the current region (REGION steps), escaped or not
+//! other stores:  StoreSite (Slot::set; DropOneIn(n), OldOnlyFilter break it)
+//! ```
+//!
 //! Liveness is read without forcing the lazy sweep (`live_after_gc`), so allocation keeps
 //! sweeping pages lazily during the run.
 
@@ -26,8 +37,12 @@ use std::rc::Rc;
 
 use ep9_value::Value;
 
+use super::v1::{Control, StoreSite};
 use super::*;
-use crate::{GlobalHandle, ScratchRoots, WeakHandle, threshold};
+use crate::{GlobalHandle, ScratchRoots, WeakHandle, gc_state, threshold};
+
+/// Steps per E2 region ([`run_controlled`] with `elide`).
+const REGION: usize = 24;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Edge {
@@ -82,6 +97,17 @@ struct Run<'h> {
     checks: u64,
     freed_seen: u64,
     retained_seen: u64,
+    /// The store site of the generational stores (a negative control, or `Control::Off`).
+    site: StoreSite,
+    /// E2 elisions on (module doc).
+    elide: bool,
+    /// E2: hosts allocated with no GC point since and not escaped; hosts allocated in the
+    /// current region; steps run.
+    fresh: BTreeSet<u32>,
+    region: BTreeSet<u32>,
+    steps: usize,
+    /// E2 stores made (plain stores into a host the region called fresh).
+    elided: u64,
 }
 
 /// Model of the run's one ScratchRoots scope (fixed size; entries are overwritten).
@@ -139,8 +165,14 @@ impl<'h> Run<'h> {
         };
         let id = self.next_id;
         self.next_id += 1;
+        let gcs = self.heap.stats().collections;
         let c = new_node(self.heap, id, n);
         let addr = c.addr();
+        if self.heap.stats().collections != gcs {
+            self.fresh.clear(); // a GC point ended every region-fresh host's E2 claim
+        }
+        self.fresh.insert(id);
+        self.region.insert(id);
         self.after_gc_point(Some(addr), stack_roots);
         self.objs.insert(
             id,
@@ -274,9 +306,20 @@ impl<'h> Run<'h> {
     }
 
     fn step(&mut self, scratch: &ScratchRoots<'_>, stack_roots: &mut [usize; STACK_ROOTS]) {
+        self.steps += 1;
+        if self.steps.is_multiple_of(REGION) {
+            self.region.clear();
+        }
         match self.rng.below(100) {
             0..=34 => {
                 let id = self.alloc(stack_roots);
+                if self.elide {
+                    // Initializing stores into the new cell before it escapes (E2).
+                    for _ in 0..self.rng.below(3) {
+                        let e = self.random_edge();
+                        self.store(id, e);
+                    }
+                }
                 // Make most new cells reachable from somewhere.
                 match self.rng.below(6) {
                     0 => self.set_global(Some(id)),
@@ -328,6 +371,7 @@ impl<'h> Run<'h> {
                 if let Some(id) = self.random_id() {
                     let v = self.cell(id).to_value();
                     self.weaks.push((self.heap.new_weak(v), id));
+                    self.fresh.remove(&id);
                 }
             }
             _ => {
@@ -338,6 +382,7 @@ impl<'h> Run<'h> {
                     } else {
                         self.heap.collect();
                     }
+                    self.fresh.clear();
                     self.after_gc_point(None, stack_roots);
                 }
             }
@@ -351,8 +396,31 @@ impl<'h> Run<'h> {
         }
         let i = self.rng.below(n);
         let v = self.value(e);
+        if let Edge::Cell(id) = e {
+            self.fresh.remove(&id); // escapes into `host`
+        }
         if self.generational {
-            store(self.heap, self.cell(host), i, v);
+            let c = self.cell(host);
+            let elided = self.elide
+                && if self.site.control == Control::ElideAfterEscape {
+                    self.region.contains(&host)
+                } else {
+                    self.fresh.contains(&host)
+                };
+            if elided {
+                if self.site.control != Control::ElideAfterEscape {
+                    // The E2 check: a fresh host is young.
+                    assert_eq!(
+                        state_of(c),
+                        gc_state::WHITE,
+                        "E2 into a host that is not WHITE"
+                    );
+                }
+                slot(c, i).init(v);
+                self.elided += 1;
+            } else {
+                self.site.store_node(self.heap, c, i, v);
+            }
         } else {
             // Any threshold: the slow path must store exactly as the fast path does.
             let th = [threshold::OFF, threshold::GEN, threshold::MARKING][self.rng.below(3)];
@@ -364,6 +432,7 @@ impl<'h> Run<'h> {
     }
 
     fn set_global(&mut self, id: Option<u32>) {
+        self.escape(id);
         let v = id.map_or(Value::UNDEFINED, |id| self.cell(id).to_value());
         if self.globals.len() < 16 {
             self.globals.push((self.heap.new_global(v), id));
@@ -378,6 +447,7 @@ impl<'h> Run<'h> {
     }
 
     fn set_vm(&mut self, id: Option<u32>) {
+        self.escape(id);
         let bits = id.map_or(Value::UNDEFINED.to_bits(), |id| {
             self.cell(id).to_value().to_bits()
         });
@@ -387,13 +457,22 @@ impl<'h> Run<'h> {
     }
 
     fn set_scratch(&mut self, scratch: &ScratchRoots<'_>, id: Option<u32>) {
+        self.escape(id);
         let v = id.map_or(Value::NULL, |id| self.cell(id).to_value());
         let i = self.rng.below(self.scratch.ids.len());
         scratch.set(i, v);
         self.scratch.ids[i] = id;
     }
 
+    /// E2: a host stored into a root has escaped.
+    fn escape(&mut self, id: Option<u32>) {
+        if let Some(id) = id {
+            self.fresh.remove(&id);
+        }
+    }
+
     fn set_stack(&mut self, stack_roots: &mut [usize; STACK_ROOTS], id: Option<u32>) {
+        self.escape(id);
         let i = self.rng.below(STACK_ROOTS);
         stack_roots[i] = id.map_or(0, |id| self.objs[&id].addr);
         black_box(&mut *stack_roots);
@@ -401,12 +480,23 @@ impl<'h> Run<'h> {
     }
 }
 
-struct Stats {
+#[derive(Debug)]
+pub(super) struct Stats {
     checks: u64,
     freed: u64,
     retained: u64,
     gcs: u64,
-    minor: u64,
+    pub(super) minor: u64,
+    /// V1 runs (one before each minor GC: these runs verify after every GC).
+    pub(super) v1_runs: u64,
+    /// E2 stores; stores the control made plain.
+    pub(super) elided: u64,
+    pub(super) dropped: u64,
+}
+
+fn state_of(c: CellPtr) -> u8 {
+    // SAFETY: callers pass live cells.
+    unsafe { c.header() }.gc_state()
 }
 
 fn run(seed: u64, steps: usize, gc_stress: u32) -> Stats {
@@ -427,6 +517,46 @@ fn run_budget(
     gc_stress: u32,
     generational: bool,
     initial_budget: usize,
+) -> Stats {
+    run_full(
+        seed,
+        steps,
+        gc_stress,
+        generational,
+        initial_budget,
+        Control::Off,
+        false,
+    )
+}
+
+/// The generational run (GC-stress `gc_stress`, or the budget policy at 0) with `control` at
+/// its store site and E2 elisions if `elide` (module doc). `Err`: the text of the panic that
+/// stopped it.
+pub(super) fn run_controlled(
+    seed: u64,
+    steps: usize,
+    gc_stress: u32,
+    control: Control,
+    elide: bool,
+) -> Result<Stats, String> {
+    std::panic::catch_unwind(|| run_full(seed, steps, gc_stress, true, 1 << 18, control, elide))
+        .map_err(|p| {
+            p.downcast_ref::<String>()
+                .cloned()
+                .or_else(|| p.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+                .unwrap_or_else(|| "a panic without a text".into())
+        })
+}
+
+#[inline(never)]
+fn run_full(
+    seed: u64,
+    steps: usize,
+    gc_stress: u32,
+    generational: bool,
+    initial_budget: usize,
+    control: Control,
+    elide: bool,
 ) -> Stats {
     let heap = test_heap(|c| {
         c.gc_stress = gc_stress;
@@ -468,6 +598,12 @@ fn run_budget(
         checks: 0,
         freed_seen: 0,
         retained_seen: 0,
+        site: StoreSite::new(control),
+        elide,
+        fresh: BTreeSet::new(),
+        region: BTreeSet::new(),
+        steps: 0,
+        elided: 0,
     };
     for _ in 0..steps {
         r.step(&scratch, &mut stack_roots);
@@ -482,6 +618,9 @@ fn run_budget(
         retained: r.retained_seen,
         gcs: heap.stats().collections,
         minor: r.minor_seen,
+        v1_runs: heap.inner.borrow().v1_runs,
+        elided: r.elided,
+        dropped: r.site.dropped,
     };
     assert_eq!(
         s.minor,
@@ -491,7 +630,8 @@ fn run_budget(
     let hs = heap.stats();
     println!(
         "seed {seed:#x} stress {gc_stress} generational {generational}: {steps} steps, {} GCs ({} minor), {} checks, {} cells freed, \
-         {} live at end, {} retained-by-scan cell-checks, {} B allocated, {} pages, {} LOS",
+         {} live at end, {} retained-by-scan cell-checks, {} B allocated, {} pages, {} LOS, \
+         {} V1 runs, {} E2 stores, {} stores the control made plain",
         s.gcs,
         s.minor,
         s.checks,
@@ -500,7 +640,10 @@ fn run_budget(
         s.retained,
         hs.allocated_bytes,
         hs.small_pages,
-        hs.large_cells
+        hs.large_cells,
+        s.v1_runs,
+        s.elided,
+        s.dropped
     );
     drop(r);
     drop(scratch);
