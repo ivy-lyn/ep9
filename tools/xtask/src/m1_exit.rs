@@ -2081,12 +2081,15 @@ mod tests {
         }
         // Without --exec: against the committed expectation file (the run must name it).
         o.exec = None;
+        // (A Windows temp path has backslashes: escape them for JSON.)
         let named = gc_json(&["test/language/l00.js"], S1).replace(
             r#""file":"x""#,
             &format!(
                 r#""file":"{}""#,
                 root.join(format!("expectations/test262.{HOST}.jit.txt"))
                     .display()
+                    .to_string()
+                    .replace('\\', "\\\\")
             ),
         );
         o.exec_gc = vec![input(&root, "gc.json", &named)];
