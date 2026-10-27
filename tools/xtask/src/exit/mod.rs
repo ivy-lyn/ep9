@@ -13,13 +13,19 @@
 //! | `verdict` | spike Verdict tables |
 //! | `cross` | ep9-cross/v1 runs: freshness and the M0 canary |
 //! | `report` | `Status`, `Cell`, text helpers, the stub-marker grep |
+//! | `records` | adr-lint: the review records of ADR amendments and the README Counts line (M4-P3) |
+//! | `drift` | adr-lint: the `path:line` references of the ADRs and the plan (M4-P3) |
+//! | `freeze` | the Frozen state of an ADR, part by part (its Freeze table; M4-P3) |
 
 pub(crate) mod adr;
 pub(crate) mod ci;
 pub(crate) mod cross;
+pub(crate) mod drift;
+pub(crate) mod freeze;
 pub(crate) mod gc_shards;
 pub(crate) mod json;
 pub(crate) mod logs;
+pub(crate) mod records;
 pub(crate) mod report;
 pub(crate) mod t262;
 pub(crate) mod verdict;

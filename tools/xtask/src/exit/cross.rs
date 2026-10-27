@@ -64,6 +64,59 @@ pub(crate) fn cross_fresh(root: &Path, commit: &str) -> Result<String, String> {
     }
 }
 
+/// The freshness rule of m1-exit (plan v9 section 9.4 items 1, 2 and 5; the M3-P5 GATES-3 tool
+/// note adds `Cargo.lock` and `rust-toolchain.toml`): the input measured this tree, or an
+/// ancestor of HEAD with no change under `paths` since. Err(why) gives OPEN. [`cross_fresh`] stays
+/// the M0 rule (crates and tools/bench only), so the m0-exit report does not change.
+pub(crate) fn fresh_since(root: &Path, commit: &str, paths: &[&str]) -> Result<String, String> {
+    let head = git(root, &["rev-parse", "--verify", "HEAD^{commit}"])
+        .ok_or("cannot read HEAD (not a git tree?)")?;
+    if commit.is_empty() || commit == "unknown" {
+        return Err("the input names no ep9 commit".into());
+    }
+    let full = git(
+        root,
+        &["rev-parse", "--verify", &format!("{commit}^{{commit}}")],
+    )
+    .ok_or_else(|| format!("its commit `{commit}` is not in this repository"))?;
+    if full == head {
+        return Ok("this tree (HEAD)".into());
+    }
+    let ancestor = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["merge-base", "--is-ancestor", &full, &head])
+        .status()
+        .map_err(|e| format!("cannot run git: {e}"))?;
+    if !ancestor.success() {
+        return Err(format!(
+            "its commit `{}` is not an ancestor of HEAD `{}`",
+            short(&full),
+            short(&head)
+        ));
+    }
+    let diff = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["diff", "--quiet", &full, &head, "--"])
+        .args(paths)
+        .status()
+        .map_err(|e| format!("cannot run git: {e}"))?;
+    let list = paths.join(", ");
+    match diff.code() {
+        Some(0) => Ok(format!(
+            "an ancestor of HEAD `{}` with no change in {list} since",
+            short(&head)
+        )),
+        Some(1) => Err(format!(
+            "not this tree: {list} changed between its commit `{}` and HEAD `{}`",
+            short(&full),
+            short(&head)
+        )),
+        _ => Err("git diff failed".into()),
+    }
+}
+
 pub(crate) fn cross_canary(p: &Path, j: &Json, root: &Path) -> Cell {
     if j.get("schema").and_then(Json::str) != Some("ep9-cross/v1") {
         return cell(

@@ -1,0 +1,4 @@
+// line 1
+pub fn ic_entry() {}
+// line 3
+// line 4
