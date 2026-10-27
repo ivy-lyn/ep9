@@ -494,7 +494,12 @@ impl Graph {
     /// - every frame-state value is defined before the guard (in block order), so the exit
     ///   can read it there;
     /// - no effect (a StoreElement, a Poll) of an instruction at or after the frame state's
-    ///   offset runs before the guard in its block: T0 would run that effect a second time.
+    ///   offset runs before the guard in its block: T0 would run that effect a second time;
+    /// - a frame state before the guard's block (a cross-block resume) needs a block path from
+    ///   the state's block to the guard's, and no effect on any such path: none at or after
+    ///   the state's offset in the state's block, none in a block between, none before the
+    ///   guard in its own block, and none at all in either end block when it lies on a cycle
+    ///   of those paths (conservative: [`Graph::effect_on_the_way`]).
     pub fn check(&self) -> Result<(), String> {
         let mut seen = vec![false; self.nodes.len()];
         for b in &self.blocks {
@@ -505,10 +510,10 @@ impl Graph {
             }
         }
         let mut defined = vec![false; self.nodes.len()];
-        for b in &self.blocks {
+        for (bi, b) in self.blocks.iter().enumerate() {
             // Bytecode offsets of the effects made so far in this block.
             let mut effects: Vec<u32> = Vec::new();
-            for &n in &b.nodes {
+            for (pos, &n) in b.nodes.iter().enumerate() {
                 let node = self.node(n);
                 if !node.live {
                     continue;
@@ -530,6 +535,20 @@ impl Graph {
                              already ran (not replayable)",
                             g.id, g.state.offset
                         ));
+                    }
+                    if g.state.offset < b.offset {
+                        match self.effect_on_the_way(bi, pos, g.state.offset) {
+                            Err(e) => return Err(format!("{at}: guard g{}: {e}", g.id)),
+                            Ok(Some(e)) => {
+                                return Err(format!(
+                                    "{at}: guard g{} resumes T0 at @{} before its block (b{bi} \
+                                     @{}), and an effect at @{e} on a path from there may \
+                                     already have run (not replayable)",
+                                    g.id, g.state.offset, b.offset
+                                ));
+                            }
+                            Ok(None) => {}
+                        }
                     }
                 }
                 if node.op.is_effect() {
@@ -614,6 +633,73 @@ impl Graph {
             }
         }
         Ok(())
+    }
+}
+
+impl Graph {
+    /// The blocks reachable from block `from` (itself included) along `succs`, or along
+    /// `preds` when `back`.
+    fn reach(&self, from: usize, back: bool) -> Vec<bool> {
+        let mut seen = vec![false; self.blocks.len()];
+        let mut work = vec![from];
+        while let Some(x) = work.pop() {
+            if std::mem::replace(&mut seen[x], true) {
+                continue;
+            }
+            let b = &self.blocks[x];
+            let next = if back { &b.preds } else { &b.succs };
+            work.extend(next.iter().map(|t| t.0 as usize));
+        }
+        seen
+    }
+
+    /// For the guard at position `pos` of block `b` whose frame state offset `s` lies before
+    /// that block: an effect that may run after T0's resume point `s` and before the guard on
+    /// some block path, as its bytecode offset. The state's block is the block with the
+    /// greatest start offset at or below `s`. On the paths from it to `b` every effect
+    /// counts, except in the state's block those before `s` and in `b` those after the
+    /// guard, unless that end block lies on a cycle of the paths (then all of its effects
+    /// count). `Err` when no block path leads from `s` to `b`.
+    fn effect_on_the_way(&self, b: usize, pos: usize, s: u32) -> Result<Option<u32>, String> {
+        let a = (0..self.blocks.len())
+            .filter(|&i| self.blocks[i].offset <= s)
+            .max_by_key(|&i| self.blocks[i].offset)
+            .ok_or_else(|| format!("its frame state @{s} is before every block"))?;
+        let fwd = self.reach(a, false);
+        let back = self.reach(b, true);
+        if !back[a] {
+            return Err(format!(
+                "its frame state @{s} (in b{a}) has no block path to the guard's block b{b}"
+            ));
+        }
+        let on = |i: usize| fwd[i] && back[i];
+        // On a cycle of the paths: a successor on the paths leads back to it.
+        let cyclic = |x: usize| {
+            self.blocks[x]
+                .succs
+                .iter()
+                .map(|t| t.0 as usize)
+                .any(|t| on(t) && self.reach(t, false)[x])
+        };
+        let effect = |n: NodeId| {
+            let node = self.node(n);
+            (node.live && node.op.is_effect()).then_some(node.offset)
+        };
+        for x in (0..self.blocks.len()).filter(|&x| on(x)) {
+            let nodes = &self.blocks[x].nodes;
+            let all = (x != a && x != b) || cyclic(x);
+            let found = if all {
+                nodes.iter().find_map(|&n| effect(n))
+            } else if x == a {
+                nodes.iter().filter_map(|&n| effect(n)).find(|&e| e >= s)
+            } else {
+                nodes[..pos].iter().find_map(|&n| effect(n))
+            };
+            if found.is_some() {
+                return Ok(found);
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -769,5 +855,78 @@ mod tests {
         g.node_mut(c).guard.as_mut().expect("guard").state.acc = Some(late);
         let e = g.check().unwrap_err();
         assert!(e.contains("not defined before the guard"), "{e}");
+    }
+
+    /// The graph of `name` in `defs` from the live facts after `warm` (T0).
+    fn graph_of(defs: &str, warm: &str, name: &str) -> Graph {
+        use crate::harness::Session;
+        let mut s = Session::new(&spike_b::harness::Config::default().threaded()).expect("session");
+        s.run(defs, "defs.js").result.expect("defs");
+        s.run(warm, "warm.js").result.expect("warm");
+        let script = s.script("defs.js").expect("script");
+        let id = *script.functions_named(name).first().expect("function");
+        let live = crate::facts::live(&s, script).expect("facts");
+        let input = s.function_input(name).expect("input");
+        let (g, _) =
+            crate::build::build(&input, &crate::facts::for_function(&live, id)).expect("build");
+        g
+    }
+
+    /// Codex round 1 (spikec3): a guard whose frame state lies before its block must not
+    /// resume T0 there when an effect on the way (here the StoreElement of `a[0] = ...` in
+    /// the entry block) already ran: T0 would increment the element twice. The graph of
+    /// `bump` with the last CheckInt32's state moved back to the first one's (@8) is refused.
+    #[test]
+    fn check_refuses_a_cross_block_resume_past_an_effect() {
+        let g = graph_of(
+            "function bump(a, k, n) { a[0] = (a[0] + 1) | 0; if (n < 0) return 0; return k + 1; }",
+            "var w = [1]; for (var q = 0; q < 20; q++) bump(w, q, 1);",
+            "bump",
+        );
+        g.check().expect("the built graph passes");
+        let checks: Vec<NodeId> = g
+            .guard_nodes()
+            .filter(|(n, _)| g.node(*n).op == Op::CheckInt32)
+            .map(|(n, _)| n)
+            .collect();
+        let last = *checks.last().expect("a check");
+        let (first, _) = g.guard_nodes().next().expect("a guard");
+        assert_ne!(g.node(first).block, g.node(last).block, "{g}");
+        let early = g.node(first).guard.as_ref().expect("guard").state.clone();
+        assert_eq!(early.offset, 8, "{g}");
+        let mut bad = g.clone();
+        bad.node_mut(last).guard.as_mut().expect("guard").state = early.clone();
+        let e = bad
+            .check()
+            .expect_err(&format!("resume at @{} passed\n{bad}", early.offset));
+        assert!(e.contains("not replayable"), "{e}");
+        assert!(e.contains("effect at @17"), "{e}");
+        // The same move with no effect on the way (no store) passes: T0 replays only checks.
+        let g = graph_of(
+            "function inc(k, n) { var z = n | 0; if (z < 0) return 0; return k + 1; }",
+            "for (var q = 0; q < 20; q++) inc(q, 1);",
+            "inc",
+        );
+        let (first, g0) = g.guard_nodes().next().expect("a guard");
+        let state = g0.state.clone();
+        let (last, _) = g
+            .guard_nodes()
+            .filter(|(n, _)| g.node(*n).op == Op::CheckInt32)
+            .last()
+            .expect("a check");
+        assert_ne!(g.node(first).block, g.node(last).block, "{g}");
+        let mut ok = g.clone();
+        ok.node_mut(last).guard.as_mut().expect("guard").state = state.clone();
+        ok.check()
+            .unwrap_or_else(|e| panic!("{e}: resume at @{} with no effect\n{ok}", state.offset));
+        // A state in a block with no path to the guard's block is refused.
+        let mut cut = ok.clone();
+        let lb = cut.node(last).block.0 as usize;
+        cut.blocks[lb].preds.clear();
+        for blk in &mut cut.blocks {
+            blk.succs.retain(|t| t.0 as usize != lb);
+        }
+        let e = cut.check().expect_err("a state with no path passed");
+        assert!(e.contains("has no block path"), "{e}");
     }
 }
