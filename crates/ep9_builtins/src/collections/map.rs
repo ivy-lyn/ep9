@@ -11,7 +11,7 @@ const MAP: ObjectClass = ObjectClass::Map;
 /// The largest index GroupBy takes (2^53 - 1).
 const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
 
-/// Map ( [ iterable ] ) (§24.1.1.1).
+/// Map ( \[ iterable \] ) (§24.1.1.1).
 pub(super) fn map_ctor<'s>(
     cx: &mut Cx<'s>,
     _this: Local<'s>,

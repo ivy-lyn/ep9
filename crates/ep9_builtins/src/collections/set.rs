@@ -15,7 +15,7 @@ use super::{Adder, add_from_iterable, close_with, iter_result, number, requires_
 
 const SET: ObjectClass = ObjectClass::Set;
 
-/// Set ( [ iterable ] ) (§24.2.2.1).
+/// Set ( \[ iterable \] ) (§24.2.2.1).
 pub(super) fn set_ctor<'s>(
     cx: &mut Cx<'s>,
     _this: Local<'s>,
@@ -212,14 +212,14 @@ fn get_set_record<'s>(cx: &mut Cx<'s>, obj: Local<'s>) -> JsResult<SetRecord<'s>
     })
 }
 
-/// ToBoolean(? Call(otherRec.[[Has]], otherRec.[[SetObject]], « e »)).
+/// ToBoolean(? Call(otherRec.\[\[Has\]\], otherRec.\[\[SetObject\]\], « e »)).
 fn other_has<'s>(cx: &mut Cx<'s>, rec: &SetRecord<'s>, e: Local<'s>) -> JsResult<bool> {
     let r = cx.call(rec.has, rec.object, &[e])?;
     Ok(cx.to_boolean(r))
 }
 
 /// A new empty Set with `%Set.prototype%` (OrdinaryObjectCreate(%Set.prototype%,
-/// « [[SetData]] »)).
+/// « \[\[SetData\]\] »)).
 fn new_set<'s>(cx: &mut Cx<'s>) -> Local<'s, JsObject> {
     let proto = cx.intrinsic(IntrinsicId::SetPrototype);
     cx.new_collection(proto, SET)

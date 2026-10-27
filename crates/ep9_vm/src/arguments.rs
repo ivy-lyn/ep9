@@ -124,7 +124,7 @@ pub(crate) fn create(cx: &mut Cx, fp: *mut u64, pc: *const u8, mapped: bool) -> 
 /// The current realm's %ThrowTypeError% (§10.2.4.1), or `None` before a table makes it. On
 /// the first use in a realm it gets the attributes the spec gives it: `length` and `name`
 /// {w: false, e: false, c: false} (a table gives a builtin function {c}) and
-/// [[Extensible]] false. The strict `callee` accessor is the only way JS code reaches it
+/// `[[Extensible]]` false. The strict `callee` accessor is the only way JS code reaches it
 /// (no month-3 role builds the Function.prototype `caller` and `arguments` accessors), so
 /// no code sees it before this runs. GC point (the dictionary move of the redefinitions).
 fn throw_type_error(rt: &Runtime) -> Option<u64> {

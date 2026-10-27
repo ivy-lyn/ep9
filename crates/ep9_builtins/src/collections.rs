@@ -350,7 +350,7 @@ pub const MODULE: BuiltinModule = BuiltinModule {
 
 // ---- shared steps --------------------------------------------------------------------------
 
-/// get Map [ @@species ] (§24.1.2.3) and get Set [ @@species ] (§24.2.3.2): the this value.
+/// get Map \[ @@species \] (§24.1.2.3) and get Set \[ @@species \] (§24.2.3.2): the this value.
 fn species<'s>(
     _cx: &mut Cx<'s>,
     this: Local<'s>,

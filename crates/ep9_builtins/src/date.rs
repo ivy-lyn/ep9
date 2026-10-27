@@ -38,7 +38,7 @@ use self::parse::Parsed;
 /// This module's block of builtin ids.
 pub const BLOCK: u8 = 12;
 
-/// The internal slots of a Date object: « [[DateValue]] ».
+/// The internal slots of a Date object: « \[\[DateValue\]\] ».
 const DATE_VALUE: usize = 0;
 const DATE_SLOTS: usize = 1;
 
@@ -111,7 +111,7 @@ pub const INTRINSICS: &[IntrinsicDef] = &[
     },
 ];
 
-/// `key` = DEFS[def], {w, c}, with a string key.
+/// `key` = `DEFS[def]`, {w, c}, with a string key.
 const fn m(key: &'static str, def: u16) -> PropDef {
     PropDef::method(PropKey::Str(key), def)
 }
@@ -274,7 +274,7 @@ fn string<'s>(cx: &mut Cx<'s>, s: &str) -> JsResult<Local<'s>> {
     Ok(cx.new_string(s)?.value())
 }
 
-/// thisTimeValue: RequireInternalSlot(this, [[DateValue]]), then the value.
+/// thisTimeValue: RequireInternalSlot(this, \[\[DateValue\]\]), then the value.
 fn this_time_value<'s>(cx: &mut Cx<'s>, this: Local<'s>) -> JsResult<f64> {
     let v = cx.slot(this, ObjectClass::Date, DATE_VALUE)?;
     Ok(v.as_number().unwrap_or(f64::NAN))
@@ -520,7 +520,7 @@ impl Set {
     }
 }
 
-/// The set*/setUTC* steps (§21.4.4.20-31): RequireInternalSlot; t = [[DateValue]]; ToNumber
+/// The set*/setUTC* steps (§21.4.4.20-31): RequireInternalSlot; t = \[\[DateValue\]\]; ToNumber
 /// of the first argument and of each other present one, in order; NaN t gives NaN (setFullYear:
 /// t = +0); then the new value from the given fields and the fields of t (LocalTime(t) for
 /// the local setters), TimeClip(UTC(...)) (local) or TimeClip(...) (UTC), stored and returned.

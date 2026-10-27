@@ -20,7 +20,7 @@ fn require<'s>(cx: &mut Cx<'s>, o: Local<'s>, class: ObjectClass) -> JsResult<()
     cx.collection_has(o, class, Local::undefined()).map(|_| ())
 }
 
-/// WeakMap ( [ iterable ] ) (§24.3.1.1).
+/// WeakMap ( \[ iterable \] ) (§24.3.1.1).
 pub(super) fn weak_map_ctor<'s>(
     cx: &mut Cx<'s>,
     _this: Local<'s>,
@@ -157,7 +157,7 @@ pub(super) fn weak_map_get_or_insert_computed<'s>(
     Ok(value)
 }
 
-/// WeakSet ( [ iterable ] ) (§24.4.1.1).
+/// WeakSet ( \[ iterable \] ) (§24.4.1.1).
 pub(super) fn weak_set_ctor<'s>(
     cx: &mut Cx<'s>,
     _this: Local<'s>,

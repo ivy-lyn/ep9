@@ -709,7 +709,7 @@ fn local<'s>(b: u64) -> Local<'s> {
 }
 
 /// %ThrowTypeError% (§10.2.4.1): throws a TypeError (V8's text). Its `length` and `name`
-/// attributes and [[Extensible]] false are set by `arguments.rs` on first use.
+/// attributes and `[[Extensible]]` false are set by `arguments.rs` on first use.
 pub(crate) fn throw_type_error<'s>(
     cx: &mut HostCx<'s>,
     _this: Local<'s>,
