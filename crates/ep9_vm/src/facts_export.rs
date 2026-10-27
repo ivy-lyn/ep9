@@ -71,12 +71,18 @@
 //!   at a CompareOp site, and a present int32 index of an Array at `GetKeyedProperty`. The
 //!   reader adds them to every slot of the kind in a function that has a vector: every
 //!   BinaryOp record has `BinaryHint::INT32`, every CompareOp record `CompareHint::INT32`,
-//!   every LoadKeyed record `KeySet::INDEX`. So a record whose only bit is that one is an
-//!   empty slot, and it means **"int32 or never ran"**: T0 cannot tell a cold site from an
-//!   int32 site (a slot starts as int32 0, `feedback.rs`). AOT treats it so, and the H32 site
-//!   budget bounds the cost when the site later sees other values. A bit next to it is a
-//!   prediction too (T0 may also have seen int32 there): a consumer guards (H16
-//!   Consequences).
+//!   every LoadKeyed record `KeySet::INDEX`. So a BinaryOp or CompareOp record whose only
+//!   bit is that one is an empty slot, and it means **"int32 or never ran"**: T0 cannot tell
+//!   a cold site from an int32 site (a slot starts as int32 0, `feedback.rs`). A LoadKeyed
+//!   record whose only bit is `INDEX` is not always an empty slot: it means **"only int32
+//!   index keys, or never ran"**, and it says nothing of the receiver, bounds or holes. The
+//!   cold path writes the receiver bits 4-7 and the out-of-bounds and hole bits 8-9 there
+//!   (`profile.rs`), but schema 1 has no field for them (`keyed` below drops them), so an index
+//!   read of a non-array receiver, out of bounds or of a hole exports the same record
+//!   (MODES-D17, MODES-D18: the "ran" bit comes with those bits in the month-6 bump). AOT
+//!   treats these records so, and the H32 site budget bounds the cost when the site later
+//!   sees other values. A bit next to it is a prediction too (T0 may also have seen int32
+//!   there): a consumer guards (H16 Consequences).
 //! - **Count units (F-R7, MC-w13-2).** Each count names its unit, and a merge adds counts of
 //!   one unit only (H16-Q5b):
 //!
@@ -302,9 +308,9 @@ fn int_value(v: u64, i: u32) -> Option<u32> {
 
 /// A keyed slot (2, 4, 6, 10, 17; `profile.rs` writes the value half, KEYED (M4-P3) the key
 /// half): the `KeySet` bits 0-3 of the value, with `implicit` added (H16-Q2 (1)). The state
-/// is the key half's: undefined (no keyed IC case yet: T0 v0 has none, KEYED), a receiver
-/// shape (monomorphic, no case: v0 has no element access to describe) or the hole
-/// (megamorphic). The receiver bits 4-7 and the out-of-bounds and hole bits 8-9 have no field
+/// is the key half's (`keyed_ic.rs`): undefined (new, or the shape died), a receiver shape
+/// (monomorphic: the fast case ran cold once with it; no case is exported, schema 1 has no
+/// element access to describe) or the hole (megamorphic). The receiver bits 4-7 and the out-of-bounds and hole bits 8-9 have no field
 /// in schema 1 (MC-w13-9, the month-6 bump).
 fn keyed(v: u64, i: u32, implicit: KeySet) -> Option<KeyedFacts> {
     let bits = int_value(v, i)?;
