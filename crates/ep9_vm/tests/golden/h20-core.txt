@@ -86,6 +86,8 @@ abi: impl<'s> Cx<'s> :: pub fn call_built(&mut self, impl Into<Local<'s>>, impl 
 abi: impl<'s> Cx<'s> :: pub fn can_be_held_weakly(&self, impl Into<Local<'s>>) -> bool
 abi: impl<'s> Cx<'s> :: pub fn catch_exception(&mut self, Throw) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn check_native_stack(&mut self) -> JsResult<()>
+abi: impl<'s> Cx<'s> :: pub fn cleanup_finalization_registries(&mut self) -> JsResult<()>
+abi: impl<'s> Cx<'s> :: pub fn clear_kept_objects(&mut self)
 abi: impl<'s> Cx<'s> :: pub fn closure_data(&self, impl Into<Local<'s>>) -> Local<'s>
 abi: impl<'s> Cx<'s> :: pub fn code_unit_at(&self, Local<'s, FlatStr>, usize) -> Option<u16>
 abi: impl<'s> Cx<'s> :: pub fn collect_garbage(&mut self)
@@ -118,6 +120,8 @@ abi: impl<'s> Cx<'s> :: pub fn display(&self, impl Into<Local<'s>>) -> String
 abi: impl<'s> Cx<'s> :: pub fn enqueue_job(&mut self, impl Into<Local<'s>>, impl Into<Local<'s>>) -> JsResult<()>
 abi: impl<'s> Cx<'s> :: pub fn evaluate_script(&mut self, &str, &str) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn evaluate_script_in(&mut self, impl Into<Local<'s, JsObject>>, &str, &str) -> JsResult<Local<'s>>
+abi: impl<'s> Cx<'s> :: pub fn finalization_registry_register(&mut self, impl Into<Local<'s>>, impl Into<Local<'s>>, impl Into<Local<'s>>, impl Into<Local<'s>>) -> JsResult<()>
+abi: impl<'s> Cx<'s> :: pub fn finalization_registry_unregister(&mut self, impl Into<Local<'s>>, impl Into<Local<'s>>) -> JsResult<bool>
 abi: impl<'s> Cx<'s> :: pub fn flatten(&mut self, impl Into<Local<'s, JsString>>) -> JsResult<Local<'s, FlatStr>>
 abi: impl<'s> Cx<'s> :: pub fn from_property_descriptor(&mut self, Option<PropertyDescriptor<'s>>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn fulfill_promise(&mut self, Local<'s, JsObject>, impl Into<Local<'s>>)
@@ -160,6 +164,7 @@ abi: impl<'s> Cx<'s> :: pub fn new_builtin_closure(&mut self, HostFn, &str, u32,
 abi: impl<'s> Cx<'s> :: pub fn new_collection(&mut self, impl Into<Local<'s>>, ObjectClass) -> Local<'s, JsObject>
 abi: impl<'s> Cx<'s> :: pub fn new_collection_iterator(&mut self, impl Into<Local<'s>>, ObjectClass, bool, bool) -> JsResult<Local<'s, JsObject>>
 abi: impl<'s> Cx<'s> :: pub fn new_error_object(&mut self, impl Into<Local<'s, JsObject>>, Option<Local<'s, JsString>>) -> Local<'s, JsObject>
+abi: impl<'s> Cx<'s> :: pub fn new_finalization_registry(&mut self, impl Into<Local<'s>>, impl Into<Local<'s>>) -> Local<'s, JsObject>
 abi: impl<'s> Cx<'s> :: pub fn new_object(&mut self) -> Local<'s, JsObject>
 abi: impl<'s> Cx<'s> :: pub fn new_object_with_proto(&mut self, impl Into<Local<'s>>) -> Local<'s, JsObject>
 abi: impl<'s> Cx<'s> :: pub fn new_object_with_slots(&mut self, impl Into<Local<'s>>, ObjectClass, usize) -> Local<'s, JsObject>
@@ -168,6 +173,7 @@ abi: impl<'s> Cx<'s> :: pub fn new_promise_capability(&mut self, impl Into<Local
 abi: impl<'s> Cx<'s> :: pub fn new_string(&mut self, &str) -> JsResult<Local<'s, JsString>>
 abi: impl<'s> Cx<'s> :: pub fn new_string_utf16(&mut self, &[u16]) -> JsResult<Local<'s, JsString>>
 abi: impl<'s> Cx<'s> :: pub fn new_symbol(&mut self, impl Into<Local<'s>>) -> JsResult<Local<'s, JsSymbol>>
+abi: impl<'s> Cx<'s> :: pub fn new_weak_ref(&mut self, impl Into<Local<'s>>, impl Into<Local<'s>>) -> Local<'s, JsObject>
 abi: impl<'s> Cx<'s> :: pub fn new_wrapper(&mut self, impl Into<Local<'s, JsObject>>, impl Into<Local<'s>>) -> JsResult<Local<'s, JsObject>>
 abi: impl<'s> Cx<'s> :: pub fn not_implemented(&mut self, &str) -> Throw
 abi: impl<'s> Cx<'s> :: pub fn now_epoch_ns(&mut self) -> i128
@@ -218,6 +224,7 @@ abi: impl<'s> Cx<'s> :: pub fn to_rust_string(&mut self, impl Into<Local<'s>>) -
 abi: impl<'s> Cx<'s> :: pub fn to_string(&mut self, impl Into<Local<'s>>) -> JsResult<Local<'s, JsString>>
 abi: impl<'s> Cx<'s> :: pub fn to_uint32(&mut self, impl Into<Local<'s>>) -> JsResult<u32>
 abi: impl<'s> Cx<'s> :: pub fn type_of(&self, impl Into<Local<'s>>) -> &'static str
+abi: impl<'s> Cx<'s> :: pub fn weak_ref_deref(&mut self, impl Into<Local<'s>>) -> JsResult<Local<'s>>
 abi: impl<'s> Cx<'s> :: pub fn with_realm<R>(&mut self, impl Into<Local<'s, JsObject>>, impl FnOnce(&mut Self) -> JsResult<R>) -> JsResult<R>
 abi: impl<'s> From<Local<'s, FlatStr>> for Local<'s, JsString>
 abi: impl<'s> From<Local<'s, FlatStr>> for Local<'s, JsValue>

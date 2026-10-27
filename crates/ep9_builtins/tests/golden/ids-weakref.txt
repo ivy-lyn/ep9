@@ -1,3 +1,8 @@
 # ep9 builtin ids: module weakref, block 17. Append-only (H20, W4-BUILTIN-IDS): never
 # reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
 # id     block.index  kind         length  name  (installed as)
+0x2200   17.0         constructor  1       "WeakRef"  (%WeakRef%)
+0x2201   17.1         method       0       "deref"  (%WeakRef.prototype%.deref w-c)
+0x2202   17.2         constructor  1       "FinalizationRegistry"  (%FinalizationRegistry%)
+0x2203   17.3         method       2       "register"  (%FinalizationRegistry.prototype%.register w-c)
+0x2204   17.4         method       1       "unregister"  (%FinalizationRegistry.prototype%.unregister w-c)
