@@ -1,17 +1,24 @@
-#![allow(dead_code)] // m4-stub
 //! `cargo xtask adr-lint` (M1 exit item 6: no H-row change without an approved ADR amendment;
 //! plan v9 rule 26, V9-A15, V9-A16).
 //!
 //! ```text
-//! cargo xtask adr-lint --trailers-only --base <rev> [--root <dir>]
+//! cargo xtask adr-lint --base <rev> [--root <dir>]                  the full lint (M4-P3)
+//! cargo xtask adr-lint --trailers-only --base <rev> [--root <dir>]  part 1 only (M4-P0)
 //! ```
 //!
-//! M4-P0 builds only the trailer part (V9-A16). Every commit in `<rev>..HEAD` that touches an
-//! H-row crate must carry a git trailer `ADR: Hnn[, Hmm]` (ids H1-H37, written `H2` or `H02`) or
-//! `ADR: none (<reason>)`, or have a line in `expectations/adr-trailer-exceptions.txt`
-//! (`<sha> <ADR ids> <decisions-log row>`, append only, written by the orchestrator; a missing
-//! file has no lines). Every other mode exits 2 "not implemented yet": the full lint (the review
-//! records of V9-A15, README Counts against the Status lines, path:line drift) is M4-P3 TOOLS.
+//! The full lint runs four parts over `<rev>..HEAD` and passes only when all four pass:
+//!
+//! | Part | Passes when | Module |
+//! |---|---|---|
+//! | 1 trailers | every commit that touches an H-row crate has an `ADR:` trailer, or a line in `expectations/adr-trailer-exceptions.txt` (below) | this file |
+//! | 2 review records | every amendment row of an Accepted or Frozen ADR since `<rev>` has review rows 1-4 and an approval by an agent that wrote none of them (V9-A15; README sections 3.1, 3.2) | `exit::records` |
+//! | 3 Counts | the README Counts line and index column equal the Status lines | `exit::records` |
+//! | 4 path:line drift | every `path:line` reference of `docs/adr` and `docs/plan` names the same line at HEAD as when it was written (no FIX and no UNFIXABLE line of the ADRLINE dry run) | `exit::drift` |
+//!
+//! **Part 1.** Every commit in `<rev>..HEAD` that touches an H-row crate must carry a git trailer
+//! `ADR: Hnn[, Hmm]` (ids H1-H37, written `H2` or `H02`) or `ADR: none (<reason>)`, or have a
+//! line in `expectations/adr-trailer-exceptions.txt` (`<sha> <ADR ids> <decisions-log row>`,
+//! append only, written by the orchestrator; a missing file has no lines).
 //!
 //! An H-row crate is a crate that the "Crates" row of an ADR names (docs/adr/README.md section 1:
 //! "The ADR lint ... uses this line"): each `ep9_<name>` in backticks is `crates/ep9_<name>/`,
@@ -24,17 +31,17 @@
 //! merge commit touches only what its own resolution changed (`--cc`); the commits it merges
 //! are checked one by one.
 //!
-//! `--root` (default: this workspace) is the git tree to check; the ADR files and the
-//! exceptions file are read from its work tree. Exit 0: every such commit has a good trailer or
-//! an exceptions line. Exit 1: the list of commits without one. Exit 2: a usage error, an unknown
-//! `<rev>`, an exceptions line in another form, or no Crates row in `docs/adr/H*.md`.
+//! `--root` (default: this workspace) is the git tree to check; the ADR files, the docs and the
+//! exceptions file are read from its work tree. Exit 0: every part passes. Exit 1: the findings.
+//! Exit 2: a usage error, an unknown `<rev>`, an exceptions line in another form, no Crates row
+//! in `docs/adr/H*.md`, or a pin table line in another form.
 
-use crate::exit::read;
+use crate::exit::{drift, read, records};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: cargo xtask adr-lint --trailers-only --base <rev> [--root <dir>]";
+const USAGE: &str = "usage: cargo xtask adr-lint [--trailers-only] --base <rev> [--root <dir>]";
 
 /// The exceptions file of rule 26 (orchestrator only, append only).
 const EXCEPTIONS: &str = "expectations/adr-trailer-exceptions.txt";
@@ -61,12 +68,6 @@ pub fn main(args: &[String]) -> Result<bool, String> {
             other => return Err(format!("unknown argument {other:?}\n{USAGE}")),
         }
     }
-    if !trailers_only {
-        return Err(format!(
-            "not implemented yet: M4-P0 builds only `--trailers-only` (the review records, \
-             Counts and path:line checks are M4-P3 TOOLS)\n{USAGE}"
-        ));
-    }
     let base = base.ok_or_else(|| format!("--base <rev> is required\n{USAGE}"))?;
     let root = match root {
         Some(r) => r,
@@ -75,9 +76,89 @@ pub fn main(args: &[String]) -> Result<bool, String> {
             std::fs::canonicalize(&r).unwrap_or(r)
         }
     };
-    let report = trailers(&root, &base)?;
-    print!("{}", report.text);
-    Ok(report.missing == 0)
+    if trailers_only {
+        let report = trailers(&root, &base)?;
+        print!("{}", report.text);
+        return Ok(report.missing == 0);
+    }
+    let lint = full(&root, &base)?;
+    print!("{}", lint.text);
+    Ok(lint.pass)
+}
+
+/// The result of the full lint.
+#[derive(Debug)]
+pub(crate) struct Lint {
+    pub(crate) pass: bool,
+    /// The findings of each part, then one summary line per part and the result line.
+    pub(crate) text: String,
+    /// The result line (the last line of `text`).
+    pub(crate) summary: String,
+}
+
+/// The four parts over `<base>..HEAD` in `root`.
+pub(crate) fn full(root: &Path, base: &str) -> Result<Lint, String> {
+    let t = trailers(root, base)?;
+    let base_sha = base_commit(root, base)?;
+    let rec = records::records(root, &base_sha)?;
+    let (counts_line, from_files, count_findings) = records::counts(root)?;
+    let d = drift::drift(root)?;
+    let mut text = String::new();
+    // Part 1 prints its own summary line last.
+    text.push_str(&t.text);
+    for g in &rec.gaps {
+        text.push_str(&format!("{g}\n"));
+    }
+    let rec_ok = rec.gaps.is_empty();
+    text.push_str(&format!(
+        "adr-lint review records: {base}..HEAD: {} Accepted or Frozen ADRs, {} amendment rows ({} rows need none: record-only rows and edits of older rows), {} gaps{}\n",
+        rec.adrs,
+        rec.rows,
+        rec.skipped,
+        rec.gaps.len(),
+        pass_word(rec_ok)
+    ));
+    for f in &count_findings {
+        text.push_str(&format!("{f}\n"));
+    }
+    let counts_ok = count_findings.is_empty();
+    text.push_str(&format!(
+        "adr-lint Counts: README {counts_line:?}; Status lines: {from_files}{}\n",
+        pass_word(counts_ok)
+    ));
+    for l in &d.lines {
+        text.push_str(&format!("{l}\n"));
+    }
+    text.push_str(&format!(
+        "adr-lint path:line drift: {} (pins: {}){}\n",
+        d.summary(),
+        drift::PINS_FILE,
+        pass_word(d.pass())
+    ));
+    let pass = t.missing == 0 && rec_ok && counts_ok && d.pass();
+    let summary = format!(
+        "adr-lint: {base}..HEAD: trailers {}, review records {}, Counts {}, path:line drift {}: {}",
+        word(t.missing == 0),
+        word(rec_ok),
+        word(counts_ok),
+        word(d.pass()),
+        word(pass)
+    );
+    text.push_str(&summary);
+    text.push('\n');
+    Ok(Lint {
+        pass,
+        text,
+        summary,
+    })
+}
+
+fn word(ok: bool) -> &'static str {
+    if ok { "PASS" } else { "FAIL" }
+}
+
+fn pass_word(ok: bool) -> &'static str {
+    if ok { ": PASS" } else { ": FAIL" }
 }
 
 /// The result of the trailer check.
@@ -816,12 +897,7 @@ mod tests {
     #[test]
     fn modes_and_usage() {
         let a = |s: &[&str]| main(&s.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        assert!(a(&[]).unwrap_err().contains("not implemented yet"));
-        assert!(
-            a(&["--base", "x"])
-                .unwrap_err()
-                .contains("not implemented yet")
-        );
+        assert!(a(&[]).unwrap_err().contains("--base"));
         assert!(a(&["--trailers-only"]).unwrap_err().contains("--base"));
         assert!(
             a(&["--trailers-only", "--what"])
@@ -836,6 +912,319 @@ mod tests {
                 .contains("not a commit")
         );
         assert!(a(&["--trailers-only", "--base", "HEAD", "--root", r]).unwrap());
+        // The full lint needs the README (part 3): the trailer fixture has none.
+        assert!(
+            a(&["--base", "HEAD", "--root", r])
+                .unwrap_err()
+                .contains("README")
+        );
+        assert!(
+            a(&["--base", "no-such-rev", "--root", r])
+                .unwrap_err()
+                .contains("not a commit")
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The full-lint fixtures (plan v9 rule 24).
+    fn fixture(name: &str) -> String {
+        read(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/adr_lint")
+                .join(name),
+        )
+        .unwrap()
+    }
+
+    const H16: &str = "docs/adr/H16-ics.md";
+    const H29: &str = "docs/adr/H29-deopt.md";
+    const README: &str = "docs/adr/README.md";
+    const LIB: &str = "crates/ep9_vm/src/lib.rs";
+
+    /// A fixture tree for the full lint: (root, base sha, the base commit's day).
+    fn full_repo(name: &str) -> (PathBuf, String, String) {
+        let root = std::env::temp_dir().join(format!("ep9-adr-lint-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "-q"]);
+        let base = commit(
+            &root,
+            &[
+                (README, &fixture("adr-README.md")),
+                (H16, &fixture("H16-accepted.md")),
+                (H29, &fixture("H29-draft.md")),
+                (LIB, &fixture("vm-lib.rs.txt")),
+            ],
+            "base",
+        );
+        let day = git(&root, &["show", "-s", "--format=%cs", &base]);
+        (root, base, day)
+    }
+
+    /// Appends `rows` to the table under `## <section>` of the file `rel` (before the next
+    /// heading, or at the end).
+    fn add_rows(root: &Path, rel: &str, section: &str, rows: &[String]) {
+        let text = read(&root.join(rel)).unwrap();
+        let mut out = Vec::new();
+        let mut on = false;
+        let mut done = false;
+        for l in text.lines() {
+            if l.starts_with("## ") {
+                if on && !done {
+                    out.extend(rows.iter().cloned());
+                    out.push(String::new());
+                    done = true;
+                }
+                on = l.trim() == format!("## {section}");
+            }
+            if on
+                && !done
+                && l.trim().is_empty()
+                && out.last().is_some_and(|p: &String| p.starts_with('|'))
+            {
+                out.extend(rows.iter().cloned());
+                done = true;
+            }
+            out.push(l.to_string());
+        }
+        if !done {
+            out.extend(rows.iter().cloned());
+        }
+        write(root, rel, &(out.join("\n") + "\n"));
+    }
+
+    /// The record rows 1-4 and an approval for `label`.
+    fn record(label: &str, approver: &str, approval: &str) -> Vec<String> {
+        vec![
+            format!("| 1 Reviewer ({label}) | reviewer C (Claude) | Checked | |"),
+            format!(
+                "| 2 Codex ({label}) | orchestrator (Codex); row text by fixer D (Claude) | Filled | |"
+            ),
+            format!("| 3 Verifier ({label}) | fixer D (Claude) | Checked | |"),
+            format!("| 4 Data ({label}) | fixer D (copied) | Runs pass | |"),
+            format!("| Approval ({label}) | {approver} (README §3.2) | {approval} | |"),
+        ]
+    }
+
+    /// Plan v9 section 5.6 acceptance: a clarify row on an Accepted ADR without rows 1-4 fails;
+    /// with rows 1-4 and an approval by an agent that wrote none of them, it passes.
+    #[test]
+    fn a_clarify_row_needs_its_review_record() {
+        let (root, base, day) = full_repo("records");
+        let lint = full(&root, &base).unwrap();
+        assert!(lint.pass, "{}", lint.text);
+        assert!(lint.summary.ends_with(": PASS"), "{}", lint.summary);
+        // The clarify row, no record: FAIL.
+        add_rows(
+            &root,
+            H16,
+            "Change log",
+            &[format!(
+                "| {day} | clarify (proposed; Accepted path) | A word fixed | docs agent |"
+            )],
+        );
+        commit(&root, &[], "docs/adr: H16 clarify");
+        let lint = full(&root, &base).unwrap();
+        assert!(!lint.pass, "{}", lint.text);
+        assert!(
+            lint.text.contains(&format!(
+                "docs/adr/H16-ics.md: 1 amendment row(s) dated {day} since the base, 0 complete"
+            )),
+            "{}",
+            lint.text
+        );
+        assert!(
+            lint.summary.contains("review records FAIL"),
+            "{}",
+            lint.summary
+        );
+        assert!(lint.summary.contains("trailers PASS"), "{}", lint.summary);
+        // Rows 1-4 with a Pending approval: still FAIL.
+        let label = format!("M4-P3 amendment: the {day} clarify row");
+        add_rows(
+            &root,
+            H16,
+            "Review record",
+            &record(&label, "Pending (orchestrator", "Pending"),
+        );
+        commit(&root, &[], "docs/adr: H16 record rows");
+        let lint = full(&root, &base).unwrap();
+        assert!(!lint.pass, "{}", lint.text);
+        assert!(lint.text.contains("is Pending"), "{}", lint.text);
+        // The approval by an agent that wrote row 3: FAIL.
+        let text = read(&root.join(H16)).unwrap().replace(
+            &format!("| Approval ({label}) | Pending (orchestrator (README §3.2) | Pending | |"),
+            &format!("| Approval ({label}) | fixer D (README §3.2) | **Approved** | |"),
+        );
+        write(&root, H16, &text);
+        let lint = full(&root, &base).unwrap();
+        assert!(!lint.pass, "{}", lint.text);
+        assert!(
+            lint.text.contains("approval is by \"fixer d\""),
+            "{}",
+            lint.text
+        );
+        // The approval by the orchestrator, which wrote none of rows 1-4: PASS.
+        write(
+            &root,
+            H16,
+            &text.replace(
+                &format!("| Approval ({label}) | fixer D"),
+                &format!("| Approval ({label}) | orchestrator"),
+            ),
+        );
+        let lint = full(&root, &base).unwrap();
+        assert!(lint.pass, "{}", lint.text);
+        // A second row of the same day needs a second record.
+        add_rows(
+            &root,
+            H16,
+            "Change log",
+            &[format!("| {day} | fill | Q1 filled | role |")],
+        );
+        let lint = full(&root, &base).unwrap();
+        assert!(lint.text.contains("2 amendment row(s)"), "{}", lint.text);
+        assert!(!lint.pass);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rows_that_need_no_record_and_bad_kinds() {
+        let (root, base, day) = full_repo("kinds");
+        // A Draft ADR's row, a record-only row, an edit of an older row: no record needed.
+        add_rows(
+            &root,
+            H29,
+            "Change log",
+            &[format!("| {day} | fill | Q1 | role |")],
+        );
+        add_rows(
+            &root,
+            H16,
+            "Change log",
+            &[format!(
+                "| {day} | clarify | Review record: rows 1-4 of the fill row | fixer |"
+            )],
+        );
+        let t = read(&root.join(H16))
+            .unwrap()
+            .replace("The first text", "The first text, edited");
+        write(&root, H16, &t);
+        let lint = full(&root, &base).unwrap();
+        assert!(lint.pass, "{}", lint.text);
+        assert!(
+            lint.text.contains("0 amendment rows (2 rows need none"),
+            "{}",
+            lint.text
+        );
+        // A kind that is not an amendment kind on an Accepted ADR.
+        add_rows(
+            &root,
+            H16,
+            "Change log",
+            &[format!("| {day} | as built | K9 built | role |")],
+        );
+        let lint = full(&root, &base).unwrap();
+        assert!(
+            lint.text.contains("is not an amendment kind"),
+            "{}",
+            lint.text
+        );
+        assert!(!lint.pass);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn counts_equal_the_status_lines() {
+        let (root, base, _) = full_repo("counts");
+        let t = read(&root.join(H29))
+            .unwrap()
+            .replace("| Status | Draft", "| Status | Accepted");
+        write(&root, H29, &t);
+        let lint = full(&root, &base).unwrap();
+        assert!(!lint.pass, "{}", lint.text);
+        assert!(
+            lint.text
+                .contains("README Counts line says 1 Draft, the Status lines give 0"),
+            "{}",
+            lint.text
+        );
+        assert!(
+            lint.text
+                .contains("README index row H29 says \"Draft\", its Status line says \"Accepted\""),
+            "{}",
+            lint.text
+        );
+        assert!(lint.summary.contains("Counts FAIL"), "{}", lint.summary);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_moved_line_is_drift() {
+        let (root, base, _) = full_repo("drift");
+        // A line added above the referenced one (with the trailer the crate needs).
+        commit(
+            &root,
+            &[(
+                LIB,
+                &format!("// new first line\n{}", fixture("vm-lib.rs.txt")),
+            )],
+            "vm: a line\n\nADR: H16",
+        );
+        let lint = full(&root, &base).unwrap();
+        assert!(!lint.pass, "{}", lint.text);
+        assert!(
+            lint.text.contains("FIX       docs/adr/H16-ics.md:10 crates/ep9_vm/src/lib.rs:2 -> crates/ep9_vm/src/lib.rs:3"),
+            "{}",
+            lint.text
+        );
+        assert!(
+            lint.summary.contains("path:line drift FAIL"),
+            "{}",
+            lint.summary
+        );
+        // The doc names the new line: PASS (the new token's intro commit maps it to itself).
+        let t = read(&root.join(H16))
+            .unwrap()
+            .replace("lib.rs:2", "lib.rs:3");
+        commit(&root, &[(H16, &t)], "docs/adr: H16 ref");
+        assert!(full(&root, &base).unwrap().pass);
+        // A token new in the work tree must lie inside the file.
+        write(&root, H16, &t.replace("lib.rs:3", "lib.rs:99"));
+        let lint = full(&root, &base).unwrap();
+        assert!(
+            lint.text.contains("new token past the end"),
+            "{}",
+            lint.text
+        );
+        write(&root, H16, &t);
+        // A pin and a history pin, from the pin table of the tree.
+        let pins = format!(
+            "# pins\npin\tH16-ics.md\tcrates/ep9_vm/src/lib.rs:3\t{LIB}\t^pub fn ic_entry\\(\\) \\{{\\}}$\t0\n"
+        );
+        write(&root, drift::PINS_FILE, &pins);
+        let lint = full(&root, &base).unwrap();
+        assert!(lint.pass, "{}", lint.text);
+        assert!(lint.text.contains("pinned=1"), "{}", lint.text);
+        write(
+            &root,
+            drift::PINS_FILE,
+            &format!(
+                "{pins}history\tH16-ics.md\tcrates/ep9_vm/src/lib.rs:7\tno such line\tHEAD\tx\n"
+            ),
+        );
+        let lint = full(&root, &base).unwrap();
+        assert!(
+            lint.text.contains("UNFIXABLE UNUSED HISTORY PIN"),
+            "{}",
+            lint.text
+        );
+        write(
+            &root,
+            drift::PINS_FILE,
+            "pin\tH16-ics.md\tx.rs:1\tx.rs\ta.b\t0\n",
+        );
+        assert!(full(&root, &base).unwrap_err().contains("regex syntax"));
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
