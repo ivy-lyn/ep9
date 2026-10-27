@@ -354,7 +354,8 @@ impl KeptObjects {
         self.roots.pending.get()
     }
 
-    /// Sets the flag again (a cleanup hook that stopped at a throw leaves work behind).
+    /// Sets the flag again (a cleanup hook that stopped at a throw or at an interrupt poll
+    /// leaves work behind).
     pub(crate) fn set_pending(&self) {
         self.roots.pending.set(true);
     }

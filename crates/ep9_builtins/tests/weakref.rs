@@ -13,7 +13,10 @@ mod common;
 use std::cell::RefCell;
 use std::hint::black_box;
 
-use ep9_vm::{Args, Cx, Isolate, JsResult, Local};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use ep9_vm::{Args, Cx, Isolate, JsResult, Local, TerminateHandle};
 
 fn lines(v: &[&str]) -> Result<Vec<String>, String> {
     Ok(v.iter().map(|s| s.to_string()).collect())
@@ -478,6 +481,283 @@ log('registered');
                 .map_err(|e| e.message)
                 .unwrap();
             assert_eq!(take_log(), Vec::<String>::new(), "stress={stress}");
+            i.verify_heap().expect("a valid heap");
+        });
+    }
+}
+
+// ---- the cleanup drain of a checkpoint (M4-P4 fixer C; P4-ORCH-8; Codex C2-1, C2-2, B1-2) ----
+
+/// `dropAndCollect(keep, k)`: `keep[k] = null`, then a collection after a stack scrub. The
+/// store runs here, in Rust: a debug build's keyed store from JS left the old element (the
+/// target) in a live dispatch-loop slot, so the collection that followed in the same callback
+/// still saw it (fixer C probe). The collection runs where a scrub has just zeroed 512 KiB
+/// (the store's frames and the last collection's frames lie there).
+#[inline(never)]
+fn drop_and_collect<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    drop_below(cx, args.get(0), args.get(1))?;
+    scrub_then_collect(cx);
+    Ok(Local::undefined())
+}
+
+#[inline(never)]
+fn drop_below<'s>(cx: &mut Cx<'s>, keep: Local<'s>, k: Local<'s>) -> JsResult<()> {
+    let keep = keep.as_object().expect("an array");
+    let k = u64::try_from(k.as_int32().expect("an index")).expect("an index");
+    cx.set_index(keep, k, Local::null(), true).map(|_| ())
+}
+
+#[inline(never)]
+fn scrub_then_collect(cx: &mut Cx<'_>) {
+    scrub_below();
+    collect_now(cx);
+}
+
+/// Zeroes 512 KiB of stack below the caller's frame.
+#[inline(never)]
+fn scrub_below() {
+    let mut words = [0usize; 1 << 16];
+    black_box(&mut words);
+}
+
+/// A chain of cleanup rounds with no promise job between them: `links` targets are registered
+/// up front (held value `k`), each one kept alive only by `keep[k]`; the script lets target 0
+/// go, and each callback lets the next target go and collects (`dropAndCollect`), so each
+/// round's GC finds the next dead target. `body` runs after that. The targets are made by the
+/// script, not in a callback: a target made in a callback (as by [`register_fresh`]) can sit
+/// where a freed cell was that a stale word of a live debug frame still names, and such a
+/// chain stalled at link 9 (fixer C probe). A sentinel cell, registered first, stays alive.
+fn chain_script(links: usize, body: &str) -> String {
+    format!(
+        r#"
+var n = 0, keep = [], sentinel = {{}};
+var fr = new FinalizationRegistry(function (h) {{
+  n++;
+  log('cb', h);
+  if (h + 1 < {links}) dropAndCollect(keep, h + 1);
+  {body}
+}});
+fr.register(sentinel, -1);
+(function () {{ for (var k = 0; k < {links}; k++) {{ var t = {{}}; keep.push(t); fr.register(t, k); }} }})();
+keep[0] = null;
+log('registered');
+"#
+    )
+}
+
+/// The log of a chain of `links` that runs to its end.
+fn chain_log(links: usize) -> Vec<String> {
+    core::iter::once("registered".to_string())
+        .chain((0..links).map(|k| format!("cb {k}")))
+        .collect()
+}
+
+/// `n`, the number of chain callbacks that started.
+fn chain_count(i: &mut Isolate) -> usize {
+    run(i, "log(n);").unwrap();
+    take_log()[0].parse().unwrap()
+}
+
+/// Runs the rest of a chain that a checkpoint left: lets target `n` go (a stopped callback
+/// may not have), then a scrubbed collection and a checkpoint, until all `links` started (at
+/// most 8 times). A run of the chain can end before its last link even with no cap: the
+/// conservative stack scan may keep a target that the chain let go alive through the
+/// collection of its round, so no new dead target is found (a word equal to the target's
+/// address in a live frame: under GC stress in a debug build the 30-link chain stopped after
+/// link 28; fixer C probe with `record_conservative_roots`). The next scrubbed collection
+/// from here frees it. The lines of these checkpoints are added to `got`.
+fn finish_chain(i: &mut Isolate, links: usize, got: &mut Vec<String>) {
+    for _ in 0..8 {
+        if chain_count(i) == links {
+            return;
+        }
+        run(i, "if (n < keep.length) keep[n] = null;").unwrap();
+        scrub_and_collect(i);
+        i.perform_microtask_checkpoint()
+            .map_err(|e| e.message)
+            .unwrap();
+        got.extend(take_log());
+    }
+    panic!("the chain did not end: {} of {links}", chain_count(i));
+}
+
+/// A chain of 30 cleanup callbacks, each of which lets one more target die and collects,
+/// with no promise job between them: one checkpoint runs them all, as node v24.22.1
+/// `--expose-gc` does (scratchpad m1m4/p4/verB/js/fr-loop.js prints `cb 1` to `cb 30`; the ep9
+/// release CLI prints the same). Before the fix the checkpoint stopped after 8 cleanup rounds
+/// (`MAX_CLEANUP_ROUNDS`) and nothing ran the rest (Codex B1-2). The first checkpoint must
+/// run more than 8 links; a debug build may stop it early at a conservative-scan root
+/// ([`finish_chain`]), so the rest runs in the next ones, each link once, in order.
+#[test]
+fn a_chain_of_30_cleanup_callbacks_runs_in_one_checkpoint() {
+    for stress in [false, true] {
+        common::on_big_stack(move || {
+            let mut i = log_isolate(stress);
+            i.register_host_function("dropAndCollect", 2, drop_and_collect);
+            run_checkpoint(&mut i, &chain_script(30, "")).unwrap();
+            scrub_and_collect(&mut i);
+            i.perform_microtask_checkpoint()
+                .map_err(|e| e.message)
+                .unwrap();
+            // Under GC stress target 0 may die during the script: the chain then runs in the
+            // script's own checkpoint. Either way the first checkpoint that ran it:
+            let mut got = take_log();
+            let first = chain_count(&mut i);
+            assert!(
+                first > 8,
+                "{first} links in one checkpoint (stress={stress})"
+            );
+            if cfg!(not(debug_assertions)) && !stress {
+                assert_eq!(first, 30, "a release build runs all 30 at once");
+            }
+            finish_chain(&mut i, 30, &mut got);
+            assert_eq!(got, chain_log(30), "first run {first} (stress={stress})");
+            i.verify_heap().expect("a valid heap");
+        });
+    }
+}
+
+thread_local! {
+    static TERM: RefCell<Option<TerminateHandle>> = const { RefCell::new(None) };
+}
+
+/// `stop()`: requests a termination; it stops the running code at its next interrupt poll.
+fn stop<'s>(
+    _cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    TERM.with(|t| t.borrow().as_ref().expect("a handle").terminate());
+    Ok(Local::undefined())
+}
+
+/// A termination during a long cleanup chain (300 links; from link 6 on each callback also
+/// runs a loop of 2,000 steps, so the interrupt budget runs out within about 6 links) stops
+/// the checkpoint (it cannot be caught); the cells not yet served stay, and later checkpoints
+/// run the rest of the chain, in order, each link once. The callback that the termination
+/// stopped may miss its line (a poll before its `log`; its cell was taken off `[[Cells]]`
+/// before the call, §9.13.1 step 3.b). Before the fix the first checkpoint ended `Ok` after
+/// 8 cleanup rounds.
+#[test]
+fn a_termination_stops_a_cleanup_chain_and_the_rest_runs_later() {
+    const LINKS: usize = 300;
+    for stress in [false, true] {
+        common::on_big_stack(move || {
+            let mut i = log_isolate(stress);
+            i.register_host_function("dropAndCollect", 2, drop_and_collect);
+            i.register_host_function("stop", 0, stop);
+            TERM.with(|t| *t.borrow_mut() = Some(i.terminate_handle()));
+            let body = "if (h === 6) stop(); if (h >= 6) for (var k = 0; k < 2000; k++) {}";
+            // Under GC stress target 0 may die during the script: the chain then starts, and
+            // stops, in the script's own checkpoint.
+            let e = match run_checkpoint(&mut i, &chain_script(LINKS, body)) {
+                Err(m) => m,
+                Ok(()) => {
+                    scrub_and_collect(&mut i);
+                    i.perform_microtask_checkpoint()
+                        .expect_err("the termination stops the chain")
+                        .message
+                }
+            };
+            assert_eq!(e, "execution terminated", "stress={stress}");
+            let mut got = take_log();
+            let n = chain_count(&mut i);
+            assert!(n > 7 && n < LINKS, "n = {n} (stress={stress})");
+            finish_chain(&mut i, LINKS, &mut got);
+            let full = chain_log(LINKS);
+            let mut without = full.clone();
+            without.remove(n);
+            assert!(
+                got == full || got == without,
+                "{} lines, n = {n} (stress={stress})",
+                got.len()
+            );
+            i.verify_heap().expect("a valid heap");
+        });
+    }
+}
+
+/// A builtin cleanup callback (`Boolean`) takes a budget unit and polls per cell, as a job
+/// does (Codex C2-1): an `InterruptHandle` request runs during a cleanup of 12,000 cells (more
+/// than the 10,000 units of one budget). With a request that also terminates, the cleanup
+/// stops and the cells not yet served stay in the registry (`unregister` finds them); with a
+/// request that only marks, every cell is served. Before the fix a builtin callback ran no
+/// poll, so the request waited for the next one. No GC stress (12,000 registrations).
+#[test]
+fn a_builtin_cleanup_callback_polls_for_interrupts() {
+    for terminate in [true, false] {
+        common::on_big_stack(move || {
+            let mut i = log_isolate(false);
+            run_checkpoint(
+                &mut i,
+                r#"
+var tok = {};
+var fr = new FinalizationRegistry(Boolean);
+(function () { for (var k = 0; k < 12000; k++) fr.register({}, k, tok); })();
+"#,
+            )
+            .unwrap();
+            scrub_and_collect(&mut i);
+            let ran = Arc::new(AtomicBool::new(false));
+            let (r, t) = (Arc::clone(&ran), i.terminate_handle());
+            i.interrupt_handle().request(Box::new(move || {
+                r.store(true, Ordering::SeqCst);
+                if terminate {
+                    t.terminate();
+                }
+            }));
+            let res = i.perform_microtask_checkpoint();
+            assert!(ran.load(Ordering::SeqCst), "the request ran in the cleanup");
+            match res {
+                Err(e) => assert!(terminate && e.terminated, "{}", e.message),
+                Ok(()) => assert!(!terminate, "the termination stops the cleanup"),
+            }
+            run(&mut i, "log('left', fr.unregister(tok));").unwrap();
+            assert_eq!(take_log(), [format!("left {terminate}")]);
+            i.verify_heap().expect("a valid heap");
+        });
+    }
+}
+
+/// ClearKeptObjects runs at the end of the checkpoint, after the cleanup (Codex C2-2): a
+/// callback that makes a WeakRef and queues no job leaves its target collectible, so the
+/// next GC (no checkpoint between) frees it. Before the fix the target stayed in the kept
+/// list until the next checkpoint.
+#[test]
+fn a_weakref_made_in_a_cleanup_callback_is_not_kept_after_the_checkpoint() {
+    for stress in [false, true] {
+        common::on_big_stack(move || {
+            let mut i = log_isolate(stress);
+            run_checkpoint(
+                &mut i,
+                r#"
+var w;
+var fr = new FinalizationRegistry(function (held) {
+  w = new WeakRef((function () { return { name: 'made in cleanup' }; })());
+  log('cleanup', held, w.deref().name);
+});
+(function () { fr.register({}, 'held'); })();
+log('registered');
+"#,
+            )
+            .unwrap();
+            scrub_and_collect(&mut i);
+            i.perform_microtask_checkpoint()
+                .map_err(|e| e.message)
+                .unwrap();
+            scrub_and_collect(&mut i);
+            run(&mut i, "log('after', w.deref() === undefined);").unwrap();
+            assert_eq!(
+                take_log(),
+                ["registered", "cleanup held made in cleanup", "after true"],
+                "stress={stress}"
+            );
             i.verify_heap().expect("a valid heap");
         });
     }

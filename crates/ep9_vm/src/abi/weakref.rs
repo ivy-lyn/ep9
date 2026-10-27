@@ -171,10 +171,11 @@ impl<'s> Cx<'s> {
     }
 
     /// ClearKeptObjects (§9.10.1): the targets that WeakRef creation and `deref` kept alive
-    /// since the last call may die at the next GC. The job loop calls it when its queue is
-    /// empty, at the end of a microtask checkpoint (so after each script and its jobs), as
-    /// HTML and node do; an embedder that runs JS with no checkpoint calls it when its
-    /// synchronous run ends. Never throws; not a GC point.
+    /// since the last call may die at the next GC. The job loop calls it each time its queue is
+    /// empty (before the cleanup jobs) and at the end of a microtask checkpoint (so after each
+    /// script, its jobs and the cleanup callbacks), as HTML and node do; an embedder that
+    /// runs JS with no checkpoint calls it when its synchronous run ends. Never throws; not a
+    /// GC point.
     pub fn clear_kept_objects(&mut self) {
         self.rt().kept_objects.clear();
     }
@@ -183,9 +184,12 @@ impl<'s> Cx<'s> {
     /// §9.5.4, CleanupFinalizationRegistry §9.13.1): for each registry that is still alive,
     /// each cell whose target died since the last call is removed from `[[Cells]]`, and the
     /// registry's callback is called with `this` undefined and the cell's held value. O(1)
-    /// when no GC since the last call saw a target or a registry die. A callback that throws
-    /// stops the run with its exception (`Err`); the cells not yet done stay, and the next
-    /// call does them. Only with no JS on the stack (as
+    /// when no GC since the last call saw a target or a registry die. Each callback takes one
+    /// interrupt budget unit and polls before it runs, as a job does ([`Cx::poll_interrupt`];
+    /// a builtin callback such as `Boolean` runs no poll of its own; M4-P4 P4-ORCH-8, Codex
+    /// C2-1), so an interrupt callback runs and a termination stops the run. A callback that
+    /// throws, or a termination, stops the run with its exception (`Err`); the cells not yet
+    /// done stay, and the next call does them. Only with no JS on the stack (as
     /// [`Cx::perform_microtask_checkpoint`]): from a host function it throws an Error and runs
     /// nothing. The job loop calls it after the job queue is empty and after
     /// [`Cx::clear_kept_objects`]; jobs that a callback queues run after it.
@@ -216,6 +220,13 @@ impl<'s> Cx<'s> {
                     let c = object::slot_get(fr, registry::CLEARED);
                     if !weakref::is_weak_cell(c) {
                         break;
+                    }
+                    // One budget unit per callback, and a poll when it runs out: the cell
+                    // stays in CLEARED if the poll stops the run. The poll runs no JS and
+                    // allocates nothing (H23-Q6).
+                    if let Err(t) = self.poll_interrupt() {
+                        rt.kept_objects.set_pending();
+                        return Err(t);
                     }
                     // §9.13.1 step 3.b: remove the cell from [[Cells]], then c: call.
                     object::slot_set(rt, fr, registry::CLEARED, weakref::next(c));
