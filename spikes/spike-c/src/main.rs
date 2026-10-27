@@ -203,14 +203,28 @@ fn compile_cmd(args: &[String]) -> Result<bool, String> {
     };
     let live = facts::live(&s, script)?;
     let input = s.input_of(f)?;
-    match spike_c::compile_input(&input, &facts::for_function(&live, id)) {
-        Ok((_, report)) => {
+    let ff = facts::for_function(&live, id);
+    match spike_c::compile_input(&input, &ff) {
+        Ok((code, report)) => {
             if graph {
                 print!("{}", report.graph);
             }
             println!("{}", report.line());
             println!("{}", report.keyed_line());
             println!("{}: {}", report.name, report.emit.exits_line());
+            // The call form of the stubs, a report next to the default (MC-w15-14).
+            let (_, call) =
+                spike_c::compile_input_with(&input, &ff, spike_c::emit_a64::StubForm::Call)
+                    .map_err(|e| format!("{}: call stubs: {e}", h.name))?;
+            println!("{}: {}", report.name, call.emit.exits_line());
+            println!("{}: {}", report.name, report.emit.meta.line());
+            let meta = report.emit.meta.encode();
+            println!(
+                "{}: code fnv1a64 {:016x}, exit metadata fnv1a64 {:016x} (no address in either)",
+                report.name,
+                fnv1a64(&code.code),
+                fnv1a64(&meta)
+            );
             Ok(true)
         }
         Err(e) => {
@@ -218,6 +232,13 @@ fn compile_cmd(args: &[String]) -> Result<bool, String> {
             Ok(false)
         }
     }
+}
+
+/// FNV-1a, 64 bits (the report's code and metadata digests).
+fn fnv1a64(b: &[u8]) -> u64 {
+    b.iter().fold(0xcbf2_9ce4_8422_2325, |h, &x| {
+        (h ^ u64::from(x)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 /// `spike-c tier <kernel> [--n N]`: config C (the first hot function compiled from the live

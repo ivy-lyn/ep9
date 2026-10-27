@@ -109,6 +109,18 @@ pub fn compile_hot(
     offset: u32,
     int: IntFacts,
 ) -> Result<(ep9_vm::Value, spike_b::emit::FunctionCode, CompileReport), String> {
+    compile_hot_with(s, hot, file, offset, int, emit_a64::StubForm::Movz)
+}
+
+/// [`compile_hot`] with the exit stubs of `form`.
+pub fn compile_hot_with(
+    s: &mut Session,
+    hot: &kernels::Hot,
+    file: &str,
+    offset: u32,
+    int: IntFacts,
+    form: emit_a64::StubForm,
+) -> Result<(ep9_vm::Value, spike_b::emit::FunctionCode, CompileReport), String> {
     let reach = hot.reach.ok_or_else(|| {
         format!(
             "{}: an inner closure; install by function id is not built",
@@ -131,8 +143,8 @@ pub fn compile_hot(
     let live = compile_facts(s, script, id, int)?;
     let facts = facts::for_function(&live, id);
     let input = s.input_of(f)?;
-    let (code, report) =
-        crate::compile_input(&input, &facts).map_err(|r| format!("{}: {r}", hot.name))?;
+    let (code, report) = crate::compile_input_with(&input, &facts, form)
+        .map_err(|r| format!("{}: {r}", hot.name))?;
     Ok((f, code, report))
 }
 
@@ -158,6 +170,17 @@ pub fn run_with(
     n: u32,
     config: &Config,
     int: IntFacts,
+) -> Result<TierRun, String> {
+    run_opts(k, n, config, int, emit_a64::StubForm::Movz)
+}
+
+/// [`run`] with the int facts of `int` and the exit stubs of `form`.
+pub fn run_opts(
+    k: &'static Kernel,
+    n: u32,
+    config: &Config,
+    int: IntFacts,
+    form: emit_a64::StubForm,
 ) -> Result<TierRun, String> {
     let hot = k.hot.first().ok_or("no hot function")?;
     if hot.reach.is_none() {
@@ -198,7 +221,7 @@ pub fn run_with(
     if w2.output != w.output {
         return Err("the two warm-up runs differ (both are T0)".into());
     }
-    let (f, code, report) = compile_hot(&mut s, hot, "defs.js", d1.offset, int)?;
+    let (f, code, report) = compile_hot_with(&mut s, hot, "defs.js", d1.offset, int, form)?;
     // SAFETY: `code` is the placement (b) code `emit_a64` made for `f` from `input_of(f)` just
     // above (no JS ran since), unchanged. emit_a64 keeps the (b) contract: the T0 handler
     // ABI, Cx and the heap read through `ep9_vm::layout` offsets (`vm_layout`, proved at the
@@ -296,6 +319,19 @@ pub fn run_script_with(
     name: &str,
     int: IntFacts,
 ) -> Result<ScriptRun, String> {
+    run_script_opts(config, defs, warm, main, name, int, emit_a64::StubForm::Movz)
+}
+
+/// [`run_script`] with the int facts of `int` and the exit stubs of `form`.
+pub fn run_script_opts(
+    config: &Config,
+    defs: &str,
+    warm: &str,
+    main: &str,
+    name: &str,
+    int: IntFacts,
+    form: emit_a64::StubForm,
+) -> Result<ScriptRun, String> {
     let config = config.threaded();
     let mut t0s = Session::new(&config)?;
     t0s.run(defs, "defs.js")
@@ -322,7 +358,7 @@ pub fn run_script_with(
         let live = compile_facts(&s, script, id, int)?;
         let facts = facts::for_function(&live, id);
         let input = s.input_of(f)?;
-        crate::compile_input(&input, &facts).map_err(|r| format!("{name}: {r}"))?
+        crate::compile_input_with(&input, &facts, form).map_err(|r| format!("{name}: {r}"))?
     };
     // SAFETY: as in `run`: emit_a64's placement (b) code for `f`, from `input_of(f)` with no
     // JS run since, unchanged.
@@ -670,6 +706,116 @@ mod tests {
         for w in e.traps.windows(2) {
             assert_eq!(w[1].1 - w[0].1, 12, "{:?}", e.traps);
         }
+    }
+
+    /// The call form of the exit stubs (MC-w15-14): 4 bytes each (`bl` to the dispatch, the
+    /// index from the return pc); every failing guard traps with the same id as with the
+    /// 12-byte form, and a run with no failing guard gives T0's output.
+    #[test]
+    fn call_form_stubs_exit_through_the_same_guards() {
+        if !aarch64() {
+            return;
+        }
+        use emit_a64::StubForm;
+        let warm = "var w = [1, 2, 3, 4]; for (var k = 0; k < 20; k++) fill(w, 4);";
+        let run = |main: &str, form| {
+            run_script_opts(&Config::default(), ARR, warm, main, "fill", IntFacts::Live, form)
+                .expect("run")
+        };
+        let ok = run("var b = [5, 6, 7, 8, 9]; print(fill(b, 5), b.join());", StubForm::Call);
+        assert!(ok.equal() && ok.trap.is_none(), "{:?} vs {:?}", ok.compiled, ok.t0);
+        for main in [
+            "print(fill([1, 2], 3));",
+            "var h = [1, , 3]; print(fill(h, 3));",
+            "print(fill({0: 1, length: 1}, 1));",
+        ] {
+            let movz = run(main, StubForm::Movz);
+            let call = run(main, StubForm::Call);
+            assert!(movz.trap.is_some(), "{main}");
+            assert_eq!(call.trap, movz.trap, "{main}");
+            assert_eq!(call.compiled.output, movz.compiled.output, "{main}");
+        }
+        let e = &ok.report.emit;
+        assert_eq!(e.form, StubForm::Call);
+        assert_eq!(e.stub_bytes as usize, 4 * e.guards, "{}", e.exits_line());
+        assert_eq!(e.table_bytes as usize, 8 * e.guards, "{}", e.exits_line());
+        for w in e.traps.windows(2) {
+            assert_eq!(w[1].1 - w[0].1, 4, "{:?}", e.traps);
+        }
+        // The same records either way, except the stub pcs.
+        let m = run("print(fill([1, 2], 2));", StubForm::Movz).report.emit.meta;
+        assert_eq!(m.exits.len(), e.meta.exits.len());
+        for (a, b) in m.exits.iter().zip(&e.meta.exits) {
+            assert_eq!((a.guard, a.bytecode, &a.values), (b.guard, b.bytecode, &b.values));
+        }
+    }
+
+    /// The per-exit metadata (SPIKEC-4): one record per guard, in stub order, at its stub's
+    /// pc, with the guard's resume offset and one value per live register and the
+    /// accumulator; the encoded table reads back equal.
+    #[test]
+    fn metadata_matches_the_frame_states() {
+        if !aarch64() {
+            return;
+        }
+        let warm = "var w = [1, 2, 3, 4]; for (var k = 0; k < 20; k++) fill(w, 4);";
+        let r = equal(ARR, warm, "print(fill([3, 4], 2));", "fill");
+        let e = &r.report.emit;
+        let m = &e.meta;
+        assert_eq!(m.exits.len(), e.guards);
+        for (k, (x, &(id, pc))) in m.exits.iter().zip(&e.traps).enumerate() {
+            assert_eq!((x.guard, x.pc, x.counter as usize), (id, pc, k));
+            assert!((x.pc as usize) < e.code_bytes);
+        }
+        // Each record against its guard's frame state in the graph text: "guard g<id> ... ->
+        // @<offset>".
+        for x in &m.exits {
+            let line = r
+                .report
+                .graph
+                .lines()
+                .find(|l| l.contains(&format!(" guard g{} ", x.guard)))
+                .expect("guard line");
+            assert!(line.ends_with(&format!("-> @{}", x.bytecode)), "{line}");
+        }
+        assert!(m.exits.iter().any(|x| !x.values.is_empty()), "{m:?}");
+        let bytes = m.encode();
+        assert_eq!(crate::deopt_meta::ExitTable::decode(&bytes).as_ref(), Ok(m));
+    }
+
+    /// Position independence (C5b, the part that needs no runtime): the same function compiled
+    /// from the same facts in two isolates (other FunctionInfo and heap addresses) gives
+    /// byte-equal code and byte-equal exit metadata, so neither holds an address.
+    #[test]
+    fn metadata_is_the_same_in_two_isolates() {
+        if !aarch64() {
+            return;
+        }
+        let warm = "var w = [1, 2, 3, 4]; for (var k = 0; k < 20; k++) fill(w, 4);";
+        let compile = |pad: u32| {
+            let mut s = Session::new(&Config::default().threaded()).expect("session");
+            // Different allocations before the function, so its heap and FunctionInfo
+            // addresses differ between the two.
+            s.run(&format!("var pad = []; for (var i = 0; i < {pad}; i++) pad.push({{ i: i }});"), "pad.js")
+                .result
+                .expect("pad");
+            s.run(ARR, "defs.js").result.expect("defs");
+            s.run(warm, "warm.js").result.expect("warm");
+            let f = s.function_value("fill").expect("fill");
+            let script = s.script("defs.js").expect("defs");
+            let id = script.functions_named("fill")[0];
+            let live = facts::live(&s, script).expect("facts");
+            let input = s.input_of(f).expect("input");
+            let key = input.key;
+            let (code, report) =
+                crate::compile_input(&input, &facts::for_function(&live, id)).expect("compile");
+            (key, code.code, report.emit.meta.encode())
+        };
+        let (k1, c1, m1) = compile(0);
+        let (k2, c2, m2) = compile(5000);
+        assert_ne!(k1, k2, "the two FunctionInfos are at different addresses");
+        assert_eq!(c1, c2, "code bytes differ between isolates");
+        assert_eq!(m1, m2, "metadata bytes differ between isolates");
     }
 
     /// Keyed facts (SPIKEC-3): an index-only LoadKeyed record backs the key's int32 check;
@@ -1068,11 +1214,43 @@ mod tests {
                 && s.key_basis == crate::ir::GuardBasis::Fact(ep9_facts::FactSource::Runtime)),
             "{k:?}"
         );
-        // One 12-byte exit stub per guard.
+        // One 12-byte exit stub per guard, one metadata record per exit.
         let e = &r.report.emit;
         assert_eq!(
             (e.guards, e.stub_bytes),
             (29, 29 * 12),
+            "{}",
+            e.exits_line()
+        );
+        assert_eq!(e.meta.exits.len(), 29, "{}", e.meta.line());
+    }
+
+    /// am3 with the call-form exit stubs (MC-w15-14): crypto still equals T0, the probe
+    /// still traps at g0, and the stubs are 4 bytes each.
+    #[test]
+    fn am3_with_call_stubs_equals_t0() {
+        if !aarch64() {
+            return;
+        }
+        if !kernels::bench_present() {
+            eprintln!("skip: no v8-v7 checkout");
+            return;
+        }
+        let k = kernels::kernel("crypto").expect("crypto");
+        let r = run_opts(
+            k,
+            1,
+            &Config::default(),
+            IntFacts::Live,
+            emit_a64::StubForm::Call,
+        )
+        .expect("run");
+        assert!(r.equal, "{}", r.line());
+        assert_eq!(r.probe_trap, Some(0), "{}", r.line());
+        let e = &r.report.emit;
+        assert_eq!(
+            (e.guards, e.stub_bytes, e.table_bytes),
+            (29, 29 * 4, 29 * 8),
             "{}",
             e.exits_line()
         );

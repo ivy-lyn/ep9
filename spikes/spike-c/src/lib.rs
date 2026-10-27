@@ -29,7 +29,8 @@
 //! | [`ir`] | the SSA graph, the fact lattice, the five ref nodes, guards with frame states | SPIKEC-1 |
 //! | [`build`](mod@build) | the graph builder: bytecode + FactSnapshot -> [`ir::Graph`] | SPIKEC-1; int facts SPIKEC-2; keyed facts SPIKEC-3 |
 //! | [`regalloc`] | linear-scan register allocation | SPIKEC-1 |
-//! | [`emit_a64`] | AArch64 code from the allocated graph (dynasm 5.1.0); guard exits = one exit stub per guard to a shared "deopt not built" trap | SPIKEC-1; exit stubs SPIKEC-3 |
+//! | [`emit_a64`] | AArch64 code from the allocated graph (dynasm 5.1.0); guard exits = one exit stub per guard to a shared "deopt not built" trap | SPIKEC-1; exit stubs SPIKEC-3; the call stub form and the generic keyed calls SPIKEC-4 |
+//! | [`deopt_meta`] | the per-exit deopt metadata form: pc, guard, bytecode offset, counter, value places; offsets only | SPIKEC-4 |
 //! | [`vm_layout`] | the VM layout facts the code reads, from the `ep9_vm::layout` export (each with its owning version), proved on live objects | SPIKEC-1; the export SPIKEC-4 |
 //! | [`tier`] | config C of the protocol: a kernel run with its hot function compiled, against T0 | SPIKEC-1 |
 //! | [`timing`] | the class S timing of protocol §3 (T0, C, H0, H1; paired ratios, the median interval), a Mac report | SPIKEC-2 |
@@ -45,6 +46,7 @@
 
 pub mod build;
 pub mod cfg;
+pub mod deopt_meta;
 pub mod emit_a64;
 pub mod facts;
 pub mod harness;
@@ -147,13 +149,23 @@ pub fn compile_input(
     input: &FunctionInput<'_>,
     facts: &facts::FunctionFacts<'_>,
 ) -> Result<(FunctionCode, CompileReport), Refusal> {
+    compile_input_with(input, facts, emit_a64::StubForm::Movz)
+}
+
+/// [`compile_input`] with the exit stubs of `form` (SPIKEC-4: the call form is a report next
+/// to the default 12-byte form, MC-w15-14).
+pub fn compile_input_with(
+    input: &FunctionInput<'_>,
+    facts: &facts::FunctionFacts<'_>,
+    form: emit_a64::StubForm,
+) -> Result<(FunctionCode, CompileReport), Refusal> {
     let (graph, stats) = build::build(input, facts)?;
     let alloc = regalloc::allocate(&graph).map_err(Refusal::Limit)?;
     regalloc::verify(&graph, &alloc).map_err(Refusal::Limit)?;
     if spike_b::emit::Arch::HOST != Some(spike_b::emit::Arch::Aarch64) {
         return Err(Refusal::Arch);
     }
-    let (code, emit) = emit_a64::emit(input, &graph, &alloc)?;
+    let (code, emit) = emit_a64::emit_with(input, &graph, &alloc, form)?;
     let (fact_guards, unbacked_guards) = graph.guard_counts();
     let report = CompileReport {
         name: input.name.to_string(),

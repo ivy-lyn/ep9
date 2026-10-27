@@ -116,6 +116,9 @@ pub enum Repr {
     Int32,
     /// 0 or 1.
     Bool,
+    /// A double, as its IEEE bits in a general register (SPIKEC-4; the emitter moves it to a
+    /// d register for each op).
+    Float64,
     /// No value (effects and control).
     None,
 }
@@ -523,7 +526,7 @@ impl Graph {
     ///   the state's block to the guard's, and no effect on any such path: none at or after
     ///   the state's offset in the state's block, none in a block between, none before the
     ///   guard in its own block, and none at all in either end block when it lies on a cycle
-    ///   of those paths (conservative: [`Graph::effect_on_the_way`]).
+    ///   of those paths (conservative: `Graph::effect_on_the_way`).
     pub fn check(&self) -> Result<(), String> {
         let mut seen = vec![false; self.nodes.len()];
         for b in &self.blocks {
