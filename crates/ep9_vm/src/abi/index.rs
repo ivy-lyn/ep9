@@ -32,10 +32,11 @@ impl<'s> Cx<'s> {
     }
 
     /// HasProperty(O, ! ToString(𝔽(index))) (§7.3.12). Makes no atom for a dense element or
-    /// a missing index.
+    /// a missing index. Any object: a proxy, or a proxy on the chain, answers through its
+    /// `[[HasProperty]]` (a revoked one throws a TypeError; M4-P4 fixer B, Codex PROXY1 P-3).
     pub fn has_index(&mut self, o: impl Into<Local<'s, JsObject>>, index: u64) -> JsResult<bool> {
         let o = o.into().bits();
-        Ok(property::has_index(self.cx, o, index))
+        property::try_has_index(self.cx, o, index)
     }
 
     /// Set(O, ! ToString(𝔽(index)), V, Throw) (§7.3.4). `Ok(false)` if the assignment failed

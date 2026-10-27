@@ -61,7 +61,9 @@
 
 use crate::conv::{Res, describe, num, to_property_key, to_uint32_of};
 use crate::descriptor::Desc;
-use crate::error::{Part::Key, Part::Text, bounded_message, not_implemented, throw_error};
+use crate::error::{
+    Part::Key, Part::Text, bounded_message, not_implemented, stack_overflow, throw_error,
+};
 use crate::exotic::{self, Exotic};
 use crate::frame::{NULL, UNDEFINED};
 use crate::interp::Cx;
@@ -548,11 +550,17 @@ fn fail(cx: &mut Cx, base: u64, start: u64, key: u64, strict: bool) -> Res<()> {
 /// The attributes of the first property `key` on the chain from the object `o`, if any, for
 /// an error message. Not a GC point and runs no JS (a lazy `prototype` is not made: it is
 /// {w}). A proxy is not asked: the walk goes on at its target, as the no-trap step does (a
-/// revoked proxy ends it).
+/// revoked proxy ends it). A proxy may make the chain a cycle: past [`MAX_PROXY_HOPS`]
+/// proxies the walk gives `None` (M4-P4 fixer B, Codex PROXY1 P-2).
 fn first_attrs_on_chain(rt: &Runtime, mut o: u64, key: u64) -> Option<i32> {
     let how = key::probe(key);
+    let mut hops = 0;
     loop {
         while crate::proxy::is_proxy_kind(kind::cell_kind(o)) {
+            hops += 1;
+            if hops > MAX_PROXY_HOPS {
+                return None;
+            }
             o = crate::proxy::target(o);
             if o == NULL {
                 return None;
@@ -801,6 +809,9 @@ pub(crate) fn has(cx: &mut Cx, o: u64, k: u64) -> Res<bool> {
 /// HasProperty(O, P) (§7.3.12, OrdinaryHasProperty along the chain) for a property key, for
 /// a chain with no proxy (a debug assert at each object; [`try_has_property`] takes one).
 /// Runs no JS and allocates nothing.
+// V9-A21 keeps the ordinary form; since `Cx::has_index` asks [`try_has_index`] (M4-P4 fixer
+// B, Codex PROXY1 P-3) only the tests call it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn has_property(cx: &Cx, o: u64, key: u64) -> bool {
     debug_assert!(is_object(o) && is_property_key(key));
     let how = key::probe(key);
@@ -981,15 +992,46 @@ fn ordinary_has_instance_of_function(cx: &mut Cx, c: u64, o: u64) -> Res<bool> {
         ));
     }
     // 6. Repeat: O = ? O.[[GetPrototypeOf]](); null gives false, P gives true. GC point (a
-    //    proxy on the chain): `proto` lives in a Rust local.
-    let mut o = try_get_prototype_of(cx, o)?;
+    //    proxy on the chain, the interrupt poll): `proto` lives in a Rust local. A proxy may
+    //    make the chain a cycle, so the walk is bounded ([`prototype_walk_step`]).
+    let mut hops = 0;
+    let mut o = prototype_walk_step(cx, o, &mut hops)?;
     while o != NULL {
         if o == proto {
             return Ok(true);
         }
-        o = try_get_prototype_of(cx, o)?;
+        o = prototype_walk_step(cx, o, &mut hops)?;
     }
     Ok(false)
+}
+
+/// The most proxies one prototype-chain walk passes: V8's `JSProxy::kMaxIterationLimit`
+/// (100 × 1024), past which V8's `PrototypeIterator` throws the RangeError "Maximum call
+/// stack size exceeded" (node v24.22.1 gives it for `a instanceof C`, `isPrototypeOf` and
+/// `__lookupGetter__` when `a`'s prototype is a proxy of `a`). Only a proxy can close a
+/// cycle: OrdinarySetPrototypeOf refuses one through ordinary objects and stops its check at
+/// a proxy (§10.1.2.1 step 8.c.i), so an ordinary chain of any length is never cut.
+pub(crate) const MAX_PROXY_HOPS: u32 = 100 * 1024;
+
+/// One step of a walk up the prototype chain (instanceof, for-in, and through
+/// `Cx::prototype_walk_step` the builtins `isPrototypeOf`, `__lookupGetter__` and
+/// `__lookupSetter__`; M4-P4 fixer B, Codex PROXY1 P-2, R-VM-P4-2): one interrupt budget unit
+/// and a poll when it runs out (the walk has no back edge, M2-P2-POLL), then
+/// `o.[[GetPrototypeOf]]()`. `hops` counts the proxies the walk has asked; past
+/// [`MAX_PROXY_HOPS`] the step throws the RangeError "Maximum call stack size exceeded"
+/// instead. The caller starts `hops` at 0. GC point (a proxy, the poll).
+pub(crate) fn prototype_walk_step(cx: &mut Cx, o: u64, hops: &mut u32) -> Res<u64> {
+    cx.budget -= 1;
+    if cx.budget <= 0 && crate::interp::slow::interrupt(cx, core::ptr::null_mut()) == 0 {
+        return Err(ep9_value::Throw);
+    }
+    if crate::proxy::is_proxy_kind(kind::cell_kind(o)) {
+        *hops += 1;
+        if *hops > MAX_PROXY_HOPS {
+            return stack_overflow(cx);
+        }
+    }
+    try_get_prototype_of(cx, o)
 }
 
 /// Whether `h` is `%Function.prototype%[@@hasInstance]` (VM builtin 0.30). Allocates nothing.
@@ -1029,6 +1071,7 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
     let mut seen_index: Vec<u32> = Vec::new();
     let mut seen_string: Vec<u64> = Vec::new();
     let mut kept = UNDEFINED;
+    let mut hops = 0;
     let mut cur = o;
     loop {
         // (index, enumerable) and (key, enumerable).
@@ -1110,8 +1153,10 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
             }
         }
         std::hint::black_box(own);
-        // GC point (a proxy's [[GetPrototypeOf]]).
-        let p = try_get_prototype_of(cx, cur)?;
+        // GC point (a proxy's [[GetPrototypeOf]], the interrupt poll). A proxy may make the
+        // chain a cycle: the step is bounded ([`prototype_walk_step`]), so `kept` holds at
+        // most one key array per proxy hop up to the bound.
+        let p = prototype_walk_step(cx, cur, &mut hops)?;
         if p == NULL {
             break;
         }
@@ -1696,6 +1741,9 @@ fn index_key_of(rt: &Runtime, i: u64) -> u64 {
 /// HasProperty(O, ! ToString(𝔽(i))) (§7.3.12) on the object `o`, for a chain with no proxy
 /// ([`has_property`]'s debug assert; [`try_has_index`] takes one). No atom for an element or
 /// a missing index. GC point only on the key path.
+// V9-A21 keeps the ordinary form; since `Cx::has_index` asks [`try_has_index`] (M4-P4 fixer
+// B, Codex PROXY1 P-3) only the tests call it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn has_index(cx: &Cx, o: u64, i: u64) -> bool {
     debug_assert!(is_object(o));
     if i <= MAX_SAFE_INDEX {

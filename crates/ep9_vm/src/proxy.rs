@@ -38,6 +38,24 @@
 //! undefined trap and forwards to the target. That is the ordinary behaviour of a proxy whose
 //! handler is `{}`. Each method checks the native stack first: a chain of proxies (or a
 //! target whose prototype chain comes back through its proxy) recurses in Rust.
+//!
+//! Forwarding depth (M4-P4 fixer B; Codex PROXY1 P-1, R-GC-P4-4). The native stack check
+//! alone does not end such a recursion: an optimized build may turn the forward of
+//! `[[HasProperty]]` (proxy -> target -> the target's prototype, the proxy again) into a loop
+//! at one stack depth, so the stack never runs low. So every forwarding method also counts
+//! its depth: [`MAX_FORWARD_DEPTH`] nested forwards on one thread give the RangeError
+//! "Maximum call stack size exceeded" (V8's text for the same JS). The count goes up before
+//! the forward and down after it returns (a guard's `Drop`), so the forward is never a tail
+//! call, and the bound holds whatever the optimizer does.
+//!
+//! ```text
+//!  a.[[HasProperty]](k)            Object.setPrototypeOf(a, p), p = new Proxy(a, {})
+//!   └ p.[[HasProperty]](k)         depth 1
+//!      └ a.[[HasProperty]](k)
+//!         └ p.[[HasProperty]](k)   depth 2 ... depth MAX_FORWARD_DEPTH + 1: RangeError
+//! ```
+
+use core::cell::Cell;
 
 use crate::conv::Res;
 use crate::descriptor::Desc;
@@ -122,46 +140,97 @@ pub(crate) fn revoke(rt: &Runtime, p: u64) {
     object::fixed_set(rt, p, field::HANDLER, NULL);
 }
 
-/// The common start of every internal method of the proxy `p`: the native stack check, then
+/// The most proxy internal methods that may forward at once on one thread (nested, each
+/// waiting for its target's method): past it a forward throws the RangeError "Maximum call
+/// stack size exceeded". Above the depth node v24.22.1 reaches in a chain of plain proxies
+/// (`'x' in p` passes 4,000 nested proxies and throws at 8,000), so the native stack check
+/// usually ends a deep chain first; this bound ends the loop that the stack check cannot see
+/// (module doc).
+pub(crate) const MAX_FORWARD_DEPTH: u32 = 10_000;
+
+thread_local! {
+    /// Proxy internal methods now forwarding on this thread ([`Forward`]). Per thread, not per
+    /// isolate: the nesting is on the native stack, which one thread's isolates share.
+    static FORWARD_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// One level of forwarding depth, held while a proxy internal method runs its target's
+/// method; its `Drop` gives the level back (also on an error return).
+struct Forward;
+
+impl Forward {
+    /// Takes one level, or `None` at [`MAX_FORWARD_DEPTH`].
+    #[inline]
+    fn enter() -> Option<Forward> {
+        FORWARD_DEPTH.with(|d| {
+            let n = d.get();
+            if n >= MAX_FORWARD_DEPTH {
+                return None;
+            }
+            d.set(n + 1);
+            Some(Forward)
+        })
+    }
+}
+
+impl Drop for Forward {
+    #[inline]
+    fn drop(&mut self) {
+        FORWARD_DEPTH.with(|d| d.set(d.get() - 1));
+    }
+}
+
+/// The forwarding depth now in use on this thread (tests: 0 outside any proxy method).
+#[cfg(test)]
+pub(crate) fn forward_depth() -> u32 {
+    FORWARD_DEPTH.with(Cell::get)
+}
+
+/// The common start of every internal method of the proxy `p`: the native stack check and
+/// the forwarding depth check (both the RangeError "Maximum call stack size exceeded"), then
 /// ValidateNonRevokedProxy (§10.5.15; TypeError with V8's text naming `trap`). Returns the
-/// target. Month 4: no trap is looked up (PROXY2 adds `GetMethod(handler, trap)` here), so
-/// the caller takes the step for an undefined trap.
+/// target and the depth level, which the caller holds until its forward returns. Month 4: no
+/// trap is looked up (PROXY2 adds `GetMethod(handler, trap)` here), so the caller takes the
+/// step for an undefined trap.
 #[inline]
-fn start(cx: &mut Cx, p: u64, trap: &str) -> Res<u64> {
+fn start(cx: &mut Cx, p: u64, trap: &str) -> Res<(u64, Forward)> {
     if !cx.rt().native_stack_ok() {
         return stack_overflow(cx);
     }
+    let Some(level) = Forward::enter() else {
+        return stack_overflow(cx);
+    };
     if handler(p) == NULL {
         let msg = format!("Cannot perform '{trap}' on a proxy that has been revoked");
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
     }
-    Ok(target(p))
+    Ok((target(p), level))
 }
 
 /// `p.[[GetPrototypeOf]]()` (§10.5.1). GC point.
 pub(crate) fn get_prototype_of(cx: &mut Cx, p: u64) -> Res<u64> {
-    let t = start(cx, p, "getPrototypeOf")?;
+    let (t, _level) = start(cx, p, "getPrototypeOf")?;
     // 7. If trap is undefined, return ? target.[[GetPrototypeOf]]().
     property::try_get_prototype_of(cx, t)
 }
 
 /// `p.[[SetPrototypeOf]](v)` (§10.5.2); `v` is an object or null. GC point.
 pub(crate) fn set_prototype_of(cx: &mut Cx, p: u64, v: u64) -> Res<bool> {
-    let t = start(cx, p, "setPrototypeOf")?;
+    let (t, _level) = start(cx, p, "setPrototypeOf")?;
     // 7. If trap is undefined, return ? target.[[SetPrototypeOf]](V).
     property::try_set_prototype_of(cx, t, v)
 }
 
 /// `p.[[IsExtensible]]()` (§10.5.3). GC point.
 pub(crate) fn is_extensible(cx: &mut Cx, p: u64) -> Res<bool> {
-    let t = start(cx, p, "isExtensible")?;
+    let (t, _level) = start(cx, p, "isExtensible")?;
     // 6. If trap is undefined, return ? IsExtensible(target).
     property::try_is_extensible(cx, t)
 }
 
 /// `p.[[PreventExtensions]]()` (§10.5.4). GC point.
 pub(crate) fn prevent_extensions(cx: &mut Cx, p: u64) -> Res<bool> {
-    let t = start(cx, p, "preventExtensions")?;
+    let (t, _level) = start(cx, p, "preventExtensions")?;
     // 6. If trap is undefined, return ? target.[[PreventExtensions]]().
     property::try_prevent_extensions(cx, t)
 }
@@ -169,49 +238,49 @@ pub(crate) fn prevent_extensions(cx: &mut Cx, p: u64) -> Res<bool> {
 /// `p.[[GetOwnProperty]](key)` (§10.5.5) as (value, attribute bits) in the stored form of
 /// `property.rs` (an accessor's value is its ACCESSOR_PAIR), or `None`. GC point.
 pub(crate) fn get_own_property(cx: &mut Cx, p: u64, key: u64) -> Res<Option<(u64, i32)>> {
-    let t = start(cx, p, "getOwnPropertyDescriptor")?;
+    let (t, _level) = start(cx, p, "getOwnPropertyDescriptor")?;
     // 7. If trap is undefined, return ? target.[[GetOwnProperty]](P).
     property::own_property_stored(cx, t, key)
 }
 
 /// `p.[[DefineOwnProperty]](key, desc)` (§10.5.6). GC point.
 pub(crate) fn define_own_property(cx: &mut Cx, p: u64, key: u64, desc: Desc) -> Res<bool> {
-    let t = start(cx, p, "defineProperty")?;
+    let (t, _level) = start(cx, p, "defineProperty")?;
     // 7. If trap is undefined, return ? target.[[DefineOwnProperty]](P, Desc).
     property::define_own_property(cx, t, key, desc)
 }
 
 /// `p.[[HasProperty]](key)` (§10.5.7). GC point.
 pub(crate) fn has_property(cx: &mut Cx, p: u64, key: u64) -> Res<bool> {
-    let t = start(cx, p, "has")?;
+    let (t, _level) = start(cx, p, "has")?;
     // 7. If trap is undefined, return ? target.[[HasProperty]](P).
     property::try_has_property(cx, t, key)
 }
 
 /// `p.[[Get]](key, receiver)` (§10.5.8). GC point.
 pub(crate) fn get(cx: &mut Cx, p: u64, key: u64, receiver: u64) -> Res<u64> {
-    let t = start(cx, p, "get")?;
+    let (t, _level) = start(cx, p, "get")?;
     // 7. If trap is undefined, return ? target.[[Get]](P, Receiver).
     property::get_with_receiver(cx, t, key, receiver)
 }
 
 /// `p.[[Set]](key, v, receiver)` (§10.5.9). GC point.
 pub(crate) fn set(cx: &mut Cx, p: u64, key: u64, v: u64, receiver: u64) -> Res<bool> {
-    let t = start(cx, p, "set")?;
+    let (t, _level) = start(cx, p, "set")?;
     // 7. If trap is undefined, return ? target.[[Set]](P, V, Receiver).
     property::set_with_receiver(cx, t, key, v, receiver)
 }
 
 /// `p.[[Delete]](key)` (§10.5.10). GC point.
 pub(crate) fn delete(cx: &mut Cx, p: u64, key: u64) -> Res<bool> {
-    let t = start(cx, p, "deleteProperty")?;
+    let (t, _level) = start(cx, p, "deleteProperty")?;
     // 7. If trap is undefined, return ? target.[[Delete]](P).
     property::internal_delete(cx, t, key)
 }
 
 /// `p.[[OwnPropertyKeys]]()` (§10.5.11) as a new array. GC point.
 pub(crate) fn own_property_keys(cx: &mut Cx, p: u64) -> Res<u64> {
-    let t = start(cx, p, "ownKeys")?;
+    let (t, _level) = start(cx, p, "ownKeys")?;
     // 7. If trap is undefined, return ? target.[[OwnPropertyKeys]]().
     property::try_own_property_keys(cx, t)
 }

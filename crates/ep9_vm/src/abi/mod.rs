@@ -1162,6 +1162,24 @@ impl<'s> Cx<'s> {
         )?))
     }
 
+    /// One step of a builtin's walk up the prototype chain (`isPrototypeOf`,
+    /// `__lookupGetter__`): one interrupt budget unit and a poll when it runs out (as
+    /// [`Cx::poll_interrupt`]), then O.`[[GetPrototypeOf]]`(), an object or null. `hops`
+    /// counts the proxies the walk has asked (the caller starts it at 0); a proxy may make the
+    /// chain a cycle, so past 100 × 1024 of them (V8's `JSProxy::kMaxIterationLimit`) the step
+    /// throws the RangeError "Maximum call stack size exceeded", as V8 does.
+    pub fn prototype_walk_step(
+        &mut self,
+        o: impl Into<Local<'s, JsObject>>,
+        hops: &mut u32,
+    ) -> JsResult<Local<'s>> {
+        Ok(Self::local(property::prototype_walk_step(
+            self.cx,
+            o.into().bits(),
+            hops,
+        )?))
+    }
+
     /// O.`[[SetPrototypeOf]]`(V) (§10.1.2); `proto` is an object or null.
     pub fn set_prototype_of(
         &mut self,

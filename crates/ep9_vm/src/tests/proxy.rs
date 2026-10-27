@@ -5,7 +5,9 @@
 //! debug asserts of the ordinary forms. No JS can make a Proxy before PROXY2 (month 5), so
 //! the proxies here come from `proxy::proxy_create`.
 
-use super::{config, isolate};
+use ep9_bytecode::VerifiedUnit;
+
+use super::{Asm, config, isolate, on_big_stack, take_output, unit};
 use crate::frame::NULL;
 use crate::runtime::Runtime;
 use crate::{
@@ -367,7 +369,9 @@ fn is_array_or_throw_follows_the_proxy_target() {
 
 /// OrdinarySetPrototypeOf step 8.c.i: the cycle check stops at a proxy, so `a` may get a
 /// proxy of itself as its prototype. A read of a missing key then recurses through the proxy
-/// into `a` again; the native stack check of each proxy method ends it in a RangeError.
+/// into `a` again; the native stack check or the forwarding depth bound of each proxy method
+/// ends it in a RangeError (node v24.22.1: "Maximum call stack size exceeded"), in debug and
+/// in release builds (R-GC-P4-4: this test never ended in release before the depth bound).
 #[test]
 fn the_cycle_check_stops_at_a_proxy_and_the_stack_check_ends_the_loop() {
     with_cx(false, |cx, rt| {
@@ -494,4 +498,370 @@ fn the_ordinary_is_extensible_asserts_not_a_proxy() {
         let p = new_proxy(cx, t);
         property::is_extensible(p.bits());
     });
+}
+
+// ---- bounds on proxy cycles (M4-P4 fixer B; Codex PROXY1 P-1, P-2; R-GC-P4-4, R-VM-P4-2) ----
+
+/// `a` whose prototype is `p = new Proxy(a, {})` (the cycle of the test above), with an own
+/// property `a.a = 1` set before the cycle closes.
+fn proxy_cycle<'s>(cx: &mut Cx<'s>) -> (Local<'s, JsObject>, Local<'s, JsObject>) {
+    let a = cx.new_object();
+    cx.set(a, "a", Local::int32(1), true).unwrap();
+    let p = new_proxy(cx, a);
+    assert!(cx.set_prototype_of(a, p).unwrap());
+    (a, p)
+}
+
+/// The RangeError text node v24.22.1 gives for every operation on the cycle that does not
+/// end (scratchpad m1m4/p4/fixB/js/cycle.js).
+const STACK_TEXT: &str = "RangeError: Maximum call stack size exceeded";
+
+/// The forwarding depth bound (`proxy::MAX_FORWARD_DEPTH`) ends the cycle by itself: on a
+/// 512 MiB stack the native stack check is far away, and `[[Get]]`, `[[HasProperty]]` and
+/// `[[Set]]` of a missing key still end in the RangeError, in debug and release builds. Own
+/// keys answer before the walk reaches the proxy. The depth count is back at 0 after each.
+#[test]
+fn the_forwarding_depth_bound_ends_a_proxy_cycle_without_the_stack_check() {
+    on_big_stack(|| {
+        with_cx(false, |cx, rt| {
+            let (a, p) = proxy_cycle(cx);
+            assert_eq!(cx.get(a, "a").unwrap().as_int32(), Some(1));
+            assert!(cx.has_property(a, "a").unwrap());
+            assert!(cx.get(a, "missing").is_err());
+            assert_eq!(take_error(cx, rt), STACK_TEXT);
+            assert_eq!(proxy::forward_depth(), 0);
+            assert!(cx.has_property(a, "missing").is_err());
+            assert_eq!(take_error(cx, rt), STACK_TEXT);
+            assert!(cx.has_property(p, "missing").is_err());
+            assert_eq!(take_error(cx, rt), STACK_TEXT);
+            assert!(cx.set(a, "missing", Local::int32(2), true).is_err());
+            assert_eq!(take_error(cx, rt), STACK_TEXT);
+            assert_eq!(proxy::forward_depth(), 0);
+        });
+    });
+}
+
+/// The bound is exact: a chain of `MAX_FORWARD_DEPTH` proxies (each the target of the next)
+/// answers `[[HasProperty]]` and `[[Get]]` from the object at its end; one more proxy throws
+/// the RangeError. On a 512 MiB stack, so the native stack check does not fire first.
+#[test]
+fn a_chain_of_max_forward_depth_proxies_answers_and_one_more_throws() {
+    on_big_stack(|| {
+        with_cx(false, |cx, rt| {
+            let t = cx.new_object();
+            cx.set(t, "x", Local::int32(7), true).unwrap();
+            let mut p = t;
+            for _ in 0..proxy::MAX_FORWARD_DEPTH {
+                p = new_proxy(cx, p);
+            }
+            assert!(cx.has_property(p, "x").unwrap());
+            assert_eq!(cx.get(p, "x").unwrap().as_int32(), Some(7));
+            let q = new_proxy(cx, p);
+            assert!(cx.has_property(q, "x").is_err());
+            assert_eq!(take_error(cx, rt), STACK_TEXT);
+            assert!(cx.get(q, "x").is_err());
+            assert_eq!(take_error(cx, rt), STACK_TEXT);
+            assert_eq!(proxy::forward_depth(), 0);
+        });
+    });
+}
+
+/// The prototype walks of instanceof (OrdinaryHasInstance), for-in key collection and the
+/// builtin step `Cx::prototype_walk_step` (`isPrototypeOf`, `__lookupGetter__`) end on the
+/// cycle with the RangeError after `MAX_PROXY_HOPS` proxies, as V8's `PrototypeIterator`
+/// does (node v24.22.1: `a instanceof C`, `Object.prototype.isPrototypeOf(a)` and
+/// `a.__lookupGetter__('zz')` throw it). No GC stress: for-in allocates one key array per
+/// proxy hop (102,400 of them), and a collection before each would take minutes.
+#[test]
+fn the_prototype_walks_end_on_a_proxy_cycle() {
+    {
+        with_cx(false, |cx, rt| {
+            let (a, p) = proxy_cycle(cx);
+            let c = host_fn(rt, return_this, "C");
+            let c = c.as_object().unwrap();
+            let cp = cx.new_object();
+            cx.set(c, "prototype", cp, true).unwrap();
+            let (ab, pb, cb) = (a.bits(), p.bits(), c.bits());
+            for o in [ab, pb] {
+                assert!(property::ordinary_has_instance(cx.inner(), cb, o).is_err());
+                assert_eq!(take_error(cx, rt), STACK_TEXT);
+                assert!(property::instance_of(cx.inner(), o, cb).is_err());
+                assert_eq!(take_error(cx, rt), STACK_TEXT);
+                assert!(property::for_in_keys(cx.inner(), o).is_err());
+                assert_eq!(take_error(cx, rt), STACK_TEXT);
+            }
+            // The builtin step: the hop count passes the bound, then the RangeError.
+            let mut hops = 0;
+            let mut o = a;
+            let err = loop {
+                match cx.prototype_walk_step(o, &mut hops) {
+                    Ok(next) => o = next.as_object().expect("the cycle never reaches null"),
+                    Err(_) => break take_error(cx, rt),
+                }
+            };
+            assert_eq!(err, STACK_TEXT);
+            assert_eq!(hops, property::MAX_PROXY_HOPS + 1);
+        });
+    }
+}
+
+/// The bound counts proxies only: an ordinary chain longer than `MAX_PROXY_HOPS` is walked to
+/// its end by instanceof and the builtin step (no cycle can close without a proxy).
+#[test]
+fn a_long_ordinary_chain_is_not_cut_by_the_proxy_hop_bound() {
+    with_cx(false, |cx, rt| {
+        let c = host_fn(rt, return_this, "C");
+        let c = c.as_object().unwrap();
+        let cp = cx.new_object();
+        cx.set(c, "prototype", cp, true).unwrap();
+        let mut o = cx.new_object_with_proto(cp);
+        for _ in 0..(property::MAX_PROXY_HOPS + 10) {
+            o = cx.new_object_with_proto(o);
+        }
+        let (ob, cb) = (o.bits(), c.bits());
+        assert!(property::ordinary_has_instance(cx.inner(), cb, ob).unwrap());
+        let mut hops = 0;
+        let mut steps = 0u32;
+        let mut cur = o;
+        while let Some(next) = cx.prototype_walk_step(cur, &mut hops).unwrap().as_object() {
+            cur = next;
+            steps += 1;
+        }
+        assert_eq!(hops, 0);
+        // The chain: MAX + 10 objects, the first one, C.prototype, %Object.prototype%.
+        assert_eq!(steps, property::MAX_PROXY_HOPS + 10 + 2);
+    });
+}
+
+/// The walks poll for interrupts at each step: a termination requested before an instanceof
+/// on the cycle stops it at the first poll (the interrupt budget, 10,000 steps), before the
+/// proxy-hop bound, and nothing can catch it.
+#[test]
+fn a_termination_stops_a_prototype_walk_on_a_proxy_cycle() {
+    let mut iso = isolate(config(Dispatch::DEFAULT, false));
+    let t = iso.terminate_handle();
+    {
+        let iso: &mut Isolate = &mut iso;
+        let mut cx = Cx::new(&mut iso.cx);
+        let (a, _p) = proxy_cycle(&mut cx);
+        let c = host_fn(&iso.rt, return_this, "C").as_object().unwrap();
+        let cp = cx.new_object();
+        cx.set(c, "prototype", cp, true).unwrap();
+        t.terminate();
+        assert!(property::ordinary_has_instance(cx.inner(), c.bits(), a.bits()).is_err());
+        assert!(
+            iso.rt.terminating.get(),
+            "a termination, not the RangeError"
+        );
+    }
+}
+
+// ---- Cx::has_index on proxies (M4-P4 fixer B; Codex PROXY1 P-3) -----------------------------
+
+/// The index loop of `Array.prototype.forEach` (ep9_builtins `array.rs` `each`): length, then
+/// HasProperty and Get of each index through the builtin ABI. The visited `index:value`.
+fn for_each_like<'s>(cx: &mut Cx<'s>, o: Local<'s, JsObject>) -> JsResult<Vec<String>> {
+    let len = cx.get(o, "length")?;
+    let len = cx.to_length(len)?;
+    let mut seen = Vec::new();
+    for k in 0..len {
+        if cx.has_index(o, k)? {
+            let v = cx.get_index(o, k)?;
+            seen.push(format!("{k}:{}", cx.to_rust_string(v)?));
+        }
+    }
+    Ok(seen)
+}
+
+/// `Cx::has_index` (the builtin ABI that forEach, filter, slice and the other Array builtins
+/// call) asks a proxy, a proxy on the chain and a revoked proxy through `[[HasProperty]]`.
+/// node v24.22.1 (scratchpad m1m4/p4/fixB/js/ic-proxy.js): `forEach` over
+/// `new Proxy([1, , 3], {})` and over `Object.create` of it visits `0:1` and `2:3`; `1 in p`
+/// of a revoked proxy throws "Cannot perform 'has' on a proxy that has been revoked".
+#[test]
+fn has_index_asks_a_live_an_inherited_and_a_revoked_proxy() {
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let arr = cx.new_array();
+            cx.set_index(arr, 0, Local::int32(1), true).unwrap();
+            cx.set_index(arr, 2, Local::int32(3), true).unwrap();
+            let p = new_proxy(cx, arr);
+            assert!(cx.has_index(p, 0).unwrap());
+            assert!(!cx.has_index(p, 1).unwrap());
+            assert!(cx.has_index(p, 2).unwrap());
+            assert!(!cx.has_index(p, 3).unwrap());
+            assert_eq!(for_each_like(cx, p).unwrap(), ["0:1", "2:3"]);
+            let child = cx.new_object_with_proto(p);
+            assert!(cx.has_index(child, 2).unwrap());
+            assert!(!cx.has_index(child, 1).unwrap());
+            assert_eq!(for_each_like(cx, child).unwrap(), ["0:1", "2:3"]);
+            proxy::revoke(rt, p.bits());
+            assert!(cx.has_index(p, 0).is_err());
+            assert_eq!(
+                take_error(cx, rt),
+                "TypeError: Cannot perform 'has' on a proxy that has been revoked"
+            );
+            assert!(cx.has_index(child, 0).is_err());
+            assert_eq!(
+                take_error(cx, rt),
+                "TypeError: Cannot perform 'has' on a proxy that has been revoked"
+            );
+            // forEach reads `length` first: node's text names 'get'.
+            assert!(for_each_like(cx, p).is_err());
+            assert_eq!(
+                take_error(cx, rt),
+                "TypeError: Cannot perform 'get' on a proxy that has been revoked"
+            );
+        });
+    }
+}
+
+// ---- the named ICs and proxies (M4-P4 fixer B; R-VM-P4-1) -----------------------------------
+
+/// Runs `setup` on a fresh isolate with dispatch `d`, then the script from `make`; the printed
+/// lines, and "THROW ..." if it threw.
+fn run_with_proxy(
+    d: Dispatch,
+    setup: impl for<'s> FnOnce(&mut Cx<'s>),
+    make: fn() -> VerifiedUnit,
+) -> Vec<String> {
+    let mut iso = isolate(config(d, false));
+    take_output();
+    iso.with_cx_checkpoint(|cx| {
+        setup(cx);
+        Ok(())
+    })
+    .unwrap();
+    let r = iso.with_cx_checkpoint(|cx| cx.run_script(make(), "t.js").map(|v| cx.display(v)));
+    let mut out = take_output();
+    if let Err(e) = r {
+        out.push(format!("THROW {e}"));
+    }
+    out
+}
+
+/// Globals `T = {x: 1}`, `P = new Proxy(T, {})`, `O = Object.create(P)`.
+fn proxy_globals(cx: &mut Cx<'_>) {
+    let t = cx.new_object();
+    cx.set(t, "x", Local::int32(1), true).unwrap();
+    let p = new_proxy(cx, t);
+    let o = cx.new_object_with_proto(p);
+    let g = cx.global();
+    cx.set(g, "T", t, true).unwrap();
+    cx.set(g, "P", p, true).unwrap();
+    cx.set(g, "O", o, true).unwrap();
+}
+
+/// `for (i = 0; i < 4; i++) { if (i == 2) T.x = 2; print(<global>.x); }`, one load site.
+fn load_x_four_times(global: &str) -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let (o, t, i) = (s.b.new_register(), s.b.new_register(), s.b.new_register());
+    s.lda_global(global);
+    s.b.star(o);
+    s.lda_global("T");
+    s.b.star(t);
+    s.b.lda_zero().star(i);
+    let head = s.b.bound_label();
+    let exit = s.b.new_label();
+    let skip = s.b.new_label();
+    s.b.lda_smi(4).test_less_than(i, s.cmp).jump_if_false(exit);
+    s.b.lda_smi(2)
+        .test_equal_strict(i, s.cmp)
+        .jump_if_false(skip);
+    s.b.lda_smi(2);
+    s.set_named(t, "x");
+    s.b.bind(skip);
+    s.get_named(o, "x");
+    s.print_acc();
+    s.b.ldar(i).inc(s.bin).star(i).jump_loop(head, 0, s.loop_);
+    s.b.bind(exit);
+    s.b.lda_undefined().return_();
+    unit("", vec![s.finish()])
+}
+
+/// `function st(o, v) { o.y = v }`-like: one store site, run with `O1.y = 1` (an add the IC
+/// may cache), then `arm()` gives `T` a setter `y` that prints, then `O2.y = 2` (the spec
+/// runs the setter), then `print(O2.y)` (undefined: the accessor has no getter).
+fn store_add_then_setter() -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let (o1, o2, o, v) = (
+        s.b.new_register(),
+        s.b.new_register(),
+        s.b.new_register(),
+        s.b.new_register(),
+    );
+    s.lda_global("O1");
+    s.b.star(o1);
+    s.lda_global("O2");
+    s.b.star(o2);
+    s.b.ldar(o1).star(o);
+    s.b.lda_smi(1).star(v);
+    let head = s.b.bound_label();
+    let exit = s.b.new_label();
+    let second = s.b.new_label();
+    s.b.lda_smi(3).test_less_than(v, s.cmp).jump_if_false(exit);
+    s.b.ldar(v);
+    s.set_named(o, "y");
+    s.b.lda_smi(1)
+        .test_equal_strict(v, s.cmp)
+        .jump_if_false(second);
+    s.lda_global("arm");
+    s.b.star(s.f).call_undefined_receiver0(s.f, s.call);
+    s.b.ldar(o2).star(o);
+    s.b.bind(second);
+    s.b.ldar(v).inc(s.bin).star(v).jump_loop(head, 0, s.loop_);
+    s.b.bind(exit);
+    s.get_named(o2, "y");
+    s.print_acc();
+    s.b.lda_undefined().return_();
+    unit("", vec![s.finish()])
+}
+
+/// `arm()`: defines `T.y` as an accessor whose setter is `print`.
+fn arm<'s>(cx: &mut Cx<'s>, _this: Local<'s>, _a: Args<'s>, _nt: Local<'s>) -> JsResult<Local<'s>> {
+    let g = cx.global();
+    let t = cx.get(g, "T")?.as_object().unwrap();
+    let pr = cx.get(g, "print")?;
+    let desc = PropertyDescriptor {
+        set: Some(pr),
+        configurable: Some(true),
+        ..PropertyDescriptor::default()
+    };
+    cx.define_property_or_throw(t, "y", desc)?;
+    Ok(Local::undefined())
+}
+
+/// R-VM-P4-1: a named load from a proxy, or through a proxy on the chain, takes the generic
+/// path at every run of the site (the IC never caches the proxy's empty cell as "missing"),
+/// and a store does not cache an add past a proxy on the chain. node v24.22.1
+/// (scratchpad m1m4/p4/fixB/js/ic-proxy.js): loads `[1, 1, 2, 2]`; the store runs the setter
+/// (`set 2`), then `O2.y` is undefined. Every dispatch expansion.
+#[test]
+fn named_ics_take_the_generic_path_at_a_proxy() {
+    for &d in Dispatch::ALL {
+        let via_child = run_with_proxy(d, proxy_globals, || load_x_four_times("O"));
+        assert_eq!(via_child, ["1", "1", "2", "2"], "{}", d.name());
+        let on_proxy = run_with_proxy(d, proxy_globals, || load_x_four_times("P"));
+        assert_eq!(on_proxy, ["1", "1", "2", "2"], "{}", d.name());
+        let mut iso = isolate(config(d, false));
+        iso.register_host_function("arm", 0, arm);
+        take_output();
+        iso.with_cx_checkpoint(|cx| {
+            proxy_globals(cx);
+            let g = cx.global();
+            let p = cx.get(g, "P")?.as_object().unwrap();
+            let o1 = cx.new_object_with_proto(p);
+            let o2 = cx.new_object_with_proto(p);
+            cx.set(g, "O1", o1, true)?;
+            cx.set(g, "O2", o2, true)?;
+            Ok(())
+        })
+        .unwrap();
+        let r = iso.with_cx_checkpoint(|cx| {
+            cx.run_script(store_add_then_setter(), "t.js")
+                .map(|v| cx.display(v))
+        });
+        assert!(r.is_ok(), "{}: {r:?}", d.name());
+        assert_eq!(take_output(), ["2", "undefined"], "{}", d.name());
+    }
 }
