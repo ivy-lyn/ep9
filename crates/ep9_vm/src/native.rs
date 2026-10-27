@@ -385,8 +385,8 @@ pub mod layout {
     /// C-18 set. ELEMENTS: the first value; value `i` is at `ELEMENTS_DATA + 8i`
     /// (`object::elems::DATA`).
     pub const ELEMENTS_DATA: u32 = elems::DATA as u32;
-    /// C-18 set. The hole: an empty element, an empty feedback key (`frame::HOLE`,
-    /// `Value::EMPTY`).
+    /// C-18 set. The hole (`frame::HOLE`, `Value::EMPTY`): an empty element; in a feedback
+    /// key half, the polymorphic or megamorphic marker (an empty key half is undefined).
     pub const HOLE: u64 = crate::frame::HOLE;
     /// C-18 set. FEEDBACK cell: the FunctionInfo of its function, a native word
     /// (`feedback::fv::INFO`).

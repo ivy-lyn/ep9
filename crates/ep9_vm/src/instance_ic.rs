@@ -45,8 +45,9 @@
 //!   dead function or shape reads undefined and its case misses; +16 keeps a validity cell,
 //!   which keeps no object alive.
 //! - The record runs in IC code, not in a `profile::record_*` hook, so the jitless
-//!   `ics_only` preset keeps it (MODES-D11; MC-w14 IC2 line). Compiled code reads the
-//!   validity cell through `GuardProtoValidity` (H16 CacheIR).
+//!   `ics_only` preset keeps it (MODES-D11; MC-w14 IC2 line). Compiled code guards the
+//!   chain through `GuardProtoValidity(ProtoRef)`, a Dynamic FuseRef, never the cell (H16
+//!   CacheIR); only T0 reads the cell.
 
 use ep9_bytecode::{Opcode, OperandKind};
 

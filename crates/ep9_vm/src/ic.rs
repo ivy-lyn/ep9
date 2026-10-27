@@ -121,8 +121,10 @@ use crate::unit::FunctionInfo;
 use crate::validity;
 
 /// The entry and case key that stands for "a string receiver" (strings have no shape; their
-/// word0 ShapeId is 0, which is the low half of int32 0). Only [`smi::STRING_LENGTH`] uses it,
-/// and that handler checks the kind byte, because symbols have ShapeId 0 too.
+/// word0 ShapeId is 0, which is the low half of int32 0). Symbols have ShapeId 0 too, so each
+/// case under this key checks the kind byte: [`smi::STRING_LENGTH`], and (M4-P3 IC2) the
+/// `PROTO_LOAD` and `MISSING` cases of a string's method load, whose chain starts at
+/// %String.prototype% (the `id == 0 && !kind::is_string(o)` miss in the load hit path).
 pub(crate) const KEY_STRING: u64 = int32_bits(0);
 
 /// Cases a POLY_IC cell holds (V8's polymorphism limit, OM-6).
