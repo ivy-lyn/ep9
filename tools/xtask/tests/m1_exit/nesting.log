@@ -1,0 +1,28 @@
+m0-exit start: depth_tests
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running unittests src/lib.rs (target/debug/deps/ep9_frontend-0000)
+
+running 8 tests
+test depth_tests::m0_binary ... ok
+test depth_tests::m1_arrow ... ok
+test depth_tests::m1_assignment ... ok
+test depth_tests::m1_conditional ... ok
+test depth_tests::m1_conditional_consequent ... ok
+test depth_tests::m1_exponent ... ok
+test depth_tests::m1_unary ... ok
+test depth_tests::m1_unary_typeof ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 400 filtered out; finished in 1.00s
+
+m0-exit status: 0
+m0-exit start: nesting_caps cli
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running tests/nesting_caps.rs (target/debug/deps/nesting_caps-0000)
+
+running 2 tests
+test every_m1_form_is_listed ... ok
+test caps_hold_end_to_end ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.00s
+
+m0-exit status: 0
