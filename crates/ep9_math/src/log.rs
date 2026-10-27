@@ -557,11 +557,11 @@ multiversion! {
 
 /// (-1)^sgn * (hi + lo/2^64) * 2^(ex-63) (C `dint64_t`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Dint {
-    hi: u64,
-    lo: u64,
-    ex: i64,
-    sgn: u64,
+pub(crate) struct Dint {
+    pub(crate) hi: u64,
+    pub(crate) lo: u64,
+    pub(crate) ex: i64,
+    pub(crate) sgn: u64,
 }
 
 impl Dint {
@@ -676,7 +676,7 @@ fn add_dint(a: &Dint, b: &Dint) -> Dint {
 }
 
 /// a * b with 126 bits of accuracy (C `mul_dint`).
-fn mul_dint(a: &Dint, b: &Dint) -> Dint {
+pub(crate) fn mul_dint(a: &Dint, b: &Dint) -> Dint {
     let mut t = u128::from(a.hi) * u128::from(b.hi);
     let m1 = u128::from(a.hi) * u128::from(b.lo);
     let m2 = u128::from(a.lo) * u128::from(b.hi);
@@ -1248,7 +1248,7 @@ fn p_2(z: &Dint) -> Dint {
 }
 
 /// log(x) for x > 0 in [`Dint`] form (C `log_2`).
-fn log_2(x: &Dint) -> Dint {
+pub(crate) fn log_2(x: &Dint) -> Dint {
     let mut x = *x;
     let mut e = x.ex;
     // The lookup index.
@@ -1268,7 +1268,7 @@ fn log_2(x: &Dint) -> Dint {
 }
 
 /// The C `dint_fromd`: x = (-1)^sgn * 2^(ex-63) * hi exactly, lo = 0.
-fn dint_fromd(b: f64) -> Dint {
+pub(crate) fn dint_fromd(b: f64) -> Dint {
     let u = b.to_bits();
     let e = ((u >> 52) & 0x7ff) as i64;
     let m = (u & (!0u64 >> 12)) + if e != 0 { 1u64 << 52 } else { 0 };
@@ -1286,7 +1286,7 @@ fn dint_fromd(b: f64) -> Dint {
 /// round bit are never all zero for log (the hardest input has 64 equal bits after the round
 /// bit, x = 0x1.62a88613629b6p+678, C comment), so adding 2^-54 (and 2^-53 if the round bit is
 /// 1) to 1 <= r < 2 rounds to nearest.
-fn dint_tod(a: &Dint) -> f64 {
+pub(crate) fn dint_tod(a: &Dint) -> f64 {
     let mut r = (a.hi >> 11) | (0x3ff << 52);
     let mut rd = hf("0x1p-54");
     if (a.hi >> 10) & 1 != 0 {
