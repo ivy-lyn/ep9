@@ -31,7 +31,7 @@
 //!
 //! Out of memory (P3-ORCH-5, replaces the V9-A11 status-word text): H23 stays as it is (out of
 //! memory is fatal after the near-limit callback). The REPRL host sets `HeapConfig::near_limit`
-//! to a callback that exits the child with [`EXIT_OUT_OF_MEMORY`] and writes no status word.
+//! to a callback that exits the child with [`unix::EXIT_OUT_OF_MEMORY`] and writes no status word.
 //! libreprl then reads EOF, waits for the child and returns `71 << 8`, which Fuzzilli counts as a
 //! failed run (not a crash, no retry delay) and starts a fresh child for the next script.
 //!
@@ -51,69 +51,6 @@
 //! numbers, the shared memory map, the exported coverage callbacks and the injected faults.
 //! Windows has no REPRL ([`main`] prints a message and exits 2).
 
-use std::io::Write as _;
-use std::sync::OnceLock;
-
-use ep9_frontend::{CodegenError, CompileOptions, SourceOpts, Strictness};
-use ep9_heap::HeapConfig;
-use ep9_vm::{Args, Cx, Isolate, IsolateConfig, JsResult, Local};
-
-use crate::run;
-use crate::run::EXIT_USAGE;
-
-/// The exit status of the child when the GC heap reaches its limit (the near-limit callback).
-/// The parent sees "exited with 71", not a signal: a failed run, never a crash.
-pub const EXIT_OUT_OF_MEMORY: u8 = 71;
-
-/// The file name of a REPRL script in locations and stack traces.
-const SCRIPT_NAME: &str = "reprl";
-
-/// Largest script: libreprl's `REPRL_MAX_DATA_SIZE` (16 MiB).
-const MAX_SCRIPT_BYTES: u64 = 16 << 20;
-
-/// What `fuzzilli('FUZZILLI_PRINT', s)` writes to: the REPRL data channel to the parent (fd 103)
-/// once the handshake is done, stdout before (as the QJS target does without the channel).
-static FUZZ_OUT: OnceLock<std::fs::File> = OnceLock::new();
-
-/// The settings of a REPRL child, from the environment (see the module doc).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Settings {
-    heap_bytes: usize,
-    stack_bytes: usize,
-    gc_stress: u32,
-}
-
-impl Settings {
-    fn from_env() -> Result<Settings, String> {
-        fn number(
-            name: &str,
-            default: u32,
-            range: std::ops::RangeInclusive<u32>,
-        ) -> Result<u32, String> {
-            match std::env::var(name) {
-                Err(std::env::VarError::NotPresent) => Ok(default),
-                Ok(v) => v
-                    .parse::<u32>()
-                    .ok()
-                    .filter(|n| range.contains(n))
-                    .ok_or_else(|| {
-                        format!(
-                            "bad {name} value {v:?} ({}..={})",
-                            range.start(),
-                            range.end()
-                        )
-                    }),
-                Err(e) => Err(format!("bad {name} value: {e}")),
-            }
-        }
-        Ok(Settings {
-            heap_bytes: (number("EP9_REPRL_HEAP_MB", 512, 8..=65536)? as usize) << 20,
-            stack_bytes: (number("EP9_REPRL_STACK_MB", 64, 1..=4096)? as usize) << 20,
-            gc_stress: number("EP9_REPRL_GC_STRESS", 0, 0..=u32::MAX)?,
-        })
-    }
-}
-
 /// The REPRL entry (`ep9 --reprl`). Returns the process exit status: 0 when the parent closes
 /// the control channel, 2 for a bad setting or a broken protocol.
 pub fn main() -> u8 {
@@ -124,184 +61,245 @@ pub fn main() -> u8 {
     #[cfg(not(unix))]
     {
         eprintln!("ep9 --reprl: the Fuzzilli REPRL mode needs a unix target");
-        EXIT_USAGE
+        crate::run::EXIT_USAGE
     }
-}
-
-/// The near-limit callback of every REPRL isolate (`HeapConfig::near_limit`, H23): the GC heap
-/// is at its limit after a full collection. Exits the child at once with
-/// [`EXIT_OUT_OF_MEMORY`] and no status word. Touches no heap and no isolate.
-fn out_of_memory(committed: usize, limit: usize) -> usize {
-    let _ = std::io::stdout().flush();
-    eprintln!(
-        "ep9 --reprl: out of memory: {committed} bytes committed, limit {limit} (exit {EXIT_OUT_OF_MEMORY})"
-    );
-    std::process::exit(i32::from(EXIT_OUT_OF_MEMORY))
-}
-
-/// The panic hook of a REPRL child: a panic is an ep9 bug, so the child must die by a signal
-/// for Fuzzilli to count a crash (run.rs's hook exits 70, which Fuzzilli counts as a failed
-/// run). Prints the same first lines as run.rs's hook (the triage script keys on them), the
-/// backtrace when `RUST_BACKTRACE` asks for one, then aborts (SIGABRT).
-fn abort_on_panic(info: &std::panic::PanicHookInfo<'_>) {
-    let msg = info
-        .payload()
-        .downcast_ref::<&str>()
-        .map(ToString::to_string)
-        .or_else(|| info.payload().downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "a panic without a message".into());
-    let _ = std::io::stdout().flush();
-    let mut err = std::io::stderr().lock();
-    let _ = writeln!(err, "ep9: internal error: {msg} (this is an ep9 bug)");
-    if let Some(at) = info.location() {
-        let thread = std::thread::current();
-        let _ = writeln!(
-            err,
-            "ep9: panicked at {at} on thread '{}'",
-            thread.name().unwrap_or("?")
-        );
-    }
-    let trace = std::backtrace::Backtrace::capture();
-    if trace.status() == std::backtrace::BacktraceStatus::Captured {
-        let _ = writeln!(err, "{trace}");
-    }
-    drop(err);
-    std::process::abort();
-}
-
-/// Runs one REPRL script in a fresh isolate and returns its status: 0, or
-/// [`run::EXIT_JS_ERROR`] for a compile error, an uncaught exception or an unhandled
-/// rejection. An internal BytecodeGen error is an ep9 bug: it panics (a crash for Fuzzilli).
-fn execute(settings: &Settings, source: &str) -> u8 {
-    let opts = SourceOpts::script(Strictness::Sloppy);
-    let unit = match ep9_frontend::compile(source, opts, CompileOptions::default()) {
-        Ok(unit) => unit,
-        Err(CodegenError::Internal(m)) => panic!("internal BytecodeGen error: {m}"),
-        Err(e) => {
-            eprintln!("{}", run::compile_error_text(SCRIPT_NAME, &e));
-            return run::EXIT_JS_ERROR;
-        }
-    };
-    let config = IsolateConfig {
-        heap: HeapConfig {
-            max_heap_bytes: settings.heap_bytes,
-            near_limit: Some(out_of_memory),
-            gc_stress: settings.gc_stress,
-            verify_after_gc: settings.gc_stress > 0,
-            ..HeapConfig::default()
-        },
-        builtins: Some(&ep9_builtins::TABLE),
-        compiler: Some(&run::COMPILER),
-        ..IsolateConfig::default()
-    };
-    let mut isolate = match Isolate::new(config) {
-        Ok(i) => i,
-        Err(e) => panic!("cannot create the isolate: {e}"),
-    };
-    isolate.register_host_function("print", 1, run::print);
-    isolate.register_host_function("gc", 0, run::gc);
-    isolate.register_host_function("fuzzilli", 2, fuzzilli);
-    let result = isolate.with_cx_checkpoint(|cx| cx.run_script(unit, SCRIPT_NAME).map(|_| ()));
-    let _ = std::io::stdout().flush();
-    let status = match result {
-        Ok(()) => run::EXIT_OK,
-        Err(e) => {
-            eprintln!("{}", run::uncaught_text(&e));
-            run::EXIT_JS_ERROR
-        }
-    };
-    // As run.rs: a promise rejected with no handler fails the run (Fuzzilli's REPRLRun checks it).
-    let rejections = isolate.take_unhandled_rejections();
-    match rejections.first() {
-        Some(e) if status == run::EXIT_OK => {
-            eprintln!("{}", run::uncaught_text(e));
-            run::EXIT_JS_ERROR
-        }
-        _ => status,
-    }
-}
-
-/// `fuzzilli(op, arg)`, the Fuzzilli builtin (Targets/README.md "Adding Custom fuzzilli
-/// Javascript Builtin"): `fuzzilli('FUZZILLI_CRASH', n)` kills the process in way `n` (0 panic,
-/// 1 wild store, 2 trap; other `n`: nothing), `fuzzilli('FUZZILLI_PRINT', s)` writes `s` and a
-/// newline to the REPRL data channel. Any other call does nothing. Returns undefined.
-fn fuzzilli<'s>(
-    cx: &mut Cx<'s>,
-    _this: Local<'s>,
-    args: Args<'s>,
-    _nt: Local<'s>,
-) -> JsResult<Local<'s>> {
-    let op = cx.to_rust_string(args.get(0))?;
-    match op.as_str() {
-        "FUZZILLI_CRASH" => {
-            let kind = cx.to_int32(args.get(1))?;
-            crash(kind);
-        }
-        "FUZZILLI_PRINT" if args.len() > 1 => {
-            let mut line = cx.to_rust_string(args.get(1))?;
-            line.push('\n');
-            // A closed channel is not a JS error.
-            let _ = match FUZZ_OUT.get() {
-                Some(mut f) => f.write_all(line.as_bytes()),
-                None => std::io::stdout().lock().write_all(line.as_bytes()),
-            };
-        }
-        _ => {}
-    }
-    Ok(Local::undefined())
-}
-
-/// The injected faults of `fuzzilli('FUZZILLI_CRASH', kind)`: one for each way ep9 can die.
-fn crash(kind: i32) {
-    match kind {
-        // A Rust panic: what an engine bug (assert, unwrap, bounds check) looks like.
-        0 => panic!("fuzzilli('FUZZILLI_CRASH', 0): injected panic"),
-        // A store through a wild pointer: what a memory-safety bug in unsafe code looks like.
-        1 => {
-            // A byte store: a wider type would fail the debug-build alignment check of
-            // `write_volatile` (a panic, SIGABRT) before the store.
-            let wild = 0x4141_4141_usize as *mut u8;
-            // SAFETY: none, on purpose: the store faults (SIGSEGV), which is the test. The
-            // address is unmapped: macOS keeps the low 4 GiB as __PAGEZERO, and Linux maps
-            // nothing at 1 GiB in a 64-bit process (the address Fuzzilli's C targets use).
-            unsafe { wild.write_volatile(0x37) };
-            std::process::abort();
-        }
-        // A trap instruction: what a JIT guard trap (the Spike C exit stubs) looks like.
-        2 => trap(),
-        _ => {}
-    }
-}
-
-/// Executes a trap instruction: `ud2` (SIGILL) on x86-64.
-#[cfg(target_arch = "x86_64")]
-fn trap() -> ! {
-    // SAFETY: `ud2` touches no memory and raises SIGILL; it never returns.
-    unsafe { core::arch::asm!("ud2", options(noreturn, nomem, nostack)) }
-}
-
-/// Executes a trap instruction: `brk` (SIGTRAP) on arm64.
-#[cfg(target_arch = "aarch64")]
-fn trap() -> ! {
-    // SAFETY: `brk` touches no memory and raises SIGTRAP; it never returns.
-    unsafe { core::arch::asm!("brk #0x1", options(noreturn, nomem, nostack)) }
-}
-
-/// No trap instruction here: abort (SIGABRT).
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-fn trap() -> ! {
-    std::process::abort()
 }
 
 #[cfg(unix)]
 mod unix {
-    //! The REPRL loop on fds 100-103 (unix only).
+    //! The REPRL child (unix only): the settings, one fresh isolate per script, the `fuzzilli`
+    //! builtin and its injected faults, and the loop on fds 100-103.
 
     use std::fs::File;
     use std::io::{ErrorKind, Read as _, Write as _};
     use std::os::fd::{FromRawFd as _, RawFd};
+    use std::sync::OnceLock;
 
-    use super::{EXIT_USAGE, FUZZ_OUT, MAX_SCRIPT_BYTES, Settings, execute, sancov};
+    use ep9_frontend::{CodegenError, CompileOptions, SourceOpts, Strictness};
+    use ep9_heap::HeapConfig;
+    use ep9_vm::{Args, Cx, Isolate, IsolateConfig, JsResult, Local};
+
+    use super::sancov;
+    use crate::run;
+    use crate::run::EXIT_USAGE;
+
+    /// The exit status of the child when the GC heap reaches its limit (the near-limit callback).
+    /// The parent sees "exited with 71", not a signal: a failed run, never a crash.
+    pub const EXIT_OUT_OF_MEMORY: u8 = 71;
+
+    /// The file name of a REPRL script in locations and stack traces.
+    const SCRIPT_NAME: &str = "reprl";
+
+    /// Largest script: libreprl's `REPRL_MAX_DATA_SIZE` (16 MiB).
+    const MAX_SCRIPT_BYTES: u64 = 16 << 20;
+
+    /// What `fuzzilli('FUZZILLI_PRINT', s)` writes to: the REPRL data channel to the parent (fd 103)
+    /// once the handshake is done, stdout before (as the QJS target does without the channel).
+    static FUZZ_OUT: OnceLock<std::fs::File> = OnceLock::new();
+
+    /// The settings of a REPRL child, from the environment (see the module doc).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct Settings {
+        heap_bytes: usize,
+        stack_bytes: usize,
+        gc_stress: u32,
+    }
+
+    impl Settings {
+        fn from_env() -> Result<Settings, String> {
+            fn number(
+                name: &str,
+                default: u32,
+                range: std::ops::RangeInclusive<u32>,
+            ) -> Result<u32, String> {
+                match std::env::var(name) {
+                    Err(std::env::VarError::NotPresent) => Ok(default),
+                    Ok(v) => v
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|n| range.contains(n))
+                        .ok_or_else(|| {
+                            format!(
+                                "bad {name} value {v:?} ({}..={})",
+                                range.start(),
+                                range.end()
+                            )
+                        }),
+                    Err(e) => Err(format!("bad {name} value: {e}")),
+                }
+            }
+            Ok(Settings {
+                heap_bytes: (number("EP9_REPRL_HEAP_MB", 512, 8..=65536)? as usize) << 20,
+                stack_bytes: (number("EP9_REPRL_STACK_MB", 64, 1..=4096)? as usize) << 20,
+                gc_stress: number("EP9_REPRL_GC_STRESS", 0, 0..=u32::MAX)?,
+            })
+        }
+    }
+
+    /// The near-limit callback of every REPRL isolate (`HeapConfig::near_limit`, H23): the GC heap
+    /// is at its limit after a full collection. Exits the child at once with
+    /// [`EXIT_OUT_OF_MEMORY`] and no status word. Touches no heap and no isolate.
+    fn out_of_memory(committed: usize, limit: usize) -> usize {
+        let _ = std::io::stdout().flush();
+        eprintln!(
+            "ep9 --reprl: out of memory: {committed} bytes committed, limit {limit} (exit {EXIT_OUT_OF_MEMORY})"
+        );
+        std::process::exit(i32::from(EXIT_OUT_OF_MEMORY))
+    }
+
+    /// The panic hook of a REPRL child: a panic is an ep9 bug, so the child must die by a signal
+    /// for Fuzzilli to count a crash (run.rs's hook exits 70, which Fuzzilli counts as a failed
+    /// run). Prints the same first lines as run.rs's hook (the triage script keys on them), the
+    /// backtrace when `RUST_BACKTRACE` asks for one, then aborts (SIGABRT).
+    fn abort_on_panic(info: &std::panic::PanicHookInfo<'_>) {
+        let msg = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(ToString::to_string)
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "a panic without a message".into());
+        let _ = std::io::stdout().flush();
+        let mut err = std::io::stderr().lock();
+        let _ = writeln!(err, "ep9: internal error: {msg} (this is an ep9 bug)");
+        if let Some(at) = info.location() {
+            let thread = std::thread::current();
+            let _ = writeln!(
+                err,
+                "ep9: panicked at {at} on thread '{}'",
+                thread.name().unwrap_or("?")
+            );
+        }
+        let trace = std::backtrace::Backtrace::capture();
+        if trace.status() == std::backtrace::BacktraceStatus::Captured {
+            let _ = writeln!(err, "{trace}");
+        }
+        drop(err);
+        std::process::abort();
+    }
+
+    /// Runs one REPRL script in a fresh isolate and returns its status: 0, or
+    /// [`run::EXIT_JS_ERROR`] for a compile error, an uncaught exception or an unhandled
+    /// rejection. An internal BytecodeGen error is an ep9 bug: it panics (a crash for Fuzzilli).
+    fn execute(settings: &Settings, source: &str) -> u8 {
+        let opts = SourceOpts::script(Strictness::Sloppy);
+        let unit = match ep9_frontend::compile(source, opts, CompileOptions::default()) {
+            Ok(unit) => unit,
+            Err(CodegenError::Internal(m)) => panic!("internal BytecodeGen error: {m}"),
+            Err(e) => {
+                eprintln!("{}", run::compile_error_text(SCRIPT_NAME, &e));
+                return run::EXIT_JS_ERROR;
+            }
+        };
+        let config = IsolateConfig {
+            heap: HeapConfig {
+                max_heap_bytes: settings.heap_bytes,
+                near_limit: Some(out_of_memory),
+                gc_stress: settings.gc_stress,
+                verify_after_gc: settings.gc_stress > 0,
+                ..HeapConfig::default()
+            },
+            builtins: Some(&ep9_builtins::TABLE),
+            compiler: Some(&run::COMPILER),
+            ..IsolateConfig::default()
+        };
+        let mut isolate = match Isolate::new(config) {
+            Ok(i) => i,
+            Err(e) => panic!("cannot create the isolate: {e}"),
+        };
+        isolate.register_host_function("print", 1, run::print);
+        isolate.register_host_function("gc", 0, run::gc);
+        isolate.register_host_function("fuzzilli", 2, fuzzilli);
+        let result = isolate.with_cx_checkpoint(|cx| cx.run_script(unit, SCRIPT_NAME).map(|_| ()));
+        let _ = std::io::stdout().flush();
+        let status = match result {
+            Ok(()) => run::EXIT_OK,
+            Err(e) => {
+                eprintln!("{}", run::uncaught_text(&e));
+                run::EXIT_JS_ERROR
+            }
+        };
+        // As run.rs: a promise rejected with no handler fails the run (Fuzzilli's REPRLRun checks it).
+        let rejections = isolate.take_unhandled_rejections();
+        match rejections.first() {
+            Some(e) if status == run::EXIT_OK => {
+                eprintln!("{}", run::uncaught_text(e));
+                run::EXIT_JS_ERROR
+            }
+            _ => status,
+        }
+    }
+
+    /// `fuzzilli(op, arg)`, the Fuzzilli builtin (Targets/README.md "Adding Custom fuzzilli
+    /// Javascript Builtin"): `fuzzilli('FUZZILLI_CRASH', n)` kills the process in way `n` (0 panic,
+    /// 1 wild store, 2 trap; other `n`: nothing), `fuzzilli('FUZZILLI_PRINT', s)` writes `s` and a
+    /// newline to the REPRL data channel. Any other call does nothing. Returns undefined.
+    fn fuzzilli<'s>(
+        cx: &mut Cx<'s>,
+        _this: Local<'s>,
+        args: Args<'s>,
+        _nt: Local<'s>,
+    ) -> JsResult<Local<'s>> {
+        let op = cx.to_rust_string(args.get(0))?;
+        match op.as_str() {
+            "FUZZILLI_CRASH" => {
+                let kind = cx.to_int32(args.get(1))?;
+                crash(kind);
+            }
+            "FUZZILLI_PRINT" if args.len() > 1 => {
+                let mut line = cx.to_rust_string(args.get(1))?;
+                line.push('\n');
+                // A closed channel is not a JS error.
+                let _ = match FUZZ_OUT.get() {
+                    Some(mut f) => f.write_all(line.as_bytes()),
+                    None => std::io::stdout().lock().write_all(line.as_bytes()),
+                };
+            }
+            _ => {}
+        }
+        Ok(Local::undefined())
+    }
+
+    /// The injected faults of `fuzzilli('FUZZILLI_CRASH', kind)`: one for each way ep9 can die.
+    fn crash(kind: i32) {
+        match kind {
+            // A Rust panic: what an engine bug (assert, unwrap, bounds check) looks like.
+            0 => panic!("fuzzilli('FUZZILLI_CRASH', 0): injected panic"),
+            // A store through a wild pointer: what a memory-safety bug in unsafe code looks like.
+            1 => {
+                // A byte store: a wider type would fail the debug-build alignment check of
+                // `write_volatile` (a panic, SIGABRT) before the store.
+                let wild = 0x4141_4141_usize as *mut u8;
+                // SAFETY: none, on purpose: the store faults (SIGSEGV), which is the test. The
+                // address is unmapped: macOS keeps the low 4 GiB as __PAGEZERO, and Linux maps
+                // nothing at 1 GiB in a 64-bit process (the address Fuzzilli's C targets use).
+                unsafe { wild.write_volatile(0x37) };
+                std::process::abort();
+            }
+            // A trap instruction: what a JIT guard trap (the Spike C exit stubs) looks like.
+            2 => trap(),
+            _ => {}
+        }
+    }
+
+    /// Executes a trap instruction: `ud2` (SIGILL) on x86-64.
+    #[cfg(target_arch = "x86_64")]
+    fn trap() -> ! {
+        // SAFETY: `ud2` touches no memory and raises SIGILL; it never returns.
+        unsafe { core::arch::asm!("ud2", options(noreturn, nomem, nostack)) }
+    }
+
+    /// Executes a trap instruction: `brk` (SIGTRAP) on arm64.
+    #[cfg(target_arch = "aarch64")]
+    fn trap() -> ! {
+        // SAFETY: `brk` touches no memory and raises SIGTRAP; it never returns.
+        unsafe { core::arch::asm!("brk #0x1", options(noreturn, nomem, nostack)) }
+    }
+
+    /// No trap instruction here: abort (SIGABRT).
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    fn trap() -> ! {
+        std::process::abort()
+    }
 
     /// Control channel from the parent ("HELO", "exec" + size).
     const CTRL_IN: RawFd = 100;
@@ -351,7 +349,7 @@ mod unix {
             return EXIT_USAGE;
         }
         let _ = FUZZ_OUT.set(data_out);
-        std::panic::set_hook(Box::new(super::abort_on_panic));
+        std::panic::set_hook(Box::new(abort_on_panic));
         // One isolate thread with the configured stack runs every script (a fresh isolate
         // each); the stack-limit RangeError then behaves as in `ep9 <file>`.
         let worker = std::thread::Builder::new()
@@ -570,7 +568,7 @@ mod tests {
     use std::process::{Child, Command, Stdio};
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    use super::EXIT_OUT_OF_MEMORY;
+    use super::unix::EXIT_OUT_OF_MEMORY;
 
     const CHILD_ENV: &str = "EP9_REPRL_TEST_CHILD";
 
