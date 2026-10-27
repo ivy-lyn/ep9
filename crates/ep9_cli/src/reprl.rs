@@ -75,9 +75,13 @@ mod unix {
     use std::os::fd::{FromRawFd as _, RawFd};
     use std::sync::OnceLock;
 
+    use ep9_bytecode::{EvalContext, FunctionCtorKind};
     use ep9_frontend::{CodegenError, CompileOptions, SourceOpts, Strictness};
     use ep9_heap::HeapConfig;
-    use ep9_vm::{Args, Cx, Isolate, IsolateConfig, JsResult, Local};
+    use ep9_vm::{
+        Args, CompileFailure, CompileResult, CompilerHooks, Cx, Isolate, IsolateConfig, JsResult,
+        Local,
+    };
 
     use super::sancov;
     use crate::run;
@@ -177,6 +181,68 @@ mod unix {
         std::process::abort();
     }
 
+    /// The compiler hooks of every REPRL isolate: run.rs's hooks (eval, `Function()`, run-time
+    /// scripts), except that an internal compiler error panics, a crash for Fuzzilli (SIGABRT
+    /// through the REPRL panic hook), as on the first compile in [`execute`]. With run.rs's
+    /// hooks the VM turns [`CompileFailure::Internal`] into a catchable `Error`, so a script
+    /// that catches it (or a failed run) would hide the compiler bug. `ep9 <file>` keeps
+    /// run.rs's hooks.
+    static COMPILER: CompilerHooks = CompilerHooks {
+        compile_eval,
+        compile_function,
+        compile_script,
+    };
+
+    fn compile_eval(source: &str, ctx: &EvalContext) -> CompileResult {
+        crash_on_internal(
+            test_fault(&[source]).unwrap_or_else(|| (run::COMPILER.compile_eval)(source, ctx)),
+        )
+    }
+
+    fn compile_function(kind: FunctionCtorKind, params: &str, body: &str) -> CompileResult {
+        crash_on_internal(
+            test_fault(&[params, body])
+                .unwrap_or_else(|| (run::COMPILER.compile_function)(kind, params, body)),
+        )
+    }
+
+    fn compile_script(source: &str) -> CompileResult {
+        crash_on_internal(
+            test_fault(&[source]).unwrap_or_else(|| (run::COMPILER.compile_script)(source)),
+        )
+    }
+
+    /// An internal compiler error is an ep9 bug: panic. Every other result goes to the VM.
+    fn crash_on_internal(result: CompileResult) -> CompileResult {
+        if let Err(CompileFailure::Internal(m)) = &result {
+            panic!("internal BytecodeGen error: {m}");
+        }
+        result
+    }
+
+    /// The test-only fault: a run-time source text that contains this fails as if the front end
+    /// had returned an internal error (the front end has no input that does it on purpose).
+    #[cfg(test)]
+    pub(super) const TEST_INTERNAL_FAULT: &str = "ep9-reprl-test-internal-compile-error";
+
+    #[cfg(test)]
+    fn test_fault(texts: &[&str]) -> Option<CompileResult> {
+        texts
+            .iter()
+            .any(|t| t.contains(TEST_INTERNAL_FAULT))
+            .then(|| {
+                Err(CompileFailure::Internal(
+                    "injected by the reprl tests".into(),
+                ))
+            })
+    }
+
+    /// No fault outside the tests.
+    #[cfg(not(test))]
+    fn test_fault(_: &[&str]) -> Option<CompileResult> {
+        None
+    }
+
     /// Runs one REPRL script in a fresh isolate and returns its status: 0, or
     /// [`run::EXIT_JS_ERROR`] for a compile error, an uncaught exception or an unhandled
     /// rejection. An internal BytecodeGen error is an ep9 bug: it panics (a crash for Fuzzilli).
@@ -199,7 +265,7 @@ mod unix {
                 ..HeapConfig::default()
             },
             builtins: Some(&ep9_builtins::TABLE),
-            compiler: Some(&run::COMPILER),
+            compiler: Some(&COMPILER),
             ..IsolateConfig::default()
         };
         let mut isolate = match Isolate::new(config) {
@@ -861,6 +927,39 @@ mod tests {
                     "{err}"
                 );
             }
+        }
+    }
+
+    /// An internal compiler error at run time (direct and indirect eval, `Function()`) ends the
+    /// child by SIGABRT with no status word, whether the script catches the error or not (the
+    /// test-only fault of the REPRL compiler hooks makes the error). A run-time SyntaxError
+    /// stays a catchable JS error.
+    #[test]
+    fn runtime_internal_compile_errors_abort() {
+        let fault = super::unix::TEST_INTERNAL_FAULT;
+        for script in [
+            format!("eval('{fault}')"),
+            format!("try {{ eval('{fault}') }} catch (e) {{}} 1"),
+            format!("try {{ (0, eval)('{fault}') }} catch (e) {{}} 1"),
+            format!("Function('{fault}')"),
+            format!("try {{ new Function('a', '{fault}') }} catch (e) {{}} 1"),
+        ] {
+            let mut p = FakeParent::spawn(&[]);
+            assert_eq!(
+                p.exec(
+                    "try { eval('let a; let a;') } catch (e) {} eval('1') + Function('return 1')()"
+                ),
+                OK
+            );
+            match p.exec(&script) {
+                Outcome::Signaled(sig) => assert_eq!(sig, libc::SIGABRT, "{script}"),
+                other => panic!("{script}: {other:?} (stderr: {})", p.stderr()),
+            }
+            let err = p.stderr();
+            assert!(
+                err.contains("ep9: internal error: internal BytecodeGen error: injected"),
+                "{script}: {err}"
+            );
         }
     }
 
