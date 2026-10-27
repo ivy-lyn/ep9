@@ -41,17 +41,33 @@
 //! GC". A bit left from before the GC would make the mark skip that cell (no trace, no
 //! check), so the verify after the GC compares the cells the sweep keeps with the cells this
 //! tracer pushed ([`Tracer::pushed_cells`], verify.rs).
+//!
+//! The S1 minor GC (heap.rs) uses the same tracer: an old cell keeps its mark bit (sticky
+//! marks), so the mark stops at it as at a cell already traced in this GC. The hosts that the
+//! S1 logs name are traced again on purpose:
+//!
+//! ```text
+//! remembered small host (GREY, marked):  retrace: set BLACK, push (not counted as pushed)
+//! old large object with a dirty card:     trace_by_cards: its trace function runs with a card
+//!                                         view; visit_slots visits only the slots of dirty
+//!                                         512 B cards; every other visit is done as usual
+//!                                         (a slot in a clean card holds no young cell)
+//! verify mode, young_strict (verify.rs):  an edge to an unmarked (young) cell is an error:
+//!                                         an old host not in the logs (a store without the
+//!                                         write barrier); visit_slots of a large host sets it
+//!                                         per card (strict in a clean card)
+//! ```
 
 use core::hash::{BuildHasherDefault, Hasher};
 use core::ptr::NonNull;
-use core::sync::atomic::Ordering::Relaxed;
+use core::sync::atomic::{AtomicU8, Ordering::Relaxed};
 use std::collections::HashMap;
 
 use ep9_value::Value;
 
 use crate::barrier::{Slot, gc_state, is_cell_bits};
 use crate::cell::{CellPtr, KindTable, Space};
-use crate::layout::{FIRST_CELL_OFFSET, Large, MAX_SMALL_SIZE, PAGE_MASK};
+use crate::layout::{CARD_SIZE, FIRST_CELL_OFFSET, Large, LargeHeader, MAX_SMALL_SIZE, PAGE_MASK};
 use crate::memory::{Chunk, Memory};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,6 +122,50 @@ pub struct Tracer<'h> {
     pub(crate) pushed_cells: usize,
     pub(crate) errors: Vec<String>,
     pub(crate) context: Context,
+    /// The cards of the old large object being traced (S1 minor GC) or checked (verify):
+    /// [`Tracer::visit_slots`] then works card by card. `None` otherwise.
+    cards: Option<CardView>,
+    /// Verify mode: an edge to an unmarked (young) cell is an error ("old host not in the S1
+    /// logs"). Set by the generational invariant check (verify.rs) for each old cell.
+    pub(crate) young_strict: bool,
+    /// S1 minor GC: hosts that the remembered lists and dirty cards named, traced again, and
+    /// their bytes. Not in [`Tracer::pushed_cells`]: their mark bits were set before the GC.
+    pub(crate) retraced_cells: usize,
+    pub(crate) retraced_bytes: usize,
+}
+
+/// The card table of one large object (S1, remembered.rs): one byte per [`CARD_SIZE`] bytes
+/// of the cell from `cell`, 1 = dirty.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CardView {
+    cell: usize,
+    cards: *const AtomicU8,
+    len: usize,
+}
+
+impl CardView {
+    /// The cards of a large object's header, or `None` before its first logged store.
+    pub(crate) fn of(h: &LargeHeader, cell: usize) -> Option<CardView> {
+        let cards = crate::remembered::cards(h)?;
+        Some(CardView {
+            cell,
+            cards: cards.as_ptr(),
+            len: cards.len(),
+        })
+    }
+
+    /// The card that holds the byte at `addr`, if it lies in the cell.
+    fn card_of(self, addr: usize) -> Option<usize> {
+        let i = addr.wrapping_sub(self.cell) / CARD_SIZE;
+        (i < self.len).then_some(i)
+    }
+
+    fn dirty(self, card: usize) -> bool {
+        debug_assert!(card < self.len);
+        // SAFETY: `card < len`, and the table lives as long as its large object, which is live
+        // for the whole GC (nothing is freed while marking) or verify. Atomic access only.
+        unsafe { (*self.cards.add(card)).load(Relaxed) != 0 }
+    }
 }
 
 /// Errors kept by one verifier run; more are counted, not stored.
@@ -169,6 +229,10 @@ impl<'h> Tracer<'h> {
             pushed_cells: 0,
             errors: Vec::new(),
             context: Context::Root("none"),
+            cards: None,
+            young_strict: false,
+            retraced_cells: 0,
+            retraced_bytes: 0,
         }
     }
 
@@ -213,8 +277,53 @@ impl<'h> Tracer<'h> {
     }
 
     pub fn visit_slots(&mut self, slots: &[Slot]) {
+        if let Some(cards) = self.cards {
+            self.visit_slots_by_card(slots, cards);
+            return;
+        }
         for s in slots {
             self.visit(s);
+        }
+    }
+
+    /// [`Tracer::visit_slots`] in an old large object with a card table (module doc). Mark
+    /// mode (S1 minor GC): only the slots of dirty cards; a clean card was not stored into
+    /// since the last GC, so it holds no young cell. Verify mode: every slot, and an edge to
+    /// a young cell is an error in a clean card. A slot outside the cell is visited as usual.
+    #[cold]
+    #[inline(never)]
+    fn visit_slots_by_card(&mut self, slots: &[Slot], cards: CardView) {
+        let mut i = 0;
+        while i < slots.len() {
+            let addr = core::ptr::from_ref(&slots[i]).addr();
+            let Some(card) = cards.card_of(addr) else {
+                self.visit(&slots[i]);
+                i += 1;
+                continue;
+            };
+            // The slots up to the end of this card (slots are 8-aligned in the cell, and a
+            // card is a multiple of 8 bytes).
+            let card_end = cards.cell + (card + 1) * CARD_SIZE;
+            let n = ((card_end - addr) / 8).max(1).min(slots.len() - i);
+            let dirty = cards.dirty(card);
+            match self.mode {
+                Mode::Mark => {
+                    if dirty {
+                        for s in &slots[i..i + n] {
+                            self.visit(s);
+                        }
+                    }
+                }
+                Mode::Verify => {
+                    let strict = self.young_strict;
+                    self.young_strict = !dirty;
+                    for s in &slots[i..i + n] {
+                        self.visit(s);
+                    }
+                    self.young_strict = strict;
+                }
+            }
+            i += n;
         }
     }
 
@@ -372,9 +481,49 @@ impl<'h> Tracer<'h> {
                     self.error(format_args!(
                         "reference {addr:#x} is not the start of a live cell"
                     ));
+                } else if self.young_strict && !is_marked(self.mem, addr) {
+                    self.young_edge_error(addr);
                 }
             }
         }
+    }
+
+    /// The generational invariant broke: an old host that the S1 logs do not name holds a
+    /// young cell. A minor GC would not trace that edge and would free the young cell.
+    #[cold]
+    fn young_edge_error(&mut self, addr: usize) {
+        self.error(format_args!(
+            "old cell holds the young cell {addr:#x} but is not in the S1 logs (a store \
+             without the write barrier)"
+        ));
+    }
+
+    /// S1 minor GC: traces again an old host from a remembered list (its mark bit is set, so
+    /// the mark would stop at it): sets it BLACK, so a later store logs it again, and pushes
+    /// it.
+    pub(crate) fn retrace(&mut self, c: CellPtr) {
+        // SAFETY: callers pass a live cell start of this heap (a listed GREY host).
+        unsafe { c.header() }.set_gc_state(gc_state::BLACK);
+        self.retraced_cells += 1;
+        self.retraced_bytes += self.kinds.cell_size(c).unwrap_or(0);
+        self.stack.push(c);
+    }
+
+    /// S1 minor GC: traces the old large object `c` now, through the slots of its dirty
+    /// cards (module doc). It stays BLACK (a large host is never GREY).
+    pub(crate) fn trace_by_cards(&mut self, c: CellPtr, cards: CardView) {
+        self.retraced_cells += 1;
+        self.retraced_bytes += self.kinds.cell_size(c).unwrap_or(0);
+        self.cards = Some(cards);
+        self.trace_one_outlined(c);
+        self.cards = None;
+    }
+
+    /// Verify mode: sets the card view of the old large object whose slots come next (`None`
+    /// after it).
+    pub(crate) fn set_cards(&mut self, cards: Option<CardView>) {
+        debug_assert!(self.mode == Mode::Verify);
+        self.cards = cards;
     }
 
     /// The cell-start test and the mark in one chunk lookup: false if no live cell starts at
@@ -620,10 +769,18 @@ impl<'h> Tracer<'h> {
     /// Verify mode: the word0 shape of the current cell. With a shape space, a non-zero id
     /// must name a live shape-space cell.
     pub(crate) fn verify_word0_shape(&mut self, id: u32) {
-        if self.shape_bytes != 0 && id != 0 && self.shape_at(id as usize).is_none() {
-            self.error(format_args!(
+        if self.shape_bytes == 0 || id == 0 {
+            return;
+        }
+        match self.shape_at(id as usize) {
+            None => self.error(format_args!(
                 "word0 ShapeId {id:#x} does not name a live shape-space cell"
-            ));
+            )),
+            // A shape install into an old host takes the barrier (`set_shape`), as a store does.
+            Some(s) if self.young_strict && !is_marked(self.mem, s.addr()) => {
+                self.young_edge_error(s.addr());
+            }
+            Some(_) => {}
         }
     }
 

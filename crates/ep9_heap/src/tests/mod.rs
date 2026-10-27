@@ -10,6 +10,7 @@
 //! | `css.rs` | conservative stack scan: locals, interior and one-past-end pointers, S7 (not Miri) |
 //! | `stress.rs` | randomized mutator against a model of the object graph |
 //! | `s1.rs` | S1 step 1 behind `HeapConfig::generational`: remembered lists, LOS cards, sticky marks, the verifier's S1 rules, GC-stress, a caught panic |
+//! | `minor.rs` | S1 step 2: the minor GC (old cells stay, remembered hosts and dirty cards traced, weak parts and young-key ephemerons), the major GC, the policy, generational GC-stress, the generational invariant check, a caught panic |
 //! | `shape.rs` | the shape region: ShapeId = cage offset, word0 edge, weak clearing, full region, shared commit limit, config |
 //! | `verify.rs` | the verify after a GC (checked mark + checked sweep) finds each fault `Heap::verify` finds; the planted dangling slot; the E2 check |
 
@@ -23,6 +24,7 @@ mod barrier;
 mod css;
 mod ephemeron;
 mod gc;
+mod minor;
 mod model;
 mod s1;
 mod shape;

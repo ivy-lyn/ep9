@@ -1,5 +1,5 @@
-//! S1 step 1 (03-gc §3 and §4, H11; V9-D21): what the barrier slow path logs when the heap is
-//! generational ([`crate::HeapConfig::generational`]).
+//! S1 (03-gc §3 and §4, H11; V9-D21): what the barrier slow path logs when the heap is
+//! generational ([`crate::HeapConfig::generational`]), for the minor GC (heap.rs) to trace.
 //!
 //! ```text
 //! barrier_slow(host, slot, v), barrier_slow_shape(host, id)  (signatures and BARRIER_VERSION 2 kept)
@@ -19,7 +19,7 @@
 //! |---|---|
 //! | A small host is logged once per GC cycle | GREY is above the GEN threshold, so a remembered host does not fire again until a GC sets it BLACK (the mark does) |
 //! | A large host dirties a card at every logged store | It stays BLACK (03-gc §3, H11 "S1 logs"): the minor GC rescans only the dirty 512-byte cards of a large array |
-//! | The lists and cards hold no `Value` and are not roots in step 1 | Cells never move in S1, and each collection empties them after its mark (every collection is still a full GC, which traces everything). The minor GC (M4-P3) will trace the remembered hosts and the dirty cards first |
+//! | The lists and cards hold no `Value`; they name old hosts | Cells never move in S1. A minor GC (step 2, M4-P3) traces every listed host again and the dirty cards of each old large object, then empties them after its mark; a major GC traces everything and empties them too |
 //! | Rust memory, not heap cells | The slow path must not allocate on the GC heap or reach a GC point (H11); `std::alloc` does neither. A list is freed with its page, a card table with its large object, both when the heap is dropped |
 //! | The cage check | `barrier_slow` gets only a `&Word0`. The thread-local list of generational cages shows that the host lies in a heap of this thread before the slow path reads a page header, and gives the cage base pointer whose provenance covers that header (no integer-to-pointer cast). A host outside (any heap in S0, a word on a test's stack) only stores |
 

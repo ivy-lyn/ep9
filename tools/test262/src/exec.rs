@@ -543,11 +543,18 @@ fn injected_fault(rel: &str) {
 }
 
 /// The config of every test isolate: the builtins of `ep9_builtins` (H20) on top of the VM's.
+/// The isolate of every test run. `EP9_GC_GENERATIONAL=1` in the environment (inherited by
+/// the workers) turns on the S1 generational heap (`HeapConfig::generational`): with
+/// `--gc-stress` that is the S1 GC-stress mode, a minor GC at every Nth allocation and a
+/// major one every 64th GC (V9-D27; plan v9 §5.1). The switch lives in `HeapConfig`, never in
+/// `IsolateConfig`.
 fn isolate_config(gc_stress: u32, feedback_threshold: u32) -> IsolateConfig {
+    let generational = std::env::var_os("EP9_GC_GENERATIONAL").is_some_and(|v| v == "1");
     IsolateConfig {
         heap: HeapConfig {
             gc_stress,
             verify_after_gc: gc_stress > 0,
+            generational,
             ..HeapConfig::default()
         },
         feedback_threshold,
