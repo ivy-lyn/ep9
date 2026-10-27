@@ -1,0 +1,8 @@
+# Build context of infra/fuzz/Dockerfile (the checkout root): sources only.
+.git
+target
+**/target
+third_party/*
+!third_party/*.commit
+!third_party/patches
+infra/x86-sandbox
