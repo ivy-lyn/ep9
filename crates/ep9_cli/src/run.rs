@@ -25,7 +25,7 @@ pub const EVAL_NAME: &str = "[eval]";
 /// `print(...args)`: ToString of each argument, joined by a space, then a newline (d8, jsc).
 /// A symbol prints as its descriptive string, `Symbol(desc)`, as node's console.log and qjs
 /// print it (ToString of a symbol throws; d8 prints only the description).
-fn print<'s>(
+pub(crate) fn print<'s>(
     cx: &mut Cx<'s>,
     _this: Local<'s>,
     args: Args<'s>,
@@ -59,7 +59,7 @@ fn print_line<'s>(cx: &mut Cx<'s>, args: impl Iterator<Item = Local<'s>>) -> JsR
 }
 
 /// `gc()`: a full collection now.
-fn gc<'s>(
+pub(crate) fn gc<'s>(
     cx: &mut Cx<'s>,
     _this: Local<'s>,
     _args: Args<'s>,
@@ -309,7 +309,7 @@ fn load_module(name: &str) -> CompileResult {
 /// `Function()` and run-time scripts reach it through these. Eval code (`compile_eval`, M2-P2)
 /// and the `Function()` family (`compile_function_ctor`, P3-FNCTOR; the async kinds answer
 /// `Unsupported`) compile.
-static COMPILER: CompilerHooks = CompilerHooks {
+pub(crate) static COMPILER: CompilerHooks = CompilerHooks {
     compile_eval: hook_compile_eval,
     compile_function: hook_compile_function,
     compile_script: hook_compile_script,
