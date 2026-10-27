@@ -686,12 +686,15 @@ fn a_termination_stops_a_cleanup_chain_and_the_rest_runs_later() {
 /// A builtin cleanup callback (`Boolean`) takes a budget unit and polls per cell, as a job
 /// does (Codex C2-1): an `InterruptHandle` request runs during a cleanup of 12,000 cells (more
 /// than the 10,000 units of one budget). With a request that also terminates, the cleanup
-/// stops and the cells not yet served stay in the registry (`unregister` finds them); with a
-/// request that only marks, every cell is served. Before the fix a builtin callback ran no
-/// poll, so the request waited for the next one. No GC stress (12,000 registrations).
+/// stops and the cells not yet served stay in the registry (`unregister` finds them); the next
+/// checkpoint, with no GC between, serves them (the pending flag is set again when the poll
+/// stops the cleanup; verifier C V-C1). With a request that only marks, every cell is served.
+/// Before the fix a builtin callback ran no poll, so the request waited for the next one. No
+/// GC stress (12,000 registrations).
 #[test]
 fn a_builtin_cleanup_callback_polls_for_interrupts() {
-    for terminate in [true, false] {
+    // (terminate, a second checkpoint after the first)
+    for (terminate, again) in [(true, false), (true, true), (false, false)] {
         common::on_big_stack(move || {
             let mut i = log_isolate(false);
             run_checkpoint(
@@ -718,8 +721,13 @@ var fr = new FinalizationRegistry(Boolean);
                 Err(e) => assert!(terminate && e.terminated, "{}", e.message),
                 Ok(()) => assert!(!terminate, "the termination stops the cleanup"),
             }
+            if again {
+                i.perform_microtask_checkpoint()
+                    .map_err(|e| e.message)
+                    .unwrap();
+            }
             run(&mut i, "log('left', fr.unregister(tok));").unwrap();
-            assert_eq!(take_log(), [format!("left {terminate}")]);
+            assert_eq!(take_log(), [format!("left {}", terminate && !again)]);
             i.verify_heap().expect("a valid heap");
         });
     }
