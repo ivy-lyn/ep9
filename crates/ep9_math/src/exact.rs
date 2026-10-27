@@ -51,12 +51,18 @@ impl FmaOps for SoftFma {
 /// `cargo xtask fp-check` allows it. `$generic` must be `#[inline(always)]`.
 ///
 /// Both copies are exact, so they give the same bits (H36 allows a hardware/software dispatch
-/// only between exact implementations).
+/// only between exact implementations). In test builds, `with_soft_fma` makes every entry
+/// point take the [`SoftFma`] copy on the calling thread, so a test can compare whole functions
+/// (fast and accurate paths) with both FMAs.
 macro_rules! multiversion {
     ($(#[$m:meta])* $vis:vis fn $name:ident($($arg:ident: $ty:ty),* $(,)?) -> $ret:ty = $generic:ident;) => {
         $(#[$m])*
         #[inline(never)]
         $vis fn $name($($arg: $ty),*) -> $ret {
+            #[cfg(test)]
+            if $crate::exact::soft_fma_forced() {
+                return $generic::<$crate::exact::SoftFma>($($arg),*);
+            }
             #[cfg(target_arch = "x86_64")]
             {
                 #[target_feature(enable = "fma")]
@@ -81,6 +87,26 @@ macro_rules! multiversion {
             }
         }
     };
+}
+
+#[cfg(test)]
+thread_local! {
+    static FORCE_SOFT_FMA: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
+/// Test builds: true while [`with_soft_fma`] runs on this thread.
+#[cfg(test)]
+pub(crate) fn soft_fma_forced() -> bool {
+    FORCE_SOFT_FMA.with(core::cell::Cell::get)
+}
+
+/// Test builds: runs `f` with every `multiversion!` entry point on [`SoftFma`] (this thread).
+#[cfg(test)]
+pub(crate) fn with_soft_fma<R>(f: impl FnOnce() -> R) -> R {
+    FORCE_SOFT_FMA.with(|c| c.set(true));
+    let r = f();
+    FORCE_SOFT_FMA.with(|c| c.set(false));
+    r
 }
 
 #[inline(always)]

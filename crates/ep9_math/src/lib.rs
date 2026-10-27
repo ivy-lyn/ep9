@@ -8,6 +8,10 @@
 //! | [`pow_js`] | `**`, `Math.pow` | the JS special cases, then the correctly rounded `pow` (CORE-MATH `cr_pow` port, M4-P1) |
 //! | [`exp()`] | `Math.exp` | correctly rounded (CORE-MATH `cr_exp` port, M4-P1) |
 //! | [`log()`] | `Math.log` | correctly rounded (CORE-MATH `cr_log` port, M4-P1) |
+//! | [`sin()`], [`cos()`], [`tan()`], [`asin()`], [`acos()`], [`atan()`], [`atan2()`] | `Math.sin` ... `Math.atan2` | correctly rounded (CORE-MATH ports, M4-P4) |
+//! | [`sinh()`], [`cosh()`], [`tanh()`], [`asinh()`], [`acosh()`], [`atanh()`] | `Math.sinh` ... `Math.atanh` | correctly rounded (CORE-MATH ports, M4-P4) |
+//! | [`log2()`], [`log10()`], [`log1p()`], [`expm1()`], [`cbrt()`] | the `Math` functions of the same names | correctly rounded (CORE-MATH ports, M4-P4) |
+//! | [`hypot_js`] | `Math.hypot` | V8 `MathHypot` port: IEEE operations only, the same bits as node (M4-P4) |
 //! | [`round_js`], [`fround`] | `Math.round`, `Math.fround` | exact |
 //! | [`fma_exact`], [`two_prod`], [`two_sum`], [`fma_soft`] | building blocks of the CR functions | exact |
 //!
@@ -19,7 +23,10 @@
 //! has it and with the exact software FMA elsewhere (the same bits).
 //!
 //! The CR ports keep the CORE-MATH tables as written in C: `hf` (crate-private) reads each C99 hexadecimal
-//! floating literal at compile time. Provenance: `THIRD-PARTY-LICENSE` ("CORE-MATH").
+//! floating literal at compile time. Provenance: `THIRD-PARTY-LICENSE` ("CORE-MATH", "V8").
+//!
+//! Golden tests (H36 Rules row 5, H36-Q6): `golden.rs` (tests only) pins the SHA-256 of each
+//! function's results on 1,000,000 fixed inputs, so every target must give the same bits.
 #![deny(unsafe_code)]
 
 #[macro_use]
@@ -37,6 +44,8 @@ mod cosh;
 mod exp;
 mod expm1;
 mod fmod;
+#[cfg(test)]
+mod golden;
 mod hypot;
 mod log;
 mod log10;
