@@ -1,6 +1,6 @@
 # lit-object-methods: script (sloppy)
 # | var k; ({m() { return 1; }, get g() { return 2; }, set g(v) {}, [k]() {}, get [k]() {}, f: function() {}, a: () => 1, [k]: function() {}});
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=139 source=embedded hints=none
 source_hash=520c0d0766435a507df449a5adcbd0b2d1a2a46f980eeb26c3c2077062d38352
 strings (7):

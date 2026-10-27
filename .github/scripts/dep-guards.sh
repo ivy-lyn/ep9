@@ -177,4 +177,103 @@ else
   ok "(10) ep9_unit does not exist yet"
 fi
 
+# 11) The ep9_vm features `spike-native` (Spike B's native entry) and `ic-stats` (IC counters)
+#     are never in the ep9 graph, default or jitless (plan M0 month 2, rule 11; H27). Control:
+#     `-p ep9_vm --features spike-native,ic-stats` must show both.
+if grep -q "ep9_cli" <<< "$members" && member_exists ep9_vm; then
+  for feat in spike-native ic-stats; do
+    feature_check 11 ep9_vm "$feat" on "control: -p ep9_vm --features spike-native,ic-stats" -p ep9_vm --features spike-native,ic-stats
+    feature_check 11 ep9_vm "$feat" off "the default ep9 (-p ep9_cli)" -p ep9_cli
+    feature_check 11 ep9_vm "$feat" off "the jitless ep9 (-p ep9_cli --no-default-features)" -p ep9_cli --no-default-features
+  done
+fi
+
+# 12) H5: the bytecode compiler is always linked. ep9 (the runtime crate, ep9_cli for now) has
+#     ep9_frontend in its normal graph, default and jitless; eval reaches it through the
+#     IsolateConfig::compiler hook. Control: ep9_vm's graph must not show ep9_frontend (ep9_vm
+#     has no edge to it), so a query that always matches fails here instead of passing.
+# present_in <package> <cargo tree args... -i <dep>>: <package> reaches <dep> in the given graph.
+# cargo tree must exit 0, and its stdout (the inverted tree, one node per line with
+# --prefix none) must hold a "<package> v" node. Only stdout is read: for a graph without <dep>
+# on those edges cargo tree exits 0 with "warning: nothing to print." on stderr and no stdout.
+present_in() {
+  local pkg="$1" out
+  shift
+  out="$(cargo tree --locked --target all --prefix none -p "$pkg" "$@")" || return 1
+  grep -q "^$pkg v" <<< "$out"
+}
+if grep -q "ep9_cli" <<< "$members"; then
+  if absent_from -p ep9_vm -e normal,build -i ep9_frontend; then ok "(12) control: ep9_vm has no ep9_frontend"; else bad "(12) control: ep9_vm reaches ep9_frontend (or cargo tree failed)"; fi
+  # Control for present_in: ep9_builtins has ep9_frontend only as a dev-dependency (check 8
+  # keeps its normal edges to ep9_vm and ep9_math), so on normal edges cargo tree prints
+  # nothing and present_in must say no.
+  if present_in ep9_builtins -e normal -i ep9_frontend 2>/dev/null; then bad "(12) control: present_in accepts ep9_builtins -> ep9_frontend on normal edges (a dev-only edge)"; else ok "(12) control: present_in rejects a dev-only edge (ep9_builtins -e normal -i ep9_frontend)"; fi
+  if present_in ep9_cli -e normal -i ep9_frontend; then ok "(12) the default ep9 (-p ep9_cli) links ep9_frontend"; else bad "(12) the default ep9 (-p ep9_cli) does not link ep9_frontend"; fi
+  if present_in ep9_cli --no-default-features -e normal -i ep9_frontend; then ok "(12) the jitless ep9 (-p ep9_cli --no-default-features) links ep9_frontend"; else bad "(12) the jitless ep9 does not link ep9_frontend"; fi
+fi
+
+# 13) H23: release builds abort on a panic, so no panic unwinds through a JIT or AOT frame.
+#     [profile.release] of Cargo.toml has `panic = "abort"` (dev-opt inherits it), and no other
+#     profile table and no .cargo/config.toml (or legacy .cargo/config) sets `panic`. cargo tree
+#     and cargo metadata do not show profiles, so this reads the files. TOML can spell the key in
+#     many ways (`"panic" =`, `'panic' =`, `release.panic =`, `release = { panic = ... }`, a
+#     \u escape in a quoted key), so the scan flags every line where `panic` can be a key, and a
+#     line with a quoted key that holds an escape; it may flag more than cargo reads, never less.
+#     Controls: the scan must flag each spelling in a sample, must not flag `panic_x` or
+#     `no-panic` keys or a comment line, and the Cargo.toml rule must accept only the one line.
+# panic_keys <file>: "<table> <line>" for every such line; the table is the last [header] seen.
+panic_keys() {
+  awk 'BEGIN {
+      q = sprintf("%c", 39)
+      key = "(^|[.{,[:space:]\"" q "])panic[\"" q "]?[[:space:]]*="
+      esc = "\\\\[uU][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][^\"" q "=]*[\"" q "][[:space:]]*="
+    }
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*\[/ { t = $0; sub(/[[:space:]]*#.*/, "", t); gsub(/[[:space:]]/, "", t); next }
+    $0 ~ key || $0 ~ esc { l = $0; sub(/^[[:space:]]+/, "", l); sub(/[[:space:]]+$/, "", l); print t " " l }' "$1"
+}
+# release_abort_only <keys>: the keys of Cargo.toml are exactly [profile.release] panic = "abort".
+release_abort_only() {
+  [ "$(grep -c . <<< "$1")" = 1 ] &&
+    grep -Eq '^\[profile\.release\] panic[[:space:]]*=[[:space:]]*"abort"[[:space:]]*(#.*)?$' <<< "$1"
+}
+control=""
+while IFS= read -r sample; do
+  [ -n "$(panic_keys <(printf '%b' "$sample"))" ] || control="$control [$sample]"
+done <<'SAMPLES'
+[profile.dev] # x\n  panic = "unwind"  # y\n[x]\n
+[profile.release]\n"panic" = "unwind"\n
+[profile.release]\n'panic' = "unwind"\n
+[profile]\nrelease.panic = "unwind"\n
+[profile]\nrelease . "panic" = "unwind"\n
+[profile]\nrelease = { panic = "unwind" }\n
+[profile]\nrelease = { opt-level = 3,panic = "unwind" }\n
+[profile]\nrelease = { debug = "#", panic = "unwind" }\n
+[profile.release]\n"pan\\u0069c" = "unwind"\n
+SAMPLES
+if [ -n "$(panic_keys <(printf '[profile.release]\npanic_x = 1\nno-panic = 2\n  # panic = "unwind"\n'))" ]; then
+  control="$control [panic_x, no-panic or a comment line flagged]"
+fi
+release_abort_only "$(panic_keys <(printf '[profile.release] # r\npanic = "abort" # H23\n'))" ||
+  control="$control [the Cargo.toml rule rejects the one allowed line]"
+release_abort_only "$(panic_keys <(printf '[profile.release]\npanic = "abort"\n[profile.dev]\n"panic" = "unwind"\n'))" &&
+  control="$control [the Cargo.toml rule accepts a second panic key]"
+if [ -z "$control" ]; then
+  keys="$(panic_keys Cargo.toml)"
+  if release_abort_only "$keys"; then
+    ok "(13) [profile.release] has panic = \"abort\", and no other profile sets panic"
+  else
+    bad "(13) Cargo.toml must set panic = \"abort\" in [profile.release] and nowhere else, in no other spelling (H23); found: $(if [ -n "$keys" ]; then paste -sd ';' - <<< "$keys"; else echo "no panic key"; fi)"
+  fi
+  for f in .cargo/config.toml .cargo/config; do
+    if [ -f "$f" ] && [ -n "$(panic_keys "$f")" ]; then
+      bad "(13) $f sets panic: $(panic_keys "$f" | paste -sd ';' -)"
+    else
+      ok "(13) $f sets no panic"
+    fi
+  done
+else
+  bad "(13) control: the panic scan failed on samples:$control"
+fi
+
 exit "$fail"

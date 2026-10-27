@@ -128,6 +128,28 @@ fn a_shadow_hides_a_capture_only_where_it_is_in_scope() {
     check_case("closure_shadowing.rs");
 }
 
+/// `IteratorRecord` (H20 ABI-3) is stack-only because it holds `Local`s: next to the real
+/// `crates/ep9_vm/src/abi/iter.rs`, `Vec<IteratorRecord>` is a finding. The same case alone is
+/// clean, so the finding comes from the real definition, not from a name list.
+#[test]
+fn a_vec_of_iterator_records_is_a_finding() {
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("gc_lint_iterator_record");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let case = "iterator_record/records_in_vec.rs";
+    fs::copy(fixtures().join(case), root.join("records_in_vec.rs")).unwrap();
+    let alone = gc_lint(Some(&root), &["records_in_vec.rs"]);
+    assert_eq!(alone.status.code(), Some(0));
+    let iter_rs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/ep9_vm/src/abi/iter.rs");
+    fs::copy(iter_rs, root.join("iter.rs")).unwrap();
+    let out = gc_lint(Some(&root), &["records_in_vec.rs", "iter.rs"]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = stdout(&out);
+    assert_eq!(reported(&text, "records_in_vec.rs"), flagged(case));
+    assert!(reported(&text, "iter.rs").is_empty(), "{text}");
+    fs::remove_dir_all(&root).unwrap();
+}
+
 #[test]
 fn clean_patterns_pass() {
     assert!(flagged("clean.rs").is_empty());

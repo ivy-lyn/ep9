@@ -21,6 +21,13 @@ jit = ["ep9_platform/jit"]
 # H15 expansion (c): handlers end in `become` (guaranteed tail calls). Needs a nightly toolchain
 # with `explicit_tail_calls` (D8: opt-in). Stable builds have the match loop and sibling calls.
 become = []
+# Spike B (M0 month 2; docs/measurements/2026-10-22-spike-b-protocol.md): the native-entry path
+# for spike-made code in T0's call path. Implies `jit`. Only spikes/spike-b turns it on; never in
+# the ep9 graph (.github/scripts/dep-guards.sh check 11).
+spike-native = ["jit"]
+# Inline-cache hit and miss counters (H16), for reports. Off in every shipped build; never in the
+# ep9 graph (.github/scripts/dep-guards.sh check 11).
+ic-stats = []
 
 [lints]
 workspace = true

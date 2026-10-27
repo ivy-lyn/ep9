@@ -2,9 +2,13 @@
 
 use std::io::Write as _;
 
+use ep9_bytecode::{EvalContext, FunctionCtorKind};
 use ep9_frontend::{CodegenError, CompileError, CompileOptions, Position, SourceOpts, Strictness};
 use ep9_heap::HeapConfig;
-use ep9_vm::{Args, Cx, Exception, Isolate, IsolateConfig, JsResult, Local};
+use ep9_vm::{
+    Args, CompileFailure, CompileResult, CompilerHooks, Cx, Exception, Isolate, IsolateConfig,
+    JsResult, Local,
+};
 
 use crate::args::{Options, Source};
 
@@ -110,6 +114,10 @@ pub fn uncaught_text(e: &Exception) -> String {
 }
 
 fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
+    // Test hook (crates/ep9_cli/tests/cli.rs): a panic on the isolate thread.
+    if std::env::var_os("EP9_CLI_FAULT").is_some_and(|v| v == "panic") {
+        panic!("injected panic (EP9_CLI_FAULT=panic)");
+    }
     let source_opts = if opts.module {
         SourceOpts::module()
     } else if opts.strict {
@@ -140,6 +148,7 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
         dispatch: opts.dispatch,
         feedback_threshold: opts.feedback_threshold,
         builtins: Some(&ep9_builtins::TABLE),
+        compiler: Some(&COMPILER),
         ..IsolateConfig::default()
     };
     let mut isolate = match Isolate::new(config) {
@@ -151,6 +160,7 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
     };
     isolate.register_host_function("print", 1, print);
     isolate.register_host_function("gc", 0, gc);
+    // `run_script` drains the microtask queue (promise jobs) before it returns.
     let result = isolate.run_script(unit, file);
     let _ = std::io::stdout().flush();
     let status = match result {
@@ -159,6 +169,18 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
             eprintln!("{}", uncaught_text(&e));
             EXIT_JS_ERROR
         }
+    };
+    // A promise rejected with no handler after the final checkpoint is reported like an
+    // uncaught exception, and the run exits 1 (node's default `--unhandled-rejections=throw`
+    // reports the first one). An uncaught exception of the script itself comes first.
+    let rejections = isolate.take_unhandled_rejections();
+    let status = match rejections.first() {
+        Some(e) if status == EXIT_OK => {
+            let _ = std::io::stdout().flush();
+            eprintln!("{}", uncaught_text(e));
+            EXIT_JS_ERROR
+        }
+        _ => status,
     };
     if opts.gc_stats {
         let st = isolate.heap().stats();
@@ -180,6 +202,76 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
     status
 }
 
+// ---- the compiler hooks (C2): ep9_frontend behind `IsolateConfig::compiler` ----------------
+
+/// The compiler entry points of the CLI's isolates: ep9_vm does not link the front end, so eval,
+/// `Function()` and run-time scripts reach it through these. Eval code (`compile_eval`, M2-P2)
+/// and the `Function()` family (`compile_function_ctor`, P3-FNCTOR; the async kinds answer
+/// `Unsupported`) compile.
+static COMPILER: CompilerHooks = CompilerHooks {
+    compile_eval: hook_compile_eval,
+    compile_function: hook_compile_function,
+    compile_script: hook_compile_script,
+};
+
+fn hook_compile_eval(source: &str, ctx: &EvalContext) -> CompileResult {
+    ep9_frontend::compile_eval(source, ctx, CompileOptions::default()).map_err(hook_failure)
+}
+
+fn hook_compile_function(kind: FunctionCtorKind, params: &str, body: &str) -> CompileResult {
+    ep9_frontend::compile_function_ctor(kind, params, body, CompileOptions::default())
+        .map_err(hook_failure)
+}
+
+fn hook_compile_script(source: &str) -> CompileResult {
+    let opts = SourceOpts::script(Strictness::Sloppy);
+    ep9_frontend::compile(source, opts, CompileOptions::default()).map_err(hook_failure)
+}
+
+/// A front-end error as the VM's [`CompileFailure`] (the message without a position).
+fn hook_failure(e: CodegenError) -> CompileFailure {
+    match e {
+        CodegenError::Compile(CompileError::Syntax(errors)) => {
+            CompileFailure::Syntax(errors.first().message.clone())
+        }
+        CodegenError::Compile(CompileError::Range(r)) => CompileFailure::Range(r.message),
+        CodegenError::Unsupported(u) => CompileFailure::Unsupported(u.feature.to_string()),
+        CodegenError::Limit(m) => CompileFailure::Range(m),
+        CodegenError::Internal(m) => CompileFailure::Internal(m),
+    }
+}
+
+/// The panic hook of the `ep9` binary. A panic on any thread is an ep9 bug: print one line and
+/// exit [`EXIT_INTERNAL`] at once. So the exit status is 70 whether the build unwinds or
+/// aborts on a panic (`panic = "abort"`, P2-INFRA2, would give 134 after the default hook).
+/// `RUST_BACKTRACE=1` adds the backtrace.
+fn internal_error(info: &std::panic::PanicHookInfo<'_>) {
+    let msg = info
+        .payload()
+        .downcast_ref::<&str>()
+        .map(ToString::to_string)
+        .or_else(|| info.payload().downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic without a message".into());
+    // Write errors are ignored: a panic inside the hook would abort.
+    let mut err = std::io::stderr().lock();
+    let _ = writeln!(err, "ep9: internal error: {msg} (this is an ep9 bug)");
+    if let Some(at) = info.location() {
+        let thread = std::thread::current();
+        let _ = writeln!(
+            err,
+            "ep9: panicked at {at} on thread '{}'",
+            thread.name().unwrap_or("?")
+        );
+    }
+    let trace = std::backtrace::Backtrace::capture();
+    if trace.status() == std::backtrace::BacktraceStatus::Captured {
+        let _ = writeln!(err, "{trace}");
+    }
+    drop(err);
+    // Flushes stdout (what the script printed so far), then ends every thread.
+    std::process::exit(i32::from(EXIT_INTERNAL));
+}
+
 /// Runs the script of `opts` on a new thread with a `stack_mib` MiB stack. Returns the exit status.
 pub fn main(opts: Options) -> u8 {
     let (file, source) = match &opts.source {
@@ -199,12 +291,14 @@ pub fn main(opts: Options) -> u8 {
         },
     };
     let stack = opts.stack_mib << 20;
+    std::panic::set_hook(Box::new(internal_error));
     let worker = std::thread::Builder::new()
         .name("ep9-isolate".into())
         .stack_size(stack)
         .spawn(move || run_on_this_thread(&opts, &file, &source));
     match worker.map(std::thread::JoinHandle::join) {
         Ok(Ok(status)) => status,
+        // Not reached while the hook exits first; kept in case a panic skips the hook.
         Ok(Err(_)) => {
             eprintln!("ep9: internal error: the engine panicked (this is an ep9 bug)");
             EXIT_INTERNAL
@@ -235,5 +329,44 @@ mod tests {
             print_line(cx, args.into_iter())
         });
         assert_eq!(line.unwrap(), "Symbol(x) Symbol() x 1\n");
+    }
+
+    /// The hooks reach the front end: a script, eval code (P2-EVAL-FE) and `Function()` code
+    /// (P3-FNCTOR) compile, an early error is a `Syntax` failure, and an async function is
+    /// `Unsupported`.
+    #[test]
+    fn the_compiler_hooks_reach_the_front_end() {
+        let iso = Isolate::new(IsolateConfig {
+            compiler: Some(&COMPILER),
+            ..IsolateConfig::default()
+        })
+        .unwrap();
+        let hooks = iso.compiler().unwrap();
+        assert!((hooks.compile_script)("var a = 1;").is_ok());
+        assert!(matches!(
+            (hooks.compile_script)("let a; let a;"),
+            Err(CompileFailure::Syntax(_))
+        ));
+        let ctx = EvalContext::default();
+        assert!((hooks.compile_eval)("1", &ctx).is_ok());
+        assert!(matches!(
+            (hooks.compile_eval)("return 1", &ctx),
+            Err(CompileFailure::Syntax(_))
+        ));
+        assert!((hooks.compile_function)(FunctionCtorKind::Normal, "a", "return a").is_ok());
+        assert!(matches!(
+            (hooks.compile_function)(FunctionCtorKind::Normal, "/*", "*/){"),
+            Err(CompileFailure::Syntax(_))
+        ));
+        assert_eq!(
+            (hooks.compile_function)(FunctionCtorKind::Async, "a", "return await a").unwrap_err(),
+            CompileFailure::Unsupported("async functions".to_string())
+        );
+        assert!(
+            Isolate::new(IsolateConfig::default())
+                .unwrap()
+                .compiler()
+                .is_none()
+        );
     }
 }

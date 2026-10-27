@@ -87,6 +87,12 @@ fn intrinsic_keys_follow_v8s_order() {
                 "length",
                 "name",
                 "prototype",
+                "isFinite",
+                "isInteger",
+                "isNaN",
+                "isSafeInteger",
+                "parseFloat",
+                "parseInt",
                 "MAX_VALUE",
                 "MIN_VALUE",
                 "NaN",
@@ -144,6 +150,25 @@ fn intrinsic_keys_follow_v8s_order() {
             k.extend(wk(&["toStringTag", "toPrimitive"]));
             k
         }),
+        (
+            IntrinsicId::Reflect,
+            s(&[
+                "defineProperty",
+                "deleteProperty",
+                "apply",
+                "construct",
+                "get",
+                "getOwnPropertyDescriptor",
+                "getPrototypeOf",
+                "has",
+                "isExtensible",
+                "ownKeys",
+                "preventExtensions",
+                "set",
+                "setPrototypeOf",
+                "Symbol(Symbol.toStringTag)",
+            ]),
+        ),
         (IntrinsicId::Math, {
             let mut k = s(&[
                 "abs", "ceil", "floor", "fround", "max", "min", "pow", "round", "sign", "sqrt",
@@ -180,9 +205,14 @@ fn property_attributes() {
                 (IntrinsicId::GlobalObject, "Math"),
                 (IntrinsicId::GlobalObject, "isNaN"),
                 (IntrinsicId::GlobalObject, "isFinite"),
+                (IntrinsicId::GlobalObject, "parseFloat"),
+                (IntrinsicId::GlobalObject, "parseInt"),
+                (IntrinsicId::GlobalObject, "Reflect"),
                 (IntrinsicId::Number, "prototype"),
                 (IntrinsicId::Number, "MAX_VALUE"),
                 (IntrinsicId::Number, "EPSILON"),
+                (IntrinsicId::Number, "isSafeInteger"),
+                (IntrinsicId::Reflect, "get"),
                 (IntrinsicId::NumberPrototype, "constructor"),
                 (IntrinsicId::NumberPrototype, "toString"),
                 (IntrinsicId::String, "fromCharCode"),
@@ -211,6 +241,7 @@ fn property_attributes() {
                 (IntrinsicId::SymbolPrototype, "toPrimitive"),
                 (IntrinsicId::SymbolPrototype, "toStringTag"),
                 (IntrinsicId::Math, "toStringTag"),
+                (IntrinsicId::Reflect, "toStringTag"),
             ] {
                 let s = cx.intrinsic(IntrinsicId::Symbol);
                 let sym = cx.get(s, name)?;
@@ -238,9 +269,14 @@ fn property_attributes() {
         ("globalThis.Math", METHOD),
         ("globalThis.isNaN", METHOD),
         ("globalThis.isFinite", METHOD),
+        ("globalThis.parseFloat", METHOD),
+        ("globalThis.parseInt", METHOD),
+        ("globalThis.Reflect", METHOD),
         ("%Number%.prototype", NONE),
         ("%Number%.MAX_VALUE", NONE),
         ("%Number%.EPSILON", NONE),
+        ("%Number%.isSafeInteger", METHOD),
+        ("%Reflect%.get", METHOD),
         ("%Number.prototype%.constructor", METHOD),
         ("%Number.prototype%.toString", METHOD),
         ("%String%.fromCharCode", METHOD),
@@ -252,6 +288,7 @@ fn property_attributes() {
         ("%Symbol.prototype%[@@toPrimitive]", C),
         ("%Symbol.prototype%[@@toStringTag]", C),
         ("%Math%[@@toStringTag]", C),
+        ("%Reflect%[@@toStringTag]", C),
     ]
     .iter()
     .map(|(k, a)| (k.to_string(), Some(*a)))

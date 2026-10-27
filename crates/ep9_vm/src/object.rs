@@ -20,20 +20,27 @@
 //! | FUNCTION | 17 | +24 FunctionInfo (native word), +32 context, +40 `[[HomeObject]]` or undefined | 2 (`length`, `name`) |
 //! | ARRAY | 18 | +24 length (int32); elements at +16 | 0 |
 //! | ERROR | 19 | +24 unit index (int32 or undefined), +32 source offset (int32) | 2 |
-//! | ITERATOR | 20 | +24 iterated value: an object (undefined when done, null while an array iterator's `next` runs user code) or a string ("" when done), +32 next index (int32) | 0 |
+//! | ITERATOR | 20 | +24 iterated value: an object (undefined when done, null while an array iterator's `next` runs user code) or a string ("" when done), +32 next index (int32), +40 kind (int32, [`iter_kind`]: values, keys, entries) | 0 |
 //! | PRIMITIVE_WRAPPER | 21 | +24 the primitive | 0 |
 //! | BOUND_FUNCTION | 22 | +24 target, +32 bound `this`, +40 bound arguments | 2 |
+//! | GENERATOR | 23 | +24 state, +32 mode (int32s), +40 function, +48 receiver, +56 context, +64 registers (an ELEMENTS cell), +72 resume mode (int32), +80 async slot ([`genf`]) | 0 |
+//! | SLOT_OBJECT | 24 | +24 ObjectClass id (int32), +32 internal slots: an ELEMENTS cell of n Values, or undefined when n = 0 ([`slot_obj`]) | 0 |
 //!
 //! | Kind | Id | Layout (byte offsets) | Size |
 //! |---|---|---|---|
 //! | ELEMENTS | 65 | +8 capacity (int32), +16 values (hole = empty) | 16 + 8 cap |
-//! | CONTEXT | 66 | +8 previous, +16 scope id (int32), +24 length (int32), +32 slots | 32 + 8 len |
+//! | CONTEXT | 66 | +8 previous, +16 scope (native word: a [`ContextScope`] record), +24 length (int32), +32 slots | 32 + 8 len |
 //!
 //! Every word after word0 is a valid `Value` (raw pointers use the native-word encoding of
 //! `frame.rs`), so one trace function per size visits them all; no trace function visits
 //! the word0 shape (the heap marks it, H08). The fixed-field API ([`new_object_with_fields`],
 //! [`fixed_get`], [`fixed_set`]) reads and writes fixed fields by index, so
 //! PRIMITIVE_WRAPPER and BOUND_FUNCTION code never hard-codes an offset.
+//!
+//! OBJECT_LAYOUT 2 (`versions.rs`, M2-P0): the GENERATOR and SLOT_OBJECT kinds, the ITERATOR
+//! kind field (+40; the cell grows from 40 to 48 B) and the CONTEXT scope word, which is now a
+//! native word that points at the VM-side [`ContextScope`] of the context's unit scope (C5),
+//! so a context names its slots: [`context_scope`] gives the unit and the scope descriptor.
 
 use ep9_heap::{CellKind, CellPtr, CellSize, Heap, KindId, Slot, Tracer};
 
@@ -41,7 +48,7 @@ use crate::frame::{HOLE, NULL, UNDEFINED, int32_bits, int32_of, native_of, nativ
 use crate::kinds as kind;
 use crate::runtime::{Atom, Root, Runtime, val};
 use crate::shape;
-use crate::unit::FunctionInfo;
+use crate::unit::{ContextScope, FunctionInfo, LoadedUnit};
 
 pub(crate) use crate::key::key_eq;
 pub(crate) use crate::kinds::{
@@ -79,7 +86,70 @@ pub(crate) mod fun {
 pub(crate) mod iter {
     pub const ITERATED: usize = 24;
     pub const NEXT: usize = 32;
+    /// The iteration kind (int32, [`super::iter_kind`]).
+    pub const KIND: usize = 40;
+    pub const FIXED: usize = 3;
+}
+
+/// The kind field of an ITERATOR cell (CreateArrayIterator's `kind`, §23.1.5.1). String
+/// iterators use [`VALUES`](iter_kind::VALUES).
+pub(crate) mod iter_kind {
+    pub const VALUES: i32 = 0;
+    pub const KEYS: i32 = 1;
+    pub const ENTRIES: i32 = 2;
+}
+
+/// GENERATOR fixed fields (OBJECT_LAYOUT 2). Every field holds a Value; state, mode and
+/// resume mode are int32s. One kind serves generators, async functions and async generators
+/// (the mode). Accessors: [`new_generator`], [`gen_get`], [`gen_set`], [`gen_regs`].
+pub(crate) mod genf {
+    /// The suspend point id, or a closed/executing marker (int32).
+    pub const STATE: usize = 24;
+    /// [`MODE_SYNC`], [`MODE_ASYNC_FUNCTION`] or [`MODE_ASYNC_GENERATOR`] (int32).
+    pub const MODE: usize = 32;
+    /// The generator function.
+    pub const FUNCTION: usize = 40;
+    /// The receiver (`this`) of the body.
+    pub const RECEIVER: usize = 48;
+    /// The context of the suspended frame.
+    pub const CONTEXT: usize = 56;
+    /// The saved parameters and registers: an ELEMENTS cell (never a Rust buffer, plan rule 8).
+    pub const REGS: usize = 64;
+    /// How the frame resumes: next, return or throw (int32).
+    pub const RESUME_MODE: usize = 72;
+    /// Async functions and async generators: the promise or the request queue.
+    #[allow(dead_code)] // month 3 (async)
+    pub const ASYNC: usize = 80;
+    pub const FIXED: usize = 8;
+    pub const MODE_SYNC: i32 = 0;
+    #[allow(dead_code)] // month 3 (async)
+    pub const MODE_ASYNC_FUNCTION: i32 = 1;
+    #[allow(dead_code)] // month 3 (async)
+    pub const MODE_ASYNC_GENERATOR: i32 = 2;
+    /// [`STATE`] of a completed generator (M2-P1-GEN-NUMBERS; suspend ids are >= 0).
+    pub const STATE_CLOSED: i32 = -1;
+    /// [`STATE`] while the body runs.
+    pub const STATE_EXECUTING: i32 = -2;
+    /// [`RESUME_MODE`] values (M2-P1-GEN-NUMBERS, V8's `JSGeneratorObject::ResumeMode`).
+    pub const RESUME_NEXT: i32 = 0;
+    pub const RESUME_RETURN: i32 = 1;
+    pub const RESUME_THROW: i32 = 2;
+    /// [`REGS`] index of the value that `next`/`return`/`throw` passed (`ResumeGenerator`
+    /// puts it in the accumulator); the saved parameters, then the registers, follow it.
+    pub const REGS_INPUT: usize = 0;
+}
+
+/// SLOT_OBJECT fixed fields (OBJECT_LAYOUT 2): the ObjectClass id and a separate cell for the
+/// internal slots. The internal slots are never in-object slots: property code owns those
+/// (`props::field_ref` stores named fields there, `props::to_dictionary` clears them), and it
+/// never touches fixed fields. Accessors: [`new_slot_object`] and its neighbours (file end).
+pub(crate) mod slot_obj {
+    /// The ObjectClass id (int32).
+    pub const CLASS: usize = 24;
+    /// The internal slots: an ELEMENTS cell of n Values, or undefined when the class has none.
+    pub const SLOTS: usize = 32;
     pub const FIXED: usize = 2;
+    pub const MAX_SLOTS: usize = 255; // most internal slots of one object (more is a caller bug)
 }
 
 pub(crate) mod arr {
@@ -208,6 +278,8 @@ const FIXED_COUNTS: [u8; 256] = {
     t[kind::ITERATOR.get() as usize] = iter::FIXED as u8;
     t[kind::PRIMITIVE_WRAPPER.get() as usize] = fixed::WRAPPER as u8;
     t[kind::BOUND_FUNCTION.get() as usize] = fixed::BOUND as u8;
+    t[kind::GENERATOR.get() as usize] = genf::FIXED as u8;
+    t[kind::SLOT_OBJECT.get() as usize] = slot_obj::FIXED as u8;
     t
 };
 
@@ -222,7 +294,9 @@ pub(crate) fn fixed_count(k: u8) -> usize {
             kind::ERROR,
             kind::ITERATOR,
             kind::PRIMITIVE_WRAPPER,
-            kind::BOUND_FUNCTION
+            kind::BOUND_FUNCTION,
+            kind::GENERATOR,
+            kind::SLOT_OBJECT
         ]
         .iter()
         .any(|x| x.get() == k),
@@ -275,7 +349,7 @@ fn object_kind(
 /// that owns a layout (strings, the property dictionary, symbols, shapes, feedback,
 /// accessors, ICs).
 pub(crate) fn register_kinds(heap: &Heap) {
-    let kinds: [(KindId, CellKind); 9] = [
+    let kinds: [(KindId, CellKind); 11] = [
         (
             kind::OBJECT,
             object_kind("object", object_size::<0>, trace_object::<0>),
@@ -326,6 +400,22 @@ pub(crate) fn register_kinds(heap: &Heap) {
                 "bound-function",
                 object_size::<{ fixed::BOUND }>,
                 trace_object::<{ fixed::BOUND }>,
+            ),
+        ),
+        (
+            kind::GENERATOR,
+            object_kind(
+                "generator",
+                object_size::<{ genf::FIXED }>,
+                trace_object::<{ genf::FIXED }>,
+            ),
+        ),
+        (
+            kind::SLOT_OBJECT,
+            object_kind(
+                "slot-object",
+                object_size::<{ slot_obj::FIXED }>,
+                trace_object::<{ slot_obj::FIXED }>,
             ),
         ),
         (
@@ -595,7 +685,8 @@ pub(crate) fn array_set_length(rt: &Runtime, a: u64, len: u32) -> bool {
 /// A new function object for `info` with `context`. It gets the own data properties
 /// `length` and `name` from the FunctionInfo, {w: false, e: false, c: true} (§10.2.9
 /// SetFunctionName, §10.2.10 SetFunctionLength), in its 2 in-object slots. `prototype`
-/// stays lazy (`exotic.rs`). GC point.
+/// stays lazy (`exotic.rs`). Its `[[Prototype]]` is %Function.prototype%, or
+/// %GeneratorFunction.prototype% for a generator function (§15.5.3). GC point.
 pub(crate) fn new_function(rt: &Runtime, info: *const FunctionInfo, context: u64) -> u64 {
     // SAFETY: function infos outlive the isolate's cells (units and host infos are never
     // freed while the isolate lives).
@@ -603,7 +694,11 @@ pub(crate) fn new_function(rt: &Runtime, info: *const FunctionInfo, context: u64
     // GC points first (the name atom of a host function, the shape); the values live in
     // Rust locals (CSS).
     let name = function_name(rt, fi);
-    let s = shape::function_shape(rt);
+    let s = if fi.is_generator() {
+        shape::generator_function_shape(rt)
+    } else {
+        shape::function_shape(rt)
+    };
     let f = alloc_with_shape(rt, kind::FUNCTION, s, fun::CAPACITY);
     init(f, fun::INFO, native_of(info));
     init(f, fun::CONTEXT, context);
@@ -654,10 +749,21 @@ pub(crate) fn set_home_object(rt: &Runtime, f: u64, home: u64) {
 /// string for a string iterator (CreateStringIterator, §22.1.5.1). The other states are listed
 /// at [`iterator_state`].
 pub(crate) fn new_iterator(rt: &Runtime, proto: u64, iterated: u64) -> u64 {
+    new_iterator_of_kind(rt, proto, iterated, iter_kind::VALUES)
+}
+
+/// [`new_iterator`] with the iteration kind `k` ([`iter_kind`]). GC point.
+pub(crate) fn new_iterator_of_kind(rt: &Runtime, proto: u64, iterated: u64, k: i32) -> u64 {
     let c = new_js_object(rt, kind::ITERATOR, proto, 0);
     init(c, iter::ITERATED, iterated);
     init(c, iter::NEXT, int32_bits(0));
+    init(c, iter::KIND, int32_bits(k));
     c.to_value().to_bits()
+}
+
+/// The iteration kind of an ITERATOR cell ([`iter_kind`]).
+pub(crate) fn iterator_kind(it: u64) -> i32 {
+    rd_i32(cell(it), iter::KIND)
 }
 
 /// (iterated value, next index) of an ITERATOR cell. Array iterator: an object (suspended),
@@ -676,6 +782,115 @@ pub(crate) fn set_iterator_state(rt: &Runtime, it: u64, iterated: u64, next: u32
     wr(&rt.heap, c, iter::NEXT, int32_bits(next as i32));
 }
 
+// ---- generators (GENERATOR cells, [`genf`]) ---------------------------------------------------
+
+/// A new GENERATOR object with prototype `proto` for the generator function `function`, in
+/// state executing with resume mode next: `receiver` is the body's `this`, `context` its
+/// context, and REGS a new ELEMENTS cell of `regs` Values (holes; the input slot undefined).
+/// GC point.
+pub(crate) fn new_generator(
+    rt: &Runtime,
+    proto: u64,
+    function: u64,
+    receiver: u64,
+    context: u64,
+    mode: i32,
+    regs: usize,
+) -> u64 {
+    // GC points first (the ELEMENTS cell, then the object); the values live in Rust locals
+    // (CSS) until the object holds them.
+    let r = new_elements(rt, regs.max(1));
+    init(r, elems::DATA + 8 * genf::REGS_INPUT, UNDEFINED);
+    let r = r.to_value().to_bits();
+    let g = new_js_object(rt, kind::GENERATOR, proto, 0);
+    init(g, genf::STATE, int32_bits(genf::STATE_EXECUTING));
+    init(g, genf::MODE, int32_bits(mode));
+    init(g, genf::FUNCTION, function);
+    init(g, genf::RECEIVER, receiver);
+    init(g, genf::CONTEXT, context);
+    init(g, genf::REGS, r);
+    init(g, genf::RESUME_MODE, int32_bits(genf::RESUME_NEXT));
+    init(g, genf::ASYNC, UNDEFINED);
+    g.to_value().to_bits()
+}
+
+/// GENERATOR field `off` ([`genf`]) of `g`.
+#[inline]
+pub(crate) fn gen_get(g: u64, off: usize) -> u64 {
+    debug_assert!(cell_kind(g) == kind::GENERATOR.get());
+    debug_assert!(
+        (genf::STATE..genf::STATE + 8 * genf::FIXED).contains(&off) && off.is_multiple_of(8)
+    );
+    rd(cell(g), off)
+}
+
+/// An int32 GENERATOR field (state, mode, resume mode) of `g`.
+#[inline]
+pub(crate) fn gen_get_i32(g: u64, off: usize) -> i32 {
+    int32_of(gen_get(g, off))
+}
+
+/// Stores GENERATOR field `off` of `g` (barriered).
+#[inline]
+pub(crate) fn gen_set(rt: &Runtime, g: u64, off: usize, v: u64) {
+    debug_assert!(cell_kind(g) == kind::GENERATOR.get());
+    debug_assert!(
+        (genf::STATE..genf::STATE + 8 * genf::FIXED).contains(&off) && off.is_multiple_of(8)
+    );
+    wr(&rt.heap, cell(g), off, v);
+}
+
+/// The saved values of a generator (its REGS cell): `[input, params.., registers..]`
+/// ([`genf::REGS_INPUT`]). A view of a live cell: hold it only while the generator is held,
+/// and do not keep it across a GC point after [`gen_release`].
+#[derive(Clone, Copy)]
+pub(crate) struct GenRegs {
+    cell: CellPtr,
+    len: usize,
+}
+
+impl GenRegs {
+    /// The number of saved slots.
+    #[inline]
+    pub fn len(self) -> usize {
+        self.len
+    }
+
+    /// Slot `i` (`i < len`).
+    #[inline]
+    pub fn get(self, i: usize) -> u64 {
+        assert!(i < self.len, "generator slot {i} out of range");
+        rd(self.cell, elems::DATA + 8 * i)
+    }
+
+    /// Stores slot `i` (`i < len`, barriered).
+    #[inline]
+    pub fn set(self, rt: &Runtime, i: usize, v: u64) {
+        assert!(i < self.len, "generator slot {i} out of range");
+        wr(&rt.heap, self.cell, elems::DATA + 8 * i, v);
+    }
+}
+
+/// The saved values of `g`, or `None` once they were released ([`gen_release`]).
+pub(crate) fn gen_regs(g: u64) -> Option<GenRegs> {
+    let r = gen_get(g, genf::REGS);
+    if r == UNDEFINED {
+        return None;
+    }
+    debug_assert!(cell_kind(r) == kind::ELEMENTS.get());
+    let c = cell(r);
+    Some(GenRegs {
+        cell: c,
+        len: rd_i32(c, elems::CAPACITY) as usize,
+    })
+}
+
+/// Drops the saved values of the completed generator `g` (REGS = undefined), so it keeps
+/// nothing alive that only its frame used.
+pub(crate) fn gen_release(rt: &Runtime, g: u64) {
+    gen_set(rt, g, genf::REGS, UNDEFINED);
+}
+
 /// IsConstructor (§7.2.4): a FUNCTION whose FunctionInfo has `[[Construct]]`, or a bound
 /// function whose target is a constructor (`bound::is_constructor`).
 pub(crate) fn is_constructor(f: u64) -> bool {
@@ -687,12 +902,32 @@ pub(crate) fn is_constructor(f: u64) -> bool {
     }
 }
 
-pub(crate) fn new_context(rt: &Runtime, previous: u64, scope: i32, len: usize) -> u64 {
+/// A new context with `len` slots (undefined) for the unit scope `scope`, whose previous
+/// context is `previous`. `scope` is an entry of its unit's [`LoadedUnit::context_scopes`],
+/// which lives as long as the isolate. GC point.
+pub(crate) fn new_context(
+    rt: &Runtime,
+    previous: u64,
+    scope: *const ContextScope,
+    len: usize,
+) -> u64 {
     let c = rt.alloc(kind::CONTEXT, ctxf::SLOTS + 8 * len);
     init(c, ctxf::PREVIOUS, previous);
-    init(c, ctxf::SCOPE, int32_bits(scope));
+    init(c, ctxf::SCOPE, native_of(scope));
     init(c, ctxf::LENGTH, int32_bits(len as i32));
     c.to_value().to_bits()
+}
+
+/// The unit and the scope descriptor of the context `c` (C5): a slot name resolves with
+/// `unit.string(scope.slots[i].name.index())`.
+pub(crate) fn context_scope<'a>(c: u64) -> (&'a LoadedUnit, &'a ep9_bytecode::Scope) {
+    // SAFETY: the SCOPE word of a CONTEXT cell is the native word of a `ContextScope` in a
+    // boxed LoadedUnit (`new_context`); units are never freed while the isolate lives
+    // (`Runtime::units` only grows), and the record's pointers point into that unit.
+    let cs = unsafe { &*native_ptr::<ContextScope>(rd(cell(c), ctxf::SCOPE)) };
+    // SAFETY: as above; `scope` points into the unit's verified scope table, which never
+    // changes after verification.
+    unsafe { (&*cs.unit, &*cs.scope) }
 }
 
 pub(crate) fn context_previous(c: u64) -> u64 {
@@ -730,4 +965,77 @@ pub(crate) fn error_site(e: u64) -> Option<(u32, u32)> {
 pub(crate) fn set_error_site(rt: &Runtime, e: u64, unit: u32, offset: u32) {
     wr(&rt.heap, cell(e), err::UNIT, int32_bits(unit as i32));
     wr(&rt.heap, cell(e), err::OFFSET, int32_bits(offset as i32));
+}
+
+// ---- SLOT_OBJECT: objects with internal slots (abi/slots.rs is the builtin ABI) ----------
+
+/// A new SLOT_OBJECT with prototype `proto` (an object or null), ObjectClass id `class` and
+/// `n` internal slots, all undefined; `n` = 0 makes no slots cell. It gets no in-object
+/// slots, so a named property goes out of line. Panics if `n` > [`slot_obj::MAX_SLOTS`].
+/// GC point.
+pub(crate) fn new_slot_object(rt: &Runtime, proto: u64, class: u16, n: usize) -> u64 {
+    assert!(
+        n <= slot_obj::MAX_SLOTS,
+        "{n} internal slots (at most {})",
+        slot_obj::MAX_SLOTS
+    );
+    // GC points first (the slots cell, then the object); the cell lives in a Rust local (CSS)
+    // until the object holds it, as in `new_generator`.
+    let slots = if n == 0 {
+        UNDEFINED
+    } else {
+        let c = rt.alloc(kind::ELEMENTS, elems::DATA + 8 * n);
+        init(c, elems::CAPACITY, int32_bits(n as i32));
+        for i in 0..n {
+            init(c, elems::DATA + 8 * i, UNDEFINED);
+        }
+        c.to_value().to_bits()
+    };
+    let o = new_js_object(rt, kind::SLOT_OBJECT, proto, 0);
+    init(o, slot_obj::CLASS, int32_bits(i32::from(class)));
+    init(o, slot_obj::SLOTS, slots);
+    o.to_value().to_bits()
+}
+
+/// The ObjectClass id of `v`, or `None` when `v` is not a SLOT_OBJECT (any Value).
+#[inline]
+pub(crate) fn slot_class(v: u64) -> Option<u16> {
+    if cell_kind(v) != kind::SLOT_OBJECT.get() {
+        return None;
+    }
+    Some(rd_i32(cell(v), slot_obj::CLASS) as u16)
+}
+
+/// The internal slot count of the SLOT_OBJECT `o`.
+#[inline]
+pub(crate) fn slot_count(o: u64) -> usize {
+    debug_assert!(cell_kind(o) == kind::SLOT_OBJECT.get());
+    let s = rd(cell(o), slot_obj::SLOTS);
+    if s == UNDEFINED {
+        return 0;
+    }
+    debug_assert!(cell_kind(s) == kind::ELEMENTS.get());
+    rd_i32(cell(s), elems::CAPACITY) as usize
+}
+
+/// Internal slot `i` of the SLOT_OBJECT `o`. Panics if `i` ≥ [`slot_count`].
+#[inline]
+pub(crate) fn slot_get(o: u64, i: usize) -> u64 {
+    let n = slot_count(o);
+    assert!(i < n, "internal slot {i} out of range (the object has {n})");
+    rd(cell(rd(cell(o), slot_obj::SLOTS)), elems::DATA + 8 * i)
+}
+
+/// Stores internal slot `i` of the SLOT_OBJECT `o` (barriered). Panics if `i` ≥
+/// [`slot_count`].
+#[inline]
+pub(crate) fn slot_set(rt: &Runtime, o: u64, i: usize, v: u64) {
+    let n = slot_count(o);
+    assert!(i < n, "internal slot {i} out of range (the object has {n})");
+    wr(
+        &rt.heap,
+        cell(rd(cell(o), slot_obj::SLOTS)),
+        elems::DATA + 8 * i,
+        v,
+    );
 }

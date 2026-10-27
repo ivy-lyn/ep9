@@ -1,6 +1,6 @@
 # iter-for-in-annex-b: script (sloppy)
 # | function f(o) { for (var k = 1 in o) ; return k; }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=50 source=embedded hints=none
 source_hash=81fb89a3580d77e91678346324382bf31e52bbf2ca6e48f4a03bdf8a0e7c8a88
 strings (1):

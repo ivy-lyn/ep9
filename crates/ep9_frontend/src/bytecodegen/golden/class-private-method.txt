@@ -1,0 +1,325 @@
+# class-private-method: script (sloppy)
+# | class A { #m() { return 1; } static #s() { return super.x; } get #a() { return 1; } set #a(v) {} set #w(v) {} t(o) { return [o.#m(), A.#s(), o.#a, #m in o, o?.#m, #a in o]; } }
+; ep9 bytecode, ABI 4
+unit kind=script strict=false ts=none source_len=176 source=embedded hints=none
+source_hash=a6a7e674334db882660d22f5ccaae1efa7a5ba390e38bbded95ab8da883765af
+strings (14):
+  str0 "A"
+  str1 "#m"
+  str2 "#s"
+  str3 "#a"
+  str4 "#w"
+  str5 "#.brand"
+  str6 "#.static-brand"
+  str7 "#.set-a"
+  str8 "#.set-w"
+  str9 "t"
+  str10 "x"
+  str11 "get #a"
+  str12 "set #a"
+  str13 "set #w"
+scopes (10):
+  scope0 script outer=- flags=[] slots=["A":class]
+  scope1 class outer=scope0 flags=[needs-context,strict] slots=["A":const, "#m":const, "#s":const, "#a":const, "#w":const, "#.brand":const, "#.static-brand":const, "#.set-a":const, "#.set-w":const]
+  scope2 function outer=scope1 flags=[strict] slots=[]
+  scope3 function outer=scope1 flags=[strict] slots=[]
+  scope4 function outer=scope1 flags=[strict] slots=[]
+  scope5 function outer=scope1 flags=[strict] slots=[]
+  scope6 function outer=scope1 flags=[strict] slots=[]
+  scope7 function outer=scope1 flags=[strict] slots=[]
+  scope8 function outer=scope1 flags=[strict] slots=[]
+  scope9 function outer=scope1 flags=[strict] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=7 range=0..176
+  code (160 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> CreateBlockContext k0  ; k0 = Scope scope1   ; 76 00
+      7    PushContext r3                               ; 13 03
+      9    LdaTheHole                                   ; 07
+     10    StaCurrentContextSlot [0]                    ; 1b 00
+     12    LdaConstant k1  ; k1 = String str0 "A"       ; 0a 01
+     14    Star r4                                      ; 0c 04
+     16 E> CallRuntime CreatePrivateName, r4            ; 68 17 00 04 01
+     21    StaCurrentContextSlot [5]                    ; 1b 05
+     23    LdaConstant k1  ; k1 = String str0 "A"       ; 0a 01
+     25    Star r4                                      ; 0c 04
+     27 E> CallRuntime CreatePrivateName, r4            ; 68 17 00 04 01
+     32    StaCurrentContextSlot [6]                    ; 1b 06
+     34    LdaTheHole                                   ; 07
+     35    Star r1                                      ; 0c 01
+     37 E> CreateClosure k2, s0, #0x00  ; k2 = Function f1 ; 74 02 00 00
+     41    Star r0                                      ; 0c 00
+     43 E> CallRuntime DefineClass, r0-r1               ; 68 04 00 00 02
+     48    Star r2                                      ; 0c 02
+     50 E> CreateClosure k3, s1, #0x00  ; k3 = Function f3 ; 74 03 01 00
+     54    StaCurrentContextSlot [1]                    ; 1b 01
+     56 E> CreateClosure k4, s2, #0x00  ; k4 = Function f4 ; 74 04 02 00
+     60    Star r4                                      ; 0c 04
+     62    Mov r0, r5                                   ; 0d 00 05
+     65 E> CallRuntime SetHomeObject, r4-r5             ; 68 0d 00 04 02
+     70    Ldar r4                                      ; 0b 04
+     72    StaCurrentContextSlot [2]                    ; 1b 02
+     74 E> CreateClosure k5, s3, #0x00  ; k5 = Function f5 ; 74 05 03 00
+     78    StaCurrentContextSlot [3]                    ; 1b 03
+     80 E> CreateClosure k6, s4, #0x00  ; k6 = Function f6 ; 74 06 04 00
+     84    StaCurrentContextSlot [7]                    ; 1b 07
+     86 E> CreateClosure k7, s5, #0x00  ; k7 = Function f7 ; 74 07 05 00
+     90    StaCurrentContextSlot [8]                    ; 1b 08
+     92    Mov r2, r4                                   ; 0d 02 04
+     95    LdaConstant k8  ; k8 = String str9 "t"       ; 0a 08
+     97    Star r5                                      ; 0c 05
+     99 E> CreateClosure k9, s6, #0x00  ; k9 = Function f8 ; 74 09 06 00
+    103    Star r6                                      ; 0c 06
+    105 E> CallRuntime DefineClassMethod, r4-r6         ; 68 0f 00 04 03
+    110    Ldar r0                                      ; 0b 00
+    112    StaCurrentContextSlot [0]                    ; 1b 00
+    114 E> CreateClosure k10, s7, #0x00  ; k10 = Function f2 ; 74 0a 07 00
+    118    Star r4                                      ; 0c 04
+    120    Mov r0, r5                                   ; 0d 00 05
+    123    Mov r4, r6                                   ; 0d 04 06
+    126 E> CallRuntime SetClassFieldsInitializer, r5-r6 ; 68 18 00 05 02
+    131    LdaCurrentContextSlot [6]                    ; 18 06
+    133    Star r5                                      ; 0c 05
+    135    LdaUndefined                                 ; 05
+    136 E> DefineKeyedOwnProperty r0, r5, #0x02, s8     ; 27 00 05 02 08
+    141    PopContext r3                                ; 14 03
+    143    Ldar r0                                      ; 0b 00
+    145    Star r1                                      ; 0c 01
+    147    LdaConstant k1  ; k1 = String str0 "A"       ; 0a 01
+    149    Star r0                                      ; 0c 00
+    151 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+    156    Ldar r1                                      ; 0b 01
+    158    LdaUndefined                                 ; 05
+    159    Return                                       ; 92
+  constants (11):
+      0 Scope scope1
+      1 String str0 "A"
+      2 Function f1
+      3 Function f3
+      4 Function f4
+      5 Function f5
+      6 Function f6
+      7 Function f7
+      8 String str9 "t"
+      9 Function f8
+     10 Function f2
+  feedback (9):
+      0 CreateClosure
+      1 CreateClosure
+      2 CreateClosure
+      3 CreateClosure
+      4 CreateClosure
+      5 CreateClosure
+      6 CreateClosure
+      7 CreateClosure
+      8 DefineKeyedOwn
+  handlers (0):
+  positions (18):
+      0 S 0 (1:1)
+      5 S 0 (1:1)
+     16 E 0 (1:1)
+     27 E 0 (1:1)
+     37 E 0 (1:1)
+     43 E 0 (1:1)
+     50 E 0 (1:1)
+     56 E 0 (1:1)
+     65 E 0 (1:1)
+     74 E 0 (1:1)
+     80 E 0 (1:1)
+     86 E 0 (1:1)
+     99 E 0 (1:1)
+    105 E 110 (1:111)
+    114 E 0 (1:1)
+    126 E 8 (1:9)
+    136 E 8 (1:9)
+    151 E 0 (1:1)
+function f1 class-constructor name="A" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=2 range=8..176
+  code (13 bytes):
+      0 S> LdaCurrentFunction                           ; 0e
+      1    Star r0                                      ; 0c 00
+      3    Mov <this>, r1                               ; 0d ff 01
+      6 E> CallRuntime RunClassFieldsInitializer, r0-r1 ; 68 19 00 00 02
+     11    LdaUndefined                                 ; 05
+     12    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (2):
+      0 S 0 (1:1)
+      6 E 8 (1:9)
+function f2 class-fields-initializer name=- parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=1 range=8..176
+  code (12 bytes):
+      0 S> LdaCurrentContextSlot [5]                    ; 18 05
+      2    Star r0                                      ; 0c 00
+      4    LdaUndefined                                 ; 05
+      5 E> DefineKeyedOwnProperty <this>, r0, #0x02, s0 ; 27 ff 00 02 00
+     10    LdaUndefined                                 ; 05
+     11    Return                                       ; 92
+  constants (0):
+  feedback (1):
+      0 DefineKeyedOwn
+  handlers (0):
+  positions (2):
+      0 S 0 (1:1)
+      5 E 8 (1:9)
+function f3 method name="#m" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=12..28
+  code (5 bytes):
+      0 S> LdaSmi [1]                                   ; 04 01
+      2    Return                                       ; 92
+      3    LdaUndefined                                 ; 05
+      4    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 17 (1:18)
+function f4 method name="#s" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=3 range=38..60
+  code (23 bytes):
+      0 S> Ldar <this>                                  ; 0b ff
+      2    Star r0                                      ; 0c 00
+      4    LdaCurrentFunction                           ; 0e
+      5    Star r2                                      ; 0c 02
+      7 E> CallRuntime GetHomeObject, r2                ; 68 0e 00 02 01
+     12    Star r1                                      ; 0c 01
+     14    Ldar r1                                      ; 0b 01
+     16 E> GetNamedPropertyFromSuper r0, k0, s0  ; k0 = String str10 "x" ; 22 00 00 00
+     20    Return                                       ; 92
+     21    LdaUndefined                                 ; 05
+     22    Return                                       ; 92
+  constants (1):
+      0 String str10 "x"
+  feedback (1):
+      0 LoadNamed
+  handlers (0):
+  positions (3):
+      0 S 43 (1:44)
+      7 E 50 (1:51)
+     16 E 56 (1:57)
+function f5 getter name="get #a" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=0 length=0 regs=0 range=67..83
+  code (5 bytes):
+      0 S> LdaSmi [1]                                   ; 04 01
+      2    Return                                       ; 92
+      3    LdaUndefined                                 ; 05
+      4    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (1):
+      0 S 72 (1:73)
+function f6 setter name="set #a" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=0 range=90..96
+  code (2 bytes):
+      0    LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (0):
+function f7 setter name="set #w" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=0 range=103..109
+  code (2 bytes):
+      0    LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (0):
+function f8 method name="t" parent=f0 outer_scope=scope1 flags=[strict,simple-params] params=1 length=1 regs=4 range=111..174
+  code (153 bytes):
+      0 S> CreateArrayLiteral k0, s0, #0x01  ; k0 = ArrayBoilerplate [_, _, _, _, _, _] ; 6d 00 00 01
+      4    Star r0                                      ; 0c 00
+      6    LdaZero                                      ; 03
+      7    Star r1                                      ; 0c 01
+      9    Ldar a0                                      ; 0b fe
+     11    Star r3                                      ; 0c 03
+     13    LdaCurrentContextSlot [5]                    ; 18 05
+     15 E> GetKeyedProperty r3, s2                      ; 23 03 02
+     18    LdaCurrentContextSlot [1]                    ; 18 01
+     20    Star r2                                      ; 0c 02
+     22 E> CallProperty0 r2, r3, s3                     ; 60 02 03 03
+     26 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     30    LdaSmi [1]                                   ; 04 01
+     32    Star r1                                      ; 0c 01
+     34    LdaImmutableCurrentContextSlot [0]           ; 19 00
+     36 E> ThrowReferenceErrorIfHole k1  ; k1 = String str0 "A" ; 94 01
+     38    Star r3                                      ; 0c 03
+     40    LdaCurrentContextSlot [6]                    ; 18 06
+     42 E> GetKeyedProperty r3, s4                      ; 23 03 04
+     45    LdaCurrentContextSlot [2]                    ; 18 02
+     47    Star r2                                      ; 0c 02
+     49 E> CallProperty0 r2, r3, s5                     ; 60 02 03 05
+     53 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     57    LdaSmi [2]                                   ; 04 02
+     59    Star r1                                      ; 0c 01
+     61    Ldar a0                                      ; 0b fe
+     63    Star r2                                      ; 0c 02
+     65    LdaCurrentContextSlot [5]                    ; 18 05
+     67 E> GetKeyedProperty r2, s6                      ; 23 02 06
+     70    LdaCurrentContextSlot [3]                    ; 18 03
+     72    Star r3                                      ; 0c 03
+     74 E> CallProperty0 r3, r2, s7                     ; 60 03 02 07
+     78 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+     82    LdaSmi [3]                                   ; 04 03
+     84    Star r1                                      ; 0c 01
+     86    Ldar a0                                      ; 0b fe
+     88    Star r2                                      ; 0c 02
+     90    LdaCurrentContextSlot [5]                    ; 18 05
+     92    Star r3                                      ; 0c 03
+     94    Ldar r2                                      ; 0b 02
+     96 E> TestIn r3, s8                                ; 53 03 08
+     99 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+    103    LdaSmi [4]                                   ; 04 04
+    105    Star r1                                      ; 0c 01
+    107    Ldar a0                                      ; 0b fe
+    109    JumpIfUndefinedOrNull @122                   ; 87 0d
+    111    Star r2                                      ; 0c 02
+    113    LdaCurrentContextSlot [5]                    ; 18 05
+    115 E> GetKeyedProperty r2, s9                      ; 23 02 09
+    118    LdaCurrentContextSlot [1]                    ; 18 01
+    120    Jump @123                                    ; 7e 03
+    122    LdaUndefined                                 ; 05
+    123 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+    127    LdaSmi [5]                                   ; 04 05
+    129    Star r1                                      ; 0c 01
+    131    Ldar a0                                      ; 0b fe
+    133    Star r2                                      ; 0c 02
+    135    LdaCurrentContextSlot [5]                    ; 18 05
+    137    Star r3                                      ; 0c 03
+    139    Ldar r2                                      ; 0b 02
+    141 E> TestIn r3, s10                               ; 53 03 0a
+    144 E> StaInArrayLiteral r0, r1, s1                 ; 28 00 01 01
+    148    Ldar r0                                      ; 0b 00
+    150    Return                                       ; 92
+    151    LdaUndefined                                 ; 05
+    152    Return                                       ; 92
+  constants (2):
+      0 ArrayBoilerplate [_, _, _, _, _, _]
+      1 String str0 "A"
+  feedback (11):
+      0 Literal
+      1 StoreInArrayLiteral
+      2 LoadKeyed
+      3 Call
+      4 LoadKeyed
+      5 Call
+      6 LoadKeyed
+      7 Call
+      8 HasKeyed
+      9 LoadKeyed
+     10 HasKeyed
+  handlers (0):
+  positions (17):
+      0 S 117 (1:118)
+     15 E 127 (1:128)
+     22 E 125 (1:126)
+     26 E 124 (1:125)
+     36 E 133 (1:134)
+     42 E 135 (1:136)
+     49 E 133 (1:134)
+     53 E 124 (1:125)
+     67 E 143 (1:144)
+     74 E 143 (1:144)
+     78 E 124 (1:125)
+     96 E 147 (1:148)
+     99 E 124 (1:125)
+    115 E 159 (1:160)
+    123 E 124 (1:125)
+    141 E 163 (1:164)
+    144 E 124 (1:125)

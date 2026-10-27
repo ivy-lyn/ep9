@@ -12,9 +12,10 @@ use oxc_ast::ast::{
 };
 use oxc_span::GetSpan;
 
+use super::expr::Prepared;
 use super::func::{Command, Control, FnGen, Gen, TargetKind};
 use super::pattern::BindMode;
-use crate::scope::{BindingId, BindingLocation, ImplicitRef, PerIteration, ScopeId};
+use crate::scope::{BindingId, BindingLocation, ImplicitRef, PerIteration, Resolution, ScopeId};
 
 impl<'a> FnGen<'a, '_> {
     pub(crate) fn statement(&mut self, s: &'a Statement<'a>) -> Gen {
@@ -176,11 +177,35 @@ impl<'a> FnGen<'a, '_> {
                 }
                 self.bind_value_in_acc(&d.id, BindMode::Init)?;
             } else if let Some(init) = &d.init {
-                self.named_value(init, super::func::pattern_name(&d.id))?;
-                self.bind_value_in_acc(&d.id, BindMode::Var)?;
+                self.var_initializer(&d.id, init)?;
             }
         }
         Ok(())
+    }
+
+    /// `var id = init` (also the Annex B.3.5 `for (var x = init in o)` head): the value of
+    /// `init` (NamedEvaluation for an anonymous function), then PutValue to `id`. A dynamic
+    /// `x` is resolved before `init` runs (§14.3.2.1 step 2, B.3.5 step 2; lookup.rs).
+    fn var_initializer(
+        &mut self,
+        id: &'a BindingPattern<'a>,
+        init: &'a oxc_ast::ast::Expression<'a>,
+    ) -> Gen {
+        if let BindingPattern::BindingIdentifier(b) = id
+            && !super::lookup::runs_no_code(init)
+        {
+            let r = self.implicit(b.span.start, ImplicitRef::VarInit)?;
+            if matches!(r.resolution, Resolution::Dynamic { .. }) {
+                let m = self.mark();
+                let p = self.resolve_dynamic(Prepared::Binding(r));
+                self.named_value(init, super::func::pattern_name(id))?;
+                self.put_prepared(&p, b.span.start, false)?;
+                self.release(m);
+                return Ok(());
+            }
+        }
+        self.named_value(init, super::func::pattern_name(id))?;
+        self.bind_value_in_acc(id, BindMode::Var)
     }
 
     /// Bind the accumulator to `pattern`.
@@ -300,7 +325,7 @@ impl<'a> FnGen<'a, '_> {
             || UnitString::new("default"),
             |id| UnitString::new(id.name.as_str()),
         );
-        self.class(c, Some(name))?;
+        self.class(c, Some(name), None)?;
         let b = match (binding, &c.id) {
             (Some(b), _) => b,
             (None, Some(id)) => self.declared(id)?,
@@ -481,14 +506,14 @@ impl<'a> FnGen<'a, '_> {
         }
     }
 
-    /// `for (var x = init in o)` (Annex B): the initializer runs first.
+    /// `for (var x = init in o)` (Annex B.3.5): the initializer runs first, before the
+    /// right side; `x` is resolved before the initializer (step 2), as in `var_decl`.
     fn for_in_var_initializer(&mut self, left: &'a ForStatementLeft<'a>) -> Gen {
         if let ForStatementLeft::VariableDeclaration(v) = left
             && let Some(d) = v.declarations.first()
             && let Some(init) = &d.init
         {
-            self.named_value(init, super::func::pattern_name(&d.id))?;
-            self.bind_value_in_acc(&d.id, BindMode::Var)?;
+            self.var_initializer(&d.id, init)?;
         }
         Ok(())
     }

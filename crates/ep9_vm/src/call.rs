@@ -6,6 +6,7 @@
 //! | JS → JS (`Call*`, `Construct`) | push frame, jump (handler or `rt_call`) | none |
 //! | JS → host function | push host frame, call the Rust fn | one Rust call, checked |
 //! | Rust → JS (`call_function`, host callbacks, ToPrimitive) | push entry frame (return pc = EXIT stub), run the dispatch | one dispatch run, checked |
+//! | generator resume (`next`/`return`/`throw`, [`run_resumed`]) | push a resumed frame (fp-3 = the generator, return pc = EXIT stub), run the dispatch | one dispatch run, checked |
 //! | `[[Construct]]` from JS | push a stub frame (return pc = construct stub) + callee frame | none |
 //!
 //! Scratch area (frame.rs): Rust code (the builtin ABI's `ArgsBuilder`, H20) may keep Values
@@ -39,7 +40,7 @@ use crate::conv::Res;
 use crate::error::{FrameRef, not_implemented, stack_overflow, throw_error};
 use crate::frame::{CONSTRUCT_BIT, HEADER, HOLE, NULL, UNDEFINED, int32_bits, native_of, slot};
 use crate::interp::{self, Cx, EXIT_STUB};
-use crate::kinds::is_callable;
+use crate::kinds::{OBJECT, cell_kind, is_callable, is_cell_bits};
 use crate::object::{self, function_context, function_info, is_function, is_object};
 use crate::property;
 use crate::runtime::{Atom, ErrorKind, Root, Runtime, frame_top};
@@ -49,9 +50,9 @@ use crate::unit::FunctionInfo;
 /// the new `fp`, or `None` if the frame would end above `limit`.
 ///
 /// `new_target` is undefined for a call. For a `[[Construct]]` it is the new.target function:
-/// the frame gets the construct bit, and v0 keeps new.target in the feedback header slot
-/// (`slot::FEEDBACK`, fp - 3). The FeedbackVector does not use that slot: T0 reaches it through
-/// the FunctionInfo (feedback.rs). H14-Q1 decides the real home of new.target.
+/// the frame gets the construct bit, and new.target goes into `slot::NEW_TARGET` (fp - 3,
+/// FRAME 2, H14-Q1). The FeedbackVector does not use that slot: T0 reaches it through the
+/// FunctionInfo (feedback.rs).
 ///
 /// # Safety
 /// `base` is the first free slot of the VM stack (`frame_top` of the caller, or the stack
@@ -99,7 +100,7 @@ pub(crate) unsafe fn push_frame(
         };
         *fp.offset(slot::ARGC) = int32_bits(argc_word as i32);
         *fp.offset(slot::FUNCTION_INFO) = native_of(fi);
-        *fp.offset(slot::FEEDBACK) = new_target;
+        *fp.offset(slot::NEW_TARGET) = new_target;
         *fp.offset(slot::CONTEXT) = context;
         *fp.offset(slot::BYTECODE_OFFSET) = int32_bits(0);
         for r in 0..fi.register_count as usize {
@@ -109,8 +110,44 @@ pub(crate) unsafe fn push_frame(
     Some(fp)
 }
 
-/// OrdinaryCallBindThis (§10.2.1.2) for the receiver a caller passes. v0: a sloppy callee
-/// gets the global object for undefined/null; primitives are not wrapped.
+/// Pushes the frame of a resumed generator (FRAME 2): [`push_frame`] for a call (the
+/// construct bit is clear), then `slot::NEW_TARGET` (fp - 3) holds `generator`, so
+/// `LdaNewTarget` in the resumed frame gives the generator object (BytecodeGen emits
+/// `LdaUndefined` for `new.target` in a generator body). Caller: [`run_resumed`].
+///
+/// # Safety
+/// As for [`push_frame`]; `generator` is valid Value bits.
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn push_resume_frame(
+    base: *mut u64,
+    limit: *mut u64,
+    fi: &FunctionInfo,
+    callee: u64,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    caller_fp: *mut u64,
+    return_pc: *const u8,
+    context: u64,
+    generator: u64,
+) -> Option<*mut u64> {
+    // SAFETY: caller contract (the `push_frame` contract).
+    let fp = unsafe {
+        push_frame(
+            base, limit, fi, callee, this, argc, arg, caller_fp, return_pc, context, UNDEFINED,
+        )
+    }?;
+    // SAFETY: header slot of the frame just pushed.
+    unsafe { *fp.offset(slot::NEW_TARGET) = generator };
+    Some(fp)
+}
+
+/// OrdinaryCallBindThis (§10.2.1.2) for the receiver a caller passes, without the ToObject
+/// step: a sloppy callee gets the global object for undefined/null; any other receiver as it
+/// is. It never allocates. Only the spike-native entries (`native.rs` `enter_native`,
+/// `run_b`) still use it (a logged spike-only gap); every other call site that runs bytecode
+/// takes [`try_bind_this`].
+#[cfg(feature = "spike-native")]
 #[inline(always)]
 pub(crate) fn bind_this(fi: &FunctionInfo, this: u64, global: u64) -> u64 {
     if !fi.is_strict() && (this == UNDEFINED || this == NULL) {
@@ -118,6 +155,58 @@ pub(crate) fn bind_this(fi: &FunctionInfo, this: u64, global: u64) -> u64 {
     } else {
         this
     }
+}
+
+/// OrdinaryCallBindThis (§10.2.1.2) with no allocation: the this value of a call of `fi`, or
+/// `None` when step 6.b makes a wrapper object (a sloppy callee and a number, boolean,
+/// string or symbol receiver); the caller then takes [`wrap_this`] (a cold path). A strict
+/// callee costs one flag test; a sloppy callee with an object receiver one cell test, one
+/// kind load and one compare (the hot T0 call of a method): a receiver is a language value,
+/// so a cell of kind 16 or more is an object (kinds 64 and up are internal cells, never a
+/// receiver), and the upper bound of `is_object` is not tested.
+///
+/// The caller wraps, not the callee prologue (H14-Q2):
+///
+/// ```text
+/// call site                          primitive receiver of a sloppy bytecode callee
+/// interp/ops.rs call_fast (2 cfgs)   None -> Flow::Cold -> slow::call
+/// slow::call, enter_b_cold           None -> wrap_this before push_frame
+/// call_function_object (from Rust)   None -> push_frame, then wrap_this into the receiver slot
+/// call_host (host callee)            no bind, no wrap: the host function gets the raw receiver
+/// native.rs enter_native, run_b      bind_this, no wrap (spike-native only, logged gap)
+/// ```
+#[inline(always)]
+pub(crate) fn try_bind_this(fi: &FunctionInfo, this: u64, global: u64) -> Option<u64> {
+    if fi.is_strict() {
+        return Some(this);
+    }
+    if is_cell_bits(this) {
+        // A string or a symbol (kinds below 16) needs the wrapper.
+        let kind = cell_kind(this);
+        debug_assert!(kind < 64, "an internal cell as a receiver");
+        return (kind >= OBJECT.get()).then_some(this);
+    }
+    if this == UNDEFINED || this == NULL {
+        Some(global)
+    } else if this == HOLE {
+        // Not a language value; as it is (the old `bind_this` result).
+        Some(this)
+    } else {
+        // A number or a boolean.
+        None
+    }
+}
+
+/// ToObject(`this`) for a call that [`try_bind_this`] refused (§10.2.1.2 step 6.b). GC point:
+/// the caller keeps the callee and the arguments rooted. `slow::call` and `enter_b_cold`
+/// wrap before `push_frame` (the arguments are in caller registers or the spread array).
+/// `call_function_object` wraps after `push_frame`, with the frame not yet published and
+/// under the scratch top, because its `arg` may read memory that the GC does not scan. The
+/// wrapper stays in a Rust local until it is stored in the frame.
+#[cold]
+#[inline(never)]
+pub(crate) fn wrap_this(cx: &mut Cx, this: u64) -> Res<u64> {
+    crate::conv::to_object(cx, this)
 }
 
 /// The first free slot above the frame `fp` (the stack base if `fp` is null), or the scratch
@@ -225,7 +314,8 @@ pub(crate) fn call_function(cx: &mut Cx, f: u64, this: u64, args: &[u64]) -> Res
 
 /// Call(F, thisArg, args) or the call step of `[[Construct]]` (`new_target` not undefined)
 /// from Rust, with `argc` arguments that `arg(i)` reads. The arguments are copied once, into
-/// the callee frame; `arg` may read the caller's frame or scratch area (H20 `call_args`).
+/// the callee frame, before the first GC point; `arg` may read the caller's frame or scratch
+/// area (H20 `call_args`), or memory that the GC does not scan (`Isolate::call`).
 /// A bound `f` (§10.4.1.1 `[[Call]]`) calls its innermost target with the bound `this` and
 /// the bound arguments in front; its `[[Construct]]` goes through [`construct_with`].
 pub(crate) fn call_with(
@@ -335,9 +425,12 @@ fn call_function_object(
         return Err(not_implemented(cx, "calling code of this dispatch kind"));
     }
     poll(cx, caller)?;
-    let this = bind_this(fi, this, rt.global());
+    let bound_this = try_bind_this(fi, this, rt.global());
     let saved = rt.stack().scratch_top();
     let base = top_of(cx, caller);
+    // No GC point before the push: `arg` may read memory that the GC does not scan (the heap
+    // copy of `Isolate::call`, the embedder slice of `native::call_from_rust`), so the frame
+    // copies the arguments first. A receiver to wrap goes in as it is, for now.
     // SAFETY: `base` is the first free slot above the current top frame and its scratch area.
     let fp = unsafe {
         push_frame(
@@ -345,7 +438,7 @@ fn call_function_object(
             cx.stack_limit,
             fi,
             f,
-            this,
+            bound_this.unwrap_or(this),
             argc,
             arg,
             caller,
@@ -357,10 +450,83 @@ fn call_function_object(
     let Some(fp) = fp else {
         return stack_overflow(cx);
     };
+    if bound_this.is_none() {
+        // GC point (the wrap of a primitive receiver of a sloppy callee, H14-Q2). The frame is
+        // not published yet: the scratch top covers it, so the GC scans the copied arguments
+        // and `f`, and a stack walk does not see the frame.
+        rt.stack().set_scratch_top(frame_top(fp));
+        match wrap_this(cx, this) {
+            // SAFETY: the receiver slot of the frame that `push_frame` just wrote.
+            Ok(w) => unsafe { *fp.offset(slot::RECEIVER) = w },
+            Err(e) => {
+                restore_scratch(rt, saved);
+                return Err(e);
+            }
+        }
+    }
     rt.stack().set_fp(fp);
     rt.stack().clear_scratch();
     cx.budget -= 1;
     // SAFETY: `fp` is a frame for `fi` that `push_frame` just wrote; its code is verified.
+    let r = unsafe { interp::run(cx, fi.code, fp) };
+    rt.stack().set_fp(caller);
+    restore_scratch(rt, saved);
+    if r == 0 { Err(Throw) } else { Ok(r) }
+}
+
+/// Resumes a suspended generator from Rust (GeneratorResume, §27.5.3.3 steps 5-9): pushes a
+/// resumed frame of the bytecode generator function `f` (`push_resume_frame`, fp-3 =
+/// `generator`) with `this`, the `argc` saved parameters that `arg(i)` reads and the saved
+/// `context`, and runs the dispatch from the function's first instruction until the frame
+/// suspends again or completes (its return pc is the EXIT stub). One checked native level,
+/// as [`call_with`]: a RangeError when the native or the VM stack is full, before the frame
+/// exists. Returns the accumulator of the `SuspendGenerator` or `Return` that left the frame.
+pub(crate) fn run_resumed(
+    cx: &mut Cx,
+    f: u64,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    context: u64,
+    generator: u64,
+) -> Res<u64> {
+    debug_assert!(is_function(f));
+    let rt = cx.rt();
+    if !rt.native_stack_ok() {
+        return stack_overflow(cx);
+    }
+    let fi = function_info(f);
+    if !fi.is_bytecode() || fi.slot.kind_byte() != crate::dispatch::DispatchKind::Interp as u8 {
+        return Err(not_implemented(cx, "calling code of this dispatch kind"));
+    }
+    let caller = rt.stack().fp();
+    poll(cx, caller)?;
+    let saved = rt.stack().scratch_top();
+    let base = top_of(cx, caller);
+    // SAFETY: `base` is the first free slot above the current top frame and its scratch area.
+    let fp = unsafe {
+        push_resume_frame(
+            base,
+            cx.stack_limit,
+            fi,
+            f,
+            this,
+            argc,
+            arg,
+            caller,
+            EXIT_STUB.as_ptr(),
+            context,
+            generator,
+        )
+    };
+    let Some(fp) = fp else {
+        return stack_overflow(cx);
+    };
+    rt.stack().set_fp(fp);
+    rt.stack().clear_scratch();
+    cx.budget -= 1;
+    // SAFETY: `fp` is a frame for `fi` that `push_resume_frame` just wrote; its code is
+    // verified.
     let r = unsafe { interp::run(cx, fi.code, fp) };
     rt.stack().set_fp(caller);
     restore_scratch(rt, saved);

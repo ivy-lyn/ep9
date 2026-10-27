@@ -7,6 +7,7 @@
 //! | `fp-check` | `fpcheck.rs` | no banned libm symbol, no FMA instruction outside `ep9_math`, no second math crate, in post-LTO objects for 5 targets (H36) |
 //! | `feature-matrix` | `features.rs` | default, jitless and `aot` builds: build, clippy and test, per package (H27) |
 //! | `gc-lint` | `gc_lint.rs` | no stack-only GC type (`Local` and friends) in a heap container, `static` or `thread_local`, and no boxed closure that uses one (H10, H20 R2) |
+//! | `m0-exit` | `m0_exit.rs` | the 12 M0 exit items per host and the Windows CI column, as a table |
 //!
 //! Each module's doc says how far it is built. Exit codes for every task: 0 pass, 1 fail,
 //! 2 usage error, tool error or a task that is not implemented yet. An unknown task exits 2.
@@ -15,6 +16,7 @@ mod disasm;
 mod features;
 mod fpcheck;
 mod gc_lint;
+mod m0_exit;
 
 use std::process::ExitCode;
 
@@ -26,6 +28,7 @@ fn main() -> ExitCode {
         "fp-check" => fpcheck::main(&args[1..]),
         "feature-matrix" => features::main(&args[1..]),
         "gc-lint" => gc_lint::main(&args[1..]),
+        "m0-exit" => m0_exit::main(&args[1..]),
         _ => {
             eprintln!("xtask: task {task:?} is not implemented yet");
             return ExitCode::from(2);

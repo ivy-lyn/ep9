@@ -1,10 +1,12 @@
-//! unix backend of [`super`]: `__register_frame` and `_Unwind_Backtrace`.
+//! unix backend of [`super`]: `__register_frame` and `_Unwind_Backtrace`. The registration
+//! mode comes from the self-test (`super::mode`).
 
 use std::ffi::{c_int, c_void};
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
 
 use super::cfi::EhFrameSection;
+use super::mode::{RegistrationMode, registration_mode};
 
 #[repr(C)]
 struct UnwindContext {
@@ -25,13 +27,11 @@ unsafe extern "C" {
     fn _Unwind_GetIP(ctx: *mut UnwindContext) -> usize;
 }
 
-/// libgcc takes a whole section; LLVM and Apple libunwind take one FDE per call.
-const WHOLE_SECTION: bool = cfg!(all(target_os = "linux", target_env = "gnu"));
-
 /// An `.eh_frame` section registered with the system unwinder. Drop deregisters it.
 #[derive(Debug)]
 pub struct EhFrameRegistration {
     section: EhFrameSection,
+    mode: RegistrationMode,
     /// Addresses passed to `__register_frame`.
     registered: Vec<usize>,
 }
@@ -43,7 +43,9 @@ unsafe impl Send for EhFrameRegistration {}
 unsafe impl Sync for EhFrameRegistration {}
 
 impl EhFrameRegistration {
-    /// Registers every FDE of `section`.
+    /// Registers every FDE of `section` in the process's [`RegistrationMode`]. The first call
+    /// in a build with `jit` runs the self-test ([`super::registration_mode`]). Fails if no
+    /// mode passed the self-test, or (without `jit`) if [`super::self_test`] has not run yet.
     ///
     /// # Safety
     /// - Each FDE describes code at its `pc_begin` range correctly; the unwinder trusts it.
@@ -58,16 +60,28 @@ impl EhFrameRegistration {
     ///   `pc_begin` to the highest FDE end of the section. libgcc finds a registration by its
     ///   span, so a walk misses frames of interleaved registrations (libgcc 12 and 14).
     pub unsafe fn register(section: EhFrameSection) -> io::Result<Self> {
+        let mode = registration_mode()?;
+        // SAFETY: the caller's contract.
+        unsafe { Self::register_mode(section, mode) }
+    }
+
+    /// [`EhFrameRegistration::register`] in a given mode, for the self-test.
+    ///
+    /// # Safety
+    /// As [`EhFrameRegistration::register`].
+    pub(super) unsafe fn register_mode(
+        section: EhFrameSection,
+        mode: RegistrationMode,
+    ) -> io::Result<Self> {
         let records = section.records()?;
         let base = section.bytes().as_ptr() as usize;
-        let registered: Vec<usize> = if WHOLE_SECTION {
-            vec![base]
-        } else {
-            records
+        let registered: Vec<usize> = match mode {
+            RegistrationMode::WholeSection => vec![base],
+            RegistrationMode::PerFde => records
                 .iter()
                 .filter(|(_, is_cie)| !is_cie)
                 .map(|(o, _)| base + o)
-                .collect()
+                .collect(),
         };
         for &p in &registered {
             // SAFETY: `p` points into `section`, which the result owns and keeps at the same
@@ -77,12 +91,18 @@ impl EhFrameRegistration {
         }
         Ok(Self {
             section,
+            mode,
             registered,
         })
     }
 
     pub fn section(&self) -> &EhFrameSection {
         &self.section
+    }
+
+    /// The mode this registration used.
+    pub fn mode(&self) -> RegistrationMode {
+        self.mode
     }
 }
 

@@ -14,7 +14,7 @@
 //!                          undefined
 //! GC                       one precise root source (it holds an Rc clone of SymbolRoots):
 //!                          the well-known symbols in WellKnownSymbol order, %Symbol.prototype%,
-//!                          then every registry entry (key and symbol)
+//!                          the class-fields key, then every registry entry (key and symbol)
 //! ```
 //!
 //! - The identity hash never comes from the address (H12). It is the next value of a
@@ -22,8 +22,13 @@
 //!   key (`EP9_HASH_SEED` fixes it). So two isolates of one process, or two runs with one
 //!   `EP9_HASH_SEED`, give the same hashes in the same order. The hash is 30 bits, the range of
 //!   a string's table hash, so `key::key_hash` serves both in one shape index.
-//! - Flags: bit 0 registered (`Symbol.for`), bit 1 well-known, bit 2 private (reserved for
-//!   private names, M1).
+//! - Flags: bit 0 registered (`Symbol.for`), bit 1 well-known, bit 2 private: a private name
+//!   (§6.2.12, `#x`; [`new_private`]). A private key is never listed by `[[OwnPropertyKeys]]`
+//!   or for-in, and the keyed property paths send it to `interp/slow/private.rs`.
+//! - The class-fields key ([`class_fields_key`]) is one private name per isolate, made by
+//!   [`install`]. A class constructor holds its instance members initializer under it (C8:
+//!   the FUNCTION layout has no free field; `interp/slow/class_fields.rs`). No JS code can
+//!   name it.
 //! - The registry is strong: a registered symbol lives as long as the isolate, because
 //!   `Symbol.for` must give the same symbol again (§20.4.2.2). Its keys are atoms.
 
@@ -55,8 +60,7 @@ pub(crate) mod flag {
     pub const REGISTERED: i32 = 1;
     /// One of the well-known symbols.
     pub const WELL_KNOWN: i32 = 2;
-    /// Reserved for private names (M1).
-    #[allow(dead_code)] // reserved bit (private names, M1)
+    /// A private name (§6.2.12): `#x` of a class body.
     pub const PRIVATE: i32 = 4;
 }
 
@@ -207,6 +211,8 @@ struct SymbolRoots {
     well_known: [Cell<u64>; WellKnownSymbol::ALL.len()],
     /// `%Symbol.prototype%` (undefined before [`install`]).
     prototype: Cell<u64>,
+    /// The class-fields key, a private name (undefined before [`install`]).
+    class_fields: Cell<u64>,
     /// Never borrowed across an allocation (W4-GC-RULES).
     registry: RefCell<Registry>,
 }
@@ -217,6 +223,7 @@ impl SymbolRoots {
             t.visit_bits(w.get());
         }
         t.visit_bits(self.prototype.get());
+        t.visit_bits(self.class_fields.get());
         self.registry
             .try_borrow()
             .expect("the symbol registry is borrowed across a GC point (W4-GC-RULES)")
@@ -239,6 +246,7 @@ impl Default for SymbolState {
             roots: Rc::new(SymbolRoots {
                 well_known: core::array::from_fn(|_| Cell::new(UNDEFINED)),
                 prototype: Cell::new(UNDEFINED),
+                class_fields: Cell::new(UNDEFINED),
                 registry: RefCell::new(Registry::default()),
             }),
             rng: Cell::new(prng_seed()),
@@ -304,6 +312,23 @@ pub(crate) fn new_symbol(rt: &Runtime, description: u64) -> u64 {
     alloc_symbol(rt, description, 0)
 }
 
+/// A new private name (§6.2.12 NewPrivateName) whose `[[Description]]` is `description` (a
+/// string, `#x`; or undefined). It is a symbol with the [`flag::PRIVATE`] bit. GC point.
+pub(crate) fn new_private(rt: &Runtime, description: u64) -> u64 {
+    alloc_symbol(rt, description, flag::PRIVATE)
+}
+
+/// True for a private name ([`new_private`]).
+pub(crate) fn is_private(sym: u64) -> bool {
+    flags(sym) & flag::PRIVATE != 0
+}
+
+/// True if the value `k` is a private name (any value; not a GC point).
+#[inline]
+pub(crate) fn is_private_key(k: u64) -> bool {
+    is_symbol(k) && is_private(k)
+}
+
 /// `[[Description]]` of the symbol `sym`: a string or undefined.
 pub(crate) fn description(sym: u64) -> u64 {
     debug_assert!(is_symbol(sym));
@@ -336,9 +361,9 @@ pub(crate) fn is_well_known(sym: u64) -> bool {
 // ---- isolate setup and roots ----------------------------------------------------------------
 
 /// Registers the symbol root source, then creates the well-known symbols (descriptions
-/// "Symbol.iterator" and so on, §6.1.5.1) and `%Symbol.prototype%` (an ordinary object whose
-/// prototype is `%Object.prototype%`, §20.4.3). Runs once, in `realm::init`, after the
-/// intrinsics.
+/// "Symbol.iterator" and so on, §6.1.5.1), `%Symbol.prototype%` (an ordinary object whose
+/// prototype is `%Object.prototype%`, §20.4.3) and the class-fields key. Runs once, in
+/// `realm::init`, after the intrinsics.
 pub(crate) fn install(rt: &Runtime) {
     let roots = Rc::clone(&rt.symbols.roots);
     debug_assert!(
@@ -355,6 +380,9 @@ pub(crate) fn install(rt: &Runtime) {
     }
     let proto = object::new_object(rt, rt.root(Root::ObjectPrototype));
     roots.prototype.set(proto);
+    let desc = atoms::intern_str(rt, "#.class-fields");
+    let key = alloc_symbol(rt, desc, flag::PRIVATE);
+    roots.class_fields.set(key);
 }
 
 /// The well-known symbol `w` of this isolate (undefined before [`install`]).
@@ -366,6 +394,13 @@ pub(crate) fn well_known(rt: &Runtime, w: WellKnownSymbol) -> u64 {
 /// [`install`]).
 pub(crate) fn prototype(rt: &Runtime) -> u64 {
     rt.symbols.roots.prototype.get()
+}
+
+/// The class-fields key: the VM-internal private name under which a class constructor holds
+/// its instance members initializer (C8; `SetClassFieldsInitializer`). Undefined before
+/// [`install`].
+pub(crate) fn class_fields_key(rt: &Runtime) -> u64 {
+    rt.symbols.roots.class_fields.get()
 }
 
 // ---- the registry -----------------------------------------------------------------------------

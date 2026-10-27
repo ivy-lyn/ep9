@@ -294,32 +294,41 @@ fn a_symbol_is_a_32_byte_cell_with_a_description_a_hash_and_flags() {
 
 // ---- roots, registry, hashes ------------------------------------------------------------------
 
+/// Checks each well-known symbol and `%Symbol.prototype%`, in a frame of its own. Run it
+/// [`below_a_pad`]. Returns their bits XOR [`MASK`] (the symbols in [`WellKnownSymbol`]
+/// order, then the prototype), so no stack word points at them.
+#[inline(never)]
+fn made_well_known_checks(rt: &Runtime) -> Vec<u64> {
+    let mut seen = Vec::new();
+    for w in WellKnownSymbol::ALL {
+        let s = symbol::well_known(rt, w);
+        assert!(kinds::is_symbol(s), "{w:?}");
+        assert!(symbol::is_well_known(s) && !symbol::is_registered(s));
+        assert_eq!(symbol::flags(s), flag::WELL_KNOWN);
+        let d = symbol::description(s);
+        assert_eq!(string::to_rust_string(d), format!("Symbol.{}", w.name()));
+        assert!(string::is_atom(d));
+        assert!(!seen.contains(&s));
+        seen.push(s);
+    }
+    // %Symbol.prototype%: an ordinary object whose prototype is %Object.prototype%.
+    let p = symbol::prototype(rt);
+    assert!(kinds::cell_kind(p) == kinds::OBJECT.get());
+    assert_eq!(object::proto_of(p), rt.root(Root::ObjectPrototype));
+    seen.push(p);
+    seen.iter().map(|&s| black_box(s) ^ MASK).collect()
+}
+
 #[test]
 fn well_known_symbols_are_isolate_roots_in_order() {
     on_big_stack(|| {
-        let mut iso = isolate(config(Dispatch::DEFAULT, true));
-        let rt: &Runtime = &iso.rt;
-        let mut seen = Vec::new();
-        for w in WellKnownSymbol::ALL {
-            let s = symbol::well_known(rt, w);
-            assert!(kinds::is_symbol(s), "{w:?}");
-            assert!(symbol::is_well_known(s) && !symbol::is_registered(s));
-            assert_eq!(symbol::flags(s), flag::WELL_KNOWN);
-            let d = symbol::description(s);
-            assert_eq!(string::to_rust_string(d), format!("Symbol.{}", w.name()));
-            assert!(string::is_atom(d));
-            assert!(!seen.contains(&s));
-            seen.push(s);
-        }
-        // %Symbol.prototype%: an ordinary object whose prototype is %Object.prototype%.
-        let p = symbol::prototype(rt);
-        assert!(kinds::cell_kind(p) == kinds::OBJECT.get());
-        assert_eq!(object::proto_of(p), rt.root(Root::ObjectPrototype));
-        // Hide the bits from the conservative scan: only the root source keeps them.
-        let masked: Vec<u64> = seen.iter().map(|&s| s ^ MASK).collect();
-        drop(seen);
-        scrub_stack();
-        iso.collect_garbage();
+        let mut c = config(Dispatch::DEFAULT, true);
+        c.heap.record_conservative_roots = true;
+        let iso = isolate(c);
+        // The checks run below a pad and hand back masked bits, so only the root source can
+        // keep the cells through the collection.
+        let (masked, pad_low) = below_a_pad(|| made_well_known_checks(&iso.rt));
+        collect_after_a_pad(&iso.rt, pad_low, &masked);
         iso.verify_heap().unwrap();
         let rt: &Runtime = &iso.rt;
         for (i, w) in WellKnownSymbol::ALL.into_iter().enumerate() {
@@ -327,18 +336,82 @@ fn well_known_symbols_are_isolate_roots_in_order() {
             assert_eq!(s, masked[i] ^ MASK, "{w:?} moved");
             assert!(rt.heap.is_cell(cell(s).addr()), "{w:?} died");
         }
-        assert!(rt.heap.is_cell(cell(symbol::prototype(rt)).addr()));
+        let p = symbol::prototype(rt);
+        assert_eq!(
+            p,
+            masked[WellKnownSymbol::ALL.len()] ^ MASK,
+            "the prototype moved"
+        );
+        assert!(rt.heap.is_cell(cell(p).addr()), "the prototype died");
     });
 }
 
+// ---- cells only a root keeps: the stack must not keep them ------------------------------------
+//
+// A test that shows a root source keeps a cell must leave no copy of its address where the
+// conservative scan of the collection reads: the callee-saved registers and `[sp, stack high)`
+// at the spill trampoline (ep9_heap css.rs). Else the scan keeps the cell, and the test passes
+// with a broken root. So the cells are made, and read, only below a 64 KiB pad
+// (W4-P3FIX-DEADSHAPE-TEST, as in tests/ic.rs):
+//
+//   test frame        gets only masked bits, and calls nothing that reads the cells before
+//                     the collection
+//   ---------------   <- the scan stops here (checked: `collect_after_a_pad`)
+//   below_a_pad       DEEP bytes of zeros
+//   ---------------   <- `pad_low`
+//   made_*            frames that make and read the cells (inline(never))
+//
+// A frame may spill a caller-saved register that it never set, such as the unused payload of a
+// returned enum; on x86-64 Linux (debug) that kept a dead shape in tests/ic.rs. Hence every
+// read of the cells happens below the pad.
+
 const MASK: u64 = 0x5a5a_5a5a_5a5a_5a5a;
 
-/// Overwrites stack below the caller, so stale words of returned frames cannot keep a cell
-/// alive through the conservative scan.
+/// Bytes of zeros between the test's frame and the frames that make the cells: far more than a
+/// collection's own frames take (`Heap::collect` down to the spill trampoline).
+const DEEP: usize = 64 << 10;
+
+/// Overwrites 256 KiB of stack below the caller, so stale words of returned frames cannot
+/// keep a cell alive through the conservative scan.
 #[inline(never)]
 fn scrub_stack() {
     let mut words = [0usize; 1 << 15];
     black_box(&mut words);
+}
+
+/// Runs `made` with [`DEEP`] bytes of zeros between its frames and the caller's. `made` must
+/// only call an `#[inline(never)]` function that makes the cells and returns their masked
+/// bits. Returns that result and `pad_low`, the lowest byte of the pad: every frame of
+/// `made`'s callee lies below it.
+#[inline(never)]
+fn below_a_pad<R>(made: impl FnOnce() -> R) -> (R, usize) {
+    let mut pad = [0u8; DEEP];
+    black_box(&mut pad);
+    let r = made();
+    (r, black_box(&mut pad).as_ptr().addr())
+}
+
+/// Scrubs the stack and collects, after the cells were made by [`below_a_pad`] (which gave
+/// `pad_low`). Then checks that the collection can show something about them: its
+/// conservative scan stopped above the pad, and kept none of `cells` (masked bits). The
+/// isolate must record its conservative roots.
+fn collect_after_a_pad(rt: &Runtime, pad_low: usize, cells: &[u64]) {
+    scrub_stack();
+    rt.heap.collect();
+    let high = ep9_platform::current_thread_stack_bounds().unwrap().high;
+    let scan_low = high - 8 * rt.heap.stats().last_stack_words;
+    assert!(
+        scan_low > pad_low,
+        "the conservative scan read the frames below the pad ({scan_low:#x} <= {pad_low:#x})"
+    );
+    let css = rt.heap.last_conservative_roots();
+    for &m in cells {
+        let addr = cell(m ^ MASK).addr();
+        assert!(
+            !css.iter().any(|c| c.addr() == addr),
+            "the conservative scan kept {addr:#x}"
+        );
+    }
 }
 
 /// `Symbol.for(text)` in its own frame; returns (symbol bits ^ MASK, its hash).
@@ -349,10 +422,23 @@ fn symbol_for_masked(cx: &mut crate::interp::Cx, text: &str) -> (u64, u32) {
     (black_box(s) ^ MASK, symbol::hash(s))
 }
 
+/// `Symbol.for("kept")`, then 100 other registrations (the registry grows), in a frame of its
+/// own. Run it [`below_a_pad`]. Returns what [`symbol_for_masked`] gave for "kept".
+#[inline(never)]
+fn made_registered_symbols(cx: &mut crate::interp::Cx) -> (u64, u32) {
+    let kept = symbol_for_masked(cx, "kept");
+    for i in 0..100 {
+        symbol_for_masked(cx, &format!("filler {i}"));
+    }
+    kept
+}
+
 #[test]
 fn the_registry_is_stable() {
     on_big_stack(|| {
-        let mut iso = isolate(config(Dispatch::DEFAULT, true));
+        let mut c = config(Dispatch::DEFAULT, true);
+        c.heap.record_conservative_roots = true;
+        let mut iso = isolate(c);
         let cx: &mut crate::interp::Cx = &mut iso.cx;
         let rt = cx.rt();
         let n0 = symbol::registry_len(rt);
@@ -385,12 +471,8 @@ fn the_registry_is_stable() {
         assert_eq!(symbol::key_for(iter), UNDEFINED);
         // Only the registry keeps "kept" alive: same cell and hash after a full GC, and
         // many other registrations (growth) in between.
-        let (kept, kept_hash) = symbol_for_masked(cx, "kept");
-        for i in 0..100 {
-            symbol_for_masked(cx, &format!("filler {i}"));
-        }
-        scrub_stack();
-        cx.rt().heap.collect();
+        let ((kept, kept_hash), pad_low) = below_a_pad(|| made_registered_symbols(cx));
+        collect_after_a_pad(cx.rt(), pad_low, &[kept]);
         assert!(
             cx.rt().heap.is_cell(cell(kept ^ MASK).addr()),
             "the registry keeps it"

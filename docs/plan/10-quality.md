@@ -17,7 +17,7 @@ Evidence tags: [R01] [R02] [R03] [R04] [R05] [R06] [R07] [R08] [R09] [R10] [R11]
 
 Plan v1 rules stay:
 - One process with rayon workers. A fresh realm per test. Harness files are pre-compiled per worker, later from a snapshot [R08].
-- Strict and sloppy runs (103,175 runs). Module, raw, async and negative-phase support.
+- Strict and sloppy runs (102,994 runs at test262 d53ebc8b: a file with `module`, `raw`, `onlyStrict` or `noStrict` runs once, any other file twice; the old count 103,175 missed 181 `staging/sm` files that write `flags` as a YAML block list). Module, raw, async and negative-phase support.
 - Results count per file by the G1 rule, and also per run. node and QuickJS run once through it to calibrate against test262.fyi.
 - The full `$262` API: createRealm, detachArrayBuffer, evalScript, gc, IsHTMLDDA, AbstractModuleSource, and agents on real threads (109 agent tests) [R08].
 - A watchdog interrupt per test. Brimstone's harness had none, and one test hung it for 11 minutes [R07].

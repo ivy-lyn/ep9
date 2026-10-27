@@ -206,6 +206,11 @@ const CASES: &[(&str, Mode, &str)] = &[
         "function f(a) { var b; eval('a + b'); return b; }",
     ),
     ("var-with", Sloppy, "var o = {}; with (o) { x = 1; x; }"),
+    (
+        "var-with-call",
+        Sloppy,
+        "var o = {f() {}}; with (o) { f(1); (f)(); }",
+    ),
     // ---- functions ----
     (
         "fn-params",
@@ -428,6 +433,52 @@ const CASES: &[(&str, Mode, &str)] = &[
         Sloppy,
         "class A { m() { return () => A; } }",
     ),
+    // ---- class fields and private names (P2-CLS-CG) ----
+    (
+        "class-field-public",
+        Sloppy,
+        "class A { x = 1; y; 'z' = () => 1; 1 = function() {}; 1.5 = 2; static s = this; }",
+    ),
+    (
+        "class-field-computed",
+        Sloppy,
+        "var k; class A { [k] = 1; static [k + 1] = function() {}; [k]() {} [k + 2]; }",
+    ),
+    (
+        "class-field-ctor",
+        Sloppy,
+        "class A { x = 1; constructor(a = this.x) { this.a = a; } } class B { y = () => this; }",
+    ),
+    (
+        "class-field-derived",
+        Sloppy,
+        "class A {} class B extends A { x = 1; constructor() { super(); } } class C extends A { y = super.constructor; } class D extends A { z; constructor() { var f = () => super(); f(); } }",
+    ),
+    (
+        "class-field-static-block",
+        Sloppy,
+        "class A { static x = 1; static { var y = this.x; function f() { return y; } let z = f; } static w = A; }",
+    ),
+    (
+        "class-private-field",
+        Sloppy,
+        "class A { #x = 1; static #s; get() { return this.#x; } set(v) { this.#x = v; this.#x += 1; this.#x++; [this.#x] = [v]; } has(o) { return #x in o && #s in A; } opt(o) { return o?.#x; } call() { return this.#x(); } }",
+    ),
+    (
+        "class-private-method",
+        Sloppy,
+        "class A { #m() { return 1; } static #s() { return super.x; } get #a() { return 1; } set #a(v) {} set #w(v) {} t(o) { return [o.#m(), A.#s(), o.#a, #m in o, o?.#m, #a in o]; } }",
+    ),
+    (
+        "class-private-assign",
+        Sloppy,
+        "class A { #m() {} get #a() { return 1; } set #a(v) {} get #g() {} t(o, v) { o.#a = v; o.#a += 1; o.#a++; [o.#a] = [v]; o.#m = v; return o.#g = v; } }",
+    ),
+    (
+        "class-private-generator",
+        Sloppy,
+        "class A { *#g() { yield 1; } static *#h() {} t() { return this.#g(); } }",
+    ),
     // ---- modules ----
     (
         "module-basic",
@@ -448,6 +499,32 @@ const CASES: &[(&str, Mode, &str)] = &[
         "module-captured",
         Module,
         "let x = 1; export const y = () => x; x = 2;",
+    ),
+    // ---- generators (M2-P1-GEN-CG) ----
+    (
+        "gen-basic",
+        Sloppy,
+        "function* g(a) { var x = yield a; yield; return x + new.target; } var e = function* () {}; ({ *m() { yield this; } });",
+    ),
+    (
+        "gen-finally",
+        Sloppy,
+        "function* g(f) { try { yield 1; } catch (e) { yield e; } finally { f(); } return 2; }",
+    ),
+    (
+        "gen-for-of",
+        Sloppy,
+        "function* g(xs) { for (const x of xs) { yield () => x; } }",
+    ),
+    (
+        "gen-labeled-nested-loop",
+        Sloppy,
+        "function* g(n) { outer: for (let i = 0; i < n; i++) { let f = () => i; while (true) { if (yield f) continue outer; break outer; } } }",
+    ),
+    (
+        "gen-yield-star",
+        Strict,
+        "function* g(it) { var r = yield* it; return r; }",
     ),
     // ---- strict and misc ----
     (
@@ -690,12 +767,19 @@ fn entry_points() {
 #[test]
 fn unsupported_constructs_name_the_feature() {
     for (src, feature) in [
-        ("function* g() {}", "generator functions"),
+        // Async generators keep the "generator functions" text until month 3 (generator.rs).
+        ("async function* g() {}", "generator functions"),
+        ("(async function* () {})", "generator functions"),
+        ("({ async *m() {} })", "generator functions"),
+        ("{ async function* g() {} }", "generator functions"),
+        ("class A { static async *m() {} }", "generator functions"),
+        ("class A { accessor x = 1 }", "class auto-accessors"),
+        ("class A { accessor #x }", "class auto-accessors"),
         ("async function f() {}", "async functions"),
         ("(async () => 1)", "async functions"),
-        ("class A { x = 1 }", "class fields"),
-        ("class A { #x() {} }", "private names"),
-        ("class A { static {} }", "class static blocks"),
+        ("class A { async #m() {} }", "async functions"),
+        ("class A { async *#m() {} }", "generator functions"),
+        ("class A { x = async () => 1 }", "async functions"),
         ("import('x')", "import()"),
     ] {
         match compile_script(src, Strictness::Sloppy) {
@@ -716,10 +800,147 @@ fn unsupported_constructs_name_the_feature() {
 #[test]
 fn unsupported_reports_a_position() {
     let Err(CodegenError::Unsupported(u)) =
-        compile_script("1;\n  function* g() {}", Strictness::Sloppy)
+        compile_script("1;\n  async function* g() {}", Strictness::Sloppy)
     else {
         panic!("expected Unsupported");
     };
     assert_eq!((u.position.line, u.position.column), (2, 3));
     assert_eq!(u.span.start, 5);
+}
+
+/// C6 (M2 P0): slot 0 of each sloppy-eval *function* var scope is `.eval_ext`. Script scope 0
+/// (the global declarations) and the script context scope never get it: script-level eval vars
+/// go to the global object.
+#[test]
+fn eval_ext_is_slot_0_of_sloppy_eval_function_var_scopes_only() {
+    use ep9_bytecode::{EVAL_EXT_BINDING, ScopeFlags, ScopeKind, UnitString};
+    let ext = UnitString::new(EVAL_EXT_BINDING);
+    let names = |unit: &VerifiedUnit, s: usize| -> Vec<UnitString> {
+        let u = unit.unit();
+        u.scopes[s]
+            .slots
+            .iter()
+            .map(|slot| u.string(slot.name).clone())
+            .collect()
+    };
+    let has_ext = |unit: &VerifiedUnit| -> Vec<usize> {
+        (0..unit.unit().scopes.len())
+            .filter(|&s| names(unit, s).contains(&ext))
+            .collect()
+    };
+
+    // Top-level sloppy eval: scope 0 and the script context scope (unit scope 1) have none.
+    let top = compile_script("var y; eval('var x');", Strictness::Sloppy).unwrap();
+    let u = top.unit();
+    assert!(u.scopes[0].flags.contains(ScopeFlags::CALLS_SLOPPY_EVAL));
+    assert_eq!(
+        u.scopes[1].kind,
+        ScopeKind::Function,
+        "script context scope"
+    );
+    assert!(
+        !names(&top, 1).is_empty(),
+        "the script context holds `this`"
+    );
+    assert_eq!(has_ext(&top), Vec::<usize>::new());
+
+    // A function (and an arrow) with a sloppy direct eval: slot 0 of its var scope.
+    for src in [
+        "function f(a) { var b; eval('var x'); return b; }",
+        "var g = (a) => eval('var x');",
+        "function h(a = eval('var x')) { return a; }",
+    ] {
+        let unit = compile_script(src, Strictness::Sloppy).unwrap();
+        let with = has_ext(&unit);
+        assert_eq!(with.len(), 1, "{src}");
+        let s = with[0];
+        assert_eq!(names(&unit, s)[0], ext, "{src}: slot 0");
+        let flags = unit.unit().scopes[s].flags;
+        assert!(
+            flags.contains(ScopeFlags::CALLS_SLOPPY_EVAL)
+                && flags.contains(ScopeFlags::NEEDS_CONTEXT),
+            "{src}"
+        );
+        // Every other sloppy-eval scope is script scope 0.
+        for (i, scope) in unit.unit().scopes.iter().enumerate() {
+            if scope.flags.contains(ScopeFlags::CALLS_SLOPPY_EVAL) && i != s {
+                assert_eq!(scope.kind, ScopeKind::Script, "{src}: scope {i}");
+            }
+        }
+    }
+
+    // Strict eval cannot add vars: no binding.
+    let strict = compile_script("function f() { eval('var x'); }", Strictness::Strict).unwrap();
+    assert_eq!(has_ext(&strict), Vec::<usize>::new());
+}
+
+/// `compile_function_ctor` (P3-FNCTOR) gives units with a consistent context chain and
+/// positions on every throwing instruction, like the golden cases. (`compile_eval` is
+/// P2-EVAL-FE's: its tests are in `eval.rs`, D3; the Function() tests are in `function_ctor.rs`.)
+#[test]
+fn function_ctor_units_pass_the_golden_checks() {
+    use ep9_bytecode::FunctionCtorKind as K;
+    for (kind, params, body) in [
+        (K::Normal, "a, b = a", "return a + b"),
+        (K::Normal, "", "var x = 1; return function () { return x; }"),
+        (K::Normal, "a", "with (a) { return b; }"),
+        (K::Normal, "", "return eval('1')"),
+        (K::Generator, "a", "yield a; yield* [a];"),
+    ] {
+        let unit =
+            crate::compile_function_ctor(kind, params, body, super::CompileOptions::default())
+                .unwrap();
+        let errors = super::ctx_check::context_errors(&unit);
+        assert!(errors.is_empty(), "{body}: {}", errors.join("\n"));
+        let missing = unpositioned_throws(&unit);
+        assert!(missing.is_empty(), "{body}: {missing:?}");
+    }
+}
+
+/// D2 (P2-CLS-CG): the synthetic class bindings (brands, accessor setters, computed field
+/// keys) are `PrivateName` bindings with names no source can spell, declared in the class
+/// scope, and the scope pass puts them in the class context (codegen finds them by name).
+#[test]
+fn synthetic_class_bindings_live_in_the_class_context() {
+    use crate::scope::{BindingKind, BindingLocation, ScopeKind};
+    let src = "var k; class C { #m() {} static #s() {} get #a() { return 1; } set #a(v) {} \
+               [k] = 1; static [k + 1]; x = 2; #f; }";
+    let sa = crate::with_front_end(src, Sloppy.opts(), crate::scope::analyze).unwrap();
+    let class = sa
+        .scopes()
+        .iter()
+        .find(|s| s.kind == ScopeKind::Class)
+        .unwrap();
+    let names: Vec<(&str, bool)> = class
+        .bindings
+        .iter()
+        .map(|&b| {
+            let binding = sa.binding(b);
+            assert!(
+                matches!(binding.kind, BindingKind::PrivateName { .. })
+                    || binding.kind == BindingKind::ClassInner
+            );
+            let in_class_context = matches!(
+                binding.location,
+                BindingLocation::Context { scope, .. } if scope == class.id
+            );
+            (sa.name(binding.name), in_class_context)
+        })
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("C", false),
+            ("#m", true),
+            ("#s", true),
+            ("#a", true),
+            ("#f", true),
+            ("#.brand", true),
+            ("#.static-brand", true),
+            ("#.set-a", true),
+            ("#.class-field-0", true),
+            ("#.class-field-1", true),
+        ]
+    );
+    assert!(class.needs_context);
 }

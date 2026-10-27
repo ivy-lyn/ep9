@@ -276,6 +276,34 @@ fn sloppy_direct_eval_forces_contexts_and_dynamic_lookups() {
     );
 }
 
+/// C6 (M2 P0): binding 0 and context slot 0 of a sloppy-eval function var scope are
+/// `.eval_ext`; the script scope gets none.
+#[test]
+fn sloppy_eval_function_var_scopes_get_eval_ext_at_slot_0() {
+    let a = script("eval('var t'); function f(a) { var x; eval('1'); }");
+    let ext = a.id_of(ep9_bytecode::EVAL_EXT_BINDING);
+    let f = a.func(1);
+    let fs = a.scope(f.scope);
+    assert_eq!(fs.bindings[0], ext, "{a}");
+    assert_eq!(fs.context_slots[0], ext, "{a}");
+    let b = a.binding(ext);
+    assert_eq!(b.kind, BindingKind::EvalExt);
+    assert!(b.kind.is_implicit() && !b.tdz);
+    assert_eq!(
+        b.location,
+        BindingLocation::Context {
+            scope: f.scope,
+            slot: 0
+        }
+    );
+    // Script scope 0 is a sloppy-eval scope too, but its eval vars are global properties.
+    assert!(a.scope(ScopeId(0)).sloppy_eval);
+    assert!(!a.scope(ScopeId(0)).bindings.contains(&ext));
+    // Strict code never gets one.
+    let s = strict("function f() { eval('var x'); }");
+    assert!(s.named(ep9_bytecode::EVAL_EXT_BINDING).is_empty());
+}
+
 #[test]
 fn strict_direct_eval_reads_but_never_adds_bindings() {
     let a = strict("function f() { var x; eval('x'); return x + z; }");
@@ -726,8 +754,9 @@ fn class_scopes_private_names_and_synthetic_functions() {
            static { var z = this; }
          }",
     );
-    // Function ids (preorder): script, h (heritage), the synthetic initializers (at the class
-    // body start), then the source order: the arrow in field `y`, the constructor, m.
+    // Function ids (a preorder of the parent links): script, h (heritage), the instance
+    // initializer and the arrow in field `y` (its child), the static initializer, then the
+    // methods in source order: the constructor, m.
     let kinds: Vec<_> = a.functions().iter().map(|f| f.kind).collect();
     assert_eq!(
         kinds,
@@ -735,12 +764,13 @@ fn class_scopes_private_names_and_synthetic_functions() {
             FunctionKind::Script,
             FunctionKind::Normal,
             FunctionKind::InstanceMembersInitializer,
-            FunctionKind::StaticMembersInitializer,
             FunctionKind::Arrow,
+            FunctionKind::StaticMembersInitializer,
             FunctionKind::DerivedConstructor,
             FunctionKind::Method,
         ]
     );
+    assert_eq!(a.func(3).parent, Some(FunctionId(2)));
     let class_scope = a
         .scopes()
         .iter()
@@ -751,7 +781,7 @@ fn class_scopes_private_names_and_synthetic_functions() {
     assert_eq!(info.constructor, Some(FunctionId(5)));
     assert_eq!(info.default_constructor, None);
     assert_eq!(info.instance_initializer, Some(FunctionId(2)));
-    assert_eq!(info.static_initializer, Some(FunctionId(3)));
+    assert_eq!(info.static_initializer, Some(FunctionId(4)));
     // Private names and the captured inner name live in the class context.
     for name in ["#x", "#y"] {
         assert_eq!(ctx(&a, name).0, class_scope.id);
@@ -773,8 +803,8 @@ fn class_scopes_private_names_and_synthetic_functions() {
     // The static block's var is local to the static initializer.
     let z = a.the("z");
     assert_eq!(a.scope(z.scope).kind, ScopeKind::StaticBlock);
-    assert_eq!(a.scope(z.scope).function, FunctionId(3));
-    assert!(a.func(3).this.is_some());
+    assert_eq!(a.scope(z.scope).function, FunctionId(4));
+    assert!(a.func(4).this.is_some());
 }
 
 #[test]
@@ -811,6 +841,33 @@ fn computed_keys_and_heritage_run_in_the_enclosing_function() {
         assert!(matches!(r.resolution, Resolution::Binding { hops: 0, .. }));
     }
     assert_eq!(a.loc("k"), BindingLocation::Parameter(0));
+}
+
+/// ClassDefinitionEvaluation step 8 (ECMA-262 §15.7.14): the heritage runs with the outer
+/// PrivateEnvironment. A `#x` in I's heritage (also in a closure or in a class J nested
+/// there) resolves to O's `#x`, never to I's; J's own body sees J's `#x`, and I's body sees
+/// I's `#x`.
+#[test]
+fn heritage_private_names_resolve_in_the_outer_class() {
+    let src = "class O { #x; m() {
+        return class I extends (this.#x, #x in this, () => this.#x,
+                                class J { #x; n() { return this.#x; } }, this.#x) {
+          #x; k() { return this.#x; }
+        };
+      } }";
+    let a = script(src);
+    let decl = |needle: &str| {
+        let at = u32::try_from(src.find(needle).unwrap()).unwrap();
+        a.named("#x")
+            .into_iter()
+            .find(|&b| a.binding(b).span.is_some_and(|s| s.start == at))
+            .unwrap()
+    };
+    let (o, j, i) = (decl("#x; m()"), decl("#x; n()"), decl("#x; k()"));
+    // Walk order: the heritage (three refs, J's body, the last ref), then I's body.
+    let targets: Vec<_> = (0..6).map(|n| a.target("#x", n)).collect();
+    assert_eq!(targets, vec![o, o, o, j, o, i]);
+    assert_eq!(a.refs("#x").len(), 6);
 }
 
 // Catch, for, function names.

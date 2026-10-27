@@ -1,6 +1,6 @@
 # op-typeof: script (sloppy)
 # | typeof undeclared; typeof undeclared === 'undefined'; let t; typeof t == 'number'; typeof t !== 'object';
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=105 source=embedded hints=none
 source_hash=6f49cc72fb5c55532394df91fab630f7f9dd13f61dccf6b16490c5647ec4b1bd
 strings (2):

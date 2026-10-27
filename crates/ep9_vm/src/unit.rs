@@ -6,16 +6,21 @@
 //!                          consts:   [[Slot]]     constant pool per function          (root ranges)
 //!                          infos:    [FunctionInfo] { dispatch slot, code, counts, consts, unit }
 //!                          feedback: UnitFeedback  per-function feedback (H16, lazy)
+//!                          context_scopes: [ContextScope] { unit, scope } per unit scope (C5)
 //! ```
+//!
+//! A context's SCOPE word points at its [`ContextScope`] (object.rs, OBJECT_LAYOUT 2), so
+//! the context names its unit and scope descriptor: `object::context_scope`.
 //!
 //! Constant pool entries become Values: Number → number, String → its atom, Oddball → its
 //! value. The other kinds keep their index as an int32 marker, and handlers read the
 //! `Constant` from the unit. BigInt is the hole marker: `LdaConstant` of a BigInt throws "not
 //! implemented" (v0).
 
+use core::cell::OnceCell;
 use core::ptr::NonNull;
 
-use ep9_bytecode::{Constant, Oddball, SourceLines, VerifiedUnit};
+use ep9_bytecode::{Constant, EvalContext, Oddball, Scope, SourceLines, VerifiedUnit};
 use ep9_heap::{RootId, RootStrength, Slot};
 use ep9_value::Value;
 
@@ -27,6 +32,47 @@ use crate::runtime::{Runtime, val};
 
 pub(crate) use crate::function_info::FunctionInfo;
 
+/// The VM-side record that a context's SCOPE word points at (C5): the unit and one of its
+/// scope descriptors. A `&Scope` alone cannot name its slots: a slot name is a unit
+/// `StringId`, which only the loaded unit maps to a heap string ([`LoadedUnit::string`]).
+pub(crate) struct ContextScope {
+    pub unit: *const LoadedUnit,
+    pub scope: *const Scope,
+}
+
+/// The receiver flags of PerformEval step 8 (§19.2.1.1) that direct eval code was compiled
+/// with: `in_function`, `in_method`, `in_derived_ctor`, `in_class_field_init` of its
+/// [`EvalContext`]. All false for every other unit (global code: a script, a module, indirect
+/// eval, `Function()`). A direct eval in the unit's function 0, or in an arrow inside it, has
+/// the same GetThisEnvironment, so it takes them over (`interp/slow/eval.rs`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct EvalReceiver {
+    pub in_function: bool,
+    pub in_method: bool,
+    pub in_derived_ctor: bool,
+    pub in_class_field_init: bool,
+}
+
+impl EvalReceiver {
+    /// The receiver flags of `ctx`.
+    pub fn of(ctx: &EvalContext) -> EvalReceiver {
+        EvalReceiver {
+            in_function: ctx.in_function,
+            in_method: ctx.in_method,
+            in_derived_ctor: ctx.in_derived_ctor,
+            in_class_field_init: ctx.in_class_field_init,
+        }
+    }
+}
+
+/// The sloppy eval prologue of a unit function (`interp/slow/eval.rs` `prologue`): the byte
+/// range of its first `CallRuntime DeclareEval*`, and its declarations in call order (the
+/// constant index of the name, a function).
+pub(crate) struct EvalPrologue {
+    pub first: Option<(u32, u32)>,
+    pub decls: Vec<(u32, bool)>,
+}
+
 /// A unit the isolate loaded. Boxed and kept until the isolate drops: frames, function cells
 /// and dispatch slots point into it.
 pub(crate) struct LoadedUnit {
@@ -34,8 +80,17 @@ pub(crate) struct LoadedUnit {
     pub file: String,
     pub unit: VerifiedUnit,
     pub infos: Box<[FunctionInfo]>,
+    /// One record per unit scope, in scope id order (stable, like `infos`): contexts point at
+    /// them.
+    pub context_scopes: Box<[ContextScope]>,
     /// Per-function feedback (H16; `feedback.rs`).
     pub feedback: UnitFeedback,
+    /// The receiver flags of direct eval code ([`EvalReceiver`]); set before the unit is
+    /// pushed to `Runtime::units`.
+    pub eval_receiver: EvalReceiver,
+    /// The [`EvalPrologue`] of function 0, decoded at its first `DeclareEval*` call. Every
+    /// eval loads a new unit, so a run decodes its prologue once, not once per call.
+    pub eval_prologue: OnceCell<EvalPrologue>,
     strings: Box<[Slot]>,
     consts: Box<[Box<[Slot]>]>,
     roots: Vec<RootId>,
@@ -58,7 +113,10 @@ impl LoadedUnit {
                 .collect(),
             unit,
             infos: Box::new([]),
+            context_scopes: Box::new([]),
             feedback,
+            eval_receiver: EvalReceiver::default(),
+            eval_prologue: OnceCell::new(),
             roots: Vec::new(),
         });
         // SAFETY: the slices live in boxes that the LoadedUnit owns. LoadedUnit has no Drop and
@@ -107,7 +165,11 @@ impl LoadedUnit {
                 lu.consts[fi][k].init(val(b));
             }
         }
-        let unit_ptr: *const LoadedUnit = &*lu;
+        // A raw pointer straight from the box (`&raw const`, no shared reborrow): the writes to
+        // `lu.infos` and `lu.context_scopes` below go through the box, and a `&*lu` pointer would
+        // be frozen and lose its permission at the first one (Miri, Tree Borrows).
+        // `object::context_scope` later makes a `&LoadedUnit` from it.
+        let unit_ptr: *const LoadedUnit = &raw const *lu;
         let infos: Box<[FunctionInfo]> = lu
             .unit
             .functions
@@ -127,6 +189,18 @@ impl LoadedUnit {
             })
             .collect();
         lu.infos = infos;
+        // The scope table of a VerifiedUnit never changes (no DerefMut), and the box does not
+        // move, so these pointers stay valid as long as the unit.
+        let scopes: Box<[ContextScope]> = lu
+            .unit
+            .scopes
+            .iter()
+            .map(|scope| ContextScope {
+                unit: unit_ptr,
+                scope,
+            })
+            .collect();
+        lu.context_scopes = scopes;
         let mut reg = rt.registry.borrow_mut();
         for info in lu.infos.iter() {
             // Empty bytecode never verifies, so len >= 1.

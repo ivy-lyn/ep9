@@ -3,44 +3,55 @@
 
 use std::cell::RefCell;
 use std::io;
+use std::sync::Barrier;
 
 use super::{CodeMemory, WxMode};
 use crate::unwind;
-use crate::va::{Cage, CageConfig, Reservation, allocation_granularity, page_size};
+use crate::va::{
+    CAGE_LIMIT, Cage, CageConfig, CodeChunk, CodeRange, CodeRangeConfig, DEFAULT_CODE_RANGE_SIZE,
+    Reservation, TSRS_RESERVATION, allocation_granularity, page_size,
+};
 
-/// Owns the reservation a test commits code in.
+/// Owns the pages a test commits code in.
 enum Space {
-    Cage(Cage),
+    Chunk(CodeChunk<'static>),
     Plain(Reservation),
 }
 
 impl Space {
-    /// A JIT cage code range for MapJit and for every mode off macOS arm64; a plain
-    /// reservation for Protect on macOS arm64.
+    /// A chunk of the process code range for MapJit and for every mode off macOS arm64; a
+    /// plain reservation for Protect on macOS arm64 (MAP_JIT pages cannot be mprotected).
     fn for_mode(mode: WxMode) -> Space {
         if mode.needs_map_jit() || !cfg!(all(target_vendor = "apple", target_arch = "aarch64")) {
-            let config = CageConfig {
-                cage_size: allocation_granularity(),
-                code_range_size: 1 << 20,
-                ..CageConfig::default()
-            };
-            Space::Cage(Cage::reserve_jit(&config).expect("reserve a JIT cage"))
+            let range = CodeRange::process().expect("reserve the process code range");
+            Space::Chunk(range.alloc(page_size()).expect("a chunk of the code range"))
         } else {
             Space::Plain(Reservation::reserve(1 << 20).expect("reserve 1 MiB"))
         }
     }
 
+    /// The whole reservation: the process code range, or the plain one.
     fn range(&self) -> &Reservation {
         match self {
-            Space::Cage(c) => c.code(),
+            Space::Chunk(c) => c.code_range().reservation(),
             Space::Plain(r) => r,
+        }
+    }
+
+    /// Offset of this test's page in [`Space::range`].
+    fn offset(&self) -> usize {
+        match self {
+            Space::Chunk(c) => c.offset(),
+            Space::Plain(_) => 0,
         }
     }
 }
 
 fn commit(space: &Space, mode: WxMode) -> CodeMemory<'_> {
-    // SAFETY: the space is new and this is its only code memory.
-    unsafe { CodeMemory::commit(space.range(), 0, page_size(), mode) }.expect("commit one page")
+    // SAFETY: the page at the space's offset is this test's alone (its chunk, or a new plain
+    // reservation), and this is its only code memory.
+    unsafe { CodeMemory::commit(space.range(), space.offset(), page_size(), mode) }
+        .expect("commit one page")
 }
 
 /// x86-64 Linux under Rosetta (for example Docker on an Apple silicon Mac). Rosetta keeps a
@@ -129,12 +140,27 @@ fn write_call_rewrite() {
     }
 }
 
+/// Pages never used before read zero. A private range, not the process one: there a page that
+/// another test's `MapJit` memory used holds unspecified bytes (`CodeMemory::commit`).
 #[test]
 fn fresh_pages_read_zero_through_a_window() {
+    let fresh = CodeRange::reserve(&CodeRangeConfig {
+        size: 1 << 20,
+        ..CodeRangeConfig::default()
+    })
+    .expect("reserve a private code range");
+    let ps = page_size();
     for &mode in WxMode::available() {
-        let space = Space::for_mode(mode);
-        let mut mem = commit(&space, mode);
-        let ps = page_size();
+        let plain;
+        let mut chunk;
+        let mut mem = if fresh.is_map_jit() == mode.needs_map_jit() {
+            chunk = fresh.alloc(ps).unwrap();
+            chunk.commit(mode).unwrap()
+        } else {
+            plain = Reservation::reserve(1 << 20).unwrap();
+            // SAFETY: a new reservation; this is its only code memory.
+            unsafe { CodeMemory::commit(&plain, 0, ps, mode) }.unwrap()
+        };
         let mut w = mem.open_write(0, ps).unwrap();
         assert!(w.bytes().iter().all(|&b| b == 0), "{mode}");
     }
@@ -460,41 +486,143 @@ fn unwind_through_generated_frame() {
     for &mode in WxMode::available() {
         let space = Space::for_mode(mode);
         let mut mem = commit(&space, mode);
-        write(&mut mem, 0, &frame_code());
-        let reg = register_frame(&mut mem);
-        // SAFETY: offset 0 holds the frame function with this signature.
-        let f: FrameFn = unsafe { std::mem::transmute(mem.exec_addr(0)) };
+        check_unwind(&mut mem, mode);
+    }
+}
 
-        // 1. A plain call: cb(5 + 1) + 5 = 65.
-        assert_eq!(call_frame(f, 5, walk_cb), 65, "{mode}");
+/// Writes the frame function at offset 0 of `mem`, registers its unwind info, calls it, walks
+/// through it and unwinds a panic through it.
+fn check_unwind(mem: &mut CodeMemory<'_>, mode: WxMode) {
+    write(mem, 0, &frame_code());
+    let reg = register_frame(mem);
+    // SAFETY: offset 0 holds the frame function with this signature.
+    let f: FrameFn = unsafe { std::mem::transmute(mem.exec_addr(0)) };
 
-        // 2. The system unwinder walks from the callback through the generated frame.
-        let ips = WALK.with(|w| w.take());
-        let ret = mem.exec_addr(RET_OFF);
-        let at = ips.iter().position(|&ip| ip == ret).unwrap_or_else(|| {
-            panic!("{mode}: walk misses the generated frame (return address {ret:#x}): {ips:x?}")
-        });
-        assert!(at >= 1, "{mode}: the callback frame must come first");
-        let call_frame_addr = call_frame as fn(FrameFn, u64, Callback) -> u64 as usize;
-        let next = ips[at + 1..].first().copied().unwrap_or(0);
-        assert!(
-            next > call_frame_addr && next - call_frame_addr < 4096,
-            "{mode}: the frame after the generated one must return into call_frame \
-             ({call_frame_addr:#x}), got {next:#x}: {ips:x?}"
+    // 1. A plain call: cb(5 + 1) + 5 = 65.
+    assert_eq!(call_frame(f, 5, walk_cb), 65, "{mode}");
+
+    // 2. The system unwinder walks from the callback through the generated frame.
+    let ips = WALK.with(|w| w.take());
+    let ret = mem.exec_addr(RET_OFF);
+    let at = ips.iter().position(|&ip| ip == ret).unwrap_or_else(|| {
+        panic!("{mode}: walk misses the generated frame (return address {ret:#x}): {ips:x?}")
+    });
+    assert!(at >= 1, "{mode}: the callback frame must come first");
+    let call_frame_addr = call_frame as fn(FrameFn, u64, Callback) -> u64 as usize;
+    let next = ips[at + 1..].first().copied().unwrap_or(0);
+    assert!(
+        next > call_frame_addr && next - call_frame_addr < 4096,
+        "{mode}: the frame after the generated one must return into call_frame \
+         ({call_frame_addr:#x}), got {next:#x}: {ips:x?}"
+    );
+    assert!(
+        ips.len() - at >= 4,
+        "{mode}: the walk stops right after the generated frame: {ips:x?}"
+    );
+
+    // 3. A Rust panic unwinds through the generated frame and is caught here.
+    let r = std::panic::catch_unwind(|| call_frame(f, 41, panic_cb));
+    let payload = r.expect_err("the callback panics");
+    let m = payload.downcast::<Marker>().expect("our payload");
+    assert_eq!(m.0, 42, "{mode}");
+
+    // 4. The function still works after the unwind.
+    assert_eq!(call_frame(f, 1, walk_cb), 21, "{mode}");
+    drop(reg);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The process code range (H07-Q6).
+
+/// Every thread gets the same range: 128 MiB, below 2^47, outside the tsrs range.
+#[test]
+fn process_code_range_is_one_per_process() {
+    let here = CodeRange::process().unwrap() as *const CodeRange as usize;
+    let there: Vec<usize> = std::thread::scope(|s| {
+        let hs: Vec<_> = (0..2)
+            .map(|_| s.spawn(|| CodeRange::process().unwrap() as *const CodeRange as usize))
+            .collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    assert_eq!(there, [here, here], "two threads, one code range");
+    let r = CodeRange::process().unwrap();
+    r.self_check().unwrap();
+    assert_eq!(r.size(), DEFAULT_CODE_RANGE_SIZE);
+    assert!(r.end() <= CAGE_LIMIT, "{:#x} ends above 2^47", r.end());
+    let k = r.range();
+    assert!(
+        k.end <= TSRS_RESERVATION.start || k.start >= TSRS_RESERVATION.end,
+        "{k:x?} overlaps the tsrs range"
+    );
+    // Unit tests build `jit`: on macOS arm64 the range is one MAP_JIT mapping.
+    assert_eq!(
+        r.is_map_jit(),
+        cfg!(all(target_vendor = "apple", target_arch = "aarch64"))
+    );
+}
+
+/// Two cages without a code range, reserved on two threads, each run code in their own chunk
+/// of the process code range at the same time.
+#[test]
+fn cages_on_two_threads_take_chunks() {
+    let range = CodeRange::process().unwrap();
+    let both = Barrier::new(2);
+    let got: Vec<_> = std::thread::scope(|s| {
+        let hs: Vec<_> = (0..2u16)
+            .map(|t| {
+                let both = &both;
+                s.spawn(move || {
+                    let cage = Cage::reserve(&CageConfig {
+                        cage_size: allocation_granularity(),
+                        code_range_size: 0,
+                        ..CageConfig::default()
+                    })
+                    .expect("reserve a cage");
+                    assert!(cage.code_range().is_none(), "no per-cage code range");
+                    let mut chunk = range.alloc(page_size()).expect("a chunk");
+                    let mut mem = chunk.commit(WxMode::DEFAULT).expect("commit the chunk");
+                    write(&mut mem, 0, &ret_const(300 + t));
+                    // Both chunks are committed and hold code now.
+                    both.wait();
+                    // SAFETY: offset 0 holds a ret_const function, written just now.
+                    let v = unsafe { call0(mem.exec_addr(0)) };
+                    let at = mem.exec_base();
+                    both.wait();
+                    (at, v, cage.heap().range())
+                })
+            })
+            .collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let ps = page_size();
+    for (t, (at, v, heap)) in got.iter().enumerate() {
+        assert_eq!(*v, 300 + t as u64);
+        assert!(range.contains(*at) && range.contains(at + ps - 1));
+        assert!(!heap.contains(at), "code lies outside the cage");
+    }
+    let (a, b) = (got[0].0, got[1].0);
+    assert!(
+        a + ps <= b || b + ps <= a,
+        "the chunks overlap: {a:#x} {b:#x}"
+    );
+}
+
+/// Code in a chunk from the safe entry (`CodeChunk::commit`) runs and unwinds.
+#[test]
+fn process_chunk_code_is_callable_and_unwinds() {
+    let range = CodeRange::process().unwrap();
+    let mut chunk = range.alloc(page_size()).unwrap();
+    let mut mem = chunk.commit(WxMode::DEFAULT).unwrap();
+    assert!(range.contains(mem.exec_base()));
+    check_unwind(&mut mem, WxMode::DEFAULT);
+    #[cfg(all(target_vendor = "apple", target_arch = "aarch64"))]
+    {
+        drop(mem);
+        let e = chunk.commit(WxMode::Protect).unwrap_err();
+        assert_eq!(
+            e.kind(),
+            io::ErrorKind::InvalidInput,
+            "MAP_JIT takes MapJit only"
         );
-        assert!(
-            ips.len() - at >= 4,
-            "{mode}: the walk stops right after the generated frame: {ips:x?}"
-        );
-
-        // 3. A Rust panic unwinds through the generated frame and is caught here.
-        let r = std::panic::catch_unwind(|| call_frame(f, 41, panic_cb));
-        let payload = r.expect_err("the callback panics");
-        let m = payload.downcast::<Marker>().expect("our payload");
-        assert_eq!(m.0, 42, "{mode}");
-
-        // 4. The function still works after the unwind.
-        assert_eq!(call_frame(f, 1, walk_cb), 21, "{mode}");
-        drop(reg);
     }
 }

@@ -12,13 +12,22 @@
 //!   so one worker is enough, and isolates on one thread (D14) share it.
 //! - A job that runs on a worker thread runs inline: a nested call does not spawn a second worker.
 //! - A panic inside the job is caught on the worker and resumed on the caller. The worker lives on.
+//!   Under `panic = "abort"` (P2-INFRA2) the `catch_unwind` in `run` never runs: the process
+//!   aborts in the job. So nothing relies on it for isolation (ep9-test262 uses worker processes).
 //! - The stack is a reservation. The OS commits pages only as deep as a job really goes.
+//! - Dropping a worker closes its channel and does not join the thread (M2-P1-WIN-TLSJOIN). The
+//!   loop sees the closed channel and the thread ends on its own, so its stack is released a
+//!   moment after the drop, not during it. The drop usually runs in the caller's thread-local
+//!   destructor. On Windows, when the caller thread ends the process (returns from `main`, or
+//!   `std::process::exit`), the OS has already ended every other thread by then, and a join of
+//!   such a thread panics ("threads should not terminate unexpectedly"). A panic in a
+//!   thread-local destructor aborts the process (0xC0000409).
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::mpsc;
-use std::thread::{self, JoinHandle};
+use std::thread;
 
 type Job = Box<dyn FnOnce() + Send>;
 
@@ -28,16 +37,18 @@ pub(crate) struct SpawnError {
     pub(crate) message: String,
 }
 
+/// A front-end worker thread, owned through its job channel. Dropping it closes the channel;
+/// the thread is never joined (see the module doc).
 struct Worker {
     stack_bytes: usize,
-    jobs: Option<mpsc::Sender<Job>>,
-    handle: Option<JoinHandle<()>>,
+    jobs: mpsc::Sender<Job>,
 }
 
 impl Worker {
     fn spawn(stack_bytes: usize) -> Result<Self, SpawnError> {
         let (jobs, inbox) = mpsc::channel::<Job>();
-        let handle = thread::Builder::new()
+        // The handle is dropped at once: that detaches the thread.
+        thread::Builder::new()
             .name("ep9-frontend".into())
             .stack_size(stack_bytes)
             .spawn(move || {
@@ -53,21 +64,7 @@ impl Worker {
                     stack_bytes >> 20
                 ),
             })?;
-        Ok(Self {
-            stack_bytes,
-            jobs: Some(jobs),
-            handle: Some(handle),
-        })
-    }
-}
-
-impl Drop for Worker {
-    fn drop(&mut self) {
-        // Close the channel first, so the worker loop ends; then wait for it.
-        drop(self.jobs.take());
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
+        Ok(Self { stack_bytes, jobs })
     }
 }
 
@@ -109,11 +106,7 @@ where
                 *slot = Some(Worker::spawn(stack_bytes)?);
             }
             let worker = slot.as_ref().expect("set above");
-            let sender = worker
-                .jobs
-                .as_ref()
-                .expect("open while the worker is in the slot");
-            match sender.send(wrapped.take().expect("sent at most once")) {
+            match worker.jobs.send(wrapped.take().expect("sent at most once")) {
                 Ok(()) => return Ok(()),
                 Err(mpsc::SendError(job)) => {
                     wrapped = Some(job);
@@ -148,6 +141,7 @@ pub(crate) fn on_worker() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     const SMALL: usize = 1 << 20;
 
@@ -192,6 +186,66 @@ mod tests {
         assert_ne!(first, bigger);
         // A smaller request reuses the bigger worker.
         assert_eq!(run(SMALL, || thread::current().id()).unwrap(), bigger);
+    }
+
+    /// Sends one message when dropped. Kept in a thread local, it signals the end of a thread.
+    struct SendOnDrop(mpsc::Sender<()>);
+
+    impl Drop for SendOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+
+    thread_local! {
+        static AT_THREAD_END: RefCell<Option<SendOnDrop>> = const { RefCell::new(None) };
+    }
+
+    const WAIT: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn dropping_a_worker_does_not_wait_for_its_thread() {
+        // M2-P1-WIN-TLSJOIN. At a Windows process exit the worker thread is already gone when the
+        // owner's thread-local destructor drops the worker; a join there panics. A busy worker
+        // stands in for that thread on every host: the drop must return without waiting for it.
+        let worker = Worker::spawn(SMALL).unwrap();
+        let (gate_tx, gate_rx) = mpsc::channel::<()>();
+        let (ended_tx, ended_rx) = mpsc::channel::<()>();
+        let job: Job = Box::new(move || {
+            AT_THREAD_END.with(|end| *end.borrow_mut() = Some(SendOnDrop(ended_tx)));
+            let _ = gate_rx.recv();
+        });
+        worker.jobs.send(job).unwrap();
+        let (dropped_tx, dropped_rx) = mpsc::channel::<()>();
+        thread::spawn(move || {
+            drop(worker);
+            let _ = dropped_tx.send(());
+        });
+        let dropped = dropped_rx.recv_timeout(WAIT);
+        drop(gate_tx);
+        assert!(dropped.is_ok(), "the drop waited for the worker thread");
+        // The worker thread still ends on its own once its job and channel are done.
+        assert!(
+            ended_rx.recv_timeout(WAIT).is_ok(),
+            "the worker thread did not end"
+        );
+    }
+
+    #[test]
+    fn a_caller_thread_that_ends_ends_its_worker_thread() {
+        let (ended_tx, ended_rx) = mpsc::channel::<()>();
+        thread::spawn(move || {
+            run(SMALL, move || {
+                AT_THREAD_END.with(|end| *end.borrow_mut() = Some(SendOnDrop(ended_tx)));
+            })
+            .unwrap();
+        })
+        .join()
+        .unwrap();
+        assert!(
+            ended_rx.recv_timeout(WAIT).is_ok(),
+            "the worker thread did not end"
+        );
     }
 
     /// Linux x86-64 user code under Apple's Rosetta translator (Docker on Apple silicon). The

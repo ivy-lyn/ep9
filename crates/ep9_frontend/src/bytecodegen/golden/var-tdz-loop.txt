@@ -1,6 +1,6 @@
 # var-tdz-loop: script (sloppy)
 # | function f() { for (let i = 0; i < 2; i++) { setTimeout(() => i); } }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=69 source=embedded hints=none
 source_hash=484bc8da17cb21dd1ec2fb3e674521cc8dc170189f53aafad1c510164ce676c8
 strings (3):

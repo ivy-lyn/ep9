@@ -69,7 +69,7 @@ All exit items of a milestone must hold. All 4 targets are tier-1 from week 1, W
 - Scope (v1): workspace, CI on 4 targets, perf CI, test262 runner. Value, cage, header, GC S0. Bytecode v1, VM stack, frames, limits. Dispatch DSL with 3 expansions and ≤ 4 handler arguments. Front end F1, depth layers 2-3, `CompiledUnit`. Shapes v0, named-property IC v0, strings v0. H16 slot kinds and the H29 ADR draft. All M0 spikes, incl. SP-tsrs-win. Builtin ABI frozen (H20).
 - Scope (A0 part 1): ADRs for H2, H3 header fields, H5, H7, H8, H13 rules, H14, H27, H35 container spec v0 and H36. Determinism CI. SP-Unit inside Spike B.
 - Exit:
-  1. Full test262 run (103,175 runs) ≤ 10 min. Expectations committed per target.
+  1. Full test262 run (102,994 runs at d53ebc8b) ≤ 10 min. Expectations committed per target.
   2. Parse negatives 4,653/4,653 and positives ≥ 99.98% on all 4 targets.
   3. `language/` ≥ 40%.
   4. richards and deltablue run correctly, each ≥ 0.6x QuickJS (design canary).
@@ -247,7 +247,8 @@ Time box for the A0 spikes (SP-Unit at M0, SP-Facts at M1):
 | SP-Value | M0 wk2 | inside M0 | `ep9_value` static asserts: Value, JsResult, word0 = 8 B [P1]. Barrier fast path ≤ 5 instructions on aarch64 plus the cell test (decided form: 4 plus the cell test; `ep9_probe_barrier`) | VM lead | H6, H11 |
 | SP-Dispatch | M0 wk2 | inside M0 | DSL on 20 opcodes, 3 expansions. On each target, incl. Win64, over the 3 fixed kernels (loop, branchy, call), the release expansion (H15: sibling calls on every target since the T0 result of 2026-10-21) has geomean time ≤ 1.25x cgoto.c and ≤ 1.5x cgoto.c per kernel. aarch64 also: geomean match time ≥ 1.2x sibling-call time, and sibling call is never slower than match on a kernel (≥ 1.0x) [R06][P1]. x86-64 reports sibling vs match per CPU model, not gated. Match vs cgoto.c is a report on every target. Timing follows the 10-quality §3 speed-gate rule; a hosted x64 result names its CPU model and holds for that model only; hosted CI speed results do not block. 0 non-tail handler exits in release; the spike's x86-64 match loop keeps a copied dispatch jump in each arm (`xtask disasm-check --match-loop`; for T0 a report only) | VM lead | H15 |
 | SP-JIT-mem | M0 wk3 | inside M0 | One generated function per target. Toggle W^X. Call it, unwind and take a backtrace (DWARF CFI; `RtlAddGrowableFunctionTable`) on all 4 targets | JIT/platform lead | H28, H27 |
-| Spike B (+SP-Unit) | M0 month 2 | inside M0; SP-Unit +0.25 | A 10-opcode template JIT. Keep native-stack JIT frames if one T0→JIT→T0 round trip costs ≤ 18 release-expansion dispatches of the loop kernel on the same host (est.). SP-Unit: the same 10 opcodes, built as a unit blob, load, call, unwind, GC-scan and fall back on a version mismatch, on 4 targets | JIT/platform lead; SP-Unit: AOT senior | H14 and D21 (ADR for one VM stack); SP-Unit: H34, H35 |
+| Spike B | M0 month 2 | inside M0 | An 11-opcode template JIT (10 planned, plus AddSmi). Keep native-stack JIT frames if one T0→JIT→T0 round trip costs ≤ 18 release-expansion dispatches of the loop kernel on the same host (est.). Result: placement (a) failed in gate window 1; placement (b) passed in gate window 2 | JIT/platform lead | H14 and D21 (ADR for one VM stack) |
+| SP-Unit | M0 month 3 (M3-P1; moved from month 2 by M2-D21-FAIL) | inside M0; +0.25 | The same 11 opcodes, built on Spike B placement (b) as a unit blob: load, call, unwind, GC-scan and fall back on a version mismatch, on 4 targets | AOT senior | H34, H35 |
 | Spike C (+SP-Facts) | M1 | 1.5-3; SP-Facts +0.25-0.5 | Small SSA compiler for 2-3 v8-v7 kernels on arm64. One eager deopt from a native frame to a VM-stack frame. Deopt correct under the tier-differential test. Kernels ≥ 3x faster than T0 (est.). SP-Facts: see A0 gate | JIT/platform lead; SP-Facts: AOT senior | H2, H14, H16, H17, H29; SP-Facts: H30-H34 |
 | SP-tsrs-win | M0 wk1; again at A1h | 0.25 | `tsrs_cli` builds on x86_64-pc-windows-msvc and passes the `ep9 check` smoke tests with ≤ 2 local patches [TSRS]. At A1h the same check covers ep9-typecheck | Lead + platform lead | none. On fail, `ep9 check` and `ep9c build --hints` print "not supported" on Windows (D2) |
 | SP-tsrs (optional) | only if D1 = B is considered | 0.25-0.5 | Apply the minimal fork patch set. Replay 4 weeks of upstream commits. Count conflicts and hours | Lead | none; data for D1 |
@@ -340,10 +341,10 @@ Roles: lead/front end, GC, VM, JIT/platform, runtime, AOT. Agents led by an orch
 
 **M0, months 2-3.**
 - Bytecode for the rest of the language: destructuring, classes with private names, spread, iterators, generators/async, labels, `with`/eval slow paths, Annex B semantics.
-- `compile_eval` and `compile_function_ctor` (Nova-style wrapper until the oxc fix lands).
+- `compile_eval` and `compile_function_ctor`, with workarounds until the oxc fixes land: eval parses the text as a Script with no wrapper and drops only the allowed nodes' errors (`eval.rs` E1); `Function()` uses a three-parse wrapper check (`function_ctor.rs` F1).
 - The oxc depth-counter patch: upstream PR first, local patch if needed.
 - Realms, `$262`, interrupts, and the minimal intrinsics the harness needs.
-- **Spike B + SP-Unit.** Spike B places the JIT frames by the D21 rule (one round trip ≤ 18 release-expansion dispatches of the loop kernel keeps native-stack JIT frames).
+- **Spike B (month 2) + SP-Unit (month 3, M3-P1).** Spike B places the JIT frames by the D21 rule (one round trip ≤ 18 release-expansion dispatches of the loop kernel keeps native-stack JIT frames).
 - ADRs H4, H13 (rules), H24, H25. Drafts of H29-H34. Freeze the builtin ABI (H20).
 - D11 and D15 were decided on 2026-10-20 ([11-decisions](./11-decisions.md)). Run the M0 exit gates.
 
@@ -362,6 +363,8 @@ Roles: lead/front end, GC, VM, JIT/platform, runtime, AOT. Agents led by an orch
 - Decisions 2026-10-20 ([decisions-log §5](../decisions-log.md#5-2026-10-20-decisions-made-by-the-agent-team-under-the-users-instruction)): D3 = agents (PM is a size; calendars do not apply); Proxy/Reflect core in M1; M2 JetStream list rule; SP-Dispatch gate by geomean plus per-kernel guards; speed-gate rule; SP-RegionCoverage and SP-RegionBound; M10 by the D17 rule; gate data goes to the orchestrator, not to the user as a question.
 - Clarified 2026-10-21 ([decisions-log §7](../decisions-log.md#7-2026-10-21-h15-dispatch-on-x86-64-sp-dispatch-reopen), D21-UNIT): the D21 threshold for Spike B counts release-expansion dispatches of the SP-Dispatch loop kernel on the same host, not "sibling-call dispatches". The number 18 does not change.
 - Amended 2026-10-21 ([decisions-log §10](../decisions-log.md#10-2026-10-21-pr-1-review-fixes-ci-gates-and-h15-on-t0), H15-X64-T0, DISPATCH-GATE-T0): §4 SP-Dispatch gates sibling calls against cgoto.c on every target; match vs cgoto.c is a report.
+- Clarified 2026-10-22 ([decisions-log §12.9](../decisions-log.md#129-p2-classes-withlookup-eval-front-end-spike-b-infra), M2-P2-D19): Spike B and SP-Unit have 11 opcodes (the planned 10 plus AddSmi), as the [Spike B protocol](../measurements/2026-10-22-spike-b-protocol.md) says. The §4 row, 02 §6 and 04 §5 say 11.
+- Clarified 2026-10-22 (decisions-log §12.12 and §12.14: M2-D21-FAIL, M2-P4-W1-D21, M2-P4-SPUNIT-M3, M2-W2-D21-B): placement (a) failed the D21 rule in gate window 1, so SP-Unit moved from M0 month 2 to M0 month 3 (M3-P1) and builds on placement (b). The §4 table has separate Spike B and SP-Unit rows. 02 §6 (H14), 02 §7 and 04 §5 say the same.
 
 ---
 

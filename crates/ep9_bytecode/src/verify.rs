@@ -5,12 +5,12 @@
 //!
 //! | Rule | Detail |
 //! |---|---|
-//! | Decoding | Every instruction decodes, inside its function; no undefined, `Illegal` or reserved opcode |
+//! | Decoding | Every instruction decodes, inside its function; no undefined, `Illegal` or reserved opcode; a generator opcode only in a function with the `GENERATOR` or `ASYNC` flag (ABI 3) |
 //! | Prefixes | A prefix precedes an opcode with a scalable operand; never two; never a larger scale than the operands need |
-//! | Registers | Local `r<i>`: `i < register_count`. Parameter `a<k>`: `k < parameter_count`. Lists, pairs and triples: locals only, inside the frame; an empty list is `r0, 0` |
+//! | Registers | Local `r<i>`: `i < register_count`. Parameter `a<k>`: `k < parameter_count`. Lists, pairs (read or written) and triples: locals only, inside the frame; an empty list is `r0, 0` |
 //! | Constants | Index in range; the kind matches the operand (`Const(..)` parameter) |
 //! | Feedback | Slot index in range; the slot kind matches the operand (`Slot(..)` parameter) |
-//! | Flags | `Flag8`/`Flag16` use only defined bits; `TypeOfLiteral` and `Runtime` ids are defined; `CallRuntime` passes the arity |
+//! | Flags | `Flag8`/`Flag16` use only defined bits; `TypeOfLiteral` and `Runtime` ids are defined; `CallRuntime` and `CallRuntimeForPair` pass the arity; a function that returns a pair only through `CallRuntimeForPair`, every other one only through `CallRuntime` |
 //! | Jumps | Target is an instruction start in the same function. Only `JumpLoop` goes backward (or to itself); all other jumps and every jump-table entry go forward |
 //! | Fall-through | The last instruction is a terminator, so execution never runs off the end |
 //! | Contexts | `CreateFunctionContext`/`CreateEvalContext` slot count equals the scope's slot count |
@@ -76,6 +76,8 @@ pub enum VerifyErrorKind {
     NonMinimalScale,
     /// `Illegal` or a reserved opcode.
     ReservedOpcode(Opcode),
+    /// A generator opcode in a function that is neither a generator nor async (ABI 3).
+    GeneratorOpcode(Opcode),
     /// Operand `n` is an invalid register, list, pair or triple.
     Register(usize),
     /// Operand `n` is an invalid constant index or names the wrong constant kind.
@@ -86,6 +88,9 @@ pub enum VerifyErrorKind {
     FlagValue(usize),
     /// `CallRuntime` argument count differs from the runtime function's arity.
     RuntimeArity,
+    /// `CallRuntime` names a function that returns a pair, or `CallRuntimeForPair` one that
+    /// does not.
+    RuntimePair,
     /// Operand `n` is a jump to a bad target or in a bad direction.
     Jump(usize),
     /// Entry `n` of a jump table goes to a bad target.
@@ -323,6 +328,16 @@ fn verify_function(
                 VerifyErrorKind::ReservedOpcode(insn.opcode),
             );
         }
+        // H02 F10: generator opcodes only in generator and async functions.
+        if info.flags.contains(OpcodeFlags::GENERATOR)
+            && !f.flags.contains(FunctionFlags::GENERATOR)
+            && !f.flags.contains(FunctionFlags::ASYNC)
+        {
+            return cx.err(
+                Some(insn.offset),
+                VerifyErrorKind::GeneratorOpcode(insn.opcode),
+            );
+        }
         if insn.scale != OperandScale::Single && required_scale(&insn) < insn.scale {
             return cx.err(Some(insn.offset), VerifyErrorKind::NonMinimalScale);
         }
@@ -365,7 +380,7 @@ fn verify_function(
                     let n = insn.operand(k + 1) as u64;
                     if n == 0 { v == 0 } else { cx.locals_ok(v, n) }
                 }
-                OperandKind::RegPair => cx.locals_ok(v, 2),
+                OperandKind::RegPair | OperandKind::RegOutPair => cx.locals_ok(v, 2),
                 OperandKind::RegOutTriple => cx.locals_ok(v, 3),
                 OperandKind::RegCount => true, // checked with its list
                 OperandKind::Imm | OperandKind::UImm => true,
@@ -434,11 +449,15 @@ fn verify_function(
                     let Some(id) = RuntimeId::from_u16(v as u16) else {
                         return cx.err(at, VerifyErrorKind::FlagValue(k));
                     };
-                    // CallRuntime(id, args, argc): argc is operand k + 2.
+                    // CallRuntime(id, args, argc) and CallRuntimeForPair(id, args, argc, out):
+                    // argc is operand k + 2.
                     if let Some(arity) = id.info().arity
                         && insn.operand(k + 2) != i64::from(arity)
                     {
                         return cx.err(at, VerifyErrorKind::RuntimeArity);
+                    }
+                    if id.info().returns_pair != (insn.opcode == Opcode::CallRuntimeForPair) {
+                        return cx.err(at, VerifyErrorKind::RuntimePair);
                     }
                     true
                 }

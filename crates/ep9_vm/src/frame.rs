@@ -15,7 +15,7 @@
 //!       callee            fp - 6   Value     the function object
 //!       argc              fp - 5   int32     actual count; bit 30 = [[Construct]] call
 //!       function info     fp - 4   native    FunctionInfo of this frame
-//!       feedback          fp - 3   Value     new.target of a [[Construct]], else undefined (H14-Q1)
+//!       new.target        fp - 3   Value     new.target of a [[Construct]], the generator object of a resumed frame, else undefined (H14-Q1)
 //!       context           fp - 2   Value     current context
 //!       bytecode offset   fp - 1   int32     saved at runtime calls (stack traces, H29)
 //!       r0 .. r(m-1)      fp + 0.. Value     undefined on push
@@ -57,10 +57,11 @@ pub mod slot {
     pub const ARGC: isize = -5;
     /// FunctionInfo pointer (native word).
     pub const FUNCTION_INFO: isize = -4;
-    /// Named for the feedback vector, but v0 keeps `new.target` here (Value): the constructor
-    /// of a `[[Construct]]` call, undefined for a call (H14-Q1). The FeedbackVector is reached
-    /// through [`FUNCTION_INFO`] instead (feedback.rs).
-    pub const FEEDBACK: isize = -3;
+    /// new.target, or the generator object in a resumed frame (Value; FRAME 2, H14-Q1): the
+    /// constructor of a `[[Construct]]` call, undefined for a call, the generator object for
+    /// a frame that `call::push_resume_frame` pushed (its construct bit is clear). JIT and AOT
+    /// frames reach the feedback vector through [`FUNCTION_INFO`] (feedback.rs).
+    pub const NEW_TARGET: isize = -3;
     /// Current context (Value).
     pub const CONTEXT: isize = -2;
     /// Bytecode offset of the current instruction (int32), saved at runtime calls.

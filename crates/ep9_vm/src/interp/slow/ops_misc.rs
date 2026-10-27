@@ -74,6 +74,8 @@ pub(crate) fn compare(cx: &mut Cx, fp: *mut u64, pc: *const u8, op: CmpOp, l: u6
         CmpOp::Le => conv::compare(cx, CompareOp::Le, l, r),
         CmpOp::Ge => conv::compare(cx, CompareOp::Ge, l, r),
         CmpOp::InstanceOf => property::instance_of(cx, l, r),
+        // `#x in o` (a private name, symbol.rs) goes to the private path (C7).
+        CmpOp::In if crate::symbol::is_private_key(l) => super::private::keyed_has(cx, r, l),
         CmpOp::In => property::has(cx, r, l),
     };
     ret(b.map(conv::boolean))

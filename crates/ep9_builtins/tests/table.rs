@@ -43,10 +43,14 @@ fn modules_have_fixed_blocks_in_a_fixed_order() {
             ("symbol", 7),
             ("math", 8),
             ("global", 9),
+            ("promise", 10),
+            ("reflect", 11),
         ]
     );
     assert_eq!(ep9_builtins::object::BLOCK, 1);
     assert_eq!(ep9_builtins::global::BLOCK, 9);
+    assert_eq!(ep9_builtins::promise::BLOCK, 10);
+    assert_eq!(ep9_builtins::reflect::BLOCK, 11);
 }
 
 #[test]
@@ -139,13 +143,17 @@ fn function_prototype_is_a_function() {
     );
     assert_eq!(
         common::run_both(
-            "print(Function.prototype.constructor === Function, Object.getPrototypeOf === undefined)"
+            "print(Function.prototype.constructor === Function, Object.getPrototypeOf(Function.prototype) === Object.prototype)"
         ),
         Ok(vec!["true true".to_string()])
     );
     assert_eq!(
         common::run_both("Function('return 1')"),
-        Err("Error: not implemented in ep9 v0: Function constructor".to_string())
+        // The common isolates have no compiler hook (O2, P3-EVAL-VM).
+        Err(
+            "EvalError: code generation from strings is not available (no compiler hook)"
+                .to_string()
+        )
     );
     assert_eq!(
         common::run_both(

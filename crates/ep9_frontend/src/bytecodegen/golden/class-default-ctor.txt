@@ -1,6 +1,6 @@
 # class-default-ctor: script (sloppy)
 # | class A {} class B extends A {} var C = class {}; var D = class extends A {};
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=77 source=embedded hints=none
 source_hash=1a802799161e1d45cf31d1dccc5f41abdc79e89e023520efbd634433ddc44337
 strings (4):

@@ -27,7 +27,9 @@ use crate::string::UnitString;
 /// |---|---|
 /// | 1 | First ABI (opcode list, CompiledUnit v0) |
 /// | 2 | Runtime ids 6-18 for BytecodeGen v0; `DefineClass` takes 2 arguments; a handler target is at or after its range end (added before v2 was released, so no bump) |
-pub const ABI_VERSION: u32 = 2;
+/// | 3 | Generator opcodes 0x99-0x9b valid in generator and async functions (flag `Generator`, no longer `Reserved`); `CallRuntimeForPair` 0x9d with operand kind `RegOutPair`; `DefineKeyedOwnProperty` flag bit 1 (private add); runtime ids 19-28 and the `pair` mark in the runtime table |
+/// | 4 | Runtime ids 29-31: a dynamic reference resolved before the right-hand side (`ResolveLookupSlot`, `LoadLookupSlotResolved`, `StoreLookupSlotResolved`; M2-P2 review fix L1); `VariableMode::FunctionName` = 5 (M2-P2 review fix L4); a use-site `strict` argument for ids 26 and 30 (`LoadLookupSlotForCall` 2, `LoadLookupSlotResolved` 3; M2-P2 review fix L6) |
+pub const ABI_VERSION: u32 = 4;
 
 /// The ECMA-262 code kind of the unit's entry function.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -287,7 +289,9 @@ pub struct ScopeFlags(pub u8);
 impl ScopeFlags {
     /// The scope allocates a context at run time.
     pub const NEEDS_CONTEXT: ScopeFlags = ScopeFlags(1 << 0);
-    /// The scope contains a sloppy direct eval (dynamic lookups).
+    /// The scope contains a sloppy direct eval (dynamic lookups). It is set only on the var
+    /// scope of the eval site. In a function var scope (not a `Script` scope), slot 0 is the
+    /// [`EVAL_EXT_BINDING`](crate::EVAL_EXT_BINDING) binding (from ABI 3).
     pub const CALLS_SLOPPY_EVAL: ScopeFlags = ScopeFlags(1 << 1);
     /// Strict mode scope.
     pub const STRICT: ScopeFlags = ScopeFlags(1 << 2);
@@ -327,6 +331,10 @@ pub enum VariableMode {
     Function = 3,
     /// Class binding.
     Class = 4,
+    /// The own name of a named function expression: an immutable binding that is not
+    /// strict (§15.2.5 CreateImmutableBinding(name, false)). A store to it is ignored in
+    /// sloppy code and throws a TypeError in strict code. (ABI 4.)
+    FunctionName = 5,
 }
 
 impl VariableMode {
@@ -338,6 +346,7 @@ impl VariableMode {
             2 => Self::Const,
             3 => Self::Function,
             4 => Self::Class,
+            5 => Self::FunctionName,
             _ => return None,
         })
     }
@@ -350,6 +359,7 @@ impl VariableMode {
             Self::Const => "const",
             Self::Function => "function",
             Self::Class => "class",
+            Self::FunctionName => "function-name",
         }
     }
 }

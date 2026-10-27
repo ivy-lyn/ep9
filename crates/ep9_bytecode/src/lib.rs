@@ -1,4 +1,4 @@
-//! Bytecode ABI v1 and `CompiledUnit` v0 (H1, H2, H3 header fields). ADR:
+//! Bytecode ABI (version [`ABI_VERSION`]) and `CompiledUnit` v0 (H1, H2, H3 header fields). ADR:
 //! `docs/adr/H02-bytecode-abi.md`, `docs/adr/H03-ts-runtime-semantics.md`.
 //!
 //! ```text
@@ -23,6 +23,7 @@
 mod builder;
 mod decode;
 mod disasm;
+mod eval_context;
 mod feedback;
 mod opcodes;
 mod operand;
@@ -39,6 +40,7 @@ pub use builder::{
 };
 pub use decode::{DecodeError, Instruction, Instructions, decode_at, read_operand};
 pub use disasm::{disassemble, disassemble_function, instruction_text};
+pub use eval_context::{EVAL_EXT_BINDING, EvalContext, FunctionCtorKind};
 pub use feedback::{
     FeedbackSlotKind, RUNTIME_FUNCTIONS, RuntimeId, RuntimeInfo, TypeOfLiteral, runtime_table_text,
 };

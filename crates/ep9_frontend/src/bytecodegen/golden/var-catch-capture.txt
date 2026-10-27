@@ -1,6 +1,6 @@
 # var-catch-capture: script (sloppy)
 # | try {} catch (e) { (() => e)(); }
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=33 source=embedded hints=none
 source_hash=2b7354fd810d10575a2037266dd2f7d8b1d5e4c8db07445c3d5edbf35a9c5af5
 strings (1):

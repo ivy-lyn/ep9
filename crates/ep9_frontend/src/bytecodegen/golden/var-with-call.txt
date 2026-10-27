@@ -1,0 +1,81 @@
+# var-with-call: script (sloppy)
+# | var o = {f() {}}; with (o) { f(1); (f)(); }
+; ep9 bytecode, ABI 4
+unit kind=script strict=false ts=none source_len=43 source=embedded hints=none
+source_hash=dda7a193f24784137b14fb1ddb33d72b509d1d5ff0592e6878ef19a1bd1b9135
+strings (2):
+  str0 "o"
+  str1 "f"
+scopes (4):
+  scope0 script outer=- flags=[] slots=["o":var]
+  scope1 function outer=scope0 flags=[] slots=[]
+  scope2 with outer=scope0 flags=[needs-context] slots=[]
+  scope3 block outer=scope2 flags=[] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[] params=0 length=0 regs=7 range=0..43
+  code (77 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 S> CreateObjectLiteral k1, s0, #0x01  ; k1 = ObjectBoilerplate {k0: _} ; 70 01 00 01
+      9    Star r0                                      ; 0c 00
+     11 E> CreateClosure k2, s1, #0x00  ; k2 = Function f1 ; 74 02 01 00
+     15 E> DefineNamedOwnProperty r0, k0, s2  ; k0 = String str1 "f" ; 25 00 00 02
+     19    Ldar r0                                      ; 0b 00
+     21 E> StaGlobal k3, s3  ; k3 = String str0 "o"     ; 12 03 03
+     24 S> LdaGlobal k3, s4  ; k3 = String str0 "o"     ; 10 03 04
+     27 E> ToObject r0                                  ; 5b 00
+     29 E> CreateWithContext r0, k4  ; k4 = Scope scope2 ; 79 00 04
+     32    PushContext r1                               ; 13 01
+     34 S> LdaConstant k0  ; k0 = String str1 "f"       ; 0a 00
+     36    Star r5                                      ; 0c 05
+     38    LdaFalse                                     ; 09
+     39    Star r6                                      ; 0c 06
+     41 E> CallRuntimeForPair LoadLookupSlotForCall, r5-r6, r2-r3 ; 9d 1a 00 05 02 02
+     47    LdaSmi [1]                                   ; 04 01
+     49    Star r4                                      ; 0c 04
+     51 E> CallProperty1 r2, r3, r4, s5                 ; 61 02 03 04 05
+     56 S> LdaConstant k0  ; k0 = String str1 "f"       ; 0a 00
+     58    Star r4                                      ; 0c 04
+     60    LdaFalse                                     ; 09
+     61    Star r5                                      ; 0c 05
+     63 E> CallRuntimeForPair LoadLookupSlotForCall, r4-r5, r2-r3 ; 9d 1a 00 04 02 02
+     69 E> CallProperty0 r2, r3, s6                     ; 60 02 03 06
+     73    PopContext r1                                ; 14 01
+     75    LdaUndefined                                 ; 05
+     76    Return                                       ; 92
+  constants (5):
+      0 String str1 "f"
+      1 ObjectBoilerplate {k0: _}
+      2 Function f1
+      3 String str0 "o"
+      4 Scope scope2
+  feedback (7):
+      0 Literal
+      1 CreateClosure
+      2 DefineNamedOwn
+      3 StoreGlobal
+      4 LoadGlobal
+      5 Call
+      6 Call
+  handlers (0):
+  positions (14):
+      0 S 0 (1:1)
+      5 S 4 (1:5)
+     11 E 8 (1:9)
+     15 E 8 (1:9)
+     21 E 4 (1:5)
+     24 S 18 (1:19)
+     27 E 24 (1:25)
+     29 E 18 (1:19)
+     34 S 29 (1:30)
+     41 E 29 (1:30)
+     51 E 29 (1:30)
+     56 S 35 (1:36)
+     63 E 36 (1:37)
+     69 E 35 (1:36)
+function f1 method name="f" parent=f0 outer_scope=scope0 flags=[simple-params] params=0 length=0 regs=0 range=10..15
+  code (2 bytes):
+      0    LdaUndefined                                 ; 05
+      1    Return                                       ; 92
+  constants (0):
+  feedback (0):
+  handlers (0):
+  positions (0):

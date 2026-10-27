@@ -2,10 +2,20 @@
 //!
 //! ```text
 //! object pattern: ToObject check, then per property: key -> (target ref) -> GetV -> default
-//!                 -> bind; rest: CopyDataPropertiesExcluding(value, keys...)
+//!                 -> bind; rest: (target ref) -> CopyDataPropertiesExcluding(value, keys...)
+//!                 -> bind
 //! array pattern:  GetIterator, then try { per element: (target ref) -> step -> default
 //!                 -> bind } finally { if !done: IteratorClose }
 //! ```
+//!
+//! The target reference is evaluated before the value: a member target's object and key, and
+//! a dynamic name (`with`, sloppy direct eval), which is resolved there (`resolve_dynamic`,
+//! lookup.rs) so that a getter, an iterator step or a default that changes the scope cannot
+//! move it. That is the order of §13.15.5.3 (AssignmentProperty: ResolveBinding, then GetV),
+//! §13.15.5.4-6 (Rest, Iterator and Keyed DestructuringAssignmentEvaluation step 1) and, for
+//! `var` patterns (environment undefined), §8.6.3 KeyedBindingInitialization and §8.6.4
+//! IteratorBindingInitialization (SingleNameBinding and BindingRestElement: ResolveBinding
+//! first). A static binding needs no early step: nothing can move it.
 
 use ep9_bytecode::{FeedbackSlotKind, Label, Register, RegisterList, RuntimeId, UnitString};
 use oxc_ast::ast::{
@@ -18,6 +28,7 @@ use oxc_span::{GetSpan, Span};
 use super::expr::Prepared;
 use super::func::{FnGen, Gen};
 use super::literal::{self, PropertyName};
+use crate::scope::{ImplicitRef, Resolution};
 
 /// How a binding pattern stores its values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,11 +148,19 @@ impl<'a, 's> FnGen<'a, 's> {
         self.release(m);
     }
 
-    /// Evaluate the target reference of an element before its value (assignment patterns).
+    /// Evaluate the target reference of an element before its value: a simple assignment
+    /// target, and a `var` binding name that resolves dynamically (see the module doc).
+    /// `None`: the target is bound after the value (a nested pattern, or a static binding).
     fn prepare_element(&mut self, t: Target<'a>) -> Gen<Option<Prepared<'a, 's>>> {
         match t {
             Target::Assign(a) if a.as_simple_assignment_target().is_some() => {
-                Ok(Some(self.prepare_target(a)?))
+                let p = self.prepare_target(a)?;
+                Ok(Some(self.resolve_dynamic(p)))
+            }
+            Target::Bind(BindingPattern::BindingIdentifier(id), BindMode::Var) => {
+                let r = self.implicit(id.span.start, ImplicitRef::VarInit)?;
+                Ok(matches!(r.resolution, Resolution::Dynamic { .. })
+                    .then(|| self.resolve_dynamic(Prepared::Binding(r))))
             }
             _ => Ok(None),
         }
@@ -235,13 +254,17 @@ impl<'a, 's> FnGen<'a, 's> {
                 self.exclude_key(&key, list.get(1 + i as u32));
             }
             let (target, default) = split_binding(&p.value);
+            let t = Target::Bind(target, mode);
+            let prepared = self.prepare_element(t)?;
             self.load_pattern_key(value, &key, p.span.start);
-            self.finish_element(Target::Bind(target, mode), None, default)?;
+            self.finish_element(t, prepared, default)?;
             self.release(im);
         }
         if let (Some(rest), Some(list)) = (&o.rest, list) {
+            let t = Target::Bind(&rest.argument, mode);
+            let prepared = self.prepare_element(t)?;
             self.object_rest(list, rest.span.start);
-            self.bind_value_in_acc(&rest.argument, mode)?;
+            self.finish_element(t, prepared, None)?;
         }
         self.release(m);
         Ok(())
@@ -265,7 +288,9 @@ impl<'a, 's> FnGen<'a, 's> {
                     if let Some(list) = list {
                         self.exclude_key(&key, list.get(1 + i as u32));
                     }
+                    // ResolveBinding before GetV (§13.15.5.3).
                     let r = self.reference_of(&id.binding)?;
+                    let target = self.resolve_dynamic(Prepared::Binding(r));
                     self.load_pattern_key(value, &key, id.span.start);
                     if let Some(init) = &id.init {
                         let have = self.b.new_label();
@@ -273,7 +298,7 @@ impl<'a, 's> FnGen<'a, 's> {
                         self.named_value(init, Some(UnitString::new(id.binding.name.as_str())))?;
                         self.b.bind(have);
                     }
-                    self.store_ref(r, false);
+                    self.put_prepared(&target, id.span.start, false)?;
                 }
                 AssignmentTargetProperty::AssignmentTargetPropertyProperty(pp) => {
                     let key = self.pattern_key(&pp.name, pp.computed)?;

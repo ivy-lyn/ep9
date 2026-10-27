@@ -1,6 +1,6 @@
 # lit-template: script (sloppy)
 # | var a, b; `x`; `${a}`; `a${a}b${b}c`; `${a}${b}`;
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=49 source=embedded hints=none
 source_hash=2b67e8c1b10391ebbfd15613c9643435f79f66f0c1417e1dc10d731b2c4f5f4d
 strings (4):

@@ -141,11 +141,39 @@ pub enum IntrinsicId {
     /// `%StringIteratorPrototype%` (§22.1.5.2), made by the VM table. Its root is a slot of
     /// the isolate's builtin state, not a runtime root.
     StringIteratorPrototype,
+    // ---- M2-P0 (generators; async functions for month 3; eval): VM table, state slots ----
+    /// `%GeneratorFunction%` (§27.3.1).
+    GeneratorFunction,
+    /// `%GeneratorFunction.prototype%` (§27.3.3).
+    GeneratorFunctionPrototype,
+    /// `%GeneratorPrototype%` (§27.5.1, `%GeneratorFunction.prototype.prototype%`).
+    GeneratorPrototype,
+    /// `%AsyncFunction%` (§27.7.1).
+    AsyncFunction,
+    /// `%AsyncFunction.prototype%` (§27.7.3).
+    AsyncFunctionPrototype,
+    /// `%eval%` (§19.2.1), also the global `eval` (P3-EVAL-VM).
+    Eval,
+    // ---- M2-P4 (Promise, RT-9): made by `ep9_builtins` (promise.rs), state slots ----
+    /// `%Promise%` (§27.2.3).
+    Promise,
+    /// `%Promise.prototype%` (§27.2.5).
+    PromisePrototype,
+    /// `%AggregateError%` (§20.5.7.1).
+    AggregateError,
+    /// `%AggregateError.prototype%` (§20.5.7.3).
+    AggregateErrorPrototype,
+    // ---- M2-P5 (Reflect): made by `ep9_builtins` (reflect.rs), a state slot ----
+    /// `%Reflect%` (§28.1).
+    Reflect,
+    // ---- M2-P5 (VM-SMALL): made by the VM table (natives.rs), a state slot ----
+    /// `%Array.prototype%[@@unscopables]` (§23.1.3.41): a null-prototype object.
+    ArrayUnscopables,
 }
 
 impl IntrinsicId {
     /// Every id, in id order.
-    pub const ALL: [IntrinsicId; 33] = [
+    pub const ALL: [IntrinsicId; 45] = [
         IntrinsicId::ObjectPrototype,
         IntrinsicId::FunctionPrototype,
         IntrinsicId::ArrayPrototype,
@@ -179,6 +207,18 @@ impl IntrinsicId {
         IntrinsicId::UriError,
         IntrinsicId::Math,
         IntrinsicId::StringIteratorPrototype,
+        IntrinsicId::GeneratorFunction,
+        IntrinsicId::GeneratorFunctionPrototype,
+        IntrinsicId::GeneratorPrototype,
+        IntrinsicId::AsyncFunction,
+        IntrinsicId::AsyncFunctionPrototype,
+        IntrinsicId::Eval,
+        IntrinsicId::Promise,
+        IntrinsicId::PromisePrototype,
+        IntrinsicId::AggregateError,
+        IntrinsicId::AggregateErrorPrototype,
+        IntrinsicId::Reflect,
+        IntrinsicId::ArrayUnscopables,
     ];
 
     /// The spec name (`%Object.prototype%`); `globalThis` for the global object.
@@ -217,6 +257,18 @@ impl IntrinsicId {
             IntrinsicId::UriError => "%URIError%",
             IntrinsicId::Math => "%Math%",
             IntrinsicId::StringIteratorPrototype => "%StringIteratorPrototype%",
+            IntrinsicId::GeneratorFunction => "%GeneratorFunction%",
+            IntrinsicId::GeneratorFunctionPrototype => "%GeneratorFunction.prototype%",
+            IntrinsicId::GeneratorPrototype => "%GeneratorPrototype%",
+            IntrinsicId::AsyncFunction => "%AsyncFunction%",
+            IntrinsicId::AsyncFunctionPrototype => "%AsyncFunction.prototype%",
+            IntrinsicId::Eval => "%eval%",
+            IntrinsicId::Promise => "%Promise%",
+            IntrinsicId::PromisePrototype => "%Promise.prototype%",
+            IntrinsicId::AggregateError => "%AggregateError%",
+            IntrinsicId::AggregateErrorPrototype => "%AggregateError.prototype%",
+            IntrinsicId::Reflect => "%Reflect%",
+            IntrinsicId::ArrayUnscopables => "%Array.prototype%[@@unscopables]",
         }
     }
 
@@ -256,7 +308,19 @@ impl IntrinsicId {
             IntrinsicId::EvalError => Root::EvalErrorConstructor,
             IntrinsicId::UriError => Root::UriErrorConstructor,
             IntrinsicId::Math => Root::Math,
-            IntrinsicId::StringIteratorPrototype => return None,
+            IntrinsicId::StringIteratorPrototype
+            | IntrinsicId::GeneratorFunction
+            | IntrinsicId::GeneratorFunctionPrototype
+            | IntrinsicId::GeneratorPrototype
+            | IntrinsicId::AsyncFunction
+            | IntrinsicId::AsyncFunctionPrototype
+            | IntrinsicId::Eval
+            | IntrinsicId::Promise
+            | IntrinsicId::PromisePrototype
+            | IntrinsicId::AggregateError
+            | IntrinsicId::AggregateErrorPrototype
+            | IntrinsicId::Reflect
+            | IntrinsicId::ArrayUnscopables => return None,
         })
     }
 
@@ -265,6 +329,18 @@ impl IntrinsicId {
     const fn slot(self) -> Option<usize> {
         match self {
             IntrinsicId::StringIteratorPrototype => Some(0),
+            IntrinsicId::GeneratorFunction => Some(1),
+            IntrinsicId::GeneratorFunctionPrototype => Some(2),
+            IntrinsicId::GeneratorPrototype => Some(3),
+            IntrinsicId::AsyncFunction => Some(4),
+            IntrinsicId::AsyncFunctionPrototype => Some(5),
+            IntrinsicId::Eval => Some(6),
+            IntrinsicId::Promise => Some(7),
+            IntrinsicId::PromisePrototype => Some(8),
+            IntrinsicId::AggregateError => Some(9),
+            IntrinsicId::AggregateErrorPrototype => Some(10),
+            IntrinsicId::Reflect => Some(11),
+            IntrinsicId::ArrayUnscopables => Some(12),
             _ => None,
         }
     }
@@ -905,7 +981,7 @@ fn data_def(m: &BuiltinModule, i: u16) -> Result<(), String> {
 // ---- per-isolate state ------------------------------------------------------------------------
 
 /// The number of intrinsics held in builtin state slots ([`IntrinsicId::slot`]).
-const INTRINSIC_SLOTS: usize = 1;
+const INTRINSIC_SLOTS: usize = 13;
 
 /// Per-isolate builtin state (`Runtime::builtins`): one entry per installed module, and the
 /// intrinsics without a runtime root.
@@ -1033,7 +1109,9 @@ pub(crate) fn existing_function(rt: &Runtime, id: BuiltinId) -> Option<u64> {
 }
 
 /// Installs the tables that [`prepare`] registered: (1) the function object of every
-/// definition, (2) the intrinsics the modules make, (3) the properties. Walk order: VM table,
+/// definition, (2) the intrinsics the modules make, then the `[[Prototype]]` of
+/// %GeneratorFunction% and %AsyncFunction% (%Function%) and of the native errors (%Error%),
+/// (3) the properties. Walk order: VM table,
 /// then the embedder's; modules, then entries, in order. Runs after `realm::init`.
 pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
     let rt = cx.rt();
@@ -1073,6 +1151,36 @@ pub(crate) fn install(cx: &mut Cx) -> Result<(), String> {
             } else {
                 set_intrinsic(rt, d.id, v);
             }
+        }
+    }
+    // §27.3.2, §27.7.2: the [[Prototype]] of %GeneratorFunction% and %AsyncFunction% is
+    // %Function%. A table gives a builtin's function object %Function.prototype% only. GC
+    // point (dictionary mode, OM-10): the intrinsics are roots.
+    let function = intrinsic(rt, IntrinsicId::Function);
+    for id in [IntrinsicId::GeneratorFunction, IntrinsicId::AsyncFunction] {
+        let c = intrinsic(rt, id);
+        if !is_object(function)
+            || !is_object(c)
+            || !crate::property::set_prototype_of(rt, c, function)
+        {
+            return Err(format!("could not set the [[Prototype]] of {}", id.name()));
+        }
+    }
+    // §20.5.6.2: the [[Prototype]] of each NativeError constructor is %Error% (made by the
+    // VM table with %Function.prototype%, as above). %AggregateError% (§20.5.7.2) gets it
+    // in `isolate.rs`, after the embedder's table made it. GC point (dictionary mode): the intrinsics are roots.
+    let error = intrinsic(rt, IntrinsicId::Error);
+    for id in [
+        IntrinsicId::EvalError,
+        IntrinsicId::RangeError,
+        IntrinsicId::ReferenceError,
+        IntrinsicId::SyntaxError,
+        IntrinsicId::TypeError,
+        IntrinsicId::UriError,
+    ] {
+        let c = intrinsic(rt, id);
+        if !is_object(error) || !is_object(c) || !crate::property::set_prototype_of(rt, c, error) {
+            return Err(format!("could not set the [[Prototype]] of {}", id.name()));
         }
     }
     for m in &modules {

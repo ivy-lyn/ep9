@@ -54,6 +54,8 @@ Accept, and every amendment of an Accepted or Frozen ADR, need all of these. The
 3. An agent that did not write the change verifies each Codex finding through the full control flow and sorts it: (a) serves the ADR's goal, (b) a defect the PR introduced, (c) neither. Only (a) and (b) change the PR. A (c) finding goes to Open questions or to an issue.
 4. The data the change needs: the spike gate output for Accept and reopen, a benchmark or gate output for a Frozen part.
 
+Phase-merged work with no per-ADR PR keeps the record in the ADR's `## Review record` section (M2-ACCEPT-RECORD).
+
 ### 3.2 Who approves (P-1)
 
 | Change kind | Draft | Accepted | Frozen part |
@@ -106,21 +108,21 @@ An ADR whose row is built after M1 exit lists its parts, each with its own freez
 
 | ID | Decision | Fix by | Plan | ADR status | File |
 |---|---|---|---|---|---|
-| H1 | Front-end boundary | M0 wk3 | E | Draft (2026-10-21) | [H01-front-end-boundary.md](H01-front-end-boundary.md) |
+| H1 | Front-end boundary | M0 wk3 | E | Accepted (2026-10-22; review record complete, M2-P4-ACCEPT; was Draft (2026-10-21)) | [H01-front-end-boundary.md](H01-front-end-boundary.md) |
 | H2 | Bytecode is a serialized ABI | M0 wk3; determinism CI M0; Spike C checks before M1 exit | E | Draft (2026-10-21; Q5 filled: slot kinds = H16 v0) | [H02-bytecode-abi.md](H02-bytecode-abi.md) |
-| H3 | TS runtime semantics in BytecodeGen; TS flags in module identity | Header fields M0 wk3; ADR M0 exit; built M4 | N | Draft (2026-10-21) | [H03-ts-runtime-semantics.md](H03-ts-runtime-semantics.md) |
-| H4 | Lazy-compile contract | M0 | U | Not started | `H04-lazy-compile-contract.md` |
-| H5 | Compiler, interpreter and source always present | M0 rule (wk3) | N | Draft (2026-10-21) | [H05-always-linked-compiler.md](H05-always-linked-compiler.md) |
-| H6 | Value encoding | M0 wk2 | U | Draft (decided 2026-10-20) | [H06-value-encoding.md](H06-value-encoding.md) |
+| H3 | TS runtime semantics in BytecodeGen; TS flags in module identity | Header fields M0 wk3; ADR M0 exit; built M4 | N | Accepted (2026-10-22; review record complete, M2-P3-ACCEPT; was Draft (2026-10-21)) | [H03-ts-runtime-semantics.md](H03-ts-runtime-semantics.md) |
+| H4 | Lazy-compile contract | M0 | U | Draft (2026-10-21) | [H04-lazy-compile-contract.md](H04-lazy-compile-contract.md) |
+| H5 | Compiler, interpreter and source always present | M0 rule (wk3) | N | Accepted (2026-10-22; review record complete, M2-P4-ACCEPT; was Draft (2026-10-21)) | [H05-always-linked-compiler.md](H05-always-linked-compiler.md) |
+| H6 | Value encoding | M0 wk2 | U | Accepted (2026-10-22; review record complete, M2-P4-ACCEPT; was Draft (decided 2026-10-20)) | [H06-value-encoding.md](H06-value-encoding.md) |
 | H7 | Address space and code range | M0 wk2 (SP-VA) | E | Draft (rewritten 2026-10-21: one cage per isolate) | [H07-address-space-and-code-range.md](H07-address-space-and-code-range.md) |
-| H8 | Object header and ShapeId | M0 wk2 | E | Draft (Q1 and Q3 filled 2026-10-21: shape region, word0 flag bits) | [H08-object-header-and-shapeid.md](H08-object-header-and-shapeid.md) |
-| H9 | Pages and side metadata | M0 wk2 | U | Draft (Q4 filled 2026-10-21) | [H09-pages-and-side-metadata.md](H09-pages-and-side-metadata.md) |
-| H10 | Rooting | M0 wk2, after SP-GC | E | Draft (Q2 filled 2026-10-21: gc-lint, Local check) | [H10-rooting.md](H10-rooting.md) |
-| H11 | Barrier and atomics | API M0; slow paths S1/S2; unit field A2 | E | Draft (decided 2026-10-20; Q3 filled 2026-10-21) | [H11-barrier-and-atomics.md](H11-barrier-and-atomics.md) |
+| H8 | Object header and ShapeId | M0 wk2 | E | Draft (Q1 and Q3 filled 2026-10-21: shape region, word0 flag bits; Q2 filled 2026-10-22: no shape-guarded load in Spike B) | [H08-object-header-and-shapeid.md](H08-object-header-and-shapeid.md) |
+| H9 | Pages and side metadata | M0 wk2 | U | Accepted (2026-10-22; review record complete, M2-P4-ACCEPT; was Draft (Q4 filled 2026-10-21)) | [H09-pages-and-side-metadata.md](H09-pages-and-side-metadata.md) |
+| H10 | Rooting | M0 wk2, after SP-GC | E | Accepted (2026-10-22; review record complete, M2-P4-ACCEPT; was Draft (Q2 filled 2026-10-21: gc-lint, Local check)) | [H10-rooting.md](H10-rooting.md) |
+| H11 | Barrier and atomics | API M0; slow paths S1/S2; unit field A2 | E | Accepted (2026-10-22; review record complete, M2-P4-ACCEPT; was Draft (decided 2026-10-20; Q3 filled 2026-10-21)) | [H11-barrier-and-atomics.md](H11-barrier-and-atomics.md) |
 | H12 | No address identity | M0 | U | Draft (Q1-Q3 filled 2026-10-21) | [H12-no-address-identity.md](H12-no-address-identity.md) |
-| H13 | Snapshot readiness and stable indices | Rules M0; index lists M1; built M4 (A1) | E | Not started | `H13-snapshot-stable-indices.md` |
-| H14 | Frames, calls, dispatch slots, pc→code registry | M0 wk3; Spike B + SP-Unit (M0 month 2); Spike C (M1) | E | Draft (2026-10-21; feedback vector via fp-4 filled) | [H14-frames-and-dispatch.md](H14-frames-and-dispatch.md) |
-| H15 | Interpreter dispatch | M0 wk2 | E | Draft (reopened twice 2026-10-21; release expansion: sibling calls on every target) | [H15-interpreter-dispatch.md](H15-interpreter-dispatch.md) |
+| H13 | Snapshot readiness and stable indices | Rules M0; index lists M1; built M4 (A1) | E | Draft (2026-10-21) | [H13-snapshot-stable-indices.md](H13-snapshot-stable-indices.md) |
+| H14 | Frames, calls, dispatch slots, pc→code registry | M0 wk3; Spike B (M0 month 2); SP-Unit (M3-P1, moved by M2-D21-FAIL); Spike C (M1) | E | Draft (2026-10-21; feedback vector via fp-4 filled; H14-Q1 filled, FRAME 2; reopened 2026-10-22 by the Spike B gate: H14-Q5 filled, placement (b), JIT frames on the VM register stack; H14-Q2 filled: the caller wraps) | [H14-frames-and-dispatch.md](H14-frames-and-dispatch.md) |
+| H15 | Interpreter dispatch | M0 wk2 | E | Draft (reopened twice 2026-10-21; release expansion: sibling calls on every target; reopened 2026-10-22 for x86-64 on Zen 3 (M2-P3-SPD-D12), H15-Q2 due before the M0 exit; Q3 and Q4 filled: cgoto.c by zig cc 0.17.0) | [H15-interpreter-dispatch.md](H15-interpreter-dispatch.md) |
 | H16 | ICs and feedback; feedback schema = FactSnapshot schema | Slot kinds M0 wk4; frozen M1 exit | E | Draft (2026-10-21; slot kinds H16 v0, FactSnapshot v0, T0 named/global IC v0 and epoch saturation built) | [H16-ics-and-feedback.md](H16-ics-and-feedback.md) |
 | H17 | Object layout | M1 (frozen at M1a) | U | Draft (2026-10-21; object layout v0 on shapes and accessors built) | [H17-object-layout.md](H17-object-layout.md) |
 | H18 | Elements kinds | M1a | U | Draft (2026-10-21, v0 notes) | [H18-elements-kinds.md](H18-elements-kinds.md) |
@@ -128,23 +130,23 @@ An ADR whose row is built after M1 exit lists its parts, each with its own freez
 | H20 | Builtin ABI | Frozen M0 exit | U | Draft (2026-10-21; ABI v1 draft, builtin tables and ids, P3 builtins and Cx::initial_name built; Q4 partly settled) | [H20-builtin-abi.md](H20-builtin-abi.md) |
 | H21 | Shape transitions under concurrent readers | ADR M1; built M5; functional before M7 | U | Not started | `H21-shape-transitions.md` |
 | H22 | Isolates and realms | M0 wk3 (D14) | E | Draft (2026-10-21) | [H22-isolates-and-realms.md](H22-isolates-and-realms.md) |
-| H23 | Limits and failure policy | M0 wk3 | E | Draft (2026-10-21) | [H23-limits-and-failure-policy.md](H23-limits-and-failure-policy.md) |
-| H24 | Debug and profiling hooks | M0 rules; AOT parts A2 | E | Not started | `H24-debug-and-profiling-hooks.md` |
-| H25 | Sandbox readiness | M0 | U | Not started | `H25-sandbox-readiness.md` |
-| H26 | Toolchain and Unicode | M0 wk1 | U | Draft | [H26-toolchain-and-unicode.md](H26-toolchain-and-unicode.md) |
-| H27 | Compilers as Cargo features | M0 (wk4) | E | Draft (2026-10-21; feature-matrix built) | [H27-compiler-features.md](H27-compiler-features.md) |
-| H28 | Platform layer | M0 wk1-3 | U | Draft (SP-JIT-mem passed on 4 CI runners on 2026-10-21: [data](../measurements/2026-10-21-sp-jit-mem.md)) | [H28-platform-layer.md](H28-platform-layer.md) |
-| H29 | Profiling and deopt contract; position-independent metadata | Draft M0 month 3; Spike C + SP-Facts; frozen M1 exit | E | Not started | `H29-deopt-contract.md` |
-| H30 | IR fact model with provenance | Draft M0 month 3; frozen M1 exit | N | Not started | `H30-ir-fact-model.md` |
-| H31 | Fuse registry | API frozen M1 exit; built M1-M2 | N | Not started | `H31-fuse-registry.md` |
-| H32 | Guard-failure policy per mode | Frozen M1 exit; applied A3, A4 | N | Not started | `H32-guard-failure-policy.md` |
-| H33 | AOT feedback rule | Frozen M1 exit; built A3/A4 | N | Not started | `H33-aot-feedback-rule.md` |
-| H34 | One Rust backend with abstract relocations | ADR frozen M1 exit; built A2/M5 | N | Not started | `H34-relocation-kinds.md` |
-| H35 | AOT unit format | Spec v0 + header struct + golden test by M0 exit; writer/loader A2; frozen at A3 gate | N | Draft (header v0 and load check built 2026-10-21; H35-Q7 decided 2026-10-20) | [H35-aot-unit-format.md](H35-aot-unit-format.md) |
-| H36 | FP semantics in every backend | M0 rule (wk2); FP differential CI from M1 | N | Draft (decided 2026-10-20; pow_js v0 and fp-check built 2026-10-21) | [H36-fp-semantics.md](H36-fp-semantics.md) |
+| H23 | Limits and failure policy | M0 wk3 | E | Accepted (2026-10-22; review record complete, M2-P5-ACCEPT; was Draft (2026-10-21)) | [H23-limits-and-failure-policy.md](H23-limits-and-failure-policy.md) |
+| H24 | Debug and profiling hooks | M0 rules; AOT parts A2 | E | Accepted (2026-10-22; review record complete, M2-P5-ACCEPT; was Draft (2026-10-21)) | [H24-debug-and-profiling-hooks.md](H24-debug-and-profiling-hooks.md) |
+| H25 | Sandbox readiness | M0 | U | Accepted (2026-10-22; review record complete, M2-P5-ACCEPT; was Draft (2026-10-21)) | [H25-sandbox-readiness.md](H25-sandbox-readiness.md) |
+| H26 | Toolchain and Unicode | M0 wk1 | U | Accepted (2026-10-22; review record complete, M2-P5-ACCEPT; was Draft) | [H26-toolchain-and-unicode.md](H26-toolchain-and-unicode.md) |
+| H27 | Compilers as Cargo features | M0 (wk4) | E | Accepted (2026-10-22; review record complete, M2-P3-ACCEPT; was Draft (2026-10-21; feature-matrix built)) | [H27-compiler-features.md](H27-compiler-features.md) |
+| H28 | Platform layer | M0 wk1-3 | U | Accepted (2026-10-22; review record complete, M2-P4-ACCEPT; was Draft (SP-JIT-mem passed on 4 CI runners on 2026-10-21: [data](../measurements/2026-10-21-sp-jit-mem.md))) | [H28-platform-layer.md](H28-platform-layer.md) |
+| H29 | Profiling and deopt contract; position-independent metadata | Draft M0 month 3; Spike C + SP-Facts; frozen M1 exit | E | Draft (2026-10-22; position part backed by the Spike B offset-slot data, placements (a) and (b); reopened 2026-10-22: JIT frames on the VM stack (placement (b)); deopt-exit parts open for Spike C + SP-Facts) | [H29-deopt-contract.md](H29-deopt-contract.md) |
+| H30 | IR fact model with provenance | Draft M0 month 3; frozen M1 exit | N | Draft (2026-10-22; FactSnapshot v0 names the 3 sources; confidence and VERIFIED open) | [H30-ir-fact-model.md](H30-ir-fact-model.md) |
+| H31 | Fuse registry | API frozen M1 exit; built M1-M2 | N | Draft (2026-10-22; no registry built; proto_index is the as-built no-elements flag) | [H31-fuse-registry.md](H31-fuse-registry.md) |
+| H32 | Guard-failure policy per mode | Frozen M1 exit; applied A3, A4 | N | Draft (2026-10-22; per-mode table and jitless budgets; applied A3, A4) | [H32-guard-failure-policy.md](H32-guard-failure-policy.md) |
+| H33 | AOT feedback rule | Frozen M1 exit; built A3/A4 | N | Draft (2026-10-22; hybrid re-tier rule; built A3/A4, K-A4P decides hybrid) | [H33-aot-feedback-rule.md](H33-aot-feedback-rule.md) |
+| H34 | One Rust backend with abstract relocations | ADR frozen M1 exit; built A2/M5 | N | Draft (2026-10-22; plan row and Spike B emitter evidence: no address, no relocation, tested for (b) on AArch64; unit-text questions open for M3-P1 SP-UNIT) | [H34-relocation-kinds.md](H34-relocation-kinds.md) |
+| H35 | AOT unit format | Spec v0 + header struct + golden test by M0 exit; writer/loader A2; frozen at A3 gate | N | Draft (header v0 and load check built 2026-10-21; H35-Q7 decided 2026-10-20; H35-Q8 filled 2026-10-22; H35-Q9 open, due M3-P1 SP-UNIT) | [H35-aot-unit-format.md](H35-aot-unit-format.md) |
+| H36 | FP semantics in every backend | M0 rule (wk2); FP differential CI from M1 | N | Accepted (2026-10-22; review record complete, M2-P3-ACCEPT; was Draft (decided 2026-10-20; pow_js v0 and fp-check built 2026-10-21)) | [H36-fp-semantics.md](H36-fp-semantics.md) |
 | H37 | TS hint side-table schema | v0 at A1h (by M4 exit); frozen at A4 start | N | Not started | `H37-hint-side-table.md` |
 
-Counts on 2026-10-21 (after M0 week 4 P3): 25 Draft, 12 Not started, 0 Accepted, 0 Frozen. H6, H11, H35 and H36 carry decisions of 2026-10-20, and H15 a decision of 2026-10-21; they move to Accepted when the §3.1 review record is complete. Until 2026-10-21 this line said "11 Draft, 26 Not started". That count did not include H15 or the five M0 wk3 drafts (H1, H2, H3, H5, H14).
+Counts on 2026-10-22 (M0 month 2 P5, from the Status line of each ADR file): 21 Draft, 2 Not started, 14 Accepted, 0 Frozen. P5 accepted H23, H24, H25 and H26 (M2-P5-ACCEPT); H04 stays Draft until ABI 5 (M2-P5-PLAN-D23). After P5-DOCS-SYNC this line said "25 Draft, 2 Not started, 10 Accepted". P5-DOCS-SYNC added the Draft H34. After P4 this line said "24 Draft, 3 Not started, 10 Accepted". P4 accepted H1, H5, H6, H9, H10, H11 and H28 (M2-P4-ACCEPT). After P3 this line said "31 Draft, 3 Not started, 3 Accepted". P3 added the Drafts H29-H33 and accepted H3, H27 and H36 (M2-P3-ACCEPT). H6, H11, H35 and H15 carry decisions and move to Accepted when the §3.1 review record is complete. On 2026-10-21 (after P0) this line said "29 Draft, 8 Not started"; until then it said "11 Draft, 26 Not started", which did not include H15 or the five M0 wk3 drafts (H1, H2, H3, H5, H14).
 
 ## 6. When each ADR is due in M0
 

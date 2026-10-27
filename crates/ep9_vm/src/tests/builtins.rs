@@ -164,7 +164,8 @@ fn two_isolates_have_the_same_intrinsic_property_order() {
         assert_eq!(a, b);
         assert!(a.len() >= 26, "core and VM intrinsics: {}", a.len());
     }
-    // The week-3 order of the global object, then `Function` (the test table appends).
+    // The week-3 order of the global object, then `Function` and `eval` (P3-EVAL-VM; the
+    // test table appends).
     with_table(Some(&TEST_TABLE), false, |cx, rt| {
         let g = cx.global();
         assert_eq!(
@@ -184,6 +185,7 @@ fn two_isolates_have_the_same_intrinsic_property_order() {
                 "EvalError",
                 "URIError",
                 "Function",
+                "eval",
                 "Math",
                 "Thing",
                 "print",
@@ -290,16 +292,34 @@ fn core_intrinsics_and_their_prototypes() {
         let tep = cx.intrinsic(IntrinsicId::TypeErrorPrototype);
         assert!(cx.get_prototype_of(tep).unwrap().is_same_bits(&ep));
         // Every constructor of the VM table is a function whose [[Prototype]] is
-        // %Function.prototype%.
+        // %Function.prototype%, except the native errors: theirs is %Error% (§20.5.6.2,
+        // `builtins::install`).
         let fp = cx.intrinsic(IntrinsicId::FunctionPrototype);
         for id in [
             IntrinsicId::Object,
             IntrinsicId::Function,
-            IntrinsicId::TypeError,
+            IntrinsicId::Error,
         ] {
             let c = cx.intrinsic(id);
             assert!(cx.is_constructor(c));
             assert!(cx.get_prototype_of(c).unwrap().is_same_bits(&fp));
+        }
+        let error = cx.intrinsic(IntrinsicId::Error);
+        for id in [
+            IntrinsicId::EvalError,
+            IntrinsicId::RangeError,
+            IntrinsicId::ReferenceError,
+            IntrinsicId::SyntaxError,
+            IntrinsicId::TypeError,
+            IntrinsicId::UriError,
+        ] {
+            let c = cx.intrinsic(id);
+            assert!(cx.is_constructor(c));
+            assert!(
+                cx.get_prototype_of(c).unwrap().is_same_bits(&error),
+                "{}",
+                id.name()
+            );
         }
         // Tables made none of these; %Symbol.prototype% comes with symbols (P2-SYM).
         assert!(!cx.has_intrinsic(IntrinsicId::Math));
@@ -323,16 +343,12 @@ fn function_prototype_is_callable_and_function_throws() {
         assert!(function.is_same_bits(&cx.get(fp, "constructor").unwrap()));
         let p = cx.get(function.as_object().unwrap(), "prototype").unwrap();
         assert!(p.is_same_bits(&fp));
+        // No compiler hook on this isolate: an EvalError (O2, P3-EVAL-VM).
+        let no_hook = "EvalError: code generation from strings is not available (no compiler hook)";
         assert!(cx.call(function, Local::undefined(), &[]).is_err());
-        assert_eq!(
-            take_error(cx, rt),
-            "Error: not implemented in ep9 v0: Function constructor"
-        );
+        assert_eq!(take_error(cx, rt), no_hook);
         assert!(cx.construct(function, &[], function).is_err());
-        assert_eq!(
-            take_error(cx, rt),
-            "Error: not implemented in ep9 v0: Function constructor"
-        );
+        assert_eq!(take_error(cx, rt), no_hook);
     });
 }
 

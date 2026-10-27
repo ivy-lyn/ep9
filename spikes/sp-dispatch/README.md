@@ -32,7 +32,8 @@ reopened again the same day ([T0 measurements](../../docs/measurements/2026-10-2
   job summary and the artifact `sp-dispatch-gate-<target>` (`bench.json` with every sample).
 
 Host of the 2026-10-20 run: Apple M5 Max (6 P + 12 E cores), load average 16-21. rustc 1.99.1,
-nightly-2026-10-04 for `become`, Homebrew clang 23.1.3 `-O2` for cgoto.c.
+nightly-2026-10-04 for `become`, Homebrew clang 23.1.3 `-O2` for cgoto.c (since M0 month 2 P2,
+gate.sh builds cgoto.c with `zig cc` 0.17.0 when it is on PATH; H15-Q3).
 
 ## Layout
 
@@ -219,5 +220,7 @@ spikes/sp-dispatch/target/release/sp-dispatch bench --rounds 15 --cgoto spikes/s
 ```
 
 gate.sh environment: `SP_ROUNDS` (15), `SP_SPEED` (`gate`; `report` keeps speed verdicts out of
-the exit code), `SP_NIGHTLY` (nightly-2026-10-04; `none` skips `become`), `CC` (clang),
-`SP_CROSS=0` skips the cross-target objects, `SP_BENCH=0` skips timing.
+the exit code), `SP_NIGHTLY` (nightly-2026-10-04; `none` skips `become`), `CC` (unset: `zig cc`
+when `zig version` prints 0.17.0, with `-target x86_64-windows-msvc` on Windows (H15-Q3), else
+clang; a set `CC` wins and the "cc:" log line says "not pinned"), `SP_CROSS=0` skips the
+cross-target objects, `SP_BENCH=0` skips timing.

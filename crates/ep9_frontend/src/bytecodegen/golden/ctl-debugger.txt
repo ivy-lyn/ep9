@@ -1,6 +1,6 @@
 # ctl-debugger: script (sloppy)
 # | debugger;
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=false ts=none source_len=9 source=embedded hints=none
 source_hash=9312a1adbbf0a4c05fc296d158ec3bd39acfe50e9e98ff02688139aad6fc3351
 strings (0):

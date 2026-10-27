@@ -18,6 +18,9 @@
 //! [`IntrinsicId`]; realm init walks the VM's table (`natives.rs`), then
 //! [`IsolateConfig::builtins`]. Contract versions: [`versions`].
 //!
+//! Jobs and promises (P4-PROMISE): the microtask queue and the Promise records are in jobs.rs,
+//! the promise operations are `Cx` methods in `abi/jobs.rs`, the tests are in `tests/jobs.rs`.
+//!
 //! ADRs: H14 frames and dispatch (docs/adr/H14-frames-and-dispatch.md), H15 interpreter
 //! dispatch, H10 rooting, H06 values.
 #![cfg_attr(feature = "become", feature(explicit_tail_calls))]
@@ -29,6 +32,7 @@ mod atoms;
 mod bound;
 mod builtins;
 mod call;
+mod compiler;
 mod conv;
 mod descriptor;
 mod dispatch;
@@ -37,12 +41,16 @@ mod exotic;
 mod feedback;
 mod frame;
 mod function_info;
+mod generator;
 mod host;
 mod ic;
 mod interp;
 mod isolate;
+mod jobs;
 mod key;
 mod kinds;
+#[cfg(feature = "spike-native")]
+mod native;
 mod natives;
 mod numconv;
 mod object;
@@ -71,6 +79,7 @@ pub use builtins::{
     IntrinsicId, IntrinsicValue, ObjectProps, PropAttrs, PropDef, PropKey, PropValue,
     WellKnownSymbol, check_tables,
 };
+pub use compiler::{CompileFailure, CompileResult, CompilerHooks};
 pub use dispatch::{
     CodeEntry, CodeRegistry, DispatchKind, DispatchSlot, NO_CODE, RangeRegistry, RegistryError,
 };
@@ -78,10 +87,18 @@ pub use ep9_value::{JsResult, Throw, Value};
 pub use host::HostCx;
 pub use interp::Dispatch;
 pub use isolate::{
-    Exception, Isolate, IsolateConfig, IsolateError, SourceLocation, TerminateHandle,
+    Exception, InterruptHandle, Isolate, IsolateConfig, IsolateError, SourceLocation,
+    TerminateHandle,
 };
 pub use runtime::ErrorKind;
 pub use string::JsStr;
+// Spike B (feature `spike-native` only): the native-entry API of `native.rs`.
+#[cfg(feature = "spike-native")]
+pub use native::{
+    InstallError, NativeCx, NativeEntry, NativeTarget, RtCompareFn, RtFn0, RtFn1, RtFn2,
+    RuntimeTable, call_from_rust, cmp, install_native, install_native_b, layout, lookup_code,
+    native_target, uninstall_native,
+};
 
 /// Facts for tests and tools (not a stable API).
 #[doc(hidden)]

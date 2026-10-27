@@ -44,6 +44,12 @@ undocumented_unsafe_blocks = "warn"
 lto = "fat"
 codegen-units = 1
 debug = "line-tables-only"
+# H23: no panic unwinds through a JIT or AOT frame. Every artifact of this profile and of
+# dev-opt (it inherits release) aborts on a panic: ep9, ep9-test262 (its workers run each test
+# in a child process, so a panic is a "worker crash" infrastructure error), ep9-bench and the
+# disasm-check and fp-check builds. Test harnesses, build scripts and proc macros keep
+# unwinding. Cargo has no per-package `panic`. dep-guards check 13 keeps this line.
+panic = "abort"
 
 # Fast local iteration with release optimization. Not for performance numbers.
 [profile.dev-opt]

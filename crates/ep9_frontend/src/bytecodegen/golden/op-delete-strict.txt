@@ -1,6 +1,6 @@
 # op-delete-strict: script (strict)
 # | var o, k; delete o.a; delete o[k];
-; ep9 bytecode, ABI 2
+; ep9 bytecode, ABI 4
 unit kind=script strict=true ts=none source_len=34 source=embedded hints=none
 source_hash=a0bfbaf96a891504be9a9adfd8416616dac776d301dc8c80094670fa2f1e7a67
 strings (3):

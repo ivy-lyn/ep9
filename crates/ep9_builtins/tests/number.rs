@@ -1,5 +1,6 @@
 //! Number (§21.1): the constructor, the constants, `Number.prototype.toString` (radix
-//! 2-36) and `valueOf`.
+//! 2-36) and `valueOf`; the statics isFinite, isInteger, isNaN and isSafeInteger; parseInt
+//! and parseFloat (§19.2.4-5), one function object each under `Number` and the global object.
 //!
 //! The expected lines are node 24's output for the same script (`print` = the
 //! arguments' ToString joined by spaces). `common::run_both` runs each script with and
@@ -173,4 +174,147 @@ fn this_number_value_reads_this_before_radix() {
         ),
         lines(&["TypeError"])
     );
+}
+
+/// The identity `Number.parseInt === parseInt` (§21.1.2.13) and `Number.parseFloat ===
+/// parseFloat` (§21.1.2.12), and the four predicates, which do not convert.
+#[test]
+fn number_statics() {
+    assert_eq!(
+        common::run_both(
+            r#"
+            print(Number.parseInt === parseInt, Number.parseFloat === parseFloat, parseInt.name, parseInt.length, parseFloat.name, parseFloat.length);
+            print(Number.isFinite.length, Number.isInteger.name, Number.isNaN.length, Number.isSafeInteger.length);
+            print(Number.isFinite(1), Number.isFinite('1'), Number.isFinite(Infinity), Number.isFinite(NaN), Number.isFinite(new Number(1)));
+            print(Number.isInteger(5), Number.isInteger(5.5), Number.isInteger(-0), Number.isInteger('5'), Number.isInteger(Infinity), Number.isInteger(1e300));
+            print(Number.isNaN(NaN), Number.isNaN('x'), Number.isNaN(undefined), Number.isNaN(0 / 0));
+            print(Number.isSafeInteger(9007199254740991), Number.isSafeInteger(9007199254740992), Number.isSafeInteger(-9007199254740991), Number.isSafeInteger(1.5), Number.isSafeInteger('1'));
+"#
+        ),
+        lines(&[
+            "true true parseInt 2 parseFloat 1",
+            "1 isInteger 1 1",
+            "true false false false false",
+            "true false true false false true",
+            "true false false true",
+            "true false true false false",
+        ])
+    );
+}
+
+/// parseInt (§19.2.5): whitespace, sign, the 0x prefix with radix 0 and 16, the radix range
+/// after ToInt32, empty digits, long decimal strings (correctly rounded), radix 2 and 16
+/// rounding (half to even past 2^53), the generic radices, and ToString before ToInt32.
+#[test]
+fn parse_int() {
+    assert_eq!(
+        common::run_both(
+            r#"
+            function show(x) { return (x === 0 && 1 / x < 0) ? '-0' : String(x); }
+            print([parseInt('  42px'), parseInt('-0'), parseInt('0x1F'), parseInt('0x1F', 16), parseInt('0x1F', 10), parseInt('1F', 16), parseInt('z', 36), parseInt('Z', 36)].map(show).join());
+            print([parseInt(''), parseInt('x'), parseInt('12', 1), parseInt('12', 37), parseInt('12', -1), parseInt('12', 0), parseInt('12', 4294967306), parseInt('11', 2.9), parseInt('0x'), parseInt('-0x10')].map(show).join());
+            print([parseInt('\u00a0\ufeff\u2028\u3000\t\n 7'), parseInt('\u180e7'), parseInt('\u200b7'), parseInt('+-1'), parseInt('\u0663'), parseInt('1e3'), parseInt('0.0000001'), parseInt(0.0000001), parseInt(1e21)].map(show).join());
+            print([parseInt('9007199254740993'), parseInt('123456789012345678901234567890'), parseInt('1'.repeat(400)), parseInt('0'.repeat(500) + '7')].map(show).join());
+            print([parseInt('1'.repeat(54), 2), parseInt('10000000000000000000000000000000000000000000000000000011', 2), parseInt('100000000000000000000000000000000000000000000000000001', 2), parseInt('fffffffffffffc00', 16), parseInt('fffffffffffffbff', 16), parseInt('20000000000001', 16)].map(show).join());
+            print([parseInt('zzzzzzzzzzzzz', 36), parseInt('2222222222222222222222222222222222', 3), parseInt('-666666666666666666666', 7)].map(show).join());
+            var order = []; parseInt({ toString: function () { order.push('s'); return '10'; } }, { valueOf: function () { order.push('r'); return 16; } }); print(order.join());
+"#
+        ),
+        lines(&[
+            "42,-0,31,31,0,31,35,35",
+            "NaN,NaN,NaN,NaN,NaN,12,12,3,NaN,-16",
+            "7,NaN,NaN,NaN,NaN,1,0,1,1",
+            "9007199254740992,1.2345678901234568e+29,Infinity,7",
+            "18014398509481984,36028797018963970,9007199254740992,18446744073709552000,18446744073709550000,9007199254740992",
+            "170581728179578200000,16677181699666568,-558545864083284030",
+            "s,r",
+        ])
+    );
+}
+
+/// parseFloat (§19.2.4): the longest StrDecimalLiteral prefix, Infinity by hand (case
+/// sensitive), no hex or separators, overflow and underflow, correct rounding, conversions.
+#[test]
+fn parse_float() {
+    assert_eq!(
+        common::run_both(
+            r#"
+            function show(x) { return (x === 0 && 1 / x < 0) ? '-0' : String(x); }
+            print([parseFloat('3.14abc'), parseFloat('  -.5'), parseFloat('.'), parseFloat('-.e1'), parseFloat('1.'), parseFloat('1.e2'), parseFloat('1e'), parseFloat('1e+'), parseFloat('1e-2x'), parseFloat('+1E+2')].map(show).join());
+            print([parseFloat('Infinity'), parseFloat('-Infinityx'), parseFloat('+Infinity'), parseFloat('infinity'), parseFloat('Inf'), parseFloat('NaN'), parseFloat('-0'), parseFloat('0x10'), parseFloat('1_000'), parseFloat('')].map(show).join());
+            print([parseFloat('\u00a0\ufeff 2.5'), parseFloat('\u180e2.5'), parseFloat('1e400'), parseFloat('-1e400'), parseFloat('1e-400'), parseFloat('2.4703282292062328e-324'), parseFloat('2.4703282292062327e-324'), parseFloat('9007199254740993'), parseFloat('0.1e1'), parseFloat('00012')].map(show).join());
+            print([parseFloat(1e21), parseFloat(-0), parseFloat({ toString: function () { return '7.5'; } }), parseFloat([' 8']), parseFloat(null), parseFloat(true)].map(show).join());
+            try { parseFloat(Symbol()); } catch (e) { print(e.name); }
+            try { parseInt('1', Symbol()); } catch (e) { print(e.name); }
+"#
+        ),
+        lines(&[
+            "3.14,-0.5,NaN,NaN,1,100,1,1,0.01,100",
+            "Infinity,-Infinity,Infinity,NaN,NaN,NaN,-0,0,1,NaN",
+            "2.5,NaN,Infinity,-Infinity,0,5e-324,0,9007199254740992,1,12",
+            "1e+21,0,7.5,8,NaN,NaN",
+            "TypeError",
+            "TypeError",
+        ])
+    );
+}
+
+/// The keys of `%Number%` and the global's Number, parseFloat, parseInt in V8's order (node 24
+/// `Object.getOwnPropertyNames`; ep9 puts Array before Function, so those two are left out),
+/// the {w, c} attributes, and no `[[Construct]]`.
+#[test]
+fn key_order_and_attributes() {
+    assert_eq!(
+        common::run_both(
+            r#"
+            print(Object.getOwnPropertyNames(Number).join());
+            var g = Object.getOwnPropertyNames(globalThis), want = ['Object', 'Number', 'parseFloat', 'parseInt', 'Boolean', 'String', 'Symbol'];
+            print(g.filter(function (k) { return want.indexOf(k) >= 0; }).join());
+            var d = Object.getOwnPropertyDescriptor(globalThis, 'parseInt'), e = Object.getOwnPropertyDescriptor(Number, 'parseFloat'), f = Object.getOwnPropertyDescriptor(Number, 'isNaN');
+            print(d.writable, d.enumerable, d.configurable, e.writable, e.enumerable, e.configurable, f.writable, f.enumerable, f.configurable);
+            try { new parseInt('1'); } catch (err) { print(err.name); }
+            try { new Number.isNaN(1); } catch (err) { print(err.name); }
+"#
+        ),
+        lines(&[
+            "length,name,prototype,isFinite,isInteger,isNaN,isSafeInteger,parseFloat,parseInt,MAX_VALUE,MIN_VALUE,NaN,NEGATIVE_INFINITY,POSITIVE_INFINITY,MAX_SAFE_INTEGER,MIN_SAFE_INTEGER,EPSILON",
+            "Object,Number,parseFloat,parseInt,Boolean,String,Symbol",
+            "true false true true false true true false true",
+            "TypeError",
+            "TypeError",
+        ])
+    );
+}
+
+/// StrWhiteSpaceChar: this module's copy of the table (`number::is_str_white_space`,
+/// M2-P5-PLAN-D5) equals the code units that String.prototype.trim removes, on all 65,536 code
+/// units, and parseInt and parseFloat skip exactly those (U+180E and U+200B are not in it).
+/// Without GC stress: the loop makes about 400,000 strings, and a collection before each one
+/// takes minutes in a debug build; the other tests here cover these functions under stress.
+#[test]
+fn white_space_table_matches_trim() {
+    let got = common::on_big_stack(|| {
+        common::run(
+            r#"
+        var out = [], bad = [];
+        for (var u = 0; u < 65536; u++) {
+          var c = String.fromCharCode(u);
+          if ((c + 'x' + c).trim() === 'x') out.push(u);
+          var trimmed = (c + '1').trim() === '1';
+          var skipped = parseInt(c + '1') === 1 && parseFloat(c + '1') === 1 && c !== '+' && c !== '0';
+          if (trimmed !== skipped) bad.push(u);
+        }
+        print(out.join());
+        print(bad.length);
+"#,
+            false,
+        )
+    })
+    .expect("no exception");
+    let table: Vec<String> = (0..=u16::MAX)
+        .filter(|&u| ep9_builtins::number::is_str_white_space(u))
+        .map(|u| u.to_string())
+        .collect();
+    assert_eq!(got, vec![table.join(","), "0".to_string()]);
+    assert!(!ep9_builtins::number::is_str_white_space(0x180E));
 }

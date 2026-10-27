@@ -1,0 +1,71 @@
+# CreateDynamicFunction compile cases for compile_function_ctor (P3-FNCTOR).
+# One case per line, tab-separated:
+#   kind (normal | generator | async | asyncgen) <TAB> P <TAB> body <TAB> node result [<TAB> ep9=<result>]
+# P (the parameter text, the arguments already joined with ",") and body are JSON strings.
+# The node result is "ok" or "SyntaxError": what `new <Ctor>(P, body)` gives in node v24.22
+# (the recorded oracle, docs/upstream/oxc-function-constructor.md). The optional last column is
+# ep9's result where it differs in M0: "unsupported: <feature>" (BytecodeGen v0, never a
+# SyntaxError). The test function_ctor::tests::the_cases_match_node reads this file.
+normal	"a,b"	"return a + b"	ok
+normal	""	""	ok
+normal	"a = 1, {b, c} = {}, [d], ...e"	"return a"	ok
+normal	"a,"	""	ok
+normal	","	""	SyntaxError
+normal	"a,a"	""	ok
+normal	"a,a"	"'use strict'"	SyntaxError
+normal	"a = 1"	"'use strict'"	SyntaxError
+normal	"...a, b"	""	SyntaxError
+normal	"yield"	"return yield"	ok
+normal	"await"	"return await"	ok
+normal	"a = new.target"	"return a"	ok
+normal	"a = function () { return 1 }"	"return a()"	ok
+normal	"x"	"let x"	SyntaxError
+normal	"/*"	"*/){"	SyntaxError
+normal	""	"}); (function(){"	SyntaxError
+normal	"a)"	""	SyntaxError
+normal	"a){}, function(b"	""	SyntaxError
+normal	"a\n) {\n}) + (function("	""	SyntaxError
+normal	""	"return 1}, function(){"	SyntaxError
+normal	""	"return 1 }"	SyntaxError
+normal	"a = `"	"`"	SyntaxError
+normal	"a = `"	"`) {"	SyntaxError
+normal	"a = /*"	"*/ 1"	SyntaxError
+normal	"a = \"\\"	"\""	SyntaxError
+normal	"/*"	""	SyntaxError
+normal	""	"/*"	SyntaxError
+normal	"a //"	"return a"	ok
+normal	""	"return 1 //"	ok
+normal	"\n-->"	""	ok
+normal	"-->"	""	SyntaxError
+normal	"<!--"	""	ok
+normal	""	"-->"	ok
+normal	""	"<!--"	ok
+normal	"a\u2028"	"return a"	ok
+normal	""	"super.x"	SyntaxError
+normal	""	"super()"	SyntaxError
+normal	""	"return this.#x"	SyntaxError
+normal	""	"new.target"	ok
+normal	""	"arguments"	ok
+normal	""	"yield 1"	SyntaxError
+normal	""	"let x; var x"	SyntaxError
+normal	""	"break"	SyntaxError
+normal	""	"label: { break label; }"	ok
+normal	""	"with (a) {}"	ok
+normal	""	"'use strict'; with (a) {}"	SyntaxError
+normal	""	"'use strict'; 010"	SyntaxError
+normal	""	"return /a/g"	ok
+normal	""	"return /(/"	SyntaxError
+normal	""	"class C { #x = 1; m() { return this.#x } } return C"	ok
+normal	""	"function f() {} return f"	ok
+normal	""	"{ function g() {} } return g"	ok
+generator	"a"	"yield a"	ok
+generator	""	"yield* [1, 2]"	ok
+generator	"yield"	""	SyntaxError
+generator	"a = yield"	""	SyntaxError
+generator	""	"var yield"	SyntaxError
+generator	""	"}); (function*(){"	SyntaxError
+async	"a"	"return await a"	ok	ep9=unsupported: async functions
+async	"await"	""	SyntaxError
+async	""	"}); (async function(){"	SyntaxError
+asyncgen	""	"yield await 1"	ok	ep9=unsupported: generator functions
+asyncgen	"a = await 1"	""	SyntaxError

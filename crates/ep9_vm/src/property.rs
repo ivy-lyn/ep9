@@ -24,8 +24,8 @@
 //! | number / boolean primitive | `Number.prototype` / `Boolean.prototype` |
 //! | symbol primitive | `Symbol.prototype` (`symbol::prototype`) |
 //!
-//! The builtin ABI (H20 ObjectOps, abi/mod.rs) calls [`get_own_property`],
-//! [`define_own_property`] (ValidateAndApplyPropertyDescriptor) and [`own_property_keys`].
+//! The builtin ABI (H20 ObjectOps, abi/mod.rs) calls [`get_own_property`], [`own_property_keys`],
+//! [`define_own_property`] (ValidateAndApplyPropertyDescriptor) and [`get_index`] and its kin.
 
 use crate::conv::{Res, describe, num, to_property_key, to_uint32_of};
 use crate::descriptor::Desc;
@@ -317,10 +317,19 @@ fn set_walk(cx: &mut Cx, o: u64, key: u64, v: u64, receiver: u64) -> Res<bool> {
 }
 
 /// §10.1.9.2 steps 2.c-e: the store lands on `receiver`: an existing writable data property
-/// gets the value, a missing one is CreateDataProperty. GC point.
+/// gets the value, a missing one is CreateDataProperty. An array receiver's `length` (which
+/// `own_property` does not see) is an existing writable data property: step 2.d.iv goes to
+/// ArraySetLength (a RangeError for an invalid length). GC point.
 fn define_on_receiver(cx: &mut Cx, receiver: u64, key: u64, v: u64) -> Res<bool> {
     if !is_object(receiver) {
         return Ok(false);
+    }
+    if is_array(receiver) && is_atom(cx, key, Atom::Length) {
+        let desc = Desc {
+            value: Some(v),
+            ..Desc::default()
+        };
+        return define_own_property(cx, receiver, key, desc);
     }
     match own_property(cx, receiver, key) {
         Some((_, a, _)) if a & attr::WRITABLE == 0 => Ok(false),
@@ -588,29 +597,93 @@ fn has_own_with(rt: &Runtime, o: u64, key: u64, how: Probe) -> bool {
     props::own_get_with(o, key, how).is_some() || exotic::own_attrs(rt, o, key, how).is_some()
 }
 
-/// InstanceofOperator (§13.10.2) and OrdinaryHasInstance (§7.3.21) for `v instanceof f`. v0:
-/// no `@@hasInstance`, so InstanceofOperator is OrdinaryHasInstance after the callable check.
+/// InstanceofOperator(V, target) (§13.10.2) for `v instanceof f`:
+///
+/// ```text
+/// f not an object ───────────────────────────────> TypeError
+/// h = GetMethod(f, @@hasInstance)
+///   h is %Function.prototype%[@@hasInstance] ────> OrdinaryHasInstance(f, v), no call
+///   h is another function ───────────────────────> ToBoolean(Call(h, f, « v »))
+///   h undefined/null: f not callable ────────────> TypeError
+///                     else ──────────────────────> OrdinaryHasInstance(f, v)
+/// ```
+///
+/// OrdinaryHasInstance of a bound function is InstanceofOperator(v, its target); the loop
+/// takes that step in place, so a long bound chain costs no native stack (W4-BLTA-BOUND).
+/// GC point (the `@@hasInstance` getter and handler run JS): `v` and `f` live in Rust locals.
 pub(crate) fn instance_of(cx: &mut Cx, v: u64, f: u64) -> Res<bool> {
-    if !is_callable(f) {
-        return Err(throw_error(
-            cx,
-            ErrorKind::TypeError,
-            "Right-hand side of 'instanceof' is not callable",
-        ));
-    }
-    // OrdinaryHasInstance step 2: a bound function gives InstanceofOperator(v, its
-    // [[BoundTargetFunction]]), which is callable (BoundFunctionCreate's target is). Its own
-    // `prototype`, if any, is never read. A loop down the chain, so its depth costs no native
-    // stack (W4-BLTA-BOUND).
     let mut f = f;
-    while is_bound(f) {
-        f = bound::target(f);
+    loop {
+        // 1. If target is not an Object, throw a TypeError exception.
+        if !is_object(f) {
+            return Err(throw_error(
+                cx,
+                ErrorKind::TypeError,
+                "Right-hand side of 'instanceof' is not an object",
+            ));
+        }
+        // 2. Let instOfHandler be ? GetMethod(target, @@hasInstance).
+        let key = symbol::well_known(cx.rt(), symbol::WellKnownSymbol::HasInstance);
+        let h = get(cx, f, key)?;
+        if h != UNDEFINED && h != NULL {
+            if !is_callable(h) {
+                let msg = format!("{} is not a function", describe(h));
+                return Err(throw_error(cx, ErrorKind::TypeError, &msg));
+            }
+            // 3. Return ToBoolean(? Call(instOfHandler, target, « V »)). The intrinsic
+            //    handler is OrdinaryHasInstance(this value, V): run it here.
+            if !is_has_instance_intrinsic(cx.rt(), h) {
+                let r = crate::call::call_function(cx, h, f, &[v])?;
+                return Ok(crate::conv::to_boolean(r));
+            }
+            // OrdinaryHasInstance step 1: a non-callable C gives false.
+            if !is_callable(f) {
+                return Ok(false);
+            }
+        } else if !is_callable(f) {
+            // 4. If IsCallable(target) is false, throw a TypeError exception.
+            return Err(throw_error(
+                cx,
+                ErrorKind::TypeError,
+                "Right-hand side of 'instanceof' is not callable",
+            ));
+        }
+        // 5. Return ? OrdinaryHasInstance(target, V). Step 2: a bound function gives
+        //    InstanceofOperator(V, [[BoundTargetFunction]]): the next round of the loop.
+        if is_bound(f) {
+            f = bound::target(f);
+            continue;
+        }
+        return ordinary_has_instance_of_function(cx, f, v);
     }
-    if !is_object(v) {
+}
+
+/// OrdinaryHasInstance(C, O) (§7.3.21) for `Function.prototype[@@hasInstance]`
+/// (`natives.rs`): false for a non-callable `c`; InstanceofOperator(O, target) for a bound
+/// `c`; else the prototype chain walk. GC point: `c` and `o` live in Rust locals.
+pub(crate) fn ordinary_has_instance(cx: &mut Cx, c: u64, o: u64) -> Res<bool> {
+    // 1. If IsCallable(C) is false, return false.
+    if !is_callable(c) {
         return Ok(false);
     }
+    // 2. If C has a [[BoundTargetFunction]], return ? InstanceofOperator(O, BC).
+    if is_bound(c) {
+        return instance_of(cx, o, bound::target(c));
+    }
+    ordinary_has_instance_of_function(cx, c, o)
+}
+
+/// OrdinaryHasInstance(C, O) steps 3-7 for a callable `c` that is not bound.
+fn ordinary_has_instance_of_function(cx: &mut Cx, c: u64, o: u64) -> Res<bool> {
+    debug_assert!(is_callable(c) && !is_bound(c));
+    // 3. If O is not an Object, return false.
+    if !is_object(o) {
+        return Ok(false);
+    }
+    // 4. Let P be ? Get(C, "prototype").
     let key = cx.rt().atom(Atom::Prototype);
-    let proto = get(cx, f, key)?;
+    let proto = get(cx, c, key)?;
+    // 5. If P is not an Object, throw a TypeError exception.
     if !is_object(proto) {
         return Err(throw_error(
             cx,
@@ -618,7 +691,8 @@ pub(crate) fn instance_of(cx: &mut Cx, v: u64, f: u64) -> Res<bool> {
             "Function has non-object prototype in instanceof check",
         ));
     }
-    let mut o = object::proto_of(v);
+    // 6. Repeat: O = ? O.[[GetPrototypeOf]](); null gives false, P gives true.
+    let mut o = object::proto_of(o);
     while o != NULL {
         if o == proto {
             return Ok(true);
@@ -626,6 +700,15 @@ pub(crate) fn instance_of(cx: &mut Cx, v: u64, f: u64) -> Res<bool> {
         o = object::proto_of(o);
     }
     Ok(false)
+}
+
+/// Whether `h` is `%Function.prototype%[@@hasInstance]` (VM builtin 0.30). Allocates nothing.
+fn is_has_instance_intrinsic(rt: &Runtime, h: u64) -> bool {
+    let id = crate::builtins::BuiltinId::new(
+        crate::natives::VM_BLOCK,
+        crate::natives::vm::FUNCTION_HAS_INSTANCE,
+    );
+    crate::builtins::existing_function(rt, id) == Some(h)
 }
 
 /// The keys a `for-in` loop visits (§14.7.5.9 EnumerateObjectProperties, v0: own and inherited
@@ -1035,12 +1118,221 @@ pub(crate) fn own_property_keys(cx: &mut Cx, o: u64) -> u64 {
     if let Some(p) = exotic::lazy_prototype_key(rt, o) {
         push(p);
     }
-    // 3. Symbols in creation order.
+    // 3. Symbols in creation order. A private name is not a property key (§6.2.12): it is
+    // never listed.
     for i in 0..object::own_count(o) {
         let k = stored(i);
-        if is_symbol_key(k) {
+        if is_symbol_key(k) && !crate::symbol::is_private(k) {
             push(k);
         }
     }
     keys
+}
+
+// ---- integer-indexed access without a key (builtin ABI H20 ABI-1, `abi/index.rs`) -----------
+//
+// `Get`, `HasProperty`, `Set` and `[[Delete]]` with the key `! ToString(𝔽(i))` for an integer
+// `i` (a builtin's loop index, up to 2^53 - 1). A dense element and a missing index need no key,
+// so these paths make no atom for them (the key path interns one per new index text).
+//
+// ```text
+// i ≤ 2^53 - 1: find_index walks the chain from o, per object own_index(i) without the key:
+//   array element / String wrapper index        -> found
+//   array-index i: fast shape                    -> absent (an array-index key makes a
+//                                                   dictionary, OM-10)
+//   stored keys ≤ INDEX_SCAN_MAX                 -> scan them: array_index_of, or the digits
+//   more stored keys                             -> Unknown: the key path from that object
+//   array-index i and no proto_index_keys        -> the walk stops after the receiver
+// i > 2^53 - 1, or Unknown: the key (number_key, an atom) and the ordinary path
+// ```
+
+/// The largest own-property count that [`own_index`] scans for a stored integer key; an object
+/// with more takes the key path (an atom, found in the table when the key is stored).
+const INDEX_SCAN_MAX: usize = 64;
+
+/// The largest integer whose decimal digits are `ToString(𝔽(i))` (2^53 - 1): above it, `𝔽(i)`
+/// rounds and the key path makes the key.
+const MAX_SAFE_INDEX: u64 = (1 << 53) - 1;
+
+/// Where the own property `! ToString(𝔽(i))` of an object is, found without the key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OwnIndex {
+    /// A dense element or a stored property: its value (the ACCESSOR_PAIR of an accessor) and
+    /// attribute bits.
+    Stored(u64, i32),
+    /// Index `i` of a String wrapper: this string (§10.4.3, {e}).
+    WrapperChar(u64),
+    /// The object has no such own property.
+    Absent,
+    /// Too many stored keys to scan: ask this object with the key.
+    Unknown,
+}
+
+/// The array index `i` names (`i < 2^32 - 1`), if any.
+fn array_index_u64(i: u64) -> Option<u32> {
+    u32::try_from(i).ok().filter(|&n| n != u32::MAX)
+}
+
+/// The decimal digits of `i` in `buf`, as a slice of it: `ToString(𝔽(i))` for
+/// `i ≤ 2^53 - 1` (Number::toString writes an integer below 10^21 as its digits).
+fn index_digits(i: u64, buf: &mut [u8; 20]) -> &[u8] {
+    let mut at = buf.len();
+    let mut n = i;
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    &buf[at..]
+}
+
+/// The own property `! ToString(𝔽(i))` of the object `o` (`text` is that string), found
+/// without the key: the exotic ones of `exotic.rs` that an integer key can name (array
+/// elements, String wrapper indices), then the stored ones. A new exotic kind with integer
+/// keys adds its case here too. Not a GC point.
+fn own_index(o: u64, i: u64, text: &[u8]) -> OwnIndex {
+    let index = array_index_u64(i);
+    if let Some(n) = index {
+        let k = kind::cell_kind(o);
+        if k == kind::ARRAY.get() {
+            if let Some(v) = object::array_get(o, n) {
+                return OwnIndex::Stored(v, attr::DEFAULT);
+            }
+        } else if k == kind::PRIMITIVE_WRAPPER.get()
+            && let Some(s) = wrapper::wrapper_value(o).filter(|&p| is_string(p))
+            && (n as usize) < object::str_len(s)
+        {
+            return OwnIndex::WrapperChar(s);
+        }
+        // An array-index key moves a fast object to dictionary mode (OM-10, `shape::add`).
+        if !shape::is_dictionary(shape::shape_of(o)) {
+            return OwnIndex::Absent;
+        }
+    }
+    let count = object::own_count(o);
+    if count > INDEX_SCAN_MAX {
+        return OwnIndex::Unknown;
+    }
+    for j in 0..count {
+        let (key, v, a) = object::own_entry(o, j);
+        // Stored keys are atoms (`props::own_add`): an array index answers from its hash
+        // field; another integer key compares its digits.
+        let hit = match index {
+            Some(n) => array_index_of(key) == Some(n),
+            None => is_string(key) && string::equals_text(key, string::JsStr::Latin1(text)),
+        };
+        if hit {
+            return OwnIndex::Stored(v, a);
+        }
+    }
+    OwnIndex::Absent
+}
+
+/// The first object on the prototype chain from `o` that has the own property
+/// `! ToString(𝔽(i))` (`text`), and where it is; `Absent` if none has it, `Unknown` if that
+/// object must be asked with the key. While no prototype has an array-index property
+/// (`shape::proto_index_keys`), an array index stops at the receiver. Not a GC point.
+fn find_index(rt: &Runtime, o: u64, i: u64, text: &[u8]) -> (u64, OwnIndex) {
+    let array_index = array_index_u64(i).is_some();
+    let mut cur = o;
+    loop {
+        let w = own_index(cur, i, text);
+        if w != OwnIndex::Absent || (array_index && !shape::proto_index_keys(rt)) {
+            return (cur, w);
+        }
+        cur = object::proto_of(cur);
+        if cur == NULL {
+            return (o, OwnIndex::Absent);
+        }
+    }
+}
+
+/// The key `! ToString(𝔽(i))` (an atom). GC point when the atom is new.
+fn index_key_of(rt: &Runtime, i: u64) -> u64 {
+    key::number_key(rt, i as f64)
+}
+
+/// HasProperty(O, ! ToString(𝔽(i))) (§7.3.12) on the object `o`. No atom for an element or a
+/// missing index. GC point only on the key path.
+pub(crate) fn has_index(cx: &Cx, o: u64, i: u64) -> bool {
+    debug_assert!(is_object(o));
+    if i <= MAX_SAFE_INDEX {
+        let mut buf = [0u8; 20];
+        let text = index_digits(i, &mut buf);
+        match find_index(cx.rt(), o, i, text) {
+            (_, OwnIndex::Stored(..) | OwnIndex::WrapperChar(_)) => return true,
+            (_, OwnIndex::Absent) => return false,
+            (cur, OwnIndex::Unknown) => {
+                let key = index_key_of(cx.rt(), i);
+                return has_property(cx, cur, key);
+            }
+        }
+    }
+    let key = index_key_of(cx.rt(), i);
+    has_property(cx, o, key)
+}
+
+/// Get(O, ! ToString(𝔽(i))) (§7.3.2, OrdinaryGet) on the object `o`. No atom for an element
+/// or a missing index. GC point (a getter, a String wrapper's character, the key path).
+pub(crate) fn get_index(cx: &mut Cx, o: u64, i: u64) -> Res<u64> {
+    debug_assert!(is_object(o));
+    if i <= MAX_SAFE_INDEX {
+        let mut buf = [0u8; 20];
+        let text = index_digits(i, &mut buf);
+        match find_index(cx.rt(), o, i, text) {
+            (_, OwnIndex::Stored(v, a)) if a & attr::ACCESSOR == 0 => return Ok(v),
+            (_, OwnIndex::Stored(pair, _)) => return accessor::call_getter(cx, pair, o),
+            (_, OwnIndex::WrapperChar(s)) => return Ok(string::char_at(cx.rt(), s, i as usize)),
+            (_, OwnIndex::Absent) => return Ok(UNDEFINED),
+            (cur, OwnIndex::Unknown) => {
+                // GC point: `cur` and `o` live in Rust locals.
+                let key = index_key_of(cx.rt(), i);
+                return get_with_receiver(cx, cur, key, o);
+            }
+        }
+    }
+    let key = index_key_of(cx.rt(), i);
+    get_from(cx, o, key)
+}
+
+/// `o.[[Set]](! ToString(𝔽(i)), v, o)` (§10.1.9 OrdinarySet) on the object `o`: `Ok(false)`
+/// when the assignment fails. An array element of a dense array is stored without a key
+/// (`array_store`, as a keyed store does); everything else takes the key path. GC point.
+pub(crate) fn set_index(cx: &mut Cx, o: u64, i: u64, v: u64) -> Res<bool> {
+    debug_assert!(is_object(o));
+    if is_array(o)
+        && let Some(n) = array_index_u64(i)
+        && array_store(cx.rt(), o, n, v)
+    {
+        return Ok(true);
+    }
+    // GC point: `o` and `v` live in Rust locals.
+    let key = index_key_of(cx.rt(), i);
+    ordinary_set(cx, o, key, v)
+}
+
+/// `o.[[Delete]](! ToString(𝔽(i)))` (§10.1.10) on the object `o`, with [`delete`]'s `strict`
+/// (a TypeError instead of `false`). An element becomes a hole and a missing index answers
+/// true, without a key. GC point.
+pub(crate) fn delete_index(cx: &mut Cx, o: u64, i: u64, strict: bool) -> Res<bool> {
+    debug_assert!(is_object(o));
+    if i <= MAX_SAFE_INDEX {
+        if is_array(o)
+            && let Some(n) = array_index_u64(i)
+            && object::array_get(o, n).is_some()
+        {
+            // v0: a dense array keeps a hole (as `delete`).
+            object::array_set(cx.rt(), o, n, crate::frame::HOLE);
+            return Ok(true);
+        }
+        let mut buf = [0u8; 20];
+        if own_index(o, i, index_digits(i, &mut buf)) == OwnIndex::Absent {
+            return Ok(true);
+        }
+    }
+    let key = index_key_of(cx.rt(), i);
+    delete(cx, o, key, strict)
 }
