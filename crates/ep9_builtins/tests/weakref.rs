@@ -199,10 +199,17 @@ fn end_of_job(i: &mut Isolate) -> Result<(), String> {
 /// and a slot that those frames leave unwritten could hold a dead target's address. On
 /// linux-x64 debug that kept the target of
 /// [`a_checkpoint_lets_a_weakref_target_die_at_the_next_gc`] alive (CI run 40564429974).
+/// The second scrub wipes the collection's own frames before the next checkpoint's frames lie
+/// over them: the collection's deeper frames (the work after the scan) leave the addresses
+/// of live cells, and a slot that a later live frame leaves unwritten keeps such a word for
+/// that frame's own collections. Without it a chain target's one-past-end address, left
+/// about 5 KiB below this frame, stopped the 30-link chain after 2 links (mac a64 debug,
+/// `EP9_HASH_SEED` 59; verifier E, V-E1).
 #[inline(never)]
 fn scrub_and_collect(i: &mut Isolate) {
     scrub_below();
     i.collect_garbage();
+    scrub_below();
 }
 
 /// A WeakRef target lives to the end of the job, then dies; the registry's callback gets
