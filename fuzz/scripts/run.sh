@@ -34,7 +34,7 @@ fi
 
 if [ "${1:-}" = build ]; then
   shift
-  exec cargo fuzz build -s "$san" "${feat[@]}" "$@"
+  exec cargo fuzz build -s "$san" ${feat[@]+"${feat[@]}"} "$@"
 fi
 
 usage() {
@@ -94,7 +94,7 @@ if [ "$fork" -gt 0 ] 2>/dev/null; then
 fi
 
 start=$(date +%s)
-cargo fuzz run -s "$san" "${feat[@]}" "$target" "${corpus[@]}" -- "${args[@]}" "$@" >"$log" 2>&1
+cargo fuzz run -s "$san" ${feat[@]+"${feat[@]}"} "$target" "${corpus[@]}" -- "${args[@]}" "$@" >"$log" 2>&1
 rc=$?
 secs=$(($(date +%s) - start))
 
