@@ -15,8 +15,13 @@
 # Prints the coverage lines, then the crash count and the SHA-256 of each crash file (no
 # program text, plan v9 rule 14).
 #
-# Exit 0: coverage grew from the first coverage line to the last. Exit 1: it did not, or fewer
-# than 2 lines. Exit 2: bad usage, or Fuzzilli wrote no coverage line (start-up tests failed).
+# Exit 0: FuzzilliCli ended normally and coverage grew from the first coverage line to the last.
+# FuzzilliCli ends normally with exit 0 when --maxRuntime is reached (ShutdownReason.finished);
+# a fatal error is exit 255 (-1, "Aborting execution after a fatal error."), and the watchdog
+# below makes 124 (SIGINT at the limit) or 137 (SIGKILL 60 s later). Exit 1: a nonzero FuzzilliCli
+# exit, or coverage did not grow, or fewer than 2 lines. Exit 2: bad usage, or Fuzzilli wrote no
+# coverage line (start-up tests failed). A failure prints the exit code, its cause, the coverage
+# lines and the crash hashes; the program text stays in fuzzilli.log on the box.
 set -uo pipefail
 
 minutes="${1:-}"
@@ -40,7 +45,14 @@ timeout --signal=INT --kill-after=60 "$((minutes * 60 + 300))" \
   "$fuzzilli" --profile=ep9 --jobs="$jobs" --maxRuntime="${minutes}m" --tag="$tag" \
   --storagePath="$out/storage" "$ep9" > "$out/fuzzilli.log" 2>&1
 rc=$?
-echo "run.sh: FuzzilliCli exit $rc"
+case "$rc" in
+  0) why="finished: --maxRuntime reached" ;;
+  124) why="the watchdog sent SIGINT after $((minutes * 60 + 300)) s: --maxRuntime did not end it" ;;
+  137) why="killed by SIGKILL (the watchdog 60 s after its SIGINT, or the kernel)" ;;
+  255) why="a Fuzzilli fatal error" ;;
+  *) why="an abnormal end" ;;
+esac
+echo "run.sh: FuzzilliCli exit $rc ($why)"
 
 awk '/^Uptime:/ { u = $2 " " $3 " " $4 " " $5 }
      /^Coverage:/ { c = $2 }
@@ -60,6 +72,13 @@ for f in ${crashes[@]+"${crashes[@]}"}; do
 done
 
 n="$(wc -l < "$out/coverage.log" | tr -d ' ')"
+if [ "$rc" -ne 0 ]; then
+  fatal=no
+  grep -q 'Aborting execution after a fatal error' "$out/fuzzilli.log" && fatal=yes
+  echo "run.sh: FAIL: FuzzilliCli exit $rc ($why); $n coverage line(s), fatal-error line: $fatal (see $out/fuzzilli.log)"
+  [ "$n" -eq 0 ] && exit 2
+  exit 1
+fi
 if [ "$n" -eq 0 ]; then
   echo "run.sh: FAIL: no coverage line (see $out/fuzzilli.log)"
   exit 2

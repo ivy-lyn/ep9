@@ -88,7 +88,7 @@ bash infra/fuzz/build-ep9.sh                 # prints the ep9 path
 printf '42\nthrow 1\n' | <REPRLRun> <ep9> --reprl     # REPRLRun's own tests, then status 0 and 256
 cargo test --locked -p ep9_cli reprl         # the fake-parent test (200 scripts, crashes, OOM)
 # infra/fuzz image only (Cloudflare, the orchestrator; never the Mac):
-infra/fuzz/run.sh 10 /work/fuzz-out          # exit 0 when coverage grows; prints hashes only
+infra/fuzz/run.sh 10 /work/fuzz-out          # exit 0: Fuzzilli exit 0, coverage grew; hashes only
 infra/fuzz/triage.sh /work/fuzz-out/storage/crashes
 ```
 
