@@ -408,8 +408,9 @@ fn the_object_prototype_function_is_cached_too() {
 
 // ---- the interrupt budget of the hit walk (M4-P4 fixer C; Codex B1-1) -------------------------
 
-/// A warm site's hit walk takes one interrupt budget unit per step and misses when the budget
-/// runs out; the generic walk then polls. On a chain longer than the whole budget: without a
+/// A warm site's hit walk takes 8 interrupt budget units after each full group of 8 steps
+/// (none for its last 1 to 8 steps) and misses when the budget is used up; the generic walk
+/// then polls. On a chain longer than the whole budget: without a
 /// termination the site answers true and keeps its handler; with a termination requested
 /// before the call, the call stops (it cannot be caught), and the site answers again after.
 /// Before the fix the hit walked the whole chain with no poll and returned true. No GC stress
