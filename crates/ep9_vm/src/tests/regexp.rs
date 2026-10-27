@@ -10,6 +10,7 @@
 //! | `a_dead_regexp_frees_its_program` | the weak source frees the table entry of a RegExp that died, and the index is reused (V9-A7) |
 //! | `exec_runs_a_pending_interrupt` | a requested interrupt runs at the exec's poll, then the match goes on |
 //! | `exec_stops_on_termination` | a termination request ends the exec with the uncatchable termination |
+//! | `a_multi_match_loop_widens_once` | the exec loop of a global replace on one Latin-1 subject copies it to UTF-16 once, not once per match; every GC empties the copy (M4-P3 P3-ORCH-13) |
 //! | `exec_keeps_the_receiver_across_the_flatten` | under GC stress, an exec whose only RegExp root is its argument keeps the program while the rope subject is flattened (fails before the fix in release only) |
 
 use core::hint::black_box;
@@ -22,7 +23,7 @@ use super::{Asm, config, isolate, unit};
 use crate::abi::{MatchRecord, ObjectClass};
 use crate::regexp::{ProgramTable, slot};
 use crate::runtime::Runtime;
-use crate::{Cx, Dispatch, Isolate, JsObject, Local};
+use crate::{Cx, Dispatch, Isolate, JsObject, JsString, Local};
 
 /// Runs `f` with a builtin-ABI context of a fresh isolate, then collects and verifies the
 /// heap. `stress`: a collection before every allocation, then the heap verifier.
@@ -118,6 +119,74 @@ fn exec_from_rust() {
             assert_eq!(exec16(cx, r, &pair, 1), "0-2");
             let r = re(cx, ".", "");
             assert_eq!(exec16(cx, r, &pair, 1), "1-2");
+        });
+    }
+}
+
+/// The exec loop of a global `@@replace` (§22.2.6.11 step 12, as `ep9_builtins` runs it with
+/// the builtin exec): an exec from 0, then from the end of each match. The match starts.
+fn global_loop<'s>(cx: &mut Cx<'s>, r: Local<'s, JsObject>, s: Local<'s, JsString>) -> Vec<usize> {
+    let mut starts = Vec::new();
+    let mut i = 0;
+    while let Some(m) = cx.regexp_exec(r, s, i).unwrap() {
+        starts.push(m.start());
+        i = m.end().max(m.start() + 1);
+    }
+    starts
+}
+
+#[test]
+fn a_multi_match_loop_widens_once() {
+    for stress in [false, true] {
+        with_cx(stress, |cx, rt| {
+            let made = || rt.regexp_programs.widenings();
+            let r = re(cx, "a", "g");
+            // A Latin-1 subject with 3 matches: 3 execs that match and 1 that does not.
+            let s = cx.new_string("xaxa\u{e9}a").unwrap();
+            let before = made();
+            assert_eq!(global_loop(cx, r, s), [1, 3, 5]);
+            if !stress {
+                assert_eq!(made() - before, 1, "one copy for the 4 execs of the loop");
+            }
+            // A second loop on the same string reuses the copy; another string copies again.
+            let before = made();
+            assert_eq!(global_loop(cx, r, s), [1, 3, 5]);
+            let t = cx.new_string("aa").unwrap();
+            assert_eq!(global_loop(cx, r, t), [0, 1]);
+            if !stress {
+                assert_eq!(made() - before, 1, "only the new subject is copied");
+            }
+            // A UTF-16 subject needs no copy.
+            let before = made();
+            let u = cx.new_string("\u{4e2d}a\u{4e2d}a").unwrap();
+            assert_eq!(global_loop(cx, r, u), [1, 3]);
+            assert_eq!(made(), before, "UTF-16 is read in place");
+            // A rope is flattened at its first exec; the later execs read the same flat cell.
+            let a = object_string(rt, "the quick brown fox jumps over ");
+            let b = object_string(rt, "the lazy dog, again and again");
+            let rope = crate::string::concat(rt, a, b).expect("a rope");
+            let rope: Local<'_> = Local::from_bits(rope);
+            let rope = rope.as_string().unwrap();
+            let before = made();
+            assert_eq!(global_loop(cx, r, rope), [36, 45, 47, 51, 55, 57]);
+            if !stress {
+                assert_eq!(made() - before, 1, "one copy of the flattened rope");
+            }
+            // Every GC (minor ones too) empties the copy: the next exec copies again.
+            for minor in [false, true] {
+                let before = made();
+                if minor {
+                    rt.heap.collect_minor();
+                } else {
+                    rt.heap.collect();
+                }
+                assert_eq!(global_loop(cx, r, s), [1, 3, 5]);
+                assert_eq!(
+                    made() - before,
+                    1,
+                    "the GC emptied the copy (minor: {minor})"
+                );
+            }
         });
     }
 }

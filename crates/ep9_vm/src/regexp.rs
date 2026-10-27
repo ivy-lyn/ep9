@@ -14,6 +14,8 @@
 //!            program (Program: regress code, no Value) <───── slot MATCHER: int32 i
 //!            names (the group names, UTF-16, no Value)
 //!   GC: the weak source frees entry i when its owner died; i goes to the free list
+//!   widened: the UTF-16 copy of the last Latin-1 subject (key = its flat string's bits);
+//!            the same weak source empties it in every GC
 //! ```
 //!
 //! `Engine` is the one name of the backend here (RX0 = `ep9_regexp::Rx0` on regress 0.12.0
@@ -44,6 +46,14 @@
 //! - The group names of a program (M4-P3 REGEXP1) come from [`group_names`], a scan of the
 //!   pattern after it compiled: the `[[GroupName]]` of each capture, for the `groups` object
 //!   of a match result (§22.2.7.2 steps 29-31). They are Rust memory beside the program.
+//! - The backend reads UTF-16, so a Latin-1 subject is copied to UTF-16 before a match. A
+//!   global match, replace or split runs one exec per match on one subject, so [`exec`] keeps
+//!   the copy of the last Latin-1 subject ([`Widened`]) and the next exec on the same flat
+//!   string reuses it: one copy per loop, not one per match (M4-P3 P3-ORCH-13). The key is
+//!   the flat string's bits. It is safe because the copy never lives across a GC: only a GC
+//!   frees a cell, and the table's weak source empties the copy in every GC (minor ones
+//!   too), so while the key is set the cell at those bits is the string that was copied, and
+//!   a string's text never changes (a SLICED cell that becomes THIN keeps its text).
 
 use core::cell::RefCell;
 use core::sync::atomic::Ordering;
@@ -125,25 +135,67 @@ impl Programs {
     }
 }
 
+/// The UTF-16 copy of one Latin-1 subject (module doc): the key and the code units. Rust
+/// memory, no Value; the key is a plain word, never traced, valid only until the next GC.
+#[derive(Default)]
+struct Widened {
+    /// The bits of the flat string that `units` copies; 0 = empty.
+    key: u64,
+    units: Vec<u16>,
+    /// The number of copies made (tests: one per subject between two GCs).
+    #[cfg(test)]
+    made: usize,
+}
+
+impl Widened {
+    /// The UTF-16 code units of the flat Latin-1 string `flat`, whose bytes are `b`: the kept
+    /// copy if it is of `flat`, else a new copy (it replaces the old one). Not a GC point.
+    fn units_of(&mut self, flat: u64, b: &[u8]) -> &[u16] {
+        if self.key != flat {
+            self.units.clear();
+            self.units.extend(b.iter().map(|&c| u16::from(c)));
+            self.key = flat;
+            #[cfg(test)]
+            {
+                self.made += 1;
+            }
+        }
+        debug_assert_eq!(self.units.len(), b.len());
+        &self.units
+    }
+
+    /// Drops the copy and its memory (the weak source, in every GC).
+    fn clear(&mut self) {
+        self.key = 0;
+        self.units = Vec::new();
+    }
+}
+
 /// The compiled programs of the isolate, indexed by the int32 a RegExp object holds.
 pub(crate) struct ProgramTable {
     inner: Rc<RefCell<Programs>>,
+    /// The UTF-16 copy of the last Latin-1 subject ([`Widened`]).
+    widened: Rc<RefCell<Widened>>,
 }
 
 impl ProgramTable {
     /// The empty table of a new isolate. `heap` is the isolate's heap, before its first
     /// allocation: the table's weak source (it holds an `Rc` clone of the entries) frees the
-    /// entries whose owner died, after marking.
+    /// entries whose owner died, after marking, and empties the Latin-1 copy.
     pub(crate) fn new(heap: &Heap) -> ProgramTable {
         let inner = Rc::new(RefCell::new(Programs::default()));
-        let table = Rc::clone(&inner);
+        let widened = Rc::new(RefCell::new(Widened::default()));
+        let (table, copy) = (Rc::clone(&inner), Rc::clone(&widened));
         heap.add_weak_source(move |w| {
             let mut t = table
                 .try_borrow_mut()
                 .expect("the RegExp program table is borrowed across a GC point");
             t.sweep(|b| w.is_live(val(b)));
+            copy.try_borrow_mut()
+                .expect("the RegExp subject copy is borrowed across a GC point")
+                .clear();
         });
-        ProgramTable { inner }
+        ProgramTable { inner, widened }
     }
 
     /// Stores `program` for the RegExp object `owner`; returns its index. Not a GC point.
@@ -194,6 +246,12 @@ impl ProgramTable {
     pub(crate) fn live(&self) -> usize {
         let t = self.inner.borrow();
         t.entries.iter().filter(|e| e.program.is_some()).count()
+    }
+
+    /// The number of Latin-1 subjects copied to UTF-16 so far (tests).
+    #[cfg(test)]
+    pub(crate) fn widenings(&self) -> usize {
+        self.widened.borrow().made
     }
 
     /// The table index of `re`'s program if it has one (tests).
@@ -442,8 +500,10 @@ pub(crate) fn exec(
     let out = loop {
         let rt = cx.rt();
         let r = {
+            // Not a GC point from here to the end of the block (the weak source borrows it).
+            let mut widened = rt.regexp_programs.widened.borrow_mut();
             let input = match string::view(cx, flat) {
-                JsStr::Latin1(b) => Input::Latin1(b),
+                JsStr::Latin1(b) => Input::Utf16(widened.units_of(flat, b)),
                 JsStr::Utf16(u) => Input::Utf16(u),
             };
             let mut poll = || {
