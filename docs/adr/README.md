@@ -91,6 +91,27 @@ An ADR whose row is built after M1 exit lists its parts, each with its own freez
 | H24 | Rules | AOT parts | A2 gate |
 | H35 | (none: the whole row freezes at the A3 gate) | Writer, loader | A3 gate |
 | H37 | (none) | Schema v0 (A1h) | A4 start |
+| H29 | Contract: Decision and Rules, the Q1-Q7 fills | A4-built part: resume in non-T0 code, the osr-entry record format, the materialize payload | A4 gates (M8 exit) |
+| H30 | Model: Decision and Rules, the Q1 and Q4 fills, the M1 list of the Q3 fill, the provenance set | VERIFIED region table: format and ranking against RUNTIME (Q5), only if the D17 rule picks (d) | End of A5 (the K-A5v decision) |
+| H31 | API: the fuse kinds, FuseRef and the registry API, fuse scope, the GuardFuse word, the T0 and Rust use | A5v fuses F1-F8 (Q4), only if the D17 rule picks (d) | End of A5 (the K-A5v decision) |
+| H32 | Policy: the JIT and jitless columns, PIN, the counter unit and rule, the lowering-class filter, the JIT and jitless accept lists | Budget numbers (4 per site, 16 per function, est.) | A4 gate (M8 exit) |
+| H32 | (the Policy part) | Hybrid part: the hybrid column, lowering `hybrid` and the hybrid accept list, a failed guard in hybrid code, PIN and the re-tier start, the rule that lifts PIN | K-A4P (M8 exit); removed before its freeze point if K-A4P fails |
+| H32 | (the Policy part) | D17 rows: SOUND THROW (D17 c), VERIFIED (D17 d) | End of A5, only if the D17 rule picks them |
+| H33 | Rule: the shared feedback schema, the counters of optimized-AOT code, RUNTIME over PROFILED and HINTED, the stale-profile rule, no re-tier in a jitless build | Baseline-AOT IC cells: how unit IC cells map to the FeedbackVector (Q3) | A3 gate |
+| H33 | (the Rule part) | Hybrid part: the re-tier path, the budget word and its unit (Q1), the re-tier start rule (Q5), the threshold number, the T1 start state (Q2), the exits that start the re-tier (Q4), the hybrid event row | K-A4P (M8 exit); removed before its freeze point if K-A4P fails |
+| H34 | Backend contract: one instruction stream, no LLVM, the meaning of each kind, zero text relocations, the Q1-Q3 fills | JIT finalize forms (T1 in M5, T2 in M7), not the T3-only forms | M7 exit (T2) |
+| H34 | (the Backend contract) | Unit finalize forms of baseline-AOT units, with the Stub kind in unit code (Q4) | A3 gate (with H35) |
+| H34 | (the Backend contract) | Unit finalize forms that only optimized-AOT unit text uses (DeoptExit, the osr-entry form) | A4 gates (M8 exit) |
+| H34 | (the Backend contract) | T3 JIT finalize forms | The gate that ends T3 (M9); removed before its freeze point if T3 is not built |
+| H34 | (the Backend contract) | T3 unit finalize forms | End of A5; removed before its freeze point if A5 is not built |
+
+- **Gated and hybrid rows (H29-H34, added in M4-P5: C-13 of [13-execution-modes §7.1](../plan/13-execution-modes.md#71-before-m1a-and-m1-exit), MODES-D1).** Each row copies a gated part of that ADR's `## Freeze table` ([13 §5.4](../plan/13-execution-modes.md#54-room-in-the-contracts-append-only-parts-and-gated-parts), kinds B and C); the ADR is the record, so a change to a part changes the ADR first. MODES-D1 reads this section as it stands: a gated part freezes at the gate that ends its build, and a part removed before its freeze point (the hybrid parts if K-A4P fails) is not a G8 count. So the rows are a table fill, not a new §3.3 clause. H16 gets its gated row (the T0 recording policy, frozen at the A4 gate) with its Freeze-table part (C-25, FREEZE-M1 batch 1).
+- **Append-only parts (no freeze point).** They work as H20 part 2 ([H20 Freeze table](H20-builtin-abi.md#freeze-table-m2-h20-parts)): a new value is a fill, an existing value never changes, and G8 never counts an append; a negative test probes an unknown value at the top of the range, never the next free one. In an ADR Freeze table now: H29 record tags, value-location tags and inline frame kinds; H30 the fused HINTED kinds after the M1 list, and the ref-node kinds; H31 the static fuse list and the dynamic descriptor kinds; H32 the lowering classes; H34 the relocation kinds. Planned with their contract change (13 §7.1): H14 dispatch kind bytes (C-03, batch 1); H16 IC handler kinds (C-24, batch 1), the CacheIR op list and the `GuardType` set (C-06, batch 1); H17 cell kind ids (C-24, M1a).
+- **Approval of the M4-P5 rows and notes above.** DOCS (M4-P5) wrote them (plan v9 §7 step 1). The orchestrator wrote none of them, so it approves (§3.2: it never approves its own change).
+
+| Approval of | Who | Result | Date |
+|---|---|---|---|
+| The C-13 rows H29-H34 and the two notes above (M4-P5 DOCS) | Pending: the orchestrator (§3.2) | Pending | |
 
 ## 4. Ownership, CODEOWNERS and the ADR lint
 
