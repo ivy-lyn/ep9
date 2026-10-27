@@ -307,11 +307,11 @@ fn int_value(v: u64, i: u32) -> Option<u32> {
 }
 
 /// A keyed slot (2, 4, 6, 10, 17; `profile.rs` writes the value half, KEYED (M4-P3) the key
-/// half): the `KeySet` bits 0-3 of the value, with `implicit` added (H16-Q2 (1)). The state
-/// is the key half's (`keyed_ic.rs`): undefined (new, or the shape died), a receiver shape
-/// (monomorphic: the fast case ran cold once with it; no case is exported, schema 1 has no
-/// element access to describe) or the hole (megamorphic). The receiver bits 4-7 and the out-of-bounds and hole bits 8-9 have no field
-/// in schema 1 (MC-w13-9, the month-6 bump).
+/// half): the `KeySet` bits 0-3 of the value, with `implicit` added (H16-Q2 (1)). The state is
+/// the key half's (`keyed_ic.rs`), live only for StoreKeyed (MC-w15-1): undefined (no state:
+/// new, the shape died, or another kind: a LoadKeyed state stays undefined), a receiver shape
+/// (monomorphic: the fast case missed once with it; no case: schema 1 has no element access)
+/// or the hole (megamorphic). Bits 4-9 (receiver, out of bounds, hole): month-6 bump, MC-w13-9.
 fn keyed(v: u64, i: u32, implicit: KeySet) -> Option<KeyedFacts> {
     let bits = int_value(v, i)?;
     let state = match feedback::key(v, i) {

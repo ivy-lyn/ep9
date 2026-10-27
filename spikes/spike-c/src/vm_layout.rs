@@ -1,9 +1,9 @@
 //! The VM layout facts the emitted code reads, taken from the `ep9_vm::layout` export (M4-P3
 //! KEYED, 8140b68; SPIKEC-4 switched to it, decision P3-ORCH-9). Until SPIKEC-4 this module
 //! kept hand copies of them; now every offset, kind id and handler field below is the VM's
-//! own constant, so a layout change moves the compiled code with it. [`check`] still proves
-//! them on live objects (a session runs it before any compile): an export that names the
-//! wrong field would fail there, not in compiled code.
+//! own constant (except the POLY_IC handler half, a literal `+ 8` here and in `emit_a64`;
+//! MC-w16-4, `POLY_HANDLER` comes with C-18), so a layout change moves the compiled code with
+//! it. [`check`] proves them on live objects before any compile: a wrong export fails there.
 //!
 //! Each fact names the version that owns it (MC-w15-5: one owner per fact, doc 13 §7.3; the
 //! C-18 `VM_LAYOUT` version covers only what no other version owns):
@@ -18,7 +18,7 @@
 //! | the hole (`Value::EMPTY`) | `HOLE` | Value encoding 1 |
 //! | FEEDBACK cell: its FunctionInfo, slot `i` at `FEEDBACK_SLOTS + FEEDBACK_SLOT_SIZE * i`: key (weak), then value | `FEEDBACK_INFO`, `FEEDBACK_SLOTS`, `FEEDBACK_SLOT_SIZE`, `FEEDBACK_KEY`, `FEEDBACK_VALUE` | IC_LAYOUT 2 |
 //! | smi handler: kind in bits 0-3 (FIELD_IN_OBJECT, ARRAY_LENGTH), byte offset from bit 4 | `SMI_KIND_MASK`, `SMI_SHIFT`, `SMI_FIELD_IN_OBJECT`, `SMI_ARRAY_LENGTH` | IC_LAYOUT 2 |
-//! | POLY_IC: case `i` at `POLY_CASES + POLY_CASE_SIZE * i`: key (weak), then handler; `POLY_COUNT` cases | `POLY_CASES`, `POLY_CASE_SIZE`, `POLY_COUNT` | IC_LAYOUT 2 |
+//! | POLY_IC: case `i` at `POLY_CASES + POLY_CASE_SIZE * i`: key (weak), then handler (key + 8, not exported: MC-w16-4); `POLY_COUNT` cases | `POLY_CASES`, `POLY_CASE_SIZE`, `POLY_COUNT` | IC_LAYOUT 2 |
 //! | `FunctionInfo.feedback`: a pointer to the unit slot that holds the FEEDBACK cell (null: none) | `FI_FEEDBACK` | VM_LAYOUT (C-18; the one fact no other version owns) |
 //!
 //! The export stays behind `spike-native` until C-18 moves it (M5-P0). What is left here
