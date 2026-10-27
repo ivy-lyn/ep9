@@ -27,6 +27,7 @@
 //! | SLOT_OBJECT | 24 | +24 ObjectClass id (int32), +32 internal slots: an ELEMENTS cell of n Values, or undefined when n = 0 ([`slot_obj`]) | 0 |
 //! | ARGUMENTS | 25 | +24 parameter map (a CONTEXT, or undefined for an unmapped object), +32 mapped count (int32); elements at +16 ([`argsf`]) | 3 (`length`, @@iterator, `callee`) |
 //! | MODULE_NAMESPACE | 26 | +24 module (a MODULE cell), +32 export names (an ELEMENTS cell of sorted strings) ([`nsf`]) | 1 (@@toStringTag) |
+//! | PROXY, PROXY_CALLABLE | 27, 28 | +24 `[[ProxyTarget]]`, +32 `[[ProxyHandler]]` (null once revoked; `proxy.rs`, M4-P4 PROXY1) | 0 |
 //!
 //! | Kind | Id | Layout (byte offsets) | Size |
 //! |---|---|---|---|
@@ -276,6 +277,8 @@ pub(crate) mod fixed {
     pub const WRAPPER: usize = 1;
     /// BOUND_FUNCTION: target, bound `this`, bound arguments.
     pub const BOUND: usize = 3;
+    /// PROXY and PROXY_CALLABLE: `[[ProxyTarget]]`, `[[ProxyHandler]]` (`proxy.rs`).
+    pub const PROXY: usize = 2;
 }
 
 /// ELEMENTS cell fields (+8 capacity (int32), +16 values). Also used by the literal-site hit
@@ -406,6 +409,8 @@ const FIXED_COUNTS: [u8; 256] = {
     t[kind::SLOT_OBJECT.get() as usize] = slot_obj::FIXED as u8;
     t[kind::ARGUMENTS.get() as usize] = argsf::FIXED as u8;
     t[kind::MODULE_NAMESPACE.get() as usize] = nsf::FIXED as u8;
+    t[kind::PROXY.get() as usize] = fixed::PROXY as u8;
+    t[kind::PROXY_CALLABLE.get() as usize] = fixed::PROXY as u8;
     t
 };
 
@@ -431,7 +436,9 @@ pub(crate) fn fixed_count(k: u8) -> usize {
             kind::GENERATOR,
             kind::SLOT_OBJECT,
             kind::ARGUMENTS,
-            kind::MODULE_NAMESPACE
+            kind::MODULE_NAMESPACE,
+            kind::PROXY,
+            kind::PROXY_CALLABLE
         ]
         .iter()
         .any(|x| x.get() == k),
@@ -492,7 +499,7 @@ fn trace_realm(c: CellPtr, t: &mut Tracer<'_>) {
 /// that owns a layout (strings, the property dictionary, symbols, shapes, feedback,
 /// accessors, ICs, the ordered tables).
 pub(crate) fn register_kinds(heap: &Heap) {
-    let kinds: [(KindId, CellKind); 15] = [
+    let kinds: [(KindId, CellKind); 17] = [
         (
             kind::OBJECT,
             object_kind("object", object_size::<0>, trace_object::<0>),
@@ -571,6 +578,22 @@ pub(crate) fn register_kinds(heap: &Heap) {
                 "module-namespace",
                 object_size::<{ nsf::FIXED }>,
                 trace_object::<{ nsf::FIXED }>,
+            ),
+        ),
+        (
+            kind::PROXY,
+            object_kind(
+                "proxy",
+                object_size::<{ fixed::PROXY }>,
+                trace_object::<{ fixed::PROXY }>,
+            ),
+        ),
+        (
+            kind::PROXY_CALLABLE,
+            object_kind(
+                "proxy-callable",
+                object_size::<{ fixed::PROXY }>,
+                trace_object::<{ fixed::PROXY }>,
             ),
         ),
         (
@@ -733,6 +756,11 @@ pub(crate) fn set_proto(rt: &Runtime, o: u64, p: u64) -> bool {
     while q != NULL {
         if q == o {
             return false;
+        }
+        // Step 8.c.i: a proxy's [[GetPrototypeOf]] is not the ordinary one, so the walk stops
+        // there (no cycle). Its cell's own prototype is null, so this only says it.
+        if crate::proxy::is_proxy_kind(cell_kind(q)) {
+            break;
         }
         q = proto_of(q);
     }

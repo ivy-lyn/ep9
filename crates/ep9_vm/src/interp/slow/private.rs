@@ -139,8 +139,10 @@ pub(crate) fn keyed_define(cx: &mut Cx, o: u64, k: u64, v: u64, flags: u8) -> Re
             "Cannot define a property on a non-object",
         ));
     }
+    // A proxy keeps its private elements in its own cell; IsExtensible asks the proxy
+    // (GC point).
     let present = props::own_get(o, k).is_some();
-    if present || !crate::property::is_extensible(o) {
+    if present || !crate::property::try_is_extensible(cx, o)? {
         let msg = match (named(k), present) {
             (Named::Element(t), true) => format!("Cannot initialize {t} twice on the same object"),
             (Named::Brand(c), true) => {

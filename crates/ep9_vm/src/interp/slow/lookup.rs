@@ -306,7 +306,7 @@ fn resolve(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<Binding> {
 
 /// HasBinding of an object Environment Record with `withEnvironment` true (§9.1.1.2.1).
 fn with_has_binding(cx: &mut Cx, o: u64, name: u64) -> Res<bool> {
-    if !property::has_property(cx, o, name) {
+    if !property::try_has_property(cx, o, name)? {
         return Ok(false);
     }
     let key = symbol::well_known(cx.rt(), WellKnownSymbol::Unscopables);
@@ -354,7 +354,7 @@ fn get_binding_value(
             Ok(v)
         }
         Binding::With(o) => {
-            if !property::has_property(cx, o, name) {
+            if !property::try_has_property(cx, o, name)? {
                 if strict {
                     return Err(throw_name_now(cx, NameMsg::NotDefined, name));
                 }
@@ -381,7 +381,7 @@ fn get_binding_value(
                 return Ok(v);
             }
             let g = rt.global();
-            if !property::has_property(cx, g, name) {
+            if !property::try_has_property(cx, g, name)? {
                 if inside_typeof {
                     return Ok(UNDEFINED);
                 }
@@ -445,7 +445,7 @@ fn set_binding_value(cx: &mut Cx, b: Binding, name: u64, v: u64, strict: bool) -
         Binding::With(o) => {
             // The binding may be gone since the reference was resolved (a getter of
             // `@@unscopables` deleted it): strict code throws, sloppy code sets it again.
-            if strict && !property::has_property(cx, o, name) {
+            if strict && !property::try_has_property(cx, o, name)? {
                 return Err(throw_name_now(cx, NameMsg::NotDefined, name));
             }
             property::set(cx, o, name, v, strict)
@@ -489,7 +489,7 @@ fn set_binding_value(cx: &mut Cx, b: Binding, name: u64, v: u64, strict: bool) -
                 return Ok(());
             }
             let g = rt.global();
-            if strict && !property::has_property(cx, g, name) {
+            if strict && !property::try_has_property(cx, g, name)? {
                 return Err(throw_name_now(cx, NameMsg::NotDefined, name));
             }
             property::set(cx, g, name, v, strict)
@@ -642,7 +642,7 @@ pub(crate) fn resolve_lookup_slot(cx: &mut Cx, fp: *mut u64, name: u64) -> Res<u
             let rt = cx.rt();
             let g = rt.global();
             if own_get(rt.root(Root::Lexical), name).is_some()
-                || property::has_property(cx, g, name)
+                || property::try_has_property(cx, g, name)?
             {
                 UNDEFINED
             } else {

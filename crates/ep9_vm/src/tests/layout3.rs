@@ -113,7 +113,8 @@ fn register_kinds_registers_the_five_new_kinds() {
             id.get()
         );
     }
-    let free = KindId::new(27).unwrap();
+    // 27 and 28 are the proxy kinds since M4-P4 PROXY1; 29 is still reserved.
+    let free = KindId::new(29).unwrap();
     assert_eq!(iso.rt.heap.register_kind(free, k("free")), Ok(()));
 }
 
