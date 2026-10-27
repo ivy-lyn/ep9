@@ -11,7 +11,7 @@
 //! | Part | Passes when | Module |
 //! |---|---|---|
 //! | 1 trailers | every commit that touches an H-row crate has an `ADR:` trailer, or a line in `expectations/adr-trailer-exceptions.txt` (below) | this file |
-//! | 2 review records | every amendment row of an Accepted or Frozen ADR since `<rev>` has review rows 1-4 and an approval by an agent that wrote none of them (V9-A15; README sections 3.1, 3.2) | `exit::records` |
+//! | 2 review records | every amendment row of an Accepted or Frozen ADR since `<rev>` has review rows 1-4 and an approval by an agent that wrote none of them (V9-A15; README sections 3.1, 3.2), and such an ADR whose text outside its Change log and Review record changed has a new amendment row | `exit::records` |
 //! | 3 Counts | the README Counts line and index column equal the Status lines | `exit::records` |
 //! | 4 path:line drift | every `path:line` reference of `docs/adr` and `docs/plan` names the same line at HEAD as when it was written (no FIX and no UNFIXABLE line of the ADRLINE dry run) | `exit::drift` |
 //!
@@ -28,8 +28,10 @@
 //! when a path it adds, changes or deletes is inside it (a rename counts on both sides; paths
 //! are read NUL-split from git, never in git's quoted form, by git calls on one commit at a
 //! time, so no byte of a path or a message can move a path or a trailer to another commit). A
-//! merge commit touches only what its own resolution changed (`--cc`); the commits it merges
-//! are checked one by one.
+//! merge commit of 2 parents touches only the paths where its tree differs from `git merge-tree
+//! --write-tree` of its parents (a clean merge touches nothing; `--cc` only when that git call
+//! fails, with a `note:` line); an octopus merge touches every path that differs from its first
+//! parent (`commit_paths`). The commits a merge brings in are checked one by one.
 //!
 //! `--root` (default: this workspace) is the git tree to check; the ADR files, the docs and the
 //! exceptions file are read from its work tree. Exit 0: every part passes. Exit 1: the findings.
@@ -318,6 +320,8 @@ struct Commit {
     /// The values of its `ADR:` trailers.
     adr: Vec<String>,
     paths: Vec<String>,
+    /// A note line for the report: a merge whose paths came from `--cc`, or an octopus merge.
+    note: Option<String>,
 }
 
 /// The full sha of the commit `base` names in `root`.
@@ -368,36 +372,110 @@ fn commits(root: &Path, base_sha: &str) -> Result<Vec<Commit>, String> {
         .filter(|v| !v.is_empty())
         .map(str::to_string)
         .collect();
-        // `-z`: every path ends in NUL and is never quoted (without it git writes a path with a
-        // non-ASCII byte, a tab, `"` or `\\` as a C string in quotes). `--cc`: a merge lists only
-        // what its own resolution changed; `--root`: a root commit lists every path it adds.
-        let paths = git_out(
-            root,
-            &[
-                "diff-tree",
-                "-z",
-                "-r",
-                "--no-commit-id",
-                "--name-only",
-                "--no-renames",
-                "--cc",
-                "--root",
-                sha,
-                "--",
-            ],
-        )?
-        .split('\0')
-        .filter(|p| !p.is_empty())
-        .map(str::to_string)
-        .collect();
+        let (paths, note) = commit_paths(root, sha)?;
         list.push(Commit {
             sha: sha.to_string(),
             subject,
             adr,
             paths,
+            note,
         });
     }
     Ok(list)
+}
+
+/// The NUL-split paths of a `git diff-tree -z -r --name-only --no-renames <args> --` call.
+///
+/// `-z`: every path ends in NUL and is never quoted (without it git writes a path with a
+/// non-ASCII byte, a tab, `"` or `\\` as a C string in quotes).
+fn diff_paths(root: &Path, args: &[&str]) -> Result<Vec<String>, String> {
+    let mut all = vec![
+        "diff-tree",
+        "-z",
+        "-r",
+        "--no-commit-id",
+        "--name-only",
+        "--no-renames",
+    ];
+    all.extend_from_slice(args);
+    all.push("--");
+    Ok(git_out(root, &all)?
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// The paths that `sha` itself adds, changes or deletes, and a note for the report when a merge
+/// fell back to `--cc` or is an octopus merge.
+///
+/// - A commit with 0 or 1 parents: its diff (`--root`: a root commit lists every path it adds).
+/// - A merge of 2 parents: the paths where its tree differs from `git merge-tree --write-tree
+///   <p1> <p2>` (git 2.38 or later), the tree a clean automatic merge gives. A clean merge whose
+///   tree equals that tree touches nothing; a conflict resolution or any other change of the
+///   merge lists the paths it changed (a conflicted path holds the conflict markers in that
+///   tree, so its resolution always differs). `--cc --name-only` is not used: it lists every
+///   path that both parents changed, even when git merged it with no conflict. Only when
+///   `git merge-tree` fails (an older git, or no tree on its first line) do the paths come from
+///   `--cc`, and the note says so.
+/// - An octopus merge (3 or more parents): `git merge-tree` merges only 2, so the lint does not
+///   split its own changes from what it merges in. It counts every path where its tree differs
+///   from its first parent (all it brings in), and the note says so: an octopus merge that
+///   brings in an H-row path needs its own trailer.
+fn commit_paths(root: &Path, sha: &str) -> Result<(Vec<String>, Option<String>), String> {
+    let parents_line = git_out(root, &["show", "-s", "--format=%P", sha, "--"])?;
+    let parents: Vec<&str> = parents_line.split_whitespace().collect();
+    let short = &sha[..sha.len().min(12)];
+    match parents.as_slice() {
+        [] | [_] => Ok((diff_paths(root, &["--root", sha])?, None)),
+        [p1, p2] => match merge_tree(root, p1, p2) {
+            Ok(tree) => Ok((diff_paths(root, &[&tree, sha])?, None)),
+            Err(e) => Ok((
+                diff_paths(root, &["--cc", sha])?,
+                Some(format!(
+                    "note: {short}: `git merge-tree --write-tree` failed ({e}); this merge's paths are the `--cc --name-only` list, which also names paths both parents changed with no conflict"
+                )),
+            )),
+        },
+        [p1, ..] => Ok((
+            diff_paths(root, &[p1, sha])?,
+            Some(format!(
+                "note: {short}: an octopus merge of {} parents; its paths are every path that differs from its first parent",
+                parents.len()
+            )),
+        )),
+    }
+}
+
+/// The tree of a clean automatic merge of `p1` and `p2` (conflicted paths hold the conflict
+/// markers): the first line of `git merge-tree --write-tree`. Exit 0 is a clean merge, exit 1 a
+/// merge with conflicts (the tree is still printed); any other exit is a failure.
+fn merge_tree(root: &Path, p1: &str, p2: &str) -> Result<String, String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "merge-tree",
+            "--write-tree",
+            "--no-messages",
+            "--allow-unrelated-histories",
+            p1,
+            p2,
+        ])
+        .output()
+        .map_err(|e| format!("cannot run git: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let tree = stdout.lines().next().unwrap_or("").trim();
+    let ok_exit = matches!(out.status.code(), Some(0 | 1));
+    if ok_exit && matches!(tree.len(), 40 | 64) && tree.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Ok(tree.to_string())
+    } else {
+        Err(format!(
+            "{}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
 }
 
 /// The trailer check over `<base>..HEAD` in `root`.
@@ -422,6 +500,9 @@ fn trailers(root: &Path, base: &str) -> Result<Trailers, String> {
         text: String::new(),
     };
     for c in &list {
+        if let Some(n) = &c.note {
+            r.text.push_str(&format!("{n}\n"));
+        }
         let hits: Vec<(&String, &String)> = c
             .paths
             .iter()
@@ -502,6 +583,13 @@ mod tests {
 
     /// Runs git in `root` with `input` on its stdin; its stdout, trimmed.
     fn git_in(root: &Path, args: &[&str], input: &[u8]) -> String {
+        let (ok, out) = git_run(root, args, input);
+        assert!(ok, "git {args:?}: {out}");
+        out
+    }
+
+    /// Runs git in `root` with `input` on its stdin: (exit 0, stdout trimmed or the whole output).
+    fn git_run(root: &Path, args: &[&str], input: &[u8]) -> (bool, String) {
         use std::io::Write;
         use std::process::Stdio;
         let mut child = Command::new("git")
@@ -516,6 +604,8 @@ mod tests {
                 "commit.gpgsign=false",
                 "-c",
                 "core.hooksPath=/dev/null",
+                "-c",
+                "rerere.enabled=false",
             ])
             .args(args)
             .stdin(Stdio::piped())
@@ -526,8 +616,14 @@ mod tests {
         // Dropping stdin after the write closes it.
         child.stdin.take().unwrap().write_all(input).unwrap();
         let out = child.wait_with_output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {out:?}");
-        String::from_utf8(out.stdout).unwrap().trim().to_string()
+        if out.status.success() {
+            (
+                true,
+                String::from_utf8(out.stdout).unwrap().trim().to_string(),
+            )
+        } else {
+            (false, format!("{out:?}"))
+        }
     }
 
     /// Writes `files` and commits them with `msg`; the new HEAD.
@@ -821,6 +917,183 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// A crate file of 3 lines, each set apart by a blank line so that git merges edits of
+    /// different lines with no conflict.
+    fn three(a: &str, b: &str, c: &str) -> String {
+        format!("// {a}\n\n// keep 1\n\n// keep 2\n\n// {b}\n\n// keep 3\n\n// keep 4\n\n// {c}\n")
+    }
+
+    /// M4-P3 review (jit-tools finding 2): a clean merge where both sides edited the same crate
+    /// file touches nothing (`--cc --name-only` listed that file, so merge 55c4965 failed); a
+    /// conflict resolution in a crate file needs a trailer, and so does a merge that drops a
+    /// side's change (`-s ours`).
+    #[test]
+    fn a_merge_touches_only_what_differs_from_the_automatic_merge() {
+        let (root, base) = repo("merge-tree");
+        let lib = "crates/ep9_vm/src/lib.rs";
+        commit(
+            &root,
+            &[(lib, &three("a", "b", "c"))],
+            "vm: three\n\nADR: H16",
+        );
+        let main = git(&root, &["symbolic-ref", "--short", "HEAD"]);
+        git(&root, &["checkout", "-q", "-b", "side"]);
+        commit(
+            &root,
+            &[(lib, &three("a", "b", "side"))],
+            "vm: side\n\nADR: H16",
+        );
+        git(&root, &["checkout", "-q", &main]);
+        commit(
+            &root,
+            &[(lib, &three("main", "b", "c"))],
+            "vm: main\n\nADR: H16",
+        );
+        // The clean merge, no trailer: both sides touched lib.rs, the merge itself nothing.
+        git(
+            &root,
+            &["merge", "-q", "--no-ff", "-m", "merge side", "side"],
+        );
+        let clean = git(&root, &["rev-parse", "HEAD"]);
+        assert_eq!(
+            read(&root.join(lib)).unwrap(),
+            three("main", "b", "side"),
+            "the fixture merge is not clean"
+        );
+        let cc = git(
+            &root,
+            &[
+                "diff-tree",
+                "-r",
+                "--no-commit-id",
+                "--name-only",
+                "--cc",
+                &clean,
+            ],
+        );
+        assert_eq!(cc, lib, "--cc --name-only lists the file of a clean merge");
+        let (paths, note) = commit_paths(&root, &clean).unwrap();
+        assert_eq!((paths.len(), note), (0, None));
+        let r = trailers(&root, &base).unwrap();
+        assert_eq!((r.commits, r.touching, r.missing), (4, 3, 0), "{}", r.text);
+        // A real conflict: both sides change the middle line; the merge writes a third text.
+        git(&root, &["checkout", "-q", "-b", "side2"]);
+        commit(
+            &root,
+            &[(lib, &three("main", "s2", "side"))],
+            "vm: s2\n\nADR: H16",
+        );
+        git(&root, &["checkout", "-q", &main]);
+        commit(
+            &root,
+            &[(lib, &three("main", "m2", "side"))],
+            "vm: m2\n\nADR: H16",
+        );
+        let (ok, _) = git_run(
+            &root,
+            &["merge", "-q", "--no-ff", "--no-edit", "side2"],
+            b"",
+        );
+        assert!(!ok, "the fixture merge has no conflict");
+        let resolved = three("main", "both", "side");
+        let fixed = commit(&root, &[(lib, &resolved)], "merge side2, resolved");
+        assert_eq!(
+            git(&root, &["show", "-s", "--format=%P", &fixed])
+                .split(' ')
+                .count(),
+            2
+        );
+        assert_eq!(
+            commit_paths(&root, &fixed).unwrap(),
+            (vec![lib.to_string()], None)
+        );
+        let r = trailers(&root, &base).unwrap();
+        assert_eq!((r.commits, r.touching, r.missing), (7, 6, 1), "{}", r.text);
+        assert!(
+            r.text.contains(&format!(
+                "{} merge side2, resolved: touches {lib}",
+                &fixed[..12]
+            )),
+            "{}",
+            r.text
+        );
+        // The same resolution with a trailer passes.
+        git(
+            &root,
+            &[
+                "commit",
+                "-q",
+                "--amend",
+                "--no-verify",
+                "-m",
+                "merge side2, resolved\n\nADR: H16",
+            ],
+        );
+        let r = trailers(&root, &base).unwrap();
+        assert_eq!((r.commits, r.touching, r.missing), (7, 6, 0), "{}", r.text);
+        // `-s ours` drops the side's change: that is the merge's own change of lib.rs.
+        git(&root, &["checkout", "-q", "-b", "side3"]);
+        commit(
+            &root,
+            &[(lib, &three("s3", "both", "side"))],
+            "vm: s3\n\nADR: H16",
+        );
+        git(&root, &["checkout", "-q", &main]);
+        git(
+            &root,
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "-s",
+                "ours",
+                "-m",
+                "merge side3, ours",
+                "side3",
+            ],
+        );
+        let r = trailers(&root, &base).unwrap();
+        assert_eq!((r.commits, r.touching, r.missing), (9, 8, 1), "{}", r.text);
+        assert!(r.text.contains("merge side3, ours: touches"), "{}", r.text);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// An octopus merge counts every path that differs from its first parent, with a note.
+    #[test]
+    fn an_octopus_merge_counts_all_it_brings_in() {
+        let (root, base) = repo("octopus");
+        let main = git(&root, &["symbolic-ref", "--short", "HEAD"]);
+        for (b, f) in [("o1", "crates/ep9_vm/src/o1.rs"), ("o2", "README.md")] {
+            git(&root, &["checkout", "-q", "-b", b, &main]);
+            commit(&root, &[(f, "// o\n")], &format!("{b}\n\nADR: H16"));
+        }
+        git(&root, &["checkout", "-q", &main]);
+        git(
+            &root,
+            &["merge", "-q", "--no-ff", "-m", "octopus", "o1", "o2"],
+        );
+        let head = git(&root, &["rev-parse", "HEAD"]);
+        assert_eq!(
+            git(&root, &["show", "-s", "--format=%P", &head])
+                .split(' ')
+                .count(),
+            3
+        );
+        let r = trailers(&root, &base).unwrap();
+        assert_eq!((r.commits, r.touching, r.missing), (3, 2, 1), "{}", r.text);
+        assert!(
+            r.text.contains("an octopus merge of 3 parents"),
+            "{}",
+            r.text
+        );
+        assert!(
+            r.text.contains("octopus: touches crates/ep9_vm/src/o1.rs"),
+            "{}",
+            r.text
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     /// Codex r2: a file named 0x1e + an earlier sha (after a file that sorts before it) made the
     /// paths after it count for that earlier commit, so a commit without a trailer passed. Bytes
     /// of a path or a subject never change which commit a path or a trailer belongs to.
@@ -1088,6 +1361,147 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// M4-P3 review (jit-tools finding 4): only a result that starts with `Approved` approves.
+    #[test]
+    fn not_approved_is_no_approval() {
+        let (root, base, day) = full_repo("not-approved");
+        add_rows(
+            &root,
+            H16,
+            "Change log",
+            &[format!("| {day} | clarify | A word fixed | docs agent |")],
+        );
+        let label = format!("the {day} clarify row");
+        add_rows(
+            &root,
+            H16,
+            "Review record",
+            &record(&label, "orchestrator", "Not Approved: row 3 is wrong"),
+        );
+        let lint = full(&root, &base).unwrap();
+        assert!(!lint.pass, "{}", lint.text);
+        assert!(lint.text.contains("Approval: 0)"), "{}", lint.text);
+        let text = read(&root.join(H16)).unwrap();
+        write(
+            &root,
+            H16,
+            &text.replace(
+                "Not Approved: row 3 is wrong",
+                "**Approved** (orchestrator)",
+            ),
+        );
+        let lint = full(&root, &base).unwrap();
+        assert!(lint.pass, "{}", lint.text);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// M4-P3 review (jit-tools finding 5): a record that the base file already has does not
+    /// cover a new Change-log row of the same date.
+    #[test]
+    fn a_base_record_covers_no_new_row() {
+        let (root, _, day) = full_repo("base-record");
+        add_rows(
+            &root,
+            H16,
+            "Change log",
+            &[format!("| {day} | clarify | A word fixed | docs agent |")],
+        );
+        add_rows(
+            &root,
+            H16,
+            "Review record",
+            &record(
+                &format!("the {day} clarify row"),
+                "orchestrator",
+                "Approved",
+            ),
+        );
+        let base = commit(&root, &[], "docs/adr: H16 clarify, recorded");
+        assert!(full(&root, &base).unwrap().pass);
+        add_rows(
+            &root,
+            H16,
+            "Change log",
+            &[format!("| {day} | clarify | Another word | docs agent |")],
+        );
+        commit(&root, &[], "docs/adr: H16 second clarify, no record");
+        let lint = full(&root, &base).unwrap();
+        assert!(!lint.pass, "{}", lint.text);
+        assert!(
+            lint.text.contains(&format!(
+                "docs/adr/H16-ics.md: 1 amendment row(s) dated {day} since the base, 0 complete"
+            )),
+            "{}",
+            lint.text
+        );
+        // Its own record (new since the base) passes; a copy of the base rows counts too.
+        add_rows(
+            &root,
+            H16,
+            "Review record",
+            &record(
+                &format!("the {day} clarify row"),
+                "orchestrator",
+                "Approved",
+            ),
+        );
+        let lint = full(&root, &base).unwrap();
+        assert!(lint.pass, "{}", lint.text);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// M4-P3 review (jit-tools finding 3): a change of an Accepted ADR outside its Change log and
+    /// Review record needs a new Change-log row.
+    #[test]
+    fn a_body_change_needs_a_change_log_row() {
+        let (root, base, day) = full_repo("body");
+        let text = read(&root.join(H16)).unwrap();
+        commit(
+            &root,
+            &[(
+                H16,
+                &text.replace("The IC entry point", "The one IC entry point"),
+            )],
+            "docs/adr: H16 body, no row",
+        );
+        let lint = full(&root, &base).unwrap();
+        assert!(!lint.pass, "{}", lint.text);
+        assert!(
+            lint.text.contains(&format!(
+                "docs/adr/H16-ics.md: the text outside `## Change log` and `## Review record` changed since the base, and no new Change-log row dated on or after {day}"
+            )),
+            "{}",
+            lint.text
+        );
+        assert!(
+            lint.summary.contains("review records FAIL"),
+            "{}",
+            lint.summary
+        );
+        // A Draft ADR's body is free; a row with its record makes H16 pass.
+        let h29 = read(&root.join(H29)).unwrap();
+        write(&root, H29, &format!("{h29}\nMore draft text.\n"));
+        add_rows(
+            &root,
+            H16,
+            "Change log",
+            &[format!("| {day} | clarify | One word | docs agent |")],
+        );
+        add_rows(
+            &root,
+            H16,
+            "Review record",
+            &record(
+                &format!("the {day} clarify row"),
+                "orchestrator",
+                "Approved",
+            ),
+        );
+        let lint = full(&root, &base).unwrap();
+        assert!(lint.pass, "{}", lint.text);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn rows_that_need_no_record_and_bad_kinds() {
         let (root, base, day) = full_repo("kinds");
@@ -1188,7 +1602,9 @@ mod tests {
             .unwrap()
             .replace("lib.rs:2", "lib.rs:3");
         commit(&root, &[(H16, &t)], "docs/adr: H16 ref");
-        assert!(full(&root, &base).unwrap().pass);
+        // (The body edit has no Change-log row, so the review-record part fails: drift only.)
+        let drift_pass = |l: &Lint| l.summary.contains("path:line drift PASS");
+        assert!(drift_pass(&full(&root, &base).unwrap()));
         // A token new in the work tree must lie inside the file.
         write(&root, H16, &t.replace("lib.rs:3", "lib.rs:99"));
         let lint = full(&root, &base).unwrap();
@@ -1204,7 +1620,7 @@ mod tests {
         );
         write(&root, drift::PINS_FILE, &pins);
         let lint = full(&root, &base).unwrap();
-        assert!(lint.pass, "{}", lint.text);
+        assert!(drift_pass(&lint), "{}", lint.text);
         assert!(lint.text.contains("pinned=1"), "{}", lint.text);
         write(
             &root,

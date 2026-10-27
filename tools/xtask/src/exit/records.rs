@@ -13,9 +13,11 @@
 //!   `rewrite` or `reopen` (README section 3.3; V9-A15: every kind). Another word is a gap.
 //! - The `## Review record` rows are `1 ...`, `2 ...`, `3 ...`, `4 ...` and `Approval`, each with a
 //!   label in parentheses that names the date of the Change-log row it covers, for example
-//!   `1 Reviewer (M4-P2 amendment: the 2026-10-27 ADRLINE clarify row)`. A row whose result
-//!   starts with `Pending` counts for nothing, and an Approval counts only when its result says
-//!   `Approved`.
+//!   `1 Reviewer (M4-P2 amendment: the 2026-10-27 ADRLINE clarify row)`. Only the rows that the
+//!   file at `<base>` does not have count (a record already there covers an older row). A row
+//!   whose result starts with `Pending` counts for nothing, and an Approval counts only when its
+//!   result starts with `Approved` (after any `*` or `_` of markdown emphasis: `**Approved**`
+//!   counts, `Not Approved` and `**Not approved**` do not).
 //! - For each date: the complete records that name it (the smallest count of rows 1, 2, 3, 4 and
 //!   Approval among the rows that name it) must be at least the amendment rows of that date. A
 //!   Pending row that names the date is a gap.
@@ -24,8 +26,14 @@
 //!   after `row text by ` in its Who cell, else the Who cell; in both cases up to the first ` (`,
 //!   `,` or `;`, in lower case.
 //!
+//! - **Body changes.** When the text outside the `## Change log` and `## Review record` sections
+//!   differs from the file at `<base>` (a file new since `<base>` is not compared), the ADR needs
+//!   at least one amendment row (README section 3: an amendment adds a dated Change-log line).
+//!   No amendment row is a gap.
+//!
 //! The date links a record to its Change-log rows: a label names no row id, so two rows of one
-//! day share their records by count. That is the limit of this check.
+//! day share their records by count, and one amendment row covers every body change of the
+//! range. That is the limit of this check.
 //!
 //! **Counts.** The README line `Counts on <date> (...): <n> Draft, <n> Not started, <n> Accepted,
 //! <n> Frozen.` equals the Status lines: the first word of each `H<nn>-*.md` Status line (an ADR
@@ -81,6 +89,31 @@ fn section_rows(text: &str, name: &str) -> Vec<String> {
         }
     }
     rows.into_iter().skip(1).collect()
+}
+
+/// The text outside the `## Change log` and `## Review record` sections (each runs from its
+/// heading to the next `## ` heading).
+fn body(text: &str) -> String {
+    let mut on = true;
+    let mut out = String::new();
+    for l in text.lines() {
+        if l.starts_with("## ") {
+            let t = l.trim();
+            on = t != "## Change log" && t != "## Review record";
+        }
+        if on {
+            out.push_str(l);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Does a Result cell approve: does it start with `Approved` after markdown emphasis?
+fn approves(result: &str) -> bool {
+    result
+        .trim_start_matches(|c: char| c == '*' || c == '_' || c.is_whitespace())
+        .starts_with("Approved")
 }
 
 /// The value of the `| Status |` row.
@@ -166,9 +199,20 @@ pub(crate) fn records(root: &Path, base_sha: &str) -> Result<Records, String> {
             continue;
         }
         r.adrs += 1;
-        let old: BTreeSet<String> = git(root, &["show", &format!("{base_sha}:{rel}")])
-            .map(|t| section_rows(&t, "Change log").into_iter().collect())
+        let base_text = git(root, &["show", &format!("{base_sha}:{rel}")]);
+        let old: BTreeSet<String> = base_text
+            .as_deref()
+            .map(|t| section_rows(t, "Change log").into_iter().collect())
             .unwrap_or_default();
+        // The record rows at the base, with their counts (two equal rows are two rows).
+        let mut old_records: BTreeMap<String, usize> = BTreeMap::new();
+        for row in base_text
+            .as_deref()
+            .map(|t| section_rows(t, "Review record"))
+            .unwrap_or_default()
+        {
+            *old_records.entry(row).or_default() += 1;
+        }
         let mut need: BTreeMap<String, usize> = BTreeMap::new();
         for row in section_rows(&text, "Change log") {
             if old.contains(&row) {
@@ -205,6 +249,11 @@ pub(crate) fn records(root: &Path, base_sha: &str) -> Result<Records, String> {
             *need.entry(d.to_string()).or_default() += 1;
         }
         if need.is_empty() {
+            if base_text.as_deref().is_some_and(|b| body(b) != body(&text)) {
+                r.gaps.push(format!(
+                    "{rel}: the text outside `## Change log` and `## Review record` changed since the base, and no new Change-log row dated on or after {base_day} records it (README section 3: an amendment adds a dated Change-log line, then needs its review record)"
+                ));
+            }
             continue;
         }
         // Per date: complete rows per part, the writers of rows 1-4, the approvers.
@@ -212,6 +261,13 @@ pub(crate) fn records(root: &Path, base_sha: &str) -> Result<Records, String> {
         let mut writers: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut approvers: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for row in section_rows(&text, "Review record") {
+            // A row the base file has covers an older Change-log row, not a new one.
+            if let Some(n) = old_records.get_mut(&row)
+                && *n > 0
+            {
+                *n -= 1;
+                continue;
+            }
             let c = cells(&row);
             let part_cell = c.first().map_or("", String::as_str);
             let Some(part) = PARTS
@@ -244,7 +300,7 @@ pub(crate) fn records(root: &Path, base_sha: &str) -> Result<Records, String> {
                 continue;
             }
             if part == "Approval" {
-                if !result.contains("Approved") {
+                if !approves(result) {
                     continue;
                 }
                 approvers
@@ -393,6 +449,22 @@ mod tests {
             "orchestrator"
         );
         assert_eq!(writer("M4-P1 Claude reviewer"), "m4-p1 claude reviewer");
+        assert!(approves(
+            "**Approved** (2026-10-27). The orchestrator wrote none"
+        ));
+        assert!(approves("**Approved.** Orchestrator approves"));
+        assert!(approves("Approved"));
+        assert!(!approves("Not Approved: row 3 is wrong"));
+        assert!(!approves(
+            "**Not approved**: the review record is not complete"
+        ));
+        assert!(!approves("**Pending** (not approved)"));
+        assert_eq!(
+            body(
+                "# H\n\n## Decision\n\nA\n\n## Change log\n\n| r |\n## Review record\n| x |\n## Notes\nB\n"
+            ),
+            "# H\n\n## Decision\n\nA\n\n## Notes\nB\n"
+        );
         assert_eq!(
             cells("| a | b \\| c | d |"),
             vec!["a".to_string(), "b \\| c".into(), "d".into()]

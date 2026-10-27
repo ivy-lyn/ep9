@@ -1146,7 +1146,11 @@ fn item6(c: &Ctx) -> (Cell, Cell) {
             let findings: Vec<String> = l
                 .text
                 .lines()
-                .filter(|t| !t.starts_with("adr-lint") && !t.starts_with("UNUSED PIN"))
+                .filter(|t| {
+                    !t.starts_with("adr-lint")
+                        && !t.starts_with("UNUSED PIN")
+                        && !t.starts_with("note: ")
+                })
                 .map(str::to_string)
                 .collect();
             cell(

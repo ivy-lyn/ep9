@@ -119,19 +119,19 @@ jobs:
       - run: node --test tools/bench/cross/run.test.mjs
       # t0-dispatch.mjs statistics (PERF-NOISE ranks, verdicts, arguments); no ep9 build needed.
       - run: node --test tools/bench/workloads/t0-dispatch.test.mjs
-      # M1 exit item 6 (plan v9 rule 26, section 5.6), last in the job so a finding does not
-      # hide the checks above: `cargo xtask adr-lint` over m0-exit..HEAD:
-      # the ADR trailers, the review records of ADR amendments, the README Counts line and the
-      # path:line drift of docs/adr and docs/plan (tools/xtask/src/adr_lint.rs). It reads the
-      # history back to the m0-exit tag, so the shallow checkout is deepened first (full blobs:
-      # the drift part reads old file versions and runs `git log -S`). Its output is uploaded as
-      # the item-6 evidence of `cargo xtask m1-exit` (the other m1-exit inputs are the
-      # m0-exit-inputs-* artifacts of the test262 jobs: the same exec JSONs and nesting log).
+      # M1 exit item 6 (plan v9 rule 26, section 5.6), last so a finding hides no check above:
+      # `cargo xtask adr-lint` (tools/xtask/src/adr_lint.rs) over m0-exit..<tip>: ADR trailers,
+      # review records, README Counts, path:line drift. <tip> is the PR head on pull_request (a
+      # worktree; GitHub's refs/pull/N/merge commit has no trailer), else HEAD. Full history first
+      # (the drift part reads old blobs). The output is the item-6 input of `cargo xtask m1-exit`.
       - name: adr-lint
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           git fetch --no-tags --unshallow origin
           git fetch --no-tags origin 'refs/tags/m0-exit:refs/tags/m0-exit'
-          cargo xtask adr-lint --base m0-exit 2>&1 | tee adr-lint.txt
+          root=$PWD; if [ -n "$PR_HEAD" ]; then root=$RUNNER_TEMP/pr-head; git worktree add -q --detach "$root" "$PR_HEAD"; fi
+          cargo xtask adr-lint --base m0-exit --root "$root" 2>&1 | tee adr-lint.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() }}
         with:
