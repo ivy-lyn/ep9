@@ -21,8 +21,8 @@
 //! `o` not an object gives false (step 3); else `P` = the field at +32 of `c`, which must be
 //! an object (else the generic path throws); then the chain walk of `o` (step 6), which
 //! misses on a Proxy (its `[[GetPrototypeOf]]` is a trap; M4-P4 PROXY1) and when the
-//! interrupt budget runs out (one unit per step, as the generic walk, checked per 8 steps;
-//! the generic walk then polls; M4-P4 fixer C, Codex B1-1).
+//! interrupt budget is used up (8 units after each full group of 8 steps, none for the last
+//! 1 to 8 steps; the generic walk then polls; M4-P4 fixer C, Codex B1-1 and CX-C-D1).
 //!
 //! Rules:
 //! - What the handler guards. InstanceofOperator (§13.10.2) is OrdinaryHasInstance when
@@ -138,13 +138,20 @@ fn field(c: u64, s: u64, field: usize) -> u64 {
 }
 
 /// The hit: the boolean (TRUE or FALSE bits), or `None` for the cold path. The chain walk
-/// takes one interrupt budget unit (`budget`, the isolate's) per step, as the generic walk
-/// does (`property::prototype_walk_step`), in groups of [`WALK_STEPS`] (one check per group:
-/// a check per step cost +7.2% instructions on a monomorphic 20-deep walk, a group of 8
-/// +1.2%). It does not poll: when the budget runs out it misses, and the generic walk of the
-/// cold path polls at its first step and answers (M4-P4 fixer C, Codex B1-1: a warm site
-/// walked a long chain with no poll, so a termination waited for the walk's end). The record
-/// after that writes nothing (the handler is current).
+/// takes interrupt budget units (`budget`, the isolate's) in groups of [`WALK_STEPS`]: 8 units
+/// after each full group of 8 steps, with one check per group (a check per step cost +7.2%
+/// instructions on a monomorphic 20-deep walk, a group of 8 +1.2%). A walk that returns inside
+/// a group (a match, the chain's end, a proxy) takes no unit for that group, so the last 1 to
+/// 8 steps of a walk (all of a walk of 8 steps or fewer) take none; the generic walk
+/// (`property::prototype_walk_step`) takes one unit per step. It does not poll: when the
+/// budget is used up after a group it misses, and the generic walk of the cold path polls at
+/// its first step and answers. So a walk that uses up the budget runs up to 7 steps past it,
+/// or 8 when the budget is at or below 0 at entry (a call takes its unit after its poll, so
+/// it can leave 0: `call::call_bytecode`). This is enough: at most 8 steps of a walk go
+/// uncharged, and a loop that runs instanceof polls at its back edge; a debit at every return
+/// would cost the hot path for no safety gain (M4-P4 fixer C, Codex B1-1: a warm site walked a
+/// long chain with no poll, so a termination waited for the walk's end; fixer D, Codex
+/// CX-C-D1). The record after that writes nothing (the handler is current).
 #[inline(always)]
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
 fn hit(
@@ -183,8 +190,8 @@ fn hit(
     // is a walk that uses up the budget: the generic walk polls.
     let mut q = o;
     loop {
-        // The budget is taken per WALK_STEPS steps, after them: a walk may pass the budget by
-        // fewer than WALK_STEPS steps.
+        // The budget is taken after each full group of WALK_STEPS steps; a return inside a
+        // group takes no unit for it (see the doc comment).
         for _ in 0..WALK_STEPS {
             if is_proxy(q) {
                 return None;

@@ -1024,7 +1024,7 @@ pub(crate) const MAX_PROXY_HOPS: u32 = 100 * 1024;
 /// The hot part is inlined: the budget unit and, for an ordinary object, its shape's
 /// prototype; the proxy part is a cold call (M4-P4 verifier B V-B1: the walk had cost about
 /// 22 more instructions per step than before fixer B). The instanceof cache's hit walk takes
-/// the same unit per step and leaves the poll to this walk (`instance_ic::hit`, Codex B1-1).
+/// 8 units per full group of 8 steps (none for its last 1 to 8) and leaves the poll to this walk.
 #[inline]
 pub(crate) fn prototype_walk_step(cx: &mut Cx, o: u64, hops: &mut u32) -> Res<u64> {
     cx.budget -= 1;
