@@ -8,9 +8,11 @@
 #                      ep9_vm spike-native tests (Spike B native entry)
 #   test262 .......... parse and exec runners vs expectations/;      (4 targets)
 #                      exec with eager feedback; bytecodegen corpus
-#                      digest (G1); on Linux x64 also exec with
-#                      GC-stress + eager feedback, the debug corpus
-#                      digest and the atom-key gate (G2, debug exec)
+#                      digest (G1), debug too (not windows-x64); the
+#                      nesting-cap tests (not windows-x64); on Linux
+#                      x64 also the atom-key gate (G2, debug exec);
+#                      the m0-exit inputs as an artifact
+#   test262-gc ....... exec with GC-stress + eager feedback, 6 shards (4 targets)
 #   fp-check ......... no libm call, no FMA outside ep9_math (H36);  (Linux x64)
 #                      SoftFma vs hardware FMA
 #   disasm ........... ep9_vm handler check (H15); ep9_heap barrier  (4 targets)
@@ -18,8 +20,11 @@
 #                      SP-Dispatch speed gates: recorded, not blocking (H15 ADR);
 #                      cgoto.c built with zig cc 0.17.0 (H15-Q3);
 #                      Spike B structural gate (checks (a)-(h));
-#                      Spike B placement (b) gate (gate.sh b; SKIP on x86-64);
-#                      Spike B Win64 unwind (windows-x64; tests/win64_unwind.rs)
+#                      Spike B placement (b) gate (gate.sh b; aarch64 and x86-64);
+#                      SP-Unit gate (gate.sh unit; 4 targets);
+#                      Spike B Win64 unwind (windows-x64; tests/win64_unwind.rs);
+#                      SP-Unit Win64 unwind (windows-x64; tests/win64_unit.rs);
+#                      SP-Dispatch Zen 3 branchy report (linux-x64, windows-x64; report only, H15-Q2)
 #   miri ............. Miri on ep9_value, ep9_heap and ep9_math      (Linux x64)
 #   dep-guards ....... cargo tree / metadata guards; cargo deny      (Linux x64)
 #   perf-ci-v0 ....... cachegrind instruction counts of 7 workloads  (Linux x64)
@@ -99,7 +104,7 @@ jobs:
           - { name: linux-arm64, os: ubuntu-24.04-arm }
           - { name: windows-x64, os: windows-2025 }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       # Windows: keep LF in our files and in test262 (scripts break on CRLF), allow long paths.
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
@@ -135,11 +140,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # linux-x64 also runs exec under GC-stress (about 18 CPU-minutes on an M5 Max), the debug
-        # corpus digest and the debug atom-key gate.
+        # linux-x64 also runs the atom-key gate (a debug exec run). GC-stress runs in the test262-gc
+        # job (M3-P3 GATES-2), so this job no longer needs the 300-min limit of M3-P2-CI-GC-TIMEOUT.
         include:
           - { name: macos-arm64, os: macos-15, timeout: 60 }
-          - { name: linux-x64, os: ubuntu-24.04, timeout: 120 }
+          - { name: linux-x64, os: ubuntu-24.04, timeout: 90 }
           - { name: linux-arm64, os: ubuntu-24.04-arm, timeout: 60 }
           - { name: windows-x64, os: windows-2025, timeout: 60 }
     runs-on: ${{ matrix.os }}
@@ -170,9 +175,10 @@ jobs:
         run: bash scripts/sync-bench.sh bench-octane bench-v8v7 bench-jetstream
       # Exit 1 on a regression vs expectations/test262-parse.<host-triple>.txt.
       - name: test262 parse
-        run: cargo run --release --locked -p ep9_test262 -- parse
+        run: cargo run --release --locked -p ep9_test262 -- parse --json test262-parse.json
       # The engine end to end (tools/test262/README.md "exec"): one worker process per CPU, 20 s
-      # soft timeout per run (the slowest run takes < 0.5 s on an M-series Mac). Exit 1 on a change
+      # soft timeout per run (on an M-series Mac, each run of the 8 sm/Date dst-offset-caching
+      # files, among the slowest, takes 0.6-1.5 s, by host load). Exit 1 on a change
       # vs expectations/test262.<host-triple>.jit.txt. Exit 2 on an infrastructure error (panic,
       # timeout, worker crash): no expectation file can list one, so it always fails the job.
       - name: test262 exec
@@ -183,27 +189,51 @@ jobs:
       - name: test262 exec, eager feedback
         if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
         run: cargo run --release --locked -p ep9_test262 -- exec --feedback-threshold 0 --json test262-exec-eager.json
-      # GC-stress (a collection before every allocation, the heap verifier after each) with eager
-      # feedback, against the same expectation file. The 11 tests of the skip list run past the
-      # timeout under GC-stress (8 of them fail without it too; its header says why each one is
-      # there); the run prints "skipped: 11". A verifier error panics: an infrastructure error,
-      # exit 2 (tools/test262/README.md "exec").
-      - name: test262 exec, GC-stress + eager feedback
-        if: ${{ !cancelled() && steps.sync.outcome == 'success' && matrix.name == 'linux-x64' }}
-        run: >-
-          cargo run --release --locked -p ep9_test262 -- exec --gc-stress 1 --feedback-threshold 0
-          --timeout 60 --skip-list expectations/test262-gc-skip.txt --json test262-exec-gc.json
       # G1 determinism (decision M2-DETERMINISM): every unit of the bytecodegen corpus (test262
       # plus the 3 benchmark pins, 54,522 files) compiles to the same bytes on every target, in
       # release and in debug. The digest over them must equal expectations/bytecode-corpus.digest
       # (crates/ep9_frontend/src/bytecodegen/corpus.rs). The log prints this runner's digest. It
       # changes only with an ABI bump or a codegen change (a BCG-CORPUS row in decisions-log).
+      # The log is an m0-exit input (item 12; CORPUS_CMD in tools/xtask/src/m0_exit.rs): no color,
+      # the start line "m0-exit start: <label>" first and the exit-status line
+      # "m0-exit status: <code>" last, so a killed run (a start with no status) cannot pass.
       - name: bytecodegen corpus digest (release)
         if: ${{ !cancelled() && steps.sync.outcome == 'success' && steps.bench.outcome == 'success' }}
-        run: cargo test -p ep9_frontend --release --locked --lib bytecodegen::corpus -- --ignored --nocapture
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          echo "m0-exit start: corpus release" | tee corpus-release.log
+          rc=0
+          cargo test -p ep9_frontend --release --locked --lib bytecodegen::corpus -- --ignored --nocapture 2>&1 | tee -a corpus-release.log || rc=$?
+          echo "m0-exit status: $rc" | tee -a corpus-release.log
+          exit "$rc"
       - name: bytecodegen corpus digest (debug)
-        if: ${{ !cancelled() && steps.sync.outcome == 'success' && steps.bench.outcome == 'success' && matrix.name == 'linux-x64' }}
-        run: cargo test -p ep9_frontend --locked --lib bytecodegen::corpus -- --ignored --nocapture
+        if: ${{ !cancelled() && steps.sync.outcome == 'success' && steps.bench.outcome == 'success' && matrix.name != 'windows-x64' }}
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          echo "m0-exit start: corpus debug" | tee corpus-debug.log
+          rc=0
+          cargo test -p ep9_frontend --locked --lib bytecodegen::corpus -- --ignored --nocapture 2>&1 | tee -a corpus-debug.log || rc=$?
+          echo "m0-exit status: $rc" | tee -a corpus-debug.log
+          exit "$rc"
+      # M0 exit item 7 (nesting caps, the UTF-16 column): the m0-exit input log of NESTING_CMD
+      # (tools/xtask/src/m0_exit.rs), two cargo runs, each with its start and exit-status lines. The
+      # build + test job runs the same tests; this log is what m0-exit reads for the host column.
+      - name: nesting caps (m0-exit item 7 log)
+        if: ${{ !cancelled() && matrix.name != 'windows-x64' }}
+        env:
+          CARGO_TERM_COLOR: never
+        run: |
+          echo "m0-exit start: depth_tests" | tee nesting.log
+          rc1=0
+          cargo test --locked -p ep9_frontend --lib depth_tests 2>&1 | tee -a nesting.log || rc1=$?
+          echo "m0-exit status: $rc1" | tee -a nesting.log
+          echo "m0-exit start: nesting_caps cli" | tee -a nesting.log
+          rc2=0
+          cargo test --locked -p ep9_cli --test nesting_caps --test cli 2>&1 | tee -a nesting.log || rc2=$?
+          echo "m0-exit status: $rc2" | tee -a nesting.log
+          [ "$rc1" = 0 ] && [ "$rc2" = 0 ]
       # G2 atom-key gate (W4-KEY-EQ): in a debug build with EP9_ASSERT_ATOM_KEYS=1, every isolate
       # drop panics if a property-key compare looked at string content (crates/ep9_vm/src/atoms.rs),
       # and the runner counts that as a panic. The gate needs "infrastructure errors: 0 (panic 0,
@@ -211,14 +241,14 @@ jobs:
       # timeout, worker crash, internal BytecodeGen error) or a runner error, and fails the step;
       # an infrastructure error also skips the expectation compare (tools/test262/src/exec.rs).
       # Exit 1 (the failing set differs from the expectation file, no infrastructure error) is a
-      # warning: the release steps above are the result gates. The 120 s soft timeout is for the
+      # warning: the release steps above are the result gates. The 300 s soft timeout is for the
       # slower debug build.
       - name: test262 exec, atom-key gate (debug)
         if: ${{ !cancelled() && steps.sync.outcome == 'success' && matrix.name == 'linux-x64' }}
         run: |
           cargo build --locked -p ep9_test262
           rc=0
-          EP9_ASSERT_ATOM_KEYS=1 target/debug/ep9-test262 exec --timeout 120 2>&1 | tee atomgate.log || rc=$?
+          EP9_ASSERT_ATOM_KEYS=1 target/debug/ep9-test262 exec --timeout 300 2>&1 | tee atomgate.log || rc=$?
           line="$(grep 'infrastructure errors:' atomgate.log | tail -n 1 || true)"
           if [ -z "$line" ]; then
             echo "::error::atom-key gate: the debug exec run printed no summary (exit $rc)"
@@ -241,6 +271,83 @@ jobs:
           name: test262-exec-${{ matrix.name }}
           path: test262-exec*.json
           if-no-files-found: ignore
+      # The host-column inputs of `cargo xtask m0-exit` for this target (M3-P3-DRYRUN-CI): --parse,
+      # --exec, --corpus (release, debug), --nesting; the eager run is the T262-EAGER evidence.
+      # The GC-stress shards (--exec-gc) are in the m0-exit-inputs-gc-* artifacts.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: m0-exit-inputs-${{ matrix.name }}
+          path: |
+            test262-parse.json
+            test262-exec.json
+            test262-exec-eager.json
+            corpus-release.log
+            corpus-debug.log
+            nesting.log
+          if-no-files-found: warn
+
+  # GC-stress (a collection before every allocation, the heap verifier after each) with eager
+  # feedback, against the expectation file of each target: M0 exit item 6, on every target
+  # (V8-A22: windows-x64 too). One whole run took about 2 h on the hosted 4-CPU linux-x64 runner
+  # at M3-P2, so it runs as 6 shards, one job each (M3-P3-GC-SHARD). `cargo xtask m0-exit
+  # --gc-shard k/n` prints the test262 path prefixes of shard k: a split of the checkout by file
+  # count that puts every test file in exactly one shard. A filtered run compares only the tests
+  # it ran (tools/test262 expect::diff), and its JSON names every file it ran (run_paths).
+  # m0-exit item 6 checks that each JSON ran and skipped exactly the files of one shard, reads
+  # the n JSON files of a target back as one whole-corpus run, and its Windows cell needs every
+  # windows-x64 shard job green. The
+  # tests of the skip list run past the timeout under GC-stress (its header says why each one is
+  # there). A verifier error panics: an infrastructure error, exit 2 (tools/test262/README.md
+  # "exec"). To change n, change `shards` and the `shard` list together.
+  test262-gc:
+    name: test262 GC-stress (${{ matrix.target.name }}, ${{ matrix.shard }}/${{ matrix.shards }})
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { name: macos-arm64, os: macos-15 }
+          - { name: linux-x64, os: ubuntu-24.04 }
+          - { name: linux-arm64, os: ubuntu-24.04-arm }
+          - { name: windows-x64, os: windows-2025 }
+        shards: [6]
+        shard: [1, 2, 3, 4, 5, 6]
+    runs-on: ${{ matrix.target.os }}
+    timeout-minutes: 90
+    steps:
+      - run: git config --global core.autocrlf false && git config --global core.longpaths true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: third_party/test262
+          key: test262-${{ runner.os }}-${{ hashFiles('third_party/test262.commit', 'third_party/patches/test262/**') }}
+      - run: bash scripts/sync-test262.sh
+      - name: test262 exec, GC-stress + eager feedback
+        env:
+          SHARD: ${{ matrix.shard }}/${{ matrix.shards }}
+        run: |
+          out="$(cargo xtask m0-exit --gc-shard "$SHARD")"
+          set -f
+          # shellcheck disable=SC2206 # one prefix per line; no prefix has a space or a glob
+          prefixes=($out)
+          set +f
+          if [ "${#prefixes[@]}" -eq 0 ]; then
+            echo "::error::cargo xtask m0-exit --gc-shard $SHARD printed no prefix"
+            exit 1
+          fi
+          echo "shard $SHARD: ${#prefixes[@]} path prefixes"
+          cargo run --release --locked -p ep9_test262 -- exec --gc-stress 1 --feedback-threshold 0 \
+            --timeout 60 --skip-list expectations/test262-gc-skip.txt --json test262-exec-gc.json \
+            "${prefixes[@]}"
+      # The --exec-gc input of `cargo xtask m0-exit` (one per shard; pass all n of a target).
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: m0-exit-inputs-gc-${{ matrix.target.name }}-${{ matrix.shard }}-of-${{ matrix.shards }}
+          path: test262-exec-gc.json
+          if-no-files-found: warn
 
   # H36 (docs/plan/10-quality.md section 5): what ships calls no libm function and has no FMA
   # instruction outside ep9_math (tools/xtask/src/fpcheck.rs). fp-check builds the post-LTO
@@ -396,15 +503,26 @@ jobs:
         run: bash spikes/spike-b/gate.sh structural
       # Spike B placement (b) gate (plan-v6 P4-PLACEMENT-B, D11): the jit_b unit tests, then
       # `spike-b structural-b all` (release) and `structural-b h` (debug). Placement (b) is built
-      # for AArch64 only; on x86-64 each (b) check prints SKIP with the Refusal text and the step
-      # passes.
+      # for AArch64 and x86-64 (M3-P0 P0-B-X64), so a SKIP line fails the step on every runner
+      # here (P0-D9).
       - name: Spike B placement (b) gate
         if: ${{ !cancelled() }}
         run: bash spikes/spike-b/gate.sh b
-      # P4-WIN-STATIC-1 (plan-v6 D25): the real Win64 unwind run of placement (a)'s x86-64 JIT
+      # SP-Unit gate (M3-P1 SP-UNIT, SPIKEB(unit)): the 11 Spike B opcodes as AOT unit text on
+      # placement (b), with 0 relocations, the unit-data register x27/r14, a per-isolate RW copy
+      # with its root ranges, 2 isolates on 2 threads, the unwind self-test and every fallback
+      # (checks (a)-(g); docs/measurements/2026-10-23-sp-unit.md). A SKIP line fails it. It runs
+      # on every runner: SP-UNIT proved it on mac a64, linux a64, linux x64 (sandbox) and
+      # windows-x64 (CI probe run 39886596197, V8-A6).
+      - name: Spike B unit gate
+        if: ${{ !cancelled() }}
+        run: bash spikes/spike-b/gate.sh unit
+      # P4-WIN-STATIC-1 (plan-v6 D25): the real Win64 unwind run of the x86-64 JIT of placement
+      # (a) (drive, id, hold) and, since M3-P0 P0-B-X64, placement (b) (bdrive, bid, bhold)
       # (spikes/spike-b/tests/win64_unwind.rs): per function, RtlLookupFunctionEntry finds its
       # RUNTIME_FUNCTION and RtlVirtualUnwind from every prologue, body and epilogue state
-      # returns to its caller; a walk from a host function steps through running JIT frames.
+      # returns to its caller ((b) epilogues end in `rex.w jmp [rdi + rax*8]`); a walk from a
+      # host function steps through running JIT frames.
       # The `cargo test` of the structural gate already runs it; this step names the result.
       # Debug, as that `cargo test`, so it reuses its build (a --release test build would
       # rebuild the fat-LTO graph). The static half (win-static.sh, llvm-readobj and llvm-mc)
@@ -412,11 +530,55 @@ jobs:
       - name: Spike B Win64 unwind (windows-x64)
         if: ${{ !cancelled() && matrix.name == 'windows-x64' }}
         run: cargo test --locked --manifest-path spikes/spike-b/Cargo.toml --test win64_unwind -- --nocapture
+      # M3-P2 WIN-STATIC-2: the Win64 unwind data of SP-Unit x86-64 unit text
+      # (spikes/spike-b/tests/win64_unit.rs). Here the spike loader maps units A and B and
+      # registers their function table; per function (JS functions, probe, cell reader),
+      # RtlLookupFunctionEntry finds the unit's UNWIND_INFO and RtlVirtualUnwind from every
+      # prologue, body and epilogue state returns to the caller; a unit with a broken
+      # UNWIND_INFO fails. The static checks of the same file (codes against the decoded
+      # prologue, a model unwinder, llvm-readobj) run on every runner in the structural gate's
+      # `cargo test`. Debug, as the step above, so it reuses that build.
+      - name: SP-Unit Win64 unwind (windows-x64)
+        if: ${{ !cancelled() && matrix.name == 'windows-x64' }}
+        run: cargo test --locked --manifest-path spikes/spike-b/Cargo.toml --test win64_unit -- --nocapture
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
           name: sp-dispatch-gate-${{ matrix.name }}
           path: spikes/sp-dispatch/target/gate/
+          if-no-files-found: warn
+      # H15-Q2 (M3-P2 PERF3; WIN-STATIC-2 task 3): the Zen 3 branchy study, report only. PERF3's
+      # spikes/sp-dispatch/zen3-branchy.sh (no arguments; exit 0 unless the build fails) prints
+      # the CPU model and the sysv and win64 ratio of each kernel. Hosted x64 runners draw
+      # different CPU models (EPYC 7763 is Zen 3), so the log starts with the runner's CPU model
+      # and is kept as an artifact for the H15-Q2 row. It never fails the job.
+      - name: SP-Dispatch Zen 3 branchy report (x64)
+        if: ${{ !cancelled() && (matrix.name == 'linux-x64' || matrix.name == 'windows-x64') }}
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          MATRIX_NAME: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          log="spikes/sp-dispatch/target/zen3/zen3-branchy-$MATRIX_NAME.log"
+          mkdir -p "$(dirname "$log")"
+          if [ "$MATRIX_NAME" = windows-x64 ]; then
+            cpu="$(powershell -NoProfile -Command '(Get-CimInstance Win32_Processor).Name' | tr -d '\r' || true)"
+          else
+            cpu="$(sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo | head -1 || true)"
+          fi
+          printf 'runner: %s\ncpu model: %s\ncommit: %s\n' "$MATRIX_NAME" "${cpu:-unknown}" "$GITHUB_SHA" | tee "$log"
+          echo "Zen 3 branchy report ($MATRIX_NAME): CPU ${cpu:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+          if [ ! -f spikes/sp-dispatch/zen3-branchy.sh ]; then
+            echo "::warning::spikes/sp-dispatch/zen3-branchy.sh is missing" | tee -a "$log"
+            exit 1
+          fi
+          bash spikes/sp-dispatch/zen3-branchy.sh 2>&1 | tee -a "$log"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() && (matrix.name == 'linux-x64' || matrix.name == 'windows-x64') }}
+        with:
+          name: zen3-branchy-${{ matrix.name }}
+          path: spikes/sp-dispatch/target/zen3/
           if-no-files-found: warn
 
   # Miri on the unsafe code of ep9_value, ep9_heap and ep9_math (docs/plan/10-quality.md

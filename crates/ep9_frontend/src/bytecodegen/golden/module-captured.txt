@@ -1,6 +1,6 @@
 # module-captured: module
 # | let x = 1; export const y = () => x; x = 2;
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=module strict=true ts=none source_len=43 source=embedded hints=none
 source_hash=fc39fcac21a243e4385fbbc9de2108bf09d0d1301ff619f1eedf92062baa9e4b
 strings (2):
@@ -9,31 +9,47 @@ strings (2):
 scopes (2):
   scope0 module outer=- flags=[needs-context,strict] slots=["x":let]
   scope1 function outer=scope0 flags=[strict] slots=[]
-function f0 module name=- parent=- outer_scope=- flags=[strict] params=0 length=0 regs=1 range=0..43
-  code (25 bytes):
-      0 E> CreateFunctionContext k0, [1]  ; k0 = Scope scope0 ; 75 00 01
-      3    PushContext r0                               ; 13 00
-      5    LdaTheHole                                   ; 07
-      6    StaCurrentContextSlot [0]                    ; 1b 00
-      8 S> LdaSmi [1]                                   ; 04 01
-     10    StaCurrentContextSlot [0]                    ; 1b 00
-     12 S> CreateClosure k1, s0, #0x00  ; k1 = Function f1 ; 74 01 00 00
-     16    StaModuleVariable [1], [0]                   ; 20 01 00
-     19 S> LdaSmi [2]                                   ; 04 02
-     21    StaCurrentContextSlot [0]                    ; 1b 00
-     23    LdaUndefined                                 ; 05
-     24    Return                                       ; 92
-  constants (2):
-      0 Scope scope0
-      1 Function f1
+module records: has-tla=false
+  requests (0):
+  imports (0):
+  local exports (1):
+      0 export="y" local="y" cell=1
+  indirect exports (0):
+  star exports (0):
+function f0 module name=- parent=- outer_scope=- flags=[strict,async] params=0 length=0 regs=3 range=0..43
+  code (45 bytes):
+      0    Ldar <this>                                  ; 0b ff
+      2    Star r0                                      ; 0c 00
+      4    LdaUndefined                                 ; 05
+      5    Star <this>                                  ; 0c ff
+      7    SwitchOnGeneratorState r0, k0  ; k0 = JumpTable [+3, +17] ; 99 00 00
+     10 E> CreateFunctionContext k1, [1]  ; k1 = Scope scope0 ; 75 01 01
+     13    PushContext r1                               ; 13 01
+     15    LdaTheHole                                   ; 07
+     16    StaCurrentContextSlot [0]                    ; 1b 00
+     18    LdaUndefined                                 ; 05
+     19    SuspendGenerator r0, r0-r1, [1]              ; 9a 00 00 02 01
+     24    ResumeGenerator r0, r0-r1                    ; 9b 00 00 02
+     28 S> LdaSmi [1]                                   ; 04 01
+     30    StaCurrentContextSlot [0]                    ; 1b 00
+     32 S> CreateClosure k2, s0, #0x00  ; k2 = Function f1 ; 74 02 00 00
+     36    StaModuleVariable [1], [0]                   ; 20 01 00
+     39 S> LdaSmi [2]                                   ; 04 02
+     41    StaCurrentContextSlot [0]                    ; 1b 00
+     43    LdaUndefined                                 ; 05
+     44    Return                                       ; 92
+  constants (3):
+      0 JumpTable [+3, +17]
+      1 Scope scope0
+      2 Function f1
   feedback (1):
       0 CreateClosure
   handlers (0):
   positions (4):
-      0 E 0 (1:1)
-      8 S 4 (1:5)
-     12 S 24 (1:25)
-     19 S 37 (1:38)
+     10 E 0 (1:1)
+     28 S 4 (1:5)
+     32 S 24 (1:25)
+     39 S 37 (1:38)
 function f1 arrow name="y" parent=f0 outer_scope=scope0 flags=[strict,simple-params] params=0 length=0 regs=0 range=28..35
   code (5 bytes):
       0 S> LdaCurrentContextSlot [0]                    ; 18 00

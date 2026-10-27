@@ -1,6 +1,6 @@
 # lit-object: script (sloppy)
 # | var x, k; ({}); ({a: 1, b: 'c'}); ({a: x, b: 2}); ({a: 1, a: 2}); ({[k]: 1, b: x}); ({x}); ({...x}); ({a: 1, ...x, b: 2}); ({__proto__: null, a: 1}); ({'__proto__': x}); ({__proto__}) ; ({1: 2, 1.5: 3});
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=203 source=embedded hints=none
 source_hash=9415f605793845a522023c24fa65ecd6f81b0da087710c1e8b92de807398a0f7
 strings (7):

@@ -1,0 +1,663 @@
+//! Realms (H22-Q3, H20 R5; M3-P1 REALMS): JS-level tests with two or three realms in one
+//! isolate. `createRealm()` makes a realm (`Cx::create_realm`) with `print` and `createRealm`
+//! in it and returns its global object. Each script runs through BytecodeGen on isolates with
+//! `ep9_builtins::TABLE` and this file's compiler hooks (`other.eval`, `other.Function`),
+//! under every dispatch expansion, with and without GC stress (a collection before every
+//! allocation, then the heap verifier).
+//!
+//! The expected lines are node v24.22.1's output for the same scripts, where `createRealm`
+//! is `vm.runInContext('globalThis', vm.createContext({}))` with `print` and `createRealm`
+//! copied in.
+
+mod common;
+
+use std::cell::RefCell;
+
+use ep9_bytecode::{EvalContext, FunctionCtorKind};
+use ep9_frontend::{CodegenError, CompileError, CompileOptions, SourceOpts, Strictness};
+use ep9_heap::HeapConfig;
+use ep9_vm::{
+    Args, CompileFailure, CompileResult, CompilerHooks, Cx, Dispatch, HostFn, Isolate,
+    IsolateConfig, JsResult, Local, PropertyDescriptor,
+};
+
+thread_local! {
+    static OUT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+fn print<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let mut parts = Vec::new();
+    for v in args.iter() {
+        parts.push(cx.to_rust_string(v)?);
+    }
+    OUT.with(|o| o.borrow_mut().push(parts.join(" ")));
+    Ok(Local::undefined())
+}
+
+/// The host functions of every realm.
+const HOST: [(&str, u32, HostFn); 2] = [("print", 1, print), ("createRealm", 0, create_realm)];
+
+/// `createRealm()`: a new realm with the host functions, made in it; returns its global.
+fn create_realm<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let global = cx.create_realm()?;
+    cx.with_realm(global, |cx| {
+        for (name, length, f) in HOST {
+            let func = cx.new_builtin_closure(f, name, length, Local::undefined());
+            let desc = PropertyDescriptor::data(func.into(), true, false, true);
+            cx.define_property_or_throw(global, name, desc)?;
+        }
+        Ok(())
+    })?;
+    Ok(global.into())
+}
+
+fn failure(e: CodegenError) -> CompileFailure {
+    match e {
+        CodegenError::Compile(CompileError::Syntax(errors)) => {
+            CompileFailure::Syntax(errors.first().message.clone())
+        }
+        CodegenError::Compile(CompileError::Range(r)) => CompileFailure::Range(r.message),
+        CodegenError::Unsupported(u) => CompileFailure::Unsupported(u.feature.to_string()),
+        CodegenError::Limit(m) => CompileFailure::Range(m),
+        CodegenError::Internal(m) => CompileFailure::Internal(m),
+    }
+}
+
+fn hook_eval(source: &str, ctx: &EvalContext) -> CompileResult {
+    ep9_frontend::compile_eval(source, ctx, CompileOptions::default()).map_err(failure)
+}
+
+fn hook_function(kind: FunctionCtorKind, params: &str, body: &str) -> CompileResult {
+    ep9_frontend::compile_function_ctor(kind, params, body, CompileOptions::default())
+        .map_err(failure)
+}
+
+fn hook_script(source: &str) -> CompileResult {
+    let opts = SourceOpts::script(Strictness::Sloppy);
+    ep9_frontend::compile(source, opts, CompileOptions::default()).map_err(failure)
+}
+
+static HOOKS: CompilerHooks = CompilerHooks {
+    compile_eval: hook_eval,
+    compile_function: hook_function,
+    compile_script: hook_script,
+};
+
+/// Runs the sloppy script `src` on an isolate with the table, [`HOOKS`] and [`HOST`]: the
+/// printed lines (after the microtask checkpoint), or the uncaught exception as "Name:
+/// message". Then collects and verifies the heap.
+fn run_in(src: &str, dispatch: Dispatch, stress: bool) -> Result<Vec<String>, String> {
+    run_in_slots(
+        src,
+        dispatch,
+        stress,
+        IsolateConfig::default().vm_stack_slots,
+    )
+}
+
+/// [`run_in`] on an isolate whose VM stack has `slots` slots.
+fn run_in_slots(
+    src: &str,
+    dispatch: Dispatch,
+    stress: bool,
+    slots: usize,
+) -> Result<Vec<String>, String> {
+    let unit = ep9_frontend::compile(
+        src,
+        SourceOpts::script(Strictness::Sloppy),
+        CompileOptions::default(),
+    )
+    .map_err(|e| format!("compile error: {e:?}"))?;
+    let mut iso = isolate_slots(dispatch, stress, slots);
+    OUT.with(|o| o.borrow_mut().clear());
+    let r = iso.with_cx_checkpoint(|cx| cx.run_script(unit, "test.js").map(|_| ()));
+    let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
+    iso.collect_garbage();
+    iso.verify_heap().expect("a valid heap");
+    r.map(|_| out).map_err(|e| e.message)
+}
+
+/// An isolate with the table, [`HOOKS`] and [`HOST`]. `stress`: a collection before every
+/// allocation, then the heap verifier.
+fn isolate(dispatch: Dispatch, stress: bool) -> Isolate {
+    isolate_slots(dispatch, stress, IsolateConfig::default().vm_stack_slots)
+}
+
+/// [`isolate`] with a VM stack of `slots` slots.
+fn isolate_slots(dispatch: Dispatch, stress: bool, slots: usize) -> Isolate {
+    let mut iso = Isolate::new(IsolateConfig {
+        heap: HeapConfig {
+            gc_stress: u32::from(stress),
+            verify_after_gc: stress,
+            ..HeapConfig::default()
+        },
+        dispatch,
+        vm_stack_slots: slots,
+        builtins: Some(&ep9_builtins::TABLE),
+        compiler: Some(&HOOKS),
+        ..IsolateConfig::default()
+    })
+    .expect("an isolate");
+    for (name, length, f) in HOST {
+        iso.register_host_function(name, length, f);
+    }
+    iso
+}
+
+/// [`run_in`] with the default dispatch, with and without GC stress; both must agree. For
+/// scripts with long loops: a debug build's sibling expansion makes a real call per
+/// instruction, so a long loop there runs out of native stack.
+fn run_both(src: &'static str) -> Result<Vec<String>, String> {
+    let a = common::on_big_stack(move || run_in(src, Dispatch::DEFAULT, false));
+    let b = common::on_big_stack(move || run_in(src, Dispatch::DEFAULT, true));
+    assert_eq!(a, b, "GC stress changed the result of {src:?}");
+    a
+}
+
+/// [`run_in`] under every dispatch expansion, with and without GC stress; all runs must agree.
+fn run_every(src: &'static str) -> Result<Vec<String>, String> {
+    let mut first: Option<(String, Result<Vec<String>, String>)> = None;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let r = common::on_big_stack(move || run_in(src, d, stress));
+            let label = format!("{} stress={stress}", d.name());
+            match &first {
+                None => first = Some((label, r)),
+                Some((l0, r0)) => assert_eq!(&r, r0, "{label} differs from {l0} for {src:?}"),
+            }
+        }
+    }
+    first.expect("at least one dispatch").1
+}
+
+fn lines(v: &[&str]) -> Result<Vec<String>, String> {
+    Ok(v.iter().map(|s| s.to_string()).collect())
+}
+
+/// Each value gets the prototype of the realm that made it: an object literal, an array
+/// literal, a closure and its result, a TypeError thrown by bytecode and one thrown by a
+/// builtin (H20 R5), `new other.Array()`, a builtin's result. The sloppy `this` of a call is
+/// the callee realm's global (`other.Function("return this")()`, a sloppy function of the
+/// other realm). `Reflect.construct(Array, [], nt)` where `nt.prototype` is not an object
+/// takes `%Array.prototype%` of nt's realm (GetPrototypeFromConstructor, §10.1.14 step 4), as
+/// does the receiver of a base constructor (OrdinaryCreateFromConstructor). A generator of the
+/// other realm resumes there: its result objects are that realm's.
+#[test]
+fn values_get_their_realm_prototypes() {
+    assert_eq!(
+        run_every(
+            r#"var other = createRealm();
+var OP = other.Object.prototype;
+print(other === globalThis, other.Object === Object, other.Array.prototype === Array.prototype);
+print(Object.getPrototypeOf(other.eval('({})')) === OP, Object.getPrototypeOf(other.eval('({})')) === Object.prototype);
+print(Object.getPrototypeOf(other.eval('[]')) === other.Array.prototype, other.eval('[]') instanceof Array, Array.isArray(other.eval('[]')));
+var mk = other.eval('(function () { return function () { return [{}]; }; })')();
+var made = mk();
+print(Object.getPrototypeOf(mk) === other.Function.prototype, Object.getPrototypeOf(made) === other.Array.prototype, Object.getPrototypeOf(made[0]) === OP);
+var e; try { other.eval('null.x'); } catch (x) { e = x; }
+print(e instanceof other.TypeError, e instanceof TypeError, e.constructor === other.TypeError);
+var e2; try { other.Object.defineProperty(1, 'x', {}); } catch (x) { e2 = x; }
+print(e2 instanceof other.TypeError, e2 instanceof TypeError);
+print(Object.getPrototypeOf(new other.Array()) === other.Array.prototype, Object.getPrototypeOf(other.Object.keys({ a: 1 })) === other.Array.prototype);
+print(other.Function('return this')() === other, other.Function('return this')() === globalThis);
+print(other.eval('(function () { return this; })')() === other, (function () { return this; })() === globalThis);
+var nt = new other.Function();
+nt.prototype = 1;
+var a = Reflect.construct(Array, [], nt);
+print(Object.getPrototypeOf(a) === other.Array.prototype, Array.isArray(a));
+var o2 = Reflect.construct(function () {}, [], nt);
+print(Object.getPrototypeOf(o2) === OP);
+var g = other.eval('(function* () { yield {}; })');
+var it = g(), step = it.next();
+print(Object.getPrototypeOf(step) === OP, Object.getPrototypeOf(step.value) === OP);"#
+        ),
+        lines(&[
+            "false false false",
+            "true false",
+            "true false true",
+            "true true true",
+            "true false true",
+            "true false",
+            "true true",
+            "true false",
+            "true true",
+            "true true",
+            "true",
+            "true true",
+        ])
+    );
+}
+
+/// The same source text runs in two realms after IC warm-up (12 rounds of 20 object and array
+/// literals; the feedback vector comes at the 8th call): each realm's objects get its own
+/// prototypes. One call site calls functions of both realms in turn (T0's `call_fast` sends the cross-realm ones cold, `slow::call` runs
+/// them in their realm). A third realm made from the second; a call chain that crosses three
+/// realms; promise jobs of another realm's promise.
+#[test]
+fn ics_and_call_sites_across_realms() {
+    assert_eq!(
+        run_both(
+            r#"var other = createRealm();
+var src = '(function () { var r = []; for (var i = 0; i < 20; i++) r.push({ i: i }, [i]); return r; })';
+var mkMain = eval(src), mkOther = other.eval(src);
+var ok = true;
+for (var n = 0; n < 12; n++) {
+  var r1 = mkMain(), r2 = mkOther();
+  for (var i = 0; i < r1.length; i += 2) {
+    ok = ok && Object.getPrototypeOf(r1[i]) === Object.prototype && Object.getPrototypeOf(r1[i + 1]) === Array.prototype;
+    ok = ok && Object.getPrototypeOf(r2[i]) === other.Object.prototype && Object.getPrototypeOf(r2[i + 1]) === other.Array.prototype;
+  }
+}
+print('same code, two realms', ok);
+function call(f) { return f(); }
+var objOther = other.eval('(function () { return {}; })');
+var objMain = function () { return {}; };
+var mixed = true;
+for (var j = 0; j < 60; j++) {
+  var f = j % 3 ? objMain : objOther;
+  var want = j % 3 ? Object.prototype : other.Object.prototype;
+  mixed = mixed && Object.getPrototypeOf(call(f)) === want;
+}
+print('one call site, two realms', mixed);
+var third = other.createRealm();
+print(third === other, third.Object === other.Object, Object.getPrototypeOf(third.eval('[]')) === third.Array.prototype);
+var depth = other.eval('(function (f) { return f(); })');
+print(Object.getPrototypeOf(depth(function () { return third.eval('({})'); })) === third.Object.prototype);
+var log = [];
+other.Promise.resolve(1).then(function (v) { log.push('main then ' + v); print(log.join()); });
+other.eval('Promise.resolve(2)').then(function (v) { print('other promise', v); });"#
+        ),
+        lines(&[
+            "same code, two realms true",
+            "one call site, two realms true",
+            "false false true",
+            "true",
+            "main then 1",
+            "other promise 2",
+        ])
+    );
+}
+
+/// A throw in another realm unwinds through the realm switch: the caller's realm is current
+/// again in the `catch` (its literals and errors are its own), also after a throw from a
+/// builtin of the other realm, a class constructor called without `new`, and a deep chain.
+#[test]
+fn a_throw_switches_back() {
+    assert_eq!(
+        run_every(
+            r#"var other = createRealm();
+function check(tag) { print(tag, Object.getPrototypeOf({}) === Object.prototype, Object.getPrototypeOf([]) === Array.prototype); }
+try { other.eval('throw new Error("x")'); } catch (e) { check('eval throw'); print(e instanceof other.Error); }
+try { other.JSON_missing.x; } catch (e) { check('main throw'); print(e instanceof TypeError); }
+try { other.Object.defineProperty(1, 'x', {}); } catch (e) { check('builtin throw'); }
+var C = other.eval('(class C {})');
+try { C(); } catch (e) { check('class call'); print(e instanceof other.TypeError, e instanceof TypeError); }
+var deep = other.eval('(function deep(n, f) { return n === 0 ? f() : deep(n - 1, f); })');
+try { deep(50, function () { throw 7; }); } catch (e) { check('deep'); print(e); }
+var c = new C();
+print(Object.getPrototypeOf(c) === C.prototype, c instanceof other.Object, c instanceof Object);"#
+        ),
+        lines(&[
+            "eval throw true true",
+            "true",
+            "main throw true true",
+            "true",
+            "builtin throw true true",
+            "class call true true",
+            "true false",
+            "deep true true",
+            "7",
+            "true true false",
+        ])
+    );
+}
+
+/// Map, Set, WeakMap and WeakSet used from two realms (COLL-1): an object has one identity
+/// hash for the whole isolate (the hash key is an isolate-wide private name, not a property of
+/// a realm's `%Object.prototype%`). The methods of one realm find the keys that the other
+/// realm's methods added, also after a rehash (40 keys grow a table past its first
+/// capacities).
+#[test]
+fn collections_hash_keys_across_realms() {
+    assert_eq!(
+        run_every(
+            r#"var other = createRealm();
+var o = {}, p = {};
+var m = new Map();
+m.set(o, 1);
+print('map', other.Map.prototype.get.call(m, o), other.Map.prototype.has.call(m, o));
+other.Map.prototype.set.call(m, o, 2);
+print('map size', m.size, m.get(o));
+var om = new other.Map();
+om.set(p, 'p');
+print('other map', om.get(p), Map.prototype.get.call(om, p));
+var s = new other.Set();
+s.add(o);
+print('set', s.has(o), Set.prototype.has.call(s, o), new Set([o]).has(o));
+var keys = [];
+for (var i = 0; i < 3; i++) keys.push({ i: i });
+var wm = new WeakMap();
+for (var i = 0; i < 3; i++) wm.set(keys[i], i);
+for (var i = 0; i < 40; i++) { var k = { j: i }; keys.push(k); other.WeakMap.prototype.set.call(wm, k, i); }
+var ok = true;
+for (var i = 0; i < keys.length; i++) ok = ok && wm.get(keys[i]) === (i < 3 ? i : i - 3) && other.WeakMap.prototype.has.call(wm, keys[i]);
+print('weakmap', ok);
+var ws = new other.WeakSet();
+for (var i = 0; i < keys.length; i++) WeakSet.prototype.add.call(ws, keys[i]);
+var ok2 = true;
+for (var i = 0; i < keys.length; i++) ok2 = ok2 && ws.has(keys[i]);
+print('weakset', ok2);
+var big = new Map();
+for (var i = 0; i < 40; i++) { if (i % 2) big.set(keys[i], i); else other.Map.prototype.set.call(big, keys[i], i); }
+var ok3 = big.size === 40;
+for (var i = 0; i < 40; i++) ok3 = ok3 && big.get(keys[i]) === i && other.Map.prototype.get.call(big, keys[i]) === i;
+print('rehash', ok3);
+var od = other.eval('({})');
+var m2 = new Map([[od, 'x']]);
+print('other object key', other.eval('(function (m, k) { return m.get(k); })')(m2, od));"#
+        ),
+        lines(&[
+            "map 1 true",
+            "map size 1 2",
+            "other map p p",
+            "set true true true",
+            "weakmap true",
+            "weakset true",
+            "rehash true",
+            "other object key x",
+        ])
+    );
+}
+
+/// The realm steps that use GetFunctionRealm (§7.3.22): a function's lazy `prototype` object
+/// is made with the `%Object.prototype%` (or the generator prototype) of the function's realm,
+/// not of the realm that first reads it (§10.2.5 MakeConstructor runs at creation). A NativeError
+/// constructed with a newTarget whose `prototype` is not an object takes the error prototype
+/// of newTarget's realm (§20.5.6.1.1, §10.1.14 step 4). ArraySpeciesCreate (§10.4.2.3 step 4)
+/// does not use `%Array%` of another realm as the constructor.
+#[test]
+fn get_function_realm_steps() {
+    assert_eq!(
+        run_every(
+            r#"var other = createRealm();
+var f = other.eval('(function () {})');
+var fp = f.prototype;
+print('a ordinary', Object.getPrototypeOf(fp) === other.Object.prototype, fp.constructor === f);
+var g = other.eval('(function* () {})');
+var GP = other.eval('Object.getPrototypeOf(function* () {}).prototype');
+print('a generator', Object.getPrototypeOf(g.prototype) === GP);
+var C = other.eval('(class {})');
+print('a class', Object.getPrototypeOf(C.prototype) === other.Object.prototype);
+var nt = new other.Function();
+nt.prototype = null;
+var e = Reflect.construct(Error, ['m'], nt);
+print('b error', Object.getPrototypeOf(e) === other.Error.prototype, e.message);
+var te = Reflect.construct(TypeError, [], nt);
+print('b type error', Object.getPrototypeOf(te) === other.TypeError.prototype);
+var e2 = Reflect.construct(other.RangeError, [], function () {}.bind());
+print('b bound nt', Object.getPrototypeOf(e2) === RangeError.prototype);
+var oa = new other.Array(1, 2, 3);
+var m = Array.prototype.map.call(oa, function (x) { return x * 2; });
+print('c map', Object.getPrototypeOf(m) === Array.prototype, m.join());
+var s = Array.prototype.slice.call(oa, 1);
+print('c slice', Object.getPrototypeOf(s) === Array.prototype);
+var oa2 = new other.Array(1);
+oa2.constructor = Array;
+print('c own array', Object.getPrototypeOf(Array.prototype.concat.call(oa2)) === Array.prototype);
+var oa3 = [1];
+oa3.constructor = other.Array;
+print('c other ctor', Object.getPrototypeOf(oa3.filter(function () { return true; })) === Array.prototype);
+var oa4 = [1];
+oa4.constructor = other.Function('return function () {}')();
+oa4.constructor[Symbol.species] = undefined;
+print('c non-array ctor', Object.getPrototypeOf(oa4.map(function (x) { return x; })) === Array.prototype);"#
+        ),
+        lines(&[
+            "a ordinary true true",
+            "a generator true",
+            "a class true",
+            "b error true m",
+            "b type error true",
+            "b bound nt true",
+            "c map true 2,4,6",
+            "c slice true",
+            "c own array true",
+            "c other ctor true",
+            "c non-array ctor true",
+        ])
+    );
+}
+
+/// NewPromiseResolveThenableJob (§27.2.2.2 steps 2-5): the job runs in the realm of `then`
+/// (GetFunctionRealm), so CreateResolvingFunctions makes `resolve` and `reject` there, and a
+/// self-resolution TypeError is that realm's. The realm of a bound `then` is its target's. A
+/// `then` of the first realm gets that realm's functions from a promise of the other realm.
+/// `await` of a thenable of the other realm takes the same job.
+#[test]
+fn thenable_jobs_run_in_the_realm_of_then() {
+    assert_eq!(
+        run_every(
+            r#"var other = createRealm();
+var thenable = other.eval('({then: function(resolve) { print("resolve prototype", Object.getPrototypeOf(resolve) === Function.prototype); resolve(globalThis.p); }})');
+var p = Promise.resolve(thenable);
+other.p = p;
+p.catch(function(e) { print('self-resolution error', e instanceof other.TypeError, e instanceof TypeError); });
+var target = other.eval('(function (resolve, reject) { print("bound then", Object.getPrototypeOf(resolve) === Function.prototype, Object.getPrototypeOf(reject) === Function.prototype); resolve(1); })');
+var t = { then: Function.prototype.bind.call(target, null) };
+Promise.resolve(t).then(function (v) { print('value', v); });
+var t2 = { then: function (resolve) { print('main then', Object.getPrototypeOf(resolve) === Function.prototype); resolve(2); } };
+other.Promise.resolve(t2).then(function (v) { print('value2', v); });
+async function a() { return await other.eval('({ then: function (r) { print("await then", Object.getPrototypeOf(r) === Function.prototype); r(3); } })'); }
+a().then(function (v) { print('value3', v); });"#
+        ),
+        lines(&[
+            "resolve prototype true",
+            "bound then true true",
+            "main then true",
+            "await then true",
+            "self-resolution error true false",
+            "value 1",
+            "value2 2",
+            "value3 3",
+        ])
+    );
+}
+
+/// X-R2-1 (Codex M3-P1 round 2; H22-Q10): NewPromiseReactionJob (§27.2.2.1 steps 2-4) runs
+/// the job in GetFunctionRealm(handler), so an error that the job makes before the handler
+/// runs is made in that realm. Here the handler is a function bound 11 times with 100
+/// arguments each: on a VM stack of 1024 slots, the push of its 1,100 bound arguments
+/// overflows before the target is entered, and the RangeError is the realm of the handler
+/// (a bound function's realm is its target's), not the realm of the microtask checkpoint.
+/// Both halves of a reaction, a `then` of the other realm, and a reaction with no handler (its
+/// realm is the current one). Every dispatch, with and without GC stress. The expected lines
+/// are node v24.22.1's for the same script with 60,000 arguments per bind (its stack is
+/// larger).
+#[test]
+fn reaction_jobs_run_in_the_realm_of_the_handler() {
+    const SRC: &str = r#"var N = 100;
+var other = createRealm();
+function bindMany(f) {
+  var a = []; for (var i = 0; i < N; i++) a.push(i);
+  for (var j = 0; j < 11; j++) f = Function.prototype.bind.apply(f, [null].concat(a));
+  return f;
+}
+var otherBh = bindMany(other.eval('(function () { return 1; })'));
+var mainBh = bindMany(function () { return 1; });
+function report(name) {
+  return [function (v) { print(name, 'fulfilled', v); },
+          function (e) { print(name, 'rejected', e instanceof RangeError, e instanceof other.RangeError, e.message); }];
+}
+var r;
+r = report('other handler, fulfill:'); Promise.resolve().then(otherBh).then(r[0], r[1]);
+r = report('other handler, reject:'); Promise.reject(0).then(null, otherBh).then(r[0], r[1]);
+r = report('main handler, other promise:'); other.Promise.resolve().then(mainBh).then(r[0], r[1]);
+r = report('main handler:'); Promise.resolve().then(mainBh).then(r[0], r[1]);
+r = report('other then, other handler:'); other.Promise.prototype.then.call(Promise.resolve(), otherBh).then(r[0], r[1]);
+r = report('no handler, other capability:'); other.Promise.prototype.then.call(Promise.reject(new RangeError('x')), undefined).then(r[0], r[1]);"#;
+    let mut first: Option<(String, Result<Vec<String>, String>)> = None;
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let r = common::on_big_stack(move || run_in_slots(SRC, d, stress, 1024));
+            let label = format!("{} stress={stress}", d.name());
+            match &first {
+                None => first = Some((label, r)),
+                Some((l0, r0)) => assert_eq!(&r, r0, "{label} differs from {l0}"),
+            }
+        }
+    }
+    let overflow = "Maximum call stack size exceeded";
+    assert_eq!(
+        first.expect("at least one dispatch").1,
+        lines(&[
+            &format!("other handler, fulfill: rejected false true {overflow}"),
+            &format!("other handler, reject: rejected false true {overflow}"),
+            &format!("main handler, other promise: rejected true false {overflow}"),
+            &format!("main handler: rejected true false {overflow}"),
+            &format!("other then, other handler: rejected false true {overflow}"),
+            "no handler, other capability: rejected true false x",
+        ])
+    );
+}
+
+/// Runs the sloppy script `src` on `iso`. Out of line, so no Value of the script stays in the
+/// caller's frame (the conservative scan reads live frames).
+#[inline(never)]
+fn run_script_on(iso: &mut Isolate, src: &str) {
+    let opts = SourceOpts::script(Strictness::Sloppy);
+    let unit = ep9_frontend::compile(src, opts, CompileOptions::default()).expect("a script");
+    iso.with_cx_checkpoint(|cx| cx.run_script(unit, "test.js").map(|_| ()))
+        .expect("no throw");
+}
+
+/// Overwrites the stack below the caller's frame with zeros, so the conservative scan finds
+/// no stale copy of a dead cell there.
+#[inline(never)]
+fn scrub_stack() {
+    let mut words = [0usize; 1 << 15];
+    std::hint::black_box(&mut words);
+}
+
+/// GetTemplateObject (§13.2.8.4): one template object per site and realm, the same object on
+/// each evaluation, also after collections when no script value holds it (the realm that made
+/// it owns it, `realmf::TEMPLATES`). A WeakMap tells the identity without holding the object.
+/// `many` has 10 sites, so the realm's list grows twice. Three scripts, so no frame of the
+/// first ones keeps the objects live. Every dispatch, with and without GC stress.
+#[test]
+fn template_objects_keep_their_identity_across_collections() {
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            let out = common::on_big_stack(move || {
+                let mut iso = isolate(d, stress);
+                OUT.with(|o| o.borrow_mut().clear());
+                run_script_on(
+                    &mut iso,
+                    "var other = createRealm(); \
+                     other.eval('function tag(s) { return s; } function g() { return tag`x`; }'); \
+                     function tag(s) { return s; } function h() { return tag`y`; } \
+                     var src = []; for (var i = 0; i < 10; i++) src.push('tag`s' + i + '`'); \
+                     var many = eval('(function () { return [' + src.join() + ']; })');",
+                );
+                run_script_on(
+                    &mut iso,
+                    "var wm = new WeakMap(); wm.set(other.eval('g()'), 'other'); \
+                     wm.set(h(), 'main'); \
+                     var ms = many(); for (var i = 0; i < ms.length; i++) wm.set(ms[i], i); \
+                     ms = null;",
+                );
+                scrub_stack();
+                iso.collect_garbage();
+                iso.collect_garbage();
+                run_script_on(
+                    &mut iso,
+                    "var ms = many(), ok = ms.length === 10; \
+                     for (var i = 0; i < ms.length; i++) ok = ok && wm.get(ms[i]) === i; \
+                     print(wm.get(other.eval('g()')), wm.get(h()), ok, \
+                     Object.getPrototypeOf(other.eval('g()')) === other.Array.prototype, \
+                     Object.getPrototypeOf(h()) === Array.prototype);",
+                );
+                iso.verify_heap().expect("a valid heap");
+                OUT.with(|o| core::mem::take(&mut *o.borrow_mut()))
+            });
+            assert_eq!(
+                out,
+                ["other main true true true"],
+                "{} stress={stress}",
+                d.name()
+            );
+        }
+    }
+}
+
+/// X-AG2 (M3-P2 fix round 2): the result of an async generator request is made in the realm
+/// the spec names. AsyncGeneratorStart step 4 (§27.6.3.2) removes the generator's context
+/// before AsyncGeneratorCompleteStep and AsyncGeneratorDrainQueue, so a body that completes
+/// gives `{value, done}` in the realm of the context that resumed it: the borrowed `next` of
+/// the main realm (`empty`, `end after a main next`), or an await closure, which the
+/// generator's realm made (`end after an await`, `queued`). AsyncGeneratorYield passes the
+/// resumer's realm too; a `yield` always resumes from its own await, so that is the
+/// generator's realm. A completed generator and the closures of AsyncGeneratorAwaitReturn
+/// use the realm of the `next` or `return` that ran. The promise is settled there as well:
+/// the other realm's inherited `then` getter is not read. Node v24.22.1 makes the two
+/// completion results in the generator's realm (it prints `other` for them and reads the
+/// getter); the other lines are node's. Every dispatch, with and without GC stress.
+#[test]
+fn async_generator_results_in_the_resumer_realm() {
+    assert_eq!(
+        run_every(
+            r#"var other = createRealm();
+var OP = other.Object.prototype;
+var AGP = Object.getPrototypeOf(Object.getPrototypeOf((async function* () {})()));
+function where(r) { var p = Object.getPrototypeOf(r); return p === Object.prototype ? 'main' : p === OP ? 'other' : '?'; }
+Object.defineProperty(OP, 'then', { get: function () { print('other then read'); }, configurable: true });
+var it = other.eval('(async function* () {})')();
+AGP.next.call(it).then(function (r) { print('empty, main next:', where(r), r.done); });
+delete OP.then;
+AGP.next.call(it).then(function (r) { print('completed, main next:', where(r), r.done); });
+var it2 = other.eval('(async function* () { yield 1; })')();
+AGP.next.call(it2).then(function (r) {
+  print('yield:', where(r), r.value);
+  AGP.next.call(it2).then(function (r2) { print('end after a main next:', where(r2), r2.done); });
+});
+var it3 = other.eval('(async function* () { await 0; })')();
+AGP.next.call(it3).then(function (r) { print('end after an await:', where(r), r.done); });
+var it4 = other.eval('(async function* () { yield 1; })')();
+AGP.next.call(it4);
+AGP.next.call(it4).then(function (r) { print('queued end:', where(r), r.done); });
+AGP.next.call(it4).then(function (r) { print('queued drain:', where(r), r.done); });
+var it5 = other.eval('(async function* () {})')();
+AGP.return.call(it5, 5).then(function (r) { print('return at start:', where(r), r.value); });
+var it6 = other.eval('(async function* () {})')();
+other.eval('(function (it) { return it.next(); })')(it6).then(function (r) { print('other next:', where(r), r.done); });
+var it7 = (async function* () {})();
+other.eval('(function (AGP, it) { return AGP.next.call(it); })')(AGP, it7).then(function (r) { print('main gen, other caller:', where(r), r.done); });
+var it8 = other.eval('(async function* () { throw 7; })')();
+AGP.next.call(it8).then(null, function (e) { print('throw:', e); });
+AGP.next.call(it8).then(function (r) { print('after throw:', where(r), r.done); });"#
+        ),
+        lines(&[
+            "empty, main next: main true",
+            "completed, main next: main true",
+            "other next: other true",
+            "main gen, other caller: main true",
+            "throw: 7",
+            "after throw: main true",
+            "yield: other 1",
+            "end after an await: other true",
+            "queued end: other true",
+            "queued drain: other true",
+            "return at start: main 5",
+            "end after a main next: main true",
+        ])
+    );
+}

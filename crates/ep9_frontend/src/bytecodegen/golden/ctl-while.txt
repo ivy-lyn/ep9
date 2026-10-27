@@ -1,6 +1,6 @@
 # ctl-while: script (sloppy)
 # | function f(a) { while (a) { a--; if (a == 3) continue; if (a == 1) break; } }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=77 source=embedded hints=none
 source_hash=985617b8a6cf011b7325e409042daa433236e335a919e1eeef8148da1e26de58
 strings (1):

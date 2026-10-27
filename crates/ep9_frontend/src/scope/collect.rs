@@ -204,6 +204,7 @@ impl<'a> Builder<'a> {
             implicit: self.implicit,
             function_at: self.function_at,
             synthetic_blocks: self.synthetic_blocks,
+            caller_private: Vec::new(),
         }
     }
 
@@ -215,6 +216,59 @@ impl<'a> Builder<'a> {
         self.names.push(text.into());
         self.name_ids.insert(text, id);
         id
+    }
+
+    /// (M3-P4, E9) The kind markers of a class whose body (or heritage) holds a direct eval:
+    /// eval code can use the class's private names, and the VM tells it their kinds from the
+    /// class scope's slot names (ep9_bytecode `eval_context.rs`). One marker slot per private
+    /// method (`#.method-x`, `#.static-method-x`) and per static accessor
+    /// (`#.static-accessor-x`); an instance accessor has its setter slot `#.set-x`, and a field
+    /// has none. The slots hold nothing. A class without a direct eval gets no marker, so its
+    /// code does not change.
+    fn private_kind_markers(&mut self, class_scope: ScopeId) {
+        let mut markers = Vec::new();
+        for &b in &self.scopes[class_scope.index()].bindings {
+            let binding = &self.bindings[b.index()];
+            let BindingKind::PrivateName { kind, is_static } = binding.kind else {
+                continue;
+            };
+            let name = &self.names[binding.name.index()];
+            if name.starts_with("#.") {
+                continue;
+            }
+            let prefix = match (kind, is_static) {
+                (PrivateKind::Method, false) => "#.method-",
+                (PrivateKind::Method, true) => "#.static-method-",
+                (PrivateKind::Getter | PrivateKind::Setter | PrivateKind::GetterSetter, true) => {
+                    "#.static-accessor-"
+                }
+                _ => continue,
+            };
+            markers.push((format!("{prefix}{}", &name[1..]), is_static));
+        }
+        for (text, is_static) in markers {
+            let id = NameId::of(self.names.len());
+            self.names.push(text.into_boxed_str());
+            self.declare(
+                class_scope,
+                id,
+                BindingKind::PrivateName {
+                    kind: PrivateKind::Method,
+                    is_static,
+                },
+                None,
+            );
+        }
+    }
+
+    /// (CX2-E9-1) `heritage` holds a direct eval (see [`FindDirectEval`]).
+    fn holds_direct_eval(&self, heritage: &Expression<'a>) -> bool {
+        let mut find = FindDirectEval {
+            budget: self.cap.saturating_sub(self.depth),
+            found: false,
+        };
+        find.visit_expression(heritage);
+        find.found
     }
 
     fn private_name(&mut self, text: &'a str) -> NameId {
@@ -267,6 +321,7 @@ impl<'a> Builder<'a> {
             context_slots: Vec::new(),
             needs_context: false,
             sloppy_eval: false,
+            parameter_env: false,
             contains_eval: false,
             per_iteration: PerIteration::No,
             hoisted_functions: Vec::new(),
@@ -807,6 +862,71 @@ fn lexical_kind(kind: VariableDeclarationKind) -> Option<BindingKind> {
     }
 }
 
+/// (M3-P4, CX2-E9-1) The marker binding of a class's heritage scope
+/// (`ClassInfo::heritage_scope`). The VM knows the name (ep9_bytecode `eval_context.rs`); it
+/// starts with `#.`, so no source text can spell it.
+pub(crate) const HERITAGE_MARKER: &str = "#.heritage";
+
+/// (CX2-E9-1) Finds a direct eval in a class heritage, also in the functions and classes
+/// inside it. Past `budget` nested nodes it answers yes: a heritage scope too many does no
+/// harm, and the main walk reports the depth.
+struct FindDirectEval {
+    budget: u32,
+    found: bool,
+}
+
+impl FindDirectEval {
+    fn enter(&mut self) -> bool {
+        if self.found {
+            return false;
+        }
+        if self.budget == 0 {
+            self.found = true;
+            return false;
+        }
+        self.budget -= 1;
+        true
+    }
+}
+
+impl<'a> Visit<'a> for FindDirectEval {
+    fn visit_expression(&mut self, it: &Expression<'a>) {
+        if self.enter() {
+            walk::walk_expression(self, it);
+            self.budget += 1;
+        }
+    }
+
+    fn visit_statement(&mut self, it: &Statement<'a>) {
+        if self.enter() {
+            walk::walk_statement(self, it);
+            self.budget += 1;
+        }
+    }
+
+    fn visit_assignment_target(&mut self, it: &AssignmentTarget<'a>) {
+        if self.enter() {
+            walk::walk_assignment_target(self, it);
+            self.budget += 1;
+        }
+    }
+
+    fn visit_binding_pattern(&mut self, it: &BindingPattern<'a>) {
+        if self.enter() {
+            walk::walk_binding_pattern(self, it);
+            self.budget += 1;
+        }
+    }
+
+    fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        if is_direct_eval(it) {
+            self.found = true;
+            return;
+        }
+        walk::walk_call_expression(self, it);
+    }
+}
+
 /// A direct eval: `eval(...)` or `(eval)(...)`, not `eval?.(...)` (ECMA-262 EvaluateCall).
 fn is_direct_eval(call: &CallExpression<'_>) -> bool {
     if call.optional {
@@ -1092,12 +1212,40 @@ impl<'a> Visit<'a> for Builder<'a> {
         let saved_strict = self.strict;
         self.cur_scope = class_scope;
         self.strict = true;
+        let eval_sites_before = self.eval_sites.len();
+        let mut heritage_scope = None;
         if let Some(heritage) = &it.heritage {
             // The heritage stays in the class scope (the inner name is in its TDZ there, and
             // the class context is on the runtime chain), but its private names are the outer
             // ones.
             self.heritage_of.push(class_scope);
+            // (CX2-E9-1) A heritage that holds a direct eval gets a scope of its own with a
+            // marker binding in its context, so the VM can tell eval code there from eval code
+            // in a computed key (see `ClassInfo::heritage_scope`).
+            if self.holds_direct_eval(&heritage.expression) {
+                let h = self.new_scope(
+                    ScopeKind::Block,
+                    Some(class_scope),
+                    self.cur_fn,
+                    heritage.expression.span(),
+                    true,
+                    None,
+                );
+                let marker = self.private_name(&HERITAGE_MARKER[1..]);
+                self.declare(
+                    h,
+                    marker,
+                    BindingKind::PrivateName {
+                        kind: PrivateKind::Method,
+                        is_static: false,
+                    },
+                    None,
+                );
+                heritage_scope = Some(h);
+                self.cur_scope = h;
+            }
             self.visit_expression(&heritage.expression);
+            self.cur_scope = class_scope;
             self.heritage_of.pop();
         }
 
@@ -1129,12 +1277,16 @@ impl<'a> Visit<'a> for Builder<'a> {
         }
 
         // Synthetic class-context bindings (P2-CLS-CG, D2). Their names start with `#.`, which
-        // no source can spell, so codegen finds them by name in the class scope and a direct
-        // eval never sees them. Like every private name they live in the class context.
+        // no source can spell, so codegen finds them by name in the class scope, and eval code
+        // cannot name them (its generated code reads the first three by name: E9). Like every
+        // private name they live in the class context.
         //   #.brand          instance brand (any instance private method or accessor)
         //   #.static-brand   static brand (any static private method or accessor)
         //   #.set-x          the setter of private accessor `#x` (`#x` holds the getter)
         //   #.class-field-N  the key of the N-th computed field, after ToPropertyKey
+        //   #.method-x, #.static-method-x, #.static-accessor-x
+        //                    kind markers, only with a direct eval in the class
+        //                    (`private_kind_markers`, after the body)
         fn synthetic_name(names: &mut Vec<Box<str>>, text: String) -> NameId {
             let id = NameId::of(names.len());
             names.push(text.into_boxed_str());
@@ -1321,6 +1473,9 @@ impl<'a> Visit<'a> for Builder<'a> {
         {
             self.finish_function(f);
         }
+        if self.eval_sites.len() > eval_sites_before {
+            self.private_kind_markers(class_scope);
+        }
         self.scopes[class_scope.index()].class = Some(ClassInfo {
             derived,
             inner_name,
@@ -1328,6 +1483,7 @@ impl<'a> Visit<'a> for Builder<'a> {
             default_constructor,
             instance_initializer: instance,
             static_initializer: statics,
+            heritage_scope,
         });
         self.cur_scope = outer;
         self.strict = saved_strict;

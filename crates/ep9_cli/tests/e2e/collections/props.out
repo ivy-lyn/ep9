@@ -1,0 +1,15 @@
+Map 0 Map lengthc name=Mapc prototype groupBy(2,groupBy)wc Symbol(Symbol.species)(0,get [Symbol.species])[get]c
+constructor(0,Map)wc get(1,get)wc set(2,set)wc has(1,has)wc delete(1,delete)wc clear(0,clear)wc entries(0,entries)wc forEach(1,forEach)wc keys(0,keys)wc size(0,get size)[get]c values(0,values)wc Symbol(Symbol.toStringTag)=Mapc Symbol(Symbol.iterator)(0,entries)wc
+true true
+Set 0 Set lengthc name=Setc prototype Symbol(Symbol.species)(0,get [Symbol.species])[get]c
+constructor(0,Set)wc has(1,has)wc add(1,add)wc delete(1,delete)wc difference(1,difference)wc clear(0,clear)wc entries(0,entries)wc forEach(1,forEach)wc intersection(1,intersection)wc isSubsetOf(1,isSubsetOf)wc isSupersetOf(1,isSupersetOf)wc isDisjointFrom(1,isDisjointFrom)wc size(0,get size)[get]c symmetricDifference(1,symmetricDifference)wc union(1,union)wc values(0,values)wc keys(0,values)wc Symbol(Symbol.toStringTag)=Setc Symbol(Symbol.iterator)(0,values)wc
+true true
+WeakMap 0 WeakMap lengthc name=WeakMapc prototype
+constructor(0,WeakMap)wc delete(1,delete)wc get(1,get)wc set(2,set)wc has(1,has)wc Symbol(Symbol.toStringTag)=WeakMapc
+true true
+WeakSet 0 WeakSet lengthc name=WeakSetc prototype
+constructor(0,WeakSet)wc delete(1,delete)wc has(1,has)wc add(1,add)wc Symbol(Symbol.toStringTag)=WeakSetc
+true true
+next(0,next)wc Symbol(Symbol.toStringTag)=Map Iteratorc true next(0,next)wc Symbol(Symbol.toStringTag)=Set Iteratorc true
+true true true
+[object Map] [object WeakSet] [object Set Iterator]

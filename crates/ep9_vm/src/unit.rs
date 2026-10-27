@@ -65,6 +65,25 @@ impl EvalReceiver {
     }
 }
 
+/// (M3-P4, CX2-E9-1) A private name that direct eval code may use from its caller's classes
+/// (the running PrivateEnvironment at the eval call, PerformEval step 10.b), and where its
+/// class context is: `depth` contexts out from the eval's site context (the context that
+/// function 0 of the eval unit closes over). `interp/slow/eval.rs` computes the list when it
+/// compiles the eval code; `interp/slow/lookup.rs` resolves a `#x` of the eval code with it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct EvalPrivateName {
+    /// The name without the `#`.
+    pub name: String,
+    /// A private method (not an accessor).
+    pub method: bool,
+    /// A private accessor (a getter, a setter or both).
+    pub accessor: bool,
+    /// A static method or static accessor.
+    pub is_static: bool,
+    /// Hops from the site context to the class context that binds the name.
+    pub depth: u32,
+}
+
 /// The sloppy eval prologue of a unit function (`interp/slow/eval.rs` `prologue`): the byte
 /// range of its first `CallRuntime DeclareEval*`, and its declarations in call order (the
 /// constant index of the name, a function).
@@ -88,9 +107,16 @@ pub(crate) struct LoadedUnit {
     /// The receiver flags of direct eval code ([`EvalReceiver`]); set before the unit is
     /// pushed to `Runtime::units`.
     pub eval_receiver: EvalReceiver,
+    /// (CX2-E9-1) The caller's private names of direct eval code ([`EvalPrivateName`]); empty
+    /// for every other unit. Set before the unit is pushed to `Runtime::units`.
+    pub eval_private: Box<[EvalPrivateName]>,
     /// The [`EvalPrologue`] of function 0, decoded at its first `DeclareEval*` call. Every
     /// eval loads a new unit, so a run decodes its prologue once, not once per call.
     pub eval_prologue: OnceCell<EvalPrologue>,
+    /// The ScriptOrModule of a `CodeKind::Eval` unit (eval code, a `Function()` body) for
+    /// `import()` in it and in the functions it makes (`module::EvalReferrer`); set before
+    /// the unit is pushed to `Runtime::units`. `None` for other units.
+    pub script_or_module: Option<crate::module::EvalReferrer>,
     strings: Box<[Slot]>,
     consts: Box<[Box<[Slot]>]>,
     roots: Vec<RootId>,
@@ -116,7 +142,9 @@ impl LoadedUnit {
             context_scopes: Box::new([]),
             feedback,
             eval_receiver: EvalReceiver::default(),
+            eval_private: Box::new([]),
             eval_prologue: OnceCell::new(),
+            script_or_module: None,
             roots: Vec::new(),
         });
         // SAFETY: the slices live in boxes that the LoadedUnit owns. LoadedUnit has no Drop and

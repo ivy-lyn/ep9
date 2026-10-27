@@ -1,0 +1,92 @@
+# async-basic: script (strict)
+# | async function f(a) { var b = await a; return b + 1; }
+; ep9 bytecode, ABI 5
+unit kind=script strict=true ts=none source_len=54 source=embedded hints=none
+source_hash=37120cf828a7a5e5c28a357f481d4e250ed8d85687d781b90b1246023b812388
+strings (1):
+  str0 "f"
+scopes (2):
+  scope0 script outer=- flags=[strict] slots=["f":function]
+  scope1 function outer=scope0 flags=[strict] slots=[]
+function f0 script name=- parent=- outer_scope=- flags=[strict] params=0 length=0 regs=2 range=0..54
+  code (24 bytes):
+      0 S> CallRuntime DeclareGlobals, ()               ; 68 05 00 00 00
+      5 E> CreateClosure k0, s0, #0x00  ; k0 = Function f1 ; 74 00 00 00
+      9    Star r1                                      ; 0c 01
+     11    LdaConstant k1  ; k1 = String str0 "f"       ; 0a 01
+     13    Star r0                                      ; 0c 00
+     15 E> CallRuntime InitializeGlobal, r0-r1          ; 68 06 00 00 02
+     20    Ldar r1                                      ; 0b 01
+     22    LdaUndefined                                 ; 05
+     23    Return                                       ; 92
+  constants (2):
+      0 Function f1
+      1 String str0 "f"
+  feedback (1):
+      0 CreateClosure
+  handlers (0):
+  positions (3):
+      0 S 0 (1:1)
+      5 E 0 (1:1)
+     15 E 0 (1:1)
+function f1 normal name="f" parent=f0 outer_scope=scope0 flags=[strict,async,simple-params] params=1 length=1 regs=5 range=0..54
+  code (101 bytes):
+      0    LdaNewTarget                                 ; 0f
+      1    Star r1                                      ; 0c 01
+      3    SwitchOnGeneratorState r1, k0  ; k0 = JumpTable [+36] ; 99 01 00
+      6    LdaCurrentFunction                           ; 0e
+      7    Star r2                                      ; 0c 02
+      9    Mov <this>, r3                               ; 0d ff 03
+     12 E> CallRuntime AsyncFunctionEnter, r2-r3        ; 68 20 00 02 02
+     17    Star r1                                      ; 0c 01
+     19    LdaCurrentContext                            ; 15
+     20    Star r2                                      ; 0c 02
+     22 S> Ldar a0                                      ; 0b fe
+     24    Star r4                                      ; 0c 04
+     26    Mov r1, r3                                   ; 0d 01 03
+     29 E> CallRuntime AsyncFunctionAwait, r3-r4        ; 68 21 00 03 02
+     34 E> SuspendGenerator r1, r0-r2, [0]              ; 9a 01 00 03 00
+     39    ResumeGenerator r1, r0-r2                    ; 9b 01 00 03
+     43    Star r3                                      ; 0c 03
+     45 E> CallRuntime GeneratorGetResumeMode, r1       ; 68 14 00 01 01
+     50    SwitchOnSmi k1, [0]  ; k1 = JumpTable [+6]   ; 8a 01 00
+     53    Ldar r3                                      ; 0b 03
+     55 E> Throw                                        ; 90
+     56    Ldar r3                                      ; 0b 03
+     58    Star r0                                      ; 0c 00
+     60 S> Ldar r0                                      ; 0b 00
+     62 E> AddSmi [1], s0                               ; 36 01 00
+     65    Star r4                                      ; 0c 04
+     67    Mov r1, r3                                   ; 0d 01 03
+     70 E> CallRuntime AsyncFunctionResolve, r3-r4      ; 68 22 00 03 02
+     75    Return                                       ; 92
+     76    LdaUndefined                                 ; 05
+     77    Star r4                                      ; 0c 04
+     79    Mov r1, r3                                   ; 0d 01 03
+     82 E> CallRuntime AsyncFunctionResolve, r3-r4      ; 68 22 00 03 02
+     87    Return                                       ; 92
+     88    Star r4                                      ; 0c 04
+     90    LdaTheHole                                   ; 07
+     91    SetPendingMessage                            ; 93
+     92    Mov r1, r3                                   ; 0d 01 03
+     95 E> CallRuntime AsyncFunctionReject, r3-r4       ; 68 23 00 03 02
+    100    Return                                       ; 92
+  constants (2):
+      0 JumpTable [+36]
+      1 JumpTable [+6]
+  feedback (1):
+      0 BinaryOp
+  handlers (1):
+        [22, 88) -> @88 context=r2 promise
+  positions (11):
+     12 E 0 (1:1)
+     22 S 26 (1:27)
+     29 E 30 (1:31)
+     34 E 30 (1:31)
+     45 E 30 (1:31)
+     55 E 30 (1:31)
+     60 S 39 (1:40)
+     62 E 46 (1:47)
+     70 E 39 (1:40)
+     82 E 53 (1:54)
+     95 E 53 (1:54)

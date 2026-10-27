@@ -1,6 +1,6 @@
 # ctl-switch: script (sloppy)
 # | function f(a) { switch (a) { case 1: return 'one'; default: a = 0; case 2: { break; } case 3: let z = 3; (() => z)(); } return a; }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=131 source=embedded hints=none
 source_hash=d6ef10a446a795c82e8adab307de774109ba27624d5fd40cd7a2f2b3a4fa81fd
 strings (3):

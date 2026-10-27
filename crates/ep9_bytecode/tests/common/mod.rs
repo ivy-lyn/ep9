@@ -242,9 +242,79 @@ pub fn sample_script_unit() -> VerifiedUnit {
 }
 
 /// A TypeScript module unit with wide operands, a strict class-like function tree, a
-/// generator-free async arrow and every TS flag set.
-pub const SAMPLE_MODULE: &str = "export const big = 100000;\n\
+/// generator-free async arrow, every TS flag set and (ABI 5) module records of every kind:
+/// a default and a namespace import, a local re-export of the namespace, an indirect re-export
+/// of the default import, a star export and an `export * as` with import attributes.
+pub const SAMPLE_MODULE: &str = "import d, * as ns from \"./m.js\";\n\
+export { d as e, ns };\n\
+export * from \"./n.js\" with { type: \"json\" };\n\
+export * as all from \"./n.js\" with { type: \"json\" };\n\
+export const big = 100000;\n\
 export async function f(x: number) { return () => x + big; }\n";
+
+/// The module records of [`SAMPLE_MODULE`] (ECMA-262 §16.2.1.6 ParseModule): `export { d as e }`
+/// re-exports an import, so it becomes an indirect entry; `export { ns }` re-exports a
+/// namespace import, so it stays a local entry of the import's cell.
+pub fn sample_module_records() -> ModuleRecords<UnitString> {
+    let s = UnitString::new;
+    ModuleRecords {
+        requested_modules: vec![
+            ModuleRequest {
+                specifier: s("./m.js"),
+                attributes: Vec::new(),
+            },
+            ModuleRequest {
+                specifier: s("./n.js"),
+                attributes: vec![(s("type"), s("json"))],
+            },
+        ],
+        import_entries: vec![
+            ImportEntry {
+                module_request: 0,
+                import_name: ImportName::Name(s("default")),
+                local_name: s("d"),
+                cell: -1,
+            },
+            ImportEntry {
+                module_request: 0,
+                import_name: ImportName::Namespace,
+                local_name: s("ns"),
+                cell: -2,
+            },
+        ],
+        local_export_entries: vec![
+            LocalExportEntry {
+                export_name: s("ns"),
+                local_name: s("ns"),
+                cell: -2,
+            },
+            LocalExportEntry {
+                export_name: s("big"),
+                local_name: s("big"),
+                cell: 1,
+            },
+            LocalExportEntry {
+                export_name: s("f"),
+                local_name: s("f"),
+                cell: 2,
+            },
+        ],
+        indirect_export_entries: vec![
+            IndirectExportEntry {
+                export_name: s("e"),
+                module_request: 0,
+                import_name: ExportImportName::Name(s("default")),
+            },
+            IndirectExportEntry {
+                export_name: s("all"),
+                module_request: 1,
+                import_name: ExportImportName::All,
+            },
+        ],
+        star_export_entries: vec![1],
+        has_tla: false,
+    }
+}
 
 pub fn sample_module_unit() -> VerifiedUnit {
     let src = SAMPLE_MODULE;
@@ -279,6 +349,7 @@ pub fn sample_module_unit() -> VerifiedUnit {
         vec![(UnitString::new("x"), VariableMode::Var)],
     );
     unit.set_hints(vec![0xde, 0xad, 0xbe, 0xef]);
+    unit.set_module_records(sample_module_records());
 
     // f2: () => x + big
     let mut a = FunctionBuilder::new(FunctionMeta {
@@ -402,6 +473,8 @@ pub struct RandomUnit {
     pub scopes: Vec<ScopeInput>,
     pub functions: Vec<FunctionCode>,
     pub hints: Option<Vec<u8>>,
+    /// ABI 5: the module records of a module unit (`None` gives empty records).
+    pub module_records: Option<ModuleRecords<UnitString>>,
 }
 
 impl RandomUnit {
@@ -416,6 +489,9 @@ impl RandomUnit {
         }
         if let Some(h) = &self.hints {
             u.set_hints(h.clone());
+        }
+        if let Some(m) = &self.module_records {
+            u.set_module_records(m.clone());
         }
         u.finish()
     }
@@ -475,7 +551,15 @@ pub fn random_unit(seed: u64) -> RandomUnit {
             ScopeKind::Catch,
             ScopeKind::Class,
         ]);
-        let flags = ScopeFlags((rng.below(8)) as u8);
+        let mut flags = ScopeFlags((rng.below(8)) as u8);
+        // ABI 5: PARAMETER_ENV only on a sloppy function scope with a sloppy eval.
+        if kind == ScopeKind::Function
+            && flags.contains(ScopeFlags::CALLS_SLOPPY_EVAL)
+            && !flags.contains(ScopeFlags::STRICT)
+            && rng.chance(50)
+        {
+            flags = flags | ScopeFlags::PARAMETER_ENV;
+        }
         let outer = (s > 0 && rng.chance(70)).then(|| ScopeId(rng.below(s as u64) as u32));
         let slots: Vec<(UnitString, VariableMode)> = (0..1 + rng.below(4))
             .map(|_| {
@@ -583,7 +667,7 @@ pub fn random_unit(seed: u64) -> RandomUnit {
             i as u32,
             plan,
             &children,
-            &scope_sizes,
+            &scopes,
             max_ctx_slots,
             src_len,
         ));
@@ -591,13 +675,80 @@ pub fn random_unit(seed: u64) -> RandomUnit {
     let hints = rng
         .chance(30)
         .then(|| (0..rng.below(16)).map(|_| rng.next() as u8).collect());
+    let module_records =
+        (code_kind == CodeKind::Module && rng.chance(80)).then(|| random_module_records(&mut rng));
     RandomUnit {
         source,
         opts,
         scopes,
         functions,
         hints,
+        module_records,
     }
+}
+
+/// ABI 5: random well-formed module records (indices in range, keys sorted, cells not 0).
+fn random_module_records(rng: &mut Rng) -> ModuleRecords<UnitString> {
+    let cell = |rng: &mut Rng| {
+        let c = 1 + rng.below(300) as i32;
+        if rng.chance(50) { -c } else { c }
+    };
+    let requests: Vec<ModuleRequest<UnitString>> = (0..rng.below(4))
+        .map(|_| {
+            let mut attributes: Vec<(UnitString, UnitString)> = (0..rng.below(3))
+                .map(|_| (random_string(rng), random_string(rng)))
+                .collect();
+            attributes.sort_by(|a, b| a.0.cmp_code_units(&b.0));
+            attributes.dedup_by(|a, b| a.0 == b.0);
+            ModuleRequest {
+                specifier: random_string(rng),
+                attributes,
+            }
+        })
+        .collect();
+    let n = requests.len() as u64;
+    let mut m = ModuleRecords {
+        requested_modules: requests,
+        has_tla: rng.chance(30),
+        ..ModuleRecords::default()
+    };
+    for _ in 0..rng.below(4) {
+        m.local_export_entries.push(LocalExportEntry {
+            export_name: random_string(rng),
+            local_name: random_string(rng),
+            cell: cell(rng),
+        });
+    }
+    if n == 0 {
+        return m;
+    }
+    for _ in 0..rng.below(4) {
+        m.import_entries.push(ImportEntry {
+            module_request: rng.below(n) as u32,
+            import_name: if rng.chance(30) {
+                ImportName::Namespace
+            } else {
+                ImportName::Name(random_string(rng))
+            },
+            local_name: random_string(rng),
+            cell: cell(rng),
+        });
+    }
+    for _ in 0..rng.below(3) {
+        m.indirect_export_entries.push(IndirectExportEntry {
+            export_name: random_string(rng),
+            module_request: rng.below(n) as u32,
+            import_name: if rng.chance(30) {
+                ExportImportName::All
+            } else {
+                ExportImportName::Name(random_string(rng))
+            },
+        });
+    }
+    for _ in 0..rng.below(3) {
+        m.star_export_entries.push(rng.below(n) as u32);
+    }
+    m
 }
 
 fn random_register(rng: &mut Rng, plan: &FnPlan) -> Register {
@@ -653,10 +804,12 @@ fn random_function(
     id: u32,
     plan: &FnPlan,
     children: &[u32],
-    scope_sizes: &[u32],
+    scopes: &[ScopeInput],
     max_ctx_slots: u32,
     src_len: u32,
 ) -> FunctionCode {
+    let scope_sizes: Vec<u32> = scopes.iter().map(|s| s.3.len() as u32).collect();
+    let scope_sizes = &scope_sizes[..];
     let nscopes = scope_sizes.len() as u32;
     let mut b = FunctionBuilder::new(FunctionMeta {
         kind: plan.kind,
@@ -672,6 +825,36 @@ fn random_function(
         length: rng.below(u64::from(plan.params) + 1) as u32,
     });
     let _regs = b.new_register_list(plan.regs);
+    // ABI 5: sometimes a mapped-parameter list over a function scope with a context: the
+    // function makes that context, then the mapped arguments object.
+    if id != 0 && plan.params > 0 && rng.chance(25) {
+        let fits: Vec<usize> = scopes
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                s.0 == ScopeKind::Function
+                    && s.1.contains(ScopeFlags::NEEDS_CONTEXT)
+                    && s.3.iter().any(|slot| slot.1 == VariableMode::Var)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if !fits.is_empty() {
+            let si = *rng.pick(&fits);
+            let mut free: Vec<u32> = (0..scopes[si].3.len() as u32)
+                .filter(|&j| scopes[si].3[j as usize].1 == VariableMode::Var)
+                .collect();
+            let slots: Vec<Option<u32>> = (0..plan.params)
+                .map(|_| {
+                    (!free.is_empty() && rng.chance(70))
+                        .then(|| free.swap_remove(rng.below(free.len() as u64) as usize))
+                })
+                .collect();
+            let k = b.scope_constant(ScopeId(si as u32));
+            b.create_function_context(k, scopes[si].3.len() as u32);
+            b.create_mapped_arguments();
+            b.set_mapped_parameters(ScopeId(si as u32), slots);
+        }
+    }
     // Sometimes push the constant pool past 255 entries, so Const operands need Wide.
     if rng.chance(10) {
         for i in 0..300 {
@@ -695,6 +878,9 @@ fn random_function(
                 || plan.flags.contains(FunctionFlags::GENERATOR)
                 || plan.flags.contains(FunctionFlags::ASYNC)
         })
+        // CX-ABI1: CreateMappedArguments with formal parameters needs a mapped-parameter
+        // list; only the list block above emits it there.
+        .filter(|op| *op != Opcode::CreateMappedArguments || plan.params == 0)
         .filter(|op| {
             id != 0
                 || !matches!(

@@ -13,7 +13,7 @@ usage: ep9 [options] <file.js>
 
 options:
   -e, --eval <code>    run <code> as a script named [eval]
-  --module             parse the source as a module (v0: no import/export linking)
+  --module             run the source as a module, with the modules it imports (./ ../ /)
   --strict             run the script as strict code
   --gc-stress[=<n>]    collect garbage before every n-th allocation (default 1) and run the
                        heap verifier after every collection
@@ -24,6 +24,8 @@ options:
                        calls of a function before it gets a feedback vector (default 8;
                        0 = at the first call, 4294967295 = never)
   --print-bytecode     print the disassembly of the unit before it runs
+  --facts-out <file>   after the run, write the feedback facts of the script (or of the entry
+                       module) to <file> as an encoded FactSnapshot v0 (H16)
   --stack-size <MiB>   native stack of the isolate thread (default 64)
   -h, --help           print this text
   --version            print the version
@@ -52,6 +54,8 @@ pub struct Options {
     /// `IsolateConfig::feedback_threshold`.
     pub feedback_threshold: u32,
     pub print_bytecode: bool,
+    /// `--facts-out`: where the FactSnapshot of the main unit goes after the run.
+    pub facts_out: Option<PathBuf>,
     pub gc_stats: bool,
     pub stack_mib: usize,
 }
@@ -66,6 +70,13 @@ pub enum Command {
 fn feedback_threshold(v: &str) -> Result<u32, String> {
     v.parse::<u32>()
         .map_err(|_| format!("bad --feedback-threshold value {v:?} (0..=4294967295)"))
+}
+
+fn facts_out(v: &str) -> Result<PathBuf, String> {
+    if v.is_empty() {
+        return Err("--facts-out needs a file name".into());
+    }
+    Ok(PathBuf::from(v))
 }
 
 fn dispatch(name: &str) -> Result<Dispatch, String> {
@@ -93,6 +104,7 @@ pub fn parse(argv: &[String]) -> Result<Command, String> {
         dispatch: Dispatch::DEFAULT,
         feedback_threshold: IsolateConfig::DEFAULT_FEEDBACK_THRESHOLD,
         print_bytecode: false,
+        facts_out: None,
         gc_stats: false,
         stack_mib: 64,
     };
@@ -123,6 +135,9 @@ pub fn parse(argv: &[String]) -> Result<Command, String> {
                 let v = it.next().ok_or("--feedback-threshold needs a value")?;
                 opts.feedback_threshold = feedback_threshold(v)?;
             }
+            "--facts-out" => {
+                opts.facts_out = Some(facts_out(it.next().ok_or("--facts-out needs a value")?)?);
+            }
             "--stack-size" => {
                 let v = it.next().ok_or("--stack-size needs a value")?;
                 opts.stack_mib = v
@@ -141,6 +156,9 @@ pub fn parse(argv: &[String]) -> Result<Command, String> {
             }
             a if a.starts_with("--dispatch=") => {
                 opts.dispatch = dispatch(&a["--dispatch=".len()..])?;
+            }
+            a if a.starts_with("--facts-out=") => {
+                opts.facts_out = Some(facts_out(&a["--facts-out=".len()..])?);
             }
             a if a.starts_with("--feedback-threshold=") => {
                 opts.feedback_threshold = feedback_threshold(&a["--feedback-threshold=".len()..])?;
@@ -186,6 +204,15 @@ mod tests {
         );
         assert!(run(&["--strict", "x.js"]).unwrap().strict);
         assert!(run(&["--module", "x.js"]).unwrap().module);
+        assert_eq!(run(&["x.js"]).unwrap().facts_out, None);
+        assert_eq!(
+            run(&["--facts-out", "f.bin", "x.js"]).unwrap().facts_out,
+            Some(PathBuf::from("f.bin"))
+        );
+        assert_eq!(
+            run(&["-e", "1", "--facts-out=f.bin"]).unwrap().facts_out,
+            Some(PathBuf::from("f.bin"))
+        );
         assert_eq!(
             run(&["x.js"]).unwrap().feedback_threshold,
             IsolateConfig::default().feedback_threshold
@@ -215,6 +242,8 @@ mod tests {
         assert!(run(&["--feedback-threshold=x", "a.js"]).is_err());
         assert!(run(&["--feedback-threshold"]).is_err());
         assert!(run(&["--bogus", "a.js"]).is_err());
+        assert!(run(&["a.js", "--facts-out"]).is_err());
+        assert!(run(&["--facts-out=", "a.js"]).is_err());
         assert!(run(&["--module", "--strict", "a.js"]).is_err());
         assert_eq!(parse(&["--version".into()]).unwrap(), Command::Version);
         assert_eq!(parse(&["-h".into()]).unwrap(), Command::Help);

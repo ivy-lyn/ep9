@@ -27,7 +27,7 @@
 //! | GEN3 | A suspend saves `r0` up to the highest live register (all named locals and live temporaries; no liveness analysis in v0) | Registers above the allocation mark are dead (stack-allocated temporaries, G1) |
 //! | GEN4 | The generator object is created after FunctionDeclarationInstantiation | §15.5.2 EvaluateGeneratorBody steps 1-2 (test262 `generator-created-after-decl-inst.js`; V8 creates it before the parameter defaults run there) |
 //! | GEN5 | `new.target` in a generator body is `LdaUndefined` (func.rs `load_new_target`); the prologue `LdaNewTarget` is the only one | fp-3 of a resumed frame is the generator object |
-//! | GEN6 | An async generator keeps the "generator functions" text | CAUSE rule: the async-generator files stay under that cause until month 3 |
+//! | GEN6 | An async generator body is lowered in `async_gen.rs` (M3-P2 ASYNCGEN); until then it kept the "generator functions" text | CAUSE rule: the async-generator files stayed under that cause until month 3 |
 
 use ep9_bytecode::{FeedbackSlotKind, Label, Register, RegisterList, RuntimeId};
 use oxc_ast::ast::{
@@ -40,17 +40,59 @@ use oxc_span::{GetSpan, Span};
 use super::func::{Command, FnGen, Gen};
 
 /// Resume modes (`GeneratorGetResumeMode`, `genf::RESUME_MODE`; M2-P1-GEN-NUMBERS, V8 values).
-const RESUME_NEXT: i32 = 0;
-const RESUME_RETURN: i32 = 1;
+pub(crate) const RESUME_NEXT: i32 = 0;
+pub(crate) const RESUME_RETURN: i32 = 1;
+pub(crate) const RESUME_THROW: i32 = 2;
 
-/// The generator state of one generator function body.
+/// Which body a [`GenState`] belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GenKind {
+    /// A generator function body (this file).
+    Sync,
+    /// An async function body (`async_fn.rs`): `return` resolves its promise.
+    AsyncFunction,
+    /// An async generator body (`async_gen.rs`).
+    AsyncGenerator,
+}
+
+/// The generator state of one generator function body, of one async function body
+/// (`async_fn.rs`: the same suspend points, ABI 5 ids 32-35) or of one async generator body
+/// (`async_gen.rs`, ids 36-41).
 pub(crate) struct GenState {
-    /// The generator object (`undefined` until `CreateGeneratorObject` on the first call).
-    object: Register,
+    /// The generator object (`undefined` until `CreateGeneratorObject`, `AsyncFunctionEnter`
+    /// or `AsyncGeneratorEnter` on the first call).
+    pub(crate) object: Register,
     /// The resume point of each suspend id: the entries of the prologue jump table.
-    resume: Vec<Label>,
+    pub(crate) resume: Vec<Label>,
     /// The next suspend id.
-    next: usize,
+    pub(crate) next: usize,
+    /// The kind of body.
+    pub(crate) kind: GenKind,
+    /// An async generator: the start offsets of its `return Expression;` statements, sorted
+    /// (each awaits its value, `async_gen.rs` AGF4). Empty for the other kinds.
+    pub(crate) awaited_returns: Vec<u32>,
+    /// A suspend point that `perform` could not emit (it has no error path): the count check
+    /// at the end of the body fails.
+    pub(crate) uncounted: bool,
+}
+
+impl GenState {
+    /// A state for `kind` with the resume points `resume`.
+    pub(crate) fn new(object: Register, resume: Vec<Label>, kind: GenKind) -> GenState {
+        GenState {
+            object,
+            resume,
+            next: 0,
+            kind,
+            awaited_returns: Vec::new(),
+            uncounted: false,
+        }
+    }
+
+    /// True when every counted suspend point was emitted and no other.
+    pub(crate) fn complete(&self) -> bool {
+        !self.uncounted && self.next == self.resume.len()
+    }
 }
 
 /// Counts the suspend points of a generator body (GEN2): one per `yield` / `yield*` that the
@@ -79,19 +121,18 @@ impl<'a> Visit<'a> for SuspendCounter {
 
 impl<'a> FnGen<'a, '_> {
     /// The check before a closure is made for a generator function node (declaration,
-    /// expression or method). An async generator keeps the "generator functions" text until
-    /// async generators exist (month 3; GEN6).
+    /// expression or method). An async generator goes to `async_gen.rs` (GEN6).
     pub(crate) fn check_generator(&self, is_async: bool, span: Span) -> Gen {
         if is_async {
-            return self.unsupported("generator functions", span);
+            return self.async_generator_closure(span);
         }
         Ok(())
     }
 
-    /// The body of a generator function (an async generator is rejected, GEN6).
+    /// The body of a generator function (an async generator goes to `async_gen.rs`, GEN6).
     pub(crate) fn gen_generator(&mut self, node: &'a Function<'a>) -> Gen {
         if node.r#async {
-            return self.unsupported("generator functions", node.span);
+            return self.gen_async_generator(node);
         }
         let mut counter = SuspendCounter(1);
         counter.visit_formal_parameters(&node.params);
@@ -107,11 +148,7 @@ impl<'a> FnGen<'a, '_> {
         self.b.lda_new_target().star(object);
         let (table, resume) = self.b.jump_table(count);
         self.b.switch_on_generator_state(object, table);
-        self.generator = Some(GenState {
-            object,
-            resume,
-            next: 0,
-        });
+        self.generator = Some(GenState::new(object, resume, GenKind::Sync));
         self.prologue_and_params(&node.params)?;
         // §15.5.2 steps 2-3: the generator object, after the parameters (GEN4).
         let m = self.mark();
@@ -132,7 +169,7 @@ impl<'a> FnGen<'a, '_> {
         self.b.lda_undefined();
         self.emit_return();
         let state = self.generator.take().expect("set above");
-        if state.next != state.resume.len() {
+        if !state.complete() {
             return Err(super::internal(format!(
                 "generator at {}: {} suspend points emitted, {} counted",
                 node.span.start,
@@ -144,7 +181,7 @@ impl<'a> FnGen<'a, '_> {
     }
 
     /// The generator object register.
-    fn generator_object(&self, span: Span) -> Gen<Register> {
+    pub(crate) fn generator_object(&self, span: Span) -> Gen<Register> {
         match &self.generator {
             Some(g) => Ok(g.object),
             None => Err(super::internal(format!(
@@ -156,7 +193,7 @@ impl<'a> FnGen<'a, '_> {
 
     /// `SuspendGenerator` with the value in the accumulator, then its resume point:
     /// `ResumeGenerator` (acc = the sent value). `live` registers `r0..live` are saved.
-    fn suspend(&mut self, live: u32, at: u32) -> Gen {
+    pub(crate) fn suspend(&mut self, live: u32, at: u32) -> Gen {
         let Some(g) = self.generator.as_mut() else {
             return Err(super::internal(format!(
                 "suspend outside a generator at {at}"
@@ -201,7 +238,7 @@ impl<'a> FnGen<'a, '_> {
         // Return.
         self.b.bind(cases[1]);
         self.b.ldar(input);
-        self.perform(Command::Return);
+        self.perform_now(Command::Return);
         // Next.
         self.b.bind(cases[0]);
         self.b.ldar(input);
@@ -209,9 +246,13 @@ impl<'a> FnGen<'a, '_> {
         Ok(())
     }
 
-    /// `yield` and `yield*`. Leaves the value of the expression in the accumulator.
+    /// `yield` and `yield*`. Leaves the value of the expression in the accumulator. In an
+    /// async generator they go to `async_gen.rs`.
     pub(crate) fn yield_expr(&mut self, y: &'a YieldExpression<'a>) -> Gen {
         self.generator_object(y.span)?;
+        if self.generator.as_ref().map(|g| g.kind) == Some(GenKind::AsyncGenerator) {
+            return self.async_yield_expr(y);
+        }
         if y.delegate {
             let Some(arg) = &y.argument else {
                 return Err(super::internal("yield* without an operand"));
@@ -286,7 +327,7 @@ impl<'a> FnGen<'a, '_> {
         self.call_iterator_method(iter, input, method, "return", after_switch, no_return, at);
         self.b.bind(no_return);
         self.b.ldar(input);
-        self.perform(Command::Return);
+        self.perform_now(Command::Return);
         // Throw.
         self.b.bind(cases[1]);
         let no_throw = self.b.new_label();
@@ -328,7 +369,7 @@ impl<'a> FnGen<'a, '_> {
         self.smi(RESUME_RETURN);
         self.b.test_reference_equal(mode).jump_if_false(is_value);
         self.b.ldar(output);
-        self.perform(Command::Return);
+        self.perform_now(Command::Return);
         self.b.bind(is_value);
         self.b.ldar(output);
         self.release(m);
@@ -338,7 +379,7 @@ impl<'a> FnGen<'a, '_> {
     /// `m = iter[name]`; if `m` is undefined or null jump to `missing`, else
     /// `acc = m.call(iter, input)` and jump to `called` (V8 `BuildCallIteratorMethod`).
     #[allow(clippy::too_many_arguments)]
-    fn call_iterator_method(
+    pub(crate) fn call_iterator_method(
         &mut self,
         iter: Register,
         input: Register,

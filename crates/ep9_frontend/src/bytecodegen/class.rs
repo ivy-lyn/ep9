@@ -4,9 +4,11 @@
 //! ```text
 //! enter class scope (inner name in TDZ)
 //! CreatePrivateName per field #x and per brand -> class context slots
+//! [enter the heritage scope: a direct eval in the heritage, CX2-E9-1]
 //! heritage -> r_heritage (or the hole)
+//! [exit the heritage scope]
 //! CreateClosure(constructor) -> r_ctor
-//! (name from a runtime key: DefineKeyedOwnProperty {}, key, [acc = r_ctor], SET_NAME)
+//! (name from a runtime key: CallRuntime SetFunctionName(r_ctor, key), ABI 5 id 44)
 //! DefineClass(r_ctor, r_heritage) -> r_proto
 //! per element, in source order:
 //!   method:         key, CreateClosure, DefineClassMethod(home, key, fn)
@@ -22,12 +24,11 @@
 //!
 //! Unsupported: `accessor` (auto-accessors) and decorators.
 
-use ep9_bytecode::{FeedbackSlotKind, Register, RuntimeId, UnitString};
+use ep9_bytecode::{Register, RuntimeId, UnitString};
 use oxc_ast::ast::{Class, ClassElement, MethodDefinitionKind, MethodDefinitionType, PropertyKey};
 use oxc_span::GetSpan;
 
 use super::Job;
-use super::class_fields::DEFINE_SET_NAME;
 use super::func::{FnGen, Gen};
 use super::literal::{self, PropertyName};
 use crate::scope::ScopeId;
@@ -59,7 +60,16 @@ impl<'a> FnGen<'a, '_> {
         self.create_private_names(c, scope, name.as_ref())?;
         match &c.heritage {
             Some(h) => {
-                self.expr(&h.expression)?;
+                // (CX2-E9-1) The heritage scope, if the class has one: its context (the
+                // `#.heritage` marker) is current while the heritage runs.
+                if let Some(hs) = info.heritage_scope {
+                    let pushed = self.enter_scope(hs);
+                    let r = self.expr(&h.expression);
+                    self.exit_scope(hs, pushed);
+                    r?;
+                } else {
+                    self.expr(&h.expression)?;
+                }
             }
             None => {
                 self.b.lda_the_hole();
@@ -105,22 +115,12 @@ impl<'a> FnGen<'a, '_> {
 
     /// SetFunctionName(F, className) (§15.7.14 step 15) for a class whose name is the
     /// property key in `key` (already ToPropertyKey'd; a symbol gives `"[description]"`), so
-    /// the static fields and blocks see it and a `static name` member still replaces it.
-    /// ABI 3 has no runtime function for this alone, and P2 adds no id (plan §10), so it
-    /// reuses bit 0 of DefineKeyedOwnProperty: defining the class on a new scratch object
-    /// under `key` names it first (VM `name_anonymous_function`). Nothing else sees the
-    /// scratch object. No user code runs here.
+    /// the static fields and blocks see it and a `static name` member still replaces it. ABI 5
+    /// runtime id 44 `SetFunctionName(function, key)` does it (it replaces the M2-P2 scratch
+    /// object define with flag bit 0, M2-P2-C2-DEFER). The constructor is new and anonymous
+    /// here, and no user code runs.
     fn name_class_from_key(&mut self, ctor: Register, key: Register) {
-        let m = self.mark();
-        let scratch = self.temp();
-        self.b
-            .create_empty_object_literal()
-            .star(scratch)
-            .ldar(ctor);
-        let s = self.slot(FeedbackSlotKind::DefineKeyedOwn);
-        self.b
-            .define_keyed_own_property(scratch, key, DEFINE_SET_NAME, s);
-        self.release(m);
+        self.runtime_with(RuntimeId::SetFunctionName, &[ctor, key]);
     }
 
     /// ClassElementEvaluation in source order: defines the methods, getters and setters,

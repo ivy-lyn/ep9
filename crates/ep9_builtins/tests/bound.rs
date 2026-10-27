@@ -46,19 +46,25 @@ fn a_long_bind_chain_with_an_argument_at_every_level_is_linear() {
         .stack_size(8 << 20)
         .spawn(move || {
             let mut iso = common::isolate(false);
-            iso.run_script(
-                compile(&format!("var levels = 100000; {CHAIN}")),
-                "chain.js",
-            )
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(
+                    compile(&format!("var levels = 100000; {CHAIN}")),
+                    "chain.js",
+                )
+                .map(|_| ())
+            })
             .expect("the chain is built");
             let t = Instant::now();
-            let r = iso.run_script(
-                compile("var r = [b('x'), b.call(null, 'y'), new bk('z').s].join(' ');"),
-                "calls.js",
-            );
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(
+                    compile("var r = [b('x'), b.call(null, 'y'), new bk('z').s].join(' ');"),
+                    "calls.js",
+                )
+                .map(|_| ())
+            });
             let took = t.elapsed();
             let r = r
-                .map(|_| iso.global("r").map(|v| iso.display(v)))
+                .map(|_| common::global_text(&mut iso, "r"))
                 .map_err(|e| e.message);
             let _ = tx.send((r, took));
         })
@@ -134,9 +140,10 @@ fn rust_calls_through_a_chain_with_bound_arguments() {
     for stress in [false, true] {
         let r = common::on_big_stack(move || {
             let mut iso = common::isolate(stress);
-            iso.run_script(
-                compile(
-                    "function v(x) { return {v: x}; }
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(
+                    compile(
+                        "function v(x) { return {v: x}; }
                      function C() {
                          var s = [];
                          for (var i = 0; i < arguments.length; i++) s[i] = arguments[i].v;
@@ -147,9 +154,11 @@ fn rust_calls_through_a_chain_with_bound_arguments() {
                      Other.prototype.tag = 'other';
                      function g() { return Array.prototype.join.call(arguments, ''); }
                      var bg = g.bind(null).bind(null, 'p', 'q').bind(null).bind(null, 'r');",
-                ),
-                "rust.js",
-            )
+                    ),
+                    "rust.js",
+                )
+                .map(|_| ())
+            })
             .map_err(|e| e.message)?;
             iso.with_cx(|cx| {
                 let g = cx.global();
@@ -200,24 +209,33 @@ fn terminate_in_chain(bind_args: bool, call: &'static str) -> (bool, String) {
                 CHAIN.replace("bind(null, i)", "bind(null)")
             };
             let mut iso = common::isolate(false);
-            iso.run_script(
-                compile(&format!("var levels = 100000; {chain}")),
-                "chain.js",
-            )
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(
+                    compile(&format!("var levels = 100000; {chain}")),
+                    "chain.js",
+                )
+                .map(|_| ())
+            })
             .expect("the chain is built");
             iso.terminate_handle().terminate();
-            let r = iso.run_script(
-                compile(&format!(
-                    "var stage = 'before'; var r = {call}; stage = 'reached ' + r;"
-                )),
-                "call.js",
-            );
+            let r = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(
+                    compile(&format!(
+                        "var stage = 'before'; var r = {call}; stage = 'reached ' + r;"
+                    )),
+                    "call.js",
+                )
+                .map(|_| ())
+            });
             let terminated = r.is_err_and(|e| e.terminated);
-            let stage = iso.global("stage").map(|v| iso.display(v));
+            let stage = common::global_text(&mut iso, "stage");
             // The isolate keeps working.
-            iso.run_script(compile("stage = 'again'"), "again.js")
-                .expect("runs");
-            let again = iso.global("stage").map(|v| iso.display(v));
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(compile("stage = 'again'"), "again.js")
+                    .map(|_| ())
+            })
+            .expect("runs");
+            let again = common::global_text(&mut iso, "stage");
             assert_eq!(again.as_deref(), Some("again"));
             (terminated, stage.unwrap_or_default())
         })
@@ -253,10 +271,13 @@ fn termination_stops_a_rust_construct_in_a_long_bind_chain() {
         .stack_size(8 << 20)
         .spawn(|| {
             let mut iso = common::isolate(false);
-            iso.run_script(
-                compile(&format!("var levels = 100000; {CHAIN}")),
-                "chain.js",
-            )
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(
+                    compile(&format!("var levels = 100000; {CHAIN}")),
+                    "chain.js",
+                )
+                .map(|_| ())
+            })
             .expect("the chain is built");
             iso.terminate_handle().terminate();
             iso.with_cx(|cx| {

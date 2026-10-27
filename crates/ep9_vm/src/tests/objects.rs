@@ -62,7 +62,7 @@ fn run_define(make: fn() -> VerifiedUnit, throws: bool, check: fn(&mut Cx<'_>)) 
         on_big_stack(move || {
             let mut iso = isolate(config(Dispatch::DEFAULT, stress));
             define_setup(&mut iso);
-            match iso.run_script(make(), "define.js") {
+            match iso.with_cx_checkpoint(|cx| cx.run_script(make(), "define.js").map(|_| ())) {
                 Ok(_) => assert!(!throws, "stress={stress}: expected a TypeError"),
                 Err(e) => assert!(
                     throws && e.constructor.as_deref() == Some("TypeError"),
@@ -355,7 +355,8 @@ fn two_literals_with_the_same_keys_share_a_shape_id() {
     for stress in [false, true] {
         on_big_stack(move || {
             let mut iso = isolate(verified(stress));
-            iso.run_script(literals(), "literals.js").unwrap();
+            iso.with_cx_checkpoint(|cx| cx.run_script(literals(), "literals.js").map(|_| ()))
+                .unwrap();
             iso.collect_garbage();
             let rt = &*iso.rt;
             let g = |name: &str| own(rt, rt.global(), name).unwrap();
@@ -486,7 +487,9 @@ fn om10_an_attribute_change_makes_a_dictionary() {
         };
         assert!(property::define_own_property(cx, o, k(rt, "a"), desc).unwrap());
         assert!(shape::is_dictionary(shape::shape_of(o)));
-        let d = property::get_own_property(cx, o, k(rt, "a")).unwrap();
+        let d = property::get_own_property(cx, o, k(rt, "a"))
+            .unwrap()
+            .unwrap();
         assert_eq!(d.value, Some(int(5)));
         assert_eq!(
             (d.writable, d.enumerable, d.configurable),
@@ -733,7 +736,7 @@ fn define_paths_store_atom_keys() {
 /// Checks `{value, writable: false, enumerable: false, configurable: true}`.
 fn assert_fn_prop(cx: &mut VmCx, f: u64, name: &str, value: u64) {
     let key = k(cx.rt(), name);
-    let d = property::get_own_property(cx, f, key).unwrap();
+    let d = property::get_own_property(cx, f, key).unwrap().unwrap();
     assert_eq!(d.value, Some(value), "{name}");
     assert_eq!(
         (d.writable, d.enumerable, d.configurable),
@@ -775,17 +778,21 @@ fn deleting_function_name_removes_the_own_property() {
         let f = crate::realm::new_host_function(rt, super::print, "probe", 1, false);
         let name = k(rt, "name");
         assert!(property::delete(cx, f, name, true).unwrap());
-        assert!(property::get_own_property(cx, f, name).is_none());
+        assert!(property::get_own_property(cx, f, name).unwrap().is_none());
         // `name` is now inherited (%Function.prototype%.name is "" in the spec; v0 may have
         // none), and re-adding it puts it last.
         assert_eq!(own_keys(cx, f), ["length"]);
         property::define(cx, f, name, k(rt, "again")).unwrap();
         assert_eq!(own_keys(cx, f), ["length", "name"]);
-        let d = property::get_own_property(cx, f, name).unwrap();
+        let d = property::get_own_property(cx, f, name).unwrap().unwrap();
         assert_eq!(d.enumerable, Some(true), "a new data property");
         // `length` delete too.
         assert!(property::delete(cx, f, k(rt, "length"), true).unwrap());
-        assert!(property::get_own_property(cx, f, k(rt, "length")).is_none());
+        assert!(
+            property::get_own_property(cx, f, k(rt, "length"))
+                .unwrap()
+                .is_none()
+        );
     });
 }
 
@@ -807,7 +814,9 @@ fn a_lazy_prototype_keeps_its_place_in_the_key_order() {
         property::define(cx, g, k(rt, "name"), int(1)).unwrap();
         assert_eq!(own_keys(cx, g), ["length", "prototype", "name"]);
         // {w: true, e: false, c: false}.
-        let d = property::get_own_property(cx, g, k(rt, "prototype")).unwrap();
+        let d = property::get_own_property(cx, g, k(rt, "prototype"))
+            .unwrap()
+            .unwrap();
         assert_eq!(
             (d.writable, d.enumerable, d.configurable),
             (Some(true), Some(false), Some(false))
@@ -1328,11 +1337,14 @@ fn function_cell_infos_have_an_index_form() {
         let mut g = Asm::new(super::meta("g", 0, 0, 0, 0));
         g.b.lda_undefined().return_();
         let mut iso = isolate(verified(false));
-        iso.run_script(unit("", vec![s.finish(), g.finish()]), "t.js")
-            .unwrap();
+        iso.with_cx_checkpoint(|cx| {
+            cx.run_script(unit("", vec![s.finish(), g.finish()]), "t.js")
+                .map(|_| ())
+        })
+        .unwrap();
         let rt = &*iso.rt;
         // Bytecode: (unit, function id) names the info.
-        let gv = iso.global("g").unwrap().to_bits();
+        let gv = iso.global_raw("g").unwrap().to_bits();
         let fi = object::function_info(gv);
         let lu = fi.loaded_unit().expect("a bytecode info has its unit");
         assert!(fi.is_bytecode() && fi.host.is_none());

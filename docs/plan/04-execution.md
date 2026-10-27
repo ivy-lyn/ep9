@@ -75,11 +75,13 @@ T2 (/T3)     ep9_opt       ---> T2 / T3 code                   optimized-AOT   (
 | pc, frame base and accumulator are handler arguments. Cx carries the dispatch table at a fixed offset | [R06]; [P1] (SP-Dispatch) |
 | Small fast paths. Slow paths are `#[cold] #[inline(never)]` runtime functions. T1, T2 and both AOT kinds call the same ones | [R06] |
 | Scope analysis puts locals that are not captured in registers. Contexts hold only captured variables | [R07] Boa +25% |
-| Lazy FeedbackVector. The interrupt budget at back-edges and returns drives tier-up, GC polls and termination | [R06] V8 waits 8 calls |
+| Lazy FeedbackVector. The interrupt budget drives tier-up, GC polls and termination. As built: one budget unit per loop back edge (`JumpLoop`) and per call, also a call from Rust whose frame does not fit on the VM stack (M3-P4); a call of a host function that is not bound takes none (the full list is the H23 Facts row "Interrupt poll") | [R06] V8 waits 8 calls |
 | Global variables use property cells plus ICs. Prototype validity cells guard proto-chain ICs | [R06] |
-| Calls never recurse in Rust. Args are reversed and padded with undefined | [R06] adaptor frame: +11.2% jitless |
+| JS→JS calls in one realm never recurse in Rust (a cross-realm call nests one Rust level, H14). Args are reversed and padded with undefined | [R06] adaptor frame: +11.2% jitless |
 | Hot builtins (push, indexOf, string ops, Math) get human fast paths. Each has a differential test against its spec-layer path (N7) | [R07] |
 | RegExp parity comes from RX1 (§3) | [R08] regress 0.8-5x slower than V8's regexp interpreter; [R07] RegExp kernel 7772 / 3651 / 1046 |
+
+- As built (M0 month 3, M3-P4 FIXES; PERF3 tasks 4-5): a StaGlobal miss that records a case scans the global tables once, not twice (M2-P5-PLAN-D8); T0's TestEqual fast body answers `x == null` and `x == undefined`; the Wide and ExtraWide prefix handlers run LdaSmi and the int32 cases of AddSmi, SubSmi, ModSmi, BitwiseOrSmi, BitwiseXorSmi and BitwiseAndSmi in their fast body. x86-64 cachegrind instructions, measured at `bc63674` (the FIXES head, before fix round 1) against `ec4b841`: t0-loop -10.10%, richards -12.13%, t0-prop -2.97%, ci-v0 -2.80%, t0-call -2.75%, deltablue -0.26%, t0-branchy 0.00%. The other PERF3 items (the cold construct path, the x86 handler register pushes, the top-level feedback vector, the budget phase lock) move to M1 (M3-P4-PERF3-S2-M1).
 
 ## 3. RegExp stages
 
@@ -155,8 +157,8 @@ ep9_baseline / ep9_opt
 | Local | Label or branch inside the function or unit | pc-relative, resolved at emit | pc-relative, resolved at emit |
 | Stub(id) | Shared IC stub or trampoline | Direct call inside the code range | pc-relative call if the stub is in the unit; else call through a link slot |
 | Runtime(fn) | Rust slow path or builtin (H20), e.g. barrier_slow | Direct or indirect call | Indirect call through the isolate table (isolate register) |
-| LinkSlot(i) | External reference resolved at load or first run | Resolved at finalize; an immediate is allowed | pc-relative load of RW link cell i |
-| IcCell(i) | IC or feedback cell | Address of the FeedbackVector slot | pc-relative load of RW IC cell i |
+| LinkSlot(i) | External reference resolved at load or first run | Resolved at finalize; an immediate is allowed | Load of RW link cell i through the unit-data register (H35-Q9) |
+| IcCell(i) | IC or feedback cell | Address of the FeedbackVector slot | Load of RW IC cell i through the unit-data register (H35-Q9) |
 | RootIndex(n) | Isolate root, intrinsic or atom by stable index (H13) | Load from the isolate root table | Load from the isolate root table (isolate register) |
 | DeoptExit(id) | Exit to the shared deopt entry | Call the shared entry; metadata keyed by pc offset | Same; metadata keyed by pc offset |
 | HeapConst(i) | Raw heap pointer | Embedded, held weakly with a dependency | **Rejected by the unit writer** |
@@ -170,7 +172,8 @@ ep9_baseline / ep9_opt
 - **Spike B (M0, month 2).** An 11-opcode template JIT (the planned 10 plus AddSmi) measures the T0 -> JIT -> T0 round trip on each target.
   - Keep native-stack JIT frames if one round trip costs ≤ 18 release-expansion dispatches of the loop kernel on the same host (est.). Otherwise open an ADR for one unified VM stack.
   - It also settles D21 (interpreter frame home; default: VM register stack + native control stack, Hermes model) [R14].
-- **SP-Unit (M0 month 3, M3-P1; +0.25 PM est.).** It moved from month 2 by M2-D21-FAIL: placement (a) failed the D21 rule, so SP-Unit builds on placement (b). The same 11 opcodes go into a unit blob. It must load, call, unwind, survive a GC scan and fall back on a version mismatch. Gate: green on 4 targets.
+  - Result: placement (a) failed in gate window 1; placement (b) passed in gate window 2 (14.618 dispatches; decision M2-W2-D21-B), so D21 = placement (b). x86-64 (b) is built since M3-P0 ([Spike B measurements](../measurements/2026-10-22-spike-b.md)).
+- **SP-Unit (M0 month 3, M3-P1; +0.25 PM est.).** It moved from month 2 by M2-D21-FAIL: placement (a) failed the D21 rule, so SP-Unit builds on placement (b). The same 11 opcodes go into a unit blob. It must load, call, unwind, survive a GC scan and fall back on a version mismatch. Gate: green on 4 targets. Result: GO on 4 targets (M3-P2; [SP-Unit measurements](../measurements/2026-10-23-sp-unit.md)).
 - **Spike C (M1, throwaway, 1.5-3 PM est.).** A small SSA compiler for 2-3 v8-v7 kernels on arm64. It reads T0 feedback and has one eager deopt from a native frame to a VM-stack frame. Gate: deopt correct under the tier-differential test; kernels ≥ 3x faster than T0 (est.).
 - **SP-Facts (inside Spike C, +0.25-0.5 PM est.).** The Spike C IR uses the fact lattice and ref nodes (§6) and emits PI deopt metadata (§9). Gate: one kernel compiled from a PROFILED FactSnapshot file gives identical output at ≥ 90% of live-feedback speed (est.).
 - A failed Spike C or SP-Facts gate reopens H2, H14, H16, H17 and H29-H34 before M1 exit.
@@ -229,6 +232,7 @@ AOT:  .ep9prof (training run) ---> PROFILED -+                                  
 ```
 
 - The FactSnapshot schema equals the feedback schema (H16). So runtime feedback, profiles and hints are interchangeable inputs.
+- As built (M0 month 3, H16-Q5): `ep9_vm::abi::export_facts` writes the feedback vectors of one loaded unit as a FactSnapshot v0 with source RUNTIME. It reads the named-property and global IC sites that T0 records, and its bytes hold no ShapeId, address or closure identity. `ep9 --facts-out <file>` writes the snapshot of the main unit (the script or the entry module) after the run (M3-P4). The `.ep9prof` container that stores a snapshot is H16-Q5b (A3).
 - **Merge rule (H30).** Precedence applies per fact kind. On a conflict, RUNTIME wins, so a slot with feedback ignores HINTED shape, call-target and representation facts. Fused HINTED facts that feedback cannot give stay: CHA and enum constants (H31), non-null, slot pre-size ([./05-aot.md](./05-aot.md) §11).
 - Dart keeps about 276 AOT branches in about 237k lines of one compiler [R14]. ep9 expects the same pattern: few mode branches, all in guard lowering and fact sources.
 
@@ -338,6 +342,8 @@ lazy:  fuse pops -> mark dependent code -> swap return addresses on the stack ->
 - Clarified 2026-10-21 ([decisions-log §7](../decisions-log.md#7-2026-10-21-h15-dispatch-on-x86-64-sp-dispatch-reopen), D21-UNIT): the D21 threshold for Spike B counts release-expansion dispatches of the SP-Dispatch loop kernel on the same host, not "sibling-call dispatches". The number 18 does not change.
 - Amended 2026-10-21 ([decisions-log §10](../decisions-log.md#10-2026-10-21-pr-1-review-fixes-ci-gates-and-h15-on-t0), H15-X64-T0): §2 T0 release uses sibling calls on every target, not the match loop on x86-64.
 - Clarified 2026-10-22 (decisions-log M2-D21-FAIL, M2-P4-SPUNIT-M3, M2-W2-D21-B): §5 SP-Unit runs in M3-P1 on placement (b), not inside Spike B in month 2.
+- As built 2026-10-25 (M3-P4 DOCS; decisions-log §13): §2 names where T0 takes budget units (H23); §5 gives the Spike B and SP-Unit results; §6 names the VM facts exporter (H16-Q5). No design change.
+- As built 2026-10-26 (M3-P4 DOCS step 2): §2 gets the M3-P4 T0 fast paths with their cachegrind effect, and the budget unit of a call from Rust whose frame does not fit; §6 names `ep9 --facts-out`. No design change.
 
 ## Evidence tags
 

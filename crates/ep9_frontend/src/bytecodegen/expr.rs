@@ -18,7 +18,7 @@ use oxc_span::{GetSpan, Span};
 use super::func::{FnGen, Gen};
 use super::literal::{self, PropertyName};
 use super::lookup::runs_no_code;
-use crate::scope::{BindingLocation, ImplicitRef, Reference, Resolution};
+use crate::scope::{BindingLocation, ImplicitRef, NameId, Reference, Resolution};
 
 /// A binary operator with a register form and a Smi form.
 #[derive(Clone, Copy)]
@@ -77,13 +77,15 @@ pub(crate) enum MemberRef {
         key: Register,
     },
     /// `o.#m` or `o.#a`, a private method or accessor (private.rs): `brand` holds the class
-    /// brand, `get` the method or the getter, `set` the setter (`None` for a method). `at` is
-    /// the `#name` offset.
+    /// brand, `get` the method or the getter, `set` the setter (`None` for a method). `name` is
+    /// the private name (`#m`, for the TypeError text of a store to a method). `at` is the
+    /// `#name` offset.
     PrivateBranded {
         obj: Register,
         brand: Register,
         get: Register,
         set: Option<Register>,
+        name: NameId,
         at: u32,
     },
 }
@@ -304,7 +306,7 @@ impl<'a, 's> FnGen<'a, 's> {
             Expression::ArrayExpression(a) => self.array(a),
             Expression::ArrowFunctionExpression(f) => {
                 if f.r#async {
-                    return self.unsupported("async functions", f.span);
+                    self.async_closure(f.span)?;
                 }
                 let id = self.function_id(f.span)?;
                 self.jobs.push(super::Job::Arrow { node: f, id, name });
@@ -312,7 +314,7 @@ impl<'a, 's> FnGen<'a, 's> {
                 Ok(())
             }
             Expression::AssignmentExpression(a) => self.assignment(a, true),
-            Expression::AwaitExpression(a) => self.unsupported("await", a.span),
+            Expression::AwaitExpression(a) => self.await_expr(a),
             Expression::BinaryExpression(b) => self.binary(b),
             Expression::CallExpression(c) => self.call(c),
             Expression::ChainExpression(c) => self.chain(c),
@@ -333,7 +335,7 @@ impl<'a, 's> FnGen<'a, 's> {
                 self.create_closure(id);
                 Ok(())
             }
-            Expression::ImportExpression(i) => self.unsupported("import()", i.span),
+            Expression::ImportExpression(i) => self.import_call(i),
             Expression::LogicalExpression(l) => self.logical(l),
             Expression::NewExpression(n) => self.new_expr(n),
             Expression::ObjectExpression(o) => self.object(o),
@@ -355,7 +357,7 @@ impl<'a, 's> FnGen<'a, 's> {
             Expression::UpdateExpression(u) => self.update(u, true),
             Expression::YieldExpression(y) => self.yield_expr(y),
             Expression::PrivateInExpression(p) => self.private_in(p),
-            Expression::ImportMeta(m) => self.unsupported("import.meta", m.span),
+            Expression::ImportMeta(m) => self.import_meta(m),
             Expression::NewTarget(t) => {
                 let r = self.implicit(t.span.start, ImplicitRef::NewTarget)?;
                 self.load_ref(r, false);
@@ -980,6 +982,7 @@ impl<'a, 's> FnGen<'a, 's> {
                 get,
                 set,
                 at,
+                ..
             } => self.private_branded_load(obj, brand, get, set.is_none(), at),
         }
     }
@@ -1026,9 +1029,10 @@ impl<'a, 's> FnGen<'a, 's> {
                 obj,
                 brand,
                 set,
+                name,
                 at,
                 ..
-            } => self.private_branded_store(obj, brand, set, at),
+            } => self.private_branded_store(obj, brand, set, name, at),
         }
         if let Some(t) = saved {
             self.b.ldar(t);
@@ -1469,17 +1473,44 @@ impl<'a, 's> FnGen<'a, 's> {
             self.b.construct(ctor, list, n, s);
         }
         self.b.star(result);
-        // Bind `this`: it must still be the hole.
-        let Resolution::Binding { binding, hops, .. } = this_ref.resolution else {
-            return Err(super::internal("super() without a this binding"));
-        };
-        self.load_binding_raw(binding, hops, false);
-        self.b.throw_super_already_called_if_not_hole();
-        self.b.ldar(result);
-        self.store_binding_raw(binding, hops);
-        self.fields_after_super(callee_ref, result)?;
+        match this_ref.resolution {
+            Resolution::Binding { binding, hops, .. } => {
+                // Bind `this`: it must still be the hole.
+                self.load_binding_raw(binding, hops, false);
+                self.b.throw_super_already_called_if_not_hole();
+                self.b.ldar(result);
+                self.store_binding_raw(binding, hops);
+                self.fields_after_super(callee_ref, result)?;
+            }
+            Resolution::Dynamic { .. } => self.eval_bind_this(this_ref, callee_ref, result),
+            Resolution::Global => return Err(super::internal("super() without a this binding")),
+        }
         self.release(m);
         Ok(())
+    }
+
+    /// `super()` in direct eval code (E6, M3-P4): the caller's `this`, `.callee` and
+    /// `new.target` are context slots of the derived constructor, reached by name.
+    /// BindThisValue (§13.3.7.1 step 8) is `StaLookupSlot "this"`: no source text can assign
+    /// to `this`, so the VM gives a store to that name the BindThisValue meaning (a
+    /// ReferenceError if `this` is already bound; `slow/lookup.rs`). Then
+    /// InitializeInstanceElements(result, F) with F = `.callee`: whether F's class has an
+    /// instance initializer is not known here, and `RunClassFieldsInitializer` does nothing
+    /// without one. The accumulator holds `this` afterwards.
+    fn eval_bind_this(&mut self, this_ref: &Reference, callee_ref: &Reference, result: Register) {
+        let k = self.name_const(this_ref.name);
+        let flags = u8::from(self.strict_at(this_ref));
+        self.b.ldar(result);
+        self.expr_pos(this_ref.span.start);
+        self.b.sta_lookup_slot(k, flags);
+        let m = self.mark();
+        let args = self.temps(2);
+        self.load_ref(callee_ref, false);
+        self.b.star(args.get(0)).mov(result, args.get(1));
+        self.expr_pos(callee_ref.span.start);
+        self.runtime(RuntimeId::RunClassFieldsInitializer, args);
+        self.release(m);
+        self.b.ldar(result);
     }
 
     fn new_expr(&mut self, n: &'a NewExpression<'a>) -> Gen {

@@ -1,41 +1,30 @@
-//! `Isolate::call` from an embedder, under GC stress (a collection before every allocation,
-//! then the heap verifier): the arguments of the call live only in the embedder's heap `Vec`
-//! and in the heap copy that `Isolate::call` makes, which the GC does not scan. So every GC
-//! point of the call must come after the callee frame has copied them (P5 fixer, R2). The wrap
-//! of a primitive `this` for a sloppy callee (OrdinaryCallBindThis step 6.b, H14-Q2) is such a
-//! GC point: `call::call_function_object` pushes the frame first, then wraps.
+//! `Cx::call` from an embedder (inside `Isolate::with_cx_checkpoint`), under GC stress (a
+//! collection before every allocation, then the heap verifier): a call with a primitive
+//! `this` for a sloppy callee wraps `this` (OrdinaryCallBindThis step 6.b, H14-Q2), a GC
+//! point, and the argument that one call made reaches the next call intact.
 //!
-//! This lives in `ep9_cli` (an embedder) because the test holds raw `ep9_vm::Value`s, which
-//! the `ep9_builtins` clippy bans forbid there.
+//! Until M3-P3 this file tested the raw `Isolate::call` with the argument only in a heap
+//! `Vec` (the R2 rule, M2-P5-FIX-R2: every GC point of the call comes after the callee frame
+//! copied the arguments). The scoped form keeps every argument in a `Local` on the native
+//! stack, so an embedder cannot make that case any more; the R2 rule for the Rust callers of
+//! `call::call_with` that remain (the spike-native `call_from_rust`, the in-crate tests) is
+//! tested in `ep9_vm` `tests::calls::a_rust_call_copies_the_arguments_before_the_this_wrap`.
 
 use ep9_frontend::{CompileOptions, SourceOpts, Strictness};
 use ep9_heap::HeapConfig;
-use ep9_vm::{Isolate, IsolateConfig, Value};
+use ep9_vm::{Isolate, IsolateConfig, Local};
 
-/// Makes one argument with one API call and puts it straight into a heap `Vec`, so the only
-/// copy of the Value is memory the GC does not scan. `inline(never)`: its frame is gone
-/// before the call under test.
-#[inline(never)]
-fn arg_in_a_vec(iso: &mut Isolate) -> Vec<Value> {
-    let mk = iso.global("mk").expect("mk");
-    vec![iso.call(mk, Value::UNDEFINED, &[]).expect("mk runs")]
+/// The `this` of the call under test.
+#[derive(Clone, Copy)]
+enum This {
+    Undefined,
+    One,
+    True,
 }
 
-/// Plain Rust with no isolate call: zeroes a part of the native stack below the caller, so no
-/// old copy of a Value stays there for the conservative scan to find.
-#[inline(never)]
-fn clear_stack() {
-    let mut a = [1u64; 16384];
-    for x in a.iter_mut() {
-        // SAFETY: a valid, aligned element of the local array.
-        unsafe { core::ptr::write_volatile(x, 0) };
-    }
-    std::hint::black_box(&a);
-}
-
-/// Calls the global `name` with `this` and one argument held only in a `Vec`; the result as
-/// text, or "Err: <message>".
-fn call_with_an_arg_in_a_vec(name: &'static str, this: Value) -> String {
+/// Calls the global `name` with `this` and one argument that `mk()` made; the result as text,
+/// or "Err: <message>".
+fn call_with_a_new_arg(name: &'static str, this: This) -> String {
     let run = move || {
         let src = "
             globalThis.mk = function () { return { a: 7, b: 'x'.repeat(3) + 'y' }; };
@@ -59,13 +48,21 @@ fn call_with_an_arg_in_a_vec(name: &'static str, this: Value) -> String {
             ..IsolateConfig::default()
         })
         .expect("an isolate");
-        iso.run_script(unit, "r2.js").expect("runs");
-        let f = iso.global(name).expect("callee");
-        let args = arg_in_a_vec(&mut iso);
-        clear_stack();
+        iso.with_cx_checkpoint(|cx| cx.run_script(unit, "r2.js").map(|_| ()))
+            .expect("runs");
         let r = iso
-            .call(f, this, &args)
-            .map(|v| iso.display(v))
+            .with_cx_checkpoint(|cx| {
+                let mk = cx.global_binding("mk")?.expect("mk");
+                let o = cx.call(mk, Local::undefined(), &[])?;
+                let f = cx.global_binding(name)?.expect("callee");
+                let this = match this {
+                    This::Undefined => Local::undefined(),
+                    This::One => Local::int32(1),
+                    This::True => Local::boolean(true),
+                };
+                let v = cx.call(f, this, &[o])?;
+                cx.to_rust_string(v)
+            })
             .map_err(|e| e.message);
         iso.verify_heap().expect("a valid heap");
         match r {
@@ -83,26 +80,12 @@ fn call_with_an_arg_in_a_vec(name: &'static str, this: Value) -> String {
 }
 
 /// node v24.22.1: `f.call(1, {a: 7, b: 'xxxy'})` and `f.bind(1)(...)` give "object:7:xxxy";
-/// the strict `g.call(1, ...)` gives "number:7:xxxy". Before the fix, the sloppy calls with a
-/// primitive `this` gave "TypeError: Cannot read properties of object (reading 'a')": the
-/// argument was freed at the wrap.
+/// the strict `g.call(1, ...)` gives "number:7:xxxy".
 #[test]
-fn isolate_call_wraps_this_after_the_arguments_are_copied() {
-    assert_eq!(
-        call_with_an_arg_in_a_vec("f", Value::UNDEFINED),
-        "object:7:xxxy"
-    );
-    assert_eq!(
-        call_with_an_arg_in_a_vec("f", Value::int32(1)),
-        "object:7:xxxy"
-    );
-    assert_eq!(call_with_an_arg_in_a_vec("f", Value::TRUE), "object:7:xxxy");
-    assert_eq!(
-        call_with_an_arg_in_a_vec("g", Value::int32(1)),
-        "number:7:xxxy"
-    );
-    assert_eq!(
-        call_with_an_arg_in_a_vec("bf", Value::UNDEFINED),
-        "object:7:xxxy"
-    );
+fn cx_call_wraps_a_primitive_this_under_gc_stress() {
+    assert_eq!(call_with_a_new_arg("f", This::Undefined), "object:7:xxxy");
+    assert_eq!(call_with_a_new_arg("f", This::One), "object:7:xxxy");
+    assert_eq!(call_with_a_new_arg("f", This::True), "object:7:xxxy");
+    assert_eq!(call_with_a_new_arg("g", This::One), "number:7:xxxy");
+    assert_eq!(call_with_a_new_arg("bf", This::Undefined), "object:7:xxxy");
 }

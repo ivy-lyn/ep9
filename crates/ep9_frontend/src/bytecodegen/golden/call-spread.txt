@@ -1,6 +1,6 @@
 # call-spread: script (sloppy)
 # | var f, o, a; f(...a); f(1, ...a); f(...a, 1); o.m(...a); new f(...a); new f(...a, 2);
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=85 source=embedded hints=none
 source_hash=03dd5224e8b3fa21ad725114c13fbf35cf1bebaeacd86c2405355b116d6c077a
 strings (7):

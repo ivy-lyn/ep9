@@ -1,6 +1,7 @@
 //! The `with_cx`-scoped embedding forms (`Cx::run_script`, `Cx::global_binding`,
-//! `Cx::display`), `Isolate::global` and the TDZ, `InterruptHandle::request`, and the heap
-//! limit callback (M2-P3 ISOLATE-API; H20-Q4, H23).
+//! `Cx::display`), the raw global read (`NativeCx::global_value`, the tests' `global_raw`)
+//! and the TDZ, `InterruptHandle::request`, and the heap limit callback (M2-P3 ISOLATE-API;
+//! H20-Q4, H23).
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
@@ -34,8 +35,8 @@ fn globals_script() -> VerifiedUnit {
 
 /// The scoped forms under every dispatch, with and without GC stress: the script's result and
 /// the globals it made survive a collection inside `with_cx`; `global_binding` finds a name
-/// on the global object's prototype chain, which `Isolate::global` (own data properties only)
-/// does not.
+/// on the global object's prototype chain, which the raw read (own data properties only) does
+/// not.
 #[test]
 fn scoped_forms_run_a_script_and_read_globals() {
     for &d in Dispatch::ALL {
@@ -65,10 +66,10 @@ fn scoped_forms_run_a_script_and_read_globals() {
                     "{label}"
                 );
                 assert_eq!(
-                    iso.global("y").map(|v| iso.display(v)).as_deref(),
+                    iso.global_raw("y").map(|v| iso.display_raw(v)).as_deref(),
                     Some("7")
                 );
-                assert!(iso.global("toString").is_none(), "{label}");
+                assert!(iso.global_raw("toString").is_none(), "{label}");
                 iso.collect_garbage();
                 iso.verify_heap().unwrap();
             });
@@ -110,16 +111,18 @@ fn tdz_script() -> VerifiedUnit {
     )
 }
 
-/// After the script fails, `x` stays in its TDZ: `Isolate::global` gives `None` (never the
-/// hole), and `Cx::global_binding` throws the ReferenceError that a read of `x` throws.
+/// After the script fails, `x` stays in its TDZ: the raw read gives `None` (never the hole),
+/// and `Cx::global_binding` throws the ReferenceError that a read of `x` throws.
 #[test]
 fn a_binding_in_its_tdz_is_none_or_a_reference_error() {
     for &d in Dispatch::ALL {
         on_big_stack(move || {
             let mut iso = isolate(config(d, false));
-            let e = iso.run_script(tdz_script(), "tdz.js").unwrap_err();
+            let e = iso
+                .with_cx_checkpoint(|cx| cx.run_script(tdz_script(), "tdz.js").map(|_| ()))
+                .unwrap_err();
             assert_eq!(e.message, "1");
-            assert!(iso.global("x").is_none(), "{}", d.name());
+            assert!(iso.global_raw("x").is_none(), "{}", d.name());
             let e = iso
                 .with_cx(|cx| cx.global_binding("x").map(|_| ()))
                 .unwrap_err();
@@ -184,22 +187,18 @@ fn a_requested_callback_runs_at_the_first_poll() {
             .unwrap();
             assert_eq!(RAN.with(Cell::get), 0, "nothing runs before a poll");
             iso.cx.budget = 3;
-            let r = iso.run_script(loop_then_seen(100), "poll.js");
-            assert_eq!(
-                r.map(|v| iso.display(v)).as_deref(),
-                Ok("1"),
-                "{}",
-                d.name()
-            );
+            let run = |iso: &mut crate::Isolate, file: &str| {
+                iso.with_cx_checkpoint(|cx| {
+                    cx.run_script(loop_then_seen(100), file)
+                        .map(|v| cx.display(v))
+                })
+            };
+            let r = run(&mut iso, "poll.js");
+            assert_eq!(r.as_deref(), Ok("1"), "{}", d.name());
             // The bit is clear and the queue empty: the next polls run nothing.
             iso.cx.budget = 3;
-            let r = iso.run_script(loop_then_seen(100), "again.js");
-            assert_eq!(
-                r.map(|v| iso.display(v)).as_deref(),
-                Ok("1"),
-                "{}",
-                d.name()
-            );
+            let r = run(&mut iso, "again.js");
+            assert_eq!(r.as_deref(), Ok("1"), "{}", d.name());
         });
     }
 }
@@ -221,12 +220,19 @@ fn a_callback_waits_for_a_poll_and_callbacks_keep_their_order() {
             }));
         }
         // 100 back edges of a 10,000 budget: no poll.
-        let r = iso.run_script(loop_then_seen(100), "idle.js");
-        assert_eq!(r.map(|v| iso.display(v)).as_deref(), Ok("0"));
+        let run = |iso: &mut crate::Isolate, file: &str| {
+            iso.with_cx_checkpoint(|cx| {
+                cx.run_script(loop_then_seen(100), file)
+                    .map(|v| cx.display(v))
+            })
+        };
+        let r = run(&mut iso, "idle.js");
+        assert_eq!(r.as_deref(), Ok("0"));
         assert!(order.lock().unwrap().is_empty());
         iso.cx.budget = 3;
-        let r = iso.run_script(loop_then_seen(100), "poll.js");
-        assert_eq!(r.map(|v| iso.display(v)).as_deref(), Ok("3"));
+        let r = run(&mut iso, "poll.js");
+        assert_eq!(r.as_deref(), Ok("3"));
+
         assert_eq!(*order.lock().unwrap(), [0, 1, 2]);
     });
 }
@@ -266,14 +272,16 @@ fn a_callback_reaches_a_running_endless_loop() {
                 }));
             });
             take_output();
-            let r = iso.run_script(endless_loop(), "loop.js");
+            let r =
+                iso.with_cx_checkpoint(|cx| cx.run_script(endless_loop(), "loop.js").map(|_| ()));
             requester.join().unwrap();
             let mut s = Asm::script(0);
             s.lda_str("again");
             s.b.return_();
-            let after = iso
-                .run_script(unit("", vec![s.finish()]), "again.js")
-                .map(|v| iso.display(v));
+            let after = iso.with_cx_checkpoint(|cx| {
+                cx.run_script(unit("", vec![s.finish()]), "again.js")
+                    .map(|v| cx.display(v))
+            });
             let ran_on = *ran_on.lock().unwrap();
             (r.map(|_| ()), ran_on, std::thread::current().id(), after)
         });
@@ -468,4 +476,176 @@ fn the_default_heap_limit_is_the_cage() {
     assert!(HeapConfig::default().near_limit.is_none());
     let iso = isolate(IsolateConfig::default());
     assert_eq!(iso.heap().max_heap_bytes(), usize::MAX);
+}
+
+// ---- realms (M3-P1 REALMS, H22-Q3) -----------------------------------------------------------
+
+/// `realm()`: the global object of the realm the host function runs in (H20 R5).
+fn realm_global<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Ok(cx.global().into())
+}
+
+/// `make()`: a new ordinary object of the realm the host function runs in.
+fn make_object<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    Ok(cx.new_object().into())
+}
+
+/// Makes a realm, keeps two of its host functions (`realmOf`, `make`) as globals of the first
+/// realm, and returns a weak handle to its global object. Out of line, so no Value of the new
+/// realm stays in the caller's frame (the conservative scan reads live frames).
+#[inline(never)]
+fn keep_a_realm(iso: &mut crate::Isolate) -> ep9_heap::WeakHandle {
+    let (rg, mk, weak) = iso
+        .create_realm(|cx, global| {
+            let rg = cx.new_builtin_closure(realm_global, "realm", 0, Local::undefined());
+            let mk = cx.new_builtin_closure(make_object, "make", 0, Local::undefined());
+            let rt = cx.inner().rt();
+            Ok((
+                rt.heap.new_global(crate::runtime::val(rg.bits())),
+                rt.heap.new_global(crate::runtime::val(mk.bits())),
+                rt.heap.new_weak(crate::runtime::val(global.bits())),
+            ))
+        })
+        .unwrap();
+    for (name, h) in [("realmOf", rg), ("make", mk)] {
+        let v = iso.rt.heap.global(h).to_bits();
+        iso.with_cx(|cx| {
+            let g = cx.global();
+            cx.set(g, name, Local::<crate::JsValue>::from_bits(v), true)?;
+            Ok(())
+        })
+        .unwrap();
+        iso.rt.heap.drop_global(h);
+    }
+    weak
+}
+
+/// Calls the kept functions of [`keep_a_realm`] from the first realm: (their realm's global
+/// is not the first realm's, the object `make` makes has that realm's
+/// `%Object.prototype%`, not the first realm's). Out of line, as [`keep_a_realm`].
+#[inline(never)]
+fn use_the_kept_realm(iso: &mut crate::Isolate) -> JsResult<(bool, bool, bool)> {
+    iso.with_cx(|cx| {
+        let g = cx.global();
+        let rg = cx.get(g, "realmOf")?;
+        let mk = cx.get(g, "make")?;
+        let other = cx.call(rg, Local::undefined(), &[])?;
+        let o = cx.call(mk, Local::undefined(), &[])?;
+        cx.collect_garbage();
+        let other = other.as_object().expect("a global object");
+        let object = cx.get(other, "Object")?.as_object().expect("%Object%");
+        let proto = cx.get(object, "prototype")?;
+        let o = o.as_object().expect("an object");
+        let o_proto = cx.get_prototype_of(o)?;
+        let mine = cx.intrinsic(crate::IntrinsicId::ObjectPrototype);
+        Ok((
+            cx.same_value(other, g),
+            cx.same_value(o_proto, proto),
+            cx.same_value(o_proto, mine),
+        ))
+    })
+    .map_err(|_| ep9_value::Throw)
+}
+
+/// A script that evaluates one tagged-template site (GetTemplateObject) and returns its
+/// template object.
+fn template_script() -> VerifiedUnit {
+    let mut s = Asm::script(0);
+    let k = s.b.template_object(vec![("x".into(), Some("x".into()))]);
+    s.b.get_template_object(k, s.lit).return_();
+    unit("", vec![s.finish()])
+}
+
+/// Makes a realm that nothing holds; returns a weak handle to its global object. It makes
+/// a function and the generator and async function shapes in that realm, so all 3 function
+/// shape caches hold a shape of it until the switch back, and a template object, which the
+/// isolate's template map finds by site (X-REALM2). Out of line, as [`keep_a_realm`].
+#[inline(never)]
+fn lose_a_realm(iso: &mut crate::Isolate) -> ep9_heap::WeakHandle {
+    iso.create_realm(|cx, global| {
+        cx.new_builtin_closure(make_object, "make", 0, Local::undefined());
+        cx.run_script(template_script(), "template.js")?;
+        let rt = cx.inner().rt();
+        crate::shape::generator_function_shape(rt);
+        crate::shape::async_function_shape(rt);
+        Ok(rt.heap.new_weak(crate::runtime::val(global.bits())))
+    })
+    .unwrap()
+}
+
+/// Overwrites the stack below the caller's frame with zeros, so the conservative scan finds
+/// no stale copy of a dead realm's cells there (the pattern of `tests/shapes.rs`).
+#[inline(never)]
+fn scrub_stack() {
+    let mut words = [0usize; 1 << 15];
+    std::hint::black_box(&mut words);
+}
+
+/// Is the cell of the weak handle `h` still live? Out of line, as [`keep_a_realm`]: the
+/// `Option<Value>` stays in this frame only.
+#[inline(never)]
+fn alive(iso: &crate::Isolate, h: ep9_heap::WeakHandle) -> bool {
+    iso.rt.heap.weak(h).is_some()
+}
+
+/// Create, use and drop realms (`Isolate::create_realm`, `Cx::create_realm`), under every
+/// dispatch, with and without GC stress:
+/// - a realm that nothing reachable holds is collected (a weak handle to its global object
+///   clears), also when it made a template object (X-REALM2);
+/// - a realm whose functions the first realm keeps in globals stays live with all its roots:
+///   after collections, the kept functions run in it (their realm's global, and an object
+///   with that realm's `%Object.prototype%`), and the first realm is current again after
+///   each call;
+/// - once the first realm deletes those globals, the realm is collected too.
+///
+/// No function is made in the first realm before a collection: the realm switch empties the
+/// function shape caches (`shape::clear_realm_caches`), so the shape of the last realm that
+/// made a function does not keep that realm live.
+#[test]
+fn realms_are_made_used_and_dropped() {
+    for &d in Dispatch::ALL {
+        for stress in [false, true] {
+            on_big_stack(move || {
+                let label = format!("{} stress={stress}", d.name());
+                let mut iso = isolate(config(d, stress));
+                let first = iso.cx.realm;
+                let lost = lose_a_realm(&mut iso);
+                assert_eq!(iso.cx.realm, first, "{label}");
+                scrub_stack();
+                iso.collect_garbage();
+                assert!(!alive(&iso, lost), "{label}: lost realm collected");
+                iso.rt.heap.drop_weak(lost);
+                let kept = keep_a_realm(&mut iso);
+                for _ in 0..3 {
+                    iso.collect_garbage();
+                    assert!(alive(&iso, kept), "{label}: kept by its functions");
+                    assert_eq!(use_the_kept_realm(&mut iso), Ok((false, true, false)));
+                    assert_eq!(iso.cx.realm, first);
+                    assert_eq!(iso.cx.global_this, iso.rt.global());
+                }
+                iso.with_cx(|cx| {
+                    let g = cx.global();
+                    cx.delete_property_or_throw(g, "realmOf")?;
+                    cx.delete_property_or_throw(g, "make")?;
+                    Ok(())
+                })
+                .unwrap();
+                scrub_stack();
+                iso.collect_garbage();
+                assert!(!alive(&iso, kept), "{label}: dropped with its functions");
+                iso.rt.heap.drop_weak(kept);
+                iso.verify_heap().unwrap();
+            });
+        }
+    }
 }

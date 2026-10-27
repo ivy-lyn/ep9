@@ -12,6 +12,8 @@
 //   --shells FILE       reference shells (default third_party/shells/versions.txt, written by
 //                       scripts/sync-shells.sh)
 //   --workloads LIST    default t0-loop,t0-branchy,t0-call,t0-prop,ci-v0,richards (workloads.mjs)
+//   --harness H         the v8v7 harness: stub (default; runs 1 and 2) or base (the real base.js,
+//                       run 3; v8v7.mjs). The JSON names it per workload
 //   --rounds N          measured paired rounds, >= 10 (class M minimum; default 10)
 //   --warmup N          dropped warm-up rounds (default 1)
 //   --host FILE         tools/bench/hosts/<host>.toml. Without it the run is provisional
@@ -67,7 +69,7 @@ import { setTimeout as sleepMs } from "node:timers/promises";
 import { guardAfter, guardBefore, hostInfo, load1, LOAD_MARGIN, readHostFile } from "../lib/host.mjs";
 import { geomean, median, verdict } from "../lib/stats.mjs";
 import { DEFAULT_WORKLOADS, EMPTY, materialize, WORKLOADS } from "./workloads.mjs";
-import { ROOT } from "./v8v7.mjs";
+import { HARNESSES, ROOT } from "./v8v7.mjs";
 
 export const SCHEMA = "ep9-cross/v1";
 /** Class M minimum (10-quality section 3). */
@@ -97,6 +99,7 @@ export function parseArgs(argv) {
     engines: DEFAULT_ENGINES,
     shells: path.join(ROOT, "third_party/shells/versions.txt"),
     workloads: DEFAULT_WORKLOADS,
+    harness: "stub",
     rounds: MIN_ROUNDS,
     warmup: 1,
     host: null,
@@ -132,6 +135,7 @@ export function parseArgs(argv) {
       case "--engines": o.engines = val().split(","); break;
       case "--shells": o.shells = path.resolve(val()); break;
       case "--workloads": o.workloads = val().split(","); break;
+      case "--harness": o.harness = val(); break;
       case "--rounds": o.rounds = num(a, val()); break;
       case "--warmup": o.warmup = num(a, val()); break;
       case "--host": o.host = path.resolve(val()); break;
@@ -164,6 +168,7 @@ export function parseArgs(argv) {
   for (const e of o.engines) if (!ENGINES[e]) throw new UsageError(`unknown engine ${e} (known: ${Object.keys(ENGINES).join(", ")})`);
   for (const w of o.workloads) if (!WORKLOADS[w]) throw new UsageError(`unknown workload ${w} (known: ${Object.keys(WORKLOADS).join(", ")})`);
   if (new Set(o.workloads).size !== o.workloads.length) throw new UsageError("--workloads has a duplicate");
+  if (!HARNESSES.includes(o.harness)) throw new UsageError(`--harness must be one of ${HARNESSES.join(", ")}`);
   return o;
 }
 
@@ -477,7 +482,7 @@ export async function run(o, deps = {}) {
   const work = o.work ?? mkdtempSync(path.join(os.tmpdir(), "ep9-cross-"));
   mkdirSync(work, { recursive: true });
   try {
-    const files = materialize(o.workloads, work);
+    const files = materialize(o.workloads, work, { harness: o.harness });
     const mWorkloads = o.workloads.filter((w) => files[w].classes.includes("M"));
     const exec = deps.exec ?? ((e, f) => spawnRun(e, f, o.timeoutS));
     const byId = Object.fromEntries(engines.map((e) => [e.id, e]));

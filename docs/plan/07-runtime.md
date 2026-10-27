@@ -33,12 +33,12 @@ Evidence tags: [R01] [R04] [R08] [R09] [R10] [R11] [R12] [R14] [R15] [R16] [R17]
 |---|---|---|---|
 | Fast startup | Snapshot-ready heap. Stable indices for roots, intrinsics, atoms, fuses and snapshot root shapes (H13) | M0 rules; index lists M1 | M4 (A1) |
 | Code cache | Serializable `CompiledUnit`; deterministic, versioned bytecode ABI (H1, H2) | M0 week 3 | M4 (A1) |
-| Microtasks, FinalizationRegistry | Host job hooks, ClearKeptObjects, HostEnqueueFinalizationRegistryCleanupJob [R08] | M0 | M1 |
-| `vm.createContext`, `$262.createRealm` | N realms per isolate | M0 | M1 |
-| CommonJS wrapper | `compile_function_ctor(params, body)` | M0 | M1 |
-| Dynamic import, `import.meta` | HostLoadImportedModule, HostGetImportMetaProperties, HostGetSupportedImportAttributes [R08] | M0 | M1 |
-| Unhandled rejections | HostPromiseRejectionTracker | M0 | M1 |
-| Ctrl-C, watchdog, termination, heap limit | Thread-safe interrupt request polled at safepoints. TerminateExecution. Near-heap-limit callback | M0 | M1 |
+| Microtasks, FinalizationRegistry | Host job hooks, ClearKeptObjects, HostEnqueueFinalizationRegistryCleanupJob [R08] | M0 | Microtasks: M0 month 2 (M2-P4 PROMISE: the engine job queue, drained by `Isolate::perform_microtask_checkpoint`; the plan said M1). FinalizationRegistry, ClearKeptObjects: M1 (M3-P1-WEAK-GAP) |
+| `vm.createContext`, `$262.createRealm` | N realms per isolate | M0 | M0 month 3 (M3-P1 REALMS; the plan said M1) |
+| CommonJS wrapper | `compile_function_ctor(params, body)` | M0 | M0 month 2 (M2-P3 FNCTOR; the plan said M1) |
+| Dynamic import, `import.meta` | HostLoadImportedModule, HostGetImportMetaProperties, HostGetSupportedImportAttributes [R08] | M0 | M0 month 3 (M3-P2 MODULE, M3-P3 IMPORT-TLA; the plan said M1): `import()`, `import.meta`, the host loader (`Isolate::with_module_host`), only the `type` import attribute. HostGetImportMetaProperties: M1 (`import.meta` has no host properties yet) |
+| Unhandled rejections | HostPromiseRejectionTracker | M0 | M0 month 2 (M2-P4 PROMISE, M2-P4-PROMISE-UNHANDLED; the plan said M1): an optional embedder callback for the Reject and Handle operations (`IsolateConfig::promise_rejection_tracker`, a `PromiseRejectionTracker`), and the list of unhandled rejections that the host drains with `Isolate::take_unhandled_rejections` |
+| Ctrl-C, watchdog, termination, heap limit | Thread-safe interrupt request polled at safepoints. TerminateExecution. Near-heap-limit callback | M0 | M0 month 2 (M2-P3 ISOLATE-API: `InterruptHandle`, `HeapConfig::near_limit`; `TerminateHandle` since M0 weeks 2-3; the plan said M1) |
 | `Error.stack`, CallSite | Per-frame metadata. UTF-16 columns | M0 | M1 (V8 API in M4) |
 | Inspector | Position tables, kept ScopeInfo, debug bytecode copy, deopt-all, async stack records | M0 | M4 |
 | Sampling profiler | Frame pointers in Rust, JIT and AOT code. VM frames can be walked from a suspended thread | M0 | M6 |
@@ -219,6 +219,7 @@ D16 is **no** (decided 2026-10-20, by rule): no iOS before v1, and the A3 gate s
 | Acceptance | JIT-only rows | tsc and prettier per shipped mode; G15 report; `ep9 -e 0` kept as a runtime gate |
 | iOS | Only via D11 | Conditional packaging section (D16) |
 | Unchanged | | Event loop, modules, `node:*`, web APIs, workers, inspector, Node-API, API boundary, lone-surrogate shim |
+| As built 2026-10-26 (M3-P4 DOCS) | | §2 "Built in": N realms per isolate (`$262.createRealm`; the engine side of `vm.createContext`) were built in M0 month 3 (M3-P1 REALMS), and `compile_function_ctor` in M0 month 2 (M2-P3 FNCTOR), not in M1. Also built in M0 (the plan said M1): microtasks (M2-P4 PROMISE), unhandled rejections (M2-P4-PROMISE-UNHANDLED), the interrupt request, termination and the near-heap-limit callback (M2-P3 ISOLATE-API), `import()` and `import.meta` (M3-P2 MODULE, M3-P3 IMPORT-TLA); FinalizationRegistry, ClearKeptObjects and HostGetImportMetaProperties stay M1. No contract or milestone gate changes ([decisions-log §12-§13](../decisions-log.md)) |
 | Decisions 2026-10-20 | | Unit fallback by field (H35 S3); debugger write rule (H24, [R18]); `--sound` only by the D17 rule; D4 exclusion rule; D16 = no; FP environment rule (H36). See [decisions-log §5](../decisions-log.md#5-2026-10-20-decisions-made-by-the-agent-team-under-the-users-instruction) |
 
 ## Evidence tags

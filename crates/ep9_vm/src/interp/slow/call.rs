@@ -8,6 +8,15 @@
 //! the caller's callee register, so everything its chain holds stays rooted until the frame
 //! push.
 //!
+//! Realms (H22-Q3): a bytecode callee of another realm does not get a frame here. It runs
+//! nested through `call::call_function_object` (or `call::construct_function_object`), which
+//! switches to its realm and back (`realm::enter_realm_of`, `realm::leave`): one Rust level per
+//! cross-realm call, and the dispatch continues at the next instruction with its result, as
+//! for a host callee. A host callee switches in `call::call_host`. So a frame pushed here
+//! always runs in the caller's realm, and no return path needs a realm check. Spike B: a
+//! native-slotted or (b) callee of another realm runs nested in its realm too
+//! (`native::call_in_its_realm`).
+//!
 //! Spike B (feature `spike-native` only, `native.rs`): a call of a FUNCTION with a Baseline or
 //! AotBaseline slot (no construct, no spread, not host, not a class constructor) is entered
 //! natively. The default build has no such branch. Two places enter it:
@@ -39,9 +48,9 @@ use super::{enter, interrupt};
 
 // ---- calls ---------------------------------------------------------------------------------
 
-/// The call or construct instruction at `pc` (all `Call*` and `Construct*` opcodes). `acc` is
-/// `new.target` for `Construct`. A bytecode callee gets a new frame and the run continues in it
-/// (no Rust recursion); a host callee runs here. Sets `cx.out_fp`/`cx.out_pc`.
+/// The call or construct instruction at `pc` (all `Call*` and `Construct*` opcodes); sets
+/// `cx.out_fp`/`cx.out_pc`. `acc` is `new.target` for `Construct`. A bytecode callee gets a new
+/// frame, no Rust recursion (a callee of another realm runs nested); a host callee runs here.
 #[cold]
 #[inline(never)]
 pub(crate) fn call(cx: &mut Cx, fp: *mut u64, pc: *const u8, acc: u64) -> u64 {
@@ -70,6 +79,7 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
     if !s.construct
         && !s.spread
         && let Some(fi) = crate::native::native_callee(s.callee)
+        && object::function_realm(s.callee) == cx.realm
     {
         return call_native(cx, fp, s, fi);
     }
@@ -140,6 +150,19 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
             cx.out_pc = s.next_pc;
             return Ok(r);
         }
+        if object::function_realm(callee) != cx.realm {
+            // A constructor of another realm: [[Construct]] from Rust (one nested run).
+            let r = call::construct_function_object(
+                cx,
+                callee,
+                argc,
+                |i| args[i as usize],
+                new_target,
+            )?;
+            cx.out_fp = fp;
+            cx.out_pc = s.next_pc;
+            return Ok(r);
+        }
         if !runs_bytecode(fi) {
             return Err(not_implemented(cx, "calling code of this dispatch kind"));
         }
@@ -156,6 +179,8 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
         // SAFETY: `fp` is the live top frame; `this` is valid Value bits.
         let Some(stub) = (unsafe { call::push_construct_stub(cx, fp, this, callee, s.next_pc) })
         else {
+            // The call takes its unit also when its frame does not fit (R3-2).
+            cx.budget -= 1;
             return stack_overflow(cx);
         };
         // SAFETY: `stub` is the new top frame; the callee frame goes right above it.
@@ -174,10 +199,12 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
                 new_target,
             )
         };
+        // One unit per call, also when the frame does not fit (R3-2): a caught RangeError
+        // must not keep the budget from running out, or the poll never comes.
+        cx.budget -= 1;
         let Some(nfp) = nfp else {
             return stack_overflow(cx);
         };
-        cx.budget -= 1;
         cx.out_fp = nfp;
         cx.out_pc = fi.code;
         return Ok(UNDEFINED);
@@ -209,6 +236,30 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
             fp,
             s.next_pc,
         )?;
+        cx.out_fp = fp;
+        cx.out_pc = s.next_pc;
+        return Ok(r);
+    }
+    if object::function_realm(callee) != cx.realm {
+        // A function of another realm: a call from Rust in its realm (one nested run; its
+        // class-constructor TypeError is that realm's, §10.2.1 step 2). The arguments stay
+        // rooted in the caller's registers (and `args` for a spread or bound call, as below).
+        // Spike B: a native-slotted or (b) callee is entered natively, in its realm.
+        #[cfg(feature = "spike-native")]
+        // SAFETY: `fp` is the live top frame (bytecode runs with no scratch area), and the
+        // reader reads `args`, which the push copies before any GC point.
+        if let Some(r) = unsafe {
+            crate::native::call_in_its_realm(cx, fp, s.next_pc, callee, this, argc, |i| {
+                args[i as usize]
+            })
+        } {
+            let r = r?;
+            cx.out_fp = fp;
+            cx.out_pc = s.next_pc;
+            return Ok(r);
+        }
+        let r =
+            call::call_function_object(cx, callee, this, argc, |i| args[i as usize], UNDEFINED)?;
         cx.out_fp = fp;
         cx.out_pc = s.next_pc;
         return Ok(r);
@@ -254,10 +305,12 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
             UNDEFINED,
         )
     };
+    // One unit per call, also when the frame does not fit (R3-2): `call_fast` gives its unit
+    // back at that exit, and a caught RangeError must not keep the budget from running out.
+    cx.budget -= 1;
     let Some(nfp) = nfp else {
         return stack_overflow(cx);
     };
-    cx.budget -= 1;
     cx.out_fp = nfp;
     cx.out_pc = fi.code;
     Ok(UNDEFINED)
@@ -286,8 +339,8 @@ fn do_call(cx: &mut Cx, fp: *mut u64, s: &CallSite, acc: u64) -> Res<u64> {
 ///   the caller's registers too, and native code runs with its frame published, so the GC
 ///   scan sees them in both frames;
 /// - state: `slow::call` already published `fp` and the call's offset (`enter`) and ran the
-///   interrupt poll; `enter_native` counts one budget unit, and a full VM stack throws the
-///   RangeError. No feedback count and no native stack check (`native.rs` module doc);
+///   interrupt poll; `enter_native` takes one budget unit, also on a full VM stack (its
+///   RangeError). No feedback count and no native stack check (`native.rs` module doc);
 /// - result: the accumulator and the next pc (`out_fp`/`out_pc`), or `Err` and `slow::call`
 ///   unwinds from this call instruction.
 ///
@@ -349,6 +402,10 @@ unsafe fn native_entry(cx: &mut Cx, fp: *mut u64, pc: *const u8) -> Option<Res<u
     // Operand 0 is the callee in all 9.
     let callee = rd(reg(0));
     let fi = crate::native::native_callee(callee)?;
+    // A callee of another realm takes `do_call` (its realm switch).
+    if object::function_realm(callee) != cx.realm {
+        return None;
+    }
     #[cfg(test)]
     crate::native::T0_ENTRY_HITS.with(|h| h.set(h.get() + 1));
     // `go` once per shape, each with its own argument reader: no slot list and no match per
@@ -527,10 +584,11 @@ fn enter_b_cold(
             UNDEFINED,
         )
     };
+    // One unit, also when the frame does not fit (R3-2), as in `do_call`.
+    cx.budget -= 1;
     let Some(nfp) = nfp else {
         return stack_overflow(cx);
     };
-    cx.budget -= 1;
     cx.out_fp = nfp;
     cx.out_pc = crate::native::ENTER_B_STUB.as_ptr();
     Ok(UNDEFINED)

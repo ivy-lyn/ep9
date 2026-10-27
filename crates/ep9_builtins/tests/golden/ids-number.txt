@@ -10,3 +10,6 @@
 0x0806   4.6          method       1       "isSafeInteger"  (%Number%.isSafeInteger w-c)
 0x0807   4.7          method       1       "parseFloat"  (%Number%.parseFloat w-c)
 0x0808   4.8          method       2       "parseInt"  (%Number%.parseInt w-c)
+0x0809   4.9          method       1       "toExponential"  (%Number.prototype%.toExponential w-c)
+0x080a   4.10         method       1       "toFixed"  (%Number.prototype%.toFixed w-c)
+0x080b   4.11         method       1       "toPrecision"  (%Number.prototype%.toPrecision w-c)

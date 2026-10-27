@@ -1,9 +1,9 @@
-//! Frame push and calls (H14). JS→JS calls never recurse in Rust: the interpreter pushes the
-//! callee frame and jumps to its code. Rust recursion happens only at the edges:
+//! Frame push and calls (H14). JS→JS calls in one realm never recurse in Rust: the interpreter
+//! pushes the callee frame and jumps to its code. Rust recursion happens only at the edges:
 //!
 //! | Path | How | Native stack |
 //! |---|---|---|
-//! | JS → JS (`Call*`, `Construct`) | push frame, jump (handler or `rt_call`) | none |
+//! | JS → JS (`Call*`, `Construct`) | push frame, jump (handler or `rt_call`); a callee of another realm: [`call_function_object`] in its realm (`slow::call`) | none; another realm: one Rust level, checked |
 //! | JS → host function | push host frame, call the Rust fn | one Rust call, checked |
 //! | Rust → JS (`call_function`, host callbacks, ToPrimitive) | push entry frame (return pc = EXIT stub), run the dispatch | one dispatch run, checked |
 //! | generator resume (`next`/`return`/`throw`, [`run_resumed`]) | push a resumed frame (fp-3 = the generator, return pc = EXIT stub), run the dispatch | one dispatch run, checked |
@@ -18,6 +18,12 @@
 //!
 //! Host functions use the builtin ABI (H20, abi/mod.rs). [`call_host`] checks the throw
 //! protocol in debug builds: `Err` comes with a pending exception and `Ok` without one.
+//!
+//! Realms (H22-Q3): a callee of another realm runs with its realm current
+//! (`realm::enter_realm_of` before the call, `realm::leave` after it, also after a throw).
+//! [`call_host`], the bytecode path of [`call_function_object`] and [`run_resumed`] switch;
+//! `slow::call` sends a bytecode callee of another realm through [`call_function_object`] or
+//! [`construct_function_object`], so every cross-realm call is one of these Rust edges.
 //!
 //! Bound functions (§10.4.1, `bound.rs`) never get a frame. [`call_with`] and
 //! [`construct_with`] walk the chain to the innermost target FUNCTION and call it with the
@@ -43,7 +49,8 @@ use crate::interp::{self, Cx, EXIT_STUB};
 use crate::kinds::{OBJECT, cell_kind, is_callable, is_cell_bits};
 use crate::object::{self, function_context, function_info, is_function, is_object};
 use crate::property;
-use crate::runtime::{Atom, ErrorKind, Root, Runtime, frame_top};
+use crate::realm;
+use crate::runtime::{Atom, ErrorKind, Runtime, frame_top};
 use crate::unit::FunctionInfo;
 
 /// Pushes the argument area, header and register file of a frame for `fi` at `base`. Returns
@@ -83,13 +90,7 @@ pub(crate) unsafe fn push_frame(
     // SAFETY: [base, top) is inside the stack (top <= limit <= end, caller contract) and above
     // every live frame, so these writes clobber nothing live.
     unsafe {
-        for i in 0..argc {
-            *base.add(n - 1 - i as usize) = arg(i);
-        }
-        for i in argc as usize..n {
-            *base.add(n - 1 - i) = UNDEFINED;
-        }
-        *base.add(n) = this;
+        // The header and the receiver first, so their inputs are dead before the loops.
         *fp.offset(slot::CALLER_FP) = native_of(caller_fp);
         *fp.offset(slot::RETURN_PC) = native_of(return_pc);
         *fp.offset(slot::CALLEE) = callee;
@@ -103,11 +104,37 @@ pub(crate) unsafe fn push_frame(
         *fp.offset(slot::NEW_TARGET) = new_target;
         *fp.offset(slot::CONTEXT) = context;
         *fp.offset(slot::BYTECODE_OFFSET) = int32_bits(0);
-        for r in 0..fi.register_count as usize {
-            *fp.add(r) = UNDEFINED;
+        // The receiver and the arguments at fixed offsets from `fp` too (`base + n` is
+        // `fp + RECEIVER`; argument `i` is at `fp + PARAM0 - i`), so the stores need no other
+        // pointer register.
+        *fp.offset(slot::RECEIVER) = this;
+        for i in 0..argc {
+            *fp.offset(slot::PARAM0 - i as isize) = arg(i);
         }
+        fill_undefined(base, fp.offset(slot::PARAM0 + 1 - argc as isize));
+        fill_undefined(fp, top);
     }
     Some(fp)
+}
+
+/// Writes undefined to every slot of `[from, to)`: the missing arguments and the registers of
+/// a new frame. A plain loop, one store per slot: these ranges are short (most T0 functions
+/// have fewer than 10 registers), and the vector loop that LLVM makes of a plain fill costs
+/// more set-up instructions and registers than the T0 call handlers have free (M3-P2 PERF3:
+/// a64 cachegrind t0-call -1.5% against the vector loop; a loop of 2 stores per pass, or one
+/// counted down, costs more). The volatile store only keeps LLVM from making the vector loop
+/// again; it is a plain store.
+///
+/// # Safety
+/// `[from, to)` is writable stack memory.
+#[inline(always)]
+unsafe fn fill_undefined(from: *mut u64, to: *mut u64) {
+    let mut p = from;
+    while p < to {
+        // SAFETY: `p` is in `[from, to)` (caller contract).
+        unsafe { p.write_volatile(UNDEFINED) };
+        p = p.wrapping_add(1);
+    }
 }
 
 /// Pushes the frame of a resumed generator (FRAME 2): [`push_frame`] for a call (the
@@ -142,28 +169,15 @@ pub(crate) unsafe fn push_resume_frame(
     Some(fp)
 }
 
-/// OrdinaryCallBindThis (§10.2.1.2) for the receiver a caller passes, without the ToObject
-/// step: a sloppy callee gets the global object for undefined/null; any other receiver as it
-/// is. It never allocates. Only the spike-native entries (`native.rs` `enter_native`,
-/// `run_b`) still use it (a logged spike-only gap); every other call site that runs bytecode
-/// takes [`try_bind_this`].
-#[cfg(feature = "spike-native")]
-#[inline(always)]
-pub(crate) fn bind_this(fi: &FunctionInfo, this: u64, global: u64) -> u64 {
-    if !fi.is_strict() && (this == UNDEFINED || this == NULL) {
-        global
-    } else {
-        this
-    }
-}
-
 /// OrdinaryCallBindThis (§10.2.1.2) with no allocation: the this value of a call of `fi`, or
 /// `None` when step 6.b makes a wrapper object (a sloppy callee and a number, boolean,
-/// string or symbol receiver); the caller then takes [`wrap_this`] (a cold path). A strict
-/// callee costs one flag test; a sloppy callee with an object receiver one cell test, one
-/// kind load and one compare (the hot T0 call of a method): a receiver is a language value,
-/// so a cell of kind 16 or more is an object (kinds 64 and up are internal cells, never a
-/// receiver), and the upper bound of `is_object` is not tested.
+/// string or symbol receiver); the caller then takes [`wrap_this`] (a cold path).
+///
+/// The receiver is tested before the strictness flag (M3-P2 PERF3): an object receiver (the
+/// hot T0 call of a method) costs one cell test, one kind load and one compare, strict or
+/// sloppy, with no flag test. A receiver is a language value, so a cell of kind 16 or more is
+/// an object (kinds 64 and up are internal cells, never a receiver), and the upper bound of
+/// `is_object` is not tested. Any other receiver then costs one flag test for a strict callee.
 ///
 /// The caller wraps, not the callee prologue (H14-Q2):
 ///
@@ -173,23 +187,24 @@ pub(crate) fn bind_this(fi: &FunctionInfo, this: u64, global: u64) -> u64 {
 /// slow::call, enter_b_cold           None -> wrap_this before push_frame
 /// call_function_object (from Rust)   None -> push_frame, then wrap_this into the receiver slot
 /// call_host (host callee)            no bind, no wrap: the host function gets the raw receiver
-/// native.rs enter_native, run_b      bind_this, no wrap (spike-native only, logged gap)
+/// native.rs enter_native, run_b      None -> push_frame, then wrap_this into the receiver slot
 /// ```
 #[inline(always)]
 pub(crate) fn try_bind_this(fi: &FunctionInfo, this: u64, global: u64) -> Option<u64> {
-    if fi.is_strict() {
-        return Some(this);
-    }
     if is_cell_bits(this) {
-        // A string or a symbol (kinds below 16) needs the wrapper.
+        // An object goes in as it is; a string or a symbol (kinds below 16) needs the wrapper
+        // for a sloppy callee only.
         let kind = cell_kind(this);
         debug_assert!(kind < 64, "an internal cell as a receiver");
-        return (kind >= OBJECT.get()).then_some(this);
+        return (kind >= OBJECT.get() || fi.is_strict()).then_some(this);
+    }
+    if fi.is_strict() {
+        return Some(this);
     }
     if this == UNDEFINED || this == NULL {
         Some(global)
     } else if this == HOLE {
-        // Not a language value; as it is (the old `bind_this` result).
+        // The hole is not a language value: it goes in as it is (no global object, no wrapper).
         Some(this)
     } else {
         // A number or a boolean.
@@ -198,11 +213,11 @@ pub(crate) fn try_bind_this(fi: &FunctionInfo, this: u64, global: u64) -> Option
 }
 
 /// ToObject(`this`) for a call that [`try_bind_this`] refused (§10.2.1.2 step 6.b). GC point:
-/// the caller keeps the callee and the arguments rooted. `slow::call` and `enter_b_cold`
-/// wrap before `push_frame` (the arguments are in caller registers or the spread array).
-/// `call_function_object` wraps after `push_frame`, with the frame not yet published and
-/// under the scratch top, because its `arg` may read memory that the GC does not scan. The
-/// wrapper stays in a Rust local until it is stored in the frame.
+/// the caller keeps the callee and the arguments rooted. `slow::call` and `enter_b_cold` wrap
+/// before `push_frame` (the arguments are in caller registers or the spread array);
+/// `call_function_object` and the spike-native `enter_native`/`run_b` (`native::wrap_receiver`)
+/// wrap after it, with the frame not yet published and under the scratch top, as their `arg`
+/// may read memory the GC does not scan. The wrapper stays in a Rust local until it is stored.
 #[cold]
 #[inline(never)]
 pub(crate) fn wrap_this(cx: &mut Cx, this: u64) -> Res<u64> {
@@ -281,6 +296,9 @@ pub(crate) fn call_host(
     // SAFETY: `fp` is the host frame that `push_frame` just wrote; it stays live until `h`
     // returns.
     let args = unsafe { Args::from_fp(fp) };
+    // H20 R5: a host function runs in its own realm. Not a GC point; the caller's realm stays
+    // in `saved_realm` (a Rust local) meanwhile.
+    let saved_realm = realm::enter_realm_of(cx, f);
     let r = {
         let mut hcx = abi::Cx::new(cx);
         h(
@@ -289,7 +307,9 @@ pub(crate) fn call_host(
             args,
             Local::from_bits(new_target),
         )
+        .map(|v| v.bits())
     };
+    realm::leave(cx, saved_realm);
     rt.stack().set_fp(caller_fp);
     restore_scratch(rt, saved);
     // H20 R4: the throw protocol.
@@ -303,7 +323,7 @@ pub(crate) fn call_host(
         "host function {:?} returned Ok with a pending exception",
         fi.name
     );
-    r.map(|v| v.bits())
+    r
 }
 
 /// Call(F, thisArg, args) from Rust (§7.3.14). Runs the interpreter for a bytecode callee.
@@ -315,7 +335,7 @@ pub(crate) fn call_function(cx: &mut Cx, f: u64, this: u64, args: &[u64]) -> Res
 /// Call(F, thisArg, args) or the call step of `[[Construct]]` (`new_target` not undefined)
 /// from Rust, with `argc` arguments that `arg(i)` reads. The arguments are copied once, into
 /// the callee frame, before the first GC point; `arg` may read the caller's frame or scratch
-/// area (H20 `call_args`), or memory that the GC does not scan (`Isolate::call`).
+/// area (H20 `call_args`), or memory that the GC does not scan (`native::call_from_rust`).
 /// A bound `f` (§10.4.1.1 `[[Call]]`) calls its innermost target with the bound `this` and
 /// the bound arguments in front; its `[[Construct]]` goes through [`construct_with`].
 pub(crate) fn call_with(
@@ -384,8 +404,10 @@ fn push_bound_args(cx: &mut Cx, f: u64, bound: u32) -> Res<(*const u64, *mut u64
     Ok((start, saved))
 }
 
-/// [`call_with`] for a FUNCTION `f` (a host or a bytecode function).
-fn call_function_object(
+/// [`call_with`] for a FUNCTION `f` (a host or a bytecode function). A bytecode `f` of
+/// another realm runs with its realm current (the class-constructor TypeError too, §10.2.1
+/// step 2: it is made in the callee's realm); `slow::call` sends cross-realm calls here.
+pub(crate) fn call_function_object(
     cx: &mut Cx,
     f: u64,
     this: u64,
@@ -413,6 +435,27 @@ fn call_function_object(
             EXIT_STUB.as_ptr(),
         );
     }
+    // Not a GC point: `arg` may still read memory the GC does not scan (see below).
+    let saved_realm = realm::enter_realm_of(cx, f);
+    let r = call_bytecode(cx, f, fi, this, argc, arg, new_target, caller);
+    realm::leave(cx, saved_realm);
+    r
+}
+
+/// The bytecode part of [`call_function_object`], in the callee's realm.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn call_bytecode(
+    cx: &mut Cx,
+    f: u64,
+    fi: &FunctionInfo,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    new_target: u64,
+    caller: *mut u64,
+) -> Res<u64> {
+    let rt = cx.rt();
     // [[Call]] of a class constructor (§10.2.1 step 2), as in the `Call*` slow path.
     if new_target == UNDEFINED && fi.is_class_constructor() {
         let msg = format!(
@@ -428,8 +471,8 @@ fn call_function_object(
     let bound_this = try_bind_this(fi, this, rt.global());
     let saved = rt.stack().scratch_top();
     let base = top_of(cx, caller);
-    // No GC point before the push: `arg` may read memory that the GC does not scan (the heap
-    // copy of `Isolate::call`, the embedder slice of `native::call_from_rust`), so the frame
+    // No GC point before the push: `arg` may read memory that the GC does not scan (the
+    // embedder slice of `native::call_from_rust`, the tests' `call_raw`), so the frame
     // copies the arguments first. A receiver to wrap goes in as it is, for now.
     // SAFETY: `base` is the first free slot above the current top frame and its scratch area.
     let fp = unsafe {
@@ -447,6 +490,10 @@ fn call_function_object(
             new_target,
         )
     };
+    // 1 unit per call, also when the frame does not fit (R3-2): a loop that catches the
+    // RangeError of a full VM stack still reaches the next poll (M3-P2-STOP; the T0 and
+    // spike-native paths take it the same way, M3-P2-D1).
+    cx.budget -= 1;
     let Some(fp) = fp else {
         return stack_overflow(cx);
     };
@@ -466,7 +513,6 @@ fn call_function_object(
     }
     rt.stack().set_fp(fp);
     rt.stack().clear_scratch();
-    cx.budget -= 1;
     // SAFETY: `fp` is a frame for `fi` that `push_frame` just wrote; its code is verified.
     let r = unsafe { interp::run(cx, fi.code, fp) };
     rt.stack().set_fp(caller);
@@ -500,6 +546,29 @@ pub(crate) fn run_resumed(
         return Err(not_implemented(cx, "calling code of this dispatch kind"));
     }
     let caller = rt.stack().fp();
+    // The generator's body runs in the realm of its function (§27.5.3.3 runs it in the
+    // generator's own execution context). Not a GC point.
+    let saved_realm = realm::enter_realm_of(cx, f);
+    let r = resume_here(cx, f, fi, this, argc, arg, context, generator, caller);
+    realm::leave(cx, saved_realm);
+    r
+}
+
+/// The frame push and run of [`run_resumed`], in the generator function's realm.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn resume_here(
+    cx: &mut Cx,
+    f: u64,
+    fi: &FunctionInfo,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+    context: u64,
+    generator: u64,
+    caller: *mut u64,
+) -> Res<u64> {
+    let rt = cx.rt();
     poll(cx, caller)?;
     let saved = rt.stack().scratch_top();
     let base = top_of(cx, caller);
@@ -583,8 +652,11 @@ pub(crate) fn construct_with(
     r
 }
 
-/// [`construct_with`] for a FUNCTION `f` with `[[Construct]]` (§10.2.2).
-fn construct_function_object(
+/// [`construct_with`] for a FUNCTION `f` with `[[Construct]]` (§10.2.2). The receiver of a
+/// base constructor is made first, in the caller's context (step 3; its prototype falls back
+/// to newTarget's realm), then the call runs in `f`'s realm ([`call_function_object`]);
+/// `slow::call` sends a construct of a bytecode function of another realm here.
+pub(crate) fn construct_function_object(
     cx: &mut Cx,
     f: u64,
     argc: u32,
@@ -611,14 +683,16 @@ fn construct_function_object(
     })
 }
 
-/// OrdinaryCreateFromConstructor(F, "%Object.prototype%") (§10.1.13).
+/// OrdinaryCreateFromConstructor(F, "%Object.prototype%") (§10.1.13): a `prototype` that is
+/// not an object falls back to `%Object.prototype%` of GetFunctionRealm(F) (§10.1.14 step 4).
 pub(crate) fn ordinary_create_from_constructor(cx: &mut Cx, f: u64) -> Res<u64> {
     let rt = cx.rt();
     let p = property::get(cx, f, rt.atom(Atom::Prototype))?;
     let proto = if is_object(p) {
         p
     } else {
-        rt.root(Root::ObjectPrototype)
+        let r = realm::get_function_realm(rt, f);
+        realm::intrinsic_in(rt, r, crate::builtins::IntrinsicId::ObjectPrototype)
     };
     Ok(object::new_object(rt, proto))
 }

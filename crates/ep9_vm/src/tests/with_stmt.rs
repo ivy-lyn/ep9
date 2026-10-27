@@ -900,7 +900,8 @@ fn the_context_walk_polls() {
                 iso.terminate_handle().terminate();
                 // The entry takes one unit; the walk takes one per context.
                 iso.cx.budget = 4;
-                let r = iso.run_script(make(look), "poll.js");
+                let r =
+                    iso.with_cx_checkpoint(|cx| cx.run_script(make(look), "poll.js").map(|_| ()));
                 if look {
                     let e = r.unwrap_err();
                     assert!(e.terminated, "{} {e:?}", d.name());
@@ -908,6 +909,82 @@ fn the_context_walk_polls() {
                     assert!(r.is_ok(), "{} {r:?}", d.name());
                 }
             });
+        }
+    }
+}
+
+/// (M3-P4, CX2-E9-1) A private name is never found by a search from the current context, and
+/// a private name slot that holds no private name symbol is never used: a `#x` without the
+/// eval code's list (`LoadedUnit::eval_private`, here a script) is a TypeError for
+/// `LdaLookupSlot` and `ResolveLookupSlot`, and a brand slot that holds undefined is a
+/// TypeError for `LoadLookupSlotResolved`. Before the fix the first two found the class
+/// context's `#x` slot (undefined: an ordinary property key) and the third gave undefined.
+/// An ordinary name in the same context still resolves.
+#[test]
+fn a_private_name_never_falls_back_to_a_search_or_a_key() {
+    let cases: [(u8, Result<&[&str], &str>); 4] = [
+        (
+            0,
+            Err("TypeError: Private name #x is not declared by a class around this code"),
+        ),
+        (
+            1,
+            Err("TypeError: Private name #x is not declared by a class around this code"),
+        ),
+        (
+            2,
+            Err("TypeError: Private name #.brand is not declared by a class around this code"),
+        ),
+        (3, Ok(&["5"])),
+    ];
+    for (case, want) in cases {
+        let make = move || {
+            let mut s = Asm::script(0);
+            let ctx = s.b.new_register();
+            let regs = s.b.new_register_list(4);
+            let kc = s.b.scope_constant(ScopeId(1));
+            s.b.create_block_context(kc).push_context(ctx);
+            s.b.lda_smi(5).sta_current_context_slot(2);
+            match case {
+                0 => lookup(&mut s, "#x"),
+                1 => resolve_ref(&mut s, regs, "#x"),
+                2 => {
+                    s.b.lda_current_context().star(regs.get(0));
+                    s.lda_str("#.brand");
+                    s.b.star(regs.get(1));
+                    load_ref_in(&mut s, regs, true);
+                }
+                _ => lookup(&mut s, "y"),
+            }
+            s.print_acc();
+            s.b.lda_undefined().return_();
+            unit_with_scopes(
+                "",
+                vec![
+                    (ScopeKind::Script, None, vec![]),
+                    (
+                        ScopeKind::Class,
+                        Some(0),
+                        vec![
+                            ("#x", VariableMode::Const),
+                            ("#.brand", VariableMode::Const),
+                            ("y", VariableMode::Let),
+                        ],
+                    ),
+                ],
+                vec![s.finish()],
+            )
+        };
+        let r = run_every(make);
+        match want {
+            Ok(lines) => {
+                ok(&r);
+                assert_eq!(r.output, lines, "case {case}");
+            }
+            Err(msg) => {
+                assert_eq!(err(&r), msg, "case {case}");
+                assert!(r.output.is_empty(), "case {case}: {:?}", r.output);
+            }
         }
     }
 }

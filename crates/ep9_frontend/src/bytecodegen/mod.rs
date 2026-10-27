@@ -1,4 +1,4 @@
-//! BytecodeGen v0: JS source -> [`CompiledUnit`](ep9_bytecode::CompiledUnit) (bytecode ABI 4).
+//! BytecodeGen v0: JS source -> [`CompiledUnit`](ep9_bytecode::CompiledUnit) (bytecode ABI 5).
 //!
 //! ```text
 //! compile_script / compile_module / compile (and eval.rs compile_eval: own parse job, Eval root)
@@ -31,7 +31,7 @@
 //! | G8 | TDZ: a binding gets an explicit hole store at scope entry only if some reference checks it (or a dynamic lookup may reach it). Globals and module cells: the VM checks | Fewer stores; V8 rule |
 //! | G9 | Runtime calls for what has no opcode: global init, direct eval, classes, super, accessors, object spread, `__proto__` (ABI 2 ids 6-18) | Opcode table unchanged |
 //! | G10 | A position entry before every instruction that may throw; statement positions at every statement | M0 exit 7 (`throw` prints file:line:col) |
-//! | G11 | Unsupported constructs fail the whole unit with [`CodegenError::Unsupported`] (async functions and async generators, class auto-accessors, decorators, ...) | No silent wrong code |
+//! | G11 | Unsupported constructs fail the whole unit with [`CodegenError::Unsupported`] (async generators, `for await`, top-level `await`, class auto-accessors, decorators, ...) | No silent wrong code |
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -51,6 +51,8 @@ use crate::{
     with_front_end,
 };
 
+mod async_fn;
+mod async_gen;
 mod class;
 mod class_fields;
 mod expr;
@@ -58,6 +60,7 @@ mod func;
 mod generator;
 mod literal;
 mod lookup;
+mod module;
 mod pattern;
 mod private;
 mod stmt;
@@ -371,6 +374,10 @@ pub(crate) fn generate(
             f.kind, f.span.start
         )));
     }
+    // ABI 5 section 5 (module.rs).
+    if module {
+        unit.set_module_records(module::module_records(fe.program, sa, &cx.cells).map_err(|e| *e)?);
+    }
     unit.finish().map_err(build_error)
 }
 
@@ -383,16 +390,20 @@ fn gen_job<'a>(
     match job {
         Job::Program => {
             let info = &sa.functions()[0];
-            let meta = FunctionMeta::entry(
+            let mut meta = FunctionMeta::entry(
                 cx.code,
                 info.strict,
                 u32::try_from(fe.source.len()).unwrap_or(u32::MAX),
             );
+            if cx.module {
+                // A resumable function 0 (module.rs, M3-P2-MODULE-F0).
+                meta.flags = meta.flags | FunctionFlags::ASYNC;
+            }
             let mut g = FnGen::new(cx, info, meta);
-            if cx.code == CodeKind::Eval {
-                g.gen_eval_program(fe.program)?;
-            } else {
-                g.gen_program(fe.program)?;
+            match cx.code {
+                CodeKind::Eval => g.gen_eval_program(fe.program)?,
+                CodeKind::Module => g.gen_module_program(fe.program)?,
+                CodeKind::Script => g.gen_program(fe.program)?,
             }
             let (code, jobs) = g.finish()?;
             Ok((info.id, code, jobs))
@@ -649,6 +660,9 @@ fn add_scopes(
         if s.sloppy_eval {
             flags = flags | ScopeFlags::CALLS_SLOPPY_EVAL;
         }
+        if s.parameter_env {
+            flags = flags | ScopeFlags::PARAMETER_ENV;
+        }
         let script_top = s.id.0 == 0 && script;
         if s.needs_context && !script_top {
             flags = flags | ScopeFlags::NEEDS_CONTEXT;
@@ -732,6 +746,7 @@ impl<'a> FnGen<'a, '_> {
     /// strict:  CreateClosure + store, per hoisted function (local bindings)
     /// sloppy:  CreateClosure; CallRuntime DeclareEvalFunction (name, closure), per function
     ///          CallRuntime DeclareEvalVar (name), per other `var` name
+    ///          CallRuntime DeclareEvalAnnexBFunction (name); Star <flag>, per Annex B name
     /// statements
     /// load .result (or LdaUndefined); Return
     /// ```
@@ -781,7 +796,11 @@ impl<'a> FnGen<'a, '_> {
         Ok(())
     }
 
-    /// The sloppy eval prologue: `DeclareEvalFunction` and `DeclareEvalVar` (ids 27-28).
+    /// The sloppy eval prologue: `DeclareEvalFunction` and `DeclareEvalVar` (ids 27-28), then
+    /// `DeclareEvalAnnexBFunction` (ABI 5 id 46) per var binding of an Annex B block function
+    /// (B.3.2.3 step ii, after the checks of steps 3-9 and after the bindings of the eval
+    /// code's own functions and vars, which step ii.2.g.i skips). Its answer stays in a register
+    /// of function 0 ([`FnGen::eval_annex_b`]) until the block function declaration runs.
     fn declare_eval_bindings(&mut self, root: ScopeId) -> Gen {
         let root_info = self.sa.scope(root);
         // functionsToInitialize: walk the declarations backwards, keep the first of each name,
@@ -793,13 +812,30 @@ impl<'a> FnGen<'a, '_> {
             }
         }
         functions.reverse();
+        // Annex B.3.2.3: the var bindings of the block functions, one per name. A var binding
+        // that only Annex B made (the scope pass gives it the block function's span) is not a
+        // `var` of the eval code: it gets no DeclareEvalVar.
+        let mut annex: Vec<BindingId> = Vec::new();
+        let mut annex_only: Vec<BindingId> = Vec::new();
+        for b in self.sa.bindings() {
+            let Some(var) = b.annex_b_var else { continue };
+            if self.binding(var).scope != root {
+                continue;
+            }
+            if !annex.contains(&var) {
+                annex.push(var);
+            }
+            if self.binding(var).span == b.span && !annex_only.contains(&var) {
+                annex_only.push(var);
+            }
+        }
         let vars: Vec<BindingId> = root_info
             .bindings
             .iter()
             .copied()
-            .filter(|&b| self.binding(b).kind == BindingKind::Var)
+            .filter(|&b| self.binding(b).kind == BindingKind::Var && !annex_only.contains(&b))
             .collect();
-        if functions.is_empty() && vars.is_empty() {
+        if functions.is_empty() && vars.is_empty() && annex.is_empty() {
             return Ok(());
         }
         self.b.set_statement_position(0);
@@ -809,7 +845,7 @@ impl<'a> FnGen<'a, '_> {
             if info.is_generator {
                 self.check_generator(info.is_async, span)?;
             } else if info.is_async {
-                return self.unsupported("async functions", span);
+                self.async_closure(span)?;
             }
             self.enter(span)?;
             let m = self.mark();
@@ -831,6 +867,18 @@ impl<'a> FnGen<'a, '_> {
             self.b.lda_constant(name).star(args.get(0));
             self.runtime(RuntimeId::DeclareEvalVar, args);
             self.release(m);
+        }
+        for var in annex {
+            // The flag register lives until the end of function 0.
+            let flag = self.temp();
+            let m = self.mark();
+            let args = self.temps(1);
+            let name = self.name_const(self.binding(var).name);
+            self.b.lda_constant(name).star(args.get(0));
+            self.runtime(RuntimeId::DeclareEvalAnnexBFunction, args);
+            self.b.star(flag);
+            self.release(m);
+            self.eval_annex_b.push((var, flag));
         }
         Ok(())
     }

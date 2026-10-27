@@ -235,8 +235,7 @@ impl Session {
         let result = match compile(source) {
             Ok(unit) => self
                 .iso
-                .run_script(unit, file)
-                .map(|v| self.iso.display(v))
+                .with_cx_checkpoint(|cx| cx.run_script(unit, file).map(|v| cx.display(v)))
                 .map_err(|e| exception_text(&e)),
             Err(e) => Err(e),
         };
@@ -248,9 +247,7 @@ impl Session {
 
     /// The emitter input for the global function `name`.
     fn input(&self, name: &str) -> Result<(Value, FunctionInput<'_>), String> {
-        let f = self
-            .iso
-            .global(name)
+        let f = ep9_vm::NativeCx::global_value(&self.iso, name)
             .ok_or_else(|| format!("no global {name}"))?;
         let t = ep9_vm::native_target(&self.iso, f)
             .ok_or_else(|| format!("{name} is not a function with bytecode"))?;
@@ -374,8 +371,9 @@ impl Session {
     }
 
     /// Placement (b): compiles the global functions `names` with [`crate::jit_b::BEmitter`]
-    /// into one module and installs each in an Opt slot. Fails if any is refused (on x86-64
-    /// every one is: [`Refusal::Arch`]).
+    /// (AArch64 or x86-64, the build's architecture) into one module and installs each in an
+    /// Opt slot. Fails if any is refused (a function the (b) planner does not cover, or
+    /// [`Refusal::Arch`] on a host with no (b) emitter).
     pub fn jit_b(&mut self, names: &[&str]) -> Result<&[Placed], String> {
         let mut codes = Vec::with_capacity(names.len());
         for name in names {
@@ -487,7 +485,8 @@ mod tests {
 
     /// Configs J and JC of the protocol: Rust calls the JIT-installed `drive(f, n)` through
     /// `call_from_rust` and gets n, also under GC stress. A throw and a termination come back
-    /// as `Err`, and the next `call_from_rust` and `Isolate::call` still work.
+    /// as `Err`, and the next `call_from_rust` and `Cx::call` (in `with_cx_checkpoint`) still
+    /// work.
     #[test]
     fn call_from_rust_runs_jit_drive() {
         for config in [Config::default(), Config::stress()] {
@@ -496,32 +495,44 @@ mod tests {
             let boom = "function boom(x) { if (x === 3) throw new Error('b' + x); return x; }";
             s.run(boom, "boom.js").result.expect("boom");
             s.jit(&["id", "drive"]).expect("jit");
-            let g = |s: &Session, n: &str| s.iso.global(n).expect("global");
+            let g =
+                |s: &Session, n: &str| ep9_vm::NativeCx::global_value(&s.iso, n).expect("global");
             let (drive, id, boom) = (g(&s, "drive"), g(&s, "id"), g(&s, "boom"));
             let u = Value::UNDEFINED;
             let n = if config.gc_stress != 0 { 200 } else { 100_000 };
             let call = |s: &mut Session, f: Value, n: i32| {
-                ep9_vm::call_from_rust(&mut s.iso, drive, u, &[f, Value::int32(n)])
-                    .map(|v| s.iso.display(v))
+                ep9_vm::call_from_rust(&mut s.iso, drive, u, &[f, Value::int32(n)]).map(|v| {
+                    v.as_int32()
+                        .map_or_else(|| format!("{v:?}"), |i| i.to_string())
+                })
             };
             assert_eq!(call(&mut s, id, n).expect("drive(id, n)"), n.to_string());
             let e = call(&mut s, boom, 10).expect_err("drive(boom, 10) throws");
             assert!(e.message.contains("b3") && !e.terminated, "{e:?}");
             assert_eq!(call(&mut s, id, 5).expect("after the throw"), "5");
-            // `boom` stays in T0; `Isolate::call` on a native slot throws not_implemented
+            // `boom` stays in T0; `Cx::call` on a native slot throws not_implemented
             // (call.rs), so the JIT entry from Rust is `call_from_rust`.
             let r = s
                 .iso
-                .call(boom, u, &[Value::int32(9)])
-                .expect("Isolate::call");
-            assert_eq!(s.iso.display(r), "9");
+                .with_cx_checkpoint(|cx| {
+                    let boom = cx.global_binding("boom")?.expect("boom");
+                    cx.call(boom, Local::undefined(), &[Local::int32(9)])
+                        .map(|v| cx.display(v))
+                })
+                .expect("Cx::call");
+            assert_eq!(r, "9");
             s.iso.terminate_handle().terminate();
             let e = call(&mut s, id, 1 << 30).expect_err("terminated");
             assert!(e.terminated, "{e:?}");
             assert_eq!(call(&mut s, id, 7).expect("after the termination"), "7");
             let e = s
                 .iso
-                .call(drive, u, &[id, Value::int32(3)])
+                .with_cx_checkpoint(|cx| {
+                    let drive = cx.global_binding("drive")?.expect("drive");
+                    let id = cx.global_binding("id")?.expect("id");
+                    cx.call(drive, Local::undefined(), &[id, Local::int32(3)])
+                        .map(|_| ())
+                })
                 .expect_err("native slot");
             assert!(e.message.contains("not implemented"), "{e:?}");
             assert_eq!(call(&mut s, id, 11).expect("last"), "11");
@@ -551,7 +562,7 @@ mod tests {
         let e = s.jit(&["drive", "id"]).expect_err("id is already native");
         assert!(e.contains("id: install refused: AlreadyNative"), "{e}");
         let kind = |s: &Session, n: &str| {
-            let f = s.iso.global(n).expect("global");
+            let f = ep9_vm::NativeCx::global_value(&s.iso, n).expect("global");
             ep9_vm::native_target(&s.iso, f).expect("bytecode").kind
         };
         assert_eq!(

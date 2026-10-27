@@ -35,8 +35,8 @@ use ep9_bytecode::{EvalContext, FunctionCtorKind};
 use ep9_frontend::{CodegenError, CompileError, CompileOptions, SourceOpts, Strictness};
 use ep9_heap::HeapConfig;
 use ep9_vm::{
-    Args, CompileFailure, CompileResult, CompilerHooks, Cx, Exception, Isolate, IsolateConfig,
-    JsResult, Local, TerminateHandle,
+    Args, CompileFailure, CompileResult, CompilerHooks, Cx, Exception, HostFn, Isolate,
+    IsolateConfig, JsResult, Local, PropertyDescriptor, TerminateHandle,
 };
 
 use crate::frontmatter::{self, Meta};
@@ -47,11 +47,21 @@ use crate::{expect, json};
 /// Native stack of the thread that runs the isolates in a worker (the CLI uses the same).
 const RUN_STACK_BYTES: usize = 64 << 20;
 
-/// The `$262` host object (INTERPRETING.md "Host-Defined Functions"). v0 has `global`, `gc`
-/// and `evalScript` (M2-P4, through `Cx::evaluate_script`); `createRealm`,
-/// `detachArrayBuffer` and `agent` are missing, so tests that use them fail.
-const PRELUDE: &str =
-    "var $262 = { global: globalThis, gc: __ep9_gc, evalScript: __ep9_eval_script };\n";
+/// The `$262` host object (INTERPRETING.md "Host-Defined Functions"): `global`, `gc`,
+/// `evalScript` (M2-P4, through `Cx::evaluate_script`) and `createRealm` (M3-P1, through
+/// `Cx::create_realm`; each realm runs this prelude over its own host functions, so its
+/// `evalScript` evaluates in that realm). `detachArrayBuffer` and `agent` are missing, so
+/// tests that use them fail.
+const PRELUDE: &str = "var $262 = { global: globalThis, gc: __ep9_gc, \
+                       evalScript: __ep9_eval_script, createRealm: __ep9_create_realm };\n";
+
+/// The host functions of every realm of a test isolate, as global names (`register`).
+const HOST_FUNCTIONS: [(&str, u32, HostFn); 4] = [
+    ("print", 1, print),
+    ("__ep9_gc", 0, gc),
+    ("__ep9_eval_script", 1, eval_script),
+    ("__ep9_create_realm", 0, create_realm),
+];
 
 pub struct Options {
     pub test262: PathBuf,
@@ -303,6 +313,29 @@ fn gc<'s>(
 ) -> JsResult<Local<'s>> {
     cx.collect_garbage();
     Ok(Local::undefined())
+}
+
+/// `$262.createRealm()` (INTERPRETING.md): a new realm (`Cx::create_realm`, every builtin
+/// table), with the host functions of [`HOST_FUNCTIONS`] made in it and [`PRELUDE`] run in it.
+/// Returns that realm's `$262`.
+fn create_realm<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let global = cx.create_realm()?;
+    cx.with_realm(global, |cx| {
+        for (name, length, f) in HOST_FUNCTIONS {
+            // A function of the current realm, as `Isolate::register_host_function` makes:
+            // writable, configurable, not enumerable.
+            let func = cx.new_builtin_closure(f, name, length, Local::undefined());
+            let desc = PropertyDescriptor::data(func.into(), true, false, true);
+            cx.define_property_or_throw(global, name, desc)?;
+        }
+        cx.evaluate_script(PRELUDE, "harness/$262 prelude")?;
+        cx.get(global, "$262")
+    })
 }
 
 /// The run that the watchdog watches.
@@ -582,9 +615,9 @@ impl RunCtx<'_> {
     fn isolate(&self) -> Result<Isolate, String> {
         let config = isolate_config(self.opts.gc_stress, self.opts.feedback_threshold);
         let mut iso = Isolate::new(config).map_err(|e| format!("cannot create an isolate: {e}"))?;
-        iso.register_host_function("print", 1, print);
-        iso.register_host_function("__ep9_gc", 0, gc);
-        iso.register_host_function("__ep9_eval_script", 1, eval_script);
+        for (name, length, f) in HOST_FUNCTIONS {
+            iso.register_host_function(name, length, f);
+        }
         Ok(iso)
     }
 
@@ -595,8 +628,8 @@ impl RunCtx<'_> {
             Ok(u) => u,
             Err(e) => return Some(compile_failure(&e, &what)),
         };
-        match iso.run_script(unit, &what) {
-            Ok(_) => None,
+        match iso.with_cx_checkpoint(|cx| cx.run_script(unit, &what).map(|_| ())) {
+            Ok(()) => None,
             Err(e) if e.terminated => Some(infra("timeout", format!("timeout in {what}"))),
             Err(e) => Some(fail(
                 format!("{what} threw: {}", cause_of_message(&e.message)),
@@ -670,11 +703,27 @@ impl RunCtx<'_> {
                 }
             }
         }
-        let result = iso.run_script(unit, rel);
+        // The test262 loader is the module host of the test and its jobs, so `import()`
+        // works in a script and in a job too (a module run uses the same hooks).
+        let root = &self.opts.test262;
+        let mut resolve =
+            |referrer: &str, specifier: &str| resolve_module(root, referrer, specifier);
+        let mut load = |name: &str| load_module(root, name);
+        let result = iso.with_module_host(&mut resolve, &mut load, |iso| {
+            if mode == Mode::Module {
+                run_module(iso, root, unit, rel)
+            } else {
+                iso.with_cx_checkpoint(|cx| cx.run_script(unit, rel).map(|_| ()))
+            }
+        });
         if fault_for("late", rel) {
             std::thread::sleep(self.opts.timeout + Duration::from_millis(100));
         }
-        let runtime_negative = negative.filter(|n| n.phase == "runtime");
+        // A module's loading and linking errors (phase `resolution`) are thrown by
+        // `run_module` before any module code runs; those tests start with
+        // `$DONOTEVALUATE()`, so an evaluated test throws its Test262Error instead.
+        let runtime_negative = negative
+            .filter(|n| n.phase == "runtime" || (mode == Mode::Module && n.phase == "resolution"));
         match result {
             Err(e) if e.terminated => infra(
                 "timeout",
@@ -704,7 +753,7 @@ impl RunCtx<'_> {
                     fail(cause, e.to_string())
                 }
             },
-            Ok(_) => {
+            Ok(()) => {
                 if let Some(n) = negative {
                     return fail(
                         format!("negative {} test: no error", n.phase),
@@ -721,6 +770,70 @@ impl RunCtx<'_> {
             }
         }
     }
+}
+
+// ---- the module loader for `flags: [module]` files (M3-P2 MODULE) -------------------------
+
+/// Runs the module test `unit` (named `rel`) with `Cx::run_module` and the test262 loader,
+/// then a microtask checkpoint (`Isolate::with_cx_checkpoint`): an error of the module wins
+/// over one of a job, but not over a termination in a job.
+fn run_module(
+    iso: &mut Isolate,
+    root: &Path,
+    unit: ep9_bytecode::VerifiedUnit,
+    rel: &str,
+) -> Result<(), Exception> {
+    let mut resolve = |referrer: &str, specifier: &str| resolve_module(root, referrer, specifier);
+    let mut load = |name: &str| load_module(root, name);
+    iso.with_cx_checkpoint(|cx| {
+        cx.run_module(unit, rel, &mut resolve, &mut load)
+            .map(|_| ())
+    })
+}
+
+/// HostLoadImportedModule's name step for test262: a relative specifier (`./x.js`,
+/// `../x.js`) names a file next to the referrer (a path relative to the test262 root, with
+/// `.` and `..` removed); the name is that path. Another specifier, or a missing file, is an
+/// error.
+fn resolve_module(root: &Path, referrer: &str, specifier: &str) -> Result<String, String> {
+    if !(specifier.starts_with("./") || specifier.starts_with("../")) {
+        return Err(format!(
+            "Cannot find module '{specifier}' imported from {referrer} (not a relative specifier)"
+        ));
+    }
+    let mut parts: Vec<&str> = referrer.split('/').collect();
+    parts.pop();
+    for p in specifier.split('/') {
+        match p {
+            "." | "" => {}
+            ".." => {
+                if parts.pop().is_none() {
+                    return Err(format!(
+                        "Cannot find module '{specifier}' imported from {referrer}"
+                    ));
+                }
+            }
+            p => parts.push(p),
+        }
+    }
+    let name = parts.join("/");
+    if root.join(&name).is_file() {
+        Ok(name)
+    } else {
+        Err(format!(
+            "Cannot find module '{specifier}' imported from {referrer}"
+        ))
+    }
+}
+
+/// HostLoadImportedModule's load step for test262: the file `name` (relative to the test262
+/// root) compiled as a module (the `internal` test hook applies to it).
+fn load_module(root: &Path, name: &str) -> CompileResult {
+    let src = match std::fs::read(root.join(name)).map(String::from_utf8) {
+        Ok(Ok(s)) => s,
+        _ => return Err(CompileFailure::Internal(format!("cannot read {name}"))),
+    };
+    compile(&src, SourceOpts::module(), name).map_err(hook_failure)
 }
 
 /// The result of an async test from its `print` output (INTERPRETING.md, flag `async`). A
@@ -1619,6 +1732,17 @@ fn summary_json(
     // committed skip list); "skipped" stays their count.
     out.push_str(",\"skipped_paths\":");
     json::string_array(&mut out, &skipped.iter().collect::<Vec<_>>());
+    // A run with path filters (a GC-stress shard) also names every file it ran, sorted:
+    // `cargo xtask m0-exit` item 6 checks that each shard ran exactly the files of its shard
+    // (M3-P3 fix round 2, C-G1). A full run runs every file of the checkout, so it leaves the
+    // list out (it would add about 4 MB).
+    if !opts.filters.is_empty() {
+        out.push_str(",\"run_paths\":");
+        json::string_array(
+            &mut out,
+            &results.iter().map(|(rel, _)| *rel).collect::<Vec<_>>(),
+        );
+    }
     let _ = write!(out, ",\"wall_seconds\":{:.3}", wall.as_secs_f64());
     out.push_str(",\"files\":");
     count(&mut out, files_all);

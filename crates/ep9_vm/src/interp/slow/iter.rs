@@ -232,9 +232,10 @@ impl Drop for KeepAlive {
     }
 }
 
-/// `CreateMappedArguments`, `CreateUnmappedArguments` (`rest = false`) and
-/// `CreateRestParameter` (`rest = true`). v0: the arguments object is an Array, and mapped
-/// arguments do not alias the parameters.
+/// `CreateRestParameter` (`rest = true`): an Array of the arguments past the formal
+/// parameters; `rest = false` gives all the arguments. The arguments objects of
+/// `CreateMappedArguments` and `CreateUnmappedArguments` are made by `arguments::create`
+/// (§10.4.4, M3-P2 VM-ARGS).
 #[cold]
 #[inline(never)]
 pub(crate) fn arguments(cx: &mut Cx, fp: *mut u64, pc: *const u8, rest: bool) -> u64 {

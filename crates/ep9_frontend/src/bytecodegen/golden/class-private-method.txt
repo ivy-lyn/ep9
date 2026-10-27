@@ -1,6 +1,6 @@
 # class-private-method: script (sloppy)
 # | class A { #m() { return 1; } static #s() { return super.x; } get #a() { return 1; } set #a(v) {} set #w(v) {} t(o) { return [o.#m(), A.#s(), o.#a, #m in o, o?.#m, #a in o]; } }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=176 source=embedded hints=none
 source_hash=a6a7e674334db882660d22f5ccaae1efa7a5ba390e38bbded95ab8da883765af
 strings (14):

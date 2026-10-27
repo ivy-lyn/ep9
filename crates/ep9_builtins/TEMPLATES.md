@@ -256,7 +256,7 @@ fn array_at<'s>(
 #     ep9_frontend::CompileOptions::default(),
 # )
 # .unwrap();
-# iso.run_script(unit, "at.js").unwrap();
+# iso.with_cx_checkpoint(|cx| cx.run_script(unit, "at.js").map(|_| ())).unwrap();
 # let result = iso.with_cx(|cx| {
 #     let global = cx.global();
 #     let v = cx.get(global, "result")?;
@@ -342,7 +342,7 @@ fn add_entry<'s>(cx: &mut Cx<'s>, obj: Local<'s, JsObject>, next: Local<'s>) -> 
 #     ep9_frontend::CompileOptions::default(),
 # )
 # .unwrap();
-# iso.run_script(unit, "from-entries.js").unwrap();
+# iso.with_cx_checkpoint(|cx| cx.run_script(unit, "from-entries.js").map(|_| ())).unwrap();
 # let result = iso.with_cx(|cx| {
 #     let global = cx.global();
 #     let v = cx.get(global, "result")?;
@@ -504,7 +504,7 @@ fn date_set_time<'s>(
 #     ep9_frontend::CompileOptions::default(),
 # )
 # .unwrap();
-# iso.run_script(unit, "slot-date.js").unwrap();
+# iso.with_cx_checkpoint(|cx| cx.run_script(unit, "slot-date.js").map(|_| ())).unwrap();
 # iso.collect_garbage();
 # let result = iso.with_cx(|cx| {
 #     let global = cx.global();

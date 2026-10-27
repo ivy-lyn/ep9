@@ -26,19 +26,20 @@
 //!
 //! | Config | `drive` | `id` | Kernel | Entry from Rust |
 //! |---|---|---|---|---|
-//! | A | T0 | JIT (Baseline slot) | A | `Isolate::call` |
-//! | C | T0 | not called (`f` = undefined) | C | `Isolate::call` |
-//! | A0 | T0 | T0 | A | `Isolate::call` |
+//! | A | T0 | JIT (Baseline slot) | A | `Cx::call` |
+//! | C | T0 | not called (`f` = undefined) | C | `Cx::call` |
+//! | A0 | T0 | T0 | A | `Cx::call` |
 //! | J | JIT | T0 | A | `ep9_vm::call_from_rust` |
 //! | JC | JIT | not called | C | `ep9_vm::call_from_rust` |
-//! | B | T0 | placement (b) (Opt slot, [`crate::jit_b`]) | A | `Isolate::call` |
-//! | AH | T0 | placement (a) code, AotBaseline slot (A-hot: entered from `call_fast`) | A | `Isolate::call` |
+//! | B | T0 | placement (b) (Opt slot, [`crate::jit_b`]) | A | `Cx::call` |
+//! | AH | T0 | placement (a) code, AotBaseline slot (A-hot: entered from `call_fast`) | A | `Cx::call` |
 //!
 //! B and AH run T0 with `Dispatch::Sibling` ([`Config::threaded`]; the release default, so
 //! the same dispatch as A, C and A0 in a release build).
 //!
-//! `Isolate::call` on a function with a native slot throws not_implemented (call.rs), so the
-//! configs that JIT `drive` enter it through `call_from_rust` (`harness` tests).
+//! `Cx::call` (in `Isolate::with_cx_checkpoint`; `Isolate::call` before M3-P3, the same
+//! `call::call_with` path) on a function with a native slot throws not_implemented (call.rs),
+//! so the configs that JIT `drive` enter it through `call_from_rust` (`harness` tests).
 //!
 //! The coordinator runs each config of a round in a child process (`spike-b bench run`): the
 //! child makes the isolate, compiles and loads the kernel, installs the JIT code, calls
@@ -52,7 +53,7 @@ use ep9_bytecode::{
     CompiledUnit, FunctionId, Instruction, Instructions, Opcode, OperandScale, UnitString,
     disassemble_function,
 };
-use ep9_vm::{DispatchKind, Value};
+use ep9_vm::{DispatchKind, Local, Value};
 
 use crate::harness::{Config, Session, compile, exception_text};
 use crate::structural::{LOOP_C_DEFS, LOOP_DEFS};
@@ -185,39 +186,65 @@ pub struct Run {
 }
 
 fn slot_kind(s: &Session, name: &str) -> Result<Option<DispatchKind>, String> {
-    let f = s
-        .iso
-        .global(name)
-        .ok_or_else(|| format!("no global {name}"))?;
+    let f =
+        ep9_vm::NativeCx::global_value(&s.iso, name).ok_or_else(|| format!("no global {name}"))?;
     Ok(ep9_vm::native_target(&s.iso, f)
         .ok_or_else(|| format!("{name} has no bytecode"))?
         .kind)
 }
 
-/// Calls `drive(f, n)` once: `Isolate::call` for a T0 `drive`, `call_from_rust` for a JIT one.
-/// Returns the result and the wall time of the call alone.
+/// Calls `drive(f, n)` once: `Cx::call` (in `Isolate::with_cx_checkpoint`) for a T0 `drive`,
+/// `call_from_rust` for a JIT one. Returns the result and the wall time of the call alone (for
+/// a T0 `drive`, with the microtask checkpoint after it, as before M3-P3).
 fn call_drive(s: &mut Session, cfg: Cfg, n: u32) -> Result<(i64, u64), String> {
-    let drive = s.iso.global("drive").ok_or("no global drive")?;
-    let f = if cfg.calls_id() {
-        s.iso.global("id").ok_or("no global id")?
-    } else {
-        Value::UNDEFINED
-    };
     let n = i32::try_from(n).map_err(|_| format!("n = {n} is not an int32"))?;
-    // `drive` and `id` are global bindings, so both stay alive across the call (GC point).
-    let args = [f, Value::int32(n)];
-    let t = Instant::now();
-    let r = if cfg.native_drive() {
-        ep9_vm::call_from_rust(&mut s.iso, drive, Value::UNDEFINED, &args)
-    } else {
-        s.iso.call(drive, Value::UNDEFINED, &args)
-    };
+    if cfg.native_drive() {
+        let drive = ep9_vm::NativeCx::global_value(&s.iso, "drive").ok_or("no global drive")?;
+        let f = if cfg.calls_id() {
+            ep9_vm::NativeCx::global_value(&s.iso, "id").ok_or("no global id")?
+        } else {
+            Value::UNDEFINED
+        };
+        // `drive` and `id` are global bindings, so both stay alive across the call (GC point).
+        let args = [f, Value::int32(n)];
+        let t = Instant::now();
+        let r = ep9_vm::call_from_rust(&mut s.iso, drive, Value::UNDEFINED, &args);
+        let ns = u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let v = r.map_err(|e| format!("drive threw: {}", exception_text(&e)))?;
+        let result = v
+            .as_int32()
+            .map(i64::from)
+            .ok_or_else(|| format!("drive returned {v:?}, not an int32"))?;
+        return Ok((result, ns));
+    }
+    let calls_id = cfg.calls_id();
+    let r = s.iso.with_cx_checkpoint(|cx| {
+        let Some(drive) = cx.global_binding("drive")? else {
+            return Ok(Err("no global drive".to_string()));
+        };
+        let f = if calls_id {
+            let Some(id) = cx.global_binding("id")? else {
+                return Ok(Err("no global id".to_string()));
+            };
+            id
+        } else {
+            Local::undefined()
+        };
+        let t = Instant::now();
+        let v = cx.call(drive, Local::undefined(), &[f, Local::int32(n)])?;
+        // The text only for the error: no formatting in the timed part of a good run.
+        let shown = if v.as_int32().is_some() {
+            String::new()
+        } else {
+            cx.display(v)
+        };
+        Ok(Ok((t, v.as_int32(), shown)))
+    });
+    let (t, result, shown) = r.map_err(|e| format!("drive threw: {}", exception_text(&e)))??;
     let ns = u64::try_from(t.elapsed().as_nanos()).unwrap_or(u64::MAX);
-    let v = r.map_err(|e| format!("drive threw: {}", exception_text(&e)))?;
-    let result = v
-        .as_int32()
+    let result = result
         .map(i64::from)
-        .ok_or_else(|| format!("drive returned {}, not an int32", s.iso.display(v)))?;
+        .ok_or_else(|| format!("drive returned {shown}, not an int32"))?;
     Ok((result, ns))
 }
 
@@ -1156,7 +1183,7 @@ mod tests {
     /// Every config returns n in this process (debug build, small n), with the slot kinds of
     /// the protocol table. B and AH run T0 with `Dispatch::Sibling`, whose debug build has no
     /// tail calls (the native stack grows per instruction), so the configs run on a thread
-    /// with a large stack. B needs the (b) emitter (AArch64); AH runs everywhere.
+    /// with a large stack. B needs the (b) emitter (AArch64 and x86-64); AH runs everywhere.
     #[test]
     fn every_config_returns_n() {
         let r = std::thread::Builder::new()

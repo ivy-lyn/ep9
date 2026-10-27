@@ -1,0 +1,16 @@
+1,2,name,tags,n,nested
+233 2 -Infinity 3
+{"1":"one","2":"two","name":"ep9","tags":["js","é","😀"],"n":[0,0,1500,1e+21,0.1],"nested":{"a":{"b":{"c":[true,false,null]}}}}
+true
+{
+  "a": {
+    "b": {
+      "c": [
+        true,
+        false,
+        null
+      ]
+    }
+  }
+}
+{"s":"a \u0007"}

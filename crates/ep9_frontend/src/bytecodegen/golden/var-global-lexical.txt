@@ -1,6 +1,6 @@
 # var-global-lexical: script (sloppy)
 # | let a = 1; const b = 2; class C {} a = b; function g() { return a + b; }
-; ep9 bytecode, ABI 4
+; ep9 bytecode, ABI 5
 unit kind=script strict=false ts=none source_len=72 source=embedded hints=none
 source_hash=4fb8fb62d37357a1a44437d45df1d16b32f192a235c946bd204b911a24f21117
 strings (4):

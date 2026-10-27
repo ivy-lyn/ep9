@@ -1,0 +1,5 @@
+# ep9 builtin ids: module json, block 14. Append-only (H20, W4-BUILTIN-IDS): never
+# reorder, remove or reuse a line; `EP9_BLESS=1` rewrites this file after a review.
+# id     block.index  kind         length  name  (installed as)
+0x1c00   14.0         method       2       "parse"  (%JSON%.parse w-c)
+0x1c01   14.1         method       3       "stringify"  (%JSON%.stringify w-c)

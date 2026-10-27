@@ -6,8 +6,9 @@
 //! ```text
 //! TABLE = [object, function, array, number, boolean, string, symbol, math, global,
 //!          block 1  2         3      4       5        6       7       8     9
-//!          promise, reflect]
-//!          10       11
+//!          promise, reflect, date, collections, json]
+//!          10       11       12    13           14   (M3-P0: 12-14 empty until M3-P1
+//!                                                   B-DATE, B-COLLECTIONS and B-JSON)
 //! each module: BLOCK, DEFS (id = BLOCK.i, append-only), INTRINSICS, PROPS, MODULE
 //! IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }: realm init installs the VM's
 //! table (block 0), then these modules in this order.
@@ -18,8 +19,11 @@
 
 pub mod array;
 pub mod boolean;
+pub mod collections;
+pub mod date;
 pub mod function;
 pub mod global;
+pub mod json;
 pub mod math;
 pub mod number;
 pub mod object;
@@ -43,6 +47,9 @@ pub const MODULES: &[BuiltinModule] = &[
     global::MODULE,
     promise::MODULE,
     reflect::MODULE,
+    date::MODULE,
+    collections::MODULE,
+    json::MODULE,
 ];
 
 /// The engine's builtin table: `IsolateConfig { builtins: Some(&ep9_builtins::TABLE), .. }`.

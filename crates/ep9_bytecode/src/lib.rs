@@ -62,8 +62,10 @@ pub use serialize::{
 };
 pub use string::UnitString;
 pub use unit::{
-    ABI_VERSION, BigIntConst, CodeKind, CompiledUnit, Constant, Function, FunctionFlags,
-    FunctionKind, Handler, HandlerKind, NumberBits, Oddball, PositionEntry, Scope, ScopeFlags,
-    ScopeKind, ScopeSlot, TsFlags, UnitHeader, VariableMode, VerifiedUnit,
+    ABI_VERSION, BigIntConst, CodeKind, CompiledUnit, Constant, ExportImportName, Function,
+    FunctionFlags, FunctionKind, Handler, HandlerKind, ImportEntry, ImportName,
+    IndirectExportEntry, LocalExportEntry, MappedParameters, ModuleRecords, ModuleRequest,
+    NumberBits, Oddball, PositionEntry, Scope, ScopeFlags, ScopeKind, ScopeSlot, TsFlags,
+    UnitHeader, VariableMode, VerifiedUnit,
 };
 pub use verify::{MAX_PARAMETERS, MAX_REGISTERS, VerifyError, VerifyErrorKind, verify, verify_ref};

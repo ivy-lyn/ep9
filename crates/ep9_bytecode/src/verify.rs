@@ -19,10 +19,13 @@
 //! | Entry frame | Function 0 only, kind = the unit's code kind, 0 parameters, no arguments object, rest parameter or new.target. Every other function is not an entry kind and is a closure target only of its parent |
 //! | Tree | Function ids are a preorder of the parent links; scopes point only to earlier scopes |
 //! | Reader rules | Strings are canonical; scope and function flags use only defined bits. The reader checks the same, so a verified unit loads back |
+//! | Parameter env (ABI 5) | `PARAMETER_ENV` only with `CALLS_SLOPPY_EVAL`, on a `Function` scope that is not strict |
+//! | Mapped parameters (ABI 5) | A list only in a function that has `CreateMappedArguments` and makes a context of the list's scope with `CreateFunctionContext`, and always in such a function with formal parameters; one entry per formal parameter; the scope is a `Function` scope with `NEEDS_CONTEXT`; each slot is in that scope and holds a `var`; no slot twice |
+//! | Module records (ABI 5) | Present exactly in a module unit; string ids and request indices in range; attribute keys sorted (UTF-16 code units) and unique; module cells not 0 |
 //!
 //! Not checked (VM duty, ADR H02 open questions): context slot and depth against the actual
-//! context chain (only a unit-wide bound is checked), module cell indices, register
-//! initialization.
+//! context chain (only a unit-wide bound is checked), module cell indices (only "not 0" is
+//! checked), register initialization.
 
 use crate::decode::{DecodeError, Instruction, Instructions};
 use crate::feedback::{RuntimeId, TypeOfLiteral};
@@ -30,7 +33,8 @@ use crate::opcodes::{Opcode, OpcodeFlags};
 use crate::operand::{ConstOperand, OperandKind, OperandParam, OperandScale, Register};
 use crate::sha256::sha256;
 use crate::unit::{
-    CodeKind, CompiledUnit, Constant, Function, FunctionFlags, FunctionKind, VerifiedUnit,
+    CodeKind, CompiledUnit, Constant, ExportImportName, Function, FunctionFlags, FunctionKind,
+    ImportName, ScopeFlags, ScopeKind, VariableMode, VerifiedUnit,
 };
 
 /// Largest `register_count` of a function.
@@ -106,6 +110,10 @@ pub enum VerifyErrorKind {
     Handler(u32, &'static str),
     /// Position table entry is invalid.
     Position(u32, &'static str),
+    /// The mapped-parameter list is invalid (ABI 5).
+    MappedParameters(&'static str),
+    /// The module records are invalid (ABI 5).
+    ModuleRecords(&'static str),
 }
 
 /// A verifier error with its place.
@@ -169,6 +177,14 @@ pub fn verify_ref(unit: &CompiledUnit) -> Result<(), VerifyError> {
         if !s.flags.is_defined() {
             return unit_err(VerifyErrorKind::ScopeFlags(i as u32));
         }
+        // ABI 5: the parameter environment of a sloppy function's parameter-list eval.
+        if s.flags.contains(ScopeFlags::PARAMETER_ENV)
+            && (s.kind != ScopeKind::Function
+                || !s.flags.contains(ScopeFlags::CALLS_SLOPPY_EVAL)
+                || s.flags.contains(ScopeFlags::STRICT))
+        {
+            return unit_err(VerifyErrorKind::ScopeFlags(i as u32));
+        }
         if let Some(o) = s.outer
             && o.index() >= i
         {
@@ -230,6 +246,76 @@ pub fn verify_ref(unit: &CompiledUnit) -> Result<(), VerifyError> {
     // Function bodies, after the whole tree is known to be valid.
     for (i, f) in unit.functions.iter().enumerate() {
         verify_function(unit, i as u32, f, max_ctx_slots)?;
+    }
+    verify_module_records(unit)
+}
+
+/// ABI 5: the module records section (present exactly in a module unit).
+fn verify_module_records(unit: &CompiledUnit) -> Result<(), VerifyError> {
+    let bad = |what| unit_err(VerifyErrorKind::ModuleRecords(what));
+    let m = match (&unit.module_records, unit.header.code_kind) {
+        (None, CodeKind::Module) => return bad("module unit without module records"),
+        (Some(_), CodeKind::Script | CodeKind::Eval) => {
+            return bad("module records in a script or eval unit");
+        }
+        (None, _) => return Ok(()),
+        (Some(m), CodeKind::Module) => m,
+    };
+    let string_ok = |s: crate::StringId| s.index() < unit.strings.len();
+    let request_ok = |r: u32| (r as usize) < m.requested_modules.len();
+    for r in &m.requested_modules {
+        if !string_ok(r.specifier)
+            || !r
+                .attributes
+                .iter()
+                .all(|&(k, v)| string_ok(k) && string_ok(v))
+        {
+            return bad("string id");
+        }
+        let sorted = r.attributes.windows(2).all(|w| {
+            unit.string(w[0].0).cmp_code_units(unit.string(w[1].0)) == core::cmp::Ordering::Less
+        });
+        if !sorted {
+            return bad("attribute keys not sorted or not unique");
+        }
+    }
+    for e in &m.import_entries {
+        let name_ok = match e.import_name {
+            ImportName::Namespace => true,
+            ImportName::Name(n) => string_ok(n),
+        };
+        if !name_ok || !string_ok(e.local_name) {
+            return bad("string id");
+        }
+        if !request_ok(e.module_request) {
+            return bad("request index");
+        }
+        if e.cell == 0 {
+            return bad("module cell 0");
+        }
+    }
+    for e in &m.local_export_entries {
+        if !string_ok(e.export_name) || !string_ok(e.local_name) {
+            return bad("string id");
+        }
+        if e.cell == 0 {
+            return bad("module cell 0");
+        }
+    }
+    for e in &m.indirect_export_entries {
+        let name_ok = match e.import_name {
+            ExportImportName::All => true,
+            ExportImportName::Name(n) => string_ok(n),
+        };
+        if !name_ok || !string_ok(e.export_name) {
+            return bad("string id");
+        }
+        if !request_ok(e.module_request) {
+            return bad("request index");
+        }
+    }
+    if !m.star_export_entries.iter().all(|&r| request_ok(r)) {
+        return bad("request index");
     }
     Ok(())
 }
@@ -366,7 +452,11 @@ fn verify_function(
     }
     let is_start = |t: i64| t >= 0 && (t as usize) < len && starts[t as usize];
 
-    // Pass 2: operands.
+    // Pass 2: operands. `mapped_ok`: the function makes a context of the mapped-parameter
+    // list's scope (ABI 5); `has_mapped_args`: it has `CreateMappedArguments`.
+    let mapped_scope = f.mapped_parameters.as_ref().map(|m| m.scope);
+    let mut mapped_ok = false;
+    let mut has_mapped_args = false;
     for insn in &insns {
         let at = Some(insn.offset);
         let info = insn.opcode.info();
@@ -482,7 +572,11 @@ fn verify_function(
                 if insn.operand(1) != slots {
                     return cx.err(at, VerifyErrorKind::Context(1));
                 }
+                if insn.opcode == Opcode::CreateFunctionContext && mapped_scope == Some(s) {
+                    mapped_ok = true;
+                }
             }
+            Opcode::CreateMappedArguments => has_mapped_args = true,
             Opcode::JumpLoop if insn.operand(1) < 0 => {
                 return cx.err(at, VerifyErrorKind::FlagValue(1));
             }
@@ -491,6 +585,55 @@ fn verify_function(
     }
     verify_handlers(&cx, &starts)?;
     verify_positions(&cx, &starts)?;
+    if let Some(m) = &f.mapped_parameters {
+        verify_mapped_parameters(&cx, m, mapped_ok, has_mapped_args)?;
+    } else if has_mapped_args && f.parameter_count > 0 {
+        // The consumer of `CreateMappedArguments` maps each formal parameter through the list;
+        // only a function with no formal parameter has none.
+        return cx.err(
+            None,
+            VerifyErrorKind::MappedParameters("CreateMappedArguments without a list"),
+        );
+    }
+    Ok(())
+}
+
+/// ABI 5: the mapped-parameter list (P0-D16). The VM-ARGS role reads it at
+/// `CreateMappedArguments`, with the context of `m.scope` current.
+fn verify_mapped_parameters(
+    cx: &Ctx<'_>,
+    m: &crate::unit::MappedParameters,
+    makes_scope_context: bool,
+    has_mapped_args: bool,
+) -> Result<(), VerifyError> {
+    let bad = |what| cx.err(None, VerifyErrorKind::MappedParameters(what));
+    if !has_mapped_args {
+        return bad("list in a function without CreateMappedArguments");
+    }
+    if m.slots.is_empty() || m.slots.len() as u64 != u64::from(cx.func.parameter_count) {
+        return bad("length differs from the parameter count");
+    }
+    let Some(scope) = cx.unit.scopes.get(m.scope.index()) else {
+        return bad("scope id");
+    };
+    if scope.kind != ScopeKind::Function || !scope.flags.contains(ScopeFlags::NEEDS_CONTEXT) {
+        return bad("scope is not a function scope with a context");
+    }
+    if !makes_scope_context {
+        return bad("the function makes no context of the scope");
+    }
+    let mut seen = vec![false; scope.slots.len()];
+    for slot in m.slots.iter().flatten() {
+        let Some(s) = scope.slots.get(*slot as usize) else {
+            return bad("slot out of range");
+        };
+        if s.mode != VariableMode::Var {
+            return bad("slot is not a var binding");
+        }
+        if std::mem::replace(&mut seen[*slot as usize], true) {
+            return bad("slot twice");
+        }
+    }
     Ok(())
 }
 

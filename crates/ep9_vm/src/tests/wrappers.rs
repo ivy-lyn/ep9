@@ -216,13 +216,15 @@ fn wrapper_length_and_indices_are_right() {
             assert_eq!(wrapper::string_own_attrs(rt, w, key), Some(a));
         }
         // The ordinary internal methods see them (property.rs asks the wrapper first).
-        let d = property::get_own_property(cx, w, k("length")).unwrap();
+        let d = property::get_own_property(cx, w, k("length"))
+            .unwrap()
+            .unwrap();
         assert_eq!(d.value, Some(conv::num(3.0)));
         assert_eq!(
             (d.writable, d.enumerable, d.configurable),
             (Some(false), Some(false), Some(false))
         );
-        let d = property::get_own_property(cx, w, k("1")).unwrap();
+        let d = property::get_own_property(cx, w, k("1")).unwrap().unwrap();
         assert_eq!(
             (d.writable, d.enumerable, d.configurable),
             (Some(false), Some(true), Some(false))

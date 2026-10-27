@@ -110,7 +110,7 @@ fn run_in(src: &str, dispatch: Dispatch, stress: bool) -> Result<Vec<String>, St
     iso.register_host_function("print", 1, print);
     iso.register_host_function("evalScript", 1, eval_script);
     OUT.with(|o| o.borrow_mut().clear());
-    let r = iso.run_script(unit, "test.js");
+    let r = iso.with_cx_checkpoint(|cx| cx.run_script(unit, "test.js").map(|_| ()));
     let out = OUT.with(|o| core::mem::take(&mut *o.borrow_mut()));
     iso.collect_garbage();
     iso.verify_heap().expect("a valid heap");
@@ -414,11 +414,11 @@ fn unsupported_and_lone_surrogates_are_not_syntax_errors() {
     assert_eq!(
         run_both(
             r#"function e(f) { try { f(); return 'ok'; } catch (x) { return x.constructor.name + ': ' + x.message; } }
-print(e(() => eval('async function af() {}')));
+print(e(() => eval('class A { accessor x = 1 }')));
 print(e(() => eval("'" + String.fromCharCode(0xD800) + "'")));"#
         ),
         lines(&[
-            "Error: not implemented in ep9 v0: unsupported: async functions",
+            "Error: not implemented in ep9 v0: unsupported: class auto-accessors",
             "Error: not implemented in ep9 v0: source text with a lone surrogate",
         ])
     );
@@ -443,6 +443,488 @@ try { evalScript('(('); } catch (e) { print(e.constructor.name); }"#
             "false false number",
             "SyntaxError",
             "SyntaxError"
+        ])
+    );
+}
+
+/// X-ARGS2 (M3-P2 fix round 2): Annex B.3.2.3 in eval code inside the parameter list of a
+/// sloppy function with parameter expressions (ABI 5 `ScopeFlags::PARAMETER_ENV`). The
+/// parameters are in their own environment between the eval code and the variable
+/// environment (FunctionDeclarationInstantiation step 20), so a block function of the eval
+/// code with a parameter's name gets no var binding (bindingExists) and the parameter keeps
+/// its value. A name that is not a parameter (`zz`), the function's own name, an eval in an
+/// arrow of the parameter list and an eval in the body still get one. With and without GC
+/// stress. Node v24.22.1 prints the same lines, except `h`: V8 keeps the arguments object
+/// binding out of the parameter environment and prints "function function"; the spec (step
+/// 22: `env` is the parameter environment) gives "object object".
+#[test]
+fn annex_b_eval_in_parameters_keeps_the_parameters() {
+    assert_eq!(
+        run_both(
+            r#"function f(af = 1, b = eval('{ function af() { return 9; } }')) { return typeof af + ' ' + af; }
+print(f());
+function g(af = 1, b = eval('{ function af() {} } typeof af')) { return b + ' ' + typeof af; }
+print(g());
+function q({ af } = { af: 1 }, b = eval('{ function af() {} } typeof af')) { return b + ' ' + typeof af; }
+print(q());
+function p(arguments = 1, b = eval('{ function arguments() {} } typeof arguments')) { return b + ' ' + typeof arguments; }
+print(p());
+function h(a = 1, b = eval('{ function arguments() {} } typeof arguments')) { return b + ' ' + typeof arguments; }
+print(h());
+function k(a = 1, b = eval('{ function zz() {} } typeof zz')) { return b + ' ' + typeof zz; }
+print(k());
+function r(x = 1, b = eval('{ function r() {} } typeof r')) { return b + ' ' + typeof r; }
+print(r());
+function t(x = 1, b = eval('{ function x() {} } typeof x'), x2 = x) { return b + ' ' + typeof x + ' ' + typeof x2; }
+print(t());
+function v(af = 1, b = () => eval('{ function af() {} } typeof af')) { return b() + ' ' + typeof af; }
+print(v());
+function n(af = 1, b = eval("eval('{ function af() {} } typeof af')")) { return b + ' ' + typeof af; }
+print(n());
+function w(af = 1, b = eval('{ function af() {} } { function bf() {} } typeof af + typeof bf')) { return b + ' ' + typeof af + ' ' + typeof bf; }
+print(w());
+function m(a, b = 2) { eval('{ function a() {} }'); return typeof a; }
+print(m(1));"#
+        ),
+        lines(&[
+            "number 1",
+            "number number",
+            "number number",
+            "number number",
+            "object object",
+            "function function",
+            "function function",
+            "number number number",
+            "function number",
+            "number number",
+            "numberfunction number function",
+            "function",
+        ])
+    );
+}
+
+/// X-ARGS3 (M3-P2 fix round 2): `StoreEvalAnnexBFunction` (id 47) at the global level when a
+/// Script run inside the eval code made a lexical binding of the name after id 46 made the
+/// var binding (`delete` removed it first). A `const` is an immutable strict binding, so
+/// SetMutableBinding throws a TypeError (§9.1.1.1.5 steps 2 and 5.b; node v24.22.1 prints the
+/// same lines when the script runs at the global level); a `let` takes the function.
+#[test]
+fn annex_b_eval_store_to_a_late_global_const_throws() {
+    assert_eq!(
+        run_both(
+            r#"function lateConst() { evalScript('const af = 1'); }
+function lateLet() { evalScript('let al = 1'); }
+try { eval('delete af; lateConst(); { function af() {} } print("after")'); print('no error'); } catch (e) { print(e.constructor.name, e.message); }
+print(typeof af, af, JSON.stringify(Object.getOwnPropertyDescriptor(globalThis, 'af')));
+eval('delete al; lateLet(); { function al() {} }');
+print(typeof al, JSON.stringify(Object.getOwnPropertyDescriptor(globalThis, 'al')));"#
+        ),
+        lines(&[
+            "TypeError Assignment to constant variable.",
+            "number 1 undefined",
+            "function undefined",
+        ])
+    );
+}
+
+/// M3-P2-EVAL-CATCH (R3-1): B.3.4 skips the Environment Record of any catch clause, simple or
+/// destructured, at runtime (EvalDeclarationInstantiation steps 3.d.i.2.a.i and
+/// 13.b.ii.4.a.i.i); the rule for a simple catch parameter is only the static early error of
+/// the catch Block. So a block function of a direct eval in a destructured catch gets a var
+/// binding (B.3.2.3), at the function level and at the global level, and `var f` in such an
+/// eval is no SyntaxError. ep9 keeps the spec. node v24 (V8) skips only a simple catch
+/// parameter, so it prints other text for the 5 lines below that have a "spec" comment; the
+/// other lines are the same. Under every dispatch expansion, with and without GC stress.
+#[test]
+fn annex_b_eval_in_a_destructured_catch_follows_the_spec() {
+    assert_eq!(
+        run_every(
+            r#"function g() { try { throw { f: 1 }; } catch ({ f }) { eval('{ function f() {} }'); } return typeof f; }
+function g2() { var inner; try { throw [1]; } catch ([f]) { eval('{ function f() {} }'); inner = typeof f; } return inner + ' ' + typeof f; }
+function h() { try { throw 1; } catch (f) { eval('{ function f() {} }'); } return typeof f; }
+function v() { var inner; try { throw { f: 1 }; } catch ({ f }) { eval('var f = 2'); inner = f; } return inner + ' ' + f; }
+function vs() { var inner; try { throw 1; } catch (f) { eval('var f = 2'); inner = f; } return inner + ' ' + f; }
+print('g', g());
+print('g2', g2());
+print('h', h());
+try { print('v', v()); } catch (e) { print('v', e.constructor.name); }
+print('vs', vs());
+try { throw { gf: 1 }; } catch ({ gf }) { eval('{ function gf() {} }'); }
+print('global destr', typeof gf);
+try { throw [1]; } catch ([ga]) { eval('{ function ga() {} }'); }
+print('global array', typeof ga);
+try { throw 1; } catch (hf) { eval('{ function hf() {} }'); }
+print('global simple', typeof hf);"#
+        ),
+        lines(&[
+            // spec; node v24: "g undefined"
+            "g function",
+            // spec; node v24: "g2 number undefined"
+            "g2 number function",
+            "h function",
+            // spec; node v24: "v SyntaxError"
+            "v 2 undefined",
+            "vs 2 undefined",
+            // spec; node v24: "global destr undefined"
+            "global destr function",
+            // spec; node v24: "global array undefined"
+            "global array function",
+            "global simple function",
+        ])
+    );
+}
+
+/// D3d (M3-P4; M3-P2-OPEN item 3): EvalDeclarationInstantiation step 3.d passes the parameter
+/// environment of a sloppy function with parameter expressions (FunctionDeclarationInstantiation
+/// step 20; ABI 5 `ScopeFlags::PARAMETER_ENV`) before it reaches the variable environment. So a
+/// var or function name of eval code in the parameter list that a parameter holds is a
+/// SyntaxError, checked before any binding is made (`zz` stays undeclared) and before the body
+/// runs. A var name that no parameter holds, an eval in the body, a destructured parameter
+/// with a body eval, an eval in an arrow of the parameter list and the name of a function
+/// expression are still allowed. Node v24.22.1 prints the same lines, except the
+/// `arguments` rows: V8 keeps the arguments object out of the parameter environment and
+/// prints "undefined"; the spec (step 22: `env` is the parameter environment) and the
+/// test262 files `language/eval-code/direct/*-declare-arguments*.js` give a SyntaxError.
+#[test]
+fn eval_var_in_parameters_conflicts_with_a_parameter() {
+    assert_eq!(
+        run_every(
+            r#"function t(label, f) { try { print(label, String(f())); } catch (e) { print(label, e.constructor.name, e.message); } }
+t('a', () => { function f(a = eval('var a = 1')) { return a; } return f(); });
+t('b', () => { function f(a, b = eval('var a = 2')) { return a; } return f(5); });
+t('c', () => { function f(a = eval('function a() {}')) { return a; } return f(); });
+t('d', () => { function f(a = eval('var b'), b) { return b; } return f(); });
+t('j', () => { var f = (a = eval('var a = 8')) => a; return f(); });
+t('k', () => { function f(a, b = eval("eval('var a = 9')")) { return a; } return f(1); });
+t('q', () => { function f(a = 1, b = eval('try {} catch (a) { var a }')) { return a; } return f(); });
+t('u', () => { var n = 0; function f(a = eval('var zz = 1; var a')) { n++; } try { f(); } catch (e) {} return typeof zz + ' ' + n; });
+t('args', () => { function f(p = eval('var arguments')) {} return f(); });
+t('args-let', () => { function f(p = eval('var arguments')) { let arguments; } return f(); });
+t('f', () => { function f(a = eval('var z = 3')) { return z; } return f(); });
+t('g', () => { function f(a = 1) { eval('var a = 4'); return a; } return f(); });
+t('h', () => { function f({a}) { eval('var a = 6'); { let z; } return a; } return f({a: 1}); });
+t('i', () => { function f(a, b = () => eval('var a = 7')) { b(); return a; } return f(1); });
+t('m', () => { var g = function f(a = eval('var f = 11')) { return f; }; return g(); });
+t('arrow-args', () => { var g = (p = eval("var arguments = 'param'")) => arguments; return g(); });"#
+        ),
+        lines(&[
+            "a SyntaxError Identifier 'a' has already been declared",
+            "b SyntaxError Identifier 'a' has already been declared",
+            "c SyntaxError Identifier 'a' has already been declared",
+            "d SyntaxError Identifier 'b' has already been declared",
+            "j SyntaxError Identifier 'a' has already been declared",
+            "k SyntaxError Identifier 'a' has already been declared",
+            "q SyntaxError Identifier 'a' has already been declared",
+            "u undefined 0",
+            // spec and test262; node v24: "args undefined"
+            "args SyntaxError Identifier 'arguments' has already been declared",
+            // spec and test262; node v24: "args-let undefined"
+            "args-let SyntaxError Identifier 'arguments' has already been declared",
+            "f 3",
+            "g 4",
+            "h 6",
+            "i 1",
+            "m 11",
+            "arrow-args param",
+        ])
+    );
+}
+
+/// E6 (M3-P4; M3-P2-OPEN item 2): `super()` in direct eval code in a derived constructor
+/// (PerformEval step 10.b.iv inDerivedConstructor), also through arrows and nested eval: it calls
+/// the parent constructor with the caller's `new.target`, binds the caller's `this` (a second
+/// binding is a ReferenceError, after the parent constructor ran), and runs the class field
+/// initializer once. `super.x`, `new.target` and `this` in eval code keep working. Outside a
+/// derived constructor `super()` stays a SyntaxError. Node v24.22.1 prints the same lines
+/// (its SyntaxError and TDZ messages differ, so only the error names are printed).
+#[test]
+fn super_call_in_eval_code() {
+    assert_eq!(
+        run_every(
+            r#"function t(label, f) { try { print(label, String(f())); } catch (e) { print(label, e.constructor.name); } }
+class A { constructor(...v) { this.v = v.join(','); } m() { return 'A.m'; } }
+t('call', () => { class B extends A { constructor() { eval('super(1)'); } } return new B().v; });
+t('call-ret', () => { class B extends A { constructor() { var r = eval('super(2)'); this.same = r === this; } } var b = new B(); return b.v + ' ' + b.same; });
+t('call-arrow', () => { class B extends A { constructor() { var f = () => eval('super(3)'); f(); } } return new B().v; });
+t('call-nested', () => { class B extends A { constructor() { eval("eval('super(5)')"); } } return new B().v; });
+t('arrow-in-eval', () => { class B extends A { constructor() { var f = eval('() => super(10)'); f(); } } return new B().v; });
+t('twice', () => { class B extends A { constructor() { super(1); eval('super(6)'); } } return new B().v; });
+t('twice2', () => { class B extends A { constructor() { eval('super(7)'); super(1); } } return new B().v; });
+t('this-before', () => { class B extends A { constructor() { eval('this'); super(1); } } return new B().v; });
+t('this-after', () => { class B extends A { constructor() { eval('super(8)'); this.w = eval('this.v'); } } return new B().w; });
+t('no-super', () => { class B extends A { constructor() { eval('1'); } } return new B().v; });
+t('fields', () => { var n = 0; class B extends A { f = ++n; #p = 5; g() { return this.#p; } constructor() { try { eval('super(9)'); eval('super(9)'); } catch (e) {} } } var b = new B(); return n + ' ' + b.f + ' ' + b.g(); });
+t('newtarget', () => { class B extends A { constructor() { eval('super(new.target === B ? 10 : 0)'); } } return new B().v; });
+t('reflect', () => { class B extends A { constructor() { eval('super(11)'); } } class X {} var o = Reflect.construct(B, [], X); return o.v + ' ' + (Object.getPrototypeOf(o) === X.prototype); });
+t('spread', () => { class B extends A { constructor() { eval('super(...[1, 2], 3)'); } } return new B().v; });
+t('escaped', () => { class B extends A { constructor() { super(1); this.f = () => eval('super(2)'); } } var b = new B(); try { b.f(); } catch (e) { return b.v + ' ' + e.constructor.name; } });
+t('not-ctor', () => { class B extends A { constructor() { eval('super(1)'); } } Object.setPrototypeOf(B, Object.prototype); return new B(); });
+t('super-prop', () => { class B extends A { constructor() { eval('super(13)'); this.r = eval('super.m()'); } } return new B().r; });
+t('in-method', () => { class B extends A { m() { eval('super()'); } } return new B().m(); });
+t('in-base', () => { class B { constructor() { eval('super()'); } } return new B(); });
+t('in-field', () => { class B extends A { x = eval('super()'); } return new B(); });
+t('in-eval-fn', () => { class B extends A { constructor() { eval('function q() { super(); }'); } } return new B(); });"#
+        ),
+        lines(&[
+            "call 1",
+            "call-ret 2 true",
+            "call-arrow 3",
+            "call-nested 5",
+            "arrow-in-eval 10",
+            "twice ReferenceError",
+            "twice2 ReferenceError",
+            "this-before ReferenceError",
+            "this-after 8",
+            "no-super ReferenceError",
+            "fields 1 1 5",
+            "newtarget 10",
+            "reflect 11 true",
+            "spread 1,2,3",
+            "escaped 1 ReferenceError",
+            "not-ctor TypeError",
+            "super-prop A.m",
+            "in-method SyntaxError",
+            "in-base SyntaxError",
+            "in-field SyntaxError",
+            "in-eval-fn SyntaxError",
+        ])
+    );
+}
+
+/// E9 (M3-P4; M3-P2-OPEN item 1): a private name of the caller's classes in direct eval code
+/// (PerformEval: the PrivateIdentifier names of the enclosing class bodies; §15.7
+/// AllPrivateIdentifiersValid): fields, methods, getters, setters, static ones, `#x in o`,
+/// through arrows, nested eval, field initializers and static blocks, with an inner class
+/// shadowing an outer name, and with both brands in one class (the brand of the right kind
+/// is checked). A name no enclosing class declares is a SyntaxError before the code runs. In a
+/// computed key, before the class defines its private method, the brand check throws the
+/// TypeError (`before-def`). Node v24.22.1 prints the same lines.
+#[test]
+fn caller_private_names_in_eval_code() {
+    assert_eq!(
+        run_every(
+            r#"function t(label, f) { try { print(label, String(f())); } catch (e) { print(label, e.constructor.name); } }
+t('field', () => { class C { #x = 1; m() { return eval('this.#x'); } } return new C().m(); });
+t('field-set', () => { class C { #x = 1; m() { eval('this.#x = 5'); return this.#x; } } return new C().m(); });
+t('field-inc', () => { class C { #x = 1; m() { eval('this.#x++; this.#x += 10'); return this.#x; } } return new C().m(); });
+t('field-other', () => { class C { #x = 1; m(o) { return eval('o.#x'); } } return new C().m({}); });
+t('field-set-other', () => { class C { #x = 1; m(o) { return eval('o.#x = 2'); } } return new C().m({}); });
+t('method', () => { class C { #m() { return 'm' + this.v; } v = 2; f() { return eval('this.#m()'); } } return new C().f(); });
+t('method-get', () => { class C { #m() {} f() { return eval('this.#m') === eval('this.#m'); } } return new C().f(); });
+t('method-other', () => { class C { #m() {} f(o) { return eval('o.#m'); } } return new C().f({}); });
+t('method-assign', () => { class C { #m() {} f() { eval('this.#m = 1'); } } return new C().f(); });
+t('getter', () => { class C { get #g() { return 'g' + this.v; } v = 3; f() { return eval('this.#g'); } } return new C().f(); });
+t('getter-set', () => { class C { get #g() { return 1; } f() { eval('this.#g = 2'); } } return new C().f(); });
+t('setter', () => { class C { set #s(v) { this.v = v; } f() { eval('this.#s = 4'); return this.v; } } return new C().f(); });
+t('setter-get', () => { class C { set #s(v) {} f() { return eval('this.#s'); } } return new C().f(); });
+t('accessor-both', () => { class C { #v = 1; get #a() { return this.#v; } set #a(x) { this.#v = x; } f() { eval('this.#a += 5'); return eval('this.#a'); } } return new C().f(); });
+t('static-field', () => { class C { static #x = 7; static f() { return eval('C.#x'); } } return C.f(); });
+t('static-method', () => { class C { static #m() { return 8; } static f() { return eval('this.#m()'); } } return C.f(); });
+t('static-method-wrong', () => { class C { static #m() { return 8; } static f() { return eval('this.#m()'); } } return C.f.call({}); });
+t('static-getter', () => { class C { static get #g() { return 9; } static f() { return eval('this.#g'); } } return C.f(); });
+t('static-setter', () => { class C { static set #s(v) { C.v = v; } static f() { eval('this.#s = 10'); return C.v; } } return C.f(); });
+t('both-brands-instance-on-ctor', () => { class C { #m() { return 1; } static #s() { return 2; } static f() { return eval('this.#m()'); } } return C.f(); });
+t('both-brands-static-on-inst', () => { class C { #m() { return 1; } static #s() { return 2; } f() { return eval('this.#s()'); } } return new C().f(); });
+t('both-brands-ok', () => { class C { #m() { return 1; } static #s() { return 2; } f() { return eval('this.#m() + C.#s()'); } } return new C().f(); });
+t('in-field', () => { class C { #x; f(o) { return eval('#x in o'); } } var c = new C(); return c.f(c) + ' ' + c.f({}); });
+t('in-method', () => { class C { #m() {} f(o) { return eval('#m in o'); } } var c = new C(); return c.f(c) + ' ' + c.f({}); });
+t('in-static', () => { class C { static #m() {} static f(o) { return eval('#m in o'); } } return C.f(C) + ' ' + C.f({}); });
+t('arrow', () => { class C { #x = 11; f() { return (() => eval('this.#x'))(); } } return new C().f(); });
+t('eval-arrow', () => { class C { #x = 12; f() { return eval('(() => this.#x)()'); } } return new C().f(); });
+t('nested-eval', () => { class C { #x = 13; f() { return eval("eval('this.#x')"); } } return new C().f(); });
+t('initializer', () => { class C { #x = 14; y = eval('this.#x'); } return new C().y; });
+t('static-block', () => { class C { static #x = 15; static { C.r = eval('C.#x'); } } return C.r; });
+t('shadow', () => { class O { #x = 'outer'; f() { class I { #x = 'inner'; g() { return eval('this.#x'); } } return new I().g(); } } return new O().f(); });
+t('outer-from-inner', () => { class O { #x = 'outer'; f() { var self = this; class I { #y = 1; g() { return eval('self.#x'); } } return new I().g(); } } return new O().f(); });
+t('outer-method-from-inner', () => { class O { #m() { return 'om'; } f() { var self = this; class I { #n() {} g() { return eval('self.#m()'); } } return new I().g(); } } return new O().f(); });
+t('eval-class', () => { class C { #x = 16; f() { return eval('class D { #x = 17; g(o) { return o.#x; } }; new D().g(this) + new D().g(new D())'); } } return new C().f(); });
+t('eval-class-caller', () => { class C { #x = 18; f() { return eval('class D { g(o) { return o.#x; } }; new D().g(this)'); } } return new C().f(); });
+t('optional', () => { class C { #x = 19; f(o) { return eval('o?.#x'); } } return new C().f(null) + ' ' + new C().f(new C()); });
+t('call-optional', () => { class C { #m() { return 20; } f(o) { return eval('o?.#m()'); } } return new C().f(undefined) + ' ' + new C().f(new C()); });
+t('destructure', () => { class C { #x = 1; f() { eval('[this.#x] = [21]'); return this.#x; } } return new C().f(); });
+t('not-declared', () => { class C { f() { return eval('this.#zz'); } } return new C().f(); });
+t('not-declared-ran', () => { var ran = false; class C { f() { eval('ran = true; this.#zz'); } } try { new C().f(); } catch (e) { return e.constructor.name + ' ' + ran; } });
+t('fn-in-eval', () => { class C { #x = 22; f() { return eval('(function(o) { return o.#x; })')(this); } } return new C().f(); });
+t('computed-key', () => { class C { #x = 23; static [eval('"k"')] = 1; } return Object.keys(C).join(); });
+t('heritage', () => { class C { #x = 1; static f() { class D extends (eval('1'), Object) {} return 1; } } return C.f(); });
+t('before-def', () => { class C { [eval('try { this.#m = 1; "none" } catch (e) { e.constructor.name }')] = 1; #m() {} } return Object.keys(new C()).join(); });
+t('before-def-get', () => { class C { static [eval('try { this.#g; "none" } catch (e) { e.constructor.name }')] = 1; get #g() { return 1; } } return Object.keys(C).join(); });"#
+        ),
+        lines(&[
+            "field 1",
+            "field-set 5",
+            "field-inc 12",
+            "field-other TypeError",
+            "field-set-other TypeError",
+            "method m2",
+            "method-get true",
+            "method-other TypeError",
+            "method-assign TypeError",
+            "getter g3",
+            "getter-set TypeError",
+            "setter 4",
+            "setter-get TypeError",
+            "accessor-both 6",
+            "static-field 7",
+            "static-method 8",
+            "static-method-wrong TypeError",
+            "static-getter 9",
+            "static-setter 10",
+            "both-brands-instance-on-ctor TypeError",
+            "both-brands-static-on-inst TypeError",
+            "both-brands-ok 3",
+            "in-field true false",
+            "in-method true false",
+            "in-static true false",
+            "arrow 11",
+            "eval-arrow 12",
+            "nested-eval 13",
+            "initializer 14",
+            "static-block 15",
+            "shadow inner",
+            "outer-from-inner outer",
+            "outer-method-from-inner om",
+            "eval-class TypeError",
+            "eval-class-caller 18",
+            "optional undefined 19",
+            "call-optional undefined 20",
+            "destructure 21",
+            "not-declared SyntaxError",
+            "not-declared-ran SyntaxError false",
+            "fn-in-eval 22",
+            "computed-key k",
+            "heritage 1",
+            "before-def TypeError",
+            "before-def-get TypeError",
+        ])
+    );
+}
+
+/// CX2-E9-1 (M3-P4 fix round 2): a class heritage runs with the outer PrivateEnvironment
+/// (ECMA-262 §15.7.14 step 8.b), computed keys with the class's own (step 12, before
+/// ClassElementEvaluation). So a `#x` of eval code in a heritage, or of a class heritage in eval
+/// code, is the outer class's `#x`, never the inner class's, and a slot of the inner class that
+/// holds undefined never becomes an ordinary property key (`heritage-{field,set}-other`: before
+/// the fix the store made a property "undefined"). `local-*`: the class is in the eval code;
+/// `site-*`: the eval is in the caller's heritage; `key-*`: computed keys; `same-*`: a field
+/// and a method of the same name. Node v24.22.1 prints the same lines, except where eval code
+/// runs in a heritage (`site-*` and `local-nested-eval`): there V8 resolves `#x` to the inner
+/// class, against step 8.b (a TypeError, or false for `#x in o`), and for `site-only-inner` it
+/// throws that TypeError at run time, not the SyntaxError of PerformEval step 10.b.
+///
+/// `anon-*` (fix round 3, R-FIX2-1): eval code in the heritage of an anonymous class with no
+/// private name (so its class scope has no context) in a computed key of a class `A`. The
+/// running PrivateEnvironment there is `A`'s, so `#x` is `A`'s `#x`, not the `#x` of a class
+/// `O` around `A` (`O.m` gets an `O`, so each access is a TypeError and `#x in o` is false),
+/// and without `O` it is still `A`'s `#x` (false, not a SyntaxError). Before the fix the VM
+/// left out the names of the context right past the heritage marker context, which is `A`'s
+/// context here: "anon-read O", "anon-write no error pwn", "anon-in true", "anon-no-outer
+/// SyntaxError", ... Node v24.22.1 prints the same `anon-*` lines.
+#[test]
+fn caller_private_names_and_the_heritage() {
+    assert_eq!(
+        run_every(
+            r#"function t(label, f) { try { print(label, String(f())); } catch (e) { print(label, e.constructor.name); } }
+t('local-set-other', () => { class C { #x; f(o) { return eval('class D extends (o.#x = 9, Object) { #x() {} }; o.undefined'); } } return new C().f({}); });
+t('local-set', () => { class C { #x = 1; f(o) { return eval('class D extends (o.#x = 9, Object) { #x() {} }; o.#x'); } } var c = new C(); return c.f(c); });
+t('local-get', () => { class C { #x = 5; f(o) { return eval('var v; class D extends (v = o.#x, Object) { #x() {} }; v'); } } var c = new C(); return c.f(c); });
+t('local-in', () => { class C { #x = 5; f(o) { return eval('var v; class D extends (v = #x in o, Object) { #x() {} }; v'); } } var c = new C(); return c.f(c) + ' ' + c.f({}); });
+t('local-method', () => { class C { #x() { return 'C.m'; } f(o) { return eval('var v; class D extends (v = o.#x(), Object) { #x = 1; }; v'); } } var c = new C(); return c.f(c); });
+t('local-method-other', () => { class C { #x() { return 'C.m'; } f(o) { return eval('var v; class D extends (v = o.#x(), Object) { #x = 1; }; v'); } } return new C().f({}); });
+t('local-arrow', () => { class C { #x = 7; f(o) { return eval('var g; class D extends (g = () => o.#x, Object) { #x() {} }; g()'); } } var c = new C(); return c.f(c) + ' ' + (() => { try { return c.f({}); } catch (e) { return e.constructor.name; } })(); });
+t('local-getter', () => { class C { get #x() { return 'get'; } f(o) { return eval('var v; class D extends (v = o.#x, Object) { #x() {} }; v'); } } var c = new C(); return c.f(c); });
+t('local-static', () => { class C { static #x() { return 'sm'; } static f(o) { return eval('var v; class D extends (v = o.#x(), Object) { static #x() { return "D"; } }; v'); } } return C.f(C); });
+t('local-nested', () => { class C { #x = 11; f(o) { return eval('var v; class E extends (class D extends (v = o.#x, Object) { #x; }) { #x() {} }; v'); } } var c = new C(); return c.f(c); });
+t('local-body', () => { class C { #x = 1; f(o) { return eval('class E extends (class D { #x = 12; m(p) { return p.#x; } }) { #x() {} }; new E().m(new E())'); } } return new C().f(new C()); });
+t('local-only-inner', () => { class C { #y; f(o) { return eval('class D extends (o.#x, Object) { #x; }'); } } return new C().f({}); });
+t('local-nested-eval', () => { class C { #x = 31; f(o) { return eval('var v; class D extends (v = eval("o.#x"), Object) { #x() {} }; v'); } } var c = new C(); return c.f(c) + ' ' + (() => { try { return c.f({}); } catch (e) { return e.constructor.name; } })(); });
+t('local-class-in-heritage', () => { class C { #x = 45; f(o) { return eval('var v; class D extends (v = (class E { g() { return o.#x; } }), Object) { #x() {} }; new v().g()'); } } var c = new C(); return c.f(c); });
+t('site-set-other', () => { class C { #x; f(o) { class D extends (eval('o.#x = 9'), Object) { #x() {} } return o.undefined; } } return new C().f({}); });
+t('site-set', () => { class C { #x = 1; f(o) { class D extends (eval('o.#x = 9'), Object) { #x() {} } return o.#x; } } var c = new C(); return c.f(c); });
+t('site-get', () => { class C { #x = 3; f(o) { var v; class D extends (v = eval('o.#x'), Object) { #x() {} } return v; } } var c = new C(); return c.f(c); });
+t('site-in', () => { class C { #x = 3; f(o) { var v; class D extends (v = eval('#x in o'), Object) { #x() {} } return v; } } var c = new C(); return c.f(c) + ' ' + c.f({}); });
+t('site-only-inner', () => { class C { f(o) { class D extends (eval('o.#x'), Object) { #x; } } } return new C().f({}); });
+t('site-method', () => { class C { #x() { return 'Cm'; } f(o) { var v; class D extends (v = eval('o.#x()'), Object) { #x = 1; } return v; } } var c = new C(); return c.f(c); });
+t('site-arrow', () => { class C { #x = 7; f(o) { var g; class D extends (g = () => eval('o.#x'), Object) { #x() {} } return g(); } } var c = new C(); return c.f(c) + ' ' + (() => { try { return c.f({}); } catch (e) { return e.constructor.name; } })(); });
+t('site-nested-eval', () => { class C { #x = 9; f(o) { var v; class D extends (v = eval('eval("o.#x")'), Object) { #x() {} } return v; } } var c = new C(); return c.f(c); });
+t('site-nested-class', () => { class C { #x = 10; f(o) { var v; class E extends (class D extends (v = eval('o.#x'), Object) { #x; }) { #x() {} } return v; } } var c = new C(); return c.f(c); });
+t('site-static', () => { class C { static #x() { return 'Cs'; } static f(o) { var v; class D extends (v = eval('o.#x()'), Object) { static #x() { return 'Ds'; } } return v; } } return C.f(C); });
+t('site-accessor', () => { class C { #v = 0; set #x(a) { this.#v = a; } get #x() { return this.#v; } f(o) { class D extends (eval('o.#x = 13'), Object) { #x() {} } return o.#x; } } var c = new C(); return c.f(c); });
+t('site-middle-class', () => { class C { #x = 1; m() { class F { #y = 'F'; g(o) { var v; class E extends (v = eval('o.#y'), Object) { #y() {} } return v; } } return new F().g(new F()); } } return new C().m(); });
+t('site-and-key', () => { class C { #x = 'C'; f(o) { var h, k; class D extends (h = eval('o.#x'), Object) { #x = 'D'; [k = eval('#x in o')] = 1; } return h + ' ' + k; } } var c = new C(); return c.f(c); });
+t('site-tdz', () => { class C { #x = 1; f() { class D extends (eval('D'), Object) { #x() {} } } } return new C().f(); });
+t('key-own', () => { class C { #x = 1; f(o) { var r; class D { #x = 2; [r = eval('#x in o')] = 0; } return r; } } var c = new C(); return c.f(c); });
+t('key-own-other', () => { class C { #x = 1; f(o) { var r; class D { #x() {} [r = (() => { try { return eval('o.#x'); } catch (e) { return e.constructor.name; } })()] = 0; } return r; } } var c = new C(); return c.f(c); });
+t('key-local-own', () => { class C { #x = 1; f(o) { return eval('var r; class D { #x = 2; [r = #x in o] = 0; }; r'); } } var c = new C(); return c.f(c); });
+t('key-local-own-later', () => eval('var g; class D { static #m() { return "m6"; } static [(g = () => D.#m(), "k")] = 1; }; g()'));
+t('same-inner-field', () => { class C { #x() { return 'Cm'; } f() { class D { #x = 'Df'; g(p) { return eval('p.#x'); } } return new D().g(new D()); } } return new C().f(); });
+t('same-inner-method', () => { class C { #x = 'Cf'; f() { class D { #x() { return 'Dm'; } g(p) { return eval('p.#x()'); } } return new D().g(new D()); } } return new C().f(); });
+t('same-inner-method-other', () => { class C { #x = 'Cf'; f() { var c = this; class D { #x() { return 'Dm'; } g(p) { return eval('p.#x'); } } return new D().g(c); } } return new C().f(); });
+t('anon-read', () => { class O { #x = 'O'; m(o) { var v; class A { #x = 'A'; static [(class extends (v = eval('o.#x'), Object) {}, 'k')] = 1; } return v; } } return new O().m(new O()); });
+t('anon-read-own', () => { class O { #x = 'O'; m() { var v; class A { #x = 'A'; static [(class extends (v = eval('(p) => p.#x'), Object) {}, 'k')] = 1; } return v(new A()); } } return new O().m(); });
+t('anon-write', () => { class O { #x = 'O'; get x() { return this.#x; } m(o) { class A { #x = 'A'; static [(class extends (eval('o.#x = "pwn"'), Object) {}, 'k')] = 1; } } } var o = new O(); try { new O().m(o); } catch (e) { return e.constructor.name + ' ' + o.x; } return 'no error ' + o.x; });
+t('anon-in', () => { class O { #x = 'O'; m(o) { var v; class A { #x = 'A'; static [(class extends (v = eval('#x in o'), Object) {}, 'k')] = 1; } return v; } } return new O().m(new O()); });
+t('anon-method', () => { class O { #x() { return 'O'; } m(o) { var v; class A { #x() { return 'A'; } static [(class extends (v = eval('o.#x()'), Object) {}, 'k')] = 1; } return v; } } return new O().m(new O()); });
+t('anon-instance-key', () => { class O { #x = 'O'; m(o) { var v; class A { #x = 'A'; [(class extends (v = eval('#x in o'), Object) {}, 'k')] = 1; } return v; } } return new O().m(new O()); });
+t('anon-no-outer', () => { var v; class A { #x; static [(class extends (v = eval('#x in {}'), Object) {}, 'k')] = 1; } return v; });
+t('anon-methods-only', () => { var v; class A { #x; static [(class extends (v = eval('#x in {}'), Object) { m() {} static s() {} get g() { return 1; } }, 'k')] = 1; } return v; });
+t('anon-nested-heritage', () => { var v; class A { #x; static [(class extends (class extends (v = eval('#x in {}'), Object) {}) {}, 'k')] = 1; } return v; });
+t('anon-eval-in-eval', () => { var v; class A { #x; static [(class extends (v = eval('eval(`#x in {}`)'), Object) {}, 'k')] = 1; } return v; });
+t('anon-arrow', () => { var g; class A { #x; static [(class extends (g = () => eval('#x in {}'), Object) {}, 'k')] = 1; } return g(); });
+t('anon-in-arrow', () => { var v; class A { #x; static [((() => class extends (v = eval('#x in {}'), Object) {})(), 'k')] = 1; } return v; });
+t('anon-eval-code', () => { class O { #x = 'O'; m(o) { return eval("var v; class A { #x = 'A'; static [(class extends (v = eval('#x in o'), Object) {}, 'k')] = 1; }; v"); } } return new O().m(new O()); });
+t('anon-eval-code-get', () => { class O { #x = 'O'; m(o) { return eval("var v; class A { #x = 'A'; static [(class extends (v = eval('o.#x'), Object) {}, 'k')] = 1; }; v"); } } return new O().m(new O()); });"#
+        ),
+        lines(&[
+            "local-set-other TypeError",
+            "local-set 9",
+            "local-get 5",
+            "local-in true false",
+            "local-method C.m",
+            "local-method-other TypeError",
+            "local-arrow 7 TypeError",
+            "local-getter get",
+            "local-static sm",
+            "local-nested 11",
+            "local-body 12",
+            "local-only-inner SyntaxError",
+            "local-nested-eval 31 TypeError",
+            "local-class-in-heritage 45",
+            "site-set-other TypeError",
+            "site-set 9",
+            "site-get 3",
+            "site-in true false",
+            "site-only-inner SyntaxError",
+            "site-method Cm",
+            "site-arrow 7 TypeError",
+            "site-nested-eval 9",
+            "site-nested-class 10",
+            "site-static Cs",
+            "site-accessor 13",
+            "site-middle-class F",
+            "site-and-key C false",
+            "site-tdz ReferenceError",
+            "key-own false",
+            "key-own-other TypeError",
+            "key-local-own false",
+            "key-local-own-later m6",
+            "same-inner-field Df",
+            "same-inner-method Dm",
+            "same-inner-method-other TypeError",
+            "anon-read TypeError",
+            "anon-read-own A",
+            "anon-write TypeError O",
+            "anon-in false",
+            "anon-method TypeError",
+            "anon-instance-key false",
+            "anon-no-outer false",
+            "anon-methods-only false",
+            "anon-nested-heritage false",
+            "anon-eval-in-eval false",
+            "anon-arrow false",
+            "anon-in-arrow false",
+            "anon-eval-code false",
+            "anon-eval-code-get TypeError",
         ])
     );
 }

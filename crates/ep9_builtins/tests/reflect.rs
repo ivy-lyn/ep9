@@ -312,3 +312,38 @@ fn set_length_on_an_array_receiver() {
         ])
     );
 }
+
+/// `Reflect.set` with a receiver that is not an object (`Cx::set_with_receiver`, H20 Freeze
+/// table part 2): a setter found on the chain runs with that receiver as `this` (a strict
+/// setter sees the receiver as it is; a sloppy one sees its wrapper, or the global object for
+/// null or undefined, §10.2.1.2), the result is true, and a throwing setter throws. Only a data-property store on such a receiver gives false (§10.1.9.2 steps
+/// 2.b and 3; review finding CX-ADR2).
+#[test]
+fn set_with_a_primitive_receiver_runs_a_setter() {
+    assert_eq!(
+        common::run_both(
+            r#"
+            var log = [];
+            var s = { set x(v) { 'use strict'; log.push(typeof this, v); } };
+            var w = { set x(v) { log.push(typeof this); } };
+            print(Reflect.set(s, 'x', 1, 5), Reflect.set(Object.create(s), 'x', 2, 'str'), Reflect.set(w, 'x', 3, true), log.join(' '));
+            var t = { set x(v) { throw new RangeError('boom'); } };
+            try { print(Reflect.set(t, 'x', 1, 5)); } catch (e) { print(e.name); }
+            print(Reflect.set({ d: 1 }, 'd', 2, 5), Reflect.set({}, 'n', 2, 'str'), Reflect.set({ get g() { return 1; } }, 'g', 2, 5));
+            var G = (function () { return this; })();
+            var n = [];
+            var ws = { set x(v) { n.push(this === G); } };
+            var ss = { set x(v) { 'use strict'; n.push(this === null ? 'null' : typeof this); } };
+            print(Reflect.set(ws, 'x', 1, null), Reflect.set(Object.create(ws), 'x', 2, undefined), Reflect.set(ss, 'x', 3, null), Reflect.set(ss, 'x', 4, undefined), n.join(' '));
+            print(Reflect.set({}, 'n', 1, null), Reflect.set({ d: 1 }, 'd', 2, undefined));
+            "#
+        ),
+        lines(&[
+            "true true true number 1 string 2 object",
+            "RangeError",
+            "false false false",
+            "true true true true true true null undefined",
+            "false false",
+        ])
+    );
+}

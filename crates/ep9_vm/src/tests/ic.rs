@@ -135,7 +135,8 @@ struct T {
 impl T {
     fn new(c: IsolateConfig, sites: &[Site]) -> T {
         let mut iso = isolate(c);
-        iso.run_script(program(sites), "ic.js").unwrap();
+        iso.with_cx_checkpoint(|cx| cx.run_script(program(sites), "ic.js").map(|_| ()))
+            .unwrap();
         T { iso }
     }
 
@@ -144,14 +145,14 @@ impl T {
     }
 
     fn f(&self, i: usize) -> Value {
-        self.iso.global(&format!("f{i}")).unwrap()
+        self.iso.global_raw(&format!("f{i}")).unwrap()
     }
 
     /// `f<i>(a, b)`.
     fn call(&mut self, i: usize, a: u64, b: u64) -> Result<u64, Exception> {
         let f = self.f(i);
         self.iso
-            .call(f, Value::UNDEFINED, &[val(a), val(b)])
+            .call_raw(f, Value::UNDEFINED, &[val(a), val(b)])
             .map(|v| v.to_bits())
     }
 
@@ -900,7 +901,7 @@ fn scans_of_the_global_object(t: &mut T, i: usize, a: u64) -> (u64, u32) {
     shape::SCANS.with(|c| c.set((gs, 0)));
     let r = t
         .iso
-        .call(f, Value::UNDEFINED, &[val(a)])
+        .call_raw(f, Value::UNDEFINED, &[val(a)])
         .unwrap()
         .to_bits();
     (r, shape::SCANS.with(|c| c.get().1))
@@ -977,4 +978,127 @@ fn a_global_ic_follows_stores_and_misses_after_a_delete() {
         t.ok(2, int(8), UNDEFINED);
         assert_eq!(t.ok(0, UNDEFINED, UNDEFINED), int(8));
     });
+}
+
+/// `f<i>(a)` (a `StaGlobal` site) and the number of scans of the global object's shape it
+/// took (M2-P5-PLAN-D8).
+fn store_scans_of_the_global_object(t: &mut T, i: usize, a: u64) -> u32 {
+    let f = t.f(i);
+    let gs = shape::shape_of(t.rt().global());
+    shape::SCANS.with(|c| c.set((gs, 0)));
+    t.iso.call_raw(f, Value::UNDEFINED, &[val(a)]).unwrap();
+    shape::SCANS.with(|c| c.get().1)
+}
+
+#[test]
+fn a_recording_global_store_costs_one_scan_of_the_global_object() {
+    each(|c| {
+        let mut t = T::new(c, &[Site::StoreGlobal("icS"), Site::Global("icS")]);
+        let g = t.rt().global();
+        props::own_define(t.rt(), g, key(t.rt(), "icS"), int(5), attr::DEFAULT);
+        assert!(!shape::is_dictionary(shape::shape_of(g)));
+        // The miss that records the case stores through the case's lookup: one scan.
+        assert_eq!(store_scans_of_the_global_object(&mut t, 0, int(6)), 1);
+        assert_eq!(t.kind(0, shape::shape_of(g)), Some(GLOBAL));
+        assert_eq!(t.ok(1, UNDEFINED, UNDEFINED), int(6));
+        // Then a hit scans nothing.
+        assert_eq!(store_scans_of_the_global_object(&mut t, 0, int(7)), 0);
+        assert_eq!(t.ok(1, UNDEFINED, UNDEFINED), int(7));
+    });
+}
+
+/// `f<i>(a)` (a `StaGlobal` site): the scans of the global object's shape and the runs of
+/// `ic::skip_global_miss` it took (P4F-R1).
+fn store_miss_work(t: &mut T, i: usize, a: u64) -> (u32, u32) {
+    ic::SKIP_CHECKS.with(|c| c.set(0));
+    let scans = store_scans_of_the_global_object(t, i, a);
+    (scans, ic::SKIP_CHECKS.with(|c| c.get()))
+}
+
+#[test]
+fn a_global_store_miss_checks_the_entry_and_computes_the_case_once() {
+    each(|c| {
+        let mut t = T::new(c, &[Site::StoreGlobal("icR"), Site::Global("icR")]);
+        let g = t.rt().global();
+        let read_only = attr::DEFAULT & !attr::WRITABLE;
+        props::own_define(t.rt(), g, key(t.rt(), "icR"), int(5), read_only);
+        let gs = shape::shape_of(g);
+        assert!(!shape::is_dictionary(gs));
+        // The first miss: one entry check and one case (SLOW: read-only), then the generic
+        // store, which takes `[[Set]]` (sloppy: no effect). The case's lookup is 1 scan; the
+        // generic store takes the rest.
+        assert_eq!(store_miss_work(&mut t, 0, int(6)), (4, 1));
+        assert_eq!(t.kind(0, gs), Some(smi::SLOW));
+        assert_eq!(t.ok(1, UNDEFINED, UNDEFINED), int(5));
+        // A miss on the recorded SLOW case: one entry check, no case, the generic store.
+        assert_eq!(store_miss_work(&mut t, 0, int(7)), (3, 1));
+        assert_eq!(t.ok(1, UNDEFINED, UNDEFINED), int(5));
+    });
+}
+
+// ---- budget units of a call from Rust ------------------------------------------------------
+
+/// A call from Rust (`call::call_function_object`) whose frame does not fit takes 1 budget
+/// unit, as every call does at its frame push, also when the push fails (R3-2; M3-P2-STOP).
+#[test]
+fn a_call_from_rust_that_does_not_fit_takes_one_unit() {
+    for &d in Dispatch::ALL {
+        on_big_stack(move || {
+            let mut t = T::new(config(d, false), &[Site::GlobalTypeof("icQ")]);
+            let f = t.f(0);
+            let limit = t.iso.cx.stack_limit;
+            // No room for any frame: the push fails.
+            t.iso.cx.stack_limit = t.iso.rt.stack().base();
+            for budget in [1, 2, 10] {
+                t.iso.cx.budget = budget;
+                let e = t.iso.call_raw(f, Value::UNDEFINED, &[]).unwrap_err();
+                assert_eq!(
+                    e.constructor.as_deref(),
+                    Some("RangeError"),
+                    "{}",
+                    e.message
+                );
+                assert_eq!(t.iso.cx.budget, budget - 1, "{}", d.name());
+            }
+            t.iso.cx.stack_limit = limit;
+            // A call whose frame fits takes 1 unit too.
+            t.iso.cx.budget = 10;
+            t.iso.call_raw(f, Value::UNDEFINED, &[]).unwrap();
+            assert_eq!(t.iso.cx.budget, 9, "{}", d.name());
+        });
+    }
+}
+
+/// Under spike-native, a call from Rust of a (b) function (`native::call_from_rust`, then
+/// `run_b`) whose frame does not fit takes 1 budget unit, as `enter_native` does (D1;
+/// M3-P2-STOP). `run_b` also serves `call_any` and a T0 call of a (b) function of another
+/// realm (`call_in_its_realm`).
+#[cfg(feature = "spike-native")]
+#[test]
+fn a_b_call_from_rust_that_does_not_fit_takes_one_unit() {
+    /// Stands in for the (b) code of `f0`: every frame push below fails, so it never runs.
+    static NEVER_RUN: [u8; 16] = [0; 16];
+    for &d in Dispatch::ALL {
+        on_big_stack(move || {
+            let mut t = T::new(config(d, false), &[Site::GlobalTypeof("icQ")]);
+            let f = t.f(0);
+            let start = NEVER_RUN.as_ptr().addr();
+            // SAFETY: nothing enters the code: the only calls of `f` are below, and each one
+            // fails at its frame push, before the code would run.
+            unsafe { crate::install_native_b(&t.iso, f, start..start + NEVER_RUN.len()) }.unwrap();
+            // No room for any frame: the push fails.
+            t.iso.cx.stack_limit = t.iso.rt.stack().base();
+            for budget in [1, 2, 10] {
+                t.iso.cx.budget = budget;
+                let e = crate::call_from_rust(&mut t.iso, f, Value::UNDEFINED, &[]).unwrap_err();
+                assert_eq!(
+                    e.constructor.as_deref(),
+                    Some("RangeError"),
+                    "{}",
+                    e.message
+                );
+                assert_eq!(t.iso.cx.budget, budget - 1, "{}", d.name());
+            }
+        });
+    }
 }

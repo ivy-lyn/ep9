@@ -474,6 +474,12 @@ const CASES: &[(&str, Mode, &str)] = &[
         Sloppy,
         "class A { #m() {} get #a() { return 1; } set #a(v) {} get #g() {} t(o, v) { o.#a = v; o.#a += 1; o.#a++; [o.#a] = [v]; o.#m = v; return o.#g = v; } }",
     ),
+    // ABI 5 id 44: a class under a computed key is named by SetFunctionName (M2-P2-C2-DEFER).
+    (
+        "class-computed-name",
+        Sloppy,
+        "var k = Symbol('s'); var o = { [k]: class {}, ['x' + 1]: class { static y = this.name; } };",
+    ),
     (
         "class-private-generator",
         Sloppy,
@@ -484,6 +490,11 @@ const CASES: &[(&str, Mode, &str)] = &[
         "module-basic",
         Module,
         "import a, {b as c} from 'x'; export let d = a + c; export function e() { return d; } export default 1;",
+    ),
+    (
+        "module-import-meta",
+        Module,
+        "export const m = import.meta; function f() { return () => import.meta.url; }",
     ),
     (
         "module-default-fn",
@@ -499,6 +510,27 @@ const CASES: &[(&str, Mode, &str)] = &[
         "module-captured",
         Module,
         "let x = 1; export const y = () => x; x = 2;",
+    ),
+    // ABI 5 section 5: requests (deduplicated, attributes sorted), imports, local exports,
+    // indirect exports (a re-exported import, `export { a } from`, `export * as`), star
+    // exports.
+    (
+        "module-records",
+        Module,
+        "import d, { a as b, 'x-y' as c } from './m.js';\nimport * as ns from './m.js';\nimport './side.js';\nexport { b as bb, ns, v as 'v-v' };\nexport { q, default as r } from './q.js' with { type: 'json', mode: 'x' };\nexport * from './s.js';\nexport * as all from './m.js';\nexport var v = 1, { w } = {};\nexport default function () {}",
+    ),
+    // M3-P3 IMPORT-TLA: `import()` (id 43) with and without options, in a module and in a
+    // nested function; a top-level `await` and `for await` (suspend ids after 1, the
+    // Promise handler, AsyncFunctionResolve at the end).
+    (
+        "module-import-call",
+        Module,
+        "export const p = import('./a.js'); function f(s, o) { return import(s, o); }",
+    ),
+    (
+        "module-tla",
+        Module,
+        "import { a } from './a.js'; export let x = await a; for await (const y of [x]) x = y; export function f() { return x; }",
     ),
     // ---- generators (M2-P1-GEN-CG) ----
     (
@@ -525,6 +557,60 @@ const CASES: &[(&str, Mode, &str)] = &[
         "gen-yield-star",
         Strict,
         "function* g(it) { var r = yield* it; return r; }",
+    ),
+    // ---- async functions (M3-P1 ASYNC, async_fn.rs) ----
+    (
+        "async-basic",
+        Strict,
+        "async function f(a) { var b = await a; return b + 1; }",
+    ),
+    ("async-no-await", Strict, "async function f() { return 1; }"),
+    (
+        "async-arrow",
+        Strict,
+        "var f = async (a, b = 2) => a + await b; var g = async () => { await 0; };",
+    ),
+    (
+        "async-try-finally",
+        Strict,
+        "async function f(p) { try { return await p; } catch (e) { await e; } finally { await 0; } }",
+    ),
+    (
+        "async-method",
+        Strict,
+        "var o = { async m() { return await this.x; } }; class C { static async #s() { await 1; } async m(x) { return super.m(await x); } }",
+    ),
+    // ---- async generators and `for await` (M3-P2 ASYNCGEN, async_gen.rs) ----
+    (
+        "async-gen-basic",
+        Strict,
+        "async function* g(a) { var b = yield a; await b; return b; }",
+    ),
+    (
+        "async-gen-return",
+        Strict,
+        "async function* g(p) { try { yield 1; return p; } finally { return; } }",
+    ),
+    (
+        "async-gen-yield-star",
+        Strict,
+        "async function* g(it) { var r = yield* it; return r; }",
+    ),
+    (
+        "async-gen-for-await",
+        Strict,
+        "async function f(xs) { for await (const x of xs) { if (x) break; } } async function* g(xs) { for await (var x of xs) yield x; }",
+    ),
+    // ---- ABI 5 mapped-parameter list and PARAMETER_ENV (P0-D16, P0-D5) ----
+    (
+        "fn-mapped-arguments",
+        Sloppy,
+        "function f(a, b, a) { arguments; return () => b; } function g(x, y) { 'use strict'; arguments; }",
+    ),
+    (
+        "fn-params-eval",
+        Sloppy,
+        "function f(a = 1, b = eval('var a = 2')) { return a; } function g({ a }) { eval('var a'); }",
     ),
     // ---- strict and misc ----
     (
@@ -612,6 +698,26 @@ fn golden_cases_are_deterministic() {
             Ok(Determinism::Same(_)) => {}
             other => panic!("{name}: {other:?}"),
         }
+    }
+}
+
+/// CX-ABI1: a serialized unit whose function makes a mapped arguments object with formal
+/// parameters but carries no mapped-parameter list does not load (the verifier rejects it).
+#[test]
+fn loader_rejects_mapped_arguments_without_a_list() {
+    use ep9_bytecode::{CompiledUnit, LoadError, VerifyError, VerifyErrorKind};
+    let unit = compile_case(Sloppy, "function f(a) { return arguments; }").unwrap();
+    let mut u = unit.unit().clone();
+    assert!(u.functions[1].mapped_parameters.is_some());
+    assert!(CompiledUnit::from_bytes(&u.to_bytes()).is_ok());
+    u.functions[1].mapped_parameters = None;
+    match CompiledUnit::from_bytes(&u.to_bytes()) {
+        Err(LoadError::Verify(VerifyError {
+            kind: VerifyErrorKind::MappedParameters("CreateMappedArguments without a list"),
+            function: Some(1),
+            ..
+        })) => {}
+        other => panic!("{other:?}"),
     }
 }
 
@@ -767,40 +873,85 @@ fn entry_points() {
 #[test]
 fn unsupported_constructs_name_the_feature() {
     for (src, feature) in [
-        // Async generators keep the "generator functions" text until month 3 (generator.rs).
-        ("async function* g() {}", "generator functions"),
-        ("(async function* () {})", "generator functions"),
-        ("({ async *m() {} })", "generator functions"),
-        ("{ async function* g() {} }", "generator functions"),
-        ("class A { static async *m() {} }", "generator functions"),
         ("class A { accessor x = 1 }", "class auto-accessors"),
         ("class A { accessor #x }", "class auto-accessors"),
-        ("async function f() {}", "async functions"),
-        ("(async () => 1)", "async functions"),
-        ("class A { async #m() {} }", "async functions"),
-        ("class A { async *#m() {} }", "generator functions"),
-        ("class A { x = async () => 1 }", "async functions"),
-        ("import('x')", "import()"),
+        ("import.source('x')", "import.source()"),
+        ("import.defer('x')", "import.defer()"),
     ] {
         match compile_script(src, Strictness::Sloppy) {
             Err(CodegenError::Unsupported(u)) => assert_eq!(u.feature, feature, "{src}"),
             other => panic!("{src}: {other:?}"),
         }
     }
-    match compile_module("import.meta") {
-        Err(CodegenError::Unsupported(u)) => assert_eq!(u.feature, "import.meta"),
-        other => panic!("{other:?}"),
+    // `import()` and top-level `await` compile (M3-P3 IMPORT-TLA): `await`, and `for await`
+    // at a module top level (also labelled, and with an early exit), in script code a nested
+    // `import()`.
+    for src in [
+        "await 1;",
+        "for await (const x of y) ;",
+        "let y = [];\n  for await (var x of y) { if (x) break; }",
+        "label: for await (x of y) ;",
+        "class C { [await 1]() {} static { var f = async () => await 2; } }",
+        "export default await import('x', { with: { type: 'json' } });",
+    ] {
+        compile_module(src).unwrap_or_else(|e| panic!("{src}: {e:?}"));
     }
-    match compile_module("for await (const x of y) ;") {
-        Err(CodegenError::Unsupported(u)) => assert_eq!(u.feature, "for await"),
-        other => panic!("{other:?}"),
+    compile_script("function f() { return import('x'); }", Strictness::Sloppy)
+        .expect("import() in a script");
+    compile_module("async function f() { await 1; }").expect("an async function in a module");
+}
+
+/// Async generators in every form compile (M3-P2 ASYNCGEN): declarations, expressions,
+/// object and class methods (static and private), nested `await`/`yield`/`yield*`, `for await`
+/// in async functions and async generators, and a sloppy direct eval's declaration; the
+/// suspend count check passes (AGF2).
+#[test]
+fn async_generators_compile_in_every_form() {
+    for src in [
+        "async function* g() {}",
+        "(async function* () { yield 1; })",
+        "({ async *m() { yield await 1; } })",
+        "{ async function* g() { yield* [1]; } }",
+        "class A { static async *m() { return 1; } async *#p() { yield; } }",
+        "async function* g(a = 1, ...r) { for await (const x of r) yield x; return [await a]; }",
+        "async function* g() { label: { try { yield 1; break label; } finally { await 2; return; } } }",
+        "async function* g() { class C { [yield 1]() {} [await 2]() {} } return yield* g(); }",
+        "async function* g() { (async () => await 1)(); function* s() { yield 1; } }",
+        "async function f() { for await (var x of []) for await (var y of []) ; }",
+        "eval('async function* g() { yield 1; }')",
+    ] {
+        compile_script(src, Strictness::Sloppy).unwrap_or_else(|e| panic!("{src}: {e:?}"));
+    }
+}
+
+/// Async functions in every form compile (M3-P1 ASYNC): declarations, expressions, arrows,
+/// object and class methods (static and private), a sloppy direct eval's declaration, and
+/// `await` in nested positions; the suspend count matches the `await` nodes.
+#[test]
+fn async_functions_compile_in_every_form() {
+    for src in [
+        "async function f() {}",
+        "(async function () { await 1; })",
+        "(async () => 1)",
+        "(async x => await x)",
+        "({ async m() { await 1; } })",
+        "class A { async m() {} static async s() { await 0; } async #p() { await 2; } }",
+        "class A { x = async () => 1 }",
+        "async function f(a = 1, ...r) { return [await a, ...r]; }",
+        "async function f() { await (await 1); for (var i = 0; i < 2; i++) await i; }",
+        "async function f() { class C { [await 1]() {} } return C; }",
+        "async function f() { function g() { var await = 1; } (async () => await 2)(); }",
+        "eval('async function f() { await 1; }')",
+        "async function f() { label: { try { await 1; break label; } finally { await 2; } } }",
+    ] {
+        compile_script(src, Strictness::Sloppy).unwrap_or_else(|e| panic!("{src}: {e:?}"));
     }
 }
 
 #[test]
 fn unsupported_reports_a_position() {
     let Err(CodegenError::Unsupported(u)) =
-        compile_script("1;\n  async function* g() {}", Strictness::Sloppy)
+        compile_script("1;\n  import.source('x')", Strictness::Sloppy)
     else {
         panic!("expected Unsupported");
     };

@@ -59,15 +59,19 @@
 //!   [`init_vector`] checks this for every vector and makes a shared slot megamorphic.
 //! - The miss path computes the case before the generic operation (no GC point, no JS), runs
 //!   the operation, and records the case only if the operation succeeded. An add-property
-//!   case is checked against the shape the operation produced.
+//!   case is checked against the shape the operation produced. A global case gives the
+//!   operation itself when it is a field: a load reads through it ([`global_case_value`]), a
+//!   store writes through it ([`store_global_miss`]), so the miss scans each table once.
 
 use core::cell::Cell;
 
 use ep9_bytecode::{Instructions, Opcode, OperandKind};
 use ep9_heap::{CellKind, CellPtr, CellSize, Heap, Tracer};
 
+use crate::error::FrameRef;
 use crate::feedback;
 use crate::frame::{HOLE, NULL, UNDEFINED, int32_bits, int32_of};
+use crate::interp::{Cx, slow};
 use crate::key;
 use crate::kinds::{self as kind, is_cell_bits};
 use crate::object::{self, arr, attr, cell, init, obj, rd, rd_i32};
@@ -551,14 +555,16 @@ fn cacheable_key(k: u64) -> bool {
 
 /// True if objects of kind `k` may have the exotic own property `name` that their storage
 /// does not show (`exotic.rs`): an array's or a String wrapper's `length`, a constructor's
-/// lazy `prototype`. Array-index keys never get here.
+/// lazy `prototype`, any export of a module namespace (OBJECT_LAYOUT 3: its exports are not
+/// in its shape, `module.rs`). Array-index keys never get here, so an arguments object
+/// (whose exotic keys are mapped indices) needs no entry.
 fn exotic_name(rt: &Runtime, k: u8, name: u64) -> bool {
     if k == kind::ARRAY.get() || k == kind::PRIMITIVE_WRAPPER.get() {
         name == rt.atom(Atom::Length)
     } else if k == kind::FUNCTION.get() {
         name == rt.atom(Atom::Prototype)
     } else {
-        false
+        k == kind::MODULE_NAMESPACE.get()
     }
 }
 
@@ -825,10 +831,78 @@ pub(crate) fn global_case_value(rt: &Runtime, case: &Case) -> Option<u64> {
     (v != HOLE).then_some(v)
 }
 
+/// The store form of [`global_case_value`] (M2-P5-PLAN-D8): stores `v` through a global store
+/// case, at the location that the lookup of the case found, with the barriered store of the
+/// hit path ([`store_global`]): a writable lexical binding outside its TDZ, or a writable own
+/// data property of the global object. False for a `SLOW` case and for the hole of a TDZ;
+/// nothing is stored then. Not a GC point.
+fn global_case_store(rt: &Runtime, case: &Case, v: u64) -> bool {
+    let (o, location) = match case.handler {
+        Handler::Smi(h) => (rt.root(Root::Lexical), int32_of(h)),
+        Handler::Global { location, .. } => (rt.global(), location),
+        _ => return false,
+    };
+    // `SLOW` is not a field handler (`field_ref` gives `None`).
+    let Some((c, off)) = field_ref(o, location) else {
+        return false;
+    };
+    if rd(c, off) == HOLE {
+        return false;
+    }
+    object::wr(&rt.heap, c, off, v);
+    true
+}
+
+/// `StaGlobal` (0x12) after an IC miss in a function that has a feedback vector (M2-P5-PLAN-D8,
+/// the store side of W4-P1-GLOBAL-ONE-SCAN; T0's cold arm sends a miss with no vector straight
+/// to `slow::store_global`). The miss checks the entry ([`skip_global_miss`]) and computes the
+/// case ([`global_case`]) once. When the case is a writable field outside a TDZ, `name = v` is
+/// stored through it ([`global_case_store`]) and the case is recorded in slot `slot`: a
+/// recording miss scans the lexical record's table and the global object's table once each,
+/// not twice. Every other miss runs the generic store with that check and that case
+/// (`slow::store_global_with`; P4F-R1: it does not compute them again): an entry that needs no
+/// case, or a case that is not a writable field outside a TDZ (`SLOW`: a `const`, an accessor,
+/// a read-only or dictionary-mode global; none: an inherited or a missing global; the hole).
+/// Returns the stored value, or 0 with a pending exception (as `slow::store_global`). GC point.
+#[cold]
+#[inline(never)]
+pub(crate) fn store_global_miss(
+    cx: &mut Cx,
+    fp: *mut u64,
+    pc: *const u8,
+    name: u64,
+    v: u64,
+    slot: u32,
+) -> u64 {
+    let rt = cx.rt();
+    let vector = feedback::vector(FrameRef(fp).info());
+    let case = vector
+        .filter(|&vec| !skip_global_miss(rt, vec, slot))
+        .and_then(|_| global_case(rt, name, true));
+    if let (Some(vec), Some(c)) = (vector, case)
+        && global_case_store(rt, &c, v)
+    {
+        // GC point (the stored value is in the caller's accumulator): the interpreter state
+        // first, as `slow::store_global` does.
+        rt.enter(fp, pc);
+        record(rt, vec, slot, c);
+        return v;
+    }
+    slow::store_global_with(cx, fp, pc, name, v, slot, vector, case)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests (P4F-R1): how many times [`skip_global_miss`] ran.
+    pub(crate) static SKIP_CHECKS: Cell<u32> = const { Cell::new(0) };
+}
+
 /// True if the miss path of the global slot `i` of `v` need not compute a case: the entry is
 /// megamorphic, or its case for the lexical record's or the global object's shape is `SLOW`.
 /// Not a GC point.
 pub(crate) fn skip_global_miss(rt: &Runtime, v: u64, i: u32) -> bool {
+    #[cfg(test)]
+    SKIP_CHECKS.with(|c| c.set(c.get() + 1));
     state(v, i) == State::Megamorphic
         || find(v, i, shape::shape_of(rt.root(Root::Lexical))) == Some(SLOW)
         || find(v, i, shape::shape_of(rt.global())) == Some(SLOW)
@@ -1009,3 +1083,106 @@ pub(crate) fn describe_handler(h: u64) -> (i32, u32, u64, i32) {
         rd_i32(c, hc::LOCATION),
     )
 }
+
+/// IC hit and miss counters (feature `ic-stats`, H27; never in `ep9`, dep-guards check 11). A
+/// report build: `cargo build --release -p ep9_cli --features ep9_vm/ic-stats`. T0's fast
+/// handlers count each IC site visit as a hit (the fast path answered) or a miss (it went
+/// cold); a miss is sorted by the state of its feedback slot. The counters are per thread
+/// (the isolate's thread) and print to stderr when that thread ends, one line per site kind:
+///
+/// ```text
+/// ep9 ic-stats: load hit=N miss=N (no-vector=N uninit=N mono=N poly=N mega=N)
+/// ```
+///
+/// Without the feature the count macro expands to nothing, so the default build is unchanged
+/// (NATIVE-INV).
+#[cfg(feature = "ic-stats")]
+pub(crate) mod stats {
+    use core::cell::Cell;
+
+    use super::{MEGA, entry};
+    use crate::frame::{HOLE, UNDEFINED};
+    use crate::unit::FunctionInfo;
+
+    /// The IC site kinds of T0.
+    #[derive(Clone, Copy)]
+    pub(crate) enum Site {
+        /// `GetNamedProperty`, `GetNamedPropertyFromSuper` (0x21, 0x22).
+        Load = 0,
+        /// `SetNamedProperty`, `DefineNamedOwnProperty` (0x24, 0x25).
+        Store = 1,
+        /// `LdaGlobal`, `LdaGlobalInsideTypeof` (0x10, 0x11).
+        LoadGlobal = 2,
+        /// `StaGlobal` (0x12).
+        StoreGlobal = 3,
+    }
+
+    const SITES: [&str; 4] = ["load", "store", "load-global", "store-global"];
+    /// Columns: hit, then the misses by slot state.
+    const COLS: [&str; 6] = ["hit", "no-vector", "uninit", "mono", "poly", "mega"];
+
+    pub(crate) struct Counters([[Cell<u64>; 6]; 4]);
+
+    impl Drop for Counters {
+        fn drop(&mut self) {
+            for (s, row) in self.0.iter().enumerate() {
+                let n: Vec<u64> = row.iter().map(Cell::get).collect();
+                if n.iter().all(|&x| x == 0) {
+                    continue;
+                }
+                let miss: u64 = n[1..].iter().sum();
+                let cols: Vec<String> = (1..6).map(|i| format!("{}={}", COLS[i], n[i])).collect();
+                eprintln!(
+                    "ep9 ic-stats: {} hit={} miss={miss} ({})",
+                    SITES[s],
+                    n[0],
+                    cols.join(" ")
+                );
+            }
+        }
+    }
+
+    thread_local! {
+        static C: Counters = const { Counters([const { [const { Cell::new(0) }; 6] }; 4]) };
+    }
+
+    fn bump(site: Site, col: usize) {
+        C.with(|c| {
+            let x = &c.0[site as usize][col];
+            x.set(x.get() + 1);
+        });
+    }
+
+    /// A hit at a `site` (the fast path answered).
+    #[inline(never)]
+    pub(crate) fn hit(site: Site) {
+        bump(site, 0);
+    }
+
+    /// A miss at slot `slot` of `fi`'s vector, sorted by the slot state.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn miss(site: Site, fi: &FunctionInfo, slot: u32) {
+        let col = match entry(fi, slot) {
+            None => 1,
+            Some((UNDEFINED, _)) => 2,
+            Some((HOLE, v)) if v == MEGA => 5,
+            Some((HOLE, _)) => 4,
+            Some(_) => 3,
+        };
+        bump(site, col);
+    }
+}
+
+/// Counts an IC hit or miss with feature `ic-stats` ([`stats`]); nothing without it.
+macro_rules! ic_count {
+    (hit, $site:ident) => {
+        #[cfg(feature = "ic-stats")]
+        $crate::ic::stats::hit($crate::ic::stats::Site::$site);
+    };
+    (miss, $site:ident, $fi:expr, $slot:expr) => {
+        #[cfg(feature = "ic-stats")]
+        $crate::ic::stats::miss($crate::ic::stats::Site::$site, $fi, $slot);
+    };
+}
+pub(crate) use ic_count;

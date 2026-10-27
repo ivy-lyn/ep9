@@ -9,9 +9,10 @@
 //!                    parseInt ({w, c}; after `prototype`, before the constants: V8's order)
 //! Number.<constant>  MAX_VALUE, MIN_VALUE, NaN, NEGATIVE_INFINITY, POSITIVE_INFINITY,
 //!                    MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, EPSILON ({}; V8's key order)
-//! %Number.prototype% toString(radix): radix 10 is ToString; 2-36 is V8's
-//!                    DoubleToRadixCString (`radix_string`); valueOf. Both read
-//!                    thisNumberValue (Cx::this_primitive_value)
+//! %Number.prototype% toExponential, toFixed, toPrecision: exact digits, rounded half up
+//!                    (`exact_decimal`, `round_half_up`); toString(radix): radix 10 is
+//!                    ToString; 2-36 is V8's DoubleToRadixCString (`radix_string`); valueOf.
+//!                    All read thisNumberValue (Cx::this_primitive_value)
 //! global             Number, parseFloat, parseInt {w, c} (node's order: right after Number)
 //! ```
 //!
@@ -27,7 +28,14 @@
 //! | parseInt, radix 2, 4, 8, 16, 32 | exact bits, rounded half to even (V8 `InternalStringToIntDouble`) |
 //! | parseInt, other radices | V8's `HandleGenericCase`: 32-bit parts, then `result * multiplier + part` as one fused multiply-add (§19.2.5 step 14 allows an approximation) |
 //!
-//! Not built yet: `toExponential`, `toFixed`, `toPrecision`, `toLocaleString`.
+//! toExponential, toFixed and toPrecision (§21.1.3.2, 3, 5) take the exact decimal value of
+//! the double (it always has a finite expansion: `m × 2^e` is `m × 5^-e × 10^e`) and round it
+//! half up: "if there are two such n, pick the larger n". V8 (node) prints the same digits.
+//! toExponential without an argument uses the shortest digits of Number::toString (the VM's
+//! `Cx::to_string`, with its even-tie rule), as V8 does. These helpers live here, not in the
+//! VM's numconv.rs: that module is private to ep9_vm.
+//!
+//! Not built yet: `toLocaleString`.
 //!
 //! Owner of the templates: P3-BLTB (see `TEMPLATES.md`). Ids are append-only: definition `i`
 //! of [`DEFS`] is `BuiltinId::new(BLOCK, i)`, pinned by `tests/golden/ids-number.txt`.
@@ -51,6 +59,9 @@ pub const DEFS: &[BuiltinDef] = &[
     BuiltinDef::method("isSafeInteger", 1, is_safe_integer), // 6
     BuiltinDef::method("parseFloat", 1, parse_float), // 7
     BuiltinDef::method("parseInt", 2, parse_int),   // 8
+    BuiltinDef::method("toExponential", 1, to_exponential), // 9
+    BuiltinDef::method("toFixed", 1, to_fixed),     // 10
+    BuiltinDef::method("toPrecision", 1, to_precision), // 11
 ];
 
 /// Definition indices (ids `BLOCK.i`) of the statics.
@@ -61,6 +72,9 @@ mod def {
     pub const IS_SAFE_INTEGER: u16 = 6;
     pub const PARSE_FLOAT: u16 = 7;
     pub const PARSE_INT: u16 = 8;
+    pub const TO_EXPONENTIAL: u16 = 9;
+    pub const TO_FIXED: u16 = 10;
+    pub const TO_PRECISION: u16 = 11;
 }
 
 /// The intrinsics this module makes.
@@ -117,6 +131,10 @@ pub const PROPS: &[ObjectProps] = &[
                 IntrinsicId::Number,
                 PropAttrs::METHOD,
             ),
+            // §21.1.3.2, 3, 5 ({w, c}), in V8's order: before toString.
+            PropDef::method(PropKey::Str("toExponential"), def::TO_EXPONENTIAL),
+            PropDef::method(PropKey::Str("toFixed"), def::TO_FIXED),
+            PropDef::method(PropKey::Str("toPrecision"), def::TO_PRECISION),
             PropDef::method(PropKey::Atom(Atom::ToStringKey), 1),
             PropDef::method(PropKey::Atom(Atom::ValueOf), 2),
         ],
@@ -224,6 +242,345 @@ fn value_of<'s>(
 ) -> JsResult<Local<'s>> {
     // 1. Return ? thisNumberValue(this value).
     cx.this_primitive_value(this, PrimitiveType::Number)
+}
+
+// ---- toExponential, toFixed, toPrecision (§21.1.3.2, 3, 5) --------------------------------------
+
+/// Number.prototype.toExponential ( fractionDigits ) (§21.1.3.2).
+fn to_exponential<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. Let x be ? thisNumberValue(this value).
+    let x = this_number_value(cx, this)?;
+    // 2. Let f be ? ToIntegerOrInfinity(fractionDigits).
+    // 3. Assert: If fractionDigits is undefined, then f is 0.
+    let fraction_digits = args.get(0);
+    let f = cx.to_integer_or_infinity(fraction_digits)?;
+    // 4. If x is not finite, return Number::toString(x, 10).
+    if !x.is_finite() {
+        return Ok(cx.to_string(Local::number(x))?.value());
+    }
+    // 5. If f < 0 or f > 100, throw a RangeError exception.
+    if !(0.0..=100.0).contains(&f) {
+        return Err(cx.throw_range_error("toExponential() argument must be between 0 and 100"));
+    }
+    // 10.b. If fractionDigits is undefined: the fewest digits that give back x (the digits
+    //       of Number::toString).
+    let shortest = if fraction_digits.is_undefined() && x != 0.0 {
+        let text = cx.to_rust_string(Local::number(x.abs()))?;
+        Some(shortest_digits(&text))
+    } else {
+        None
+    };
+    let text = exponential_string(x, f as u32, shortest);
+    Ok(cx.new_string(&text)?.value())
+}
+
+/// Number.prototype.toFixed ( fractionDigits ) (§21.1.3.3).
+fn to_fixed<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. Let x be ? thisNumberValue(this value).
+    let x = this_number_value(cx, this)?;
+    // 2. Let f be ? ToIntegerOrInfinity(fractionDigits).
+    // 3. Assert: If fractionDigits is undefined, then f is 0.
+    let f = cx.to_integer_or_infinity(args.get(0))?;
+    // 4. If f is not finite, throw a RangeError exception.
+    // 5. If f < 0 or f > 100, throw a RangeError exception.
+    if !(0.0..=100.0).contains(&f) {
+        return Err(cx.throw_range_error("toFixed() digits argument must be between 0 and 100"));
+    }
+    // 6. If x is not finite, return Number::toString(x, 10).
+    // 10. If x ≥ 10^21, let m be ! ToString(𝔽(x)). (With the sign of steps 8-9.)
+    if !x.is_finite() || x.abs() >= 1e21 {
+        return Ok(cx.to_string(Local::number(x))?.value());
+    }
+    let text = fixed_string(x, f as u32);
+    Ok(cx.new_string(&text)?.value())
+}
+
+/// Number.prototype.toPrecision ( precision ) (§21.1.3.5).
+fn to_precision<'s>(
+    cx: &mut Cx<'s>,
+    this: Local<'s>,
+    args: Args<'s>,
+    _new_target: Local<'s>,
+) -> JsResult<Local<'s>> {
+    // 1. Let x be ? thisNumberValue(this value).
+    let x = this_number_value(cx, this)?;
+    // 2. If precision is undefined, return ! ToString(x).
+    let precision = args.get(0);
+    if precision.is_undefined() {
+        return Ok(cx.to_string(Local::number(x))?.value());
+    }
+    // 3. Let p be ? ToIntegerOrInfinity(precision).
+    let p = cx.to_integer_or_infinity(precision)?;
+    // 4. If x is not finite, return Number::toString(x, 10).
+    if !x.is_finite() {
+        return Ok(cx.to_string(Local::number(x))?.value());
+    }
+    // 5. If p < 1 or p > 100, throw a RangeError exception.
+    if !(1.0..=100.0).contains(&p) {
+        return Err(cx.throw_range_error("toPrecision() argument must be between 1 and 100"));
+    }
+    let text = precision_string(x, p as u32);
+    Ok(cx.new_string(&text)?.value())
+}
+
+/// The exact decimal value of the positive finite double `x`: `(d, point)` with
+/// `x = 0.d₁d₂…dₖ × 10^point`, `d₁ ≠ 0` and `dₖ ≠ 0` (each `dᵢ` a digit 0-9).
+///
+/// `x = m × 2^e` with an integer `m`. For `e ≥ 0` the digits are those of `m × 2^e`; for
+/// `e < 0`, `x = m × 5^-e × 10^e`, so they are those of `m × 5^-e`. Both are integers of at most
+/// 1,024 bits (2^1024 and 2^53 × 5^1074 < 10^767), kept in base-10^9 limbs.
+pub fn exact_decimal(x: f64) -> (Vec<u8>, i32) {
+    debug_assert!(x > 0.0 && x.is_finite());
+    let bits = x.to_bits();
+    let biased = ((bits >> 52) & 0x7ff) as i32;
+    let fraction = bits & ((1 << 52) - 1);
+    let (m, e) = if biased == 0 {
+        (fraction, -1074)
+    } else {
+        (fraction | (1 << 52), biased - 1075)
+    };
+    const BASE: u64 = 1_000_000_000;
+    // Little-endian limbs < 10^9.
+    let mut limbs: Vec<u64> = vec![m % BASE, (m / BASE) % BASE, m / (BASE * BASE)];
+    let mul = |limbs: &mut Vec<u64>, k: u64| {
+        let mut carry = 0;
+        for l in limbs.iter_mut() {
+            let v = *l * k + carry;
+            *l = v % BASE;
+            carry = v / BASE;
+        }
+        while carry > 0 {
+            limbs.push(carry % BASE);
+            carry /= BASE;
+        }
+    };
+    // Factors below 2^32, so limb × factor + carry stays below 2^64.
+    let (factor, step, mut count) = if e >= 0 {
+        (1u64 << 31, 31, e)
+    } else {
+        (1_220_703_125, 13, -e) // 5^13
+    };
+    while count >= step {
+        mul(&mut limbs, factor);
+        count -= step;
+    }
+    let last = if e >= 0 {
+        1u64 << count
+    } else {
+        5u64.pow(count as u32)
+    };
+    mul(&mut limbs, last);
+    while limbs.last() == Some(&0) {
+        limbs.pop();
+    }
+    let mut text = limbs.last().expect("x > 0").to_string();
+    for l in limbs.iter().rev().skip(1) {
+        text.push_str(&format!("{l:09}"));
+    }
+    let mut d: Vec<u8> = text.bytes().map(|b| b - b'0').collect();
+    // The integer has `d.len()` digits and is x × 10^max(0, -e).
+    let point = d.len() as i32 + e.min(0);
+    while d.last() == Some(&0) {
+        d.pop();
+    }
+    (d, point)
+}
+
+/// `0.d₁…dₖ × 10^point` rounded half up to `keep` digits (the larger of two equally close
+/// values, as §21.1.3.2, 3 and 5 ask): `(r, point')` with `r` the `keep` leading digits (zeros
+/// added past `k`) and the rounded value `0.r × 10^point'`. A carry out of the first digit
+/// gives `r = 1 0…0` (`keep` digits) and `point' = point + 1`. `keep ≤ 0` rounds at a place
+/// above the first digit: `([1], point + 1)` when that rounds up (only for `keep = 0` and
+/// `d₁ ≥ 5`), else `([], point)` for zero.
+pub fn round_half_up(d: &[u8], point: i32, keep: i32) -> (Vec<u8>, i32) {
+    if keep < 0 {
+        return (Vec::new(), point);
+    }
+    let keep = keep as usize;
+    if keep >= d.len() {
+        let mut r = d.to_vec();
+        r.resize(keep, 0);
+        return (r, point);
+    }
+    let mut r = d[..keep].to_vec();
+    // The value past the cut is at least half a unit exactly when its first digit is ≥ 5.
+    if d[keep] < 5 {
+        return (r, point);
+    }
+    for digit in r.iter_mut().rev() {
+        if *digit == 9 {
+            *digit = 0;
+        } else {
+            *digit += 1;
+            return (r, point);
+        }
+    }
+    // All nines (or keep = 0): 10^point.
+    r.insert(0, 1);
+    r.truncate(keep.max(1));
+    (r, point + 1)
+}
+
+/// The digits and the point of Number::toString's text of a positive finite number (the
+/// shortest round-trip digits, §6.1.6.1.20 step 5): "123", "1.5", "0.00012", "1.2e+21",
+/// "5e-324".
+fn shortest_digits(text: &str) -> (Vec<u8>, i32) {
+    let (mantissa, exp) = match text.split_once('e') {
+        Some((m, e)) => (m, e.parse::<i32>().expect("an exponent")),
+        None => (text, 0),
+    };
+    let int_len = mantissa.find('.').unwrap_or(mantissa.len()) as i32;
+    let mut d: Vec<u8> = mantissa
+        .bytes()
+        .filter(u8::is_ascii_digit)
+        .map(|b| b - b'0')
+        .collect();
+    let mut point = int_len + exp;
+    let lead = d.iter().take_while(|&&c| c == 0).count();
+    d.drain(..lead);
+    point -= lead as i32;
+    while d.last() == Some(&0) {
+        d.pop();
+    }
+    (d, point)
+}
+
+/// The digits `d` as text.
+fn digit_text(d: &[u8]) -> String {
+    d.iter().map(|&c| char::from(b'0' + c)).collect()
+}
+
+/// §21.1.3.2 steps 6-15 for a finite `x` and `0 ≤ f ≤ 100`; `shortest` holds the digits of
+/// step 10.b when fractionDigits is undefined (and `x ≠ 0`).
+pub fn exponential_string(x: f64, f: u32, shortest: Option<(Vec<u8>, i32)>) -> String {
+    // 7. Let s be the empty String.
+    // 8. If x < 0, then set s to "-" and x to -x.
+    let mut s = String::new();
+    if x < 0.0 {
+        s.push('-');
+    }
+    let x = x.abs();
+    let (m, e) = if x == 0.0 {
+        // 9. If x = 0: m is f + 1 zeros, e = 0.
+        (vec![0; f as usize + 1], 0)
+    } else if let Some((d, point)) = shortest {
+        // 10.b. The fewest digits n (f + 1 of them) with 𝔽(n × 10^(e - f)) = x.
+        (d, point - 1)
+    } else {
+        // 10.a. 10^f ≤ n < 10^(f+1), n × 10^(e - f) - x closest to zero; the larger of two.
+        let (d, point) = exact_decimal(x);
+        let (r, point) = round_half_up(&d, point, f as i32 + 1);
+        (r, point - 1)
+    };
+    // 11. If f ≠ 0 (the digit count after the first), m = a "." b.
+    let m = digit_text(&m);
+    s.push_str(&m[..1]);
+    if m.len() > 1 {
+        s.push('.');
+        s.push_str(&m[1..]);
+    }
+    // 12-14. "e", the sign of e ("+" for 0), and the digits of abs(e).
+    s.push('e');
+    s.push(if e < 0 { '-' } else { '+' });
+    s.push_str(&e.unsigned_abs().to_string());
+    s
+}
+
+/// §21.1.3.3 steps 7-12 for a finite `x` with `abs(x) < 10^21` and `0 ≤ f ≤ 100`.
+pub fn fixed_string(x: f64, f: u32) -> String {
+    // 8. Let s be the empty String.
+    // 9. If x < 0, then set s to "-" and x to -x. (-0 is not below 0.)
+    let mut s = String::new();
+    if x < 0.0 {
+        s.push('-');
+    }
+    let x = x.abs();
+    // 11.a. n: n / 10^f - x closest to zero; the larger of two.
+    // 11.b. If n = 0, m = "0"; else the digits of n.
+    let mut m = if x == 0.0 {
+        String::from("0")
+    } else {
+        let (d, point) = exact_decimal(x);
+        let (mut r, point) = round_half_up(&d, point, point + f as i32);
+        if r.is_empty() {
+            String::from("0")
+        } else {
+            // n = 0.r × 10^(point + f): point + f digits (a carry adds one).
+            r.resize((point + f as i32) as usize, 0);
+            digit_text(&r)
+        }
+    };
+    // 11.c. If f ≠ 0: pad m with zeros to f + 1 digits, then a "." b with f digits in b.
+    let f = f as usize;
+    if f != 0 {
+        if m.len() <= f {
+            m = format!("{}{m}", "0".repeat(f + 1 - m.len()));
+        }
+        let k = m.len();
+        m.insert(k - f, '.');
+    }
+    s.push_str(&m);
+    s
+}
+
+/// §21.1.3.5 steps 6-14 for a finite `x` and `1 ≤ p ≤ 100`.
+pub fn precision_string(x: f64, p: u32) -> String {
+    // 7. Let s be the empty String.
+    // 8. If x < 0, then set s to "-" and x to -x.
+    let mut s = String::new();
+    if x < 0.0 {
+        s.push('-');
+    }
+    let x = x.abs();
+    let p = p as i32;
+    let (m, e) = if x == 0.0 {
+        // 9. m is p zeros, e = 0.
+        (vec![0; p as usize], 0)
+    } else {
+        // 10.a. 10^(p-1) ≤ n < 10^p, n × 10^(e-p+1) - x closest to zero; the larger of two.
+        let (d, point) = exact_decimal(x);
+        let (r, point) = round_half_up(&d, point, p);
+        (r, point - 1)
+    };
+    let m = digit_text(&m);
+    // 10.c. If e < -6 or e ≥ p: exponential notation.
+    if e < -6 || e >= p {
+        s.push_str(&m[..1]);
+        if p != 1 {
+            s.push('.');
+            s.push_str(&m[1..]);
+        }
+        s.push('e');
+        s.push(if e < 0 { '-' } else { '+' });
+        s.push_str(&e.unsigned_abs().to_string());
+        return s;
+    }
+    if e == p - 1 {
+        // 11. All p digits before the point.
+        s.push_str(&m);
+    } else if e >= 0 {
+        // 12. The first e + 1 digits, ".", the rest.
+        let k = e as usize + 1;
+        s.push_str(&m[..k]);
+        s.push('.');
+        s.push_str(&m[k..]);
+    } else {
+        // 13. "0.", -(e + 1) zeros, m.
+        s.push_str("0.");
+        s.push_str(&"0".repeat((-(e + 1)) as usize));
+        s.push_str(&m);
+    }
+    s
 }
 
 // ---- Number statics (§21.1.2) ------------------------------------------------------------------

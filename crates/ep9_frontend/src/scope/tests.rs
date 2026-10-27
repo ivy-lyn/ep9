@@ -340,6 +340,49 @@ fn which_calls_are_direct_eval() {
     }
 }
 
+/// L4-A4 (ABI 5 `PARAMETER_ENV`): set on the function scope of a sloppy function whose
+/// parameter list holds a direct eval, and nowhere else.
+#[test]
+fn parameter_env_marks_an_eval_in_a_sloppy_parameter_list() {
+    let pe = |a: &ScopeAnalysis, f: u32| {
+        let info = a.func(f);
+        (
+            a.scope(info.scope).parameter_env,
+            a.scope(info.scope).sloppy_eval,
+        )
+    };
+    // The M2-P3-RF1-EVAL-PARAM case.
+    let a = script("function f(a = 1, b = eval('var a = 2')) {}");
+    assert_eq!(pe(&a, 1), (true, true), "{a}");
+    assert!(!a.scope(a.func(1).body_scope).parameter_env);
+    // An arrow's own parameter list.
+    let a = script("var g = (a = eval('var x')) => a;");
+    assert_eq!(pe(&a, 1), (true, true), "{a}");
+    // A body eval with only a destructuring pattern: same scopes, no parameter environment.
+    let a = script("function f({a}) { eval('var a'); }");
+    assert_eq!(pe(&a, 1), (false, true), "{a}");
+    // A body eval of a function with parameter expressions goes to the body scope.
+    let a = script("function f(a = 1) { eval('var a'); }");
+    assert_eq!(pe(&a, 1), (false, false), "{a}");
+    assert!(a.scope(a.func(1).body_scope).sloppy_eval);
+    // Strict code: the eval is strict, so there is no sloppy eval and no bit.
+    let a = strict("function f(a = 1, b = eval('var a = 2')) {}");
+    assert_eq!(pe(&a, 1), (false, false), "{a}");
+    // An eval inside a function in the parameter list belongs to that function.
+    let a = script("function f(a = function () { eval('var z'); }) {}");
+    assert_eq!(pe(&a, 1), (false, false), "{a}");
+    assert_eq!(pe(&a, 2), (false, true), "{a}");
+    // Every scope of these programs but the marked ones has no bit.
+    for src in [
+        "eval('var a');",
+        "function f(a, b) { eval(''); }",
+        "{ eval('') }",
+    ] {
+        let a = script(src);
+        assert!(a.scopes.iter().all(|s| !s.parameter_env), "{src}\n{a}");
+    }
+}
+
 #[test]
 fn eval_in_parameters_adds_vars_outside_the_parameters() {
     // Sloppy, split: eval vars go to the function environment outside the parameter scope.
@@ -743,6 +786,95 @@ fn uncaptured_this_and_home_object_stay_in_the_frame() {
 }
 
 // Classes.
+
+/// E9 (M3-P4): a class whose body (or heritage) holds a direct eval gets one kind marker slot
+/// per private method and static accessor, in its class context; a class without a direct
+/// eval, and a field or an instance accessor, gets none.
+#[test]
+fn private_kind_markers_only_with_a_direct_eval() {
+    let src = |body: &str| {
+        format!(
+            "class C {{ #f; static #sf; #m() {{}} static #s() {{}} get #a() {{}} set #a(v) {{}}
+               static get #g() {{}} {body} }}"
+        )
+    };
+    let markers = |a: &ScopeAnalysis| {
+        let mut v: Vec<String> = (0..a.bindings().len())
+            .map(BindingId::of)
+            .map(|b| a.name(a.binding(b).name).to_owned())
+            .filter(|n| {
+                n.starts_with("#.method-")
+                    || n.starts_with("#.static-method-")
+                    || n.starts_with("#.static-accessor-")
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    for body in [
+        "x() { eval('1'); }",
+        "static { () => eval('1'); }",
+        "[eval('k')] = 1;",
+    ] {
+        let a = script(&src(body));
+        assert_eq!(
+            markers(&a),
+            ["#.method-m", "#.static-accessor-g", "#.static-method-s"],
+            "{body}\n{a}"
+        );
+        let class_scope = a
+            .scopes()
+            .iter()
+            .find(|s| s.kind == ScopeKind::Class)
+            .unwrap();
+        for name in ["#.method-m", "#.static-method-s", "#.static-accessor-g"] {
+            assert_eq!(ctx(&a, name).0, class_scope.id, "{name}");
+        }
+    }
+    for body in ["x() { (0, eval)('1'); }", "x() { new Function(''); }", ""] {
+        assert!(markers(&script(&src(body))).is_empty(), "{body}");
+    }
+}
+
+/// CX2-E9-1 (M3-P4): a class whose heritage holds a direct eval (also in a function inside the
+/// heritage) gets a heritage scope: a strict `Block` child of the class scope with the marker
+/// binding `#.heritage` in its context, around the heritage only (an eval in a computed key or
+/// a method stays in the class scope or below it). No other class gets one.
+#[test]
+fn heritage_scope_only_with_a_direct_eval_in_the_heritage() {
+    let heritage = |a: &ScopeAnalysis| {
+        a.scopes()
+            .iter()
+            .filter_map(|s| s.class.as_ref().and_then(|c| c.heritage_scope))
+            .collect::<Vec<_>>()
+    };
+    for src in [
+        "class C extends (eval('1'), Object) { #x; }",
+        "class C extends (() => eval('1'))() { m() { eval('2'); } }",
+        "class C extends (class { m() { eval('1'); } }) {}",
+    ] {
+        let a = script(src);
+        let hs = heritage(&a);
+        assert_eq!(hs.len(), 1, "{src}\n{a}");
+        let h = a.scope(hs[0]);
+        let class = a.scopes().iter().find(|s| s.class.is_some()).unwrap();
+        assert_eq!(h.kind, ScopeKind::Block, "{src}");
+        assert_eq!(h.parent, Some(class.id), "{src}");
+        assert!(h.strict && h.needs_context, "{src}");
+        assert_eq!(ctx(&a, "#.heritage").0, h.id, "{src}");
+    }
+    for src in [
+        "class C extends Object { m() { eval('1'); } }",
+        "class C extends Object { [eval('k')] = 1; }",
+        "class C extends (eval?.('1'), Object) {}",
+        "class C extends ((0, eval)('1'), Object) {}",
+        "class C { m() { eval('1'); } }",
+    ] {
+        let a = script(src);
+        assert!(heritage(&a).is_empty(), "{src}\n{a}");
+        assert!(a.named("#.heritage").is_empty(), "{src}");
+    }
+}
 
 #[test]
 fn class_scopes_private_names_and_synthetic_functions() {

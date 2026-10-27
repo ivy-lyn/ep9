@@ -270,8 +270,7 @@ fn callback<'s>(cx: &mut Cx<'s>, f: Local<'s>, method: &str) -> JsResult<Local<'
 
 /// CreateDataPropertyOrThrow(O, ! ToString(𝔽(k)), v) (§7.3.7).
 fn create_index<'s>(cx: &mut Cx<'s>, o: Local<'s, JsObject>, k: u64, v: Local<'s>) -> JsResult<()> {
-    let key = index_key(cx, k);
-    cx.create_data_property_or_throw(o, key, v)
+    cx.create_data_property_index_or_throw(o, k, v)
 }
 
 /// Set(O, "length", 𝔽(len), true) (§7.3.4).
@@ -333,8 +332,17 @@ fn array_species_create<'s>(
     }
     // 3. Let C be ? Get(originalArray, "constructor").
     let mut c = cx.get(original, "constructor")?;
-    // 4. If IsConstructor(C) is true, then: a constructor of another realm is not used.
-    //    (v0: one realm, H20-Q2.)
+    // 4. If IsConstructor(C) is true, then
+    //    a-b. Let thisRealm be the current Realm Record; let realmC be ? GetFunctionRealm(C).
+    //    c. If thisRealm and realmC are not the same Realm Record, then: if SameValue(C,
+    //       realmC.[[Intrinsics]].[[%Array%]]) is true, set C to undefined. (C is realmC's
+    //       %Array% and not the current one: each realm has its own %Array%.)
+    if cx.is_constructor(c) {
+        let realm_array = cx.function_realm_intrinsic(c, IntrinsicId::Array);
+        if c.is_same_bits(&realm_array) && !c.is_same_bits(&cx.intrinsic(IntrinsicId::Array)) {
+            c = Local::undefined();
+        }
+    }
     // 5. If C is an Object, then
     if let Some(co) = c.as_object() {
         // a. Set C to ? Get(C, %Symbol.species%).

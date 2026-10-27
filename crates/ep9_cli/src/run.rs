@@ -139,6 +139,9 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
     if opts.print_bytecode {
         println!("{}", ep9_bytecode::disassemble(&unit));
     }
+    // `--facts-out`: the content hash names the unit in the isolate after the run (the unit
+    // moves into the run).
+    let facts_unit = opts.facts_out.as_ref().map(|_| unit.content_hash());
     let config = IsolateConfig {
         heap: HeapConfig {
             gc_stress: opts.gc_stress,
@@ -160,8 +163,16 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
     };
     isolate.register_host_function("print", 1, print);
     isolate.register_host_function("gc", 0, gc);
-    // `run_script` drains the microtask queue (promise jobs) before it returns.
-    let result = isolate.run_script(unit, file);
+    // `with_cx_checkpoint` drains the microtask queue (promise jobs) before it returns; a
+    // module run does the same (`run_module`). The file loader is the module host of the run
+    // and its jobs, so `import()` works in a script too.
+    let result = isolate.with_module_host(&mut resolve_module, &mut load_module, |isolate| {
+        if opts.module {
+            run_module(isolate, unit, file)
+        } else {
+            isolate.with_cx_checkpoint(|cx| cx.run_script(unit, file).map(|_| ()))
+        }
+    });
     let _ = std::io::stdout().flush();
     let status = match result {
         Ok(_) => EXIT_OK,
@@ -182,8 +193,23 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
         }
         _ => status,
     };
+    let status = match (&opts.facts_out, &facts_unit) {
+        (Some(path), Some(hash)) => match write_facts(&isolate, hash, path) {
+            Ok(()) => status,
+            Err(msg) => {
+                eprintln!("ep9: {msg}");
+                // The run's own error comes first.
+                if status == EXIT_OK {
+                    EXIT_USAGE
+                } else {
+                    status
+                }
+            }
+        },
+        _ => status,
+    };
     if opts.gc_stats {
-        let st = isolate.heap().stats();
+        let st = isolate.gc_stats();
         eprintln!(
             "ep9: gc collections={} freed_cells={} allocated_bytes={}",
             st.collections, st.freed_cells, st.allocated_bytes
@@ -200,6 +226,81 @@ fn run_on_this_thread(opts: &Options, file: &str, source: &str) -> u8 {
         }
     }
     status
+}
+
+/// `--facts-out` (H16-Q5, M3-P4 FIXES): the facts of the loaded unit `hash` (the script, or
+/// the entry module; an imported module is another unit) from `ep9_vm::abi::export_facts`, in
+/// the canonical FactSnapshot v0 encoding (`ep9_facts`), written to `path`. The bytes depend
+/// only on the program and what it did. A function that ran fewer times than
+/// `--feedback-threshold` has no feedback vector and no record. Runs after the final
+/// checkpoint, so the facts include what the jobs did. Not a GC point; runs no JS.
+fn write_facts(isolate: &Isolate, hash: &[u8; 32], path: &std::path::Path) -> Result<(), String> {
+    let facts =
+        ep9_vm::abi::export_facts(isolate, hash).map_err(|e| format!("--facts-out: {e}"))?;
+    std::fs::write(path, facts.encode())
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
+// ---- the file loader for `--module` (M3-P2 MODULE) ------------------------------------------
+
+/// Runs the module `unit` (the file `file`) with the modules it imports, then a microtask
+/// checkpoint (`Isolate::with_cx_checkpoint`): the module's error wins over a job's, but not
+/// over a termination in a job. The module is named by its canonical path (so an import of
+/// the same file is the same module); `-e` code is named [`EVAL_NAME`].
+fn run_module(
+    isolate: &mut Isolate,
+    unit: ep9_bytecode::VerifiedUnit,
+    file: &str,
+) -> Result<(), Exception> {
+    let name = if file == EVAL_NAME {
+        file.to_string()
+    } else {
+        std::fs::canonicalize(file).map_or_else(|_| file.to_string(), |p| p.display().to_string())
+    };
+    isolate.with_cx_checkpoint(|cx| {
+        cx.run_module(unit, &name, &mut resolve_module, &mut load_module)
+            .map(|_| ())
+    })
+}
+
+/// The name of the module that `specifier` names in the module `referrer` (a file path, or
+/// [`EVAL_NAME`] for the current directory): a relative (`./`, `../`) or absolute path,
+/// canonical. A bare specifier (a package name) is an error: the CLI has no package lookup
+/// yet (M4 runtime).
+fn resolve_module(referrer: &str, specifier: &str) -> Result<String, String> {
+    let relative = specifier.starts_with("./") || specifier.starts_with("../");
+    if !relative && !specifier.starts_with('/') {
+        return Err(format!(
+            "Cannot find module '{specifier}' imported from {referrer} (only relative and absolute paths are supported)"
+        ));
+    }
+    let base = if referrer == EVAL_NAME {
+        std::path::PathBuf::from(".")
+    } else {
+        std::path::Path::new(referrer).parent().map_or_else(
+            || std::path::PathBuf::from("."),
+            std::path::Path::to_path_buf,
+        )
+    };
+    let path = base.join(specifier);
+    std::fs::canonicalize(&path)
+        .map(|p| p.display().to_string())
+        .map_err(|e| format!("Cannot find module '{specifier}' imported from {referrer}: {e}"))
+}
+
+/// The module unit of the file `name` (a canonical path).
+fn load_module(name: &str) -> CompileResult {
+    let source = match std::fs::read(name).map(String::from_utf8) {
+        Ok(Ok(s)) => s,
+        Ok(Err(_)) => {
+            return Err(CompileFailure::Syntax(format!(
+                "{name}: the file is not valid UTF-8"
+            )));
+        }
+        Err(e) => return Err(CompileFailure::Internal(format!("cannot read {name}: {e}"))),
+    };
+    ep9_frontend::compile(&source, SourceOpts::module(), CompileOptions::default())
+        .map_err(hook_failure)
 }
 
 // ---- the compiler hooks (C2): ep9_frontend behind `IsolateConfig::compiler` ----------------
@@ -343,6 +444,12 @@ mod tests {
         .unwrap();
         let hooks = iso.compiler().unwrap();
         assert!((hooks.compile_script)("var a = 1;").is_ok());
+        // An unsupported feature (`import.source()`, a stage 3 proposal; M3-P3 IMPORT-TLA
+        // built import()).
+        assert_eq!(
+            (hooks.compile_script)("import.source('x')").unwrap_err(),
+            CompileFailure::Unsupported("import.source()".to_string())
+        );
         assert!(matches!(
             (hooks.compile_script)("let a; let a;"),
             Err(CompileFailure::Syntax(_))
@@ -358,9 +465,9 @@ mod tests {
             (hooks.compile_function)(FunctionCtorKind::Normal, "/*", "*/){"),
             Err(CompileFailure::Syntax(_))
         ));
-        assert_eq!(
-            (hooks.compile_function)(FunctionCtorKind::Async, "a", "return await a").unwrap_err(),
-            CompileFailure::Unsupported("async functions".to_string())
+        assert!((hooks.compile_function)(FunctionCtorKind::Async, "a", "return await a").is_ok());
+        assert!(
+            (hooks.compile_function)(FunctionCtorKind::AsyncGenerator, "", "yield await 1").is_ok()
         );
         assert!(
             Isolate::new(IsolateConfig::default())

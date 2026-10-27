@@ -56,9 +56,9 @@ pub(crate) const DEFINE_PRIVATE: u8 = 0x02;
 
 /// The name prefix of the synthetic class bindings (D2).
 const SYNTHETIC: &str = "#.";
-const BRAND: &str = "#.brand";
-const STATIC_BRAND: &str = "#.static-brand";
-const SETTER: &str = "#.set-";
+pub(crate) const BRAND: &str = "#.brand";
+pub(crate) const STATIC_BRAND: &str = "#.static-brand";
+pub(crate) const SETTER: &str = "#.set-";
 const FIELD_KEY: &str = "#.class-field-";
 
 impl<'a> FnGen<'a, '_> {

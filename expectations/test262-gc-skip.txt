@@ -1,8 +1,13 @@
 # ep9-test262 exec --gc-stress: tests that are neither run nor counted (--skip-list).
 # Under `--gc-stress 1 --timeout 60` (a collection before every allocation) each one runs past
-# the timeout, an infrastructure error (exit 2). All but recursion.js,
-# string-upper-lower-mapping.js and toSpliced-dense.js also fail without GC-stress and are
-# listed in every expectations/test262.<triple>.jit.txt (8 of the 11):
+# the timeout (or, on a slow or busy host, can run past it), an infrastructure error (exit 2).
+# 44 tests: 11 month-2, 10 M3-P1, 22 M3-P2 and 1 M3-P3 test. 9 of them also fail without
+# GC-stress and are listed in every expectations/test262.<triple>.jit.txt: 8 month-2 tests
+# (S7.4_A5.js, S7.4_A6.js, the 5 tco-* tests and ownkeys-linear.js) and the M3-P1 test
+# two-digit-years.js. The other 35 pass without GC-stress: the 3 month-2 tests recursion.js,
+# string-upper-lower-mapping.js and toSpliced-dense.js, the other 9 M3-P1 tests, the 22 M3-P2
+# tests and the M3-P3 test.
+# The 8 month-2 tests that fail without GC-stress:
 # - S7.4_A5.js and S7.4_A6.js: each evals one comment per UTF-16 code unit (since P3, eval
 #   exists) and fails at the first lone surrogate, 0xD800 (EVM-SURROGATE; the shim is M3).
 #   3 s each without GC-stress; alone under it 289 s (S7.4_A5) and 152 s (S7.4_A6), mac a64;
@@ -13,6 +18,7 @@
 # - ownkeys-linear.js: ReferenceError, no `Proxy` yet. Alone under GC-stress it takes 68 s
 #   (2 runs, mac a64 at load 9) and 101 s at load 18, so it can pass the timeout on a busy host
 #   (a slow test is a flaky gate).
+# The 3 month-2 tests that pass without GC-stress:
 # recursion.js passes without GC-stress, and passes alone under it in about 450-490 s. It
 # recurses through generator resume (about 24,000 deep) until the native-stack RangeError, and
 # every forced collection scans that deep stack (M2-P1-GEN-GCSKIP).
@@ -24,7 +30,56 @@
 # 17% of them in toSpliced (2.9 per call, as toReversed). Alone under it: 62 s per run (125 s
 # for both runs) at host load 18-25, mac a64; a timeout in the x86-64 sandbox run at a8eefa5
 # (M2-P4-GCSKIP-TOSPLICED).
-# Measured at test262 d53ebc8b on aarch64-apple-darwin. Paths are relative to the test262 root.
+# M3-P1 (Date, WeakMap; M3-P1 integration fixer, each file alone, --gc-stress 1
+# --feedback-threshold 0 --timeout 120 --threads 1, mac a64 release, host load 2-9):
+# - the 8 sm/Date/dst-offset-caching-*-of-8.js (B-DATE): each makes about 3M Date objects.
+#   Alone under GC-stress both runs of each pass 120 s (timeout, 241 s wall per file); without
+#   it each passes in 1-2 s wall;
+# - sm/Date/two-digit-years.js (B-DATE): fails anyway (the legacy Date.parse forms are M3
+#   milestone work). Alone under GC-stress its 2 runs take 144.8 s wall (about 72 s each, past
+#   the 60 s timeout); without it 0.1 s;
+# - sm/regress/regress-1507322-deep-weakmap.js (B-COLLECTIONS): a deep WeakMap chain, O(n^2)
+#   under --gc-stress 1. Alone under GC-stress: the hard timeout (245 s, no result); without
+#   it it passes in 0.2 s.
+# M3-P2 (B-SMALL, the URI functions; M3-P2 integration fixer, decision M3-P2-GCSKIP): the 21
+# decodeURI, decodeURIComponent, encodeURI and encodeURIComponent tests below loop over large
+# ranges of UTF-16 code units or UTF-8 byte sequences (up to 65,536 code units, or 5 x 64^3
+# 4-byte sequences) and call the URI function for each. Each passes without GC-stress. Alone
+# under --gc-stress 1 --feedback-threshold 0 --timeout 900 --threads 1 (mac a64 release, host
+# load 9-80), both runs of each pass in 57-1,256 s wall, past the 60 s timeout.
+# decodeURIComponent/S15.1.3.2_A2.4_T1.js, the twin of decodeURI/S15.1.3.1_A2.4_T1.js, is the
+# 22nd (M3-P2 fix round 2): it ran past the 60 s timeout under GC-stress in 2 x86-64 sandbox
+# runs.
+# M3-P3 (decision M3-P3-GCSKIP-WIN): sm/Function/has-instance-jitted.js passes without GC-stress
+# and under it on mac a64, linux a64, linux x64 and the x86-64 sandbox. In PR #3 run 40172410411
+# (windows-x64, shard 2/6, 4 workers) both runs ran past the 60 s timeout. Alone under
+# --gc-stress 1 --feedback-threshold 0 on mac a64 release its 2 runs take 19.3 s wall, so the
+# Windows runner is more than 6 times slower on this file (M3-P4 FIXES looked for a
+# Windows-only cost and found none; the file stays on the list for M0, M3-P4-GCSKIP-WIN).
+# Measured at test262 d53ebc8b on aarch64-apple-darwin (the M3-P1 tests: at the M3-P1 fixer
+# head). Paths are relative to the test262 root.
+test/built-ins/decodeURI/S15.1.3.1_A1.10_T1.js
+test/built-ins/decodeURI/S15.1.3.1_A1.11_T1.js
+test/built-ins/decodeURI/S15.1.3.1_A1.11_T2.js
+test/built-ins/decodeURI/S15.1.3.1_A1.12_T1.js
+test/built-ins/decodeURI/S15.1.3.1_A1.12_T2.js
+test/built-ins/decodeURI/S15.1.3.1_A1.12_T3.js
+test/built-ins/decodeURI/S15.1.3.1_A1.2_T1.js
+test/built-ins/decodeURI/S15.1.3.1_A1.2_T2.js
+test/built-ins/decodeURI/S15.1.3.1_A2.4_T1.js
+test/built-ins/decodeURI/S15.1.3.1_A2.5_T1.js
+test/built-ins/decodeURIComponent/S15.1.3.2_A1.10_T1.js
+test/built-ins/decodeURIComponent/S15.1.3.2_A1.11_T1.js
+test/built-ins/decodeURIComponent/S15.1.3.2_A1.11_T2.js
+test/built-ins/decodeURIComponent/S15.1.3.2_A1.12_T1.js
+test/built-ins/decodeURIComponent/S15.1.3.2_A1.12_T2.js
+test/built-ins/decodeURIComponent/S15.1.3.2_A1.12_T3.js
+test/built-ins/decodeURIComponent/S15.1.3.2_A1.2_T1.js
+test/built-ins/decodeURIComponent/S15.1.3.2_A1.2_T2.js
+test/built-ins/decodeURIComponent/S15.1.3.2_A2.4_T1.js
+test/built-ins/decodeURIComponent/S15.1.3.2_A2.5_T1.js
+test/built-ins/encodeURI/S15.1.3.3_A2.3_T1.js
+test/built-ins/encodeURIComponent/S15.1.3.4_A2.3_T1.js
 test/language/comments/S7.4_A5.js
 test/language/comments/S7.4_A6.js
 test/language/expressions/call/tco-call-args.js
@@ -33,6 +88,17 @@ test/language/expressions/call/tco-non-eval-function.js
 test/language/expressions/call/tco-non-eval-global.js
 test/language/expressions/call/tco-non-eval-with.js
 test/staging/sm/Array/toSpliced-dense.js
+test/staging/sm/Date/dst-offset-caching-1-of-8.js
+test/staging/sm/Date/dst-offset-caching-2-of-8.js
+test/staging/sm/Date/dst-offset-caching-3-of-8.js
+test/staging/sm/Date/dst-offset-caching-4-of-8.js
+test/staging/sm/Date/dst-offset-caching-5-of-8.js
+test/staging/sm/Date/dst-offset-caching-6-of-8.js
+test/staging/sm/Date/dst-offset-caching-7-of-8.js
+test/staging/sm/Date/dst-offset-caching-8-of-8.js
+test/staging/sm/Date/two-digit-years.js
+test/staging/sm/Function/has-instance-jitted.js
 test/staging/sm/Proxy/ownkeys-linear.js
 test/staging/sm/String/string-upper-lower-mapping.js
 test/staging/sm/extensions/recursion.js
+test/staging/sm/regress/regress-1507322-deep-weakmap.js

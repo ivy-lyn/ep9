@@ -26,12 +26,19 @@
 //! Rust -> native: [`call_from_rust`] (P2-SPIKE-B, M2-P2-SPIKEB-RUSTENTRY) enters a
 //! native-slotted function from Rust with an entry frame (return pc = the `Exit` stub), as
 //! `call::call_function_object` does for T0. The general paths still refuse native code: a call
-//! from Rust through `call::call_function_object` (for example `Isolate::call` or a builtin
+//! from Rust through `call::call_function_object` (for example `Cx::call` or a builtin
 //! callback) throws "not implemented", and so do `[[Construct]]` and a bound-function call of a
 //! native-slotted function (they take the T0 paths). `call_any` takes no spread call
 //! (BytecodeGen's spread array needs the iterator path of `slow::call`). Generator functions
 //! never get native code ([`InstallError::Generator`]): a resume pushes a new frame and runs
 //! T0 (`call::run_resumed`).
+//!
+//! Realms (H22-Q3): native code runs in its function's realm, as T0 code does. The T0 entries
+//! (`native_entry`, `call_native`, `enter_b_cold`, `call_fast`) take a callee of the caller's
+//! realm only. A native-slotted or (b) callee of another realm is entered nested from
+//! `slow::call` ([`call_in_its_realm`]), and `call_any`, [`call_from_rust`] and [`run_b`]
+//! switch too: `realm::enter_realm_of` before OrdinaryCallBindThis, `realm::leave` after the
+//! return or throw.
 
 use core::ops::Range;
 
@@ -47,6 +54,7 @@ use crate::interp::slow::{self, CmpOp, UnOp};
 use crate::interp::{Cx, EXIT_STUB};
 use crate::isolate::{Exception, Isolate};
 use crate::object;
+use crate::realm;
 use crate::runtime::{ErrorKind, Runtime, val};
 use crate::unit::FunctionInfo;
 
@@ -163,6 +171,63 @@ pub(crate) static RUNTIME_TABLE: RuntimeTable = RuntimeTable {
     unwind: rt_unwind,
 };
 
+impl RuntimeTable {
+    /// The entries in declaration order: name, byte offset, function type. The list is an
+    /// H13 index list (H13-Q3, M3-P1 SP-UNIT): native code and unit text call an entry by its
+    /// offset, so the list is append-only (`crates/ep9_vm/tests/golden/runtime-table.txt`).
+    pub const ENTRIES: [(&'static str, usize, &'static str); 8] = [
+        ("poll", layout::RT_POLL, "RtFn0"),
+        ("call_any", layout::RT_CALL_ANY, "RtFn1"),
+        ("add", layout::RT_ADD, "RtFn2"),
+        ("inc", layout::RT_INC, "RtFn1"),
+        ("compare", layout::RT_COMPARE, "RtCompareFn"),
+        ("stack_overflow", layout::RT_STACK_OVERFLOW, "RtFn0"),
+        ("throw", layout::RT_THROW, "RtFn1"),
+        ("unwind", layout::RT_UNWIND, "RtFn0"),
+    ];
+
+    /// The one runtime table of the process (every isolate's `Cx::runtime_table` points at it).
+    /// SP-UNIT's loader resolves the unit's runtime-table link cell to it (an external
+    /// reference, H13), and its tests wrap its entries.
+    pub fn process() -> &'static RuntimeTable {
+        &RUNTIME_TABLE
+    }
+}
+
+impl NativeCx {
+    /// The `Cx` of `iso` as native code gets it (the isolate register). Only native code and
+    /// the table functions may use the pointer, and only while `iso` lives and runs nothing
+    /// else.
+    pub fn of(iso: &mut Isolate) -> *mut NativeCx {
+        core::ptr::from_mut::<Cx>(&mut iso.cx).cast::<NativeCx>()
+    }
+
+    /// `Cx::unit_data` of `iso` (M3-P1 SP-UNIT, H35-Q9; [`layout::CX_UNIT_DATA`]).
+    pub fn unit_data(iso: &Isolate) -> usize {
+        iso.cx.unit_data
+    }
+
+    /// Sets `Cx::unit_data` of `iso` and returns the old value. The value is the address of
+    /// the isolate's unit-data directory (or 0): unit code reads it on every entry, so it must
+    /// stay valid while code of a unit it names can run in `iso`.
+    pub fn set_unit_data(iso: &mut Isolate, directory: usize) -> usize {
+        core::mem::replace(&mut iso.cx.unit_data, directory)
+    }
+
+    /// The intrinsic `id` of the current realm (undefined if no table made it): the value a
+    /// unit link cell of kind "intrinsic by stable index" (H13) resolves to.
+    pub fn intrinsic(iso: &Isolate, id: crate::IntrinsicId) -> Value {
+        val(crate::builtins::intrinsic(&iso.rt, id))
+    }
+
+    /// A new string with the text `s`: the value a unit link cell of kind "unit constant"
+    /// resolves to. GC point. The result is not rooted: store it into a root (a unit link
+    /// cell in a strong root range) before the next allocation.
+    pub fn new_string(iso: &mut Isolate, s: &str) -> Value {
+        val(crate::string::new_string(&iso.rt, s))
+    }
+}
+
 /// Byte offsets native code reads and writes. All are fixed for the build (Cx and
 /// FunctionInfo are `repr(C)`; FRAME 2 and OBJECT_LAYOUT 2, `versions.rs`).
 pub mod layout {
@@ -191,6 +256,11 @@ pub mod layout {
     pub const CX_NATIVE_LIMIT: usize = offset_of!(Cx, native_limit);
     /// `Cx::runtime_table` (`*const RuntimeTable`).
     pub const CX_RUNTIME_TABLE: usize = offset_of!(Cx, runtime_table);
+    /// `Cx::unit_data` (usize; M3-P1 SP-UNIT, H35-Q9): the isolate's unit-data directory, one
+    /// word per unit slot, each the base of the isolate's RW copy of the unit in that slot (0:
+    /// none). Unit code loads its unit-data register (x27 / r14) from it on entry. 0 = no
+    /// directory.
+    pub const CX_UNIT_DATA: usize = offset_of!(Cx, unit_data);
 
     // ---- RuntimeTable ----
     pub const RT_POLL: usize = offset_of!(RuntimeTable, poll);
@@ -308,7 +378,10 @@ pub(crate) unsafe fn enter_native(
     arg: impl Fn(u32) -> u64,
 ) -> Res<u64> {
     let rt = cx.rt();
-    let this = call::bind_this(fi, this, rt.global());
+    // OrdinaryCallBindThis: no GC point before the push, because `arg` may read memory that
+    // the GC does not scan (the embedder slice of `call_from_rust`); a primitive receiver of a
+    // sloppy callee goes in as it is and is wrapped after the push (`wrap_receiver`, H14-Q2).
+    let bound = call::try_bind_this(fi, this, rt.global());
     // SAFETY: caller contract (the `push_frame` contract).
     let nfp = unsafe {
         call::push_frame(
@@ -316,7 +389,7 @@ pub(crate) unsafe fn enter_native(
             cx.stack_limit,
             fi,
             callee,
-            this,
+            bound.unwrap_or(this),
             argc,
             arg,
             caller_fp,
@@ -325,10 +398,15 @@ pub(crate) unsafe fn enter_native(
             UNDEFINED,
         )
     };
+    cx.budget -= 1; // 1 unit per call, also when the frame does not fit (R3-2; D1).
     let Some(nfp) = nfp else {
         return stack_overflow(cx);
     };
-    cx.budget -= 1;
+    if bound.is_none() {
+        // SAFETY: `nfp` is the frame just pushed at `base`, above every live frame and scratch
+        // Value, and not published yet.
+        unsafe { wrap_receiver(cx, nfp, this) }?;
+    }
     rt.stack().set_fp(nfp);
     // Native code runs with no scratch area, as bytecode does. Only an entry from Rust
     // ([`call_from_rust`]) can find one here; it puts the caller's scratch top back after the
@@ -354,6 +432,34 @@ pub(crate) unsafe fn enter_native(
         return Err(Throw);
     }
     Ok(r)
+}
+
+/// OrdinaryCallBindThis step 6.b (§10.2.1.2) for a call that [`call::try_bind_this`] refused
+/// (a primitive receiver of a sloppy callee, H14-Q2; M3-P0 P0-D10): ToObject(`this`) into the
+/// receiver slot of the frame `nfp`, as `call::call_function_object` does. GC point: while the
+/// wrap runs, the scratch top covers the new frame, so the GC scans its copied arguments and
+/// its callee, and a stack walk does not see it (it is not published). The scratch top is put
+/// back on every exit. `enter_native` and `run_b` call it after `push_frame`, because their
+/// `arg` may read memory that the GC does not scan.
+///
+/// # Safety
+/// `nfp` is the frame that `push_frame` just wrote above every live frame and every scratch
+/// Value, and it is not published yet.
+#[cold]
+#[inline(never)]
+unsafe fn wrap_receiver(cx: &mut Cx, nfp: *mut u64, this: u64) -> Res<()> {
+    let stack = cx.rt().stack();
+    let saved = stack.scratch_top();
+    stack.set_scratch_top(crate::runtime::frame_top(nfp));
+    let r = call::wrap_this(cx, this);
+    if saved.is_null() {
+        stack.clear_scratch();
+    } else {
+        stack.set_scratch_top(saved);
+    }
+    // SAFETY: the receiver slot of the frame that `push_frame` just wrote (caller contract).
+    unsafe { *nfp.offset(slot::RECEIVER) = r? };
+    Ok(())
 }
 
 // ---- the runtime table ---------------------------------------------------------------------
@@ -608,10 +714,14 @@ fn call_at(cx: &mut Cx, fp: *mut u64, pc: *const u8, acc: u64) -> Res<u64> {
         }
         let base = call::top_of(cx, fp);
         let next = pc.wrapping_add(insn.size() as usize);
+        // A callee of another realm runs in its realm (H22-Q3), from OrdinaryCallBindThis on.
+        let saved = realm::enter_realm_of(cx, callee);
         // SAFETY: `fp` is the live top frame (published by `enter`), `base` is the first free
         // slot above it, `arg` reads registers of this verified instruction, and the callee's
         // slot holds native code (`native_callee`, `install_native` contract).
-        return unsafe { enter_native(cx, base, fp, next, callee, cfi, this, argc, arg) };
+        let r = unsafe { enter_native(cx, base, fp, next, callee, cfi, this, argc, arg) };
+        realm::leave(cx, saved);
+        return r;
     }
     if let Some(bfi) = b_callee(callee) {
         let base = call::top_of(cx, fp);
@@ -779,7 +889,7 @@ pub fn lookup_code(iso: &Isolate, pc: usize) -> Option<CodeEntry> {
 // ---- Rust -> native ------------------------------------------------------------------------
 
 /// Call(`f`, `this`, `args`) from Rust into native code (M2-P2-SPIKEB-RUSTENTRY; Spike B
-/// configs J and JC time `drive` through it). The types are those of `Isolate::call`.
+/// configs J and JC time `drive` through it). It takes and returns raw `Value`s by design.
 ///
 /// A function with native code ([`install_native`]; a FUNCTION with a Baseline or AotBaseline
 /// slot, not a class constructor or generator) is entered through the T0 entry path
@@ -792,19 +902,19 @@ pub fn lookup_code(iso: &Isolate, pc: usize) -> Option<CodeEntry> {
 /// | frame | pushed above the top frame and the caller's scratch Values (`call::top_of`), return pc = the `Exit` stub, `this` after OrdinaryCallBindThis | `push_frame` with `EXIT_STUB` |
 /// | run | the slot entry, with the new frame published and no scratch area | `interp::run` |
 ///
-/// Any other callee takes the T0 path of `Isolate::call` (`call::call_with`), so this function
+/// Any other callee takes the T0 path of `Cx::call` (`call::call_with`), so this function
 /// also calls T0, host and bound functions.
 ///
 /// **State on every exit** (D20). Whether the call returns, throws, is terminated or fails its
 /// stack check, it puts back what it found: the published top frame (`VmStack::fp`), the
 /// scratch top, and `Cx::out_fp`/`out_pc`. So the VM stack depth after the call equals the
-/// depth before it, and a later `call_from_rust` or `Isolate::call` starts from the same
+/// depth before it, and a later `call_from_rust` or `Cx::call` starts from the same
 /// state. `call_function_object` does the same for the frame and the scratch top on its error
 /// path. An exception or a termination comes back as `Err`, taken from the isolate as
-/// `Isolate::call` takes it (the pending exception is cleared).
+/// `Isolate::with_cx` takes it (the pending exception is cleared).
 ///
 /// The arguments are copied into the callee frame before the first GC point; `args` must hold
-/// live values (as for `Isolate::call`).
+/// live values (as for `Cx::call`).
 pub fn call_from_rust(
     iso: &mut Isolate,
     f: Value,
@@ -822,7 +932,7 @@ pub fn call_from_rust(
         let r = match (native_callee(f), b_callee(f)) {
             (Some(fi), _) => enter_from_rust(cx, f, fi, this, argc, arg),
             (None, Some(fi)) => b_from_rust(cx, f, fi, this, argc, arg),
-            // No native code: the T0 path of `Isolate::call`.
+            // No native code: the T0 path of `Cx::call`.
             (None, None) => call::call_with(cx, f, this, argc, arg, UNDEFINED),
         };
         // Nested T0 calls under native code set them (`slow::call`); put them back.
@@ -830,7 +940,7 @@ pub fn call_from_rust(
         cx.out_pc = out_pc;
         r
     });
-    // The hole never leaves the VM (as `Isolate::call`).
+    // The hole never leaves the VM (as in `Cx::run_script`).
     r.map(|b| val(if b == HOLE { UNDEFINED } else { b }))
 }
 
@@ -855,11 +965,14 @@ fn enter_from_rust(
     }
     let saved_scratch = stack.scratch_top();
     let base = call::top_of(cx, caller);
+    // A function of another realm runs in its realm (H22-Q3), as `call_function_object`.
+    let saved_realm = realm::enter_realm_of(cx, f);
     // SAFETY: `caller` is the published top frame (or null at the outermost entry), `base` is
     // the first free slot above it and above the caller's scratch Values (`top_of`), `arg`
     // reads live Values for `i < argc`, and `native_callee` checked that the slot of `fi`
     // holds native code (`install_native` contract).
     let r = unsafe { enter_native(cx, base, caller, EXIT_STUB.as_ptr(), f, fi, this, argc, arg) };
+    realm::leave(cx, saved_realm);
     // Put back the frame state this call found, on every exit (`enter_native` already
     // published `caller` again, except when its frame push failed). `call_from_rust` puts
     // back `out_fp`/`out_pc`.
@@ -870,6 +983,40 @@ fn enter_from_rust(
         stack.set_scratch_top(saved_scratch);
     }
     r
+}
+
+/// T0's call (`slow::call`) of a native-slotted or (b) function `callee` of another realm
+/// (H22-Q3): runs it nested, in its realm, as `call::call_function_object` runs a T0 callee
+/// of another realm (one Rust level per cross-realm call). A native-slotted callee is
+/// entered with return pc `next_pc` (as `call_native`), a (b) callee by a nested dispatch
+/// ([`run_b`], which switches itself). `None` if `callee` has neither (the caller takes
+/// `call_function_object`). The caller sets `out_fp`/`out_pc`.
+///
+/// # Safety
+/// `fp` is the live top frame with no scratch Values above it, and `arg(i)` returns valid
+/// Value bits for `i < argc` (it is read before the first GC point).
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn call_in_its_realm(
+    cx: &mut Cx,
+    fp: *mut u64,
+    next_pc: *const u8,
+    callee: u64,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+) -> Option<Res<u64>> {
+    let base = crate::runtime::frame_top(fp);
+    if let Some(fi) = native_callee(callee) {
+        let saved = realm::enter_realm_of(cx, callee);
+        // SAFETY: caller contract; `base` is the first free slot above `fp`, and
+        // `native_callee` checked the native slot.
+        let r = unsafe { enter_native(cx, base, fp, next_pc, callee, fi, this, argc, arg) };
+        realm::leave(cx, saved);
+        return Some(r);
+    }
+    let fi = b_callee(callee)?;
+    // SAFETY: caller contract; `b_callee` checked the (b) slot.
+    Some(unsafe { run_b(cx, base, fp, callee, fi, this, argc, arg) })
 }
 
 // ---- placement (b) (P4-PLACEMENT-B) ---------------------------------------------------------
@@ -995,6 +1142,7 @@ pub(crate) unsafe fn a_hot_call(cx: &mut Cx, fp: *mut u64) -> u64 {
 /// `Dispatch::Sibling`/`Become`; the bytecode under `Dispatch::Match`), and publishes
 /// `caller_fp` again. One nested native level, as a T0 callee of `call::call_with`; `Err`
 /// when the run ends with an exception pending. The native and VM stack checks come first.
+/// A callee of another realm runs in its realm (`realm::enter_realm_of`, `realm::leave`).
 ///
 /// # Safety
 /// `caller_fp` is the live top frame (or null), `base` is the first free slot above it and
@@ -1010,11 +1158,35 @@ unsafe fn run_b(
     argc: u32,
     arg: impl Fn(u32) -> u64,
 ) -> Res<u64> {
-    let rt = cx.rt();
-    if !rt.native_stack_ok() {
+    if !cx.rt().native_stack_ok() {
         return stack_overflow(cx);
     }
-    let this = call::bind_this(fi, this, rt.global());
+    // A callee of another realm runs in its realm (H22-Q3), from OrdinaryCallBindThis on.
+    let saved = realm::enter_realm_of(cx, callee);
+    // SAFETY: caller contract.
+    let r = unsafe { run_b_in_realm(cx, base, caller_fp, callee, fi, this, argc, arg) };
+    realm::leave(cx, saved);
+    r
+}
+
+/// [`run_b`] after its native stack check and realm switch.
+///
+/// # Safety
+/// As [`run_b`].
+#[allow(clippy::too_many_arguments)]
+unsafe fn run_b_in_realm(
+    cx: &mut Cx,
+    base: *mut u64,
+    caller_fp: *mut u64,
+    callee: u64,
+    fi: &FunctionInfo,
+    this: u64,
+    argc: u32,
+    arg: impl Fn(u32) -> u64,
+) -> Res<u64> {
+    let rt = cx.rt();
+    // OrdinaryCallBindThis as in `enter_native`: wrap a primitive receiver after the push.
+    let bound = call::try_bind_this(fi, this, rt.global());
     // SAFETY: caller contract (the `push_frame` contract).
     let nfp = unsafe {
         call::push_frame(
@@ -1022,7 +1194,7 @@ unsafe fn run_b(
             cx.stack_limit,
             fi,
             callee,
-            this,
+            bound.unwrap_or(this),
             argc,
             arg,
             caller_fp,
@@ -1031,10 +1203,17 @@ unsafe fn run_b(
             UNDEFINED,
         )
     };
+    // 1 unit per call, also when the frame does not fit, as in `enter_native` (R3-2, D1): a
+    // loop that catches the RangeError of a full VM stack still reaches the next poll
+    // (M3-P2-STOP).
+    cx.budget -= 1;
     let Some(nfp) = nfp else {
         return stack_overflow(cx);
     };
-    cx.budget -= 1;
+    if bound.is_none() {
+        // SAFETY: as in `enter_native`.
+        unsafe { wrap_receiver(cx, nfp, this) }?;
+    }
     rt.stack().set_fp(nfp);
     rt.stack().clear_scratch();
     // SAFETY: `nfp` is the frame of `fi` just pushed and published; the stub byte enters its
@@ -1085,7 +1264,7 @@ fn b_from_rust(
 /// | T0 call, cold (`slow::call`: budget poll, feedback threshold, prefixed call, spread, bound) | frame push, then `OP_ENTER_B` (no Rust recursion) |
 /// | `call_any` from native code, [`call_from_rust`] | a nested dispatch from `OP_ENTER_B` (return pc = the `Exit` stub) |
 /// | the match loop (`Dispatch::Match`) | the bytecode (D4) |
-/// | `[[Construct]]`, a call from Rust through `call::call_with` (`Isolate::call`, builtins) | "not implemented", as for placement (a) |
+/// | `[[Construct]]`, a call from Rust through `call::call_with` (`Cx::call`, builtins) | "not implemented", as for placement (a) |
 ///
 /// Refused before the slot changes, as [`install_native`]: not bytecode, a class constructor,
 /// a generator function, a function that already has native code, a range the registry

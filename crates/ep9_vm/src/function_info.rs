@@ -40,8 +40,15 @@ pub(crate) mod fi_flags {
     /// A generator function (`function*`, a generator method): its calls make a generator
     /// object, its function object inherits from %GeneratorFunction.prototype% and its lazy
     /// `prototype` from %GeneratorPrototype% (M2-P1-GEN-FLAG). Not set for async generators
-    /// (month 3 adds their own bit).
+    /// ([`ASYNC_GENERATOR`]).
     pub const GENERATOR: u32 = 256;
+    /// An async function (not an async generator): its function object inherits from
+    /// %AsyncFunction.prototype% (§15.8.3, §27.7.3).
+    pub const ASYNC: u32 = 512;
+    /// An async generator function (`async function*`, an async generator method): its
+    /// function object inherits from %AsyncGeneratorFunction.prototype% and its lazy
+    /// `prototype` from %AsyncGeneratorPrototype% (§15.6.3, §15.6.4; M3-P2 ASYNCGEN).
+    pub const ASYNC_GENERATOR: u32 = 1024;
 }
 
 /// Per-function data the VM needs at run time. `repr(C)`: the call path reads the dispatch
@@ -102,6 +109,12 @@ fn bytecode_flags(f: &ep9_bytecode::Function) -> u32 {
     }
     if f.flags.contains(FunctionFlags::GENERATOR) && !f.flags.contains(FunctionFlags::ASYNC) {
         flags |= fi_flags::GENERATOR;
+    }
+    if f.flags.contains(FunctionFlags::ASYNC) && !f.flags.contains(FunctionFlags::GENERATOR) {
+        flags |= fi_flags::ASYNC;
+    }
+    if f.flags.contains(FunctionFlags::ASYNC) && f.flags.contains(FunctionFlags::GENERATOR) {
+        flags |= fi_flags::ASYNC_GENERATOR;
     }
     flags
 }
@@ -215,6 +228,18 @@ impl FunctionInfo {
     #[inline(always)]
     pub fn is_generator(&self) -> bool {
         self.flags & fi_flags::GENERATOR != 0
+    }
+
+    /// An async function, not an async generator ([`fi_flags::ASYNC`]).
+    #[inline(always)]
+    pub fn is_async_function(&self) -> bool {
+        self.flags & fi_flags::ASYNC != 0
+    }
+
+    /// An async generator function ([`fi_flags::ASYNC_GENERATOR`]).
+    #[inline(always)]
+    pub fn is_async_generator(&self) -> bool {
+        self.flags & fi_flags::ASYNC_GENERATOR != 0
     }
 
     /// Bytecode offset of `pc`, if `pc` is inside this function's code.

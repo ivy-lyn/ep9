@@ -320,6 +320,18 @@ pub struct ClassInfo {
     pub instance_initializer: Option<FunctionId>,
     /// Synthetic static members initializer, when the class has static fields or static blocks.
     pub static_initializer: Option<FunctionId>,
+    /// (M3-P4, CX2-E9-1) The heritage scope: a `Block` scope, child of the class scope, around
+    /// the `extends` expression of a class whose heritage holds a direct eval (only then). Its
+    /// one binding is the marker `#.heritage` (`collect.rs` `HERITAGE_MARKER`), so it has a
+    /// context, right inside the class context (if the class scope has one). The heritage
+    /// runs in the class context but with the outer PrivateEnvironment (ECMA-262 §15.7.14
+    /// step 8.b): the VM leaves out the private names of the context past a marker context
+    /// when that context is of this scope's parent, the class scope (ep9_bytecode
+    /// `eval_context.rs`), so eval code in the heritage does not see this class's names, and
+    /// eval code in a computed key (whose context is the class context) does. A class scope
+    /// with no context has no private names, and the context past the marker context is then
+    /// of an enclosing scope, whose names stay (fix round 3, R-FIX2-1).
+    pub heritage_scope: Option<ScopeId>,
 }
 
 /// A scope and its context layout.
@@ -346,6 +358,11 @@ pub struct ScopeInfo {
     /// A sloppy direct eval can add `var` bindings to this scope at run time. In a function
     /// var scope, binding 0 and context slot 0 are then [`BindingKind::EvalExt`].
     pub sloppy_eval: bool,
+    /// (ABI 5 `ScopeFlags::PARAMETER_ENV`.) The function scope of a sloppy function with
+    /// parameter expressions, whose `sloppy_eval` comes from a direct eval in the parameter
+    /// list: ECMA-262 puts the parameters in an environment of their own between that eval
+    /// and the variable environment (FunctionDeclarationInstantiation step 20).
+    pub parameter_env: bool,
     /// A direct eval in this scope or an inner one (also in inner functions).
     pub contains_eval: bool,
     /// Loop head per-iteration bindings.
@@ -636,11 +653,31 @@ pub struct ScopeAnalysis {
     implicit: Vec<(u32, ImplicitRef, RefId)>,
     function_at: Vec<(u32, FunctionId)>,
     synthetic_blocks: Vec<(u32, ScopeId)>,
+    /// (M3-P4, E9) Direct eval code: the private names of the caller's classes (with the
+    /// `#`), their kind (`Field`, `Method` or `GetterSetter` for any accessor) and whether
+    /// they are static, from the `EvalContext`. A `#x` reference of the eval code that no class
+    /// of the eval code declares resolves `Dynamic`, and BytecodeGen compiles it by this kind.
+    caller_private: Vec<(Box<str>, PrivateKind, bool)>,
 }
 
 const NONE: u32 = u32::MAX;
 
 impl ScopeAnalysis {
+    /// (E9) Sets the private names of the caller's classes (see the field).
+    pub(crate) fn set_caller_private(&mut self, names: Vec<(Box<str>, PrivateKind, bool)>) {
+        self.caller_private = names;
+    }
+
+    /// (E9) The kind of the caller's private name `name` (with the `#`) and whether it is
+    /// static.
+    #[must_use]
+    pub(crate) fn caller_private(&self, name: &str) -> Option<(PrivateKind, bool)> {
+        self.caller_private
+            .iter()
+            .find(|(n, _, _)| &**n == name)
+            .map(|&(_, kind, is_static)| (kind, is_static))
+    }
+
     /// Functions by id. `functions()[0]` is the script or module.
     #[must_use]
     pub fn functions(&self) -> &[FunctionInfo] {
@@ -845,6 +882,9 @@ impl fmt::Display for ScopeAnalysis {
             }
             if scope.sloppy_eval {
                 write!(f, " sloppy-eval")?;
+            }
+            if scope.parameter_env {
+                write!(f, " parameter-env")?;
             }
             writeln!(f)?;
             for &b in &scope.bindings {

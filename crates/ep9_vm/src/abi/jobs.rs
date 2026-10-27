@@ -202,9 +202,9 @@ impl<'s> Cx<'s> {
     /// any promise that got a handler ("handle" unlinks one at once already).
     ///
     /// Only with no JS on the stack (the spec runs it when the execution context stack is
-    /// empty): `Isolate::run_script` and `Isolate::call` run it after their run, and an
-    /// embedder inside `Isolate::with_cx` may call it there. From a host function it throws an
-    /// Error and runs nothing.
+    /// empty): `Isolate::with_cx_checkpoint` runs it after its scope, and an embedder inside
+    /// `Isolate::with_cx` may call it there. From a host function it throws an Error and runs
+    /// nothing.
     pub fn perform_microtask_checkpoint(&mut self) -> JsResult<()> {
         let rt = self.rt();
         if !rt.stack().fp().is_null() {
@@ -261,16 +261,18 @@ impl<'s> Cx<'s> {
     }
 
     /// The Job of NewPromiseReactionJob (§27.2.2.1) for the Fulfill or the Reject half of the
-    /// reaction record `r`.
+    /// reaction record `r`. Steps 2-4: the job's realm is GetFunctionRealm(handler) when the
+    /// handler is not empty (else null: the current realm), so the job runs there
+    /// (`realm::switch`), and an error that it makes before the handler runs (a RangeError of
+    /// `call::call_with` while it pushes a bound handler's arguments) is that realm's (X-R2-1).
+    /// The realm of the checkpoint is current again after the job, also after a throw.
     fn promise_reaction_job(
         &mut self,
         r: Local<'s, JsObject>,
         argument: Local<'s>,
         reject: bool,
     ) -> JsResult<()> {
-        // a. Let promiseCapability be reaction.[[Capability]].
-        let cap_promise = self.rec_get(r, reaction::PROMISE);
-        // b-c. Let type be reaction.[[Type]]; let handler be reaction.[[Handler]].
+        // Job steps b-c. Let type be reaction.[[Type]]; let handler be reaction.[[Handler]].
         let handler = self.rec_get(
             r,
             if reject {
@@ -279,6 +281,33 @@ impl<'s> Cx<'s> {
                 reaction::ON_FULFILLED
             },
         );
+        // NewPromiseReactionJob step 3. handlerRealm = GetFunctionRealm(handler) (v0 has no
+        // Proxy, so it does not throw); an empty handler gives null: the current realm.
+        let saved = self.cx.realm;
+        let handler_realm = if handler.is_undefined() {
+            saved
+        } else {
+            crate::realm::get_function_realm(self.rt(), handler.bits())
+        };
+        if handler_realm == saved {
+            return self.promise_reaction_job_in(r, handler, argument, reject);
+        }
+        crate::realm::switch(self.cx, handler_realm);
+        let res = self.promise_reaction_job_in(r, handler, argument, reject);
+        crate::realm::switch(self.cx, saved);
+        res
+    }
+
+    /// Steps a-i of the Job of NewPromiseReactionJob, in the job's realm.
+    fn promise_reaction_job_in(
+        &mut self,
+        r: Local<'s, JsObject>,
+        handler: Local<'s>,
+        argument: Local<'s>,
+        reject: bool,
+    ) -> JsResult<()> {
+        // a. Let promiseCapability be reaction.[[Capability]].
+        let cap_promise = self.rec_get(r, reaction::PROMISE);
         // d-f. handlerResult: the argument as a normal (Fulfill) or throw (Reject) completion
         // when the handler is empty, else Completion(HostCallJobCallback(handler, undefined,
         // « argument »)).
@@ -308,8 +337,29 @@ impl<'s> Cx<'s> {
         self.call(f, Local::undefined(), &[value]).map(|_| ())
     }
 
-    /// The Job of NewPromiseResolveThenableJob (§27.2.2.2).
+    /// The Job of NewPromiseResolveThenableJob (§27.2.2.2). Steps 2-5: the job's realm is
+    /// GetFunctionRealm(then), so it runs there (`realm::switch`), and the resolving functions
+    /// of step a are that realm's (X-REALM3). The realm of the checkpoint is current again
+    /// after the job, also after a throw.
     fn promise_resolve_thenable_job(
+        &mut self,
+        promise: Local<'s, JsObject>,
+        thenable: Local<'s>,
+        then: Local<'s>,
+    ) -> JsResult<()> {
+        let then_realm = crate::realm::get_function_realm(self.rt(), then.bits());
+        let saved = self.cx.realm;
+        if then_realm == saved {
+            return self.promise_resolve_thenable_job_in(promise, thenable, then);
+        }
+        crate::realm::switch(self.cx, then_realm);
+        let r = self.promise_resolve_thenable_job_in(promise, thenable, then);
+        crate::realm::switch(self.cx, saved);
+        r
+    }
+
+    /// Steps a-c of the Job of NewPromiseResolveThenableJob, in the job's realm.
+    fn promise_resolve_thenable_job_in(
         &mut self,
         promise: Local<'s, JsObject>,
         thenable: Local<'s>,
@@ -442,6 +492,20 @@ impl<'s> Cx<'s> {
         // resolution, thenJobCallback); HostEnqueuePromiseJob.
         self.enqueue(job::THENABLE, promise.into(), resolution, then);
         Ok(())
+    }
+
+    /// The steps of a promise resolve function after its `[[AlreadyResolved]]` check
+    /// (§27.2.1.3.2 steps 7-16), for a VM-made pending promise that one resolve at most
+    /// reaches: an async function's own promise (§27.7.5.2 AsyncBlockStart step 3.f;
+    /// `interp/slow/async_fn.rs`). A thenable takes a job; a throw of its `then` getter
+    /// rejects. GC point; may run JS (the getter).
+    pub(crate) fn resolve_promise_once(
+        &mut self,
+        promise: Local<'s, JsObject>,
+        resolution: Local<'s>,
+    ) -> JsResult<()> {
+        debug_assert!(self.is_promise(promise) && self.state_of(promise) == promise::PENDING);
+        self.resolve_promise(promise, resolution)
     }
 
     /// FulfillPromise(promise, value) (§27.2.1.4). `promise` is pending.

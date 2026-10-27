@@ -24,7 +24,9 @@ fn rehash(bytes: &mut [u8]) {
 
 #[test]
 fn random_units_round_trip() {
-    let mut stats = [0usize; 4]; // functions, instructions, wide instructions, bytes
+    // functions, instructions, wide instructions, bytes, mapped-parameter lists (ABI 5),
+    // module units with a request (ABI 5)
+    let mut stats = [0usize; 6];
     for seed in 0..cases() {
         let r = random_unit(seed);
         let unit = r
@@ -47,17 +49,31 @@ fn random_units_round_trip() {
             }
         }
         stats[3] += bytes.len();
+        stats[4] += unit
+            .functions
+            .iter()
+            .filter(|f| f.mapped_parameters.is_some())
+            .count();
+        stats[5] += usize::from(
+            unit.module_records
+                .as_ref()
+                .is_some_and(|m| !m.requested_modules.is_empty()),
+        );
     }
     // The generator must reach the interesting cases, or the test proves little.
     println!(
-        "{} units: {} functions, {} instructions ({} with a prefix), {} bytes",
+        "{} units: {} functions, {} instructions ({} with a prefix), {} bytes, {} mapped-parameter lists, {} module units with requests",
         cases(),
         stats[0],
         stats[1],
         stats[2],
-        stats[3]
+        stats[3],
+        stats[4],
+        stats[5]
     );
     assert!(stats[2] > 0, "no Wide/ExtraWide instruction generated");
+    assert!(stats[4] > 0, "no mapped-parameter list generated");
+    assert!(stats[5] > 0, "no module records with a request generated");
 }
 
 #[test]
@@ -210,7 +226,7 @@ fn header_errors_map_to_h35_outcomes() {
         CompiledUnit::from_bytes(&m).unwrap_err(),
         LoadError::BadHeader("TS flags on a JavaScript unit")
     );
-    // Bits 12-15 (reserved TS flags) are zero in ABI 1-4, on a JavaScript and on a
+    // Bits 12-15 (reserved TS flags) are zero in ABI 1-5, on a JavaScript and on a
     // TypeScript unit (H03 Rules row 2).
     for bit in 12..16 {
         for extra in [0, unit_flags::TYPESCRIPT] {

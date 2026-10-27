@@ -123,8 +123,8 @@ fn tree(name: &str) -> PathBuf {
             "include.js",
             test("includes: [extra.js]\n", "assert.sameValue(extra(), 42);"),
         ),
-        // An async generator: still "generator functions" after P1-GEN-CG (plan-v3 §4).
-        ("unsupported.js", test("", "async function* g() {}")),
+        // A class auto-accessor: unsupported (async generators compile since M3-P2 ASYNCGEN).
+        ("unsupported.js", test("", "class A { accessor x = 1 }")),
     ];
     for (name, src) in tests {
         write(&root, &format!("test/language/{name}"), src);
@@ -185,7 +185,7 @@ fn pass_and_fail_rules() {
     assert!(text.contains("language             9 / 18"), "{text}");
     let summary = std::fs::read_to_string(&json).unwrap();
     assert!(
-        summary.contains("\"cause\":\"unsupported: generator functions\""),
+        summary.contains("\"cause\":\"unsupported: class auto-accessors\""),
         "{summary}"
     );
     assert!(
@@ -244,6 +244,52 @@ fn skip_list_paths_reach_the_json() {
         ),
         "{summary}"
     );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A run with path filters (a GC-stress shard) names every file it ran, sorted, in
+/// `run_paths`: `cargo xtask m0-exit` item 6 checks that each shard ran exactly the files of its
+/// shard (M3-P3 fix round 2, C-G1). A full run leaves the list out.
+#[test]
+fn filtered_runs_name_their_files() {
+    let root = tree("run-paths");
+    let expect = expect_file(&root, FAILING);
+    let skip = root.join("skip.txt");
+    std::fs::write(&skip, "# s\ntest/language/neg-runtime-t262.js\n").unwrap();
+    let json = root.join("summary.json");
+    let (code, text) = exec(
+        &root,
+        &expect,
+        &[
+            "--gc-stress",
+            "1",
+            "--skip-list",
+            skip.to_str().unwrap(),
+            "--json",
+            json.to_str().unwrap(),
+            "test/language/raw.js",
+            "test/language/neg-runtime-",
+        ],
+        None,
+    );
+    assert_eq!(code, Some(0), "{text}");
+    let summary = std::fs::read_to_string(&json).unwrap();
+    assert!(
+        summary.contains(
+            "\"skipped_paths\":[\"test/language/neg-runtime-t262.js\"],\"run_paths\":[\"test/language/neg-runtime-object.js\",\
+             \"test/language/neg-runtime-string.js\",\"test/language/neg-runtime-wrong.js\",\
+             \"test/language/raw.js\"]"
+        ),
+        "{summary}"
+    );
+    assert!(
+        summary.contains("\"files\":{\"passed\":1,\"total\":4}"),
+        "{summary}"
+    );
+    let (code, text) = exec(&root, &expect, &["--json", json.to_str().unwrap()], None);
+    assert_eq!(code, Some(0), "{text}");
+    let summary = std::fs::read_to_string(&json).unwrap();
+    assert!(!summary.contains("run_paths"), "{summary}");
     std::fs::remove_dir_all(root).unwrap();
 }
 
