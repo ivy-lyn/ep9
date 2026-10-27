@@ -507,11 +507,11 @@ pub(crate) fn set_keyed(cx: &mut Cx, base: u64, k: u64, v: u64, strict: bool) ->
     if let Some(i) = val(k).as_int32()
         && i >= 0
     {
-        let k = kind::cell_kind(base);
-        if k == kind::ARRAY.get() && array_store(cx.rt(), base, i as u32, v) {
+        let kd = kind::cell_kind(base);
+        if kd == kind::ARRAY.get() && array_store(cx.rt(), base, i as u32, v) {
             return Ok(());
         }
-        if k == kind::ARGUMENTS.get() && arguments::set_element_value(cx.rt(), base, i as u32, v) {
+        if kd == kind::ARGUMENTS.get() && arguments::set_element_value(cx.rt(), base, i as u32, v) {
             return Ok(());
         }
     }
