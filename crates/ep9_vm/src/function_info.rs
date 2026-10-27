@@ -10,7 +10,7 @@
 //! [`FunctionInfo::host`] (host functions, realm.rs) and [`FunctionInfo::stub`] (VM stub
 //! frames).
 
-use core::cell::Cell;
+use core::cell::{Cell, OnceCell};
 
 use ep9_bytecode::{Constant, FunctionFlags, FunctionKind, PositionEntry, position_at};
 use ep9_heap::Slot;
@@ -78,6 +78,9 @@ pub(crate) struct FunctionInfo {
     /// Calls counted while the function has no feedback vector (`feedback::count_call`):
     /// below the threshold until the call that makes the vector, then fixed.
     pub invocations: Cell<u32>,
+    /// The feedback slots that more than one instruction names (`literal_site::shared_slot`):
+    /// empty until the first literal-site miss that asks, then made by one walk of the code.
+    pub shared_slots: OnceCell<crate::literal_site::SharedSlots>,
 }
 
 /// The FunctionInfo flags of a unit function.
@@ -149,6 +152,7 @@ impl FunctionInfo {
             kind: Some(f.kind),
             feedback: Cell::new(core::ptr::null()),
             invocations: Cell::new(0),
+            shared_slots: OnceCell::new(),
         }
     }
 
@@ -175,6 +179,7 @@ impl FunctionInfo {
             kind: None,
             feedback: Cell::new(core::ptr::null()),
             invocations: Cell::new(0),
+            shared_slots: OnceCell::new(),
         }
     }
 
@@ -196,6 +201,7 @@ impl FunctionInfo {
             kind: None,
             feedback: Cell::new(core::ptr::null()),
             invocations: Cell::new(0),
+            shared_slots: OnceCell::new(),
         }
     }
 

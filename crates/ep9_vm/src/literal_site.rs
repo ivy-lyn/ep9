@@ -42,7 +42,8 @@
 //!   %Object.prototype% or %Array.prototype%, as the cold path uses), and for an object the
 //!   key's property count against the boilerplate length and its in-object capacity. The key
 //!   is recorded only from the cold result of a site whose slot no other instruction uses
-//!   ([`exclusive_slot`]), so the key's properties are the boilerplate's keys in order.
+//!   ([`shared_slot`]: one walk of the code per function, then O(1) per miss), so the key's
+//!   properties are the boilerplate's keys in order.
 //! - A BigInt constant (the hole marker, `unit.rs`) is not a value: a hit that meets one goes
 //!   cold, and the cold path throws its "not implemented".
 //! - A CloneObject case is recorded only for a source that a hit can copy field by field: a
@@ -336,21 +337,72 @@ fn shallow_boilerplate(fi: &FunctionInfo, k: u32) -> bool {
     }
 }
 
-/// True if the instruction at `pc` is the only one of `fi` with feedback slot `slot`.
-/// BytecodeGen gives each literal site its own slot, but the verifier does not require it,
-/// and a Literal key is right only for the boilerplate it was made from. Not a GC point.
-pub(crate) fn exclusive_slot(fi: &FunctionInfo, pc: *const u8, slot: u32) -> bool {
-    let Some(off) = fi.offset_of(pc) else {
-        return false;
-    };
-    // SAFETY: as in `slot_at`.
-    let code = unsafe { core::slice::from_raw_parts(fi.code, fi.code_len as usize) };
-    Instructions::new(code).all(|insn| {
-        let Ok(insn) = insn else { return false };
-        insn.offset == off
-            || !(0..insn.operand_count())
-                .any(|j| insn.operand_kind(j) == OperandKind::Slot && insn.unsigned(j) == slot)
-    })
+/// The feedback slots of one function that more than one instruction names
+/// ([`FunctionInfo::shared_slots`]): bit `s % 32` of word `s / 32` is set for slot `s`. `None`: the
+/// code did not decode (verified code always does), so every slot counts as shared.
+pub(crate) struct SharedSlots(Option<Box<[u32]>>);
+
+impl SharedSlots {
+    /// One walk of the code of `fi`. Not a GC point.
+    fn of(fi: &FunctionInfo) -> SharedSlots {
+        // SAFETY: as in `slot_at`.
+        let code = unsafe { core::slice::from_raw_parts(fi.code, fi.code_len as usize) };
+        let (mut seen, mut shared) = (Vec::<u32>::new(), Vec::<u32>::new());
+        for insn in Instructions::new(code) {
+            #[cfg(test)]
+            SCANNED.with(|c| c.set(c.get() + 1));
+            let Ok(insn) = insn else {
+                debug_assert!(false, "verified code decodes");
+                return SharedSlots(None);
+            };
+            let slots = (0..insn.operand_count())
+                .filter(|&j| insn.operand_kind(j) == OperandKind::Slot)
+                .map(|j| insn.unsigned(j) as usize);
+            for (n, s) in slots.clone().enumerate() {
+                // An instruction that names a slot twice is still one instruction.
+                if slots.clone().take(n).any(|t| t == s) {
+                    continue;
+                }
+                let (w, bit) = (s / 32, 1u32 << (s % 32));
+                if seen.len() <= w {
+                    seen.resize(w + 1, 0);
+                    shared.resize(w + 1, 0);
+                }
+                if seen[w] & bit != 0 {
+                    shared[w] |= bit;
+                }
+                seen[w] |= bit;
+            }
+        }
+        SharedSlots(Some(shared.into_boxed_slice()))
+    }
+
+    fn contains(&self, slot: u32) -> bool {
+        let Some(words) = &self.0 else { return true };
+        let s = slot as usize;
+        words
+            .get(s / 32)
+            .is_some_and(|w| w & (1u32 << (s % 32)) != 0)
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: instructions that [`SharedSlots::of`] decoded.
+    pub(crate) static SCANNED: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+/// True if feedback slot `slot` of `fi` is named by more than one instruction. BytecodeGen
+/// gives each literal site its own slot, but the verifier does not require it, and a Literal
+/// key is right only for the boilerplate it was made from. The first call walks the code once
+/// and keeps the answer for every slot in `fi` (a function's code never changes), so each
+/// later call is O(1): a walk per miss would cost O(sites x code length) per function (the
+/// M4-P2 nesting_caps regression: a script's vector at entry, 61181b1, made every literal
+/// site of top-level code miss into the walk). Not a GC point.
+pub(crate) fn shared_slot(fi: &FunctionInfo, slot: u32) -> bool {
+    fi.shared_slots
+        .get_or_init(|| SharedSlots::of(fi))
+        .contains(slot)
 }
 
 /// The int32 count `value + 1`, saturating; a value that is not an int32 counts as 0.
@@ -397,7 +449,7 @@ pub(crate) fn miss(cx: &mut Cx, fp: *mut u64, pc: *const u8, kind: Lit, k: u32, 
     let flag_ok = flags as u8 & SHALLOW == 0 || shallow_boilerplate(fi, k);
     let new_key = if describable && flag_ok {
         // A new key only for a slot that this site alone uses (the key fits its boilerplate).
-        if key == shape || exclusive_slot(fi, pc, i) {
+        if !shared_slot(fi, i) {
             shape
         } else {
             UNDEFINED
