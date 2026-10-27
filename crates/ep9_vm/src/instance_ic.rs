@@ -77,9 +77,9 @@ pub(crate) mod io {
     pub const SIZE: usize = 40;
 }
 
-/// POLY_IC case offsets (the `ic.rs` POLY_IC layout).
-const POLY_KEY: usize = 8;
-const POLY_CASE: usize = 16;
+/// POLY_IC case offsets: the `ic.rs` POLY_IC layout (`ic::pc`), not a copy.
+const POLY_KEY: usize = ic::pc::CASES;
+const POLY_CASE: usize = ic::pc::CASE;
 
 // ---- the hit path -------------------------------------------------------------------------------
 
