@@ -6,13 +6,19 @@
 //! /a+/g  (CreateRegExpLiteral)  -> create_literal: a RegExp object, MATCHER = undefined
 //! Cx::regexp_create(proto, p, f) -> create: flags parsed, pattern compiled now, MATCHER = index
 //! Cx::regexp_exec(re, s, i)     -> exec: program_index (compiles at the first exec of a
-//!                                  literal), flatten s, Rx0::exec from i, poll interrupts
+//!                                  literal), flatten s, Engine::exec from i, poll
+//!                                  interrupts; the match spans + the group names
 //!
 //! Runtime.regexp_programs (ProgramTable, Rust memory)        RegExp object (heap)
 //!   entry i: owner (weak word) ─────────────────────────────> SLOT_OBJECT, class RegExp
-//!            program (Rx0Program: regress code, no Value) <── slot MATCHER: int32 i
+//!            program (Program: regress code, no Value) <───── slot MATCHER: int32 i
+//!            names (the group names, UTF-16, no Value)
 //!   GC: the weak source frees entry i when its owner died; i goes to the free list
 //! ```
+//!
+//! `Engine` is the one name of the backend here (RX0 = `ep9_regexp::Rx0` on regress 0.12.0
+//! in month 4; the month-5 fork and RX1/RX2 change only the alias, MC-w14-19). A program is
+//! an int32 table index in the object, never a process address.
 //!
 //! Internal slots of a RegExp object ([`slot`]):
 //!
@@ -35,13 +41,16 @@
 //! - A literal compiles at its first exec (the parser already rejected bad literals; a
 //!   pattern that the parser takes and regress does not throws its SyntaxError there).
 //!   `regexp_create` (the RegExp constructor, M4-P3) compiles at once.
+//! - The group names of a program (M4-P3 REGEXP1) come from [`group_names`], a scan of the
+//!   pattern after it compiled: the `[[GroupName]]` of each capture, for the `groups` object
+//!   of a match result (§22.2.7.2 steps 29-31). They are Rust memory beside the program.
 
 use core::cell::RefCell;
 use core::sync::atomic::Ordering;
 use std::rc::Rc;
 
 use ep9_heap::Heap;
-use ep9_regexp::{Backend, ExecResult, Flags, Input, Rx0, Rx0Program, Span};
+use ep9_regexp::{Backend, ExecResult, Flags, Input, Span};
 use ep9_value::Throw;
 
 use crate::abi::ObjectClass;
@@ -55,6 +64,17 @@ use crate::kinds;
 use crate::object::{self, attr};
 use crate::runtime::{ErrorKind, Runtime, val};
 use crate::string::{self, JsStr};
+
+/// The RegExp backend of this build: the one place that names it (MC-w14-19).
+type Engine = ep9_regexp::Rx0;
+/// A compiled program of [`Engine`]: Rust memory, no Value.
+type Program = <Engine as Backend>::Program;
+
+/// The `[[GroupName]]` of each capture group of a program, by group number - 1 (`None` for
+/// an unnamed group), as UTF-16 code units. Empty when the pattern has no named group
+/// (shared: every match record of the program holds a clone of the `Rc`). Rust memory, no
+/// Value.
+pub(crate) type Names = Rc<[Option<Box<[u16]>>]>;
 
 /// The internal slots of a RegExp object (the table in the module doc).
 pub(crate) mod slot {
@@ -76,7 +96,9 @@ pub(crate) mod slot {
 struct Entry {
     /// The RegExp object's bits, held weakly (the weak source clears it); 0 = free.
     owner: u64,
-    program: Option<Rx0Program>,
+    program: Option<Program>,
+    /// The group names of `program` ([`group_names`]); empty for a free entry.
+    names: Names,
 }
 
 /// The entries, and the free indices to reuse.
@@ -94,6 +116,7 @@ impl Programs {
             if e.owner != 0 && !is_live(e.owner) {
                 e.owner = 0;
                 e.program = None;
+                e.names = Rc::from([]);
                 self.free.push(i as u32);
                 freed += 1;
             }
@@ -124,11 +147,12 @@ impl ProgramTable {
     }
 
     /// Stores `program` for the RegExp object `owner`; returns its index. Not a GC point.
-    fn insert(&self, owner: u64, program: Rx0Program) -> i32 {
+    fn insert(&self, owner: u64, (program, names): (Program, Names)) -> i32 {
         let mut t = self.inner.borrow_mut();
         let e = Entry {
             owner,
             program: Some(program),
+            names,
         };
         let i = match t.free.pop() {
             Some(i) => {
@@ -157,7 +181,12 @@ impl ProgramTable {
             .program
             .as_ref()
             .expect("a live RegExp holds a live program index");
-        Rx0::exec(program, input, start, caps, poll)
+        Engine::exec(program, input, start, caps, poll)
+    }
+
+    /// The group names of program `index` (a clone of the shared `Rc`).
+    fn names(&self, index: i32) -> Names {
+        Rc::clone(&self.inner.borrow().entries[index as usize].names)
     }
 
     /// The number of entries that hold a program (tests).
@@ -268,10 +297,7 @@ pub(crate) fn create(cx: &mut Cx, proto: u64, pattern: u64, flags: u64) -> Res<u
         );
         return Err(syntax_error(cx, &msg));
     };
-    let program = match Rx0::compile(&units_of(pattern), f) {
-        Ok(p) => p,
-        Err(e) => return Err(syntax_error(cx, &e.message)),
-    };
+    let program = compile(cx, &units_of(pattern), f)?;
     let rt = cx.rt();
     // Not compiled into the table yet: the object must exist to own the entry.
     let o = new_regexp(rt, proto, pattern, f, UNDEFINED);
@@ -289,15 +315,102 @@ fn program_index(cx: &mut Cx, re: u64) -> Res<i32> {
     }
     let source = object::slot_get(re, slot::SOURCE);
     let flags = Flags::from_bits(int32_of(object::slot_get(re, slot::RECORD)) as u8);
-    match Rx0::compile(&units_of(source), flags) {
-        Ok(p) => {
-            let rt = cx.rt();
-            let i = rt.regexp_programs.insert(re, p);
-            object::slot_set(rt, re, slot::MATCHER, int32_bits(i));
-            Ok(i)
-        }
+    let p = compile(cx, &units_of(source), flags)?;
+    let rt = cx.rt();
+    let i = rt.regexp_programs.insert(re, p);
+    object::slot_set(rt, re, slot::MATCHER, int32_bits(i));
+    Ok(i)
+}
+
+/// Compiles `pattern` with `flags` and scans its group names. A SyntaxError if it does not
+/// compile. GC point only through the error.
+fn compile(cx: &mut Cx, pattern: &[u16], flags: Flags) -> Res<(Program, Names)> {
+    match Engine::compile(pattern, flags) {
+        Ok(p) => Ok((p, group_names(pattern, flags))),
         Err(e) => Err(syntax_error(cx, &e.message)),
     }
+}
+
+/// The `[[GroupName]]` of each capture group of `pattern` (§22.2.1.1 CapturingGroupName; the
+/// groups are numbered by their left parentheses, §22.2.2.1), for a pattern that compiled.
+/// A scan, not a parser: it skips an escape (a backslash and the next code unit) and a
+/// character class (`[` ... `]`, nested classes with `v`), counts each `(` not followed by
+/// `?`, and reads the name of `(?<name>` (not `(?<=`, `(?<!`). A name's `\uXXXX` and
+/// `\u{...}` escapes are decoded to UTF-16. Empty if the pattern has no named group.
+pub(crate) fn group_names(pattern: &[u16], flags: Flags) -> Names {
+    const BACKSLASH: u16 = b'\\' as u16;
+    let nested = flags.contains(Flags::UNICODE_SETS);
+    let unit = |i: usize| pattern.get(i).copied();
+    let (mut names, mut any) = (Vec::new(), false);
+    let (mut i, mut class_depth) = (0, 0usize);
+    while i < pattern.len() {
+        let c = pattern[i];
+        if c == BACKSLASH {
+            i += 2;
+            continue;
+        }
+        if class_depth > 0 {
+            if c == u16::from(b']') {
+                class_depth -= 1;
+            } else if c == u16::from(b'[') && nested {
+                class_depth += 1;
+            }
+            i += 1;
+            continue;
+        }
+        if c == u16::from(b'[') {
+            class_depth = 1;
+        } else if c == u16::from(b'(') {
+            if unit(i + 1) != Some(u16::from(b'?')) {
+                names.push(None);
+            } else if unit(i + 2) == Some(u16::from(b'<'))
+                && !matches!(unit(i + 3), Some(0x3D | 0x21))
+            {
+                // `(?<name>`: the name ends at the first `>` (an escape in a name has none).
+                let start = i + 3;
+                let end = pattern[start..]
+                    .iter()
+                    .position(|&u| u == u16::from(b'>'))
+                    .map_or(pattern.len(), |n| start + n);
+                names.push(Some(decode_name(&pattern[start..end])));
+                any = true;
+                i = end;
+            }
+        }
+        i += 1;
+    }
+    if any { Rc::from(names) } else { Rc::from([]) }
+}
+
+/// A group name as UTF-16: `\uXXXX` and `\u{X...}` decoded, every other code unit kept.
+fn decode_name(raw: &[u16]) -> Box<[u16]> {
+    let hex = |s: &[u16]| -> Option<u32> {
+        let t = String::from_utf16(s).ok()?;
+        u32::from_str_radix(&t, 16).ok()
+    };
+    let mut out = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] == u16::from(b'\\') && raw.get(i + 1) == Some(&u16::from(b'u')) {
+            if raw.get(i + 2) == Some(&u16::from(b'{')) {
+                if let Some(close) = raw[i + 3..].iter().position(|&u| u == u16::from(b'}'))
+                    && let Some(c) = hex(&raw[i + 3..i + 3 + close]).and_then(char::from_u32)
+                {
+                    let mut buf = [0u16; 2];
+                    out.extend_from_slice(c.encode_utf16(&mut buf));
+                    i += 4 + close;
+                    continue;
+                }
+            } else if let Some(u) = raw.get(i + 2..i + 6).and_then(hex) {
+                out.push(u as u16);
+                i += 6;
+                continue;
+            }
+        }
+        out.push(raw[i]);
+        i += 1;
+    }
+    out.into_boxed_slice()
 }
 
 /// The matcher of RegExpBuiltinExec (§22.2.7.2) without the `lastIndex` steps: the first
@@ -305,9 +418,14 @@ fn program_index(cx: &mut Cx, re: u64) -> Res<i32> {
 /// RegExp: only at `index`), as capture spans in code units; `None` for no match (also when
 /// `index` > the length). A TypeError if `re` is not a RegExp object; a SyntaxError if a
 /// literal's pattern does not compile. Interrupts: the backend polls the interrupt word, and
-/// a pending request runs `slow::interrupt` (callbacks, termination) before a retry. GC point
-/// (the flat string, an error).
-pub(crate) fn exec(cx: &mut Cx, re: u64, s: u64, index: usize) -> Res<Option<Vec<Option<Span>>>> {
+/// a pending request runs `slow::interrupt` (callbacks, termination) before a retry. With a
+/// match: the program's group names too. GC point (the flat string, an error).
+pub(crate) fn exec(
+    cx: &mut Cx,
+    re: u64,
+    s: u64,
+    index: usize,
+) -> Res<Option<(Vec<Option<Span>>, Names)>> {
     if !is_regexp(re) {
         let msg = format!("{} is not a RegExp object", describe(re));
         return Err(throw_error(cx, ErrorKind::TypeError, &msg));
@@ -338,7 +456,7 @@ pub(crate) fn exec(cx: &mut Cx, re: u64, s: u64, index: usize) -> Res<Option<Vec
                 .exec(program, input, index, &mut caps, &mut poll)
         };
         match r {
-            ExecResult::Match => break Ok(Some(caps)),
+            ExecResult::Match => break Ok(Some((caps, rt.regexp_programs.names(program)))),
             ExecResult::NoMatch => break Ok(None),
             ExecResult::Interrupted => {
                 if slow::interrupt(cx, core::ptr::null_mut()) == 0 {
@@ -353,4 +471,42 @@ pub(crate) fn exec(cx: &mut Cx, re: u64, s: u64, index: usize) -> Res<Option<Vec
     };
     core::hint::black_box(&re);
     out
+}
+
+#[cfg(test)]
+mod group_name_tests {
+    use super::{Flags, group_names};
+
+    /// The names of `pattern` as strings ("-" for an unnamed group).
+    fn names(pattern: &str, flags: &str) -> Vec<String> {
+        let p: Vec<u16> = pattern.encode_utf16().collect();
+        let f: Vec<u16> = flags.encode_utf16().collect();
+        let n = group_names(&p, Flags::parse(&f).unwrap());
+        n.iter()
+            .map(|x| x.as_deref().map_or("-".into(), String::from_utf16_lossy))
+            .collect()
+    }
+
+    #[test]
+    fn groups_are_counted_by_left_parenthesis() {
+        let p = r"(a)(?<x>b)(?:c)(?=d)(?<=e)(?<!f)(?<y>g)(?i:h)";
+        assert_eq!(names(p, ""), ["-", "x", "y"]);
+        // No named group: no names at all (the record has no `groups` object).
+        assert!(names(r"(a)(b)", "").is_empty());
+    }
+
+    #[test]
+    fn escapes_and_classes_hide_parentheses() {
+        assert_eq!(names(r"\((?<w>a)[(](?<z>b)", ""), ["w", "z"]);
+        assert_eq!(names(r"[\]((](?<q>x)", ""), ["q"]);
+        // With v a class nests: the "(" inside the inner class is no group.
+        assert_eq!(names(r"[[(]--[a]](?<v>x)", "v"), ["v"]);
+    }
+
+    #[test]
+    fn name_escapes_are_decoded() {
+        assert_eq!(names(r"(?<ab>.)(?<\u{63}>.)", ""), ["ab", "c"]);
+        assert_eq!(names("(?<\u{1d49c}>.)", "u"), ["\u{1d49c}"]);
+        assert_eq!(names(r"(?<𝒜>.)", ""), ["\u{1d49c}"]);
+    }
 }

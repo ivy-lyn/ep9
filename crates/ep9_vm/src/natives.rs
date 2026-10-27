@@ -1251,7 +1251,7 @@ pub(crate) fn error_to_string<'s>(
     Ok(local(object::new_string(rt, &s)))
 }
 
-/// Object.prototype.toString (§20.1.3.6). v0: no RegExp.
+/// Object.prototype.toString (§20.1.3.6).
 pub(crate) fn object_to_string<'s>(
     cx: &mut HostCx<'s>,
     this: Local<'s>,
@@ -1289,6 +1289,9 @@ pub(crate) fn object_to_string<'s>(
     } else if cx.object_class(local(o)) == Some(crate::abi::ObjectClass::Date) {
         // 13. Else if O has a [[DateValue]] internal slot, let builtinTag be "Date".
         "Date"
+    } else if cx.object_class(local(o)) == Some(crate::abi::ObjectClass::RegExp) {
+        // 14. Else if O has a [[RegExpMatcher]] internal slot, let builtinTag be "RegExp".
+        "RegExp"
     } else {
         "Object"
     };

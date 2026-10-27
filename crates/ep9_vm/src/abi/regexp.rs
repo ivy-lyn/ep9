@@ -4,13 +4,15 @@
 //!
 //! ```text
 //! ep9_builtins regexp.rs ──Cx::regexp_create / Cx::regexp_exec (RX0A)──> regexp.rs (VM)
-//!                                                                         └─> ep9_regexp
+//!   (the RegExp builtins, REGEXP1)                                        └─> ep9_regexp
+//!   MatchRecord: spans + group names (REGEXP1); Cx::is_builtin: the fast-path test (REGEXP1)
 //! ```
 //!
 //! | Method | Spec | Errors |
 //! |---|---|---|
 //! | `regexp_create(proto, pattern, flags)` | RegExpAlloc (§22.2.3.1) with the prototype `proto`, then RegExpInitialize (§22.2.3.3) for the strings `pattern` and `flags` (the caller ran ToString, after its GetPrototypeFromConstructor, so the spec order holds): the slots, `lastIndex` = 0, the program compiled now | SyntaxError for a bad flags string (a letter not in `dgimsuvy`, a letter twice, `u` with `v`) or a pattern that does not compile |
-//! | `regexp_exec(re, s, index)` | the matcher step of RegExpBuiltinExec (§22.2.7.2): the first match at or after code unit `index` (sticky: only at `index`; Unicode mode: an `index` inside a surrogate pair starts at the pair, as V8); no `lastIndex` read or write, no result object | TypeError if `re` is not a RegExp object; SyntaxError if a literal's pattern does not compile (literals compile at their first exec); the termination of an interrupt |
+//! | `regexp_exec(re, s, index)` | the matcher step of RegExpBuiltinExec (§22.2.7.2): the first match at or after code unit `index` (sticky: only at `index`; Unicode mode: an `index` inside a surrogate pair starts at the pair, as V8); no `lastIndex` read or write, no result object. The [`MatchRecord`] also names the groups (`[[GroupName]]`, M4-P3) | TypeError if `re` is not a RegExp object; SyntaxError if a literal's pattern does not compile (literals compile at their first exec); the termination of an interrupt |
+//! | `is_builtin(f, id)` (M4-P3 REGEXP1) | whether `f` is the current realm's function object of builtin `id`: the "still the intrinsic?" test of a fast path (the RegExp builtins take theirs only while `%RegExp.prototype%.exec` is the builtin `exec`, the exec fuse of H31) | none (no allocation, no JS) |
 //!
 //! Each method is a part-2 addition: an `h20-core.txt` line (EP9_BLESS) and an H20 Change-log
 //! row (V9-A1, V9-A14).
@@ -18,16 +20,19 @@
 use ep9_value::JsResult;
 
 use super::{Cx, JsObject, JsString, Local};
+use crate::builtins::{self, BuiltinId};
 use crate::frame::NULL;
 use crate::kinds;
-use crate::regexp;
+use crate::regexp::{self, Names};
 
 /// The result of one successful match: the capture spans in UTF-16 code units (index 0 is the
-/// whole match; `None` for a capture that did not take part). Rust memory with no Value in it
-/// (plan rule 8), so it may outlive a GC point.
+/// whole match; `None` for a capture that did not take part) and the group names of the
+/// pattern. Rust memory with no Value in it (plan rule 8), so it may outlive a GC point.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MatchRecord {
     captures: Vec<Option<(usize, usize)>>,
+    /// `[[GroupName]]` of group `i` at `i - 1`; empty if no group has a name.
+    names: Names,
 }
 
 impl MatchRecord {
@@ -50,6 +55,20 @@ impl MatchRecord {
     /// `i` > [`MatchRecord::group_count`].
     pub fn get(&self, i: usize) -> Option<(usize, usize)> {
         self.captures.get(i).copied().flatten()
+    }
+
+    /// True if a group of the pattern has a name (`(?<name>...)`): the match result then has
+    /// a `groups` object (§22.2.7.2 step 29).
+    pub fn has_group_names(&self) -> bool {
+        !self.names.is_empty()
+    }
+
+    /// The `[[GroupName]]` of capture group `i` (1 = the first group) as UTF-16 code units, or
+    /// `None` for an unnamed group, `i` = 0 or `i` > [`MatchRecord::group_count`]. With
+    /// duplicate named groups (`(?<a>x)|(?<a>y)`) several groups have the same name.
+    pub fn group_name(&self, i: usize) -> Option<&[u16]> {
+        let n = self.names.get(i.checked_sub(1)?)?;
+        n.as_deref()
     }
 }
 
@@ -86,7 +105,17 @@ impl<'s> Cx<'s> {
         index: usize,
     ) -> JsResult<Option<MatchRecord>> {
         let (re, s) = (re.into().bits(), s.into().bits());
-        let captures = regexp::exec(self.inner(), re, s, index)?;
-        Ok(captures.map(|captures| MatchRecord { captures }))
+        let m = regexp::exec(self.inner(), re, s, index)?;
+        Ok(m.map(|(captures, names)| MatchRecord { captures, names }))
+    }
+
+    /// Whether `f` is the function object of the builtin `id` of the current realm (no
+    /// allocation, no JS). False for a function of another realm, and in a realm after the
+    /// first (the builtin table keeps the first realm's function objects only), so a fast path
+    /// that tests this takes its spec steps there. The RegExp builtins test the exec fuse
+    /// with it: `%RegExp.prototype%.exec` is still the builtin `exec` (MC-w14-18).
+    pub fn is_builtin(&self, f: impl Into<Local<'s>>, id: BuiltinId) -> bool {
+        let f = f.into().bits();
+        kinds::is_function(f) && builtins::existing_function(self.rt(), id) == Some(f)
     }
 }
