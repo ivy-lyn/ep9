@@ -221,8 +221,11 @@ impl std::fmt::Display for BuildInfo {
 ///
 /// Empty in M5-P1: each hook comes with its feature (fuse pop after FR0 and CONST/REP;
 /// tier-up and deopt with T1; PIN), never before (V10-D27). How a hook is added:
-/// - a private field here, a plain `fn` pointer (`Copy`: the options sit in a `Cell` in the
-///   isolate's `Runtime`; no captured state, so per-run state stays in the isolate);
+/// - a private field here, `Copy` data (the options sit in a `Cell` in the isolate's
+///   `Runtime`; no captured state, so per-run state stays in the isolate): a `&'static` table
+///   of `fn` pointers with its own `PartialEq` (by address of the table), not a bare `fn`
+///   pointer, because `derive(PartialEq)` over a fn-pointer field fails under `-D warnings`
+///   (`unpredictable_function_pointer_comparisons`; MODES-CHECK-w18 MC-w18-8);
 /// - a setter on [`ExecOptions`] (a new H20 golden line, `embed (not core)`; never a public
 ///   field), and its reader through `rt.exec.get().fuzz_hooks()`;
 /// - a `None` default, so a build or an embedder that sets no hook runs as before.
