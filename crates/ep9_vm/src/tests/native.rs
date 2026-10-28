@@ -82,6 +82,8 @@ fn layout_offsets_read_the_live_isolate() {
         // Appended by M4-P3 KEYED (P2-ORCH-6): the generic keyed load and store.
         layout::RT_GET_KEYED,
         layout::RT_SET_KEYED,
+        // Appended by M5-P0 P0-VM5 (V10-D39): the deopt hook, entry 10.
+        layout::RT_DEOPT,
     ];
     for (i, off) in rt.into_iter().enumerate() {
         assert_eq!(off, i * 8);

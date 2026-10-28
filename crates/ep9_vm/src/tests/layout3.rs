@@ -23,8 +23,8 @@ use crate::{Dispatch, Isolate, arguments, kinds, module, property, props, shape,
 
 #[test]
 fn layout_3_versions_kinds_and_fixed_fields() {
-    // OBJECT_LAYOUT 4 (M4-P0) keeps every layout-3 kind and field checked here; the version
-    // numbers are pinned by `tests::layout4`.
+    // OBJECT_LAYOUT 4 (M4-P0) and 5 (M5-P0) keep every layout-3 kind and field checked here;
+    // the version numbers are pinned by `tests::layout5`.
     assert!(black_box(versions::OBJECT_LAYOUT_VERSION) >= 3);
     let ids = [
         kinds::ARGUMENTS,
