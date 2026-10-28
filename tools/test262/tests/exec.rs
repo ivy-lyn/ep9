@@ -231,16 +231,19 @@ fn the_json_names_its_commit_dirty_flag_and_host() {
     };
     let top = git(&["rev-parse", "--show-toplevel"]).and_then(|t| std::fs::canonicalize(t).ok());
     let env = |k: &str| std::env::var(k).ok();
+    // An explicit EP9_SOURCE_DIRTY other than 0 is dirty on every path (CX6-2).
+    let declared = env("EP9_SOURCE_DIRTY").is_some_and(|d| d.trim() != "0");
     let want = if top.as_deref() == Some(repo.as_path()) {
         let head = git(&["rev-parse", "HEAD"]).unwrap();
-        let dirty = !git(&["status", "--porcelain", "--untracked-files=no"])
-            .unwrap()
-            .is_empty();
+        let dirty = declared
+            || !git(&["status", "--porcelain", "--untracked-files=no"])
+                .unwrap()
+                .is_empty();
         format!(
             ",\"commit\":\"{head}\",\"dirty\":{dirty},\"commit_source\":\"git\",\"made_by\":\"host:"
         )
     } else if let Some(commit) = env("EP9_SOURCE_COMMIT") {
-        let dirty = env("EP9_SOURCE_DIRTY").map(|d| d.trim() == "1");
+        let dirty = env("EP9_SOURCE_DIRTY").map(|d| d.trim() != "0");
         format!(
             ",\"commit\":\"{}\"{},\"commit_source\":\"env\",\"made_by\":\"host:",
             commit.trim().to_ascii_lowercase(),
@@ -248,7 +251,7 @@ fn the_json_names_its_commit_dirty_flag_and_host() {
         )
     } else if let Ok(sbx) = std::fs::read_to_string(repo.join(".sbx-commit")) {
         format!(
-            ",\"commit\":\"{}\",\"dirty\":false,\"commit_source\":\"sbx-commit\",\"made_by\":\"host:",
+            ",\"commit\":\"{}\",\"dirty\":{declared},\"commit_source\":\"sbx-commit\",\"made_by\":\"host:",
             sbx.trim().to_ascii_lowercase()
         )
     } else {
