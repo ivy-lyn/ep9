@@ -122,6 +122,11 @@ lists the 44 tests that run past (or on a slow or busy host can run past) the 60
 under GC-stress (9 fail without it too, and are in every `test262.<triple>.jit.txt`; the other
 35 pass without it; its header says why each one is there).
 
+The `exec --json` summary also says where the run came from (`src/provenance.rs`; `cargo xtask
+m1-exit` items 3 and 4 read it): `commit`, `dirty`, `commit_source` (`git` or `env`), `made_by`
+(host, and the GitHub run and job) and `tree` (git ids of the paths a run depends on). A tree
+copy with no git takes `EP9_SOURCE_COMMIT` (40 hex digits) and `EP9_SOURCE_DIRTY` (`0`/`1`).
+
 `--feedback-threshold <n>` is the number of calls before a function gets its feedback vector
 (H16; default 8, `0` = at the first call, `4294967295` = never), as `ep9 --feedback-threshold`.
 The result must not depend on it, so every threshold uses the same expectation file.
