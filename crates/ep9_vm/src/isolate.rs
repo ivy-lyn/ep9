@@ -287,7 +287,6 @@ impl Isolate {
             out_pc: core::ptr::null(),
             dispatch: config.dispatch,
             feedback_threshold: config.feedback_threshold,
-            proto_epoch: &rt.shapes.proto_epoch,
             interrupt: Arc::as_ptr(&rt.terminate),
             #[cfg(feature = "spike-native")]
             native_limit: rt.native_limit,

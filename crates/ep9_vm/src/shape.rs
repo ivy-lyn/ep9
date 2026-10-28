@@ -64,8 +64,8 @@
 //!   object ([`note_change`]: a named property or an element that appears or goes away, new
 //!   attributes, `[[SetPrototypeOf]]`, PreventExtensions, dictionary mode) invalidates its
 //!   validity cell and the cells of every prototype below it (`validity.rs`, H16 K5), and
-//!   bumps [`ShapeState::proto_epoch`] (kept for the debug cross-check of the IC hit paths
-//!   until M5-P0, plan v9 §3.3 and V9-A25). A value store does neither.
+//!   bumps [`ShapeState::proto_epoch`] (kept for the debug cross-check of the IC hit paths,
+//!   plan v9 §3.3 and V9-A25). A value store does neither.
 //! - The first array-index own property on a prototype-mode object (or an object with one, or
 //!   a routed ARGUMENTS or MODULE_NAMESPACE object, becoming a prototype) sets the sticky
 //!   [`proto_index_keys`] flag: until then `[[Set]]` adds array elements without walking the
@@ -79,8 +79,9 @@
 //! | [`register_kinds`] | `object::register_kinds` | SHAPE (shape space), SLOTS, DESCRIPTORS, DESC_INDEX, TRANSITIONS, PROTO_INFO |
 //! | [`init`] | `Runtime::new` | register the ShapeState root range and make the null PROTO_INFO and its validity cell |
 //!
-//! `Cx::proto_epoch` points at [`ShapeState::proto_epoch`]; since M4-P1 no IC hit path
-//! compares it (the validity cells do), only the debug cross-check of `ic.rs` reads it.
+//! Since M4-P1 no IC hit path compares [`ShapeState::proto_epoch`] (the validity cells do);
+//! only the debug cross-check of `ic.rs` reads it, from the runtime (M5-P0 removed
+//! `Cx::proto_epoch`).
 
 use core::cell::Cell;
 use core::ptr::NonNull;

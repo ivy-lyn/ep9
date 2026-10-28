@@ -900,7 +900,7 @@ op!(StaModuleVariable(st, cell: i32, depth: Depth) { Flow::Cold } cold {
 // operation and records a case.
 op!(GetNamedProperty(st, object: R, name: K, s: FSlot) {
     let o = st.reg(object);
-    match ic::load(st.rt(), st.info(), st.cx.proto_epoch, o, s.0, name.0) {
+    match ic::load(st.rt(), st.info(), o, s.0, name.0) {
         Some(v) => {
             ic::ic_count!(hit, Load);
             st.acc = v;
@@ -923,7 +923,7 @@ op!(GetNamedPropertyFromSuper(st, receiver: R, name: K, s: FSlot) {
     if !object::is_object(home) {
         return Flow::Cold;
     }
-    match ic::load(st.rt(), st.info(), st.cx.proto_epoch, object::proto_of(home), s.0, name.0) {
+    match ic::load(st.rt(), st.info(), object::proto_of(home), s.0, name.0) {
         Some(v) => {
             ic::ic_count!(hit, Load);
             st.acc = v;
@@ -958,7 +958,7 @@ op!(GetKeyedProperty(st, object: R, s: FSlot) {
 });
 op!(SetNamedProperty(st, object: R, name: K, s: FSlot) {
     let (o, v) = (st.reg(object), st.acc);
-    if ic::store::<true>(st.rt(), st.info(), st.cx.proto_epoch, o, s.0, name.0, v) {
+    if ic::store::<true>(st.rt(), st.info(), o, s.0, name.0, v) {
         ic::ic_count!(hit, Store);
         Flow::Next
     } else {
@@ -973,7 +973,7 @@ op!(SetNamedProperty(st, object: R, name: K, s: FSlot) {
 // CreateDataPropertyOrThrow: an add needs no epoch (the prototype chain does not matter).
 op!(DefineNamedOwnProperty(st, object: R, name: K, s: FSlot) {
     let (o, v) = (st.reg(object), st.acc);
-    if ic::store::<false>(st.rt(), st.info(), st.cx.proto_epoch, o, s.0, name.0, v) {
+    if ic::store::<false>(st.rt(), st.info(), o, s.0, name.0, v) {
         ic::ic_count!(hit, Store);
         Flow::Next
     } else {

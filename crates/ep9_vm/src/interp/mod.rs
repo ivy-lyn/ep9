@@ -24,7 +24,6 @@ pub(crate) mod dsl;
 pub(crate) mod ops;
 pub(crate) mod slow;
 
-use core::cell::Cell;
 use core::sync::atomic::AtomicU32;
 
 use ep9_bytecode::Opcode;
@@ -143,13 +142,6 @@ pub(crate) struct Cx {
     /// Calls of a function before T0 makes its feedback vector (H16; 0 = at once, `u32::MAX`
     /// = never). From `IsolateConfig::feedback_threshold`; see `feedback.rs`.
     pub feedback_threshold: u32,
-    /// The prototype epoch (`ShapeState::proto_epoch` in the runtime), read through this
-    /// pointer so a change made by a host call or a nested run is seen at once. Since M4-P1
-    /// no IC hit path compares it: the validity cells replaced it (`validity.rs`, H16 K5),
-    /// and release builds do not read it. `ic::load` and `ic::store` still take it for the
-    /// debug cross-check of a hit (plan v9 R1, V9-A25, `ic.rs`). The field stays because the
-    /// `Cx` field list is frozen for month 4; it is removed in M5-P0.
-    pub proto_epoch: *const Cell<u32>,
     // ---- appended in M2-P0 (no field above moves; the poll fields are fixed for month 2) ----
     /// The isolate's interrupt word (`Runtime::terminate`, bits in [`interrupt`]), read at
     /// the interrupt poll (`slow::interrupt`). Other threads set bits (`TerminateHandle`).
