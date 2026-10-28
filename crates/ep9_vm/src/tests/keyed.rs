@@ -135,6 +135,20 @@ impl Prog {
         a
     }
 
+    /// [`Prog::array`], holey from the start: the last element is stored first (an index past
+    /// `length`), so the array is HOLEY_INT32 (H18) and a later out-of-bounds or hole store
+    /// makes no kind transition (no new shape).
+    fn holey_array(&mut self, vals: &[i32]) -> ep9_bytecode::Register {
+        let a = self.s.b.new_register();
+        self.s.b.create_empty_array_literal(self.s.lit).star(a);
+        let n = vals.len();
+        for i in std::iter::once(n - 1).chain(0..n - 1) {
+            self.s.b.lda_smi(i as i32).star(self.key).lda_smi(vals[i]);
+            self.s.b.set_keyed_property(a, self.key, self.s.set_keyed);
+        }
+        a
+    }
+
     /// `print(p[i])` for each `i`.
     fn print_elements(&mut self, p: ep9_bytecode::Register, is: &[i32]) {
         for &i in is {
@@ -188,13 +202,16 @@ fn z(bits: u32, key: &str) -> String {
 /// index) hits only after a cold execution of that case at its site recorded `INDEX |
 /// ARRAY`; every other case (a name key, out of bounds, a hole, an object receiver) goes cold
 /// and records its bits each time, and leaves the key half alone. A second receiver shape
-/// makes the site megamorphic (a cold execution), and then every fast case hits.
+/// makes the site megamorphic (a cold execution), and then every fast case hits. The array
+/// is holey from the start (M5-P1): with ELEM1 an out-of-bounds store on a packed array moves
+/// it to a new (holey) shape, and the shape the key half recorded then dies at a GC, so the
+/// key half would depend on when collections run (it did under GC stress in release builds).
 #[test]
 fn a_fast_store_hits_only_after_its_case_ran_cold() {
     fn make() -> VerifiedUnit {
         let mut p = Prog::new();
         p.zap(); // before the first call: no vector
-        let a = p.array(&[1, 2, 3]);
+        let a = p.holey_array(&[1, 2, 3]);
         // A name key on the array: cold, no state change.
         p.st(
             a,
