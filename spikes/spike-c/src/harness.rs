@@ -248,9 +248,13 @@ impl Session {
     }
 
     /// Places `codes` (made from the function values `fns`, same order) in one module and
-    /// installs each in an Opt slot (placement (b), `ep9_vm::install_native_b`). All or
-    /// nothing, as `spike_b::harness::Session::install_as`: if an install is refused, the
-    /// functions this call installed before it go back to T0 before the module drops.
+    /// installs each in an Opt slot (placement (b)): with its deopt metadata `metas[i]` (the
+    /// H29 byte form of [`crate::deopt_meta`]) through `ep9_vm::NativeCx::install_b_with_deopt`,
+    /// so its guard exits deopt to T0 (M5-P1), or with `None` through
+    /// `ep9_vm::install_native_b` (code with no exits, such as Spike B's; an exit of such code
+    /// ends in the deopt entry's internal error). All or nothing, as
+    /// `spike_b::harness::Session::install_as`: if an install is refused, the functions this
+    /// call installed before it go back to T0 before the module drops.
     ///
     /// The key check refuses code made for another function; it cannot see what the bytes
     /// do, so the ABI is the caller's promise.
@@ -263,20 +267,28 @@ impl Session {
     /// through the `ep9_vm::layout` offsets, only `RuntimeTable` calls, callee-saved
     /// registers kept, and exits only by the (b) tail jump to `cx.table[*pc]`. Code of
     /// another ABI (placement (a) `NativeEntry` code, `spike_b::jit::SpikeEmitter`) breaks
-    /// it. The caller does not need to keep anything alive: the session keeps the module
-    /// until the isolate drops.
+    /// it. `metas[i]`, if any, is the metadata the emitter made with `codes[i]`: each exit
+    /// calls `RuntimeTable::deopt` with its stub's pc offset, and each stack location is a
+    /// word of the code's own native frame. The caller does not need to keep anything alive:
+    /// the session keeps the module until the isolate drops.
     ///
     /// ```compile_fail,E0133
     /// let mut s = spike_c::harness::Session::new(&spike_b::harness::Config::default()).unwrap();
-    /// let _ = s.install_b(&[], Vec::new()); // E0133: an unsafe fn
+    /// let _ = s.install_b(&[], Vec::new(), Vec::new()); // E0133: an unsafe fn
     /// ```
     pub unsafe fn install_b(
         &mut self,
         fns: &[Value],
         codes: Vec<FunctionCode>,
+        metas: Vec<Option<Vec<u8>>>,
     ) -> Result<&[Placed], String> {
-        if fns.len() != codes.len() {
-            return Err(format!("{} functions, {} codes", fns.len(), codes.len()));
+        if fns.len() != codes.len() || metas.len() != codes.len() {
+            return Err(format!(
+                "{} functions, {} codes, {} metadata tables",
+                fns.len(),
+                codes.len(),
+                metas.len()
+            ));
         }
         for (i, (&f, code)) in fns.iter().zip(&codes).enumerate() {
             let input = self.input_of(f).map_err(|e| format!("function {i}: {e}"))?;
@@ -292,12 +304,20 @@ impl Session {
             let range = module.functions()[i].code.clone();
             // SAFETY: the caller's contract (# Safety): function `i` of the module is
             // placement (b) code for `f` (the key check above also holds: the same
-            // FunctionInfo) with the ABI and exit rules `install_native_b` requires. The
+            // FunctionInfo) with the ABI and exit rules `install_native_b` requires, and
+            // `metas[i]` is its own metadata (the `install_b_with_deopt` rules). The
             // module outlives the installation: on success it goes to `self.modules`, which
             // drops after `self.iso`, and `self.iso` never leaves the session (private
             // field, no `&mut` accessor); on a refusal the loop below uninstalls functions
             // 0..i before the module drops (or keeps the module if one cannot be uninstalled).
-            let r = unsafe { ep9_vm::install_native_b(&self.iso, f, range) };
+            let r = unsafe {
+                match &metas[i] {
+                    Some(m) => ep9_vm::NativeCx::install_b_with_deopt(&self.iso, f, range, m),
+                    None => {
+                        ep9_vm::install_native_b(&self.iso, f, range).map_err(|e| format!("{e:?}"))
+                    }
+                }
+            };
             if let Err(e) = r {
                 let stuck = fns[..i]
                     .iter()
@@ -307,11 +327,18 @@ impl Session {
                 if stuck > 0 {
                     self.modules.push(module);
                 }
-                return Err(format!("{name}: install refused: {e:?}"));
+                return Err(format!("{name}: install refused: {e}"));
             }
         }
         self.modules.push(module);
         Ok(self.modules.last().expect("pushed").functions())
+    }
+
+    /// The exit counters of the code installed for `f` with deopt metadata, in stub order
+    /// (counter `k` = the exit of [`crate::emit_a64::EmitReport::exits`]`[k]`); `None` if `f`
+    /// has no such code.
+    pub fn exit_counts(&self, f: Value) -> Option<Vec<u64>> {
+        ep9_vm::NativeCx::deopt_counts(&self.iso, f)
     }
 
     /// The JIT modules of this session.
@@ -398,7 +425,7 @@ mod tests {
             .expect("(b) code");
         // SAFETY: `code` is placement (b) code of Spike B's `BEmitter` for `f`, made from
         // `input_of(f)` just above and not changed.
-        unsafe { s.install_b(&[f], vec![code]) }.expect("install");
+        unsafe { s.install_b(&[f], vec![code], vec![None]) }.expect("install");
         assert_eq!(s.slot_kind(f), Some(ep9_vm::DispatchKind::Opt));
         let jit = s.run(main, "main.js");
         assert_eq!(jit, t0);
@@ -408,7 +435,7 @@ mod tests {
             .emit(&s.input_of(f).expect("input"))
             .expect("(b) code");
         // SAFETY: as above: (b) code of `BEmitter` for `f`, unchanged.
-        let e = unsafe { s.install_b(&[f], vec![code]) }.expect_err("already native");
+        let e = unsafe { s.install_b(&[f], vec![code], vec![None]) }.expect_err("already native");
         assert!(e.contains("AlreadyNative"), "{e}");
         assert_eq!(s.modules().len(), 1);
     }

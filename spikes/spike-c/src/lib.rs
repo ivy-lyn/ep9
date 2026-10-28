@@ -29,8 +29,8 @@
 //! | [`ir`] | the SSA graph, the fact lattice, the five ref nodes, guards with frame states | SPIKEC-1 |
 //! | [`build`](mod@build) | the graph builder: bytecode + FactSnapshot -> [`ir::Graph`] | SPIKEC-1; int facts SPIKEC-2; keyed facts SPIKEC-3; the generic keyed path, doubles, `===`, context loads and calls (the `lin_solve` graph) SPIKEC-4 |
 //! | [`regalloc`] | linear-scan register allocation | SPIKEC-1 |
-//! | [`emit_a64`] | AArch64 code from the allocated graph (dynasm 5.1.0); guard exits = one exit stub per guard to a shared "deopt not built" trap | SPIKEC-1; exit stubs SPIKEC-3; the call stub form and the generic keyed calls SPIKEC-4 |
-//! | [`deopt_meta`] | the per-exit deopt metadata form: pc, guard, bytecode offset, counter, value places; offsets only | SPIKEC-4 |
+//! | [`emit_a64`] | AArch64 code from the allocated graph (dynasm 5.1.0); guard exits = one exit stub per guard to a shared exit that calls the VM's deopt entry (H29) | SPIKEC-1; exit stubs SPIKEC-3; the call stub form and the generic keyed calls SPIKEC-4; the deopt entry SPIKEC-5 |
+//! | [`deopt_meta`] | the per-exit deopt metadata: pc, guard, bytecode offset, counter, value places; offsets only; written in the H29 byte form the VM reads | SPIKEC-4; the H29 byte form SPIKEC-5 |
 //! | [`vm_layout`] | the VM layout facts the code reads, from the `ep9_vm::layout` export (each with its owning version), proved on live objects | SPIKEC-1; the export SPIKEC-4 |
 //! | [`tier`] | config C of the protocol: a kernel run with its hot function compiled, against T0 | SPIKEC-1 |
 //! | [`timing`] | the class S timing of protocol §3 (T0, C, H0, H1; paired ratios, the median interval), a Mac report | SPIKEC-2 |
@@ -149,7 +149,7 @@ pub fn compile_input(
     input: &FunctionInput<'_>,
     facts: &facts::FunctionFacts<'_>,
 ) -> Result<(FunctionCode, CompileReport), Refusal> {
-    compile_input_with(input, facts, emit_a64::StubForm::Movz)
+    compile_input_with(input, facts, emit_a64::StubForm::Call)
 }
 
 /// [`compile_input`] with the exit stubs of `form` (SPIKEC-4: the call form is a report next

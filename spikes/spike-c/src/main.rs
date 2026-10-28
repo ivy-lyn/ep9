@@ -216,11 +216,19 @@ fn compile_cmd(args: &[String]) -> Result<bool, String> {
             println!("{}", report.line());
             println!("{}", report.keyed_line());
             println!("{}: {}", report.name, report.emit.exits_line());
-            // The call form of the stubs, a report next to the default (MC-w15-14).
-            let (_, call) =
-                spike_c::compile_input_with(&input, &ff, spike_c::emit_a64::StubForm::Call)
-                    .map_err(|e| format!("{}: call stubs: {e}", h.name))?;
-            println!("{}: {}", report.name, call.emit.exits_line());
+            // The movz form of the stubs, a report next to the default call form (MC-w15-14,
+            // V10-D31).
+            let (_, movz) =
+                spike_c::compile_input_with(&input, &ff, spike_c::emit_a64::StubForm::Movz)
+                    .map_err(|e| format!("{}: movz stubs: {e}", h.name))?;
+            println!("{}: {}", report.name, movz.emit.exits_line());
+            // The VM's reader takes the table the install registers (H29).
+            let records = ep9_vm::NativeCx::check_deopt_meta(&report.emit.meta.encode())
+                .map_err(|e| format!("{}: exit table: {e}", h.name))?;
+            println!(
+                "{}: exit table read by ep9_vm: {records} records",
+                report.name
+            );
             println!("{}: {}", report.name, report.emit.meta.line());
             let meta = report.emit.meta.encode();
             println!(
@@ -307,7 +315,7 @@ fn tier_cmd(args: &[String]) -> Result<bool, String> {
     let run = spike_c::tier::run(k, n.unwrap_or(k.n), &config)?;
     println!("{}", run.report.line());
     println!("{}", run.line());
-    Ok(run.equal && (run.probe_trap.is_some() || run.function != "am3"))
+    Ok(run.equal && (run.probe_exit.is_some() || run.function != "am3"))
 }
 
 /// The value after `flag` in `args`, parsed.

@@ -1109,6 +1109,12 @@ impl Builder<'_> {
     /// A loop phi whose back-edge inputs are all Int32 becomes Int32: its entry input gets an
     /// (unbacked) CheckInt32 at the end of the preheader, with the frame state of the loop
     /// header (T0 would enter the loop there). Repeats to a fixed point (nested phis).
+    ///
+    /// R-SPIKE-P4-1 (M5-P1): the check goes only into a preheader whose one successor is the
+    /// header. A preheader that may branch past the loop (`if (c) { while (..) .. }`) would
+    /// run the check on a path that never enters the loop, and a deopt there would resume T0
+    /// inside the loop. Such a phi stays Tagged (no edge split: the spike keeps blocks in
+    /// bytecode order). [`crate::ir::Graph::check`] refuses the other form.
     fn unbox_loop_phis(&mut self) {
         loop {
             let mut changed = false;
@@ -1122,6 +1128,7 @@ impl Builder<'_> {
                     .collect();
                 let [entry] = fwd[..] else { continue };
                 let pre = preds[entry];
+                let pre_enters_only = self.g.blocks[pre.0 as usize].succs == [BlockId(h as u32)];
                 for (r, phi) in self.loop_phis[h].clone() {
                     let node = self.g.node(phi);
                     if !node.live || node.op != Op::Phi || node.repr != Repr::Tagged {
@@ -1137,6 +1144,9 @@ impl Builder<'_> {
                         continue;
                     }
                     let e = node.inputs[entry];
+                    if self.g.node(e).repr != Repr::Int32 && !pre_enters_only {
+                        continue;
+                    }
                     // Backed only if a check of the phi in the header block is: the header
                     // runs once at each entry with the entry value, so that site's record
                     // saw the entry value of each run. A check elsewhere in the loop (in a

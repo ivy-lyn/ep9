@@ -36,39 +36,37 @@
 //! policy is `ExitPolicy::Deopt`.
 //!
 //! ```text
-//!  guard g fails ──> exit stub g (12 bytes while id and offset fit in 16 bits):
-//!                      movz x16, #g ; movz x17, #<bytecode offset of g's frame state>
-//!                      b <shared exit of g's policy>
-//!                    clobbers only x16, x17 (never allocated): every frame-state value is
-//!                    still where the allocation put it (a register, a native stack slot, a
-//!                    VM frame slot, a constant; H29-Q2)
-//!  shared exit (Deopt, one per function): month 5 = the eager deopt entry (read the exit's
-//!                    metadata by x16, write the values back, resume T0 at x17);
-//!                    until then the "deopt not built" trap
-//!
-//!  call form (StubForm::Call, SPIKEC-4 report, MC-w15-14; V8's eager exit):
-//!    guard g fails ──> stub k: bl <dispatch>                       4 bytes
-//!    dispatch:  x16 = x30 - stubs start = 4(k + 1); (x16, x17) = (id, offset) of entry k of
-//!               an in-code table (8 bytes per exit) ──> the same shared exit
-//!               In month 5 the index k selects the exit's metadata record, so the table goes.
+//!  guard g fails ──> exit stub k (the k-th guard)          clobbers only x16, x17, x30
+//!                    call form (StubForm::Call, the default, V10-D31; V8's eager exit):
+//!                      bl <shared exit>                    4 bytes; x30 - 4 = the stub's pc
+//!                    movz form (StubForm::Movz, a report):
+//!                      movz x16, #<the stub's pc offset> ; movz x17, #g ; b <shared exit>
+//!                                                          12 bytes while both fit in 16 bits
+//!                    every frame-state value is still where the allocation put it (a
+//!                    register, a native stack slot, a VM frame slot, a constant; H29-Q2)
+//!  shared exit (Deopt, one per function; the eager deopt entry, M5-P1):
+//!    sub sp, sp, #256 ; str x30, [sp, #240] ; stp x16, x17, [sp, #128]   the stub's state,
+//!                                               before any call or far branch (MC-w15-14)
+//!    stp x0, x1 .. x28, x29 below sp            the register dump: word n = xn (H29-Q3)
+//!    w2 = x30 - 4 - code start (adr) | x16      the stub's pc offset (position independent)
+//!    RuntimeTable::deopt(cx, fp, w2, dump = sp, x29)       entry 10, `ep9_vm` deopt.rs
+//!    add sp, sp, #256 ; x3 = x0 ; x1 = cx.out_pc ; x2 = cx.out_fp ; b leave
+//!                                               T0 resumes in the same VM frame (H29, SCP:128)
 //! ```
 //!
-//! am3 (SPIKEC-4, `spike-c compile crypto`): movz form 12.0 + 1.9 = 13.9 bytes per exit out
-//! of line; call form 4.0 + 2.8 (dispatch and shared exit) + 8.0 (table) = 14.8, or 6.8
-//! without the table. **The month-5 deopt entry saves x16 and x17 (x30 for the call form)
-//! before any table call or far branch:** an AAPCS64 linker veneer or a call may change
-//! them, and they are the only state the stub passes (MC-w15-14).
-//!
-//! Month 5 replaces only the shared exit; the stubs and the guard branches stay. The
-//! **"deopt not built" trap** throws the int32 [`TRAP_BASE`] + guard id through
-//! `RuntimeTable::throw` at the stub's bytecode offset and unwinds as any throw from (b)
-//! code. The run then ends with that uncaught number ([`trap_of`] reads it back), never with
-//! a wrong value. It is a stand-in, not a policy: H32 never throws on a fact failure, and JS
-//! code could catch the number (the protocol kernels do not catch around compiled
-//! functions). [`EmitReport`] gives the bytes per exit, and (SPIKEC-4) the per-exit
-//! position-independent metadata ([`crate::deopt_meta`]: the stub's pc offset from the code
-//! start, the bytecode offset, the place of every live value, the RW exit-counter index;
-//! H29-Q1, Q2, Q5), made from the guards' frame states and the allocation.
+//! The entry finds the exit's record by the stub's pc offset in the metadata the install
+//! registered ([`crate::harness::Session::install_b`], `ep9_vm::NativeCx::install_b_with_deopt`),
+//! rebuilds the frame's live registers and the accumulator from the dump, the native frame
+//! (x29 + offset), the constants and the VM frame, adds 1 to the exit's counter and sets
+//! `Cx::out_pc` to the record's bytecode offset. The code stays installed: the next call runs
+//! it again (SCP:128). am3 (SPIKEC-5, `spike-c compile crypto`): call form 4.0 + 4.4 = 8.4
+//! bytes per exit out of line (29 stubs, a 128-byte shared exit), movz form 12.0 + 4.1 = 16.1
+//! (a 120-byte shared exit); the dump makes the shared exit larger than SPIKEC-4's (once per
+//! function). The exit metadata is 1127 bytes (38.9 per exit). [`EmitReport`] gives the bytes per
+//! exit and the per-exit position-independent metadata ([`crate::deopt_meta`]: the stub's pc
+//! offset from the code start, the bytecode offset, the place of every live value, the RW
+//! exit-counter index; H29-Q1, Q2, Q5), made from the guards' frame states and the
+//! allocation.
 //!
 //! Scratch: x12-x14 stage inputs that are not in registers, x15 stages a spilled result (and
 //! is a temporary in the poll and store paths), x16 and x17 are temporaries. No absolute
@@ -98,30 +96,21 @@ use crate::vm_layout;
 
 type Ops = VecAssembler<Aarch64Relocation>;
 
-/// The first thrown number of the "deopt not built" trap: guard `g` throws `TRAP_BASE + g`.
-pub const TRAP_BASE: i32 = 1_900_000_000;
+/// The bytes of the shared exit's register dump below sp: x0-x30, one word each (word n =
+/// xn, `ep9_vm` `deopt::DUMP_REGS`), rounded up to keep sp 16-aligned.
+const DUMP_BYTES: u32 = 256;
 
-/// The guard id of a "deopt not built" trap, from an uncaught exception's text.
-pub fn trap_of(text: &str) -> Option<u32> {
-    text.split(|c: char| !c.is_ascii_digit())
-        .filter_map(|w| w.parse::<i64>().ok())
-        .find(|&n| n >= i64::from(TRAP_BASE) && n < i64::from(TRAP_BASE) + 100_000)
-        .map(|n| (n - i64::from(TRAP_BASE)) as u32)
-}
-
-/// The form of the exit stubs (MC-w15-14: SPIKEC-4 reports the call form next to the
-/// 12-byte one).
+/// The form of the exit stubs (V10-D31: the call form is the default; MC-w15-14: the movz
+/// form stays as a report).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum StubForm {
-    /// `movz x16, #id ; movz x17, #offset ; b <shared exit>`: 12 bytes while the id and the
-    /// offset fit in 16 bits. The default.
+    /// `bl <shared exit>`: 4 bytes. The shared exit finds the stub's pc from the return
+    /// address (x30 - 4), so no per-exit data is in the code (V8's eager exit).
     #[default]
-    Movz,
-    /// `bl <dispatch>`: 4 bytes. The dispatch of the policy finds the stub index from the
-    /// return pc (x30 - stubs start), reads (id, offset) from an in-code table of 8 bytes per
-    /// exit and goes to the same shared exit (V8's eager exit: one call, the index from the
-    /// pc). In month 5 the index selects the metadata record instead of the in-code table.
     Call,
+    /// `movz x16, #<the stub's pc offset> ; movz x17, #<guard id> ; b <shared exit>`: 12
+    /// bytes while both fit in 16 bits.
+    Movz,
 }
 
 /// What the emitter made (the report).
@@ -132,40 +121,33 @@ pub struct EmitReport {
     pub guards: usize,
     /// The stub form used.
     pub form: StubForm,
-    /// Native offset of each guard's exit stub: (guard id, offset).
-    pub traps: Vec<(u32, u32)>,
+    /// Native offset of each guard's exit stub, in stub order: (guard id, offset). Entry `k`
+    /// is the exit whose counter has index `k`.
+    pub exits: Vec<(u32, u32)>,
     /// Bytes of all exit stubs (one per guard).
     pub stub_bytes: u32,
-    /// Bytes of the shared exits (one per exit policy used; today the trap), with the call
-    /// form's dispatch code.
+    /// Bytes of the shared exits (one per exit policy used: the deopt entry).
     pub shared_exit_bytes: u32,
-    /// The call form's in-code (guard id, bytecode offset) table (0 for the movz form).
-    pub table_bytes: u32,
-    /// The per-exit metadata (SPIKEC-4; [`crate::deopt_meta`]).
+    /// The per-exit metadata (SPIKEC-4; [`crate::deopt_meta`]); the install registers its
+    /// bytes with the code.
     pub meta: crate::deopt_meta::ExitTable,
 }
 
 impl EmitReport {
-    /// Out-of-line bytes per exit: the stubs plus the shared exits (and the call form's
-    /// table), over the guards. The in-line branches of each guard are in the body and not
-    /// counted here.
+    /// Out-of-line bytes per exit: the stubs plus the shared exits, over the guards. The
+    /// in-line branches of each guard are in the body and not counted here.
     pub fn bytes_per_exit(&self) -> f64 {
         if self.guards == 0 {
             return 0.0;
         }
-        f64::from(self.stub_bytes + self.shared_exit_bytes + self.table_bytes) / self.guards as f64
+        f64::from(self.stub_bytes + self.shared_exit_bytes) / self.guards as f64
     }
 
     /// One report line: the exits and their bytes (MC-w14 SPIKEC-3: bytes per exit).
     pub fn exits_line(&self) -> String {
         let per = |b: f64, n: usize| if n == 0 { 0.0 } else { b / n as f64 };
-        let table = if self.form == StubForm::Call {
-            format!(" + id/offset table {} bytes", self.table_bytes)
-        } else {
-            String::new()
-        };
         format!(
-            "exits {} ({:?} stubs): stubs {} bytes ({:.1} per exit) + shared exit {} bytes{table} \
+            "exits {} ({:?} stubs): stubs {} bytes ({:.1} per exit) + shared exit {} bytes \
              = {:.1} bytes per exit out of line; {:.1} exits per KB of code ({} bytes)",
             self.guards,
             self.form,
@@ -198,6 +180,12 @@ const SAVED: [(u8, u32); 10] = [
 ];
 /// The first spill slot (sp + 96).
 const SPILL_BASE: u32 = 96;
+
+/// The byte offset of spill slot `k` from sp after the prologue, which is also x29 (the deopt
+/// metadata's stack locations, [`crate::deopt_meta::stack_offset`]).
+pub(crate) fn spill_slot_offset(k: u32) -> u32 {
+    SPILL_BASE + 8 * k
+}
 /// The largest frame: the epilogue's `ldp x29, x30, [sp], #S` takes a post-index immediate of
 /// at most +504 (the prologue's `stp` reaches -512), so 496, the largest multiple of 16 below
 /// it (50 spill slots).
@@ -320,6 +308,8 @@ struct Emitter<'a> {
     a: &'a Allocation,
     labels: Vec<DynamicLabel>,
     frame: u32,
+    /// Offset 0 of the code (the shared exit's `adr` finds the code start from it).
+    start: DynamicLabel,
     /// Guard exits: (label, guard id, bytecode offset, the guard's policy).
     traps: Vec<(DynamicLabel, u32, u32, ExitPolicy)>,
     throws: BTreeMap<u32, DynamicLabel>,
@@ -337,18 +327,17 @@ struct Emitter<'a> {
     /// Bytes of the exit stubs and of the shared exits.
     stub_bytes: u32,
     shared_exit_bytes: u32,
-    table_bytes: u32,
     form: StubForm,
 }
 
 /// Emits the code of `graph` (built from `input`) with the registers of `alloc` and the
-/// 12-byte exit stubs.
+/// call-form exit stubs (the default, V10-D31).
 pub fn emit(
     input: &FunctionInput<'_>,
     graph: &Graph,
     alloc: &Allocation,
 ) -> Result<(FunctionCode, EmitReport), Refusal> {
-    emit_with(input, graph, alloc, StubForm::Movz)
+    emit_with(input, graph, alloc, StubForm::Call)
 }
 
 /// [`emit`] with the exit stubs of `form`.
@@ -365,17 +354,20 @@ pub fn emit_with(
         .iter()
         .map(|_| ops.new_dynamic_label())
         .collect();
-    let (unwind, leave, ret) = (
+    let (unwind, leave, ret, start) = (
+        ops.new_dynamic_label(),
         ops.new_dynamic_label(),
         ops.new_dynamic_label(),
         ops.new_dynamic_label(),
     );
+    dynasm!(ops ; .arch aarch64 ; =>start);
     let mut e = Emitter {
         ops,
         g: graph,
         a: alloc,
         labels,
         frame,
+        start,
         traps: Vec::new(),
         throws: BTreeMap::new(),
         unwind,
@@ -387,7 +379,6 @@ pub fn emit_with(
         trap_at: Vec::new(),
         stub_bytes: 0,
         shared_exit_bytes: 0,
-        table_bytes: 0,
         form,
     };
     let overflow = e.ops.new_dynamic_label();
@@ -411,10 +402,9 @@ pub fn emit_with(
         frame_bytes: frame,
         guards,
         form,
-        traps: report_traps,
+        exits: report_traps,
         stub_bytes: e.stub_bytes,
         shared_exit_bytes: e.shared_exit_bytes,
-        table_bytes: e.table_bytes,
         meta,
     };
     // ops / native_offsets: every reachable instruction, with the first native offset of its
@@ -468,6 +458,7 @@ impl Emitter<'_> {
         Ok(())
     }
 
+    /// The label of the exit stub of guard `n` (each failing branch of the guard goes there).
     fn trap(&mut self, n: NodeId) -> DynamicLabel {
         let node = self.g.node(n);
         let g = node.guard.as_ref().expect("a guard");
@@ -485,7 +476,7 @@ impl Emitter<'_> {
     }
 
     fn slot_off(k: u32) -> u32 {
-        SPILL_BASE + 8 * k
+        spill_slot_offset(k)
     }
 
     /// The register that holds `v` (loaded into `stage` if it is not in one).
@@ -618,7 +609,7 @@ impl Emitter<'_> {
                 let ok = self.ops.new_dynamic_label();
                 mov64(&mut self.ops, 17, NOT_CELL_MASK);
                 // An Array whose elements store is a cell must have an ELEMENTS cell (Values),
-                // so an ELEMENTS_DOUBLE or ELEMENTS_DICT cell (OBJECT_LAYOUT 5) traps here, fail
+                // so an ELEMENTS_DOUBLE or ELEMENTS_DICT cell (OBJECT_LAYOUT 5) exits here, fail
                 // closed (V10-D9b). No elements cell (undefined) passes. The element ops check
                 // both again (this guard is shared per block, and a generic keyed op between
                 // may run JS that swaps the store; M5-P0 review F1).
@@ -1198,6 +1189,71 @@ impl Emitter<'_> {
         Ok(epilogue)
     }
 
+    /// The shared exit of [`ExitPolicy::Deopt`] (module docs; H29, V10-D31): the eager deopt
+    /// entry. The stub's state goes to memory before any call or far branch, since a call or
+    /// an AAPCS64 linker veneer may change x16, x17 and x30 (MC-w15-14). Then every register
+    /// goes into a dump below sp (word n = xn), and `RuntimeTable::deopt(cx, fp, the stub's pc
+    /// offset, dump, x29)` rebuilds the VM frame. It sets `Cx::out_pc`/`out_fp` (the resume
+    /// point, or the unwind target of an internal error) as `RuntimeTable::unwind` does, so
+    /// the tail is the unwind path's: the (b) exit with its result.
+    fn deopt_exit(&mut self) -> Result<(), Refusal> {
+        let table = scaled(layout::CX_RUNTIME_TABLE)?;
+        let entry = scaled(layout::RT_DEOPT)?;
+        let out_pc = scaled(layout::CX_OUT_PC)?;
+        let out_fp = scaled(layout::CX_OUT_FP)?;
+        let (start, leave) = (self.start, self.leave);
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; sub sp, sp, DUMP_BYTES
+            ; str x30, [sp, #240]
+            ; stp x16, x17, [sp, #128]
+            ; stp x0, x1, [sp]
+            ; stp x2, x3, [sp, #16]
+            ; stp x4, x5, [sp, #32]
+            ; stp x6, x7, [sp, #48]
+            ; stp x8, x9, [sp, #64]
+            ; stp x10, x11, [sp, #80]
+            ; stp x12, x13, [sp, #96]
+            ; stp x14, x15, [sp, #112]
+            ; stp x18, x19, [sp, #144]
+            ; stp x20, x21, [sp, #160]
+            ; stp x22, x23, [sp, #176]
+            ; stp x24, x25, [sp, #192]
+            ; stp x26, x27, [sp, #208]
+            ; stp x28, x29, [sp, #224]
+        );
+        match self.form {
+            // x30 = the stub's pc + 4.
+            StubForm::Call => {
+                dynasm!(self.ops
+                    ; .arch aarch64
+                    ; adr x17, =>start
+                    ; sub x2, x30, x17
+                    ; sub x2, x2, #4
+                );
+            }
+            StubForm::Movz => {
+                dynasm!(self.ops ; .arch aarch64 ; mov x2, x16);
+            }
+        }
+        dynasm!(self.ops
+            ; .arch aarch64
+            ; mov x0, x28
+            ; mov x1, x26
+            ; add x3, sp, #0
+            ; mov x4, x29
+            ; ldr x16, [x28, table]
+            ; ldr x16, [x16, entry]
+            ; blr x16
+            ; add sp, sp, DUMP_BYTES
+            ; mov x3, x0
+            ; ldr x1, [x28, out_pc]
+            ; ldr x2, [x28, out_fp]
+            ; b =>leave
+        );
+        Ok(())
+    }
+
     fn out_of_line(&mut self, overflow: DynamicLabel) -> Result<(), Refusal> {
         let throw0 = self.throw_at(0);
         dynasm!(self.ops ; .arch aarch64 ; =>overflow);
@@ -1234,106 +1290,53 @@ impl Emitter<'_> {
             let t = self.labels[to];
             dynasm!(self.ops ; .arch aarch64 ; b =>t);
         }
-        // Exit stubs (module docs): the movz form sets x16 = the guard id, x17 = the bytecode
-        // offset of its frame state, then goes to the shared exit of its policy; the call
-        // form calls its policy's dispatch, which sets the same two from the in-code table.
-        // Only x16, x17 (and x30 in the call form) change.
-        // (policy, shared exit, the call form's dispatch)
-        let mut shared: Vec<(ExitPolicy, DynamicLabel, DynamicLabel)> = Vec::new();
+        // Exit stubs (module docs): the call form calls its policy's shared exit, which finds
+        // the stub's pc from x30; the movz form sets x16 = the stub's pc offset and x17 = the
+        // guard id, then goes there. Only x16, x17 (and x30 in the call form) change.
+        // (policy, shared exit)
+        let mut shared: Vec<(ExitPolicy, DynamicLabel)> = Vec::new();
         let start = self.ops.offset().0 as u32;
-        let stubs_start = self.ops.new_dynamic_label();
-        dynasm!(self.ops ; .arch aarch64 ; =>stubs_start);
-        for (l, id, off, policy) in self.traps.clone() {
-            let (exit, dispatch) = match shared.iter().find(|(p, ..)| *p == policy) {
-                Some(&(_, x, d)) => (x, d),
+        for (l, id, _, policy) in self.traps.clone() {
+            let exit = match shared.iter().find(|(p, _)| *p == policy) {
+                Some(&(_, x)) => x,
                 None => {
                     let x = self.ops.new_dynamic_label();
-                    let d = self.ops.new_dynamic_label();
-                    shared.push((policy, x, d));
-                    (x, d)
+                    shared.push((policy, x));
+                    x
                 }
             };
             dynasm!(self.ops ; .arch aarch64 ; =>l);
             let here = self.ops.offset().0 as u32;
             self.trap_at.push((id, here));
             match self.form {
+                StubForm::Call => {
+                    dynasm!(self.ops ; .arch aarch64 ; bl =>exit);
+                }
                 StubForm::Movz => {
-                    mov64(&mut self.ops, 16, u64::from(id));
-                    mov64(&mut self.ops, 17, u64::from(off));
+                    mov64(&mut self.ops, 16, u64::from(here));
+                    mov64(&mut self.ops, 17, u64::from(id));
                     dynasm!(self.ops ; .arch aarch64 ; b =>exit);
                 }
-                StubForm::Call => {
-                    dynasm!(self.ops ; .arch aarch64 ; bl =>dispatch);
-                }
             }
         }
-        let stubs_end = self.ops.offset().0 as u32;
-        self.stub_bytes = stubs_end - start;
-        if self.form == StubForm::Call {
-            // The dispatch: stub k returns to stubs_start + 4(k + 1); entry k of the table
-            // (8 bytes: id, offset) is at table + 8(k + 1) - 8.
-            let table = self.ops.new_dynamic_label();
-            for &(_, exit, dispatch) in &shared {
-                dynasm!(self.ops
-                    ; .arch aarch64
-                    ; =>dispatch
-                    ; adr x16, =>stubs_start
-                    ; sub x16, x30, x16
-                    ; adr x17, =>table
-                    ; add x17, x17, x16, lsl #1
-                    ; ldp w16, w17, [x17, #-8]
-                    ; b =>exit
-                );
-            }
-            let table_start = self.ops.offset().0 as u32;
-            dynasm!(self.ops ; .arch aarch64 ; =>table);
-            for &(_, id, off, _) in &self.traps {
-                dynasm!(self.ops ; .arch aarch64 ; .u32 id ; .u32 off);
-            }
-            self.table_bytes = self.ops.offset().0 as u32 - table_start;
-        }
-        let stubs_end = self.ops.offset().0 as u32 - self.table_bytes;
+        self.stub_bytes = self.ops.offset().0 as u32 - start;
         let unwind = self.unwind;
-        let table = scaled(layout::CX_RUNTIME_TABLE)?;
-        let throw_entry = scaled(layout::RT_THROW)?;
         let shared_start = self.ops.offset().0 as u32;
-        for (policy, x, _) in shared {
+        for (policy, x) in shared {
             dynasm!(self.ops ; .arch aarch64 ; =>x);
             match policy {
-                // Eager deopt to T0 at x17 plus an exit counter (H32, JIT mode). The deopt
-                // entry is month 5; until then the stand-in trap: throw TRAP_BASE + x16 at
-                // offset x17, then unwind from there. x19 keeps the offset across the call
-                // (callee-saved; the value it held is dead on this path, and `leave`
-                // restores the caller's x19 from the frame).
-                ExitPolicy::Deopt => {
-                    dynasm!(self.ops ; .arch aarch64 ; mov x19, x17);
-                    mov64(&mut self.ops, 3, u64::from(TRAP_BASE as u32));
-                    dynasm!(self.ops ; .arch aarch64 ; add w3, w3, w16);
-                    mov64(&mut self.ops, 17, NUMBER_TAG);
-                    dynasm!(self.ops
-                        ; .arch aarch64
-                        ; orr x3, x3, x17
-                        ; mov x0, x28
-                        ; mov x1, x26
-                        ; mov w2, w19
-                        ; ldr x16, [x28, table]
-                        ; ldr x16, [x16, throw_entry]
-                        ; blr x16
-                        ; mov x2, x19
-                        ; b =>unwind
-                    );
-                }
+                // Eager deopt to T0 at the exit's bytecode offset, plus its exit counter (H32,
+                // JIT mode): the deopt entry of `ep9_vm` (M5-P1).
+                ExitPolicy::Deopt => self.deopt_exit()?,
             }
         }
-        // The shared exits, plus the call form's dispatch code (between the stubs and the
-        // table).
-        self.shared_exit_bytes =
-            self.ops.offset().0 as u32 - shared_start + (stubs_end - (start + self.stub_bytes));
+        self.shared_exit_bytes = self.ops.offset().0 as u32 - shared_start;
         for (&off, &l) in &self.throws.clone() {
             dynasm!(self.ops ; .arch aarch64 ; =>l);
             mov64(&mut self.ops, 2, u64::from(off));
             dynasm!(self.ops ; .arch aarch64 ; b =>unwind);
         }
+        let table = scaled(layout::CX_RUNTIME_TABLE)?;
         let entry = scaled(layout::RT_UNWIND)?;
         let out_pc = scaled(layout::CX_OUT_PC)?;
         let out_fp = scaled(layout::CX_OUT_FP)?;
@@ -1397,11 +1400,23 @@ fn cfi(frame: u32, epilogue: u32) -> CfiProgram {
 mod tests {
     use super::*;
 
+    /// The guard whose exit ended a run that was installed with no exit table: the deopt
+    /// entry refuses ("deopt at native offset <pc>: no deopt metadata ...") and names the
+    /// stub's pc, which `exits` maps to its guard. A test that corrupts the heap by hand
+    /// installs so, so that T0 never resumes on the corrupted object.
+    fn exit_of(err: &str, exits: &[(u32, u32)]) -> Option<u32> {
+        let rest = err.split("deopt at native offset ").nth(1)?;
+        let pc: u32 = rest.split(':').next()?.parse().ok()?;
+        exits.iter().find(|x| x.1 == pc).map(|x| x.0)
+    }
+
     #[test]
-    fn trap_text() {
-        assert_eq!(trap_of("Uncaught 1900000003"), Some(3));
-        assert_eq!(trap_of("uncaught: 1900000000\n    at am3"), Some(0));
-        assert_eq!(trap_of("TypeError: x is 42"), None);
+    fn exit_text() {
+        let exits = [(0, 40), (3, 52)];
+        let e = "Error: ep9 internal error: deopt at native offset 52: no deopt metadata";
+        assert_eq!(exit_of(e, &exits), Some(3));
+        assert_eq!(exit_of("Error: deopt at native offset 44: x", &exits), None);
+        assert_eq!(exit_of("TypeError: x is 42", &exits), None);
     }
 
     #[test]
@@ -1434,14 +1449,14 @@ mod tests {
         assert_eq!(a.finalize().expect("a"), b.finalize().expect("b"));
     }
 
-    /// V10-D9b: `CheckArray` traps on an Array whose elements store is a cell other than an
+    /// V10-D9b: `CheckArray` exits on an Array whose elements store is a cell other than an
     /// ELEMENTS cell (an ELEMENTS_DOUBLE or ELEMENTS_DICT cell from M5-P1 on). The test makes
     /// such an array by hand: it points `b`'s elements word at a plain object (a live cell, so
-    /// a GC meanwhile is safe), runs the compiled `fill(b, 3)`, which must end in the trap of
-    /// a CheckArray guard, then puts the word back. With the word back, the same call equals
-    /// T0 again.
+    /// a GC meanwhile is safe), runs the compiled `fill(b, 3)`, which must take the exit of a
+    /// CheckArray guard (installed with no exit table, see [`exit_of`]), then puts the word
+    /// back. With the word back, the same call runs again.
     #[test]
-    fn check_array_traps_on_an_elements_store_that_is_not_an_elements_cell() {
+    fn check_array_exits_on_an_elements_store_that_is_not_an_elements_cell() {
         use crate::harness::Session;
         use spike_b::harness::Config;
         if spike_b::emit::Arch::HOST != Some(spike_b::emit::Arch::Aarch64) {
@@ -1475,7 +1490,7 @@ mod tests {
         assert!(!guards.is_empty(), "{}", report.graph);
         // SAFETY: emit_a64's placement (b) code for `fill`, from `input_of(fill)` with no JS
         // run since.
-        unsafe { s.install_b(&[f], vec![code]) }.expect("install");
+        unsafe { s.install_b(&[f], vec![code], vec![None]) }.expect("install");
         let ok = s.run("fill(b, 3);", "ok.js");
         assert!(ok.result.is_ok(), "{:?}", ok.result);
         let b = s.function_value("b").expect("b").to_bits();
@@ -1493,9 +1508,13 @@ mod tests {
         let bad = s.run("fill(b, 3);", "bad.js");
         // SAFETY: as above.
         unsafe { at.write(old) };
-        let trap = bad.result.as_ref().err().and_then(|e| trap_of(e));
+        let exit = bad
+            .result
+            .as_ref()
+            .err()
+            .and_then(|e| exit_of(e, &report.emit.exits));
         assert!(
-            trap.is_some_and(|g| guards.contains(&g)),
+            exit.is_some_and(|g| guards.contains(&g)),
             "{:?} ({guards:?})",
             bad.result
         );
@@ -1508,9 +1527,9 @@ mod tests {
     /// from M5-P1 on). So LoadElement checks the store's kind itself. The test removes every
     /// CheckArray from the graph of `sum` (the state the element op meets after such a swap),
     /// points `b`'s elements word at a plain object (a live cell) and runs the code: it must
-    /// end in the trap of a LoadElement guard, not read the object's words as Values.
+    /// take the exit of a LoadElement guard, not read the object's words as Values.
     #[test]
-    fn element_ops_trap_on_an_elements_store_that_is_not_an_elements_cell() {
+    fn element_ops_exit_on_an_elements_store_that_is_not_an_elements_cell() {
         use crate::harness::Session;
         use crate::ir::{NodeId, Op};
         use spike_b::harness::Config;
@@ -1525,7 +1544,7 @@ mod tests {
         s.run(defs, "defs.js").result.expect("defs");
         s.run(warm, "warm.js").result.expect("warm");
         let f = s.function_value("sum").expect("sum");
-        let (code, guards) = {
+        let (code, guards, exits) = {
             let script = s.script("defs.js").expect("defs script");
             let [id] = script.functions_named("sum")[..] else {
                 panic!("one sum");
@@ -1566,12 +1585,12 @@ mod tests {
             assert!(!guards.is_empty(), "{g}");
             let alloc = crate::regalloc::allocate(&g).expect("alloc");
             crate::regalloc::verify(&g, &alloc).expect("verify");
-            let (code, _) = emit_with(&input, &g, &alloc, StubForm::Movz).expect("emit");
-            (code, guards)
+            let (code, report) = emit_with(&input, &g, &alloc, StubForm::Movz).expect("emit");
+            (code, guards, report.exits)
         };
         // SAFETY: emit_a64's placement (b) code for `sum`, from `input_of(sum)` with no JS
         // run since; its element ops keep their own guards.
-        unsafe { s.install_b(&[f], vec![code]) }.expect("install");
+        unsafe { s.install_b(&[f], vec![code], vec![None]) }.expect("install");
         let ok = s.run("sum(b, 3);", "ok.js");
         assert!(ok.result.is_ok(), "{:?}", ok.result);
         let b = s.function_value("b").expect("b").to_bits();
@@ -1589,9 +1608,9 @@ mod tests {
         let bad = s.run("sum(b, 3);", "bad.js");
         // SAFETY: as above.
         unsafe { at.write(old) };
-        let trap = bad.result.as_ref().err().and_then(|e| trap_of(e));
+        let exit = bad.result.as_ref().err().and_then(|e| exit_of(e, &exits));
         assert!(
-            trap.is_some_and(|g| guards.contains(&g)),
+            exit.is_some_and(|g| guards.contains(&g)),
             "{:?} ({guards:?})",
             bad.result
         );
