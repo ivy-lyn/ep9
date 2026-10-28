@@ -36,6 +36,12 @@
 //!    MOVED. A range is decided per endpoint (CX6-5): its start (its end) keeps step 4 when the
 //!    paired base line has a cite of that name with the same start (the same end).
 //!
+//! 6. A cited line that is the base line with a dated note appended at its end (the rest
+//!    of the line at HEAD starts with `Note (YYYY-MM-DD` or `[YYYY-MM-DD`, as a dated
+//!    addendum that moves no line is written, plan v10 section 3.8 WI-SC3) still names its
+//!    line: a note (`short cite NOTE ADDED`), not a finding, as an edited table row is
+//!    ([`appended_note`]; M5-P1 fixer). Text edited before the note stays CHANGED.
+//!
 //! Known limits (M4-P5 CX6-4; CX6-3 is closed by step 5 in M5-P1): the word-overlap pairing is
 //! a heuristic: a reworded row that keeps a stale number can lose its pair to an inserted row,
 //! and its cite is then checked at the commit that added that number. When one cite text is on
@@ -425,6 +431,16 @@ pub(crate) fn short_cites(root: &Path) -> Result<Cites, String> {
                     ));
                     continue;
                 }
+                // The same line with a dated note appended (step 6): a note, not a finding.
+                if hits.is_empty()
+                    && let Some(lh) = &lh
+                    && appended_note(text, lh.trim())
+                {
+                    out.notes.push(format!(
+                        "short cite NOTE ADDED {cite}: the line at {short_base} with a dated note appended (read the note once): {clip}"
+                    ));
+                    continue;
+                }
                 out.findings.push(match hits.as_slice() {
                     [m] if named => format!("SHORT CITE MOVED {cite} -> {name}:{m} (same text as at {short_base}): {clip}"),
                     // A fallback base may not be the commit the cite was written for: its line
@@ -630,6 +646,33 @@ fn same_row(a: &str, b: &str, base: Option<&[String]>, head: Option<&[String]>) 
     first_cell(b) == Some(key) && once(base) && once(head)
 }
 
+/// True if `head` is the line `base` (not blank) with a dated note appended (step 6 of the
+/// module doc): after `base` come blanks, then `Note (YYYY-MM-DD` or `[YYYY-MM-DD`.
+fn appended_note(base: &str, head: &str) -> bool {
+    let Some(rest) = head.strip_prefix(base) else {
+        return false;
+    };
+    if base.is_empty() || !rest.starts_with(char::is_whitespace) {
+        return false;
+    }
+    let rest = rest.trim_start();
+    let Some(date) = rest
+        .strip_prefix("Note (")
+        .or_else(|| rest.strip_prefix('['))
+    else {
+        return false;
+    };
+    let d = date.as_bytes();
+    d.len() >= 10
+        && d[..10].iter().enumerate().all(|(i, c)| {
+            if i == 4 || i == 7 {
+                *c == b'-'
+            } else {
+                c.is_ascii_digit()
+            }
+        })
+}
+
 /// The raw stdout of `git show <spec>` (blank lines kept), or None.
 fn git_raw(root: &Path, spec: &str) -> Option<String> {
     let out = std::process::Command::new("git")
@@ -828,6 +871,60 @@ mod tests {
         assert!(!c.lines().iter().any(|l| l.starts_with("note: SHORT CITE")));
         assert!(c.summary().contains("6 short cites, 5 findings"));
         assert!(!c.summary().contains("report only"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Step 6 (M5-P1 fixer): a cited line with a dated note appended at its end is a note, not
+    /// a finding; text after the line that is not a dated note, or an edit before the note,
+    /// stays CHANGED.
+    #[test]
+    fn a_dated_note_appended_to_a_cited_line_is_a_note() {
+        let root = repo("note");
+        write(&root, "docs/adr/README.md", "a\n- Entry in vm.\nc\nd\n");
+        let body = "\nAR:2 and AR:3 and AR:4.\n";
+        write(
+            &root,
+            DOC,
+            &format!("{}{body}", HEADER.replace("{BASE}", "0000000")),
+        );
+        let base = commit(&root, "base");
+        write(
+            &root,
+            DOC,
+            &format!("{}{body}", HEADER.replace("{BASE}", &base[..7])),
+        );
+        commit(&root, "header");
+        write(
+            &root,
+            "docs/adr/README.md",
+            "a\n- Entry in vm. Note (2026-10-29, M5-P1): it is split.\nc [2026-10-29, x:] done\nd and more\n",
+        );
+        commit(&root, "notes");
+        let c = short_cites(&root).unwrap();
+        assert_eq!(c.total, 3);
+        for k in [2, 3] {
+            assert!(
+                c.notes
+                    .iter()
+                    .any(|n| n.starts_with(&format!("short cite NOTE ADDED doc13:6 AR:{k}:"))),
+                "{k}: {:?}",
+                c.notes
+            );
+        }
+        assert_eq!(
+            c.findings,
+            vec![format!(
+                "SHORT CITE CHANGED doc13:6 AR:4: the line at {} is not in the file at HEAD: d",
+                &base[..7]
+            )]
+        );
+        assert!(appended_note("x", "x Note (2026-10-29): y"));
+        assert!(appended_note("x", "x  [2026-10-29, r:] y"));
+        assert!(!appended_note("x", "xNote (2026-10-29)"));
+        assert!(!appended_note("x", "x Note (soon)"));
+        assert!(!appended_note("x", "x [2026-1-29]"));
+        assert!(!appended_note("x", "y x Note (2026-10-29)"));
+        assert!(!appended_note("", " Note (2026-10-29)"));
         std::fs::remove_dir_all(root).unwrap();
     }
 
