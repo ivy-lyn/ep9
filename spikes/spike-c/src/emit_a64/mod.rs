@@ -613,7 +613,15 @@ impl Emitter<'_> {
                 let d = self.dst(n)?;
                 let kind = vm_layout::KIND_BYTE;
                 let arr = u32::from(vm_layout::KIND_ARRAY);
+                let elems = vm_layout::ARRAY_ELEMENTS;
+                let values = u32::from(vm_layout::KIND_ELEMENTS);
+                let ok = self.ops.new_dynamic_label();
                 mov64(&mut self.ops, 17, NOT_CELL_MASK);
+                // An Array whose elements store is a cell must have an ELEMENTS cell (Values):
+                // LoadElement and StoreElement read and write its words as Values, so an
+                // ELEMENTS_DOUBLE or ELEMENTS_DICT cell (OBJECT_LAYOUT 5) traps here, fail
+                // closed (V10-D9b). No elements cell (undefined) passes: the element ops trap
+                // on it themselves.
                 dynasm!(self.ops
                     ; .arch aarch64
                     ; tst X(x), x17
@@ -622,6 +630,13 @@ impl Emitter<'_> {
                     ; ldrb w16, [X(x), kind]
                     ; cmp w16, arr
                     ; b.ne =>trap
+                    ; ldr x16, [X(x), elems]
+                    ; tst x16, x17
+                    ; b.ne =>ok
+                    ; ldrb w16, [x16, kind]
+                    ; cmp w16, values
+                    ; b.ne =>trap
+                    ; =>ok
                 );
                 if d != x {
                     dynasm!(self.ops ; .arch aarch64 ; mov X(d), X(x));
@@ -682,7 +697,7 @@ impl Emitter<'_> {
                 );
                 for i in 0..vm_layout::POLY_COUNT {
                     let k = vm_layout::POLY_CASES + vm_layout::POLY_CASE_SIZE * i;
-                    let h = k + 8;
+                    let h = k + vm_layout::POLY_HANDLER;
                     let next = self.ops.new_dynamic_label();
                     dynasm!(self.ops
                         ; .arch aarch64
@@ -1410,6 +1425,75 @@ mod tests {
         );
         assert_eq!(w, 1 << 49);
         assert_eq!(a.finalize().expect("a"), b.finalize().expect("b"));
+    }
+
+    /// V10-D9b: `CheckArray` traps on an Array whose elements store is a cell other than an
+    /// ELEMENTS cell (an ELEMENTS_DOUBLE or ELEMENTS_DICT cell from M5-P1 on). The test makes
+    /// such an array by hand: it points `b`'s elements word at a plain object (a live cell, so
+    /// a GC meanwhile is safe), runs the compiled `fill(b, 3)`, which must end in the trap of
+    /// a CheckArray guard, then puts the word back. With the word back, the same call equals
+    /// T0 again.
+    #[test]
+    fn check_array_traps_on_an_elements_store_that_is_not_an_elements_cell() {
+        use crate::harness::Session;
+        use spike_b::harness::Config;
+        if spike_b::emit::Arch::HOST != Some(spike_b::emit::Arch::Aarch64) {
+            eprintln!("skip: the emitter is aarch64 only");
+            return;
+        }
+        let defs = "function fill(a, n) { for (var i = 0; i < n; i++) { a[i] = (a[i] * 3 + i) & 1023; } return a[0]; }";
+        let warm = "var w = [1, 2, 3, 4]; for (var k = 0; k < 20; k++) fill(w, 4); \
+                    var b = [5, 6, 7]; var o = { x: 1 };";
+        let mut s = Session::new(&Config::default().threaded()).expect("session");
+        s.run(defs, "defs.js").result.expect("defs");
+        s.run(warm, "warm.js").result.expect("warm");
+        let f = s.function_value("fill").expect("fill");
+        let (code, report) = {
+            let script = s.script("defs.js").expect("defs script");
+            let [id] = script.functions_named("fill")[..] else {
+                panic!("one fill");
+            };
+            let live = crate::facts::live(&s, script).expect("facts");
+            let facts = crate::facts::for_function(&live, id);
+            let input = s.input_of(f).expect("input");
+            crate::compile_input_with(&input, &facts, StubForm::Movz).expect("compile")
+        };
+        let guards: Vec<u32> = report
+            .graph
+            .lines()
+            .filter(|l| l.contains("CheckArray"))
+            .filter_map(|l| l.split(" guard g").nth(1))
+            .filter_map(|t| t.split(' ').next()?.parse().ok())
+            .collect();
+        assert!(!guards.is_empty(), "{}", report.graph);
+        // SAFETY: emit_a64's placement (b) code for `fill`, from `input_of(fill)` with no JS
+        // run since.
+        unsafe { s.install_b(&[f], vec![code]) }.expect("install");
+        let ok = s.run("fill(b, 3);", "ok.js");
+        assert!(ok.result.is_ok(), "{:?}", ok.result);
+        let b = s.function_value("b").expect("b").to_bits();
+        let o = s.function_value("o").expect("o").to_bits();
+        let at = (b + u64::from(vm_layout::ARRAY_ELEMENTS)) as *mut u64;
+        // SAFETY: `b` is a live Array held by a global; its elements word is a Value slot,
+        // and `o` is a live cell, so the array stays a valid heap object while the word
+        // points at it. The isolate runs only the script below until the word is restored.
+        let old = unsafe { at.read() };
+        assert!(vm_layout::is_cell(old));
+        // SAFETY: as above; the old word is the array's ELEMENTS cell.
+        assert_eq!(unsafe { vm_layout::kind(old) }, vm_layout::KIND_ELEMENTS);
+        // SAFETY: as above.
+        unsafe { at.write(o) };
+        let bad = s.run("fill(b, 3);", "bad.js");
+        // SAFETY: as above.
+        unsafe { at.write(old) };
+        let trap = bad.result.as_ref().err().and_then(|e| trap_of(e));
+        assert!(
+            trap.is_some_and(|g| guards.contains(&g)),
+            "{:?} ({guards:?})",
+            bad.result
+        );
+        let again = s.run("print(fill(b, 3));", "again.js");
+        assert!(again.result.is_ok(), "{:?}", again.result);
     }
 
     /// The largest frame that `emit` accepts encodes in both the prologue `stp` (pre-index,
