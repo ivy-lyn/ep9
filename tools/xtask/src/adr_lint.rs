@@ -6,7 +6,8 @@
 //! cargo xtask adr-lint --trailers-only --base <rev> [--root <dir>]  part 1 only (M4-P0)
 //! ```
 //!
-//! The full lint runs four parts over `<rev>..HEAD` and passes only when all four pass:
+//! The full lint runs five parts over `<rev>..HEAD` and passes only when all five pass (part 5
+//! only while it gates):
 //!
 //! | Part | Passes when | Module |
 //! |---|---|---|
@@ -14,7 +15,7 @@
 //! | 2 review records | every amendment row of an Accepted or Frozen ADR since `<rev>` has review rows 1-4 and an approval by an agent that wrote none of them (V9-A15; README sections 3.1, 3.2), and such an ADR whose text outside its Change log and Review record changed has a new amendment row | `exit::records` |
 //! | 3 Counts | the README Counts line and index column equal the Status lines | `exit::records` |
 //! | 4 path:line drift | every `path:line` reference of `docs/adr` and `docs/plan` names the same line at HEAD as when it was written (no FIX and no UNFIXABLE line of the ADRLINE dry run) | `exit::drift` |
-//! | 5 short cites | every short cite of `docs/plan/13-execution-modes.md` (`H31:66`, `AR:37`, ...) names the same line at HEAD as at the commit its header names (MC-w16-8). Report only while `exit::cites::GATE` is false: `note:` lines, no effect on the result | `exit::cites` |
+//! | 5 short cites | every short cite of `docs/plan/13-execution-modes.md` (`H31:66`, `AR:37`, ...) names the same line at HEAD as at the commit its header names (MC-w16-8). It gates from M4-P5 (`exit::cites::GATE` true); with `GATE` false it is report only: `note:` lines, no effect on the result | `exit::cites` |
 //!
 //! **Part 1.** Every commit in `<rev>..HEAD` that touches an H-row crate must carry a git trailer
 //! `ADR: Hnn[, Hmm]` (ids H1-H37, written `H2` or `H02`) or `ADR: none (<reason>)`, or have a
@@ -99,7 +100,7 @@ pub(crate) struct Lint {
     pub(crate) summary: String,
 }
 
-/// The four parts over `<base>..HEAD` in `root`.
+/// The five parts over `<base>..HEAD` in `root`.
 pub(crate) fn full(root: &Path, base: &str) -> Result<Lint, String> {
     let t = trailers(root, base)?;
     let base_sha = base_commit(root, base)?;

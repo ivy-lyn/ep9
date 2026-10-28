@@ -22,8 +22,10 @@
 //!    that base already (verifier r1 F2: `golden:334` named another line there). A cite whose
 //!    file is missing at HEAD (a family name with no file) is NO FILE.
 //!
-//! The part is report only while [`GATE`] is false: its lines start with `note: ` and do not
-//! change the result. The orchestrator sets [`GATE`] after the doc 13 fix of MC-w16-2 is merged.
+//! The part gates from M4-P5 ([`GATE`] true; plan v9 rule 20, P5-ORCH-2: it guards the
+//! doc 13 pointers such as the FR0 row H31:90): a finding fails adr-lint and so m1-exit item 6.
+//! With [`GATE`] false the part is report only: its lines start with `note: `, an error is a
+//! note, and the result does not change.
 
 use super::{git, read};
 use std::collections::HashMap;
@@ -32,9 +34,9 @@ use std::path::Path;
 /// The doc whose short cites are checked.
 pub(crate) const DOC: &str = "docs/plan/13-execution-modes.md";
 
-/// False: report only (MC-w16-8, until the MC-w16-2 fix is merged). True: a finding (MOVED,
-/// NOT AT BASE LINE, CHANGED, BAD AT BASE, NO FILE, BASE) fails adr-lint.
-pub(crate) const GATE: bool = false;
+/// True (from M4-P5, after the MC-w16-2 doc 13 fix): a finding (MOVED, NOT AT BASE LINE,
+/// CHANGED, BAD AT BASE, NO FILE, BASE) fails adr-lint. False: report only (MC-w16-8).
+pub(crate) const GATE: bool = true;
 
 /// The result of the short-cite check.
 #[derive(Debug, Default)]
@@ -536,6 +538,8 @@ mod tests {
             "docs/adr/README.md",
             "a\nb\nC changed\n| Poll | one unit, edited |\n",
         );
+        // golden:2 ("g2") is on 2 lines at HEAD and not on line 2: CHANGED, no target (N1).
+        write(&root, "g.txt", "g1\ng1b\ng2\ng2\n");
         commit(&root, "move");
         let c = short_cites(&root).unwrap();
         assert_eq!(c.total, 6);
@@ -565,12 +569,22 @@ mod tests {
                     "SHORT CITE CHANGED doc13:6 AR:3: the line at {} is not in the file at HEAD: c",
                     &base[..7]
                 ),
+                format!(
+                    "SHORT CITE CHANGED doc13:6 golden:2: the line at {} is on 2 lines at HEAD: g2",
+                    &base[..7]
+                ),
             ]
         );
-        // Report only: the part passes and each line is a note.
-        assert_eq!(c.pass(), !GATE);
-        assert!(c.lines().iter().all(|l| l.starts_with("note: ") || GATE));
-        assert!(c.summary().contains("6 short cites, 4 findings"));
+        // The part gates (GATE): a moved cite fails it and prints as a finding, not a note.
+        assert!(!c.pass());
+        assert!(
+            c.lines()
+                .iter()
+                .any(|l| l.starts_with("SHORT CITE MOVED doc13:6 H31:2"))
+        );
+        assert!(!c.lines().iter().any(|l| l.starts_with("note: SHORT CITE")));
+        assert!(c.summary().contains("6 short cites, 5 findings"));
+        assert!(!c.summary().contains("report only"));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -709,7 +723,8 @@ mod tests {
     }
 
     /// While report only, an error of the check is a note, so adr-lint's other parts still run
-    /// (verifier r1 F6): here doc 13 is in the tree but no commit has it.
+    /// (verifier r1 F6); while it gates, the error stops adr-lint: here doc 13 is in the tree
+    /// but no commit has it.
     #[test]
     fn an_error_is_a_note_while_report_only() {
         let root = repo("err");
