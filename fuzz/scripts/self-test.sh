@@ -116,8 +116,9 @@ echo "fuzz self-test: record.sh ok (every field, measured CPU-h, no dirty field 
 
 # 2. The Fuzzilli path: triage ids and infra/fuzz/run.sh's record, with a stub FuzzilliCli.
 #    Two crash files with different program text and the same bug (only numbers differ in the
-#    panic text) are one group id; a third with another signal is a second id.
-crash_js() { # <file> <program text> <signal> <index>
+#    panic text) are one group id, and so is a third whose frames moved to other lines (an
+#    edit); a fourth with another signal is a second id.
+crash_js() { # <file> <program text> <signal> <index> [<line of the first frame>]
   cat >"$1" <<JS
 var s = "$2";
 crash(s);
@@ -129,7 +130,7 @@ crash(s);
 // stack backtrace:
 //    0: std::panicking::begin_panic
 //    1: ep9_vm::interp::run::h0123456789abcdef
-//              at /src/crates/ep9_vm/src/interp/mod.rs:100:5
+//              at /src/crates/ep9_vm/src/interp/mod.rs:${5:-100}:5
 //    2: ep9_vm::isolate::Isolate::eval::h0123456789abcdef
 //              at /src/crates/ep9_vm/src/isolate.rs:50:9
 //    3: ep9_cli::main::h0123456789abcdef
@@ -143,12 +144,13 @@ mkdir -p "$work/crashes"
 crash_js "$work/crashes/a.js" "$secret" 6 12
 crash_js "$work/crashes/b.js" "$secret-two" 6 977
 crash_js "$work/crashes/c.js" "$secret" 11 3
+crash_js "$work/crashes/d.js" "$secret-three" 6 5 140
 bash "$infra/triage.sh" "$work/crashes" >"$work/triage.txt" 2>&1 || fail "triage.sh exit $?"
 no_leak "triage.sh's output" "$work/triage.txt"
 bash "$infra/triage.sh" --ids "$work/crashes" >"$work/ids.txt" || fail "triage.sh --ids exit $?"
 [ "$(wc -l <"$work/ids.txt" | tr -d ' ')" = 2 ] || fail "triage.sh --ids: not 2 group ids for 2 bugs"
 grep -qvE '^[0-9a-f]{64}$' "$work/ids.txt" && fail "triage.sh --ids printed a line that is not an id"
-printf '6\tindex N out of range\tep9_vm::interp::run@mod.rs:100 < ep9_vm::isolate::Isolate::eval@isolate.rs:50 < ep9_cli::main@main.rs:10' \
+printf '6\tindex N out of range\tep9_vm::interp::run@mod.rs < ep9_vm::isolate::Isolate::eval@isolate.rs < ep9_cli::main@main.rs' \
   >"$work/key.txt"
 grep -qx "$(sha256 "$work/key.txt")" "$work/ids.txt" ||
   fail "triage.sh --ids: the SIGABRT group id is not the SHA-256 of its key line"
@@ -164,7 +166,7 @@ for a in "$@"; do case "$a" in --storagePath=*) st="${a#--storagePath=}" ;; esac
 mkdir -p "$st/crashes"
 cp "$STUB_CRASHES"/*.js "$st/crashes/"
 for c in 1.00 2.50; do
-  printf 'Uptime: 0d 0h 1m 0s\nCoverage: %s%%\nCrashes Found: 3\nTotal Execs: 100\n' "$c"
+  printf 'Uptime: 0d 0h 1m 0s\nCoverage: %s%%\nCrashes Found: 4\nTotal Execs: 100\n' "$c"
 done
 STUB
 printf '#!/bin/sh\nexit 0\n' >"$work/fz/ep9"

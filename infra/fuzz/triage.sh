@@ -11,10 +11,11 @@
 # the group id, the key and the file names. It never prints program text. Exit 0; 2 when no
 # file is found.
 #
-# The group id is the SHA-256 of the key line "<signal>\t<panic text>\t<frames>" (no newline):
-# the Fuzzilli crash id of the ep9-fuzz/v1 record (plan v10 V10-D24), so one bug is one id
-# across boxes and campaigns. --ids prints only the group ids, one per line, sorted (the input
-# of fuzz/scripts/record.sh --crash-id).
+# The group id is the SHA-256 of the key line "<signal>\t<panic text>\t<frames>" (no newline)
+# with the line numbers of the frames cut ("<symbol>@<file name>"): the Fuzzilli crash id of the
+# ep9-fuzz/v1 record (plan v10 V10-D24), so one bug is one id across boxes and campaigns, also
+# after an edit moves its lines. --ids prints only the group ids, one per line, sorted (the
+# input of fuzz/scripts/record.sh --crash-id).
 set -euo pipefail
 
 ids_only=no
@@ -91,12 +92,14 @@ sha256() {
   fi
 }
 
-# <id>\t<signal>\t<panic text>\t<frames>\t<file name>, one line per file.
+# <id>\t<signal>\t<panic text>\t<frames>\t<file name>, one line per file. The id is of the
+# key with no frame line numbers.
 lines() {
   local f k
   for f in "${files[@]}"; do
     k="$(key "$f")"
-    printf '%s\t%s\t%s\n' "$(printf '%s' "$k" | sha256)" "$k" "$(basename "$f")"
+    printf '%s\t%s\t%s\n' "$(printf '%s' "$k" | sed -E 's/(@[^ <]+):[0-9]+/\1/g' | sha256)" \
+      "$k" "$(basename "$f")"
   done
 }
 
