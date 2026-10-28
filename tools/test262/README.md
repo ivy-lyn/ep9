@@ -127,7 +127,7 @@ m1-exit` items 3 and 4 read it): `commit`, `dirty`, `commit_source` (`git` or `e
 (host, and the GitHub run and job) and `tree` (git ids of the paths a run depends on). A tree
 copy with no git takes `EP9_SOURCE_COMMIT` (40 hex digits) and `EP9_SOURCE_DIRTY` (`0`/`1`),
 or else the `.sbx-commit` file that `sbx push-git` writes (`commit_source` `sbx-commit`, not
-dirty). The runner reads these facts before the run and again at the end; when they differ it
+dirty). An `EP9_SOURCE_DIRTY` other than `0` makes the run dirty on every path. The runner reads these facts before the run and again at the end; when they differ it
 writes `"dirty": true` and `"source_changed_during_run": true`.
 
 `--feedback-threshold <n>` is the number of calls before a function gets its feedback vector

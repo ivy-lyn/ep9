@@ -26,7 +26,15 @@
 //!    most words with it, has no such cite; M4-P5 CX5-C7, verifier r1 F1 and r2 F1), was
 //!    written for the files at HEAD: it is checked at HEAD only, and a cite past the
 //!    end of its file at HEAD is BAD AT HEAD. Step 4 is for the other cites, so an edit that
-//!    keeps a stale number still gives MOVED.
+//!    keeps a stale number still gives MOVED. A range is decided per endpoint (CX6-5): its start
+//!    (its end) keeps step 4 when the paired base line has a cite of that name with the same
+//!    start (the same end).
+//!
+//! Known limits (M4-P5 CX6-3, CX6-4; month-5 carry): a cite added after `Cites at` is checked
+//! at HEAD only until the next `Cites at` bump, so a move in that window (about one phase) is
+//! not found; CI runs the HEAD check on the push that adds it. The word-overlap pairing is a
+//! heuristic: a reworded row that keeps a stale number can lose its pair to an inserted row, and
+//! its cite is then checked at HEAD only.
 //!
 //! The part gates from M4-P5 ([`GATE`] true; plan v9 rule 20, P5-ORCH-2: it guards the
 //! doc 13 pointers such as the FR0 row H31:90): a finding fails adr-lint and so m1-exit item 6.
@@ -328,12 +336,18 @@ pub(crate) fn short_cites(root: &Path) -> Result<Cites, String> {
                 continue;
             };
             let (b, h) = (show(&base, &file), show("HEAD", &file));
-            let carried = pair[i]
-                .is_some_and(|b| cites_in(base_v[b], &forms).contains(&(name.clone(), n, end)));
-            let new_line = !old_lines.contains(l) && !carried;
-            for k in std::iter::once(n).chain(end) {
+            // CX6-5: "carried" per endpoint. The start (the end) keeps the move check when the
+            // paired base line has a cite of this name with the same start (the same end).
+            let base_cites = pair[i].map_or_else(Vec::new, |b| cites_in(base_v[b], &forms));
+            let carried = |k: u64, is_end: bool| {
+                old_lines.contains(l)
+                    || base_cites.iter().any(|(bn, bs, be)| {
+                        *bn == name && if is_end { *be == Some(k) } else { *bs == k }
+                    })
+            };
+            for (k, is_end) in std::iter::once((n, false)).chain(end.map(|e| (e, true))) {
                 out.total += 1;
-                if new_line {
+                if !carried(k, is_end) {
                     let lines = h.as_ref().map_or(0, Vec::len);
                     if k == 0 || k as usize > lines {
                         out.findings.push(format!(
@@ -935,6 +949,52 @@ mod tests {
         let c = short_cites(&root).unwrap();
         assert_eq!(c.findings, Vec::<String>::new());
         assert_eq!(c.total, 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// M4-P5 CX6-5 (Codex round 2): "carried" is decided per endpoint of a range. A range with
+    /// one changed endpoint keeps the move check for the other one: AR:2-4 -> AR:2-5 after a
+    /// line insert above line 2 gives MOVED for the start; AR:2-4 -> AR:3-4 for the end.
+    #[test]
+    fn a_range_keeps_the_move_check_per_endpoint() {
+        let root = repo("range");
+        write(&root, "docs/adr/README.md", "a\nb\nc\nd\ne\n");
+        let body = "\nRule AR:2-4.\n";
+        write(
+            &root,
+            DOC,
+            &format!("{}{body}", HEADER.replace("{BASE}", "0000000")),
+        );
+        let base = commit(&root, "base");
+        let short = base[..7].to_string();
+        let head = |b: &str| format!("{}{b}", HEADER.replace("{BASE}", &short));
+        write(&root, DOC, &head(body));
+        commit(&root, "header");
+        write(&root, "docs/adr/README.md", "z\na\nb\nc\nd\ne\n");
+        commit(&root, "move");
+        let check = |text: &str, want: Vec<String>| {
+            write(&root, DOC, &head(text));
+            commit(&root, "edit");
+            let c = short_cites(&root).unwrap();
+            assert_eq!(c.findings, want, "{text}");
+            assert_eq!(c.total, 2, "{text}");
+        };
+        // The end fixed, the start stale: MOVED for the start.
+        check(
+            "\nRule AR:2-5.\n",
+            vec![format!(
+                "SHORT CITE MOVED doc13:6 AR:2 -> AR:3 (same text as at {short}): b"
+            )],
+        );
+        // The start fixed, the end stale: MOVED for the end.
+        check(
+            "\nRule AR:3-4.\n",
+            vec![format!(
+                "SHORT CITE MOVED doc13:6 AR:4 -> AR:5 (same text as at {short}): d"
+            )],
+        );
+        // Both fixed: none.
+        check("\nRule AR:3-5.\n", vec![]);
         std::fs::remove_dir_all(root).unwrap();
     }
 

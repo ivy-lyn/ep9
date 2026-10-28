@@ -27,7 +27,7 @@
 //! | 2 | exit2 JSON: both readings `pass` (a `fail` is FAIL; marginal or no gate verdict is OPEN), each of the two reading ids once (else OPEN); a gate host, not provisional; fresh: its commit is a full commit id (40 hex digits) and is HEAD, or an ancestor with no change in the five paths of item 1 since, and `"dirty": false` (run.mjs writes it, exit2.mjs copies it; `true` or no field is OPEN). On `x86_64-unknown-linux-gnu` without a gate host the cell reads OPEN "marginal (no gate host)" (V9-D31) | N/A by design |
 //! | 3 | exec JSON: no GC-stress, 0 infra, `language/` >= 85% of the whole `test/language` dir of this tree's test262 checkout; a fresh, named input (below) | step `test262 exec` green; passed = total (host exec JSON) - the `test/language/` lines of the Windows expectation file |
 //! | 4 | GC JSONs (one run, or every shard of one split, each once): `gc_stress` > 0, `timeout_ms` <= 60000, `feedback_threshold` 0, S1 on (`"generational": true`), verify cadence 1 (`"verify_cadence": 1`; the row prints it), 0 infra, the whole corpus, the skipped tests = the committed skip list; the same pass set: with `--exec`, no test that passes there fails under GC-stress; without it, 0 new failures against the committed expectation file. The row prints the skip-list size and FAILs if it grew since `--base` without a `docs/decisions-log.md` line that names each added path (V9-A19, V9-A24); each GC JSON a fresh, named input (below), all of one commit, the `--exec` JSON of that commit too | every job `test262 GC-stress (windows-x64, k/n)` once, its step `test262 exec, GC-stress ...` green, and the step name says `S1` (else OPEN) |
-//! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id adds nothing; a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), is not `"dirty": true` (else not counted, OPEN; no `dirty` field: counted, with a NOTE), and a counted Fuzzilli record is fresh in `crates`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` (V9-A30), a counted cargo-fuzz record in `crates/ep9_frontend`, `fuzz`, the root `Cargo.toml`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
+//! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id adds nothing; a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), says `"dirty": false` (`true`, no field or a non-bool: not counted, OPEN), and a counted Fuzzilli record is fresh in `crates`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml` (V9-A30), a counted cargo-fuzz record in `crates/ep9_frontend`, `fuzz`, the root `Cargo.toml`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
 //! | 6 | `adr-lint --base <rev>` passes (all five parts; part 5, the doc 13 short cites, gates from M4-P5) | repo-wide, as the host |
 //! | 7 | the Spike C verdict is GO (no condition); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
 //! | 8 | nesting log: the 7 `depth_tests::m1_*` tests, `caps_hold_end_to_end` and `every_m1_form_is_listed` ok, each in a cargo run that exited 0, no cargo failure line, every run with its start and exit-status lines; a fresh, named input: its `m1-exit source:` line (below) | step `cargo test --workspace --locked` of `build + test (windows-x64)` green |
@@ -56,9 +56,10 @@
 //! "<sha>", "dirty": true | false, "cpu_hours": <n>, "counted": true | false, "crashes": [{"id":
 //! "<hash>", "state": "open" | "fixed" | "duplicate" | "not-a-bug"}]}`. A record with `counted:
 //! false` only adds its open crashes. `dirty` (the fuzzed tree had uncommitted changes in a
-//! tracked file): `true` is not counted (OPEN); a record without the field still counts and the
-//! row gets a NOTE line, because its producers (fuzz.yml, infra/fuzz) are month-5 work and do
-//! not write it yet (CX5-C5). The record holds hashes only, never an input (rule 14).
+//! tracked file): only `false` is counted; `true`, no field or a non-bool is not counted (OPEN).
+//! Its producers (fuzz.yml, infra/fuzz) are month-5 work and do not write it yet, so item 5 stays
+//! OPEN until they do (CX6-1, replaces the CX5-C5 NOTE rule). The record holds hashes only, never
+//! an input (rule 14).
 //!
 //! The extra rows (no exit-code effect): the carried M0 item-5 cell (SP-Dispatch, read from the
 //! newest `*-m0-spike-review.md`), the stub markers (`m2`, `m3`, `m4`, plan v9 rule 4) and the
@@ -1603,7 +1604,6 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
     // counted campaign id, adds no hours and no crash.
     let mut files: BTreeSet<PathBuf> = BTreeSet::new();
     let mut campaigns: BTreeSet<String> = BTreeSet::new();
-    let mut notes: Vec<String> = Vec::new();
     for (p, j) in &c.fuzz {
         let canon = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
         if !files.insert(canon) {
@@ -1669,8 +1669,8 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
                     false
                 }
             };
-        // CX5-C5: `dirty: true` is not counted; a record with no `dirty` counts with a NOTE
-        // (the ep9-fuzz/v1 producers add the field in month 5).
+        // CX6-1 (replaces the CX5-C5 NOTE rule): only `dirty: false` is counted; `true`, no
+        // field or a non-bool gives OPEN (the ep9-fuzz/v1 producers add the field in month 5).
         let counted = counted
             && match j.get("dirty").and_then(Json::bool) {
                 Some(false) => true,
@@ -1683,11 +1683,12 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
                     false
                 }
                 None => {
-                    notes.push(format!(
-                        "NOTE: {} does not say whether its tree was dirty (the ep9-fuzz/v1 producers write `dirty` from month 5)",
+                    status = status.max(Status::Open);
+                    why.push(format!(
+                        "{}: not counted: it does not say whether its tree was dirty (no `dirty` bool)",
                         p.display()
                     ));
-                    true
+                    false
                 }
             };
         if counted {
@@ -1733,13 +1734,12 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
     repo_wide(cell(
         status,
         format!(
-            "{}; Fuzzilli {:.1} / {FUZZILLI_HOURS} CPU-h, cargo-fuzz {:.1} / {CARGO_FUZZ_HOURS} CPU-h, {} open unique crashes{}{}",
+            "{}; Fuzzilli {:.1} / {FUZZILLI_HOURS} CPU-h, cargo-fuzz {:.1} / {CARGO_FUZZ_HOURS} CPU-h, {} open unique crashes{}",
             runs.join(", "),
             hours.get("fuzzilli").copied().unwrap_or(0.0),
             hours.get("cargo-fuzz").copied().unwrap_or(0.0),
             open.len(),
-            because(&why),
-            because(&notes)
+            because(&why)
         ),
     ))
 }
@@ -3533,9 +3533,9 @@ mod tests {
     }
 
     /// CX5-C5 (Codex round 1): a measured tree with uncommitted changes proves nothing. Item 2:
-    /// `dirty: true` or no `dirty` (run.mjs and exit2.mjs write it) gives OPEN. Item 5: a
-    /// record with `dirty: true` is not counted; one with no `dirty` (the ep9-fuzz/v1
-    /// producers add it in month 5) counts with a NOTE.
+    /// `dirty: true` or no `dirty` (run.mjs and exit2.mjs write it) gives OPEN. Item 5 (CX6-1,
+    /// Codex round 2): only a record with `dirty: false` is counted; `dirty: true`, no `dirty`
+    /// or a `dirty` that is not a JSON bool gives OPEN and adds no hours.
     #[test]
     fn items_2_and_5_read_the_dirty_flag() {
         let root = fake_repo("dirty");
@@ -3584,16 +3584,26 @@ mod tests {
             c.evidence
         );
         assert!(c.evidence.contains("Fuzzilli 0.0 / 100"), "{}", c.evidence);
-        fuzz(&mut o, f.replace(r#""dirty":false,"#, ""));
-        let c = &run(&o).unwrap().cells[4].0;
-        assert_eq!(c.status, Status::Pass, "{c:?}");
-        assert!(
-            c.evidence.contains("NOTE: ")
-                && c.evidence
-                    .contains("f1.json does not say whether its tree was dirty"),
-            "{}",
-            c.evidence
-        );
+        for bad in [
+            f.replace(r#""dirty":false,"#, ""),
+            f.replace(r#""dirty":false"#, r#""dirty":"false""#),
+            f.replace(r#""dirty":false"#, r#""dirty":0"#),
+        ] {
+            fuzz(&mut o, bad);
+            let c = &run(&o).unwrap().cells[4].0;
+            assert_eq!(c.status, Status::Open, "{c:?}");
+            assert!(
+                c.evidence.contains(
+                    "f1.json: not counted: it does not say whether its tree was dirty (no `dirty` bool)"
+                ),
+                "{}",
+                c.evidence
+            );
+            assert!(c.evidence.contains("Fuzzilli 0.0 / 100"), "{}", c.evidence);
+            assert!(!c.evidence.contains("NOTE: "), "{}", c.evidence);
+        }
+        fuzz(&mut o, f.clone());
+        assert_eq!(run(&o).unwrap().cells[4].0.status, Status::Pass);
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -21,7 +21,10 @@
 //!   (`0` or `1`) name them; the caller that copied the tree sets both. With no git tree and no
 //!   `EP9_SOURCE_COMMIT`: `"sbx-commit"` when `<root>/.sbx-commit` holds one line of 40 hex
 //!   digits (CX5-C6; `infra/x86-sandbox/sbx push-git` writes it after it extracts `git archive`
-//!   of that commit, committed files only, so `"dirty": false`).
+//!   of that commit, committed files only, so `"dirty": false`). Such a tree is taken as clean
+//!   with no file check; the month-5 provenance work adds one.
+//! - An explicit `EP9_SOURCE_DIRTY` other than `0` makes `"dirty": true` on every path (git, env,
+//!   `.sbx-commit`), also with no `EP9_SOURCE_COMMIT` (CX6-2). `0` does not hide a dirty git tree.
 //! - `"made_by"`: `host:<hostname>`, plus ` gh-run:<GITHUB_RUN_ID>/<GITHUB_JOB>` in a GitHub job.
 //! - `"tree"`: `{"<path>": "<git tree or blob id at HEAD>", ...}` for [`TREE_PATHS`] (from git
 //!   only). A pull_request CI job runs on GitHub's merge commit, which the local repository does
@@ -81,10 +84,17 @@ fn full_sha(s: &str) -> bool {
     s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// `EP9_SOURCE_DIRTY`: unset is None, `0` is `false`, any other value is `true` (CX6-2).
+fn dirty_env(env: &dyn Fn(&str) -> Option<String>) -> Option<bool> {
+    env("EP9_SOURCE_DIRTY").map(|d| d.trim() != "0")
+}
+
 /// The facts of the tree at `root`; `env` reads an environment variable (a parameter, so the
 /// tests do not touch the process environment).
 pub fn source(root: &Path, env: &dyn Fn(&str) -> Option<String>) -> Source {
     let made_by = made_by(env);
+    // An explicit dirty declaration wins on every path (CX6-2).
+    let declared_dirty = dirty_env(env) == Some(true);
     // A work tree of its own: `--show-toplevel` must be `root`, so a copy of the tree inside
     // another repository does not take that repository's commit.
     let top = git(root, &["rev-parse", "--show-toplevel"]);
@@ -94,8 +104,11 @@ pub fn source(root: &Path, env: &dyn Fn(&str) -> Option<String>) -> Source {
     });
     if same {
         let commit = git(root, &["rev-parse", "--verify", "HEAD^{commit}"]).filter(|c| full_sha(c));
-        let dirty =
-            git(root, &["status", "--porcelain", "--untracked-files=no"]).map(|s| !s.is_empty());
+        let dirty = if declared_dirty {
+            Some(true)
+        } else {
+            git(root, &["status", "--porcelain", "--untracked-files=no"]).map(|s| !s.is_empty())
+        };
         let tree = if commit.is_some() {
             TREE_PATHS
                 .iter()
@@ -116,10 +129,15 @@ pub fn source(root: &Path, env: &dyn Fn(&str) -> Option<String>) -> Source {
     if env("EP9_SOURCE_COMMIT").is_none()
         && let Ok(text) = std::fs::read_to_string(root.join(SBX_COMMIT))
     {
-        // One commit's committed files (`git archive`): never dirty. A bad line names nothing.
+        // One commit's committed files (`git archive`): not dirty unless the caller says so. A
+        // bad line names nothing.
         let commit = Some(text.trim().to_ascii_lowercase()).filter(|c| full_sha(c));
         return Source {
-            dirty: commit.as_ref().map(|_| false),
+            dirty: if declared_dirty {
+                Some(true)
+            } else {
+                commit.as_ref().map(|_| false)
+            },
             commit,
             from: "sbx-commit",
             made_by,
@@ -130,14 +148,9 @@ pub fn source(root: &Path, env: &dyn Fn(&str) -> Option<String>) -> Source {
     let commit = env("EP9_SOURCE_COMMIT")
         .map(|c| c.trim().to_ascii_lowercase())
         .filter(|c| full_sha(c));
-    let dirty = match env("EP9_SOURCE_DIRTY").as_deref().map(str::trim) {
-        Some("0") => Some(false),
-        Some("1") => Some(true),
-        _ => None,
-    };
     Source {
         commit,
-        dirty,
+        dirty: dirty_env(env),
         from: "env",
         made_by,
         tree: Vec::new(),
@@ -394,6 +407,52 @@ mod tests {
             (Some(a), Some(true), true)
         );
         std::fs::remove_dir_all(d).unwrap();
+        std::fs::remove_dir_all(copy).unwrap();
+    }
+
+    /// CX6-2 (Codex round 2): an explicit `EP9_SOURCE_DIRTY` other than `0` marks the run dirty
+    /// on every path: git, env and `.sbx-commit`, also with no `EP9_SOURCE_COMMIT`. `0` does not
+    /// hide a dirty git tree.
+    #[test]
+    fn an_explicit_dirty_env_is_dirty_on_every_path() {
+        let dirty =
+            |v: &'static str| move |k: &str| (k == "EP9_SOURCE_DIRTY").then(|| v.to_string());
+        // git: a clean tree.
+        let d = tmp("dirty-env-git");
+        std::fs::write(d.join("a.txt"), "a\n").unwrap();
+        git_in(&d, &["init", "-q"]);
+        git_in(&d, &["add", "-A"]);
+        git_in(&d, &["commit", "-q", "-m", "a"]);
+        for (v, want) in [("1", true), ("yes", true), ("0", false)] {
+            let s = source(&d, &dirty(v));
+            assert_eq!((s.from, s.dirty), ("git", Some(want)), "{v}: {s:?}");
+        }
+        std::fs::write(d.join("a.txt"), "changed\n").unwrap();
+        assert_eq!(source(&d, &dirty("0")).dirty, Some(true));
+        // .sbx-commit, no EP9_SOURCE_COMMIT.
+        let sbx = tmp("dirty-env-sbx");
+        let sha = "89abcdef0123456789abcdef0123456789abcdef";
+        std::fs::write(sbx.join(".sbx-commit"), format!("{sha}\n")).unwrap();
+        for (v, want) in [("1", true), ("2", true), ("0", false)] {
+            let s = source(&sbx, &dirty(v));
+            assert_eq!(
+                (s.commit.as_deref(), s.from, s.dirty),
+                (Some(sha), "sbx-commit", Some(want)),
+                "{v}: {s:?}"
+            );
+        }
+        // env: no git tree, no .sbx-commit, no EP9_SOURCE_COMMIT.
+        let copy = tmp("dirty-env-copy");
+        for (v, want) in [("1", Some(true)), ("true", Some(true)), ("0", Some(false))] {
+            let s = source(&copy, &dirty(v));
+            assert_eq!(
+                (s.commit.as_deref(), s.from, s.dirty),
+                (None, "env", want),
+                "{v}"
+            );
+        }
+        std::fs::remove_dir_all(d).unwrap();
+        std::fs::remove_dir_all(sbx).unwrap();
         std::fs::remove_dir_all(copy).unwrap();
     }
 
