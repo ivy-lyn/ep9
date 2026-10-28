@@ -166,7 +166,7 @@ pin	H23-limits-and-failure-policy.md	crates/ep9_heap/src/heap.rs:111	crates/ep9_
 # changed in place (OBJECT_LAYOUT 5 added +32 to the ARRAY row; the IC hit path lost the epoch
 # argument), and one dated record row that keeps the native.rs lines of its commit.
 pin	H18-elements-kinds.md	crates/ep9_vm/src/object.rs:21	crates/ep9_vm/src/object.rs	^//! \| ARRAY \| 18 \|	0
-pin	H31-fuse-registry.md	crates/ep9_vm/src/interp/ops.rs:926	crates/ep9_vm/src/interp/ops.rs	match ic::load\(st\.rt\(\), st\.info\(\), object::proto_of\(home\), s\.0, name\.0\) \{	0
+pin	H31-fuse-registry.md	crates/ep9_vm/src/interp/ops.rs:952	crates/ep9_vm/src/interp/ops.rs	match ic::load\(st\.rt\(\), st\.info\(\), object::proto_of\(home\), s\.0, name\.0\) \{	0
 history	H13-snapshot-stable-indices.md	crates/ep9_vm/src/native.rs:285-295	| 4 Data (M4-P3 amendment: the 2026-10-27 RuntimeTable row clarify, K-1)	f0a5557	^    pub const RT_POLL\: usize = offset_of\!\(RuntimeTable, poll\)\;$
 # H23:34: the new number 205 was an older token of H23 with another line (375d953), so the
 # drift map would read it from there.
@@ -176,3 +176,25 @@ pin	H23-limits-and-failure-policy.md	crates/ep9_vm/src/isolate.rs:205	crates/ep9
 history	H16-ics-and-feedback.md	crates/ep9_vm/src/profile.rs:102-104	| 3 Verifier (M4-P2 amendment: the 2026-10-27 Fact meanings fill row, P2-ORCH-12)	06f9ee7	^//!   - \*\*An int32 `\+` or `-` that overflows\*\*
 history	H20-builtin-abi.md	crates/ep9_vm/src/versions.rs:26	| 1 Reviewer (M4-P2 amendment: the 2026-10-27 clarify row, H20-Q1, ADR-A0)	4fee08e	^pub const FRAME_VERSION\: u32 = 2\;$
 history	H22-isolates-and-realms.md	crates/ep9_vm/src/isolate.rs:513-517	| 1 Reviewer (M4-P2 amendment: the 2026-10-27 H22-Q11 fill row, ADR-A0)	4fee08e	^    /// It runs ABI code, so it is an H20 core entry point
+# M5-P1 integration fixer (ADRLINE of the M5-P1 merge head): dated record rows keep the lines of
+# the commit they name (ELEM1, PROFILE5, REPRL2 and SPIKEC-5 moved those lines); the fixer may not
+# edit a Result cell written by someone else.
+history	H17-object-layout.md	spikes/spike-c/src/emit_a64/mod.rs:731	| 3 Verifier (M5-P0 amendment: the 2026-10-28 rewrite (version) row, OBJECT_LAYOUT 4 -> 5)	036a0ef	Op\:\:LoadElement \| Op\:\:StoreElement \=\> \{
+history	H19-strings.md	crates/ep9_vm/src/property.rs:1614	| 4 Data (M4-P4: the 2026-10-27 ADRLINE clarify row (fixer A, part B fixer B))	e1857f3	if is_symbol_key\(k\) \&\& \!crate\:\:symbol\:\:is_private\(k\) \{
+history	H19-strings.md	crates/ep9_vm/src/property.rs:1614	| 4 Data (M4-P4: the 2026-10-27 fixer C clarify row, D2-2 re-kind and ADRLINE)	e1857f3	if is_symbol_key\(k\) \&\& \!crate\:\:symbol\:\:is_private\(k\) \{
+history	H19-strings.md	`:1599`	| 4 Data (M4-P4: the 2026-10-27 fixer C clarify row, D2-2 re-kind and ADRLINE)	e1857f3	^        push\(k\)\;$	crates/ep9_vm/src/property.rs
+history	H20-builtin-abi.md	docs/adr/H20-builtin-abi.md:368	| 2 Codex (M5-P0 amendment: the 2026-10-28 part-2 fill row (API addition), ExecOptions	036a0ef	^\| 1 Reviewer \(M5\-P0 amendment\: the 2026\-10\-28 part\-2 fill row \(API addition\)\, ExecOptions\,
+history	H20-builtin-abi.md	crates/ep9_vm/src/exec.rs:159-165	| 2 Codex (M5-P0 amendment: the 2026-10-28 part-2 fill row (API addition), ExecOptions	036a0ef	^pub struct BuildInfo \{$
+history	H20-builtin-abi.md	crates/ep9_vm/src/exec.rs:159-165	| 3 Verifier (M5-P0 amendment: the 2026-10-28 part-2 fill row (API addition), ExecOptions	036a0ef	^pub struct BuildInfo \{$
+# SPIKEC-5 made spikes/spike-c/src/deopt_meta.rs a thin builder of the H29 byte form; H29-Q2 and
+# doc 13 section 3.6 cite the SPIKEC-4 form it replaced, as at the M5-P1 base (history).
+history	H29-deopt-contract.md	spikes/spike-c/src/deopt_meta.rs:13-18	Spike C covers them in its own form	6e60ebd	^\/\/\!  value   \:\= u8 tag
+history	H29-deopt-contract.md	spikes/spike-c/src/deopt_meta.rs:294-306	Spike C covers them in its own form	6e60ebd	let repr \= match tag \& 3 \{
+history	13-execution-modes.md	spikes/spike-c/src/deopt_meta.rs:13-18	SPIKEC-4 built its own form	6e60ebd	^\/\/\!  value   \:\= u8 tag
+history	13-execution-modes.md	spikes/spike-c/src/deopt_meta.rs:294-306	SPIKEC-4 built its own form	6e60ebd	let repr \= match tag \& 3 \{
+# H16 F-R7 paragraph: the count-units block of the exporter doc keeps lines 86-100; PROFILE5 rewrote
+# its last 3 lines in place (the jittered window).
+pin	H16-ics-and-feedback.md	crates/ep9_vm/src/facts_export.rs:86-100	crates/ep9_vm/src/facts_export.rs	^\/\/\! \- \*\*Count units \(F\-R7\, MC\-w13\-2\)\.\*\*	0	longer keeps a site out of every window \(MC\-w13\-17\;	0
+# H31:79: the new number exotic.rs:210 was an older H31 token with another line (e902a53), so the
+# drift map would read it from there.
+pin	H31-fuse-registry.md	crates/ep9_vm/src/exotic.rs:210	crates/ep9_vm/src/exotic.rs	^pub\(crate\) fn own_attrs\(rt\: \&Runtime\, o\: u64\, key\: u64\, how\: Probe\)	0
