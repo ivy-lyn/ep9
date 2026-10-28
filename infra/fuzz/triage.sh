@@ -4,13 +4,24 @@
 # alone when there is no panic text (a wild store, a trap). SIGKILL gets the tag "killed,
 # probably out of memory": Fuzzilli counts its own timeout kill as a timeout, not a crash.
 #
-#   infra/fuzz/triage.sh [<crash dir or .js file>...]   default /work/fuzz-out/storage/crashes
+#   infra/fuzz/triage.sh [--ids] [<crash dir or .js file>...]   default /work/fuzz-out/storage/crashes
 #
 # Reads the "CRASH INFO" footer that Fuzzilli writes at the end of each crash .js file
 # (TERMSIG, STDERR). Prints one block per group, the largest first: the file count, the signal,
-# the key and the file names. It never prints program text. Exit 0; 2 when no file is found.
+# the group id, the key and the file names. It never prints program text. Exit 0; 2 when no
+# file is found.
+#
+# The group id is the SHA-256 of the key line "<signal>\t<panic text>\t<frames>" (no newline):
+# the Fuzzilli crash id of the ep9-fuzz/v1 record (plan v10 V10-D24), so one bug is one id
+# across boxes and campaigns. --ids prints only the group ids, one per line, sorted (the input
+# of fuzz/scripts/record.sh --crash-id).
 set -euo pipefail
 
+ids_only=no
+if [ "${1:-}" = --ids ]; then
+  ids_only=yes
+  shift
+fi
 [ "$#" -gt 0 ] || set -- /work/fuzz-out/storage/crashes
 files=()
 for a in "$@"; do
@@ -72,19 +83,40 @@ key() {
   ' "$1"
 }
 
-for f in "${files[@]}"; do
-  printf '%s\t%s\n' "$(key "$f")" "$(basename "$f")"
-done | sort | awk -F '\t' '
+sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  else
+    shasum -a 256 | cut -d' ' -f1
+  fi
+}
+
+# <id>\t<signal>\t<panic text>\t<frames>\t<file name>, one line per file.
+lines() {
+  local f k
+  for f in "${files[@]}"; do
+    k="$(key "$f")"
+    printf '%s\t%s\t%s\n' "$(printf '%s' "$k" | sha256)" "$k" "$(basename "$f")"
+  done
+}
+
+if [ "$ids_only" = yes ]; then
+  lines | cut -f1 | LC_ALL=C sort -u
+  exit 0
+fi
+
+lines | LC_ALL=C sort | awk -F '\t' '
   function signame(s) {
     if (s == 4) return "SIGILL"; if (s == 5) return "SIGTRAP"; if (s == 6) return "SIGABRT"
     if (s == 7) return "SIGBUS"; if (s == 9) return "SIGKILL"; if (s == 11) return "SIGSEGV"
     return "signal " s
   }
   {
-    k = $1 FS $2 FS $3
+    k = $2 FS $3 FS $4
     if (!(k in count)) { order[++groups] = k }
     count[k]++
-    names[k] = names[k] "\n    " $4
+    id[k] = $1
+    names[k] = names[k] "\n    " $5
   }
   END {
     # The largest group first (a selection sort; groups are few).
@@ -95,8 +127,8 @@ done | sort | awk -F '\t' '
       tag = signame(p[1])
       if (p[1] == 9) tag = tag " (killed, probably out of memory)"
       else if (p[2] == "") tag = tag " (no panic text: replay under gdb)"
-      printf "%d file(s)  %s\n  panic:  %s\n  frames: %s\n  files:%s\n\n", count[k], tag, \
-        (p[2] == "" ? "-" : p[2]), (p[3] == "" ? "-" : p[3]), names[k]
+      printf "%d file(s)  %s\n  id:     %s\n  panic:  %s\n  frames: %s\n  files:%s\n\n", count[k], \
+        tag, id[k], (p[2] == "" ? "-" : p[2]), (p[3] == "" ? "-" : p[3]), names[k]
     }
     printf "triage.sh: %d file(s), %d group(s)\n", NR, groups
   }'
