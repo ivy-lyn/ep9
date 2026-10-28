@@ -416,6 +416,183 @@ fn the_json_names_the_runner_commit_and_test262_head() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// `git -C <dir> <args>` with a test identity and no signing; None when git fails.
+fn git_t(dir: &Path, args: &[&str]) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@test.invalid",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// One `exec` run with the test seam of the source reads (tools/test262/src/exec.rs,
+/// `seam_source_root`): the source facts of the tree `src`, and `during` = (from, to) copied
+/// over during the run. The JSON is written to `json`.
+fn exec_seam(
+    root: &Path,
+    expect: &Path,
+    json: &Path,
+    src: &Path,
+    during: Option<(&Path, &Path)>,
+) -> String {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ep9-test262"));
+    cmd.arg("exec")
+        .arg("--test262")
+        .arg(root)
+        .arg("--expect")
+        .arg(expect)
+        .arg("--json")
+        .arg(json)
+        .args(["--threads", "2"])
+        .env_remove("EP9_TEST262_FAULT")
+        // An explicit dirty flag would win over git (CX6-2): this test reads git only.
+        .env_remove("EP9_SOURCE_DIRTY")
+        .env_remove("EP9_SOURCE_COMMIT")
+        .env("EP9_TEST262_SOURCE_ROOT", src);
+    match during {
+        Some((from, to)) => cmd
+            .env("EP9_TEST262_DURING_RUN_FROM", from)
+            .env("EP9_TEST262_DURING_RUN_TO", to),
+        None => cmd
+            .env_remove("EP9_TEST262_DURING_RUN_FROM")
+            .env_remove("EP9_TEST262_DURING_RUN_TO"),
+    };
+    let out = cmd.output().unwrap();
+    let text =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{text}");
+    std::fs::read_to_string(json).unwrap()
+}
+
+/// F3 (plan v10 section 3.7; in:189 item 4, audit F6): the CX5-C1 wiring of the two source reads
+/// (before the run and when the summary is written, tools/test262/src/exec.rs). A tracked file
+/// of the ep9 tree that changes between them gives `"dirty": true` and
+/// `"source_changed_during_run": true` (provenance::settle); with no change the JSON names the
+/// clean tree. The same seam covers the end-of-run read of the test262 checkout (gates5 high 2):
+/// an edited test makes `"test262_dirty": true`, a HEAD that moves gives another
+/// `"test262_head_end"`. Every run of the seam writes `"test_seam": true`.
+#[test]
+fn a_change_during_the_run_makes_the_json_dirty() {
+    let root = tree("during");
+    let work = std::env::temp_dir().join(format!("ep9-test262-during-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    let expect = work.join("expect.txt");
+    write(&work, "expect.txt", &(FAILING.join("\n") + "\n"));
+    let json = work.join("summary.json");
+    // A small ep9 tree: one tracked file under `crates`.
+    let src = work.join("src");
+    write(&src, "crates/x.rs", "// x\n");
+    write(&src, "Cargo.toml", "[workspace]\n");
+    if git_t(&src, &["init", "-q"]).is_none() {
+        // No git here: nothing to read.
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(work).unwrap();
+        return;
+    }
+    git_t(&src, &["add", "-A"]).unwrap();
+    git_t(&src, &["commit", "-q", "-m", "src"]).unwrap();
+    let head = git_t(&src, &["rev-parse", "HEAD"]).unwrap();
+    let crates = git_t(&src, &["rev-parse", "HEAD:crates"]).unwrap();
+    write(&work, "edited.rs", "// x, edited during the run\n");
+    let edited = work.join("edited.rs");
+    let tracked = src.join("crates/x.rs");
+    // No change: the clean tree, and the seam named.
+    let summary = exec_seam(&root, &expect, &json, &src, None);
+    assert!(
+        summary.contains(&format!(
+            ",\"commit\":\"{head}\",\"dirty\":false,\"commit_source\":\"git\",\"made_by\":\"host:"
+        )),
+        "{summary}"
+    );
+    assert!(
+        summary.contains(&format!("\"tree\":{{\"crates\":\"{crates}\",")),
+        "{summary}"
+    );
+    assert!(!summary.contains("source_changed_during_run"), "{summary}");
+    assert!(summary.contains(",\"test_seam\":true"), "{summary}");
+    // A tracked file changes between the two reads.
+    let summary = exec_seam(&root, &expect, &json, &src, Some((&edited, &tracked)));
+    assert!(
+        summary.contains(&format!(
+            ",\"commit\":\"{head}\",\"dirty\":true,\"commit_source\":\"git\",\"made_by\":\"host:"
+        )),
+        "{summary}"
+    );
+    assert!(
+        summary.contains(",\"source_changed_during_run\":true"),
+        "{summary}"
+    );
+    assert!(summary.contains(",\"test_seam\":true"), "{summary}");
+    // The edit stays: both reads see it, so the run is dirty, but nothing changed during it.
+    let summary = exec_seam(&root, &expect, &json, &src, None);
+    assert!(summary.contains(",\"dirty\":true,"), "{summary}");
+    assert!(!summary.contains("source_changed_during_run"), "{summary}");
+    git_t(&src, &["checkout", "-q", "--", "."]).unwrap();
+    // The test262 checkout read at the end of the run (gates5 high 2; M5-P0 verifier F2).
+    if git_t(&root, &["init", "-q"]).is_some() {
+        git_t(&root, &["add", "-A"]).unwrap();
+        git_t(&root, &["commit", "-q", "-m", "t262"]).unwrap();
+        let t1 = git_t(&root, &["rev-parse", "HEAD"]).unwrap();
+        git_t(&root, &["commit", "-q", "--allow-empty", "-m", "t262 b"]).unwrap();
+        let t2 = git_t(&root, &["rev-parse", "HEAD"]).unwrap();
+        git_t(&root, &["checkout", "-q", "--detach", &t1]).unwrap();
+        let summary = exec_seam(&root, &expect, &json, &src, None);
+        assert!(
+            summary.contains(&format!(
+                ",\"test262_head\":\"{t1}\",\"test262_head_end\":\"{t1}\",\"test262_dirty\":false"
+            )),
+            "{t1}: {summary}"
+        );
+        // A test edited during the run: only the end read sees it.
+        let pass = std::fs::read_to_string(root.join("test/language/pass.js")).unwrap();
+        write(&work, "pass.js", &format!("{pass}// edited\n"));
+        let summary = exec_seam(
+            &root,
+            &expect,
+            &json,
+            &src,
+            Some((&work.join("pass.js"), &root.join("test/language/pass.js"))),
+        );
+        assert!(
+            summary.contains(&format!(
+                ",\"test262_head\":\"{t1}\",\"test262_head_end\":\"{t1}\",\"test262_dirty\":true"
+            )),
+            "{t1}: {summary}"
+        );
+        git_t(&root, &["checkout", "-q", "--", "."]).unwrap();
+        // The checkout HEAD moves during the run (a detached HEAD file now names t2; t2 has
+        // the same tree, so the checkout stays clean).
+        write(&work, "HEAD", &format!("{t2}\n"));
+        let summary = exec_seam(
+            &root,
+            &expect,
+            &json,
+            &src,
+            Some((&work.join("HEAD"), &root.join(".git/HEAD"))),
+        );
+        assert!(
+            summary.contains(&format!(
+                ",\"test262_head\":\"{t1}\",\"test262_head_end\":\"{t2}\",\"test262_dirty\":false"
+            )),
+            "{t1} {t2}: {summary}"
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(work).unwrap();
+}
+
 /// The JSON names the skipped tests, not only their count: `cargo xtask m0-exit` item 6 checks
 /// that a GC-stress run skipped exactly the committed skip list (M2-P2-RF2-I8).
 #[test]

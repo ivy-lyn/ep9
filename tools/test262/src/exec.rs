@@ -1416,14 +1416,58 @@ fn header(triple: &str) -> String {
     )
 }
 
+/// Test seam of the two source reads (only for tools/test262/tests; plan v10 section 3.7 F3,
+/// the CX5-C1 wiring): `EP9_TEST262_SOURCE_ROOT=<dir>` reads the source facts of the ep9 tree
+/// at `<dir>` (a small git tree of the test) in place of this repository, and
+/// `EP9_TEST262_DURING_RUN_FROM=<file>` with `EP9_TEST262_DURING_RUN_TO=<file>` copies the
+/// first file over the second right after the reads before the run (a tracked file of that
+/// tree, or of the test262 checkout, changes during the run). A run that uses either writes
+/// `"test_seam": true`, and `cargo xtask m1-exit` gives such an input OPEN.
+fn seam_source_root() -> PathBuf {
+    std::env::var_os("EP9_TEST262_SOURCE_ROOT")
+        .filter(|r| !r.is_empty())
+        .map_or_else(crate::repo_root, PathBuf::from)
+}
+
+/// True when the run uses the test seam ([`seam_source_root`]).
+fn seam_used() -> bool {
+    ["EP9_TEST262_SOURCE_ROOT", "EP9_TEST262_DURING_RUN_FROM"]
+        .iter()
+        .any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()))
+}
+
+/// The change of the test seam during the run ([`seam_source_root`]); an error ends the run
+/// (exit 2), so a test cannot pass without the change.
+fn seam_during_run() -> Result<(), String> {
+    let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty());
+    match (
+        var("EP9_TEST262_DURING_RUN_FROM"),
+        var("EP9_TEST262_DURING_RUN_TO"),
+    ) {
+        (None, None) => Ok(()),
+        (Some(from), Some(to)) => std::fs::copy(&from, &to).map(|_| ()).map_err(|e| {
+            format!(
+                "test seam: cannot copy {} to {}: {e}",
+                Path::new(&from).display(),
+                Path::new(&to).display()
+            )
+        }),
+        _ => Err("test seam: set both EP9_TEST262_DURING_RUN_FROM and _TO".to_string()),
+    }
+}
+
 /// Run the `exec` command. Exit code: 0 = matches the expectations, 1 = differs, 2 = error.
 pub fn run(opts: &Options) -> ExitCode {
     let started = Instant::now();
     // The source facts before any test runs (CX5-C1): the summary compares them with a second
     // read when it is written.
-    let source = provenance::source(&crate::repo_root(), &provenance::process_env);
+    let source = provenance::source(&seam_source_root(), &provenance::process_env);
     // The test262 checkout before the run too (gates5 high 2).
     let t262 = provenance::test262_checkout(&opts.test262);
+    if let Err(e) = seam_during_run() {
+        eprintln!("ep9-test262: {e}");
+        return ExitCode::from(2);
+    }
     if let Err(e) = check_builtins(isolate_config(0, opts.feedback_threshold)) {
         eprintln!("ep9-test262: {e}");
         return ExitCode::from(2);
@@ -1768,8 +1812,11 @@ fn summary_json(
     json::string(&mut out, &opts.test262.display().to_string());
     // Where the run came from (`cargo xtask m1-exit` items 3 and 4: freshness and provenance):
     // the facts read before the run, dirty when a second read now differs (CX5-C1).
-    let now = provenance::source(&crate::repo_root(), &provenance::process_env);
+    let now = provenance::source(&seam_source_root(), &provenance::process_env);
     provenance::write_fields(&mut out, &provenance::settle(source, &now));
+    if seam_used() {
+        out.push_str(",\"test_seam\":true");
+    }
     // The runner's build commit and dirty flag, and the test262 checkout before the run and
     // now (C2, gates5 high 1 and 2, item 8; m1-exit X4).
     provenance::write_runner_fields(

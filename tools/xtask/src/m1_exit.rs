@@ -27,7 +27,7 @@
 //! | 2 | exit2 JSON: both readings `pass` (a `fail` is FAIL; marginal or no gate verdict is OPEN), each of the two reading ids once (else OPEN); a gate host, not provisional; fresh: its commit is a full commit id (40 hex digits) and is HEAD, or an ancestor with no change in the five paths of item 1 and the two regress fork paths since, and `"dirty": false` (run.mjs writes it, exit2.mjs copies it; `true` or no field is OPEN). On `x86_64-unknown-linux-gnu` without a gate host the cell reads OPEN "marginal (no gate host)" (V9-D31) | N/A by design |
 //! | 3 | exec JSON: no GC-stress, 0 infra, `language/` >= 85% of the whole `test/language` dir of this tree's test262 checkout; a fresh, named input (below) | step `test262 exec` green; passed = total (host exec JSON) - the `test/language/` lines of the Windows expectation file |
 //! | 4 | GC JSONs (one run, or every shard of one split, each once): `gc_stress` > 0, `timeout_ms` <= 60000, `feedback_threshold` 0, S1 on (`"generational": true`), verify cadence 1 (`"verify_cadence": 1`; the row prints it), 0 infra, the whole corpus, the skipped tests = the committed skip list; the same pass set: with `--exec`, no test that passes there fails under GC-stress; without it, 0 new failures against the committed expectation file. The row prints the skip-list size and FAILs if it grew since `--base` without a `docs/decisions-log.md` line that names each added path (V9-A19, V9-A24); each GC JSON a fresh, named input (below), all of one commit, the `--exec` JSON of that commit too | every job `test262 GC-stress (windows-x64, k/n)` once, its step `test262 exec, GC-stress ...` green, and the step name says `S1` (else OPEN) |
-//! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id adds nothing; a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), says `"dirty": false` (`true`, no field or a non-bool: not counted, OPEN), and a counted Fuzzilli record is fresh in `crates`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `third_party/regress.commit`, `third_party/patches/regress` (V9-A30, D41), a counted cargo-fuzz record in `crates/ep9_frontend`, `crates/ep9_bytecode`, `fuzz`, the root `Cargo.toml`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
+//! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id that already counted adds nothing, while a record of the id that is not counted does not block a later one (F4); a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), says `"dirty": false` (`true`, no field or a non-bool: not counted, OPEN), and a counted Fuzzilli record is fresh in `crates`, the root `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `third_party/regress.commit`, `third_party/patches/regress` (V9-A30, D41), a counted cargo-fuzz record in `crates/ep9_frontend`, `crates/ep9_bytecode`, `fuzz`, the root `Cargo.toml`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
 //! | 6 | `adr-lint --base <rev>` passes (all five parts; part 5, the doc 13 short cites, gates from M4-P5) | repo-wide, as the host |
 //! | 7 | the Spike C verdict is GO (no condition); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
 //! | 8 | nesting log: the 7 `depth_tests::m1_*` tests, `caps_hold_end_to_end` and `every_m1_form_is_listed` ok, each in a cargo run that exited 0, no cargo failure line, every run with its start and exit-status lines; a fresh, named input: its `m1-exit source:` line (below) | step `cargo test --workspace --locked` of `build + test (windows-x64)` green |
@@ -47,7 +47,8 @@
 //! repository does not have; the JSON `"tree"` object, the log line `m1-exit trees: <path>=<id>
 //! ...`), when the tree was dirty (or the input does not say), when the runner read another
 //! source state at the end of the run than at its start (`"source_changed_during_run": true`),
-//! when no host or job is named, or when the job is of another CI run than `--ci-run`. An
+//! when no host or job is named, when the runner read its source through its test seam
+//! (`"test_seam": true`, F3), or when the job is of another CI run than `--ci-run`. An
 //! ep9-test262 JSON also names the commit its runner was built at (`"runner_commit"`), whether
 //! the runner's compiled sources had uncommitted changes then (`"runner_dirty"`), and the HEAD of
 //! the test262 checkout it ran before and after the run (`"test262_head"`, `"test262_head_end"`)
@@ -55,6 +56,15 @@
 //! when one is missing or not a full commit id, the runner commit is not the input's `commit`,
 //! the runner was built dirty, the checkout HEAD is not the pin `third_party/test262.commit` or
 //! moved during the run, or the checkout had changes (plan v10 X4).
+//!
+//! **The gate build** (X3, the O8 refusal; plan v10 V10-D10, V10-A12): items 1-4 read the
+//! build each input ran. An ep9-test262 JSON names `preset`, `mode` (the preset its isolates
+//! ran), `feedback` and `features`; the kernels JSON (`ep9.engine_build`) and the exit2 JSON
+//! (`engine_build`) copy the build line of `ep9 --version`, `features <list>; preset <name>`,
+//! whose feedback is the preset's default (the `ep9` binary has no feedback option). The cell
+//! is OPEN (not FAIL), "preset X, the gate reads Y", when a field is missing, the preset or mode
+//! is not `jit`, the feedback is not `full`, or the features do not hold `jit`. Item 4 reads
+//! the build of each GC-stress JSON and of the `--exec` run it compares with.
 //!
 //! **The CI run** names its head (`headSha`): HEAD, or an ancestor with no change in those paths,
 //! `expectations` or `.github` since. Else every Windows cell is at least OPEN ("stale CI run").
@@ -254,6 +264,14 @@ const FUZZILLI_HOURS: f64 = 100.0;
 const CARGO_FUZZ_HOURS: f64 = 24.0;
 /// Item 5: the closed crash states.
 const CLOSED: [&str; 3] = ["fixed", "duplicate", "not-a-bug"];
+
+/// Items 1-4, X3 (the O8 refusal; plan v10 V10-D10, V10-A12): the gate build. The gate reads
+/// the default build: the `jit` ep9_vm feature, preset `jit`, feedback `full`. An input of
+/// another build, or one that does not say, is OPEN (not FAIL): `ics_only` and `jitless` are
+/// extra columns, never the gate reading.
+const GATE_PRESET: &str = "jit";
+const GATE_FEEDBACK: &str = "full";
+const GATE_FEATURE: &str = "jit";
 
 const VERDICTS_HOW: &str =
     "the Spike C and SP-Facts Verdict tables (a markdown table with Spike and Verdict columns)";
@@ -573,6 +591,137 @@ struct Source {
     /// An ep9-test262 JSON (not a log): it must also name the runner's build commit and the
     /// test262 checkout HEAD (X4).
     runner: Option<Runner>,
+    /// An ep9-test262 JSON (not a log): the build it ran, which must be the gate build (X3).
+    build: Option<Build>,
+    /// The runner read its source facts through its test seam (`"test_seam": true`; F3,
+    /// tools/test262/src/exec.rs): another tree's facts, or a file changed on purpose.
+    seam: bool,
+}
+
+/// The build an input names (X3, [`build_check`]): an ep9-test262 JSON writes `preset` (the
+/// build's default preset), `mode` (the preset its isolates ran), `feedback` and `features`
+/// (tools/test262/src/exec.rs, MC-w17-5); a bench JSON copies the second line of
+/// `ep9 --version`, `features <list>; preset <name>` ([`Build::of_line`]). A field that is
+/// missing or not of its type is None.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Build {
+    preset: Option<String>,
+    /// The preset the isolates ran (`mode`); None when the input has no such field.
+    mode: Option<String>,
+    feedback: Option<String>,
+    /// True when `feedback` is not written but follows from the preset ([`Build::of_line`]).
+    feedback_implied: bool,
+    features: Option<Vec<String>>,
+}
+
+impl Build {
+    /// The build fields of an ep9-test262 JSON.
+    fn of_json(j: &Json) -> Build {
+        Build {
+            preset: str_field(j, "preset"),
+            mode: str_field(j, "mode"),
+            feedback: str_field(j, "feedback"),
+            feedback_implied: false,
+            features: j.get("features").and_then(Json::arr).and_then(|a| {
+                a.iter()
+                    .map(|f| f.str().map(str::to_string))
+                    .collect::<Option<Vec<_>>>()
+            }),
+        }
+    }
+
+    /// The build line of `ep9 --version` (`features jit,become; preset jit`; `features none`
+    /// when no feature is on; crates/ep9_cli/src/args.rs `version_text`), as kernels.mjs
+    /// (`ep9.engine_build`) and run.mjs copy it; None (no line, null) gives a build with no
+    /// field. A `feedback <mode>` part is read when there is one; else the feedback follows
+    /// from the preset (`jit` full, `jitless` ics_only; crates/ep9_vm/src/exec.rs
+    /// `ExecOptions::jit`, `::jitless`): the `ep9` binary has no feedback option and runs
+    /// `ExecOptions::default()`, the build's preset with its default mode.
+    fn of_line(line: Option<&str>) -> Build {
+        let mut b = Build::default();
+        for part in line.unwrap_or("").split(';') {
+            match part.trim().split_once(' ') {
+                Some(("features", v)) => {
+                    b.features = Some(match v.trim() {
+                        "none" => Vec::new(),
+                        v => v.split(',').map(|f| f.trim().to_string()).collect(),
+                    });
+                }
+                Some(("preset", v)) => b.preset = Some(v.trim().to_string()),
+                Some(("feedback", v)) => b.feedback = Some(v.trim().to_string()),
+                _ => {}
+            }
+        }
+        if b.feedback.is_none() {
+            b.feedback = match b.preset.as_deref() {
+                Some("jit") => Some("full".to_string()),
+                Some("jitless") => Some("ics_only".to_string()),
+                _ => None,
+            };
+            b.feedback_implied = b.feedback.is_some();
+        }
+        b
+    }
+
+    /// `preset jit, feedback full, features jit,become` (`?` for a missing field).
+    fn text(&self) -> String {
+        format!(
+            "build: preset {}, feedback {}{}, features {}",
+            self.preset.as_deref().unwrap_or("?"),
+            self.feedback.as_deref().unwrap_or("?"),
+            if self.feedback_implied {
+                " (the preset's default)"
+            } else {
+                ""
+            },
+            match &self.features {
+                None => "?".to_string(),
+                Some(f) if f.is_empty() => "none".to_string(),
+                Some(f) => f.join(","),
+            }
+        )
+    }
+}
+
+/// X3, the O8 refusal (plan v10 section 3.7, V10-D10): the OPEN reasons of an input whose build
+/// is not the gate build ([`GATE_PRESET`], [`GATE_FEEDBACK`], a feature list with
+/// [`GATE_FEATURE`]), or that does not name it. Each reason reads "preset X, the gate reads Y".
+fn build_check(b: &Build) -> Vec<String> {
+    let mut why = Vec::new();
+    let mut field = |what: &str, key: &str, got: Option<&str>, want: &str| match got {
+        None => why.push(format!(
+            "build: it names no {what} (`{key}`), the gate reads {what} {want} (V10-D10)"
+        )),
+        Some(g) if g != want => why.push(format!(
+            "build: {what} {g}, the gate reads {what} {want} (V10-D10)"
+        )),
+        Some(_) => {}
+    };
+    field("preset", "preset", b.preset.as_deref(), GATE_PRESET);
+    field("feedback", "feedback", b.feedback.as_deref(), GATE_FEEDBACK);
+    // `mode` is the preset the isolates ran; an input without the field is read by `preset`.
+    if let Some(m) = b.mode.as_deref()
+        && m != GATE_PRESET
+    {
+        why.push(format!(
+            "build: its isolates ran preset {m} (`mode`), the gate reads preset {GATE_PRESET} (V10-D10)"
+        ));
+    }
+    match &b.features {
+        None => why.push(format!(
+            "build: it names no features (`features`), the gate reads a build with {GATE_FEATURE} (V10-D10)"
+        )),
+        Some(f) if !f.iter().any(|f| f == GATE_FEATURE) => why.push(format!(
+            "build: features {}, the gate reads a build with {GATE_FEATURE} (V10-D10)",
+            if f.is_empty() {
+                "none".to_string()
+            } else {
+                f.join(",")
+            }
+        )),
+        Some(_) => {}
+    }
+    why
 }
 
 /// The build facts an ep9-test262 JSON names from M5-P0 (plan v10 section 2.6, X4): the
@@ -620,6 +769,8 @@ impl Source {
                 test262_head_end: str_field(j, "test262_head_end"),
                 test262_dirty: j.get("test262_dirty").and_then(Json::bool),
             }),
+            build: Some(Build::of_json(j)),
+            seam: j.get("test_seam").and_then(Json::bool) == Some(true),
         }
     }
 
@@ -662,6 +813,8 @@ impl Source {
                 trees: BTreeMap::new(),
                 changed: false,
                 runner: None,
+                build: None,
+                seam: false,
             };
             match &found {
                 Some(f) if *f != s => {
@@ -808,7 +961,8 @@ fn short(s: &str) -> String {
 /// HEAD or an ancestor with no change in `paths` since ([`fresh_since`]), the tree had no
 /// uncommitted change, and the input names the host or job that made it; a job of another CI
 /// run than the one given is a mismatch. An ep9-test262 JSON also names a runner built at that
-/// commit and a test262 checkout at the pin ([`runner_check`], X4).
+/// commit and a test262 checkout at the pin ([`runner_check`], X4), and the gate build
+/// ([`build_check`], X3).
 fn source_check(c: &Ctx, s: &Source, paths: &[&str]) -> (Vec<String>, String) {
     let mut why = Vec::new();
     let tree = match s.commit.as_deref() {
@@ -850,16 +1004,29 @@ fn source_check(c: &Ctx, s: &Source, paths: &[&str]) -> (Vec<String>, String) {
             "stale input: the source changed during the run (source_changed_during_run)".into(),
         );
     }
+    if s.seam {
+        why.push(
+            "provenance: the runner read its source through its test seam (test_seam): a test run, not a measurement"
+                .into(),
+        );
+    }
     if let Some(r) = &s.runner {
         why.extend(runner_check(&c.o.root, s.commit.as_deref(), r));
     }
-    let by = match s.made_by.as_deref() {
+    // X3: the gate build (V10-D10).
+    if let Some(b) = &s.build {
+        why.extend(build_check(b));
+    }
+    let mut by = match s.made_by.as_deref() {
         Some(m) => m.to_string(),
         None => {
             why.push("provenance: it names no host or job (made_by)".into());
             "no host".to_string()
         }
     };
+    if let Some(b) = &s.build {
+        let _ = write!(by, "; {}", b.text());
+    }
     if let (Some(theirs), Ok(ci)) = (s.ci_run(), &c.ci)
         && let Some(ours) = ci.id.as_deref()
         && theirs != ours
@@ -1113,13 +1280,21 @@ fn kernels_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
         status = status.max(Status::Open);
         format!("not fresh: {}", fresh.join("; "))
     };
+    // X3: the checked binary is the gate build (its `--version` build line, `ep9.engine_build`).
+    let build = Build::of_line(j.path(&["ep9", "engine_build"]).and_then(Json::str));
+    let build_why = build_check(&build);
+    if !build_why.is_empty() {
+        status = status.max(Status::Open);
+        why.extend(build_why);
+    }
     cell(
         status,
         format!(
-            "{}: {ok}/{} {KERNEL_OK}; ep9 commit `{}`; {tree}{}",
+            "{}: {ok}/{} {KERNEL_OK}; ep9 commit `{}`; {tree}; {}{}",
             p.display(),
             rows.len(),
             short(commit),
+            build.text(),
             because(&why)
         ),
     )
@@ -1242,6 +1417,14 @@ fn exit2_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
             tree.push_str("; it does not say whether the tree was dirty (`dirty`)");
         }
     }
+    // X3: the measured ep9 is the gate build: the build line of its `--version`
+    // (`engine_build`, from the ep9 engine of the run.mjs JSON).
+    let build = Build::of_line(j.get("engine_build").and_then(Json::str));
+    let build_why = build_check(&build);
+    if !build_why.is_empty() {
+        status = status.max(Status::Open);
+    }
+    let _ = write!(tree, "; {}{}", build.text(), because(&build_why));
     cell(
         status,
         format!(
@@ -1449,6 +1632,10 @@ fn gc_source(c: &Ctx) -> (Vec<String>, String) {
                 "provenance: --exec {} was measured with uncommitted changes, or does not say",
                 ep.display()
             ));
+        }
+        // X3: the pass set the GC-stress runs are compared with is of the gate build too.
+        for w in es.build.as_ref().map(build_check).unwrap_or_default() {
+            why.push(format!("--exec {}: {w}", ep.display()));
         }
     }
     (why, texts.join(" | "))
@@ -1851,8 +2038,11 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
             .map(str::trim)
             .filter(|s| !s.is_empty());
         // A second record of a counted campaign adds no hours, but its open crashes still count
-        // (a crash found late in a campaign is still open).
-        let dup = counted && campaign.is_some_and(|id| !campaigns.insert(format!("{tool}/{id}")));
+        // (a crash found late in a campaign is still open). F4 (in:190 item 5): the id is
+        // inserted below, only once this record counts, so a record of the id that is not
+        // counted (dirty, stale, no `dirty` field) does not block a later one that counts.
+        let key = campaign.map(|id| format!("{tool}/{id}"));
+        let dup = counted && key.as_ref().is_some_and(|k| campaigns.contains(k));
         if dup {
             why.push(format!(
                 "{}: campaign {tool} {:?} again, its hours counted once",
@@ -1912,6 +2102,8 @@ fn item5(c: &Ctx) -> (Cell, Cell) {
         if counted {
             match fresh_named(&c.o.root, commit, fresh_paths) {
                 Ok(_) => {
+                    // F4: the campaign counts from here on (`counted` needs a campaign id).
+                    campaigns.extend(key);
                     *hours
                         .entry(if tool == "fuzzilli" {
                             "fuzzilli"
@@ -2541,10 +2733,16 @@ mod tests {
 
     /// The source fields of an ep9-test262 JSON made at `rev`, by a runner built there, with the
     /// pinned test262 checkout.
+    /// The build fields of a gate-build ep9-test262 JSON (X3).
+    const GATE_BUILD: &str =
+        r#""mode":"jit","preset":"jit","features":["jit","become"],"feedback":"full","#;
+    /// The `--version` build line of a gate-build ep9 (X3).
+    const GATE_LINE: &str = "features jit,become; preset jit";
+
     fn src_at(root: &Path, rev: &str) -> String {
         let commit = git_in(root, &["rev-parse", rev]);
         format!(
-            r#""commit":"{commit}","dirty":false,"commit_source":"git","made_by":"host:test","runner_commit":"{commit}","runner_dirty":false,"test262_head":"{PIN}","test262_head_end":"{PIN}","test262_dirty":false,"#,
+            r#""commit":"{commit}","dirty":false,"commit_source":"git","made_by":"host:test","runner_commit":"{commit}","runner_dirty":false,"test262_head":"{PIN}","test262_head_end":"{PIN}","test262_dirty":false,{GATE_BUILD}"#,
         )
     }
 
@@ -3183,7 +3381,7 @@ mod tests {
         .collect();
         let src = |ids: &str| {
             format!(
-                r#""commit":"{e}","dirty":false,"made_by":"host:ci gh-run:1/build","runner_commit":"{e}","runner_dirty":false,"test262_head":"{PIN}","test262_head_end":"{PIN}","test262_dirty":false,"tree":{{{ids}}},"#,
+                r#""commit":"{e}","dirty":false,"made_by":"host:ci gh-run:1/build","runner_commit":"{e}","runner_dirty":false,"test262_head":"{PIN}","test262_head_end":"{PIN}","test262_dirty":false,{GATE_BUILD}"tree":{{{ids}}},"#,
                 e = "e".repeat(40)
             )
         };
@@ -3248,6 +3446,12 @@ mod tests {
                 ),
                 Status::Open,
                 "stale input: the source changed during the run (source_changed_during_run)",
+            ),
+            // F3: the runner's test seam (tools/test262/tests/exec.rs) is no measurement.
+            (
+                ok.replace(r#""dirty":false,"#, r#""dirty":false,"test_seam":true,"#),
+                Status::Open,
+                "provenance: the runner read its source through its test seam (test_seam)",
             ),
             (
                 format!(
@@ -3707,6 +3911,101 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// F4 (plan v10 section 3.7; in:190 item 5) on the records of the producer,
+    /// fuzz/scripts/record.sh (the fixtures `fuzz-*.json`, made by `make-fuzz-records.sh`): a
+    /// campaign id counts once, and only from the record that counts. A record of the id that is
+    /// not counted (dirty, or stale) does not block a later one that counts.
+    #[test]
+    fn item5_counts_a_campaign_from_the_record_that_counts() {
+        let root = fake_repo("item5f4");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        let placeholder = "f4".repeat(20);
+        let rec = |name: &str, commit: &str| {
+            let text = read(&fixture(name)).unwrap();
+            assert!(text.contains(&placeholder), "{name}: {text}");
+            input(&root, name, &text.replace(&placeholder, commit))
+        };
+        let clean = rec("fuzz-fuzzilli.json", &head);
+        let dirty = rec("fuzz-fuzzilli-dirty.json", &head);
+        let cargo = rec("fuzz-cargo-fuzz.json", &head);
+        let mut o = opts(&root);
+        // The producer's records count: 100 + 24 CPU-h, PASS.
+        o.fuzz = vec![clean.clone(), cargo.clone()];
+        let c = &run(&o).unwrap().cells[4].0;
+        assert_eq!(c.status, Status::Pass, "{c:?}");
+        assert!(
+            c.evidence.contains(
+                "Fuzzilli 100.0 / 100 CPU-h, cargo-fuzz 24.0 / 24 CPU-h, 0 open unique crashes"
+            ),
+            "{}",
+            c.evidence
+        );
+        // A dirty record of the campaign first, then the clean one: the clean one counts (the
+        // id was inserted before the checks: 0 h, OPEN).
+        o.fuzz = vec![dirty.clone(), clean.clone(), cargo.clone()];
+        let c = &run(&o).unwrap().cells[4].0;
+        assert!(
+            c.evidence
+                .contains("fuzz-fuzzilli-dirty.json: not counted: made with uncommitted changes"),
+            "{}",
+            c.evidence
+        );
+        assert!(!c.evidence.contains("again"), "{}", c.evidence);
+        assert!(
+            c.evidence.contains("Fuzzilli 100.0 / 100 CPU-h"),
+            "{}",
+            c.evidence
+        );
+        assert_eq!(
+            c.status,
+            Status::Open,
+            "the dirty record is still named: {c:?}"
+        );
+        // The other order: the clean one counts, the dirty one is the same campaign again.
+        o.fuzz = vec![clean.clone(), dirty, cargo.clone()];
+        let c = &run(&o).unwrap().cells[4].0;
+        assert_eq!(c.status, Status::Pass, "{c:?}");
+        assert!(
+            c.evidence.contains(
+                "fuzz-fuzzilli-dirty.json: campaign fuzzilli \"fz-fixture-1\" again, its hours counted once"
+            ),
+            "{}",
+            c.evidence
+        );
+        assert!(
+            c.evidence.contains("Fuzzilli 100.0 / 100 CPU-h"),
+            "{}",
+            c.evidence
+        );
+        // A stale record of the campaign (a commit this repository does not have) first: it is
+        // not counted, and the fresh one still counts.
+        let stale = input(
+            &root,
+            "stale.json",
+            &read(&clean).unwrap().replace(&head, &"e".repeat(40)),
+        );
+        o.fuzz = vec![stale, clean, cargo];
+        let c = &run(&o).unwrap().cells[4].0;
+        assert_eq!(
+            c.status,
+            Status::Open,
+            "the stale record is still named: {c:?}"
+        );
+        assert!(
+            c.evidence
+                .contains("stale.json: not counted: its commit `eeee"),
+            "{}",
+            c.evidence
+        );
+        assert!(!c.evidence.contains("again"), "{}", c.evidence);
+        assert!(
+            c.evidence.contains("Fuzzilli 100.0 / 100 CPU-h"),
+            "{}",
+            c.evidence
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// The Freeze-table form of README section 3.4, with a Contract part due at M1 exit.
     fn adr(id: &str, status: &str, table: bool) -> String {
         let t = if table {
@@ -3825,7 +4124,7 @@ mod tests {
             })
             .collect();
         format!(
-            r#"{{"schema":"ep9-kernels/v1","commit":"{}","tree":{{{}}},"dirty":[],"host":{{"target":"{target}"}},"kernels":[{}]}}"#,
+            r#"{{"schema":"ep9-kernels/v1","commit":"{}","tree":{{{}}},"dirty":[],"host":{{"target":"{target}"}},"ep9":{{"bin":"ep9","engine_build":"{GATE_LINE}"}},"kernels":[{}]}}"#,
             git_in(root, &["rev-parse", "HEAD"]),
             ids.join(","),
             rows.join(",")
@@ -3879,7 +4178,7 @@ mod tests {
 
     fn exit2_json(commit: &str, gates: [&str; 2], gate_host: bool) -> String {
         format!(
-            r#"{{"schema":"ep9-exit2/v1","commit":"{commit}","dirty":false,"host":{{"gate_host":{gate_host}}},"provisional":false,"readings":[{{"id":"octane7-vs-qjs","label":"Octane-7","gate":"{}","net":{{"median":1.1}}}},{{"id":"v8v7-7-vs-node-jitless","label":"v8-v7","gate":"{}"}}]}}"#,
+            r#"{{"schema":"ep9-exit2/v1","commit":"{commit}","dirty":false,"engine_build":"{GATE_LINE}","host":{{"gate_host":{gate_host}}},"provisional":false,"readings":[{{"id":"octane7-vs-qjs","label":"Octane-7","gate":"{}","net":{{"median":1.1}}}},{{"id":"v8v7-7-vs-node-jitless","label":"v8-v7","gate":"{}"}}]}}"#,
             gates[0], gates[1]
         )
     }
@@ -4262,6 +4561,179 @@ mod tests {
         let c = gc_ci_cell(&ci(&[job(1, s1, "success"), job(2, s1, "failure")])).unwrap();
         assert_eq!(c.status, Status::Fail, "{c:?}");
         assert!(gc_ci_cell(&ci(&[])).is_err());
+    }
+
+    /// X3, the O8 refusal (plan v10 section 3.7, V10-D10): items 1-4 read the build of each
+    /// input. A missing field, a preset or feedback other than the gate's (`jit`, `full`), or
+    /// features without `jit` give OPEN, never FAIL; the gate build passes.
+    #[test]
+    fn items_1_to_4_refuse_another_build() {
+        let root = fake_repo("x3");
+        let head = git_in(&root, &["rev-parse", "HEAD"]);
+        let mut o = opts(&root);
+        let gate = GATE_BUILD;
+        // Items 3 and 4: the fields of an ep9-test262 JSON.
+        let t262_cases: Vec<(String, Status, &str)> = vec![
+            (
+                gate.to_string(),
+                Status::Pass,
+                "build: preset jit, feedback full, features jit,become",
+            ),
+            (
+                gate.replace(r#""preset":"jit""#, r#""preset":"jitless""#),
+                Status::Open,
+                "build: preset jitless, the gate reads preset jit (V10-D10)",
+            ),
+            (
+                gate.replace(r#""mode":"jit""#, r#""mode":"jitless""#),
+                Status::Open,
+                "build: its isolates ran preset jitless (`mode`), the gate reads preset jit",
+            ),
+            (
+                gate.replace(r#""feedback":"full""#, r#""feedback":"ics_only""#),
+                Status::Open,
+                "build: feedback ics_only, the gate reads feedback full (V10-D10)",
+            ),
+            (
+                gate.replace(r#"["jit","become"]"#, r#"["become"]"#),
+                Status::Open,
+                "build: features become, the gate reads a build with jit (V10-D10)",
+            ),
+            (
+                gate.replace(r#"["jit","become"]"#, "[]"),
+                Status::Open,
+                "build: features none, the gate reads a build with jit",
+            ),
+            // A JSON from before M5-P0: `mode` only.
+            (
+                r#""mode":"jit","#.to_string(),
+                Status::Open,
+                "build: it names no preset (`preset`), the gate reads preset jit",
+            ),
+            (
+                gate.replace(r#""feedback":"full","#, ""),
+                Status::Open,
+                "build: it names no feedback (`feedback`), the gate reads feedback full",
+            ),
+            (
+                gate.replace(r#""features":["jit","become"],"#, ""),
+                Status::Open,
+                "build: it names no features (`features`), the gate reads a build with jit",
+            ),
+            // A non-string feature is no feature list.
+            (
+                gate.replace(r#"["jit","become"]"#, r#"["jit",1]"#),
+                Status::Open,
+                "build: it names no features (`features`)",
+            ),
+        ];
+        let bare = src_at(&root, "HEAD").replace(GATE_BUILD, "");
+        for (build, want, text) in &t262_cases {
+            let src = format!("{bare}{build}");
+            o.exec = Some(input(
+                &root,
+                "exec.json",
+                &exec_json(17, 20, 24, 0.0, &[], &src),
+            ));
+            o.exec_gc = Vec::new();
+            let c = &run(&o).unwrap().cells[2].0;
+            assert_eq!(c.status, *want, "item 3, {text}: {c:?}");
+            assert!(c.evidence.contains(text), "item 3, {text}: {}", c.evidence);
+            // Item 4: the GC-stress JSON (the --exec run of the gate build).
+            o.exec = Some(input(
+                &root,
+                "exec.json",
+                &exec_json(17, 20, 24, 0.0, &[], &src_at(&root, "HEAD")),
+            ));
+            o.exec_gc = vec![input(&root, "gc.json", &gc_json(&[], S1, &src))];
+            let c = &run(&o).unwrap().cells[3].0;
+            assert_eq!(c.status, *want, "item 4, {text}: {c:?}");
+            assert!(c.evidence.contains(text), "item 4, {text}: {}", c.evidence);
+        }
+        // Item 4 also reads the build of the --exec run it compares with.
+        let src = src_at(&root, "HEAD");
+        o.exec = Some(input(
+            &root,
+            "exec.json",
+            &exec_json(
+                17,
+                20,
+                24,
+                0.0,
+                &[],
+                &src.replace(r#""feedback":"full""#, r#""feedback":"ics_only""#),
+            ),
+        ));
+        o.exec_gc = vec![input(&root, "gc.json", &gc_json(&[], S1, &src))];
+        let c = &run(&o).unwrap().cells[3].0;
+        assert_eq!(c.status, Status::Open, "{c:?}");
+        assert!(
+            c.evidence
+                .contains("exec.json: build: feedback ics_only, the gate reads feedback full"),
+            "{}",
+            c.evidence
+        );
+        // Items 1 and 2: the `--version` build line the bench JSONs copy.
+        let line_cases: [(Option<&str>, Status, &str); 6] = [
+            (
+                Some(GATE_LINE),
+                Status::Pass,
+                "build: preset jit, feedback full (the preset's default), features jit,become",
+            ),
+            (
+                Some("features jit; preset jit; feedback full"),
+                Status::Pass,
+                "build: preset jit, feedback full, features jit",
+            ),
+            (
+                Some("features none; preset jitless"),
+                Status::Open,
+                "build: preset jitless, the gate reads preset jit (V10-D10); build: feedback ics_only, the gate reads feedback full (V10-D10); build: features none, the gate reads a build with jit",
+            ),
+            (
+                Some("features jit; preset jit; feedback ics_only"),
+                Status::Open,
+                "build: feedback ics_only, the gate reads feedback full",
+            ),
+            // A binary from before M5-P0 prints no build line: kernels.mjs writes null.
+            (
+                None,
+                Status::Open,
+                "build: it names no preset (`preset`), the gate reads preset jit",
+            ),
+            (
+                Some("unknown (--version: exit 1)"),
+                Status::Open,
+                "build: it names no features (`features`)",
+            ),
+        ];
+        for (line, want, text) in line_cases {
+            let value = line.map_or("null".to_string(), |l| format!("\"{l}\""));
+            let k = kernels_json(&root, HOST, 15, 15, None)
+                .replace(&format!("\"{GATE_LINE}\""), &value);
+            o.kernels = Some(input(&root, "kernels.json", &k));
+            let c = &run(&o).unwrap().cells[0].0;
+            assert_eq!(c.status, want, "item 1, {text}: {c:?}");
+            assert!(c.evidence.contains(text), "item 1, {text}: {}", c.evidence);
+            let e = exit2_json(&head, ["pass", "pass"], true)
+                .replace(&format!("\"{GATE_LINE}\""), &value);
+            o.cross = Some(input(&root, "exit2.json", &e));
+            let c = &run(&o).unwrap().cells[1].0;
+            assert_eq!(c.status, want, "item 2, {text}: {c:?}");
+            assert!(c.evidence.contains(text), "item 2, {text}: {}", c.evidence);
+        }
+        // An exit2 JSON with no `engine_build` field (exit2.mjs of M5-P0 copies none): OPEN.
+        let e = exit2_json(&head, ["pass", "pass"], true)
+            .replace(&format!(r#""engine_build":"{GATE_LINE}","#), "");
+        o.cross = Some(input(&root, "exit2.json", &e));
+        let c = &run(&o).unwrap().cells[1].0;
+        assert_eq!(c.status, Status::Open, "{c:?}");
+        assert!(
+            c.evidence.contains("build: it names no preset (`preset`)"),
+            "{}",
+            c.evidence
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn fuzz_json(tool: &str, commit: &str, hours: f64, counted: bool, crash: &str) -> String {
