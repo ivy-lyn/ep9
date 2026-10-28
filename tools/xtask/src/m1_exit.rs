@@ -1573,7 +1573,7 @@ fn item4(c: &Ctx) -> (Cell, Cell) {
 
 /// The source of the GC-stress inputs (P3-ORCH-14, P3-ORCH-21): each shard fresh and named, all
 /// shards of one commit, and the `--exec` run (the pass set they are compared with) of the same
-/// commit.
+/// commit, a clean tree, the gate build and not the runner's test seam.
 fn gc_source(c: &Ctx) -> (Vec<String>, String) {
     let mut why: Vec<String> = Vec::new();
     let mut texts: Vec<String> = Vec::new();
@@ -1630,6 +1630,14 @@ fn gc_source(c: &Ctx) -> (Vec<String>, String) {
         if es.dirty != Some(false) {
             why.push(format!(
                 "provenance: --exec {} was measured with uncommitted changes, or does not say",
+                ep.display()
+            ));
+        }
+        // F3: a pass set the runner made through its test seam is no measurement, as for
+        // item 3 (M5-P1 review).
+        if es.seam {
+            why.push(format!(
+                "provenance: --exec {}: the runner read its source through its test seam (test_seam): a test run, not a measurement",
                 ep.display()
             ));
         }
@@ -3695,6 +3703,11 @@ mod tests {
             (
                 head.replace(r#""dirty":false,"#, ""),
                 "was measured with uncommitted changes, or does not say",
+            ),
+            // F3: an --exec input that the runner made through its test seam (M5-P1 review).
+            (
+                head.replace(r#""dirty":false,"#, r#""dirty":false,"test_seam":true,"#),
+                "read its source through its test seam (test_seam)",
             ),
         ] {
             o.exec = Some(input(&root, "exec.json", &exec(&src)));
