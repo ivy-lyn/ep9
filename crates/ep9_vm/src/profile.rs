@@ -79,7 +79,7 @@
 //! | CompareOp (12) | `CompareHint` bits | untouched | every execution that is not implicit |
 //! | TypeOf (13) | `TypeSet` bits of the operand | untouched | every execution |
 //! | LoadKeyed, StoreKeyed, DefineKeyedOwn, HasKeyed, StoreInArrayLiteral (2, 4, 6, 10, 17) | [`keyed`] bits: the `KeySet` bits 0-3, the receiver (bits 4-7), out of bounds (8), hole (9) | untouched (KEYED, M4-P3, owns it) | every cold execution |
-//! | Call (0) at `Call*` sites | the count of sampled calls, saturating at `i32::MAX` | the native word of the one target FunctionInfo sampled, or the hole (megamorphic) | sampled: a call in the first [`CALL_WINDOW`] budget units after a budget reset |
+//! | Call (0) at `Call*` sites | the count of sampled calls, saturating at `i32::MAX` | the native word of the one target FunctionInfo sampled, or the hole (megamorphic) | sampled: a call in the [`CALL_WINDOW`] budget units of each budget period's window (the first ones after a reset to `BUDGET`; after a poll's jittered reset, [`budget_after_poll`], the ones after the jitter units) |
 //! | JumpLoop (19) | the count of sampled back edges, saturating at `i32::MAX` | untouched | sampled: a back edge that polls (the budget is used up) |
 //! | ForIn (18) | `ForInHint` bits | the one receiver shape seen, or the hole | every execution |
 //! | CreateClosure (20) | a count that saturates at [`CLOSURE_MANY`]: 0 none, 1 one, 2 many | untouched | every execution |
@@ -94,12 +94,20 @@
 //!     reader adds these bits to every slot of its kind in a function that has a vector: they
 //!     are a prediction that a consumer guards (H16 Consequences).
 //!   - **Sampled calls and back edges** (plan v9 R2: "move a kind to the cold path only").
-//!     `record_call` records only in the first [`CALL_WINDOW`] units of each
-//!     `interp::BUDGET` (the budget is reset at each poll), and `record_jump_loop` only at a
-//!     back edge that polls. A hot site is sampled in proportion to its share of the units;
-//!     a site that never runs in a window stays uninitialized. The windows come at a fixed
-//!     period, so a pattern with that period can hide a target (an open point for the
-//!     reader).
+//!     `record_call` records only in a window of [`CALL_WINDOW`] budget units in each
+//!     budget period (a call whose budget before it is in `(BUDGET - CALL_WINDOW, BUDGET]`),
+//!     and `record_jump_loop` only at a back edge that polls. A hot site is sampled in
+//!     proportion to its share of the units; a site that never runs in a window stays
+//!     uninitialized. **Window jitter (M5-P1 PROFILE5; MC-w13-17, F16):** a poll resets the
+//!     budget to [`budget_after_poll`], `BUDGET` plus a jitter in `0..`[`CALL_JITTER`] from
+//!     the isolate's own sequence (`Runtime::call_window_jitter`), so the window starts that
+//!     many units after the poll and the polls do not come at a fixed period: a call pattern
+//!     whose period divides `BUDGET` no longer keeps a site out of every window. The window
+//!     test of the call handlers is unchanged (one compare with a constant); the upper bound
+//!     `BUDGET` is tested in the record path only. Wiring (one line in
+//!     `interp::slow::interrupt`): until the poll calls [`budget_after_poll`], the budget
+//!     never goes above `BUDGET`, the upper bound never fails, and the windows keep the fixed
+//!     period.
 //!   - **An int32 `+`, `-`, `Inc` or `Dec` that overflows** records `INT32_OVERFLOW` on
 //!     the overflow arm of its fast body only, the branch the checked operation already
 //!     takes ([`INT32_OVERFLOW`]; MODES-D16, M5-P1 PROFILE5): the int32 result that fits
@@ -177,9 +185,55 @@ const _: () = {
     assert!(KeySet::ALL.bits() == 0xF);
 };
 
-/// Calls are recorded in the first `CALL_WINDOW` budget units after each budget reset (a
-/// poll, or the isolate start).
+/// Calls are recorded in a window of `CALL_WINDOW` budget units in each budget period: a call
+/// whose budget before it is in `(BUDGET - CALL_WINDOW, BUDGET]`, the first `CALL_WINDOW`
+/// units after a reset to `BUDGET` (the isolate start), or units `j + 1 ..= j + CALL_WINDOW`
+/// after a reset to `BUDGET + j` ([`budget_after_poll`]).
 pub(crate) const CALL_WINDOW: i64 = 64;
+
+/// The jitter of a poll's budget reset is in `0..CALL_JITTER` units ([`budget_after_poll`]):
+/// two windows, so the start of the next window moves by up to twice its length each period.
+/// The mean budget period grows by `CALL_JITTER / 2` units (0.64% of `BUDGET`), so polls come
+/// that much less often.
+pub(crate) const CALL_JITTER: i64 = 2 * CALL_WINDOW;
+
+/// The budget an interrupt poll resets to (`interp::slow::interrupt`): `BUDGET + j`, `j` in
+/// `0..CALL_JITTER`, the next value of the isolate's jitter sequence
+/// (`Runtime::call_window_jitter`). The sampled-call window then starts `j` units after the
+/// poll ([`CALL_WINDOW`]), so a call pattern with a period that divides `BUDGET` does not see
+/// the window at one fixed phase (MC-w13-17; DL M4-P1-OPEN (2)).
+///
+/// The sequence: a Weyl step of the state and the splitmix64 output function, seeded on first
+/// use from the isolate's `Math.random` seed words (`runtime::rng_seed`, so a run with a fixed
+/// `EP9_HASH_SEED` gives each isolate the same jitters; each isolate has its own sequence). The
+/// state is Rust memory (no Value, no GC point); a state of 0 means "not seeded yet". Out of
+/// line: it runs once per poll.
+// Until the poll calls it (the one-line wiring in `interp::slow::interrupt`, which removes
+// this allow), only `tests::profile` does.
+#[cfg_attr(not(test), allow(dead_code))]
+#[cold]
+#[inline(never)]
+pub(crate) fn budget_after_poll(rt: &Runtime) -> i64 {
+    const GAMMA: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut state = rt.call_window_jitter.get();
+    if state == 0 {
+        let [a, b] = crate::runtime::rng_seed(rt.id);
+        // Never 0 (an odd value), and not the `Math.random` state itself.
+        state = (a ^ b.rotate_left(29) ^ 0x6a09_e667_f3bc_c909) | 1;
+    }
+    state = state.wrapping_add(GAMMA);
+    if state == 0 {
+        state = GAMMA;
+    }
+    rt.call_window_jitter.set(state);
+    let mut z = state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^= z >> 31;
+    // CALL_JITTER is a power of two: the low bits of the mixed word.
+    const _: () = assert!(CALL_JITTER > 0 && CALL_JITTER & (CALL_JITTER - 1) == 0);
+    BUDGET + (z & (CALL_JITTER as u64 - 1)) as i64
+}
 
 /// The CreateClosure count saturates here: "many" (`ClosureCount::Many`).
 pub(crate) const CLOSURE_MANY: u32 = 2;
@@ -655,24 +709,30 @@ fn target_key(callee: u64) -> u64 {
 /// A `Call*` site (Call slot) whose call went cold: called once per execution, from the cold
 /// body (`interp::ops::call_record_cold`), after the fast tests of the callee failed; a call
 /// that `call_fast` finishes records with [`record_call_pushed`] instead. Sampled:
-/// only a call in the first [`CALL_WINDOW`] units of the budget (`cx.budget` above
-/// `BUDGET - CALL_WINDOW`; the budget is reset at each poll) counts and keeps the target's
-/// FunctionInfo (monomorphic) or the hole (megamorphic). The hot path is one load and one
-/// test of the budget.
+/// only a call in the window ([`CALL_WINDOW`]: `cx.budget` in
+/// `(BUDGET - CALL_WINDOW, BUDGET]`; a poll resets the budget, [`budget_after_poll`]) counts
+/// and keeps the target's FunctionInfo (monomorphic) or the hole (megamorphic). The hot path
+/// is one load and one test of the budget; the upper bound (the jitter units before the
+/// window) is tested after it.
 #[inline(always)]
 pub(crate) fn record_call(st: &mut St<'_>, s: FSlot, callee: u64) {
     if st.cx.budget <= BUDGET - CALL_WINDOW {
         return;
     }
     core::hint::cold_path();
+    if st.cx.budget > BUDGET {
+        return;
+    }
     if let Some(v) = vector_of(st) {
         record_call_in(st.rt(), v, s, callee);
     }
 }
 
 /// True if a call whose budget unit `call_fast` has just taken (`budget` is the value after
-/// the decrement) is in the window of [`record_call`]: the budget before it was above
-/// `BUDGET - CALL_WINDOW`.
+/// the decrement) may be in the window of [`record_call`]: the budget before it was above
+/// `BUDGET - CALL_WINDOW`. One compare with a constant in the call handlers: the upper bound
+/// (a budget before the call above `BUDGET`, in the jitter units of [`budget_after_poll`])
+/// is tested in [`record_call_pushed`].
 #[inline(always)]
 pub(crate) fn call_window_after_unit(budget: i64) -> bool {
     budget >= BUDGET - CALL_WINDOW
@@ -683,9 +743,13 @@ pub(crate) fn call_window_after_unit(budget: i64) -> bool {
 /// slot of the caller's instruction. Same record as [`record_call`] before the push (no GC
 /// point and no write to the caller's vector lies between them). Runs after the handler
 /// (`interp::Flow::JumpRecordCall`, `interp::dsl::record_call_next`), so the call handlers
-/// keep no register for it.
+/// keep no register for it. A call in the jitter units before the window (the budget before
+/// it above `BUDGET`, so `cx.budget >= BUDGET` after its unit) records nothing.
 #[inline(always)]
 pub(crate) fn record_call_pushed(st: &St<'_>, s: FSlot) {
+    if st.cx.budget >= BUDGET {
+        return;
+    }
     // SAFETY: `st.fp` is a frame that `call::push_frame` just wrote: its caller-fp slot holds
     // the live caller frame, whose FunctionInfo slot holds a FunctionInfo native word.
     let fi = unsafe {

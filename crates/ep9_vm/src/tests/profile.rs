@@ -15,7 +15,7 @@ use crate::feedback;
 use crate::frame::{HOLE, UNDEFINED, int32_bits, native_of};
 use crate::interp::BUDGET;
 use crate::kinds;
-use crate::profile::{self, CALL_WINDOW, CLOSURE_MANY, keyed};
+use crate::profile::{self, CALL_JITTER, CALL_WINDOW, CLOSURE_MANY, keyed};
 use crate::{Dispatch, IsolateConfig};
 
 /// A key half after a run, in a form that two isolates share.
@@ -1257,6 +1257,85 @@ fn calls_outside_the_window_are_not_recorded_until_a_poll() {
         (1..=(CALL_WINDOW as u32) / 2 + 6).contains(&mono),
         "about one window of calls: {mono}"
     );
+}
+
+/// The window jitter (M5-P1 PROFILE5; MC-w13-17): a poll resets the budget to `BUDGET + j`
+/// (`profile::budget_after_poll`), and a call whose budget before it is above `BUDGET` (in
+/// the `j` units before the window) records nothing, at a call that `call_fast` finishes
+/// (`record_call_pushed`) and at one that goes cold (`record_call`).
+#[test]
+fn calls_in_the_jitter_units_before_the_window_are_not_recorded() {
+    let k = call_program(6, false).1;
+    // The whole run (about 32 units) is in the jitter units: nothing is recorded.
+    let above = How {
+        budget: Some(BUDGET + CALL_JITTER),
+        ..RUN
+    };
+    let got = slots(above, || call_program(6, false).0);
+    for s in [k.mono, k.mega, k.closures, k.host] {
+        assert_eq!((key(&got, 0, s), value(&got, 0, s)), (Key::Undefined, 0));
+    }
+    // 4 units of jitter: the first 2 iterations of the mono loop (a call and a back edge
+    // each) are before the window, the rest of the run is in it.
+    let near = How {
+        budget: Some(BUDGET + 4),
+        ..RUN
+    };
+    let got = slots(near, || call_program(6, false).0);
+    assert_eq!(
+        (key(&got, 0, k.mono), value(&got, 0, k.mono)),
+        (Key::Info(1), 4)
+    );
+    assert_eq!(
+        (key(&got, 0, k.mega), value(&got, 0, k.mega)),
+        (Key::Hole, 6)
+    );
+    assert_eq!(
+        (key(&got, 0, k.host), value(&got, 0, k.host)),
+        (Key::Native, 1),
+        "a cold call in the window (record_call)"
+    );
+}
+
+/// `profile::budget_after_poll`: `BUDGET` plus a jitter in `0..CALL_JITTER`, from a sequence
+/// that each isolate seeds on first use from its own seed words (so a fixed `EP9_HASH_SEED`
+/// repeats it), with many values. Over 100 polls of a pattern whose period (100 units)
+/// divides `BUDGET`, the window start takes many phases, where the fixed reset gave one.
+#[test]
+fn a_poll_resets_the_budget_with_a_jitter_from_the_isolate_sequence() {
+    let draws = |rt: &crate::runtime::Runtime| -> Vec<i64> {
+        (0..512).map(|_| profile::budget_after_poll(rt)).collect()
+    };
+    let iso = isolate(config(Dispatch::DEFAULT, false));
+    assert_eq!(
+        iso.rt.call_window_jitter.get(),
+        0,
+        "seeded on the first poll"
+    );
+    let a = draws(&iso.rt);
+    assert_ne!(iso.rt.call_window_jitter.get(), 0);
+    assert!(
+        a.iter().all(|b| (BUDGET..BUDGET + CALL_JITTER).contains(b)),
+        "{a:?}"
+    );
+    let distinct: std::collections::BTreeSet<i64> = a.iter().copied().collect();
+    assert!(distinct.len() > CALL_JITTER as usize / 2, "{distinct:?}");
+    // The same seed gives the same sequence.
+    iso.rt.call_window_jitter.set(0);
+    assert_eq!(draws(&iso.rt), a);
+    // Another isolate has its own sequence.
+    let other = isolate(config(Dispatch::DEFAULT, false));
+    assert_ne!(draws(&other.rt), a);
+    // The window start of each of 100 periods, as a phase of a 100-unit pattern.
+    let mut at = 0i64;
+    let phases: std::collections::BTreeSet<i64> = a[..100]
+        .iter()
+        .map(|&b| {
+            at += b;
+            at % 100
+        })
+        .collect();
+    assert!(phases.len() > 30, "{phases:?}");
 }
 
 // ---- JumpLoop, CreateClosure, ForIn ----------------------------------------------------------
