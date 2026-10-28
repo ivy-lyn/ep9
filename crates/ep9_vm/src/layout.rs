@@ -116,6 +116,13 @@ pub struct RuntimeTable {
     /// TypeError there). Operands: the receiver, the key and the value. `v`, or 0. No
     /// feedback.
     pub set_keyed: RtFn3,
+    /// The eager deopt entry (M5-P0, V10-D39; H29, SC WI-SC0): native code's shared exit calls
+    /// it for a failed guard. Operands: the address of the register dump and the native frame
+    /// pointer (x29) of the exit. It decodes the exit's record (`deopt.rs`), rebuilds the VM
+    /// frame, sets `Cx::out_fp`/`Cx::out_pc` as [`RuntimeTable::unwind`] does and returns the
+    /// accumulator there. It calls no recording function (MC-w15-6). M5-P0: a stub that
+    /// throws "deopt not built" and returns 0; M5-P1 SPIKEC-5 builds it.
+    pub deopt: RtFn2,
 }
 
 // ---- Cx (the isolate register points at it): VM_LAYOUT ----
@@ -168,6 +175,8 @@ pub const RT_UNWIND: usize = offset_of!(RuntimeTable, unwind);
 pub const RT_GET_KEYED: usize = offset_of!(RuntimeTable, get_keyed);
 /// VM_LAYOUT. Entry 9 (M4-P3 KEYED): the generic keyed store.
 pub const RT_SET_KEYED: usize = offset_of!(RuntimeTable, set_keyed);
+/// VM_LAYOUT. Entry 10 (M5-P0, V10-D39): the eager deopt entry.
+pub const RT_DEOPT: usize = offset_of!(RuntimeTable, deopt);
 
 // ---- FunctionInfo: VM_LAYOUT ----
 /// VM_LAYOUT. FunctionInfo: the start of its bytecode (`*const u8`).

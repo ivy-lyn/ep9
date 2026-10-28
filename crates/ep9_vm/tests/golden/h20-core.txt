@@ -295,7 +295,7 @@ embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)] pub struct 
 embed (not core): #[derive(Clone, Debug)] pub struct TerminateHandle(_)
 embed (not core): #[derive(Debug)] #[repr(C)] pub struct DispatchSlot { .. }
 embed (not core): #[derive(Debug, Default)] pub struct RangeRegistry { .. }
-embed (not core): #[repr(C)] #[derive(Debug)] pub struct RuntimeTable { pub poll: RtFn0, pub call_any: RtFn1, pub add: RtFn2, pub inc: RtFn1, pub compare: RtCompareFn, pub stack_overflow: RtFn0, pub throw: RtFn1, pub unwind: RtFn0, pub get_keyed: RtFn2, pub set_keyed: RtFn3 }
+embed (not core): #[repr(C)] #[derive(Debug)] pub struct RuntimeTable { pub poll: RtFn0, pub call_any: RtFn1, pub add: RtFn2, pub inc: RtFn1, pub compare: RtCompareFn, pub stack_overflow: RtFn0, pub throw: RtFn1, pub unwind: RtFn0, pub get_keyed: RtFn2, pub set_keyed: RtFn3, pub deopt: RtFn2 }
 embed (not core): #[repr(C)] pub struct NativeCx { .. }
 embed (not core): Atom: no item in the source text (a macro makes it: M3-P3-H20-GOLDEN-LIMIT)
 embed (not core): impl CodeEntry :: pub fn contains(&self, usize) -> bool
@@ -438,6 +438,7 @@ embed (not core): pub const POLY_HANDLER: u32
 embed (not core): pub const RT_ADD: usize
 embed (not core): pub const RT_CALL_ANY: usize
 embed (not core): pub const RT_COMPARE: usize
+embed (not core): pub const RT_DEOPT: usize
 embed (not core): pub const RT_GET_KEYED: usize
 embed (not core): pub const RT_INC: usize
 embed (not core): pub const RT_POLL: usize

@@ -100,13 +100,14 @@ pub(crate) static RUNTIME_TABLE: RuntimeTable = RuntimeTable {
     unwind: rt_unwind,
     get_keyed: rt_get_keyed,
     set_keyed: rt_set_keyed,
+    deopt: rt_deopt,
 };
 
 impl RuntimeTable {
     /// The entries in declaration order: name, byte offset, function type. The list is an
     /// H13 index list (H13-Q3, M3-P1 SP-UNIT): native code and unit text call an entry by its
     /// offset, so the list is append-only (`crates/ep9_vm/tests/golden/runtime-table.txt`).
-    pub const ENTRIES: [(&'static str, usize, &'static str); 10] = [
+    pub const ENTRIES: [(&'static str, usize, &'static str); 11] = [
         ("poll", layout::RT_POLL, "RtFn0"),
         ("call_any", layout::RT_CALL_ANY, "RtFn1"),
         ("add", layout::RT_ADD, "RtFn2"),
@@ -117,6 +118,7 @@ impl RuntimeTable {
         ("unwind", layout::RT_UNWIND, "RtFn0"),
         ("get_keyed", layout::RT_GET_KEYED, "RtFn2"),
         ("set_keyed", layout::RT_SET_KEYED, "RtFn3"),
+        ("deopt", layout::RT_DEOPT, "RtFn2"),
     ];
 
     /// The one runtime table of the process (every isolate's `Cx::runtime_table` points at it).
@@ -459,6 +461,20 @@ native_fns! {
             return bad_offset(cx, off);
         };
         slow::prop(cx, fp, pc, PropOp::SetKeyed, o, k, v)
+    }
+
+    /// [`RuntimeTable::deopt`] (M5-P0 stub, V10-D39): throws "deopt not built", as the Spike
+    /// C trap did. Calls no recording function (MC-w15-6). M5-P1 SPIKEC-5 gives it its body
+    /// (the side-table lookup and the frame rebuild of `deopt.rs`).
+    ///
+    /// # Safety
+    /// As [`rt_poll`].
+    unsafe fn rt_deopt(cx: *mut NativeCx, fp: *mut u64, off: u32, _dump: u64, _native_fp: u64) -> u64 {
+        // SAFETY: caller contract.
+        let (cx, _) = unsafe { enter(cx, fp, off) };
+        let msg = format!("ep9 internal error: deopt not built (offset {off})");
+        throw_error(cx, ErrorKind::Error, &msg);
+        0
     }
 
     /// [`RuntimeTable::unwind`].

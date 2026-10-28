@@ -29,6 +29,7 @@ mod builtins;
 mod calls;
 mod class_fields;
 mod construct;
+mod deopt;
 mod eval;
 mod exceptions;
 mod exec;

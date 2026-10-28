@@ -64,6 +64,7 @@ mod call;
 mod compiler;
 mod construct_ic;
 mod conv;
+mod deopt;
 mod descriptor;
 mod dispatch;
 mod elements;

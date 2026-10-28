@@ -309,6 +309,10 @@ pub(crate) struct Runtime {
     /// before the realm exists. Stored in M5-P0; M5-P3 PROFILE6 reads the feedback mode.
     #[allow(dead_code)] // read from M5-P3 on
     pub exec: Cell<crate::exec::ExecOptions>,
+    /// The deopt side table (`deopt.rs`, V10-D32): code start -> deopt metadata and exit
+    /// counters, filled at install. Rust memory, no Value. Empty until M5-P1 SPIKEC-5.
+    #[allow(dead_code)] // filled by M5-P1 SPIKEC-5
+    pub deopt: crate::deopt::SideTable,
 }
 
 /// The next [`Runtime::id`].
@@ -358,6 +362,7 @@ impl Runtime {
             kept_objects: crate::weakref::KeptObjects::new(&heap),
             regexp_programs: crate::regexp::ProgramTable::new(&heap),
             exec: Cell::new(crate::exec::ExecOptions::build_default()),
+            deopt: crate::deopt::SideTable::new(),
             heap,
             shared,
             units: RefCell::new(Vec::new()),

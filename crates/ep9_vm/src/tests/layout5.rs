@@ -219,7 +219,7 @@ fn the_cx_offsets_read_the_live_cx() {
     }
 }
 
-/// The RuntimeTable (VM_LAYOUT 1): one pointer per entry, in declaration order.
+/// The RuntimeTable (VM_LAYOUT 1): one pointer per entry, in declaration order, 11 entries.
 #[test]
 fn the_runtime_table_offsets() {
     let rt = [
@@ -233,11 +233,14 @@ fn the_runtime_table_offsets() {
         layout::RT_UNWIND,
         layout::RT_GET_KEYED,
         layout::RT_SET_KEYED,
+        // Appended by M5-P0 (V10-D39): the deopt entry. 11 entries = VM_LAYOUT 1.
+        layout::RT_DEOPT,
     ];
     for (i, off) in rt.into_iter().enumerate() {
         assert_eq!(off, i * 8);
     }
     assert_eq!(size_of::<layout::RuntimeTable>(), rt.len() * 8);
+    assert_eq!(rt.len(), 11);
 }
 
 /// Arrays (ARRAY +32 allocation site, OBJECT_LAYOUT 5) and REALM (+48, +56) on live cells; the
