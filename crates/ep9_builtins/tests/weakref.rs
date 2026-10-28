@@ -826,3 +826,56 @@ log('script', w.deref() !== undefined);
         });
     }
 }
+
+/// `queueJob(f)`: HostEnqueuePromiseJob for `f` (`Cx::enqueue_job`): a job that calls `f`, so
+/// a throw from `f` is the job's throw (a `then` callback's throw only rejects a promise).
+fn queue_job<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    cx.enqueue_job(args.get(0), Local::undefined())?;
+    Ok(Local::undefined())
+}
+
+/// ClearKeptObjects runs on the `Err` exits of a checkpoint too (BP §6, DL M4-P4-OPEN (3)):
+/// a job reads a WeakRef target (`deref`: AddToKeptObjects), then throws, or is terminated;
+/// the checkpoint stops with that error, and the target dies at the next GC, with no
+/// checkpoint between. Before M5-P1 the `Err` exits returned before the clear, so the kept
+/// list held the target until a later checkpoint ended `Ok`. The target is registered in a
+/// FinalizationRegistry, so [`common::assert_dies`] reads its death from the callback (the
+/// probe neither keeps nor clears the kept list).
+#[test]
+fn a_throwing_job_lets_its_weakref_target_die_at_the_next_gc() {
+    for (job, want) in [
+        ("throw new RangeError('job threw')", "RangeError: job threw"),
+        ("stop(); for (;;) {}", "execution terminated"),
+    ] {
+        for stress in [false, true] {
+            common::on_big_stack(move || {
+                let mut i = log_isolate(stress);
+                i.register_host_function("weakFresh", 2, weak_fresh);
+                i.register_host_function("stop", 0, stop);
+                i.register_host_function("queueJob", 1, queue_job);
+                TERM.with(|t| *t.borrow_mut() = Some(i.terminate_handle()));
+                let src = format!(
+                    r#"
+var fr = new FinalizationRegistry(function (held) {{ log('cleanup', held); }});
+var w = weakFresh(fr, 'job target');
+queueJob(function () {{ log('job', w.deref() !== undefined); {job}; }});
+"#
+                );
+                let e = run_checkpoint(&mut i, &src).unwrap_err();
+                assert_eq!(e, want, "stress={stress}");
+                assert_eq!(take_log(), ["job true"], "stress={stress}");
+                common::assert_dies(&mut i, "the target of a stopped job's WeakRef", |i| {
+                    i.with_cx(|cx| cx.cleanup_finalization_registries())
+                        .unwrap();
+                    take_log() == ["cleanup job target"]
+                });
+                i.verify_heap().expect("a valid heap");
+            });
+        }
+    }
+}
