@@ -20,6 +20,12 @@
 //! `packed-refs`). `git rev-parse --git-path` finds them, also in a worktree, where `.git` is a
 //! file. The paths are chosen in `build_watch.rs` (tested by `tests/build_watch.rs`). Cargo
 //! reruns build scripts on a toolchain change by itself.
+//!
+//! When git cannot answer (no git program, or no checkout), the id says "commit unknown" and
+//! the script watches `NO_GIT_WATCH` in `OUT_DIR`, a path it never creates: cargo then reruns
+//! the script on every build, so the first build after git works again names the commit
+//! (month-5 input item 10; before, an "unknown" id stayed cached). The two output files are
+//! written only when their bytes change, so a rerun with the same text does not touch them.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -37,6 +43,10 @@ const BUILD_ID_LEN: usize = 16;
 /// The override variable: exactly 32 hex digits.
 const OVERRIDE_VAR: &str = "EP9_BUILD_ID";
 
+/// The watched path, in `OUT_DIR`, while git cannot answer: it never exists, so cargo reruns the
+/// script on every build until git answers.
+const NO_GIT_WATCH: &str = "ep9-no-git.rerun";
+
 fn main() {
     let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
     let dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets it"));
@@ -50,7 +60,7 @@ fn main() {
             format!("override {}\n", hex.to_ascii_lowercase()),
         ),
         Err(std::env::VarError::NotPresent) => {
-            let text = input_text(&dir);
+            let text = input_text(&dir, &out);
             let digest = sha256(text.as_bytes());
             let mut id = [0u8; BUILD_ID_LEN];
             id.copy_from_slice(&digest[..BUILD_ID_LEN]);
@@ -58,8 +68,17 @@ fn main() {
         }
         Err(e) => panic!("{OVERRIDE_VAR}: {e}"),
     };
-    std::fs::write(out.join("engine_build_id.bin"), id).expect("write engine_build_id.bin");
-    std::fs::write(out.join("engine_build_id.txt"), text).expect("write engine_build_id.txt");
+    write_if_changed(&out.join("engine_build_id.bin"), &id);
+    write_if_changed(&out.join("engine_build_id.txt"), text.as_bytes());
+}
+
+/// Writes `bytes` to `path` unless the file already holds them (a rerun with the same input
+/// keeps the file's time, so the crate that includes it is not rebuilt for nothing).
+fn write_if_changed(path: &Path, bytes: &[u8]) {
+    if std::fs::read(path).is_ok_and(|old| old == bytes) {
+        return;
+    }
+    std::fs::write(path, bytes).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
 }
 
 /// The 16 bytes of an `EP9_BUILD_ID` value; anything but 32 hex digits fails the build.
@@ -89,12 +108,18 @@ fn bad_override(hex: &str) -> ! {
 }
 
 /// The hashed text (module doc), with the rerun lines for the git inputs.
-fn input_text(dir: &Path) -> String {
+fn input_text(dir: &Path, out: &Path) -> String {
     let commit = git(dir, &["rev-parse", "HEAD"]);
     if commit.is_some() {
         for p in build_watch::head_watch_paths(dir) {
             println!("cargo::rerun-if-changed={}", p.display());
         }
+    } else {
+        // Rerun until git answers (module doc).
+        println!(
+            "cargo::rerun-if-changed={}",
+            out.join(NO_GIT_WATCH).display()
+        );
     }
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
     let version = Command::new(&rustc)
