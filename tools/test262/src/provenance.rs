@@ -1,6 +1,8 @@
 //! Where a JSON summary came from (plan v9 section 7 step 3, P3-ORCH-14 and P3-ORCH-21): the
-//! commit of the ep9 tree this runner was built from, whether that tree had uncommitted changes,
-//! and the host or CI job that ran it. `cargo xtask m1-exit` items 3 and 4 read the three fields
+//! commit the ep9 tree is at when the runner runs, whether that tree had uncommitted changes,
+//! and the host or CI job that ran it. The fields are read at run time, not at build time: a
+//! binary built at one commit and run after a checkout of another names the other one. Run the
+//! runner with `cargo run` (it rebuilds on a change) to make an m1-exit input. `cargo xtask m1-exit` items 3 and 4 read the three fields
 //! and give OPEN "stale input" when the commit is missing, the tree was dirty, or the paths the
 //! run depends on changed after the commit.
 //!
