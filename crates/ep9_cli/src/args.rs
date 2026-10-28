@@ -6,6 +6,14 @@ use ep9_vm::{Dispatch, IsolateConfig};
 
 pub const VERSION_LINE: &str = concat!("ep9 ", env!("CARGO_PKG_VERSION"));
 
+/// The `--version` text: [`VERSION_LINE`], then the build line `features <list>; preset <name>`
+/// of `ep9_vm::build_info()` (MC-w17-5; "features none" when no ep9_vm feature is on).
+/// tools/bench (kernels.mjs, run.mjs, ep9-bench) copies the second line into its JSON as
+/// `engine_build`.
+pub fn version_text() -> String {
+    format!("{VERSION_LINE}\n{}\n", ep9_vm::build_info())
+}
+
 pub const USAGE: &str = "\
 usage: ep9 [options] <file.js>
        ep9 [options] -e <code>
@@ -252,5 +260,21 @@ mod tests {
         assert_eq!(parse(&["--version".into()]).unwrap(), Command::Version);
         assert_eq!(parse(&["-h".into()]).unwrap(), Command::Help);
         assert_eq!(parse(&["--reprl".into()]).unwrap(), Command::Reprl);
+    }
+
+    /// Two lines: the version, then the build (the default ep9 has the jit feature and
+    /// preset; the jitless one has neither).
+    #[test]
+    fn version_text_names_the_build() {
+        let t = version_text();
+        let lines: Vec<&str> = t.lines().collect();
+        assert_eq!(lines.len(), 2, "{t}");
+        assert_eq!(lines[0], VERSION_LINE);
+        if cfg!(feature = "jit") {
+            assert!(lines[1].starts_with("features jit"), "{t}");
+            assert!(lines[1].ends_with("; preset jit"), "{t}");
+        } else {
+            assert_eq!(lines[1], "features none; preset jitless");
+        }
     }
 }
