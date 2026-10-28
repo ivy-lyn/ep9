@@ -125,7 +125,10 @@ under GC-stress (9 fail without it too, and are in every `test262.<triple>.jit.t
 The `exec --json` summary also says where the run came from (`src/provenance.rs`; `cargo xtask
 m1-exit` items 3 and 4 read it): `commit`, `dirty`, `commit_source` (`git` or `env`), `made_by`
 (host, and the GitHub run and job) and `tree` (git ids of the paths a run depends on). A tree
-copy with no git takes `EP9_SOURCE_COMMIT` (40 hex digits) and `EP9_SOURCE_DIRTY` (`0`/`1`).
+copy with no git takes `EP9_SOURCE_COMMIT` (40 hex digits) and `EP9_SOURCE_DIRTY` (`0`/`1`),
+or else the `.sbx-commit` file that `sbx push-git` writes (`commit_source` `sbx-commit`, not
+dirty). The runner reads these facts before the run and again at the end; when they differ it
+writes `"dirty": true` and `"source_changed_during_run": true`.
 
 `--feedback-threshold <n>` is the number of calls before a function gets its feedback vector
 (H16; default 8, `0` = at the first call, `4294967295` = never), as `ep9 --feedback-threshold`.

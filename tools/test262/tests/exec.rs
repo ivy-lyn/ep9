@@ -204,8 +204,10 @@ fn pass_and_fail_rules() {
 }
 
 /// The JSON names its source (`cargo xtask m1-exit` items 3 and 4, P3-ORCH-14): the commit of
-/// the ep9 tree the runner was built from, its dirty flag (both from git in the repo root) and
-/// the host that ran it.
+/// the ep9 tree the runner was built from, its dirty flag and the host that ran it. In a git
+/// work tree both come from git; in a copy without git (CX5-C6) from `EP9_SOURCE_COMMIT` and
+/// `EP9_SOURCE_DIRTY` when the caller gives them, else from the `.sbx-commit` file of
+/// `sbx push-git`, else the JSON names no commit. The test does not need git to work.
 #[test]
 fn the_json_names_its_commit_dirty_flag_and_host() {
     let root = tree("source");
@@ -214,22 +216,44 @@ fn the_json_names_its_commit_dirty_flag_and_host() {
     let (code, text) = exec(&root, &expect, &["--json", json.to_str().unwrap()], None);
     assert_eq!(code, Some(0), "{text}");
     let summary = std::fs::read_to_string(&json).unwrap();
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let repo = std::fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
+    // `git -C <repo> <args>`, or None when git cannot answer (no git, or no work tree).
     let git = |args: &[&str]| {
         let out = Command::new("git")
             .arg("-C")
             .arg(&repo)
             .args(args)
             .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?}");
-        String::from_utf8(out.stdout).unwrap().trim().to_string()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
     };
-    let head = git(&["rev-parse", "HEAD"]);
-    let dirty = !git(&["status", "--porcelain", "--untracked-files=no"]).is_empty();
-    let want = format!(
-        ",\"commit\":\"{head}\",\"dirty\":{dirty},\"commit_source\":\"git\",\"made_by\":\"host:"
-    );
+    let top = git(&["rev-parse", "--show-toplevel"]).and_then(|t| std::fs::canonicalize(t).ok());
+    let env = |k: &str| std::env::var(k).ok();
+    let want = if top.as_deref() == Some(repo.as_path()) {
+        let head = git(&["rev-parse", "HEAD"]).unwrap();
+        let dirty = !git(&["status", "--porcelain", "--untracked-files=no"])
+            .unwrap()
+            .is_empty();
+        format!(
+            ",\"commit\":\"{head}\",\"dirty\":{dirty},\"commit_source\":\"git\",\"made_by\":\"host:"
+        )
+    } else if let Some(commit) = env("EP9_SOURCE_COMMIT") {
+        let dirty = env("EP9_SOURCE_DIRTY").map(|d| d.trim() == "1");
+        format!(
+            ",\"commit\":\"{}\"{},\"commit_source\":\"env\",\"made_by\":\"host:",
+            commit.trim().to_ascii_lowercase(),
+            dirty.map_or(String::new(), |d| format!(",\"dirty\":{d}"))
+        )
+    } else if let Ok(sbx) = std::fs::read_to_string(repo.join(".sbx-commit")) {
+        format!(
+            ",\"commit\":\"{}\",\"dirty\":false,\"commit_source\":\"sbx-commit\",\"made_by\":\"host:",
+            sbx.trim().to_ascii_lowercase()
+        )
+    } else {
+        ",\"commit_source\":\"env\",\"made_by\":\"host:".to_string()
+    };
     assert!(summary.contains(&want), "{want}: {summary}");
     std::fs::remove_dir_all(root).unwrap();
 }
