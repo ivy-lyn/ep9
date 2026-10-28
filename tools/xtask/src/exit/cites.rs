@@ -8,15 +8,19 @@
 //!    `<name> = `<path>`` pair. A name that ends in `nn` with a `*` path (`Hnn`) is a family:
 //!    `H31` is the one file of the family's dir whose name starts with `H31-`.
 //! 2. The base is the commit the header names right after `Cites at ` (`- Cites at <sha> ...`).
-//!    A header that names none there (the text "the M4-P4 merge head") falls back to the last
-//!    commit that changed doc 13, and a `note:` line says so.
+//!    A header that names none there (the text "the M4-P4 merge head"), or names one that is not
+//!    a commit here, falls back to the last commit that changed doc 13, and a BASE finding says
+//!    so: that base moves with every doc 13 edit, so it can hide an older move.
 //! 3. The cites are those above the `## 12.` heading: the header puts section 12 (the critique
 //!    record) outside the "names the line there" rule, and section 13 is the history of earlier
 //!    cite moves (old numbers on purpose).
 //! 4. Each cited line (both ends of a range) at the base is compared with the same line at HEAD.
 //!    A different line is MOVED when the base text (trimmed, not blank) is exactly one line of
 //!    the file at HEAD (the report names the new number), else CHANGED (the text was edited or
-//!    removed). A cite past the end of its file at the base is BAD AT BASE.
+//!    removed). A cite past the end of its file at the base is BAD AT BASE. With a fallback base
+//!    a MOVED line is NOT AT BASE LINE and names no new number: the cite may have been wrong at
+//!    that base already (verifier r1 F2: `golden:334` named another line there). A cite whose
+//!    file is missing at HEAD (a family name with no file) is NO FILE.
 //!
 //! The part is report only while [`GATE`] is false: its lines start with `note: ` and do not
 //! change the result. The orchestrator sets [`GATE`] after the doc 13 fix of MC-w16-2 is merged.
@@ -28,8 +32,8 @@ use std::path::Path;
 /// The doc whose short cites are checked.
 pub(crate) const DOC: &str = "docs/plan/13-execution-modes.md";
 
-/// False: report only (MC-w16-8, until the MC-w16-2 fix is merged). True: a MOVED, CHANGED or
-/// BAD AT BASE line fails adr-lint.
+/// False: report only (MC-w16-8, until the MC-w16-2 fix is merged). True: a finding (MOVED,
+/// NOT AT BASE LINE, CHANGED, BAD AT BASE, NO FILE, BASE) fails adr-lint.
 pub(crate) const GATE: bool = false;
 
 /// The result of the short-cite check.
@@ -37,7 +41,8 @@ pub(crate) const GATE: bool = false;
 pub(crate) struct Cites {
     /// The cites read (both ends of a range count).
     pub(crate) total: usize,
-    /// One line per cite that does not name the same line at HEAD.
+    /// One line per cite that does not name the same line at HEAD, and a BASE line when the
+    /// header names no base commit.
     pub(crate) findings: Vec<String>,
     /// Notes: the base and where it came from, unknown names.
     pub(crate) notes: Vec<String>,
@@ -50,7 +55,7 @@ impl Cites {
 
     pub(crate) fn summary(&self) -> String {
         format!(
-            "{DOC}: {} short cites, {} not on the same line at HEAD{}",
+            "{DOC}: {} short cites, {} findings{}",
             self.total,
             self.findings.len(),
             if GATE { "" } else { " (report only, MC-w16-8)" }
@@ -188,8 +193,10 @@ fn cites_in(line: &str, forms: &[(String, Form)]) -> Vec<Cite> {
     out
 }
 
-/// The commit of the doc header's `Cites at <sha>`, else the last commit that changed the doc.
-fn base_commit(root: &Path, doc: &str, notes: &mut Vec<String>) -> Result<String, String> {
+/// The base of the check: (commit, named). `named` is true for the commit of the doc header's
+/// `Cites at <sha>`; else the base is the last commit that changed the doc, and a BASE finding
+/// says why (no sha there, or one that is not a commit here).
+fn base_commit(root: &Path, doc: &str, out: &mut Cites) -> Result<(String, bool), String> {
     let named = doc
         .lines()
         .find_map(|l| l.strip_prefix("- Cites at "))
@@ -198,19 +205,37 @@ fn base_commit(root: &Path, doc: &str, notes: &mut Vec<String>) -> Result<String
     if let Some(t) = named
         && let Some(full) = git(root, &["rev-parse", "--verify", &format!("{t}^{{commit}}")])
     {
-        notes.push(format!(
+        out.notes.push(format!(
             "short cites: base {} (the doc 13 header: \"Cites at {t}\")",
             &full[..full.len().min(12)]
         ));
-        return Ok(full);
+        return Ok((full, true));
     }
     let last = git(root, &["log", "-1", "--format=%H", "--", DOC])
         .ok_or_else(|| format!("no commit changed {DOC}"))?;
-    notes.push(format!(
-        "short cites: the {DOC} header names no commit after \"Cites at \"; base = the last commit that changed it, {}",
+    let why = match named {
+        Some(t) => {
+            format!("names `{t}` after \"Cites at \", which is not a commit in this repository")
+        }
+        None => "names no commit after \"Cites at \"".to_string(),
+    };
+    out.findings.push(format!(
+        "SHORT CITE BASE: the {DOC} header {why}; base = the last commit that changed it, {} (it moves with every doc edit and can hide an older move: name the base in the header)",
         &last[..last.len().min(12)]
     ));
-    Ok(last)
+    Ok((last, false))
+}
+
+/// The short-cite part of adr-lint: [`short_cites`]; while report only ([`GATE`] false) an error
+/// is a note, so it cannot stop the other parts (verifier r1 F6).
+pub(crate) fn part(root: &Path) -> Result<Cites, String> {
+    match short_cites(root) {
+        Err(e) if !GATE => Ok(Cites {
+            notes: vec![format!("short cites: not checked: {e}")],
+            ..Cites::default()
+        }),
+        r => r,
+    }
 }
 
 /// The short-cite check over the work tree's doc 13 (module doc). A tree without doc 13 has no
@@ -230,7 +255,7 @@ pub(crate) fn short_cites(root: &Path) -> Result<Cites, String> {
             .push(format!("short cites: {DOC} has no \"- Short forms:\" line"));
         return Ok(out);
     }
-    let base = base_commit(root, &doc, &mut out.notes)?;
+    let (base, named) = base_commit(root, &doc, &mut out)?;
     let short_base = &base[..base.len().min(7)];
     // The files of each family dir at HEAD.
     let mut dirs: HashMap<String, Vec<String>> = HashMap::new();
@@ -271,10 +296,14 @@ pub(crate) fn short_cites(root: &Path) -> Result<Cites, String> {
                 None => None,
             };
             let Some(file) = file else {
-                out.notes.push(format!(
-                    "short cites: doc13:{} {name}:{n}: no file for {name} at HEAD",
-                    i + 1
-                ));
+                // A renamed or deleted ADR: the cite names nothing (verifier r1 F6).
+                for k in std::iter::once(n).chain(end) {
+                    out.total += 1;
+                    out.findings.push(format!(
+                        "SHORT CITE NO FILE doc13:{} {name}:{k}: no file for {name} at HEAD",
+                        i + 1
+                    ));
+                }
                 continue;
             };
             let (b, h) = (show(&base, &file), show("HEAD", &file));
@@ -311,7 +340,7 @@ pub(crate) fn short_cites(root: &Path) -> Result<Cites, String> {
                 // the cite still names its row, so this is a note, not a finding.
                 if hits.is_empty()
                     && let Some(lh) = &lh
-                    && same_row(text, lh.trim())
+                    && same_row(text, lh.trim(), b.as_deref(), h.as_deref())
                 {
                     out.notes.push(format!(
                         "short cite EDITED {cite}: the same table row, its text changed since {short_base} (read it once): {clip}"
@@ -319,7 +348,10 @@ pub(crate) fn short_cites(root: &Path) -> Result<Cites, String> {
                     continue;
                 }
                 out.findings.push(match hits.as_slice() {
-                    [m] => format!("SHORT CITE MOVED {cite} -> {name}:{m} (same text as at {short_base}): {clip}"),
+                    [m] if named => format!("SHORT CITE MOVED {cite} -> {name}:{m} (same text as at {short_base}): {clip}"),
+                    // A fallback base may not be the commit the cite was written for: its line
+                    // there proves nothing, so name no target.
+                    [_] => format!("SHORT CITE NOT AT BASE LINE {cite}: its text at {short_base} is on another line at HEAD (fallback base: the cite may have been wrong already; find the line by hand): {clip}"),
                     _ => format!(
                         "SHORT CITE CHANGED {cite}: the line at {short_base} is {} at HEAD: {clip}",
                         if hits.is_empty() { "not in the file".to_string() } else { format!("on {} lines", hits.len()) }
@@ -331,15 +363,26 @@ pub(crate) fn short_cites(root: &Path) -> Result<Cites, String> {
     Ok(out)
 }
 
-/// Two table rows with the same first cell (not blank).
-fn same_row(a: &str, b: &str) -> bool {
-    let first = |l: &str| {
-        l.strip_prefix('|')
-            .and_then(|r| r.split_once('|'))
-            .map(|(c, _)| c.trim().to_string())
-            .filter(|c| !c.is_empty())
+/// The first cell of a table row (not blank).
+fn first_cell(l: &str) -> Option<&str> {
+    l.trim()
+        .strip_prefix('|')
+        .and_then(|r| r.split_once('|'))
+        .map(|(c, _)| c.trim())
+        .filter(|c| !c.is_empty())
+}
+
+/// Two table rows with the same first cell (not blank), and that first cell names one row only
+/// in the file at the base and at HEAD: with two rows of that cell, the cited row may have moved
+/// and the other taken its line (verifier r1 F6).
+fn same_row(a: &str, b: &str, base: Option<&[String]>, head: Option<&[String]>) -> bool {
+    let Some(key) = first_cell(a) else {
+        return false;
     };
-    first(a).is_some() && first(a) == first(b)
+    let once = |v: Option<&[String]>| {
+        v.is_some_and(|v| v.iter().filter(|l| first_cell(l) == Some(key)).count() == 1)
+    };
+    first_cell(b) == Some(key) && once(base) && once(head)
 }
 
 /// The raw stdout of `git show <spec>` (blank lines kept), or None.
@@ -527,10 +570,7 @@ mod tests {
         // Report only: the part passes and each line is a note.
         assert_eq!(c.pass(), !GATE);
         assert!(c.lines().iter().all(|l| l.starts_with("note: ") || GATE));
-        assert!(
-            c.summary()
-                .contains("6 short cites, 4 not on the same line at HEAD")
-        );
+        assert!(c.summary().contains("6 short cites, 4 findings"));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -552,30 +592,143 @@ mod tests {
         write(&root, "docs/adr/H02-x.md", "zero\none\n");
         commit(&root, "later");
         let c = short_cites(&root).unwrap();
+        assert_eq!(c.findings.len(), 4, "{:?}", c.findings);
+        // The fallback base is a finding (verifier r1 F6).
         assert!(
-            c.notes.iter().any(|n| n.contains(&format!(
-                "base = the last commit that changed it, {}",
+            c.findings[0].starts_with(&format!(
+                "SHORT CITE BASE: the {DOC} header names no commit after \"Cites at \"; base = the last commit that changed it, {}",
                 &doc_commit[..12]
-            ))),
+            )),
             "{:?}",
-            c.notes
+            c.findings
         );
+        // With a fallback base, a moved line names no target: the cite may have been wrong at
+        // that base already (verifier r1 F2).
         assert!(
-            c.notes.iter().any(|n| n.contains("H09:1: no file for H09")),
+            c.findings[1].starts_with("SHORT CITE NOT AT BASE LINE doc13:6 H02:1: its text at "),
             "{:?}",
-            c.notes
+            c.findings
         );
-        assert_eq!(c.findings.len(), 2, "{:?}", c.findings);
+        assert!(!c.findings[1].contains("->"), "{:?}", c.findings);
+        assert!(
+            c.findings[2].starts_with("SHORT CITE BAD AT BASE doc13:6 H02:7"),
+            "{:?}",
+            c.findings
+        );
+        // A family name with no file at HEAD is a finding, not a note (verifier r1 F6).
+        assert_eq!(
+            c.findings[3],
+            "SHORT CITE NO FILE doc13:6 H09:1: no file for H09 at HEAD"
+        );
+        assert_eq!(c.total, 3);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A header sha that is not a commit here is a BASE finding, not a silent fallback; a
+    /// header sha that is one gives MOVED with its target (verifier r1 F2, F6).
+    #[test]
+    fn a_header_sha_must_resolve() {
+        let root = repo("badsha");
+        write(&root, "docs/adr/H02-x.md", "one\n");
+        let body = "\nH02:1.\n";
+        write(
+            &root,
+            DOC,
+            &format!("{}{body}", HEADER.replace("{BASE}", "abcdef1")),
+        );
+        let doc_commit = commit(&root, "doc");
+        let c = short_cites(&root).unwrap();
+        assert_eq!(c.findings.len(), 1, "{:?}", c.findings);
+        assert!(
+            c.findings[0].starts_with(&format!(
+                "SHORT CITE BASE: the {DOC} header names `abcdef1` after \"Cites at \", which is not a commit in this repository; base = the last commit that changed it, {}",
+                &doc_commit[..12]
+            )),
+            "{:?}",
+            c.findings
+        );
+        // Named and resolved: the move names its target.
+        write(&root, "docs/adr/H02-x.md", "zero\none\n");
+        write(
+            &root,
+            DOC,
+            &format!("{}{body}", HEADER.replace("{BASE}", &doc_commit[..7])),
+        );
+        commit(&root, "move");
+        let c = short_cites(&root).unwrap();
+        assert_eq!(c.findings.len(), 1, "{:?}", c.findings);
         assert!(
             c.findings[0].starts_with("SHORT CITE MOVED doc13:6 H02:1 -> H02:2"),
             "{:?}",
             c.findings
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Two rows with one first cell: an edit at the cited line is not EDITED, because the cited
+    /// row may have moved and the other taken its line (verifier r1 F6).
+    #[test]
+    fn edited_needs_a_unique_first_cell() {
+        let root = repo("rows");
+        write(
+            &root,
+            "docs/adr/README.md",
+            "a\nb\nc\n| Poll | one unit |\n| Poll | other |\n",
+        );
+        write(
+            &root,
+            DOC,
+            &format!("{}\nAR:4.\n", HEADER.replace("{BASE}", "0000000")),
+        );
+        let base = commit(&root, "base");
+        write(
+            &root,
+            DOC,
+            &format!("{}\nAR:4.\n", HEADER.replace("{BASE}", &base[..7])),
+        );
+        // The cited row moves below the other one and is edited.
+        write(
+            &root,
+            "docs/adr/README.md",
+            "a\nb\nc\n| Poll | other |\n| Poll | one unit, edited |\n",
+        );
+        commit(&root, "swap");
+        let c = short_cites(&root).unwrap();
         assert!(
-            c.findings[1].starts_with("SHORT CITE BAD AT BASE doc13:6 H02:7"),
+            !c.notes.iter().any(|n| n.contains("EDITED")),
+            "{:?}",
+            c.notes
+        );
+        assert_eq!(c.findings.len(), 1, "{:?}", c.findings);
+        assert!(
+            c.findings[0].starts_with("SHORT CITE CHANGED doc13:6 AR:4"),
             "{:?}",
             c.findings
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// While report only, an error of the check is a note, so adr-lint's other parts still run
+    /// (verifier r1 F6): here doc 13 is in the tree but no commit has it.
+    #[test]
+    fn an_error_is_a_note_while_report_only() {
+        let root = repo("err");
+        write(&root, "x.txt", "x\n");
+        commit(&root, "first");
+        write(&root, DOC, &HEADER.replace("{BASE}", "no sha"));
+        assert!(short_cites(&root).is_err());
+        let p = part(&root);
+        if GATE {
+            assert!(p.is_err(), "{p:?}");
+        } else {
+            let c = p.unwrap();
+            assert!(c.pass());
+            assert!(
+                c.notes[0].starts_with("short cites: not checked: no commit changed"),
+                "{:?}",
+                c.notes
+            );
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -106,7 +106,7 @@ pub(crate) fn full(root: &Path, base: &str) -> Result<Lint, String> {
     let rec = records::records(root, &base_sha)?;
     let (counts_line, from_files, count_findings) = records::counts(root)?;
     let d = drift::drift(root)?;
-    let sc = cites::short_cites(root)?;
+    let sc = cites::part(root)?;
     let mut text = String::new();
     // Part 1 prints its own summary line last.
     text.push_str(&t.text);
