@@ -17,6 +17,10 @@
 #   FUZZ_LOG_DIR    default fuzz/logs              FUZZ_SUMMARY   write a JSON summary here
 #   FUZZ_TIMEOUT    seconds per input (default 30) FUZZ_MAX_LEN   -max_len (default 4096)
 #
+# The summary (numbers, names and hashes only) is the input of fuzz/scripts/record.sh --run:
+# "seconds" is the measured wall time of the run, "workers" the -fork workers (1 without fork),
+# "binary_sha256" the SHA-256 of the target binary that ran (null when it is not found).
+#
 # Exit 0: no crash file and libFuzzer exit 0. Exit 1: a fixed text and the hashes only.
 # A crash file is every artifact file except libFuzzer's `slow-unit-*` (an input that took at
 # least -report_slow_units seconds, default 10, but less than -timeout): those are listed with
@@ -130,9 +134,18 @@ grep -E '^(stat::[a-z_]+|INFO: Seed): [0-9]+$' "$log" | sed 's/^/  /'
 if [ -n "${FUZZ_SUMMARY:-}" ]; then
   case "$FUZZ_SUMMARY" in /*) summary="$FUZZ_SUMMARY" ;; *) summary="$caller_dir/$FUZZ_SUMMARY" ;; esac
   execs="$(grep -E '^stat::number_of_executed_units: [0-9]+$' "$log" | tail -1 | sed 's/.*: //')"
+  workers=1
+  [ "$fork" -gt 0 ] 2>/dev/null && workers="$fork"
+  # cargo fuzz builds <target> for the host triple in release mode (cargo-fuzz 0.12 defaults).
+  host="$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')"
+  bin_sha=null
+  if [ -n "$host" ] && [ -f "target/$host/release/$target" ]; then
+    bin_sha="\"$(sha256 "target/$host/release/$target")\""
+  fi
   {
-    printf '{"tool":"cargo-fuzz","target":"%s","mode":"%s","seconds":%s,"fork":%s,' \
-      "$target" "$mode" "$secs" "$fork"
+    printf '{"tool":"cargo-fuzz","target":"%s","mode":"%s","seconds":%s,"fork":%s,"workers":%s,' \
+      "$target" "$mode" "$secs" "$fork" "$workers"
+    printf '"binary_sha256":%s,' "$bin_sha"
     printf '"libfuzzer_exit":%s,"executed_units":%s,"crashes":%s,"crash_sha256":[' \
       "$rc" "${execs:-null}" "$n"
     sep=""
