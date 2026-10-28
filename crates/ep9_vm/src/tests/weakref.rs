@@ -120,18 +120,35 @@ fn alive(rt: &Runtime, h: WeakHandle) -> bool {
     below_a_pad(|| black_box(rt.heap.weak(h)).is_some())
 }
 
-/// A full collection after a stack scrub.
-#[inline(never)]
+/// A full collection after a stack scrub (rule 35: the scrub runs in the test's own frame,
+/// before and after). Inlined, so the zeros of the first scrub also lie under the frame of
+/// [`gc_now`]: an out-of-line helper's own frame is not under its own scrub, and a slot that
+/// it never writes (on Win64 the home space it gives its callees) keeps what the last call at
+/// that depth left there (`tests/ordered_table.rs` `collect`: CI run 40733504045).
+#[inline(always)]
 fn collect(iso: &Isolate) {
     scrub_stack();
-    iso.rt.heap.collect();
+    gc_now(iso, false);
+    scrub_stack();
 }
 
-/// A minor collection (S1 on) after a stack scrub.
-#[inline(never)]
+/// A minor collection (S1 on) after a stack scrub, as [`collect`].
+#[inline(always)]
 fn collect_young(iso: &Isolate) {
     scrub_stack();
-    iso.rt.heap.collect_minor();
+    gc_now(iso, true);
+    scrub_stack();
+}
+
+/// A collection (minor if `minor`), out of line, so that its frames lie on the zeros of the
+/// caller's scrub.
+#[inline(never)]
+fn gc_now(iso: &Isolate, minor: bool) {
+    if minor {
+        iso.rt.heap.collect_minor();
+    } else {
+        iso.rt.heap.collect();
+    }
 }
 
 /// Runs `f` with a builtin-ABI context of `iso`, below a pad.
