@@ -21,6 +21,7 @@ mod index;
 mod json;
 mod parse;
 mod pool;
+mod provenance;
 mod suite;
 
 /// The target triple this binary was built for (from build.rs).

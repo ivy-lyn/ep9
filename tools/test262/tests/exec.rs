@@ -203,6 +203,37 @@ fn pass_and_fail_rules() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// The JSON names its source (`cargo xtask m1-exit` items 3 and 4, P3-ORCH-14): the commit of
+/// the ep9 tree the runner was built from, its dirty flag (both from git in the repo root) and
+/// the host that ran it.
+#[test]
+fn the_json_names_its_commit_dirty_flag_and_host() {
+    let root = tree("source");
+    let expect = expect_file(&root, FAILING);
+    let json = root.join("summary.json");
+    let (code, text) = exec(&root, &expect, &["--json", json.to_str().unwrap()], None);
+    assert_eq!(code, Some(0), "{text}");
+    let summary = std::fs::read_to_string(&json).unwrap();
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    let head = git(&["rev-parse", "HEAD"]);
+    let dirty = !git(&["status", "--porcelain", "--untracked-files=no"]).is_empty();
+    let want = format!(
+        ",\"commit\":\"{head}\",\"dirty\":{dirty},\"commit_source\":\"git\",\"made_by\":\"host:"
+    );
+    assert!(summary.contains(&want), "{want}: {summary}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// The JSON names the skipped tests, not only their count: `cargo xtask m0-exit` item 6 checks
 /// that a GC-stress run skipped exactly the committed skip list (M2-P2-RF2-I8).
 #[test]
