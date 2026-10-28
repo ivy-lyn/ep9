@@ -26,6 +26,10 @@
 //! doc 13 pointers such as the FR0 row H31:90): a finding fails adr-lint and so m1-exit item 6.
 //! With [`GATE`] false the part is report only: its lines start with `note: `, an error is a
 //! note, and the result does not change.
+//!
+//! To fix a MOVED finding takes two commits, because a commit cannot name itself: first commit
+//! the change that moves the line; then change the cite numbers and set `Cites at` to the sha of
+//! that first commit.
 
 use super::{git, read};
 use std::collections::HashMap;

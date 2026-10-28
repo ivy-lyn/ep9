@@ -33,7 +33,7 @@
 // of another type, NaN, an infinity or undefined never hashes as a number or string node gave.
 //
 // The JSON keeps what m1-exit needs for "15/15 on a fresh tree": the commit, the git tree ids
-// of crates, tools/bench, Cargo.lock and rust-toolchain.toml at HEAD, and the paths among them
+// of crates, tools/bench, the root Cargo.toml, Cargo.lock and rust-toolchain.toml at HEAD, and the paths among them
 // with uncommitted changes (`dirty`; not fresh when it is not empty).
 //
 // Exit status: 0 every kernel ran with node's output (kernels on --not-yet may fail); 1 a kernel

@@ -569,7 +569,7 @@ Exit-record content. Only tag values are reserved now. The record format (bytes 
 
 **Kind C: the hybrid part (F9).** Hybrid ships only if K-A4P passes at M8 exit (P05:380). H33 says a failed K-A4P removes the hybrid rows, "a rewrite" (H33:99). So the hybrid-only rows freeze at K-A4P, as H33-Q5 already does for the threshold (H33:84): lowering `hybrid` and its acceptance rule (H32), the hybrid PIN + re-tier rule and the rule that lifts PIN (H32, H33), budget counters for re-tier (H33), the hybrid preset (text). If K-A4P fails, the part is removed before its freeze point, which AR:84 does not count.
 
-- Decided (MODES-D1): this is the reading of AR:84. The orchestrator adds the rows to the AR §3.4 table in M4-P5, and an agent of another plan role approves them (C-13; AR:68). AR:84 already allows it, so this is a table fill, not a new AR §3.3 clause.
+- Decided (MODES-D1): this is the reading of AR:84. The orchestrator adds the rows to the AR §3.4 table in M4-P5, and an agent of another plan role approves them (C-13; AR:68). AR:84 already allows it, so this is a table fill, not a new AR §3.3 clause. [Revised 2026-10-28, M4-P5 (plan v9 §7 step 1, MC-w16-12): DOCS writes the rows and the orchestrator approves them; see the C-13 Route cell and the §8 M4-P5 row.]
 
 ---
 

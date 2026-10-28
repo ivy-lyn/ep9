@@ -121,7 +121,7 @@ jobs:
       - run: node --test tools/bench/workloads/t0-dispatch.test.mjs
       # M1 exit item 6 (plan v9 rule 26, section 5.6), last so a finding hides no check above:
       # `cargo xtask adr-lint` (tools/xtask/src/adr_lint.rs) over m0-exit..HEAD: ADR trailers,
-      # review records, README Counts, path:line drift. HEAD is the checked-out tree, so on
+      # review records, README Counts, path:line drift and the doc 13 short cites. HEAD is the checked-out tree, so on
       # pull_request it is GitHub's refs/pull/N/merge commit: the merge result, so drift that the
       # base branch brings in fails too. That clean 2-parent merge has no trailer and needs none:
       # a merge touches only the paths where its tree differs from `git merge-tree --write-tree`

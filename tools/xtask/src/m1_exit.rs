@@ -28,7 +28,7 @@
 //! | 3 | exec JSON: no GC-stress, 0 infra, `language/` >= 85% of the whole `test/language` dir of this tree's test262 checkout; a fresh, named input (below) | step `test262 exec` green; passed = total (host exec JSON) - the `test/language/` lines of the Windows expectation file |
 //! | 4 | GC JSONs (one run, or every shard of one split, each once): `gc_stress` > 0, `timeout_ms` <= 60000, `feedback_threshold` 0, S1 on (`"generational": true`), verify cadence 1 (`"verify_cadence": 1`; the row prints it), 0 infra, the whole corpus, the skipped tests = the committed skip list; the same pass set: with `--exec`, no test that passes there fails under GC-stress; without it, 0 new failures against the committed expectation file. The row prints the skip-list size and FAILs if it grew since `--base` without a `docs/decisions-log.md` line that names each added path (V9-A19, V9-A24); each GC JSON a fresh, named input (below), all of one commit, the `--exec` JSON of that commit too | every job `test262 GC-stress (windows-x64, k/n)` once, its step `test262 exec, GC-stress ...` green, and the step name says `S1` (else OPEN) |
 //! | 5 | fuzz records: Fuzzilli >= 100 CPU-h and cargo-fuzz >= 24 CPU-h (counted records, each campaign once: a file given twice or a second record of a `campaign` id adds nothing; a counted record with no `campaign` id is not counted, OPEN), 0 open unique crashes; a counted record names a full commit id (40 hex digits), and a counted Fuzzilli record is fresh in `crates`, `Cargo.lock`, `rust-toolchain.toml` (V9-A30), a counted cargo-fuzz record in `crates/ep9_frontend`, `fuzz`, `Cargo.lock` (else OPEN) | repo-wide, as the host |
-//! | 6 | `adr-lint --base <rev>` passes (all four parts) | repo-wide, as the host |
+//! | 6 | `adr-lint --base <rev>` passes (all five parts; part 5, the doc 13 short cites, gates from M4-P5) | repo-wide, as the host |
 //! | 7 | the Spike C verdict is GO (no condition); H2, H14, H16, H17, H18, H19 Frozen, part by part (`exit::freeze`) | repo-wide, as the host |
 //! | 8 | nesting log: the 7 `depth_tests::m1_*` tests, `caps_hold_end_to_end` and `every_m1_form_is_listed` ok, each in a cargo run that exited 0, no cargo failure line, every run with its start and exit-status lines; a fresh, named input: its `m1-exit source:` line (below) | step `cargo test --workspace --locked` of `build + test (windows-x64)` green |
 //! | 9 | H29-H34 Frozen, each part of its Freeze table that freezes by M1 exit (an append-only list is open, a later gate is not due; MC-w14-15) | repo-wide, as the host |
@@ -751,7 +751,9 @@ fn kernels_cell(root: &Path, host: &str, p: &Path, j: &Json) -> Cell {
     let commit = j.get("commit").and_then(Json::str).unwrap_or("unknown");
     let mut fresh = Vec::new();
     // The tree ids prove the code; the commit must still be a full id (M4-P5 C3).
-    if !is_full_sha(commit) {
+    if j.get("commit").is_none() {
+        fresh.push("it names no ep9 commit".to_string());
+    } else if !is_full_sha(commit) {
         fresh.push(format!(
             "its commit {commit:?} is not a commit id (40 hex digits)"
         ));
@@ -1940,7 +1942,7 @@ mod tests {
         v
     }
 
-    /// A fake repo (a git work tree) with the fixture ADR README and spike review, the four fresh
+    /// A fake repo (a git work tree) with the fixture ADR README and spike review, the five fresh
     /// paths, a small test262 checkout, the expectation and skip files; tagged `m0-exit`.
     fn fake_repo(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("ep9-m1-exit-{}-{name}", std::process::id()));
