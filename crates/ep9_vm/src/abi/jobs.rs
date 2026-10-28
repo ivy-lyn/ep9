@@ -233,7 +233,7 @@ impl<'s> Cx<'s> {
                 // checkpoint. A callback may queue jobs: they run in this checkpoint. Each
                 // callback takes a budget unit and polls (`cleanup_finalization_registries`).
                 self.clear_kept_objects();
-                if let Err(t) = self.cleanup_then_poll_a_stopped_walk() {
+                if let Err(t) = self.cleanup_finalization_registries() {
                     if rt.terminating.get() {
                         self.clear_queue();
                     }
@@ -279,20 +279,6 @@ impl<'s> Cx<'s> {
     fn checkpoint_exit(&mut self, t: Throw) -> Throw {
         self.clear_kept_objects();
         t
-    }
-
-    /// The cleanup jobs ([`Cx::cleanup_finalization_registries`]), then, if a cleanup list
-    /// walk stopped at a termination request (`weakref::walk_step`), a poll with no budget
-    /// left, so the termination ends the checkpoint at once (`Err`). Without that poll a
-    /// checkpoint whose walk stopped, with no job queued, would serve the pending cleanup
-    /// again and again, each run stopping at its first walk poll.
-    fn cleanup_then_poll_a_stopped_walk(&mut self) -> JsResult<()> {
-        self.cleanup_finalization_registries()?;
-        if self.rt().kept_objects.walk_stopped() {
-            self.cx.budget = 0;
-            return self.poll_interrupt();
-        }
-        Ok(())
     }
 
     /// Drops every queued job (a termination: no job runs after it, as V8 drops its

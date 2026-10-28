@@ -20,6 +20,7 @@
 //! | `a_minor_gc_clears_a_young_target` | with S1 on, a minor collection clears a young target and the hook calls back |
 //! | `wrong_receivers_throw` | RequireInternalSlot TypeErrors, also for a hand-made object of the class |
 //! | `a_cleanup_walk_stops_at_a_termination_request_with_its_lists_whole` | (M5-P1 GC5) a cleanup walk polls every `WALK_POLL_CELLS` cells; at a termination request it stops with CELLS and CLEARED whole, notes the stop, keeps the cleanup pending; the next run moves and serves the rest, each cell once |
+//! | `a_stopped_unlink_walk_ends_a_direct_cleanup_call_with_the_termination` | (M5-P1 fixer round 4, Codex R2) a termination seen while the walk unlinks dead registries, with no cell to serve, ends a direct `cleanup_finalization_registries` call (`Isolate::with_cx`, no checkpoint) with the termination; the next call unlinks the rest |
 
 use core::cell::{Cell, RefCell};
 use std::hint::black_box;
@@ -623,6 +624,60 @@ fn a_cleanup_walk_stops_at_a_termination_request_with_its_lists_whole() {
                 "generational={generational}"
             );
             iso.rt.heap.drop_global(r);
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
+}
+
+/// A walk that stops at a termination request ends the cleanup call at once, also when no
+/// cell waits in CLEARED and outside a checkpoint (M5-P1 fixer round 4; Codex R2
+/// "Propagate walk termination without requiring a callback"). 3,000 registries die with no
+/// cell, so `unlink_dead_registries` reaches its poll (every [`weakref::WALK_POLL_CELLS`]
+/// links) and stops there; no callback is to run. A direct call through `Isolate::with_cx`
+/// must give the termination (`Err`, `terminated`) and leave no termination request for the
+/// next run. The next call (the request gone) unlinks the rest. Without stress (3,000
+/// registries), S0 and S1.
+#[test]
+fn a_stopped_unlink_walk_ends_a_direct_cleanup_call_with_the_termination() {
+    use core::sync::atomic::Ordering;
+    const REGISTRIES: usize = 3000;
+    for generational in [false, true] {
+        on_big_stack(move || {
+            let mut iso = isolate(cfg(false, generational));
+            iso.register_host_function("cb", 1, cb);
+            take_log();
+            for _ in 0..REGISTRIES {
+                let r = new_registry(&mut iso, "cb");
+                iso.rt.heap.drop_global(r);
+            }
+            collect(&iso);
+            let terminate = crate::interp::interrupt::TERMINATE;
+            iso.rt.terminate.fetch_or(terminate, Ordering::SeqCst);
+            let r = iso.with_cx(|cx| cx.cleanup_finalization_registries());
+            let label = format!("generational={generational}");
+            assert!(
+                matches!(&r, Err(e) if e.terminated),
+                "the stopped walk ends the call with the termination: {r:?} ({label})"
+            );
+            assert_eq!(
+                iso.rt.terminate.load(Ordering::SeqCst) & terminate,
+                0,
+                "no termination request is left for the next run ({label})"
+            );
+            assert!(iso.rt.kept_objects.is_pending(), "{label}");
+            assert_ne!(
+                iso.rt.kept_objects.registries(),
+                UNDEFINED,
+                "the walk stopped with dead links left ({label})"
+            );
+            // The next call unlinks the rest and serves nothing.
+            assert_eq!(
+                iso.with_cx(|cx| cx.cleanup_finalization_registries()),
+                Ok(())
+            );
+            assert_eq!(iso.rt.kept_objects.registries(), UNDEFINED, "{label}");
+            assert_eq!(take_log(), Vec::<i32>::new(), "{label}");
             iso.collect_garbage();
             iso.verify_heap().unwrap();
         });

@@ -188,9 +188,10 @@ impl<'s> Cx<'s> {
     /// interrupt budget unit and polls before it runs, as a job does ([`Cx::poll_interrupt`];
     /// a builtin callback such as `Boolean` runs no poll of its own; M4-P4 P4-ORCH-8, Codex
     /// C2-1), so an interrupt callback runs and a termination stops the run; a list walk that
-    /// stopped at a termination request (`weakref::walk_step`) runs no callback. A callback that
-    /// throws, or a termination, stops the run with its exception (`Err`); the cells not yet
-    /// done stay, and the next call does them. Only with no JS on the stack (as
+    /// stopped at a termination request (`weakref::walk_step`) runs no callback and ends the
+    /// run with the termination (`Err`). A callback that throws, or a termination, stops the
+    /// run with its exception (`Err`); the cells not yet done stay, and the next call does
+    /// them. Only with no JS on the stack (as
     /// [`Cx::perform_microtask_checkpoint`]): from a host function it throws an Error and runs
     /// nothing. The job loop calls it after the job queue is empty and after
     /// [`Cx::clear_kept_objects`]; jobs that a callback queues run after it. It is also the
@@ -215,9 +216,12 @@ impl<'s> Cx<'s> {
             link = weakref::next(link);
         }
         // A walk that stopped at a termination request (`weakref::walk_step`): no callback
-        // runs after it, so the first poll below ends the run with the termination.
+        // runs after it. A poll with no budget left ends the run with the termination at once
+        // (`Err`), also when no cell is in CLEARED (a stop while dead registries are unlinked)
+        // and also for a direct call outside a checkpoint. The rest stays pending.
         if rt.kept_objects.walk_stopped() {
             self.cx.budget = 0;
+            return self.poll_interrupt();
         }
         // The callbacks. Each one may run any JS and collect, so every read is fresh; `link`
         // and `fr` live in Rust locals (CSS), so the registry stays alive while it is served.
