@@ -410,6 +410,7 @@ embed (not core): pub const SMI_FIELD_IN_OBJECT: i32
 embed (not core): pub const SMI_KIND_MASK: i32
 embed (not core): pub const SMI_SHIFT: u32
 embed (not core): pub const THREADED_HANDLERS: usize
+embed (not core): pub const VM_LAYOUT_VERSION: u32
 embed (not core): pub const fn fp_param(u32) -> isize
 embed (not core): pub const fn fp_register(u32) -> isize
 embed (not core): pub const fn int32_bits(i32) -> u64

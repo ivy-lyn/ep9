@@ -28,3 +28,13 @@ pub const FRAME_VERSION: u32 = 2;
 pub const BUILTIN_ABI_VERSION: u32 = 1;
 /// Deoptimization metadata (H29): none exists yet.
 pub const DEOPT_META_VERSION: u32 = 0;
+/// The VM layout (C-18, doc 13 C-18; MC-w15-5: one owner per fact): the layout facts native
+/// code bakes in that no other version owns. They are the interpreter `Cx` field offsets
+/// (`layout::CX_*`), the FunctionInfo offsets (`layout::FI_*`, `FI_FEEDBACK` included) and the
+/// RuntimeTable offsets (`layout::RT_*`) with the table's length. 1 (M5-P0): `Cx` has no
+/// `proto_epoch`, and `native_limit`, `runtime_table` and `unit_data` exist in every build (they
+/// were `spike-native` only), so the `Cx` layout no longer depends on the features; the
+/// RuntimeTable has 11 entries (entry 10 `deopt`, M5-P0). Frame offsets belong to
+/// [`FRAME_VERSION`], cell and kind facts to [`OBJECT_LAYOUT_VERSION`], IC data to
+/// [`IC_LAYOUT_VERSION`] and Value bits to the value encoding (`ep9_value`).
+pub const VM_LAYOUT_VERSION: u32 = 1;
