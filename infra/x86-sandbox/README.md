@@ -70,6 +70,9 @@ zstd ──> put ──> /work/.upload/git-<commit>.tar.zst ──>      <remote
 
 - `<remote-dir>` must be absolute, plain (no `.`, `..`, `//` or trailing `/`), not `/`, and not
   `/work/.upload` or a parent of it (so not `/work`). These checks run before any request.
+  The box checks again on the physical path (`cd -P`), before it deletes anything, and then
+  uses only that path: a symlink in a parent dir cannot lead `--clear` to `/`, `/work` or the
+  upload dir (exit 93).
 - A non-empty `<remote-dir>` (a dotfile counts) is refused with exit 93; the upload is removed
   and the dir is not touched. `--clear` deletes its entries first. A file or a symlink at
   `<remote-dir>` is always refused. Without this rule, files of an earlier commit would stay

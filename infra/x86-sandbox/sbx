@@ -412,17 +412,25 @@ pg_build() {
 }
 
 # pg_remote_script REMOTE_DIR REMOTE_TAR FULL_COMMIT CLEAR -> the bash the box runs.
-# Exit 93: refused (REMOTE_DIR is not an empty dir and CLEAR is 0, or it is not a dir); the
-# upload is removed and REMOTE_DIR is not touched.
+# Exit 93: refused (REMOTE_DIR is not an empty dir and CLEAR is 0, or it is not a dir, or its
+# physical path is / or holds UPLOAD_DIR); the upload is removed and REMOTE_DIR is not touched.
+# The box resolves REMOTE_DIR first (cd -P): a symlink in an ancestor can make a path that
+# passed pg_check_remote_dir name /work or /; every step after that uses the resolved dir.
 pg_remote_script() {
-	local rd rt
-	rd=$(q "$1"); rt=$(q "$2")
+	local rd rt up
+	rd=$(q "$1"); rt=$(q "$2"); up=$(q "$UPLOAD_DIR")
 	cat <<-SCRIPT
-	set -eo pipefail; rd=$rd; rt=$rt
+	set -eo pipefail; rd=$rd; rt=$rt; up=$up
 	refuse() { rm -f "\$rt"; echo "sbx push-git: refused: \$1" >&2; exit 93; }
 	if [ -L "\$rd" ]; then refuse "\$rd is a symlink"; fi
 	if [ -e "\$rd" ] && [ ! -d "\$rd" ]; then refuse "\$rd exists and is not a directory"; fi
-	if [ -d "\$rd" ] && [ -n "\$(ls -A "\$rd")" ]; then
+	[ -d "\$rd" ] || mkdir -p "\$rd"
+	pd=\$(CDPATH= cd -P -- "\$rd" && pwd -P) || refuse "cannot resolve \$rd"
+	pu=\$(CDPATH= cd -P -- "\$up" && pwd -P) || refuse "cannot resolve the upload dir \$up"
+	if [ "\$pd" = / ]; then refuse "\$rd is / on the box"; fi
+	case "\$pu/" in "\$pd"/*) refuse "\$rd is \$pd on the box, which holds the upload dir \$pu" ;; esac
+	rd=\$pd
+	if [ -n "\$(ls -A "\$rd")" ]; then
 		if [ $4 = 1 ]; then
 			echo "sbx push-git: --clear: deleting the \$(ls -A "\$rd" | wc -l | tr -d ' ') entries of \$rd" >&2
 			find "\$rd" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
@@ -430,7 +438,6 @@ pg_remote_script() {
 			refuse "\$rd is not empty (\$(ls -A "\$rd" | wc -l | tr -d ' ') entries); pass --clear to delete its contents first, or use a new dir"
 		fi
 	fi
-	mkdir -p "\$rd"
 	zstd -q -dc "\$rt" | tar -xf - -C "\$rd"
 	rm -f "\$rt"
 	printf '%s\n' $3 > "\$rd/.sbx-commit"

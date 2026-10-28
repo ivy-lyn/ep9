@@ -238,6 +238,24 @@ no_upload "e2e symlink"
 fake --clear sbx-t "$R" "$C1" "$BOX"
 expect 99 "holds the upload dir" "e2e: the parent of the upload dir is refused before the build"
 
+# An ancestor symlink: $T/alias -> $T, so $T/alias/box passes the local (lexical) checks but is
+# $BOX, the parent of the upload dir. The box resolves the path first and refuses it; nothing
+# under $BOX is deleted.
+ln -s "$T" "$T/alias"
+mkdir -p "$BOX/keep"; printf 'k\n' > "$BOX/keep/f"
+listing "$BOX" > "$T/before"
+fake --clear sbx-t "$R" "$C1" "$T/alias/box"
+expect 93 "holds the upload dir" "e2e: --clear through an ancestor symlink to the upload dir's parent is refused on the box"
+listing "$BOX" | grep -v '^\./\.upload' > "$T/after"; grep -v '^\./\.upload' "$T/before" > "$T/before.k"
+cmp -s "$T/before.k" "$T/after"; check $? "e2e: the ancestor-symlink refusal deleted nothing"
+no_upload "e2e ancestor symlink"
+# Through the same alias to a dir of its own: the resolved dir is cleared and filled.
+mkdir -p "$BOX/src"; printf 'stale\n' > "$BOX/src/stale.txt"
+fake --clear sbx-t "$R" "$C1" "$T/alias/box/src"
+check "$RC" "e2e: --clear through an ancestor symlink to a plain dir: exit 0"
+if [ -e "$BOX/src/stale.txt" ]; then bad "e2e: --clear through an ancestor symlink left a stale file"; else ok "e2e: --clear through an ancestor symlink cleared the resolved dir"; fi
+verify_tree "$BOX/src" "$C1" "e2e ancestor symlink"
+
 # ---- 5. lint ----
 bash -n "$SBX"; check $? "bash -n sbx"
 if [ -x /bin/bash ]; then /bin/bash -n "$SBX"; check $? "/bin/bash -n sbx"; fi
