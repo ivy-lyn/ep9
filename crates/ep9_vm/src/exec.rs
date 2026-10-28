@@ -17,7 +17,6 @@
 //! | Opaque: no public field, so a later setter or preset is a new H20 golden line, never a changed one | [`ExecOptions`], [`Preset`], [`Feedback`] (associated consts) |
 //! | A preset the build cannot run is an error, never a silent downgrade; it reuses `IsolateError::Config` (M-R6) | [`Isolate::new_with`] |
 //! | The jitless preset defaults to `ics_only`; the jit preset to `full` (MODES-D11) | [`ExecOptions::jitless`], [`ExecOptions::jit`] |
-//! | Fuzz hooks are per isolate: they live in the options (the seat `FuzzHooks`), never in a static or a thread-local (w16 O7, V10-D27) | [`ExecOptions`] |
 //!
 //! M5-P0 stores the options (`Runtime::exec`); nothing reads them yet. The feedback mode takes
 //! effect in M5-P3 (PROFILE6: the `ics_only` T0 handler table, chosen per `Cx`); until then
@@ -149,44 +148,6 @@ impl ExecOptions {
     pub const fn feedback_mode(&self) -> Feedback {
         self.feedback
     }
-
-    /// The fuzz hooks of these options (the seat; none is built yet, V10-D27).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the seat: the first fuzz hook reads it (V10-D27)")
-    )]
-    pub(crate) const fn fuzz_hooks(&self) -> FuzzHooks {
-        self.fuzz
-    }
-}
-
-/// The fuzz-hook seat of an isolate (M5-P1 REPRL2; w16 O7, V10-D27): the place in
-/// [`ExecOptions`] where the hooks that a fuzzer host sets for one isolate live.
-///
-/// ```text
-/// REPRL child, per script:  ExecOptions (preset, feedback, fuzz hooks) -> Isolate::new_with
-///                                                                         -> Runtime::exec
-///                           the isolate drops at the end of the script: its hooks go with it
-/// ```
-///
-/// Why a seat in the options: V8 once leaked a fuzz flag from one REPRL script to the next
-/// through a process global (V8 ac1bee768f, MODES-CHECK-w16 O7). ep9 runs one fresh isolate per
-/// REPRL script, so a hook stored here cannot reach the next script; a static or a
-/// thread-local could (ep9 has per-thread state that outlives an isolate).
-///
-/// Empty in M5-P1: each hook comes with its feature (fuse pop after FR0 and CONST/REP;
-/// tier-up and deopt with T1; PIN), never before (V10-D27). How a hook is added:
-/// - a private field here, a plain `fn` pointer (`Copy`: the options sit in a `Cell` in the
-///   isolate's `Runtime`; no captured state, so per-run state stays in the isolate);
-/// - a setter on [`ExecOptions`] (a new H20 golden line, `embed (not core)`; never a public
-///   field), and its reader through `rt.exec.get().fuzz_hooks()`;
-/// - a `None` default, so a build or an embedder that sets no hook runs as before.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct FuzzHooks {}
-
-impl FuzzHooks {
-    /// No hook set: every preset constructor starts with it.
-    pub(crate) const NONE: FuzzHooks = FuzzHooks {};
 }
 
 impl Default for ExecOptions {
@@ -236,6 +197,46 @@ impl std::fmt::Display for BuildInfo {
             self.features.join(",")
         };
         write!(f, "features {features}; preset {}", self.preset)
+    }
+}
+
+/// The fuzz-hook seat of an isolate (M5-P1 REPRL2; w16 O7, V10-D27): the place in
+/// [`ExecOptions`] where the hooks that a fuzzer host sets for one isolate live.
+///
+/// ```text
+/// REPRL child, per script:  ExecOptions (preset, feedback, fuzz hooks) -> Isolate::new_with
+///                                                                         -> Runtime::exec
+///                           the isolate drops at the end of the script: its hooks go with it
+/// ```
+///
+/// Why a seat in the options: V8 once leaked a fuzz flag from one REPRL script to the next
+/// through a process global (V8 ac1bee768f, MODES-CHECK-w16 O7). ep9 runs one fresh isolate per
+/// REPRL script, so a hook stored here cannot reach the next script; a static or a
+/// thread-local could (ep9 has per-thread state that outlives an isolate).
+///
+/// Empty in M5-P1: each hook comes with its feature (fuse pop after FR0 and CONST/REP;
+/// tier-up and deopt with T1; PIN), never before (V10-D27). How a hook is added:
+/// - a private field here, a plain `fn` pointer (`Copy`: the options sit in a `Cell` in the
+///   isolate's `Runtime`; no captured state, so per-run state stays in the isolate);
+/// - a setter on [`ExecOptions`] (a new H20 golden line, `embed (not core)`; never a public
+///   field), and its reader through `rt.exec.get().fuzz_hooks()`;
+/// - a `None` default, so a build or an embedder that sets no hook runs as before.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FuzzHooks {}
+
+impl FuzzHooks {
+    /// No hook set: every preset constructor starts with it.
+    pub(crate) const NONE: FuzzHooks = FuzzHooks {};
+}
+
+impl ExecOptions {
+    /// The fuzz hooks of these options (the seat; none is built yet, V10-D27).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the seat: the first fuzz hook reads it (V10-D27)")
+    )]
+    pub(crate) const fn fuzz_hooks(&self) -> FuzzHooks {
+        self.fuzz
     }
 }
 
