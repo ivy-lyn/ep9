@@ -121,18 +121,20 @@ fn alive(rt: &Runtime, h: WeakHandle) -> bool {
     below_a_pad(|| black_box(rt.heap.weak(h)).is_some())
 }
 
-/// A full collection after a stack scrub.
+/// A full collection, with a stack scrub before and after it (plan v10 rule 35).
 #[inline(never)]
 fn collect(iso: &Isolate) {
     scrub_stack();
     iso.rt.heap.collect();
+    scrub_stack();
 }
 
-/// A minor collection (S1 on) after a stack scrub.
+/// A minor collection (S1 on), with a stack scrub before and after it (plan v10 rule 35).
 #[inline(never)]
 fn collect_young(iso: &Isolate) {
     scrub_stack();
     iso.rt.heap.collect_minor();
+    scrub_stack();
 }
 
 /// Runs `f` with a builtin-ABI context of `iso`, below a pad.
