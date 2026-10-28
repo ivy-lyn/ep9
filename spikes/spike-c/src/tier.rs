@@ -12,8 +12,9 @@
 //!          (Driver::matches: the check line and "<benchmark> <n>" lines)
 //! ```
 //!
-//! Both sessions use the threaded T0 dispatch (placement (b) code runs only under it). A run
-//! that ends in the "deopt not built" trap names the guard ([`crate::emit_a64::trap_of`]).
+//! Both sessions use the threaded T0 dispatch (placement (b) code runs only under it). The
+//! compiled code is installed with its exit table (H29): a failing guard deopts into T0 in
+//! the same frame, and the VM counts the exits per record ([`fired`] names their guards).
 
 use std::time::Instant;
 
@@ -32,17 +33,31 @@ pub struct TierRun {
     pub t0: RunOutput,
     pub compiled: RunOutput,
     pub report: CompileReport,
-    /// The guard whose trap ended the compiled run, if one did.
-    pub trap: Option<u32>,
+    /// The exits counted in loop(n), per exit record (record order, see [`fired`]).
+    pub exits: Vec<u64>,
     /// Output equal to T0, no uncaught error, a right driver run.
     pub equal: bool,
     /// Wall time of loop(n), seconds (one run each; a report, not a class S reading).
     pub t0_secs: f64,
     pub compiled_secs: f64,
     /// After loop(n), the compiled function called with a receiver of a shape no guard
-    /// admits: the guard whose trap fired (proof that the compiled code is what runs), or
-    /// `None` if the kernel has no probe.
-    pub probe_trap: Option<u32>,
+    /// admits, in both sessions: the first guard whose exit counter rose (proof that the
+    /// compiled code is what runs and deopts), or `None` if the kernel has no probe. The
+    /// probe's result equals T0's (else the run is an error).
+    pub probe_exit: Option<u32>,
+}
+
+/// The guards of the exit records whose counter is not 0 (`exits` in record order).
+pub fn fired(report: &CompileReport, exits: &[u64]) -> Vec<u32> {
+    report
+        .emit
+        .meta
+        .exits
+        .iter()
+        .zip(exits)
+        .filter(|(_, n)| **n > 0)
+        .map(|(r, _)| r.guard)
+        .collect()
 }
 
 impl TierRun {
@@ -50,20 +65,30 @@ impl TierRun {
     pub fn line(&self) -> String {
         let verdict = if self.equal {
             "output equal to T0".to_string()
-        } else if let Some(g) = self.trap {
-            format!("trap of guard g{g} (deopt not built)")
         } else {
             format!(
                 "output differs: compiled {:?} {:?} vs T0 {:?} {:?}",
                 self.compiled.result, self.compiled.output, self.t0.result, self.t0.output
             )
         };
-        let probe = match self.probe_trap {
-            Some(g) => format!("; probe: a new receiver shape traps at g{g}"),
+        let probe = match self.probe_exit {
+            Some(g) => format!("; probe: a new receiver shape deopts at g{g}, result as T0"),
             None => String::new(),
         };
+        let total: u64 = self.exits.iter().sum();
+        let guards = fired(&self.report, &self.exits)
+            .iter()
+            .map(|g| format!("g{g}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let exits = if total == 0 {
+            "; exits 0".to_string()
+        } else {
+            format!("; exits {total} (guards {guards})")
+        };
         format!(
-            "{} {} n = {}: {verdict}; T0 {:.3} s, compiled {:.3} s (one run, report only){probe}",
+            "{} {} n = {}: {verdict}{exits}; T0 {:.3} s, compiled {:.3} s (one run, report \
+             only){probe}",
             self.kernel, self.function, self.n, self.t0_secs, self.compiled_secs
         )
     }
@@ -109,7 +134,7 @@ pub fn compile_hot(
     offset: u32,
     int: IntFacts,
 ) -> Result<(ep9_vm::Value, spike_b::emit::FunctionCode, CompileReport), String> {
-    compile_hot_with(s, hot, file, offset, int, emit_a64::StubForm::Movz)
+    compile_hot_with(s, hot, file, offset, int, emit_a64::StubForm::Call)
 }
 
 /// [`compile_hot`] with the exit stubs of `form`.
@@ -171,7 +196,7 @@ pub fn run_with(
     config: &Config,
     int: IntFacts,
 ) -> Result<TierRun, String> {
-    run_opts(k, n, config, int, emit_a64::StubForm::Movz)
+    run_opts(k, n, config, int, emit_a64::StubForm::Call)
 }
 
 /// [`run`] with the int facts of `int` and the exit stubs of `form`.
@@ -222,12 +247,14 @@ pub fn run_opts(
         return Err("the two warm-up runs differ (both are T0)".into());
     }
     let (f, code, report) = compile_hot_with(&mut s, hot, "defs.js", d1.offset, int, form)?;
+    let meta = report.emit.meta.encode();
     // SAFETY: `code` is the placement (b) code `emit_a64` made for `f` from `input_of(f)` just
-    // above (no JS ran since), unchanged. emit_a64 keeps the (b) contract: the T0 handler
-    // ABI, Cx and the heap read through `ep9_vm::layout` offsets (`vm_layout`, proved at the
-    // start of this run), only RuntimeTable calls, x19-x28 saved and restored, and every
-    // exit is the tail jump to `cx.table[*pc]`.
-    unsafe { s.install_b(&[f], vec![code]) }?;
+    // above (no JS ran since), unchanged, and `meta` its exit table. emit_a64 keeps the (b)
+    // contract: the T0 handler ABI, Cx and the heap read through `ep9_vm::layout` offsets
+    // (`vm_layout`, proved at the start of this run), only RuntimeTable calls (the deopt
+    // entry among them), x19-x28 saved and restored, and every exit is the tail jump to
+    // `cx.table[*pc]`.
+    unsafe { s.install_b(&[f], vec![code], vec![Some(meta)]) }?;
     if s.slot_kind(f) != Some(ep9_vm::DispatchKind::Opt) {
         return Err(format!(
             "{}: slot kind {:?} after install",
@@ -238,20 +265,23 @@ pub fn run_opts(
     let t = Instant::now();
     let compiled = s.run(&loop_n, "loop.js");
     let compiled_secs = t.elapsed().as_secs_f64();
-    let trap = compiled
-        .result
-        .as_ref()
-        .err()
-        .and_then(|e| emit_a64::trap_of(e));
+    let counts = |s: &Session| s.exit_counts(f).ok_or("no exit counters after the install");
+    let exits = counts(&s)?;
     let equal = compiled == t0 && t0.result.is_ok() && dn.matches(&compiled.output);
-    // The probe: `this` of a shape the IC never saw. T0 would compute a number; the compiled
-    // function's first shape guard traps.
-    let probe_trap = match PROBES.iter().find(|(f, _)| *f == hot.name) {
+    // The probe: `this` of a shape the IC never saw. The compiled function's first shape
+    // guard deopts, and T0 finishes the call: the result must be T0's own.
+    let probe_exit = match PROBES.iter().find(|(f, _)| *f == hot.name) {
         Some((_, js)) => {
-            let p = s.run(js, "probe.js");
-            match &p.result {
-                Err(e) => emit_a64::trap_of(e),
-                Ok(v) => return Err(format!("{}: the probe returned {v}, no trap", hot.name)),
+            let want = t0s.run(js, "probe.js");
+            let got = s.run(js, "probe.js");
+            if got != want || want.result.is_err() {
+                return Err(format!("{}: the probe gave {got:?}, T0 {want:?}", hot.name));
+            }
+            let after = counts(&s)?;
+            let rose: Vec<u64> = after.iter().zip(&exits).map(|(a, b)| a - b).collect();
+            match fired(&report, &rose).first() {
+                Some(&g) => Some(g),
+                None => return Err(format!("{}: the probe did not deopt", hot.name)),
             }
         }
         None => None,
@@ -263,11 +293,11 @@ pub fn run_opts(
         t0,
         compiled,
         report,
-        trap,
+        exits,
         equal,
         t0_secs,
         compiled_secs,
-        probe_trap,
+        probe_exit,
     })
 }
 
@@ -287,14 +317,19 @@ pub struct ScriptRun {
     pub t0: RunOutput,
     pub compiled: RunOutput,
     pub report: CompileReport,
-    /// The guard whose trap ended `main`, if one did.
-    pub trap: Option<u32>,
+    /// The exits counted in `main`, per exit record (record order).
+    pub exits: Vec<u64>,
 }
 
 impl ScriptRun {
     /// True if `main` printed the same and ended the same in both runs.
     pub fn equal(&self) -> bool {
         self.t0 == self.compiled
+    }
+
+    /// The guards whose exit ran in `main` (record order).
+    pub fn fired(&self) -> Vec<u32> {
+        fired(&self.report, &self.exits)
     }
 }
 
@@ -326,7 +361,7 @@ pub fn run_script_with(
         main,
         name,
         int,
-        emit_a64::StubForm::Movz,
+        emit_a64::StubForm::Call,
     )
 }
 
@@ -368,20 +403,19 @@ pub fn run_script_opts(
         let input = s.input_of(f)?;
         crate::compile_input_with(&input, &facts, form).map_err(|r| format!("{name}: {r}"))?
     };
+    let meta = report.emit.meta.encode();
     // SAFETY: as in `run`: emit_a64's placement (b) code for `f`, from `input_of(f)` with no
-    // JS run since, unchanged.
-    unsafe { s.install_b(&[f], vec![code]) }?;
+    // JS run since, unchanged, and its exit table.
+    unsafe { s.install_b(&[f], vec![code], vec![Some(meta)]) }?;
     let compiled = s.run(main, "main.js");
-    let trap = compiled
-        .result
-        .as_ref()
-        .err()
-        .and_then(|e| emit_a64::trap_of(e));
+    let exits = s
+        .exit_counts(f)
+        .ok_or("no exit counters after the install")?;
     Ok(ScriptRun {
         t0,
         compiled,
         report,
-        trap,
+        exits,
     })
 }
 
@@ -407,15 +441,24 @@ mod tests {
             r.t0,
             r.report.graph
         );
-        assert!(r.trap.is_none());
+        assert!(r.fired().is_empty(), "{name}: exits {:?}", r.exits);
         r
     }
 
-    fn traps(defs: &str, warm: &str, main: &str, name: &str) -> ScriptRun {
+    /// `main` in config C equals T0 and at least one guard deopted on the way (the deopt
+    /// entry rebuilt the frame, and T0 finished the work).
+    fn deopts(defs: &str, warm: &str, main: &str, name: &str) -> ScriptRun {
         let r = run_script(&Config::default(), defs, warm, main, name).expect("run");
         assert!(
-            r.trap.is_some(),
-            "{name}: no trap: compiled {:?} vs T0 {:?}",
+            r.equal(),
+            "{name}: compiled {:?} vs T0 {:?}\n{}",
+            r.compiled,
+            r.t0,
+            r.report.graph
+        );
+        assert!(
+            !r.fired().is_empty(),
+            "{name}: no exit: compiled {:?} vs T0 {:?}",
             r.compiled,
             r.t0
         );
@@ -447,25 +490,25 @@ mod tests {
             "{}",
             r.report.graph
         );
-        // `a + i` past 2^31 is a double in JS before `| 0`; the overflow guard traps instead
-        // (T0 prints 704982704).
-        let r = traps(SUM, warm, "print(sum(100000));", "sum");
+        // `a + i` past 2^31 is a double in JS before `| 0`; the overflow guard deopts and T0
+        // finishes the loop (704982704).
+        let r = deopts(SUM, warm, "print(sum(100000));", "sum");
         assert_eq!(r.t0.output, ["704982704"]);
-        // A double that is an int32 passes the entry check; 2.5 does not (unbacked: the trap).
+        // A double that is an int32 passes the entry check; 2.5 does not (unbacked: a deopt).
         equal(
             SUM,
             "sum(3);",
             "print(sum(4.0), sum(Math.floor(7.9)));",
             "sum",
         );
-        traps(SUM, "sum(3);", "print(sum(2.5));", "sum");
-        traps(SUM, "sum(3);", "print(sum('3'));", "sum");
+        deopts(SUM, "sum(3);", "print(sum(2.5));", "sum");
+        deopts(SUM, "sum(3);", "print(sum('3'));", "sum");
     }
 
     /// With int records (the FACTS2 stand-in, and the live records since FACTS2) every int32
     /// input check of `sum` is a fact guard and only the overflow guards of `+` stay unbacked;
     /// the guard basis is data: the code is the same bytes as with no int fact, and a failing
-    /// guard still ends in the trap (JIT mode: deopt, month 5).
+    /// guard deopts into T0 (month 5, H29).
     #[test]
     fn int_facts_back_the_int32_guards() {
         if !aarch64() {
@@ -484,7 +527,7 @@ mod tests {
         )
         .expect("run");
         assert!(
-            plain.equal() && plain.trap.is_none(),
+            plain.equal() && plain.fired().is_empty(),
             "{:?} vs {:?}",
             plain.compiled,
             plain.t0
@@ -516,7 +559,7 @@ mod tests {
         )
         .expect("run");
         assert!(
-            r.equal() && r.trap.is_none(),
+            r.equal() && r.fired().is_empty(),
             "{:?} vs {:?}",
             r.compiled,
             r.t0
@@ -537,7 +580,7 @@ mod tests {
             IntFacts::ImplicitInt32,
         )
         .expect("run");
-        assert!(t.trap.is_some(), "{:?}", t.compiled);
+        assert!(t.equal() && !t.fired().is_empty(), "{:?}", t.compiled);
     }
 
     /// Only a hint inside {int32} (the empty set included, MODES-D10) backs a guard: a hint
@@ -591,8 +634,8 @@ mod tests {
         .expect("run");
         assert_eq!(r.t0.output, ["-2147483648"]);
         assert!(
-            r.trap.is_some(),
-            "the overflow guard traps: {:?}",
+            r.equal() && !r.fired().is_empty(),
+            "the overflow guard deopts: {:?}",
             r.compiled
         );
         let g = &r.report.graph;
@@ -670,7 +713,7 @@ mod tests {
     const ARR: &str = "function fill(a, n) { for (var i = 0; i < n; i++) { a[i] = (a[i] * 3 + i) & 1023; } return a[0]; }";
 
     #[test]
-    fn arrays_equal_t0_and_trap_out_of_bounds() {
+    fn arrays_equal_t0_and_deopt_out_of_bounds() {
         if !aarch64() {
             return;
         }
@@ -681,10 +724,11 @@ mod tests {
             "var b = [5, 6, 7, 8, 9]; print(fill(b, 5), b.join());",
             "fill",
         );
-        // A read past the length or of a hole: the generic path is not built (trap).
-        traps(ARR, warm, "print(fill([1, 2], 3));", "fill");
-        traps(ARR, warm, "var h = [1, , 3]; print(fill(h, 3));", "fill");
-        traps(ARR, warm, "print(fill({0: 1, length: 1}, 1));", "fill");
+        // A read past the length or of a hole: the generic path is not built (a deopt; T0
+        // reads `undefined`).
+        deopts(ARR, warm, "print(fill([1, 2], 3));", "fill");
+        deopts(ARR, warm, "var h = [1, , 3]; print(fill(h, 3));", "fill");
+        deopts(ARR, warm, "print(fill({0: 1, length: 1}, 1));", "fill");
     }
 
     /// The ids of the guards on the graph lines that contain `op`.
@@ -697,54 +741,72 @@ mod tests {
             .collect()
     }
 
-    /// Exit stubs (SPIKEC-3): one stub per guard (12 bytes while the id and the offset fit in
-    /// 16 bits) and one shared exit; each failing guard still traps with its own id, so the
-    /// stub passed the right one.
+    /// Exit stubs (SPIKEC-3): one stub per guard (12 bytes in the movz form while the stub
+    /// offset and the id fit in 16 bits) and one shared exit; each failing guard counts on
+    /// its own exit record, so the stub passed the right one (SPIKEC-5: the deopt entry).
     #[test]
     fn each_guard_exits_through_its_own_stub() {
         if !aarch64() {
             return;
         }
         let warm = "var w = [1, 2, 3, 4]; for (var k = 0; k < 20; k++) fill(w, 4);";
-        let oob = traps(ARR, warm, "print(fill([1, 2], 3));", "fill");
+        let movz = |main: &str| {
+            let r = run_script_opts(
+                &Config::default(),
+                ARR,
+                warm,
+                main,
+                "fill",
+                IntFacts::Live,
+                emit_a64::StubForm::Movz,
+            )
+            .expect("run");
+            assert!(r.equal(), "{:?} vs {:?}", r.compiled, r.t0);
+            r
+        };
+        let oob = movz("print(fill([1, 2], 3));");
         let g = &oob.report.graph;
         let loads = guard_ids(g, "LoadElement");
         let arrays = guard_ids(g, "CheckArray");
         assert!(!loads.is_empty() && !arrays.is_empty(), "{g}");
         assert!(
-            loads.contains(&oob.trap.expect("trap")),
+            matches!(oob.fired()[..], [x] if loads.contains(&x)),
             "{:?} {g}",
-            oob.trap
+            oob.fired()
         );
-        let hole = traps(ARR, warm, "var h = [1, , 3]; print(fill(h, 3));", "fill");
+        let hole = movz("var h = [1, , 3]; print(fill(h, 3));");
         assert!(
-            loads.contains(&hole.trap.expect("trap")),
+            matches!(hole.fired()[..], [x] if loads.contains(&x)),
             "{:?} {g}",
-            hole.trap
+            hole.fired()
         );
-        let obj = traps(ARR, warm, "print(fill({0: 1, length: 1}, 1));", "fill");
+        let obj = movz("print(fill({0: 1, length: 1}, 1));");
         assert!(
-            arrays.contains(&obj.trap.expect("trap")),
+            matches!(obj.fired()[..], [x] if arrays.contains(&x)),
             "{:?} {g}",
-            obj.trap
+            obj.fired()
         );
         let e = &oob.report.emit;
-        assert_eq!(e.traps.len(), e.guards);
+        assert_eq!(e.exits.len(), e.guards);
         assert_eq!(e.stub_bytes as usize, 12 * e.guards, "{}", e.exits_line());
         assert!(
-            e.shared_exit_bytes > 0 && e.shared_exit_bytes <= 80,
+            e.shared_exit_bytes > 0 && e.shared_exit_bytes <= SHARED_EXIT_MAX,
             "{}",
             e.exits_line()
         );
         // The stubs sit one after another in guard order.
-        for w in e.traps.windows(2) {
-            assert_eq!(w[1].1 - w[0].1, 12, "{:?}", e.traps);
+        for w in e.exits.windows(2) {
+            assert_eq!(w[1].1 - w[0].1, 12, "{:?}", e.exits);
         }
     }
 
-    /// The call form of the exit stubs (MC-w15-14): 4 bytes each (`bl` to the dispatch, the
-    /// index from the return pc); every failing guard traps with the same id as with the
-    /// 12-byte form, and a run with no failing guard gives T0's output.
+    /// The most bytes the shared exit may take (it saves x0-x30 for the deopt entry).
+    const SHARED_EXIT_MAX: u32 = 160;
+
+    /// The call form of the exit stubs (MC-w15-14, the default since SPIKEC-5): 4 bytes each
+    /// (`bl` to the shared exit, the stub found from the return pc); every failing guard
+    /// deopts through the same exit record as with the 12-byte movz form, and every run
+    /// gives T0's output.
     #[test]
     fn call_form_stubs_exit_through_the_same_guards() {
         if !aarch64() {
@@ -769,7 +831,7 @@ mod tests {
             StubForm::Call,
         );
         assert!(
-            ok.equal() && ok.trap.is_none(),
+            ok.equal() && ok.fired().is_empty(),
             "{:?} vs {:?}",
             ok.compiled,
             ok.t0
@@ -781,16 +843,21 @@ mod tests {
         ] {
             let movz = run(main, StubForm::Movz);
             let call = run(main, StubForm::Call);
-            assert!(movz.trap.is_some(), "{main}");
-            assert_eq!(call.trap, movz.trap, "{main}");
-            assert_eq!(call.compiled.output, movz.compiled.output, "{main}");
+            assert!(movz.equal() && call.equal(), "{main}");
+            assert!(!movz.fired().is_empty(), "{main}");
+            assert_eq!(call.fired(), movz.fired(), "{main}");
+            assert_eq!(call.exits, movz.exits, "{main}");
         }
         let e = &ok.report.emit;
         assert_eq!(e.form, StubForm::Call);
         assert_eq!(e.stub_bytes as usize, 4 * e.guards, "{}", e.exits_line());
-        assert_eq!(e.table_bytes as usize, 8 * e.guards, "{}", e.exits_line());
-        for w in e.traps.windows(2) {
-            assert_eq!(w[1].1 - w[0].1, 4, "{:?}", e.traps);
+        assert!(
+            e.shared_exit_bytes > 0 && e.shared_exit_bytes <= SHARED_EXIT_MAX,
+            "{}",
+            e.exits_line()
+        );
+        for w in e.exits.windows(2) {
+            assert_eq!(w[1].1 - w[0].1, 4, "{:?}", e.exits);
         }
         // The same records either way, except the stub pcs.
         let m = run("print(fill([1, 2], 2));", StubForm::Movz)
@@ -808,7 +875,7 @@ mod tests {
 
     /// The per-exit metadata (SPIKEC-4): one record per guard, in stub order, at its stub's
     /// pc, with the guard's resume offset and one value per live register and the
-    /// accumulator; the encoded table reads back equal.
+    /// accumulator; the VM's reader takes the encoded table.
     #[test]
     fn metadata_matches_the_frame_states() {
         if !aarch64() {
@@ -819,7 +886,7 @@ mod tests {
         let e = &r.report.emit;
         let m = &e.meta;
         assert_eq!(m.exits.len(), e.guards);
-        for (k, (x, &(id, pc))) in m.exits.iter().zip(&e.traps).enumerate() {
+        for (k, (x, &(id, pc))) in m.exits.iter().zip(&e.exits).enumerate() {
             assert_eq!((x.guard, x.pc, x.counter as usize), (id, pc, k));
             assert!((x.pc as usize) < e.code_bytes);
         }
@@ -836,7 +903,10 @@ mod tests {
         }
         assert!(m.exits.iter().any(|x| !x.values.is_empty()), "{m:?}");
         let bytes = m.encode();
-        assert_eq!(crate::deopt_meta::ExitTable::decode(&bytes).as_ref(), Ok(m));
+        assert_eq!(
+            ep9_vm::NativeCx::check_deopt_meta(&bytes),
+            Ok(m.exits.len())
+        );
     }
 
     /// Position independence (C5b, the part that needs no runtime): the same function compiled
@@ -881,7 +951,7 @@ mod tests {
     /// The double path (SPIKEC-4): a `+` or `*` whose record saw a double takes CheckNumber
     /// and Float64 ops; the result boxes as `Value::number` does (an int32 Value for an
     /// integer, -0 and NaN kept apart), equal to T0; a string operand fails the number check
-    /// (the trap, never a wrong value).
+    /// (a deopt, never a wrong value).
     const DOT: &str = "function dot(a, b, n) { var s = 0; for (var i = 0; i < n; i++) { s = s + a[i] * b[i]; } return s; }";
 
     #[test]
@@ -914,7 +984,7 @@ mod tests {
         for l in g.lines().filter(|l| l.contains("CheckNumber")) {
             assert!(l.contains("Fact(Runtime)"), "{l}\n{g}");
         }
-        traps(DOT, warm, "print(dot(['x'], [1], 1));", "dot");
+        deopts(DOT, warm, "print(dot(['x'], [1], 1));", "dot");
         // GC stress: the boxed doubles and the arrays around the compiled loop.
         let r = run_script(
             &Config::stress(),
@@ -951,7 +1021,7 @@ mod tests {
         );
         assert!(r.report.graph.contains("Compare(Eq)"), "{}", r.report.graph);
         // A string `c` fails the int32 check of `===` (T0 says false).
-        traps(
+        deopts(
             defs,
             "for (var q = 0; q < 20; q++) { ratio(1, 4, 1); ratio(3, 6, 0); }",
             "print(ratio(1, 4, '1'));",
@@ -1060,9 +1130,9 @@ mod tests {
         assert_eq!(sites.len(), 1, "{sites:?}");
         assert_eq!(sites[0].keys, Some(ep9_facts::KeySet::INDEX));
         assert!(!sites[0].store);
-        // An index of another form (a string) fails the int32 key check: the trap, never a
+        // An index of another form (a string) fails the int32 key check: a deopt, never a
         // wrong value (T0 prints 8).
-        let t = traps(AT, warm, "print(at([7, 8, 9], '1'));", "at");
+        let t = deopts(AT, warm, "print(at([7, 8, 9], '1'));", "at");
         assert_eq!(t.t0.output, ["8"]);
         // A name key in the warm-up: the generic path (SPIKEC-4), no keyed guard.
         let r = equal(
@@ -1200,10 +1270,14 @@ mod tests {
             crate::compile_input(&input, &facts::for_function(&live, id)).expect("compile")
         };
         assert!(report.build.keyed.iter().all(|k| k.generic));
+        let meta = report.emit.meta.encode();
         // SAFETY: as in `run`: emit_a64's placement (b) code for `f`, from `input_of(f)` with
-        // no JS run since, unchanged.
-        unsafe { s.install_b(&[f], vec![code]) }.expect("install");
+        // no JS run since, unchanged, and its exit table.
+        unsafe { s.install_b(&[f], vec![code], vec![Some(meta)]) }.expect("install");
         s.run(main, "main.js").result.expect("main");
+        // No guard failed (a deopt would let T0 record): the compiled code ran it all.
+        let exits = s.exit_counts(f).expect("counters");
+        assert!(exits.iter().all(|&n| n == 0), "{exits:?}");
         assert_eq!(facts_of(&s), before, "the compiled gen recorded feedback");
     }
 
@@ -1299,21 +1373,21 @@ mod tests {
             "{}",
             r.report.graph
         );
-        // A third shape: the guard fails (trap), never a wrong field.
-        traps(NAMED, warm, "print(get({ w: 1, v: 9 }, 2));", "get");
-        traps(NAMED, warm, "print(get(5, 2));", "get");
+        // A third shape: the guard fails (a deopt), never a wrong field.
+        deopts(NAMED, warm, "print(get({ w: 1, v: 9 }, 2));", "get");
+        deopts(NAMED, warm, "print(get(5, 2));", "get");
     }
 
     #[test]
-    fn mul_overflow_and_minus_zero_trap() {
+    fn mul_overflow_and_minus_zero_deopt() {
         if !aarch64() {
             return;
         }
         let defs =
             "function m(a, b) { var r = 0; for (var i = 0; i < 1; i++) { r = a * b; } return r; }";
         equal(defs, "m(3, 4);", "print(m(-3, 4), m(46340, 46340));", "m");
-        traps(defs, "m(3, 4);", "print(m(65536, 65536));", "m");
-        traps(defs, "m(3, 4);", "print(1 / m(0, -5));", "m");
+        deopts(defs, "m(3, 4);", "print(m(65536, 65536));", "m");
+        deopts(defs, "m(3, 4);", "print(1 / m(0, -5));", "m");
     }
 
     /// A swap in a loop makes a phi move cycle (a <- b, b <- a + b).
@@ -1412,7 +1486,7 @@ mod tests {
         let k = kernels::kernel("crypto").expect("crypto");
         let r = run(k, 1, &Config::default()).expect("run");
         assert!(r.equal, "{}", r.line());
-        assert_eq!(r.probe_trap, Some(0), "{}", r.line());
+        assert_eq!(r.probe_exit, Some(0), "{}", r.line());
         // Since FACTS2 (M4-P2) the live facts back the int32 input checks too, as with the
         // stand-in (`am3_with_int_facts_equals_t0`): 11 fact guards; unbacked are the 6 keyed
         // guards, the 9 overflow guards of `+` and `-`, and the entry checks of the loop
@@ -1435,21 +1509,17 @@ mod tests {
                 && s.key_basis == crate::ir::GuardBasis::Fact(ep9_facts::FactSource::Runtime)),
             "{k:?}"
         );
-        // One 12-byte exit stub per guard, one metadata record per exit.
+        // One 4-byte exit stub per guard (the call form), one metadata record per exit.
         let e = &r.report.emit;
-        assert_eq!(
-            (e.guards, e.stub_bytes),
-            (29, 29 * 12),
-            "{}",
-            e.exits_line()
-        );
+        assert_eq!((e.guards, e.stub_bytes), (29, 29 * 4), "{}", e.exits_line());
         assert_eq!(e.meta.exits.len(), 29, "{}", e.meta.line());
     }
 
-    /// am3 with the call-form exit stubs (MC-w15-14): crypto still equals T0, the probe
-    /// still traps at g0, and the stubs are 4 bytes each.
+    /// am3 with the movz-form exit stubs (MC-w15-14, a report since the call form is the
+    /// default): crypto still equals T0, the probe still deopts at g0, and the stubs are 12
+    /// bytes each.
     #[test]
-    fn am3_with_call_stubs_equals_t0() {
+    fn am3_with_movz_stubs_equals_t0() {
         if !aarch64() {
             return;
         }
@@ -1463,15 +1533,15 @@ mod tests {
             1,
             &Config::default(),
             IntFacts::Live,
-            emit_a64::StubForm::Call,
+            emit_a64::StubForm::Movz,
         )
         .expect("run");
         assert!(r.equal, "{}", r.line());
-        assert_eq!(r.probe_trap, Some(0), "{}", r.line());
+        assert_eq!(r.probe_exit, Some(0), "{}", r.line());
         let e = &r.report.emit;
         assert_eq!(
-            (e.guards, e.stub_bytes, e.table_bytes),
-            (29, 29 * 4, 29 * 8),
+            (e.guards, e.stub_bytes),
+            (29, 29 * 12),
             "{}",
             e.exits_line()
         );
@@ -1493,7 +1563,7 @@ mod tests {
         let k = kernels::kernel("crypto").expect("crypto");
         let r = run_with(k, 1, &Config::default(), IntFacts::ImplicitInt32).expect("run");
         assert!(r.equal, "{}", r.line());
-        assert_eq!(r.probe_trap, Some(0), "{}", r.line());
+        assert_eq!(r.probe_exit, Some(0), "{}", r.line());
         let unbacked: Vec<&str> = r
             .report
             .graph

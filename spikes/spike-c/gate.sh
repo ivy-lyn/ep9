@@ -17,11 +17,11 @@
 #     3  `spike-c tier crypto --n 1` and `spike-c tier crypto` (n = 8): crypto with am3
 #        compiled and installed (placement (b)) after a warm-up run; output equal to T0 line
 #        for line (the kernel checks its own decrypt), then a probe call with a receiver
-#        shape no guard admits must end in the "deopt not built" trap (the compiled am3 runs)
+#        shape no guard admits must deopt into T0 (an exit counter of the compiled am3 rises)
+#        and print what a T0 run of the same probe prints (month 5, H29)
 #     4  `spike-c tier crypto --n 1 --stress` (GC before every allocation, verifier on):
-#        report only. PASS if equal; XFAIL if it ends in a trap (a shape the GC freed drops
-#        out of the weak IC entry the guard reads; T0 would re-record it, the compiled code
-#        can only deopt, and the deopt entry is month 5); FAIL on any other result
+#        PASS only if the output equals T0 (a shape the GC freed drops out of the weak IC
+#        entry a guard reads; that guard now deopts into T0, which re-records it). No XFAIL
 #     SKIP without the v8-v7 checkout (scripts/sync-bench.sh)
 #   gate.sh linsolve     (plan v9 M4-P4 SPIKEC-4; protocol §7 "lin_solve graph build") kernel 2:
 #     1  release build (as am3)
@@ -106,17 +106,7 @@ am3() {
   run "am3/compile" "$bin" compile crypto
   run "am3/tier-n1" "$bin" tier crypto --n 1
   run "am3/tier-n8" "$bin" tier crypto
-  echo "== [am3/stress] $bin tier crypto --n 1 --stress (report only)"
-  local out status=0
-  out="$("$bin" tier crypto --n 1 --stress 2>&1)" || status=$?
-  echo "$out"
-  if [ "$status" = 0 ]; then
-    record "am3/stress" PASS "output equal to T0 under GC stress"
-  elif [ "$status" = 1 ] && grep -q "trap of guard" <<<"$out"; then
-    record "am3/stress" XFAIL "deopt not built: $(grep -o 'trap of guard g[0-9]*' <<<"$out" | head -1) (month 5)"
-  else
-    record "am3/stress" FAIL "exit $status"
-  fi
+  run "am3/stress" "$bin" tier crypto --n 1 --stress
 }
 
 linsolve() {

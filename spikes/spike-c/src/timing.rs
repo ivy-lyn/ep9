@@ -29,8 +29,9 @@
 //! the VM state at the timer start differs only by the installed code.
 //!
 //! The timer is the process's own clock around the timed scripts only (protocol §3: the check
-//! line is made after the timer stops). Exits in the timed region are 0 in every right run:
-//! a guard failure ends the run in the trap until month 5, and a trapped run is a wrong run.
+//! line is made after the timer stops). A guard failure in C or H1 deopts into T0 in the
+//! same frame (month 5, H29), so the run stays right; the exits counted in the timed region
+//! are part of what one process reports (`exits` line).
 
 use std::process::Command;
 use std::time::Instant;
@@ -102,6 +103,8 @@ pub struct Once {
     pub output: Vec<String>,
     /// For C and H1: the compiled code's size and its (fact, unbacked) guards.
     pub code: Option<(usize, usize, usize)>,
+    /// For C and H1: the exits counted in the timed region (all exit records together).
+    pub exits: Option<u64>,
 }
 
 impl Once {
@@ -110,6 +113,9 @@ impl Once {
         let mut s = format!("secs {}\n", self.secs);
         if let Some((b, f, u)) = self.code {
             s.push_str(&format!("code {b} {f} {u}\n"));
+        }
+        if let Some(e) = self.exits {
+            s.push_str(&format!("exits {e}\n"));
         }
         for l in &self.output {
             s.push_str(&format!("| {l}\n"));
@@ -120,6 +126,7 @@ impl Once {
     pub fn parse(text: &str) -> Result<Once, String> {
         let mut secs = None;
         let mut code = None;
+        let mut exits = None;
         let mut output = Vec::new();
         for l in text.lines() {
             if let Some(o) = l.strip_prefix("| ") {
@@ -134,12 +141,15 @@ impl Once {
                     return Err(format!("bad code line {l}"));
                 };
                 code = Some((b, f, u));
+            } else if let Some(v) = l.strip_prefix("exits ") {
+                exits = Some(v.parse::<u64>().map_err(|e| format!("exits {v}: {e}"))?);
             }
         }
         Ok(Once {
             secs: secs.ok_or("no secs line")?,
             output,
             code,
+            exits,
         })
     }
 }
@@ -182,7 +192,12 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
     step(&mut s, &defs, "defs.js", &mut out)?;
     let hot = k.hot.first().ok_or("no hot function")?;
     let mut code = None;
+    // The compiled function in C and H1, and the exits it counted in the timed region.
+    let mut compiled = None;
+    let mut timed_exits = 0u64;
     let mut secs = 0.0;
+    // The exits counted so far for `f` (all records), when `f` runs compiled code.
+    let counted = |s: &Session, f| s.exit_counts(f).map(|c| c.iter().sum::<u64>());
     match which {
         Which::T0 | Which::C => {
             // The warm-up: the driver's n = 1 loop (its lines are not part of the output).
@@ -198,9 +213,12 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
                     report.fact_guards,
                     report.unbacked_guards,
                 ));
+                let meta = report.emit.meta.encode();
                 // SAFETY: `c` is emit_a64's placement (b) code for `f`, from `input_of(f)`
-                // in `compile_hot` with no JS run since, unchanged (as `tier::run`).
-                unsafe { s.install_b(&[f], vec![c]) }?;
+                // in `compile_hot` with no JS run since, unchanged (as `tier::run`); `meta`
+                // is its exit table.
+                unsafe { s.install_b(&[f], vec![c], vec![Some(meta)]) }?;
+                compiled = Some(f);
             }
             let names = kernels::benchmark_names(
                 &std::fs::read_to_string(kernels::bench_dir().join(k.file))
@@ -224,6 +242,7 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
                     "setup.js",
                     &mut out,
                 )?;
+                let before = compiled.and_then(|f| counted(&s, f));
                 let t = Instant::now();
                 step(
                     &mut s,
@@ -232,6 +251,9 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
                     &mut out,
                 )?;
                 secs += t.elapsed().as_secs_f64();
+                if let (Some(a), Some(b)) = (before, compiled.and_then(|f| counted(&s, f))) {
+                    timed_exits += b - a;
+                }
                 let check = if k.check.is_empty() {
                     String::new()
                 } else {
@@ -260,9 +282,12 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
                     report.fact_guards,
                     report.unbacked_guards,
                 ));
+                let meta = report.emit.meta.encode();
                 // SAFETY: as for config C above.
-                unsafe { s.install_b(&[f], vec![c]) }?;
+                unsafe { s.install_b(&[f], vec![c], vec![Some(meta)]) }?;
+                compiled = Some(f);
             }
+            let before = compiled.and_then(|f| counted(&s, f));
             let t = Instant::now();
             step(
                 &mut s,
@@ -271,6 +296,9 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
                 &mut out,
             )?;
             secs = t.elapsed().as_secs_f64();
+            if let (Some(a), Some(b)) = (before, compiled.and_then(|f| counted(&s, f))) {
+                timed_exits += b - a;
+            }
             step(
                 &mut s,
                 &format!("print('result ' + __spikeCR, {});", h.digest),
@@ -283,6 +311,7 @@ pub fn once(which: Which, k: &'static Kernel, n: u32, hot_k: u32) -> Result<Once
         secs,
         output: out,
         code,
+        exits: compiled.map(|_| timed_exits),
     })
 }
 
@@ -450,6 +479,8 @@ pub fn time(
     let mut ref_h0: Option<Vec<String>> = None;
     let mut wrong = Vec::new();
     let mut code = None;
+    // The most exits one C or H1 run counted in its timed region.
+    let mut most_exits: Option<u64> = None;
     for round in 0..=rounds {
         let mut times = [None; 4];
         for which in order(round) {
@@ -502,6 +533,9 @@ pub fn time(
             if which == Which::C {
                 code = code.or(o.code);
             }
+            if let Some(e) = o.exits {
+                most_exits = Some(most_exits.map_or(e, |m| m.max(e)));
+            }
             times[i_of(which)] = Some(o.secs);
         }
         if round > 0 {
@@ -552,11 +586,11 @@ pub fn time(
             "compiled {}: {b} bytes, guards {f} fact + {u} unbacked",
             k.hot[0].name
         ));
-        if ok {
-            report.push_str(
-                "; exits in the timed region: 0 (a guard failure ends a run in the trap, and \
-                 every run was right)",
-            );
+        if let Some(e) = most_exits {
+            report.push_str(&format!(
+                "; exits in the timed region: at most {e} per C or H1 run (a guard failure \
+                 deopts into T0)"
+            ));
         }
         report.push('\n');
     }
@@ -668,6 +702,7 @@ mod tests {
             secs: 0.25,
             output: vec!["Encrypt 8".into(), String::new(), "x".into()],
             code: Some((3292, 2, 27)),
+            exits: Some(4),
         };
         assert_eq!(Once::parse(&o.text()).expect("parse"), o);
     }
@@ -691,6 +726,7 @@ mod tests {
         );
         assert_eq!(c.output, t0.output);
         assert!(c.code.is_some() && t0.code.is_none());
+        assert!(c.exits.is_some() && t0.exits.is_none());
         let h0 = once(Which::H0, k, 1, 50).expect("h0");
         let h1 = once(Which::H1, k, 1, 50).expect("h1");
         assert_eq!(h1.output, h0.output);

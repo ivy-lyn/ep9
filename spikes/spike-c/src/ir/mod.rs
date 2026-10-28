@@ -38,10 +38,10 @@
 //! ([`Graph::set_guard`]); the builder never rewrites it, and shares a check only between
 //! sites of one policy (MC-w14-20).
 //!
-//! Until month 5 builds the deopt entry, every exit goes through its exit stub to the shared
-//! "deopt not built" trap ([`crate::emit_a64`]); each guard keeps the frame state a deopt
-//! will need (the bytecode offset and the SSA value of every live register), placed so that
-//! T0 can resume there ([`Graph::check`], guard placement).
+//! Every exit goes through its exit stub to the shared exit and the VM's deopt entry (H29,
+//! SPIKEC-5; [`crate::emit_a64`]); each guard keeps the frame state the deopt reads (the
+//! bytecode offset and the SSA value of every live register), placed so that T0 can resume
+//! there ([`Graph::check`], guard placement).
 
 use std::fmt;
 use std::sync::Arc;
@@ -385,7 +385,7 @@ pub struct FrameState {
 /// A guard's exit.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Guard {
-    /// Dense guard index (the trap names it).
+    /// Dense guard index (its exit record names it).
     pub id: u32,
     pub basis: GuardBasis,
     pub policy: ExitPolicy,
