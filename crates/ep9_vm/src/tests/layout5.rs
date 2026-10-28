@@ -222,7 +222,9 @@ fn the_cx_offsets_read_the_live_cx() {
     }
 }
 
-/// The RuntimeTable (VM_LAYOUT 1): one pointer per entry, in declaration order, 11 entries.
+/// The RuntimeTable (VM_LAYOUT 1): one pointer per entry, in declaration order. The entries
+/// are append-only (H13-Q3, M5-P0-ORCH-9): the test checks the prefix of entries 0-10 at 8 *
+/// index and a length of at least 11, so an append fails no test and moves no version.
 #[test]
 fn the_runtime_table_offsets() {
     let rt = [
@@ -236,14 +238,14 @@ fn the_runtime_table_offsets() {
         layout::RT_UNWIND,
         layout::RT_GET_KEYED,
         layout::RT_SET_KEYED,
-        // Appended by M5-P0 (V10-D39): the deopt entry. 11 entries = VM_LAYOUT 1.
+        // Appended by M5-P0 (V10-D39): the deopt entry, entry 10.
         layout::RT_DEOPT,
     ];
     for (i, off) in rt.into_iter().enumerate() {
         assert_eq!(off, i * 8);
     }
-    assert_eq!(size_of::<layout::RuntimeTable>(), rt.len() * 8);
-    assert_eq!(rt.len(), 11);
+    assert!(size_of::<layout::RuntimeTable>() >= rt.len() * 8);
+    assert_eq!(rt.len(), 11, "the prefix this test checks");
 }
 
 /// The VM_LAYOUT 1 numbers native code reads, pinned (M5-P0 review F2): the live-object tests

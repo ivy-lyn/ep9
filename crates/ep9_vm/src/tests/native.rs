@@ -88,7 +88,9 @@ fn layout_offsets_read_the_live_isolate() {
     for (i, off) in rt.into_iter().enumerate() {
         assert_eq!(off, i * 8);
     }
-    assert_eq!(size_of::<crate::native::RuntimeTable>(), rt.len() * 8);
+    // A prefix: the table is append-only (H13-Q3, M5-P0-ORCH-9), so a later entry fails no
+    // test here.
+    assert!(size_of::<crate::native::RuntimeTable>() >= rt.len() * 8);
     // Frames (FRAME 2, H14).
     assert_eq!(layout::fp_param(0), -80);
     assert_eq!(layout::fp_param(1), -88);
