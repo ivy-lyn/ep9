@@ -208,7 +208,7 @@ const NESTING_TESTS: [&str; 9] = [
 ];
 const NESTING_CMD: &str = "echo \"m0-exit start: depth_tests\" > nesting.log; \
      echo \"m1-exit source: commit $(git rev-parse HEAD) dirty $(git status --porcelain --untracked-files=no | wc -l | tr -d ' ') made-by host:$(hostname)${GITHUB_RUN_ID:+ gh-run:$GITHUB_RUN_ID/$GITHUB_JOB}\" >> nesting.log; \
-     echo \"m1-exit trees:$(for p in crates tools/bench Cargo.toml Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit; do printf ' %s=%s' $p $(git rev-parse --verify --quiet HEAD:$p); done)\" >> nesting.log; \
+     echo \"m1-exit trees:$(for p in crates tools/bench Cargo.toml Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit; do printf ' %s=%s' \"$p\" \"$(git rev-parse --verify --quiet \"HEAD:$p\")\"; done)\" >> nesting.log; \
      cargo test --locked -p ep9_frontend --lib depth_tests >> nesting.log 2>&1; \
      echo \"m0-exit status: $?\" >> nesting.log; \
      echo \"m0-exit start: nesting_caps cli\" >> nesting.log; \
@@ -2416,6 +2416,37 @@ mod tests {
             assert!(c.evidence.contains(why), "item {}: {}", i + 1, c.evidence);
         }
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The CI nesting step (.github/workflows/ci.yml) writes the two NESTING_CMD source lines
+    /// right after its first start line, with the same text, so the linux-a64 CI log of item 8
+    /// names its source (gates need 1).
+    #[test]
+    fn ci_yml_writes_the_nesting_cmd_source_lines() {
+        let ci =
+            read(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows/ci.yml"))
+                .unwrap();
+        let lines: Vec<&str> = ci.lines().map(str::trim).collect();
+        let start = lines
+            .iter()
+            .position(|l| *l == r#"echo "m0-exit start: depth_tests" | tee nesting.log"#)
+            .expect("the nesting step's first start line");
+        // Each `echo "m1-exit ...` command of NESTING_CMD, up to its ` >> nesting.log`.
+        let want: Vec<String> = NESTING_CMD
+            .match_indices("echo \"m1-exit ")
+            .map(|(k, _)| {
+                let c = &NESTING_CMD[k..];
+                let end = c.find(" >> nesting.log").unwrap_or_else(|| panic!("{c}"));
+                format!("{} | tee -a nesting.log", &c[..end])
+            })
+            .collect();
+        assert_eq!(want.len(), 2, "{NESTING_CMD}");
+        assert_eq!(
+            lines[start + 1..start + 3],
+            want[..],
+            "ci.yml after line {}",
+            start + 1
+        );
     }
 
     /// The two NESTING_CMD lines that name the source, run by `sh` in a fake repo: item 8 reads

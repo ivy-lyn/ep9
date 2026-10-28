@@ -346,12 +346,17 @@ jobs:
       # M0 exit item 7 (nesting caps, the UTF-16 column): the m0-exit input log of NESTING_CMD
       # (tools/xtask/src/m0_exit.rs), two cargo runs, each with its start and exit-status lines. The
       # build + test job runs the same tests; this log is what m0-exit reads for the host column.
+      # M1 exit item 8 reads the same log: the "m1-exit source:" and "m1-exit trees:" lines are
+      # the two source lines of NESTING_CMD in tools/xtask/src/m1_exit.rs (same text; the test
+      # ci_yml_writes_the_nesting_cmd_source_lines checks it).
       - name: nesting caps (m0-exit item 7 log)
         if: ${{ !cancelled() && matrix.name != 'windows-x64' }}
         env:
           CARGO_TERM_COLOR: never
         run: |
           echo "m0-exit start: depth_tests" | tee nesting.log
+          echo "m1-exit source: commit $(git rev-parse HEAD) dirty $(git status --porcelain --untracked-files=no | wc -l | tr -d ' ') made-by host:$(hostname)${GITHUB_RUN_ID:+ gh-run:$GITHUB_RUN_ID/$GITHUB_JOB}" | tee -a nesting.log
+          echo "m1-exit trees:$(for p in crates tools/bench Cargo.toml Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit; do printf ' %s=%s' "$p" "$(git rev-parse --verify --quiet "HEAD:$p")"; done)" | tee -a nesting.log
           rc1=0
           cargo test --locked -p ep9_frontend --lib depth_tests 2>&1 | tee -a nesting.log || rc1=$?
           echo "m0-exit status: $rc1" | tee -a nesting.log
