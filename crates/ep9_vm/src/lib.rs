@@ -45,6 +45,10 @@
 //! `abi/weakref.rs` (M4-P4 WEAKREF). `interp/ops.rs` calls the hooks (it has no owner after
 //! M4-P0).
 //!
+//! Month-5 modules (M5-P0, plan v10 §2.4; OBJECT_LAYOUT 5, IC_LAYOUT 3, VM_LAYOUT 1):
+//! [`layout`] (the layout facts native code bakes in, C-18; ungated since M5-P0) and exec.rs
+//! ([`ExecOptions`], [`Isolate::new_with`] and [`build_info`], C-23).
+//!
 //! ADRs: H14 frames and dispatch (docs/adr/H14-frames-and-dispatch.md), H15 interpreter
 //! dispatch, H10 rooting, H06 values.
 #![cfg_attr(feature = "become", feature(explicit_tail_calls))]
@@ -63,6 +67,7 @@ mod conv;
 mod descriptor;
 mod dispatch;
 mod error;
+mod exec;
 mod exotic;
 mod facts_export;
 mod feedback;
@@ -78,6 +83,8 @@ mod jobs;
 mod key;
 mod keyed_ic;
 mod kinds;
+#[doc(hidden)]
+pub mod layout;
 mod literal_site;
 mod module;
 #[cfg(feature = "spike-native")]
@@ -123,6 +130,7 @@ pub use dispatch::{
     CodeEntry, CodeRegistry, DispatchKind, DispatchSlot, NO_CODE, RangeRegistry, RegistryError,
 };
 pub use ep9_value::{JsResult, Throw, Value};
+pub use exec::{BuildInfo, ExecOptions, Feedback, Preset, build_info};
 pub use host::HostCx;
 pub use interp::Dispatch;
 pub use isolate::{
@@ -135,7 +143,7 @@ pub use string::JsStr;
 #[cfg(feature = "spike-native")]
 pub use native::{
     InstallError, NativeCx, NativeEntry, NativeTarget, RtCompareFn, RtFn0, RtFn1, RtFn2,
-    RuntimeTable, call_from_rust, cmp, install_native, install_native_b, layout, lookup_code,
+    RuntimeTable, call_from_rust, cmp, install_native, install_native_b, lookup_code,
     native_target, uninstall_native,
 };
 

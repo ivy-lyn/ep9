@@ -303,6 +303,12 @@ pub(crate) struct Runtime {
     /// entry of a dead RegExp.
     #[allow(dead_code)] // read by its owner module from M4-P1 on
     pub regexp_programs: crate::regexp::ProgramTable,
+    // ---- M5-P0 (plan v10 §2.4, P0-VM5): the month-5 Runtime fields; each type lives in its
+    // owner's module (as M4-P0) ----
+    /// The execution options of the isolate (`exec.rs`, C-23): set by `Isolate::new_with`
+    /// before the realm exists. Stored in M5-P0; M5-P3 PROFILE6 reads the feedback mode.
+    #[allow(dead_code)] // read from M5-P3 on
+    pub exec: Cell<crate::exec::ExecOptions>,
 }
 
 /// The next [`Runtime::id`].
@@ -351,6 +357,7 @@ impl Runtime {
             rng: Cell::new(rng_seed(id)),
             kept_objects: crate::weakref::KeptObjects::new(&heap),
             regexp_programs: crate::regexp::ProgramTable::new(&heap),
+            exec: Cell::new(crate::exec::ExecOptions::build_default()),
             heap,
             shared,
             units: RefCell::new(Vec::new()),
