@@ -29,12 +29,16 @@
 //! | PROTO_INFO | 75 | +8 prototype (or null), +16 shape count, +24 SLOTS of shapes, +32 the prototype's current VALIDITY_CELL (79, `validity.rs`; undefined until an IC case needs it; the null prototype's is made in [`init`]; traced strongly) | 40 |
 //!
 //! - **counts** (int32): property count in bits 0-11, in-object capacity in bits 12-19, the
-//!   object kind id in bits 20-27.
+//!   object kind id in bits 20-27, and (OBJECT_LAYOUT 5) the elements kind in bits 28-31
+//!   ([`ELEMENTS_KIND_SHIFT`]; the values are in `elements.rs`; 0 in every shape, and read by
+//!   nothing, until M5-P1 ELEM1 writes it).
 //! - **flags** (int32): [`flag`]. A fast shape is always extensible; a non-extensible object
-//!   is in dictionary mode (OM-10).
+//!   is in dictionary mode (OM-10). OBJECT_LAYOUT 5: bits 4-7 of a root shape hold the slack
+//!   counter ([`flag::SLACK_SHIFT`]; M5-P2 SLACK).
 //! - **details** (int32, [`Details`]): attributes in bits 0-3 (writable, enumerable,
-//!   configurable, [`ACCESSOR`]), representation in bits 4-6 and const in bit 7 (both
-//!   reserved, 0), field index in bits 8-23.
+//!   configurable, [`ACCESSOR`]), representation in bits 4-6 and const in bit 7 (OBJECT_LAYOUT
+//!   5 names the values, [`rep`] and [`DETAILS_CONST`]; both 0 until M5-P2 CONSTREP writes
+//!   them), field index in bits 8-23.
 //!
 //! Rules:
 //! - Only SHAPE lives in the shape space ([`heap_config`], [`register_kinds`]); its cells come
@@ -64,8 +68,8 @@
 //!   object ([`note_change`]: a named property or an element that appears or goes away, new
 //!   attributes, `[[SetPrototypeOf]]`, PreventExtensions, dictionary mode) invalidates its
 //!   validity cell and the cells of every prototype below it (`validity.rs`, H16 K5), and
-//!   bumps [`ShapeState::proto_epoch`] (kept for the debug cross-check of the IC hit paths
-//!   until M5-P0, plan v9 §3.3 and V9-A25). A value store does neither.
+//!   bumps [`ShapeState::proto_epoch`] (kept for the debug cross-check of the IC hit paths,
+//!   plan v9 §3.3 and V9-A25). A value store does neither.
 //! - The first array-index own property on a prototype-mode object (or an object with one, or
 //!   a routed ARGUMENTS or MODULE_NAMESPACE object, becoming a prototype) sets the sticky
 //!   [`proto_index_keys`] flag: until then `[[Set]]` adds array elements without walking the
@@ -79,8 +83,9 @@
 //! | [`register_kinds`] | `object::register_kinds` | SHAPE (shape space), SLOTS, DESCRIPTORS, DESC_INDEX, TRANSITIONS, PROTO_INFO |
 //! | [`init`] | `Runtime::new` | register the ShapeState root range and make the null PROTO_INFO and its validity cell |
 //!
-//! `Cx::proto_epoch` points at [`ShapeState::proto_epoch`]; since M4-P1 no IC hit path
-//! compares it (the validity cells do), only the debug cross-check of `ic.rs` reads it.
+//! Since M4-P1 no IC hit path compares [`ShapeState::proto_epoch`] (the validity cells do);
+//! only the debug cross-check of `ic.rs` reads it, from the runtime (M5-P0 removed
+//! `Cx::proto_epoch`).
 
 use core::cell::Cell;
 use core::ptr::NonNull;
@@ -156,7 +161,43 @@ pub(crate) mod flag {
     /// Not in the transition tree and used by one object only (prototype mode): no parent,
     /// no transitions. A change makes a new unique shape.
     pub const UNIQUE: i32 = 8;
+    /// OBJECT_LAYOUT 5: bits 4-7 of a root shape's flags hold the slack counter (H17 slack row;
+    /// M5-P2 SLACK): instances made before the root shape's in-object capacity is fixed. 0
+    /// until SLACK writes it.
+    #[allow(dead_code)] // M5-P2 SLACK
+    pub const SLACK_SHIFT: u32 = 4;
+    /// OBJECT_LAYOUT 5: the slack counter bits.
+    #[allow(dead_code)] // M5-P2 SLACK
+    pub const SLACK_MASK: i32 = 0xF << SLACK_SHIFT;
 }
+
+/// OBJECT_LAYOUT 5: the elements kind of a shape's objects in `counts` bits 28-31 (H18-Q3;
+/// the values are `elements.rs` constants, written by M5-P1 ELEM1).
+#[allow(dead_code)] // M5-P1 ELEM1
+pub(crate) const ELEMENTS_KIND_SHIFT: u32 = 28;
+/// OBJECT_LAYOUT 5: the elements-kind bits of `counts` (bit 31 is the int32 sign bit).
+#[allow(dead_code)] // M5-P1 ELEM1
+pub(crate) const ELEMENTS_KIND_MASK: i32 = (0xF_u32 << ELEMENTS_KIND_SHIFT) as i32;
+
+/// OBJECT_LAYOUT 5: the representation values of details bits 4-6 (H17 rep/const row, C-02;
+/// M5-P2 CONSTREP writes them). 5-7 are reserved.
+#[allow(dead_code)] // M5-P2 CONSTREP
+pub(crate) mod rep {
+    /// The bits of a details word that hold the representation.
+    pub const SHIFT: u32 = 4;
+    pub const MASK: i32 = 0x7 << SHIFT;
+    /// No representation recorded yet (v0: every descriptor).
+    pub const NONE: i32 = 0;
+    pub const INT32: i32 = 1;
+    pub const DOUBLE: i32 = 2;
+    /// A heap object (not a number).
+    pub const HEAP: i32 = 3;
+    pub const ANY: i32 = 4;
+}
+
+/// OBJECT_LAYOUT 5: details bit 7, the field is const (H17 rep/const row; M5-P2 CONSTREP).
+#[allow(dead_code)] // M5-P2 CONSTREP
+pub(crate) const DETAILS_CONST: i32 = 1 << 7;
 
 /// The cage alignment and largest cage of an ep9_vm isolate (W4-OBJ-CAGE): 64 GiB, the H7
 /// default cage size. [`heap_config`] asks for it, so the cage base of any cell is its
@@ -185,8 +226,10 @@ const COUNT_MASK: i32 = 0xFFF;
 const CAPACITY_SHIFT: u32 = 12;
 const KIND_SHIFT: u32 = 20;
 
-/// Details bits 4-7: representation (3 bits) and const (1 bit), reserved and 0 in v0.
+/// Details bits 4-7: representation (3 bits, [`rep`]) and const (1 bit, [`DETAILS_CONST`]),
+/// 0 until M5-P2 CONSTREP writes them.
 const RESERVED_DETAILS: i32 = 0xF0;
+const _: () = assert!(rep::MASK | DETAILS_CONST == RESERVED_DETAILS);
 const FIELD_SHIFT: u32 = 8;
 
 /// ShapeState root range slots.
@@ -1174,6 +1217,7 @@ pub(crate) fn note_change(rt: &Runtime, o: u64) {
             "a prototype without a unique shape"
         );
         crate::validity::invalidate(rt, validity_cell_of(unique_info(s)));
+        crate::fuse::on_proto_change(rt, o);
     }
 }
 

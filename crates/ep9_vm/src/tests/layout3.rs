@@ -59,10 +59,10 @@ fn layout_3_versions_kinds_and_fixed_fields() {
         (nsf::MODULE, nsf::EXPORTS, nsf::FIXED, nsf::CAPACITY),
         (24, 32, 2, 1)
     );
-    // MODULE: 16 Values after word0; REALM: 5.
+    // MODULE: 16 Values after word0; REALM: 5 (7 since OBJECT_LAYOUT 5, `tests::layout5`).
     assert_eq!(modf::SIZE, 8 + 8 * 16);
     assert_eq!((modf::STATUS, modf::HOST_DEFINED), (8, 128));
-    assert_eq!(realmf::SIZE, 8 + 8 * 5);
+    assert_eq!(realmf::SIZE, 8 + 8 * 7);
     assert_eq!(
         (
             realmf::GLOBAL_OBJECT,
@@ -299,7 +299,7 @@ fn made_holders(rt: &Runtime) -> (Vec<GlobalHandle>, Vec<(String, u64)>) {
         "ORDERED_TABLE",
         &mut (otf::DATA + 8..otf::DATA + 8 * (2 + 2 * 3)).step_by(8),
     );
-    // REALM: 5 Values.
+    // REALM: 7 Values (5 before OBJECT_LAYOUT 5).
     let r = crate::realm::new_realm_record(rt);
     fill(r, "REALM", &mut (8..realmf::SIZE).step_by(8));
     // FUNCTION: [[HomeObject]] (+40) and the 2 in-object slots, which moved to +56 and +64.

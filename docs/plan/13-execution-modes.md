@@ -62,7 +62,7 @@ The first weekly check (MODES-CHECK-w13, plan v9 rule 29) found no broken mode r
 |---|---|---|---|---|
 | L-A build capability | link time | which code **producers** exist | Cargo features `jit` (runtime codegen) and `aot` (unit emission) (P02:184; P08:115-118) | `jit` only forwards to `ep9_platform` (`crates/ep9_vm/Cargo.toml:25`); `ep9_vm` has no `cfg(feature = "jit")` |
 | L-P process permit (new, F13) | before the first isolate | which producers may **run** in this process; bounded by L-A | one process-wide setting; workers inherit it | none. One 128 MiB code range serves every isolate (H07:52; H22:40), so W^X is a process property |
-| L-B isolate policy | isolate creation | which code kinds may be **installed**, their rank, accepted lowering classes, thresholds, run-time fact inputs, load policy; bounded by L-P | new `ExecOptions` (opaque) passed to a new entry point `Isolate::new_with(IsolateConfig, ExecOptions)` (proposal, section 1.2) | `IsolateConfig` has 8 public fields (`crates/ep9_vm/src/isolate.rs:51-73`), among them `feedback_threshold` and `compiler: Option<&'static CompilerHooks>`. It is a core `embed:` line of the Frozen H20 core (golden:352; `crates/ep9_vm/tests/h20_core.rs:33-34`; H20:88). `--jitless` and `--unit` are named in `crates/ep9_cli/src/main.rs:2` but not parsed |
+| L-B isolate policy | isolate creation | which code kinds may be **installed**, their rank, accepted lowering classes, thresholds, run-time fact inputs, load policy; bounded by L-P | new `ExecOptions` (opaque) passed to a new entry point `Isolate::new_with(IsolateConfig, ExecOptions)` (proposal, section 1.2) | `IsolateConfig` has 8 public fields (`crates/ep9_vm/src/isolate.rs:51-73`), among them `feedback_threshold` and `compiler: Option<&'static CompilerHooks>`. It is a core `embed:` line of the Frozen H20 core (golden:467; `crates/ep9_vm/tests/h20_core.rs:33-34`; H20:88). `--jitless` and `--unit` are named in `crates/ep9_cli/src/main.rs:2` but not parsed |
 | L-C function state | run time | which code a function **has** and **runs** | code set + dispatch slot (section 3) | one slot `{kind, entry}` per FunctionInfo (H14:69; `crates/ep9_vm/src/function_info.rs:58`) |
 
 Rules:
@@ -80,7 +80,7 @@ Rules:
 
 ### 1.2 ExecOptions, ExecPolicy and the three presets (proposal)
 
-Why not `IsolateConfig`: it is a core line of the Frozen H20 core (golden:352). "A changed or removed core line is a change to a Frozen part; a new line is an addition" (golden:3-5). A new field is a changed line, so its kind is rewrite (H20:88). A new entry point and a new type are new lines, so they are part-2 additions, a fill (H20:89; test `a_new_isolate_method_is_a_new_line`, H20:130).
+Why not `IsolateConfig`: it is a core line of the Frozen H20 core (golden:467). "A changed or removed core line is a change to a Frozen part; a new line is an addition" (golden:3-5). A new field is a changed line, so its kind is rewrite (H20:88). A new entry point and a new type are new lines, so they are part-2 additions, a fill (H20:89; test `a_new_isolate_method_is_a_new_line`, H20:130).
 
 ```
  Isolate::new_with(config: IsolateConfig, exec: ExecOptions) -> Result<Isolate, IsolateError>   (new line)
@@ -762,7 +762,7 @@ R9 (the AR §3.4 reading is refused) and R10 (the C-22 R2 rewrite is refused) ar
 | Alternative | Why rejected |
 |---|---|
 | A global `Mode` enum read by `ep9_vm` and the compilers | Spreads mode branches. The plan wants them only in fact sources and guard policy (P04:237). Three layers cover every case, the jitless preset on a JIT build included |
-| `ExecPolicy` or `TierHooks` as new `IsolateConfig` fields | `IsolateConfig` is a core line of the Frozen H20 core (golden:352). A changed line is a rewrite of a Frozen part (golden:3-5; H20:88). A new entry point is an addition |
+| `ExecPolicy` or `TierHooks` as new `IsolateConfig` fields | `IsolateConfig` is a core line of the Frozen H20 core (golden:467). A changed line is a rewrite of a Frozen part (golden:3-5; H20:88). A new entry point is an addition |
 | Guard lowering after mode-blind passes | A SLOWPATH guard rejoins the main path (H32:39-43); blind passes would assume facts it breaks. H30:65 and H32:61 put the policy in the IR |
 | A separate AOT compiler, a second IR or an LLVM path | One emitter, two finalizers (H34:23-30). JEP 295 `jaotc` was removed for low use and high upkeep. H34 says no LLVM |
 | An AOT-only runtime without T0 | H5 forbids it (P02:162). Dart and GraalVM had to add interpreters back |

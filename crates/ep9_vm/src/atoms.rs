@@ -105,6 +105,8 @@ atoms! {
     Next = "next",
     Return = "return",
     Throw = "throw",
+    // ---- M5-P0 (plan v10 §2.3; V10-D11: the ARGS fast path names it without a lookup) ----
+    Callee = "callee",
 }
 
 // ---- the table -------------------------------------------------------------------------------

@@ -22,7 +22,8 @@
 //! | POLY_IC | 69 | 4 cases from +8: key (weak), handler (strong) | 72 |
 //! | IC_HANDLER | 70 | IC_LAYOUT 2 (below): +8 int32 handler kind, +16 the validity cell (strong) or an int32, +24 a weak ref, +32 an int32 | 40 |
 //!
-//! **IC_LAYOUT 2** (`versions::IC_LAYOUT_VERSION`, M4-P0; plan v9 §2.3, V9-A8). The feedback
+//! **IC_LAYOUT 2** (`versions::IC_LAYOUT_VERSION`, M4-P0; plan v9 §2.3, V9-A8), **3** since M5-P0
+//! (the `ALLOC_SITE` handler kind and the keyed kinds-set bits, `profile.rs`). The feedback
 //! slot table (which module writes which slot kind) is in the `profile.rs` module docs. The
 //! IC_HANDLER cell:
 //!
@@ -34,6 +35,7 @@
 //! | `CONSTRUCT_SITE` | int32 count | the initial shape | the `prototype` field index | `construct_ic.rs` (M4-P1 OBJ-ALLOC) |
 //! | `INSTANCEOF` | the validity cell | the rhs function's shape (the slot key is the function) | the `prototype` field index | `instance_ic.rs` (M4-P3 IC2) |
 //! | `CLONE` | int32 count | the result shape (the slot key is the source shape) | int32 0 | `literal_site.rs` (M4-P1 OBJ-ALLOC) |
+//! | `ALLOC_SITE` (IC_LAYOUT 3) | the int32 elements kind the site makes | the result shape | int32 count | `literal_site.rs` (M5-P2 ELEM2) |
 //!
 //! The size stays 40 B and no kind id is added (construct sites, instanceof and clone caches
 //! are IC_HANDLER cells; a Literal site keeps only its slot halves). The trace function visits +24
@@ -72,8 +74,9 @@
 //!   0x24 and 0x25 different slot kinds, so a 0x24 site never reads one.
 //! - The debug cross-check (plan v9 R1, V9-A25): in debug builds a hit through a valid cell
 //!   walks the chain again and asserts the answer, unless no prototype changed since the
-//!   cell was made (the `proto_epoch` that `Cx::proto_epoch` points at equals the cell's).
-//!   Release builds do not read the epoch.
+//!   cell was made (the runtime's `ShapeState::proto_epoch` equals the cell's). It reads the
+//!   epoch from the runtime itself (M5-P0: `Cx` has no epoch field and the hit paths take no
+//!   epoch argument). Release builds do not read the epoch.
 //! - A fast shape is always extensible and a non-extensible object has a dictionary shape
 //!   (OM-10), so an add-property case, which is made only for a fast shape, can never match a
 //!   non-extensible receiver. [`store`] also asserts it.
@@ -100,8 +103,6 @@
 //!   case is checked against the shape the operation produced. A global case gives the
 //!   operation itself when it is a field: a load reads through it ([`global_case_value`]), a
 //!   store writes through it ([`store_global_miss`]), so the miss scans each table once.
-
-use core::cell::Cell;
 
 use ep9_bytecode::{Instructions, Opcode, OperandKind};
 use ep9_heap::{CellKind, CellPtr, CellSize, Heap, Tracer};
@@ -175,6 +176,13 @@ pub(crate) mod hk {
     /// shape: +16 int32 count, +24 the result shape (weak), +32 int32 0.
     #[allow(dead_code)]
     pub const CLONE: i32 = 7;
+    /// IC_LAYOUT 3 (M5-P0; V10-D6, MODES-D19): an array-literal allocation site: +16 the int32
+    /// elements kind the site makes (`elements::kind`), +24 the result shape (weak), +32 an
+    /// int32 count. The Literal slot of the site and every array made there (ARRAY +32,
+    /// `object::arr::ALLOC_SITE`) hold it; one-way generalization; only IC code writes it.
+    /// M5-P2 ELEM2 builds it.
+    #[allow(dead_code)] // M5-P2 ELEM2
+    pub const ALLOC_SITE: i32 = 8;
 }
 
 /// IC_HANDLER fields.
@@ -189,10 +197,12 @@ mod hc {
     pub const SIZE: usize = 40;
 }
 
-/// POLY_IC fields (`native::layout` exports `CASES` and `CASE` for Spike C, C-18).
+/// POLY_IC fields (`crate::layout` exports `CASES`, `CASE` and `HANDLER` for Spike C, C-18).
 pub(crate) mod pc {
     pub const CASES: usize = 8;
     pub const CASE: usize = 16;
+    /// A case's handler half, after its key (`crate::layout::POLY_HANDLER`, MC-w16-4).
+    pub const HANDLER: usize = 8;
     pub const SIZE: usize = CASES + CASE * super::POLY_CASES;
 }
 
@@ -314,23 +324,16 @@ fn read_field(o: u64, loc: i32) -> Option<u64> {
     field_ref(o, loc).map(|(c, off)| rd(c, off))
 }
 
-#[cfg(debug_assertions)]
-fn epoch_now(epoch: *const Cell<u32>) -> u32 {
-    // SAFETY: `Cx::proto_epoch` points at the runtime's `ShapeState::proto_epoch`, which
-    // lives as long as the isolate.
-    unsafe { (*epoch).get() }
-}
-
 /// The debug cross-check of a hit through the valid validity cell of the handler `c` (plan v9
-/// R1, V9-A25): unless no prototype changed since the cell was made (`epoch` equals the
-/// epoch the cell keeps, and it is not saturated), walks the chain of `o` (the receiver or
+/// R1, V9-A25): unless no prototype changed since the cell was made (the runtime's
+/// `ShapeState::proto_epoch` equals the epoch the cell keeps, and it is not saturated), walks the chain of `o` (the receiver or
 /// lookup start whose shape is the case key; a string's starts at %String.prototype%) for
 /// the site's name `key` and asserts the handler's answer. Not a GC point.
 #[cfg(debug_assertions)]
 #[cold]
 #[inline(never)]
-fn cross_check(rt: &Runtime, epoch: *const Cell<u32>, o: u64, key: u64, c: CellPtr) {
-    let now = epoch_now(epoch);
+fn cross_check(rt: &Runtime, o: u64, key: u64, c: CellPtr) {
+    let now = rt.shapes.proto_epoch.get();
     if now != shape::EPOCH_SATURATED && now == validity::made_at(rd(c, hc::CELL)) {
         return;
     }
@@ -359,8 +362,8 @@ fn cross_check(rt: &Runtime, epoch: *const Cell<u32>, o: u64, key: u64, c: CellP
 /// `slot` of the vector of `fi`, or `None` on a miss (no vector, no case for `o`'s shape, a
 /// `SLOW` case, an invalid validity cell, a dead holder, a megamorphic entry). `o` is the
 /// receiver (0x21) or the lookup start (0x22); any value. `name` is the site's name constant
-/// (an index into the constants of `fi`) and `epoch` the prototype epoch: both feed only the
-/// debug cross-check ([`cross_check`]); release builds do not read them.
+/// (an index into the constants of `fi`): it feeds only the debug cross-check
+/// ([`cross_check`]); release builds do not read it.
 ///
 /// A megamorphic entry misses here: its miss path probes the stub cache ([`mega_load`], M4-P3
 /// IC2). A probe here would cost every monomorphic hit two loads (the site's name operand and
@@ -368,14 +371,7 @@ fn cross_check(rt: &Runtime, epoch: *const Cell<u32>, o: u64, key: u64, c: CellP
 /// +1.4% instructions on t0-prop, mac a64), so the hit path stays as it was.
 #[inline(always)]
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
-pub(crate) fn load(
-    rt: &Runtime,
-    fi: &FunctionInfo,
-    epoch: *const Cell<u32>,
-    o: u64,
-    slot: u32,
-    name: u32,
-) -> Option<u64> {
+pub(crate) fn load(rt: &Runtime, fi: &FunctionInfo, o: u64, slot: u32, name: u32) -> Option<u64> {
     if !is_cell_bits(o) {
         return None;
     }
@@ -385,21 +381,14 @@ pub(crate) fn load(
     // `move`: a closure that borrowed `name` would keep it in memory, and the T0 handler then
     // loses its sibling tail call in a debug-assertions build at opt-level 2 (Spike C's test
     // profile), so each GetNamedProperty grew the native stack until the RangeError.
-    load_with(rt, epoch, o, id, move || fi.constant(name), h)
+    load_with(rt, o, id, move || fi.constant(name), h)
 }
 
 /// The value the handler `h` gives for `o` (ShapeId `id`), as for [`load`]. `key` gives the
 /// site's name for the debug cross-check only. Not a GC point.
 #[inline(always)]
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
-fn load_with(
-    rt: &Runtime,
-    epoch: *const Cell<u32>,
-    o: u64,
-    id: u32,
-    key: impl Fn() -> u64,
-    h: u64,
-) -> Option<u64> {
+fn load_with(rt: &Runtime, o: u64, id: u32, key: impl Fn() -> u64, h: u64) -> Option<u64> {
     if is_i32(h) {
         let x = int32_of(h);
         return match x & smi::KIND_MASK {
@@ -420,7 +409,7 @@ fn load_with(
     }
     if k == hk::MISSING {
         #[cfg(debug_assertions)]
-        cross_check(rt, epoch, o, key(), c);
+        cross_check(rt, o, key(), c);
         return Some(UNDEFINED);
     }
     let holder = rd(c, hc::REF);
@@ -428,21 +417,20 @@ fn load_with(
         return None;
     }
     #[cfg(debug_assertions)]
-    cross_check(rt, epoch, o, key(), c);
+    cross_check(rt, o, key(), c);
     read_field(holder, rd_i32(c, hc::LOCATION))
 }
 
 /// The hit path of a named store: `o.key = v` (0x24, `CHECK_EPOCH`: an add case checks its
 /// validity cell) or CreateDataProperty (0x25) from slot `slot` of the vector of `fi`. False
 /// on a miss (also a megamorphic entry: its miss path probes the stub cache, [`mega_store`]);
-/// nothing is stored then. `name` (the site's name constant) and `epoch` feed only the debug
-/// cross-check ([`cross_check`]).
+/// nothing is stored then. `name` (the site's name constant) feeds only the debug cross-check
+/// ([`cross_check`]).
 #[inline(always)]
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
 pub(crate) fn store<const CHECK_EPOCH: bool>(
     rt: &Runtime,
     fi: &FunctionInfo,
-    epoch: *const Cell<u32>,
     o: u64,
     slot: u32,
     name: u32,
@@ -458,7 +446,7 @@ pub(crate) fn store<const CHECK_EPOCH: bool>(
         return false;
     };
     // `move`: as in [`load`] (the sibling tail call of the handler).
-    store_with::<CHECK_EPOCH>(rt, epoch, o, move || fi.constant(name), v, h)
+    store_with::<CHECK_EPOCH>(rt, o, move || fi.constant(name), v, h)
 }
 
 /// Stores `v` through the handler `h` for `o`, as for [`store`]. False if `h` does not apply;
@@ -468,7 +456,6 @@ pub(crate) fn store<const CHECK_EPOCH: bool>(
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
 fn store_with<const CHECK_EPOCH: bool>(
     rt: &Runtime,
-    epoch: *const Cell<u32>,
     o: u64,
     key: impl Fn() -> u64,
     v: u64,
@@ -497,7 +484,7 @@ fn store_with<const CHECK_EPOCH: bool>(
     }
     #[cfg(debug_assertions)]
     if CHECK_EPOCH {
-        cross_check(rt, epoch, o, key(), hcell);
+        cross_check(rt, o, key(), hcell);
     }
     let loc = rd_i32(hcell, hc::LOCATION);
     let off = (loc >> smi::SHIFT) as usize;
@@ -531,7 +518,7 @@ pub(crate) fn mega_load(rt: &Runtime, v: u64, slot: u32, o: u64, key: u64) -> Op
     }
     let id = shape_id(o);
     let r = stub_cache::probe(rt, stub_cache::Op::Load, id, key)
-        .and_then(|h| load_with(rt, &rt.shapes.proto_epoch, o, id, || key, h));
+        .and_then(|h| load_with(rt, o, id, || key, h));
     stub_stats!(Load, r.is_some());
     r
 }
@@ -553,10 +540,9 @@ pub(crate) fn mega_store(
         return false;
     }
     let id = shape_id(o);
-    let epoch: *const Cell<u32> = &rt.shapes.proto_epoch;
     let done = match stub_cache::probe(rt, store_op(define), id, key) {
-        Some(h) if define => store_with::<false>(rt, epoch, o, || key, val, h),
-        Some(h) => store_with::<true>(rt, epoch, o, || key, val, h),
+        Some(h) if define => store_with::<false>(rt, o, || key, val, h),
+        Some(h) => store_with::<true>(rt, o, || key, val, h),
         None => false,
     };
     stub_stats!(Store, done);
@@ -1218,7 +1204,7 @@ pub(crate) fn store_global_miss(
 #[cfg(test)]
 thread_local! {
     /// Tests (P4F-R1): how many times [`skip_global_miss`] ran.
-    pub(crate) static SKIP_CHECKS: Cell<u32> = const { Cell::new(0) };
+    pub(crate) static SKIP_CHECKS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
 }
 
 /// True if the miss path of the global slot `i` of `v` need not compute a case: the entry is

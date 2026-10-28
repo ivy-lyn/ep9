@@ -303,6 +303,25 @@ pub(crate) struct Runtime {
     /// entry of a dead RegExp.
     #[allow(dead_code)] // read by its owner module from M4-P1 on
     pub regexp_programs: crate::regexp::ProgramTable,
+    // ---- M5-P0 (plan v10 §2.4, P0-VM5): the month-5 Runtime fields; each type lives in its
+    // owner's module (as M4-P0) ----
+    /// The execution options of the isolate (`exec.rs`, C-23): set by `Isolate::new_with`
+    /// before the realm exists. Stored in M5-P0; M5-P3 PROFILE6 reads the feedback mode.
+    #[allow(dead_code)] // read from M5-P3 on
+    pub exec: Cell<crate::exec::ExecOptions>,
+    /// The deopt side table (`deopt.rs`, V10-D32): code start -> deopt metadata and exit
+    /// counters, filled at install. Rust memory, no Value. Empty until M5-P1 SPIKEC-5.
+    #[allow(dead_code)] // filled by M5-P1 SPIKEC-5
+    pub deopt: crate::deopt::SideTable,
+    /// The fuse registry (`fuse.rs`, H31): fuse states and their weak dependents. Rust
+    /// memory. Empty until M5-P1 FR0.
+    #[allow(dead_code)] // filled by M5-P1 FR0
+    pub fuses: crate::fuse::Registry,
+    /// The state of the sampled-call window jitter (`profile.rs`, `CALL_WINDOW`; doc 13:705):
+    /// M5-P1 PROFILE5 seeds and advances it if the window start gets a jitter. 0 = no jitter
+    /// (today).
+    #[allow(dead_code)] // M5-P1 PROFILE5
+    pub call_window_jitter: Cell<u64>,
 }
 
 /// The next [`Runtime::id`].
@@ -351,6 +370,10 @@ impl Runtime {
             rng: Cell::new(rng_seed(id)),
             kept_objects: crate::weakref::KeptObjects::new(&heap),
             regexp_programs: crate::regexp::ProgramTable::new(&heap),
+            exec: Cell::new(crate::exec::ExecOptions::build_default()),
+            deopt: crate::deopt::SideTable::new(),
+            fuses: crate::fuse::Registry::new(),
+            call_window_jitter: Cell::new(0),
             heap,
             shared,
             units: RefCell::new(Vec::new()),

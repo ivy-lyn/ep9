@@ -1,27 +1,28 @@
 //! The VM layout facts the emitted code reads, taken from the `ep9_vm::layout` export (M4-P3
 //! KEYED, 8140b68; SPIKEC-4 switched to it, decision P3-ORCH-9). Until SPIKEC-4 this module
 //! kept hand copies of them; now every offset, kind id and handler field below is the VM's
-//! own constant (except the POLY_IC handler half, a literal `+ 8` here and in `emit_a64`;
-//! MC-w16-4, `POLY_HANDLER` comes with C-18), so a layout change moves the compiled code with
-//! it. [`check`] proves them on live objects before any compile: a wrong export fails there.
+//! own constant (the POLY_IC handler half too since M5-P0: `POLY_HANDLER`, MC-w16-4, C-18), so a
+//! layout change moves the compiled code with it. [`check`] proves them on live objects before
+//! any compile: a wrong export fails there.
 //!
 //! Each fact names the version that owns it (MC-w15-5: one owner per fact, doc 13 §7.3; the
 //! C-18 `VM_LAYOUT` version covers only what no other version owns):
 //!
 //! | Fact | Export (`ep9_vm::layout`) | Owning version |
 //! |---|---|---|
-//! | word0: ShapeId in bytes 0-3, kind in byte 5 | `SHAPE_ID_BYTE`, `KIND_BYTE` | OBJECT_LAYOUT 4 |
-//! | OBJECT kind 16, ARRAY kind 18 | `KIND_OBJECT`, `KIND_ARRAY` | OBJECT_LAYOUT 4 |
-//! | in-object field `f` of an OBJECT (no fixed fields) at `OBJECT_FIELDS + 8f` | `OBJECT_FIELDS` | OBJECT_LAYOUT 4 |
-//! | ARRAY: ELEMENTS, length (an int32 Value) | `ARRAY_ELEMENTS`, `ARRAY_LENGTH` | OBJECT_LAYOUT 4 |
-//! | ELEMENTS: capacity (an int32 Value), values from `ELEMENTS_DATA` | `ELEMENTS_CAPACITY`, `ELEMENTS_DATA` | OBJECT_LAYOUT 4 |
+//! | word0: ShapeId in bytes 0-3, kind in byte 5 | `SHAPE_ID_BYTE`, `KIND_BYTE` | OBJECT_LAYOUT 5 |
+//! | OBJECT kind 16, ARRAY kind 18 | `KIND_OBJECT`, `KIND_ARRAY` | OBJECT_LAYOUT 5 |
+//! | in-object field `f` of an OBJECT (no fixed fields) at `OBJECT_FIELDS + 8f` | `OBJECT_FIELDS` | OBJECT_LAYOUT 5 |
+//! | ARRAY: elements store, length (an int32 Value) | `ARRAY_ELEMENTS`, `ARRAY_LENGTH` | OBJECT_LAYOUT 5 |
+//! | the elements store read as Values is an ELEMENTS cell (kind 65); `CheckArray` traps on any other elements cell (ELEMENTS_DOUBLE 81, ELEMENTS_DICT 82; V10-D9b) | `KIND_ELEMENTS` | OBJECT_LAYOUT 5 |
+//! | ELEMENTS: capacity (an int32 Value), values from `ELEMENTS_DATA` | `ELEMENTS_CAPACITY`, `ELEMENTS_DATA` | OBJECT_LAYOUT 5 |
 //! | the hole (`Value::EMPTY`) | `HOLE` | Value encoding 1 |
-//! | FEEDBACK cell: its FunctionInfo, slot `i` at `FEEDBACK_SLOTS + FEEDBACK_SLOT_SIZE * i`: key (weak), then value | `FEEDBACK_INFO`, `FEEDBACK_SLOTS`, `FEEDBACK_SLOT_SIZE`, `FEEDBACK_KEY`, `FEEDBACK_VALUE` | IC_LAYOUT 2 |
-//! | smi handler: kind in bits 0-3 (FIELD_IN_OBJECT, ARRAY_LENGTH), byte offset from bit 4 | `SMI_KIND_MASK`, `SMI_SHIFT`, `SMI_FIELD_IN_OBJECT`, `SMI_ARRAY_LENGTH` | IC_LAYOUT 2 |
-//! | POLY_IC: case `i` at `POLY_CASES + POLY_CASE_SIZE * i`: key (weak), then handler (key + 8, not exported: MC-w16-4); `POLY_COUNT` cases | `POLY_CASES`, `POLY_CASE_SIZE`, `POLY_COUNT` | IC_LAYOUT 2 |
-//! | `FunctionInfo.feedback`: a pointer to the unit slot that holds the FEEDBACK cell (null: none) | `FI_FEEDBACK` | VM_LAYOUT (C-18; the one fact no other version owns) |
+//! | FEEDBACK cell: its FunctionInfo, slot `i` at `FEEDBACK_SLOTS + FEEDBACK_SLOT_SIZE * i`: key (weak), then value | `FEEDBACK_INFO`, `FEEDBACK_SLOTS`, `FEEDBACK_SLOT_SIZE`, `FEEDBACK_KEY`, `FEEDBACK_VALUE` | IC_LAYOUT 3 |
+//! | smi handler: kind in bits 0-3 (FIELD_IN_OBJECT, ARRAY_LENGTH), byte offset from bit 4 | `SMI_KIND_MASK`, `SMI_SHIFT`, `SMI_FIELD_IN_OBJECT`, `SMI_ARRAY_LENGTH` | IC_LAYOUT 3 |
+//! | POLY_IC: case `i` at `POLY_CASES + POLY_CASE_SIZE * i`: key (weak), then handler at `+ POLY_HANDLER` (MC-w16-4); `POLY_COUNT` cases | `POLY_CASES`, `POLY_CASE_SIZE`, `POLY_HANDLER`, `POLY_COUNT` | IC_LAYOUT 3 |
+//! | `FunctionInfo.feedback`: a pointer to the unit slot that holds the FEEDBACK cell (null: none) | `FI_FEEDBACK` | VM_LAYOUT 1 (C-18) |
 //!
-//! The export stays behind `spike-native` until C-18 moves it (M5-P0). What is left here
+//! Since M5-P0 the export is `ep9_vm::layout`, in every ep9_vm build (C-18). What is left here
 //! is derived from it: the two smi handlers the shape guards compare and the Value helpers.
 
 use ep9_value::encoding::{DOUBLE_ENCODE_OFFSET, NOT_CELL_MASK, NUMBER_TAG};
@@ -29,8 +30,8 @@ use ep9_value::encoding::{DOUBLE_ENCODE_OFFSET, NOT_CELL_MASK, NUMBER_TAG};
 pub use ep9_vm::layout::{
     ARRAY_ELEMENTS, ARRAY_LENGTH, ELEMENTS_CAPACITY, ELEMENTS_DATA, FEEDBACK_INFO, FEEDBACK_KEY,
     FEEDBACK_SLOT_SIZE, FEEDBACK_SLOTS, FEEDBACK_VALUE, FI_FEEDBACK, HOLE, KIND_ARRAY, KIND_BYTE,
-    KIND_OBJECT, OBJECT_FIELDS, POLY_CASE_SIZE, POLY_CASES, POLY_COUNT, SHAPE_ID_BYTE,
-    SMI_ARRAY_LENGTH, SMI_FIELD_IN_OBJECT, SMI_KIND_MASK, SMI_SHIFT,
+    KIND_ELEMENTS, KIND_OBJECT, OBJECT_FIELDS, POLY_CASE_SIZE, POLY_CASES, POLY_COUNT,
+    POLY_HANDLER, SHAPE_ID_BYTE, SMI_ARRAY_LENGTH, SMI_FIELD_IN_OBJECT, SMI_KIND_MASK, SMI_SHIFT,
 };
 
 /// The smi handler of `length` on an Array shape (an int32 Value of kind ARRAY_LENGTH).
@@ -118,7 +119,7 @@ pub unsafe fn ic_handler_for(key: u64, value: u64, id: u32) -> Option<u64> {
         for i in 0..POLY_COUNT {
             let at = POLY_CASES + POLY_CASE_SIZE * i;
             // SAFETY: `value` is a live POLY_IC cell (POLY_COUNT cases).
-            let (k, h) = unsafe { (word(value, at), word(value, at + 8)) };
+            let (k, h) = unsafe { (word(value, at), word(value, at + POLY_HANDLER)) };
             if k as u32 == id {
                 return Some(h);
             }
@@ -206,6 +207,9 @@ pub fn check(session: &mut crate::harness::Session) -> Result<String, String> {
         if !is_cell(e) || int32_of(word(e, ELEMENTS_CAPACITY)).is_none_or(|c| c < 3) {
             return Err("ELEMENTS cell or its capacity".into());
         }
+        if kind(e) != KIND_ELEMENTS {
+            return Err(format!("the array's elements cell has kind {}", kind(e)));
+        }
         for (i, want) in [11, 22, 33].into_iter().enumerate() {
             if word(e, ELEMENTS_DATA + 8 * i as u32) != int32_bits(want) {
                 return Err(format!("element {i} is not at +{ELEMENTS_DATA} + 8i"));
@@ -275,6 +279,8 @@ mod tests {
             (16, 24, 16, 0, 8)
         );
         assert_eq!((POLY_CASES, POLY_CASE_SIZE, POLY_COUNT), (8, 16, 4));
+        // M5-P0 (C-18): the handler half, a literal + 8 before, and the ELEMENTS kind.
+        assert_eq!((POLY_HANDLER, KIND_ELEMENTS), (8, 65));
         assert_eq!(
             (
                 SMI_KIND_MASK,
