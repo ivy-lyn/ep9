@@ -62,8 +62,9 @@ use std::path::Path;
 use std::process::Command;
 
 /// The paths whose ids the JSON names: the paths whose change makes an m1-exit item 3 or 4 input
-/// stale (`T262_FRESH_PATHS` in tools/xtask/src/m1_exit.rs).
-pub const TREE_PATHS: [&str; 7] = [
+/// stale (`T262_FRESH_PATHS` in tools/xtask/src/m1_exit.rs; an m1-exit test checks that the two
+/// lists are the same). The last two are the regress fork (D41): its pin and its patch set.
+pub const TREE_PATHS: [&str; 9] = [
     "crates",
     "tools/bench",
     "Cargo.toml",
@@ -71,6 +72,8 @@ pub const TREE_PATHS: [&str; 7] = [
     "rust-toolchain.toml",
     "tools/test262",
     "third_party/test262.commit",
+    "third_party/regress.commit",
+    "third_party/patches/regress",
 ];
 
 /// The source facts of one run.
@@ -621,7 +624,7 @@ mod tests {
         write_fields(&mut out, &source(&d, &no_env));
         assert!(out.starts_with(",\"commit\":\""), "{out}");
         assert!(out.contains(",\"dirty\":true,\"commit_source\":\"git\",\"made_by\":\"host:"));
-        // The temp tree has none of the seven paths; with one, its id is named.
+        // The temp tree has none of the nine paths; with one, its id is named.
         assert!(!out.contains("\"tree\""), "{out}");
         std::fs::write(d.join("Cargo.lock"), "lock\n").unwrap();
         git_in(&d, &["add", "-A"]);
@@ -642,6 +645,27 @@ mod tests {
         let s = source(&d, &no_env);
         let names: Vec<&str> = s.tree.iter().map(|(p, _)| *p).collect();
         assert_eq!(names, ["Cargo.toml", "Cargo.lock"], "{s:?}");
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    /// pre medium 1 (D41): the regress fork pin and its patch set are tree paths, so a CI
+    /// merge-commit run names their ids and m1-exit compares them with HEAD's.
+    #[test]
+    fn the_regress_fork_is_a_tree_path() {
+        let d = tmp("regress");
+        std::fs::create_dir_all(d.join("third_party/patches/regress")).unwrap();
+        std::fs::write(d.join("third_party/regress.commit"), "b\n").unwrap();
+        std::fs::write(d.join("third_party/patches/regress/0001.patch"), "p\n").unwrap();
+        git_in(&d, &["init", "-q"]);
+        git_in(&d, &["add", "-A"]);
+        git_in(&d, &["commit", "-q", "-m", "a"]);
+        let s = source(&d, &no_env);
+        let names: Vec<&str> = s.tree.iter().map(|(p, _)| *p).collect();
+        assert_eq!(
+            names,
+            ["third_party/regress.commit", "third_party/patches/regress"],
+            "{s:?}"
+        );
         std::fs::remove_dir_all(d).unwrap();
     }
 
