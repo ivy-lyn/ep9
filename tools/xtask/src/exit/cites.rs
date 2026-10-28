@@ -21,25 +21,28 @@
 //!    a MOVED line is NOT AT BASE LINE and names no new number: the cite may have been wrong at
 //!    that base already (verifier r1 F2: `golden:334` named another line there). A cite whose
 //!    file is missing at HEAD (a family name with no file) is NO FILE.
+//! 5. A doc 13 line that is not a line of doc 13 at the base (new or edited since; M4-P5
+//!    CX5-C7) was written for the files at HEAD: its cites are checked at HEAD only, and a cite
+//!    past the end of its file at HEAD is BAD AT HEAD. Step 4 is for the unchanged lines.
 //!
 //! The part gates from M4-P5 ([`GATE`] true; plan v9 rule 20, P5-ORCH-2: it guards the
 //! doc 13 pointers such as the FR0 row H31:90): a finding fails adr-lint and so m1-exit item 6.
 //! With [`GATE`] false the part is report only: its lines start with `note: `, an error is a
 //! note, and the result does not change.
 //!
-//! To fix a MOVED finding takes two commits, because a commit cannot name itself: first commit
-//! the change that moves the line; then change the cite numbers and set `Cites at` to the sha of
-//! that first commit.
+//! To fix a MOVED finding, change the cite number: its doc 13 line is then new since the base
+//! and is checked at HEAD (step 5). Setting `Cites at` to a later commit (one commit cannot
+//! name itself, so a commit before the one that sets it) brings the other lines up to date.
 
 use super::{git, read};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// The doc whose short cites are checked.
 pub(crate) const DOC: &str = "docs/plan/13-execution-modes.md";
 
 /// True (from M4-P5, after the MC-w16-2 doc 13 fix): a finding (MOVED, NOT AT BASE LINE,
-/// CHANGED, BAD AT BASE, NO FILE, BASE) fails adr-lint. False: report only (MC-w16-8).
+/// CHANGED, BAD AT BASE, BAD AT HEAD, NO FILE, BASE) fails adr-lint. False: report only (MC-w16-8).
 pub(crate) const GATE: bool = true;
 
 /// The result of the short-cite check.
@@ -263,6 +266,10 @@ pub(crate) fn short_cites(root: &Path) -> Result<Cites, String> {
     }
     let (base, named) = base_commit(root, &doc, &mut out)?;
     let short_base = &base[..base.len().min(7)];
+    // The doc 13 lines at the base: a line that is not one of them (new or edited since) was
+    // written for the files at HEAD, so its cites are checked at HEAD only (CX5-C7).
+    let base_doc = git_raw(root, &format!("{base}:{DOC}")).unwrap_or_default();
+    let old_lines: HashSet<&str> = base_doc.lines().collect();
     // The files of each family dir at HEAD.
     let mut dirs: HashMap<String, Vec<String>> = HashMap::new();
     let mut files: HashMap<(String, &str), Option<Vec<String>>> = HashMap::new();
@@ -313,8 +320,19 @@ pub(crate) fn short_cites(root: &Path) -> Result<Cites, String> {
                 continue;
             };
             let (b, h) = (show(&base, &file), show("HEAD", &file));
+            let new_line = !old_lines.contains(l);
             for k in std::iter::once(n).chain(end) {
                 out.total += 1;
+                if new_line {
+                    let lines = h.as_ref().map_or(0, Vec::len);
+                    if k == 0 || k as usize > lines {
+                        out.findings.push(format!(
+                            "SHORT CITE BAD AT HEAD doc13:{} {name}:{k}: {file} has no line {k} at HEAD",
+                            i + 1
+                        ));
+                    }
+                    continue;
+                }
                 let at = |v: &Option<Vec<String>>| {
                     v.as_ref()
                         .and_then(|v| v.get((k as usize).wrapping_sub(1)).cloned())
@@ -679,6 +697,62 @@ mod tests {
             c.findings[0].starts_with("SHORT CITE MOVED doc13:6 H02:1 -> H02:2"),
             "{:?}",
             c.findings
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// M4-P5 CX5-C7 (Codex round 1): a doc 13 line that is new since the base names the line
+    /// at HEAD it was written for, so it is checked at HEAD only. Codex's fixture: the base
+    /// README has 3 lines; one commit adds a 4th and a new doc 13 line with a correct AR:4.
+    /// A new cite past the end at HEAD is BAD AT HEAD; an unchanged doc 13 line keeps the
+    /// base-vs-HEAD move check.
+    #[test]
+    fn a_new_doc_line_is_checked_at_head() {
+        let root = repo("newline");
+        write(&root, "docs/adr/README.md", "a\nb\nc\n");
+        let body = "\nAR:2.\n";
+        write(
+            &root,
+            DOC,
+            &format!("{}{body}", HEADER.replace("{BASE}", "0000000")),
+        );
+        let base = commit(&root, "base");
+        let head = |extra: &str| format!("{}{body}{extra}", HEADER.replace("{BASE}", &base[..7]));
+        write(&root, DOC, &head(""));
+        commit(&root, "header");
+        // One commit: a 4th README paragraph and a new doc 13 line that cites it.
+        write(
+            &root,
+            "docs/adr/README.md",
+            "a\nb\nc\nd, the new paragraph\n",
+        );
+        write(&root, DOC, &head("\nThe new rule: AR:4.\n"));
+        commit(&root, "new paragraph");
+        let c = short_cites(&root).unwrap();
+        assert_eq!((c.total, c.findings.len()), (2, 0), "{:?}", c.findings);
+        assert!(c.pass());
+        // A new cite past the end of its file at HEAD.
+        write(&root, DOC, &head("\nThe new rule: AR:4, AR:9.\n"));
+        let c = short_cites(&root).unwrap();
+        assert_eq!(
+            c.findings,
+            vec!["SHORT CITE BAD AT HEAD doc13:8 AR:9: docs/adr/README.md has no line 9 at HEAD"]
+        );
+        // The unchanged doc 13 line (AR:2) keeps the move check against the base.
+        write(
+            &root,
+            "docs/adr/README.md",
+            "a0\na\nb\nc\nd, the new paragraph\n",
+        );
+        write(&root, DOC, &head("\nThe new rule: AR:5.\n"));
+        commit(&root, "move");
+        let c = short_cites(&root).unwrap();
+        assert_eq!(
+            c.findings,
+            vec![format!(
+                "SHORT CITE MOVED doc13:6 AR:2 -> AR:3 (same text as at {}): b",
+                &base[..7]
+            )]
         );
         std::fs::remove_dir_all(root).unwrap();
     }
