@@ -1297,12 +1297,13 @@ fn calls_in_the_jitter_units_before_the_window_are_not_recorded() {
     );
 }
 
-/// `profile::budget_after_poll`: `BUDGET` plus a jitter in `0..CALL_JITTER`, from a sequence
-/// that each isolate seeds on first use from its own seed words (so a fixed `EP9_HASH_SEED`
-/// repeats it), with many values. Over 100 polls of a pattern whose period (100 units)
-/// divides `BUDGET`, the window start takes many phases, where the fixed reset gave one.
+/// `profile::budget_after_poll`: `BUDGET` plus a jitter in `0..CALL_JITTER`, from one fixed
+/// sequence that each isolate starts on its first poll (so a second isolate, and a second
+/// process, see the same jitters and give the same facts), with many values. Over 100 polls
+/// of a pattern whose period (100 units) divides `BUDGET`, the window start takes many
+/// phases, where the fixed reset gave one.
 #[test]
-fn a_poll_resets_the_budget_with_a_jitter_from_the_isolate_sequence() {
+fn a_poll_resets_the_budget_with_a_jitter_from_a_fixed_sequence() {
     let draws = |rt: &crate::runtime::Runtime| -> Vec<i64> {
         (0..512).map(|_| profile::budget_after_poll(rt)).collect()
     };
@@ -1323,9 +1324,13 @@ fn a_poll_resets_the_budget_with_a_jitter_from_the_isolate_sequence() {
     // The same seed gives the same sequence.
     iso.rt.call_window_jitter.set(0);
     assert_eq!(draws(&iso.rt), a);
-    // Another isolate has its own sequence.
+    // Off: the fixed period, and the state stays off.
+    iso.rt.call_window_jitter.set(profile::JITTER_OFF);
+    assert!(draws(&iso.rt).iter().all(|&b| b == BUDGET));
+    assert_eq!(iso.rt.call_window_jitter.get(), profile::JITTER_OFF);
+    // Another isolate runs the same sequence.
     let other = isolate(config(Dispatch::DEFAULT, false));
-    assert_ne!(draws(&other.rt), a);
+    assert_eq!(draws(&other.rt), a);
     // The window start of each of 100 periods, as a phase of a 100-unit pattern.
     let mut at = 0i64;
     let phases: std::collections::BTreeSet<i64> = a[..100]
@@ -1344,7 +1349,9 @@ fn a_poll_resets_the_budget_with_a_jitter_from_the_isolate_sequence() {
 fn back_edges_are_counted_at_the_budget_polls() {
     fn make() -> VerifiedUnit {
         let mut s = Asm::script(0);
-        counted_loop(&mut s, 2 * BUDGET as i32 + 10, |_, _| {});
+        // Past the second poll also when the first one's reset has the largest jitter
+        // (`profile::budget_after_poll`), and before a third.
+        counted_loop(&mut s, 2 * (BUDGET + CALL_JITTER) as i32 + 10, |_, _| {});
         s.b.lda_undefined().return_();
         unit("", vec![s.finish()])
     }

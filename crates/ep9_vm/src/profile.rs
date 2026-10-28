@@ -197,17 +197,28 @@ pub(crate) const CALL_WINDOW: i64 = 64;
 /// that much less often.
 pub(crate) const CALL_JITTER: i64 = 2 * CALL_WINDOW;
 
+/// A `Runtime::call_window_jitter` state that turns the jitter off: [`budget_after_poll`]
+/// then gives `BUDGET`, the fixed period (as before M5-P1). Tests that count budget units
+/// across a poll set it; the sequence never reaches it.
+pub(crate) const JITTER_OFF: u64 = u64::MAX;
+
+/// The first state of the jitter sequence ([`budget_after_poll`]): the fraction bits of
+/// sqrt(2), a constant with no structure (not 0, not [`JITTER_OFF`]).
+pub(crate) const JITTER_SEED: u64 = 0x6a09_e667_f3bc_c908;
+
 /// The budget an interrupt poll resets to (`interp::slow::interrupt`): `BUDGET + j`, `j` in
 /// `0..CALL_JITTER`, the next value of the isolate's jitter sequence
 /// (`Runtime::call_window_jitter`). The sampled-call window then starts `j` units after the
 /// poll ([`CALL_WINDOW`]), so a call pattern with a period that divides `BUDGET` does not see
 /// the window at one fixed phase (MC-w13-17; DL M4-P1-OPEN (2)).
 ///
-/// The sequence: a Weyl step of the state and the splitmix64 output function, seeded on first
-/// use from the isolate's `Math.random` seed words (`runtime::rng_seed`, so a run with a fixed
-/// `EP9_HASH_SEED` gives each isolate the same jitters; each isolate has its own sequence). The
-/// state is Rust memory (no Value, no GC point); a state of 0 means "not seeded yet". Out of
-/// line: it runs once per poll.
+/// The sequence: a Weyl step of the state and the splitmix64 output function, from one fixed
+/// seed ([`JITTER_SEED`]) on first use. So every isolate and every process runs the same
+/// sequence: a second isolate gives the same facts (`ep9_builtins` `tests/facts_export.rs`),
+/// and a run does not depend on the hash seed. A program cannot keep a site out of every
+/// window unless its call pattern follows this sequence. The state is Rust memory (no Value,
+/// no GC point); a state of 0 means "not seeded yet", and [`JITTER_OFF`] turns the jitter
+/// off. Out of line: it runs once per poll.
 // Until the poll calls it (the one-line wiring in `interp::slow::interrupt`, which removes
 // this allow), only `tests::profile` does.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -216,13 +227,14 @@ pub(crate) const CALL_JITTER: i64 = 2 * CALL_WINDOW;
 pub(crate) fn budget_after_poll(rt: &Runtime) -> i64 {
     const GAMMA: u64 = 0x9e37_79b9_7f4a_7c15;
     let mut state = rt.call_window_jitter.get();
+    if state == JITTER_OFF {
+        return BUDGET;
+    }
     if state == 0 {
-        let [a, b] = crate::runtime::rng_seed(rt.id);
-        // Never 0 (an odd value), and not the `Math.random` state itself.
-        state = (a ^ b.rotate_left(29) ^ 0x6a09_e667_f3bc_c909) | 1;
+        state = JITTER_SEED;
     }
     state = state.wrapping_add(GAMMA);
-    if state == 0 {
+    if state == 0 || state == JITTER_OFF {
         state = GAMMA;
     }
     rt.call_window_jitter.set(state);
