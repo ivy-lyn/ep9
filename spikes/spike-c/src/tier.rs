@@ -953,7 +953,10 @@ mod tests {
     /// The double path (SPIKEC-4): a `+` or `*` whose record saw a double takes CheckNumber
     /// and Float64 ops; the result boxes as `Value::number` does (an int32 Value for an
     /// integer, -0 and NaN kept apart), equal to T0; a string operand fails the number check
-    /// (a deopt, never a wrong value).
+    /// (a deopt, never a wrong value). Since M5-P1 ELEM1 an array of doubles keeps its elements
+    /// in an ELEMENTS_DOUBLE cell, and CheckArray exits there (V10-D9b, closed on DOUBLE cells);
+    /// so each array of this test ends in a `null` that `n` never reaches, which keeps its
+    /// elements as Values, and one more run shows the exit on a DOUBLE cell.
     const DOT: &str = "function dot(a, b, n) { var s = 0; for (var i = 0; i < n; i++) { s = s + a[i] * b[i]; } return s; }";
 
     #[test]
@@ -961,13 +964,13 @@ mod tests {
         if !aarch64() {
             return;
         }
-        let warm = "for (var q = 0; q < 20; q++) dot([0.5, 1.5, 2], [2, 0.25, 3], 3);";
+        let warm = "for (var q = 0; q < 20; q++) dot([0.5, 1.5, 2, null], [2, 0.25, 3, null], 3);";
         let r = equal(
             DOT,
             warm,
-            "print(dot([0.5, 2], [4, 0.25], 2), dot([1, 2, 3], [4, 5, 6], 3), dot([0.1, 0.2], [1, 1], 2));\n\
-             print(dot([NaN], [1], 1), 1 / dot([-0], [1], 1), dot([1e300], [1e300], 1), dot([-1e300], [1e300], 1));\n\
-             print(dot([3], [1], 0), dot([2147483647, 1], [1, 1], 2), dot([-2147483648], [1], 1), dot([0.5, 0.5], [1, 1], 2) === 1);",
+            "print(dot([0.5, 2, null], [4, 0.25, null], 2), dot([1, 2, 3, null], [4, 5, 6, null], 3), dot([0.1, 0.2, null], [1, 1, null], 2));\n\
+             print(dot([NaN, null], [1, null], 1), 1 / dot([-0, null], [1, null], 1), dot([1e300, null], [1e300, null], 1), dot([-1e300, null], [1e300, null], 1));\n\
+             print(dot([3, null], [1, null], 0), dot([2147483647, 1, null], [1, 1, null], 2), dot([-2147483648, null], [1, null], 1), dot([0.5, 0.5, null], [1, 1, null], 2) === 1);",
             "dot",
         );
         assert_eq!(
@@ -986,13 +989,17 @@ mod tests {
         for l in g.lines().filter(|l| l.contains("CheckNumber")) {
             assert!(l.contains("Fact(Runtime)"), "{l}\n{g}");
         }
-        deopts(DOT, warm, "print(dot(['x'], [1], 1));", "dot");
+        deopts(DOT, warm, "print(dot(['x', null], [1, null], 1));", "dot");
+        // An array of doubles alone has an ELEMENTS_DOUBLE cell: CheckArray exits, and the
+        // run ends in T0 with T0's value.
+        let r = deopts(DOT, warm, "print(dot([0.5, 1.5], [2, 0.25], 2));", "dot");
+        assert_eq!(r.compiled.output, ["1.375"]);
         // GC stress: the boxed doubles and the arrays around the compiled loop.
         let r = run_script(
             &Config::stress(),
             DOT,
             warm,
-            "var xs = []; for (var k = 0; k < 300; k++) xs.push(k / 7); print(dot(xs, xs, 300));",
+            "var xs = []; for (var k = 0; k < 300; k++) xs.push(k / 7); xs.push(null); print(dot(xs, xs, 300));",
             "dot",
         )
         .expect("run");
