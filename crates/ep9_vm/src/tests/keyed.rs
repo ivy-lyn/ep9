@@ -51,7 +51,8 @@ fn zap<'s>(
             // An int32 is not a cell: no barrier (E1).
             let off = fv::SLOTS + fv::SLOT_SIZE * s as usize + fv::VALUE;
             object::init(object::cell(v), off, int32_bits(0));
-            format!("{} {key}", value as u32)
+            // IC_LAYOUT 3 bits 10-16 (the kinds set, M5-P1 ELEM1) are left out here.
+            format!("{} {key}", value as u32 & !crate::elements::KINDS_SET_MASK)
         }
     };
     Ok(cx.new_string(&text)?.value())

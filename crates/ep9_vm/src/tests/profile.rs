@@ -953,7 +953,9 @@ fn keyed_sites_record_keys_receivers_and_misses() {
     ];
     assert_eq!(k.len(), want.len());
     for (i, (&slot, &w)) in k.iter().zip(&want).enumerate() {
-        assert_eq!(value(&got, 0, slot), w, "keyed case {i}");
+        // IC_LAYOUT 3 bits 10-16 (the kinds set, M5-P1 ELEM1) are left out here.
+        let bits = value(&got, 0, slot) & !crate::elements::KINDS_SET_MASK;
+        assert_eq!(bits, w, "keyed case {i}");
         assert_eq!(
             key(&got, 0, slot),
             Key::Undefined,
@@ -1070,7 +1072,13 @@ fn keyed_sites_record_the_element_case_of_every_index_key_form() {
         .iter()
         .zip(&INDEX_CASES)
         .enumerate()
-        .map(|(i, (&slot, &(_, _, w)))| (i, value(&got, 0, slot), w))
+        .map(|(i, (&slot, &(_, _, w)))| {
+            (
+                i,
+                value(&got, 0, slot) & !crate::elements::KINDS_SET_MASK,
+                w,
+            )
+        })
         .filter(|&(_, g, w)| g != w)
         .collect();
     assert!(wrong.is_empty(), "(case, got, want): {wrong:?}");
