@@ -72,7 +72,7 @@ use crate::kinds::{self as kind, is_bound, is_callable, is_symbol};
 use crate::object::{self, attr, is_array, is_function, is_object, is_string};
 use crate::props;
 use crate::runtime::{Atom, ErrorKind, Root, Runtime, val};
-use crate::{accessor, arguments, bound, shape, string, symbol, wrapper};
+use crate::{accessor, arguments, bound, elements, shape, string, symbol, wrapper};
 
 fn is_atom(cx: &Cx, key: u64, a: Atom) -> bool {
     object::key_eq(key, cx.rt().atom(a))
@@ -91,7 +91,8 @@ pub(crate) fn get_with_receiver(cx: &mut Cx, mut o: u64, key: u64, receiver: u64
     debug_assert!(is_object(o) && is_property_key(key));
     let how = key::probe(key);
     loop {
-        if kind::cell_kind(o) != kind::OBJECT.get()
+        // A plain object with an elements cell asks the hook too (its index keys, H18-Q3).
+        if (kind::cell_kind(o) != kind::OBJECT.get() || object::has_elements_cell(o))
             && let Some(r) = exotic::get(cx, o, key, how, receiver)
         {
             return r;
@@ -119,7 +120,7 @@ pub(crate) fn get_data_from(cx: &mut Cx, mut o: u64, key: u64) -> Option<u64> {
     let how = key::probe(key);
     loop {
         let k = kind::cell_kind(o);
-        if k != kind::OBJECT.get() && !exotic::is_routed(k) {
+        if (k != kind::OBJECT.get() || object::has_elements_cell(o)) && !exotic::is_routed(k) {
             // Only non-routed kinds get here, and their `exotic::get` never throws; the
             // `Some(Err)` arm is defensive.
             match exotic::get(cx, o, key, how, o) {
@@ -372,6 +373,12 @@ fn ordinary_set_walk(cx: &mut Cx, o: u64, key: u64, v: u64, receiver: u64) -> Re
             {
                 return Ok(true);
             }
+        } else if elements::plain_elements_kind(kind::cell_kind(o))
+            && object::has_elements_cell(o)
+            && let Some(i) = array_index_of(key)
+            && plain_store(rt, o, i, v)
+        {
+            return Ok(true);
         } else if is_function(o) && exotic::is_lazy_prototype(rt, o, key, how) {
             // Make `prototype`, so the store below replaces it.
             exotic::function_prototype(rt, o);
@@ -475,6 +482,31 @@ fn array_store(rt: &Runtime, a: u64, i: u32, v: u64) -> bool {
         return false;
     }
     object::array_set(rt, a, i, v)
+}
+
+/// [`array_store`] for an object `o` of an `elements::plain_elements_kind` (H18-Q3): an
+/// existing element takes the value; a missing one is added to the elements store only if
+/// `o` has a fast shape (extensible, and no index key among its stored properties: an index
+/// key makes a dictionary, OM-10) and no prototype has an index key. False if it stored
+/// nothing (also an index too far for the elements store, `object::element_set`): the caller
+/// takes the key path. GC point.
+fn plain_store(rt: &Runtime, o: u64, i: u32, v: u64) -> bool {
+    if object::element_get(o, i).is_none()
+        && (shape::is_dictionary(shape::shape_of(o)) || shape::proto_index_keys(rt))
+    {
+        return false;
+    }
+    object::element_set(rt, o, i, v)
+}
+
+/// Adds the new element `i` with the value `v` to the plain-elements object `o` for
+/// CreateDataProperty (no chain walk): only if `o` has a fast shape (extensible, no stored
+/// index key). False if it stored nothing: the caller takes the key path. GC point.
+fn plain_define(rt: &Runtime, o: u64, i: u32, v: u64) -> bool {
+    if object::element_get(o, i).is_none() && shape::is_dictionary(shape::shape_of(o)) {
+        return false;
+    }
+    object::element_set(rt, o, i, v)
 }
 
 /// A failed `base[key] = v`: nothing in sloppy code, a TypeError in strict code. The message
@@ -589,6 +621,9 @@ pub(crate) fn set_keyed(cx: &mut Cx, base: u64, k: u64, v: u64, strict: bool) ->
         if kd == kind::ARRAY.get() && array_store(cx.rt(), base, i as u32, v) {
             return Ok(());
         }
+        if elements::plain_elements_kind(kd) && plain_store(cx.rt(), base, i as u32, v) {
+            return Ok(());
+        }
         if kd == kind::ARGUMENTS.get() && arguments::set_element_value(cx.rt(), base, i as u32, v) {
             return Ok(());
         }
@@ -622,6 +657,19 @@ pub(crate) fn define(cx: &mut Cx, o: u64, key: u64, v: u64) -> Res<()> {
         // An existing element is {w, e, c}; a new one needs an extensible array.
         && (object::array_get(o, i).is_some() || is_extensible(o))
         && object::array_set(rt, o, i, v)
+    {
+        return Ok(());
+    }
+    // An index key of a plain-elements object that has an elements cell (H18-Q3): its
+    // element, or a new one when the property storage has no such key (one place per key).
+    // Without a cell, a string index key takes the key path (OM-10), as in v0: the index test
+    // is a call, and every named define would pay it (M5-P1 BENCH-SET, ci-v0).
+    if elements::plain_elements_kind(kind::cell_kind(o))
+        && object::has_elements_cell(o)
+        && let Some(i) = array_index_of(key)
+        && (object::element_get(o, i).is_some()
+            || (is_extensible(o) && props::own_get_with(o, key, how).is_none()))
+        && object::element_set(rt, o, i, v)
     {
         return Ok(());
     }
@@ -700,6 +748,13 @@ pub(crate) fn define_keyed(cx: &mut Cx, o: u64, k: u64, v: u64) -> Res<()> {
     {
         return Ok(());
     }
+    if elements::plain_elements_kind(kind::cell_kind(o))
+        && let Some(i) = val(k).as_int32()
+        && i >= 0
+        && plain_define(cx.rt(), o, i as u32, v)
+    {
+        return Ok(());
+    }
     let key = to_property_key(cx, k)?;
     define(cx, o, key, v)
 }
@@ -746,6 +801,14 @@ pub(crate) fn ordinary_delete(rt: &Runtime, o: u64, key: u64) -> bool {
     {
         // v0: a dense array keeps a hole.
         object::array_set(rt, o, i, crate::frame::HOLE);
+        return true;
+    }
+    if elements::plain_elements_kind(kind::cell_kind(o))
+        && let Some(i) = array_index_of(key)
+        && object::element_get(o, i).is_some()
+    {
+        // An element is {w, e, c}: it becomes a hole.
+        object::element_set(rt, o, i, crate::frame::HOLE);
         return true;
     }
     if let Some(a) = exotic::own_attrs(rt, o, key, how) {
@@ -1120,12 +1183,8 @@ pub(crate) fn for_in_keys(cx: &mut Cx, o: u64) -> Res<u64> {
                 }
             }
         } else {
-            if is_array(cur) {
-                for i in 0..object::array_len(cur) {
-                    if object::array_get(cur, i).is_some() {
-                        index_keys.push((i, true));
-                    }
-                }
+            if is_array(cur) || elements::plain_elements_kind(kind::cell_kind(cur)) {
+                index_keys.extend(object::element_indices(cur).map(|i| (i, true)));
             }
             // A String wrapper (§10.4.3.3): its indices come first, and its `length` (not
             // enumerable) first among the strings, so it hides an inherited `length`.
@@ -1378,9 +1437,12 @@ pub(crate) fn ordinary_define_own_property(cx: &mut Cx, o: u64, key: u64, desc: 
         {
             return Ok(true);
         }
-        if let OwnSlot::Exotic(_) = slot {
+        if let OwnSlot::Exotic(e) = slot
+            && (is_array(o) || !matches!(e, Exotic::Element(_)))
+        {
             // Exotic own properties are data properties; only a dense element gets here
-            // (a String wrapper's are not configurable).
+            // (a String wrapper's are not configurable). A plain-elements object's element
+            // becomes a stored accessor below (H18-Q3).
             return Err(not_implemented(cx, "accessor array elements"));
         }
         // GC point: `o`, `key`, `get` and `set` live in Rust locals.
@@ -1404,7 +1466,7 @@ pub(crate) fn ordinary_define_own_property(cx: &mut Cx, o: u64, key: u64, desc: 
     match slot {
         // New attributes move a fast object to dictionary mode (OM-10, props.rs).
         OwnSlot::Storage => props::own_define(rt, o, key, v, attrs),
-        OwnSlot::Exotic(Exotic::Element(i)) => {
+        OwnSlot::Exotic(Exotic::Element(i)) if is_array(o) => {
             if attrs != attr::DEFAULT {
                 return Err(not_implemented(
                     cx,
@@ -1412,6 +1474,18 @@ pub(crate) fn ordinary_define_own_property(cx: &mut Cx, o: u64, key: u64, desc: 
                 ));
             }
             object::array_set(rt, o, i, v);
+        }
+        // An element of a plain-elements object (H18-Q3): a {w, e, c} data value stays an
+        // element; anything else (an accessor, other attributes) moves it to the property
+        // storage, as a v0 index key (one place per key: the element goes first).
+        OwnSlot::Exotic(Exotic::Element(i)) => {
+            if attrs == attr::DEFAULT {
+                object::element_set(rt, o, i, v);
+            } else {
+                object::element_set(rt, o, i, crate::frame::HOLE);
+                // GC point: `o`, `key` and `v` live in Rust locals.
+                props::own_define(rt, o, key, v, attrs);
+            }
         }
         // Validation passed on a non-writable, non-configurable property: nothing changes
         // (SameValue held for the value).
@@ -1498,6 +1572,16 @@ fn add_own_property(cx: &mut Cx, o: u64, key: u64, v: u64, attrs: i32) -> Res<bo
         }
         // Past the v0 dense limit the index becomes a dictionary property and `length`
         // stays (H18 v0 notes), as in [[Set]] and literals.
+    } else if attrs == attr::DEFAULT
+        && elements::plain_elements_kind(kind::cell_kind(o))
+        && object::has_elements_cell(o)
+        && let Some(i) = array_index_of(key)
+        && object::element_set(rt, o, i, v)
+    {
+        // A new {w, e, c} index key of a plain-elements object that has an elements cell
+        // (H18-Q3; without one, a string key takes the key path, as in `define`); an index
+        // too far for its elements store stays a stored property.
+        return Ok(true);
     }
     props::own_define(rt, o, key, v, attrs);
     Ok(true)
@@ -1579,8 +1663,8 @@ pub(crate) fn ordinary_own_property_keys(cx: &mut Cx, o: u64) -> u64 {
     };
     // 1. Integer indices ascending: elements, String wrapper indices, stored index keys.
     let mut indices: Vec<u32> = Vec::new();
-    if is_array(o) {
-        indices.extend((0..object::array_len(o)).filter(|&i| object::array_get(o, i).is_some()));
+    if is_array(o) || elements::plain_elements_kind(kind::cell_kind(o)) {
+        indices.extend(object::element_indices(o));
     }
     if let Some(s) = wrapper::wrapper_value(o).filter(|&p| is_string(p)) {
         indices.extend(0..object::str_len(s) as u32);
@@ -1695,8 +1779,8 @@ fn own_index(o: u64, i: u64, text: &[u8]) -> OwnIndex {
     }
     let index = array_index_u64(i);
     if let Some(n) = index {
-        if k == kind::ARRAY.get() {
-            if let Some(v) = object::array_get(o, n) {
+        if k == kind::ARRAY.get() || elements::plain_elements_kind(k) {
+            if let Some(v) = object::element_get(o, n) {
                 return OwnIndex::Stored(v, attr::DEFAULT);
             }
         } else if k == kind::PRIMITIVE_WRAPPER.get()
@@ -1705,7 +1789,8 @@ fn own_index(o: u64, i: u64, text: &[u8]) -> OwnIndex {
         {
             return OwnIndex::WrapperChar(s);
         }
-        // An array-index key moves a fast object to dictionary mode (OM-10, `shape::add`).
+        // An array-index key that is a stored property moves a fast object to dictionary mode
+        // (OM-10, `shape::add`); elements were read above.
         if !shape::is_dictionary(shape::shape_of(o)) {
             return OwnIndex::Absent;
         }
@@ -1832,6 +1917,12 @@ pub(crate) fn set_index(cx: &mut Cx, o: u64, i: u64, v: u64) -> Res<bool> {
     {
         return Ok(true);
     }
+    if elements::plain_elements_kind(kind::cell_kind(o))
+        && let Some(n) = array_index_u64(i)
+        && plain_store(cx.rt(), o, n, v)
+    {
+        return Ok(true);
+    }
     // GC point: `o` and `v` live in Rust locals.
     let key = index_key_of(cx.rt(), i);
     ordinary_set(cx, o, key, v)
@@ -1846,6 +1937,12 @@ pub(crate) fn define_index(cx: &mut Cx, o: u64, i: u64, v: u64) -> Res<()> {
         // An existing element is {w, e, c}; a new one needs an extensible array.
         && (object::array_get(o, n).is_some() || is_extensible(o))
         && object::array_set(cx.rt(), o, n, v)
+    {
+        return Ok(());
+    }
+    if elements::plain_elements_kind(kind::cell_kind(o))
+        && let Some(n) = array_index_u64(i)
+        && plain_define(cx.rt(), o, n, v)
     {
         return Ok(());
     }
@@ -1866,6 +1963,13 @@ pub(crate) fn delete_index(cx: &mut Cx, o: u64, i: u64, strict: bool) -> Res<boo
         {
             // v0: a dense array keeps a hole (as `delete`).
             object::array_set(cx.rt(), o, n, crate::frame::HOLE);
+            return Ok(true);
+        }
+        if elements::plain_elements_kind(kind::cell_kind(o))
+            && let Some(n) = array_index_u64(i)
+            && object::element_get(o, n).is_some()
+        {
+            object::element_set(cx.rt(), o, n, crate::frame::HOLE);
             return Ok(true);
         }
         let mut buf = [0u8; 20];

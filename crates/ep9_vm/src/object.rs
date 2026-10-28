@@ -669,6 +669,7 @@ pub(crate) fn register_kinds(heap: &Heap) {
     for (id, k) in kinds {
         heap.register_kind(id, k).expect("register a VM cell kind");
     }
+    crate::elements::register_kinds(heap);
     crate::props::register_kinds(heap);
     crate::symbol::register_kinds(heap);
     crate::shape::register_kinds(heap);
@@ -832,7 +833,7 @@ pub(crate) fn flags_of(o: u64) -> i32 {
     f
 }
 
-// ---- arrays --------------------------------------------------------------------------------
+// ---- arrays and elements (H18) -------------------------------------------------------------
 
 pub(crate) fn new_array(rt: &Runtime, capacity: usize) -> u64 {
     let a = new_js_object(rt, kind::ARRAY, rt.root(Root::ArrayPrototype), 0);
@@ -924,80 +925,318 @@ pub(crate) fn array_len(a: u64) -> u32 {
     rd_i32(cell(a), arr::LENGTH) as u32
 }
 
-fn elements_of(a: u64) -> Option<CellPtr> {
-    let e = rd(cell(a), obj::ELEMENTS);
+/// The elements cell (+16) of the JS object `o`, if it has one.
+#[inline(always)]
+fn elements_of(o: u64) -> Option<CellPtr> {
+    let e = rd(cell(o), obj::ELEMENTS);
     (e != UNDEFINED).then(|| cell(e))
 }
 
-/// Element `i`: `Some(value)` if `i < length` and not a hole.
+/// True if the JS object `o` has an elements cell at +16 (an Array, an ARGUMENTS object or an
+/// `elements::plain_elements_kind` object with an element once). One load; not a GC point.
+#[inline(always)]
+pub(crate) fn has_elements_cell(o: u64) -> bool {
+    rd(cell(o), obj::ELEMENTS) != UNDEFINED
+}
+
+/// Reads the raw word at `off` of the cell `c` (an ELEMENTS_DOUBLE data word: f64 bits, not
+/// a Value). Not a GC point.
+#[inline(always)]
+pub(crate) fn raw_get(c: CellPtr, off: usize) -> u64 {
+    // SAFETY: `c` is live (crate invariant) and `off` is a data word inside its capacity.
+    unsafe { c.field::<u64>(off).read() }
+}
+
+/// Writes the raw word `bits` at `off` of the ELEMENTS_DOUBLE cell `c`. No barrier: the word
+/// is not a Value and the GC never reads it (`elements::register_kinds`).
+#[inline(always)]
+pub(crate) fn raw_set(c: CellPtr, off: usize, bits: u64) {
+    // SAFETY: `c` is live (crate invariant).
+    debug_assert!(unsafe { c.header() }.kind() == kind::ELEMENTS_DOUBLE.get());
+    // SAFETY: `c` is live (crate invariant) and `off` is a data word inside its capacity.
+    unsafe { c.field::<u64>(off).write(bits) }
+}
+
+/// The f64 bits a DOUBLE store writes for the number Value `v`: every NaN becomes the
+/// canonical NaN (V10-D7), so no store writes the hole [`delems::HOLE`].
+#[inline(always)]
+pub(crate) fn double_bits(v: u64) -> u64 {
+    let d = val(v).as_number().expect("a number for a DOUBLE store");
+    if d.is_nan() {
+        delems::CANONICAL_NAN
+    } else {
+        d.to_bits()
+    }
+}
+
+/// The Value of the DOUBLE data word `bits` (not the hole): as `Value::number`, so an
+/// integral value is an int32 again. No allocation (a NaN-box, H6). The only NaN a DOUBLE
+/// cell holds is the canonical one, which is the NaN of `Value::double`: no NaN test here.
+#[inline(always)]
+pub(crate) fn double_value(bits: u64) -> u64 {
+    debug_assert!(bits != delems::HOLE);
+    debug_assert!(!f64::from_bits(bits).is_nan() || bits == delems::CANONICAL_NAN);
+    let d = f64::from_bits(bits);
+    let i = d as i32; // saturates; NaN gives 0
+    if i as f64 == d && (i != 0 || bits == 0) {
+        int32_bits(i)
+    } else {
+        bits.wrapping_add(ep9_value::encoding::DOUBLE_ENCODE_OFFSET)
+    }
+}
+
+const _: () = assert!(delems::CANONICAL_NAN == ep9_value::encoding::PURE_NAN_BITS);
+
+/// Element `i` of the elements cell `e` (an ELEMENTS or ELEMENTS_DOUBLE cell): `Some(value)`
+/// if `i` is below its capacity and not a hole. The cell's kind is its storage form, so this
+/// reads either form without the shape (one storage form is one case, MC-w15-21). Not a GC
+/// point.
+#[inline(always)]
+fn element_at(e: CellPtr, i: u32) -> Option<u64> {
+    if i as usize >= rd_i32(e, elems::CAPACITY) as usize {
+        return None;
+    }
+    let off = elems::DATA + 8 * i as usize;
+    // SAFETY: `e` is live (crate invariant).
+    if unsafe { e.header() }.kind() == kind::ELEMENTS.get() {
+        let v = rd(e, off);
+        return (v != HOLE).then_some(v);
+    }
+    // SAFETY: `e` is live (crate invariant).
+    debug_assert!(unsafe { e.header() }.kind() == kind::ELEMENTS_DOUBLE.get());
+    let bits = raw_get(e, off);
+    (bits != delems::HOLE).then(|| double_value(bits))
+}
+
+/// Element `i`: `Some(value)` if `i < length` and not a hole. Inlined: the T0 keyed load
+/// (`GetKeyedProperty`) reads through it with no call.
+#[inline(always)]
 pub(crate) fn array_get(a: u64, i: u32) -> Option<u64> {
     if i >= array_len(a) {
         return None;
     }
-    let e = elements_of(a)?;
-    if i as usize >= rd_i32(e, elems::CAPACITY) as usize {
-        return None;
+    element_at(elements_of(a)?, i)
+}
+
+/// Element `i` of the elements store of the JS object `o` (an Array or an
+/// `elements::plain_elements_kind` object): `Some(value)` if present. For an Array, also
+/// below `length` (elements at or past it are holes). Not a GC point.
+pub(crate) fn element_get(o: u64, i: u32) -> Option<u64> {
+    if kind::is_array(o) {
+        return array_get(o, i);
     }
-    let v = rd(e, elems::DATA + 8 * i as usize);
-    (v != HOLE).then_some(v)
+    element_at(elements_of(o)?, i)
+}
+
+/// True if the JS object `o` may have an element: an Array with a non-zero `length`, or
+/// another object whose elements store holds one. Not a GC point.
+pub(crate) fn may_have_elements(o: u64) -> bool {
+    if kind::is_array(o) {
+        return array_len(o) > 0;
+    }
+    if !crate::elements::plain_elements_kind(cell_kind(o)) {
+        return false;
+    }
+    let Some(e) = elements_of(o) else {
+        return false;
+    };
+    (0..rd_i32(e, elems::CAPACITY) as u32).any(|i| element_at(e, i).is_some())
+}
+
+/// The indices of the elements of the JS object `o` (an Array or a plain-elements object), in
+/// ascending order. Not a GC point (the caller runs no JS while it reads them).
+pub(crate) fn element_indices(o: u64) -> impl Iterator<Item = u32> {
+    let end = match elements_of(o) {
+        None => 0,
+        Some(e) if kind::is_array(o) => array_len(o).min(rd_i32(e, elems::CAPACITY) as u32),
+        Some(e) => rd_i32(e, elems::CAPACITY) as u32,
+    };
+    (0..end).filter(move |&i| element_get(o, i).is_some())
 }
 
 /// Stores element `i`, growing the array; [`HOLE`] removes it. False if `i` is past the v0
 /// dense limit. A raw store: callers check `[[Extensible]]` for a new element, and a
 /// `[[Set]]` caller the prototype chain (`shape::proto_index_keys`). Every element write goes
-/// through here and [`array_set_length`]: an element that appears or goes away is a
-/// structural change of a prototype (OM-8, `shape::note_change`); a value store is not. An
-/// element that appears on a prototype also sets `shape::proto_index_keys`.
+/// through here, [`array_set_length`] and [`element_set`]: an element that appears or goes
+/// away is a structural change of a prototype (OM-8, `shape::note_change`); a value store is
+/// not. An element that appears on a prototype also sets `shape::proto_index_keys`.
+///
+/// Elements kinds (H18, M5-P1): the store first makes the array's kind general enough for `v`
+/// (`elements::transition`, one-way: a hole or an index past `length` makes it holey, a double
+/// makes it DOUBLE, another Value ELEMENTS), then stores in the kind's storage form; a DOUBLE
+/// store writes `v`'s f64 with a canonical NaN ([`double_bits`]). GC point (a new cell or
+/// shape): `a` and `v` live in Rust locals.
 pub(crate) fn array_set(rt: &Runtime, a: u64, i: u32, v: u64) -> bool {
     if i >= arr::MAX_LENGTH {
         return false;
     }
-    // Only a prototype pays for more than the flag test.
-    let structural = shape::is_prototype_object(a) && array_get(a, i).is_some() != (v != HOLE);
-    let cap = elements_of(a).map_or(0, |e| rd_i32(e, elems::CAPACITY) as usize);
-    let e = if (i as usize) < cap {
-        elements_of(a).expect("elements")
+    let len = array_len(a);
+    let from = crate::elements::kind_of(a);
+    // At or below `length`, an int32 fits every kind (INT32 is the bottom of the lattice) and
+    // every value but the hole fits an ELEMENTS kind: no join.
+    let int32 = v & ep9_value::encoding::NUMBER_TAG == ep9_value::encoding::NUMBER_TAG;
+    let elements =
+        from & !crate::elements::kind::HOLEY_BIT == crate::elements::kind::PACKED_ELEMENTS;
+    let to = if i <= len && (int32 || (elements && v != HOLE)) {
+        from
+    } else if v == HOLE {
+        crate::elements::holey(from)
     } else {
-        // GC point: `a` and `v` live in Rust locals.
-        let n = new_elements(rt, (i as usize + 1).max(cap * 2).max(4));
-        if let Some(old) = elements_of(a) {
+        let k = crate::elements::join(from, crate::elements::value_kind(v));
+        if i > len {
+            crate::elements::holey(k)
+        } else {
+            k
+        }
+    };
+    store_element(rt, a, i, v, from, to);
+    if i >= len {
+        wr(&rt.heap, cell(a), arr::LENGTH, int32_bits(i as i32 + 1));
+    }
+    true
+}
+
+/// The store of [`array_set`] and [`element_set`]: kind `from` -> `to`, then `v` (or the hole)
+/// at `i`. In line only the common case (no transition, inside the capacity, not a
+/// prototype): a store in place in the storage form of the kind. Not a GC point there.
+#[inline(always)]
+fn store_element(rt: &Runtime, o: u64, i: u32, v: u64, from: u8, to: u8) {
+    if to == from
+        && !shape::is_prototype_object(o)
+        && let Some(e) = elements_of(o)
+        && i < rd_i32(e, elems::CAPACITY) as u32
+    {
+        let off = elems::DATA + 8 * i as usize;
+        if crate::elements::storage(to) == Some(crate::elements::Storage::Doubles) {
+            let bits = if v == HOLE {
+                delems::HOLE
+            } else {
+                double_bits(v)
+            };
+            raw_set(e, off, bits);
+        } else {
+            wr(&rt.heap, e, off, v);
+        }
+        return;
+    }
+    store_element_slow(rt, o, i, v, from, to);
+}
+
+/// Stores element `i` of the elements store of `o`, an object that is not an Array
+/// (`elements::plain_elements_kind`); [`HOLE`] removes it. False (nothing stored) for a new
+/// element at or past [`arr::MAX_LENGTH`] or `elements::PLAIN_GAP` past the capacity: the
+/// caller keeps such an index as a stored property (v0). A raw store, as [`array_set`]: the
+/// callers check `[[Extensible]]`, the chain and that the property storage has no such key.
+/// The kind is always holey (no `length`). GC point.
+pub(crate) fn element_set(rt: &Runtime, o: u64, i: u32, v: u64) -> bool {
+    debug_assert!(crate::elements::plain_elements_kind(cell_kind(o)));
+    let cap = elements_of(o).map_or(0, |e| rd_i32(e, elems::CAPACITY) as u32);
+    if i >= cap && (i >= arr::MAX_LENGTH || i - cap >= crate::elements::PLAIN_GAP) {
+        if v == HOLE {
+            return true;
+        }
+        return false;
+    }
+    let from = crate::elements::kind_of(o);
+    let to = if v == HOLE {
+        crate::elements::holey(from)
+    } else {
+        crate::elements::holey(crate::elements::join(from, crate::elements::value_kind(v)))
+    };
+    store_element(rt, o, i, v, from, to);
+    true
+}
+
+/// The other cases of [`store_element`]: kind `from` -> `to` (a transition when they differ),
+/// then `v` (or the hole) at `i` in `to`'s storage form, growing the cell to
+/// max(i + 1, 2 × capacity, 4). GC point.
+#[inline(never)]
+fn store_element_slow(rt: &Runtime, o: u64, i: u32, v: u64, from: u8, to: u8) {
+    use crate::elements::{Storage, storage};
+    // Only a prototype pays for more than the flag test.
+    let structural = shape::is_prototype_object(o) && element_get(o, i).is_some() != (v != HOLE);
+    if to != from {
+        // GC point: `o` and `v` live in Rust locals.
+        crate::elements::transition(rt, o, to);
+    }
+    let doubles = storage(to) == Some(Storage::Doubles);
+    let cap = elements_of(o).map_or(0, |e| rd_i32(e, elems::CAPACITY) as usize);
+    let e = if (i as usize) < cap {
+        elements_of(o).expect("elements")
+    } else {
+        // GC point: `o` and `v` live in Rust locals.
+        let new_cap = (i as usize + 1).max(cap * 2).max(4);
+        let n = if doubles {
+            crate::elements::new_double_cell(rt, new_cap)
+        } else {
+            new_elements(rt, new_cap)
+        };
+        if let Some(old) = elements_of(o) {
             for j in 0..cap {
-                init(n, elems::DATA + 8 * j, rd(old, elems::DATA + 8 * j));
+                let off = elems::DATA + 8 * j;
+                if doubles {
+                    raw_set(n, off, raw_get(old, off));
+                } else {
+                    init(n, off, rd(old, off));
+                }
             }
         }
-        wr(&rt.heap, cell(a), obj::ELEMENTS, n.to_value().to_bits());
+        wr(&rt.heap, cell(o), obj::ELEMENTS, n.to_value().to_bits());
         n
     };
-    wr(&rt.heap, e, elems::DATA + 8 * i as usize, v);
-    if i >= array_len(a) {
-        wr(&rt.heap, cell(a), arr::LENGTH, int32_bits(i as i32 + 1));
+    let off = elems::DATA + 8 * i as usize;
+    if doubles {
+        let bits = if v == HOLE {
+            delems::HOLE
+        } else {
+            double_bits(v)
+        };
+        raw_set(e, off, bits);
+    } else {
+        wr(&rt.heap, e, off, v);
     }
     if structural {
         if v != HOLE {
-            shape::note_proto_index_key(rt, a);
+            shape::note_proto_index_key(rt, o);
         }
-        shape::note_change(rt, a);
+        shape::note_change(rt, o);
     }
-    true
 }
 
 /// Sets `length` (§10.4.2.4 ArraySetLength, v0: dense, no non-configurable elements). False
 /// if `len` is past the v0 dense limit. A cut that removes an element is a structural change
 /// of a prototype (OM-8); growth and a cut over holes only change the value of `length`.
+/// Growth makes the kind holey (the new indices are holes; GC point); a cut keeps it.
 pub(crate) fn array_set_length(rt: &Runtime, a: u64, len: u32) -> bool {
     if len > arr::MAX_LENGTH {
         return false;
     }
     let old = array_len(a);
+    if len > old {
+        let from = crate::elements::kind_of(a);
+        let to = crate::elements::holey(from);
+        if to != from {
+            // GC point: `a` lives in a Rust local.
+            crate::elements::transition(rt, a, to);
+        }
+    }
     if len < old
         && let Some(e) = elements_of(a)
     {
         let end = old.min(rd_i32(e, elems::CAPACITY) as u32);
         let at = |j: u32| elems::DATA + 8 * j as usize;
         // Only a prototype pays for more than the flag test.
-        let structural = shape::is_prototype_object(a) && (len..end).any(|j| rd(e, at(j)) != HOLE);
-        for j in len..end {
-            wr(&rt.heap, e, at(j), HOLE);
+        let structural =
+            shape::is_prototype_object(a) && (len..end).any(|j| element_at(e, j).is_some());
+        // SAFETY: `e` is live (crate invariant).
+        if unsafe { e.header() }.kind() == kind::ELEMENTS_DOUBLE.get() {
+            for j in len..end {
+                raw_set(e, at(j), delems::HOLE);
+            }
+        } else {
+            for j in len..end {
+                wr(&rt.heap, e, at(j), HOLE);
+            }
         }
         if structural {
             shape::note_change(rt, a);

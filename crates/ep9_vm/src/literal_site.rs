@@ -52,6 +52,7 @@
 
 use ep9_bytecode::{Constant, Instructions, Oddball, OperandKind};
 
+use crate::elements;
 use crate::error::FrameRef;
 use crate::feedback;
 use crate::frame::{HOLE, UNDEFINED, int32_bits, int32_of};
@@ -60,7 +61,7 @@ use crate::interp::dsl::{FSlot, K};
 use crate::interp::slow::Lit;
 use crate::interp::{Cx, Flow, St};
 use crate::kinds::{self as kind, is_cell_bits};
-use crate::object::{self, alloc_from_shape, arr, attr, cell, elems, init, obj, rd};
+use crate::object::{self, alloc_from_shape, arr, attr, cell, delems, elems, init, obj, rd};
 use crate::runtime::{Root, Runtime, val};
 use crate::shape::{self, slf};
 use crate::unit::FunctionInfo;
@@ -89,14 +90,28 @@ mod pc {
 
 // ---- allocation ----------------------------------------------------------------------------
 
-/// A new array with `shape` (the realm's array shape), `length` = `n` and an ELEMENTS cell of
-/// capacity `n` whose element `i` is `value(i)` (the hole for none), or no ELEMENTS cell for
-/// `n` = 0. GC point: the ELEMENTS cell comes first and lives in a Rust local while the array
-/// is allocated, so both are filled with initializing stores (E2: each host is the newest
-/// cell when it is filled).
+/// A new array with `shape` (an array shape of the realm), `length` = `n` and an elements
+/// cell of capacity `n` whose element `i` is `value(i)` (the hole for none), or no cell for
+/// `n` = 0. The cell has the storage form of the shape's elements kind (H18, M5-P1 ELEM1):
+/// Values in an ELEMENTS cell, or raw f64 (canonical NaN, the hole pattern for a hole) in an
+/// ELEMENTS_DOUBLE cell; the caller checked that the kind fits every value
+/// ([`literal_kind`]). GC point: the cell comes first and lives in a Rust local while the
+/// array is allocated, so both are filled with initializing stores (E2: each host is the
+/// newest cell when it is filled; raw f64 words take no barrier).
 #[inline(always)]
 fn alloc_array(rt: &Runtime, shape: u64, n: usize, value: impl Fn(usize) -> u64) -> u64 {
-    let e = if n > 0 {
+    let doubles =
+        elements::storage(shape::elements_kind(shape)) == Some(elements::Storage::Doubles);
+    let e = if n > 0 && doubles {
+        let e = elements::new_double_cell(rt, n);
+        for i in 0..n {
+            let v = value(i);
+            if v != HOLE {
+                object::raw_set(e, delems::DATA + 8 * i, object::double_bits(v));
+            }
+        }
+        e.to_value().to_bits()
+    } else if n > 0 {
         let e = rt.alloc(kind::ELEMENTS, elems::DATA + 8 * n);
         init(e, elems::CAPACITY, int32_bits(n as i32));
         for i in 0..n {
@@ -112,6 +127,72 @@ fn alloc_array(rt: &Runtime, shape: u64, n: usize, value: impl Fn(usize) -> u64)
         init(a, obj::ELEMENTS, e);
     }
     a.to_value().to_bits()
+}
+
+/// A new array for a nested array boilerplate of [`cold_object`]: as [`alloc_array`], with
+/// the elements kind its values need, found while they are stored (one pass: a hole makes
+/// it holey; a DOUBLE kind copies the Values cell into an ELEMENTS_DOUBLE cell). `ashape` is
+/// the realm's array root shape. GC point: each cell lives in a Rust local while the next
+/// one, the shape and the array are made; each is filled right after its allocation (E2).
+fn alloc_nested_array(rt: &Runtime, ashape: u64, n: usize, value: impl Fn(usize) -> u64) -> u64 {
+    let mut ek = elements::kind::PACKED_INT32;
+    let e = if n > 0 {
+        let e = rt.alloc(kind::ELEMENTS, elems::DATA + 8 * n);
+        init(e, elems::CAPACITY, int32_bits(n as i32));
+        for i in 0..n {
+            let v = value(i);
+            ek = if v == HOLE {
+                elements::holey(ek)
+            } else {
+                elements::join(ek, elements::value_kind(v))
+            };
+            init(e, elems::DATA + 8 * i, v);
+        }
+        if elements::storage(ek) == Some(elements::Storage::Doubles) {
+            let d = elements::new_double_cell(rt, n);
+            for i in 0..n {
+                let v = rd(e, elems::DATA + 8 * i);
+                if v != HOLE {
+                    object::raw_set(d, delems::DATA + 8 * i, object::double_bits(v));
+                }
+            }
+            d.to_value().to_bits()
+        } else {
+            e.to_value().to_bits()
+        }
+    } else {
+        UNDEFINED
+    };
+    // A root array shape of the realm: never `None`.
+    let shape = shape::with_elements_kind(rt, ashape, ek).expect("a root array shape");
+    let a = alloc_from_shape(rt, kind::ARRAY, shape);
+    init(a, arr::LENGTH, int32_bits(n as i32));
+    if n > 0 {
+        init(a, obj::ELEMENTS, e);
+    }
+    a.to_value().to_bits()
+}
+
+/// The elements kind an array literal needs for its constant elements (`elements`: `None` for
+/// a computed element, else the constant index): PACKED_INT32, joined with each constant's
+/// kind; an elision (the hole constant) makes it holey. A computed element is a hole until
+/// its `StaInArrayLiteral` store, which makes the kind its value needs (no JS can read the
+/// array before), so it does not count.
+#[inline(always)]
+fn literal_kind(fi: &FunctionInfo, elements: &[Option<ep9_bytecode::ConstIndex>]) -> u8 {
+    elements
+        .iter()
+        .fold(elements::kind::PACKED_INT32, |k, e| match e {
+            None => k,
+            Some(ci) => {
+                let c = fi.constant(ci.0);
+                if c == HOLE {
+                    elements::holey(k)
+                } else {
+                    elements::join(k, elements::value_kind(c))
+                }
+            }
+        })
 }
 
 /// The key of Literal slot `s` of the running function, if it holds a shape.
@@ -196,6 +277,13 @@ pub(crate) fn fast_array(st: &mut St<'_>, boilerplate: K, s: FSlot, flags: u8) -
     if bigint {
         return Flow::Cold;
     }
+    // The key is the shape of a cold result, which stored these constants (`slow::literal`
+    // `array_from_boilerplate`): its elements kind holds them, so a hit makes no kind
+    // transition. Checked in debug builds only (a second pass per hit cost splay +4%, M5-P1).
+    debug_assert!(
+        elements::allows(literal_kind(fi, elements), shape::elements_kind(shape)),
+        "a literal key kind below its constants' kind"
+    );
     rt.enter(st.fp, st.pc);
     // GC points; `shape` lives in a Rust local. A computed element (`None`) stays a hole until
     // `StaInArrayLiteral` stores it, as on the cold path.
@@ -531,10 +619,10 @@ pub(crate) fn cold_object(cx: &mut Cx, fp: *mut u64, pc: *const u8, k: u32) -> O
     let mut arrays: crate::call::ArgBuf<u64> = crate::call::ArgBuf::new();
     for &(_, val) in props.iter() {
         if let Some(ci) = val
-            && let Constant::ArrayBoilerplate(elements) = fi.constant_entry(ci.0)
+            && let Constant::ArrayBoilerplate(items) = fi.constant_entry(ci.0)
         {
-            let a = alloc_array(rt, ashape, elements.len(), |j| {
-                elements[j].map_or(HOLE, |c| fi.constant(c.0))
+            let a = alloc_nested_array(rt, ashape, items.len(), |j| {
+                items[j].map_or(HOLE, |c| fi.constant(c.0))
             });
             arrays.push(a);
         }
@@ -668,6 +756,11 @@ fn new_clone_handler(rt: &Runtime, rs: u64) -> u64 {
 /// {w, e, c} in-object at fields 0..n. Not a GC point.
 fn clonable(ss: u64, rs: u64) -> bool {
     if shape::is_dictionary(ss) || shape::is_dictionary(rs) {
+        return false;
+    }
+    // A source that has (or had) elements (an index key of a plain object, H18-Q3, M5-P1):
+    // the hit copies fields only, so the cold path copies it. Elements kind 0 = no elements.
+    if shape::elements_kind(ss) != 0 || shape::elements_kind(rs) != 0 {
         return false;
     }
     let n = shape::count(ss);

@@ -948,7 +948,7 @@ op!(GetKeyedProperty(st, object: R, s: FSlot) {
         && let Some(v) = object::array_get(o, i32_of(k) as u32)
     {
         st.acc = v;
-        return Flow::Next;
+        return next_or_record(s, profile::keyed_hit_kind(st, o));
     }
     keyed_ic::fast_get(st, o, k, s)
 } cold {
