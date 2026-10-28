@@ -14,7 +14,7 @@
 //! | OBJECT kind 16, ARRAY kind 18 | `KIND_OBJECT`, `KIND_ARRAY` | OBJECT_LAYOUT 5 |
 //! | in-object field `f` of an OBJECT (no fixed fields) at `OBJECT_FIELDS + 8f` | `OBJECT_FIELDS` | OBJECT_LAYOUT 5 |
 //! | ARRAY: elements store, length (an int32 Value) | `ARRAY_ELEMENTS`, `ARRAY_LENGTH` | OBJECT_LAYOUT 5 |
-//! | the elements store read as Values is an ELEMENTS cell (kind 65); `CheckArray` traps on any other elements cell (ELEMENTS_DOUBLE 81, ELEMENTS_DICT 82; V10-D9b) | `KIND_ELEMENTS` | OBJECT_LAYOUT 5 |
+//! | the elements store read as Values is an ELEMENTS cell (kind 65); `CheckArray`, `LoadElement` and `StoreElement` trap on any other elements cell (ELEMENTS_DOUBLE 81, ELEMENTS_DICT 82; V10-D9b, M5-P0 review F1) | `KIND_ELEMENTS` | OBJECT_LAYOUT 5 |
 //! | ELEMENTS: capacity (an int32 Value), values from `ELEMENTS_DATA` | `ELEMENTS_CAPACITY`, `ELEMENTS_DATA` | OBJECT_LAYOUT 5 |
 //! | the hole (`Value::EMPTY`) | `HOLE` | Value encoding 1 |
 //! | FEEDBACK cell: its FunctionInfo, slot `i` at `FEEDBACK_SLOTS + FEEDBACK_SLOT_SIZE * i`: key (weak), then value | `FEEDBACK_INFO`, `FEEDBACK_SLOTS`, `FEEDBACK_SLOT_SIZE`, `FEEDBACK_KEY`, `FEEDBACK_VALUE` | IC_LAYOUT 3 |

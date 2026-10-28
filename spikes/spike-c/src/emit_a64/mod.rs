@@ -617,11 +617,11 @@ impl Emitter<'_> {
                 let values = u32::from(vm_layout::KIND_ELEMENTS);
                 let ok = self.ops.new_dynamic_label();
                 mov64(&mut self.ops, 17, NOT_CELL_MASK);
-                // An Array whose elements store is a cell must have an ELEMENTS cell (Values):
-                // LoadElement and StoreElement read and write its words as Values, so an
-                // ELEMENTS_DOUBLE or ELEMENTS_DICT cell (OBJECT_LAYOUT 5) traps here, fail
-                // closed (V10-D9b). No elements cell (undefined) passes: the element ops trap
-                // on it themselves.
+                // An Array whose elements store is a cell must have an ELEMENTS cell (Values),
+                // so an ELEMENTS_DOUBLE or ELEMENTS_DICT cell (OBJECT_LAYOUT 5) traps here, fail
+                // closed (V10-D9b). No elements cell (undefined) passes. The element ops check
+                // both again (this guard is shared per block, and a generic keyed op between
+                // may run JS that swaps the store; M5-P0 review F1).
                 dynasm!(self.ops
                     ; .arch aarch64
                     ; tst X(x), x17
@@ -746,6 +746,7 @@ impl Emitter<'_> {
                     vm_layout::ELEMENTS_DATA,
                 );
                 let hole = vm_layout::HOLE as u32;
+                let (kind, values) = (vm_layout::KIND_BYTE, u32::from(vm_layout::KIND_ELEMENTS));
                 dynasm!(self.ops
                     ; .arch aarch64
                     ; ldr w16, [X(arr), len]
@@ -754,9 +755,15 @@ impl Emitter<'_> {
                     ; ldr x16, [X(arr), elems]
                 );
                 mov64(&mut self.ops, 17, NOT_CELL_MASK);
+                // The store must be an ELEMENTS cell (Values) here too, not only at the block's
+                // CheckArray: a GetKeyedGeneric or SetKeyedGeneric after that guard may run JS
+                // that replaces it with an ELEMENTS_DOUBLE or ELEMENTS_DICT cell (V10-D9b).
                 dynasm!(self.ops
                     ; .arch aarch64
                     ; tst x16, x17
+                    ; b.ne =>trap
+                    ; ldrb w17, [x16, kind]
+                    ; cmp w17, values
                     ; b.ne =>trap
                     ; ldr w17, [x16, cap]
                     ; cmp W(i), w17
@@ -1493,6 +1500,102 @@ mod tests {
             bad.result
         );
         let again = s.run("print(fill(b, 3));", "again.js");
+        assert!(again.result.is_ok(), "{:?}", again.result);
+    }
+
+    /// M5-P0 review F1: a CheckArray is shared per block, and a generic keyed op after it may
+    /// run JS that swaps the array's elements store (an ELEMENTS_DOUBLE or ELEMENTS_DICT cell
+    /// from M5-P1 on). So LoadElement checks the store's kind itself. The test removes every
+    /// CheckArray from the graph of `sum` (the state the element op meets after such a swap),
+    /// points `b`'s elements word at a plain object (a live cell) and runs the code: it must
+    /// end in the trap of a LoadElement guard, not read the object's words as Values.
+    #[test]
+    fn element_ops_trap_on_an_elements_store_that_is_not_an_elements_cell() {
+        use crate::harness::Session;
+        use crate::ir::{NodeId, Op};
+        use spike_b::harness::Config;
+        if spike_b::emit::Arch::HOST != Some(spike_b::emit::Arch::Aarch64) {
+            eprintln!("skip: the emitter is aarch64 only");
+            return;
+        }
+        let defs = "function sum(a, n) { var s = 0; for (var i = 0; i < n; i++) { s = (s + a[i] * 3) & 1023; } return s; }";
+        let warm = "var w = [1, 2, 3, 4]; for (var k = 0; k < 20; k++) sum(w, 4); \
+                    var b = [5, 6, 7]; var o = { x: 1, y: 2, z: 3 };";
+        let mut s = Session::new(&Config::default().threaded()).expect("session");
+        s.run(defs, "defs.js").result.expect("defs");
+        s.run(warm, "warm.js").result.expect("warm");
+        let f = s.function_value("sum").expect("sum");
+        let (code, guards) = {
+            let script = s.script("defs.js").expect("defs script");
+            let [id] = script.functions_named("sum")[..] else {
+                panic!("one sum");
+            };
+            let live = crate::facts::live(&s, script).expect("facts");
+            let facts = crate::facts::for_function(&live, id);
+            let input = s.input_of(f).expect("input");
+            let (mut g, _) = crate::build::build(&input, &facts).expect("build");
+            let checks: Vec<NodeId> = g
+                .order()
+                .filter(|&n| g.node(n).op == Op::CheckArray)
+                .collect();
+            assert!(!checks.is_empty(), "{g}");
+            for c in checks {
+                let a = g.node(c).inputs[0];
+                let swap = |v: &mut NodeId| {
+                    if *v == c {
+                        *v = a;
+                    }
+                };
+                for node in &mut g.nodes {
+                    node.inputs.iter_mut().for_each(swap);
+                    if let Some(guard) = &mut node.guard {
+                        guard.state.registers.iter_mut().for_each(|(_, v)| swap(v));
+                        guard.state.acc.as_mut().map(swap);
+                    }
+                }
+                let b = g.node(c).block.0 as usize;
+                g.nodes[c.0 as usize].live = false;
+                g.blocks[b].nodes.retain(|&x| x != c);
+            }
+            g.check().expect("graph");
+            let guards: Vec<u32> = g
+                .order()
+                .filter(|&n| g.node(n).op == Op::LoadElement)
+                .filter_map(|n| g.node(n).guard.as_ref().map(|x| x.id))
+                .collect();
+            assert!(!guards.is_empty(), "{g}");
+            let alloc = crate::regalloc::allocate(&g).expect("alloc");
+            crate::regalloc::verify(&g, &alloc).expect("verify");
+            let (code, _) = emit_with(&input, &g, &alloc, StubForm::Movz).expect("emit");
+            (code, guards)
+        };
+        // SAFETY: emit_a64's placement (b) code for `sum`, from `input_of(sum)` with no JS
+        // run since; its element ops keep their own guards.
+        unsafe { s.install_b(&[f], vec![code]) }.expect("install");
+        let ok = s.run("sum(b, 3);", "ok.js");
+        assert!(ok.result.is_ok(), "{:?}", ok.result);
+        let b = s.function_value("b").expect("b").to_bits();
+        let o = s.function_value("o").expect("o").to_bits();
+        let at = (b + u64::from(vm_layout::ARRAY_ELEMENTS)) as *mut u64;
+        // SAFETY: `b` is a live Array held by a global; its elements word is a Value slot,
+        // and `o` is a live cell, so the array stays a valid heap object while the word
+        // points at it. The isolate runs only the script below until the word is restored;
+        // `sum` only reads.
+        let old = unsafe { at.read() };
+        // SAFETY: as above; the old word is the array's ELEMENTS cell.
+        assert_eq!(unsafe { vm_layout::kind(old) }, vm_layout::KIND_ELEMENTS);
+        // SAFETY: as above.
+        unsafe { at.write(o) };
+        let bad = s.run("sum(b, 3);", "bad.js");
+        // SAFETY: as above.
+        unsafe { at.write(old) };
+        let trap = bad.result.as_ref().err().and_then(|e| trap_of(e));
+        assert!(
+            trap.is_some_and(|g| guards.contains(&g)),
+            "{:?} ({guards:?})",
+            bad.result
+        );
+        let again = s.run("print(sum(b, 3));", "again.js");
         assert!(again.result.is_ok(), "{:?}", again.result);
     }
 
