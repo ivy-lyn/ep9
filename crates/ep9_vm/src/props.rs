@@ -170,6 +170,7 @@ fn field_get(o: u64, s: u64, f: usize) -> u64 {
 
 #[inline]
 fn field_set(rt: &Runtime, o: u64, s: u64, f: usize, v: u64) {
+    crate::field_rep::before_field_store(rt, s, f, v);
     let (c, off) = field_ref(o, s, f);
     wr(&rt.heap, c, off, v);
 }

@@ -733,6 +733,7 @@ pub(crate) fn new_object(rt: &Runtime, proto: u64) -> u64 {
     } else {
         8
     };
+    let cap = crate::slack::initial_capacity(rt, proto, cap);
     new_object_with_capacity(rt, proto, cap)
 }
 

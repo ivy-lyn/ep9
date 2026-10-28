@@ -1217,6 +1217,7 @@ pub(crate) fn note_change(rt: &Runtime, o: u64) {
             "a prototype without a unique shape"
         );
         crate::validity::invalidate(rt, validity_cell_of(unique_info(s)));
+        crate::fuse::on_proto_change(rt, o);
     }
 }
 

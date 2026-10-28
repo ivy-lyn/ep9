@@ -313,6 +313,15 @@ pub(crate) struct Runtime {
     /// counters, filled at install. Rust memory, no Value. Empty until M5-P1 SPIKEC-5.
     #[allow(dead_code)] // filled by M5-P1 SPIKEC-5
     pub deopt: crate::deopt::SideTable,
+    /// The fuse registry (`fuse.rs`, H31): fuse states and their weak dependents. Rust
+    /// memory. Empty until M5-P1 FR0.
+    #[allow(dead_code)] // filled by M5-P1 FR0
+    pub fuses: crate::fuse::Registry,
+    /// The state of the sampled-call window jitter (`profile.rs`, `CALL_WINDOW`; doc 13:705):
+    /// M5-P1 PROFILE5 seeds and advances it if the window start gets a jitter. 0 = no jitter
+    /// (today).
+    #[allow(dead_code)] // M5-P1 PROFILE5
+    pub call_window_jitter: Cell<u64>,
 }
 
 /// The next [`Runtime::id`].
@@ -363,6 +372,8 @@ impl Runtime {
             regexp_programs: crate::regexp::ProgramTable::new(&heap),
             exec: Cell::new(crate::exec::ExecOptions::build_default()),
             deopt: crate::deopt::SideTable::new(),
+            fuses: crate::fuse::Registry::new(),
+            call_window_jitter: Cell::new(0),
             heap,
             shared,
             units: RefCell::new(Vec::new()),
