@@ -5,8 +5,14 @@
 # Fuzzilli runs on Cloudflare use it (plan v9 §5.5, V9-D24; never on the Mac, rule 23).
 #
 # The build context is the ep9 checkout root (Dockerfile.dockerignore keeps target/, .git and
-# the third_party checkouts out of it):
-#   docker build --platform linux/amd64 -f infra/fuzz/Dockerfile -t ep9-fuzz .
+# the third_party checkouts out of it). The two build args name the source state of the
+# context; infra/fuzz/run.sh copies them into each ep9-fuzz/v1 record (plan v10 §2.7, CX6-1):
+#   docker build --platform linux/amd64 -f infra/fuzz/Dockerfile -t ep9-fuzz \
+#     --build-arg EP9_SOURCE_COMMIT="$(git rev-parse HEAD)" \
+#     --build-arg EP9_SOURCE_DIRTY="$(test -z "$(git status --porcelain --untracked-files=no)" && echo false || echo true)" .
+# For a `git archive` export of HEAD the context is clean: EP9_SOURCE_DIRTY=false. A missing
+# or malformed value is written as unknown: the record then has commit "unknown" or no `dirty`
+# field, and m1-exit does not count it.
 #
 # As infra/x86-sandbox/Dockerfile: the sandbox-shim stage (the tag must equal the npm
 # @cloudflare/sandbox version of the Worker that runs the image) and `sleep infinity` as the
@@ -38,17 +44,31 @@ COPY . /src
 WORKDIR /src
 
 # Fuzzilli (pin + patch) -> /opt/fuzzilli/bin; ep9 (sancov) -> /opt/ep9/bin/ep9. The build
-# trees are removed; the sources stay for symbolized backtraces.
+# trees are removed; the sources stay for symbolized backtraces. The regress checkout
+# (third_party/regress, git-ignored and not in the context) is synced before the ep9 build:
+# the root [patch.crates-io] path needs it (plan v10 rule 42).
 RUN bash scripts/sync-fuzzilli.sh \
  && bin="$(cd third_party/fuzzilli && swift build -c release --show-bin-path)" \
  && install -D -m 755 "$bin/FuzzilliCli" /opt/fuzzilli/bin/FuzzilliCli \
  && install -D -m 755 "$bin/REPRLRun" /opt/fuzzilli/bin/REPRLRun \
  && rm -rf third_party/fuzzilli/.build \
  && rustup toolchain install \
+ && bash scripts/sync-regress.sh \
  && ep9="$(bash infra/fuzz/build-ep9.sh x86_64-unknown-linux-gnu)" \
  && install -D -m 755 "$ep9" /opt/ep9/bin/ep9 \
  && rm -rf target /root/.cargo/registry \
  && /opt/fuzzilli/bin/FuzzilliCli --help | grep -q '"ep9"'
+
+# /opt/ep9/SOURCE (read by infra/fuzz/run.sh): "commit=<40 hex | unknown>" and
+# "dirty=<true | false | unknown>". After the build, so the build layer does not depend on it.
+ARG EP9_SOURCE_COMMIT=
+ARG EP9_SOURCE_DIRTY=
+RUN c="$EP9_SOURCE_COMMIT"; d="$EP9_SOURCE_DIRTY"; \
+    printf '%s' "$c" | grep -Eqx '[0-9a-f]{40}' || c=unknown; \
+    case "$d" in true|false) ;; *) d=unknown ;; esac; \
+    if [ "$c" = unknown ]; then d=unknown; fi; \
+    printf 'commit=%s\ndirty=%s\n' "$c" "$d" > /opt/ep9/SOURCE \
+ && cat /opt/ep9/SOURCE
 
 ENV EP9=/opt/ep9/bin/ep9 \
     FUZZILLI=/opt/fuzzilli/bin/FuzzilliCli
