@@ -515,10 +515,21 @@ fn drop_below<'s>(cx: &mut Cx<'s>, keep: Local<'s>, k: Local<'s>) -> JsResult<()
 /// script, not in a callback: a target made in a callback (as by [`register_fresh`]) can sit
 /// where a freed cell was that a stale word of a live debug frame still names, and such a
 /// chain stalled at link 9 (fixer C probe). A sentinel cell, registered first, stays alive.
+///
+/// Each target is followed by a gap object (kept alive by `gaps`), so no cell starts where a
+/// target ends. The cleanup hook reads the cells, and its own live frame may keep a cell's
+/// address while a callback runs: on linux-x64 release, `Cx::cleanup_finalization_registries`
+/// keeps the `prev` cell of its collect pass (the cell of target `h + 1`) in a stack slot
+/// across the callback of link `h`. The conservative scan's end rule reads a cell's address as
+/// one past the end of the cell before it. When a cell was made right after its target, that
+/// kept target `h + 1` alive, and both chain tests stopped after 1 link (CI run 40715227268).
+/// A mac a64 release probe that holds that `prev` word (or every cell address of the collect
+/// pass) in that frame stops both tests the same way with the old layout, and not with this
+/// one.
 fn chain_script(links: usize, body: &str) -> String {
     format!(
         r#"
-var n = 0, keep = [], sentinel = {{}};
+var n = 0, keep = [], gaps = [], sentinel = {{}};
 var fr = new FinalizationRegistry(function (h) {{
   n++;
   log('cb', h);
@@ -526,7 +537,7 @@ var fr = new FinalizationRegistry(function (h) {{
   {body}
 }});
 fr.register(sentinel, -1);
-(function () {{ for (var k = 0; k < {links}; k++) {{ var t = {{}}; keep.push(t); fr.register(t, k); }} }})();
+(function () {{ for (var k = 0; k < {links}; k++) {{ var t = {{}}; gaps.push({{}}); keep.push(t); fr.register(t, k); }} }})();
 keep[0] = null;
 log('registered');
 "#
