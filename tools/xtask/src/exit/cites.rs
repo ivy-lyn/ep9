@@ -22,8 +22,9 @@
 //!    that base already (verifier r1 F2: `golden:334` named another line there). A cite whose
 //!    file is missing at HEAD (a family name with no file) is NO FILE.
 //! 5. A cite on a doc 13 line that is new since the base, or on an edited line whose cite
-//!    number changed (the base line the edit replaced has no such cite; M4-P5 CX5-C7, verifier
-//!    r1 F1), was written for the files at HEAD: it is checked at HEAD only, and a cite past the
+//!    number changed (the base line the edit replaced, the removed line nearby that shares the
+//!    most words with it, has no such cite; M4-P5 CX5-C7, verifier r1 F1 and r2 F1), was
+//!    written for the files at HEAD: it is checked at HEAD only, and a cite past the
 //!    end of its file at HEAD is BAD AT HEAD. Step 4 is for the other cites, so an edit that
 //!    keeps a stale number still gives MOVED.
 //!
@@ -397,8 +398,9 @@ pub(crate) fn short_cites(root: &Path) -> Result<Cites, String> {
 }
 
 /// For each line of `head`, the line of `base` it replaced, if any: the lines of a longest
-/// common subsequence are kept (no pair: they are base lines); between two kept lines, the n-th
-/// added line pairs with the n-th removed one (an added line with no removed one: no pair).
+/// common subsequence are kept (no pair: they are base lines); between two kept lines, an added
+/// line pairs with the removed line it shares the most words with ([`match_gap`]; CX5 verifier
+/// r2 F1), so a row inserted above an edited row does not take that row's pair.
 fn paired(base: &[&str], head: &[&str]) -> Vec<Option<usize>> {
     let (n, m) = (base.len(), head.len());
     // t[i][j]: the length of a longest common subsequence of base[i..] and head[j..].
@@ -418,10 +420,12 @@ fn paired(base: &[&str], head: &[&str]) -> Vec<Option<usize>> {
     loop {
         let kept = i < n && j < m && base[i] == head[j];
         if kept || (i == n && j == m) {
-            // A drop of each drain empties its whole list, the unpaired rest too.
-            for (b, h) in gone.drain(..).zip(added.drain(..)) {
-                out[h] = Some(b);
-            }
+            // In each gap, an added line pairs with the removed line that shares the most words
+            // (cite numbers masked), not with the one at its place: a row inserted above an
+            // edited row, or two edited rows that swap, still pair right.
+            match_gap(base, head, &gone, &added, &mut out);
+            gone.clear();
+            added.clear();
             if !kept {
                 return out;
             }
@@ -433,6 +437,53 @@ fn paired(base: &[&str], head: &[&str]) -> Vec<Option<usize>> {
         } else {
             gone.push(i);
             i += 1;
+        }
+    }
+}
+
+/// The words of a line, each digit after a `:` masked, so a line whose cite numbers changed
+/// has the same words.
+fn shape(l: &str) -> HashSet<String> {
+    l.split_whitespace()
+        .map(|w| match w.split_once(':') {
+            Some((a, b)) => format!(
+                "{a}:{}",
+                b.chars()
+                    .map(|c| if c.is_ascii_digit() { '#' } else { c })
+                    .collect::<String>()
+            ),
+            None => w.to_string(),
+        })
+        .collect()
+}
+
+/// Pairs the added lines of one gap with its removed lines: the pair with the most shared words
+/// first (then the nearer one in the gap), each line once; a pair with no shared word is none.
+fn match_gap(
+    base: &[&str],
+    head: &[&str],
+    gone: &[usize],
+    added: &[usize],
+    out: &mut [Option<usize>],
+) {
+    let gs: Vec<HashSet<String>> = gone.iter().map(|&b| shape(base[b])).collect();
+    let mut cand = Vec::new();
+    for (x, &h) in added.iter().enumerate() {
+        let hs = shape(head[h]);
+        for (y, g) in gs.iter().enumerate() {
+            let n = hs.intersection(g).count();
+            if n > 0 {
+                cand.push((std::cmp::Reverse(n), x.abs_diff(y), x, y));
+            }
+        }
+    }
+    cand.sort();
+    let (mut used_a, mut used_g) = (vec![false; added.len()], vec![false; gone.len()]);
+    for (_, _, x, y) in cand {
+        if !used_a[x] && !used_g[y] {
+            used_a[x] = true;
+            used_g[y] = true;
+            out[added[x]] = Some(gone[y]);
         }
     }
 }
@@ -811,11 +862,18 @@ mod tests {
     /// one; an added line beyond the removed ones, and a kept line, pair with none.
     #[test]
     fn edited_lines_pair_with_the_lines_they_replaced() {
-        let base = ["h", "a", "b", "t"];
-        let head = ["h", "A", "B", "new", "t", "end"];
+        let base = ["h", "row a AR:2", "row b AR:3", "t"];
+        let head = [
+            "h",
+            "new AR:9",
+            "row b AR:4 (see)",
+            "row a AR:2 x",
+            "t",
+            "end",
+        ];
         assert_eq!(
             paired(&base, &head),
-            vec![None, Some(1), Some(2), None, None, None]
+            vec![None, None, Some(2), Some(1), None, None]
         );
         assert_eq!(paired(&[], &["x"]), vec![None]);
         assert_eq!(paired(&["x", "y"], &[]), Vec::<Option<usize>>::new());
@@ -877,6 +935,58 @@ mod tests {
         let c = short_cites(&root).unwrap();
         assert_eq!(c.findings, Vec::<String>::new());
         assert_eq!(c.total, 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// CX5 verifier r2 F1: an edited line pairs with the removed line it shares the most words
+    /// with, not with the one at its place in the gap. A row inserted above an edited row, two
+    /// edited rows that swap, and a new line above an edited row keep the move check; a
+    /// contiguous +1 renumber gives none.
+    #[test]
+    fn an_inserted_or_swapped_row_keeps_the_move_check() {
+        let root = repo("gap");
+        write(&root, "docs/adr/README.md", "a\nb\nc\nd\n");
+        let body = "\n| r1 | AR:2 |\n| r2 | AR:3 |\n";
+        write(
+            &root,
+            DOC,
+            &format!("{}{body}", HEADER.replace("{BASE}", "0000000")),
+        );
+        let base = commit(&root, "base");
+        let short = base[..7].to_string();
+        let head = |b: &str| format!("{}{b}", HEADER.replace("{BASE}", &short));
+        write(&root, DOC, &head(body));
+        commit(&root, "header");
+        write(&root, "docs/adr/README.md", "z\na\nb\nc\nd\n");
+        commit(&root, "move");
+        let r1 = |l: usize| {
+            format!("SHORT CITE MOVED doc13:{l} AR:2 -> AR:3 (same text as at {short}): b")
+        };
+        let r2 = |l: usize| {
+            format!("SHORT CITE MOVED doc13:{l} AR:3 -> AR:4 (same text as at {short}): c")
+        };
+        let check = |text: &str, want: Vec<String>| {
+            write(&root, DOC, &head(text));
+            commit(&root, "edit");
+            assert_eq!(short_cites(&root).unwrap().findings, want, "{text}");
+        };
+        // A new row above r1, r1 edited with its stale AR:2 kept.
+        check(
+            "\n| r0 | new AR:5 |\n| r1 | AR:2 (see) |\n| r2 | AR:3 |\n",
+            vec![r1(7), r2(8)],
+        );
+        // r1 and r2 both edited and swapped.
+        check(
+            "\n| r2 | AR:3 (see) |\n| r1 | AR:2 (see) |\n",
+            vec![r2(6), r1(7)],
+        );
+        // A new line above an edited r1, no blank line between; r2 renumbered.
+        check(
+            "\nA new rule for the loop AR:1.\n| r1 | AR:2 (see) |\n| r2 | AR:4 |\n",
+            vec![r1(7)],
+        );
+        // The contiguous table renumbered +1: none.
+        check("\n| r1 | AR:3 |\n| r2 | AR:4 |\n", vec![]);
         std::fs::remove_dir_all(root).unwrap();
     }
 
