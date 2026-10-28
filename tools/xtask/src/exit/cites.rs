@@ -5,7 +5,7 @@
 //!
 //! 1. The short forms are the ones doc 13 defines in its header line `- Short forms: P02 =
 //!    `docs/plan/02-architecture.md`, ..., Hnn = `docs/adr/Hnn-*.md`, golden = ...`: each
-//!    `<name> = `<path>`` pair. A name that ends in `nn` with a `*` path (`Hnn`) is a family:
+//!    `` <name> = `<path>` `` pair. A name that ends in `nn` with a `*` path (`Hnn`) is a family:
 //!    `H31` is the one file of the family's dir whose name starts with `H31-`.
 //! 2. The base is the commit the header names right after `Cites at ` (`- Cites at <sha> ...`).
 //!    A header that names none there (the text "the M4-P4 merge head"), or names one that is not
@@ -85,7 +85,7 @@ enum Form {
     Family { dir: String, prefix: String },
 }
 
-/// The `<name> = `<path>`` pairs of the doc's `- Short forms:` header line.
+/// The `` <name> = `<path>` `` pairs of the doc's `- Short forms:` header line.
 fn short_forms(doc: &str) -> Vec<(String, Form)> {
     let Some(line) = doc.lines().find(|l| l.starts_with("- Short forms:")) else {
         return Vec::new();
