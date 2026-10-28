@@ -95,9 +95,9 @@
 //!   | `LiteralFacts::count` | **cold-path literal results**: a lower bound of the allocations | `literal_site.rs` (`miss`) |
 //!
 //!   All saturate at `i32::MAX`. A sampled count is a share of the budget units, not of the
-//!   executions: the windows come at a fixed period (`BUDGET`), so a call pattern with that
-//!   period can keep a site out of every window (`tests::facts_export`, MC-w13-17; the
-//!   jitter of the window start is month 5).
+//!   executions. A poll resets the budget to `BUDGET` plus a jitter (M5-P1 PROFILE5,
+//!   `profile::budget_after_poll`), so a call pattern whose period divides `BUDGET` no
+//!   longer keeps a site out of every window (MC-w13-17; `ep9_builtins` `tests/facts_export.rs`).
 //! - **Call keys are never written out (F-R8, MC-w13-8).** A `Call*` site keys the native word
 //!   of the callee's FunctionInfo (`profile.rs`), a `Construct*` site the constructor cell
 //!   (weak, `construct_ic.rs`). The exporter branches on the site opcode and maps the

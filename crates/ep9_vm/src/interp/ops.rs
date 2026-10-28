@@ -2006,6 +2006,8 @@ mod call_budget {
                     ..config(d, false)
                 });
                 iso.cx.budget = budget;
+                // These tests count the units across a poll: the fixed reset to `BUDGET`.
+                iso.rt.call_window_jitter.set(crate::profile::JITTER_OFF);
                 let r = iso.with_cx_checkpoint(|cx| {
                     cx.run_script(make(), "budget.js").map(|v| cx.display(v))
                 });
@@ -2198,6 +2200,7 @@ mod call_budget {
                 iso.interrupt_handle()
                     .request(Box::new(move || r2.store(true, Ordering::SeqCst)));
                 iso.cx.budget = budget;
+                iso.rt.call_window_jitter.set(crate::profile::JITTER_OFF);
                 let r = iso.with_cx_checkpoint(|cx| {
                     cx.run_script(overflow_program(calls, site), "overflow.js")
                         .map(|v| cx.display(v))

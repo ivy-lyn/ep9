@@ -317,10 +317,9 @@ pub(crate) struct Runtime {
     /// memory. Empty until M5-P1 FR0.
     #[allow(dead_code)] // filled by M5-P1 FR0
     pub fuses: crate::fuse::Registry,
-    /// The state of the sampled-call window jitter (`profile.rs`, `CALL_WINDOW`; doc 13:705):
-    /// M5-P1 PROFILE5 seeds and advances it if the window start gets a jitter. 0 = no jitter
-    /// (today).
-    #[allow(dead_code)] // M5-P1 PROFILE5
+    /// The state of the sampled-call window jitter (`profile::budget_after_poll`, M5-P1
+    /// PROFILE5): each poll advances it. 0 = not seeded yet (the next poll starts the fixed
+    /// sequence); `profile::JITTER_OFF` = no jitter (the fixed reset to `BUDGET`).
     pub call_window_jitter: Cell<u64>,
 }
 

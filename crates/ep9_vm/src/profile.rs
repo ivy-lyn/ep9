@@ -105,10 +105,9 @@
 //!     many units after the poll and the polls do not come at a fixed period: a call pattern
 //!     whose period divides `BUDGET` no longer keeps a site out of every window. The window
 //!     test of the call handlers is unchanged (one compare with a constant); the upper bound
-//!     `BUDGET` is tested in the record path only. Wiring (one line in
-//!     `interp::slow::interrupt`): until the poll calls [`budget_after_poll`], the budget
-//!     never goes above `BUDGET`, the upper bound never fails, and the windows keep the fixed
-//!     period.
+//!     `BUDGET` is tested in the record path only. The poll
+//!     (`interp::slow::interrupt`) calls [`budget_after_poll`]; the isolate start keeps
+//!     `BUDGET`.
 //!   - **An int32 `+`, `-`, `Inc` or `Dec` that overflows** records `INT32_OVERFLOW` on
 //!     the overflow arm of its fast body only, the branch the checked operation already
 //!     takes ([`INT32_OVERFLOW`]; MODES-D16, M5-P1 PROFILE5): the int32 result that fits
@@ -223,9 +222,6 @@ pub(crate) const JITTER_SEED: u64 = 0x6a09_e667_f3bc_c908;
 /// window unless its call pattern follows this sequence. The state is Rust memory (no Value,
 /// no GC point); a state of 0 means "not seeded yet", and [`JITTER_OFF`] turns the jitter
 /// off. Out of line: it runs once per poll.
-// Until the poll calls it (the one-line wiring in `interp::slow::interrupt`, which removes
-// this allow), only `tests::profile` does.
-#[cfg_attr(not(test), allow(dead_code))]
 #[cold]
 #[inline(never)]
 pub(crate) fn budget_after_poll(rt: &Runtime) -> i64 {
