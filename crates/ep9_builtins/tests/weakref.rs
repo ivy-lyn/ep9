@@ -941,7 +941,8 @@ var keep = [];
 
 /// A termination request stops a long cleanup walk (`weakref::collect_cleared`, 30,000 dead
 /// cells) at its next poll: the checkpoint ends with the termination before the walk has
-/// moved 1,024 cells, so fewer than 1,024 callbacks ran; the cells not yet moved stay in the
+/// moved 1,024 cells, and before any callback runs (the walk saw the termination, so the
+/// first callback poll ends the run; M5-P1 review); the cells not yet moved stay in the
 /// registry, and the next checkpoint (no GC between) serves them, each once. Without the walk
 /// poll the walk moves all 30,000 cells and the callbacks run until the budget poll (the
 /// mutation is in the GC5 report). No GC stress (30,000 registrations).
@@ -969,7 +970,10 @@ var tok = {{}}, fr = new FinalizationRegistry(countServed);
             .expect_err("the termination stops the walk");
         assert!(e.terminated, "{}", e.message);
         let first = SERVED.with(core::cell::Cell::get);
-        assert!(first < 1024, "{first} callbacks before the termination");
+        assert_eq!(
+            first, 0,
+            "{first} callbacks after the walk saw the termination"
+        );
         i.perform_microtask_checkpoint()
             .map_err(|e| e.message)
             .unwrap();
