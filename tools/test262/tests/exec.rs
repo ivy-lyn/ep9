@@ -250,14 +250,83 @@ fn the_json_names_its_commit_dirty_flag_and_host() {
             dirty.map_or(String::new(), |d| format!(",\"dirty\":{d}"))
         )
     } else if let Ok(sbx) = std::fs::read_to_string(repo.join(".sbx-commit")) {
+        // CX6-2 (c): clean only with the export manifest (this test runs on an unedited copy);
+        // without it the JSON does not say.
+        let manifest = repo.join(".sbx-manifest").exists();
+        let dirty = if declared {
+            ",\"dirty\":true"
+        } else if manifest {
+            ",\"dirty\":false"
+        } else {
+            ""
+        };
         format!(
-            ",\"commit\":\"{}\",\"dirty\":{declared},\"commit_source\":\"sbx-commit\",\"made_by\":\"host:",
-            sbx.trim().to_ascii_lowercase()
+            ",\"commit\":\"{}\"{dirty},\"commit_source\":\"sbx-commit\",\"source_manifest\":\"{}\",\"made_by\":\"host:",
+            sbx.trim().to_ascii_lowercase(),
+            if manifest { "checked" } else { "missing" }
         )
     } else {
         ",\"commit_source\":\"env\",\"made_by\":\"host:".to_string()
     };
     assert!(summary.contains(&want), "{want}: {summary}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// C2 and item 8 (plan v10 section 2.6): the JSON names the commit the runner was built at
+/// (in a git work tree: HEAD, as cargo rebuilt it for this test) and the HEAD of the test262
+/// checkout it ran; a test262 directory that is no git work tree of its own names none.
+#[test]
+fn the_json_names_the_runner_commit_and_test262_head() {
+    let root = tree("runner");
+    let expect = expect_file(&root, FAILING);
+    let json = root.join("summary.json");
+    let run = || {
+        let (code, text) = exec(&root, &expect, &["--json", json.to_str().unwrap()], None);
+        assert_eq!(code, Some(0), "{text}");
+        std::fs::read_to_string(&json).unwrap()
+    };
+    let git = |dir: &Path, args: &[&str]| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@test.invalid",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let summary = run();
+    assert!(!summary.contains("\"test262_head\""), "{summary}");
+    let repo = std::fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap();
+    let top =
+        git(&repo, &["rev-parse", "--show-toplevel"]).and_then(|t| std::fs::canonicalize(t).ok());
+    if top.as_deref() == Some(repo.as_path()) {
+        let head = git(&repo, &["rev-parse", "HEAD"]).unwrap();
+        assert!(
+            summary.contains(&format!(",\"runner_commit\":\"{head}\"")),
+            "{head}: {summary}"
+        );
+    }
+    // The fake tree as a git checkout of its own.
+    if git(&root, &["init", "-q"]).is_some() {
+        git(&root, &["add", "-A"]).unwrap();
+        git(&root, &["commit", "-q", "-m", "t262"]).unwrap();
+        let t262 = git(&root, &["rev-parse", "HEAD"]).unwrap();
+        let summary = run();
+        assert!(
+            summary.contains(&format!(",\"test262_head\":\"{t262}\"")),
+            "{t262}: {summary}"
+        );
+    }
     std::fs::remove_dir_all(root).unwrap();
 }
 

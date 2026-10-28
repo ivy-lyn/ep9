@@ -1738,6 +1738,12 @@ fn summary_json(
     // the facts read before the run, dirty when a second read now differs (CX5-C1).
     let now = provenance::source(&crate::repo_root(), &provenance::process_env);
     provenance::write_fields(&mut out, &provenance::settle(source, &now));
+    // The runner's build commit and the test262 checkout HEAD (C2, item 8; m1-exit X4).
+    provenance::write_runner_fields(
+        &mut out,
+        provenance::runner_commit(),
+        provenance::test262_head(&opts.test262).as_deref(),
+    );
     let _ = write!(
         out,
         ",\"workers\":{},\"timeout_ms\":{},\"gc_stress\":{},\"feedback_threshold\":{},\"skipped\":{}",
