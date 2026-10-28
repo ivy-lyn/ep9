@@ -72,6 +72,7 @@ import { setTimeout as sleepMs } from "node:timers/promises";
 import { guardAfter, guardBefore, hostInfo, load1, LOAD_MARGIN, readHostFile } from "../lib/host.mjs";
 import { geomean, median, verdict } from "../lib/stats.mjs";
 import { DEFAULT_WORKLOADS, EMPTY, expandWorkloads, materialize, WORKLOADS } from "./workloads.mjs";
+import { treeState } from "./kernels.mjs";
 import { DEFAULT_HARNESS, HARNESSES, ROOT } from "./v8v7.mjs";
 
 export const SCHEMA = "ep9-cross/v1";
@@ -482,6 +483,9 @@ export async function run(o, deps = {}) {
   const commit = o.commit ?? git(["rev-parse", "HEAD"]);
   const runnerCommit = git(["rev-parse", "HEAD"]);
   const runnerDirty = git(["status", "--porcelain", "--untracked-files=no"]);
+  // The fresh paths (kernels.mjs FRESH_PATHS) with uncommitted changes, as kernels.mjs writes
+  // them ([] = clean, null = git cannot say); m1-exit item 2 gives OPEN unless it is [] (CX5-C5).
+  const dirty = treeState().dirty;
 
   const work = o.work ?? mkdtempSync(path.join(os.tmpdir(), "ep9-cross-"));
   mkdirSync(work, { recursive: true });
@@ -557,7 +561,7 @@ export async function run(o, deps = {}) {
       label: o.label,
       started,
       finished: new Date().toISOString(),
-      commit: { ep9: commit, runner: runnerCommit, runner_dirty: runnerDirty === null ? null : runnerDirty !== "" },
+      commit: { ep9: commit, runner: runnerCommit, runner_dirty: runnerDirty === null ? null : runnerDirty !== "", dirty },
       host: {
         file: o.host && path.relative(ROOT, o.host),
         id: hostFile?.id ?? null,

@@ -25,7 +25,7 @@ import {
   schedule,
 } from "./run.mjs";
 import { readExit2, READINGS, renderMarkdown as renderExit2 } from "./exit2.mjs";
-import { blockerOf, generateKernel, KERNEL_IDS, OK, parseArgs as kernelsArgs, PROBES, probeKeys, withProbe } from "./kernels.mjs";
+import { blockerOf, generateKernel, KERNEL_IDS, OK, parseArgs as kernelsArgs, PROBES, probeKeys, treeState, withProbe } from "./kernels.mjs";
 import { generate as generateOctane, HARNESS as OCTANE_HARNESS, KERNELS as OCTANE_KERNELS } from "./octane.mjs";
 import { benchmarkNames, DEFAULT_HARNESS, errorPlace, generate, HARNESSES, PRINT_PRELUDE } from "./v8v7.mjs";
 import { EMPTY, expandWorkloads, materialize, OCTANE_7, SETS, V8V7_7, V8V7_8, WORKLOADS } from "./workloads.mjs";
@@ -397,6 +397,16 @@ test("CLI: rotated rounds as planned, 10 rounds, JSON with every sample", (t) =>
   assert.equal(r.stdout, readFileSync(f.md, "utf8"));
 });
 
+test("CLI: the JSON says whether the fresh paths had uncommitted changes (CX5-C5)", (t) => {
+  const f = fakeSetup(t);
+  const r = f.run(["--host", f.host(1000)]);
+  assert.equal(r.status, 0, r.stderr);
+  const res = JSON.parse(readFileSync(f.out, "utf8"));
+  // The list of kernels.mjs's treeState(): the FRESH_PATHS entries with changes ([] = clean).
+  assert.deepEqual(res.commit.dirty, treeState().dirty);
+  assert.ok(Array.isArray(res.commit.dirty), JSON.stringify(res.commit));
+});
+
 test("CLI: load guard failure is provisional with --allow-busy, and 'host busy' without", (t) => {
   const f = fakeSetup(t);
   const busy = f.run(["--host", f.host(-100)]);
@@ -674,6 +684,35 @@ test("exit2: per-round geomeans, intervals and gate readings from the fixture", 
   assert.equal(v8.gate, "marginal");
   assert.equal(e.pass, false);
   assert.match(renderExit2(e), /\| Octane-7 geomean vs QuickJS \| 1 \| 1\.200 \| .* \| pass \|/);
+});
+
+test("exit2: dirty from the run's list of changed fresh paths; no list is null (CX5-C5)", () => {
+  let j = fixture();
+  j.commit.dirty = [];
+  let e = readExit2(j);
+  assert.equal(e.dirty, false);
+  assert.deepEqual(e.dirty_paths, []);
+  j.commit.dirty = ["crates/ep9_vm/src/lib.rs"];
+  e = readExit2(j);
+  assert.equal(e.dirty, true);
+  assert.deepEqual(e.dirty_paths, ["crates/ep9_vm/src/lib.rs"]);
+  assert.match(renderExit2(e), /uncommitted changes in crates\/ep9_vm\/src\/lib\.rs/);
+  j = fixture();
+  delete j.commit.dirty;
+  e = readExit2(j);
+  assert.equal(e.dirty, null);
+  assert.equal(e.dirty_paths, null);
+});
+
+test("m1-exit's kernel and reading ids are the ones kernels.mjs and exit2.mjs write (CX5-C3)", () => {
+  const rs = readFileSync(path.join(DIR, "../../xtask/src/m1_exit.rs"), "utf8");
+  const list = (name) => {
+    const m = rs.match(new RegExp(`const ${name}: \\[&str; [A-Z0-9_]+\\] = \\[([^\\]]*)\\];`));
+    assert.ok(m, name);
+    return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+  };
+  assert.deepEqual(list("KERNEL_IDS"), KERNEL_IDS);
+  assert.deepEqual(list("READING_IDS"), READINGS.map((r) => r.id));
 });
 
 test("exit2: pass, fail, and no gate verdict for a provisional run, a stub harness or a void row", () => {
