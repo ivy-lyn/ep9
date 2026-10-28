@@ -320,8 +320,20 @@ pub(super) fn below_a_pad<R>(made: impl FnOnce() -> R) -> (R, usize) {
 /// Scrubs the stack and collects, after the dead cells were made by [`below_a_pad`] (which
 /// gave `pad_low`). Then checks that the collection can show something about them: its
 /// conservative scan stopped above the pad, and kept none of `dead` (masked addresses).
+/// Inlined (rule 35), so the scrub runs in the test's own frame and its zeros lie under the
+/// frame of [`collect_and_check`] too: an out-of-line helper's own frame is not under its
+/// own scrub (`tests/ordered_table.rs` `collect`: CI run 40733504045). The collection and
+/// the checks stay out of line, so the unmasked addresses they compute never reach the
+/// test's frame.
+#[inline(always)]
 pub(super) fn collect_after_a_pad(t: &mut T, pad_low: usize, dead: &[usize]) {
     scrub_stack();
+    collect_and_check(t, pad_low, dead);
+}
+
+/// The collection and the checks of [`collect_after_a_pad`], out of line.
+#[inline(never)]
+fn collect_and_check(t: &mut T, pad_low: usize, dead: &[usize]) {
     t.collect();
     let high = ep9_platform::current_thread_stack_bounds().unwrap().high;
     let scan_low = high - 8 * t.rt().heap.stats().last_stack_words;

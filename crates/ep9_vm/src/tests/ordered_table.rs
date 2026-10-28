@@ -328,10 +328,26 @@ fn alive(rt: &Runtime, h: WeakHandle) -> bool {
     below_a_pad(|| black_box(rt.heap.weak(h)).is_some())
 }
 
-/// Collects after a stack scrub, so that only real references keep cells.
-#[inline(never)]
+/// Collects after a stack scrub, so that only real references keep cells (rule 35: the scrub
+/// runs in the test's own frame, before and after). Inlined, so the zeros of the first scrub
+/// also lie under the frame of [`gc_now`]. An out-of-line helper's own frame is not under
+/// its own scrub, and a slot that it never writes (on Win64 the 32-byte home space it gives
+/// its callees) keeps what the last call at that depth left there: on windows-x64 release
+/// `Heap::verify` (run by the test just before) left the address of the last cell it checked
+/// there, the table of the Map value made last by `weak_map_entries_are_ephemerons` (it holds
+/// the next key strongly), and the scan kept the rest of the graph after its root was dropped
+/// (CI run 40733504045). The second scrub
+/// clears the collection's frames before later calls lie over them.
+#[inline(always)]
 fn collect(iso: &Isolate) {
     scrub_stack();
+    gc_now(iso);
+    scrub_stack();
+}
+
+/// A full collection, out of line, so that its frames lie on the zeros of the caller's scrub.
+#[inline(never)]
+fn gc_now(iso: &Isolate) {
     iso.rt.heap.collect();
 }
 
@@ -447,9 +463,13 @@ fn weak_map_entries_are_ephemerons() {
                     rt.heap.drop_global(r);
                     collect(&iso);
                     let rt: &Runtime = &iso.rt;
+                    let live: Vec<usize> = (0..g.cells.len())
+                        .filter(|&n| alive(rt, g.cells[n]))
+                        .collect();
                     assert!(
-                        g.cells.iter().all(|&h| !alive(rt, h)),
-                        "all die without the root"
+                        live.is_empty(),
+                        "all die without the root: cells {live:?} of {links:?} live (stress \
+                         {stress})"
                     );
                     iso.verify_heap().unwrap();
                 }

@@ -396,8 +396,20 @@ fn below_a_pad<R>(made: impl FnOnce() -> R) -> (R, usize) {
 /// `pad_low`). Then checks that the collection can show something about them: its
 /// conservative scan stopped above the pad, and kept none of `cells` (masked bits). The
 /// isolate must record its conservative roots.
+/// Inlined (rule 35), so the scrub runs in the test's own frame and its zeros lie under the
+/// frame of [`collect_and_check`] too: an out-of-line helper's own frame is not under its
+/// own scrub (`tests/ordered_table.rs` `collect`: CI run 40733504045). The collection and
+/// the checks stay out of line, so the unmasked addresses they compute never reach the
+/// test's frame.
+#[inline(always)]
 fn collect_after_a_pad(rt: &Runtime, pad_low: usize, cells: &[u64]) {
     scrub_stack();
+    collect_and_check(rt, pad_low, cells);
+}
+
+/// The collection and the checks of [`collect_after_a_pad`], out of line.
+#[inline(never)]
+fn collect_and_check(rt: &Runtime, pad_low: usize, cells: &[u64]) {
     rt.heap.collect();
     let high = ep9_platform::current_thread_stack_bounds().unwrap().high;
     let scan_low = high - 8 * rt.heap.stats().last_stack_words;
