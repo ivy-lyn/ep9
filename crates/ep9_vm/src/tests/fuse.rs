@@ -1,7 +1,8 @@
 //! Tests of the fuse registry v0 (`fuse.rs`; M5-P1 FR0, H31, C-01): a pop invalidates every
 //! dependent and is one-way, a dead dependent is dropped, a proxy chain is refused
 //! (MC-w16-15), a descriptor must name its subject, the constructor-chain kind (MC-w15-9),
-//! changes that must not pop, two realms, the static list order, and the weak and strong
+//! changes that must not pop, two realms (and a read for a subject no arm names), the static
+//! list order, and the weak and strong
 //! handles across collections. Each test runs with and without GC stress (a collection
 //! before every allocation, then the heap verifier).
 
@@ -59,23 +60,23 @@ fn a_pop_invalidates_every_dependent() {
         let d = proto_chain(IntrinsicId::ArrayPrototype);
         let f = FuseRef::Dynamic(d);
         let word = fuses.arm(rt, d, ap).unwrap();
-        assert!(word.intact() && fuses.intact(f));
+        assert!(word.intact() && fuses.intact(rt, f, ap));
         let code: Vec<CodeHandle> = (0..3).map(|_| CodeHandle::new()).collect();
         for c in &code {
-            fuses.depend(f, c).unwrap();
+            fuses.depend(rt, f, ap, c).unwrap();
         }
         // The same handle twice is one entry.
-        fuses.depend(f, &code[0]).unwrap();
+        fuses.depend(rt, f, ap, &code[0]).unwrap();
         assert_eq!(fuses.dependent_entries(f), 3);
         // A change above the subject (Object.prototype is on the chain) pops it.
         add(rt, op, "fuseA");
         assert!(code.iter().all(CodeHandle::is_invalidated));
-        assert!(!word.intact() && !fuses.intact(f));
+        assert!(!word.intact() && !fuses.intact(rt, f, ap));
         // One-way: no new dependent, no new arm, the word stays popped.
         let late = CodeHandle::new();
-        assert_eq!(fuses.depend(f, &late), Err(Refusal::Popped));
+        assert_eq!(fuses.depend(rt, f, ap, &late), Err(Refusal::Popped));
         assert_eq!(fuses.arm(rt, d, ap).err(), Some(Refusal::Popped));
-        assert_eq!(fuses.guard(f).err(), Some(Refusal::Popped));
+        assert_eq!(fuses.guard(rt, f, ap).err(), Some(Refusal::Popped));
         assert!(!late.is_invalidated());
         add(rt, ap, "fuseB");
         assert!(!word.intact());
@@ -86,17 +87,21 @@ fn a_pop_invalidates_every_dependent() {
         fuses.wire(7).unwrap();
         fuses.wire(8).unwrap();
         let sc: Vec<CodeHandle> = (0..3).map(|_| CodeHandle::new()).collect();
+        // A static fuse ignores the subject (NULL here).
         for c in &sc {
-            fuses.depend(s, c).unwrap();
+            fuses.depend(rt, s, NULL, c).unwrap();
         }
         let oc = CodeHandle::new();
-        fuses.depend(other, &oc).unwrap();
-        let sw = fuses.guard(s).unwrap();
+        fuses.depend(rt, other, NULL, &oc).unwrap();
+        let sw = fuses.guard(rt, s, NULL).unwrap();
         fuses.pop(rt, s);
         assert!(sc.iter().all(CodeHandle::is_invalidated));
-        assert!(!sw.intact() && !fuses.intact(s));
-        assert!(fuses.intact(other) && !oc.is_invalidated());
-        assert_eq!(fuses.depend(s, &CodeHandle::new()), Err(Refusal::Popped));
+        assert!(!sw.intact() && !fuses.intact(rt, s, NULL));
+        assert!(fuses.intact(rt, other, ap) && !oc.is_invalidated());
+        assert_eq!(
+            fuses.depend(rt, s, NULL, &CodeHandle::new()),
+            Err(Refusal::Popped)
+        );
         // A second pop changes nothing.
         fuses.pop(rt, s);
         assert!(!sw.intact());
@@ -113,12 +118,12 @@ fn a_dead_dependent_is_dropped() {
         let f = FuseRef::Dynamic(d);
         let _word = fuses.arm(rt, d, ap).unwrap();
         let live = CodeHandle::new();
-        fuses.depend(f, &live).unwrap();
+        fuses.depend(rt, f, ap, &live).unwrap();
         // 100 code objects that die at once: a full list drops its dead entries before it
         // grows, so it never holds them all.
         for _ in 0..100 {
             let c = CodeHandle::new();
-            fuses.depend(f, &c).unwrap();
+            fuses.depend(rt, f, ap, &c).unwrap();
             drop(c);
         }
         assert!(
@@ -137,10 +142,10 @@ fn a_dead_dependent_is_dropped() {
         assert_eq!(fuses.dependent_entries(f), 0);
         // A pop with dead dependents only: nothing to mark, no panic.
         let dead = CodeHandle::new();
-        fuses.depend(f, &dead).unwrap();
+        fuses.depend(rt, f, ap, &dead).unwrap();
         drop(dead);
         add(rt, ap, "fuseC");
-        assert!(!fuses.intact(f));
+        assert!(!fuses.intact(rt, f, ap));
     });
 }
 
@@ -154,10 +159,10 @@ fn an_unused_fuse_is_swept_and_a_held_word_keeps_it() {
         let f = FuseRef::Dynamic(d);
         let word = fuses.arm(rt, d, ap).unwrap();
         fuses.sweep(rt);
-        assert!(fuses.intact(f), "a GuardFuse reader holds the word");
+        assert!(fuses.intact(rt, f, ap), "a GuardFuse reader holds the word");
         drop(word);
         fuses.sweep(rt);
-        assert_eq!(fuses.guard(f).err(), Some(Refusal::NotArmed));
+        assert_eq!(fuses.guard(rt, f, ap).err(), Some(Refusal::NotArmed));
         assert!(fuses.is_empty());
         // Swept, not popped: a later arm makes it again.
         let word = fuses.arm(rt, d, ap).unwrap();
@@ -182,7 +187,7 @@ fn a_proxy_chain_is_refused() {
             assert!(object::set_proto(rt, ap, p));
             assert_eq!(fuses.arm(rt, d, ap).err(), Some(Refusal::ProxyOnChain));
             assert_eq!(
-                fuses.depend(FuseRef::Dynamic(d), &CodeHandle::new()),
+                fuses.depend(rt, FuseRef::Dynamic(d), ap, &CodeHandle::new()),
                 Err(Refusal::NotArmed)
             );
             // Object.prototype's chain has no proxy: armed.
@@ -239,7 +244,7 @@ fn a_descriptor_must_name_its_subject() {
         let nd = Descriptor::ProtoChain(ProtoRef::Null);
         let nw = fuses.arm(rt, nd, NULL).unwrap();
         add(rt, op, "fuseD");
-        assert!(nw.intact() && fuses.intact(FuseRef::Dynamic(nd)));
+        assert!(nw.intact() && fuses.intact(rt, FuseRef::Dynamic(nd), NULL));
         assert_eq!(fuses.subject_count(nd), 1);
     });
 }
@@ -272,7 +277,7 @@ fn changes_below_the_subject_off_the_chain_and_value_stores_do_not_pop() {
         add(rt, ap, "fuseF");
         assert!(!aw.intact(), "a change of the subject itself pops");
         assert_eq!(fuses.arm(rt, ad, ap).err(), Some(Refusal::Popped));
-        assert!(ow.intact() && fuses.intact(FuseRef::Dynamic(od)));
+        assert!(ow.intact() && fuses.intact(rt, FuseRef::Dynamic(od), op));
         add(rt, op, "fuseG");
         assert!(!ow.intact());
     });
@@ -294,7 +299,7 @@ fn a_change_in_the_middle_of_a_three_level_chain_pops() {
         let d = proto_chain(IntrinsicId::RangeErrorPrototype);
         let w = fuses.arm(rt, d, rp).unwrap();
         let code = CodeHandle::new();
-        fuses.depend(FuseRef::Dynamic(d), &code).unwrap();
+        fuses.depend(rt, FuseRef::Dynamic(d), rp, &code).unwrap();
         add(rt, ep, "fuseM");
         assert!(
             !w.intact() && code.is_invalidated(),
@@ -321,7 +326,7 @@ fn the_constructor_chain_pops_on_the_function_and_above() {
                         "the arm puts F in prototype mode"
                     );
                     let c = CodeHandle::new();
-                    fuses.depend(FuseRef::Dynamic(d), &c).unwrap();
+                    fuses.depend(rt, FuseRef::Dynamic(d), f, &c).unwrap();
                     // A change of an unrelated prototype does not pop it.
                     add(
                         rt,
@@ -361,7 +366,7 @@ fn a_fuse_armed_in_two_realms_pops_through_either() {
                         let rt: &Runtime = cx.inner().rt();
                         let op = builtins::intrinsic(rt, IntrinsicId::ObjectPrototype);
                         let w = rt.fuses.arm(rt, d, op).unwrap();
-                        rt.fuses.depend(f, &c).unwrap();
+                        rt.fuses.depend(rt, f, op, &c).unwrap();
                         (w, op)
                     };
                     let second_op = cx.with_realm(g, |cx| {
@@ -389,6 +394,76 @@ fn a_fuse_armed_in_two_realms_pops_through_either() {
     }
 }
 
+/// A fuse armed in realm 1 answers for realm 1's subject only (M5-P1 review, Codex r1 fr0):
+/// realm 2's Array.prototype, which no arm names, reads not armed for `guard`, `intact` and
+/// `depend`, while realm 2's chain changes (a new property, then a proxy put on it) and pop
+/// nothing; realm 1's subject still reads intact. Arming realm 2's subject with a proxy on
+/// its chain is refused.
+#[test]
+fn a_subject_of_another_realm_is_not_armed_by_the_first_arm() {
+    for stress in [false, true] {
+        on_big_stack(move || {
+            let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+            let r = iso.with_cx(|cx| {
+                let g = cx.create_realm()?;
+                let d = proto_chain(IntrinsicId::ArrayPrototype);
+                let f = FuseRef::Dynamic(d);
+                let c = CodeHandle::new();
+                let (w, ap1) = {
+                    let rt: &Runtime = cx.inner().rt();
+                    let ap = builtins::intrinsic(rt, IntrinsicId::ArrayPrototype);
+                    let w = rt.fuses.arm(rt, d, ap).unwrap();
+                    rt.fuses.depend(rt, f, ap, &c).unwrap();
+                    (w, ap)
+                };
+                cx.with_realm(g, |cx| {
+                    let target = cx.new_object().bits();
+                    let handler = cx.new_object().bits();
+                    let inner = cx.inner();
+                    let p = proxy::proxy_create(inner, target, handler).expect("proxy_create");
+                    let rt: &Runtime = inner.rt();
+                    let fuses = &rt.fuses;
+                    let ap2 = builtins::intrinsic(rt, IntrinsicId::ArrayPrototype);
+                    assert_ne!(ap2, ap1);
+                    let not_armed = |why: &str| {
+                        assert_eq!(
+                            fuses.guard(rt, f, ap2).err(),
+                            Some(Refusal::NotArmed),
+                            "{why}"
+                        );
+                        assert!(!fuses.intact(rt, f, ap2), "{why}");
+                        assert_eq!(
+                            fuses.depend(rt, f, ap2, &CodeHandle::new()),
+                            Err(Refusal::NotArmed),
+                            "{why}"
+                        );
+                    };
+                    not_armed("never armed");
+                    // Realm 2's chain changes: nothing watches it, so nothing pops.
+                    add(rt, ap2, "fuseN");
+                    not_armed("a new property");
+                    assert!(object::set_proto(rt, ap2, p));
+                    not_armed("a proxy on the chain");
+                    assert_eq!(fuses.arm(rt, d, ap2).err(), Some(Refusal::ProxyOnChain));
+                    not_armed("the arm was refused");
+                    assert!(w.intact() && !c.is_invalidated());
+                    assert!(fuses.intact(rt, f, ap1));
+                    assert_eq!(fuses.subject_count(d), 1);
+                    Ok(())
+                })?;
+                // Realm 1's chain still pops the fuse.
+                let rt: &Runtime = cx.inner().rt();
+                add(rt, ap1, "fuseO");
+                assert!(!w.intact() && c.is_invalidated());
+                Ok(())
+            });
+            assert_eq!(r, Ok(()));
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
+}
+
 #[test]
 fn an_armed_fuse_survives_collections() {
     each(|iso| {
@@ -396,7 +471,10 @@ fn an_armed_fuse_survives_collections() {
         let d = proto_chain(IntrinsicId::ArrayPrototype);
         let w = iso.rt.fuses.arm(&iso.rt, d, ap).unwrap();
         let c = CodeHandle::new();
-        iso.rt.fuses.depend(FuseRef::Dynamic(d), &c).unwrap();
+        iso.rt
+            .fuses
+            .depend(&iso.rt, FuseRef::Dynamic(d), ap, &c)
+            .unwrap();
         for _ in 0..3 {
             iso.collect_garbage();
         }
@@ -442,25 +520,31 @@ fn static_fuses_keep_their_order_and_need_a_pop_site() {
         // intact.
         for i in 0..n {
             let f = FuseRef::Static(i);
-            assert!(!fuses.intact(f));
-            assert_eq!(fuses.guard(f).err(), Some(Refusal::NotWired));
-            assert_eq!(fuses.depend(f, &CodeHandle::new()), Err(Refusal::NotWired));
+            assert!(!fuses.intact(rt, f, NULL));
+            assert_eq!(fuses.guard(rt, f, NULL).err(), Some(Refusal::NotWired));
+            assert_eq!(
+                fuses.depend(rt, f, NULL, &CodeHandle::new()),
+                Err(Refusal::NotWired)
+            );
         }
         let past = FuseRef::Static(u32::MAX);
         assert_eq!(fuses.wire(u32::MAX), Err(Refusal::UnknownStatic));
-        assert_eq!(fuses.guard(past).err(), Some(Refusal::UnknownStatic));
         assert_eq!(
-            fuses.depend(past, &CodeHandle::new()),
+            fuses.guard(rt, past, NULL).err(),
+            Some(Refusal::UnknownStatic)
+        );
+        assert_eq!(
+            fuses.depend(rt, past, NULL, &CodeHandle::new()),
             Err(Refusal::UnknownStatic)
         );
         fuses.pop(rt, past);
         // Wired: intact until popped, then never again.
         fuses.wire(0).unwrap();
-        let w = fuses.guard(FuseRef::Static(0)).unwrap();
+        let w = fuses.guard(rt, FuseRef::Static(0), NULL).unwrap();
         assert!(w.intact());
         fuses.pop(rt, FuseRef::Static(0));
         fuses.wire(0).unwrap();
-        assert!(!w.intact() && !fuses.intact(FuseRef::Static(0)));
+        assert!(!w.intact() && !fuses.intact(rt, FuseRef::Static(0), NULL));
     });
 }
 

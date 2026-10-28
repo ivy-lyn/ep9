@@ -19,8 +19,11 @@
 //!    popped:  Descriptor set (one-way: a popped descriptor never arms again)
 //!
 //!  arm(rt, d, subject)  check the name and the chain (no proxy), prototype mode, cell_for
-//!  depend(f, code)      code depends on f (an InvalidatingFuse)
-//!  guard(f) / intact(f) the GuardFuse read: one load + compare of the fuse word
+//!  depend(rt, f, subject, code)   code that runs against subject depends on f
+//!                                 (an InvalidatingFuse)
+//!  guard(rt, f, subject) / intact(rt, f, subject)
+//!                       the GuardFuse read: one load + compare of the fuse word; for a
+//!                       dynamic fuse only with a subject it is armed with
 //!  pop(rt, f)           word := POPPED, every live dependent Invalidated, handles released
 //!  shape::note_change(o) on a prototype -> validity::invalidate -> on_proto_change
 //!                       -> pop every armed fuse whose subject cell is now invalid
@@ -45,7 +48,11 @@
 //!   descriptor, so a pop through any armed subject (any realm) invalidates every dependent.
 //!   A descriptor names an object per realm (an intrinsic), or per closure (a class
 //!   prototype), so code that runs against another subject of the same name arms the fuse
-//!   with that subject first, or reads it as a GuardFuse there.
+//!   with that subject first. [`Registry::depend`], [`Registry::guard`] and
+//!   [`Registry::intact`] of a dynamic fuse take the caller's subject and refuse
+//!   ([`Refusal::NotArmed`]) one whose current validity cell is not one the fuse holds: the
+//!   word of a fuse armed in one realm never answers for another realm's subject, whose chain
+//!   nothing watches (M5-P1 review, Codex r1 fr0).
 //! - Static fuses are named by index in the H31 Decision order. A static fuse is usable
 //!   ([`Registry::depend`], [`Registry::guard`], an intact read) only once its pop site is
 //!   wired ([`Registry::wire`]); v0 wires none, so each reads not intact.
@@ -257,6 +264,33 @@ struct DynFuse {
     dependents: Dependents,
 }
 
+impl DynFuse {
+    /// True if the fuse is armed with `subject`: its current validity cell (no new one is
+    /// made) is valid and is the cell of one of the fuse's subjects. Not a GC point.
+    fn armed_with(&self, rt: &Runtime, subject: u64) -> bool {
+        current_cell(rt, subject).is_some_and(|c| {
+            self.subjects
+                .iter()
+                .any(|s| rt.heap.global(s.cell).to_bits() == c)
+        })
+    }
+}
+
+/// The current valid VALIDITY_CELL of `subject` (null, or an object in prototype mode), or
+/// `None`: any other value, an object not in prototype mode (never armed), or no valid cell
+/// now (its chain changed since its cell was made). Makes no cell. Not a GC point.
+fn current_cell(rt: &Runtime, subject: u64) -> Option<u64> {
+    if subject != NULL
+        && !(is_cell_bits(subject)
+            && kind::is_object(subject)
+            && shape::is_prototype_object(subject))
+    {
+        return None;
+    }
+    let c = shape::validity_cell_of(shape::proto_info_of(rt, subject));
+    validity::is_valid(c).then_some(c)
+}
+
 struct Inner {
     statics: Vec<StaticFuse>,
     armed: HashMap<Descriptor, DynFuse>,
@@ -363,8 +397,16 @@ impl Registry {
     }
 
     /// Makes `code` depend on `f` (an InvalidatingFuse): a pop of `f` marks it Invalidated.
-    /// A static fuse must be wired and a dynamic one armed. Not a GC point.
-    pub(crate) fn depend(&self, f: FuseRef, code: &CodeHandle) -> Result<(), Refusal> {
+    /// A static fuse must be wired (it ignores `subject`). A dynamic one must be armed with
+    /// `subject`, the object the code runs against (null for `ProtoChain(Null)`): its current
+    /// validity cell is one the fuse holds ([`Refusal::NotArmed`] if not). Not a GC point.
+    pub(crate) fn depend(
+        &self,
+        rt: &Runtime,
+        f: FuseRef,
+        subject: u64,
+        code: &CodeHandle,
+    ) -> Result<(), Refusal> {
         let mut inner = self.inner.borrow_mut();
         match f {
             FuseRef::Static(i) => {
@@ -385,6 +427,9 @@ impl Registry {
                     return Err(Refusal::Popped);
                 }
                 let f = inner.armed.get_mut(&d).ok_or(Refusal::NotArmed)?;
+                if !f.armed_with(rt, subject) {
+                    return Err(Refusal::NotArmed);
+                }
                 f.dependents.add(code);
             }
         }
@@ -392,8 +437,14 @@ impl Registry {
     }
 
     /// The word of `f` for a GuardFuse reader (a Rust fast path, H31-Q5): a wired static fuse
-    /// or an armed dynamic one. The word reads intact until `f` pops. Not a GC point.
-    pub(crate) fn guard(&self, f: FuseRef) -> Result<Rc<FuseWord>, Refusal> {
+    /// (it ignores `subject`), or a dynamic one armed with `subject` (as [`Registry::depend`]).
+    /// The word reads intact until `f` pops; it answers for `subject` only. Not a GC point.
+    pub(crate) fn guard(
+        &self,
+        rt: &Runtime,
+        f: FuseRef,
+        subject: u64,
+    ) -> Result<Rc<FuseWord>, Refusal> {
         let inner = self.inner.borrow();
         match f {
             FuseRef::Static(i) => {
@@ -414,16 +465,18 @@ impl Registry {
                 inner
                     .armed
                     .get(&d)
+                    .filter(|f| f.armed_with(rt, subject))
                     .map(|f| Rc::clone(&f.word))
                     .ok_or(Refusal::NotArmed)
             }
         }
     }
 
-    /// True if `f` is intact: a wired static fuse or an armed dynamic one that has not
-    /// popped. Anything else reads false, so a reader takes its slow path. Not a GC point.
-    pub(crate) fn intact(&self, f: FuseRef) -> bool {
-        self.guard(f).is_ok_and(|w| w.intact())
+    /// True if `f` is intact for `subject`: a wired static fuse, or a dynamic one armed with
+    /// `subject` (as [`Registry::guard`]), that has not popped. Anything else reads false, so
+    /// a reader takes its slow path. Not a GC point.
+    pub(crate) fn intact(&self, rt: &Runtime, f: FuseRef, subject: u64) -> bool {
+        self.guard(rt, f, subject).is_ok_and(|w| w.intact())
     }
 
     /// Pops `f`: its word reads POPPED from now on, every live dependent is Invalidated, and
