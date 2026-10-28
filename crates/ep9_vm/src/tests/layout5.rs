@@ -27,8 +27,9 @@ fn dummy_kind(name: &'static str) -> CellKind {
 
 // ---- versions -------------------------------------------------------------------------------
 
-/// The month-5 versions (V10-D2): OBJECT_LAYOUT 4 -> 5 and the new VM_LAYOUT 1 move once in
-/// M5-P0; FRAME 2, DEOPT_META 0 (V10-D29), the builtin ABI 1 and the bytecode ABI 5 stay.
+/// The month-5 versions (V10-D2): OBJECT_LAYOUT 4 -> 5, IC_LAYOUT 2 -> 3 and the new VM_LAYOUT 1
+/// move once in M5-P0; FRAME 2, DEOPT_META 0 (V10-D29), the builtin ABI 1 and the bytecode ABI
+/// 5 stay.
 #[test]
 fn month_5_versions() {
     assert_eq!(
@@ -37,7 +38,7 @@ fn month_5_versions() {
             versions::IC_LAYOUT_VERSION,
             versions::VM_LAYOUT_VERSION
         ),
-        (5, 2, 1)
+        (5, 3, 1)
     );
     assert_eq!(
         (
@@ -128,6 +129,7 @@ fn elements_kind_values_and_storage_forms() {
         shape::ELEMENTS_KIND_MASK as u32
     );
     assert_eq!(layout::SHAPE_ELEMENTS_KIND_SHIFT, 28);
+    assert_eq!(layout::KEYED_KINDS_SET_SHIFT, 10);
     // Every array is HOLEY_ELEMENTS until ELEM1 builds the lattice.
     assert_eq!(elements::kind_of_array(UNDEFINED), ek::HOLEY_ELEMENTS);
 }
@@ -383,4 +385,21 @@ fn poly_handler_reads_a_live_poly_ic() {
 unsafe fn word_at(addr: u64, off: usize) -> u64 {
     // SAFETY: the caller's contract.
     unsafe { ((addr as usize + off) as *const u64).read() }
+}
+
+/// IC_LAYOUT 3: the ALLOC_SITE handler kind is new and distinct; the IC_HANDLER cell stays 40 B.
+#[test]
+fn the_alloc_site_handler_kind() {
+    use crate::ic::hk;
+    let kinds = [
+        hk::PROTO_LOAD,
+        hk::MISSING,
+        hk::ADD,
+        hk::GLOBAL,
+        hk::CONSTRUCT_SITE,
+        hk::INSTANCEOF,
+        hk::CLONE,
+        hk::ALLOC_SITE,
+    ];
+    assert_eq!(kinds, [1, 2, 3, 4, 5, 6, 7, 8]);
 }

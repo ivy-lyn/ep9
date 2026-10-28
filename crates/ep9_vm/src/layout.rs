@@ -334,3 +334,6 @@ pub const SMI_FIELD_IN_OBJECT: i32 = smi::FIELD_IN_OBJECT;
 /// IC_LAYOUT. Smi handler kind: an Array's `length`, the int32 at [`ARRAY_LENGTH`]
 /// (`ic::smi::ARRAY_LENGTH`).
 pub const SMI_ARRAY_LENGTH: i32 = smi::ARRAY_LENGTH;
+/// IC_LAYOUT (3). A keyed slot's value half: bit `KEYED_KINDS_SET_SHIFT + k` is set once the
+/// site saw elements kind `k` (0-6; `elements::KINDS_SET_SHIFT`).
+pub const KEYED_KINDS_SET_SHIFT: u32 = crate::elements::KINDS_SET_SHIFT;

@@ -42,8 +42,14 @@ pub const OBJECT_LAYOUT_VERSION: u32 = 5;
 /// Inline-cache and feedback data layout (H16). 2 (M4-P0): the feedback slot table of
 /// `profile.rs` (one writer module per slot kind) and the IC_HANDLER layout of `ic.rs` (+8
 /// handler kind, +16 validity cell or int32, +24 weak ref, +32 int32; new handler kinds
-/// CONSTRUCT_SITE, INSTANCEOF and CLONE).
-pub const IC_LAYOUT_VERSION: u32 = 2;
+/// CONSTRUCT_SITE, INSTANCEOF and CLONE). 3 (M5-P0; plan v10 §2.3, V10-D2: the one bump of
+/// month 5): the value half of a keyed slot (LoadKeyed, StoreKeyed, DefineKeyedOwn, HasKeyed)
+/// keeps bits 0-9 and holds in bits 10-16 the set of elements kinds seen, one bit per kind
+/// value 0-6 (MC-w15-21; `elements::KINDS_SET_SHIFT`); a new IC_HANDLER handler kind
+/// ALLOC_SITE (`ic::hk`: +16 the int32 elements kind, +24 the result shape (weak), +32 an
+/// int32 count) for array-literal sites (V10-D6, MODES-D19). No other handler kind and no
+/// slot kind changes (the bytecode ABI 5 stays).
+pub const IC_LAYOUT_VERSION: u32 = 3;
 /// The frame layout: 8-slot header, arguments, registers (H14). 2 (M2-P0): fp-3 holds
 /// new.target, or the generator object in a resumed frame (`frame::slot::NEW_TARGET`).
 pub const FRAME_VERSION: u32 = 2;

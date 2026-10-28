@@ -1,7 +1,8 @@
-//! T0 profile recording (owner M4-P1 PROFILE; OI-06, JA-3, H16-Q2) and the IC_LAYOUT 2 feedback
-//! slot table (H16; `versions::IC_LAYOUT_VERSION` 2, M4-P0).
+//! T0 profile recording (owner M4-P1 PROFILE; OI-06, JA-3, H16-Q2) and the IC_LAYOUT 3 feedback
+//! slot table (H16; `versions::IC_LAYOUT_VERSION` 2 since M4-P0, 3 since M5-P0).
 //!
-//! **IC_LAYOUT 2 slot table.** Each slot of a FEEDBACK cell (`feedback.rs`, 16 B) is a key half
+//! **IC_LAYOUT 3 slot table** (M5-P0: the keyed kinds-set bits and the ALLOC_SITE handler; the
+//! rest as IC_LAYOUT 2). Each slot of a FEEDBACK cell (`feedback.rs`, 16 B) is a key half
 //! (weak) and a value half (strong). One module writes each slot kind:
 //!
 //! | Slot kind (ABI byte) | Key half (weak) | Value half (strong) | Writer module (role, phase) |
@@ -9,11 +10,11 @@
 //! | Call (0) at `Call*` sites | **(M4-P1)** the native word of the target's FunctionInfo (not a cell; the FUNCTION cell's +24), or the hole = megamorphic | int32 count of the sampled calls (saturating) | `profile.rs` (PROFILE, M4-P1) |
 //! | Call (0) at `Construct*` sites | the target function, or the hole | a construct-site handler (an IC_HANDLER cell, handler kind `CONSTRUCT_SITE`: +16 int32 count, +24 initial shape (weak), +32 int32 `prototype` field index; V9-A8), or an int32 count | `construct_ic.rs` (OBJ-ALLOC, M4-P1) |
 //! | LoadNamed, StoreNamed, DefineNamedOwn, LoadGlobal*, StoreGlobal (1, 3, 5, 7-9) | as IC_LAYOUT 1 | as IC_LAYOUT 1; the prototype cases keep a validity cell, not the epoch | `ic.rs` (VALIDITY M4-P1, IC2 M4-P3) |
-//! | LoadKeyed, StoreKeyed, DefineKeyedOwn, HasKeyed (2, 4, 6, 10) | the receiver shape (monomorphic) or the hole (`keyed_ic.rs` writes it, KEYED, M4-P3) | int32 bits: element form seen, key types (int32, string, symbol), out of bounds, hole read | `profile.rs` writes the bits (M4-P1); `keyed_ic.rs` writes the key half and never reads the bits (KEYED, M4-P3; MC-w14-8); only the StoreKeyed fast case changes the key half, so the exported state is live only for StoreKeyed (MC-w15-1) |
+//! | LoadKeyed, StoreKeyed, DefineKeyedOwn, HasKeyed (2, 4, 6, 10) | the receiver shape (monomorphic) or the hole (`keyed_ic.rs` writes it, KEYED, M4-P3) | int32 bits: element form seen, key types (int32, string, symbol), out of bounds, hole read (bits 0-9); **IC_LAYOUT 3:** bits 10-16 the set of elements kinds seen, one bit per kind value 0-6 (`elements::KINDS_SET_SHIFT`; one storage form counts as one case, MC-w15-21; M5-P1 ELEM1 writes them) | `profile.rs` writes the bits (M4-P1); `keyed_ic.rs` writes the key half and never reads the bits (KEYED, M4-P3; MC-w14-8); only the StoreKeyed fast case changes the key half, so the exported state is live only for StoreKeyed (MC-w15-1) |
 //! | BinaryOp, CompareOp (11, 12) | undefined | int32 hint bits (int32, number, string, bigint, other) | `profile.rs` |
 //! | TypeOf (13) | undefined | int32 type bits | `profile.rs` |
 //! | InstanceOf (14) | the rhs function, or the hole (2-4 functions, or megamorphic) | an instanceof handler (an IC_HANDLER cell, handler kind `INSTANCEOF`: +16 validity cell, +24 the rhs function's shape (weak; the hit compares it, so the field index holds), +32 int32 `prototype` field index; V9-A8), a POLY_IC cell (2-4 cases: the function (weak), its handler), or an int32 state | `instance_ic.rs` (IC2, M4-P3) |
-//! | Literal (15) | the result shape | int32 count | `literal_site.rs` (OBJ-ALLOC, M4-P1) |
+//! | Literal (15) | the result shape | int32 count; **IC_LAYOUT 3:** at an array-literal site, or an allocation-site handler (an IC_HANDLER cell, handler kind `ALLOC_SITE`: +16 the int32 elements kind the site makes, +24 the result shape (weak), +32 int32 count; V10-D6, MODES-D19), which every array made there keeps at ARRAY +32 | `literal_site.rs` (OBJ-ALLOC, M4-P1; the ALLOC_SITE handler M5-P2 ELEM2) |
 //! | CloneObject (16) | the source shape, or the hole (2-4 source shapes, or megamorphic) | a clone handler (an IC_HANDLER cell, handler kind `CLONE`: +16 int32 count, +24 the result shape (weak), +32 int32 0), a POLY_IC cell (2-4 cases: the source shape (weak), its handler), or an int32 state | `literal_site.rs` (OBJ-ALLOC, M4-P1) |
 //! | StoreInArrayLiteral, ForIn, JumpLoop, CreateClosure (17-20) | ForIn: the receiver shape; others undefined | int32 bits or count (JumpLoop: the sampled back edges, **M4-P1**) | `profile.rs` |
 //!
@@ -24,7 +25,7 @@
 //!
 //! Rules: a slot is written only when its bit or state is new (load, test, rare store;
 //! V9-D6). A hit path never allocates and never calls (H16:103). The IC_HANDLER layout under
-//! IC_LAYOUT 2 is in the `ic.rs` module docs.
+//! IC_LAYOUT 3 is in the `ic.rs` module docs.
 //!
 //! **Record points** (`interp/ops.rs` calls them; ops.rs has no owner after M4-P0, V9-D5).
 //! Each hook is `#[inline(always)]` and calls nothing on its fast-body path. Not out of line

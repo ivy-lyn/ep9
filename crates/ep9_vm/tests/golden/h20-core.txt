@@ -420,6 +420,7 @@ embed (not core): pub const FUNCTION_INFO: usize
 embed (not core): pub const HOLE: u32
 embed (not core): pub const HOLE: u64
 embed (not core): pub const IC_LAYOUT_VERSION: u32
+embed (not core): pub const KEYED_KINDS_SET_SHIFT: u32
 embed (not core): pub const KIND_ARRAY: u8
 embed (not core): pub const KIND_BYTE: u32
 embed (not core): pub const KIND_ELEMENTS: u8
