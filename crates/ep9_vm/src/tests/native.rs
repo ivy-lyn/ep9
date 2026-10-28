@@ -4270,6 +4270,251 @@ mod placement_b {
             }
         }
     }
+    // ---- M5-P1 SPIKEC-5: the eager deopt entry (H29; V10-D29 to V10-D32) ----------------
+
+    /// A framed (b) stub that leaves at once through an eager deopt exit at native offset
+    /// `pc`, as Spike C's shared exit does: `RuntimeTable::deopt(cx, fp, pc, dump, nfp)` with
+    /// the addresses of a register dump (`dump`, x0-x30) and a native frame (`nfp`) baked in,
+    /// then the tail jump to `cx.table[*out_pc]` with `(cx, out_pc, out_fp, result)`.
+    #[cfg(target_arch = "aarch64")]
+    fn b_deopt(pc: u32, dump: u64, nfp: u64) -> Vec<u8> {
+        let mut a = A64::default();
+        a.op(0xA9BE_7BFD) // stp x29, x30, [sp, #-32]!
+            .op(0x9100_03FD) // mov x29, sp
+            .op(0xA901_73FA) // stp x26, x28, [sp, #16]
+            .mov(28, 0)
+            .mov(26, 2)
+            .imm(3, dump)
+            .imm(4, nfp)
+            .mov(0, 28)
+            .mov(1, 26)
+            .op(0x5280_0000 | (pc << 5) | 2) // movz w2, #pc
+            .ldr(16, 28, layout::CX_RUNTIME_TABLE)
+            .ldr(16, 16, layout::RT_DEOPT)
+            .op(0xD63F_0200) // blr x16
+            .mov(3, 0)
+            .ldr(1, 28, layout::CX_OUT_PC)
+            .ldr(2, 28, layout::CX_OUT_FP)
+            .mov(0, 28)
+            .op(0x3940_0029) // ldrb w9, [x1]
+            .op(0xF869_7810) // ldr x16, [x0, x9, lsl #3]
+            .op(0xA941_73FA) // ldp x26, x28, [sp, #16]
+            .op(0xA8C2_7BFD) // ldp x29, x30, [sp], #32
+            .op(0xD61F_0200); // br x16
+        a.bytes()
+    }
+
+    /// The deopt functions: `dsum`, `dsum0` and `dbad`, each `(a, b) { var x = a; return b +
+    /// x; }` as `Ldar a0; Star r4; Ldar a1; Add r4; Return`, as globals.
+    #[cfg(target_arch = "aarch64")]
+    fn deopt_defs() -> VerifiedUnit {
+        let names = ["dsum", "dsum0", "dbad"];
+        let mut s = Asm::script(0);
+        let mut all = Vec::new();
+        for (i, name) in names.iter().enumerate() {
+            let mut f = Asm::new(meta(name, 2, 0, 0, 0));
+            let (a0, a1) = (f.b.parameter(0), f.b.parameter(1));
+            let x = f.b.new_register();
+            f.b.ldar(a0).star(x).ldar(a1).add(x, f.bin).return_();
+            all.push(f.finish());
+            let k = s.b.function_constant(FunctionId(i as u32 + 1));
+            s.b.create_closure(k, s.closure, 0);
+            s.sta_global(name);
+        }
+        s.b.lda_undefined().return_();
+        all.insert(0, s.finish());
+        unit("", all)
+    }
+
+    /// An eager deopt from (b) code (M5-P1 SPIKEC-5, C2 part 1): `RuntimeTable::deopt` finds
+    /// the exit's record by the stub's pc offset in the side table that
+    /// `NativeCx::install_b_with_deopt` filled, writes the register `x` (r4) from a dump
+    /// register (an int32) and the accumulator from a native stack word (a double), counts
+    /// the exit, and T0 resumes at the `Add` in the same VM frame: `dsum(1, 2)` is 2.5 + 40.
+    /// A record that resumes at offset 0 with no values runs the whole function in T0
+    /// (`dsum0(1, 2)` is 3, as T0). A pc with no record is a catchable internal error, and the
+    /// next calls still work. Under the match loop the bytecode runs (no exit counts). The
+    /// install refuses metadata the reader refuses, a resume offset inside an instruction and
+    /// a record past the code, and the function stays in T0.
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn an_eager_deopt_resumes_t0_in_the_same_frame() {
+        use crate::deopt::{ExitClass, ExitValue, Loc, Record, RecordTag, Repr, Table, Target};
+        let record = |bytecode: u32, values: Vec<ExitValue>| Table {
+            consts: vec![],
+            records: vec![Record {
+                tag: RecordTag::Exit,
+                class: ExitClass::Speculation,
+                pc: 8,
+                bytecode,
+                counter: 0,
+                feedback: None,
+                values,
+            }],
+        };
+        for &d in Dispatch::ALL {
+            for stress in [false, true] {
+                let label = format!("{} stress={stress}", d.name());
+                let threaded = d != Dispatch::Match;
+                let (out, bad, counts) = on_big_stack(move || {
+                    let dump: &'static mut [u64; crate::deopt::DUMP_REGS] =
+                        Box::leak(Box::new([0; crate::deopt::DUMP_REGS]));
+                    dump[5] = 0xFFFF_0000_0000_0028; // int32 40 in the low half
+                    let nfp: &'static mut [u64; 4] = Box::leak(Box::new([0; 4]));
+                    nfp[2] = 2.5f64.to_bits();
+                    let (dump, nfp) = (dump.as_ptr().addr() as u64, nfp.as_ptr().addr() as u64);
+                    let stubs = vec![b_deopt(8, dump, nfp); 3];
+                    with_b_stubs(&stubs, |code| {
+                        let mut iso = isolate(config(d, stress));
+                        iso.with_cx_checkpoint(|cx| {
+                            cx.run_script(deopt_defs(), "d.js").map(|_| ())
+                        })
+                        .unwrap();
+                        let add = offset_in(&iso, "dsum", Opcode::Add);
+                        let x = Target::Reg(Register::local(4));
+                        let mid = record(
+                            add,
+                            vec![
+                                ExitValue {
+                                    target: x,
+                                    repr: Repr::Int32,
+                                    loc: Loc::Reg(5),
+                                },
+                                ExitValue {
+                                    target: Target::Acc,
+                                    repr: Repr::Float64,
+                                    loc: Loc::Stack(16),
+                                },
+                            ],
+                        );
+                        let f = |iso: &Isolate, n: &str| iso.global_raw(n).unwrap();
+                        let len = code[0].len();
+                        // Refusals: the function stays in T0.
+                        let mut cut = mid.encode();
+                        cut.pop();
+                        let past = Table {
+                            records: vec![Record {
+                                pc: len as u32,
+                                ..mid.records[0].clone()
+                            }],
+                            ..mid.clone()
+                        };
+                        for (meta, why) in [
+                            (cut, "deopt metadata refused: "),
+                            (record(1, vec![]).encode(), "not an instruction start"),
+                            (past.encode(), "code bytes"),
+                        ] {
+                            // SAFETY: as below; the install is refused before the slot changes.
+                            let e = unsafe {
+                                NativeCx::install_b_with_deopt(
+                                    &iso,
+                                    f(&iso, "dsum"),
+                                    code[0].clone(),
+                                    &meta,
+                                )
+                            }
+                            .unwrap_err();
+                            assert!(e.contains(why), "{why}: {e}");
+                            assert_eq!(
+                                crate::native_target(&iso, f(&iso, "dsum")).unwrap().kind,
+                                Some(DispatchKind::Interp)
+                            );
+                        }
+                        assert_eq!(NativeCx::deopt_counts(&iso, f(&iso, "dsum")), None);
+                        assert_eq!(NativeCx::check_deopt_meta(&mid.encode()), Ok(1));
+                        let bad = Table {
+                            records: vec![Record {
+                                pc: 12,
+                                ..mid.records[0].clone()
+                            }],
+                            ..mid.clone()
+                        };
+                        for (name, range, meta) in [
+                            ("dsum", &code[0], mid.encode()),
+                            ("dsum0", &code[1], record(0, vec![]).encode()),
+                            ("dbad", &code[2], bad.encode()),
+                        ] {
+                            // SAFETY: `range` holds `b_deopt` code, which keeps the handler ABI
+                            // and leaves only through `RuntimeTable::deopt` at pc 8 with its
+                            // VM frame, the dump and a native frame whose word 2 the record
+                            // reads (stack offset 16); it stays mapped until `with_b_stubs`
+                            // returns, after the isolate drops.
+                            unsafe {
+                                NativeCx::install_b_with_deopt(
+                                    &iso,
+                                    f(&iso, name),
+                                    range.clone(),
+                                    &meta,
+                                )
+                            }
+                            .unwrap();
+                        }
+                        // SAFETY: as above; the second install is refused.
+                        let e = unsafe {
+                            NativeCx::install_b_with_deopt(
+                                &iso,
+                                f(&iso, "dsum"),
+                                code[0].clone(),
+                                &mid.encode(),
+                            )
+                        }
+                        .unwrap_err();
+                        assert!(e.contains("AlreadyNative"), "{e}");
+                        use Lit::Int;
+                        let rows = vec![
+                            ("dsum", vec![Int(1), Int(2)]),
+                            ("dsum0", vec![Int(1), Int(2)]),
+                            ("dsum", vec![Int(5), Int(6)]),
+                        ];
+                        let (r, out) = run_rows(&mut iso, &rows);
+                        assert_eq!(r.as_deref(), Ok("done"));
+                        let bad = iso
+                            .with_cx_checkpoint(|cx| {
+                                cx.run_script(
+                                    calls_unit(&[("dbad", vec![Int(1), Int(2)])]),
+                                    "bad.js",
+                                )
+                                .map(|v| cx.display(v))
+                            })
+                            .map_err(|e| e.message);
+                        let (r2, again) = run_rows(&mut iso, &rows[..1]);
+                        assert_eq!(r2.as_deref(), Ok("done"));
+                        assert_eq!(again, out[..1]);
+                        let counts: Vec<Option<Vec<u64>>> = ["dsum", "dsum0", "dbad"]
+                            .iter()
+                            .map(|n| NativeCx::deopt_counts(&iso, f(&iso, n)))
+                            .collect();
+                        iso.collect_garbage();
+                        iso.verify_heap().unwrap();
+                        (out, bad, counts)
+                    })
+                });
+                if threaded {
+                    assert_eq!(out, ["42.5", "3", "42.5"], "{label}");
+                    let e = bad.unwrap_err();
+                    assert!(
+                        e.contains(
+                            "ep9 internal error: deopt at native offset 8: no exit record at pc 8"
+                        ),
+                        "{label}: {e}"
+                    );
+                    assert_eq!(
+                        counts,
+                        [Some(vec![3]), Some(vec![1]), Some(vec![0])],
+                        "{label}"
+                    );
+                } else {
+                    assert_eq!(out, ["3", "3", "11"], "{label}");
+                    assert_eq!(bad.as_deref(), Ok("done"), "{label}");
+                    assert_eq!(
+                        counts,
+                        [Some(vec![0]), Some(vec![0]), Some(vec![0])],
+                        "{label}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 // ---- M4-P3 KEYED (P2-ORCH-6): the keyed table entries and the layout export --------------

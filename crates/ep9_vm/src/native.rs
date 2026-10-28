@@ -464,18 +464,18 @@ native_fns! {
         slow::prop(cx, fp, pc, PropOp::SetKeyed, o, k, v)
     }
 
-    /// [`RuntimeTable::deopt`] (M5-P0 stub, V10-D39): throws "deopt not built", as the Spike
-    /// C trap did. Calls no recording function (MC-w15-6). M5-P1 SPIKEC-5 gives it its body
-    /// (the side-table lookup and the frame rebuild of `deopt.rs`).
+    /// [`RuntimeTable::deopt`] (M5-P1 SPIKEC-5; H29, V10-D29): the eager deopt entry. `pc`
+    /// is the exit stub's offset from the code start (not a bytecode offset); [`deopt_at`]
+    /// rebuilds the frame. Calls no recording function (MC-w15-6).
     ///
     /// # Safety
-    /// As [`rt_poll`].
-    unsafe fn rt_deopt(cx: *mut NativeCx, fp: *mut u64, off: u32, _dump: u64, _native_fp: u64) -> u64 {
+    /// As [`rt_poll`], from a shared exit: `dump` holds x0-x30 at the exit and `native_fp` is
+    /// its x29, and the code runs with the metadata [`NativeCx::install_b_with_deopt`] took.
+    unsafe fn rt_deopt(cx: *mut NativeCx, fp: *mut u64, pc: u32, dump: u64, native_fp: u64) -> u64 {
+        // SAFETY: caller contract: `cx` is the Cx native code got (see `enter`).
+        let cx = unsafe { &mut *cx.cast::<Cx>() };
         // SAFETY: caller contract.
-        let (cx, _) = unsafe { enter(cx, fp, off) };
-        let msg = format!("ep9 internal error: deopt not built (offset {off})");
-        throw_error(cx, ErrorKind::Error, &msg);
-        0
+        unsafe { deopt_at(cx, fp, pc, dump, native_fp) }
     }
 
     /// [`RuntimeTable::unwind`].
@@ -1189,6 +1189,119 @@ const _: () = {
     assert!(HEADER == 8);
     assert!(slot::PARAM0 == -10 && slot::BYTECODE_OFFSET == -1);
 };
+
+// ---- the eager deopt entry (M5-P1 SPIKEC-5; H29, V10-D29 to V10-D32) -----------------------
+
+/// The body of [`RuntimeTable::deopt`]: finds the exit's record in the isolate's deopt side
+/// table by the code start (the frame's dispatch slot entry) and `pc`, rebuilds the VM frame
+/// `fp` (`deopt::SideTable::deopt`: values, accumulator, counter + 1), publishes `fp` at the
+/// resume pc and sets `Cx::out_fp`/`out_pc` there, as [`RuntimeTable::unwind`] does, then
+/// returns the accumulator. The shared exit tail-jumps to `cx.table[*out_pc]`, so T0 resumes
+/// in the same VM frame; the code stays installed (SCP:128). If the side table refuses (no
+/// metadata, no record at `pc`, a value the frame cannot take), it throws an internal error
+/// from the function's start and returns what `error::unwind` gives, so the shared exit takes
+/// the same path. No GC point on the success path (H29-Q7).
+///
+/// # Safety
+/// As [`rt_deopt`].
+unsafe fn deopt_at(cx: &mut Cx, fp: *mut u64, pc: u32, dump: u64, native_fp: u64) -> u64 {
+    let f = FrameRef(fp);
+    let fi = f.info();
+    let shape = crate::deopt::FrameShape {
+        registers: fi.register_count,
+        params: f.argc().max(fi.parameter_count),
+    };
+    // SAFETY: the shared exit stored x0-x30 at `dump` (caller contract), 8-aligned below sp.
+    let regs = unsafe {
+        &*core::ptr::with_exposed_provenance::<[u64; crate::deopt::DUMP_REGS]>(dump as usize)
+    };
+    let exit = crate::deopt::ExitState {
+        regs,
+        native_fp: core::ptr::with_exposed_provenance(native_fp as usize),
+    };
+    let function = core::ptr::from_ref(fi).addr();
+    let rt = cx.rt();
+    // SAFETY: `fp` is the live frame of `fi` with the slots of `shape`; the metadata of the
+    // install names only stack words of the exit's native frame (caller contract).
+    let r = unsafe {
+        rt.deopt
+            .deopt(fi.slot.entry(), function, pc, &exit, fp, shape)
+    };
+    match r {
+        Ok(resume) => {
+            // `CodeMeta::read` checked that the offset is an instruction start.
+            let at = fi.code.wrapping_add(resume.bytecode as usize);
+            rt.enter(fp, at);
+            cx.out_fp = fp;
+            cx.out_pc = at;
+            resume.acc
+        }
+        Err(e) => {
+            rt.enter(fp, fi.code);
+            let msg = format!("ep9 internal error: deopt at native offset {pc}: {e}");
+            throw_error(cx, ErrorKind::Error, &msg);
+            crate::error::unwind(cx, fp, fi.code)
+        }
+    }
+}
+
+/// The deopt part of the spike API (M5-P1 SPIKEC-5), as associated functions of
+/// [`NativeCx`] (like `NativeCx::global_value`): `lib.rs` re-exports the free functions of
+/// this module by name, and its export list is not this role's to change.
+impl NativeCx {
+    /// [`install_native_b`] of the code `code` for the function `f`, with the code's deopt
+    /// metadata `meta` (the H29 byte form, `deopt.rs`): the shared exit of the code calls
+    /// [`RuntimeTable::deopt`], which finds its records here. The metadata is read and
+    /// checked first (the reader's refusals, a record pc past the code, a resume offset that
+    /// is not an instruction start of `f`'s bytecode); a refusal of the metadata or of the
+    /// install leaves `f` in T0. Its exit counters start at 0 ([`NativeCx::deopt_counts`]).
+    ///
+    /// # Safety
+    /// The [`install_native_b`] contract, and: every exit of the code calls
+    /// [`RuntimeTable::deopt`] with the code's own VM frame, the stub's offset from the code
+    /// start, its register dump (x0-x30) and its frame pointer, and each stack location of
+    /// `meta` is a word of that native frame.
+    pub unsafe fn install_b_with_deopt(
+        iso: &Isolate,
+        f: Value,
+        code: Range<usize>,
+        meta: &[u8],
+    ) -> Result<(), String> {
+        let fi = bytecode_info(f).map_err(|e| format!("install refused: {e:?}"))?;
+        // SAFETY: a bytecode FunctionInfo's code is `code_len` bytes of verified bytecode.
+        let bytecode = unsafe { core::slice::from_raw_parts(fi.code, fi.code_len as usize) };
+        let starts: Vec<u32> = ep9_bytecode::Instructions::new(bytecode)
+            .map_while(Result::ok)
+            .map(|i| i.offset)
+            .collect();
+        let len = code.end.saturating_sub(code.start);
+        let function = core::ptr::from_ref(fi).addr();
+        let read =
+            crate::deopt::CodeMeta::read(len, function, meta, |o| starts.binary_search(&o).is_ok());
+        let read = read.map_err(|e| format!("deopt metadata refused: {e}"))?;
+        let start = code.start;
+        // SAFETY: the caller's contract.
+        unsafe { install_native_b(iso, f, code) }.map_err(|e| format!("install refused: {e:?}"))?;
+        iso.rt.deopt.insert(start, read);
+        Ok(())
+    }
+
+    /// The exit counters (one per record, in record order) of the code installed for `f` by
+    /// [`NativeCx::install_b_with_deopt`]; `None` if `f` has no such code.
+    pub fn deopt_counts(iso: &Isolate, f: Value) -> Option<Vec<u64>> {
+        let fi = bytecode_info(f).ok()?;
+        if fi.slot.kind_byte() != DispatchKind::Opt as u8 {
+            return None;
+        }
+        iso.rt.deopt.counters(fi.slot.entry())
+    }
+
+    /// Reads `meta` as the deopt reader does (the H29 byte form, every refusal of
+    /// `deopt::Table::decode`), with no install: the number of records, or why it refuses.
+    pub fn check_deopt_meta(meta: &[u8]) -> Result<usize, String> {
+        crate::deopt::Table::decode(meta).map(|t| t.records.len())
+    }
+}
 
 #[cfg(test)]
 std::thread_local! {
