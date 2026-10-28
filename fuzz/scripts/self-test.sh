@@ -6,7 +6,8 @@
 # First, with no cargo (jq only): record.sh's field rules and refusals, and the Fuzzilli path:
 # infra/fuzz/triage.sh group ids and infra/fuzz/run.sh's record, with a stub FuzzilliCli that
 # writes crash files holding a secret program text (no fuzzer runs). Then, with a stub `cargo`,
-# a libFuzzer slow-unit file is not counted as a crash. Then it builds frontend_compile with the
+# a libFuzzer slow-unit file is not counted as a crash, and a run cut off before its summary
+# still gives its crash ids (run.sh crashes). Then it builds frontend_compile with the
 # `fixture-crash` feature (the target panics on an input that starts with "EP9-FIXTURE-CRASH"
 # and prints the input), replays one fixture input with -runs=0 (no mutation), and checks that
 #   - run.sh exits 1 and reports exactly 1 crash file with the fixture's SHA-256,
@@ -213,6 +214,41 @@ echo "$out" | grep -q ': libFuzzer exit 0, 0 crash file(s), 1 slow unit(s)$' ||
   fail "a slow unit: no '0 crash file(s), 1 slow unit(s)' line"
 grep -q '"crashes":0,' "$work/slow.json" && grep -q '"slow_units":1,' "$work/slow.json" ||
   fail "a slow unit: the summary does not say 0 crashes and 1 slow unit"
+
+# 3b. A run cut off after a crash file and before its summary (fuzz.yml's Summary step then
+# finds no summary). A stub `cargo` writes a crash file where libFuzzer would and then kills
+# run.sh. `run.sh crashes <summary>` must still give that file's hash (from the run's start
+# marker <summary>.started), and the record written as fuzz.yml's fallback writes it must hold
+# it. A summary path that no run started with gives no hash, though the artifact dir holds a
+# crash file: so an earlier run's crash (this self-test's fixture) never reaches a campaign
+# record.
+cat >"$work/bin/cargo" <<'STUB'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in -artifact_prefix=*) printf 'cut' >"${a#-artifact_prefix=}crash-0" ;; esac
+done
+kill -TERM "$PPID"
+STUB
+printf 'cut' >"$work/cut-input"
+cut_want="$(sha256 "$work/cut-input")"
+(PATH="$work/bin:$PATH" FUZZ_LOG_DIR="$work/cut-logs" FUZZ_SUMMARY="$work/cut.json" FUZZ_FORK=4 \
+  bash "$here/run.sh" frontend_compile 60 "$work/cut-corpus") >"$work/cut.txt" 2>&1
+rc=$?
+[ "$rc" -ne 0 ] && [ ! -e "$work/cut.json" ] || fail "a cut run: run.sh exit $rc, or it wrote a summary"
+ids="$(bash "$here/run.sh" crashes "$work/cut.json")" || fail "a cut run: run.sh crashes exit $?"
+[ "$ids" = "$cut_want" ] || fail "a cut run: run.sh crashes gave '$ids', not the crash file's hash"
+cut_args=()
+for h in $ids; do cut_args+=(--crash-id "$h"); done
+bash "$here/record.sh" --tool cargo-fuzz --campaign gh0-1-frontend_compile --target frontend_compile \
+  --commit "$commit" --dirty false --counted false --seconds 0 --workers 4 \
+  --uncounted "no run summary: the campaign step did not end" ${cut_args[@]+"${cut_args[@]}"} \
+  --out "$work/cut-record.json" || fail "a cut run: record.sh exit $?"
+jq -e --arg want "$cut_want" '.schema == "ep9-fuzz/v1" and .dirty == false and .counted == false
+  and .cpu_hours == 0 and [.crashes[].id] == [$want] and all(.crashes[]; .state == "open")' \
+  "$work/cut-record.json" >/dev/null || fail "a cut run: the record lost the crash id: $(cat "$work/cut-record.json")"
+ids="$(bash "$here/run.sh" crashes "$work/never-started.json")" || fail "run.sh crashes (no run) exit $?"
+[ -z "$ids" ] || fail "run.sh crashes gave hashes for a summary path that no run started with"
+echo "fuzz self-test: a cut run's crash reaches the record; no run, no crash ids"
 
 # 4. The fixture crash, its output and its record.
 FUZZ_FEATURES=fixture-crash bash "$here/run.sh" build frontend_compile >"$work/build.log" 2>&1 ||

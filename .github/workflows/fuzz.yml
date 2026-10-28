@@ -131,7 +131,9 @@ jobs:
         run: bash fuzz/scripts/run.sh "$TARGET" "$SECONDS_IN" "fuzz/corpus/$TARGET" "fuzz/seeds/$TARGET"
       # The ep9-fuzz/v1 record: names, numbers and hashes only (record.sh refuses any other
       # string). With no run summary (the campaign step did not end) the record says 0 s and
-      # counted false.
+      # counted false, and it still lists the crash files of this campaign: run.sh wrote
+      # fuzz-summary.json.started when the run began, and `run.sh crashes` reads that run's
+      # artifact dir (no marker, no run: the self-test's fixture crash is never read).
       - name: Summary
         if: ${{ always() }}
         env:
@@ -155,7 +157,10 @@ jobs:
           if [ -f fuzz-summary.json ]; then
             args+=(--run fuzz-summary.json)
           else
+            ids="$(bash fuzz/scripts/run.sh crashes fuzz-summary.json)" ||
+              { echo "::error::no run summary, and the crash files of the run cannot be read"; exit 1; }
             args+=(--seconds 0 --workers "$JOBS_IN" --uncounted "no run summary: the campaign step did not end")
+            for h in $ids; do args+=(--crash-id "$h"); done
           fi
           bash fuzz/scripts/record.sh "${args[@]}" --out "fuzz-record-$TARGET.json"
           { echo "## cargo-fuzz $TARGET (ep9-fuzz/v1)"; echo '```'; cat "fuzz-record-$TARGET.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
