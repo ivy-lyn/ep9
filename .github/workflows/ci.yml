@@ -7,15 +7,15 @@
 #   scope ............ docs_only for the pushed range                (Linux x64)
 #                      (.github/scripts/ci-scope.sh, its self-test first)
 #   build-test ....... build + test; clippy on the other 3 targets;  (4 targets)
-#                      ep9_vm spike-native tests (Spike B native entry)
+#                      ep9_vm spike-native tests (Spike B native entry);
+#                      ep9_vm and ep9_builtins tests in release
 #   feature-matrix ... default, jitless, aot (H27; cargo xtask        (4 targets)
 #                      feature-matrix), out of build-test for wall time
 #   test262 .......... parse and exec runners vs expectations/;      (4 targets)
 #                      exec with eager feedback; bytecodegen corpus
 #                      digest (G1), debug too (not windows-x64); the
-#                      nesting-cap tests (not windows-x64); on Linux
-#                      x64 also the atom-key gate (G2, debug exec);
-#                      the m0-exit inputs as an artifact
+#                      nesting-cap tests (not windows-x64); the
+#                      m0-exit inputs as an artifact
 #   test262-gc ....... exec with GC-stress + eager feedback, 6 shards (4 targets)
 #   fp-check ......... no libm call, no FMA outside ep9_math (H36);  (Linux x64)
 #                      SoftFma vs hardware FMA
@@ -28,7 +28,11 @@
 #                      SP-Unit gate (gate.sh unit; 4 targets);
 #                      Spike B Win64 unwind (windows-x64; tests/win64_unwind.rs);
 #                      SP-Unit Win64 unwind (windows-x64; tests/win64_unit.rs);
-#                      SP-Dispatch Zen 3 branchy report (linux-x64, windows-x64; report only, H15-Q2)
+#                      SP-Dispatch Zen 3 branchy report (linux-x64, windows-x64; report only, H15-Q2);
+#                      Spike C gate (macos-arm64, linux-arm64; gate.sh all)
+#   bench-run ........ M1 exit item 1: the 15 kernels on ep9 vs node (4 targets)
+#                      (kernels.mjs --check) as an artifact
+#   atomgate ......... the atom-key gate (G2, debug exec)            (Linux x64)
 #   miri ............. Miri on ep9_value, ep9_heap and ep9_math      (Linux x64)
 #   dep-guards ....... cargo tree / metadata guards; cargo deny      (Linux x64)
 #   perf-ci-v0 ....... cachegrind instruction counts of 7 workloads  (Linux x64)
@@ -37,8 +41,9 @@
 #   fuzz-smoke ....... cargo-fuzz, 60 s per front-end target; prints (Linux x64)
 #                      only the crash count and hashes (V9-A17)
 #
-# 52 jobs: lint 1, scope 1, build-test 4, feature-matrix 4, test262 4, test262-gc 24, fp-check 1,
-# disasm 4, spikes 4, miri 1, dep-guards 1, perf-ci-v0 1, sp-tsrs-win 1, fuzz-smoke 1.
+# 57 jobs: lint 1, scope 1, build-test 4, feature-matrix 4, test262 4, atomgate 1, test262-gc 24,
+# fp-check 1, disasm 4, spikes 4, bench-run 4, miri 1, dep-guards 1, perf-ci-v0 1, sp-tsrs-win 1,
+# fuzz-smoke 1.
 #
 # Scope (docs/plan/12-governance.md section 3; plan v9 V9-D35, V9-A18): every job except lint and
 # scope `needs: scope` and is skipped when scope says docs_only=true. docs_only is true only when
@@ -46,8 +51,8 @@
 # docs/measurements/ (code reads both); anything else fails closed to docs_only=false. A
 # docs-only change runs scope and lint only (lint stays: its adr-lint step, from M4-P3, must see
 # ADR commits). If scope fails, the other jobs still run (`!cancelled()`). GitHub counts a skipped job as green,
-# so on a code change CI is done only when every one of the 52 jobs ran and none is pending or
-# skipped. Timeouts follow the plan v9 section 9.2 budget table (rule 25: >= 1.5x the last
+# so on a code change CI is done only when every one of the 57 jobs ran and none is pending or
+# skipped. Timeouts follow the plan v10 section 9.2 budget table (rule 25: >= 1.5x the last
 # measured time).
 #
 # Every action is pinned by full commit SHA; the comment names its release tag.
@@ -201,8 +206,8 @@ jobs:
           - { name: linux-arm64, os: ubuntu-24.04-arm }
           - { name: windows-x64, os: windows-2025 }
     runs-on: ${{ matrix.os }}
-    # Plan v9 section 9.2: 110 (>= 1.5 x 72.0 min, the last measured max with the feature matrix
-    # inside) until the first run without it is measured.
+    # Plan v10 section 9.2: 110 (the last measured max: 40.8 min, windows-x64, run 40628919438;
+    # the release tests add est. 5-10 min).
     timeout-minutes: 110
     steps:
       # Windows: keep LF in our files and in test262 (scripts break on CRLF), allow long paths.
@@ -224,6 +229,11 @@ jobs:
       - name: spike-native tests (ep9_vm)
         if: ${{ !cancelled() }}
         run: cargo test -p ep9_vm --features spike-native --locked native
+      # Release-only faults (plan v10 section 2.8 task 1): the profile of ep9 and ep9-test262
+      # (fat LTO, no debug assertions). Mac a64 (18 CPUs), cold build: 100 s for 995 tests.
+      - name: release tests (ep9_vm, ep9_builtins)
+        if: ${{ !cancelled() }}
+        run: cargo test --release --locked -p ep9_vm -p ep9_builtins
       # 10-quality section 5: clippy -D warnings on all 4 targets (the lint job covers Linux x64).
       - if: ${{ matrix.name != 'linux-x64' }}
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -265,21 +275,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # linux-x64 also runs the atom-key gate (a debug exec run). GC-stress runs in the test262-gc
-        # job (M3-P3 GATES-2), so this job no longer needs the 300-min limit of M3-P2-CI-GC-TIMEOUT.
+        # GC-stress runs in the test262-gc job (M3-P3 GATES-2) and the atom-key gate in the
+        # atomgate job (plan v10 V10-D47).
         include:
           - { name: macos-arm64, os: macos-15 }
           - { name: linux-x64, os: ubuntu-24.04 }
           - { name: linux-arm64, os: ubuntu-24.04-arm }
           - { name: windows-x64, os: windows-2025 }
     runs-on: ${{ matrix.os }}
-    # Plan v9 section 9.2: 90 on every target (>= 1.5 x 45.0 min, the last measured max).
+    # Plan v10 section 9.2: 90 on every target (>= 1.5 x 54.4 min, the last measured max, with the
+    # atom-key gate inside) until the first run without it is measured.
     timeout-minutes: 90
     steps:
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-rust
+      # One release cache per target for test262, test262-gc and bench-run (10 GB cache limit).
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: release-${{ matrix.name }}
       # The checkout is keyed by the pin and the patch set, so a pin change misses the cache.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -360,35 +374,6 @@ jobs:
           cargo test --locked -p ep9_cli --test nesting_caps --test cli 2>&1 | tee -a nesting.log || rc2=$?
           echo "m0-exit status: $rc2" | tee -a nesting.log
           [ "$rc1" = 0 ] && [ "$rc2" = 0 ]
-      # G2 atom-key gate (W4-KEY-EQ): in a debug build with EP9_ASSERT_ATOM_KEYS=1, every isolate
-      # drop panics if a property-key compare looked at string content (crates/ep9_vm/src/atoms.rs),
-      # and the runner counts that as a panic. The gate needs "infrastructure errors: 0 (panic 0,
-      # ...)" in the summary and exit 0 or 1. Exit 2 means an infrastructure error (panic,
-      # timeout, worker crash, internal BytecodeGen error) or a runner error, and fails the step;
-      # an infrastructure error also skips the expectation compare (tools/test262/src/exec.rs).
-      # Exit 1 (the failing set differs from the expectation file, no infrastructure error) is a
-      # warning: the release steps above are the result gates. The 300 s soft timeout is for the
-      # slower debug build.
-      - name: test262 exec, atom-key gate (debug)
-        if: ${{ !cancelled() && steps.sync.outcome == 'success' && matrix.name == 'linux-x64' }}
-        run: |
-          cargo build --locked -p ep9_test262
-          rc=0
-          EP9_ASSERT_ATOM_KEYS=1 target/debug/ep9-test262 exec --timeout 300 2>&1 | tee atomgate.log || rc=$?
-          line="$(grep 'infrastructure errors:' atomgate.log | tail -n 1 || true)"
-          if [ -z "$line" ]; then
-            echo "::error::atom-key gate: the debug exec run printed no summary (exit $rc)"
-            exit 1
-          fi
-          if ! grep -qE '^ *infrastructure errors: 0 \(panic 0, timeout 0, worker crash 0, other 0\)$' <<< "$line"; then
-            echo "::error::atom-key gate (exit $rc):$line"
-            exit 1
-          fi
-          case "$rc" in
-            0) ;;
-            1) echo "::warning::atom-key gate passed (infrastructure errors 0), but the debug failing set differs from the expectation file (exit 1)" ;;
-            *) echo "::error::atom-key gate: the debug exec run exited $rc:$line"; exit 1 ;;
-          esac
       # Every failure with its cause; regenerate an expectation file from test262-exec.json
       # (status "fail").
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -448,6 +433,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-rust
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: release-${{ matrix.target.name }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: third_party/test262
@@ -561,7 +548,9 @@ jobs:
           - { name: linux-arm64, os: ubuntu-24.04-arm }
           - { name: windows-x64, os: windows-2025 }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # Plan v10 section 9.2: 75 until the first run with the Spike C steps is measured (the last
+    # max without them: 25.9 min, windows-x64, run 40628919438).
+    timeout-minutes: 75
     steps:
       - run: git config --global core.autocrlf false && git config --global core.longpaths true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -578,6 +567,7 @@ jobs:
             spikes/sp-gc -> target
             spikes/sp-jit-mem -> target
             spikes/spike-b -> target
+            spikes/spike-c -> target
       # H15-Q3: one LLVM for cgoto.c on every target. spikes/sp-dispatch/gate.sh builds it with
       # `zig cc` when `zig version` prints 0.17.0 and logs "cc: zig cc 0.17.0 (pinned, H15-Q3)".
       # The archive is pinned by its SHA-256 from https://ziglang.org/download/index.json
@@ -676,6 +666,25 @@ jobs:
       - name: SP-Unit Win64 unwind (windows-x64)
         if: ${{ !cancelled() && matrix.name == 'windows-x64' }}
         run: cargo test --locked --manifest-path spikes/spike-b/Cargo.toml --test win64_unit -- --nocapture
+      # Spike C gate (plan v10 V10-D38; M1 exit items 7 and 10): `gate.sh` with no argument runs
+      # structural, am3 and linsolve (not `time`, a timing report). The emitter is aarch64 only,
+      # so it runs on the 2 arm64 runners. The am3 and linsolve steps read the pinned v8-v7
+      # checkout, and the structural kernels check prints SKIP without it; here every step must
+      # run, so a SKIP line fails the step. The am3 GC-stress step is a report (XFAIL until the
+      # deopt entry, spikes/spike-c/gate.sh). Mac a64 (18 CPUs), cold build: 75 s.
+      - name: v8-v7 checkout (Spike C)
+        if: ${{ !cancelled() && (matrix.name == 'macos-arm64' || matrix.name == 'linux-arm64') }}
+        run: bash scripts/sync-bench.sh bench-v8v7
+      - name: Spike C gate
+        if: ${{ !cancelled() && (matrix.name == 'macos-arm64' || matrix.name == 'linux-arm64') }}
+        run: |
+          rc=0
+          bash spikes/spike-c/gate.sh 2>&1 | tee spike-c-gate.log || rc=$?
+          if grep -n 'SKIP' spike-c-gate.log; then
+            echo "::error::Spike C gate: a step was skipped (the lines above)"
+            exit 1
+          fi
+          exit "$rc"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
@@ -716,6 +725,109 @@ jobs:
           path: spikes/sp-dispatch/target/zen3/
           if-no-files-found: warn
 
+  # M1 exit item 1 (plan v10 V10-D46): do the 8 v8-v7 kernels and Octane-7 run on ep9 with node's
+  # output? tools/bench/cross/kernels.mjs --check runs each of the 15 once on node 24.22.1 (the
+  # oracle) and on the release ep9; exit 1 if one fails or prints other output. Its JSON
+  # (ep9-kernels/v1: commit, tree ids, host target, one row per kernel) is the --kernels input
+  # of `cargo xtask m1-exit` for this target; m1-exit reads the step "kernels" of
+  # bench-run (windows-x64) for the Windows column (tools/xtask/src/m1_exit.rs, item1). Keep the
+  # job and step names. Mac a64 (18 CPUs): release build 34 s (deps warm), kernels 4 s, 15/15.
+  bench-run:
+    name: bench-run (${{ matrix.name }})
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macos-arm64, os: macos-15 }
+          - { name: linux-x64, os: ubuntu-24.04 }
+          - { name: linux-arm64, os: ubuntu-24.04-arm }
+          - { name: windows-x64, os: windows-2025 }
+    runs-on: ${{ matrix.os }}
+    # Plan v10 section 9.2: 45 for the first run (not measured; est. 12-20 min), then 1.5x.
+    timeout-minutes: 45
+    steps:
+      - run: git config --global core.autocrlf false && git config --global core.longpaths true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust
+      # The release cache of this target, shared with test262 and test262-gc.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: release-${{ matrix.name }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.1'
+      # The benchmark pins, with the test262 job's cache entry (same paths and key). kernels.mjs
+      # reads bench-octane and bench-v8v7; jetstream is synced too, so this job never saves an
+      # entry of that key without it.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            third_party/bench-octane
+            third_party/bench-v8v7
+            third_party/bench-jetstream
+          key: bench-${{ runner.os }}-${{ hashFiles('third_party/bench-octane.commit', 'third_party/bench-v8v7.commit', 'third_party/bench-jetstream.commit', 'third_party/patches/bench-*/**') }}
+      - run: bash scripts/sync-bench.sh bench-octane bench-v8v7 bench-jetstream
+      - run: cargo build --release --locked -p ep9_cli
+      - name: kernels
+        env:
+          EXE: ${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: node tools/bench/cross/kernels.mjs --check "target/release/ep9$EXE" --out kernels.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: m1-exit-inputs-kernels-${{ matrix.name }}
+          path: kernels.json
+          if-no-files-found: warn
+
+  # G2 atom-key gate (W4-KEY-EQ), its own job since M5-P0 (plan v10 V10-D47): in the test262 job
+  # it made test262 parse + exec (linux-x64) the longest job (54.4 min, run 40628919438). No
+  # xtask reads this job or step. In a debug build with EP9_ASSERT_ATOM_KEYS=1, every isolate
+  # drop panics if a property-key compare looked at string content (crates/ep9_vm/src/atoms.rs),
+  # and the runner counts that as a panic. The gate needs "infrastructure errors: 0 (panic 0,
+  # ...)" in the summary and exit 0 or 1. Exit 2 means an infrastructure error (panic,
+  # timeout, worker crash, internal BytecodeGen error) or a runner error, and fails the step;
+  # an infrastructure error also skips the expectation compare (tools/test262/src/exec.rs).
+  # Exit 1 (the failing set differs from the expectation file, no infrastructure error) is a
+  # warning: the release exec steps of the test262 job are the result gates. The 300 s soft
+  # timeout is for the slower debug build.
+  atomgate:
+    name: atomgate (linux-x64)
+    needs: scope
+    if: ${{ !cancelled() && needs.scope.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-24.04
+    # Plan v10 section 9.2: 60 (not measured; est. 35 min, the step's share of the 54.4 min).
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: third_party/test262
+          key: test262-${{ runner.os }}-${{ hashFiles('third_party/test262.commit', 'third_party/patches/test262/**') }}
+      - run: bash scripts/sync-test262.sh
+      - name: test262 exec, atom-key gate (debug)
+        run: |
+          cargo build --locked -p ep9_test262
+          rc=0
+          EP9_ASSERT_ATOM_KEYS=1 target/debug/ep9-test262 exec --timeout 300 2>&1 | tee atomgate.log || rc=$?
+          line="$(grep 'infrastructure errors:' atomgate.log | tail -n 1 || true)"
+          if [ -z "$line" ]; then
+            echo "::error::atom-key gate: the debug exec run printed no summary (exit $rc)"
+            exit 1
+          fi
+          if ! grep -qE '^ *infrastructure errors: 0 \(panic 0, timeout 0, worker crash 0, other 0\)$' <<< "$line"; then
+            echo "::error::atom-key gate (exit $rc):$line"
+            exit 1
+          fi
+          case "$rc" in
+            0) ;;
+            1) echo "::warning::atom-key gate passed (infrastructure errors 0), but the debug failing set differs from the expectation file (exit 1)" ;;
+            *) echo "::error::atom-key gate: the debug exec run exited $rc:$line"; exit 1 ;;
+          esac
+
   # Miri on the unsafe code of ep9_value, ep9_heap and ep9_math (docs/plan/10-quality.md
   # section 5, sanitizers; ep9_math: the FMA dispatch in exact.rs). The plan runs it nightly; it
   # runs on every PR until the nightly trigger lands. The crates skip what Miri cannot run (the
@@ -733,6 +845,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The +toolchain override wins over rust-toolchain.toml, so the stable pin is not needed.
       - run: rustup toolchain install "$MIRI_TOOLCHAIN" --profile minimal --component miri,rust-src --no-self-update
+      # The root [patch.crates-io] regress path (third_party/regress, git-ignored) must exist for
+      # any cargo command in the workspace; this job has no setup-rust, which syncs it for the
+      # other jobs (plan v10 rule 42).
+      - name: regress sync
+        run: bash scripts/sync-regress.sh
       - run: cargo "+$MIRI_TOOLCHAIN" miri setup
       - run: cargo "+$MIRI_TOOLCHAIN" miri test --locked -p ep9_value -p ep9_heap -p ep9_math
 
