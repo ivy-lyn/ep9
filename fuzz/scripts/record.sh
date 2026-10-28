@@ -8,10 +8,14 @@
 #       --commit <40 hex>|unknown --dirty true|false|unknown --counted true|false
 #       ( --run <run.sh summary JSON>
 #       | --seconds <n> --workers <n> [--binary <file>] [--crash-id <sha256>]... [--crash-file <file>]... )
-#       [--runner <name>] [--uncounted <reason>] [--out <file>]
+#       [--preset <name>] [--runner <name>] [--uncounted <reason>] [--out <file>]
 #
 # The record (one JSON line; key order as below):
-#   schema "ep9-fuzz/v1"; tool; campaign; target; commit;
+#   schema "ep9-fuzz/v1"; tool; campaign; target;
+#   preset     (optional) the execution preset the target ran (Fuzzilli: the REPRL child's,
+#              EP9_REPRL_PRESET or else the build's own; infra/fuzz/run.sh). The target names
+#              the binary, so a jit build run as jitless keeps target reprl and has preset jitless
+#   commit;
 #   dirty      true | false; NO field when unknown, so m1-exit does not count it (CX6-1)
 #   cpu_hours  measured seconds x workers / 3600 (4 decimals), never the requested time
 #   seconds, workers
@@ -45,7 +49,7 @@ sha256() {
 }
 
 tool="" campaign="" target="" commit="" dirty="" counted="" run="" seconds="" workers=""
-binary="" binary_given=no runner="" uncounted="" out=""
+binary="" binary_given=no runner="" uncounted="" out="" preset=""
 ids=()
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || die "$1 needs a value"
@@ -66,6 +70,7 @@ while [ $# -gt 0 ]; do
       ids+=("$(sha256 "$2")")
       ;;
     --runner) runner="$2" ;;
+    --preset) preset="$2" ;;
     --uncounted) uncounted="$2" ;;
     --out) out="$2" ;;
     *) die "unknown option $1" ;;
@@ -83,6 +88,7 @@ case "$tool" in cargo-fuzz | fuzzilli) ;; *) die "--tool must be cargo-fuzz or f
 case "$dirty" in true | false | unknown) ;; *) die "--dirty must be true, false or unknown" ;; esac
 case "$counted" in true | false) ;; *) die "--counted must be true or false" ;; esac
 [ -z "$runner" ] || [[ "$runner" =~ $name_re ]] || die "--runner must match $name_re"
+[ -z "$preset" ] || [[ "$preset" =~ $name_re ]] || die "--preset must match $name_re"
 [ -z "$uncounted" ] || [[ "$uncounted" =~ $reason_re ]] ||
   die "--uncounted: only letters, digits, spaces and ._:,()/- (at most 200)"
 
@@ -134,8 +140,10 @@ record="$(
     --arg dirty "$dirty" --arg cpu "$cpu_hours" --argjson seconds "$seconds" \
     --argjson workers "$workers" --arg counted "$counted" --arg uncounted "$uncounted" \
     --argjson ids "$ids_json" --arg binary "$binary_sha" --arg runner "$runner" \
-    --argjson run "$run_json" '
-    {schema: "ep9-fuzz/v1", tool: $tool, campaign: $campaign, target: $target, commit: $commit}
+    --arg preset "$preset" --argjson run "$run_json" '
+    {schema: "ep9-fuzz/v1", tool: $tool, campaign: $campaign, target: $target}
+    + (if $preset == "" then {} else {preset: $preset} end)
+    + {commit: $commit}
     + (if $dirty == "unknown" then {} else {dirty: ($dirty == "true")} end)
     + {cpu_hours: ($cpu | tonumber), seconds: $seconds, workers: $workers,
        counted: ($counted == "true" and $uncounted == "")}

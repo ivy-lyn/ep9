@@ -191,6 +191,45 @@ STUB_CRASHES="$work/crashes" EP9="$work/fz/ep9" FUZZILLI="$work/fz/FuzzilliCli" 
   fail "infra/fuzz/run.sh (no SOURCE) exit $?"
 jq -e '.commit == "unknown" and (has("dirty") | not)' "$work/fz/out2/record.json" >/dev/null ||
   fail "infra/fuzz/run.sh: an image with no SOURCE did not write commit unknown and no dirty field"
+# The effective preset (Codex r1 reprl2): the record names the preset the REPRL child runs,
+# EP9_REPRL_PRESET or else the build's own (line 2 of `ep9 --version`), apart from the target
+# (the binary). A jit build run with EP9_REPRL_PRESET=jitless is preset jitless, target reprl.
+# A setting the child refuses (jit on a jitless build, any other value) is exit 2 before
+# Fuzzilli starts, and no record is written.
+printf 'commit=%s\ndirty=false\n' "$commit" >"$work/fz/SOURCE"
+printf '#!/bin/sh\necho "ep9 0.0.0"\necho "features jit,become; preset jit"\n' >"$work/fz/ep9-jit"
+printf '#!/bin/sh\necho "ep9 0.0.0"\necho "features none; preset jitless"\n' >"$work/fz/ep9-jitless"
+chmod +x "$work/fz/ep9-jit" "$work/fz/ep9-jitless"
+preset_run() { # <ep9 stub> <out dir> [<EP9_REPRL_PRESET>]
+  (
+    if [ $# -ge 3 ]; then export EP9_REPRL_PRESET="$3"; else unset EP9_REPRL_PRESET; fi
+    STUB_CRASHES="$work/crashes" EP9="$1" FUZZILLI="$work/fz/FuzzilliCli" JOBS=1 \
+      EP9_SOURCE="$work/fz/SOURCE" bash "$infra/run.sh" 1 "$2" >"$2.txt" 2>&1
+  )
+}
+for c in "jit reprl jit" "jit reprl jitless jitless" "jitless reprl-jitless jitless" \
+  "jitless reprl-jitless jitless jitless"; do
+  # shellcheck disable=SC2086 # split on purpose: the case words
+  set -- $c
+  dir="$work/fz/p-$1-${4:-unset}"
+  if [ $# -ge 4 ]; then preset_run "$work/fz/ep9-$1" "$dir" "$4"; else preset_run "$work/fz/ep9-$1" "$dir"; fi
+  rc=$?
+  [ "$rc" -eq 0 ] || { cat "$dir.txt"; fail "infra/fuzz/run.sh ($1 build, setting ${4:-unset}) exit $rc"; }
+  jq -e --arg t "$2" --arg p "$3" '.target == $t and .preset == $p' "$dir/record.json" >/dev/null ||
+    fail "infra/fuzz/run.sh ($1 build, setting ${4:-unset}): want target $2, preset $3: $(cat "$dir/record.json")"
+done
+for c in "jitless jit" "jit hybrid" "jit JIT" "jit "; do
+  # shellcheck disable=SC2086 # split on purpose: the case words
+  set -- $c
+  dir="$work/fz/bad-$1-${2:-empty}"
+  preset_run "$work/fz/ep9-$1" "$dir" "${2:-}"
+  rc=$?
+  [ "$rc" -eq 2 ] || { cat "$dir.txt"; fail "infra/fuzz/run.sh ($1 build, setting '${2:-}') exit $rc, expected 2"; }
+  [ ! -e "$dir/record.json" ] || fail "infra/fuzz/run.sh ($1 build, setting '${2:-}') wrote a record"
+done
+rec --dirty false --counted false --seconds 1 --workers 1 --preset 'jit less' >/dev/null 2>&1 &&
+  fail "record.sh took a preset that is not a name"
+echo "fuzz self-test: the record names the effective preset (EP9_REPRL_PRESET, else the build's own)"
 echo "fuzz self-test: Fuzzilli record ok (triage group ids, campaign id, no program text)"
 
 # 3. A slow unit is listed but is not a crash. A stub `cargo`, first on PATH, writes a

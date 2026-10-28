@@ -10,6 +10,10 @@
 # --jobs, default nproc), FUZZ_TAG (Fuzzilli --tag, default ep9-<hostname>). The ep9 profile
 # forwards EP9_REPRL_HEAP_MB, EP9_REPRL_STACK_MB, EP9_REPRL_GC_STRESS and EP9_REPRL_PRESET
 # (jit | jitless) from this environment to the REPRL child.
+# The effective preset (the one the child runs): EP9_REPRL_PRESET when set, else the build's
+# own (line 2 of `$EP9 --version`). A setting the child would refuse (jit on a jitless build,
+# or any value but jit and jitless) is exit 2 before Fuzzilli starts. The record writes it as
+# `preset` (none when the build line names no preset and nothing is set).
 # The ep9-fuzz/v1 record (fuzz/scripts/record.sh; plan v10 §2.7):
 #   FUZZ_BOX      box name in the campaign id (default the hostname)
 #   FUZZ_SESSION  session name in the campaign id (default the UTC start time, HHMMSS)
@@ -81,11 +85,27 @@ case "$build" in
   *"; preset jitless") target=reprl-jitless ;;
   *) target=reprl ;;
 esac
+# The effective preset (as crates/ep9_cli/src/reprl.rs reads EP9_REPRL_PRESET).
+case "$build" in
+  *"; preset "*) preset="${build##*; preset }" ;;
+  *) preset="" ;;
+esac
+if [ -n "${EP9_REPRL_PRESET+set}" ]; then
+  case "$EP9_REPRL_PRESET" in
+    jit | jitless) ;;
+    *) echo "run.sh: bad EP9_REPRL_PRESET value '$EP9_REPRL_PRESET' (jit, jitless)" >&2; exit 2 ;;
+  esac
+  if [ "$EP9_REPRL_PRESET" = jit ] && [ "$preset" = jitless ]; then
+    echo "run.sh: EP9_REPRL_PRESET=jit needs an ep9 built with the jit feature (this one: $build)" >&2
+    exit 2
+  fi
+  preset="$EP9_REPRL_PRESET"
+fi
 
 rm -rf "$out"
 mkdir -p "$out"
 echo "run.sh: $minutes min, $jobs jobs, tag $tag, ep9 $(sha256sum "$ep9" | cut -c1-16)"
-echo "run.sh: target $target, build ${build:-unknown}, preset setting ${EP9_REPRL_PRESET:-default}"
+echo "run.sh: target $target, build ${build:-unknown}, preset ${preset:-unknown} (setting ${EP9_REPRL_PRESET-default})"
 echo "run.sh: campaign $campaign, commit $src_commit, dirty $src_dirty, counted $counted"
 start=$(date +%s)
 # --maxRuntime stops Fuzzilli; timeout is only a guard (start-up tests, shutdown).
@@ -125,6 +145,7 @@ n="$(wc -l < "$out/coverage.log" | tr -d ' ')"
 # The ep9-fuzz/v1 record: crash ids are the triage group ids (never a program text).
 rec=(--tool fuzzilli --campaign "$campaign" --target "$target" --commit "$src_commit"
   --dirty "$src_dirty" --counted "$counted" --seconds "$secs" --workers "$jobs" --binary "$ep9")
+[ -z "$preset" ] || rec+=(--preset "$preset")
 if [ "${#crashes[@]}" -gt 0 ]; then
   ids="$(bash "$here/triage.sh" --ids ${crashes[@]+"${crashes[@]}"})" ||
     { echo "run.sh: FAIL: triage.sh --ids failed; no record written"; exit 2; }

@@ -163,7 +163,12 @@ infra/fuzz/triage.sh /work/fuzz-out/storage/crashes        # groups, each with i
 Settings of the child (environment): `EP9_REPRL_HEAP_MB` (512), `EP9_REPRL_STACK_MB` (64),
 `EP9_REPRL_GC_STRESS` (0), `EP9_REPRL_PRESET` (`jit` or `jitless`; default the build's own;
 `jit` in the jitless build is a usage error, exit 2); the ep9 profile forwards each one that
-FuzzilliCli's environment sets (the child gets only the profile's environment). Fuzz hooks of
+FuzzilliCli's environment sets (the child gets only the profile's environment).
+`EP9_REPRL_GENERATIONAL` (1: S1, the generational heap, so `gc('minor')` is a minor GC; 0: S0)
+defaults to 1; the profile does not forward it, so a Fuzzilli run is S1. The record of a
+Fuzzilli session (`infra/fuzz/run.sh`) names the effective preset as `preset`: the
+`EP9_REPRL_PRESET` setting, else the build's own; a setting the child would refuse stops
+`run.sh` with exit 2. Fuzz hooks of
 later features (fuse pop, tier-up, deopt) go in the per-isolate seat of `ep9_vm`'s
 `ExecOptions`, never in a static (MODES-CHECK-w16 O7, V10-D27). A mutation run is an orchestrator run on Cloudflare `infra/fuzz` (at
 most 4 boxes), asked for by a request file (plan v9 rule 17, V9-A6, V9-D24). Crash files and the
