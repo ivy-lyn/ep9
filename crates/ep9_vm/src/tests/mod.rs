@@ -12,7 +12,9 @@
 //! owners fill them. M4-P0 declared the month-4 modules (`construct`, `instance_ic`, `keyed`,
 //! `layout4`, `literal_site`, `profile`, `proxy`, `regexp`, `stub_cache`, `validity`,
 //! `weakref`); `layout4` holds the OBJECT_LAYOUT 4 and IC_LAYOUT 2 tests, the others are empty
-//! until their owners fill them.
+//! until their owners fill them. M5-P0 declared the month-5 modules (`deopt`, `elements`,
+//! `exec`, `external_ref`, `field_rep`, `fuse`, `layout5`, `slack`); `layout5` holds the
+//! OBJECT_LAYOUT 5, IC_LAYOUT 3 and VM_LAYOUT 1 tests and `exec` the C-23 tests.
 
 #![allow(clippy::unwrap_used)]
 
@@ -29,6 +31,7 @@ mod class_fields;
 mod construct;
 mod eval;
 mod exceptions;
+mod exec;
 mod facts_export;
 mod feedback;
 mod gc;

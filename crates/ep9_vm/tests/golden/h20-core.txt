@@ -285,9 +285,13 @@ embed (not core): #[derive(Clone)] pub struct InterruptHandle { .. }
 embed (not core): #[derive(Clone, Copy, Debug)] pub enum JsStr<'a> { Latin1(&'a [u8]), Utf16(&'a [u16]) }
 embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum ErrorKind { Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError, UriError }
 embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum RegistryError { Empty, Overlap(usize) }
+embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub struct BuildInfo { pub features: &'static [&'static str], pub preset: &'static str }
 embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub struct CodeEntry { pub kind: DispatchKind, pub start: usize, pub len: usize, pub function: usize }
+embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub struct ExecOptions { .. }
 embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)] #[repr(u8)] pub enum DispatchKind { Interp = 0, Baseline = 1, Opt = 2, AotBaseline = 3, AotOpt = 4 }
 embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)] pub enum Dispatch { Match, Sibling, #[cfg(feature = "become")] Become }
+embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)] pub struct Feedback(_)
+embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)] pub struct Preset(_)
 embed (not core): #[derive(Clone, Debug)] pub struct TerminateHandle(_)
 embed (not core): #[derive(Debug)] #[repr(C)] pub struct DispatchSlot { .. }
 embed (not core): #[derive(Debug, Default)] pub struct RangeRegistry { .. }
@@ -297,6 +301,7 @@ embed (not core): Atom: no item in the source text (a macro makes it: M3-P3-H20-
 embed (not core): impl CodeEntry :: pub fn contains(&self, usize) -> bool
 embed (not core): impl CodeEntry :: pub fn range(&self) -> Range<usize>
 embed (not core): impl CodeRegistry for RangeRegistry { fn register(&mut self, CodeEntry) -> Result<(), RegistryError>; fn unregister(&mut self, usize) -> Option<CodeEntry>; fn lookup(&self, usize) -> Option<CodeEntry>; fn len(&self) -> usize }
+embed (not core): impl Default for ExecOptions { fn default() -> Self }
 embed (not core): impl Dispatch :: pub const ALL: &'static [Dispatch]
 embed (not core): impl Dispatch :: pub const DEFAULT: Dispatch
 embed (not core): impl Dispatch :: pub const RELEASE: Dispatch
@@ -316,6 +321,16 @@ embed (not core): impl DispatchSlot :: pub fn kind_byte(&self) -> u8
 embed (not core): impl Eq for JsStr<'_>
 embed (not core): impl ErrorKind :: pub const ALL: [ErrorKind; 7]
 embed (not core): impl ErrorKind :: pub const fn name(self) -> &'static str
+embed (not core): impl ExecOptions :: pub const fn build_default() -> ExecOptions
+embed (not core): impl ExecOptions :: pub const fn feedback(self, Feedback) -> ExecOptions
+embed (not core): impl ExecOptions :: pub const fn feedback_mode(&self) -> Feedback
+embed (not core): impl ExecOptions :: pub const fn jit() -> ExecOptions
+embed (not core): impl ExecOptions :: pub const fn jitless() -> ExecOptions
+embed (not core): impl ExecOptions :: pub const fn preset(&self) -> Preset
+embed (not core): impl Feedback :: pub const FULL: Feedback
+embed (not core): impl Feedback :: pub const ICS_ONLY: Feedback
+embed (not core): impl Feedback :: pub const fn name(self) -> &'static str
+embed (not core): impl Feedback :: pub fn from_name(&str) -> Option<Feedback>
 embed (not core): impl InterruptHandle :: pub fn request(&self, Box<dyn FnOnce() + Send>)
 embed (not core): impl Isolate :: pub fn builtin_table(&self) -> Option<&'static BuiltinTable>
 embed (not core): impl Isolate :: pub fn collect_garbage(&mut self)
@@ -323,15 +338,22 @@ embed (not core): impl Isolate :: pub fn compiler(&self) -> Option<&'static Comp
 embed (not core): impl Isolate :: pub fn dispatch(&self) -> Dispatch
 embed (not core): impl Isolate :: pub fn gc_stats(&self) -> GcStats
 embed (not core): impl Isolate :: pub fn interrupt_handle(&self) -> InterruptHandle
+embed (not core): impl Isolate :: pub fn new_with(IsolateConfig, ExecOptions) -> Result<Isolate, IsolateError>
 embed (not core): impl Isolate :: pub fn string_view(&mut self, Value) -> Option<JsStr<'_>>
 embed (not core): impl Isolate :: pub fn terminate_handle(&self) -> TerminateHandle
 embed (not core): impl Isolate :: pub fn verify_heap(&self) -> Result<VerifyReport, VerifyError>
 embed (not core): impl Ord for JsStr<'_> { fn cmp(&self, &Self) -> core::cmp::Ordering }
 embed (not core): impl PartialEq<JsStr<'_>> for JsStr<'_> { fn eq(&self, &JsStr<'_>) -> bool }
 embed (not core): impl PartialOrd for JsStr<'_> { fn partial_cmp(&self, &Self) -> Option<core::cmp::Ordering> }
+embed (not core): impl Preset :: pub const JIT: Preset
+embed (not core): impl Preset :: pub const JITLESS: Preset
+embed (not core): impl Preset :: pub const fn available(self) -> bool
+embed (not core): impl Preset :: pub const fn name(self) -> &'static str
+embed (not core): impl Preset :: pub fn from_name(&str) -> Option<Preset>
 embed (not core): impl RangeRegistry :: pub fn new() -> RangeRegistry
 embed (not core): impl TerminateHandle :: pub fn terminate(&self)
 embed (not core): impl std::fmt::Debug for InterruptHandle { fn fmt(&self, &mut std::fmt::Formatter<'_>) -> std::fmt::Result }
+embed (not core): impl std::fmt::Display for BuildInfo { fn fmt(&self, &mut std::fmt::Formatter<'_>) -> std::fmt::Result }
 embed (not core): impl<'a> JsStr<'a> :: pub fn array_index(&self) -> Option<u32>
 embed (not core): impl<'a> JsStr<'a> :: pub fn at(&self, usize) -> u16
 embed (not core): impl<'a> JsStr<'a> :: pub fn is_empty(&self) -> bool
@@ -415,6 +437,7 @@ embed (not core): pub const fn fp_param(u32) -> isize
 embed (not core): pub const fn fp_register(u32) -> isize
 embed (not core): pub const fn int32_bits(i32) -> u64
 embed (not core): pub const fn int32_of(u64) -> i32
+embed (not core): pub fn build_info() -> BuildInfo
 embed (not core): pub fn export_facts(&Isolate, &ep9_facts::UnitHash) -> Result<ep9_facts::FactSnapshot, &'static str>
 embed (not core): pub static VM_BUILTINS: &BuiltinTable
 embed (not core): pub trait CodeRegistry { fn register(&mut self, CodeEntry) -> Result<(), RegistryError>; fn unregister(&mut self, usize) -> Option<CodeEntry>; fn lookup(&self, usize) -> Option<CodeEntry>; fn len(&self) -> usize; fn is_empty(&self) -> bool }
@@ -444,6 +467,7 @@ embed: pub type CompileResult = Result<VerifiedUnit, CompileFailure>
 path: ep9_vm::Args = abi::Args
 path: ep9_vm::ArgsBuilder = abi::ArgsBuilder
 path: ep9_vm::Atom = atoms::Atom
+path: ep9_vm::BuildInfo = exec::BuildInfo
 path: ep9_vm::BuiltinDef = builtins::BuiltinDef
 path: ep9_vm::BuiltinId = builtins::BuiltinId
 path: ep9_vm::BuiltinKind = builtins::BuiltinKind
@@ -463,6 +487,8 @@ path: ep9_vm::DispatchSlot = dispatch::DispatchSlot
 path: ep9_vm::Downcast = abi::Downcast
 path: ep9_vm::ErrorKind = runtime::ErrorKind
 path: ep9_vm::Exception = isolate::Exception
+path: ep9_vm::ExecOptions = exec::ExecOptions
+path: ep9_vm::Feedback = exec::Feedback
 path: ep9_vm::FlatStr = abi::FlatStr
 path: ep9_vm::HostCx = host::HostCx
 path: ep9_vm::HostFn = abi::HostFn
@@ -489,6 +515,7 @@ path: ep9_vm::MatchRecord = abi::MatchRecord
 path: ep9_vm::NO_CODE = dispatch::NO_CODE
 path: ep9_vm::ObjectClass = abi::ObjectClass
 path: ep9_vm::ObjectProps = builtins::ObjectProps
+path: ep9_vm::Preset = exec::Preset
 path: ep9_vm::PrimitiveType = abi::PrimitiveType
 path: ep9_vm::PromiseCapability = abi::PromiseCapability
 path: ep9_vm::PromiseRejectionOperation = abi::PromiseRejectionOperation
@@ -539,6 +566,7 @@ path: ep9_vm::abi::Rest
 path: ep9_vm::abi::ScratchList
 path: ep9_vm::abi::ToPrimitiveHint
 path: ep9_vm::abi::export_facts (part 2, not core: V8-A13)
+path: ep9_vm::build_info = exec::build_info
 path: ep9_vm::check_tables = builtins::check_tables
 path: ep9_vm::internals = #[doc(hidden)] pub mod internals
 path: ep9_vm::layout = #[doc(hidden)] pub mod layout
