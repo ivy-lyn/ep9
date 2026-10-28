@@ -282,7 +282,8 @@ pub(crate) mod arr {
     #[allow(dead_code)] // filled by M5-P2 ELEM2
     pub const ALLOC_SITE: usize = 32;
     pub const FIXED: usize = 2;
-    /// v0: dense arrays only, up to this length. Elements kinds come with H18 (M1a).
+    /// The length limit of an array's elements store (every kind of H18; M5-P1 ELEM1): a
+    /// store or `length` past it is refused (`array_set`, `array_set_length`).
     pub const MAX_LENGTH: u32 = 1 << 26;
 }
 

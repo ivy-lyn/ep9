@@ -310,12 +310,13 @@ pub(crate) struct Runtime {
     #[allow(dead_code)] // read from M5-P3 on
     pub exec: Cell<crate::exec::ExecOptions>,
     /// The deopt side table (`deopt.rs`, V10-D32): code start -> deopt metadata and exit
-    /// counters, filled at install. Rust memory, no Value. Empty until M5-P1 SPIKEC-5.
-    #[allow(dead_code)] // filled by M5-P1 SPIKEC-5
+    /// counters, filled by `NativeCx::install_b_with_deopt` (M5-P1 SPIKEC-5) and emptied of a
+    /// code start by `uninstall_native`. Rust memory, no Value.
+    #[cfg_attr(not(feature = "spike-native"), allow(dead_code))]
+    // read by native.rs (spike-native)
     pub deopt: crate::deopt::SideTable,
-    /// The fuse registry (`fuse.rs`, H31): fuse states and their weak dependents. Rust
-    /// memory. Empty until M5-P1 FR0.
-    #[allow(dead_code)] // filled by M5-P1 FR0
+    /// The fuse registry (`fuse.rs`, H31): fuse states and their weak dependents (M5-P1 FR0;
+    /// `shape::note_change` calls its prototype hook). Rust memory.
     pub fuses: crate::fuse::Registry,
     /// The state of the sampled-call window jitter (`profile::budget_after_poll`, M5-P1
     /// PROFILE5): each poll advances it. 0 = not seeded yet (the next poll starts the fixed

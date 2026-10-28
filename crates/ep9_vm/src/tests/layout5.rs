@@ -130,7 +130,7 @@ fn elements_kind_values_and_storage_forms() {
     );
     assert_eq!(layout::SHAPE_ELEMENTS_KIND_SHIFT, 28);
     assert_eq!(layout::KEYED_KINDS_SET_SHIFT, 10);
-    // Every array is HOLEY_ELEMENTS until ELEM1 builds the lattice.
+    // A value that is not a JS object reads as HOLEY_ELEMENTS (the most general dense kind).
     assert_eq!(elements::kind_of_array(UNDEFINED), ek::HOLEY_ELEMENTS);
 }
 
