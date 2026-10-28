@@ -190,26 +190,12 @@ fn end_of_job(i: &mut Isolate) -> Result<(), String> {
         .map_err(|e| e.message)
 }
 
-/// A collection after a stack scrub: [`scrub_below`] zeroes the stack below this frame, then
-/// the collection runs from here, so its own frames (`Isolate::collect_garbage` down to the
-/// spill trampoline, which the conservative scan reads) lie on zeros. The scrub must be a
-/// call of its own (fixer E): with the zeroed array in this frame, the collection's frames
-/// lay below the array, on the stale words of a script's frames (a debug match loop takes
-/// about 200 KiB of stack, so a script run below a 64 KiB pad reaches past a 256 KiB array),
-/// and a slot that those frames leave unwritten could hold a dead target's address. On
-/// linux-x64 debug that kept the target of
+/// A collection after a stack scrub, before and after (`common::scrub_and_collect`, plan
+/// rule 35; it lived here until M5-P1 GC5 moved it to `common`). On linux-x64 debug an
+/// unscrubbed collection kept the target of
 /// [`a_checkpoint_lets_a_weakref_target_die_at_the_next_gc`] alive (CI run 40564429974).
-/// The second scrub wipes the collection's own frames before the next checkpoint's frames lie
-/// over them: the collection's deeper frames (the work after the scan) leave the addresses
-/// of live cells, and a slot that a later live frame leaves unwritten keeps such a word for
-/// that frame's own collections. Without it a chain target's one-past-end address, left
-/// about 5 KiB below this frame, stopped the 30-link chain after 2 links (mac a64 debug,
-/// `EP9_HASH_SEED` 59; verifier E, V-E1).
-#[inline(never)]
 fn scrub_and_collect(i: &mut Isolate) {
-    scrub_below();
-    i.collect_garbage();
-    scrub_below();
+    common::scrub_and_collect(i);
 }
 
 /// A WeakRef target lives to the end of the job, then dies; the registry's callback gets
@@ -414,10 +400,10 @@ log('registered');
     }
 }
 
-/// `gc()` for the scripts below: a collection after a stack scrub ([`scrub_then_collect`]: the
-/// words below this frame are zeroed first, and the collection's frames then lie on them, as
-/// in [`scrub_and_collect`]), so the frames of earlier calls leave no stale pointer for the
-/// scan.
+/// `gc()` for the scripts below: a collection after a stack scrub
+/// (`common::scrub_then_collect`: the words below this frame are zeroed first, and the
+/// collection's frames then lie on them, as in [`scrub_and_collect`]), so the frames of
+/// earlier calls leave no stale pointer for the scan.
 #[inline(never)]
 fn gc_scrubbed<'s>(
     cx: &mut Cx<'s>,
@@ -425,13 +411,8 @@ fn gc_scrubbed<'s>(
     _args: Args<'s>,
     _nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
-    scrub_then_collect(cx);
+    common::scrub_then_collect(cx);
     Ok(Local::undefined())
-}
-
-#[inline(never)]
-fn collect_now(cx: &mut Cx<'_>) {
-    cx.collect_garbage();
 }
 
 /// `registerFresh(fr, held)`: `fr.register({}, held)` with the new target made here, in Rust,
@@ -516,7 +497,7 @@ fn drop_and_collect<'s>(
     _nt: Local<'s>,
 ) -> JsResult<Local<'s>> {
     drop_below(cx, args.get(0), args.get(1))?;
-    scrub_then_collect(cx);
+    common::scrub_then_collect(cx);
     Ok(Local::undefined())
 }
 
@@ -525,22 +506,6 @@ fn drop_below<'s>(cx: &mut Cx<'s>, keep: Local<'s>, k: Local<'s>) -> JsResult<()
     let keep = keep.as_object().expect("an array");
     let k = u64::try_from(k.as_int32().expect("an index")).expect("an index");
     cx.set_index(keep, k, Local::null(), true).map(|_| ())
-}
-
-/// A collection after a stack scrub, from inside a host function ([`scrub_and_collect`] from
-/// Rust): the scrub is a call of its own, so the collection's frames lie on its zeros.
-#[inline(never)]
-fn scrub_then_collect(cx: &mut Cx<'_>) {
-    scrub_below();
-    collect_now(cx);
-}
-
-/// Zeroes 512 KiB of stack below the caller's frame. The caller's next call (a collection)
-/// then has zeros under its frames, where the conservative scan reads.
-#[inline(never)]
-fn scrub_below() {
-    let mut words = [0usize; 1 << 16];
-    black_box(&mut words);
 }
 
 /// A chain of cleanup rounds with no promise job between them: `links` targets are registered
@@ -787,4 +752,219 @@ log('registered');
             i.verify_heap().expect("a valid heap");
         });
     }
+}
+
+// ---- the WEAKREF tail (M5-P1 GC5; plan v10 §3.2 tasks 2 and 4; DL M4-P4-OPEN (3), (5)) ----
+
+/// `weakFresh(fr, held)`: a new object made here, in Rust (so no interpreter frame keeps a
+/// stale copy of it for the conservative scan), registered in `fr` with `held` if `fr` is
+/// an object, and a new WeakRef to it, which is the result. WeakRef creation adds the object
+/// to the kept list (AddToKeptObjects), so after the call only the kept list holds it
+/// strongly.
+#[inline(never)]
+fn weak_fresh<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    let (fr, held) = (args.get(0), args.get(1));
+    let o = cx.new_object();
+    if let Some(r) = fr.as_object() {
+        let register = cx.get(r, "register")?;
+        cx.call(register, fr, &[o.into(), held])?;
+    }
+    let weak_ref = cx.global_binding("WeakRef")?.expect("WeakRef");
+    Ok(cx.construct(weak_ref, &[o.into()], weak_ref)?.into())
+}
+
+/// The first ClearKeptObjects of a checkpoint (the one before the cleanup jobs,
+/// `crates/ep9_vm/src/abi/jobs.rs` in `perform_microtask_checkpoint`) has a test of its own
+/// (V-E2, M4-P4 verifier E): a script makes a WeakRef to a target that only the kept list
+/// holds, and no checkpoint runs after it. A scrubbed GC then kills another target, and the
+/// next checkpoint's cleanup callback for it collects (`gc()`): the job target must be dead
+/// there, because the checkpoint cleared the kept list before the cleanup. With that one
+/// call removed, the end-of-checkpoint clear still runs, so every other weakref test passes,
+/// but this callback finds the target alive (`after gc false`; the mutation is in the GC5
+/// report). The job target is in no FinalizationRegistry, so no cleanup walk reads its
+/// address onto the stack.
+#[test]
+fn the_first_clear_of_a_checkpoint_frees_a_job_target_for_a_cleanup_gc() {
+    for stress in [false, true] {
+        common::on_big_stack(move || {
+            let mut i = log_isolate(stress);
+            i.register_host_function("gc", 0, gc_scrubbed);
+            i.register_host_function("registerFresh", 2, register_fresh);
+            i.register_host_function("weakFresh", 2, weak_fresh);
+            run(
+                &mut i,
+                r#"
+var w = weakFresh(undefined);
+var fr = new FinalizationRegistry(function (held) {
+  gc();
+  log('cleanup', held, 'job target dead', w.deref() === undefined);
+});
+registerFresh(fr, 'trigger');
+log('script', w.deref() !== undefined);
+"#,
+            )
+            .unwrap();
+            assert_eq!(take_log(), ["script true"], "stress={stress}");
+            // The trigger dies; the job target stays (the kept list holds it: no checkpoint
+            // ran after the script).
+            scrub_and_collect(&mut i);
+            i.perform_microtask_checkpoint()
+                .map_err(|e| e.message)
+                .unwrap();
+            let roots = common::conservative_roots(&i);
+            assert_eq!(
+                take_log(),
+                ["cleanup trigger job target dead true"],
+                "stress={stress} (the last GC had {roots} conservative roots)"
+            );
+            i.verify_heap().expect("a valid heap");
+        });
+    }
+}
+
+/// `queueJob(f)`: HostEnqueuePromiseJob for `f` (`Cx::enqueue_job`): a job that calls `f`, so
+/// a throw from `f` is the job's throw (a `then` callback's throw only rejects a promise).
+fn queue_job<'s>(
+    cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    cx.enqueue_job(args.get(0), Local::undefined())?;
+    Ok(Local::undefined())
+}
+
+/// ClearKeptObjects runs on the `Err` exits of a checkpoint too (BP §6, DL M4-P4-OPEN (3)):
+/// a job reads a WeakRef target (`deref`: AddToKeptObjects), then throws, or is terminated;
+/// the checkpoint stops with that error, and the target dies at the next GC, with no
+/// checkpoint between. Before M5-P1 the `Err` exits returned before the clear, so the kept
+/// list held the target until a later checkpoint ended `Ok`. The target is registered in a
+/// FinalizationRegistry, so [`common::assert_dies`] reads its death from the callback (the
+/// probe neither keeps nor clears the kept list).
+#[test]
+fn a_throwing_job_lets_its_weakref_target_die_at_the_next_gc() {
+    for (job, want) in [
+        ("throw new RangeError('job threw')", "RangeError: job threw"),
+        ("stop(); for (;;) {}", "execution terminated"),
+    ] {
+        for stress in [false, true] {
+            common::on_big_stack(move || {
+                let mut i = log_isolate(stress);
+                i.register_host_function("weakFresh", 2, weak_fresh);
+                i.register_host_function("stop", 0, stop);
+                i.register_host_function("queueJob", 1, queue_job);
+                TERM.with(|t| *t.borrow_mut() = Some(i.terminate_handle()));
+                let src = format!(
+                    r#"
+var fr = new FinalizationRegistry(function (held) {{ log('cleanup', held); }});
+var w = weakFresh(fr, 'job target');
+queueJob(function () {{ log('job', w.deref() !== undefined); {job}; }});
+"#
+                );
+                let e = run_checkpoint(&mut i, &src).unwrap_err();
+                assert_eq!(e, want, "stress={stress}");
+                assert_eq!(take_log(), ["job true"], "stress={stress}");
+                common::assert_dies(&mut i, "the target of a stopped job's WeakRef", |i| {
+                    i.with_cx(|cx| cx.cleanup_finalization_registries())
+                        .unwrap();
+                    take_log() == ["cleanup job target"]
+                });
+                i.verify_heap().expect("a valid heap");
+            });
+        }
+    }
+}
+
+thread_local! {
+    static SERVED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+/// A cleanup callback that counts its calls.
+fn count_served<'s>(
+    _cx: &mut Cx<'s>,
+    _this: Local<'s>,
+    _args: Args<'s>,
+    _nt: Local<'s>,
+) -> JsResult<Local<'s>> {
+    SERVED.with(|n| n.set(n.get() + 1));
+    Ok(Local::undefined())
+}
+
+/// The cleanup list walks poll every 1,024 cells (`weakref::walk_step`; DL M4-P4-OPEN (3)):
+/// an `InterruptHandle` request runs inside one `unregister` call that walks 5,000 cells, so
+/// it has run when that script returns; the script has no back edge, and its few calls do
+/// not use up the budget, so no other poll runs it. Without the walk poll the request waits for the next budget
+/// poll (the mutation is in the GC5 report). No GC stress (5,000 registrations).
+#[test]
+fn an_unregister_walk_runs_interrupt_requests() {
+    common::on_big_stack(|| {
+        let mut i = log_isolate(false);
+        run(
+            &mut i,
+            r#"
+var tok = {}, fr = new FinalizationRegistry(function () {});
+var keep = [];
+(function () { for (var k = 0; k < 5000; k++) { var t = {}; keep.push(t); fr.register(t, k, tok); } })();
+"#,
+        )
+        .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        i.interrupt_handle().request(Box::new(move || {
+            let _ = tx.send(());
+        }));
+        assert!(rx.try_recv().is_err(), "the request waits for a poll");
+        run(&mut i, "var a = fr.unregister({}); log('removed', a);").unwrap();
+        let ran = rx.try_recv().is_ok();
+        assert_eq!(take_log(), ["removed false"]);
+        assert!(ran, "the unregister walk ran the interrupt request");
+        run(&mut i, "log('left', fr.unregister(tok));").unwrap();
+        assert_eq!(take_log(), ["left true"]);
+        i.verify_heap().expect("a valid heap");
+    });
+}
+
+/// A termination request stops a long cleanup walk (`weakref::collect_cleared`, 30,000 dead
+/// cells) at its next poll: the checkpoint ends with the termination before the walk has
+/// moved 1,024 cells, so fewer than 1,024 callbacks ran; the cells not yet moved stay in the
+/// registry, and the next checkpoint (no GC between) serves them, each once. Without the walk
+/// poll the walk moves all 30,000 cells and the callbacks run until the budget poll (the
+/// mutation is in the GC5 report). No GC stress (30,000 registrations).
+#[test]
+fn a_termination_stops_a_long_cleanup_walk() {
+    const CELLS: usize = 30_000;
+    common::on_big_stack(|| {
+        let mut i = log_isolate(false);
+        i.register_host_function("countServed", 1, count_served);
+        run(
+            &mut i,
+            &format!(
+                r#"
+var tok = {{}}, fr = new FinalizationRegistry(countServed);
+(function () {{ for (var k = 0; k < {CELLS}; k++) fr.register({{}}, k, tok); }})();
+"#
+            ),
+        )
+        .unwrap();
+        scrub_and_collect(&mut i);
+        SERVED.with(|n| n.set(0));
+        i.terminate_handle().terminate();
+        let e = i
+            .perform_microtask_checkpoint()
+            .expect_err("the termination stops the walk");
+        assert!(e.terminated, "{}", e.message);
+        let first = SERVED.with(core::cell::Cell::get);
+        assert!(first < 1024, "{first} callbacks before the termination");
+        i.perform_microtask_checkpoint()
+            .map_err(|e| e.message)
+            .unwrap();
+        assert_eq!(SERVED.with(core::cell::Cell::get), CELLS);
+        run(&mut i, "log('left', fr.unregister(tok));").unwrap();
+        assert_eq!(take_log(), ["left false"]);
+        i.verify_heap().expect("a valid heap");
+    });
 }

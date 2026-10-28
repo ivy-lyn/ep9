@@ -204,14 +204,14 @@ impl<'s> Cx<'s> {
     /// callbacks run in the same checkpoint too, until no cleanup is pending, with no round
     /// cap (M4-P4 P4-ORCH-8; node `--expose-gc` runs them all). Each job and each cleanup
     /// callback (a JS or a builtin function) takes one interrupt budget unit and polls
-    /// (M2-P2-POLL), so an interrupt callback runs and `TerminateHandle` stops a job loop or
-    /// a cleanup chain that never ends; a termination also clears the queue, and the cells
-    /// not yet served stay pending for a later checkpoint. A job that throws stops the
-    /// checkpoint with its exception pending (`Err`); the jobs behind it stay queued. On the
-    /// `Ok` exit it runs ClearKeptObjects once more, after the cleanup and the jobs it queued,
-    /// so a WeakRef that a callback made keeps its target only to the end of the checkpoint
-    /// (§9.10; Codex C2-2). Then the rejected list drops any promise that got a handler
-    /// ("handle" unlinks one at once already).
+    /// (M2-P2-POLL), and the cleanup list walks poll every 1,024 cells (`weakref::walk_step`),
+    /// so an interrupt callback runs and `TerminateHandle` stops a job loop, a cleanup chain
+    /// or a long walk; a termination also clears the queue, and the cells not yet served stay
+    /// pending for a later checkpoint. A job that throws stops the checkpoint with its
+    /// exception pending (`Err`); the jobs behind it stay queued. Every exit, `Err` too, runs
+    /// ClearKeptObjects once more (M5-P1 GC5), so a WeakRef that a callback or a stopped job
+    /// made keeps its target only to the end of the checkpoint (§9.10; Codex C2-2). The `Ok`
+    /// exit then drops from the rejected list any promise that got a handler.
     ///
     /// Only with no JS on the stack (the spec runs it when the execution context stack is
     /// empty): `Isolate::with_cx_checkpoint` runs it after its scope, and an embedder inside
@@ -233,11 +233,11 @@ impl<'s> Cx<'s> {
                 // checkpoint. A callback may queue jobs: they run in this checkpoint. Each
                 // callback takes a budget unit and polls (`cleanup_finalization_registries`).
                 self.clear_kept_objects();
-                if let Err(t) = self.cleanup_finalization_registries() {
+                if let Err(t) = self.cleanup_then_poll_a_stopped_walk() {
                     if rt.terminating.get() {
                         self.clear_queue();
                     }
-                    return Err(t);
+                    return Err(self.checkpoint_exit(t));
                 }
                 if rt.jobs.queue_head() == UNDEFINED {
                     // A GC inside a callback set the cleanup flag again: serve those cells
@@ -252,21 +252,46 @@ impl<'s> Cx<'s> {
             }
             if let Err(t) = self.poll_interrupt() {
                 self.clear_queue();
-                return Err(t);
+                return Err(self.checkpoint_exit(t));
             }
             let Some(j) = self.dequeue() else { break };
             if let Err(t) = self.run_job(j) {
                 if rt.terminating.get() {
                     self.clear_queue();
                 }
-                return Err(t);
+                return Err(self.checkpoint_exit(t));
             }
         }
         // ClearKeptObjects at the end of the checkpoint, after the cleanup callbacks and the
         // jobs they queued: a callback may have made a WeakRef (AddToKeptObjects) and queued
-        // nothing (Codex C2-2). Not a GC point.
+        // nothing (Codex C2-2). Not a GC point. The `Err` exits run it in `checkpoint_exit`.
         self.clear_kept_objects();
         self.prune_rejected();
+        Ok(())
+    }
+
+    /// The `Err` exit of [`Cx::perform_microtask_checkpoint`] (a job or a cleanup callback
+    /// threw, or a poll stopped it): ClearKeptObjects, as the `Ok` exit runs it, then `t`.
+    /// Without it the kept list held every target that the checkpoint's jobs made or read
+    /// until the next checkpoint that ends `Ok` (DL M4-P4-OPEN (3); M5-P1 GC5). The jobs
+    /// behind a throw stay queued: they run in a later checkpoint, as later jobs (§9.10.1).
+    /// Not a GC point.
+    fn checkpoint_exit(&mut self, t: Throw) -> Throw {
+        self.clear_kept_objects();
+        t
+    }
+
+    /// The cleanup jobs ([`Cx::cleanup_finalization_registries`]), then, if a cleanup list
+    /// walk stopped at a termination request (`weakref::walk_step`), a poll with no budget
+    /// left, so the termination ends the checkpoint at once (`Err`). Without that poll a
+    /// checkpoint whose walk stopped, with no job queued, would serve the pending cleanup
+    /// again and again, each run stopping at its first walk poll.
+    fn cleanup_then_poll_a_stopped_walk(&mut self) -> JsResult<()> {
+        self.cleanup_finalization_registries()?;
+        if self.rt().kept_objects.walk_stopped() {
+            self.cx.budget = 0;
+            return self.poll_interrupt();
+        }
         Ok(())
     }
 

@@ -19,6 +19,7 @@
 //! | `a_throwing_callback_leaves_the_rest` | a throw stops the hook; the next call does the remaining cells |
 //! | `a_minor_gc_clears_a_young_target` | with S1 on, a minor collection clears a young target and the hook calls back |
 //! | `wrong_receivers_throw` | RequireInternalSlot TypeErrors, also for a hand-made object of the class |
+//! | `a_cleanup_walk_stops_at_a_termination_request_with_its_lists_whole` | (M5-P1 GC5) a cleanup walk polls every `WALK_POLL_CELLS` cells; at a termination request it stops with CELLS and CLEARED whole, notes the stop, keeps the cleanup pending; the next run moves and serves the rest, each cell once |
 
 use core::cell::{Cell, RefCell};
 use std::hint::black_box;
@@ -531,4 +532,82 @@ fn wrong_receivers_throw() {
             rt.take_pending();
         });
     });
+}
+
+/// The number of WEAK_CELLs in the list of slot `list` of the registry `fr`.
+fn list_len(fr: u64, list: usize) -> usize {
+    let mut n = 0;
+    let mut c = object::slot_get(fr, list);
+    while weakref::is_weak_cell(c) {
+        n += 1;
+        c = weakref::next(c);
+    }
+    n
+}
+
+/// A cleanup walk polls every [`weakref::WALK_POLL_CELLS`] cells (M5-P1 GC5; DL M4-P4-OPEN
+/// (3)). With a termination requested, `collect_cleared` over 3,000 dead cells stops before
+/// it has moved [`weakref::WALK_POLL_CELLS`] of them: both lists stay whole (every cell is in
+/// CELLS or CLEARED), the stop is noted (`walk_stopped`) and the cleanup stays pending. With
+/// the request gone, the next run (`take_pending` lets the walks go on) moves the rest, and
+/// the hook serves every cell once. Without stress (3,000 registrations), S0 and S1.
+#[test]
+fn a_cleanup_walk_stops_at_a_termination_request_with_its_lists_whole() {
+    use core::sync::atomic::Ordering;
+    const CELLS: usize = 3000;
+    for generational in [false, true] {
+        on_big_stack(move || {
+            let mut iso = isolate(cfg(false, generational));
+            iso.register_host_function("cb", 1, cb);
+            take_log();
+            let r = new_registry(&mut iso, "cb");
+            for k in 0..CELLS {
+                register_fresh(&mut iso, r, k as i32, None);
+            }
+            collect(&iso);
+            let terminate = crate::interp::interrupt::TERMINATE;
+            iso.rt.terminate.fetch_or(terminate, Ordering::SeqCst);
+            with_cx(&mut iso, |_, rt| {
+                let fr = rt.heap.global(r).to_bits();
+                assert!(rt.kept_objects.take_pending(), "the GC saw dead targets");
+                let moved = weakref::collect_cleared(rt, fr);
+                assert!(moved < weakref::WALK_POLL_CELLS, "moved {moved}");
+                assert!(rt.kept_objects.walk_stopped() && rt.kept_objects.is_pending());
+                assert_eq!(list_len(fr, registry::CLEARED), moved);
+                assert_eq!(
+                    list_len(fr, registry::CELLS) + moved,
+                    CELLS,
+                    "every cell is in a list"
+                );
+                // A stopped run does no more walk work.
+                assert_eq!(weakref::collect_cleared(rt, fr), 0);
+            });
+            iso.rt.terminate.fetch_and(!terminate, Ordering::SeqCst);
+            with_cx(&mut iso, |_, rt| {
+                let fr = rt.heap.global(r).to_bits();
+                assert!(rt.kept_objects.take_pending());
+                assert!(
+                    !rt.kept_objects.walk_stopped(),
+                    "take_pending starts a new run"
+                );
+                let before = list_len(fr, registry::CLEARED);
+                let moved = weakref::collect_cleared(rt, fr);
+                assert_eq!(before + moved, CELLS);
+                assert_eq!(list_len(fr, registry::CELLS), 0);
+                // Pending again, so the hook below runs the callbacks.
+                rt.kept_objects.set_pending();
+            });
+            assert_eq!(cleanup(&mut iso), Ok(()));
+            let mut got = take_log();
+            got.sort_unstable();
+            assert_eq!(
+                got,
+                (0..CELLS as i32).collect::<Vec<_>>(),
+                "generational={generational}"
+            );
+            iso.rt.heap.drop_global(r);
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
 }
