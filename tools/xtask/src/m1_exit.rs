@@ -275,7 +275,7 @@ const NESTING_TESTS: [&str; 9] = [
 ];
 const NESTING_CMD: &str = "echo \"m0-exit start: depth_tests\" > nesting.log; \
      echo \"m1-exit source: commit $(git rev-parse HEAD) dirty $(git status --porcelain --untracked-files=no | wc -l | tr -d ' ') made-by host:$(hostname)${GITHUB_RUN_ID:+ gh-run:$GITHUB_RUN_ID/$GITHUB_JOB}\" >> nesting.log; \
-     echo \"m1-exit trees:$(for p in crates tools/bench Cargo.toml Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit; do printf ' %s=%s' \"$p\" \"$(git rev-parse --verify --quiet \"HEAD:$p\")\"; done)\" >> nesting.log; \
+     echo \"m1-exit trees:$(for p in crates tools/bench Cargo.toml Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit third_party/regress.commit third_party/patches/regress; do printf ' %s=%s' \"$p\" \"$(git rev-parse --verify --quiet \"HEAD:$p\")\"; done)\" >> nesting.log; \
      cargo test --locked -p ep9_frontend --lib depth_tests >> nesting.log 2>&1; \
      echo \"m0-exit status: $?\" >> nesting.log; \
      echo \"m0-exit start: nesting_caps cli\" >> nesting.log; \
@@ -3015,6 +3015,15 @@ mod tests {
             "ci.yml after line {}",
             start + 1
         );
+    }
+
+    /// pre medium 1: the trees line of NESTING_CMD names exactly [`T262_FRESH_PATHS`], so a CI
+    /// merge-commit log passes on the ids of every path item 8 checks (the regress fork too).
+    #[test]
+    fn the_nesting_trees_line_names_the_t262_fresh_paths() {
+        let k = NESTING_CMD.find("for p in ").expect("the trees loop") + "for p in ".len();
+        let list = &NESTING_CMD[k..k + NESTING_CMD[k..].find(';').unwrap()];
+        assert_eq!(list.split(' ').collect::<Vec<_>>(), T262_FRESH_PATHS);
     }
 
     /// The two NESTING_CMD lines that name the source, run by `sh` in a fake repo: item 8 reads

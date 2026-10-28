@@ -375,7 +375,7 @@ jobs:
         run: |
           echo "m0-exit start: depth_tests" | tee nesting.log
           echo "m1-exit source: commit $(git rev-parse HEAD) dirty $(git status --porcelain --untracked-files=no | wc -l | tr -d ' ') made-by host:$(hostname)${GITHUB_RUN_ID:+ gh-run:$GITHUB_RUN_ID/$GITHUB_JOB}" | tee -a nesting.log
-          echo "m1-exit trees:$(for p in crates tools/bench Cargo.toml Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit; do printf ' %s=%s' "$p" "$(git rev-parse --verify --quiet "HEAD:$p")"; done)" | tee -a nesting.log
+          echo "m1-exit trees:$(for p in crates tools/bench Cargo.toml Cargo.lock rust-toolchain.toml tools/test262 third_party/test262.commit third_party/regress.commit third_party/patches/regress; do printf ' %s=%s' "$p" "$(git rev-parse --verify --quiet "HEAD:$p")"; done)" | tee -a nesting.log
           rc1=0
           cargo test --locked -p ep9_frontend --lib depth_tests 2>&1 | tee -a nesting.log || rc1=$?
           echo "m0-exit status: $rc1" | tee -a nesting.log
