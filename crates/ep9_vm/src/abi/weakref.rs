@@ -193,7 +193,9 @@ impl<'s> Cx<'s> {
     /// done stay, and the next call does them. Only with no JS on the stack (as
     /// [`Cx::perform_microtask_checkpoint`]): from a host function it throws an Error and runs
     /// nothing. The job loop calls it after the job queue is empty and after
-    /// [`Cx::clear_kept_objects`]; jobs that a callback queues run after it.
+    /// [`Cx::clear_kept_objects`]; jobs that a callback queues run after it. It is also the
+    /// fuse registry's sweep point: after a GC it first drops the fuses that nothing uses
+    /// (`fuse::Registry::sweep_after_gc`; no JS, not a GC point).
     pub fn cleanup_finalization_registries(&mut self) -> JsResult<()> {
         let rt = self.rt();
         if !rt.stack().fp().is_null() {
@@ -202,6 +204,7 @@ impl<'s> Cx<'s> {
                 "FinalizationRegistry cleanup needs an empty JS stack",
             ));
         }
+        rt.fuses.sweep_after_gc(rt);
         if !rt.kept_objects.take_pending() {
             return Ok(());
         }

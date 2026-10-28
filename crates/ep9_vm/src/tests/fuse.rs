@@ -2,8 +2,8 @@
 //! dependent and is one-way, a dead dependent is dropped, a proxy chain is refused
 //! (MC-w16-15), a descriptor must name its subject, the constructor-chain kind (MC-w15-9),
 //! changes that must not pop, two realms (and a read for a subject no arm names), the static
-//! list order, and the weak and strong
-//! handles across collections. Each test runs with and without GC stress (a collection
+//! list order, the weak and strong handles across collections, and the runtime sweep at the
+//! cleanup point after a GC. Each test runs with and without GC stress (a collection
 //! before every allocation, then the heap verifier).
 
 use ep9_facts::{FunctionRef, ProtoRef};
@@ -458,6 +458,61 @@ fn a_subject_of_another_realm_is_not_armed_by_the_first_arm() {
                 Ok(())
             });
             assert_eq!(r, Ok(()));
+            iso.collect_garbage();
+            iso.verify_heap().unwrap();
+        });
+    }
+}
+
+/// The runtime sweep (M5-P1 fixer round 3, Codex r1 fr0 medium): once every user of a dynamic
+/// fuse is gone (its word and its code handles), the first FinalizationRegistry cleanup point
+/// after a GC (`Cx::cleanup_finalization_registries`, which every microtask checkpoint runs)
+/// drops the fuse and its handles, with no `Registry::sweep` call here. A drop alone and a
+/// GC alone keep the entry; a fuse whose word is still held stays through both.
+#[test]
+fn an_unused_fuse_goes_at_the_cleanup_point_after_a_gc() {
+    for stress in [false, true] {
+        on_big_stack(move || {
+            let mut iso = isolate(config(Dispatch::DEFAULT, stress));
+            let cleanup = |iso: &mut Isolate| {
+                iso.with_cx(|cx| cx.cleanup_finalization_registries())
+                    .expect("no registry, no callback");
+            };
+            let ap = builtins::intrinsic(&iso.rt, IntrinsicId::ArrayPrototype);
+            let op = object_prototype(&iso.rt);
+            let unused = proto_chain(IntrinsicId::ArrayPrototype);
+            let held = proto_chain(IntrinsicId::ObjectPrototype);
+            let held_word = {
+                let rt = &iso.rt;
+                let w = rt.fuses.arm(rt, unused, ap).unwrap();
+                let c = CodeHandle::new();
+                rt.fuses
+                    .depend(rt, FuseRef::Dynamic(unused), ap, &c)
+                    .unwrap();
+                drop((w, c));
+                rt.fuses.arm(rt, held, op).unwrap()
+            };
+            // Every user of `unused` is gone; nothing has swept yet.
+            assert_eq!(iso.rt.fuses.subject_count(unused), 1);
+            assert_eq!(iso.rt.fuses.dependent_entries(FuseRef::Dynamic(unused)), 1);
+            iso.collect_garbage();
+            assert_eq!(
+                iso.rt.fuses.subject_count(unused),
+                1,
+                "a GC alone sweeps nothing"
+            );
+            cleanup(&mut iso);
+            let rt = &iso.rt;
+            assert_eq!(rt.fuses.subject_count(unused), 0, "stress={stress}");
+            assert_eq!(rt.fuses.dependent_entries(FuseRef::Dynamic(unused)), 0);
+            assert!(!rt.fuses.intact(rt, FuseRef::Dynamic(unused), ap));
+            // The held fuse stays armed and intact.
+            assert_eq!(rt.fuses.subject_count(held), 1);
+            assert!(held_word.intact() && rt.fuses.intact(rt, FuseRef::Dynamic(held), op));
+            drop(held_word);
+            iso.collect_garbage();
+            cleanup(&mut iso);
+            assert!(iso.rt.fuses.is_empty(), "stress={stress}");
             iso.collect_garbage();
             iso.verify_heap().unwrap();
         });

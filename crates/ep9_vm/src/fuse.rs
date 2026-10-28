@@ -1,5 +1,6 @@
-// The registry API has no caller outside `tests::fuse` until the first compiled reader (the
-// link step of a unit, H35; JIT code) and the first wired builtin pop site come.
+// Most of the registry API has no caller outside `tests::fuse` until the first compiled reader
+// (the link step of a unit, H35; JIT code) and the first wired builtin pop site come (the
+// runtime callers today: `shape::note_change` and the cleanup point's sweep).
 #![cfg_attr(not(test), allow(dead_code))]
 //! The fuse registry v0 (M5-P1 FR0; CONSTREP appends descriptor kind 3; H31, C-01,
 //! MC-w16-15, MC-w15-9, V10-D12): named facts that code depends on. A fuse is intact until a
@@ -25,6 +26,8 @@
 //!                       the GuardFuse read: one load + compare of the fuse word; for a
 //!                       dynamic fuse only with a subject it is armed with
 //!  pop(rt, f)           word := POPPED, every live dependent Invalidated, handles released
+//!  sweep_after_gc(rt)   at the cleanup point after a GC (Cx::cleanup_finalization_registries):
+//!                       drop dead dependents, dead subjects and the fuses nothing uses
 //!  shape::note_change(o) on a prototype -> validity::invalidate -> on_proto_change
 //!                       -> pop every armed fuse whose subject cell is now invalid
 //! ```
@@ -62,6 +65,12 @@
 //! - GC (plan rule 8): the registry holds handle-table indices, `Rc` fuse words and `Weak`
 //!   code handles, never a Value. [`on_proto_change`] and [`Registry::pop`] are not GC points;
 //!   [`Registry::arm`] is one.
+//! - The runtime sweep: a weak source notes each GC (it cannot sweep there: the heap's handle
+//!   table is borrowed while the weak sources run). The next FinalizationRegistry cleanup
+//!   point (`Cx::cleanup_finalization_registries`, which every microtask checkpoint runs)
+//!   calls [`Registry::sweep_after_gc`]: dead dependents and dead subjects go, and so does an
+//!   armed fuse that nothing uses (no live dependent and no word held outside the registry),
+//!   with its handles (M5-P1 fixer round 3, Codex r1 fr0).
 //!
 //! The FUSE kind id 83 stays reserved (OBJECT_LAYOUT 5): v0 needs no heap cell (H31-Q1, Q3:
 //! the fuse word is Rust memory until a unit link cell or a root table names it).
@@ -71,7 +80,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 
 use ep9_facts::{FunctionRef, ProtoRef};
-use ep9_heap::{GlobalHandle, WeakHandle};
+use ep9_heap::{GlobalHandle, Heap, WeakHandle};
 
 use crate::atoms::Atom;
 use crate::builtins::{self, BuiltinId, IntrinsicId};
@@ -302,12 +311,18 @@ pub(crate) struct Registry {
     inner: RefCell<Inner>,
     /// The number of armed dynamic fuses: [`on_proto_change`] reads only this while it is 0.
     armed: Cell<usize>,
+    /// Set by the heap's weak source at every GC; cleared by [`Registry::sweep_after_gc`].
+    gc_since_sweep: Rc<Cell<bool>>,
 }
 
 impl Registry {
     /// The registry of a new isolate: every static fuse intact and not wired, no dynamic
-    /// fuse armed.
-    pub(crate) fn new() -> Registry {
+    /// fuse armed. Registers with `heap` a weak source that notes each GC (module doc: the
+    /// runtime sweep). Not a GC point.
+    pub(crate) fn new(heap: &Heap) -> Registry {
+        let gc_since_sweep = Rc::new(Cell::new(false));
+        let g = Rc::clone(&gc_since_sweep);
+        heap.add_weak_source(move |_| g.set(true));
         let statics = STATIC
             .iter()
             .map(|_| StaticFuse {
@@ -323,6 +338,7 @@ impl Registry {
                 popped: HashSet::new(),
             }),
             armed: Cell::new(0),
+            gc_since_sweep,
         }
     }
 
@@ -522,6 +538,14 @@ impl Registry {
             let f = inner.armed.remove(&d).expect("listed above");
             release_subjects(rt, f.subjects.into_iter());
             self.armed.set(self.armed.get() - 1);
+        }
+    }
+
+    /// [`Registry::sweep`] if a GC ran since the last call: the runtime sweep point
+    /// (`Cx::cleanup_finalization_registries`; module doc). Runs no JS. Not a GC point.
+    pub(crate) fn sweep_after_gc(&self, rt: &Runtime) {
+        if self.gc_since_sweep.replace(false) {
+            self.sweep(rt);
         }
     }
 

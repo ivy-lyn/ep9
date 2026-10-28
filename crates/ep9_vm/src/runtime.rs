@@ -372,7 +372,7 @@ impl Runtime {
             regexp_programs: crate::regexp::ProgramTable::new(&heap),
             exec: Cell::new(crate::exec::ExecOptions::build_default()),
             deopt: crate::deopt::SideTable::new(),
-            fuses: crate::fuse::Registry::new(),
+            fuses: crate::fuse::Registry::new(&heap),
             call_window_jitter: Cell::new(0),
             heap,
             shared,
