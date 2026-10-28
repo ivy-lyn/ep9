@@ -30,6 +30,12 @@
 //!    (its end) keeps step 4 when the paired base line has a cite of that name with the same
 //!    start (the same end).
 //!
+//! Known limits (M4-P5 CX6-3, CX6-4; month-5 carry): a cite added after `Cites at` is checked
+//! at HEAD only until the next `Cites at` bump, so a move in that window (about one phase) is
+//! not found; CI runs the HEAD check on the push that adds it. The word-overlap pairing is a
+//! heuristic: a reworded row that keeps a stale number can lose its pair to an inserted row, and
+//! its cite is then checked at HEAD only.
+//!
 //! The part gates from M4-P5 ([`GATE`] true; plan v9 rule 20, P5-ORCH-2: it guards the
 //! doc 13 pointers such as the FR0 row H31:90): a finding fails adr-lint and so m1-exit item 6.
 //! With [`GATE`] false the part is report only: its lines start with `note: `, an error is a
