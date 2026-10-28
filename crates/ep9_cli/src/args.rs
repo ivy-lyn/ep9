@@ -6,14 +6,6 @@ use ep9_vm::{Dispatch, IsolateConfig};
 
 pub const VERSION_LINE: &str = concat!("ep9 ", env!("CARGO_PKG_VERSION"));
 
-/// The `--version` text: [`VERSION_LINE`], then the build line `features <list>; preset <name>`
-/// of `ep9_vm::build_info()` (MC-w17-5; "features none" when no ep9_vm feature is on).
-/// tools/bench (kernels.mjs, run.mjs, ep9-bench) copies the second line into its JSON as
-/// `engine_build`.
-pub fn version_text() -> String {
-    format!("{VERSION_LINE}\n{}\n", ep9_vm::build_info())
-}
-
 pub const USAGE: &str = "\
 usage: ep9 [options] <file.js>
        ep9 [options] -e <code>
@@ -187,6 +179,14 @@ pub fn parse(argv: &[String]) -> Result<Command, String> {
         opts.verify_heap = true;
     }
     Ok(Command::Run(opts))
+}
+
+/// The `--version` text: [`VERSION_LINE`], then the build line `features <list>; preset <name>`
+/// of `ep9_vm::build_info()` (MC-w17-5; "features none" when no ep9_vm feature is on).
+/// tools/bench (kernels.mjs, run.mjs, ep9-bench) copies the second line into its JSON as
+/// `engine_build`.
+pub fn version_text() -> String {
+    format!("{VERSION_LINE}\n{}\n", ep9_vm::build_info())
 }
 
 #[cfg(test)]
