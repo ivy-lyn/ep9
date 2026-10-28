@@ -278,6 +278,31 @@ fn changes_below_the_subject_off_the_chain_and_value_stores_do_not_pop() {
     });
 }
 
+/// MODES-CHECK-w18 MC-w18-9 (M5-P1 fixer): the hook gets only the changed prototype, so a
+/// chain fuse must pop when any prototype of its chain changes, the middle one too. A
+/// 3-level chain: RangeError.prototype -> Error.prototype -> Object.prototype.
+#[test]
+fn a_change_in_the_middle_of_a_three_level_chain_pops() {
+    each(|iso| {
+        let rt = &iso.rt;
+        let fuses = &rt.fuses;
+        let rp = builtins::intrinsic(rt, IntrinsicId::RangeErrorPrototype);
+        let ep = builtins::intrinsic(rt, IntrinsicId::ErrorPrototype);
+        let op = builtins::intrinsic(rt, IntrinsicId::ObjectPrototype);
+        assert_eq!(object::proto_of(rp), ep);
+        assert_eq!(object::proto_of(ep), op);
+        let d = proto_chain(IntrinsicId::RangeErrorPrototype);
+        let w = fuses.arm(rt, d, rp).unwrap();
+        let code = CodeHandle::new();
+        fuses.depend(FuseRef::Dynamic(d), &code).unwrap();
+        add(rt, ep, "fuseM");
+        assert!(
+            !w.intact() && code.is_invalidated(),
+            "the middle prototype changed"
+        );
+    });
+}
+
 #[test]
 fn the_constructor_chain_pops_on_the_function_and_above() {
     for through_function in [true, false] {
