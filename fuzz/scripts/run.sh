@@ -9,6 +9,8 @@
 #   fuzz/scripts/run.sh <target> replay  <corpus dir>...     each input once, no mutation
 #                                                            (-runs=0; the only mode for the Mac)
 #   fuzz/scripts/run.sh <target> <seconds> <corpus dir>...   mutation run (CI and campaigns)
+#   fuzz/scripts/run.sh crashes <summary file>               the crash ids of a run cut off
+#                                                            before its summary (below)
 #
 # The first corpus dir is the writable one; the others are read only (seeds). Extra libFuzzer
 # flags go after "--". Environment:
@@ -20,6 +22,12 @@
 # The summary (numbers, names and hashes only) is the input of fuzz/scripts/record.sh --run:
 # "seconds" is the measured wall time of the run, "workers" the -fork workers (1 without fork),
 # "binary_sha256" the SHA-256 of the target binary that ran (null when it is not found).
+# When the run starts, after it empties its artifact dir, run.sh writes the start marker
+# <summary file>.started (that dir's path). `run.sh crashes <summary file>` prints the SHA-256
+# of each crash file in the dir its marker names, one per line, and nothing when there is no
+# marker (no run started with that summary file, so an older run's files, such as the
+# self-test's fixture crash, are never read). fuzz.yml's Summary step uses it when the
+# campaign step ended with no summary.
 #
 # Exit 0: no crash file and libFuzzer exit 0. Exit 1: a fixed text and the hashes only.
 # A crash file is every artifact file except libFuzzer's `slow-unit-*` (an input that took at
@@ -42,9 +50,36 @@ if [ "${1:-}" = build ]; then
 fi
 
 usage() {
-  echo "usage: $0 build [<target>] | $0 <target> replay|<seconds> <corpus dir>... [-- <libFuzzer flags>]" >&2
+  echo "usage: $0 build [<target>] | $0 crashes <summary file> | $0 <target> replay|<seconds> <corpus dir>... [-- <libFuzzer flags>]" >&2
   exit 2
 }
+sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    shasum -a 256 "$1" | cut -d' ' -f1
+  fi
+}
+# A crash file is every artifact file except libFuzzer's slow-unit-* (see the header).
+is_crash() {
+  case "${1##*/}" in slow-unit-*) return 1 ;; *) return 0 ;; esac
+}
+# <summary file> -> its path (relative to the caller's directory).
+summary_path() {
+  case "$1" in /*) printf '%s' "$1" ;; *) printf '%s' "$caller_dir/$1" ;; esac
+}
+
+if [ "${1:-}" = crashes ]; then
+  [ $# -eq 2 ] || usage
+  marker="$(summary_path "$2").started"
+  [ -f "$marker" ] || exit 0
+  dir="$(cat "$marker")"
+  [ -d "$dir" ] || { echo "run.sh crashes: the started run's artifact dir is gone" >&2; exit 2; }
+  while IFS= read -r f; do
+    if is_crash "$f"; then sha256 "$f" || exit 2; fi
+  done < <(find "$dir" -type f | LC_ALL=C sort)
+  exit 0
+fi
 [ $# -ge 3 ] || usage
 target="$1" mode="$2"
 shift 2
@@ -60,14 +95,6 @@ done
 [ "${1:-}" = -- ] && shift
 [ ${#corpus[@]} -ge 1 ] || usage
 
-sha256() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | cut -d' ' -f1
-  else
-    shasum -a 256 "$1" | cut -d' ' -f1
-  fi
-}
-
 log_dir="${FUZZ_LOG_DIR:-$fuzz_dir/logs}"
 case "$log_dir" in /*) ;; *) log_dir="$caller_dir/$log_dir" ;; esac
 mkdir -p "$log_dir"
@@ -75,6 +102,12 @@ log="$log_dir/$target.log"
 art="artifacts/$target"
 rm -rf "$art"
 mkdir -p "$art"
+summary=""
+if [ -n "${FUZZ_SUMMARY:-}" ]; then
+  summary="$(summary_path "$FUZZ_SUMMARY")"
+  rm -f "$summary" # an older run's summary is not this run's
+  printf '%s\n' "$fuzz_dir/$art" >"$summary.started"
+fi
 for d in "${corpus[@]}"; do
   mkdir -p "$d"
 done
@@ -105,10 +138,7 @@ secs=$(($(date +%s) - start))
 files=()
 slow=()
 while IFS= read -r f; do
-  case "${f##*/}" in
-    slow-unit-*) slow+=("$f") ;;
-    *) files+=("$f") ;;
-  esac
+  if is_crash "$f"; then files+=("$f"); else slow+=("$f"); fi
 done < <(find "$art" -type f | LC_ALL=C sort)
 n=${#files[@]}
 echo "fuzz $target ($mode, ${secs}s): libFuzzer exit $rc, $n crash file(s), ${#slow[@]} slow unit(s)"
@@ -131,8 +161,7 @@ done
 # replays a single-process run on a private host).
 grep -E '^(stat::[a-z_]+|INFO: Seed): [0-9]+$' "$log" | sed 's/^/  /'
 
-if [ -n "${FUZZ_SUMMARY:-}" ]; then
-  case "$FUZZ_SUMMARY" in /*) summary="$FUZZ_SUMMARY" ;; *) summary="$caller_dir/$FUZZ_SUMMARY" ;; esac
+if [ -n "$summary" ]; then
   execs="$(grep -E '^stat::number_of_executed_units: [0-9]+$' "$log" | tail -1 | sed 's/.*: //')"
   workers=1
   [ "$fork" -gt 0 ] 2>/dev/null && workers="$fork"

@@ -311,6 +311,8 @@ cmd_get() {
 #              gitlinks are skipped: git archive writes no file for them), sorted by path
 #              byte by byte (LC_ALL=C). <path> is the raw path from the root, not quoted; it
 #              is everything after the first space. Every line ends with \n.
+#   last:      end <n>             n = the number of "<blob id> <path>" lines, in decimal; a
+#              manifest cut short has no end line, or a wrong n
 # A path with a newline cannot be written this way, so push-git refuses such a commit.
 
 # pg_check_remote_dir DIR: absolute, no `.`, `..`, `//` or trailing `/`, not `/`, and not
@@ -343,7 +345,7 @@ pg_parse_args() {
 
 # sbx_manifest GIT_DIR FULL_COMMIT OUT_FILE -> writes the manifest (format above); 1 on error.
 sbx_manifest() {
-	local gd=$1 full=$2 out=$3 raw="$3.raw" rec meta path mode type sha
+	local gd=$1 full=$2 out=$3 raw="$3.raw" rec meta path mode type sha n
 	git -C "$gd" ls-tree -r -z --full-tree "$full" > "$raw" || { echo "sbx: git ls-tree $full failed" >&2; return 1; }
 	: > "$out.body"
 	while IFS= read -r -d '' rec; do
@@ -359,9 +361,11 @@ sbx_manifest() {
 		[ -n "$mode" ] && [ -n "$sha" ] || { echo "sbx: bad ls-tree entry '$rec'" >&2; return 1; }
 		printf '%s %s\0' "$sha" "$path" >> "$out.body"
 	done < "$raw"
+	n=$(tr -cd '\0' < "$out.body" | wc -c | tr -d ' ')
 	{
 		printf 'commit %s\n' "$full"
 		LC_ALL=C sort -z -t ' ' -k 2 < "$out.body" | tr '\0' '\n'
+		printf 'end %s\n' "$n"
 	} > "$out" || return 1
 	rm -f "$raw" "$out.body"
 }
@@ -375,7 +379,7 @@ pg_verify_tar() {
 	mkdir -p "$chk"
 	tar -xf "$tar" -C "$chk" || { echo "sbx: local extract of the archive failed" >&2; return 1; }
 	cmp -s "$man" "$chk/.sbx-manifest" || { echo "sbx: the archive's .sbx-manifest differs from the one written" >&2; return 1; }
-	want=$(wc -l < "$man" | tr -d ' ')  # n files + the commit line = n files + the manifest itself
+	want=$(($(wc -l < "$man") - 1))  # n files + the commit and end lines - 1 = n files + the manifest itself
 	n=$(find "$chk" \( -type f -o -type l \) | wc -l | tr -d ' ')
 	[ "$n" = "$want" ] || { echo "sbx: the archive has $n files, the manifest names $((want - 1)) plus itself (a .gitattributes export-ignore?)" >&2; return 1; }
 	: > "$chk.paths"; : > "$chk.rel"; : > "$chk.want"
@@ -389,7 +393,7 @@ pg_verify_tar() {
 		else
 			echo "sbx: the archive has no file $p" >&2; return 1
 		fi
-	done < <(sed 1d "$man")
+	done < <(sed '1d;$d' "$man")
 	git -C "$gd" hash-object --no-filters --stdin-paths < "$chk.paths" > "$chk.got" || return 1
 	paste -d ' ' "$chk.got" "$chk.rel" | cmp -s - "$chk.want" || {
 		echo "sbx: archive bytes differ from the commit's blobs (a .gitattributes eol=crlf, export-subst, ident or filter rule?):" >&2
@@ -412,17 +416,25 @@ pg_build() {
 }
 
 # pg_remote_script REMOTE_DIR REMOTE_TAR FULL_COMMIT CLEAR -> the bash the box runs.
-# Exit 93: refused (REMOTE_DIR is not an empty dir and CLEAR is 0, or it is not a dir); the
-# upload is removed and REMOTE_DIR is not touched.
+# Exit 93: refused (REMOTE_DIR is not an empty dir and CLEAR is 0, or it is not a dir, or its
+# physical path is / or holds UPLOAD_DIR); the upload is removed and REMOTE_DIR is not touched.
+# The box resolves REMOTE_DIR first (cd -P): a symlink in an ancestor can make a path that
+# passed pg_check_remote_dir name /work or /; every step after that uses the resolved dir.
 pg_remote_script() {
-	local rd rt
-	rd=$(q "$1"); rt=$(q "$2")
+	local rd rt up
+	rd=$(q "$1"); rt=$(q "$2"); up=$(q "$UPLOAD_DIR")
 	cat <<-SCRIPT
-	set -eo pipefail; rd=$rd; rt=$rt
+	set -eo pipefail; rd=$rd; rt=$rt; up=$up
 	refuse() { rm -f "\$rt"; echo "sbx push-git: refused: \$1" >&2; exit 93; }
 	if [ -L "\$rd" ]; then refuse "\$rd is a symlink"; fi
 	if [ -e "\$rd" ] && [ ! -d "\$rd" ]; then refuse "\$rd exists and is not a directory"; fi
-	if [ -d "\$rd" ] && [ -n "\$(ls -A "\$rd")" ]; then
+	[ -d "\$rd" ] || mkdir -p "\$rd"
+	pd=\$(CDPATH= cd -P -- "\$rd" && pwd -P) || refuse "cannot resolve \$rd"
+	pu=\$(CDPATH= cd -P -- "\$up" && pwd -P) || refuse "cannot resolve the upload dir \$up"
+	if [ "\$pd" = / ]; then refuse "\$rd is / on the box"; fi
+	case "\$pu/" in "\$pd"/*) refuse "\$rd is \$pd on the box, which holds the upload dir \$pu" ;; esac
+	rd=\$pd
+	if [ -n "\$(ls -A "\$rd")" ]; then
 		if [ $4 = 1 ]; then
 			echo "sbx push-git: --clear: deleting the \$(ls -A "\$rd" | wc -l | tr -d ' ') entries of \$rd" >&2
 			find "\$rd" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
@@ -430,7 +442,6 @@ pg_remote_script() {
 			refuse "\$rd is not empty (\$(ls -A "\$rd" | wc -l | tr -d ' ') entries); pass --clear to delete its contents first, or use a new dir"
 		fi
 	fi
-	mkdir -p "\$rd"
 	zstd -q -dc "\$rt" | tar -xf - -C "\$rd"
 	rm -f "\$rt"
 	printf '%s\n' $3 > "\$rd/.sbx-commit"
@@ -448,7 +459,7 @@ cmd_push_git() {
 	mkdir -p "$WORK/pg"
 	pg_build "$PG_GD" "$full" "$WORK/pg" || { echo "sbx: push-git: nothing was sent" >&2; exit 92; }
 	sbx_init_remote
-	echo "sbx: push-git $PG_GD@$full ($(file_size "$WORK/pg/src.tar.zst") B zstd, $(($(wc -l < "$WORK/pg/.sbx-manifest") - 1)) files) -> $PG_ID:$PG_RD" >&2
+	echo "sbx: push-git $PG_GD@$full ($(file_size "$WORK/pg/src.tar.zst") B zstd, $(($(wc -l < "$WORK/pg/.sbx-manifest") - 2)) files) -> $PG_ID:$PG_RD" >&2
 	rtar="$UPLOAD_DIR/git-$full.tar.zst"
 	cmd_put "$PG_ID" "$WORK/pg/src.tar.zst" "$rtar"
 	out="$WORK/pg/extract.json"

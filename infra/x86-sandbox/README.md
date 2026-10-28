@@ -70,6 +70,9 @@ zstd ──> put ──> /work/.upload/git-<commit>.tar.zst ──>      <remote
 
 - `<remote-dir>` must be absolute, plain (no `.`, `..`, `//` or trailing `/`), not `/`, and not
   `/work/.upload` or a parent of it (so not `/work`). These checks run before any request.
+  The box checks again on the physical path (`cd -P`), before it deletes anything, and then
+  uses only that path: a symlink in a parent dir cannot lead `--clear` to `/`, `/work` or the
+  upload dir (exit 93).
 - A non-empty `<remote-dir>` (a dotfile counts) is refused with exit 93; the upload is removed
   and the dir is not touched. `--clear` deletes its entries first. A file or a symlink at
   `<remote-dir>` is always refused. Without this rule, files of an earlier commit would stay
@@ -80,18 +83,23 @@ zstd ──> put ──> /work/.upload/git-<commit>.tar.zst ──>      <remote
   ```
   commit <full commit id>
   <blob id> <path>          one line per file of the archive, sorted by path byte by byte (LC_ALL=C)
+  end <n>                   the last line: n = the number of <blob id> <path> lines, in decimal
   ```
 
   The lines come from `git ls-tree -r <commit>`. A gitlink is skipped (`git archive` writes no
   file for it); a symlink is listed with the blob id of its target text. `<path>` is the raw path
   from the root, not quoted: it is everything after the first space. Every line ends with `\n`.
-  `.sbx-manifest` and `.sbx-commit` are not listed. A commit with a path that holds a newline, or
-  with its own `.sbx-manifest` or `.sbx-commit`, is refused (exit 92).
+  `.sbx-manifest` and `.sbx-commit` are not listed. A manifest cut short has no `end` line or a
+  wrong count, so a reader can tell it from a whole one. A commit with a path that holds a
+  newline, or with its own `.sbx-manifest` or `.sbx-commit`, is refused (exit 92).
 - Before anything is sent, `sbx` extracts the archive locally and checks that it holds exactly
   the listed files and that each one hashes to its blob id (`git hash-object --no-filters`). A
   `.gitattributes` rule such as `eol=crlf`, `export-subst` or `export-ignore` would make the
   archive differ from the blobs; then `push-git` stops with exit 92.
 - `.sbx-commit` (one line: the full commit id) is written on the box after the extract, as before.
+- `push-git` takes no lock on the box: two pushes to one `<remote-dir>` at the same time can both
+  pass the empty check and leave a mixed tree. Run one push per dir at a time (the orchestrator
+  runs `push-git` once per box id).
 
 Test the local parts with no sandbox, no network and no token (temp git repos; the two Worker
 calls are replaced by local stand-ins):
