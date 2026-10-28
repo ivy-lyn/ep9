@@ -26,8 +26,11 @@ crash = a panic or an abort anywhere (also on the front-end worker thread), an I
 - `scripts/seed-test262.sh <test262> <corpus root> [max]`: a test262 sample (test/language, below
   4 KiB, at most 1,500 files, front matter cut) in each target's input form.
 - `scripts/run.sh`: the only way to run a target here and in CI (below).
-- `scripts/self-test.sh`: proves run.sh's output rule on a fixture crash, and (with a stub
-  `cargo`) that a libFuzzer `slow-unit-*` file is not counted as a crash.
+- `scripts/record.sh`: writes one `ep9-fuzz/v1` record (below) from a run.sh summary or from a
+  Fuzzilli box session.
+- `scripts/self-test.sh`: proves run.sh's output rule on a fixture crash, that (with a stub
+  `cargo`) a libFuzzer `slow-unit-*` file is not counted as a crash, and the record rules for
+  both tools (with a stub FuzzilliCli for `infra/fuzz/run.sh`).
 
 ## Rules
 
@@ -36,8 +39,15 @@ crash = a panic or an abort anywhere (also on the front-end worker thread), an I
   fuzzer output to `logs/<target>.log` and prints only the crash count, the SHA-256 of each
   crash file (and of each `slow-unit-*` file, which is listed but does not fail the run) and
   `stat::` numbers. CI uploads no log, no corpus and no crash file;
-  `fuzz.yml` uploads a summary JSON of numbers and hashes. Crash files (`artifacts/`), corpora
-  (`corpus/`) and logs (`logs/`) are git-ignored.
+  `fuzz.yml` uploads one `ep9-fuzz/v1` record per target (names, numbers and hashes). Crash
+  files (`artifacts/`), corpora (`corpus/`) and logs (`logs/`) are git-ignored.
+
+| Place | May go out | Never goes out |
+|---|---|---|
+| GitHub job log, step summary, artifact | counts, SHA-256, `stat::` numbers, the `ep9-fuzz/v1` record | crash files, corpus, fuzzer log |
+| Cloudflare fuzz box | everything stays on the box | - |
+| Repo | counted records (hashes only, at M1 exit); a regression test only in the fix commit, once the fix is public | raw crash inputs before the fix; Fuzzilli logs |
+| PR text, commit message, decisions log, review focus text | hashes and triage group ids | program text of a crash |
 - **The Mac builds and replays only** (plan v9 rule 23, V9-A6): `run.sh build` and
   `run.sh <target> replay <dirs>` (`-runs=0`: each input once, no mutation). Mutation runs go to
   the CI `fuzz-smoke` job (60 s per target, every PR) and to `fuzz.yml` (dispatch, the
@@ -59,11 +69,37 @@ bash fuzz/scripts/run.sh frontend_compile 60 fuzz/corpus/frontend_compile fuzz/s
 FUZZ_FORK=4 FUZZ_SUMMARY=s.json bash fuzz/scripts/run.sh eval_context 7200 fuzz/corpus/eval_context fuzz/seeds/eval_context
 ```
 
-A crash found in CI is reproduced off GitHub (the orchestrator's triage host, never the Mac):
-the same commit, the same seed corpus and the libFuzzer seed that run.sh prints
-(`INFO: Seed: <n>`) replay a single-process run; the SHA-256 tells when the same input is
-found. The fix gets a regression test in the crate; the input goes into the repo only once the
-fix is public.
+A crash found in CI is reproduced off GitHub (on a fuzz box, never the Mac; the input is never
+uploaded, not even encrypted): the same commit, the same seed corpus and the libFuzzer seed
+that run.sh prints (`INFO: Seed: <n>`) replay a single-process run; the SHA-256 tells when the
+same input is found. The fix gets a regression test in the crate; the input goes into the repo
+only once the fix is public.
+
+## Records (`ep9-fuzz/v1`)
+
+`cargo xtask m1-exit --fuzz <record>...` reads them (M1 exit item 5). One record per
+cargo-fuzz target run (`fuzz.yml`) or per Fuzzilli box session (`infra/fuzz/run.sh`), one JSON
+line, written by `scripts/record.sh`:
+
+| Field | cargo-fuzz (`fuzz.yml`) | Fuzzilli (`infra/fuzz/run.sh`) |
+|---|---|---|
+| `schema`, `tool` | `ep9-fuzz/v1`, `cargo-fuzz` | `ep9-fuzz/v1`, `fuzzilli` |
+| `campaign` | `gh<run id>-<attempt>-<target>` | `fz-<UTC date>-<box>-<session>` (`FUZZ_BOX`, `FUZZ_SESSION`) |
+| `target` | the cargo-fuzz target | `reprl` |
+| `commit` | the checked-out HEAD | `/opt/ep9/SOURCE` (the image build arg `EP9_SOURCE_COMMIT`), else `unknown` |
+| `dirty` | `git status --porcelain --untracked-files=no` before the build or after the run is not empty | the build arg `EP9_SOURCE_DIRTY`; **no field** when unknown |
+| `cpu_hours` | the measured run seconds x `-fork` workers / 3600 | the measured FuzzilliCli seconds x `JOBS` / 3600 |
+| `counted` | the dispatch input `counted` (default false) | `COUNTED` (default false) |
+| `crashes` | `[{id, state: "open"}]`, id = the crash file SHA-256 | id = the SHA-256 of the triage key (`infra/fuzz/triage.sh --ids`) |
+| `binary_sha256` | the target binary | `/opt/ep9/bin/ep9` |
+
+Extra fields: `seconds`, `workers`, `runner`, `run` (run.sh's summary) and, when a run that
+was asked to count ended abnormally (libFuzzer exit not 0 with no crash file, FuzzilliCli exit
+not 0, no binary hash), `counted: false` with `uncounted_reason`. m1-exit counts a record only
+when it is `counted`, has a campaign id, says `"dirty": false` and is fresh at HEAD; a counted
+run is pre-registered by a decisions-log row before it starts (plan v10 rule 41), and a
+bug-finding run keeps `counted: false`. record.sh refuses (exit 2) any string that is not a
+name, a hash or a fixed text, so no input text can reach a record.
 
 ## Fuzzilli (REPRL)
 
@@ -87,9 +123,11 @@ bash scripts/sync-fuzzilli.sh                # prints the FuzzilliCli and REPRLR
 bash infra/fuzz/build-ep9.sh                 # prints the ep9 path
 printf '42\nthrow 1\n' | <REPRLRun> <ep9> --reprl     # REPRLRun's own tests, then status 0 and 256
 cargo test --locked -p ep9_cli reprl         # the fake-parent test (200 scripts, crashes, OOM)
-# infra/fuzz image only (Cloudflare, the orchestrator; never the Mac):
-infra/fuzz/run.sh 10 /work/fuzz-out          # exit 0: Fuzzilli exit 0, coverage grew; hashes only
-infra/fuzz/triage.sh /work/fuzz-out/storage/crashes
+# infra/fuzz image only (Cloudflare, the orchestrator; never the Mac). Build the image with the
+# EP9_SOURCE_COMMIT and EP9_SOURCE_DIRTY build args (infra/fuzz/Dockerfile header):
+FUZZ_BOX=b1 FUZZ_SESSION=s1 infra/fuzz/run.sh 10 /work/fuzz-out   # exit 0: Fuzzilli exit 0,
+                                             # coverage grew; hashes only; /work/fuzz-out/record.json
+infra/fuzz/triage.sh /work/fuzz-out/storage/crashes        # groups, each with its id
 ```
 
 Settings of the child (environment): `EP9_REPRL_HEAP_MB` (512), `EP9_REPRL_STACK_MB` (64),
