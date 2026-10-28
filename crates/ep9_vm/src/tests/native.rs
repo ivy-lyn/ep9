@@ -4515,6 +4515,84 @@ mod placement_b {
             }
         }
     }
+
+    /// An uninstall drops the code's deopt side-table entry (M5-P1 fixer; V10-D32): after
+    /// `install_b_with_deopt` of code A, `uninstall_native` and a plain `install_native_b` of
+    /// code at the same start, an exit of that code finds no metadata (a catchable internal
+    /// error), not A's records, and the function has no exit counters.
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn an_uninstall_drops_the_deopt_metadata_of_its_code() {
+        use crate::deopt::{ExitClass, ExitValue, Loc, Record, RecordTag, Repr, Table, Target};
+        for &d in Dispatch::ALL.iter().filter(|&&d| d != Dispatch::Match) {
+            let label = d.name();
+            let (first, second, counts) = on_big_stack(move || {
+                let dump: &'static mut [u64; crate::deopt::DUMP_REGS] =
+                    Box::leak(Box::new([0; crate::deopt::DUMP_REGS]));
+                dump[5] = 0xFFFF_0000_0000_0028; // int32 40 in the low half
+                let nfp: &'static mut [u64; 4] = Box::leak(Box::new([0; 4]));
+                nfp[2] = 2.5f64.to_bits();
+                let (dump, nfp) = (dump.as_ptr().addr() as u64, nfp.as_ptr().addr() as u64);
+                with_b_stubs(&[b_deopt(8, dump, nfp)], |code| {
+                    let mut iso = isolate(config(d, false));
+                    iso.with_cx_checkpoint(|cx| cx.run_script(deopt_defs(), "d.js").map(|_| ()))
+                        .unwrap();
+                    let add = offset_in(&iso, "dsum", Opcode::Add);
+                    let meta = Table {
+                        consts: vec![],
+                        records: vec![Record {
+                            tag: RecordTag::Exit,
+                            class: ExitClass::Speculation,
+                            pc: 8,
+                            bytecode: add,
+                            counter: 0,
+                            feedback: None,
+                            values: vec![
+                                ExitValue {
+                                    target: Target::Reg(Register::local(4)),
+                                    repr: Repr::Int32,
+                                    loc: Loc::Reg(5),
+                                },
+                                ExitValue {
+                                    target: Target::Acc,
+                                    repr: Repr::Float64,
+                                    loc: Loc::Stack(16),
+                                },
+                            ],
+                        }],
+                    }
+                    .encode();
+                    let f = iso.global_raw("dsum").unwrap();
+                    // SAFETY: as in `an_eager_deopt_resumes_t0_in_the_same_frame`.
+                    unsafe { NativeCx::install_b_with_deopt(&iso, f, code[0].clone(), &meta) }
+                        .unwrap();
+                    use Lit::Int;
+                    let rows = vec![("dsum", vec![Int(1), Int(2)])];
+                    let (r, first) = run_rows(&mut iso, &rows);
+                    assert_eq!(r.as_deref(), Ok("done"));
+                    crate::uninstall_native(&iso, f).unwrap();
+                    // SAFETY: the same code at the same start, with no metadata: its exit
+                    // calls `RuntimeTable::deopt`, which must refuse.
+                    unsafe { crate::install_native_b(&iso, f, code[0].clone()) }.unwrap();
+                    let counts = NativeCx::deopt_counts(&iso, f);
+                    let second = iso
+                        .with_cx_checkpoint(|cx| {
+                            cx.run_script(calls_unit(&rows), "again.js")
+                                .map(|v| cx.display(v))
+                        })
+                        .map_err(|e| e.message);
+                    (first, second, counts)
+                })
+            });
+            assert_eq!(first, ["42.5"], "{label}");
+            assert_eq!(counts, None, "{label}");
+            let e = second.unwrap_err();
+            assert!(
+                e.contains("ep9 internal error: deopt at native offset 8: no deopt metadata"),
+                "{label}: {e}"
+            );
+        }
+    }
 }
 
 // ---- M4-P3 KEYED (P2-ORCH-6): the keyed table entries and the layout export --------------

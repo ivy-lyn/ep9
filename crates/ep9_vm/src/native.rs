@@ -739,7 +739,9 @@ pub unsafe fn install_native(
 }
 
 /// Puts the function `f` back on T0 (slot kind Interp, entry = its bytecode) and removes the
-/// registry entry [`install_native`] added. Returns that entry.
+/// registry entry [`install_native`] added, and the deopt side-table entry of the code start
+/// if [`NativeCx::install_b_with_deopt`] made one (V10-D32: a later code at the same start
+/// must not read the old records). Returns the registry entry.
 pub fn uninstall_native(iso: &Isolate, f: Value) -> Result<CodeEntry, InstallError> {
     let fi = bytecode_info(f)?;
     if fi.slot.kind_byte() == DispatchKind::Interp as u8 {
@@ -749,6 +751,7 @@ pub fn uninstall_native(iso: &Isolate, f: Value) -> Result<CodeEntry, InstallErr
     let start = fi.slot.entry();
     fi.slot
         .install(DispatchKind::Interp, fi.code.expose_provenance());
+    rt.deopt.remove(start);
     rt.registry
         .borrow_mut()
         .unregister(start)

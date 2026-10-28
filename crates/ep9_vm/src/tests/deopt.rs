@@ -484,4 +484,10 @@ fn the_side_table_counts_each_exit() {
     // A new install at the same start replaces the old metadata and its counters.
     st.insert(start, read(len, &t.encode()).expect("read"));
     assert_eq!(st.counters(start), Some(vec![0, 0]));
+    // An uninstall drops the entry: a deopt at that start then finds no metadata.
+    assert!(!st.remove(start + 4));
+    assert!(st.remove(start));
+    assert!(st.is_empty());
+    let e = deopt(12, fun).unwrap_err();
+    assert!(e.contains("no deopt metadata"), "{e}");
 }

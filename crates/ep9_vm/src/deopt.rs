@@ -672,6 +672,13 @@ impl SideTable {
         self.code.borrow_mut().insert(start, meta);
     }
 
+    /// Drops what the code at `start` left: its metadata and counters
+    /// ([`crate::native::uninstall_native`] calls it when the code leaves its function, so a
+    /// later code at the same start never reads them). True if there was an entry.
+    pub(crate) fn remove(&self, start: usize) -> bool {
+        self.code.borrow_mut().remove(&start).is_some()
+    }
+
     /// The exit counters of the code at `start`, in record order.
     pub(crate) fn counters(&self, start: usize) -> Option<Vec<u64>> {
         self.code.borrow().get(&start).map(|c| c.counters.clone())
