@@ -95,6 +95,9 @@ zstd ──> put ──> /work/.upload/git-<commit>.tar.zst ──>      <remote
   `.gitattributes` rule such as `eol=crlf`, `export-subst` or `export-ignore` would make the
   archive differ from the blobs; then `push-git` stops with exit 92.
 - `.sbx-commit` (one line: the full commit id) is written on the box after the extract, as before.
+- `push-git` takes no lock on the box: two pushes to one `<remote-dir>` at the same time can both
+  pass the empty check and leave a mixed tree. Run one push per dir at a time (the orchestrator
+  runs `push-git` once per box id).
 
 Test the local parts with no sandbox, no network and no token (temp git repos; the two Worker
 calls are replaced by local stand-ins):
