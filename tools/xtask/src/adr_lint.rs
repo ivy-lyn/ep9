@@ -14,6 +14,7 @@
 //! | 2 review records | every amendment row of an Accepted or Frozen ADR since `<rev>` has review rows 1-4 and an approval by an agent that wrote none of them (V9-A15; README sections 3.1, 3.2), and such an ADR whose text outside its Change log and Review record changed has a new amendment row | `exit::records` |
 //! | 3 Counts | the README Counts line and index column equal the Status lines | `exit::records` |
 //! | 4 path:line drift | every `path:line` reference of `docs/adr` and `docs/plan` names the same line at HEAD as when it was written (no FIX and no UNFIXABLE line of the ADRLINE dry run) | `exit::drift` |
+//! | 5 short cites | every short cite of `docs/plan/13-execution-modes.md` (`H31:66`, `AR:37`, ...) names the same line at HEAD as at the commit its header names (MC-w16-8). Report only while `exit::cites::GATE` is false: `note:` lines, no effect on the result | `exit::cites` |
 //!
 //! **Part 1.** Every commit in `<rev>..HEAD` that touches an H-row crate must carry a git trailer
 //! `ADR: Hnn[, Hmm]` (ids H1-H37, written `H2` or `H02`) or `ADR: none (<reason>)`, or have a
@@ -38,7 +39,7 @@
 //! Exit 2: a usage error, an unknown `<rev>`, an exceptions line in another form, no Crates row
 //! in `docs/adr/H*.md`, or a pin table line in another form.
 
-use crate::exit::{drift, read, records};
+use crate::exit::{cites, drift, read, records};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -105,6 +106,7 @@ pub(crate) fn full(root: &Path, base: &str) -> Result<Lint, String> {
     let rec = records::records(root, &base_sha)?;
     let (counts_line, from_files, count_findings) = records::counts(root)?;
     let d = drift::drift(root)?;
+    let sc = cites::short_cites(root)?;
     let mut text = String::new();
     // Part 1 prints its own summary line last.
     text.push_str(&t.text);
@@ -137,9 +139,23 @@ pub(crate) fn full(root: &Path, base: &str) -> Result<Lint, String> {
         drift::PINS_FILE,
         pass_word(d.pass())
     ));
-    let pass = t.missing == 0 && rec_ok && counts_ok && d.pass();
+    for l in sc.lines() {
+        text.push_str(&format!("{l}\n"));
+    }
+    text.push_str(&format!(
+        "adr-lint short cites: {}{}\n",
+        sc.summary(),
+        pass_word(sc.pass())
+    ));
+    let pass = t.missing == 0 && rec_ok && counts_ok && d.pass() && sc.pass();
+    // Part 5 joins the result line when it gates (exit::cites::GATE).
+    let short = if cites::GATE {
+        format!(", short cites {}", word(sc.pass()))
+    } else {
+        String::new()
+    };
     let summary = format!(
-        "adr-lint: {base}..HEAD: trailers {}, review records {}, Counts {}, path:line drift {}: {}",
+        "adr-lint: {base}..HEAD: trailers {}, review records {}, Counts {}, path:line drift {}{short}: {}",
         word(t.missing == 0),
         word(rec_ok),
         word(counts_ok),
