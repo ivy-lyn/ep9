@@ -2022,7 +2022,7 @@ fn extra_rows(root: &Path) -> Vec<(&'static str, Cell)> {
     vec![
         ("carried M0 item 5 (SP-Dispatch condition 2)", m0_item5),
         (
-            "stub markers (plan v9 rule 4)",
+            "stub markers (plan v9 and v10 rule 4)",
             stub_markers(root, &STUB_MARKERS, &STUB_DIRS),
         ),
         ("ADR Counts line", counts),
