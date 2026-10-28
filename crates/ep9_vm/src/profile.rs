@@ -102,9 +102,9 @@
 //!   - **An int32 `+` or `-` that overflows** takes the fast path's double arm and stays
 //!     implicit (its test costs every int32 `+` and `-`); `*`, `/` and `>>>` record
 //!     `INT32_OVERFLOW` (their test reuses the boxed result).
-//!   - **Keyed sites** record on their cold path only. In v0 every keyed case except the
-//!     implicit one is cold. A fast keyed path that a later role adds must miss on a case
-//!     that is new for its site (KEYED, M4-P3), so the cold hook still sees it.
+//!   - **Keyed sites** record on their cold path only. Every keyed case is cold except the
+//!     implicit one and a StoreKeyed hit. A fast keyed path (such as StoreKeyed's) must miss on
+//!     a case that is new for its site (KEYED, M4-P3), so the cold hook still sees it.
 //! - **Unary sites** see only the operand: an int32 operand stays implicit even when `Inc`,
 //!   `Dec` or `Negate` leaves int32 (the hook has no operator).
 //! - **Call keys.** The key is the native word of the callee's FunctionInfo (a FUNCTION
@@ -767,10 +767,10 @@ fn element_case(o: u64, i: u32) -> u32 {
 }
 
 /// A keyed access or `in` (LoadKeyed, StoreKeyed, DefineKeyedOwn, StoreInArrayLiteral or
-/// HasKeyed slot), before the fast path. Records nothing: the one keyed case that T0 runs
-/// fast (an int32 index of a present Array element at `GetKeyedProperty`) is implicit, and
-/// every other case goes cold, where [`record_keyed_cold`] records it. A fast keyed path that
-/// a later role adds must miss on a case that is new for its site (KEYED, M4-P3).
+/// HasKeyed slot), before the fast path. Records nothing: T0 runs fast the implicit case (an
+/// int32 index of a present Array element at `GetKeyedProperty`) and a StoreKeyed hit, which
+/// its site's miss recorded first; every other case goes cold, where [`record_keyed_cold`]
+/// records it. A fast keyed path must miss on a case that is new for its site (KEYED, M4-P3).
 #[inline(always)]
 pub(crate) fn record_keyed(_st: &mut St<'_>, _s: FSlot, _o: u64, _k: u64) {}
 
