@@ -9,7 +9,8 @@
 //! (`f0`, `f1`, ... are globals); objects come from the runtime and live in Rust locals (the
 //! conservative stack scan keeps them). A local keeps its cell only up to its last use: optimized
 //! code may drop it there. An object that an assertion about weak IC data needs alive after its
-//! last use is rooted by a handle ([`T::keep`]).
+//! last use is rooted by a handle ([`T::keep`], [`T::keep_all`]); an IC state (`Polymorphic(n)`,
+//! `Megamorphic`) counts the live shapes of every object it saw, so it is such an assertion.
 
 use std::hint::black_box;
 
@@ -213,6 +214,21 @@ impl T {
 
     pub(super) fn release(&self, h: GlobalHandle) {
         self.rt().heap.drop_global(h);
+    }
+
+    /// Roots each of `vs` until [`T::release_all`]: objects whose shapes an IC state or a
+    /// stub cache entry counts after their last use. Case keys are weak, and a release frame
+    /// may drop a local's last copy at that use: on x86-64 the slot of the first of five
+    /// objects was reused right after its load, the object and its shape died under GC
+    /// stress, and the site stayed `Polymorphic(4)` (M5-P0, run 40733504045).
+    pub(super) fn keep_all(&self, vs: &[u64]) -> Vec<GlobalHandle> {
+        vs.iter().map(|&v| self.keep(v)).collect()
+    }
+
+    pub(super) fn release_all(&self, hs: Vec<GlobalHandle>) {
+        for h in hs {
+            self.release(h);
+        }
     }
 }
 
