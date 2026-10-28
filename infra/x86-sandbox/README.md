@@ -27,7 +27,8 @@ token rotation timing) is in that README; it is not copied here.
 
 - URL: `.url` = `https://ep9-x86-sandbox.lynweklm.workers.dev` (must be `https://`)
 - Token: `.token` (mode 600, git-ignored). Never print it. `sbx` reads it itself.
-- Client needs: bash 3.2+, curl, jq, base64, split, shasum, zstd, tar, git.
+- Client needs: bash 3.2+, curl, jq, base64, split, shasum, zstd, tar, git (`push-git` needs
+  `git archive --add-file`).
 
 ## Commands
 
@@ -42,14 +43,63 @@ $SBX health <id>                 # is it running? (never starts it)
 $SBX exec <id> 'nproc' [timeout_s]                 # bash -c in /work; exit code passes through
 $SBX put  <id> ./file /work/in/file                # chunked upload, sha256 checked
 $SBX get  <id> /work/out/file ./file               # chunked download, sha256 checked
-$SBX push-git <id> <git-dir> <commit> /work/src    # committed files only (git archive)
+$SBX push-git <id> <git-dir> <commit> /work/src    # committed files only (git archive); see below
+$SBX push-git --clear <id> <git-dir> <commit> /work/src   # same, but empties a non-empty /work/src first
+$SBX manifest <git-dir> <commit>                   # print the .sbx-manifest of <commit> (local, no token)
 $SBX bg   <id> <job> '<long command>'              # anything over ~1-2 min
 $SBX wait <id> <job> 20                            # poll, stream the log, exit with its code
 $SBX destroy <id>                                  # stop it now (files are lost; billing stops)
 ```
 
 Exit codes of `sbx`: 98 transport / HTTP error, 97 sha256 mismatch, 96 job not found,
-95 job died without an exit file, 94 destroy answered but a container still runs, 99 bad usage.
+95 job died without an exit file, 94 destroy answered but a container still runs,
+93 push-git refused the remote dir (not empty, not a dir, or a symlink), 92 push-git or
+manifest cannot describe the commit (nothing was sent), 99 bad usage.
+
+## push-git
+
+```
+Mac                                                          box
+git ls-tree -r <commit> ──> .sbx-manifest
+git archive --add-file=.sbx-manifest <commit> ──> tar
+  check: tar files == manifest files, each hashes to its blob id
+zstd ──> put ──> /work/.upload/git-<commit>.tar.zst ──>      <remote-dir> missing or empty? (else exit 93,
+                                                               or with --clear: delete its entries)
+                                                             extract; write .sbx-commit
+```
+
+- `<remote-dir>` must be absolute, plain (no `.`, `..`, `//` or trailing `/`), not `/`, and not
+  `/work/.upload` or a parent of it (so not `/work`). These checks run before any request.
+- A non-empty `<remote-dir>` (a dotfile counts) is refused with exit 93; the upload is removed
+  and the dir is not touched. `--clear` deletes its entries first. A file or a symlink at
+  `<remote-dir>` is always refused. Without this rule, files of an earlier commit would stay
+  next to the new ones and the tree would no longer be that commit (F5).
+- The archive carries `.sbx-manifest` at the root of `<remote-dir>`; no extra request is made.
+  The test262 runner compares the tree with it (CX6-2 (c)). Format:
+
+  ```
+  commit <full commit id>
+  <blob id> <path>          one line per file of the archive, sorted by path byte by byte (LC_ALL=C)
+  ```
+
+  The lines come from `git ls-tree -r <commit>`. A gitlink is skipped (`git archive` writes no
+  file for it); a symlink is listed with the blob id of its target text. `<path>` is the raw path
+  from the root, not quoted: it is everything after the first space. Every line ends with `\n`.
+  `.sbx-manifest` and `.sbx-commit` are not listed. A commit with a path that holds a newline, or
+  with its own `.sbx-manifest` or `.sbx-commit`, is refused (exit 92).
+- Before anything is sent, `sbx` extracts the archive locally and checks that it holds exactly
+  the listed files and that each one hashes to its blob id (`git hash-object --no-filters`). A
+  `.gitattributes` rule such as `eol=crlf`, `export-subst` or `export-ignore` would make the
+  archive differ from the blobs; then `push-git` stops with exit 92.
+- `.sbx-commit` (one line: the full commit id) is written on the box after the extract, as before.
+
+Test the local parts with no sandbox, no network and no token (temp git repos; the two Worker
+calls are replaced by local stand-ins):
+
+```bash
+bash infra/x86-sandbox/tests/push-git-local.sh
+SBX_TEST_BASH=/bin/bash bash infra/x86-sandbox/tests/push-git-local.sh   # sbx under bash 3.2 (macOS)
+```
 
 ## Cross-build on the Mac, run on the box
 
@@ -149,3 +199,4 @@ every id ever used with its state.
 | `Dockerfile` | node:24-trixie-slim (by digest) + sandbox-shim 1.0.1 + valgrind, perf, gdb, strace, build-essential, rustup stable minimal |
 | `sbx` | client |
 | `smoke.sh` | smoke test |
+| `tests/push-git-local.sh` | local test of `push-git` and `manifest` (no sandbox, no token) |
