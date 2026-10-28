@@ -165,7 +165,7 @@ Owner: the front-end lead agent (D12). Agents draft; only the user posts upstrea
 
 | Gate | Trigger |
 |---|---|
-| P1 | Eval context or the depth limit is neither upstream nor in a local set of ≤ 3 patches |
+| P1 | Eval context or the depth limit is neither upstream nor in a local set of ≤ 3 patches. Reading (plan v9 V9-D25, docs/decisions-log.md:2771): an item that runs on a tested ep9 workaround counts as covered, so P1 does not trip on it. Eval context stays on its workaround (a Script parse that drops only the allowed nodes' errors, plus post-checks: `crates/ep9_frontend/src/eval.rs:6-21`, decision E1; the `eval_context` fuzz target). The depth limit stays on layers 0, 2 and 3 of §6 (`crates/ep9_frontend/src/depth.rs:3-8`; tests `crates/ep9_frontend/src/depth_tests.rs` and `crates/ep9_cli/tests/nesting_caps.rs`, the `frontend_compile` fuzz target); the layer-1 oxc counter becomes a local patch only if the 24 CPU-h front-end cargo-fuzz run finds a depth miss. Local oxc patches today: 0 of 3 (no `third_party/patches/oxc`, no `[patch.crates-io]` in `Cargo.toml`) |
 | P2 | Measured work for oxc version bumps is > 1 PM per year (est.) |
 | P3 | After L1: compiling typescript.js (9.1 MB) takes > 1.5x V8 cold compile, or retained front-end memory is > 2x V8's (est.) |
 | P4 | Any test262 lone-surrogate eval case fails through the shim (M0 counts them, incl. S7.4_A5 and S7.4_A6 [T262]) |
