@@ -104,7 +104,6 @@
 //!   operation itself when it is a field: a load reads through it ([`global_case_value`]), a
 //!   store writes through it ([`store_global_miss`]), so the miss scans each table once.
 
-
 use ep9_bytecode::{Instructions, Opcode, OperandKind};
 use ep9_heap::{CellKind, CellPtr, CellSize, Heap, Tracer};
 
@@ -372,13 +371,7 @@ fn cross_check(rt: &Runtime, o: u64, key: u64, c: CellPtr) {
 /// +1.4% instructions on t0-prop, mac a64), so the hit path stays as it was.
 #[inline(always)]
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
-pub(crate) fn load(
-    rt: &Runtime,
-    fi: &FunctionInfo,
-    o: u64,
-    slot: u32,
-    name: u32,
-) -> Option<u64> {
+pub(crate) fn load(rt: &Runtime, fi: &FunctionInfo, o: u64, slot: u32, name: u32) -> Option<u64> {
     if !is_cell_bits(o) {
         return None;
     }
@@ -395,13 +388,7 @@ pub(crate) fn load(
 /// site's name for the debug cross-check only. Not a GC point.
 #[inline(always)]
 #[cfg_attr(not(debug_assertions), allow(unused_variables))]
-fn load_with(
-    rt: &Runtime,
-    o: u64,
-    id: u32,
-    key: impl Fn() -> u64,
-    h: u64,
-) -> Option<u64> {
+fn load_with(rt: &Runtime, o: u64, id: u32, key: impl Fn() -> u64, h: u64) -> Option<u64> {
     if is_i32(h) {
         let x = int32_of(h);
         return match x & smi::KIND_MASK {

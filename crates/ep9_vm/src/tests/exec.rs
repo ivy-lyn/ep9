@@ -7,7 +7,10 @@ use crate::{BuildInfo, ExecOptions, Feedback, Isolate, IsolateConfig, IsolateErr
 #[test]
 fn presets_have_their_default_feedback_and_names() {
     let jit = ExecOptions::jit();
-    assert_eq!((jit.preset(), jit.feedback_mode()), (Preset::JIT, Feedback::FULL));
+    assert_eq!(
+        (jit.preset(), jit.feedback_mode()),
+        (Preset::JIT, Feedback::FULL)
+    );
     let jitless = ExecOptions::jitless();
     assert_eq!(
         (jitless.preset(), jitless.feedback_mode()),
@@ -108,7 +111,10 @@ fn build_info_names_the_features_and_the_default_preset() {
     assert_eq!(b.features, want.as_slice());
     assert_eq!(b.preset, ExecOptions::default().preset().name());
     let line = b.to_string();
-    assert!(line.starts_with("features ") && line.contains("; preset "), "{line}");
+    assert!(
+        line.starts_with("features ") && line.contains("; preset "),
+        "{line}"
+    );
     let none = BuildInfo {
         features: &[],
         preset: "jitless",

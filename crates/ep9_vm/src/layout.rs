@@ -21,11 +21,11 @@
 use core::mem::offset_of;
 
 use crate::dispatch::DispatchSlot;
+use crate::elements::kind as ek;
 use crate::feedback::fv;
 use crate::frame::{HEADER, slot};
 use crate::ic::smi;
 use crate::interp::Cx;
-use crate::elements::kind as ek;
 use crate::object::{arr, ctxf, delems, elems, fun, obj};
 use crate::unit::FunctionInfo;
 

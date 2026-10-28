@@ -184,7 +184,10 @@ fn callee_is_a_predefined_atom() {
     let iso = isolate(config(Dispatch::DEFAULT, false));
     let rt = &*iso.rt;
     rt.heap.collect();
-    assert_eq!(crate::atoms::intern_str(rt, "callee"), rt.atom(Atom::Callee));
+    assert_eq!(
+        crate::atoms::intern_str(rt, "callee"),
+        rt.atom(Atom::Callee)
+    );
 }
 
 // ---- layout facts on live objects --------------------------------------------------------------
@@ -261,14 +264,15 @@ fn arrays_and_realms_on_live_cells() {
         assert_eq!(int32_of(word_at(a, layout::ARRAY_LENGTH as usize)), 1);
         let e = word_at(a, layout::ARRAY_ELEMENTS as usize);
         assert_eq!(kind(e), layout::KIND_ELEMENTS);
-        assert_eq!(
-            word_at(e, layout::ELEMENTS_DATA as usize),
-            int32_bits(5)
-        );
+        assert_eq!(word_at(e, layout::ELEMENTS_DATA as usize), int32_bits(5));
         let realm = rt.root(crate::runtime::Root::Realm);
         assert_eq!(kind(realm), kinds::REALM.get());
         assert_eq!(
-            (realmf::MAPPED_ARGUMENTS_SHAPE, realmf::UNMAPPED_ARGUMENTS_SHAPE, realmf::SIZE),
+            (
+                realmf::MAPPED_ARGUMENTS_SHAPE,
+                realmf::UNMAPPED_ARGUMENTS_SHAPE,
+                realmf::SIZE
+            ),
             (48, 56, 64)
         );
         assert_eq!(word_at(realm, realmf::MAPPED_ARGUMENTS_SHAPE), UNDEFINED);
@@ -293,10 +297,7 @@ fn the_context_offsets_read_a_live_context() {
             word_at(inner, layout::CONTEXT_SCOPE as usize),
             crate::frame::native_of(core::ptr::null::<u8>())
         );
-        assert_eq!(
-            int32_of(word_at(inner, layout::CONTEXT_LENGTH as usize)),
-            3
-        );
+        assert_eq!(int32_of(word_at(inner, layout::CONTEXT_LENGTH as usize)), 3);
         assert_eq!(
             word_at(inner, layout::CONTEXT_SLOTS as usize + 8 * 2),
             int32_bits(9)
@@ -351,7 +352,8 @@ fn poly_handler_reads_a_live_poly_ic() {
     let fi = object::function_info(g("ld2"));
     let v = crate::feedback::vector(fi).expect("a vector");
     let named = Asm::new(meta("x", 0, 0, 0, 0)).named.index();
-    let smi = |off: u32| int32_bits(layout::SMI_FIELD_IN_OBJECT | (off << layout::SMI_SHIFT) as i32);
+    let smi =
+        |off: u32| int32_bits(layout::SMI_FIELD_IN_OBJECT | (off << layout::SMI_SHIFT) as i32);
     // SAFETY: `v` and the POLY_IC cell are live cells of `iso`, which runs nothing.
     unsafe {
         let at = layout::FEEDBACK_SLOTS as usize + layout::FEEDBACK_SLOT_SIZE as usize * named;

@@ -59,7 +59,8 @@ use crate::runtime::{ErrorKind, Runtime, val};
 use crate::unit::FunctionInfo;
 
 pub use crate::layout::{NativeCx, RuntimeTable};
-#[allow(unused_imports)] // the types of the table entries, for `ep9_vm::RtFn0` and the rest (lib.rs)
+// The types of the table entries, for `ep9_vm::RtFn0` and the rest (lib.rs).
+#[allow(unused_imports)]
 pub use crate::layout::{NativeEntry, RtCompareFn, RtFn0, RtFn1, RtFn2, RtFn3};
 
 /// Defines functions with the native-code ABI (see `native_fn_types`).
