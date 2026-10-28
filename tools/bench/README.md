@@ -139,7 +139,9 @@ The rules come from the PERF-NOISE rule ([10-quality](../../docs/plan/10-quality
 ### The v8-v7 stub harness
 
 The official harness (`base.js` + `run_harness.js`) needs `Date` for its timer and score, and `Math`.
-ep9 T0 has neither yet, so `cross/v8v7.mjs` keeps the kernel file as it is and replaces only the
+When the stub was made (decision PERF-2), ep9 T0 had no `Date` and no `Math.log` or `Math.pow`. `Date` came
+in M3-P1 and those two in M4-P1 (MATH1), so `base` is the default harness since then (next section).
+The stub `cross/v8v7.mjs` keeps the kernel file as it is and replaces only the
 harness: `BenchmarkSuite` and `Benchmark` record the benchmarks, each benchmark runs setup, then
 `run()` N times, then tear-down, and prints `<name> <N>`. `Math.random` is base.js's deterministic
 version where `Math` exists. The kernels check their own results. The generator reads the kernel
