@@ -47,7 +47,8 @@
 //! repository does not have; the JSON `"tree"` object, the log line `m1-exit trees: <path>=<id>
 //! ...`), when the tree was dirty (or the input does not say), when the runner read another
 //! source state at the end of the run than at its start (`"source_changed_during_run": true`),
-//! when no host or job is named, or when the job is of another CI run than `--ci-run`. An
+//! when no host or job is named, when the runner read its source through its test seam
+//! (`"test_seam": true`, F3), or when the job is of another CI run than `--ci-run`. An
 //! ep9-test262 JSON also names the commit its runner was built at (`"runner_commit"`), whether
 //! the runner's compiled sources had uncommitted changes then (`"runner_dirty"`), and the HEAD of
 //! the test262 checkout it ran before and after the run (`"test262_head"`, `"test262_head_end"`)
@@ -592,6 +593,9 @@ struct Source {
     runner: Option<Runner>,
     /// An ep9-test262 JSON (not a log): the build it ran, which must be the gate build (X3).
     build: Option<Build>,
+    /// The runner read its source facts through its test seam (`"test_seam": true`; F3,
+    /// tools/test262/src/exec.rs): another tree's facts, or a file changed on purpose.
+    seam: bool,
 }
 
 /// The build an input names (X3, [`build_check`]): an ep9-test262 JSON writes `preset` (the
@@ -766,6 +770,7 @@ impl Source {
                 test262_dirty: j.get("test262_dirty").and_then(Json::bool),
             }),
             build: Some(Build::of_json(j)),
+            seam: j.get("test_seam").and_then(Json::bool) == Some(true),
         }
     }
 
@@ -809,6 +814,7 @@ impl Source {
                 changed: false,
                 runner: None,
                 build: None,
+                seam: false,
             };
             match &found {
                 Some(f) if *f != s => {
@@ -996,6 +1002,12 @@ fn source_check(c: &Ctx, s: &Source, paths: &[&str]) -> (Vec<String>, String) {
     if s.changed {
         why.push(
             "stale input: the source changed during the run (source_changed_during_run)".into(),
+        );
+    }
+    if s.seam {
+        why.push(
+            "provenance: the runner read its source through its test seam (test_seam): a test run, not a measurement"
+                .into(),
         );
     }
     if let Some(r) = &s.runner {
@@ -3434,6 +3446,12 @@ mod tests {
                 ),
                 Status::Open,
                 "stale input: the source changed during the run (source_changed_during_run)",
+            ),
+            // F3: the runner's test seam (tools/test262/tests/exec.rs) is no measurement.
+            (
+                ok.replace(r#""dirty":false,"#, r#""dirty":false,"test_seam":true,"#),
+                Status::Open,
+                "provenance: the runner read its source through its test seam (test_seam)",
             ),
             (
                 format!(
