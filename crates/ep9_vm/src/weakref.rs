@@ -208,7 +208,7 @@ pub(crate) fn next(c: u64) -> u64 {
 
 /// The next link of the registry chain after `link`, or undefined: a read of [`next`] that
 /// tests count when a cleanup walk of this run stopped
-/// ([`KeptObjects::links_after_stop`]; no count outside tests). Not a GC point.
+/// (`KeptObjects::links_after_stop`, a test-only item; no count outside tests). Not a GC point.
 #[inline]
 pub(crate) fn next_link(rt: &Runtime, link: u64) -> u64 {
     #[cfg(test)]

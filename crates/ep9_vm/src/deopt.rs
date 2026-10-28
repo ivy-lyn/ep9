@@ -673,7 +673,7 @@ impl SideTable {
     }
 
     /// Drops what the code at `start` left: its metadata and counters
-    /// ([`crate::native::uninstall_native`] calls it when the code leaves its function, so a
+    /// (`native::uninstall_native`, built with the `spike-native` feature, calls it when the code leaves its function, so a
     /// later code at the same start never reads them). True if there was an entry.
     pub(crate) fn remove(&self, start: usize) -> bool {
         self.code.borrow_mut().remove(&start).is_some()
