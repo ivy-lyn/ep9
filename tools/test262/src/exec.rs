@@ -1422,6 +1422,8 @@ pub fn run(opts: &Options) -> ExitCode {
     // The source facts before any test runs (CX5-C1): the summary compares them with a second
     // read when it is written.
     let source = provenance::source(&crate::repo_root(), &provenance::process_env);
+    // The test262 checkout before the run too (gates5 high 2).
+    let t262 = provenance::test262_checkout(&opts.test262);
     if let Err(e) = check_builtins(isolate_config(0, opts.feedback_threshold)) {
         eprintln!("ep9-test262: {e}");
         return ExitCode::from(2);
@@ -1721,6 +1723,7 @@ pub fn run(opts: &Options) -> ExitCode {
     if let Some(path) = &opts.json {
         let text = summary_json(
             opts, &by_dir, files_all, runs_all, &top, &results, &diff, wall, &skipped, source,
+            &t262,
         );
         if let Err(e) = std::fs::write(path, text) {
             eprintln!("ep9-test262: cannot write {}: {e}", path.display());
@@ -1742,6 +1745,7 @@ fn summary_json(
     wall: Duration,
     skipped: &BTreeSet<String>,
     source: provenance::Source,
+    t262: &provenance::Checkout,
 ) -> String {
     let count = |out: &mut String, c: Count| {
         let _ = write!(out, "{{\"passed\":{},\"total\":{}}}", c.passed, c.total);
@@ -1766,11 +1770,14 @@ fn summary_json(
     // the facts read before the run, dirty when a second read now differs (CX5-C1).
     let now = provenance::source(&crate::repo_root(), &provenance::process_env);
     provenance::write_fields(&mut out, &provenance::settle(source, &now));
-    // The runner's build commit and the test262 checkout HEAD (C2, item 8; m1-exit X4).
+    // The runner's build commit and dirty flag, and the test262 checkout before the run and
+    // now (C2, gates5 high 1 and 2, item 8; m1-exit X4).
     provenance::write_runner_fields(
         &mut out,
         provenance::runner_commit(),
-        provenance::test262_head(&opts.test262).as_deref(),
+        provenance::runner_dirty(),
+        t262,
+        &provenance::test262_checkout(&opts.test262),
     );
     let _ = write!(
         out,

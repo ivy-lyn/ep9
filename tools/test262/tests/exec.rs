@@ -6,6 +6,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// The compiled paths of `runner_dirty` (gates5 high 1); this file uses `compiled_dirty` only.
+#[allow(dead_code)]
+#[path = "../runner_build.rs"]
+mod runner_build;
+
 const ASSERT: &str = r#"
 function assert(c, m) { if (c !== true) throw new Test262Error(m || "assert"); }
 assert.sameValue = function (a, b, m) {
@@ -363,21 +368,50 @@ fn the_json_names_the_runner_commit_and_test262_head() {
         git(&repo, &["rev-parse", "--show-toplevel"]).and_then(|t| std::fs::canonicalize(t).ok());
     if top.as_deref() == Some(repo.as_path()) {
         let head = git(&repo, &["rev-parse", "HEAD"]).unwrap();
+        // gates5 high 1: and whether its compiled sources had uncommitted changes (cargo
+        // rebuilt it for this test, so the flag is the state of the tree now).
+        let dirty = runner_build::compiled_dirty(&repo).unwrap();
         assert!(
-            summary.contains(&format!(",\"runner_commit\":\"{head}\"")),
-            "{head}: {summary}"
+            summary.contains(&format!(
+                ",\"runner_commit\":\"{head}\",\"runner_dirty\":{dirty}"
+            )),
+            "{head} {dirty}: {summary}"
         );
     }
     // The fake tree as a git checkout of its own.
     if git(&root, &["init", "-q"]).is_some() {
-        git(&root, &["add", "-A"]).unwrap();
+        // The stamp file of scripts/sync-lib.sh is not a change of the checkout.
+        std::fs::write(root.join(".ep9-stamp"), "pin patches\n").unwrap();
+        git(&root, &["add", "-A", ":!.ep9-stamp"]).unwrap();
         git(&root, &["commit", "-q", "-m", "t262"]).unwrap();
         let t262 = git(&root, &["rev-parse", "HEAD"]).unwrap();
         let summary = run();
+        // gates5 high 2: the HEAD before and after the run, and no change in the checkout.
         assert!(
-            summary.contains(&format!(",\"test262_head\":\"{t262}\"")),
+            summary.contains(&format!(
+                ",\"test262_head\":\"{t262}\",\"test262_head_end\":\"{t262}\",\"test262_dirty\":false"
+            )),
             "{t262}: {summary}"
         );
+        // An edited test, or a new one the run picks up: dirty.
+        git(&root, &["commit", "-q", "-am", "summary"]).unwrap();
+        let t262 = git(&root, &["rev-parse", "HEAD"]).unwrap();
+        let pass = std::fs::read_to_string(root.join("test/language/pass.js")).unwrap();
+        for (file, text) in [
+            ("test/language/pass.js", format!("{pass}// edited\n")),
+            ("test/language/new.js", pass.clone()),
+        ] {
+            std::fs::write(root.join(file), text).unwrap();
+            let summary = run();
+            assert!(
+                summary.contains(&format!(
+                    ",\"test262_head\":\"{t262}\",\"test262_head_end\":\"{t262}\",\"test262_dirty\":true"
+                )),
+                "{file}: {summary}"
+            );
+            git(&root, &["checkout", "-q", "--", "."]).unwrap();
+            git(&root, &["clean", "-q", "-f", "test"]).unwrap();
+        }
     }
     std::fs::remove_dir_all(root).unwrap();
 }
