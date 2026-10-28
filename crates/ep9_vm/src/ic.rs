@@ -189,7 +189,7 @@ mod hc {
     pub const SIZE: usize = 40;
 }
 
-/// POLY_IC fields (`native::layout` exports `CASES` and `CASE` for Spike C, C-18).
+/// POLY_IC fields (`crate::layout` exports `CASES` and `CASE` for Spike C, C-18).
 pub(crate) mod pc {
     pub const CASES: usize = 8;
     pub const CASE: usize = 16;

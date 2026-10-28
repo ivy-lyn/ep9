@@ -288,12 +288,12 @@ impl Isolate {
             dispatch: config.dispatch,
             feedback_threshold: config.feedback_threshold,
             interrupt: Arc::as_ptr(&rt.terminate),
-            #[cfg(feature = "spike-native")]
             native_limit: rt.native_limit,
             #[cfg(feature = "spike-native")]
             runtime_table: &crate::native::RUNTIME_TABLE,
+            #[cfg(not(feature = "spike-native"))]
+            runtime_table: core::ptr::null(),
             realm: rt.root(Root::Realm),
-            #[cfg(feature = "spike-native")]
             unit_data: 0,
         });
         realm::install(&mut cx).map_err(IsolateError::BuiltinTable)?;

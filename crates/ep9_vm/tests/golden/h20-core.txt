@@ -291,6 +291,8 @@ embed (not core): #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)] pub enum Di
 embed (not core): #[derive(Clone, Debug)] pub struct TerminateHandle(_)
 embed (not core): #[derive(Debug)] #[repr(C)] pub struct DispatchSlot { .. }
 embed (not core): #[derive(Debug, Default)] pub struct RangeRegistry { .. }
+embed (not core): #[repr(C)] #[derive(Debug)] pub struct RuntimeTable { pub poll: RtFn0, pub call_any: RtFn1, pub add: RtFn2, pub inc: RtFn1, pub compare: RtCompareFn, pub stack_overflow: RtFn0, pub throw: RtFn1, pub unwind: RtFn0, pub get_keyed: RtFn2, pub set_keyed: RtFn3 }
+embed (not core): #[repr(C)] pub struct NativeCx { .. }
 embed (not core): Atom: no item in the source text (a macro makes it: M3-P3-H20-GOLDEN-LIMIT)
 embed (not core): impl CodeEntry :: pub fn contains(&self, usize) -> bool
 embed (not core): impl CodeEntry :: pub fn range(&self) -> Range<usize>
@@ -336,14 +338,82 @@ embed (not core): impl<'a> JsStr<'a> :: pub fn is_empty(&self) -> bool
 embed (not core): impl<'a> JsStr<'a> :: pub fn len(&self) -> usize
 embed (not core): impl<'a> JsStr<'a> :: pub fn to_string_lossy(self) -> String
 embed (not core): impl<'a> JsStr<'a> :: pub fn to_utf16(self) -> Vec<u16>
+embed (not core): pub const ARRAY_ELEMENTS: u32
+embed (not core): pub const ARRAY_LENGTH: i32
+embed (not core): pub const ARRAY_LENGTH: u32
 embed (not core): pub const BUILTIN_ABI_VERSION: u32
 embed (not core): pub const COLD_OPCODES: usize
+embed (not core): pub const CX_BUDGET: usize
+embed (not core): pub const CX_GLOBAL_THIS: usize
+embed (not core): pub const CX_INTERRUPT: usize
+embed (not core): pub const CX_NATIVE_LIMIT: usize
+embed (not core): pub const CX_OUT_FP: usize
+embed (not core): pub const CX_OUT_PC: usize
+embed (not core): pub const CX_RUNTIME_TABLE: usize
+embed (not core): pub const CX_STACK_LIMIT: usize
+embed (not core): pub const CX_TABLE: usize
+embed (not core): pub const CX_UNIT_DATA: usize
 embed (not core): pub const DEOPT_META_VERSION: u32
+embed (not core): pub const ELEMENTS_CAPACITY: u32
+embed (not core): pub const ELEMENTS_DATA: u32
+embed (not core): pub const FEEDBACK_INFO: u32
+embed (not core): pub const FEEDBACK_KEY: u32
+embed (not core): pub const FEEDBACK_SLOTS: u32
+embed (not core): pub const FEEDBACK_SLOT_SIZE: u32
+embed (not core): pub const FEEDBACK_VALUE: u32
+embed (not core): pub const FI_CODE: usize
+embed (not core): pub const FI_FEEDBACK: usize
+embed (not core): pub const FI_PARAMETER_COUNT: usize
+embed (not core): pub const FI_REGISTER_COUNT: usize
+embed (not core): pub const FI_SLOT_ENTRY: usize
+embed (not core): pub const FI_SLOT_KIND: usize
+embed (not core): pub const FP_ARGC: isize
+embed (not core): pub const FP_BYTECODE_OFFSET: isize
+embed (not core): pub const FP_CALLEE: isize
+embed (not core): pub const FP_CALLER_FP: isize
+embed (not core): pub const FP_CONTEXT: isize
+embed (not core): pub const FP_FUNCTION_INFO: isize
+embed (not core): pub const FP_NEW_TARGET: isize
+embed (not core): pub const FP_RECEIVER: isize
+embed (not core): pub const FP_RETURN_PC: isize
+embed (not core): pub const FRAME_HEADER_WORDS: usize
 embed (not core): pub const FRAME_VERSION: u32
+embed (not core): pub const FUNCTION_CONTEXT: usize
+embed (not core): pub const FUNCTION_INFO: isize
+embed (not core): pub const FUNCTION_INFO: usize
+embed (not core): pub const HOLE: u32
+embed (not core): pub const HOLE: u64
 embed (not core): pub const IC_LAYOUT_VERSION: u32
+embed (not core): pub const KIND_ARRAY: u8
+embed (not core): pub const KIND_BYTE: u32
+embed (not core): pub const KIND_OBJECT: u8
+embed (not core): pub const NATIVE_WORD_OFFSET: u64
 embed (not core): pub const NO_CODE: u8
+embed (not core): pub const OBJECT_FIELDS: u32
 embed (not core): pub const OBJECT_LAYOUT_VERSION: u32
+embed (not core): pub const POLY_CASES: u32
+embed (not core): pub const POLY_CASE_SIZE: u32
+embed (not core): pub const POLY_COUNT: u32
+embed (not core): pub const RT_ADD: usize
+embed (not core): pub const RT_CALL_ANY: usize
+embed (not core): pub const RT_COMPARE: usize
+embed (not core): pub const RT_GET_KEYED: usize
+embed (not core): pub const RT_INC: usize
+embed (not core): pub const RT_POLL: usize
+embed (not core): pub const RT_SET_KEYED: usize
+embed (not core): pub const RT_STACK_OVERFLOW: usize
+embed (not core): pub const RT_THROW: usize
+embed (not core): pub const RT_UNWIND: usize
+embed (not core): pub const SHAPE_ID_BYTE: u32
+embed (not core): pub const SMI_ARRAY_LENGTH: i32
+embed (not core): pub const SMI_FIELD_IN_OBJECT: i32
+embed (not core): pub const SMI_KIND_MASK: i32
+embed (not core): pub const SMI_SHIFT: u32
 embed (not core): pub const THREADED_HANDLERS: usize
+embed (not core): pub const fn fp_param(u32) -> isize
+embed (not core): pub const fn fp_register(u32) -> isize
+embed (not core): pub const fn int32_bits(i32) -> u64
+embed (not core): pub const fn int32_of(u64) -> i32
 embed (not core): pub fn export_facts(&Isolate, &ep9_facts::UnitHash) -> Result<ep9_facts::FactSnapshot, &'static str>
 embed (not core): pub static VM_BUILTINS: &BuiltinTable
 embed (not core): pub trait CodeRegistry { fn register(&mut self, CodeEntry) -> Result<(), RegistryError>; fn unregister(&mut self, usize) -> Option<CodeEntry>; fn lookup(&self, usize) -> Option<CodeEntry>; fn len(&self) -> usize; fn is_empty(&self) -> bool }
@@ -470,6 +540,7 @@ path: ep9_vm::abi::ToPrimitiveHint
 path: ep9_vm::abi::export_facts (part 2, not core: V8-A13)
 path: ep9_vm::check_tables = builtins::check_tables
 path: ep9_vm::internals = #[doc(hidden)] pub mod internals
+path: ep9_vm::layout = #[doc(hidden)] pub mod layout
 path: ep9_vm::versions = pub mod versions
 tables: #[derive(Clone, Copy)] pub struct BuiltinDef { pub name: &'static str, pub length: u32, pub kind: BuiltinKind, pub f: HostFn }
 tables: #[derive(Clone, Copy, Debug)] pub struct BuiltinModule { pub name: &'static str, pub block: u8, pub defs: &'static [BuiltinDef], pub intrinsics: &'static [IntrinsicDef], pub props: &'static [ObjectProps] }

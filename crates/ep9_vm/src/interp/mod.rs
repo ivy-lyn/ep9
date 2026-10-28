@@ -125,6 +125,10 @@ impl Dispatch {
 
 /// Interpreter context (H15): the dispatch table at offset 0, then the fields handlers read.
 /// It holds no GC-visible state (see `runtime.rs`).
+///
+/// The field list is a native-code contract: `crate::layout` exports the offsets native code
+/// reads (`CX_*`). M5-P0 (C-18) removed `proto_epoch` and made the three native fields
+/// unconditional, so the layout is the same in every build; the list is frozen for month 5.
 #[repr(C)]
 pub(crate) struct Cx {
     pub table: [Handler; 256],
@@ -146,21 +150,20 @@ pub(crate) struct Cx {
     /// The isolate's interrupt word (`Runtime::terminate`, bits in [`interrupt`]), read at
     /// the interrupt poll (`slow::interrupt`). Other threads set bits (`TerminateHandle`).
     pub interrupt: *const AtomicU32,
-    /// Spike B (feature `spike-native`): the lowest native stack address native code may
-    /// reach (`Runtime::native_limit`, copied so a JIT prologue compares one `Cx` field).
-    #[cfg(feature = "spike-native")]
+    /// The lowest native stack address native code may reach (`Runtime::native_limit`,
+    /// copied so a JIT prologue compares one `Cx` field). Unconditional since M5-P0 (C-18):
+    /// before, it existed with feature `spike-native` only, so the `Cx` layout depended on
+    /// the features.
     pub native_limit: usize,
-    /// Spike B (feature `spike-native`): the runtime functions native code calls
-    /// (`native::RUNTIME_TABLE`).
-    #[cfg(feature = "spike-native")]
-    pub runtime_table: *const crate::native::RuntimeTable,
+    /// The runtime functions native code calls (`native::RUNTIME_TABLE` with feature
+    /// `spike-native`; null in a build without it). Unconditional since M5-P0 (C-18).
+    pub runtime_table: *const crate::layout::RuntimeTable,
     // ---- appended in M3-P0 (no field above moves; the list is frozen for month 3) ----
     /// The current realm: a REALM cell (a copy of the `Root::Realm` root, like
     /// `global_this`; OBJECT_LAYOUT 3). M3-P1 REALMS switches it on a cross-realm call.
     pub realm: u64,
-    /// Spike B (feature `spike-native`): reserved for SP-UNIT (H35-Q9, the unit-data
-    /// register); 0 = none. Nothing reads it in M3-P0.
-    #[cfg(feature = "spike-native")]
+    /// The isolate's unit-data directory (SP-UNIT, H35-Q9, the unit-data register); 0 =
+    /// none. Unconditional since M5-P0 (C-18); only spike-native code sets it today.
     pub unit_data: usize,
 }
 
