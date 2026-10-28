@@ -2,9 +2,10 @@
 //! commit the ep9 tree is at when the runner runs, whether that tree had uncommitted changes,
 //! and the host or CI job that ran it. The fields are read at run time, not at build time: a
 //! binary built at one commit and run after a checkout of another names the other one. Run the
-//! runner with `cargo run` (it rebuilds on a change) to make an m1-exit input. `cargo xtask m1-exit` items 3 and 4 read the three fields
-//! and give OPEN "stale input" when the commit is missing, the tree was dirty, or the paths the
-//! run depends on changed after the commit.
+//! runner with `cargo run` (it rebuilds on a change) to make an m1-exit input.
+//! `cargo xtask m1-exit` items 3 and 4 read the three fields and give OPEN "stale input" when
+//! the commit is missing, the tree was dirty, or the paths the run depends on changed after the
+//! commit.
 //!
 //! - `"commit"`: `git rev-parse --verify HEAD` in the repo root (found at build time, as the
 //!   default paths are). Left out when git cannot answer.
