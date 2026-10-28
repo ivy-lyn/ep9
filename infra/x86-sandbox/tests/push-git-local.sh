@@ -82,8 +82,9 @@ if [ "$(sed -n 1p "$T/m1")" = "commit $C1" ]; then ok "manifest: line 1 is 'comm
 	for p in '.gitattributes' 'B.txt' 'a b/c d.txt' 'a-b' 'a.txt' 'a/b.txt' 'bin.dat' 'dir/sub/deep.rs' 'empty' 'gone-in-2.txt' 'link' 'run.sh'; do
 		printf '%s %s\n' "$(git -C "$R" rev-parse "$C1:$p")" "$p"
 	done
+	printf 'end 12\n'
 } > "$T/m1.want"
-cmp -s "$T/m1" "$T/m1.want"; check $? "manifest: one '<blob id> <path>' line per file, byte order, gitlink skipped"
+cmp -s "$T/m1" "$T/m1.want"; check $? "manifest: one '<blob id> <path>' line per file, byte order, gitlink skipped, 'end <count>' last"
 cmp -s "$T/m1" "$T/m1.want" || diff "$T/m1.want" "$T/m1" | sed 's/^/     | /'
 sbx manifest "$R" HEAD~1
 cmp -s "$T/out" "$T/m1"; check $? "manifest: a rev name gives the same manifest as the full id"
@@ -171,11 +172,13 @@ EOF
 fake() { RC=0; "$BASH_BIN" "$T/fake.sh" "$@" > "$T/out" 2> "$T/err" || RC=$?; }
 
 # verify_tree DIR COMMIT DESC: a reader's check written apart from sbx. The tree holds exactly
-# the manifest's files plus .sbx-manifest and .sbx-commit, and each file hashes to its blob id.
+# the manifest's files plus .sbx-manifest and .sbx-commit, each file hashes to its blob id, and
+# the last line is "end <number of entry lines>".
 verify_tree() {
 	local d=$1 c=$2 desc=$3 line sha p got n want e=0
 	[ "$(cat "$d/.sbx-commit" 2>/dev/null)" = "$c" ] || { bad "$desc: .sbx-commit"; e=1; }
 	[ "$(sed -n 1p "$d/.sbx-manifest")" = "commit $c" ] || { bad "$desc: manifest line 1"; e=1; }
+	[ "$(sed -n '$p' "$d/.sbx-manifest")" = "end $(($(wc -l < "$d/.sbx-manifest") - 2))" ] || { bad "$desc: manifest last line 'end <count>'"; e=1; }
 	sbx manifest "$R" "$c"
 	cmp -s "$T/out" "$d/.sbx-manifest" || { bad "$desc: .sbx-manifest differs from 'sbx manifest'"; e=1; }
 	while IFS= read -r line; do
@@ -183,9 +186,9 @@ verify_tree() {
 		if [ -L "$d/$p" ]; then got=$(printf '%s' "$(readlink "$d/$p")" | git hash-object --stdin)
 		else got=$(git hash-object --no-filters -- "$d/$p" 2>/dev/null); fi
 		[ "$got" = "$sha" ] || { bad "$desc: $p hashes to '$got', manifest says $sha"; e=1; }
-	done < <(sed 1d "$d/.sbx-manifest")
+	done < <(sed '1d;$d' "$d/.sbx-manifest")
 	n=$(find "$d" \( -type f -o -type l \) | wc -l | tr -d ' ')
-	want=$(($(wc -l < "$d/.sbx-manifest") - 1 + 2))
+	want=$(($(wc -l < "$d/.sbx-manifest") - 2 + 2))
 	[ "$n" = "$want" ] || { bad "$desc: $n files in the tree, want $want"; e=1; }
 	[ -x "$d/run.sh" ] || { bad "$desc: run.sh lost its x bit"; e=1; }
 	[ "$e" = 0 ] && ok "$desc: tree matches the manifest (every blob id, file count, .sbx-commit)"
