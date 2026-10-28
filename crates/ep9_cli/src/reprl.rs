@@ -41,13 +41,15 @@
 //! before every n-th allocation and verify the heap after each collection, as `--gc-stress=n`),
 //! `EP9_REPRL_PRESET` (`jit` or `jitless`, the execution preset of each isolate, C-23; default
 //! the build's own: `jit` with the `jit` feature, else `jitless`; `jit` in a jitless build is a
-//! usage error, never a silent downgrade, M-R6). The isolate config is the CLI's: no fuzz-only
+//! usage error, never a silent downgrade, M-R6), `EP9_REPRL_GENERATIONAL` (1 = S1, the
+//! generational heap, the default; 0 = S0. REPRL fuzzes S1, the coming default of M5-P2, from
+//! M5-P1 on: decision M5-P1-ORCH-1). The isolate config is the CLI's: no fuzz-only
 //! `IsolateConfig` field (doc 13, MC-w14). Per-isolate fuzz hooks go in the `ExecOptions` seat
 //! of `ep9_vm` (w16 O7, V10-D27), never in a static here: each script gets fresh options.
 //!
 //! Host functions of each script: `print`, `fuzzilli` (below) and `gc(kind)`: `gc('minor')` is
-//! a minor GC (`Cx::collect_garbage_minor`: S1 frees the young cells; an S0 heap runs a full
-//! collection), and `gc()`, `gc('major')` or any other argument a full one (no conversion
+//! a minor GC (`Cx::collect_garbage_minor`: S1 frees the young cells; with
+//! `EP9_REPRL_GENERATIONAL=0`, an S0 heap, it runs a full collection), and `gc()`, `gc('major')` or any other argument a full one (no conversion
 //! runs: an argument that is not the string `"minor"` is a major GC, so a mutated call does not
 //! fail the script).
 //!
@@ -117,6 +119,8 @@ mod unix {
         pub(super) heap_bytes: usize,
         pub(super) stack_bytes: usize,
         pub(super) gc_stress: u32,
+        /// S1, the generational heap (`EP9_REPRL_GENERATIONAL`, default on).
+        pub(super) generational: bool,
         /// The execution options of each script's isolate (`EP9_REPRL_PRESET`).
         pub(super) exec: ExecOptions,
     }
@@ -173,6 +177,7 @@ mod unix {
                 heap_bytes: (number("EP9_REPRL_HEAP_MB", 512, 8..=65536)? as usize) << 20,
                 stack_bytes: (number("EP9_REPRL_STACK_MB", 64, 1..=4096)? as usize) << 20,
                 gc_stress: number("EP9_REPRL_GC_STRESS", 0, 0..=u32::MAX)?,
+                generational: number("EP9_REPRL_GENERATIONAL", 1, 0..=1)? == 1,
                 exec,
             })
         }
@@ -294,25 +299,7 @@ mod unix {
                 return run::EXIT_JS_ERROR;
             }
         };
-        let config = IsolateConfig {
-            heap: HeapConfig {
-                max_heap_bytes: settings.heap_bytes,
-                near_limit: Some(out_of_memory),
-                gc_stress: settings.gc_stress,
-                verify_after_gc: settings.gc_stress > 0,
-                ..HeapConfig::default()
-            },
-            builtins: Some(&ep9_builtins::TABLE),
-            compiler: Some(&COMPILER),
-            ..IsolateConfig::default()
-        };
-        let mut isolate = match Isolate::new_with(config, settings.exec) {
-            Ok(i) => i,
-            Err(e) => panic!("cannot create the isolate: {e}"),
-        };
-        isolate.register_host_function("print", 1, run::print);
-        isolate.register_host_function("gc", 1, gc);
-        isolate.register_host_function("fuzzilli", 2, fuzzilli);
+        let mut isolate = new_isolate(settings);
         let result = isolate.with_cx_checkpoint(|cx| cx.run_script(unit, SCRIPT_NAME).map(|_| ()));
         let _ = std::io::stdout().flush();
         let status = match result {
@@ -331,6 +318,32 @@ mod unix {
             }
             _ => status,
         }
+    }
+
+    /// The isolate of one script: the CLI's config with the heap settings, and the host
+    /// functions `print`, `gc` and `fuzzilli`.
+    pub(super) fn new_isolate(settings: &Settings) -> Isolate {
+        let config = IsolateConfig {
+            heap: HeapConfig {
+                max_heap_bytes: settings.heap_bytes,
+                near_limit: Some(out_of_memory),
+                gc_stress: settings.gc_stress,
+                verify_after_gc: settings.gc_stress > 0,
+                generational: settings.generational,
+                ..HeapConfig::default()
+            },
+            builtins: Some(&ep9_builtins::TABLE),
+            compiler: Some(&COMPILER),
+            ..IsolateConfig::default()
+        };
+        let mut isolate = match Isolate::new_with(config, settings.exec) {
+            Ok(i) => i,
+            Err(e) => panic!("cannot create the isolate: {e}"),
+        };
+        isolate.register_host_function("print", 1, run::print);
+        isolate.register_host_function("gc", 1, gc);
+        isolate.register_host_function("fuzzilli", 2, fuzzilli);
+        isolate
     }
 
     /// `gc(kind)`: `gc('minor')` runs a minor GC, any other call a full one (module doc). The
@@ -1094,8 +1107,13 @@ mod tests {
         let unset = with(None).unwrap();
         assert_eq!(unset.exec, ExecOptions::default());
         assert_eq!(
-            (unset.heap_bytes, unset.stack_bytes, unset.gc_stress),
-            (512 << 20, 64 << 20, 0)
+            (
+                unset.heap_bytes,
+                unset.stack_bytes,
+                unset.gc_stress,
+                unset.generational
+            ),
+            (512 << 20, 64 << 20, 0, true)
         );
         assert_eq!(with(Some("jitless")).unwrap().exec, ExecOptions::jitless());
         if cfg!(feature = "jit") {
@@ -1108,6 +1126,53 @@ mod tests {
         for bad in ["", "JIT", "hybrid", "jitless "] {
             let e = with(Some(bad)).unwrap_err();
             assert!(e.starts_with("bad EP9_REPRL_PRESET value"), "{bad:?}: {e}");
+        }
+    }
+
+    /// `gc('minor')` in a REPRL isolate is an S1 minor GC: generational is on by default (M5-P1
+    /// decision M5-P1-ORCH-1: REPRL fuzzes the coming M5-P2 default; Codex r1 reprl2), and
+    /// `EP9_REPRL_GENERATIONAL=0` turns it off (an S0 heap: `gc('minor')` is a full GC). Other
+    /// values are refused. In process, with the isolate the child makes for each script.
+    #[test]
+    fn gc_minor_is_a_minor_gc_with_generational_on_by_default() {
+        use super::unix::{Settings, new_isolate};
+
+        let with = |v: Option<&str>| {
+            Settings::from_lookup(|name| match (name, v) {
+                ("EP9_REPRL_GENERATIONAL", Some(v)) => Ok(v.to_string()),
+                _ => Err(std::env::VarError::NotPresent),
+            })
+        };
+        let minors = |s: &Settings| {
+            let unit = ep9_frontend::compile(
+                "var keep = [{}]; gc('minor'); gc('minor'); keep.push({});",
+                ep9_frontend::SourceOpts::script(ep9_frontend::Strictness::Sloppy),
+                ep9_frontend::CompileOptions::default(),
+            )
+            .expect("compiles");
+            let mut iso = new_isolate(s);
+            let before = iso.gc_stats().minor_collections;
+            iso.with_cx_checkpoint(|cx| cx.run_script(unit, "reprl").map(|_| ()))
+                .expect("runs");
+            iso.gc_stats().minor_collections - before
+        };
+        assert_eq!(minors(&with(None).unwrap()), 2, "the default (S1)");
+        assert_eq!(
+            minors(&with(Some("1")).unwrap()),
+            2,
+            "EP9_REPRL_GENERATIONAL=1"
+        );
+        assert_eq!(
+            minors(&with(Some("0")).unwrap()),
+            0,
+            "EP9_REPRL_GENERATIONAL=0 (S0)"
+        );
+        for bad in ["", "2", "yes", "on"] {
+            let e = with(Some(bad)).unwrap_err();
+            assert!(
+                e.starts_with("bad EP9_REPRL_GENERATIONAL value"),
+                "{bad:?}: {e}"
+            );
         }
     }
 
